@@ -11,16 +11,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Tracing a fix to what introduced it (WP-705, WP-ADR68): SZZ on a local
-// checkout. The lines a fix removes or changes are blamed on the commit
-// before it, and each blamed commit is mapped to the change that carried it
-// to the base. The server has no git, so runners do this and upload the
-// result; only fixes linked to bug tasks are traced.
-//
-// SZZ cannot blame a fix that only adds lines, a common shape for a missing
-// case. Those blame the lines next to the insertion, as weak evidence
-// (method "context"). A proving test (WP-709) would beat both.
-
 const (
 	maxTraceFiles       = 60
 	maxListedFiles      = 500
@@ -122,7 +112,7 @@ func (r *fixRepo) carrier(c, tip string) (string, error) {
 		return "", fmt.Errorf("rev-list %s..%s: %w", c, tip, err)
 	}
 	found := ""
-	for _, l := range strings.Fields(out) { // newest first
+	for _, l := range strings.Fields(out) {
 		if chain[l] {
 			found = l
 		}
@@ -270,7 +260,6 @@ func TraceFix(root string, in FixInput) (*FixTrace, error) {
 		if len(res.Files) == maxListedFiles {
 			break
 		}
-		// A file the fix creates is where the cure lives, not the bug.
 		if f.old == "" {
 			continue
 		}
@@ -326,7 +315,7 @@ func TraceFix(root string, in FixInput) (*FixTrace, error) {
 		}
 		counts, err := r.blame(from, p, ls)
 		if err != nil {
-			return nil, err // a partial answer would be final and wrong
+			return nil, err
 		}
 		for c, n := range counts {
 			blamed[c] += n
@@ -372,7 +361,7 @@ func (r *fixRepo) bulkCommit(c string) (bool, error) {
 		if err != nil {
 			return false, fmt.Errorf("git diff-tree %s: %w", c, err)
 		}
-		n = len(strings.FieldsFunc(out, func(ch rune) bool { return ch == '\n' })) // a path can hold spaces
+		n = len(strings.FieldsFunc(out, func(ch rune) bool { return ch == '\n' }))
 		r.sizes[c] = n
 	}
 	return n > maxFilesPerCommit, nil
@@ -403,7 +392,7 @@ func (r *fixRepo) introducers(res *FixTrace, blamed map[string]int, tip string, 
 	for c := range blamed {
 		shas = append(shas, c)
 	}
-	slices.Sort(shas) // a tie for the top commit stays the same between runs
+	slices.Sort(shas)
 	for _, c := range shas {
 		n := blamed[c]
 		bulk, err := r.bulkCommit(c)
@@ -440,7 +429,6 @@ func (r *fixRepo) introducers(res *FixTrace, blamed map[string]int, tip string, 
 			a.top, a.commit = n, c
 		}
 	}
-	// A share is of the lines that could be the cause: a dropped line can't.
 	possible := res.Lines - res.Dropped
 	for m, a := range byCarrier {
 		if a.lines == 0 {
@@ -472,7 +460,7 @@ func (r *fixRepo) introducers(res *FixTrace, blamed map[string]int, tip string, 
 func (r *fixRepo) neighbours(rev, path string, inserts []int) ([]int, error) {
 	body, err := r.git("show", rev+":"+path)
 	if err != nil {
-		return nil, fmt.Errorf("git show %s: %w", path, err) // the diff said it's there
+		return nil, fmt.Errorf("git show %s: %w", path, err)
 	}
 	src := strings.Split(strings.TrimSuffix(body, "\n"), "\n")
 	seen := map[int]bool{}
@@ -519,11 +507,11 @@ func (r *fixRepo) blame(rev, path string, lines []int) (map[string]int, error) {
 
 // fixFile is one code file in a fix's diff.
 type fixFile struct {
-	old, new  string // "" for a side that doesn't exist
-	removed   []int  // lines in old worth blaming
-	inserts   []int  // old line numbers that lines were added after
+	old, new  string
+	removed   []int
+	inserts   []int
 	changed   int
-	submodule bool // a pointer to another repo: there are no lines to blame
+	submodule bool
 }
 
 func (f *fixFile) path() string {
@@ -538,7 +526,7 @@ func diffPath(p string) string {
 	if p == "/dev/null" {
 		return ""
 	}
-	if u, err := strconv.Unquote(p); err == nil { // git quotes a tab, quote or backslash as Go would
+	if u, err := strconv.Unquote(p); err == nil {
 		p = u
 	}
 	p = strings.Trim(p, `"`)
@@ -586,7 +574,7 @@ func parseFixDiff(diff string) []*fixFile {
 			cur.old = diffPath(l[4:])
 		case strings.HasPrefix(l, "+++ "):
 			cur.new = diffPath(l[4:])
-		case strings.HasSuffix(l, " 160000"): // the index or mode line of a submodule
+		case strings.HasSuffix(l, " 160000"):
 			cur.submodule = true
 		case strings.HasPrefix(l, "@@ "):
 			m := hunkRE.FindStringSubmatch(l)
@@ -601,8 +589,6 @@ func parseFixDiff(diff string) []*fixFile {
 			if m[3] != "" {
 				nNew, _ = strconv.Atoi(m[3])
 			}
-			// A hunk's body has exactly these many lines: read them here so
-			// a removed "-- x" can't be mistaken for a file header.
 			added := map[string]bool{}
 			var removed []string
 			for j := 0; j < nOld+nNew && i+1 < len(lines); {

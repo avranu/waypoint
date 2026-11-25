@@ -1,7 +1,3 @@
-// An issue's conversations with your assistant (WP-ADR1): the ones linked
-// to it (started from here, by an automation, or linked from the chat) and
-// a way to start one about it.
-
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { MessagesSquare, Sparkles } from 'lucide-react'
@@ -25,7 +21,6 @@ export function AssistantChats({ issue }: { issue: { key: string; title: string 
       Ask {a.name}
     </Link>
   ))
-  // No conversations yet: just the button, not a section.
   if (!links.length) return <div className="flex flex-wrap gap-1">{ask}</div>
   return (
     <section>

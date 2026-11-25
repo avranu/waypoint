@@ -1,15 +1,5 @@
 package core
 
-// The CI board (WP-225): what Forgejo Actions is running for the repos
-// Waypoint knows, what waits and why, what finished and how long it took,
-// and when it will all be done. Each attached Forgejo repo is read: its
-// unfinished runs and their jobs (every 15 seconds at most, while someone
-// looks), the tasks runners took in the last day and its recent runs (every
-// two minutes). The pool the jobs share is the CI hosts that report
-// (ci_hosts.go), else an admin's setting per forge, else the forge's
-// runners (site administrator tokens only), else one runner as busy as the
-// busiest moment of the day; ETAs play the queue forward over it (simulate).
-
 import (
 	"context"
 	"database/sql"
@@ -25,14 +15,14 @@ import (
 )
 
 const (
-	ciBoardFresh    = 15 * time.Second // unfinished runs are read again after this
-	ciHistoryFresh  = 2 * time.Minute  // tasks and recent runs
+	ciBoardFresh    = 15 * time.Second
+	ciHistoryFresh  = 2 * time.Minute
 	ciHistoryWindow = 24 * time.Hour
-	ciTaskPages     = 6 // at most 300 tasks a repo read; ci_jobs fills in the rest of the day (WP-508)
+	ciTaskPages     = 6
 	ciRecentMax     = 200
 	ciBucket        = 15 * time.Minute
 	ciReadParallel  = 6
-	ciPoolKey       = "ci_pool" // server_settings: {forge id: [runner]}
+	ciPoolKey       = "ci_pool"
 )
 
 // CIBoard is the page (and wp ci status).
@@ -90,7 +80,7 @@ type CIAlert struct {
 	Title string `json:"title"`
 	Body  string `json:"body,omitempty"`
 	URL   string `json:"url,omitempty"`
-	key   string // the same trouble from one sweep to the next, whatever its numbers (sweepCIHealth)
+	key   string
 }
 
 // CIPool is the runners a forge's jobs share, as the ETAs model them.
@@ -223,14 +213,12 @@ type CIPoint struct {
 
 // ciBoardCache keeps what was read, shared by everyone looking.
 type ciBoardCache struct {
-	mu      sync.Mutex
-	at      time.Time
-	snap    *ciSnapshot
-	history map[string]*ciHistory // forge id|repo
-	runners map[int64]ciRunners
-	stall   map[string]ciStall // forge id|repo → fullRunStallAfter (WP-317)
-	// tests: the failing tests a finished job's log names, by
-	// forge id|repo|task (the doctor's, WP-586); a finished log won't change.
+	mu       sync.Mutex
+	at       time.Time
+	snap     *ciSnapshot
+	history  map[string]*ciHistory
+	runners  map[int64]ciRunners
+	stall    map[string]ciStall
 	tests    map[string][]string
 	building chan struct{}
 }
@@ -242,19 +230,13 @@ type ciRunners struct {
 }
 
 type ciHistory struct {
-	at    time.Time
-	tasks []ActionTask
-	runs  map[int64]ActionRun // by number
-	err   error
-	// The last day's finished jobs that tasks, read newest first and capped,
-	// leaves out, from ci_jobs (WP-508); waits holds the kept wait of every
-	// finished job of the day, for those whose run isn't among runs. tasks
-	// and kept hold every job from whole on (zero: all of them).
-	kept  []ciKeptJob
-	waits map[int64]int64 // by task id
-	whole time.Time
-	// draftRuns are the runs tasks name that runs leaves out (it holds the
-	// newest 50) and ci_runs keeps at the draft tier.
+	at        time.Time
+	tasks     []ActionTask
+	runs      map[int64]ActionRun
+	err       error
+	kept      []ciKeptJob
+	waits     map[int64]int64
+	whole     time.Time
 	draftRuns map[int64]bool
 }
 
@@ -293,8 +275,8 @@ type ciProject struct {
 type ciRepoData struct {
 	ref     ciRepoRef
 	active  []ActionRun
-	jobs    map[int64][]ActionJob // by run id
-	running map[int64]ActionTask  // by task id
+	jobs    map[int64][]ActionJob
+	running map[int64]ActionTask
 	hist    *ciHistory
 	err     error
 }
@@ -303,8 +285,8 @@ type ciSnapshot struct {
 	at      time.Time
 	repos   []*ciRepoData
 	runners map[int64]ciRunners
-	pools   map[int64][]CIPoolRunner // configured
-	prs     map[string]CIPRRef       // forge|repo|sha
+	pools   map[int64][]CIPoolRunner
+	prs     map[string]CIPRRef
 }
 
 // CIBoard reads (or reuses) what CI is doing and lays it out for actor.
@@ -333,12 +315,11 @@ func (s *Service) ciSnapshot(ctx context.Context) (*ciSnapshot, error) {
 		if c.building == nil {
 			c.building = make(chan struct{})
 			c.mu.Unlock()
-			// the read outlives a viewer who leaves: the others share it
 			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 			snap, err := s.readCI(rctx)
 			cancel()
 			if err == nil {
-				s.notePoolSaturation(snap) // WP-509
+				s.notePoolSaturation(snap)
 			}
 			c.mu.Lock()
 			if err == nil {
@@ -500,7 +481,7 @@ func (s *Service) readCIRepo(ctx context.Context, cl ForgeActions, d *ciRepoData
 		return err
 	})
 	if noActions(err) {
-		return // Actions are off for the repo: nothing to read, nothing wrong
+		return
 	}
 	if err != nil {
 		d.err = err
@@ -513,7 +494,7 @@ func (s *Service) readCIRepo(ctx context.Context, cl ForgeActions, d *ciRepoData
 		var jobs []ActionJob
 		err := call(func() (err error) { jobs, err = cl.ActionJobs(ctx, f, repo, r.ID); return err })
 		if noActions(err) {
-			gone[r.ID] = true // deleted since the list was read: nothing to show (WP-236)
+			gone[r.ID] = true
 			continue
 		}
 		if err != nil {
@@ -529,7 +510,7 @@ func (s *Service) readCIRepo(ctx context.Context, cl ForgeActions, d *ciRepoData
 		return err
 	})
 	if noActions(err) {
-		*d = ciRepoData{ref: d.ref} // Actions went off mid-read (WP-236)
+		*d = ciRepoData{ref: d.ref}
 		return
 	}
 	if err != nil {
@@ -542,7 +523,7 @@ func (s *Service) readCIRepo(ctx context.Context, cl ForgeActions, d *ciRepoData
 	}
 	d.hist = s.ciRepoHistory(ctx, cl, f, repo, call)
 	if noActions(d.hist.err) {
-		*d = ciRepoData{ref: d.ref} // Actions went off mid-read (WP-236)
+		*d = ciRepoData{ref: d.ref}
 		return
 	}
 	if d.hist.err != nil {
@@ -561,7 +542,7 @@ func (s *Service) ciRepoHistory(ctx context.Context, cl ForgeActions, f *Forge, 
 	}
 	h = &ciHistory{at: s.now(), runs: map[int64]ActionRun{}}
 	since := s.now().Add(-ciHistoryWindow)
-	var oldest time.Time // of the tasks read; zero once the read reached the first
+	var oldest time.Time
 	for page := 1; page <= ciTaskPages; page++ {
 		var list []ActionTask
 		if h.err = call(func() (err error) { list, err = cl.ActionTasks(ctx, f, repo, nil, page, 50); return err }); h.err != nil {
@@ -587,7 +568,7 @@ func (s *Service) ciRepoHistory(ctx context.Context, cl ForgeActions, f *Forge, 
 	h.tasks = settleTaskEnds(h.tasks, h.runs)
 	if h.err == nil {
 		h.whole = oldest
-		if s.recordCIHistory(ctx, f.ID, repo, h.tasks, h.runs) == nil { // WP-490
+		if s.recordCIHistory(ctx, f.ID, repo, h.tasks, h.runs) == nil {
 			h.whole = s.noteCIWhole(ctx, f.ID, repo, oldest)
 		}
 		if drafts, err := s.keptDraftRuns(ctx, f.ID, repo, h.tasks, h.runs); err != nil {
@@ -726,8 +707,6 @@ func tptr(t time.Time) *time.Time {
 // layoutCIBoard turns a snapshot into the board actor may see.
 func (s *Service) layoutCIBoard(ctx context.Context, actor *Actor, snap *ciSnapshot) *CIBoard {
 	now := snap.at
-	// the last day's figures start where every repo's jobs are whole: a day
-	// ago, or later after a hole in the kept jobs (WP-508)
 	from := now.Add(-ciHistoryWindow)
 	for _, d := range snap.repos {
 		if d.hist != nil && d.hist.whole.After(from) {
@@ -751,7 +730,6 @@ func (s *Service) layoutCIBoard(ctx context.Context, actor *Actor, snap *ciSnaps
 		return "", false
 	}
 
-	// What finished: durations, waits, stats, the timeline.
 	durs := newCIDurations()
 	type statAcc struct {
 		CIJobStats
@@ -761,7 +739,7 @@ func (s *Service) layoutCIBoard(ctx context.Context, actor *Actor, snap *ciSnaps
 	stats := map[string]*statAcc{}
 	var waits, waits3h, runTimes []float64
 	from3h := now.Add(-doctorRecent)
-	spans := map[int64][][2]time.Time{} // forge → task spans, for the peak
+	spans := map[int64][][2]time.Time{}
 	var waitSpans [][2]time.Time
 	var busySpans [][2]time.Time
 	repoRow := make([]CIRepo, len(snap.repos))
@@ -887,11 +865,10 @@ func (s *Service) layoutCIBoard(ctx context.Context, actor *Actor, snap *ciSnaps
 
 	s.keptDurations(ctx, durs, snap.repos)
 
-	// What's running and queued, forge by forge over its pool.
 	type pend struct {
 		job   CIJob
 		forge int64
-		sim   int // index in that forge's sims
+		sim   int
 		runIx int
 	}
 	var pending []pend
@@ -906,7 +883,7 @@ func (s *Service) layoutCIBoard(ctx context.Context, actor *Actor, snap *ciSnaps
 			ref := s.ciRef(snap, d, v.ok, v.key, run, true, ActionTask{})
 			runIx := len(b.Runs)
 			cr := CIRun{CIRef: ref, Jobs: len(jobs), Status: run.Status}
-			idx := map[int64]int{} // job id → sim index
+			idx := map[int64]int{}
 			for _, j := range jobs {
 				switch {
 				case j.Status == "running":
@@ -959,9 +936,6 @@ func (s *Service) layoutCIBoard(ctx context.Context, actor *Actor, snap *ciSnaps
 				sims90[fid] = append(sims90[fid], sj90)
 				pending = append(pending, pend{job: cj, forge: fid, sim: idx[j.ID], runIx: runIx})
 			}
-			// needs, matched by name among the run's unfinished jobs; a need
-			// matching no name waits for every other unfinished job that
-			// needs nothing
 			for _, j := range jobs {
 				si, ok := idx[j.ID]
 				if !ok || len(j.Needs) == 0 || j.Status == "running" {
@@ -990,7 +964,6 @@ func (s *Service) layoutCIBoard(ctx context.Context, actor *Actor, snap *ciSnaps
 		}
 	}
 
-	// Pools, and the simulation over each.
 	hosts, err := s.ciHosts(ctx)
 	if err != nil {
 		s.log.WarnContext(ctx, "read CI hosts", "err", err)
@@ -1106,7 +1079,6 @@ func (s *Service) layoutCIBoard(ctx context.Context, actor *Actor, snap *ciSnaps
 		return y.EstFinish.Compare(*x.EstFinish)
 	})
 
-	// Busy time and the timeline.
 	for _, sp := range busySpans {
 		b.Summary.BusySeconds24h += int64(spanIn(sp, from, now).Seconds())
 	}

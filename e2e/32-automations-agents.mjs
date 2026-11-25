@@ -74,7 +74,6 @@ async function run(width, scheme, key, full) {
     await api("POST", "/projects", { name: `Agents ${key}`, key });
   await toSettings();
 
-  // ---- the gallery says what each card needs ----
   const weekly = gallery("Weekly code review into a PR");
   await weekly.waitFor();
   for (const tagText of ["Needs a runner", "Changes PRs"])
@@ -94,7 +93,6 @@ async function run(width, scheme, key, full) {
   await shot("gallery");
   await overflow("gallery");
 
-  // ---- turn on the weekly review and look at its steps ----
   await weekly.getByRole("button", { name: "Turn on" }).click();
   const mine = card("Weekly code review into a PR");
   await mine.waitFor();
@@ -124,7 +122,6 @@ async function run(width, scheme, key, full) {
   await shot("weekly-editor");
   await dialogFits("weekly editor");
 
-  // A fallback model is one click, and saved.
   await chain.getByRole("button", { name: "Add a fallback" }).click();
   ok((await chain.locator("li").count()) === 2, `${tag} a fallback model can be added`);
   await chain.getByLabel("CLI 2").selectOption("claude").catch(async () => {
@@ -134,7 +131,6 @@ async function run(width, scheme, key, full) {
   await chain.getByLabel("Model 2").fill("sonnet");
   await shot("weekly-fallback");
 
-  // A test says what the steps would do and changes nothing.
   await dlg.getByRole("button", { name: "Test", exact: true }).click();
   const test = dialog(/Test “Weekly code review into a PR”/);
   await test.getByRole("button", { name: "Run the test" }).click();
@@ -155,19 +151,16 @@ async function run(width, scheme, key, full) {
   );
   ok(saved.saved_by?.username === "robin", `${tag} the API says robin saved it`);
 
-  // ---- the card that deploys goes in switched off ----
   await ship.getByRole("button", { name: "Add, off" }).click();
   const shipped = card("Ship merged PRs");
   await shipped.waitFor();
   ok(!(await shipped.getByRole("switch").first().isChecked()), `${tag} “Ship merged PRs” is added switched off`);
   await shot("ship-off");
 
-  // ---- copy and edit another ----
   await toSettings();
   await gallery("Fix failing CI on agents' PRs").getByRole("button", { name: "Copy and edit" }).click();
   dlg = dialog("New automation");
   await dlg.getByLabel("Name", { exact: true }).waitFor();
-  // the form fills the copy's name a moment after the dialog opens
   const copyName = await dlg.getByLabel("Name", { exact: true }).evaluate(
     (el) =>
       new Promise((resolve) => {
@@ -183,7 +176,6 @@ async function run(width, scheme, key, full) {
   await dlg.getByRole("button", { name: "Cancel" }).click();
 
   if (full) {
-    // ---- a run that waits for a person, carried on when they answer ----
     await api("POST", `/projects/${key}/automations`, {
       name: "Ask robin",
       enabled: true,

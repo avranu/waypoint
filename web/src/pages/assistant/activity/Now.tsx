@@ -1,8 +1,3 @@
-// Activity → Now: what the assistant is doing (its open conversations),
-// what waits on you (the gate's approvals, chat questions), and one
-// timeline of what it did: the gate's audit, conversations started and
-// ended, and scheduled runs, grouped by day, newest first.
-
 import { useMemo, useState, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
@@ -154,7 +149,6 @@ function cronItems(jobs: CronJob[], sessions: HermesSession[]): Item[] {
     const failed = !!j.last_status && j.last_status !== 'ok'
     if (!j.no_agent && !failed) continue
     const at = Date.parse(j.last_run_at)
-    // An agent run already shows as its conversation; add only the failure.
     if (
       !failed &&
       sessions.some(
@@ -209,7 +203,7 @@ export function NowView({ assistant }: { assistant: Assistant }) {
       { limit: 100, order: 'recent', archived: 'include' },
       10_000,
     ),
-    refetchInterval: 60_000, // sessions.changed refetches it sooner
+    refetchInterval: 60_000,
     enabled: up,
     retry: false,
   })
@@ -241,7 +235,6 @@ export function NowView({ assistant }: { assistant: Assistant }) {
   for (const it of visible) counts.set(it.group, (counts.get(it.group) ?? 0) + 1)
   const filtered = group ? visible.filter((it) => it.group === group) : visible
   const days = byDay(filtered.slice(0, shown), (it) => it.at)
-  // The feed is built from the latest conversations and audit rows only.
   const olderUnloaded =
     (sessions.data ? sessions.data.total > sessions.data.sessions.length : false) ||
     (audit.data?.length ?? 0) >= 1000

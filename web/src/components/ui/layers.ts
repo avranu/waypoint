@@ -1,5 +1,3 @@
-// Stacked overlays (dialogs, popovers): Escape closes only the topmost.
-
 import { useEffect, useRef } from 'react'
 
 const stack: number[] = []

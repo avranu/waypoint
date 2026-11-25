@@ -166,7 +166,6 @@ func TestUpdateIndexesAndSkips(t *testing.T) {
 		t.Errorf("indexed files:\n got  %v\n want %s", got, want)
 	}
 
-	// no changes: nothing written, nothing re-read
 	st = update(t, ix)
 	if st.Added+st.Changed+st.Removed != 0 || st.NewCommits != 0 {
 		t.Errorf("idle update did work: %+v", st)
@@ -179,7 +178,6 @@ func TestUpdateIncremental(t *testing.T) {
 	update(t, ix)
 	time.Sleep(10 * time.Millisecond)
 
-	// edit (dirty), add (untracked), delete, ignore
 	r.write("core/merge.go", mergeGo+"\nfunc extra() {}\n")
 	r.write("core/new.go", "package core\n\nfunc Brand() {}\n")
 	if err := os.Remove(filepath.Join(r.dir, "tools/run.py")); err != nil {
@@ -206,7 +204,6 @@ func TestUpdateIncremental(t *testing.T) {
 		}
 	}
 
-	// a commit moves HEAD: only the new commit is read
 	r.commit("Fix brand", 0)
 	st = update(t, ix)
 	if st.NewCommits != 1 {
@@ -228,7 +225,6 @@ func TestSignals(t *testing.T) {
 	if s.LastFix.IsZero() || s.LastSubject != "Tweak both" {
 		t.Errorf("last fix/subject = %v %q", s.LastFix, s.LastSubject)
 	}
-	// docs-only commits are not fixes and don't touch code files
 	if n, _ := ix.Signals("docs/notes.md"); n == nil || n.Fixes != 0 {
 		t.Errorf("notes signals = %+v", n)
 	}
@@ -240,7 +236,6 @@ func TestSignals(t *testing.T) {
 		t.Errorf("confidence = %v", co[0].Confidence)
 	}
 	imp, err := ix.Importers("core/merge.go")
-	// the handler imports package core; the test file is in the package and imports none of it
 	if err != nil || len(imp) != 1 || imp[0] != "api/handler.go" {
 		t.Errorf("importers = %v %v", imp, err)
 	}
@@ -262,7 +257,6 @@ func TestFindRoutesAndRanks(t *testing.T) {
 	if !strings.Contains(res.Files[0].Hits[0].Text, "func (s *Service) MergeReady") || res.Files[0].Hits[0].Line != 4 {
 		t.Errorf("definition hit = %+v", res.Files[0].Hits[0])
 	}
-	// the caller shows up after the definition, with the function it is in
 	var caller *FileHit
 	for i, f := range res.Files {
 		if f.Path == "api/handler.go" {
@@ -272,7 +266,6 @@ func TestFindRoutesAndRanks(t *testing.T) {
 	if caller == nil || caller.Hits[0].In != "handleMerge" || caller.Hits[0].Line != 6 {
 		t.Errorf("caller digest: %s", res.Render())
 	}
-	// the test file ranks below source
 	var srcAt, testAt = -1, -1
 	for i, f := range res.Files {
 		switch f.Path {
@@ -286,7 +279,6 @@ func TestFindRoutesAndRanks(t *testing.T) {
 		t.Errorf("test ranked above source: %s", res.Render())
 	}
 
-	// path
 	res, _ = ix.Find(ctx, "merge.go", FindOptions{})
 	if res.Mode != ModePath || res.Files[0].Path != "core/merge.go" || len(res.Files[0].Symbols) == 0 {
 		t.Errorf("path find: %s", res.Render())
@@ -300,7 +292,6 @@ func TestFindRoutesAndRanks(t *testing.T) {
 		t.Errorf("glob find: %s", res.Render())
 	}
 
-	// prose: words in docs, symbol names and text
 	res, _ = ix.Find(ctx, "exponential backoff retries", FindOptions{})
 	if res.Mode != ModeText || res.Files[0].Path != "README.md" || res.Files[0].Hits[0].Line != 3 {
 		t.Errorf("prose find: %s", res.Render())
@@ -309,12 +300,10 @@ func TestFindRoutesAndRanks(t *testing.T) {
 	if res.Files[0].Path != "core/merge.go" {
 		t.Errorf("split-word find: %s", res.Render())
 	}
-	// an identifier nothing defines falls back to text
 	res, _ = ix.Find(ctx, "backoff", FindOptions{})
 	if res.Total == 0 || res.Files[0].Path != "README.md" {
 		t.Errorf("text fallback: %s", res.Render())
 	}
-	// nothing at all
 	res, _ = ix.Find(ctx, "zzzznotthere", FindOptions{})
 	if res.Total != 0 || !strings.Contains(res.Render(), "No matches") {
 		t.Errorf("no match: %s", res.Render())
@@ -350,7 +339,6 @@ func TestFindBudget(t *testing.T) {
 			t.Errorf("budget %d: %d files shown, %d more", budget, len(res.Files), len(res.More))
 		}
 	}
-	// a budget too small for even one file still answers with one
 	res, _ := ix.Find(context.Background(), "retry backoff", FindOptions{Budget: 10})
 	if len(res.Files) != 1 {
 		t.Errorf("tiny budget: %d files", len(res.Files))
@@ -363,17 +351,14 @@ func TestShow(t *testing.T) {
 	update(t, ix)
 	ctx := context.Background()
 
-	// a small file prints in full, numbered
 	res, err := ix.Show(ctx, "tools/run.py", ShowOptions{})
 	if err != nil || res.Kind != "full" || !strings.Contains(res.Render(0), "4  def run_all(items):") {
 		t.Fatalf("small file: %v\n%s", err, res.Render(0))
 	}
-	// --outline
 	res, _ = ix.Show(ctx, "tools/run.py", ShowOptions{Outline: true})
 	if res.Kind != "outline" || !strings.Contains(res.Render(0), "def run_all(items)") || !strings.Contains(res.Render(0), "// Run every item.") {
 		t.Errorf("outline: %s", res.Render(0))
 	}
-	// a symbol: real lines from disk, with a methods footer for types
 	res, err = ix.Show(ctx, "core/merge.go:Service", ShowOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -382,20 +367,17 @@ func TestShow(t *testing.T) {
 	if !strings.Contains(out, "core/merge.go:8-9") || !strings.Contains(out, "type Service struct{ n int }") || !strings.Contains(out, "methods: MergeReady:4") {
 		t.Errorf("type show:\n%s", out)
 	}
-	// Type.Method, a unique suffix for the file, and the symbol alone
 	for _, ref := range []string{"core/merge.go:Service.MergeReady", "merge.go:MergeReady", "MergeReady"} {
 		res, err = ix.Show(ctx, ref, ShowOptions{})
 		if err != nil || len(res.Blocks) != 1 || res.Blocks[0].Start != 3 || res.Blocks[0].End != 6 {
 			t.Errorf("show %s: %v %+v", ref, err, res)
 		}
 	}
-	// the file changes under the index: show still returns the real lines
 	r.write("core/merge.go", strings.Replace(mergeGo, "package core\n", "package core\n\n\n\n", 1))
 	res, err = ix.Show(ctx, "core/merge.go:MergeReady", ShowOptions{})
 	if err != nil || res.Blocks[0].Start != 6 || !strings.Contains(res.Blocks[0].Lines[len(res.Blocks[0].Lines)-1], "}") {
 		t.Errorf("stale index: %v %+v", err, res)
 	}
-	// ranges, FILE:LINE, grep-style path:line:text
 	res, _ = ix.Show(ctx, "core/merge_test.go:5-7", ShowOptions{})
 	if res.Kind != "lines" || len(res.Blocks[0].Lines) != 3 || res.Blocks[0].Start != 5 {
 		t.Errorf("range: %+v", res)
@@ -408,7 +390,6 @@ func TestShow(t *testing.T) {
 	if err != nil || res.Blocks[0].Symbol != "TestMergeReady" {
 		t.Errorf("grep style: %v %+v", err, res)
 	}
-	// errors are specific
 	if _, err = ix.Show(ctx, "core/merge.go:Nope", ShowOptions{}); err == nil || !strings.Contains(err.Error(), "no symbol") {
 		t.Errorf("missing symbol: %v", err)
 	}
@@ -418,7 +399,6 @@ func TestShow(t *testing.T) {
 	if _, err = ix.Show(ctx, "core/merge.go:999", ShowOptions{}); err == nil {
 		t.Error("line past the end accepted")
 	}
-	// a long symbol is cut at the budget and says how to read the rest
 	var b strings.Builder
 	b.WriteString("package p\n\nfunc long() {\n")
 	for i := range 300 {
@@ -470,7 +450,6 @@ func TestSchemaMismatchRebuilds(t *testing.T) {
 	if st := update(t, ix2); st.Added == 0 {
 		t.Errorf("not rebuilt: %+v", st)
 	}
-	// a corrupt file is replaced, not fatal
 	_ = ix2.Close()
 	if err := os.WriteFile(ix2.DBPath, []byte("this is not a database at all, just text"), 0o600); err != nil {
 		t.Fatal(err)

@@ -50,7 +50,6 @@ func TestEventsRememberTheAgentSession(t *testing.T) {
 		t.Errorf("its own task isn't named: %v", d)
 	}
 
-	// A project event belongs to no task: the session, not the task it holds.
 	if err := e.s.write(e.ctx, agent, func(t *tx) error {
 		t.emit(&Event{Kind: EvProjectMember, ProjectID: p.ID, Field: "member", Old: "x", New: "editor"})
 		return nil
@@ -72,8 +71,6 @@ func TestEventsRememberTheAgentSession(t *testing.T) {
 		t.Errorf("project event names a task: %v", pd)
 	}
 
-	// A task of another project: the session is kept, the held task's key
-	// (a task of a project this one may not share) is not.
 	q := e.project(e.admin, "Beta", "kanban")
 	far := e.issue(e.admin, IssueInput{Project: q.Key, Title: "elsewhere"})
 	if _, err := e.s.AddComment(e.ctx, agent, far.Key, "from another project"); err != nil {
@@ -87,7 +84,6 @@ func TestEventsRememberTheAgentSession(t *testing.T) {
 		t.Errorf("other project's event names the held task: %v", d)
 	}
 
-	// No session, no keys.
 	if _, err := e.s.AddComment(e.ctx, e.admin, two.Key, "a person"); err != nil {
 		t.Fatal(err)
 	}

@@ -14,10 +14,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// wp code why (WP-182, ADR3 point 4): the history behind a file or symbol,
-// read from Waypoint's records (the pull requests, issues and decisions) with
-// git as the fallback.
-
 func init() {
 	codeCmd.subs = append(codeCmd.subs, &command{name: "why", args: "FILE | FILE:SYMBOL",
 		summary: "the commits, PRs, issues and decisions behind a file or symbol",
@@ -294,7 +290,7 @@ func (r *whyResult) render() string {
 				line += fmt.Sprintf("\n        %s %s (%s)", i.Key, clipOne(i.Title, 80), i.Status)
 			}
 		} else if ok {
-			continue // the same pull request again (its commits)
+			continue
 		}
 		b.WriteString(line + "\n")
 	}

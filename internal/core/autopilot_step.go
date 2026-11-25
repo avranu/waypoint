@@ -14,13 +14,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Autopilot steps (WP-ADR9): what autopilot is doing about one finished
-// session. A Stop that finds the session's task done makes it due after the
-// grace period; the minute tick (RunAutopilot) checks the limits, picks and
-// reserves the next task and queues an autopilot job on the person's runner
-// on that machine, which clears the session in its tmux pane, runs wp next
-// for the new one and pastes the answer as its prompt.
-
 // Step states.
 const (
 	StepDue      = "due"
@@ -33,23 +26,23 @@ const (
 
 // Waiting reasons (and the stopped ones), as the person reads them in Reason.
 const (
-	WaitBackground = "background" // live background work
-	WaitUnknown    = "unknown"    // the Stop didn't say what still runs
-	WaitNews       = "news"       // news it must act on is about to wake it
-	WaitPrompted   = "prompted"   // a person used it: waits for them to leave it idle
-	WaitRunner     = "runner"     // no runner online on its machine
-	WaitNothing    = "nothing"    // nothing ready to take
-	WaitMerge      = "merge"      // the ready tasks build on an unmerged pull request
-	WaitScreen     = "screen"     // the runner found a draft in the input, or the session busy
-	WaitNoTmux     = "no_tmux"    // not in tmux, or not started as plain claude: it can't be restarted
-	WaitJob        = "job"        // the runner's job failed
-	WaitRate       = "rate"       // it started per_hour tasks in the project this hour
-	WaitRepeat     = "repeat"     // the queue offered tasks an agent already finished (told, not waited on)
-	WaitReviewing  = "reviewing"  // its adversarial review round is running (WP-285)
+	WaitBackground = "background"
+	WaitUnknown    = "unknown"
+	WaitNews       = "news"
+	WaitPrompted   = "prompted"
+	WaitRunner     = "runner"
+	WaitNothing    = "nothing"
+	WaitMerge      = "merge"
+	WaitScreen     = "screen"
+	WaitNoTmux     = "no_tmux"
+	WaitJob        = "job"
+	WaitRate       = "rate"
+	WaitRepeat     = "repeat"
+	WaitReviewing  = "reviewing"
 	// WaitAudit (review_audit.go): another model's audit before the round (WP-687).
-	StopLoop    = "loop"    // it turned itself off: a run of quickly finished tasks
-	StopCleared = "cleared" // the person cleared it: the session is theirs now (WP-1319)
-	StopYours   = "yours"   // a person's own session: autopilot doesn't move it on (WP-1319)
+	StopLoop    = "loop"
+	StopCleared = "cleared"
+	StopYours   = "yours"
 )
 
 // yoursDetail is why a step in a person's own session stopped.
@@ -84,23 +77,21 @@ const (
 	// pull request is work, however fast.
 	autopilotQuickRuns = 3
 	autopilotQuickRun  = 5 * time.Minute
-	// The starts in an hour are the person's per_hour limit (at most
-	// maxPerHour, never off; WP-284).
 )
 
 // AutopilotPromptMark starts every prompt autopilot pastes, so its own
 // prompts never count as a person's.
 const AutopilotPromptMark = "Waypoint autopilot"
 
-// HarnessPromptMarks start the prompts Claude Code itself submits to a
-// session when something the session started reports back: a background
-// shell or agent finishing, a subagent's or another session's message. They
-// arrive through the same hook as typing, but no person wrote them (WP-700).
-// A subagent's hand-back shows in the transcript after "Another Claude
-// session sent a message:", but the UserPromptSubmit hook gets it without
-// that line, starting at its <agent-message from="…"> tag (WP-823). The
-// hook's input says nothing else about where a prompt came from, so the
-// text is all there is to go by.
+// HarnessPromptMarks are the text prefixes of the prompts Claude Code itself
+// submits to a session when something the session started reports back: a
+// background shell or agent finishing, a subagent's or another session's
+// message (WP-700). They are matched as text, so a person, or any text, can
+// begin with one: the match says a prompt looks like the harness's, not that
+// the harness wrote it. A subagent's hand-back shows in the transcript after
+// "Another Claude session sent a message:", but the UserPromptSubmit hook gets
+// it without that line, starting at its <agent-message from="…"> tag (WP-823).
+// The hook's input has no other signal of where a prompt came from.
 var HarnessPromptMarks = []string{"<task-notification>", "Another Claude session sent a message:", `<agent-message from="`}
 
 // HarnessPromptMark is the mark the prompt starts with once normalised
@@ -233,13 +224,9 @@ type stepRow struct {
 	nextIssue, jobID                 sql.NullInt64
 	attempts                         int
 	reviewID                         sql.NullInt64
-	spend                            bool // started to use what's left of the week (WP-262)
-	// byHand: a person's Start or Start now moves it, which skips the
-	// pace's schedule and spacing (not kept: a later tick applies them).
-	byHand bool
-	// asked: the person's Start next task made it, so it moves on their own
-	// session, which autopilot otherwise leaves alone (WP-1319).
-	asked bool
+	spend                            bool
+	byHand                           bool
+	asked                            bool
 }
 
 const stepCols = `id, user_id, project_id, coalesce(session_id, 0), run_id, stop_at, state, reason, detail, due_at, next_issue, job_id, attempts, notified, created_at, review_id, updated_at, spend, asked`
@@ -278,7 +265,7 @@ func (s *Service) autopilotSteps(ctx context.Context, uid, projectID int64) ([]*
 		}
 		st.DueAt, st.CreatedAt, st.UpdatedAt = msTime(due), msTime(created), msTime(updated)
 		if st.Session.ID == 0 {
-			st.Session = nil // autopilot's own start (WP-ADR72)
+			st.Session = nil
 		} else {
 			st.Session.URL = fmt.Sprintf("/agents/sessions/%d", st.Session.ID)
 		}
@@ -293,8 +280,6 @@ func (s *Service) autopilotSteps(ctx context.Context, uid, projectID int64) ([]*
 	return out, rows.Err()
 }
 
-// ---- at a Stop ----
-
 // autopilotAtStop runs at a Stop of one of a person's sessions (a Stop that
 // lets the agent stop: nothing was delivered). It records the background
 // work the Stop reported and, when autopilot is on in the session's project
@@ -307,9 +292,8 @@ func (s *Service) autopilotAtStop(ctx context.Context, t *tx, x *AgentSession, e
 		return "", err
 	}
 	if x.Kind == SessionTask {
-		return "", nil // task sessions hand off themselves (WP-97)
+		return "", nil
 	}
-	// A task whose pull request waits for its review (WP-688).
 	if note, handled, err := s.reviewFirstAtStop(ctx, t, x, ev, seen, at); handled || err != nil {
 		return note, err
 	}
@@ -318,19 +302,15 @@ func (s *Service) autopilotAtStop(ctx context.Context, t *tx, x *AgentSession, e
 		return "", err
 	}
 	if key == "" {
-		return s.autopilotUnfinishedNote(ctx, t, x, seen, at) // no task finished or given back here yet
+		return s.autopilotUnfinishedNote(ctx, t, x, seen, at)
 	}
 	if released {
-		// One finished and another given back in a turn: the finished one
-		// still gets its review.
 		if k, r, err := s.finishedThisTurn(ctx, t, x.ID); err != nil {
 			return "", err
 		} else if k != "" {
 			key, run, released = k, r, false
 		}
 	}
-	// The session's project is its repo's; a repo no project is attached to
-	// works in the project of the task it finished.
 	pid := x.projectID.Int64
 	if !x.projectID.Valid {
 		if err := t.QueryRowContext(ctx, `SELECT i.project_id FROM agent_runs r JOIN issues i ON i.id = r.issue_id WHERE r.id = ?`, run).Scan(&pid); err != nil {
@@ -341,10 +321,6 @@ func (s *Service) autopilotAtStop(ctx context.Context, t *tx, x *AgentSession, e
 	if err := t.QueryRowContext(ctx, `SELECT issue_id, started_at FROM agent_runs WHERE id = ?`, run).Scan(&issueID, &runStart); err != nil {
 		return "", err
 	}
-	// The Stop that ends an adversarial review round is its report, whatever
-	// autopilot does next (WP-285). The round is the step's while it runs,
-	// though the session finished another task since: autopilot off lets a
-	// person have it do one before the round starts (WP-ADR113).
 	reviewOf := issueID
 	if err := t.QueryRowContext(ctx, `SELECT w.issue_id FROM autopilot_steps st JOIN work_log w ON w.id = st.review_id
 		WHERE st.session_id = ? AND st.state IN (?, ?, ?) AND w.kind = 'review' AND w.state = ? ORDER BY st.id DESC LIMIT 1`,
@@ -361,7 +337,7 @@ func (s *Service) autopilotAtStop(ctx context.Context, t *tx, x *AgentSession, e
 			return "", err
 		}
 		if live == 0 {
-			return "", nil // kept, stopped, or autopilot went off during it: the session is the person's
+			return "", nil
 		}
 	}
 	on, lim, err := s.autopilotFor(ctx, t, x.userID, pid)
@@ -369,12 +345,6 @@ func (s *Service) autopilotAtStop(ctx context.Context, t *tx, x *AgentSession, e
 		return "", err
 	}
 	if !on {
-		// A step still here carried a review past the switch (roundOwed,
-		// WP-ADR113). One that has run leaves nothing to do: its task is
-		// shipped, and nothing starts after it. One still to run goes on:
-		// this Stop isn't its report, so the step stays as it was. What
-		// follows is the on-path (a new round for a task finished here, the
-		// next task), none of which the switch allows (audit #883).
 		owed, err := s.liveStepRound(ctx, t, x.ID)
 		if err != nil {
 			return "", err
@@ -382,9 +352,6 @@ func (s *Service) autopilotAtStop(ctx context.Context, t *tx, x *AgentSession, e
 		if owed == "" {
 			return "", s.stopStep(ctx, t, x.ID, "off", "autopilot was turned off")
 		}
-		// This Stop isn't the round's report, but it ends the turn a pending
-		// round's typing waited for: it comes a minute later, as with
-		// autopilot on (WP-1363). One waiting on its audit keeps waiting.
 		if _, err := t.ExecContext(ctx, `UPDATE autopilot_steps SET stop_at = ?, state = ?, reason = '', detail = '', due_at = ?, updated_at = ?
 			WHERE session_id = ? AND state IN (?, ?) AND reason <> ? AND review_id IN (SELECT id FROM work_log WHERE kind = 'review' AND state = ?)`,
 			at, StepDue, at+reviewStartDelay, s.nowMS(), x.ID, StepDue, StepWaiting, WaitAudit, RoundPending); err != nil {
@@ -397,16 +364,10 @@ func (s *Service) autopilotAtStop(ctx context.Context, t *tx, x *AgentSession, e
 		}
 		return fmt.Sprintf("Autopilot is off: %s's adversarial review still runs here, and nothing starts after it.", owed), nil
 	}
-	// Autopilot moves on only the sessions it started that nobody has typed
-	// in since (WP-1319). A person's own session stays theirs, whatever it
-	// finished: the review its ship asked for still runs in it, and nothing
-	// starts after that.
 	mine, err := autopilotOwns(ctx, t, x.ID)
 	if err != nil {
 		return "", err
 	}
-	// The person asked (/wp next, Start next task) while this task's step
-	// was live, as before its review: that holds for the same task.
 	if !mine {
 		var asked bool
 		if err := t.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM autopilot_steps WHERE session_id = ? AND asked = 1 AND state IN (?, ?) AND run_id IS ?)`,
@@ -415,9 +376,6 @@ func (s *Service) autopilotAtStop(ctx context.Context, t *tx, x *AgentSession, e
 		}
 		mine = asked
 	}
-	// A run on an epic the finished task is under isn't another task: the
-	// session took the epic, then the sub-task, and the sub-task still gets
-	// its review and the next task (WP-730).
 	var held string
 	if err := t.QueryRowContext(ctx, `WITH RECURSIVE up(id, depth) AS (SELECT parent_id, 0 FROM issues WHERE id = ? AND parent_id IS NOT NULL
 			UNION ALL SELECT x.parent_id, up.depth + 1 FROM issues x JOIN up ON x.id = up.id WHERE x.parent_id IS NOT NULL AND up.depth < 50)
@@ -431,8 +389,6 @@ func (s *Service) autopilotAtStop(ctx context.Context, t *tx, x *AgentSession, e
 		return "", s.stopStep(ctx, t, x.ID, StopYours, yoursDetail)
 	}
 	if held != "" {
-		// Said, not silent: no step means nothing starts the next task here
-		// until the session finishes the one it holds (WP-720).
 		verb := "is done"
 		if released {
 			verb = "went back"
@@ -440,7 +396,6 @@ func (s *Service) autopilotAtStop(ctx context.Context, t *tx, x *AgentSession, e
 		note := fmt.Sprintf("Autopilot: %s %s, but this session still holds %s, so the next task doesn't start here until that one is finished.", key, verb, held)
 		return note, s.stopStep(ctx, t, x.ID, "working", "it took another task itself")
 	}
-	// A task given back has no change to review (WP-ADR75).
 	review := stepRound{}
 	if !released {
 		if review, err = s.roundAtDone(ctx, t, x, run, issueID, lim, at); err != nil {
@@ -458,10 +413,6 @@ func (s *Service) autopilotAtStop(ctx context.Context, t *tx, x *AgentSession, e
 		return "", s.stopStep(ctx, t, x.ID, StopYours, yoursDetail)
 	}
 	if review.pending() {
-		// The review starts in a minute, whatever waits for the next task
-		// (WP-689): background work too, as a session at its prompt can be
-		// typed into whatever runs behind it (WP-1363). What follows it is
-		// decided at its Stop.
 		then := "then the next task"
 		if !mine {
 			then = "and nothing starts here after it"
@@ -478,10 +429,6 @@ func (s *Service) autopilotAtStop(ctx context.Context, t *tx, x *AgentSession, e
 		}
 		return say(what + " waits: " + detail + "."), s.putStep(ctx, t, x, pid, run, at, StepWaiting, hold, detail, until, review.id)
 	}
-	// A session its person prompted while its task ran is theirs until they
-	// leave it; one they only started it in (the prompt that had it take
-	// the task, before its run began), or autopilot started and they didn't
-	// touch, moves on after the grace (WP-307).
 	prompted, err := s.promptedSince(ctx, t, x.ID, runStart)
 	if err != nil {
 		return "", err
@@ -505,7 +452,7 @@ func (s *Service) autopilotAtStop(ctx context.Context, t *tx, x *AgentSession, e
 	} else if wait, err := s.autopilotUnderWay(ctx, t, &stepRow{userID: x.userID, projectID: pid, sessionID: x.ID}, lim, at); err == nil && wait != "" {
 		status = fmt.Sprintf("The next task waits: %s.", wait)
 	} else if ready, why, err := s.atStopReady(ctx, t, x, pid, run, lim); err != nil {
-		s.log.WarnContext(ctx, "autopilot: peek at the queue", "session", x.ID, "err", err) // the step decides at its tick
+		s.log.WarnContext(ctx, "autopilot: peek at the queue", "session", x.ID, "err", err)
 	} else if ready = s.withoutFinished(ctx, ready); len(ready) == 0 {
 		nothing := "No task is ready yet"
 		if c := lim.criteriaText(); c != "" {
@@ -513,7 +460,6 @@ func (s *Service) autopilotAtStop(ctx context.Context, t *tx, x *AgentSession, e
 		}
 		status = fmt.Sprintf("%s%s; the next one starts when one is.", nothing, colonWhy(why))
 	} else if unmerged, prs, err := s.sessionUnmerged(ctx, x.ID); err == nil && len(unmerged) > 0 {
-		// The step waits for the session's open pull requests under the merge policy.
 		if _, wait := s.mergeOrder(ctx, ready, unmerged, prs, valueOf(lim.Merge), true); wait != "" {
 			status = fmt.Sprintf("The next task is held: %s (for %s at most).", wait, plural1(valueOf(lim.MergeWaitHours), "hour"))
 		}
@@ -568,12 +514,12 @@ func (s *Service) autopilotUnfinishedNote(ctx context.Context, t *tx, x *AgentSe
 	case key == "":
 		return "Autopilot: this session ended its turn without taking a task, so nothing starts after it.", nil
 	case outcome == "paused":
-		return "", nil // it picks the task up again when the pause ends
+		return "", nil
 	case ended.Valid:
 		return fmt.Sprintf("Autopilot: this session's claim on %s ended before it finished the task or gave it back, so the next task doesn't start here.", key), nil
 	}
 	if live, _ := liveBackground(seen, 0, at); len(live) > 0 || s.blockingNews(ctx, t, x.ID) {
-		return "", nil // something is about to wake it
+		return "", nil
 	}
 	return fmt.Sprintf("Autopilot: this session still holds %s, so the next task doesn't start until it finishes or gives it back.", key), nil
 }
@@ -787,7 +733,7 @@ func (s *Service) runEnded(ctx context.Context, q queryer, run int64) (int64, er
 	var ended sql.NullInt64
 	err := q.QueryRowContext(ctx, `SELECT ended_at FROM agent_runs WHERE id = ?`, run).Scan(&ended)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil // no such run: not ended
+		return 0, nil
 	}
 	return ended.Int64, err
 }
@@ -915,7 +861,7 @@ func (s *Service) trackBackground(ctx context.Context, t *tx, sessionID int64, p
 	old := map[string]int64{}
 	_ = json.Unmarshal([]byte(raw), &old)
 	if p == nil {
-		return old, nil // it didn't say: keep what was known
+		return old, nil
 	}
 	now := map[string]int64{}
 	keep := func(sig string) {
@@ -953,7 +899,7 @@ func (s *Service) putStep(ctx context.Context, t *tx, x *AgentSession, projectID
 		review = reviewID
 	}
 	if run != 0 {
-		runID = run // none: a person started it on a session with no finished task
+		runID = run
 	}
 	_, err := t.ExecContext(ctx, `INSERT INTO autopilot_steps(user_id, project_id, session_id, run_id, stop_at, state, reason, detail, due_at, created_at, updated_at, review_id)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
@@ -999,7 +945,7 @@ func (s *Service) stopLiveStep(ctx context.Context, q *tx, sessionID int64, reas
 		StepStopped, reason, detail, s.nowMS(), sessionID, StepDue, StepWaiting, StepStarting); err != nil {
 		return true, err
 	}
-	if state != StepStarting { // a review job's finish does this for its own
+	if state != StepStarting {
 		if err := s.stopReviewCompact(ctx, q, sessionID, review.Int64); err != nil {
 			return true, err
 		}
@@ -1062,7 +1008,6 @@ func (s *Service) AutopilotStepWanted(ctx context.Context, a *Actor, id, job int
 func (s *Service) autopilotOnPrompt(ctx context.Context, t *tx, x *AgentSession, ev *HookEvent) error {
 	switch {
 	case ev.typed == TypedReview:
-		// The adversarial review's prompt went in: its round runs.
 		var review sql.NullInt64
 		if err := t.QueryRowContext(ctx, `SELECT review_id FROM autopilot_steps WHERE session_id = ? AND state IN (?, ?, ?)`, x.ID, StepDue, StepWaiting, StepStarting).
 			Scan(&review); err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -1071,7 +1016,7 @@ func (s *Service) autopilotOnPrompt(ctx context.Context, t *tx, x *AgentSession,
 		_, err := s.startRound(ctx, t, review.Int64, s.hookTime(ev))
 		return err
 	case typedByWaypointAlone(ev.typed):
-		return nil // autopilot's own kickoff, or a compaction or ping Waypoint typed; a relayed message falls through to the person's turn
+		return nil
 	case isHarnessPrompt(ev.Prompt):
 		var review sql.NullInt64
 		err := t.QueryRowContext(ctx, `SELECT review_id FROM autopilot_steps WHERE session_id = ? AND state = ?`, x.ID, StepStarting).Scan(&review)
@@ -1095,8 +1040,6 @@ func (s *Service) autopilotOnPrompt(ctx context.Context, t *tx, x *AgentSession,
 	}
 	stopped, err := s.stopLiveStep(ctx, t, x.ID, "prompted", "you prompted the session")
 	if stopped && err == nil {
-		// Only a prompt that stopped a step: a session's every prompt would
-		// be a line each, and its cost, in a hook's batch of up to 200.
 		head := squeezeSpace(ev.Prompt)
 		if len(head) > 200 {
 			head = head[:200]
@@ -1142,15 +1085,11 @@ func (s *Service) reviewWaitsForPerson(ctx context.Context, t *tx, sessionID int
 	}
 	now := s.nowMS()
 	if reason == WaitAudit && state != StepStarting {
-		// Another model's audit runs off the session: the person's turn
-		// doesn't hold it, and its recheck stays (WP-1363).
 		if _, err := t.ExecContext(ctx, `UPDATE autopilot_steps SET job_id = NULL, next_issue = NULL, updated_at = ? WHERE id = ?`, now, id); err != nil {
 			return false, err
 		}
 		return true, s.stopReviewCompact(ctx, t, sessionID, review.Int64)
 	}
-	// Due in a minute, not once they're gone: the round's model work starts
-	// while they talk, and only typing waits for their Stop (WP-1363).
 	if _, err := t.ExecContext(ctx, `UPDATE autopilot_steps SET state = ?, reason = ?, detail = ?, due_at = ?, job_id = NULL, next_issue = NULL, updated_at = ? WHERE id = ?`,
 		StepWaiting, WaitPrompted, reviewWaitsForYou(r.key), now+reviewStartDelay, now, id); err != nil {
 		return false, err
@@ -1227,11 +1166,9 @@ func (s *Service) autopilotSessionNote(ctx context.Context, sessionID, orProject
 	return AutopilotSessionNote
 }
 
-// ---- the minute tick ----
-
 // RunAutopilot moves on the steps that are due: each in its own write.
 func (s *Service) RunAutopilot(ctx context.Context) {
-	s.sweepTypedPrompts(ctx) // first: a failed read of the steps below doesn't skip it
+	s.sweepTypedPrompts(ctx)
 	rows, err := s.db.R.QueryContext(ctx, `SELECT `+stepCols+` FROM autopilot_steps WHERE state IN (?, ?) AND due_at <= ? AND session_id IS NOT NULL ORDER BY due_at LIMIT 50`,
 		StepDue, StepWaiting, s.nowMS())
 	if err != nil {
@@ -1296,8 +1233,6 @@ func (s *Service) unstickSteps(ctx context.Context) {
 		job, err := lookupRunnerJob(ctx, s, x.job)
 		switch {
 		case err != nil && !missingOrDenied(err):
-			// Not known to be gone: the reservation stays and the step isn't failed;
-			// the sweep looks again (WP-1406).
 			if readFault(err) {
 				s.log.WarnContext(ctx, "read a stuck autopilot step's runner job", "step", x.id, "job", x.job, "err", err)
 			}
@@ -1307,9 +1242,9 @@ func (s *Service) unstickSteps(ctx context.Context) {
 			_ = s.db.R.QueryRowContext(ctx, `SELECT coalesce(next_issue, 0), run_id, coalesce(session_id, 0) FROM autopilot_steps WHERE id = ?`, x.id).Scan(&issue, &run, &sessionID)
 			if sessionID == 0 {
 				if err := releaseOwnTask(ctx, s.db.W, x.id); err != nil {
-					continue // still reserved: try the release again next time
+					continue
 				}
-				if err := s.stepUpdate(ctx, x.id, StepFailed, WaitJob, "its runner job is gone", 0); err != nil { // the sweep tries again
+				if err := s.stepUpdate(ctx, x.id, StepFailed, WaitJob, "its runner job is gone", 0); err != nil {
 					if readFault(err) {
 						s.log.WarnContext(ctx, "step update failed", "step", x.id, "err", err)
 					}
@@ -1326,7 +1261,7 @@ func (s *Service) unstickSteps(ctx context.Context) {
 		case job.State == "queued" || job.State == "running":
 			s.cutStuckJob(ctx, x.id, x.user, x.updated, job, now)
 		default:
-			s.autopilotJobFinished(ctx, ev) // finished while nobody listened
+			s.autopilotJobFinished(ctx, ev)
 		}
 	}
 }
@@ -1356,7 +1291,6 @@ func (s *Service) writeRows(ctx context.Context, query string, args ...any) (int
 func (s *Service) cutStuckJob(ctx context.Context, step, userID, queuedAt int64, job *RunnerJob, now int64) {
 	var reviewID sql.NullInt64
 	if err := s.db.R.QueryRowContext(ctx, `SELECT review_id FROM autopilot_steps WHERE id = ?`, step).Scan(&reviewID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		// Nothing is cut on a reading that failed: the next sweep reads again.
 		s.log.WarnContext(ctx, "read the round of a stuck job's step", "step", step, "job", job.ID, "err", err)
 		return
 	}
@@ -1392,7 +1326,7 @@ func (s *Service) cutStuckJob(ctx context.Context, step, userID, queuedAt int64,
 			} else {
 				if n > 0 {
 					s.log.InfoContext(ctx, "review job cut and asked for again", "step", step, "job", job.ID, "try", tries+1, "of", reviewJobTries, "why", why)
-					if _, err := s.cancelRunnerJob(ctx, &Actor{User: u}, job.ID, why); err != nil { // its finish isn't the step's job any more
+					if _, err := s.cancelRunnerJob(ctx, &Actor{User: u}, job.ID, why); err != nil {
 						s.log.WarnContext(ctx, "cancel the cut review job", "job", job.ID, "err", err)
 					}
 					return
@@ -1401,7 +1335,7 @@ func (s *Service) cutStuckJob(ctx context.Context, step, userID, queuedAt int64,
 		}
 		s.log.InfoContext(ctx, "review job cut for good", "step", step, "job", job.ID, "tries", tries+1, "why", why)
 	}
-	if _, err := s.cancelRunnerJob(ctx, &Actor{User: u}, job.ID, why); readFault(err) && !IsInvalid(err) && !missingOrDenied(err) { // its finish event answers the step; finished meanwhile: nothing to cancel
+	if _, err := s.cancelRunnerJob(ctx, &Actor{User: u}, job.ID, why); readFault(err) && !IsInvalid(err) && !missingOrDenied(err) {
 		s.log.WarnContext(ctx, "cancel a stuck autopilot runner job", "step", step, "job", job.ID, "err", err)
 	}
 }
@@ -1413,13 +1347,11 @@ func (s *Service) stepUpdate(ctx context.Context, id int64, state, reason, detai
 	var was, wasWhy string
 	var round sql.NullInt64
 	if s.db.R.QueryRowContext(ctx, `SELECT state, reason, review_id FROM autopilot_steps WHERE id = ?`, id).Scan(&was, &wasWhy, &round) == nil && (was != state || wasWhy != reason) {
-		// Each change of what a step waits for, not each tick that finds it the same.
 		s.log.InfoContext(ctx, "autopilot step changed", "step", id, "round", round.Int64, "from", was, "from_why", wasWhy, "to", state, "why", reason, "due", due)
 	}
 	_, err := s.writeRows(ctx, `UPDATE autopilot_steps SET state = ?, reason = ?, detail = ?, due_at = CASE WHEN ? > 0 THEN ? ELSE due_at END, updated_at = ?
 		WHERE id = ? AND state IN (?, ?, ?)`, state, reason, excerpt(detail, 300), due, due, s.nowMS(), id, StepDue, StepWaiting, StepStarting)
 	if err == nil && (state == StepStopped || state == StepFailed) {
-		// A step that ends takes the round it was to run with it.
 		var review sql.NullInt64
 		if s.db.R.QueryRowContext(ctx, `SELECT review_id FROM autopilot_steps WHERE id = ?`, id).Scan(&review) == nil && review.Valid {
 			err = s.write(ctx, SystemActor(), func(t *tx) error {
@@ -1468,11 +1400,6 @@ const NotifyAutopilot = "autopilot"
 func (s *Service) pauseStep(ctx context.Context, st *stepRow, why string, recheck time.Time) error {
 	reason := pauseReason(why)
 	if st.reviewID.Valid {
-		// A step carrying a round before its pull request wakes once the round
-		// has waited heldScreenWait, however far the pause's own recheck is, so
-		// roundOverdue can tell the person it waits on a limit.
-		// It wakes again when the round's wait on a limit is spent
-		// (roundLimitWait), so the limit never holds it for good.
 		for _, d := range []time.Duration{heldScreenWait, heldScreenWait + roundLimitWait} {
 			if wake := time.UnixMilli(st.createdAt).Add(d + time.Minute); wake.After(s.now()) {
 				if wake.Before(recheck) {
@@ -1520,8 +1447,6 @@ func (s *Service) reviewWorkFirst(ctx context.Context, st *stepRow, x *AgentSess
 		return nil, false, err
 	}
 	if p.done {
-		// The audit found nothing: the round ended without the session, so
-		// its compaction and warm state go now, whatever holds the step.
 		if user, err := s.userByID(ctx, s.db.R, st.userID); err == nil {
 			s.dropReviewCompact(ctx, user, review.id)
 		}
@@ -1531,10 +1456,6 @@ func (s *Service) reviewWorkFirst(ctx context.Context, st *stepRow, x *AgentSess
 	if p.wait == "" {
 		return &p, false, nil
 	}
-	// The early compaction is typed into the session too: only into one
-	// nobody is using (the review's job compacts it when it comes, if not).
-	// Not into one that blocking news is about to wake (advanceStep types
-	// the news first).
 	newsFirst := now-st.stopAt <= autopilotNewsWait.Milliseconds() && s.blockingNews(ctx, s.db.R, x.ID)
 	if prompted == 0 && x.State != SessionWorking && !newsFirst {
 		if user, err := s.userByID(ctx, s.db.R, st.userID); err == nil {
@@ -1573,8 +1494,6 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 	if prompted != 0 && pending == nil {
 		return s.stepUpdate(ctx, st.id, StepStopped, "prompted", "you prompted the session", 0)
 	}
-	// A review a ship asked for runs once it is due (WP-1363): its model
-	// work starts whatever the session is doing, and only typing waits.
 	var early *reviewPlan
 	if pending != nil {
 		plan, waits, err := s.reviewWorkFirst(ctx, st, x, pending, prompted, now)
@@ -1583,13 +1502,8 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 		}
 		early = plan
 		if plan != nil && plan.done {
-			// Ended without the session: the step goes on as one with no
-			// review, and a person's prompt has it (WP-307).
 			pending, early = nil, nil
 			if prompted != 0 {
-				// A person has the session, but the pull request doesn't
-				// need it (WP-1370); a failed open is picked up again by
-				// the sweep (shipSettledRounds).
 				if _, err := s.shipOwed(ctx, st.reviewID.Int64); err != nil {
 					s.log.WarnContext(ctx, "autopilot: open a reviewed pull request", "step", st.id, "err", err)
 				}
@@ -1597,9 +1511,6 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 			}
 		}
 	}
-	// A round before the pull request has an end of its own: a session that
-	// is never free to type into, or whose person never ends their turn,
-	// doesn't hold the task unshipped for ever (WP-1370).
 	overdue := false
 	if pending != nil {
 		if overdue, err = s.roundOverdue(ctx, st, pending, now); err != nil {
@@ -1608,33 +1519,23 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 			pending, early, prompted = nil, nil, 0
 		}
 	}
-	// Blocking news about to wake the session goes in first: typing waits
-	// for it (at most autopilotNewsWait after the Stop), the model work
-	// above doesn't.
 	if pending != nil && prompted == 0 && now-st.stopAt <= autopilotNewsWait.Milliseconds() && s.blockingNews(ctx, s.db.R, x.ID) {
 		return s.stepUpdate(ctx, st.id, StepWaiting, WaitNews, "news it is blocked on is about to wake it; "+pending.key+"'s adversarial review is typed in after it", now+autopilotRetry.Milliseconds())
 	}
 	if prompted != 0 {
-		// Typing a review waits for the person's turn to end (WP-816). Their
-		// Stop brings it a minute later; one that never came is made up for
-		// by a session idle well after their last prompt.
 		if x.State == SessionWorking || now-prompted < autopilotIdleHold.Milliseconds() {
 			due := max(now+autopilotRetry.Milliseconds(), prompted+autopilotIdleHold.Milliseconds())
 			return s.stepUpdate(ctx, st.id, StepWaiting, WaitPrompted, reviewWaitsForYou(pending.key), due)
 		}
 	}
 	if x.State == SessionWorking && !overdue && !s.freshSession(ctx, x.ID) {
-		return nil // its next Stop decides again
+		return nil
 	}
 	on, lim, err := s.autopilotFor(ctx, s.db.R, st.userID, st.projectID)
 	if err != nil {
 		return err
 	}
 	if !on {
-		// The switch is about the next task. A review already asked for is
-		// about one already shipped: it runs (a pull request held for it
-		// opens after it, or without it), and only then does the step stop
-		// (roundOwed).
 		owed, err := roundOwed(ctx, s.db.R, st.reviewID.Int64)
 		if err != nil {
 			return err
@@ -1643,9 +1544,6 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 			return s.stepUpdate(ctx, st.id, StepStopped, "off", "autopilot was turned off", 0)
 		}
 	}
-	// Background work goes stale with time: look again. It holds the next
-	// task, not a review, which is typed into a session at its prompt
-	// whatever runs behind it (WP-1363).
 	if pending == nil && (st.reason == WaitBackground || st.reason == WaitUnknown || st.reason == WaitNews) {
 		var raw string
 		if err := s.db.R.QueryRowContext(ctx, `SELECT bg_seen FROM agent_sessions WHERE id = ?`, x.ID).Scan(&raw); err != nil {
@@ -1656,20 +1554,17 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 			s.log.WarnContext(ctx, "a session's background record is unreadable; read as empty", "session", x.ID, "err", err)
 		}
 		var doneAt int64
-		if st.runID.Valid { // a step started by hand has no run
+		if st.runID.Valid {
 			var rerr error
 			if doneAt, rerr = s.runEnded(ctx, s.db.R, st.runID.Int64); readFault(rerr) {
 				s.log.WarnContext(ctx, "read when an autopilot step's run ended", "step", st.id, "run", st.runID.Int64, "err", rerr)
 			}
 		}
 		if doneAt == 0 && roundBeforePR(ctx, s.db.R, st.reviewID.Int64) != nil {
-			// A round before the pull request: its task is done from its ship.
 			if r, _ := roundByID(ctx, s.db.R, st.reviewID.Int64); r != nil {
 				doneAt = r.createdAt
 			}
 		}
-		// An unknown Stop is given the benefit of the doubt once its wait is
-		// over; news that hasn't gone out in its few minutes won't soon.
 		if hold, detail, until := s.autopilotHold(ctx, s.db.R, x.ID, true, seen, doneAt, now); hold != "" &&
 			(hold != WaitNews || now-st.createdAt <= autopilotNewsWait.Milliseconds()) {
 			return s.stepUpdate(ctx, st.id, StepWaiting, hold, detail, until)
@@ -1680,9 +1575,6 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 		return err
 	}
 	why, recheck := autopilotPaused(m, lim, s.now())
-	// The week's pace spreads new tasks over the week: a review a ship
-	// asked for doesn't wait on it, and the next task still does, after
-	// the review (WP-1363).
 	paceLater := why != "" && pauseReason(why) == PauseWeek && st.reviewID.Valid
 	if paceLater {
 		if live, err := roundLive(ctx, s.db.R, st.reviewID.Int64); err != nil {
@@ -1705,7 +1597,7 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 		}
 		what := "the next task"
 		if !on {
-			what = "the adversarial review it still owes" // nothing starts after it
+			what = "the adversarial review it still owes"
 		}
 		s.tellOnce(ctx, st, WaitRunner, "Autopilot needs a runner", fmt.Sprintf("Autopilot can't start %s in %s: %s.", what, cmp(x.Title, "a session"), detail))
 		return nil
@@ -1716,21 +1608,10 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 	if err != nil {
 		return err
 	}
-	// The review round first (WP-285, WP-689): the person's pace and the
-	// hourly starts are about the next task, not its review.
 	if review, err := roundByID(ctx, s.db.R, st.reviewID.Int64); err != nil {
 		return err
 	} else if review != nil && (early != nil || review.state == RoundPending || review.state == RoundRunning) {
-		// early: planned above, the round may have ended there (plan.done).
-		// A review held before its pull request doesn't wait for a runner
-		// without end: the pull request opens without it (WP-752). Nor does
-		// one autopilot off carries (roundOwed): the step stops after it.
-		// After the pull request too: its round then ends, and what its audit
-		// found goes to the pull request's review gate (handOverRoundAudits).
 		heldTooLong := !runnerOK && review.state == RoundPending && now-noRunnerSince(review.createdAt, r) > heldNoRunnerWait.Milliseconds()
-		// A running round needs no runner for what Waypoint does for it (its
-		// check, its ship, the end of its wait: decideIdle), so a runner that
-		// is gone holds it no longer than its own bounds do.
 		if !runnerOK && !heldTooLong && review.state != RoundRunning {
 			return noRunner()
 		}
@@ -1741,11 +1622,6 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 			s.dropReviewCompact(ctx, user, review.id)
 			s.unwarmReview(ctx, x.ID)
 		case review.state == RoundRunning:
-			// Its check of the marks is Waypoint's to finish (the check, the
-			// ship, or the deadline for a session that never answers it): the
-			// session going idle is no end of the round (WP-1370).
-			// Idle, and the round's Stop never came: move on without it,
-			// unless Waypoint is on its check (decideRound).
 			out, err := s.decideIdle(ctx, review.id)
 			if err != nil {
 				return err
@@ -1758,7 +1634,6 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 			s.setRoundNow(ctx, review.id, []string{RoundPending}, RoundSkipped,
 				fmt.Sprintf("the runner on %s runs a wp from before adversarial reviews: update it (wp update, then restart the runner)", x.Machine))
 		case early != nil || review.state == RoundPending:
-			// Another model's audit first (WP-687).
 			var plan reviewPlan
 			if early != nil {
 				plan = *early
@@ -1777,14 +1652,8 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 			}
 		}
 	}
-	// A task whose pull request waited for its review (WP-688), still under
-	// way once the round is over, isn't left for the next one.
-	// Its review left nothing for the session to do: Waypoint opens the
-	// pull request the session's wp ship would have (WP-1370).
 	var shipErr error
 	if !s.shipDue(ctx, st.reviewID.Int64, now) {
-		// The ship failed and its next try isn't due: the same backoff as the
-		// sweep's, not a try every autopilotRetry (WP-1370).
 		if bp := roundBeforePR(ctx, s.db.R, st.reviewID.Int64); bp != nil && bp.ShipErr != "" {
 			return s.stepUpdate(ctx, st.id, StepWaiting, WaitJob, "couldn't open its pull request, trying again: "+forgeSaid(errors.New(bp.ShipErr)), bp.ShipNext)
 		}
@@ -1806,8 +1675,6 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 		if err := s.write(ctx, SystemActor(), func(t *tx) error { return s.stopStep(ctx, t, st.sessionID, "unshipped", why) }); err != nil {
 			return err
 		}
-		// Say what is true: a pull request open from the branch is not "not
-		// open"; Waypoint opened it and a later step of the ship failed (R1).
 		if open := s.roundPROpen(ctx, st.reviewID.Int64); open != "" {
 			s.tellOnce(ctx, st, "unshipped", "Autopilot stopped in a session",
 				fmt.Sprintf("Autopilot stopped in %s: %s. The pull request %s is open; Waypoint couldn't finish handing the task over. Ask the session to run wp ship, or finish it yourself.", cmp(x.Title, "a session"), why, open))
@@ -1818,15 +1685,11 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 		return nil
 	}
 	if !on {
-		// What the switch left it to finish is done: nothing starts next.
 		return s.stepUpdate(ctx, st.id, StepStopped, "off", "autopilot was turned off", 0)
 	}
 	if paceLater {
-		return s.pauseStep(ctx, st, why, recheck) // the review is over; the pace holds the next task
+		return s.pauseStep(ctx, st, why, recheck)
 	}
-	// A person's own session isn't moved on unless they asked (WP-1319):
-	// this also catches a step made before the rule, or a session the
-	// person typed in while its step waited.
 	if !st.asked {
 		if mine, err := autopilotOwns(ctx, s.db.R, x.ID); err != nil {
 			return err
@@ -1845,8 +1708,6 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 		s.tellOnce(ctx, st, WaitRate, "Autopilot paused", fmt.Sprintf("Autopilot paused in %s: %s. It goes on by itself at %s.", s.projectKeyOf(ctx, st.projectID), wait, s.clock(msTime(until))))
 		return nil
 	}
-	// The person's own pace: expected, so a wait, never news. Not at the
-	// week's end while the quota would go unused (spendGoesOn).
 	if st.byHand || !s.spendGoesOn(ctx, st.userID) {
 		if wait, reason, until, err := s.autopilotPace(ctx, s.db.R, st.userID, st.projectID, lim, now, st.byHand); err != nil {
 			return err
@@ -1857,11 +1718,6 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 	if !runnerOK {
 		return noRunner()
 	}
-	// Autopilot's other sessions here: one at a time, by default (WP-ADR72).
-	// After the review round, which is about this session's own finished
-	// task. The count and the claim are one transaction, so two checks at
-	// once can't both see room; the claim also keeps a tick and a "now" from
-	// both starting it.
 	var wait string
 	claimed := false
 	err = s.write(ctx, SystemActor(), func(t *tx) error {
@@ -1915,8 +1771,6 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 			return err
 		}
 		if notice != "" {
-			// Not an empty queue: work waits on something the person may want
-			// to know of, where "starts in about a minute" was all they heard.
 			s.tellOnce(ctx, st, WaitNothing+":"+WaitSafety+":"+notice, "Autopilot is waiting in "+key,
 				fmt.Sprintf("Autopilot can't start the next task in %s: %s. It starts one by itself once one is ready; a person's review of a task (wp review KEY, or Mark reviewed on it) releases it now.", key, why))
 		}
@@ -1929,7 +1783,7 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 	prompt := s.kickoffTemplate(ctx, st.projectID, next.ID)
 	held, heldErr := s.autopilotHeld(ctx, x)
 	if heldErr != nil {
-		s.log.WarnContext(ctx, "autopilot: what other sessions hold", "step", st.id, "err", heldErr) // the sweep removes nothing this time
+		s.log.WarnContext(ctx, "autopilot: what other sessions hold", "step", st.id, "err", heldErr)
 	}
 	raw, _ := json.Marshal(AutopilotJob{CLIID: x.CLIID, Dir: x.Cwd, Key: next.Key, Title: excerpt(next.Title, 200), Done: doneKey, Agent: agent, Step: st.id, Prompt: prompt, Held: held, HeldUnknown: heldErr != nil})
 	job, err := enqueueRunnerJob(ctx, s, &Actor{User: user}, RunnerJobInput{Kind: JobAutopilot, OwnerID: st.userID, Label: x.Machine, Input: raw,
@@ -1944,7 +1798,7 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 		return err
 	}
 	if n == 0 {
-		s.releaseReserved(ctx, next.ID, agent) // stopped while its job was queued: the job finds it unwanted
+		s.releaseReserved(ctx, next.ID, agent)
 	}
 	return nil
 }
@@ -1965,9 +1819,6 @@ const autopilotReviewSource = "autopilot_review"
 // off it, until the review's prompt starts a turn.
 func (s *Service) startReviewJob(ctx context.Context, st *stepRow, x *AgentSession, user *User, agent string, review *roundRow, prompt string, now int64) error {
 	if job, res := s.typedRound(ctx, st.id, review); job != nil {
-		// Typed already, and its round never started: whatever hid the
-		// prompt or lost the job's finish, typing it again costs the session
-		// a compaction and the whole prompt (WP-1562).
 		s.log.WarnContext(ctx, "autopilot: a review was typed and its round never started; starting it instead of typing it again",
 			"task", review.key, "round", review.id, "step", st.id, "job", job.ID)
 		s.reviewJobFinished(ctx, st, job, res, now)
@@ -1989,7 +1840,6 @@ func (s *Service) startReviewJob(ctx context.Context, st *stepRow, x *AgentSessi
 		return err
 	}
 	if n == 0 {
-		// A keep-warm ping or Waypoint's own compaction is on the screen.
 		return s.stepUpdate(ctx, st.id, StepWaiting, WaitScreen, "the session is busy keeping its cache warm", now+autopilotRetry.Milliseconds())
 	}
 	s.dropReviewCompact(ctx, user, review.id)
@@ -2014,7 +1864,7 @@ func (s *Service) startReviewJob(ctx context.Context, st *stepRow, x *AgentSessi
 		return err
 	}
 	if n == 0 {
-		s.unwarmReview(ctx, x.ID) // stopped while its job was queued: the job finds it unwanted
+		s.unwarmReview(ctx, x.ID)
 	}
 	return nil
 }
@@ -2043,7 +1893,7 @@ func (s *Service) typedReviewLanded(ctx context.Context, st *stepRow, jobID int6
 	}
 	r, err := roundByID(ctx, s.db.R, st.reviewID.Int64)
 	if err != nil || r == nil || r.state != RoundPending {
-		return // reviewJobFinished moves a step on whose round ended; this one is the person's
+		return
 	}
 	job, res, ok := s.typedReview(ctx, jobID, r)
 	if !ok {
@@ -2106,7 +1956,7 @@ func (s *Service) reviewJobFinished(ctx context.Context, st *stepRow, job *Runne
 	}
 	reviewing := func() {
 		switch review.state {
-		case RoundPending: // the hook of its prompt hasn't come (yet)
+		case RoundPending:
 			if err := s.write(ctx, SystemActor(), func(t *tx) error {
 				_, err := s.startRound(ctx, t, review.id, now)
 				return err
@@ -2124,8 +1974,6 @@ func (s *Service) reviewJobFinished(ctx context.Context, st *stepRow, job *Runne
 			}
 			detail := "running the adversarial review of " + review.key
 			if res.Outcome == "reviewing" {
-				// What the runner saw while typing it (WP-1325): kept, so the
-				// step says how it went in and whether the session took it.
 				if res.Detail != "" {
 					detail += " (" + res.Detail + ")"
 				}
@@ -2139,7 +1987,7 @@ func (s *Service) reviewJobFinished(ctx context.Context, st *stepRow, job *Runne
 					s.log.WarnContext(ctx, "step update failed", "step", st.id, "err", err)
 				}
 			}
-		default: // its Stop came before the job's answer: move on
+		default:
 			if err := s.stepUpdate(ctx, st.id, StepDue, "", "", now); err != nil {
 				if readFault(err) {
 					s.log.WarnContext(ctx, "step update failed", "step", st.id, "err", err)
@@ -2158,7 +2006,7 @@ func (s *Service) reviewJobFinished(ctx context.Context, st *stepRow, job *Runne
 			}
 		}
 	case job.State == "done" && res.Outcome == "unwanted":
-		s.unwarmReview(ctx, st.sessionID) // stopped while the job was on its way: stopStep ended the round
+		s.unwarmReview(ctx, st.sessionID)
 		if res.Warning != "" {
 			s.log.WarnContext(ctx, "autopilot: the review job found the step unwanted", "task", review.key, "step", st.id, "warning", res.Warning)
 		}
@@ -2166,8 +2014,6 @@ func (s *Service) reviewJobFinished(ctx context.Context, st *stepRow, job *Runne
 		s.unwarmReview(ctx, st.sessionID)
 		reason, retry := WaitScreen, autopilotRetry
 		if res.Reason == WaitNoTmux {
-			// It can't be typed into: move on (the next task can't start
-			// either, which the step then says).
 			s.setRoundNow(ctx, review.id, []string{RoundPending}, RoundSkipped, res.Detail)
 			if err := s.stepUpdate(ctx, st.id, StepDue, "", "", now); err != nil {
 				if readFault(err) {
@@ -2176,11 +2022,8 @@ func (s *Service) reviewJobFinished(ctx context.Context, st *stepRow, job *Runne
 			}
 			return
 		} else if now-max(st.createdAt, s.roundAuditEnded(ctx, review.id)) > heldScreenWait.Milliseconds() {
-			// A task unshipped behind a screen that won't come free (WP-752); a round after the pull request ends too, its audit going to the gate.
 			why := fmt.Sprintf("the session stayed busy for %d hours, so it couldn't be started: %s", int(heldScreenWait.Hours()), res.Detail)
 			if audit, n := s.roundEndedAudit(ctx, review.id); audit != 0 {
-				// The review was done; it was the session that couldn't
-				// be given what it found.
 				why = fmt.Sprintf("%s%d, %s), but the session stayed busy for %d hours, so what it found couldn't be given to it: %s",
 					heldReviewEnded, audit, plural1(n, "finding"), int(heldScreenWait.Hours()), res.Detail)
 			}
@@ -2201,10 +2044,9 @@ func (s *Service) reviewJobFinished(ctx context.Context, st *stepRow, job *Runne
 		}
 	default:
 		if review.state != RoundPending {
-			reviewing() // typed before it failed: its Stop ends it
+			reviewing()
 			return
 		}
-		// Fail open: the next task matters more than its review.
 		s.unwarmReview(ctx, st.sessionID)
 		why := cmp(cmp(job.Error, res.Detail), "the runner job "+job.State)
 		reason := "the runner couldn't start it: " + why
@@ -2212,7 +2054,7 @@ func (s *Service) reviewJobFinished(ctx context.Context, st *stepRow, job *Runne
 			reason = fmt.Sprintf("the runner couldn't start it, tried %d times (the last: %s)", st.attempts+1, why)
 		}
 		if strings.HasPrefix(why, roundCancelledBy) {
-			reason = why // a person's decision, not a failure (heldUnshipped)
+			reason = why
 		}
 		s.setRoundNow(ctx, review.id, []string{RoundPending}, RoundFailed, reason)
 		if err := s.stepUpdate(ctx, st.id, StepDue, "", "", now); err != nil {
@@ -2246,7 +2088,7 @@ func (s *Service) projectKeyOf(ctx context.Context, id int64) string {
 func (s *Service) pickAutopilotTask(ctx context.Context, actor *Actor, st *stepRow, x *AgentSession, lim AutopilotLimits) (*Issue, string, error) {
 	policy := valueOf(lim.Merge)
 	if p, err := s.pauseFor(ctx, actor, actor.Agent); err != nil || p != nil {
-		return nil, "", err // agents are paused: nothing is ready
+		return nil, "", err
 	}
 	ready, _, err := s.agentWork(ctx, actor, []string{actor.Agent}, AgentQuery{Agent: actor.Agent, Project: s.projectKeyOf(ctx, st.projectID), Query: lim.criteriaQuery(), Peek: true})
 	if err != nil {
@@ -2373,8 +2215,6 @@ func (s *Service) autopilotLoop(ctx context.Context, st *stepRow, lim AutopilotL
 				autopilotQuickRuns, int(autopilotQuickRun.Minutes()), strings.Join(churn, "; ")), "", 0, nil
 		}
 	}
-	// Every recent start given back: slow down and say so, without turning
-	// autopilot off. Blocked tasks are expected (WP-ADR75).
 	streak, lastGiven := 0, int64(0)
 	for _, x := range starts {
 		var at sql.NullInt64
@@ -2444,7 +2284,6 @@ func (s *Service) churned(ctx context.Context, issue, from int64) (string, error
 	case doneBefore:
 		return "an agent had finished it before", nil
 	}
-	// What the agent said: its summary, and its comments on the task then.
 	var said []string
 	var summary string
 	_ = s.db.R.QueryRowContext(ctx, `SELECT body FROM task_summaries WHERE run_id = ?`, run).Scan(&summary)
@@ -2548,8 +2387,6 @@ func (s *Service) releaseReserved(ctx context.Context, issueID int64, agent stri
 	s.writeLogged(ctx, "write a step's bookkeeping; the sweep tries again", `UPDATE issues SET claimed_by = '', claimed_until = NULL, claimed_at = NULL WHERE id = ? AND claimed_by = ?
 		AND NOT EXISTS (SELECT 1 FROM agent_runs r WHERE r.issue_id = issues.id AND r.ended_at IS NULL)`, issueID, agent)
 }
-
-// ---- the runner's answer ----
 
 // AutopilotJobResult is what an autopilot job reports.
 type AutopilotJobResult struct {
@@ -2701,12 +2538,12 @@ func (s *Service) autopilotJobFinished(ctx context.Context, e *Event) {
 	}
 	now := s.nowMS()
 	if st.sessionID == 0 {
-		s.ownStartFinished(ctx, st, job, res, now) // a session of its own (WP-ADR72)
+		s.ownStartFinished(ctx, st, job, res, now)
 		return
 	}
 	agent, _ := s.stepAgent(ctx, s.db.R, st.runID, st.sessionID)
 	if !st.nextIssue.Valid && st.reviewID.Valid {
-		s.reviewJobFinished(ctx, st, job, res, now) // a review job (WP-285)
+		s.reviewJobFinished(ctx, st, job, res, now)
 		return
 	}
 	nextKey := ""
@@ -2753,12 +2590,8 @@ func (s *Service) autopilotJobFinished(ctx context.Context, e *Event) {
 			}
 		}
 	case job.State == "done" && res.Outcome == "unwanted":
-		// Stopped while the job was on its way: stopStep released the task.
 	case job.State == "done" && res.Outcome == "cleared":
-		// Cleared, but the prompt didn't reach the new session: the person
-		// has to give it the task, and hears so at once.
 		if res.Via == "restart" && res.NewCLI == "" {
-			// Exited, and the new one didn't start: the pane has no session.
 			if err := s.stepUpdate(ctx, st.id, StepFailed, WaitJob, "exited the session to restart it, but "+res.Detail, 0); err != nil {
 				if readFault(err) {
 					s.log.WarnContext(ctx, "step update failed", "step", st.id, "err", err)
@@ -2782,8 +2615,6 @@ func (s *Service) autopilotJobFinished(ctx context.Context, e *Event) {
 	case job.State == "done" && res.Outcome == "held":
 		s.releaseReserved(ctx, st.nextIssue.Int64, agent)
 		if res.Reason == WaitNoTmux {
-			// Not a wait: nothing changes by looking again. This step ends, and
-			// the sweep starts the task in a session of its own (WP-ADR72).
 			if err := s.stepUpdate(ctx, st.id, StepStopped, WaitNoTmux, res.Detail, 0); err != nil {
 				if readFault(err) {
 					s.log.WarnContext(ctx, "step update failed", "step", st.id, "err", err)
@@ -2792,7 +2623,6 @@ func (s *Service) autopilotJobFinished(ctx context.Context, e *Event) {
 			s.tellOnce(ctx, st, WaitNoTmux, "Autopilot can't move a session on", "Autopilot can't move on the session that finished "+cmp(st.doneKey(ctx, s), "its task")+": "+res.Detail+" Where the limit allows it, autopilot starts the next task in a session of its own.")
 			return
 		}
-		// Busy or a draft: look again soon at first, then less often.
 		retry := autopilotRetry
 		long := now-st.createdAt > autopilotScreenWait.Milliseconds()
 		if long {
@@ -2878,7 +2708,7 @@ func (s *Service) AutopilotStepAction(ctx context.Context, a *Actor, id int64, a
 	}
 	check := a.requireHuman
 	if action == "now" {
-		check = a.requirePersonDirect // it starts work at once
+		check = a.requirePersonDirect
 	}
 	if err := check("changing what autopilot does"); err != nil {
 		return err
@@ -2906,8 +2736,6 @@ func (s *Service) AutopilotStepAction(ctx context.Context, a *Actor, id int64, a
 	case "stop":
 		return s.write(ctx, a, func(t *tx) error { return s.stopStep(ctx, t, st.sessionID, "stopped", "you stopped it") })
 	case "now":
-		// Starting at once skips the grace and a merge wait (created_at moves
-		// back past it), never a limit.
 		_, err := s.writeRows(ctx, `UPDATE autopilot_steps SET due_at = ?, created_at = min(created_at, ?), reason = CASE WHEN reason = ? THEN '' ELSE reason END, updated_at = ?
 			WHERE id = ? AND state IN (?, ?)`, s.nowMS(), s.nowMS()-autopilotMergeWaitMax.Milliseconds(), WaitPrompted, s.nowMS(), st.id, StepDue, StepWaiting)
 		if err != nil {
@@ -2954,12 +2782,6 @@ func (s *Service) roundOverdue(ctx context.Context, st *stepRow, review *roundRo
 	if _, lim, err := s.autopilotFor(ctx, s.db.R, st.userID, st.projectID); err == nil {
 		if m, err := s.autopilotMeter(ctx, st.userID); err == nil {
 			if why, _ := autopilotPaused(m, lim, s.now()); why != "" {
-				// No pull request opens around a usage limit (the model work
-				// it waits for would run past it), so the round waits for the
-				// pause to end, for at most roundLimitWait beyond what a
-				// screen would have kept it; the week's pace, which a review
-				// doesn't wait on, doesn't hold it at all. A person is told
-				// once, for each kind of limit, what became of it.
 				kind := pauseReason(why)
 				key := "round-paused:" + strconv.FormatInt(review.id, 10) + ":" + kind
 				if kind != PauseWeek && now-since <= (heldScreenWait+roundLimitWait).Milliseconds() {
@@ -2979,8 +2801,6 @@ func (s *Service) roundOverdue(ctx context.Context, st *stepRow, review *roundRo
 		reason = fmt.Sprintf("a usage limit held it: %s", limited)
 	}
 	if st.reason == WaitScreen && st.detail != "" {
-		// What the screen showed the last time it was tried, as the
-		// held-screen failure says it (WP-752).
 		reason = fmt.Sprintf("the session stayed busy for %d hours, so it couldn't be started: %s", int(heldScreenWait.Hours()), st.detail)
 	}
 	if ra, err := s.roundAuditOf(ctx, review.id); err == nil && ra.id != 0 {

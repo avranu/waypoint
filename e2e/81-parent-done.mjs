@@ -37,12 +37,9 @@ async function run(width, scheme) {
   const a = (await api("POST", "/issues", { project: "WAYP", title: `Export as CSV ${tag}`, parent: parent.key, status: "in_progress" })).body;
   const b = (await api("POST", "/issues", { project: "WAYP", title: `Export as JSON ${tag}`, parent: parent.key, status: "done" })).body;
 
-  // The API refuses and names the open one.
   const refused = await api("PATCH", `/issues/${parent.key}`, { status: "done" });
   ok(refused.status === 400 && JSON.stringify(refused.body).includes(a.key) && !JSON.stringify(refused.body).includes(b.key), `${tag} the API refuses and names only the open sub-task: ${refused.status} ${JSON.stringify(refused.body)}`);
 
-  // The picker says it before the click; picking Done anyway shows why not.
-  // (The sub-task is In Progress, so the only "To Do" is the parent's.)
   await page.goto(`${base}/issue/${parent.key}`);
   await page.locator('button[title="To Do"] >> visible=true').first().click();
   const done = page.getByRole("option", { name: /^Done/ }).filter({ hasText: "1 sub-task open" });
@@ -55,7 +52,6 @@ async function run(width, scheme) {
   await shot("refused");
   ok((await api("GET", `/issues/${parent.key}`)).body.status?.category !== "done", `${tag} the parent stays open`);
 
-  // Won't Do on the sub-task closes it; then the parent can close.
   ok((await api("PATCH", `/issues/${a.key}`, { status: "canceled" })).status === 200, `${tag} the open sub-task is dropped`);
   const closed = await api("PATCH", `/issues/${parent.key}`, { status: "done" });
   ok(closed.status === 200 || (await api("GET", `/issues/${parent.key}`)).body.status?.category === "done", `${tag} with none open, the parent closes: ${closed.status} ${JSON.stringify(closed.body).slice(0, 200)}`);

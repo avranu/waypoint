@@ -27,7 +27,7 @@ func TryEgress(ctx context.Context, proxy string, r Request, roots *tls.Config) 
 		c.Got, c.Detail = Inconclusive, "bad proxy: "+err.Error()
 		return c
 	}
-	var connect string // the broker's header on a CONNECT it answered
+	var connect string
 	tr := &http.Transport{
 		Proxy:           http.ProxyURL(pu),
 		TLSClientConfig: roots,

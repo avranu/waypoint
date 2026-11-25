@@ -37,8 +37,8 @@ func TestOTLPMapsEvents(t *testing.T) {
 		tool("tool_decision", "3", "decision", "reject", "source", "hook", "tool_parameters", `{"bash_command":"rm -rf /tmp/x","full_command":"rm -rf /tmp/x && echo hi"}`),
 		tool("tool_decision", "4", "decision", "accept", "source", "config"),
 		OTLPEvent{At: at, Attrs: map[string]string{"event.name": "user_prompt", "session.id": "s1", "prompt": "TOPSECRET"}},
-		OTLPEvent{At: at, Attrs: map[string]string{"event.name": "api_request", "model": "m"}},                    // no session
-		OTLPEvent{At: 5, Attrs: map[string]string{"event.name": "api_request", "session.id": "s1", "model": "m"}}, // implausible time
+		OTLPEvent{At: at, Attrs: map[string]string{"event.name": "api_request", "model": "m"}},
+		OTLPEvent{At: 5, Attrs: map[string]string{"event.name": "api_request", "session.id": "s1", "model": "m"}},
 	)
 	if r.Rejected != 2 || r.Ignored != 2 {
 		t.Errorf("result %+v", r)
@@ -87,7 +87,6 @@ func TestOTLPIsIdempotent(t *testing.T) {
 	if r.Ignored != 2 {
 		t.Errorf("retry result %+v", r)
 	}
-	// a different event in the same hour still counts
 	e.otlp(e.me, apiReq(e.hour(-1)+2, "s1", "10", "5"))
 	if tt := e.overview(e.me, UsageQuery{}).Totals; tt.Messages != 2 || tt.Input != 20 {
 		t.Errorf("totals %+v", tt)
@@ -97,13 +96,11 @@ func TestOTLPIsIdempotent(t *testing.T) {
 func TestOTLPNeverDoubleCountsATranscriptSession(t *testing.T) {
 	e := newAnalyticsEnv(t)
 	h := e.hour(-1)
-	// OTLP first; the transcript arrives later and replaces it
 	e.otlp(e.me, apiReq(h+1, "s1", "10", "5"), apiReq(h+2, "s2", "7", "3"))
 	e.ingest(e.me, "c1", "devhost", UsageChunk{Messages: []UsageMessageRow{msg(h+1, "s1", "a/b", "claude-opus-5-5", "main", 1, 10, 5, 20, 0, 500)}})
 	if tt := e.overview(e.me, UsageQuery{}).Totals; tt.Messages != 2 || tt.Input != 17 {
 		t.Errorf("transcript replaces OTLP for s1 only: %+v", tt)
 	}
-	// transcript first; later OTLP events for that session are ignored
 	e.ingest(e.me, "c2", "devhost", UsageChunk{Messages: []UsageMessageRow{msg(h+1, "s3", "a/b", "claude-opus-5-5", "main", 1, 100, 5, 0, 0, 0)}})
 	r := e.otlp(e.me, apiReq(h+9, "s3", "100", "5"), apiReq(h+10, "s3", "50", "5"), apiReq(h+3, "s2", "1", "1"))
 	if r.Ignored != 2 {

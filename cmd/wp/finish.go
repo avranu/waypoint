@@ -86,7 +86,7 @@ func cmdFinish(c *cli, args []string) error {
 		checkGiven = checkGiven || fl.Name == "check"
 	})
 	keys, rest, keyErr := c.currentKeys(pos)
-	given := keyErr == nil && len(rest) < len(pos) // named, not held
+	given := keyErr == nil && len(rest) < len(pos)
 	if keyErr != nil {
 		if len(pos) > 0 && codeShape(pos[0]) != "" {
 			return keyErr
@@ -103,7 +103,7 @@ func cmdFinish(c *cli, args []string) error {
 		return c.usage("usage is one task's: give one KEY")
 	}
 	if !given && len(keys) == 1 && !*noShip && c.finished(keys[0]) {
-		keys = nil // a claim finished on the board isn't what ships
+		keys = nil
 	}
 	shipping := false
 	if !*noShip {
@@ -115,7 +115,6 @@ func cmdFinish(c *cli, args []string) error {
 		return c.usage("a pull request ships one task: give one KEY (the others finish with wp ship KEY once it is open)")
 	}
 	if shipping {
-		// Before anything is committed or pushed (WP-1449).
 		if err := c.refuseDiagnoseRound(keys); err != nil {
 			return err
 		}
@@ -143,8 +142,6 @@ func cmdFinish(c *cli, args []string) error {
 		if !so.summaryGiven {
 			return
 		}
-		// For the task's next wp ship (WP-1093): the task named or taken,
-		// else the one the branch names, as wp ship links it.
 		switch {
 		case len(keys) == 1:
 			c.keepSummary(keys[0], *so.summary)
@@ -156,8 +153,6 @@ func cmdFinish(c *cli, args []string) error {
 			}
 		}
 	}
-	// A marker this call didn't write (a subagent's wp ship in this
-	// session, one a hook never took) mustn't end the turn after it.
 	c.clearShipEnd()
 	switch {
 	case !shipping && (checkGiven || so.summaryGiven):
@@ -171,10 +166,10 @@ func cmdFinish(c *cli, args []string) error {
 		}
 	}
 	for _, k := range keys {
-		c.objectiveShipNote(k) // WP-927: Waypoint reads a round's end itself; nothing is measured here
+		c.objectiveShipNote(k)
 	}
 	if shipping {
-		c.noteRewrites(shipKey(keys), *f.base) // information only (WP-1370): it keeps no turn open
+		c.noteRewrites(shipKey(keys), *f.base)
 	}
 	if len(shots) > 0 {
 		if len(keys) != 1 {
@@ -184,7 +179,6 @@ func cmdFinish(c *cli, args []string) error {
 		if err != nil {
 			return c.usage("%s", err)
 		}
-		// The pictures go first: a failed shot leaves the task open to retry.
 		if err := c.shoot(keys[0], shots, o); err != nil {
 			keepSummary()
 			return fmt.Errorf("%w (the task is still open: fix the page or drop --shot, then run this again)", err)
@@ -202,8 +196,6 @@ func cmdFinish(c *cli, args []string) error {
 		if err != nil || !other || len(keys) == 0 {
 			return err
 		}
-		// The branch's pull request is another task's: this one has nothing
-		// of its own to ship.
 	}
 	if err := c.finishDone(keys, *msg, u); err != nil {
 		if len(shots) > 0 {
@@ -213,7 +205,7 @@ func cmdFinish(c *cli, args []string) error {
 	}
 	if !shipping && !*noShip {
 		if s := commitsLeftNotice(f, keys); s != "" {
-			_, _ = fmt.Fprintln(c.err, "Notice: "+s) // stderr: --json keeps stdout for the response
+			_, _ = fmt.Fprintln(c.err, "Notice: "+s)
 		}
 	}
 	return nil
@@ -261,8 +253,6 @@ func (c *cli) codeToShip(f prOpenFlags, keys []string) (bool, error) {
 			return true, nil
 		}
 	}
-	// One task only: a pull request ships one, and a mention shouldn't stop
-	// wp done A B finishing both.
 	if len(keys) == 1 && commitsAllName(base, branch, keys[0]) {
 		closed, err := c.taskClosed(keys[0])
 		if err != nil {
@@ -331,7 +321,7 @@ func commitsLeftNotice(f prOpenFlags, keys []string) string {
 		return left + "a pull request ships one task. If they are one of these tasks' work: " + strings.Join(cmds, " or ")
 	}
 	if commitsAllName(base, branch, keys[0]) {
-		return "" // the task's own, and finished: nothing is unaccounted for
+		return ""
 	}
 	return left + fmt.Sprintf("neither the branch name nor every commit subject names %s. If they are that task's work: wp pr open --issue %s", keys[0], keys[0])
 }
@@ -439,10 +429,10 @@ func (c *cli) refuseDiagnoseRound(keys []string) error {
 	}
 	var o objective
 	if err := c.do("GET", "/api/v1/issues/"+esc(key)+"/objective", nil, &o); err != nil {
-		if isNotFound(err) { // no objective on it: nothing to refuse
+		if isNotFound(err) {
 			return nil
 		}
-		return err // not knowing is not leave to commit or push
+		return err
 	}
 	if o.State != "active" || o.Phase != "" || o.RoundKind != "diagnose" {
 		return nil

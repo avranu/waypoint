@@ -2,8 +2,6 @@ package api
 
 import "net/http"
 
-// Dashboards (WP-780): a project, or every project, at a glance.
-
 func (s *Server) projectDashboard(w http.ResponseWriter, r *http.Request) (any, error) {
 	return s.svc.ProjectDashboard(r.Context(), actorFrom(r), r.PathValue("key"))
 }

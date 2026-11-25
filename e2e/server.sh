@@ -1,6 +1,4 @@
 #!/bin/bash
-# Starts, restarts or stops the throwaway server the suites run against.
-#   server.sh start|restart|stop        (DIR and PORT come from run.sh)
 set -euo pipefail
 : "${DIR:?}" "${PORT:?}" "${BIN:?}"
 stop() { [ -f "$DIR/pid" ] && kill "$(cat "$DIR/pid")" 2>/dev/null || true; rm -f "$DIR/pid"; sleep 0.3; }

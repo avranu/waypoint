@@ -36,7 +36,6 @@ func TestRelationKinds(t *testing.T) {
 		return n
 	}
 
-	// Tension reads the same from both ends and is one row per pair.
 	if err := e.s.AddRelation(e.ctx, e.admin, simple.Key, "tension", detail.Key); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +52,6 @@ func TestRelationKinds(t *testing.T) {
 		t.Errorf("a symmetric kind stored %d times", n)
 	}
 
-	// Supersedes has an inverse, stored the same way round either way.
 	if err := e.s.AddRelation(e.ctx, e.admin, old.Key, "superseded_by", repl.Key); err != nil {
 		t.Fatal(err)
 	}
@@ -64,8 +62,6 @@ func TestRelationKinds(t *testing.T) {
 		t.Errorf("replaced: %+v", r)
 	}
 
-	// A follow-up's subkind: set, changed by saying it again, kept when
-	// said again without one, refused where the kind has none.
 	if _, err := e.s.Relate(e.ctx, e.admin, later.Key, RelationInput{Kind: "follows", Issue: first.Key, Subkind: "Fix"}); err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +93,6 @@ func TestRelationKinds(t *testing.T) {
 		t.Errorf("an unknown kind: %v", err)
 	}
 
-	// The history says what changed, as the issue reads it.
 	hist, err := e.s.History(e.ctx, e.admin, first.Key, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +101,6 @@ func TestRelationKinds(t *testing.T) {
 		t.Errorf("history: %+v", hist)
 	}
 
-	// Who stands behind it: a person, an agent, Waypoint.
 	if r := find(simple.Key, detail.Key); r.Basis != "person" || r.CreatedBy == nil || r.CreatedBy.ID != e.admin.User.ID || r.CreatedAt.IsZero() {
 		t.Errorf("a person's relation: %+v", r)
 	}
@@ -124,7 +118,6 @@ func TestRelationKinds(t *testing.T) {
 		t.Errorf("Waypoint's relation: %+v", r)
 	}
 
-	// WQL finds both ends of a tension, and what was replaced.
 	got := e.search(e.admin, "is:tension")
 	slices.Sort(got)
 	want := []string{simple.Key, detail.Key}
@@ -206,7 +199,6 @@ func TestGoalTension(t *testing.T) {
 	if len(refs) != 1 || refs[0].ID != g.ID || !refs[0].Tension {
 		t.Errorf("brief's notes: %+v", refs)
 	}
-	// Serving it as well isn't a tension any more, for the brief.
 	e.serve(e.admin, task.Key, g.ID)
 	if refs := e.s.DesignNotesFor(e.ctx, e.admin, task.ID); len(refs) != 1 || refs[0].Tension {
 		t.Errorf("served and in tension: %+v", refs)

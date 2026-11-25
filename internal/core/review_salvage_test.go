@@ -18,7 +18,7 @@ func TestSalvageFindings(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
-		want int // findings kept; 0 means not ok
+		want int
 	}{
 		{"cut in the third element", `{"findings":[` + f1 + `,` + f2 + `,{"file":"c.go","cl`, 2},
 		{"cut between elements", `{"findings":[` + f1 + `,` + f2 + `,`, 2},
@@ -37,15 +37,12 @@ func TestSalvageFindings(t *testing.T) {
 		{"findings object nested in another (found by the later start)", `{"x":{"findings":[` + f1 + `,{"fi`, 1},
 		{"no object", `no json here`, 0},
 		{"mismatched brackets", `{"findings":[` + f1 + `]],{"fi`, 0},
-		// The array closed and the object was cut after it: every finding is whole (1255.2).
 		{"closed array, cut in a later field", `{"findings":[` + f1 + `,` + f2 + `],"summary":"x`, 2},
 		{"closed array, cut right after it", `{"findings":[` + f1 + `,` + f2 + `]`, 2},
 		{"closed array, nested values after it", `{"findings":[` + f1 + `],"meta":{"a":{"b":[1]}},"s":"x`, 1},
 		{"closed empty array, cut after it", `{"findings":[],"summary":"x`, 0},
-		// Only objects are findings (1255.17).
 		{"array elements", `{"findings":[["a"],["b"`, 0},
 		{"an array among the objects", `{"findings":[` + f1 + `,["a"],{"fi`, 0},
-		// a scalar past the last whole object is part of the dropped tail
 		{"a scalar in the cut tail", `{"findings":[` + f1 + `,"x",{"fi`, 1},
 		{"a string between objects", `{"findings":[` + f1 + `,"x",` + f2 + `,{"fi`, 0},
 		{"a number among the objects", `{"findings":[` + f1 + `,3,` + f2 + `,{"fi`, 0},
@@ -66,7 +63,6 @@ func TestSalvageFindings(t *testing.T) {
 			t.Errorf("%s: salvaged %s: %v", c.name, raw, err)
 		}
 	}
-	// A complete answer is extractJSON's, never salvaged.
 	whole := `{"findings":[` + f1 + `]}`
 	if _, _, ok := salvageFindings(whole); ok {
 		t.Error("a complete answer was salvaged")
@@ -99,7 +95,6 @@ func TestCompleteSalvagesOnlyWhenAsked(t *testing.T) {
 	if note.answers != 1 || note.findings != 1 {
 		t.Errorf("note %+v", note)
 	}
-	// A cut in the first finding is still a failure, and leaves no note.
 	p = cutAnswerServer(t, `{"findings":[{"file":"a.go","cla`)
 	ctx, note = withSalvage(context.Background())
 	if _, _, err := c.Complete(ctx, p, "m", "sys", "prompt", reviewSchema); err == nil || note.answers != 0 {
@@ -138,13 +133,11 @@ func TestEachProviderKindSalvages(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var b []byte
 		switch {
-		case r.URL.Path == "/api/chat": // ollama
+		case r.URL.Path == "/api/chat":
 			b, _ = json.Marshal(map[string]any{"message": map[string]any{"content": cut}})
-		case r.URL.Path == "/session": // opencode
+		case r.URL.Path == "/session":
 			b, _ = json.Marshal(map[string]any{"id": "s1", "permission": []any{map[string]string{"permission": "*", "pattern": "*", "action": "ask"}}})
 		case strings.HasSuffix(r.URL.Path, "/message"):
-			// The structured form is refused, so the answer comes as text,
-			// which is where a cut answer is read.
 			var in map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&in)
 			if in["format"] != nil {

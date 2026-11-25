@@ -1,17 +1,5 @@
 package core
 
-// Delivery (WP-389): whether shipped work is live yet. A task done by an
-// agent passes through a pull request (CI, review, the merge queue), a merge
-// and a deploy before a person can try it; each step can stall, and from
-// outside they all look alike: "the feature isn't there". Delivery puts each
-// recent task at its step, says what it waits on, and says which deployed
-// environments are up to date with what merged.
-//
-// Whether a deployed commit contains a merge is asked of the forge ("is the
-// merge in the deployed commit?"); a branch's merges land in order, so per
-// environment the merged pull requests split into a prefix that is in it and
-// a suffix that isn't, found by binary search. Answers are cached for good.
-
 import (
 	"context"
 	"database/sql"
@@ -25,13 +13,13 @@ import (
 
 // Delivery stages, in the order work moves through them.
 const (
-	StageWorking   = "working"   // an agent holds the task; no pull request yet
-	StageBlocked   = "blocked"   // an open task blocks it
-	StageReview    = "review"    // its pull request is open and moving: CI, review, the merge queue
-	StageStuck     = "stuck"     // its pull request is open and needs someone: failed CI, conflicts, findings, nobody set it to merge
-	StageMerged    = "merged"    // merged, not yet deployed where it counts
-	StageLive      = "live"      // in production (or staging, where a repo has no production)
-	StageUntracked = "untracked" // merged into a branch no environment tracks
+	StageWorking   = "working"
+	StageBlocked   = "blocked"
+	StageReview    = "review"
+	StageStuck     = "stuck"
+	StageMerged    = "merged"
+	StageLive      = "live"
+	StageUntracked = "untracked"
 )
 
 // deliveryDefaultDays is how far back merged work is listed.
@@ -121,8 +109,6 @@ func (s *Service) Delivery(ctx context.Context, actor *Actor, q DeliveryQuery) (
 	if actor == nil || actor.User == nil {
 		return nil, ErrUnauthorized
 	}
-	// The route needs environments.read; the pull requests and tasks listed
-	// are other permissions' data, so a token needs those too.
 	for _, p := range []Permission{PermEnvironmentsRead, PermPullsRead, PermIssuesRead} {
 		if err := actor.need(p); err != nil {
 			return nil, err
@@ -157,7 +143,7 @@ func (s *Service) Delivery(ctx context.Context, actor *Actor, q DeliveryQuery) (
 	for _, p := range prs.Pulls {
 		switch {
 		case p.State == "closed":
-			continue // never merged: it won't go live
+			continue
 		case p.State == "merged" && (p.MergedAt == nil || p.MergedAt.Before(since)):
 			continue
 		}
@@ -260,10 +246,8 @@ func (s *Service) stageMerged(ctx context.Context, out *Delivery, envs []*Enviro
 	fctx, cancel := context.WithTimeout(ctx, deliveryForgeTime)
 	defer cancel()
 	type result struct{ in, unknown bool }
-	runs := map[[2]int64]result{} // {pr, env}
+	runs := map[[2]int64]result{}
 	for _, e := range envs {
-		// Merges land in order only within one base branch, so each base is
-		// searched on its own.
 		byBase := map[string][]*PRSummary{}
 		for _, p := range merged {
 			if strings.EqualFold(p.Repo, e.Repo) && (e.Branch == "" || e.Branch == p.BaseRef) {
@@ -272,11 +256,8 @@ func (s *Service) stageMerged(ctx context.Context, out *Delivery, envs []*Enviro
 		}
 		for _, mine := range byBase {
 			sort.SliceStable(mine, func(a, b int) bool { return mine[a].MergedAt.Before(*mine[b].MergedAt) })
-			// The deployed commit has a prefix of them: find where it ends.
 			in := func(p *PRSummary) (bool, error) { return s.commitHas(fctx, e, p) }
-			lo, hi := 0, len(mine) // the boundary is in [lo, hi]
-			// The deployed commit is a merge listed here (the usual case: CI
-			// deploys each merge): the boundary is right after it, no forge asked.
+			lo, hi := 0, len(mine)
 			for n, p := range mine {
 				if p.MergeSHA != "" && sameCommit(e.Commit, p.MergeSHA) {
 					lo, hi = n+1, n+1
@@ -382,8 +363,6 @@ func (s *Service) commitHas(ctx context.Context, e *Environment, p *PRSummary) (
 	head := p.MergeSHA
 	fromHead := false
 	if head == "" {
-		// A merge commit has the head in it; a squash doesn't, so a "no"
-		// from this fallback is unknown, not absent.
 		head = p.HeadSHA
 		fromHead = true
 	}
@@ -391,7 +370,6 @@ func (s *Service) commitHas(ctx context.Context, e *Environment, p *PRSummary) (
 		return false, nil
 	}
 	if head == "" {
-		// Nothing to compare: absence isn't known.
 		return false, ErrUnsupported
 	}
 	if sameCommit(e.Commit, head) {

@@ -77,7 +77,7 @@ func defaultSlots() int { return max(1, runtime.NumCPU()/2) }
 // slotHold is a held slot.
 type slotHold struct {
 	f   *os.File
-	idx int // which slot (NAME.IDX.lock)
+	idx int
 }
 
 func (h *slotHold) release() { _ = h.f.Close() }
@@ -106,7 +106,7 @@ func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstM
 	}
 	start := time.Now()
 	notified := false
-	var remove func() // leaves the queue
+	var remove func()
 	defer func() {
 		if remove != nil {
 			remove()
@@ -126,16 +126,12 @@ func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstM
 			if ok {
 				wd, _ := os.Getwd()
 				_ = f.Truncate(0)
-				// The session last, so a wp from before it was recorded still
-				// reads the command (audit #1382.1).
 				_, _ = f.WriteAt([]byte(fmt.Sprintf("%d\t%d\t%s\t%s\t%s\t%s\n", os.Getpid(), time.Now().Unix(), slotField(wd), slotField(strings.Join(os.Args[1:], " ")), slotField(slotSession()), slotField(slotCtxKey(ctx)))), 0)
 				return &slotHold{f: f, idx: i}, nil
 			}
 			_ = f.Close()
 		}
 		if remove == nil {
-			// The first round found no slot: join the queue as of now, so those
-			// who come later can count this one (WP-1571).
 			remove = slotAddWaiter(dir, name)
 			if firstMiss != nil {
 				firstMiss()
@@ -220,8 +216,6 @@ func slotHeld(name string) bool {
 		if !ok || base != want {
 			continue
 		}
-		// The marker only counts while the wp that took the slot is alive:
-		// a background descendant that outlives it must take the slot again.
 		if pid, err := strconv.Atoi(pidStr); err == nil && pid > 0 && slotPidAlive(pid) {
 			return true
 		}
@@ -236,7 +230,7 @@ func slotHeld(name string) bool {
 func (c *cli) runInSlotThen(name string, n int, argv []string, out, errw io.Writer, started func(), envf func([]string) []string) (int, error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	own := !slotHeld(name) // a nested run is inside someone's slot and time
+	own := !slotHeld(name)
 	cmd := ""
 	if own {
 		cmd = slotRunKey(os.Args, argv)
@@ -261,8 +255,6 @@ func (c *cli) runInSlotThen(name string, n int, argv []string, out, errw io.Writ
 	begun := time.Now()
 	code, err := runSlotCmd(ctx, env, argv, os.Stdin, out, errw)
 	if err == nil {
-		// A command that could not start, or whose wait failed, has no exit
-		// code: the hold's exit stays unknown (WP-1646).
 		setExit(code)
 	}
 	if err == nil && code == 0 && cmd != "" && derr == nil {
@@ -336,7 +328,6 @@ func cmdSlotRun(c *cli, args []string) error {
 	if len(keep) > 0 && pos[0] != "tests" {
 		return c.usage("--keep-env is for the tests slot; other slots run with the whole environment")
 	}
-	// Tests run without the caller's secrets, as under wp testsum (WP-1065).
 	var envf func([]string) []string
 	var dropped []string
 	if pos[0] == "tests" {
@@ -443,7 +434,6 @@ func (c *cli) takeSlotExit(ctx context.Context, name string, n int, run slotRun,
 	if prev := os.Getenv(slotHeldEnv); prev != "" {
 		held = prev + "," + held
 	}
-	// Replace the inherited value rather than add a second entry.
 	kept := make([]string, 0, len(env)+1)
 	for _, e := range env {
 		if !strings.HasPrefix(e, slotHeldEnv+"=") {

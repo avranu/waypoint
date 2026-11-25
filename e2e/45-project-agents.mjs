@@ -64,7 +64,6 @@ async function run(width, scheme) {
   await page.getByText("Beta importer").first().waitFor();
   ok((await page.getByText("Alpha parser rewrite").count()) === 0, `${tag} the other project shows only its own`);
 
-  // Pause from the tab header: the project setting flips and the tab says so.
   await page.getByRole("button", { name: "Pause agents" }).click();
   await page.getByRole("button", { name: "Resume agents" }).waitFor();
   ok((await api("GET", `/projects/${b}`)).settings.agents_paused === true, `${tag} Pause agents pauses the project`);
@@ -73,24 +72,20 @@ async function run(width, scheme) {
   await page.getByRole("button", { name: "Pause agents" }).waitFor();
   ok((await api("GET", `/projects/${b}`)).settings.agents_paused !== true, `${tag} Resume agents resumes it`);
 
-  // The global page links to the project's tab.
   await page.goto(`${base}/agents?tab=queue&project=${a}`);
   await page.getByRole("link", { name: `${a} Agents tab` }).click();
   await page.waitForURL(`${base}/p/${a}/agents`);
   ok(true, `${tag} the global Agents page links to the project's tab`);
 
-  // Every tab is reachable: visible, or in More; none clipped.
   const labels = ["Board", "Backlog", "List", "Timeline", "Agents", "Reports", "Environments", "Pages", "Design", "Glossary", "Settings"];
   const nav = page.getByRole("navigation", { name: "Project sections" });
   const hidden = [];
-  // The strip measures after layout and again when fonts load: wait for it to settle.
   if (width < 700) await nav.getByRole("button", { name: "More" }).waitFor();
   await page.evaluate(() => document.fonts.ready);
   await page.waitForFunction(() => {
     const n = document.querySelector('nav[aria-label="Project sections"]');
     return n && n.scrollWidth <= n.clientWidth + 1;
   });
-  // Let the strip settle (fonts load, then it re-measures) before reading what is hidden.
   let settled = "";
   for (let i = 0; i < 20; i++) {
     hidden.length = 0;
@@ -118,7 +113,7 @@ async function run(width, scheme) {
   await ctx.close();
 }
 
-for (const [w, s] of looks([[1440, "light"], [390, "dark"]], [0, 1])) // the More menu is phone-only
+for (const [w, s] of looks([[1440, "light"], [390, "dark"]], [0, 1]))
   try { await run(w, s); } catch (e) { fail(`${w}/${s}: ${e.message.split("\n").slice(0, 3).join(" ")}`); }
 await browser.close();
 console.log(errors.length ? `${errors.length} problem(s)` : "all good");

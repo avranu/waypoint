@@ -32,7 +32,7 @@ func TestStatedDependencies(t *testing.T) {
 // relateFixture is a project with an issue about the Sanborn map harvest
 // and the issues around it.
 type relateFixture struct {
-	member                                *Actor // edits Maps and Other, can't see Secret
+	member                                *Actor
 	src, alike, sameTitle, waits, done    *IssueDetail
 	linked, unrelated, private, otherProj *IssueDetail
 }
@@ -109,7 +109,6 @@ func TestSuggestRelations(t *testing.T) {
 	if s := got[f.alike.Key]; s.Kind != "relates" || s.Reason != "Shares production, stops, walk." {
 		t.Errorf("alike: %+v", s)
 	}
-	// Another project's issue relates; it is not a duplicate.
 	if s := got[f.otherProj.Key]; s.Kind != "relates" {
 		t.Errorf("other project: %+v", s)
 	}
@@ -121,7 +120,6 @@ func TestSuggestRelations(t *testing.T) {
 	if order[0] != f.waits.Key || order[1] != f.sameTitle.Key {
 		t.Errorf("stated and same-title links come first: %v", order)
 	}
-	// Someone who can't see the issue gets nothing.
 	if _, err := e.s.SuggestRelations(e.ctx, e.user("kim", false), f.src.Key); err == nil {
 		t.Error("an outsider got suggestions")
 	}
@@ -138,7 +136,6 @@ func TestAutoRelateLinksTheSureOnes(t *testing.T) {
 	if rels[f.waits.Key] != "blocked_by" || rels[f.sameTitle.Key] != "duplicates" {
 		t.Errorf("relations = %v", rels)
 	}
-	// Other projects stay out of it, and so does what isn't sure.
 	for _, i := range []*IssueDetail{f.otherProj, f.private, f.unrelated} {
 		if _, ok := rels[i.Key]; ok {
 			t.Errorf("linked %s: %v", i.Key, rels)

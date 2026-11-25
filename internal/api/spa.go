@@ -36,7 +36,6 @@ type staticFile struct {
 }
 
 func init() {
-	// Go's table doesn't know it; browsers want this for the PWA manifest.
 	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
 }
 
@@ -139,7 +138,6 @@ func (s *Server) spa(w http.ResponseWriter, r *http.Request) {
 	}
 	f, ok := sf.load(name)
 	if !ok {
-		// Client-side routes get the app; missing files with an extension 404.
 		if path.Ext(name) != "" {
 			http.NotFound(w, r)
 			return

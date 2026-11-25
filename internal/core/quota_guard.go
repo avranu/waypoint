@@ -12,28 +12,6 @@ import (
 	"time"
 )
 
-// The daily quota guard (WP-932, WP-ADR112). Autopilot's limits (week_ahead,
-// week_max, week_end_hours; autopilot.go) and use-what's-left's window
-// (WP-262, autopilot_spend.go) are meant to keep automation off the
-// person's weekly Claude Code quota until the week's end. This checks
-// afterwards, once a day and from the records alone, that they did: how many
-// points of the week the quota readings rose by, how much of that went to
-// automation's sessions and runner jobs, and in which phase of the week. A
-// breach is automation using quota while the person's own limits would have
-// held it back, or a use-what's-left start before its window opened; the
-// person is told. It never stops anything: the gates do that.
-//
-// Points are not reported per session, so they are shared out: each rise of
-// the readings over the hours it spans, by each hour's usage at list price,
-// and an hour's points between automation and the person by the cost each
-// spent in it. An hour's owner in a session is whoever wrote its last prompt:
-// autopilot's prompts start with AutopilotPromptMark; Claude Code's own
-// (harness), keep-warm pings and /compact keep the owner before them; before
-// any prompt, a session autopilot started is automation's and any other the
-// person's. Runner jobs that run Claude (agent, review and audit jobs, not
-// ones a person queued) are automation's, by the cost they report over the
-// time they ran.
-
 // EvQuotaGuard: a daily check found automation used quota its limits should
 // have held back (WP-932). It reaches only its user.
 const EvQuotaGuard = "usage.quota_guard"
@@ -58,12 +36,12 @@ const (
 // The phases of the week an hour falls in, as autopilot's gates saw it at
 // the hour's start.
 const (
-	GuardPhaseUnder   = "under"   // below an even pace
-	GuardPhaseAhead   = "ahead"   // at or ahead of an even pace, within the limits
-	GuardPhaseEnd     = "end"     // the week's last 2×week_end_hours, within the (raised) limits
-	GuardPhaseOver    = "over"    // the limits hold autopilot back
-	GuardPhaseOff     = "off"     // the person turned the quota limits off
-	GuardPhaseUnknown = "unknown" // no reading of the week
+	GuardPhaseUnder   = "under"
+	GuardPhaseAhead   = "ahead"
+	GuardPhaseEnd     = "end"
+	GuardPhaseOver    = "over"
+	GuardPhaseOff     = "off"
+	GuardPhaseUnknown = "unknown"
 )
 
 var guardPhases = []string{GuardPhaseUnder, GuardPhaseAhead, GuardPhaseEnd, GuardPhaseOver, GuardPhaseOff, GuardPhaseUnknown}
@@ -225,9 +203,8 @@ func (s *Service) RunQuotaGuard(ctx context.Context) {
 		from := to.Add(-quotaGuardEvery)
 		if last.Valid {
 			if last.Int64 > from.UnixMilli() {
-				continue // checked within the day
+				continue
 			}
-			// A missed day (Waypoint was down) is judged with the next.
 			from = msTime(max(last.Int64, to.Add(-quotaGuardMaxDays*24*time.Hour).UnixMilli())).UTC()
 		}
 		c, err := s.quotaGuardCheck(ctx, uid, from, to)
@@ -271,7 +248,6 @@ func quotaGuardText(c *QuotaGuardCheck) string {
 }
 
 func (s *Service) notifyQuotaGuard(ctx context.Context, e *Event) {
-	// Autopilot: where its limits are set.
 	s.notifyURL(ctx, e.UserID, e, NotifyQuota, "Automation used quota its limits should have saved", strings.TrimSpace(e.New), "/agents?tab=autopilot")
 }
 
@@ -284,7 +260,7 @@ type quotaKnot struct {
 // quotaWeekLine is one week's readings, as a rising line from 0 at its start.
 type quotaWeekLine struct {
 	start, reset int64
-	knots        []quotaKnot // the first is (start, 0)
+	knots        []quotaKnot
 }
 
 // at is the week's mark at t: the line between the readings around t, the
@@ -353,8 +329,8 @@ func (s *Service) quotaWeekLines(ctx context.Context, uid, since, before int64) 
 // guardHour is an hour's spending, by who.
 type guardHour struct {
 	cost, auto float64
-	sources    map[string]float64 // automation's cost by source key
-	models     map[string]float64 // automation's session cost by model
+	sources    map[string]float64
+	models     map[string]float64
 }
 
 // quotaGuardCheck judges [from, to): whole hours.
@@ -384,13 +360,11 @@ func (s *Service) quotaGuardCheck(ctx context.Context, uid int64, from, to time.
 	}
 	hourMS := time.Hour.Milliseconds()
 	fromMS, toMS := from.UnixMilli(), to.UnixMilli()
-	// Readings after the window still share their rise with its last hours.
 	until := max(toMS, s.nowMS())
 	weeks, err := s.quotaWeekLines(ctx, uid, fromMS-quotaWeek.Milliseconds(), until)
 	if err != nil {
 		return nil, err
 	}
-	// Weeks that end before the window say nothing of it.
 	kept := weeks[:0]
 	for _, w := range weeks {
 		if w.reset > fromMS {
@@ -402,8 +376,6 @@ func (s *Service) quotaGuardCheck(ctx context.Context, uid int64, from, to time.
 	if err != nil {
 		return nil, err
 	}
-	// A rise between two readings is shared over the hours between them,
-	// so usage is read from the first of them.
 	first := fromMS
 	for _, w := range weeks {
 		first = min(first, w.start)
@@ -414,8 +386,8 @@ func (s *Service) quotaGuardCheck(ctx context.Context, uid int64, from, to time.
 		return nil, err
 	}
 	n := int((toMS - fromMS) / hourMS)
-	pts := make([]float64, n)   // explained points per window hour
-	unexp := make([]float64, n) // unexplained
+	pts := make([]float64, n)
+	unexp := make([]float64, n)
 	for _, w := range weeks {
 		for i := 1; i < len(w.knots); i++ {
 			a, b := w.knots[i-1], w.knots[i]
@@ -423,7 +395,6 @@ func (s *Service) quotaGuardCheck(ctx context.Context, uid int64, from, to time.
 			if rise <= 0 || b.at <= fromMS || a.at >= toMS {
 				continue
 			}
-			// weight: each hour's cost, by the share of it the rise spans
 			total := 0.0
 			for h := a.at - a.at%hourMS; h < b.at; h += hourMS {
 				if g := hours[h]; g != nil {
@@ -699,7 +670,7 @@ func (s *Service) guardSpending(ctx context.Context, uid, first, before, from, t
 		}
 		get(hour).cost += cost
 		if hour < from || hour >= to {
-			continue // only the window's points are split
+			continue
 		}
 		k := sessKey{machine, session}
 		bySession[k] = append(bySession[k], sessHour{hour, cost, model})
@@ -714,7 +685,7 @@ func (s *Service) guardSpending(ctx context.Context, uid, first, before, from, t
 			return nil, err
 		}
 		if sid == 0 {
-			continue // no session row: no prompts to go by, so the person's
+			continue
 		}
 		key := fmt.Sprintf("session:%d", sid)
 		for _, sh := range list {
@@ -728,8 +699,6 @@ func (s *Service) guardSpending(ctx context.Context, uid, first, before, from, t
 			g.models[sh.model] += sh.cost * share
 		}
 	}
-	// Runner jobs that ran Claude for automation, by the cost they report,
-	// over the time they ran. A job a person queued is theirs.
 	jrows, err := s.db.R.QueryContext(ctx, `SELECT id, started_at, finished_at, coalesce(json_extract(result, '$.tokens.cost_usd'), 0) FROM runner_jobs
 		WHERE owner_id = ? AND cli = 'claude' AND kind IN (?,?,?) AND source != 'manual'
 		AND started_at IS NOT NULL AND finished_at IS NOT NULL AND started_at < ? AND finished_at >= ?`,
@@ -916,7 +885,7 @@ func (s *Service) guardEarlySpend(ctx context.Context, uid int64, c *QuotaGuardC
 			}
 		}
 		if w == nil {
-			continue // no reading of its week: nothing to judge it by
+			continue
 		}
 		left := time.Duration(w.reset-at) * time.Millisecond
 		if left > time.Duration(spendEnd*float64(time.Hour))+quotaGuardSpendSlack {

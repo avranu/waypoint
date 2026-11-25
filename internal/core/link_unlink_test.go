@@ -40,7 +40,6 @@ func TestRemoveLinkRestoresStatus(t *testing.T) {
 	}
 	status := func(key string) string { return e.get(e.admin, key).Status.Name }
 
-	// The link moved it: removing the link puts it back.
 	a := e.issue(e.admin, IssueInput{Project: p.Key, Title: "A"})
 	before := status(a.Key)
 	l := link(a.Key, pr1)
@@ -50,7 +49,6 @@ func TestRemoveLinkRestoresStatus(t *testing.T) {
 		t.Errorf("status after unlink = %q, want %q", got, before)
 	}
 
-	// Another open pull request is still linked: the status stays.
 	b := e.issue(e.admin, IssueInput{Project: p.Key, Title: "B"})
 	l1 := link(b.Key, pr1)
 	link(b.Key, pr2)
@@ -60,7 +58,6 @@ func TestRemoveLinkRestoresStatus(t *testing.T) {
 		t.Errorf("status with another PR linked = %q, want In Review", got)
 	}
 
-	// A merged one counts too; a closed one doesn't.
 	c := e.issue(e.admin, IssueInput{Project: p.Key, Title: "C"})
 	l1 = link(c.Key, pr1)
 	l2 := link(c.Key, pr2)
@@ -81,7 +78,6 @@ func TestRemoveLinkRestoresStatus(t *testing.T) {
 		t.Errorf("status with only a closed PR left = %q, want %q", got, before)
 	}
 
-	// Moved by someone since, or not by the link at all: left alone.
 	f := e.issue(e.admin, IssueInput{Project: p.Key, Title: "F"})
 	l1 = link(f.Key, pr1)
 	move(f.Key, "In Review", pr1)

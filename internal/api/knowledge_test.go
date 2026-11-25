@@ -31,7 +31,6 @@ func TestKnowledgeAPI(t *testing.T) {
 	var issue map[string]any
 	human.json("POST", "/api/v1/issues", map[string]any{"project": "WID", "title": "Build the board"}, &issue)
 
-	// Glossary: add, lock, look up as text; agents can't change locked terms.
 	var g map[string]any
 	if code := human.json("POST", "/api/v1/glossary", map[string]any{"term": "Board", "definition": "Columns of statuses.", "aliases": []string{"kanban"},
 		"project": "WID", "locked": true, "links": []string{"WID-1", "web/src/pages/Board.tsx"}}, &g); code != 200 || g["locked"] != true {
@@ -42,7 +41,6 @@ func TestKnowledgeAPI(t *testing.T) {
 	if code != 200 || !strings.Contains(string(b), "Board  (WID glossary") || !strings.Contains(string(b), "locked by") || !strings.Contains(string(b), "file web/src/pages/Board.tsx") {
 		t.Errorf("lookup: %d %s", code, b)
 	}
-	// An alias routes to the term to use, without the entry listing its aliases.
 	if !strings.HasPrefix(string(b), `"kanban" is another name for "Board"`) || strings.Contains(string(b), "aliases:") {
 		t.Errorf("lookup by alias: %s", b)
 	}
@@ -52,12 +50,10 @@ func TestKnowledgeAPI(t *testing.T) {
 	if code, _ := agent.do("PATCH", "/api/v1/glossary/"+itoa(id), map[string]any{"locked": false}); code != 403 {
 		t.Errorf("agent unlock: %d", code)
 	}
-	// MCP calls count as an agent's even with the person's own token.
 	if text := callMCPTool(t, ts.URL, tok, "save_glossary", map[string]any{"id": id, "definition": "via mcp"}); !strings.Contains(text, "locked") {
 		t.Errorf("mcp edit of locked term: %s", text)
 	}
 
-	// Design: a person's note is approved; an agent's edit becomes a proposal.
 	var note map[string]any
 	if code := human.json("POST", "/api/v1/design", map[string]any{"title": "Board view", "kind": "feature", "project": "WID",
 		"body": "The [[Board]] shows work by status.", "links": []string{"WID-1"}}, &note); code != 200 || note["approved"] != true {
@@ -85,7 +81,6 @@ func TestKnowledgeAPI(t *testing.T) {
 	if code, b := human.do("POST", "/api/v1/design/revisions/"+rid+"/approve", map[string]any{"note": "ok"}); code != 200 {
 		t.Errorf("approve: %d %s", code, b)
 	}
-	// The spec, as an agent reads it.
 	code, b = agent.do("GET", "/api/v1/spec?topic=board+view&project=WID&format=text", nil)
 	s := string(b)
 	if code != 200 || !strings.Contains(s, "SPEC: Board view") || !strings.Contains(s, "Approved by robin") || !strings.Contains(s, "Add swimlanes.") ||
@@ -95,7 +90,6 @@ func TestKnowledgeAPI(t *testing.T) {
 	if code, b := agent.do("GET", "/api/v1/spec?project=WID&format=text", nil); code != 200 || !strings.Contains(string(b), "features: #") {
 		t.Errorf("overview: %d %s", code, b)
 	}
-	// The issue's links show the note; next/take mention it.
 	var links []map[string]any
 	if code := human.json("GET", "/api/v1/links?type=issue&key=WID-1", nil, &links); code != 200 || len(links) != 2 {
 		t.Errorf("issue links: %d %v", code, links)
@@ -104,7 +98,6 @@ func TestKnowledgeAPI(t *testing.T) {
 	if code != 200 || !strings.Contains(string(b), "Design: #") || !strings.Contains(string(b), "Assess and complete") {
 		t.Errorf("take: %d %s", code, b)
 	}
-	// Search everything, as text and JSON.
 	code, b = agent.do("GET", "/api/v1/search/all?q=board&project=WID&format=text", nil)
 	if code != 200 || !strings.Contains(string(b), "Issues (1)") || !strings.Contains(string(b), "Design notes (1)") || !strings.Contains(string(b), "Glossary (1)") {
 		t.Errorf("search text: %d %s", code, b)
@@ -113,12 +106,10 @@ func TestKnowledgeAPI(t *testing.T) {
 	if code := agent.json("GET", "/api/v1/search/all?q=board&kinds=glossary", nil, &res); code != 200 || len(res.Groups) != 1 || res.Groups[0].Kind != "glossary" {
 		t.Errorf("search json: %d %+v", code, res)
 	}
-	// Wikilinks resolve.
 	var it map[string]any
 	if code := human.json("GET", "/api/v1/resolve?ref=Board&project=WID", nil, &it); code != 200 || it["type"] != "glossary" {
 		t.Errorf("resolve: %d %v", code, it)
 	}
-	// The agent index stays short.
 	if code, b := agent.do("GET", "/api/v1/agent", nil); code != 200 || len(b) > 3200 {
 		t.Errorf("index: %d (%d bytes)", code, len(b))
 	}

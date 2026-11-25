@@ -45,7 +45,6 @@ func TestGuardChurnTellsThenStops(t *testing.T) {
 	if text, _, trip := g.decide(guardAt(21, 27)); text != "" || trip != nil {
 		t.Fatalf("told twice: %q", text)
 	}
-	// a change starts the count again
 	l := guardAt(22, 28)
 	l.progress = true
 	g.decide(l)
@@ -56,14 +55,12 @@ func TestGuardChurnTellsThenStops(t *testing.T) {
 	if text != "" || !strings.HasPrefix(stop, "Quota guard stopped this session: $32 since its last change") || !strings.HasSuffix(stop, guardStopTail) || trip.Action != "stopped" || g.Stopped != "churn" {
 		t.Fatalf("past 1.5 times: %q %q %+v", text, stop, trip)
 	}
-	// it stays stopped, and reports nothing new
 	if _, stop, trip := g.decide(guardAt(32, 61)); !strings.Contains(stop, "stays stopped") || trip != nil {
 		t.Fatalf("after the stop: %q %+v", stop, trip)
 	}
 }
 
 func TestGuardSessionHoursAndModel(t *testing.T) {
-	// session: $90 on the task with changes all along
 	g := &guardLocal{}
 	g.decide(guardAt(0, 0))
 	for i, cost := range []float64{20, 40, 61} {
@@ -80,7 +77,6 @@ func TestGuardSessionHoursAndModel(t *testing.T) {
 		t.Fatalf("session stop: %q", stop)
 	}
 
-	// hours: 18 hours of cheap work
 	g = &guardLocal{}
 	g.decide(guardAt(0, 0))
 	if text, _, _ := g.decide(guardAt(12*60, 1)); !strings.Contains(text, "for 12 hours") {
@@ -90,7 +86,6 @@ func TestGuardSessionHoursAndModel(t *testing.T) {
 		t.Fatalf("hours stop: %q", stop)
 	}
 
-	// model: Opus where automation uses Sonnet and Haiku; a cheaper one is fine
 	g = &guardLocal{}
 	g.decide(guardAt(0, 0))
 	for i := 1; i <= 4; i++ {
@@ -112,7 +107,6 @@ func TestGuardSessionHoursAndModel(t *testing.T) {
 		t.Fatalf("model stop: %q", stop)
 	}
 
-	// no usual models known: the model rule is off
 	if guardUnusualModel("claude-opus-5-5", nil, guardTestPrices) {
 		t.Error("no usual models, yet unusual")
 	}
@@ -142,7 +136,6 @@ func TestGuardHoldTellsThenStops(t *testing.T) {
 		t.Fatalf("hold stop: %q", stop)
 	}
 
-	// $2 more stops it sooner
 	g = &guardLocal{}
 	g.decide(guardAt(0, 0))
 	l = guardAt(1, 1)
@@ -156,7 +149,6 @@ func TestGuardHoldTellsThenStops(t *testing.T) {
 }
 
 func TestGuardIdleAndPerson(t *testing.T) {
-	// a person's own session: nothing until 8 hours and $60 since they typed
 	g := &guardLocal{}
 	person := func(m int, cost float64) guardLook {
 		l := guardAt(m, cost)
@@ -176,7 +168,6 @@ func TestGuardIdleAndPerson(t *testing.T) {
 		t.Fatalf("idle stop: %q", stop)
 	}
 
-	// a person who typed into an automation session: only the idle rule
 	g = &guardLocal{Person: true}
 	if text, stop, _ := g.decide(guardAt(0, 0)); text != "" || stop != "" {
 		t.Fatal(text, stop)
@@ -211,7 +202,6 @@ func TestGuardPrompt(t *testing.T) {
 	if err := readJSON(c.burnPath("s1"), &st); err != nil || st.Guard.Person || !st.Guard.AutoAt.Equal(guardT0) || st.Guard.Told != nil {
 		t.Fatalf("automation's prompt didn't start the counts: %+v", st.Guard)
 	}
-	// Automation's next prompt (a review round) doesn't start them again.
 	burnNow = func() time.Time { return guardT0.Add(3 * time.Hour) }
 	if r := c.guardPrompt("s1", true); r != "" {
 		t.Fatal(r)
@@ -220,8 +210,6 @@ func TestGuardPrompt(t *testing.T) {
 		t.Fatalf("a second automation prompt restarted the counts: %+v", st.Guard)
 	}
 
-	// A stop the guard no longer calls for lets automation go on: the
-	// person raised the line, or turned the guard off.
 	stop := func() {
 		c.withBurnState("s2", func(st *burnState) bool {
 			st.Guard = &guardLocal{Stopped: "hours", AutoAt: guardT0.Add(-20 * time.Hour)}
@@ -268,7 +256,6 @@ func TestGuardPrompt(t *testing.T) {
 	if !personCanType() {
 		t.Error("an autopilot tmux session counted as untyped")
 	}
-	// wp start KEY: a person's own task session.
 	t.Setenv("WAYPOINT_SESSION", "")
 	t.Setenv("WAYPOINT_UNATTENDED", "")
 	t.Setenv("WP_TASK", "WP-12")
@@ -297,7 +284,6 @@ func TestGuardCopy(t *testing.T) {
 	if p == nil || p.ChurnUSD != 45 || h == nil || h.Rule != "burst" {
 		t.Fatalf("copy: %+v %+v", p, h)
 	}
-	// a stale copy keeps its lines but not its hold
 	if p, h := c.guardNow(now.Add(pauseFresh + time.Minute)); p.ChurnUSD != 45 || h != nil {
 		t.Fatalf("stale: %+v %+v", p, h)
 	}
@@ -345,7 +331,6 @@ func TestGuardPulse(t *testing.T) {
 		t.Fatalf("trips sent twice: %v", tr)
 	}
 
-	// a server without pulses: the trips wait, the pause is pulled
 	pulses = false
 	c.queueGuardTrip(guardTrip{Session: "s1", Rule: "churn", Action: "stopped", Cost: 40, At: time.Now()})
 	hookClaudePause(c, nil, true)

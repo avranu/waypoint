@@ -8,10 +8,6 @@ import (
 	"strings"
 )
 
-// What `wp hook claude` adds for usage analytics (WP-D20), kept apart from
-// the rest of the installer: a Stop and SessionEnd hook that run
-// `wp usage sync --hook` in the background, and the status line.
-
 const hookUsageSync = "usage sync --hook"
 
 // usageHookTimeout is the usage hooks' timeout in seconds.
@@ -27,7 +23,6 @@ func installUsageIntegration(settings map[string]any, exe string, uninstall bool
 		if uninstall {
 			ch = removeHook(settings, event, hookUsageSync)
 		} else {
-			// asynchronous: the session never waits for the upload
 			if ch, err = addHookOpts(settings, event, quoteArg(exe)+" "+hookUsageSync, hookUsageSync, hookOpts{async: true, timeout: usageHookTimeout}); err != nil {
 				return changed, notes, fmt.Errorf("hooks.%s: %w", event, err)
 			}
@@ -57,7 +52,7 @@ func isOurStatusLine(cmd string) bool {
 	if name == "wp" {
 		return true
 	}
-	exe, err := os.Executable() // a renamed or dev build of this binary
+	exe, err := os.Executable()
 	return err == nil && name == programName(exe)
 }
 
@@ -81,9 +76,9 @@ func installStatusLine(settings map[string]any, exe string, uninstall bool) (cha
 			return false, "", nil
 		}
 		if orig, ok := wrappedStatusLine(cmd); ok {
-			sl["command"] = orig // what the person had
+			sl["command"] = orig
 		} else {
-			delete(settings, "statusLine") // there was none before
+			delete(settings, "statusLine")
 		}
 		return true, "", nil
 	}
@@ -97,7 +92,7 @@ func installStatusLine(settings map[string]any, exe string, uninstall bool) (cha
 			want = ours + " -- " + quoteArg(orig)
 		}
 		if cmd != want {
-			sl["command"] = want // wp moved
+			sl["command"] = want
 			return true, "", nil
 		}
 		return false, "", nil

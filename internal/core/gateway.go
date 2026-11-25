@@ -14,15 +14,6 @@ import (
 	"unicode"
 )
 
-// The LLM gateway is one OpenAI-compatible endpoint (LiteLLM, OpenRouter,
-// a self-hosted proxy, OpenLLMs, …) that startup sets up as a provider
-// from LLM_GATEWAY_URL and LLM_GATEWAY_API_KEY, first for every AI task
-// (WP-1187). Waypoint asks it only standard requests (chat completions,
-// /models) unless it declares extensions of that API
-// (LLM_GATEWAY_EXTENSIONS, GatewayExtensions); what needs one it lacks is
-// skipped, quietly: no fallbacks in a request, no exclusions, no surplus
-// work, no feedback reports, no audits through it, and so on.
-
 // The extensions of the OpenAI API a gateway may declare. Each is one
 // gateway's protocol; OpenLLMs is one gateway that implements them all.
 const (
@@ -408,7 +399,7 @@ func (s *Service) finishGatewaySetup(ctx context.Context, pid int64, g GatewaySe
 			return err
 		}
 		if len(had) > 0 && had[0].CLI == "" && had[0].ProviderID == pid {
-			continue // done before the setup stopped
+			continue
 		}
 		lead := []string{strings.TrimSpace(g.Model)}
 		if slices.Contains(exts, GatewayRoutes) {
@@ -445,10 +436,10 @@ func (s *Service) setGatewayChain(ctx context.Context, pid int64, task string, l
 	}
 	for _, cm := range rest {
 		if _, err := s.aiProvider(ctx, cm.ProviderID); err == nil || !errors.Is(err, ErrNotFound) {
-			chain = append(chain, cm) // fallbacks may name a removed provider; a transient error keeps it
+			chain = append(chain, cm)
 		}
 	}
-	chain = chain[:min(len(chain), 11)] // a model and at most 10 fallbacks
+	chain = chain[:min(len(chain), 11)]
 	return s.SetAITask(ctx, SystemActor(), task, pid, chain[0].Model, chain[1:])
 }
 

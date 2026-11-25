@@ -13,9 +13,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Agent endpoints (WP-D7): a token-cheap work queue. Answers are short
-// plain text unless ?format=json.
-
 //go:embed agent_help.md
 var agentHelpText string
 
@@ -60,7 +57,6 @@ func (s *Server) agentBatch(w http.ResponseWriter, r *http.Request) (any, error)
 func (s *Server) agentTake(w http.ResponseWriter, r *http.Request, batch bool) (any, error) {
 	var q core.AgentQuery
 	if r.Method == http.MethodGet {
-		// GET only looks, so read-only tokens can use it too.
 		v := r.URL.Query()
 		q = core.AgentQuery{Agent: v.Get("agent"), Project: v.Get("project"), Repo: v.Get("repo"),
 			Step: v.Get("step"), Query: v.Get("query"), Peek: true, Delegated: queryBool(r, "delegated")}
@@ -72,7 +68,6 @@ func (s *Server) agentTake(w http.ResponseWriter, r *http.Request, batch bool) (
 		take = s.svc.AgentBatch
 	}
 	t, err := take(r.Context(), actorFrom(r), q)
-	// Paused by a person: not a failure, an answer (WP-D15).
 	if p := (*core.ErrAgentsPaused)(nil); errors.As(err, &p) {
 		if wantsJSON(r) {
 			return map[string]any{"task": nil, "paused": p.Pause, "message": p.Error()}, nil
@@ -82,7 +77,6 @@ func (s *Server) agentTake(w http.ResponseWriter, r *http.Request, batch bool) (
 	if err != nil {
 		return nil, err
 	}
-	// Requests the person has decided since the agent asked (WP-D16).
 	answered := s.svc.AnsweredRequests(r.Context(), actorFrom(r))
 	warning := ""
 	if !q.Peek && t != nil {
@@ -112,8 +106,6 @@ func (s *Server) agentTake(w http.ResponseWriter, r *http.Request, batch bool) (
 func sessionHint(r *http.Request) core.SessionHint {
 	h := core.SessionHint{Task: strings.TrimSpace(r.Header.Get("X-Waypoint-Task"))}
 	if len(h.Task) > 1000 {
-		// Too long to be 20 keys (the CLI sends at most that): keep the whole
-		// keys in the first part rather than dropping the binding.
 		h.Task = h.Task[:1000]
 		h.Task = h.Task[:max(0, strings.LastIndexAny(h.Task, ", \t"))]
 	}
@@ -191,8 +183,6 @@ func agentTaskText(t *core.AgentTask, o taskText) string {
 	for _, k := range t.Skipped {
 		fmt.Fprintf(&b, "(Passed over %s.)\n", k)
 	}
-	// WP-242: what the agent needs to do the work, each thing once. Its
-	// priority, type, points and status (In Progress, now) don't change it.
 	switch {
 	case o.Assigned:
 		fmt.Fprintf(&b, "Autopilot assigned %s to you: %q %s\n", d.Key, d.Title, provenance(d, false))
@@ -205,9 +195,6 @@ func agentTaskText(t *core.AgentTask, o taskText) string {
 		fmt.Fprintf(&b, "%s %q %s\n", d.Key, d.Title, provenance(d, false))
 	}
 	if o.Assigned {
-		// Autopilot runs this session from here on; SessionStart can't tell
-		// yet, as it tells only sessions known to be autopilot's. A session a
-		// person started (StartedBy) is theirs and isn't told (WP-1319).
 		b.WriteString(core.AutopilotSessionNote + "\n")
 	}
 	b.WriteString(writtenLine(d, true, time.Now()))
@@ -247,9 +234,9 @@ func agentTaskText(t *core.AgentTask, o taskText) string {
 	if len(meta) > 0 {
 		b.WriteString(strings.Join(meta, " · ") + "\n")
 	}
-	b.WriteString(core.ObjectiveText(d.Objective, true, time.Now())) // WP-927
+	b.WriteString(core.ObjectiveText(d.Objective, true, time.Now()))
 	if t.Resume != nil {
-		b.WriteString(t.Resume.ResumeText(d.Key) + "\n") // WP-567
+		b.WriteString(t.Resume.ResumeText(d.Key) + "\n")
 	}
 	if n := len(d.Files); n > 0 {
 		fmt.Fprintf(&b, "Attachments: %d — wp files %s saves them to view\n", n, d.Key)
@@ -351,9 +338,6 @@ func taskClosing(d *core.IssueDetail, o taskText, now time.Time) string {
 	if o.ReviewFirst {
 		ship += " --review"
 	}
-	// --shot puts the page's screenshot on the task for whoever checks it
-	// (WP-245); the hint is worded for the change, not the task (WP-626).
-	// --summary is the reply that ends the turn at the ship (WP-1093).
 	s := fmt.Sprintf("Assess and complete the task as appropriate. When done, run `%s -m \"what you did\" --summary \"your reply to the person\"`; if it ships cleanly, that reply ends your turn (add `--check \"CMD\"` to run your checks first, and `--shot URL` for each new frontend change).", ship)
 	if why := declineReasons(d, now); why != "" {
 		s += fmt.Sprintf(" This task %s: if it's stale, poorly designed, superseded by recent work, or in conflict with other tasks or project goals, tell the user and decline it with `wp hold%s -m \"why\"`, which keeps it out of autopilot until someone lifts the hold.", why, key)
@@ -502,8 +486,6 @@ func (s *Server) agentClock(r *http.Request, f, own func(context.Context, *core.
 	return textResponse(msg + "\n"), nil
 }
 
-// ---- workflows ----
-
 func (s *Server) listWorkflows(w http.ResponseWriter, r *http.Request) (any, error) {
 	return s.svc.ListWorkflows(r.Context(), actorFrom(r), r.URL.Query().Get("project"))
 }
@@ -539,8 +521,6 @@ func (s *Server) deleteWorkflow(w http.ResponseWriter, r *http.Request) (any, er
 	return nil, s.svc.DeleteWorkflow(r.Context(), actorFrom(r), id)
 }
 
-// ---- pages ----
-
 func (s *Server) listPages(w http.ResponseWriter, r *http.Request) (any, error) {
 	v := r.URL.Query()
 	q := core.PageQuery{Project: v.Get("project"), Category: v.Get("category"), Text: v.Get("q"), Issue: v.Get("issue"), Limit: queryInt(r, "limit", 200)}
@@ -570,7 +550,7 @@ func (s *Server) getPage(w http.ResponseWriter, r *http.Request) (any, error) {
 		return nil, err
 	}
 	pg, err := s.svc.GetPage(r.Context(), actorFrom(r), id)
-	if err == nil && !queryBool(r, "listed") { // listed=1: wp brief listing it unasked, recorded as shown
+	if err == nil && !queryBool(r, "listed") {
 		s.svc.NoteLookup(r.Context(), actorFrom(r), core.KPage, id, "")
 	}
 	if err != nil || !wantsText(r) {
@@ -624,8 +604,6 @@ func (s *Server) dropPageCode(w http.ResponseWriter, r *http.Request) (any, erro
 	return nil, s.svc.DropPageCode(r.Context(), actorFrom(r), id, r.PathValue("code"))
 }
 
-// ---- tags, related issues ----
-
 func (s *Server) listTags(w http.ResponseWriter, r *http.Request) (any, error) {
 	return s.svc.ListTags(r.Context(), actorFrom(r))
 }
@@ -647,8 +625,6 @@ func (s *Server) rewrittenWork(w http.ResponseWriter, r *http.Request) (any, err
 	}
 	return s.svc.NoteRewrites(r.Context(), actorFrom(r), r.PathValue("key"), in.Repo, in.Head, in.PRs)
 }
-
-// ---- CLI login (device flow) ----
 
 func (s *Server) cliLoginStart(w http.ResponseWriter, r *http.Request) (any, error) {
 	var in struct {
@@ -686,8 +662,6 @@ func (s *Server) cliLoginInfo(w http.ResponseWriter, r *http.Request) (any, erro
 	if err != nil {
 		return nil, err
 	}
-	// The approval page warns when the login was started somewhere else: a
-	// code someone sent you is how this flow gets phished.
 	ip := s.clientIP(r)
 	return struct {
 		*core.DeviceRequest

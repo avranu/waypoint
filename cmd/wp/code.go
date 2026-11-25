@@ -70,7 +70,7 @@ func (c *cli) codeIndex(dbPath string, update bool) (*codeindex.Index, codeindex
 		_ = ix.Close()
 		return nil, st, err
 	}
-	c.maybeUpload(ix) // a day-old summary of the default branch goes to the server (WP-182)
+	c.maybeUpload(ix)
 	return ix, st, nil
 }
 

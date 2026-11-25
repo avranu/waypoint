@@ -1,10 +1,3 @@
-// Unsent text kept in this browser (WP-68). Quick-add boxes, the new-issue
-// dialog and the issue title and description editors write what's typed
-// here as it's typed and clear it once the server has it, so a refresh, a
-// crash or a closed tab doesn't lose it. When storage refuses (private
-// mode, full), the text is registered as unsaved instead and UnsavedGuard
-// asks before leaving; so does a save still in flight when the page unloads.
-
 import { useEffect, useState, useSyncExternalStore } from 'react'
 
 const PREFIX = 'wp:draft:'
@@ -54,7 +47,6 @@ export function useDraft<T>(key: string | null, initial: T) {
     return { key: k, v: d ?? initial, restored: d !== null, kept: true }
   }
   const [s, setS] = useState(() => load(key))
-  // A new key (another project, another issue) loads its own draft.
   let cur = s
   if (s.key !== key) {
     cur = load(key)
@@ -67,8 +59,6 @@ export function useDraft<T>(key: string | null, initial: T) {
   useUnsaved(!cur.kept && !isEmpty(cur.v))
   return [cur.v, set, { restored: cur.restored }] as const
 }
-
-// ---- what can't be kept ----
 
 let unsaved = 0
 let inflight = 0

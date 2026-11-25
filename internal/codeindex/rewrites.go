@@ -49,9 +49,6 @@ func TraceRewrites(root, base, head string, now time.Time) (*FixTrace, error) {
 		}
 		return nil, fmt.Errorf("git merge-tree: %w", err)
 	}
-	// A merge git can't settle (a file deleted on one side, changed on the
-	// other) exits 1 with its tree still written; any other failure leaves
-	// no tree to read above.
 	merge, err := gitOut(root, "-c", "user.name=wp", "-c", "user.email=wp@localhost", "commit-tree", "--no-gpg-sign", tree, "-p", base, "-p", head, "-m", "wp: merge as it would be made now")
 	if err != nil {
 		return nil, fmt.Errorf("git commit-tree: %w", err)
@@ -61,9 +58,6 @@ func TraceRewrites(root, base, head string, now time.Time) (*FixTrace, error) {
 		return nil, err
 	}
 	if tr.Method != TraceSZZ {
-		// A change that removes nothing replaces nothing: TraceFix's fallback
-		// blames the lines beside its insertions, which says who wrote the
-		// neighbourhood, not whose work this undoes.
 		tr.Introducers = nil
 	}
 	return tr, nil

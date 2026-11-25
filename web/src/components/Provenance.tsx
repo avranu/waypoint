@@ -1,7 +1,3 @@
-// Who wrote something agents can write too, and whether a person has
-// reviewed it (WP-D11). Agent-written text shows "Written by <agent>" and
-// stays "Not reviewed" until someone marks it, or rewrites it.
-
 import { Fragment } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
@@ -29,7 +25,6 @@ export function useReview() {
           ? ['page', 'pages', 'unreviewed']
           : ['issue', 'comments', 'unreviewed', 'waiting'])
         qc.invalidateQueries({ queryKey: [key] })
-      // An issue's close shows on boards and lists too (WP-272).
       if (type === 'issue' || type === 'close') {
         invalidateProject(qc)
       }

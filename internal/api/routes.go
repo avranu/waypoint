@@ -29,7 +29,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 		http.Error(w, "this MCP server is stateless; POST JSON-RPC requests", http.StatusMethodNotAllowed)
 	})
 
-	// Auth (public).
 	mux.HandleFunc("POST /api/v1/auth/login", p(s.login))
 	mux.HandleFunc("POST /api/v1/auth/logout", p(s.logout))
 	mux.HandleFunc("GET /api/v1/auth/link/{token}", p(s.getLink))
@@ -39,7 +38,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/help", s.apiHelp)
 	mux.HandleFunc("GET /api/v1", s.apiHelp)
 
-	// Me.
 	mux.HandleFunc("GET /api/v1/me", a(s.me))
 	mux.HandleFunc("PATCH /api/v1/me", a(s.updateMe))
 	mux.HandleFunc("POST /api/v1/me/password", a(s.changePassword))
@@ -60,11 +58,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/me/sessions", a(s.listSessions))
 	mux.HandleFunc("DELETE /api/v1/me/sessions/{id}", a(s.revokeSession))
 
-	// Users.
 	mux.HandleFunc("GET /api/v1/users", a(s.listUsers))
 	mux.HandleFunc("GET /api/v1/users/{id}/avatar", s.avatar)
 
-	// Admin.
 	mux.HandleFunc("GET /api/v1/admin/users", a(s.adminUsers))
 	mux.HandleFunc("POST /api/v1/admin/users", a(s.adminCreateUser))
 	mux.HandleFunc("PATCH /api/v1/admin/users/{id}", a(s.adminUpdateUser))
@@ -77,38 +73,34 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/admin/webhooks", a(s.listGlobalWebhooks))
 	mux.HandleFunc("POST /api/v1/admin/webhooks", a(s.createGlobalWebhook))
 
-	// The Agents page (WP-D15).
 	s.agentsHubRoutes(mux)
-	s.sessionRoutes(mux) // agent sessions and requests (WP-D16)
+	s.sessionRoutes(mux)
 	s.requestRoutes(mux)
-	// Environments and deployments (WP-D19).
 	s.environmentRoutes(mux)
 	s.shippingRoutes(mux)
 	s.babysitRoutes(mux)
 	s.codeAuditRoutes(mux)
-	s.ciBoardRoutes(mux)    // the CI board (WP-225)
-	s.serverDiagRoutes(mux) // production diagnostics (WP-375)
+	s.ciBoardRoutes(mux)
+	s.serverDiagRoutes(mux)
 	s.runnersRoutes(mux)
-	s.sandboxRoutes(mux) // sandbox policy, person-only writes (WP-418)
+	s.sandboxRoutes(mux)
 	s.automationRoutes(mux)
-	s.assistantRoutes(mux)  // a person's own Hermes agent (WP-ADR1)
-	s.kitRoutes(mux)        // the agent kit (WP-ADR2)
-	s.agentSetupRoutes(mux) // agent setup (WP-ADR44)
-	s.autopilotRoutes(mux)  // autopilot and task summaries (WP-ADR9)
+	s.assistantRoutes(mux)
+	s.kitRoutes(mux)
+	s.agentSetupRoutes(mux)
+	s.autopilotRoutes(mux)
 
-	// Forges.
-	// Agents (WP-D7).
 	mux.HandleFunc("GET /api/v1/agent", a(s.agentIndex))
 	mux.HandleFunc("GET /api/v1/agent/help/{topic}", a(s.agentHelpTopic))
 	mux.HandleFunc("POST /api/v1/agent/next", a(s.agentNext))
-	mux.HandleFunc("GET /api/v1/agent/next", a(s.agentNext)) // peek
+	mux.HandleFunc("GET /api/v1/agent/next", a(s.agentNext))
 	mux.HandleFunc("POST /api/v1/agent/batch", a(s.agentBatch))
-	mux.HandleFunc("GET /api/v1/agent/batch", a(s.agentBatch)) // peek
+	mux.HandleFunc("GET /api/v1/agent/batch", a(s.agentBatch))
 	mux.HandleFunc("POST /api/v1/agent/done/{key}", a(s.agentDone))
 	mux.HandleFunc("POST /api/v1/agent/handoff", a(s.agentHandoff))
 	mux.HandleFunc("POST /api/v1/agent/handoff/release", a(s.agentHandoffRelease))
 	mux.HandleFunc("POST /api/v1/agent/handoff/outcome", a(s.agentHandoffOutcome))
-	mux.HandleFunc("POST /api/v1/fanouts", a(s.createFanout)) // WP-148
+	mux.HandleFunc("POST /api/v1/fanouts", a(s.createFanout))
 	mux.HandleFunc("GET /api/v1/fanouts", a(s.listFanouts))
 	mux.HandleFunc("GET /api/v1/fanouts/{id}", a(s.getFanout))
 	mux.HandleFunc("POST /api/v1/fanouts/{id}/claim", a(s.claimFanout))
@@ -117,14 +109,13 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/fanouts/{id}/items/{key}/failed", a(s.fanoutItemFailed))
 	mux.HandleFunc("POST /api/v1/fanouts/{id}/items/{key}/end", a(s.endFanoutItem))
 	mux.HandleFunc("POST /api/v1/agent/release/{key}", a(s.agentRelease))
-	mux.HandleFunc("POST /api/v1/agent/pushed", a(s.agentPushed)) // WP-843
+	mux.HandleFunc("POST /api/v1/agent/pushed", a(s.agentPushed))
 	mux.HandleFunc("POST /api/v1/agent/decline/{key}", a(s.agentDecline))
 	mux.HandleFunc("POST /api/v1/agent/usage/{key}", a(s.agentUsage))
 	mux.HandleFunc("POST /api/v1/agent/take/{key}", a(s.agentTakeKey))
 	mux.HandleFunc("POST /api/v1/agent/pause/{key}", a(s.agentPause))
 	mux.HandleFunc("POST /api/v1/agent/resume/{key}", a(s.agentResume))
 
-	// Glossary, design notes, specs, links, search everything (WP-D10).
 	mux.HandleFunc("GET /api/v1/instructions", a(s.listInstructions))
 	mux.HandleFunc("GET /api/v1/instructions/preview", a(s.previewInstructions))
 	mux.HandleFunc("POST /api/v1/instructions", a(s.createInstruction))
@@ -149,7 +140,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/design/{id}/approve", a(s.approveDesign))
 	mux.HandleFunc("POST /api/v1/design/revisions/{rid}/{action}", a(s.reviewDesign))
 	mux.HandleFunc("GET /api/v1/spec", a(s.spec))
-	// Goals and the trace to them (WP-382).
 	mux.HandleFunc("GET /api/v1/goals", a(s.listGoals))
 	mux.HandleFunc("GET /api/v1/goals/gaps", a(s.goalGaps))
 	mux.HandleFunc("POST /api/v1/goals/suggest", a(s.suggestGoals))
@@ -202,14 +192,13 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /setup", s.cliSetup)
 	mux.HandleFunc("GET /cli/{file}", s.cliFile)
 
-	// AI.
 	mux.HandleFunc("GET /api/v1/ai/tasks", a(s.aiTasks))
 	mux.HandleFunc("PUT /api/v1/ai/tasks/{task}", a(s.setAITask))
 	mux.HandleFunc("GET /api/v1/ai/safety-drill", a(s.safetyDrill))
 	mux.HandleFunc("POST /api/v1/ai/safety-drill", a(s.runSafetyDrill))
 	mux.HandleFunc("GET /api/v1/ai/review-arms", a(s.reviewArms))
 	mux.HandleFunc("PUT /api/v1/ai/review-arms/pins", a(s.pinReviewArm))
-	mux.HandleFunc("GET /api/v1/objectives", a(s.listObjectives)) // WP-927
+	mux.HandleFunc("GET /api/v1/objectives", a(s.listObjectives))
 	mux.HandleFunc("GET /api/v1/issues/{key}/objective", a(s.getObjective))
 	mux.HandleFunc("PUT /api/v1/issues/{key}/objective", a(s.setObjective))
 	mux.HandleFunc("DELETE /api/v1/issues/{key}/objective", a(s.clearObjective))
@@ -217,12 +206,12 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/issues/{key}/objective/checks", a(s.recordObjectiveCheck))
 	mux.HandleFunc("POST /api/v1/issues/{key}/objective/go", a(s.objectiveGo))
 	mux.HandleFunc("POST /api/v1/issues/{key}/objective/diagnose", a(s.diagnoseObjective))
-	mux.HandleFunc("GET /api/v1/experiments", a(s.listExperiments)) // WP-254
+	mux.HandleFunc("GET /api/v1/experiments", a(s.listExperiments))
 	mux.HandleFunc("POST /api/v1/experiments/{key}/start", a(s.startExperiment))
 	mux.HandleFunc("POST /api/v1/experiments/{key}/stop", a(s.stopExperiment))
 	mux.HandleFunc("GET /api/v1/experiments/{key}/results", a(s.experimentResults))
-	mux.HandleFunc("GET /api/v1/reviews/stats", a(s.reviewStats)) // WP-371
-	mux.HandleFunc("GET /api/v1/mistakes", a(s.mistakes))         // WP-710
+	mux.HandleFunc("GET /api/v1/reviews/stats", a(s.reviewStats))
+	mux.HandleFunc("GET /api/v1/mistakes", a(s.mistakes))
 	mux.HandleFunc("GET /api/v1/ai/providers", a(s.listAIProviders))
 	mux.HandleFunc("POST /api/v1/ai/providers", a(s.createAIProvider))
 	mux.HandleFunc("PATCH /api/v1/ai/providers/{id}", a(s.updateAIProvider))
@@ -237,9 +226,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/issues/{key}/ai/subtasks", a(s.aiSubtasks))
 	mux.HandleFunc("POST /api/v1/projects/{key}/ai/estimate", a(s.aiEstimateProject))
 	mux.HandleFunc("GET /api/v1/prep/due", a(s.prepDue))
-	mux.HandleFunc("GET /api/v1/escapes/due", a(s.escapesDue)) // WP-705
+	mux.HandleFunc("GET /api/v1/escapes/due", a(s.escapesDue))
 	mux.HandleFunc("POST /api/v1/escapes/traces", a(s.escapeTrace))
-	mux.HandleFunc("GET /api/v1/escapes/proofs/due", a(s.escapeProofsDue)) // WP-709
+	mux.HandleFunc("GET /api/v1/escapes/proofs/due", a(s.escapeProofsDue))
 	mux.HandleFunc("POST /api/v1/escapes/proofs", a(s.escapeProof))
 	mux.HandleFunc("GET /api/v1/escapes/stats", a(s.escapeStats))
 	mux.HandleFunc("GET /api/v1/escapes/files", a(s.escapeFiles))
@@ -261,7 +250,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/forges/{id}/org-hooks", a(s.addOrgHook))
 	mux.HandleFunc("DELETE /api/v1/forges/{id}/org-hooks/{hid}", a(s.removeOrgHook))
 
-	// Projects.
 	mux.HandleFunc("GET /api/v1/projects", a(s.listProjects))
 	mux.HandleFunc("POST /api/v1/projects", a(s.createProject))
 	mux.HandleFunc("GET /api/v1/projects/{key}", a(s.getProject))
@@ -322,7 +310,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/projects/{key}/reports/roadmap", a(s.roadmap))
 	mux.HandleFunc("GET /api/v1/reports/time", a(s.timeReport))
 
-	// Issues.
 	mux.HandleFunc("GET /api/v1/issues", a(s.searchIssues))
 	mux.HandleFunc("GET /api/v1/search", a(s.searchIssues))
 	mux.HandleFunc("POST /api/v1/issues", a(s.createIssue))
@@ -370,7 +357,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/worklog/stakes", a(s.reviewStakesStats))
 	mux.HandleFunc("POST /api/v1/projects/{key}/test-evidence", a(s.recordTestEvidence))
 
-	// Time tracking.
 	mux.HandleFunc("GET /api/v1/timer", a(s.getTimer))
 	mux.HandleFunc("POST /api/v1/timer/start", a(s.startTimer))
 	mux.HandleFunc("POST /api/v1/timer/stop", a(s.stopTimer))
@@ -379,7 +365,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/v1/time/{id}", a(s.updateTime))
 	mux.HandleFunc("DELETE /api/v1/time/{id}", a(s.deleteTime))
 
-	// Notifications, views, live updates.
 	mux.HandleFunc("GET /api/v1/notifications", a(s.listNotifications))
 	mux.HandleFunc("POST /api/v1/notifications/read", a(s.readNotifications))
 	mux.HandleFunc("GET /api/v1/inbox", a(s.inbox))
@@ -397,11 +382,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/", s.spa)
 }
 
-// ---- auth ----
-
 func (s *Server) setSession(w http.ResponseWriter, r *http.Request, tok string) {
 	// #nosec G124 -- Secure is set whenever the site is served over https;
-	// plain-http LAN and dev setups need the cookie too.
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookie, Value: tok, Path: "/", HttpOnly: true, Secure: s.secureCookies(r),
 		SameSite: http.SameSiteLaxMode, MaxAge: 60 * 24 * 3600,
@@ -416,8 +398,6 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) (any, error) {
 	if err := decode(r, &in); err != nil {
 		return nil, err
 	}
-	// Only failures count, per address and per account. The per-account
-	// limit is looser so someone else's guessing can't easily lock you out.
 	ip := s.clientIP(r)
 	userKey := "login-user:" + strings.ToLower(strings.TrimSpace(in.Login))
 	if s.limiter.blocked("login:"+ip) || s.userLimiter.blocked(userKey) {
@@ -481,15 +461,12 @@ func (s *Server) resetPassword(w http.ResponseWriter, r *http.Request) (any, err
 	return nil, s.svc.ResetPassword(r.Context(), r.PathValue("token"), in.Password)
 }
 
-// ---- me ----
-
 func (s *Server) me(w http.ResponseWriter, r *http.Request) (any, error) {
 	u, err := s.svc.UserByID(r.Context(), actorFrom(r).User.ID)
 	if err != nil {
 		return nil, err
 	}
 	if t := tokenInfoFor(actorFrom(r)); t != nil {
-		// A permission token also learns what it may do (WP-111).
 		return struct {
 			*core.User
 			Token *tokenInfo `json:"token"`
@@ -669,8 +646,6 @@ func (s *Server) calendar(w http.ResponseWriter, r *http.Request) {
 	w.Write(b) // #nosec G705 -- an iCalendar document Waypoint built, served as text/calendar
 }
 
-// ---- users ----
-
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) (any, error) {
 	users, err := s.svc.ListUsers(r.Context(), actorFrom(r))
 	if err != nil {
@@ -691,7 +666,6 @@ func (s *Server) avatar(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	// Avatars are only for signed-in users.
 	if _, err := s.authenticate(r); err != nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -788,8 +762,6 @@ func (s *Server) revokeInvite(w http.ResponseWriter, r *http.Request) (any, erro
 	return nil, s.svc.RevokeInvite(r.Context(), actorFrom(r), r.PathValue("id"))
 }
 
-// ---- issue templates ----
-
 func (s *Server) listTemplates(w http.ResponseWriter, r *http.Request) (any, error) {
 	return s.svc.ListTemplates(r.Context(), actorFrom(r), r.PathValue("key"))
 }
@@ -821,8 +793,6 @@ func (s *Server) deleteTemplate(w http.ResponseWriter, r *http.Request) (any, er
 	}
 	return nil, s.svc.DeleteTemplate(r.Context(), actorFrom(r), r.PathValue("key"), id)
 }
-
-// ---- AI ----
 
 func (s *Server) aiTasks(w http.ResponseWriter, r *http.Request) (any, error) {
 	return s.svc.AITasks(r.Context(), actorFrom(r))
@@ -929,8 +899,6 @@ func (s *Server) aiEstimateProject(w http.ResponseWriter, r *http.Request) (any,
 	}
 	return map[string]int{"queued": n}, nil
 }
-
-// ---- forges ----
 
 func (s *Server) listForges(w http.ResponseWriter, r *http.Request) (any, error) {
 	return s.svc.ListForges(r.Context(), actorFrom(r))
@@ -1065,7 +1033,6 @@ func (s *Server) forgeHook(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	// GitHub caps payloads at 25 MB; a cut-off body would fail its signature.
 	const maxHook = 25 << 20
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxHook+1))
 	if err != nil {
@@ -1082,8 +1049,6 @@ func (s *Server) forgeHook(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
-
-// ---- projects ----
 
 func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) (any, error) {
 	if m := r.URL.Query().Get("match"); m != "" {
@@ -1201,8 +1166,6 @@ func (s *Server) deleteLabel(w http.ResponseWriter, r *http.Request) (any, error
 	return nil, s.svc.DeleteLabel(r.Context(), actorFrom(r), id)
 }
 
-// ---- sprints ----
-
 func (s *Server) listSprints(w http.ResponseWriter, r *http.Request) (any, error) {
 	return s.svc.ListSprints(r.Context(), actorFrom(r), r.PathValue("key"), queryBool(r, "closed"))
 }
@@ -1273,8 +1236,6 @@ func (s *Server) burndown(w http.ResponseWriter, r *http.Request) (any, error) {
 	return s.svc.SprintBurndown(r.Context(), actorFrom(r), id)
 }
 
-// ---- bot runs (WP-D14) ----
-
 func (s *Server) listBotRuns(w http.ResponseWriter, r *http.Request) (any, error) {
 	q := r.URL.Query()
 	return s.svc.ListBotRunsFiltered(r.Context(), actorFrom(r), r.PathValue("key"), core.BotRunFilter{
@@ -1300,8 +1261,6 @@ func (s *Server) retryBotRun(w http.ResponseWriter, r *http.Request) (any, error
 	}
 	return s.svc.RetryBotRun(r.Context(), actorFrom(r), id)
 }
-
-// ---- automations & webhooks ----
 
 func (s *Server) listAutomations(w http.ResponseWriter, r *http.Request) (any, error) {
 	return s.svc.ListAutomations(r.Context(), actorFrom(r), r.PathValue("key"))
@@ -1424,8 +1383,6 @@ func (s *Server) testWebhook(w http.ResponseWriter, r *http.Request) (any, error
 	return res, nil
 }
 
-// ---- repos ----
-
 func (s *Server) updateRepo(w http.ResponseWriter, r *http.Request) (any, error) {
 	id, err := pathID(r, "id")
 	if err != nil {
@@ -1453,9 +1410,6 @@ func (s *Server) updateRepo(w http.ResponseWriter, r *http.Request) (any, error)
 	if err := decode(r, &in); err != nil {
 		return nil, err
 	}
-	// The gate and the merge policy are saved first: they are the parts a
-	// bad request can fail on (an unknown severity, minutes out of range),
-	// and that must leave the other switches untouched.
 	if in.ReviewGate != nil || in.GateSeverity != nil {
 		if err := s.svc.SetRepoGate(r.Context(), actorFrom(r), r.PathValue("key"), id, in.ReviewGate, in.GateSeverity); err != nil {
 			return nil, err
@@ -1539,8 +1493,6 @@ func (s *Server) syncRepo(w http.ResponseWriter, r *http.Request) (any, error) {
 	return nil, core.ErrNotFound
 }
 
-// ---- reports ----
-
 func (s *Server) velocity(w http.ResponseWriter, r *http.Request) (any, error) {
 	return s.svc.Velocity(r.Context(), actorFrom(r), r.PathValue("key"), queryInt(r, "limit", 10))
 }
@@ -1599,8 +1551,6 @@ func (s *Server) timeReport(w http.ResponseWriter, r *http.Request) (any, error)
 	return s.svc.GetTimeReport(r.Context(), actorFrom(r), from, to, r.URL.Query().Get("project"))
 }
 
-// ---- issues ----
-
 func (s *Server) searchIssues(w http.ResponseWriter, r *http.Request) (any, error) {
 	q := r.URL.Query()
 	res, err := s.svc.Search(r.Context(), actorFrom(r), core.SearchParams{
@@ -1635,7 +1585,7 @@ func projectFields(res *core.SearchResult, fields []string) (any, error) {
 	}
 	var all []map[string]any
 	if err := json.Unmarshal(b, &all); err != nil {
-		return nil, err // unreachable: b is our own Marshal output
+		return nil, err
 	}
 	out := make([]map[string]any, len(all))
 	for i, m := range all {
@@ -1999,8 +1949,6 @@ func (s *Server) issueTime(w http.ResponseWriter, r *http.Request) (any, error) 
 	return s.svc.ListTimeEntries(r.Context(), actorFrom(r), core.TimeQuery{Issue: r.PathValue("key")})
 }
 
-// ---- time ----
-
 func (s *Server) getTimer(w http.ResponseWriter, r *http.Request) (any, error) {
 	t, err := s.svc.RunningTimer(r.Context(), actorFrom(r))
 	if err != nil {
@@ -2061,8 +2009,6 @@ func (s *Server) deleteTime(w http.ResponseWriter, r *http.Request) (any, error)
 	}
 	return nil, s.svc.DeleteTimeEntry(r.Context(), actorFrom(r), id)
 }
-
-// ---- notifications & views ----
 
 func (s *Server) listNotifications(w http.ResponseWriter, r *http.Request) (any, error) {
 	list, unread, err := s.svc.ListNotifications(r.Context(), actorFrom(r), queryBool(r, "unread"), queryInt(r, "limit", 50))
@@ -2161,14 +2107,13 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-s.done:
-			return // shutting down; the client reconnects to the new process
+			return
 		case <-ping.C:
-			// Signed out, disabled or revoked since connecting: stop.
 			if _, err := s.authenticate(r); err != nil {
 				return
 			}
 			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
-				return // client gone
+				return
 			}
 			fl.Flush()
 		case e := <-sub.C:

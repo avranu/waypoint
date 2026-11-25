@@ -53,7 +53,6 @@ func TestOffIsInert(t *testing.T) {
 	if span.IsRecording() || ctx != context.Background() {
 		t.Error("a span was recorded while off")
 	}
-	// Ending what Start returned must not end the caller's span.
 	exp := recordSpans(t)
 	outer, parent := Start(context.Background(), "outer")
 	Use(nil)
@@ -88,7 +87,6 @@ func TestRequestSpanNames(t *testing.T) {
 	}
 	_ = ctx
 
-	// From a trusted proxy, the request joins the caller's trace.
 	r = httptest.NewRequest("GET", "/healthz", nil)
 	r.Header.Set("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 	_, joined := StartRequest(r, true)
@@ -106,7 +104,6 @@ func TestTransport(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := &http.Client{Transport: Transport(http.DefaultTransport)}
-	// Off: passes straight through.
 	if res, err := c.Get(srv.URL + "/x"); err != nil || res.StatusCode != http.StatusTeapot {
 		t.Fatalf("off: %v %v", res, err)
 	}

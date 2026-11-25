@@ -43,10 +43,6 @@ func (s *Service) insertRelation(ctx context.Context, t *tx, r newRelation) (boo
 			return false, nil
 		}
 	}
-	// The pair the other way round, in the same kind. A kind that reads the same
-	// from both ends (relates, tension) says it already: the relation is there.
-	// A kind with an inverse (blocks, follows, ...) says the opposite: A blocks
-	// B and B blocks A can't both hold, so it is refused, and says so.
 	if k, _, ok := storedRelation(r.Kind); ok {
 		var back bool
 		if err := t.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM issue_relations WHERE kind = ? AND source_id = ? AND target_id = ?)`,

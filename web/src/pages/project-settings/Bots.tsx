@@ -1,6 +1,3 @@
-// What bots did on the project's pull requests (WP-D14): each run, why it
-// ran, the models it tried, what it found, and a link to what it posted.
-
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -198,8 +195,6 @@ export function BotRunCard({
   const live = r.status === 'queued' || r.status === 'running'
   const findings = r.findings ?? []
   const shown = findings.filter((f) => f.placement !== 'withheld')
-  // Left out before posting: the verifier doubted them, or the line they
-  // quoted isn't in the file. Kept so their fate can be judged.
   const dropped = findings.filter((f) => f.state === 'dropped')
   return (
     <li className="rounded-xl border border-line bg-panel p-3 sm:p-4">

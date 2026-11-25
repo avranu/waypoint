@@ -27,7 +27,7 @@ const PNG = Buffer.from(
 );
 
 const browser = await chromium.launch();
-let opus, haiku; // headers of robin's two agents
+let opus, haiku;
 let sessionIDs = {};
 
 // Picks an option from one of the app's dropdowns (a combobox + listbox).
@@ -56,7 +56,6 @@ async function seed(api, call) {
     .get(Date.now()).id;
   const project = db.prepare("SELECT id FROM projects WHERE key = ?").get(KEY).id;
   db.prepare("INSERT INTO project_repos(project_id, forge_id, repo, created_at) VALUES (?, ?, 'acme/app', ?)").run(project, forge, Date.now());
-  // Pull requests: one open with checks and a gate and set to merge, one failing, one merged by an agent.
   const pr = db.prepare(`INSERT INTO pull_requests(forge_id, repo, number, title, author, url, base_ref, head_ref, head_sha, state, created_at, updated_at,
       opened_at, merged_at, agent, ci_state, ci_sha, gate_state, armed_at) VALUES (?, 'acme/app', ?, ?, 'robin', ?, 'main', ?, ?, ?, ?, ?, ?, ?, 'anthropic/claude-code', ?, ?, ?, ?)`);
   const now = Date.now();
@@ -65,7 +64,6 @@ async function seed(api, call) {
   pr.run(forge, 4, "Record a session's files", "http://127.0.0.1:1/acme/app/pulls/4", "feat/files", "cccc333", "merged", now - 86400e3, now - 3600e3, now - 86400e3, now - 3600e3, "passed", "cccc333", "success", null);
   db.close();
 
-  // Sessions, by their hooks: two on one machine (one working, one idle), one waiting for a person on another.
   const hook = (h, ev, extra = {}) =>
     call("POST", "/sessions/hook", { events: [{ event: ev, session_id: extra.session_id, machine: extra.machine, cwd: extra.cwd, repo: extra.repo, branch: extra.branch, ...extra }] }, h);
   const start = async (h, session_id, machine, repo, branch, model, title, prompt) => {
@@ -82,7 +80,6 @@ async function seed(api, call) {
   await hook(opus, "Stop", { ...s1, session_id: "cli-ov-1", last_message: "", input_tokens: 0, output_tokens: 0 }).catch(() => {});
   await hook(opus, "UserPromptSubmit", { ...s1, prompt: "Build the Agents overview tab", title: "Overview tab" });
 
-  // A question from the working session.
   const as1 = { ...opus, "X-Waypoint-Session": "cli-ov-1", "X-Waypoint-Machine": "ov-box" };
   const ask = await call("POST", "/requests", {
     kind: "question",
@@ -95,7 +92,6 @@ async function seed(api, call) {
   const lr = await later.json();
   await call("POST", `/requests/${lr.id}/snooze`, { minutes: 600 });
 
-  // Tasks: two for claude (the head is urgent), one for haiku, one backlog; the agent takes the urgent one.
   const mk = (title, extra) => api("POST", "/issues", { project: KEY, title, ...extra });
   await mk("Fix the flaky sessions test", { agent: "claude", priority: "urgent" });
   await mk("Tidy the README", { agent: "claude", priority: "low" });
@@ -105,7 +101,6 @@ async function seed(api, call) {
   const next = await call("POST", "/agent/next", {}, as1);
   if (!next.ok()) throw new Error(`next: ${next.status()} ${await next.text()}`);
   const task = (await next.text()).match(/OVW-\d+/)?.[0];
-  // Another agent finishes a task and files one for later.
   const as2 = { ...opus, "X-Waypoint-Session": "cli-ov-2", "X-Waypoint-Machine": "ov-box" };
   const next2 = await call("POST", "/agent/next", {}, as2);
   const task2 = (await next2.text()).match(/OVW-\d+/)?.[0];
@@ -115,11 +110,9 @@ async function seed(api, call) {
   }
   await call("POST", "/issues", { project: KEY, title: "Follow up: group sessions by repo too", status: "backlog" }, as2);
 
-  // Knowledge written by agents.
   await call("POST", "/pages", { title: "How the overview is built", category: "note", project: KEY, body: "One request, many panels." }, as2);
   await call("POST", "/glossary", { term: "Overview", definition: "The first tab of the Agents page.", project: KEY }, as2);
 
-  // Usage for the working session: tokens by model, tools, Bash heads, a refusal.
   const h = hour(1);
   const ing = await api("POST", "/usage/ingest", {
     machine: "ov-box", version: "test",
@@ -140,7 +133,6 @@ async function seed(api, call) {
     }],
   });
   ok(ing && ing.accepted === 1, "seed: usage ingested");
-  // An environment, so the strip has something to say.
   await api("POST", `/projects/${KEY}/environments`, { name: "production", kind: "production" }).catch(() => {});
   return task;
 }
@@ -179,7 +171,6 @@ async function run(width, scheme) {
   await page.waitForURL(base + "/");
   await seed(api, call);
 
-  // ---- the API: one round trip ----
   const t0 = Date.now();
   const ov = await api("GET", `/agents/overview?days=30`);
   const took = Date.now() - t0;
@@ -194,7 +185,6 @@ async function run(width, scheme) {
   const ch = await api("GET", "/changes?kind=page");
   ok(ch.changes.length >= 1 && ch.changes[0].agent === "anthropic/claude-code", `${tag} API: a page change by claude-code`);
 
-  // ---- the Overview tab ----
   await page.goto(base + "/agents");
   await page.getByRole("tab", { name: "Overview" }).waitFor();
   const tabs = await page.getByRole("tab").allTextContents();
@@ -215,8 +205,6 @@ async function run(width, scheme) {
   ok((await sessions.getByRole("img", { name: "Working" }).count()) >= 1 && (await sessions.getByRole("img", { name: "Waiting for you" }).count()) === 1 && (await sessions.getByRole("img", { name: "Idle" }).count()) === 1,
     `${tag} state dots: working, waiting for you, idle`);
   ok(await sessions.getByText("Config loader tidied: two functions merged, tests pass.").isVisible(), `${tag} the last update shows`);
-  // Other suites on this server delegate issues too, and Up next shows only the
-  // first few heads per agent: look at it through this suite's own project filter.
   await page.goto(`${base}/agents?project=${KEY}`);
   const next = page.getByRole("region", { name: "Up next" });
   await next.getByText("Rename a CSS class").waitFor();
@@ -241,7 +229,6 @@ async function run(width, scheme) {
   await overflow("overview");
   await tallShot("overview");
 
-  // Folding is remembered.
   await sessions.getByRole("button", { name: /Sessions now/ }).click();
   ok((await sessions.getByText("Tidy the config loader").count()) === 0, `${tag} Sessions now folds`);
   await page.reload();
@@ -250,8 +237,6 @@ async function run(width, scheme) {
   await page.getByRole("region", { name: "Sessions now" }).getByRole("button", { name: /Sessions now/ }).click();
   ok(await page.getByRole("region", { name: "Sessions now" }).getByText("Tidy the config loader").isVisible(), `${tag} …and opens again`);
 
-  // Filters carry: an agent that isn't there empties it with one-line hints.
-  // (An agent matches the work anyone may take, so empty it with a project that has none.)
   if (!(await api("GET", "/projects")).some((p) => p.key === "OVEMT")) await api("POST", "/projects", { name: "Overview empty", key: "OVEMT" });
   await page.goto(base + "/agents?agent=gemini&project=OVEMT");
   await page.getByRole("region", { name: "Sessions now" }).getByText(/Agent sessions appear here/).waitFor();
@@ -260,7 +245,6 @@ async function run(width, scheme) {
   await shot("overview-empty");
   await page.goto(base + "/agents");
 
-  // ---- a request opens as a sheet, with files ----
   await page.getByRole("region", { name: "Waiting on you" }).getByText("Should the overview group sessions by machine first?").click();
   const sheet = page.getByRole("dialog", { name: /Request/ });
   await sheet.waitFor();
@@ -272,13 +256,11 @@ async function run(width, scheme) {
   await shot("request-sheet");
   await page.keyboard.press("Escape");
 
-  // ---- the Sessions tab ----
   await page.getByRole("tab", { name: "Sessions" }).click();
   await page.getByRole("list", { name: "Sessions" }).waitFor();
   ok((await page.getByRole("list", { name: "Sessions" }).getByRole("listitem").count()) >= 3 && (await page.getByText("Dark theme").first().isVisible()), `${tag} the active sessions are listed`);
   await pick(page, "State", "Waiting for you");
   await page.getByText("Dark theme").first().waitFor();
-  // The list refilters after the pick: wait for the others to leave rather than counting once.
   await page.getByText("Overview tab").first().waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
   ok((await page.getByText("Overview tab").count()) === 0, `${tag} state filter: only those waiting for you`);
   await pick(page, "State", "Active");
@@ -288,7 +270,6 @@ async function run(width, scheme) {
   await shot("sessions");
   await pick(page, "Machine", "All machines");
 
-  // ---- a session's page ----
   await page.getByRole("list", { name: "Sessions" }).getByText("Overview tab").first().click();
   await page.waitForURL(/\/agents\/sessions\/\d+/);
   sessionIDs.main = page.url().match(/sessions\/(\d+)/)[1];
@@ -306,12 +287,10 @@ async function run(width, scheme) {
   ok(await page.getByRole("heading", { name: /Timeline/ }).isVisible(), `${tag} timeline`);
   await overflow("session page");
   await tallShot("session");
-  // The summary of the question opens as a sheet from here, too.
   await page.getByRole("region", { name: "Summary" }).getByText("Should the overview group sessions by machine first?").click();
   await page.getByRole("dialog", { name: /Request/ }).waitFor();
   await page.keyboard.press("Escape");
 
-  // ---- the Usage tab's session rows link to the page ----
   await page.goto(base + "/agents?tab=usage");
   await page.getByRole("radio", { name: "Session" }).click();
   const link = page.getByRole("link", { name: "Session", exact: true }).first();
@@ -320,7 +299,6 @@ async function run(width, scheme) {
   await page.waitForURL(/\/agents\/sessions\/\d+/);
   ok(page.url().includes(`/agents/sessions/${sessionIDs.main}`), `${tag} a usage row opens its session`);
 
-  // ---- live: a new request appears on the open overview ----
   await page.goto(base + "/agents");
   const region = page.getByRole("region", { name: "Waiting on you" });
   await region.waitFor();
@@ -333,7 +311,6 @@ async function run(width, scheme) {
   const after = await region.getByRole("listitem").count();
   ok(after === before + 1, `${tag} it appears without a reload (${before} → ${after})`);
   if (after !== before + 1) console.log((await region.innerText()).replace(/\n+/g, " | "));
-  // Withdraw it so each run starts alike.
   const made = await r.json();
   await call("POST", `/requests/${made.id}/withdraw`, {}, as1);
   await ctx.close();

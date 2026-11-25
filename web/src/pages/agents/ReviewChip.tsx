@@ -1,7 +1,3 @@
-// The chip that says where a session's adversarial review is (WP-752,
-// WP-761): blue with a running clock while it is under way, solid once
-// something is really working on it, amber when it went wrong.
-
 import { clock } from '@/lib/format'
 import { useTick } from '@/lib/hooks'
 import { reviewFaulted, reviewLive, reviewWorking, type SessionReview } from '@/lib/sessions'

@@ -1,20 +1,5 @@
 package main
 
-// The session snapshot (WP-1468, WP-ADR145 points 3 to 5): what a Claude Code
-// session is actually running with, read by the hook at the moment it runs.
-// Every value says where it was seen; one the source does not carry is left
-// out and `missing` says why. Names and sizes only: environment values come
-// from an allow-list, settings are read for a few non-secret keys, and
-// nothing under an unlisted name is ever sent.
-//
-// Time: the build is held to snapshotBudget so a slow disk never holds the
-// session up. Every git call gets a deadline of what remains of the budget,
-// and every file read starts only while some remains (otherwise it is
-// skipped and `missing` says so). Two limits stay: gitInfo, which the hook
-// runs for the event before this build, is outside the clock; and one read
-// that blocks (a hung network mount) cannot be interrupted, only bounded in
-// size (snapshotMaxFileBytes), so a single blocked read can still overrun.
-
 import (
 	"context"
 	"crypto/sha256"
@@ -35,11 +20,11 @@ import (
 )
 
 const (
-	snapshotMaxFiles       = 200      // instruction files listed
-	snapshotMaxMemoryFiles = 2000     // memory files counted
-	snapshotMaxFileBytes   = 4 << 20  // a settings, .claude.json or .mcp.json read; larger is skipped
-	snapshotMaxNames       = 200      // names in one inventory list (skills of a scope, MCP servers, plugins, hook events)
-	snapshotMaxInventory   = 64 << 10 // the server's snapshotMaxBytes (internal/core): it discards a larger inventory whole
+	snapshotMaxFiles       = 200
+	snapshotMaxMemoryFiles = 2000
+	snapshotMaxFileBytes   = 4 << 20
+	snapshotMaxNames       = 200
+	snapshotMaxInventory   = 64 << 10
 )
 
 // snapshotBudget is the build's time budget, snapshotBudgetReal as a hook
@@ -120,8 +105,8 @@ type snapshotBuilder struct {
 	in       hookEventInput
 	git      gitFacts
 	deadline time.Time
-	cfgDir   string // Claude Code's user config dir; "" when none can be named
-	cfgWhy   string // why not
+	cfgDir   string
+	cfgWhy   string
 	claude   *claudeProc
 	sn       hookSnapshot
 	src      map[string]string
@@ -205,7 +190,6 @@ func buildSnapshot(in hookEventInput, g gitFacts) *hookSnapshot {
 	b := &snapshotBuilder{in: in, git: g, deadline: start.Add(snapshotBudget), src: map[string]string{}, miss: map[string]string{}, inv: map[string]any{}}
 	b.cfgDir, b.cfgWhy = userConfigDir()
 	hookSrc := "hook:" + in.HookEventName
-	// Claude Code is the only thing the hook is installed for.
 	b.sn.Harness, b.src["harness"] = sp("claude"), "constant: the hook is installed for Claude Code"
 	b.findClaude()
 	b.fromEnvironment()
@@ -289,9 +273,6 @@ func (b *snapshotBuilder) fromEnvironment() {
 	} else {
 		b.missing("entrypoint", "CLAUDE_CODE_ENTRYPOINT is not set in the hook's environment")
 	}
-	// The claude process's own executable says which version runs. The
-	// environment's CLAUDE_CODE_EXECPATH is only the fallback: a nested
-	// session inherits it from its parent, so it can name another version.
 	if v, ok := versionFromPath(b.claudeExe()); ok {
 		b.sn.HarnessVersion, b.src["harness_version"] = sp(v), "process:exe"
 	} else if v, ok := versionFromPath(os.Getenv("CLAUDE_CODE_EXECPATH")); ok {
@@ -334,7 +315,6 @@ func (b *snapshotBuilder) fromPayload(hookSrc string) {
 	if in.Model != "" {
 		b.sn.Model, b.src["model"] = sp(in.Model), hookSrc
 	} else {
-		// SessionStart's model is "not always included" (hooks reference).
 		b.missing("model", hookSrc+" carried no model (Claude Code does not always include it)")
 	}
 	if in.PermissionMode != "" {
@@ -342,10 +322,6 @@ func (b *snapshotBuilder) fromPayload(hookSrc string) {
 	} else {
 		b.missing("permission_mode", hookSrc+" carries no permission_mode")
 	}
-	// Effort comes from the payload only. CLAUDE_EFFORT is not a fallback:
-	// on Claude Code 2.1.330 a hook's CLAUDE_EFFORT was absent under
-	// `--effort low`, and a nested session kept its parent's level, so it can
-	// be wrong where the payload is silent.
 	switch {
 	case in.effortLevel() != "":
 		b.sn.Effort, b.src["effort"] = sp(in.effortLevel()), hookSrc
@@ -468,7 +444,6 @@ func findClaudeProc(root string, pid int) *claudeProc {
 		if err != nil {
 			return nil
 		}
-		// "pid (comm) S ppid ...": comm may hold spaces and parentheses.
 		s := string(stat)
 		i := strings.LastIndex(s, ")")
 		if i < 0 {
@@ -514,10 +489,9 @@ func (b *snapshotBuilder) fromGit() {
 		b.missing("git_branch", "the cwd is not in a git work tree")
 		return
 	}
-	// The branch and worktree flag are gitInfo's, already read.
 	branchSrc := "git:symbolic-ref"
 	if b.git.Detached {
-		branchSrc = "git:rev-parse" // "(detached <sha>)" is made with rev-parse
+		branchSrc = "git:rev-parse"
 	}
 	b.sn.GitBranch, b.src["git_branch"] = sp(b.git.Branch), branchSrc
 	wt := b.git.Worktree
@@ -543,7 +517,7 @@ func (b *snapshotBuilder) fromGit() {
 func managedSettingsPath(goos string) string {
 	switch goos {
 	case "linux":
-		return "/etc/claude-code/managed-settings.json" // also WSL
+		return "/etc/claude-code/managed-settings.json"
 	case "darwin":
 		return "/Library/Application Support/ClaudeCode/managed-settings.json"
 	case "windows":
@@ -555,9 +529,6 @@ func managedSettingsPath(goos string) string {
 func (b *snapshotBuilder) settings() {
 	var files []snapSettingsFile
 	add := func(scope, path string) { files = append(files, b.readSettingsFile(scope, path)) }
-	// The user file is Claude Code's (CLAUDE_CONFIG_DIR), not WP_CLAUDE_SETTINGS,
-	// where wp installs its hooks in tests: the snapshot records what Claude
-	// Code reads.
 	if b.cfgDir != "" {
 		add("user", filepath.Join(b.cfgDir, "settings.json"))
 	} else {
@@ -580,7 +551,6 @@ func (b *snapshotBuilder) settings() {
 			break
 		}
 	}
-	// MCP servers by name: the user file's, this project's, and .mcp.json.
 	mcp := map[string][]string{}
 	if b.cfgDir != "" {
 		if names, err := b.claudeJSONMCPNames(claudeJSONPath(b.cfgDir), b.in.Cwd); err != nil {
@@ -839,7 +809,7 @@ func (b *snapshotBuilder) memory() {
 	truncated := false
 	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
-			return nil // an unreadable entry is not counted; the directory still is
+			return nil
 		}
 		if files >= snapshotMaxMemoryFiles || b.expired() {
 			truncated = true

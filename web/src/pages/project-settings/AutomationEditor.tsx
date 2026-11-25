@@ -1,9 +1,3 @@
-// The automation editor reads as a sentence: "When [the status changes] from
-// [any status] to [Done], only if [type:bug], then [assign it to] [the
-// reporter] and [add a comment] …". The triggers, the actions and their
-// settings come from the catalog (GET /automation-catalog); short choices
-// sit inline as chips, long text opens in a box under its step.
-
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -90,7 +84,6 @@ export function AutomationEditor({
   const [help, setHelp] = useState(false)
   const [addingCond, setAddingCond] = useState(false)
   const [testing, setTesting] = useState(false)
-  // Saving a new webhook automation keeps the editor open to show its address.
   const [saved, setSaved] = useState<Automation | null>(null)
   const [saveError, setSaveError] = useState('')
   const current = saved ?? automation ?? null
@@ -212,7 +205,6 @@ export function AutomationEditor({
   return (
     <Dialog
       open={open}
-      // While query help is open on top, Escape should only close that.
       onClose={help ? () => setHelp(false) : testing ? () => setTesting(false) : onClose}
       wide
       title={
@@ -573,8 +565,6 @@ function triggerTip(def: TriggerDef, projectKey?: string) {
   return def.doc ? <Tip>{def.doc.replace(/`/g, '')}</Tip> : null
 }
 
-// ---- the webhook trigger's address ----
-
 function WebhookAddress({ automation }: { automation: Automation | null }) {
   const qc = useQueryClient()
   const [url, setUrl] = useState(automation?.hook_url ?? '')
@@ -626,8 +616,6 @@ function WebhookAddress({ automation }: { automation: Automation | null }) {
     </div>
   )
 }
-
-// ---- inputs ----
 
 const INPUT_TYPES: { value: DInput['type']; label: string }[] = [
   { value: 'text', label: 'Text' },
@@ -773,8 +761,6 @@ function InputsEditor({
     </section>
   )
 }
-
-// ---- rule-wide options ----
 
 const ZONES: string[] = (() => {
   try {

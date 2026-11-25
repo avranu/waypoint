@@ -1,6 +1,3 @@
-// Shared pieces of the sandbox settings (WP-418): the password check that
-// loosening needs, the reason dialog, and the change log with Revert.
-
 import { useCallback, useRef, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowRight, RotateCcw, ShieldAlert, ShieldCheck } from 'lucide-react'

@@ -65,7 +65,6 @@ func TestSandboxDrill(t *testing.T) {
 		return d
 	}
 
-	// No helper, or a helper with no repo user: no drill.
 	e.s.maybeSandboxDrills(e.ctx)
 	e.poll(bob, r, RunnerPoll{Sandbox: report("v1", sandbox.User{Name: "wp-acme", Kind: sandbox.KindOrg, Key: "1/acme", Present: true})})
 	e.s.maybeSandboxDrills(e.ctx)
@@ -84,7 +83,6 @@ func TestSandboxDrill(t *testing.T) {
 	}
 	e.poll(bob, r, RunnerPoll{Sandbox: report("v1", users...)})
 
-	// Only the owner or an admin, in the browser.
 	if _, err := e.s.StartSandboxDrill(e.ctx, bob, r.ID); !errors.Is(err, ErrSandboxUI) {
 		t.Errorf("drill from the CLI: %v", err)
 	}
@@ -92,7 +90,6 @@ func TestSandboxDrill(t *testing.T) {
 		t.Errorf("drill on someone else's machine: %v", err)
 	}
 
-	// The first: queued once, as the owner's job for this runner.
 	e.s.maybeSandboxDrills(e.ctx)
 	e.s.maybeSandboxDrills(e.ctx)
 	if n := drills(); n != 1 {
@@ -140,7 +137,6 @@ func TestSandboxDrill(t *testing.T) {
 		t.Errorf("running drill %+v", d)
 	}
 
-	// It passed: recorded, no one told.
 	finish(c, RunnerFinish{State: "done", Result: drillReport(drillRefused, drillControl)})
 	if d := last(); d.State != DrillPassed || d.Passed != 5 || len(d.Cases) != 5 || d.FinishedAt == nil {
 		t.Errorf("passed drill %+v", d)
@@ -153,7 +149,6 @@ func TestSandboxDrill(t *testing.T) {
 		t.Errorf("another drill right after the last: %d", n)
 	}
 
-	// A week on: something got out. The owner and the admins hear.
 	e.clock = e.clock.Add(sandboxDrillEvery)
 	e.s.maybeSandboxDrills(e.ctx)
 	if d := last(); d.Reason != "weekly" {
@@ -167,8 +162,6 @@ func TestSandboxDrill(t *testing.T) {
 		t.Errorf("failed drill told bob %d, the admin %d", told(bob), told(e.admin))
 	}
 
-	// A new helper: a drill now. It couldn't run: recorded, told only the
-	// second time in a row, and not the third.
 	e.poll(bob, r, RunnerPoll{Sandbox: report("v2", users...)})
 	e.s.maybeSandboxDrills(e.ctx)
 	if d := last(); d.Reason != "helper" || d.HelperVersion != "v2" {
@@ -178,7 +171,6 @@ func TestSandboxDrill(t *testing.T) {
 	if d := last(); d.State != DrillError || d.Error != "the helper refused the spec" {
 		t.Errorf("errored drill %+v", d)
 	}
-	// A report that stops part way proves nothing either.
 	for i, try := range []struct {
 		result json.RawMessage
 		why    string
@@ -202,7 +194,6 @@ func TestSandboxDrill(t *testing.T) {
 		}
 	}
 
-	// A person can start one; a paused machine can't run one.
 	d, err := e.s.StartSandboxDrill(e.ctx, web, r.ID)
 	if err != nil || d.Reason != "person" || d.StartedBy == nil || d.StartedBy.ID != bob.User.ID {
 		t.Fatalf("person's drill %+v %v", d, err)

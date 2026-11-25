@@ -30,7 +30,6 @@ function npm(args) {
   try {
     return execFileSync('npm', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })
   } catch (err) {
-    // npm audit exits 1 when it finds anything; the JSON is still on stdout.
     if (typeof err.stdout === 'string' && err.stdout.trim() !== '') return err.stdout
     throw err
   }
@@ -42,7 +41,6 @@ function advisories(extra) {
   const found = new Map()
   for (const vuln of Object.values(report.vulnerabilities ?? {})) {
     for (const via of vuln.via) {
-      // Strings name another vulnerable package; its advisories are listed under it.
       if (typeof via !== 'object' || !severe.has(via.severity)) continue
       const id = via.url.split('/').pop()
       found.set(id, { id, pkg: via.name, range: via.range, title: via.title, url: via.url })

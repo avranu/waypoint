@@ -172,13 +172,13 @@ type warmChoice struct {
 // whether to keep it warm, let it cool, or compact it and let it cool.
 func decideWarm(f warmFacts) warmChoice {
 	if f.Paused {
-		return warmChoice{Action: warmCool, Why: "its person paused agents", Class: warmClassPaused} // no ping, no compact: both cost tokens
+		return warmChoice{Action: warmCool, Why: "its person paused agents", Class: warmClassPaused}
 	}
 	if f.LeftAlone {
 		return warmChoice{Action: warmCool, Why: "its person stopped Waypoint in it (/wp stop)", Class: warmClassPaused}
 	}
 	if f.Clearable && !f.Unmerged {
-		return warmChoice{Action: warmCool, Why: "it said it can be cleared", Class: warmClassClearable} // nothing more is expected of it
+		return warmChoice{Action: warmCool, Why: "it said it can be cleared", Class: warmClassClearable}
 	}
 	limit := f.Limit
 	if limit <= 0 {
@@ -210,19 +210,6 @@ func decideWarm(f warmFacts) warmChoice {
 		}
 		return warmChoice{Action: warmCompacting, Why: why, Warm: true, Class: class}
 	}
-	// A session whose task isn't merged yet (WP-1306): its pull request may
-	// still fail CI or a review, or merge with something to follow up, and
-	// its person asks the session what happened. Compacted, that question
-	// starts from a summary, not the whole context written cold. It applies
-	// where the session would otherwise cool; what keeps it warm (its work,
-	// a request or chat with its person active) still does. Whether it pays
-	// is weighed by the class's evidence (weighWarm).
-	//
-	// Every cool goes through orUnmerged, so none loses its own reason or
-	// class: under the compaction floor it stays the cool it was; over it,
-	// it compacts, keeping why it would cool, in the unmerged class, since
-	// that is what the compaction is for and whose evidence weighs it (the
-	// cooling class's would weigh it by sessions that were merged).
 	orUnmerged := func(c warmChoice) warmChoice {
 		if f.Unmerged && c.Action == warmCool && f.ContextTokens >= unmergedCompactFrom {
 			c.Action, c.Class = warmCompacting, warmClassUnmerged
@@ -237,12 +224,9 @@ func decideWarm(f warmFacts) warmChoice {
 		return orUnmerged(cool(warmClassWorkCap, fmt.Sprintf("waited over %s on %s", roundHours(warmWorkFor), work), true))
 	}
 	if f.Clearable {
-		// Unmerged (a merged one cooled above), once its own work is weighed.
 		return orUnmerged(warmChoice{Action: warmCool, Why: "it said it can be cleared", Class: warmClassClearable})
 	}
 	if f.Unattended {
-		// Nobody is expected to answer it or come back to it: a request's
-		// answer or a person can start it cold.
 		return orUnmerged(cool(warmClassUnattended, "autopilot runs it, and no work of its own is running", false))
 	}
 	if f.Requests > 0 {
@@ -346,8 +330,8 @@ func (s *Service) warmSession(ctx context.Context, id int64) error {
 	f.Paused = paused != nil
 	c := decideWarm(f)
 	rule := c.Action
-	c = s.weighWarm(ctx, user, model, ctxTokens, c) // WP-1000: only while it pays
-	evidenceChanged := rule != c.Action             // before the runner check: that is no evidence
+	c = s.weighWarm(ctx, user, model, ctxTokens, c)
+	evidenceChanged := rule != c.Action
 	if c.Action != warmCool && !runnerOnline(ctx, s, user, machine) {
 		c = warmChoice{Action: warmCool, Why: c.Why + "; no runner of its person's is online on " + machine + " to keep it warm", Class: c.Class}
 	}
@@ -355,9 +339,6 @@ func (s *Service) warmSession(ctx context.Context, id int64) error {
 	if evidenceChanged {
 		rec.Rule = rule
 	}
-	// What it is told when its cache would cool anyway goes now instead, and
-	// keeps the cache warm just the same: batched news, and a background job
-	// quiet long enough to tell of early (WP-1045, WP-ADR118).
 	if c.Warm {
 		held := s.hasHeldNews(ctx, id)
 		early := s.tellEarly(ctx, id, user)
@@ -376,7 +357,7 @@ func (s *Service) warmSession(ctx context.Context, id int64) error {
 				return err
 			}
 			if held {
-				s.releaseBatchWaiting(ctx, id, early != "") // the early notice goes in the same prompt
+				s.releaseBatchWaiting(ctx, id, early != "")
 			} else {
 				s.postToSession(ctx, id, true)
 			}
@@ -445,7 +426,7 @@ func (s *Service) hasHeldNews(ctx context.Context, sessionID int64) bool {
 		OR EXISTS (SELECT 1 FROM requests WHERE session_id = ? AND delivered_at IS NULL AND batch_until IS NOT NULL)`, sessionID, sessionID).Scan(&held)
 	var state string
 	_ = s.db.R.QueryRowContext(ctx, `SELECT state FROM agent_sessions WHERE id = ?`, sessionID).Scan(&state)
-	return held && state == SessionIdle // only an idle session is posted its batch
+	return held && state == SessionIdle
 }
 
 // personActive: the person used the web, or typed into one of their
@@ -528,7 +509,7 @@ func (s *Service) warmFailed(ctx context.Context, id int64, why string) {
 			return err
 		}
 		if state != warmPinged && state != warmCompacting {
-			return nil // a hook moved on meanwhile
+			return nil
 		}
 		what := "keep its prompt cache warm"
 		if state == warmCompacting {
@@ -573,8 +554,6 @@ func (s *Service) cacheWarmJobFinished(ctx context.Context, e *Event) {
 // that post starts doesn't read as its person typing.
 // It returns the previous marker and the one written, for restorePosted.
 func markPosted(ctx context.Context, s *Service, sessionID int64) (previous sql.NullInt64, at int64, ok bool) {
-	// Read and write in one write transaction, so each post sees the marker
-	// the previous one wrote.
 	tx, err := s.db.W.BeginTx(ctx, nil)
 	if err != nil {
 		s.log.WarnContext(ctx, "note a post to a session", "session", sessionID, "err", err)
@@ -609,8 +588,6 @@ func restorePosted(ctx context.Context, s *Service, sessionID int64, previous sq
 	}
 }
 
-// ---- the hooks' side ----
-
 // warmQuietPrompt: the prompt is a keep-warm ping, or the /compact Waypoint
 // typed: no turn of the session's work. The hooks leave the session as it
 // was.
@@ -641,7 +618,7 @@ func (s *Service) warmPromptStarted(ctx context.Context, t *tx, x *AgentSession,
 	if err := t.QueryRowContext(ctx, `SELECT posted_at FROM agent_sessions WHERE id = ?`, x.ID).Scan(&posted); err != nil {
 		return err
 	}
-	if err := warmUsed(ctx, t, x.ID, at); err != nil { // WP-1000
+	if err := warmUsed(ctx, t, x.ID, at); err != nil {
 		return err
 	}
 	typed := (ev.typed == "" || typedCarriesPerson(ev.typed)) && !isHarnessPrompt(ev.Prompt) && x.Kind != SessionTask &&
@@ -681,9 +658,9 @@ func (s *Service) warmStop(ctx context.Context, t *tx, x *AgentSession, ev *Hook
 		next := warmNone
 		switch state {
 		case warmCompacting:
-			next = warmCompacted // nothing more for this stop: it was let cool
+			next = warmCompacted
 		case warmReview:
-			next = warmReview // the review's prompt comes next
+			next = warmReview
 		}
 		q = `UPDATE agent_sessions SET stopped_at = ?, warm_state = ?, cache_ttl = coalesce(nullif(?, ''), cache_ttl) WHERE id = ?`
 		args = []any{at, next, ttl, x.ID}
@@ -723,13 +700,11 @@ func (s *Service) warmSessionStart(ctx context.Context, t *tx, x *AgentSession, 
 		return false, err
 	}
 	if ev.Source == "compact" && state == warmReview {
-		// warm_at: compactedForReview's evidence that it really happened.
 		if _, err := t.ExecContext(ctx, `UPDATE agent_sessions SET context_tokens = 0, warm_at = ? WHERE id = ?`, at, x.ID); err != nil {
 			return true, err
 		}
 		return true, s.sessionTimeline(ctx, t, x.ID, at, "autopilot", "", 0, "", "", "Compacted it before the adversarial review", x.projectID, map[string]any{"decision": warmReview})
 	}
-	// The compaction's own stop may have come first (state compacted).
 	if ev.Source == "compact" && (state == warmCompacting || state == warmCompacted) {
 		if _, err := t.ExecContext(ctx, `UPDATE agent_sessions SET warm_state = ?, warm_at = ?, context_tokens = 0 WHERE id = ?`, warmCompacted, at, x.ID); err != nil {
 			return true, err
