@@ -452,7 +452,7 @@ func (c *cli) runShipCheck(cmd string) error {
 		return fmt.Errorf("--check couldn't run %s: %w (nothing shipped)", cmd, err)
 	}
 	if nothing {
-		c.println("Check: " + cmd + " has nothing to run for what changed; not recorded as a pass.")
+		c.println("Check: " + cmd + " has nothing to run: no changed file is in the packages it asks for; not recorded as a pass.")
 		return nil
 	}
 	res, _, _ := parseTestOutput(buf.Bytes(), "auto")
@@ -470,6 +470,9 @@ func (c *cli) runShipCheck(cmd string) error {
 		line := fmt.Sprintf("Check passed: %s (%s)", cmd, took)
 		if res.Passed+res.Failed+res.Skipped > 0 {
 			line += "; " + strings.TrimSpace(res.render())
+		}
+		if rec.compileOnly {
+			line += "; only compiled, no test ran, so it is not recorded as a pass"
 		}
 		c.println(line)
 		return nil

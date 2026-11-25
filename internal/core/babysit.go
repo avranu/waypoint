@@ -1056,6 +1056,9 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 	} else if pr.ArmedAt == nil {
 		work = unoffered(b, late)
 	}
+	if len(failed) > 0 && s.authorHolds(ctx, b, pr) {
+		return
+	}
 	if len(failed) > 0 && !conflict && len(work) == 0 {
 		faults := s.headRunnerFaults(ctx, pr)
 		if faults != nil {

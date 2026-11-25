@@ -328,6 +328,14 @@ func (s *Service) shipNewsNow(ctx context.Context, session, task int64) (*ShipNe
 	var found []*SessionMessage
 	var ids []int64
 	for _, m := range mine {
+		if strings.HasPrefix(m.stepKey, "ci:") {
+			// A pull request may be linked to several tasks, and which one
+			// prTaskID names is arbitrary: the session's own message is bound
+			// by its step key (the query is of this session's news only).
+			found = append(found, m)
+			ids = append(ids, m.ID)
+			continue
+		}
 		if n, bound := messageTask(ctx, s.db.R, m.stepKey); bound && n == task {
 			found = append(found, m)
 			ids = append(ids, m.ID)
@@ -412,8 +420,12 @@ func (s *Service) AckShipNews(ctx context.Context, actor *Actor, cliID, machine,
 			if !shipNewsKey(key) {
 				continue
 			}
-			if of, bound := messageTask(ctx, t, key); !bound || of != task {
-				continue
+			if !strings.HasPrefix(key, "ci:") {
+				// A ci: key is bound by this session and its exact step key,
+				// not by task (a pull request may link to several).
+				if of, bound := messageTask(ctx, t, key); !bound || of != task {
+					continue
+				}
 			}
 			res, err := t.ExecContext(ctx, `UPDATE session_messages SET state = 'delivered', via = 'ship', delivered_at = ?, batch_until = NULL WHERE id = ? AND session_id = ? AND state = 'queued'`, now, id, session)
 			if err != nil {

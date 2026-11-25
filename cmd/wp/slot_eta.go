@@ -365,7 +365,8 @@ type slotWaiter struct {
 	pid     int
 	at      int64 // unix ns
 	session string
-	order   []int // nil: any slot
+	order   []int     // nil: an older wp's waiter, which recorded none
+	seen    time.Time // when its file was last refreshed (its last poll)
 }
 
 // slotLiveWaiters are the waiters of name whose process still holds its file
@@ -390,6 +391,10 @@ func slotLiveWaiters(dir, name string) []slotWaiter {
 			continue
 		}
 		b, err := io.ReadAll(io.LimitReader(f, 4096))
+		var seen time.Time
+		if st, serr := f.Stat(); serr == nil {
+			seen = st.ModTime()
+		}
 		_ = f.Close()
 		if err != nil {
 			continue
@@ -398,9 +403,25 @@ func slotLiveWaiters(dir, name string) []slotWaiter {
 		if !ok {
 			continue
 		}
-		ws = append(ws, slotWaiter{pid, at, session, order})
+		ws = append(ws, slotWaiter{pid, at, session, order, seen})
 	}
 	return ws
+}
+
+// slotWaiterStale is how long another process's waiter file may go without a
+// refresh before it blocks nobody: a waiter that is alive but not polling
+// (stopped with Ctrl-Z, hung) must not hold up the ones behind it. A waiter
+// refreshes its file on every poll of its wait loop (slotPoll, 100ms), so this
+// is 100 polls: this machine runs at several times its core count, where a
+// live waiter can miss seconds, and losing its place costs it a long wait,
+// while a stopped one being passed 10 seconds late costs nearly nothing.
+const slotWaiterStale = 10 * time.Second
+
+// slotTouchWaiter refreshes this process's waiter file of name: its poll is
+// the sign that it is still waiting. Best effort.
+func slotTouchWaiter(dir, name string) {
+	now := time.Now()
+	_ = os.Chtimes(slotWaiterPath(dir, name), now, now)
 }
 
 // slotBlockedSlots are the slots a waiter that came at arrival (unix ns) may
@@ -408,17 +429,26 @@ func slotLiveWaiters(dir, name string) []slotWaiter {
 // pid. A waiter held back behind its worktree's long run has no waiter file
 // yet, so it blocks nobody, and one that can't use a slot doesn't block it:
 // a long waiter at the head leaves the upper slots to the short ones
-// (WP-1876, WP-ADR150).
+// (WP-1876, WP-ADR150). A waiter of an older wp that recorded no slots blocks
+// none (it doesn't honour the order either, and a stall behind a long run is
+// worse than one start out of turn), and neither does another process's
+// waiter whose file was not refreshed within slotWaiterStale.
 func slotBlockedSlots(dir, name string, arrival int64) (blocked func(slot int) bool) {
+	return slotBlockedSlotsAt(dir, name, arrival, time.Now())
+}
+
+// slotBlockedSlotsAt is slotBlockedSlots as of now.
+func slotBlockedSlotsAt(dir, name string, arrival int64, now time.Time) (blocked func(slot int) bool) {
 	var ahead []slotWaiter
 	for _, w := range slotLiveWaiters(dir, name) {
-		if w.pid != os.Getpid() && (w.at < arrival || (w.at == arrival && w.pid < os.Getpid())) {
+		if w.pid != os.Getpid() && w.order != nil && now.Sub(w.seen) <= slotWaiterStale &&
+			(w.at < arrival || (w.at == arrival && w.pid < os.Getpid())) {
 			ahead = append(ahead, w)
 		}
 	}
 	return func(slot int) bool {
 		for _, w := range ahead {
-			if w.order == nil || slices.Contains(w.order, slot) {
+			if slices.Contains(w.order, slot) {
 				return true
 			}
 		}

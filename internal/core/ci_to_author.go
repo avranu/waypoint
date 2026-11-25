@@ -71,27 +71,30 @@ func (s *Service) sessionLive(ctx context.Context, session int64) bool {
 // failure is the author's now (no round is due). A hand-off past
 // authorHandBack, or whose session ended, falls back to a round (WP-1878).
 func (s *Service) handToAuthor(ctx context.Context, b *Babysit, pr *PullRequest, failed []string) bool {
-	list := b.handoffList()
-	for i, h := range list {
-		if !sameSHA(h.Head, pr.HeadSHA) {
-			continue
-		}
-		if h.Outcome != "" {
-			return false
-		}
-		if s.now().Sub(msTime(h.At)) >= authorHandBack || !s.sessionLive(ctx, b.sessionID) {
-			s.closeHandoff(ctx, b, pr, i, handoffFellBack)
-			return false
-		}
-		s.setState(ctx, b, pr, BabysitWatching, authorFixingWait)
+	if s.authorHolds(ctx, b, pr) {
 		return true
+	}
+	list := b.handoffList()
+	for _, h := range list {
+		if sameSHA(h.Head, pr.HeadSHA) {
+			return false
+		}
 	}
 	if !s.authorWaiting(ctx, b, pr) {
 		return false
 	}
 	text := authorNewsText(pr, failed)
-	if _, err := s.queueMessage(ctx, b.sessionID, text, ciNewsKey(pr.ID, pr.HeadSHA), messageFrom{}, true); err != nil {
+	key := ciNewsKey(pr.ID, pr.HeadSHA)
+	// The news is stored once for its key: a cancelled or delivered row left
+	// under it would swallow this one, and the hand-off would be recorded
+	// with nothing delivered.
+	m, err := s.queueMessage(ctx, b.sessionID, text, key, messageFrom{}, true)
+	if err != nil {
 		s.log.WarnContext(ctx, "hand failed checks to the session that wrote them", "pr", pr.ID, "err", err)
+		return false
+	}
+	if m.State != MessageQueued || m.sessionID != b.sessionID {
+		s.log.WarnContext(ctx, "failed-check news for this head is not queued; a round takes it", "pr", pr.ID, "state", m.State)
 		return false
 	}
 	if !s.saveHandoffs(ctx, b, append(list, authorHandoff{Head: pr.HeadSHA, At: s.nowMS(), Checks: failed})) {
@@ -100,6 +103,36 @@ func (s *Service) handToAuthor(ctx context.Context, b *Babysit, pr *PullRequest,
 	}
 	s.setState(ctx, b, pr, BabysitWatching, authorFixingWait)
 	return true
+}
+
+// authorHolds says whether the pull request's head has a hand-off to the
+// author that is pending and inside its deadline: then no round is sent for
+// any cause, since a draft with a failed check isn't in the merge line and
+// what else is pending can wait for the author's new head, the deadline, or
+// the author being gone. A hand-off past authorHandBack, whose session ended,
+// or whose news is still undelivered while the session has no checks wait
+// open or seen within ciWaitWindow, ends as fell back (the next step then
+// handles whatever is pending as it always did).
+func (s *Service) authorHolds(ctx context.Context, b *Babysit, pr *PullRequest) bool {
+	for i, h := range b.handoffList() {
+		if !sameSHA(h.Head, pr.HeadSHA) || h.Outcome != "" {
+			continue
+		}
+		if s.now().Sub(msTime(h.At)) >= authorHandBack || !s.sessionLive(ctx, b.sessionID) ||
+			(s.ciNewsQueued(ctx, pr.ID, h.Head) && !s.authorWaiting(ctx, b, pr)) {
+			s.closeHandoff(ctx, b, pr, i, handoffFellBack)
+			return false
+		}
+		s.setState(ctx, b, pr, BabysitWatching, authorFixingWait)
+		return true
+	}
+	return false
+}
+
+// ciNewsQueued says whether the head's failure news waits undelivered.
+func (s *Service) ciNewsQueued(ctx context.Context, pr int64, head string) bool {
+	var n int
+	return s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM session_messages WHERE step_key = ? AND state = 'queued'`, ciNewsKey(pr, head)).Scan(&n) == nil && n > 0
 }
 
 // authorNewsText is what the author is told: which pull request, the failed
@@ -153,21 +186,29 @@ func (s *Service) settleHandoffs(ctx context.Context, b *Babysit, pr *PullReques
 	}
 }
 
-// handoffCounts are the hand-offs begun since the time: all, those a new head
-// fixed and those a round took.
-func handoffCounts(raw string, since time.Time) (handed, fixed, fellBack int) {
+// handoffTally counts the hand-offs begun since a time by how each stands:
+// they add up to Handed.
+type handoffTally struct {
+	Handed, Fixed, FellBack, Cleared, Pending int
+}
+
+func handoffCounts(raw string, since time.Time) (t handoffTally) {
 	var l []authorHandoff
 	_ = json.Unmarshal([]byte(raw), &l)
 	for _, h := range l {
 		if msTime(h.At).Before(since) {
 			continue
 		}
-		handed++
+		t.Handed++
 		switch h.Outcome {
 		case handoffFixed:
-			fixed++
+			t.Fixed++
 		case handoffFellBack:
-			fellBack++
+			t.FellBack++
+		case handoffCleared:
+			t.Cleared++
+		default:
+			t.Pending++
 		}
 	}
 	return
@@ -240,8 +281,10 @@ func (s *Service) AwaitShipChecks(ctx context.Context, actor *Actor, cliID, mach
 // shipChecksNow is where the wait stands: the failure handed to the session
 // first, then what the head's checks say.
 func (s *Service) shipChecksNow(ctx context.Context, session, task, prID int64, head string) (*ShipNews, error) {
+	// A wait for a given head takes that head's failure only.
+	prefix := "ci:" + itoa64(prID) + ":"
 	rows, err := s.db.R.QueryContext(ctx, `SELECT `+messageCols+` FROM session_messages m LEFT JOIN users u ON u.id = m.created_by
-		WHERE m.session_id = ? AND m.state = 'queued' AND m.step_key LIKE ? ORDER BY m.id`, session, "ci:"+itoa64(prID)+":%")
+		WHERE m.session_id = ? AND m.state = 'queued' AND m.step_key LIKE ? ORDER BY m.id`, session, prefix+"%")
 	if err != nil {
 		return nil, err
 	}
@@ -252,6 +295,9 @@ func (s *Service) shipChecksNow(ctx context.Context, session, task, prID int64, 
 		if err != nil {
 			_ = rows.Close()
 			return nil, err
+		}
+		if head != "" && !sameSHA(strings.TrimPrefix(m.stepKey, prefix), head) {
+			continue
 		}
 		found = append(found, m)
 		ids = append(ids, m.ID)
@@ -282,8 +328,12 @@ func (s *Service) shipChecksNow(ctx context.Context, session, task, prID int64, 
 		}
 		return &ShipNews{Outcome: ShipNewsWaiting, Checks: true, Text: at + " has failed checks: " + w.Why + "; Waypoint is deciding who fixes them."}, nil
 	}
-	if w.CI == CIPassed && (head == "" || sameSHA(w.HeadSHA, head)) {
-		return &ShipNews{Outcome: ShipNewsChecksPassed, Checks: true, Text: at + ": its checks passed. " + checksStanding(w)}, nil
+	if (w.CI == CIPassed || w.CI == CINone) && (head == "" || sameSHA(w.HeadSHA, head)) {
+		said := "its checks passed. "
+		if w.CI == CINone {
+			said = "no checks ran for its head. "
+		}
+		return &ShipNews{Outcome: ShipNewsChecksPassed, Checks: true, Text: at + ": " + said + checksStanding(w)}, nil
 	}
 	if w.Verdict == PRWaitConflict {
 		return over(fmt.Sprintf("%s has a conflict with %s; Waypoint's babysitting takes it from here.", at, cmp(w.BaseRef, "its base"))), nil

@@ -419,7 +419,7 @@ const repostNewsAfter = 2 * time.Minute
 func (s *Service) repostQueuedNews(ctx context.Context) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT DISTINCT m.session_id FROM session_messages m JOIN agent_sessions x ON x.id = m.session_id
 		WHERE m.state = 'queued' AND m.passive = 0 AND m.batch_until IS NULL AND x.ended_at IS NULL AND m.created_at < ?
-		AND (m.step_key LIKE 'check:%' OR m.step_key LIKE 'audit:%' OR m.step_key LIKE 'ci:%') LIMIT 50`, s.nowMS()-repostNewsAfter.Milliseconds())
+		AND (m.step_key LIKE 'check:%' OR m.step_key LIKE 'audit:%') LIMIT 50`, s.nowMS()-repostNewsAfter.Milliseconds())
 	if err != nil {
 		s.log.WarnContext(ctx, "queued news to post again", "err", err)
 		return

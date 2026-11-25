@@ -66,6 +66,22 @@ func (be *bsEnv) passes(sha string) {
 	be.s.Wait()
 }
 
+// ciDelivered is the author's client having taken the news and acked it.
+func (be *bsEnv) ciDelivered(pr int64) {
+	be.t.Helper()
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE session_messages SET state = 'delivered', via = 'ship' WHERE step_key LIKE ?`, "ci:"+itoa64(pr)+":%"); err != nil {
+		be.t.Fatal(err)
+	}
+}
+
+// conflicts makes the forge say the pull request conflicts with its base.
+func (be *bsEnv) conflicts(pr int64) {
+	be.t.Helper()
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE pull_requests SET mergeable = 0, head_at = NULL, mergeable_since = NULL WHERE id = ?`, pr); err != nil {
+		be.t.Fatal(err)
+	}
+}
+
 func (be *bsEnv) handoffs() []authorHandoff { return be.babysit().handoffList() }
 
 // A failed check goes to the session waiting in wp ship, once for the head,
@@ -140,6 +156,7 @@ func TestAuthorHandBackDeadlineSendsARound(t *testing.T) {
 	be, pr, _ := authorEnv(t)
 	be.openWait(pr.ID)
 	be.ci("7777777aaaa", CheckFailed)
+	be.ciDelivered(pr.ID)
 	be.later(authorHandBack - time.Minute)
 	be.step()
 	if len(be.jobs()) != 0 {
@@ -152,8 +169,8 @@ func TestAuthorHandBackDeadlineSendsARound(t *testing.T) {
 	if len(be.jobs()) != 1 || len(h) != 1 || h[0].Outcome != handoffFellBack {
 		t.Fatalf("jobs %v handoffs %+v", be.jobs(), h)
 	}
-	if n := be.ciNews(pr.ID); len(n) != 1 || n[0] != "cancelled" {
-		t.Errorf("the author's news after the round took over: %v", n)
+	if n := be.ciNews(pr.ID); len(n) != 1 || n[0] != "delivered" {
+		t.Errorf("the author's delivered news is kept: %v", n)
 	}
 	st, err := be.s.GetRoundStats(be.ctx, be.admin, "", 7, false)
 	if err != nil || st.AuthorHandoffs != 1 || st.AuthorFixed != 0 || st.AuthorFellBack != 1 {
@@ -194,6 +211,7 @@ func TestAuthorHandoffSurvivesARestart(t *testing.T) {
 	be, pr, _ := authorEnv(t)
 	be.openWait(pr.ID)
 	be.ci("7777777aaaa", CheckFailed)
+	be.ciDelivered(pr.ID)
 	be.s.shipWaits.mu.Lock()
 	be.s.shipWaits.by = nil
 	be.s.shipWaits.mu.Unlock()
@@ -245,6 +263,10 @@ func TestAuthorHandoffClearsWhenChecksPass(t *testing.T) {
 	if h := be.handoffs(); len(h) != 1 || h[0].Outcome != handoffCleared || len(be.jobs()) != 0 {
 		t.Fatalf("handoffs %+v jobs %v", h, be.jobs())
 	}
+	st, err := be.s.GetRoundStats(be.ctx, be.admin, "", 7, false)
+	if err != nil || st.AuthorHandoffs != 1 || st.AuthorCleared != 1 || st.AuthorPending != 0 {
+		t.Fatalf("stats %+v, %v", st, err)
+	}
 }
 
 // The wait returns the failure handed to the session, holds it queued until
@@ -256,16 +278,14 @@ func TestAwaitShipChecksReturnsTheHandedFailure(t *testing.T) {
 		err error
 	}
 	out := make(chan res, 1)
+	// The wait is open before the failure comes, so the hand-off happens
+	// whether the call below has started or not (it finds the held news first).
+	end := be.openWait(pr.ID)
+	defer end(false)
 	go func() {
 		n, err := be.s.AwaitShipChecks(be.ctx, be.agent, "cli-1", "m1", task.Key, pr.ID, "7777777aaaa", 20*time.Second)
 		out <- res{n, err}
 	}()
-	for range 200 {
-		if be.s.shipWaits.checksHeld(be.agent.Session, pr.ID, be.s.now()) {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
 	be.ci("7777777aaaa", CheckFailed)
 	r := <-out
 	if r.err != nil || r.n.Outcome != ShipNewsChecksFailed || !r.n.Checks || len(r.n.IDs) != 1 ||
@@ -314,5 +334,148 @@ func TestAwaitShipChecksOutcomes(t *testing.T) {
 	be.passes("7777777aaaa")
 	if n := await("7777777aaaa"); n.Outcome != ShipNewsChecksPassed || !n.Checks {
 		t.Fatalf("passed: %+v", n)
+	}
+}
+
+// A head that settles with no checks at all ends the wait as the rest of the
+// code treats it (no checks is not a failure), and says so.
+func TestAwaitShipChecksNoChecksEndsTheWait(t *testing.T) {
+	be, pr, task := authorEnv(t)
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE pull_requests SET ci_state = ?, ci_sha = head_sha WHERE id = ?`, CINone, pr.ID); err != nil {
+		t.Fatal(err)
+	}
+	n, err := be.s.AwaitShipChecks(be.ctx, be.agent, "cli-1", "m1", task.Key, pr.ID, be.pr(7).HeadSHA, 30*time.Millisecond)
+	if err != nil || n.Outcome != ShipNewsChecksPassed || !strings.Contains(n.Text, "no checks ran") || strings.Contains(n.Text, "checks passed") {
+		t.Fatalf("got %+v, %v", n, err)
+	}
+}
+
+// While a hand-off is pending inside its deadline no round goes out for any
+// cause; after the deadline one round carries both the failure and the conflict.
+func TestPendingHandoffHoldsEveryRound(t *testing.T) {
+	be, pr, _ := authorEnv(t)
+	be.openWait(pr.ID)
+	be.ci("7777777aaaa", CheckFailed)
+	be.ciDelivered(pr.ID)
+	be.conflicts(pr.ID)
+	be.later(10 * time.Minute)
+	be.step()
+	b := be.babysit()
+	if h := be.handoffs(); len(be.jobs()) != 0 || len(h) != 1 || h[0].Outcome != "" || b.State != BabysitWatching || b.Wait != authorFixingWait {
+		t.Fatalf("a conflict during the hand-off: jobs %v handoffs %+v state %s wait %q", be.jobs(), h, b.State, b.Wait)
+	}
+	be.later(authorHandBack)
+	be.step()
+	be.step()
+	b = be.babysit()
+	h := be.handoffs()
+	if len(be.jobs()) != 1 || h[0].Outcome != handoffFellBack || len(b.Rounds) != 1 || !b.Rounds[0].Conflict || len(b.Rounds[0].Checks) == 0 {
+		t.Fatalf("after the deadline: jobs %v handoffs %+v rounds %+v", be.jobs(), h, b.Rounds)
+	}
+}
+
+// News the author hasn't taken, with no wait of the author's open or seen
+// within ciWaitWindow, falls back to a round at once; taken news keeps the
+// deadline.
+func TestUndeliveredHandoffNewsFallsBackWhenTheAuthorIsNotWaiting(t *testing.T) {
+	be, pr, _ := authorEnv(t)
+	end := be.openWait(pr.ID)
+	be.ci("7777777aaaa", CheckFailed)
+	be.step()
+	if len(be.jobs()) != 0 {
+		t.Fatalf("a round while the author's wait is open: %v", be.jobs())
+	}
+	end(true)
+	be.later(ciWaitWindow - time.Second)
+	be.step()
+	if len(be.jobs()) != 0 {
+		t.Fatalf("a round while the wait is within its window: %v", be.jobs())
+	}
+	be.later(2 * time.Second)
+	be.step()
+	be.step()
+	h := be.handoffs()
+	if len(be.jobs()) != 1 || len(h) != 1 || h[0].Outcome != handoffFellBack {
+		t.Fatalf("jobs %v handoffs %+v", be.jobs(), h)
+	}
+	if n := be.ciNews(pr.ID); len(n) != 1 || n[0] != "cancelled" {
+		t.Errorf("the undelivered news: %v", n)
+	}
+}
+
+// News the client took keeps the deadline though the wait is gone.
+func TestDeliveredHandoffNewsKeepsTheDeadline(t *testing.T) {
+	be, pr, _ := authorEnv(t)
+	end := be.openWait(pr.ID)
+	be.ci("7777777aaaa", CheckFailed)
+	end(true)
+	be.ciDelivered(pr.ID)
+	be.later(ciWaitWindow + time.Minute)
+	be.step()
+	if h := be.handoffs(); len(be.jobs()) != 0 || len(h) != 1 || h[0].Outcome != "" {
+		t.Fatalf("jobs %v handoffs %+v", be.jobs(), h)
+	}
+}
+
+// A cancelled row left under the head's key swallows the news (the insert
+// keeps one row for the key): no hand-off is recorded then, and a round goes.
+func TestHandoffNeedsItsNewsQueued(t *testing.T) {
+	be, pr, _ := authorEnv(t)
+	be.openWait(pr.ID)
+	if _, err := be.s.db.W.Exec(`INSERT INTO session_messages(session_id, body, step_key, created_at, state, passive) VALUES (?,?,?,?,'cancelled',1)`,
+		be.agent.Session, "old", ciNewsKey(pr.ID, "7777777aaaa"), be.clockNow().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	be.ci("7777777aaaa", CheckFailed)
+	if len(be.jobs()) != 1 || len(be.handoffs()) != 0 {
+		t.Fatalf("jobs %v handoffs %+v", be.jobs(), be.handoffs())
+	}
+}
+
+// A wait for a new head never returns the previous head's failure.
+func TestAwaitShipChecksTakesTheAskedHeadsFailureOnly(t *testing.T) {
+	be, pr, task := authorEnv(t)
+	be.openWait(pr.ID)
+	be.ci("7777777aaaa", CheckFailed)
+	if n := be.ciNews(pr.ID); len(n) != 1 || n[0] != MessageQueued {
+		t.Fatalf("setup: %v", n)
+	}
+	got, err := be.s.shipChecksNow(be.ctx, be.agent.Session, task.ID, pr.ID, "8888888bbbb")
+	if err != nil || got.Outcome == ShipNewsChecksFailed {
+		t.Fatalf("the old head's failure for the new head: %+v, %v", got, err)
+	}
+	got, err = be.s.shipChecksNow(be.ctx, be.agent.Session, task.ID, pr.ID, "7777777aaaa")
+	if err != nil || got.Outcome != ShipNewsChecksFailed {
+		t.Fatalf("the head's own failure: %+v, %v", got, err)
+	}
+}
+
+// A pull request linked to two tasks: the news is bound by its session and
+// step key, so the ack works whichever task prTaskID happens to name.
+func TestAckShipNewsOfAPullRequestLinkedToTwoTasks(t *testing.T) {
+	be, pr, task := authorEnv(t)
+	other, err := be.s.CreateIssue(be.ctx, be.admin, IssueInput{Project: be.p.Key, Title: "Second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The earlier link is the one prTaskID names: make it the other task.
+	if _, err := be.s.db.W.Exec(`UPDATE external_links SET issue_id = ? WHERE issue_id = ?`, other.ID, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := be.s.db.W.Exec(`INSERT INTO external_links(issue_id, provider, kind, url, repo, number, state, created_at) VALUES (?,?,?,?,?,?,?,?)`,
+		task.ID, "github", "pull", "https://github.com/me/app/pull/7", "me/app", 7, "open", 2); err != nil {
+		t.Fatal(err)
+	}
+	be.openWait(pr.ID)
+	be.ci("7777777aaaa", CheckFailed)
+	got, err := be.s.shipChecksNow(be.ctx, be.agent.Session, task.ID, pr.ID, "7777777aaaa")
+	if err != nil || got.Outcome != ShipNewsChecksFailed {
+		t.Fatalf("%+v, %v", got, err)
+	}
+	if err := be.s.AckShipNews(be.ctx, be.agent, "cli-1", "m1", task.Key, got.IDs); err != nil {
+		t.Fatal(err)
+	}
+	if n := be.ciNews(pr.ID); len(n) != 1 || n[0] != "delivered" {
+		t.Fatalf("after the ack: %v", n)
 	}
 }

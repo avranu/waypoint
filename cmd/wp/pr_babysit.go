@@ -467,6 +467,8 @@ type roundStats struct {
 	AuthorHandoffs int `json:"author_handoffs"`
 	AuthorFixed    int `json:"author_fixed"`
 	AuthorFellBack int `json:"author_fell_back"`
+	AuthorCleared  int `json:"author_cleared"`
+	AuthorPending  int `json:"author_pending"`
 	Nitpicks       *struct {
 		Decisions map[string]int `json:"decisions"`
 		Comments  map[string]int `json:"comments"`
@@ -623,7 +625,7 @@ func (st *roundStats) classText() string {
 		fmt.Fprintf(&b, "Merged: %d, after %.1f rounds each.\n", st.Merged, float64(st.MergedRounds)/float64(st.Merged))
 	}
 	if st.AuthorHandoffs > 0 {
-		fmt.Fprintf(&b, "Failed checks handed to the session that wrote the pull request: %d; it fixed %d in time, %d fell back to a round.\n", st.AuthorHandoffs, st.AuthorFixed, st.AuthorFellBack)
+		fmt.Fprintf(&b, "Failed first checks handed to the author: %d (new head before the deadline %d, fell back to a round %d, checks passed unchanged %d, still pending %d)\n", st.AuthorHandoffs, st.AuthorFixed, st.AuthorFellBack, st.AuthorCleared, st.AuthorPending)
 	}
 	if st.Rounds > 0 {
 		fmt.Fprintf(&b, "Stronger model: %d rounds (%.0f%%); assessor: %d (%.0f%%); parked for a person after %d; rested, nobody asked, after %d.\n",

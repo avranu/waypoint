@@ -129,7 +129,7 @@ func TestCgroupBounded(t *testing.T) {
 func TestScopeArgv(t *testing.T) {
 	got := scopeArgv("/usr/bin/systemd-run", 200, []string{"go", "test", "./x"})
 	want := []string{"/usr/bin/systemd-run", "--user", "--scope", "--quiet", "--collect", "--slice=waypoint-tests.slice",
-		"-p", "CPUQuota=200%", "-p", "CPUWeight=50", "--", "/bin/sh", "-c", slotScopeMarker, "sh", "go", "test", "./x"}
+		"-p", "CPUQuota=200%", "--", "/bin/sh", "-c", slotScopeMarker, "sh", "go", "test", "./x"}
 	if !slices.Equal(got, want) {
 		t.Errorf("argv\n got %q\nwant %q", got, want)
 	}
@@ -174,16 +174,43 @@ func TestGoBoundEnv(t *testing.T) {
 // fakeSystemdRun puts a systemd-run on PATH that logs its arguments to the
 // returned file and then, when ok, becomes the command after "--" as the
 // real one does for --scope; otherwise it fails as it does without a bus.
+// The scope has a cpu.max quota.
 func fakeSystemdRun(t *testing.T, ok bool) (log string) {
+	t.Helper()
+	if !ok {
+		return fakeSystemdScope(t, false, "")
+	}
+	return fakeSystemdScope(t, true, "200000 100000")
+}
+
+// fakeSystemdScope is fakeSystemdRun for a scope whose cgroup has the cpu.max
+// content cpuMax ("": no such file). The scope's wrapper is run as written,
+// with the cgroup files it reads pointed at a fixture.
+func fakeSystemdScope(t *testing.T, ok bool, cpuMax string) (log string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("needs sh")
 	}
 	dir := t.TempDir()
 	log = filepath.Join(dir, "args")
+	root := filepath.Join(dir, "cg")
+	if err := os.MkdirAll(filepath.Join(root, "scope"), 0o755); err != nil { // #nosec G301 -- a test fixture
+		t.Fatal(err)
+	}
+	proc := filepath.Join(dir, "proc")
+	if err := os.WriteFile(proc, []byte("0::/scope\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if cpuMax != "" {
+		if err := os.WriteFile(filepath.Join(root, "scope", "cpu.max"), []byte(cpuMax+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	script := "#!/bin/sh\necho \"$@\" > " + log + "\necho 'Failed to connect to bus' >&2\nexit 1\n"
 	if ok {
-		script = "#!/bin/sh\necho \"$@\" > " + log + "\nwhile [ \"$1\" != -- ]; do shift; done; shift\nexec \"$@\"\n"
+		script = "#!/bin/sh\necho \"$@\" > " + log + "\nwhile [ \"$1\" != -- ]; do shift; done; shift\n" +
+			"s=$(printf %s \"$3\" | sed -e 's#/sys/fs/cgroup#" + root + "#' -e 's#/proc/self/cgroup#" + proc + "#')\n" +
+			"shift 3\nexec /bin/sh -c \"$s\" \"$@\"\n"
 	}
 	if err := os.WriteFile(filepath.Join(dir, "systemd-run"), []byte(script), 0o755); err != nil { // #nosec G306 -- a test script
 		t.Fatal(err)
@@ -228,7 +255,7 @@ func TestRunSlotBoundScope(t *testing.T) {
 		t.Errorf("env, working folder and Go's settings in the scope:\n got %q\nwant %q", out, want)
 	}
 	b, _ := os.ReadFile(log)
-	for _, w := range []string{"--user", "--scope", "--collect", "--slice=waypoint-tests.slice", "CPUQuota=250%", "CPUWeight=50"} {
+	for _, w := range []string{"--user", "--scope", "--collect", "--slice=waypoint-tests.slice", "CPUQuota=250%"} {
 		if !strings.Contains(string(b), w) {
 			t.Errorf("systemd-run was given %q, want %q", b, w)
 		}
@@ -290,6 +317,44 @@ func TestRunSlotBoundStopReachesTheCommandInTheScope(t *testing.T) {
 	code, kind, _ := runBound(t, ctx, "", os.Environ(), "sleep", "30")
 	if code != 128+15 || kind != slotBoundScope || time.Since(start) > 10*time.Second {
 		t.Errorf("code %d kind %q after %v, want SIGTERM's 143 soon", code, kind, time.Since(start))
+	}
+}
+
+func TestRunSlotBoundScopeWithoutQuotaIsRecordedAsNone(t *testing.T) {
+	for _, c := range []struct{ name, cpuMax, kind string }{
+		{"quota", "150000 100000", slotBoundScope},
+		{"max", "max 100000", slotBoundNone},
+		{"unreadable", "", slotBoundNone},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fakeSystemdScope(t, true, c.cpuMax)
+			probesAre(t, false, false, true)
+			t.Setenv(slotCPUEnv, "200")
+			count := filepath.Join(t.TempDir(), "count")
+			code, kind, _ := runBound(t, context.Background(), "", os.Environ(), "sh", "-c", "echo ran >> "+count+"; exit 4")
+			if code != 4 || kind != c.kind {
+				t.Errorf("code %d kind %q, want 4 and %q", code, kind, c.kind)
+			}
+			if b, _ := os.ReadFile(count); string(b) != "ran\n" {
+				t.Errorf("the command ran %q, want once", b)
+			}
+		})
+	}
+}
+
+func TestRunSlotBoundCancelledBeforeTheScopeStartsRunsNothing(t *testing.T) {
+	fakeSystemdRun(t, false)
+	probesAre(t, false, false, true)
+	t.Setenv(slotCPUEnv, "200")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	count := filepath.Join(t.TempDir(), "count")
+	code, _, _ := runBound(t, ctx, "", os.Environ(), "sh", "-c", "echo ran >> "+count)
+	if code != 128+15 {
+		t.Errorf("code %d, want 143", code)
+	}
+	if _, err := os.Stat(count); err == nil {
+		t.Error("the command ran after the cancel")
 	}
 }
 

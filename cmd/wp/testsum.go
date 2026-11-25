@@ -37,8 +37,9 @@ variables (*_TOKEN, *_KEY, …). FILE (an existing, non-executable file) or
 A go test of a whole heavy package or ./... with no -run, in a repository that
 lists heavy packages (.waypoint/heavy-tests), runs the tests beside what you
 changed since the base instead, and says so first with the command that runs
-everything. --all, or WP_TEST_ALL=1, runs it whole; so does a runner job (CI)
-(WP-1877).`,
+everything. --all, or WP_TEST_ALL=1, runs it whole; so does a runner job (CI),
+and so does a command with a flag that names a file (-coverprofile, -o,
+-cpuprofile, -trace, …), with the reason said (WP-1877).`,
 	examples: []string{"wp testsum -- go test -run '^TestSlot' ./cmd/wp", "wp testsum pytest -q", "wp testsum --repeat 30 go test -run TestFlaky ./internal/core", "wp testsum --base origin/main go test ./cmd/wp", "go test -json -run '^TestSlot' ./cmd/wp | wp testsum"},
 	run:      cmdTestsum,
 }

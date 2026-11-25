@@ -72,9 +72,14 @@ else the diff against the base, as wp test). A changed package runs whole,
 except the heavy ones, which run the tests of the changed test files and of
 the test files beside the changed source files. Heavy packages are the
 directories listed in .waypoint/heavy-tests (one per line, # comments) and
-every --by-file. It runs at most two go test commands, each with -count=1
-and the flags after --; -vet=off isn't added, pass it when vet already ran.
-Changed files in a heavy package with no test beside them are listed.
+every --by-file. A file under testdata/ selects the package above it, and
+so does a file a package embeds (go list says which); in a heavy package that
+means the tests whose file names it. It runs at most three go test commands,
+each with -count=1 and the flags after --; -vet=off isn't added, pass it when
+vet already ran. Changed files in a heavy package with no test beside them
+are listed, and a heavy package left with no test selected is compiled with
+its tests and none runs (go test -run '^$'), so a file that doesn't build
+still fails; that compile is not recorded as the tests passing.
 --print shows the commands and runs nothing. This is a heuristic: a change
 in foo.go can break a test in bar_test.go, and CI runs everything.`,
 		examples: []string{"wp test go --print", "wp test go -- -vet=off -timeout 30m"},
@@ -244,8 +249,8 @@ func (t *scopedTest) dryRun() error {
 }
 
 func (t *scopedTest) noTestsNote(sel goSelection) {
-	if len(sel.NoTests) > 0 {
-		t.c.println("No tests beside: " + strings.Join(sel.NoTests, ", ") + " (heavy package: only tests in changed test files and beside changed files run).")
+	if l := sel.noTestsLine(); l != "" {
+		t.c.println(l)
 	}
 }
 
@@ -331,6 +336,7 @@ func (t *scopedTest) runGo(ctx context.Context, env []string, rec *testRunRecord
 	c := t.c
 	sel, build, vet, tests := t.goSteps()
 	t.noTestsNote(sel)
+	rec.compileOnly = sel.compileOnly()
 	var failed, passed []string
 	step := func(name string, argv []string) error {
 		code, err := runSlotCmdIn(ctx, t.root, env, argv, nil, c.err, c.err)
@@ -358,14 +364,18 @@ func (t *scopedTest) runGo(ctx context.Context, env []string, rec *testRunRecord
 	}
 	if len(tests) > 0 {
 		if res != nil {
-			_, _ = fmt.Fprint(c.out, res.render())
+			_, _ = fmt.Fprint(c.out, res.renderSaving(raw))
 		} else if tcode != 0 {
 			_, _ = fmt.Fprintf(c.out, "the tests exited %d and no test results were recognized; last lines:\n%s\n", tcode, lastLines(raw, 20))
 		}
+		name, ok := "tests", "tests"
+		if sel.compileOnly() {
+			name, ok = "compile", "compile (only compiled, no test ran)"
+		}
 		if tcode != 0 || (res != nil && res.outcome() == runFail) {
-			failed = append(failed, "tests")
+			failed = append(failed, name)
 		} else {
-			passed = append(passed, "tests")
+			passed = append(passed, ok)
 		}
 	}
 	if res == nil {
@@ -478,11 +488,11 @@ func cmdTestGo(c *cli, args []string) error {
 	}
 	sel := selectGoTests(root, changed, readHeavyTests(root, byFile))
 	cmds := sel.commands(rest)
-	if len(sel.NoTests) > 0 {
-		c.println("No tests beside: " + strings.Join(sel.NoTests, ", ") + " (heavy package: only tests in changed test files and beside changed files run).")
+	if l := sel.noTestsLine(); l != "" {
+		c.println(l)
 	}
 	if len(cmds) == 0 {
-		c.println("wp test go: no changed Go package has tests selected, so no go test runs.")
+		c.println("wp test go: no changed file belongs to a Go package (or is a testdata or embedded file of one), so no go test runs.")
 		return nil
 	}
 	if *printOnly {
@@ -514,8 +524,12 @@ func cmdTestGo(c *cli, args []string) error {
 		}
 		return fmt.Errorf("no test results found in the go test output")
 	}
-	_, _ = fmt.Fprint(c.out, res.render())
+	_, _ = fmt.Fprint(c.out, res.renderSaving(raw))
+	rec.compileOnly = sel.compileOnly()
 	rec.finish(res, code)
+	if sel.compileOnly() && code == 0 && res.outcome() != runFail {
+		c.println("wp test go: only compiled, no test ran; not recorded as a pass.")
+	}
 	if code != 0 || res.outcome() == runFail {
 		c.withheld(dropped)
 		return exitCode(1)

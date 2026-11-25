@@ -221,13 +221,56 @@ func TestSlotBlockedSlotsTieBreaksOnPid(t *testing.T) {
 	}
 }
 
-// A waiter file from a wp that didn't record its slots may take any.
-func TestSlotBlockedSlotsLegacyWaiterBlocksAll(t *testing.T) {
+// A waiter file from a wp that didn't record its slots blocks none: that wp
+// doesn't honour the order either, and a stall behind a long run is worse.
+func TestSlotBlockedSlotsLegacyWaiterBlocksNothing(t *testing.T) {
 	dir := fcfsDir(t)
 	writeWaiter(t, dir, 4194001, time.Now().Add(-time.Second).UnixNano())
 	b := slotBlockedSlots(dir, "tests", time.Now().UnixNano())
-	if !b(0) || !b(7) {
-		t.Error("a waiter with no slots recorded blocks none")
+	if b(0) || b(7) {
+		t.Error("a waiter with no slots recorded blocks nothing")
+	}
+}
+
+// A live waiter whose file was not refreshed within slotWaiterStale blocks
+// nothing; a fresh one still does. Times are set on the files, no sleeps.
+func TestSlotBlockedSlotsStaleLiveWaiterBlocksNothing(t *testing.T) {
+	dir := fcfsDir(t)
+	now := time.Now()
+	at := now.Add(-time.Minute).UnixNano()
+	fcfsWaiter(t, dir, "tests", 4194001, at, []int{0})
+	fcfsWaiter(t, dir, "tests", 4194002, at, []int{1})
+	touch := func(pid int, mt time.Time) {
+		p := filepath.Join(dir, fmt.Sprintf("tests.%d.wait", pid))
+		if err := os.Chtimes(p, mt, mt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	touch(4194001, now.Add(-slotWaiterStale-time.Second)) // stopped
+	touch(4194002, now.Add(-slotWaiterStale/2))           // polling
+	b := slotBlockedSlotsAt(dir, "tests", now.UnixNano(), now)
+	if b(0) {
+		t.Error("a live waiter that stopped polling still blocks")
+	}
+	if !b(1) {
+		t.Error("a waiter that polled recently no longer blocks")
+	}
+}
+
+// The waiter's own poll refreshes its file.
+func TestSlotTouchWaiterRefreshesTheFile(t *testing.T) {
+	dir := fcfsDir(t)
+	remove := slotAddWaiterFor(dir, "tests", time.Now(), []int{0})
+	defer remove()
+	p := slotWaiterPath(dir, "tests")
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(p, old, old); err != nil {
+		t.Fatal(err)
+	}
+	slotTouchWaiter(dir, "tests")
+	st, err := os.Stat(p)
+	if err != nil || time.Since(st.ModTime()) > time.Minute {
+		t.Errorf("mtime %v err %v, want refreshed", st.ModTime(), err)
 	}
 }
 

@@ -227,21 +227,94 @@ func TestPlanGoTestNothingSelected(t *testing.T) {
 	}
 	lines := narrowNotice("wp testsum", "wp testsum --all --", []string{"go", "test", "-json", "./internal/core"}, p, 0)
 	want := []string{
-		"wp testsum: nothing changed in ./internal/core since the base (8240ca8a9), so no test runs.",
+		"wp testsum: no file changed in ./internal/core since the base (8240ca8a9), so no test runs.",
 		"  The whole package: wp testsum --all -- go test ./internal/core   (CI runs the whole suite on the pull request)",
 	}
 	if !slices.Equal(lines, want) {
 		t.Errorf("notice:\n%s", strings.Join(lines, "\n"))
 	}
-	// Changed, but no test beside it.
+	// Files changed, none selecting a test: said apart from nothing changed.
+	p = planGoTest([]string{"go", "test", "./internal/core"}, narrowRepo(t, "internal/core/notes.md", "internal/core/z.txt", "internal/small/s.go"))
+	lines = narrowNotice("wp testsum", "wp testsum --all --", []string{"go", "test", "./internal/core"}, p, 0)
+	if len(p.Cmds) != 0 || !strings.Contains(lines[0], "2 files changed in ./internal/core since the base") ||
+		!strings.Contains(lines[0], "none of them selects a test (internal/core/notes.md, internal/core/z.txt)") {
+		t.Errorf("changed, selecting nothing:\n%s", strings.Join(lines, "\n"))
+	}
+	if got := listFiles([]string{"a", "b", "c", "d", "e", "f", "g"}, 5); got != "a, b, c, d, e and 2 more" {
+		t.Errorf("listFiles: %q", got)
+	}
+}
+
+// A changed source file in a heavy package with no test beside it is compiled,
+// not skipped, and the notice says so.
+func TestPlanGoTestNoTestBesideIsCompiled(t *testing.T) {
 	in := narrowRepo(t, "internal/core/c.go")
 	if err := os.WriteFile(filepath.Join(in.root, "internal/core/c.go"), []byte("package core\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	p = planGoTest([]string{"go", "test", "./internal/core"}, in)
-	lines = narrowNotice("wp testsum", "wp testsum --all --", []string{"go", "test", "./internal/core"}, p, 0)
-	if len(p.Cmds) != 0 || !strings.Contains(lines[0], "no test sits beside it") || !strings.Contains(strings.Join(lines, "\n"), "No tests beside: internal/core/c.go") {
-		t.Errorf("no tests beside:\n%s", strings.Join(lines, "\n"))
+	p := planGoTest([]string{"go", "test", "-race", "./internal/core"}, in)
+	if got := cmdLines(p); !slices.Equal(got, []string{"go test -count=1 -race -run ^$ ./internal/core"}) {
+		t.Fatalf("commands %q", got)
+	}
+	if !p.Sel.compileOnly() {
+		t.Error("not compile-only")
+	}
+	lines := strings.Join(narrowNotice("wp testsum", "wp testsum --all --", []string{"go", "test", "./internal/core"}, p, 0), "\n")
+	if !strings.Contains(lines, "no test sits beside the change, so the package is compiled and no test runs") || !strings.Contains(lines, "No test sits beside: internal/core/c.go") {
+		t.Errorf("notice:\n%s", lines)
+	}
+}
+
+// A testdata file and an embedded file select their package through the slot's
+// plan too, even when the asked package names only the package folder.
+func TestPlanGoTestSelectsTestdataAndEmbeddedFiles(t *testing.T) {
+	in := narrowRepo(t, "internal/small/testdata/in.json", "internal/core/testdata/g.txt")
+	for p, s := range map[string]string{
+		"internal/small/s.go":     "package small\nimport _ \"embed\"\n//go:embed tpl.html\nvar tpl string\n",
+		"internal/small/tpl.html": "x\n",
+		"internal/core/b_test.go": "package core\nimport \"testing\"\nfunc TestB1(t *testing.T) { _ = \"testdata/g.txt\" }\n",
+	} {
+		if err := os.WriteFile(filepath.Join(in.root, p), []byte(s), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := planGoTest([]string{"go", "test", "./..."}, in)
+	want := []string{"go test -count=1 ./internal/small", "go test -count=1 -run ^(TestB1)$ ./internal/core"}
+	if got := cmdLines(p); !slices.Equal(got, want) {
+		t.Errorf("got %q want %q", got, want)
+	}
+	in = narrowRepo(t, "internal/small/tpl.html")
+	if err := os.WriteFile(filepath.Join(in.root, "internal/small/s.go"), []byte("package small\nimport _ \"embed\"\n//go:embed tpl.html\nvar tpl string\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(in.root, "internal/small/tpl.html"), []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p = planGoTest([]string{"go", "test", "./internal/core", "./internal/small"}, in)
+	if got := cmdLines(p); !slices.Equal(got, []string{"go test -count=1 ./internal/small"}) {
+		t.Errorf("embedded file in a light package: %q", got)
+	}
+}
+
+// A flag whose value is a file path is not narrowed; the notice says why.
+func TestPlanGoTestFileFlagIsNotNarrowed(t *testing.T) {
+	for _, f := range []string{"coverprofile", "o", "cpuprofile", "memprofile", "blockprofile", "mutexprofile", "trace", "outputdir", "modfile", "overlay", "exec"} {
+		for _, form := range [][]string{{"-" + f, "x.out"}, {"-" + f + "=x.out"}, {"--" + f, "x.out"}} {
+			argv := append(append([]string{"go", "test"}, form...), "./internal/core")
+			p := planGoTest(argv, narrowRepo(t, "internal/core/a.go"))
+			if p.Narrow || !p.Whole || len(p.Cmds) != 0 || !strings.Contains(p.Why, "-"+f+" names a file") {
+				t.Errorf("%v: narrow %v whole %v why %q", form, p.Narrow, p.Whole, p.Why)
+			}
+		}
+	}
+	// A light package alone is run as asked without a notice; so is --all.
+	if p := planGoTest([]string{"go", "test", "-coverprofile=c.out", "./internal/small"}, narrowRepo(t, "internal/small/s.go")); p.Why != "" || p.Whole {
+		t.Errorf("light package: %+v", p)
+	}
+	in := narrowRepo(t, "internal/core/a.go")
+	in.all = true
+	if p := planGoTest([]string{"go", "test", "-coverprofile=c.out", "./internal/core"}, in); p.Why != "" || !p.All {
+		t.Errorf("--all: %+v", p)
 	}
 }
 
@@ -253,7 +326,7 @@ func TestNarrowNotice(t *testing.T) {
 	p := planGoTest([]string{"go", "test", "./internal/core"}, in)
 	want := []string{
 		"wp testsum: running the 3 tests beside your 3 changed files in internal/core, not the whole package (base 8240ca8a9).",
-		"  No tests beside: internal/core/c.go.",
+		"  No test sits beside: internal/core/c.go (heavy package: only tests in changed test files and beside changed files run).",
 		"  The whole package: wp testsum --all -- go test ./internal/core   (about 21 minutes here; CI runs the whole suite on the pull request)",
 	}
 	got := narrowNotice("wp testsum", "wp testsum --all --", []string{"go", "test", "-json", "./internal/core"}, p, 21*time.Minute+10*time.Second)
@@ -434,7 +507,7 @@ func TestSlotNarrowedToNothingRunsNothing(t *testing.T) {
 	if _, serr := os.Stat(log); serr == nil {
 		t.Error("go ran")
 	}
-	if !strings.Contains(errb.String(), "wp testsum: nothing changed in ./internal/core since the base") || !strings.Contains(errb.String(), "wp testsum --all -- go test ./internal/core") {
+	if !strings.Contains(errb.String(), "wp testsum: no file changed in ./internal/core since the base") || !strings.Contains(errb.String(), "wp testsum --all -- go test ./internal/core") {
 		t.Errorf("stderr:\n%s", errb)
 	}
 	dir, _ := slotDir()
@@ -473,5 +546,25 @@ func TestSlotLsCountsNarrowedAndAll(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "go test runs narrowed to the diff: 2; run whole with --all or WP_TEST_ALL=1: 1") {
 		t.Errorf("ls:\n%s", out)
+	}
+}
+
+// A cancel between the narrowed commands: the next one does not start, and
+// the run ends with the code of a signalled one.
+func TestSlotNarrowedCancelBetweenCommandsSkipsTheRest(t *testing.T) {
+	log := narrowedSlot(t, []string{"internal/core/a.go", "internal/small/s.go"}, "0", "0")
+	// The first go stops the run as Ctrl-C does (the slot's context catches
+	// SIGTERM) and gives it a moment to arrive.
+	script := "#!/bin/sh\necho \"$PWD|$*\" >> '" + log + "'\nkill -TERM $PPID\nsleep 0.5\n"
+	if err := os.WriteFile(filepath.Join(filepath.Dir(log), "go"), []byte(script), 0o700); err != nil { // #nosec G306 -- a test script
+		t.Fatal(err)
+	}
+	c, out, _ := sqCLI()
+	code, err := c.runInSlotWith("tests", 2, []string{"go", "test", "./..."}, out, out, nil, nil, slotOpts{who: "wp testsum", allCmd: "wp testsum --all --"})
+	if err != nil || code != 128+15 {
+		t.Fatalf("code %d err %v, want 143", code, err)
+	}
+	if logged, _ := os.ReadFile(log); strings.Count(string(logged), "\n") != 1 {
+		t.Errorf("go ran:\n%s, want only the first command", logged)
 	}
 }

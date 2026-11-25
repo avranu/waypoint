@@ -94,6 +94,7 @@ func (e *checksEnv) ship(t *testing.T, args ...string) error {
 	if err := fs.Parse(append([]string{"--no-arm", "--no-move"}, args...)); err != nil {
 		t.Fatal(err)
 	}
+	fs.Visit(func(fl *flag.Flag) { so.summaryGiven = so.summaryGiven || fl.Name == "summary" })
 	_, err := e.c.shipWork(f, so, "", false, "WP-9", true)
 	return err
 }
@@ -148,6 +149,11 @@ func TestShipChecksAgainstAnOlderServer(t *testing.T) {
 		"none":    say(map[string]any{"outcome": "none"}),
 		"waiting": waitingAnswer(),
 		"404":     func(w http.ResponseWriter) { http.Error(w, "404 page not found", http.StatusNotFound) },
+		// What the real older server answers: it decodes the request strictly and
+		// refuses the field it doesn't know.
+		"400 unknown pull_id": func(w http.ResponseWriter) {
+			http.Error(w, `{"error":"json: unknown field \"pull_id\""}`, http.StatusBadRequest)
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := newChecksEnv(t, answer)
@@ -195,5 +201,18 @@ func TestShipChecksBoundIsWhatIsLeft(t *testing.T) {
 	}
 	if !strings.Contains(e.out.String(), "Stopped waiting here") {
 		t.Fatalf("output:\n%s", e.out.String())
+	}
+}
+
+// A wait that ends on failed checks keeps the --summary for the next wp ship,
+// as the other ways out of a ship do.
+func TestShipChecksFailureKeepsTheSummary(t *testing.T) {
+	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
+	e := newChecksEnv(t, checksAnswer("checks_failed", "a/b#5 failed its checks", 41))
+	if err := e.ship(t, "--wait-timeout=5s", "--summary", "Rows export now."); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.c.keptSummaryOf("WP-9"); got != "Rows export now." {
+		t.Fatalf("kept summary %q\n%s", got, e.out.String())
 	}
 }

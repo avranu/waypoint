@@ -438,6 +438,11 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 		dirty, _ := localGit("status", "--porcelain", "--untracked-files=no")
 		why := shipNeedsAgent(o, so.before, wrong, putOffPrompt(o.key, o.PutOff), dirty != "")
 		if c.canWaitChecks(so, o, babysat, why) {
+			if summary != "" {
+				// The wait may end on failed checks: the next wp ship is the
+				// one that ends the turn with this summary.
+				c.keepSummary(cmpStr(key, o.key), summary)
+			}
 			head, _ := localGit("rev-parse", "HEAD")
 			if done, err := c.waitShipChecks(task, d.ID, d.Number, strings.TrimSpace(head), min(*so.waitTimeout, shipLeft())); err != nil || done {
 				return false, err

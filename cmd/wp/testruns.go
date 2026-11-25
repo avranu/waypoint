@@ -53,9 +53,12 @@ type testRunRecorder struct {
 	// label is the command as the record says it, where that isn't argv:
 	// wp test says "wp test (scoped check)", not the script it ran.
 	label string
-	tree  string
-	start time.Time
-	snap  func() string
+	// compileOnly: the run only compiled packages and ran no test. A pass is
+	// then not kept, as it would read as the tests passing; a failure is.
+	compileOnly bool
+	tree        string
+	start       time.Time
+	snap        func() string
 }
 
 func newTestRunRecorder(argv []string) *testRunRecorder {
@@ -80,6 +83,9 @@ func (r *testRunRecorder) started() {
 // the end leaves no telling whether the tree moved.
 func (r *testRunRecorder) finish(res *testResult, exit int) {
 	if r == nil || r.tree == "" {
+		return
+	}
+	if r.compileOnly && exit == 0 && res.outcome() != runFail {
 		return
 	}
 	end := r.snap()

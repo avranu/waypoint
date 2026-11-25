@@ -57,6 +57,10 @@ if any '(\.go$|^go\.(mod|sum)$|^\.golangci\.yml$)'; then
   golang=1
   command -v golangci-lint >/dev/null || make tools || failed="$failed tools"
   step build go build ./...
+  # vet type-checks every package and test (about 4 s wall, 9 CPU seconds with a warm build cache; no test runs):
+  # a signature change that breaks another package's tests fails here without
+  # running them.
+  if any '(\.go$|^go\.(mod|sum)$)'; then step vet go vet ./...; fi
   if any '^\.golangci\.yml$'; then
     # A lint configuration change reaches every package.
     step lint make golint
@@ -106,7 +110,13 @@ if any '^(\.forgejo/|\.gitattributes$|web/src/lib/theme\.ts$)'; then
 fi
 
 if [ -n "$golang" ]; then
-  step tests "${WP_TEST_WP:-wp}" test go -- -vet=off -timeout 30m
+  if any '\.go$'; then
+    step tests "${WP_TEST_WP:-wp}" test go -- -vet=off -timeout 30m
+  else
+    # Only go.mod, go.sum or .golangci.yml changed: build, vet and the
+    # vulnerability check ran, and no package's tests.
+    echo ".waypoint/test: no package test ran for a dependency or lint-config change; wp test --all runs everything" >&2
+  fi
 fi
 
 passed=$(echo "$passed" | sed 's/^ //; s/ /, /g')

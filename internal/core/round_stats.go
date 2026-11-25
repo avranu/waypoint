@@ -34,10 +34,14 @@ type RoundStats struct {
 	// (WP-695).
 	Nitpicks *NitpickStats `json:"nitpicks,omitempty"`
 	// Failed checks a waiting author took instead of a round (WP-1878): how
-	// many, how many a new head fixed in time, how many fell back to a round.
+	// many; of them a new head came before the deadline (any new head, not
+	// only the author's), a round took, the checks passed on the same head, or
+	// the hand-off is still pending. The four add up to the first.
 	AuthorHandoffs int `json:"author_handoffs"`
 	AuthorFixed    int `json:"author_fixed"`
 	AuthorFellBack int `json:"author_fell_back"`
+	AuthorCleared  int `json:"author_cleared"`
+	AuthorPending  int `json:"author_pending"`
 }
 
 // maxReplayDays bounds a replay: it reads each pull request's files from
@@ -110,8 +114,12 @@ func (s *Service) GetRoundStats(ctx context.Context, actor *Actor, projectRef st
 			out.Merged++
 			out.MergedRounds += len(k.rounds)
 		}
-		h, f, fb := handoffCounts(k.handoffs, since)
-		out.AuthorHandoffs, out.AuthorFixed, out.AuthorFellBack = out.AuthorHandoffs+h, out.AuthorFixed+f, out.AuthorFellBack+fb
+		h := handoffCounts(k.handoffs, since)
+		out.AuthorHandoffs += h.Handed
+		out.AuthorFixed += h.Fixed
+		out.AuthorFellBack += h.FellBack
+		out.AuthorCleared += h.Cleared
+		out.AuthorPending += h.Pending
 		var inSpan []BabysitRound
 		for _, r := range k.rounds {
 			if !r.At.Before(since) {

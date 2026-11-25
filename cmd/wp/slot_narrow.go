@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -37,6 +38,10 @@ const (
 var (
 	goTestValueFlags = setOf("run bench benchtime count cpu timeout parallel tags p vet covermode coverpkg coverprofile cpuprofile memprofile memprofilerate blockprofile blockprofilerate mutexprofile mutexprofilefraction outputdir trace o exec fuzz fuzztime fuzzminimizetime shuffle skip gcflags ldflags asmflags gccgoflags mod modfile overlay pkgdir toolexec buildvcs compiler installsuffix buildmode list testlogfile")
 	goTestBoolFlags  = setOf("json v race short failfast cover x n a work msan asan trimpath c benchmem linkshared fullpath")
+	// goTestPathFlags are the flags whose value is a file or folder the
+	// command writes or reads: a run split in several commands would write it
+	// once per command, the last one over the others.
+	goTestPathFlags = setOf("coverprofile o cpuprofile memprofile blockprofile mutexprofile trace outputdir modfile overlay exec")
 )
 
 // goTestArgs is a direct go test command line taken apart.
@@ -46,6 +51,8 @@ type goTestArgs struct {
 	// Run, Fuzz, List and Compile: a flag that picks which tests run or that
 	// runs none. Such a command is left alone.
 	Run, Fuzz, List, Compile bool
+	// PathFlag is the first flag given whose value is a file path ("" none).
+	PathFlag string
 }
 
 // splitGoTestArgs takes argv apart when it is `go test …` directly, with
@@ -78,6 +85,9 @@ func splitGoTestArgs(argv []string) (a goTestArgs, ok bool) {
 		case goTestBoolFlags[name]:
 		default:
 			return a, false
+		}
+		if goTestPathFlags[name] && a.PathFlag == "" {
+			a.PathFlag = "-" + name
 		}
 		switch name {
 		case "run":
@@ -152,18 +162,21 @@ type goTestPlan struct {
 	// All: it would have been narrowed but --all or WP_TEST_ALL=1 asked for
 	// everything (counted by wp slot ls).
 	All bool
-	// Narrow: run Cmds instead, from Root. No Cmds: nothing in the asked
-	// packages changed, so nothing runs.
+	// Narrow: run Cmds instead, from Root. No Cmds: no changed file belongs
+	// to the asked packages or selects a test, so nothing runs.
 	Narrow  bool
 	Cmds    [][]string
 	Root    string
 	Base    string
 	Sel     goSelection
-	Changed int // changed Go files in the asked packages
+	Changed int // changed files that belong to the asked packages
 	// HeavyChanged: how many of them are in heavy packages, which run by file.
 	HeavyChanged int
-	Asked        []string // the package arguments as typed
-	Why          string   // why a whole heavy run was not narrowed, when that is news
+	// Kept: the changed files that sit in the asked packages' folders, the
+	// ones the notice names when none selects a test.
+	Kept  []string
+	Asked []string // the package arguments as typed
+	Why   string   // why a whole heavy run was not narrowed, when that is news
 }
 
 // planGoTest decides, for argv in the tests slot, whether it is narrowed to
@@ -186,30 +199,29 @@ func planGoTest(argv []string, in narrowEnv) goTestPlan {
 		p.All = in.all
 		return p
 	}
+	if a.PathFlag != "" {
+		p.Why = a.PathFlag + " names a file, and the selection can run several go test commands that would each write it, so the command runs as asked"
+		return p
+	}
 	base, changed, err := in.changes()
 	if err != nil {
 		p.Why = err.Error()
 		return p
-	}
-	heavySet := map[string]bool{}
-	for _, h := range in.heavy {
-		heavySet[cleanPkgDir(h)] = true
 	}
 	var kept []string
 	for _, f := range changed {
 		f = path.Clean(filepath.ToSlash(f))
 		if match(path.Dir(f)) {
 			kept = append(kept, f)
-			if strings.HasSuffix(f, ".go") {
-				p.Changed++
-				if heavySet[path.Dir(f)] {
-					p.HeavyChanged++
-				}
-			}
 		}
 	}
 	p.Whole, p.Narrow, p.Base = false, true, base
-	p.Sel = selectGoTests(in.root, kept, in.heavy)
+	p.Kept = kept
+	// Every changed path goes to the selection: a testdata or embedded file
+	// sits in a folder the asked packages may not name, and belongs to a
+	// package they do.
+	p.Sel = selectGoTestsIn(in.root, changed, in.heavy, match, listEmbeds, os.Stderr)
+	p.Changed, p.HeavyChanged = p.Sel.Files, p.Sel.HeavyFiles
 	p.Cmds = p.Sel.commands(a.Flags)
 	return p
 }
@@ -335,10 +347,10 @@ func narrowNotice(who, allCmd string, argv []string, p goTestPlan, median time.D
 	var lines []string
 	base := p.Base[:min(len(p.Base), narrowSHALen)]
 	switch {
-	case len(p.Cmds) == 0 && len(p.Sel.NoTests) == 0:
-		lines = append(lines, fmt.Sprintf("%s: nothing changed in %s since the base (%s), so no test runs.", who, shellJoin(p.askedOrHere()), base))
+	case len(p.Cmds) == 0 && len(p.Kept) == 0:
+		lines = append(lines, fmt.Sprintf("%s: no file changed in %s since the base (%s), so no test runs.", who, shellJoin(p.askedOrHere()), base))
 	case len(p.Cmds) == 0:
-		lines = append(lines, fmt.Sprintf("%s: %s changed in %s since the base (%s) but no test sits beside it, so no test runs.", who, plural1(p.Changed, "file"), strings.Join(p.Sel.Packages, " "), base))
+		lines = append(lines, fmt.Sprintf("%s: %s changed in %s since the base (%s), but none of them selects a test (%s), so no test runs.", who, plural1(len(p.Kept), "file"), shellJoin(p.askedOrHere()), base, listFiles(p.Kept, 5)))
 	default:
 		var what []string
 		if len(heavy) > 0 {
@@ -347,10 +359,13 @@ func narrowNotice(who, allCmd string, argv []string, p goTestPlan, median time.D
 		if len(whole) > 0 {
 			what = append(what, fmt.Sprintf("every test of %s", strings.Join(whole, ", ")))
 		}
+		if len(p.Sel.Compile) > 0 {
+			what = append(what, fmt.Sprintf("only a compile of %s (no test sits beside the change, so the package is compiled and no test runs)", strings.Join(trimDot(p.Sel.Compile), ", ")))
+		}
 		lines = append(lines, fmt.Sprintf("%s: running %s, not %s (base %s).", who, strings.Join(what, " and "), asked, base))
 	}
-	if len(p.Sel.NoTests) > 0 {
-		lines = append(lines, "  No tests beside: "+strings.Join(p.Sel.NoTests, ", ")+".")
+	if l := p.Sel.noTestsLine(); l != "" {
+		lines = append(lines, "  "+l)
 	}
 	bracket := "CI runs the whole suite on the pull request"
 	if median > 0 {
@@ -361,6 +376,22 @@ func narrowNotice(who, allCmd string, argv []string, p goTestPlan, median time.D
 		label = "Everything asked for"
 	}
 	return append(lines, fmt.Sprintf("  %s: %s %s   (%s)", label, allCmd, shellJoin(shownArgv(argv)), bracket))
+}
+
+// listFiles lists up to max of files, then how many more.
+func listFiles(files []string, max int) string {
+	if len(files) <= max {
+		return strings.Join(files, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(files[:max], ", "), len(files)-max)
+}
+
+func trimDot(pkgs []string) []string {
+	out := make([]string, len(pkgs))
+	for i, p := range pkgs {
+		out[i] = strings.TrimPrefix(p, "./")
+	}
+	return out
 }
 
 // askedOrHere is the packages asked for, or the working folder when none was named.
@@ -442,6 +473,8 @@ func (c *cli) runInSlotWith(name string, n int, argv []string, out, errw io.Writ
 		}
 		if opts.rec != nil {
 			opts.rec.label = opts.rec.command() + scopedMark
+			// A run that only compiles passed no test: it is not kept as a pass.
+			opts.rec.compileOnly = plan.Sel.compileOnly()
 		}
 		do = func(ctx context.Context, env []string) (int, error) {
 			if envf != nil {
@@ -449,6 +482,10 @@ func (c *cli) runInSlotWith(name string, n int, argv []string, out, errw io.Writ
 			}
 			code := 0
 			for _, argv := range plan.Cmds {
+				if ctx.Err() != nil {
+					// Cancelled between commands: the next does not start.
+					return 128 + int(syscall.SIGTERM), nil
+				}
 				got, err := runSlotCmdIn(ctx, plan.Root, env, argv, os.Stdin, out, errw)
 				if err != nil {
 					return 0, err

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -257,7 +258,7 @@ func TestWpTestGoSelectsFromTheChangedList(t *testing.T) {
 	if err := c.dispatch(testCmd, []string{"go", "--print", "--", "-vet=off"}); err != nil {
 		t.Fatal(err)
 	}
-	want := "No tests beside: h/other.go (heavy package: only tests in changed test files and beside changed files run).\n" +
+	want := "No test sits beside: h/other.go (heavy package: only tests in changed test files and beside changed files run).\n" +
 		"go test -count=1 -vet=off ./w\n" +
 		"go test -count=1 -vet=off -run '^(TestH)$' ./h\n"
 	if out.String() != want {
@@ -271,11 +272,68 @@ func TestWpTestGoSelectsFromTheChangedList(t *testing.T) {
 		t.Fatal(err)
 	}
 	out.Reset()
-	if err := c.dispatch(testCmd, []string{"go", "--print"}); err != nil || !strings.Contains(out.String(), "no changed Go package") {
+	if err := c.dispatch(testCmd, []string{"go", "--print"}); err != nil || !strings.Contains(out.String(), "no changed file belongs to a Go package") {
 		t.Errorf("nothing selected: %v\n%s", err, out.String())
 	}
 	if err := c.dispatch(testCmd, []string{"go", "-vet=off"}); err == nil || !strings.Contains(err.Error(), "after --") {
 		t.Errorf("flags without --: %v", err)
+	}
+}
+
+// A heavy package whose changed file has no test beside it is compiled: a
+// file that doesn't build fails, and a compile that passes is not kept as the
+// tests passing.
+func TestWpTestCompilesAHeavyPackageWithNoTestBeside(t *testing.T) {
+	root := scopedRepo(t)
+	putFiles(t, root, map[string]string{
+		"go.mod":                "module example.com/m\n\ngo 1.21\n",
+		"q/q.go":                "package q\n",
+		"q/q_test.go":           "package q\n\nimport \"testing\"\n\nfunc TestQ(t *testing.T) {}\n",
+		".waypoint/heavy-tests": "q\n",
+	})
+	gitDo(t, "add", "-A")
+	gitDo(t, "commit", "-q", "-m", "module")
+	gitDo(t, "update-ref", "refs/heads/main", "HEAD")
+	putFiles(t, root, map[string]string{"q/new.go": "package q\n\nfunc New() int { return 1 }\n"})
+	out, _, err := runWpTest(t)
+	if err != nil || !strings.Contains(out, "compile (only compiled, no test ran)") || !strings.Contains(out, "No test sits beside: q/new.go") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if runs := readTestRuns(testRunsPath()); len(runs) != 0 {
+		t.Errorf("a compile-only pass was recorded: %+v", runs)
+	}
+	putFiles(t, root, map[string]string{"q/new.go": "package q\n\nfunc New() int { return undefinedName }\n"})
+	out, _, err = runWpTest(t)
+	var ec exitCode
+	if !errors.As(err, &ec) || ec != 1 || !strings.Contains(out, "wp test: failed:") {
+		t.Fatalf("a file that doesn't build passed: %v\n%s", err, out)
+	}
+	if runs := readTestRuns(testRunsPath()); len(runs) == 0 || runs[len(runs)-1].Outcome != runFail {
+		t.Errorf("the failure was not recorded: %+v", runs)
+	}
+}
+
+// wp test and wp test go keep the full output of a failure they cut.
+func TestWpTestKeepsTheFullOutputOfALongFailure(t *testing.T) {
+	root := scopedRepo(t)
+	t.Setenv("WAYPOINT_TESTOUT_DIR", t.TempDir())
+	var b strings.Builder
+	b.WriteString("package q\n\nimport \"testing\"\n")
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&b, "func TestF%02d(t *testing.T) { t.Fatal(\"boom %02d\") }\n", i, i)
+	}
+	putFiles(t, root, map[string]string{"go.mod": "module example.com/m\n\ngo 1.21\n", "q/q.go": "package q\n", "q/q_test.go": b.String()})
+	gitDo(t, "add", "-A")
+	gitDo(t, "commit", "-q", "-m", "module")
+	gitDo(t, "update-ref", "refs/heads/main", "HEAD")
+	putFiles(t, root, map[string]string{"q/q.go": "package q\n\nvar X = 1\n"})
+	out, _, err := runWpTest(t)
+	if err == nil || !strings.Contains(out, "Full output: ") || !strings.Contains(out, " lines)") {
+		t.Errorf("wp test: %v\n%s", err, out)
+	}
+	out, _, err = runWpTest(t, "go")
+	if err == nil || !strings.Contains(out, "Full output: ") {
+		t.Errorf("wp test go: %v\n%s", err, out)
 	}
 }
 

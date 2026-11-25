@@ -49,7 +49,8 @@ of the command's recent runs, and says nothing without any (WP-1571).
 In the tests slot a go test of a whole heavy package or ./... with no -run,
 in a repository with .waypoint/heavy-tests, runs the tests beside what you
 changed since the base instead, and says so first, with the command that runs
-everything. --all, or WP_TEST_ALL=1, runs it whole. Such a whole run is long
+everything. --all, or WP_TEST_ALL=1, runs it whole, as does a flag that names a
+file (-coverprofile, -o, -cpuprofile, -trace, …). Such a whole run is long
 from its first run. Runs of the two kinds keep separate times (WP-1877).
 
 Waiters are served first come, first served: a run tries a slot only when no
@@ -60,8 +61,9 @@ CPU bound, WAYPOINT_SLOT_CPU percent of one core (default 200; off for none),
 so a go test in a slot can't take every core:
   cgroup  the process already sits under a cpu.max quota (a sandbox): nothing added
   runner  a runner job: its load governor paces it; Go is held to the quota
-  scope   a systemd user scope (systemd-run --user) with CPUQuota and CPUWeight=50
-          in waypoint-tests.slice; needs a user bus (XDG_RUNTIME_DIR)
+  scope   a systemd user scope (systemd-run --user) with CPUQuota in
+          waypoint-tests.slice (a scope whose cgroup shows no quota counts as
+          none); needs a user bus (XDG_RUNTIME_DIR)
   env     elsewhere: GOMAXPROCS and GOFLAGS -p set, unless you set them. This
           binds Go builds and tests only, not other programs the command runs.
   none    WAYPOINT_SLOT_CPU=off
@@ -148,6 +150,7 @@ func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstM
 	defer remove()
 	missed := false
 	for {
+		slotTouchWaiter(dir, name)
 		blocked := slotBlockedSlots(dir, name, me.UnixNano())
 		for _, i := range order {
 			if blocked(i) {

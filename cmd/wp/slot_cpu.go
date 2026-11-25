@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -20,11 +21,7 @@ const (
 	slotCPUEnv = "WAYPOINT_SLOT_CPU"
 	// slotCPUDefault is that quota unset: two cores.
 	slotCPUDefault = 200
-	// slotCPUWeight is the scope's CPUWeight. It equals the sandbox slice's
-	// (sandbox_install.go: CPUWeight=50), so a test run weighs what a
-	// sandboxed session does when they compete.
-	slotCPUWeight = 50
-	// slotCPUSlice holds every scope this makes, so they share one weight.
+	// slotCPUSlice holds every scope this makes.
 	slotCPUSlice = "waypoint-tests.slice"
 )
 
@@ -154,16 +151,17 @@ func cgroupBounded(procCgroup, root string) bool {
 }
 
 // slotScopeMarker runs first in the scope: it says on fd 3 that the scope
-// started, closes fd 3 so the command doesn't have it, and becomes the
-// command. systemd-run exits 1 when it can't start the scope, as a command
-// may, so without it the two can't be told apart.
-const slotScopeMarker = `printf x >&3; exec 3>&-; exec "$@"`
+// started, "x" when the scope's cgroup has a cpu.max quota and "n" when it
+// has none (unreadable counts as none), closes fd 3 so the command doesn't
+// have it, and becomes the command. systemd-run exits 1 when it can't start
+// the scope, as a command may, so without it the two can't be told apart.
+const slotScopeMarker = `q=; { read q _ < /sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)/cpu.max; } 2>/dev/null; m=n; [ -n "$q" ] && [ "$q" != max ] && m=x; printf %s "$m" >&3; exec 3>&-; exec "$@"`
 
 // scopeArgv is the command line that runs argv in a systemd user scope with
 // the quota (percent); bin is systemd-run.
 func scopeArgv(bin string, quota int, argv []string) []string {
 	out := []string{bin, "--user", "--scope", "--quiet", "--collect", "--slice=" + slotCPUSlice,
-		"-p", "CPUQuota=" + strconv.Itoa(quota) + "%", "-p", "CPUWeight=" + strconv.Itoa(slotCPUWeight),
+		"-p", "CPUQuota=" + strconv.Itoa(quota) + "%",
 		"--", "/bin/sh", "-c", slotScopeMarker, "sh"}
 	return append(out, argv...)
 }
@@ -214,9 +212,17 @@ func runSlotBound(ctx context.Context, dir string, env, argv []string, in io.Rea
 		}
 	}
 	if kind == slotBoundScope {
-		if code, started, err := runInScope(ctx, dir, env, argv, quota, in, out, errw); started {
+		code, started, bounded, err := runInScope(ctx, dir, env, argv, quota, in, out, errw)
+		if started {
+			if !bounded {
+				kind = slotBoundNone // a scope that bounds nothing
+			}
 			tell()
 			return code, kind, err
+		}
+		if ctx.Err() != nil {
+			// Cancelled before the scope started: the next command does not run.
+			return 128 + int(syscall.SIGTERM), kind, nil
 		}
 		kind = slotBoundEnv
 	}
@@ -233,18 +239,18 @@ func runSlotBound(ctx context.Context, dir string, env, argv []string, in io.Rea
 type slotRanKeyT struct{}
 
 // runInScope runs argv in a systemd user scope. started false says the scope
-// did not start and argv did not run.
-func runInScope(ctx context.Context, dir string, env, argv []string, quota int, in io.Reader, out, errw io.Writer) (code int, started bool, err error) {
+// did not start and argv did not run; bounded says the scope has a quota.
+func runInScope(ctx context.Context, dir string, env, argv []string, quota int, in io.Reader, out, errw io.Writer) (code int, started, bounded bool, err error) {
 	bin, lerr := exec.LookPath("systemd-run")
 	if lerr != nil {
-		return 0, false, nil
+		return 0, false, false, nil
 	}
 	if _, lerr := exec.LookPath(argv[0]); lerr != nil {
-		return 0, false, nil // the plain run says what is missing
+		return 0, false, false, nil // the plain run says what is missing
 	}
 	r, w, perr := os.Pipe()
 	if perr != nil {
-		return 0, false, nil
+		return 0, false, false, nil
 	}
 	defer func() { _ = r.Close() }()
 	full := scopeArgv(bin, quota, argv)
@@ -254,10 +260,10 @@ func runInScope(ctx context.Context, dir string, env, argv []string, quota int, 
 	serr := cmd.Start()
 	_ = w.Close()
 	if serr != nil {
-		return 0, false, nil
+		return 0, false, false, nil
 	}
 	code, err = waitSlotCmd(ctx, cmd)
 	_ = r.SetReadDeadline(time.Now().Add(time.Second))
 	b, _ := io.ReadAll(r)
-	return code, len(b) > 0, err
+	return code, len(b) > 0, len(b) > 0 && b[0] == 'x', err
 }

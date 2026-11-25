@@ -72,7 +72,7 @@ func TestSelectGoTests(t *testing.T) {
 		{"heavy: a platform file runs the tests of its stem and of itself", []string{"heavy/foo_linux.go"},
 			goSelection{Packages: []string{"./heavy"}, Heavy: []heavyRun{{"./heavy", []string{"TestFoo", "TestFooExtra", "TestWin"}}}}},
 		{"heavy: source with no tests beside is listed", []string{"heavy/bar.go"},
-			goSelection{Packages: []string{"./heavy"}, NoTests: []string{"heavy/bar.go"}}},
+			goSelection{Packages: []string{"./heavy"}, NoTests: []string{"heavy/bar.go"}, Compile: []string{"./heavy"}}},
 		{"heavy: a test file with no tests in it is listed", []string{"heavy/helpers_test.go", "heavy/foo.go"},
 			goSelection{Packages: []string{"./heavy"}, Heavy: []heavyRun{{"./heavy", []string{"TestFoo", "TestFooExtra", "TestWin"}}}, NoTests: []string{"heavy/helpers_test.go"}}},
 		{"a deleted package is skipped", []string{"gone/g.go", "gone/g_test.go"}, goSelection{}},
@@ -85,6 +85,7 @@ func TestSelectGoTests(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := selectGoTests(root, tt.changed, heavy)
+			got.Files, got.HeavyFiles = 0, 0 // counted in TestSelectGoTestsDataFiles
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("got  %+v\nwant %+v", got, tt.want)
 			}
@@ -153,5 +154,177 @@ func TestFileStems(t *testing.T) {
 		if got := fileStems(in); !reflect.DeepEqual(got, want) {
 			t.Errorf("%s: got %v, want %v", in, got, want)
 		}
+	}
+}
+
+// dataModule is a module with a heavy and a light package that have testdata
+// and embedded files.
+func dataModule(t *testing.T) string {
+	root := t.TempDir()
+	putFiles(t, root, map[string]string{
+		"go.mod":                           "module m\n",
+		"light/l.go":                       "package x\nimport _ \"embed\"\n//go:embed tmpl/page.html\nvar page string\n",
+		"light/tmpl/page.html":             "x\n",
+		"light/testdata/deep/fixture.json": "{}\n",
+		"heavy/foo.go":                     srcGo,
+		"heavy/foo_test.go":                "package x\nimport \"testing\"\nfunc TestFoo(t *testing.T) {}\n",
+		"heavy/other_test.go":              "package x\nimport \"testing\"\nfunc TestOther(t *testing.T) { _ = \"testdata/golden.txt\" }\n",
+		"heavy/embed.go":                   "package x\nimport _ \"embed\"\n//go:embed schema.sql\nvar schema string\n",
+		"heavy/embed_test.go":              "package x\nimport \"testing\"\nfunc TestEmbed(t *testing.T) {}\n",
+		"heavy/schema.sql":                 "x\n",
+		"heavy/stray.txt":                  "x\n",
+		"heavy/testdata/golden.txt":        "x\n",
+		"heavy/testdata/unused.txt":        "x\n",
+		"heavy/sub/s.go":                   srcGo,
+		"heavy/sub/testdata/x.txt":         "x\n",
+		"loose/testdata/y.txt":             "x\n",
+	})
+	return root
+}
+
+func TestSelectGoTestsDataFiles(t *testing.T) {
+	root := dataModule(t)
+	heavy := []string{"heavy"}
+	embeds := func(string) (embedIndex, error) {
+		return embedIndex{
+			owners: map[string][]string{"light/tmpl/page.html": {"light"}, "heavy/schema.sql": {"heavy"}, "heavy/sub/gone.txt": {"heavy/sub"}},
+			dirs:   map[string][]string{"light/tmpl": {"light"}, "heavy": {"heavy"}, "heavy/sub": {"heavy/sub"}},
+		}, nil
+	}
+	tests := []struct {
+		name    string
+		changed []string
+		want    goSelection
+	}{
+		{"light: a testdata file runs the package whole", []string{"light/testdata/deep/fixture.json"},
+			goSelection{Packages: []string{"./light"}, Whole: []string{"./light"}, Files: 1}},
+		{"light: an embedded file runs the package whole", []string{"light/tmpl/page.html"},
+			goSelection{Packages: []string{"./light"}, Whole: []string{"./light"}, Files: 1}},
+		{"heavy: a testdata file runs the tests whose file names it", []string{"heavy/testdata/golden.txt"},
+			goSelection{Packages: []string{"./heavy"}, Heavy: []heavyRun{{"./heavy", []string{"TestOther"}}}, Files: 1, HeavyFiles: 1}},
+		{"heavy: a deleted testdata file selects the same", []string{"heavy/testdata/golden.txt", "heavy/testdata/removed/golden.txt"},
+			goSelection{Packages: []string{"./heavy"}, Heavy: []heavyRun{{"./heavy", []string{"TestOther"}}}, NoTests: nil, Files: 2, HeavyFiles: 2}},
+		{"heavy: a testdata file no test file names has no test", []string{"heavy/testdata/unused.txt"},
+			goSelection{Packages: []string{"./heavy"}, NoTests: []string{"heavy/testdata/unused.txt"}, Compile: []string{"./heavy"}, Files: 1, HeavyFiles: 1}},
+		{"heavy: an embedded file selects the source that embeds it, and its beside-tests", []string{"heavy/schema.sql"},
+			goSelection{Packages: []string{"./heavy"}, Heavy: []heavyRun{{"./heavy", []string{"TestEmbed"}}}, Files: 1, HeavyFiles: 1}},
+		{"testdata belongs to the nearest package above it (here light, not heavy)", []string{"heavy/sub/testdata/x.txt"},
+			goSelection{Packages: []string{"./heavy/sub"}, Whole: []string{"./heavy/sub"}, Files: 1}},
+		{"testdata with no package above selects nothing", []string{"loose/testdata/y.txt"}, goSelection{}},
+		{"a go file in testdata selects nothing", []string{"light/testdata/t.go"}, goSelection{}},
+		{"a deleted embedded file takes the packages embedding in its folder", []string{"heavy/sub/gone.txt"},
+			goSelection{Packages: []string{"./heavy/sub"}, Whole: []string{"./heavy/sub"}, Files: 1}},
+		{"other non-Go files select nothing", []string{"heavy/stray.txt", "docs/a.md", "web/src/x.tsx", "scripts/run.sh"}, goSelection{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var warn strings.Builder
+			got := selectGoTestsIn(root, tt.changed, heavy, nil, embeds, &warn)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("got  %+v\nwant %+v", got, tt.want)
+			}
+			if warn.Len() > 0 {
+				t.Errorf("warned: %s", warn.String())
+			}
+		})
+	}
+}
+
+func TestSelectGoTestsListsEmbedsOnceAndOnlyWhenNeeded(t *testing.T) {
+	root := dataModule(t)
+	calls := 0
+	embeds := func(string) (embedIndex, error) { calls++; return embedIndex{}, nil }
+	selectGoTestsIn(root, []string{"heavy/foo.go", "light/testdata/deep/fixture.json", "light/l.go"}, nil, nil, embeds, os.Stderr)
+	if calls != 0 {
+		t.Errorf("go list asked %d times with no embeddable path", calls)
+	}
+	selectGoTestsIn(root, []string{"a.txt", "b.sql", "c/d.html"}, nil, nil, embeds, os.Stderr)
+	if calls != 1 {
+		t.Errorf("go list asked %d times, want once", calls)
+	}
+}
+
+func TestSelectGoTestsGoListFailureIsSaidAndSelectsNothing(t *testing.T) {
+	root := dataModule(t)
+	var warn strings.Builder
+	got := selectGoTestsIn(root, []string{"light/tmpl/page.html", "light/l.go"}, nil, nil,
+		func(string) (embedIndex, error) { return embedIndex{}, os.ErrInvalid }, &warn)
+	if !reflect.DeepEqual(got.Whole, []string{"./light"}) || got.Files != 1 {
+		t.Errorf("only the Go file selects: %+v", got)
+	}
+	if !strings.Contains(warn.String(), "can't list the files packages embed") {
+		t.Errorf("failure not said: %q", warn.String())
+	}
+}
+
+func TestSelectGoTestsInHonoursTheMatcher(t *testing.T) {
+	root := dataModule(t)
+	got := selectGoTestsIn(root, []string{"light/testdata/deep/fixture.json", "heavy/foo.go"}, []string{"heavy"},
+		func(dir string) bool { return dir == "light" }, nil, os.Stderr)
+	if !reflect.DeepEqual(got.Packages, []string{"./light"}) {
+		t.Errorf("packages %v", got.Packages)
+	}
+}
+
+func TestListEmbedsReadsGoList(t *testing.T) {
+	root := dataModule(t)
+	idx, err := listEmbeds(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := idx.ownersOf(root, "light/tmpl/page.html"); !reflect.DeepEqual(got, []string{"light"}) {
+		t.Errorf("owners of the template: %v", got)
+	}
+	if got := idx.ownersOf(root, "heavy/schema.sql"); !reflect.DeepEqual(got, []string{"heavy"}) {
+		t.Errorf("owners of the schema: %v", got)
+	}
+	if got := idx.ownersOf(root, "heavy/stray.txt"); got != nil {
+		t.Errorf("a file nothing embeds has owners: %v", got)
+	}
+}
+
+// The repository's own migrations are embedded by internal/db; no rule of
+// their own selects it.
+func TestRepositoryMigrationsSelectInternalDB(t *testing.T) {
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ := filepath.Glob(filepath.Join(root, "internal/db/migrations/*.sql"))
+	if len(m) == 0 {
+		t.Skip("no migrations here")
+	}
+	rel, _ := filepath.Rel(root, m[0])
+	got := selectGoTests(root, []string{filepath.ToSlash(rel)}, nil)
+	if !reflect.DeepEqual(got.Whole, []string{"./internal/db"}) {
+		t.Errorf("%s selects %+v", rel, got)
+	}
+}
+
+func TestGoSelectionCompileOnlyCommand(t *testing.T) {
+	sel := goSelection{Packages: []string{"./h"}, Compile: []string{"./h"}, NoTests: []string{"h/new.go"}}
+	got := sel.commands([]string{"-vet=off"})
+	want := [][]string{{"go", "test", "-count=1", "-vet=off", "-run", "^$", "./h"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v want %v", got, want)
+	}
+	if !sel.compileOnly() || sel.testsRun() {
+		t.Error("a compile-only selection runs no test")
+	}
+	if l := sel.noTestsLine(); !strings.Contains(l, "no test runs") || !strings.Contains(l, "h/new.go") {
+		t.Errorf("line: %q", l)
+	}
+	both := goSelection{Heavy: []heavyRun{{"./a", []string{"TestA"}}}, Compile: []string{"./h"}}
+	if c := both.commands(nil); len(c) != 2 || c[1][len(c[1])-1] != "./h" || both.compileOnly() {
+		t.Errorf("heavy with tests plus a compile: %v", c)
+	}
+}
+
+func TestUnparsableTestFileIsCompiled(t *testing.T) {
+	root := t.TempDir()
+	putFiles(t, root, map[string]string{"go.mod": "module m\n", "h/a.go": srcGo, "h/a_test.go": "package x\nfunc ("})
+	sel := selectGoTests(root, []string{"h/a_test.go"}, []string{"h"})
+	if !sel.compileOnly() || len(sel.commands(nil)) != 1 {
+		t.Errorf("an unparsable test file must still be compiled: %+v", sel)
 	}
 }
