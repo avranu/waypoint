@@ -596,8 +596,10 @@ runners built from a release follow it:
   even with jobs running, and once it succeeds the binary is replaced, so
   `wp` calls on that machine use it at once; until then (or for 6 hours
   after a failed download) jobs run the old one. The runner process restarts
-  on the new binary when no job is running, whichever `wp` put it there. If
-  it has waited 15 minutes, it takes no new jobs until the running ones
+  on the new binary when no job is running, whichever `wp` put it there, as
+  long as the file is still the one it checked. If it has waited 15 minutes
+  (counted from the first release it was to restart on, even when a newer
+  one has replaced it since), it takes no new jobs until the running ones
   finish, then restarts. A server back on the runner's own release has the
   binary put back, with no restart.
 
