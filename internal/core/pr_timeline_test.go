@@ -1,0 +1,196 @@
+package core
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+)
+
+// timelineEnv opens pull requests 7 (heads 7777777aaaa, then 8888888bbbb) and
+// 8 (its own head) so a timeline has another pull request's rows to leave out.
+func timelineEnv(t *testing.T) (*shipEnv, *PullRequest, int64) {
+	t.Helper()
+	se := newShipEnv(t, "forgejo")
+	se.pullHook("opened", ForgePR{Number: 7, Title: "Add export", Author: "sam", HeadRef: "add-export", HeadSHA: "7777777aaaa", State: "open"})
+	se.pullHook("opened", ForgePR{Number: 8, Title: "Other", Author: "sam", HeadRef: "other", HeadSHA: "9999999cccc", State: "open"})
+	se.s.Wait()
+	pr := se.pr(7)
+	t0 := se.clockNow().Add(-5 * time.Hour).UnixMilli()
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := se.s.db.W.ExecContext(se.ctx, q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`UPDATE pull_requests SET opened_at = ? WHERE id = ?`, t0, pr.ID)
+	exec(`DELETE FROM pr_events WHERE pr_id = ? AND kind = 'pushed'`, pr.ID)
+	exec(`DELETE FROM merge_holds WHERE pr_id = ?`, pr.ID) // the holds opening it made
+	exec(`INSERT INTO pr_events(pr_id, kind, actor, sha, created_at) VALUES (?, 'pushed', 'sam', '8888888bbbb', ?)`, pr.ID, t0+60*60000)
+	return se, pr, t0
+}
+
+func (se *shipEnv) timelineRun(number int, sha, ref, event, status string, created int64, started, stopped any) {
+	se.t.Helper()
+	if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO ci_runs(forge_id, repo, number, workflow, event, ref, sha, tier, status, created_at, started_at, stopped_at)
+		VALUES (?, 'me/app', ?, 'ci.yml', ?, ?, ?, '', ?, ?, ?, ?)`, se.f.ID, number, event, ref, sha, status, created, started, stopped); err != nil {
+		se.t.Fatal(err)
+	}
+}
+
+func TestPRTimelineRuns(t *testing.T) {
+	se, _, t0 := timelineEnv(t)
+	min := func(m int) int64 { return t0 + int64(m)*60000 }
+	se.timelineRun(1, "7777777aaaa", "#7", "pull_request", "failure", min(1), min(4), min(19))
+	se.timelineRun(2, "8888888bbbb", "#7", "pull_request", "success", min(62), min(63), min(80))
+	se.timelineRun(3, "9999999cccc", "#8", "pull_request", "success", min(2), min(3), min(9))
+	se.timelineRun(4, "ffffffffff", "refs/pull/7/head", "pull_request", "cancelled", min(70), nil, nil)
+	se.timelineRun(5, "7777777aaaa", "refs/heads/add-export", "push", "success", min(1), min(2), min(3))
+
+	tl, err := se.s.PRTimeline(se.ctx, se.admin, se.p.Key, "", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range tl.Runs {
+		got = append(got, fmt.Sprint(r.Number))
+	}
+	if strings.Join(got, ",") != "1,2,4" {
+		t.Fatalf("runs = %v, want 1,2,4 (not another pull request's, not a branch push)", got)
+	}
+	r1, r4 := tl.Runs[0], tl.Runs[2]
+	if r1.WaitS == nil || *r1.WaitS != 180 || r1.RunS == nil || *r1.RunS != 900 || r1.Head != "7777777" {
+		t.Errorf("run 1 = %+v", r1)
+	}
+	if r4.WaitS != nil || r4.RunS != nil || r4.StartedAt != nil || r4.StoppedAt != nil {
+		t.Errorf("run 4 never started, but has %+v", r4)
+	}
+	raw, _ := json.Marshal(r4)
+	if strings.Contains(string(raw), "wait_s") || strings.Contains(string(raw), "started_at") {
+		t.Errorf("run 4 json = %s", raw)
+	}
+	if tl.Totals.CIWaitS != 180+60 || tl.Totals.CIRunS != 900+1020 {
+		t.Errorf("totals = %+v", tl.Totals)
+	}
+	if len(tl.Pushes) != 1 || tl.Pushes[0].Head != "8888888" {
+		t.Errorf("pushes = %+v", tl.Pushes)
+	}
+}
+
+// The merge queue's run of a stack the pull request rode is one of its runs,
+// though it is a push to a wp-queue/ branch on a commit that is no head of it.
+func TestPRTimelineStackRuns(t *testing.T) {
+	se, pr, t0 := timelineEnv(t)
+	min := func(m int) int64 { return t0 + int64(m)*60000 }
+	stack := func(prID int64, branch, sha string) {
+		t.Helper()
+		if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO queue_stacks(forge_id, repo, base_ref, pr_id, base_sha, branch, commit_sha, created_at) VALUES (?, 'me/app', 'main', ?, 'base', ?, ?, ?)`,
+			se.f.ID, prID, branch, sha, min(90)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stack(pr.ID, "wp-queue/main/7-abc", "aaaaaaa1111")
+	stack(se.pr(8).ID, "wp-queue/main/8-abd", "bbbbbbb2222")
+	se.timelineRun(1, "8888888bbbb", "#7", "pull_request", "success", min(62), min(63), min(80))
+	se.timelineRun(2, "aaaaaaa1111", "wp-queue/main/7-abc", "push", "success", min(91), min(93), min(113))
+	se.timelineRun(3, "bbbbbbb2222", "wp-queue/main/8-abd", "push", "success", min(91), min(92), min(99))
+
+	tl, err := se.s.PRTimeline(se.ctx, se.admin, se.p.Key, "", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tl.Runs) != 2 || tl.Runs[0].Number != 1 || tl.Runs[0].Stack || tl.Runs[1].Number != 2 || !tl.Runs[1].Stack {
+		t.Fatalf("runs = %+v, want #1 and the stack run #2", tl.Runs)
+	}
+	if tl.Totals.CIWaitS != 60+120 || tl.Totals.CIRunS != 1020+1200 {
+		t.Errorf("totals = %+v", tl.Totals)
+	}
+}
+
+func TestPRTimelineHolds(t *testing.T) {
+	se, pr, t0 := timelineEnv(t)
+	min := func(m int) int64 { return t0 + int64(m)*60000 }
+	add := func(what string, from, until any) {
+		t.Helper()
+		if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO merge_holds(pr_id, head_sha, what, first_at, cleared_at) VALUES (?, '7777777aaaa', ?, ?, ?)`, pr.ID, what, from, until); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 9; i++ {
+		add(fmt.Sprintf("short %d", i), min(100+i), min(100+i)+30000) // under a minute each
+	}
+	add("a", min(10), min(30))
+	add("b", min(20), min(40)) // overlaps a: 10..40 is 30m
+	now := se.clockNow().UnixMilli()
+	add("open", now-10*60000, nil) // counts to now: 10m
+
+	tl, err := se.s.PRTimeline(se.ctx, se.admin, se.p.Key, "", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tl.Holds) != 12 {
+		t.Fatalf("%d holds, want all 12", len(tl.Holds))
+	}
+	if tl.Holds[0].What != "a" || tl.Holds[len(tl.Holds)-1].What != "open" || tl.Holds[len(tl.Holds)-1].Until != nil {
+		t.Errorf("order or open end wrong: %+v", tl.Holds)
+	}
+	if want := int64(30*60 + 9*30 + 10*60); tl.Totals.HeldS != want {
+		t.Errorf("held_s = %d, want %d", tl.Totals.HeldS, want)
+	}
+}
+
+func TestPRTimelineArmAndMerge(t *testing.T) {
+	se, pr, t0 := timelineEnv(t)
+	min := func(m int) int64 { return t0 + int64(m)*60000 }
+	audit := func(action string, at int64, target int64) {
+		t.Helper()
+		if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO audit_log(user_id, action, category, project_id, target_type, target_id, created_at) VALUES (?, ?, 'approval', ?, 'pr', ?, ?)`,
+			se.admin.User.ID, action, se.p.ID, target, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Opening it armed it by the repo's setting; this test lists its own rows.
+	if _, err := se.s.db.W.ExecContext(se.ctx, `DELETE FROM audit_log WHERE target_type = 'pr' AND target_id = ?`, pr.ID); err != nil {
+		t.Fatal(err)
+	}
+	audit("pr.merge", min(270), pr.ID)
+	audit("pr.arm", min(90), pr.ID)
+	audit("pr.disarm", min(120), pr.ID)
+	audit("pr.arm", min(130), pr.ID)
+	audit("pr.arm", min(95), se.pr(8).ID)
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET state = 'merged', merged_at = ? WHERE id = ?`, min(277), pr.ID); err != nil {
+		t.Fatal(err)
+	}
+	tl, err := se.s.PRTimeline(se.ctx, se.admin, se.p.Key, "", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, a := range tl.Armed {
+		got = append(got, a.What+"/"+a.By)
+	}
+	if want := "arm/" + se.admin.User.Username + ",disarm/" + se.admin.User.Username + ",arm/" + se.admin.User.Username + ",merge/" + se.admin.User.Username; strings.Join(got, ",") != want {
+		t.Errorf("armed = %v, want %s", got, want)
+	}
+	if tl.MergedAt == nil || tl.Totals.OpenToMergedS == nil || *tl.Totals.OpenToMergedS != 277*60 {
+		t.Errorf("merged = %v, totals = %+v", tl.MergedAt, tl.Totals)
+	}
+}
+
+func TestPRTimelineRefusesWhatThePullRequestRefuses(t *testing.T) {
+	se, _, _ := timelineEnv(t)
+	stranger := se.user("stranger", false)
+	_, err := se.s.PRTimeline(se.ctx, stranger, se.p.Key, "", 7)
+	if err == nil {
+		t.Fatal("a stranger read the timeline")
+	}
+	_, want := se.s.FindPullRequest(se.ctx, stranger, se.p.Key, "", 7)
+	if !errors.Is(err, want) && err.Error() != want.Error() {
+		t.Errorf("err = %v, FindPullRequest says %v", err, want)
+	}
+	if _, err := se.s.PRTimeline(se.ctx, nil, se.p.Key, "", 7); !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("no actor: %v", err)
+	}
+}

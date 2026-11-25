@@ -17,6 +17,7 @@ import (
 func (s *Server) shippingRoutes(mux *http.ServeMux) {
 	a := s.authed
 	mux.HandleFunc("GET /api/v1/projects/{key}/pulls/{number}", a(s.findPull))
+	mux.HandleFunc("GET /api/v1/projects/{key}/pulls/{number}/timeline", a(s.pullTimeline))
 	mux.HandleFunc("POST /api/v1/projects/{key}/pulls", a(s.openPull))
 	mux.HandleFunc("POST /api/v1/pulls/{id}/check", a(s.checkPull))
 	mux.HandleFunc("GET /api/v1/pulls/{id}/readiness", a(s.pullReadiness))
@@ -48,6 +49,15 @@ func (s *Server) findPull(w http.ResponseWriter, r *http.Request) (any, error) {
 		return nil, err
 	}
 	return s.svc.GetPullRequest(r.Context(), actor, id)
+}
+
+// pullTimeline is wp pr timeline: one pull request's ship-to-merge timeline (WP-1806).
+func (s *Server) pullTimeline(w http.ResponseWriter, r *http.Request) (any, error) {
+	n, err := strconv.Atoi(r.PathValue("number"))
+	if err != nil {
+		return nil, fmt.Errorf("%w: number must be a number", errBadRequest)
+	}
+	return s.svc.PRTimeline(r.Context(), actorFrom(r), r.PathValue("key"), r.URL.Query().Get("repo"), n)
 }
 
 // openPullBody is the request of wp pr open and wp ship.
