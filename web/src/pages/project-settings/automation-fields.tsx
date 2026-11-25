@@ -1,10 +1,3 @@
-// The settings of a trigger or an action, drawn from the catalog: each
-// ParamDef has a control by its type. Short ones sit in the sentence as
-// chips ("move it to [Done]"); long ones (templates, lists, models) open in
-// a box under it. Settings the catalog doesn't know how to draw still get a
-// plain control, and the hand-made ones (status pickers, the model chain,
-// sprint and tag suggestions) stay as the renderers for their settings.
-
 import { useMemo, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -54,8 +47,6 @@ export function Clause({
     </div>
   )
 }
-
-// ---- template values ----
 
 export interface VarGroup {
   title: string
@@ -110,8 +101,6 @@ export function InsertVars({
     </>
   )
 }
-
-// ---- hand-made controls ----
 
 const lcFirst = (s: string) => s.charAt(0).toLowerCase() + s.slice(1)
 
@@ -221,7 +210,6 @@ export function UserValue({
   const special = param.options ?? []
   const members = project?.members ?? []
   if (!project)
-    // An admin automation has no members to pick from: type a username or choose a group.
     return (
       <>
         <Input
@@ -346,8 +334,6 @@ export function CronPreview({
   )
 }
 
-// ---- the sentence ----
-
 const lit = (text: string): PhrasePart => ({ lit: text })
 const par = (param: string): PhrasePart => ({ param })
 
@@ -462,7 +448,6 @@ function slots(def: TriggerDef | ActionDef): { slots: Slot[]; inLine: Set<string
   let parts = override?.parts
   if (!parts) {
     parts = phraseParts(def.phrase)
-    // The first words are what the dropdown shows.
     if (parts[0] && 'lit' in parts[0]) parts = parts.slice(1)
   }
   const out: Slot[] = []
@@ -484,7 +469,6 @@ function slots(def: TriggerDef | ActionDef): { slots: Slot[]; inLine: Set<string
       }
     }
   }
-  // "Made by [anyone]" ends the line of any trigger that has it.
   const by = def.params?.find((p) => p.name === 'by')
   if (by && !inLine.has('by')) {
     out.push({ kind: 'lit', text: by.label.toLowerCase() }, { kind: 'param', p: by })
@@ -543,7 +527,6 @@ export function Sentence({
       )
       return
     }
-    // A word belongs to the setting after it, or the one before when it ends the line.
     const next = list.slice(i + 1).find((x) => x.kind === 'param')
     const prev = list
       .slice(0, i)
@@ -555,8 +538,6 @@ export function Sentence({
   })
   return <>{out}</>
 }
-
-// ---- the box under the sentence ----
 
 const WIDE = new Set(['template', 'long', 'list', 'globs', 'json', 'models', 'agents', 'url'])
 
@@ -644,8 +625,6 @@ function ParamField({
   )
 }
 
-// ---- one setting ----
-
 function Control({
   owner,
   p,
@@ -671,7 +650,6 @@ function Control({
   const project = env.project
   const [reveal, setReveal] = useState(false)
 
-  // ---- hand-made ones, by what they set ----
   if ((key === 'add_label.value' || key === 'remove_label.value') && project) {
     const id = `labels-${project.key}`
     return (
@@ -814,7 +792,6 @@ function Control({
       </Select>
     )
 
-  // ---- the rest, by type ----
   switch (p.type) {
     case 'select':
     case 'field': {
@@ -1024,7 +1001,6 @@ function Control({
             aria-label={label}
           />
         )
-      // Titles, keys and queries are one line.
       if (p.type === 'template' && ONE_LINE.has(p.name))
         return (
           <Input

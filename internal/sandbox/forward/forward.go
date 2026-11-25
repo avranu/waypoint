@@ -81,7 +81,6 @@ func pipe(c net.Conn, broker string) {
 	defer func() { _ = c.Close() }()
 	b, err := net.DialTimeout("unix", broker, 10*time.Second)
 	if err != nil {
-		// A proxy client reads this as a refused CONNECT.
 		_, _ = io.WriteString(c, "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nthe sandbox's egress broker isn't reachable\n")
 		return
 	}

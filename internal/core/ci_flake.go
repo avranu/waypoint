@@ -1,19 +1,5 @@
 package core
 
-// Flaky checks (WP-392, WP-ADR26). On 2026-11-01 two merge-queue fronts in a row
-// failed on tests their pull requests didn't touch (a data race in a test,
-// an e2e check of sampled behaviour). Each failure handed out a babysit
-// round, sent the pull request to the back of the queue, and the round
-// fixed the flake in its own branch, so the next front failed the same way:
-// one fix was pushed to three branches before any reached main.
-//
-// So before a round for failed checks, the babysitter re-runs the head's
-// failed jobs once, keeping its place in the queue. Failing again, it gets
-// its round. Passing, the failure wasn't the pull request's: Waypoint files
-// a bug for the flaky test in the repo's project, with the log of the
-// failure kept from before the re-run (or adds the sighting to the open one),
-// so it is fixed once, on main.
-
 import (
 	"context"
 	"database/sql"
@@ -82,17 +68,12 @@ func (s *Service) rerunForFlake(ctx context.Context, b *Babysit, pr *PullRequest
 	now := s.now()
 	if sameSHA(fr.SHA, pr.HeadSHA) {
 		if now.Sub(msTime(fr.At)) < faultRerunSettle {
-			// The forge may not have posted the re-run's pending statuses yet.
 			s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("re-ran %s on %s to rule out a flaky test; waiting for the results", joinAnd(failed), short(pr.HeadSHA)))
 			return true
 		}
 		if !fr.Read {
-			// A failed head isn't polled, and the re-run's webhooks may have
-			// been missed: read it once more before the round. New results
-			// carry on through the events this raises.
 			fr.Read = true
 			if err := s.saveFlakeRerun(ctx, b, fr); err != nil {
-				// The marker stays as it was; the read below still happens.
 				s.log.WarnContext(ctx, "save a flake re-run", "pr", pr.ID, "err", err)
 			}
 			if f, err := s.forgeByID(ctx, pr.ForgeID); err == nil && s.refreshHead(ctx, f, pr.Repo, pr.HeadSHA) == nil {
@@ -101,7 +82,7 @@ func (s *Service) rerunForFlake(ctx context.Context, b *Babysit, pr *PullRequest
 				}
 			}
 		}
-		return false // re-ran once and failed again: its round
+		return false
 	}
 	if !slices.ContainsFunc(failed, func(c string) bool { return b.streaks[c] == 0 }) {
 		return false
@@ -119,15 +100,11 @@ func (s *Service) rerunForFlake(ctx context.Context, b *Babysit, pr *PullRequest
 		s.log.WarnContext(ctx, "read the failed checks before a flake re-run", "pr", pr.ID, "err", err)
 		return false
 	}
-	// Save the marker first: a re-run the session can't remember would be
-	// issued again, and its results would meet a round started beside it.
 	marker := flakeRerun{SHA: pr.HeadSHA, At: now.UnixMilli(), Checks: checks}
 	if err := s.saveFlakeRerun(ctx, b, marker); err != nil {
 		s.log.WarnContext(ctx, "save a flake re-run", "pr", pr.ID, "err", err)
-		return false // nothing re-run yet: its round
+		return false
 	}
-	// The re-run replaces the failed jobs' logs, and their test results
-	// with them (WP-704).
 	s.keepFailedEvidence(ctx, f, pr.Repo, pr.HeadSHA)
 	n, err := cl.RetryChecks(ctx, f, pr.Repo, pr.HeadSHA)
 	if err != nil || n == 0 {
@@ -137,7 +114,7 @@ func (s *Service) rerunForFlake(ctx context.Context, b *Babysit, pr *PullRequest
 		if err := s.saveFlakeRerun(ctx, b, flakeRerun{}); err != nil {
 			s.log.WarnContext(ctx, "clear a flake re-run", "pr", pr.ID, "err", err)
 		}
-		return false // nothing the forge can re-run
+		return false
 	}
 	s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("%s failed on %s; Waypoint re-ran %d job%s once to rule out a flaky test before a round", joinAnd(failed), short(pr.HeadSHA), n, plural(n)))
 	return true
@@ -220,8 +197,6 @@ func failingTests(lines []string) []string {
 			suite = ""
 			continue
 		}
-		// In a suite, "FAIL <what>" is its check's, whatever <what> starts
-		// with; a Go package's "FAIL pkg 0.1s" is not a check.
 		if m := e2eFailRE.FindStringSubmatch(l); suite != "" && m != nil && !goPkgFailRE.MatchString(l) {
 			add(suite + ": " + m[1])
 			named = true
@@ -284,7 +259,7 @@ func (s *Service) flakeProven(ctx context.Context, b *Babysit, pr *PullRequest) 
 		return
 	}
 	if key == "" {
-		return // nothing filed (no project, no checks): stays unfiled
+		return
 	}
 	fr.Filed = true
 	if err := s.saveFlakeRerun(ctx, b, fr); err != nil {
@@ -330,7 +305,7 @@ func (s *Service) fileFlake(ctx context.Context, b *Babysit, pr *PullRequest, fr
 		return open, err
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return "", err // a failed lookup isn't "no open issue": don't file a duplicate
+		return "", err
 	}
 	in := IssueInput{Project: itoa64(projectID), Type: "bug", Agent: "claude", Priority: "high", Labels: []string{"flaky"},
 		Title: title,
@@ -364,8 +339,6 @@ func flakeRepro(checks []flakeCheck) string {
 	if len(names) > 1 {
 		run = "(" + strings.Join(names, "|") + ")"
 	}
-	// The names are read from CI logs: quoted, so the line runs as one
-	// command whatever they hold.
 	return fmt.Sprintf("Reproduce it, and check a fix held, with `wp testsum --repeat 30 -- go test -run %s ./...` (add -race if the log shows a data race): "+
 		"it counts the failing runs, and 0 in 30 puts the failure rate under about 11%%.\n\n", ShellWord("^"+run+"$"))
 }

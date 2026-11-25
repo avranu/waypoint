@@ -83,7 +83,6 @@ func TestTranscriptReadsBackInOrder(t *testing.T) {
 	if err != nil || len(files) != 2 || files[0].File != "main" || files[0].Pieces != 2 || !files[0].Complete || files[1].Kind != "Explore" || !files[0].Redacted {
 		t.Fatalf("files: %+v %v", files, err)
 	}
-	// the whole session in order: main first, then the sub-agent
 	var order []string
 	var all strings.Builder
 	err = e.s.WalkTranscript(e.ctx, e.admin, TranscriptQuery{Session: "s1"}, func(f TranscriptFile, r io.Reader) error {
@@ -108,7 +107,6 @@ func TestTranscriptRetriesAndGaps(t *testing.T) {
 	if r := e.put(e.admin, first, l1); r.Status != "duplicate" || r.Have != int64(len(l1)) {
 		t.Errorf("same piece again: %+v", r)
 	}
-	// a client that lost its place sends a bigger piece from the start: the server holds part of it
 	both := piece("s1", "main", 0, l1+l2)
 	if r := e.put(e.admin, both, l1+l2); r.Status != "behind" || r.Have != int64(len(l1)) {
 		t.Errorf("a piece overlapping what is held: %+v", r)
@@ -123,7 +121,6 @@ func TestTranscriptRetriesAndGaps(t *testing.T) {
 	if got := e.readAll(e.admin, TranscriptQuery{Session: "s1", File: "main"}); got != l1 {
 		t.Errorf("after the refused pieces: %q", got)
 	}
-	// the resumed piece joins
 	if r := e.put(e.admin, piece("s1", "main", int64(len(l1)), l2), l2); r.Status != "stored" {
 		t.Fatal(r)
 	}
@@ -150,7 +147,6 @@ func TestTranscriptRewriteStartsNewGeneration(t *testing.T) {
 	if got := e.readAll(e.admin, TranscriptQuery{Session: "s1", File: "main", Gen: &g0}); got != old {
 		t.Errorf("generation 0: %q", got)
 	}
-	// the retry of the rewrite's first piece does not make a third generation
 	if r := e.put(e.admin, in, rewritten); r.Status != "duplicate" {
 		t.Errorf("retry of a rewrite: %+v", r)
 	}
@@ -201,7 +197,7 @@ func TestTranscriptRefusesBadPieces(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	e2 := newEnv(t) // no TranscriptDir
+	e2 := newEnv(t)
 	in := ok
 	in.Gzip = tgz(t, "{}\n")
 	if _, err := e2.s.IngestTranscript(e2.ctx, e2.admin, in); !errors.Is(err, ErrTranscriptsOff) {

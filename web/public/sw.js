@@ -3,7 +3,7 @@
 // for flaky mobile connections. API calls are never cached.
 const SHELL = 'waypoint-shell-v2'
 const ASSETS = 'waypoint-assets-v2'
-const MAX_ASSETS = 150 // old builds' hashed files age out instead of piling up
+const MAX_ASSETS = 150
 const NAV_TIMEOUT = 4000
 
 self.addEventListener('install', () => self.skipWaiting())
@@ -17,7 +17,7 @@ self.addEventListener('activate', (e) => {
 })
 
 async function trim(cache) {
-  const keys = await cache.keys() // insertion order: oldest first
+  const keys = await cache.keys()
   await Promise.all(keys.slice(0, Math.max(0, keys.length - MAX_ASSETS)).map((k) => cache.delete(k)))
 }
 
@@ -38,7 +38,6 @@ self.addEventListener('fetch', (e) => {
     return
   }
   if (e.request.mode === 'navigate') {
-    // Every route serves the same shell, so one cached copy covers them all.
     const network = fetch(e.request).then((res) => {
       if (res.ok) {
         const copy = res.clone()
@@ -49,7 +48,6 @@ self.addEventListener('fetch', (e) => {
     const fallback = () => caches.match('/', { cacheName: SHELL })
     e.respondWith(
       new Promise((resolve) => {
-        // On a slow connection, show the cached shell rather than a blank screen.
         const t = setTimeout(() => fallback().then((hit) => hit && resolve(hit)), NAV_TIMEOUT)
         network
           .then((res) => (clearTimeout(t), resolve(res)))

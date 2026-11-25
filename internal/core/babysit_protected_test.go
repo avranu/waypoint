@@ -88,11 +88,6 @@ func TestBabysitProtectedFileHandoff(t *testing.T) {
 			t.Errorf("task body lacks %q:\n%s", want, body)
 		}
 	}
-	// The body is Waypoint's template alone, which the screen doesn't hold
-	// (WP-1266: #398 waited four days on held handoffs). The round's agent's
-	// words and diff aren't on the task at all, where the screen would hold
-	// them (they edit protected files, and may run sudo): `wp pr todo`
-	// shows them as untrusted text, whole and from the latest refused round.
 	if strings.Contains(body, "atexit.register") {
 		t.Errorf("the refused diff is in the template body:\n%s", body)
 	}
@@ -127,12 +122,10 @@ func TestBabysitProtectedFileHandoff(t *testing.T) {
 		t.Errorf("agent %q %v", agent, err)
 	}
 
-	// Another step files nothing more and spends no round.
 	be.step()
 	if n := len(be.protectedTasks()); n != 1 || len(be.jobs()) != 1 {
 		t.Errorf("after another step: %d tasks, jobs %v", n, be.jobs())
 	}
-	// Done without a push: not filed again for this round.
 	if _, err := be.s.UpdateIssue(be.ctx, be.admin, key, IssuePatch{Status: ptr("Done")}); err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +134,6 @@ func TestBabysitProtectedFileHandoff(t *testing.T) {
 		t.Errorf("filed again for the same round: %d", n)
 	}
 
-	// A server start doesn't resume it into another refused round.
 	if _, err := be.s.db.W.Exec(`UPDATE pull_requests SET armed_at = ? WHERE id = ?`, be.s.nowMS(), pr.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +142,6 @@ func TestBabysitProtectedFileHandoff(t *testing.T) {
 		t.Error("a protected-file refusal on the head is resumable")
 	}
 
-	// The session's push carries it on.
 	be.push("8888888bbbb")
 	if b = be.babysit(); b.State == BabysitNeedsPerson {
 		t.Errorf("after a push: %+v", b)
@@ -190,7 +181,6 @@ func protectedConflictEnv(t *testing.T, baseCI string) *bsEnv {
 	be.sg.fileAt["7777777aaaa:"+ci] = "on: push\nrun: make check\njobs: 1\n"
 	be.sg.fileAt["main:"+ci] = baseCI
 	pr := be.open()
-	// Its diff is the CI change, read afresh: opening it kept the sample's.
 	be.sg.mu.Lock()
 	be.sg.diffs["7777777aaaa"] = ciDiff
 	be.sg.mu.Unlock()

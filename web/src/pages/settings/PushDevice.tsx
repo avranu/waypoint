@@ -1,5 +1,3 @@
-// Web push for this browser: subscribe/unsubscribe and pick what gets pushed.
-
 import { useEffect, useState } from 'react'
 import { BellRing, BellOff } from 'lucide-react'
 import { api, request } from '@/lib/api'
@@ -26,7 +24,6 @@ function keyBytes(b64url: string) {
 }
 
 async function registration() {
-  // The service worker only registers in production builds.
   const reg = await navigator.serviceWorker.getRegistration()
   if (!reg) throw new Error('Notifications need the installed app (or a production build).')
   return reg

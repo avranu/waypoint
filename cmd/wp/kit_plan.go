@@ -15,14 +15,6 @@ import (
 	"time"
 )
 
-// Making a checkout match the agent kit (WP-ADR2 §4), the pure part: what
-// Claude Code has (its marketplaces, installed plugins and the checkout's
-// .claude/settings.local.json), what the kit wants here, and the actions
-// between them. Claude Code's own CLI does the changes (claude plugin …,
-// checked against 2.1.309): the marketplace at user scope from the kit's
-// git URL, plugins installed and enabled at local scope, which is the
-// checkout's git-ignored settings.local.json.
-
 // kitWant is what the kit wants in one checkout.
 type kitWant struct {
 	Marketplace string
@@ -120,7 +112,7 @@ func planKitSync(want kitWant, have kitHave, force bool) kitPlan {
 			}
 			p.Drift = append(p.Drift, kitDrift{Plugin: name, What: what + " (--force to enable it)"})
 			if managed[id] {
-				p.Managed = append(p.Managed, id) // still wp's; the person's choice is reported each time
+				p.Managed = append(p.Managed, id)
 			}
 			continue
 		case !installed:
@@ -170,8 +162,6 @@ func short7(sha string) string {
 	}
 	return sha
 }
-
-// ---- what Claude Code has ----
 
 // readKitHave reads what Claude Code has for the checkout at dir: its
 // files, not its CLI, so it is quick.
@@ -265,7 +255,7 @@ func forgetGoneInstalls(marketplace string) (int, error) {
 	var file map[string]json.RawMessage
 	var plugins map[string][]json.RawMessage
 	if json.Unmarshal(raw, &file) != nil || json.Unmarshal(file["plugins"], &plugins) != nil {
-		return 0, nil // not a shape we know: leave it to Claude Code
+		return 0, nil
 	}
 	gone := 0
 	for id, list := range plugins {
@@ -317,8 +307,6 @@ func gitHead(dir string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
-
-// ---- settings.local.json ----
 
 // mergeSettings sets enabledPlugins entries (nil value: remove it) and, if
 // given, extraKnownMarketplaces entries in a settings file, keeping every
@@ -411,8 +399,6 @@ func lineDiff(a, b string) string {
 	if n > maxDiffLines || m > maxDiffLines {
 		return fmt.Sprintf("(settings too long to diff: %d -> %d lines)\n", n, m)
 	}
-	// lcs[i][j] is the longest common run of x[i:] and y[j:]; past either
-	// end it is 0 (at), so the table needs no extra row or column.
 	lcs := make([][]int, n)
 	for i := range lcs {
 		lcs[i] = make([]int, m)
@@ -450,8 +436,6 @@ func lineDiff(a, b string) string {
 	return out.String()
 }
 
-// ---- the claude CLI ----
-
 // claudePlugins is Claude Code's plugin CLI (tests use a fake).
 type claudePlugins interface {
 	// Run runs `claude plugin ARGS… --json` in dir.
@@ -483,7 +467,6 @@ func (c claudeCLI) Run(ctx context.Context, dir string, args ...string) error {
 	cmd.Stdin = nil
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		// --json prints a result line, then the error for people.
 		msg := strings.TrimSpace(string(out))
 		var res struct {
 			Error   string `json:"error"`
@@ -517,7 +500,7 @@ func claudeArgs(a kitAction, want kitWant) []string {
 	case "install":
 		return []string{"install", a.Plugin, "--scope", "local"}
 	}
-	return []string{a.Kind, a.Plugin, "--scope", "local"} // update, enable, disable
+	return []string{a.Kind, a.Plugin, "--scope", "local"}
 }
 
 // applyKitPlan carries the plan out with claude, or, without it, by
@@ -555,7 +538,7 @@ func applyKitPlan(ctx context.Context, cl claudePlugins, dir string, want kitWan
 	failedMarketplace := false
 	for _, a := range plan.Actions {
 		if a.Kind == "compact-window" {
-			continue // written above: claude has no command for it
+			continue
 		}
 		if failedMarketplace && a.Plugin != "" {
 			errs = append(errs, fmt.Errorf("%s %s: skipped, the marketplace isn't there", a.Kind, a.Plugin))

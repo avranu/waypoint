@@ -57,7 +57,6 @@ async function run(width, scheme) {
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(base + "/");
 
-  // ---- automations: one per trigger family ----
   const addAction = async (first, label) => {
     await dialog
       .getByRole("button", { name: first ? "choose an action" : "and then…" })
@@ -181,7 +180,6 @@ async function run(width, scheme) {
       );
     const a = await find();
     same(a?.rule, c.want, `${tag} ${c.family}: saved as built`);
-    // Reopen: the sentence shows what was saved, and saving changes nothing.
     await page.getByRole("button", { name, exact: true }).click();
     await dialog.waitFor();
     ok(await c.check(), `${tag} ${c.family}: reopens with its values`);
@@ -198,7 +196,6 @@ async function run(width, scheme) {
     if (a) await api("DELETE", `/automations/${a.id}`);
   }
 
-  // ---- workflow step agents ----
   await page.goto(base + "/p/WAYP/settings?tab=workflows");
   await page.getByRole("button", { name: "New workflow" }).click();
   const wfName = `Agents ${tag}`;

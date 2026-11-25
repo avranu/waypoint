@@ -82,7 +82,7 @@ func (s *Service) reviveHeldRounds(ctx context.Context) {
 	for _, l := range list {
 		x, err := scanSession(s.db.R.QueryRowContext(ctx, `SELECT `+sessionCols+` FROM agent_sessions s WHERE s.id = ?`, l.session), now)
 		if err != nil || x.State == SessionWorking {
-			continue // still going: its Stop decides
+			continue
 		}
 		if err := s.write(ctx, SystemActor(), func(t *tx) error {
 			return s.putStep(ctx, t, x, l.project, l.run, now, StepDue, "", "", now, l.round)
@@ -120,24 +120,16 @@ type shipRoundIn struct {
 	userID  int64
 	agent   string
 	why     string
-	// ended: the round's session has ended (the run is still open). The
-	// ship then acts with no session: a babysit and a claim recorded for a
-	// dead session would send its news, and its warnings to others, nowhere.
-	ended bool
+	ended   bool
 }
 
 // shipRun is what one ship of a round has read and decided as it goes, so
 // its steps share it.
 type shipRun struct {
-	r  *roundRow
-	bp *beforePR
-	in shipRoundIn
-	// reviewed: the review ran and left nothing to do (else it didn't run
-	// or wasn't settled, and in.why says why).
-	reviewed bool
-	// ran: the review did something before it ended; given: its findings
-	// reached the session; unchecked: marks no check answered; panel: the
-	// Haiku checks' confirmed problems that no model's findings carry.
+	r                *roundRow
+	bp               *beforePR
+	in               shipRoundIn
+	reviewed         bool
 	ran, given       bool
 	unchecked, panel string
 	title            string
@@ -145,9 +137,7 @@ type shipRun struct {
 	res              *OpenPRResult
 	notes            []string
 	armed, babysat   bool
-	// pin: the commit the review read, which a pull request must be at to
-	// be opened for it and armed ("" when none is known).
-	pin string
+	pin              string
 }
 
 // shipRound is the one server-side ship of a round's branch: a release (the
@@ -193,20 +183,16 @@ func (s *Service) shipRead(ctx context.Context, in shipRoundIn) (*shipRun, error
 		return nil, errors.New("its review round is gone")
 	}
 	if bp.ShipDone {
-		return nil, nil // another caller finished this ship while this one waited
+		return nil, nil
 	}
 	sh := &shipRun{r: r, bp: bp, in: in}
 	reviewed := in.why == ""
-	// A check of the marks that never gave an answer (failed, hit a limit,
-	// cancelled, or by a person) is not "nothing left to do": the PR opens,
-	// and says what wasn't checked (WP-1370).
 	unchecked := ""
 	if reviewed {
 		unchecked = s.uncheckedOf(ctx, r, true)
 	}
 	facts, ran := "", false
 	if !reviewed {
-		// What the review did is told from what was recorded, not from why it ended.
 		facts, ran = s.roundFacts(ctx, r)
 		if facts != "" {
 			in.why += " (" + facts + ")"
@@ -220,20 +206,18 @@ func (s *Service) shipRead(ctx context.Context, in shipRoundIn) (*shipRun, error
 		if err := s.db.R.QueryRowContext(ctx, `SELECT ended_at IS NULL FROM agent_sessions WHERE id = ?`, in.session).Scan(&live); err == nil {
 			in.ended = !live
 		} else if !errors.Is(err, sql.ErrNoRows) {
-			return nil, err // unknown is not "still live": the ship is tried again
+			return nil, err
 		}
 	}
 	in.agent = s.shipAgent(ctx, r, in.agent, in.session)
 	if in.userID == 0 {
 		if err := s.db.R.QueryRowContext(ctx, `SELECT user_id FROM agent_sessions WHERE id = ?`, in.session).Scan(&in.userID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return nil, err // the ship is tried again, as whoever opens it is not known
+			return nil, err
 		}
 	}
 	sh.reviewed, sh.unchecked, sh.ran = reviewed, unchecked, ran
 	sh.in = in
 	if reviewed {
-		// The run must still be open: a ship of the session's own ends it,
-		// and then there is nothing left for Waypoint to do.
 		var open bool
 		if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM agent_runs WHERE id = ? AND ended_at IS NULL)`, r.runID.Int64).Scan(&open); err != nil {
 			return nil, err
@@ -249,10 +233,7 @@ func (s *Service) shipRead(ctx context.Context, in shipRoundIn) (*shipRun, error
 		}
 	}
 	sh.title = title
-	// A review that ended with its findings undelivered did run.
 	sh.given = !strings.HasPrefix(in.why, heldReviewEnded)
-	// The Haiku checks' confirmed problems that no reviewing model's
-	// findings carry are said, with the audit that holds them.
 	if !reviewed {
 		if n, audit := s.panelConfirmed(ctx, r.id); n > 0 {
 			sh.panel = fmt.Sprintf(" Before the reviewing model failed, Waypoint's Haiku checks confirmed %s against the code; audit #%d holds them (`wp audit show %d`).", plural1(n, "problem"), audit, audit)
@@ -275,10 +256,6 @@ func (s *Service) shipAuthorize(ctx context.Context, sh *shipRun) (done bool, er
 	if why != "" {
 		return true, s.stopShip(ctx, r, in, why)
 	}
-	// A pull request already open from the branch is the task's to arm and
-	// babysit only if it is linked to the task: one linked to none or to
-	// another task isn't Waypoint's to take over, so it is left as it is and
-	// the person told (WP-1370).
 	if id := s.openPROfBranch(ctx, bp); id != 0 {
 		var repo string
 		var number int
@@ -290,11 +267,6 @@ func (s *Service) shipAuthorize(ctx context.Context, sh *shipRun) (done bool, er
 			return true, err
 		}
 		if len(keys) == 0 {
-			// Waypoint's own pull request for this task whose link a crash
-			// kept from being made: the link is made now, and it is the
-			// task's again (WP-1370).
-			// Not one a person unlinked from the task on purpose (RemoveLink keeps
-			// a record of that).
 			var by, url string
 			var unlinked bool
 			if s.db.R.QueryRowContext(ctx, `SELECT p.agent, p.url, EXISTS (SELECT 1 FROM issue_unlinks u WHERE u.issue_id = ? AND u.url = p.url) FROM pull_requests p WHERE p.id = ?`, r.issueID, id).Scan(&by, &url, &unlinked) == nil && by != "" && by == in.agent && !unlinked {
@@ -317,7 +289,6 @@ func (s *Service) shipAuthorize(ctx context.Context, sh *shipRun) (done bool, er
 		if moved, err := s.branchMovedSinceReview(ctx, actor, r, bp); err != nil {
 			return true, err
 		} else if moved {
-			// Not the commit the review read: nothing is opened.
 			return true, s.startOverAfterMove(ctx, r, in, bp, "")
 		}
 	}
@@ -357,9 +328,6 @@ func (s *Service) shipOpen(ctx context.Context, sh *shipRun) (done bool, err err
 	r, bp, in, reviewed, actor := sh.r, sh.bp, sh.in, sh.reviewed, sh.actor
 	title, unchecked, given, panel, ran := sh.title, sh.unchecked, sh.given, sh.panel, sh.ran
 	body := bp.Body
-	// A stacked branch's parent may have merged or closed, its branch gone,
-	// while the ship was held: its base is worked out again, as a live
-	// ship's is (WP-1670). One asked for stays as asked.
 	base, stackedOn := bp.Base, []string(nil)
 	if bp.Stacked != "" {
 		base, stackedOn = bp.Asked, []string{bp.Stacked}
@@ -385,11 +353,8 @@ func (s *Service) shipOpen(ctx context.Context, sh *shipRun) (done bool, err err
 		}
 		in2.Body = strings.TrimSpace(body + "\n\nWaypoint opened this " + lead + ": " + in.why + "." + panel)
 	}
-	// The authority is asked again once the forge has answered: it can go
-	// while the call is out, and then the pull request that exists is
-	// recorded and left alone.
 	again := in
-	again.user = nil // read the person again: in.user is from before the forge call
+	again.user = nil
 	in2.stillMay = func(ctx context.Context) string {
 		_, why, err := s.shipAuthority(ctx, r, bp, &again)
 		if err != nil {
@@ -403,9 +368,6 @@ func (s *Service) shipOpen(ctx context.Context, sh *shipRun) (done bool, err err
 	}
 	sh.pin = s.reviewedHead(ctx, r, bp)
 	if reviewed && res.Pull != nil && res.Held == "" && res.Stopped == "" && sh.pin != "" && !sameSHA(res.Pull.HeadSHA, sh.pin) {
-		// Pushed between the check of the branch and the forge opening it
-		// (or an open pull request that is at another commit): it is
-		// recorded, not armed, and the review starts over.
 		return true, s.startOverAfterMove(ctx, r, in, bp, fmt.Sprintf("%s#%d", res.Pull.Repo, res.Pull.Number))
 	}
 	if res.Stopped != "" && res.Pull != nil {
@@ -438,7 +400,6 @@ func (s *Service) shipArm(ctx context.Context, sh *shipRun) {
 			if mr, err := s.MergePR(ctx, actor, pr.ID, MergeInput{WhenReady: true, Head: sh.pin}); err != nil {
 				notes = append(notes, "couldn't arm it: "+err.Error())
 			} else if mr != nil && mr.ByHand {
-				// Not an error, and not armed: a person merges it.
 				notes = append(notes, "wasn't armed: "+strings.Join(mr.Reasons, "; "))
 			} else {
 				armed = true
@@ -456,8 +417,6 @@ func (s *Service) shipArm(ctx context.Context, sh *shipRun) {
 		}
 		var status string
 		var resolved bool
-		// An unread status is not "not In Review": a task that is Done must not
-		// be moved back on a failed read, and a closed task is never moved.
 		statusErr := s.db.R.QueryRowContext(ctx, `SELECT s.name, i.resolved_at IS NOT NULL FROM issues i JOIN statuses s ON s.id = i.status_id WHERE i.id = ?`, r.issueID).Scan(&status, &resolved)
 		if statusErr != nil {
 			notes = append(notes, "left the task's status alone: couldn't read it: "+statusErr.Error())
@@ -497,13 +456,8 @@ func (s *Service) shipRecord(ctx context.Context, sh *shipRun) error {
 			return err
 		}
 	}
-	// The person's notice is stored by the write that ends the run: both or
-	// neither, so a crash between them can't leave a shipped task nobody was
-	// told of. Dispatch sends it on (WP-1370).
 	head, text, _ := s.shipWords(ctx, sh)
 	return s.endHeldRunWith(ctx, actor, r.issueID, in.agent, func(t *tx) error {
-		// The claim: the first to finish the ship sets it, and only that one
-		// tells the person (a second caller sees no row change).
 		res, err := t.ExecContext(ctx, `UPDATE work_log SET before_pr = json_set(before_pr, '$.ship_done', json('true')) WHERE id = ? AND before_pr != '' AND coalesce(json_extract(before_pr, '$.ship_done'), 0) = 0`, r.id)
 		if err != nil {
 			return err
@@ -552,13 +506,11 @@ func (s *Service) shipWords(ctx context.Context, sh *shipRun) (head, text, sessi
 		s.log.WarnContext(ctx, "autopilot: after opening a held pull request", "task", r.key, "notes", notes)
 	}
 	if res.Notice != "" {
-		text += " " + res.Notice // what the open did instead of what was asked
+		text += " " + res.Notice
 	}
 	if bp.Urgent && pr.Urgent {
 		text += fmt.Sprintf(" Its wp ship marked it urgent, so it delays other CI runs to cut the line: `wp pr urgent %d --off` takes that off.", pr.Number)
 	} else if pr.Urgent && !res.Existing && !strings.Contains(res.Notice, taggedUrgentNotice(r.key, pr.Number)) {
-		// wp ship didn't ask for it, so the task's tag did; no one reads this
-		// open's notice.
 		text += " " + taggedUrgentNotice(r.key, pr.Number)
 	}
 	return head, text, session
@@ -576,7 +528,7 @@ func (s *Service) shipTell(ctx context.Context, sh *shipRun) {
 		return
 	}
 	_, _, text := s.shipWords(ctx, sh)
-	if in.session != 0 && !in.ended { // an ended session can't read it; the person's notice carries it
+	if in.session != 0 && !in.ended {
 		if _, err := s.queueMessage(ctx, in.session, text, fmt.Sprintf("shipped:%d", r.id), messageFrom{}, true); err != nil {
 			s.log.WarnContext(ctx, "autopilot: tell a session its pull request opened", "round", r.id, "err", err)
 		}
@@ -655,8 +607,6 @@ func (s *Service) endRoundReviewed(ctx context.Context, r *roundRow, unchecked s
 		if n, _ := res.RowsAffected(); n > 0 {
 			s.emitWorkLog(ctx, t, r.issueID, r.id, RoundDone)
 		}
-		// The step carrying the round ends in the same write: a crash between
-		// the two can't leave a step waiting on a round that shipped.
 		return s.endShippedStep(ctx, t, r.id)
 	})
 }
@@ -876,7 +826,7 @@ func (s *Service) sessionReviews(ctx context.Context, actor *Actor, list []*Agen
 			return err
 		}
 		if ended > 0 && (later || now-ended > sessionReviewShown.Milliseconds()) {
-			continue // the session has gone on from it
+			continue
 		}
 		stage, label, detail := reviewStage(state, reason, stepState, stepReason, stepDetail, auditJob, alt)
 		if stage == "" {
@@ -941,9 +891,6 @@ func (s *Service) roundFacts(ctx context.Context, r *roundRow) (facts string, ra
 			}
 		}
 	}
-	// An earlier round of the run's loop whose check didn't run: its marks
-	// still stand unchecked, whatever this round's own check did (the
-	// round's own is said above).
 	if un := s.uncheckedOf(ctx, r, false); un != "" {
 		parts = append(parts, un)
 	}
@@ -1017,8 +964,6 @@ func (l release) Comment(url string, existing bool) string {
 // request's newest finished audit): the round's own and the check of its
 // marks.
 func (s *Service) carryAudits(ctx context.Context, round, prID int64, number int) {
-	// A round of the loop before this one whose check didn't run: its audit's
-	// marks stand unchecked too, and are carried the same way.
 	if r, _ := roundByID(ctx, s.db.R, round); r != nil {
 		for _, e := range s.loopRounds(ctx, r) {
 			if e == round || s.checkDidntRun(ctx, e) == "" {
@@ -1033,9 +978,6 @@ func (s *Service) carryAudits(ctx context.Context, round, prID int64, number int
 		}
 	}
 	if ra, err := s.roundAuditOf(ctx, round); err == nil && ra.id != 0 {
-		// Marks nobody checked are not decisions the gate can lean on: the
-		// session's rejection of a critical or high finding stands only as a
-		// claim, so it is open again, with what the session said kept in its note.
 		if s.checkDidntRun(ctx, round) != "" {
 			s.reopenUnverified(ctx, ra.id)
 		}
@@ -1053,7 +995,6 @@ func (s *Service) carryAudits(ctx context.Context, round, prID int64, number int
 			return err
 		}
 		if n, _ := res.RowsAffected(); n > 0 {
-			// The gate reads the pull request's newest finished audit: it looks again.
 			var projectID int64
 			if err := t.QueryRowContext(ctx, `SELECT project_id FROM code_audits WHERE id = ?`, id).Scan(&projectID); err != nil {
 				return err
@@ -1085,8 +1026,6 @@ func (s *Service) reopenUnverified(ctx context.Context, auditID int64) {
 			return err
 		}
 		reopened, _ := res.RowsAffected()
-		// A medium or low one stays rejected (it holds nothing), marked so the
-		// pull request's packet lists it as unchecked.
 		res, err = t.ExecContext(ctx, `UPDATE code_audit_findings SET note = trim(? || note)
 			WHERE audit_id = ? AND state = 'rejected' AND severity IN ('medium', 'low') AND note NOT LIKE ?`, uncheckedNote, auditID, uncheckedNote+"%")
 		if err != nil {
@@ -1096,7 +1035,6 @@ func (s *Service) reopenUnverified(ctx context.Context, auditID int64) {
 		if reopened+marked == 0 {
 			return nil
 		}
-		// What the audit's findings say changed: the packet and the gate look again.
 		var projectID int64
 		if err := t.QueryRowContext(ctx, `SELECT project_id FROM code_audits WHERE id = ?`, auditID).Scan(&projectID); err != nil {
 			return err
@@ -1115,7 +1053,6 @@ func (s *Service) reopenUnverified(ctx context.Context, auditID int64) {
 func (s *Service) checkDidntRun(ctx context.Context, round int64) string {
 	var id int64
 	if s.db.R.QueryRowContext(ctx, `SELECT id FROM code_audits WHERE request_key = ?`, fmt.Sprintf(checkAuditKey, round)).Scan(&id) != nil {
-		// Never recorded: asked for and refused (noteCheckNotAsked), or none was.
 		var why string
 		if s.db.R.QueryRowContext(ctx, `SELECT coalesce(json_extract(before_pr, '$.check_err'), '') FROM work_log WHERE id = ? AND before_pr != ''`, round).Scan(&why) != nil || why == "" {
 			return ""
@@ -1175,7 +1112,6 @@ func (s *Service) pullTaskKeys(ctx context.Context, repo string, number int) ([]
 func (s *Service) branchMovedSinceReview(ctx context.Context, actor *Actor, r *roundRow, bp *beforePR) (bool, error) {
 	read := s.reviewedHead(ctx, r, bp)
 	if read == "" {
-		// Nothing says what the review read: a pull request can't be held to it.
 		return false, fmt.Errorf("waypoint can't tell which commit %s's review read, so it didn't open a pull request for %s", r.key, bp.Branch)
 	}
 	cl, ok := s.Forges.(ForgeKitReader)
@@ -1188,7 +1124,7 @@ func (s *Service) branchMovedSinceReview(ctx context.Context, actor *Actor, r *r
 	}
 	i := slices.IndexFunc(repos, func(pr ProjectRepo) bool { return strings.EqualFold(pr.Repo, bp.Repo) })
 	if i < 0 {
-		return false, nil // shipRound's open says so
+		return false, nil
 	}
 	f, err := s.forgeByID(ctx, repos[i].ForgeID)
 	if err != nil {

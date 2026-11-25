@@ -290,9 +290,8 @@ func validHost(h string) bool {
 
 // decision is what the rules say about one request.
 type decision struct {
-	ok     bool
-	reason string
-	// gateway: the request goes to the push gateway, not the host.
+	ok      bool
+	reason  string
 	gateway bool
 }
 
@@ -322,8 +321,6 @@ func (r *Rule) check(method, path, query string) decision {
 		}
 	}
 	if restricted && !cleanPath(path) {
-		// Patterns are only as good as the path is plain: refuse what an
-		// upstream might read differently from us.
 		return deny("path")
 	}
 	for _, rt := range r.Deny {
@@ -403,8 +400,6 @@ func cleanPath(p string) bool {
 			return false
 		}
 	}
-	// An escaped unreserved character means the same as the character
-	// itself to an upstream, but not to our segment matcher.
 	for i := 0; i < len(p); i++ {
 		if p[i] != '%' {
 			continue

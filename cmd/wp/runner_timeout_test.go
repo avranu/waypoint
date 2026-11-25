@@ -28,8 +28,6 @@ func TestTimedOutAgentKeepsItsCommits(t *testing.T) {
 	p := newTestProc(t)
 	job := agentJob{CLI: "claude", Prompt: "x", Repo: remote, Branch: "agent/round", Push: true, Permission: "edit_run", CommitMessage: "Round"}
 
-	// Asked to keep them (a babysitting round, WP-1597): the commit it had
-	// made is pushed, what it left uncommitted is not, and the job still fails.
 	job.KeepOnTimeout = true
 	run := newRun(10 * time.Second)
 	o := p.execAgent(context.Background(), run, "agent", job)
@@ -53,7 +51,6 @@ func TestTimedOutAgentKeepsItsCommits(t *testing.T) {
 		t.Errorf("work trees left: %v", left)
 	}
 
-	// Not asked: a timeout pushes nothing, as before.
 	job.KeepOnTimeout, job.Branch = false, "agent/other"
 	if o := p.execAgent(context.Background(), newRun(10*time.Second), "agent", job); o.State != "failed" || o.Result != nil {
 		t.Errorf("outcome = %+v", o)
@@ -74,7 +71,7 @@ func TestCallClockSaysWhereTheTimeWent(t *testing.T) {
 	c.end("a")
 	c.begin("b", "Read main.go")
 	now = now.Add(time.Second)
-	c.end("b") // quick: not worth naming
+	c.end("b")
 	c.end("unknown")
 	c.begin("c", "Bash wp testsum -- make check")
 	now = now.Add(37 * time.Minute)
@@ -82,8 +79,6 @@ func TestCallClockSaysWhereTheTimeWent(t *testing.T) {
 	if got := c.spent(); got != want {
 		t.Errorf("spent = %q\nwant    %q", got, want)
 	}
-	// A call that never returns is kept short, and the clock is safe to read
-	// while the CLI's output is still being read.
 	c.begin("d", "Bash "+strings.Repeat("y", 8000))
 	if n := len(c.open["d"].what); n > 130 {
 		t.Errorf("kept %d bytes of a command", n)
@@ -100,7 +95,7 @@ func TestCallClockSaysWhereTheTimeWent(t *testing.T) {
 		_ = c.spent()
 	}
 	<-done
-	var none *callClock // a CLI whose output doesn't tell its calls apart
+	var none *callClock
 	none.begin("x", "y")
 	none.end("x")
 	if got := none.spent(); got != "" {

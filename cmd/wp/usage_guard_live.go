@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// wp usage guard (live part), set and lift: the live quota guard (WP-932).
-
 // guardLiveReport is the server's QuotaGuardLive.
 type guardLiveReport struct {
 	Who      string `json:"who"`

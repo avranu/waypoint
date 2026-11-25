@@ -85,7 +85,7 @@ func TestBusySkipsMakeAJobStuck(t *testing.T) {
 	e.s.jobs.declare("unset", period, "unset")
 	e.s.CheckJobHealth(e.ctx)
 	since := e.clockNow()
-	for range 3 { // 0, 10, 20 minutes: not yet
+	for range 3 {
 		e.busyJob(name, period)
 		e.runJob("unset", period, func(ctx context.Context) { jobSkip(ctx, "no AI model is set up") })
 		e.s.CheckJobHealth(e.ctx)
@@ -97,7 +97,7 @@ func TestBusySkipsMakeAJobStuck(t *testing.T) {
 	if got := e.serverNotices(e.admin); len(got) != 0 {
 		t.Fatalf("told early: %v", got)
 	}
-	for range 4 { // to 60 minutes: past jobOverdue (30m)
+	for range 4 {
 		e.busyJob(name, period)
 		e.runJob("unset", period, func(ctx context.Context) { jobSkip(ctx, "no AI model is set up") })
 		e.s.CheckJobHealth(e.ctx)
@@ -117,13 +117,11 @@ func TestBusySkipsMakeAJobStuck(t *testing.T) {
 	if n := e.one(`SELECT busy_since FROM job_health WHERE name = ?`, name); n == "" || n == "<nil>" {
 		t.Errorf("busy_since is not saved: %q", n)
 	}
-	// Told once, not at each check.
 	e.busyJob(name, period)
 	e.s.CheckJobHealth(e.ctx)
 	if got = e.serverNotices(e.admin); len(got) != 1 {
 		t.Fatalf("told again: %v", got)
 	}
-	// A clean run ends it.
 	e.runJob(name, period, nil)
 	e.s.CheckJobHealth(e.ctx)
 	if j = e.jobOf(name); j.State != "" || j.BusySince != nil {
@@ -265,11 +263,9 @@ func TestSecretLearnedLaterIsBlanked(t *testing.T) {
 	log("repo sync failed", secret)
 	log("repo sync failed", redacted)
 	e.s.saveJobHealth(e.ctx)
-	// The row that held the secret was told of and lived through downtime;
-	// the one it merges into was acknowledged.
 	e.exec(`UPDATE job_problems SET alerted_at = 5000, streak_away_ms = 700, away_ms = 100 WHERE message = 'repo sync failed' AND target = ?`, secret)
 	e.exec(`UPDATE job_problems SET alerted_at = NULL, streak_away_ms = 9, away_ms = 300, acked_at = 77, ack_reason = 'known' WHERE message = 'repo sync failed' AND target = ?`, redacted)
-	log("login failed for "+secret, "acme/app") // not saved yet
+	log("login failed for "+secret, "acme/app")
 	e.s.cfg.Logs.AddSecret(secret)
 	e.s.jobs.mu.Lock()
 	var mem strings.Builder
@@ -293,15 +289,12 @@ func TestSecretLearnedLaterIsBlanked(t *testing.T) {
 			t.Errorf("%s holds it: %s", q, got)
 		}
 	}
-	// "repo sync failed" for the secret and for [redacted] is one row.
 	if n := e.one(`SELECT count(*) || ' ' || sum(count) FROM job_problems WHERE message = 'repo sync failed'`); n != "1 2" {
 		t.Errorf("merged: %s", n)
 	}
 	if n := e.one(`SELECT count(*) FROM job_problems`); n != "2" {
 		t.Errorf("rows: %s", n)
 	}
-	// Told stays told, the streak's away time is that of the streak kept
-	// (the older one), away time is the larger, and the ack survives.
 	if n := e.one(`SELECT alerted_at || ' ' || streak_away_ms || ' ' || away_ms || ' ' || coalesce(acked_at, 'none') FROM job_problems WHERE message = 'repo sync failed'`); n != "5000 700 300 77" {
 		t.Errorf("merged marks: %s", n)
 	}
@@ -316,7 +309,7 @@ func TestJobHealthWithNoAdminStillClears(t *testing.T) {
 	e := newEnv(t)
 	e.quietLog()
 	e.s.beginServerRun(e.ctx)
-	e.failHourly("sync") // told: one notice
+	e.failHourly("sync")
 	e.exec(`UPDATE users SET disabled = 1 WHERE is_admin = 1`)
 	e.pass(26 * time.Hour)
 	e.s.CheckJobHealth(e.ctx)

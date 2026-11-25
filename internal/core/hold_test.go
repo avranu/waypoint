@@ -45,7 +45,6 @@ func TestHoldKeepsATaskFromAgentsUntilItEnds(t *testing.T) {
 		t.Errorf("is:on-hold = %+v, %v", res, err)
 	}
 
-	// The date comes: handed out again, without anyone lifting it.
 	e.setClock(time.Date(2026, 10, 8, 0, 0, 1, 0, time.UTC))
 	if e.get(e.admin, later.Key).Hold != nil {
 		t.Error("an ended hold still shows")
@@ -71,7 +70,6 @@ func TestHoldEndsTheClaimAndOnlyAPersonLiftsTheirs(t *testing.T) {
 	if got, err := e.s.AgentNext(e.ctx, opus, AgentQuery{}); err != nil || got == nil || got.Issue.Key != task.Key {
 		t.Fatalf("next = %v, %v", got, err)
 	}
-	// The agent holds what it took: "not yet", and its claim ends.
 	if _, err := e.s.SetHold(e.ctx, opus, task.Key, HoldInput{Note: "waiting on Robin"}); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +84,6 @@ func TestHoldEndsTheClaimAndOnlyAPersonLiftsTheirs(t *testing.T) {
 	if got, _ := e.s.AgentNext(e.ctx, opus, AgentQuery{Peek: true}); got != nil {
 		t.Errorf("a hold without a date ended by itself: next = %s", got.Issue.Key)
 	}
-	// An agent's hold: a person may change it, and then it is theirs.
 	if _, err := e.s.SetHold(e.ctx, e.admin, task.Key, HoldInput{Note: "I'll decide"}); err != nil {
 		t.Fatal(err)
 	}

@@ -91,7 +91,6 @@ export function SearchPage() {
   const [sheet, setSheet] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [help, setHelp] = useState(false)
-  // Everything unless the query uses filters, or the person picked a mode.
   const mode = chosen ?? (hasFilters(text) ? 'issues' : 'all')
   useEffect(() => {
     navigate({ to: '/search', search: { q: query, mode: chosen }, replace: true })

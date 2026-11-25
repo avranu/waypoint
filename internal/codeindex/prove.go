@@ -26,32 +26,23 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Proving a fix (WP-709): a regression test that passes on the buggy code
-// proves nothing. The Go tests a fix adds or changes run twice on a runner:
-// on the fix, where they must pass, and on the code before it with the
-// fix's test files, where at least one should fail. A test that doesn't
-// build without the fix (it calls something the fix added) proves nothing
-// either. When the trace blamed a change, the proving tests also run on that
-// change and the commit before it: failing on it and passing before it
-// confirms the blame.
-
 // Proof outcomes.
 const (
-	ProofProven      = "proven"      // a test fails without the fix and passes with it
-	ProofPasses      = "passes"      // the tests pass without the fix too
-	ProofNoBuild     = "no_build"    // the tests don't build without the fix
-	ProofHeadFails   = "head_fails"  // the tests fail or don't build on the fix itself
-	ProofNoTest      = "no_test"     // the fix adds or changes no test
-	ProofUnsupported = "unsupported" // its tests aren't Go
-	ProofNone        = "none"        // nothing to prove (Note says why)
+	ProofProven      = "proven"
+	ProofPasses      = "passes"
+	ProofNoBuild     = "no_build"
+	ProofHeadFails   = "head_fails"
+	ProofNoTest      = "no_test"
+	ProofUnsupported = "unsupported"
+	ProofNone        = "none"
 )
 
 // What running the proving tests on the blamed change said.
 const (
-	IntroConfirmed = "confirmed"       // fail on it, pass on the commit before
-	IntroPasses    = "passes_at_intro" // pass on it: it didn't break them
-	IntroBefore    = "fails_before"    // fail before it too: the cause is older
-	IntroNoBuild   = "no_build"        // don't build there
+	IntroConfirmed = "confirmed"
+	IntroPasses    = "passes_at_intro"
+	IntroBefore    = "fails_before"
+	IntroNoBuild   = "no_build"
 )
 
 const (
@@ -111,8 +102,6 @@ func ProveFix(ctx context.Context, root string, in ProveInput) (*FixProof, error
 		return nil, err
 	}
 	if note != "" {
-		// The fix was traced, so a checkout can place it; this one can't
-		// yet. Recording "none" would end its proofs for good.
 		return nil, fmt.Errorf("can't place the fix: %s", note)
 	}
 	res.Commit, res.Base = to, from
@@ -124,8 +113,6 @@ func ProveFix(ctx context.Context, root string, in ProveInput) (*FixProof, error
 		res.Outcome, res.Note = outcome, note
 		return res, nil
 	}
-	// The notes' end is kept when they're too long, so what was left out
-	// goes last.
 	notesText := func(notes []string) string {
 		if note != "" {
 			notes = append(slices.Clone(notes), note)
@@ -161,7 +148,7 @@ func ProveFix(ctx context.Context, root string, in ProveInput) (*FixProof, error
 	if err != nil {
 		return nil, err
 	}
-	var passing []goPkgTests // per package, the tests that pass on the fix
+	var passing []goPkgTests
 	headNotes := []string{}
 	for _, p := range pkgs {
 		for _, t := range p.tests {
@@ -228,8 +215,6 @@ func ProveFix(ctx context.Context, root string, in ProveInput) (*FixProof, error
 		if len(failed) == 0 {
 			continue
 		}
-		// A test that fails once may be flaky: it proves the fix only when
-		// it fails again.
 		again, err := goTest(ctx, dir, failed)
 		if err != nil {
 			return nil, err
@@ -298,8 +283,6 @@ func (r *fixRepo) checkIntro(ctx context.Context, intro string, proving []goPkgT
 			if len(failed) == 0 {
 				continue
 			}
-			// As on the base, a failure counts only when it repeats: one
-			// flaky run would set the blame's confidence to 0 or 1.
 			again, err := goTest(ctx, filepath.Join(dir, filepath.FromSlash(p.dir)), failed)
 			if err != nil {
 				return false, false, err
@@ -323,7 +306,7 @@ func (r *fixRepo) checkIntro(ctx context.Context, intro string, proving []goPkgT
 	}
 	parent, err := r.rev(intro + "^1")
 	if err != nil {
-		return IntroNoBuild, nil // the repository's first commit
+		return IntroNoBuild, nil
 	}
 	built, failed, err = fails(parent)
 	switch {
@@ -454,7 +437,7 @@ func (r *fixRepo) addedLines(from, to string, files []string) (map[string][]int,
 			for i := 0; i < n; i++ {
 				res[cur] = append(res[cur], start+i)
 			}
-			if n == 0 { // only removed lines: they were between start and start+1
+			if n == 0 {
 				res[cur] = append(res[cur], start, start+1)
 			}
 		}
@@ -543,7 +526,7 @@ func realDirs(root, rel string) error {
 		fi, err := os.Lstat(cur)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
-			return nil // made below as a directory, or the package isn't there
+			return nil
 		case err != nil:
 			return err
 		case fi.IsDir():
@@ -581,7 +564,7 @@ func (r *fixRepo) overlayTests(fix, pkg, dir string) error {
 	}
 	pathspec := prefix
 	if pathspec == "" {
-		pathspec = "." // git refuses an empty pathspec
+		pathspec = "."
 	}
 	out, err := r.git("ls-tree", "-r", "-z", "--full-tree", fix, "--", pathspec)
 	if err != nil {
@@ -597,9 +580,9 @@ func (r *fixRepo) overlayTests(fix, pkg, dir string) error {
 		if !test && !strings.HasPrefix(rest, "testdata/") {
 			continue
 		}
-		fields := strings.Fields(meta) // mode type object
+		fields := strings.Fields(meta)
 		if len(fields) != 3 || fields[1] != "blob" || fields[0] == "120000" {
-			continue // a submodule or a symlink: not a file to copy
+			continue
 		}
 		body, err := r.git("cat-file", "blob", fields[2])
 		if err != nil {
@@ -620,10 +603,8 @@ func (r *fixRepo) overlayTests(fix, pkg, dir string) error {
 type goTestResult struct {
 	built          bool
 	passed, failed map[string]bool
-	// crashed is a test binary that built but failed before running a test
-	// (TestMain exiting, an init panicking): every test counts as failed.
-	crashed bool
-	tail    string // the end of the output, when it didn't build or crashed
+	crashed        bool
+	tail           string
 }
 
 // goTestEnv is the environment the tests get: the runner's own, without
@@ -685,7 +666,7 @@ func goTest(ctx context.Context, dir string, tests []string) (*goTestResult, err
 			}
 		}
 		if ev.Test == "" && ev.Action == "fail" {
-			pkgFailed = true // the binary ran (or the build failed, said above)
+			pkgFailed = true
 		}
 		if ev.Test == "" || strings.Contains(ev.Test, "/") {
 			continue

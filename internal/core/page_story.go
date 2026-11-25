@@ -15,31 +15,20 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Plan stories (WP-190, WP-ADR122). Agents write long plans and a person skims and
-// approves them, which used to record the whole plan as approved, as if the
-// person had meant every line. Now a long plan an agent wrote gets a short
-// user story, written by another model (the story task, else the
-// automations' model) from the plan and from the person's own words that
-// asked for it. The page shows the story first and the plan after it.
-// Approving the plan keeps the story as the person's intent; the plan stays
-// the agent's text, approved on its story only. A person edits the story
-// like any text, and what they write is theirs. Agents can't write one:
-// it would be the plan's author grading its own plan.
-
 const (
 	storyTask  = "story"
-	storyAgent = "waypoint/story" // who a model-written story is from
+	storyAgent = "waypoint/story"
 
-	storyMinLen    = 1500   // runes of an agent's plan before it gets a story
-	storyMax       = 2000   // bytes of a story
-	storyPlanMax   = 24_000 // bytes of the plan the model reads
-	storyPromptMax = 4000   // bytes of the person's prompt it reads
-	storyTaskDesc  = 600    // bytes of each linked task's (person-written) description
-	storyPoints    = 5      // points a story keeps at most
-	storyPointMax  = 160    // runes of each point
-	storySweepMax  = 10     // plans without a story the hourly sweep queues
+	storyMinLen    = 1500
+	storyMax       = 2000
+	storyPlanMax   = 24_000
+	storyPromptMax = 4000
+	storyTaskDesc  = 600
+	storyPoints    = 5
+	storyPointMax  = 160
+	storySweepMax  = 10
 	storyTimeout   = 3 * time.Minute
-	storyRetry     = 24 * time.Hour // the sweep's wait before asking for a plan's story again
+	storyRetry     = 24 * time.Hour
 )
 
 // StoryAgentNotice is what an agent that tried to write a story is told.
@@ -142,7 +131,7 @@ func (s *Service) storySets(actor *Actor, pg *Page, text string, body *string) (
 	sets = []string{"story = ?", "story_agent = ''", "story_by = ?", "story_at = ?", "story_base = ?"}
 	args = []any{text, actor.id(), s.nowMS(), storyHash(b)}
 	if text != pg.Story {
-		sets = append(sets, "story_model = ''") // rewritten: the person's own, not a kept suggestion
+		sets = append(sets, "story_model = ''")
 	}
 	return sets, args, "", nil
 }
@@ -300,7 +289,6 @@ func (s *Service) writeStory(ctx context.Context, id int64, force bool) error {
 	if err != nil {
 		return err
 	}
-	// Bookkeeping for the sweep, not an edit: when the model was last asked.
 	if _, err := s.db.W.ExecContext(ctx, `UPDATE pages SET story_tried = ? WHERE id = ?`, s.nowMS(), id); err != nil {
 		return err
 	}
@@ -316,8 +304,6 @@ func (s *Service) writeStory(ctx context.Context, id int64, force bool) error {
 	actor := aiActorNamed("AI story", derefInt(pg.ProjectID), model)
 	var n int64
 	err = s.write(ctx, actor, func(t *tx) error {
-		// Read again in the write: the model took a while, and a person's
-		// story or a new body wins.
 		res, err := t.ExecContext(ctx, `UPDATE pages SET story = ?, story_agent = ?, story_model = ?, story_by = NULL, story_at = ?, story_base = ?
 			WHERE id = ? AND (story = '' OR story_agent != '') AND body = ?`, story, storyAgent, model, s.nowMS(), storyHash(pg.Body), id, pg.Body)
 		if err != nil {

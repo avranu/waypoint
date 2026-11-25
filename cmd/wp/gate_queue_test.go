@@ -14,7 +14,7 @@ type fakeWaits struct {
 	t       time.Time
 	sleeps  int
 	onSleep func(n int)
-	goneAt  int // the sleep after which the parent is gone (0: never)
+	goneAt  int
 }
 
 func (f *fakeWaits) waits() gateWaits {
@@ -102,7 +102,7 @@ func TestSlotQueue(t *testing.T) {
 		q.admit = func() (int, bool) {
 			calls++
 			if calls == 1 {
-				return 5, false // lost the race
+				return 5, false
 			}
 			return 4, true
 		}
@@ -216,7 +216,7 @@ func TestGateQueue(t *testing.T) {
 		g := newGateFixture(t)
 		t.Setenv("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", "6")
 		for _, id := range []string{"a", "b", "c", "d", "e", "f"} {
-			g.start("s1", id, "haiku-worker") // not in an agents dir: resolved by name below
+			g.start("s1", id, "haiku-worker")
 		}
 		g.c.trackSubagent(hookEventInput{SessionID: "s1", AgentID: "a", AgentType: "general-purpose", HookEventName: "SubagentStart"})
 		t.Setenv("CLAUDE_CODE_SUBAGENT_MODEL", "haiku")
@@ -258,7 +258,7 @@ func TestGateQueue(t *testing.T) {
 		g := newGateFixture(t)
 		t.Setenv("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", "2")
 		g.start("s1", "a", "general-purpose")
-		g.run(haikuCall) // a reservation by the main thread
+		g.run(haikuCall)
 		out := g.run(`{"session_id":"s1","tool_use_id":"tu2","tool_name":"Agent","agent_id":"a","tool_input":{"subagent_type":"general-purpose","model":"sonnet"}}`)
 		if !strings.Contains(out, "this start waited 4m") {
 			t.Errorf("out %q sleeps %d", out, g.f.sleeps)
@@ -286,8 +286,6 @@ func TestGateQueue(t *testing.T) {
 		g := newGateFixture(t)
 		t.Setenv("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", "1")
 		g.start("s1", "a", "general-purpose")
-		// Opus: the nested premium rule (an agent can't start an Opus agent)
-		// refuses it before the slot queue, so nothing is held.
 		out := g.run(`{"session_id":"s1","tool_name":"Agent","agent_id":"z","tool_input":{"subagent_type":"general-purpose","model":"opus"}}`)
 		if !strings.Contains(out, "coordinator") || g.f.sleeps != 0 {
 			t.Errorf("out %q sleeps %d", out, g.f.sleeps)
@@ -296,7 +294,7 @@ func TestGateQueue(t *testing.T) {
 	t.Run("a person's pause is not held", func(t *testing.T) {
 		g := newGateFixture(t)
 		t.Setenv("CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS", "1")
-		g.start("s1", "a", "general-purpose") // the table is at the limit
+		g.start("s1", "a", "general-purpose")
 		g.c.savePause(json.RawMessage(testPause))
 		if g.c.activePause() == nil {
 			t.Fatal("the pause was not saved")
@@ -320,11 +318,10 @@ func TestGateQueue(t *testing.T) {
 				t.Fatalf("%s: out %q sleeps %d", id, out, g.f.sleeps)
 			}
 		}
-		// Their SubagentStarts have not come: both slots are reserved.
 		g.f.onSleep = func(n int) {
 			if n == 3 {
-				g.start("s1", "x", "general-purpose") // the first start answers a reservation
-				g.stop("s1", "x")                     // and it finishes at once: a slot is free
+				g.start("s1", "x", "general-purpose")
+				g.stop("s1", "x")
 			}
 		}
 		if out := g.run(call("tu3")); out != "" || g.f.sleeps != 3 {
@@ -351,7 +348,6 @@ func TestTrackSubagentRuns(t *testing.T) {
 	start("kid")
 	first := c.loadState().Agents["s"]["kid"].Since
 	time.Sleep(5 * time.Millisecond)
-	// stopped and resumed: a new run, the same parent
 	c.trackSubagent(hookEventInput{SessionID: "s", AgentID: "kid", HookEventName: "SubagentStop"})
 	start("kid")
 	st := c.loadState()
@@ -361,7 +357,6 @@ func TestTrackSubagentRuns(t *testing.T) {
 	if p := st.AgentParents["s"]["kid"].Parent; p != "boss" {
 		t.Errorf("parent %q", p)
 	}
-	// the parent's record may come after the start
 	start("late")
 	c.trackAgentParent(hookEventInput{SessionID: "s", AgentID: "boss", ToolResponse: []byte(`{"agentId":"late"}`)})
 	st = c.loadState()
@@ -371,14 +366,12 @@ func TestTrackSubagentRuns(t *testing.T) {
 	if got := st.childrenOf("s", "", time.Now()); len(got) != 0 {
 		t.Errorf("main's children %v", got)
 	}
-	// a stop that came before the record leaves nothing live
 	c.trackSubagent(hookEventInput{SessionID: "s", AgentID: "fast", HookEventName: "SubagentStop"})
 	c.trackAgentParent(hookEventInput{SessionID: "s", AgentID: "", ToolResponse: []byte(`{"agentId":"fast"}`)})
 	st = c.loadState()
 	if _, ok := st.liveIDs("s", time.Now())["fast"]; ok {
 		t.Errorf("a stopped agent is live")
 	}
-	// a session that ends takes its agents with it
 	c.forgetSessionAgents("s")
 	if st := c.loadState(); len(st.Agents) != 0 || len(st.AgentParents) != 0 {
 		t.Errorf("left %v %v", st.Agents, st.AgentParents)
@@ -407,7 +400,6 @@ func TestGateNotes(t *testing.T) {
 		if out := g.run(call); out != "" {
 			t.Errorf("second: %q", out)
 		}
-		// resumed: a new run, told again
 		time.Sleep(5 * time.Millisecond)
 		g.startMode("s1", "boss", "general-purpose", true)
 		if out := g.run(call); !strings.Contains(out, "wp agents wait") {
@@ -416,7 +408,7 @@ func TestGateNotes(t *testing.T) {
 	})
 	t.Run("a foreground (or unknown) subagent is never told to end its turn", func(t *testing.T) {
 		g := newGateFixture(t)
-		g.start("s1", "unk", "general-purpose") // no record of how it was started
+		g.start("s1", "unk", "general-purpose")
 		g.startMode("s1", "fgboss", "general-purpose", false)
 		call := `{"session_id":"s1","agent_id":"fgboss","tool_name":"Agent","tool_input":{"subagent_type":"general-purpose","model":"haiku","run_in_background":true}}`
 		if out := g.run(call); !strings.Contains(out, "wp agents wait` in the foreground") || !strings.Contains(out, "600000") || strings.Contains(out, "run_in_background: true") {

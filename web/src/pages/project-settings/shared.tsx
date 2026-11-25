@@ -1,5 +1,3 @@
-// Small building blocks shared by the project settings tabs.
-
 import { useRef, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { Check, Lock } from 'lucide-react'
@@ -114,8 +112,6 @@ export function ColorPicker({
               type="color"
               value={custom}
               onChange={(e) => setCustom(e.target.value)}
-              // React's onChange fires while dragging; the native change
-              // event fires once the person settles on a color.
               ref={(el) => {
                 if (el) el.onchange = () => el.value !== value && onChange(el.value)
               }}

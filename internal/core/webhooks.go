@@ -295,7 +295,7 @@ func (s *Service) deliverWebhooks(ctx context.Context, e *Event) {
 	if e.IssueID != 0 && e.Kind != EvIssueDeleted {
 		var rerr error
 		issue, rerr = s.issueByID(ctx, s.db.R, e.IssueID, true)
-		if readFault(rerr) && !errors.Is(rerr, ErrNotFound) { // deleted since: delivered without it
+		if readFault(rerr) && !errors.Is(rerr, ErrNotFound) {
 			s.log.WarnContext(ctx, "read the issue of a webhook event", "issue", e.IssueID, "event", e.Kind, "err", rerr)
 		}
 	}

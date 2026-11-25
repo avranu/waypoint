@@ -50,12 +50,10 @@ func TestAttachmentsOnAnything(t *testing.T) {
 	if img.TargetType != "page" || img.TargetID != pg.ID || img.Kind != "image" || img.Caption != "a caption" || !img.Inline {
 		t.Errorf("page image = %+v", img)
 	}
-	// A page code works as the target, with ?project= for a bare one.
 	var viaCode core.Attachment
 	if code := c.json("POST", "/api/v1/attachments?target=page:"+pg.Code+"&project=FILE&name=c.txt", "by code", &viaCode); code != 200 || viaCode.TargetID != pg.ID {
 		t.Errorf("by code: %d %+v", code, viaCode)
 	}
-	// Multipart with a caption field, and the old issue endpoint.
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 	fw, _ := mw.CreateFormFile("file", "notes.md")
@@ -108,7 +106,6 @@ func TestAttachmentsOnAnything(t *testing.T) {
 		b, _ := io.ReadAll(resp.Body)
 		return resp, string(b)
 	}
-	// Everything is served under a sandbox, without sniffing.
 	safe := func(r *http.Response, what string) {
 		t.Helper()
 		if r.Header.Get("X-Content-Type-Options") != "nosniff" || !strings.Contains(r.Header.Get("Content-Security-Policy"), "sandbox") {
@@ -133,11 +130,9 @@ func TestAttachmentsOnAnything(t *testing.T) {
 		}
 		safe(r, tc.att.Name)
 	}
-	// ?download forces a download even for what would show.
 	if r, _ := get(tok, img.URL+"?download=1", nil); !strings.HasPrefix(r.Header.Get("Content-Disposition"), "attachment") {
 		t.Errorf("download: %q", r.Header.Get("Content-Disposition"))
 	}
-	// Range, for seeking in video; and a revalidation costs nothing.
 	r, body := get(tok, vid.URL, map[string]string{"Range": "bytes=4-9"})
 	if r.StatusCode != 206 || body != mp4[4:10] || r.Header.Get("Content-Range") != fmt.Sprintf("bytes 4-9/%d", len(mp4)) || r.Header.Get("Accept-Ranges") != "bytes" {
 		t.Errorf("range: %d %q %q", r.StatusCode, body, r.Header.Get("Content-Range"))
@@ -150,7 +145,6 @@ func TestAttachmentsOnAnything(t *testing.T) {
 		t.Errorf("text range: %d %q", r.StatusCode, body)
 	}
 
-	// Lists carry the kinds; outsiders see nothing and can't touch anything.
 	var onPage []core.Attachment
 	if code := c.json("GET", "/api/v1/attachments?target="+pageTarget, nil, &onPage); code != 200 || len(onPage) != 6 {
 		t.Errorf("page files: %d %d", code, len(onPage))
@@ -172,7 +166,6 @@ func TestAttachmentsOnAnything(t *testing.T) {
 			t.Errorf("target %q: %d", bad, code)
 		}
 	}
-	// Captions and deletion.
 	var capd core.Attachment
 	if code := c.json("PATCH", fmt.Sprintf("/api/v1/attachments/%d", img.ID), map[string]string{"caption": "new caption"}, &capd); code != 200 || capd.Caption != "new caption" {
 		t.Errorf("caption: %d %+v", code, capd)
@@ -194,7 +187,6 @@ func TestAttachmentSizeLimit(t *testing.T) {
 	svc.CreateIssue(ctx, &core.Actor{User: u}, core.IssueInput{Project: "BIG", Title: "Files"})
 	tok, _, _ := svc.CreateAPIToken(ctx, &core.Actor{User: u}, "t", false, 0)
 	c := &client{t: t, base: ts.URL, http: http.DefaultClient, token: tok}
-	// The default is 25 MB: 12 MB goes in, 26 MB doesn't (and isn't read in full).
 	if code, _ := c.do("POST", "/api/v1/attachments?target=BIG-1&name=ok.bin", strings.Repeat("x", 12<<20)); code != 200 {
 		t.Errorf("12 MB: %d", code)
 	}
@@ -222,7 +214,6 @@ func TestMCPAttachFile(t *testing.T) {
 	if len(files) != 1 || files[0].Agent != "mcp" || files[0].Caption != "The bug" {
 		t.Errorf("files = %+v", files)
 	}
-	// A big file gets through the request limit (a 2 MB cap would cut it).
 	big := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("log line\n"), 400_000))
 	if out := callMCPTool(t, ts.URL, tok, "attach_file", map[string]any{"target": "MCP-1", "name": "big.log", "content_base64": big}); !strings.Contains(out, "Attached big.log (text/x-log") {
 		t.Errorf("big file: %.200s", out)

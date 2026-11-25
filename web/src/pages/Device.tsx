@@ -1,7 +1,3 @@
-// /device?code=XXXX-XXXX: approve a `wp auth login` from the command line.
-// The CLI shows a code and opens this page; approving gives it a token
-// that acts as you (as an agent, when the CLI said which one).
-
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { useMutation, useQuery } from '@tanstack/react-query'

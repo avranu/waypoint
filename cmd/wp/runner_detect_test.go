@@ -42,7 +42,6 @@ func TestDetectCLIs(t *testing.T) {
 	if c := by["cursor"]; c.SignedIn == nil || *c.SignedIn {
 		t.Errorf("cursor = %+v", c)
 	}
-	// A cursor-agent that answers in JSON says who is signed in and the plan.
 	write("cursor-agent", `case "$1 $2 $3" in
 "status --format json") echo '{"status":"authenticated","isAuthenticated":true,"userInfo":{"email":"robin@example.com"}}';;
 "about --format json") echo '{"cliVersion":"2026.10.22","subscriptionTier":"Pro+"}';;
@@ -58,7 +57,6 @@ esac`)
 			t.Errorf("cursor signed out = %+v", c)
 		}
 	}
-	// Only what is installed is reported.
 	t.Setenv("PATH", t.TempDir())
 	if got := detectCLIs(context.Background()); len(got) != 0 {
 		t.Errorf("found %+v", got)

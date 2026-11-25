@@ -70,7 +70,6 @@ function InlineField({
       </button>
     )
   }
-  // The field stays, with what was typed, until the save lands.
   const commit = async () => {
     if (saving.current) return
     if (draft.trim() === value) return setDraft(null)
@@ -79,7 +78,6 @@ function InlineField({
       await onSave(draft.trim())
       setDraft(null)
     } catch {
-      /* the save reports its own error; the text stays to retry */
     } finally {
       saving.current = false
     }
@@ -111,7 +109,6 @@ function Running({ timer }: { timer: TimeEntry }) {
   const { stop } = useTimer()
   const edit = useEditTimer(timer)
   useTick(1000)
-  // Backdating: a clock time today, or yesterday if that's still to come.
   const setStart = (v: string) => {
     const [h, m] = v.split(':').map(Number)
     if (Number.isNaN(h) || Number.isNaN(m)) return
@@ -120,7 +117,6 @@ function Running({ timer }: { timer: TimeEntry }) {
     if (d.getTime() > Date.now()) d = addDays(d, -1)
     edit.mutate({ started_at: rfc3339(d) })
   }
-  // "1h30m" running so far: move the start so the clock shows that.
   const setElapsed = (v: string) => {
     const secs = parseDuration(v)
     if (secs === null || secs <= 0) return toastError(new Error('Try 1h30m, 45m or 1:30.'))

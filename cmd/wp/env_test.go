@@ -53,7 +53,6 @@ func TestCLIEnvironments(t *testing.T) {
 		t.Errorf("empty ls --json: %s", out)
 	}
 
-	// CI: started, then succeeded for the same commit.
 	out = e.wp("env", "deploy", "staging", "-p", p.Key, "--commit", "3fa9c1e5b7d2", "--branch", "main", "--status", "started", "--url", "https://ci.example.com/runs/7")
 	if !strings.Contains(out, "started: 3fa9c1e to "+p.Key+"/staging") {
 		t.Errorf("deploy started: %s", out)
@@ -66,7 +65,6 @@ func TestCLIEnvironments(t *testing.T) {
 		t.Errorf("bad commit accepted: %s", out)
 	}
 
-	// A dev environment from the project's address pattern.
 	out = e.wp("env", "up", "a23x42s", "-p", p.Key, "--branch", "fix/login", "--commit", "abc1234", "--ttl", "3d")
 	if !strings.Contains(out, "a23x42s is up at https://a23x42s.dev.harbor.org") || !strings.Contains(out, "until") {
 		t.Errorf("up: %s", out)
@@ -102,12 +100,10 @@ func TestCLIEnvironments(t *testing.T) {
 	if out := e.wp("env", "ls", "-p", p.Key, "--stopped"); !strings.Contains(out, "a23x42s") || !strings.Contains(out, "stopped") {
 		t.Errorf("--stopped:\n%s", out)
 	}
-	// Every project.
 	if out := e.wp("env", "ls", "-A"); !strings.Contains(out, "PROJECT") || !strings.Contains(out, p.Key) {
 		t.Errorf("ls -A:\n%s", out)
 	}
 
-	// In a checkout, deploy defaults to the commit checked out here.
 	gitRepoWithCommit(t)
 	out = e.wp("env", "deploy", "preview-1", "-p", p.Key)
 	if !strings.Contains(out, "succeeded:") {

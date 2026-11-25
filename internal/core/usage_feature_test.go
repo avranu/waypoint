@@ -117,7 +117,6 @@ func TestRunFeaturesRecordedAtClaimAndEnd(t *testing.T) {
 		t.Fatalf("after the end: %v", got)
 	}
 
-	// Nothing changed during this one, so nothing more is noted.
 	same := e.issue(e.me, IssueInput{Project: p.Key, Title: "Export"})
 	if _, err := e.s.AgentDone(e.ctx, ag, same.Key, AgentDoneInput{}); err != nil {
 		t.Fatal(err)
@@ -311,9 +310,7 @@ func TestUsageFeatureComparesByWhatRunsHad(t *testing.T) {
 		f.task(-80+n, "v0.79.0", "v0.79.0", 1000)
 		f.task(-40+n, "v0.80.0", "v0.80.0", 3000)
 	}
-	// After the deploy by date, but its session started before it.
 	stale := f.task(-30, "v0.80.0", "v0.79.0", 900000)
-	// Before anything was recorded.
 	old := f.task(-90, "", "", 900000)
 
 	o, err := f.s.UsageFeature(f.ctx, f.me, UsageQuery{}, FeatureQuery{Ref: "0.80.0"})
@@ -412,9 +409,9 @@ func TestFeatureReleaseWithAVersionTwoProjectsShare(t *testing.T) {
 func TestFeatureReleaseFromTask(t *testing.T) {
 	f := newFeatureEnv(t)
 	shipped := f.issue(f.me, IssueInput{Project: f.p.Key, Title: "Shipped"})
-	f.mergedPR(shipped.ID, 7, -60) // first deployed by v0.80.0, at -50
-	f.rollout("v0.79.5", -62, -58) // started before that merge, so without it
-	f.mergedPR(shipped.ID, 9, -20) // a follow-up, in a later release
+	f.mergedPR(shipped.ID, 7, -60)
+	f.rollout("v0.79.5", -62, -58)
+	f.mergedPR(shipped.ID, 9, -20)
 	f.deploy("v0.81.0", -15)
 
 	o, err := f.s.UsageFeature(f.ctx, f.me, UsageQuery{}, FeatureQuery{Ref: shipped.Key, Window: 500})
@@ -447,7 +444,6 @@ func TestUsageForTask(t *testing.T) {
 	i := f.task(-10, "v0.80.0", "v0.79.0", 500)
 	other := f.task(-5, "v0.80.0", "v0.80.0", 700)
 	f.mergedPR(i.ID, 7, -8)
-	// Tool calls in the hour of the task, and in the other task's.
 	f.ingest(f.me, "tools", "m1", UsageChunk{Tools: []UsageToolRow{
 		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "builtin", Tool: "Edit", Calls: 4, Errors: 1},
 		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "builtin", Tool: "Read", Calls: 9},
@@ -477,14 +473,12 @@ func TestUsageForTask(t *testing.T) {
 	if got["server"] != "v0.80.0" || got["session_server"] != "v0.79.0" || got["hooks"] != "on" {
 		t.Errorf("features = %v", got)
 	}
-	// A skill is listed in Used but isn't a tool call on Trends either.
 	if o.Input != 500 || o.ToolCalls != 13 || o.ToolErrors != 1 || o.Edits != 4 || o.ActiveHours != 1 || o.Sessions != 1 || o.RunMinutes != 60 {
 		t.Errorf("totals = %+v", o)
 	}
 	if o.PRs != 2 || o.Files != 6 || o.Lines != 72 {
 		t.Errorf("prs %d files %d lines %d", o.PRs, o.Files, o.Lines)
 	}
-	// Which arm a task was in is for admins, as on the experiments themselves.
 	if len(o.Arms) != 0 {
 		t.Errorf("a non-admin saw arms %v", o.Arms)
 	}
@@ -495,7 +489,6 @@ func TestUsageForTask(t *testing.T) {
 		t.Errorf("used = %+v", o.Used)
 	}
 
-	// Usage of the task only, and only for those who can see the task.
 	if o, err := f.s.UsageForTask(f.ctx, f.me, UsageQuery{}, other.Key); err != nil || o.Edits != 50 || o.Input != 700 {
 		t.Errorf("other task = %+v, %v", o, err)
 	}
@@ -503,7 +496,6 @@ func TestUsageForTask(t *testing.T) {
 	if _, err := f.s.UsageForTask(f.ctx, sam, UsageQuery{}, i.Key); err == nil {
 		t.Error("a stranger read the task's usage")
 	}
-	// A member sees the task's usage, but not which arm of an experiment it's in.
 	if err := f.s.SetMember(f.ctx, f.me, f.p.Key, "sam", "viewer"); err != nil {
 		t.Fatal(err)
 	}

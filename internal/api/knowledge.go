@@ -10,13 +10,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Glossary, design notes, specs, links and search across everything (WP-D10).
-// Lookups, specs and search answer in compact text with
-// ?format=text, for agents and the CLI.
-
 func wantsText(r *http.Request) bool { return r.URL.Query().Get("format") == "text" }
-
-// ---- glossary ----
 
 func (s *Server) listGlossary(w http.ResponseWriter, r *http.Request) (any, error) {
 	v := r.URL.Query()
@@ -88,8 +82,6 @@ func (s *Server) deleteGlossary(w http.ResponseWriter, r *http.Request) (any, er
 	return nil, s.svc.DeleteGlossary(r.Context(), actorFrom(r), id)
 }
 
-// ---- design notes ----
-
 // designID is the note a path names: its number, or a code (ADR7, APP-ADR7;
 // ?project= says where a bare code is).
 func (s *Server) designID(r *http.Request) (int64, error) {
@@ -126,7 +118,7 @@ func (s *Server) getDesign(w http.ResponseWriter, r *http.Request) (any, error) 
 	if err != nil {
 		return nil, err
 	}
-	if !queryBool(r, "listed") { // listed=1: wp brief listing it unasked, recorded as shown
+	if !queryBool(r, "listed") {
 		s.svc.NoteLookup(r.Context(), actorFrom(r), core.KDesign, id, "")
 	}
 	if wantsText(r) {
@@ -234,8 +226,6 @@ func (s *Server) spec(w http.ResponseWriter, r *http.Request) (any, error) {
 	return sp, nil
 }
 
-// ---- links ----
-
 func linkEndFromQuery(r *http.Request) (core.LinkEnd, error) {
 	v := r.URL.Query()
 	e := core.LinkEnd{Type: v.Get("type"), Key: v.Get("key"), Ref: v.Get("ref")}
@@ -280,7 +270,6 @@ func (s *Server) removeItemLink(w http.ResponseWriter, r *http.Request) (any, er
 func (s *Server) resolve(w http.ResponseWriter, r *http.Request) (any, error) {
 	v := r.URL.Query()
 	it, err := s.svc.Resolve(r.Context(), actorFrom(r), v.Get("ref"), v.Get("project"))
-	// soft=1: nothing found is an answer (null), not an error.
 	if errors.Is(err, core.ErrNotFound) && queryBool(r, "soft") {
 		return nil, nil
 	}
@@ -307,8 +296,6 @@ func (s *Server) resolveRefs(w http.ResponseWriter, r *http.Request) (any, error
 	return map[string]any{"refs": refs}, nil
 }
 
-// ---- search everything ----
-
 func (s *Server) searchAll(w http.ResponseWriter, r *http.Request) (any, error) {
 	v := r.URL.Query()
 	q := core.AllQuery{Text: v.Get("q"), Archived: queryBool(r, "archived"), Limit: queryInt(r, "limit", 10), Near: v.Get("near")}
@@ -330,8 +317,6 @@ func (s *Server) searchAll(w http.ResponseWriter, r *http.Request) (any, error) 
 	return res, nil
 }
 
-// ---- agent pickup ----
-
 func (s *Server) agentTakeKey(w http.ResponseWriter, r *http.Request) (any, error) {
 	var in struct {
 		Agent        string `json:"agent"`
@@ -347,7 +332,6 @@ func (s *Server) agentTakeKey(w http.ResponseWriter, r *http.Request) (any, erro
 	s.svc.NoteCrossProject(r.Context(), actorFrom(r), in.CrossProject, t)
 	warning := s.svc.TaskSessionWarning(r.Context(), actorFrom(r), t, sessionHint(r))
 	if wantsJSON(r) {
-		// why says when an epic's key handed out its sub-task (WP-730).
 		return map[string]any{"task": t.Issue, "workflow": t.Workflow, "step": t.Step, "related": t.Related, "resumed": t.Resumed, "skipped": t.Skipped, "why": t.Why, "design": t.Design, "comments": t.Comments, "warning": warning}, nil
 	}
 	return textResponse(agentTaskText(t, s.taskTextFor(r, t, s.onlyClaim(r, t))) + warningText(warning)), nil

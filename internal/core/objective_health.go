@@ -11,21 +11,6 @@ import (
 	"time"
 )
 
-// What keeps objectives moving, and tells their people (WP-927, WP-ADR111, WP-ADR142).
-//
-// An objective in effect runs for days with nobody watching, so every way
-// it can stop moving is either put right here or put to a person:
-//
-//   - onObjectiveEvent moves a reading on the moment its job or its judge
-//     ends, reads a merged pull request itself, and hands a round back out
-//     when its pull request is closed unmerged;
-//   - objectiveWatch (every few minutes) hands back out a round an agent
-//     took and left, and finds the objectives nothing will move on by
-//     itself (no runner to read it, a round nobody takes up, a pull request
-//     nobody merges): their person is told, and told again daily;
-//   - a person is told when an objective is proposed, met, ended, needs
-//     them, or has gone rounds without getting nearer.
-
 // NotifyObjective is the notification kind of news of an objective.
 const NotifyObjective = "objective"
 
@@ -97,9 +82,6 @@ func (s *Service) onObjectiveEvent(ctx context.Context, e *Event) {
 			}
 		})
 	case e.Kind == EvExternalPRMerged && e.IssueID != 0:
-		// Here, and not in the background: a rule of the project that
-		// closes the task on this merge runs after, and finds the merge
-		// taken account of.
 		if err := s.objectiveMerged(ctx, e.IssueID, e.New); err != nil {
 			s.log.WarnContext(ctx, "read a merge for an objective", "issue", e.IssueKey, "err", err)
 		}
@@ -115,8 +97,6 @@ func (s *Service) onObjectiveEvent(ctx context.Context, e *Event) {
 // objectiveSweepAudits cancels the judge's audits of a task that nothing
 // waits for any more: every one but the audit of the reading under way.
 func (s *Service) objectiveSweepAudits(ctx context.Context, issueID int64) {
-	// Not while a step asks for one: its audit exists before the objective
-	// says so.
 	unlock := s.objectiveLocks.lock(issueID)
 	defer unlock()
 	s.objectiveSweep(ctx, issueID)
@@ -165,7 +145,6 @@ func (s *Service) objectiveOrphans(ctx context.Context) {
 		if err := rows.Scan(&key); err != nil {
 			continue
 		}
-		// objective:<issue>:…
 		rest, ok := strings.CutPrefix(key, "objective:")
 		if !ok {
 			continue
@@ -229,12 +208,6 @@ func (s *Service) objectiveTell(ctx context.Context, e *Event, what string) {
 		case told == 0 || o.Stalled >= 2*told:
 			told = o.Stalled
 			title = fmt.Sprintf("%s: %s without getting nearer its objective", o.Key, plural1(o.Stalled, "round"))
-			// A diagnosis that stood when this was emitted was written for the
-			// rounds before it: say so, and how many rounds since were read
-			// and came no nearer in a row. That is the event's no_better (a
-			// recorded diagnosis zeroes it), never the stall count: a round
-			// that landed nothing counts as stalled but was never read, so it
-			// is no evidence the diagnosis failed.
 			if did := eventInt64(e.Data["diagnosis"]); did != 0 {
 				var dround int
 				if err := s.db.R.QueryRowContext(ctx, `SELECT round_no FROM objective_rounds WHERE id = ?`, did).Scan(&dround); err == nil {
@@ -285,7 +258,6 @@ func (s *Service) objectiveHandBack(ctx context.Context, issueID int64, why stri
 			return nil
 		}
 		if after > 0 && (i.ClaimedBy == "" || i.ClaimedUntil == nil) {
-			// Nobody's claim ran out: a person has it in hand.
 			return nil
 		}
 		var open int
@@ -365,7 +337,7 @@ func (s *Service) objectiveStuck(ctx context.Context, o *Objective, paused map[i
 		case o.verifyReading == nil && o.verifyJob == nil:
 			by := o.reader()
 			if by == nil {
-				return "", 0, nil // the next step asks a person
+				return "", 0, nil
 			}
 			runners, err := s.ownerRunners(ctx, *by)
 			if err != nil {
@@ -401,7 +373,6 @@ func (s *Service) objectiveStuck(ctx context.Context, o *Objective, paused map[i
 		}
 		return "", 0, nil
 	}
-	// A round to be worked.
 	i, err := s.issueByID(ctx, s.db.R, o.IssueID, false)
 	if err != nil {
 		return "", 0, err
@@ -419,7 +390,6 @@ func (s *Service) objectiveStuck(ctx context.Context, o *Objective, paused map[i
 	case err != nil && !errors.Is(err, sql.ErrNoRows):
 		return "", 0, err
 	case err == nil && o.issueCategory == CatInProgress:
-		// Out on a pull request: the round ends when it merges.
 		if opened = max(opened, o.roundStartedAt); now-opened > objectivePRSlow.Milliseconds() {
 			return fmt.Sprintf("Round %d's pull request has been open since %s and hasn't merged: %s. The round ends when it merges; closing it unmerged hands the round out again.", o.Round, objectiveClock(msTime(opened)), url), opened, nil
 		}
@@ -494,7 +464,6 @@ func (s *Service) objectiveWatchOne(ctx context.Context, issueID int64, paused m
 		if tell {
 			sets = append(sets, "stuck_told_at", now)
 			if o.stuckToldAt == 0 {
-				// Once in the task's history; the reminders go to its people only.
 				ev = objectiveEvent(o, "stuck", fmt.Sprintf("round %d", o.Round), "nothing moves it on: "+why)
 				t.emit(ev)
 			}

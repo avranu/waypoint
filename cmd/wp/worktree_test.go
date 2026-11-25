@@ -17,11 +17,11 @@ func TestBesideCheckout(t *testing.T) {
 		path string
 		want bool
 	}{
-		{"/projects/team/repo-x", true}, // ../repo-x
-		{"/projects/sp-activity", true}, // in a folder above
+		{"/projects/team/repo-x", true},
+		{"/projects/sp-activity", true},
 		{"/projects/team/repo/.claude/worktrees/x", false},
 		{"/projects/team/repo/.worktrees/x", false},
-		{"/projects/team/worktrees/x", false}, // a folder made for worktrees
+		{"/projects/team/worktrees/x", false},
 		{"/tmp/claude/scratch/x", false},
 		{"/home/me/wt/x", false},
 		{"/projects/team/repo", false},
@@ -55,7 +55,7 @@ func TestWorktreePlaceNudge(t *testing.T) {
 	other := t.TempDir()
 	for _, tc := range []struct {
 		cmd, dir string
-		want     string // a fragment of the refusal; "" for none
+		want     string
 	}{
 		{"git worktree add ../repo-x -b x", f.repo, "`git worktree add " + home + "/x -b x`"},
 		{"git worktree add -b feat ../repo-feat origin/main", f.repo, "`git worktree add -b feat " + home + "/feat origin/main`"},
@@ -68,8 +68,7 @@ func TestWorktreePlaceNudge(t *testing.T) {
 		{"WP_WORKTREE_ANYWHERE=1 git worktree add ../repo-x", f.repo, ""},
 		{"echo git worktree add ../repo-x", f.repo, ""},
 		{"git worktree list", f.repo, ""},
-		{"git worktree add ../x", other, ""}, // not in a repository
-		// Wrapped, nested and moved (audit 939.2).
+		{"git worktree add ../x", other, ""},
 		{`sh -c "git worktree add ../repo-x"`, f.repo, home + "/x"},
 		{"bash -lc 'git worktree add ../repo-x'", f.repo, home + "/x"},
 		{"sudo git worktree add ../repo-x", f.repo, home + "/x"},
@@ -78,7 +77,6 @@ func TestWorktreePlaceNudge(t *testing.T) {
 		{"git worktree move .claude/worktrees/z ../repo-z", f.repo, "`git worktree move .claude/worktrees/z " + home + "/z`"},
 		{"git worktree move ../repo-z .claude/worktrees/z", f.repo, ""},
 		{"git worktree add --orphan ../repo-w", f.repo, home + "/w"},
-		// The override, however it is set (audit 939.4).
 		{"export WP_WORKTREE_ANYWHERE=1; git worktree add ../repo-x", f.repo, ""},
 		{"sudo WP_WORKTREE_ANYWHERE=1 git worktree add ../repo-x", f.repo, ""},
 		{`sh -c "WP_WORKTREE_ANYWHERE=1 git worktree add ../repo-x"`, f.repo, ""},
@@ -91,7 +89,6 @@ func TestWorktreePlaceNudge(t *testing.T) {
 			t.Errorf("%q: want %q in %q", tc.cmd, tc.want, got)
 		}
 	}
-	// Set in the environment Claude Code runs in.
 	t.Setenv(worktreeAnywhere, "1")
 	if got := worktreePlaceNudge("git worktree add ../repo-x", f.repo); got != "" {
 		t.Errorf("%s=1 in the environment: refused: %s", worktreeAnywhere, got)
@@ -151,8 +148,6 @@ func TestWorktreeAdd(t *testing.T) {
 	if !strings.Contains(out, "tracking origin/feat") || !dirExists(filepath.Join(f.repo, ".claude", "worktrees", "feat")) {
 		t.Errorf("--branch feat: %s", out)
 	}
-	// A name whose branch is left from a removed worktree goes on to the
-	// next; when that one is a worktree already, it is reused (audit 939.5).
 	tgit(t, f.repo, "branch", "worktree-foo")
 	tgit(t, f.repo, "worktree", "add", "-q", "-b", "other", filepath.Join(f.repo, ".claude", "worktrees", "foo-2"))
 	if out := e.wp("worktree", "foo"); !strings.Contains(out, "Already a worktree (other)") {
@@ -207,7 +202,6 @@ func TestWorktreeMove(t *testing.T) {
 	if b := tgit(t, moved, "branch", "--show-current"); b != "quiet" {
 		t.Errorf("moved worktree's branch %q", b)
 	}
-	// Recently changed: stays, for that reason (no live session names it).
 	defer func() { worktreeNow = time.Now }()
 	worktreeNow = time.Now
 	fresh := filepath.Join(parent, "repo-fresh")
@@ -215,7 +209,6 @@ func TestWorktreeMove(t *testing.T) {
 	if out := e.wp("worktree", "move", fresh); !strings.Contains(out, "kept "+fresh+": its HEAD moved") || !dirExists(fresh) {
 		t.Errorf("recent: %s", out)
 	}
-	// One already under the home isn't renamed; explicit paths don't change that.
 	if out := e.wp("worktree", "move", moved); !strings.Contains(out, "kept "+moved+": already under") || !dirExists(moved) {
 		t.Errorf("homed: %s", out)
 	}

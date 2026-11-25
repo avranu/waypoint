@@ -62,14 +62,14 @@ func TestGoTemplate(t *testing.T) {
 	for _, tc := range []struct {
 		rule         *Rule
 		method, path string
-		want         string // "" allowed, else the reason
+		want         string
 	}{
 		{proxy, "GET", "/golang.org/x/net/@v/list", ""},
 		{proxy, "GET", "/golang.org/x/net/@v/v0.30.0.zip", ""},
-		{proxy, "GET", "/golang.org/x/net/html/@v/v0.30.0.mod", ""}, // a package path under the module
+		{proxy, "GET", "/golang.org/x/net/html/@v/v0.30.0.mod", ""},
 		{proxy, "GET", "/golang.org/x/net/@latest", ""},
 		{proxy, "GET", "/github.com/!burnt!sushi/toml/@v/v1.4.0.info", ""},
-		{proxy, "GET", "/github.com/BurntSushi/toml/@v/v1.4.0.info", "path"}, // never sent unescaped
+		{proxy, "GET", "/github.com/BurntSushi/toml/@v/v1.4.0.info", "path"},
 		{proxy, "GET", "/golang.org/toolchain/@v/v0.0.1-go1.27.3.linux-amd64.zip", ""},
 		{proxy, "GET", "/golang.org/x/netx/@v/list", "module"},
 		{proxy, "GET", "/evil.example.com/leak-the-secret/@v/list", "module"},
@@ -145,7 +145,6 @@ func TestBuiltInTemplatesValidate(t *testing.T) {
 	if err := p.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	// A policy survives a round trip through JSON, as it will in a spec.
 	b, err := json.Marshal(p)
 	if err != nil {
 		t.Fatal(err)
@@ -207,20 +206,20 @@ func TestPublicAddr(t *testing.T) {
 		"10.9.0.31":                            false,
 		"172.16.5.4":                           false,
 		"192.168.1.1":                          false,
-		"100.100.1.1":                          false, // tailnet
-		"169.254.169.254":                      false, // metadata
+		"100.100.1.1":                          false,
+		"169.254.169.254":                      false,
 		"0.0.0.0":                              false,
 		"255.255.255.255":                      false,
 		"224.0.0.1":                            false,
 		"198.18.0.1":                           false,
 		"::1":                                  false,
 		"fe80::1":                              false,
-		"fd7a:115c:a1e0::1":                    false, // tailnet ULA
+		"fd7a:115c:a1e0::1":                    false,
 		"::ffff:127.0.0.1":                     false,
-		"64:ff9b::a02:1f":                      false, // NAT64 of 10.9.0.31
-		"64:ff9b::101:101":                     true,  // NAT64 of 1.1.1.1
-		"2002:a02:1f::1":                       false, // 6to4 of 10.9.0.31
-		"2001:0:4136:e378:8000:63bf:f5fd:ffe0": false, // Teredo of 10.9.0.31
+		"64:ff9b::a02:1f":                      false,
+		"64:ff9b::101:101":                     true,
+		"2002:a02:1f::1":                       false,
+		"2001:0:4136:e378:8000:63bf:f5fd:ffe0": false,
 	} {
 		if got := publicAddr(netip.MustParseAddr(a)); got != want {
 			t.Errorf("publicAddr(%s) = %v", a, got)

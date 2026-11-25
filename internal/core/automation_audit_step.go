@@ -8,10 +8,6 @@ import (
 	"time"
 )
 
-// The audit step (WP-348): asks for an audit, like wp audit does, and waits
-// for it to settle, so later steps can read what it found:
-// {{.Steps.audit.Findings}}, {{.Steps.audit.Critical}}, {{.Steps.audit.URL}} …
-
 // auditWait bounds how long a step waits: every model of a long chain at
 // the full timeout, the busy retries, and time in the queue.
 const auditWait = 12 * time.Hour

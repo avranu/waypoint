@@ -14,7 +14,6 @@ import {
 export const pointerFirst: CollisionDetection = (args) => {
   const within = pointerWithin(args)
   if (within.length) {
-    // Prefer an item over its container when both are under the pointer.
     const items = within.filter(
       (c) =>
         !String(c.id).startsWith('col-') &&

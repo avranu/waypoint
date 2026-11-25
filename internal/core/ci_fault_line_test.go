@@ -16,7 +16,7 @@ func faultAtFront(t *testing.T) (be *bsEnv, head7, head8 string) {
 	t.Helper()
 	be = newBabysitEnvOn(t, "forgejo")
 	be.sg.files[".forgejo/workflows/ci.yml"] = ciOnEdit
-	be.sg.noRetry = true // nothing re-runs it: the wait is for someone else's fix
+	be.sg.noRetry = true
 	be.runnerOnline()
 	infra := be.project(be.admin, "Infra", "")
 	if _, err := be.s.UpdateProject(be.ctx, be.admin, infra.Key, ProjectInput{Settings: &ProjectSettings{CIRunners: true}}); err != nil {
@@ -31,7 +31,6 @@ func faultAtFront(t *testing.T) (be *bsEnv, head7, head8 string) {
 		t.Fatalf("#7 isn't the front: %+v", pr)
 	}
 
-	// #7's full run fails on the runner, not the code.
 	be.sg.sm.Lock()
 	be.sg.logs["ci / e2e (pull_request)"] = enospcLog
 	be.sg.sm.Unlock()
@@ -52,7 +51,6 @@ func faultAtFront(t *testing.T) (be *bsEnv, head7, head8 string) {
 func TestRunnerFaultGivesUpTheFront(t *testing.T) {
 	be, head7, _ := faultAtFront(t)
 
-	// Still failing faultFrontHold on: #8 goes, #7 waits on out of line.
 	be.setClock(be.clockNow().Add(faultFrontHold))
 	be.runnerOnline()
 	be.step()
@@ -65,21 +63,16 @@ func TestRunnerFaultGivesUpTheFront(t *testing.T) {
 	if pr := be.pr(8); pr.ReadyAt == nil || pr.QueuedAt == nil {
 		t.Fatalf("#8 didn't get the front: %+v %q", pr, be.babysitOf(8).Wait)
 	}
-	// Its next look doesn't put it back while its checks still fail.
 	be.step()
 	if be.pr(7).QueuedAt != nil {
 		t.Fatal("#7 rejoined while failing")
 	}
 
-	// The fix lands and a re-run passes: back at its place in the line. (The
-	// re-run's first status puts the head back to pending, which the poll
-	// follows.)
 	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE ci_heads SET state = 'pending', checked_at = 0 WHERE sha = ?`, head7); err != nil {
 		t.Fatal(err)
 	}
 	be.draftChecks(head7, CommitCheck{State: CheckSuccess, ID: 9, Description: "Successful in 16m"}, CommitCheck{State: CheckSuccess, ID: 11, Description: "Successful in 18m"})
 	be.step()
-	// Its place was ahead of #8's, so it goes first and merges.
 	if pr := be.pr(7); pr.State != "merged" {
 		t.Fatalf("#7 after its checks passed: %+v (%q)", pr, be.babysitOf(7).Wait)
 	}
@@ -124,7 +117,7 @@ func TestFaultRerunBegin(t *testing.T) {
 	if r.begin("abc", 300) || r.first != 100 {
 		t.Fatalf("same spell: %+v", r)
 	}
-	r.first = 0 // its checks passed (faultSpellOver)
+	r.first = 0
 	if !r.begin("abc", 400) || r != (faultRerun{sha: "abc", n: 1, first: 400, last: 200}) {
 		t.Fatalf("new spell, re-runs still counted: %+v", r)
 	}

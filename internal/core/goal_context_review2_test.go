@@ -25,15 +25,12 @@ func TestGoalContextDrawOnlyNewClaim(t *testing.T) {
 	if e.rows(i.ID) != 0 {
 		t.Fatal("a peek or resume drew")
 	}
-	// A run that began before this claim: the claim came after a lapse.
 	e.exec(`INSERT INTO agent_runs(issue_id, agent, started_at, ended_at, outcome) VALUES (?,?,?,?,'expired')`,
 		i.ID, e.ag.agentName(), e.s.nowMS()-3600_000, e.s.nowMS()-1800_000)
 	e.take(e.ag, i.ID, "next")
 	if e.rows(i.ID) != 0 {
 		t.Fatal("a claim after earlier work drew")
 	}
-	// The same task and claim, without the earlier run, draws: the run, and
-	// the empty via before it, were what held it back.
 	e.exec(`DELETE FROM agent_runs WHERE issue_id = ?`, i.ID)
 	e.take(e.ag, i.ID, "next")
 	if e.rows(i.ID) != 1 {
@@ -71,8 +68,6 @@ func TestGoalContextNextPeekResume(t *testing.T) {
 	if e.rows(i.ID) != 0 {
 		t.Error("a resume drew")
 	}
-	// The same claim taken as new draws: only the resume's empty via held
-	// it back.
 	e.take(e.ag, i.ID, "next")
 	if e.rows(i.ID) != 1 {
 		t.Error("the claim, taken as new, didn't draw")
@@ -124,7 +119,6 @@ func TestGoalContextPriorFallback(t *testing.T) {
 	if e.s.goalPol.peek() != nil {
 		t.Error("the prior was cached as the estimate")
 	}
-	// Prior rows are data like the thompson ones.
 	now := e.s.now()
 	r := &goalRow{arm: goalArmChain, policy: "prior", done: true, prs: 1, checked: 1, assigned: now.Add(-48 * time.Hour).UnixMilli(), resolved: now.Add(-24 * time.Hour).UnixMilli(), typ: "task"}
 	if obs, _ := goalObservations(&goalPrimary, []string{goalArmChain}, []*goalRow{r}, now); len(obs) != 1 {

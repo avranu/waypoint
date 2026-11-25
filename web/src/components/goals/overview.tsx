@@ -1,5 +1,3 @@
-// The Goals page's key to the colors, and its week-on-week chart.
-
 import clsx from 'clsx'
 import { TrendingDown, TrendingUp } from 'lucide-react'
 import { groupCounts } from '@/lib/knowledge'

@@ -16,7 +16,7 @@ import (
 type twoForks struct {
 	*shipForge
 	heads  map[string]bool
-	during func() // while the forge is being asked
+	during func()
 }
 
 func (g *twoForks) ForkedTwice(ctx context.Context, f *Forge, repo, tip, head string) (bool, error) {

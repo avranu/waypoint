@@ -1,7 +1,3 @@
-// The Agents overview (WP-D16): which agents work where, what they finished,
-// what comes next, what waits on a person; one request for the whole tab.
-// Recent changes page on their own, and a session's usage has its own call.
-
 import { infiniteQueryOptions, queryOptions } from '@tanstack/react-query'
 import { api, qs } from './api'
 import type { UserRef } from './types'

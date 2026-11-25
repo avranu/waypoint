@@ -18,7 +18,6 @@ func TestNextDoesTheBriefArm(t *testing.T) {
 	commitFiles(t, s.repo, map[string]string{"core/merge.go": briefMergeGo, "README.md": "# App\n"})
 	ctx := context.Background()
 
-	// No run: the brief, and no arms kept.
 	s.asAgent()
 	i, err := s.svc.CreateIssue(ctx, s.me, core.IssueInput{Project: s.project.Key, Title: "Make MergeReady wait", Description: "Change `core/merge.go`.", Agent: "claude"})
 	if err != nil {
@@ -28,7 +27,6 @@ func TestNextDoesTheBriefArm(t *testing.T) {
 		t.Fatalf("no run:\n%s", out)
 	}
 
-	// Started by a person who is an admin, through wp.
 	s.asHuman()
 	if out := s.wp("experiment", "start", "next_brief", "--days", "7", "-m", "does the brief pay?"); !strings.Contains(out, "Started next_brief") {
 		t.Fatalf("start:\n%s", out)
@@ -75,7 +73,6 @@ func TestNextDoesTheBriefArm(t *testing.T) {
 	if out := s.wp("experiment", "stop", "next_brief", "-m", "test over"); !strings.Contains(out, "Stopped next_brief") {
 		t.Errorf("stop:\n%s", out)
 	}
-	// An agent's token can't start one.
 	s.asAgent()
 	if out, code := s.run("experiment", "start", "next_brief"); code == 0 {
 		t.Errorf("an agent started an experiment:\n%s", out)

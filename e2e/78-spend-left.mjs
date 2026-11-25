@@ -64,7 +64,6 @@ async function run(width, scheme) {
   readings();
 
   await page.goto(`${base}/agents?tab=autopilot`);
-  // Settings live in a dialog from the gear at the top; the switch is on the page too.
   await page.getByRole("button", { name: "Autopilot settings" }).click();
   const card = page.getByTestId("autopilot-spend");
   await card.waitFor();
@@ -82,7 +81,6 @@ async function run(width, scheme) {
   await shot("on");
   await overflow("on");
 
-  // The cap.
   await page.locator("#spend-at-once").fill("5");
   await page.locator("#spend-at-once").press("Enter");
   await page.waitForFunction(
@@ -94,7 +92,6 @@ async function run(width, scheme) {
   ok(/1 to 20/.test(await card.innerText()), `${tag} a cap of 0 is refused before saving`);
   await page.locator("#spend-at-once").fill("5");
 
-  // Saving the defaults form keeps the switch and the cap.
   await page.locator("#defaults-grace_seconds").fill("90");
   await page.locator("#defaults-grace_seconds").press("Enter");
   await page.waitForFunction(
@@ -107,7 +104,6 @@ async function run(width, scheme) {
   await sw.click();
   await page.waitForFunction(() => !document.querySelector('[data-testid="autopilot-spend-why"]'));
   ok(true, `${tag} off again, the plan line goes`);
-  // The page's own toggle (outside the dialog) does the same.
   await page.keyboard.press("Escape");
   await card.waitFor({ state: "hidden" });
   const pageSw = page.getByRole("switch", { name: "Use what’s left", exact: true });

@@ -10,23 +10,6 @@ import (
 	"time"
 )
 
-// Cross-filed tasks (WP-378, WP-ADR25). An agent working in one repo knows
-// little of another, and tends to push work off to it. A task an agent
-// files while its session works in another project is recorded as filed
-// from there (cross_filed); the agents of the task's own project are told
-// so whenever they take or read it, and that they should first check it
-// belongs. wp decline closes it with a reason, without filing anything back
-// (a task sent back would start a loop between the two repos' agents).
-//
-// How it ends (declined, canceled, done) goes to the sessions outside the
-// project that showed they care: the filer, and any that read it or named
-// it in a prompt or a final message. News waits for the session's next turn
-// (a turn paid for anyway), unless the task the session holds is blocked by
-// it: then it may wake the agent, batched like --notify news (WP-ADR6). A
-// decline nobody running heard is left for the next agent session that
-// starts a turn in the filing project, once, and a comment goes on any task
-// there it blocks.
-
 // FiledFrom says where a task an agent filed from another repo came from.
 type FiledFrom struct {
 	Project string `json:"project,omitempty"` // key, when the reader can see it
@@ -86,14 +69,14 @@ func (s *Service) recordCrossFiled(ctx context.Context, t *tx, actor *Actor, iss
 	var from sql.NullInt64
 	var repo string
 	if err := t.QueryRowContext(ctx, `SELECT project_id, repo FROM agent_sessions WHERE id = ?`, actor.Session).Scan(&from, &repo); err != nil {
-		return nil // no session to tell: an ordinary task
+		return nil
 	}
 	switch {
 	case from.Valid && from.Int64 == projectID:
 		return nil
 	case !from.Valid:
 		if repo == "" {
-			return nil // not in a repo: where it came from can't be said
+			return nil
 		}
 		var here bool
 		if err := t.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM project_repos WHERE project_id = ? AND repo = ? COLLATE NOCASE)`, projectID, repo).Scan(&here); err != nil || here {
@@ -148,8 +131,6 @@ func (s *Service) filedFrom(ctx context.Context, q queryer, actor *Actor, i *Iss
 		if err := q.QueryRowContext(ctx, `SELECT project_id, repo FROM agent_sessions WHERE id = ?`, actor.Session).Scan(&sp, &repo); err == nil && (!sp.Valid || sp.Int64 != i.ProjectID) {
 			f.Here = sp.Valid && r.projectID.Valid && sp.Int64 == r.projectID.Int64 ||
 				!r.projectID.Valid && r.repo != "" && strings.EqualFold(repo, r.repo)
-			// In the background: a read may run inside a write, which holds
-			// the one writer connection.
 			sess, id, key, at := actor.Session, i.ID, i.Key, s.nowMS()
 			bg := context.WithoutCancel(ctx)
 			s.goBG(func() {
@@ -168,7 +149,6 @@ func (s *Service) noteNamedRefs(ctx context.Context, t *tx, x *AgentSession, tex
 	if text == "" {
 		return nil
 	}
-	// Code spans count too: agents quote commands (`wp show APP-12`).
 	seen := map[string]bool{}
 	for _, m := range issueKeyRE.FindAllStringSubmatch(text, 200) {
 		if seen[m[0]] || len(seen) >= 20 {
@@ -266,8 +246,6 @@ func (s *Service) DeclineIssue(ctx context.Context, actor *Actor, ref, agent, wh
 func (s *Service) crossFiledEvent(ctx context.Context, e *Event) {
 	switch e.Kind {
 	case EvIssueReopened:
-		// Open again: how it ends next is news again, and an old decline
-		// no longer stands.
 		if _, err := s.db.W.ExecContext(ctx, `UPDATE cross_filed SET told = '', declined_at = NULL, declined_by = '', declined_agent = '', declined_why = '' WHERE issue_id = ?`, e.IssueID); err != nil {
 			s.log.WarnContext(ctx, "reopen cross-filed task", "issue", e.IssueKey, "err", err)
 		}
@@ -311,11 +289,10 @@ func (s *Service) tellCrossFiled(ctx context.Context, issueID int64, cat string)
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return nil // already told
+		return nil
 	}
 	body := s.crossNews(ctx, i, r, outcome)
 
-	// The sessions outside the project that care and still run.
 	type listener struct {
 		id      int64
 		blocked bool
@@ -355,8 +332,6 @@ func (s *Service) tellCrossFiled(ctx context.Context, issueID int64, cat string)
 		}
 		delivered++
 		if l.blocked && m.State == MessageQueued {
-			// Its work waits on this: news that can wait for the cache edge,
-			// like --notify (WP-ADR6).
 			s.batchOrTell(ctx, l.id, 0, false, func(until int64) error {
 				_, err := s.db.W.ExecContext(ctx, `UPDATE session_messages SET batch_until = ?, blocking = 0 WHERE id = ? AND state = 'queued'`, until, m.ID)
 				return err
@@ -364,10 +339,9 @@ func (s *Service) tellCrossFiled(ctx context.Context, issueID int64, cat string)
 		}
 	}
 	if outcome == "done" {
-		return nil // what waits on it is unblocked as usual; nothing else to say
+		return nil
 	}
 
-	// Open tasks elsewhere it blocks: they would read as ready now.
 	blocked, err := queryIDs(ctx, s.db.R, `SELECT t.id FROM issue_relations rel JOIN issues t ON t.id = rel.target_id JOIN statuses st ON st.id = t.status_id
 		WHERE rel.source_id = ? AND rel.kind = 'blocks' AND t.project_id != ? AND st.category NOT IN ('done','canceled')`, issueID, i.ProjectID)
 	if err != nil {
@@ -381,8 +355,6 @@ func (s *Service) tellCrossFiled(ctx context.Context, issueID int64, cat string)
 		note += "."
 		sys := SystemActor()
 		if outcome == "declined" && r.why != "" {
-			// An agent's reason stays marked and unreviewed (WP-D11); a
-			// person's carries no agent mark.
 			sys.textAgent = r.declinedAgent
 		}
 		err := s.write(ctx, sys, func(t *tx) error {
@@ -401,12 +373,9 @@ func (s *Service) tellCrossFiled(ctx context.Context, issueID int64, cat string)
 			return err
 		}
 	}
-	// A failed delivery doesn't count as told: the notice below is the fallback.
 	if delivered > 0 || len(blocked) > 0 || !r.projectID.Valid {
 		return nil
 	}
-	// No one who cared still runs: the next agent session in the filing
-	// project hears it, once.
 	_, err = s.db.W.ExecContext(ctx, `INSERT INTO project_notices(project_id, issue_id, body, created_at, expires_at) VALUES (?,?,?,?,?)`,
 		r.projectID.Int64, issueID, body, now, now+projectNoticeTTL.Milliseconds())
 	return err

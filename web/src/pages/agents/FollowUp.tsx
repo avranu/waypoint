@@ -1,8 +1,3 @@
-// A session's follow-up (WP-D22): steps queued to run once the agent truly
-// finishes, so nobody has to sit and wait for it to /clear, switch model and
-// paste the next prompt. The steps are an automation's, edited with the
-// automation step editor; the trigger is fixed: this agent finishing.
-
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {

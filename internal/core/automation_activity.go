@@ -5,9 +5,6 @@ import (
 	"strings"
 )
 
-// agent_activity reads the Agents overview's summary (WP-D16) into text a
-// model can digest, for the daily digest of agent work (WP-D18).
-
 func activityText(o *Overview) string {
 	var b strings.Builder
 	list := func(title string, l SummaryList) {

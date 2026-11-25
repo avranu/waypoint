@@ -19,10 +19,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Tests for the findings of audit 1218 on the transcript archive.
-
-// ---- redaction ----
-
 func jsonLineOf(t *testing.T, s string) string {
 	t.Helper()
 	b, err := marshalString(s)
@@ -96,7 +92,7 @@ func TestArchiveRedactionOfSecretNamedKeys(t *testing.T) {
 		{`{"secret":{"a":"xx","b":{"c":["yy"]},"n":5},"o":"keep it"}`, `{"secret":{"a":"***","b":{"c":["***"]},"n":5},"o":"keep it"}`},
 		{`{"secret":["a"],"other":"keep it"}`, `{"secret":["***"],"other":"keep it"}`},
 		{`{"usage":{"input_tokens":12,"output_tokens":3},"k":"v"}`, `{"usage":{"input_tokens":12,"output_tokens":3},"k":"v"}`},
-		{`{"password":12345678}`, `{"password":12345678}`}, // numbers are left: input_tokens lives under a key named token
+		{`{"password":12345678}`, `{"password":12345678}`},
 	}
 	for _, c := range cases {
 		out, ok := redactTranscriptLineWith([]byte(c.in+"\n"), nil)
@@ -106,17 +102,12 @@ func TestArchiveRedactionOfSecretNamedKeys(t *testing.T) {
 	}
 }
 
-// ---- a server that can be made to misbehave ----
-
 type archiveTap struct {
 	mu       sync.Mutex
 	pieces   int
 	statuses int
-	bodies   []string // the status bodies posted, in order
-	// onPiece, when set, answers a piece itself and returns true.
-	onPiece func(n int, w http.ResponseWriter, r *http.Request) bool
-	// onStatus and onIngest do the same for the status post (n counts them)
-	// and the hour counts' upload.
+	bodies   []string
+	onPiece  func(n int, w http.ResponseWriter, r *http.Request) bool
 	onStatus func(n int, w http.ResponseWriter, r *http.Request) bool
 	onIngest func(w http.ResponseWriter, r *http.Request) bool
 }
@@ -228,8 +219,6 @@ func smallLimits(t *testing.T, maxLine int, gzipCap int) {
 	t.Cleanup(func() { archiveMaxLine, archiveGzipCap = ol, og })
 }
 
-// ---- piece building (8, 9) ----
-
 // A line over the limit does not discard the lines before it: they go, the
 // line becomes a stub that says what it was, and the rest of the file follows.
 func TestArchiveOversizeLineIsAStub(t *testing.T) {
@@ -301,8 +290,6 @@ func TestArchiveGzipOverTheCapIsCutOrStubbed(t *testing.T) {
 		}
 	}
 }
-
-// ---- refusals (6) ----
 
 // A refusal that will not change (a 4xx) is its own count, is not a failing
 // network, holds the file (its bytes stay waiting) and is tried again once a
@@ -421,8 +408,6 @@ func TestArchiveJobTokenStopsQuietly(t *testing.T) {
 	}
 }
 
-// ---- read errors (26, 27) and counting (28) ----
-
 func TestArchiveReadErrorsAreErrors(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "x.jsonl")
 	if err := os.WriteFile(p, []byte(userLine("a")+"\n"+userLine("b")+"\n"), 0o600); err != nil {
@@ -433,7 +418,7 @@ func TestArchiveReadErrorsAreErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	size := int64(len(userLine("a")+"\n") * 2)
-	_ = fh.Close() // every read now fails
+	_ = fh.Close()
 	if _, err := tailHash(fh, size); err == nil {
 		t.Error("tailHash hid a read error")
 	}
@@ -506,8 +491,6 @@ func TestArchiveCountsStubsWhenStored(t *testing.T) {
 	}
 }
 
-// ---- pass control (5, 13, 14, 15, 16, 17, 18, 19, 38, 42, 43, 48) ----
-
 // Another pass holds the lock: the result and the CLI say so, and the state
 // file is not touched (it is read only under the lock).
 func TestArchiveLockContention(t *testing.T) {
@@ -548,11 +531,11 @@ func TestArchiveOneDiscoveryRuleForEveryPass(t *testing.T) {
 	old := putTranscript(t, dir, "old", userLine("o1"))
 	longAgo := time.Now().Add(-60 * 24 * time.Hour)
 	_ = os.Chtimes(old, longAgo, longAgo)
-	archiveSync(t, e, dir) // --all: the old one too
+	archiveSync(t, e, dir)
 	appendTo(t, old, userLine("o2")+"\n")
 	_ = os.Chtimes(old, longAgo, longAgo)
 	appendTo(t, a, userLine("a2")+"\n")
-	putTranscript(t, dir, "ccc", userLine("c1")) // new, never seen
+	putTranscript(t, dir, "ccc", userLine("c1"))
 
 	c, _ := newCLI(&bytes.Buffer{}, &bytes.Buffer{})
 	hookIn := `{"session_id":"aaa","transcript_path":"` + a + `"}`
@@ -683,7 +666,7 @@ func TestArchiveLostStateAfterARewriteStoresNoThirdCopy(t *testing.T) {
 	if res.Archive.Pieces != 0 || res.ArchiveError != "" {
 		t.Errorf("after losing state: %+v %q", res.Archive, res.ArchiveError)
 	}
-	for gen, want := range map[int]int{0: 1, 1: 1, 2: 0} { // no third copy
+	for gen, want := range map[int]int{0: 1, 1: 1, 2: 0} {
 		g := gen
 		files, _ := e.svc.TranscriptFiles(context.Background(), me, core.TranscriptQuery{Session: "rw", Gen: &g})
 		if len(files) != want {
@@ -740,8 +723,6 @@ func TestArchiveDryRunTouchesNothing(t *testing.T) {
 	}
 }
 
-// ---- rewrites (44) ----
-
 // Claude Code rewrote the bytes before the offset and kept the first line:
 // the 64 bytes before the offset notice.
 func TestArchiveNoticesChangeBeforeTheOffsetWithTheSameFirstLine(t *testing.T) {
@@ -753,7 +734,7 @@ func TestArchiveNoticesChangeBeforeTheOffsetWithTheSameFirstLine(t *testing.T) {
 	p := putTranscript(t, dir, "same", lines...)
 	archiveSync(t, e, dir)
 	raw, _ := os.ReadFile(p)
-	i := len(raw) - 10 // inside the last 64 bytes
+	i := len(raw) - 10
 	changed := append([]byte(nil), raw...)
 	changed[i] = 'Z'
 	changed = append(changed, []byte(userLine("grown")+"\n")...)
@@ -768,8 +749,6 @@ func TestArchiveNoticesChangeBeforeTheOffsetWithTheSameFirstLine(t *testing.T) {
 		t.Errorf("newest generation is not the new file")
 	}
 }
-
-// ---- the CLI ----
 
 func TestArchiveTextNamesTheUnit(t *testing.T) {
 	r := &usageSyncResult{Archive: &archiveResult{Dropped: map[string]int64{"upload_failed": 3, "refused": 1}}}
@@ -788,7 +767,7 @@ func TestUsageTranscriptFileCommand(t *testing.T) {
 	dir := fixtureDir(t)
 	archiveSync(t, e, dir)
 	want := archived(t, e, me, "sess1", "main")
-	person, _, err := e.svc.CreateToken(context.Background(), me, core.TokenSpec{Name: "person"}) // reading is for people, not agents
+	person, _, err := e.svc.CreateToken(context.Background(), me, core.TokenSpec{Name: "person"})
 	if err != nil {
 		t.Fatal(err)
 	}

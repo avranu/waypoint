@@ -46,7 +46,6 @@ func TestTaskSummariesAndUnfiledAsks(t *testing.T) {
 	if _, err := te.s.AgentTake(te.ctx, te.ag, a.Key, ""); err != nil {
 		t.Fatal(err)
 	}
-	// An ask the agent filed itself.
 	if _, _, err := te.s.CreateRequest(te.ctx, te.ag, RequestInput{Kind: RequestQuestion, Title: "May I install the runner on runner1?", Questions: []Question{{Question: "May I install the runner on runner1?"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +56,7 @@ func TestTaskSummariesAndUnfiledAsks(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	stopMsg("Working on it.") // not finished: no summary
+	stopMsg("Working on it.")
 	var n int
 	if err := te.s.db.R.QueryRow(`SELECT count(*) FROM task_summaries`).Scan(&n); err != nil {
 		t.Fatal(err)
@@ -81,8 +80,6 @@ func TestTaskSummariesAndUnfiledAsks(t *testing.T) {
 	if s.Issue == nil || s.Issue.Key != a.Key || !strings.Contains(s.Body, "Shipped") || len(s.Asks) != 1 || !strings.Contains(s.Asks[0], "Rotate the forge token") || s.Request == "" {
 		t.Fatalf("summary = %+v", s)
 	}
-	// The trailing-question rule (WP-96) filed this Stop's ask already, quoting
-	// the message: the summary points at that, nothing is filed twice.
 	var title, body, source string
 	if err := te.s.db.R.QueryRow(`SELECT title, body, source FROM requests WHERE id = (SELECT request_id FROM task_summaries)`).Scan(&title, &body, &source); err != nil {
 		t.Fatal(err)
@@ -90,7 +87,6 @@ func TestTaskSummariesAndUnfiledAsks(t *testing.T) {
 	if source != requestAuto || !strings.Contains(body, "Rotate the forge token") {
 		t.Errorf("linked request %q (%s): %q", title, source, body)
 	}
-	// The agent's next Stop rewrites it; the request isn't filed again.
 	stopMsg(msg + "\nAlso: CI is green.")
 	if err := te.s.db.R.QueryRow(`SELECT count(*) FROM requests WHERE source = ?`, requestAuto).Scan(&n); err != nil {
 		t.Fatal(err)
@@ -98,7 +94,6 @@ func TestTaskSummariesAndUnfiledAsks(t *testing.T) {
 	if n != 1 {
 		t.Errorf("auto requests = %d, want 1", n)
 	}
-	// After a person prompts, the summary stays the agent's report.
 	if _, err := te.s.SessionHook(te.ctx, te.ag, []HookEvent{hook("box", te.cli, "UserPromptSubmit", func(h *HookEvent) { h.Prompt = "thanks, what was #12 again?" })}); err != nil {
 		t.Fatal(err)
 	}
@@ -107,8 +102,6 @@ func TestTaskSummariesAndUnfiledAsks(t *testing.T) {
 	if !strings.Contains(page.Summaries[0].Body, "CI is green") {
 		t.Errorf("a reply to the person replaced the summary: %q", page.Summaries[0].Body)
 	}
-	// The person's agents read them, but not a draft's, and a runner job's
-	// token only its projects'; the person marks them read.
 	if ap, err := te.s.TaskSummaries(te.ctx, te.ag, TaskSummaryQuery{}); err != nil || len(ap.Summaries) != 1 || ap.Unreviewed != 1 {
 		t.Errorf("an agent reading the summaries: %+v %v", ap, err)
 	}

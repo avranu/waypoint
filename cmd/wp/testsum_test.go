@@ -233,7 +233,7 @@ func TestTestsumCapsAndTruncatesMessages(t *testing.T) {
 
 func TestTestsumRunsCommandThroughSlot(t *testing.T) {
 	slotEnv(t)
-	t.Chdir(t.TempDir()) // no repo: nothing recorded in this checkout's git dir
+	t.Chdir(t.TempDir())
 	var out, errb bytes.Buffer
 	cmd := `printf '{"Action":"pass","Package":"p","Test":"T","Elapsed":0}\n{"Action":"pass","Package":"p","Elapsed":1}\n'`
 	if code := run([]string{"testsum", "--", "sh", "-c", cmd}, &out, &errb); code != 0 || !strings.HasPrefix(out.String(), "PASS: 1 tests") {
@@ -243,15 +243,12 @@ func TestTestsumRunsCommandThroughSlot(t *testing.T) {
 	if code := run([]string{"testsum", "--", "sh", "-c", "echo boom; exit 3"}, &out, &errb); code != 1 || !strings.Contains(out.String(), "exited 3") {
 		t.Errorf("unrecognized failure: %d %q", code, out.String())
 	}
-	// Tests passed, then a type check failed: say both, exit 1.
 	out.Reset()
 	cmd = `printf '{"Action":"pass","Package":"p","Test":"T","Elapsed":0}\n{"Action":"pass","Package":"p","Elapsed":1}\nmypy: 2 errors\n'; exit 2`
 	if code := run([]string{"testsum", "--", "sh", "-c", cmd}, &out, &errb); code != 1 || !strings.HasPrefix(out.String(), "PASS: 1 tests") ||
 		!strings.Contains(out.String(), "but the command exited 2") || !strings.Contains(out.String(), "mypy: 2 errors") {
 		t.Errorf("pass then failure: %d %q", code, out.String())
 	}
-	// The command without -- (WP-1080): flags before it are testsum's, and
-	// everything from it on, flags and -- included, is the command's.
 	out.Reset()
 	errb.Reset()
 	cmd = `printf '{"Action":"pass","Package":"p","Test":"T","Elapsed":0}\n{"Action":"pass","Package":"p","Elapsed":1}\n'; [ "$*" = "--format x -- -y" ] || exit 9`

@@ -1,6 +1,3 @@
-// One schedule in the list, and (opened) what it asks, where it sends and
-// what its runs did.
-
 import { useState, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -27,8 +24,6 @@ import { toast, toastError } from '@/components/ui/toast'
 import { Markdown } from '@/components/Markdown'
 import { jobPath, putJob, runNow, runsQuery, type CronJob, type CronRun } from './api'
 import { storedLabel, zoneNote, type Zone } from './schedule'
-
-// ---- state ----
 
 export type JobState = 'running' | 'scheduled' | 'paused' | 'completed' | 'error'
 
@@ -100,8 +95,6 @@ export function deliverLabel(deliver: string, names: Map<string, string>): strin
     )
     .join(', ')
 }
-
-// ---- the row ----
 
 export function JobRow({
   assistantId,
@@ -265,8 +258,6 @@ function useJobActions(assistantId: number, j: CronJob) {
   }
 }
 
-// ---- opened ----
-
 function JobDetail({
   assistantId,
   job: j,
@@ -403,8 +394,6 @@ function Meta({ label, children }: { label: string; children: ReactNode }) {
     </>
   )
 }
-
-// ---- runs ----
 
 function runState(r: CronRun): 'running' | 'ok' | 'warn' | 'error' | 'stopped' {
   if (r.source === 'cron_output') {

@@ -49,7 +49,6 @@ async function run(width, scheme) {
   const key = `Q${width}${scheme === "dark" ? "D" : "L"}`;
   const repo = `me/app${tag}`;
   await api("POST", "/projects", { name: `Pulls ${tag}`, key });
-  // Nothing listens there: webhooks come in below, signed by hand.
   const forge = await api("POST", "/forges", {
     kind: "forgejo",
     name: `PR forge ${tag}`,
@@ -92,7 +91,6 @@ async function run(width, scheme) {
       },
     });
 
-  // ---- Admin → Forges: "me" is robin ----
   await api("PUT", `/forges/${forge.id}/people`, {
     people: [{ login: "me", user: "robin", person_only: true }],
   });

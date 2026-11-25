@@ -7,12 +7,6 @@ import (
 	"unicode"
 )
 
-// A job's environment is built from an allowlist (WP-418, WP-ADR28 §7.3):
-// the runner's environment holds what the person who started it has (an SSH
-// agent, a desktop session's bus, forge and cloud tokens, Waypoint's own
-// token), and a job gets only what programs need to run and find their
-// tools. A runner started with --env NAME passes NAME through too.
-
 // jobEnvVars are the variables a job keeps from the runner's environment.
 var jobEnvVars = map[string]bool{}
 
@@ -48,7 +42,7 @@ var apiKeyVars = []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_A
 func jobEnvKeeps(k string, keepKeys bool) bool {
 	u := strings.ToUpper(k)
 	if strings.HasPrefix(u, "WAYPOINT_") {
-		return false // the runner's token, server and session never reach a job as variables (the saved config.json under HOME is a known gap until the broker phase)
+		return false
 	}
 	if jobEnvVars[u] || runnerEnvPass[u] {
 		return true
@@ -87,7 +81,7 @@ func jobEnv(base []string, extra map[string]string, keepKeys bool) []string {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		if strings.ToUpper(k) != "WAYPOINT_UNATTENDED" { // a job can't turn the guard off
+		if strings.ToUpper(k) != "WAYPOINT_UNATTENDED" {
 			out = append(out, k+"="+extra[k])
 		}
 	}

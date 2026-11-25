@@ -56,7 +56,6 @@ async function run(width, scheme, n) {
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(base + "/");
 
-  // robin's Haiku agent, working, through its hooks.
   const { token } = await api("POST", "/me/tokens", { name: `haiku ${n}`, agent: "anthropic/claude-haiku-5-5" });
   const agent = { ...H, Authorization: `Bearer ${token}` };
   const where = { session_id: `cli-fu-${n}`, machine: `fu-box-${n}`, cwd: "/work/parser", branch: "feat/parser" };
@@ -71,7 +70,6 @@ async function run(width, scheme, n) {
   await shot("empty");
   await overflow("empty panel");
 
-  // ---- queue a fresh Opus agent with a prompt ----
   await panel.getByRole("button", { name: "Start a fresh agent" }).click();
   const dlg = page.getByRole("dialog", { name: "When this agent finishes" });
   await dlg.waitFor();
@@ -88,7 +86,6 @@ async function run(width, scheme, n) {
   await shot("armed");
   await overflow("armed");
 
-  // ---- background work holds it ----
   await hook("Stop", {
     last_message: "Started the test suite in the background.",
     pending: { tasks: [{ type: "shell", status: "running", description: "go test ./..." }], crons: [] },
@@ -98,7 +95,6 @@ async function run(width, scheme, n) {
   ok(true, `${tag} a background task holds it, and the header says so`);
   await shot("held");
 
-  // ---- it truly finishes: the step runs (no runner on that machine here) ----
   const fin = await hook("Stop", { last_message: "The parser is done; tests pass.", pending: { tasks: [], crons: [] } });
   ok(!fin.await, `${tag} no hook wait for a step that doesn't talk to the agent`);
   await panel.getByText("Failed").first().waitFor({ timeout: 20000 });
@@ -106,11 +102,9 @@ async function run(width, scheme, n) {
   await shot("ran");
   await overflow("ran");
 
-  // ---- queue "tell it what's next": the next stop carries it to the agent ----
   await page.getByRole("button", { name: "Queue again" }).click();
   const dlg2 = page.getByRole("dialog", { name: "When this agent finishes" });
   await dlg2.waitFor();
-  // Replace the step with a message for the agent.
   await dlg2.getByRole("button", { name: /^Remove/ }).first().click();
   await dlg2.getByRole("button", { name: "Tell it what’s next" }).click();
   const msg = dlg2.getByLabel("Message", { exact: true });
@@ -118,7 +112,6 @@ async function run(width, scheme, n) {
   await msg.fill("Now write the README section for the parser.");
   await dlg2.getByRole("button", { name: "Queue" }).click();
   await dlg2.waitFor({ state: "hidden" });
-  // The agent had already finished, so it runs at once and waits to be heard.
   await panel.getByText("Waiting for the agent to take it and finish").first().waitFor({ timeout: 20000 });
   ok(true, `${tag} queuing on a finished agent runs at once`);
   await hook("UserPromptSubmit", { prompt: "one more thing" });
@@ -129,10 +122,9 @@ async function run(width, scheme, n) {
   ok(/README written/.test(await panel.innerText()), `${tag} the step has the agent's answer`);
   await shot("told");
 
-  // ---- the Sessions tab shows what is queued ----
   await page.getByRole("button", { name: "Queue again" }).click();
   await page.getByRole("dialog", { name: "When this agent finishes" }).getByRole("button", { name: "Queue" }).click();
-  await hook("UserPromptSubmit", { prompt: "keep going" }); // not finished: it stays queued
+  await hook("UserPromptSubmit", { prompt: "keep going" });
   await page.goto(`${base}/agents?tab=sessions`);
   const row = page.getByRole("link").filter({ hasText: `Parser ${n}` }).first();
   await row.waitFor();

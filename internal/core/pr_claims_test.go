@@ -51,7 +51,6 @@ func TestPRClaimWarnsSecondSession(t *testing.T) {
 		t.Fatalf("holder = %d, want %d", got, first.Session)
 	}
 
-	// Renewing keeps when it started and moves the expiry.
 	be.claimExec(`UPDATE pr_claims SET claimed_at = 5, expires_at = ? WHERE pull_id = ?`, be.s.nowMS()+1000, pr.ID)
 	if w := be.s.claimPR(be.ctx, first, pr.ID); w != "" {
 		t.Errorf("renewal warned: %s", w)
@@ -64,7 +63,6 @@ func TestPRClaimWarnsSecondSession(t *testing.T) {
 		t.Errorf("after renewal claimed_at = %d, expires_at = %d", claimed, until)
 	}
 
-	// A second session is told who holds it, and doesn't take it over.
 	w := be.s.claimPR(be.ctx, second, pr.ID)
 	if !strings.Contains(w, "Fixing the export") || !strings.Contains(w, "holds it") {
 		t.Errorf("warning = %q", w)
@@ -73,7 +71,6 @@ func TestPRClaimWarnsSecondSession(t *testing.T) {
 		t.Errorf("holder after the warning = %d, want %d", got, first.Session)
 	}
 
-	// The action still goes through and carries the warning.
 	res, err := be.s.MergePR(be.ctx, second, pr.ID, MergeInput{WhenReady: true, Style: "squash"})
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +79,6 @@ func TestPRClaimWarnsSecondSession(t *testing.T) {
 		t.Errorf("MergePR warning = %q", res.Warning)
 	}
 
-	// Outside a session nothing claims or warns.
 	outside := *be.agent
 	outside.Session = 0
 	if w := be.s.claimPR(be.ctx, &outside, pr.ID); w != "" {
@@ -194,7 +190,7 @@ func TestPRClaimOnHeldShip(t *testing.T) {
 	}
 	ended := a.clockNow().UnixMilli()
 	a.setNewestRound(RoundDone, ended)
-	a.reported(key) // its own review: what it found, on the record (WP-1320)
+	a.reported(key)
 	if opened, err := a.ship(key, ShipReview, func(in *OpenPRInput) { in.HeadTime = ended/1000 - 60 }); err != nil || opened.Pull == nil {
 		t.Fatalf("opened = %+v, %v", opened, err)
 	}
@@ -211,7 +207,6 @@ func TestPRClaimOnHeldShip(t *testing.T) {
 		t.Fatalf("holder = %d, want %d", got, a.ag.Session)
 	}
 
-	// Another session holds it: this one is told.
 	r, err := a.s.db.W.ExecContext(a.ctx, `INSERT INTO agent_sessions(user_id, machine, cli_id, title, started_at, last_seen_at) VALUES (?, 'box', 'other', '', ?, ?)`,
 		a.ag.id(), a.s.nowMS(), a.s.nowMS())
 	if err != nil {

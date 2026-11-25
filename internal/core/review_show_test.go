@@ -71,9 +71,6 @@ func TestReviewPostsTheFirstAndKeepsTheRest(t *testing.T) {
 	if len(run.Findings) != 9 || later != 4 || !strings.Contains(run.Summary, "5 findings and 4 more kept") {
 		t.Errorf("%d findings stored, %d later, summary %q", len(run.Findings), later, run.Summary)
 	}
-	// The review says how to read the ones it didn't post, and they are in
-	// the pull request's to-do with the posted ones: an open one can hold
-	// the gate, so the agent has to be given it.
 	if page := fmt.Sprintf("as does https://wp.test/agents?tab=pulls&pr=%d", run.PR.ID); !strings.Contains(reviews[0], page) {
 		t.Errorf("the review doesn't link Waypoint's page (%s):\n%s", page, reviews[0])
 	}
@@ -93,8 +90,6 @@ func TestReviewPostsTheFirstAndKeepsTheRest(t *testing.T) {
 	if kept != 4 || !strings.Contains(todo.Text, "Distinct problem number 9") {
 		t.Errorf("%d of the 4 unposted findings are in the to-do:\n%s", kept, todo.Text)
 	}
-	// The pull request's finding counts are what the bots raised and kept,
-	// so the ones past the posted number are in them too (audit 1248.9).
 	sum := &PRSummary{ID: run.PR.ID, Findings: map[string]int{}}
 	if err := pe.s.fillPRs(pe.ctx, pe.admin, []*PRSummary{sum}); err != nil {
 		t.Fatal(err)

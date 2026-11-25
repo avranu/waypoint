@@ -23,13 +23,10 @@ func (s *Server) autopilotRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/autopilot/activity", a(s.autopilotActivity))
 	mux.HandleFunc("GET /api/v1/autopilot/summaries", a(s.taskSummaries))
 	mux.HandleFunc("POST /api/v1/autopilot/summaries/reviewed", a(s.reviewTaskSummaries))
-	// Who can review a round, and the reviewer's default brief (WP-1320).
 	mux.HandleFunc("GET /api/v1/autopilot/review-models", a(s.reviewModelOptions))
-	// Its wording (WP-308): for every project, and as one project uses it.
 	mux.HandleFunc("GET /api/v1/autopilot/text", a(s.autopilotText))
 	mux.HandleFunc("PUT /api/v1/admin/autopilot-text", a(s.setAutopilotText))
 	mux.HandleFunc("GET /api/v1/projects/{key}/autopilot-text", a(s.projectAutopilotText))
-	// When sessions are told of stalled background jobs (WP-1045).
 	mux.HandleFunc("GET /api/v1/stalled-jobs/policy", a(s.stallPolicy))
 	mux.HandleFunc("PUT /api/v1/admin/stalled-jobs", a(s.setStallPolicy))
 	mux.HandleFunc("GET /api/v1/projects/{key}/stalled-jobs", a(s.projectStallPolicy))

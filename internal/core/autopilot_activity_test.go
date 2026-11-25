@@ -23,7 +23,6 @@ func TestAutopilotActivityCountsByDay(t *testing.T) {
 			t.Errorf("an earlier day has counts: %+v", d)
 		}
 	}
-	// Days shift with the viewer's zone and out-of-range asks fall back.
 	if act, err = a.s.AutopilotActivity(a.ctx, a.admin, 999, 99999); err != nil || len(act.Days) != 14 {
 		t.Fatalf("defaults: %v %v", err, act)
 	}

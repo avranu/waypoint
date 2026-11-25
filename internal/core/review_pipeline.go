@@ -1,13 +1,5 @@
 package core
 
-// Review pipelines (WP-D14, WP-5): a review action may name up to three
-// reviewers (model chains) that review each part of the diff in parallel.
-// Their findings are merged, and one that several found counts them
-// (agreed). Before anything is posted, a verifier chain checks each new
-// finding against the code at the head and keeps it, corrects a detail, or
-// drops it with a reason; dropped findings are listed, folded, under the
-// review. Checking what a later push fixed is verify.go's job.
-
 import (
 	"context"
 	"encoding/json"
@@ -30,7 +22,7 @@ const (
 	verifyNewDiff     = 6000
 	verifyNewPrompt   = 40000
 	verifyNewPerCall  = 4 * time.Minute
-	verifyAgreedLines = 5 // how far apart two reviewers' lines may be and still mean one problem
+	verifyAgreedLines = 5
 )
 
 // reviewerChains are the chains a review runs: the action's models (else
@@ -42,9 +34,6 @@ func reviewerChains(first []ChainModel, more [][]ChainModel, gateway int64) [][]
 		if len(c) == 0 || len(out) == reviewMaxReviewers {
 			continue
 		}
-		// The same chain twice is one reviewer, unless it asks the gateway
-		// first: a later reviewer excludes the first one's model there, so
-		// the gateway picks another (WP-365).
 		key := fmt.Sprint(c)
 		if seen[key] && (gateway == 0 || c[0].ProviderID != gateway) {
 			continue
@@ -57,16 +46,12 @@ func reviewerChains(first []ChainModel, more [][]ChainModel, gateway int64) [][]
 
 // reviewerAnswer is one reviewer's findings on one part of the diff.
 type reviewerAnswer struct {
-	findings []Finding
-	model    string
-	log      []ModelAttempt
-	err      error
-	// requestID names the gateway request that answered, for feedback on
-	// its findings (WP-514); "" when another provider answered.
+	findings  []Finding
+	model     string
+	log       []ModelAttempt
+	err       error
 	requestID string
-	// salvaged is how many findings an answer cut off at its length limit
-	// had finished and kept (WP-1421); 0 when the answer came whole.
-	salvaged int
+	salvaged  int
 }
 
 // reviewChunk runs a run's reviewers on one part of the diff, each with
@@ -120,9 +105,6 @@ func (s *Service) reviewOnce(ctx context.Context, chain []ChainModel, prompt str
 	used, attempts, err := s.runChain(ctx, chain, reviewSystem, prompt, reviewSchema, &ans, reviewCallTimeout)
 	s.coolStalls(ctx, gw, gatewayReviewRoute, chain, attempts)
 	if len(cooled) > 0 && ctx.Err() == nil && leftNoModel(chain, attempts) {
-		// Maybe the cooling models were all the route had, and another entry
-		// answered or failed in its place: ask the route as without, with the
-		// same bar. A failed ask keeps an answer already had.
 		prevErr := err
 		ctx, cooled = plain, nil
 		var again struct {
@@ -135,10 +117,6 @@ func (s *Service) reviewOnce(ctx context.Context, chain []ChainModel, prompt str
 			used, err, ans.Findings = u2, err2, again.Findings
 		}
 	}
-	// The gateway can't fall back once a model's stream has started, so one
-	// that then fails or outlasts the call (Grok on Cursor reasons for over
-	// ten minutes on a large diff) ends the request, and the round's retry
-	// may get the same model. Ask once more with it left out (WP-1709).
 	if slow := failedMidStream(chain, attempts); err != nil && ctx.Err() == nil && slow != "" && s.asksExcludingGateway(ctx, chain) {
 		s.log.InfoContext(ctx, "a review's model failed after it started; asking again without it", "model", slow)
 		// What plain excludes (the first reviewer's model) comes first, then
@@ -203,7 +181,7 @@ func (s *Service) asksExcludingGateway(ctx context.Context, chain []ChainModel) 
 // the order they came in.
 func mergeReviewers(byReviewer [][]Finding) []Finding {
 	var out []Finding
-	from := []int{} // which reviewer raised each of out, for "another reviewer"
+	from := []int{}
 	for r, list := range byReviewer {
 		for _, f := range list {
 			f.Agreed, f.Models = 1, []string{f.Model}
@@ -219,7 +197,6 @@ func mergeReviewers(byReviewer [][]Finding) []Finding {
 				continue
 			}
 			m := &out[hit]
-			// The same model answering two reviewers is one opinion.
 			if !slices.Contains(m.Models, f.Model) {
 				m.Agreed++
 				m.Models = append(m.Models, f.Model)
@@ -235,7 +212,7 @@ func mergeReviewers(byReviewer [][]Finding) []Finding {
 			if m.Suggestion == "" {
 				m.Suggestion = f.Suggestion
 			}
-			from[hit] = r // a third reviewer may agree too
+			from[hit] = r
 		}
 	}
 	return out
@@ -314,8 +291,8 @@ type droppedFinding struct {
 type verifiedFindings struct {
 	kept      []Finding
 	dropped   []droppedFinding
-	models    []string // the verifier models that answered
-	unchecked int      // kept without a check: their file couldn't be read, their part's verifier failed, or no verdict came
+	models    []string
+	unchecked int
 	log       []ModelAttempt
 }
 
@@ -353,7 +330,7 @@ func (s *Service) verifyNewIn(ctx context.Context, chain []ChainModel, hf *headF
 	var items []item
 	for n, fnd := range found {
 		if fnd.Verify == VerifyTrusted {
-			continue // its reviewer needs no verifier (WP-696)
+			continue
 		}
 		path := fnd.File
 		if fd, ok := resolvePath(fnd.File, files); ok {
@@ -361,14 +338,13 @@ func (s *Service) verifyNewIn(ctx context.Context, chain []ChainModel, hf *headF
 		}
 		text := hf.get(path)
 		if text == "" {
-			continue // not checked against code that can't be read: kept as found
+			continue
 		}
 		var b strings.Builder
 		fmt.Fprintf(&b, "Finding %d (%s) at %s:%d:\n%s\n", n+1, fnd.Severity, path, fnd.Line, fnd.Claim)
 		fmt.Fprintf(&b, "\nThe file at the head (commit %s):\n%s", short(head), numbered(text, fnd.Line, verifyNewRadius))
 		items = append(items, item{n: n, path: path, text: b.String()})
 	}
-	// The change to each file, once per call, with the findings on it.
 	diffOf := map[string]string{}
 	for _, fd := range files {
 		d := annotate(fd.text)
@@ -421,8 +397,6 @@ func (s *Service) verifyNewIn(ctx context.Context, chain []ChainModel, hf *headF
 			var ans struct {
 				Verdicts []verdict `json:"verdicts"`
 			}
-			// The gateway leaves out the models that raised these findings; the
-			// check below still catches another provider's answer.
 			var raisedBy []string
 			for _, it := range pending {
 				raisedBy = append(raisedBy, reviewersOf(found[it.n])...)
@@ -435,7 +409,6 @@ func (s *Service) verifyNewIn(ctx context.Context, chain []ChainModel, hf *headF
 				}
 				break
 			}
-			// A verdict from the model that raised the finding is no check.
 			accepted := 0
 			var again []item
 			for _, v := range ans.Verdicts {
@@ -454,12 +427,8 @@ func (s *Service) verifyNewIn(ctx context.Context, chain []ChainModel, hf *headF
 				out.models = append(out.models, used.Model)
 			}
 			if accepted > 0 {
-				// What this answer left unjudged stays unchecked; what it
-				// judged as the reviewer would is for the next model.
 				pending = again
 			}
-			// Past the models tried, which may be more than one attempt's
-			// worth: one request to the gateway covers several.
 			rest = rest[next:]
 		}
 	}
@@ -471,7 +440,7 @@ func (s *Service) verifyNewIn(ctx context.Context, chain []ChainModel, hf *headF
 		v, ok := decided[n]
 		if !ok {
 			fnd.Verify = VerifyUnchecked
-			out.kept = append(out.kept, fnd) // not judged: posted as the reviewer said
+			out.kept = append(out.kept, fnd)
 			out.unchecked++
 			continue
 		}
@@ -486,7 +455,7 @@ func (s *Service) verifyNewIn(ctx context.Context, chain []ChainModel, hf *headF
 		case "correct":
 			fnd.Verify = VerifyCorrected
 			if v.Line > 0 && v.Line != fnd.Line {
-				fnd.Line, fnd.Suggestion = v.Line, "" // a suggestion was for the old line
+				fnd.Line, fnd.Suggestion = v.Line, ""
 			}
 			if slices.Contains(severities, v.Severity) {
 				fnd.Severity = v.Severity
