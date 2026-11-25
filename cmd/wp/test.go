@@ -247,7 +247,7 @@ func (t *scopedTest) noTestsNote(sel goSelection) {
 	}
 }
 
-const passedAtCI = "CI runs the whole suite before the pull request opens."
+const ciRunsAllNote = "CI runs the whole suite before the pull request opens."
 
 func (t *scopedTest) run() error {
 	c := t.c
@@ -273,7 +273,7 @@ func (t *scopedTest) run() error {
 	if t.all {
 		c.println("wp test --all: passed: " + verdict)
 	} else {
-		c.println("wp test: passed: " + verdict + " " + passedAtCI)
+		c.println("wp test: passed: " + verdict + " " + ciRunsAllNote)
 	}
 	return nil
 }

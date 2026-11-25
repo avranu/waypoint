@@ -202,7 +202,7 @@ func fileStems(base string) []string {
 	stems := []string{base}
 	for cur := base; ; {
 		i := strings.LastIndex(cur, "_")
-		if i <= 0 || !(knownGOOS[cur[i+1:]] || knownGOARCH[cur[i+1:]]) {
+		if i <= 0 || (!knownGOOS[cur[i+1:]] && !knownGOARCH[cur[i+1:]]) {
 			return stems
 		}
 		cur = cur[:i]
