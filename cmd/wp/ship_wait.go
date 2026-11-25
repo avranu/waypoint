@@ -164,8 +164,9 @@ var reopenPR = func(c *cli, f prOpenFlags) (*openedPR, []byte, error) { return c
 // the round had for the agent was printed and the ship is over. Findings
 // leave the turn going to read them (the summary stays kept for the task's
 // next ship); a round that ended with nothing for the agent ends the turn
-// with the summary, when there is one and nothing else asks the agent. Otherwise the ship goes on with o: the pull request Waypoint opened,
-// or the held answer as it was when nothing came.
+// with the summary, when there is one and nothing else asks the agent.
+// Otherwise the ship goes on with o: the pull request Waypoint opened, or the
+// held answer as it was when nothing came.
 func (c *cli) waitHeldShip(f prOpenFlags, so shipOpts, o *openedPR, raw []byte, task, summary string) (*openedPR, []byte, bool, error) {
 	if summary != "" {
 		c.keepSummary(task, summary)
