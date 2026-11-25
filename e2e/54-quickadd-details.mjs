@@ -57,7 +57,6 @@ for (const [width, scheme] of looks([
   page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
   const dialog = page.getByRole("dialog");
 
-  // Backlog box: the button carries the text and its tokens over.
   await page.goto(`${base}/p/QAD/backlog`);
   const box = page.getByLabel("Add to backlog");
   await box.fill(`Details from the button ${tag} !high ~3`);
@@ -88,7 +87,6 @@ for (const [width, scheme] of looks([
   );
   ok(made && made.points === 3, `${tag} tokens carried over (points)`);
 
-  // Ctrl+Enter, with text too long for a title: split into title + description.
   await box.fill(long);
   await box.press("Control+Enter");
   await dialog.waitFor();
@@ -102,7 +100,6 @@ for (const [width, scheme] of looks([
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
 
-  // Board column and Home capture box.
   await page.goto(`${base}/p/QAD/board`);
   await page.getByRole("button", { name: "Add to To Do", exact: true }).click();
   const col = page.getByLabel("New issue title");

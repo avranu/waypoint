@@ -1,15 +1,5 @@
 package core
 
-// Trusted reviewers (WP-696). A review by a model that does this job well
-// doesn't need a second model to check its findings, which is what put a
-// second quota on every pull request. The findings it posts are the same
-// counts the gateway gets (review_feedback.go): once a model has enough of them
-// judged, they decide whether it is trusted, whichever way that goes. Until
-// then the seed list does.
-//
-// A trusted reviewer's findings count for neither review arm: they would
-// make "no verifier" look good, and that arm also carries the weak models.
-
 import (
 	"context"
 	"strings"
@@ -39,7 +29,7 @@ var seedSpellings = strings.NewReplacer("deepseek-v4.1-flash", "deepseek-4.1-fla
 // moment.
 type reviewerTrust struct {
 	seeds    []string
-	measured map[string]bool // only models with enough judged findings
+	measured map[string]bool
 }
 
 // runnerAliases are the short names the claude CLI takes for a seeded model.
@@ -113,7 +103,7 @@ func (s *Service) reviewerTrust(ctx context.Context) (reviewerTrust, error) {
 			c = &count{}
 			counts[m] = c
 		}
-		w := armWeight(now, f, f.version, "") // by age only: the reviewer, whatever its prompt
+		w := armWeight(now, f, f.version, "")
 		c.judged++
 		if f.useful {
 			c.useful += w

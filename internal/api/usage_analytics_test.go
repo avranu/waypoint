@@ -39,7 +39,6 @@ func TestUsageAnalyticsAPI(t *testing.T) {
 	if code := pat.json("POST", "/api/v1/usage/ingest", body, &res); code != 200 || res.Duplicate != 1 || res.Accepted != 0 {
 		t.Errorf("repeat: %d %+v", code, res)
 	}
-	// a newer wp may send fields this server doesn't know
 	body["chunks"].([]any)[0].(map[string]any)["id"] = "c2"
 	body["from_the_future"] = true
 	if code, b := pat.do("POST", "/api/v1/usage/ingest", body); code != 200 {
@@ -66,7 +65,6 @@ func TestUsageAnalyticsAPI(t *testing.T) {
 	if code := pat.json("GET", "/api/v1/usage/summary", nil, &sum); code != 200 || !sum.HasData || sum.Totals.Messages != 4 {
 		t.Errorf("summary: %d %+v", code, sum)
 	}
-	// its agents read it; other people can't; an admin can
 	if code, _ := agent.do("GET", "/api/v1/usage/overview", nil); code != 200 {
 		t.Errorf("agent read: %d", code)
 	}
@@ -87,7 +85,6 @@ func TestUsageAnalyticsAPI(t *testing.T) {
 		t.Errorf("bad breakdown: %d", code)
 	}
 
-	// prices: everyone reads, admins change
 	var prices []core.ModelPrice
 	if code := pat.json("GET", "/api/v1/usage/prices", nil, &prices); code != 200 || len(prices) < 10 {
 		t.Errorf("prices: %d %d", code, len(prices))

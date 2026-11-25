@@ -33,7 +33,7 @@ func (s *Server) resolveKit(w http.ResponseWriter, r *http.Request) (any, error)
 
 func (s *Server) reportKit(w http.ResponseWriter, r *http.Request) (any, error) {
 	var in core.KitReport
-	if err := decodeLarge(w, r, &in); err != nil { // a newer wp may say more
+	if err := decodeLarge(w, r, &in); err != nil {
 		return nil, err
 	}
 	if err := s.svc.ReportKitCheckout(r.Context(), actorFrom(r), in); err != nil {

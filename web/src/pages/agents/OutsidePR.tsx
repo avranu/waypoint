@@ -1,8 +1,3 @@
-// Text from outside on a pull request (WP-281): a pull request, review or
-// comment that a forge user who isn't a Waypoint person wrote. It waits here,
-// unseen by agents, automations and models, until a person approves it.
-// Shown as plain text: nothing in it renders, loads or links by itself.
-
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Globe } from 'lucide-react'
 import { decideOutsidePR, outsidePRQuery, type OutsidePRText } from '@/lib/pulls'

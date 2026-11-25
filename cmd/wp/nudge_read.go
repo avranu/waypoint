@@ -10,15 +10,9 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Big-read nudges (WP-145): a whole-file Read, `cat FILE` or a wide
-// `sed -n A,Bp` of a large file is re-read by every later call, so the note
-// names a cheaper way in. Same contract as the Bash nudges: a note, never a
-// refusal, no network, a few ms (the file is stat'ed and at most bigReadSample
-// bytes read; longer files get an estimate from size and average line length).
-
 const (
-	bigReadLines  = 800 // a Read/cat of more lines than this is nudged
-	bigSedLines   = 400 // a sed range wider than this is nudged
+	bigReadLines  = 800
+	bigSedLines   = 400
 	bigReadSample = 64 << 10
 )
 
@@ -75,7 +69,7 @@ func bigReadNote(subject, abs, cwd string) string {
 func bigReadFor(tool, cwd, path string, limit int, cmd string) (kind, text string) {
 	switch tool {
 	case "Read":
-		if limit > 0 || path == "" || isPicture(path) { // a picture is looked at, not grepped
+		if limit > 0 || path == "" || isPicture(path) {
 			return
 		}
 		if n := fileLines(bigReadPath(path, cwd)); n > bigReadLines {

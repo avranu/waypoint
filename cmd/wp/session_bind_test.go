@@ -34,7 +34,7 @@ func TestSessionInNearestOldIsNone(t *testing.T) {
 	sub := filepath.Join(root, "wt")
 	s := &State{Cwds: map[string]*cwdSession{
 		"far":  {Session: "far", Cwd: root, At: time.Now()},
-		"near": {Session: "near", Cwd: sub, At: time.Now().Add(-48 * time.Hour)}, // no pid to prove it lives
+		"near": {Session: "near", Cwd: sub, At: time.Now().Add(-48 * time.Hour)},
 	}}
 	if got := s.sessionIn(sub); got != "" {
 		t.Errorf("an expired nearest entry gave %q", got)
@@ -74,22 +74,18 @@ func TestRememberSessionTwoInOneCwd(t *testing.T) {
 	dir := t.TempDir()
 	c := &cli{}
 	rememberSession(c, hookEventInput{SessionID: "first", Cwd: dir})
-	// Give the first a different process, as a second harness would have.
 	c.state.Cwds["first"].Pid, c.state.Cwds["first"].PidStart = os.Getpid(), procStart(os.Getpid())
 	rememberSession(c, hookEventInput{SessionID: "second", Cwd: dir})
 	if c.state.Cwds["first"] == nil || c.state.Cwds["second"] == nil || c.state.Cwds["first"].Session != "first" {
 		b, _ := json.Marshal(c.state.Cwds)
 		t.Fatalf("each session should have its own entry: %s", b)
 	}
-	// Two different live processes (the harness here, and this test): from the
-	// directory alone, none.
 	if c.state.Cwds["first"].Pid == c.state.Cwds["second"].Pid {
 		t.Fatal("the test needs two different processes")
 	}
 	if got := c.state.sessionIn(dir); got != "" {
 		t.Errorf("two live sessions in one directory: %q", got)
 	}
-	// The second ends: the first is the one.
 	pid, start := exitedPid(t)
 	c.state.Cwds["second"].Pid, c.state.Cwds["second"].PidStart = pid, start
 	if got := c.state.sessionIn(dir); got != "first" {

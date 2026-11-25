@@ -6,18 +6,6 @@ import (
 	"time"
 )
 
-// A PreToolUse hook that Claude Code has already cancelled fails open and its
-// output is discarded. A note that is "once only" must not be marked shown by
-// such a run, or it is lost for good (WP-1398): hookLate says whether this
-// process has lived so long that it is probably too late.
-//
-// A late run still tells (a cancelled run's output is discarded at no cost; one
-// that was not cancelled delivers it) but marks the note shown only on its
-// lateTellsMax-th late try, so a note is delivered at least once unless every
-// one of three late runs is cancelled. The loss that remains is a cancel
-// landing between the mark and process exit; it cannot be closed without a
-// delivery acknowledgement from Claude Code.
-
 // hookLateAfter is how far into its timeout a hook is presumed cancelled:
 // three quarters, so a 2 s hook is late after 1.5 s.
 func hookLateAfter(timeoutSeconds int) time.Duration {
@@ -86,7 +74,7 @@ func ageFromProc(stat, uptime string) (time.Duration, bool) {
 	if i < 0 {
 		return 0, false
 	}
-	f := strings.Fields(stat[i+1:]) // f[0] is field 3 (state)
+	f := strings.Fields(stat[i+1:])
 	const startField = 22
 	if len(f) < startField-2 {
 		return 0, false

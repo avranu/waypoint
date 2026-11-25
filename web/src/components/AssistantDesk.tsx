@@ -1,6 +1,3 @@
-// Your assistant on the home page (WP-ADR1): how it is, a box to hand it
-// something, and what it has been talking about.
-
 import { useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'

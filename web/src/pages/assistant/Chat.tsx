@@ -1,7 +1,3 @@
-// The assistant's chat (WP-ADR1): its conversations on the left, from
-// every channel (Waypoint, Signal, schedules, the terminal), and the one
-// open on the right, streaming as it runs. On a phone the list is a sheet.
-
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -60,10 +56,7 @@ export function ChatTab({ assistant }: { assistant: Assistant }) {
   const navigate = useNavigate({ from: '/assistant/$id' })
   const wide = useMediaQuery('(min-width: 900px)')
   const [listOpen, setListOpen] = useState(false)
-  // A conversation keeps its component when it gets its id (the first
-  // send), so the turn streaming in it isn't lost; picking one starts afresh.
   const [convKey, setConvKey] = useState(() => search.s ?? 'new')
-  // Something to send from elsewhere (home, the palette) starts afresh.
   useEffect(() => {
     if (search.send === '1' && search.ask && !search.s) setConvKey(`ask-${Date.now()}`)
   }, [search.send, search.ask, search.s])
@@ -131,8 +124,6 @@ export function ChatTab({ assistant }: { assistant: Assistant }) {
     </div>
   )
 }
-
-// ---- the list ----
 
 type Filter = 'all' | 'chats' | 'scheduled' | 'archived'
 
@@ -528,8 +519,6 @@ function LinkDialog({
   )
 }
 
-// ---- one conversation ----
-
 const SUGGESTIONS = [
   'What needs my attention today?',
   'What did you do since yesterday?',
@@ -573,7 +562,6 @@ function Conversation({
   const open = live.open.filter((r) => !c.runtime || r.params.session_id === c.runtime)
   const elsewhere = live.open.length - open.length
 
-  // Follow the tail while you're at the bottom; stop when you scroll up.
   useEffect(() => {
     const el = scroller.current
     if (el && pinned) el.scrollTop = el.scrollHeight
@@ -613,7 +601,6 @@ function Conversation({
     },
     [c, onCreated, issue, stored, assistant.id, qc],
   )
-  // Asked from elsewhere (home, the palette): send it once the chat is up.
   const sentNow = useRef(false)
   useEffect(() => {
     if (!sendNow || !ask || stored || sentNow.current || blocked || live.state !== 'open') return
@@ -862,8 +849,6 @@ function HeaderMenu({
   )
 }
 
-// ---- the composer ----
-
 interface Completion {
   text: string
   display?: string
@@ -904,13 +889,11 @@ function Composer({
   const ta = useRef<HTMLTextAreaElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const touch = useMediaQuery('(pointer: coarse)')
-  // Dictation appends to what is already typed.
   const before = useRef('')
   const dictation = useDictation((done, interim) => {
     const sep = before.current && !/\s$/.test(before.current) ? ' ' : ''
     setText(before.current + sep + done + interim)
   })
-  // Editing a question puts it back in the box.
   useEffect(() => {
     if (editing === undefined) return
     setText(editing)
@@ -921,15 +904,12 @@ function Composer({
     try {
       if (text && !initial) localStorage.setItem(key, text)
       else localStorage.removeItem(key)
-    } catch {
-      /* storage blocked */
-    }
+    } catch {}
   }, [key, text, initial])
   useEffect(() => {
     if (!touch) ta.current?.focus()
   }, [touch])
 
-  // Slash commands: complete the first word.
   const slashText = text.startsWith('/') && !text.includes('\n') ? text : ''
   const debounced = useDebounced(slashText, 120)
   useEffect(() => {
@@ -946,8 +926,6 @@ function Composer({
     }
   }, [debounced, assistant.id, runtime])
 
-  // The rows answer `debounced`; until that is what is typed they belong to
-  // an earlier text, and Enter or Tab must not swap them in for it.
   const fresh = completions.length > 0 && !!slashText && debounced === slashText
   const submit = async () => {
     const t = text.trim()
@@ -964,9 +942,7 @@ function Composer({
       setFiles([])
       try {
         localStorage.removeItem(key)
-      } catch {
-        /* storage blocked */
-      }
+      } catch {}
     } catch (e) {
       toastError(e)
     } finally {

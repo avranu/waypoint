@@ -1,6 +1,3 @@
-// Small pieces shared by the glossary, design notes and links: where an
-// item lives, who wrote it (a person or an agent), and an inline title.
-
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -135,7 +132,6 @@ export function InlineTitle({
   const [draft, setDraft] = useState(value)
   const ref = useRef<HTMLTextAreaElement>(null)
   useEffect(() => setDraft(value), [value])
-  // A long title wraps instead of running off a narrow screen.
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
@@ -256,7 +252,6 @@ export function BlockTitle({ children, actions }: { children: ReactNode; actions
 
 /** A line diff: removed lines red, added green, unchanged runs folded to a little context. */
 export function DiffView({ lines, context = 2 }: { lines: DiffLine[]; context?: number }) {
-  // Keep changed lines and a few around them.
   const keep = lines.map((_l, i) =>
     lines.slice(Math.max(0, i - context), i + context + 1).some((x) => x.op !== ' '),
   )

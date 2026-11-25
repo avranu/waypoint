@@ -12,12 +12,6 @@ import (
 	"strings"
 )
 
-// The directories wp setup offers the runner by default: the top-level
-// folders where Claude Code has worked on this computer (~/code,
-// /projects), from the session folders under ~/.claude/projects. Never the
-// whole disk, the home directory, a folder that holds it, system or
-// temporary folders, or hidden ones.
-
 // claudeWorkRoots lists those folders, the most used first.
 func claudeWorkRoots(claudeDir, home string) []string {
 	projects := filepath.Join(claudeDir, "projects")
@@ -222,7 +216,7 @@ func workRoot(cwd, home string) string {
 		return ""
 	}
 	if home != "" && inside(home, root) {
-		return "" // it holds the home directory
+		return ""
 	}
 	return root
 }

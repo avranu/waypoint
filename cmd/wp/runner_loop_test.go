@@ -69,7 +69,6 @@ func TestRunnerTakesQueuedJobsOnce(t *testing.T) {
 	me := e.runnerUser("robin")
 	dir := t.TempDir()
 	ctx := context.Background()
-	// Registered once, so jobs can be queued before the runner runs.
 	reg := core.RunnerRegistration{Name: "box", AllowedDirs: []string{dir}}
 	if _, err := e.svc.RegisterRunner(ctx, me, reg); err != nil {
 		t.Fatal(err)
@@ -97,7 +96,6 @@ func TestRunnerTakesQueuedJobsOnce(t *testing.T) {
 	if !strings.Contains(out.String(), "is connected") {
 		t.Errorf("runner said %q", out.String())
 	}
-	// The runner is reported as the machine it is.
 	rs, _ := e.svc.ListRunners(ctx, me, false)
 	if len(rs) != 1 || rs[0].Name != "box" || rs[0].OS == "" || rs[0].Version == "" || len(rs[0].AllowedDirs) != 1 {
 		t.Errorf("runner = %+v", rs)
@@ -107,7 +105,7 @@ func TestRunnerTakesQueuedJobsOnce(t *testing.T) {
 func TestRunnerRefusesAnAgentToken(t *testing.T) {
 	e := newEnv(t)
 	stubDetect(t)
-	e.login() // an agent token
+	e.login()
 	var out syncBuffer
 	err := runRunner(context.Background(), &cli{dir: e.dir, out: &out, err: &out}, runnerOpts{Name: "box", MaxJobs: 1, Once: true, PollWait: 0})
 	if err == nil || !strings.Contains(err.Error(), "not as an agent") {
@@ -135,7 +133,6 @@ func TestRunnerCancelAndRemoval(t *testing.T) {
 		}
 		return len(rs) == 1
 	})
-	// A job that prints nothing: the cancel has to reach it through the poll.
 	job, err := e.svc.EnqueueRunnerJob(ctx, me, core.RunnerJobInput{Kind: core.JobCommand, Input: cmdJobInput("sleep 60", dir)})
 	if err != nil {
 		t.Fatal(err)
@@ -144,7 +141,6 @@ func TestRunnerCancelAndRemoval(t *testing.T) {
 		j, _ := e.svc.GetRunnerJob(ctx, me, job.ID, -1)
 		return j.State == "running"
 	})
-	// A second job waits for the one slot, then runs when it frees.
 	second, _ := e.svc.EnqueueRunnerJob(ctx, me, core.RunnerJobInput{Kind: core.JobCommand, Input: cmdJobInput("echo after", dir)})
 	time.Sleep(300 * time.Millisecond)
 	if j, _ := e.svc.GetRunnerJob(ctx, me, second.ID, -1); j.State != "queued" {
@@ -163,7 +159,6 @@ func TestRunnerCancelAndRemoval(t *testing.T) {
 		j, _ := e.svc.GetRunnerJob(ctx, me, second.ID, -1)
 		return j.State == "done"
 	})
-	// Removing the runner in Waypoint ends it, cleanly.
 	if err := e.svc.DeleteRunner(ctx, me, runner.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +216,7 @@ func TestRunnerSurvivesTheServerGoingAway(t *testing.T) {
 		j, _ := e.svc.GetRunnerJob(ctx, me, job.ID, -1)
 		return j.State == "running"
 	})
-	down.Store(true) // the server restarts while the job runs
+	down.Store(true)
 	time.Sleep(3500 * time.Millisecond)
 	if j, _ := e.svc.GetRunnerJob(ctx, me, job.ID, -1); j.State != "running" {
 		t.Fatalf("the job ended while nobody could hear it: %s", j.State)

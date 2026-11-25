@@ -20,7 +20,7 @@ func TestCurrentKeyNeverFallsBackFromANamedTarget(t *testing.T) {
 		args     []string
 		key      string
 		rest     int
-		contains string // of the refusal; "" for none
+		contains string
 	}{
 		{[]string{"APP-12", "text"}, "APP-12", 1, ""},
 		{[]string{"app12"}, "APP12", 0, ""},

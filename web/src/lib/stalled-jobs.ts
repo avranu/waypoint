@@ -1,7 +1,3 @@
-// When sessions are told that an agent's background job made no progress
-// (WP-1045). Admins set it for every project (Admin → AI); a project's owners
-// can set the project's own, which wins.
-
 import { api, enc } from './api'
 import type { StallPolicy } from './types'
 

@@ -5,19 +5,13 @@ import (
 	"strings"
 )
 
-// The audit log (WP-D15): what people decided about agents' work and about
-// Waypoint itself: reviews and approvals, delegating work to agents,
-// pausing and ordering agents, settings and access. Issue history keeps
-// every field change; this keeps the decisions, across projects, in one
-// place a person can read.
-
 // Audit categories.
 const (
-	AuditApproval   = "approval"   // reviews of agent-written text, design decisions, PR approvals and merges
-	AuditDelegation = "delegation" // work handed to agents or taken back
-	AuditControl    = "control"    // pausing agents, the queue's order, releasing claims, bot runs
-	AuditSettings   = "settings"   // automations, AI models, forges, the review note
-	AuditAccess     = "access"     // tokens, device logins, members
+	AuditApproval   = "approval"
+	AuditDelegation = "delegation"
+	AuditControl    = "control"
+	AuditSettings   = "settings"
+	AuditAccess     = "access"
 )
 
 // AuditEntry is one decision.
@@ -77,7 +71,7 @@ func auditable(a *Actor, e AuditEntry) bool {
 // Waypoint's own tables, or a forge's report).
 func (s *Service) audit(ctx context.Context, actor *Actor, e AuditEntry) {
 	if !auditable(actor, e) {
-		return // and no write: Waypoint's own setup may call this mid-transaction
+		return
 	}
 	if err := s.write(ctx, actor, func(t *tx) error { t.audit(e); return nil }); err != nil {
 		s.log.ErrorContext(ctx, "record audit entry", "action", e.Action, "err", err)

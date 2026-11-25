@@ -18,7 +18,7 @@ func TestListArgs(t *testing.T) {
 		{[]string{"R-5,6,7"}, []string{"R-5", "R-6", "R-7"}},
 		{[]string{"5", "6"}, []string{"5", "6"}},
 		{[]string{"WP:R-58", "59", "API:R-2,3"}, []string{"WP:R-58", "WP:R-59", "API:R-2", "API:R-3"}},
-		{[]string{"c14", "281"}, []string{"c14", "281"}}, // no dash: nothing carries
+		{[]string{"c14", "281"}, []string{"c14", "281"}},
 		{[]string{"#280,", "c14"}, []string{"#280", "c14"}},
 		{[]string{",", ""}, nil},
 	} {
@@ -37,7 +37,7 @@ func TestCurrentKeys(t *testing.T) {
 		{[]string{"WP-12", "WP-15", "done"}, []string{"WP-12", "WP-15"}, []string{"done"}},
 		{[]string{"wp-12,", "15", "In", "Review"}, []string{"WP-12", "WP-15"}, []string{"In", "Review"}},
 		{[]string{"issue:APP-3"}, []string{"APP-3"}, []string{}},
-		{[]string{"WP12", "15"}, []string{"WP12"}, []string{"15"}}, // a bare number needs KEY-N before it
+		{[]string{"WP12", "15"}, []string{"WP12"}, []string{"15"}},
 	} {
 		keys, rest, err := c.currentKeys(tc.in)
 		if err != nil || !slices.Equal(keys, tc.keys) || !slices.Equal(rest, tc.rest) {
@@ -74,7 +74,7 @@ func TestSeveralTargets(t *testing.T) {
 		t.Errorf("mv with a missing key: %d %s", code, out)
 	}
 	for _, key := range []string{k + "-1", k + "-3"} {
-		if d, _ := s.svc.GetIssue(ctx, s.me, key); d.Status.Category != "done" || (d.Priority == 1) != (key == k+"-1") { // low
+		if d, _ := s.svc.GetIssue(ctx, s.me, key); d.Status.Category != "done" || (d.Priority == 1) != (key == k+"-1") {
 			t.Errorf("%s: %s priority %d", key, d.Status.Category, d.Priority)
 		}
 	}

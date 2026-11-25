@@ -21,15 +21,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// `wp upgrade` replaces this binary with the one the server serves at
-// /cli/wp-OS-ARCH, checked against /cli/SHA256SUMS as the install script
-// does, and only once the new binary has run here and named the version
-// expected. The runner does it by itself between jobs when the server's
-// version differs, and the SessionStart hook looks once a day in a detached
-// process; both only when this wp and the server are release builds. A wp
-// that changed brings the Claude Code hooks up to date the next time one
-// runs (refreshHooks). See WP design #330, "Setting a computer up".
-
 var updateCmd = &command{
 	name: "upgrade", aliases: []string{"self-update"}, group: "Setup", args: "[--check] [--force]",
 	summary: "replace this wp with the version your Waypoint serves",
@@ -157,14 +148,13 @@ func (c *cli) selfUpdate(ctx context.Context, want string) (got, exe string, err
 	}
 	ext := ""
 	if runtime.GOOS == "windows" {
-		ext = ".exe" // or Windows won't run it
+		ext = ".exe"
 	}
-	// Next to the binary, so putting it in place is a rename.
 	tmp, err := os.CreateTemp(filepath.Dir(exe), ".wp-update-*"+ext)
 	if err != nil {
 		return "", exe, fmt.Errorf("can't write next to %s (%w); reinstall with curl -fsSL %s/cli | sh", exe, err, orDash(c.server()))
 	}
-	defer func() { _ = os.Remove(tmp.Name()) }() // gone already once it's in place
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	h := sha256.New()
 	err = c.fetchPublic(ctx, "/cli/"+name, io.MultiWriter(tmp, h), 512<<20)
 	if cerr := tmp.Close(); err == nil {
@@ -222,7 +212,7 @@ func replaceExe(exe, next string) error {
 		return os.Rename(next, exe)
 	}
 	old := exe + ".old"
-	_ = os.Remove(old) // the last update's, unless it still runs
+	_ = os.Remove(old)
 	if _, err := os.Stat(old); err == nil {
 		old = fmt.Sprintf("%s.old-%d", exe, time.Now().UnixNano())
 	}
@@ -314,7 +304,7 @@ func (c *cli) autoUpdate(ctx context.Context, sv string, err error) {
 // at most once a day (the SessionStart hook calls it), so the hook never
 // waits for the download.
 func (c *cli) autoUpdateInBackground() {
-	defer func() { _ = recover() }() // a hook must never fail the session
+	defer func() { _ = recover() }()
 	if autoUpdateOff() || !isRelease(version) {
 		return
 	}

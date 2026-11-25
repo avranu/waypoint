@@ -20,8 +20,6 @@ func TestFollowUpsBackfill(t *testing.T) {
 		`INSERT INTO users(id, username, email, created_at, updated_at) VALUES (1, 'robin', 'j@example.com', 0, 0)`,
 		`INSERT INTO projects(id, key, name, created_at, updated_at) VALUES (1, 'WP', 'Waypoint', 0, 0)`,
 		`INSERT INTO statuses(id, project_id, name, category) VALUES (1, 1, 'To Do', 'todo')`,
-		// 2 filed from 1; 3 a sub-task of 1 filed from it; 4 a sub-task of 2
-		// filed from 1; 5 its own origin.
 		`INSERT INTO issues(id, project_id, number, title, status_id, reporter_id, parent_id, origin_issue_id, created_at, updated_at) VALUES
 			(1, 1, 1, 'a', 1, 1, NULL, NULL, 0, 0),
 			(2, 1, 2, 'b', 1, 1, NULL, 1, 0, 0),
@@ -62,8 +60,6 @@ func TestFollowUpsAfterBackfill(t *testing.T) {
 		`INSERT INTO users(id, username, email, created_at, updated_at) VALUES (1, 'robin', 'j@example.com', 0, 0)`,
 		`INSERT INTO projects(id, key, name, created_at, updated_at) VALUES (1, 'WP', 'Waypoint', 0, 0)`,
 		`INSERT INTO statuses(id, project_id, name, category) VALUES (1, 1, 'To Do', 'todo'), (2, 1, 'Done', 'done')`,
-		// 1 done at 100; 2..7 filed at 200; 8 filed at 50, before 1 was done;
-		// 6 a sub-task of 1.
 		`INSERT INTO issues(id, project_id, number, title, status_id, reporter_id, parent_id, created_at, updated_at, resolved_at) VALUES
 			(1, 1, 1, 'a', 2, 1, NULL, 0, 0, 100),
 			(2, 1, 2, 'b', 1, 1, NULL, 200, 0, NULL),
@@ -75,10 +71,6 @@ func TestFollowUpsAfterBackfill(t *testing.T) {
 			(8, 1, 8, 'h', 1, 1, NULL, 50, 0, NULL),
 			(9, 1, 9, 'i', 1, 1, NULL, 200, 0, NULL)`,
 		`DELETE FROM issue_relations`,
-		// 2: a person chose it, from the done end; 3: an agent; 4: made
-		// before basis, a person's event beside it; 5: made before basis,
-		// no account's event (auto-relate); 6: the sub-task; 7: the text
-		// named it; 8: filed before 1 was done; 9: related both ways.
 		`INSERT INTO issue_relations(source_id, target_id, kind, created_at, named_in, basis) VALUES
 			(1, 2, 'relates', 300, NULL, ''),
 			(3, 1, 'relates', 300, NULL, 'agent'),

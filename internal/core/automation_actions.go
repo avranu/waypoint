@@ -8,11 +8,6 @@ import (
 	"time"
 )
 
-// The actions Waypoint ships with: the original issue, notification and
-// pull request ones (run by runAction), and the newer ones that wait, ask a
-// model or look things up. An action in another file registers itself the
-// same way, with its own Run.
-
 func legacyRun(c *StepCtx) error { return c.S.runAction(c) }
 
 var userParam = func(label string, opts []ParamOption) ParamDef {
@@ -38,7 +33,6 @@ const askSystem = "You work inside an issue tracker, answering a prompt written 
 	"Answer concisely and plainly."
 
 func registerActions() {
-	// ---- issue ----
 	registerAction(ActionDef{Name: "set_status", Label: "Move to status", Group: "Issue", Phrase: "move it to {status}", Needs: "issue",
 		Doc: "Move the issue to `status` (a name, or a category like done)", Params: []ParamDef{statusParam}, Run: legacyRun})
 	registerAction(ActionDef{Name: "set_priority", Label: "Set priority", Group: "Issue", Phrase: "set its priority to {value}", Needs: "issue",
@@ -104,7 +98,6 @@ func registerActions() {
 			{Name: "Count", Type: "number", Doc: "how many matched, even beyond the limit"}, {Name: "Keys", Type: "list"}},
 		Run: searchIssues})
 
-	// ---- people ----
 	assignOpts := opts("actor", "Whoever triggered it", "reporter", "The reporter", "none", "Nobody (unassign)")
 	registerAction(ActionDef{Name: "assign", Label: "Assign", Group: "People", Phrase: "assign it to {user}", Needs: "issue",
 		Doc: "Assign to `user` (actor, reporter, a username, or none), replacing others", Run: legacyRun, Params: []ParamDef{userParam("Assign to", assignOpts)}})
@@ -113,7 +106,6 @@ func registerActions() {
 	registerAction(ActionDef{Name: "comment", Label: "Add a comment", Group: "People", Phrase: "add a comment", Needs: "issue",
 		Doc: "Comment `message` (a template)", Run: legacyRun, Params: []ParamDef{messageTpl(false)}})
 
-	// ---- notify ----
 	notifyOpts := opts("assignees", "The assignees", "watchers", "The watchers", "reporter", "The reporter", "actor", "Whoever triggered it", "owners", "The project's owners", "admins", "The admins")
 	registerAction(ActionDef{Name: "notify", Label: "Send a notification", Group: "Notify", Phrase: "notify {user}",
 		Doc: "Notify `user` (assignees, watchers, reporter, actor, owners, admins, or a username) with `message`; `title` is optional", Run: legacyRun,
@@ -154,7 +146,6 @@ func registerActions() {
 			return nil
 		}})
 
-	// ---- integrations ----
 	registerAction(ActionDef{Name: "webhook", Label: "Call a webhook", Group: "Integrations", Phrase: "POST to {url}",
 		Doc: "POST JSON to `url`; `body` is an optional JSON template", Run: legacyRun,
 		Params: []ParamDef{{Name: "url", Label: "URL", Type: PURL, Required: true}, {Name: "body", Label: "Body", Type: PJSON, Help: "A JSON template; empty sends the event."}}})
@@ -162,7 +153,6 @@ func registerActions() {
 		Doc: "Trigger a Kestra flow via its webhook `url` (…/executions/webhook/ns/flow/key); `body` optional", Run: legacyRun,
 		Params: []ParamDef{{Name: "url", Label: "Webhook URL", Type: PURL, Required: true}, {Name: "body", Label: "Body", Type: PJSON}}})
 
-	// ---- pull requests ----
 	registerAction(ActionDef{Name: "review", Label: "Review it with a model", Group: "Pull request", Phrase: "review it with {models}", Needs: "pr",
 		Doc: "Review the pull request with a model and post one review with line comments; `models` (else Admin → AI's review models, tried in order; an entry `{cli, model}` runs a coding agent such as claude, codex, cursor or opencode on the rule owner's runner), `focus` (extra instructions), `max_findings` (how many are posted on the pull request, worst first; the rest are kept in Waypoint and counted in the review), `min_severity` (P0-P3: findings below aren't posted), `skip_files` (globs left out beside lockfiles, generated and minified files), `force` (even at a head already reviewed), `second_models` and `third_models` (more reviewers, in parallel), `verify_models` (else Admin → AI's verify models) or `no_verify`. When steps follow it, the run waits for the review and leaves Findings, Posted, Worst (P0-P3), P0…P3, Reviewed, Status, URL",
 		Run: reviewStep, Check: checkReview, Outputs: reviewOutputs,
@@ -185,20 +175,18 @@ func registerActions() {
 	registerAction(ActionDef{Name: "reply", Label: "Answer the reply", Group: "Pull request", Phrase: "answer the reply with {models}", Needs: "pr",
 		Doc:    "Answer a person's reply in a bot's review thread: stand by the finding with evidence, withdraw it, or agree it is minor; `models` (else Admin → AI's review models)",
 		Run:    legacyRun,
-		Params: []ParamDef{{Name: "models", Label: "Models", Type: PModels, Runners: true, Help: "Tried in order; empty uses Admin → AI's review models."}}}) // WP-D21
+		Params: []ParamDef{{Name: "models", Label: "Models", Type: PModels, Runners: true, Help: "Tried in order; empty uses Admin → AI's review models."}}})
 	registerAction(ActionDef{Name: "pr_comment", Label: "Comment on the pull request", Group: "Pull request", Phrase: "comment on it", Needs: "pr",
 		Doc: "Comment `message` (a template) on the pull request", Run: legacyRun, Params: []ParamDef{messageTpl(false)}})
 	registerAction(ActionDef{Name: "react", Label: "React with an emoji", Group: "Pull request", Phrase: "react with {value}", Needs: "pr",
 		Doc: "React to the pull request with emoji `value` (eyes, +1, -1, rocket, heart, confused)", Run: legacyRun,
 		Params: []ParamDef{{Name: "value", Label: "Emoji", Type: PSelect, Required: true, Options: opts("eyes", "👀", "+1", "👍", "-1", "👎", "rocket", "🚀", "heart", "❤️", "confused", "😕")}}})
 
-	// ---- time ----
 	registerAction(ActionDef{Name: "start_timer", Label: "Start timer", Group: "Time", Phrase: "start a timer for {user}", Needs: "issue",
 		Doc: "Start a timer on the issue for `user` (default: actor)", Run: legacyRun, Params: []ParamDef{userParam("For", opts("actor", "Whoever triggered it"))}})
 	registerAction(ActionDef{Name: "stop_timer", Label: "Stop timer", Group: "Time", Phrase: "stop the timer of {user}", Needs: "issue",
 		Doc: "Stop `user`'s timer if it is running on this issue", Run: legacyRun, Params: []ParamDef{userParam("Of", opts("actor", "Whoever triggered it"))}})
 
-	// ---- AI ----
 	registerAction(ActionDef{Name: "ask_model", Label: "Ask a model", Group: "AI", Phrase: "ask a model {prompt}", Long: true,
 		Doc: "Send `prompt` to a model (the step's `models`, else the Automations models in Admin → AI) and keep its answer: Text, or JSON in Data when `schema` is given",
 		Params: []ParamDef{
@@ -217,7 +205,6 @@ func registerActions() {
 			return "Would ask a model: " + excerpt(p, 400)
 		}})
 
-	// ---- flow ----
 	registerAction(ActionDef{Name: "delay", Label: "Wait", Group: "Flow", Phrase: "wait {duration}", Long: true,
 		Doc:    "Pause the run for `duration` (90s, 15m, 2h, 3d …)",
 		Params: []ParamDef{{Name: "duration", Label: "For", Type: PDuration, Required: true, Default: "15m", Min: f64(1), Max: f64(30 * 24 * 3600)}},
@@ -293,7 +280,7 @@ func registerActions() {
 		},
 		Outputs: []OutputDef{{Name: "Iterations", Type: "number"}, {Name: "Exhausted", Type: "bool", Doc: "it ran the most times without the condition holding"}},
 		Run: func(c *StepCtx) error {
-			return fmt.Errorf("a repeat is run by the engine") // never called
+			return fmt.Errorf("a repeat is run by the engine")
 		}})
 }
 

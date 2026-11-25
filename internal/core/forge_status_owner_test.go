@@ -46,14 +46,12 @@ func TestForgedGateStatus(t *testing.T) {
 		se.s.Wait()
 	}
 
-	// Waypoint's own statuses are its own: reading them posts nothing.
 	n := se.sg.postedOn(head)
 	refresh()
 	if got := se.sg.postedOn(head); got != n || strings.Contains(logs.String(), "didn't post") {
 		t.Fatalf("own statuses were answered: %d posts (was %d); log: %s", got, n, logs.String())
 	}
 
-	// Another account says the gate passed: Waypoint says again it fails.
 	se.sg.forgeStatus(head, CommitCheck{Name: gateContext, State: CheckSuccess, Description: "LGTM", Creator: "claude"})
 	refresh()
 	if got := se.sg.postedOn(head); got != n+1 {
@@ -68,16 +66,12 @@ func TestForgedGateStatus(t *testing.T) {
 	if pr := se.pr(5); pr.GateState != GateFailure {
 		t.Errorf("gate state = %s", pr.GateState)
 	}
-	// Answered once: Waypoint's post is the newest now.
 	refresh()
 	refresh()
 	if got := se.sg.postedOn(head); got != n+1 {
 		t.Fatalf("answered again: %d posts", got-n)
 	}
 
-	// A forged status that agrees with Waypoint is logged, not answered;
-	// one under another waypoint/* context (a CI job's token, no creator)
-	// too.
 	se.sg.forgeStatus(head, CommitCheck{Name: gateContext, State: CheckFailed, Creator: "claude"})
 	se.sg.forgeStatus(head, CommitCheck{Name: "waypoint/tested", State: CheckSuccess})
 	refresh()
@@ -87,7 +81,6 @@ func TestForgedGateStatus(t *testing.T) {
 	if l := logs.String(); !strings.Contains(l, "context=waypoint/tested") || !strings.Contains(l, `by="an unnamed account"`) {
 		t.Errorf("log lacks the waypoint/tested status: %s", l)
 	}
-	// None of them counts toward CI.
 	checks, err := se.s.prChecks(se.ctx, se.pr(5))
 	if err != nil {
 		t.Fatal(err)

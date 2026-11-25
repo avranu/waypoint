@@ -1,7 +1,3 @@
-// What can be done to one file or folder, from its row's menu or the
-// preview's header: download, copy its path, delete it (folders with
-// everything in them, after asking).
-
 import { useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Copy, Download, FolderOpen, Trash2 } from 'lucide-react'

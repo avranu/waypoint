@@ -1,8 +1,3 @@
-// Admin → Experiments (WP-254, WP-ADR53): A/B tests of how agents work.
-// Each experiment is defined in code with its arms (the first is today's
-// behaviour); a run switches it on for a while with fixed weights, and the
-// results compare each arm's tasks against the control, with their caveats.
-
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { CircleCheck, FlaskConical, List } from 'lucide-react'

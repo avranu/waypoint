@@ -8,10 +8,6 @@ import (
 	"time"
 )
 
-// When sessions are told of stalled jobs (WP-1045): the policy, quiet
-// spells reported from the runner's floor, early notices at a keep-warm
-// ping, cold wakes, withdrawn notices and the evidence.
-
 func (be *bsEnv) reportV2(runner int64, settled []SettledJob, jobs ...StalledJob) []StalledJobOutcome {
 	be.t.Helper()
 	out, err := be.s.ReportStalledJobs(be.ctx, be.admin, StalledJobsReport{Runner: runner, Jobs: jobs, Settled: settled, V: 2})
@@ -61,19 +57,15 @@ func TestStalledQuietNotYet(t *testing.T) {
 	if n := len(be.stalledMessages()); n != 0 {
 		t.Fatalf("%d messages", n)
 	}
-	// An older runner is asked to report it again instead.
 	out = be.reportStalled(r.ID, quietJob(6, 40*time.Minute, be.clockNow()))
 	if !out[0].Retry || out[0].AgainIn != 0 {
 		t.Errorf("older runner: %+v", out)
 	}
-	// It moved again: its spell ends by itself, and the next is a new one.
 	be.reportV2(r.ID, []SettledJob{{Session: "cli-1", Task: "b1x9", How: "progress"}})
 	be.reportV2(r.ID, nil, quietJob(5, 50*time.Minute, be.clockNow()))
 	if sp := be.spells(); len(sp) != 2 || sp[0].settled != "progress" || sp[0].outcome != "self" || sp[0].told || sp[1].settled != "" {
 		t.Errorf("spells %+v", sp)
 	}
-	// Told, or nothing more to come: an older runner isn't asked again
-	// (it would report it every minute).
 	for _, j := range []StalledJob{quietJob(20, 40*time.Minute, be.clockNow()), quietJob(21, 41*time.Minute, be.clockNow())} {
 		if out = be.reportStalled(r.ID, j); out[0].Retry {
 			t.Errorf("older runner asked again: %+v", out)
@@ -95,7 +87,6 @@ func TestStalledPolicyOffAndTimeouts(t *testing.T) {
 	if out := be.reportV2(r.ID, nil, j); !strings.Contains(out[0].Outcome, "45-minute timeout") {
 		t.Errorf("timeout: %+v", out)
 	}
-	// A spell that couldn't be told isn't evidence once it ends.
 	be.reportV2(r.ID, []SettledJob{{Session: "cli-1", Task: "b1x9", How: "ended"}})
 	var skipped string
 	if err := be.s.db.R.QueryRow(`SELECT skipped FROM stalled_jobs`).Scan(&skipped); err != nil || skipped != "timeout" {
@@ -117,7 +108,6 @@ func TestStalledPolicyOffAndTimeouts(t *testing.T) {
 	if out := be.reportV2(r.ID, nil, j); !strings.Contains(out[0].Outcome, "aren't told") {
 		t.Errorf("off: %+v", out)
 	}
-	// The session's project turns it back on for itself.
 	if _, err := be.s.db.W.Exec(`UPDATE agent_sessions SET project_id = ? WHERE id = ?`, be.p.ID, be.agent.Session); err != nil {
 		t.Fatal(err)
 	}
@@ -135,14 +125,12 @@ func TestStalledPolicyOffAndTimeouts(t *testing.T) {
 	if out := be.reportV2(r.ID, nil, j); out[0].Outcome != "woke its session (its prompt cache is warm)" {
 		t.Errorf("project's own: %+v", out)
 	}
-	// Times out of range are refused.
 	if err := json.Unmarshal([]byte(`{"settings":{"stalled_jobs":{"min_age":20,"quiet":2}}}`), &pin); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := be.s.UpdateProject(be.ctx, be.admin, be.p.Key, pin); err == nil {
 		t.Error("a 2-minute stall time was taken")
 	}
-	// nil goes back to the default.
 	if g, err := be.s.SetStallPolicy(be.ctx, be.admin, nil); err != nil || g.Custom || g.Policy != DefaultStallPolicy {
 		t.Errorf("reset: %+v %v", g, err)
 	}
@@ -215,7 +203,6 @@ func TestStalledColdWake(t *testing.T) {
 	if sp := be.spells(); sp[0].how != stallColdWake {
 		t.Errorf("spells %+v", sp)
 	}
-	// Read, and the job ended soon after: acted on.
 	if _, err := be.s.db.W.Exec(`UPDATE session_messages SET state = 'delivered', delivered_at = ?`, be.s.nowMS()); err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +223,7 @@ func TestStalledEarlyAtKeepWarm(t *testing.T) {
 	if out[0].Outcome != "quiet, not stalled yet" || out[0].AgainIn != 4*60 {
 		t.Fatalf("outcome %+v", out)
 	}
-	be.warmSweep(3 * time.Minute) // 55 minutes after its stop
+	be.warmSweep(3 * time.Minute)
 	if jobs := be.warmJobs(); len(jobs) != 0 {
 		t.Errorf("pinged as well: %+v", jobs)
 	}
@@ -253,7 +240,6 @@ func TestStalledEarlyAtKeepWarm(t *testing.T) {
 	if out := be.reportV2(r.ID, nil, quietJob(15, 48*time.Minute, be.clockNow())); out[0].Outcome != "its session was told already" {
 		t.Errorf("again: %+v", out)
 	}
-	// What the session reads is headed as news of its job.
 	if text := MessagesText([]*SessionMessage{{Body: "x", stepKey: "stalled:1:2"}}); !strings.HasPrefix(text, "Waypoint, news of your background job") {
 		t.Errorf("header %q", text)
 	}
@@ -292,15 +278,12 @@ func TestStallEvidence(t *testing.T) {
 	for range 4 {
 		facts = append(facts, stallFact{Class: "go test", Outcome: "acted", How: stallWoke})
 	}
-	// 12 reach 15 (4 stuck: 33%); from 23 only the 4 stuck ones are left.
 	if q := stallQuietFor(facts, "go test", 15); q.Quiet != 23 || q.Sample != 12 || q.Stuck != 4 || !strings.Contains(q.Why, "`go test` jobs'") {
 		t.Errorf("go test: %+v", q)
 	}
-	// Another kind with too few spells of its own uses everyone's.
 	if q := stallQuietFor(facts, "git push", 15); q.Quiet != 23 || !strings.Contains(q.Why, "all jobs'") {
 		t.Errorf("git push: %+v", q)
 	}
-	// Too few spells: the setting stands.
 	if q := stallQuietFor(facts[:9], "go test", 15); q.Quiet != 15 || q.Why != "" {
 		t.Errorf("few: %+v", q)
 	}

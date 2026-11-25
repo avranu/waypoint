@@ -162,8 +162,6 @@ func TestSnapshotLeavesWhatASourceDidNotCarryNullAndSaysWhy(t *testing.T) {
 
 func TestSnapshotEffortComesFromThePayloadOnly(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	// CLAUDE_EFFORT can be wrong (absent under --effort low, inherited from a
-	// parent session): it is never used.
 	t.Setenv("CLAUDE_EFFORT", "medium")
 	in := hookEventInput{HookEventName: "Stop", Cwd: t.TempDir(), EffortRaw: json.RawMessage(`{"level":"low"}`)}
 	sn := buildSnapshot(in, gitFacts{})
@@ -175,7 +173,6 @@ func TestSnapshotEffortComesFromThePayloadOnly(t *testing.T) {
 	if sn.Effort != nil || !strings.Contains(sn.Missing["effort"], "carries no effort") {
 		t.Errorf("absent effort: %v, %q", sn.Effort, sn.Missing["effort"])
 	}
-	// present but not {"level": string}: said apart from absent, and the rest is still read
 	in.EffortRaw = json.RawMessage(`"high"`)
 	sn = buildSnapshot(in, gitFacts{})
 	if sn.Effort != nil || !strings.Contains(sn.Missing["effort"], "unrecognised shape") {
@@ -191,8 +188,6 @@ func TestSnapshotEffortComesFromThePayloadOnly(t *testing.T) {
 }
 
 func TestSnapshotRequestedValuesComeFromTheLaunchNotThePayload(t *testing.T) {
-	// No claude process above the hook (the default in tests): nothing is
-	// requested: NULL with a reason, never a copy of the observed value.
 	t.Setenv("HOME", t.TempDir())
 	sn := buildSnapshot(hookEventInput{HookEventName: "SessionStart", Cwd: t.TempDir(), Model: "m", PermissionMode: "auto"}, gitFacts{})
 	if sn.RequestedModel != nil || sn.Missing["requested_model"] == "" {
@@ -205,7 +200,7 @@ func TestSnapshotRequestedValuesComeFromTheLaunchNotThePayload(t *testing.T) {
 
 func TestSnapshotStaysInItsTimeBudget(t *testing.T) {
 	old := snapshotBudget
-	snapshotBudget = snapshotBudgetReal // the tests run roomy (TestMain)
+	snapshotBudget = snapshotBudgetReal
 	t.Cleanup(func() { snapshotBudget = old })
 	s := newSessionEnv(t)
 	snapshotHome(t, s.repo)
@@ -274,7 +269,6 @@ func TestSessionStartStoresSnapshotAndChangesOverTime(t *testing.T) {
 			t.Error("the compaction summary was stored")
 		}
 	}
-	// the snapshots as built, and the request bodies as sent, never hold it either
 	raw, _ := json.Marshal(snaps)
 	if strings.Contains(string(raw), "SECRET SUMMARY") {
 		t.Error("the compaction summary is in a snapshot")
@@ -286,7 +280,6 @@ func TestSessionStartStoresSnapshotAndChangesOverTime(t *testing.T) {
 	if strings.Contains(bodies, "SECRET SUMMARY") {
 		t.Error("the compaction summary was sent to the server")
 	}
-	// the model switch sends both model fields (finding 29, CLI half)
 	if !strings.Contains(bodies, "from_model") || !strings.Contains(bodies, `"requested_model":"opus"`) {
 		t.Errorf("model switch fields not sent: %s", bodies)
 	}
@@ -330,7 +323,6 @@ func TestOutboxDropsAreCountedAndReported(t *testing.T) {
 	for i := 0; i < outboxMax+5; i++ {
 		c.queueEvent(sessionEvent{Event: "UserPromptSubmit", At: time.Now().UnixMilli(), SessionID: "drop-1", Prompt: "p"})
 	}
-	// the oldest is now past its day: forgotten unsent, so counted
 	if err := c.updateState(func(st *State) { st.Outbox[0].Event.At = time.Now().Add(-48 * time.Hour).UnixMilli() }); err != nil {
 		t.Fatal(err)
 	}
@@ -343,12 +335,9 @@ func TestOutboxDropsAreCountedAndReported(t *testing.T) {
 		t.Errorf("unqueued counted %d (%v)", n, c.state.Drops)
 	}
 
-	// Back up: the next event reports the counts, the expired one is counted
-	// as it is forgotten, and the counts leave the state once the server has them.
 	t.Setenv("WAYPOINT_SERVER", up)
 	s.hook(in("drop-1", "SessionStart", s.repo, nil))
 	c, _ = newCLI(&bytes.Buffer{}, &bytes.Buffer{})
-	// the expired one is counted before the counts are taken: it went out in this call
 	if len(c.state.Drops) != 0 || c.state.DropsOut != nil {
 		t.Errorf("after the first send the state holds %v / %+v, want nothing", c.state.Drops, c.state.DropsOut)
 	}

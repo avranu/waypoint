@@ -14,10 +14,6 @@ import (
 	webpush "github.com/SherClockHolmes/webpush-go"
 )
 
-// Web push: notifications on phones and desktops with the app installed,
-// for people who don't run Gotify. The server signs pushes with its own
-// VAPID key pair, made on first use.
-
 // PushSubscription is a browser's push endpoint, as the Push API gives it.
 type PushSubscription struct {
 	Endpoint string `json:"endpoint"`
@@ -73,7 +69,6 @@ func (s *Service) SavePushSubscription(ctx context.Context, actor *Actor, sub Pu
 			actor.id(), sub.Endpoint, sub.Keys.P256dh, sub.Keys.Auth, truncateBytes(userAgent, 200), s.nowMS()); err != nil {
 			return err
 		}
-		// Keep the ten most recent devices.
 		_, err := t.ExecContext(ctx, `DELETE FROM push_subscriptions WHERE user_id = ? AND id NOT IN
 			(SELECT id FROM push_subscriptions WHERE user_id = ? ORDER BY created_at DESC LIMIT 10)`, actor.id(), actor.id())
 		return err
@@ -158,7 +153,7 @@ func (s *Service) sendPush(ctx context.Context, userID int64, msg pushMessage) {
 		subscriber = "mailto:waypoint@localhost"
 	}
 	for _, t := range targets {
-		body := slices.Clone(payload) // the library appends padding in place
+		body := slices.Clone(payload)
 		s.goBG(func() {
 			resp, err := webpush.SendNotificationWithContext(context.Background(), body, &t.sub, &webpush.Options{
 				HTTPClient: s.pushHTTP, Subscriber: subscriber, VAPIDPublicKey: pub, VAPIDPrivateKey: priv, TTL: 24 * 3600,

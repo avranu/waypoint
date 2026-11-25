@@ -51,7 +51,6 @@ async function seed(api, call) {
           in: Math.round(30000 * k), out: Math.round(26000 * k),
           cw5: Math.round(110000 * k), cw1: 0, cr: Math.round(2400000 * k) + (kind === "main" && d % 9 === 0 ? 0 : 1_000_000),
         });
-        // the per-call measures (WP-35): contexts that creep up over the month
         const calls = Math.round(12 * k);
         const avg = 180_000 + (28 - d) * 6_000 + (kind === "main" ? 60_000 : 0);
         ledger.push({
@@ -114,10 +113,8 @@ async function seed(api, call) {
     ],
   });
   if (!r.ok()) throw new Error(`ingest: ${r.status()} ${await r.text()}`);
-  // a second machine, last synced days ago
   const d = await send("prodhost", chunks.filter((c) => c.machine === "prodhost"));
   if (!d.ok()) throw new Error(`ingest prodhost: ${d.status()} ${await d.text()}`);
-  // quota: a 7-day window 55% gone with 71% used, and a hot 5-hour window
   const reset7 = now + 3 * DAY;
   const reset5 = now + 90 * 60_000;
   for (const [span, pct, reset] of [["seven_day", 71, reset7], ["five_hour", 86, reset5]]) {
@@ -127,7 +124,6 @@ async function seed(api, call) {
     });
     if (!q.ok()) throw new Error(`quota: ${q.status()}`);
   }
-  // history behind it (the API only takes samples from now)
   await api("POST", "/projects", { name: "Usage", key: "USG" });
   const db = new DatabaseSync(`${process.env.DIR}/wp.db`);
   db.exec("PRAGMA busy_timeout = 5000");
@@ -138,20 +134,15 @@ async function seed(api, call) {
     const at = start7 + (i * (4 * DAY - HOUR)) / 16;
     ins.run(uid, at, "seven_day", (71 * (at - start7)) / (now - start7) * 0.98, reset7, "devhost", "", "claude-opus-5-5");
   }
-  for (const wk of [1, 2, 3]) // past windows
+  for (const wk of [1, 2, 3])
     for (let i = 1; i <= 4; i++)
       ins.run(uid, reset7 - wk * 7 * DAY - (5 - i) * DAY, "seven_day", 30 + wk * 12 + i * 8, reset7 - wk * 7 * DAY, "devhost", "", "");
   db.prepare("UPDATE usage_machines SET last_sync_at = ? WHERE machine = 'prodhost'").run(now - 3 * DAY);
-  // an instruction change on a default branch (WP-196), as a push records it
   const forge = db
     .prepare(`INSERT INTO forges(kind, name, base_url, created_at) VALUES ('forgejo', 'Usage forge', 'http://127.0.0.1:1', ?) RETURNING id`)
     .get(now).id;
-  // On this suite's own project: a repo on WAYP is one more than suites run
-  // after this one in the same lane expect (79-objectives' dialog then asks
-  // which repository, and its Set objective stays open).
   const project = db.prepare("SELECT id FROM projects WHERE key = 'USG'").get().id;
   db.prepare("INSERT INTO project_repos(project_id, forge_id, repo, created_at) VALUES (?, ?, 'acme/web', ?)").run(project, forge, now);
-  // ten tasks, each held by two of the sessions (WP-196's per-task view)
   const held = db.prepare("INSERT INTO agent_sessions(user_id, machine, cli_id, issue_id, started_at, last_seen_at) VALUES (?,?,?,?,?,?)");
   const sessions = chunks.flatMap((c) => c.sessions.map((x) => [c.machine, x.s]));
   for (let i = 0; i < 10; i++) {
@@ -199,7 +190,6 @@ async function run(width, scheme) {
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(base + "/");
 
-  // Nothing reported yet: the tab says how to start.
   const before = await api("GET", "/usage/overview?days=30");
   if (!before.has_data) {
     await page.goto(`${base}/agents?tab=usage`);
@@ -216,17 +206,14 @@ async function run(width, scheme) {
 
   await page.goto(`${base}/agents?tab=usage`);
   await page.getByText("Fresh tokens").first().waitFor();
-  // quota
   await page.getByRole("meter", { name: /7 days quota used/ }).waitFor();
   ok((await page.getByRole("meter", { name: /7 days quota used/ }).getAttribute("aria-valuenow")) === "71", `${tag} the 7-day gauge says 71%`);
   ok(await page.getByText(/Will run out/).first().isVisible(), `${tag} the pace line warns`);
   ok(await page.getByRole("meter", { name: /5 hours quota used/ }).isVisible(), `${tag} the 5-hour gauge shows`);
   await page.getByRole("group", { name: /Seven-day quota used over the window/ }).waitFor();
   ok(true, `${tag} the week chart renders`);
-  // tokens
   await page.getByRole("group", { name: "Fresh tokens per day by model family" }).waitFor();
   ok(true, `${tag} tokens by day render`);
-  // the token ledger (WP-35), beside the X4 baseline
   const led = page.getByTestId("token-ledger");
   await led.getByText("Context per call", { exact: true }).first().waitFor();
   ok(await led.getByText(/X4: 279k/).first().isVisible(), `${tag} the ledger shows the X4 baseline`);
@@ -243,21 +230,17 @@ async function run(width, scheme) {
   const lg = await api("GET", "/usage/ledger?days=30");
   ok(lg.overall.calls > 500 && lg.overall.cold_starts > 0 && lg.spawns[0].forks > 0 && lg.spawns[0].fresh > 0, `${tag} API ledger: ${lg.overall.calls} calls, avg ${Math.round(lg.overall.avg_context)}, ${lg.overall.cold_starts} cold`);
   await led.screenshot({ path: `${out}/ledger-${width}-${scheme}.png` });
-  // the word "inferred" must survive the narrowest tile (WP-1470)
   const coldTile = await page.getByText(/^Cold starts \(inferred\)$/).first().evaluate((el) => ({ cut: el.scrollWidth > el.clientWidth + 1, shown: el.getBoundingClientRect().width > 0 }));
   ok(coldTile.shown && !coldTile.cut, `${tag} the cold-starts tile label shows "inferred" whole`);
   ok((await page.getByText("Cache hit rate").first().isVisible()) && (await page.getByText("API-equivalent cost").first().isVisible()), `${tag} cache and cost tiles show`);
-  // suggestions with evidence, and an allow rule to copy
   ok(await page.getByText("Search subagents are running on a premium model").isVisible(), `${tag} the model suggestion shows`);
   ok(await page.getByText("Never-used-skill").count() + (await page.getByText("never-used-skill").count()) > 0, `${tag} unused skill is listed`);
   await shot("usage");
-  // each section on its own, so the pictures can be read
   const secs = page.locator("section");
   for (let i = 0; i < Math.min(await secs.count(), 14); i++)
     await secs.nth(i).screenshot({ path: `${out}/usage-section-${String(i).padStart(2, "0")}-${width}-${scheme}.png` });
   await overflow("usage");
 
-  // Sorting a breakdown: Machine tab, by cost.
   await page.locator("section", { hasText: "Where it went" }).getByRole("radio", { name: "Machine" }).click();
   const table = page.locator("section", { hasText: "Where it went" }).locator("table");
   await table.getByRole("cell", { name: "prodhost" }).waitFor();
@@ -273,7 +256,6 @@ async function run(width, scheme) {
   await page.getByText("Refactor the web pipeline").first().waitFor();
   ok(true, `${tag} sessions carry their titles`);
 
-  // Tools, Bash heads, refusals.
   ok(await page.getByRole("heading", { name: "MCP servers", exact: true }).isVisible(), `${tag} MCP servers are grouped`);
   ok(await page.getByText("drive-old").first().isVisible() && await page.getByText("stale-cmd").first().isVisible(), `${tag} unused MCP servers and commands are listed`);
   ok(await page.getByRole("cell", { name: "git push" }).first().isVisible(), `${tag} Bash heads show`);
@@ -282,7 +264,6 @@ async function run(width, scheme) {
   ok(await page.getByText("no rule can allow it").first().isVisible(), `${tag} hook refusals offer no rule`);
   ok(await page.getByText(/unread lines/).first().isVisible() && await page.getByText(/never synced|synced 3 days ago/).first().isVisible(), `${tag} machines show when they last synced`);
 
-  // Filtering to one session narrows the tab and the URL.
   await page.locator("section", { hasText: "Where it went" }).getByRole("radio", { name: "Session" }).click();
   await page.locator("section", { hasText: "Where it went" }).getByRole("row").filter({ hasText: "Refactor the web pipeline" }).first().click();
   await page.waitForURL(/session=web-main-0/);
@@ -293,8 +274,6 @@ async function run(width, scheme) {
   await page.getByRole("button", { name: "Show every session" }).click();
   await page.waitForFunction(() => !location.search.includes("session="));
 
-  // Trends (WP-196): a measure by day, split by repo, with the instruction
-  // change marked; before and after it, per session and per day.
   const tr = await api("GET", "/usage/trends?days=30");
   ok(tr.has_data && tr.repos.length >= 2 && tr.marks.some((m) => m.kind === "instructions") && tr.marks.some((m) => m.kind === "cli"),
     `${tag} API trends: ${tr.dates.length} days, ${tr.repos.length} repos, ${tr.marks.length} marks, ${tr.factors.length} factors`);
@@ -345,7 +324,6 @@ async function run(width, scheme) {
   await shot("cli");
   await overflow("cli");
 
-  // Admin → AI → Prices: a new model gets a price, and the table shows it.
   await page.goto(`${base}/admin?tab=ai`);
   await page.getByRole("heading", { name: "Prices" }).waitFor();
   await page.getByRole("button", { name: "Edit claude-opus-5-5", exact: true }).waitFor();
@@ -366,7 +344,6 @@ async function run(width, scheme) {
   await shot("admin-prices");
   await overflow("prices");
 
-  // The page's agent filter narrows by model.
   await page.goto(`${base}/agents?tab=usage&agent=haiku`);
   await page.getByText("Fresh tokens").first().waitFor();
   ok(!(await page.getByText("claude-sonnet-5-5").first().isVisible().catch(() => false)), `${tag} only haiku after picking it`);

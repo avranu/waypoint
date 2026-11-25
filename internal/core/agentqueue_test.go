@@ -33,8 +33,6 @@ func TestMergePins(t *testing.T) {
 		{"past the end is the end", map[int64]pin{1: {99, 1}}, []int64{2, 3, 4, 5, 1}},
 		{"pins with the same number go by rank", map[int64]pin{2: {0, 3}, 4: {0, 2}}, []int64{4, 2, 1, 3, 5}},
 		{"then by id", map[int64]pin{2: {0, 1}, 4: {0, 1}}, []int64{2, 4, 1, 3, 5}},
-		// WP-311: pins put at the top stay there when the first of them is
-		// done (here it left ranks 2 and 3 behind).
 		{"pins at the top stay there", map[int64]pin{4: {0, 2}, 5: {0, 3}}, []int64{4, 5, 1, 2, 3}},
 	} {
 		if got := mergePins(auto, c.pins); !slices.Equal(got, c.want) {
@@ -45,70 +43,55 @@ func TestMergePins(t *testing.T) {
 
 func TestPlacePin(t *testing.T) {
 	auto := []int64{1, 2, 3, 4, 5}
-	// Placing a task pins only it.
 	got := placePin(auto, nil, 4, 2)
 	if !maps.Equal(got, map[int64]pin{4: {1, 2}}) {
 		t.Errorf("one drag pinned %v", got)
 	}
-	// The pins it passes keep their places in the order shown: 4 still has
-	// one automatic task (1) ahead of it.
-	got = placePin(auto, map[int64]pin{4: {1, 2}}, 3, 1) // [3 1 4 2 5]
+	got = placePin(auto, map[int64]pin{4: {1, 2}}, 3, 1)
 	if !maps.Equal(got, map[int64]pin{3: {0, 1}, 4: {1, 3}}) {
 		t.Errorf("pass: %v", got)
 	}
-	// Pinning a task that was ahead of a pin: the pin doesn't move down.
-	got = placePin(auto, map[int64]pin{5: {3, 4}}, 1, 1) // [1 2 3 5 4]
+	got = placePin(auto, map[int64]pin{5: {3, 4}}, 1, 1)
 	if want := map[int64]pin{1: {0, 1}, 5: {2, 4}}; !maps.Equal(got, want) {
 		t.Errorf("ahead: %v, want %v", got, want)
 	}
 	if order := mergePins(auto, got); !slices.Equal(order, []int64{1, 2, 3, 5, 4}) {
 		t.Errorf("ahead order: %v", order)
 	}
-	// A pin dropped where the automatic order puts it is let go.
 	got = placePin(auto, map[int64]pin{4: {1, 2}}, 4, 4)
 	if len(got) != 0 {
 		t.Errorf("back in place: %v", got)
 	}
-	// ... but an unpinned task dropped anywhere is pinned there, even past the end.
 	if got = placePin(auto, nil, 1, 99); !maps.Equal(got, map[int64]pin{1: {4, 5}}) {
 		t.Errorf("to the end: %v", got)
 	}
-	// No place: pinned where it is now.
 	if got = placePin(auto, map[int64]pin{5: {0, 1}}, 3, 0); !maps.Equal(got, map[int64]pin{5: {0, 1}, 3: {2, 4}}) {
 		t.Errorf("pin here: %v", got)
 	}
 }
 
 func TestPinRanks(t *testing.T) {
-	// Another view's pins hold 1024 and 3072; this view's hold 2048 and 4096.
 	all := []float64{1024, 2048, 3072, 4096}
-	// Swapping this view's two pins swaps their ranks; the other view's
-	// pins keep theirs, so the pins around them don't move there.
 	got, ok := pinRanks([]int64{2, 1}, 0, []float64{4096, 2048}, all)
 	if !ok || !maps.Equal(got, map[int64]float64{2: 2048, 1: 4096}) {
 		t.Errorf("swap: %v", got)
 	}
-	// A new pin after 1 goes just after it, before the next pin anywhere.
 	all = []float64{1024, 2048, 3072, 4096}
 	if got, _ = pinRanks([]int64{1, 9, 2}, 9, []float64{2048, 4096}, all); got[9] != 2560 || got[1] != 2048 || got[2] != 4096 {
 		t.Errorf("after: %v", got)
 	}
-	// First in the view: just before its next, after the pin before that.
 	if got, _ = pinRanks([]int64{9, 1}, 9, []float64{2048}, all); got[9] != 1536 {
 		t.Errorf("first: %v", got)
 	}
-	// Alone in the view: before every pin; with no pins at all, anywhere.
 	if got, _ = pinRanks([]int64{9}, 9, nil, all); got[9] != 0 {
 		t.Errorf("alone: %v", got)
 	}
 	if got, _ = pinRanks([]int64{9}, 9, nil, nil); got[9] != 1024 {
 		t.Errorf("only: %v", got)
 	}
-	// Let go: the rest keep their slots.
 	if got, _ = pinRanks([]int64{1}, 9, []float64{2048}, all); !maps.Equal(got, map[int64]float64{1: 2048}) {
 		t.Errorf("let go: %v", got)
 	}
-	// No room between two ranks: say so.
 	if _, ok = pinRanks([]int64{1, 9}, 9, []float64{1}, []float64{1, 1 + 1e-9}); ok {
 		t.Error("found room where there is none")
 	}
@@ -149,7 +132,6 @@ func TestQueuePinsAcrossProjects(t *testing.T) {
 		}
 		return got
 	}
-	// Each project's queue, top three pinned one after another.
 	for n, d := range []*IssueDetail{as[3], as[1], as[2]} {
 		move(a, d, n+1)
 	}
@@ -165,7 +147,6 @@ func TestQueuePinsAcrossProjects(t *testing.T) {
 	if got := pinnedIn(b.Key); !slices.Equal(got, wantB) {
 		t.Errorf("beta = %v, want %v", got, wantB)
 	}
-	// Every project's queue keeps both orders; Beta, pinned last, first.
 	want := append(slices.Clone(wantB), wantA...)
 	if got := pinnedIn(""); !slices.Equal(got, want) {
 		t.Errorf("every project = %v, want %v", got, want)
@@ -183,25 +164,20 @@ func TestAutoOrder(t *testing.T) {
 		return qi
 	}
 	items := []*queuedIssue{
-		mk(1, func(qi *queuedIssue) {}),                                        // board order
-		mk(2, func(qi *queuedIssue) { qi.issue.Points = pts(1) }),              // small
-		mk(3, func(qi *queuedIssue) { qi.issue.Points = pts(8) }),              // big
-		mk(4, func(qi *queuedIssue) { qi.issue.Type = "bug" }),                 // a bug
-		mk(5, func(qi *queuedIssue) { qi.issue.Category = "bugfix" }),          // a bug by category
-		mk(6, func(qi *queuedIssue) { qi.issue.DueDate = str("2026-10-20") }),  // due later
-		mk(7, func(qi *queuedIssue) { qi.issue.DueDate = str("2026-10-08") }),  // due sooner
-		mk(8, func(qi *queuedIssue) { qi.issue.Priority = 3 }),                 // high
-		mk(9, func(qi *queuedIssue) { qi.issue.Priority = 4 }),                 // urgent
-		mk(10, func(qi *queuedIssue) { qi.issue.DueDate = str("2026-10-01") }), // overdue
-		// Anyone's urgent work comes before delegated work that matters less
-		// (WP-997: the delegated low-priority bugs came first).
+		mk(1, func(qi *queuedIssue) {}),
+		mk(2, func(qi *queuedIssue) { qi.issue.Points = pts(1) }),
+		mk(3, func(qi *queuedIssue) { qi.issue.Points = pts(8) }),
+		mk(4, func(qi *queuedIssue) { qi.issue.Type = "bug" }),
+		mk(5, func(qi *queuedIssue) { qi.issue.Category = "bugfix" }),
+		mk(6, func(qi *queuedIssue) { qi.issue.DueDate = str("2026-10-20") }),
+		mk(7, func(qi *queuedIssue) { qi.issue.DueDate = str("2026-10-08") }),
+		mk(8, func(qi *queuedIssue) { qi.issue.Priority = 3 }),
+		mk(9, func(qi *queuedIssue) { qi.issue.Priority = 4 }),
+		mk(10, func(qi *queuedIssue) { qi.issue.DueDate = str("2026-10-01") }),
 		mk(11, func(qi *queuedIssue) { qi.issue.Agent = ""; qi.issue.Priority = 4 }),
-		mk(12, func(qi *queuedIssue) { qi.planned = true }), // planned
-		// A low-priority task blocking an urgent one is as urgent, and more.
+		mk(12, func(qi *queuedIssue) { qi.planned = true }),
 		mk(13, func(qi *queuedIssue) { qi.issue.Priority = 1; qi.unblocks, qi.blockedUrgency = 1, urgency(4, nil, day) }),
-		// An agent's text no person has read comes after a person's.
 		mk(14, func(qi *queuedIssue) { qi.issue.Type = "bug"; qi.issue.TextAgent, qi.issue.Unreviewed = "claude", true }),
-		// Waiting a long time lifts a task a little.
 		mk(15, func(qi *queuedIssue) { qi.issue.CreatedAt = day.AddDate(0, 0, -30) }),
 	}
 	for _, qi := range items {
@@ -215,7 +191,6 @@ func TestAutoOrder(t *testing.T) {
 	if want := []int64{13, 9, 10, 11, 8, 7, 4, 5, 15, 12, 2, 6, 1, 3, 14}; !slices.Equal(got, want) {
 		t.Errorf("order = %v, want %v", got, want)
 	}
-	// A query's own order keeps its order after overdue.
 	slices.SortStableFunc(items, func(a, b *queuedIssue) int { return autoOrder(a, b, today, true) })
 	if items[0].issue.ID != 10 {
 		t.Errorf("custom order starts with %d, want the overdue 10", items[0].issue.ID)
@@ -251,7 +226,7 @@ func TestAgentQueueOrderAndPins(t *testing.T) {
 	}
 	low := mk("Low", "claude", "low", "")
 	urgent := mk("Urgent", "claude", "urgent", "")
-	late := mk("Late", "claude", "low", "2026-10-01") // the clock says Oct 5
+	late := mk("Late", "claude", "low", "2026-10-01")
 	high := mk("High, due soon", "claude", "high", "2026-10-09")
 	tok, _, _ := e.s.CreateToken(e.ctx, e.admin, TokenSpec{Name: "opus", Agent: "anthropic/claude-opus-5-5"})
 	opus, _ := e.s.TokenActor(e.ctx, tok)
@@ -299,36 +274,28 @@ func TestAgentQueueOrderAndPins(t *testing.T) {
 		t.Errorf("why: %q, %q (exact %v)", q.Next[0].Why, q.Next[2].Why, q.Exact)
 	}
 
-	// Pinning low to the top moves low and nothing else.
 	move(QueueMove{Key: low.Key, Top: true})
 	q = order(low.Key, late.Key, urgent.Key, high.Key)
 	if !q.Next[0].Pinned || q.Next[0].Why != "Pinned at #1 by robin" || q.Next[1].Why != "Overdue (due Oct 1) · Low priority" {
 		t.Errorf("pins: %+v / %+v", q.Next[0], q.Next[1])
 	}
 	pinned(low.Key)
-	// Dragging high to #3 pins high there. Urgent, which it passed, is not
-	// pinned: it just follows the automatic order, now after high.
 	move(QueueMove{Key: high.Key, Position: 3})
 	order(low.Key, late.Key, high.Key, urgent.Key)
 	pinned(low.Key, high.Key)
 
-	// Something new and more important joins the automatic order; the pins
-	// hold their places and the rest flows around them.
 	newer := mk("Newer", "claude", "urgent", "2026-10-02")
 	order(low.Key, newer.Key, high.Key, late.Key, urgent.Key)
 	pinned(low.Key, high.Key)
 
-	// Passing a pin moves it along with the order shown.
 	move(QueueMove{Key: low.Key, Position: 4})
 	order(newer.Key, high.Key, late.Key, low.Key, urgent.Key)
 	if d := e.get(e.admin, high.Key); d.AgentOrder == nil || d.AgentAhead != 1 {
 		t.Errorf("high after %d tasks (%v), want 1", d.AgentAhead, d.AgentOrder)
 	}
-	// Dropping a pinned task where the automatic order puts it lets it go.
 	move(QueueMove{Key: low.Key, Position: 5})
 	order(newer.Key, high.Key, late.Key, urgent.Key, low.Key)
 	pinned(high.Key)
-	// "Pin here" holds an unpinned task where it is.
 	move(QueueMove{Key: urgent.Key})
 	pinned(high.Key, urgent.Key)
 	if d := e.get(e.admin, urgent.Key); d.AgentOrder == nil || d.AgentAhead != 2 {
@@ -339,22 +306,18 @@ func TestAgentQueueOrderAndPins(t *testing.T) {
 	order(newer.Key, late.Key, urgent.Key, high.Key, low.Key)
 	pinned()
 
-	// next takes them in the order shown and says why.
 	move(QueueMove{Key: high.Key, Position: 2})
 	move(QueueMove{Key: late.Key, Top: true})
 	task, err := e.s.AgentNext(e.ctx, opus, AgentQuery{})
 	if err != nil || task == nil || task.Issue.Key != late.Key || task.Why != "Pinned at #1 by robin" {
 		t.Fatalf("next = %+v, %v", task, err)
 	}
-	// Closing it drops it from people's order; so does taking it off agents.
 	if _, err := e.s.AgentDone(e.ctx, opus, late.Key, AgentDoneInput{}); err != nil {
 		t.Fatal(err)
 	}
 	if d := e.get(e.admin, late.Key); d.AgentOrder != nil {
 		t.Error("a closed issue kept its pin")
 	}
-	// High keeps its place after newer: the pin that finished above it
-	// leaves no gap for the automatic order to fill (WP-311).
 	order(newer.Key, high.Key, urgent.Key, low.Key)
 	none := "none"
 	if _, err := e.s.UpdateIssue(e.ctx, e.admin, high.Key, IssuePatch{Agent: &none}); err != nil {
@@ -369,7 +332,6 @@ func TestAgentQueueOrderAndPins(t *testing.T) {
 	if err := e.s.MoveInQueue(e.ctx, e.admin, QueueMove{Key: low.Key, Position: -1}); err == nil {
 		t.Error("placed an issue at a negative place")
 	}
-	// Agents can't reorder their own queue.
 	if err := e.s.MoveInQueue(e.ctx, opus, QueueMove{Key: low.Key, Top: true}); err == nil {
 		t.Error("an agent reordered the queue")
 	}
@@ -379,7 +341,7 @@ func TestAgentQueueWaitingAndScope(t *testing.T) {
 	e := newEnv(t)
 	p := e.project(e.admin, "Waits", "")
 	last := ""
-	mk := func(in IssueInput) *IssueDetail { // in board order, top to bottom
+	mk := func(in IssueInput) *IssueDetail {
 		in.Project, in.After = p.Key, last
 		d := e.issue(e.admin, in)
 		last = d.Key
@@ -422,7 +384,6 @@ func TestAgentQueueWaitingAndScope(t *testing.T) {
 		t.Errorf("delegated by = %+v", q.Next[0].DelegatedBy)
 	}
 
-	// A family covers the agents seen with it; each item says who may take it.
 	fam, _ := e.s.AgentQueueFor(e.ctx, e.admin, "claude", "")
 	if fam.Exact || len(fam.Covers) != 2 {
 		t.Fatalf("family covers %v (exact %v)", fam.Covers, fam.Exact)
@@ -435,13 +396,11 @@ func TestAgentQueueWaitingAndScope(t *testing.T) {
 			t.Errorf("takers = %v", it.Takers)
 		}
 	}
-	// Every agent: all delegated open work.
 	all, _ := e.s.AgentQueueFor(e.ctx, e.admin, "", "")
 	if len(all.Next) != 2 || len(all.Waiting) != 2 {
 		t.Errorf("all = %v / %v", queueKeys(all.Next), queueKeys(all.Waiting))
 	}
 
-	// Claimed by haiku: opus's queue shows it waiting, haiku's as working.
 	if task, _ := e.s.AgentNext(e.ctx, haiku, AgentQuery{}); task == nil || task.Issue.Key != ready.Key {
 		t.Fatalf("haiku next = %+v", task)
 	}
@@ -460,7 +419,6 @@ func TestAgentQueueWaitingAndScope(t *testing.T) {
 		t.Errorf("haiku working = %v", got)
 	}
 
-	// A person takes it back; agents can't use that.
 	if err := e.s.ReleaseClaim(e.ctx, haiku, ready.Key); err == nil {
 		t.Error("an agent used the person's release")
 	}
@@ -472,7 +430,6 @@ func TestAgentQueueWaitingAndScope(t *testing.T) {
 		t.Errorf("after release: %q %+v", d.ClaimedBy, d.AgentRuns)
 	}
 
-	// A project pause stops new work there, for every agent.
 	yes := true
 	if _, err := e.s.UpdateProject(e.ctx, e.admin, p.Key, ProjectInput{Settings: &ProjectSettings{AgentsPaused: yes}}); err != nil {
 		t.Fatal(err)
@@ -496,7 +453,6 @@ func TestAgentPauses(t *testing.T) {
 	opus, _ := e.s.TokenActor(e.ctx, tokO)
 	gpt, _ := e.s.TokenActor(e.ctx, tokG)
 
-	// Opus holds a task, then its person pauses Claude agents.
 	if task, _ := e.s.AgentNext(e.ctx, opus, AgentQuery{}); task == nil || task.Issue.Key != first.Key {
 		t.Fatalf("next = %+v", task)
 	}
@@ -506,7 +462,6 @@ func TestAgentPauses(t *testing.T) {
 	if _, err := e.s.PauseAgents(e.ctx, e.admin, "claude", "reviewing what it did", false); err != nil {
 		t.Fatal(err)
 	}
-	// What it holds stays its own; nothing new.
 	if task, err := e.s.AgentNext(e.ctx, opus, AgentQuery{}); err != nil || task == nil || task.Issue.Key != first.Key {
 		t.Errorf("held task while paused = %+v, %v", task, err)
 	}
@@ -518,7 +473,6 @@ func TestAgentPauses(t *testing.T) {
 	if !errors.As(err, &paused) || !strings.Contains(err.Error(), "reviewing what it did") {
 		t.Fatalf("paused next = %v", err)
 	}
-	// Other agents carry on.
 	if task, _ := e.s.AgentNext(e.ctx, gpt, AgentQuery{}); task == nil || task.Issue.Key != second.Key {
 		t.Errorf("gpt next = %+v", task)
 	}
@@ -571,7 +525,6 @@ func TestQueueParentWaitsForSubIssues(t *testing.T) {
 		t.Fatalf("epic waits: %+v", wait)
 	}
 
-	// Once no open sub-issue is for agents, the parent is handed out.
 	none := AgentHumans
 	if _, err := e.s.UpdateIssue(e.ctx, e.admin, child.Key, IssuePatch{Agent: &none}); err != nil {
 		t.Fatal(err)

@@ -125,7 +125,6 @@ func TestNamedRelationLimits(t *testing.T) {
 	if got := e.issue(&agent, IssueInput{Project: p.Key, Title: "Filed by an agent", Description: "See " + a.Key}); len(got.Relations) != 0 {
 		t.Errorf("an agent's text linked: %v", got.Relations)
 	}
-	// A person's account writing a model's words, or a forge's mirrored text.
 	carried := *e.admin
 	carried.textAgent = "waypoint"
 	if got := e.issue(&carried, IssueInput{Project: p.Key, Title: "Audit finding", Description: "See " + a.Key}); len(got.Relations) != 0 {
@@ -242,7 +241,6 @@ func TestChosenRelationReplacesNamed(t *testing.T) {
 		t.Errorf("relations = %+v", got)
 	}
 
-	// With AutoRelate, a dependency the text states becomes one, not a plain link.
 	name := "Auto"
 	ap, err := e.s.CreateProject(e.ctx, e.admin, ProjectInput{Name: &name, Settings: &ProjectSettings{AutoRelate: true}})
 	if err != nil {

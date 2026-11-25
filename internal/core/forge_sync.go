@@ -13,9 +13,6 @@ import (
 	"time"
 )
 
-// Two-way comment sync, cross-forge dedupe and auto-created projects
-// (WP-D7, "Forges").
-
 // ForgeComment is a comment on a forge issue.
 type ForgeComment struct {
 	ID        string
@@ -87,8 +84,6 @@ type ForgeDiscoverer interface {
 	IsGroup(ctx context.Context, f *Forge, namespace string) (bool, error)
 }
 
-// ---- comments: forge → Waypoint ----
-
 // importForgeComment mirrors one forge comment onto every Waypoint issue
 // mirroring that forge issue. Comments Waypoint posted itself are
 // recognised, so they don't come back as copies.
@@ -127,7 +122,7 @@ func (s *Service) mirroredIssues(ctx context.Context, f *Forge, repo string, num
 		if err := rows.Scan(&id, &u); err != nil {
 			return nil, err
 		}
-		if strings.EqualFold(hostOf(u), host) { // a mirror on another forge has its own link
+		if strings.EqualFold(hostOf(u), host) {
 			out = append(out, id)
 		}
 	}
@@ -144,9 +139,6 @@ func hostOf(raw string) string {
 
 func (s *Service) upsertForgeComment(ctx context.Context, f *Forge, issueID int64, action string, c ForgeComment) error {
 	body := truncateBytes(strings.TrimSpace(c.Body), maxCommentLen)
-	// Who isn't a Waypoint person writes only held text, which nothing but
-	// people read until a person approves it (WP-279); a login agents may
-	// write as writes unreviewed agent text (WP-282).
 	outside, agent := s.forgeWriter(ctx, s.db.R, f, c.Author)
 	sys := forgeSyncActor(f, c.Author, agent)
 	return s.write(ctx, sys, func(t *tx) error {
@@ -164,13 +156,13 @@ func (s *Service) upsertForgeComment(ctx context.Context, f *Forge, issueID int6
 		}
 		held := err == nil
 		var cid int64
-		var mine bool // our copy of a comment written elsewhere (Waypoint or another forge)
+		var mine bool
 		err = t.QueryRowContext(ctx, `SELECT l.comment_id, l.origin = 0 FROM comment_links l JOIN comments c ON c.id = l.comment_id
 			WHERE l.forge_id = ? AND l.external_id = ? AND c.issue_id = ?`, f.ID, c.ID, issueID).Scan(&cid, &mine)
 		switch {
 		case err == nil && action == "deleted":
 			if mine {
-				return nil // deleting the forge copy leaves the original
+				return nil
 			}
 			if _, err := t.ExecContext(ctx, `DELETE FROM comments WHERE id = ?`, cid); err != nil {
 				return err
@@ -182,7 +174,6 @@ func (s *Service) upsertForgeComment(ctx context.Context, f *Forge, issueID int6
 				return nil
 			}
 			if outside {
-				// An approved comment keeps its approved text; the new one waits.
 				var cur string
 				if err := t.QueryRowContext(ctx, `SELECT body FROM comments WHERE id = ?`, cid).Scan(&cur); err != nil {
 					return err
@@ -215,15 +206,11 @@ func (s *Service) upsertForgeComment(ctx context.Context, f *Forge, issueID int6
 			}
 			return nil
 		}
-		// Its copy here was deleted (or a person discarded it): it stays deleted.
 		var gone bool
 		if err := t.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM comment_tombstones WHERE issue_id = ? AND forge_id = ? AND external_id = ?)`,
 			issueID, f.ID, c.ID).Scan(&gone); err != nil || gone {
 			return err
 		}
-		// The webhook for a comment Waypoint just posted can beat the post's
-		// own reply: recognise our copy by its marker and text instead of
-		// copying it back.
 		if strings.Contains(body, viaWaypoint) {
 			var own int64
 			err = t.QueryRowContext(ctx, `SELECT id FROM comments c WHERE issue_id = ? AND created_at > ? AND instr(?, body) > 0
@@ -237,15 +224,13 @@ func (s *Service) upsertForgeComment(ctx context.Context, f *Forge, issueID int6
 			}
 		}
 		if discarded && heldBody == body {
-			return nil // a person kept it out
+			return nil
 		}
 		if outside {
 			return s.holdOutside(ctx, t, f, heldText{issue: i, externalID: c.ID, url: c.URL, author: c.Author, body: body})
 		}
 		created := s.nowMS()
 		if held {
-			// It waited until its author turned out to be a person: let it in
-			// where it was written, quietly.
 			created = heldAt
 			if err := s.dropHeld(ctx, t, i, f, c.ID); err != nil {
 				return err
@@ -282,8 +267,6 @@ func (s *Service) syncComments(ctx context.Context, f *Forge, repo string, numbe
 	return nil
 }
 
-// ---- comments: Waypoint → forge ----
-
 // pushComment posts a new comment to every synced forge issue the issue
 // mirrors, attributed to its author, and remembers the copy. A comment that
 // came from one forge goes to the others (mirrors stay complete) but never
@@ -292,11 +275,11 @@ func (s *Service) pushComment(ctx context.Context, e *Event) {
 	cm, ok := s.Forges.(ForgeCommenter)
 	commentID := dataInt(e, "comment_id")
 	if !ok || commentID == 0 || e.Data["local"] == true {
-		return // a local comment names machines and paths (addLocalComment)
+		return
 	}
 	text, err := s.forgeCommentText(ctx, commentID)
 	if err != nil {
-		return // gone meanwhile
+		return
 	}
 	links, err := s.externalLinks(ctx, s.db.R, e.IssueID)
 	if err != nil {
@@ -304,7 +287,7 @@ func (s *Service) pushComment(ctx context.Context, e *Event) {
 	}
 	for _, l := range links {
 		if !l.Mirror || l.Number == nil {
-			continue // a forge issue that only mentions this one gets nothing
+			continue
 		}
 		f := s.forgeForLink(ctx, l)
 		if f == nil || f.ID == 0 || f.token == "" || !s.repoPostsComments(ctx, e.ProjectID, f.ID, l.Repo) {
@@ -350,7 +333,7 @@ func (s *Service) forgeCommentText(ctx context.Context, commentID int64) (string
 type forgeCommentChange struct {
 	commentID int64
 	deleted   bool
-	copies    []forgeCommentCopy // the ones Waypoint posted
+	copies    []forgeCommentCopy
 }
 
 type forgeCommentCopy struct {
@@ -377,7 +360,7 @@ func (s *Service) forgeCommentChanged(ctx context.Context, t *tx, issueID, comme
 			return nil, err
 		}
 		all = append(all, c)
-		if !origin { // someone else's comment on the forge stays theirs
+		if !origin {
 			ch.copies = append(ch.copies, c)
 		}
 	}
@@ -440,7 +423,7 @@ func (s *Service) pushCommentChange(ctx context.Context, e *Event) {
 					s.log.WarnContext(ctx, "update comment on forge", "repo", repo, "issue", num, "deleted", ch.deleted, "err", err)
 				}
 			})
-			break // one copy lives on one forge issue
+			break
 		}
 	}
 }
@@ -502,8 +485,6 @@ func (s *Service) pushStateToMirrors(ctx context.Context, issueID, projectID int
 	}
 }
 
-// ---- auto-created projects ----
-
 // forgeAdmin is who auto-created projects belong to: the admin who
 // connected the forge, or else the first admin.
 func (s *Service) forgeAdmin(ctx context.Context, f *Forge) (*Actor, error) {
@@ -533,16 +514,13 @@ func (s *Service) ensureRepoProject(ctx context.Context, f *Forge, repo string, 
 	if !validRepoFor(f.Kind, repo) {
 		return invalid("repo %q", repo)
 	}
-	// One at a time per owner/name (across forges, for mirrors), so two
-	// webhooks for a new repo make one project.
 	unlock := forgeLocks.lock("repo|" + strings.ToLower(repo))
 	defer unlock()
 	var n int
 	if err := s.db.R.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM project_repos WHERE forge_id = ? AND lower(repo) = lower(?))
 		+ (SELECT count(*) FROM forge_repo_ignores WHERE forge_id = ? AND repo = ?)`, f.ID, repo, f.ID, repo).Scan(&n); err != nil || n > 0 {
-		return err // attached already, or detached on purpose
+		return err
 	}
-	// A mirror: the same owner/name already synced from another forge.
 	var projectID int64
 	err := s.db.R.QueryRowContext(ctx, `SELECT project_id FROM project_repos WHERE lower(repo) = lower(?) ORDER BY sync_issues DESC, id LIMIT 1`, repo).Scan(&projectID)
 	mirror := err == nil
@@ -568,12 +546,6 @@ func (s *Service) ensureRepoProject(ctx context.Context, f *Forge, repo string, 
 	} else if err != nil {
 		return err
 	}
-	// A repo joined by name alone may not be the same repo at all (anyone
-	// can own acme/web on another forge): it links PRs and commits, but its
-	// issues and Waypoint's comments wait until a project owner turns sync
-	// and posting on. Its bots stay off too: a mirror's pull requests are
-	// twins of the first repo's (a mirror copies reviews across), so
-	// reviewing both would double every review (WP-D14).
 	on := boolInt(!mirror)
 	if _, err := s.db.W.ExecContext(ctx, `INSERT INTO project_repos(project_id, forge_id, repo, forge_repo_id, sync_issues, post_comments, bots, created_at) VALUES (?,?,?,?,?,?,?,?)
 		ON CONFLICT(project_id, forge_id, repo) DO NOTHING`, projectID, f.ID, repo, id, on, on, on, s.nowMS()); err != nil {
@@ -602,7 +574,7 @@ func (s *Service) namespaceIsGroup(ctx context.Context, f *Forge, ns string, hin
 		return *hint
 	}
 	if strings.Contains(ns, "/") {
-		return true // only groups nest
+		return true
 	}
 	d, ok := s.Forges.(ForgeDiscoverer)
 	if !ok {
@@ -622,7 +594,6 @@ func (s *Service) namespaceIsGroup(ctx context.Context, f *Forge, ns string, hin
 // made the first time it's needed and shared by every forge. GitLab
 // subgroups nest under their parent group's project.
 func (s *Service) namespaceProject(ctx context.Context, admin *Actor, f *Forge, ns string) (*Project, error) {
-	// Namespaces lock after repos and children before parents, so no cycle.
 	unlock := forgeLocks.lock("ns|" + strings.ToLower(ns))
 	defer unlock()
 	var id int64
@@ -683,8 +654,6 @@ func (s *Service) PreviewDiscover(ctx context.Context, actor *Actor, forgeID int
 	out := make([]DiscoveredRepo, 0, len(repos))
 	for _, r := range repos {
 		d := DiscoveredRepo{Repo: r.Path}
-		// A repo attached under its old name (renamed or transferred) joins
-		// its project; so does a mirror.
 		err := s.db.R.QueryRowContext(ctx, `SELECT p.name FROM project_repos pr JOIN projects p ON p.id = pr.project_id
 			WHERE (pr.forge_id = ? AND pr.forge_repo_id = ? AND ? != 0) OR lower(pr.repo) = lower(?)
 			ORDER BY pr.forge_repo_id = ? DESC, pr.sync_issues DESC, pr.id LIMIT 1`, f.ID, r.ID, r.ID, r.Path, r.ID).Scan(&d.Joins)
@@ -719,7 +688,6 @@ func (s *Service) DiscoverRepos(ctx context.Context, actor *Actor, forgeID int64
 	if err != nil {
 		return 0, err
 	}
-	// Only repos the forge reported: the names come from the browser.
 	want := func(list []string) map[string]bool {
 		m := map[string]bool{}
 		for _, r := range list {
@@ -815,8 +783,6 @@ func (s *Service) attachRepos(ctx context.Context, f *Forge, repos []ForgeRepo) 
 	return added
 }
 
-// ---- HTTP client: comments and repos ----
-
 type apiComment struct {
 	ID   int64  `json:"id"`
 	Body string `json:"body"`
@@ -901,7 +867,6 @@ func (c *httpForgeClient) ListRepos(ctx context.Context, f *Forge) ([]ForgeRepo,
 	}
 	orgs := map[string]bool{}
 	if f.Kind != "github" {
-		// Forgejo's repo owners don't say whether they're organisations.
 		var list []struct {
 			Name     string `json:"name"`
 			Username string `json:"username"`

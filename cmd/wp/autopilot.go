@@ -10,9 +10,6 @@ import (
 	"time"
 )
 
-// wp autopilot (WP-194, WP-ADR9): turn autopilot on or off per project, set
-// its limits, see what it is doing, and read what agents left in summaries.
-
 var autopilotCmd = &command{
 	name: "autopilot", group: "Tasks", args: "[on|off|set|summaries|reviewed|stop|now …]",
 	summary: "restart finished sessions on the next task (agents read it, people change it)",
@@ -136,7 +133,7 @@ type apStep struct {
 	Reason  string    `json:"reason"`
 	Detail  string    `json:"detail"`
 	DueAt   time.Time `json:"due_at"`
-	Session *struct { // nil: a session of autopilot's own, still starting
+	Session *struct {
 		Title   string `json:"title"`
 		Machine string `json:"machine"`
 	} `json:"session"`

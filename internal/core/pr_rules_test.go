@@ -10,10 +10,6 @@ import (
 	"testing"
 )
 
-// PR rules the editor can express (WP-D14 phase 5): conditions, review
-// options, review outputs for "only if", and the label and review-request
-// triggers.
-
 func TestPRFilterConditions(t *testing.T) {
 	n := func(v int) *int { return &v }
 	base := func() *PullRequest {
@@ -24,12 +20,11 @@ func TestPRFilterConditions(t *testing.T) {
 		name string
 		f    PRFilter
 		pr   func(*PullRequest)
-		want string // "" runs; else a prefix of why it is left out
+		want string
 	}{
 		{"named author", PRFilter{Authors: []string{"SAM"}}, nil, ""},
 		{"other author", PRFilter{Authors: []string{"ann", "bo*"}}, nil, "by sam"},
 		{"author glob", PRFilter{Authors: []string{"renovate*"}}, func(p *PullRequest) { p.Author = "renovate-bot" }, ""},
-		// "[bot]" is literal, not a character class; naming bots lets them in.
 		{"github app", PRFilter{Authors: []string{"*[bot]"}}, func(p *PullRequest) { p.Author = "dependabot[bot]" }, ""},
 		{"brackets are literal", PRFilter{Authors: []string{"*[bot]"}}, func(p *PullRequest) { p.Author = "robot" }, "by robot"},
 		{"bots stay out by default", PRFilter{}, func(p *PullRequest) { p.Author = "dependabot[bot]" }, "opened by a bot"},
@@ -64,7 +59,6 @@ func TestPRFilterConditions(t *testing.T) {
 		}
 	}
 
-	// Which filters need the diff.
 	pr := base()
 	pr.filesKnown = false
 	if !(&PRFilter{Paths: []string{"a"}}).needsFiles(pr) || !(&PRFilter{SkipPaths: []string{"a"}}).needsFiles(pr) || (&PRFilter{MaxChangedLines: 5}).needsFiles(pr) {
@@ -94,13 +88,10 @@ func TestDiffFiles(t *testing.T) {
 	if !slices.Equal(pf.Paths, []string{"app/login.go", "go.sum", "deploy/secret.yaml", "old.txt"}) {
 		t.Errorf("paths = %q", pf.Paths)
 	}
-	// login.go +2 -1, go.sum +1 -1, secret.yaml +1 -1, old.txt -1.
 	if pf.Additions != 4 || pf.Deletions != 4 {
 		t.Errorf("additions %d, deletions %d", pf.Additions, pf.Deletions)
 	}
 }
-
-// ---- end to end, through webhooks ----
 
 // prHook sends a GitHub pull_request webhook, with labels and the rest of
 // the payload as given, after setting what the forge answers.
@@ -181,7 +172,6 @@ func TestPRFilterReadsTheFiles(t *testing.T) {
 	pe.onlyRule("Code only", Rule{Trigger: Trigger{Event: "pr_updated"}, PR: &PRFilter{Paths: []string{"app/**", "web/**"}, SkipPaths: []string{"docs/**"}, MaxChangedLines: 100},
 		Actions: []Action{{Type: "review"}}})
 
-	// A docs-only pull request is left out, and its files are kept for the head.
 	pe.prHook("opened", ForgePR{Number: 3, Title: "Docs", Author: "sam", HeadRef: "docs", HeadSHA: "d0c5d0c5", State: "open"}, docsDiff, nil)
 	if done := pe.settle(); len(done) != 0 {
 		t.Fatalf("a docs-only change was reviewed: %+v", done)
@@ -191,12 +181,10 @@ func TestPRFilterReadsTheFiles(t *testing.T) {
 		t.Fatalf("kept files = %q at %q (%v)", files, sha, err)
 	}
 
-	// Code: reviewed; the forge didn't say its size, so the diff did.
 	pe.prHook("opened", ForgePR{Number: 4, Title: "Login", Author: "sam", HeadRef: "fix", HeadSHA: "c0dec0de", State: "open"}, sampleDiff, nil)
 	if done := pe.settle(); len(done) != 1 || done[0].Status != "done" {
 		t.Fatalf("code change: %+v", done)
 	}
-	// Too big by the forge's count.
 	big := ForgePR{Number: 6, Title: "Huge", Author: "sam", HeadRef: "big", HeadSHA: "b16b16b1", State: "open", Additions: ptr(400), Deletions: ptr(20)}
 	pe.prHook("opened", big, sampleDiff, nil)
 	if done := pe.settle(); len(done) != 0 {
@@ -220,16 +208,13 @@ func TestReviewMinSeverityAndSkipFiles(t *testing.T) {
 		t.Errorf("review body: %q", r)
 	}
 
-	// Files to skip join the built-in list: with app/** skipped, only noise
-	// and config are left.
 	pe.onlyRule("Not app", Rule{Trigger: Trigger{Event: "pr_updated"}, Actions: []Action{{Type: "review", Extra: map[string]any{"skip_files": []any{"app/**", "deploy/**", "old.txt"}}}}})
-	pe.prHook("synchronize", ForgePR{Number: 5, Title: "Fix login", Author: "sam", HeadRef: "fix", HeadSHA: "2222222bbbb", State: "open"}, sampleDiff, nil)
+	pe.prHook("synchronize", ForgePR{Number: 5, Title: "Fix login", Author: "sam", HeadRef: "fix", HeadSHA: "2222222bbbb", State: "open"}, diffPlus("old.txt"), nil)
 	done = pe.settle()
 	if len(done) != 1 || done[0].Status != "skipped" || !strings.Contains(done[0].Summary, "nothing reviewable") {
 		t.Fatalf("skip files: %+v", done)
 	}
 
-	// Bad settings are refused when saved.
 	for _, x := range []map[string]any{{"min_severity": "P7"}, {"skip_files": []any{"a[]"}}} {
 		r := Rule{Trigger: Trigger{Event: "pr_updated"}, Actions: []Action{{Type: "review", Extra: x}}}
 		if err := r.validate(); err == nil {
@@ -263,7 +248,6 @@ func TestReviewOutputsForOnlyIf(t *testing.T) {
 	}
 	a := pe.onlyRule("Tell me", rule)
 
-	// A P1: the comment goes out with what the review found.
 	pe.llm.answers[model] = oneFinding
 	pe.prHook("opened", ForgePR{Number: 5, Title: "Fix login", Author: "sam", HeadRef: "fix", HeadSHA: "1111111aaaa", State: "open"}, sampleDiff, nil)
 	if done := pe.settle(); len(done) != 1 || done[0].Status != "done" {
@@ -282,15 +266,13 @@ func TestReviewOutputsForOnlyIf(t *testing.T) {
 		t.Fatalf("comments = %q", got)
 	}
 
-	// Nothing found: the other comment.
 	pe.llm.answers[model] = `{"findings":[]}`
-	pe.prHook("synchronize", ForgePR{Number: 5, Title: "Fix login", Author: "sam", HeadRef: "fix", HeadSHA: "2222222bbbb", State: "open"}, sampleDiff, nil)
+	pe.prHook("synchronize", ForgePR{Number: 5, Title: "Fix login", Author: "sam", HeadRef: "fix", HeadSHA: "2222222bbbb", State: "open"}, diffPlus("two.txt"), nil)
 	pe.settle()
 	if got := pe.posted(); len(got) != 2 || !strings.HasSuffix(got[1], "|Clean") {
 		t.Fatalf("comments = %q", got)
 	}
 
-	// A P3 only: neither.
 	pe.llm.answers[model] = `{"findings":[{"file":"app/login.go","line":12,"severity":"low","claim":"Name the error better.","suggestion":""}]}`
 	pe.prHook("synchronize", ForgePR{Number: 5, Title: "Fix login", Author: "sam", HeadRef: "fix", HeadSHA: "3333333cccc", State: "open"}, sampleDiff, nil)
 	pe.settle()
@@ -324,7 +306,6 @@ func TestPRLabeledAndReviewRequested(t *testing.T) {
 	pe.prHook("opened", pr, sampleDiff, nil)
 	pr.Labels = []string{"backend", "needs-review"}
 	pe.prHook("labeled", pr, sampleDiff, map[string]any{"label": map[string]string{"name": "needs-review"}})
-	// A repeat delivery adds nothing.
 	pe.prHook("labeled", pr, sampleDiff, nil)
 	pe.prHook("review_requested", pr, sampleDiff, map[string]any{"requested_reviewer": map[string]string{"login": "waypoint-bot"}})
 	pe.prHook("review_requested", pr, sampleDiff, map[string]any{"requested_reviewer": map[string]string{"login": "ann"}})
@@ -392,7 +373,6 @@ func TestAskCodeRabbitOncePerPullRequest(t *testing.T) {
 	if n := asks(); n != 1 {
 		t.Fatalf("a push asked again: %d asks", n)
 	}
-	// A person's draft waits until it is marked ready.
 	pe.prHook("opened", ForgePR{Number: 8, Title: "WIP", Author: "sam", HeadRef: "wip", HeadSHA: "cccc3333", State: "draft"}, sampleDiff, nil)
 	pe.settle()
 	if n := asks(); n != 1 {
@@ -404,7 +384,6 @@ func TestAskCodeRabbitOncePerPullRequest(t *testing.T) {
 		t.Fatalf("marked ready: %d asks", n)
 	}
 
-	// The migration's rule is the template's.
 	sqlText, err := os.ReadFile("../db/migrations/0185_coderabbit_requests.sql")
 	if err != nil {
 		t.Fatal(err)

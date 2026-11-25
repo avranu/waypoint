@@ -12,8 +12,6 @@ export default defineConfig({
     emptyOutDir: true,
     target: 'es2022',
     sourcemap: false,
-    // Libraries change rarely; keep them in their own long-cached chunks so
-    // an app update only re-downloads app code.
     rolldownOptions: {
       output: {
         codeSplitting: {

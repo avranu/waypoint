@@ -10,12 +10,6 @@ import (
 	"time"
 )
 
-// Provenance and review (WP-D11). Agents act through a person's token,
-// so every record both can write says which agent wrote it, if one did.
-// What an agent wrote (issue text, comments, pages, glossary entries) is
-// unreviewed until a person reviews it, or rewrites it. Reads still return
-// it, marked. Design notes have their own approval (WP-D10).
-
 // userRefPtr is a user reference for provenance (nil for none or system).
 func (s *Service) userRefPtr(ctx context.Context, q queryer, id *int64) *UserRef {
 	if id == nil {
@@ -75,15 +69,10 @@ func (s *Service) Review(ctx context.Context, actor *Actor, kind, ref, project s
 			if err != nil {
 				return err
 			}
-			// Approving a plan that has a story approves it on its story,
-			// not line by line (WP-190): the plan stays the agent's text.
 			if err := add(t.ExecContext(ctx, `UPDATE pages SET reviewed_by = ?, reviewed_at = ?, reviewed_on_story = story != ''
 				WHERE id = ? AND text_agent != '' AND reviewed_at IS NULL`, me, now, id)); err != nil {
 				return err
 			}
-			// It keeps the story as the person's intent. The page counts
-			// once: keeping only the story counts when the text was
-			// already reviewed.
 			kept, err := s.keepStory(ctx, t, actor, id, now)
 			if err != nil {
 				return err
@@ -184,7 +173,6 @@ func (s *Service) reviewIssue(ctx context.Context, t *tx, actor *Actor, kind, re
 		}
 		return 0, err
 	}
-	// Whose text (or close) this approves, for the record.
 	var about string
 	if err := t.QueryRowContext(ctx, `SELECT coalesce(group_concat(agent, ', '), '') FROM (
 		SELECT text_agent AS agent FROM issues WHERE ? AND id = ? AND text_agent != '' AND reviewed_at IS NULL
@@ -297,12 +285,6 @@ func (s *Service) listUnreviewed(ctx context.Context, actor *Actor, project stri
 	q := s.db.R
 	cache := map[int64]*UserRef{}
 	out := []UnreviewedItem{}
-	// Each query selects: the item's id, the id its access goes by (the
-	// issue, for comments), ref, title, excerpt, agent, author, time,
-	// project id and key.
-	// Rows are read in batches until limit visible ones are found: what the
-	// actor can't see mustn't crowd out what they can (bounded, for a busy
-	// server with much they can't see).
 	scan := func(typ, query string, args []any, visible func(it *UnreviewedItem, accessID int64, projectID sql.NullInt64) bool) error {
 		if only != nil && !slices.Contains(only, typ) {
 			return nil

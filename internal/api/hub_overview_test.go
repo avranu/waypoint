@@ -33,7 +33,6 @@ func TestAgentOverviewChangesAndSessionUsageAPI(t *testing.T) {
 	if code, b := human.do("POST", "/api/v1/issues", map[string]any{"project": "WID", "title": "Parser", "agent": "claude", "priority": "high"}); code != 200 {
 		t.Fatalf("issue: %d %s", code, b)
 	}
-	// The agent's session (a hook), a question from it, and a thing it filed.
 	var hook core.HookResult
 	agent.http = &http.Client{Transport: headerTransport{"X-Waypoint-Machine": "box"}}
 	if code := agent.json("POST", "/api/v1/sessions/hook", map[string]any{"events": []map[string]any{
@@ -69,7 +68,6 @@ func TestAgentOverviewChangesAndSessionUsageAPI(t *testing.T) {
 	if ov.Environments == nil || ov.Changes == nil || len(ov.Changes.Changes) == 0 || ov.Pulls.Open == nil {
 		t.Errorf("parts: %+v", ov)
 	}
-	// Filters; a bad one; a stranger sees nothing; unauthenticated is refused.
 	var narrowed core.Overview
 	if code := human.json("GET", "/api/v1/agents/overview?agent=haiku&project=WID", nil, &narrowed); code != 200 || narrowed.SessionsTotal != 0 || len(narrowed.Waiting.Requests) != 0 {
 		t.Errorf("narrowed: %d %+v", code, narrowed.SessionsTotal)
@@ -88,7 +86,6 @@ func TestAgentOverviewChangesAndSessionUsageAPI(t *testing.T) {
 		t.Errorf("anonymous: %d", code)
 	}
 
-	// Changes: kinds, agent filter, paging by time.
 	var ch core.ChangeList
 	if code := human.json("GET", "/api/v1/changes?kind=issue&limit=1", nil, &ch); code != 200 || len(ch.Changes) != 1 || ch.Changes[0].Kind != "issue" || ch.Changes[0].URL == "" {
 		t.Fatalf("changes: %d %+v", code, ch)
@@ -104,7 +101,6 @@ func TestAgentOverviewChangesAndSessionUsageAPI(t *testing.T) {
 		t.Errorf("bad kind: %d", code)
 	}
 
-	// A session's usage: the owner and their agent read it; others are told it is private.
 	var u core.SessionUsage
 	if code := human.json("GET", "/api/v1/sessions/"+id64(hook.Session)+"/usage", nil, &u); code != 200 || u.HasData {
 		t.Errorf("usage: %d %+v", code, u)

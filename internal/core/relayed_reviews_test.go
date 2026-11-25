@@ -65,12 +65,10 @@ func TestTidyBotText(t *testing.T) {
 	if tidyReviewBody("carol", "<b>keep</b> mine") != "<b>keep</b> mine" {
 		t.Error("tidied a person's comment")
 	}
-	// Nitpicks a review body holds itself keep it a review comment.
 	n := PRNote{ID: "1", Kind: "comment", Author: "mirror", Body: in + "\nOn `app/b.go` line 3:\n\n**Minor** · guard nil.\n\n<!-- mirror:review github 1 -->"}
 	if ps := noteParts(n, false, "mirror", posters{}); len(ps) != 2 || ps[0].extID != "1" || ps[1].extID != relayedID("1", "`app/b.go` line 3") {
 		t.Errorf("parts = %+v", ps)
 	}
-	// Tidying what was stored untidied isn't an edit.
 	if botTextChanged(excerpt(in, storedCommentChars), excerpt(tidyBotText(in), storedCommentChars)) {
 		t.Error("tidying counts as an edit")
 	}
@@ -100,7 +98,7 @@ func TestNoteParts(t *testing.T) {
 		{"approval", note("3", crApproved), nil},
 		{"review: one comment per inline finding, no status body", note("4", crReview), []part{
 			{"relayed", relayedID("4", "`app/a.go` line 12"), "app/a.go", 12, true},
-			{"relayed", relayedID("4", "`app/b.go` line 7 (before the change)"), "app/b.go", 0, true}, // a line before the change isn't on the head
+			{"relayed", relayedID("4", "`app/b.go` line 7 (before the change)"), "app/b.go", 0, true},
 		}},
 		{"review with findings outside the diff keeps its body", note("5", crOutside), []part{
 			{"comment", "5", "", 0, true},
@@ -131,8 +129,6 @@ func TestNoteParts(t *testing.T) {
 	if got := noteParts(note("1", crSummary), true, "mirror", posters{}); len(got) != 1 || got[0].extID != "1" {
 		t.Errorf("kept whole = %+v", got)
 	}
-	// A note dealt with whole that the packet cut short was answered from
-	// its start only: its findings split out anyway.
 	long := strings.Replace(crReview, "---\n", "---\n"+strings.Repeat("<picture><source srcset=\"x.svg\"></picture> ", 120), 1)
 	if got := noteParts(note("12", long), true, "mirror", posters{}); len(got) != 2 || got[0].extID != relayedID("12", "`app/a.go` line 12") || got[1].extID != relayedID("12", "`app/b.go` line 7 (before the change)") {
 		t.Errorf("cut, dealt with whole = %+v", got)
@@ -146,7 +142,6 @@ func TestNoteParts(t *testing.T) {
 func TestRelayedReviewComments(t *testing.T) {
 	be := newBabysitEnv(t)
 	at := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
-	// The mirror's account is an agent's, so its copies aren't held.
 	if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT OR IGNORE INTO forge_people(forge_id, login, user_id) VALUES (?, 'mirror', NULL)`, be.f.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -203,15 +198,12 @@ func TestRelayedReviewComments(t *testing.T) {
 		}
 	}
 
-	// CodeRabbit marking its comment addressed changes nothing it asks.
 	addressed := strings.Replace(crReview, "The promise rejection escapes.", "The promise rejection escapes.\n\n<!-- <review_comment_addressed> -->\n✅ Addressed in commit 1a2b3c4", 1)
 	be.sg.setNotes(PRNote{ID: "702", Kind: "comment", Author: "mirror", Body: addressed, At: at, UpdatedAt: at.Add(time.Minute)})
 	be.step()
 	if c := be.comment(relayedID("702", "`app/a.go` line 12")); c.Verdict != VerdictRejected {
 		t.Errorf("after CodeRabbit marked it addressed = %+v", c)
 	}
-	// An edit that changes what it asks makes it a comment to deal with
-	// again (CodeRabbit rewrites its comments in place).
 	be.sg.setNotes(PRNote{ID: "702", Kind: "comment", Author: "mirror", Body: strings.Replace(crReview, "escapes", "escapes the handler", 1), At: at, UpdatedAt: at.Add(2 * time.Minute)})
 	be.step()
 	if c := be.comment(relayedID("702", "`app/a.go` line 12")); c.Verdict != VerdictNew || c.Dealt || !strings.Contains(c.Body, "escapes the handler") {
@@ -224,7 +216,6 @@ func TestRelayedReviewComments(t *testing.T) {
 		t.Errorf("readiness after an edit = %q", r)
 	}
 
-	// Dealing with the head of a split review leaves its findings alone.
 	be.sg.setNotes(PRNote{ID: "5", Kind: "comment", Author: "mirror", Body: crOutside, At: at})
 	be.step()
 	head := be.comment("5")
@@ -236,7 +227,6 @@ func TestRelayedReviewComments(t *testing.T) {
 		t.Errorf("finding after its review's head was dealt with = %+v", c)
 	}
 
-	// The work packet says when it shows only the start of a comment.
 	long := "**octo** commented on GitHub:\n\n" + strings.Repeat("Please also check the retry path. ", 150) + "\n\n<!-- mirror:comment github 98 -->"
 	be.sg.setNotes(PRNote{ID: "720", Kind: "comment", Author: "mirror", Body: long, At: at})
 	be.step()
@@ -343,7 +333,7 @@ func TestCopiedFindingsOutsideDiff(t *testing.T) {
 			}
 			tc.note.At = be.clockNow()
 			be.sg.setNotes(tc.note)
-			pr := be.open() // its diff (sampleDiff) changes app/login.go, go.sum, deploy/secret.yaml
+			pr := be.open()
 			be.start(pr)
 			be.ci("7777777aaaa", CheckSuccess)
 			if got := len(be.jobs()) == 1; got != tc.round {
@@ -365,7 +355,6 @@ func TestCopiedFindingsOutsideDiff(t *testing.T) {
 		})
 	}
 
-	// A push that starts changing the file makes the finding work again.
 	be := newBabysitEnv(t)
 	be.runnerOnline()
 	if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT OR IGNORE INTO forge_people(forge_id, login, user_id) VALUES (?, 'mirror', NULL)`, be.f.ID); err != nil {
@@ -398,7 +387,6 @@ func (be *bsEnv) changes(sha string, paths ...string) {
 	be.sg.mu.Lock()
 	be.sg.diffs[sha] = diff
 	be.sg.mu.Unlock()
-	// Read again, not from what was kept at the push.
 	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE pull_requests SET files_sha = '' WHERE id = ?`, be.pr(7).ID); err != nil {
 		be.t.Fatal(err)
 	}

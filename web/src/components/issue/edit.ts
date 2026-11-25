@@ -24,9 +24,6 @@ export function useIssueEdit(
         toastError(e)
         throw e
       })
-    // The toast says what went wrong; a caller that waits still sees the
-    // refusal, and one that doesn't (a picker's onChange) leaves no
-    // unhandled rejection behind.
     p.catch(() => {})
     return p
   }

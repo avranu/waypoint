@@ -73,7 +73,6 @@ func TestSpendLeftStartsPastAtOnce(t *testing.T) {
 	if p := a.plan(); len(p.Started) != 1 || p.Started[0].Task == nil || p.Start {
 		t.Fatalf("after a spend start: %+v", p)
 	}
-	// At the cap (2) nothing more, spacing or not.
 	a.tick(20 * time.Minute)
 	if a.ownJobs() != 2 {
 		t.Fatalf("over the cap: %d jobs", a.ownJobs())
@@ -144,13 +143,13 @@ func TestSpendLeftLeavesRoom(t *testing.T) {
 	if _, err := a.s.db.W.Exec(`UPDATE agent_sessions SET typed_at = ? WHERE id = ?`, a.clockNow().UnixMilli(), a.session); err != nil {
 		t.Fatal(err)
 	}
-	a.weekAt(85, 1, 8*time.Hour) // on pace for 93
+	a.weekAt(85, 1, 8*time.Hour)
 	p := a.plan()
 	if !p.PersonActive || p.Target != 90 || p.Start || p.Wants || !strings.Contains(p.Why, "leaves you 10 points") {
 		t.Fatalf("active, 8 h left: %+v", p)
 	}
-	a.setClock(a.clockNow().Add(time.Minute)) // so the latest reading is the next
-	a.weekAt(95, 1, 50*time.Minute)           // on pace for 95.8: the last hour
+	a.setClock(a.clockNow().Add(time.Minute))
+	a.weekAt(95, 1, 50*time.Minute)
 	p = a.plan()
 	if p.Target != 100 || !p.Start {
 		t.Fatalf("active, the last hour: %+v", p)
@@ -188,7 +187,7 @@ func TestSpendLeftFinishedSessionGoesOn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a.autopilotStarted(res.Session) // autopilot's, so it goes on (WP-1319)
+	a.autopilotStarted(res.Session)
 	b := *a.ag
 	b.Session = res.Session
 	if _, err := a.s.AgentTake(a.ctx, &b, other.Key, ""); err != nil {
@@ -200,7 +199,6 @@ func TestSpendLeftFinishedSessionGoesOn(t *testing.T) {
 	if len(a.jobs) != 1 {
 		t.Fatalf("jobs %d", len(a.jobs))
 	}
-	// at_once is 1 and a step is starting a session: b, finishing, goes on.
 	a.setClock(a.clockNow().Add(time.Minute))
 	if _, err := a.s.AgentDone(a.ctx, &b, other.Key, AgentDoneInput{Comment: "done"}); err != nil {
 		t.Fatal(err)

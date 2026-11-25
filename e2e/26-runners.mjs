@@ -110,12 +110,10 @@ async function run(width, scheme, first, last) {
   await page.waitForURL(base + "/");
 
   if (first) {
-    // Nothing connected yet: the page says how.
     await page.goto(`${base}/settings?tab=runners`);
     await page.getByText("No runners yet").waitFor();
     const cmd = (await page.locator("code", { hasText: "curl -fsSL" }).first().innerText()).trim();
     ok(cmd === `curl -fsSL ${base}/setup | sh`, `${tag} the one command is "${cmd}"`);
-    // ...and it is the installer that goes on to wp setup, not the app.
     const script = await (await fetch(`${base}/setup`)).text();
     ok(
       script.startsWith("#!/bin/sh") && script.includes("setup=1"),
@@ -134,7 +132,6 @@ async function run(width, scheme, first, last) {
     }
   }
 
-  // The runner shows up with what it reported.
   await page.goto(`${base}/settings?tab=runners`);
   const row = page.getByTestId("runner").first();
   await row.waitFor();
@@ -150,7 +147,6 @@ async function run(width, scheme, first, last) {
     `${tag} codex is signed out, with a hint on hover`,
   );
   ok((await row.getByRole("button", { name: /Run a command/ }).count()) === 1, `${tag} a command can be run`);
-  // With --max-jobs 2 it watches the machine and says how many jobs it takes (WP-366).
   if (process.platform === "linux") {
     const cap = row.getByTestId("runner-capacity");
     await cap.waitFor();
@@ -162,7 +158,6 @@ async function run(width, scheme, first, last) {
   await shot("runners");
   await overflow("runners");
 
-  // "Connect a runner" shows the command and what a runner can do.
   await page.getByRole("button", { name: "Connect a runner" }).click();
   await page.getByText("On the computer you want to connect, run:").waitFor();
   ok(
@@ -173,7 +168,6 @@ async function run(width, scheme, first, last) {
   await overflow("connect panel");
   await page.getByRole("button", { name: "Connect a runner" }).click();
 
-  // Run a command from the page: the output streams onto the job page.
   await row.getByRole("button", { name: /Run a command/ }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("Command").fill("echo hello from the runner; sleep 1; echo and goodbye");
@@ -188,7 +182,6 @@ async function run(width, scheme, first, last) {
   await overflow("job page");
 
   if (first) {
-    // Live: the job is Running while its first lines are already on screen.
     const live = await api("POST", "/runner-jobs", {
       kind: "command",
       input: { command: "for i in 1 2 3 4 5; do echo tick $i; sleep 1; done", dir: work },
@@ -200,7 +193,6 @@ async function run(width, scheme, first, last) {
     await page.getByText("Done", { exact: true }).first().waitFor();
     ok((await page.getByTestId("job-log").innerText()).includes("tick 5"), `${tag} all the ticks arrive`);
 
-    // A failure says why.
     const bad = await api("POST", "/runner-jobs", { kind: "command", input: { command: "echo oops >&2; exit 3", dir: repo } });
     await settled(bad.id, ["failed"]);
     await page.goto(`${base}/runner-jobs/${bad.id}`);
@@ -209,7 +201,6 @@ async function run(width, scheme, first, last) {
     ok((await page.getByText("exit code").count()) > 0, `${tag} the exit code shows`);
     await shot("job-failed");
 
-    // An applied change: written, committed, listed.
     const blob = git("hash-object", "hello.txt");
     const applied = await api("POST", "/runner-jobs", {
       kind: "apply",
@@ -228,7 +219,6 @@ async function run(width, scheme, first, last) {
     await page.getByText("2 files written").waitFor();
     ok((await page.getByText("docs/new.md").count()) > 0, `${tag} the result lists the files`);
     await shot("job-apply");
-    // The same change again is refused: the file moved on.
     const stale = await api("POST", "/runner-jobs", {
       kind: "apply",
       input: { dir: repo, files: [{ path: "hello.txt", base_sha: blob, content: "other\n" }] },
@@ -236,7 +226,6 @@ async function run(width, scheme, first, last) {
     const staleDone = await settled(stale.id, ["failed"]);
     ok(/nothing was written/.test(staleDone.error), `${tag} a change made against an old file is refused`);
 
-    // Cancel a running job from its page.
     const slow = await api("POST", "/runner-jobs", { kind: "command", input: { command: "echo started; sleep 120", dir: work } });
     await page.goto(`${base}/runner-jobs/${slow.id}`);
     await page.getByTestId("job-log").getByText("started").waitFor();
@@ -248,23 +237,20 @@ async function run(width, scheme, first, last) {
 
   }
 
-  // Recent jobs hang off the runner.
   await page.goto(`${base}/settings?tab=runners`);
   const again = page.getByTestId("runner").first();
   await again.getByText("Recent jobs").waitFor();
   ok((await again.locator('a[href^="/runner-jobs/"]').count()) >= 1, `${tag} recent jobs link to their pages`);
   await shot("runners-jobs");
 
-  // The admin's view lists everyone's runners.
   await page.goto(`${base}/admin?tab=runners`);
   await page.getByText("Everyone's runners").waitFor();
-  await page.getByTestId("runner").first().waitFor(); // the list loads after its heading
+  await page.getByTestId("runner").first().waitFor();
   ok((await page.getByTestId("runner").count()) >= 1, `${tag} Admin → Runners lists runners`);
   ok((await page.getByRole("button", { name: /Run a command/ }).count()) === 0, `${tag} the admin view runs nothing`);
   await shot("runners-admin");
 
   if (last) {
-    // Removing it stops the process.
     await page.goto(`${base}/settings?tab=runners`);
     await page.getByRole("button", { name: "Remove e2e-box" }).click();
     await page.getByRole("dialog").getByRole("button", { name: "Remove" }).click();

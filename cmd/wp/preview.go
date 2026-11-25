@@ -26,14 +26,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// wp preview (WP-1226): this checkout's own Waypoint, built from the working
-// tree and run on 127.0.0.1 with a throwaway database and an admin signed
-// in, so an agent can screenshot its change (wp shot /PATH) before any
-// server it can sign into runs it. Production runs main; a branch has no
-// server of its own, and a local build's pages need a login the agent
-// didn't have. Waypoint checkouts only: another app's dev server is the
-// agent's to start, and wp shot takes its URL.
-
 var previewCmd = &command{
 	name: "preview", group: "Tasks", args: "[start|stop|status]",
 	summary: "run this checkout's Waypoint locally, signed in, for wp shot",
@@ -147,7 +139,6 @@ func (st *previewState) alive() bool {
 		return false
 	}
 	defer func() { _ = resp.Body.Close() }()
-	// Another app now on the port may answer anything with a 200.
 	var me struct {
 		Username string `json:"username"`
 	}
@@ -205,7 +196,6 @@ func (c *cli) ensurePreview() (*previewState, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	// One wp at a time per checkout: two shots at once mustn't start two.
 	if lf, err := os.OpenFile(filepath.Join(dir, "lock"), os.O_CREATE|os.O_RDWR, 0o600); err == nil { // #nosec G304 -- our own lock file
 		defer func() { _ = lf.Close() }()
 		if unlock, err := fileLock(lf); err == nil {
@@ -215,8 +205,6 @@ func (c *cli) ensurePreview() (*previewState, error) {
 	st, _ := loadPreview(dir)
 	up := st.alive()
 	if st != nil {
-		// Pushed back before the build, which can wait minutes for a
-		// slot: the keeper mustn't let the preview lapse under it.
 		st.Until = time.Now().Add(previewIdle)
 		if err := savePreview(dir, st); err != nil {
 			return nil, err
@@ -244,14 +232,11 @@ func (c *cli) ensurePreview() (*previewState, error) {
 	if err := os.Rename(next, bin); err != nil {
 		return nil, err
 	}
-	// Migrations apply once by name, so a database made by migrations
-	// since edited, renamed or dropped would be wrong for this build.
 	fresh := st == nil || st.Token == "" || st.Schema != schema
 	if fresh && st != nil && st.Token != "" {
 		c.note("The migrations changed since the preview's data was made: it starts with an empty database.")
 	}
 	if fresh {
-		// No account wp knows of: start from an empty database.
 		for _, f := range []string{"wp.db", "wp.db-wal", "wp.db-shm", "server.log"} {
 			_ = os.Remove(filepath.Join(dir, f))
 		}
@@ -279,7 +264,6 @@ func (c *cli) ensurePreview() (*previewState, error) {
 		return nil, fmt.Errorf("the preview didn't start (wp preview stop deletes its data, so the next start is fresh): %v\n%s", err, tailFile(filepath.Join(dir, "server.log"), 12))
 	}
 	if !fresh && !st.alive() {
-		// Something else may have taken the port before the server bound it.
 		stopPreviewServer(dir, st)
 		return nil, errors.New("the preview's server didn't come up as the preview's own (the port may be taken); wp preview stop, then try again")
 	}
@@ -311,8 +295,6 @@ func (c *cli) buildPreview(top, out string) error {
 		return err
 	}
 	defer release()
-	// The checkout's code (npm install scripts, vite's config) runs here:
-	// without the caller's credentials, as tests run (WP-1065).
 	env, _ = testEnv(env, nil)
 	web := filepath.Join(top, "web")
 	vite := filepath.Join(web, "node_modules", "vite", "bin", "vite.js")
@@ -326,7 +308,6 @@ func (c *cli) buildPreview(top, out string) error {
 			return err
 		}
 	}
-	// vite empties dist; the placeholder is tracked (package.json's build does the same).
 	if err := os.WriteFile(filepath.Join(web, "dist", ".gitkeep"), nil, 0o600); err != nil {
 		return err
 	}
@@ -449,7 +430,6 @@ func stopPreviewServer(dir string, st *previewState) {
 			time.Sleep(200 * time.Millisecond)
 		}
 	}
-	// A keeper that died without its server leaves the server's pid.
 	if b, err := os.ReadFile(filepath.Join(dir, "server.pid")); err == nil { // #nosec G304 -- our own pid file
 		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 && previewProc(pid, dir, st) {
 			if p, err := os.FindProcess(pid); err == nil {
@@ -632,7 +612,6 @@ func cmdPreviewStop(c *cli, args []string) error {
 	if err != nil {
 		return err
 	}
-	// Not while a start or the keeper's lapse check has the directory.
 	if lf, err := os.OpenFile(filepath.Join(dir, "lock"), os.O_RDWR, 0o600); err == nil { // #nosec G304 -- our own lock file
 		defer func() { _ = lf.Close() }()
 		if unlock, err := fileLock(lf); err == nil {
@@ -673,8 +652,6 @@ func cmdPreviewServe(c *cli, args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(st.Port))
-	// Only what the server needs: no tokens, AI or forge settings from the
-	// shell that started it reach a throwaway server.
 	env := []string{"WAYPOINT_DB=" + filepath.Join(dir, "wp.db"), "WAYPOINT_ADDR=" + addr,
 		"WAYPOINT_BASE_URL=http://" + addr, "WAYPOINT_BACKUP_DIR=off", "WAYPOINT_LOG_FORMAT=text"}
 	for _, k := range []string{"PATH", "HOME", "TMPDIR", "TZ"} {
@@ -694,7 +671,7 @@ func cmdPreviewServe(c *cli, args []string) error {
 	tick := time.NewTicker(30 * time.Second)
 	defer tick.Stop()
 	lapsed := false
-	var lockFile *os.File // held while the directory is deleted
+	var lockFile *os.File
 	for !lapsed {
 		select {
 		case err := <-exited:
@@ -707,8 +684,6 @@ func cmdPreviewServe(c *cli, args []string) error {
 			if !previewLapsed(dir, st.Top) {
 				continue
 			}
-			// A start or stop holding the lock may be reviving it: look again
-			// under the lock, and leave it for the next tick if it is busy.
 			if lf, err := os.OpenFile(filepath.Join(dir, "lock"), os.O_CREATE|os.O_RDWR, 0o600); err == nil { // #nosec G304 -- our own lock file
 				got, lerr := slotTryLock(lf)
 				if lerr == nil && !got {
@@ -754,7 +729,7 @@ func stopServer(srv *exec.Cmd, exited <-chan error) {
 	}
 	select {
 	case err := <-exited:
-		_ = err // the server's exit status after a stop says nothing
+		_ = err
 	case <-time.After(10 * time.Second):
 		_ = srv.Process.Kill()
 		err := <-exited

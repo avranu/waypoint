@@ -40,16 +40,14 @@ type SearchResult struct {
 
 // compiled is a query turned into SQL fragments.
 type compiled struct {
-	with   string // WITH clause (visibility)
+	with   string
 	joins  string
 	where  []string
-	args   []any // args for joins, then where, in order
+	args   []any
 	jargs  []any
 	order  string
 	hasFTS bool
-	// score is the relevance of the query's words (lower is better): bm25,
-	// doubled when every word is in the key or title (WP-610).
-	score string
+	score  string
 }
 
 func (c *compiled) add(cond string, args ...any) {
@@ -77,13 +75,13 @@ func (s *Service) compileQuery(ctx context.Context, actor *Actor, q wql.Query, p
 		UNION ALL SELECT x.id, sh.depth + 1 FROM issues x JOIN shared sh ON x.parent_id = sh.id WHERE sh.depth < 50)`
 	c.jargs = append(c.jargs, actor.id())
 	switch member, margs := actor.memberProjects(RoleViewer); {
-	case actor.scope != nil: // a job's token: its projects, no shares (WP-418)
+	case actor.scope != nil:
 		c.add(`i.project_id IN `+member, margs...)
 	case !actor.isAdmin():
 		c.add(`(i.project_id IN `+member+` OR i.id IN (SELECT id FROM shared))`, margs...)
 	}
 	if actor.HidesDrafts() {
-		c.add(`i.draft = 0`) // WP-42
+		c.add(`i.draft = 0`)
 	}
 	if projectID != 0 {
 		c.add(`i.project_id = ?`, projectID)
@@ -100,20 +98,16 @@ func (s *Service) compileQuery(ctx context.Context, actor *Actor, q wql.Query, p
 			continue
 		}
 		if t.Negate {
-			// coalesce: an unset field doesn't match "points:>3", so it
-			// does match "-points:>3".
 			cond = "coalesce((" + cond + "), 0) = 0"
 		}
 		c.add(cond, args...)
 	}
-	// Free text: issue keys match exactly, other words go to full-text search.
 	var words []string
 	for _, w := range q.Text {
 		if keyPattern.MatchString(w) {
 			c.add(`(p.key || '-' || i.number) = ? COLLATE NOCASE`, strings.ToUpper(w))
 			continue
 		}
-		// "APP12" is APP-12 when there's such an issue; otherwise a word.
 		if looksLikeKey(w) {
 			if id, err := s.resolveIssueID(ctx, s.db.R, w); err == nil {
 				c.add(`i.id = ?`, id)
@@ -128,8 +122,6 @@ func (s *Service) compileQuery(ctx context.Context, actor *Actor, q wql.Query, p
 			c.score = "f.score"
 			c.joins += ` JOIN (SELECT rowid AS rid, bm25(issue_search, 10.0, 5.0, 1.0) AS score FROM issue_search WHERE issue_search MATCH ?) f ON f.rid = i.id`
 			c.jargs = append(c.jargs, m)
-			// What is named in the title is what a searcher remembers: a
-			// title match outranks one buried in a long body or comments.
 			if t := ftsTitleQuery(words); t != "" {
 				c.score = "f.score * (CASE WHEN ft.rid IS NULL THEN 1 ELSE 2 END)"
 				c.joins += ` LEFT JOIN (SELECT rowid AS rid FROM issue_search WHERE issue_search MATCH ?) ft ON ft.rid = i.id`
@@ -137,7 +129,6 @@ func (s *Service) compileQuery(ctx context.Context, actor *Actor, q wql.Query, p
 			}
 		}
 	}
-	// Ordering.
 	var orders []string
 	for _, o := range q.Order {
 		expr, ok := orderExprs[o.Field]
@@ -148,7 +139,6 @@ func (s *Service) compileQuery(ctx context.Context, actor *Actor, q wql.Query, p
 		if o.Desc {
 			dir = " DESC"
 		}
-		// Keep empty dates/points last whichever way we sort.
 		if strings.Contains(expr, "due_date") || strings.Contains(expr, "start_date") || strings.Contains(expr, "points") || strings.Contains(expr, "resolved") {
 			orders = append(orders, expr+" IS NULL")
 		}
@@ -193,7 +183,7 @@ func ftsMatch(text string) string {
 func ftsQuery(words []string) string {
 	pos, neg := ftsTerms(words)
 	if len(pos) == 0 {
-		return "" // FTS5 can't start with NOT
+		return ""
 	}
 	q := strings.Join(pos, " AND ")
 	for _, t := range neg {
@@ -325,8 +315,6 @@ func (s *Service) compileTerm(ctx context.Context, actor *Actor, t wql.Term, now
 		c, a := inList("st.name", vals)
 		return c, a, nil
 	case "category", "cat", "kind":
-		// Status categories (todo, done, …) and issue categories (feature,
-		// bugfix, …) don't overlap, so one key serves both.
 		var statusCats, issueCats []string
 		for _, v := range vals {
 			v = strings.ToLower(strings.ReplaceAll(v, " ", "_"))
@@ -350,9 +338,6 @@ func (s *Service) compileTerm(ctx context.Context, actor *Actor, t wql.Term, now
 		}
 		return "(" + strings.Join(parts, " OR ") + ")", args, nil
 	case "agent", "ai", "model":
-		// agent:none = humans only; agent:anyone = anyone may take it;
-		// agent:any = delegated to any agent; otherwise issues delegated to a
-		// spec that mentions it (agent:claude finds "claude", "claude haiku" …).
 		var parts []string
 		var args []any
 		for _, v := range vals {
@@ -386,7 +371,6 @@ func (s *Service) compileTerm(ctx context.Context, actor *Actor, t wql.Term, now
 		c, a := inList("(SELECT lower(w.name) FROM workflows w WHERE w.id = i.workflow_id)", lowerAll(vals))
 		return c, a, nil
 	case "risk":
-		// Provenance risk (WP-554): risk:high, risk:>=medium.
 		levels, err := riskLevelsFor(t.Op, vals)
 		if err != nil {
 			return "", nil, err
@@ -590,7 +574,6 @@ func (s *Service) compileTerm(ctx context.Context, actor *Actor, t wql.Term, now
 			cond := "EXISTS (SELECT 1 FROM external_links el WHERE el.issue_id = i.id AND (el.url LIKE ? ESCAPE '\\' OR el.repo = ? COLLATE NOCASE))"
 			args = append(args, likeContains(v), v)
 			if t.Key == "repo" {
-				// Or anything in a project the repo is attached to.
 				cond = "(" + cond + " OR EXISTS (SELECT 1 FROM project_repos pr WHERE pr.project_id = i.project_id AND pr.repo = ? COLLATE NOCASE))"
 				args = append(args, v)
 			}
@@ -635,16 +618,12 @@ func (s *Service) isCond(actor *Actor, v, today, key string) (string, []any, err
 		return `EXISTS (SELECT 1 FROM issue_relations r JOIN issues b ON b.id = r.source_id JOIN statuses bs ON bs.id = b.status_id
 			WHERE r.target_id = i.id AND r.kind = 'blocks' AND bs.category NOT IN ('done','canceled'))`, nil, nil
 	case "followup", "follow_up", "follows":
-		// A follow-up of another task (WP-255).
 		return "EXISTS (SELECT 1 FROM issue_relations r WHERE r.source_id = i.id AND r.kind = 'follows')", nil, nil
 	case "followed", "followups", "follow_ups":
-		// Work that needed follow-ups (WP-255).
 		return "EXISTS (SELECT 1 FROM issue_relations r WHERE r.target_id = i.id AND r.kind = 'follows')", nil, nil
 	case "tension", "tensions", "conflict", "conflicts":
-		// In tension with another task (WP-1036).
 		return "EXISTS (SELECT 1 FROM issue_relations r WHERE (r.source_id = i.id OR r.target_id = i.id) AND r.kind = 'tension')", nil, nil
 	case "superseded", "replaced":
-		// Another task replaces it (WP-1036).
 		return "EXISTS (SELECT 1 FROM issue_relations r WHERE r.target_id = i.id AND r.kind = 'supersedes')", nil, nil
 	case "watching", "watched":
 		return "EXISTS (SELECT 1 FROM issue_watchers x WHERE x.issue_id = i.id AND x.user_id = ?)", []any{actor.id()}, nil
@@ -671,7 +650,7 @@ func (s *Service) isCond(actor *Actor, v, today, key string) (string, []any, err
 	case "epic", "story", "task", "bug":
 		return "i.type = ?", []any{v}, nil
 	case "agent", "agents", "delegated":
-		return sqlDelegated, nil, nil // handed to agents on purpose
+		return sqlDelegated, nil, nil
 	case "human", "humans":
 		return "i.agent = 'none'", nil, nil
 	case "anyone":
@@ -685,8 +664,6 @@ func (s *Service) isCond(actor *Actor, v, today, key string) (string, []any, err
 	case "published":
 		return "i.draft = 0", nil, nil
 	case "outside":
-		// Text from outside waiting for a person (WP-279): what only people
-		// see, so nothing for anyone else.
 		if actor.HidesDrafts() {
 			return "0", nil, nil
 		}
@@ -700,13 +677,10 @@ func (s *Service) isCond(actor *Actor, v, today, key string) (string, []any, err
 	case "agent-closed", "agentclosed", "agent_closed":
 		return "(i.resolved_at IS NOT NULL AND i.resolved_agent != '')", nil, nil
 	case "close-unreviewed", "closeunreviewed", "close_unreviewed":
-		// An agent closed it and no person has reviewed the close (WP-272).
 		return "(" + closeUnreviewed("i") + ")", nil, nil
 	case "on-hold", "onhold", "hold", "on_hold":
-		// On hold: kept from agents until a date or until lifted (WP-269).
 		return "(i.hold_at IS NOT NULL AND (i.hold_until IS NULL OR i.hold_until > ? OR i.hold_when != ''))", []any{s.nowMS()}, nil
 	case "held":
-		// Held for a person by the safety screen (WP-ADR10).
 		return sqlUnreviewed + " AND EXISTS (SELECT 1 FROM task_safety ts WHERE ts.issue_id = i.id AND ts.verdict = 'hold')", nil, nil
 	}
 	return "", nil, invalid("unknown value %s:%s", key, v)
@@ -714,8 +688,6 @@ func (s *Service) isCond(actor *Actor, v, today, key string) (string, []any, err
 
 // Search finds issues with a query.
 func (s *Service) Search(ctx context.Context, actor *Actor, p SearchParams) (*SearchResult, error) {
-	// A query that is just a request code (API:R-28) is that code, not the
-	// filter API = "R-28": find the issues that write it (WP-184).
 	if p.RawFTS == "" {
 		if c := bareRequestCode(p.Query); c != nil {
 			p.Query, p.RawFTS = "", mentionExpr([]searchCode{*c})
@@ -778,7 +750,6 @@ func (s *Service) Search(ctx context.Context, actor *Actor, p SearchParams) (*Se
 	if err := s.db.R.QueryRowContext(ctx, countSQL, countArgs...).Scan(&res.Total); err != nil {
 		return nil, fmt.Errorf("count: %w", err)
 	}
-	// Select ids in order, then load full rows.
 	idSQL, idArgs := c.sql("SELECT i.id " + base)
 	idSQL += " ORDER BY " + order + ", i.id LIMIT ? OFFSET ?"
 	idArgs = append(append(idArgs, orderArgs...), p.Limit, p.Offset)
@@ -826,8 +797,6 @@ func (s *Service) issuesByIDs(ctx context.Context, ids []int64, withDesc bool) (
 	}
 	return out, nil
 }
-
-// ---- board & backlog ----
 
 // BoardColumn is one status column.
 type BoardColumn struct {

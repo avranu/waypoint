@@ -1,6 +1,3 @@
-// The agent queue (WP-D15): what agents take next and in what order, what
-// they hold, what waits and why; pins, pauses and taking work back.
-
 import { queryOptions, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, enc, qs } from './api'
 import type { Issue, UserRef } from './types'

@@ -10,9 +10,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// The escape ledger (WP-705, WP-ADR68): runners ask which fixes to trace and
-// upload what they find; everyone else reads the ledger.
-
 const maxFixTraceBody = 1 << 20
 
 func (s *Server) escapesDue(w http.ResponseWriter, r *http.Request) (any, error) {
@@ -156,7 +153,6 @@ func escapeListText(list []*core.Escape) string {
 			fmt.Fprintf(&o, "  [%s]", strings.Join(e.Tags, " "))
 		}
 		o.WriteString("\n")
-		// Both come from forge or reporter wording: held apart as outside text.
 		fmt.Fprintf(&o, "  <untrusted>%s</untrusted>\n", oneLine(e.Title))
 		if e.Note != "" {
 			fmt.Fprintf(&o, "  note: <untrusted>%s</untrusted>\n", oneLine(e.Note))
@@ -164,7 +160,6 @@ func escapeListText(list []*core.Escape) string {
 		if e.Proof != "" {
 			fmt.Fprintf(&o, "  %s\n", core.ProofText(e.Proof, e.ProofFailed, e.ProofIntro, e.IntroCheck, e.ProofNote))
 			if e.ProofNote != "" && e.Proof != "none" {
-				// Test output: the repo's code wrote it.
 				fmt.Fprintf(&o, "  proof note: <untrusted>%s</untrusted>\n", oneLine(e.ProofNote))
 			}
 		}

@@ -9,19 +9,6 @@ import (
 	"time"
 )
 
-// decideRound is the one table for what a review round needs, from what is
-// recorded of it (WP-1370). Asked by: advanceRound (the step, the sweep, the
-// settled check and the agent's ship all carry a round out through it),
-// shipSettledRounds (the sweep), decideIdle (the step's idle session), the Stop (reviewFirstAtStop and
-// roundAtStop, which ask whether the session's last message is the report),
-// sweepRounds (which rounds end), tellCheck (whether a session is waited on)
-// and, with ShipAsks, the session's own ship (roundDecidable). What does not
-// go through it: the ship's intent (skip, review, force) and the scheduling
-// of a new round (reviewFirst), a step's own bookkeeping about a round
-// (typing its prompt, a runner that is gone, the pace) and the ending of a
-// step's round when the step stops (endStepRound). Those act on a round's
-// state as mechanics and decide nothing about its fate.
-
 // Checks, as the decision sees them.
 const (
 	checkAbsent    = ""
@@ -29,7 +16,7 @@ const (
 	checkRunning   = "running"
 	checkAgreed    = "agreed"
 	checkDisagreed = "disagreed"
-	checkDidnt     = "didn't run" // failed, hit a limit, or was cancelled
+	checkDidnt     = "didn't run"
 )
 
 // roundIn is every fact the decision rests on.
@@ -109,16 +96,16 @@ type roundIn struct {
 
 // outcome kinds.
 const (
-	doNothing     = iota // only when the run is closed
-	doWait               // for something that will change, by a time
-	doTell               // the session, who has until a time
-	doShip               // reviewed: Waypoint opens the pull request
-	doShipCarried        // opened with unverified marks carried to its gate
-	doRelease            // opened without the review, with what it found carried
-	doFinish             // the pull request is open: end the round and the run
-	doEnd                // the round ends with a state of its own (To), Waypoint ships nothing
-	doReport             // the session's stop is the round's report
-	doHold               // a person's decision (or a new ask) stands: Waypoint ships nothing, the step stops and says why
+	doNothing = iota
+	doWait
+	doTell
+	doShip
+	doShipCarried
+	doRelease
+	doFinish
+	doEnd
+	doReport
+	doHold
 	// doReleaseAfterRunEnded: the run ended (or its session did) with the round
 	// done, failed, skipped or interrupted for Waypoint's own reason, and the
 	// branch has no pull request. heldUnshipped, reviveHeldRounds,
@@ -149,8 +136,8 @@ type roundOut struct {
 
 // What a tell asks of the session.
 const (
-	needReport = "report" // its review isn't recorded: wp audit report
-	needMarks  = "marks"  // findings of the review are still to decide
+	needReport = "report"
+	needMarks  = "marks"
 )
 
 // reviewed says the round has a review a pull request may open on (WP-1370):
@@ -264,19 +251,12 @@ func decideRound(in roundIn) roundOut {
 		return decideOpens(in)
 	}
 	if in.ShipAsks {
-		// The session's ship answers a round under way (the ship is its
-		// report), one that ended (at a Stop, or by the session reading its
-		// audit) and one given up after its prompt went in ("no report came
-		// back"): the session was asked, and a ship from it is the answer,
-		// late. A round that never started reviewed nothing.
 		if in.State == RoundRunning || in.State == RoundDone || (in.State == RoundFailed && in.Started) {
 			return roundOut{Do: doReport}
 		}
 		return roundOut{Do: doNothing, Settled: "a ship from the session is no report of a round that isn't under way or never started"}
 	}
 	if in.ShipAudited {
-		// The ship is the round's report only when the round hasn't started
-		// and its audit is done, read something, and leaves nothing to decide.
 		switch {
 		case in.State != RoundPending:
 			return roundOut{Do: doNothing, Settled: "only a round still pending is ended by the session's reading of its audit"}
@@ -290,8 +270,6 @@ func decideRound(in roundIn) roundOut {
 		return roundOut{Do: doReport}
 	}
 	if in.Stopped && in.State == RoundRunning {
-		// The session stopped: its last message is the report, unless the
-		// review's own background agents or its check still go (they wake it).
 		switch {
 		case in.Subagents:
 			return roundOut{Do: doWait, For: "the review's background agents", Until: readWait}
@@ -318,17 +296,12 @@ func decideRound(in roundIn) roundOut {
 	left := func(limit time.Duration, since time.Duration) time.Duration { return max(limit-since, 0) }
 	if in.Superseded {
 		if in.SinceChange >= heldScreenWait {
-			// A wait with no time left that nothing acts on would hold the
-			// round for ever: it is shipped, with what it found carried.
 			return roundOut{Do: doShipCarried, Why: "the review round its decision scheduled never settled"}
 		}
 		return roundOut{Do: doWait, For: "the review round its decision scheduled", Until: left(heldScreenWait, in.SinceChange)}
 	}
 	switch in.Check {
 	case checkQueued, checkRunning:
-		// expireChecks cancels a check at checkPatience; this bounds a check
-		// that stays stuck anyway. The round's age plays no part: a check
-		// still going is never "no report came back".
 		if in.SinceChange >= checkPatience+heldScreenWait {
 			return roundOut{Do: doShipCarried, Why: "the check of its marks never settled"}
 		}
@@ -350,7 +323,6 @@ func decideRound(in roundIn) roundOut {
 		if in.Check == checkDidnt {
 			return roundOut{Do: doShipCarried, Why: "the check of its marks didn't run"}
 		}
-		// No check: the session's own ship is in flight.
 		if in.SinceStart >= reviewRunMax+autopilotNothingRetry {
 			return roundOut{Do: doRelease, Why: "no report came back"}
 		}
@@ -379,7 +351,6 @@ func decideRound(in roundIn) roundOut {
 		}
 		return roundOut{Do: doShip}
 	}
-	// Skipped, failed, interrupted: the review didn't run to the end.
 	if in.Release == "" {
 		return roundOut{Do: doHold, Why: "the review " + in.State}
 	}
@@ -458,9 +429,6 @@ func (s *Service) roundInOf(ctx context.Context, id int64) (roundIn, error) {
 		if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pull_requests WHERE repo = ? COLLATE NOCASE AND head_ref = ? AND state IN ('open', 'draft') AND (head_repo = '' OR head_repo = repo COLLATE NOCASE))`, bp.Repo, bp.Branch).Scan(&in.PROpen); err != nil {
 			return in, err
 		}
-		// A pull request that existed when the round was scheduled and was
-		// merged or closed since is a person's to have decided; one closed
-		// before the round is an earlier ship's, and doesn't stop this one.
 		if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pull_requests WHERE repo = ? COLLATE NOCASE AND head_ref = ? AND state IN ('merged', 'closed')
 			AND created_at <= ? AND updated_at >= ?)`, bp.Repo, bp.Branch, r.createdAt, r.createdAt).Scan(&in.PRGone); err != nil {
 			return in, err
@@ -520,7 +488,7 @@ func (s *Service) roundInOf(ctx context.Context, id int64) (roundIn, error) {
 		return in, err
 	}
 	if cid != 0 && checkSession == 0 {
-		in.Session = false // the check has no session to tell
+		in.Session = false
 	} else if cid != 0 && checkSession != r.sessionID.Int64 {
 		var live bool
 		in.Session = s.db.R.QueryRowContext(ctx, `SELECT ended_at IS NULL FROM agent_sessions WHERE id = ?`, checkSession).Scan(&live) == nil && live
@@ -549,8 +517,6 @@ func (s *Service) reviewFacts(ctx context.Context, id int64, in *roundIn) error 
 		in.AuditID = chosen
 	}
 	if in.AuditID == 0 {
-		// The reviewer that replaced a given-up audit, still going: its
-		// findings are the round's when it ends.
 		if rv, err := s.roundReviewer(ctx, id); err != nil && !errors.Is(err, ErrNotFound) {
 			return err
 		} else if rv != nil && (rv.Status == AuditQueued || rv.Status == AuditRunning) {
@@ -558,8 +524,6 @@ func (s *Service) reviewFacts(ctx context.Context, id int64, in *roundIn) error 
 		}
 	}
 	in.HandedOver = in.AuditID == 0 && strings.Contains(note, stakesNoClaude)
-	// The findings that are the round's are those of the audit it chose, as
-	// reviewAgain has always counted them: no other audit's decide it.
 	ids := []int64{in.AuditID}
 	seen := map[int64]bool{}
 	for _, aid := range ids {
@@ -613,16 +577,10 @@ func (s *Service) endedFacts(ctx context.Context, r *roundRow, in *roundIn) erro
 		return err
 	}
 	in.SinceEnd = time.Duration(max(now-max(updated, runEnd, sessEnd, moved), 0)) * time.Millisecond
-	// A ship that has been failing counts its window from its first try:
-	// the end of the run says nothing of how long Waypoint has kept at it.
 	if bp := roundBeforePR(ctx, s.db.R, r.id); bp != nil && bp.ShipFirst != 0 && bp.ShipStop == "" {
 		in.SinceEnd = time.Duration(max(now-bp.ShipFirst, 0)) * time.Millisecond
-		in.ShipSpent = in.SinceEnd >= shipGiveUp // however the last try left the record: a ship ever tried is ended, and told, never dropped
+		in.ShipSpent = in.SinceEnd >= shipGiveUp
 	}
-	// A session that went on to another task has left the round: its run is
-	// over for it. A round still pending or running is the session's own
-	// Stop's for heldStopLost first; one that has an end state has nothing
-	// left to wait for.
 	if moved > 0 && in.RunOpen {
 		ended := in.State == RoundDone || in.State == RoundSkipped || in.State == RoundFailed || in.State == RoundInterrupted
 		if ended || time.Duration(max(now-moved, 0))*time.Millisecond > heldStopLost {
@@ -655,7 +613,6 @@ func (s *Service) settleRound(ctx context.Context, id int64, r *roundRow, out ro
 // before-PR ship: the one place a server-side ship or release is decided.
 // It returns the decision, so a caller can tell a wait from a ship.
 func (s *Service) advanceRound(ctx context.Context, id int64) (roundOut, error) {
-	// No ship waits on a forge for ever, whoever asked for it.
 	ctx, cancel := context.WithTimeout(ctx, shipBudget)
 	defer cancel()
 	in, err := s.roundInOf(ctx, id)
@@ -665,18 +622,14 @@ func (s *Service) advanceRound(ctx context.Context, id int64) (roundOut, error) 
 	out := decideRound(in)
 	r, _ := roundByID(ctx, s.db.R, id)
 	if !in.Unshipped && out.Do != doEnd {
-		return roundOut{Do: doNothing}, nil // a round that isn't before a pull request ships nothing
+		return roundOut{Do: doNothing}, nil
 	}
 	switch out.Do {
 	case doEnd:
 		if out.Told != "" {
-			// No review was recorded: nothing is opened, the person is told
-			// once, by the write that ends the round, and wp ship works again.
 			err = s.endUnreviewed(ctx, id, r, out)
 			return out, err
 		}
-		// A round the window ended while its ship kept failing says what the
-		// ship met, and tells the person.
 		if bp := roundBeforePR(ctx, s.db.R, id); bp != nil && bp.ShipFirst != 0 && bp.ShipStop == "" {
 			why := bp.ShipErr
 			if why == "" {
@@ -694,23 +647,17 @@ func (s *Service) advanceRound(ctx context.Context, id int64) (roundOut, error) 
 	case doReleaseAfterRunEnded:
 		err = s.releaseEnded(ctx, id, out)
 	case doShip, doShipCarried, doFinish:
-		// doFinish: the pull request is open and the run isn't ended yet: the
-		// ship picks up where the dead process left it (shipRound).
 		err = s.shipReviewed(ctx, id)
 	case doRelease:
 		err = s.shipRound(ctx, shipRoundIn{round: id, why: out.Why})
 		if err == nil && r != nil && r.state == RoundRunning {
 			s.setRoundNow(ctx, id, []string{RoundRunning}, RoundFailed, out.Why)
-			// The check's news is no use to a round that ended: dropped, and
-			// a failure to drop it is said, not swallowed.
 			if _, cerr := s.writeRows(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE state = 'queued' AND step_key LIKE 'check:%' AND session_id = ?`, r.sessionID.Int64); cerr != nil {
 				s.log.WarnContext(ctx, "drop the check news of a released round", "round", id, "session", r.sessionID.Int64, "err", cerr)
 			}
 		}
 	}
 	if out.Do == doShip || out.Do == doShipCarried || out.Do == doRelease || out.Do == doFinish || out.Do == doReleaseAfterRunEnded {
-		// The try is recorded on the round whoever asked, so a retry's time and
-		// the one notice to the person are the round's, not the caller's.
 		key := ""
 		if r != nil {
 			key = r.key
@@ -756,9 +703,6 @@ func (s *Service) shipOwed(ctx context.Context, id int64) (roundOut, error) {
 	if id == 0 {
 		return roundOut{}, nil
 	}
-	// A ship that failed isn't tried again before its backoff is up, whoever
-	// asks: the same gate as the sweep's, unless its time is spent and the
-	// round only has to end (WP-1370).
 	if bp := roundBeforePR(ctx, s.db.R, id); bp != nil && bp.ShipErr != "" && bp.ShipStop == "" && !s.shipDue(ctx, id, s.nowMS()) {
 		if in, err := s.roundInOf(ctx, id); err != nil || !in.ShipSpent {
 			return roundOut{}, err
@@ -782,7 +726,7 @@ func (s *Service) releaseWhy(ctx context.Context, r *roundRow, runEnded bool) (s
 	}
 	reason = strings.TrimSpace(reason)
 	if reason == roundReplaced || reason == roundRestarted {
-		return "", nil // another round took the branch on
+		return "", nil
 	}
 	switch r.state {
 	case RoundSkipped, RoundFailed:
@@ -790,9 +734,6 @@ func (s *Service) releaseWhy(ctx context.Context, r *roundRow, runEnded bool) (s
 			return cmp(reason, "its adversarial review didn't run"), nil
 		}
 	case RoundInterrupted:
-		// Interrupted for the last time, the round isn't asked for again
-		// (askAgainAfterInterrupt): the session's stop that follows is a stop
-		// with nobody left to ship, and Waypoint ships.
 		again, err := askAgainAfterInterrupt(ctx, s.db.R, nonzero(r.sessionID.Int64, 0), r.issueID)
 		if err != nil {
 			return "", err
@@ -801,8 +742,6 @@ func (s *Service) releaseWhy(ctx context.Context, r *roundRow, runEnded bool) (s
 			return fmt.Sprintf("the session was interrupted %d times before its adversarial review reported, so it isn't asked again", reviewInterruptsMax), nil
 		}
 		if runEnded {
-			// Asked again only by a session that is there to be asked: the
-			// run is over, so nobody is, and Waypoint ships.
 			return "its adversarial review was interrupted and its run ended", nil
 		}
 	}

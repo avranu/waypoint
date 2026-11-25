@@ -24,16 +24,10 @@ func TestRequestedNotApproved(t *testing.T) {
 		`INSERT INTO projects(id, key, name, created_at, updated_at) VALUES (1, 'WP', 'Waypoint', 0, 0)`,
 		`INSERT INTO statuses(id, project_id, name, category) VALUES (1, 1, 'To Do', 'todo')`,
 		`INSERT INTO issues(id, project_id, number, title, status_id, reporter_id, reporter_agent, created_at, updated_at) VALUES (1, 1, 1, 'a', 1, 1, '', 0, 0)`,
-		// 1 written for WP-1 (Sam's); 2 the same, but Robin approved it; 3 an
-		// agent's proposal Sam approved.
 		`INSERT INTO design_notes(id, project_id, number, kind, title, created_agent, created_at, updated_at, approved_by, approved_at, requested_issue_id, requested_by) VALUES
 			(1, 1, 1, 'decision', 'a', 'anthropic/claude-code', 0, 0, 1, 5, 1, 1),
 			(2, 1, 2, 'decision', 'b', 'anthropic/claude-code', 0, 0, 2, 5, 1, 1),
 			(3, 1, 3, 'decision', 'c', 'anthropic/claude-code', 0, 0, 1, 5, NULL, NULL)`,
-		// 1 the agent's stamped edit; 2 its stamped addition; 3 an addition
-		// Robin reviewed with a note that reads like the stamp; 4 Sam's
-		// review of an agent's addition to note 3 with that note; 5 Sam's
-		// own edit; 6 a stamp in other case.
 		`INSERT INTO design_revisions(id, note_id, kind, state, user_id, agent, created_at, reviewed_by, reviewed_at, review_note) VALUES
 			(1, 1, 'edit', 'applied', 1, 'anthropic/claude-code', 0, 1, 5, 'requested in WP-1 by Sam'),
 			(2, 1, 'addition', 'approved', 1, 'anthropic/claude-code', 0, 1, 5, 'requested in WP-1 by Sam'),

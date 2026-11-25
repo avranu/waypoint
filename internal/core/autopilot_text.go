@@ -8,12 +8,6 @@ import (
 	"strings"
 )
 
-// Autopilot's wording (WP-308): the prompt it pastes into a session it
-// starts on a task, and the note a session sees at the Stop that finished
-// one. Admins word both for every project under Admin → AI; a project's
-// owners can word their own under its settings (ProjectSettings
-// AutopilotPrompt, AutopilotDone), which wins over the admins'.
-
 // DefaultAutopilotPrompt is the prompt until someone words their own. The
 // runner fills in {key} (the task), {title} (its title), {done} (the task
 // the session finished before, or nothing) and {next} (what wp next

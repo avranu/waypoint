@@ -48,7 +48,6 @@ func TestCIEvidence(t *testing.T) {
 	exec(`INSERT INTO project_repos(project_id, forge_id, repo, created_at) VALUES (?, ?, 'acme/app', 0)`, p.ID, f.ID)
 	a.reply["GET /repos/acme/app"] = map[string]any{"default_branch": "main"}
 
-	// job adds a finished job of run `run` and what the forge says of it.
 	runJobs := map[int64][]map[string]any{}
 	job := func(task, run int64, name, event, ref, sha, title string, end time.Duration, log string) {
 		t.Helper()
@@ -73,22 +72,17 @@ func TestCIEvidence(t *testing.T) {
 	nosec := testevidence.Suppression{Kind: testevidence.NoSec, Rules: []string{"G304"}, Path: "internal/x/a.go", Line: 10, Code: "os.ReadFile(p)", Reason: "p is ours"}
 	nolint := testevidence.Suppression{Kind: testevidence.NoLint, Path: "internal/y/b.go", Line: 3, Code: "x := 1"}
 
-	// A push to main: shard 1 fails TestFlaky, shard 2 passes it; their
-	// coverage adds up to all of a.go.
 	job(1, 10, "backend shard (1)", "push", "main", "aaaa111", "Merge", -30*time.Minute, evidenceLog(t, &testevidence.Payload{V: 1, Shard: "1/2",
 		Tests: []testevidence.Test{{Package: "internal/x", Name: "TestA", Outcome: "pass", Ms: 1200}, {Package: "internal/x", Name: "TestFlaky", Outcome: "fail", Ms: 30}},
 		Cover: file(1), Suppressions: []testevidence.Suppression{nosec}, ScannedSuppressions: true}))
 	job(2, 10, "backend shard (2)", "push", "main", "aaaa111", "Merge", -29*time.Minute, evidenceLog(t, &testevidence.Payload{V: 1, Shard: "2/2",
 		Tests: []testevidence.Test{{Package: "internal/x", Name: "TestFlaky", Outcome: "pass", Ms: 40}, {Package: "internal/y", Name: "TestB", Outcome: "fail", Ms: 5}},
 		Cover: file(2)}))
-	// lint never carries any: three misses, then it is skipped.
 	for i := int64(0); i < 4; i++ {
 		job(20+i, 10, "lint", "push", "main", "aaaa111", "Merge", time.Duration(-28+i)*time.Minute, "golangci-lint: 0 issues\n")
 	}
-	// A pull request's run, one shard: partial coverage, not the default branch.
 	job(30, 11, "backend shard (1)", "pull_request", "feature", "bbbb222", "WIP: Try", -20*time.Minute, evidenceLog(t, &testevidence.Payload{V: 1, Shard: "1/2",
 		Tests: []testevidence.Test{{Package: "internal/y", Name: "TestB", Outcome: "fail", Ms: 6}}, Cover: file(0)}))
-	// A garbled one and one still settling.
 	job(31, 12, "backend shard (2)", "pull_request", "feature", "bbbb222", "Try", -19*time.Minute, "wp-evidence v1 1/1 AAAA\n")
 	job(32, 12, "backend shard (1)", "pull_request", "feature", "bbbb222", "Try", -time.Minute, evidenceLog(t, &testevidence.Payload{V: 1}))
 
@@ -116,7 +110,6 @@ func TestCIEvidence(t *testing.T) {
 		t.Error("the fourth lint log was read; after three without evidence it should be skipped")
 	}
 
-	// Read once.
 	n := len(a.got)
 	if err := e.s.readCIEvidence(e.ctx, f, "acme/app"); err != nil {
 		t.Fatal(err)
@@ -132,8 +125,6 @@ func TestCIEvidence(t *testing.T) {
 	if len(tests.Flaky) != 1 || tests.Flaky[0].Name != "TestFlaky" || tests.Flaky[0].Score != 1 || tests.Flaky[0].Fails != 1 || tests.Flaky[0].Runs != 2 {
 		t.Errorf("flaky = %+v, want TestFlaky with score 1 (1 fail, 2 runs)", tests.Flaky)
 	}
-	// TestB failed on main and on the pull request: failing on main, with
-	// the other ref's failure counted apart; the PR alone never makes a test failing.
 	if len(tests.Failing) != 1 || tests.Failing[0].Name != "TestB" || tests.Failing[0].Fails != 1 || tests.Failing[0].OtherRefs != 1 || tests.Failing[0].LastPass != nil {
 		t.Errorf("failing = %+v, want TestB, 1 fail, 1 elsewhere", tests.Failing)
 	}
@@ -151,7 +142,6 @@ func TestCIEvidence(t *testing.T) {
 		t.Errorf("package internal/y, slow: %+v, want no passing tests and only TestB counted", pk)
 	}
 
-	// Coverage: main's commit is complete, both shards' blocks merged.
 	cov, err := e.s.CICoverage(e.ctx, e.admin, CICoverageInput{})
 	if err != nil {
 		t.Fatal(err)
@@ -173,7 +163,6 @@ func TestCIEvidence(t *testing.T) {
 		t.Errorf("unknown sha: err = %v, want not found", err)
 	}
 
-	// Suppressions: the first scan adds nothing; the next adds and removes.
 	sup, err := e.s.CISuppressions(e.ctx, e.admin, CISuppressionsInput{})
 	if err != nil {
 		t.Fatal(err)
@@ -199,8 +188,6 @@ func TestCIEvidence(t *testing.T) {
 	if sup.Count != 1 || sup.NoReason != 1 || len(sup.Added) != 1 || sup.Added[0].Kind != "nolint" || len(sup.Removed) != 1 || sup.Removed[0].Path != "internal/x/a.go" || len(sup.Scans) != 2 {
 		t.Errorf("second scan: %+v, want the nolint added, the nosec removed", sup)
 	}
-	// An older commit's scan whose job ends after the newer one's (a slow
-	// shard, a re-run) is counted but leaves the ledger at the newer tree.
 	exec(`INSERT INTO ci_runs(forge_id, repo, number, workflow, event, ref, sha, status, created_at) VALUES (?, 'acme/app', 9, 'ci.yml', 'push', 'main', 'aaaa000', 'success', ?)`,
 		f.ID, e.clockNow().Add(-3*time.Hour).UnixMilli())
 	job(41, 9, "backend shard (1)", "push", "main", "aaaa000", "Merge", -5*time.Minute, evidenceLog(t, &testevidence.Payload{V: 1, Shard: "1/2",
@@ -216,8 +203,6 @@ func TestCIEvidence(t *testing.T) {
 		t.Errorf("after an older commit's late scan: %+v, want the ledger still at cccc333 (the nolint only), 3 scans", sup)
 	}
 
-	// A package with a package below it: its trend counts what its headline
-	// does, the package alone.
 	sub, err := e.s.CICoverage(e.ctx, e.admin, CICoverageInput{SHA: "cccc", Path: "internal/x"})
 	if err != nil {
 		t.Fatal(err)
@@ -234,7 +219,6 @@ func TestCIEvidence(t *testing.T) {
 		t.Errorf("failing after TestB passed on main = %+v, want none", tests.Failing)
 	}
 
-	// Someone who can't see the project sees none of it.
 	bob := e.user("bob", false)
 	if _, err := e.s.CITests(e.ctx, bob, CITestsInput{Repo: "acme/app"}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("bob: err = %v, want not found", err)
@@ -246,8 +230,6 @@ func TestCIEvidence(t *testing.T) {
 		t.Errorf("bob coverage: err = %v, want not found", err)
 	}
 
-	// A month on, the results and file detail are pruned; per-package
-	// coverage stays.
 	e.setClock(e.clockNow().Add(31 * 24 * time.Hour))
 	e.s.pruneCIEvidence(e.ctx)
 	var runs, filesKept, pkgs int
@@ -309,7 +291,6 @@ func TestCIEvidenceBeforeRerun(t *testing.T) {
 	if outcome != "fail" {
 		t.Errorf("outcome = %q, want fail", outcome)
 	}
-	// A push to the default branch is kept as one, as the history pass keeps it.
 	var onDefault bool
 	if err := e.s.db.R.QueryRowContext(e.ctx, `SELECT r.on_default FROM ci_test_runs r WHERE r.task_id = 81`).Scan(&onDefault); err != nil {
 		t.Fatal(err)
@@ -402,7 +383,6 @@ func TestCIEvidenceKindProbe(t *testing.T) {
 		t.Fatalf("job 4 = %v, want skipped after three misses", got)
 	}
 
-	// Within the hour nothing is probed.
 	e.setClock(e.clockNow().Add(30 * time.Minute))
 	job(5, -5*time.Minute, withEvidence)
 	pass()
@@ -410,8 +390,6 @@ func TestCIEvidenceKindProbe(t *testing.T) {
 		t.Errorf("job 5 half an hour on = %v, want skipped", got)
 	}
 
-	// An hour after the last read the next job is probed, has evidence, and
-	// the skipped jobs are unread again; the next pass reads them.
 	e.setClock(e.clockNow().Add(31 * time.Minute))
 	job(6, -5*time.Minute, withEvidence)
 	pass()
@@ -428,7 +406,6 @@ func TestCIEvidenceKindProbe(t *testing.T) {
 		}
 	}
 
-	// The wait doubles with each probe that finds none, up to a week.
 	if d := evidenceProbeAfter(evidenceMisses+2, evidenceMisses); d != 4*time.Hour {
 		t.Errorf("after two empty probes: wait %v, want 4h", d)
 	}

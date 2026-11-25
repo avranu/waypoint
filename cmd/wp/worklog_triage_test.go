@@ -55,7 +55,6 @@ func TestChangeFacts(t *testing.T) {
 		t.Fatalf("numstat %q, diff %q", numstat, diff)
 	}
 
-	// A diff too big to send is left out, which keeps the review.
 	write("a.go", "package a\n\n// "+strings.Repeat("x", maxChangeDiff)+"\n")
 	triageGit(t, "add", ".")
 	triageGit(t, "commit", "-q", "-m", "third")
@@ -64,7 +63,6 @@ func TestChangeFacts(t *testing.T) {
 		t.Fatalf("clipped: %d keys", len(got))
 	}
 
-	// A list of files too long to send says nothing at all.
 	for i := range maxChangeDiff/240 + 1 {
 		write(fmt.Sprintf("%04d%s", i, strings.Repeat("f", 240)), "x\n")
 	}

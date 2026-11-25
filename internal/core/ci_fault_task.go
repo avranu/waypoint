@@ -1,16 +1,5 @@
 package core
 
-// A runner fault that outlasts its first re-runs is tracked in a task
-// (WP-589), one open per forge and kind of fault, in the project that owns
-// the CI runners (its setting `ci_runners`), each new sighting a comment.
-//
-// The agent that takes it reads and reports; it changes nothing on a host.
-// Until WP-838 this asked agents to ssh in, free disk by hand and change the
-// infrastructure repo. Freeing disk and restarting a runner happen only through
-// deterministic tools that can do nothing else, and changes to the
-// infrastructure repo are that repo's own: an agent files a draft task
-// asking it to assess one.
-
 import (
 	"context"
 	"database/sql"
@@ -165,7 +154,6 @@ func (s *Service) fileRunnerFault(ctx context.Context, userID int64, at faultSub
 			}
 		}
 		if _, err := s.AddComment(ctx, &writer, open.key, "Seen again. "+seen); err != nil {
-			// Not filed: the caller asks the owner rather than dropping the evidence.
 			return "", fmt.Errorf("add a runner fault's sighting to %s: %w", open.key, err)
 		}
 		return open.key, nil

@@ -8,10 +8,6 @@ import (
 	"net/url"
 )
 
-// Reading a repo at a commit through the forge's API, for the agent kit
-// (WP-ADR2 §4): its default branch's head, the paths in its tree, and files
-// (ForgePRs.FileAt).
-
 // ForgeKitReader is what reading the kit needs from a forge client.
 type ForgeKitReader interface {
 	DefaultBranch(ctx context.Context, f *Forge, repo string) (string, error)
@@ -80,7 +76,6 @@ func (c *httpForgeClient) RepoTree(ctx context.Context, f *Forge, repo, sha stri
 		}
 		add(out.Tree)
 	default:
-		// Forgejo pages a recursive tree.
 		for page := 1; len(paths) < maxTreePaths; page++ {
 			var out struct {
 				Tree      []entry `json:"tree"`

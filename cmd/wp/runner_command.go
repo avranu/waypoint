@@ -71,6 +71,11 @@ type agentJob struct {
 	DiffSince   int64    `json:"diff_since"`
 	DiffPaths   []string `json:"diff_paths"`
 	DiffExclude []string `json:"diff_exclude"`
+	// GatewayArchiveMax and GatewayFileMax, for an audit the gateway runs:
+	// what it takes of the packed checkout and of one file, in bytes; 0: the
+	// server didn't say (gatewayArchiveFallback, gatewayFileFallback).
+	GatewayArchiveMax int64 `json:"gateway_archive_max,omitempty"`
+	GatewayFileMax    int64 `json:"gateway_file_max,omitempty"`
 	// Helpers, for an audit: the Haiku checks run around its model in the
 	// same checkout (runner_helpers.go, WP-1320).
 	Helpers *auditHelpers `json:"helpers,omitempty"`
@@ -134,7 +139,7 @@ func (p *runnerProc) execCommand(ctx context.Context, run *jobRun, in commandJob
 	cmd := shellCommand(ctx, in.Command)
 	cmd.Dir = dir
 	cmd.Env = append(jobEnv(os.Environ(), in.Env, in.KeepKeys), runnerSelfEnv(p.allowed)...)
-	cmd.Stdout, cmd.Stderr = run.out, run.out // one writer: output stays in order
+	cmd.Stdout, cmd.Stderr = run.out, run.out
 	cmd.Stdin = nil
 	setProcGroup(cmd)
 	killOnCancel(cmd)

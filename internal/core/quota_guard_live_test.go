@@ -7,13 +7,11 @@ import (
 )
 
 func TestGuardPolicyLines(t *testing.T) {
-	// No baseline: the defaults, and no model rule.
 	p := guardPolicy(QuotaGuardSettings{}, nil)
 	if p.ChurnUSD != guardChurnFloor || p.SessionUSD != guardSessionFloor || p.BurstUSD != guardBurstFloor || p.Hours != 12 || p.IdleHours != 8 ||
 		!p.Pace || len(p.Models) != 0 || p.From["churn_usd"] != "default" || p.From["models"] != "default" {
 		t.Fatalf("defaults %+v", p)
 	}
-	// A month of usage: three times the usual biggest session and busy hour.
 	b := &GuardBaseline{Sessions: 40, SessionP50: 12, SessionP90: 40, Hours: 100, HourP95: 30,
 		Models: map[string]float64{"claude-opus-5-5": 0.8, "claude-sonnet-5-5": 0.18, "claude-haiku-5-5": 0.02}}
 	p = guardPolicy(QuotaGuardSettings{}, b)
@@ -21,18 +19,15 @@ func TestGuardPolicyLines(t *testing.T) {
 		strings.Join(p.Models, ",") != "claude-opus-5-5,claude-sonnet-5-5" {
 		t.Fatalf("usual %+v", p)
 	}
-	// A small baseline never lowers a line below its floor.
 	p = guardPolicy(QuotaGuardSettings{}, &GuardBaseline{Sessions: 40, SessionP50: 1, SessionP90: 2, Hours: 100, HourP95: 3})
 	if p.ChurnUSD != guardChurnFloor || p.SessionUSD != guardSessionFloor || p.BurstUSD != guardBurstFloor {
 		t.Fatalf("floors %+v", p)
 	}
-	// ...and a line the floor set says so, rather than "usual".
 	for _, f := range []string{"churn_usd", "session_usd", "burst_usd"} {
 		if p.From[f] != "default" {
 			t.Errorf("%s from %q with the floor in force, want default", f, p.From[f])
 		}
 	}
-	// The person's lines win, 0 turns a rule off.
 	zero, ten, off := 0.0, 10.0, false
 	p = guardPolicy(QuotaGuardSettings{ChurnUSD: &zero, SessionUSD: &ten, Pace: &off, Models: []string{"claude-haiku-5-5"}}, b)
 	if p.ChurnUSD != 0 || p.SessionUSD != 10 || p.Pace || p.From["churn_usd"] != "set" || strings.Join(p.Models, ",") != "claude-haiku-5-5" {
@@ -88,8 +83,6 @@ func (l *liveEnv) notes(kind string) []string {
 
 func TestGuardBurstHoldsAutopilot(t *testing.T) {
 	l := newLiveEnv(t)
-	// Automation's session climbs $90 in the hour, a review job adds $15;
-	// the person's own session's $200 isn't automation's.
 	l.pulse(nil, SessionPulse{Session: "auto-1", Cost: 30, Auto: true}, SessionPulse{Session: "mine", Cost: 10})
 	l.tick(20 * time.Minute)
 	l.pulse(nil, SessionPulse{Session: "auto-1", Cost: 80, Auto: true}, SessionPulse{Session: "mine", Cost: 210})
@@ -110,7 +103,6 @@ func TestGuardBurstHoldsAutopilot(t *testing.T) {
 	if w.Hold == nil || w.Hold.Rule != GuardRuleBurst || !strings.Contains(w.Hold.Reason, "$105 in the last hour") {
 		t.Fatalf("hold %+v", w.Hold)
 	}
-	// Autopilot starts nothing, whatever the quota limits say, and the hooks hear of it.
 	m, err := l.s.autopilotMeter(l.ctx, l.me.User.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -126,14 +118,12 @@ func TestGuardBurstHoldsAutopilot(t *testing.T) {
 	if n := l.notes(NotifyQuota); len(n) != 1 || !strings.Contains(n[0], "held back") {
 		t.Errorf("notes %q", n)
 	}
-	// The next sweep doesn't tell again.
 	l.tick(time.Minute)
 	l.watch()
 	if n := l.notes(NotifyQuota); len(n) != 1 {
 		t.Errorf("told again: %q", n)
 	}
 
-	// The person lifts it: no new hold for the quiet time, though the hour is still over.
 	if _, err := l.s.LiftQuotaGuard(l.ctx, l.me, "1h"); err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +133,6 @@ func TestGuardBurstHoldsAutopilot(t *testing.T) {
 	if h := l.s.guardHoldFor(l.ctx, l.me.User.ID); h != nil {
 		t.Errorf("still held %+v", h)
 	}
-	// Turned off, it holds nothing and sends no policy.
 	on := false
 	if _, err := l.s.SetQuotaGuard(l.ctx, l.me, QuotaGuardSettingsInput{Merge: true, On: &on}); err != nil {
 		t.Fatal(err)
@@ -169,14 +158,12 @@ func TestGuardTripStopsAndBacksOff(t *testing.T) {
 			l.exec(`INSERT INTO agent_runs(issue_id, agent, user_id, started_at, session_id) VALUES (?,?,?,?,?)`, issue.ID, "claude", l.me.User.ID, l.clockNow().UnixMilli(), sid)
 		}
 	}
-	// Told first: recorded only.
 	l.pulse([]GuardTripInput{{Session: "t-1", Rule: GuardRuleChurn, Action: "told", Cost: 22, Detail: "$22 since the last edit"}})
 	var left int64
 	_ = l.s.db.R.QueryRow(`SELECT coalesce(left_alone_at, 0) FROM agent_sessions WHERE id = ?`, sids[0]).Scan(&left)
 	if left != 0 || len(l.notes(NotifyQuota)) != 0 {
 		t.Fatalf("a tell left the session alone (%d) or notified", left)
 	}
-	// Stopped: left alone, its task waits like a release, the person is told.
 	l.pulse([]GuardTripInput{{Session: "t-1", Rule: GuardRuleChurn, Action: "stopped", Cost: 31, Detail: "$31 since the last edit"}})
 	_ = l.s.db.R.QueryRow(`SELECT coalesce(left_alone_at, 0) FROM agent_sessions WHERE id = ?`, sids[0]).Scan(&left)
 	if left == 0 {
@@ -189,14 +176,12 @@ func TestGuardTripStopsAndBacksOff(t *testing.T) {
 	if len(n) != 1 || !strings.Contains(n[0], "stopped session t-1") || !strings.Contains(n[0], issue.Key+" waits") || !strings.Contains(n[0], "/agents/sessions/") {
 		t.Errorf("notes %q", n)
 	}
-	// A trip for a rule the hooks don't have, or a session never heard of, changes nothing.
 	l.pulse([]GuardTripInput{{Session: "t-2", Rule: "drop tables", Action: "stopped"}, {Session: "ghost", Rule: GuardRuleHours, Action: "stopped"}})
 	var trips int
 	_ = l.s.db.R.QueryRow(`SELECT count(*) FROM quota_guard_trips WHERE user_id = ?`, l.me.User.ID).Scan(&trips)
 	if trips != 3 {
 		t.Errorf("%d trips", trips)
 	}
-	// Three sessions stopped in six hours: the strategy, so automation is held.
 	if w := l.watch(); w.Hold != nil {
 		t.Fatalf("held after one stop: %+v", w.Hold)
 	}
@@ -209,12 +194,10 @@ func TestGuardTripStopsAndBacksOff(t *testing.T) {
 	if err != nil || live.Hold == nil || len(live.Trips) != 6 || live.Trips[0].Action != "held" {
 		t.Fatalf("live %+v %v", live, err)
 	}
-	// When it ends, the stops that led to it don't hold automation again.
 	l.tick(guardTripsFor + time.Minute)
 	if w := l.watch(); w.Hold != nil {
 		t.Fatalf("held again on the same stops: %+v", w.Hold)
 	}
-	// Stops a hold made are the hold's, not a strategy's.
 	l.pulse([]GuardTripInput{{Session: "t-1", Rule: GuardRuleHold, Action: "stopped"}, {Session: "t-2", Rule: GuardRuleHold, Action: "stopped"}, {Session: "t-3", Rule: GuardRuleHold, Action: "stopped"}})
 	if w := l.watch(); w.Hold != nil {
 		t.Fatalf("a hold's own stops held automation: %+v", w.Hold)
@@ -223,15 +206,12 @@ func TestGuardTripStopsAndBacksOff(t *testing.T) {
 
 func TestGuardSpendShares(t *testing.T) {
 	l := newLiveEnv(t)
-	// One session: automation's, then the person types in it, then
-	// automation again. What the person spent stays theirs.
 	l.pulse(nil, SessionPulse{Session: "s", Cost: 10, Auto: true})
 	l.tick(5 * time.Minute)
 	l.pulse(nil, SessionPulse{Session: "s", Cost: 50})
 	l.tick(5 * time.Minute)
 	l.pulse(nil, SessionPulse{Session: "s", Cost: 52, Auto: true})
 	now := l.clockNow()
-	// A four-hour review job's $40 counts by the share of it in the window.
 	l.exec(`INSERT INTO runner_jobs(owner_id, kind, title, cli, input, state, timeout, source, result, created_at, started_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		l.me.User.ID, JobReview, "review PR #4", "claude", "{}", "done", 600, "automation_step", `{"tokens":{"cost_usd":40}}`,
 		now.Add(-4*time.Hour).UnixMilli(), now.Add(-4*time.Hour).UnixMilli(), now.UnixMilli())
@@ -251,15 +231,12 @@ func TestGuardPaceSharesThePoints(t *testing.T) {
 	read(60)
 	l.pulse(nil, SessionPulse{Session: "auto-1", Cost: 5, Auto: true}, SessionPulse{Session: "mine", Cost: 5})
 	l.watch()
-	// The week rises 6 points; the person spent $90 of the $100.
 	l.tick(10 * time.Minute)
 	l.pulse(nil, SessionPulse{Session: "auto-1", Cost: 15, Auto: true}, SessionPulse{Session: "mine", Cost: 95})
 	read(66)
 	if w := l.watch(); w.Hold != nil {
 		t.Fatalf("the person's own spend held automation: %+v", w.Hold)
 	}
-	// Then automation spends most of the next 6 points (under the burst
-	// line): held.
 	l.tick(10 * time.Minute)
 	l.pulse(nil, SessionPulse{Session: "auto-1", Cost: 55, Auto: true}, SessionPulse{Session: "mine", Cost: 100})
 	read(72)
@@ -267,7 +244,6 @@ func TestGuardPaceSharesThePoints(t *testing.T) {
 	if w.Hold == nil || w.Hold.Rule != GuardRulePace {
 		t.Fatalf("pace hold %+v", w)
 	}
-	// The next hold needs points spent from here.
 	if w.OverFrom != 72 {
 		t.Errorf("over phase not started again: %+v", w)
 	}
@@ -280,13 +256,11 @@ func TestGuardPaceHold(t *testing.T) {
 	read := func(pct float64) {
 		l.exec(`INSERT INTO quota_samples(user_id, at, span, percent, resets_at, machine) VALUES (?,?,?,?,?,?)`, l.me.User.ID, l.clockNow().UnixMilli(), "seven_day", pct, now.Add(4*24*time.Hour).UnixMilli(), "box")
 	}
-	// 3 days in (43% even), at 60%: over the person's +10 line.
 	read(60)
 	l.pulse(nil, SessionPulse{Session: "auto-1", Cost: 5, Auto: true})
 	if w := l.watch(); w.Hold != nil || w.OverSince == nil || w.OverFrom != 60 {
 		t.Fatalf("first look %+v", w)
 	}
-	// The week rises 4 points while automation keeps spending.
 	l.tick(10 * time.Minute)
 	l.pulse(nil, SessionPulse{Session: "auto-1", Cost: 25, Auto: true})
 	read(64)
@@ -294,7 +268,6 @@ func TestGuardPaceHold(t *testing.T) {
 	if w.Hold == nil || w.Hold.Rule != GuardRulePace || !strings.Contains(w.Hold.Reason, "rose 4 points") {
 		t.Fatalf("pace hold %+v", w.Hold)
 	}
-	// Turning pace off ends the record of the over phase.
 	off := false
 	if _, err := l.s.SetQuotaGuard(l.ctx, l.me, QuotaGuardSettingsInput{Merge: true, Settings: QuotaGuardSettings{Pace: &off}}); err != nil {
 		t.Fatal(err)
@@ -341,7 +314,6 @@ func TestGuardChangeAllowed(t *testing.T) {
 			t.Errorf("%s lift: %v", c.name, err)
 		}
 	}
-	// Merge keeps what was set; clear puts a line back to its default.
 	live, err := l.s.SetQuotaGuard(l.ctx, l.me, QuotaGuardSettingsInput{Merge: true, Clear: []string{"churn_usd"}})
 	if err != nil || live.Settings.ChurnUSD != nil || live.Policy.From["churn_usd"] != "default" {
 		t.Fatalf("clear %+v %v", live, err)
@@ -356,7 +328,6 @@ func TestGuardChangeAllowed(t *testing.T) {
 
 func TestGuardBaseline(t *testing.T) {
 	l := newLiveEnv(t)
-	// Six autopilot sessions over the month, $4 each in two hours.
 	for i := range 6 {
 		cli := "auto-" + string(rune('a'+i))
 		at := time.Duration(-i*48) * time.Hour

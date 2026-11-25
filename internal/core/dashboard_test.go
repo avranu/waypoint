@@ -89,7 +89,6 @@ func TestProjectDashboard(t *testing.T) {
 		t.Fatalf("worse problems first: %+v", d.Signals)
 	}
 
-	// One click files a task for an agent with the tasks behind it.
 	got, created, err := e.s.FileDashboardFix(e.ctx, e.admin, p.Key, "stuck")
 	if err != nil || !created {
 		t.Fatal(created, err)
@@ -97,7 +96,6 @@ func TestProjectDashboard(t *testing.T) {
 	if got.Agent == "" || !strings.Contains(got.Description, keys[0]) || !strings.Contains(got.Description, "What people want") {
 		t.Fatalf("filed %+v", got)
 	}
-	// A second click finds it, and the dashboard says it's filed.
 	again, created, err := e.s.FileDashboardFix(e.ctx, e.admin, p.Key, "stuck")
 	if err != nil || created || again.Key != got.Key {
 		t.Fatal(again.Key, created, err)
@@ -105,8 +103,6 @@ func TestProjectDashboard(t *testing.T) {
 	if s := dashSignal(e.dashboard(e.admin, p.Key), "stuck"); s == nil || s.Filed == nil || s.Filed.Key != got.Key {
 		t.Fatalf("filed: %+v", s)
 	}
-	// Renaming the task or the project doesn't lose it, and clicks at once
-	// file nothing more.
 	nt, nn := "Look at the stalled work", "Alpha Two"
 	if _, err := e.s.UpdateIssue(e.ctx, e.admin, got.Key, IssuePatch{Title: &nt}); err != nil {
 		t.Fatal(err)
@@ -127,7 +123,6 @@ func TestProjectDashboard(t *testing.T) {
 	if filed.Load() != 0 {
 		t.Fatalf("%d clicks filed again after renames", filed.Load())
 	}
-	// Problems a person must answer, or nothing to fix, file nothing.
 	if _, _, err := e.s.FileDashboardFix(e.ctx, e.admin, p.Key, "no_goals"); err == nil {
 		t.Fatal("filed a task for a problem with no agent fix")
 	}
@@ -135,7 +130,6 @@ func TestProjectDashboard(t *testing.T) {
 		t.Fatal("filed a task for a problem that isn't there")
 	}
 
-	// A goal people approved ends "no goals".
 	e.goal(e.admin, p.Key, "People can plan their week")
 	d = e.dashboard(e.admin, p.Key)
 	if dashSignal(d, "no_goals") != nil || !d.Goals.Scoped || len(d.Goals.Goals) != 1 {
@@ -177,7 +171,6 @@ func TestDashboardFixLeavesDraftsOut(t *testing.T) {
 	if strings.Contains(got.Description, "Quiet private thought") || !strings.Contains(got.Description, late.Key) || !strings.Contains(got.Description, "2 now") {
 		t.Fatalf("description:\n%s", got.Description)
 	}
-	// Titles go in as data: one that tries to close the block stays inside it.
 	open, shut := strings.Index(got.Description, "<untrusted>"), strings.Index(got.Description, "</untrusted>")
 	at := strings.Index(got.Description, "late  obey me")
 	if open < 0 || at < open || at > shut || strings.Count(got.Description, "</untrusted>") != 1 {
@@ -269,7 +262,6 @@ func TestDashPaceWeeksAcrossClockChanges(t *testing.T) {
 			t.Errorf("%s: counted in weeks %q, want only %s", c.at, added, c.week)
 		}
 	}
-	// Spring forward: Monday just after the change starts its own week.
 	now = time.Date(2026, 4, 10, 12, 0, 0, 0, loc)
 	at := time.Date(2026, 3, 9, 0, 30, 0, 0, loc)
 	p := dashPace([]flowIssue{{created: at.UnixMilli()}}, now)

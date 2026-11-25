@@ -33,7 +33,6 @@ func TestGoalsAPI(t *testing.T) {
 	agent.json("POST", "/api/v1/issues", map[string]any{"project": "WID", "title": "Recolour the footer"}, &stray)
 	goalID := int64(goal["id"].(float64))
 
-	// The agent links its task; the link waits for a person.
 	var link map[string]any
 	if code := agent.json("POST", "/api/v1/links", map[string]any{"from": map[string]any{"ref": task["key"]}, "to": map[string]any{"ref": fmt.Sprintf("design:%d", goalID)}, "rel": "serves"}, &link); code != 200 {
 		t.Fatalf("agent link: %d %v", code, link)
@@ -61,7 +60,6 @@ func TestGoalsAPI(t *testing.T) {
 		t.Errorf("trace json: %d %v", code, tr["grounding"])
 	}
 
-	// Only a person confirms; then the task is grounded by people.
 	if code, _ := agent.do("POST", fmt.Sprintf("/api/v1/goals/links/%d/confirm", linkID), nil); code != 403 {
 		t.Errorf("agent confirm: %d, want 403", code)
 	}
@@ -72,7 +70,6 @@ func TestGoalsAPI(t *testing.T) {
 		t.Errorf("after confirm: %v", tr["grounding"])
 	}
 
-	// A person says the stray task doesn't serve the goal: it isn't offered again.
 	if code, b := human.do("POST", "/api/v1/goals/dismiss-match", map[string]any{"item": map[string]any{"ref": stray["key"]}, "goal": goalID}); code != 204 {
 		t.Fatalf("dismiss match: %d %s", code, b)
 	}
@@ -80,7 +77,6 @@ func TestGoalsAPI(t *testing.T) {
 		t.Errorf("agent dismiss: %d, want 403", code)
 	}
 
-	// MCP has both.
 	if text := callMCPTool(t, ts.URL, agentTok, "goals", map[string]any{"project": "WID", "gaps": true}); !strings.Contains(text, "Recolour the footer") {
 		t.Errorf("mcp goals gaps:\n%s", text)
 	}

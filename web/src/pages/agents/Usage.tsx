@@ -1,8 +1,3 @@
-// Agents page, Usage tab (WP-D20): where tokens go and why, from Claude Code's
-// own transcripts, hooks and status line (read by `wp`, never reported by the
-// model). Quota and pace, tokens by day and model, the cache, breakdowns,
-// tools, Bash commands, permission refusals and suggestions.
-
 import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
 import { Gauge, TriangleAlert, X } from 'lucide-react'
@@ -34,7 +29,6 @@ export function UsageTab({ filters, setFilters }: HubTabProps) {
   if (!o) return <UsageSkeleton />
   const narrowed = !!(filters.agent || filters.project || filters.machine || filters.session)
   if (!o.has_data && !narrowed) return <HowToStart />
-  // The quota card above already says the pace; the suggestion would repeat it.
   const quotaShown = !!o.quota && o.quota.windows.length > 0 && !filters.session
   const suggestions = o.suggestions.filter((a) => !(quotaShown && a.kind === 'quota'))
   const sessionTitle = o.top_sessions.find((s) => s.key === filters.session)?.label

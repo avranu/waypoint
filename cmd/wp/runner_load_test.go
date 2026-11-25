@@ -51,7 +51,6 @@ func TestGovernorGrowsSlowlyHoldsWhenBusyAndDropsToOne(t *testing.T) {
 	if g.limit != 1 || !slices.Equal(g.lanes(0, 0, 0), []string{laneHeavy, laneLight, laneRequest}) {
 		t.Fatalf("starts at limit %d, lanes %v", g.limit, g.lanes(0, 0, 0))
 	}
-	// Not saturated: no growth however long it's calm.
 	step(10*time.Minute, calmSample(), 0)
 	if g.limit != 1 {
 		t.Fatalf("grew to %d with nothing running", g.limit)
@@ -67,7 +66,6 @@ func TestGovernorGrowsSlowlyHoldsWhenBusyAndDropsToOne(t *testing.T) {
 	if line := step(90*time.Second, calmSample(), 1); g.limit != 2 || !strings.Contains(line, "up to 2 heavy jobs") {
 		t.Fatalf("limit %d after calm minutes (%q)", g.limit, line)
 	}
-	// Each step needs its own calm couple of minutes.
 	step(time.Minute, calmSample(), 2)
 	if g.limit != 2 {
 		t.Fatalf("grew again within a minute")
@@ -89,8 +87,6 @@ func TestGovernorGrowsSlowlyHoldsWhenBusyAndDropsToOne(t *testing.T) {
 	if line := step(15*time.Second, over, 2); g.limit != 1 || !strings.Contains(line, "one job at a time") {
 		t.Fatalf("overloaded: limit %d (%q)", g.limit, line)
 	}
-	// Overloaded with a babysit round running: only a request's jobs, which
-	// a person approved and is watching (WP-503), up to their own slots.
 	if l := g.lanes(1, 0, 0); !slices.Equal(l, []string{laneRequest}) {
 		t.Fatalf("overloaded with a job running: lanes %v", l)
 	}
@@ -100,14 +96,11 @@ func TestGovernorGrowsSlowlyHoldsWhenBusyAndDropsToOne(t *testing.T) {
 	if l := g.lanes(0, 0, 1); !slices.Equal(l, []string{laneHeavy, laneLight, laneRequest}) {
 		t.Fatalf("overloaded with only a request's job running: lanes %v", l)
 	}
-	// Calm again: climbs back from one.
 	step(15*time.Second, calmSample(), 1)
 	step(growAfter, calmSample(), 1)
 	if g.limit != 2 {
 		t.Fatalf("after overload, limit %d", g.limit)
 	}
-	// --max-jobs caps heavy and light jobs together; a request's jobs have
-	// their own slots beside it.
 	if l := g.lanes(2, 2, 0); !slices.Equal(l, []string{laneRequest}) {
 		t.Fatalf("at --max-jobs: lanes %v", l)
 	}
@@ -131,18 +124,15 @@ func TestLoadProfileLearnsBusyHours(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "load-profile.json")
 	p := loadLoadProfile(path)
 	loc := time.UTC
-	// Monday 04:00-05:00: other work keeps 7 of 8 CPUs busy (the runner's
-	// own CPU doesn't count).
 	at := time.Date(2026, 11, 2, 4, 0, 0, 0, loc)
 	for i := range 240 {
 		p.add(at.Add(time.Duration(i)*15*time.Second), loadSample{CPUs: 8, Busy: 9, Own: 2, measured: true})
 	}
-	p.add(at.Add(time.Hour), loadSample{CPUs: 8, Busy: 1, Own: 0, measured: true}) // folds the hour in
+	p.add(at.Add(time.Hour), loadSample{CPUs: 8, Busy: 1, Own: 0, measured: true})
 	q := loadLoadProfile(path)
 	if b := q.Week[weekHour(at)]; b.N != 1 || b.Busy != 7 {
 		t.Fatalf("saved week hour %+v, want 7 busy CPUs", b)
 	}
-	// The next Monday 03:30: the coming hour is usually busy.
 	g := newGovernor(6, q)
 	now := at.AddDate(0, 0, 7).Add(-30 * time.Minute)
 	busy := calmSample()
@@ -154,7 +144,6 @@ func TestLoadProfileLearnsBusyHours(t *testing.T) {
 	if r := g.report(now, 0, 0, 0); !strings.Contains(r["reason"].(string), "usually uses") {
 		t.Errorf("report doesn't say why: %v", r)
 	}
-	// Tuesday 04:00 hasn't been seen: the same hour of other days stands in.
 	if v, ok := q.predict(at.AddDate(0, 0, 1)); !ok || v != 7 {
 		t.Errorf("Tuesday 04:00 predicted %v %v", v, ok)
 	}
@@ -165,7 +154,6 @@ func TestLoadProfileLearnsBusyHours(t *testing.T) {
 	if got := hourRanges([]time.Time{at, at.Add(time.Hour), at.Add(9 * time.Hour)}, loc); got != "04:00-06:00, 13:00-14:00" {
 		t.Errorf("hourRanges = %q", got)
 	}
-	// An hour with only a few looks (the runner restarted) isn't learnt.
 	r := loadLoadProfile("")
 	r.add(at, loadSample{CPUs: 8, Busy: 8, measured: true})
 	r.add(at.Add(time.Hour), loadSample{CPUs: 8, Busy: 8, measured: true})
@@ -292,7 +280,7 @@ func TestProfileCapGivesWayToACalmMachine(t *testing.T) {
 		p.add(at.Add(time.Duration(i)*15*time.Second), loadSample{CPUs: 8, Busy: 9, Own: 2, measured: true})
 	}
 	p.add(at.Add(time.Hour), loadSample{CPUs: 8, Busy: 1, Own: 0, measured: true})
-	now := at.AddDate(0, 0, 7).Add(30 * time.Minute) // next Monday, 04:30
+	now := at.AddDate(0, 0, 7).Add(30 * time.Minute)
 
 	g := newGovernor(4, loadLoadProfile(path))
 	g.observe(calmSample(), now, 0)
@@ -311,7 +299,6 @@ func TestProfileCapGivesWayToACalmMachine(t *testing.T) {
 		t.Errorf("the report doesn't say the usual limit gave way: %q", why)
 	}
 
-	// The same hour with a busy sample: capped at one.
 	b := newGovernor(4, loadLoadProfile(path))
 	b.limit = 3
 	busy := calmSample()
@@ -345,7 +332,6 @@ func TestWaitingJobGivesUpItsHeavyPlace(t *testing.T) {
 	if h, _, _, _, _ := p.running(); h != 0 {
 		t.Fatalf("running counts %d heavy", h)
 	}
-	// Only one job at a time gives up its place.
 	p.jobs[2] = heavyJob(2, 3*time.Minute)
 	if h, _, _, _, _ := p.running(); h != 1 {
 		t.Fatalf("two waiting: %d counted heavy, want 1", h)
@@ -365,7 +351,7 @@ func TestProfileCapNeedsLastingCalm(t *testing.T) {
 	for i := range 240 {
 		p.add(at.Add(time.Duration(i)*15*time.Second), loadSample{CPUs: 8, Busy: 9, Own: 2, measured: true})
 	}
-	p.add(at.Add(time.Hour), loadSample{CPUs: 8, Busy: 1, Own: 0, measured: true}) // the next hour's first sample saves it
+	p.add(at.Add(time.Hour), loadSample{CPUs: 8, Busy: 1, Own: 0, measured: true})
 	now := at.AddDate(0, 0, 7).Add(10 * time.Minute)
 	g := newGovernor(4, loadLoadProfile(path))
 	g.limit = 3
@@ -382,7 +368,6 @@ func TestProfileCapNeedsLastingCalm(t *testing.T) {
 		}
 		now = now.Add(15 * time.Second)
 	}
-	// Calm throughout growAfter: the limit gives way.
 	for range int(growAfter/(15*time.Second)) + 1 {
 		g.observe(calmSample(), now, 1)
 		now = now.Add(15 * time.Second)

@@ -4,10 +4,6 @@ import (
 	"strings"
 )
 
-// The Go template limits the module proxy to the modules a repo's go.mod
-// needs, plus the toolchain (PL7 §7.1): a session can't use the proxy to
-// fetch, or to leak data through the name of, any other module path.
-
 // ToolchainModule is what `go` fetches to switch toolchains.
 const ToolchainModule = "golang.org/toolchain"
 

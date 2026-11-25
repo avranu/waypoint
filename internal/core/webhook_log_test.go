@@ -30,7 +30,7 @@ func (h *hookReceiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.sigs = append(h.sigs, r.Header.Get("X-Waypoint-Signature"))
 	h.deliveries = append(h.deliveries, r.Header.Get("X-Waypoint-Delivery"))
 	w.WriteHeader(h.status)
-	_, _ = w.Write([]byte(strings.Repeat("no thanks. ", 400))) // ~4.4 KB
+	_, _ = w.Write([]byte(strings.Repeat("no thanks. ", 400)))
 }
 
 func TestWebhookDeliveryLogAndReplay(t *testing.T) {
@@ -62,7 +62,6 @@ func TestWebhookDeliveryLogAndReplay(t *testing.T) {
 		t.Errorf("delivery id %q, sent %q", d.Delivery, rec.deliveries[0])
 	}
 
-	// Replay: the same body, a new delivery id, signed with today's secret.
 	rec.status = 200
 	if _, err := e.s.UpdateWebhook(e.ctx, e.admin, h.ID, WebhookInput{Secret: ptr("second")}); err != nil {
 		t.Fatal(err)
@@ -85,7 +84,6 @@ func TestWebhookDeliveryLogAndReplay(t *testing.T) {
 	if log, _ := e.s.WebhookDeliveries(e.ctx, e.admin, h.ID); len(log) != 2 || log[0].ID != r.ID {
 		t.Errorf("log after replay (newest first): %+v", log)
 	}
-	// A test ping is logged too.
 	if _, err := e.s.TestWebhook(e.ctx, e.admin, h.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +129,6 @@ func TestWebhookDeliveryAccess(t *testing.T) {
 	if _, err := e.s.ReplayWebhookDelivery(e.ctx, ro, h.ID, log[0].ID); err == nil {
 		t.Error("a read-only token replayed a delivery")
 	}
-	// A delivery only replays through its own webhook.
 	if _, err := e.s.ReplayWebhookDelivery(e.ctx, e.admin, global.ID, log[0].ID); err == nil {
 		t.Error("replayed another webhook's delivery")
 	}
@@ -168,7 +165,6 @@ func TestWebhookDeliveryPruneAndBigBodies(t *testing.T) {
 	if n != keepDeliveries || m != 1 {
 		t.Errorf("after pruning: %d and %d, want %d and 1", n, m, keepDeliveries)
 	}
-	// A body too big to keep can't be replayed.
 	log, _ := e.s.WebhookDeliveries(e.ctx, e.admin, other.ID)
 	if len(log) != 1 || log[0].Replayable {
 		t.Fatalf("big body entry: %+v", log)

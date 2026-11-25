@@ -8,28 +8,6 @@ import (
 	"slices"
 )
 
-// The prep policy's arithmetic (WP-250, WP-ADR104): no database, no clock.
-//
-// Every task an agent took with a prep is one observation: an outcome
-// (lower is better), what was known of the task before any pointers were
-// drawn (its covariates), and the arm it got. The arms' effects against
-// showing nothing are estimated together with the covariates' in one
-// weighted ridge regression, so a difference between arms isn't one of
-// project, task type, agent model or month. An observation's weight halves
-// as it ages, so the estimate follows what agents do now and widens when
-// an arm's evidence gets old. Each arm's share of new tasks is the
-// probability that it is the best one (Thompson sampling): an arm the data
-// say is worse gets few tasks at once and none when that is sure, and gets
-// some again only when the evidence against it has aged enough to doubt.
-//
-// How fast evidence should age isn't assumed: the estimate is a mix of fits
-// at several half-lives (prepHalfLives), each weighted by how well it
-// forecast the outcomes of the last prepForecastDays days from the tasks
-// before them. While nothing changes the long half-lives forecast best and
-// carry the estimate (most evidence, least exploring); when an arm's effect
-// moves the short ones do, within days. The simulation in
-// prep_policy_sim_test.go is what this was chosen on.
-
 // prepObs is one task in a fit.
 type prepObs struct {
 	Y float64   // the outcome; lower is better
@@ -52,11 +30,9 @@ type prepFit struct {
 	// ArmN: each arm's weighted observations; the last is no pointers'.
 	ArmN  []float64
 	draws [][]float64
-	// Every coefficient (the covariates', then the arms') and their
-	// covariance, for forecasts.
-	beta []float64
-	inv  [][]float64
-	p    int // covariates, the intercept among them
+	beta  []float64
+	inv   [][]float64
+	p     int
 }
 
 const (
@@ -132,7 +108,7 @@ func fitPrepArms(arms []string, obs []prepObs, spread float64) *prepFit {
 	}
 	f.N = sumW
 	prior := make([]float64, d)
-	prior[0] = 1e-8 // the intercept is the data's
+	prior[0] = 1e-8
 	for i := 1; i < p; i++ {
 		prior[i] = 1 / (prepCovarSD * prepCovarSD)
 	}
@@ -142,8 +118,6 @@ func fitPrepArms(arms []string, obs []prepObs, spread float64) *prepFit {
 	sigma2 := spread * spread
 	var inv [][]float64
 	var beta []float64
-	// The spread is the data's once there are data: fitted, then fitted
-	// again with what the first fit left unexplained.
 	for range 3 {
 		a := make([][]float64, d)
 		for i := range d {
@@ -160,7 +134,6 @@ func fitPrepArms(arms []string, obs []prepObs, spread float64) *prepFit {
 				beta[i] += inv[i][j] * xty[j] / sigma2
 			}
 		}
-		// The weighted squares left over: y'Wy - 2b'X'Wy + b'X'WXb.
 		rss := sumYY
 		for i := range d {
 			rss -= 2 * beta[i] * xty[i]
@@ -420,7 +393,6 @@ func invertSPD(a [][]float64) [][]float64 {
 			break
 		}
 	}
-	// L's inverse, then its transpose times it.
 	li := make([][]float64, n)
 	for i := range n {
 		li[i] = make([]float64, n)
@@ -494,7 +466,6 @@ func (f *prepFit) sample() [][]float64 {
 		return f.draws
 	}
 	k := len(f.Arms)
-	// Cholesky of the effects' covariance, a little added if it must be.
 	l := make([][]float64, k)
 	for i := range k {
 		l[i] = make([]float64, k)

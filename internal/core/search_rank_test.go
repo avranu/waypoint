@@ -37,7 +37,6 @@ func TestSearchRanksWhatTheSearcherMeans(t *testing.T) {
 		return out
 	}
 
-	// A two-letter word is that word (and its plural), never a prefix.
 	got := keys("PR", "")
 	for _, n := range noise {
 		if slices.Contains(got, n.Key) {
@@ -47,7 +46,6 @@ func TestSearchRanksWhatTheSearcherMeans(t *testing.T) {
 	if !slices.Contains(got, bodyPR.Key) {
 		t.Errorf("PR should still find a body mention: %v", got)
 	}
-	// Title matches lead; the project in view leads among them.
 	got = keys("PR", wp.Key)
 	if len(got) != 3 || got[0] != want.Key || got[1] != elsewherePR.Key || got[2] != bodyPR.Key {
 		t.Errorf("PR near %s = %v, want [%s %s %s]", wp.Key, got, want.Key, elsewherePR.Key, bodyPR.Key)
@@ -57,14 +55,12 @@ func TestSearchRanksWhatTheSearcherMeans(t *testing.T) {
 		t.Errorf("PR near %s = %v, want %s first", other.Key, got, elsewherePR.Key)
 	}
 
-	// Three letters or more still match as a prefix, while typing.
 	if got := keys("pr proc", wp.Key); len(got) == 0 || got[0] != want.Key {
 		t.Errorf("pr proc = %v, want %s first", got, want.Key)
 	}
 	if got := keys("improv", ""); !slices.Equal(got, []string{want.Key}) {
 		t.Errorf("improv = %v, want [%s]", got, want.Key)
 	}
-	// Punctuation around a short word doesn't make it a prefix again.
 	for _, q := range []string{"PR?", "(PR)", "PR-"} {
 		for _, n := range noise {
 			if got := keys(q, ""); slices.Contains(got, n.Key) {
@@ -72,17 +68,14 @@ func TestSearchRanksWhatTheSearcherMeans(t *testing.T) {
 			}
 		}
 	}
-	// Scripts without spaces keep prefix matching: "日本語" is one token.
 	cjk := e.issue(e.admin, IssueInput{Project: wp.Key, Title: "日本語 notes"})
 	if got := keys("日本", ""); !slices.Equal(got, []string{cjk.Key}) {
 		t.Errorf("日本 = %v, want [%s]", got, cjk.Key)
 	}
 
-	// An unwanted word can come first.
 	if got := keys("-release PR", wp.Key); slices.Contains(got, bodyPR.Key) || !slices.Contains(got, want.Key) {
 		t.Errorf("-release PR = %v", got)
 	}
-	// An explicit order still wins over relevance.
 	if got := keys("PR order:-title", wp.Key); !slices.Equal(got, []string{bodyPR.Key, elsewherePR.Key, want.Key}) {
 		t.Errorf("PR order:-title = %v", got)
 	}

@@ -11,10 +11,6 @@ import (
 	"unicode/utf8"
 )
 
-// Pages are markdown documents: plans, decisions, notes. They nest, can
-// belong to a project (and then follow its roles) or to their author alone,
-// and link to issues. See WP-D7.
-
 // PageCategories are the kinds of page (optional).
 var PageCategories = []string{"plan", "idea", "experiment", "reference", "note", "decision", "problem", "feature", "bug"}
 
@@ -107,8 +103,6 @@ const pageFrom = ` FROM pages pg LEFT JOIN projects p ON p.id = pg.project_id LE
 	LEFT JOIN users tb ON tb.id = pg.text_by`
 
 func pageSelect(withBody bool) string {
-	// The second body is the story's base: lists without bodies still read
-	// it for pages with a story, so story_stale reads the same everywhere.
 	body, base := "''", "CASE WHEN pg.story != '' THEN pg.body ELSE '' END"
 	if withBody {
 		body, base = "pg.body", "pg.body"
@@ -121,7 +115,7 @@ func scanPage(sc interface{ Scan(...any) error }) (*Page, error) {
 	var parent, project, uid, av, number, tid, tav, reviewedAt, storyAt, session sql.NullInt64
 	var uname, dname, tname, tdname sql.NullString
 	var c, u int64
-	var body string // the body again, for the story's base; '' when left out
+	var body string
 	if err := sc.Scan(&pg.ID, &parent, &project, &pg.ProjectKey, &pg.Title, &pg.Body, &pg.Category, &pg.Position,
 		&uid, &uname, &dname, &av, &pg.ChildCount, &c, &u,
 		&number, &pg.CreatedAgent, &pg.TextAgent, &tid, &tname, &tdname, &tav, &pg.reviewedBy, &reviewedAt, &pg.Draft,
@@ -148,8 +142,6 @@ func scanPage(sc interface{ Scan(...any) error }) (*Page, error) {
 // agents and automations (WP-42).
 func (s *Service) pageRole(ctx context.Context, q queryer, actor *Actor, pg *Page) (int, error) {
 	if actor.HidesDrafts() {
-		// From the database, so a caller holding a partial Page can't get
-		// it wrong; a failed lookup counts as a draft.
 		var d bool
 		if err := q.QueryRowContext(ctx, `SELECT draft FROM pages WHERE id = ?`, pg.ID).Scan(&d); (err != nil && !errors.Is(err, sql.ErrNoRows)) || d {
 			return RoleNone, nil
@@ -158,7 +150,6 @@ func (s *Service) pageRole(ctx context.Context, q queryer, actor *Actor, pg *Pag
 	if pg.ProjectID != nil {
 		return s.projectRole(ctx, q, actor, *pg.ProjectID)
 	}
-	// A job's token never reaches its person's personal pages (WP-418).
 	if pg.Owner != nil && pg.Owner.ID == actor.id() && actor.id() != 0 && actor.scope == nil {
 		return RoleOwner, nil
 	}
@@ -205,8 +196,6 @@ func (s *Service) ListPages(ctx context.Context, actor *Actor, q PageQuery) ([]*
 	if actor == nil || actor.User == nil {
 		return nil, ErrUnauthorized
 	}
-	// Visible: pages in projects the actor belongs to (or all, for admins),
-	// and their own personal pages (not to a job's token, WP-418).
 	member, margs := actor.memberProjects(RoleViewer)
 	where := []string{`((pg.project_id IS NULL AND pg.owner_id = ? AND ?) OR (pg.project_id IS NOT NULL AND (? OR pg.project_id IN ` + member + `)))`}
 	args := append([]any{actor.id(), actor.scope == nil, actor.isAdmin()}, margs...)
@@ -235,8 +224,6 @@ func (s *Service) ListPages(ctx context.Context, actor *Actor, q PageQuery) ([]*
 	}
 	if q.Text != "" {
 		var or []string
-		// A code (PL13) finds the page with it, here or (APP-PL13) there, as
-		// well as pages mentioning it.
 		for _, c := range pageCodeCandidates(q.Text) {
 			cond := "pg.id IN (SELECT page_id FROM page_codes WHERE prefix = ? AND number = ?"
 			args = append(args, c.Prefix, c.Number)
@@ -374,7 +361,7 @@ func (s *Service) otherCodes(ctx context.Context, pg *Page) ([]string, error) {
 		}
 		code := c.String()
 		if !own && key == "" {
-			code += " (personal)" // from when it was a personal page
+			code += " (personal)"
 		}
 		if code != pg.Code {
 			out = append(out, code)
@@ -550,8 +537,6 @@ func (s *Service) CreatePage(ctx context.Context, actor *Actor, in PageInput) (*
 		return nil, err
 	}
 	if in.Draft && actor.HidesDrafts() {
-		// An agent may file a draft for its person, but from now on only
-		// people see it: it gets back no more than what it wrote (WP-42).
 		pg, err := scanPage(s.db.R.QueryRowContext(ctx, pageSelect(false)+` WHERE pg.id = ?`, id))
 		if err == nil && cat == "decision" {
 			pg.Notice = DecisionPageNotice
@@ -602,7 +587,7 @@ func (s *Service) PublishPage(ctx context.Context, actor *Actor, id int64) (*Pag
 	}
 	for _, pid := range published {
 		s.publishPage(projectID, pid)
-		s.pageEvent(ctx, actor, EvPageUpdated, pid) // now what any new page would set off
+		s.pageEvent(ctx, actor, EvPageUpdated, pid)
 	}
 	return s.GetPage(ctx, actor, id)
 }
@@ -653,7 +638,6 @@ func (s *Service) UpdatePage(ctx context.Context, actor *Actor, id int64, in Pag
 			sets, args = append(sets, "body = ?"), append(args, *in.Body)
 		}
 		if (in.Title != nil && strings.TrimSpace(*in.Title) != pg.Title) || (in.Body != nil && *in.Body != pg.Body) {
-			// Whoever writes the text owns it: an agent's waits for review again.
 			sets = append(sets, "text_by = ?", "text_agent = ?", "reviewed_by = NULL", "reviewed_at = NULL", "reviewed_on_story = 0")
 			args = append(args, nullUser(actor.id()), actor.agentName())
 		}
@@ -706,8 +690,6 @@ func (s *Service) UpdatePage(ctx context.Context, actor *Actor, id int64, in Pag
 			}
 		}
 		if !int64PtrEq(project, pg.ProjectID) {
-			// Taking pages out of a project is the owners' call; a page that
-			// becomes personal is the mover's, so it can't end up unreachable.
 			if pg.ProjectID != nil {
 				if err := s.requireProjectRole(ctx, t, actor, *pg.ProjectID, RoleOwner); err != nil {
 					return invalid("only project owners can move pages out of the project")
@@ -720,14 +702,13 @@ func (s *Service) UpdatePage(ctx context.Context, actor *Actor, id int64, in Pag
 					return err
 				}
 			}
-			// The whole subtree moves with it.
 			if _, err := t.ExecContext(ctx, `WITH RECURSIVE d(id) AS (SELECT id FROM pages WHERE id = ?
 				UNION SELECT x.id FROM pages x JOIN d ON x.parent_id = d.id)
 				UPDATE pages SET project_id = ? WHERE id IN (SELECT id FROM d)`, id, nullInt(project)); err != nil {
 				return err
 			}
 			if in.Project.Set && !in.Parent.Set {
-				sets = append(sets, "parent_id = NULL") // leaving its parent's project means leaving its parent
+				sets = append(sets, "parent_id = NULL")
 			}
 			moved = true
 		}
@@ -741,8 +722,6 @@ func (s *Service) UpdatePage(ctx context.Context, actor *Actor, id int64, in Pag
 				return err
 			}
 		}
-		// A new category or project gives the page (and, moved, its
-		// sub-pages) a new code there; the old ones keep leading to it.
 		if recode {
 			if err := s.codePage(ctx, t, id, want); err != nil {
 				return err
@@ -781,11 +760,11 @@ func (s *Service) pageEvent(ctx context.Context, actor *Actor, kind string, id i
 	var draft bool
 	_ = s.db.R.QueryRowContext(ctx, `SELECT title, project_id, draft FROM pages WHERE id = ?`, id).Scan(&title, &pid, &draft)
 	if draft {
-		return // drafts set nothing off until a person publishes them (WP-42)
+		return
 	}
 	e.ProjectID, e.Data["title"] = pid.Int64, title
 	s.automate(ctx, actor, e)
-	s.queueStory(id) // a long agent-written plan gets a story (WP-190)
+	s.queueStory(id)
 }
 
 // DeletePage removes a page and its sub-pages.
@@ -803,7 +782,6 @@ func (s *Service) DeletePage(ctx context.Context, actor *Actor, id int64) error 
 		if _, err := t.ExecContext(ctx, `DELETE FROM pages WHERE id = ?`, id); err != nil {
 			return err
 		}
-		// Personal pages are their author's business.
 		if pg.ProjectID != nil {
 			t.audit(AuditEntry{Action: "page.delete", Category: AuditControl, ProjectID: *pg.ProjectID, TargetType: "page", TargetID: id,
 				Target: pageLabel(pg), Detail: "deleted the page and its sub-pages"})

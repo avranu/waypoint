@@ -25,7 +25,6 @@ func changeFacts(base string) map[string]any {
 	if ref == "" {
 		return nil
 	}
-	// Unescaped, so an accented path matches the code index's.
 	numstat, err := localGit("-c", "core.quotepath=off", "diff", "--no-renames", "--numstat", ref+"...HEAD")
 	if err != nil || numstat == "" || len(numstat) > maxChangeDiff {
 		return nil

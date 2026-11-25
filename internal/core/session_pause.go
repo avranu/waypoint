@@ -5,13 +5,6 @@ import (
 	"strings"
 )
 
-// Session pause (WP-146): a person's pause with Sessions set winds down the
-// sessions it covers, not only the queue. The CLI's hooks pull it to a local
-// file; the PreToolUse hooks then refuse new agents and tell the session to
-// finish its step, write a hand-off and stop. Here, Waypoint stops waking
-// those sessions itself: no news posted to an idle one, no keep-warm ping,
-// nothing delivered at a Stop that would carry it on.
-
 // SessionPauseState is what a session's hooks pull: the pause covering it,
 // or none.
 type SessionPauseState struct {
