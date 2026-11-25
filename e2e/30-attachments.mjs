@@ -271,7 +271,7 @@ async function run(width, scheme) {
   ok(true, `${tag} a file can be removed`);
 
   await page.getByText("The plan.").click();
-  const ta = page.locator("textarea:visible").first();
+  const ta = page.locator(".rich-editor[contenteditable=true]");
   await ta.waitFor();
   await ta.evaluate((el, b64) => {
     const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
@@ -280,8 +280,8 @@ async function run(width, scheme) {
     el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
   }, PNG1.toString("base64"));
   await page.waitForFunction(() =>
-    /!\[pasted\.png\]\(\/api\/v1\/attachments\/\d+\/pasted\.png\)/.test(
-      document.querySelector("textarea")?.value ?? "",
+    /^\/api\/v1\/attachments\/\d+\/pasted\.png$/.test(
+      document.querySelector('.rich-editor img[alt="pasted.png"]')?.getAttribute("src") ?? "",
     ),
   );
   ok(true, `${tag} a pasted image uploads to the page and becomes Markdown`);

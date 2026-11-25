@@ -53,6 +53,7 @@ import {
 import { Button, IconButton } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Field, Input, Select, Switch, Textarea } from '@/components/ui/input'
+import { MarkdownField } from '@/components/editor/MarkdownField'
 import { Empty, PageHeader, Skeleton } from '@/components/ui/misc'
 import { MenuList, Picker, Popover, usePopover, type PickItem } from '@/components/ui/popover'
 import { toast, toastError } from '@/components/ui/toast'
@@ -555,11 +556,11 @@ function NewNoteDialog({
           </div>
         )}
         <Field label="What you intend">
-          <Textarea
+          <MarkdownField
             value={body}
-            onChange={(e) => setBody(e.target.value)}
+            onValueChange={setBody}
             rows={6}
-            autoGrow
+            ariaLabel="What you intend"
             placeholder="Markdown. Link terms, notes and issues with [[wikilinks]]."
           />
         </Field>

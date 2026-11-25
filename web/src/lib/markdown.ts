@@ -7,7 +7,7 @@ marked.setOptions({ gfm: true, breaks: true })
 
 // Our own uploaded video, written as an image in the source, plays in place
 // (WP-D16). Anything else stays an image, so markdown can't embed other media.
-const ATTACHED_VIDEO = /^\/api\/v1\/attachments\/\d+\/[^?#]+\.(?:mp4|webm)$/i
+export const ATTACHED_VIDEO = /^\/api\/v1\/attachments\/\d+\/[^?#]+\.(?:mp4|webm)$/i
 const attr = (s: string) =>
   s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
@@ -265,14 +265,20 @@ function untrustedImages(root: DocumentFragment) {
   }
 }
 
+// DOMPurify's own list of addresses, and blob: (a file added to a form that
+// has nowhere to attach it yet: lib/deferredFiles.ts).
+const WITH_BLOB =
+  /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|blob):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i
+
 // The parse, template and sanitise steps both renderers share, so a SANITIZE
 // change applies to both.
-function sanitized(src: string, addAttr: string[] = []) {
+function sanitized(src: string, addAttr: string[] = [], blob = false) {
   const html = marked.parse(src, { async: false }) as string
   const tpl = document.createElement('template')
   tpl.innerHTML = DOMPurify.sanitize(html, {
     ...SANITIZE,
     ADD_ATTR: [...SANITIZE.ADD_ATTR, ...addAttr],
+    ...(blob ? { ALLOWED_URI_REGEXP: WITH_BLOB } : {}),
   })
   return tpl
 }
@@ -385,8 +391,8 @@ export const isPieceSrc = (src: string) => PIECE_SRC_OK.test(src)
  * keep their markdown, so the text round-trips back to the same markdown.
  * Task checkboxes are the only form controls kept.
  */
-export function renderMarkdownForEdit(src: string): string {
-  const tpl = sanitized(src, ['contenteditable'])
+export function renderMarkdownForEdit(src: string, opts: { blob?: boolean } = {}): string {
+  const tpl = sanitized(src, ['contenteditable'], opts.blob)
   for (const input of Array.from(tpl.content.querySelectorAll('input'))) {
     if (input.getAttribute('type') === 'checkbox' && input.classList.contains('task')) {
       input.setAttribute('contenteditable', 'false')

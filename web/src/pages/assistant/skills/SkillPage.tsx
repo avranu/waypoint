@@ -170,8 +170,7 @@ export function SkillPage({
                 onChange={setDraft}
                 onSave={save}
                 autoFocus
-                minHeight="min-h-[24rem]"
-                preview={(t) => <SkillDoc assistantId={id} content={t} known={known} />}
+                rows={16}
               />
               <EditorActions
                 onCancel={() => setEditing(false)}

@@ -104,6 +104,15 @@ body {
 :where(input, textarea, select):focus-visible {
   outline: none;
 }
+/* The formatted editor shows focus on its own box (a ring, or the field's border). */
+.rich-editor:focus-visible {
+  outline: none;
+}
+/* ProseMirror asks for break-spaces, where a space at the end of a line takes
+   room and so wraps a word the view fits; the view's lines are pre-wrap's. */
+.rich-editor {
+  white-space: pre-wrap !important;
+}
 
 [data-bg] .wp-surface {
   background: color-mix(in oklab, var(--wp-panel) 94%, transparent);
@@ -144,18 +153,99 @@ body {
   display: none;
 }
 
-.rich-editor[data-empty] > p::before {
-  content: var(--rich-placeholder);
+.rich-editor p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
   color: var(--wp-subtle);
   pointer-events: none;
   /* One line, whatever the hint's length, so the editor is no taller than the
      "Add a description" button it replaces. */
   display: inline-block;
-  max-width: 100%;
+  /* width 0 + min-width 100%: the hint fills the line but adds nothing to the
+     box's min-content, so a long hint can't widen a flex row past the screen. */
+  width: 0;
+  min-width: 100%;
   vertical-align: top;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The editor's DOM where it differs from the rendered view's: task items are a
+   label (the box) beside a div (the text), tables sit in a wrapper, and what is
+   selected shows. */
+.rich-editor ul[data-type='taskList'] {
+  list-style: none;
+  padding-left: 0.2em;
+}
+.rich-editor li[data-checked] {
+  /* The view's box (13px) and the space after it. */
+  --task-w: calc(13px + 0.68em);
+  display: flex;
+  align-items: flex-start;
+}
+.rich-editor li[data-checked] > label {
+  flex: none;
+  width: var(--task-w);
+  user-select: none;
+  /* One line tall however the box sits, as a box in a line of text is. */
+  display: block;
+  height: 1lh;
+  overflow: visible;
+}
+.rich-editor li[data-checked] > label input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--wp-accent);
+}
+.rich-editor li[data-checked] > div {
+  flex: 1;
+  min-width: 0;
+}
+/* The view's nested list is under the text and 0.2em in from its parent's box;
+   here it sits inside the text column, so it steps back out by the box. */
+.rich-editor li[data-checked] ul[data-type='taskList'] {
+  padding-left: 0;
+  margin-left: calc(0.2em - var(--task-w));
+}
+.rich-editor .tableWrapper {
+  overflow-x: auto;
+}
+.rich-editor td > p,
+.rich-editor th > p {
+  margin: 0;
+}
+.rich-editor .selectedCell {
+  background: color-mix(in oklab, var(--wp-accent) 14%, transparent);
+}
+.rich-editor .ProseMirror-selectednode {
+  outline: 2px solid color-mix(in oklab, var(--wp-accent) 55%, transparent);
+  outline-offset: 1px;
+}
+.rich-editor pre {
+  white-space: pre-wrap;
+}
+.rich-editor .ProseMirror-gapcursor {
+  display: none;
+  pointer-events: none;
+  position: absolute;
+}
+.rich-editor .ProseMirror-gapcursor::after {
+  content: '';
+  display: block;
+  position: absolute;
+  top: -2px;
+  width: 20px;
+  border-top: 1px solid var(--wp-fg);
+  animation: wp-gap-blink 1.1s steps(2, start) infinite;
+}
+.rich-editor.ProseMirror-focused .ProseMirror-gapcursor {
+  display: block;
+}
+@keyframes wp-gap-blink {
+  to {
+    visibility: hidden;
+  }
 }
 
 .prose-wp {
@@ -275,6 +365,9 @@ body {
   color: var(--wp-muted);
 }
 .prose-wp input[type='checkbox'] {
+  /* Chromium's box size, spelled out: Safari's default is 12px, which moved the text after it. */
+  width: 13px;
+  height: 13px;
   margin-right: 0.4em;
   accent-color: var(--wp-accent);
 }

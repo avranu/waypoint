@@ -5,6 +5,7 @@
 import { chromium } from "playwright";
 import fs from "node:fs";
 import { looks } from "./looks.mjs";
+import { fillMarkdown, markdownOf, mdBox } from "./editor.mjs";
 const [base, out] = process.argv.slice(2);
 fs.mkdirSync(out, { recursive: true });
 const errors = [];
@@ -91,7 +92,7 @@ for (const [width, scheme] of looks([
   await box.press("Control+Enter");
   await dialog.waitFor();
   const t = await title.inputValue();
-  const d = await dialog.getByPlaceholder(/Add a description/).inputValue();
+  const d = await markdownOf(mdBox(dialog, { placeholder: /Add a description/ }));
   ok(
     t.length < 200 && t.startsWith("Make the importer"),
     `${tag} long text gives a short title`,

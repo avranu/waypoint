@@ -23,6 +23,10 @@ const fieldLook =
   'rounded-lg border border-line bg-panel px-3 text-sm text-fg placeholder:text-subtle transition-colors focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20 disabled:opacity-60'
 export const inputClass = 'w-full ' + fieldLook
 
+/** fieldLook for a box that holds the focus inside it (the formatted editor); keep in step with fieldLook. */
+export const fieldBoxLook =
+  'rounded-lg border border-line bg-panel text-sm text-fg transition-colors focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20'
+
 /** inputClass, minus w-full when `className` already gives a width. */
 function fieldClass(className?: string) {
   return /(^|\s)!?([a-z]+:)?(w-|flex-1|basis-)/.test(className ?? '') ? fieldLook : inputClass

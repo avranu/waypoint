@@ -2,6 +2,7 @@
 import { chromium } from "playwright";
 import fs from "node:fs";
 import { execSync } from "node:child_process";
+import { fillMarkdown } from "./editor.mjs";
 const [base, out, restart] = process.argv.slice(2);
 fs.mkdirSync(out, { recursive: true });
 const errors = [];
@@ -129,8 +130,8 @@ await page
   .locator("[role=dialog] .prose-wp")
   .first()
   .click({ position: { x: 5, y: 5 } });
-const ta = page.locator("[role=dialog] textarea").filter({ hasText: "Intro" });
-await ta.fill("typed then escaped");
+const ta = page.locator("[role=dialog] .rich-editor").filter({ hasText: "Intro" });
+await fillMarkdown(ta, "typed then escaped");
 await page.keyboard.press("Escape");
 await page.waitForTimeout(500);
 ok(
@@ -174,15 +175,15 @@ await page.keyboard.press("Enter");
 await page.waitForTimeout(300);
 ok(
   (await page
-    .locator("textarea")
+    .locator(".rich-editor")
     .filter({ hasText: "first comment" })
     .count()) === 1,
   "Edit opens editor at once",
 );
-await page
-  .locator("textarea")
-  .filter({ hasText: "first comment" })
-  .fill("edited comment");
+await fillMarkdown(
+  page.locator(".rich-editor").filter({ hasText: "first comment" }),
+  "edited comment",
+);
 await page.keyboard.press("Control+Enter");
 await page.waitForTimeout(700);
 const comments = await apiGet(`/issues/${created.key}/comments`);

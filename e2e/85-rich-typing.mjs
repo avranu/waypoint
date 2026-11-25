@@ -14,6 +14,7 @@
 import { launchEngine } from "./engine.mjs";
 import fs from "node:fs";
 import { looks } from "./looks.mjs";
+import { formattedSwitch, toolbarOf, shape, navigationAbort } from "./editor.mjs";
 const [base, out] = process.argv.slice(2);
 fs.mkdirSync(out, { recursive: true });
 const errors = [];
@@ -97,7 +98,7 @@ for (const [width, scheme] of looks(
   const height = width < 500 ? 844 : 800;
   const ctx = await browser.newContext({ viewport: { width, height }, colorScheme: scheme });
   const page = await login(ctx);
-  page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
+  page.on("pageerror", (e) => navigationAbort(e.message) || fail(`${tag} pageerror: ${e.message}`));
   const make = async (title, description) =>
     (
       await page.request.post(base + "/api/v1/issues", {
@@ -128,11 +129,11 @@ for (const [width, scheme] of looks(
     const issue = await make(name, "");
     await page.goto(`${base}/issue/${issue.key}`);
     // The description lives on the Details tab, which a fresh browser opens second.
-    await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
+    await page.getByRole("tab", { name: "Details" }).click({ timeout: 15000 }).catch(() => {});
     await page.getByRole("button", { name: "Add a description…" }).click();
     await richBox.waitFor();
     await steps();
-    const html = await richBox.evaluate((el) => el.innerHTML);
+    const html = await shape(richBox);
     if (dom) {
       const good = typeof dom === "function" ? dom(html) : dom.test(html);
       ok(good, `${tag} ${name}: editor DOM (${html.replace(/​/g, "·").slice(0, 160)})`);
@@ -205,8 +206,9 @@ for (const [width, scheme] of looks(
       await press("Enter");
       await type("+ b");
     },
-    "- a\n\n- b",
-    /^<ul><li>a<\/li><\/ul><ul><li>b<\/li><\/ul>$/,
+    // A list typed right after another joins it (it is one list in markdown).
+    "- a\n- b",
+    /^<ul><li>a<\/li><li>b<\/li><\/ul>$/,
   );
 
   // 3. Tasks.
@@ -271,7 +273,7 @@ for (const [width, scheme] of looks(
       await type("after");
     },
     "```js\nconst a_b = 1 * 2\nx()\n```\n\nafter",
-    /<pre><code class="language-js">const a_b = 1 \* 2<br>x\(\)(<br>)?<\/code><\/pre><p>after<\/p>/,
+    /<pre><code class="language-js">const a_b = 1 \* 2(<br>|\n)x\(\)(<br>|\n)?<\/code><\/pre><p>after<\/p>/,
   );
   await typed(
     "bare fence on space",
@@ -286,6 +288,43 @@ for (const [width, scheme] of looks(
     "```\n# not a heading `x` **y**\n```\n\nafter",
     /<pre><code>[^<]*(<br>)?<\/code><\/pre><p>after<\/p>/,
   );
+  // A fence typed on a line after Shift+Enter, in a paragraph (Jess, WP-1855).
+  await typed(
+    "fence after a line break",
+    async () => {
+      await type("text");
+      await press("Shift+Enter");
+      await type("```");
+      await press("Enter");
+      await type("code");
+    },
+    "text\n\n```\ncode\n```",
+    /^<p>text<\/p><pre><code>code<\/code><\/pre>$/,
+  );
+  await typed(
+    "fence with language after a line break",
+    async () => {
+      await type("text");
+      await press("Shift+Enter");
+      await type("```js");
+      await press("Enter");
+      await type("code");
+    },
+    "text\n\n```js\ncode\n```",
+    /<p>text<\/p><pre><code class="language-js">code<\/code><\/pre>/,
+  );
+  await typed(
+    "bare fence on space after a line break",
+    async () => {
+      await type("text");
+      await press("Shift+Enter");
+      await type("``` ");
+      await type("code");
+    },
+    "text\n\n```\ncode\n```",
+    /<p>text<\/p><pre><code>code<\/code><\/pre>/,
+  );
+
   await typed(
     "code block Tab and ArrowDown",
     async () => {
@@ -309,7 +348,8 @@ for (const [width, scheme] of looks(
       await type("below");
     },
     "---\n\nbelow",
-    /<hr><p>below<\/p>/,
+    // The rule is made by the third dash; Enter then leaves an empty paragraph, which is not saved.
+    /<hr>(<p><\/p>)?<p>below<\/p>/,
   );
 
   for (const r of ["***", "___"])
@@ -439,10 +479,10 @@ for (const [width, scheme] of looks(
       await press("Control+z");
       const t = await richBox.evaluate((el) => el.innerText.replace(/\ufeff/g, ""));
       ok(t.trim() === "a ![p](/favicon.svg)", `${tag} undo after an image is the literal text (${JSON.stringify(t)})`);
-      await press("Control+Shift+z");
     },
-    "a ![p](/favicon.svg)",
-    /<img src="\/favicon\.svg" alt="p">/,
+    // Taking the rule back is not a history step to redo: the text stays text.
+    "a ![p\\](/favicon.svg)",
+    (h) => !/<img/.test(h),
   );
 
   for (const src of [
@@ -469,7 +509,7 @@ for (const [width, scheme] of looks(
     async () => {
       await type("# ");
       await press("Control+z");
-      const t = await richBox.evaluate((el) => el.innerHTML);
+      const t = await shape(richBox);
       ok(/^<p>#(&nbsp;| )<\/p>$/.test(t), `${tag} undo after "# " is the literal text (${t})`);
       // The restored text is selected, so typing would replace it.
       await press("End");
@@ -509,7 +549,7 @@ for (const [width, scheme] of looks(
     async () => {
       await type("- ");
       await press("Control+z");
-      const t = await richBox.evaluate((el) => el.innerHTML);
+      const t = await shape(richBox);
       ok(/^<p>-(&nbsp;| )<\/p>$/.test(t), `${tag} undo after "- " is the literal text (${t})`);
       await press("End");
       await type("x");
@@ -523,7 +563,7 @@ for (const [width, scheme] of looks(
       await type("```");
       await press("Enter");
       await press("Control+z");
-      const t = await richBox.evaluate((el) => el.innerHTML);
+      const t = await shape(richBox);
       ok(/^<p>```<\/p>$/.test(t), `${tag} undo after Enter on a fence is the literal text (${t})`);
       await press("End");
       await type("x");
@@ -566,7 +606,8 @@ for (const [width, scheme] of looks(
         );
       });
     },
-    "x a\u2060b",
+    // A dropped U+FEFF is kept as it came (no parking characters exist any more).
+    "x a\ufeffb",
     null,
   );
 
@@ -592,36 +633,27 @@ for (const [width, scheme] of looks(
     "q",
     (h) => !/blockquote/.test(h),
   );
+  // Backspace right after "[ ] " takes the typed text back (the rule is undone); the next one deletes a character.
   await typed(
-    "backspace in an empty task leaves an empty bullet item",
+    "backspace right after the box gives back the typed [ ]",
     async () => {
       await type("[ ] ");
       await press("Backspace");
       await type("x");
     },
-    "- x",
-    /^<ul><li>\ufeff?x<\/li><\/ul>$/,
+    "[ ] x",
+    (h) => !/<ul/.test(h),
   );
   await typed(
-    "undo after backspace in an empty task gives the box back, with nothing typed in",
-    async () => {
-      await type("[ ] ");
-      await press("Backspace");
-      await press("Control+z");
-    },
-    null,
-    (h) => /<li>\ufeff?<input[^>]*class="task"/.test(h) && !/>[^<]*\.[^<]*</.test(h),
-  );
-  await typed(
-    "a second backspace in an emptied task leaves the empty bullet item",
+    "a second backspace after the box deletes one character",
     async () => {
       await type("[ ] ");
       await press("Backspace");
       await press("Backspace");
       await type("y");
     },
-    "- y",
-    /^<ul><li>\ufeff?y<\/li><\/ul>$/,
+    "[ ]y",
+    (h) => !/<ul/.test(h),
   );
   // Enter inside a heading splits it in two, a new line of the same level in
   // the markdown, not a space within one line.
@@ -640,12 +672,11 @@ for (const [width, scheme] of looks(
     async () => {
       await type("[ ] t");
       await press("Home");
-      await press("ArrowRight");
-      await press("ArrowRight");
       await press("Backspace");
     },
-    "- t",
-    (h) => !/<input/.test(h),
+    // Backspace at the start of a task takes it out of the list (it no longer turns into a bullet).
+    "t",
+    (h) => !/<input|<ul/.test(h),
   );
   await typed(
     "backspace deletes one visible character after inline code",
@@ -658,7 +689,7 @@ for (const [width, scheme] of looks(
       await type("X");
     },
     "`aX`",
-    (h) => /<code>aX<\/code>/.test(h) || /<code>a<\/code>[^<]*X/.test(h),
+    (h) => /<code>aX<\/code>/.test(h),
   );
   await typed(
     "arrows over the caret parking space move one character",
@@ -677,7 +708,7 @@ for (const [width, scheme] of looks(
   const openDesc = async (name, initial) => {
     const issue = await make(name, initial);
     await page.goto(`${base}/issue/${issue.key}`);
-    await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
+    await page.getByRole("tab", { name: "Details" }).click({ timeout: 15000 }).catch(() => {});
     return issue;
   };
   const viewBox = page.locator('.prose-wp[title="Click or press Enter to edit"]').first();
@@ -704,8 +735,9 @@ for (const [width, scheme] of looks(
       await press("Home");
       await type("``` ");
     },
-    "\\`\\`\\` foo",
-    (h) => /foo/.test(h) && !/<pre/.test(h),
+    // The text after the caret goes into the block (WP-1791).
+    "```\nfoo\n```",
+    /<pre><code>foo<\/code><\/pre>/,
   );
   await typed(
     "Enter in the middle of a task keeps the text",
@@ -722,8 +754,6 @@ for (const [width, scheme] of looks(
     async () => {
       await type("[ ] milk");
       await press("Home");
-      await press("ArrowRight");
-      await press("ArrowRight");
       await press("Enter");
     },
     "- [ ]\n- [ ] milk",
@@ -737,9 +767,10 @@ for (const [width, scheme] of looks(
     await press("Enter");
     await type("[ ] ");
     await type("t");
-    const h = await richBox.evaluate((el) => el.innerHTML);
-    ok(/<li>first<\/li><li><input[^>]*class="task"[^>]*>[^<]*t<\/li>/.test(h), `${tag} "[ ] " typed at the start of a bullet makes it a task (${h.slice(0, 160)})`);
-    await closeAndCheck(i, "task in a bullet", "- first\n- [ ] t");
+    const h = await shape(richBox);
+    ok(/<li>first<\/li><\/ul><ul><li><input[^>]*class="task"[^>]*>[^<]*t<\/li>/.test(h), `${tag} "[ ] " typed at the start of a bullet makes it a task (${h.slice(0, 160)})`);
+    // A list is all bullets or all tasks: the task item starts its own list.
+    await closeAndCheck(i, "task in a bullet", "- first\n\n- [ ] t");
   }
 
   // Tables: the caret in a cell is in the cell, not in "the table".
@@ -754,7 +785,7 @@ for (const [width, scheme] of looks(
     await type("``` ");
     await press("End");
     await type(" `x` y");
-    const h = await richBox.evaluate((el) => el.innerHTML);
+    const h = await shape(richBox);
     ok(/<table/.test(h) && !/<(ul|h1|pre)\b/.test(h), `${tag} block rules typed in a table cell leave the table alone (${h.slice(0, 200)})`);
     ok(/<th>[^<]*<code>x<\/code>/.test(h) && !/<code>x<\/code>[^<]*y<\/code>/.test(h), `${tag} inline code typed in a cell converts, inside that cell (${h.slice(0, 200)})`);
     await done.click();
@@ -834,16 +865,19 @@ for (const [width, scheme] of looks(
     null,
   );
 
-  // Backspace over the parking space takes one visible character, an emoji too.
+  // Backspace takes one visible character, an emoji too, inside code.
   await typed(
-    "backspace over the parking space after an emoji",
+    "backspace over an emoji inside code",
     async () => {
       await type("`a\u{1F600}`");
+      await press("Home");
+      await press("ArrowRight");
+      await press("ArrowRight");
       await press("Backspace");
       await type("X");
     },
     "`aX`",
-    (h) => /<code>aX<\/code>/.test(h) || /<code>a<\/code>[^<]*X/.test(h),
+    (h) => /<code>aX<\/code>/.test(h),
   );
 
   // A rule that throws must not lose the typed text.
@@ -893,7 +927,7 @@ for (const [width, scheme] of looks(
     await dialog.waitFor();
     await dialog.locator('.prose-wp[title="Click or press Enter to edit"]').first().click();
     await richBox.waitFor();
-    const tb = page.getByRole("toolbar", { name: "Formatting" });
+    const tb = toolbarOf(richBox);
     const box = await tb.boundingBox();
     ok(box && box.y >= 0 && box.y + box.height <= height && box.x >= 0 && box.x + box.width <= width + 0.5, `${tag} the toolbar is on screen in the sheet (${JSON.stringify(box)})`);
     const hit = await tb.evaluate((el) => {
@@ -916,7 +950,7 @@ for (const [width, scheme] of looks(
     const i = await openDesc("Toolbar cue", "Words.");
     await viewBox.click();
     await richBox.waitFor();
-    const tb = page.getByRole("toolbar", { name: "Formatting" });
+    const tb = toolbarOf(richBox);
     const state = () =>
       tb.evaluate((el) => ({
         fade: el.getAttribute("data-fade"),
@@ -933,10 +967,10 @@ for (const [width, scheme] of looks(
     const b = await state();
     ok(b.fade === "left" && b.mask && b.mask !== "none", `${tag} at the end the fade is on the left only (${JSON.stringify(b)})`);
     await page.screenshot({ path: `${out}/rich-toolbar-cue-end-${tag}.png` });
-    await page.getByRole("button", { name: "Edit as markdown" }).click();
+    await toolbarOf(richBox).getByRole("button", { name: "Edit as markdown" }).click();
     await page.locator('textarea[aria-label="Description"]').waitFor();
     ok(true, `${tag} "Edit as markdown" is reachable by scrolling the toolbar`);
-    await page.getByRole("button", { name: "Edit formatted" }).click();
+    await formattedSwitch(page.locator('textarea[aria-label="Description"]')).click();
     await richBox.waitFor();
     await press("Escape");
     await page.setViewportSize({ width, height });
@@ -1030,7 +1064,11 @@ for (const [width, scheme] of looks(
         };
         const sel = "p,h1,h2,h3,li,ul,ol,pre,blockquote,table,hr";
         // The code blocks' copy button is not part of the text.
-        const blocks = Array.from(el.querySelectorAll(sel)).filter((e) => !e.closest(".code-copy"));
+        // The editor wraps a list item's and a cell's text in a paragraph of its own;
+        // the box that holds it is the one compared.
+        const blocks = Array.from(el.querySelectorAll(sel)).filter(
+          (e) => !e.closest(".code-copy") && !e.matches("li > p, li > div > p, td > p, th > p"),
+        );
         return {
           scrollY: window.scrollY,
           scrollers,
@@ -1090,7 +1128,7 @@ for (const [width, scheme] of looks(
       caret.collapsed && w0 >= 0 && caret.offset >= w0 && caret.offset <= w0 + "plainwordnumber3x".length,
       `${tag} the caret is inside the clicked word (offset ${caret.offset}, word at ${w0})`,
     );
-    const tb = page.getByRole("toolbar", { name: "Formatting" });
+    const tb = toolbarOf(richBox);
     const tbBox = await tb.boundingBox();
     ok(tbBox && tbBox.y >= 0 && tbBox.y + tbBox.height <= height && tbBox.x >= 0 && tbBox.x + tbBox.width <= width + 0.5, `${tag} the toolbar is on screen (${JSON.stringify(tbBox)})`);
     const hit = await tb.evaluate((el) => {

@@ -6,6 +6,7 @@
 import { launchEngine } from "./engine.mjs";
 import fs from "node:fs";
 import { looks } from "./looks.mjs";
+import { formattedSwitch, pasteText, shape, toolbarOf, caretToStart, navigationAbort } from "./editor.mjs";
 const [base, out] = process.argv.slice(2);
 fs.mkdirSync(out, { recursive: true });
 const errors = [];
@@ -46,10 +47,10 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     colorScheme: scheme,
   });
   const page = await login(ctx);
-  page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
+  page.on("pageerror", (e) => navigationAbort(e.message) || fail(`${tag} pageerror: ${e.message}`));
   // The description is on the Details tab, which a fresh browser may not show.
   const details = () =>
-    page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
+    page.getByRole("tab", { name: "Details" }).click({ timeout: 15000 }).catch(() => {});
   const make = async (title, description) =>
     (
       await page.request.post(base + "/api/v1/issues", {
@@ -100,11 +101,10 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
   const insertInto = async (title, text, want) => {
     const issue = await open(title);
     await richBox.waitFor();
-    // Inserted in one piece, which the typing rules (WP-1749) leave alone: this
-    // suite is about how literal text is written, not about what typing a
-    // marker does (suite 85).
-    await field.focus();
-    await page.keyboard.insertText(text);
+    // Pasted with Shift+Ctrl+V, which puts text in as the characters it is: this
+    // suite is about how literal text is written, not about what typing or
+    // pasting a marker does (suites 85 and below).
+    await pasteText(richBox, text, { literal: true });
     const got = await saved(issue.key, want);
     ok(got === want, `${tag} inserting ${JSON.stringify(text)} saves ${JSON.stringify(want)}: ${JSON.stringify(got)}`);
     await settleClose();
@@ -132,10 +132,8 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
   const writes = async (title, html, want) => {
     const issue = await open(title);
     await richBox.waitFor();
-    await richBox.evaluate((el, h) => {
-      el.innerHTML = h;
-      el.dispatchEvent(new InputEvent("input", { bubbles: true }));
-    }, html);
+    // Pasted as HTML, the way a web page or document is copied in.
+    await pasteText(richBox, null, { html });
     const got = await saved(issue.key, want);
     ok(got === want, `${tag} ${title} writes ${JSON.stringify(want)}: ${JSON.stringify(got)}`);
     await settleClose();
@@ -150,20 +148,35 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     "<table><tbody><tr><th>h</th></tr><tr><td>a|b \\| <code>c|d</code><br>e</td></tr></tbody></table>",
     "| h |\n| --- |\n| a\\|b \\\\\\| `c\\|d` e |",
   );
+  // An empty link (no text) is dropped by the editor: there is nothing to see or click.
   await writes(
     "Table cell targets",
     '<table><tbody><tr><th>h</th></tr><tr><td><a href="/x?a|b">l</a> <img src="/i|.png" alt="p|q"> <a href="/y|z"></a> <a href="https://e.com/a|b">https://e.com/a|b</a></td></tr></tbody></table>',
-    "| h |\n| --- |\n| [l](/x?a\\|b) ![p\\|q](/i\\|.png) [/y\\|z](/y\\|z) <https://e.com/a\\|b> |",
+    "| h |\n| --- |\n| [l](/x?a\\|b) ![p\\|q](/i\\|.png) <https://e.com/a\\|b> |",
   );
+  // Links whose address is a refused one (a space) lose the link, keep the text; links
+  // are made by the editor's autolinking, so a link followed by letters is one link.
   await writes(
     "Autolinks",
     '<p>see <a href="https://example.com/a_b">https://example.com/a_b</a>. (<a href="https://example.com/">https://example.com/</a>)</p>' +
-      '<p><a href="https://example.com/">https://example.com/</a>more <a href="https://example.com/x.">https://example.com/x.</a> <em><a href="https://example.com/">https://example.com/</a></em></p>' +
+      '<p><em><a href="https://example.com/">https://example.com/</a></em></p>' +
       '<p><a href="/issue/a b">/issue/a b</a> <a href="mailto:a@example.com">mailto:a@example.com</a> <a href="https://example.com/"></a></p>',
     "see https://example.com/a_b. (https://example.com/)\n\n" +
-      "<https://example.com/>more <https://example.com/x.> *<https://example.com/>*\n\n" +
-      "[/issue/a b](</issue/a b>) <mailto:a@example.com> https://example.com/",
+      "[*https://example.com/*](https://example.com/)\n\n" +
+      "/issue/a b <mailto:a@example.com>",
   );
+  {
+    // A link to an address with a space is held, and saved with the space
+    // encoded (a serializer normalisation: the same link).
+    const text = "[/issue/a b](</issue/a b>)";
+    const i = await open("Space in a link target", text);
+    await richBox.waitFor();
+    ok((await note.count()) === 0, `${tag} a link to an address with a space opens rich`);
+    ok((await richBox.locator('a[href="/issue/a%20b"]').count()) === 1, `${tag} and shows as a link`);
+    await settleClose();
+    const got = await saved(i.key, "[/issue/a b](/issue/a%20b)");
+    ok(got === "[/issue/a b](/issue/a%20b)", `${tag} and saves the address encoded: ${JSON.stringify(got)}`);
+  }
   await writes(
     "Table cell blocks",
     "<table><tbody><tr><th>h</th></tr><tr><td><ul><li>a|b</li></ul><pre><code>c|d\ne</code></pre></td></tr></tbody></table>",
@@ -232,9 +245,9 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
   {
     const i = await open("Bold edge", "word next");
     await richBox.waitFor();
-    await field.press("Control+Home");
-    for (let k = 0; k < 5; k++) await field.press("Shift+ArrowRight");
-    await page.getByRole("button", { name: "Bold" }).click();
+    await caretToStart(richBox);
+    for (let k = 0; k < 5; k++) await richBox.press("Shift+ArrowRight");
+    await toolbarOf(richBox).getByRole("button", { name: "Bold" }).click();
     const want = "**word** next";
     const got = await saved(i.key, want);
     ok(got === want, `${tag} bold on "word " saves **word** next: ${JSON.stringify(got)}`);
@@ -246,8 +259,8 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     const i = await open("Ol start", text);
     await richBox.waitFor();
     ok((await note.count()) === 0, `${tag} a list starting at 3 opens rich`);
-    await field.press("Control+End");
-    await field.pressSequentially("!");
+    await richBox.press("Control+End");
+    await richBox.pressSequentially("!");
     const want = "3. three\n4. four!";
     const got = await saved(i.key, want);
     ok(got === want, `${tag} ol start is kept: ${JSON.stringify(got)}`);
@@ -258,8 +271,8 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     const i = await open("Nested ol", text);
     await richBox.waitFor();
     ok((await note.count()) === 0, `${tag} a list nested under a number opens rich`);
-    await field.press("Control+End");
-    await field.pressSequentially("!");
+    await richBox.press("Control+End");
+    await richBox.pressSequentially("!");
     const want = "1. one\n   - child\n2. two!";
     const got = await saved(i.key, want);
     ok(got === want, `${tag} nested indent is the marker width + 1: ${JSON.stringify(got)}`);
@@ -271,13 +284,69 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     const i = await open("Fence", text);
     await richBox.waitFor();
     ok((await note.count()) === 0, `${tag} a code block holding a fence opens rich`);
-    await field.press("Control+Home");
-    await field.pressSequentially("z");
+    await caretToStart(richBox);
+    await richBox.pressSequentially("z");
     const want = "````\nza\n```\nb\n````";
     const got = await saved(i.key, want);
     ok(got === want, `${tag} the fence outgrows the body: ${JSON.stringify(got)}`);
     await settleClose();
   }
+  // Paste (WP-1791): text that reads as markdown becomes formatting, prose is
+  // literal, Shift+Ctrl+V is always literal, and HTML keeps what the schema holds.
+  const pasted = async (name, text, opts, want, dom) => {
+    const i = await open(`Paste ${name}`);
+    await richBox.waitFor();
+    await pasteText(richBox, text, opts);
+    const html = await shape(richBox);
+    if (dom) ok(typeof dom === "function" ? dom(html) : dom.test(html), `${tag} paste ${name}: editor DOM (${html.slice(0, 200)})`);
+    const hit = want instanceof RegExp ? (d) => want.test(d) : (d) => d === want;
+    let got = await desc(i.key);
+    for (let k = 0; k < 40 && !hit(got); k++) {
+      // wplint:ignore e2e-wait polling a value or proving a negative: there is nothing to wait on
+      await page.waitForTimeout(250);
+      got = await desc(i.key);
+    }
+    ok(hit(got), `${tag} paste ${name} saves ${want}: ${JSON.stringify(got)}`);
+    await settleClose();
+  };
+  await pasted("fence", "```\nx\n```", {}, "```\nx\n```", /<pre><code>x/);
+  await pasted("fence with language", "```js\nlet a = 1\n```", {}, "```js\nlet a = 1\n```", /language-js/);
+  await pasted(
+    "heading, list and task",
+    "# T\n\n- a\n- [ ] b",
+    {},
+    /^# T\n\n- a\n\n?- \[ \] b$/,
+    (h) => /<h1>T<\/h1>/.test(h) && /<li>a<\/li>/.test(h) && /type="checkbox"|data-type="taskItem"|class="task"/.test(h),
+  );
+  await pasted("inline markup", "some **bold** and `code`", {}, "some **bold** and `code`", /<strong>bold<\/strong>.*<code>code<\/code>/);
+  await pasted("prose with snake_case", "use snake_case and file_name.txt here", {}, "use snake_case and file_name.txt here");
+  await pasted("one line of prose", "just some words", {}, "just some words");
+  await pasted(
+    "with Shift+Ctrl+V",
+    "# T\n\n- a\n\n```\nx\n```",
+    { literal: true },
+    // ProseMirror's plain paste makes one paragraph per line.
+    "\\# T\n\n\\- a\n\n\\`\\`\\`\n\nx\n\n\\`\\`\\`",
+    (h) => !/<h1>|<ul>|<pre>/.test(h),
+  );
+  await pasted(
+    "HTML link",
+    "label",
+    { html: '<a href="https://example.com">label</a>' },
+    /^\[label\]\(https:\/\/example\.com\/?\)$/,
+    /<a [^>]*href="https:\/\/example\.com\/?"[^>]*>label<\/a>/,
+  );
+  await pasted(
+    "HTML with styles, classes and scripts",
+    "hi there",
+    {
+      html:
+        '<p class="Mso x" style="color:red;font-family:Comic Sans" onclick="alert(1)"><span style="font-weight:700" class="y">hi</span> there<script>window.__x=1</script><style>p{}</style></p>',
+    },
+    // The bold the schema holds is kept; no style, class or script reaches the text.
+    "**hi** there",
+    (h) => !/style=|onclick|<script|<style|Mso|Comic|class=/.test(h) && /<strong>hi<\/strong> there/.test(h),
+  );
   await ctx.close();
 }
 

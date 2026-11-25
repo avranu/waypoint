@@ -6,6 +6,7 @@
 import { chromium } from "playwright";
 import fs from "node:fs";
 import { looks } from "./looks.mjs";
+import { fillMarkdown, markdownOf, mdBox } from "./editor.mjs";
 const [base, out] = process.argv.slice(2);
 fs.mkdirSync(out, { recursive: true });
 const errors = [];
@@ -328,7 +329,7 @@ async function run(width) {
   let dialog = page.getByRole("dialog");
   const t7 = `From the dialog ${tag}`;
   await dialog.getByLabel("Issue title").fill(t7);
-  await dialog.getByPlaceholder(/Add a description/).fill("Some notes");
+  await fillMarkdown(mdBox(dialog, { placeholder: /Add a description/ }), "Some notes");
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
   await page.reload();
@@ -340,7 +341,7 @@ async function run(width) {
     `${tag} the new-issue dialog brings back its title`,
   );
   ok(
-    (await dialog.getByPlaceholder(/Add a description/).inputValue()) ===
+    (await markdownOf(mdBox(dialog, { placeholder: /Add a description/ }))) ===
       "Some notes",
     `${tag} and its description`,
   );

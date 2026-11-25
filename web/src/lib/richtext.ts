@@ -1,5 +1,10 @@
-import { renderMarkdownForEdit, hasRawHtml, isPieceSrc, pieceText, PIECE_SRC } from '@/lib/markdown'
-import { PARK } from '@/lib/richinput'
+import { isPieceSrc, pieceText, PIECE_SRC } from '@/lib/markdown'
+
+// A root-relative path never starts "//" or "/\": browsers read a backslash
+// there as a slash, and the link would leave the site.
+export const SAFE_HREF = /^(?:https?:\/\/|mailto:|\/(?![/\\])|#)\S+$/i
+// An image is fetched, so only a web address or a path on this site.
+export const SAFE_SRC = /^(?:https?:\/\/|\/(?![/\\]))\S+$/i
 
 // `label`: text inside a link label or image alt, where any bracket would end
 // it early. `cell`: inside a table cell, which is one line (its pipes are
@@ -180,7 +185,7 @@ function pieceOf(node: Node): string | null {
   return piece !== null &&
     el.getAttribute('contenteditable') === 'false' &&
     isPieceSrc(piece) &&
-    el.textContent?.replaceAll(PARK, '') === pieceText(piece)
+    el.textContent === pieceText(piece)
     ? piece
     : null
 }
@@ -498,29 +503,22 @@ function autolinks(md: string) {
 /** The markdown behind a rich editor's HTML. */
 export function htmlToMarkdown(html: string): string {
   const tpl = document.createElement('template')
-  // The editor parks the caret after an element in a PARK character; only that
-  // one goes, so a zero-width space in the person's own text is kept.
-  tpl.innerHTML = withoutPark(html)
+  tpl.innerHTML = html
   return autolinks(tidy(serialize(tpl.content)))
 }
 
-const withoutPark = (s: string) => s.split(PARK).join('')
-const norm = (html: string) => withoutPark(html).replace(/\s+/g, ' ').trim()
-
 /**
- * Whether markdown can be opened in the rich editor without losing anything.
- * Editing re-spells untouched markdown into the editor's canonical form
- * (`__x__` becomes `**x**`, a `+` bullet `-`, and so on), so this checks
- * what the text renders as, not its bytes: it must render the same after a
- * round trip. Raw HTML (comments included) fails outright, since the
- * sanitiser would drop it from both sides of that comparison and the first
- * edit would delete it; footnotes and the like fail by the comparison.
+ * Whether markdown starts with a YAML front-matter block (a `---` line,
+ * `key: value` lines, a closing `---`), as skills and memory files do. The
+ * editor would read it as a rule and a heading, so such text opens as source.
  */
-export function survivesRichEdit(md: string): boolean {
-  if (hasRawHtml(md)) return false
-  // The editor drops every PARK on save, its own parked carets and any in the
-  // text alike, which no comparison can see: such text stays in markdown.
-  if (md.includes(PARK)) return false
-  const html = renderMarkdownForEdit(md)
-  return norm(renderMarkdownForEdit(htmlToMarkdown(html))) === norm(html)
+export function hasFrontMatter(md: string): boolean {
+  const lines = md.replace(/^\uFEFF/, '').split(/\r?\n/)
+  if (!/^---[ \t]*$/.test(lines[0])) return false
+  let keys = 0
+  for (const line of lines.slice(1)) {
+    if (/^---[ \t]*$/.test(line)) return keys > 0
+    if (/^[\w.-]+[ \t]*:/.test(line)) keys++
+  }
+  return false
 }

@@ -16,8 +16,18 @@ export default defineConfig({
       output: {
         codeSplitting: {
           groups: [
-            { name: 'react', test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/, priority: 30 },
+            {
+              name: 'react',
+              test: /node_modules[\\/](react|react-dom|scheduler|use-sync-external-store)[\\/]/,
+              priority: 30,
+            },
             { name: 'tanstack', test: /node_modules[\\/]@tanstack[\\/]/, priority: 20 },
+            // The formatted editor, loaded with it (components/editor/lazy.ts), not with the app.
+            {
+              name: 'editor-vendor',
+              test: /node_modules[\\/](@tiptap|prosemirror-[^\\/]+|linkifyjs|orderedmap|rope-sequence|w3c-keyname|crelt)[\\/]/,
+              priority: 25,
+            },
             { name: 'vendor', test: /node_modules[\\/]/, priority: 10 },
           ],
         },

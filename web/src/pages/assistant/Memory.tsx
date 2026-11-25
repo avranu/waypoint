@@ -327,7 +327,6 @@ function MemoryFile({
             onSave={save}
             autoFocus
             hint="A line with only § separates entries."
-            preview={(t) => <EntryList entries={parseEntries(t)} />}
           />
           <EditorActions
             onCancel={() => setEdit(null)}
@@ -352,7 +351,7 @@ function MemoryFile({
                       onChange={setDraft}
                       onSave={save}
                       autoFocus
-                      minHeight="min-h-[6rem]"
+                      rows={3}
                     />
                     <EditorActions
                       onCancel={() => setEdit(null)}
@@ -396,7 +395,7 @@ function MemoryFile({
                 onChange={setDraft}
                 onSave={save}
                 autoFocus
-                minHeight="min-h-[6rem]"
+                rows={3}
                 placeholder={
                   target === 'user' ? 'Something about you to remember…' : 'Something to remember…'
                 }
@@ -448,19 +447,6 @@ function MemoryFile({
         onConfirm={() => writeFile(draft)}
       />
     </Section>
-  )
-}
-
-/** Entries as they read: one block each, a rule between. */
-function EntryList({ entries }: { entries: string[] }) {
-  return (
-    <ul className="divide-y divide-line">
-      {entries.map((e, i) => (
-        <li key={i} className="py-2 first:pt-0 last:pb-0">
-          <Markdown text={e} className="!text-[13px]" />
-        </li>
-      ))}
-    </ul>
   )
 }
 
