@@ -63,7 +63,7 @@ func keysOf(o *DeferredOffer) string {
 
 func TestDeferredOffersTasksTheSessionFiledOnce(t *testing.T) {
 	d := newDeferredEnv(t)
-	a, b := d.file("First extra"), d.file("Second </untrusted> extra")
+	a, b := d.file("First extra"), d.file("Second </untru</untrusted>sted> extra")
 	o := d.offer(d.ag, "")
 	if keysOf(o) != a.Key+","+b.Key {
 		t.Fatalf("offered %q, want %s,%s", keysOf(o), a.Key, b.Key)

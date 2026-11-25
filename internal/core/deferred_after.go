@@ -469,17 +469,19 @@ func (s *Service) deferredUntold(ctx context.Context, id int64) {
 			return
 		}
 		on := map[int64]bool{}
-		issues = slices.DeleteFunc(issues, func(i *Issue) bool {
-			ok, seen := on[i.ProjectID]
-			if !seen {
-				if ok, err = s.deferredOn(ctx, &Actor{User: user, Session: id}, i.ProjectID); err != nil {
-					warn("check autopilot", err)
-				}
-				on[i.ProjectID] = ok && !user.Disabled
-				ok = on[i.ProjectID]
+		for _, i := range issues {
+			if _, seen := on[i.ProjectID]; seen {
+				continue
 			}
-			return !ok
-		})
+			ok, err := s.deferredOn(ctx, &Actor{User: user, Session: id}, i.ProjectID)
+			if err != nil {
+				// a failed read isn't "off": the rows stay untold for the next sweep
+				warn("check autopilot", err)
+				return
+			}
+			on[i.ProjectID] = ok && !user.Disabled
+		}
+		issues = slices.DeleteFunc(issues, func(i *Issue) bool { return !on[i.ProjectID] })
 	}
 	if len(issues) == 0 {
 		told()

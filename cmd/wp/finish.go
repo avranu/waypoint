@@ -563,7 +563,7 @@ func (c *cli) checkShipKeys(f prOpenFlags, keys []string) error {
 		return c.usage("a pull request is shipped for at most %d tasks (%d given): ship %s with their own wp ship from their own branches", maxShipTasks, len(uniq), strings.Join(uniq[maxShipTasks:], ", "))
 	}
 	project := c.shipHome(f)
-	for _, k := range uniq[1:] {
+	for _, k := range uniq {
 		if !keyRE.MatchString(k) {
 			return c.usage("%q isn't an issue key like WP-12: run wp ship WP-12 WP-13 -m ... with the keys of the tasks this change does", k)
 		}

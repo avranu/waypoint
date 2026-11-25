@@ -207,8 +207,11 @@ func TestShipSeveralKeysArmFailureKeepsTheOthers(t *testing.T) {
 	}
 	for _, k := range []string{main.Key, also.Key} {
 		d, err := e.svc.GetIssue(ctx, me, k)
-		if err != nil || d.Status.Name != "In Review" || len(d.Links) != 1 {
-			t.Errorf("%s after the arm failed: %v %+v links %+v\n%s", k, err, d.Status, d.Links, out)
+		if err != nil {
+			t.Fatalf("%s after the arm failed: %v\n%s", k, err, out)
+		}
+		if d.Status.Name != "In Review" || len(d.Links) != 1 {
+			t.Errorf("%s after the arm failed: %+v links %+v\n%s", k, d.Status, d.Links, out)
 		}
 	}
 	if strings.Contains(out, "isn't linked") {

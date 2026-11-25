@@ -313,7 +313,7 @@ func (s *Service) openRunSessions(ctx context.Context, session int64, ids []int6
 func deferredList(o *DeferredOffer) string {
 	var b strings.Builder
 	for _, t := range o.Tasks {
-		fmt.Fprintf(&b, "  %s <untrusted>%s</untrusted>\n", t.Key, strings.ReplaceAll(t.Title, "</untrusted>", ""))
+		fmt.Fprintf(&b, "  %s <untrusted>%s</untrusted>\n", t.Key, untrusted(t.Title))
 	}
 	if o.More > 0 {
 		fmt.Fprintf(&b, "  and %d more not listed (wp ls shows them)\n", o.More)
