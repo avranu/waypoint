@@ -289,7 +289,9 @@ func (s *Service) objectiveHandBack(ctx context.Context, issueID int64, why stri
 			return nil
 		}
 		var open int
-		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM external_links WHERE issue_id = ? AND kind = 'pull' AND state IN ('', 'open', 'draft')`, issueID).Scan(&open); err != nil || open > 0 {
+		// #nosec G202 -- unapprovedOutsidePullSQL splices a column name, no value (WP-1802)
+		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM external_links WHERE issue_id = ? AND kind = 'pull' AND state IN ('', 'open', 'draft')
+			AND NOT `+unapprovedOutsidePullSQL("external_links.url"), issueID).Scan(&open); err != nil || open > 0 {
 			return err
 		}
 		todo, err := s.objectiveTodo(ctx, t, i.ProjectID)
@@ -414,7 +416,9 @@ func (s *Service) objectiveStuck(ctx context.Context, o *Objective, paused map[i
 	}
 	var url string
 	var opened int64
-	err = s.db.R.QueryRowContext(ctx, `SELECT url, created_at FROM external_links WHERE issue_id = ? AND kind = 'pull' AND state IN ('', 'open', 'draft') ORDER BY created_at LIMIT 1`, o.IssueID).Scan(&url, &opened)
+	// #nosec G202 -- unapprovedOutsidePullSQL splices a column name, no value (WP-1802)
+	err = s.db.R.QueryRowContext(ctx, `SELECT url, created_at FROM external_links WHERE issue_id = ? AND kind = 'pull' AND state IN ('', 'open', 'draft')
+		AND NOT `+unapprovedOutsidePullSQL("external_links.url")+` ORDER BY created_at LIMIT 1`, o.IssueID).Scan(&url, &opened)
 	switch {
 	case err != nil && !errors.Is(err, sql.ErrNoRows):
 		return "", 0, err

@@ -193,8 +193,8 @@ func (s *Service) screenNotes(ctx context.Context, f *Forge, pr *PullRequest, no
 	return out
 }
 
-// screenPull decides, as recordPR stores a pull request, whether it waits
-// for a person: from outside and not approved at this title and head. A
+// screenPull decides, as a pull request or its new title is stored, whether
+// it waits for a person: from outside and not approved at this title and head. A
 // waiting one keeps an approved title, or none.
 func (s *Service) screenPull(ctx context.Context, t *tx, v *prVoice, pr *PullRequest, fp *ForgePR) error {
 	title := excerpt(stripWIP(fp.Title), 300)
@@ -271,7 +271,7 @@ func (s *Service) approvedBody(ctx context.Context, f *Forge, pr *PullRequest, f
 
 // unapprovedOutsidePullSQL is true where urlExpr is the URL of a pull
 // request from outside that no person has approved: its links are shown
-// and set nothing off (WP-1802).
+// and set nothing off but a merge, which takes a person (WP-1802).
 func unapprovedOutsidePullSQL(urlExpr string) string {
 	return "EXISTS (SELECT 1 FROM pull_requests op WHERE op.outside = 1 AND op.url = " + urlExpr + ")"
 }
@@ -291,14 +291,8 @@ func (s *Service) emitPullOpened(ctx context.Context, t *tx, issueID int64, url,
 		return false, nil
 	}
 	if once {
-		var last string
-		err := t.QueryRowContext(ctx, `SELECT kind FROM events WHERE issue_id = ? AND new_value = ? AND kind IN (?, ?, ?) ORDER BY id DESC LIMIT 1`,
-			issueID, url, EvExternalPROpened, EvExternalPRMerged, EvExternalPRClosed).Scan(&last)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		if last, err := lastPullEvent(ctx, t, issueID, url); err != nil || last == EvExternalPROpened {
 			return false, err
-		}
-		if last == EvExternalPROpened {
-			return false, nil
 		}
 	}
 	i, err := s.issueByID(ctx, t, issueID, false)
@@ -308,6 +302,31 @@ func (s *Service) emitPullOpened(ctx context.Context, t *tx, issueID int64, url,
 	t.emit(&Event{Kind: EvExternalPROpened, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key, New: url, Old: old,
 		Data: map[string]any{"title": title, "number": number}})
 	return true, nil
+}
+
+// lastPullEvent is the kind of the last open, merge or close an issue's
+// link to url set off ("" none).
+func lastPullEvent(ctx context.Context, q queryer, issueID int64, url string) (string, error) {
+	var last string
+	err := q.QueryRowContext(ctx, `SELECT kind FROM events WHERE issue_id = ? AND new_value = ? AND kind IN (?, ?, ?) ORDER BY id DESC LIMIT 1`,
+		issueID, url, EvExternalPROpened, EvExternalPRMerged, EvExternalPRClosed).Scan(&last)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return last, err
+}
+
+// pullCloseHeld reports whether closing the pull request at url sets nothing
+// off on an issue: no person approved it and the issue's last event from it
+// isn't an open, so there is nothing to take back, and its author can close
+// it unasked. An open that did run is still closed (WP-1802).
+func pullCloseHeld(ctx context.Context, q queryer, issueID int64, url string) (bool, error) {
+	var held bool
+	if err := q.QueryRowContext(ctx, `SELECT `+unapprovedOutsidePullSQL("?"), url).Scan(&held); err != nil || !held { // #nosec G202 -- the helper splices a placeholder, no value
+		return false, err
+	}
+	last, err := lastPullEvent(ctx, q, issueID, url)
+	return last != EvExternalPROpened, err
 }
 
 // outsidePullsOpened runs what the open links of pull requests just let in

@@ -568,3 +568,147 @@ func TestEndedFactsIgnoreAnUnapprovedOutsideLink(t *testing.T) {
 		t.Error("an approved pull request doesn't count as the task's")
 	}
 }
+
+// A new title a listing brings, where the webhook was missed, waits for a
+// person as a webhook's does: no link shows it (WP-281).
+func TestListedOutsideTitleWaits(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	i := se.issue(se.admin, IssueInput{Project: se.p.Key, Title: "Login"})
+	pr := ForgePR{Number: 68, Title: "Rework login", Author: "mallory", HeadRef: strings.ToLower(i.Key) + "-x",
+		HeadSHA: "aaaaaaa6868", State: "open", HeadRepo: "mallory/app", URL: "https://git.example.com/me/app/pulls/68"}
+	se.pullHook("opened", pr)
+	se.s.Wait()
+	refresh := func(title string) {
+		t.Helper()
+		listed := pr
+		listed.Title = title
+		if err := se.s.refreshPR(se.ctx, se.f, "me/app", &listed); err != nil {
+			t.Fatal(err)
+		}
+		se.s.refreshPRMentions(se.ctx, se.f, "me/app", &listed)
+		se.s.Wait()
+	}
+	shown := func(when, want string) {
+		t.Helper()
+		if got := se.pr(68).Title; got != want {
+			t.Errorf("%s: stored title %q, want %q", when, got, want)
+		}
+		links := se.get(se.admin, i.Key).Links
+		if len(links) != 1 || links[0].Title != want {
+			t.Errorf("%s: links %+v, want title %q", when, links, want)
+		}
+	}
+	refresh("zebra before approval")
+	shown("held", "")
+	held, err := se.s.ListOutsidePR(se.ctx, se.admin, se.pr(68).ID)
+	if err != nil || len(held) != 1 || held[0].Title != "zebra before approval" {
+		t.Fatal(held, err)
+	}
+	if err := se.s.ApproveOutsidePR(se.ctx, se.admin, held[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	se.s.Wait()
+	refresh("zebra after approval")
+	if !se.pr(68).Outside || se.pr(68).Title != "" {
+		t.Errorf("an approved pull request's new title: outside=%v title=%q", se.pr(68).Outside, se.pr(68).Title)
+	}
+	for _, l := range se.get(se.admin, i.Key).Links {
+		if l.Title == "zebra after approval" {
+			t.Errorf("a link shows the unapproved title: %+v", l)
+		}
+	}
+}
+
+// Closing is an outside author's own act: from a pull request no person
+// approved it sets nothing off, and its link counts for no reader of the
+// task's pull requests. One whose open did run is still closed (WP-1802).
+func TestUnapprovedOutsideCloseSetsNothingOff(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	closed := se.watch(EvExternalPRClosed)
+	i := se.issue(se.admin, IssueInput{Project: se.p.Key, Title: "Login"})
+	pr := ForgePR{Number: 69, Title: "Rework login", Author: "mallory", HeadRef: strings.ToLower(i.Key) + "-x",
+		HeadSHA: "aaaaaaa6969", State: "open", HeadRepo: "mallory/app"}
+	se.pullHook("opened", pr)
+	se.s.Wait()
+	pr.State = "closed"
+	se.pullHook("closed", pr)
+	se.s.Wait()
+	if links := se.get(se.admin, i.Key).Links; len(links) != 1 || links[0].State != "closed" {
+		t.Fatalf("links: %+v", links)
+	}
+	if n := len(closed.all()); n != 0 {
+		t.Errorf("pr_closed for an unapproved pull request = %d", n)
+	}
+
+	j := se.issue(se.admin, IssueInput{Project: se.p.Key, Title: "Sessions"})
+	pr = ForgePR{Number: 70, Title: "Sessions", Author: "mallory", HeadRef: strings.ToLower(j.Key) + "-x",
+		HeadSHA: "aaaaaaa7070", State: "open", HeadRepo: "mallory/app"}
+	se.pullHook("opened", pr)
+	se.s.Wait()
+	held, err := se.s.ListOutsidePR(se.ctx, se.admin, se.pr(70).ID)
+	if err != nil || len(held) != 1 {
+		t.Fatal(held, err)
+	}
+	if err := se.s.ApproveOutsidePR(se.ctx, se.admin, held[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	se.s.Wait()
+	// A new head waits again, and then they close it.
+	pr.HeadSHA = "bbbbbbb7070"
+	se.pullHook("synchronized", pr)
+	se.s.Wait()
+	pr.State = "closed"
+	se.pullHook("closed", pr)
+	se.s.Wait()
+	if !se.pr(70).Outside {
+		t.Fatal("the new head didn't wait")
+	}
+	if n := len(closed.all()); n != 1 {
+		t.Errorf("pr_closed after an open that ran = %d", n)
+	}
+}
+
+// An unapproved outside pull request's open link doesn't stand in for the
+// task's pull request: unlinking the link that moved the task puts it back,
+// autopilot counts neither as shipped nor unmerged, and an objective's
+// round isn't out on it (WP-1802).
+func TestUnapprovedOutsideLinkIsNotTheTasksPull(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	i := se.issue(se.admin, IssueInput{Project: se.p.Key, Title: "Login"})
+	before := se.get(se.admin, i.Key).Status.Name
+	const mine = "https://git.example.com/me/app/pulls/72"
+	l, err := se.s.AddLink(se.ctx, se.admin, i.Key, mine, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	se.s.Wait()
+	status := "In Review"
+	if _, err := se.s.UpdateIssue(se.ctx, se.admin, i.Key, IssuePatch{Status: &status, ViaLink: mine}); err != nil {
+		t.Fatal(err)
+	}
+	se.mexec(`INSERT INTO agent_runs(issue_id, agent, step, user_id, started_at, ended_at, outcome, session_id)
+		VALUES (?, 'claude', 'work', ?, 1000, 2000, 'done', NULL)`, i.ID, se.admin.User.ID)
+	start := se.s.nowMS() - 1000
+	se.mexec(`INSERT INTO agent_runs(issue_id, agent, step, user_id, started_at, ended_at, outcome, session_id)
+		VALUES (?, 'claude', 'work', ?, ?, ?, 'done', NULL)`, i.ID, se.admin.User.ID, start, start+2000)
+	se.mexec(`DELETE FROM external_links WHERE issue_id = ? AND url != ?`, i.ID, mine)
+	se.pullHook("opened", ForgePR{Number: 71, Title: "Rework login", Author: "mallory", HeadRef: strings.ToLower(i.Key) + "-x",
+		HeadSHA: "aaaaaaa7171", State: "open", HeadRepo: "mallory/app"})
+	se.s.Wait()
+	if links := se.get(se.admin, i.Key).Links; len(links) != 2 {
+		t.Fatalf("links: %+v", links)
+	}
+	se.mexec(`UPDATE external_links SET created_at = 1 WHERE url = ?`, mine)
+	if why, err := se.s.churned(se.ctx, i.ID, start); err != nil || why != "it already had a pull request" {
+		t.Errorf("churned with a person's earlier link = %q %v", why, err)
+	}
+	if err := se.s.RemoveLink(se.ctx, se.admin, i.Key, l.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := se.get(se.admin, i.Key).Status.Name; got != before {
+		t.Errorf("status after unlinking = %q, want %q", got, before)
+	}
+	if why, err := se.s.churned(se.ctx, i.ID, start); err != nil || why != "an agent had finished it before" {
+		t.Errorf("churned with only the unapproved link = %q %v", why, err)
+	}
+}

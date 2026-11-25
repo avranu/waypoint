@@ -890,7 +890,9 @@ func (s *Service) RemoveLink(ctx context.Context, actor *Actor, issueRef string,
 			return nil
 		}
 		var others int
-		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM external_links WHERE issue_id = ? AND kind = 'pull' AND state IN ('', 'open', 'draft', 'merged')`, i.ID).Scan(&others); err != nil {
+		// #nosec G202 -- unapprovedOutsidePullSQL splices a column name, no value (WP-1802)
+		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM external_links WHERE issue_id = ? AND kind = 'pull' AND state IN ('', 'open', 'draft', 'merged')
+			AND (state = 'merged' OR NOT `+unapprovedOutsidePullSQL("external_links.url")+`)`, i.ID).Scan(&others); err != nil {
 			return err
 		}
 		if others > 0 {
@@ -1042,7 +1044,13 @@ func (s *Service) applyLinkState(ctx context.Context, linkURL string, item *Forg
 			case item.IsPR && item.State == "merged":
 				kind = EvExternalPRMerged
 			case item.IsPR && item.State == "closed":
-				kind = EvExternalPRClosed
+				held, err := pullCloseHeld(ctx, t, r.issueID, linkURL)
+				if err != nil {
+					return err
+				}
+				if !held {
+					kind = EvExternalPRClosed
+				}
 			case item.IsPR && item.State == "open": // new, reopened, or out of draft
 				// Not while no person approved an outside one: approving it runs
 				// this. Read in this write, so whichever of the two commits

@@ -516,13 +516,18 @@ func (s *Service) refreshPR(ctx context.Context, f *Forge, repo string, fp *Forg
 		_, err = s.recordPR(ctx, f, repo, fp, false)
 		return err
 	}
-	_, err = s.db.W.ExecContext(ctx, `UPDATE pull_requests SET title = ?, opened_at = coalesce(?, opened_at), merged_at = coalesce(?, merged_at),
+	if title := excerpt(stripWIP(fp.Title), 300); title != old.Title {
+		if err := s.retitleListedPR(ctx, f, old.ID, title, fp); err != nil {
+			return err
+		}
+	}
+	_, err = s.db.W.ExecContext(ctx, `UPDATE pull_requests SET opened_at = coalesce(?, opened_at), merged_at = coalesce(?, merged_at),
 		closed_at = coalesce(?, closed_at), merged_by = CASE WHEN ? != '' THEN ? ELSE merged_by END,
 		merge_sha = CASE WHEN ? != '' THEN ? ELSE merge_sha END,
 		agent = CASE WHEN ? != '' THEN ? ELSE agent END,
 		additions = coalesce(?, additions), deletions = coalesce(?, deletions), changed_files = coalesce(?, changed_files), commits = coalesce(?, commits),
 		head_repo = CASE WHEN ? != '' THEN ? ELSE head_repo END
-		WHERE id = ?`, excerpt(stripWIP(fp.Title), 300), nullTime(fp.OpenedAt), nullTime(fp.MergedAt), nullTime(fp.ClosedAt), fp.MergedBy, fp.MergedBy, fp.MergeSHA, fp.MergeSHA,
+		WHERE id = ?`, nullTime(fp.OpenedAt), nullTime(fp.MergedAt), nullTime(fp.ClosedAt), fp.MergedBy, fp.MergedBy, fp.MergeSHA, fp.MergeSHA,
 		codingAgent(fp.Body, fp.Author), codingAgent(fp.Body, fp.Author),
 		nullIntP(fp.Additions), nullIntP(fp.Deletions), nullIntP(fp.ChangedFiles), nullIntP(fp.Commits), headRepoOf(fp, repo), headRepoOf(fp, repo), old.ID)
 	if err == nil && !settled && old.ArmedAt == nil && s.autoArm(ctx, old.ID) {
@@ -551,6 +556,23 @@ func (s *Service) refreshPR(ctx context.Context, f *Forge, repo string, fp *Forg
 		s.scheduleMergeRecheck(ctx, old.ID)
 	}
 	return nil
+}
+
+// retitleListedPR records a title a listing changed, screened as a
+// webhook's is: an outside author's waits for a person (WP-281). In one
+// write, so the new title is never stored unscreened.
+func (s *Service) retitleListedPR(ctx context.Context, f *Forge, prID int64, title string, fp *ForgePR) error {
+	voice := s.prVoice(ctx, f)
+	return s.write(ctx, SystemActor(), func(t *tx) error {
+		pr, err := s.prByID(ctx, t, prID)
+		if err != nil {
+			return err
+		}
+		if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET title = ? WHERE id = ?`, title, pr.ID); err != nil {
+			return err
+		}
+		return s.screenPull(ctx, t, voice, pr, fp)
+	})
 }
 
 func nullTime(t *time.Time) any {

@@ -233,6 +233,28 @@ func TestObjectiveRoundLeftIsHandedOutAgain(t *testing.T) {
 	}
 }
 
+// A pull request from outside no person approved isn't the round's: a
+// round left with only its link is handed out again (WP-1802).
+func TestObjectiveRoundIgnoresAnUnapprovedOutsidePull(t *testing.T) {
+	o := newObjEnv(t)
+	task := o.task("Fast")
+	o.set(task.Key, ObjectiveInput{Check: ptrOf("./bench.sh"), Until: ptrOf("< 1s")})
+	o.read(ObjectiveJobResult{Head: shaA, Reading: timed(3)})
+	o.take1(task.Key)
+	url := o.pull(task.Key, 7)
+	if _, err := o.s.db.W.ExecContext(o.ctx, `INSERT INTO pull_requests(forge_id, repo, number, url, state, outside, created_at, updated_at)
+		VALUES (?, 'me/app', 7, ?, 'open', 1, 1, 1) ON CONFLICT(forge_id, repo, number) DO UPDATE SET outside = 1, url = excluded.url`, o.f.ID, url); err != nil {
+		t.Fatal(err)
+	}
+	d := o.get(o.admin, task.Key)
+	o.setClock(d.ClaimedUntil.Add(2 * time.Hour))
+	o.s.CheckObjectives(o.ctx)
+	o.s.Wait()
+	if got := o.status(task.Key); got != "To Do" {
+		t.Fatalf("with only an unapproved outside pull request: %s", got)
+	}
+}
+
 // A round nobody takes up, and one out on a pull request nobody merges,
 // don't wait in silence: the objective's person is told, once and then
 // daily, and the list says it is stuck.

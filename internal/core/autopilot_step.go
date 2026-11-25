@@ -2429,9 +2429,13 @@ func (s *Service) churned(ctx context.Context, issue, from int64) (string, error
 		return "", err
 	}
 	var shipped, hadPR, doneBefore bool
+	// An unapproved outside pull request's link isn't the task's unless
+	// merged (WP-1802).
+	counts := `(state = 'merged' OR NOT ` + unapprovedOutsidePullSQL("external_links.url") + `)`
+	// #nosec G202 -- counts is a fixed condition, no value
 	if err := s.db.R.QueryRowContext(ctx, `SELECT
-		EXISTS(SELECT 1 FROM external_links WHERE issue_id = ? AND kind IN ('pull', 'commit') AND created_at >= ?),
-		EXISTS(SELECT 1 FROM external_links WHERE issue_id = ? AND kind = 'pull' AND created_at < ?),
+		EXISTS(SELECT 1 FROM external_links WHERE issue_id = ? AND kind IN ('pull', 'commit') AND created_at >= ? AND `+counts+`),
+		EXISTS(SELECT 1 FROM external_links WHERE issue_id = ? AND kind = 'pull' AND created_at < ? AND `+counts+`),
 		EXISTS(SELECT 1 FROM agent_runs WHERE issue_id = ? AND outcome = 'done' AND ended_at < ?)`,
 		issue, start, issue, start, issue, start).Scan(&shipped, &hadPR, &doneBefore); err != nil {
 		return "", err
@@ -2501,9 +2505,10 @@ func (s *Service) autopilotTrip(ctx context.Context, st *stepRow, why string) er
 // sessionUnmerged is the issues this session finished whose pull request is
 // still open or a draft, and those pull requests in words.
 func (s *Service) sessionUnmerged(ctx context.Context, sessionID int64) ([]int64, []string, error) {
+	// #nosec G202 -- unapprovedOutsidePullSQL splices a column name, no value (WP-1802)
 	rows, err := s.db.R.QueryContext(ctx, `SELECT DISTINCT l.issue_id, l.repo, coalesce(l.number, 0) FROM external_links l
 		JOIN agent_runs r ON r.issue_id = l.issue_id AND r.session_id = ? AND r.outcome = 'done'
-		WHERE l.kind = 'pull' AND l.state IN ('open', 'draft') ORDER BY l.issue_id`, sessionID)
+		WHERE l.kind = 'pull' AND l.state IN ('open', 'draft') AND NOT `+unapprovedOutsidePullSQL("l.url")+` ORDER BY l.issue_id`, sessionID)
 	if err != nil {
 		return nil, nil, err
 	}
