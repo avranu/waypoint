@@ -535,7 +535,11 @@ func TestTraceFile(t *testing.T) {
 		{"main session, a worktree's file", wt + "/internal/x.go", main, tracePath{"internal/x.go", app}, true},
 		{"main session, a worktree beside it", side + "/internal/x.go", main, tracePath{"internal/x.go", app}, true},
 		{"main session, a settings file of the repository", main + "/.claude/settings.json", main, tracePath{".claude/settings.json", app}, true},
-		{"main session, the worktree directory itself", wt, main, tracePath{}, false},
+		{"main session, the worktree directory itself", wt, main, tracePath{}, true},
+		{"a checkout's root itself (gofmt -w .)", main, main, tracePath{}, true},
+		{"a Claude Code worktree's root itself", wt, wt, tracePath{}, true},
+		{"a worktree root that is gone", gone, gone, tracePath{}, true},
+		{"a directory in no checkout, itself", plain, plain, tracePath{}, false},
 		{"another repository's file is that repository's", other + "/internal/x.go", main, tracePath{"internal/x.go", oth}, true},
 		{"a session in no checkout", other + "/internal/x.go", plain, tracePath{"internal/x.go", oth}, true},
 		{"a directory that is there, in no checkout", plain + "/notes.md", main, tracePath{}, false},
@@ -602,6 +606,7 @@ func TestTraceFile(t *testing.T) {
 		{"sed -i in a worktree that is gone and unplaced", "sed -i s/a/b/ " + j("elsewhere", "wt") + "/internal/x.go", trEdit, nil},
 		{"a redirect to a note outside any checkout", "cat > " + plain + "/notes.md <<'EOF'\nx\nEOF", trOther, nil},
 		{"reading another repository", "cat " + other + "/internal/x.go", trRead, []tracePath{{"internal/x.go", oth}}},
+		{"gofmt -w . at the checkout root", "gofmt -w .", trEdit, nil},
 	} {
 		if c := classifyTraceCall("Bash", bash(tc.cmd), main, 1, 1, "m", nil); c.Class != tc.class || !reflect.DeepEqual(c.Paths, tc.paths) {
 			t.Errorf("%s: class %q paths %+v", tc.name, c.Class, c.Paths)

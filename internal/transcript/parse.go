@@ -123,6 +123,7 @@ type toolInput struct {
 	Limit        *int64 `json:"limit"`
 	Background   *bool  `json:"run_in_background"`
 	Todos        []any  `json:"todos"`
+	Content      string `json:"content"`
 }
 
 type toolResult struct {
@@ -203,6 +204,7 @@ type parser struct {
 	reqRef     map[int]string
 	setting    map[string]string
 	settingUID map[string]int
+	shell      ShellSession // the working directories and kept scripts of this file
 }
 
 // Parse reads one transcript file. file is where it sits under the session
@@ -291,6 +293,7 @@ func (p *parser) line(b []byte) {
 	if ts != nil {
 		p.lastTS = *ts
 	}
+	p.shell.Note(r.Cwd)
 	thread := p.fileThread
 	if r.AgentID != "" {
 		thread = r.AgentID
@@ -541,6 +544,8 @@ func (p *parser) toolUse(bl *block, r *rec, ts *int64, thread, msgID string, byS
 		t.IsTest = ptr(isTestPath(f))
 	}
 	switch bl.Name {
+	case "Write":
+		p.shell.KeepWrite(in.FilePath, r.Cwd, in.Content)
 	case "Read":
 		set("file", clip(in.FilePath, targetRunes))
 		t.ReadOffset, t.ReadLimit = in.Offset, in.Limit
@@ -548,7 +553,9 @@ func (p *parser) toolUse(bl *block, r *rec, ts *int64, thread, msgID string, byS
 		set("command", commandHead(in.Command))
 		t.Background = in.Background
 		if bl.Name == "Bash" {
-			t.ShellWrite = ptr(ShellEdit(in.Command, r.Cwd))
+			if wrote, known := p.shell.Edit(in.Command, r.Cwd); known {
+				t.ShellWrite = ptr(wrote)
+			}
 		}
 	case "Grep", "Glob":
 		set("pattern", clip(in.Pattern, patternRunes))
@@ -575,6 +582,15 @@ func (p *parser) toolUse(bl *block, r *rec, ts *int64, thread, msgID string, byS
 	}
 	p.tools[bl.ID] = len(p.res.ToolCalls)
 	p.res.ToolCalls = append(p.res.ToolCalls, t)
+}
+
+// LooksRefused says a tool result's text is a refusal: the call never ran,
+// because a permission was denied, a hook or the auto-mode classifier blocked
+// it, or the user declined.
+func LooksRefused(text string) bool {
+	return strings.HasPrefix(text, "Permission for this") || strings.Contains(text, "denied by the Claude Code auto mode classifier") ||
+		strings.Contains(text, "hook error:") && strings.Contains(text, "Blocked") ||
+		strings.HasPrefix(text, "The user doesn't want to proceed") || strings.HasPrefix(text, "Permission to use ")
 }
 
 var exitCodeRE = regexp.MustCompile(`^Exit code (\d+)`)
@@ -713,6 +729,9 @@ func (p *parser) results(blocks []block, r *rec, ts *int64, n int) {
 			t.DurationMS = ptr(*ts - *t.At)
 		}
 		if bl.IsError {
+			if t.Tool == "Bash" && LooksRefused(text) {
+				t.ShellWrite = ptr(false) // it never ran
+			}
 			t.Error = strp(clip(text, errorRunes))
 			if m := exitCodeRE.FindStringSubmatch(text); m != nil {
 				if c, err := strconv.ParseInt(m[1], 10, 64); err == nil {

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"git.jmann.me/claude/waypoint/internal/core"
+	trscript "git.jmann.me/claude/waypoint/internal/transcript"
 )
 
 // fixtureDir copies cmd/wp/testdata/usage into a temp Claude config dir. The
@@ -796,13 +797,49 @@ func TestUsageParseBashShellEditRows(t *testing.T) {
 		switch {
 		case r.Kind == "builtin" && r.Tool == "Bash":
 			bash += r.Calls
-		case r.Kind == shellEditKind:
+		case r.Kind == trscript.ShellEditKind:
 			marked = true
 			shell += r.Calls
 		}
 	}
 	if bash != 2 || !marked || shell != 1 {
 		t.Fatalf("Bash calls %d, shell_edit row present %v with %d calls; tools %+v", bash, marked, shell, got.Chunk.Tools)
+	}
+}
+
+// A script kept in a file counts as the edit it makes when a later call runs
+// it, in the same transcript: saved with a heredoc or with the Write tool.
+func TestUsageParseShellEditRowsKeepScripts(t *testing.T) {
+	dir := t.TempDir()
+	tool := func(id, name, in string) string {
+		return `{"type":"tool_use","id":"` + id + `","name":"` + name + `","input":` + in + `}`
+	}
+	line := func(id string, tools ...string) string {
+		return `{"type":"assistant","timestamp":"2026-10-05T10:00:01.000Z","message":{"id":"` + id + `","model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":2},"content":[` + strings.Join(tools, ",") + `]}}` + "\n"
+	}
+	tr := line("m1",
+		tool("t1", "Bash", `{"command":"cat > /tmp/e.py <<'EOF'\nopen('/work/app/a.go','w').write('x')\nEOF"}`),
+		tool("t2", "Write", `{"file_path":"/tmp/w.py","content":"open('/work/app/b.go','w').write('x')\n"}`)) +
+		line("m2",
+			tool("t3", "Bash", `{"command":"python3 /tmp/e.py"}`),
+			tool("t4", "Bash", `{"command":"python3 /tmp/w.py"}`),
+			tool("t5", "Bash", `{"command":"python3 /tmp/none.py"}`))
+	p := filepath.Join(dir, "projects", "-work-app", "sess1.jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(tr), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := parseMain(t, dir, usageFileState{})
+	var shell int64
+	for _, r := range got.Chunk.Tools {
+		if r.Kind == trscript.ShellEditKind {
+			shell += r.Calls
+		}
+	}
+	if shell != 2 {
+		t.Fatalf("shell edits %d, want 2 (both kept scripts, not the unknown one); tools %+v", shell, got.Chunk.Tools)
 	}
 }
 

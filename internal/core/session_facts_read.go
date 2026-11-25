@@ -167,21 +167,27 @@ type SessionFacts struct {
 	} `json:"docs_fetched"`
 
 	// Changes: Edits counts the edit calls that did not fail; Failed is those
-	// whose result was an error. ShellEdits counts Bash calls that wrote a
-	// file that is not scratch; ShellUnknown is the Bash calls stored before
-	// that was recorded (so ShellEdits is a floor when it is above 0).
+	// whose result was an error, including edits a REPL script ran. ShellEdits
+	// counts Bash calls that wrote a file of the work and ran (a failed run
+	// still counts, a refused one never ran); ShellUnknown is the Bash calls
+	// with no answer (stored before it was recorded, or too long to read), so
+	// ShellEdits is a floor when it is above 0. ScriptEdits and
+	// ScriptShellEdits are the edit-tool and Bash calls a REPL script ran
+	// that wrote; neither is in Edits or ShellEdits.
 	Changes struct {
-		Edits        int   `json:"edits"`
-		Failed       int   `json:"failed"`
-		ShellEdits   int   `json:"shell_edits"`
-		ShellUnknown int   `json:"shell_unknown"`
-		ScriptEdits  int   `json:"script_edits"` // edit tools a REPL script ran; not in Edits
-		FilesChanged int   `json:"files_changed"`
-		LinesAdded   Tally `json:"lines_added"`
-		LinesRemoved Tally `json:"lines_removed"`
-		TestEdits    int   `json:"test_edits"` // edits of test files (not failed)
-		TestFiles    int   `json:"test_files"`
-		TestLinesAdd Tally `json:"test_lines_added"`
+		Edits        int `json:"edits"`
+		Failed       int `json:"failed"`
+		ShellEdits   int `json:"shell_edits"`
+		ShellUnknown int `json:"shell_unknown"`
+		ScriptEdits  int `json:"script_edits"` // edit tools a REPL script ran; not in Edits
+		// ScriptShellEdits: Bash calls a REPL script ran that wrote a file; not in ShellEdits.
+		ScriptShellEdits int   `json:"script_shell_edits"`
+		FilesChanged     int   `json:"files_changed"`
+		LinesAdded       Tally `json:"lines_added"`
+		LinesRemoved     Tally `json:"lines_removed"`
+		TestEdits        int   `json:"test_edits"` // edits of test files (not failed)
+		TestFiles        int   `json:"test_files"`
+		TestLinesAdd     Tally `json:"test_lines_added"`
 	} `json:"changes"`
 
 	Repeated struct {
@@ -613,8 +619,14 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *Session
 		}
 		if script == 1 {
 			o.ToolCalls.ByScript++
-			if transcript.IsEditTool(tool) {
+			failed := isErr.Valid && isErr.Int64 == 1
+			switch {
+			case transcript.IsEditTool(tool) && failed:
+				o.Changes.Failed++
+			case transcript.IsEditTool(tool):
 				o.Changes.ScriptEdits++
+			case tool == "Bash" && shell.Valid && shell.Int64 == 1:
+				o.Changes.ScriptShellEdits++
 			}
 			continue
 		}
@@ -638,7 +650,9 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *Session
 			o.DocsFetched.Calls++
 			fetched[target.String]++
 		}
-		if tool == "Bash" && !failed {
+		if tool == "Bash" {
+			// A refused call is recorded as no write (it never ran); one that
+			// failed after running still wrote (sed -i && go test).
 			switch {
 			case !shell.Valid:
 				o.Changes.ShellUnknown++

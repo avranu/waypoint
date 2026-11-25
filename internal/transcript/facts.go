@@ -13,7 +13,7 @@ package transcript
 // ParserVersion is stored on every row the parser produced; a bump re-derives
 // every archived file. Change it whenever the parser would produce different
 // rows from the same bytes.
-const ParserVersion = 3
+const ParserVersion = 4
 
 // Thread names who wrote a record: the main thread, or the sub-agent's id.
 const MainThread = "main"
@@ -128,8 +128,9 @@ type ToolCall struct {
 	// ByScript: a REPL script ran it (the record's model is <synthetic>), not
 	// the model; MsgID is nil then.
 	ByScript bool
-	// ShellWrite (Bash only): the command wrote a file that is not scratch,
-	// by the recogniser in ShellEdit; nil for other tools.
+	// ShellWrite (Bash only): the command wrote a file of the work, by the
+	// recogniser in ShellSession.Edit; false too for a call that was refused
+	// (it never ran); nil for other tools and for a command too long to read.
 	ShellWrite *bool
 	// Target is a file path, URL, command head (first words, clipped), a search
 	// pattern or query (clipped), a skill name or the recipient of a message.

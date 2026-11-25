@@ -184,7 +184,7 @@ func factsText(f *core.SessionFacts) string {
 		p("  %s x%d", d.URL, d.Times)
 	}
 	c := f.Changes
-	p("changes: %d edits (%d failed; %d more run by REPL scripts), %s, %d files; lines added %s, removed %s", c.Edits, c.Failed, c.ScriptEdits, shellEditsText(c.ShellEdits, c.ShellUnknown), c.FilesChanged,
+	p("changes: %d edits (%d failed; %d more run by REPL scripts), %s, %d files; lines added %s, removed %s", c.Edits, c.Failed, c.ScriptEdits, shellEditsText(c.ShellEdits, c.ShellUnknown, c.ScriptShellEdits), c.FilesChanged,
 		tallyText(c.LinesAdded, nil), tallyText(c.LinesRemoved, nil))
 	p("  test files edited: %d edits of %d test files, lines added %s", c.TestEdits, c.TestFiles, tallyText(c.TestLinesAdd, nil))
 	r := f.Repeated
@@ -203,13 +203,22 @@ func factsText(f *core.SessionFacts) string {
 }
 
 // shellEditsText says the Bash calls that wrote files, beside the edits of
-// the editing tools; unknown for Bash calls stored before it was recorded.
-func shellEditsText(n, unknown int) string {
+// the editing tools; unknown for Bash calls with no answer (stored before it
+// was recorded, or too long to read). viaScript is the Bash calls a REPL
+// script ran that wrote files, told apart from the rest as the edits of
+// scripts are.
+func shellEditsText(n, unknown, viaScript int) string {
+	var s string
 	switch {
 	case unknown == 0:
-		return fmt.Sprintf("%d shell edits", n)
+		s = fmt.Sprintf("%d shell edits", n)
 	case n == 0:
-		return fmt.Sprintf("shell edits unknown (%d Bash calls not classified)", unknown)
+		s = fmt.Sprintf("shell edits unknown (%d Bash calls not classified)", unknown)
+	default:
+		s = fmt.Sprintf("%d+ shell edits (%d Bash calls not classified)", n, unknown)
 	}
-	return fmt.Sprintf("%d+ shell edits (%d Bash calls not classified)", n, unknown)
+	if viaScript > 0 {
+		s += fmt.Sprintf(" and %d more run by REPL scripts", viaScript)
+	}
+	return s
 }

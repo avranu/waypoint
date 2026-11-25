@@ -550,10 +550,10 @@ func TestFactsShellEditsAndFailedEdits(t *testing.T) {
 	e := transcriptEnv(t)
 	jo := e.user("jo", false)
 	e.putFile(jo, "s1", "main", 0, fPrompt("a", 1, "human")+
-		fAssistant("m1", 2, 10,
+		fCwd(fAssistant("m1", 2, 10,
 			fTool("t1", "Edit", fm{"file_path": "/r/a.go"}), fTool("t2", "Edit", fm{"file_path": "/r/b.go"}),
 			fTool("t3", "Bash", fm{"command": "echo x > /r/out.txt"}), fTool("t4", "Bash", fm{"command": "echo x > /tmp/scratch.txt"}),
-			fTool("t5", "Bash", fm{"command": "ls"}))+
+			fTool("t5", "Bash", fm{"command": "ls"})), "/r")+
 		fResult("t1", 2, false, nil)+fResult("t2", 2, true, nil)+fResult("t3", 2, false, nil)+fResult("t4", 2, false, nil)+fResult("t5", 2, false, nil))
 	e.quiet()
 	if run := e.derive(); run.Derived != 1 || run.Failed != 0 {
