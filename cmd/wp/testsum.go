@@ -268,12 +268,16 @@ func (c *cli) testsumReport(data []byte, format string, cmdFailed int, rec *test
 	_, _ = fmt.Fprint(c.out, res.render())
 	rec.finish(res, cmdFailed)
 	if res.Failed > 0 || len(res.Failures) > 0 {
+		if cmdFailed != 0 {
+			// The rest of the output may hold more than the failed tests.
+			_, _ = fmt.Fprint(c.out, keptOutput(data, 20))
+		}
 		return res, exitCode(1)
 	}
 	if cmdFailed != 0 {
 		// The tests passed, but something else in CMD (a lint, a type
 		// check, a second suite that didn't start) failed: show its end.
-		_, _ = fmt.Fprintf(c.out, "but the command exited %d; last lines:\n%s\n%s", cmdFailed, lastLines(data, 20), keptOutput(data, 20))
+		_, _ = fmt.Fprintf(c.out, "but the command exited %d; last lines:\n%s", cmdFailed, failedTail(data, 20))
 		return res, exitCode(1)
 	}
 	return res, nil
@@ -288,15 +292,23 @@ func lastLines(data []byte, n int) string {
 	return strings.Join(lines, "\n")
 }
 
-// failedOutputFile holds the whole output of the last command that failed
-// with its error above the lines shown, in the checkout's git directory.
+// failedOutputFile holds the whole output of the last failed command whose
+// output was longer than the lines shown, in the checkout's git directory;
+// each later long failure overwrites it.
 const failedOutputFile = "wp-failed-output.log"
+
+// failedTail is the last n lines of a failed command's output, then a line
+// saying where all of it is when it is longer. One n for both, so the lines
+// shown and the threshold for keeping can't drift apart.
+func failedTail(data []byte, n int) string {
+	return lastLines(data, n) + "\n" + keptOutput(data, n)
+}
 
 // keptOutput saves a failed command's whole output when it is longer than
 // the shown lines, and returns a line saying where ("" when all of it was
-// shown or it can't be saved). The tail of a failed make check is its
-// passing test packages, and the lint finding that failed it is above them:
-// without the file, finding it costs another run (WP-1812).
+// shown). A failed make check shows its last lines; the step's own output,
+// with the finding that failed it, is above them, and the file is what
+// gives it without another run (WP-1812).
 func keptOutput(data []byte, shown int) string {
 	n := strings.Count(strings.TrimRight(string(data), "\n"), "\n") + 1
 	if n <= shown {
@@ -304,20 +316,30 @@ func keptOutput(data []byte, shown int) string {
 	}
 	p, err := localGit("rev-parse", "--git-path", failedOutputFile)
 	if err != nil || p == "" {
-		return ""
-	}
-	if abs, err := filepath.Abs(p); err == nil {
+		// Not in a repo: a temp file, so the output is still kept.
+		f, err := os.CreateTemp("", "wp-failed-output-*.log")
+		if err != nil {
+			return fmt.Sprintf("Its %d lines of output couldn't be saved: %v\n", n, err)
+		}
+		p = f.Name()
+		_ = f.Close()
+	} else if abs, err := filepath.Abs(p); err == nil {
 		p = abs
 	}
+	return keptAt(p, data, n)
+}
+
+// keptAt writes data, n lines, to p and says where, or why it couldn't.
+func keptAt(p string, data []byte, n int) string {
 	if err := os.WriteFile(p, data, 0o600); err != nil {
-		return ""
+		return fmt.Sprintf("Its %d lines of output couldn't be saved: %v\n", n, err)
 	}
 	return fmt.Sprintf("All %d lines of its output: %s\n", n, p)
 }
 
 // emitUnparsed reports a command that failed without producing results.
 func (c *cli) emitUnparsed(data []byte, code int) error {
-	_, _ = fmt.Fprintf(c.out, "FAIL: the command exited %d and no test results were recognized; last lines:\n%s\n%s", code, lastLines(data, 20), keptOutput(data, 20))
+	_, _ = fmt.Fprintf(c.out, "FAIL: the command exited %d and no test results were recognized; last lines:\n%s", code, failedTail(data, 20))
 	return exitCode(1)
 }
 

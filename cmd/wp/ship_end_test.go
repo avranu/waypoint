@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -262,7 +263,7 @@ func shipEndsTurn(t *testing.T, e *env, me *core.Actor, key string) {
 	}
 	// A failed check: nothing ships, the summary waits.
 	out, code := e.run("ship", "--check", "false", "--summary", "{task} is in PR #{pr}.")
-	if code == 0 || !strings.Contains(out, "Check failed: false exited 1") || !strings.Contains(out, "nothing was committed or shipped") {
+	if code == 0 || !strings.Contains(out, "Check failed: false exited 1") || !strings.Contains(out, "nothing was committed or shipped") || strings.Contains(out, "lines of its output") {
 		t.Errorf("failed check: %d\n%s", code, out)
 	}
 	if k := state().Summaries[key]; k == nil || k.Text != "{task} is in PR #{pr}." {
@@ -270,12 +271,16 @@ func shipEndsTurn(t *testing.T, e *env, me *core.Actor, key string) {
 	}
 	// A failure whose error is above the lines shown: the whole output is
 	// kept in a file the message names (WP-1812).
-	out, code = e.run("ship", "--check", "echo a lint finding; seq 40; exit 3", "--summary", "{task} is in PR #{pr}.")
-	m := regexp.MustCompile(`All 41 lines of its output: (\S+)`).FindStringSubmatch(out)
+	out, code = e.run("ship", "--check", "printf 'a lint %s\\n' finding; seq 40; exit 3", "--summary", "{task} is in PR #{pr}.")
+	m := regexp.MustCompile(`All 41 lines of its output: (.+)`).FindStringSubmatch(out)
 	if code == 0 || strings.Contains(out, "a lint finding") || m == nil {
 		t.Fatalf("long failed check: %d\n%s", code, out)
 	}
-	if kept, err := os.ReadFile(m[1]); err != nil || !strings.HasPrefix(string(kept), "a lint finding\n1\n") {
+	want := "a lint finding\n"
+	for i := 1; i <= 40; i++ {
+		want += strconv.Itoa(i) + "\n"
+	}
+	if kept, err := os.ReadFile(m[1]); err != nil || string(kept) != want {
 		t.Errorf("kept output: %v\n%s", err, kept)
 	}
 	// A step put off needs the agent: the kept summary is used and kept
@@ -420,5 +425,19 @@ func TestShipEndMarkerAfterALongBackgroundWait(t *testing.T) {
 	}
 	if e := c.takeShipEnd("sess-long", "b1"); e == nil || e.Text != "Shipped." {
 		t.Fatalf("the marker written at the end of an hour's wait was refused: %+v", e)
+	}
+}
+
+func TestSlotWaitNote(t *testing.T) {
+	for w, want := range map[time.Duration]string{
+		0:                                     "",
+		59 * time.Second:                      "",
+		59*time.Second + 400*time.Millisecond: "",
+		60 * time.Second:                      " (and 1m0s waiting for a slot)",
+		44 * time.Minute:                      " (and 44m0s waiting for a slot)",
+	} {
+		if got := slotWaitNote(w); got != want {
+			t.Errorf("slotWaitNote(%v) = %q, want %q", w, got, want)
+		}
 	}
 }

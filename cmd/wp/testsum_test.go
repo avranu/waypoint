@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -254,6 +256,48 @@ func TestTestsumRunsCommandThroughSlot(t *testing.T) {
 	cmd = `printf '{"Action":"pass","Package":"p","Test":"T","Elapsed":0}\n{"Action":"pass","Package":"p","Elapsed":1}\n'; [ "$*" = "--format x -- -y" ] || exit 9`
 	if code := run([]string{"testsum", "--format", "go", "sh", "-c", cmd, "sh", "--format", "x", "--", "-y"}, &out, &errb); code != 0 || !strings.HasPrefix(out.String(), "PASS: 1 tests") {
 		t.Errorf("positional: %d %q %q", code, out.String(), errb.String())
+	}
+}
+
+// A failure with more output than the tail shows keeps all of it in a file
+// the message names; with no repo here that is a temp file (WP-1812).
+func TestTestsumKeepsLongFailedOutput(t *testing.T) {
+	slotEnv(t)
+	t.Chdir(t.TempDir())
+	pass := `printf '{"Action":"pass","Package":"p","Test":"T","Elapsed":0}\n{"Action":"pass","Package":"p","Elapsed":1}\n'; `
+	fail := `printf '{"Action":"fail","Package":"p","Test":"T","Elapsed":0}\n{"Action":"fail","Package":"p","Elapsed":1}\n'; `
+	for name, cmd := range map[string]string{
+		"unrecognized": "echo first; seq 40; exit 3",
+		"passed, then": pass + "echo first; seq 40; exit 3",
+		"failed, and":  fail + "echo first; seq 40; exit 3",
+	} {
+		var out, errb bytes.Buffer
+		if code := run([]string{"testsum", "--", "sh", "-c", cmd}, &out, &errb); code != 1 {
+			t.Fatalf("%s: exit %d %q", name, code, out.String())
+		}
+		m := regexp.MustCompile(`All (\d+) lines of its output: (.+)\n`).FindStringSubmatch(out.String())
+		if m == nil {
+			t.Fatalf("%s: no pointer to the output:\n%s", name, out.String())
+		}
+		kept, err := os.ReadFile(m[2])
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if n := strings.Count(string(kept), "\n"); strconv.Itoa(n) != m[1] || !strings.Contains(string(kept), "first\n1\n2\n") || !strings.HasSuffix(string(kept), "\n40\n") {
+			t.Errorf("%s: pointer says %s lines; file has %d:\n%s", name, m[1], n, kept)
+		}
+		_ = os.Remove(m[2])
+	}
+}
+
+func TestKeptOutputSaysWhenItCannotSave(t *testing.T) {
+	data := []byte(strings.Repeat("x\n", 30))
+	got := keptAt(filepath.Join(t.TempDir(), "no", "such", "dir", "f.log"), data, 30)
+	if !strings.HasPrefix(got, "Its 30 lines of output couldn't be saved: ") {
+		t.Errorf("write failure: %q", got)
+	}
+	if got := keptOutput(data, 30); got != "" {
+		t.Errorf("output no longer than shown: %q", got)
 	}
 }
 

@@ -438,6 +438,16 @@ func checkArgv(cmd string) []string {
 	return strings.Fields(cmd)
 }
 
+// slotWaitNote says how long a check waited for a slot, as text to follow
+// its own time, when that is a minute or more. Under a minute is left out:
+// it is noise next to the check's time, and waits.jsonl has every wait.
+func slotWaitNote(w time.Duration) string {
+	if w = w.Round(time.Second); w < time.Minute {
+		return ""
+	}
+	return fmt.Sprintf(" (and %s waiting for a slot)", w)
+}
+
 // runShipCheck runs --check CMD in the tests slot, as wp testsum does, and
 // records it against the working tree; a pass already recorded on this
 // tree for the same command isn't run again. An error: the check failed or
@@ -481,8 +491,9 @@ func (c *cli) runShipCheck(cmd string) error {
 		rec.finish(res, code)
 	}
 	took := time.Since(start).Round(time.Second)
+	waited := slotWaitNote(start.Sub(queued))
 	if !failed {
-		line := fmt.Sprintf("Check passed: %s (%s)", cmd, took)
+		line := fmt.Sprintf("Check passed: %s (%s%s)", cmd, took, waited)
 		if res.Passed+res.Failed+res.Skipped > 0 {
 			line += "; " + strings.TrimSpace(res.render())
 		}
@@ -492,10 +503,6 @@ func (c *cli) runShipCheck(cmd string) error {
 	if res.Passed+res.Failed+res.Skipped > 0 {
 		_, _ = fmt.Fprint(c.out, res.render())
 	}
-	waited := ""
-	if w := start.Sub(queued).Round(time.Second); w >= time.Minute {
-		waited = fmt.Sprintf(" (and %s waiting for a slot)", w)
-	}
-	_, _ = fmt.Fprintf(c.out, "Check failed: %s exited %d after %s%s; last lines:\n%s\n%s", cmd, code, took, waited, lastLines(buf.Bytes(), 30), keptOutput(buf.Bytes(), 30))
+	_, _ = fmt.Fprintf(c.out, "Check failed: %s exited %d after %s%s; last lines:\n%s", cmd, code, took, waited, failedTail(buf.Bytes(), 30))
 	return fmt.Errorf("the check failed, so nothing was committed or shipped: fix it and run wp ship again")
 }
