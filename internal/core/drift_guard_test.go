@@ -490,6 +490,24 @@ func TestDriftGuardQueuedAheadCheckWaitsFromReady(t *testing.T) {
 	}
 }
 
+// An ahead check the babysit never stamped (it rests, or was set off) stops
+// holding the merge once it is older than an audit may take.
+func TestDriftGuardUnstampedAheadCheckStopsHolding(t *testing.T) {
+	be, _, _ := footprintEnv(t)
+	be.policy(MergePolicyInput{ReviewWaitMinutes: ptr(0), QuietMinutes: ptr(10)})
+	be.botRun("done")
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step() // asked ahead
+	be.setClock(be.clockNow().Add(auditWaitMax - time.Minute))
+	if r := be.reasons(7); !strings.Contains(r, "footprint check queued") {
+		t.Fatalf("not held while unstamped: %q", r)
+	}
+	be.setClock(be.clockNow().Add(2 * time.Minute))
+	if r := be.reasons(7); strings.Contains(r, "footprint") {
+		t.Errorf("held for good by an unstamped check: %q", r)
+	}
+}
+
 // An ahead ask that can't be made (nobody's runner) records nothing: the head
 // stays unseen and the late path decides, as it always did.
 func TestDriftGuardAheadSkipIsNotRecorded(t *testing.T) {

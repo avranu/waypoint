@@ -529,6 +529,12 @@ func (s *Service) footprintDue(ctx context.Context, pr *PullRequest) (string, *t
 		}
 		wake := c.Queued.Add(auditQueueWait)
 		if c.Queued.IsZero() {
+			// Not stamped yet: the babysit's next step does it. One it never
+			// reaches (it rests, or was set off) must not hold the merge for
+			// good: an ask older than an audit may take holds nothing.
+			if s.now().Sub(c.At) > auditWaitMax {
+				continue
+			}
 			wake = s.now().Add(driftRetry)
 		} else if !s.now().Before(wake) {
 			continue
