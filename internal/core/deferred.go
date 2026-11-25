@@ -323,14 +323,12 @@ func deferredList(o *DeferredOffer) string {
 
 // deferredDo is how an offer says to do the tasks and ship them with the
 // change: wp ship with the key of each task done added to the keys it ships
-// (WP-1426), the example built from the real keys when it can be, so it runs
-// as printed.
-func deferredDo(shipping []string, o *DeferredOffer) string {
+// (WP-1426), the example built from the real keys only, so it runs as
+// printed: a ship that named no key gives the offered task's alone. where is
+// said after "do it".
+func deferredDo(shipping []string, o *DeferredOffer, where string) string {
 	n := len(o.Tasks) + o.More
 	keys := slices.Clone(shipping)
-	if len(keys) == 0 {
-		keys = []string{"KEY"}
-	}
 	eg := ""
 	if len(o.Tasks) > 0 {
 		keys = append(keys, o.Tasks[0].Key)
@@ -339,7 +337,7 @@ func deferredDo(shipping []string, o *DeferredOffer) string {
 		}
 	}
 	eg += "wp ship " + strings.Join(keys, " ") + " -m \u2026"
-	return "If " + oneOrMany(n, "it is", "one is") + " well defined, or you can define it now, and belongs with this change, do it: give a Sonnet agent a brief for it (the files, the behaviour, the tests to write first), check its diff and tests yourself, commit it on this branch, then run wp ship with its key added (" + eg + "): one pull request for all of them, linked to each, and each moves In Review and then Done on the merge. " +
+	return "If " + oneOrMany(n, "it is", "one is") + " well defined, or you can define it now, and belongs with this change, do it" + where + ": give a Sonnet agent a brief for it (the files, the behaviour, the tests to write first), check its diff and tests yourself, commit it on this branch, then run wp ship with its key added (" + eg + "): one pull request for all of them, linked to each, and each moves In Review and then Done on the merge. " +
 		"Leave any that needs a person's decision or doesn't belong with this change.\n"
 }
 
@@ -366,11 +364,11 @@ func deferredText(shipping []string, o *DeferredOffer, after bool) string {
 	b.WriteString(oneOrMany(n, " that is open, unblocked and not waiting on a person:\n", " that are open, unblocked and not waiting on a person:\n"))
 	b.WriteString(deferredList(o))
 	if after {
-		b.WriteString(strings.Replace(deferredDo(shipping, o), "do it:", "do it on the same branch:", 1))
+		b.WriteString(deferredDo(shipping, o, " on the same branch"))
 		b.WriteString("Running wp ship again pushes to the open pull request. Waypoint won't mention " + oneOrMany(n, "this task", "these tasks") + " again.")
 		return b.String()
 	}
-	b.WriteString(deferredDo(shipping, o))
+	b.WriteString(deferredDo(shipping, o, ""))
 	b.WriteString("To ship as it is, run the same wp ship command again. Waypoint won't ask about " + oneOrMany(n, "this task", "these tasks") + " again.")
 	return b.String()
 }

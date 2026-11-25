@@ -208,3 +208,15 @@ func TestDeferredListsEightAndRecordsAll(t *testing.T) {
 		t.Fatalf("the two not listed stop the next ship: %q", keysOf(again))
 	}
 }
+
+// The offer's example runs as printed: a ship that named no key gives the
+// offered task's key alone, never a placeholder.
+func TestDeferredExampleHasOnlyRealKeys(t *testing.T) {
+	o := &DeferredOffer{Tasks: []DeferredTask{{Key: "WP-9", Title: "x"}}}
+	if do := deferredDo(nil, o, ""); !strings.Contains(do, "(wp ship WP-9 -m") || strings.Contains(do, "KEY") {
+		t.Errorf("no key shipped: %s", do)
+	}
+	if do := deferredDo([]string{"WP-1"}, o, " on the same branch"); !strings.Contains(do, "do it on the same branch: ") || !strings.Contains(do, "wp ship WP-1 WP-9 -m") {
+		t.Errorf("after a ship: %s", do)
+	}
+}

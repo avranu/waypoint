@@ -1358,7 +1358,7 @@ func (c *cli) moveShipped(k, url, msg string, problem func(string)) bool {
 func (c *cli) shipAlso(so shipOpts, o *openedPR, d *prDetail, msg string, also []string, note, problem func(string)) {
 	for _, k := range also {
 		if !slices.Contains(o.AlsoLinked, k) {
-			if !strings.Contains(o.Warning, k) {
+			if !namesKey(o.Warning, k) {
 				problem(k + " isn't linked to the pull request: run wp link " + k + " " + d.URL)
 			}
 			continue
