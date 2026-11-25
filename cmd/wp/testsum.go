@@ -330,8 +330,11 @@ func keptOutput(data []byte, shown int) string {
 }
 
 // keptAt writes data, n lines, to p and says where, or why it couldn't.
+// Credentials are blanked first, since lines above the tail were never
+// shown and the file outlives the run; the write is a rename, so two
+// failures at once leave one run's output, not a mix (audit 1779).
 func keptAt(p string, data []byte, n int) string {
-	if err := os.WriteFile(p, data, 0o600); err != nil {
+	if err := writeFileAtomic(p, []byte(redact(string(data))), 0o600); err != nil {
 		return fmt.Sprintf("Its %d lines of output couldn't be saved: %v\n", n, err)
 	}
 	return fmt.Sprintf("All %d lines of its output: %s\n", n, p)

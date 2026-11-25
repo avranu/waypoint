@@ -292,9 +292,19 @@ func TestTestsumKeepsLongFailedOutput(t *testing.T) {
 
 func TestKeptOutputSaysWhenItCannotSave(t *testing.T) {
 	data := []byte(strings.Repeat("x\n", 30))
-	got := keptAt(filepath.Join(t.TempDir(), "no", "such", "dir", "f.log"), data, 30)
+	blocker := filepath.Join(t.TempDir(), "a-file")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := keptAt(filepath.Join(blocker, "f.log"), data, 30)
 	if !strings.HasPrefix(got, "Its 30 lines of output couldn't be saved: ") {
 		t.Errorf("write failure: %q", got)
+	}
+	// A credential above the tail isn't kept in the file.
+	p := filepath.Join(t.TempDir(), "f.log")
+	keptAt(p, []byte("fetch https://bot:hunter2secret@git.example/x\n"+string(data)), 31)
+	if kept, err := os.ReadFile(p); err != nil || strings.Contains(string(kept), "hunter2secret") || !strings.Contains(string(kept), "https://bot:***@git.example/x\n") {
+		t.Errorf("kept file: %v\n%s", err, kept)
 	}
 	if got := keptOutput(data, 30); got != "" {
 		t.Errorf("output no longer than shown: %q", got)
