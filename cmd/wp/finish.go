@@ -42,7 +42,7 @@ When the pull request is held for the review round (or the check of your marks),
 wp ship waits for the round's next step and prints it, up to --wait-timeout
 (default 90m): the findings in full, to mark and ship again; the pull request
 Waypoint opened (the turn ends there, as with --summary); or why the round
-ended. Run it with run_in_background: true and end your turn: you are woken
+ended (with --summary the turn ends there too). Run it with run_in_background: true and end your turn: you are woken
 when it exits. --no-wait returns at once as before, and what the review finds
 comes to you later as a message.
 --summary is your final reply to the person, written before you know the

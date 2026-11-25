@@ -500,3 +500,107 @@ func TestHeldShipWithANoticeToActOnDoesNotWait(t *testing.T) {
 		}
 	}
 }
+
+// shipEnded is a held ship whose wait ends with the round over: summary is
+// what the agent gave (or had kept), pull what the server found.
+func shipEnded(t *testing.T, summary string, pull any) (*cli, *bytes.Buffer, bool) {
+	t.Helper()
+	t.Chdir(t.TempDir())
+	ans := map[string]any{"outcome": "ended", "text": "Waypoint's review round for this task is over (done). PR 7 (open): https://git.example/a/b/pulls/7 Nothing more is waiting on you here."}
+	if pull != nil {
+		ans["pull"] = pull
+	}
+	c, out, _ := waitEnv(t, say(ans))
+	wait := time.Hour
+	no := false
+	so := shipOpts{noWait: &no, waitTimeout: &wait}
+	o := &openedPR{Held: "Pushed.", HeldNeedsAgent: new(bool)}
+	_, _, done, err := c.waitHeldShip(heldFlags(), so, o, []byte(`{}`), "WP-9", summary)
+	if err != nil || !done {
+		t.Fatalf("done %v, err %v", done, err)
+	}
+	c2, _ := newCLI(new(bytes.Buffer), new(bytes.Buffer))
+	e := c2.state.ShipEnds["sess-wait"]
+	return c2, out, e != nil && !e.Ready.IsZero()
+}
+
+var endedPull = map[string]any{"repo": "a/b", "number": 7, "url": "https://git.example/a/b/pulls/7", "state": "open"}
+
+// The round is over and the agent gave a summary: the turn ends with it, then
+// Waypoint's line naming the pull request.
+func TestHeldShipEndedEndsTheTurnWithTheSummary(t *testing.T) {
+	c, out, marked := shipEnded(t, "Fixed {task}; see PR {pr} at {url}.", endedPull)
+	if !marked {
+		t.Fatal("no marker was written")
+	}
+	e := c.state.ShipEnds["sess-wait"]
+	want := "Fixed WP-9; see PR 7 at https://git.example/a/b/pulls/7.\n\nWaypoint's review round for this task is over (done). PR 7 (open): https://git.example/a/b/pulls/7 Nothing more is waiting on you here."
+	if e.Text != want || e.Key != "WP-9" {
+		t.Errorf("marker %q (key %q), want %q", e.Text, e.Key, want)
+	}
+	if !strings.Contains(out.String(), shipEndsLine) {
+		t.Errorf("output lacks the turn-ending line:\n%s", out.String())
+	}
+}
+
+// No pull request recorded: the placeholders say so, and there is no
+// trailing paragraph.
+func TestHeldShipEndedWithoutAPullRequest(t *testing.T) {
+	c, _, marked := shipEnded(t, "Shipped {task}: {pr} {url}", nil)
+	if !marked {
+		t.Fatal("no marker was written")
+	}
+	text := c.state.ShipEnds["sess-wait"].Text
+	if !strings.HasPrefix(text, "Shipped this task: (no pull request) (no pull request)\n\nWaypoint's review round") || strings.Contains(text, "after the adversarial review") {
+		t.Errorf("marker %q", text)
+	}
+}
+
+// No summary: nothing ends the turn; the news is printed for the agent.
+func TestHeldShipEndedWithoutASummaryEndsNothing(t *testing.T) {
+	_, out, marked := shipEnded(t, "", endedPull)
+	if marked || strings.Contains(out.String(), shipEndsLine) || !strings.Contains(out.String(), "PR 7 (open)") {
+		t.Errorf("marked %v:\n%s", marked, out.String())
+	}
+}
+
+// A warning the held answer carries needs the agent: the turn goes on.
+func TestHeldShipEndedWithAWarningKeepsTheTurn(t *testing.T) {
+	t.Chdir(t.TempDir())
+	c, _, _ := waitEnv(t, say(map[string]any{"outcome": "ended", "text": "over", "pull": endedPull}))
+	wait := time.Hour
+	no := false
+	so := shipOpts{noWait: &no, waitTimeout: &wait}
+	o := &openedPR{Held: "Pushed.", HeldNeedsAgent: new(bool), Warning: "careful"}
+	if _, _, done, err := c.waitHeldShip(heldFlags(), so, o, []byte(`{}`), "WP-9", "Shipped."); err != nil || !done {
+		t.Fatalf("done %v err %v", done, err)
+	}
+	c2, _ := newCLI(new(bytes.Buffer), new(bytes.Buffer))
+	if e := c2.state.ShipEnds["sess-wait"]; e != nil && !e.Ready.IsZero() {
+		t.Errorf("a marker was written: %+v", e)
+	}
+}
+
+// A summary kept by an earlier ship is the one the turn ends with, and the
+// background report of this ship takes the marker.
+func TestHeldShipEndedWithAKeptSummaryEndsTheBackgroundTurn(t *testing.T) {
+	t.Chdir(t.TempDir())
+	c, _, _ := waitEnv(t, say(map[string]any{"outcome": "ended", "text": "over", "pull": endedPull}))
+	c.noteShipBackground("sess-wait", "b1")
+	c.keepSummary("WP-9", "Kept {task}.")
+	wait := time.Hour
+	no := false
+	so := shipOpts{noWait: &no, waitTimeout: &wait}
+	summary, kept := c.shipSummary("WP-9", "", false)
+	if !kept {
+		t.Fatal("the summary wasn't kept")
+	}
+	o := &openedPR{Held: "Pushed.", HeldNeedsAgent: new(bool)}
+	if _, _, done, err := c.waitHeldShip(heldFlags(), so, o, []byte(`{}`), "WP-9", summary); err != nil || !done {
+		t.Fatalf("done %v err %v", done, err)
+	}
+	c2, _ := newCLI(new(bytes.Buffer), new(bytes.Buffer))
+	if e := c2.takeShipEnd("sess-wait", "b1"); e == nil || e.Text != "Kept WP-9.\n\nover" {
+		t.Fatalf("the background report's marker: %+v", e)
+	}
+}

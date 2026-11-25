@@ -34,15 +34,18 @@ var shipChunk = waitChunk
 
 // shipNews is the server's answer to a wait.
 type shipNews struct {
-	Outcome string  `json:"outcome"` // findings, pull, ended, waiting, none
-	Text    string  `json:"text"`
-	IDs     []int64 `json:"ids"` // the messages of findings: waitHeldShip acks them once printed
-	Pull    *struct {
-		Repo   string `json:"repo"`
-		Number int    `json:"number"`
-		URL    string `json:"url"`
-		State  string `json:"state"`
-	} `json:"pull"`
+	Outcome string    `json:"outcome"` // findings, pull, ended, waiting, none
+	Text    string    `json:"text"`
+	IDs     []int64   `json:"ids"` // the messages of findings: waitHeldShip acks them once printed
+	Pull    *shipPull `json:"pull"`
+}
+
+// shipPull is the pull request the server found for the task's branch.
+type shipPull struct {
+	Repo   string `json:"repo"`
+	Number int    `json:"number"`
+	URL    string `json:"url"`
+	State  string `json:"state"`
 }
 
 // canWaitShip: the same conditions under which endTurnAfterShip may write a
@@ -158,9 +161,10 @@ func (n *shipNews) pullLine() string {
 var reopenPR = func(c *cli, f prOpenFlags) (*openedPR, []byte, error) { return c.openPR(f) }
 
 // waitHeldShip is wp ship's wait for a held round's next step. done: what
-// the round had for the agent was printed and the ship is over (no marker, so
-// the turn goes on to read it; the summary stays kept for the task's next
-// ship). Otherwise the ship goes on with o: the pull request Waypoint opened,
+// the round had for the agent was printed and the ship is over. Findings
+// leave the turn going to read them (the summary stays kept for the task's
+// next ship); a round that ended with nothing for the agent ends the turn
+// with the summary, when there is one and nothing else asks the agent. Otherwise the ship goes on with o: the pull request Waypoint opened,
 // or the held answer as it was when nothing came.
 func (c *cli) waitHeldShip(f prOpenFlags, so shipOpts, o *openedPR, raw []byte, task, summary string) (*openedPR, []byte, bool, error) {
 	if summary != "" {
@@ -195,5 +199,15 @@ func (c *cli) waitHeldShip(f prOpenFlags, so shipOpts, o *openedPR, raw []byte, 
 		return nil, nil, true, fmt.Errorf("printing the review's findings: %w", err)
 	}
 	c.ackShipNews(task, n.IDs)
+	if n.Outcome == "ended" && summary != "" {
+		dirty, _ := localGit("status", "--porcelain", "--untracked-files=no")
+		putOff := putOffPrompt(o.key, o.PutOff)
+		if putOff != "" {
+			c.println(putOff)
+		}
+		if shipNeedsAgent(o, so.before, nil, putOff, dirty != "") == "" && c.endTurnAfterShip(task, endedSummary(summary, task, n.Pull, n.Text)) {
+			c.println(shipEndsLine)
+		}
+	}
 	return o, raw, true, nil
 }

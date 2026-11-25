@@ -444,7 +444,7 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 			c.keepSummary(cmpStr(key, o.key), summary)
 			why := shipNeedsAgent(o, so.before, wrong, putOff, dirty != "")
 			if why == "" && c.endTurnAfterShip(cmpStr(key, o.key), fillSummary(summary, o.key, d)) {
-				c.println("Waypoint ends the turn here and shows the person your --summary as the reply (should the turn go on, end it with that summary).")
+				c.println(shipEndsLine)
 				return false, nil
 			}
 		}
@@ -454,6 +454,9 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 	}
 	return false, nil
 }
+
+// shipEndsLine is what wp ship says once it has marked the turn to end.
+const shipEndsLine = "Waypoint ends the turn here and shows the person your --summary as the reply (should the turn go on, end it with that summary)."
 
 // shipNeedsAgent is why a ship needs the agent's turn to go on ("": nothing
 // does): what wp ship said before the pull request (before), a notice or

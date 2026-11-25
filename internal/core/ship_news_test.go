@@ -158,6 +158,9 @@ func TestAwaitShipNewsShippedPullMergedEnds(t *testing.T) {
 	if got.Outcome != ShipNewsEnded || !strings.Contains(got.Text, "PR 12") || !strings.Contains(got.Text, "merged") {
 		t.Fatalf("got %+v", got)
 	}
+	if got.Pull == nil || got.Pull.Number != 12 || got.Pull.State != "merged" || !strings.Contains(got.Text, "https://git.example/acme/app/pulls/12") {
+		t.Fatalf("merged news lacks the pull request: %+v", got)
+	}
 }
 
 // A shipped round with no pull request of the branch's own repo recorded
@@ -184,6 +187,22 @@ func TestAwaitShipNewsSkippedRoundEnds(t *testing.T) {
 	}
 	got := a.await(held.Key, time.Second)
 	if got.Outcome != ShipNewsEnded || !strings.Contains(got.Text, "over") {
+		t.Fatalf("got %+v", got)
+	}
+	if got.Pull != nil || strings.Contains(got.Text, "PR ") {
+		t.Fatalf("no pull request is recorded, yet %+v", got)
+	}
+}
+
+// An ended round whose branch has a pull request names it, with its link.
+func TestAwaitShipNewsEndedNamesThePullRequest(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	a.openPull(t, round, "merged")
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = ?, ended_at = ?, reason = ? WHERE id = ?`, RoundSkipped, a.clockNow().UnixMilli(), roundCancelledBy+" a person", round); err != nil {
+		t.Fatal(err)
+	}
+	got := a.await(held.Key, time.Second)
+	if got.Outcome != ShipNewsEnded || got.Pull == nil || got.Pull.Number != 12 || !strings.Contains(got.Text, "PR 12 (merged): https://git.example/acme/app/pulls/12 Nothing more is waiting on you here.") {
 		t.Fatalf("got %+v", got)
 	}
 }

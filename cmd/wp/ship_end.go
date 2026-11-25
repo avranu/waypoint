@@ -193,6 +193,18 @@ func heldSummary(text string) string {
 	return s + "\n\n(The pull request opens after the adversarial review, by Waypoint when the review leaves nothing for the session to do; findings that need the session come back to it.)"
 }
 
+// endedSummary is what the person sees when a held ship's wait ends with the
+// round over: the summary, then Waypoint's news (which names the pull request
+// when there is one). pull is the one the server found, nil when none is.
+func endedSummary(text, key string, pull *shipPull, news string) string {
+	pr, url, task := "(no pull request)", "(no pull request)", "this task"
+	if pull != nil {
+		pr, url, task = strconv.Itoa(pull.Number), pull.URL, cmpStr(key, "this task")
+	}
+	s := strings.NewReplacer("{task}", task, "{pr}", pr, "{url}", url).Replace(strings.TrimSpace(text))
+	return s + "\n\n" + news
+}
+
 // endTurnAfterShip marks this session's turn as one the hooks may end, with
 // text shown to the person, and says whether it did: only a Claude Code
 // session whose hooks reach the server can have its turn ended.
