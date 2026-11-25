@@ -264,6 +264,11 @@ func (s *Service) SessionFacts(ctx context.Context, actor *Actor, q FactsQuery) 
 		}
 		return nil, err
 	}
+	if actor.Automation != nil {
+		if err := actor.requirePersonDirect("reading session facts"); err != nil {
+			return nil, err
+		}
+	}
 	// An agent, even in its person's shell, reads its own person's facts but
 	// not anyone else's: decided on the resolved ids, so a differently-cased
 	// name or an alias cannot dodge it.
@@ -351,7 +356,7 @@ func (s *Service) SessionFacts(ctx context.Context, actor *Actor, q FactsQuery) 
 	if out.Status.FilesArchived == 0 {
 		return nil, notFound("archived transcript for " + out.Key)
 	}
-	if err := s.factsCount(ctx, scopes, out); err != nil {
+	if err := s.factsCount(ctx, scopes, actor.HidesCommandText(), out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -508,7 +513,7 @@ func topN[K comparable](m map[K]int, n int, less func(a, b K) bool) []K {
 }
 
 // factsCount reads the rows of the scopes and counts them.
-func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *SessionFacts) error {
+func (s *Service) factsCount(ctx context.Context, scopes []factScope, hideCommands bool, o *SessionFacts) error {
 	w, args := scopesWhere(scopes, "")
 	o.Turns.ByOrigin = map[string]int{}
 	o.Turns.BySlashCommand = map[string]int{}
@@ -653,6 +658,9 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *Session
 	}
 	for _, k := range topN(times, 10, func(a, b [2]string) bool { return a[0]+a[1] < b[0]+b[1] }) {
 		r := repeatShown[k]
+		if hideCommands && (r.tool == "Bash" || r.tool == "PowerShell") {
+			r.target = usageCommandRedacted
+		}
 		o.Repeated.Top = append(o.Repeated.Top, RepeatedCall{Tool: r.tool, Target: r.target, Times: times[k]})
 	}
 	o.DocsRead.Distinct = len(docs)

@@ -492,16 +492,47 @@ func TestFactsReadByAgent(t *testing.T) {
 	if f, err := e.s.SessionFacts(e.ctx, e.admin, FactsQuery{Session: "s1", User: "all"}); err != nil || f.ModelCalls.Total != 4 {
 		t.Errorf("a person admin with --user all: %v %+v", err, f)
 	}
+	// An automation acting for the person is not an agent reading.
+	auto := *jo
+	auto.Automation = &Automation{}
+	if f, err := e.s.SessionFacts(e.ctx, &auto, FactsQuery{Session: "s1"}); !errors.Is(err, ErrForbidden) || f != nil {
+		t.Errorf("an automation: %v %v", err, f)
+	}
 	// A token without usage.read, or a runner job's scoped token, gets nothing.
 	noUsage := *jo
 	noUsage.Permissions = PermissionSet{PermIssuesRead: true}
-	if _, err := e.s.SessionFacts(e.ctx, &noUsage, FactsQuery{Session: "s1"}); !errors.Is(err, ErrForbidden) {
+	// Leaving out --user would not help it, so it isn't advised.
+	if _, err := e.s.SessionFacts(e.ctx, &noUsage, FactsQuery{Session: "s1", User: "jo"}); !errors.Is(err, ErrForbidden) || strings.Contains(err.Error(), "leaving out --user") {
 		t.Errorf("a token without usage.read: %v", err)
 	}
 	job := *jo
 	job.scope = map[int64]int{p.ID: RoleEditor}
 	if _, err := e.s.SessionFacts(e.ctx, &job, FactsQuery{Session: "s1"}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("a runner job's scoped token: %v", err)
+	}
+}
+
+// An agent sees that a command was repeated, not its text; its person sees it.
+func TestFactsReadByAgentHidesCommands(t *testing.T) {
+	e := transcriptEnv(t)
+	jo := e.user("jo", false)
+	cmd := fm{"command": "export API_TOKEN=abc123 && ./deploy"}
+	e.putFile(jo, "s2", "main", 0, fAssistant("m1", 2, 5, fTool("t1", "Bash", cmd), fTool("t2", "Bash", cmd)))
+	e.quiet()
+	e.derive()
+	shell := *jo
+	shell.AgentEnv = "claude"
+	for _, c := range []struct {
+		a      *Actor
+		hidden bool
+	}{{jo, false}, {&shell, true}, {agentActor(jo, "anthropic/claude-code"), true}} {
+		f, err := e.s.SessionFacts(e.ctx, c.a, FactsQuery{Session: "s2"})
+		if err != nil || len(f.Repeated.Top) != 1 || f.Repeated.Top[0].Times != 2 {
+			t.Fatalf("hidden %v: %v %+v", c.hidden, err, f)
+		}
+		if got := f.Repeated.Top[0].Target; (got == usageCommandRedacted) != c.hidden || strings.Contains(got, "abc123") == c.hidden {
+			t.Errorf("hidden %v: target %q", c.hidden, got)
+		}
 	}
 }
 
