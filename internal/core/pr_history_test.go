@@ -94,7 +94,7 @@ func TestPullRequestHistory(t *testing.T) {
 	// A push, by whoever pushed it.
 	pe.setClock(pe.clockNow().Add(time.Hour))
 	pr.HeadSHA = "bbbbbbb2222"
-	pe.fg.setPR(pe.f, "me/app", pr, sampleDiff)
+	pe.fg.setPR(pe.f, "me/app", pr, diffPlus("two.txt"))
 	pe.send("pull_request", prPayload("synchronize", pr, nil))
 	pe.drain()
 	// Reviews: a person's approval (twice: delivered again), a bot's

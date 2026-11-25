@@ -607,7 +607,7 @@ func (s *Service) lookAgainAt(ctx context.Context, what, query string, args ...a
 		s.log.WarnContext(ctx, what, "err", err)
 	}
 	rows.Close()
-	bg := context.WithoutCancel(ctx)
+	bg := withoutLineLocks(context.WithoutCancel(ctx))
 	for _, id := range ids {
 		s.nudgeBabysit(id, false)
 		s.goBG(func() { s.maybeAutoMerge(bg, id) })

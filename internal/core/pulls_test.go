@@ -280,6 +280,19 @@ type prForge struct {
 	// ownLogin is the forge token's account when set (TokenLogin); else
 	// every token is the bot account's.
 	ownLogin string
+	// parents is a commit's parents by sha (CommitParents); a miss is an error.
+	parents map[string][]string
+	// afterDiff runs after PRDiff has read a diff (a push in between).
+	afterDiff func()
+}
+
+func (p *prForge) CommitParents(ctx context.Context, f *Forge, repo, sha string) ([]string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if ps, ok := p.parents[sha]; ok {
+		return append([]string(nil), ps...), nil
+	}
+	return nil, fmt.Errorf("no commit %s", sha)
 }
 
 func newPRForge() *prForge {
@@ -298,8 +311,13 @@ func (p *prForge) GetPR(ctx context.Context, f *Forge, repo string, n int) (*For
 
 func (p *prForge) PRDiff(ctx context.Context, f *Forge, repo string, pr *ForgePR) (string, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.diffs[pr.HeadSHA], nil
+	d := p.diffs[pr.HeadSHA]
+	hook := p.afterDiff
+	p.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return d, nil
 }
 
 func (p *prForge) DirAt(ctx context.Context, f *Forge, repo, path, ref string) ([]string, error) {
@@ -374,6 +392,11 @@ func (p *prForge) ListPRs(ctx context.Context, f *Forge, repo string) ([]*ForgeP
 func (p *prForge) setPR(f *Forge, repo string, pr ForgePR, diff string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// As the forge's client reads it: an open pull request with a "WIP: "
+	// title is a draft.
+	if pr.State == "open" && draftTitle(pr.Title) {
+		pr.State = "draft"
+	}
 	p.prs[mk(f, repo, pr.Number)] = &pr
 	p.diffs[pr.HeadSHA] = diff
 }
@@ -454,6 +477,9 @@ type prEnv struct {
 	f    *Forge
 	p    *Project
 	repo *ProjectRepo
+	// diffs: the diff a head's pull request has, where not sampleDiff.
+	diffs map[string]string
+	seen  map[int]string // PR number → the head pullHook last sent
 }
 
 func newPREnv(t *testing.T, kind string) *prEnv {
@@ -487,10 +513,30 @@ func newPREnv(t *testing.T, kind string) *prEnv {
 	return &prEnv{env: e, fg: fg, llm: llm, f: f, p: p, repo: r}
 }
 
+// diffPlus is sampleDiff with one more file, so a head carrying it changes
+// something the earlier head did not (a head with the same diff carries the
+// earlier review, WP-1808).
+func diffPlus(name string) string {
+	return sampleDiff + "diff --git a/" + name + " b/" + name + "\nnew file mode 100644\n--- /dev/null\n+++ b/" + name + "\n@@ -0,0 +1 @@\n+x\n"
+}
+
 // pullHook sends a pull_request webhook for pr.
 func (pe *prEnv) pullHook(action string, pr ForgePR) {
 	pe.t.Helper()
-	pe.fg.setPR(pe.f, "me/app", pr, sampleDiff)
+	// A head after the first changes something, unless the test says its diff
+	// is the earlier one's (pe.diffs): a merge-only push carries the review.
+	diff, ok := pe.diffs[pr.HeadSHA]
+	if !ok {
+		diff = sampleDiff
+		if pe.seen == nil {
+			pe.seen = map[int]string{}
+		}
+		if h := pe.seen[pr.Number]; h != "" && h != pr.HeadSHA {
+			diff = diffPlus("head-" + pr.HeadSHA + ".txt")
+		}
+		pe.seen[pr.Number] = pr.HeadSHA
+	}
+	pe.fg.setPR(pe.f, "me/app", pr, diff)
 	headRepo := cmp(pr.HeadRepo, "me/app") // forges name it; a fork's differs
 	payload := map[string]any{
 		"action": action,
@@ -576,6 +622,7 @@ func TestReviewPullRequests(t *testing.T) {
 	}
 	// A push: reviewed again, and the same finding isn't posted twice.
 	pr.HeadSHA = "2222222bbbb"
+	pe.diffs = map[string]string{"2222222bbbb": diffPlus("two.txt")}
 	pe.pullHook("synchronize", pr)
 	done = pe.drain()
 	if len(done) != 1 || done[0].Status != "done" || !strings.Contains(done[0].Summary, "1 already raised") {
@@ -747,6 +794,7 @@ func TestReviewCommandsAndRetries(t *testing.T) {
 		pe.llm.answers[m] = "!timeout"
 	}
 	pr.HeadSHA = "ddddddd4444"
+	pe.diffs = map[string]string{"ddddddd4444": diffPlus("four.txt")}
 	pe.pullHook("synchronize", pr)
 	done = pe.drain()
 	if len(done) != 1 || done[0].Status != "failed" || !strings.Contains(done[0].Error, "unavailable") {

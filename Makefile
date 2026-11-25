@@ -118,7 +118,7 @@ prepush: prepush-go prepush-ops prepush-web ## CI's lint job, as the pre-push ho
 prepush-go: cross-check
 	go vet $(GOPKGS)
 	test -z "$$(gofmt -l cmd internal)"
-	$(GOTOOLS) golangci-lint run $(GOPKGS)
+	$(GOTOOLS) $(SLOT) golangci-lint run $(GOPKGS)
 	go run ./cmd/wplint ./cmd/... ./internal/...
 	go run ./cmd/wplint repo -base origin/main
 
