@@ -1020,7 +1020,7 @@ function Properties({
         projectKey={project.key}
         value={issue.parent}
         onChange={edit.parent}
-        exclude={[issue.key, ...issue.children.map((c) => c.key)]}
+        of={issue.key}
         disabled={!editable}
         variant={v}
       />

@@ -204,6 +204,10 @@ func TestHierarchyRules(t *testing.T) {
 	if got := e.search(e.admin, "under:"+root.Key+" order:key"); strings.Join(got, ",") != child.Key+","+grand.Key {
 		t.Errorf("under = %v", got)
 	}
+	// -under: leaves them all out, which the parent picker relies on (WP-819).
+	if got := e.search(e.admin, "-under:"+child.Key+" order:key"); strings.Join(got, ",") != root.Key+","+child.Key {
+		t.Errorf("-under = %v", got)
+	}
 	// Bulk move with descendants into a sprint keeps the tree.
 	sp, err := e.s.CreateSprint(e.ctx, e.admin, p.Key, SprintInput{})
 	if err != nil {

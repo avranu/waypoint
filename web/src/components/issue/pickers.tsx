@@ -545,7 +545,7 @@ export function ParentPicker({
   projectKey,
   value,
   onChange,
-  exclude,
+  of,
   disabled,
   variant = 'pill',
   autoOpen,
@@ -553,8 +553,9 @@ export function ParentPicker({
   projectKey: string
   value?: IssueRef | null
   onChange: (key: string | null) => void
-  /** keys that can't be the parent: the issue itself and its direct subtasks */
-  exclude?: string[]
+  /** the issue whose parent this is: it and everything beneath it, at any
+   *  depth, can't be its parent, so neither is offered (WP-819) */
+  of?: string
   disabled?: boolean
   variant?: Variant
   autoOpen?: boolean
@@ -563,10 +564,12 @@ export function ParentPicker({
   const [text, setText] = useState('')
   const debounced = useDebounced(text, 150)
   const parentSearch = (t: string) =>
-    q.search(`${t} is:open ${t ? '' : 'type:epic,story order:-updated'}`.trim(), {
-      project: projectKey,
-      limit: 30 + (exclude?.length ?? 0),
-    })
+    q.search(
+      [t, 'is:open', of ? `-under:${of}` : '', t ? '' : 'type:epic,story order:-updated']
+        .filter(Boolean)
+        .join(' '),
+      { project: projectKey, limit: of ? 31 : 30 },
+    )
   // Ready before the first click.
   usePrefetch(parentSearch(''), !disabled)
   const search = useQuery({
@@ -586,7 +589,7 @@ export function ParentPicker({
           },
         ]
       : []),
-    ...(results?.issues ?? []).filter((i) => !exclude?.includes(i.key)).map(issuePickItem),
+    ...(results?.issues ?? []).filter((i) => i.key !== of).map(issuePickItem),
   ]
   return (
     <>
