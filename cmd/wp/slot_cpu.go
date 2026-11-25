@@ -115,7 +115,7 @@ func userBusReachable() bool {
 	if _, err := exec.LookPath("systemd-run"); err != nil {
 		return false
 	}
-	st, err := os.Stat(filepath.Join(rt, "bus"))
+	st, err := os.Stat(filepath.Join(rt, "bus")) // #nosec G703 -- the user's own runtime folder, only whether the socket is there
 	return err == nil && st.Mode()&os.ModeSocket != 0
 }
 
@@ -142,7 +142,7 @@ func cgroupBounded(procCgroup, root string) bool {
 		return false
 	}
 	for p := filepath.Clean("/" + rel); ; p = filepath.Dir(p) {
-		if b, err := os.ReadFile(filepath.Join(root, p, "cpu.max")); err == nil { // #nosec G304 -- a cgroup file
+		if b, err := os.ReadFile(filepath.Join(root, p, "cpu.max")); err == nil { // #nosec G304 G703 -- a cgroup file
 			if f := strings.Fields(string(b)); len(f) > 0 && f[0] != "max" {
 				return true
 			}

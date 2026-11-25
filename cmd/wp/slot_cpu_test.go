@@ -216,7 +216,9 @@ func TestRunSlotBoundScope(t *testing.T) {
 	probesAre(t, false, false, true)
 	t.Setenv(slotCPUEnv, "250")
 	dir := t.TempDir()
-	env := append(os.Environ(), "WAYPOINT_SLOTS_HELD=tests=x@1", "MY_VAR=kept")
+	// The test may itself run under an env bound, which sets GOMAXPROCS.
+	env := slices.DeleteFunc(os.Environ(), func(e string) bool { return strings.HasPrefix(e, "GOMAXPROCS=") })
+	env = append(env, "WAYPOINT_SLOTS_HELD=tests=x@1", "MY_VAR=kept")
 	code, kind, out := runBound(t, context.Background(), dir, env, "sh", "-c", "echo $MY_VAR $WAYPOINT_SLOTS_HELD; pwd; echo $GOMAXPROCS; exit 3")
 	if code != 3 || kind != slotBoundScope {
 		t.Fatalf("code %d kind %q out %q", code, kind, out)
