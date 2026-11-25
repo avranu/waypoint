@@ -1763,7 +1763,8 @@ func (s *Service) reviewIntent(ctx context.Context, prID int64) string {
 		if err := s.db.R.QueryRowContext(ctx, `SELECT project_id, outside FROM issues WHERE id = ?`, l.issue.ID).Scan(&project, &outside); err != nil {
 			outside = true
 		}
-		title := excerpt(l.issue.Title, 160)
+		// Quoted, so a title can't pass for the goal or risk clause after it.
+		title := fmt.Sprintf("%q", excerpt(oneLine(l.issue.Title), 160))
 		if outside {
 			title = outsideTitleInPrompt
 		}
@@ -1773,7 +1774,7 @@ func (s *Service) reviewIntent(ctx context.Context, prID int64) string {
 		case g.Pending:
 			b.WriteString("; not traced to a goal yet")
 		case g.Goal != nil:
-			fmt.Fprintf(&b, "; serves goal %q, %s", excerpt(g.Goal.Title, 160), GroundingWords(g.Grounding))
+			fmt.Fprintf(&b, "; serves goal %q, %s", excerpt(oneLine(g.Goal.Title), 160), GroundingWords(g.Grounding))
 		default:
 			b.WriteString("; " + GroundingWords(g.Grounding))
 		}
