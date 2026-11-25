@@ -1866,10 +1866,11 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 			if r < RoleViewer {
 				return notFound("issue " + *p.Parent.Value)
 			}
-			// No cycles: the new parent must not be this issue or beneath it.
+			// No cycles: the new parent must not be this issue or beneath it,
+			// however far beneath. UNION, not a depth cap, ends the walk.
 			var cyc int
-			if err := t.QueryRowContext(ctx, `WITH RECURSIVE anc(id, parent_id, depth) AS (SELECT id, parent_id, 0 FROM issues WHERE id = ?
-				UNION ALL SELECT x.id, x.parent_id, a.depth + 1 FROM issues x JOIN anc a ON x.id = a.parent_id WHERE a.depth < 50)
+			if err := t.QueryRowContext(ctx, `WITH RECURSIVE anc(id, parent_id) AS (SELECT id, parent_id FROM issues WHERE id = ?
+				UNION SELECT x.id, x.parent_id FROM issues x JOIN anc a ON x.id = a.parent_id)
 				SELECT count(*) FROM anc WHERE id = ?`, pid, i.ID).Scan(&cyc); err != nil {
 				return err
 			}

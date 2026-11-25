@@ -565,10 +565,16 @@ export function ParentPicker({
   const debounced = useDebounced(text, 150)
   const parentSearch = (t: string) =>
     q.search(
-      [t, 'is:open', of ? `-under:${of}` : '', t ? '' : 'type:epic,story order:-updated']
+      [
+        t,
+        'is:open',
+        // -under: is what's beneath it; -key: is the issue itself.
+        of ? `-under:${of} -key:${of}` : '',
+        t ? '' : 'type:epic,story order:-updated',
+      ]
         .filter(Boolean)
         .join(' '),
-      { project: projectKey, limit: of ? 31 : 30 },
+      { project: projectKey, limit: 30 },
     )
   // Ready before the first click.
   usePrefetch(parentSearch(''), !disabled)
@@ -589,7 +595,7 @@ export function ParentPicker({
           },
         ]
       : []),
-    ...(results?.issues ?? []).filter((i) => i.key !== of).map(issuePickItem),
+    ...(results?.issues ?? []).map(issuePickItem),
   ]
   return (
     <>

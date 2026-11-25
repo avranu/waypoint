@@ -1,9 +1,9 @@
 // Pickers leave out what is already attached (WP-778): "Add relation" doesn't
-// offer the issue's relations (of that kind) or the issue itself, the parent picker doesn't
-// offer its subtasks or theirs at any depth (WP-819), a page's "Add a link" search doesn't offer what the
-// page links to (a key typed out still says "linked"), and "Link to a goal"
-// doesn't offer the goal the task is linked to.
-// Desktop and phone widths. Needs user robin (01-signup-flow).
+// offer the issue's relations (of that kind) or the issue itself, the parent
+// picker doesn't offer the issue, its subtasks or theirs at any depth (WP-819),
+// a page's "Add a link" search doesn't offer what the page links to (a key
+// typed out still says "linked"), and "Link to a goal" doesn't offer the goal
+// the task is linked to.
 import { chromium } from "playwright";
 import fs from "node:fs";
 
@@ -37,14 +37,17 @@ for (const width of [1280, 390]) {
 
   if (!seed) {
     await api("POST", "/projects", { name: "Picker checks", key: KEY });
-    const issue = (title, parent) => api("POST", "/issues", { project: KEY, title, parent });
+    const issue = (title, parent, type) =>
+      api("POST", "/issues", { project: KEY, title, parent, type });
     // Has a parent, so the parent picker shows without adding the property.
     const top = await issue("Harbor top task");
     const main = await issue("Harbor main task", top.key);
     const linked = await issue("Harbor linked task");
     const unlinked = await issue("Harbor unlinked task");
     const sub = await issue("Harbor subtask", main.key);
-    await issue("Harbor grandchild", sub.key);
+    // Stories: the picker lists epics and stories before anything is typed.
+    await issue("Harbor grandchild", sub.key, "story");
+    await issue("Harbor other story", undefined, "story");
     await api("POST", `/issues/${main.key}/relations`, { kind: "relates", issue: linked.key });
     const goal = (title) => api("POST", "/design", { title, kind: "goal", project: KEY });
     const served = await goal("Harbor served goal");
@@ -107,14 +110,23 @@ for (const width of [1280, 390]) {
   // ---- parent ----
   await page.locator('button:has-text("Harbor top task"):visible').first().click();
   box = page.getByPlaceholder("Search for a parent…");
+  await row("Harbor other story").first().waitFor();
+  ok(
+    (await row("Harbor grandchild").count()) === 0,
+    `${tag}: a subtask's subtask isn't offered before anything is typed`,
+  );
   await box.fill("Harbor");
   await row("Harbor unlinked task").first().waitFor();
+  ok((await row("Harbor top task").count()) === 1, `${tag}: the current parent is still offered`);
   ok((await row("Harbor subtask").count()) === 0, `${tag}: a subtask isn't offered as the parent`);
   ok(
     (await row("Harbor grandchild").count()) === 0,
     `${tag}: a subtask's subtask isn't offered as the parent`,
   );
-  ok((await row("Harbor main task").count()) === 0, `${tag}: the issue isn't offered as its own parent`);
+  ok(
+    (await row("Harbor main task").count()) === 0,
+    `${tag}: the issue isn't offered as its own parent`,
+  );
   await page.keyboard.press("Escape");
 
   // ---- goal ----

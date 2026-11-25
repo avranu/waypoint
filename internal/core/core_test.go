@@ -204,9 +204,30 @@ func TestHierarchyRules(t *testing.T) {
 	if got := e.search(e.admin, "under:"+root.Key+" order:key"); strings.Join(got, ",") != child.Key+","+grand.Key {
 		t.Errorf("under = %v", got)
 	}
-	// -under: leaves them all out, which the parent picker relies on (WP-819).
+	// -under: leaves out what is beneath the issue and keeps the issue itself;
+	// the parent picker adds -key: to leave that out too (WP-819).
 	if got := e.search(e.admin, "-under:"+child.Key+" order:key"); strings.Join(got, ",") != root.Key+","+child.Key {
 		t.Errorf("-under = %v", got)
+	}
+	if got := e.search(e.admin, "-under:"+child.Key+" -key:"+child.Key); strings.Join(got, ",") != root.Key {
+		t.Errorf("-under -key = %v", got)
+	}
+	// Neither rule stops at a depth: 60 levels down is still beneath the top
+	// (audit 1804.1: both walks used to give up after 50).
+	deep := e.project(e.admin, "Deep", "")
+	top := e.issue(e.admin, IssueInput{Project: deep.Key, Title: "top"})
+	last := top
+	for n := 0; n < 60; n++ {
+		last = e.issue(e.admin, IssueInput{Parent: last.Key, Title: "level"})
+	}
+	if _, err := e.s.UpdateIssue(e.ctx, e.admin, top.Key, IssuePatch{Parent: Some(last.Key)}); !IsInvalid(err) {
+		t.Errorf("cycle allowed 60 levels down: %v", err)
+	}
+	if got := e.search(e.admin, "under:"+top.Key); len(got) != 60 {
+		t.Errorf("under found %d of 60 levels", len(got))
+	}
+	if got := e.search(e.admin, "project:"+deep.Key+" -under:"+top.Key); strings.Join(got, ",") != top.Key {
+		t.Errorf("-under 60 levels down = %v", got)
 	}
 	// Bulk move with descendants into a sprint keeps the tree.
 	sp, err := e.s.CreateSprint(e.ctx, e.admin, p.Key, SprintInput{})

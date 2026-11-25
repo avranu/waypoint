@@ -533,8 +533,8 @@ func (s *Service) compileTerm(ctx context.Context, actor *Actor, t wql.Term, now
 			if err != nil {
 				id = -1
 			}
-			parts = append(parts, `i.id IN (WITH RECURSIVE d(id, depth) AS (SELECT id, 0 FROM issues WHERE parent_id = ?
-				UNION ALL SELECT x.id, d.depth + 1 FROM issues x JOIN d ON x.parent_id = d.id WHERE d.depth < 50) SELECT id FROM d)`)
+			parts = append(parts, `i.id IN (WITH RECURSIVE d(id) AS (SELECT id FROM issues WHERE parent_id = ?
+				UNION SELECT x.id FROM issues x JOIN d ON x.parent_id = d.id) SELECT id FROM d)`)
 			args = append(args, id)
 		}
 		return "(" + strings.Join(parts, " OR ") + ")", args, nil
