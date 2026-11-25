@@ -1,0 +1,47 @@
+# Grouping of internal/core's non-test files into domains (WP-1664, WP-ADR151).
+#
+# Each line is `domain: glob glob ...`; globs match file names (path.Match).
+# The first line with a matching glob wins; a file matching no line falls to
+# the group named by its stem before the first underscore, and a group not
+# listed here is "unplaced" and sits at the top of the order.
+#
+# The ORDER of the lines is the provider-first layer order, bottom first: a
+# reference from a file in one group to a file in a group listed later is
+# "upward" and is what has to be cut before the lower group can move out of
+# core. The order is the one the core split plans to follow; change it with the
+# plan, not to make a number look better.
+kernel: core.go events.go kernel_shims.go
+forge: forge*.go
+pr: pr_*.go pulls*.go
+issues: issues.go issue_*.go
+audit: audit*.go
+project: project*.go
+automation: automation*.go
+session: session*.go
+code: code_*.go
+usage: usage*.go
+requests: request*.go
+design: design*.go
+runner: runner*.go
+ai: ai.go ai_*.go
+task: task*.go
+prep: prep_*.go
+relation: relation*.go related.go
+review: review*.go
+babysit: babysit*.go
+agent: agent*.go
+autopilot: autopilot*.go
+job: job_*.go
+kit: kit*.go
+env: env*.go
+page: page*.go
+ci: ci.go ci_*.go
+sandbox: sandbox*.go
+fanout: fanout*.go
+search: search*.go
+quota: quota*.go
+server: server*.go
+merge: merge*.go
+objective: objective*.go
+escape: escape*.go
+goal: goal*.go

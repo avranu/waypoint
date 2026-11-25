@@ -8,7 +8,7 @@ GOVULNCHECK_VERSION ?= v1.9.0
 ACTIONLINT_VERSION ?= v1.7.12
 KUBECONFORM_VERSION ?= v0.8.0
 
-.PHONY: e2e e2e-webkit all build web server cli cross-check test lint golint wplint wplint-code sast vuln check prepush prepush-go prepush-ops prepush-web tools ci-image ops-lint dev docker deploy deploy-remote rollback-remote deploy-status restart-remote need-deploy-host release-dry-run clean help
+.PHONY: e2e e2e-webkit all build web server cli cross-check test lint golint wplint wplint-code coremap sast vuln check prepush prepush-go prepush-ops prepush-web tools ci-image ops-lint dev docker deploy deploy-remote rollback-remote deploy-status restart-remote need-deploy-host release-dry-run clean help
 
 all: build
 
@@ -65,6 +65,9 @@ wplint: wplint-code ## Waypoint's own analyzers + the migration and e2e-wait che
 
 wplint-code: ## Waypoint's own analyzers over cmd and internal
 	$(SLOT) go run ./cmd/wplint ./cmd/... ./internal/...
+
+coremap: ## map the references between internal/core's file groups (CORE_ARGS='-group pr' for a query; see internal/coremap/doc.go)
+	$(SLOT) go run ./cmd/coremap $(CORE_ARGS)
 
 cross-check: ## build wp for windows/amd64 and darwin/arm64 (no output)
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/wp
