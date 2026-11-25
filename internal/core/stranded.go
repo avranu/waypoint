@@ -92,6 +92,13 @@ func taskFinished(status string) bool {
 	return false
 }
 
+// pendingSubagent says a subagent is among the unfinished background tasks.
+func pendingSubagent(p *HookPending) bool {
+	return p != nil && slices.ContainsFunc(p.Tasks, func(t PendingTask) bool {
+		return !taskFinished(t.Status) && subagentKind(t.Type)
+	})
+}
+
 // runningTasks names the background tasks still running ("shell: make
 // check").
 func runningTasks(p *HookPending) []string {
@@ -107,8 +114,8 @@ func runningTasks(p *HookPending) []string {
 		if d == "" {
 			d = cmp(t.Type, "task")
 		}
-		if !slices.Contains(out, d) {
-			out = append(out, excerpt(d, 200))
+		if d = excerpt(d, 200); !slices.Contains(out, d) {
+			out = append(out, d)
 		}
 		if len(out) == 10 {
 			break

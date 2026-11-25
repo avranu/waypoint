@@ -119,7 +119,13 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via stri
 	fresh := 0
 	err = s.write(ctx, actor, func(t *tx) error {
 		for _, it := range out.Findings {
-			told, err := s.sessionTold(ctx, t, actor.Session, outstandingKind, via, it)
+			// Printed at the wait counts at a Stop; the wait's own record doesn't
+			// hide a finding the Stop named.
+			seenVia := via
+			if via == OutstandingAtStop {
+				seenVia = ""
+			}
+			told, err := s.sessionTold(ctx, t, actor.Session, outstandingKind, seenVia, it)
 			if err != nil {
 				return err
 			}
@@ -302,6 +308,13 @@ func (o *SessionOutstanding) stopText(running []string) string {
 	if o.Empty() {
 		return ""
 	}
-	return "Something is still running in the background (" + strings.Join(running[:min(len(running), 3)], "; ") +
-		"). Work of yours is waiting; do what doesn't need its result now instead of ending the turn idle:\n" + o.Lines
+	var b strings.Builder
+	b.WriteString("Still running in the background:\n")
+	for _, r := range running[:min(len(running), 3)] {
+		b.WriteString("- " + excerpt(r, 100) + "\n")
+	}
+	if n := len(running) - 3; n > 0 {
+		fmt.Fprintf(&b, "- and %d more\n", n)
+	}
+	return b.String() + "Work of yours is waiting; do what doesn't need those results now instead of ending the turn idle:\n" + o.Lines
 }

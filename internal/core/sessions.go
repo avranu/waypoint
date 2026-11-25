@@ -1006,7 +1006,9 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 		res.Text = joinText(res.Text, s.autopilotSessionNote(ctx, res.Session, 0))
 	}
 	if last := evs[len(evs)-1]; last.Event == "Stop" && !last.StopHookActive && !lastQuiet && !pausedStop && !leftStop && res.Text == "" && res.Session != 0 {
-		if running := runningTasks(last.Pending); len(running) > 0 && !s.followUpTalks(ctx, res.Session) {
+		// A running subagent wakes the session when it reports, and the findings
+		// usually wait on its work: asking costs a turn that answers "not yet".
+		if running := runningTasks(last.Pending); len(running) > 0 && !pendingSubagent(last.Pending) && !s.followUpTalks(ctx, res.Session) {
 			ac := *actor
 			ac.Session = res.Session
 			if o, err := s.SessionOutstanding(ctx, &ac, OutstandingAtStop); err != nil {
