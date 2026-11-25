@@ -303,13 +303,29 @@ type rawLine struct {
 	IsAPIError       bool   `json:"isApiErrorMessage"`
 	IsMeta           bool   `json:"isMeta"`
 	IsCompactSummary bool   `json:"isCompactSummary"`
-	Message          *struct {
+	// APIError names an API error record's kind (usage_limit_reached,
+	// connection_failed); a limit record also carries the account's
+	// rate_limit_info under apiErrorParams.
+	APIError       string `json:"apiError"`
+	APIErrorParams *struct {
+		RateLimitInfo *rawRateLimit `json:"rate_limit_info"`
+	} `json:"apiErrorParams"`
+	Message *struct {
 		ID      string          `json:"id"`
 		Model   string          `json:"model"`
 		Usage   *rawUsage       `json:"usage"`
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
 	PermissionDecision *rawDecision `json:"permissionDecision"`
+}
+
+type rawRateLimit struct {
+	Status                string `json:"status"`
+	ResetsAt              int64  `json:"resetsAt"`
+	RateLimitType         string `json:"rateLimitType"`
+	OverageStatus         string `json:"overageStatus"`
+	OverageDisabledReason string `json:"overageDisabledReason"`
+	IsUsingOverage        bool   `json:"isUsingOverage"`
 }
 
 type rawDecision struct {
