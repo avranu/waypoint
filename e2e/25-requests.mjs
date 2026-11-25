@@ -239,6 +239,7 @@ async function run(width, scheme) {
   await page.getByText(/marked it done/).waitFor();
   ok((await cell.inputValue()) === "make migrate ARGS=--dry-run", `${tag} a reload of a decided request shows the command that ran`);
   ok((await page.getByTitle("The agent’s command").textContent()) === "agent’s: make migrate", `${tag} and the agent's beside it`);
+  ok((await page.getByTitle("The agent’s command").evaluate((el) => getComputedStyle(el).whiteSpace)) === "pre-wrap", `${tag} keeping its newlines and spaces`);
   ok((await page.getByRole("button", { name: "Reset to the agent’s command" }).count()) === 0, `${tag} with no reset`);
   const sentBack = new DatabaseSync(`${process.env.DIR}/wp.db`);
   sentBack.exec("PRAGMA busy_timeout = 5000");
@@ -254,6 +255,24 @@ async function run(width, scheme) {
   ok((await page.getByText("Applying failed").count()) === 0, `${tag} and doesn't read as a failed change`);
   await shot("command-sent-back");
   await overflow("command sent back");
+  // A run from elsewhere (another tab) doesn't overwrite what the person typed and hasn't run…
+  await cell.fill("make migrate ARGS=--verbose");
+  await api("POST", "/requests/RQ:R-3/cells/1/run", { command: "make migrate ARGS=--elsewhere" });
+  await page.getByRole("button", { name: "3 earlier runs" }).waitFor();
+  ok((await cell.inputValue()) === "make migrate ARGS=--verbose", `${tag} a run from elsewhere keeps what the person is typing`);
+  // …but an editor the person hasn't touched shows it, on a reload and while the page stays open.
+  await page.reload();
+  ok((await cell.inputValue()) === "make migrate ARGS=--elsewhere", `${tag} a reload shows the run from elsewhere`);
+  await api("POST", "/requests/RQ:R-3/cells/1/run", { command: "make migrate ARGS=--again" });
+  await page.getByRole("button", { name: "4 earlier runs" }).waitFor();
+  ok((await cell.inputValue()) === "make migrate ARGS=--again", `${tag} and an untouched editor follows a later run`);
+  // Those runs reopened it: back to sent back, so it doesn't wait on robin in the checks below.
+  {
+    const back = new DatabaseSync(`${process.env.DIR}/wp.db`);
+    back.exec("PRAGMA busy_timeout = 5000");
+    back.prepare("UPDATE requests SET state = 'failed', decision = 'ran', note = '', error = 'exit 2', decided_by = 1, decided_at = ?, delivered_at = NULL WHERE number = 3").run(Date.now());
+    back.close();
+  }
 
   await page.goto(base + "/requests/RQ:R-4");
   await page.getByRole("heading", { name: /Allow Bash: wp pr log 12/ }).waitFor();
