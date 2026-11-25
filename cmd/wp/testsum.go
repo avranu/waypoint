@@ -331,36 +331,72 @@ var (
 	pemEndRE    = lazyre.New(`-----END [A-Z ]*PRIVATE KEY-----`)
 	pemBodyRE   = lazyre.New(`^[A-Za-z0-9+/=]+$`)
 	pemHeaderRE = lazyre.New(`^[A-Za-z][A-Za-z0-9-]*: .*$`)
+	// nameOnlyRE is a line that ends at a name's separator, so the value,
+	// if there is one, is on the next line.
+	nameOnlyRE = lazyre.New(`[=:]\s*$`)
 )
+
+// pemFullLine is the least length taken for a whole line of a key's body
+// (they are 64 or more); a shorter base64 line is a key's last line only
+// after one of those, so "ok" or "12" after a bare header stays.
+const pemFullLine = 40
 
 // redactKept is redact for a kept output file: line by line, returning as
 // many lines as it got, so "All N lines" stays true and an unterminated key
 // header can't blank the rest of the file. After a BEGIN PRIVATE KEY line
-// with no END, the base64 and header lines of the key body are blanked until
-// the END line or the first line that isn't one.
+// with no END, the key's header lines and body lines are blanked, up to the
+// END line, the body's short last line, or the first line that is neither.
+// A line ending in \r is matched without it. A value on the line after its
+// name is blanked as redact would blank it in the whole text.
 func redactKept(s string) string {
 	lines := strings.Split(s, "\n")
-	inKey, afterHdr := false, false
-	for i, l := range lines {
-		if inKey {
+	inKey, afterHdr, sawFull := false, false, false
+	carried, carry := "", false
+	for i, raw := range lines {
+		l, cr := strings.CutSuffix(raw, "\r")
+		blank := func() {
+			lines[i] = "***"
+			if cr {
+				lines[i] += "\r"
+			}
+		}
+		was := carry
+		if carry {
+			raw, carry = carried, false
+		}
+		if inKey && !was {
 			switch {
 			case pemEndRE.MatchString(l):
 				inKey = false
 				continue
-			case pemBodyRE.MatchString(l):
-				lines[i], afterHdr = "***", false
+			case pemBodyRE.MatchString(l) && len(l) >= pemFullLine:
+				blank()
+				afterHdr, sawFull = false, true
 				continue
-			case pemHeaderRE.MatchString(l):
-				lines[i], afterHdr = "***", true
+			case pemBodyRE.MatchString(l) && sawFull:
+				blank()
+				inKey = false
+				continue
+			case pemHeaderRE.MatchString(l) && !sawFull:
+				blank()
+				afterHdr = true
 				continue
 			case l == "" && afterHdr:
-				lines[i], afterHdr = "***", false
+				blank()
+				afterHdr = false
 				continue
 			}
 		}
-		lines[i] = redact(l)
+		lines[i] = redact(raw)
 		inKey = pemBeginRE.MatchString(l) && !pemEndRE.MatchString(l)
-		afterHdr = false
+		afterHdr, sawFull = false, false
+		if !inKey && i+1 < len(lines) && nameOnlyRE.MatchString(l) {
+			// redact's own match of a name and its value runs over the
+			// line break; take what it makes of the next line.
+			if two := strings.Split(redact(raw+"\n"+lines[i+1]), "\n"); len(two) == 2 {
+				carried, carry = two[1], true
+			}
+		}
 	}
 	return strings.Join(lines, "\n")
 }

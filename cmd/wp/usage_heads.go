@@ -376,16 +376,26 @@ var schemeAuthRE = lazyre.New(`(?i)(\bauthorization["']?\s*[=:]\s*["']?)[\w-]+\s
 var pemKeyRE = lazyre.New(`(-----BEGIN [A-Z ]*PRIVATE KEY-----)(?s:.*?)(-----END [A-Z ]*PRIVATE KEY-----|\z)`)
 var urlPasswordRE = lazyre.New(`(://[^\s/:@]+:)[^\s/@]+@`)
 
-// urlUserRE finds a long URL user part with no password after it, where the
-// user is the token (https://TOKEN@host); short names (git@, deploy@) stay.
-var urlUserRE = lazyre.New(`(://)[^\s/:@]{20,}@`)
+// urlUserRE finds a URL user part with no password after it, where the
+// user may be the token (https://TOKEN@host). redact blanks one that is 20
+// characters or more, or has both a letter and a digit; plain names (git@,
+// deploy@) stay.
+var urlUserRE = lazyre.New(`://[^\s/:@]{8,}@`)
+
+func blankURLUser(m string) string {
+	u := m[len("://") : len(m)-1]
+	if len(u) < 20 && (!strings.ContainsAny(u, "0123456789") || strings.Trim(u, "0123456789") == "") {
+		return m
+	}
+	return "://***@"
+}
 
 // redact hides credentials in text that may leave the machine. Redact
 // before cutting, so a cut never leaves part of a token.
 func redact(s string) string {
 	s = pemKeyRE.ReplaceAllString(s, "${1}***${2}")
 	s = urlPasswordRE.ReplaceAllString(s, "${1}***@")
-	s = urlUserRE.ReplaceAllString(s, "${1}***@")
+	s = urlUserRE.ReplaceAllStringFunc(s, blankURLUser)
 	s = digestAuthRE.ReplaceAllString(s, "${1}***")
 	s = schemeAuthRE.ReplaceAllString(s, "${1}***")
 	s = secretRE.ReplaceAllString(s, "${1}${2}***")

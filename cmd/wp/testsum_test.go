@@ -389,18 +389,31 @@ func TestKeptRedactionKeepsEveryLine(t *testing.T) {
 		seq += strconv.Itoa(i) + "\n"
 	}
 	tok := "ghp_" + strings.Repeat("a1B2c3", 5)
+	full := strings.Repeat("MIIEabc+/9", 6) + "ABCD"
 	for name, c := range map[string]struct{ in, want string }{
 		"header without an end": {
-			"x\n-----BEGIN RSA PRIVATE KEY-----\nthe finding\n" + seq,
-			"x\n-----BEGIN RSA PRIVATE KEY-----***\nthe finding\n" + seq,
+			"x\n-----BEGIN RSA PRIVATE KEY-----\n" + seq + "ok\nPASS\nthe finding\n",
+			"x\n-----BEGIN RSA PRIVATE KEY-----***\n" + seq + "ok\nPASS\nthe finding\n",
 		},
 		"complete key": {
-			"before\n-----BEGIN RSA PRIVATE KEY-----\nMIIEabc+/=\nQWERTY12\nzz==\n-----END RSA PRIVATE KEY-----\nafter\n",
+			"before\n-----BEGIN RSA PRIVATE KEY-----\n" + full + "\n" + full + "\nzz==\n-----END RSA PRIVATE KEY-----\nafter\n",
 			"before\n-----BEGIN RSA PRIVATE KEY-----***\n***\n***\n***\n-----END RSA PRIVATE KEY-----\nafter\n",
 		},
+		"key cut off, then output": {
+			"-----BEGIN PRIVATE KEY-----\n" + full + "\nzz==\nok\n",
+			"-----BEGIN PRIVATE KEY-----***\n***\n***\nok\n",
+		},
+		"CRLF key": {
+			"-----BEGIN PRIVATE KEY-----\r\n" + full + "\r\n" + full + "\r\nzz==\r\n-----END PRIVATE KEY-----\r\nafter\r\n",
+			"-----BEGIN PRIVATE KEY-----***\n***\r\n***\r\n***\r\n-----END PRIVATE KEY-----\r\nafter\r\n",
+		},
 		"encrypted key headers": {
-			"-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,ABCD\n\nMIIEabc\n-----END RSA PRIVATE KEY-----\nafter\n",
+			"-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,ABCD\n\n" + full + "\n-----END RSA PRIVATE KEY-----\nafter\n",
 			"-----BEGIN RSA PRIVATE KEY-----***\n***\n***\n***\n***\n-----END RSA PRIVATE KEY-----\nafter\n",
+		},
+		"value on the next line": {
+			"api_token:\nabcdefgh12345678\nafter\n",
+			"api_token:\n***\nafter\n",
 		},
 		"credentials": {
 			"a\ntoken=abcdef123456\n" + tok + "\nfetch https://bot:hunter2secret@git.example/x\n",

@@ -86,6 +86,8 @@ func TestRedactMoreTokenShapes(t *testing.T) {
 		"pypi-" + strings.Repeat("aB_-", 6):              "***",
 		"xapp-1-A0123-4567-abcdef":                       "***",
 		"https://" + strings.Repeat("u", 24) + "@host/x": "https://***@host/x",
+		"https://tok123abc@git.example/x":                "https://***@git.example/x",
+		"https://jenkinsci@git.example/x":                "https://jenkinsci@git.example/x",
 		"ssh://git@github.com/x":                         "ssh://git@github.com/x",
 		"https://deploy@git.example/x":                   "https://deploy@git.example/x",
 		"npm_config_cache":                               "npm_config_cache",
