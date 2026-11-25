@@ -19,7 +19,9 @@ import (
 const (
 	// slotCPUEnv is the quota of a run as a percent of one core, or "off".
 	slotCPUEnv = "WAYPOINT_SLOT_CPU"
-	// slotCPUDefault is that quota unset: two cores.
+	// slotCPUDefault is that quota unset: two cores. It is a starting value
+	// that has not been measured against run times or waits; set it with
+	// WAYPOINT_SLOT_CPU.
 	slotCPUDefault = 200
 	// slotCPUSlice holds every scope this makes.
 	slotCPUSlice = "waypoint-tests.slice"
@@ -73,8 +75,10 @@ func realSlotCPUProbes() slotCPUProbes {
 }
 
 // chooseCPUBound is the kind of bound a run gets, in order: off, a quota the
-// process already sits under, a runner job (its governor paces jobs, and it
-// has no user bus), a systemd user scope, the environment.
+// process already sits under, a runner job (the runner's governor already
+// paces its jobs, so a scope would only add a second limit), a systemd user
+// scope, the environment. The runner branch comes before the user-bus probe
+// for that reason, whether or not the runner has a bus.
 func chooseCPUBound(p slotCPUProbes, on bool) string {
 	switch {
 	case !on:
@@ -166,25 +170,50 @@ func scopeArgv(bin string, quota int, argv []string) []string {
 	return append(out, argv...)
 }
 
+// slotSavedGoFlagsFn is what go env GOFLAGS prints, the flags saved with go
+// env -w; a variable for the tests.
+var slotSavedGoFlagsFn = savedGoFlags
+
+// savedGoFlags asks go for its GOFLAGS setting; "" when go is not found or
+// fails, which leaves the bound as it was without this.
+func savedGoFlags() string {
+	bin, err := exec.LookPath("go")
+	if err != nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, "env", "GOFLAGS").Output() // #nosec G204 -- a fixed argument
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // goBoundEnv is env with Go held to the cores of the quota: GOMAXPROCS and a
 // -p in GOFLAGS, each only when the caller hasn't set one. It binds Go and
-// nothing else.
-func goBoundEnv(env []string, quota int) []string {
+// nothing else. An environment GOFLAGS overrides the flags saved with go env
+// -w, so when the environment has none the -p is added to the saved ones
+// (saved, nil for none), and left out when they have a -p of their own.
+func goBoundEnv(env []string, quota int, saved func() string) []string {
 	k := strconv.Itoa(max(1, quota/100))
-	procs, flags := false, ""
+	procs, flags, fromEnv := false, "", false
 	out := make([]string, 0, len(env)+2)
 	for _, e := range env {
 		switch {
 		case strings.HasPrefix(e, "GOMAXPROCS="):
 			procs = true
 		case strings.HasPrefix(e, "GOFLAGS="):
-			flags = strings.TrimPrefix(e, "GOFLAGS=")
+			flags, fromEnv = strings.TrimPrefix(e, "GOFLAGS="), true
 			continue
 		}
 		out = append(out, e)
 	}
 	if !procs {
 		out = append(out, "GOMAXPROCS="+k)
+	}
+	if !fromEnv && saved != nil {
+		flags = saved()
 	}
 	hasP := false
 	for _, f := range strings.Fields(flags) {
@@ -195,7 +224,7 @@ func goBoundEnv(env []string, quota int) []string {
 	if !hasP {
 		flags = strings.TrimSpace(flags + " -p=" + k)
 	}
-	if flags != "" {
+	if flags != "" && (fromEnv || !hasP) {
 		out = append(out, "GOFLAGS="+flags)
 	}
 	return out
@@ -207,17 +236,23 @@ func goBoundEnv(env []string, quota int) []string {
 func runSlotBound(ctx context.Context, dir string, env, argv []string, in io.Reader, out, errw io.Writer) (int, string, error) {
 	kind, quota := slotBoundKind()
 	tell := func() {
-		if p, ok := ctx.Value(slotRanKeyT{}).(*string); ok {
-			*p = kind
+		if p, ok := ctx.Value(slotRanKeyT{}).(*slotRan); ok {
+			p.kind = kind
+			if p.set != nil {
+				p.set(kind)
+			}
 		}
 	}
 	if kind == slotBoundScope {
-		code, started, bounded, err := runInScope(ctx, dir, env, argv, quota, in, out, errw)
-		if started {
+		code, started, _, err := runInScope(ctx, dir, env, argv, quota, in, out, errw, func(bounded bool) {
+			// The marker says the scope started: from here the command runs
+			// under it, and the lock file says so before its work begins.
 			if !bounded {
 				kind = slotBoundNone // a scope that bounds nothing
 			}
 			tell()
+		})
+		if started {
 			return code, kind, err
 		}
 		if ctx.Err() != nil {
@@ -227,20 +262,30 @@ func runSlotBound(ctx context.Context, dir string, env, argv []string, in io.Rea
 		kind = slotBoundEnv
 	}
 	if kind == slotBoundEnv || kind == slotBoundRunner {
-		env = goBoundEnv(env, quota)
+		env = goBoundEnv(env, quota, slotSavedGoFlagsFn)
 	}
 	tell()
 	code, err := runSlotPlain(ctx, dir, env, argv, in, out, errw)
 	return code, kind, err
 }
 
-// slotRanKeyT is the context key of a *string runSlotBound writes the bound
-// to, for a hold whose commands are run by its caller (runInSlotDo).
+// slotRanKeyT is the context key of a *slotRan runSlotBound tells the bound
+// it runs under, for a hold whose commands are run by its caller (runInSlotDo).
 type slotRanKeyT struct{}
+
+// slotRan is the bound the command ran under, and set (when not nil) is told
+// it the moment it is known, before the command's work starts, so the lock
+// file wp slot ls reads is right for the whole run.
+type slotRan struct {
+	kind string
+	set  func(string)
+}
 
 // runInScope runs argv in a systemd user scope. started false says the scope
 // did not start and argv did not run; bounded says the scope has a quota.
-func runInScope(ctx context.Context, dir string, env, argv []string, quota int, in io.Reader, out, errw io.Writer) (code int, started, bounded bool, err error) {
+// onStart (when not nil) is called with bounded as soon as the marker says the
+// scope started, while the command runs.
+func runInScope(ctx context.Context, dir string, env, argv []string, quota int, in io.Reader, out, errw io.Writer, onStart func(bounded bool)) (code int, started, bounded bool, err error) {
 	bin, lerr := exec.LookPath("systemd-run")
 	if lerr != nil {
 		return 0, false, false, nil
@@ -262,8 +307,19 @@ func runInScope(ctx context.Context, dir string, env, argv []string, quota int, 
 	if serr != nil {
 		return 0, false, false, nil
 	}
+	// The marker writes one byte and closes its end before the command
+	// starts, so the read ends then, not when the command does.
+	var b []byte
+	read := make(chan struct{})
+	go func() {
+		defer close(read)
+		b, _ = io.ReadAll(r)
+		if len(b) > 0 && onStart != nil {
+			onStart(b[0] == 'x')
+		}
+	}()
 	code, err = waitSlotCmd(ctx, cmd)
 	_ = r.SetReadDeadline(time.Now().Add(time.Second))
-	b, _ := io.ReadAll(r)
+	<-read
 	return code, len(b) > 0, len(b) > 0 && b[0] == 'x', err
 }

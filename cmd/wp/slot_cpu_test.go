@@ -141,22 +141,22 @@ func TestScopeArgv(t *testing.T) {
 func TestGoBoundEnv(t *testing.T) {
 	has := func(env []string, kv string) bool { return slices.Contains(env, kv) }
 	base := []string{"PATH=/bin", "HOME=/h"}
-	got := goBoundEnv(base, 200)
+	got := goBoundEnv(base, 200, nil)
 	if !has(got, "GOMAXPROCS=2") || !has(got, "GOFLAGS=-p=2") || !has(got, "PATH=/bin") {
 		t.Errorf("plain: %q", got)
 	}
-	if got := goBoundEnv(base, 50); !has(got, "GOMAXPROCS=1") || !has(got, "GOFLAGS=-p=1") {
+	if got := goBoundEnv(base, 50, nil); !has(got, "GOMAXPROCS=1") || !has(got, "GOFLAGS=-p=1") {
 		t.Errorf("under one core still gets one: %q", got)
 	}
-	got = goBoundEnv(append(slices.Clone(base), "GOMAXPROCS=6", "GOFLAGS=-p=5"), 200)
+	got = goBoundEnv(append(slices.Clone(base), "GOMAXPROCS=6", "GOFLAGS=-p=5"), 200, nil)
 	if !has(got, "GOMAXPROCS=6") || !has(got, "GOFLAGS=-p=5") || has(got, "GOMAXPROCS=2") || has(got, "GOFLAGS=-p=2") {
 		t.Errorf("the caller's settings were overridden: %q", got)
 	}
-	got = goBoundEnv(append(slices.Clone(base), "GOFLAGS=-mod=mod -p 7"), 200)
+	got = goBoundEnv(append(slices.Clone(base), "GOFLAGS=-mod=mod -p 7"), 200, nil)
 	if !has(got, "GOFLAGS=-mod=mod -p 7") {
 		t.Errorf("a -p with a separate value is the caller's: %q", got)
 	}
-	got = goBoundEnv(append(slices.Clone(base), "GOFLAGS=-mod=mod -race"), 300)
+	got = goBoundEnv(append(slices.Clone(base), "GOFLAGS=-mod=mod -race"), 300, nil)
 	if !has(got, "GOFLAGS=-mod=mod -race -p=3") {
 		t.Errorf("-p is added after the caller's other flags: %q", got)
 	}
@@ -221,11 +221,21 @@ func fakeSystemdScope(t *testing.T, ok bool, cpuMax string) (log string) {
 
 func probesAre(t *testing.T, cgroup, runner, bus bool) {
 	t.Helper()
+	stubSavedGoFlags(t, "")
 	old := slotCPUProbeFn
 	slotCPUProbeFn = func() slotCPUProbes {
 		return slotCPUProbes{goos: "linux", cgroup: func() bool { return cgroup }, runnerJob: func() bool { return runner }, userBus: func() bool { return bus }}
 	}
 	t.Cleanup(func() { slotCPUProbeFn = old })
+}
+
+// stubSavedGoFlags stands in for what go env GOFLAGS prints, so no test reads the
+// developer's go env file.
+func stubSavedGoFlags(t *testing.T, flags string) {
+	t.Helper()
+	old := slotSavedGoFlagsFn
+	slotSavedGoFlagsFn = func() string { return flags }
+	t.Cleanup(func() { slotSavedGoFlagsFn = old })
 }
 
 func runBound(t *testing.T, ctx context.Context, dir string, env []string, argv ...string) (code int, kind, out string) {
@@ -452,5 +462,81 @@ func TestSlotLsShowsTheBoundOfARunningHoldAndUnboundRuns(t *testing.T) {
 	}
 	if !strings.Contains(ls.String(), "runs with no CPU bound (WAYPOINT_SLOT_CPU=off): 1 of 3") {
 		t.Errorf("summary:\n%s", ls.String())
+	}
+}
+
+// An environment GOFLAGS overrides the go env file, so the bound starts from
+// the saved flags when the environment has none.
+func TestGoBoundEnvKeepsFlagsSavedWithGoEnvW(t *testing.T) {
+	has := func(env []string, kv string) bool { return slices.Contains(env, kv) }
+	base := []string{"PATH=/bin"}
+	saved := func(s string) func() string { return func() string { return s } }
+	if got := goBoundEnv(base, 200, saved("-tags=x")); !has(got, "GOFLAGS=-tags=x -p=2") {
+		t.Errorf("saved flags dropped: %q", got)
+	}
+	// A saved -p is the user's: GOFLAGS is not set, so go reads the file as it would.
+	if got := goBoundEnv(base, 200, saved("-tags=x -p=7")); slices.ContainsFunc(got, func(e string) bool { return strings.HasPrefix(e, "GOFLAGS=") }) {
+		t.Errorf("a saved -p is the user's: %q", got)
+	}
+	// The environment's GOFLAGS wins, as it does for go: the saved ones are not asked.
+	asked := false
+	got := goBoundEnv(append(slices.Clone(base), "GOFLAGS=-mod=mod"), 200, func() string { asked = true; return "-tags=x" })
+	if asked || !has(got, "GOFLAGS=-mod=mod -p=2") {
+		t.Errorf("asked %v: %q", asked, got)
+	}
+	// Nothing saved (or go not found): as before.
+	if got := goBoundEnv(base, 200, saved("")); !has(got, "GOFLAGS=-p=2") {
+		t.Errorf("nothing saved: %q", got)
+	}
+}
+
+// The lock file wp slot ls reads shows the bound the command runs under from
+// the moment it starts, not only after it returns: a scope that did not start
+// ran under the env bound, and one with no quota bounded nothing.
+func TestSlotLsShowsTheBoundOfARunThatDiffersFromTheOneDecidedWhileItRuns(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		fake func(t *testing.T)
+		want string
+	}{
+		{"scope did not start", func(t *testing.T) { fakeSystemdRun(t, false) }, "env"},
+		{"scope without a quota", func(t *testing.T) { fakeSystemdScope(t, true, "max 100000") }, "none"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			c.fake(t)
+			slotEnv(t)
+			t.Setenv(slotHeldEnv, "")
+			sqRepo(t)
+			sqArgs(t)
+			probesAre(t, false, false, true) // decided before the run: scope
+			t.Setenv(slotCPUEnv, "200")
+			cl, _, _ := sqCLI()
+			dir := t.TempDir()
+			running, stop := filepath.Join(dir, "running"), filepath.Join(dir, "stop")
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				var out, errb bytes.Buffer
+				_, _ = cl.runInSlotThen("tests", 2, []string{"sh", "-c", "touch " + running + "; while [ ! -e " + stop + " ]; do sleep 0.05; done"}, &out, &errb, nil, nil)
+			}()
+			for i := 0; i < 200; i++ {
+				if _, err := os.Stat(running); err == nil {
+					break
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			ctxLs, ls, _ := sqCLI()
+			if err := cmdSlotLs(ctxLs, nil); err != nil {
+				t.Fatal(err)
+			}
+			got := ls.String()
+			if err := os.WriteFile(stop, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			<-done
+			if !strings.Contains(got, "[cpu bound: "+c.want+"]") || strings.Contains(got, "[cpu bound: scope]") {
+				t.Errorf("a running hold shows the bound it runs under (%s):\n%s", c.want, got)
+			}
+		})
 	}
 }

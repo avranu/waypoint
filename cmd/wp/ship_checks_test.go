@@ -134,8 +134,9 @@ func TestShipChecksPassedEndsAsBefore(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := e.out.String()
-	if !strings.Contains(s, "its checks passed. It is ready and armed.") || !strings.Contains(s, "5") {
-		t.Fatalf("output:\n%s", s)
+	opened, passed := strings.Index(s, "PR 5"), strings.Index(s, "a/b#5: its checks passed. It is ready and armed.")
+	if opened < 0 || passed < opened {
+		t.Fatalf("the passed line must name PR 5 and come after the opened line:\n%s", s)
 	}
 	if _, acked := e.waits(); len(acked) != 0 {
 		t.Errorf("acked %v", acked)
@@ -214,5 +215,63 @@ func TestShipChecksFailureKeepsTheSummary(t *testing.T) {
 	}
 	if got := e.c.keptSummaryOf("WP-9"); got != "Rows export now." {
 		t.Fatalf("kept summary %q\n%s", got, e.out.String())
+	}
+}
+
+// The checks wait is asked only when nothing else wants the agent's turn
+// (why), the ship isn't --json, and the pull request is babysat and waited on.
+func TestCanWaitChecks(t *testing.T) {
+	e := newChecksEnv(t, checksAnswer("waiting", "running"))
+	fs := flag.NewFlagSet("ship", flag.ContinueOnError)
+	so := addShipFlags(fs)
+	if err := fs.Parse(nil); err != nil {
+		t.Fatal(err)
+	}
+	if !e.c.canWaitChecks(so, nil, true, "") {
+		t.Fatal("the plain agent ship does not wait")
+	}
+	if e.c.canWaitChecks(so, nil, true, "there is a warning") {
+		t.Error("waits with something that needs the agent's turn")
+	}
+	if e.c.canWaitChecks(so, nil, false, "") {
+		t.Error("waits on a pull request nobody babysits")
+	}
+	e.c.asJSON = true
+	if e.c.canWaitChecks(so, nil, true, "") {
+		t.Error("waits under --json")
+	}
+}
+
+// One --wait-timeout bounds the whole ship: the checks wait gets what the
+// review wait left.
+func TestShipWaitLeftIsOneDeadline(t *testing.T) {
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	old := shipNow
+	t.Cleanup(func() { shipNow = old })
+	shipNow = func() time.Time { return now }
+	shipLeftIs(t, time.Hour)
+	d := 30 * time.Minute
+	so := shipOpts{waitTimeout: &d}
+	so.deadline = shipNow().Add(d)
+	if got := so.waitLeft(); got != 30*time.Minute {
+		t.Fatalf("at the start: %v", got)
+	}
+	now = now.Add(20 * time.Minute) // the review wait ran 20 minutes
+	if got := so.waitLeft(); got != 10*time.Minute {
+		t.Errorf("after the review wait: %v, want what is left of 30m", got)
+	}
+	now = now.Add(time.Hour)
+	if got := so.waitLeft(); got > 0 {
+		t.Errorf("past the deadline: %v", got)
+	}
+	// shipLeft still caps it.
+	now = time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	shipLeftIs(t, 5*time.Minute)
+	if got := so.waitLeft(); got != 5*time.Minute {
+		t.Errorf("capped by shipLeft: %v", got)
+	}
+	// A ship whose deadline was never taken waits as the flag says.
+	if got := (shipOpts{waitTimeout: &d}).waitLeft(); got != 5*time.Minute {
+		t.Errorf("no deadline: %v", got)
 	}
 }

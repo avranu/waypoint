@@ -211,6 +211,11 @@ func planGoTest(argv []string, in narrowEnv) goTestPlan {
 	var kept []string
 	for _, f := range changed {
 		f = path.Clean(filepath.ToSlash(f))
+		if b := path.Base(f); b == "go.mod" || b == "go.sum" {
+			// A dependency change reaches every package, asked or not.
+			p.Why = b + " changed, so this runs as typed"
+			return p
+		}
 		if match(path.Dir(f)) {
 			kept = append(kept, f)
 		}

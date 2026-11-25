@@ -166,6 +166,10 @@ func TestRoundStatsText(t *testing.T) {
 	if want := "Failed first checks handed to the author: 12 (new head before the deadline 8, fell back to a round 3, checks passed unchanged 1, still pending 0)"; !strings.Contains(got, want) {
 		t.Errorf("stats lack %q:\n%s", want, got)
 	}
+	got = (&roundStats{Days: 7, Rounds: 2, PRs: 1, AuthorHandoffs: 1, AuthorFixed: 1, AuthorFixedMedianMinutes: 11.6}).text()
+	if want := "still pending 0); a new head came after 12 minutes at the median\n"; !strings.Contains(got, want) {
+		t.Errorf("stats lack %q:\n%s", want, got)
+	}
 	if got := (&roundStats{Days: 7, Rounds: 2, PRs: 1}).text(); !strings.Contains(got, "--replay classifies them") {
 		t.Errorf("unclassified: %s", got)
 	}

@@ -93,8 +93,10 @@ fi
 
 # Guard tests read the repository, not the package's code: the git index, CI
 # workflows, the Makefile, lock files, deploy scripts. internal/cilint reads
-# the index and most of those, so it runs every time (about 20 CPU seconds);
-# the others when the files they read changed.
+# the index and most of those, so it runs every time (measured 2026-11-25 on
+# an 8-core machine, go test -count=1 ./internal/cilint under /usr/bin/time -v:
+# 11.1 and 12.1 CPU seconds user+sys, 20 and 32 s wall); the others when the
+# files they read changed.
 guards=
 # A changed internal/cilint runs whole below, so the guard run would repeat it.
 printf '%s\n' "$pkgs" | grep -q -x './internal/cilint' || guards="./internal/cilint"
@@ -109,14 +111,20 @@ if any '^(\.forgejo/|\.gitattributes$|web/src/lib/theme\.ts$)'; then
   step core-guards go test -count=1 -vet=off -timeout 30m -run '^(TestAdvisoriesJobIsInWorkflow|TestGitAttributesUnionMerge|TestLookPaletteMatchesWeb)$' ./internal/core
 fi
 
-if [ -n "$golang" ]; then
-  if any '\.go$'; then
-    step tests "${WP_TEST_WP:-wp}" test go -- -vet=off -timeout 30m
-  else
-    # Only go.mod, go.sum or .golangci.yml changed: build, vet and the
-    # vulnerability check ran, and no package's tests.
-    echo ".waypoint/test: no package test ran for a dependency or lint-config change; wp test --all runs everything" >&2
-  fi
+# The tests the change selects: those of the changed .go files, and of the
+# package a changed testdata or embedded file (a migration, web/dist) belongs
+# to, which wp test go --print says without running anything.
+runtests=
+any '\.go$' && runtests=1
+if [ -z "$runtests" ] && "${WP_TEST_WP:-wp}" test go --print 2>/dev/null | grep -q '^go test '; then
+  runtests=1
+fi
+if [ -n "$runtests" ]; then
+  step tests "${WP_TEST_WP:-wp}" test go -- -vet=off -timeout 30m
+elif [ -n "$golang" ]; then
+  # Only go.mod, go.sum or .golangci.yml changed: build, vet and the
+  # vulnerability check ran, and no package's tests are selected.
+  echo ".waypoint/test: no package test is selected by a dependency or lint-config change, so none ran; CI runs the whole suite (wp test --all runs it here)" >&2
 fi
 
 passed=$(echo "$passed" | sed 's/^ //; s/ /, /g')

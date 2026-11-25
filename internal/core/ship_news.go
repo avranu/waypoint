@@ -70,6 +70,10 @@ type shipWaitEntry struct {
 	// the babysit hand a failed check to the session instead of a round.
 	checks bool
 	pr     int64
+	// since is when the checks wait first opened: what the bound on a head
+	// whose checks Waypoint can't read counts from.
+	since time.Time
+	head  string // the head the wait asked about last
 }
 
 // holder says, for one session's messages, whether a wp ship waits for each
@@ -116,6 +120,31 @@ func (w *shipWaits) checksHeld(session, pr int64, now time.Time) bool {
 	return false
 }
 
+// checksSince is when the session's wait for the pull request's checks began
+// (the zero time when none is registered).
+func (w *shipWaits) checksSince(session, pr int64) time.Time {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, e := range w.by[session] {
+		if e.checks && e.pr == pr {
+			return e.since
+		}
+	}
+	return time.Time{}
+}
+
+// noteHead restarts the bound for a wait that now asks about another head:
+// the new head's checks haven't had their time yet.
+func (w *shipWaits) noteHead(session, pr int64, head string, now time.Time) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, e := range w.by[session] {
+		if e.checks && e.pr == pr && e.head != head {
+			e.head, e.since = head, now
+		}
+	}
+}
+
 func (w *shipWaits) held(session, task int64, now time.Time) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -155,6 +184,9 @@ func (s *Service) openWait(session, task, pr int64) func(linger bool) {
 	}
 	e.open++
 	if pr != 0 {
+		if !e.checks || e.pr != pr {
+			e.since = s.now()
+		}
 		e.checks, e.pr = true, pr
 	}
 	checks := e.checks

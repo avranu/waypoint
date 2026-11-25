@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -566,5 +567,81 @@ func TestSlotNarrowedCancelBetweenCommandsSkipsTheRest(t *testing.T) {
 	}
 	if logged, _ := os.ReadFile(log); strings.Count(string(logged), "\n") != 1 {
 		t.Errorf("go ran:\n%s, want only the first command", logged)
+	}
+}
+
+// A dependency change reaches every package, so a go test with go.mod or
+// go.sum in the diff runs as typed, whatever packages were asked.
+func TestPlanGoTestGoModChangeIsNotNarrowed(t *testing.T) {
+	for _, f := range []string{"go.mod", "go.sum"} {
+		for _, argv := range [][]string{
+			{"go", "test", "./..."},
+			{"go", "test", "./internal/core"},
+			{"go", "test", "./internal/small", "./internal/core"},
+		} {
+			p := planGoTest(argv, narrowRepo(t, f, "internal/small/s.go"))
+			if p.Narrow || !p.Whole || len(p.Cmds) != 0 || p.Why != f+" changed, so this runs as typed" {
+				t.Errorf("%s %v: narrow %v whole %v cmds %v why %q", f, argv, p.Narrow, p.Whole, p.Cmds, p.Why)
+			}
+		}
+	}
+	// A go.mod that changed outside the asked packages still counts, and
+	// --all stays All with no reason said.
+	in := narrowRepo(t, "go.mod")
+	in.all = true
+	if p := planGoTest([]string{"go", "test", "./internal/core"}, in); p.Why != "" || !p.All {
+		t.Errorf("--all: %+v", p)
+	}
+}
+
+// wp ship --check "go test ./..." that narrows to nothing prints that and
+// records no pass; one that only compiles says so and records none either.
+func TestRunShipCheckNarrowedToNothingOrToACompileRecordsNoPass(t *testing.T) {
+	log := narrowedSlot(t, []string{"README.md"}, "0", "0", "0")
+	root, _ := os.Getwd()
+	putFiles(t, root, map[string]string{"internal/core/c.go": "package core\n"})
+	gitDo(t, "add", "-A")
+	gitDo(t, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "files")
+	passes := func() int {
+		n := 0
+		on, _ := runsOnTree(readTestRuns(testRunsPath()), workingTree())
+		for _, r := range on {
+			if r.Outcome == runPass {
+				n++
+			}
+		}
+		return n
+	}
+	var out bytes.Buffer
+	c := &cli{out: &out, err: &bytes.Buffer{}}
+
+	if err := c.runShipCheck("go test ./..."); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Check: go test ./... has nothing to run: no changed file is in the packages it asks for; not recorded as a pass.") || passes() != 0 {
+		t.Errorf("nothing to run: passes %d\n%s", passes(), out.String())
+	}
+	// go list may run (to see what a changed file is embedded by); go test not.
+	if b, _ := os.ReadFile(log); strings.Contains(string(b), "|test ") {
+		t.Errorf("go test ran for a check with nothing to run:\n%s", b)
+	}
+
+	// A control: a change with tests beside it runs and is recorded.
+	in, _ := loadNarrowEnvFn(false)
+	in.changes = func() (string, []string, error) { return "8240ca8a9ffff", []string{"internal/small/s.go"}, nil }
+	loadNarrowEnvFn = func(all bool) (narrowEnv, bool) { in.all = all; return in, true }
+	out.Reset()
+	if err := c.runShipCheck("go test ./..."); err != nil || !strings.Contains(out.String(), "Check passed: go test ./...") || strings.Contains(out.String(), "only compiled") || passes() != 1 {
+		t.Fatalf("a run with a test: err %v, passes %d\n%s", err, passes(), out.String())
+	}
+
+	// A heavy package with no test beside the changed file is only compiled.
+	in.changes = func() (string, []string, error) { return "8240ca8a9ffff", []string{"internal/core/c.go"}, nil }
+	out.Reset()
+	if err := c.runShipCheck("go test ./internal/core"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Check passed: go test ./internal/core") || !strings.Contains(out.String(), "; only compiled, no test ran, so it is not recorded as a pass") || passes() != 1 {
+		t.Errorf("compile only: passes %d\n%s", passes(), out.String())
 	}
 }

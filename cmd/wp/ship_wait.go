@@ -172,7 +172,7 @@ func (c *cli) waitHeldShip(f prOpenFlags, so shipOpts, o *openedPR, raw []byte, 
 	announce := func() {
 		c.println(fmt.Sprintf("Pushed; waiting for %s's review (it can take a while; you are woken when this command exits).", cmpStr(task, "the task")))
 	}
-	n, why, werr := c.waitShipNews(task, min(*so.waitTimeout, shipLeft()), announce)
+	n, why, werr := c.waitShipNews(task, so.waitLeft(), announce)
 	switch {
 	case n == nil:
 		switch why {
@@ -223,6 +223,8 @@ func (c *cli) shipChecksOnce(task string, pull int64, head string, hold, limit t
 // wasn't switched off, Waypoint babysits the pull request (a failure falls
 // to a round otherwise) and nothing else asks the agent's turn (why).
 func (c *cli) canWaitChecks(so shipOpts, o *openedPR, babysat bool, why string) bool {
+	// shipWork has already returned for --json by the time it asks; the term
+	// is kept so the predicate states the whole rule on its own.
 	return babysat && why == "" && !*so.noWait && !c.asJSON && c.agentHeader() != "" && c.thisSession() != "" && c.server() != "" && c.token() != ""
 }
 
@@ -259,12 +261,15 @@ func (c *cli) waitShipChecks(task string, pull int64, number int, head string, b
 		news = n
 		return true, nil
 	})
+	lostTouch := func(cause error) {
+		if announced {
+			c.println(fmt.Sprintf("Lost touch with Waypoint while waiting for PR %d's checks (%v); Waypoint's babysitting takes any failure from here.", number, cause))
+		}
+	}
 	var lost *pollBoundError
 	switch {
 	case errors.As(err, &lost):
-		if announced {
-			c.println(fmt.Sprintf("Lost touch with Waypoint while waiting for PR %d's checks (%v); Waypoint's babysitting takes any failure from here.", number, lost.cause))
-		}
+		lostTouch(lost.cause)
 		return false, nil
 	case errors.Is(err, errPollBound):
 		if announced {
@@ -272,9 +277,7 @@ func (c *cli) waitShipChecks(task string, pull int64, number int, head string, b
 		}
 		return false, nil
 	case err != nil:
-		if announced {
-			c.println(fmt.Sprintf("Lost touch with Waypoint while waiting for PR %d's checks (%v); Waypoint's babysitting takes any failure from here.", number, err))
-		}
+		lostTouch(err)
 		return false, nil
 	case news == nil:
 		return false, nil

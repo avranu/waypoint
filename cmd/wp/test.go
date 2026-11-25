@@ -44,7 +44,9 @@ var testCmd = &command{
 since the merge base with the remote's default branch (--base REF changes
 that), staged, unstaged, and new files that aren't ignored; deleted files
 count. It runs in the tests slot as wp testsum does, without secret-looking
-variables, and keeps the run against the tree as "wp test (scoped check)".
+variables, and keeps the run against the tree as "wp test (scoped check)"
+("wp test --base REF (scoped check)" with --base, which wp ship's own check
+doesn't take for a pass of the default base).
 
 The check is the repository's executable .waypoint/test, run from the
 repository's root with
@@ -187,7 +189,7 @@ func cmdTest(c *cli, args []string) error {
 		}
 	}
 	c.println(fmt.Sprintf("wp test: checking %s against %s with %s.", plural1(len(changed), "changed file"), shortSHA(base), what))
-	t := &scopedTest{c: c, root: root, base: base, changed: changed, all: *all, script: script}
+	t := &scopedTest{c: c, root: root, base: base, ref: *ref, changed: changed, all: *all, script: script}
 	if *dry {
 		return t.dryRun()
 	}
@@ -199,14 +201,21 @@ type scopedTest struct {
 	c       *cli
 	root    string
 	base    string
+	ref     string // --base as given, "" for the default base
 	changed []string
 	all     bool
 	script  string
 }
 
+// label is the command the run is kept under. A caller-chosen base is named in
+// it, so wp ship's check (which looks for the default scoped pass) doesn't
+// take a pass over a changed set the caller picked for the tree's.
 func (t *scopedTest) label() string {
-	if t.all {
+	switch {
+	case t.all:
 		return "wp test --all"
+	case t.ref != "":
+		return "wp test --base " + t.ref + scopedMark
 	}
 	return "wp test" + scopedMark
 }

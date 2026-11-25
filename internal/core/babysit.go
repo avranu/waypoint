@@ -311,6 +311,16 @@ func (s *Service) startBabysit(ctx context.Context, actor *Actor, pr *PullReques
 			return err
 		}
 		if b != nil {
+			// A babysit that arming a merge started has no session (the system
+			// started it), and one whose session ended has nobody to tell: the
+			// session that ships it now is the one its news goes to. A live
+			// other session keeps it.
+			if actor.Session != 0 && b.sessionID != actor.Session && (b.sessionID == 0 || !s.sessionLive(ctx, b.sessionID)) {
+				if _, err := t.ExecContext(ctx, `UPDATE babysits SET session_id = ?, updated_at = ? WHERE id = ?`, actor.Session, s.nowMS(), b.ID); err != nil {
+					return err
+				}
+				b.sessionID = actor.Session
+			}
 			if model != "" && model != b.Model {
 				if _, err := t.ExecContext(ctx, `UPDATE babysits SET model = ?, updated_at = ? WHERE id = ?`, model, s.nowMS(), b.ID); err != nil {
 					return err
@@ -1280,15 +1290,7 @@ func (s *Service) babysitRoundBy(ctx context.Context, b *Babysit, pr *PullReques
 		}
 	}
 	keepFront = keepFront && wait == "" && jobID != 0
-	if !keepFront && (wait != "" || len(failed) > 0 || len(comments) > 0 || len(findings) > 0) {
-		s.leaveQueue(ctx, pr)
-		s.nudgeLine(ctx, pr)
-	}
-	if !keepFront && pr.WipAuto && pr.State == "open" {
-		if err := s.markDraft(ctx, pr); err != nil {
-			s.log.WarnContext(ctx, "put a pull request back to draft", "pr", pr.ID, "err", err)
-		}
-	}
+	s.stepOutOfLine(ctx, pr, keepFront, wait != "" || len(failed) > 0 || len(comments) > 0 || len(findings) > 0)
 	if wait != "" {
 		s.setState(ctx, b, pr, BabysitWatching, wait)
 		return
@@ -2131,5 +2133,27 @@ func queuedRoundWaitText(text string, ahead int, jobID int64) string {
 		return fmt.Sprintf("%s (1 job ahead; job #%d)", text, jobID)
 	default:
 		return fmt.Sprintf("%s (%d jobs ahead; job #%d)", text, ahead, jobID)
+	}
+}
+
+// stepOutOfLine is what a pull request with work to do first does to its place
+// in the merge line and to its ready state: unless it keeps the front, it
+// leaves the queue (when leave) and a pull request Waypoint marked ready goes
+// back to draft. A round for failed checks and a hand-off of them to the
+// author both do this (WP-1878), so a failed pull request doesn't hold the
+// line while someone fixes it; a new head that passes joins the line again
+// the usual way.
+func (s *Service) stepOutOfLine(ctx context.Context, pr *PullRequest, keepFront, leave bool) {
+	if keepFront {
+		return
+	}
+	if leave {
+		s.leaveQueue(ctx, pr)
+		s.nudgeLine(ctx, pr)
+	}
+	if pr.WipAuto && pr.State == "open" {
+		if err := s.markDraft(ctx, pr); err != nil {
+			s.log.WarnContext(ctx, "put a pull request back to draft", "pr", pr.ID, "err", err)
+		}
 	}
 }

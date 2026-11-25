@@ -293,15 +293,17 @@ func (c *cli) runInSlotDo(name string, n int, run slotRun, cmd string, started f
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	bound, _ := slotBoundKind()
-	// ran is the bound the command had, set by runSlotBound: a scope that
-	// can't start falls back to the env bound.
-	var ran string
-	ctx = context.WithValue(ctx, slotRanKeyT{}, &ran)
+	// ran is the bound the command had, told by runSlotBound as soon as it
+	// is known (a scope that can't start falls back to the env bound), and
+	// passed on to the lock file once the slot is held.
+	ran := &slotRan{}
+	ctx = context.WithValue(ctx, slotRanKeyT{}, ran)
 	taken, err := c.takeSlotRun(context.WithValue(ctx, slotBoundKeyT{}, bound), name, n, run, cmd)
 	if err != nil {
 		return 0, err
 	}
 	env, setExit := taken.env, taken.setExit
+	ran.set = taken.setBound
 	defer taken.release()
 	dir, derr := slotDir()
 	if cmd != "" && derr == nil {
@@ -314,8 +316,8 @@ func (c *cli) runInSlotDo(name string, n int, run slotRun, cmd string, started f
 	}
 	begun := time.Now()
 	code, err := do(ctx, env)
-	if ran != "" {
-		taken.setBound(ran)
+	if ran.kind != "" {
+		taken.setBound(ran.kind)
 	}
 	if err == nil {
 		setExit(code)
