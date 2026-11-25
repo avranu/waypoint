@@ -53,8 +53,8 @@ func TestDiscoverTranscriptsIgnoresSymlinkedFiles(t *testing.T) {
 	real := writeAt(t, filepath.Join(proj, "s.jsonl"), tline("m1", "s"))
 	sub := writeAt(t, filepath.Join(proj, "s", "subagents", "agent-x.jsonl"), tline("m2", "s"))
 	linkAt(t, secret, filepath.Join(proj, "link.jsonl"))
-	writeAt(t, filepath.Join(proj, jobSidecarFile), "{}\n")                      // the job's sidecar is not a transcript
-	if err := os.MkdirAll(filepath.Join(proj, "dir.jsonl"), 0o700); err != nil { // nor is a directory named like one
+	writeAt(t, filepath.Join(proj, jobSidecarFile), "{}\n")
+	if err := os.MkdirAll(filepath.Join(proj, "dir.jsonl"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	linkAt(t, secret, filepath.Join(proj, "s", "subagents", "agent-y.jsonl"))
@@ -107,7 +107,6 @@ func TestArchivePassSkipsSymlinkedTranscripts(t *testing.T) {
 	if files, _ := e.svc.TranscriptFiles(context.Background(), me, core.TranscriptQuery{Session: "real"}); len(files) != 1 {
 		t.Errorf("the real one wasn't: %+v", files)
 	}
-	// and the open itself refuses one the listing never saw
 	a := &archiver{c: &cli{dir: e.dir}, st: archiveState{Files: map[string]*archiveFileState{}, Dropped: map[string]int64{}}, res: &archiveResult{Dropped: map[string]int64{}}, deadline: time.Now().Add(time.Minute)}
 	a.file(archiveFileOfPath(link), 100)
 	if a.res.Dropped["unreadable_file"] != 1 || a.res.Pieces != 0 {
@@ -217,7 +216,6 @@ func TestJobEndUploadRetriesWhenBusy(t *testing.T) {
 		t.Errorf("log = %s", log)
 	}
 
-	// released while it waits: the second try sends
 	transcriptBusyWait, transcriptBusyTries = 300*time.Millisecond, 3
 	go func() { time.Sleep(100 * time.Millisecond); unlock() }()
 	_, log = keepIt(p, work, nil)
@@ -331,14 +329,13 @@ func TestCancelDuringTheJobEndUploadReachesTheSidecar(t *testing.T) {
 	_, p, _, work, proj := jobEndSetup(t, func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasPrefix(r.URL.Path, "/api/v1/usage/") {
-				run.cancelled.Store(true) // a person cancels while the upload is in flight
+				run.cancelled.Store(true)
 				time.Sleep(100 * time.Millisecond)
 			}
 			h.ServeHTTP(w, r)
 		})
 	})
 	o := p.keepTranscripts(context.Background(), run, agentJob{CLI: "claude"}, work, time.Now(), nil, outcome{State: "failed", Error: "claude exited 1"})
-	// what runJob reports to the server
 	reported := settleOutcome(context.Background(), run.cancelled, o)
 	var meta jobMeta
 	b, err := os.ReadFile(filepath.Join(proj, jobSidecarFile))

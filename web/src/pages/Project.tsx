@@ -128,14 +128,12 @@ function ProjectTabs({
     if (!el) return
     const ro = new ResizeObserver(measure)
     ro.observe(el)
-    // Tab widths change when the webfont arrives; re-measure then.
     for (const c of Array.from(ruler.current?.children ?? [])) ro.observe(c)
     void document.fonts?.ready.then(measure)
     return () => ro.disconnect()
   }, [measure])
   const href = (to: string) => to.replace('$key', project)
   const active = (to: string) => pathname === href(to) || pathname.startsWith(href(to) + '/')
-  // Keep the current tab in the strip: swap it for the last one that fit.
   let shown = all.slice(0, fit)
   const here = all.findIndex((t) => active(t.to))
   if (here >= fit && fit > 0) shown = [...all.slice(0, fit - 1), all[here]]
@@ -261,14 +259,11 @@ export function ProjectLayout() {
 /** The issue detail as a side sheet over the current page. */
 export function IssueSheet({ issueKey, onClose }: { issueKey: string; onClose: () => void }) {
   const leaving = useRef<HTMLElement | null>(null)
-  // Esc leaves a text field first (letting the field cancel its edit), then closes the sheet.
   useEscapeLayer(true, () => {
     const t = document.activeElement as HTMLElement | null
     if (!t || !(t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)))
       return onClose()
-    // A second Esc before the field has been left (a quick double press) closes the sheet.
     if (leaving.current === t) return onClose()
-    // The field sees the key first (and may cancel and blur itself); then leave it.
     leaving.current = t
     setTimeout(() => {
       if (document.activeElement === t) t.blur()
@@ -294,7 +289,6 @@ export function IssueSheet({ issueKey, onClose }: { issueKey: string; onClose: (
 /** Open an issue in the sheet by setting ?issue=. */
 export function useOpenIssue() {
   const navigate = useNavigate()
-  // Stable, so memoized cards don't re-render on every drag-over.
   return useCallback(
     (key: string) =>
       navigate({
@@ -333,8 +327,6 @@ export function FilterBar({
     () => new Set([...text.matchAll(/assignee:([\w.,-]+)/g)].flatMap((m) => m[1].split(','))),
     [text],
   )
-  // The text filter stays tucked behind a button until wanted (click, or F),
-  // and stays open while it holds a filter.
   const [open, setOpen] = useState(!!current)
   const input = useRef<HTMLInputElement>(null)
   const expanded = open || !!text
@@ -371,7 +363,7 @@ export function FilterBar({
             <IconButton
               label="Clear filter"
               size="xs"
-              onMouseDown={(e) => e.preventDefault()} // keep focus in the field
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
                 setText('')
                 input.current?.focus()

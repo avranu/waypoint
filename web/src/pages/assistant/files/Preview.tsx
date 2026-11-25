@@ -1,8 +1,3 @@
-// One of the assistant's files, shown for what it is: images as pictures,
-// audio and video in a player, Markdown rendered (untrusted: no HTML, no
-// remote images) or raw, JSON pretty, and any other text with line numbers.
-// Text can be edited in place. HTML is only ever text here.
-
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useBlocker } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -118,7 +113,6 @@ export function FilePreview({
     }
   }
 
-  // Cmd/Ctrl+S saves while editing, wherever the focus is.
   useEffect(() => {
     if (!editing) return
     const onKey = (e: KeyboardEvent) => {
@@ -315,8 +309,6 @@ export function FilePreview({
   )
 }
 
-// ---- kinds of preview ----
-
 function DownloadButton({ id, path }: { id: number; path: string }) {
   return (
     <a
@@ -376,7 +368,6 @@ function ImageView({ id, entry }: { id: number; entry: FileEntry }) {
         {img.error.message}
       </NoPreview>
     )
-  // Only ever an image: an <img> doesn't run what's inside (SVG included).
   if (!img.data.data_url.startsWith('data:image/')) return <NoPreview id={id} entry={entry} />
   return (
     <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-auto bg-sunken p-4 sm:p-6">

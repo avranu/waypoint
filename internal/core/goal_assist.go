@@ -9,14 +9,10 @@ import (
 	"time"
 )
 
-// Tying work to goals where a person already is (WP-679): a task asks the
-// model for the goal it serves, and a goal lists the open work most likely
-// to serve it, so nobody browses every task to link one.
-
 const (
-	goalWorkMax  = 30   // tasks a goal's work list shows
-	goalWorkScan = 3000 // open tasks it scores at most
-	goalTaskDesc = 1500 // characters of a task's description the model reads
+	goalWorkMax  = 30
+	goalWorkScan = 3000
+	goalTaskDesc = 1500
 )
 
 // TaskGoalSuggestion is what the model proposes for one task: an approved
@@ -65,14 +61,12 @@ func (s *Service) SuggestTaskGoal(ctx context.Context, actor *Actor, ref string)
 		t, _ := aiTaskByName(goalSuggestTask)
 		return nil, invalid("no AI model is set up for %q or for Automations; an admin can choose one under Admin → AI", t.Label)
 	}
-	// What stays from agents stays from the model too, as in SuggestGoals.
 	switch {
 	case i.Draft:
 		return &TaskGoalSuggestion{Note: "This task is a draft: publish it before a model reads it, or pick its goal yourself."}, nil
 	case i.Outside:
 		return &TaskGoalSuggestion{Note: "This task's text came from outside Waypoint, so no model reads it; pick its goal yourself."}, nil
 	}
-	// One question per task at a time.
 	s.goals.mu.Lock()
 	if s.goals.asking[i.ID] {
 		s.goals.mu.Unlock()
@@ -93,8 +87,6 @@ func (s *Service) SuggestTaskGoal(ctx context.Context, actor *Actor, ref string)
 	if err != nil {
 		return nil, err
 	}
-	// Goals the task already serves, or a person said it doesn't, aren't
-	// offered again.
 	skip := map[int64]string{}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT dst_id, 'is already linked to the task' FROM knowledge_links
 		WHERE src_type = 'issue' AND src_id = ? AND rel = 'serves' AND dst_type = 'design'
@@ -178,7 +170,6 @@ Answer "goal" with the id of the goal it serves, or 0 and a new goal as "title".
 		out.Why, out.Note = "", fmt.Sprintf("The model's goal (“%s”) %s, so Waypoint left it out.", title, w[0])
 		return out, nil
 	}
-	// A new goal that says what one already says is that goal.
 	for _, g := range goals {
 		if goalRepeats(title, []string{g.Title}) {
 			return pick(g)
@@ -252,8 +243,6 @@ func (s *Service) GoalWork(ctx context.Context, actor *Actor, goalID int64, proj
 	}
 	out := &GoalWorkList{Goal: *goal, Items: []GoalWorkItem{}}
 
-	// The goal's words as the matcher knows them; a goal no person approved
-	// yet has only its own.
 	m, err := s.newGoalMatcher(ctx)
 	if err != nil {
 		return nil, err
@@ -271,7 +260,7 @@ func (s *Service) GoalWork(ctx context.Context, actor *Actor, goalID int64, proj
 		}
 	}
 	if gvec == nil {
-		full, err := s.GetDesign(ctx, actor, n.ID) // with its body
+		full, err := s.GetDesign(ctx, actor, n.ID)
 		if err != nil {
 			return nil, err
 		}

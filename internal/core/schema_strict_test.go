@@ -36,7 +36,7 @@ func llmSchemas(t *testing.T) map[string]map[string]any {
 // object lists all its properties in required and sets additionalProperties
 // false.
 func strictProblems(schema any, at string) []string {
-	b, _ := json.Marshal(schema) // Go-typed values to plain JSON
+	b, _ := json.Marshal(schema)
 	var v any
 	_ = json.Unmarshal(b, &v)
 	var out []string

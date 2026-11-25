@@ -84,8 +84,6 @@ for (const [width, scheme] of looks([
   const desc = async (key) =>
     (await (await page.request.get(base + `/api/v1/issues/${key}`, { headers: H })).json())
       .description;
-  // Polls the API until the description satisfies `want` (a string or a
-  // predicate); returns the last value either way.
   const waitDesc = async (key, want, ms = 10000) => {
     const hit = typeof want === "function" ? want : (d) => d === want;
     const end = Date.now() + ms;
@@ -108,7 +106,6 @@ for (const [width, scheme] of looks([
     );
   };
 
-  // An untouched open and close changes nothing.
   const a = await make("Mixed", MIXED);
   await page.goto(`${base}/issue/${a.key}`);
   await details();
@@ -117,11 +114,10 @@ for (const [width, scheme] of looks([
   ok((await note.count()) === 0, `${tag} mixed markdown opens in the rich editor`);
   await page.screenshot({ path: `${out}/rich-open-${tag}.png` });
   // wplint:ignore e2e-wait polling a value or proving a negative: there is nothing to wait on
-  await page.waitForTimeout(2200); // longer than the autosave pause: it would have gone out
+  await page.waitForTimeout(2200);
   await settleClose();
   ok((await desc(a.key)) === MIXED, `${tag} an untouched open and close keeps the text byte for byte`);
 
-  // Bold from the toolbar; Shift+Enter is one newline, Enter a new paragraph.
   const b = await make("Bold", "alpha beta_gamma");
   await page.goto(`${base}/issue/${b.key}`);
   await details();
@@ -151,7 +147,6 @@ for (const [width, scheme] of looks([
   const cd = await waitDesc(c.key, "plain text **word**");
   ok(cd === "plain text **word**", `${tag} bold on a typed word saves **word**: ${JSON.stringify(cd)}`);
 
-  // Task boxes toggle and save.
   await settleClose();
   const t = await make("Tasks", "- [ ] first\n- [x] second");
   await page.goto(`${base}/issue/${t.key}`);
@@ -163,7 +158,6 @@ for (const [width, scheme] of looks([
   ok(td === "- [x] first\n- [x] second", `${tag} a task box toggles in the editor: ${JSON.stringify(td)}`);
   await settleClose();
 
-  // Text the editor can't keep opens as markdown.
   const h = await make("Html", HTML);
   await page.goto(`${base}/issue/${h.key}`);
   await details();
@@ -182,7 +176,6 @@ for (const [width, scheme] of looks([
   await settleClose();
   ok((await desc(h.key)) === HTML, `${tag} nothing changed`);
 
-  // The toggle switches editors, keeps the draft and the choice.
   const m = await make("Toggle", "**bold** text");
   await page.goto(`${base}/issue/${m.key}`);
   await details();
@@ -215,7 +208,6 @@ for (const [width, scheme] of looks([
   await richBox.waitFor();
 
 
-  // ---- @mentions in the rich editor ----
   const menu = page.getByRole("listbox", { name: "Mention someone" });
   const openRich = async (key, text) => {
     await page.goto(`${base}/issue/${key}`);
@@ -265,7 +257,6 @@ for (const [width, scheme] of looks([
   ok(!(await menu.isVisible()), `${tag} "@." opens no menu`);
   await settleClose();
 
-  // ---- uploads in the rich editor ----
   const PNG =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
   const pastePng = (name) =>
@@ -299,7 +290,6 @@ for (const [width, scheme] of looks([
   await page.unrouteAll({ behavior: "ignoreErrors" });
   await settleClose();
 
-  // The editor goes away while the file is still uploading.
   const us = await make("Upload switch", "pic");
   await openRich(us.key, "pic");
   await slow(1500);
@@ -317,12 +307,8 @@ for (const [width, scheme] of looks([
   ok(link("late.png").test(usd), `${tag} ...and is saved: ${JSON.stringify(usd)}`);
   await page.unrouteAll({ behavior: "ignoreErrors" });
   await settleClose();
-  // Back to the rich editor for what follows.
   await page.evaluate(() => localStorage.setItem("wp.editor.mode", "rich"));
 
-  // Done/Escape pressed while the file is still uploading: the editor is gone
-  // when it ends, and the link (or the failed upload's cleanup) must still be
-  // saved rather than left as the placeholder (WP-628).
   const ue = await make("Upload escape", "pic");
   await openRich(ue.key, "pic");
   await slow(1500);
@@ -338,7 +324,6 @@ for (const [width, scheme] of looks([
   );
   await page.unrouteAll({ behavior: "ignoreErrors" });
 
-  // The same upload failing after Escape: the placeholder goes, and is saved.
   const uf = await make("Upload escape fail", "pic");
   await openRich(uf.key, "pic");
   await page.route(/\/api\/v1\/attachments\?/, async (route) => {
@@ -347,13 +332,11 @@ for (const [width, scheme] of looks([
   });
   await pastePng("bad.png");
   await field.press("Escape");
-  // Escape saves the placeholder first; the failure then has to take it out.
   await waitDesc(uf.key, (d) => d.includes("Uploading bad.png"));
   const ufd = await waitDesc(uf.key, (d) => !d.includes("Uploading"));
   ok(!ufd.includes("Uploading") && !ufd.includes("bad.png"), `${tag} an upload failing after Escape leaves no placeholder saved: ${JSON.stringify(ufd)}`);
   await page.unrouteAll({ behavior: "ignoreErrors" });
 
-  // The placeholder deleted mid-upload: the file is attached, say so.
   const ud = await make("Upload deleted", "pic");
   await openRich(ud.key, "pic");
   await slow(1200);
@@ -368,9 +351,6 @@ for (const [width, scheme] of looks([
   await page.unrouteAll({ behavior: "ignoreErrors" });
   await settleClose();
 
-  // The placeholder's text node remade mid-upload (the browser can swap it
-  // for an equal one): the link goes into the draft and must show in the
-  // editor too, or the next keystroke writes the editor's old text over it.
   const ur = await make("Upload remade", "pic");
   await openRich(ur.key, "pic");
   await slow(1200);
@@ -393,7 +373,6 @@ for (const [width, scheme] of looks([
   await page.unrouteAll({ behavior: "ignoreErrors" });
   await settleClose();
 
-  // ---- toolbar buttons, empty and not ----
   const tools = [
     ["Italic", /^[*_]TXT[*_]$/],
     ["Heading 1", /^# TXT$/],
@@ -425,7 +404,6 @@ for (const [width, scheme] of looks([
     await settleClose();
   }
 
-  // Underline has no markdown: the shortcut does nothing.
   const un = await make("Underline", "plain");
   await openRich(un.key, "plain");
   await field.press("Control+a");
@@ -433,7 +411,6 @@ for (const [width, scheme] of looks([
   ok(!(await richBox.evaluate((el) => !!el.querySelector("u"))), `${tag} Ctrl+U adds no underline`);
   await settleClose();
 
-  // Text dragged in from outside is plain text, like a paste.
   const dr = await make("Drop", "plain");
   await openRich(dr.key, "plain");
   await richBox.evaluate((el) => {
@@ -450,7 +427,6 @@ for (const [width, scheme] of looks([
   ok(/^plain\s*dropped words$/.test(drd), `${tag} dropped text is inserted as text: ${JSON.stringify(drd)}`);
   await settleClose();
 
-  // An empty description shows the prompt and nothing overflows.
   await settleClose();
   const e = await make("Empty", undefined);
   await page.goto(`${base}/issue/${e.key}`);

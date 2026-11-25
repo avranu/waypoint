@@ -7,16 +7,6 @@ import (
 	"strings"
 )
 
-// Vouching for an environment's addresses (WP-1087, WP-ADR109 amending WP-ADR90).
-// Unattended agent sessions may read from the hosts of the environments
-// whose addresses a person set. Before this, the only way for a person to
-// set them was the web form, which nobody was prompted to visit when an
-// agent hit the guard (one task waited on WP:R-325 for days). VouchEnvironment
-// is one step for whoever runs it: a person's call records the addresses as
-// theirs; an agent's files one question for a person, and the person's
-// "Allow reads" answer records them as that person's. What the person is
-// shown in the question is exactly what gets recorded.
-
 // EnvReadAllow is the choice of an environment read request that vouches.
 const EnvReadAllow = "Allow reads"
 
@@ -75,7 +65,7 @@ func envReadAllows(answers []Answer) bool {
 	if len(answers) != 1 {
 		return false
 	}
-	return containsStr(answers[0].Choices, EnvReadAllow) // picked, not typed
+	return containsStr(answers[0].Choices, EnvReadAllow)
 }
 
 // EnvVouchInput: the addresses to vouch for; nil keeps the environment's
@@ -146,18 +136,15 @@ func (s *Service) VouchEnvironment(ctx context.Context, actor *Actor, projectRef
 		return nil, invalid("%s is stopped, so agents don't read from it; start it again first (wp env up %s)", name, name)
 	}
 	if ask.VersionURL != "" && (cur == nil || cur.CommitField == "" && cur.VersionField == "") {
-		// The save "Allow reads" makes would fail on it (validEnvSettings),
-		// leaving the person a question that can't be allowed.
 		return nil, invalid("a version address needs the field to read from it, which a person sets on the environment in the web; leave --version out")
 	}
 	res := &EnvVouchResult{Hosts: ask.hosts()}
 	if cur != nil && cur.AddressAgent == "" && cur.URL == ask.URL && cur.HealthURL == ask.HealthURL && cur.VersionURL == ask.VersionURL {
-		// A person already set exactly these: nothing to ask or change.
 		res.Vouched = true
 		res.Environment, err = s.envDetail(ctx, cur.ID)
 		return res, err
 	}
-	if addressAgent(actor) != "" { // an agent, an agent's shell or an automation
+	if addressAgent(actor) != "" {
 		if err := actor.need(PermRequestsCreate); err != nil {
 			return nil, err
 		}
@@ -169,8 +156,6 @@ func (s *Service) VouchEnvironment(ctx context.Context, actor *Actor, projectRef
 			return nil, err
 		}
 		if !created && !s.mayDecideOrOwn(ctx, actor, req) {
-			// Someone else's open ask: the agent learns it is asked, not
-			// that person's reason.
 			req = &Request{ID: req.ID, Code: req.Code, Ref: req.Ref, Number: req.Number, Project: req.Project,
 				Kind: req.Kind, Title: req.Title, State: req.State, EnvRead: req.EnvRead}
 		}

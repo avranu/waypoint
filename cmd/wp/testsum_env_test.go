@@ -78,8 +78,6 @@ func TestTestsumKeepsSecretsOutOfTheCommand(t *testing.T) {
 		t.Errorf("--repeat leaked the secret: %d %q %q", code, out.String(), errb.String())
 	}
 
-	// wp slot run tests is the other way tests are run: it drops them too,
-	// names them when it fails, and other slots keep the whole environment.
 	out.Reset()
 	errb.Reset()
 	if code := run([]string{"slot", "run", "tests", "--", "sh", "-c", check}, &out, &errb); code != 0 {

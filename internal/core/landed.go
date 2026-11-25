@@ -1,14 +1,5 @@
 package core
 
-// Pull requests whose work already landed (WP-140). Stacked branches get
-// merged into one another, and the pull request at the bottom carries the
-// whole stack onto the default branch; the ones above it are left open and
-// armed with nothing to merge. When a base branch moves (and every sync, in
-// case a webhook was missed) Waypoint asks the forge whether each open pull
-// request's head is already in its base, and if it is, finishes the pull
-// request: marked merged where the forge allows that, else closed, with one
-// comment saying where its work went.
-
 import (
 	"context"
 	"database/sql"
@@ -40,7 +31,7 @@ func (s *Service) onBaseMoved(ctx context.Context, f *Forge, repo, branch string
 	bg := withoutLineLocks(context.WithoutCancel(ctx))
 	s.goBG(func() {
 		s.checkLanded(bg, f, repo, branch)
-		s.lineChanged(bg, lineRef{forge: f.ID, repo: repo, base: branch}) // the base moved: candidates on the old tip end, the line reads the new one (WP-1659)
+		s.lineChanged(bg, lineRef{forge: f.ID, repo: repo, base: branch})
 	})
 }
 
@@ -98,13 +89,11 @@ func (s *Service) checkLanded(ctx context.Context, f *Forge, repo, base string) 
 			return
 		}
 		if pr.headRepo != "" && !strings.EqualFold(pr.headRepo, repo) {
-			continue // a fork's head can't be compared by name
+			continue
 		}
 		if done, err := s.landPR(ctx, f, pr); isStatus(err, http.StatusNotFound) {
-			// The forge has no such pull request: the repo moved or is gone,
-			// or the pull request was deleted. Never retried (WP-207).
 			if s.repoMissing(ctx, f, repo) {
-				return // moved: its pull requests are under the new name now
+				return
 			}
 			s.dropGonePR(ctx, f, repo, pr)
 		} else if err != nil {
@@ -131,13 +120,13 @@ func (s *Service) landPR(ctx context.Context, f *Forge, pr *PullRequest) (bool, 
 	if !ok || !ok2 || f.token == "" {
 		return false, nil
 	}
-	defer forgeLocks.lock(fmt.Sprintf("merge:%d", pr.ID))() // not while an armed merge is under way
+	defer forgeLocks.lock(fmt.Sprintf("merge:%d", pr.ID))()
 	fp, err := prc.GetPR(ctx, f, pr.Repo, pr.Number)
 	if err != nil {
 		return false, err
 	}
 	if fp.State != "open" && fp.State != "draft" {
-		_, err := s.recordPR(ctx, f, pr.Repo, fp, false) // the forge got there first
+		_, err := s.recordPR(ctx, f, pr.Repo, fp, false)
 		return false, err
 	}
 	if fp.HeadSHA == "" || fp.BaseRef == "" {
@@ -149,7 +138,7 @@ func (s *Service) landPR(ctx context.Context, f *Forge, pr *PullRequest) (bool, 
 	}
 	var seen, landed *int64
 	if err := s.db.R.QueryRowContext(ctx, `SELECT landed_seen_at, landed_at FROM pull_requests WHERE id = ?`, pr.ID).Scan(&seen, &landed); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return false, err // unread is not "never commented": the comment would be posted again
+		return false, err
 	}
 	if !in {
 		if seen != nil {
@@ -158,8 +147,6 @@ func (s *Service) landPR(ctx context.Context, f *Forge, pr *PullRequest) (bool, 
 		return false, nil
 	}
 	now := s.nowMS()
-	// GitHub and GitLab mark such a pull request merged on their own: wait
-	// for them, and close it only if they haven't.
 	if f.Kind != "forgejo" && landed == nil {
 		if seen == nil {
 			s.setLanded(ctx, pr.ID, fmt.Sprintf("landed_seen_at = %d", now))
@@ -169,18 +156,17 @@ func (s *Service) landPR(ctx context.Context, f *Forge, pr *PullRequest) (bool, 
 			return false, nil
 		}
 	}
-	// It landed. The head must be what was checked when it is finished.
 	sha, text := s.landedWhere(ctx, f, cl, pr, fp, work)
 	again, err := prc.GetPR(ctx, f, pr.Repo, pr.Number)
 	if err != nil {
 		return false, err
 	}
 	if !sameSHA(again.HeadSHA, fp.HeadSHA) || (again.State != "open" && again.State != "draft") {
-		return false, nil // it moved since the check
+		return false, nil
 	}
 	projectID, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
 	if err != nil {
-		return false, err // before the pull request is touched
+		return false, err
 	}
 	if err := s.disarmLanded(ctx, pr, text); err != nil {
 		return false, err
@@ -196,7 +182,6 @@ func (s *Service) landPR(ctx context.Context, f *Forge, pr *PullRequest) (bool, 
 	how := "marked it merged"
 	err = cl.MarkMerged(ctx, f, pr.Repo, pr.Number, sha)
 	if err != nil && (isRefusal(err) || errors.Is(err, ErrUnsupported)) {
-		// The repo doesn't allow manual merges (or the forge has no such thing).
 		how = "closed it"
 		err = cl.ClosePR(ctx, f, pr.Repo, pr.Number)
 	}
@@ -205,14 +190,13 @@ func (s *Service) landPR(ctx context.Context, f *Forge, pr *PullRequest) (bool, 
 	}
 	s.audit(ctx, SystemActor(), AuditEntry{Action: "pr.landed", Category: AuditControl, ProjectID: projectID, TargetType: "pr", TargetID: pr.ID,
 		Target: fmt.Sprintf("%s#%d", pr.Repo, pr.Number), URL: pr.URL, Detail: how + " “" + pr.Title + "”: its work had already landed on " + fp.BaseRef, About: pr.Agent, Actor: "landed pull requests"})
-	// The forge's word, so the page, the issue link and the PR-merged rules see it now.
 	if fresh, err := prc.GetPR(ctx, f, pr.Repo, pr.Number); err == nil {
 		if _, err := s.recordPR(ctx, f, pr.Repo, fresh, false); err != nil {
 			s.log.WarnContext(ctx, "record a landed pull request", "repo", pr.Repo, "number", pr.Number, "err", err)
 		}
 		s.applyLinkState(ctx, fresh.URL, s.linkItem(ctx, f, &ForgeItem{Number: fresh.Number, Title: fresh.Title, State: fresh.State, URL: fresh.URL, IsPR: true, Author: fresh.Author}))
 	}
-	s.nudgeBabysit(pr.ID, false) // ends it: the pull request is merged or closed
+	s.nudgeBabysit(pr.ID, false)
 	return true, nil
 }
 
@@ -246,7 +230,6 @@ func (s *Service) headLanded(ctx context.Context, f *Forge, cl ForgeBranches, re
 	if ahead > maxEmptyMerges {
 		return false, "", nil
 	}
-	// Any error here is only "can't tell": not landed, never a gone pull request.
 	_, work, ok := s.emptyMerge(ctx, f, cl, repo, base, head, maxEmptyMerges)
 	return ok, work, nil
 }
@@ -265,7 +248,6 @@ func (s *Service) emptyMerge(ctx context.Context, f *Forge, cl ForgeBranches, re
 	if err != nil || len(ps) < 2 {
 		return "", "", false
 	}
-	// Each parent as the commit in base it stands for, and the branch's work.
 	eqs, works := make([]string, len(ps)), make([]string, len(ps))
 	inBase := make([]bool, len(ps))
 	for i, p := range ps {
@@ -283,7 +265,6 @@ func (s *Service) emptyMerge(ctx context.Context, f *Forge, cl ForgeBranches, re
 		}
 		eqs[i], works[i] = e, w
 	}
-	// into: a parent in base that holds every other parent's commit.
 	into := -1
 	for i := range ps {
 		if !inBase[i] {
@@ -312,12 +293,12 @@ func (s *Service) emptyMerge(ctx context.Context, f *Forge, cl ForgeBranches, re
 		return "", "", false
 	}
 	if theirs, err := tr.CommitTree(ctx, f, repo, ps[into]); err != nil || theirs != mine {
-		return "", "", false // the merge changed something: work left
+		return "", "", false
 	}
 	work = works[into]
 	for i := range ps {
 		if i != into {
-			work = works[i] // the branch's side, as an update merges the base in second
+			work = works[i]
 			break
 		}
 	}
@@ -383,7 +364,7 @@ func (s *Service) disarmLanded(ctx context.Context, pr *PullRequest, why string)
 		t.emit(&Event{Kind: EvPRActivity, ProjectID: projectID, New: "disarmed", Data: map[string]any{"pr_id": pr.ID}})
 		return nil
 	})
-	return err // landPR's caller logs it, once, with the pull request
+	return err
 }
 
 // repoMissing is for a 404 from the forge about repo. It follows the repo to
@@ -396,7 +377,7 @@ func (s *Service) repoMissing(ctx context.Context, f *Forge, repo string) (moved
 		return false
 	}
 	got, err := finder.GetRepo(ctx, f, repo)
-	if err == nil && !strings.EqualFold(got.Path, repo) { // the forge redirects the old name
+	if err == nil && !strings.EqualFold(got.Path, repo) {
 		if err := s.moveRepo(ctx, SystemActor(), f, repo, got.Path, got.ID, false, false); err != nil {
 			s.log.WarnContext(ctx, "follow moved repo", "forge", f.Name, "from", repo, "to", got.Path, "err", err)
 			return false
@@ -412,7 +393,7 @@ func (s *Service) repoMissing(ctx context.Context, f *Forge, repo string) (moved
 	}
 	var n int
 	if e := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM project_repos WHERE forge_id = ? AND repo = ? COLLATE NOCASE`, f.ID, repo).Scan(&n); e == nil && n == 0 {
-		return true // findMovedRepo renamed it
+		return true
 	}
 	return false
 }

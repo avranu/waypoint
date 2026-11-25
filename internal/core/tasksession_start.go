@@ -6,15 +6,6 @@ import (
 	"strings"
 )
 
-// Starting a task session from the web (WP-71): the queue's Start button
-// queues a session job on one of the person's runners, the same launch as
-// `wp start KEY --bg` (WP_TASK=KEY, the task's wp next answer as its first
-// prompt).
-// Waypoint knows no project's checkout, so the session starts where the
-// person last worked on that project, on a machine their runner is on.
-// Picking the machine, repo and model is WP-45; the queue starting
-// sessions by itself is WP-53.
-
 // TaskSessionPlace is where a task session for a project can start: a
 // runner of the person's and the checkout they last worked in on its
 // machine.
@@ -34,13 +25,6 @@ type TaskSessionStart struct {
 	Job   *RunnerJob        `json:"job"`
 	Place *TaskSessionPlace `json:"place"`
 }
-
-// A task session's first prompt is made the way autopilot makes its own
-// (WP-1037): the launcher runs wp next for the task as the new session
-// will, and pastes the answer into the template autopilot uses
-// (kickoffTemplate). The session starts with the task, how to finish it and
-// how to ask about it or hand it back, rather than an order to go and fetch
-// it and "do it".
 
 // kickoffTemplate is the template a session started on a task gets its wp
 // next answer in: autopilot's wording in the project (autopilotTextFor) and
@@ -80,9 +64,6 @@ func (s *Service) sessionPlaces(ctx context.Context, userID int64, need jobNeeds
 	if err != nil || len(runners) == 0 {
 		return out, err
 	}
-	// A session's projects: its repo's, and those of the tasks it took (a
-	// project needn't have its repo connected). Worktree sessions are left
-	// out: their directory is usually gone.
 	rows, err := s.db.R.QueryContext(ctx, `SELECT p.key, x.machine, x.cwd FROM agent_sessions x
 		JOIN (SELECT id AS sid, project_id AS pid FROM agent_sessions WHERE user_id = ? AND project_id IS NOT NULL
 			UNION SELECT r.session_id, i.project_id FROM agent_runs r JOIN agent_sessions y ON y.id = r.session_id JOIN issues i ON i.id = r.issue_id
@@ -119,7 +100,7 @@ func (s *Service) sessionPlaces(ctx context.Context, userID int64, need jobNeeds
 				best[key] = &p
 				out = append(out, &p)
 			case r.Online && !b.Online:
-				*b = p // out holds b
+				*b = p
 			}
 		}
 	}
@@ -130,7 +111,7 @@ func (s *Service) sessionPlaces(ctx context.Context, userID int64, need jobNeeds
 // person's runner (TaskSessionPlaces), bound to the task from birth. The
 // runner job's audit entry records who started it.
 func (s *Service) StartTaskSession(ctx context.Context, a *Actor, key string) (*TaskSessionStart, error) {
-	if err := a.need(PermSessionsStart); err != nil { // WP-111
+	if err := a.need(PermSessionsStart); err != nil {
 		return nil, err
 	}
 	if err := a.canWrite(); err != nil {

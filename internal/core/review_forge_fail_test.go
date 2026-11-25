@@ -7,11 +7,6 @@ import (
 	"time"
 )
 
-// What the forge's refusals and silences do to the server ship (WP-1370):
-// a refusal that won't change ends the round at once; a failure that may
-// pass is retried for a bounded time, then ends the round with its last
-// error and a final notice; no ship waits on a forge for ever.
-
 func (e *loopEnv) lastRoundBody() string {
 	e.t.Helper()
 	var body string

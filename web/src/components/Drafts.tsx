@@ -1,6 +1,3 @@
-// Drafts (WP-42): issues and pages a person is still thinking through.
-// Agents can't see them anywhere until a person publishes them.
-
 import { Globe, PenLine } from 'lucide-react'
 import clsx from 'clsx'
 import { Badge } from '@/components/ui/misc'

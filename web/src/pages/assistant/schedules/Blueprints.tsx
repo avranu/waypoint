@@ -1,6 +1,3 @@
-// Hermes's blueprints: ready-made schedules (a morning briefing, a weekly
-// review…) with a few blanks to fill in.
-
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Wand2 } from 'lucide-react'
@@ -96,8 +93,6 @@ function BlueprintDialog({
   const qc = useQueryClient()
   const targets = useQuery(targetsQuery(assistantId)).data?.targets ?? []
   const names = new Map(targets.map((t) => [t.id, t.name]))
-  // "origin" from here means Hermes's home channel; with no messaging platform
-  // connected there is none, so start from saving the result instead.
   const noHome = !targets.some((t) => t.id !== 'local' && !t.id.startsWith('bot-chat'))
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(

@@ -52,7 +52,6 @@ func TestGlossaryScopes(t *testing.T) {
 	if strings.Join(got, " ") != want {
 		t.Errorf("full glossary = %v, want %s", got, want)
 	}
-	// Lookup: nearest first, aliases count.
 	lk, err := e.s.LookupGlossary(e.ctx, e.admin, "claim", repo.Key)
 	if err != nil || len(lk.Matches) != 2 || lk.Matches[0].ProjectKey != org.Key || !lk.Matches[1].Shadowed {
 		t.Fatalf("lookup = %+v, %v", lk, err)
@@ -63,17 +62,14 @@ func TestGlossaryScopes(t *testing.T) {
 	if lk, _ := e.s.LookupGlossary(e.ctx, e.admin, "widg", repo.Key); len(lk.Matches) != 0 || len(lk.Suggestions) == 0 || lk.Suggestions[0].Term != "Widget" {
 		t.Errorf("suggestions = %+v", lk)
 	}
-	// The [[wikilink]] became a link, visible from both ends.
 	links, err := e.s.ItemLinks(e.ctx, e.admin, LinkEnd{Type: KGlossary, ID: gadget.ID})
 	if err != nil || len(links) != 1 || links[0].Direction != "in" || links[0].Item.Title != "Widget" || !links[0].Auto {
 		t.Errorf("gadget links = %+v, %v", links, err)
 	}
-	// Duplicate terms in one scope are refused; another scope is fine.
 	dup := "claim"
 	if _, err := e.s.CreateGlossary(e.ctx, e.admin, GlossaryInput{Term: &dup, Project: &org.Key}); !IsInvalid(err) {
 		t.Errorf("duplicate = %v", err)
 	}
-	// Non-admins can't write the global glossary; members read it.
 	bob := e.user("bob", false)
 	if err := e.s.SetMember(e.ctx, e.admin, repo.Key, "bob", "editor"); err != nil {
 		t.Fatal(err)
@@ -88,7 +84,6 @@ func TestGlossaryScopes(t *testing.T) {
 			t.Error("bob sees another project's glossary")
 		}
 	}
-	// Bob sees Widgets (member) and global, not Acme (not a member).
 	full, _ = e.s.ListGlossary(e.ctx, bob, GlossaryQuery{Project: repo.Key})
 	if len(full) != 2 {
 		t.Errorf("bob's full glossary = %d entries", len(full))
@@ -107,12 +102,10 @@ func TestGlossaryLocks(t *testing.T) {
 	if g.CreatedAgent != "anthropic/claude-opus-5-5" || g.Locked || !g.CanEdit {
 		t.Errorf("agent-made entry = %+v", g)
 	}
-	// Unlocked: agents edit freely.
 	def2 := "A workflow step."
 	if _, err := e.s.UpdateGlossary(e.ctx, agent, g.ID, GlossaryInput{Definition: &def2}); err != nil {
 		t.Fatal(err)
 	}
-	// Agents can't lock; people can.
 	yes := true
 	if _, err := e.s.UpdateGlossary(e.ctx, agent, g.ID, GlossaryInput{Locked: &yes}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("agent lock = %v", err)
@@ -120,7 +113,6 @@ func TestGlossaryLocks(t *testing.T) {
 	if g, err = e.s.UpdateGlossary(e.ctx, e.admin, g.ID, GlossaryInput{Locked: &yes}); err != nil || !g.Locked || g.LockedBy == nil {
 		t.Fatalf("lock = %+v, %v", g, err)
 	}
-	// Locked: agents can't edit, delete or link from it.
 	if _, err := e.s.UpdateGlossary(e.ctx, agent, g.ID, GlossaryInput{Definition: &def}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("agent edit of locked = %v", err)
 	}
@@ -130,13 +122,11 @@ func TestGlossaryLocks(t *testing.T) {
 	if _, err := e.s.AddItemLink(e.ctx, agent, LinkInput{From: LinkEnd{Type: KGlossary, ID: g.ID}, To: LinkEnd{Ref: "internal/core/agents.go"}}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("agent link from locked = %v", err)
 	}
-	// MCP clients count as agents even without an identity.
 	mcp := *e.admin
 	mcp.MCP = true
 	if _, err := e.s.UpdateGlossary(e.ctx, &mcp, g.ID, GlossaryInput{Definition: &def}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("mcp edit of locked = %v", err)
 	}
-	// People still edit it, and the history shows who did what.
 	if _, err := e.s.UpdateGlossary(e.ctx, e.admin, g.ID, GlossaryInput{Definition: &def}); err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +151,6 @@ func TestDesignApproval(t *testing.T) {
 	if err != nil || !note.Approved || note.ApprovedBy == nil || note.Kind != "screen" {
 		t.Fatalf("human note = %+v, %v", note, err)
 	}
-	// An agent's edit to an approved note waits for a person.
 	n, err := e.s.UpdateDesign(e.ctx, agent, note.ID, DesignInput{Body: str("Shows everything, with a big chart.")})
 	if err != nil || n.Body != "Shows everything about an issue." || len(n.Proposals) != 1 || n.Notice == "" || n.Pending != 1 {
 		t.Fatalf("agent edit = %+v, %v", n, err)
@@ -172,21 +161,17 @@ func TestDesignApproval(t *testing.T) {
 	if err := e.s.DeleteDesign(e.ctx, agent, note.ID); !errors.Is(err, ErrForbidden) {
 		t.Errorf("agent delete = %v", err)
 	}
-	// Additions are append-only and pending.
 	n, err = e.s.AddDesignAddition(e.ctx, agent, note.ID, "Mobile: stack the sidebar under the description.")
 	if err != nil || len(n.Additions) != 1 || n.Additions[0].State != RevPending || n.Additions[0].Agent == "" {
 		t.Fatalf("addition = %+v, %v", n.Additions, err)
 	}
-	// Agents can't review.
 	if _, err := e.s.ReviewDesign(e.ctx, agent, n.Additions[0].ID, "approve", ""); !errors.Is(err, ErrForbidden) {
 		t.Errorf("agent review = %v", err)
 	}
-	// The review queue shows both, oldest first.
 	q, err := e.s.DesignReview(e.ctx, e.admin, p.Key)
 	if err != nil || len(q) != 2 || q[0].Revision.Kind != "edit" || q[1].Revision.Kind != "addition" {
 		t.Fatalf("queue = %+v, %v", q, err)
 	}
-	// A person merges the addition into the body and rejects the edit.
 	e.setClock(e.clockNow().Add(time.Hour))
 	n, err = e.s.ReviewDesign(e.ctx, e.admin, q[1].Revision.ID, "merge", "")
 	if err != nil || !strings.HasSuffix(n.Body, "Mobile: stack the sidebar under the description.") || n.Additions[0].State != RevMerged {
@@ -199,7 +184,6 @@ func TestDesignApproval(t *testing.T) {
 	if err != nil || n.Pending != 0 || len(n.Proposals) != 0 || strings.Contains(n.Body, "chart") {
 		t.Fatalf("reject = %+v, %v", n, err)
 	}
-	// History keeps all of it: who wrote what, who approved it, when.
 	var merged *DesignRevision
 	for i := range n.History {
 		if n.History[i].Kind == "edit" && n.History[i].State == RevApproved && n.History[i].Agent != "" {
@@ -210,7 +194,6 @@ func TestDesignApproval(t *testing.T) {
 		t.Errorf("merged revision = %+v", merged)
 	}
 
-	// An agent's own note is proposed until approved; meanwhile it can edit it.
 	prop, err := e.s.CreateDesign(e.ctx, agent, DesignInput{Title: str("Dark mode"), Kind: str("feature"), Body: str("Follow the system."), Project: &p.Key})
 	if err != nil || prop.Approved || prop.Notice == "" || !prop.CanEdit {
 		t.Fatalf("agent note = %+v, %v", prop, err)
@@ -224,7 +207,6 @@ func TestDesignApproval(t *testing.T) {
 	if prop, err = e.s.ApproveDesign(e.ctx, e.admin, prop.ID, ""); err != nil || !prop.Approved || prop.ApprovedBy == nil {
 		t.Fatalf("approve = %+v, %v", prop, err)
 	}
-	// Approved now: further agent edits are proposals.
 	if prop, _ = e.s.UpdateDesign(e.ctx, agent, prop.ID, DesignInput{Title: str("Themes")}); prop.Title != "Dark mode" || len(prop.Proposals) != 1 {
 		t.Errorf("post-approval agent edit = %+v", prop)
 	}
@@ -235,7 +217,7 @@ func TestDesignApproval(t *testing.T) {
 
 func TestSpecAndLinks(t *testing.T) {
 	e := newEnv(t)
-	e.s.Forges = newMemForge() // its GitHub links are refreshed, not from the real API (WP-1065)
+	e.s.Forges = newMemForge()
 	p := e.project(e.admin, "Spec", "")
 	agent := agentActor(e.admin, "anthropic/claude-opus-5-5")
 	if _, err := e.s.CreateGlossary(e.ctx, e.admin, GlossaryInput{Term: str("Board"), Definition: str("Columns of statuses."), Project: &p.Key}); err != nil {
@@ -274,12 +256,10 @@ func TestSpecAndLinks(t *testing.T) {
 	if len(sp.Note.Additions) != 1 || sp.Note.Additions[0].State != RevPending {
 		t.Errorf("additions = %+v", sp.Note.Additions)
 	}
-	// The overview has goals in full and an index of the rest.
 	ov, err := e.s.GetSpecOverview(e.ctx, e.admin, p.Key)
 	if err != nil || len(ov.Goals) != 1 || len(ov.Index["feature"]) != 1 || ov.Pending != 1 {
 		t.Errorf("overview = %+v, %v", ov, err)
 	}
-	// The issue sees the note from its side; agents can't remove people's links.
 	links, err := e.s.ItemLinks(e.ctx, agent, LinkEnd{Type: KIssue, Key: issue.Key})
 	if err != nil || len(links) != 1 || links[0].Item.Type != KDesign || links[0].Direction != "in" || links[0].CanRemove {
 		t.Fatalf("issue links = %+v, %v", links, err)
@@ -287,7 +267,6 @@ func TestSpecAndLinks(t *testing.T) {
 	if err := e.s.RemoveItemLink(e.ctx, agent, links[0].ID); !errors.Is(err, ErrForbidden) {
 		t.Errorf("agent removed a person's link: %v", err)
 	}
-	// Agents may add links to approved notes, and remove their own.
 	l, err := e.s.AddItemLink(e.ctx, agent, LinkInput{From: LinkEnd{Type: KDesign, ID: feature.ID}, To: LinkEnd{Ref: "glossary:board"}, Rel: "relates"})
 	if err != nil || l.Item.Title != "Board" || l.CreatedAgent == "" || !l.CanRemove {
 		t.Fatalf("agent link = %+v, %v", l, err)
@@ -295,7 +274,6 @@ func TestSpecAndLinks(t *testing.T) {
 	if err := e.s.RemoveItemLink(e.ctx, agent, l.ID); err != nil {
 		t.Errorf("agent remove own link = %v", err)
 	}
-	// Page↔issue links go through pages.
 	pg, _ := e.s.CreatePage(e.ctx, e.admin, PageInput{Title: str("Board notes"), Project: Some(p.Key)})
 	if _, err := e.s.AddItemLink(e.ctx, e.admin, LinkInput{From: LinkEnd{Type: KIssue, Key: issue.Key}, To: LinkEnd{Type: KPage, ID: pg.ID}}); err != nil {
 		t.Fatal(err)
@@ -303,7 +281,6 @@ func TestSpecAndLinks(t *testing.T) {
 	if got, _ := e.s.GetPage(e.ctx, e.admin, pg.ID); len(got.Issues) != 1 {
 		t.Errorf("page issues = %+v", got.Issues)
 	}
-	// Wikilinks resolve for the UI.
 	it, err := e.s.Resolve(e.ctx, e.admin, "Board", p.Key)
 	if err != nil || it.Type != KGlossary {
 		t.Errorf("resolve = %+v, %v", it, err)
@@ -367,7 +344,6 @@ func TestSearchAll(t *testing.T) {
 	if _, err := e.s.SearchAll(e.ctx, e.admin, AllQuery{Text: "flux", Kinds: []string{"bogus"}}); !IsInvalid(err) {
 		t.Errorf("bad kind = %v", err)
 	}
-	// Outsiders find nothing.
 	bob := e.user("bob", false)
 	r, _ = e.s.SearchAll(e.ctx, bob, AllQuery{Text: "flux", Archived: true})
 	for _, g := range r.Groups {
@@ -394,16 +370,13 @@ func TestAgentTake(t *testing.T) {
 		t.Fatalf("taken = by %q, %s, agent %q, at %v", d.ClaimedBy, d.Status.Category, d.Agent, d.ClaimedAt)
 	}
 	started := *d.ClaimedAt
-	// next resumes it instead of dropping it, and keeps the timer's start.
 	e.setClock(e.clockNow().Add(10 * time.Minute))
 	if again, err := e.s.AgentNext(e.ctx, opus, AgentQuery{}); err != nil || again == nil || again.Issue.Key != human.Key || !again.Issue.ClaimedAt.Equal(started) {
 		t.Fatalf("next after take = %+v, %v", again, err)
 	}
-	// Another agent can't take it while held.
 	if _, err := e.s.AgentTake(e.ctx, other, human.Key, ""); !IsInvalid(err) {
 		t.Errorf("second take = %v", err)
 	}
-	// Agent time shows in the time report; release stops it.
 	e.setClock(e.clockNow().Add(20 * time.Minute))
 	if _, err := e.s.AgentRelease(e.ctx, opus, human.Key, ReleaseInput{Comment: "Need input"}); err != nil {
 		t.Fatal(err)
@@ -416,7 +389,6 @@ func TestAgentTake(t *testing.T) {
 	if err != nil || rep.AgentSeconds != 30*60 || len(rep.ByAgent) != 1 || rep.TotalSeconds != 0 {
 		t.Errorf("report agent %d %+v total %d %v", rep.AgentSeconds, rep.ByAgent, rep.TotalSeconds, err)
 	}
-	// Closed tasks can't be taken.
 	if _, err := e.s.Transition(e.ctx, e.admin, human.Key, "done", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -433,12 +405,10 @@ func TestGlossaryAvoidWords(t *testing.T) {
 	if err != nil || len(g.Avoid) != 1 || g.Avoid[0] != "invite to issue" {
 		t.Fatalf("create: %+v %v", g, err)
 	}
-	// Looking up an avoided word says which term to use.
 	res, err := e.s.LookupGlossary(e.ctx, e.admin, "INVITE TO ISSUE", p.Key)
 	if err != nil || len(res.Matches) != 0 || len(res.Instead) != 1 || res.Instead[0].ID != g.ID {
 		t.Errorf("lookup avoided: %+v %v", res, err)
 	}
-	// It's searchable, and can't also be a name for the term.
 	if list, _ := e.s.ListGlossary(e.ctx, e.admin, GlossaryQuery{Project: p.Key, Text: "invite"}); len(list) != 1 {
 		t.Errorf("search avoided word: %d", len(list))
 	}

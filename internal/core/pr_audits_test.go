@@ -6,9 +6,6 @@ import (
 	"time"
 )
 
-// Audits of agents' pull requests, and what the babysitter and the merge do
-// with their findings (WP-355).
-
 // auditOn turns the project's "audit pull requests" setting on.
 func (be *bsEnv) auditOn() {
 	be.t.Helper()
@@ -142,14 +139,12 @@ func (be *bsEnv) pushMine(sha string) {
 func TestPRAuditRequestedOncePerHead(t *testing.T) {
 	be := newBabysitEnv(t)
 	be.auditBox()
-	// Off by default: opening asks for nothing.
 	pr0 := be.openMine()
 	be.ready(pr0)
 	if got := be.audits(); len(got) != 0 {
 		t.Fatalf("audit with the setting off: %v", got)
 	}
 	be.auditOn()
-	// Marked ready with it on, the head is audited, once.
 	be.ready(pr0)
 	if got := be.audits(); len(got) != 1 || !strings.HasPrefix(got[0][strings.Index(got[0], ":")+1:], "7777777aaaa") {
 		t.Fatalf("audits at the first head: %v", got)
@@ -158,8 +153,6 @@ func TestPRAuditRequestedOncePerHead(t *testing.T) {
 	if got := be.audits(); len(got) != 1 {
 		t.Fatalf("a second audit at the same head: %v", got)
 	}
-	// Another head is audited when the pull request is marked ready there,
-	// not on every push.
 	be.pushMine("8888888bbbb")
 	if got := be.audits(); len(got) != 1 {
 		t.Fatalf("a push alone asked for an audit: %v", got)
@@ -242,8 +235,6 @@ func TestPRAuditFindingsAreRoundWork(t *testing.T) {
 			t.Errorf("the round's prompt lacks %q:\n%s", want, in.Prompt)
 		}
 	}
-	// The round changes nothing: the same findings don't start another one,
-	// and the high one, still open, is left to a person.
 	be.finish(jobs[0], false)
 	be.step()
 	b = be.babysit()
@@ -253,7 +244,6 @@ func TestPRAuditFindingsAreRoundWork(t *testing.T) {
 	if r := be.reasons(7); !strings.Contains(r, "audit #") {
 		t.Errorf("the open high finding doesn't hold: %q", r)
 	}
-	// Closed with verdicts, it holds nothing.
 	be.markFinding(itoa64(id)+".1", "rejected")
 	be.markFinding(itoa64(id)+".2", "fixed")
 	if r := be.reasons(7); strings.Contains(r, "audit #") {

@@ -145,8 +145,6 @@ func TestAutopilotReviewTrustsCleanTranscript(t *testing.T) {
 // session stays held until the registry goes idle.
 func TestAutopilotReviewWaitsForIdle(t *testing.T) {
 	f, file, _ := reviewJobEnv(t, "busy")
-	// A turn in progress on the screen, so the busy registry holds the
-	// review (an empty prompt beside a busy registry would be read as idle).
 	f.screen = screenWorking
 	old := autopilotIdleWait
 	t.Cleanup(func() { autopilotIdleWait = old })
@@ -209,7 +207,6 @@ func TestAutopilotStartHoldsAShellSession(t *testing.T) {
 	if r.Outcome != "held" || r.Reason != "busy" || len(f.typed) != 0 {
 		t.Fatalf("outcome %+v, typed %q", o, f.typed)
 	}
-	// It says why, not "shell, not idle" (audit #1039).
 	if !strings.Contains(r.Detail, "background shell") || strings.Contains(r.Detail, "not idle") {
 		t.Errorf("detail = %q", r.Detail)
 	}

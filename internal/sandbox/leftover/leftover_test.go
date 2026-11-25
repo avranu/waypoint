@@ -53,7 +53,6 @@ func write(t *testing.T, dir, name, body string) {
 func TestBundleCommitsLeftovers(t *testing.T) {
 	dir, base := repo(t)
 	write(t, dir, "new.txt", "agent\n")
-	// A hook that would fail the commit doesn't run.
 	write(t, dir, ".git/hooks/pre-commit", "#!/bin/sh\nexit 1\n")
 	if err := os.Chmod(filepath.Join(dir, ".git/hooks/pre-commit"), 0o755); err != nil {
 		t.Fatal(err)
@@ -72,7 +71,6 @@ func TestBundleCommitsLeftovers(t *testing.T) {
 	if !bytes.HasPrefix(out.Bytes(), []byte("# v")) {
 		t.Fatalf("not a bundle: %q", out.Bytes()[:min(out.Len(), 40)])
 	}
-	// The bundle verifies against a clone that has the base.
 	clone := t.TempDir()
 	run(t, clone, "clone", "--quiet", dir, ".")
 	run(t, clone, "reset", "--quiet", "--hard", base)

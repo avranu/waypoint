@@ -114,7 +114,7 @@ func TestUnshippedLeavesOutPullRequestsAccountedFor(t *testing.T) {
 	})
 	wantNoItem(t, rep, "in-flight")
 	wantNoItem(t, rep, "closed-here")
-	wantItem(t, rep, unshippedNoPR, "closed-before") // committed after it was closed
+	wantItem(t, rep, unshippedNoPR, "closed-before")
 }
 
 // A squash merge leaves no ancestry, and Waypoint may not know the pull
@@ -220,8 +220,8 @@ func TestUnshippedPullRequestMergedElsewhere(t *testing.T) {
 	if it := wantItem(t, rep, unshippedNoPR, "off-main"); !strings.Contains(it.What, "#1 merged only into support") {
 		t.Errorf("should say where it was merged: %+v", it)
 	}
-	wantItem(t, rep, unshippedNoPR, "beyond") // its pull request's files aren't on main
-	wantNoItem(t, rep, "stacked")             // an open pull request carries it on
+	wantItem(t, rep, unshippedNoPR, "beyond")
+	wantNoItem(t, rep, "stacked")
 	wantNoItem(t, rep, "into-main")
 }
 
@@ -295,21 +295,18 @@ func TestUnshippedStashes(t *testing.T) {
 		tgit(t, f.repo, append([]string{"stash", "push", "-q", "-m", msg}, flags...)...)
 	}
 
-	// Tracked change the default branch doesn't have.
 	writeFile(t, filepath.Join(f.repo, "base"), "changed")
 	tgit(t, f.repo, "stash", "push", "-q", "-m", "keep-me")
 	rep := scanLater(t, f.repo, unshippedPRs{})
 	wantItem(t, rep, unshippedStash, "stash@{0}")
 	tgit(t, f.repo, "stash", "drop", "-q")
 
-	// Untracked files the default branch lacks.
 	stash("only-here.txt", "untracked", "-u")
 	if it := wantItem(t, scanLater(t, f.repo, unshippedPRs{}), unshippedStash, "stash@{0}"); !strings.Contains(it.What, "untracked") {
 		t.Errorf("stash item: %+v", it)
 	}
 	tgit(t, f.repo, "stash", "drop", "-q")
 
-	// Untracked file that landed with the same contents.
 	stash("landed.txt", "already there", "-u")
 	writeFile(t, filepath.Join(f.repo, "landed.txt"), "stashed landed.txt")
 	tgit(t, f.repo, "add", "landed.txt")
@@ -322,7 +319,6 @@ func TestUnshippedStashes(t *testing.T) {
 	}
 	tgit(t, f.repo, "stash", "drop", "-q")
 
-	// A change the default branch has since made identically.
 	writeFile(t, filepath.Join(f.repo, "base"), "same change")
 	tgit(t, f.repo, "stash", "push", "-q", "-m", "same")
 	writeFile(t, filepath.Join(f.repo, "base"), "same change")
@@ -331,7 +327,6 @@ func TestUnshippedStashes(t *testing.T) {
 	wantNoItem(t, scanLater(t, f.repo, unshippedPRs{}), "stash@")
 	tgit(t, f.repo, "stash", "drop", "-q")
 
-	// A change that landed and was edited again afterwards.
 	writeFile(t, filepath.Join(f.repo, "base"), "landed once")
 	tgit(t, f.repo, "stash", "push", "-q", "-m", "landed once")
 	writeFile(t, filepath.Join(f.repo, "base"), "landed once")
@@ -360,7 +355,6 @@ func TestUnshippedStashStagedContent(t *testing.T) {
 	wantItem(t, scanLater(t, f.repo, unshippedPRs{}), unshippedStash, "stash@{0}")
 	tgit(t, f.repo, "stash", "drop", "-q")
 
-	// Part staged, part not, all landed: the worktree held what was staged.
 	writeFile(t, filepath.Join(f.repo, "side"), "staged\n")
 	tgit(t, f.repo, "add", "side")
 	writeFile(t, filepath.Join(f.repo, "base"), "not staged\n")
@@ -411,7 +405,6 @@ func TestUnshippedOnce(t *testing.T) {
 		t.Errorf("told twice: %q", again)
 	}
 
-	// What doesn't fit one notice isn't marked told.
 	var many []unshippedItem
 	for n := range 12 {
 		many = append(many, unshippedItem{Kind: unshippedNoPR, Branch: "branch-" + strconv.Itoa(n), What: strings.Repeat("x", 100)})
@@ -444,7 +437,6 @@ func TestUnshippedMarksWorkInUse(t *testing.T) {
 		t.Errorf("a process is there: %+v", it)
 	}
 
-	// Changed moments ago, nothing running there.
 	now, err := scanUnshipped(context.Background(), f.repo, unshippedPRs{}, unshippedOpts{})
 	if err != nil {
 		t.Fatal(err)
@@ -488,7 +480,6 @@ func TestUnshippedNoRemotesIsNotJudged(t *testing.T) {
 		t.Errorf("a repository with no remote: items %+v, notes %v", rep.Items, rep.Notes)
 	}
 
-	// Files and stashes don't depend on a remote.
 	writeFile(t, filepath.Join(dir, "base"), "stashed")
 	tgit(t, dir, "stash", "push", "-q", "-m", "keep")
 	writeFile(t, filepath.Join(dir, "new.txt"), "work")
@@ -551,10 +542,10 @@ func TestSweepUnshippedDropsWhatIsReportedOrHeld(t *testing.T) {
 		t.Fatal(err)
 	}
 	items := []unshippedItem{
-		{Kind: unshippedNoPR, Path: inBase, Branch: "wp-2", Task: "WP-2"},        // nobody's on it
-		{Kind: unshippedUnpushed, Branch: "wp-3", Task: "WP-3"},                  // held
-		{Kind: unshippedStash, Stash: "stash@{0}", Branch: "wp-4", Task: "WP-4"}, // told
-		{Kind: unshippedUnpushed, Branch: "wp-5", Task: "WP-5", InUse: true},     // someone is on it
+		{Kind: unshippedNoPR, Path: inBase, Branch: "wp-2", Task: "WP-2"},
+		{Kind: unshippedUnpushed, Branch: "wp-3", Task: "WP-3"},
+		{Kind: unshippedStash, Stash: "stash@{0}", Branch: "wp-4", Task: "WP-4"},
+		{Kind: unshippedUnpushed, Branch: "wp-5", Task: "WP-5", InUse: true},
 	}
 	got := sweepUnshipped(items, []autopilotHeld{{Key: "wp-3"}})
 	if len(got) != 2 || got[0].Task != "WP-2" || got[1].Task != "WP-4" {

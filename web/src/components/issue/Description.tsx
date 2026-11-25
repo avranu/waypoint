@@ -23,9 +23,7 @@ const readMode = (): 'rich' | 'md' => {
 const writeMode = (m: 'rich' | 'md') => {
   try {
     localStorage.setItem(MODE_KEY, m)
-  } catch {
-    // Private mode: the choice lasts until the page closes.
-  }
+  } catch {}
 }
 
 // How long typing pauses before an autosave goes out.
@@ -86,18 +84,13 @@ export function MarkdownEditor({
   batchedRefs?: { refs: TextRef[] | undefined }
 }) {
   const navigate = useNavigate()
-  // An edit left open (a refresh, a closed tab) comes back open.
   const [stored] = useState(() => (draftKey ? readDraft<string>(draftKey) : null))
   const [restored, setRestored] = useState(stored !== null && stored !== value)
   const [editing, setEditing] = useState(autoEdit || restored)
-  // Where a click opened the editor: the caret goes there and the page stays
-  // where it is. A keyboard open or a restored draft has none.
   const [clicked, setClicked] = useState<{ x: number; y: number } | undefined>()
   useEffect(() => {
     if (!editing) setClicked(undefined)
   }, [editing])
-  // What's on screen: the saved text plus any checkbox toggles still being
-  // saved, so a quick second toggle builds on the first instead of undoing it.
   const [shown, setShown] = useState(value)
   useEffect(() => setShown(value), [value])
   const [draft, setDraftState] = useState(restored ? stored! : value)
@@ -106,11 +99,6 @@ export function MarkdownEditor({
     if (!editing) setDraftState(shown)
   }, [shown, editing])
   const setDraft = (v: string) => {
-    // An upload can end after Done/Escape closed the editor. Nothing autosaves
-    // then, so the link (or the removal of a failed upload's placeholder)
-    // would stay in local state; send it now. `latest` is a ref because the
-    // upload's closure is stale. Without autosave, the text is kept as a
-    // draft and the next edit session shows it.
     if (autosave && !latest.current.editing) {
       latest.current.draft = v
       setDraftState(v)
@@ -134,8 +122,6 @@ export function MarkdownEditor({
   const refs = batchedRefs ? batchedRefs.refs : own
   const html = useMemo(() => renderMarkdown(shown, { project, refs }), [shown, project, refs])
 
-  // Close right away (the change shows optimistically); if the save fails,
-  // reopen the editor with the text so nothing typed is lost.
   const save = async () => {
     const text = draft
     setEditing(false)
@@ -158,23 +144,18 @@ export function MarkdownEditor({
     onCancel?.()
   }
 
-  // ---- autosave ----
   const [state, setState] = useState<SaveState>('idle')
   const latest = useRef({ draft, onSave, draftKey, editing })
   latest.current = { draft, onSave, draftKey, editing }
-  // The text the server is known to hold, and every text sent from this edit.
   const base = useRef(value)
   const sent = useRef(new Set<string>())
   const queue = useRef<Promise<unknown>>(Promise.resolve())
   const wasEditing = useRef(editing)
   if (editing && !wasEditing.current) ((base.current = value), sent.current.clear())
   wasEditing.current = editing
-  // The text changed on the server since editing began, by someone else:
-  // saving would overwrite it, so autosave waits for a choice.
   const conflict =
     autosave && editing && value !== base.current && !sent.current.has(value) && value !== draft
 
-  // Sends the draft; resolves true once the server has it (or has all of it).
   const flush = (): Promise<boolean> => {
     const run = async () => {
       const text = latest.current.draft
@@ -190,8 +171,6 @@ export function MarkdownEditor({
           setKept(true)
           setRestored(false)
         }
-        // Whatever was typed meanwhile is the next autosave's job; never
-        // leave this at 'saving', which held that autosave back.
         setState('saved')
         return true
       } catch {
@@ -212,7 +191,6 @@ export function MarkdownEditor({
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- flush reads refs
   }, [draft, dirty, conflict, state])
-  // Leaving the page (or this issue) sends what's pending.
   useEffect(
     () => () => {
       const { draft: d, onSave: f, editing: on } = latest.current
@@ -223,8 +201,6 @@ export function MarkdownEditor({
     [],
   )
 
-  // Which editor is open (WP-628): the remembered one, unless the text has
-  // formatting the rich editor can't keep, which opens as markdown with a note.
   const opening = useMemo(
     () => {
       if (!rich || !editing) return null
@@ -396,7 +372,6 @@ export function MarkdownEditor({
     const t = e.target as HTMLElement
     const a = t.closest('a')
     if (a) {
-      // Issue links stay in the app instead of reloading the page.
       const href = a.getAttribute('href') ?? ''
       if (href.startsWith('/') && !href.startsWith('//') && !e.metaKey && !e.ctrlKey) {
         e.preventDefault()
@@ -410,11 +385,10 @@ export function MarkdownEditor({
       const boxes = Array.from((e.currentTarget as HTMLElement).querySelectorAll('input.task'))
       const next = toggleTask(shown, boxes.indexOf(t), boxes.length)
       if (next === null) {
-        setEditing(true) // can't map the box to the source safely
+        setEditing(true)
         return
       }
       setShown(next)
-      // The save path reports errors; show the saved text again.
       Promise.resolve(onSave(next)).catch(() => setShown(value))
       return
     }

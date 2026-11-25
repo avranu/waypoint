@@ -1,6 +1,3 @@
-// AI helpers on an issue: a points estimate to apply, and sub-task
-// suggestions to pick from. Shown only when an admin has set up a model.
-
 import { useState } from 'react'
 import clsx from 'clsx'
 import { Sparkles } from 'lucide-react'

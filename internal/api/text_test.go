@@ -53,7 +53,6 @@ Assess and complete the task as appropriate. When done, run ` + "`wp ship WP-223
 		t.Errorf("wp next:\n got %q\nwant %q", next, want)
 	}
 
-	// Work left stranded on it (WP-567): where to resume, after the meta line.
 	d.Points = nil
 	at2 := time.Date(2026, 11, 2, 14, 46, 0, 0, time.UTC)
 	res := agentTaskText(&core.AgentTask{Issue: d, Why: why, Resume: &core.StrandedWork{At: at2, Why: "clear", Machine: "devhost",
@@ -72,7 +71,6 @@ Assess and complete the task as appropriate. When done, run ` + "`wp ship WP-223
 
 func TestOnlyClaim(t *testing.T) {
 	task := &core.AgentTask{Issue: &core.IssueDetail{Issue: &core.Issue{Key: "WP-7"}}}
-	// Other keys are looked up (still held?): TestNextShowsKeylessDoneForTheOnlyTask.
 	s := &Server{}
 	for h, want := range map[string]bool{"": false, "none": true, "wp-7": true, " WP-7 ,none": true} {
 		r := httptest.NewRequest("POST", "/api/v1/agent/next", nil)
@@ -324,7 +322,6 @@ func TestAssignedAnswerOpensWithAutopilot(t *testing.T) {
 	if got := agentTaskText(&core.AgentTask{Issue: d, Resumed: true}, taskText{}); !strings.HasPrefix(got, "(You already hold this task.)\nWP-7 ") {
 		t.Errorf("not assigned: %s", got)
 	}
-	// A session a person started for the task (WP-1037) hears who did.
 	if got := agentTaskText(&core.AgentTask{Issue: d}, taskText{StartedBy: "Robin"}); !strings.HasPrefix(got, "Robin started this session for WP-7: \"Fix it\" by") {
 		t.Errorf("started: %s", got)
 	}
@@ -354,8 +351,6 @@ func TestPageTextStory(t *testing.T) {
 		t.Error("the story should come before the plan")
 	}
 
-	// Reviewed line by line before it had a story (audit #973.5): the text
-	// was approved, whatever happened to the story after.
 	p.StoryAgent, p.StoryBy, p.StoryAt, p.ReviewedBy, p.ReviewedAt, p.StoryStale, p.Prompt = "", robin, &at, robin, &at, true, nil
 	if got = pageText(p); strings.Contains(got, "approved its story") {
 		t.Errorf("a line-by-line review read as a story's:\n%s", got)
@@ -395,7 +390,6 @@ func TestGoalLineChain(t *testing.T) {
 	if !strings.HasSuffix(got, "  under goal #3 \"Near…\" › goal #1 \"Far\" (2 more left out: wp goals shows them)\n") {
 		t.Errorf("above: %q", got)
 	}
-	// Every parent left out: the count still shows.
 	d.Goal.Chain = nil
 	d.Goal.Above = 2
 	if got := goalLine(d); !strings.HasSuffix(got, "  (2 parent goals left out: wp goals shows them)\n") {
@@ -405,7 +399,6 @@ func TestGoalLineChain(t *testing.T) {
 	if got := goalLine(d); !strings.HasSuffix(got, "  (1 parent goal left out: wp goals shows them)\n") {
 		t.Errorf("one left out: %q", got)
 	}
-	// Nothing to say without a goal, chain or not.
 	d.Goal.Goal = nil
 	if got := goalLine(d); got != "" {
 		t.Errorf("no goal: %q", got)

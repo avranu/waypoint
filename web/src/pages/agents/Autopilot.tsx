@@ -1,8 +1,3 @@
-// Agents → Autopilot (WP-194, WP-1196): turn autopilot on per project, see what
-// it is about to do with each finished session (and stop it, or have it go
-// now), the meters its limits read, what has been happening, and the
-// summaries agents left of the tasks they finished. Settings live in a dialog.
-
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -70,7 +65,6 @@ export function useNow(active: boolean) {
 }
 
 export function AutopilotTab({ filters }: HubTabProps) {
-  // Countdowns and states move on the server's clock: look again every 20 s.
   const { data, isLoading, error } = useQuery({ ...autopilotQuery(), refetchInterval: 20_000 })
   const project = filters.project
   const [settings, setSettings] = useState<string | null>(null)
@@ -450,7 +444,6 @@ function StepRow({ s, now }: { s: AutopilotStep; now: number }) {
 function Sessions({ list }: { list: AutopilotOpenSession[] }) {
   const groups = new Map<string, AutopilotOpenSession[]>()
   for (const x of list) {
-    // startable ones keep their own row: each has its own button
     const k = x.startable || x.task ? `own-${x.id}` : openSessionBrief(x).label
     groups.set(k, [...(groups.get(k) ?? []), x])
   }

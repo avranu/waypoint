@@ -84,18 +84,15 @@ export function AppShell() {
   const [collapsed, setCollapsed] = useLocal('sidebar-collapsed', false)
   const [palette, setPalette] = useState(false)
   const [newProject, setNewProject] = useState(false)
-  // Deleting projects: one (from its menu) or a pick of several.
   const [deleting, setDeleting] = useState<{ only?: Project } | null>(null)
   const onDeleteProjects = (only?: Project) => setDeleting({ only })
   const create = useCreateIssueDialog()
   const desktop = useMediaQuery('(min-width: 768px)')
 
   useEffect(() => startLive(qc), [qc])
-  // On a new device, follow the theme saved to the profile.
   useEffect(() => {
     if (me?.prefs.theme && !localStorage.getItem('wp:theme')) setTheme(me.prefs.theme)
   }, [me?.prefs.theme])
-  // Warm the caches the sidebar and pickers need.
   useEffect(() => {
     qc.prefetchQuery(q.users())
     qc.prefetchQuery(q.timer())
@@ -225,11 +222,8 @@ function Sidebar({
   const projects = useQuery(q.projects()).data ?? []
   const [folded, setFolded] = useLocal<number[]>('projects-folded', [])
   const views = (useQuery(q.views()).data ?? []).filter((v) => v.pinned)
-  // The Inbox badge counts what waits on you (WP-D16) with the unread notifications
-  // that are still relevant (WP-1141).
   const waiting = useQuery(waitingQuery()).data
   const unread = (useQuery(q.inboxCounts()).data?.live_unread ?? 0) + (waiting?.total ?? 0)
-  // Finished work no one has looked at yet (WP-245).
   const closes = waiting?.closes ?? 0
   const envsDown = useQuery(envSummaryQuery()).data?.down ?? 0
   const assistants = useMyAssistants()
@@ -248,7 +242,6 @@ function Sidebar({
     () => new Map(order.tree.map((n) => [n.project.id, n.ancestors.at(-1) ?? null])),
     [order.tree],
   )
-  // A project only moves among its siblings, so only they are drop targets.
   const siblingsOnly: CollisionDetection = (args) =>
     closestCenter({
       ...args,
@@ -588,7 +581,7 @@ function UserMenu({ compact }: { compact?: boolean }) {
     const next: Theme = theme === '' ? 'dark' : theme === 'dark' ? 'light' : ''
     setTheme(next)
     setT(next)
-    savePrefs.mutate({ theme: next }) // the local choice already applies; syncing is best-effort
+    savePrefs.mutate({ theme: next })
   }
   const logout = () =>
     api.post('/auth/logout').then(() => {
@@ -737,7 +730,6 @@ function ProjectRow({
         params={{ key: p.key }}
         draggable={false}
         className={clsx(
-          // The fold and "…" buttons sit to the right of the link, not over it.
           'flex h-8 items-center gap-2.5 rounded-lg px-2 text-[13px]',
           !collapsed && (hasChildren ? 'mr-12' : 'mr-6'),
           active ? 'font-medium text-fg' : 'text-muted hover:text-fg',
@@ -877,9 +869,6 @@ function MobileNav({
   const anchor = usePopover()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const showFab = !/^\/(issue|settings|admin|device|assistant)/.test(pathname)
-  // The + button floats over the page; it steps aside while the person
-  // scrolls down so it never sits on what they're reading (charts, the last
-  // row of a list), and comes back when they scroll up.
   const scrollingDown = useScrollingDown(pathname)
   const item =
     'flex flex-1 flex-col items-center justify-center gap-0.5 text-[10px] text-muted data-[status=active]:text-accent [&_svg]:size-5'

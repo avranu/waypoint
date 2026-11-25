@@ -8,9 +8,6 @@ import (
 	"unicode/utf8"
 )
 
-// WP-175: nothing submitted is cut. Text too long for a title becomes a
-// summary title and the whole text lands in the description or details.
-
 func TestSummaryTitle(t *testing.T) {
 	long := strings.Repeat("word ", 200)
 	for _, c := range []struct{ in, want string }{
@@ -45,7 +42,6 @@ func TestLongIssueTitleKeepsItsText(t *testing.T) {
 	if !strings.Contains(i.Description, strings.TrimSpace(text)) {
 		t.Fatalf("description lost the text: %.80q", i.Description)
 	}
-	// An edit to a long title keeps it too, ahead of the existing description.
 	other := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Short", Description: "notes"})
 	long := strings.Repeat("a very long edited title ", 30)
 	got, err := e.s.UpdateIssue(e.ctx, e.admin, other.Key, IssuePatch{Title: &long})
@@ -68,7 +64,6 @@ func TestLongRequestTitleKeepsItsText(t *testing.T) {
 	if utf8.RuneCountInString(got.Title) > maxRequestTitle || !strings.Contains(got.Body, strings.TrimSpace(text)) || !strings.HasSuffix(got.Body, "why") {
 		t.Fatalf("title %q body %.60q", got.Title, got.Body)
 	}
-	// A change request's commit message defaults to the whole text.
 	c := r.ask(RequestInput{Kind: RequestChange, Title: text, Files: []RequestFileInput{{Path: "a.txt", Content: "x"}}})
 	cg, _ := r.s.GetRequest(r.ctx, r.ana, c.Ref, 0)
 	if cg.Message != strings.TrimSpace(text) {

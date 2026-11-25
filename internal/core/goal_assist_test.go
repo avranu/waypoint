@@ -21,7 +21,6 @@ func TestGoalWordingExamples(t *testing.T) {
 		"Nobody loses work when the server restarts",
 		"Travellers find a route in one tap",
 		"People take their data with them when they leave",
-		// Words that are verbs in a task but nouns here.
 		"Build failures show up within a minute",
 		"Store owners see their sales as they happen",
 		"Install takes under a minute",
@@ -30,7 +29,6 @@ func TestGoalWordingExamples(t *testing.T) {
 		"Move fast without breaking the build",
 		"Drop-in replacement for the old export",
 		"Addresses autocomplete as people type",
-		// One list, or two short clauses, is still one outcome.
 		"Sign-in is simple: email, passkey or SSO",
 		"Readers search; results appear as they type",
 	}
@@ -40,7 +38,6 @@ func TestGoalWordingExamples(t *testing.T) {
 		}
 	}
 	bad := map[string]string{
-		// Tasks and specs, the way agents write them.
 		"Add a goal picker to the issue page":              "reads as a task",
 		"Implement the speculative merge queue":            "reads as a task",
 		"Refactor goal tracing to recompute incrementally": "reads as a task",
@@ -52,7 +49,6 @@ func TestGoalWordingExamples(t *testing.T) {
 		"Reviews stop claiming compile errors; they see the definitions the diff uses":               "lists several things",
 		"When a babysit round hits the plan's usage limit the pull request waits for the next round": "is long (17 words)",
 		"Supercalifragilisticexpialidociousnessesses" + strings.Repeat("x", 120) + " forever":        "is long (",
-		// How instead of what.
 		"Use Django, Postgres and Redis":     "Postgres",
 		"Switch to Kubernetes for deploys":   "says how",
 		"Speed up ListGoals":                 "names code",
@@ -82,7 +78,7 @@ func TestSuggestTaskGoal(t *testing.T) {
 		t.Fatalf("no model: %v", err)
 	}
 	llm := &fakeLLM{}
-	e.s.quiesceGoals(t) // the goal and task above queued passes that read the model
+	e.s.quiesceGoals(t)
 	e.s.LLM = llm
 	if err := e.s.EnsureDefaultAI(e.ctx, "http://opencode:4096", "", "opencode/big-pickle"); err != nil {
 		t.Fatal(err)
@@ -100,8 +96,6 @@ func TestSuggestTaskGoal(t *testing.T) {
 		{answer: `{"goal": 0, "title": "Add type-ahead to the station search box", "why": "x"}`, note: "reads as a task"},
 		{answer: `{"goal": 0, "title": "Travellers find a route with one tap", "why": "same goal"}`, goal: route.Title},
 	} {
-		// The goal queued background trace and judgement passes that read the
-		// model's answer; wait them out before swapping it (WP-1372).
 		e.s.quiesceGoals(t)
 		llm.set(c.answer)
 		got, err := e.s.SuggestTaskGoal(e.ctx, e.admin, task.Key)
@@ -128,7 +122,6 @@ func TestSuggestTaskGoal(t *testing.T) {
 		t.Errorf("a suggestion saved a goal: %d goals", len(n))
 	}
 
-	// A goal the person said no to isn't offered again, nor named anew.
 	if err := e.s.DismissGoalMatch(e.ctx, e.admin, LinkEnd{Type: KIssue, Key: task.Key}, route.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +138,6 @@ func TestSuggestTaskGoal(t *testing.T) {
 		t.Errorf("dismissed goal offered to the model:\n%s", prompt)
 	}
 
-	// A draft stays from the model, as it stays from agents.
 	calls := len(llm.own())
 	draft := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Plan the night buses", Draft: true})
 	got, err = e.s.SuggestTaskGoal(e.ctx, e.admin, draft.Key)
@@ -185,7 +177,6 @@ func TestGoalWork(t *testing.T) {
 	if !strings.Contains(w.Items[0].Reason, "invoice") || w.Matched != 2 {
 		t.Errorf("first = %+v, matched %d", w.Items[0], w.Matched)
 	}
-	// A search finds any open task, even one sharing no words.
 	w, err = e.s.GoalWork(e.ctx, e.admin, invoices.ID, p.Key, "settings")
 	if err != nil {
 		t.Fatal(err)
@@ -197,7 +188,6 @@ func TestGoalWork(t *testing.T) {
 	if got := keys(w); len(got) != 1 || got[0] != other.Key {
 		t.Errorf("by key = %v, want %s", got, other.Key)
 	}
-	// A person's no keeps a task out of the list.
 	if err := e.s.DismissGoalMatch(e.ctx, e.admin, LinkEnd{Type: KIssue, Key: pdf.Key}, invoices.ID); err != nil {
 		t.Fatal(err)
 	}

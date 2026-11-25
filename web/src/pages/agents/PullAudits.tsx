@@ -1,6 +1,3 @@
-// A pull request's audits (WP-348): the ones asked for, newest first, and a
-// button to ask for another.
-
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ShieldCheck } from 'lucide-react'

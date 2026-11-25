@@ -63,7 +63,6 @@ async function seed(api, call) {
       cost_usd: cost,
       ...(model ? { model } : {}),
     });
-    // Done before the link: a task out on a pull request waits for the merge (WP-246).
     const link = () =>
       pr &&
       as(who, "POST", `/issues/${issue.key}/links`, {
@@ -84,8 +83,6 @@ async function seed(api, call) {
     title: "Shortcuts clash with the browser's",
   });
 
-  // Shape the history: each run moves back to its day and length; merged
-  // pull requests get records; two review bot runs, one with a fallback.
   const db = new DatabaseSync(`${process.env.DIR}/wp.db`);
   db.exec("PRAGMA busy_timeout = 5000");
   const now = Date.now();
@@ -156,7 +153,6 @@ async function run(width, scheme) {
   const call = (m, p, d, headers = H) =>
     page.request.fetch(base + "/api/v1" + p, { method: m, headers, data: d });
   const api = (m, p, d) => call(m, p, d).then((r) => (r.status() === 204 ? null : r.json()));
-  // The page scrolls inside the app shell, so the window grows to show it all.
   const shot = async (name) => {
     await page.waitForTimeout(300);
     const tall = await page.evaluate(() => {
@@ -220,7 +216,6 @@ async function run(width, scheme) {
   await shot("activity");
   await overflow("activity");
 
-  // Two Haiku versions make a family; picking it narrows to both.
   const tasks = (n) =>
     page.waitForFunction(
       (n) =>
@@ -238,7 +233,6 @@ async function run(width, scheme) {
   await tasks("2");
   ok(true, `${tag} the claude-haiku family covers both versions`);
 
-  // Picking an agent narrows the tab (and the URL).
   await page
     .getByRole("button", { name: "anthropic/claude-haiku-5-5" })
     .filter({ visible: true })
@@ -257,7 +251,6 @@ async function run(width, scheme) {
   );
   await shot("activity-haiku");
 
-  // A spec that matches nothing explains how work gets recorded.
   await page.goto(`${base}/agents?tab=activity&project=${KEY}&agent=gemini`);
   await page.getByText(/No agent work in the last 30 days/).waitFor();
   ok(await page.getByText("wp hook claude").isVisible(), `${tag} the empty state teaches`);

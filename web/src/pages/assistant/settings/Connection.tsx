@@ -1,7 +1,3 @@
-// How Waypoint reaches the assistant: its door, owner and login, the
-// Waypoint token the agent uses, and a test that goes all the way through.
-// Admins change these under Admin → Assistants.
-
 import { useEffect, useRef } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'

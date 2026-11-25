@@ -19,7 +19,6 @@ import (
 // quiet on the shapes main uses on purpose (testdata/src/RULE).
 func TestAnalyzers(t *testing.T) {
 	dir := analysistest.TestData()
-	// The corelayers fixture's domains, bottom-up.
 	defer wplint.SetCoreOrder("forge", "pr", "merge", "top")()
 	cases := map[string][]string{
 		"apidb":         {"apidb/internal/api", "apidb/internal/core"},
@@ -36,9 +35,6 @@ func TestAnalyzers(t *testing.T) {
 		"corelayers":    {"corelayers/internal/core", "corelayers/internal/core/kernel", "corelayers/internal/core/forge", "corelayers/internal/core/pr", "corelayers/internal/core/merge", "corelayers/internal/core/top", "corelayers/internal/core/stray"},
 		"testenv":       {"testenv/cli", "testenv/clean", "testenv/notests", "testenv/ranged"},
 	}
-	// These rules need the package's tests (llmSchemas, TestMain), so only
-	// the test variant reports; analysistest would hold the plain variant to
-	// the same want comments.
 	testVariant := map[string]bool{"schemachain": true, "testenv": true}
 	seen := map[string]bool{}
 	for _, a := range wplint.Analyzers {
@@ -75,7 +71,7 @@ var patRE = regexp.MustCompile("`([^`]*)`")
 // comments, and that the plain variant reports nothing.
 func runTestVariant(t *testing.T, dir string, a *analysis.Analyzer, pkgs ...string) {
 	t.Helper()
-	got := map[string][]string{} // "file:line" → messages
+	got := map[string][]string{}
 	for _, res := range analysistest.Run(quiet{t}, dir, a, pkgs...) {
 		if res.Err != nil {
 			t.Fatalf("%s: %v", res.Pass.Pkg.Path(), res.Err)

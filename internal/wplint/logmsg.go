@@ -24,7 +24,7 @@ var LogMsg = &analysis.Analyzer{
 // *slog.Logger, or of the package-level function of the same name.
 var logMsgArg = map[string]int{
 	"Warn": 0, "Error": 0, "WarnContext": 1, "ErrorContext": 1,
-	"Log": 2, "LogAttrs": 2, // after the context and the level
+	"Log": 2, "LogAttrs": 2,
 }
 
 func runLogMsg(pass *analysis.Pass) (any, error) {
@@ -36,8 +36,6 @@ func runLogMsg(pass *analysis.Pass) (any, error) {
 		if isTestFile(pass, f) {
 			continue
 		}
-		// check looks at the calls in one function's body, a function
-		// declared or a literal at package level (var x = func() { … }).
 		check := func(body *ast.BlockStmt) {
 			ast.Inspect(body, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
@@ -115,11 +113,11 @@ func builtInVar(pass *analysis.Pass, body *ast.BlockStmt, e ast.Expr) bool {
 		switch n := n.(type) {
 		case *ast.AssignStmt:
 			if len(n.Lhs) != len(n.Rhs) {
-				return true // a call that returns several values: not a message put together here
+				return true
 			}
 			for k, lhs := range n.Lhs {
 				if is(lhs) && n.Tok != token.ASSIGN && n.Tok != token.DEFINE {
-					built = true // msg += name
+					built = true
 				} else if is(lhs) && builtHere(pass, n.Rhs[k]) {
 					built = true
 				}

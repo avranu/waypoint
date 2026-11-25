@@ -25,7 +25,6 @@ func TestUnlockStaleLockTime(t *testing.T) {
 	if !lockedAt(common, filepath.Join(f.repo, "nowhere")).IsZero() {
 		t.Error("lockedAt answered for a path that isn't a worktree")
 	}
-	// Written "in 1970": an earlier boot, or another host.
 	var lockFile string
 	ents, _ := os.ReadDir(filepath.Join(common, "worktrees"))
 	for _, e := range ents {
@@ -208,7 +207,6 @@ func TestTidyMissingFolderRowsNameBranch(t *testing.T) {
 			t.Errorf("no worktree row with Branch %q: %+v", name, rep.Rows)
 		}
 	}
-	// Applying prunes the records and never touches the branches (judged as branches).
 	tidyApply(ctx, f.repo, rep, tidyOpts{worktrees: true, branches: true, now: later()})
 	if out := tgit(t, f.repo, "worktree", "list", "--porcelain"); strings.Contains(out, "gone-") {
 		t.Errorf("records left:\n%s", out)
@@ -243,7 +241,7 @@ func TestNextLostRace(t *testing.T) {
 	}
 	key := i.Key
 	wt := filepath.Join(repo, ".claude", "worktrees", worktreeSlug(key))
-	worktreeAddHook = func() { // the other agent got there first
+	worktreeAddHook = func() {
 		worktreeAddHook = func() {}
 		git(t, s.repo, "worktree", "add", "-q", "-b", "worktree-"+worktreeSlug(key), wt, "origin/main")
 	}

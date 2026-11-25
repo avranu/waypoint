@@ -1,8 +1,3 @@
-// Uploads to the assistant's files. They live outside React so they keep
-// going (and keep showing) while the person moves between folders and
-// tabs. Each one asks Hermes not to overwrite; a clash waits for the
-// person: replace it, keep both (a numbered name), or skip.
-
 import { useSyncExternalStore } from 'react'
 import { ApiError } from '@/lib/api'
 import { joinPath, MAX_UPLOAD, numbered } from './model'
@@ -122,7 +117,7 @@ function start(u: Upload) {
   }
   const finish = (p: Partial<Upload>) => {
     aborts.delete(u.key)
-    if (!items.some((x) => x.key === u.key)) return // cancelled
+    if (!items.some((x) => x.key === u.key)) return
     patch(u.key, p)
     pump()
   }
@@ -135,7 +130,6 @@ function start(u: Upload) {
     }
     const err = new ApiError(xhr.status, message(xhr.responseText) || xhr.statusText)
     if (err.status === 409 && !u.overwrite) {
-      // Keeping both: try the next number on its own.
       if (u.next && u.next < 100)
         return finish({ status: 'queued', name: numbered(u.file.name, u.next), next: u.next + 1 })
       return finish({ status: 'conflict' })

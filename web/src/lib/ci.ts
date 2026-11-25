@@ -1,7 +1,3 @@
-// The CI board (WP-225): what the shared Forgejo Actions runners are
-// running, what waits and why, what finished, and when it will all be done.
-// Times are ISO strings; durations are seconds.
-
 export interface CIPoolRunner {
   name: string
   labels: string[] | null
@@ -205,9 +201,6 @@ export function gib(n: number): string {
   if (n >= 1024 ** 3) return (n / 1024 ** 3).toFixed(1) + ' GiB'
   return (n / 1024 ** 2).toFixed(1) + ' MiB'
 }
-
-// CI history (WP-490): finished runs and jobs the server keeps, bucketed by
-// day or week, with the last seven days against the seven before.
 
 export interface CIHistoryStats {
   from: string

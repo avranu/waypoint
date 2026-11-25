@@ -12,7 +12,7 @@ import (
 // sent records the requests a wrapped server saw, and answers some itself.
 type sent struct {
 	mu    sync.Mutex
-	posts []string // "POST /path body"
+	posts []string
 	stub  func(w http.ResponseWriter, r *http.Request) bool
 }
 

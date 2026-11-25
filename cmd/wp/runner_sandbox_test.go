@@ -69,13 +69,13 @@ func TestRunSandboxOps(t *testing.T) {
 	out := &bytes.Buffer{}
 	p := &runnerProc{c: &cli{out: out}, jobs: map[int64]*activeJob{}}
 	p.sb.socket = sock
-	p.sb.running = map[int64]bool{3: true} // already running: not again
+	p.sb.running = map[int64]bool{3: true}
 	p.runSandboxOps(context.Background(), []sandboxOp{
 		{ID: 1, Op: sandbox.OpRemoveUser, Spec: &sandbox.Signed{Payload: "ok"}},
 		{ID: 2, Op: sandbox.OpReconcile, Spec: &sandbox.Signed{Payload: "bad"}},
 		{ID: 3, Op: sandbox.OpReconcile, Spec: &sandbox.Signed{Payload: "ok"}},
 	})
-	if reqs := got(); len(reqs) != 3 || reqs[0].Op != sandbox.OpRemoveUser || reqs[2].Op != sandbox.OpStatus { // two actions, then a status
+	if reqs := got(); len(reqs) != 3 || reqs[0].Op != sandbox.OpRemoveUser || reqs[2].Op != sandbox.OpStatus {
 		t.Errorf("the helper got %+v", reqs)
 	}
 	done, failed := p.takeSandboxDone()
@@ -85,7 +85,7 @@ func TestRunSandboxOps(t *testing.T) {
 	if again, _ := p.takeSandboxDone(); len(again) != 0 {
 		t.Errorf("taken twice: %+v", again)
 	}
-	failed() // the poll didn't get through: they go in the next one
+	failed()
 	if again, _ := p.takeSandboxDone(); len(again) != 2 {
 		t.Errorf("not put back: %+v", again)
 	}

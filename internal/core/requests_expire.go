@@ -6,15 +6,6 @@ import (
 	"encoding/json"
 )
 
-// Requests that expire (WP-66). A request a hook filed for one tool call, a
-// refused call (permission) or an AskUserQuestion, is of use only while the
-// agent can still act on the decision, which reaches it at its session's
-// next Stop (WP-D16). Once a new prompt has started a later turn, or the
-// session has ended, a decision would arrive out of context: the request
-// expires, saying why, and leaves Waiting on you (its history keeps it).
-// Requests an agent files itself (wp request) are meant to outlive the chat
-// and never expire.
-
 // Why a request expired, as people read it.
 const (
 	expiredNewPrompt = "The agent moved on: a new prompt started a later turn in its session, so a decision would reach it out of context."
@@ -59,7 +50,6 @@ func (s *Service) expireRequests(ctx context.Context, t *tx, where string, args 
 	result, _ := json.Marshal(RequestResult{Reason: reason})
 	n := 0
 	for _, r := range list {
-		// Delivered at once: there is nothing to tell the agent.
 		res, err := t.ExecContext(ctx, `UPDATE requests SET state = 'expired', decision = 'expire', result = ?, decided_at = ?, delivered_at = ?, snoozed_until = NULL, updated_at = ?
 			WHERE id = ? AND state = 'open'`, string(result), at, at, at, r.id)
 		if err != nil {

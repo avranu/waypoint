@@ -50,19 +50,18 @@ func TestRelaunchArgs(t *testing.T) {
 // own process, respawn): /exit ends it, the command line (or respawn) starts
 // a new session, and a paste and Enter there set it to work.
 type fakePane struct {
-	cfg     string
-	respawn bool
-	exited  bool
-	typed   []string
-	started string // the command line Claude Code was started with
-	opts    []string
-	pasted  string
-	dialog  string // what the new session shows instead of its input box
-	// exitDialog is what /exit asks in a worktree with commits; Enter answers.
+	cfg        string
+	respawn    bool
+	exited     bool
+	typed      []string
+	started    string
+	opts       []string
+	pasted     string
+	dialog     string
 	exitDialog string
 	asked      bool
-	worktree   string // the directory --worktree makes
-	respawnIn  string // respawn-pane's -c
+	worktree   string
+	respawnIn  string
 }
 
 const fakeNewPID = 4242
@@ -208,7 +207,6 @@ func TestAutopilotJobRestartsTheSession(t *testing.T) {
 			!strings.Contains(f.pasted, "APP-2  Second") {
 			t.Errorf("respawn %v: pasted %q", respawn, f.pasted)
 		}
-		// The session's hook will know it for autopilot's own (WP-308).
 		if key, ok := p.c.pastedPromptKey("new-789", "  "+f.pasted+"\n"); !ok || key != "APP-2" {
 			t.Errorf("respawn %v: pasted prompt not noted: %q %v", respawn, key, ok)
 		}
@@ -216,7 +214,6 @@ func TestAutopilotJobRestartsTheSession(t *testing.T) {
 		if !strings.Contains(env, "WAYPOINT_SESSION=new-789") || !strings.Contains(env, "WAYPOINT_AGENT=anthropic/claude-code") {
 			t.Errorf("respawn %v: wp next ran for another session:\n%s", respawn, env)
 		}
-		// wp next runs as the job's own token, never the runner's (WP-418).
 		if !strings.Contains(env, "WAYPOINT_TOKEN=wpt_job") || strings.Contains(env, "wpt_runner") {
 			t.Errorf("respawn %v: wp next env has the wrong token:\n%s", respawn, env)
 		}

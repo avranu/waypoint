@@ -50,7 +50,6 @@ func (a *apEnv) ownReviews() []string {
 
 func TestOwnReviewRecorded(t *testing.T) {
 	a, _, key := introEnv(t)
-	// a subagent of another kind sends no report: nothing kept
 	if _, err := a.s.SessionHook(a.ctx, a.ag, []HookEvent{hook("box", a.cli, "SubagentStop", func(h *HookEvent) { h.AgentType = "Explore" })}); err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +74,6 @@ func TestOwnReviewRecorded(t *testing.T) {
 	if e == nil || e.Title != "Own review" || e.Body != "1. x.go:12 Save writes to a nil map." || wl.Summary.OwnReviews != 1 {
 		t.Fatalf("work log = %+v, %+v", wl.Summary, e)
 	}
-	// counted like a round's report
 	if _, err := a.s.db.W.Exec(`UPDATE work_log SET read_state = 'done', found = 1, fixed = 0, rejected = 0 WHERE kind = ?`, WorkOwnReview); err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +82,6 @@ func TestOwnReviewRecorded(t *testing.T) {
 		t.Fatalf("summary = %+v", wl.Summary)
 	}
 
-	// attached by hand, on another task too
 	other := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Other"})
 	if _, err := a.s.AddWorkNote(a.ctx, a.ag, other.Key, WorkNoteInput{Body: "x", Tag: TagFound, Review: true}); !IsInvalid(err) {
 		t.Fatalf("tagged review: %v", err)
@@ -108,7 +105,7 @@ func TestOwnReviewRecorded(t *testing.T) {
 // With no task under way in the session, a review is attached to nothing.
 func TestOwnReviewNoTask(t *testing.T) {
 	a, _, _ := firstEnv(t)
-	a.stopWith("hello") // the session exists, with no run
+	a.stopWith("hello")
 	a.ownReviewDone("Found nothing.")
 	if got := a.ownReviews(); len(got) != 0 {
 		t.Fatalf("own reviews = %q", got)
@@ -123,7 +120,7 @@ func TestShipWithOwnReview(t *testing.T) {
 	t.Run("the round, held for its report", func(t *testing.T) {
 		a, g, key := introEnv(t)
 		a.ownReviewDone("No issues found.")
-		for range 2 { // and again: the same answer, one round
+		for range 2 {
 			res, err := a.ship(key, ShipPR)
 			if err != nil || res.Pull != nil || !strings.Contains(res.Held, "wp audit report "+key) || res.Notice != "" || len(g.created) != 0 {
 				t.Fatalf("pr = %+v, %v", res, err)
@@ -146,8 +143,6 @@ func TestShipWithOwnReview(t *testing.T) {
 		if err != nil || rep.Round != id || len(rep.Audit.Findings) != 0 {
 			t.Fatalf("report = %+v, %v", rep, err)
 		}
-		// The work log counted the reviewer's words as raising nothing,
-		// as the report says: no check is asked to read them again.
 		if _, err := a.s.db.W.Exec(`UPDATE work_log SET read_state = 'done', found = 0, fixed = 0, rejected = 0 WHERE kind = ?`, WorkOwnReview); err != nil {
 			t.Fatal(err)
 		}
@@ -173,9 +168,6 @@ func TestShipWithOwnReview(t *testing.T) {
 		if got := a.rounds(); len(got) != 1 || got[0] != RoundDone || a.newestRoundID() != pending {
 			t.Fatalf("rounds = %q", got)
 		}
-		// The first ship asked for the round's audit (WP-1325), so the
-		// session's own review ended while that audit was still going: the
-		// audit goes on as the pull request's, and the note names it.
 		ra, _ := a.roundAuditRow(pending)
 		if note := a.roundNote(pending); ra.id == 0 || !strings.HasPrefix(note, roundAuditOutwaited) || !strings.Contains(note, "audit #"+itoa64(ra.id)) {
 			t.Fatalf("audit note = %q, audit %d", note, ra.id)
@@ -209,7 +201,6 @@ func TestShipWithOwnReview(t *testing.T) {
 		if err != nil || !strings.Contains(res.Held, "end your turn") || len(g.created) != 0 {
 			t.Fatalf("review = %+v, %v", res, err)
 		}
-		// the round asked for after it is what the session waits for
 		if res, err := a.ship(key, ShipPR); err != nil || res.Held == "" || len(g.created) != 0 {
 			t.Fatalf("pr after review = %+v, %v", res, err)
 		}
@@ -240,7 +231,6 @@ func TestOwnReviewTwoTasks(t *testing.T) {
 	if res, err := a.ship(first, ShipPR); err != nil || res.Pull != nil || res.Held == "" || len(g.created) != 0 {
 		t.Fatalf("first shipped on the second's review: %+v, %v", res, err)
 	}
-	// a key that only starts the same, or both keys: neither
 	a.ownReviewAsked("Attack "+first+"0 and "+first+"-x", "ok")
 	a.ownReviewAsked("Attack "+first+" and "+second.Key, "ok")
 	if got := a.ownReviews(); len(got) != 1 {
@@ -250,7 +240,6 @@ func TestOwnReviewTwoTasks(t *testing.T) {
 	if res, err := a.ship(first, ShipPR); err != nil || !strings.Contains(res.Held, "wp audit report "+first) {
 		t.Fatalf("first with its review: %+v, %v", res, err)
 	}
-	// (the round its first ship scheduled is the one the review became)
 	if got := a.rounds(); len(got) != 1 || got[0] != RoundDone {
 		t.Fatalf("rounds = %q", got)
 	}
@@ -262,8 +251,8 @@ func TestOwnReviewTwoTasks(t *testing.T) {
 func TestOwnReviewCommitsSince(t *testing.T) {
 	for _, c := range []struct {
 		name   string
-		found  string // the count read out of the report: "" not yet
-		after  bool   // a commit since the review ended
+		found  string
+		after  bool
 		stands bool
 	}{
 		{"clean, nothing since", "0", false, true},
@@ -292,7 +281,6 @@ func TestOwnReviewCommitsSince(t *testing.T) {
 				t.Fatal(err)
 			}
 			if c.stands {
-				// (as the change's round, held for its report)
 				if res.Pull != nil || !strings.Contains(res.Held, "wp audit report") || len(g.created) != 0 {
 					t.Fatalf("own review didn't stand: %+v", res)
 				}

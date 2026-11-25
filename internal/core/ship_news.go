@@ -10,20 +10,13 @@ import (
 	"time"
 )
 
-// A wp ship held for a review round waits on the server for the round's next
-// step and prints it, instead of ending the agent's turn so that each step
-// costs a turn end, a reply and a typed prompt (WP-1669). AwaitShipNews is
-// that wait. While one is open the round's audit and check news stays queued
-// for it; when the wait goes away without taking it (the CLI was killed), the
-// news is delivered the usual way.
-
 // What a wait returns (ShipNews.Outcome).
 const (
-	ShipNewsFindings = "findings" // the round's news: Text, IDs
-	ShipNewsPull     = "pull"     // Waypoint shipped the round's pull request: Pull
-	ShipNewsEnded    = "ended"    // the round is over and Waypoint does nothing more: Text says why
-	ShipNewsWaiting  = "waiting"  // nothing yet: ask again
-	ShipNewsNone     = "none"     // the session has no round for the task
+	ShipNewsFindings = "findings"
+	ShipNewsPull     = "pull"
+	ShipNewsEnded    = "ended"
+	ShipNewsWaiting  = "waiting"
+	ShipNewsNone     = "none"
 )
 
 const (
@@ -62,7 +55,7 @@ type shipWaits struct {
 
 type shipWaitEntry struct {
 	open  int
-	until time.Time // registered until, once the last call returned
+	until time.Time
 }
 
 // holder says, for one session's messages, whether a wp ship waits for each
@@ -209,8 +202,6 @@ func (s *Service) shipWaitTarget(ctx context.Context, actor *Actor, cliID, machi
 	if session == 0 {
 		return 0, 0, notFound("session")
 	}
-	// The actor must be able to read both: the session (its own:
-	// SessionForHeader) and the task, whose round and pull request a wait tells.
 	if _, err := s.sessionByID(ctx, s.db.R, actor, session); err != nil {
 		return 0, 0, err
 	}
@@ -311,9 +302,6 @@ func (s *Service) shipNewsNow(ctx context.Context, session, task int64) (*ShipNe
 			}
 			return &ShipNews{Outcome: ShipNewsEnded, Text: fmt.Sprintf("Waypoint's review round for this task is over, and its pull request, PR %d, is %s. Nothing more is waiting on you here.", p.Number, p.State)}, nil
 		case errors.Is(err, sql.ErrNoRows):
-			// OpenPullRequest records the pull request it opens or adopts
-			// (only one whose head is the repo's own) before shipRecord sets
-			// ship_done, so none is coming: the round is over.
 			return &ShipNews{Outcome: ShipNewsEnded, Text: fmt.Sprintf("Waypoint's review round for this task is over and it shipped the round, but no pull request from %s in %s is recorded. Nothing more is waiting on you here.", bp.Branch, bp.Repo)}, nil
 		default:
 			return nil, err
@@ -340,7 +328,7 @@ func (s *Service) shipNewsNow(ctx context.Context, session, task int64) (*ShipNe
 	case out.Do == doEnd && out.Told != "":
 		return ended(out.Told), nil
 	}
-	return nil, nil // Waypoint is still acting: what it does next produces news
+	return nil, nil
 }
 
 // AckShipNews says the client has printed the findings AwaitShipNews returned:
@@ -376,7 +364,7 @@ func (s *Service) AckShipNews(ctx context.Context, actor *Actor, cliID, machine,
 				return err
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
-				continue // another path took it
+				continue
 			}
 			delivered = true
 			s.log.InfoContext(ctx, "session message delivered to a waiting ship", "message", id, "session", session, "step_key", key)

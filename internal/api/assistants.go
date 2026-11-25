@@ -179,7 +179,6 @@ func (s *Server) assistantLive(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	sseClients.Inc()
 	defer sseClients.Dec()
-	// A write that fails means the browser has gone: stop at once.
 	frame := func(f hermes.Frame) bool {
 		_, err := fmt.Fprintf(w, "id: %d\ndata: %s\n\n", f.Seq, f.Msg)
 		return err == nil
@@ -203,7 +202,7 @@ func (s *Server) assistantLive(w http.ResponseWriter, r *http.Request) {
 		case <-s.done:
 			return
 		case <-sub.Gone():
-			return // fell behind; the browser reconnects and catches up
+			return
 		case <-ping.C:
 			if _, err := s.authenticate(r); err != nil {
 				return
@@ -216,7 +215,6 @@ func (s *Server) assistantLive(w http.ResponseWriter, r *http.Request) {
 			if !frame(f) {
 				return
 			}
-			// Send what else is queued in the same flush (token deltas).
 		more:
 			for n := 0; n < 64; n++ {
 				select {
@@ -242,7 +240,7 @@ func (s *Server) assistantRPC(w http.ResponseWriter, r *http.Request) (any, erro
 		Method string          `json:"method"`
 		Params json.RawMessage `json:"params"`
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 64<<20) // attachments ride in params
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<20)
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		return nil, fmt.Errorf("%w: %v", errBadRequest, err)
 	}

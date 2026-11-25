@@ -6,11 +6,6 @@ import (
 	"strings"
 )
 
-// When Waypoint tells a session about its stalled background job
-// (WP-1045, WP-ADR118). Admins set it for every project under Admin → AI;
-// a project's owners can set the project's own (ProjectSettings
-// StalledJobs), which wins. Unset, the defaults apply.
-
 // StallPolicy is when a session is told that its background job has made
 // no progress. Times are minutes.
 type StallPolicy struct {

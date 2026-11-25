@@ -25,7 +25,6 @@ func TestChainStep(t *testing.T) {
 		{"Bash", `wp code find MergeReady`, "", stepWP},
 		{"Bash", `cd x; wp brief "how do merges work"`, "", stepWP},
 		{"Bash", `grep -rn X . && wp code show merge.go`, "", stepWP},
-		// not a chain step
 		{"Bash", `go test ./...`, "", ""},
 		{"Bash", `wp show WP-1 | grep foo`, "", ""},
 		{"Bash", `sed -i 's/a/b/' x.go`, "", ""},
@@ -76,7 +75,6 @@ func TestChainNudge(t *testing.T) {
 	if got := run("../x", "", repo, stepFind, stepFind, stepFind, stepFind, stepFind); anyBool(got) {
 		t.Errorf("unsafe session id: %v", got)
 	}
-	// old transcripts' files go when a new one starts
 	old := filepath.Join(c.dir, "nudge", "s1.json")
 	past := time.Now().Add(-chainKeep - time.Hour)
 	if err := os.Chtimes(old, past, past); err != nil {

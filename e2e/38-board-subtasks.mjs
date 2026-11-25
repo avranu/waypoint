@@ -42,7 +42,7 @@ for (const vp of looks([
       })
     ).json();
 
-  const key = "SB" + vp.width; // a fresh project per viewport
+  const key = "SB" + vp.width;
   if (!(await send("GET", "/projects")).some((p) => p.key === key))
     await send("POST", "/projects", { name: "Subtasks " + vp.width, key });
   const cols = (await send("GET", `/projects/${key}/board`)).columns.map(
@@ -85,7 +85,6 @@ for (const vp of looks([
   await page.waitForSelector("section[data-col]");
   await card(P.key).waitFor();
 
-  // Folded by default; the other-column subtask stays visible in its own column.
   const first = await keysIn(col(0));
   ok(
     first.length === 2 && first.includes(P.key) && first.includes(T.key),
@@ -110,7 +109,6 @@ for (const vp of looks([
   );
   await page.screenshot({ path: `${out}/${tag}-folded.png` });
 
-  // Open it; the state survives a reload.
   await strip(P.key).click();
   await card(S1.key).waitFor();
   ok(
@@ -132,7 +130,6 @@ for (const vp of looks([
   );
 
   if (vp.width > 600) {
-    // Drag a nested subtask into the second column.
     await strip(P.key).click();
     await card(S1.key).waitFor();
     await drag(card(S1.key), card(S3.key));
@@ -150,8 +147,6 @@ for (const vp of looks([
       (await stripText(P.key)).includes("1 of 3 subtasks"),
       `${tag}: the parent's strip counts what is left: ${await stripText(P.key)}`,
     );
-    // Drag the parent across: its subtasks in the new column fold under it,
-    // the one left behind turns into a card of its own.
     await drag(card(P.key), card(S3.key));
     const p = await send("GET", "/issues/" + P.key);
     ok(
@@ -166,7 +161,6 @@ for (const vp of looks([
     await page.screenshot({ path: `${out}/${tag}-after-drag.png` });
   }
 
-  // Toolbar toggle: flat shows every issue as a card, none with a strip.
   const toggle = page.getByRole("button", { name: "Nest subtasks" });
   ok(
     (await toggle.getAttribute("aria-pressed")) === "true",

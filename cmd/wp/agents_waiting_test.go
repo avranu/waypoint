@@ -28,8 +28,6 @@ func TestWaitingAgents(t *testing.T) {
 	t.Cleanup(func() { taskHeld = held })
 	taskHeld = func(session, id string) bool { return false }
 
-	// the session's whole list: the boss itself, its child, a stranger's agent,
-	// a monitor, and a `wp agents wait` of its own
 	const tasks = `[{"id":"boss","type":"subagent","status":"running"},{"id":"kid1","type":"subagent","status":"running"},{"id":"alien","type":"subagent","status":"running"},{"id":"m1","type":"monitor","status":"running"},{"id":"w1","type":"shell","status":"running","command":"wp agents wait"}]`
 	newC := func() *cli {
 		c := &cli{dir: t.TempDir()}
@@ -48,13 +46,11 @@ func TestWaitingAgents(t *testing.T) {
 		if !ok || !a.Waiting || len(a.Tasks) != 1 || a.Tasks[0].ID != "kid1" {
 			t.Fatalf("not kept waiting on exactly its child (not itself, a stranger, a monitor, its own wait): %+v", a)
 		}
-		// the wake is the same run
 		c.trackSubagent(hookEventInput{SessionID: "s", AgentID: "boss", AgentType: "x", HookEventName: "SubagentStart"})
 		a = live(c)["boss"]
 		if a.Waiting || !a.Since.Equal(since) {
 			t.Errorf("woken: %+v, since was %v", a, since)
 		}
-		// a stop with nothing running ends it
 		c.trackSubagent(stopWith("s", "boss", `[]`))
 		if _, ok := live(c)["boss"]; ok {
 			t.Error("still there after the last stop")
@@ -99,7 +95,7 @@ func TestWaitingAgents(t *testing.T) {
 		c.trackSubagent(hookEventInput{SessionID: "s", AgentID: "kid1", AgentType: "x", HookEventName: "SubagentStart"})
 		c.trackSubagent(stopWith("s", "boss", tasks))
 		ageWait(t, c, "s", "boss", time.Minute)
-		c.noteWaitingSeen("s") // a waiter polls while the child runs
+		c.noteWaitingSeen("s")
 		c.trackSubagent(stopWith("s", "kid1", `[]`))
 		if _, ok := live(c)["boss"]; !ok {
 			t.Error("dropped at once when its work ended: the wake had no time")
@@ -219,7 +215,6 @@ func TestProvisionalAgentsAndReservations(t *testing.T) {
 		start := func(id string) {
 			c.trackSubagent(hookEventInput{SessionID: "s", AgentID: id, AgentType: "worker", HookEventName: "SubagentStart"})
 		}
-		// An async launch drops its own reservation; its start is not owed another's.
 		c.admitSlot("s", reservation{ID: "own", Mode: modeBg, Type: "worker"}, 20)
 		c.admitSlot("s", reservation{ID: "other", Mode: modeBg, Type: "worker"}, 20)
 		post(c, "", "w1", "own", "worker", "async_launched")
@@ -227,13 +222,11 @@ func TestProvisionalAgentsAndReservations(t *testing.T) {
 		if left() != 1 {
 			t.Fatalf("the adopted launch's start took another call's reservation: %d left", left())
 		}
-		// It stops for good and is resumed with a message: not an Agent call.
 		c.trackSubagent(hookEventInput{SessionID: "s", AgentID: "w1", HookEventName: "SubagentStop"})
 		start("w1")
 		if left() != 1 {
 			t.Fatalf("a resume took a reservation: %d left", left())
 		}
-		// A wake from waiting is the same run.
 		_ = c.updateState(func(s *State) {
 			a := s.Agents["s"]["w1"]
 			a.Waiting = true
@@ -243,7 +236,6 @@ func TestProvisionalAgentsAndReservations(t *testing.T) {
 		if left() != 1 {
 			t.Fatalf("a wake took a reservation: %d left", left())
 		}
-		// A first start of a new agent does take it.
 		start("w2")
 		if left() != 0 {
 			t.Fatalf("a first start took none: %d left", left())
@@ -251,12 +243,10 @@ func TestProvisionalAgentsAndReservations(t *testing.T) {
 	})
 	t.Run("a start takes the oldest reservation of its parent and type", func(t *testing.T) {
 		c := &cli{dir: t.TempDir()}
-		// the start's parent is known from its Agent call's record
 		c.admitSlot("s", reservation{ID: "r1", Mode: modeFg, Parent: "p1", Type: "worker"}, 20)
 		c.admitSlot("s", reservation{ID: "r2", Mode: modeBg, Parent: "p2", Type: "worker"}, 20)
 		c.admitSlot("s", reservation{ID: "r3", Mode: modeFg, Parent: "p2", Type: "other"}, 20)
-		c.trackAgentParent(hookEventInput{SessionID: "s", AgentID: "p2", ToolResponse: []byte(`{"agentId":"x1"}`)}) // x1: p2's, mode fg by its call
-		// the parent record has a mode of its own and wins; check the reservation taken
+		c.trackAgentParent(hookEventInput{SessionID: "s", AgentID: "p2", ToolResponse: []byte(`{"agentId":"x1"}`)})
 		c.trackSubagent(hookEventInput{SessionID: "s", AgentID: "x1", AgentType: "worker", HookEventName: "SubagentStart"})
 		s := c.loadState()
 		var ids []string
@@ -266,7 +256,6 @@ func TestProvisionalAgentsAndReservations(t *testing.T) {
 		if strings.Join(ids, ",") != "r1,r3" {
 			t.Errorf("left %v, want r1,r3 (p2's worker taken)", ids)
 		}
-		// no parent known: the oldest of the type
 		c.trackSubagent(hookEventInput{SessionID: "s", AgentID: "x2", AgentType: "worker", HookEventName: "SubagentStart"})
 		s = c.loadState()
 		if l := s.Reserved["s"]; len(l) != 1 || l[0].ID != "r3" {

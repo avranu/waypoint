@@ -47,14 +47,11 @@ func TestFlakeRerunFilesTheFlake(t *testing.T) {
 	if len(fr.Checks) != 1 || !slices.Equal(fr.Checks[0].Tests, []string{"TestAgentActivity"}) || !strings.Contains(fr.Checks[0].Excerpt, "DATA RACE") {
 		t.Fatalf("the log before the re-run: %+v", fr)
 	}
-	// The forge hasn't posted the re-run's statuses yet: still waiting.
 	be.step()
 	if b := be.babysit(); b.Round != 0 || !strings.Contains(b.Wait, "waiting for the results") || len(be.retries()) != 1 {
 		t.Fatalf("before the re-run's statuses: %+v", b)
 	}
 
-	// The re-run passes. A failed head isn't polled: once the re-run has
-	// settled, Waypoint reads it again.
 	be.sg.setChecks("7777777aaaa", CommitCheck{Name: "ci / test", State: CheckSuccess, Description: "Successful in 9m"})
 	be.setClock(be.clockNow().Add(faultRerunSettle))
 	be.runnerOnline()
@@ -86,13 +83,11 @@ func TestFlakeRerunFilesTheFlake(t *testing.T) {
 	if told := strings.Join(be.told(), "\n"); !strings.Contains(told, "filed as "+key) || !strings.Contains(told, "don't fix it in this pull request") {
 		t.Errorf("told: %s", told)
 	}
-	// Once only, however often the babysitter steps.
 	be.step()
 	if n := strings.Count(strings.Join(be.told(), "\n"), "filed as "+key); n != 1 {
 		t.Errorf("told %d times", n)
 	}
 
-	// Another pull request hits it: added to the open bug.
 	other := *be.pr(7)
 	other.Number, other.HeadSHA = 8, "8888888bbbb"
 	again := parseFlakeRerun(b.flakeRerun)
@@ -116,7 +111,7 @@ func TestFlakeRerunNotInARow(t *testing.T) {
 	be.runnerOnline()
 	pr := be.open()
 	be.start(pr)
-	be.ci("7777777aaaa", CheckFailed) // re-ran, failed again: round 1
+	be.ci("7777777aaaa", CheckFailed)
 	b := be.babysit()
 	if b.Round != 1 || len(be.retries()) != 1 {
 		t.Fatalf("round 1: %+v retries %v", b, be.retries())

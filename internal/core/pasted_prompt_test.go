@@ -11,28 +11,21 @@ import (
 func TestUnwrapPasted(t *testing.T) {
 	review := AutopilotReviewMark + "WP-1: the findings"
 	for _, tc := range []struct{ in, want string }{
-		// What Claude Code 2.1.328 hands the hook for a bracketed paste (WP-1562).
 		{"\n\n<pasted_content id=\"d29a\">\n" + review + "\n</pasted_content id=\"d29a\">\n", review},
 		{"<pasted_content>" + review + "</pasted_content>", review},
-		// A review of this code quotes the tags: the id says where it ends.
 		{"<pasted_content id=\"7f\">" + review + ` <pasted_content id="1">x</pasted_content id="1"> and "<pasted_content id=\"9\">"` + "</pasted_content id=\"7f\">", review + ` <pasted_content id="1">x</pasted_content id="1"> and "<pasted_content id=\"9\">"`},
 		{"<pasted_content>a <pasted_content>b</pasted_content></pasted_content>", "a <pasted_content>b</pasted_content>"},
 		{"<pasted_content>a</pasted_content><pasted_content>b</pasted_content>", "<pasted_content>a</pasted_content><pasted_content>b</pasted_content>"},
 		{review, review},
-		// Text around the paste is the person's: left as it is.
 		{"look at this <pasted_content id=\"1\">x</pasted_content id=\"1\">", "look at this <pasted_content id=\"1\">x</pasted_content id=\"1\">"},
 		{"<pasted_content id=\"1\">x</pasted_content id=\"1\"> and this", "<pasted_content id=\"1\">x</pasted_content id=\"1\"> and this"},
-		// Two pastes are not one.
 		{"<pasted_content id=\"1\">a</pasted_content id=\"1\"><pasted_content id=\"2\">b</pasted_content id=\"2\">", "<pasted_content id=\"1\">a</pasted_content id=\"1\"><pasted_content id=\"2\">b</pasted_content id=\"2\">"},
 		{"<pasted_contentx>a</pasted_contentx>", "<pasted_contentx>a</pasted_contentx>"},
 		{"<pasted_content id=\"1\">unclosed", "<pasted_content id=\"1\">unclosed"},
-		// The closing tag is the opening one's: no other id, none missing.
 		{"<pasted_content id=\"1\">a</pasted_content id=\"2\">", "<pasted_content id=\"1\">a</pasted_content id=\"2\">"},
-		{"<pasted_content id=\"1\">a</pasted_content>", "a"}, // plain close: how the digest rule's tests wrap, still one paste
+		{"<pasted_content id=\"1\">a</pasted_content>", "a"},
 		{"<pasted_content>a</pasted_content id=\"1\">", "<pasted_content>a</pasted_content id=\"1\">"},
 		{"<pasted_content id=\"1\">a</pasted_content id=\"1\"> b</pasted_content id=\"2\">", "<pasted_content id=\"1\">a</pasted_content id=\"1\"> b</pasted_content id=\"2\">"},
-		// Claude Code gave every paste the same id (d29a in each of eight
-		// deliveries to one session): two pastes with it are still two.
 		{"<pasted_content id=\"d29a\">a</pasted_content id=\"d29a\"> <pasted_content id=\"d29a\">b</pasted_content id=\"d29a\">", "<pasted_content id=\"d29a\">a</pasted_content id=\"d29a\"> <pasted_content id=\"d29a\">b</pasted_content id=\"d29a\">"},
 		{"", ""},
 	} {
@@ -78,7 +71,6 @@ func TestTypedReviewStartsItsRound(t *testing.T) {
 	a.stopWith("Shipped.")
 	id := a.step().reviewID.Int64
 	a.tick(61 * time.Second)
-	// Some future wrapping no check knows: it reads as the person's.
 	a.prompt("[pasted] " + AutopilotReviewMark + first.Key + ": " + DefaultReviewPrompt)
 	if st := a.step(); st.reason != WaitPrompted || a.round(id).state != RoundPending {
 		t.Fatalf("setup: step %+v, round %+v", st, a.round(id))
@@ -120,14 +112,12 @@ func TestWrappedRecordedPromptIsWaypoints(t *testing.T) {
 		t.Run(tc.kind+" by digest", func(t *testing.T) {
 			a := newAPEnv(t)
 			a.record(tc.kind, tc.text)
-			sum := PromptSum(UnwrapPasted(wrapped)) // what the --no-prompts hook sends, if it sends a digest
+			sum := PromptSum(UnwrapPasted(wrapped))
 			if k := a.recogniseEv(HookEvent{PromptSum: sum}); k != tc.kind {
 				t.Fatalf("recognised as %q, want %q", k, tc.kind)
 			}
 		})
 		t.Run(tc.kind+" the hook's local match", func(t *testing.T) {
-			// matchTyped compares PromptSums of the text it unwrapped itself
-			// with the pending digests: the wrapped text must reach the record's.
 			want := PromptSum(tc.text)
 			for _, in := range []string{wrapped, UnwrapPasted(wrapped)} {
 				if got := PromptSums(in); !slices.Contains(got, want) {
@@ -136,7 +126,6 @@ func TestWrappedRecordedPromptIsWaypoints(t *testing.T) {
 			}
 		})
 	}
-	// A person's paste with no record is theirs, wrapped or not.
 	a := newAPEnv(t)
 	if k := a.recognise(pasted("my own notes")); k != "" {
 		t.Fatalf("a person's paste read as %q", k)
@@ -266,12 +255,12 @@ func TestUntypedReviewLeavesTheStep(t *testing.T) {
 func TestTypedReviewNotTypedTwice(t *testing.T) {
 	a, key, id := clearedReview(t)
 	raw, _ := json.Marshal(AutopilotJobResult{Outcome: "reviewing"})
-	a.res[1] = RunnerJob{State: "done", Result: raw} // and no finish event
+	a.res[1] = RunnerJob{State: "done", Result: raw}
 	if _, err := a.s.db.W.Exec(`INSERT INTO runner_jobs(id, owner_id, kind, input, state, timeout, source, source_id, created_at) VALUES (1, ?, ?, ?, 'done', 60, ?, ?, ?)`,
 		a.admin.User.ID, JobAutopilot, string(a.jobs[0].Input), autopilotReviewSource, a.step().id, a.clockNow().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
-	a.stopWith("Answered the person.") // the Stop that typed the review again
+	a.stopWith("Answered the person.")
 	a.tick(61 * time.Second)
 	noMoreReviews(a, key)
 	if r := a.round(id); r.state != RoundRunning {
@@ -316,7 +305,7 @@ var realLookupRunnerJob = lookupRunnerJob
 // counts for it (audit 1287.1, c6035).
 func TestTypedReviewReadsStoredInput(t *testing.T) {
 	a, key, id := clearedReview(t)
-	lookupRunnerJob = realLookupRunnerJob // newAPEnv's cleanup puts its stub back, then the original
+	lookupRunnerJob = realLookupRunnerJob
 	r, err := roundByID(a.ctx, a.s.db.R, id)
 	if err != nil || r == nil {
 		t.Fatal(r, err)

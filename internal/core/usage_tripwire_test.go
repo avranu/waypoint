@@ -36,12 +36,12 @@ func TestQuotaTripwire(t *testing.T) {
 
 	send(30, reset)
 	step(20 * time.Minute)
-	send(33, reset) // +3: below the default of 4
+	send(33, reset)
 	if pushes() != 0 {
 		t.Fatal("pushed below the threshold")
 	}
 	step(32 * time.Minute)
-	send(36, reset) // +6 over 52 min
+	send(36, reset)
 	if pushes() != 1 {
 		t.Fatalf("pushes = %d, want 1", pushes())
 	}
@@ -51,7 +51,7 @@ func TestQuotaTripwire(t *testing.T) {
 		t.Errorf("body = %q", body)
 	}
 	step(10 * time.Minute)
-	send(42, reset) // still climbing, inside the hour
+	send(42, reset)
 	if pushes() != 1 {
 		t.Errorf("debounce failed: %d", pushes())
 	}
@@ -63,7 +63,6 @@ func TestQuotaTripwire(t *testing.T) {
 		t.Errorf("after the hour: %d, want 2", pushes())
 	}
 
-	// The week rolls over: a drop never fires.
 	step(10 * time.Minute)
 	send(2, next)
 	step(time.Hour + time.Minute)
@@ -72,7 +71,6 @@ func TestQuotaTripwire(t *testing.T) {
 		t.Errorf("a reset fired: %d", pushes())
 	}
 
-	// Off.
 	setPref(`{"quota_jump":0}`)
 	step(2 * time.Hour)
 	send(10, next)
@@ -81,7 +79,6 @@ func TestQuotaTripwire(t *testing.T) {
 	if pushes() != 2 {
 		t.Errorf("fired while off: %d", pushes())
 	}
-	// A higher threshold holds back a rise of 6.
 	setPref(`{"quota_jump":8}`)
 	step(2 * time.Hour)
 	send(50, next)
