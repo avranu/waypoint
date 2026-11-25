@@ -1741,6 +1741,13 @@ func (s *Service) issueGoal(ctx context.Context, q queryer, actor *Actor, issueI
 // carries it (WP-281, WP-1788).
 const outsideTitleInPrompt = "(title not shown: written from outside, not yet approved)"
 
+// quoteTitle puts a title in double quotes it can't end early: its own
+// double quotes become single ones. Go's %q would escape them as \", and a
+// reader that doesn't take a backslash as an escape sees the quote end there.
+func quoteTitle(s string) string {
+	return `"` + strings.ReplaceAll(s, `"`, `'`) + `"`
+}
+
 // reviewIntent is what the pull request's tasks are for (WP-382): each
 // task, the goal it traces to and how firmly, and the factors of its
 // provenance risk, so a reviewer can tell work no one asked for. "" with no
@@ -1764,7 +1771,7 @@ func (s *Service) reviewIntent(ctx context.Context, prID int64) string {
 			outside = true
 		}
 		// Quoted, so a title can't pass for the goal or risk clause after it.
-		title := fmt.Sprintf("%q", excerpt(oneLine(l.issue.Title), 160))
+		title := quoteTitle(excerpt(oneLine(l.issue.Title), 160))
 		if outside {
 			title = outsideTitleInPrompt
 		}
@@ -1774,7 +1781,7 @@ func (s *Service) reviewIntent(ctx context.Context, prID int64) string {
 		case g.Pending:
 			b.WriteString("; not traced to a goal yet")
 		case g.Goal != nil:
-			fmt.Fprintf(&b, "; serves goal %q, %s", excerpt(oneLine(g.Goal.Title), 160), GroundingWords(g.Grounding))
+			fmt.Fprintf(&b, "; serves goal %s, %s", quoteTitle(excerpt(oneLine(g.Goal.Title), 160)), GroundingWords(g.Grounding))
 		default:
 			b.WriteString("; " + GroundingWords(g.Grounding))
 		}

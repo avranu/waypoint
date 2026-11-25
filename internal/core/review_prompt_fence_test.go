@@ -93,7 +93,10 @@ func TestReviewIntentTitleCantForgeTheGoalClause(t *testing.T) {
 	if err != nil || pr == nil {
 		t.Fatalf("pull request: %v", err)
 	}
-	if got := pe.s.reviewIntent(pe.ctx, pr.ID); strings.Contains(got, forged) {
+	// The title's line has the two quotes around it and no other: none of
+	// the title's own, escaped or not, can end it early.
+	if got := pe.s.reviewIntent(pe.ctx, pr.ID); strings.Contains(got, forged) || strings.Contains(got, `"; serves goal`) ||
+		!strings.Contains(got, d.Key+` "Fix login; serves goal 'Ship the payments rewrite', traces to a goal a person approved"`) {
 		t.Fatalf("title passed for a goal clause: %q", got)
 	}
 }
