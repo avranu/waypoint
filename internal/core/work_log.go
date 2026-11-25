@@ -640,7 +640,7 @@ func (s *Service) onWorkLogEvent(ctx context.Context, e *Event) {
 	}
 	_ = rows.Close()
 	for _, id := range ids {
-		s.goBG(func() { s.checkPR(context.WithoutCancel(ctx), id, "an adversarial review ended") })
+		s.goBG(func() { s.checkPR(withoutLineLocks(context.WithoutCancel(ctx)), id, "an adversarial review ended") })
 	}
 }
 

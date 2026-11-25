@@ -89,14 +89,14 @@ func (s *Service) heldWait(ctx context.Context, b *Babysit, pr *PullRequest, r *
 	files := strings.Join(h.Files, ", ")
 	switch h.State {
 	case heldJudging:
-		s.goBG(func() { s.judgeHeld(context.WithoutCancel(ctx), pr.ID) }) // a step after a restart starts the check again
+		s.goBG(func() { s.judgeHeld(withoutLineLocks(context.WithoutCancel(ctx)), pr.ID) }) // a step after a restart starts the check again
 		s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("round %d's change to protected files (%s) is being checked", r.N, files))
 	case heldApplying:
 		// Its job's end may have come while no one listened (a restart):
 		// read the job, as judging starts its check again.
 		if job, err := s.heldJob(ctx, h.Job); err == nil && (job == nil || job.State != "queued" && job.State != "running") {
 			bid, jobID := b.ID, h.Job
-			s.goBG(func() { s.finishHeldJob(context.WithoutCancel(ctx), pr.ID, bid, jobID) })
+			s.goBG(func() { s.finishHeldJob(withoutLineLocks(context.WithoutCancel(ctx)), pr.ID, bid, jobID) })
 		}
 		s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("round %d's change to protected files (%s) is being pushed", r.N, files))
 	case heldUnasked:
@@ -112,7 +112,7 @@ func (s *Service) heldWait(ctx context.Context, b *Babysit, pr *PullRequest, r *
 	case heldAsked:
 		s.setState(ctx, b, pr, BabysitNeedsPerson, fmt.Sprintf("round %d's change to protected files (%s) waits for your approval: %s", r.N, files, excerpt(h.Why, 160)))
 		if pr.QueuedAt != nil {
-			s.leaveQueue(ctx, pr.ID)
+			s.leaveQueue(ctx, pr)
 			s.nudgeLine(ctx, pr)
 		}
 	default:
@@ -428,7 +428,7 @@ func (s *Service) heldJobFinished(ctx context.Context, e *Event) {
 	if jobID == 0 || bid == 0 || s.db.R.QueryRowContext(ctx, `SELECT pr_id FROM babysits WHERE id = ?`, bid).Scan(&prID) != nil {
 		return
 	}
-	s.goBG(func() { s.finishHeldJob(context.WithoutCancel(ctx), prID, bid, jobID) })
+	s.goBG(func() { s.finishHeldJob(withoutLineLocks(context.WithoutCancel(ctx)), prID, bid, jobID) })
 }
 
 // heldJob reads the job that applies a held change: nil, with no error, when
@@ -519,7 +519,7 @@ func (s *Service) onHeldAnswered(ctx context.Context, e *Event) {
 	}
 	push := state == RequestAnswered && strings.EqualFold(strings.TrimSpace(answer), heldPush)
 	s.goBG(func() {
-		bg := context.WithoutCancel(ctx)
+		bg := withoutLineLocks(context.WithoutCancel(ctx))
 		unlock := s.babysitLocks.lock(prID)
 		defer unlock()
 		b, err := s.activeBabysit(bg, s.db.R, prID)
