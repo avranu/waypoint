@@ -60,7 +60,7 @@ so a go test in a slot can't take every core:
           binds Go builds and tests only, not other programs the command runs.
   none    WAYPOINT_SLOT_CPU=off
 ls shows the bound of each running hold and how many runs of the last 24h had none.`,
-	examples: []string{"wp slot run tests -- go test ./...", "wp slot ls"},
+	examples: []string{"wp slot run tests -- go test -run '^TestSlot' ./cmd/wp", "wp slot ls"},
 }
 
 func init() {
