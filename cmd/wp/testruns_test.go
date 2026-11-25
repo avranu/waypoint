@@ -525,3 +525,71 @@ func TestShipLine(t *testing.T) {
 		}
 	}
 }
+
+func recordWithLoad(t *testing.T, read func() (float64, bool)) (testRun, string) {
+	t.Helper()
+	tempRepo(t)
+	rec := newTestRunRecorder([]string{"go", "test"})
+	rec.load = read
+	rec.started()
+	rec.finish(&testResult{Passed: 1, Units: 1}, 0)
+	b, err := os.ReadFile(testRunsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs := readTestRuns(testRunsPath())
+	if len(runs) != 1 {
+		t.Fatalf("runs: %+v", runs)
+	}
+	return runs[0], string(b)
+}
+
+func TestTestRunKeepsTheLoadAtStartAndEnd(t *testing.T) {
+	r, _ := recordWithLoad(t, loadReader(15.4, 19.2))
+	if !reflect.DeepEqual(r.Load, []float64{15.4, 19.2}) {
+		t.Errorf("load: %v", r.Load)
+	}
+}
+
+func TestTestRunWithoutLoadHasNoLoadKey(t *testing.T) {
+	r, raw := recordWithLoad(t, loadReader())
+	if r.Load != nil || strings.Contains(raw, `"load"`) {
+		t.Errorf("load %v in %s", r.Load, raw)
+	}
+}
+
+func TestTestRunWithOneReadingKeepsNone(t *testing.T) {
+	for name, read := range map[string]func() (float64, bool){
+		"start only": loadReader(3),
+		"end only": func() func() (float64, bool) {
+			n := 0
+			return func() (float64, bool) { n++; return 4, n > 1 }
+		}(),
+	} {
+		if r, raw := recordWithLoad(t, read); r.Load != nil || strings.Contains(raw, `"load"`) {
+			t.Errorf("%s: load %v in %s", name, r.Load, raw)
+		}
+	}
+}
+
+func TestTestRunReadsOldRecordsWithoutLoad(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "runs.jsonl")
+	write(t, p, `{"at":1,"tree":"t","command":"c","outcome":"pass","passed":1,"failed":0,"skipped":0,"units":1,"seconds":1,"duration":1}`+"\n")
+	if runs := readTestRuns(p); len(runs) != 1 || runs[0].Load != nil {
+		t.Errorf("runs: %+v", runs)
+	}
+}
+
+// The load stays on this machine: the server decodes strictly, so a run
+// sent with it would be refused (WP-1850).
+func TestRunsToSendLeavesOutTheLoad(t *testing.T) {
+	on := []testRun{{Outcome: runPass, Load: []float64{1, 2}}, {Outcome: runFail, Load: []float64{3, 4}}}
+	for _, r := range runsToSend(on) {
+		if r.Load != nil {
+			t.Fatalf("sent with load: %+v", r)
+		}
+	}
+	if on[0].Load == nil {
+		t.Fatal("the kept record lost its load")
+	}
+}

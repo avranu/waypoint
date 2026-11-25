@@ -51,6 +51,9 @@ type testRun struct {
 	Seconds  float64  `json:"seconds"`
 	Duration float64  `json:"duration"`
 	Exit     int      `json:"exit,omitempty"`
+	// Load is the one-minute load when the run got its slot and when it
+	// finished; absent unless the host gave both (WP-1850).
+	Load []float64 `json:"load,omitempty"`
 }
 
 type testRunRecorder struct {
@@ -58,23 +61,52 @@ type testRunRecorder struct {
 	tree  string
 	start time.Time
 	snap  func() string // workingTree
+	load  func() (float64, bool)
+
+	loadStart, loadEnd float64
+	okStart, okEnd     bool
 }
 
+// readHostLoad is a var so a test can fix the load.
+var readHostLoad = hostLoad
+
 func newTestRunRecorder(argv []string) *testRunRecorder {
-	return &testRunRecorder{argv: argv, snap: workingTree}
+	return &testRunRecorder{argv: argv, snap: workingTree, load: readHostLoad}
 }
 
 // started notes the tree when the command starts, once it has its slot.
 func (r *testRunRecorder) started() {
 	if r != nil {
 		r.tree, r.start = r.snap(), time.Now()
+		r.loadStart, r.okStart = r.readLoad()
 	}
+}
+
+func (r *testRunRecorder) readLoad() (float64, bool) {
+	if r.load == nil {
+		return 0, false
+	}
+	return r.load()
+}
+
+// loads is the load at the start and the end, or nil unless both were read,
+// so position always means start and end.
+func (r *testRunRecorder) loads() []float64 {
+	if r == nil || !r.okStart || !r.okEnd {
+		return nil
+	}
+	return []float64{r.loadStart, r.loadEnd}
 }
 
 // finish keeps the run, unless it can't be tied to a tree: git failing at
 // the end leaves no telling whether the tree moved.
 func (r *testRunRecorder) finish(res *testResult, exit int) {
-	if r == nil || r.tree == "" {
+	if r == nil {
+		return
+	}
+	// Read before the early return: a check outside a work tree still says its load.
+	r.loadEnd, r.okEnd = r.readLoad()
+	if r.tree == "" {
 		return
 	}
 	end := r.snap()
@@ -85,7 +117,7 @@ func (r *testRunRecorder) finish(res *testResult, exit int) {
 		At: time.Now().UnixMilli(), Tree: r.tree, Moved: end != r.tree,
 		Command: runCommand(r.argv), Outcome: res.outcome(),
 		Passed: res.Passed, Failed: res.Failed, Skipped: res.Skipped, Units: res.Units, UnitName: res.UnitName,
-		Seconds: res.Seconds, Duration: time.Since(r.start).Seconds(), Exit: exit,
+		Seconds: res.Seconds, Duration: time.Since(r.start).Seconds(), Exit: exit, Load: r.loads(),
 	}
 	if exit != 0 && run.Outcome != runFail {
 		run.Outcome = runFail // the tests passed but the command didn't
@@ -253,6 +285,7 @@ func runsToSend(on []testRun) []testRun {
 	for _, wantFail := range []bool{true, false} {
 		for _, r := range on {
 			if (r.Outcome == runFail) == wantFail {
+				r.Load = nil // the server refuses a field it doesn't know
 				out = append(out, r)
 			}
 		}
