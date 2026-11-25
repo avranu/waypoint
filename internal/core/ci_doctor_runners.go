@@ -343,15 +343,16 @@ func (s *Service) SweepCIHealth(ctx context.Context) {
 		s.log.WarnContext(ctx, "CI health: read the doctor", "err", err)
 		return
 	}
-	if len(d.Missing) > 0 {
-		// Part of CI wasn't read: findings missing from it haven't cleared,
-		// and notifyCIHealth would forget them and tell again (WP-1851).
-		s.log.InfoContext(ctx, "CI health: the doctor was partial; this sweep is skipped", "missing", d.Missing)
-		return
+	// Part of CI wasn't read: findings missing from it haven't cleared, so
+	// nothing is forgotten, and only what doesn't come from the doctor (a
+	// silent host) is told this time (WP-1851).
+	partial := len(d.Missing) > 0
+	if partial {
+		s.log.WarnContext(ctx, "CI health: the doctor was partial; only silent hosts are told this sweep", "missing", d.Missing)
 	}
 	var due []CIFinding
 	for _, f := range d.Findings {
-		if f.Level == "problem" && ciNotifyKinds[f.Kind] {
+		if !partial && f.Level == "problem" && ciNotifyKinds[f.Kind] {
 			due = append(due, f)
 		}
 	}
@@ -366,12 +367,13 @@ func (s *Service) SweepCIHealth(ctx context.Context) {
 			}
 		}
 	}
-	s.notifyCIHealth(ctx, admins, due)
+	s.notifyCIHealth(ctx, admins, due, !partial)
 }
 
 // notifyCIHealth tells the admins of each finding not told about in the last
-// ciNotifyEvery, and forgets those that have cleared.
-func (s *Service) notifyCIHealth(ctx context.Context, admins []int64, due []CIFinding) {
+// ciNotifyEvery, and forgets those that have cleared; forget is false when
+// due is not the whole list.
+func (s *Service) notifyCIHealth(ctx context.Context, admins []int64, due []CIFinding, forget bool) {
 	now := s.now()
 	last := map[string]int64{}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT key, value FROM server_settings WHERE key >= ? AND key < ?`, ciNotifiedKey, ciNotifiedKey+"\xff")
@@ -402,6 +404,9 @@ func (s *Service) notifyCIHealth(ctx context.Context, admins []int64, due []CIFi
 			s.notifyURL(ctx, id, nil, NotifyCI, f.Title, body, "/ci")
 		}
 		s.putSetting(ctx, k, itoa64(now.UnixMilli()))
+	}
+	if !forget {
+		return
 	}
 	for k, at := range last {
 		if !seen[k] && now.Sub(msTime(at)) >= ciNotifyEvery {

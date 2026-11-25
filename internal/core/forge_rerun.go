@@ -96,7 +96,7 @@ func (c *httpForgeClient) RerunJobs(ctx context.Context, f *Forge, repo, sha, on
 		}
 		slices.Sort(failed)
 		if slices.ContainsFunc(failed, func(n string) bool { return strings.EqualFold(n, only) }) {
-			return res, fmt.Errorf("job %q needs another failed job, which Forgejo re-runs it with: run it without --job", only)
+			return res, invalid("job %q needs another failed job, which Forgejo re-runs it with: run it without --job", only)
 		}
 		return res, &RerunNoMatch{Job: only, Failed: slices.Compact(failed)}
 	}

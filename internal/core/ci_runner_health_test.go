@@ -315,19 +315,19 @@ func TestNotifyCIHealthOncePerWindow(t *testing.T) {
 		}
 		return n
 	}
-	be.s.notifyCIHealth(be.ctx, admins, []CIFinding{f})
-	be.s.notifyCIHealth(be.ctx, admins, []CIFinding{f})
+	be.s.notifyCIHealth(be.ctx, admins, []CIFinding{f}, true)
+	be.s.notifyCIHealth(be.ctx, admins, []CIFinding{f}, true)
 	if n := count(); n != 1 {
 		t.Fatalf("told %d times", n)
 	}
 	be.setClock(be.clockNow().Add(ciNotifyEvery + time.Minute))
-	be.s.notifyCIHealth(be.ctx, admins, []CIFinding{f})
+	be.s.notifyCIHealth(be.ctx, admins, []CIFinding{f}, true)
 	if n := count(); n != 2 {
 		t.Fatalf("still happening after the window: told %d times", n)
 	}
 	// Cleared for a window: the key is dropped.
 	be.setClock(be.clockNow().Add(ciNotifyEvery + time.Minute))
-	be.s.notifyCIHealth(be.ctx, admins, nil)
+	be.s.notifyCIHealth(be.ctx, admins, nil, true)
 	var left int
 	if err := be.s.db.R.QueryRowContext(be.ctx, `SELECT count(*) FROM server_settings WHERE key LIKE 'ci_notified:%'`).Scan(&left); err != nil {
 		t.Fatal(err)

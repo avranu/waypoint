@@ -415,6 +415,7 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 	began := time.Now()
 
 	var snap *ciSnapshot
+	stale := false
 	{
 		sctx, cancel := context.WithTimeout(ctx, bud.Snapshot)
 		start := time.Now()
@@ -429,6 +430,7 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 			}
 			var age time.Duration
 			if snap, age = s.staleCISnapshot(); snap != nil {
+				stale = true
 				t.missing = append(t.missing, fmt.Sprintf("the forge's runs and jobs are from the last read, %s ago (%s)", ShortDuration(age), why))
 			} else {
 				snap = &ciSnapshot{at: s.now(), runners: map[int64]ciRunners{}, prs: map[string]CIPRRef{}}
@@ -445,6 +447,9 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 	b := s.layoutCIBoard(ctx, actor, snap)
 	t.ms["layout"] = time.Since(start).Milliseconds()
 	now := b.GeneratedAt
+	if stale { // the database steps read rows of now, not of the last read
+		now = s.now()
+	}
 	d := &CIDoctor{GeneratedAt: now, Findings: []CIFinding{}, Lines: []CILine{}, Mains: []CIMain{}, Jobs: []CIDoctorJob{}, CIWork: []CIWorkPR{}}
 	d.Pool = doctorPool(b, now)
 
@@ -487,12 +492,19 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 	}
 	var limits CIDoctor
 	var runnerFindings []CIFinding
-	side(func() { // lines first: the jobs and the CI work read them
+	side(func() { // lines first: the jobs, the CI work and the mains read them
 		t.step(s, ctx, "lines", "the merge lines", bud.Lines, func(c context.Context) error {
 			return s.doctorLines(c, d, now, visible, hist)
 		})
 		var inner sync.WaitGroup
-		inner.Add(2)
+		inner.Add(3)
+		go func() { // after the lines: their bases say which branches to show
+			defer inner.Done()
+			t.step(s, ctx, "mains", "the main branches' runs", bud.Mains, func(context.Context) error {
+				doctorMains(d, snap, now, visible)
+				return nil
+			})
+		}()
 		go func() {
 			defer inner.Done()
 			t.step(s, ctx, "jobs", "the unreliable and slow jobs", bud.Jobs, func(c context.Context) error {
@@ -512,12 +524,6 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 			})
 		}()
 		inner.Wait()
-	})
-	side(func() {
-		t.step(s, ctx, "mains", "the main branches' runs", bud.Mains, func(context.Context) error {
-			doctorMains(d, snap, now, visible)
-			return nil
-		})
 	})
 	side(func() {
 		t.step(s, ctx, "limits", "the jobs' time limits", bud.Limits, func(c context.Context) error {
