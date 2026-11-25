@@ -133,8 +133,8 @@ func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool,
 	if firstFailRun > 0 && firstFail != nil {
 		_, _ = fmt.Fprintf(c.out, "run %d, the first that failed:\n%s", firstFailRun, firstFail.render())
 		if firstFailCode != 0 && firstFail.outcome() == runFail {
-			// The rest of the output may hold more than the failed tests.
-			_, _ = fmt.Fprint(c.out, keptOutput(firstFailData, 20))
+			// None of the output is shown, so all of it is kept.
+			_, _ = fmt.Fprint(c.out, keptOutput(firstFailData, 0))
 		}
 		if firstFailCode != 0 && firstFail.outcome() != runFail {
 			_, _ = fmt.Fprintf(c.out, "but the command exited %d; last lines:\n%s", firstFailCode, failedTail(firstFailData, 20))

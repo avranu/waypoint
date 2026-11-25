@@ -509,3 +509,92 @@ func TestShipCheckTimeLeavesOutTheSlotWait(t *testing.T) {
 		t.Errorf("the wait was counted as the check's time:\n%s", out.String())
 	}
 }
+
+// The wait is named when it passes the threshold, for a passing check and a
+// failing one; the threshold is lowered so the test stays short.
+func TestShipCheckNamesTheSlotWait(t *testing.T) {
+	slotEnv(t)
+	t.Chdir(t.TempDir())
+	old := slotWaitNoteMin
+	slotWaitNoteMin = time.Second
+	t.Cleanup(func() { slotWaitNoteMin = old })
+	var holds []*slotHold
+	for range defaultSlots() {
+		h, err := acquireSlot(t.Context(), "tests", defaultSlots(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		holds = append(holds, h)
+	}
+	go func() {
+		time.Sleep(2 * time.Second)
+		for _, h := range holds {
+			h.release()
+		}
+	}()
+	var out bytes.Buffer
+	c, err := newCLI(&out, new(bytes.Buffer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.runShipCheck("true"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Check passed: true") || !strings.Contains(out.String(), "waiting for a slot") {
+		t.Errorf("passing check:\n%s", out.String())
+	}
+}
+
+func TestShipCheckFailureNamesTheSlotWait(t *testing.T) {
+	slotEnv(t)
+	t.Chdir(t.TempDir())
+	old := slotWaitNoteMin
+	slotWaitNoteMin = time.Second
+	t.Cleanup(func() { slotWaitNoteMin = old })
+	var holds []*slotHold
+	for range defaultSlots() {
+		h, err := acquireSlot(t.Context(), "tests", defaultSlots(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		holds = append(holds, h)
+	}
+	go func() {
+		time.Sleep(2 * time.Second)
+		for _, h := range holds {
+			h.release()
+		}
+	}()
+	var out bytes.Buffer
+	c, err := newCLI(&out, new(bytes.Buffer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.runShipCheck("false"); err == nil {
+		t.Fatal("a failing check passed")
+	}
+	if !strings.Contains(out.String(), "Check failed: false exited 1") || !strings.Contains(out.String(), "waiting for a slot") {
+		t.Errorf("failing check:\n%s", out.String())
+	}
+}
+
+// A failed check shows 30 lines of output; a pointer to the file comes only
+// with more.
+func TestShipCheckPointerPastThirtyLines(t *testing.T) {
+	slotEnv(t)
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Chdir(t.TempDir())
+	for n, want := range map[int]bool{30: false, 31: true} {
+		var out bytes.Buffer
+		c, err := newCLI(&out, new(bytes.Buffer))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.runShipCheck("seq " + strconv.Itoa(n) + "; exit 3"); err == nil {
+			t.Fatalf("%d lines: the check passed", n)
+		}
+		if got := strings.Contains(out.String(), "lines of its output"); got != want {
+			t.Errorf("%d lines: pointer %v, want %v:\n%s", n, got, want, out.String())
+		}
+	}
+}

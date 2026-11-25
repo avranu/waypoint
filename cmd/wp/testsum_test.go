@@ -448,6 +448,13 @@ func keptInvariant(t *testing.T, name, in, got string) {
 // redactKept works on the whole text like redact, and keeps every line and
 // everything that is not credential (WP-1812).
 func TestKeptRedactionWholeText(t *testing.T) {
+	numbered := func(n int) string {
+		var b strings.Builder
+		for i := 1; i <= n; i++ {
+			fmt.Fprintf(&b, "line %d\n", i)
+		}
+		return b.String()
+	}
 	b64 := func(n int) string { return strings.Repeat("aB3/", n/4+1)[:n] }
 	body := b64(64)
 	begin, end := "-----BEGIN RSA PRIVATE KEY-----", "-----END RSA PRIVATE KEY-----"
@@ -493,9 +500,65 @@ func TestKeptRedactionWholeText(t *testing.T) {
 			in:   begin + "\n12:00 " + body + "\n12:00 " + body + "\n12:00 zz9=\n12:01 all done\n",
 			want: begin + "\n***\n***\n***\n12:01 all done\n",
 		},
-		"value glued to a begin line":      {in: "password=hunter2hunter2" + begin + "\n" + body + "\n" + end + "\n", absent: []string{"hunter2hunter2", body}, present: []string{end}},
+		"value glued to a begin line":      {in: "password=hunter2hunter2" + begin + "\n" + body + "\n" + end + "\n", absent: []string{"hunter2hunter2", body}, present: []string{begin, end}},
+		"base64 value glued to a begin":    {in: "password=dGVzdA==" + begin + "\n" + body + "\n" + end + "\n", absent: []string{"dGVzdA==", body}, present: []string{begin, end}},
+		"value with = glued to a begin":    {in: "secret=hunter2=" + begin + "\n" + body + "\n" + end + "\n", absent: []string{"hunter2", body}, present: []string{begin, end}},
 		"CRLF credential on the next line": {in: "Authorization: Basic\r\nSECRETSECRET\r\nnext\r\n", absent: []string{"SECRETSECRET"}, present: []string{"next"}},
 		"CRLF flag value":                  {in: "--password\r\nhunter2hunter2\r\nnext\r\n", want: "--password\r\n***\r\nnext\r\n"},
+		"diff plus lines with headers": {
+			in:      begin + "\n+Proc-Type: 4,ENCRYPTED\n+DEK-Info: AES-128-CBC,00112233445566778899AABBCCDDEEFF\n+\n+" + body + "\nrest\n",
+			absent:  []string{"00112233445566778899AABBCCDDEEFF", body},
+			present: []string{begin, "rest"},
+		},
+		"log prefix, short last line without =": {
+			in:      begin + "\n12:00 " + body + "\n12:00 abcdEFGH1234\nrest\n",
+			absent:  []string{"abcdEFGH1234", body},
+			present: []string{begin, "rest"},
+		},
+		"log prefixed headers": {
+			in:      begin + "\n12:00 Proc-Type: 4,ENCRYPTED\n12:00 DEK-Info: AES-128-CBC,00112233445566778899AABBCCDDEEFF\n\n12:00 " + body + "\nrest\n",
+			absent:  []string{"00112233445566778899AABBCCDDEEFF", body},
+			present: []string{begin, "rest"},
+		},
+		"blank line before the body": {
+			in:      begin + "\n\n" + body + "\n" + body + "\nrest\n",
+			absent:  []string{body},
+			present: []string{begin, "rest"},
+		},
+		"JSON array of lines": {
+			in:      begin + "\n\"" + body + "\",\n\"" + body + "\",\n\"abcd12EF\"\nrest\n",
+			absent:  []string{body, "abcd12EF"},
+			present: []string{begin, "rest"},
+		},
+		"commit SHA after a bare begin": {
+			in:   begin + "\ncommit " + strings.Repeat("3f2a", 10) + "\n" + strings.Repeat("3f2a", 10) + "\nPASS\n",
+			want: begin + "\ncommit " + strings.Repeat("3f2a", 10) + "\n" + strings.Repeat("3f2a", 10) + "\nPASS\n",
+		},
+		"a word after a bare begin": {in: begin + "\nPASS\nrest\n", want: begin + "\nPASS\nrest\n"},
+		"a begin named in a message": {
+			in:      "want a line: " + begin + "\nlint: finding X at a.go:3\na\nb\nc\nd\ne\n" + begin + "\n" + body + "\n" + end + "\nafter\n",
+			absent:  []string{body},
+			present: []string{"lint: finding X at a.go:3", "after"},
+		},
+		"begin with no end for 450 lines": {
+			in:      begin + "\n" + numbered(450) + end + "\n",
+			present: []string{"line 1\n", "line 450\n"},
+		},
+		"PGP block": {
+			in:      "-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v2\n\n" + body + "\n" + body + "\n=AbCd\n-----END PGP PRIVATE KEY BLOCK-----\nafter\n",
+			absent:  []string{body, "=AbCd", "GnuPG"},
+			present: []string{"-----BEGIN PGP PRIVATE KEY BLOCK-----", "-----END PGP PRIVATE KEY BLOCK-----", "after"},
+		},
+		"PGP block without an end": {
+			in:      "-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v2\n\n" + body + "\n" + body + "\n=AbCd\nafter\n",
+			absent:  []string{body, "=AbCd", "GnuPG"},
+			present: []string{"-----BEGIN PGP PRIVATE KEY BLOCK-----", "after"},
+		},
+		"digest header with CRLF": {
+			in:      "Authorization: Digest username=\"u\", response=\"x\"\r\nnext\r\n",
+			absent:  []string{`response="x"`},
+			present: []string{"\r\nnext\r\n"},
+		},
 	} {
 		_, got := keptRead(t, c.in)
 		if c.want != "" && got != c.want {
@@ -612,6 +675,58 @@ func TestTestsumPointerOnlyPastTheShownLines(t *testing.T) {
 		}
 		if got := strings.Contains(out.String(), "lines of its output"); got != want {
 			t.Errorf("%d lines: pointer %v, want %v:\n%s", n, got, want, out.String())
+		}
+	}
+}
+
+// The kept file holds a log line that only looks like a go test event, and
+// output text that looks like one (WP-1812).
+func TestPlainOutputKeepsLookalikeLines(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Chdir(t.TempDir())
+	odd := `{"Action":"fail","Message":"nil pointer in parser"}`
+	got := keptOutput([]byte(odd+"\n"+strings.Repeat("x\n", 39)), 20)
+	m := regexp.MustCompile(`All (\d+) lines of its output \(kept until the next long failure here\): (.+)\n`).FindStringSubmatch(got)
+	if m == nil || m[1] != "40" {
+		t.Fatalf("pointer: %q", got)
+	}
+	if b, _ := os.ReadFile(m[2]); !strings.Contains(string(b), "nil pointer") {
+		t.Errorf("the line was dropped:\n%s", b)
+	}
+	// Output that is itself JSON stays through failedTail's one pass.
+	var b strings.Builder
+	for i := 0; i < 39; i++ {
+		fmt.Fprintf(&b, `{"Action":"output","Package":"p","Test":"T","Output":"o%d\n"}`+"\n", i)
+	}
+	b.WriteString(`{"Action":"output","Package":"p","Test":"T","Output":"{\"Action\":\"fail\",\"Package\":\"p\"}\n"}` + "\n")
+	got = failedTail([]byte(b.String()), 20)
+	m = regexp.MustCompile(`All (\d+) lines of its output \(kept until the next long failure here\): (.+)\n`).FindStringSubmatch(got)
+	if m == nil {
+		t.Fatalf("no pointer:\n%s", got)
+	}
+	if k, _ := os.ReadFile(m[2]); !strings.Contains(string(k), `{"Action":"fail","Package":"p"}`+"\n") {
+		t.Errorf("the output text was dropped:\n%s", k)
+	}
+}
+
+// Failed tests and a failing command: nothing of the output was shown, so
+// all of it is kept however short.
+func TestTestsumKeepsShortOutputWithFailedTests(t *testing.T) {
+	slotEnv(t)
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Chdir(t.TempDir())
+	cmd := `printf '{"Action":"fail","Package":"p","Test":"T","Elapsed":0}\n{"Action":"fail","Package":"p","Elapsed":1}\n'; echo LINT FAILED; exit 2`
+	for _, args := range [][]string{{"testsum"}, {"testsum", "--repeat", "2"}} {
+		var out, errb bytes.Buffer
+		if code := run(append(args, "--", "sh", "-c", cmd), &out, &errb); code != 1 {
+			t.Fatalf("%v: exit %d %q %q", args, code, out.String(), errb.String())
+		}
+		m := regexp.MustCompile(`All (\d+) lines of its output \(kept until the next long failure here\): (.+)\n`).FindStringSubmatch(out.String())
+		if m == nil {
+			t.Fatalf("%v: no pointer:\n%s", args, out.String())
+		}
+		if k, _ := os.ReadFile(m[2]); !strings.Contains(string(k), "LINT FAILED") {
+			t.Errorf("%v: kept file:\n%s", args, k)
 		}
 	}
 }

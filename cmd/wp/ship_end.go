@@ -438,11 +438,15 @@ func checkArgv(cmd string) []string {
 	return strings.Fields(cmd)
 }
 
+// slotWaitNoteMin is the wait slotWaitNote leaves out below; a var so a test
+// can lower it.
+var slotWaitNoteMin = time.Minute
+
 // slotWaitNote says how long a check waited for a slot, as text to follow
 // its own time, when that is a minute or more. Under a minute is left out:
 // it is noise next to the check's time, and waits.jsonl has the recent waits.
 func slotWaitNote(w time.Duration) string {
-	if w = w.Round(time.Second); w < time.Minute {
+	if w = w.Round(time.Second); w < slotWaitNoteMin {
 		return ""
 	}
 	return fmt.Sprintf(", and %s waiting for a slot", w)

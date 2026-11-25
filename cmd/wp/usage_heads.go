@@ -362,7 +362,7 @@ var tokenLikeRE = lazyre.New(`\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{2
 // digestAuthRE takes a Digest header's whole value (several quoted
 // parameters, one of them the response) to the end of the line or a closing
 // single quote.
-var digestAuthRE = lazyre.New(`(?i)(\bauthorization["']?\s*[=:]\s*["']?digest\s+)[^\n']+`)
+var digestAuthRE = lazyre.New(`(?i)(\bauthorization["']?\s*[=:]\s*["']?digest\s+)[^\r\n']+`)
 
 // schemeAuthRE takes a scheme word and the credential after it in an
 // Authorization value (ApiKey, AWS4-HMAC-SHA256, one not invented yet), so a
@@ -373,7 +373,7 @@ var schemeAuthRE = lazyre.New(`(?i)(\bauthorization["']?\s*[=:]\s*["']?)[\w-]+\s
 // (RSA, EC, OPENSSH, ENCRYPTED or plain), and to the end of the text when the
 // END line is missing (a key cut off by a limit). The body may hold real or
 // escaped newlines.
-var pemKeyRE = lazyre.New(`(-----BEGIN [A-Z ]*PRIVATE KEY-----)(?s:.*?)(-----END [A-Z ]*PRIVATE KEY-----|\z)`)
+var pemKeyRE = lazyre.New(`(-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----)(?s:.*?)(-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|\z)`)
 var urlPasswordRE = lazyre.New(`(://[^\s/:@]+:)[^\s/@]+@`)
 
 // urlUserRE finds a URL user part that is not followed by a password, or
@@ -383,7 +383,7 @@ var urlPasswordRE = lazyre.New(`(://[^\s/:@]+:)[^\s/@]+@`)
 // characters or more, or holds a digit and at least one other character that
 // is not a digit; a shorter part with no digit, or all digits, stays (git@,
 // deploy@, a number).
-var urlUserRE = lazyre.New(`://[^\s/:@]{8,}(?::\*\*\*|:)?@`)
+var urlUserRE = lazyre.New(`://[^\s/:@?#]{8,}(?::\*\*\*|:)?@`)
 
 func blankURLUser(m string) string {
 	u := m[len("://") : len(m)-1]

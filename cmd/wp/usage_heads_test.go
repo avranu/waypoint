@@ -97,6 +97,11 @@ func TestRedactMoreTokenShapes(t *testing.T) {
 		"https://1234-5678@h/x":                          "https://***@h/x",
 		"https://123456789012@h/x":                       "https://123456789012@h/x",
 		"https://deploy@git.example/x":                   "https://deploy@git.example/x",
+		"https://" + strings.Repeat("u", 19) + "@h/x":    "https://" + strings.Repeat("u", 19) + "@h/x",
+		"https://" + strings.Repeat("u", 20) + "@h/x":    "https://***@h/x",
+		"https://build200@host/x":                        "https://***@host/x",
+		"https://buil200@host/x":                         "https://buil200@host/x",
+		"https://example.com?email=jess@example.com":     "https://example.com?email=jess@example.com",
 		"npm_config_cache":                               "npm_config_cache",
 		"sk_live_short":                                  "sk_live_short",
 		"pypi-short":                                     "pypi-short",
@@ -104,5 +109,14 @@ func TestRedactMoreTokenShapes(t *testing.T) {
 		if got := redact(in); got != want {
 			t.Errorf("redact(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestRedactPGPBlock(t *testing.T) {
+	body := strings.Repeat("aB3/", 16)
+	in := "-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v2\n\n" + body + "\n=AbCd\n-----END PGP PRIVATE KEY BLOCK-----\nafter"
+	got := redact(in)
+	if strings.Contains(got, body) || strings.Contains(got, "=AbCd") || !strings.HasSuffix(got, "-----END PGP PRIVATE KEY BLOCK-----\nafter") {
+		t.Errorf("redact: %q", got)
 	}
 }

@@ -269,8 +269,8 @@ func (c *cli) testsumReport(data []byte, format string, cmdFailed int, rec *test
 	rec.finish(res, cmdFailed)
 	if res.Failed > 0 || len(res.Failures) > 0 {
 		if cmdFailed != 0 {
-			// The rest of the output may hold more than the failed tests.
-			_, _ = fmt.Fprint(c.out, keptOutput(data, 20))
+			// None of the output is shown, so all of it is kept.
+			_, _ = fmt.Fprint(c.out, keptOutput(data, 0))
 		}
 		return res, exitCode(1)
 	}
@@ -303,18 +303,28 @@ const failedOutputFile = "wp-failed-output.log"
 // shown and the threshold for keeping can't drift apart.
 func failedTail(data []byte, n int) string {
 	data = plainOutput(data)
-	return lastLines(data, n) + "\n" + keptOutput(data, n)
+	return lastLines(data, n) + "\n" + keptPlain(data, n)
+}
+
+// goStreamEvent holds exactly the fields test2json and go build -json
+// write, so a line with any other field is not taken for one of their events.
+type goStreamEvent struct {
+	Time, Action, Package, ImportPath, Test, Output, FailedBuild, Key, Value string
+	Elapsed                                                                  float64
 }
 
 // plainOutput is the text of a go test -json stream: the Output of each
 // event that has one, and any other line as it was (a build error printed
-// outside the events). Output that holds no event is returned unchanged.
+// outside the events, or a JSON line with fields no event has). Output that
+// holds no event is returned unchanged.
 func plainOutput(data []byte) []byte {
 	var out []byte
 	found := false
 	for _, l := range bytes.SplitAfter(data, []byte("\n")) {
-		var ev goEvent
-		if bytes.HasPrefix(l, []byte("{")) && json.Unmarshal(l, &ev) == nil && ev.Action != "" {
+		var ev goStreamEvent
+		dec := json.NewDecoder(bytes.NewReader(l))
+		dec.DisallowUnknownFields()
+		if bytes.HasPrefix(l, []byte("{")) && dec.Decode(&ev) == nil && !dec.More() && ev.Action != "" {
 			found = true
 			out = append(out, ev.Output...)
 			continue
@@ -333,7 +343,11 @@ func plainOutput(data []byte) []byte {
 // with the finding that failed it, is above them, and the file is what
 // gives it without another run (WP-1812).
 func keptOutput(data []byte, shown int) string {
-	data = plainOutput(data)
+	return keptPlain(plainOutput(data), shown)
+}
+
+// keptPlain is keptOutput for data that is already plain text.
+func keptPlain(data []byte, shown int) string {
 	if strings.Count(strings.TrimRight(string(data), "\n"), "\n")+1 <= shown {
 		return ""
 	}
@@ -354,13 +368,10 @@ func keptOutput(data []byte, shown int) string {
 }
 
 var (
-	pemBeginRE  = lazyre.New(`-----BEGIN [A-Z ]*PRIVATE KEY-----`)
-	pemEndRE    = lazyre.New(`-----END [A-Z ]*PRIVATE KEY-----`)
+	pemBeginRE  = lazyre.New(`-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----`)
+	pemEndRE    = lazyre.New(`-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----`)
 	pemBodyRE   = lazyre.New(`^[A-Za-z0-9+/=]+$`)
-	pemHeaderRE = lazyre.New(`^(Proc-Type|DEK-Info|Comment): `)
-	// keyAsValueRE is a name's match whose whole value is the start of a
-	// key's BEGIN line.
-	keyAsValueRE = lazyre.New(`[\s=:"']-----BEGIN$`)
+	pemHeaderRE = lazyre.New(`(?:^|\s)(?:Proc-Type|DEK-Info|Comment|Version): `)
 )
 
 // pemFullLine is the least length taken for a whole line of a key's body
@@ -368,13 +379,26 @@ var (
 // after one of those, so "ok" or "12" after a bare header stays.
 const pemFullLine = 40
 
+// pemMaxLines is how far below a BEGIN line its END line is looked for (a
+// 16384-bit RSA key is under 250 lines).
+const pemMaxLines = 400
+
+// pemKeyLike says a body line is mixed case with a digit, as base64 is; a
+// commit SHA or a word is not.
+func pemKeyLike(s string) bool {
+	return strings.ContainsAny(s, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") && strings.ContainsAny(s, "abcdefghijklmnopqrstuvwxyz") && strings.ContainsAny(s, "0123456789")
+}
+
 // redactKept is redact for a kept output file, returning as many lines as it
 // got, each \r kept, so "All N lines" stays true. Every line between a
-// BEGIN and an END PRIVATE KEY line becomes ***; after a BEGIN with no END
-// only the lines that look like the key (its headers, base64 lines of 40 or
-// more characters, a shorter last one) do, so the rest of the output stays.
-// Then redact's other patterns run over the whole text, a match that spanned
-// lines giving them back as *** lines.
+// BEGIN and an END PRIVATE KEY line becomes ***, when the END is within 400
+// lines and before another BEGIN. Otherwise (a BEGIN with no END) only the
+// lines that look like the key do, so the rest of the output stays: its
+// headers, base64 lines of 40 or more characters (the first one mixed case
+// with a digit, so a commit SHA is not one), then one shorter line that is
+// not all letters. A diff or quote marker, a log prefix, quotes and a comma
+// around a line are allowed. Then redact's other patterns run over the whole
+// text, a match that spanned lines giving them back as *** lines.
 func redactKept(s string) string {
 	lines := strings.Split(s, "\n")
 	star := func(j int) {
@@ -384,7 +408,7 @@ func redactKept(s string) string {
 			lines[j] = "***"
 		}
 	}
-	noEnd := false // no END line is left in the text
+	noEnd := false // the text has no END line below this point
 	for i := 0; i < len(lines); i++ {
 		l, _ := strings.CutSuffix(lines[i], "\r")
 		loc := pemBeginRE.FindStringIndex(l)
@@ -396,14 +420,18 @@ func redactKept(s string) string {
 			continue
 		}
 		end := -1
-		for j := i + 1; j < len(lines) && !noEnd; j++ {
-			if pemEndRE.MatchString(lines[j]) {
-				end = j
-				break
+		if !noEnd {
+			j := i + 1
+			for ; j < len(lines) && j <= i+pemMaxLines; j++ {
+				if pemBeginRE.MatchString(lines[j]) {
+					break
+				}
+				if pemEndRE.MatchString(lines[j]) {
+					end = j
+					break
+				}
 			}
-		}
-		if end < 0 {
-			noEnd = true
+			noEnd = end < 0 && j >= len(lines)
 		}
 		// Anything after BEGIN on its own line is the key (one printed
 		// with escaped newlines, say).
@@ -427,24 +455,30 @@ func redactKept(s string) string {
 	body:
 		for ; j < len(lines); j++ {
 			t := strings.Trim(strings.TrimSuffix(lines[j], "\r"), " \t")
-			if strings.HasPrefix(t, "-") || strings.HasPrefix(t, ">") {
+			if t != "" && strings.IndexByte("-+>", t[0]) >= 0 {
 				t = strings.TrimLeft(t[1:], " \t")
 			}
-			// A body line may come after a log prefix: its last field
-			// is what is matched.
+			// A body line may come after a log prefix, or be quoted: its
+			// last field is what is matched.
 			last := t
-			if f := strings.Fields(t); len(f) > 1 {
+			if f := strings.Fields(t); len(f) > 0 {
 				last = f[len(f)-1]
 			}
+			last = strings.TrimSuffix(strings.Trim(last, `"',;`), `\n`)
 			switch {
 			case inHeaders && pemHeaderRE.MatchString(t):
 				sawHeader = true
-			case inHeaders && sawHeader && t == "":
-				inHeaders = false
-			case pemBodyRE.MatchString(last) && len(last) >= pemFullLine:
+			case t == "" && !sawFull:
+				// Nothing to blank; the body may follow.
+				if sawHeader {
+					inHeaders = false
+				}
+				continue
+			case pemBodyRE.MatchString(last) && len(last) >= pemFullLine && (sawFull || pemKeyLike(last)):
 				inHeaders, sawFull = false, true
-			case sawFull && (pemBodyRE.MatchString(t) || pemBodyRE.MatchString(last) && strings.HasSuffix(last, "=")):
+			case sawFull && pemBodyRE.MatchString(last) && strings.Trim(last, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz") != "":
 				star(j)
+				j++
 				break body
 			default:
 				break body
@@ -456,10 +490,15 @@ func redactKept(s string) string {
 	s = strings.Join(lines, "\n")
 	for _, st := range redactSteps {
 		s = replaceStep(s, st, func(m, r string) string {
-			if keyAsValueRE.MatchString(m) {
-				// "api_key:" and a key's BEGIN line after it: the value
-				// is the key, blanked above, and the line stays readable.
-				return m
+			if v, ok := strings.CutSuffix(m, "-----BEGIN"); ok && v != "" {
+				if strings.TrimSuffix(r, "***")+"-----BEGIN" == m {
+					// "api_key:" and a key's BEGIN line after it: the
+					// value is the key, blanked above, and the line stays
+					// readable.
+					return m
+				}
+				// A value glued to a BEGIN line: blank it, keep the marker.
+				return keepLines(m, r) + "-----BEGIN"
 			}
 			return keepLines(m, r)
 		})
@@ -493,11 +532,8 @@ func keepLines(m, r string) string {
 		}
 		b.WriteString(cr(ml[j]) + "\n")
 	}
-	if len(ml)-1 >= len(pieces) {
-		b.WriteString("***")
-	} else {
-		b.WriteString(pieces[len(ml)-1])
-	}
+	// d > 0 means ml has at least as many lines as pieces.
+	b.WriteString("***")
 	return b.String()
 }
 
