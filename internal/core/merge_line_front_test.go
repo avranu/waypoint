@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 )
@@ -136,9 +137,9 @@ func TestFrontPastGraceStaysWhenSettledAndLeavesWhenFailed(t *testing.T) {
 	}
 }
 
-// A title edit that fails leaves the front marked ready and in its place; the
-// next step tries again.
-func TestFrontStaysWhenTheTitleEditFails(t *testing.T) {
+// A title edit that fails leaves the front marked ready and a member, with the
+// line going past it; the next step tries again.
+func TestFrontPassedOverWhileTheTitleEditFails(t *testing.T) {
 	se := newStackEnv(t)
 	se.draftGreen(head7s, 5)
 	se.draftGreen(head8s, 7)
@@ -147,18 +148,98 @@ func TestFrontStaysWhenTheTitleEditFails(t *testing.T) {
 	se.holder(7, 40*time.Minute, 20*time.Minute)
 	f := &failingTitleEdit{shipForge: se.sg, fail: true}
 	se.s.Forges = f
-	if got := se.lineOrderNumbers(); len(got) == 0 || got[0] != 7 {
-		t.Fatalf("line %v, want #7 kept while its edit fails", got)
+	for range 2 {
+		if got := se.lineOrderNumbers(); !slices.Equal(got, []int{8}) {
+			t.Fatalf("line %v, want #8 alone while #7's edit fails", got)
+		}
 	}
 	if p := se.pr(7); !queueHolder(p) || p.QueuedAt == nil {
 		t.Fatalf("#7 half out: %+v", p)
 	}
 	f.fail = false
-	if got := se.lineOrderNumbers(); len(got) == 0 || got[0] == 7 {
+	if got := se.lineOrderNumbers(); !slices.Equal(got, []int{8}) {
 		t.Fatalf("line %v, want #7 out after the retry", got)
 	}
-	if f.tries != 2 {
-		t.Errorf("edits tried %d, want 2", f.tries)
+	if p := se.pr(7); p.State != "draft" || p.QueuedAt != nil {
+		t.Fatalf("#7 after the retry: state %s queued %v", p.State, p.QueuedAt)
+	}
+	if f.tries != 3 {
+		t.Errorf("edits tried %d, want 3", f.tries)
+	}
+}
+
+// The grace: 15 minutes from the later of the ready mark and the change's last
+// move; a clean base merge moves only the head, which gets frontMoveGrace.
+func TestFrontGraceBounds(t *testing.T) {
+	se := newStackEnv(t)
+	now := se.clockNow()
+	ago := func(d time.Duration) *time.Time { at := now.Add(-d); return &at }
+	for name, tc := range map[string]struct {
+		ready, head time.Duration
+		change      time.Duration // a carried head's change; 0: not carried
+		want        bool
+	}{
+		"just ready":                      {ready: frontGrace - time.Second, head: time.Hour, want: true},
+		"ready a grace ago":               {ready: frontGrace, head: time.Hour},
+		"the change just moved":           {ready: time.Hour, head: frontGrace - time.Second, want: true},
+		"the change moved a grace ago":    {ready: time.Hour, head: frontGrace},
+		"a base merge just now":           {ready: time.Hour, head: frontMoveGrace - time.Second, change: 2 * time.Hour, want: true},
+		"a base merge doesn't restart it": {ready: time.Hour, head: frontMoveGrace, change: 2 * time.Hour},
+	} {
+		p := &PullRequest{HeadSHA: head7s, ReadyAt: ago(tc.ready), headAt: ago(tc.head)}
+		if tc.change > 0 {
+			p.carriedSHA, p.carriedFromSHA, p.carriedAt = head7s, head8s, ago(tc.change)
+		}
+		if got := se.s.inFrontGrace(p); got != tc.want {
+			t.Errorf("%s: in grace %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+// Past the grace a front whose run was only cancelled keeps its place while a
+// babysit watches it, and leaves when none does.
+func TestFrontWithACancelledRun(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.step()
+	se.holder(7, 3*time.Hour, 2*time.Hour)
+	se.sg.setChecks(head7s, CommitCheck{State: CheckFailed, ID: 9, Description: "Has been cancelled"})
+	se.s.CheckBabysits(se.ctx)
+	se.s.Wait()
+	se.holder(7, 3*time.Hour, 2*time.Hour)
+	p := se.pr(7)
+	if p.CIState != CIFailed {
+		t.Fatalf("#7's checks are %q, want failed", p.CIState)
+	}
+	if b, err := se.s.activeBabysit(se.ctx, se.s.db.R, p.ID); err != nil || b == nil {
+		t.Fatalf("#7 has no babysit: %v", err)
+	}
+	if se.s.frontFailed(se.ctx, p) {
+		t.Error("a cancelled run counted as failed checks under a babysit")
+	}
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE babysits SET ended_at = ? WHERE pr_id = ?`, se.s.nowMS(), p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if why := se.s.lineLeft(se.ctx, p); why != "its checks failed" {
+		t.Errorf("a cancelled run nobody watches: %q", why)
+	}
+}
+
+// A read that fails past the grace doesn't take the front out.
+func TestFrontStaysWhenItsStateCantBeRead(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.step()
+	se.holder(7, 40*time.Minute, 20*time.Minute)
+	p := se.pr(7)
+	if _, err := se.s.db.W.ExecContext(se.ctx, `ALTER TABLE bot_runs RENAME TO bot_runs_x`); err != nil {
+		t.Fatal(err)
+	}
+	if why, unread := se.s.unsettled(se.ctx, p); !unread {
+		t.Fatalf("unsettled = %q, want an unread reason", why)
+	}
+	if why := se.s.lineLeft(se.ctx, p); why != "" {
+		t.Fatalf("the front left %q on a read that failed", why)
 	}
 }
 

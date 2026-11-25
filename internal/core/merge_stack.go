@@ -354,52 +354,61 @@ func (s *Service) stackable(ctx context.Context, pr *PullRequest, style string) 
 // waypoint and 1 of 41 on another repo, and the stacks and batches used 27% to 30%
 // of their runner time; a CodeRabbit review lands about 48 minutes after a
 // push, long after the draft tier passes).
-func (s *Service) unsettled(ctx context.Context, pr *PullRequest) string {
+// unread: why only says that something couldn't be read, so nothing is known
+// to hold the head.
+func (s *Service) unsettled(ctx context.Context, pr *PullRequest) (why string, unread bool) {
 	// A head that owes its audit is asked for it now, not at the ready mark
 	// the line gives it: that audit's findings start a round whose push ends
 	// the candidate that got it there (WP-1852). Once the row exists, the
 	// audit going and its findings hold it below; where nothing would create
-	// the audit (auditOwed) it is settled without.
-	if s.requestHeadAudit(ctx, pr) {
-		return "its head hasn't been audited yet"
+	// the audit (auditOwed) or the request is refused it is settled without.
+	waiting, err := s.requestHeadAudit(ctx, pr)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read whether a pull request's head owes an audit", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+		}
+		return "its audits couldn't be read", true
+	}
+	if waiting {
+		return "its head hasn't been audited yet", false
 	}
 	going, why, err := s.reviewGoingErr(ctx, pr)
 	if err != nil {
-		return "its reviews couldn't be read"
+		return "its reviews couldn't be read", true
 	}
 	if going {
-		return why
+		return why, false
 	}
 	var rd PRReadiness
 	holds, err := s.reviewHolds(ctx, pr, true, &rd)
 	if err != nil {
-		return "its reviews couldn't be read"
+		return "its reviews couldn't be read", true
 	}
 	if len(holds) > 0 {
-		return holds[0]
+		return holds[0], len(holds) == rd.unread
 	}
 	if after, _ := s.mergeWaitReasons(ctx, pr); len(after) > 0 {
-		return after[0]
+		return after[0], after[0] == mergeAfterUnread
 	}
 	pol, attached, err := s.repoMergePolicy(ctx, pr.ForgeID, pr.Repo)
 	if err != nil {
-		return "its merge policy couldn't be read"
+		return "its merge policy couldn't be read", true
 	}
 	if !attached {
-		return ""
+		return "", false
 	}
 	checks, err := s.prChecks(ctx, pr)
 	if err != nil {
-		return "its checks couldn't be read"
+		return "its checks couldn't be read", true
 	}
 	waits, _, err := s.settleWaits(ctx, pr, pol, checks)
 	if err != nil {
-		return "its review wait couldn't be read"
+		return "its review wait couldn't be read", true
 	}
 	if len(waits) > 0 {
-		return waits[0]
+		return waits[0], false
 	}
-	return ""
+	return "", false
 }
 
 // touchesCI: p is under a directory Forgejo reads workflows from

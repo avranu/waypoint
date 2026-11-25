@@ -229,9 +229,11 @@ func (s *Service) lineGather(ctx context.Context, ref lineRef) (*lineState, erro
 		ls.prs[p.ID] = p
 		if why := s.lineLeft(ctx, p); why != "" {
 			if queueHolder(p) && !s.frontGivesWay(ctx, p, why) {
-				// Still marked ready (the title edit failed): it keeps its
-				// place and this is tried again next step, not half out.
-				keep = append(keep, p)
+				// Still marked ready (the title edit failed): it stays a
+				// member, not half out, and the next step tries again. The
+				// line goes past it, so an edit that keeps failing holds up
+				// no one behind it.
+				ls.held[p.ID] = "it can't merge yet (" + why + ") and couldn't be put back to draft; trying again"
 				continue
 			}
 			s.lineDrop(ctx, ref, p, why)
@@ -315,28 +317,55 @@ func (s *Service) lineGather(ctx context.Context, ref lineRef) (*lineState, erro
 
 // frontGrace: how long a pull request Waypoint marked ready keeps the front
 // while it isn't settled, from the later of its being marked ready and its
-// head's last move. A round that pushes nothing (WP-455) merges on the run
-// that passed a minute later; a candidate that merged did so a median 2 and at
-// most 16.5 minutes after it passed. Past it the front gives way (WP-1852):
-// #582 held the front four hours through rounds the audit started after the
-// ready mark.
+// change's last move (a clean base merge moves the head, not the change). A
+// round that pushes nothing (WP-455) merges on the run that passed a minute
+// later; a candidate that merged did so a median 2 and at most 16.5 minutes
+// after it passed. Past it the front gives way (WP-1852): #582 held the front
+// four hours through rounds the audit started after the ready mark.
 const frontGrace = 15 * time.Minute
 
-// frontSince is when a marked-ready p's grace began: the later of its ready
-// mark and its head's last move.
-func frontSince(p *PullRequest) time.Time {
-	at := *p.ReadyAt
-	if p.headAt != nil && p.headAt.After(at) {
-		at = *p.headAt
+// frontMoveGrace is what any new head gets, however old its change: the time
+// the review gate takes to be evaluated on a clean base merge.
+const frontMoveGrace = 5 * time.Minute
+
+// inFrontGrace: a marked-ready p is still within its grace.
+func (s *Service) inFrontGrace(p *PullRequest) bool {
+	since := *p.ReadyAt
+	if at := p.contentSince(); at != nil && at.After(since) {
+		since = *at
 	}
-	return at
+	now := s.now()
+	return now.Sub(since) < frontGrace || p.headAt != nil && now.Sub(*p.headAt) < frontMoveGrace
+}
+
+// frontFailed: past its grace, the front's failed head counts against it. A
+// run that was only cancelled is no failure while a babysit watches it: that
+// re-runs the jobs or asks a person, which takes it out of the line. Checks
+// that can't be read count for nothing.
+func (s *Service) frontFailed(ctx context.Context, p *PullRequest) bool {
+	if !failedOn(p, p.HeadSHA) {
+		return false
+	}
+	checks, err := s.prChecks(ctx, p)
+	if err != nil {
+		if readFault(err) {
+			s.log.WarnContext(ctx, "read the front's failed checks", "pr", p.ID, "err", err)
+		}
+		return false
+	}
+	if !cancelledOnly(checks) {
+		return true
+	}
+	b, err := s.activeBabysit(ctx, s.db.R, p.ID)
+	return err == nil && b == nil
 }
 
 // lineLeft says why p no longer holds a place in the line, "" when it does.
 // A pull request that isn't Waypoint's marked-ready front must be settled:
 // its checks passed at its head and nothing is left that could move the head.
 // The front keeps its place through a round (WP-455) for frontGrace; past
-// that it must not have failed its checks or be unsettled either (WP-1852).
+// that it must not have failed its checks or be unsettled either (WP-1852). A
+// read that fails doesn't take the front out: the next look asks again.
 // Its full run still going, being behind the base and the forge still
 // reading mergeability are the line's own business and never count.
 func (s *Service) lineLeft(ctx context.Context, p *PullRequest) string {
@@ -344,13 +373,20 @@ func (s *Service) lineLeft(ctx context.Context, p *PullRequest) string {
 		return "its head isn't known"
 	}
 	if queueHolder(p) {
-		if s.now().Sub(frontSince(p)) < frontGrace {
+		if s.inFrontGrace(p) {
+			// Asked for within the grace too: nothing else asks when a head
+			// moves under the front, and its merge holds only for an audit
+			// that exists.
+			s.askHeadAudit(ctx, p)
 			return ""
 		}
-		if failedOn(p, p.HeadSHA) {
+		if s.frontFailed(ctx, p) {
 			return "its checks failed"
 		}
-		return s.unsettled(ctx, p)
+		if why, unread := s.unsettled(ctx, p); !unread {
+			return why
+		}
+		return ""
 	}
 	if failedOn(p, p.HeadSHA) {
 		return "its checks failed"
@@ -358,17 +394,14 @@ func (s *Service) lineLeft(ctx context.Context, p *PullRequest) string {
 	if p.ciSHA != p.HeadSHA || p.CIState != CIPassed {
 		return "its checks haven't passed on its head"
 	}
-	if why := s.unsettled(ctx, p); why != "" {
-		return why
-	}
-	return ""
+	why, _ := s.unsettled(ctx, p)
+	return why
 }
 
 // frontGivesWay takes a marked-ready front that lineLeft says has left back
 // to draft, so it is no longer the front (queueHolder) and the non-holder
 // rules in lineLeft apply: it joins again once settled, at its arming-order
-// place. False when the title edit failed: it is still marked ready, so the
-// caller keeps it and the next step tries again (WP-1852).
+// place. False when the title edit failed: it is still marked ready (WP-1852).
 func (s *Service) frontGivesWay(ctx context.Context, p *PullRequest, why string) bool {
 	ready := s.now().Sub(*p.ReadyAt).Round(time.Second)
 	if err := s.markDraft(ctx, p); err != nil {
