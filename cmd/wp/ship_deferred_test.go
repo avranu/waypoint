@@ -58,6 +58,11 @@ func TestShipStopsOnceForDeferredTasks(t *testing.T) {
 		}
 		return string(out)
 	}
+	// wp ship commits with the repository's config alone, as in CI, which has
+	// no global identity.
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	git("config", "user.email", "t@example.com")
+	git("config", "user.name", "T")
 	git("commit", "-q", "--allow-empty", "-m", "first")
 	git("checkout", "-q", "-b", strings.ToLower(task.Key)+"-work")
 	if err := os.WriteFile("a.txt", []byte("a"), 0o644); err != nil {
@@ -170,6 +175,11 @@ func deferredShip(t *testing.T, answers ...string) (e *env, ship []string, git f
 		}
 		return string(out)
 	}
+	// wp ship commits with the repository's config alone, as in CI, which has
+	// no global identity.
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	git("config", "user.email", "t@example.com")
+	git("config", "user.name", "T")
 	git("commit", "-q", "--allow-empty", "-m", "first")
 	git("checkout", "-q", "-b", strings.ToLower(task.Key)+"-work")
 	if err := os.WriteFile("a.txt", []byte("a"), 0o644); err != nil {

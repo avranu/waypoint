@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"net/url"
@@ -543,48 +544,38 @@ func (c *cli) shipHome(f prOpenFlags) string {
 }
 
 // checkShipKeys refuses a wp ship A B that can't go along before anything is
-// committed or pushed: more than maxShipTasks keys, a key that isn't an issue
-// key, doesn't exist, is closed or is in another project than this checkout's.
-// Each error names the key and what to run instead (WP-1426).
+// committed or pushed. Waypoint's open makes the checks (how many tasks, each
+// one existing, editable, open, in the project and not on a diagnose round);
+// this asks it to make them now, so there is one copy of them (WP-1426). A
+// refusal names the key and what to run instead.
 func (c *cli) checkShipKeys(f prOpenFlags, keys []string) error {
 	if len(keys) < 2 {
 		return nil
 	}
 	keys = upperKeys(keys)
-	seen := map[string]bool{}
-	var uniq []string
-	for _, k := range keys {
-		if !seen[k] {
-			seen[k] = true
-			uniq = append(uniq, k)
-		}
-	}
-	if len(uniq) > maxShipTasks {
-		return c.usage("a pull request is shipped for at most %d tasks (%d given): ship %s with their own wp ship from their own branches", maxShipTasks, len(uniq), strings.Join(uniq[maxShipTasks:], ", "))
-	}
 	project := c.shipHome(f)
-	for _, k := range uniq {
-		if !keyRE.MatchString(k) {
-			return c.usage("%q isn't an issue key like WP-12: run wp ship WP-12 WP-13 -m ... with the keys of the tasks this change does", k)
-		}
+	if project == "" {
 		var i struct {
 			ProjectKey string `json:"project_key"`
-			Status     struct {
-				Category string `json:"category"`
-			} `json:"status"`
 		}
-		if err := c.do("GET", "/api/v1/issues/"+esc(k), nil, &i); err != nil {
-			return fmt.Errorf("%s: %w (check the key with wp show %s, or leave it out of wp ship and run wp ship %s later)", k, err, k, k)
+		if err := c.do("GET", "/api/v1/issues/"+esc(keys[0]), nil, &i); err != nil {
+			return c.shipKeysRefused(keys[0], err)
 		}
-		switch {
-		case project != "" && !strings.EqualFold(i.ProjectKey, project):
-			return c.usage("%s isn't in %s (it is in %s), and one pull request is in one project: leave it out of wp ship, and ship it with wp ship %s from its own branch", k, project, i.ProjectKey, k)
-		case isClosedCategory(i.Status.Category):
-			return c.usage("%s is closed: reopen it first (wp edit %s --status \"To Do\") if this change does it, or leave it out of wp ship", k, k)
-		}
+		project = i.ProjectKey
 	}
-	return nil
+	err := c.do("POST", "/api/v1/projects/"+esc(project)+"/pulls/tasks", map[string]any{"keys": keys}, nil)
+	return c.shipKeysRefused("", err)
 }
 
-// maxShipTasks mirrors the server's bound (internal/core/pr_open.go).
-const maxShipTasks = 6
+// shipKeysRefused is a refused key as a usage error (exit 2), with what to
+// run; a server that can't answer is an error of its own.
+func (c *cli) shipKeysRefused(key string, err error) error {
+	var ae *apiError
+	if err == nil || !errors.As(err, &ae) || ae.status >= 500 {
+		return err
+	}
+	if key != "" {
+		return c.usage("%s: %s (check the key with wp show %s, or leave it out of wp ship and run wp ship %s later)", key, ae.msg, key, key)
+	}
+	return c.usage("%s", ae.msg)
+}

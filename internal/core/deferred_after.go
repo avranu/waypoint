@@ -273,7 +273,8 @@ func (s *Service) deferredCompactState(ctx context.Context, id int64) string {
 		s.log.WarnContext(ctx, "deferred offer: read its compaction", "session", id, "err", err)
 		return deferredCompactFailed
 	}
-	failed := func() string {
+	failed := func(why string) string {
+		s.log.InfoContext(ctx, "deferred offer: its compaction failed", "session", id, "job", job, "state", state, "why", why)
 		if _, err := s.writeRows(ctx, `UPDATE agent_sessions SET warm_state = '' WHERE id = ? AND warm_state = ?`, id, warmCompacting); err != nil {
 			s.log.WarnContext(ctx, "deferred offer: release the session", "session", id, "err", err)
 		}
@@ -285,22 +286,26 @@ func (s *Service) deferredCompactState(ctx context.Context, id int64) string {
 		if now-created < deferredCompactWait.Milliseconds() {
 			return deferredCompactWaits
 		}
-		if state == "queued" {
-			if _, err := s.cancelRunnerJob(ctx, SystemActor(), job, "no runner took the compaction before an offer in time"); err != nil {
-				s.log.InfoContext(ctx, "deferred offer: cancel its compaction", "job", job, "err", err)
-			}
+		j, err := s.cancelRunnerJob(ctx, SystemActor(), job, "the compaction before an offer took too long")
+		if err != nil {
+			s.log.InfoContext(ctx, "deferred offer: cancel its compaction", "job", job, "err", err)
 		}
-		return failed()
+		// A runner still compacting the session keeps it quiet until it stops
+		// (cancelled now): releasing it sooner would post into a compaction.
+		if state == "running" && (err != nil || j.State == "running") {
+			return deferredCompactWaits
+		}
+		return failed("it didn't finish in time")
 	case "done":
 		var r struct {
 			Delivered *bool `json:"delivered"`
 		}
 		if err := json.Unmarshal([]byte(result.String), &r); err != nil {
 			s.log.WarnContext(ctx, "deferred offer: read its compaction's result", "session", id, "job", job, "err", err)
-			return failed()
+			return failed("its result can't be read")
 		}
 		if r.Delivered != nil && !*r.Delivered {
-			return failed()
+			return failed("the runner couldn't type it")
 		}
 		var warmAt sql.NullInt64
 		_ = s.db.R.QueryRowContext(ctx, `SELECT warm_at FROM agent_sessions WHERE id = ?`, id).Scan(&warmAt)
@@ -310,9 +315,9 @@ func (s *Service) deferredCompactState(ctx context.Context, id int64) string {
 		case finished >= now-deferredCompactWait.Milliseconds():
 			return deferredCompactWaits
 		}
-		return failed()
+		return failed("the session didn't start again after it")
 	}
-	return failed()
+	return failed("the job ended " + state)
 }
 
 // compactForDeferred queues the session's compaction for an offer, once, as
@@ -424,8 +429,8 @@ func (s *Service) deferredSweep(ctx context.Context) {
 // since the rows were recorded. Past deferredCompactWait, with no runner to
 // do it, the text is queued for the session's next hook.
 func (s *Service) deferredUntold(ctx context.Context, id int64) {
-	warn := func(what string, err error) {
-		s.log.WarnContext(ctx, "deferred offers: "+what, "session", id, "err", err)
+	warn := func(step string, err error) {
+		s.log.WarnContext(ctx, "deferred offers: a step failed", "step", step, "session", id, "err", err)
 	}
 	rows, err := queryIDs(ctx, s.db.R, `SELECT issue_id FROM deferred_offers WHERE session_id = ? AND told_at IS NULL ORDER BY id`, id)
 	if err != nil {
@@ -435,8 +440,14 @@ func (s *Service) deferredUntold(ctx context.Context, id int64) {
 	if len(rows) == 0 {
 		return
 	}
+	// Every read and write below is of these rows only: a row recorded
+	// meanwhile (a ship's offer) is not in the text sent now, so it stays
+	// untold for the next sweep rather than being marked told unsent.
+	// #nosec G202 -- the list is placeholders only; values are bound
+	these := ` WHERE session_id = ? AND told_at IS NULL AND issue_id IN (` + placeholders(len(rows)) + `)`
+	theseArgs := func(first ...any) []any { return append(append(first, id), int64Args(rows)...) }
 	var offered, task, shippedAt sql.NullInt64
-	if err := s.db.R.QueryRowContext(ctx, `SELECT min(offered_at), max(task_issue_id), max(shipped_at) FROM deferred_offers WHERE session_id = ? AND told_at IS NULL`, id).Scan(&offered, &task, &shippedAt); err != nil {
+	if err := s.db.R.QueryRowContext(ctx, `SELECT min(offered_at), max(task_issue_id), max(shipped_at) FROM deferred_offers`+these, theseArgs()...).Scan(&offered, &task, &shippedAt); err != nil {
 		warn("read when they were recorded", err)
 		return
 	}
@@ -446,7 +457,7 @@ func (s *Service) deferredUntold(ctx context.Context, id int64) {
 		return
 	}
 	told := func() {
-		if _, err := s.writeRows(ctx, `UPDATE deferred_offers SET told_at = ? WHERE session_id = ? AND told_at IS NULL`, s.nowMS(), id); err != nil {
+		if _, err := s.writeRows(ctx, `UPDATE deferred_offers SET told_at = ?`+these, theseArgs(s.nowMS())...); err != nil {
 			warn("mark them told", err)
 		}
 	}
@@ -496,11 +507,15 @@ func (s *Service) deferredUntold(ctx context.Context, id int64) {
 			return
 		case state == "" && x.tokens >= deferredCompactFrom() && x.cli == "claude" && s.deferredTypable(ctx, id, true):
 			if s.compactForDeferred(ctx, x) {
-				if _, err := s.writeRows(ctx, `UPDATE deferred_offers SET compacted = 1 WHERE session_id = ? AND told_at IS NULL`, id); err != nil {
-					warn("mark them compacted", err)
-				}
 				return
 			}
+		}
+	}
+	// compacted says the session was compacted before it read the offer, so
+	// it is set once the compaction is done, not when it is queued
+	if state == deferredCompactDone {
+		if _, err := s.writeRows(ctx, `UPDATE deferred_offers SET compacted = 1`+these, theseArgs()...); err != nil {
+			warn("mark them compacted", err)
 		}
 	}
 	var keys []string

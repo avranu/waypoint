@@ -154,22 +154,8 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 	if err := s.shipAlso(ctx, actor, p, &in); err != nil {
 		return nil, err
 	}
-	for _, ref := range append([]string{in.Issue, in.For}, in.Also...) {
-		if ref == "" {
-			continue
-		}
-		i, _, err := s.getIssueFor(ctx, s.db.R, actor, ref, RoleEditor, false)
-		if err != nil {
-			continue
-		}
-		o, err := s.objectiveRow(ctx, s.db.R, i.ID)
-		if err != nil {
-			return nil, err
-		}
-		if o != nil && o.diagnoseRound() {
-			return nil, invalid("%s's round %d is a diagnose round, which ships no code: record the diagnosis first (wp objective diagnose %s -f FILE). The same round then reopens as a work round, and that is the round to ship in. A person can skip the diagnosis with wp objective next %s",
-				i.Key, o.Round, i.Key, i.Key)
-		}
+	if err := s.refuseDiagnoseShip(ctx, actor, append([]string{in.Issue, in.For}, in.Also...)); err != nil {
+		return nil, err
 	}
 	repos, err := s.ListProjectRepos(ctx, actor, p.Key)
 	if err != nil {
@@ -539,6 +525,53 @@ func (s *Service) reviewedRound(ctx context.Context, issueID, run int64, branch 
 		}
 	}
 	return false
+}
+
+// refuseDiagnoseShip refuses a ship for a task on a diagnose round.
+func (s *Service) refuseDiagnoseShip(ctx context.Context, actor *Actor, refs []string) error {
+	for _, ref := range refs {
+		if ref == "" {
+			continue
+		}
+		i, _, err := s.getIssueFor(ctx, s.db.R, actor, ref, RoleEditor, false)
+		if err != nil {
+			continue
+		}
+		o, err := s.objectiveRow(ctx, s.db.R, i.ID)
+		if err != nil {
+			return err
+		}
+		if o != nil && o.diagnoseRound() {
+			return invalid("%s's round %d is a diagnose round, which ships no code: record the diagnosis first (wp objective diagnose %s -f FILE). The same round then reopens as a work round, and that is the round to ship in. A person can skip the diagnosis with wp objective next %s",
+				i.Key, o.Round, i.Key, i.Key)
+		}
+	}
+	return nil
+}
+
+// CheckShipTasks is what wp ship A B asks before it commits or pushes
+// anything: the open's own checks of the tasks (shipAlso and the diagnose
+// round), so the CLI keeps no copy of them that could drift (WP-1426). Every
+// key is checked as an extra task, the first one too.
+func (s *Service) CheckShipTasks(ctx context.Context, actor *Actor, project string, keys []string) error {
+	if actor == nil || actor.User == nil {
+		return ErrUnauthorized
+	}
+	if err := actor.need(PermPullsWrite); err != nil {
+		return err
+	}
+	p, err := s.projectByRef(ctx, s.db.R, project)
+	if err != nil {
+		return err
+	}
+	if err := s.requireProjectRole(ctx, s.db.R, actor, p.ID, RoleEditor); err != nil {
+		return err
+	}
+	in := OpenPRInput{Also: keys}
+	if err := s.shipAlso(ctx, actor, p, &in); err != nil {
+		return err
+	}
+	return s.refuseDiagnoseShip(ctx, actor, in.Also)
 }
 
 // maxShipTasks is the most tasks one pull request is shipped for: the

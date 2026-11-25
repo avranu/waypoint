@@ -18,6 +18,7 @@ func (s *Server) shippingRoutes(mux *http.ServeMux) {
 	a := s.authed
 	mux.HandleFunc("GET /api/v1/projects/{key}/pulls/{number}", a(s.findPull))
 	mux.HandleFunc("POST /api/v1/projects/{key}/pulls", a(s.openPull))
+	mux.HandleFunc("POST /api/v1/projects/{key}/pulls/tasks", a(s.checkShipTasks))
 	mux.HandleFunc("POST /api/v1/pulls/{id}/check", a(s.checkPull))
 	mux.HandleFunc("GET /api/v1/pulls/{id}/readiness", a(s.pullReadiness))
 	mux.HandleFunc("GET /api/v1/pulls/{id}/failed-checks", a(s.failedChecks))
@@ -102,6 +103,21 @@ func (s *Server) openPull(w http.ResponseWriter, r *http.Request) (any, error) {
 		res.PutOff = s.putOffAfterOpen(r.Context(), actorFrom(r), in.Issue, res.Reviewed)
 	}
 	return res, nil
+}
+
+// checkShipTasks refuses, as the open would, tasks that can't share one pull
+// request; wp ship A B asks it before it commits (WP-1426).
+func (s *Server) checkShipTasks(w http.ResponseWriter, r *http.Request) (any, error) {
+	var in struct {
+		Keys []string `json:"keys"`
+	}
+	if err := decode(r, &in); err != nil {
+		return nil, err
+	}
+	if err := s.svc.CheckShipTasks(r.Context(), actorFrom(r), r.PathValue("key"), in.Keys); err != nil {
+		return nil, err
+	}
+	return map[string]bool{"ok": true}, nil
 }
 
 // putOffAfterOpen is what the open says about the task's put-off steps. After

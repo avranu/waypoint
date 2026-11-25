@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -93,8 +94,16 @@ func TestShipSeveralKeysShipsOnePullRequest(t *testing.T) {
 	if len(fg.created) != 0 {
 		t.Fatalf("a refused ship opened %d pull requests", len(fg.created))
 	}
+	// refused before anything was committed: the change is still staged
+	if out, err := exec.Command("git", "-C", dir, "log", "--format=%s").CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "first" {
+		t.Errorf("a refused ship committed: %v\n%s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", dir, "diff", "--cached", "--name-only").CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "a.txt" {
+		t.Errorf("a refused ship unstaged the change: %v\n%s", err, out)
+	}
 
-	out := e.wp("ship", main.Key, also.Key, "-p", p.Key, "-m", "Did it")
+	// keys in lower case are the tasks' keys
+	out := e.wp("ship", main.Key, strings.ToLower(also.Key), "-p", p.Key, "-m", "Did it")
 	if len(fg.created) != 1 || !strings.Contains(out, "also "+also.Key+" In Review") {
 		t.Fatalf("ship A B (%d created):\n%s", len(fg.created), out)
 	}
@@ -135,8 +144,11 @@ func TestShipSeveralKeysShipsOnePullRequest(t *testing.T) {
 		t.Errorf("opened %d pull requests", len(fg.created))
 	}
 	d, err := e.svc.GetIssue(ctx, me, late.Key)
-	if err != nil || d.Status.Name != "In Review" || len(d.Links) != 1 {
-		t.Errorf("%s after shipping onto the open pull request: %v %+v links %+v", late.Key, err, d.Status, d.Links)
+	if err != nil {
+		t.Fatalf("%s after shipping onto the open pull request: %v", late.Key, err)
+	}
+	if d.Status.Name != "In Review" || len(d.Links) != 1 {
+		t.Errorf("%s after shipping onto the open pull request: %+v links %+v", late.Key, d.Status, d.Links)
 	}
 }
 

@@ -199,3 +199,36 @@ func TestHeldShipOfSeveralTasksLinksAndMovesEvery(t *testing.T) {
 		}
 	}
 }
+
+// wp ship A B asks CheckShipTasks before it commits: it refuses what the open
+// would refuse, a diagnose round among the extra tasks too, every key from
+// one copy of the rules, and accepts exactly maxShipTasks.
+func TestCheckShipTasksRefusesWhatTheOpenWould(t *testing.T) {
+	o := newObjEnv(t)
+	first := o.task("First")
+	diag := o.toDiagnose(2, 2, ObjectiveInput{})
+	closed := o.task("Closed")
+	if _, err := o.s.UpdateIssue(o.ctx, o.admin, closed.Key, IssuePatch{Status: str("Done")}); err != nil {
+		t.Fatal(err)
+	}
+	var six []string
+	for range maxShipTasks {
+		six = append(six, o.task("More").Key)
+	}
+	for _, tc := range []struct {
+		keys []string
+		want string
+	}{
+		{[]string{first.Key, diag.Key}, "diagnose round"},
+		{[]string{first.Key, closed.Key}, "is closed"},
+		{[]string{first.Key, o.p.Key + "-999"}, o.p.Key + "-999"},
+		{append([]string{first.Key}, six...), "at most 6 tasks"},
+	} {
+		if err := o.s.CheckShipTasks(o.ctx, o.ag, o.p.Key, tc.keys); !IsInvalid(err) || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%v: %v", tc.keys, err)
+		}
+	}
+	if err := o.s.CheckShipTasks(o.ctx, o.ag, o.p.Key, six); err != nil {
+		t.Errorf("exactly %d tasks: %v", maxShipTasks, err)
+	}
+}

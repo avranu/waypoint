@@ -448,6 +448,7 @@ var routePermissions = map[string]core.Permission{
 	"GET /api/v1/branches":                                        core.PermPullsRead,
 	"GET /api/v1/branches/tidy":                                   core.PermPullsRead,
 	"POST /api/v1/projects/{key}/pulls":                           core.PermPullsWrite,
+	"POST /api/v1/projects/{key}/pulls/tasks":                     core.PermPullsWrite,
 	"POST /api/v1/pulls/{id}/check":                               core.PermPullsWrite,
 	"POST /api/v1/findings/{id}/dismiss":                          core.PermPullsWrite,
 	"POST /api/v1/findings/{id}/reopen":                           core.PermPullsWrite,

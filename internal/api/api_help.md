@@ -1036,6 +1036,7 @@ steers or clears one in effect.
                                      needs acting on. When held_needs_agent and notice_needs_agent are false
                                      there is nothing for the agent to run: it ends its turn and Waypoint
                                      opens the pull request itself. Without review, held is a 400 error.
+    POST /projects/{key}/pulls/tasks {keys}   refuse, as the open would, tasks that can't share one pull request (wp ship A B asks before it commits): {"ok":true} or the error
     GET /projects/{key}/pulls/{number}?repo=owner/name   a pull request by number: the detail above plus
                                      "shipping": {ci, checks[{name,state,url,description,has_log}],
                                      gate{enabled,severity,state,note,open,below}, findings[{id,path,line,
