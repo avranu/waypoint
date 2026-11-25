@@ -92,15 +92,15 @@ const (
 // prompts never count as a person's.
 const AutopilotPromptMark = "Waypoint autopilot"
 
-// HarnessPromptMarks start the prompts Claude Code itself submits to a
-// session when something the session started reports back: a background
-// shell or agent finishing, a subagent's or another session's message. They
-// arrive through the same hook as typing, but no person wrote them (WP-700).
-// A subagent's hand-back shows in the transcript after "Another Claude
-// session sent a message:", but the UserPromptSubmit hook gets it without
-// that line, starting at its <agent-message from="…"> tag (WP-823). The
-// hook's input says nothing else about where a prompt came from, so the
-// text is all there is to go by.
+// HarnessPromptMarks are the text prefixes of the prompts Claude Code itself
+// submits to a session when something the session started reports back: a
+// background shell or agent finishing, a subagent's or another session's
+// message (WP-700). They are matched as text, so a person, or any text, can
+// begin with one: the match says a prompt looks like the harness's, not that
+// the harness wrote it. A subagent's hand-back shows in the transcript after
+// "Another Claude session sent a message:", but the UserPromptSubmit hook gets
+// it without that line, starting at its <agent-message from="…"> tag (WP-823).
+// The hook's input has no other signal of where a prompt came from.
 var HarnessPromptMarks = []string{"<task-notification>", "Another Claude session sent a message:", `<agent-message from="`}
 
 // HarnessPromptMark is the mark the prompt starts with once normalised

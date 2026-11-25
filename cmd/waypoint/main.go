@@ -277,13 +277,6 @@ func serve(ctx context.Context, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("tracing: %w", err)
 	}
-	defer func() {
-		flush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := stopTracing(flush); err != nil {
-			log.Warn("tracing shutdown", "err", err)
-		}
-	}()
 	if tracing.Enabled() {
 		log = slog.New(tracing.LogHandler(log.Handler()))
 		log.Info("tracing on (OTLP over HTTP)")
@@ -306,6 +299,15 @@ func serve(ctx context.Context, log *slog.Logger) error {
 	}
 	log = slog.New(logs.Handler(log.Handler()))
 	slog.SetDefault(log)
+	// Registered after logs.Close's defer, so it runs before it: what the
+	// shutdown logs is still kept.
+	defer func() {
+		flush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := stopTracing(flush); err != nil {
+			log.Warn("tracing shutdown", "err", err)
+		}
+	}()
 	svc, d, err := open(ctx, log, logs)
 	if err != nil {
 		return err

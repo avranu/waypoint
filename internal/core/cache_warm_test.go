@@ -293,7 +293,7 @@ func TestKeepWarmAutopilotSession(t *testing.T) {
 
 	// A prompt stored before this branch kept Claude Code's paste wrapper and
 	// has no typed record: it reads as a person's, by what it says (not at
-	// all by how it opens), unless migration 0188's backfill gave it a kind
+	// all by how it opens), unless migration 0187's backfill gave it a kind
 	// (db.TestTypedPromptsBackfillReadsWrappedRows), which keeps it autopilot's.
 	be.setClock(be.clockNow().Add(time.Minute))
 	legacy := excerpt(pasted(AutopilotPromptMark+" started this session for WP-3"), 500)

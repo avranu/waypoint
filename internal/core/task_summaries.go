@@ -148,7 +148,9 @@ func (s *Service) fileSummaryAsks(ctx context.Context, t *tx, actor *Actor, x *A
 	}
 	reqID, _, err := s.createRequestTx(ctx, t, actor, x, RequestInput{Kind: RequestQuestion, Title: title, Source: requestAuto, Body: b.String(), Questions: qs}, at)
 	if IsInvalid(err) {
-		return nil // too many open already: the Stop must still succeed
+		// The asks are a guess; refusing them must not fail the Stop.
+		s.log.WarnContext(ctx, "summary asks refused", "session", x.ID, "summary", summaryID, "full", errors.Is(err, errRequestsFull), "err", err)
+		return nil
 	}
 	if err != nil {
 		return err
@@ -276,6 +278,9 @@ func (s *Service) unfiledAsks(ctx context.Context, q queryer, x *AgentSession, m
 	for _, a := range asks {
 		if requestCodeRE.MatchString(a) || askCovered(a, filed) {
 			continue
+		}
+		if len(out) == maxRequestQuestions {
+			break // one request holds this many
 		}
 		out = append(out, a)
 	}

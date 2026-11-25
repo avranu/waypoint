@@ -82,7 +82,8 @@ func TestForgePatientClient(t *testing.T) {
 type slowForge struct {
 	*shipForge
 	defaultDown, createDown bool
-	createdAnyway           bool // the forge opened it before going quiet
+	createdAnyway           bool  // the forge opened it before going quiet
+	createErr               error // CreatePR answers with it
 }
 
 var errForgeTimeout = &url.Error{Op: "Post", URL: "https://git.example.com/api/v1/repos/acme/app/pulls", Err: context.DeadlineExceeded}
@@ -97,6 +98,9 @@ func (g *slowForge) DefaultBranch(ctx context.Context, f *Forge, repo string) (s
 func (g *slowForge) CreatePR(ctx context.Context, f *Forge, repo string, in NewPR) (*ForgePR, error) {
 	if !isForgePatient(ctx) {
 		return nil, errors.New("opening a pull request isn't a patient call")
+	}
+	if g.createErr != nil {
+		return nil, g.createErr
 	}
 	if !g.createDown {
 		return g.shipForge.CreatePR(ctx, f, repo, in)
@@ -141,6 +145,15 @@ func TestOpenPullRequestForgeDown(t *testing.T) {
 	if !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "open the pull request: git.example.com didn't answer") {
 		t.Fatalf("open down: %v", err)
 	}
+	// "Already exists", and the forge doesn't list it: a 502 to try again,
+	// not the forge's refusal.
+	g.createDown, g.createErr = false, &forgeAPIError{method: "POST", path: "/repos/acme/app/pulls", status: 422, body: "A pull request already exists for acme:feature"}
+	_, err = e.s.OpenPullRequest(e.ctx, e.admin, in)
+	var ae *forgeAPIError
+	if !errors.Is(err, ErrUnavailable) || errors.As(err, &ae) || shipRefused(err) || !strings.Contains(err.Error(), "already exist") || !strings.HasSuffix(err.Error(), "try again in a minute") {
+		t.Fatalf("already exists, not listed: %v", err)
+	}
+	g.createDown, g.createErr = true, nil
 	// It opened anyway, and no webhook said so: the forge's list has it, so
 	// it is recorded and returned.
 	g.createdAnyway = true

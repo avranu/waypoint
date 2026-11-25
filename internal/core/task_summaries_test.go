@@ -1,6 +1,9 @@
 package core
 
 import (
+	"bytes"
+	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -56,7 +59,9 @@ func TestTaskSummariesAndUnfiledAsks(t *testing.T) {
 	}
 	stopMsg("Working on it.") // not finished: no summary
 	var n int
-	_ = te.s.db.R.QueryRow(`SELECT count(*) FROM task_summaries`).Scan(&n)
+	if err := te.s.db.R.QueryRow(`SELECT count(*) FROM task_summaries`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
 	if n != 0 {
 		t.Fatalf("a summary before the task was done: %d", n)
 	}
@@ -79,13 +84,17 @@ func TestTaskSummariesAndUnfiledAsks(t *testing.T) {
 	// The trailing-question rule (WP-96) filed this Stop's ask already, quoting
 	// the message: the summary points at that, nothing is filed twice.
 	var title, body, source string
-	_ = te.s.db.R.QueryRow(`SELECT title, body, source FROM requests WHERE id = (SELECT request_id FROM task_summaries)`).Scan(&title, &body, &source)
+	if err := te.s.db.R.QueryRow(`SELECT title, body, source FROM requests WHERE id = (SELECT request_id FROM task_summaries)`).Scan(&title, &body, &source); err != nil {
+		t.Fatal(err)
+	}
 	if source != requestAuto || !strings.Contains(body, "Rotate the forge token") {
 		t.Errorf("linked request %q (%s): %q", title, source, body)
 	}
 	// The agent's next Stop rewrites it; the request isn't filed again.
 	stopMsg(msg + "\nAlso: CI is green.")
-	_ = te.s.db.R.QueryRow(`SELECT count(*) FROM requests WHERE source = ?`, requestAuto).Scan(&n)
+	if err := te.s.db.R.QueryRow(`SELECT count(*) FROM requests WHERE source = ?`, requestAuto).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
 	if n != 1 {
 		t.Errorf("auto requests = %d, want 1", n)
 	}
@@ -129,5 +138,97 @@ func TestTaskSummariesAndUnfiledAsks(t *testing.T) {
 	}
 	if page, _ = te.s.TaskSummaries(te.ctx, te.admin, TaskSummaryQuery{All: true}); len(page.Summaries) != 1 || page.Summaries[0].ReviewedAt == nil {
 		t.Errorf("all = %+v", page.Summaries)
+	}
+}
+
+// stopWithSummary finishes a task and reports a Stop whose last message is msg.
+func stopWithSummary(t *testing.T, te *taskEnv, msg string) {
+	t.Helper()
+	p := te.project(te.admin, "App", "")
+	a := te.issue(te.admin, IssueInput{Project: p.Key, Title: "First", Agent: "claude"})
+	if _, err := te.s.AgentTake(te.ctx, te.ag, a.Key, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := te.s.AgentDone(te.ctx, te.ag, a.Key, AgentDoneInput{}); err != nil {
+		t.Fatal(err)
+	}
+	te.setClock(te.clockNow().Add(time.Minute))
+	if _, err := te.s.SessionHook(te.ctx, te.ag, []HookEvent{hook("box", te.cli, "Stop", func(h *HookEvent) { h.LastMessage = msg })}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// More asks than a request holds are read whole; the first the request holds
+// are filed as one request, and a refusal is logged, not a failed Stop. (A
+// Stop's own trailing-question rule can file first, so this calls the filing
+// step itself.)
+func TestTaskSummaryWithMoreAsksThanARequestHolds(t *testing.T) {
+	te := newTaskEnv(t, "")
+	logs := &bytes.Buffer{}
+	te.s.log = slog.New(slog.NewTextHandler(logs, nil))
+	var msg string
+	for _, ask := range []string{"The runner install on runner1", "The forge token rotation before Friday", "A name for the new tab", "The production deploy window", "How long audit logs are retained", "A billing contact for the invoices", "The mirror host for backups", "The license key renewal", "The domain registration renewal"} {
+		msg += "- " + ask + "\n"
+	}
+	asks := summaryAsks("Waiting on you:\n" + msg)
+	if len(asks) != 9 {
+		t.Fatalf("a summary with 9 asks reads %d, want 9", len(asks))
+	}
+	file := func(asks []string) error {
+		return te.s.write(te.ctx, te.ag, func(tx *tx) error {
+			x, err := te.s.sessionByID(te.ctx, tx, te.ag, te.session)
+			if err != nil {
+				return err
+			}
+			return te.s.fileSummaryAsks(te.ctx, tx, te.ag, x, 0, "WP-1", asks, te.s.nowMS())
+		})
+	}
+	if err := file(asks); err != nil {
+		t.Fatalf("filing more asks than a request holds: %v, want the refusal logged", err)
+	}
+	if !strings.Contains(logs.String(), "summary asks refused") || !strings.Contains(logs.String(), "full=false") {
+		t.Fatalf("the refusal isn't logged: %q", logs.String())
+	}
+	if err := file(asks[:maxRequestQuestions]); err != nil {
+		t.Fatalf("filing a summary's asks: %v", err)
+	}
+	var n, questions int
+	if err := te.s.db.R.QueryRow(`SELECT count(*), coalesce(max(json_array_length(json_extract(payload, '$.questions'))), 0) FROM requests WHERE source = ?`, requestAuto).Scan(&n, &questions); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || questions != maxRequestQuestions {
+		t.Errorf("auto requests = %d with %d questions, want 1 with %d", n, questions, maxRequestQuestions)
+	}
+}
+
+// A person with the most requests open gets no auto request from a summary,
+// and the Stop still succeeds.
+func TestTaskSummaryAsksAtTheOpenRequestCap(t *testing.T) {
+	te := newTaskEnv(t, "")
+	logs := &bytes.Buffer{}
+	te.s.log = slog.New(slog.NewTextHandler(logs, nil))
+	for i := range maxRequestsOpenIn {
+		title := fmt.Sprintf("Open question number %d zq%dx", i, i*7919)
+		if _, _, err := te.s.CreateRequest(te.ctx, te.ag, RequestInput{Kind: RequestQuestion, Title: title, Questions: []Question{{Question: title}}}); err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+	}
+	stopWithSummary(t, te, "Shipped it.\n\nWaiting on you:\n- Rotate the forge token before Friday\n")
+	var n int
+	if err := te.s.db.R.QueryRow(`SELECT count(*) FROM requests WHERE source = ?`, requestAuto).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("auto requests = %d at the cap, want 0", n)
+	}
+	var summaries, linked int
+	if err := te.s.db.R.QueryRow(`SELECT count(*), count(request_id) FROM task_summaries`).Scan(&summaries, &linked); err != nil {
+		t.Fatal(err)
+	}
+	if summaries != 1 || linked != 0 {
+		t.Errorf("summaries = %d with %d linked to a request, want 1 with none", summaries, linked)
+	}
+	if !strings.Contains(logs.String(), "summary asks refused") || !strings.Contains(logs.String(), "full=true") {
+		t.Errorf("the open-cap refusal isn't logged: %q", logs.String())
 	}
 }

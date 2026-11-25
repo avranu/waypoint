@@ -56,13 +56,19 @@ async function run(width) {
   const page = await login(ctx);
   // Failures the test forces itself are expected; anything else is a bug.
   let forced = 0;
+  let forcedTotal = 0;
+  let excused = 0;
   page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
   page.on(
     "console",
-    (m) =>
-      m.type() === "error" &&
-      !/status of (400|500)/.test(m.text()) &&
-      fail(`${tag} console: ${m.text().slice(0, 300)}`),
+    (m) => {
+      if (m.type() !== "error") return;
+      if (/status of (400|500)/.test(m.text()) && excused < forcedTotal) {
+        excused++;
+        return;
+      }
+      fail(`${tag} console: ${m.text().slice(0, 300)}`);
+    },
   );
   const shot = (name) =>
     page.screenshot({ path: `${out}/${name}-${width}.png` });
@@ -77,6 +83,7 @@ async function run(width) {
     page.route(pattern, (route) =>
       route.request().method() === method && forced < 1
         ? (forced++,
+          forcedTotal++,
           route.fulfill({
             status,
             contentType: "application/json",
