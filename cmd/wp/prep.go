@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -122,11 +121,15 @@ type prepEvidence struct {
 		Date     string `json:"date"`
 		By       string `json:"by"`
 		BearsOn  string `json:"bears_on"`
+		// ChangedSince: the record was edited after it was matched.
+		ChangedSince bool `json:"changed_since,omitempty"`
 	} `json:"evidence"`
 	Claims []struct {
-		Quote string `json:"quote"`
-		Test  string `json:"test"`
-		Ref   string `json:"ref,omitempty"`
+		Quote        string `json:"quote"`
+		Test         string `json:"test"`
+		Ref          string `json:"ref,omitempty"`
+		RefKind      string `json:"ref_kind,omitempty"`
+		ChangedSince bool   `json:"changed_since,omitempty"`
 	} `json:"claims"`
 }
 
@@ -428,6 +431,12 @@ func renderPrepEvidence(e *prepEvidence, project string, compact bool) (string, 
 	}
 	var b strings.Builder
 	var items []shownItem
+	edited := func(changed bool) string {
+		if changed {
+			return ", edited since it was matched"
+		}
+		return ""
+	}
 	// One command per kind that reads something printed here.
 	read := map[string]string{}
 	canRead := func(kind, ref string) {
@@ -442,7 +451,7 @@ func renderPrepEvidence(e *prepEvidence, project string, compact bool) (string, 
 			if it.Kind == "design" {
 				category += " assumptions"
 			}
-			fmt.Fprintf(&b, "  %s %s [%s, %s, %s]", it.Ref, it.Title, category, it.Date, it.By)
+			fmt.Fprintf(&b, "  %s %s [%s, %s, %s%s]", it.Ref, it.Title, category, it.Date, it.By, edited(it.ChangedSince))
 			if it.BearsOn != "" {
 				b.WriteString(" — bears on: " + it.BearsOn)
 			}
@@ -456,14 +465,10 @@ func renderPrepEvidence(e *prepEvidence, project string, compact bool) (string, 
 		for _, cl := range e.Claims[:min(len(e.Claims), limit)] {
 			fmt.Fprintf(&b, "  - \"%s\" — test: %s", cl.Quote, cl.Test)
 			if cl.Ref != "" {
-				b.WriteString(" (see " + cl.Ref + ")")
-				kind := "page"
-				if designRefRE.MatchString(cl.Ref) {
-					kind = "design"
-				}
-				canRead(kind, cl.Ref)
+				b.WriteString(" (see " + cl.Ref + edited(cl.ChangedSince) + ")")
+				canRead(cl.RefKind, cl.Ref)
 				if !slices.ContainsFunc(items, func(it shownItem) bool { return it.Ref == cl.Ref }) {
-					items = append(items, shownItem{Type: kind, Ref: cl.Ref, Project: project})
+					items = append(items, shownItem{Type: cl.RefKind, Ref: cl.Ref, Project: project})
 				}
 			}
 			b.WriteByte('\n')
@@ -481,9 +486,6 @@ func renderPrepEvidence(e *prepEvidence, project string, compact bool) (string, 
 	b.WriteString("Judge these before relying on them: could more or better data be collected, or better controls used? Check how and when each figure was measured. A claim listed here is not known to be wrong.\n")
 	return b.String(), items
 }
-
-// designRefRE tells a decision's code from a page's.
-var designRefRE = regexp.MustCompile(`-ADR\d+$`)
 
 // prepTermLimit is how many of a prep's terms renderPrepNotes prints.
 func prepTermLimit(compact bool) int {

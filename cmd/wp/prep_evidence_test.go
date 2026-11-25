@@ -16,7 +16,7 @@ const evidenceJSON = `{"evidence": [
 	{"ref": "WP-R3", "kind": "page", "title": "Model survey", "category": "reference", "date": "2026-10-02", "by": "person", "bears_on": "which models point"},
 	{"ref": "WP-ADR89", "kind": "design", "title": "Gate on checks", "category": "decision", "date": "2026-09-30", "by": "reviewed by a person", "bears_on": "check times"}],
 	"claims": [
-	{"quote": "most merges fail", "test": "count why merges failed", "ref": "WP-X20"},
+	{"quote": "most merges fail", "test": "count why merges failed", "ref": "WP-X20", "ref_kind": "page"},
 	{"quote": "checks are slow", "test": "time them for a week"},
 	{"quote": "nobody reads reviews", "test": "count reads"}]}`
 
@@ -130,8 +130,21 @@ Judge these before relying on them: could more or better data be collected, or b
 	if out := one(`{"claims": [{"quote": "checks are slow", "test": "time them"}]}`); strings.Contains(out, "Recorded evidence") || strings.Contains(out, "Read one") || !strings.Contains(out, "Claims in") || !strings.Contains(out, "Judge these") {
 		t.Errorf("claims alone:\n%s", out)
 	}
-	if out := one(`{"claims": [{"quote": "checks are slow", "test": "time them", "ref": "WP-ADR89"}]}`); !strings.Contains(out, "Read one: wp design show WP-ADR89\n") {
+	// The server says what kind a claim's record is: its code doesn't.
+	if out := one(`{"claims": [{"quote": "checks are slow", "test": "time them", "ref": "WP-D7", "ref_kind": "design"}]}`); !strings.Contains(out, "Read one: wp design show WP-D7\n") {
 		t.Errorf("a claim's decision:\n%s", out)
+	}
+	// What was edited after it was matched says so.
+	edited := one(`{"evidence": [{"ref": "WP-X20", "kind": "page", "title": "Backtests", "category": "experiment", "date": "2026-11-17", "by": "person", "changed_since": true},
+		{"ref": "WP-ADR89", "kind": "design", "title": "Gate", "category": "decision", "date": "2026-09-30", "by": "person", "changed_since": true}],
+		"claims": [{"quote": "checks are slow", "test": "time them", "ref": "WP-R3", "ref_kind": "page", "changed_since": true},
+		{"quote": "most merges fail", "test": "count them", "ref": "WP-R4", "ref_kind": "page"}]}`)
+	for _, w := range []string{"WP-X20 Backtests [experiment, 2026-11-17, person, edited since it was matched]\n",
+		"WP-ADR89 Gate [decision assumptions, 2026-09-30, person, edited since it was matched]\n",
+		"time them (see WP-R3, edited since it was matched)\n", "count them (see WP-R4)\n"} {
+		if !strings.Contains(edited, w) {
+			t.Errorf("edited lacks %q:\n%s", w, edited)
+		}
 	}
 	if out := one(`{"evidence": [{"ref": "WP-ADR89", "kind": "design", "title": "Gate", "category": "decision", "date": "2026-09-30", "by": "person"}]}`); strings.Contains(out, "Claims in") || strings.Contains(out, "bears on") || !strings.Contains(out, "Read one: wp design show WP-ADR89\n") {
 		t.Errorf("evidence alone:\n%s", out)
@@ -140,9 +153,9 @@ Judge these before relying on them: could more or better data be collected, or b
 	// claim names is recorded as shown, once.
 	var e prepEvidence
 	if err := json.Unmarshal([]byte(`{"evidence": [{"ref": "WP-ADR89", "kind": "design", "title": "Gate", "category": "decision", "date": "2026-09-30", "by": "person"}],
-		"claims": [{"quote": "most merges fail", "test": "count them", "ref": "WP-R9"},
-		{"quote": "checks are slow", "test": "time them", "ref": "WP-R9"},
-		{"quote": "the gate is flaky", "test": "rerun it", "ref": "WP-ADR89"}]}`), &e); err != nil {
+		"claims": [{"quote": "most merges fail", "test": "count them", "ref": "WP-R9", "ref_kind": "page"},
+		{"quote": "checks are slow", "test": "time them", "ref": "WP-R9", "ref_kind": "page"},
+		{"quote": "the gate is flaky", "test": "rerun it", "ref": "WP-ADR89", "ref_kind": "design"}]}`), &e); err != nil {
 		t.Fatal(err)
 	}
 	out, items := renderPrepEvidence(&e, "WP", false)
@@ -155,5 +168,11 @@ Judge these before relying on them: could more or better data be collected, or b
 	}
 	if out := one(`{}`); out != "" {
 		t.Errorf("nothing found: %q", out)
+	}
+
+	// A ready prep with neither notes nor evidence prints nothing.
+	prep = `{"key": "WP-12", "state": "ready"}`
+	if out := c.prepSection(nil, "WP-12", 4000, false, true); out != "" {
+		t.Errorf("an empty prep: %q", out)
 	}
 }

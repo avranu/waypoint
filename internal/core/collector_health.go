@@ -254,7 +254,25 @@ var collectors = []collector{
 		output:  `SELECT MAX(h.last_at) FROM hook_drops h`,
 		dropped: `SELECT COALESCE(SUM(h.dropped), 0) FROM hook_drops h`,
 	},
+	{
+		name:  "prep evidence",
+		about: "after a task prep the server asks the prep model which recorded data bears on the task (WP-ADR157), and again when a runner asks for prep work (PrepDue); a check that failed says why in task_prep_evidence.error",
+		// Open tasks prepared of late whose evidence isn't there, while the
+		// experiment runs: without a live run none is made. A prep with no
+		// check at all doesn't count: nothing retries one.
+		waiting: `SELECT COUNT(*), MIN(tp.updated_at) FROM task_preps tp
+			CROSS JOIN task_prep_evidence pe ON pe.issue_id = tp.issue_id
+			CROSS JOIN issues i ON i.id = tp.issue_id CROSS JOIN statuses st ON st.id = i.status_id
+			WHERE tp.updated_at >= ? AND tp.state = 'ready' AND pe.state != 'ready'
+			AND st.category NOT IN ('` + CatDone + `', '` + CatCanceled + `')
+			AND EXISTS (SELECT 1 FROM experiment_runs er WHERE er.experiment = '` + ExpPrepEvidence + `' AND er.stopped_at IS NULL)`,
+		args:   func(now time.Time) []any { return []any{now.Add(-evidenceWaitingWindow).UnixMilli()} },
+		output: `SELECT MAX(pe.created_at) FROM task_prep_evidence pe WHERE pe.state = 'ready'`,
+	},
 }
+
+// evidenceWaitingWindow is how recent a prep still waits for its evidence.
+const evidenceWaitingWindow = 14 * 24 * time.Hour
 
 // What waits for the transcript archive, by machine: bytes the machine says
 // are pending, or an archive status that stopped (the machine reported before

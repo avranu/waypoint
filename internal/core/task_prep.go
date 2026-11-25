@@ -285,13 +285,20 @@ func (s *Service) PrepDue(ctx context.Context, a *Actor, machine string, limit i
 			if pass == 1 {
 				lo, hi = prepPerProject, prepPerProject+depth
 			}
-			for n := lo; n < hi && n < len(q.ready) && len(out) < limit; n++ {
+			for n := lo; n < hi && n < len(q.ready); n++ {
 				qi := q.ready[n]
 				due, err := s.prepIsDue(ctx, qi.issue, now, pass == 0)
 				if err != nil {
 					return nil, err
 				}
-				if due {
+				switch {
+				case !due:
+					// A prep that stands may still lack its evidence. The
+					// server runs that again itself, outside limit.
+					if err := s.retryPrepEvidence(ctx, qi.issue.ID, now, pass == 0); err != nil {
+						s.log.WarnContext(ctx, "prep evidence retry", "issue", qi.issue.Key, "err", err)
+					}
+				case len(out) < limit:
 					out = append(out, &PrepDueTask{Key: qi.issue.Key, Project: q.pl.ProjectKey, Dir: q.pl.Dir})
 					s.markPrepAhead(qi.issue.ID, n-lo+1, pass == 1)
 				}
@@ -499,24 +506,37 @@ func cleanBundle(b *PrepBundle) error {
 // queuePrep has the model read a prep in the background, bounded like the
 // other background AI work.
 func (s *Service) queuePrep(issueID int64, key string) {
-	s.aiMu.Lock()
-	full := s.prepping >= maxQueuedEstimates
-	if !full {
-		s.prepping++
-	}
-	s.aiMu.Unlock()
-	if full {
+	if !s.reservePrep() {
 		s.log.Info("prep skipped: queue full", "issue", key)
 		return
 	}
+	s.goPrep("prep", key, func(ctx context.Context) error { return s.runPrep(ctx, issueID) })
+}
+
+// reservePrep takes one of the places for prep work in the background, when
+// one is free; goPrep or releasePrep gives it back.
+func (s *Service) reservePrep() bool {
+	s.aiMu.Lock()
+	defer s.aiMu.Unlock()
+	if s.prepping >= maxQueuedEstimates {
+		return false
+	}
+	s.prepping++
+	return true
+}
+
+func (s *Service) releasePrep() {
+	s.aiMu.Lock()
+	defer s.aiMu.Unlock()
+	s.prepping--
+}
+
+// goPrep runs reserved prep work in the background and logs its failure.
+func (s *Service) goPrep(what, key string, run func(context.Context) error) {
 	s.goBG(func() {
-		defer func() {
-			s.aiMu.Lock()
-			s.prepping--
-			s.aiMu.Unlock()
-		}()
-		if err := s.runPrep(s.bgCtx, issueID); err != nil {
-			s.log.Info("prep failed", "issue", key, "err", err)
+		defer s.releasePrep()
+		if err := run(s.bgCtx); err != nil {
+			s.log.Info(what+" failed", "issue", key, "err", err)
 		}
 	})
 }

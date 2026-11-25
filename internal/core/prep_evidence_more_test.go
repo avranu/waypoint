@@ -1,0 +1,280 @@
+package core
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+	"unicode/utf8"
+)
+
+// A task held out from the pointers is held out from the evidence too: an agent
+// is given none, draws no arm and is no unit. A person is given it.
+func TestPrepEvidenceHeldOut(t *testing.T) {
+	e := newEvidenceEnv(t)
+	e.llm.evidence = oneClaim
+	e.prepArm(e.task.ID, prepArmNone)
+	e.prep(e.task.Key)
+	e.claim(e.ag, e.task.Key)
+	if got := e.served(e.ag, e.task.Key, true); !got.HeldOut || got.Evidence != nil {
+		t.Errorf("held out: %+v %+v", got.HeldOut, got.Evidence)
+	}
+	if got := e.units(e.task.ID); got != "0 0" {
+		t.Errorf("units %s", got)
+	}
+	e.forceArm(e.task.ID, "shown") // an arm drawn before the pointers were held out
+	for _, shown := range []bool{true, false} {
+		if got := e.served(e.ag, e.task.Key, shown); got.Evidence != nil {
+			t.Errorf("held out with an arm (shown %v): %+v", shown, got.Evidence)
+		}
+	}
+	if got := e.served(e.admin, e.task.Key, false); got.Evidence == nil {
+		t.Error("a person got none")
+	}
+}
+
+// Only the agent holding the task draws its arm.
+func TestPrepEvidenceHolder(t *testing.T) {
+	e := newEvidenceEnv(t)
+	e.llm.evidence = oneClaim
+	e.prep(e.task.Key)
+	e.served(e.ag, e.task.Key, true)
+	if got := e.units(e.task.ID); got != "0 0" {
+		t.Fatalf("an unclaimed task: units %s", got)
+	}
+	e.claim(agentActor(e.admin, "openai/codex"), e.task.Key)
+	e.served(e.ag, e.task.Key, true)
+	if got := e.units(e.task.ID); got != "0 0" {
+		t.Fatalf("another agent's task: units %s", got)
+	}
+	other := e.issue(e.admin, IssueInput{Project: e.p.Key, Title: "Mine", Description: "The checks are slow."})
+	e.prep(other.Key)
+	e.claim(e.ag, other.Key)
+	e.served(e.ag, other.Key, true)
+	if got := e.units(other.ID); got != "1 1" {
+		t.Fatalf("the holder: units %s", got)
+	}
+}
+
+// A snapshot that can't be kept leaves the arm in force; the next fetch keeps it.
+func TestPrepEvidenceSnapshotFailure(t *testing.T) {
+	e := newEvidenceEnv(t)
+	e.llm.evidence = oneClaim
+	e.prep(e.task.Key)
+	e.claim(e.ag, e.task.Key)
+	e.forceArm(e.task.ID, "shown")
+	exec := func(q string) {
+		t.Helper()
+		if _, err := e.s.db.W.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`CREATE TRIGGER no_snapshot BEFORE INSERT ON prep_evidence_units BEGIN SELECT RAISE(ABORT, 'no snapshot'); END`)
+	if got := e.served(e.ag, e.task.Key, true); got.Evidence == nil {
+		t.Error("the shown arm got none")
+	}
+	if got := e.units(e.task.ID); got != "1 0" {
+		t.Fatalf("units %s", got)
+	}
+	exec(`DROP TRIGGER no_snapshot`)
+	e.served(e.ag, e.task.Key, true)
+	if got := e.units(e.task.ID); got != "1 1" {
+		t.Errorf("units %s", got)
+	}
+}
+
+// jsonOf is the evidence as the API sends it.
+func (e *evidenceEnv) sent() (items, claims []map[string]any) {
+	e.t.Helper()
+	raw, err := json.Marshal(e.served(e.admin, e.task.Key, false).Evidence)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	var got struct {
+		Evidence []map[string]any `json:"evidence"`
+		Claims   []map[string]any `json:"claims"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		e.t.Fatal(err)
+	}
+	return got.Evidence, got.Claims
+}
+
+// What was edited after it was matched says so, for a pick and a claim's ref.
+func TestPrepEvidenceChangedSince(t *testing.T) {
+	e := newEvidenceEnv(t)
+	e.seed()
+	e.llm.evidence = fmt.Sprintf(`{"evidence": [{"ref": %q, "bears_on": "check times"}, {"ref": %q, "bears_on": "the gate"}],
+		"claims": [{"quote": "checks are slow", "test": "time them", "ref": %q}, {"quote": "Most merges fail", "test": "count", "ref": %q}]}`,
+		e.code("ref"), e.code("assumes"), e.code("ref"), e.code("assumes"))
+	e.prep(e.task.Key)
+	items, claims := e.sent()
+	if len(items) != 2 || len(claims) != 2 {
+		t.Fatalf("%v %v", items, claims)
+	}
+	for _, m := range slices.Concat(items, claims) {
+		if m["changed_since"] != nil {
+			t.Errorf("unedited: %v", m)
+		}
+	}
+	e.setClock(e.clockNow().Add(48 * time.Hour))
+	body := "Checks take nine minutes now."
+	if _, err := e.s.UpdatePage(e.ctx, e.admin, e.pages["ref"].ID, PageInput{Body: &body}); err != nil {
+		t.Fatal(err)
+	}
+	items, claims = e.sent()
+	if items[0]["changed_since"] != true || items[1]["changed_since"] != nil || claims[0]["changed_since"] != true || claims[1]["changed_since"] != nil {
+		t.Errorf("after an edit: %v %v", items, claims)
+	}
+}
+
+// A claim's ref carries the kind of what it names, and loses it with the ref.
+func TestPrepEvidenceRefKind(t *testing.T) {
+	e := newEvidenceEnv(t)
+	e.seed()
+	e.llm.evidence = fmt.Sprintf(`{"evidence": [], "claims": [{"quote": "checks are slow", "test": "time them", "ref": %q}, {"quote": "Most merges fail", "test": "count", "ref": %q}]}`,
+		e.code("ref"), e.code("assumes"))
+	e.prep(e.task.Key)
+	_, claims := e.sent()
+	if len(claims) != 2 || claims[0]["ref_kind"] != "page" || claims[1]["ref_kind"] != "design" {
+		t.Fatalf("claims %v", claims)
+	}
+	retired := "retired"
+	if _, err := e.s.UpdateDesign(e.ctx, e.admin, e.notes["assumes"].ID, DesignInput{Status: &retired}); err != nil {
+		t.Fatal(err)
+	}
+	if _, claims = e.sent(); claims[1]["ref"] != nil || claims[1]["ref_kind"] != nil {
+		t.Errorf("a retired decision: %v", claims[1])
+	}
+}
+
+func (e *evidenceEnv) candidates(i *IssueDetail) []evidenceCand {
+	e.t.Helper()
+	d, err := e.s.issueByID(e.ctx, e.s.db.R, i.ID, true)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	c, err := e.s.evidenceCandidates(e.ctx, d, []string{"merge", "checks"})
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return c
+}
+
+// Only the section's own heading counts towards the search's limit.
+func TestPrepEvidenceAssumptionsLimit(t *testing.T) {
+	e := newEvidenceEnv(t)
+	for n := range 20 {
+		e.decision(fmt.Sprint("sub", n), e.p.Key, "Merge checks", "## Decision\nmerge checks merge checks merge checks\n\n### Assumptions\nmerge checks")
+	}
+	filler := strings.Repeat("unrelated filler words here ", 200)
+	e.decision("first", e.p.Key, "Gate", "## Assumptions\n- A merge waits. "+filler)
+	e.decision("later", e.p.Key, "Queue", "## Decision\nQueue.\n\n## Assumptions\n- A merge waits. "+filler)
+	var got []string
+	for _, c := range e.candidates(e.task) {
+		got = append(got, c.Ref)
+	}
+	slices.Sort(got)
+	want := []string{e.code("first"), e.code("later")}
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("candidates %v; want %v", got, want)
+	}
+}
+
+func TestPrepEvidenceLongTitle(t *testing.T) {
+	e := newEvidenceEnv(t)
+	long := "Merge checks " + strings.Repeat("é", 180)
+	e.page(e.admin, "long", "experiment", e.p.Key, long, "merge checks", false)
+	e.decision("longer", e.p.Key, long, "## Assumptions\nMerge checks.")
+	got := e.candidates(e.task)
+	if len(got) != 2 {
+		t.Fatalf("candidates %+v", got)
+	}
+	for _, c := range got {
+		if n := utf8.RuneCountInString(c.Title); n != 120 {
+			t.Errorf("%s: title of %d runes", c.Ref, n)
+		}
+	}
+}
+
+func TestPrepEvidenceCandidateCaps(t *testing.T) {
+	e := newEvidenceEnv(t)
+	for n := range evidencePageMax + 3 {
+		e.page(e.admin, fmt.Sprint("p", n), []string{"experiment", "reference", "note", "problem"}[n%4], e.p.Key, fmt.Sprint("Merge checks ", n), "merge checks", false)
+	}
+	for n := range evidenceDesignMax + 3 {
+		e.decision(fmt.Sprint("d", n), e.p.Key, fmt.Sprint("Merge checks ", n), "## Assumptions\nMerge checks.")
+	}
+	count := map[string]int{}
+	for _, c := range e.candidates(e.task) {
+		count[c.Kind]++
+	}
+	if count[KPage] != 8 || count[KDesign] != 4 {
+		t.Errorf("candidates %v", count)
+	}
+}
+
+// A page linked to the parent is offered to a sub-task, a person's review of
+// an agent's page is said, and a draft's supersedes link retires nothing.
+func TestPrepEvidenceCandidateSources(t *testing.T) {
+	e := newEvidenceEnv(t)
+	story := e.issue(e.admin, IssueInput{Project: e.p.Key, Title: "Story", Type: "story"})
+	child := e.issue(e.admin, IssueInput{Parent: story.Key, Title: "Slice", Type: "subtask"})
+	e.page(e.ag, "parented", "experiment", e.p.Key, "Unrelated words", "Nothing in common.", false, story.Key)
+	got := e.candidates(child)
+	if len(got) != 1 || got[0].Ref != e.code("parented") || got[0].By != "agent, unreviewed" {
+		t.Fatalf("from the parent: %+v", got)
+	}
+	if _, err := e.s.db.W.Exec(`UPDATE pages SET reviewed_at = ?, reviewed_by = ? WHERE id = ?`, e.s.nowMS(), e.admin.User.ID, e.pages["parented"].ID); err != nil {
+		t.Fatal(err)
+	}
+	e.page(e.admin, "replacement", "experiment", e.p.Key, "Draft", "draft", true)
+	e.supersede("replacement", "parented")
+	got = e.candidates(child)
+	if len(got) != 1 || got[0].By != "reviewed by a person" {
+		t.Errorf("reviewed, with a draft's supersedes link: %+v", got)
+	}
+}
+
+// A surplus check that fails for anything but a wait is a failure, and the
+// error kept is cut to 500 bytes.
+func TestPrepEvidenceSurplusError(t *testing.T) {
+	e, g, p := surplusEnv(t)
+	i := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Task"})
+	// 413 is a request too large, not the gateway declining surplus work.
+	g.set(func(g *fakeGateway) { g.status = 413 })
+	d, err := e.s.issueByID(e.ctx, e.s.db.R, i.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := prepEvidenceTask{issue: d, priority: prioritySurplus, hash: "h", title: d.Title}
+	if err := e.s.runPrepEvidence(e.ctx, task); err == nil {
+		t.Error("no error returned")
+	}
+	if got := e.one(`SELECT state FROM task_prep_evidence WHERE issue_id = ?`, i.ID); got != "failed" {
+		t.Errorf("state = %q", got)
+	}
+	cause := errors.New(strings.Repeat("x", 900))
+	if err := e.s.storePrepEvidence(e.ctx, task, "failed", nil, "", "", 0, 0, cause); !errors.Is(err, cause) {
+		t.Errorf("returned %v", err)
+	}
+	if got := e.one(`SELECT length(CAST(error AS BLOB)) FROM task_prep_evidence WHERE issue_id = ?`, i.ID); got != "500" {
+		t.Errorf("error kept at %s bytes", got)
+	}
+}
+
+// The migration's run ends at 100 finished tasks per arm, not at a date.
+func TestPrepEvidenceRunTarget(t *testing.T) {
+	e := newEnv(t)
+	run, err := e.s.liveExperimentRun(e.ctx, ExpPrepEvidence)
+	if err != nil || run == nil || run.Target != 100 || run.EndsAt != nil {
+		t.Fatalf("run %+v %v", run, err)
+	}
+	if d, _ := experimentDef(ExpPrepEvidence); !strings.HasPrefix(d.Exposure, "the agent holding the task fetched ") {
+		t.Errorf("exposure: %q", d.Exposure)
+	}
+}

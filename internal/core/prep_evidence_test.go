@@ -21,6 +21,10 @@ type evidenceLLM struct {
 	fail     error
 	prompts  []string
 	systems  []string
+	// during runs in an evidence check and pointing in a pointer prep, before
+	// either answers; gate, when set, holds an evidence check until closed.
+	during, pointing func()
+	gate             chan struct{}
 }
 
 func (f *evidenceLLM) Models(ctx context.Context, p *AIProvider) ([]AIModel, error) {
@@ -33,11 +37,23 @@ func (f *evidenceLLM) Complete(ctx context.Context, p *AIProvider, model, system
 	switch {
 	case strings.HasPrefix(prompt, "Evidence check for task "):
 		f.prompts, f.systems = append(f.prompts, prompt), append(f.systems, system)
-		if f.fail != nil {
-			return nil, "", f.fail
+		answer, fail, during, gate := f.evidence, f.fail, f.during, f.gate
+		f.mu.Unlock()
+		if during != nil {
+			during()
 		}
-		return json.RawMessage(f.evidence), "", nil
+		if gate != nil {
+			<-gate
+		}
+		f.mu.Lock()
+		if fail != nil {
+			return nil, "", fail
+		}
+		return json.RawMessage(answer), "", nil
 	case strings.HasPrefix(prompt, "Task "):
+		if f.pointing != nil {
+			f.pointing()
+		}
 		return json.RawMessage(`{"files": [{"path": "internal/merge.go", "why": "the gate"}], "symbols": [], "tests": [], "related": [], "terms": [], "questions": []}`), "", nil
 	}
 	return json.RawMessage(`{"points": 3, "confidence": "high", "reason": "Small."}`), "", nil
@@ -123,6 +139,14 @@ func (e *evidenceEnv) served(a *Actor, key string, shown bool) *TaskPrep {
 	}
 	e.s.AttachPrepEvidence(e.ctx, a, p, shown)
 	return p
+}
+
+// claim has the agent take the task, as wp next does before it reads the prep.
+func (e *evidenceEnv) claim(a *Actor, key string) {
+	e.t.Helper()
+	if _, err := e.s.AgentTake(e.ctx, a, key, ""); err != nil {
+		e.t.Fatal(err)
+	}
 }
 
 // forceArm gives a task its arm in the live run before anything draws one.
@@ -257,7 +281,7 @@ func TestPrepEvidence(t *testing.T) {
 	if second.Kind != "design" || second.Category != "decision" || second.By != "person" || second.Title != "Gate merges on checks" {
 		t.Errorf("a decision: %+v", second)
 	}
-	if len(ev.Claims) != 2 || ev.Claims[0].Quote != "most merges fail because checks are slow" || ev.Claims[0].Ref != e.code("linked") ||
+	if len(ev.Claims) != 2 || ev.Claims[0].Quote != "Most merges fail because checks are slow" || ev.Claims[0].Ref != e.code("linked") ||
 		ev.Claims[0].Test != "count why merges failed" || ev.Claims[1].Ref != "" {
 		t.Fatalf("claims = %+v", ev.Claims)
 	}
@@ -278,6 +302,7 @@ func TestPrepEvidence(t *testing.T) {
 	}
 
 	// The shown arm.
+	e.claim(e.ag, e.task.Key)
 	e.forceArm(e.task.ID, "shown")
 	if got := e.served(e.ag, e.task.Key, true); got.Evidence == nil || len(got.Evidence.Evidence) != 3 || got.Notes == nil {
 		t.Fatalf("shown arm: %+v", got)
@@ -286,12 +311,22 @@ func TestPrepEvidence(t *testing.T) {
 		t.Fatalf("shown arm: units %s", got)
 	}
 	snapshot := func(id int64) string {
-		return e.one(`SELECT issue_type || ' ' || priority || ' ' || text_len || ' ' || (length(text_hash) = 24) || ' ' || candidates || ' ' || evidence_n || ' ' || claims_n || ' ' || refs || ' ' || (model != '') || ' ' || at
+		return e.one(`SELECT issue_type || ' ' || priority || ' ' || text_len || ' ' || (length(text_hash) = 24) || ' ' || candidates || ' ' || evidence_n || ' ' || claims_n || ' ' || dropped || ' ' || risk || ' ' || evidence || ' ' || (model != '') || ' ' || at
 			FROM prep_evidence_units WHERE issue_id = ?`, id)
 	}
-	refs, _ := json.Marshal([]string{e.code("linked"), e.code("assumes"), e.code("ref")})
+	// What was given at the first exposure, whole, and the task's risk then.
+	given, _ := json.Marshal(e.served(e.admin, e.task.Key, false).Evidence)
+	risk, err := e.s.issueRiskByID(e.ctx, e.s.db.R, e.ag, e.task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []string{"Gate timing", "how often merges wait", "2026-10-05", "experiment", "Most merges fail because checks are slow", "count why merges failed", e.code("assumes")} {
+		if !strings.Contains(string(given), w) {
+			t.Errorf("evidence lacks %q: %s", w, given)
+		}
+	}
 	textLen := utf8.RuneCountInString(e.task.Title) + utf8.RuneCountInString(e.task.Description)
-	want := fmt.Sprintf("%s 3 %d 1 4 3 2 %s 1 %d", e.task.Type, textLen, refs, e.s.nowMS())
+	want := fmt.Sprintf("%s 3 %d 1 4 3 2 6 %s %s 1 %d", e.task.Type, textLen, risk.Level, given, e.s.nowMS())
 	if got := snapshot(e.task.ID); got != want {
 		t.Errorf("snapshot = %s; want %s", got, want)
 	}
@@ -357,8 +392,7 @@ func TestPrepEvidence(t *testing.T) {
 }
 
 // Both arms are units with the same snapshot; only one is given the
-// evidence. Evidence is given whatever the pointers' arm, and not without a
-// live run (WP-ADR157).
+// evidence. None is given without a live run (WP-ADR157).
 func TestPrepEvidenceArms(t *testing.T) {
 	e := newEvidenceEnv(t)
 	e.llm.evidence = `{"evidence": [], "claims": [{"quote": "checks are slow", "test": "time them", "ref": null}]}`
@@ -374,10 +408,11 @@ func TestPrepEvidenceArms(t *testing.T) {
 		return i
 	}
 	// Drawn by the experiment: find a task in each arm.
-	seen := map[string]bool{}
+	seen := map[string]string{}
 	for n := 0; n < 40 && len(seen) < 2; n++ {
 		i := mk(fmt.Sprint("Drawn ", n))
 		e.prep(i.Key)
+		e.claim(e.ag, i.Key)
 		got := e.served(e.ag, i.Key, true)
 		arm := e.one(`SELECT arm FROM experiment_units WHERE issue_id = ? AND via = 'prep' AND exposed_at IS NOT NULL`, i.ID)
 		if (arm == "shown") != (got.Evidence != nil) {
@@ -386,17 +421,18 @@ func TestPrepEvidenceArms(t *testing.T) {
 		if units := e.units(i.ID); units != "1 1" {
 			t.Fatalf("arm %s: units %s", arm, units)
 		}
-		if got := e.one(`SELECT evidence_n || ' ' || claims_n || ' ' || refs FROM prep_evidence_units WHERE issue_id = ?`, i.ID); got != "0 1 []" {
+		if got := e.one(`SELECT evidence_n || ' ' || claims_n || ' ' || dropped || ' ' || (risk != '') || ' ' || json_array_length(evidence, '$.claims') FROM prep_evidence_units WHERE issue_id = ?`, i.ID); got != "0 1 0 1 1" {
 			t.Fatalf("arm %s: snapshot %s", arm, got)
 		}
-		seen[arm] = true
+		seen[arm] = i.Key
 	}
-	if !seen["none"] || !seen["shown"] {
+	if seen["none"] == "" || seen["shown"] == "" {
 		t.Fatalf("arms seen: %v", seen)
 	}
 	control := mk("Control")
 	e.forceArm(control.ID, "none")
 	e.prep(control.Key)
+	e.claim(e.ag, control.Key)
 	if got := e.served(e.ag, control.Key, true); got.Evidence != nil {
 		t.Errorf("control: %+v", got.Evidence)
 	}
@@ -404,19 +440,11 @@ func TestPrepEvidenceArms(t *testing.T) {
 		t.Errorf("control, unshown: %+v", got.Evidence)
 	}
 
-	// Pointers held out: the evidence is given all the same.
-	held := mk("Held")
-	e.prepArm(held.ID, prepArmNone)
-	e.forceArm(held.ID, "shown")
-	e.prep(held.Key)
-	if got := e.served(e.ag, held.Key, true); got.Notes != nil || !got.HeldOut || got.Evidence == nil {
-		t.Errorf("held out: %+v", got)
-	}
-
 	// Nothing found: kept, nothing given, no unit.
 	e.llm.evidence = noEvidence
 	empty := mk("Empty")
 	e.prep(empty.Key)
+	e.claim(e.ag, empty.Key)
 	if got := e.served(e.ag, empty.Key, true); got.Evidence != nil {
 		t.Errorf("nothing found: %+v", got.Evidence)
 	}
@@ -427,20 +455,22 @@ func TestPrepEvidenceArms(t *testing.T) {
 		t.Errorf("nothing found: %s", got)
 	}
 
-	// No live run: agents get none and are no units; people still do.
+	// No live run: agents get none and are no units; people still read what a
+	// run stored.
 	if _, err := e.s.StopExperiment(e.ctx, e.admin, ExpPrepEvidence, ""); err != nil {
 		t.Fatal(err)
 	}
 	e.llm.evidence = `{"evidence": [], "claims": [{"quote": "checks are slow", "test": "time them", "ref": null}]}`
 	late := mk("Late")
 	e.prep(late.Key)
+	e.claim(e.ag, late.Key)
 	if got := e.served(e.ag, late.Key, true); got.Evidence != nil || e.units(late.ID) != "0 0" {
 		t.Errorf("no live run: %+v, units %s", got.Evidence, e.units(late.ID))
 	}
-	if got := e.served(e.ag, held.Key, false); got.Evidence != nil {
+	if got := e.served(e.ag, seen["shown"], false); got.Evidence != nil {
 		t.Errorf("a stopped run's unit: %+v", got.Evidence)
 	}
-	if got := e.served(e.admin, late.Key, false); got.Evidence == nil {
+	if got := e.served(e.admin, seen["shown"], false); got.Evidence == nil {
 		t.Error("a person got none")
 	}
 }
@@ -491,7 +521,8 @@ func TestPrepEvidenceCurrentPage(t *testing.T) {
 	}
 	ev := e.served(e.admin, e.task.Key, false).Evidence
 	want := PrepEvidenceItem{Ref: e.code("ref"), Kind: KPage, Title: title, Category: "reference",
-		Date: pg.UpdatedAt.Format("2006-01-02"), By: "agent, unreviewed", BearsOn: "check times"}
+		Date: pg.UpdatedAt.Format("2006-01-02"), By: "agent, unreviewed", BearsOn: "check times",
+		Updated: e.pages["ref"].UpdatedAt.UnixMilli(), ChangedSince: true}
 	if ev == nil || len(ev.Evidence) != 1 || ev.Evidence[0] != want {
 		t.Fatalf("evidence = %+v; want %+v", ev, want)
 	}
@@ -512,7 +543,7 @@ func TestPrepEvidenceFailure(t *testing.T) {
 	if p.State != "ready" || p.Error != "" || p.Evidence != nil {
 		t.Fatalf("prep = %+v", p)
 	}
-	if got := e.one(`SELECT state || ' ' || (error != '') || ' ' || (length(error) <= 510) || ' [' || notes || ']' FROM task_prep_evidence WHERE issue_id = ?`, e.task.ID); got != "failed 1 1 []" {
+	if got := e.one(`SELECT state || ' ' || (error != '') || ' [' || notes || ']' FROM task_prep_evidence WHERE issue_id = ?`, e.task.ID); got != "failed 1 []" {
 		t.Errorf("row = %q", got)
 	}
 	if got := e.units(e.task.ID); got != "0 0" {
@@ -529,8 +560,10 @@ func TestPrepEvidenceRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e.s.runPrepEvidence(e.ctx, prepEvidenceTask{issue: d, priority: prioritySurplus, hash: "h", title: d.Title}); err != nil {
-		t.Logf("refused: %v", err)
+	err = e.s.runPrepEvidence(e.ctx, prepEvidenceTask{issue: d, priority: prioritySurplus, hash: "h", title: d.Title})
+	var wait *aiWaitError
+	if !errors.As(err, &wait) {
+		t.Errorf("returned %v; want the gateway's wait", err)
 	}
 	if got := e.one(`SELECT state FROM task_prep_evidence WHERE issue_id = ?`, i.ID); got != "refused" {
 		t.Errorf("state = %q", got)
@@ -574,9 +607,11 @@ func TestCheckPrepEvidence(t *testing.T) {
 			claim(strings.Repeat("long ", 41), "over 200 runes", ""),
 			claim("ünïcode größe matters", "folds", "APP-X9"),
 			claim("every visit.", "", ""),
-		}}, quotes: []string{"THE BOARD takes nine seconds to load", "ünïcode größe matters"}, claimed: []string{"APP-ADR2", ""}, dropped: 5},
+		}}, quotes: []string{"The board takes nine seconds to load", "Ünïcode Größe matters"}, claimed: []string{"APP-ADR2", ""}, dropped: 5},
 		{name: "twelve runes", in: evidenceAnswer{Claims: []evidenceClaim{claim("Cache the bo", "t", ""), claim("cache the BO", "again", "")}},
 			quotes: []string{"Cache the bo"}, claimed: []string{""}, dropped: 1},
+		{name: "200 runes kept, 201 not", in: evidenceAnswer{Claims: []evidenceClaim{claim(strings.Repeat("long ", 41)[:201], "t", ""), claim(strings.Repeat("long ", 41)[1:201], "u", "")}},
+			quotes: []string{strings.Repeat("long ", 41)[1:201]}, claimed: []string{""}, dropped: 1},
 		{name: "three claims", in: evidenceAnswer{Claims: []evidenceClaim{claim("The board takes", "a", ""), claim("nine seconds to", "b", ""), claim("load on every", "c", ""), claim("Cache the board", "d", "")}},
 			quotes: []string{"The board takes", "nine seconds to", "load on every"}, claimed: []string{"", "", ""}, dropped: 1},
 	} {
@@ -611,6 +646,12 @@ func TestPrepAssumptions(t *testing.T) {
 		"## Assumptions\n```\n# a comment\n```\nz\r\n## N": "```\n# a comment\n```\nz",
 		"### Assumptions\nno":                              "",
 		"## Assumptions of the old design\nno":             "",
+		// A fence closes only on its own character, at least as long, alone.
+		"````\n```\n## Assumptions\nin code\n````\n":    "",
+		"```\n~~~\n## Assumptions\nin code\n```\n":      "",
+		"```\n``` go\n## Assumptions\nin code\n```\n":   "",
+		"~~~\ncode\n~~~~  \n## Assumptions\nafter":      "after",
+		"## Assumptions\n~~~~\n~~~\n# x\n~~~~\n# T\nno": "~~~~\n~~~\n# x\n~~~~",
 	} {
 		if got := markdownSection(in, "Assumptions"); got != want {
 			t.Errorf("%q: %q; want %q", in, got, want)

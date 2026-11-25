@@ -141,7 +141,7 @@ var experimentDefs = []ExperimentDef{
 		Arms:     []ExperimentArm{{Key: "none", Label: "Evidence found, not shown", Control: true}, {Key: "shown", Label: "Evidence shown"}},
 		Weights:  map[string]int{"none": 1, "shown": 1},
 		Where:    "wp next, wp take and wp show print the task's prep evidence, or leave it out.",
-		Exposure: "an agent's wp that can print it fetched a ready prep with evidence for the task",
+		Exposure: "the agent holding the task fetched a ready prep with evidence for the task, with a wp that can print it",
 		Primary:  "cost_usd",
 		Caveats: []string{
 			"Only tasks where the model found something are units, so this says nothing about the others.",
@@ -159,6 +159,7 @@ var experimentCaveats = []string{
 	"Medians and rank tests are used because task cost is heavy-tailed; a few huge tasks still decide means.",
 	"Agents, models and instructions change during a run; randomising spreads those changes over both arms, so they add noise, not bias, as long as the run isn't paused or reweighted midway.",
 	"An agent can't be blinded: when an arm is visible to it (a brief that isn't there), it may act differently because of that, which is part of the effect.",
+	"Follow-up tasks and review findings keep arriving after a task is done and are counted to today, so a task that finished earlier has had longer to collect them.",
 }
 
 func experimentDef(key string) (*ExperimentDef, bool) {

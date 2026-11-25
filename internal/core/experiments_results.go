@@ -36,16 +36,22 @@ type expTask struct {
 	// Later tasks that follow this one, and those of them that fix it.
 	followups float64
 	fixes     float64
-	// What its own review notes say they found; selfReviewed when any does.
+	// What its self-reviews found, and what its adversarial reviews did by a
+	// count no model read; the bool says there was such a count.
 	selfReview   float64
 	selfReviewed bool
+	reviewFound  float64
+	reviewed     bool
 	prComments   float64 // review comments that aren't a bot finding's
 }
 
-var experimentMetrics = []struct {
+// experimentMetric is one measure of a task, and its value when it has one.
+type experimentMetric struct {
 	ExperimentMetric
 	get func(t *expTask) (float64, bool)
-}{
+}
+
+var experimentMetrics = []experimentMetric{
 	{ExperimentMetric{"cost_usd", "Cost", "usd"}, func(t *expTask) (float64, bool) { return t.row.CostUSD, t.row.CostUSD > 0 }},
 	{ExperimentMetric{"tokens", "Tokens", "tokens"}, func(t *expTask) (float64, bool) {
 		u := t.row.UsageTotals
@@ -70,6 +76,7 @@ var experimentMetrics = []struct {
 	{ExperimentMetric{"followups", "Follow-up tasks", "count"}, func(t *expTask) (float64, bool) { return t.followups, true }},
 	{ExperimentMetric{"fixes", "Follow-up fixes", "count"}, func(t *expTask) (float64, bool) { return t.fixes, true }},
 	{ExperimentMetric{"self_review", "Self-review findings", "count"}, func(t *expTask) (float64, bool) { return t.selfReview, t.selfReviewed }},
+	{ExperimentMetric{"review_found", "Adversarial review findings", "count"}, func(t *expTask) (float64, bool) { return t.reviewFound, t.reviewed }},
 	{ExperimentMetric{"pr_comments", "Review comments", "count"}, func(t *expTask) (float64, bool) { return t.prComments, t.row.PRs > 0 }},
 }
 
@@ -251,7 +258,7 @@ func (s *Service) experimentReviewMeasures(ctx context.Context, byID map[int64]*
 		rows, err := s.db.R.QueryContext(ctx, `SELECT DISTINCT el.issue_id, p.id,
 				(SELECT count(*) FROM bot_findings f WHERE f.pr_id = p.id AND f.state != 'withdrawn'),
 				(SELECT coalesce(max(b.round), 0) FROM babysits b WHERE b.pr_id = p.id),
-				(SELECT count(*) FROM review_comments c WHERE c.pr_id = p.id AND c.finding_id IS NULL AND c.gone_at IS NULL)
+				(SELECT count(*) FROM review_comments c WHERE c.pr_id = p.id AND c.finding_id IS NULL AND c.kind != 'finding' AND c.gone_at IS NULL)
 			FROM external_links el JOIN pull_requests p ON el.kind = 'pull' AND (el.url = p.url OR (el.repo = p.repo COLLATE NOCASE AND el.number = p.number))
 			WHERE el.issue_id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")+`)`, args...)
 		if err != nil {
@@ -278,21 +285,29 @@ func (s *Service) experimentReviewMeasures(ctx context.Context, byID map[int64]*
 }
 
 // experimentLaterMeasures adds, for the tasks whose ids are args, what came
-// back about each: follow-up tasks and self-review findings.
+// back about each: follow-up tasks and review findings.
 func (s *Service) experimentLaterMeasures(ctx context.Context, byID map[int64]*expTask, args []any) error {
 	in := "(" + strings.TrimSuffix(strings.Repeat("?,", len(args)), ",") + ")"
 	for _, m := range []struct {
 		query string // yields the task's id and two numbers
+		first []any  // its arguments before the ids
 		add   func(t *expTask, a, b float64)
 	}{
+		// Not Waypoint's own guess from files two tasks both changed.
 		{`SELECT target_id, count(*), coalesce(sum(subkind = 'fix'), 0) FROM issue_relations
-			WHERE kind = 'follows' AND target_id IN ` + in + ` GROUP BY target_id`,
+			WHERE kind = 'follows' AND coalesce(found, '') != ? AND target_id IN ` + in + ` GROUP BY target_id`, []any{relationFoundFiles},
 			func(t *expTask, all, fixes float64) { t.followups, t.fixes = all, fixes }},
 		{`SELECT issue_id, sum(found), 0 FROM work_log
-			WHERE kind = 'review' AND found IS NOT NULL AND issue_id IN ` + in + ` GROUP BY issue_id`,
+			WHERE kind = ? AND reason != ? AND found IS NOT NULL AND issue_id IN ` + in + ` GROUP BY issue_id`,
+			[]any{WorkOwnReview, ownReviewPanel},
 			func(t *expTask, found, _ float64) { t.selfReview, t.selfReviewed = found, true }},
+		// The measured counts of WorkLogTotals: none a model read.
+		{`SELECT issue_id, sum(found), 0 FROM work_log
+			WHERE kind = ? AND coalesce(read_by, '') IN ('', ?) AND found IS NOT NULL AND issue_id IN ` + in + ` GROUP BY issue_id`,
+			[]any{WorkReview, readByRules},
+			func(t *expTask, found, _ float64) { t.reviewFound, t.reviewed = found, true }},
 	} {
-		rows, err := s.db.R.QueryContext(ctx, m.query, args...) // #nosec G202 -- only placeholders are joined in
+		rows, err := s.db.R.QueryContext(ctx, m.query, append(m.first, args...)...) // #nosec G202 -- only placeholders are joined in
 		if err != nil {
 			return err
 		}

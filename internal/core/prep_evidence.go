@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -31,6 +33,10 @@ type PrepEvidenceItem struct {
 	Date     string `json:"date"`     // updated
 	By       string `json:"by"`
 	BearsOn  string `json:"bears_on"`
+	// Updated is the record's last change (ms) when it was matched;
+	// ChangedSince says it has changed again.
+	Updated      int64 `json:"updated,omitempty"`
+	ChangedSince bool  `json:"changed_since,omitempty"`
 }
 
 // PrepClaim is a statement in the task text that data could test.
@@ -38,6 +44,10 @@ type PrepClaim struct {
 	Quote string `json:"quote"`
 	Test  string `json:"test"`
 	Ref   string `json:"ref,omitempty"`
+	// The record Ref names, as on PrepEvidenceItem.
+	RefKind      string `json:"ref_kind,omitempty"`
+	RefUpdated   int64  `json:"ref_updated,omitempty"`
+	ChangedSince bool   `json:"changed_since,omitempty"`
 }
 
 func (e *PrepEvidence) empty() bool { return len(e.Evidence) == 0 && len(e.Claims) == 0 }
@@ -48,6 +58,7 @@ const (
 	evidencePageRunes    = 700
 	evidenceDesignRunes  = 900
 	evidencePicksMax     = 3
+	evidenceTitleRunes   = 120
 	evidenceBearsOnRunes = 160
 	evidenceQuoteMin     = 12
 	evidenceQuoteMax     = 200
@@ -120,8 +131,17 @@ type prepEvidenceTask struct {
 
 // runPrepEvidence asks the prep model for a task's evidence and claims and
 // stores what checks out. Its failure is its own: the pointer prep stands.
+// With no live prep_evidence run agents are given none, so it asks and stores
+// nothing; what an earlier run stored stays for people.
 func (s *Service) runPrepEvidence(ctx context.Context, t prepEvidenceTask) error {
+	if run, err := s.liveExperimentRun(ctx, ExpPrepEvidence); err != nil || run == nil {
+		return err
+	}
 	i := t.issue
+	// A check in flight, or one that was lost, is there to see.
+	if err := s.storePrepEvidence(ctx, t, "pending", nil, "", "", 0, 0, nil); err != nil {
+		return err
+	}
 	cands, err := s.evidenceCandidates(ctx, i, t.words)
 	if err != nil {
 		return s.storePrepEvidence(ctx, t, "failed", nil, "", "", 0, 0, err)
@@ -143,6 +163,73 @@ func (s *Service) runPrepEvidence(ctx context.Context, t prepEvidenceTask) error
 	}
 	notes, dropped := checkPrepEvidence(&answer, cands, append([]string{t.title, t.desc}, t.comments...))
 	return s.storePrepEvidence(ctx, t, "ready", notes, model, requestID, len(cands), dropped, nil)
+}
+
+// retryPrepEvidence runs a queued task's evidence check again, in the
+// background, when the one kept failed, was refused, was lost or read other
+// text than its prep. The server has all it reads, so no runner uploads
+// anything. It never makes a task's first check, and does nothing without a
+// live run.
+func (s *Service) retryPrepEvidence(ctx context.Context, issueID int64, now time.Time, front bool) error {
+	var hash, bundle, checked, state string
+	var prepped, at int64
+	err := s.db.R.QueryRowContext(ctx, `SELECT tp.text_hash, tp.updated_at, tp.bundle, e.text_hash, e.state, e.created_at
+		FROM task_preps tp JOIN task_prep_evidence e ON e.issue_id = tp.issue_id
+		WHERE tp.issue_id = ? AND tp.state = 'ready'`, issueID).Scan(&hash, &prepped, &bundle, &checked, &state, &at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	age := now.Sub(msTime(at))
+	due := state == "failed" && age > prepRetryFailed ||
+		state == "refused" && (front || age > prepRetryFailed) ||
+		state == "pending" && age > prepPendingMax ||
+		checked != hash && now.Sub(msTime(prepped)) > prepPendingMax
+	if !due {
+		return nil
+	}
+	// Without a live run the row stays as it is: claiming it would only leave
+	// it pending.
+	if run, err := s.liveExperimentRun(ctx, ExpPrepEvidence); err != nil || run == nil {
+		return err
+	}
+	i, err := s.issueByID(ctx, s.db.R, issueID, true)
+	if err != nil || i.Type == "epic" {
+		return err
+	}
+	title, desc, comments, cur, err := s.prepText(ctx, issueID)
+	// Text that changed since the prep waits for a new prep.
+	if err != nil || cur != hash {
+		return err
+	}
+	var b PrepBundle
+	if err := json.Unmarshal([]byte(bundle), &b); err != nil {
+		return err
+	}
+	priority := "normal"
+	if !front {
+		priority = prioritySurplus
+	}
+	if !s.reservePrep() {
+		s.log.InfoContext(ctx, "prep evidence skipped: queue full", "issue", i.Key)
+		return nil
+	}
+	// Whoever moves the row first runs it: two callers queue one retry.
+	res, err := s.db.W.ExecContext(ctx, `UPDATE task_prep_evidence SET state = 'pending', text_hash = ?, created_at = ?
+		WHERE issue_id = ? AND state = ? AND created_at = ? AND text_hash = ?`, hash, s.nowMS(), issueID, state, at, checked)
+	var claimed int64
+	if err == nil {
+		claimed, err = res.RowsAffected()
+	}
+	if claimed == 0 {
+		s.releasePrep()
+		return err
+	}
+	t := prepEvidenceTask{issue: i, priority: priority, hash: hash, title: title, desc: desc, comments: comments, words: b.Words}
+	s.goPrep("prep evidence", i.Key, func(ctx context.Context) error { return s.runPrepEvidence(ctx, t) })
+	return nil
 }
 
 // storePrepEvidence keeps a task's evidence in place of any before, and
@@ -216,7 +303,8 @@ func (s *Service) evidenceCandidates(ctx context.Context, i *Issue, words []stri
 			ORDER BY n.updated_at DESC, n.id DESC LIMIT 20`,
 			// Only those with the section count towards the limit.
 			`SELECT n.id FROM design_search JOIN design_notes n ON n.id = design_search.rowid
-			WHERE design_search MATCH ?1 AND n.project_id = ?2 AND n.kind = 'decision' AND n.status = 'active' AND n.body LIKE '%## Assumptions%'
+			WHERE design_search MATCH ?1 AND n.project_id = ?2 AND n.kind = 'decision' AND n.status = 'active'
+			AND (n.body LIKE '## Assumptions%' OR n.body LIKE '%' || char(10) || '## Assumptions%')
 			ORDER BY bm25(design_search) LIMIT 20`, evidenceDesignMax},
 	} {
 		ids, err := s.evidenceIDs(ctx, kind.linked, i.ProjectID, i.ID, parent)
@@ -298,6 +386,7 @@ func (s *Service) evidenceCand(ctx context.Context, actor *Actor, i *Issue, kind
 			return nil, err
 		}
 		c.Ref, c.Title, c.Category, c.Date = i.ProjectKey+"-"+pg.Code, pg.Title, pg.Category, pg.UpdatedAt.Format("2006-01-02")
+		c.Updated = pg.UpdatedAt.UnixMilli()
 		byAgent, reviewed = pg.TextAgent != "", !pg.Unreviewed
 		c.excerpt = clipRunes(strings.TrimSpace(pg.Body), evidencePageRunes)
 	} else {
@@ -310,10 +399,11 @@ func (s *Service) evidenceCand(ctx context.Context, actor *Actor, i *Issue, kind
 			return nil, nil
 		}
 		c.Ref, c.Title, c.Category, c.Date = i.ProjectKey+"-"+n.Code, n.Title, n.Kind, n.UpdatedAt.Format("2006-01-02")
+		c.Updated = n.UpdatedAt.UnixMilli()
 		byAgent, reviewed = n.CreatedAgent != "" || n.UpdatedAgent != "", n.ApprovedBy != nil
 		c.excerpt = clipRunes(section, evidenceDesignRunes)
 	}
-	c.Title = prepLine(c.Title)
+	c.Title = clipRunes(prepLine(c.Title), evidenceTitleRunes)
 	switch {
 	case !byAgent:
 		c.By = "person"
@@ -329,11 +419,16 @@ func (s *Service) evidenceCand(ctx context.Context, actor *Actor, i *Issue, kind
 // next heading of its level or above; code fences hold no headings.
 func markdownSection(body, title string) string {
 	var out []string
-	in, fenced := false, false
+	in, fence := false, "" // the run that opened the code fence we are in
 	for _, line := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
-		if t := strings.TrimSpace(line); strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~") {
-			fenced = !fenced
-		} else if !fenced && (strings.HasPrefix(line, "# ") || strings.HasPrefix(line, "## ")) {
+		if run, rest := fenceRun(line); run != "" {
+			switch {
+			case fence == "":
+				fence = run
+			case strings.HasPrefix(run, fence) && rest == "":
+				fence = ""
+			}
+		} else if fence == "" && (strings.HasPrefix(line, "# ") || strings.HasPrefix(line, "## ")) {
 			if in {
 				break
 			}
@@ -346,6 +441,17 @@ func markdownSection(body, title string) string {
 		}
 	}
 	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+// fenceRun splits a line that starts with a code fence into its run of three
+// or more backticks or tildes and what follows; run is "" for any other line.
+func fenceRun(line string) (run, rest string) {
+	t := strings.TrimSpace(line)
+	if !strings.HasPrefix(t, "```") && !strings.HasPrefix(t, "~~~") {
+		return "", ""
+	}
+	after := strings.TrimLeft(t, t[:1])
+	return t[:len(t)-len(after)], strings.TrimSpace(after)
 }
 
 // checkPrepEvidence keeps the picks that are candidates and the claims whose
@@ -372,21 +478,24 @@ func checkPrepEvidence(a *evidenceAnswer, cands []evidenceCand, texts []string) 
 	}
 	lines := make([]string, len(texts))
 	for n, t := range texts {
-		lines[n] = strings.ToLower(prepLine(t))
+		lines[n] = prepLine(t)
 	}
 	for _, c := range a.Claims {
 		quote, test := prepLine(c.Quote), clipRunes(prepLine(c.Test), evidenceTestRunes)
-		low, n := strings.ToLower(quote), utf8.RuneCountInString(quote)
-		if len(out.Claims) == evidencePicksMax || test == "" || n < evidenceQuoteMin || n > evidenceQuoteMax ||
-			!slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, low) }) ||
-			slices.ContainsFunc(out.Claims, func(x PrepClaim) bool { return strings.EqualFold(x.Quote, quote) }) {
+		n := utf8.RuneCountInString(quote)
+		if len(out.Claims) == evidencePicksMax || test == "" || n < evidenceQuoteMin || n > evidenceQuoteMax {
+			dropped++
+			continue
+		}
+		quote = quotedIn(lines, quote)
+		if quote == "" || slices.ContainsFunc(out.Claims, func(x PrepClaim) bool { return strings.EqualFold(x.Quote, quote) }) {
 			dropped++
 			continue
 		}
 		claim := PrepClaim{Quote: quote, Test: test}
 		if c.Ref != nil {
 			if it, ok := cand(*c.Ref); ok {
-				claim.Ref = it.Ref
+				claim.Ref, claim.RefKind, claim.RefUpdated = it.Ref, it.Kind, it.Updated
 			}
 		}
 		out.Claims = append(out.Claims, claim)
@@ -394,11 +503,27 @@ func checkPrepEvidence(a *evidenceAnswer, cands []evidenceCand, texts []string) 
 	return out, dropped
 }
 
+// quotedIn is quote as the first of texts that holds it, in any case, spells
+// it; "" when none does.
+func quotedIn(texts []string, quote string) string {
+	// Folding rune by rune keeps a rune's index, which byte offsets don't.
+	low := strings.Map(unicode.ToLower, quote)
+	for _, t := range texts {
+		folded := strings.Map(unicode.ToLower, t)
+		if at := strings.Index(folded, low); at >= 0 {
+			from := utf8.RuneCountInString(folded[:at])
+			return string([]rune(t)[from : from+utf8.RuneCountInString(low)])
+		}
+	}
+	return ""
+}
+
 // AttachPrepEvidence adds a task's evidence to a prep GetPrep returned, for a
-// caller that can print it. A person is given it. An agent taking the task
-// (shown) draws its arm of the experiment and is recorded as a unit, and is
-// given it in the shown arm; any other read by an agent draws nothing and
-// gives it only to a task already in that arm. A failure leaves it out.
+// caller that can print it. A person is given it. The agent holding the task,
+// taking it (shown), draws its arm of the experiment and is recorded as a unit,
+// and is given it in the shown arm; any other read by an agent draws nothing
+// and gives it only to a task already in that arm. An agent whose prep is held
+// out from its pointers is given none and is no unit. A failure leaves it out.
 func (s *Service) AttachPrepEvidence(ctx context.Context, a *Actor, p *TaskPrep, shown bool) {
 	if err := s.attachPrepEvidence(ctx, a, p, shown); err != nil {
 		s.log.WarnContext(ctx, "prep evidence", "issue", p.Key, "err", err)
@@ -406,7 +531,7 @@ func (s *Service) AttachPrepEvidence(ctx context.Context, a *Actor, p *TaskPrep,
 }
 
 func (s *Service) attachPrepEvidence(ctx context.Context, a *Actor, p *TaskPrep, shown bool) error {
-	if p.State != "ready" || p.Stale {
+	if p.State != "ready" || p.Stale || a.IsAgent() && p.HeldOut {
 		return nil
 	}
 	i, _, err := s.getIssueFor(ctx, s.db.R, a, p.Key, RoleViewer, true)
@@ -419,10 +544,10 @@ func (s *Service) attachPrepEvidence(ctx context.Context, a *Actor, p *TaskPrep,
 		return err
 	}
 	var raw, hash, model string
-	var candidates int
-	err = s.db.R.QueryRowContext(ctx, `SELECT e.notes, e.text_hash, e.model, e.candidates FROM task_prep_evidence e
+	var candidates, dropped int
+	err = s.db.R.QueryRowContext(ctx, `SELECT e.notes, e.text_hash, e.model, e.candidates, e.dropped FROM task_prep_evidence e
 		JOIN task_preps tp ON tp.issue_id = e.issue_id AND tp.text_hash = e.text_hash
-		WHERE e.issue_id = ? AND e.state = 'ready' AND tp.state = 'ready'`, i.ID).Scan(&raw, &hash, &model, &candidates)
+		WHERE e.issue_id = ? AND e.state = 'ready' AND tp.state = 'ready'`, i.ID).Scan(&raw, &hash, &model, &candidates, &dropped)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -438,13 +563,16 @@ func (s *Service) attachPrepEvidence(ctx context.Context, a *Actor, p *TaskPrep,
 	}
 	if a.IsAgent() {
 		var arm string
-		if shown && !a.ReadOnly {
+		if shown && !a.ReadOnly && i.ClaimedBy != "" && i.ClaimedBy == a.agentName() {
 			got := s.experimentArm(ctx, i.ID, ExpPrepEvidence, "prep", true)
 			if got.Run == 0 {
 				return nil
 			}
-			if err := s.snapshotPrepEvidence(ctx, got.Run, i, hash, model, candidates, &ev); err != nil {
-				return err
+			u := prepEvidenceUnit{run: got.Run, hash: hash, model: model, candidates: candidates, dropped: dropped}
+			if err := s.snapshotPrepEvidence(ctx, a, i, u, &ev); err != nil {
+				// The unit is exposed already: it keeps its arm, and the next
+				// such fetch keeps the snapshot.
+				s.log.WarnContext(ctx, "prep evidence snapshot", "issue", i.Key, "err", err)
 			}
 			arm = got.Arm
 		} else {
@@ -494,6 +622,7 @@ func (s *Service) visibleEvidence(ctx context.Context, a *Actor, i *Issue, ev *P
 		}
 		if c != nil {
 			it.Title, it.Category, it.Date, it.By = c.Title, c.Category, c.Date, c.By
+			it.ChangedSince = c.Updated != it.Updated
 			kept = append(kept, it)
 		}
 	}
@@ -507,32 +636,33 @@ func (s *Service) visibleEvidence(ctx context.Context, a *Actor, i *Issue, ev *P
 			return err
 		}
 		if c == nil {
-			ev.Claims[n].Ref = ""
+			ev.Claims[n].Ref, ev.Claims[n].RefKind, ev.Claims[n].RefUpdated = "", "", 0
+		} else {
+			ev.Claims[n].ChangedSince = c.Updated != ev.Claims[n].RefUpdated
 		}
 	}
 	return nil
 }
 
+// prepEvidenceUnit is the run and the stored check a unit was exposed to.
+type prepEvidenceUnit struct {
+	run                 int64
+	hash, model         string
+	candidates, dropped int
+}
+
 // snapshotPrepEvidence keeps what a task and its evidence were when the
 // experiment's unit was first exposed, whichever its arm.
-func (s *Service) snapshotPrepEvidence(ctx context.Context, run int64, i *Issue, hash, model string, candidates int, ev *PrepEvidence) error {
-	refs := []string{}
-	add := func(ref string) {
-		if ref != "" && !slices.Contains(refs, ref) {
-			refs = append(refs, ref)
-		}
-	}
-	for _, it := range ev.Evidence {
-		add(it.Ref)
-	}
-	for _, c := range ev.Claims {
-		add(c.Ref)
-	}
-	raw, err := json.Marshal(refs)
+func (s *Service) snapshotPrepEvidence(ctx context.Context, a *Actor, i *Issue, u prepEvidenceUnit, ev *PrepEvidence) error {
+	raw, err := json.Marshal(ev)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.W.ExecContext(ctx, `INSERT OR IGNORE INTO prep_evidence_units(run_id, issue_id, issue_type, priority, text_len, text_hash, candidates, evidence_n, claims_n, refs, model, at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, run, i.ID, i.Type, i.Priority, prepTextLen(i), hash, candidates, len(ev.Evidence), len(ev.Claims), string(raw), model, s.nowMS())
+	risk, err := s.issueRiskByID(ctx, s.db.R, a, i.ID)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.W.ExecContext(ctx, `INSERT OR IGNORE INTO prep_evidence_units(run_id, issue_id, issue_type, priority, text_len, text_hash, candidates, evidence_n, claims_n, dropped, risk, evidence, model, at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, u.run, i.ID, i.Type, i.Priority, prepTextLen(i), u.hash, u.candidates, len(ev.Evidence), len(ev.Claims), u.dropped, risk.Level, string(raw), u.model, s.nowMS())
 	return err
 }

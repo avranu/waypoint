@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -411,8 +412,9 @@ func TestExperimentReviewMeasures(t *testing.T) {
 }
 
 // How a task held up afterwards (WP-ADR157): later tasks that follow on from
-// it, those that fix it, what its self-reviews found, and the review
-// comments on its pull requests that aren't Waypoint's findings.
+// it, those that fix it, what its self-reviews and its measured adversarial
+// reviews found, and the review comments on its pull requests that aren't
+// Waypoint's findings.
 func TestExperimentHeldUpMeasures(t *testing.T) {
 	e := newEnv(t)
 	p := e.project(e.admin, "App", "")
@@ -420,6 +422,7 @@ func TestExperimentHeldUpMeasures(t *testing.T) {
 		return e.issue(e.admin, IssueInput{Project: p.Key, Title: title}).ID
 	}
 	task, quiet, later, fix, other := mk("Task"), mk("Quiet"), mk("Later"), mk("Fix"), mk("Other")
+	guessed, filed := mk("Guessed"), mk("Filed")
 	f := e.forge("forgejo", "https://git.example.com", false)
 	url := "https://git.example.com/acme/app/pulls/3"
 	exec := func(q string, args ...any) {
@@ -432,15 +435,25 @@ func TestExperimentHeldUpMeasures(t *testing.T) {
 		exec(`INSERT INTO issue_relations(source_id, target_id, kind, subkind, created_at) VALUES (?,?,?,?,0)`, source, target, kind, subkind)
 	}
 	relate(later, task, "follows", "")
+	for source, found := range map[int64]string{guessed: "files", filed: "session"} {
+		exec(`INSERT INTO issue_relations(source_id, target_id, kind, subkind, found, created_at) VALUES (?,?,'follows','fix',?,0)`, source, task, found)
+	}
 	relate(fix, task, "follows", "fix")
 	relate(task, other, "follows", "fix") // the task is the later one
 	relate(other, task, "relates", "")
 	for _, w := range []struct {
-		issue int64
-		kind  string
-		found any
-	}{{task, "review", 2}, {task, "review", 3}, {task, "review", nil}, {task, "note", 9}, {quiet, "review", nil}, {quiet, "note", 1}, {later, "review", 0}} {
-		exec(`INSERT INTO work_log(issue_id, kind, found, created_at, updated_at) VALUES (?,?,?,0,0)`, w.issue, w.kind, w.found)
+		issue        int64
+		kind, reason string
+		found        any
+		readBy       string
+	}{
+		{task, "review", "", 2, ""}, {task, "review", "", 3, "rules"}, {task, "review", "", 40, "a/model"}, {task, "review", "", nil, ""},
+		{task, "own_review", "", 4, ""}, {task, "own_review", "diff", 2, "a/model"}, {task, "own_review", ownReviewPanel, 70, ""},
+		{task, "note", "", 9, ""},
+		{quiet, "review", "", nil, ""}, {quiet, "review", "", 8, "a/model"}, {quiet, "own_review", "", nil, ""}, {quiet, "note", "", 1, ""},
+		{later, "review", "", 0, ""}, {later, "own_review", ownReviewPanel, 5, ""},
+	} {
+		exec(`INSERT INTO work_log(issue_id, kind, reason, found, read_by, created_at, updated_at) VALUES (?,?,?,?,?,0,0)`, w.issue, w.kind, w.reason, w.found, w.readBy)
 	}
 	exec(`INSERT INTO pull_requests(forge_id, repo, number, url, state, created_at, updated_at) VALUES (?, 'acme/app', 3, ?, 'open', 0, 0)`, f.ID, url)
 	for _, u := range []string{url, url + "/files"} { // one pull request linked twice
@@ -461,6 +474,9 @@ func TestExperimentHeldUpMeasures(t *testing.T) {
 	exec(`INSERT INTO pull_requests(forge_id, repo, number, url, state, created_at, updated_at) VALUES (?, 'acme/app', 4, ?, 'open', 0, 0)`, f.ID, second)
 	exec(`INSERT INTO external_links(issue_id, provider, kind, url, repo, number, state, created_at) VALUES (?, 'forgejo', 'pull', ?, 'acme/app', 4, 'open', 0)`, task, second)
 	comment("5", false, false) // on the second pull request
+	// A finding in Waypoint's review body whose row has lost its finding.
+	exec(`INSERT INTO review_comments(pr_id, kind, ext_id, created_at, updated_at, seen_at)
+		VALUES ((SELECT max(id) FROM pull_requests), 'finding', 'f9', 0, 0, 0)`)
 
 	byID := map[int64]*expTask{task: {}, quiet: {}, later: {}}
 	byID[task].row.PRs = 2
@@ -469,7 +485,7 @@ func TestExperimentHeldUpMeasures(t *testing.T) {
 	}
 	measured := func(id int64) string {
 		var out []string
-		for _, key := range []string{"followups", "fixes", "self_review", "pr_comments"} {
+		for _, key := range []string{"followups", "fixes", "self_review", "review_found", "pr_comments"} {
 			mi := metricIndex(key)
 			if mi < 0 {
 				t.Fatalf("no metric %s", key)
@@ -483,9 +499,27 @@ func TestExperimentHeldUpMeasures(t *testing.T) {
 		}
 		return strings.Join(out, " ")
 	}
-	for id, want := range map[int64]string{task: "2 1 5 3", quiet: "0 0 - -", later: "0 0 0 -"} {
+	for id, want := range map[int64]string{task: "3 2 6 5 3", quiet: "0 0 - - -", later: "0 0 - 0 -"} {
 		if got := measured(id); got != want {
 			t.Errorf("task %d: %s; want %s", id, got, want)
 		}
+	}
+	if !slices.ContainsFunc(experimentCaveats, func(c string) bool { return strings.Contains(c, "keep arriving") }) {
+		t.Error("no caveat that later findings keep arriving")
+	}
+
+	// The stakes report counts the same follow-ups, once.
+	tiers := map[string]*StakesTierStats{StakesNormal: {}}
+	if err := e.s.stakesOutcomes(e.ctx, e.admin, 14, map[int64]string{task: StakesNormal}, tiers, &ReviewStakesStats{}); err != nil {
+		t.Fatal(err)
+	}
+	var follow []string
+	for _, o := range tiers[StakesNormal].Outcomes {
+		if strings.Contains(o.Key, "fix") || strings.Contains(o.Key, "followup") {
+			follow = append(follow, fmt.Sprintf("%s=%v", o.Key, o.Mean))
+		}
+	}
+	if got := strings.Join(follow, " "); got != "followups=3 followup_fixes=2" {
+		t.Errorf("stakes follow-ups: %s", got)
 	}
 }

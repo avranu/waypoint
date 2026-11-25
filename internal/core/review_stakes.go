@@ -741,9 +741,9 @@ var stakesExtraMetrics = []ExperimentMetric{
 
 // stakesOutcomes measures each tier's tasks the way experiments measure
 // their arms (experimentMetrics: cost, tokens, turns, tool calls, active
-// hours, review findings on the pull requests, babysit rounds...) and adds
-// the follow-ups filed on them. It reads every person's usage, so only an
-// admin gets it.
+// hours, review findings on the pull requests, babysit rounds...), with the
+// follow-ups filed on them under the report's own keys. It reads every
+// person's usage, so only an admin gets it.
 func (s *Service) stakesOutcomes(ctx context.Context, actor *Actor, days int, taskTier map[int64]string, tiers map[string]*StakesTierStats, out *ReviewStakesStats) error {
 	if len(taskTier) == 0 {
 		return nil
@@ -769,10 +769,10 @@ func (s *Service) stakesOutcomes(ctx context.Context, actor *Actor, days int, ta
 		}
 		// #nosec G202 -- only placeholders are joined in
 		rows, err := s.db.R.QueryContext(ctx, `SELECT i.id, p.key || '-' || i.number, st.category,
-				(SELECT count(*) FROM issue_relations r WHERE r.target_id = i.id AND r.kind = 'follows'),
-				(SELECT count(*) FROM issue_relations r WHERE r.target_id = i.id AND r.kind = 'follows' AND r.subkind = 'fix')
+				(SELECT count(*) FROM issue_relations r WHERE r.target_id = i.id AND r.kind = 'follows' AND coalesce(r.found, '') != ?),
+				(SELECT count(*) FROM issue_relations r WHERE r.target_id = i.id AND r.kind = 'follows' AND r.subkind = 'fix' AND coalesce(r.found, '') != ?)
 			FROM issues i JOIN projects p ON p.id = i.project_id JOIN statuses st ON st.id = i.status_id
-			WHERE i.id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")+`)`, args...)
+			WHERE i.id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")+`)`, append([]any{relationFoundFiles, relationFoundFiles}, args...)...)
 		if err != nil {
 			return err
 		}
@@ -809,8 +809,11 @@ func (s *Service) stakesOutcomes(ctx context.Context, actor *Actor, days int, ta
 	if err := s.experimentReviewMeasures(ctx, byID); err != nil {
 		return err
 	}
+	// The experiments' two follow-up counts are stakesExtraMetrics here.
+	measures := slices.Clone(experimentMetrics)
+	measures = slices.DeleteFunc(measures, func(m experimentMetric) bool { return m.Key == "followups" || m.Key == "fixes" })
 	type acc struct{ values [][]float64 }
-	n := len(experimentMetrics) + len(stakesExtraMetrics)
+	n := len(measures) + len(stakesExtraMetrics)
 	per := map[string]*acc{}
 	for id, t := range byID {
 		tier := taskTier[id]
@@ -823,14 +826,14 @@ func (s *Service) stakesOutcomes(ctx context.Context, actor *Actor, days int, ta
 			tt.Tasks++
 		}
 		if t.measured {
-			for i, m := range experimentMetrics {
+			for i, m := range measures {
 				if v, ok := m.get(t); ok {
 					a.values[i] = append(a.values[i], v)
 				}
 			}
 		}
 		for j := range stakesExtraMetrics {
-			a.values[len(experimentMetrics)+j] = append(a.values[len(experimentMetrics)+j], extra[id][j])
+			a.values[len(measures)+j] = append(a.values[len(measures)+j], extra[id][j])
 		}
 	}
 	for tier, a := range per {
@@ -840,10 +843,10 @@ func (s *Service) stakesOutcomes(ctx context.Context, actor *Actor, days int, ta
 		}
 		for i, v := range a.values {
 			var m ExperimentMetric
-			if i < len(experimentMetrics) {
-				m = experimentMetrics[i].ExperimentMetric
+			if i < len(measures) {
+				m = measures[i].ExperimentMetric
 			} else {
-				m = stakesExtraMetrics[i-len(experimentMetrics)]
+				m = stakesExtraMetrics[i-len(measures)]
 			}
 			o := StakesOutcome{ExperimentMetric: m, N: len(v)}
 			if len(v) > 0 {

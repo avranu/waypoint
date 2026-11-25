@@ -18,6 +18,10 @@ import (
 // The data is for telling, later, which follow-ups the first piece of work
 // should have caught.
 
+// relationFoundFiles is found on a follow-up Waypoint guessed from the files
+// two tasks' pull requests both changed.
+const relationFoundFiles = "files"
+
 // followFoundAfter is found on a follow-up Waypoint recorded because
 // someone related a task to one done before it was filed (WP-1003).
 const followFoundAfter = "after"
@@ -171,7 +175,7 @@ func (s *Service) noteFollowUpsByFiles(ctx context.Context, issueID int64, linkU
 			if related {
 				continue
 			}
-			if _, err := s.insertRelation(ctx, t, newRelation{Src: issueID, Dst: other, Kind: "follows", Found: "files", Basis: "inferred", Score: &share, Unrelated: true}); err != nil {
+			if _, err := s.insertRelation(ctx, t, newRelation{Src: issueID, Dst: other, Kind: "follows", Found: relationFoundFiles, Basis: "inferred", Score: &share, Unrelated: true}); err != nil {
 				return err
 			}
 		}
