@@ -277,7 +277,7 @@ func TestTestsumKeepsLongFailedOutput(t *testing.T) {
 		if code := run([]string{"testsum", "--", "sh", "-c", cmd}, &out, &errb); code != 1 {
 			t.Fatalf("%s: exit %d %q", name, code, out.String())
 		}
-		m := regexp.MustCompile(`All (\d+) lines of its output: (.+)\n`).FindStringSubmatch(out.String())
+		m := regexp.MustCompile(`All (\d+) lines of its output \(kept until the next long failure here\): (.+)\n`).FindStringSubmatch(out.String())
 		if m == nil {
 			t.Fatalf("%s: no pointer to the output:\n%s", name, out.String())
 		}
@@ -393,23 +393,23 @@ func TestKeptRedactionKeepsEveryLine(t *testing.T) {
 	for name, c := range map[string]struct{ in, want string }{
 		"header without an end": {
 			"x\n-----BEGIN RSA PRIVATE KEY-----\n" + seq + "ok\nPASS\nthe finding\n",
-			"x\n-----BEGIN RSA PRIVATE KEY-----***\n" + seq + "ok\nPASS\nthe finding\n",
+			"x\n-----BEGIN RSA PRIVATE KEY-----\n" + seq + "ok\nPASS\nthe finding\n",
 		},
 		"complete key": {
 			"before\n-----BEGIN RSA PRIVATE KEY-----\n" + full + "\n" + full + "\nzz==\n-----END RSA PRIVATE KEY-----\nafter\n",
-			"before\n-----BEGIN RSA PRIVATE KEY-----***\n***\n***\n***\n-----END RSA PRIVATE KEY-----\nafter\n",
+			"before\n-----BEGIN RSA PRIVATE KEY-----\n***\n***\n***\n-----END RSA PRIVATE KEY-----\nafter\n",
 		},
 		"key cut off, then output": {
 			"-----BEGIN PRIVATE KEY-----\n" + full + "\nzz==\nok\n",
-			"-----BEGIN PRIVATE KEY-----***\n***\n***\nok\n",
+			"-----BEGIN PRIVATE KEY-----\n***\n***\nok\n",
 		},
 		"CRLF key": {
 			"-----BEGIN PRIVATE KEY-----\r\n" + full + "\r\n" + full + "\r\nzz==\r\n-----END PRIVATE KEY-----\r\nafter\r\n",
-			"-----BEGIN PRIVATE KEY-----***\n***\r\n***\r\n***\r\n-----END PRIVATE KEY-----\r\nafter\r\n",
+			"-----BEGIN PRIVATE KEY-----\r\n***\r\n***\r\n***\r\n-----END PRIVATE KEY-----\r\nafter\r\n",
 		},
 		"encrypted key headers": {
 			"-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,ABCD\n\n" + full + "\n-----END RSA PRIVATE KEY-----\nafter\n",
-			"-----BEGIN RSA PRIVATE KEY-----***\n***\n***\n***\n***\n-----END RSA PRIVATE KEY-----\nafter\n",
+			"-----BEGIN RSA PRIVATE KEY-----\n***\n***\n***\n***\n-----END RSA PRIVATE KEY-----\nafter\n",
 		},
 		"value on the next line": {
 			"api_token:\nabcdefgh12345678\nafter\n",
@@ -425,9 +425,88 @@ func TestKeptRedactionKeepsEveryLine(t *testing.T) {
 		if got != c.want {
 			t.Errorf("%s:\n got %q\nwant %q", name, got, c.want)
 		}
-		if strings.Count(got, "\n") != strings.Count(c.in, "\n") {
-			t.Errorf("%s: %d lines in, %d kept", name, strings.Count(c.in, "\n"), strings.Count(got, "\n"))
+		keptInvariant(t, name, c.in, got)
+	}
+}
+
+// keptInvariant: redaction never changes the number of lines, and a line
+// that ended in \r still does.
+func keptInvariant(t *testing.T, name, in, got string) {
+	t.Helper()
+	if strings.Count(got, "\n") != strings.Count(in, "\n") {
+		t.Errorf("%s: %d lines in, %d kept", name, strings.Count(in, "\n"), strings.Count(got, "\n"))
+		return
+	}
+	a, b := strings.Split(in, "\n"), strings.Split(got, "\n")
+	for i := range a {
+		if strings.HasSuffix(a[i], "\r") && !strings.HasSuffix(b[i], "\r") {
+			t.Errorf("%s: line %d lost its \\r: %q", name, i+1, b[i])
 		}
+	}
+}
+
+// redactKept works on the whole text like redact, and keeps every line and
+// everything that is not credential (WP-1812).
+func TestKeptRedactionWholeText(t *testing.T) {
+	b64 := func(n int) string { return strings.Repeat("aB3/", n/4+1)[:n] }
+	body := b64(64)
+	begin, end := "-----BEGIN RSA PRIVATE KEY-----", "-----END RSA PRIVATE KEY-----"
+	for name, c := range map[string]struct {
+		in      string
+		absent  []string
+		present []string
+		want    string // exact output, when set
+	}{
+		"terminated, first body line indented": {in: begin + "\n " + body + "\n" + body + "\n" + end + "\nafter\n", absent: []string{body}, present: []string{begin, end, "after"}},
+		"terminated, trailing space":           {in: begin + "\n" + body + " \n" + body + "\n" + end + "\nafter\n", absent: []string{body}, present: []string{begin, end, "after"}},
+		"terminated, diff prefixes":            {in: "- " + begin + "\n- " + body + "\n- " + body + "\n- " + end + "\nafter\n", absent: []string{body}, present: []string{"- " + begin, "- " + end, "after"}},
+		"terminated, log prefix":               {in: begin + "\n12:00 " + body + "\n" + end + "\n", absent: []string{body}, present: []string{begin, end}},
+		"one line":                             {in: "a " + begin + "SECRETSECRET" + end + " b\n", want: "a " + begin + "***" + end + " b\n"},
+		"unterminated, indented first line":    {in: begin + "\n  " + body + "\n" + body + "\n" + body + "\nall done\n", absent: []string{body}, present: []string{begin, "all done"}},
+		"basic auth on the next line":          {in: "Authorization: Basic\ndXNlcjpwYXNzd29yZA==\nnext\n", absent: []string{"dXNlcjpwYXNzd29yZA=="}, present: []string{"next"}},
+		"bearer on the next line":              {in: "Authorization: Bearer\nabcdef123456\nnext\n", absent: []string{"abcdef123456"}, present: []string{"next"}},
+		"flag value on the next line":          {in: "--password\nhunter2hunter2\nnext\n", absent: []string{"hunter2hunter2"}, present: []string{"next"}},
+		"blank line between name and value":    {in: "password:\n\nhunter22222\nafter\n", absent: []string{"hunter22222"}, present: []string{"after"}},
+		"bare begin then a panic": {
+			in:   begin + "\npanic: runtime error: index out of range\n\nError: boom\nok\n12\nPASS\n",
+			want: begin + "\npanic: runtime error: index out of range\n\nError: boom\nok\n12\nPASS\n",
+		},
+		"unterminated with headers": {
+			in:      begin + "\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,ABCDEF\n\n" + body + "\n" + b64(20) + "\nafter\n",
+			absent:  []string{"Proc-Type", "DEK-Info", body, b64(20) + "\n"},
+			present: []string{begin, "after"},
+		},
+		"39 characters stays after a bare begin": {in: begin + "\n" + b64(39) + "\nafter\n", want: begin + "\n" + b64(39) + "\nafter\n"},
+		"40 characters is blanked after a begin": {in: begin + "\n" + b64(40) + "\nall done\n", want: begin + "\n***\nall done\n"},
+		"CRLF key": {
+			in:   begin + "\r\n" + body + "\r\n " + body + "\r\n" + b64(10) + "\r\n" + end + "\r\nafter\r\n",
+			want: begin + "\r\n***\r\n***\r\n***\r\n" + end + "\r\nafter\r\n",
+		},
+		"CRLF unterminated key": {
+			in:   begin + "\r\n" + body + "\r\n" + b64(10) + "\r\nafter\r\n",
+			want: begin + "\r\n***\r\n***\r\nafter\r\n",
+		},
+		"unterminated, body on the begin line":        {in: "key: \"" + begin + `\n` + body + `\n` + body + "\nall done\n", absent: []string{body}, present: []string{begin, "all done"}},
+		"terminated, body on the begin and end lines": {in: begin + body + "\n" + body + end + "\nafter\n", want: begin + "***\n***" + end + "\nafter\n"},
+		"name alone before a key":                     {in: "api_key:\n" + begin + "\n" + body + "\n" + end + "\n", want: "api_key:\n" + begin + "\n***\n" + end + "\n"},
+		"CRLF credential on the next line":            {in: "Authorization: Basic\r\nSECRETSECRET\r\nnext\r\n", absent: []string{"SECRETSECRET"}, present: []string{"next"}},
+		"CRLF flag value":                             {in: "--password\r\nhunter2hunter2\r\nnext\r\n", want: "--password\r\n***\r\nnext\r\n"},
+	} {
+		_, got := keptRead(t, c.in)
+		if c.want != "" && got != c.want {
+			t.Errorf("%s:\n got %q\nwant %q", name, got, c.want)
+		}
+		for _, a := range c.absent {
+			if strings.Contains(got, a) {
+				t.Errorf("%s: %q survives:\n%s", name, a, got)
+			}
+		}
+		for _, p := range c.present {
+			if !strings.Contains(got, p) {
+				t.Errorf("%s: %q was lost:\n%s", name, p, got)
+			}
+		}
+		keptInvariant(t, name, c.in, got)
 	}
 }
 
@@ -463,5 +542,71 @@ func TestTestsumNoKeptOutputOnCleanExit(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "lines of its output") {
 		t.Errorf("a pointer for a command that exited 0:\n%s", out.String())
+	}
+}
+
+// The count is the file's lines, trailing blank lines included, while the
+// threshold is about the lines that hold something.
+func TestKeptOutputCountsTheFilesLines(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Chdir(t.TempDir())
+	got := keptOutput([]byte(strings.Repeat("x\n", 31)+"\n\n"), 20)
+	m := regexp.MustCompile(`All (\d+) lines of its output \(kept until the next long failure here\): (.+)\n`).FindStringSubmatch(got)
+	if m == nil || m[1] != "33" {
+		t.Fatalf("pointer: %q", got)
+	}
+	if b, _ := os.ReadFile(m[2]); strings.Count(string(b), "\n") != 33 {
+		t.Errorf("file has %d lines", strings.Count(string(b), "\n"))
+	}
+	// 20 lines and blank ones after them: all of it was shown.
+	if got := keptOutput([]byte(strings.Repeat("x\n", 20)+"\n\n"), 20); got != "" {
+		t.Errorf("blank lines past the shown ones: %q", got)
+	}
+}
+
+// wp testsum runs go test as go test -json; the kept file and the lines shown
+// are the text of the output, not its events.
+func TestKeptOutputOfGoTestJSONIsPlain(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Chdir(t.TempDir())
+	var b strings.Builder
+	b.WriteString("# m/p [build failed]\n")
+	for i := 1; i <= 25; i++ {
+		fmt.Fprintf(&b, `{"Action":"output","Package":"m/p","Test":"T","Output":"line %d\n"}`+"\n", i)
+		b.WriteString(`{"Action":"run","Package":"m/p","Test":"T"}` + "\n")
+	}
+	b.WriteString(`{"Action":"fail","Package":"m/p","Elapsed":0}` + "\n")
+	got := failedTail([]byte(b.String()), 20)
+	m := regexp.MustCompile(`All (\d+) lines of its output \(kept until the next long failure here\): (.+)\n`).FindStringSubmatch(got)
+	if m == nil {
+		t.Fatalf("no pointer:\n%s", got)
+	}
+	if strings.Contains(got, `{"Action"`) || !strings.Contains(got, "line 25\n") {
+		t.Errorf("tail is not plain text:\n%s", got)
+	}
+	kept, _ := os.ReadFile(m[2])
+	if strings.Contains(string(kept), `{"Action"`) || !strings.HasPrefix(string(kept), "# m/p [build failed]\nline 1\nline 2\n") || strconv.Itoa(strings.Count(string(kept), "\n")) != m[1] {
+		t.Errorf("pointer says %s lines; file has %d:\n%s", m[1], strings.Count(string(kept), "\n"), kept)
+	}
+	// Output that holds no events is as it was.
+	if p := plainOutput([]byte("a\n{\"x\":1}\nb\n")); string(p) != "a\n{\"x\":1}\nb\n" {
+		t.Errorf("plain output changed: %q", p)
+	}
+}
+
+// A pointer to the whole output is for output longer than the 20 lines
+// shown: 20 lines are all shown, 21 are not.
+func TestTestsumPointerOnlyPastTheShownLines(t *testing.T) {
+	slotEnv(t)
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Chdir(t.TempDir())
+	for n, want := range map[int]bool{20: false, 21: true} {
+		var out, errb bytes.Buffer
+		if code := run([]string{"testsum", "--", "sh", "-c", "seq " + strconv.Itoa(n) + "; exit 3"}, &out, &errb); code != 1 {
+			t.Fatalf("%d lines: exit %d %q", n, code, out.String())
+		}
+		if got := strings.Contains(out.String(), "lines of its output"); got != want {
+			t.Errorf("%d lines: pointer %v, want %v:\n%s", n, got, want, out.String())
+		}
 	}
 }

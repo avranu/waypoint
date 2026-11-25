@@ -273,7 +273,7 @@ func shipEndsTurn(t *testing.T, e *env, me *core.Actor, key string) {
 	// A failure whose error is above the lines shown: the whole output is
 	// kept in a file the message names (WP-1812).
 	out, code = e.run("ship", "--check", "printf 'a lint %s\\n' finding; seq 40; exit 3", "--summary", "{task} is in PR #{pr}.")
-	m := regexp.MustCompile(`All 41 lines of its output: (.+)`).FindStringSubmatch(out)
+	m := regexp.MustCompile(`All 41 lines of its output \(kept until the next long failure here\): (.+)`).FindStringSubmatch(out)
 	if code == 0 || strings.Contains(out, "a lint finding") || m == nil {
 		t.Fatalf("long failed check: %d\n%s", code, out)
 	}
@@ -470,5 +470,42 @@ func TestCheckLines(t *testing.T) {
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)
 		}
+	}
+}
+
+// A check that queued behind another reports its own time, not the wait
+// (WP-1812): the slots are held for about 2s, the check itself takes none.
+func TestShipCheckTimeLeavesOutTheSlotWait(t *testing.T) {
+	slotEnv(t)
+	t.Chdir(t.TempDir())
+	var holds []*slotHold
+	for range defaultSlots() {
+		h, err := acquireSlot(t.Context(), "tests", defaultSlots(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		holds = append(holds, h)
+	}
+	go func() {
+		time.Sleep(2 * time.Second)
+		for _, h := range holds {
+			h.release()
+		}
+	}()
+	var out bytes.Buffer
+	c, err := newCLI(&out, new(bytes.Buffer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t0 := time.Now()
+	if err := c.runShipCheck("true"); err != nil {
+		t.Fatal(err)
+	}
+	if waited := time.Since(t0); waited < 1500*time.Millisecond {
+		t.Fatalf("the check didn't wait for the slots: %v", waited)
+	}
+	// 1s allows for a loaded machine; the wait alone would make it 2s.
+	if !strings.Contains(out.String(), "Check passed: true (0s)") && !strings.Contains(out.String(), "Check passed: true (1s)") {
+		t.Errorf("the wait was counted as the check's time:\n%s", out.String())
 	}
 }

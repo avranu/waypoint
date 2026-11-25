@@ -302,7 +302,29 @@ const failedOutputFile = "wp-failed-output.log"
 // saying where all of it is when it is longer. One n for both, so the lines
 // shown and the threshold for keeping can't drift apart.
 func failedTail(data []byte, n int) string {
+	data = plainOutput(data)
 	return lastLines(data, n) + "\n" + keptOutput(data, n)
+}
+
+// plainOutput is the text of a go test -json stream: the Output of each
+// event that has one, and any other line as it was (a build error printed
+// outside the events). Output that holds no event is returned unchanged.
+func plainOutput(data []byte) []byte {
+	var out []byte
+	found := false
+	for _, l := range bytes.SplitAfter(data, []byte("\n")) {
+		var ev goEvent
+		if bytes.HasPrefix(l, []byte("{")) && json.Unmarshal(l, &ev) == nil && ev.Action != "" {
+			found = true
+			out = append(out, ev.Output...)
+			continue
+		}
+		out = append(out, l...)
+	}
+	if !found {
+		return data
+	}
+	return out
 }
 
 // keptOutput saves a failed command's whole output when it is longer than
@@ -311,9 +333,14 @@ func failedTail(data []byte, n int) string {
 // with the finding that failed it, is above them, and the file is what
 // gives it without another run (WP-1812).
 func keptOutput(data []byte, shown int) string {
-	n := strings.Count(strings.TrimRight(string(data), "\n"), "\n") + 1
-	if n <= shown {
+	data = plainOutput(data)
+	if strings.Count(strings.TrimRight(string(data), "\n"), "\n")+1 <= shown {
 		return ""
+	}
+	// The file keeps trailing blank lines, so the count is of the file's.
+	n := bytes.Count(data, []byte("\n"))
+	if !bytes.HasSuffix(data, []byte("\n")) {
+		n++
 	}
 	p, err := localGit("rev-parse", "--git-path", failedOutputFile)
 	if err != nil || p == "" {
@@ -330,10 +357,7 @@ var (
 	pemBeginRE  = lazyre.New(`-----BEGIN [A-Z ]*PRIVATE KEY-----`)
 	pemEndRE    = lazyre.New(`-----END [A-Z ]*PRIVATE KEY-----`)
 	pemBodyRE   = lazyre.New(`^[A-Za-z0-9+/=]+$`)
-	pemHeaderRE = lazyre.New(`^[A-Za-z][A-Za-z0-9-]*: .*$`)
-	// nameOnlyRE is a line that ends at a name's separator, so the value,
-	// if there is one, is on the next line.
-	nameOnlyRE = lazyre.New(`[=:]\s*$`)
+	pemHeaderRE = lazyre.New(`^(Proc-Type|DEK-Info|Comment): `)
 )
 
 // pemFullLine is the least length taken for a whole line of a key's body
@@ -341,64 +365,131 @@ var (
 // after one of those, so "ok" or "12" after a bare header stays.
 const pemFullLine = 40
 
-// redactKept is redact for a kept output file: line by line, returning as
-// many lines as it got, so "All N lines" stays true and an unterminated key
-// header can't blank the rest of the file. After a BEGIN PRIVATE KEY line
-// with no END, the key's header lines and body lines are blanked, up to the
-// END line, the body's short last line, or the first line that is neither.
-// A line ending in \r is matched without it. A value on the line after its
-// name is blanked as redact would blank it in the whole text.
+// redactKept is redact for a kept output file, returning as many lines as it
+// got, each \r kept, so "All N lines" stays true. Every line between a
+// BEGIN and an END PRIVATE KEY line becomes ***; after a BEGIN with no END
+// only the lines that look like the key (its headers, base64 lines of 40 or
+// more characters, a shorter last one) do, so the rest of the output stays.
+// Then redact's other patterns run over the whole text, a match that spanned
+// lines giving them back as *** lines.
 func redactKept(s string) string {
 	lines := strings.Split(s, "\n")
-	inKey, afterHdr, sawFull := false, false, false
-	carried, carry := "", false
-	for i, raw := range lines {
-		l, cr := strings.CutSuffix(raw, "\r")
-		blank := func() {
-			lines[i] = "***"
-			if cr {
-				lines[i] += "\r"
-			}
-		}
-		was := carry
-		if carry {
-			raw, carry = carried, false
-		}
-		if inKey && !was {
-			switch {
-			case pemEndRE.MatchString(l):
-				inKey = false
-				continue
-			case pemBodyRE.MatchString(l) && len(l) >= pemFullLine:
-				blank()
-				afterHdr, sawFull = false, true
-				continue
-			case pemBodyRE.MatchString(l) && sawFull:
-				blank()
-				inKey = false
-				continue
-			case pemHeaderRE.MatchString(l) && !sawFull:
-				blank()
-				afterHdr = true
-				continue
-			case l == "" && afterHdr:
-				blank()
-				afterHdr = false
-				continue
-			}
-		}
-		lines[i] = redact(raw)
-		inKey = pemBeginRE.MatchString(l) && !pemEndRE.MatchString(l)
-		afterHdr, sawFull = false, false
-		if !inKey && i+1 < len(lines) && nameOnlyRE.MatchString(l) {
-			// redact's own match of a name and its value runs over the
-			// line break; take what it makes of the next line.
-			if two := strings.Split(redact(raw+"\n"+lines[i+1]), "\n"); len(two) == 2 {
-				carried, carry = two[1], true
-			}
+	star := func(j int) {
+		if strings.HasSuffix(lines[j], "\r") {
+			lines[j] = "***\r"
+		} else {
+			lines[j] = "***"
 		}
 	}
-	return strings.Join(lines, "\n")
+	noEnd := false // no END line is left in the text
+	for i := 0; i < len(lines); i++ {
+		l, _ := strings.CutSuffix(lines[i], "\r")
+		loc := pemBeginRE.FindStringIndex(l)
+		if loc == nil {
+			continue
+		}
+		if pemEndRE.MatchString(l[loc[1]:]) {
+			lines[i] = pemKeyRE.ReplaceAllString(l, "${1}***${2}") + lines[i][len(l):]
+			continue
+		}
+		end := -1
+		for j := i + 1; j < len(lines) && !noEnd; j++ {
+			if pemEndRE.MatchString(lines[j]) {
+				end = j
+				break
+			}
+		}
+		if end < 0 {
+			noEnd = true
+		}
+		// Anything after BEGIN on its own line is the key (one printed
+		// with escaped newlines, say).
+		if strings.TrimSpace(l[loc[1]:]) != "" {
+			lines[i] = l[:loc[1]] + "***" + lines[i][len(l):]
+		}
+		if end >= 0 {
+			for j := i + 1; j < end; j++ {
+				star(j)
+			}
+			// So is what comes before END on its line, unless it is only
+			// a diff or quote prefix.
+			if at := pemEndRE.FindStringIndex(lines[end]); strings.Trim(lines[end][:at[0]], " \t-+>") != "" {
+				lines[end] = "***" + lines[end][at[0]:]
+			}
+			i = end
+			continue
+		}
+		inHeaders, sawHeader, sawFull := true, false, false
+		j := i + 1
+	body:
+		for ; j < len(lines); j++ {
+			t := strings.Trim(strings.TrimSuffix(lines[j], "\r"), " \t")
+			if strings.HasPrefix(t, "-") || strings.HasPrefix(t, ">") {
+				t = strings.TrimLeft(t[1:], " \t")
+			}
+			switch {
+			case inHeaders && pemHeaderRE.MatchString(t):
+				sawHeader = true
+			case inHeaders && sawHeader && t == "":
+				inHeaders = false
+			case pemBodyRE.MatchString(t) && len(t) >= pemFullLine:
+				inHeaders, sawFull = false, true
+			case pemBodyRE.MatchString(t) && sawFull:
+				star(j)
+				break body
+			default:
+				break body
+			}
+			star(j)
+		}
+		i = j - 1
+	}
+	s = strings.Join(lines, "\n")
+	for _, st := range redactSteps {
+		s = replaceStep(s, st, func(m, r string) string {
+			if strings.HasSuffix(m, "-----BEGIN") {
+				// "api_key:" and a key's BEGIN line after it: the value
+				// is the key, blanked above, and the line stays readable.
+				return m
+			}
+			return keepLines(m, r)
+		})
+	}
+	return s
+}
+
+// keepLines pads r, a replacement of m, with *** lines for the lines of m it
+// lost, keeping the \r that ended each line of m.
+func keepLines(m, r string) string {
+	d := strings.Count(m, "\n") - strings.Count(r, "\n")
+	if d <= 0 {
+		return r
+	}
+	cr := func(l string) string {
+		if strings.HasSuffix(l, "\r") {
+			return "\r"
+		}
+		return ""
+	}
+	ml := strings.Split(m, "\n")
+	pieces := strings.Split(r, "\n")
+	var b strings.Builder
+	for j := range len(ml) - 1 {
+		if j < len(pieces)-1 {
+			b.WriteString(strings.TrimSuffix(pieces[j], "\r"))
+		} else if j == len(pieces)-1 {
+			b.WriteString(pieces[j])
+		} else {
+			b.WriteString("***")
+		}
+		b.WriteString(cr(ml[j]) + "\n")
+	}
+	if len(ml)-1 >= len(pieces) {
+		b.WriteString("***")
+	} else {
+		b.WriteString(pieces[len(ml)-1])
+	}
+	return b.String()
 }
 
 // keptAt writes data, n lines, to p and says where, or why it couldn't.
@@ -409,7 +500,7 @@ func keptAt(p string, data []byte, n int) string {
 	if err := writeFileAtomic(p, []byte(redactKept(string(data))), 0o600); err != nil {
 		return fmt.Sprintf("Its %d lines of output couldn't be saved: %v\n", n, err)
 	}
-	return fmt.Sprintf("All %d lines of its output: %s\n", n, p)
+	return fmt.Sprintf("All %d lines of its output (kept until the next long failure here): %s\n", n, p)
 }
 
 // emitUnparsed reports a command that failed without producing results.

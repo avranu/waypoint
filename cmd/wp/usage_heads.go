@@ -376,28 +376,78 @@ var schemeAuthRE = lazyre.New(`(?i)(\bauthorization["']?\s*[=:]\s*["']?)[\w-]+\s
 var pemKeyRE = lazyre.New(`(-----BEGIN [A-Z ]*PRIVATE KEY-----)(?s:.*?)(-----END [A-Z ]*PRIVATE KEY-----|\z)`)
 var urlPasswordRE = lazyre.New(`(://[^\s/:@]+:)[^\s/@]+@`)
 
-// urlUserRE finds a URL user part with no password after it, where the
-// user may be the token (https://TOKEN@host). redact blanks one that is 20
-// characters or more, or has both a letter and a digit; plain names (git@,
-// deploy@) stay.
-var urlUserRE = lazyre.New(`://[^\s/:@]{8,}@`)
+// urlUserRE finds a URL user part that is not followed by a password, or
+// only by one redact has blanked (:***@) or left empty (:@), where the user
+// may be the token (https://TOKEN@host, https://TOKEN:x-oauth-basic@host).
+// Of a user part of 8 characters or more, redact blanks one that is 20
+// characters or more, or holds a digit and at least one other character that
+// is not a digit; a shorter part with no digit, or all digits, stays (git@,
+// deploy@, a number).
+var urlUserRE = lazyre.New(`://[^\s/:@]{8,}(?::\*\*\*|:)?@`)
 
 func blankURLUser(m string) string {
 	u := m[len("://") : len(m)-1]
+	rest := ""
+	if i := strings.IndexByte(u, ':'); i >= 0 {
+		u, rest = u[:i], u[i:]
+	}
 	if len(u) < 20 && (!strings.ContainsAny(u, "0123456789") || strings.Trim(u, "0123456789") == "") {
 		return m
 	}
-	return "://***@"
+	return "://***" + rest + "@"
+}
+
+// redactStep is one pattern of redact and what replaces a match of it; sub
+// is the match and its groups, as FindStringSubmatch gives them.
+type redactStep struct {
+	re   *lazyre.Regexp
+	repl func(sub []string) string
+}
+
+// redactSteps are redact's patterns after pemKeyRE, in the order they run.
+var redactSteps = []redactStep{
+	{urlPasswordRE, func(sub []string) string { return sub[1] + "***@" }},
+	{urlUserRE, func(sub []string) string { return blankURLUser(sub[0]) }},
+	{digestAuthRE, func(sub []string) string { return sub[1] + "***" }},
+	{schemeAuthRE, func(sub []string) string { return sub[1] + "***" }},
+	{secretRE, func(sub []string) string { return sub[1] + sub[2] + "***" }},
+	{tokenLikeRE, func([]string) string { return "***" }},
+}
+
+// replaceStep replaces every match of st in s; fix, when set, may change a
+// match's replacement given the matched text.
+func replaceStep(s string, st redactStep, fix func(m, r string) string) string {
+	idx := st.re.FindAllStringSubmatchIndex(s, -1)
+	if idx == nil {
+		return s
+	}
+	var b strings.Builder
+	last := 0
+	for _, ix := range idx {
+		sub := make([]string, len(ix)/2)
+		for g := range sub {
+			if ix[2*g] >= 0 {
+				sub[g] = s[ix[2*g]:ix[2*g+1]]
+			}
+		}
+		r := st.repl(sub)
+		if fix != nil {
+			r = fix(sub[0], r)
+		}
+		b.WriteString(s[last:ix[0]])
+		b.WriteString(r)
+		last = ix[1]
+	}
+	b.WriteString(s[last:])
+	return b.String()
 }
 
 // redact hides credentials in text that may leave the machine. Redact
 // before cutting, so a cut never leaves part of a token.
 func redact(s string) string {
 	s = pemKeyRE.ReplaceAllString(s, "${1}***${2}")
-	s = urlPasswordRE.ReplaceAllString(s, "${1}***@")
-	s = urlUserRE.ReplaceAllStringFunc(s, blankURLUser)
-	s = digestAuthRE.ReplaceAllString(s, "${1}***")
-	s = schemeAuthRE.ReplaceAllString(s, "${1}***")
-	s = secretRE.ReplaceAllString(s, "${1}${2}***")
-	return tokenLikeRE.ReplaceAllString(s, "***")
+	for _, st := range redactSteps {
+		s = replaceStep(s, st, nil)
+	}
+	return s
 }

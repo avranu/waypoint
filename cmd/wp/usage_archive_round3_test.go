@@ -119,7 +119,7 @@ func TestRedactionPatternsArePinned(t *testing.T) {
 		{"schemeAuthRE", schemeAuthRE.String(), `(?i)(\bauthorization["']?\s*[=:]\s*["']?)[\w-]+\s+[^\s"']{4,}`},
 		{"tokenLikeRE", tokenLikeRE.String(), `\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|AIza[A-Za-z0-9_-]{35,}|npm_[A-Za-z0-9]{36,}|pypi-[A-Za-z0-9_-]{16,}|xapp-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,})`},
 		{"urlPasswordRE", urlPasswordRE.String(), `(://[^\s/:@]+:)[^\s/@]+@`},
-		{"urlUserRE", urlUserRE.String(), `://[^\s/:@]{8,}@`},
+		{"urlUserRE", urlUserRE.String(), `://[^\s/:@]{8,}(?::\*\*\*|:)?@`},
 		{"pemKeyRE", pemKeyRE.String(), `(-----BEGIN [A-Z ]*PRIVATE KEY-----)(?s:.*?)(-----END [A-Z ]*PRIVATE KEY-----|\z)`},
 	}
 	for _, p := range pins {
