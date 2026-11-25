@@ -163,7 +163,6 @@ func TestArchivePassCutByACancelDoesNotSayTimeLimit(t *testing.T) {
 	t.Setenv("WAYPOINT_MACHINE", "testbox")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	// the status post is cut by the same cancel, so the pass also returns its error
 	res, _ := usageArchive(&cli{dir: e.dir, out: &strings.Builder{}, err: &strings.Builder{}}, usageSyncOptions{Ctx: ctx}, fixtureDir(t), time.Now())
 	if res == nil {
 		t.Fatal("no result")

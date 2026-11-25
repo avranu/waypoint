@@ -142,7 +142,6 @@ func TestAGiveBackInALaterTurnIsWhatTheStopSays(t *testing.T) {
 	a.finish(first.Key)
 	a.stopWith("Shipped.")
 	a.setClock(a.clockNow().Add(time.Minute))
-	// Autopilot's, so the session stays autopilot's (WP-1319).
 	const next = AutopilotPromptMark + ": go on with the next task"
 	if _, err := a.s.storeMessage(a.ctx, a.session, next, "test:next", messageFrom{by: a.admin.User.ID}, true); err != nil {
 		t.Fatal(err)
@@ -220,7 +219,7 @@ func TestHoldsCantWaitOnEachOther(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, other := range []string{y, x} { // directly on y, and through it on x
+	for _, other := range []string{y, x} {
 		if _, err := a.s.SetHold(a.ctx, a.admin, z, HoldInput{After: []string{other}}); !IsInvalid(err) {
 			t.Errorf("%s waiting for %s = %v, want refused", z, other, err)
 		}

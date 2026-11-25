@@ -1,7 +1,3 @@
-// Hermes's configuration: a form built from its schema (one field per
-// setting, by category, with search), saving only what changed, or the
-// whole config.yaml as text, saved after a look at the diff.
-
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -188,7 +184,6 @@ function ConfigForm({
         </div>
       </Section>
     )
-  // With a search, results are grouped under their categories.
   const groups: [string, [string, FieldDef][]][] = q
     ? categories
         .map(
@@ -442,7 +437,6 @@ function FieldControl({
           value={value === null || value === undefined ? '' : String(value)}
           onChange={(e) => {
             const t = e.target.value
-            // Hermes keeps some "string" settings as numbers; keep them numbers.
             onChange(
               typeof value === 'number' && t.trim() !== '' && !isNaN(Number(t)) ? Number(t) : t,
             )
@@ -524,7 +518,6 @@ function StructuredField({
       : t.trim() === ''
         ? null
         : JSON.parse(t)
-  // Follow the value when it changes from outside (undo, discard, a reload).
   useEffect(() => {
     let mine: unknown
     try {

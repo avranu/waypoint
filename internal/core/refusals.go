@@ -11,22 +11,6 @@ import (
 	"time"
 )
 
-// Refused tool calls are logged for audit, not filed as requests (WP-232,
-// WP-ADR115). When Claude Code's auto-mode classifier refuses a call, the
-// agent usually works on another way and asks for what it still needs
-// itself (wp request), so a request per refusal only added to what a person
-// sorts through. The PermissionDenied hook records the refusal here instead:
-// nothing waits on a person, nothing notifies and the agent isn't told. People
-// read the log under Agents → Audit log → Refused calls, on the session's
-// timeline, and on a request the agent files soon after in the same session.
-//
-// A refusal that is common, repeated or disruptive is better ended by an
-// allow rule than by approvals (WP-233, WP-ADR114): each row offers WP-233's
-// narrow rules, the log ranks the rules that would have let the period's
-// refusals through (RuleSuggestion), and a person who picks one gets it
-// added to the session repo's .claude/settings.json by pull request
-// (AllowRefusedCall).
-
 const (
 	// refusalRepeat: the same call refused again in a session this soon
 	// counts on the same row.
@@ -166,7 +150,6 @@ func (s *Service) logRefusal(ctx context.Context, t *tx, actor *Actor, x *AgentS
 	if len(input) > maxRefusalInput {
 		input = ""
 	}
-	// The session's project, when the person may see it, as for a request.
 	var project sql.NullInt64
 	if x.projectID.Valid {
 		r, rerr := s.projectRole(ctx, t, actor, x.projectID.Int64)
@@ -227,7 +210,6 @@ func (s *Service) ListRefusals(ctx context.Context, actor *Actor, q RefusalQuery
 		where, args = append(where, "f.session_id = ?"), append(args, q.Session)
 	}
 	if spec := strings.TrimSpace(q.Agent); spec != "" {
-		// Specs aren't SQL: match the period's agents in Go.
 		// #nosec G202 -- where is built from fixed conditions; values are bound
 		rows, err := s.db.R.QueryContext(ctx, `SELECT DISTINCT f.agent FROM tool_refusals f WHERE `+strings.Join(where, " AND "), args...)
 		if err != nil {
@@ -437,9 +419,6 @@ func (s *Service) ruleSuggestions(ctx context.Context, cond string, args []any) 
 				g = &RuleSuggestion{Rule: r.Rule, Covers: r.Covers, Tool: tool, Repo: repo, rank: rank, sess: map[int64]bool{}}
 				groups[k] = g
 			}
-			// The newest member nobody picked a rule for, or whose pick
-			// failed: AllowRefusedCall refuses one with a rule or a pick
-			// on its way.
 			if open && g.Refusal == 0 {
 				g.Refusal = id
 			}
@@ -457,7 +436,6 @@ func (s *Service) ruleSuggestions(ctx context.Context, cond string, args []any) 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// Of rules covering the same refusals, keep the narrowest.
 	best := map[string]*RuleSuggestion{}
 	for _, g := range groups {
 		if g.Calls < 2 && g.Ran == 0 {
@@ -475,7 +453,7 @@ func (s *Service) ruleSuggestions(ctx context.Context, cond string, args []any) 
 			g.Added, g.PR = true, pr
 		}
 		if !g.Added && g.Refusal == 0 {
-			continue // every call it covers has a rule, or one on its way
+			continue
 		}
 		list = append(list, g)
 	}
@@ -544,10 +522,6 @@ func (s *Service) AllowRefusedCall(ctx context.Context, actor *Actor, id int64, 
 	}
 	err = s.write(ctx, actor, func(t *tx) error {
 		now := s.nowMS()
-		// Claim the call, so a second pick (another tab, the row and the
-		// suggestion at once) can't open a second pull request or record
-		// its failure over the first's. A pick whose dispatch never
-		// finished (a restart) can be made again after refusalPickStale.
 		res, err := t.ExecContext(ctx, `UPDATE tool_refusals SET rule_by = ?, rule_at = ?, rule_reason = ''
 			WHERE id = ? AND rule = '' AND (rule_at IS NULL OR rule_reason != '' OR rule_at < ?)`, actor.id(), now, f.ID, now-refusalPickStale.Milliseconds())
 		if err != nil {
@@ -611,7 +585,6 @@ func (s *Service) addRefusalRule(ctx context.Context, actor *Actor, j *permRuleJ
 	default:
 		rule, pr = j.rule, res.URL
 	}
-	// Only this pick's outcome: a later pick of a stale one owns the row.
 	if _, err := s.db.W.ExecContext(ctx, `UPDATE tool_refusals SET rule = ?, rule_pr = ?, rule_reason = ? WHERE id = ? AND rule_at = ?`, rule, pr, reason, j.refusal, j.at); err != nil {
 		s.log.ErrorContext(ctx, "record a refusal's rule", "refusal", j.refusal, "rule", j.rule, "pr", pr, "err", err)
 	}

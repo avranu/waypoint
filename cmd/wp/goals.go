@@ -11,9 +11,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Goals and traces (WP-382, WP-ADR50): what people want a project to do,
-// and how each piece of work, down to a line of code, traces back to it.
-
 var goalsCmd = &command{
 	name: "goals", group: "Knowledge", args: "[gaps] [FLAGS]",
 	aliases: []string{"intent"},
@@ -226,8 +223,6 @@ goal, so it stops suggesting it.`,
 	},
 }
 
-// ---- trace ----
-
 var traceCmd = &command{
 	name: "trace", group: "Knowledge", args: "KEY | pr:N | SHA | FILE:LINE",
 	aliases: []string{"blame"},
@@ -379,7 +374,6 @@ func commitQuery(q url.Values, sha string) {
 	subject, _, _ := strings.Cut(msg, "\n")
 	pr := prNumber(subject)
 	if pr == 0 {
-		// The merge that brought it in names the pull request.
 		if merges, err := localGit("log", "--merges", "--ancestry-path", "--reverse", "--format=%s", sha+"..HEAD"); err == nil {
 			for _, s := range strings.Split(merges, "\n") {
 				if pr = prNumber(s); pr > 0 {

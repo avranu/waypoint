@@ -360,7 +360,6 @@ function CodingAgentsSection() {
 
 function TaskRow({ task, providers }: { task: AITask; providers: AIProvider[] }) {
   const set = useSetAITask()
-  // The chain shows what was saved; only a new model (or Off) is announced.
   const save = (primary: ChainModel | null, fallbacks: ChainModel[], note?: string) =>
     set.mutate(
       primary

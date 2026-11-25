@@ -167,7 +167,6 @@ func TestPrepPolicyDraws(t *testing.T) {
 			if got.Notes != nil || !got.HeldOut || held != "1" {
 				t.Fatalf("no pointers: %+v (held_out %s)", got, held)
 			}
-			// a person still reads what was made
 			if p := e.get(e.admin, i.Key, false); p.Notes == nil || len(p.Notes.Files) != 2 {
 				t.Fatalf("no pointers, for a person: %+v", p)
 			}
@@ -187,7 +186,6 @@ func TestPrepPolicyDraws(t *testing.T) {
 		t.Errorf("40 tasks at even shares: %v", counts)
 	}
 
-	// a person's read draws nothing
 	i := e.task("internal/a.go")
 	if p := e.get(e.admin, i.Key, false); p.Notes == nil {
 		t.Fatalf("a person's read: %+v", p)
@@ -195,7 +193,6 @@ func TestPrepPolicyDraws(t *testing.T) {
 	if got := e.one(`SELECT COUNT(*) FROM prep_assignments WHERE issue_id = ?`, i.ID); got != "0" {
 		t.Errorf("a person's read drew an arm")
 	}
-	// a read-only token takes no task: its read draws nothing either
 	ro := *e.ag
 	ro.ReadOnly = true
 	if p := e.get(&ro, i.Key, true); p.Notes == nil {
@@ -204,8 +201,6 @@ func TestPrepPolicyDraws(t *testing.T) {
 	if got := e.one(`SELECT COUNT(*) FROM prep_assignments WHERE issue_id = ?`, i.ID); got != "0" {
 		t.Errorf("a read-only token's read drew an arm")
 	}
-	// an agent looking (not taking) draws the arm but is no exposure, and
-	// a read-only token's read after it is none either
 	e.get(e.ag, i.Key, false)
 	if a := e.arm(i.ID); a.exposed {
 		t.Errorf("a look counted as a take: %+v", a)
@@ -218,7 +213,6 @@ func TestPrepPolicyDraws(t *testing.T) {
 	if a := e.arm(i.ID); !a.exposed {
 		t.Errorf("a take wasn't recorded: %+v", a)
 	}
-	// no picks: nothing to choose between
 	i = e.task()
 	if p := e.get(e.ag, i.Key, true); p.HeldOut {
 		t.Errorf("a prep with no picks was held out: %+v", p)
@@ -239,7 +233,6 @@ func TestPrepPolicyUnmeasured(t *testing.T) {
 			t.Fatalf("unmeasured: %+v %+v", a, got)
 		}
 	}
-	// a trace older than two weeks doesn't make it measurable
 	e.measurable()
 	e.setClock(e.clockNow().Add(prepTracesWithin + time.Hour))
 	i := e.task("internal/a.go")
@@ -318,8 +311,6 @@ func TestPrepPolicyAgentArm(t *testing.T) {
 		t.Errorf("40 tasks over three arms: %v", counts)
 	}
 
-	// agentic picks made before the prep's present text: the chat prep's
-	// are shown, and the task still counts for the arm it drew
 	i = e.task("internal/a.go")
 	e.agentPicks(i.ID, now, "internal/c.go")
 	e.exec(`UPDATE prep_trials SET text_hash = 'an earlier text' WHERE issue_id = ?`, i.ID)
@@ -328,7 +319,6 @@ func TestPrepPolicyAgentArm(t *testing.T) {
 		t.Errorf("picks of an earlier text: %+v", got)
 	}
 
-	// the same files from both: one arm that speaks for both
 	for range 12 {
 		i := e.task("internal/a.go", "internal/b.go")
 		e.agentPicks(i.ID, now, "internal/b.go", "internal/a.go")
@@ -383,7 +373,6 @@ func TestPrepPolicyLearns(t *testing.T) {
 	if s := rep.String(); !strings.Contains(s, "60 measured") || !strings.Contains(s, "against no pointers") {
 		t.Errorf("report:\n%s", s)
 	}
-	// whole-task navigation isn't known of an open take: no guard spoke
 	for _, g := range rep.Guards {
 		if g.Guard == "nav" {
 			t.Errorf("a guard on open takes: %+v", g)
@@ -395,7 +384,6 @@ func TestPrepPolicyLearns(t *testing.T) {
 			t.Fatalf("a task still got the chat picks: %+v", e.arm(i.ID))
 		}
 	}
-	// the unmeasured get what the measured showed is best
 	other := e.user("lee", false)
 	if err := e.s.SetMember(e.ctx, e.admin, e.p.Key, "lee", "editor"); err != nil {
 		t.Fatal(err)
@@ -405,7 +393,6 @@ func TestPrepPolicyLearns(t *testing.T) {
 	if a := e.arm(i.ID); a.arm != prepArmNone || a.policy != "best" {
 		t.Errorf("unmeasured, with chat picks worse: %+v", a)
 	}
-	// a trace of a task with no drawn arm changes nothing
 	e.measurable()
 	if e.s.prepPolStale {
 		t.Error("a trace of an undrawn task marked the estimate stale")
@@ -453,7 +440,6 @@ func TestPrepPolicyGuard(t *testing.T) {
 	if got := e.get(e.ag, i.Key, true); got.Notes != nil {
 		t.Errorf("an arm that is out was drawn: %+v", e.arm(i.ID))
 	}
-	// years on, what was seen counts for too little to hold it out
 	e.setClock(e.clockNow().Add(800 * 24 * time.Hour))
 	rep = e.report()
 	if c := reportArm(rep, prepArmChat); c.Out != "" || c.Share == 0 || !strings.Contains(rep.History[0].Reason, "chat back") {
@@ -500,12 +486,9 @@ func TestPrepRowsOutcomes(t *testing.T) {
 		t.Errorf("no pull request: %+v", r)
 	}
 	undone, findings := prepGuards[1], prepGuards[2]
-	// Shown and never taken (no trace): no outcome of the arm's, however
-	// long it waits.
 	if _, ok := prepValue(&undone, by[i.ID], e.s.now().Add(prepDoneWithin+time.Hour)); ok {
 		t.Error("a task no agent took counts as undone")
 	}
-	// the first trace from the take is the task's; an earlier session's isn't
 	e.ingestTraces(e.me, "c1", "m1", e.nav(i.Key, now-(time.Hour).Milliseconds(), 50, 50, "release"))
 	tr := e.nav(i.Key, now+2000, 7, 9, "ship")
 	tr.Session = "later"
@@ -534,8 +517,6 @@ func TestPrepRowsOutcomes(t *testing.T) {
 	if v, ok := prepValue(&findings, &r, e.s.now()); !ok || v < 1.38 || v > 1.39 {
 		t.Errorf("findings of a done task = %v, %v", v, ok)
 	}
-	// A task given the best arm unmeasured is no evidence, and a count no
-	// take could reach (stored before the bound) can't turn the sums to NaN.
 	e.exec(`UPDATE prep_assignments SET policy = 'best' WHERE issue_id = ?`, plain.ID)
 	e.exec(`UPDATE task_traces SET pre_calls = ?, calls = ? WHERE issue_id = ?`, int64(1)<<62, int64(1)<<62, i.ID)
 	rows, err = e.s.prepRows(e.ctx, e.s.now())
@@ -570,7 +551,6 @@ func TestPrepOffline(t *testing.T) {
 	if a := e.arm(i.ID); strings.Contains(a.shares, "agent") {
 		t.Errorf("an arm that names fewer was drawn: %+v", a)
 	}
-	// mixed results: not screened, and more backtests would tell something
 	for n, id := range ids {
 		e.exec(`UPDATE prep_scores SET hits = ? WHERE issue_id = ? AND source = 'trial'`, n%3, id)
 		e.exec(`UPDATE prep_scores SET hits = 1 WHERE issue_id = ? AND source = 'prep'`, id)
@@ -579,21 +559,16 @@ func TestPrepOffline(t *testing.T) {
 	if agent.Screen != "" || !agent.wants() || agent.Lo >= agent.Diff || agent.Hi <= agent.Diff {
 		t.Errorf("mixed: %+v", agent)
 	}
-	// a second chat score of a task (its prep made again by another model)
-	// doesn't count the task twice
 	e.exec(`INSERT INTO prep_scores(issue_id, source, priority, model, picked, truth, hits, scored_at) VALUES (?, 'prep', 'normal', 'new/b', 3, 2, 0, ?)`, ids[0], e.s.nowMS()+1)
 	chat, agent, _ = e.s.prepOfflineScores(e.ctx)
 	if chat.Tasks != 20 || agent.Pairs != 20 || chat.Hits != 19 {
 		t.Errorf("a task scored twice: %+v %+v", chat, agent)
 	}
-	// scores older than the window aren't counted
 	e.setClock(e.clockNow().Add(prepOfflineWindow + time.Hour))
 	if _, agent, _ = e.s.prepOfflineScores(e.ctx); agent.Pairs != 0 {
 		t.Errorf("old scores counted: %+v", agent)
 	}
 
-	// an agent shown nothing: what would the picks have named of the files
-	// it opened and edited? Tests, docs and files it made are left out.
 	now := e.s.nowMS()
 	u := e.task("internal/a.go", "internal/z.go", "internal/a_test.go")
 	e.agentPicks(u.ID, now, "internal/b.go")
@@ -601,7 +576,6 @@ func TestPrepOffline(t *testing.T) {
 	tr := e.nav(u.Key, now+1000, 6, 8, "ship")
 	tr.Files = []TraceFile{{Path: "internal/a.go", Read: true}, {Path: "internal/b.go", Read: true, Edited: true},
 		{Path: "internal/a_test.go", Read: true, Edited: true}, {Path: "README.md", Read: true}, {Path: "internal/new.go", Edited: true, Created: true},
-		// a file of another repository is one the agent needed and no pick of this prep can be, whatever its path
 		{Path: "internal/z.go", Repo: "someone/else", Read: true, Edited: true}}
 	var prepRepo string
 	if err := e.s.db.R.QueryRow(`SELECT repo FROM task_preps WHERE issue_id = ?`, u.ID).Scan(&prepRepo); err != nil || prepRepo == "" {

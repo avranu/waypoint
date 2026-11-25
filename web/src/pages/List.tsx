@@ -452,7 +452,6 @@ function BulkBar({
           onPick={(v) => apply({ sprint: v || null }, 'Sprint')}
         />
       )}
-      {/* People and agents in one list, as on a task (WP-1196). */}
       <BulkPicker
         label="Assign"
         items={[

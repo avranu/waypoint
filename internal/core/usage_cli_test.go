@@ -58,7 +58,6 @@ func TestUsageCLIReport(t *testing.T) {
 		UsageCLIRow{Kind: "unknown_flag", Head: "wp ls", Detail: "--search"},
 		UsageCLIRow{Kind: "follow", Head: "wp next", Detail: "git fetch"},
 		UsageCLIRow{Kind: "signal", Detail: "sleep", N: 3},
-		// these aren't the shape they say they are, and aren't stored
 		UsageCLIRow{Kind: "wp", Head: "wp show WP-1 secret"},
 		UsageCLIRow{Kind: "follow", Head: "wp next", Detail: "curl 'a; b'"},
 	), e.cliRows("s2", "c/d", h,
@@ -95,7 +94,6 @@ func TestUsageCLIReport(t *testing.T) {
 		t.Errorf("wp next: %+v", next)
 	}
 
-	// a repo narrows the report, not the list to pick from
 	one, err := e.s.UsageCLI(e.ctx, e.me, UsageQuery{Days: 30}, "c/d")
 	if err != nil {
 		t.Fatal(err)

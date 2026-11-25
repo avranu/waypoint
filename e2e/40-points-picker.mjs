@@ -27,7 +27,6 @@ for (const vp of looks([
     (m) =>
       m.type() === "error" && fail(`console (${tag}): ` + m.text().slice(0, 300)),
   );
-  // A model is "set up" for estimates, and it always answers 5.
   await page.route("**/api/v1/ai/tasks", (r) =>
     r.fulfill({
       json: [
@@ -67,9 +66,6 @@ for (const vp of looks([
   const issue = await api.post("/issues", { project: key, title: "Points label" });
 
   await page.goto(`${base}/issue/${issue.key}`);
-  // Unset optional fields wait behind "More" (WP-680).
-  // Picking it there opens its picker at once (WP-1196); close that, to check the face first.
-  // The wide side panel lists every field, with no More button.
   const more = page.locator('[aria-label="More fields"]:visible');
   if (await more.count()) {
     await more.first().click();
@@ -81,13 +77,10 @@ for (const vp of looks([
   await points.waitFor();
   const estimate = page.getByRole("button", { name: /Estimate with AI/ });
 
-  // Unset: reads "Points", and no estimate button beside it.
-  // On the strip it reads "Points"; in the side panel's labelled row, "None".
   const face = (await points.textContent()).trim();
   ok(face === "Points" || face === "None", `${tag}: unset reads short (${face})`);
   ok((await estimate.count()) === 0, `${tag}: no Estimate button beside the control`);
 
-  // Opening the picker offers the estimate; use it.
   await points.click();
   await estimate.waitFor();
   await page.screenshot({ path: `${out}/${tag}-picker-offer.png` });
@@ -97,7 +90,6 @@ for (const vp of looks([
   await page.screenshot({ path: `${out}/${tag}-picker-result.png` });
   await use.click();
   await page.locator('[title="Story points"]:visible').getByText("5 pts").waitFor();
-  // The label updates optimistically; give the save a moment to land.
   let saved = null;
   for (let i = 0; i < 20; i++) {
     saved = (await api.get("/issues/" + issue.key)).points;
@@ -107,7 +99,6 @@ for (const vp of looks([
   if (saved !== 5) saved = (await api.get("/issues/" + issue.key)).points;
   ok(saved === 5, `${tag}: estimate applied`);
 
-  // Set: still no button beside the points, but the picker has it.
   ok((await estimate.count()) === 0, `${tag}: set points show no Estimate button`);
   await points.click();
   await estimate.waitFor();

@@ -20,7 +20,7 @@ const H = { "X-Waypoint-Client": "web" };
 const KEY = "RQ";
 
 const browser = await chromium.launch();
-let agent; // headers of robin's agent token
+let agent;
 
 const CLAUDE_MD = "# Rules\n\nBe nice.\nKeep answers short.\nAsk before deleting.\n";
 // git's blob id, as wp computes it
@@ -32,7 +32,6 @@ async function seed(api, call, w) {
   await api("POST", "/projects", { name: "Requests", key: KEY });
   const { token } = await api("POST", "/me/tokens", { name: "requests agent", agent: "anthropic/claude-code" });
   agent = { ...H, Authorization: `Bearer ${token}`, "X-Waypoint-Machine": "box" };
-  // A forge and repo so a pull request is possible; the agent's session.
   const db = new DatabaseSync(`${process.env.DIR}/wp.db`);
   db.exec("PRAGMA busy_timeout = 5000");
   const forge = db
@@ -79,7 +78,6 @@ async function seed(api, call, w) {
   });
   await ask({ kind: "permission", title: "Allow Bash: wp pr log 12?", tool: "Bash", tool_input: { command: "wp pr log 12", description: "the failed check's log" }, reason: "Reading CI logs is outside what auto mode allows." });
   await ask({ kind: "action", title: "Set the DEPLOY_SSH_KEY secret", body: "In the repo settings under **Secrets**." });
-  // Two earlier runs of the migration's first cell, so the notebook has history.
   const d2 = new DatabaseSync(`${process.env.DIR}/wp.db`);
   d2.exec("PRAGMA busy_timeout = 5000");
   const cell = d2.prepare("SELECT c.id FROM request_cells c JOIN requests r ON r.id = c.request_id WHERE r.kind = 'command' AND c.n = 1").get().id;
@@ -127,13 +125,11 @@ async function run(width, scheme) {
   await page.waitForURL(base + "/");
   await seed(api, call);
 
-  // Each run starts from the same five open requests (the earlier run's are reset).
   const db = new DatabaseSync(`${process.env.DIR}/wp.db`);
   db.exec("PRAGMA busy_timeout = 5000");
   db.exec("UPDATE requests SET state = 'open', decision = '', answer = '', note = '', decided_by = NULL, decided_at = NULL, delivered_at = NULL, snoozed_until = NULL, error = '', result = '{}', apply_path = '' WHERE number <= 5");
   db.exec("DELETE FROM requests WHERE number > 5");
   db.exec("DELETE FROM request_cell_runs WHERE exit_code IS NULL");
-  // The second cell has a run queued for a runner, which says what it waits for (WP-503).
   db.exec("DELETE FROM runner_jobs WHERE source = 'request_cell' AND title = 'make seed'");
   const seedCell = db.prepare("SELECT c.id FROM request_cells c JOIN requests r ON r.id = c.request_id WHERE r.kind = 'command' AND c.n = 2").get().id;
   const job = db.prepare("INSERT INTO runner_jobs(owner_id, created_by, kind, title, input, timeout, source, source_id, created_at) VALUES (1, 1, 'command', 'make seed', '{}', 600, 'request_cell', ?, ?)").run(seedCell, Date.now());
@@ -143,7 +139,6 @@ async function run(width, scheme) {
   const waiting = await api("GET", "/waiting");
   ok(waiting.requests.length === 5 && waiting.total >= 5, `${tag} API: ${waiting.requests.length} requests wait on robin`);
 
-  // ---- the Inbox ----
   await page.goto(base + "/inbox");
   const section = page.getByRole("region", { name: "Waiting on you" });
   await section.waitFor();
@@ -151,9 +146,6 @@ async function run(width, scheme) {
   ok(await section.getByText("Which database should the new tests use?").isVisible(), `${tag} the question is listed`);
   ok(await section.getByText(/File change · claude-code · box · RQ/).isVisible(), `${tag} each row says who, where and which project`);
   const badge = await page.locator("aside a[href='/inbox'], nav a[href='/inbox']").filter({ visible: true }).first().innerText();
-  // The badge is the waiting requests plus the unread notifications that still
-  // matter (WP-1141); other suites leave notifications behind, so compare with
-  // what the API says, not with 5.
   const unread = (await api("GET", "/inbox")).summary.live_unread;
   const expected = waiting.total + unread;
   ok(
@@ -163,11 +155,9 @@ async function run(width, scheme) {
   await shot("inbox");
   await overflow("inbox");
 
-  // ---- a question, in the sheet ----
   await section.getByText("Which database should the new tests use?").click();
   const sheet = page.getByRole("dialog", { name: /Request RQ:R-1/ });
   await sheet.waitFor();
-  // The sheet opens before the request has loaded: wait for its title.
   ok(
     await sheet
       .getByRole("heading", { name: "Which database should the new tests use?" })
@@ -188,17 +178,15 @@ async function run(width, scheme) {
   ok(got.state === "answered" && got.answer === "postgres" && got.decided_by?.username === "robin", `${tag} the answer reached the server: ${got.state} ${got.answer}`);
   await page.keyboard.press("Escape");
   await sheet.waitFor({ state: "hidden" });
-  // Request rows are buttons; other suites' design notes and unreviewed text add link rows.
   await page.waitForFunction(() => document.querySelectorAll("section[aria-label='Waiting on you'] li button").length === 4);
   ok(true, `${tag} the answered request left the waiting list at once`);
 
-  // ---- the file change, as a page ----
   await page.goto(base + "/requests/RQ:R-2");
   await page.getByRole("heading", { name: "Tighten the rules in CLAUDE.md" }).waitFor();
   ok(await page.getByText("2 files").isVisible(), `${tag} the change counts its files`);
   ok(await page.locator("tr", { hasText: "Keep answers short and plain." }).first().isVisible(), `${tag} the diff shows an added line`);
   ok(await page.getByRole("button", { name: /docs\/NEW.md/ }).isVisible(), `${tag} a new file is listed`);
-  await page.getByRole("button", { name: /docs\/NEW.md/ }).click(); // folds it
+  await page.getByRole("button", { name: /docs\/NEW.md/ }).click();
   ok((await page.getByText("A new page.").count()) === 0, `${tag} a file's diff folds`);
   const runner = page.getByRole("radio", { name: /Apply on box/ });
   ok(await runner.isDisabled(), `${tag} the runner choice is off with no runner online`);
@@ -206,13 +194,11 @@ async function run(width, scheme) {
   ok((await page.getByRole("radio", { name: /Open a pull request/ }).getAttribute("aria-checked")) === "true", `${tag} a pull request is the default`);
   await tallShot("change");
   await overflow("change");
-  // The forge isn't reachable here: approving shows how it fails, and can be retried.
   await page.getByRole("button", { name: "Approve and apply" }).click();
   await page.getByText("Applying failed").waitFor();
   ok(await page.getByText(/forge has no API token/i).isVisible(), `${tag} a failed apply says why`);
   ok(await page.getByRole("button", { name: "Try again" }).isVisible(), `${tag} and offers to try again`);
   await shot("change-failed");
-  // An approved change that altered nothing doesn't read as applied (WP-948).
   {
     const noop = new DatabaseSync(`${process.env.DIR}/wp.db`);
     noop.exec("PRAGMA busy_timeout = 5000");
@@ -228,7 +214,6 @@ async function run(width, scheme) {
   await shot("change-no-op");
   await overflow("change no-op");
 
-  // ---- the command notebook ----
   await page.goto(base + "/requests/RQ:R-3");
   await page.getByRole("heading", { name: "Run the migration" }).waitFor();
   const cell = page.getByRole("textbox", { name: "Command 1" });
@@ -243,7 +228,6 @@ async function run(width, scheme) {
   await cell.fill("make migrate ARGS=--dry-run");
   ok(await page.getByRole("button", { name: "Reset to the agent’s command" }).isVisible(), `${tag} an edited command can be reset`);
   await page.getByRole("button", { name: "Run again" }).first().click();
-  // No runner is online here: the run is refused, with the way out.
   await page.getByText(/No runner online on box/).first().waitFor();
   ok(true, `${tag} running with no runner says so`);
   await tallShot("command");
@@ -251,13 +235,11 @@ async function run(width, scheme) {
   await page.getByRole("button", { name: "Done" }).click();
   await page.getByText(/marked it done/).waitFor();
   ok((await api("GET", "/requests/RQ:R-3")).state === "done", `${tag} Done decides a command request`);
-  // Decided, the editor is read-only: a reload shows the command that ran, and says the agent's.
   await page.reload();
   await page.getByText(/marked it done/).waitFor();
   ok((await cell.inputValue()) === "make migrate ARGS=--dry-run", `${tag} a reload of a decided request shows the command that ran`);
   ok((await page.getByTitle("The agent’s command").textContent()) === "agent’s: make migrate", `${tag} and the agent's beside it`);
   ok((await page.getByRole("button", { name: "Reset to the agent’s command" }).count()) === 0, `${tag} with no reset`);
-  // A run that exits non-zero sends it back to the agent (WP-170); it can still be run again.
   const sentBack = new DatabaseSync(`${process.env.DIR}/wp.db`);
   sentBack.exec("PRAGMA busy_timeout = 5000");
   sentBack.prepare("UPDATE requests SET state = 'failed', decision = 'ran', note = '', error = 'exit 2', decided_by = 1, decided_at = ?, delivered_at = NULL WHERE number = 3").run(Date.now());
@@ -273,12 +255,10 @@ async function run(width, scheme) {
   await shot("command-sent-back");
   await overflow("command sent back");
 
-  // ---- a refused tool call ----
   await page.goto(base + "/requests/RQ:R-4");
   await page.getByRole("heading", { name: /Allow Bash: wp pr log 12/ }).waitFor();
   ok(await page.locator("pre", { hasText: '"command": "wp pr log 12"' }).isVisible(), `${tag} the tool call's input shows`);
   ok(await page.getByText("Reading CI logs is outside what auto mode allows.").isVisible(), `${tag} and the reason`);
-  // Allow from now on (WP-233): no rule until the person picks one, the exact rule, one prefix rule, or another.
   const allow = page.getByRole("radiogroup", { name: "Allow from now on" });
   ok((await allow.getByRole("radio", { name: /No rule/ }).getAttribute("aria-checked")) === "true", `${tag} no rule is picked at first`);
   ok(await page.getByRole("button", { name: "Approve", exact: true }).isVisible(), `${tag} so the button is a plain approval`);
@@ -300,7 +280,6 @@ async function run(width, scheme) {
   const perm = await api("GET", "/requests/RQ:R-4");
   ok(perm.state === "approved" && perm.note === "Only this pull request." && !perm.result?.rule, `${tag} approved without a rule, with a note`);
 
-  // ---- snooze ----
   await page.goto(base + "/requests/RQ:R-5");
   await page.getByRole("heading", { name: "Set the DEPLOY_SSH_KEY secret" }).waitFor();
   await page.getByRole("button", { name: "Snooze" }).click();
@@ -309,7 +288,6 @@ async function run(width, scheme) {
   const w2 = await api("GET", "/waiting");
   ok(w2.requests.length === 0, `${tag} a snoozed request no longer waits on you`);
 
-  // ---- a dismissal without a note isn't told to the agent (WP-197) ----
   await page.getByRole("button", { name: "Dismiss", exact: true }).click();
   await page.getByText(/the agent isn’t told, since there was no note for it/).waitFor();
   const quiet = await api("GET", "/requests/RQ:R-5");
@@ -317,7 +295,6 @@ async function run(width, scheme) {
   await shot("dismissed-quiet");
   await overflow("dismissed quiet");
 
-  // ---- live: a request filed while the Inbox is open appears without a reload ----
   await page.goto(base + "/inbox");
   await page.waitForTimeout(500);
   const filed = await call("POST", "/requests", { kind: "question", title: "Squash the migrations?", questions: [{ question: "Squash the migrations?" }] }, { ...agent, "X-Waypoint-Session": "e2e-session" });
@@ -332,7 +309,6 @@ async function run(width, scheme) {
   await sh2.getByText(/answered/i).first().waitFor();
   ok(true, `${tag} a free-text answer is sent`);
 
-  // ---- age; a refused call is logged, not asked (WP-232); a terminal question the agent moved on from (WP-66) ----
   const hook = (event, extra = {}) =>
     call("POST", "/sessions/hook", { events: [{ event, session_id: "e2e-session", machine: "box", cwd: "/work/app", repo: "acme/app", branch: "feat/requests", ...extra }] }, agent);
   const old = await call("POST", "/requests", { kind: "action", title: "Rotate the API key" }, { ...agent, "X-Waypoint-Session": "e2e-session" });
@@ -363,7 +339,6 @@ async function run(width, scheme) {
   ok((await ws.locator("li button", { hasText: "Which cache" }).locator("[data-old]").count()) === 0, `${tag} a fresh one doesn't`);
   await shot("waiting-age");
   await overflow("waiting-age");
-  // The question shows what was refused just before it.
   await page.goto(base + "/requests/RQ:R-8");
   const before = page.getByRole("region", { name: "Refused just before this was asked" });
   await before.waitFor();
@@ -371,8 +346,6 @@ async function run(width, scheme) {
   ok(await before.getByText("Network writes are outside what auto mode allows.").isVisible(), `${tag} and why`);
   await shot("refused-before");
   await overflow("refused-before");
-  // Agents → Audit log → Refused calls lists it. A call refused twice in a row
-  // offers the allow rules that would have let it through (WP-233).
   for (const n of [1, 2])
     await hook("PermissionDenied", {
       tool: "Bash",
@@ -386,7 +359,7 @@ async function run(width, scheme) {
   ok(true, `${tag} Audit log → Refused calls lists the refused call`);
   ok(await page.getByText(/^Last \d+ days: \d+ refused calls?( \(\d+ different\))? in 1 session/).isVisible(), `${tag} with the period's counts`);
   const rulesBox = page.getByRole("region", { name: "Allow rules" });
-  await rulesBox.getByText("Bash(wp pr checks 12)").waitFor(); // one command: its prefix rule covers nothing more
+  await rulesBox.getByText("Bash(wp pr checks 12)").waitFor();
   ok(await rulesBox.getByText(/^\d+ refused calls in 1 session/).first().isVisible(), `${tag} the rules that would have let repeated refusals through are ranked, with what they cover`);
   await shot("refused-calls");
   await overflow("refused-calls");
@@ -398,13 +371,11 @@ async function run(width, scheme) {
   ok((await pick.getByRole("radio", { name: /No rule/ }).count()) === 0, `${tag} with no "No rule": nothing waits on this pick`);
   await shot("refused-rule");
   await overflow("refused-rule");
-  // This forge isn't reachable, so the pull request fails and the row says why.
   await row.getByRole("button", { name: "Add rule" }).click();
   await row.getByText(/wasn’t added|wasn't added/).waitFor();
   ok(true, `${tag} a rule whose pull request couldn't be opened says why`);
   const after = await api("GET", `/refusals?project=${KEY}&limit=1`);
   ok(after.refusals[0].command === "wp pr checks 12" && !after.refusals[0].rule && after.refusals[0].rules?.length > 0, `${tag} and still offers its rules`);
-  // A new prompt: the agent moved on, so the terminal question leaves the list by itself.
   await page.goto(base + "/inbox");
   await ws.getByText("Which cache should I clear?").waitFor();
   await page.waitForTimeout(20);

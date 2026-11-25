@@ -5,8 +5,6 @@ import (
 	"testing"
 )
 
-// Who can pick a task up (WP-93): Anyone (the default), Humans only, Agents.
-
 func TestCheckAgentSpecStates(t *testing.T) {
 	for in, want := range map[string]string{
 		"": "", "anyone": "", "Anyone": "", " ": "",
@@ -33,7 +31,6 @@ func TestIssueAnyoneDefaultAndStates(t *testing.T) {
 	mk := func(actor *Actor, agent string) *IssueDetail {
 		return e.issue(actor, IssueInput{Project: p.Key, Title: "t " + agent, Agent: agent})
 	}
-	// A person's new issue is Anyone's unless they say otherwise.
 	def := mk(e.admin, "")
 	if def.Agent != "" || def.Delegated() {
 		t.Errorf("default agent = %q, want Anyone", def.Agent)
@@ -50,7 +47,6 @@ func TestIssueAnyoneDefaultAndStates(t *testing.T) {
 	if any.Agent != "any" || cl.Agent != "claude" || !any.Delegated() || !cl.Delegated() {
 		t.Errorf("agents = %q, %q", any.Agent, cl.Agent)
 	}
-	// An agent's own bookkeeping is for itself, unless it says Anyone.
 	ag := agentActor(e.admin, "anthropic/claude-opus-5-5")
 	if got := e.issue(ag, IssueInput{Project: p.Key, Title: "mine"}).Agent; got != "anthropic/claude-opus-5-5" {
 		t.Errorf("an agent's own issue is for %q", got)
@@ -59,7 +55,6 @@ func TestIssueAnyoneDefaultAndStates(t *testing.T) {
 		t.Errorf("an agent can file an Anyone issue; got %q", got)
 	}
 
-	// Search tells the states apart (the agent's own issues are left out).
 	mine := []string{def.Key, humans.Key, any.Key, cl.Key}
 	found := func(q string) []string {
 		got := slices.DeleteFunc(e.search(e.admin, "project:"+p.Key+" "+q), func(k string) bool { return !slices.Contains(mine, k) })
@@ -74,10 +69,10 @@ func TestIssueAnyoneDefaultAndStates(t *testing.T) {
 		"agent:humans": {humans.Key},
 		"agent:any":    {any.Key},
 		"agent:claude": {cl.Key},
-		"is:agent":     {any.Key, cl.Key}, // delegated on purpose
+		"is:agent":     {any.Key, cl.Key},
 		"is:delegated": {any.Key, cl.Key},
 		"-is:human":    {def.Key, any.Key, cl.Key},
-		"agent:no":     {}, // not a prefix match on "none"
+		"agent:no":     {},
 	} {
 		slices.Sort(want)
 		if got := found(q); !slices.Equal(got, want) && len(got)+len(want) > 0 {
@@ -92,8 +87,6 @@ func TestAnyoneInTheQueue(t *testing.T) {
 	mk := func(title, agent, prio string) *IssueDetail {
 		return e.issue(e.admin, IssueInput{Project: p.Key, Title: title, Agent: agent, Priority: prio})
 	}
-	// Delegated work counts for more, but an urgent Anyone task comes before
-	// delegated ones that matter less (WP-997 ends WP-93's delegated-first).
 	anyoneUrgent := mk("Anyone urgent", "", "urgent")
 	anyoneLow := mk("Anyone low", "", "low")
 	delegatedLow := mk("Delegated low", "claude", "low")
@@ -158,7 +151,6 @@ func TestDrainTakesOnlyDelegated(t *testing.T) {
 	if task, err := e.s.AgentNext(e.ctx, opus, AgentQuery{Delegated: true, Peek: true}); err != nil || task != nil {
 		t.Errorf("drain took an Anyone task: %+v, %v", task, err)
 	}
-	// An agent asking for its next task is handed the Anyone one.
 	if task, err := e.s.AgentNext(e.ctx, opus, AgentQuery{}); err != nil || task == nil || task.Issue.Key != anyone.Key {
 		t.Errorf("next = %+v, %v; want the Anyone task", task, err)
 	}
@@ -172,19 +164,16 @@ func TestAnyoneTakeAndPatch(t *testing.T) {
 	tok, _, _ := e.s.CreateToken(e.ctx, e.admin, TokenSpec{Name: "opus", Agent: "anthropic/claude-opus-5-5"})
 	opus, _ := e.s.TokenActor(e.ctx, tok)
 
-	// Humans only keeps it out of next, but not out of an explicit take.
 	if task, _ := e.s.AgentNext(e.ctx, opus, AgentQuery{Peek: true, Query: "key:" + humans.Key}); task != nil {
 		t.Errorf("next offered a humans-only task: %+v", task)
 	}
 	if task, err := e.s.AgentTake(e.ctx, opus, humans.Key, ""); err != nil || task.Issue.Agent != "anthropic/claude-opus-5-5" {
 		t.Errorf("explicit take of a humans-only task = %+v, %v", task, err)
 	}
-	// Taking an Anyone task leaves it Anyone's.
 	if task, err := e.s.AgentTake(e.ctx, opus, anyone.Key, ""); err != nil || task.Issue.Agent != "" {
 		t.Errorf("explicit take of an Anyone task = %+v, %v", task, err)
 	}
 
-	// Patching: Anyone <-> Humans only is not a delegation; handing it to agents is.
 	other := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Other"})
 	patch := func(spec string) {
 		t.Helper()
@@ -213,7 +202,6 @@ func TestAnyoneTakeAndPatch(t *testing.T) {
 		t.Errorf("audit for %s = %v; Anyone/Humans moves aren't delegations, claude then anyone is delegate then undelegate", other.Key, acts)
 	}
 
-	// Humans only can't be pinned in the queue; Anyone can.
 	stillHumans := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Still humans", Agent: "none"})
 	if err := e.s.MoveInQueue(e.ctx, e.admin, QueueMove{Key: stillHumans.Key, Top: true}); err == nil {
 		t.Error("pinned a humans-only task")

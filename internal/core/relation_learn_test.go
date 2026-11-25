@@ -50,7 +50,6 @@ func TestRelationSuggestionDecisions(t *testing.T) {
 		t.Errorf("alike recorded as %+v", r)
 	}
 
-	// A read-only token's look writes nothing.
 	ro := *f.member
 	ro.ReadOnly = true
 	if len(suggestedKeys(t, e, &ro, f.alike.Key)) == 0 {
@@ -60,7 +59,6 @@ func TestRelationSuggestionDecisions(t *testing.T) {
 		t.Errorf("a read-only look recorded %d (%v)", n, err)
 	}
 
-	// An agent looking records nothing: only people's decisions teach.
 	agent := &Actor{User: f.member.User, Agent: "claude"}
 	suggestedKeys(t, e, agent, f.src.Key)
 	if r, _ := rowOf(f.src, f.alike); r.times != 1 {
@@ -70,7 +68,6 @@ func TestRelationSuggestionDecisions(t *testing.T) {
 		t.Error("an agent dismissed a suggestion")
 	}
 
-	// Relating the pair, from the other end, accepts it.
 	if err := e.s.AddRelation(e.ctx, f.member, f.alike.Key, "relates", f.src.Key); err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +75,6 @@ func TestRelationSuggestionDecisions(t *testing.T) {
 		t.Errorf("related pair: %+v", r)
 	}
 
-	// A dismissal keeps the pair apart, from either end.
 	if err := e.s.DismissRelationSuggestion(e.ctx, f.member, f.src.Key, f.otherProj.Key); err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +87,6 @@ func TestRelationSuggestionDecisions(t *testing.T) {
 	if _, ok := suggestedKeys(t, e, f.member, f.otherProj.Key)[f.src.Key]; ok {
 		t.Error("a dismissed suggestion came back from the other end")
 	}
-	// Shown again, a decided suggestion keeps its decision.
 	if r, _ := rowOf(f.src, f.otherProj); r.outcome != "dismissed" || r.times != 1 {
 		t.Errorf("dismissed, then shown again: %+v", r)
 	}
@@ -99,8 +94,6 @@ func TestRelationSuggestionDecisions(t *testing.T) {
 		t.Error("dismissed a pair that is related")
 	}
 
-	// Removing the relation undoes the acceptance: the pair can be
-	// suggested and dismissed again.
 	d, err := e.s.GetIssue(e.ctx, f.member, f.src.Key)
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +119,6 @@ func TestFitLogistic(t *testing.T) {
 	var y []bool
 	for range 400 {
 		f := relFeatures{Word: rng.Float64() * 0.5, SharedGoal: rng.IntN(2) == 1, AgeDays: rng.Float64() * 100}
-		// People take what shares a goal, whatever the words.
 		z := -2 + 4*b2f(f.SharedGoal)
 		x = append(x, f.x())
 		y = append(y, rng.Float64() < 1/(1+math.Exp(-z)))
@@ -250,7 +242,6 @@ func TestRelationRankerAdoption(t *testing.T) {
 		if err := e.s.recordFit(e.ctx, f); err != nil {
 			t.Fatal(err)
 		}
-		// A restart loads it, and doesn't fit again within the day.
 		e.s.ranker = rankerState{}
 		r := e.s.relationRanker(e.ctx)
 		if r == nil || r.Line != f.Ranker.Line {
@@ -278,8 +269,6 @@ func TestRelationRankerAdoption(t *testing.T) {
 func TestRankerLineDropsSuggestions(t *testing.T) {
 	e := newEnv(t)
 	f := newRelateFixture(e, nil)
-	// A ranker that thinks nothing alike is worth showing: what the text
-	// states and the same title still are.
 	w := make([]float64, len(relFeatureNames)+1)
 	sd := make([]float64, len(relFeatureNames))
 	for j := range sd {
@@ -294,7 +283,6 @@ func TestRankerLineDropsSuggestions(t *testing.T) {
 	if _, ok := got[f.waits.Key]; !ok {
 		t.Errorf("a stated dependency went: %v", got)
 	}
-	// Under a line it clears, the alike issue is back, with its score kept.
 	e.s.ranker.r.Line = 0.4
 	if _, ok := suggestedKeys(t, e, f.member, f.src.Key)[f.alike.Key]; !ok {
 		t.Error("alike issue missing under a line it clears")
@@ -329,7 +317,6 @@ func TestRelationSuggestionWhoDecides(t *testing.T) {
 		return *o
 	}
 
-	// A viewer, who can neither add nor dismiss, isn't recorded.
 	vic := e.user("vic", false)
 	if err := e.s.SetMember(e.ctx, e.admin, strings.SplitN(f.src.Key, "-", 2)[0], "vic", "viewer"); err != nil {
 		t.Fatal(err)
@@ -341,8 +328,6 @@ func TestRelationSuggestionWhoDecides(t *testing.T) {
 		t.Errorf("a viewer's look recorded %d", n)
 	}
 
-	// Shown to a person from both ends; an agent relating the pair isn't
-	// the person taking it, and the pair no longer counts as ignored.
 	suggestedKeys(t, e, f.member, f.src.Key)
 	suggestedKeys(t, e, f.member, f.alike.Key)
 	if outcome(f.alike, f.src) != "" {
@@ -371,7 +356,6 @@ func TestRelationSuggestionWhoDecides(t *testing.T) {
 		t.Errorf("dismissing a related pair: %v", err)
 	}
 
-	// A dismissal decides the pair from both ends.
 	suggestedKeys(t, e, f.member, f.otherProj.Key)
 	if outcome(f.src, f.otherProj) != "" || outcome(f.otherProj, f.src) != "" {
 		t.Fatalf("not shown both ways: %q %q", outcome(f.src, f.otherProj), outcome(f.otherProj, f.src))
@@ -383,7 +367,6 @@ func TestRelationSuggestionWhoDecides(t *testing.T) {
 		t.Errorf("dismissed one way: %q %q", outcome(f.src, f.otherProj), outcome(f.otherProj, f.src))
 	}
 
-	// Undone, it is undecided again from both ends and comes back.
 	if err := e.s.UndoRelationDismissal(e.ctx, agent, f.src.Key, f.otherProj.Key); err == nil {
 		t.Error("an agent undid a dismissal")
 	}
@@ -397,8 +380,6 @@ func TestRelationSuggestionWhoDecides(t *testing.T) {
 		t.Error("an undone dismissal stayed hidden")
 	}
 
-	// A suggestion whose look wasn't recorded can still be dismissed, and
-	// doesn't train the ranker.
 	if _, err := e.s.db.W.ExecContext(e.ctx, `DELETE FROM relation_suggestions WHERE (issue_id = ? AND other_id = ?) OR (issue_id = ? AND other_id = ?)`,
 		f.src.ID, f.waits.ID, f.waits.ID, f.src.ID); err != nil {
 		t.Fatal(err)

@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// Tests for the check of stored transcript pieces' files (WP-1466, audit 1234.1).
-
 func putThree(t *testing.T, e *env) (rels []string) {
 	t.Helper()
 	var from int64
@@ -64,7 +62,6 @@ func TestMissingTranscriptFilesAreReported(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// the check runs daily: moved on a day, it runs in the hourly job
 	e.setClock(e.clockNow().Add(25 * time.Hour))
 	e.s.CheckCollectorHealth(e.ctx)
 	if p := archiveProblem(t, e); !strings.Contains(p, "2 stored transcript pieces are missing on disk") {
@@ -74,7 +71,6 @@ func TestMissingTranscriptFilesAreReported(t *testing.T) {
 	if err := e.s.db.R.QueryRow(`SELECT pieces FROM transcript_totals WHERE id = 1`).Scan(&n); err != nil || n != 3 {
 		t.Errorf("the index was changed: %d %v", n, err)
 	}
-	// one piece is "is", and the count follows the files
 	if err := os.WriteFile(filepath.Join(e.s.cfg.TranscriptDir, rels[0]), tgz(t, `{"n":1}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +85,7 @@ func TestMissingTranscriptFilesAreReported(t *testing.T) {
 func TestMissingTranscriptFilesCheckIsDaily(t *testing.T) {
 	e := transcriptEnv(t)
 	rels := putThree(t, e)
-	e.s.CheckTranscriptFiles(e.ctx) // the server's start
+	e.s.CheckTranscriptFiles(e.ctx)
 	_ = os.Remove(filepath.Join(e.s.cfg.TranscriptDir, rels[0]))
 	e.setClock(e.clockNow().Add(2 * time.Hour))
 	e.s.CheckTranscriptFiles(e.ctx)
@@ -111,7 +107,7 @@ func TestMissingTranscriptFilesCheckedAtStart(t *testing.T) {
 	rels := putThree(t, e)
 	e.s.CheckTranscriptFiles(e.ctx)
 	_ = os.Remove(filepath.Join(e.s.cfg.TranscriptDir, rels[2]))
-	e.s.transcriptFilesChecked.Store(false) // as in a restarted server
+	e.s.transcriptFilesChecked.Store(false)
 	e.s.CheckTranscriptFiles(e.ctx)
 	var n int
 	if err := e.s.db.R.QueryRow(`SELECT missing FROM transcript_totals WHERE id = 1`).Scan(&n); err != nil || n != 1 {
@@ -121,7 +117,7 @@ func TestMissingTranscriptFilesCheckedAtStart(t *testing.T) {
 
 // With the archive off the check reads nothing and says nothing.
 func TestMissingTranscriptFilesNotCheckedWhenOff(t *testing.T) {
-	e := newEnv(t) // no TranscriptDir
+	e := newEnv(t)
 	e.s.CheckCollectorHealth(e.ctx)
 	var n int
 	var at *int64

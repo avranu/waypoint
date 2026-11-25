@@ -35,7 +35,6 @@ func TestProjectSandboxPolicy(t *testing.T) {
 	}
 	web := e.browser(owner)
 
-	// Not a token (the person's own included), MCP, an agent or an automation.
 	tok, _, err := e.s.CreateAPIToken(e.ctx, owner, "cli", false, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +52,6 @@ func TestProjectSandboxPolicy(t *testing.T) {
 			t.Errorf("%s set the sandbox: %v", name, err)
 		}
 	}
-	// A viewer in the browser may read but not change it.
 	vweb := e.browser(viewer)
 	if pol, err := e.s.ProjectSandbox(e.ctx, vweb, p.Key); err != nil || pol.CanEdit {
 		t.Errorf("viewer read = %+v, %v", pol, err)
@@ -61,20 +59,15 @@ func TestProjectSandboxPolicy(t *testing.T) {
 	if _, err := e.s.SetProjectSandbox(e.ctx, vweb, p.Key, SandboxPolicyInput{Level: ptr(SandboxVM)}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("a viewer set the sandbox: %v", err)
 	}
-	// A token reads it.
 	if pol, err := e.s.ProjectSandbox(e.ctx, tokActor, p.Key); err != nil || pol.CanEdit || pol.Level != "" {
 		t.Errorf("token read = %+v, %v", pol, err)
 	}
 
-	// Signing in counts as entering the password: for ten minutes.
 	e.setClock(e.clockNow().Add(11 * time.Minute))
-	// Tightening needs no password: the default may be anything, but VM is
-	// the strongest.
 	pol, err := e.s.SetProjectSandbox(e.ctx, web, p.Key, SandboxPolicyInput{Level: ptr(SandboxVM)})
 	if err != nil || pol.Level != SandboxVM || !pol.CanEdit || pol.UpdatedBy == nil || pol.UpdatedBy.ID != owner.User.ID {
 		t.Fatalf("tighten = %+v, %v", pol, err)
 	}
-	// Loosening does, and a reason.
 	if _, err := e.s.SetProjectSandbox(e.ctx, web, p.Key, SandboxPolicyInput{Level: ptr(SandboxContained), Reason: "x"}); !errors.Is(err, ErrReauth) {
 		t.Fatalf("loosened without a password: %v", err)
 	}
@@ -98,7 +91,6 @@ func TestProjectSandboxPolicy(t *testing.T) {
 	if err != nil || pol.Level != SandboxOff || pol.InteractiveLevel != SandboxContained {
 		t.Fatalf("loosen = %+v, %v", pol, err)
 	}
-	// Another browser session of the same person hasn't re-authenticated.
 	other := e.browser(owner)
 	e.setClock(e.clockNow().Add(11 * time.Minute))
 	if _, err := e.s.SetProjectSandbox(e.ctx, other, p.Key, SandboxPolicyInput{InteractiveLevel: ptr(SandboxOff), Reason: "x"}); !errors.Is(err, ErrReauth) {
@@ -119,13 +111,11 @@ func TestProjectSandboxPolicy(t *testing.T) {
 	if c := log[2]; c.Loosens || c.New != SandboxVM || c.Current {
 		t.Errorf("log[2] = %+v", c)
 	}
-	// Someone who can't see the project doesn't see its log.
 	stranger := e.browser(e.user("sam", false))
 	if l, err := e.s.SandboxLog(e.ctx, stranger, SandboxLogQuery{}); err != nil || len(l) != 0 {
 		t.Errorf("stranger's log = %+v, %v", l, err)
 	}
 
-	// Reverting off → vm tightens: no password needed.
 	if err := e.s.RevertSandboxChange(e.ctx, web, off.ID, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +130,6 @@ func TestProjectSandboxPolicy(t *testing.T) {
 		t.Errorf("revert log = %+v", c)
 	}
 
-	// The admin heard about each change; the owner who made them didn't.
 	e.s.Wait()
 	ns, _, _ := e.s.ListNotifications(e.ctx, e.admin, false, 20)
 	var loosened bool
@@ -183,7 +172,6 @@ func TestSandboxMachine(t *testing.T) {
 	if _, err := e.s.SetSandboxMachine(e.ctx, web, mine.ID, SandboxMachineInput{Paused: ptr(true), Reason: "jobs fail"}); !errors.Is(err, ErrReauth) {
 		t.Errorf("paused without a password: %v", err)
 	}
-	// Tightening the default needs none.
 	m, err := e.s.SetSandboxMachine(e.ctx, web, mine.ID, SandboxMachineInput{DefaultLevel: ptr(SandboxVM)})
 	if err != nil || m.DefaultLevel != SandboxVM {
 		t.Fatalf("default = %+v, %v", m, err)
@@ -199,11 +187,9 @@ func TestSandboxMachine(t *testing.T) {
 	if len(log) != 2 || log[0].Field != "paused" || log[0].Old != "no" || log[0].New != "yes" || !log[0].Loosens || !log[0].Current {
 		t.Fatalf("log = %+v", log)
 	}
-	// Bob doesn't see the admin's machine's log.
 	if l, _ := e.s.SandboxLog(e.ctx, bweb, SandboxLogQuery{}); len(l) != 0 {
 		t.Errorf("bob's log = %+v", l)
 	}
-	// Unpausing (a revert) tightens.
 	e.setClock(e.clockNow().Add(time.Hour))
 	if err := e.s.RevertSandboxChange(e.ctx, web, log[0].ID, ""); err != nil {
 		t.Fatal(err)

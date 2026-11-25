@@ -31,7 +31,6 @@ func TestRepoHookTestDelivery(t *testing.T) {
 				t.Fatal(err)
 			}
 			e.repoState(p.Key, r.ID)
-			// GitHub pings a new hook by itself; the others are asked to.
 			want := []string{"acme/app"}
 			if kind == "github" {
 				want = nil
@@ -39,7 +38,6 @@ func TestRepoHookTestDelivery(t *testing.T) {
 			if got := fake.tested(); !slices.Equal(got, want) {
 				t.Errorf("test deliveries after adding: %v, want %v", got, want)
 			}
-			// A refreshed (not new) hook is tested on every forge.
 			if err := e.s.RetryRepoHook(e.ctx, e.admin, p.Key, r.ID); err != nil {
 				t.Fatal(err)
 			}
@@ -60,7 +58,6 @@ func TestForgejoTestPushIsAPing(t *testing.T) {
 	r, _ := e.s.AddProjectRepo(e.ctx, e.admin, p.Key, f.ID, "acme/app", false)
 	i := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Thing"})
 	e.repoState(p.Key, r.ID)
-	// Forgejo's test: the latest commit again (before = after).
 	body := []byte(`{"ref":"refs/heads/main","before":"abc","after":"abc","commits":[{"message":"fix ` + i.Key + `","url":"https://git.test/acme/app/commit/abc"}],
 		"repository":{"full_name":"acme/app","owner":{"username":"acme"}}}`)
 	h := signedGitHub(secret, "", body)
@@ -102,7 +99,7 @@ func TestDeleteProjectRemovesItsHooks(t *testing.T) {
 	if n := fake.count("acme/own"); n != 0 {
 		t.Errorf("the deleted project's own repo kept its webhook (%d)", n)
 	}
-	fake.only("acme/shared") // Beta still has it
+	fake.only("acme/shared")
 }
 
 func TestOrgHookLifecycle(t *testing.T) {
@@ -148,19 +145,15 @@ func TestOrgHookLifecycle(t *testing.T) {
 			if len(hooks) != 1 || hooks[0].State != hookInstalled || hooks[0].ID != oh.ID {
 				t.Fatalf("org hooks: %+v", hooks)
 			}
-			// GitLab is asked for a test delivery; GitHub pings by itself;
-			// Forgejo can't test organisation hooks.
 			if got, want := slices.Contains(fake.tested(), "org:Acme"), kind == "gitlab"; got != want {
 				t.Errorf("org test delivery requested: %v, want %v (%v)", got, want, fake.tested())
 			}
 
-			// A repo linked later in the org gets no hook of its own.
 			two, _ := e.s.AddProjectRepo(e.ctx, e.admin, p.Key, f.ID, "acme/two", false)
 			if st := e.repoState(p.Key, two.ID); st.HookState != hookCovered || fake.count("acme/two") != 0 {
 				t.Errorf("new repo in a covered org: %+v (%d hooks)", st, fake.count("acme/two"))
 			}
 
-			// Deliveries from its repos show on the org hook.
 			if kind == "github" {
 				body := []byte(`{"zen":"hi","repository":{"full_name":"acme/two","owner":{"type":"Organization"}}}`)
 				if err := e.s.HandleForgeWebhook(e.ctx, f.ID, signedGitHub(secret, "ping", body), body); err != nil {
@@ -171,7 +164,6 @@ func TestOrgHookLifecycle(t *testing.T) {
 				}
 			}
 
-			// Removing it gives the repos their own hooks back.
 			if err := e.s.RemoveOrgHook(e.ctx, e.admin, f.ID, oh.ID); err != nil {
 				t.Fatal(err)
 			}
@@ -186,7 +178,6 @@ func TestOrgHookLifecycle(t *testing.T) {
 				fake.only(r.Repo)
 			}
 
-			// Deleting the forge takes an org hook with it.
 			if _, err := e.s.AddOrgHook(e.ctx, e.admin, f.ID, "other"); err != nil {
 				t.Fatal(err)
 			}
@@ -211,7 +202,7 @@ func asString(v any) string {
 func TestOrgHookFailureKeepsRepoHooks(t *testing.T) {
 	e := newEnv(t)
 	fake, srv := newHookForge(t, "gitlab")
-	fake.refuse["org:grp"] = 404 // a group webhook on GitLab Free
+	fake.refuse["org:grp"] = 404
 	f, _ := e.s.CreateForge(e.ctx, e.admin, ForgeInput{Kind: ptr("gitlab"), BaseURL: ptr(srv.URL), Token: ptr("tok")})
 	p := e.project(e.admin, "Alpha", "kanban")
 	r, _ := e.s.AddProjectRepo(e.ctx, e.admin, p.Key, f.ID, "grp/sub/app", false)
@@ -227,7 +218,6 @@ func TestOrgHookFailureKeepsRepoHooks(t *testing.T) {
 		t.Errorf("repo under a failed group hook: %+v", st)
 	}
 	fake.only("grp/sub/app")
-	// Once allowed, trying again covers the subgroup's repo.
 	delete(fake.refuse, "org:grp")
 	if _, err := e.s.AddOrgHook(e.ctx, e.admin, f.ID, "grp"); err != nil {
 		t.Fatal(err)

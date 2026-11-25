@@ -109,7 +109,6 @@ func TestClearStrandsUnfinishedWork(t *testing.T) {
 				t.Errorf("successor message = %+v, %v", m, err)
 			}
 		}
-		// The open run didn't carry over: it was released.
 		var open int
 		if err := se.s.db.R.QueryRow(`SELECT count(*) FROM agent_runs WHERE ended_at IS NULL`).Scan(&open); err != nil {
 			t.Fatal(err)
@@ -176,7 +175,6 @@ func TestStartQuietWhileTaskHeld(t *testing.T) {
 func TestSweepReopensIdleTasks(t *testing.T) {
 	se := newStrandEnv(t)
 	se.stop(t, "cli-old", []string{" M a.go"}, nil)
-	// The session goes quiet (no end heard), the lease lapses.
 	se.setClock(se.clockNow().Add(3 * time.Hour))
 	if err := se.s.expireRuns(se.ctx); err != nil {
 		t.Fatal(err)
@@ -187,7 +185,6 @@ func TestSweepReopensIdleTasks(t *testing.T) {
 	if got := se.status(t); got != CatInProgress {
 		t.Fatalf("swept too early: %s", got)
 	}
-	// Its session still pings: it may come back to it.
 	se.setClock(se.clockNow().Add(4 * time.Hour))
 	if _, err := se.s.SessionHook(se.ctx, se.ag, []HookEvent{hook("m1", "cli-old", "UserPromptSubmit", nil)}); err != nil {
 		t.Fatal(err)
@@ -201,7 +198,6 @@ func TestSweepReopensIdleTasks(t *testing.T) {
 	var open int
 	_ = se.s.db.R.QueryRow(`SELECT count(*) FROM agent_runs WHERE ended_at IS NULL`).Scan(&open)
 	if open != 0 {
-		// The prompt reopened a run: let it lapse too.
 		se.setClock(se.clockNow().Add(3 * time.Hour))
 		if err := se.s.expireRuns(se.ctx); err != nil {
 			t.Fatal(err)
@@ -225,8 +221,6 @@ func TestSweepReopensIdleTasks(t *testing.T) {
 		t.Errorf("sweep claims background work died:\n%s", c)
 	}
 
-	// A session waiting on its person (a permission prompt) is still about
-	// however long it waits, until it ends (WP-ADR54).
 	we := newStrandEnv(t)
 	if _, err := we.s.SessionHook(we.ctx, we.ag, []HookEvent{hook("m1", "cli-old", "Notification", func(h *HookEvent) { h.NotificationType = "permission_prompt" })}); err != nil {
 		t.Fatal(err)
@@ -249,7 +243,6 @@ func TestSweepReopensIdleTasks(t *testing.T) {
 		t.Fatalf("task of a session gone a day is %s, want todo", got)
 	}
 
-	// Humans-only tasks aren't the sweep's.
 	he := newStrandEnv(t)
 	if _, err := he.s.UpdateIssue(he.ctx, he.admin, he.key, IssuePatch{Agent: ptr(AgentHumans)}); err != nil {
 		t.Fatal(err)

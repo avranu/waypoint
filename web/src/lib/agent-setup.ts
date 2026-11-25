@@ -1,9 +1,3 @@
-// Agent setup (WP-208, WP-ADR44): every attached repo's and every machine's
-// agent files (CLAUDE.md, AGENTS.md, .claude/ agents, skills, commands,
-// settings), the shared instructions published into each repo's root file,
-// and Waypoint's checks. Reads are factories in queries.ts (q.agentSetup,
-// q.agentFile, q.machineFile); the mutations live here.
-
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from './api'
 import type { UserRef } from './types'

@@ -28,7 +28,6 @@ func TestFollowUps(t *testing.T) {
 	if !has(rel(later.Key), "follows", first.Key, "") || !has(rel(first.Key), "followed_by", later.Key, "") {
 		t.Errorf("follows: %+v / %+v", rel(later.Key), rel(first.Key))
 	}
-	// The inverse, from the other side, is stored the same way round.
 	other := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Another pass on board speed"})
 	if err := e.s.AddRelation(e.ctx, e.admin, first.Key, "followed_by", other.Key); err != nil {
 		t.Fatal(err)
@@ -58,9 +57,6 @@ func TestFollowUps(t *testing.T) {
 		t.Errorf("is:followed = %v, want %v", got, []string{first.Key})
 	}
 
-	// An agent working on a task files one: it follows that task, found
-	// "session". A sub-task it files of the same task is a slice, not a
-	// follow-up.
 	a := agentActor(e.admin, "anthropic/claude-opus-5-5")
 	sess, err := e.s.SessionHook(e.ctx, a, []HookEvent{hook("box", "follow-a", "SessionStart", nil)})
 	if err != nil {
@@ -103,7 +99,6 @@ func TestBestFollowed(t *testing.T) {
 			t.Errorf("%s: %d, want %d", c.name, got, c.want)
 		}
 	}
-	// Files most pull requests change (help text, a changelog) don't count.
 	var many []fileSet
 	for range 8 {
 		many = append(many, set("CHANGELOG.md", "help.md", "other.go"))
@@ -143,7 +138,7 @@ func TestFollowUpsByFiles(t *testing.T) {
 	pr(2, now.Add(-2*time.Hour), "a.go", "b.go")
 	pr(3, now.Add(-time.Hour), "a.go", "b.go", "d.go")
 	mine := done(e.proj.Key, "Board speed", 1)
-	theirs := done(other.Key, "Beta's board work", 2) // newer, but another project
+	theirs := done(other.Key, "Beta's board work", 2)
 	later := e.issue(e.admin, IssueInput{Project: e.proj.Key, Title: "Board speed again"})
 	e.link(t, later.ID, 3)
 	if err := e.s.noteFollowUpsByFiles(e.ctx, later.ID, "http://f.test/o/r/pulls/3"); err != nil {

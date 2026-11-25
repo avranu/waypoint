@@ -51,8 +51,6 @@ export function ReportsPage() {
   )
 }
 
-// ---- shared bits ----
-
 function Card({
   title,
   actions,
@@ -146,12 +144,9 @@ function lastValue(vals: (number | null)[]): number | null {
   return null
 }
 
-// ---- 1. forecast ----
-
 function ForecastCard({ projectKey, className }: { projectKey: string; className?: string }) {
   const [draft, setDraft] = useState('')
   const [scope, setScope] = useState('')
-  // The scope box is rarely needed: a filter button opens it (open already when a scope is set).
   const [scoping, setScoping] = useState(false)
   const fq = useQuery({
     ...q.forecast(projectKey, scope),
@@ -242,7 +237,6 @@ function ForecastCard({ projectKey, className }: { projectKey: string; className
 function ForecastBody({ fc }: { fc: Forecast }) {
   const unit = fc.basis === 'points' ? 'pts' : 'issues'
   const n = fc.weekly_throughput.length
-  // Bucket i covers the week starting (this Monday − 7·(n − i)) days.
   const weeks = useMemo(() => {
     const now = new Date()
     const monday = new Date(
@@ -326,13 +320,10 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
   )
 }
 
-// ---- 2. roadmap ----
-
 function RoadmapCard({ projectKey, className }: { projectKey: string; className?: string }) {
   const rq = useQuery(q.roadmap(projectKey))
   const openIssue = useOpenIssue()
   const epics = rq.data
-  // A long list starts folded so the charts stay in view.
   const [open, setOpen] = useState<boolean | undefined>(undefined)
   const shown = open ?? (!epics || epics.length <= 5)
   const fold = epics && epics.length > 0 && (
@@ -421,8 +412,6 @@ function EpicDate({ label, date, message }: { label: string; date?: string; mess
   )
 }
 
-// ---- 3. burndown ----
-
 function BurndownCard({ sprint }: { sprint: Sprint }) {
   const bq = useQuery(q.burndown(sprint.id))
   const bd = bq.data
@@ -505,8 +494,6 @@ function BurndownCard({ sprint }: { sprint: Sprint }) {
   )
 }
 
-// ---- 4 & 5. burnup and throughput ----
-
 const weekOptions = [
   { value: 4, label: '4w' },
   { value: 12, label: '12w' },
@@ -560,7 +547,6 @@ function BurnupCard({
   picker: ReactNode
   weeks: number
 }) {
-  // Points only when finished work carries them too: a flat zero line beside 98 finished issues reads as broken.
   const usePoints =
     !!data?.some((w) => w.scope_points > 0) && !!data?.some((w) => w.done_points > 0)
   const unit = usePoints ? 'points' : 'issues'
@@ -665,10 +651,7 @@ function ThroughputCard({
   )
 }
 
-// ---- 6. cumulative flow ----
-
 const flowSeries: { cat: Category; name: string; color: string }[] = [
-  // Bottom to top.
   { cat: 'done', name: 'Done', color: viz.aqua },
   { cat: 'in_progress', name: 'In progress', color: viz.blue },
   { cat: 'todo', name: 'To do', color: viz.yellow },
@@ -734,8 +717,6 @@ function FlowCard({ projectKey }: { projectKey: string }) {
   )
 }
 
-// ---- 7. velocity ----
-
 function VelocityCard({
   project,
   data,
@@ -784,8 +765,6 @@ function VelocityCard({
     </Card>
   )
 }
-
-// ---- 8. time tracked ----
 
 function TimeCard({ projectKey }: { projectKey: string }) {
   const openIssue = useOpenIssue()

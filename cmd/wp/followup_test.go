@@ -19,7 +19,6 @@ func TestFollowupCommands(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv("WAYPOINT_SESSION", "sess-1")
 
-	// The agent can't, and the error says how its person can.
 	out, code := s.run("followup", "set", "--tell", "keep going")
 	if code == 0 || !strings.Contains(out, "for people") || !strings.Contains(out, "WAYPOINT_AGENT=none wp followup set") {
 		t.Fatalf("an agent queued steps (exit %d): %s", code, out)
@@ -28,7 +27,6 @@ func TestFollowupCommands(t *testing.T) {
 		t.Fatalf("an agent read the follow-up (exit %d): %s", code, out)
 	}
 
-	// The person, in the same shell: this session, steps in flag order.
 	s.asHuman()
 	if out := s.wp("followup"); !strings.Contains(out, "Nothing is queued") {
 		t.Fatalf("show with nothing queued: %s", out)
@@ -53,7 +51,6 @@ func TestFollowupCommands(t *testing.T) {
 		t.Fatalf("show: %s", out)
 	}
 
-	// --append adds after; --steps-json takes any step; by number from elsewhere.
 	t.Setenv("WAYPOINT_SESSION", "")
 	t.Chdir(t.TempDir())
 	if out, code := s.run("followup"); code == 0 || !strings.Contains(out, "no agent session here") {
@@ -65,19 +62,16 @@ func TestFollowupCommands(t *testing.T) {
 	if fu, _ = s.svc.GetFollowUp(ctx, s.me, sid); len(fu.Steps) != 3 || fu.Steps[2].Type != "notify" {
 		t.Fatalf("appended: %+v", fu.Steps)
 	}
-	// In the session's directory, it is found without being named.
 	t.Chdir(s.repo)
 	if out := s.wp("followup", "show", "--json"); !strings.Contains(out, `"notify"`) {
 		t.Fatalf("by directory: %s", out)
 	}
-	// Mistakes are caught before anything is sent.
 	if out, code := s.run("followup", "set", "--prompt", "x"); code != 2 || !strings.Contains(out, "goes after the --fresh") {
 		t.Fatalf("--prompt without --fresh: %d %s", code, out)
 	}
 	if out, code := s.run("followup", "set", "--fresh", "opus"); code != 2 || !strings.Contains(out, "needs a prompt") {
 		t.Fatalf("--fresh without a prompt: %d %s", code, out)
 	}
-	// Someone else's session isn't found.
 	if out, code := s.run("followup", "show", "other-cli-id"); code == 0 || !strings.Contains(out, "no session other-cli-id") {
 		t.Fatalf("an unknown session: %s", out)
 	}

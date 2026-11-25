@@ -1,8 +1,3 @@
-// Pause running sessions (WP-146): a pause of all your agents that also
-// winds down the sessions running now. Their hooks refuse new agents and tell
-// them to finish the step they're on, write a hand-off and stop; Waypoint
-// stops waking them until you resume. The quota alert's Pause does the same.
-
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { CirclePause, CirclePlay } from 'lucide-react'

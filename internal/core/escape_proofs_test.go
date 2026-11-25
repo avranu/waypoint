@@ -47,7 +47,6 @@ func TestProofsDueOnlyTracedFixesOnce(t *testing.T) {
 	if due, err = e.s.EscapeProofsDue(e.ctx, e.admin, "", "o/r", 0); err != nil || len(due) != 0 {
 		t.Fatalf("after the proof: %+v %v", due, err)
 	}
-	// A trace placing the fix elsewhere makes the proof stale.
 	in := FixTraceInput{PR: fix, Machine: "m", Commit: "elsewhere", Method: "none"}
 	if err := e.s.RecordFixTrace(e.ctx, e.admin, in); err != nil {
 		t.Fatal(err)
@@ -55,7 +54,6 @@ func TestProofsDueOnlyTracedFixesOnce(t *testing.T) {
 	if due, err = e.s.EscapeProofsDue(e.ctx, e.admin, "", "o/r", 0); err != nil || len(due) != 1 || due[0].Fix != "elsewhere" {
 		t.Fatalf("after a new trace: %+v %v", due, err)
 	}
-	// A runner that proved the old commit meanwhile is turned away.
 	err = e.s.RecordFixProof(e.ctx, e.admin, FixProofInput{PR: fix, Machine: "m", Commit: "placed", Outcome: "passes"})
 	if err == nil || !strings.Contains(err.Error(), "traced to") {
 		t.Fatalf("a proof of the old commit: %v", err)
@@ -82,19 +80,16 @@ func TestProofConfirmsAndRefutesTheBlame(t *testing.T) {
 		t.Fatalf("before: %+v %v", rows, err)
 	}
 
-	// The test passes on m1: the blame moves to m2, unconfirmed.
 	e.prove(t, FixProofInput{PR: fix, Commit: "placed", Outcome: "proven", Tests: []string{"x.TestA"}, Failed: []string{"x.TestA"}, Intro: "m1", IntroCheck: "passes_at_intro"})
 	rows, err = e.s.EscapeList(e.ctx, e.admin, EscapeQuery{Key: task.Key})
 	if err != nil || len(rows) != 1 || rows[0].IntroNumber != 2 || rows[0].Confidence != 0.4 || rows[0].Proof != "proven" {
 		t.Fatalf("refuted: %+v %v", rows[0], err)
 	}
 
-	// Confirmed on m2: certain.
 	e.prove(t, FixProofInput{PR: fix, Commit: "placed", Outcome: "proven", Tests: []string{"x.TestA"}, Failed: []string{"x.TestA"}, Intro: "m2", IntroCheck: "confirmed"})
 	if c := e.introConfidence(t, fix, "m2"); c != 1 {
 		t.Fatalf("confirmed confidence = %v", c)
 	}
-	// A re-trace of the same commit keeps what the proof found.
 	if err := e.s.RecordFixTrace(e.ctx, e.admin, in); err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +115,6 @@ func TestProofStatsCompareRefixes(t *testing.T) {
 	e.bug(t, "third", 3)
 	e.record(t, a, FixIntroducerInput{}, "none")
 	e.record(t, b, FixIntroducerInput{}, "none")
-	// c's bug came from b, a fix.
 	e.record(t, c, FixIntroducerInput{Merge: "m2", PR: 2, Lines: 1, Share: 1, At: now.Add(-10 * day).UnixMilli()}, "szz")
 	e.prove(t, FixProofInput{PR: a, Commit: "placed", Outcome: "proven", Tests: []string{"x.T"}, Failed: []string{"x.T"}})
 	e.prove(t, FixProofInput{PR: b, Commit: "placed", Outcome: "no_test"})
@@ -156,7 +150,6 @@ func TestFixProofInputValidates(t *testing.T) {
 			t.Errorf("accepted %+v", in)
 		}
 	}
-	// A check of a change the trace doesn't blame.
 	e2 := newEscapeEnv(t)
 	e2.mergedPR(t, 1, e2.s.now().Add(-time.Hour), "m1")
 	traced := e2.mergedPR(t, 2, e2.s.now(), "m2")
@@ -167,7 +160,6 @@ func TestFixProofInputValidates(t *testing.T) {
 		t.Errorf("a check of an unblamed change: %v", err)
 	}
 	e2.prove(t, FixProofInput{PR: traced, Commit: "placed", Outcome: "proven", Tests: []string{"x.T"}, Failed: []string{"x.T"}, Intro: "m1", IntroCheck: "confirmed"})
-	// No trace yet: nothing to prove.
 	if err := e.s.RecordFixProof(e.ctx, e.admin, FixProofInput{PR: fix, Outcome: "no_test"}); err == nil {
 		t.Error("accepted a proof of an untraced fix")
 	}

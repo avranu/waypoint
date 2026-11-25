@@ -1,7 +1,3 @@
-// What the agent is waiting on you for, in the chat (WP-ADR1): Hermes's
-// own approval of a command, and its clarify questions. (The gate's
-// approvals are different: those are answered on Signal.)
-
 import { useState } from 'react'
 import clsx from 'clsx'
 import { HelpCircle, ShieldQuestion } from 'lucide-react'

@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// wp usage risky: the risky commands wp usage sync found (WP-647).
-
 var usageRiskyCmd = &command{
 	name: "risky", args: "[--days 7] [--high] [--kind KIND] [--refused] [--limit 30] [--user NAME]",
 	summary: "risky shell commands agents ran: deletes, force pushes, production",

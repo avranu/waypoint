@@ -8,7 +8,6 @@ func TestPages(t *testing.T) {
 	p := e.project(e.admin, "Docs", "")
 	i := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Ship it"})
 
-	// Personal pages are private to their author.
 	mine, err := e.s.CreatePage(e.ctx, sam, PageInput{Title: str("Diary"), Body: str("private thoughts"), Category: str("note")})
 	if err != nil {
 		t.Fatal(err)
@@ -16,7 +15,6 @@ func TestPages(t *testing.T) {
 	if _, err := e.s.GetPage(e.ctx, e.admin, mine.ID); err == nil {
 		t.Error("someone else (even an admin) read a personal page")
 	}
-	// Project pages follow project roles; children join the parent's project.
 	plan, err := e.s.CreatePage(e.ctx, e.admin, PageInput{Title: str("Launch plan"), Category: str("plan"), Project: Some(p.Key), Issues: &[]string{i.Key}})
 	if err != nil {
 		t.Fatal(err)
@@ -35,7 +33,6 @@ func TestPages(t *testing.T) {
 	if _, err := e.s.UpdatePage(e.ctx, sam, plan.ID, PageInput{Title: str("x")}); err == nil {
 		t.Error("viewer edited a page")
 	}
-	// No cycles; search and issue links work.
 	if _, err := e.s.UpdatePage(e.ctx, e.admin, plan.ID, PageInput{Parent: Some(child.ID)}); err == nil {
 		t.Error("page moved under its own child")
 	}
@@ -46,7 +43,7 @@ func TestPages(t *testing.T) {
 	if d := e.get(e.admin, i.Key); len(d.Pages) != 1 || d.Pages[0].ID != plan.ID {
 		t.Errorf("issue pages = %+v", d.Pages)
 	}
-	if list, _ := e.s.ListPages(e.ctx, sam, PageQuery{}); len(list) != 3 { // diary + 2 project pages
+	if list, _ := e.s.ListPages(e.ctx, sam, PageQuery{}); len(list) != 3 {
 		t.Errorf("sam lists %d pages", len(list))
 	}
 	if err := e.s.DeletePage(e.ctx, e.admin, plan.ID); err != nil {

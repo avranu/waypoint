@@ -1,9 +1,5 @@
 package core
 
-// Branches on a forge (WP-140): list them, compare one with another, delete
-// one, and finish a pull request whose work already landed elsewhere.
-// httpForgeClient implements it for GitHub, Forgejo and GitLab.
-
 import (
 	"context"
 	"fmt"
@@ -138,7 +134,7 @@ func (c *httpForgeClient) DeleteBranch(ctx context.Context, f *Forge, repo, bran
 		err = c.do(ctx, f, http.MethodDelete, fmt.Sprintf("/repos/%s/branches/%s", repo, escapePath(branch)), nil, nil)
 	}
 	if isStatus(err, http.StatusNotFound) || isStatus(err, http.StatusUnprocessableEntity) && f.Kind == "github" {
-		return nil // already gone
+		return nil
 	}
 	return err
 }

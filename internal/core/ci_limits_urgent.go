@@ -1,25 +1,5 @@
 package core
 
-// The fix for a CI time limit cuts the merge line (WP-949). While a repo's
-// runs are stopped by a limit, every merge ahead of the fix pays for it:
-// on 2026-11-12 the pull request that made backend tests 3-7× faster was
-// 8th in a line of 18 that took 10½ hours to drain, while shards hit their
-// 40m limit 11 times a day, and only a person's `wp pr urgent` moved it.
-//
-// So the CI limits task (WP-922), filed by Waypoint itself from job logs,
-// is tagged ci-urgent when a run is stopped by a limit (the "problem"
-// level), and the existing tag rules carry it to the fix: wp ship's pull
-// request for the task opens urgent, one whose own text names the task gets
-// the label (WP-697), and open pull requests already linked to it get it
-// now. The tag goes on once per spell: a person who takes it off the task
-// keeps it off until the limits are fine and a run is stopped again. When
-// the hourly check finds no run stopped any more, the watch takes off the
-// tag it put on; pull requests keep the label they have.
-//
-// Only Waypoint tags the task, and only from CI evidence; a pull request
-// can still name the task to ride along, as with any tagged task, and
-// `wp pr urgent N --off` or `wp edit KEY --untag ci-urgent` undo it.
-
 import (
 	"context"
 	"fmt"
@@ -57,8 +37,6 @@ func (s *Service) ciLimitUrged(ctx context.Context, forgeID int64, repo string) 
 // urgeCILimits tags the open limits task ci-urgent and puts the urgent lane
 // on the open pull requests in repo already linked to it.
 func (s *Service) urgeCILimits(ctx context.Context, writer *Actor, forgeID int64, repo, task string) {
-	// A tag a person put on is theirs: the watch does not claim it, so the
-	// calm check leaves it.
 	byPerson := s.taskUrgent(ctx, SystemActor(), task)
 	d, err := s.UpdateIssue(ctx, writer, task, IssuePatch{AddLabels: []string{CIUrgentLabel}})
 	if err != nil {
@@ -106,8 +84,6 @@ func (s *Service) calmCILimits(ctx context.Context, forgeID int64, repo string) 
 		forget()
 		return
 	}
-	// From here the record stays until the tag is off, so a failed untag is
-	// tried again at the next check.
 	owner := s.repoProjectOwner(ctx, forgeID, repo)
 	u, err := s.userByID(ctx, s.db.R, owner)
 	if owner == 0 || err != nil || u.Disabled {

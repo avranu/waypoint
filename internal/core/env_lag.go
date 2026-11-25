@@ -1,27 +1,5 @@
 package core
 
-// Deploy lag alerts (WP-199). From October 18 to 26 a runner janitor
-// cancelled each of Waypoint's queued main runs about 20 seconds after its
-// merge: for eight days nothing on main was released or deployed, and nobody
-// noticed until someone went looking. Whatever stops a merge reaching an
-// environment (no release tag, a cancelled or failed deploy job, a deployer
-// that is down), the symptom is the same: the environment keeps running an
-// older commit than its branch's head. An environment with a lag limit
-// (lag_alert_m; production and staging start at 45 minutes) that has been
-// behind its branch longer than that tells the project's owners, once per
-// stall and again each day it lasts.
-//
-// It works from what Waypoint already has, so every project that records its
-// deployments (wp env deploy, a version endpoint) gets it: the branch head
-// from push events, the environment's commit and when it got it, and the
-// pull requests merged into the branch. "Behind since" is when the branch
-// first moved past what it runs: the moment it got its commit when the head
-// was already newer by then, else the earliest pull request merged after it,
-// or the latest head push when none was. The merges matter because a branch
-// that keeps moving (a merge every twenty minutes) has a recent head push all
-// the time. Only the latest push per branch is kept, so on a branch taking
-// direct pushes with no pull requests each push restarts the clock.
-
 import (
 	"context"
 	"database/sql"
@@ -55,7 +33,7 @@ func envDefaultLag(e *Environment) int {
 type envLag struct {
 	env   *Environment
 	head  string
-	since time.Time // when the branch first moved past what it runs
+	since time.Time
 }
 
 // checkEnvLag tells the owners about environments that have run behind
@@ -77,13 +55,13 @@ func (s *Service) checkEnvLag(ctx context.Context) {
 			continue
 		}
 		if lag == nil {
-			continue // the head on record is out of date: can't tell
+			continue
 		}
 		if now.Sub(lag.since) < time.Duration(e.LagAlertM)*time.Minute {
 			continue
 		}
 		if lag.toldAt() && now.Sub(*e.lagAlertedAt) < envLagRepeat {
-			continue // told about this stall already today
+			continue
 		}
 		if err := s.alertEnvLag(ctx, lag, now); err != nil {
 			s.log.WarnContext(ctx, "deploy lag: alert", "environment", e.ID, "err", err)
@@ -106,8 +84,6 @@ func (s *Service) envBehindSince(ctx context.Context, e *Environment) (*envLag, 
 		return &envLag{env: e, head: e.Head, since: since}, err
 	}
 	if since.After(*got) {
-		// The branch moved after it got its commit: behind since the first
-		// merge or push after that.
 		first, err := s.firstMergeAfter(ctx, e, *got)
 		if err != nil {
 			return nil, err
@@ -117,10 +93,6 @@ func (s *Service) envBehindSince(ctx context.Context, e *Environment) (*envLag, 
 		}
 		return &envLag{env: e, head: e.Head, since: since}, nil
 	}
-	// The head was already there when it got its commit: a deploy of an older
-	// release (a rollback), behind from then on. Unless a merge came after
-	// the head's push: then the push that followed it never reached Waypoint,
-	// and what it runs may well be newer than the head on record.
 	missed, err := s.firstMergeAfter(ctx, e, since.Add(envLagHeadSlack))
 	if err != nil || missed != nil {
 		return nil, err
@@ -183,8 +155,6 @@ func (s *Service) envGotCommit(ctx context.Context, e *Environment) (*time.Time,
 func (s *Service) alertEnvLag(ctx context.Context, l *envLag, now time.Time) error {
 	e := l.env
 	return s.write(ctx, SystemActor(), func(t *tx) error {
-		// Only if nothing changed since it was read: a deploy that landed
-		// meanwhile, or another server's check, wins.
 		res, err := t.ExecContext(ctx, `UPDATE environments SET lag_alerted_at = ?
 			WHERE id = ? AND commit_sha = ? AND coalesce(lag_alerted_at, 0) = ?`,
 			now.UnixMilli(), e.ID, e.Commit, msOrZero(e.lagAlertedAt))

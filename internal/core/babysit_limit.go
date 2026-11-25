@@ -13,12 +13,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// A round whose agent stopped at its owner's usage limit did no work on
-// the pull request, so it isn't one of its rounds (WP-683): counted, it
-// took the next rung, and an assessor round that hit the limit parked the
-// pull request for a person. It is dropped, and the next round waits until
-// the limit lifts, out of the merge line meanwhile.
-
 // limitRetry is how long a round waits when nothing says when the limit
 // lifts: a rate limit is over by then, and a spent plan costs one quick
 // failed job per try.
@@ -92,7 +86,7 @@ func restoreStreaks(b *Babysit, r BabysitRound) {
 		}
 	}
 	if sameSHA(b.RoundSHA, r.SHA) {
-		return // a round on the same head again didn't add to them
+		return
 	}
 	for _, c := range r.Checks {
 		if b.streaks[c]--; b.streaks[c] <= 0 {
@@ -166,7 +160,6 @@ func takeBackRound(b *Babysit, i int) BabysitRound {
 // has taken is never touched. It reports whether the round was withdrawn; b
 // is changed only when it was.
 func (s *Service) withdrawQueuedRound(ctx context.Context, b *Babysit, pr *PullRequest, jobID int64) bool {
-	// Most jobs a step asks about are running: no write for those.
 	var state string
 	if err := s.db.R.QueryRowContext(ctx, `SELECT state FROM runner_jobs WHERE id = ?`, jobID).Scan(&state); err != nil || state != "queued" {
 		return false
@@ -185,15 +178,13 @@ func (s *Service) withdrawQueuedRound(ctx context.Context, b *Babysit, pr *PullR
 		if err := t.QueryRowContext(wctx, `SELECT state FROM runner_jobs WHERE id = ?`, jobID).Scan(&state); err != nil || state != "queued" {
 			return err
 		}
-		// In the same write as the cancel, so whoever hears of the job's
-		// end finds it is no longer the babysit's and records no outcome.
 		res, err := t.ExecContext(wctx, `UPDATE babysits SET job_id = NULL, round = ?, round_sha = ?, rounds = ?, streaks = ?, wait_at = ?, updated_at = ? WHERE id = ? AND job_id = ?`,
 			nb.Round, nb.RoundSHA, string(rounds), string(st), now.UnixMilli(), now.UnixMilli(), b.ID, jobID)
 		if err != nil {
 			return err
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			return nil // no longer this babysit's job
+			return nil
 		}
 		cancelled = true
 		projectID, err := s.attachedProject(wctx, t, pr.ForgeID, pr.Repo)

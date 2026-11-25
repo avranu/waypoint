@@ -1,8 +1,3 @@
-// One way to answer a suggestion on the Goals page, so every section looks
-// and reads the same: a primary check that names what it makes (Link a task
-// to a goal, Approve a goal), a quiet cross that always reads Drop (the
-// suggestion goes), and "Other goal…" to pick a different one (WP-1196).
-
 import type { ReactNode } from 'react'
 import { Check, Target, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'

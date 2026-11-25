@@ -11,9 +11,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// What every session in the repository reads before any work (instruction
-// files, auto memory), and how much of its code is comments (WP-193).
-
 // sugDoc is a file read into every session.
 type sugDoc struct {
 	Name     string       `json:"name"` // as shown: AGENTS.md, ~/.claude/CLAUDE.md
@@ -31,12 +28,12 @@ type sugSection struct {
 }
 
 const (
-	memoryLines   = 200 // Claude Code reads the first 200 lines of MEMORY.md
+	memoryLines   = 200
 	importDepth   = 4
 	maxDocBytes   = 2 << 20
-	maxScanBytes  = 1 << 20 // source files larger than this are skipped
-	commentBlock  = 15      // lines: a comment block worth a look
-	approxTokenOf = 4       // bytes per token, as the Usage tab estimates
+	maxScanBytes  = 1 << 20
+	commentBlock  = 15
+	approxTokenOf = 4
 )
 
 var importRE = lazyre.New(`(?:^|\s)@((?:~/|\.{0,2}/)?[A-Za-z0-9_./-]+\.[A-Za-z0-9]+)`)
@@ -91,7 +88,7 @@ func instructionDocs(claudeRoot, root string, memDirs []string) []sugDoc {
 			break
 		}
 	}
-	for i := len(dirs) - 1; i >= 0; i-- { // outermost first, as Claude Code reads them
+	for i := len(dirs) - 1; i >= 0; i-- {
 		for _, name := range []string{"CLAUDE.md", "CLAUDE.local.md", filepath.Join(".claude", "CLAUDE.md")} {
 			add(filepath.Join(dirs[i], name), 0)
 		}
@@ -109,7 +106,7 @@ func instructionDocs(claudeRoot, root string, memDirs []string) []sugDoc {
 		}
 		doc := docOf(show(p), p, b)
 		doc.Memory = true
-		if doc.Lines > memoryLines { // only the first 200 lines reach a session
+		if doc.Lines > memoryLines {
 			doc.Unread = doc.Lines - memoryLines
 			doc.Bytes = int64(len(firstLines(b, memoryLines)))
 		}
@@ -205,12 +202,10 @@ func docOf(name, path string, b []byte) sugDoc {
 	flush()
 	sort.SliceStable(d.Sections, func(i, j int) bool { return d.Sections[i].Bytes > d.Sections[j].Bytes })
 	if len(d.Sections) < 2 {
-		d.Sections = nil // one section says nothing the size doesn't
+		d.Sections = nil
 	}
 	return d
 }
-
-// ---- comments ----
 
 // sugSource is one tracked source file's comments.
 type sugSource struct {
@@ -298,11 +293,9 @@ func commentsOf(b []byte, style string) sugSource {
 	return s
 }
 
-// ---- paths ----
-
 // sugPaths turns a path a session used into one relative to the repository.
 type sugPaths struct {
-	roots    map[string]bool // every worktree of the repository
+	roots    map[string]bool
 	mainRoot string
 	tracked  map[string]bool
 }
@@ -313,7 +306,7 @@ func (sp *sugPaths) rel(p, cwd string) string {
 		return ""
 	}
 	if i := strings.LastIndexByte(p, ':'); i > 0 && !strings.ContainsAny(p[i+1:], `/\`) {
-		p = p[:i] // wp code show FILE:SYMBOL, or FILE:LINE
+		p = p[:i]
 	}
 	if !filepath.IsAbs(p) {
 		if cwd == "" {

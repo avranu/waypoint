@@ -30,12 +30,11 @@ func TestFrontCommentRoundStaysReady(t *testing.T) {
 			if pr := be.pr(7); pr.State != "open" || pr.ReadyAt == nil {
 				t.Fatalf("#7 not marked ready: %+v", pr)
 			}
-			// A comment comes in during the full run (its webhook reads it).
 			be.sg.setNotes(PRNote{ID: "601", Kind: "comment", Author: "carol", Body: "Should exports include archived rows?", At: be.clockNow()})
 			if _, err := be.s.syncReviewComments(be.ctx, be.pr(7)); err != nil {
 				t.Fatal(err)
 			}
-			be.runnerOnline() // runners check in every few seconds; the test clock jumps
+			be.runnerOnline()
 			be.draftChecks(head7, fullRunGreen7[0], fullRunGreen7[1])
 			b := be.babysitOf(7)
 			if b.Round != 1 || b.JobID == 0 || len(b.Rounds[0].Comments) != 1 {
@@ -55,7 +54,6 @@ func TestFrontCommentRoundStaysReady(t *testing.T) {
 				t.Fatalf("merged while the round works: %+v", m)
 			}
 
-			// The round answers the comment.
 			if _, err := be.s.AckReviewComments(be.ctx, be.agent, AckInput{IDs: []string{be.comment("601").Ref}, Verdict: VerdictRejected, Note: "Archived rows stay out, as the spec says."}); err != nil {
 				t.Fatal(err)
 			}
@@ -68,7 +66,7 @@ func TestFrontCommentRoundStaysReady(t *testing.T) {
 				return
 			}
 			be.setClock(be.clockNow().Add(time.Minute))
-			p7.Title = "Change add-export" // ready: the push runs the full tier
+			p7.Title = "Change add-export"
 			be.pushTo(p7, "7777777bbbb")
 			be.finish(b.JobID, true)
 			be.sweep()
@@ -97,7 +95,7 @@ func TestFrontCommentRoundStaysReady(t *testing.T) {
 // otherwise start it over.
 func TestQuietPeriodIgnoresOwnPosts(t *testing.T) {
 	be := newBabysitEnvOn(t, "forgejo")
-	be.fg.ownLogin = "robin" // Waypoint posts as the forge token's person
+	be.fg.ownLogin = "robin"
 	pr := be.open()
 	ctx := context.Background()
 	at := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)

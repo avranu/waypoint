@@ -74,7 +74,6 @@ func TestCodeCommands(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "core/merge.go:3-6  func MergeReady") || !strings.Contains(out, "5  \treturn id > 0") {
 		t.Errorf("show symbol: code %d\n%s", code, out)
 	}
-	// from a subdirectory, paths are relative to where you are
 	t.Chdir("core")
 	out, _, code = runCode(t, "show", "merge.go:4-5")
 	if code != 0 || !strings.Contains(out, "4  func MergeReady") {
@@ -93,7 +92,6 @@ func TestCodeCommands(t *testing.T) {
 		t.Errorf("index --rebuild: code %d\n%s", code, out)
 	}
 
-	// mistakes are plain
 	_, errw, code = runCode(t, "show", "core/merge.go:Nope")
 	if code != 1 || !strings.Contains(errw, `no symbol "Nope"`) {
 		t.Errorf("missing symbol: code %d %q", code, errw)

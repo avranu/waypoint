@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// ---- helpers ----
-
 var (
 	testActionsOnce sync.Once
 	flakyMu         sync.Mutex
@@ -139,8 +137,6 @@ func (e *env) manual(a *Automation, inputs map[string]any) *AutomationRun {
 	return r
 }
 
-// ---- catalog ----
-
 func TestAutomationCatalog(t *testing.T) {
 	registerTestActions()
 	c := BuildCatalog(true)
@@ -151,7 +147,6 @@ func TestAutomationCatalog(t *testing.T) {
 			t.Errorf("action %s lacks a label or group", a.Name)
 		}
 	}
-	// Everything the flat list of actions could do is still defined.
 	for _, n := range []string{"set_status", "set_parent_status", "reopen_parent", "set_children_status", "set_priority", "create_issue", "set_field", "assign",
 		"add_assignee", "add_label", "remove_label", "comment", "notify", "gotify", "email", "webhook", "kestra", "start_timer", "stop_timer", "add_to_sprint", "set_agent",
 		"set_workflow", "set_step", "create_subtasks", "review", "pr_comment", "react", "ask_model", "delay", "wait_for", "repeat"} {
@@ -173,7 +168,6 @@ func TestAutomationCatalog(t *testing.T) {
 			t.Errorf("trigger %s is missing", old)
 		}
 	}
-	// Triggers for what other parts will emit are registered already.
 	for _, n := range []string{"session_waiting", "request_created", "request_decided", "request_waiting", "runner_offline", "pr_ci_failed", "pr_review_gate", "env_deployed",
 		"repo_pushed", "files_changed", "glossary_changed", "design_changed", "project_created", "repo_attached", "timer_started", "automation_finished", "system_resources",
 		"count_crossed", "manual", "webhook"} {
@@ -301,7 +295,6 @@ func TestOldRulesStillWork(t *testing.T) {
 		}
 		id, _ := res.LastInsertId()
 		ids = append(ids, id)
-		// Saving what was loaded writes the same JSON back, key for key.
 		back, _ := json.Marshal(r)
 		var a, b map[string]any
 		_ = json.Unmarshal([]byte(text), &a)
@@ -310,7 +303,6 @@ func TestOldRulesStillWork(t *testing.T) {
 			t.Errorf("rule %d changed in a round trip:\n%s\n%s", n, text, back)
 		}
 	}
-	// The first rule runs as it always did.
 	i := e.issue(e.admin, IssueInput{Project: p.Key, Title: "work"})
 	if _, err := e.s.Transition(e.ctx, e.admin, i.Key, "In Progress", ""); err != nil {
 		t.Fatal(err)
@@ -322,7 +314,6 @@ func TestOldRulesStillWork(t *testing.T) {
 	if cs := e.commentBodies(i.Key); len(cs) != 1 || cs[0] != "Started "+i.Key+" by robin" {
 		t.Errorf("old rule comment = %q", cs)
 	}
-	// It left a run behind, which the old format never did.
 	a, err := e.s.GetAutomation(e.ctx, e.admin, ids[0])
 	if err != nil {
 		t.Fatal(err)
@@ -338,7 +329,6 @@ func TestOldRulesStillWork(t *testing.T) {
 	if len(r.Steps) != 2 || r.Steps[0].StepID != "s1" || r.Steps[1].Type != "comment" {
 		t.Errorf("steps = %+v", r.Steps)
 	}
-	// Unknown keys on a rule (a newer version's) are kept, not dropped.
 	var withExtra Rule
 	if err := json.Unmarshal([]byte(`{"trigger":{"event":"created","by":"agent","future":1},"actions":[{"type":"comment","message":"x","note_to_self":true}]}`), &withExtra); err != nil {
 		t.Fatal(err)
@@ -348,8 +338,6 @@ func TestOldRulesStillWork(t *testing.T) {
 		t.Errorf("extra keys lost: %s", out)
 	}
 }
-
-// ---- runs ----
 
 func TestRunsRecordInstantAutomations(t *testing.T) {
 	e := newEnv(t)
@@ -361,7 +349,7 @@ func TestRunsRecordInstantAutomations(t *testing.T) {
 		{Type: "comment", ID: "skipme", OnlyIf: "{{.Steps.tag.Failed}}", Message: "never"},
 	}})
 	bug := e.issue(e.admin, IssueInput{Project: p.Key, Type: "bug", Title: "Broken"})
-	e.issue(e.admin, IssueInput{Project: p.Key, Type: "task", Title: "Not a bug"}) // the condition doesn't hold: no run
+	e.issue(e.admin, IssueInput{Project: p.Key, Type: "task", Title: "Not a bug"})
 	runs := e.runs(a)
 	if len(runs) != 1 {
 		t.Fatalf("%d runs", len(runs))
@@ -390,7 +378,6 @@ func TestRunsRecordInstantAutomations(t *testing.T) {
 	if r.Rule == nil || len(r.Rule.Actions) != 4 {
 		t.Errorf("run lacks the rule it ran: %+v", r.Rule)
 	}
-	// The rule snapshot is the rule as it ran, even after an edit.
 	edited := Rule{Trigger: Trigger{Event: "created"}, Actions: []Action{{Type: "add_label", Value: "other"}}}
 	if _, err := e.s.UpdateAutomation(e.ctx, e.admin, a.ID, AutomationInput{Rule: &edited}); err != nil {
 		t.Fatal(err)
@@ -399,7 +386,6 @@ func TestRunsRecordInstantAutomations(t *testing.T) {
 		t.Errorf("snapshot changed with the automation: %+v", r2.Rule)
 	}
 
-	// A failing step stops the run, records the error and is counted.
 	f := e.addAuto(p, "Fails", Rule{Trigger: Trigger{Event: "assigned"}, Actions: []Action{
 		{Type: "set_status", Status: "No Such Status"}, {Type: "comment", Message: "unreached"}}})
 	i2 := e.issue(e.admin, IssueInput{Project: p.Key, Title: "assign me"})
@@ -417,7 +403,6 @@ func TestRunsRecordInstantAutomations(t *testing.T) {
 	if cur, _ := e.s.GetAutomation(e.ctx, e.admin, f.ID); cur.RunCount != 1 || cur.LastError == "" {
 		t.Errorf("stats = %+v", cur)
 	}
-	// on_error: continue goes on past a failing step.
 	c := e.addAuto(p, "Carries on", Rule{Trigger: Trigger{Event: "unassigned"}, Actions: []Action{
 		{Type: "set_status", ID: "bad", Status: "No Such Status", OnError: "continue"},
 		{Type: "comment", ID: "after", OnlyIf: "{{.Previous.Failed}}", Message: "recovered: {{.Steps.bad.Failed}}"}}})
@@ -466,7 +451,6 @@ func TestDurableRunWaitsAndResumes(t *testing.T) {
 		t.Fatal("a rule with a delay isn't durable")
 	}
 	i := e.issue(e.admin, IssueInput{Project: p.Key, Title: "x"})
-	// The request returned without waiting: the run is queued for the worker.
 	runs := e.runs(a)
 	if len(runs) != 1 || runs[0].Status != RunQueued || !runs[0].Durable {
 		t.Fatalf("after the change: %+v", runs)
@@ -485,13 +469,11 @@ func TestDurableRunWaitsAndResumes(t *testing.T) {
 	if s := stepByID(r, "pause"); s == nil || s.Status != "waiting" {
 		t.Fatalf("delay step = %+v", s)
 	}
-	// Not yet: nothing happens a minute on.
 	e.setClock(e.clockNow().Add(time.Minute))
 	e.s.DrainAutomationRuns(e.ctx)
 	if e.run(r.ID).Status != RunWaiting {
 		t.Fatal("run resumed early")
 	}
-	// A restart in the meantime changes nothing: waits are in the database.
 	s2 := New(e.s.db, Config{BaseURL: "https://wp.test"}, nil)
 	s2.SetClock(e.clockNow)
 	s2.resumeRuns(e.ctx)
@@ -508,7 +490,6 @@ func TestDurableRunWaitsAndResumes(t *testing.T) {
 	if cs := e.commentBodies(i.Key); len(cs) != 2 || cs[1] != "waited true" {
 		t.Errorf("comments = %q", cs)
 	}
-	// The first step ran once, not again on resume.
 	if s := stepByID(done, "first"); s.Attempts != 1 {
 		t.Errorf("first step attempts = %d", s.Attempts)
 	}
@@ -525,8 +506,6 @@ func TestDurableRunSurvivesARestartMidStep(t *testing.T) {
 		{Type: "test_flaky", ID: "two", Extra: map[string]any{"key": "crash-two"}},
 	}})
 	run := e.manual(a, nil)
-	// Claim it and stop after the first step, as a crash would: the run is
-	// "running", step one finished, step two started and never ended.
 	claimed, err := e.s.claimAutomationRun(e.ctx)
 	if err != nil || claimed == nil {
 		t.Fatalf("claim: %v %v", claimed, err)
@@ -591,7 +570,6 @@ func TestRetryOnError(t *testing.T) {
 		t.Errorf("calls: flaky %d, after %d", flakyCount("retry-a"), flakyCount("retry-after"))
 	}
 
-	// Out of retries: the run fails.
 	b := e.addAuto(p, "Gives up", Rule{Trigger: Trigger{Event: "manual"}, Actions: []Action{
 		{Type: "test_flaky", ID: "flaky", Extra: map[string]any{"key": "retry-b", "fail": 9}, OnError: "retry", Retries: 1, RetryDelay: "1m"}}})
 	run2 := e.manual(b, nil)
@@ -650,7 +628,6 @@ func TestRepeatUntil(t *testing.T) {
 		t.Error("the step after the group didn't run once")
 	}
 
-	// A condition that never holds stops at the maximum and says so.
 	b := e.addAuto(p, "Never", Rule{Trigger: Trigger{Event: "manual"}, Actions: []Action{
 		{Type: "repeat", ID: "loop", Extra: map[string]any{"max": 2, "until": "{{.Steps.poll.Failed}}"}, Steps: []Action{
 			{Type: "test_count", ID: "poll", Extra: map[string]any{"key": "repeat-b"}}}},
@@ -676,7 +653,6 @@ func TestWaitForEvent(t *testing.T) {
 	if e.run(run.ID).Status != RunWaiting {
 		t.Fatal("not waiting")
 	}
-	// An event about another issue doesn't satisfy it.
 	if _, err := e.s.AddComment(e.ctx, e.admin, other.Key, "elsewhere"); err != nil {
 		t.Fatal(err)
 	}
@@ -684,7 +660,6 @@ func TestWaitForEvent(t *testing.T) {
 	if e.run(run.ID).Status != RunWaiting {
 		t.Fatal("an event about another issue resumed the run")
 	}
-	// The matching event queues the run in dispatch; the worker finishes it.
 	if _, err := e.s.AddComment(e.ctx, e.admin, i.Key, "now"); err != nil {
 		t.Fatal(err)
 	}
@@ -701,7 +676,6 @@ func TestWaitForEvent(t *testing.T) {
 		t.Errorf("wait outputs = %+v", w.Outputs)
 	}
 
-	// Timing out fails the step, or carries on when asked.
 	run2 := e.manual(a, map[string]any{"issue": i.Key})
 	e.s.DrainAutomationRuns(e.ctx)
 	e.setClock(e.clockNow().Add(2 * time.Hour))
@@ -729,7 +703,6 @@ func TestWaitForEvent(t *testing.T) {
 	if !found {
 		t.Error("the notification after the timeout wasn't sent")
 	}
-	// Conditions on the event's data: where=.
 	if !matchConditions("state=passed, verdict!=approved", &Event{Data: map[string]any{"state": "passed", "verdict": "commented"}}) ||
 		matchConditions("state=passed", &Event{Data: map[string]any{"state": "failed"}}) ||
 		matchConditions("verdict!=approved", &Event{Data: map[string]any{"verdict": "approved"}}) {
@@ -763,7 +736,6 @@ func TestRequestWaitingWatch(t *testing.T) {
 	if r.Status != RunSucceeded || r.Event == nil || r.Event.Data["request"] != "R-2" {
 		t.Errorf("run = %+v event %+v", r, r.Event)
 	}
-	// An update without a decision doesn't end a watch.
 	created("R-3")
 	e.s.automate(e.ctx, SystemActor(), &Event{Kind: EvRequestUpdated, ProjectID: p.ID, Data: map[string]any{"request": "R-3", "title": "renamed"}})
 	e.setClock(e.clockNow().Add(20 * time.Minute))
@@ -781,7 +753,6 @@ func TestConcurrencyPolicies(t *testing.T) {
 		return e.addAuto(p, name, Rule{Trigger: Trigger{Event: "manual"}, Concurrency: policy, Actions: []Action{
 			{Type: "delay", Extra: map[string]any{"duration": "10m"}}, {Type: "test_count", Extra: map[string]any{"key": "conc-" + name}}}})
 	}
-	// parallel: both go.
 	par := slow("par", "")
 	e.manual(par, nil)
 	e.manual(par, nil)
@@ -794,7 +765,6 @@ func TestConcurrencyPolicies(t *testing.T) {
 			t.Errorf("parallel run %d is %s", r.ID, r.Status)
 		}
 	}
-	// skip: the second is recorded as skipped and does nothing.
 	skip := slow("skip", "skip")
 	first := e.manual(skip, nil)
 	second := e.manual(skip, nil)
@@ -810,7 +780,6 @@ func TestConcurrencyPolicies(t *testing.T) {
 	if cur, _ := e.s.GetAutomation(e.ctx, e.admin, skip.ID); cur.RunCount != 1 {
 		t.Errorf("a skipped run counted: %d", cur.RunCount)
 	}
-	// queue: the second waits for the first to finish.
 	queue := slow("queue", "queue")
 	q1 := e.manual(queue, nil)
 	q2 := e.manual(queue, nil)
@@ -828,7 +797,6 @@ func TestConcurrencyPolicies(t *testing.T) {
 	if e.run(q2.ID).Status != RunSucceeded {
 		t.Errorf("queue: second = %s", e.run(q2.ID).Status)
 	}
-	// Schedules default to skip; everything else to parallel.
 	if (&Rule{Trigger: Trigger{Event: "schedule"}}).concurrency() != "skip" || (&Rule{Trigger: Trigger{Event: "created"}}).concurrency() != "parallel" {
 		t.Error("default concurrency")
 	}
@@ -860,7 +828,6 @@ func TestCancelRun(t *testing.T) {
 			t.Error("a cancelled run went on")
 		}
 	}
-	// Cancelling a finished run changes nothing; a viewer can't cancel.
 	if again, err := e.s.CancelAutomationRun(e.ctx, e.admin, run.ID); err != nil || again.Status != RunCancelled {
 		t.Errorf("second cancel: %+v %v", again, err)
 	}
@@ -888,14 +855,12 @@ func TestRunAgainAndPruning(t *testing.T) {
 	if got := e.get(e.admin, i.Key); len(got.Labels) != 1 {
 		t.Errorf("rerun didn't repeat the effect: %+v", got.Labels)
 	}
-	// Only owners repeat an event's effects.
 	sam := e.user("sam", false)
 	e.s.SetMember(e.ctx, e.admin, p.Key, "sam", "editor")
 	if _, err := e.s.RerunAutomation(e.ctx, sam, runs[0].ID); err == nil {
 		t.Error("an editor repeated an event-triggered run")
 	}
 
-	// Retention: runs older than 90 days go, but the last 200 stay.
 	old := e.clockNow().Add(-100 * 24 * time.Hour).UnixMilli()
 	for n := range 205 {
 		if _, err := e.s.db.W.ExecContext(e.ctx, `INSERT INTO automation_runs(automation_id, project_id, rule_id, status, created_at, finished_at)
@@ -909,11 +874,9 @@ func TestRunAgainAndPruning(t *testing.T) {
 	var total, oldLeft int
 	_ = e.s.db.R.QueryRowContext(e.ctx, `SELECT count(*) FROM automation_runs WHERE automation_id = ?`, a.ID).Scan(&total)
 	_ = e.s.db.R.QueryRowContext(e.ctx, `SELECT count(*) FROM automation_runs WHERE automation_id = ? AND finished_at < ?`, a.ID, e.clockNow().Add(-90*24*time.Hour).UnixMilli()).Scan(&oldLeft)
-	// The 2 recent runs stay, and the newest 200 of the old ones.
 	if total != 202 || oldLeft != 200 {
 		t.Errorf("after pruning: %d runs, %d old", total, oldLeft)
 	}
-	// With few runs everything stays however old.
 	b := e.addAuto(p, "Rare", Rule{Trigger: Trigger{Event: "manual"}, Actions: []Action{{Type: "comment", Message: "x"}}})
 	rb := e.manual(b, nil)
 	_, _ = e.s.db.W.ExecContext(e.ctx, `UPDATE automation_runs SET finished_at = ? WHERE id = ?`, old, rb.ID)
@@ -924,8 +887,6 @@ func TestRunAgainAndPruning(t *testing.T) {
 		t.Error("pruning dropped one of an automation's last 200 runs")
 	}
 }
-
-// ---- model and lookups ----
 
 func TestAskModelAndLookupSteps(t *testing.T) {
 	e := newEnv(t)
@@ -971,7 +932,6 @@ func TestAskModelAndLookupSteps(t *testing.T) {
 		t.Errorf("notifications = %+v", ns)
 	}
 
-	// With a schema the answer comes back as JSON.
 	llm.answers["Classify"] = `{"priority":"high","why":"loops"}`
 	b := e.addAuto(p, "Classify", Rule{Trigger: Trigger{Event: "manual"}, Actions: []Action{
 		{Type: "ask_model", ID: "c", Extra: map[string]any{"prompt": "Classify this", "schema": `{"type":"object","properties":{"priority":{"type":"string"}}}`}},
@@ -983,7 +943,6 @@ func TestAskModelAndLookupSteps(t *testing.T) {
 	if c == nil || c.Outputs["Data"].(map[string]any)["priority"] != "high" || c.Outputs["Text"] != `{"priority":"high","why":"loops"}` && !strings.Contains(c.Outputs["Text"].(string), `"priority":"high"`) {
 		t.Errorf("schema answer = %+v", c)
 	}
-	// No model configured and none in the step: a clear failure.
 	if _, err := e.s.db.W.ExecContext(e.ctx, `DELETE FROM ai_tasks WHERE task = 'automation'`); err != nil {
 		t.Fatal(err)
 	}
@@ -1024,7 +983,6 @@ func TestAutomationFinishedTrigger(t *testing.T) {
 	src := e.addAuto(p, "Source", Rule{Trigger: Trigger{Event: "manual"}, Actions: []Action{{Type: "set_status", Status: "No Such Status"}}})
 	watch := e.addAuto(p, "Watcher", Rule{Trigger: Trigger{Event: "automation_finished", Extra: map[string]any{"automation": "Source", "status": "failed"}},
 		Actions: []Action{{Type: "notify", User: "admins", Message: "{{.Trigger.Data.name}} failed: {{.Trigger.Data.error}}"}}})
-	// Another automation finishing doesn't count.
 	other := e.addAuto(p, "Other", Rule{Trigger: Trigger{Event: "manual"}, Actions: []Action{{Type: "comment", Message: "x"}}})
 	e.manual(other, nil)
 	if len(e.runs(watch)) != 0 {
@@ -1039,8 +997,6 @@ func TestAutomationFinishedTrigger(t *testing.T) {
 	if len(ns) == 0 || !strings.HasPrefix(ns[0].Body, "Source failed: ") {
 		t.Errorf("notifications = %+v", ns)
 	}
-	// An automation that watches every automation doesn't trigger itself, and
-	// two that watch each other stop at the depth limit.
 	a := e.addAuto(p, "A", Rule{Trigger: Trigger{Event: "automation_finished"}, Actions: []Action{{Type: "add_label", Value: "x"}}})
 	b := e.addAuto(p, "B", Rule{Trigger: Trigger{Event: "automation_finished"}, Actions: []Action{{Type: "add_label", Value: "x"}}})
 	done := make(chan struct{})
@@ -1068,7 +1024,6 @@ func TestEventTriggersFromWithinWaypoint(t *testing.T) {
 	glossEdit := n("glossary edit", Trigger{Event: "glossary_changed", Extra: map[string]any{"change": "changed"}})
 	page := n("page", Trigger{Event: "page_created"})
 	design := n("design", Trigger{Event: "design_changed", Extra: map[string]any{"state": "approved"}})
-	// Admin automations see project creation and every project's events.
 	global, err := e.s.CreateAdminAutomation(e.ctx, e.admin, AutomationInput{Name: str("all"), Rule: &Rule{Trigger: Trigger{Event: "project_created"},
 		Actions: []Action{{Type: "notify", User: "admins", Message: "project {{.Trigger.Data.name}}"}}}})
 	if err != nil {
@@ -1126,7 +1081,7 @@ func TestEventTriggersFromWithinWaypoint(t *testing.T) {
 	}
 	p2 := e.project(e.admin, "Second", "")
 	gr, err := e.s.ListAutomationRuns(e.ctx, e.admin, global.ID, 10, 0)
-	if err != nil || len(gr) != 1 { // the first project was created before the automation
+	if err != nil || len(gr) != 1 {
 		t.Fatalf("project_created runs = %d (%v)", len(gr), err)
 	}
 	if gr[0].ProjectID != 0 || !strings.Contains(e.run(gr[0].ID).Event.Data["name"].(string), "Second") || p2.Key == "" {

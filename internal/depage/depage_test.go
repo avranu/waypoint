@@ -316,7 +316,6 @@ func TestCheck(t *testing.T) {
 		}
 	}
 
-	// Old enough now: the waiver can go, and everything passes.
 	out.Reset()
 	ok := []Dep{{Eco: NPM, Name: "old", Version: "1.0.0"}}
 	if !Report(&out, Check(context.Background(), src, ok, map[string]Waiver{"npm old 1.0.0": {Line: 4, Reason: "x"}}, now, 7*24*time.Hour), 7*24*time.Hour, false, false) {

@@ -1,9 +1,3 @@
-// An assistant's page (WP-ADR1): Waypoint as the dashboard for a person's
-// own Hermes agent. Chat is the first tab; the rest are what the agent has
-// and does: activity and approvals, schedules, skills, memory, tools and
-// connections, files, usage, settings. The header carries its health and
-// the one control Waypoint has over it at the gate: freeze.
-
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
@@ -201,7 +195,7 @@ function Header({ assistant }: { assistant: Assistant }) {
   const [freezing, setFreezing] = useState(false)
   const status = useQuery({
     ...hermesQuery<HermesStatus>(assistant.id, 'status', undefined, 10_000),
-    refetchInterval: 60_000, // each call is a line in the gate's audit
+    refetchInterval: 60_000,
     enabled: assistant.state.reachable && !assistant.state.frozen,
     retry: false,
   }).data

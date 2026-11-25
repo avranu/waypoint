@@ -8,15 +8,6 @@ import (
 	"strings"
 )
 
-// The `wp` CLI is served by the server it talks to:
-//
-//	curl -fsSL https://waypoint.example.com/cli | sh
-//
-// installs the right binary for the machine, checks it against SHA256SUMS
-// and points it at this server. /setup is the same script followed by
-// `wp setup` (sign in, Claude Code hooks, runner), as is
-// `curl …/cli | sh -s -- setup`.
-
 var cliFileRE = regexp.MustCompile(`^(wp-(linux|darwin|windows)-(amd64|arm64)(\.exe)?|waypoint-sandboxd-linux-(amd64|arm64)|SHA256SUMS)$`)
 
 const installScript = `#!/bin/sh

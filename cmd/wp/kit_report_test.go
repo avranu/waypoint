@@ -114,7 +114,6 @@ func TestKitReport(t *testing.T) {
 	}
 	write(".claude/plugins/known_marketplaces.json", `{"agent-kit":{"source":{"source":"git","url":"u"}}}`)
 
-	// Sent, and noted.
 	if err := kitReport(c, []string{"--quiet"}); err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +127,6 @@ func TestKitReport(t *testing.T) {
 		t.Fatalf("not noted: %v", c.state.MachineReport)
 	}
 
-	// --check sends nothing.
 	if err := kitReport(c, []string{"--check"}); err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +134,6 @@ func TestKitReport(t *testing.T) {
 		t.Fatalf("check: %d sent\n%s", len(srv.reports), out.String())
 	}
 
-	// A session's start: at most every 6 hours, never from a test build.
 	var started [][]string
 	oldStart, oldExe := backgroundStart, selfExe
 	backgroundStart = func(exe string, args ...string) { started = append(started, args) }

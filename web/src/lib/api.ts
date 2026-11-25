@@ -1,5 +1,3 @@
-// Thin fetch wrapper for the Waypoint API.
-
 export class ApiError extends Error {
   status: number
   /** what kind of refusal, when the server says: `reauth` asks for the password again */

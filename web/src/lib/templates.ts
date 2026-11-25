@@ -1,5 +1,3 @@
-// Issue templates: reusable starting points for new issues in a project.
-
 import { queryOptions } from '@tanstack/react-query'
 import { api, enc } from './api'
 

@@ -42,7 +42,6 @@ func TestRecordSlotHoldsCountsAndIsIdempotent(t *testing.T) {
 	if m.pending != 2 || m.dropped != 2 || m.rejected != 1 || m.since == nil || m.stored == nil {
 		t.Errorf("machine after first: %+v", m)
 	}
-	// the same two again, and the pending count of what is left
 	in.Pending, in.Holds = 2, in.Holds[:2]
 	res, err = e.s.RecordSlotHolds(e.ctx, e.admin, in)
 	if err != nil || *res != (SlotHoldsResult{Duplicate: 2}) {
@@ -196,7 +195,6 @@ func TestSlotHoldsAreSeparatePerUserAndAccess(t *testing.T) {
 	if got, _ := e.s.SlotHolds(e.ctx, e.admin, SlotHoldsFilter{User: "jo", Machine: "nope"}); len(got) != 0 {
 		t.Errorf("machine filter: %+v", got)
 	}
-	// who may write
 	ro := *jo
 	ro.ReadOnly = true
 	for name, a := range map[string]*Actor{"read-only": &ro, "nobody": nil} {
@@ -243,19 +241,18 @@ func TestRecordSlotHoldsKeepsPendingSince(t *testing.T) {
 		t.Fatalf("first: %+v", m)
 	}
 	e.setClock(e.clockNow().Add(time.Hour))
-	report(3, 0) // oldest not sent
+	report(3, 0)
 	if m := slotMachine(t, e, e.admin, "box"); m.since == nil || *m.since != now-5000 {
 		t.Errorf("no oldest: since %v, want %d", m.since, now-5000)
 	}
-	report(3, e.clockNow().UnixMilli()+1000) // not before now: unusable
+	report(3, e.clockNow().UnixMilli()+1000)
 	if m := slotMachine(t, e, e.admin, "box"); m.since == nil || *m.since != now-5000 {
 		t.Errorf("oldest in the future: since %v", m.since)
 	}
-	report(3, now-1000) // usable: used
+	report(3, now-1000)
 	if m := slotMachine(t, e, e.admin, "box"); m.since == nil || *m.since != now-1000 {
 		t.Errorf("usable oldest: since %v", m.since)
 	}
-	// a machine with none before gets now
 	if _, err := e.s.RecordSlotHolds(e.ctx, e.admin, SlotHoldsIn{Machine: "new", Pending: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +304,6 @@ func TestSlotHoldRowRefusals(t *testing.T) {
 			t.Errorf("%s: accepted", name)
 		}
 	}
-	// the edges are accepted, and a 64-character id is kept whole
 	edge := two(func(h *SlotHold) {
 		h.QueuedAt, h.WaitMS, h.HoldMS, h.TreeWaitMS = now+int64(24*time.Hour/time.Millisecond), slotDurMaxMS, slotDurMaxMS, slotDurMaxMS
 		h.ID = strings.Repeat("i", 64)
@@ -356,7 +352,6 @@ func TestSlotHoldsCollector(t *testing.T) {
 		return CollectorHealth{}
 	}
 	e.setClock(time.Now().Add(-72 * time.Hour))
-	// a machine that says holds are waiting and gets none stored, and one that is caught up
 	if _, err := e.s.RecordSlotHolds(e.ctx, e.admin, SlotHoldsIn{Machine: "stuck", Pending: 3, Dropped: 4, Holds: []SlotHold{{ID: "bad"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +363,7 @@ func TestSlotHoldsCollector(t *testing.T) {
 	if h.Waiting != 1 || !h.Stalled || h.LastOutputAt == nil {
 		t.Errorf("health %+v", h)
 	}
-	if h.Dropped == nil || *h.Dropped != 5 { // 4 dropped by the machine + 1 refused here
+	if h.Dropped == nil || *h.Dropped != 5 {
 		t.Errorf("dropped = %v", h.Dropped)
 	}
 	if c := collectorByName(t, name); c.unit != "machines" || c.group != "machine" {

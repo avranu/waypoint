@@ -54,8 +54,6 @@ func TestDelegationDraws(t *testing.T) {
 	}
 
 	e.usageSeen()
-	// A task held since long before is drawn nothing: its work began
-	// without an arm (taken with --json, or resumed).
 	resumed := e.issue(e.admin, IssueInput{Project: e.p.Key, Title: "Resumed"})
 	e.exec(`UPDATE issues SET claimed_at = ? WHERE id = ?`, e.s.now().Add(-2*time.Hour).UnixMilli(), resumed.ID)
 	if d := e.delegation(e.ag, resumed, true); d != nil {
@@ -132,8 +130,6 @@ func TestDelegationPolicyCache(t *testing.T) {
 		t.Errorf("not worked out again after delegPolicyRetry: %v", err)
 	}
 
-	// With no estimate yet, a failure is an error, and so is a take before
-	// the retry.
 	e.s.delegPol = nil
 	now = now.Add(delegPolicyAge + time.Minute)
 	e.exec(`ALTER TABLE delegation_assignments RENAME TO delegation_off`)
@@ -201,8 +197,6 @@ func TestDelegationPolicyLearns(t *testing.T) {
 	if s.Share < 0.9 || byArm[delegArmManager].Share != 0 || s.Measured != 40 {
 		t.Errorf("shares: %+v", rep.Arms)
 	}
-	// Shrunk toward nothing by the prior and the ageing: about halved, and
-	// halved inside its interval.
 	if s.Effect > -0.3 || s.Lo > math.Log(0.5) || s.Hi < math.Log(0.5) {
 		t.Errorf("scouts' effect %v [%v, %v], want about %v", s.Effect, s.Lo, s.Hi, math.Log(0.5))
 	}

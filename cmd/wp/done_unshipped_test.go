@@ -30,9 +30,6 @@ func TestDoneRefusesUnshippedCode(t *testing.T) {
 		t.Errorf("refused, yet finished:\n%s", out)
 	}
 
-	// Committed but not pushed (a remote has the main branch, not this
-	// one): wp done ships it. This repo has no origin to open a pull
-	// request against, so shipping stops at the base branch.
 	bare := t.TempDir()
 	git(t, bare, "init", "-q", "--bare")
 	git(t, s.repo, "remote", "add", "pub", bare)
@@ -46,7 +43,6 @@ func TestDoneRefusesUnshippedCode(t *testing.T) {
 	}
 	s.wp("done", first, "-m", "not this task's", "--no-ship")
 
-	// Pushed: nothing left here, so wp done finishes.
 	git(t, s.repo, "push", "-q", "-u", "pub", "HEAD:refs/heads/fix")
 	s.wp("next", second, "--no-brief")
 	s.wp("done", second, "-m", "reviewed")

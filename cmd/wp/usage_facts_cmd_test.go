@@ -18,7 +18,7 @@ func TestFactsTargetRouting(t *testing.T) {
 		{pos: []string{"wp-1467"}, kind: "task", value: "WP-1467"},
 		{pos: []string{"WP1467"}, kind: "task", value: "WP1467"},
 		{pos: []string{"0b1c9d2e-aaaa-bbbb-cccc-0123456789ab"}, kind: "session", value: "0b1c9d2e-aaaa-bbbb-cccc-0123456789ab"},
-		{pos: []string{"abc123"}, kind: "task", value: "ABC123"}, // looks like a key: the flag is for this
+		{pos: []string{"abc123"}, kind: "task", value: "ABC123"},
 		{session: "abc123", kind: "session", value: "abc123"},
 		{task: "wp-9", kind: "task", value: "WP-9"},
 		{task: "WP-1", session: "s", fail: true},

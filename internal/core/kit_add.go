@@ -14,11 +14,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Sharing a skill, agent, command or hook through the kit (`wp kit add`,
-// WP-ADR2 §4): Waypoint commits the files to a new branch of the kit repo
-// and opens a pull request, reviewed and merged like any other. A plugin
-// the kit doesn't have yet is added to the marketplace in the same PR.
-
 // Kinds of things kit add shares.
 var kitAddKinds = []string{"skill", "agent", "command", "hook"}
 

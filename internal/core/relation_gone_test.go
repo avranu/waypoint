@@ -48,7 +48,6 @@ func TestRemoveRelationKeepsWhatWasRemoved(t *testing.T) {
 	if len(olds) != 1 {
 		t.Fatalf("want one removal event, got %v", olds)
 	}
-	// b is the target of "a follows b": b reads it from the other side.
 	if olds[0] != "followed_by (fix) "+a.Key {
 		t.Errorf("old = %q", olds[0])
 	}

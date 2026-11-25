@@ -32,7 +32,7 @@ type autoRuns struct {
 	kick    chan struct{}
 	mu      sync.Mutex
 	cancels map[int64]context.CancelFunc
-	timers  map[int64]*time.Timer // count checks waiting out their debounce
+	timers  map[int64]*time.Timer
 }
 
 func (w *autoRuns) init() {
@@ -102,7 +102,6 @@ func (s *Service) runAutomations(ctx context.Context, actor *Actor, e *Event) {
 		if !a.Rule.Trigger.matches(e) {
 			continue
 		}
-		// An automation never re-triggers itself.
 		if actor != nil && actor.Automation != nil && actor.Automation.ID == a.ID {
 			continue
 		}
@@ -157,15 +156,13 @@ func (s *Service) startRun(ctx context.Context, actor *Actor, a *Automation, e *
 		user = actor.User
 		depth = actor.depth
 		budget = actor.budget
-		// A run a permission token set off can do no more than the token
-		// (WP-111): its dangerous steps (runner jobs, merges) are refused.
 		perms = actor.Permissions
 	}
 	if budget == nil {
 		n := automationBudget
 		budget = &n
 		if actor != nil {
-			actor.budget = budget // later events from the same change share it
+			actor.budget = budget
 		}
 	}
 	auto := &Actor{User: user, Automation: a, depth: depth + 1, budget: budget, Permissions: perms}
@@ -326,8 +323,6 @@ func (s *Service) runFinished(ctx context.Context, a *Automation, run *Automatio
 	e := &Event{Kind: EvAutomationRunFinished, ProjectID: run.ProjectID, AdminOnly: run.ProjectID == 0, New: run.Status, At: s.now().UTC(),
 		Data: map[string]any{"automation": a.ID, "run": run.ID, "status": run.Status, "name": a.Name, "error": run.Error}}
 	if a.SessionID != 0 {
-		// A follow-up's run is its person's: tell them, and the steps waiting
-		// on it; other automations don't see it (WP-D22).
 		e.ProjectID, e.AdminOnly, e.UserID = 0, false, a.createdBy
 		s.Hub.Publish(e)
 		s.matchWaits(ctx, e)
@@ -343,8 +338,6 @@ func (s *Service) runFinished(ctx context.Context, a *Automation, run *Automatio
 	}
 	s.dispatch(ctx, &Actor{User: SystemActor().User, Automation: a, depth: run.depth}, []*Event{e})
 }
-
-// ---- the worker ----
 
 const automationWorkers = 4
 
@@ -486,7 +479,7 @@ func (s *Service) executeRun(ctx context.Context, run *AutomationRun) {
 	}
 	err = x.walk(ctx)
 	if s.bgCtx.Err() != nil {
-		return // shutting down: the next start queues it again
+		return
 	}
 	s.endDurable(done, x, run, err)
 }
@@ -515,7 +508,6 @@ func (s *Service) endDurable(ctx context.Context, x *execution, run *AutomationR
 			s.log.ErrorContext(ctx, "park automation run", "run", run.ID, "err", uerr)
 			return
 		}
-		// The wait may have been resolved before the run was marked waiting.
 		var resolved sql.NullInt64
 		if s.db.R.QueryRowContext(ctx, `SELECT resolved_at FROM automation_waits WHERE id = ?`, p.waitID).Scan(&resolved) == nil && resolved.Valid {
 			_, _ = s.db.W.ExecContext(ctx, `UPDATE automation_runs SET status = 'queued', not_before = 0 WHERE id = ? AND status = 'waiting'`, run.ID)
@@ -524,7 +516,7 @@ func (s *Service) endDurable(ctx context.Context, x *execution, run *AutomationR
 		s.Hub.Publish(s.runLiveScope(ctx, run.AutomationID, &Event{Kind: EvAutomationRunFinished, ProjectID: run.ProjectID, AdminOnly: run.ProjectID == 0, New: RunWaiting, Data: map[string]any{"automation": run.AutomationID, "run": run.ID, "status": RunWaiting}}))
 		return
 	case errors.Is(err, errCancelled):
-		return // CancelAutomationRun recorded it
+		return
 	}
 	status, errText := RunSucceeded, ""
 	if err != nil {
@@ -536,7 +528,7 @@ func (s *Service) endDurable(ctx context.Context, x *execution, run *AutomationR
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return // cancelled meanwhile
+		return
 	}
 	if _, uerr := s.db.W.ExecContext(ctx, `UPDATE automation_waits SET resolved_at = ?, outcome = 'cancelled' WHERE run_id = ? AND resolved_at IS NULL`, now, run.ID); uerr != nil {
 		s.log.WarnContext(ctx, "best-effort write failed", "err", uerr)
@@ -552,8 +544,6 @@ func (s *Service) endDurable(ctx context.Context, x *execution, run *AutomationR
 		s.runFinished(ctx, a, run)
 	}
 }
-
-// ---- waits ----
 
 // identityKeys are the data keys that name the thing an event is about; a
 // wait's key is "name:value" of one of them (pr:42, request:R-12 …).
@@ -631,7 +621,6 @@ func (s *Service) matchWaits(ctx context.Context, e *Event) {
 		return
 	}
 	if e.Kind == EvAutomationRunFinished {
-		// Queued and waiting runs are live updates, not finishes.
 		if st := dataStr(e, "status"); st != RunSucceeded && st != RunFailed && st != RunCancelled {
 			return
 		}
@@ -643,7 +632,7 @@ func (s *Service) matchWaits(ctx context.Context, e *Event) {
 	}
 	var hits []pendingWait
 	keys := eventKeys(e)
-	var unscoped []pendingWait // waits of runs outside any project
+	var unscoped []pendingWait
 	for rows.Next() {
 		var w pendingWait
 		if err := rows.Scan(&w.id, &w.automationID, &w.runID, &w.projectID, &w.key, &w.match, &w.event); err != nil {
@@ -684,7 +673,7 @@ func (s *Service) waitMaySee(ctx context.Context, automationID int64, e *Event) 
 		return false
 	}
 	if !session.Valid {
-		return true // an admin automation
+		return true
 	}
 	switch {
 	case e.UserID != 0:
@@ -743,7 +732,6 @@ func (s *Service) resolveWait(ctx context.Context, w pendingWait, outcome string
 		s.kickRuns()
 		return
 	}
-	// A watch: a request that should have been answered by now.
 	if outcome != "timeout" {
 		return
 	}
@@ -804,8 +792,6 @@ func (s *Service) startWatch(ctx context.Context, a *Automation, d *TriggerDef, 
 	}
 }
 
-// ---- retention ----
-
 const (
 	runKeepDays = 90
 	runKeepMin  = 200
@@ -822,12 +808,9 @@ func (s *Service) PruneAutomationRuns(ctx context.Context) error {
 	if _, err := s.db.W.ExecContext(ctx, `DELETE FROM automation_rules WHERE created_at < ? AND NOT EXISTS (SELECT 1 FROM automation_runs r WHERE r.rule_id = automation_rules.id)`, cutoff); err != nil {
 		return err
 	}
-	// Resolved waits are only needed while their step is.
 	_, err := s.db.W.ExecContext(ctx, `DELETE FROM automation_waits WHERE resolved_at IS NOT NULL AND resolved_at < ? AND run_id IS NULL`, cutoff)
 	return err
 }
-
-// ---- helpers ----
 
 // automationByID loads an automation, whichever project it is in.
 func (s *Service) automationByID(ctx context.Context, id int64) (*Automation, error) {

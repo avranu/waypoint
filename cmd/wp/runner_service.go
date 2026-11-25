@@ -16,12 +16,6 @@ import (
 	"time"
 )
 
-// Running the runner at login: a systemd user unit on Linux and a launchd
-// agent on macOS. Both start `wp runner` with the flags given to
-// `wp runner install`, restart it if it crashes (but not when Waypoint says
-// it was removed), and start it again at login. The service gets the PATH
-// of the shell that installed it, because that's where the agent CLIs are.
-
 const (
 	unitName     = "waypoint-runner.service"
 	launchdLabel = "org.waypoint.runner"
@@ -92,7 +86,6 @@ func systemdUnit(exe string, args []string, env map[string]string, server string
 			b.WriteString("Environment=" + systemdQuote(k+"="+v) + "\n")
 		}
 	}
-	// A runner that was removed in Waypoint exits cleanly and stays stopped.
 	b.WriteString("Restart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n")
 	return b.String()
 }
@@ -372,21 +365,18 @@ func prepareRunnerInstall(c *cli, o *runnerOpts) (string, error) {
 	if o.MaxJobs < 1 || o.MaxJobs > maxRunnerJobs {
 		return "", c.usage("--max-jobs is between 1 and %d", maxRunnerJobs)
 	}
-	// The runner would refuse a bad --env name; say so now.
 	if err := passJobEnv(o.Env); err != nil {
 		return "", c.usage("%v", err)
 	}
-	// The runner would refuse a directory that isn't there; say so now.
 	if _, err := parseAllowed(o.Allow); err != nil {
 		return "", err
 	}
 	if err := checkJobEnv(o.Env); err != nil {
 		return "", c.usage("%v", err)
 	}
-	// Absolute paths, so the service doesn't depend on where install ran.
 	for i, d := range o.Allow {
 		if d == "~" || strings.HasPrefix(d, "~/") {
-			continue // the runner expands it
+			continue
 		}
 		if abs, err := filepath.Abs(d); err == nil {
 			o.Allow[i] = abs
@@ -495,8 +485,6 @@ func installSystemd(c *cli, exe string, o runnerOpts, env map[string]string) err
 		return err
 	}
 	unit := systemdUnit(exe, runnerArgs(o), env, c.server())
-	// Installing again changes nothing, and doesn't restart (and so stop the
-	// jobs of) a runner that is running as asked.
 	if old, err := os.ReadFile(path); err == nil && string(old) == unit { // #nosec G304 -- our own unit file
 		if out, _ := sysRun("systemctl", "--user", "is-active", unitName); out == "active" {
 			c.println("The runner is installed and running already (systemd user unit " + unitName + ", unchanged).")
@@ -566,7 +554,7 @@ func installLaunchd(c *cli, exe string, o runnerOpts, env map[string]string) err
 		return err
 	}
 	c.println("Wrote", path)
-	_, _ = sysRun("launchctl", "bootout", launchdDomain()+"/"+launchdLabel) // not loaded yet is fine
+	_, _ = sysRun("launchctl", "bootout", launchdDomain()+"/"+launchdLabel)
 	if out, err := sysRun("launchctl", "bootstrap", launchdDomain(), path); err != nil {
 		return fmt.Errorf("launchctl bootstrap: %v %s", err, out)
 	}

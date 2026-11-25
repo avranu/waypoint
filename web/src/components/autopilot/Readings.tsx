@@ -1,7 +1,3 @@
-// What autopilot's limits read right now: the last hour's spend, the week's
-// quota and the five-hour window, each a bar with its limit marked on it.
-// Words live in tooltips; the bar and its marks carry the meaning.
-
 import type { ReactNode } from 'react'
 import clsx from 'clsx'
 import { Clock, Gauge, Plane, Wallet } from 'lucide-react'
@@ -122,7 +118,6 @@ const Value = ({ children }: { children: ReactNode }) => (
 
 export function Readings({ meter, limits }: { meter: AutopilotMeter; limits: AutopilotLimits }) {
   const hourly = limits.max_hourly_usd ?? 0
-  // While you have the quota limits off, they pause nothing.
   const quotaOff = !!meter.quota_off_until
   const weekCap = quotaOff ? 0 : (meter.week_cap ?? limits.week_max ?? 0)
   const fiveCap = quotaOff ? 0 : (limits.five_hour_max ?? 0)
@@ -130,9 +125,7 @@ export function Readings({ meter, limits }: { meter: AutopilotMeter; limits: Aut
   const even = meter.week_even
   const aheadLimit = quotaOff ? 0 : (limits.week_ahead ?? 0)
   const ahead = weekPct !== undefined && even !== undefined ? weekPct - even : undefined
-  // The first limit to bite: the pace line (even pace + points ahead) or the ceiling.
   const paceLine = even !== undefined && aheadLimit > 0 ? even + aheadLimit : 0
-  // A line at or past 100% never bites inside the week, so it says nothing.
   const bites = [paceLine, weekCap].filter((n) => n > 0 && n < 100)
   const pauseAt = bites.length ? Math.min(...bites) : 0
   const warn = 'var(--wp-warn)'

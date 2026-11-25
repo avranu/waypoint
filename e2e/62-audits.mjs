@@ -206,7 +206,6 @@ let auditID;
   const dlg = page.getByRole("dialog", { name: "New audit" });
   await dlg.getByRole("combobox", { name: "Project", exact: true }).click();
   await page.getByRole("option", { name: `Ledger (${KEY})`, exact: true }).click();
-  // The project's repositories load after it is picked.
   const repoBox = dlg.getByRole("combobox", { name: "Repository", exact: true });
   await wait(async () => (await repoBox.innerText()).includes(REPO), "the repository list");
   ok(true, "its one repository is picked");
@@ -217,7 +216,6 @@ let auditID;
   ok((await dlg.getByLabel("Model 1").inputValue()) === "grok-4.7-high", "Grok 4.7 high is the first model");
   ok(!(await dlg.getByText("Post the findings on the pull request").isVisible()), "no posting for a branch");
   ok(await dlg.getByText("Have Claude check and fix the findings").isVisible(), "Claude fixing is offered");
-  // Asked without a branch: says what's missing, in the dialog.
   await dlg.getByRole("button", { name: "Start audit" }).click();
   await page.waitForTimeout(300);
   ok(await dlg.isVisible(), "a branch is needed before it starts");
@@ -248,7 +246,6 @@ let auditID;
   ok(await page.getByText("How to confirm it").first().isVisible(), "each finding says how to confirm it");
   ok(await page.getByRole("link", { name: "ledger/close.go:88" }).isVisible(), "findings link to the line on the forge");
 
-  // Verdicts.
   const item = (t) => page.locator('li[id^="finding-"]', { hasText: t });
   await item("Anyone can close").getByRole("button", { name: "Confirm" }).click();
   await item("Anyone can close").getByText("Confirmed", { exact: true }).waitFor();
@@ -413,7 +410,6 @@ let recentID;
     ok(await p.getByText(t, { exact: false }).first().isVisible(), `the page shows “${t}”`);
   await p.screenshot({ path: `${out}/recent-audit-1280.png`, fullPage: true });
 
-  // Edit and run again: the same ask, changed.
   await p.getByRole("button", { name: "Edit and run again" }).click();
   const again = p.getByRole("dialog", { name: "New audit" });
   await again.getByRole("radio", { name: "Last 2 weeks" }).waitFor();
@@ -431,7 +427,6 @@ let recentID;
   const a2 = await api("GET", `/audits/${second}`);
   ok(a2.since === "3d" && a2.focus?.includes("security") && a2.max_findings === 5 && !a2.model, `the copy is its own ask, and no model ran: ${JSON.stringify({ since: a2.since, focus: a2.focus, max: a2.max_findings, model: a2.model })}`);
 
-  // Show at a time (WP-1421): asked to show 5, a model that reports 12 keeps 12.
   const twelve = Array.from({ length: 12 }, (_, n) => ({
     title: `Nit number ${n + 1}`,
     path: "ledger/nit.go",

@@ -81,7 +81,6 @@ func (g *Box[T]) Get() T {
 	if !slices.Equal(p.Imports, []string{"fmt", "strings"}) {
 		t.Errorf("imports = %q", p.Imports)
 	}
-	// broken source still yields the declarations before the error
 	bad := Scan("go", []byte("package x\n\nfunc ok() {}\n\nfunc broken( {\n"))
 	if len(bad.Symbols) == 0 || bad.Symbols[0].Name != "ok" {
 		t.Errorf("broken go: %v", syms(bad))
@@ -142,50 +141,49 @@ def top(a, b):
 			t.Errorf("method doc/sig = %q / %q", s.Doc, s.Sig)
 		}
 	}
-	// odd input must not crash
 	for _, bad := range []string{"def (", "class", "'''unterminated", "x = (\n", "def f():\n\t\tpass\n  x"} {
 		Scan("python", []byte(bad))
 	}
 }
 
 func TestScanTypeScript(t *testing.T) {
-	src := "import React, { useState } from 'react'\n" + // 1
-		"import type { A } from \"./types\"\n" + // 2
-		"export { b } from './b'\n" + // 3
-		"const lazy = require('lazy')\n" + // 4
-		"\n" + // 5
-		"/** Button props. */\n" + // 6
-		"export interface Props {\n" + // 7
-		"  label: string\n" + // 8
-		"  onClick(e: Event): void\n" + // 9
-		"}\n" + // 10
-		"\n" + // 11
-		"export type Id = string | number\n" + // 12
-		"\n" + // 13
-		"export const Button = ({ label }: Props) => {\n" + // 14
-		"  const re = /[/{]x}/g\n" + // 15
-		"  return `<b>${label}</b> {`\n" + // 16
-		"}\n" + // 17
-		"\n" + // 18
-		"export default class Widget extends Base {\n" + // 19
-		"  private count = 0\n" + // 20
-		"  // renders\n" + // 21
-		"  async render(a: string,\n" + // 22
-		"    b: number): Promise<void> {\n" + // 23
-		"    if (a) { return }\n" + // 24
-		"    const s = '}'\n" + // 25
-		"  }\n" + // 26
-		"  static make = () => new Widget()\n" + // 27
-		"  get size() { return 1 }\n" + // 28
-		"}\n" + // 29
-		"\n" + // 30
-		"export async function load(url: string): Promise<void> {\n" + // 31
-		"  await fetch(url)\n" + // 32
-		"}\n" + // 33
-		"const x = 1\n" + // 34
-		"let y = foo(\n" + // 35
-		"  1,\n" + // 36
-		")\n" // 37
+	src := "import React, { useState } from 'react'\n" +
+		"import type { A } from \"./types\"\n" +
+		"export { b } from './b'\n" +
+		"const lazy = require('lazy')\n" +
+		"\n" +
+		"/** Button props. */\n" +
+		"export interface Props {\n" +
+		"  label: string\n" +
+		"  onClick(e: Event): void\n" +
+		"}\n" +
+		"\n" +
+		"export type Id = string | number\n" +
+		"\n" +
+		"export const Button = ({ label }: Props) => {\n" +
+		"  const re = /[/{]x}/g\n" +
+		"  return `<b>${label}</b> {`\n" +
+		"}\n" +
+		"\n" +
+		"export default class Widget extends Base {\n" +
+		"  private count = 0\n" +
+		"  // renders\n" +
+		"  async render(a: string,\n" +
+		"    b: number): Promise<void> {\n" +
+		"    if (a) { return }\n" +
+		"    const s = '}'\n" +
+		"  }\n" +
+		"  static make = () => new Widget()\n" +
+		"  get size() { return 1 }\n" +
+		"}\n" +
+		"\n" +
+		"export async function load(url: string): Promise<void> {\n" +
+		"  await fetch(url)\n" +
+		"}\n" +
+		"const x = 1\n" +
+		"let y = foo(\n" +
+		"  1,\n" +
+		")\n"
 	checkSyms(t, "tsx", src, []string{
 		"const lazy 4-4", "interface Props 6-10", "method Props.onClick 9-9", "type Id 12-12", "func Button 14-17",
 		"class Widget 19-29", "method Widget.render 21-26", "method Widget.make 27-27", "method Widget.size 28-28",
@@ -362,7 +360,6 @@ data:
 		"key name 1-1", "key on 2-3", "key jobs 4-10", "key jobs.test 5-8", "key jobs.lint 9-10",
 		"key apiVersion 12-12", "key kind 13-13", "key metadata 14-17", "key data 18-19", "configmap cfg 12-19",
 	}
-	// order of keys vs the resource symbol isn't part of the contract
 	slices.Sort(got)
 	slices.Sort(want)
 	if !slices.Equal(got, want) {
@@ -376,36 +373,36 @@ func TestScanHTML(t *testing.T) {
 }
 
 func TestScanJSWrappers(t *testing.T) {
-	iife := "(function () {\n" + // 1
-		"  'use strict'\n" + // 2
-		"  function init(el) {\n" + // 3
-		"    el.focus()\n" + // 4
-		"  }\n" + // 5
-		"  const state = { open: false }\n" + // 6
-		"  document.addEventListener('click', function (e) {\n" + // 7
-		"    function onClick() {}\n" + // 8
-		"  })\n" + // 9
-		"})()\n" + // 10
-		"\n" + // 11
-		"$(function () {\n" + // 12
-		"  function ready() {}\n" + // 13
-		"})\n" // 14
+	iife := "(function () {\n" +
+		"  'use strict'\n" +
+		"  function init(el) {\n" +
+		"    el.focus()\n" +
+		"  }\n" +
+		"  const state = { open: false }\n" +
+		"  document.addEventListener('click', function (e) {\n" +
+		"    function onClick() {}\n" +
+		"  })\n" +
+		"})()\n" +
+		"\n" +
+		"$(function () {\n" +
+		"  function ready() {}\n" +
+		"})\n"
 	checkSyms(t, "javascript", iife, []string{"func init 3-5", "const state 6-6", "func onClick 8-8", "func ready 13-13"})
 
-	spec := "import { test, expect } from '@playwright/test'\n" + // 1
-		"\n" + // 2
-		"describe('merge readiness', () => {\n" + // 3
-		"  const helper = () => 1\n" + // 4
-		"  it('is ready when checks pass', async () => {\n" + // 5
-		"    expect(1).toBe(1)\n" + // 6
-		"  })\n" + // 7
-		"  describe.skip('nested', () => {\n" + // 8
-		"    test(\"deep one\", () => {})\n" + // 9
-		"  })\n" + // 10
-		"})\n" + // 11
-		"test('top level', async ({ page }) => {\n" + // 12
-		"  await page.goto('/')\n" + // 13
-		"})\n" // 14
+	spec := "import { test, expect } from '@playwright/test'\n" +
+		"\n" +
+		"describe('merge readiness', () => {\n" +
+		"  const helper = () => 1\n" +
+		"  it('is ready when checks pass', async () => {\n" +
+		"    expect(1).toBe(1)\n" +
+		"  })\n" +
+		"  describe.skip('nested', () => {\n" +
+		"    test(\"deep one\", () => {})\n" +
+		"  })\n" +
+		"})\n" +
+		"test('top level', async ({ page }) => {\n" +
+		"  await page.goto('/')\n" +
+		"})\n"
 	checkSyms(t, "typescript", spec, []string{
 		"suite merge readiness 3-11", "func merge readiness.helper 4-4", "test merge readiness.is ready when checks pass 5-7",
 		"suite merge readiness.nested 8-10", "test nested.deep one 9-9", "test top level 12-14",

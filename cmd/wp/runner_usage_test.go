@@ -37,10 +37,8 @@ func TestRunnerSyncsUsageOnATimer(t *testing.T) {
 	go func() {
 		done <- runRunner(rctx, c, runnerOpts{Name: "box", MaxJobs: 1, PollWait: -1, UsageEvery: 150 * time.Millisecond, UsageDir: dir})
 	}()
-	// The first sync happens on its own.
 	waitFor(t, "the first usage sync", 20*time.Second, func() bool { return messages() == 3 })
 
-	// A message written later is picked up by a later sync, with no hook in sight.
 	transcript := filepath.Join(dir, "projects", "-work-app", "sess1.jsonl")
 	f, err := os.OpenFile(transcript, os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -83,21 +81,18 @@ func TestRunnerUsageSyncCanBeTurnedOffAndNeedsAClaudeDir(t *testing.T) {
 			rs, _ := e.svc.ListRunners(ctx, me, false)
 			return len(rs) == 1
 		})
-		time.Sleep(800 * time.Millisecond) // several rounds
+		time.Sleep(800 * time.Millisecond)
 		stop()
 		<-done
 	}
-	// --no-usage-sync: nothing is uploaded.
 	run(runnerOpts{UsageDir: fixtureDir(t), NoUsageSync: true})
 	if n := messages(); n != 0 {
 		t.Errorf("uploaded %d messages with usage sync off", n)
 	}
-	// A machine without a Claude directory: nothing to do, nothing said.
 	run(runnerOpts{UsageDir: filepath.Join(t.TempDir(), "no-such-claude-dir")})
 	if n := messages(); n != 0 {
 		t.Errorf("uploaded %d messages without a Claude directory", n)
 	}
-	// The service line carries the flag.
 	if args := runnerArgs(runnerOpts{Name: "n", MaxJobs: 1, NoUsageSync: true}); args[len(args)-1] != "--no-usage-sync" {
 		t.Errorf("args: %v", args)
 	}

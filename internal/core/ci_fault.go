@@ -1,15 +1,5 @@
 package core
 
-// Runner faults (WP-230): a CI job that failed because of the machine it ran
-// on, not the code. On 2026-10-28 a runner ran out of disk and jobs failed with
-// "no space left on device"; a commit pushed to re-run CI only put more
-// load on the full runner. A failed job's log says so in words a pattern
-// can find; then no agent round is spent on it (the babysitter waits, fix_ci
-// skips) and Waypoint re-runs the jobs on a schedule (ci_fault_retry.go, WP-838).
-// A fault that outlasts the first re-runs is tracked in one task
-// (ci_fault_task.go). `wp pr log`, `wp pr wait` and the work packet say it too,
-// and the CI board lists the recent ones.
-
 import (
 	"context"
 	"fmt"
@@ -29,8 +19,8 @@ type RunnerFault struct {
 	Kind   string `json:"kind,omitempty"`   // disk, docker, lost, timeout, dns, service, network, time_limit
 	Line   string `json:"line"`             // the log line that says so
 	Runner string `json:"runner,omitempty"` // the runner or its host, when known
-	at     int    // the line's index in the cleaned log
-	task   int64  // the forge's task id, when the log gives it: finds the host (nameFaultHost)
+	at     int
+	task   int64
 }
 
 // The kinds of runner fault. They differ in what ends them: a full disk ends
@@ -57,33 +47,11 @@ var runnerFaultRules = []struct {
 	{lazyre.New(`(?i)no space left on device|\bENOSPC\b|disk quota exceeded`), faultDisk, "the runner ran out of disk space"},
 	{lazyre.New(`(?i)cannot connect to the docker daemon`), faultDocker, "the runner's Docker daemon wasn't reachable"},
 	{lazyre.New(`(?i)runner has received a shutdown signal|lost communication with the server|job failed \(system failure\)`), faultLost, "the runner was lost during the job"},
-	// The job's deadline passed, so the runner's next step, saving the job's
-	// summary, failed with it. One project's backend, 2026-11-10: three attempts
-	// of #198 ended at 910s, 906s and 908s against a 15-minute limit, each
-	// read as Docker timing out. Before the rule below, which it also matches.
 	{lazyre.New(`(?i)\[runner\]:?\s*context deadline exceeded.*unable to copy "?/var/run/act/workflow/`), faultTimeLimit, "the job hit its workflow's time limit (timeout-minutes)"},
 	{lazyre.New(`(?i)(?:\[runner\]|error response from daemon|failed to (?:pull|fetch|start|create|remove)\b).*context deadline exceeded`), faultTimeout, "the runner timed out talking to Docker or a registry"},
-	// Only the runner's own line (fetching an action, pulling an image): a
-	// test that can't resolve a host is the code's (WP-425).
 	{lazyre.New(`(?i)\[runner\]:.*(?:could not resolve host|temporary failure in name resolution|no such host|server misbehaving)`), faultDNS, "the runner couldn't resolve a host name (DNS)"},
-	// The runner's resolver failing, not a name the code got wrong ("no
-	// such host" is left out: a test's made-up host says that too). govulncheck
-	// on a runner, 2026-10-29/30: "lookup vuln.go.dev on 127.0.0.11:53: server
-	// misbehaving" (WP-392).
 	{lazyre.New(`(?i)\blookup \S+ on \S+: (?:server misbehaving|read udp \S+ i/o timeout)|temporary failure in name resolution|could not resolve host`), faultDNS, "the runner couldn't look up a host name (DNS)"},
-	// The Forgejo runner's own line when a job's service container (a
-	// database, a broker) never passed its health check: the job stops
-	// before any of the repo's steps run. A managed repo, 2026-11-08..15: its
-	// rabbitmq service did this; babysits spent rounds on it and parked
-	// (#210, #214), and a dependency update sat failed for two days (#223)
-	// (WP-1042).
 	{lazyre.New(`(?i)\bservice \[[^\]]+\]: container health check \S+ \([^)]*\) is not healthy`), faultService, "a CI service container never became healthy"},
-	// A Docker build's download cut off mid-transfer: BuildKit's step output
-	// ("#11 75.69 curl: (18) ..."), where no server of the repo's own is
-	// running, so the far end or the network between failed. curl 18 partial
-	// transfer, 35 TLS handshake, 56 receive failure, 92 HTTP/2 stream error;
-	// not 22 (an HTTP error status, as for a wrong URL). A managed repo's #223,
-	// 2026-11-15: the PostgreSQL apt key fetch got no bytes in 69s.
 	{lazyre.New(`^#\d+ [\d.]+ curl: \((?:18|35|56|92)\) `), faultNetwork, "a download in the Docker build was cut off (network)"},
 }
 
@@ -191,7 +159,7 @@ func (s *Service) headRunnerFaults(ctx context.Context, pr *PullRequest) map[str
 			f := logRunnerFault(log)
 			if f == nil {
 				if derivedFailure(log) {
-					continue // it failed because a shard did; the shard's log says why
+					continue
 				}
 				return false
 			}
@@ -202,8 +170,6 @@ func (s *Service) headRunnerFaults(ctx context.Context, pr *PullRequest) map[str
 	if !ok || len(out) == 0 {
 		return nil
 	}
-	// Named once the rows are closed: a query while they are open holds a
-	// second reader, and with every reader held so, none is left for it.
 	for _, f := range out {
 		s.nameFaultHost(ctx, pr.ForgeID, f)
 	}
@@ -228,9 +194,9 @@ const runnerFaultRequestKey = "auto:runner-fault:"
 type faultSubject struct {
 	forgeID int64
 	repo    string
-	name    string // "me/app#7", "me/app main run #2140"
+	name    string
 	url     string
-	agent   string // who files the request
+	agent   string
 }
 
 func prFaultSubject(pr *PullRequest) faultSubject {
@@ -265,7 +231,6 @@ func (s *Service) askAboutRunner(ctx context.Context, userID int64, at faultSubj
 	b.WriteString("\n" + why + " Waypoint starts no agent round for these: babysat pull requests wait, keeping their place in the merge queue, and it keeps re-running them while it can. " +
 		"The pull requests carry on when their checks pass. The CI board (/ci) lists the jobs that failed this way, and the hosts' health. Mark this done when the runner is fit again.")
 	in := RequestInput{Kind: RequestAction, Title: fmt.Sprintf("Fix %s: %s", where, f.What), Body: b.String(), ToolUseID: key, Followup: "never"}
-	// Asked all the same: a project that couldn't be read files it with none.
 	projectKey, err := s.attachedProjectKey(ctx, at.forgeID, at.repo)
 	if readFault(err) {
 		s.log.WarnContext(ctx, "read the project to ask about a CI runner", "at", at.name, "repo", at.repo, "err", err)
@@ -323,10 +288,8 @@ func (s *Service) faultHosts(ctx context.Context, forgeID int64, faults map[stri
 	return "", false, ""
 }
 
-// ---- recent faults, for the CI board ----
-
 const (
-	runnerFaultWindow = 2 * time.Hour // the CI board shows faults this recent
+	runnerFaultWindow = 2 * time.Hour
 	runnerFaultKeep   = 100
 )
 

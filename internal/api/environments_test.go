@@ -54,7 +54,6 @@ func TestCIRecordsDeployments(t *testing.T) {
 	x := newEnvAPI(t)
 	base := "/api/v1/projects/" + x.key + "/environments/staging"
 
-	// CI says it started; the environment is made.
 	var d core.Deployment
 	body := map[string]any{"commit": "3fa9c1e5b7", "branch": "main", "version": "1.2.3", "status": "started", "url": "https://ci.example.com/runs/41", "notes": "release build"}
 	if code := x.ci.json("POST", base+"/deployments", body, &d); code != 200 {
@@ -67,7 +66,6 @@ func TestCIRecordsDeployments(t *testing.T) {
 	if code := x.viewer.json("GET", base, nil, &env); code != 200 || env.Kind != "staging" || env.Commit != "" || len(env.Deployments) != 1 {
 		t.Fatalf("environment after start: %d %+v", code, env.Environment)
 	}
-	// Success finishes the same deployment.
 	var done core.Deployment
 	body["status"] = "succeeded"
 	if code := x.ci.json("POST", base+"/deployments", body, &done); code != 200 || done.ID != d.ID || done.Status != "succeeded" || done.FinishedAt == nil {
@@ -77,7 +75,6 @@ func TestCIRecordsDeployments(t *testing.T) {
 	if env.Commit != "3fa9c1e5b7" || env.Branch != "main" || env.Version != "1.2.3" || len(env.Deployments) != 1 {
 		t.Errorf("environment after success: %+v / %d deployments", env.Environment, len(env.Deployments))
 	}
-	// By id, a failure.
 	var failed core.Deployment
 	if code := x.ci.json("POST", fmt.Sprintf("/api/v1/environments/%d/deployments", env.ID), map[string]any{"commit": "aaaaaaa", "status": "failed"}, &failed); code != 200 || failed.Status != "failed" {
 		t.Errorf("failed: %d %+v", code, failed)
@@ -87,7 +84,6 @@ func TestCIRecordsDeployments(t *testing.T) {
 		t.Errorf("list: %d %+v", code, list)
 	}
 
-	// Who may: a viewer and a read-only token may not, a typo is a 400.
 	if code, _ := x.viewer.do("POST", base+"/deployments", map[string]any{"commit": "3fa9c1e"}); code != 403 {
 		t.Errorf("viewer: %d", code)
 	}
@@ -151,7 +147,6 @@ func TestEnvironmentEndpoints(t *testing.T) {
 		t.Errorf("bad id: %d", code)
 	}
 
-	// Dev environments: up with an address, listed, down; stopped ones hidden by default.
 	var up core.EnvironmentDetail
 	if code := x.ci.json("POST", root+"/a23x42s/up", map[string]any{"url": "https://a23x42s.dev.example.com", "branch": "fix/login", "commit": "abc1234", "ttl_s": 3600}, &up); code != 200 || !up.Ephemeral || up.Commit != "abc1234" || up.ExpiresAt == nil {
 		t.Fatalf("up: %d %+v", code, up.Environment)
@@ -170,19 +165,16 @@ func TestEnvironmentEndpoints(t *testing.T) {
 		t.Errorf("stopped: %d without, %d with", n, len(list))
 	}
 
-	// Where do commits run?
 	x.svc.RecordDeploymentNamed(context.Background(), core.SystemActor(), x.key, "production", core.DeployInput{Commit: "deadbeef1"})
 	var at map[string][]core.EnvironmentAt
 	if code := x.viewer.json("GET", "/api/v1/environments/at?repo=acme/app&sha=deadbeef1", nil, &at); code != 200 {
 		t.Errorf("at: %d", code)
 	}
 
-	// Check now: the test server isn't reachable under the default egress policy.
 	var chk core.EnvironmentDetail
 	if code := x.ci.json("POST", "/api/v1/environments/"+id+"/check", nil, &chk); code != 200 {
 		t.Errorf("check: %d", code)
 	}
-	// Only people delete.
 	if code, _ := x.viewer.do("DELETE", "/api/v1/environments/"+id, nil); code != 403 {
 		t.Errorf("viewer delete: %d", code)
 	}

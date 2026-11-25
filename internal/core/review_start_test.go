@@ -6,12 +6,6 @@ import (
 	"time"
 )
 
-// A requested review starts when it is asked (WP-1325): the round's step is
-// made due at the ship (scheduleRound) and asks for the round's audit, which
-// reads the pushed branch, at the next tick, without waiting for the
-// session's Stop. The planning at the Stop and the
-// tick finds that audit and goes on as before.
-
 // auditsOfRound counts the audits asked for under the round's request keys
 // (the exact ones: round 1's don't include round 10's).
 func (a *apEnv) auditsOfRound(round int64) int {
@@ -48,7 +42,6 @@ func TestReviewStartsAtShip(t *testing.T) {
 		t.Fatalf("ship = %+v, %v", res, err)
 	}
 	roundID := a.newestRoundID()
-	// Asked by the round's step at the tick after the ship: no Stop yet.
 	ra, au := a.roundAuditRow(roundID)
 	if au == nil || au.Target != "branch" || au.Ref != "wp-1-first" || au.Purpose != AuditReview || ra.note != "" {
 		t.Fatalf("no audit at the ship: %+v %+v", ra, au)
@@ -60,7 +53,6 @@ func TestReviewStartsAtShip(t *testing.T) {
 		t.Fatalf("the ship marked the round started: %+v", r)
 	}
 
-	// The Stop and the tick plan again: the one audit, the same outcome.
 	a.stopWith("Pushed; the review comes first.")
 	a.tick(61 * time.Second)
 	if n := a.auditsOfRound(roundID); n != 1 {
@@ -158,7 +150,6 @@ func TestReviewDoesNotStartWhilePaused(t *testing.T) {
 		t.Fatal(err)
 	}
 	hour := a.clockNow().UnixMilli() - a.clockNow().UnixMilli()%3_600_000
-	// $100 or more this hour on Opus output: over the hourly limit.
 	if _, err := a.s.db.W.Exec(`INSERT INTO usage_hours(user_id, hour, machine, session, repo, model, output) VALUES (?,?,?,?,?,?,?)`,
 		a.admin.User.ID, hour, "box", "s", "", "claude-opus-5-5", 50_000_000); err != nil {
 		t.Fatal(err)

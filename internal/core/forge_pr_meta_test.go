@@ -12,7 +12,6 @@ import (
 func TestChangePRLabelsOnEachForge(t *testing.T) {
 	ctx := context.Background()
 
-	// GitHub: names; a missing label to remove is fine.
 	a, f, c := newAPIFake(t, "github")
 	a.reply["POST /repos/me/app/issues/5/labels"] = []any{}
 	a.reply["DELETE /repos/me/app/issues/5/labels/old"] = 204
@@ -26,7 +25,6 @@ func TestChangePRLabelsOnEachForge(t *testing.T) {
 		t.Error("github didn't try to remove the second label")
 	}
 
-	// Forgejo: ids. A label the repo lacks is made first; removal looks the id up.
 	a, f, c = newAPIFake(t, "forgejo")
 	a.reply["GET /repos/me/app/labels?limit=200"] = []map[string]any{{"id": 7, "name": "bug"}}
 	a.reply["POST /repos/me/app/labels"] = map[string]any{"id": 9, "name": "automerge"}
@@ -46,7 +44,6 @@ func TestChangePRLabelsOnEachForge(t *testing.T) {
 		t.Error("forgejo didn't remove the label by id")
 	}
 
-	// GitLab: names in one update.
 	a, f, c = newAPIFake(t, "gitlab")
 	a.reply["PUT /projects/me%2Fapp/merge_requests/5"] = map[string]any{}
 	if err := c.ChangePRLabels(ctx, f, "me/app", 5, []string{"a", "b"}, []string{"c"}); err != nil {
@@ -69,7 +66,6 @@ func TestRequestReviewersOnEachForge(t *testing.T) {
 			t.Errorf("%s reviewers = %+v", kind, b)
 		}
 	}
-	// GitLab sets ids: the ones already there, plus the new.
 	a, f, c := newAPIFake(t, "gitlab")
 	a.reply["GET /projects/me%2Fapp/merge_requests/5"] = map[string]any{"reviewers": []map[string]any{{"id": 3}}}
 	a.reply["GET /users?username=ann"] = []map[string]any{{"id": 11}}
