@@ -216,14 +216,14 @@ type runnerProc struct {
 	// that replaces the one noted doesn't start the drain's wait again.
 	updatedTo, updatedExe, updatedSum string
 	updatedAt                         time.Time
-	diskLookedAt          time.Time // the last look at the disk's release
-	drainLoggedFor        string
-	draining              bool             // takes no new jobs until idle, then restarts
-	now                   func() time.Time // tests swap it; nil: runnerClock
-	updating              bool             // a download runs beside the loop
-	updateDone            chan updateResult
-	updateCancel          context.CancelFunc                                                  // ends the download beside the loop
-	downloadFn            func(ctx context.Context, want string) (got, exe string, err error) // nil: c.selfUpdate
+	diskLookedAt                      time.Time // the last look at the disk's release
+	drainLoggedFor                    string
+	draining                          bool             // takes no new jobs until idle, then restarts
+	now                               func() time.Time // tests swap it; nil: runnerClock
+	updating                          bool             // a download runs beside the loop
+	updateDone                        chan updateResult
+	updateCancel                      context.CancelFunc                                                  // ends the download beside the loop
+	downloadFn                        func(ctx context.Context, want string) (got, exe string, err error) // nil: c.selfUpdate
 
 	reportCtx context.Context // ends when the runner has stopped waiting to report
 	// stopCtx ends when a runner stop begins (stopAll); nil in a runner built by hand
