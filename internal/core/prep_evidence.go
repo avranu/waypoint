@@ -499,13 +499,17 @@ func markdownSection(body, title string) string {
 }
 
 // fenceRun splits a line that starts with a code fence into its run of three
-// or more backticks or tildes and what follows; run is "" for any other line.
+// or more backticks or tildes and what follows; run is "" for any other line,
+// such as inline code: backticks with another backtick after them (CommonMark).
 func fenceRun(line string) (run, rest string) {
 	t := strings.TrimSpace(line)
 	if !strings.HasPrefix(t, "```") && !strings.HasPrefix(t, "~~~") {
 		return "", ""
 	}
 	after := strings.TrimLeft(t, t[:1])
+	if t[0] == '`' && strings.Contains(after, "`") {
+		return "", ""
+	}
 	return t[:len(t)-len(after)], strings.TrimSpace(after)
 }
 
@@ -587,6 +591,11 @@ func (s *Service) AttachPrepEvidence(ctx context.Context, a *Actor, p *TaskPrep,
 
 func (s *Service) attachPrepEvidence(ctx context.Context, a *Actor, p *TaskPrep, shown bool) error {
 	if p.State != "ready" || p.Stale || a.IsAgent() && p.HeldOut {
+		return nil
+	}
+	// Evidence names pages and decisions, and claims can paraphrase any of
+	// them: a token that can't read both is given none and draws no arm.
+	if a.need(PermPagesRead) != nil || a.need(PermDesignRead) != nil {
 		return nil
 	}
 	i, _, err := s.getIssueFor(ctx, s.db.R, a, p.Key, RoleViewer, true)

@@ -311,7 +311,7 @@ func TestPrepEvidence(t *testing.T) {
 		t.Fatalf("shown arm: units %s", got)
 	}
 	snapshot := func(id int64) string {
-		return e.one(`SELECT issue_type || ' ' || priority || ' ' || text_len || ' ' || (length(text_hash) = 24) || ' ' || candidates || ' ' || evidence_n || ' ' || claims_n || ' ' || dropped || ' ' || risk || ' ' || evidence || ' ' || (model != '') || ' ' || at
+		return e.one(`SELECT issue_type || ' ' || priority || ' ' || text_len || ' ' || text_hash || ' ' || candidates || ' ' || evidence_n || ' ' || claims_n || ' ' || dropped || ' ' || risk || ' ' || evidence || ' ' || (model != '') || ' ' || at
 			FROM prep_evidence_units WHERE issue_id = ?`, id)
 	}
 	// What was given at the first exposure, whole, and the task's risk then.
@@ -326,7 +326,8 @@ func TestPrepEvidence(t *testing.T) {
 		}
 	}
 	textLen := utf8.RuneCountInString(e.task.Title) + utf8.RuneCountInString(e.task.Description)
-	want := fmt.Sprintf("%s 3 %d 1 4 3 2 6 %s %s 1 %d", e.task.Type, textLen, risk.Level, given, e.s.nowMS())
+	checked := e.one(`SELECT text_hash FROM task_prep_evidence WHERE issue_id = ?`, e.task.ID) // of the text the check read
+	want := fmt.Sprintf("%s 3 %d %s 4 3 2 6 %s %s 1 %d", e.task.Type, textLen, checked, risk.Level, given, e.s.nowMS())
 	if got := snapshot(e.task.ID); got != want {
 		t.Errorf("snapshot = %s; want %s", got, want)
 	}
@@ -646,6 +647,23 @@ func TestCheckPrepEvidence(t *testing.T) {
 	}
 }
 
+// A quote is cut from the text as it spells it, counted in runes: lower case
+// takes fewer bytes than U+0130 and more than U+023A.
+func TestPrepQuotedIn(t *testing.T) {
+	for _, tc := range []struct{ text, quote, want string }{
+		{"Zürich — most Merges FAIL here", "merges fail", "Merges FAIL"},
+		{"İİİ most Merges FAIL here", "merges fail", "Merges FAIL"},
+		{"ȺȺȺ most Merges FAIL here", "merges fail", "Merges FAIL"},
+		{"so İSTANBUL merges ȺLL fail", "istanbul MERGES ⱥll", "İSTANBUL merges ȺLL"},
+		{"İİ ends in Ⱥ", "in ⱥ", "in Ⱥ"},
+		{"İİ most merges pass", "merges fail", ""},
+	} {
+		if got := quotedIn([]string{"nothing here", tc.text}, tc.quote); got != tc.want {
+			t.Errorf("%q in %q: %q; want %q", tc.quote, tc.text, got, tc.want)
+		}
+	}
+}
+
 func TestPrepAssumptions(t *testing.T) {
 	for in, want := range map[string]string{
 		"## Decision\nx":   "",
@@ -662,6 +680,11 @@ func TestPrepAssumptions(t *testing.T) {
 		"```\n``` go\n## Assumptions\nin code\n```\n":   "",
 		"~~~\ncode\n~~~~  \n## Assumptions\nafter":      "after",
 		"## Assumptions\n~~~~\n~~~\n# x\n~~~~\n# T\nno": "~~~~\n~~~\n# x\n~~~~",
+		// Backticks with a backtick after them on the line are inline code,
+		// not a fence; tildes open one whatever follows.
+		"```go x``` tail\n## Assumptions\nfound":            "found",
+		"## Assumptions\n- a\n```go x``` tail\n## Next\nno": "- a\n```go x``` tail",
+		"~~~ `x`\n## Assumptions\nin code\n~~~\n":           "",
 	} {
 		if got := markdownSection(in, "Assumptions"); got != want {
 			t.Errorf("%q: %q; want %q", in, got, want)

@@ -21,6 +21,9 @@ const evidenceJSON = `{"evidence": [
 	{"quote": "checks are slow", "test": "time them for a week"},
 	{"quote": "nobody reads reviews", "test": "count reads"}]}`
 
+// joined is a prep section as printed: its notes, then its evidence.
+func joined(notes, evidence string) string { return notes + evidence }
+
 // Evidence prints after the notes, or alone for held-out pointers, two of
 // each in the compact form; an agent's showing records the pages and
 // decisions listed (WP-ADR157).
@@ -57,7 +60,7 @@ func TestRenderPrepEvidence(t *testing.T) {
 	var printed bytes.Buffer
 	c, _ := newCLI(&printed, &bytes.Buffer{})
 
-	full := c.prepSection(nil, "WP-12", 10, false, true)
+	full := joined(c.prepSection(nil, "WP-12", 10, false, true))
 	want := `Recorded evidence that may bear on this task (matched by a weaker model):
   WP-X20 Prep backtests [experiment, 2026-11-17, agent, unreviewed] — bears on: how often picks are used
   WP-R3 Model survey [reference, 2026-10-02, person] — bears on: which models point
@@ -114,7 +117,7 @@ Judge these before relying on them: could more or better data be collected, or b
 
 	// With pointers, it follows them.
 	prep = `{"key": "WP-12", "state": "ready", "notes": {"files": [{"path": "merge.go", "why": "the gate"}]}, "evidence": ` + evidenceJSON + `}`
-	both := c.prepSection(nil, "WP-12", 4000, false, true)
+	both := joined(c.prepSection(nil, "WP-12", 4000, false, true))
 	if n, ev := strings.Index(both, "merge.go — the gate\n"), strings.Index(both, "\nRecorded evidence"); n < 0 || ev < n {
 		t.Errorf("notes and evidence:\n%s", both)
 	}
@@ -173,7 +176,7 @@ Judge these before relying on them: could more or better data be collected, or b
 
 	// A ready prep with neither notes nor evidence prints nothing.
 	prep = `{"key": "WP-12", "state": "ready"}`
-	if out := c.prepSection(nil, "WP-12", 4000, false, true); out != "" {
+	if out := joined(c.prepSection(nil, "WP-12", 4000, false, true)); out != "" {
 		t.Errorf("an empty prep: %q", out)
 	}
 }
@@ -301,5 +304,96 @@ func TestRenderPrepEvidenceFullLimit(t *testing.T) {
 	}
 	if got := strings.Join(refs, " "); got != "WP-X1 WP-X2 WP-X3 WP-R1 WP-R2 WP-R3" {
 		t.Errorf("shown %s", got)
+	}
+}
+
+// Evidence is printed on top of a brief's budget: the code section is the same
+// with it and without, so what the shown arm of the experiment is given of the
+// code doesn't shrink (WP-ADR157).
+func TestBriefEvidenceLeavesTheCodeBudget(t *testing.T) {
+	var issue []byte
+	notes := `"notes": {"terms": [{"term": "Alpha", "definition": "first", "why": "w"}]}`
+	prep := ""
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/issues/WP-12":
+			_, _ = w.Write(issue)
+		case "/api/v1/issues/WP-12/prep":
+			_, _ = w.Write([]byte(prep))
+		case "/api/v1/knowledge/shown":
+			_, _ = w.Write([]byte("{}"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(ts.Close)
+	repo := codeRepo(t)
+	files := map[string]string{}
+	var named []string
+	for i := range 12 {
+		// Long paths, so even the short code section passes its floor.
+		name := fmt.Sprintf("merging/%smerge_ready_checks_%02d.go", strings.Repeat("a_rather_long_directory_name_for_merging/", 9), i)
+		var b strings.Builder
+		b.WriteString("package merging\n")
+		for j := range 8 {
+			fmt.Fprintf(&b, "\n// MergeReady%02d_%d waits before merging.\nfunc MergeReady%02d_%d(pullRequestIdentifier int) bool {\n\treturn pullRequestIdentifier > %d\n}\n", i, j, i, j, j)
+		}
+		files[name] = b.String()
+		named = append(named, fmt.Sprintf("`MergeReady%02d_0`", i), "`"+name+"`")
+	}
+	var err error
+	issue, err = json.Marshal(map[string]string{"key": "WP-12", "projectKey": "WP", "title": "Make merging wait",
+		"description": "Change " + strings.Join(named, " and ") + "."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitFiles(t, repo, files)
+	t.Chdir(repo)
+	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
+	t.Setenv("WAYPOINT_SERVER", ts.URL)
+	t.Setenv("WAYPOINT_TOKEN", "wpt_x")
+	t.Setenv("WAYPOINT_AGENT", "anthropic/claude-code")
+	c, _ := newCLI(&bytes.Buffer{}, &bytes.Buffer{})
+
+	const start, end = "Recorded evidence", "A claim listed here is not known to be wrong.\n"
+	for _, compact := range []bool{false, true} {
+		sizes := map[int]bool{}
+		for _, budget := range []int{700, 900, 1000, 1500, 2500} {
+			brief := func(p string) string {
+				prep = p
+				out, _, err := c.brief("WP-12", "", "", budget, compact)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return out
+			}
+			code := func(out string) string {
+				i := strings.Index(out, "\nCode")
+				if i < 0 {
+					t.Fatalf("no code section:\n%s", out)
+				}
+				return out[i:]
+			}
+			for _, with := range []string{notes + `, `, ""} {
+				without := `{"key": "WP-12", "state": "ready"}`
+				if with != "" {
+					without = `{"key": "WP-12", "state": "ready", ` + notes + `}`
+				}
+				plain := brief(without)
+				shown := brief(`{"key": "WP-12", "state": "ready", ` + with + `"evidence": ` + evidenceJSON + `}`)
+				i, j := strings.Index(shown, start), strings.Index(shown, end)
+				if i < 0 || j < i || i > strings.Index(shown, "\nCode") {
+					t.Fatalf("evidence belongs before the code:\n%s", shown)
+				}
+				if code(shown) != code(plain) {
+					t.Errorf("compact %v, budget %d, notes %v: evidence changed the code section:\n%s\n--- without:\n%s", compact, budget, with != "", code(shown), code(plain))
+					return
+				}
+				sizes[len(code(plain))] = true
+			}
+		}
+		if len(sizes) < 2 {
+			t.Errorf("compact %v: the budget never limited the code section, so this shows nothing: %v", compact, sizes)
+		}
 	}
 }

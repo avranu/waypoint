@@ -379,16 +379,16 @@ func (p *runnerProc) prepTasks(ctx context.Context) {
 
 // prepSection is the prep printed in a brief: for the agent taking the task
 // (shown records that it was shown), with each picked symbol resolved in ix.
-// Empty when there is no ready prep, or neither its pointers nor evidence
-// are for this reader.
-func (c *cli) prepSection(ix *codeindex.Index, key string, budget int, compact, shown bool) string {
+// The evidence follows the notes. Both are empty when there is no ready prep,
+// or neither its pointers nor evidence are for this reader.
+func (c *cli) prepSection(ix *codeindex.Index, key string, budget int, compact, shown bool) (notes, evidence string) {
 	path := "/api/v1/issues/" + esc(key) + "/prep?evidence=1"
 	if shown {
 		path += "&shown=1"
 	}
 	var p prepView
 	if c.do("GET", path, nil, &p) != nil || p.State != "ready" || p.Notes == nil && p.Evidence == nil {
-		return ""
+		return "", ""
 	}
 	return c.renderPrepShown(key, &p, prepIndex(ix, p.Repo), budget, compact)
 }
@@ -397,8 +397,7 @@ func (c *cli) prepSection(ix *codeindex.Index, key string, budget int, compact, 
 // tokens and then its evidence: the glossary terms, pages and decisions it
 // printed (not the ones the compact form or the budget left out) are told to
 // the server as shown, whether or not this is the task it took (WP-ADR145).
-func (c *cli) renderPrepShown(key string, p *prepView, ix *codeindex.Index, budget int, compact bool) string {
-	var out string
+func (c *cli) renderPrepShown(key string, p *prepView, ix *codeindex.Index, budget int, compact bool) (out, evidence string) {
 	project := projectOfKey(key)
 	if p.Notes != nil {
 		out = renderPrepNotes(p, ix, budget, compact)
@@ -406,10 +405,10 @@ func (c *cli) renderPrepShown(key string, p *prepView, ix *codeindex.Index, budg
 	items := printedTerms(p, out, project, compact)
 	evidence, listed := renderPrepEvidence(p.Evidence, project, compact)
 	if evidence != "" && out != "" && !strings.HasSuffix(out, "\n") {
-		out += "\n"
+		evidence = "\n" + evidence
 	}
 	c.noteShown("prep", append(items, listed...))
-	return out + evidence
+	return out, evidence
 }
 
 func projectOfKey(key string) string { return key[:max(strings.LastIndex(key, "-"), 0)] }

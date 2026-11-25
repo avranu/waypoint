@@ -185,6 +185,53 @@ func TestPrepEvidenceAssumptionsLimit(t *testing.T) {
 	}
 }
 
+// Evidence names pages and decisions and says what is in them, so a token that
+// can't read both is given none of it, and as holder draws no arm.
+func TestPrepEvidenceNeedsReadPermissions(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		perms []Permission
+		given bool
+	}{
+		{"unrestricted", nil, true},
+		{"both", []Permission{PermIssuesRead, PermPagesRead, PermDesignRead}, true},
+		{"no pages.read", []Permission{PermIssuesRead, PermDesignRead}, false},
+		{"no design.read", []Permission{PermIssuesRead, PermPagesRead}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEvidenceEnv(t)
+			e.llm.evidence = `{"evidence": [], "claims": [{"quote": "checks are slow", "test": "time them", "ref": null}]}`
+			e.prep(e.task.Key)
+			e.claim(e.ag, e.task.Key)
+			holder, reader := *e.ag, *e.admin
+			holder.Permissions, reader.Permissions = permissionSet(tc.perms), permissionSet(tc.perms)
+			if tc.given {
+				e.forceArm(e.task.ID, "shown")
+			}
+			if got := e.served(&holder, e.task.Key, true); (got.Evidence != nil) != tc.given || got.Notes == nil {
+				t.Errorf("the holder: %+v", got)
+			}
+			want := "1 1"
+			if !tc.given {
+				want = "0 0"
+			}
+			if got := e.units(e.task.ID); got != want {
+				t.Errorf("units %s; want %s", got, want)
+			}
+			// Nor is it given to a read of a task already in the shown arm; a
+			// restricted token reads as an agent does.
+			if !tc.given {
+				e.forceArm(e.task.ID, "shown")
+			}
+			for name, a := range map[string]*Actor{"the holder": &holder, "another read": &reader} {
+				if got := e.served(a, e.task.Key, false); (got.Evidence != nil) != tc.given {
+					t.Errorf("%s: %+v", name, got.Evidence)
+				}
+			}
+		})
+	}
+}
+
 // Superseded pages don't count towards either page query's limit, linked or
 // matched by words.
 func TestPrepEvidenceSupersededPagesLimit(t *testing.T) {

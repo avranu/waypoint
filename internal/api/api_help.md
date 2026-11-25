@@ -123,7 +123,8 @@ stateless, same bearer token).
                                       the ready, current prep found some: {evidence: [{ref, kind (page|design),
                                       title, category, date, by, bears_on, updated, changed_since}], claims:
                                       [{quote, test, ref, ref_kind, ref_updated, changed_since}]}. People who view
-                                      the project get it, not those given only the task. An agent gets it only in
+                                      the project get it, not those given only the task, and a restricted token only
+                                      with both pages.read and design.read. An agent gets it only in
                                       the shown arm of a live prep_evidence experiment, drawn when the agent
                                       holding the task fetches with shown=1 (which makes the task a unit), and
                                       never when the prep is held out

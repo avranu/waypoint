@@ -159,9 +159,15 @@ func (c *cli) brief(key, question, db string, budget int, compact bool) (string,
 		defer func() { _ = ix.Close() }()
 	}
 	if key != "" {
-		if prep := c.prepSection(ix, key, budget*25/100, compact, compact || c.takenHere(key)); prep != "" {
-			put("\n" + prep)
+		notes, evidence := c.prepSection(ix, key, budget*25/100, compact, compact || c.takenHere(key))
+		if notes != "" {
+			put("\n" + notes)
+		} else if evidence != "" {
+			sb.WriteString("\n")
 		}
+		// On top of the budget, not out of it: the code the shown arm is given
+		// must not shrink (WP-ADR157).
+		sb.WriteString(evidence)
 	}
 	if ix == nil {
 		if compact {

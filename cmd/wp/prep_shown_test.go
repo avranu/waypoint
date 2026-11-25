@@ -42,7 +42,7 @@ func TestPrepRecordsOnlyThePrintedTermsAsShown(t *testing.T) {
 	p := &prepView{State: "ready", Notes: &n}
 
 	t.Setenv("WAYPOINT_AGENT", "anthropic/claude-code")
-	out := c.renderPrepShown("WP-12", p, nil, 4000, true)
+	out, _ := c.renderPrepShown("WP-12", p, nil, 4000, true)
 	if strings.Contains(out, "D: d") || !strings.Contains(out, "C: c") {
 		t.Fatalf("compact prep printed the wrong terms:\n%s", out)
 	}

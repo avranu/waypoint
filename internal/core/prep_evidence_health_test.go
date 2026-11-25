@@ -28,16 +28,27 @@ func (c *collectorEnv) preps(t *testing.T, n int, ago time.Duration, state strin
 	return ids
 }
 
+// retried puts the last attempt at each task's evidence ago ago.
+func (c *collectorEnv) retried(t *testing.T, ids []int64, ago time.Duration) {
+	t.Helper()
+	for _, id := range ids {
+		if _, err := c.s.db.W.ExecContext(c.ctx, `UPDATE task_prep_evidence SET created_at = ? WHERE issue_id = ?`, c.clockNow().Add(-ago).UnixMilli(), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // Evidence checks that all fail for two days stall the collector; one that
 // succeeds does not leave it stalled (WP-ADR157).
 func TestCollectorPrepEvidence(t *testing.T) {
 	c := newCollectorEnv(t)
-	c.preps(t, 2, 47*time.Hour, "failed")
+	ids := c.preps(t, 2, 47*time.Hour, "failed")
 	c.s.CheckCollectorHealth(c.ctx)
 	if h := c.health(t, prepEvidenceCollector); h.Stalled || h.Waiting != 2 {
 		t.Fatalf("under 48h: %+v", h)
 	}
 	c.setClock(c.clockNow().Add(2 * time.Hour))
+	c.retried(t, ids, time.Hour)
 	c.s.CheckCollectorHealth(c.ctx)
 	if h := c.health(t, prepEvidenceCollector); !h.Stalled || h.Waiting != 2 {
 		t.Fatalf("every check failing: %+v", h)
@@ -68,10 +79,28 @@ func TestCollectorPrepEvidenceWaiting(t *testing.T) {
 	}
 }
 
+// A failure nothing has tried again for two days (the task taken, far back in
+// the queue, or not prepared by itself) is no stall, however quiet it is since;
+// while some check still fails, every task without evidence waits.
+func TestCollectorPrepEvidenceOldFailure(t *testing.T) {
+	c := newCollectorEnv(t)
+	c.preps(t, 1, 47*time.Hour, "failed")
+	c.setClock(c.clockNow().Add(2 * time.Hour))
+	c.s.CheckCollectorHealth(c.ctx)
+	if h := c.health(t, prepEvidenceCollector); h.Stalled || h.Waiting != 0 {
+		t.Fatalf("one old failure, nothing since: %+v", h)
+	}
+	c.preps(t, 1, time.Hour, "failed")
+	c.s.CheckCollectorHealth(c.ctx)
+	if h := c.health(t, prepEvidenceCollector); !h.Stalled || h.Waiting != 2 || h.OldestWaitAt == nil || c.clockNow().Sub(*h.OldestWaitAt) < 48*time.Hour {
+		t.Errorf("a recent failure beside it: %+v", h)
+	}
+}
+
 // With no live run no check is made, so none waits.
 func TestCollectorPrepEvidenceNoRun(t *testing.T) {
 	c := newCollectorEnv(t)
-	c.preps(t, 2, 72*time.Hour, "failed")
+	c.retried(t, c.preps(t, 2, 72*time.Hour, "failed"), time.Hour)
 	if _, err := c.s.StopExperiment(c.ctx, c.admin, ExpPrepEvidence, ""); err != nil {
 		t.Fatal(err)
 	}
