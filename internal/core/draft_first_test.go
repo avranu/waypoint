@@ -977,3 +977,35 @@ func TestPersonsReadyEditPutsCIBackToPending(t *testing.T) {
 		t.Fatalf("a body edit of an open pull request marked it again: %d", pr.readyStatusID)
 	}
 }
+
+// As above, but the edit comes before any of the draft run's statuses were
+// stored: it is still held, and the draft run's skips alone, coming after,
+// don't clear it; a run whose jobs really ran does (audit #1748.2).
+func TestPersonsReadyEditBeforeStatusesIsHeld(t *testing.T) {
+	be := newBabysitEnvOn(t, "forgejo")
+	be.sg.files[".forgejo/workflows/ci.yml"] = ciOnEdit
+	const head = "7777777aaaa"
+	p := bsPR
+	p.Title = "WIP: Add export"
+	be.pullHook("opened", p)
+	be.s.Wait()
+	be.drain()
+	p.Title = "Add export"
+	be.pullHook("edited", p)
+	be.s.Wait()
+	pr := be.pr(7)
+	if pr.State != "open" || pr.ReadyAt == nil || pr.readyStatusID != unknownReadyStatus || !sameSHA(pr.readySHA, head) || pr.CIState != CIPending {
+		t.Fatalf("after the edit: state %q ready at %q status %d ci %q", pr.State, pr.readySHA, pr.readyStatusID, pr.CIState)
+	}
+	be.draftChecks(head, CommitCheck{State: CheckSuccess, ID: 5, Description: "Has been skipped"}, CommitCheck{State: CheckSuccess, ID: 6, Description: "Has been skipped"})
+	pr = be.pr(7)
+	rd, err := be.s.readiness(be.ctx, pr)
+	if err != nil || rd.Ready || !strings.Contains(strings.Join(rd.Reasons, ";"), "full run hasn't finished") || pr.CIState == CIPassed {
+		t.Fatalf("ready on the draft run's skips: %+v %v ci %q", rd, err, pr.CIState)
+	}
+	be.draftChecks(head, CommitCheck{State: CheckSuccess, ID: 9, Description: "Successful in 4m"}, CommitCheck{State: CheckSuccess, ID: 10, Description: "Successful in 9m"})
+	pr = be.pr(7)
+	if rd, err = be.s.readiness(be.ctx, pr); err != nil || strings.Contains(strings.Join(rd.Reasons, ";"), "full run") || pr.CIState != CIPassed {
+		t.Fatalf("after the full run: %+v %v ci %q", rd, err, pr.CIState)
+	}
+}

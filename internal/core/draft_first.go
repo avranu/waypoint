@@ -158,7 +158,7 @@ func fullRunReasons(pr *PullRequest, checks []PRCheck) []string {
 // every check the edit reruns has passed since then, going by checks (the
 // head's statuses).
 func fullRunPassed(pr *PullRequest, checks []CommitCheck, now time.Time) bool {
-	if pr.readyStatusID == 0 || !sameSHA(pr.readySHA, pr.HeadSHA) {
+	if pr.readyStatusID <= 0 || !sameSHA(pr.readySHA, pr.HeadSHA) {
 		return false
 	}
 	was := *pr
@@ -533,6 +533,10 @@ func fullRunSkipped(ctx context.Context, cl ForgeActionLogs, f *Forge, repo, sha
 	return out, nil
 }
 
+// unknownReadyStatus is ready_status_id for a pull request made ready by an
+// edit before any of its head's status ids were stored: below every id.
+const unknownReadyStatus = -1
+
 // markReadyByEdit marks pr, made ready at its head by someone's title edit,
 // as markReady marks it: the newest status id of the head's checks and the
 // checks the edit runs again, so its full run is told from the draft run's
@@ -561,8 +565,13 @@ func (s *Service) markReadyByEdit(ctx context.Context, t *tx, pr *PullRequest, n
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	if len(names) == 0 || maxID == 0 {
-		return nil // nothing the edit runs again, or no status ids to tell the runs apart
+	if maxID == 0 {
+		// Nothing stored yet to tell the draft run's statuses from the
+		// edit's (or no ids): every status then counts as the edit's, so its
+		// skips alone don't clear the hold and only a run with a job that
+		// really ran does (audit #1748.2). Unmarked, the draft run's skipped
+		// successes, a merge-only push's among them, would merge it.
+		maxID = unknownReadyStatus
 	}
 	nm, _ := json.Marshal(names)
 	if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET ready_at = ?, ready_sha = ?, ready_status_id = ?, ready_checks = ?, ready_skipped = '[]', ready_cand = 0,
