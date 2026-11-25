@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 
 	"git.jmann.me/claude/waypoint/internal/lazyre"
@@ -158,38 +159,38 @@ func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *Shel
 	}
 	set := func(words []string) {
 		for _, w := range words {
-			if name, v, ok := strings.Cut(w, "="); ok && assignRE.MatchString(w) && !strings.HasSuffix(name, "+") {
+			if name, v, ok := strings.Cut(w, "="); ok && AssignRE.MatchString(w) && !strings.HasSuffix(name, "+") {
 				vars[name] = v
 			}
 		}
 	}
-	for _, g := range parseShell(cmd) {
-		all := make([]string, len(g.words))
-		assigns := len(g.words) > 0
-		for i, w := range g.words {
+	for _, g := range ParseShell(cmd) {
+		all := make([]string, len(g.Words))
+		assigns := len(g.Words) > 0
+		for i, w := range g.Words {
 			all[i] = fill(w)
-			assigns = assigns && assignRE.MatchString(w)
+			assigns = assigns && AssignRE.MatchString(w)
 		}
 		if assigns {
 			set(all)
 			continue
 		}
-		words := stripWords(all)
+		words := StripWords(all)
 		if len(words) == 0 {
 			continue
 		}
-		if depth < 3 && shells[path.Base(words[0])] {
-			if inner, ok := shellDashC(words[1:]); ok {
+		if depth < 3 && Shells[path.Base(words[0])] {
+			if inner, ok := ShellDashC(words[1:]); ok {
 				shellCommands(inner, dir, depth+1, vars, mem, out, disk)
 				continue
 			}
-			if g.heredoc != "" {
-				shellCommands(g.heredoc, dir, depth+1, vars, mem, out, disk)
+			if g.Heredoc != "" {
+				shellCommands(g.Heredoc, dir, depth+1, vars, mem, out, disk)
 				continue
 			}
 		}
-		c := ShellCommand{Words: words, Head: headOf(words), Dir: dir, Script: g.heredoc}
-		for _, r := range g.redirs {
+		c := ShellCommand{Words: words, Head: HeadOf(words), Dir: dir, Script: g.Heredoc}
+		for _, r := range g.Redirs {
 			c.Redirs = append(c.Redirs, fill(r))
 		}
 		switch {
@@ -454,12 +455,13 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 		return false
 	}
 	if prog == "npx" || prog == "bunx" {
-		if ws := plain(0); len(ws) > 0 && path.Base(ws[0]) == "prettier" {
-			for i, a := range args {
-				if a == ws[0] {
-					prog, args = "prettier", args[i+1:]
-					break
-				}
+		// npx [--prefix DIR] prettier ...: the tool is the first word named
+		// prettier among the first few, whatever flags and their values
+		// come before it.
+		for i, a := range args[:min(len(args), 4)] {
+			if path.Base(a) == "prettier" {
+				prog, args = "prettier", args[i+1:]
+				break
 			}
 		}
 	}
@@ -540,9 +542,17 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 				out = append(out, ShellWrite{Kind: "curl", Path: f, Whole: true})
 			}
 		}
+	case "dd":
+		for _, a := range args {
+			if f, ok := strings.CutPrefix(a, "of="); ok {
+				out = append(out, ShellWrite{Kind: "dd", Path: f, Whole: true})
+			}
+		}
 	case "xargs", "find":
 		for i, a := range args {
-			if b := path.Base(a); b == "sed" && sedInPlace(args[i:]) || b == "perl" && i+1 < len(args) && perlInPlaceRE.MatchString(args[i+1]) {
+			b := path.Base(a)
+			formats := (b == "gofmt" || b == "goimports" || b == "prettier") && slices.ContainsFunc(args[i+1:], func(x string) bool { return x == "-w" || x == "--write" })
+			if formats || b == "sed" && sedInPlace(args[i:]) || b == "perl" && i+1 < len(args) && perlInPlaceRE.MatchString(args[i+1]) {
 				out = append(out, ShellWrite{Kind: "patch", Path: "*"})
 				break
 			}

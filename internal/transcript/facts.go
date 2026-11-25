@@ -13,7 +13,7 @@ package transcript
 // ParserVersion is stored on every row the parser produced; a bump re-derives
 // every archived file. Change it whenever the parser would produce different
 // rows from the same bytes.
-const ParserVersion = 4
+const ParserVersion = 3
 
 // Thread names who wrote a record: the main thread, or the sub-agent's id.
 const MainThread = "main"

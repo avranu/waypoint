@@ -1,7 +1,6 @@
 package transcript
 
-// A copy of the command-head reader of cmd/wp/usage_heads.go (stripWords,
-// headOf and what they use), which the shell-write recogniser needs.
+// The command-head reader the usage report (cmd/wp) and the write recogniser share.
 
 import (
 	"path"
@@ -11,7 +10,7 @@ import (
 )
 
 var (
-	assignRE   = lazyre.New(`^[A-Za-z_][A-Za-z0-9_]*\+?=`)
+	AssignRE   = lazyre.New(`^[A-Za-z_][A-Za-z0-9_]*\+?=`)
 	redirectRE = lazyre.New(`^(\d*|&)(>>?|<)(&\d*|.*)$`)
 	subcmdRE   = lazyre.New(`^[a-z][a-z0-9:_.-]*$`)
 )
@@ -23,9 +22,9 @@ var skipWords = map[string]bool{"if": true, "then": true, "else": true, "elif": 
 // dropSegment: these words alone don't run anything.
 var dropWords = map[string]bool{"fi": true, "done": true, "esac": true, "for": true, "case": true, "select": true, "function": true, "in": true, "}": true, "{": true, "[[": true, "[": true, "break": true, "continue": true}
 
-// subcommandTools take a subcommand as their first word that is not a flag.
+// SubcommandTools take a subcommand as their first word that is not a flag.
 // valueFlags are the flags that take a value, which must be skipped.
-var subcommandTools = map[string]map[string]bool{
+var SubcommandTools = map[string]map[string]bool{
 	"git": {"-C": true, "-c": true, "--git-dir": true, "--work-tree": true, "--namespace": true}, "go": {"-C": true},
 	"npm": {"--prefix": true, "-w": true, "--workspace": true}, "pnpm": {"-C": true, "--dir": true, "--filter": true, "-F": true}, "yarn": {"--cwd": true},
 	"npx": nil, "bun": nil, "deno": nil, "make": {"-C": true, "-f": true, "-j": true, "-I": true}, "gmake": nil,
@@ -50,10 +49,10 @@ var wrapperValueFlags = map[string]map[string]bool{
 	"timeout": {"-s": true, "-k": true}, "env": {"-u": true, "-C": true, "-S": true}, "stdbuf": {"-i": true, "-o": true, "-e": true},
 }
 
-var shells = map[string]bool{"bash": true, "sh": true, "zsh": true, "dash": true, "ash": true, "ksh": true}
+var Shells = map[string]bool{"bash": true, "sh": true, "zsh": true, "dash": true, "ash": true, "ksh": true}
 
-// shellDashC finds the script of `bash -c SCRIPT` (also -lc, -ic…).
-func shellDashC(args []string) (string, bool) {
+// ShellDashC finds the script of `bash -c SCRIPT` (also -lc, -ic…).
+func ShellDashC(args []string) (string, bool) {
 	for i, a := range args {
 		if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.Contains(a, "c") && i+1 < len(args) {
 			return args[i+1], true
@@ -65,9 +64,9 @@ func shellDashC(args []string) (string, bool) {
 	return "", false
 }
 
-// stripWords drops redirections, assignments, control words and wrappers
+// StripWords drops redirections, assignments, control words and wrappers
 // from the front of a segment, leaving the program and its arguments.
-func stripWords(seg []string) []string {
+func StripWords(seg []string) []string {
 	var words []string
 	for i := 0; i < len(seg); i++ {
 		w := seg[i]
@@ -82,7 +81,7 @@ func stripWords(seg []string) []string {
 	for len(words) > 0 {
 		w := words[0]
 		switch {
-		case assignRE.MatchString(w), skipWords[w]:
+		case AssignRE.MatchString(w), skipWords[w]:
 			words = words[1:]
 		case dropWords[w]:
 			return nil
@@ -93,7 +92,7 @@ func stripWords(seg []string) []string {
 				return words
 			}
 			words = words[1:]
-			for len(words) > 0 && (strings.HasPrefix(words[0], "-") || assignRE.MatchString(words[0])) {
+			for len(words) > 0 && (strings.HasPrefix(words[0], "-") || AssignRE.MatchString(words[0])) {
 				flag := words[0]
 				words = words[1:]
 				if wrapperValueFlags[base][flag] && len(words) > 0 {
@@ -108,8 +107,8 @@ func stripWords(seg []string) []string {
 	return nil
 }
 
-// headOf names a command: its program, plus the subcommand for tools that have them.
-func headOf(words []string) string {
+// HeadOf names a command: its program, plus the subcommand for tools that have them.
+func HeadOf(words []string) string {
 	prog := words[0]
 	switch {
 	case (strings.HasPrefix(prog, "$") || strings.HasPrefix(prog, "`")) && !strings.Contains(prog, "/"):
@@ -124,7 +123,7 @@ func headOf(words []string) string {
 	if len(name) > 60 {
 		name = name[:60]
 	}
-	flags, ok := subcommandTools[strings.TrimSuffix(name, ".exe")]
+	flags, ok := SubcommandTools[strings.TrimSuffix(name, ".exe")]
 	if !ok {
 		if strings.HasPrefix(name, "python") {
 			for i := 1; i+1 < len(words); i++ {

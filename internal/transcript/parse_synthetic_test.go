@@ -54,6 +54,20 @@ func TestShellEditTable(t *testing.T) {
 		{"ls -la", "/r", false},
 		{"grep -rn foo .", "/r", false},
 		{"git apply fix.patch", "/r", true},
+		{"gofmt -w internal/a.go", "/r", true},
+		{"goimports -w a.go b.go", "/r", true},
+		{"perl -pi -e 's/a/b/' a.go", "/r", true},
+		{"npx --prefix e2e prettier --write e2e/85-board.mjs", "/r", true},
+		{"cd web && npx prettier --write src/a.tsx", "/r", true},
+		{"gofmt -l . | xargs gofmt -w", "/r", true},
+		{"dd if=/dev/zero of=/r/blob bs=1k count=1", "/r", true},
+		{"dd if=/dev/zero of=/tmp/blob bs=1k count=1", "/r", false},
+		{"touch /r/new.go", "/r", false},
+		{"gofmt -l .", "/r", false},
+		{"gofmt -w /tmp/x.go", "/r", false},
+		{"python3 - <<'E'\np='internal/a.go'\ns=open(p).read()\nopen(p,'w').write(s.replace('a','b'))\nE", "/r", true},
+		{"cd /tmp/s && python3 - <<'E'\np='out.json'\nopen(p,'w').write('x')\nE", "/r", false},
+		{"cd $(mktemp -d) && echo x > a.txt", "/r", false},
 	} {
 		if got := ShellEdit(c.cmd, c.cwd); got != c.want {
 			t.Errorf("ShellEdit(%q) = %v, want %v", c.cmd, got, c.want)

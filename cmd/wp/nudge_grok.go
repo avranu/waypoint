@@ -25,14 +25,14 @@ type grokRun struct {
 // findGrokRuns looks through the commands, substitutions included. A `wait`
 // in the same list holds the call open, so what it waits for isn't detached.
 func findGrokRuns(cmds []*guardCmd, detached bool) []grokRun {
-	waits := slices.ContainsFunc(cmds, func(c *guardCmd) bool { return len(c.words) > 0 && c.words[0] == "wait" })
+	waits := slices.ContainsFunc(cmds, func(c *guardCmd) bool { return len(c.Words) > 0 && c.Words[0] == "wait" })
 	var runs []grokRun
 	for _, c := range cmds {
-		d := detached || (c.detached && !waits)
-		if found, secs := grokRunWords(c.words); found {
+		d := detached || (c.Detached && !waits)
+		if found, secs := grokRunWords(c.Words); found {
 			runs = append(runs, grokRun{secs, d})
 		}
-		for _, sub := range c.subs {
+		for _, sub := range c.Subs {
 			runs = append(runs, findGrokRuns(sub, d)...)
 		}
 	}

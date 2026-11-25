@@ -2,24 +2,22 @@ package transcript
 
 import "strings"
 
-// The shell reader below is a copy of cmd/wp/guard_shell.go (the guard still
-// uses that one); a change to how a command line is read belongs in both.
+// ShellCmd is one simple command of a parsed shell line. The guard, the
+// usage heads and the write recogniser all read lines with this parser.
+type ShellCmd struct {
+	Words   []string
+	Open    []bool
+	Subs    [][]*ShellCmd
+	Redirs  []string
+	Heredoc string
+	PipeIn  bool
+	AndIn   bool
 
-// shellCmd is one simple command.
-type shellCmd struct {
-	words   []string
-	open    []bool
-	subs    [][]*shellCmd
-	redirs  []string
-	heredoc string
-	pipeIn  bool
-	andIn   bool
-
-	detached bool
+	Detached bool
 }
 
 type shellHeredoc struct {
-	cmd   *shellCmd
+	cmd   *ShellCmd
 	delim string
 	strip bool
 }
@@ -35,8 +33,8 @@ type shellParser struct {
 
 const shellMaxNest = 12
 
-// parseShell reads a command line into simple commands.
-func parseShell(s string) []*shellCmd {
+// ParseShell reads a command line into simple commands.
+func ParseShell(s string) []*ShellCmd {
 	p := &shellParser{s: s}
 	return p.list(0)
 }
@@ -52,7 +50,8 @@ func isShellMeta(c byte) bool {
 	return false
 }
 
-func isDigits(s string) bool {
+// IsDigits says s is one or more ASCII digits.
+func IsDigits(s string) bool {
 	if s == "" {
 		return false
 	}
@@ -72,28 +71,28 @@ func (p *shellParser) peek(n int) byte {
 }
 
 // list reads commands until end (or the end of the text).
-func (p *shellParser) list(end byte) []*shellCmd {
+func (p *shellParser) list(end byte) []*ShellCmd {
 	prevEnd := p.end
 	p.end = end
 	defer func() { p.end = prevEnd }()
 	p.nest++
 	defer func() { p.nest-- }()
-	var out []*shellCmd
-	cur := &shellCmd{}
+	var out []*ShellCmd
+	cur := &ShellCmd{}
 	pipe := false
 	and := false
 	listStart := 0
 	var groups []int
 	flush := func(nextPipe bool) bool {
 		added := false
-		if len(cur.words) > 0 || len(cur.redirs) > 0 || len(cur.subs) > 0 {
-			cur.pipeIn, cur.andIn = pipe, and
+		if len(cur.Words) > 0 || len(cur.Redirs) > 0 || len(cur.Subs) > 0 {
+			cur.PipeIn, cur.AndIn = pipe, and
 			out = append(out, cur)
 			pipe, and, added = nextPipe, false, true
 		} else if !nextPipe {
 			pipe = false
 		}
-		cur = &shellCmd{}
+		cur = &ShellCmd{}
 		return added
 	}
 	if p.nest > shellMaxNest {
@@ -110,7 +109,7 @@ func (p *shellParser) list(end byte) []*shellCmd {
 			flush(false)
 			listStart = len(out)
 			p.readHeredocs()
-		case c == '#' && len(cur.words) == 0:
+		case c == '#' && len(cur.Words) == 0:
 			for p.i < len(p.s) && p.s[p.i] != '\n' {
 				p.i++
 			}
@@ -128,7 +127,7 @@ func (p *shellParser) list(end byte) []*shellCmd {
 			p.i++
 			flush(false)
 			for _, x := range out[listStart:] {
-				x.detached = true
+				x.Detached = true
 			}
 			listStart = len(out)
 		case c == '|':
@@ -164,14 +163,14 @@ func (p *shellParser) list(end byte) []*shellCmd {
 			p.redirect(cur)
 		default:
 			w, quoted := p.word(cur)
-			if !quoted && isDigits(w) && (p.peek(0) == '<' || p.peek(0) == '>') {
+			if !quoted && IsDigits(w) && (p.peek(0) == '<' || p.peek(0) == '>') {
 				continue
 			}
-			if len(cur.words) == 0 && !quoted && shellKeywords[w] {
+			if len(cur.Words) == 0 && !quoted && shellKeywords[w] {
 				continue
 			}
-			cur.words = append(cur.words, w)
-			cur.open = append(cur.open, p.open)
+			cur.Words = append(cur.Words, w)
+			cur.Open = append(cur.Open, p.open)
 		}
 	}
 	flush(false)
@@ -179,7 +178,7 @@ func (p *shellParser) list(end byte) []*shellCmd {
 }
 
 // redirect reads a redirection at p.i (on its < or >) into cur.
-func (p *shellParser) redirect(cur *shellCmd) {
+func (p *shellParser) redirect(cur *ShellCmd) {
 	c := p.s[p.i]
 	p.i++
 	amp := false
@@ -215,10 +214,10 @@ func (p *shellParser) redirect(cur *shellCmd) {
 	}
 	p.skipSpaces()
 	w, _ := p.word(cur)
-	if c == '<' || w == "" || (amp && (isDigits(w) || w == "-")) {
+	if c == '<' || w == "" || (amp && (IsDigits(w) || w == "-")) {
 		return
 	}
-	cur.redirs = append(cur.redirs, w)
+	cur.Redirs = append(cur.Redirs, w)
 }
 
 func (p *shellParser) skipSpaces() {
@@ -250,20 +249,20 @@ func (p *shellParser) readHeredocs() {
 			b.WriteString(line)
 			b.WriteByte('\n')
 		}
-		h.cmd.heredoc += b.String()
+		h.cmd.Heredoc += b.String()
 	}
 	p.pending = nil
 }
 
-// subPlaceholder stands for a substitution in a word.
-const subPlaceholder = "$(…)"
+// ShellSubPlaceholder stands for a substitution in a word.
+const ShellSubPlaceholder = "$(…)"
 
 // word reads one word, unquoted; quoted says any of it was quoted or escaped.
-// The code a substitution in it runs is read into cur.subs. p.open says the
+// The code a substitution in it runs is read into cur.Subs. p.open says the
 // shell may make other words of it, which the guard doesn't see: an
 // unquoted $ or substitution (split into words), or a glob or brace at its
 // start ({-d,x=1} is -d x=1; ?d can be a file named -d).
-func (p *shellParser) word(cur *shellCmd) (string, bool) {
+func (p *shellParser) word(cur *ShellCmd) (string, bool) {
 	var b strings.Builder
 	quoted := false
 	open := false
@@ -296,20 +295,20 @@ func (p *shellParser) word(cur *shellCmd) (string, bool) {
 			p.dquote(&b, cur)
 		case c == '$' && p.peek(1) == '(':
 			p.i += 2
-			cur.subs = append(cur.subs, p.list(')'))
-			b.WriteString(subPlaceholder)
+			cur.Subs = append(cur.Subs, p.list(')'))
+			b.WriteString(ShellSubPlaceholder)
 			open = true
 		case c == '$' && p.peek(1) == '\'':
 			p.i++
 		case c == '`' && p.end != '`':
 			p.i++
-			cur.subs = append(cur.subs, p.list('`'))
-			b.WriteString(subPlaceholder)
+			cur.Subs = append(cur.Subs, p.list('`'))
+			b.WriteString(ShellSubPlaceholder)
 			open = true
 		case (c == '<' || c == '>') && p.peek(1) == '(' && b.Len() == 0:
 			p.i += 2
-			cur.subs = append(cur.subs, p.list(')'))
-			b.WriteString(subPlaceholder)
+			cur.Subs = append(cur.Subs, p.list(')'))
+			b.WriteString(ShellSubPlaceholder)
 		case isShellMeta(c) || (c == '`' && p.end == '`'):
 			p.open = open
 			return b.String(), quoted
@@ -326,7 +325,7 @@ func (p *shellParser) word(cur *shellCmd) (string, bool) {
 }
 
 // dquote reads the inside of "..." (p.i is past the opening quote).
-func (p *shellParser) dquote(b *strings.Builder, cur *shellCmd) {
+func (p *shellParser) dquote(b *strings.Builder, cur *ShellCmd) {
 	for p.i < len(p.s) {
 		c := p.s[p.i]
 		switch {
@@ -344,12 +343,12 @@ func (p *shellParser) dquote(b *strings.Builder, cur *shellCmd) {
 			p.i += 2
 		case c == '$' && p.peek(1) == '(':
 			p.i += 2
-			cur.subs = append(cur.subs, p.list(')'))
-			b.WriteString(subPlaceholder)
+			cur.Subs = append(cur.Subs, p.list(')'))
+			b.WriteString(ShellSubPlaceholder)
 		case c == '`' && p.end != '`':
 			p.i++
-			cur.subs = append(cur.subs, p.list('`'))
-			b.WriteString(subPlaceholder)
+			cur.Subs = append(cur.Subs, p.list('`'))
+			b.WriteString(ShellSubPlaceholder)
 		default:
 			b.WriteByte(c)
 			p.i++
