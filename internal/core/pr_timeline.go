@@ -169,7 +169,7 @@ func (s *Service) PRTimeline(ctx context.Context, actor *Actor, projectKey, repo
 		return nil, err
 	}
 	defer arm.Close()
-	var disarmed int64 // the last time
+	var disarmed int64 // when it was disarmed, if it wasn't armed again since
 	for arm.Next() {
 		var action string
 		var at int64
@@ -178,8 +178,11 @@ func (s *Service) PRTimeline(ctx context.Context, actor *Actor, projectKey, repo
 			return nil, err
 		}
 		tl.Armed = append(tl.Armed, PRArmEvent{At: msTime(at), What: action[len("pr."):], By: by.String})
-		if action == "pr.disarm" {
+		switch action {
+		case "pr.disarm":
 			disarmed = at
+		case "pr.arm":
+			disarmed = 0
 		}
 	}
 	if err := arm.Err(); err != nil {

@@ -193,20 +193,28 @@ func TestPRTimelineOpenHoldEndsWithThePullRequest(t *testing.T) {
 	for _, c := range []struct{ name, sql, state string }{
 		{"merged", `UPDATE pull_requests SET state = 'merged', merged_at = %d WHERE id = ?`, "merged"},
 		{"closed", `UPDATE pull_requests SET state = 'closed', closed_at = %d, armed_at = NULL WHERE id = ?`, "closed"},
+		// Disarmed at 75m and armed again at 76m, it closed at 100m: the earlier disarm ends nothing.
+		{"rearmed", `INSERT INTO audit_log(action, category, target_type, target_id, created_at) VALUES ('pr.disarm', 'control', 'pr', ?1, %[1]d - 25*60000), ('pr.arm', 'approval', 'pr', ?1, %[1]d - 24*60000)`, "closed"},
 		{"disarmed", `INSERT INTO audit_log(action, category, target_type, target_id, created_at) VALUES ('pr.disarm', 'control', 'pr', ?, %d)`, "open"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			se, pr, t0 := timelineEnv(t)
 			min := func(m int) int64 { return t0 + int64(m)*60000 }
 			se.timelineRun(1, "8888888bbbb", "#7", "pull_request", "success", min(62), min(63), min(80))
+			// Opening it armed it by the repo's setting, at the test's now; each case lists its own rows.
+			if _, err := se.s.db.W.ExecContext(se.ctx, `DELETE FROM audit_log WHERE target_type = 'pr' AND target_id = ?`, pr.ID); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO merge_holds(pr_id, head_sha, what, first_at) VALUES (?, '8888888bbbb', 'behind main', ?)`, pr.ID, min(70)); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := se.s.db.W.ExecContext(se.ctx, fmt.Sprintf(c.sql, min(100)), pr.ID); err != nil {
 				t.Fatal(err)
 			}
-			if c.name == "disarmed" {
-				if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET armed_at = NULL WHERE id = ?`, pr.ID); err != nil {
+			after := map[string]string{"disarmed": `UPDATE pull_requests SET armed_at = NULL WHERE id = ?`,
+				"rearmed": fmt.Sprintf(`UPDATE pull_requests SET state = 'closed', closed_at = %d, armed_at = NULL WHERE id = ?`, min(100))}[c.name]
+			if after != "" {
+				if _, err := se.s.db.W.ExecContext(se.ctx, after, pr.ID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -220,7 +228,7 @@ func TestPRTimelineOpenHoldEndsWithThePullRequest(t *testing.T) {
 			if h := tl.Holds[0]; h.Until == nil || !h.Until.Equal(msTime(min(100))) {
 				t.Errorf("the hold ends %v, want when the pull request did", h.Until)
 			}
-			if (tl.ClosedAt != nil) != (c.name == "closed") {
+			if (tl.ClosedAt != nil) != (c.state == "closed") {
 				t.Errorf("closed_at = %v", tl.ClosedAt)
 			}
 		})
