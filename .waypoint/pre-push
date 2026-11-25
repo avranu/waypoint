@@ -21,13 +21,22 @@ if ! committed=$(git diff --name-only "$base" HEAD); then
   echo "pre-push: can't list what changed since origin/main, so nothing was checked" >&2
   exit 1
 fi
+# Nor may a failed read of the work tree pass as nothing left in it.
+if ! uncommitted=$(git status --porcelain); then
+  echo "pre-push: can't list what is changed in the work tree, so nothing was checked" >&2
+  exit 1
+fi
 changed=$(
   echo "$committed"
-  git status --porcelain | cut -c4-
+  echo "$uncommitted" | cut -c4-
 )
 [ -n "$changed" ] || exit 0
 
-PATH="$(go env GOPATH)/bin:$PATH"
+if ! gopath=$(go env GOPATH); then
+  echo "pre-push: can't find Go, so nothing was checked" >&2
+  exit 1
+fi
+PATH="$gopath/bin:$PATH"
 status=0
 if echo "$changed" | grep -q -E '(\.go$|^go\.(mod|sum)$|^\.golangci\.yml$)'; then
   command -v golangci-lint >/dev/null || make tools || status=1
