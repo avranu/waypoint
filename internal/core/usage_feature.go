@@ -605,7 +605,7 @@ func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskA
 		if kind == "builtin" && tool == "Bash" {
 			bash[k] += calls
 		}
-		if kind == "shell_edit" {
+		if kind == transcript.ShellEditKind {
 			marked[k] = true
 			// A non-zero exit still counts (sed -i ... && go test writes before
 			// the test fails); a refused call wrote nothing.
