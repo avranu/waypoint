@@ -343,6 +343,12 @@ func (s *Service) SweepCIHealth(ctx context.Context) {
 		s.log.WarnContext(ctx, "CI health: read the doctor", "err", err)
 		return
 	}
+	if len(d.Missing) > 0 {
+		// Part of CI wasn't read: findings missing from it haven't cleared,
+		// and notifyCIHealth would forget them and tell again (WP-1851).
+		s.log.InfoContext(ctx, "CI health: the doctor was partial; this sweep is skipped", "missing", d.Missing)
+		return
+	}
 	var due []CIFinding
 	for _, f := range d.Findings {
 		if f.Level == "problem" && ciNotifyKinds[f.Kind] {

@@ -22,11 +22,13 @@ import (
 	stdcmp "cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"git.jmann.me/claude/waypoint/internal/lazyre"
@@ -69,8 +71,10 @@ type CIDoctor struct {
 	Pool        CIDoctorPool  `json:"pool"`
 	Lines       []CILine      `json:"lines"` // longest to drain first
 	Mains       []CIMain      `json:"mains"`
-	Jobs        []CIDoctorJob `json:"jobs"`    // unreliable, then each repo's slowest full-tier jobs
-	CIWork      []CIWorkPR    `json:"ci_work"` // armed pull requests that work on CI
+	Jobs        []CIDoctorJob `json:"jobs"` // unreliable, then each repo's slowest full-tier jobs
+	// Missing: parts of the answer the doctor couldn't read in time (WP-1851).
+	Missing []string   `json:"missing,omitempty"`
+	CIWork  []CIWorkPR `json:"ci_work"` // armed pull requests that work on CI
 	// UrgentLane: how a fix can cut the line, only where CI is stuck
 	// (WP-544)
 	UrgentLane []CIUrgentLane `json:"urgent_lane,omitempty"`
@@ -358,20 +362,89 @@ type CIWorkPR struct {
 	Urgent   bool   `json:"urgent,omitempty"` // labelled ci-urgent
 }
 
-// CIDoctor reads the CI board and the merge lines and says what's wrong.
+// ciDoctorBudgets is the time the doctor gives the whole answer and each
+// step of it (WP-1851). The client waits a minute: the answer comes before
+// that, with what was read and a line for what wasn't, because the doctor is
+// asked while CI is busy and the forge slow, which is when a failed answer
+// helps least. A variable so the tests can shorten it.
+var ciDoctorBudgets = struct{ Whole, Snapshot, Lines, Jobs, Tests, Mains, Limits, CIWork, Runners time.Duration }{
+	Whole: 50 * time.Second, Snapshot: 20 * time.Second, Lines: 15 * time.Second, Jobs: 5 * time.Second, Tests: 10 * time.Second,
+	Mains: 5 * time.Second, Limits: 10 * time.Second, CIWork: 10 * time.Second, Runners: 10 * time.Second,
+}
+
+// doctorSteps times the doctor's steps and keeps what each couldn't read.
+type doctorSteps struct {
+	mu      sync.Mutex
+	ms      map[string]int64
+	missing []string
+}
+
+// step runs fn within budget (and the whole's time), and says in missing what
+// it couldn't read when it ran out of time or failed. fn gets a context that
+// ends with the budget: what it had computed by then stays.
+func (t *doctorSteps) step(s *Service, ctx context.Context, name, what string, budget time.Duration, fn func(ctx context.Context) error) {
+	sctx, cancel := context.WithTimeout(ctx, budget)
+	start := time.Now()
+	err := fn(sctx)
+	late := sctx.Err() != nil
+	cancel()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.ms[name] = time.Since(start).Milliseconds()
+	switch {
+	case late || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
+		t.missing = append(t.missing, what+" (not read in time)")
+	case err != nil:
+		s.log.WarnContext(ctx, "ci doctor: "+name, "err", err)
+		t.missing = append(t.missing, what+" (failed: "+excerpt(err.Error(), 120)+")")
+	}
+}
+
+// CIDoctor reads the CI board and the merge lines and says what's wrong. The
+// steps after the snapshot read the database, and run side by side; each has
+// its own time, and one that runs out leaves its part out and says so in
+// Missing and in a finding, rather than failing the answer (WP-1851).
 func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error) {
 	if actor == nil || actor.User == nil {
 		return nil, ErrUnauthorized
 	}
-	snap, err := s.ciSnapshot(ctx)
-	if err != nil {
-		return nil, err
+	ctx, cancelAll := context.WithTimeout(ctx, ciDoctorBudgets.Whole)
+	defer cancelAll()
+	bud := ciDoctorBudgets
+	t := &doctorSteps{ms: map[string]int64{}}
+	began := time.Now()
+
+	var snap *ciSnapshot
+	{
+		sctx, cancel := context.WithTimeout(ctx, bud.Snapshot)
+		start := time.Now()
+		var err error
+		snap, err = s.ciSnapshot(sctx)
+		cancel()
+		t.ms["snapshot"] = time.Since(start).Milliseconds()
+		if err != nil {
+			why := "failed: " + excerpt(err.Error(), 120)
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				why = "not read in time"
+			}
+			var age time.Duration
+			if snap, age = s.staleCISnapshot(); snap != nil {
+				t.missing = append(t.missing, fmt.Sprintf("the forge's runs and jobs are from the last read, %s ago (%s)", ShortDuration(age), why))
+			} else {
+				snap = &ciSnapshot{at: s.now(), runners: map[int64]ciRunners{}, prs: map[string]CIPRRef{}}
+				snap.pools, _ = s.ciPools(ctx)
+				t.missing = append(t.missing, fmt.Sprintf("the forge's runs and jobs, so the pool, the main branches and the job timings (%s)", why))
+			}
+		}
 	}
+	start := time.Now()
 	b := s.layoutCIBoard(ctx, actor, snap)
+	t.ms["layout"] = time.Since(start).Milliseconds()
 	now := b.GeneratedAt
 	d := &CIDoctor{GeneratedAt: now, Findings: []CIFinding{}, Lines: []CILine{}, Mains: []CIMain{}, Jobs: []CIDoctorJob{}, CIWork: []CIWorkPR{}}
 	d.Pool = doctorPool(b, now)
 
+	var seenMu sync.Mutex
 	seen := map[int64]bool{}
 	visible := func(forgeID int64, repo string) (string, bool) {
 		ids, err := s.projectsOfRepo(ctx, forgeID, repo)
@@ -379,10 +452,14 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 			return "", false
 		}
 		for _, id := range ids {
+			seenMu.Lock()
 			ok, known := seen[id]
+			seenMu.Unlock()
 			if !known {
 				ok = s.requireProjectRole(ctx, s.db.R, actor, id, RoleViewer) == nil
+				seenMu.Lock()
 				seen[id] = ok
+				seenMu.Unlock()
 			}
 			if ok {
 				if p, err := s.projectByID(ctx, s.db.R, id); err == nil {
@@ -399,23 +476,78 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 		}
 	}
 
-	if err := s.doctorLines(ctx, d, now, visible, hist); err != nil {
-		return nil, err
+	var wg sync.WaitGroup
+	side := func(fn func()) {
+		wg.Add(1)
+		go func() { defer wg.Done(); fn() }()
 	}
-	window := now.Add(-2 * ciHistoryWindow)
-	doctorJobs(d, b, snap, s.selfStoppedJobs(ctx, window), s.conflictedStacks(ctx, window), s.commitHeads(ctx, window), now, visible)
-	s.doctorTests(ctx, d, hist)
-	doctorMains(d, snap, now, visible)
-	s.doctorLimits(ctx, d, snap, visible) // WP-922
-	if err := s.doctorCIWork(ctx, actor, d, now); err != nil {
-		s.log.WarnContext(ctx, "ci doctor: CI work", "err", err)
+	var limits CIDoctor
+	var runnerFindings []CIFinding
+	side(func() { // lines first: the jobs and the CI work read them
+		t.step(s, ctx, "lines", "the merge lines", bud.Lines, func(c context.Context) error {
+			return s.doctorLines(c, d, now, visible, hist)
+		})
+		var inner sync.WaitGroup
+		inner.Add(2)
+		go func() {
+			defer inner.Done()
+			t.step(s, ctx, "jobs", "the unreliable and slow jobs", bud.Jobs, func(c context.Context) error {
+				window := now.Add(-2 * ciHistoryWindow)
+				doctorJobs(d, b, snap, s.selfStoppedJobs(c, window), s.conflictedStacks(c, window), s.commitHeads(c, window), now, visible)
+				return nil
+			})
+			t.step(s, ctx, "tests", "the failing tests of the unreliable jobs", bud.Tests, func(c context.Context) error {
+				s.doctorTests(c, d, hist)
+				return nil
+			})
+		}()
+		go func() {
+			defer inner.Done()
+			t.step(s, ctx, "ci_work", "the armed pull requests that work on CI", bud.CIWork, func(c context.Context) error {
+				return s.doctorCIWork(c, actor, d, now)
+			})
+		}()
+		inner.Wait()
+	})
+	side(func() {
+		t.step(s, ctx, "mains", "the main branches' runs", bud.Mains, func(context.Context) error {
+			doctorMains(d, snap, now, visible)
+			return nil
+		})
+	})
+	side(func() {
+		t.step(s, ctx, "limits", "the jobs' time limits", bud.Limits, func(c context.Context) error {
+			s.doctorLimits(c, &limits, snap, visible) // WP-922
+			return nil
+		})
+	})
+	side(func() {
+		t.step(s, ctx, "runners", "the hosts' runs", bud.Runners, func(c context.Context) error {
+			runnerFindings = s.doctorRunnerFindings(c, d.Pool, now, func(forgeID int64, repo string) bool {
+				_, ok := visible(forgeID, repo)
+				return ok
+			})
+			return nil
+		})
+	})
+	wg.Wait()
+	d.Findings = append(d.Findings, limits.Findings...)
+
+	slices.Sort(t.missing)
+	d.Missing = t.missing
+	extra := runnerFindings
+	if len(t.missing) > 0 {
+		extra = append(extra, CIFinding{Level: "warn", Kind: "doctor_partial", Title: "The doctor could not read all of CI in time: " + strings.Join(t.missing, "; "),
+			Detail: "What follows is what was read; what is missing is not reported as fine.", Next: "wp ci doctor, again in a minute"})
 	}
-	doctorFindings(d, b, now, s.doctorRunnerFindings(ctx, d.Pool, now, func(forgeID int64, repo string) bool {
-		_, ok := visible(forgeID, repo)
-		return ok
-	})...)
+	doctorFindings(d, b, now, extra...)
 	doctorBottleneck(d)
 	doctorUrgentLane(d)
+	steps := make([]any, 0, 2*len(t.ms)+4)
+	for _, k := range slices.Sorted(maps.Keys(t.ms)) {
+		steps = append(steps, k+"_ms", t.ms[k])
+	}
+	s.log.InfoContext(ctx, "ci doctor", append(steps, "total_ms", time.Since(began).Milliseconds(), "missing", len(t.missing))...)
 	return d, nil
 }
 
