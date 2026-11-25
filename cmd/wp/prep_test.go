@@ -161,7 +161,6 @@ func TestPrepAgainstServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	out = e.wp("show", is.Key)
-	// WP-449: the comments first, right after the description; the prep after them.
 	if p, c := strings.Index(out, "merge.go:6-9 Service.MergeReady — decides"), strings.Index(out, "Drafts too."); p < 0 || c < 0 || p < c {
 		t.Errorf("wp show has no prep after the comments:\n%s", out)
 	}

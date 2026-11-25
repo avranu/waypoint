@@ -65,7 +65,6 @@ func TestRepoShardMatrices(t *testing.T) {
 			}
 		}
 	}
-	// backend-shard and e2e-shard; fewer means a split suite was un-split by accident.
 	if sharded < 2 {
 		t.Errorf("want the backend and e2e shard jobs in ci.yml, found %d sharded jobs", sharded)
 	}
@@ -115,8 +114,6 @@ func TestRepoHeavyJobImage(t *testing.T) {
 	if err := yaml.Unmarshal(src, &wf); err != nil {
 		t.Fatal(err)
 	}
-	// The repository is build.sh's REPO, read rather than written here: it
-	// names the site's registry (WP-459).
 	script, err := os.ReadFile("../../.forgejo/ci-image/build.sh")
 	if err != nil {
 		t.Fatal(err)
@@ -129,7 +126,6 @@ func TestRepoHeavyJobImage(t *testing.T) {
 	pinned := regexp.MustCompile(`^` + regexp.QuoteMeta(repo) + `:[0-9a-f]{12}@sha256:[0-9a-f]{64}$`)
 	image, heavy := "", 0
 	for id, j := range wf.Jobs {
-		// runs-on may pick the urgent label by an expression (WP-466)
 		if !strings.Contains(j.RunsOn, "forgejo-ci-heavy") {
 			continue
 		}
@@ -145,7 +141,6 @@ func TestRepoHeavyJobImage(t *testing.T) {
 			t.Errorf("job %s runs in %s, another heavy job in %s: make ci-image pins them all to one", id, got, image)
 		}
 	}
-	// backend-shard, lint and e2e-shard
 	if heavy < 3 {
 		t.Errorf("want the three heavy jobs in ci.yml, found %d", heavy)
 	}
@@ -167,8 +162,6 @@ func repoModes(t *testing.T) ModeFunc {
 // Makefiles run by path is committed executable (WP-950).
 func TestRepoScriptsExecutable(t *testing.T) {
 	mode := repoModes(t)
-	// The mirror's checkout has no .forgejo/ (WP-1624); its Makefiles and
-	// GitHub workflows are still checked.
 	files, _ := filepath.Glob("../../.forgejo/workflows/*.y*ml")
 	gh, _ := filepath.Glob("../../.github/workflows/*.y*ml")
 	files = append(files, gh...)

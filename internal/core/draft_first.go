@@ -1,25 +1,5 @@
 package core
 
-// Draft-first pull requests (WP-158). An agent's pull request opens with the
-// forge's "WIP: " title prefix (Forgejo refuses to merge such a pull request),
-// and CI runs its fast tier on it while the edit and fix rounds go on. When
-// the babysitter sees the draft tier green with nothing else pending,
-// Waypoint drops the prefix: the forge's `edited` event starts the full
-// suite on the same head, and the pull request may merge only once that run
-// has finished. The front of the merge queue stays ready through its rounds
-// (WP-455, WP-456); a failed full run of a head a round pushed, or a round
-// anywhere else, sends the pull request back to draft.
-//
-// The draft tier's skipped jobs report success, so green statuses on the head
-// prove nothing about the full run. Waypoint notes the newest commit status id
-// the head had when it went ready (ids only grow, whatever the clocks say) and
-// the checks it had; the full run has finished when every one of those checks
-// has a status newer than that id, and it passed. A skipped job's status
-// counts as passing (some checks always skip on pull requests, a docs-only
-// change skips tests). A check's state comes from the run that counts
-// (fgRunChecks, WP-ADR48), so a no-op run's skips never hide the full run's
-// pending or failed job.
-
 import (
 	"context"
 	"database/sql"
@@ -97,7 +77,7 @@ func tallyFullRun(pr *PullRequest, checks []PRCheck) (fullRunTally, bool) {
 		return t, false
 	}
 	if pr.readyStatusID == 0 && len(pr.readyChecks) == 0 {
-		return t, false // the head had no checks to run again
+		return t, false
 	}
 	have := map[string]PRCheck{}
 	for _, c := range checks {
@@ -124,13 +104,8 @@ func tallyFullRun(pr *PullRequest, checks []PRCheck) (fullRunTally, bool) {
 			t.done++
 			t.real = t.real || !skippedPRCheck(c)
 		case skippedPRCheck(c):
-			// Skipped before and skipped again: Forgejo posts no status that
-			// repeats the last one, and a job the full run runs posts
-			// "waiting" the moment the run starts (WP-174).
 			t.done++
 		case slices.Contains(pr.readySkipped, n):
-			// Ran in the draft tier, skipped by the full run: the skip posts
-			// no status either (WP-552, noteFullRunSkips).
 			t.done++
 		default:
 			t.stale = append(t.stale, n)
@@ -143,8 +118,6 @@ func tallyFullRun(pr *PullRequest, checks []PRCheck) (fullRunTally, bool) {
 // run yet: nothing when it isn't one Waypoint marked ready at this head.
 func fullRunReasons(pr *PullRequest, checks []PRCheck) []string {
 	t, ok := tallyFullRun(pr, checks)
-	// A genuine full run always has a job that ran (backend, lint); a no-op
-	// run (a body edit) posts only skipped successes.
 	if !ok || t.done == len(t.names) && t.real {
 		return nil
 	}
@@ -211,8 +184,6 @@ func (s *Service) markReady(ctx context.Context, pr *PullRequest) error {
 // the edit skips its checks (the head has waypoint/stack).
 func (s *Service) markReadyOn(ctx context.Context, pr *PullRequest, st *queueStack) error {
 	if st != nil && pr.State == "open" {
-		// Already ready (marked at an earlier head, or by hand): its title
-		// stays, and the candidate's run is the full run at this head.
 		return s.write(ctx, SystemActor(), func(t *tx) error {
 			_, err := t.ExecContext(ctx, `UPDATE pull_requests SET ready_at = coalesce(ready_at, ?), ready_sha = ?, ready_status_id = 0, ready_checks = '[]', ready_skipped = '[]', ready_cand = ? WHERE id = ? AND state = 'open'`,
 				s.nowMS(), pr.HeadSHA, st.ID, pr.ID)
@@ -228,7 +199,6 @@ func (s *Service) markReadyOn(ctx context.Context, pr *PullRequest, st *queueSta
 	if err != nil {
 		return err
 	}
-	// Without a run on the edit, the checks the head has are the whole run.
 	onEdit, err := s.ciRunsOnEdit(ctx, f, pr.Repo, pr.HeadSHA)
 	if err != nil {
 		return err
@@ -239,11 +209,6 @@ func (s *Service) markReadyOn(ctx context.Context, pr *PullRequest, st *queueSta
 			return err
 		}
 	}
-	// Marked ready at this head before, and the full run since then passed:
-	// a round that pushed nothing put it back to draft. There is nothing new
-	// to run, and the workflow's run for this edit skips its checks when the
-	// head's last full run passed (WP-353), so no status newer than now is
-	// coming: the checks it has are the full run.
 	if onEdit && fullRunPassed(pr, all, s.now()) || st != nil {
 		all = nil
 	}
@@ -261,13 +226,10 @@ func (s *Service) markReadyOn(ctx context.Context, pr *PullRequest, st *queueSta
 	}
 	nm, _ := json.Marshal(names)
 	now := s.nowMS()
-	var cand int64 // the candidate it is marked ready on (ready_cand), if any
+	var cand int64
 	if st != nil {
 		cand = st.ID
 	}
-	// The marker goes in before the edit: the forge's webhook for the edit can
-	// be recorded first, and an open pull request without it merged on the
-	// draft tier's checks (#94).
 	if err := s.write(ctx, SystemActor(), func(t *tx) error {
 		_, err := t.ExecContext(ctx, `UPDATE pull_requests SET ready_at = ?, ready_sha = ?, ready_status_id = ?, ready_checks = ?, ready_skipped = '[]', ready_cand = ? WHERE id = ? AND state = 'draft'`,
 			now, pr.HeadSHA, maxID, string(nm), cand, pr.ID)
@@ -292,7 +254,6 @@ func (s *Service) markReadyOn(ctx context.Context, pr *PullRequest, st *queueSta
 			WHERE id = ? AND state IN ('draft', 'open') AND ready_sha = ?`, onEdit, onEdit, pr.ID, pr.HeadSHA); err != nil {
 			return err
 		}
-		// Follow the head's statuses again: the full run is about to start.
 		if _, err := t.ExecContext(ctx, `UPDATE ci_heads SET state = 'pending', settled_at = NULL, seen_at = ?, checked_at = 0 WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND sha = ? AND ?`,
 			now, pr.ForgeID, pr.Repo, pr.HeadSHA, onEdit); err != nil {
 			return err
@@ -363,9 +324,6 @@ func (s *Service) markDraft(ctx context.Context, pr *PullRequest) error {
 		return err
 	}
 	return s.write(ctx, SystemActor(), func(t *tx) error {
-		// ready_sha, ready_status_id, ready_checks and ready_skipped stay: marked ready again
-		// at the same head, they tell whether its full run passed since
-		// (fullRunPassed). Without ready_at nothing else reads them.
 		if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET state = 'draft', ready_at = NULL WHERE id = ? AND state = 'open'`, pr.ID); err != nil {
 			return err
 		}
@@ -479,7 +437,7 @@ func (s *Service) noteFullRunSkips(ctx context.Context, f *Forge, pr *PullReques
 		return false
 	}
 	if !kept {
-		return false // the ready mark moved on; nothing was stored
+		return false
 	}
 	pr.readySkipped = all
 	return true

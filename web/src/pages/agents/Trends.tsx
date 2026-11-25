@@ -1,8 +1,3 @@
-// Agents page, Trends tab (WP-196): how usage moves over time and with what.
-// Any measure by day (by repo where it adds up), with instruction changes and
-// new Claude Code versions marked; usage before against after any moment;
-// what each task used; and which of a task's traits go with its cost.
-
 import { useMemo, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
@@ -122,8 +117,6 @@ export function TrendsTab({ filters }: HubTabProps) {
     </div>
   )
 }
-
-// ---- over time ----
 
 function OverTime({ o, pick }: { o: UsageTrends; pick: (p: Pivot) => void }) {
   const [id, setId] = useState<Measure['id']>('cost')
@@ -296,8 +289,6 @@ function MarkList({ marks, pick }: { marks: UsageMark[]; pick: (p: Pivot) => voi
     </div>
   )
 }
-
-// ---- before and after ----
 
 interface Pivot {
   at: string
@@ -574,8 +565,6 @@ function CompareTable({ stats, minN }: { stats: CompareStat[]; minN: number }) {
   )
 }
 
-// ---- tasks ----
-
 function TasksSection({ o }: { o: UsageTrends }) {
   const cols: Col<UsageTrendTask>[] = [
     {
@@ -653,8 +642,6 @@ function TasksSection({ o }: { o: UsageTrends }) {
     </Section>
   )
 }
-
-// ---- factors ----
 
 function strength(r: number) {
   const a = Math.abs(r)

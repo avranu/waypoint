@@ -46,7 +46,6 @@ func prLinksPlanProblems(plan []string) []string {
 	var out []string
 	var url, number, issuePK bool
 	for _, d := range plan {
-		// Issues come from the links by primary key, not by walking a project's.
 		if scansAny(d, "i", "issues") || strings.HasPrefix(d, "SEARCH i USING INDEX") {
 			out = append(out, "issues not reached by primary key: "+d)
 		}
@@ -98,7 +97,6 @@ func TestPRLinksPlanProblems(t *testing.T) {
 // the pull request.
 func TestPRLinksUseIndexes(t *testing.T) {
 	pe := newPREnv(t, "github")
-	// A member who can see the project, so the visibility arguments are bound.
 	member := pe.user("viewer", false)
 	if err := pe.s.SetMember(pe.ctx, pe.admin, pe.p.Key, "viewer", "viewer"); err != nil {
 		t.Fatal(err)
@@ -121,19 +119,13 @@ func TestPRLinksUseIndexes(t *testing.T) {
 	exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 2000)
 		INSERT INTO pull_requests(forge_id, repo, number, url, state, created_at, updated_at, opened_at)
 		SELECT ?, 'me/app', i, 'https://x/me/app/pull/' || i, 'merged', ?, ?, ? FROM n`, pe.f.ID, now, now, now)
-	// The list shows the 300 most recently updated: make 7 and 8 among them.
 	exec(`UPDATE pull_requests SET updated_at = ? WHERE number IN (7, 8)`, now+1000)
-	// Pull request 7 is linked by URL alone (its repo and number match nothing); 8 by repo and number in another spelling.
 	exec(`INSERT INTO external_links(issue_id, kind, url, repo, number, created_at) VALUES (?, 'pull', 'https://x/me/app/pull/7', 'no/match', 99999, 0)`, linked.ID)
 	exec(`INSERT INTO external_links(issue_id, kind, url, repo, number, created_at) VALUES (?, 'pull', 'https://mirror/ME/App/pulls/8', 'ME/App', 8, 0)`, linked.ID)
-	// Links to pull requests of another repo with the same numbers, and a
-	// link of another kind that matches PR 7 by URL and PR 8 by repo and number.
 	exec(`INSERT INTO external_links(issue_id, kind, url, repo, number, created_at)
 		WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 2000)
 		SELECT ?, 'pull', 'https://other/' || i, 'o/r', i, 0 FROM n`, other.ID)
 	exec(`INSERT INTO external_links(issue_id, kind, url, repo, number, created_at) VALUES (?, 'issue', 'https://x/me/app/pull/7', 'me/app', 8, 0)`, other.ID)
-	// Thousands of issues over a few projects, as on a real instance: a plan
-	// that walks issues per pull request shows up only with them.
 	for _, name := range []string{"Beta", "Gamma"} {
 		pe.project(pe.admin, name, "")
 	}
@@ -154,7 +146,6 @@ func TestPRLinksUseIndexes(t *testing.T) {
 			if p := prLinksPlanProblems(plan); len(p) != 0 {
 				t.Errorf("plan: %v\n%s", p, strings.Join(plan, "\n"))
 			}
-			// The old query, with the same arguments, must be flagged.
 			vis, vargs := visibleSQL("i.project_id", actor)
 			old := strings.Replace(strings.Replace(prLinksOldSQL, "%s", idList(len(ids)), 1), "%s", vis, 1)
 			old = strings.Replace(old, "%s", draftsHidden(actor, "i"), 1)

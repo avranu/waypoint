@@ -1,13 +1,5 @@
 package core
 
-// Experiment results (WP-254, WP-ADR53). Each exposed task is measured on
-// the usage the trends already attribute to tasks, plus its pull requests'
-// review findings and babysit rounds; the arms are compared with medians,
-// a bootstrap interval on the ratio of medians, Mann-Whitney tests with a
-// Holm correction across metrics (those of how a task held up apart from the
-// rest), a test on the done rates, and a sample ratio check that says when
-// the assignment itself went wrong.
-
 import (
 	"context"
 	"fmt"
@@ -155,7 +147,7 @@ type ExperimentResults struct {
 }
 
 const (
-	experimentMinN      = 10 // tasks per arm before anything is said
+	experimentMinN      = 10
 	experimentBootstrap = 1000
 )
 
@@ -235,9 +227,6 @@ func (s *Service) experimentTasks(ctx context.Context, actor *Actor, run *Experi
 	if len(byKey) == 0 {
 		return out, nil
 	}
-	// Everyone's usage from the run's first day to now: work on a task
-	// goes on after the run stops, so a stopped run is still measured to
-	// today (its units are fixed).
 	days := int(math.Ceil(float64(s.nowMS()-run.StartedAt.UnixMilli())/float64(24*hourMillis))) + 1
 	tr, err := s.UsageTrends(ctx, actor, UsageQuery{Days: min(days, 365), User: "all", allTasks: true})
 	if err != nil {
@@ -285,7 +274,7 @@ func (s *Service) experimentReviewMeasures(ctx context.Context, byID map[int64]*
 			return err
 		}
 		for rows.Next() {
-			var id, prID int64 // prID keeps DISTINCT per pull request
+			var id, prID int64
 			var f, r, c float64
 			if err := rows.Scan(&id, &prID, &f, &r, &c); err != nil {
 				rows.Close()
@@ -380,8 +369,6 @@ func experimentCompare(d *ExperimentDef, run *ExperimentRun, tasks map[string][]
 		return v
 	}
 	ctl := d.control()
-	// Resampling for an interval, seeded by the run so a page shows the
-	// same numbers twice.
 	rng := rand.New(rand.NewPCG(uint64(run.ID), 0x5eed)) // #nosec G404 G115 -- not for secrets; run ids are positive
 	type pref struct{ arm, metric int }
 	// One family of comparisons for how tasks held up, one for the rest.
@@ -437,13 +424,11 @@ func experimentCompare(d *ExperimentDef, run *ExperimentRun, tasks map[string][]
 			o.Arms[pAt[f][i].arm].Stats[pAt[f][i].metric].PAdj = f64p(p)
 		}
 	}
-	// Done rates against the control's.
 	c := &o.Arms[0]
 	for i := 1; i < len(o.Arms); i++ {
 		a := &o.Arms[i]
 		o.Arms[i].DoneP = twoProportion(a.Done, len(tasks[a.Key]), c.Done, len(tasks[ctl]))
 	}
-	// Sample ratio: assigned and exposed counts against the weights.
 	var w, assigned, exposed []float64
 	for _, a := range o.Arms {
 		if a.Weight > 0 {
@@ -452,7 +437,6 @@ func experimentCompare(d *ExperimentDef, run *ExperimentRun, tasks map[string][]
 	}
 	o.SRM, o.ExposedSRM = srmP(assigned, w), srmP(exposed, w)
 
-	// The primary metric's detectable change.
 	pi := metricIndex(d.Primary)
 	if pi >= 0 && len(o.Arms) > 1 {
 		cv := values(ctl, pi)

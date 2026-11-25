@@ -37,9 +37,7 @@ type AIModel struct {
 }
 
 type httpLLM struct {
-	http *http.Client
-	// plainJSON remembers opencode models that can't give structured
-	// answers, so they're asked for plain JSON straight away.
+	http      *http.Client
 	plainJSON sync.Map
 }
 
@@ -144,7 +142,7 @@ func (c *httpLLM) send(ctx context.Context, p *AIProvider, method, path string, 
 		}
 		req.Header.Set("Accept", accept)
 		if a := gatewayAskOf(ctx); a != nil && a.requestID != "" {
-			req.Header.Set("X-Request-ID", a.requestID) // the id a feedback report names (WP-514)
+			req.Header.Set("X-Request-ID", a.requestID)
 		}
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
@@ -152,12 +150,12 @@ func (c *httpLLM) send(ctx context.Context, p *AIProvider, method, path string, 
 		switch {
 		case p.apiKey == "":
 		case p.Kind == "opencode":
-			req.SetBasicAuth("opencode", p.apiKey) // OPENCODE_SERVER_PASSWORD
+			req.SetBasicAuth("opencode", p.apiKey)
 		default:
 			req.Header.Set("Authorization", "Bearer "+p.apiKey)
 		}
 		resp, err := c.http.Do(req)
-		usageSinkOf(ctx).sentOne(resp) // for ai_calls (WP-375)
+		usageSinkOf(ctx).sentOne(resp)
 		if err != nil {
 			return nil, err
 		}
@@ -171,14 +169,11 @@ func (c *httpLLM) send(ctx context.Context, p *AIProvider, method, path string, 
 		if ok {
 			le.retryAfter = wait
 		}
-		// A 429, or the gateway's no_model_at_bar with a Retry-After (some
-		// models at the bar are only busy), is asked again with the same
-		// request, bar included. With no Retry-After none is at the bar at all.
 		if (resp.StatusCode != http.StatusTooManyRequests && !le.noModelAtBar()) || !ok || try == maxRateRetries || wait > maxRetryAfter {
 			return nil, le
 		}
 		if d, has := ctx.Deadline(); has && time.Until(d) < wait {
-			return nil, le // it would be cancelled before the retry
+			return nil, le
 		}
 		t := time.NewTimer(wait)
 		select {
@@ -197,7 +192,6 @@ func retryAfter(h string, now time.Time) (time.Duration, bool) {
 		return 0, false
 	}
 	if n, err := strconv.Atoi(h); err == nil {
-		// Bounded before it becomes a Duration, which a huge one overflows.
 		return time.Duration(min(max(n, 0), 366*24*3600)) * time.Second, true
 	}
 	if t, err := http.ParseTime(h); err == nil {
@@ -215,7 +209,7 @@ func (e *modelError) Error() string { return e.name + ": " + e.msg }
 type llmError struct {
 	status     int
 	body       string
-	retryAfter time.Duration // the Retry-After of a 429; 0 when it gave none
+	retryAfter time.Duration
 }
 
 // noModelAtBar: the gateway has no model at the request's routing.weakest
@@ -227,13 +221,6 @@ func (e *llmError) noModelAtBar() bool {
 }
 
 func (e *llmError) Error() string { return fmt.Sprintf("HTTP %d: %s", e.status, e.body) }
-
-// ---- opencode (`opencode serve`) ----
-//
-// opencode runs a full coding agent, tools included. Its free models only
-// work with the agent's normal tool set, so instead of removing tools the
-// session asks permission for everything and Waypoint refuses every
-// request: issue text can't make it run a command.
 
 func (c *httpLLM) opencodeModels(ctx context.Context, p *AIProvider) ([]AIModel, error) {
 	var res struct {
@@ -278,8 +265,6 @@ func (c *httpLLM) opencodeComplete(ctx context.Context, p *AIProvider, model, sy
 		if !rejectsStructured(err) {
 			return raw, err
 		}
-		// Some models (Muse Spark) refuse the forced tool call opencode's
-		// structured output uses; they answer plain JSON well enough.
 		c.plainJSON.Store(model, true)
 	}
 	return c.opencodeAsk(ctx, p, model, system, prompt, schema, false)
@@ -314,8 +299,6 @@ func (c *httpLLM) opencodeAsk(ctx context.Context, p *AIProvider, model, system,
 	}, &sess); err != nil {
 		return nil, err
 	}
-	// Refuse to run unless the server took the ask-for-everything rule: an
-	// opencode that ignores it would let the agent use its tools.
 	asks := slices.ContainsFunc(sess.Permission, func(r struct{ Permission, Pattern, Action string }) bool {
 		return r.Permission == "*" && r.Pattern == "*" && r.Action == "ask"
 	})
@@ -340,7 +323,6 @@ func (c *httpLLM) opencodeAsk(ctx context.Context, p *AIProvider, model, system,
 		"parts":  []map[string]string{{"type": "text", "text": prompt}},
 	}
 	if structured {
-		// Free models sometimes skip the structured answer; opencode can ask again.
 		body["format"] = map[string]any{"type": "json_schema", "schema": schema, "retryCount": 2}
 	} else {
 		sb, _ := json.Marshal(schema)
@@ -371,7 +353,7 @@ func (c *httpLLM) opencodeAsk(ctx context.Context, p *AIProvider, model, system,
 		text := ""
 		for _, part := range res.Parts {
 			if part.Type == "text" && strings.TrimSpace(part.Text) != "" {
-				text = part.Text // the last step's answer
+				text = part.Text
 			}
 		}
 		if text == "" {
@@ -417,8 +399,6 @@ func (c *httpLLM) opencodeRefuseTools(ctx context.Context, p *AIProvider, sessio
 	}
 }
 
-// ---- OpenAI-compatible (OpenLLMs, OpenRouter, LM Studio, xAI, Ollama's /v1, …) ----
-
 func (c *httpLLM) openaiModels(ctx context.Context, p *AIProvider) ([]AIModel, error) {
 	var res struct {
 		Data []struct {
@@ -452,9 +432,6 @@ func (c *httpLLM) openaiModels(ctx context.Context, p *AIProvider) ([]AIModel, e
 // chain can take minutes, and a stream (with the gateway's keep-alives)
 // survives proxies that drop a silent connection.
 func (c *httpLLM) openaiComplete(ctx context.Context, p *AIProvider, model string, fallbacks []string, system, prompt string, schema map[string]any) (json.RawMessage, string, error) {
-	// The schema goes in the prompt too: a gateway passes response_format
-	// only to upstreams that take it (others get a plain transcript), and
-	// they leave out fields they weren't told of.
 	sb, _ := json.Marshal(schema)
 	body := map[string]any{
 		"model": model,
@@ -467,7 +444,7 @@ func (c *httpLLM) openaiComplete(ctx context.Context, p *AIProvider, model strin
 			"json_schema": map[string]any{"name": "result", "schema": schema, "strict": true},
 		},
 		"stream":     true,
-		"max_tokens": maxTokensOf(ctx), // a runaway stream ends here, not at the client timeout
+		"max_tokens": maxTokensOf(ctx),
 	}
 	if len(fallbacks) > 0 {
 		body["fallbacks"] = fallbacks
@@ -475,32 +452,28 @@ func (c *httpLLM) openaiComplete(ctx context.Context, p *AIProvider, model strin
 	if a := gatewayAskOf(ctx); a != nil {
 		routing := map[string]any{}
 		if a.paid != "" {
-			routing["paid"] = a.paid // the gateway's purpose pick (WP-514)
+			routing["paid"] = a.paid
 		}
 		if a.priority != "" {
-			routing["priority"] = a.priority // surplus work (WP-906)
+			routing["priority"] = a.priority
 		}
 		if a.weakest != "" {
-			routing["weakest"] = a.weakest // the minimum of a code review (WP-1440)
+			routing["weakest"] = a.weakest
 		}
 		if len(routing) > 0 {
 			body["routing"] = routing
 		}
 	}
 	if ex := gatewayExcludeOf(ctx); len(ex) > 0 {
-		body["exclude"] = ex // the gateway leaves these models out (WP-365)
+		body["exclude"] = ex
 	}
 	text, served, err := c.openaiChat(ctx, p, body)
 	var le *llmError
 	if errors.As(err, &le) && le.status == http.StatusBadRequest {
-		// Not every server knows json_schema; plain JSON mode works almost
-		// everywhere.
 		body["response_format"] = map[string]any{"type": "json_object"}
 		text, served, err = c.openaiChat(ctx, p, body)
 	}
 	if err != nil {
-		// served says whose failure it was when the stream had started: a
-		// route's slow model is recorded by its name, not the route's (WP-1709).
 		return nil, served, err
 	}
 	if strings.TrimSpace(text) == "" {
@@ -552,7 +525,7 @@ func (c *httpLLM) openaiChat(ctx context.Context, p *AIProvider, body map[string
 	for sc.Scan() {
 		data, ok := strings.CutPrefix(sc.Text(), "data:")
 		if !ok {
-			continue // keep-alive comments, event names, blank separators
+			continue
 		}
 		data = strings.TrimSpace(data)
 		if data == "[DONE]" {
@@ -571,7 +544,6 @@ func (c *httpLLM) openaiChat(ctx context.Context, p *AIProvider, body map[string
 			return "", served, fmt.Errorf("unreadable stream: %w", err)
 		}
 		if chunk.Error != nil {
-			// Failed after the stream started: no status code to go by.
 			name := chunk.Error.Type
 			if name == "" {
 				name = "error"
@@ -591,15 +563,8 @@ func (c *httpLLM) openaiChat(ctx context.Context, p *AIProvider, body map[string
 	if err := sc.Err(); err != nil {
 		return "", served, err
 	}
-	return text.String(), served, nil // ended without [DONE]; the JSON check decides
+	return text.String(), served, nil
 }
-
-// ---- Ollama (its own API: every local model, structured output) ----
-//
-// Ollama also speaks the OpenAI API under /v1, but its own lists every
-// pulled model with its size, takes the JSON schema as `format`, and lets
-// Waypoint size the context window: Ollama's default is a few thousand
-// tokens and it drops the start of a longer prompt without saying so.
 
 func (c *httpLLM) ollamaModels(ctx context.Context, p *AIProvider) ([]AIModel, error) {
 	var res struct {
@@ -619,7 +584,7 @@ func (c *httpLLM) ollamaModels(ctx context.Context, p *AIProvider) ([]AIModel, e
 		if m.Details.ParameterSize != "" {
 			name += " (" + m.Details.ParameterSize + ")"
 		}
-		out = append(out, AIModel{ID: m.Name, Name: name, Free: true}) // it runs on your own hardware
+		out = append(out, AIModel{ID: m.Name, Name: name, Free: true})
 	}
 	sortModels(out)
 	return out, nil
@@ -741,8 +706,6 @@ func extractAnswerJSON(ctx context.Context, s string) (json.RawMessage, error) {
 	if n == nil {
 		return raw, err
 	}
-	// The note is the last answer's: a chain that salvaged one model's
-	// answer, rejected it and went on to a whole one has salvaged nothing.
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.answers, n.findings = 0, 0
@@ -788,11 +751,11 @@ func salvageFrom(s string) (json.RawMessage, int, bool) {
 		esc      bool
 		strStart int
 		lastKey  string
-		keyReady bool // a key string at depth 1 just ended, awaiting its colon
+		keyReady bool
 		arrStart = -1
 		lastEnd  = -1
 		count    int
-		closed   bool // the findings array has closed
+		closed   bool
 	)
 	for i := 0; i < len(s); i++ {
 		c := s[i]
@@ -817,7 +780,6 @@ func salvageFrom(s string) (json.RawMessage, int, bool) {
 			inStr, strStart = true, i
 			keyReady = false
 		case ':':
-			// only a key at depth 1 followed by a colon counts
 			if !keyReady || len(stack) != 1 {
 				lastKey = ""
 			}
@@ -834,31 +796,26 @@ func salvageFrom(s string) (json.RawMessage, int, bool) {
 			stack = stack[:len(stack)-1]
 			if arrStart >= 0 && !closed && len(stack) == 2 {
 				if c != '}' {
-					return nil, 0, false // a finding is an object
+					return nil, 0, false
 				}
 				lastEnd = i + 1
 				count++
 			}
 			if arrStart >= 0 && len(stack) == 1 {
-				// The array closed; if the object is cut after it, every
-				// finding in it is whole.
 				closed = true
 			}
 			if len(stack) == 0 {
-				return nil, 0, false // a complete object: not a cut answer
+				return nil, 0, false
 			}
 		}
 	}
 	if arrStart < 0 || lastEnd < 0 || (len(stack) < 2 && !closed) {
 		return nil, 0, false
 	}
-	// elements of the array are objects; a cut-off tail past lastEnd is dropped.
 	raw := json.RawMessage(`{"findings":[` + s[arrStart:lastEnd] + `]}`)
 	if !json.Valid(raw) {
 		return nil, 0, false
 	}
-	// The bracket scan sees only closers, so a scalar element ("x", 3) is
-	// caught here: every element must be an object.
 	var doc struct {
 		Findings []json.RawMessage `json:"findings"`
 	}

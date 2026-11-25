@@ -1,13 +1,5 @@
 package core
 
-// Draft-first needs a repo whose CI runs again when a pull request is edited
-// (WP-173). Dropping "WIP: " is an `edited` event, and only a workflow that
-// lists it under pull_request types starts the full run then; Forgejo's
-// default types (opened, synchronize, reopened) don't. In a repo whose CI
-// doesn't, the draft's checks were already the whole run, so an agent's pull
-// request opens ready there, and one marked ready doesn't wait for a run
-// that never comes.
-
 import (
 	"context"
 	"fmt"
@@ -98,7 +90,7 @@ func workflowRunsOnEdit(body string) bool {
 		On yaml.Node `yaml:"on"`
 	}
 	if yaml.Unmarshal([]byte(body), &wf) != nil || wf.On.Kind != yaml.MappingNode {
-		return false // "on: pull_request" or a list: the default types
+		return false
 	}
 	for i := 0; i+1 < len(wf.On.Content); i += 2 {
 		if k := wf.On.Content[i].Value; k != "pull_request" && k != "pull_request_target" {

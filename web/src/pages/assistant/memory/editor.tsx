@@ -1,7 +1,3 @@
-// Editing the assistant's own Markdown (memory files, its persona, skills):
-// a plain text area with a rendered preview one click away, a guard that
-// asks before navigating away from unsaved text, and a short "Saved" mark.
-
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useBlocker } from '@tanstack/react-router'
 import clsx from 'clsx'
@@ -161,8 +157,6 @@ export function SavedMark({ show }: { show: boolean }) {
     </span>
   )
 }
-
-// ---- leaving with unsaved text ----
 
 // Editors with unsaved text, by key. One LeaveGuard per tab reads it, so two
 // open editors ask once, not twice.

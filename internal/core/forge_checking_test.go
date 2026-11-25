@@ -59,7 +59,6 @@ func readyForgejo(t *testing.T) *shipEnv {
 func TestForgeCheckingThenMergeable(t *testing.T) {
 	se := readyForgejo(t)
 	id := se.pr(5).ID
-	// Forgejo says "no" right after the push, while it works it out.
 	se.forgeSays(5, ptr(false))
 	se.readForge(5)
 	if got := se.reasons(5); got != "the forge is still checking whether it merges with its base" {
@@ -69,11 +68,9 @@ func TestForgeCheckingThenMergeable(t *testing.T) {
 	if err != nil || !res.Armed || len(se.sg.merged()) != 0 {
 		t.Fatalf("arm: %+v %v", res, err)
 	}
-	// Waypoint plans a read soon, not at the 10-minute sync.
 	if n, at := se.rechecks(5); n != 0 || at == nil || at.Sub(se.clockNow()) != 30*time.Second {
 		t.Fatalf("recheck = %d %v (now %v)", n, at, se.clockNow())
 	}
-	// A wait on it doesn't settle on the unconfirmed "no".
 	w, err := se.s.WaitPullRequest(se.ctx, se.admin, id, PRWaitInput{})
 	if err != nil || w.Verdict != PRWaitWaiting || !strings.Contains(w.Why, "still checking") || w.Readiness.Checking != true {
 		t.Fatalf("wait: %+v %v", w, err)
@@ -82,13 +79,11 @@ func TestForgeCheckingThenMergeable(t *testing.T) {
 	if sh.Mergeable != nil {
 		t.Errorf("shipping says mergeable = %v while checking", *sh.Mergeable)
 	}
-	// Too early: nothing is read.
 	se.setClock(se.clockNow().Add(29 * time.Second))
 	se.s.CheckMergeRechecks(se.ctx)
 	if n, _ := se.rechecks(5); n != 0 {
 		t.Fatalf("read before its time: %d", n)
 	}
-	// The forge finished: it merges now, with no sync.
 	se.forgeSays(5, ptr(true))
 	se.setClock(se.clockNow().Add(2 * time.Second))
 	se.s.CheckMergeRechecks(se.ctx)
@@ -106,7 +101,6 @@ func TestForgeCheckingConfirmedConflict(t *testing.T) {
 	if _, err := se.s.MergePR(se.ctx, se.admin, id, MergeInput{WhenReady: true}); err != nil {
 		t.Fatal(err)
 	}
-	// 30 seconds on it still says no: not believed yet; read again in two minutes.
 	se.setClock(se.clockNow().Add(31 * time.Second))
 	se.s.CheckMergeRechecks(se.ctx)
 	se.s.Wait()
@@ -116,7 +110,6 @@ func TestForgeCheckingConfirmedConflict(t *testing.T) {
 	if !strings.Contains(se.reasons(5), "still checking") {
 		t.Fatalf("reasons = %q", se.reasons(5))
 	}
-	// Two minutes later the "no" survived a read well after the push: a conflict.
 	se.setClock(se.clockNow().Add(2*time.Minute + time.Second))
 	se.s.CheckMergeRechecks(se.ctx)
 	se.s.Wait()
@@ -130,7 +123,6 @@ func TestForgeCheckingConfirmedConflict(t *testing.T) {
 	if len(se.sg.merged()) != 0 {
 		t.Error("merged a conflicting pull request")
 	}
-	// A new head is checked afresh: the old "no" is not news about it.
 	next := testPR
 	next.HeadSHA = "2222222bbbb"
 	se.sg.setChecks(next.HeadSHA, CommitCheck{Name: ciBackendPR, State: CheckSuccess})
@@ -139,7 +131,6 @@ func TestForgeCheckingConfirmedConflict(t *testing.T) {
 	if got := se.reasons(5); !strings.Contains(got, "still checking") {
 		t.Fatalf("after a push: %q", got)
 	}
-	// ... and a "no" nobody confirms is believed after 15 minutes.
 	se.setClock(se.clockNow().Add(16 * time.Minute))
 	if !strings.Contains(se.reasons(5), "has conflicts") {
 		t.Fatalf("after the limit: %q", se.reasons(5))
@@ -160,11 +151,9 @@ func TestMergeRefusedTryAgainLater(t *testing.T) {
 	if pr.ArmedAt == nil || !strings.Contains(pr.armedNote, "still checking") || pr.mergeRetryN != 1 {
 		t.Fatalf("armed = %v note %q retries %d", pr.ArmedAt, pr.armedNote, pr.mergeRetryN)
 	}
-	// A wait on it keeps waiting rather than calling it ready.
 	if w, _ := se.s.WaitPullRequest(se.ctx, se.admin, id, PRWaitInput{}); w.Verdict != PRWaitWaiting {
 		t.Errorf("wait: %+v", w)
 	}
-	// Tried again after a minute, then five, then fifteen, then every ten.
 	for i, wait := range []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, 10 * time.Minute} {
 		se.setClock(se.clockNow().Add(wait - time.Second))
 		se.s.CheckArmedMerges(se.ctx)
@@ -179,7 +168,6 @@ func TestMergeRefusedTryAgainLater(t *testing.T) {
 			t.Fatalf("after %s: retries %d, want %d", wait, n, i+2)
 		}
 	}
-	// It accepts.
 	se.sg.mergeErr = nil
 	se.setClock(se.clockNow().Add(11 * time.Minute))
 	se.s.CheckArmedMerges(se.ctx)
@@ -222,13 +210,12 @@ func TestBabysitIgnoresUnconfirmedConflict(t *testing.T) {
 	if jobs := be.jobs(); len(jobs) != 0 || be.babysit().Round != 0 {
 		t.Fatalf("a round for a conflict the forge hasn't confirmed: %v %+v", jobs, be.babysit())
 	}
-	// The recheck repeats the "no" well after the push: now it is a conflict.
 	be.setClock(be.clockNow().Add(31 * time.Second))
 	be.s.CheckMergeRechecks(be.ctx)
 	be.setClock(be.clockNow().Add(2*time.Minute + time.Second))
 	be.s.CheckMergeRechecks(be.ctx)
 	be.s.Wait()
-	be.runnerOnline() // it kept checking in while the clock jumped
+	be.runnerOnline()
 	be.step()
 	if b := be.babysit(); b.Round != 1 || len(b.Rounds) != 1 || !b.Rounds[0].Conflict {
 		t.Fatalf("after the conflict was confirmed: %+v jobs %v", b, be.jobs())
@@ -246,7 +233,7 @@ func TestWIPTitleMergeableSaysNothing(t *testing.T) {
 	}{
 		{"WIP: tidy", true, true},
 		{"[WIP] tidy", false, true},
-		{"tidy", true, false}, // GitHub's draft flag: its answer is real
+		{"tidy", true, false},
 		{"tidy", false, false},
 	} {
 		fp := apiPR{Number: 1, Title: c.title, State: "open", Draft: c.draft, Mergeable: no}.pr()
@@ -285,19 +272,16 @@ func TestWIPDraftForgetsItsConflict(t *testing.T) {
 		}
 		se.s.Wait()
 	}
-	// A sync's listing clears the stored "no".
 	read("WIP: "+testPR.Title, ptr(false), true)
 	if pr := se.pr(5); pr.Mergeable != nil {
 		t.Fatalf("after a sync: mergeable = %v", *pr.Mergeable)
 	}
-	// So does a webhook, and the draft's only reason is being one.
 	se.forgeSays(5, ptr(false))
 	se.readForge(5)
 	read("WIP: "+testPR.Title, ptr(false), false)
 	if got := se.reasons(5); got != reasonDraft {
 		t.Fatalf("reasons = %q", got)
 	}
-	// Marked ready, a "no" is the forge's answer again.
 	read(testPR.Title, ptr(false), false)
 	if got := se.reasons(5); !strings.Contains(got, "still checking") {
 		t.Fatalf("ready: %q", got)

@@ -1,7 +1,3 @@
-// Environments (WP-D19): every environment you can see, grouped by project
-// with the ones that are down first; and one project's, as cards with its dev
-// environments in their own section.
-
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
@@ -48,8 +44,6 @@ function Counts({ list }: { list: Environment[] }) {
     </span>
   )
 }
-
-// ---- all projects ----
 
 export function EnvironmentsPage() {
   const query = useQuery(envsQuery(undefined, false))
@@ -121,8 +115,6 @@ export function EnvironmentsPage() {
     </div>
   )
 }
-
-// ---- one project ----
 
 export function ProjectEnvironmentsPage() {
   const project = useProject()

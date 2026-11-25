@@ -29,12 +29,10 @@ export function Dialog({
   useEffect(() => {
     if (!open) return
     const prev = document.activeElement as HTMLElement | null
-    // Move focus in unless a field already took it (autoFocus).
     if (!ref.current?.contains(document.activeElement))
       (focusables(ref.current)[0] ?? ref.current)?.focus({ preventScroll: true })
     return () => prev?.focus?.()
   }, [open])
-  // Keep Tab inside the dialog. Portaled popovers bubble here through React, so only act on our own DOM.
   const trap = (e: React.KeyboardEvent) => {
     if (e.key !== 'Tab' || !ref.current?.contains(e.target as Node)) return
     const list = focusables(ref.current)

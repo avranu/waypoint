@@ -119,7 +119,7 @@ func TestMeaningBreakerOneProbeAndRefused(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
 		if hold.Load() {
-			select { // the server may not see the client hang up
+			select {
 			case <-r.Context().Done():
 			case <-stop:
 			}
@@ -127,8 +127,6 @@ func TestMeaningBreakerOneProbeAndRefused(t *testing.T) {
 		http.Error(w, "wedged", http.StatusServiceUnavailable)
 	}))
 	defer srv.Close()
-	// Released before srv.Close (deferred calls run last-in first), so a
-	// failed test doesn't leave held handlers blocking Close.
 	var stopOnce sync.Once
 	releaseHeld := func() { stopOnce.Do(func() { close(stop) }) }
 	defer releaseHeld()
@@ -175,7 +173,6 @@ func TestMeaningBreakerOneProbeAndRefused(t *testing.T) {
 		t.Fatalf("a cancelled probe is no verdict: %+v", h)
 	}
 
-	// The turn came back: the next call probes, and the service is gone.
 	hold.Store(false)
 	releaseHeld()
 	srv.CloseClientConnections()

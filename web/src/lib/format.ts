@@ -1,5 +1,3 @@
-// Formatting helpers for dates, durations and people.
-
 const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' })
 
 export function relativeTime(iso: string | null | undefined): string {

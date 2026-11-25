@@ -7,15 +7,10 @@ import (
 	"time"
 )
 
-// The SessionStart line about wp tidy (ADR2 §5, WP-136): when a repo has more
-// than tidyHintOver merged branches and worktrees to remove, the agent is told
-// once. Counting is bounded and cached per repo for a day, so a session
-// never waits for it more than tidyHintBudget (and most don't wait at all).
-
 const (
 	tidyHintOver  = 10
 	tidyHintEvery = 24 * time.Hour
-	tidyHintRetry = 6 * time.Hour // after a count that ran out of time
+	tidyHintRetry = 6 * time.Hour
 )
 
 // tidyHintBudget is how long counting may take; a variable so a test on a
@@ -73,7 +68,7 @@ func tidyHint(c *cli, cwd string, now time.Time) string {
 			s.Tidy = map[string]*tidyCache{}
 		}
 		s.Tidy[key] = &tidyCache{At: now, Removable: n}
-		for k, v := range s.Tidy { // forget old ones
+		for k, v := range s.Tidy {
 			if now.Sub(v.At) > 30*24*time.Hour {
 				delete(s.Tidy, k)
 			}

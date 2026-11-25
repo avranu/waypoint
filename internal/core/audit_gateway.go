@@ -1,23 +1,5 @@
 package core
 
-// Audits the LLM gateway runs (WP-617, WP-ADR84), where it declares the
-// tasks extension (GatewayTasks). An audit's chain may name gateway/<model>
-// beside the CLIs: the gateway then runs an agent of
-// its own (an agent task, POST /v1/tasks) over the whole checkout, on
-// whichever of its models has room, so a review round's audit spends none
-// of a coding plan and comes from a model that isn't the author's.
-//
-// The checkout is on the runner and the gateway's key is here, so the
-// runner clones as for any audit, packs its work tree and hands it to
-// Waypoint, which sends it on with the key (the relay below). The runner
-// then asks Waypoint how the task goes until it ends. The key never reaches
-// a runner.
-//
-// The gateway ranks the models of its audit purpose by what callers report
-// of how each answer's findings fared, so each task is remembered
-// (gateway_tasks) and a sweep reports its audit's findings as the session
-// marks them: fixed or confirmed held up, rejected did not.
-
 import (
 	"bytes"
 	"context"
@@ -194,7 +176,6 @@ func (r readerCloser) Close() error { return r.close() }
 // is streamed, never held whole: inside the JSON as base64 while that fits
 // the gateway's body limit, else as the repo part of a multipart upload.
 func (c *httpLLM) CreateTask(ctx context.Context, p *AIProvider, spec gatewayTaskSpec, archive io.Reader, size int64) (*gatewayTask, error) {
-	// Free models first; a paid one only when no free one can take it.
 	routing := map[string]any{"paid": cmp(spec.Paid, "fallback")}
 	task := map[string]any{"model": spec.Model, "prompt": spec.Prompt, "profile": "readonly", "timeout_seconds": spec.Timeout, "routing": routing}
 	if spec.Weakest != "" {
@@ -238,7 +219,6 @@ func (c *httpLLM) CreateTask(ctx context.Context, p *AIProvider, spec gatewayTas
 		body := readerCloser{io.MultiReader(bytes.NewReader(pre.Bytes()), archive, strings.NewReader(end)), func() error { return nil }}
 		return c.taskCall(ctx, p, http.MethodPost, "/tasks", mw.FormDataContentType(), body, int64(pre.Len())+size+int64(len(end)))
 	}
-	// {"model":…,"repo":{"archive_base64":"…"}}
 	pre := append(head[:len(head)-1:len(head)-1], `,"repo":{"archive_base64":"`...)
 	const end = `"}}`
 	pr, pw := io.Pipe()
@@ -367,8 +347,6 @@ func gatewayModelName(s string) string {
 	}
 	return b.String()
 }
-
-// ---- which models, for whose code ----
 
 // gatewayFamilies maps the words a session's model name may hold to the
 // globs that leave that model's family out at the gateway (its exclude
@@ -694,8 +672,6 @@ type gatewayRefusedModel struct {
 	why   string
 }
 
-// ---- the relay a runner speaks to ----
-
 // GatewayTaskView is what a runner sees of its audit's task at the gateway.
 type GatewayTaskView struct {
 	ID     string `json:"id,omitempty"`
@@ -721,7 +697,7 @@ type GatewayTaskView struct {
 type gatewayJob struct {
 	id, auditID, issueID int64
 	in                   AgentJob
-	left                 time.Duration // of the job's time
+	left                 time.Duration
 	running              bool
 }
 
@@ -807,8 +783,6 @@ func (s *Service) StartGatewayTask(ctx context.Context, actor *Actor, jobID int6
 		v := gatewayRefusedView(err)
 		var r *gatewayRefusal
 		if errors.As(err, &r) && (r.status == http.StatusForbidden || r.status == http.StatusNotFound) {
-			// The key may not use this model, or the gateway has none by the
-			// name: the next audits skip it for a while.
 			s.gatewayRefused.Store(j.in.Model, gatewayRefusedModel{until: s.now().Add(gatewayRefusedFor), why: excerpt(cmp(r.msg, v.ErrorKind), 120)})
 		}
 		s.log.Info("gateway audit: the task was not taken", "job", jobID, "model", j.in.Model, "kind", v.ErrorKind, "err", err)
@@ -826,7 +800,6 @@ func (s *Service) StartGatewayTask(ctx context.Context, actor *Actor, jobID int6
 		s.log.Info("gateway audit: the task's bar", "job", jobID, "task", t.ID, "bar", t.Bar)
 	}
 	if err != nil {
-		// Unrecorded, it could never be read or reported on: stop it.
 		bg, stop := context.WithTimeout(context.WithoutCancel(ctx), gatewayCallTimeout)
 		defer stop()
 		_ = tl.CancelTask(bg, p, t.ID)
@@ -855,7 +828,6 @@ func (s *Service) GatewayTask(ctx context.Context, actor *Actor, jobID int64) (*
 	if err != nil {
 		var r *gatewayRefusal
 		if errors.As(err, &r) && r.status >= 400 && r.status < 500 && r.status != http.StatusTooManyRequests {
-			// The gateway doesn't have it (any more), or won't show it.
 			return &GatewayTaskView{ID: id, Status: GatewayTaskFailed, ErrorKind: cmp(r.code, "not_found"), Error: r.Error()}, nil
 		}
 		return &GatewayTaskView{ID: id, Status: GatewayTaskUnknown, ErrorKind: "unreachable", Error: excerpt(aiPublicError(err), 300), RetryAfter: int(gatewayBusyRetry.Seconds())}, nil
@@ -961,16 +933,10 @@ func (s *Service) gatewayView(ctx context.Context, j *gatewayJob, t *gatewayTask
 			v.ErrorKind = cmp(map[string]string{GatewayTaskCancelled: "cancelled"}[v.Status], "server")
 		}
 		if v.Status == GatewayTaskFailed && v.ErrorKind == "cancelled" {
-			// Failed "cancelled" is the gateway's sandbox stopping under a task
-			// nobody called off, as a deploy restarting it does; a task
-			// cancelled through its API ends in status cancelled instead.
-			// Like the gateway's own restart it is safe to send again: the
-			// runner resends it, and the chain goes again later (WP-994).
 			v.ErrorKind = "interrupted"
 			v.Error = "The gateway stopped the task's sandbox under it (" + cmp(v.Error, "the task was cancelled") + "); it is safe to send again"
 		}
 	default:
-		// A state this Waypoint doesn't know: the runner asks again.
 		v.Status, v.RetryAfter = GatewayTaskUnknown, int(gatewayBusyRetry.Seconds())
 		return v
 	}
@@ -1006,7 +972,6 @@ func gatewayRefusedView(err error) *GatewayTaskView {
 	v := &GatewayTaskView{Status: GatewayTaskRefused, Error: excerpt(aiPublicError(err), 300)}
 	var r *gatewayRefusal
 	if !errors.As(err, &r) {
-		// It never answered: down, restarting, or the upload broke.
 		v.ErrorKind, v.RetryAfter = "unreachable", int(gatewayBusyRetry.Seconds())
 		return v
 	}
@@ -1014,11 +979,6 @@ func gatewayRefusedView(err error) *GatewayTaskView {
 	wait := int(max(r.retryAfter, gatewayBusyRetry).Seconds())
 	switch {
 	case r.code == gatewayNoModelAtBar:
-		// No model at the task's quality bar can take it (WP-916). When
-		// some are only busy or resting the gateway says how long; with
-		// none at the bar at all it doesn't, and sending it again can't
-		// help, so the audit's chain ends and its round goes on by its tier: an
-		// elevated one asks again at the floor, another to its Claude reviewer.
 		v.ErrorKind = gatewayNoModelAtBar
 		if r.retryAfter > 0 {
 			v.RetryAfter = wait
@@ -1030,11 +990,6 @@ func gatewayRefusedView(err error) *GatewayTaskView {
 	case r.status >= 500:
 		v.ErrorKind, v.RetryAfter = "unavailable", wait
 	case r.status == http.StatusRequestTimeout:
-		// The gateway's intake gave up on the body (WP-1078): it was too
-		// slow to read it, which says nothing about any model. The runner
-		// sends it again after a longer wait than a plain busy answer, so
-		// an overloaded gateway gets it two or three times in the runner's
-		// admit window, not every 30s.
 		v.ErrorKind, v.RetryAfter = "intake_timeout", int(max(r.retryAfter, gatewayIntakeRetry).Seconds())
 	case r.status == http.StatusUnauthorized:
 		v.ErrorKind = "auth"
@@ -1099,8 +1054,6 @@ func (s *Service) gatewayAuditAnswered(ctx context.Context, jobID int64, asked A
 	}
 	return GatewayCLI + "/" + served
 }
-
-// ---- reports on how the findings fared ----
 
 // reportAuditFeedback sends the gateway a report for each task whose
 // audit's findings were marked since its last report (or that never had

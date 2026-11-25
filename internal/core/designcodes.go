@@ -12,13 +12,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Decision codes (WP-113): a decision note is known by ADR and a number,
-// numbered per project (global notes have their own run): ADR7, or
-// APP-ADR7 from another project. ADR-0007 and appADR7 mean the same. Codes
-// stay with a note when its kind or project changes (a move adds the new
-// project's code and the old one keeps leading here) and are never reused,
-// even after the note is deleted.
-
 var (
 	designCodeRE = lazyre.New(`(?i)^(?:([A-Z][A-Z0-9]{1,9})-?)?ADR-?0*([0-9]{1,9})$`)
 	// "ADR-0007: Title", "ADR7 — Title", as imported decisions start.
@@ -131,7 +124,6 @@ func (s *Service) codeDesign(ctx context.Context, t *tx, id, want int64) error {
 			return invalid("ADR%d is already design #%d", n, holder)
 		}
 	} else {
-		// Back to a place it had a code in: its old code.
 		err := t.QueryRowContext(ctx, `SELECT number FROM design_codes WHERE scope = ? AND note_id = ? ORDER BY number LIMIT 1`, scope, id).Scan(&n)
 		if errors.Is(err, sql.ErrNoRows) {
 			if err := t.QueryRowContext(ctx, `SELECT coalesce(max(number), 0) + 1 FROM design_codes WHERE scope = ?`, scope).Scan(&n); err != nil {
@@ -218,7 +210,6 @@ func (s *Service) designByCode(ctx context.Context, actor *Actor, c DesignCode, 
 	readable := func(id int64) bool {
 		_, _, err := s.designFor(ctx, s.db.R, actor, id, RoleViewer)
 		if err != nil {
-			// Not found or not allowed is "can't read it"; anything else is a failed read.
 			if !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrForbidden) {
 				if readFault(err) {
 					s.log.WarnContext(ctx, "read whether a design note is readable", "note", id, "err", err)
@@ -329,8 +320,6 @@ func (s *Service) designByCodeIn(ctx context.Context, q queryer, c DesignCode, s
 		if scope != nil {
 			var err error
 			if chain, err = s.projectChainIDs(ctx, q, *scope); err != nil {
-				// Without the chain a project's own ADR7 can't be told from the
-				// global one: name nothing rather than the wrong note.
 				if readFault(err) {
 					s.log.WarnContext(ctx, "read the project chain to resolve a design code", "project", *scope, "code", c.String(), "err", err)
 				}
@@ -342,7 +331,6 @@ func (s *Service) designByCodeIn(ctx context.Context, q queryer, c DesignCode, s
 	for _, sc := range chain {
 		id, ok, err := designCodeTaken(ctx, q, sc, c.Number)
 		if err != nil {
-			// A failed read of a nearer scope mustn't fall through to a farther one.
 			if readFault(err) {
 				s.log.WarnContext(ctx, "read a design code", "scope", sc, "code", c.String(), "err", err)
 			}

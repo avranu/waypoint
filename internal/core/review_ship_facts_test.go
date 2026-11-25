@@ -10,8 +10,6 @@ import (
 // needs the agent. The table is each producer and what it needs; the cases
 // below drive the ones reachable from a ship and check what the result says.
 func TestShipTextsSayWhatTheyNeed(t *testing.T) {
-	// producer -> held / notice needs the agent. Held is true unless the text
-	// says "Nothing more to run"; a Notice is news unless it asks for action.
 	for _, p := range []struct {
 		producer string
 		held     bool
@@ -49,8 +47,6 @@ func TestShipTextsSayWhatTheyNeed(t *testing.T) {
 	}
 	e.stopWith("Pushed; the review comes first.")
 	e.tick(61 * time.Second)
-	// The review is under way: shipping it again for another asks nothing
-	// either, and says what to run: nothing.
 	res, err = e.ship(e.task.Key, ShipReview)
 	if err != nil || res.Held == "" {
 		t.Fatalf("ship --review = %+v, %v", res, err)

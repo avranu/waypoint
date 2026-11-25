@@ -9,28 +9,6 @@ import (
 	"time"
 )
 
-// Use what's left at the week's end (WP-262, WP-ADR106). Quota left at the
-// week's reset is lost. A person can turn on, for all their projects at
-// once, a switch under which the sweep starts autopilot sessions of its own
-// past each project's at_once over the week's last week_end_hours, paced so
-// the week's use reaches 100% just before the reset:
-//
-//   - Every sweep projects the use at the reset: the latest seven_day
-//     reading plus the last hour's slope times the hours left.
-//   - Below the target it starts one more session, up to spend_at_once
-//     autopilot sessions across the person's projects, and no sooner than
-//     spendSpacing after the last such start, so that start shows in the
-//     readings before the next is judged.
-//   - The target is 100%, or 100 − spendReserve while the person is using
-//     Claude Code themselves, so their own work keeps room; in the last hour
-//     it is 100% whatever they do, since running out then costs them at most
-//     the hour (the maintainer, WP-262, 11-14).
-//   - While they use it, the five-hour window's own ceiling holds too.
-//
-// The tasks are the sweep's: ready tasks in projects with autopilot on, by
-// each project's criteria. The hourly spend limit and the loop guard still
-// hold; the schedule, spacing and daily count don't, for these starts.
-
 const (
 	// DefaultSpendAtOnce: autopilot sessions at once, across the person's
 	// projects, while it uses what's left.
@@ -107,17 +85,9 @@ func (s *Service) weekReading(ctx context.Context, uid int64, now time.Time) (*w
 	}
 	r := &weekReading{at: msTime(at), reset: msTime(reset), pct: pct}
 	if now.Sub(r.at) > time.Hour {
-		// Nothing has posted a reading in an hour: no session the status line
-		// runs in is at work, so the use is flat as far as anything shows.
 		r.perHour = ptrOf(0.0)
 		return r, nil
 	}
-	// The slope over the last hour: from the oldest reading within the hour
-	// before this one (at least spendSlopeMin before it), else the newest
-	// before that, else the week's first. Readings stop while nothing runs,
-	// so after an idle spell the reading before the gap would spread a fresh
-	// burst over the gap: the hour's own readings come first. The same week:
-	// its reset moves by seconds between readings at most.
 	var baseAt int64
 	var basePct float64
 	const sameWeek = `user_id = ? AND span = 'seven_day' AND resets_at BETWEEN ? AND ?`

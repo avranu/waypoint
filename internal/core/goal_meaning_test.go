@@ -311,8 +311,6 @@ func TestMeaningCoverageStale(t *testing.T) {
 			t.Errorf("%s: judgement used = %v, want %v", c.i.Key, got, c.want)
 		}
 	}
-	// A parent reworded: the judgement of the task against it is stale.
-	// (Judged at the old title, then no model can judge the new one.)
 	other := e.serving("Make the toolbar feel predictable", e.leaf)
 	e.meaning()
 	e.useJudge(func(string) (string, error) { return "", errors.New("the model is down") })
@@ -364,13 +362,11 @@ func TestMeaningPairsFromJudgements(t *testing.T) {
 			t.Errorf("goal %d flagged without a judgement: %q", id, w)
 		}
 	}
-	// What a person was shown is kept, for the labels.
 	var shown int
 	_ = e.s.db.R.QueryRow(`SELECT count(*) FROM goal_meaning_shown`).Scan(&shown)
 	if shown != 2 {
 		t.Errorf("%d suggestions recorded as shown, want 2", shown)
 	}
-	// A title edit makes the pair's judgement stale.
 	e.exec(`UPDATE design_notes SET title = 'Finance staff download figures as workbooks, weekly' WHERE id = ?`, twin.ID)
 	if w := e.wording(e.goals(e.admin, e.p.Key), twin.ID); w != "" {
 		t.Errorf("edited goal still flagged: %q", w)
@@ -419,10 +415,9 @@ func TestMeaningNLIAlone(t *testing.T) {
 	if e.coverJudged(i.ID) != 0 {
 		t.Error("coverage decided without the language model")
 	}
-	// Only new text is embedded again.
 	n := fm.embedded()
 	e.meaning()
-	if fm.embedded() != n+1 { // the probe
+	if fm.embedded() != n+1 {
 		t.Errorf("embedded %d texts again with nothing new", fm.embedded()-n-1)
 	}
 	e.exec(`UPDATE design_notes SET title = 'Mobile screens stay easy to read' WHERE title = 'Mobile screens stay readable'`)
@@ -491,8 +486,6 @@ func TestMeaningBackoff(t *testing.T) {
 	if j.count(coverMarker) <= n {
 		t.Error("not asked again after the back-off")
 	}
-	// The pass that failed set a timer for the next, so a retry doesn't
-	// wait for a goal to change.
 	e.s.goals.mu.Lock()
 	timer := e.s.goals.judgeTimer
 	e.s.goals.mu.Unlock()
@@ -537,7 +530,6 @@ func TestMeaningShownLabels(t *testing.T) {
 		return 0
 	}))
 	e.meaning()
-	// An agent's read records nothing.
 	if _, err := e.s.ListGoals(e.ctx, e.ag, e.p.Key); err == nil {
 		var n int
 		_ = e.s.db.R.QueryRow(`SELECT count(*) FROM goal_meaning_shown`).Scan(&n)
@@ -556,8 +548,6 @@ func TestMeaningShownLabels(t *testing.T) {
 	if l := e.labels(labelDismissed); len(l) != 1 || l[0].y || l[0].judgement != judgeRestates || l[0].ref != key {
 		t.Errorf("dismissed labels = %+v", l)
 	}
-	// Shown again, the dismissed suggestion is hidden by the view: no
-	// second label.
 	e.exec(`UPDATE design_notes SET title = 'Reports export to spreadsheets' WHERE id = ?`, parent.ID)
 	e.meaning()
 	e.goals(e.admin, e.p.Key)
@@ -594,8 +584,6 @@ func TestMeaningDriftLabel(t *testing.T) {
 	if len(e.labels(labelDrift)) != 1 {
 		t.Error("a flag labelled twice")
 	}
-	// A second flag on the same task and goal is the same pair: no new
-	// label, and the passes come to rest (e.meaning fails otherwise).
 	e.exec(`INSERT INTO goal_drift_flags(id, project_id, kind, goal_id, goal_title, created_at, answer) VALUES (3, ?, 'contradicts', ?, ?, 2, 'stop')`, e.p.ID, e.top.ID, e.top.Title)
 	e.exec(`INSERT INTO goal_drift_flag_issues(flag_id, issue_id) VALUES (3, ?)`, i.ID)
 	e.meaning()
@@ -700,7 +688,6 @@ func TestMeaningEvaluate(t *testing.T) {
 	if r := meaningEvalReason(f, rows, versions); r != "" {
 		t.Errorf("nothing new and evaluated again: %q", r)
 	}
-	// Labels that agree with it: still nothing.
 	more := append([]meaningRow(nil), rows...)
 	for k := range 30 {
 		more = append(more, meaningRow{id: int64(100 + k), y: true, source: labelActed, grp: "x", f: map[string]float64{"nli_min": 0.9}})
@@ -708,7 +695,6 @@ func TestMeaningEvaluate(t *testing.T) {
 	if r := meaningEvalReason(f, more, versions); r != "" {
 		t.Errorf("agreeing labels triggered %q", r)
 	}
-	// Yes labels it misses, more than its held-out rate allows.
 	for k := range 25 {
 		more = append(more, meaningRow{id: int64(200 + k), y: true, source: labelActed, grp: "y", f: map[string]float64{"nli_min": 0.05}})
 	}
@@ -719,12 +705,10 @@ func TestMeaningEvaluate(t *testing.T) {
 	if r := meaningEvalReason(f, rows, v2); r != "version" {
 		t.Errorf("reason = %q, want version", r)
 	}
-	// An unknown version (the service down) is no change.
 	v3 := map[string]string{"embed": "", "nli": "", "llm": meaningLLMVersion, "construct": meaningConstruct}
 	if r := meaningEvalReason(f, rows, v3); r != "" {
 		t.Errorf("a service that is down triggered %q", r)
 	}
-	// Kept when the challenger is no better.
 	again := meaningEvaluate(judgeCover, rows, f)
 	if again == nil || again.Decider != "nli_min" || again.Note != "kept" {
 		t.Errorf("re-evaluation = %+v", again)
@@ -745,7 +729,7 @@ func TestBinomUpper(t *testing.T) {
 
 type meaningFeedbackLLM struct {
 	reports []feedbackReport
-	during  func() // runs while a report is out
+	during  func()
 }
 
 func (f *meaningFeedbackLLM) Feedback(ctx context.Context, p *AIProvider, r feedbackReport) error {
@@ -805,8 +789,6 @@ func TestMeaningFeedback(t *testing.T) {
 		t.Errorf("reported again: %d", len(fl.reports))
 	}
 
-	// Behaviour overturns a constructed label (a-c graded 0, now acted on as
-	// overlapping) and agrees with a dismissal (a-b, now ignored too).
 	e.exec(`INSERT INTO meaning_labels(judgement, a_hash, b_hash, y, source, grp, at) VALUES
 		('overlap', 'a', 'c', 1, 'acted', 'g', ?), ('overlap', 'a', 'b', 0, 'ignored', 'g', ?)`, now, now)
 	e.s.queueMeaningFeedback(e.ctx)
@@ -815,7 +797,6 @@ func TestMeaningFeedback(t *testing.T) {
 		t.Errorf("after the overturn: %+v", fl.reports)
 	}
 
-	// A verdict that changes while its report is out is still due after it.
 	e.exec(`INSERT INTO meaning_labels(judgement, a_hash, b_hash, y, source, grp, at) VALUES ('overlap', 'a', 'b', 1, 'acted', 'g', ?)`, now)
 	e.s.queueMeaningFeedback(e.ctx)
 	fl.during = func() {

@@ -7,11 +7,6 @@ import (
 	"strings"
 )
 
-// The ship reply (WP-390): the template wp ship prints for an agent's last
-// message, so wrap-ups say what shipped and stop. Admins word it under
-// Admin → AI. wp ship fills in {task} (the issue key, else the pull
-// request's title), {pr} (its number) and {url}.
-
 // DefaultShipReply is the template until an admin words their own.
 const DefaultShipReply = `Reply template (adapt it where it doesn't fit):
   {task} shipped in PR #{pr} ({url}): <what it does, one or two sentences>.

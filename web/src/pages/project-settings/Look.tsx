@@ -1,7 +1,3 @@
-// Who chose the project's icon, color and background (WP-65, WP-108), with the
-// two ways to change it: Pick another has Waypoint choose again (no AI), Reset
-// to default clears it.
-
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { RotateCcw, Shuffle } from 'lucide-react'

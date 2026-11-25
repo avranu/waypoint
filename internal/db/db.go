@@ -50,8 +50,6 @@ func dsn(path string, readOnly bool) string {
 	} else {
 		q.Set("_txlock", "immediate")
 	}
-	// SQLite URI filenames are percent-decoded, so characters that would end
-	// the path early are escaped.
 	esc := strings.NewReplacer("%", "%25", "?", "%3f", "#", "%23").Replace(path)
 	return "file:" + esc + "?" + q.Encode()
 }
@@ -83,8 +81,6 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	n := max(4, runtime.NumCPU())
 	r.SetMaxOpenConns(n)
 	r.SetMaxIdleConns(n)
-	// The file holds password hashes and tokens; keep it private. (Best
-	// effort: a mounted volume may not allow it.)
 	for _, f := range []string{path, path + "-wal", path + "-shm"} {
 		_ = os.Chmod(f, 0o600)
 	}
@@ -152,7 +148,6 @@ func apply(ctx context.Context, w *sql.DB, name, body string) error {
 		return fmt.Errorf("migration %s: %w", name, err)
 	}
 	if rebuild {
-		// The rebuilt tables must still satisfy every reference.
 		rows, err := tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
 		if err != nil {
 			_ = tx.Rollback()

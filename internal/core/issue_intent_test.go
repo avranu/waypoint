@@ -33,7 +33,6 @@ func TestIssueIntent(t *testing.T) {
 		t.Fatalf("the intent must not touch the description or its provenance: %q unreviewed=%v", d.Description, d.Unreviewed)
 	}
 
-	// The same words from a person make it theirs.
 	if _, err := e.s.UpdateIssue(e.ctx, e.admin, i.Key, IssuePatch{Intent: str("Readers find answers faster.")}); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +40,6 @@ func TestIssueIntent(t *testing.T) {
 		t.Fatalf("a person keeping an agent's intent should own it: %q by %q", d.Intent, d.IntentAgent)
 	}
 
-	// An agent can't rewrite or clear a person's intent.
 	for _, text := range []string{"Something else.", ""} {
 		if _, err := e.s.UpdateIssue(e.ctx, agent, i.Key, IssuePatch{Intent: str(text)}); err == nil {
 			t.Fatalf("an agent changed a person's intent to %q", text)
@@ -51,7 +49,6 @@ func TestIssueIntent(t *testing.T) {
 		t.Fatalf("a refused agent edit changed the intent: %q by %q", d.Intent, d.IntentAgent)
 	}
 
-	// Saves in a row fold into one history entry that shows the latest words.
 	for _, text := range []string{"First try.", "Second try."} {
 		if _, err := e.s.UpdateIssue(e.ctx, e.admin, i.Key, IssuePatch{Intent: str(text)}); err != nil {
 			t.Fatal(err)
@@ -75,7 +72,6 @@ func TestIssueIntent(t *testing.T) {
 		t.Fatalf("the newest intent entry should show the latest save, got %q", newest)
 	}
 
-	// A person's rewrite, then clearing it.
 	if _, err := e.s.UpdateIssue(e.ctx, e.admin, i.Key, IssuePatch{Intent: str("")}); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +82,6 @@ func TestIssueIntent(t *testing.T) {
 	if _, err := e.s.UpdateIssue(e.ctx, e.admin, i.Key, IssuePatch{Intent: str(strings.Repeat("x", maxIntentLen+1))}); err == nil {
 		t.Fatal("an intent longer than the limit should be refused")
 	}
-	// The limit counts characters, as the editor does, not bytes.
 	if _, err := e.s.UpdateIssue(e.ctx, e.admin, i.Key, IssuePatch{Intent: str(strings.Repeat("é", maxIntentLen))}); err != nil {
 		t.Fatalf("an intent at the limit in accented letters should be kept: %v", err)
 	}

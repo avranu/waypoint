@@ -155,7 +155,6 @@ func TestTranscriptRoutes(t *testing.T) {
 	if code, _ := a.human.do("GET", "/api/v1/usage/transcript?session=nope&file=main", nil); code != 404 {
 		t.Errorf("unknown session: %d", code)
 	}
-	// an agent's shell (the person's token, the agent's header) reads none
 	for _, path := range []string{"/api/v1/usage/transcripts?session=s1", "/api/v1/usage/transcript?session=s1&file=main"} {
 		resp, err := a.req("GET", path, nil, map[string]string{"X-Waypoint-Agent-Env": "claude"})
 		if err != nil {
@@ -167,7 +166,6 @@ func TestTranscriptRoutes(t *testing.T) {
 			t.Errorf("%s from an agent's shell: %d %q", path, resp.StatusCode, body)
 		}
 	}
-	// damage the second piece: the first goes out, then the transfer breaks
 	var second string
 	_ = filepath.WalkDir(a.dir, func(p string, d os.DirEntry, _ error) error {
 		if d != nil && !d.IsDir() && strings.Contains(d.Name(), "-0-8-16-") {
@@ -183,7 +181,7 @@ func TestTranscriptRoutes(t *testing.T) {
 	}
 	resp, err = a.req("GET", "/api/v1/usage/transcript?session=s1&file=main", nil, nil)
 	if err != nil {
-		return // the connection broke before the headers: not a whole body either
+		return
 	}
 	b, err = io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -263,7 +261,6 @@ func TestTranscriptQueryAndNumbers(t *testing.T) {
 		}
 		_ = resp.Body.Close()
 	}
-	// two machines hold s1; box has two generations (a new fingerprint base starts one)
 	put("box", "s1", "h#0", 0, "gen0\n")
 	put("box", "s1", "h#1", 0, "gen1\n")
 	put("lap", "s1", "h#0", 0, "lap0\n")
@@ -280,7 +277,7 @@ func TestTranscriptQueryAndNumbers(t *testing.T) {
 	if code, b := read("&machine=box&gen=1"); code != 200 || b != "gen1\n" {
 		t.Errorf("gen=1: %d %q", code, b)
 	}
-	if code, b := read("&machine=box"); code != 200 || b != "gen1\n" { // no gen: the newest
+	if code, b := read("&machine=box"); code != 200 || b != "gen1\n" {
 		t.Errorf("newest gen: %d %q", code, b)
 	}
 	if code, b := read("&machine=box&gen=9"); code != 404 {
@@ -294,7 +291,6 @@ func TestTranscriptQueryAndNumbers(t *testing.T) {
 			t.Errorf("gen=%s: %d, want 400", g, code)
 		}
 	}
-	// a second person's copy is picked by user=
 	other, err := a.svc.CreateUser(context.Background(), core.SystemActor(), core.CreateUserInput{Username: "sam", Email: "sam@example.com", Password: "correct-horse-battery"})
 	if err != nil {
 		t.Fatal(err)
@@ -312,10 +308,9 @@ func TestTranscriptQueryAndNumbers(t *testing.T) {
 		t.Errorf("user=sam: %d %+v", code, files)
 	}
 	files = nil
-	if code := a.human.json("GET", "/api/v1/usage/transcripts?session=s1&user=robin", nil, &files); code != 200 || len(files) != 2 { // box at its newest generation, and lap
+	if code := a.human.json("GET", "/api/v1/usage/transcripts?session=s1&user=robin", nil, &files); code != 200 || len(files) != 2 {
 		t.Errorf("user=robin: %d %+v", code, files)
 	}
-	// ingest numbers
 	for _, bad := range []string{"from=abc&to=5", "from=0&to=abc"} {
 		resp, err := a.req("POST", "/api/v1/usage/transcript?machine=box&session=s2&file=main&kind=main&fp=h%230&redacted=1&version=t&"+bad, tgz(t, "x\n"), nil)
 		if err != nil {

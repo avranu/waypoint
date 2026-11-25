@@ -1,7 +1,3 @@
-// The assistant's Activity tab (WP-ADR1): what it is doing, what it has
-// done, and what waits on you. Four views, kept in the URL (`view`): now
-// and a timeline, the gate's approvals, its raw audit, and the logs.
-
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { History, ScrollText, ShieldCheck, TerminalSquare } from 'lucide-react'

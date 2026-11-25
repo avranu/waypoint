@@ -74,7 +74,6 @@ async function run(width, scheme) {
   await page.waitForURL((u) => !u.pathname.startsWith("/login"));
   await seed(api, call);
 
-  // ---- the task's text links what exists ----
   let refCalls = 0;
   page.on("request", (r) => r.method() === "POST" && new URL(r.url()).pathname === "/api/v1/refs" && refCalls++);
   await page.goto(base + `/issue/${task.key}`);
@@ -93,7 +92,6 @@ async function run(width, scheme) {
   ok(note === "/requests/RF:R-1", `${tag} R1 in a comment links the request (${note})`);
   await page.getByText("Third note").waitFor();
   await page.waitForLoadState("networkidle");
-  // the description asks once and the three comments together once (WP-184)
   ok(refCalls === 2, `${tag} /refs is called once for the description and once for all comments (${refCalls})`);
   await shot("task");
   await overflow("task");
@@ -101,7 +99,6 @@ async function run(width, scheme) {
   await page.getByRole("heading", { name: "Deploy Quarry 0.3.22 to production" }).waitFor();
   ok(true, `${tag} the link opens the request`);
 
-  // ---- searching by code, any spelling ----
   for (const q of ["R-1", "R1", "RF:R-1"]) {
     await page.goto(base + `/search?q=${encodeURIComponent(q)}`);
     const best = page.locator("section", { hasText: "Best match" }).first();
@@ -114,7 +111,6 @@ async function run(width, scheme) {
       await overflow("search");
     }
   }
-  // ---- a decision by its code: first on the page, and in the palette, the one in view first ----
   for (const q of ["ADR1", "ADR-0001"]) {
     await page.goto(base + `/search?q=${encodeURIComponent(q)}`);
     const heads = page.locator("section h2");

@@ -44,8 +44,8 @@ func (g *shipForge) DeleteBranch(ctx context.Context, f *Forge, repo, branch str
 // stackEnv: three armed drafts, #7 #8 #9, in a repo that opts in to stacks.
 type stackEnv struct {
 	*bsEnv
-	made []CommitInput // stack branches made, in order
-	shas []string      // their commits
+	made []CommitInput
+	shas []string
 }
 
 const head7s, head8s, head9s = "7777777aaaa", "8888888cccc", "9999999dddd"
@@ -66,8 +66,6 @@ func newStackEnv(t *testing.T) *stackEnv {
 		be.sg.parents[sha] = []string{cmp(be.sg.baseTip, "tip-1")}
 		return &ForgeCommit{SHA: sha, Branch: in.Branch}, nil
 	}
-	// A merge moves main: its merge commit's parents are the old tip and
-	// the head, and every head still open now lacks the tip.
 	be.sg.onMergeN = func(n int) {
 		m := be.sg.mergeSHAs[n]
 		head := map[int]string{7: head7s, 8: head8s, 9: head9s}[n]
@@ -264,7 +262,7 @@ func (se *stackEnv) stackConflictOn(i int, n, base string, heads ...string) {
 	for j, name := range []string{"ci / backend (push)", "ci / lint (push)", "ci / e2e (push)"} {
 		st := CheckFailed
 		if j != 1 {
-			st = CheckSuccess // the jobs fail-fast cancelled: no status
+			st = CheckSuccess
 		}
 		checks = append(checks, CommitCheck{Name: name, State: st, ID: int64(500 + 10*i + j), Description: "Failing after 1m", URL: "https://forge/me/app/actions/runs/" + sha + "/jobs/" + fmt.Sprint(j)})
 	}
@@ -329,9 +327,6 @@ func TestStackedQueueBaseConflictWaitsOutALimit(t *testing.T) {
 	if b := se.babysitOf(8); b.Round != 0 || b.JobID != 0 {
 		t.Fatalf("#8 got a round with its owner's limit spent: %+v", b)
 	}
-	// The line drops a head that conflicts with the base from its places (a
-	// round resolves it); with the limit spent the round waits, and the pull
-	// request stays armed.
 	if pr := se.pr(8); pr.ArmedAt == nil {
 		t.Errorf("#8 was disarmed: %+v", pr)
 	}

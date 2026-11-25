@@ -9,15 +9,6 @@ import (
 	"time"
 )
 
-// Follow-ups (WP-255, WP-ADR101): "A follows B" says A is more work on what B did.
-// People and agents say so with the relation; Waypoint records three kinds
-// itself: what an agent files while working on a task (issues.go, found
-// "session"), a task whose merged pull request changed mostly the files
-// a recently finished task's did (here, found "files"), and a task someone
-// related to one done before it was filed (relate, found "after"; WP-1003).
-// The data is for telling, later, which follow-ups the first piece of work
-// should have caught.
-
 // relationFoundFiles is found on a follow-up Waypoint guessed from the files
 // two tasks' pull requests both changed.
 const relationFoundFiles = "files"
@@ -31,9 +22,9 @@ const relationFoundSession = "session"
 const followFoundAfter = "after"
 
 const (
-	followUpWindow    = 60 * 24 * time.Hour // how far back a finished task's pull request counts
-	followUpMinShared = 2                   // files in common, not counting common ones
-	followUpMinShare  = 0.5                 // of this pull request's own (not common) files
+	followUpWindow    = 60 * 24 * time.Hour
+	followUpMinShared = 2
+	followUpMinShare  = 0.5
 	// A file more than one in followUpCommonOf of the window's pull requests
 	// changed (lists, help text, the changelog) says nothing about which
 	// work this continues; with fewer than followUpCommonMin of them
@@ -126,8 +117,6 @@ func (s *Service) noteFollowUpsByFiles(ctx context.Context, issueID int64, linkU
 		return nil
 	}
 	merged := pr.MergedAt.UnixMilli()
-	// Only files read before: a pull request nobody read the diff of
-	// isn't worth a forge call per candidate.
 	rows, err := s.db.R.QueryContext(ctx, `SELECT p.id, p.files, el.issue_id
 		FROM pull_requests p JOIN external_links el ON `+pullLinkSQL+`
 		JOIN issues i ON i.id = el.issue_id JOIN statuses st ON st.id = i.status_id

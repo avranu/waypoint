@@ -264,7 +264,7 @@ func looksLikeKey(ref string) bool { return len(keyCandidates(ref)) > 0 }
 
 // issueSelect lists issue columns; description only when detail is wanted.
 func issueSelect(withDesc bool) string {
-	desc, peek := "''", "substr(i.description, 1, 600)" // list rows carry a peek (WP-67), not the text
+	desc, peek := "''", "substr(i.description, 1, 600)"
 	if withDesc {
 		desc, peek = "i.description", "''"
 	}
@@ -363,7 +363,7 @@ func (s *Service) loadIssues(ctx context.Context, q queryer, query string, args 
 			return nil, err
 		}
 		if !i.Hold.on(now) {
-			i.Hold = nil // ran out
+			i.Hold = nil
 		}
 		out = append(out, i)
 	}
@@ -387,7 +387,6 @@ func (s *Service) hydrate(ctx context.Context, q queryer, issues []*Issue) error
 		byID[i.ID] = i
 		ids = append(ids, i.ID)
 	}
-	// Chunk to stay well under SQLite's variable limit.
 	for start := 0; start < len(ids); start += 500 {
 		chunk := ids[start:min(start+500, len(ids))]
 		ph, args := placeholders(len(chunk)), int64Args(chunk)
@@ -426,7 +425,6 @@ func (s *Service) hydrate(ctx context.Context, q queryer, issues []*Issue) error
 		}
 		rows.Close()
 	}
-	// Reporters: few distinct users, so load each once.
 	users := map[int64]*UserRef{}
 	for _, i := range issues {
 		if i.reporterID == nil {
@@ -535,7 +533,7 @@ func (s *Service) isDraft(ctx context.Context, q queryer, id int64) bool {
 	var d bool
 	err := q.QueryRowContext(ctx, `SELECT draft FROM issues WHERE id = ?`, id).Scan(&d)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false // nothing there to hide
+		return false
 	}
 	if err != nil {
 		if readFault(err) {
@@ -676,7 +674,6 @@ func (s *Service) GetIssue(ctx context.Context, actor *Actor, ref string) (*Issu
 	}
 	d := &IssueDetail{Issue: i, Role: roleNames[role]}
 	q := s.db.R
-	// Ancestors for breadcrumbs, root first.
 	rows, err := q.QueryContext(ctx, `WITH RECURSIVE anc(id, parent_id, depth) AS (
 			SELECT id, parent_id, 0 FROM issues WHERE id = ?
 			UNION ALL SELECT i.id, i.parent_id, a.depth + 1 FROM issues i JOIN anc a ON i.id = a.parent_id WHERE a.depth < 50)
@@ -699,7 +696,6 @@ func (s *Service) GetIssue(ctx context.Context, actor *Actor, ref string) (*Issu
 		ancestorProject = append(ancestorProject, pid)
 	}
 	rows.Close()
-	// Breadcrumbs only show what the viewer could open.
 	for n, r := range ancestors {
 		if s.canSee(ctx, q, actor, r.ID, ancestorProject[n]) {
 			d.Ancestors = append(d.Ancestors, r)
@@ -727,7 +723,7 @@ func (s *Service) GetIssue(ctx context.Context, actor *Actor, ref string) (*Issu
 	if d.Pages, err = s.issuePages(ctx, actor, i.ID); err != nil {
 		return nil, err
 	}
-	if d.FiledFrom, err = s.filedFrom(ctx, q, actor, i); err != nil { // WP-378
+	if d.FiledFrom, err = s.filedFrom(ctx, q, actor, i); err != nil {
 		return nil, err
 	}
 	if d.Tested, err = s.issueEvidence(ctx, q, i.ID); err != nil {
@@ -749,9 +745,8 @@ func (s *Service) GetIssue(ctx context.Context, actor *Actor, ref string) (*Issu
 	if err := q.QueryRowContext(ctx, `SELECT intent, intent_agent FROM issues WHERE id = ?`, i.ID).Scan(&d.Intent, &d.IntentAgent); err != nil {
 		return nil, err
 	}
-	// WP-1035: the parent goals the task's arm shows.
 	s.goalContextRead(ctx, q, actor, d)
-	if d.Written, err = issueWritten(ctx, q, i.ID); err != nil { // WP-460
+	if d.Written, err = issueWritten(ctx, q, i.ID); err != nil {
 		return nil, err
 	}
 	d.Watchers, d.Watching = []UserRef{}, false
@@ -804,8 +799,6 @@ func (s *Service) GetIssue(ctx context.Context, actor *Actor, ref string) (*Issu
 	return d, nil
 }
 
-// ---- create ----
-
 // IssueInput creates an issue. References are flexible so people and agents
 // can use names: Project is a key, Parent an issue key, Status a status name
 // (or category), Sprint a name / "active" / "next", Assignees usernames or "me".
@@ -842,18 +835,11 @@ type IssueInput struct {
 	// (WP-67). Very long titles get that without saying so.
 	TitleIsText bool `json:"title_is_text"`
 
-	// madeParent: Parent is the draft this same call just created (a
-	// template's sub-tasks), so an agent may put sub-tasks under it.
-	madeParent bool
-	// outside: imported from a forge user who isn't a Waypoint person, by
-	// login on forge outsideForge (WP-279); it is made a draft.
+	madeParent   bool
 	outside      bool
 	outsideBy    string
 	outsideForge *int64
-	// template: Title and Description are Waypoint's own template with only
-	// plain names in it; the screen takes them as Waypoint's, stamped in the
-	// same write (stampTemplate, WP-1266).
-	template bool
+	template     bool
 }
 
 func parsePriorityAny(v any) (int, error) {
@@ -915,7 +901,6 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 		return nil, invalid("title is required")
 	}
 	if utf8.RuneCountInString(in.Title) > maxTitleLen {
-		// Text typed where a title goes: a short title, the text kept whole.
 		in.Title, in.Description = splitTitle(in.Title, in.Description, true)
 		in.TitleIsText = true
 	}
@@ -941,10 +926,8 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 		return nil, err
 	}
 	if !said && actor.Agent != "" {
-		in.Agent = actor.Agent // an agent's own bookkeeping is for itself
+		in.Agent = actor.Agent
 	}
-	// Left unsaid, a new issue is Anyone's. Only handing it to agents on
-	// purpose moves it out of the backlog.
 	delegated := agentDelegated(in.Agent) && said
 	var id int64
 	err = s.write(ctx, actor, func(t *tx) error {
@@ -960,7 +943,7 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 			}
 			if parent.Draft {
 				if actor.HidesDrafts() && !in.madeParent {
-					return notFound("issue " + in.Parent) // the same answer as for no issue at all
+					return notFound("issue " + in.Parent)
 				}
 				in.Draft = true
 			}
@@ -978,8 +961,6 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 		if parent != nil && parent.ProjectID != p.ID {
 			return invalid("a parent must be in the same project")
 		}
-		// Editors of the project can create; so can people a parent issue
-		// was shared with as editors (to add subtasks).
 		role, err := s.projectRole(ctx, t, actor, p.ID)
 		if err != nil {
 			return err
@@ -991,7 +972,7 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 				}
 				return ErrForbidden
 			}
-			if actor.scope != nil { // a job token's reach is its project's; the owner's shares don't extend it
+			if actor.scope != nil {
 				return ErrForbidden
 			}
 			r, rerr := s.shareRole(ctx, t, actor.id(), parent.ID)
@@ -1020,7 +1001,6 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 			}
 			sprintID = &sp.ID
 		} else if parent != nil && parent.SprintID != nil {
-			// Sub-issues join their parent's sprint unless it has closed.
 			var state string
 			if err := t.QueryRowContext(ctx, `SELECT state FROM sprints WHERE id = ?`, *parent.SprintID).Scan(&state); err != nil {
 				return err
@@ -1033,8 +1013,6 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 		if err != nil {
 			return err
 		}
-		// An issue added straight into a sprint belongs on the board, and one
-		// handed to an agent is ready for it (agents skip the backlog).
 		if (sprintID != nil || delegated && in.Status == "") && st.Category == CatBacklog {
 			if todo, err := s.firstStatusIn(ctx, t, p.ID, CatTodo); err == nil {
 				st = todo
@@ -1057,9 +1035,6 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 		}
 		var rank float64
 		if in.After == "" && in.Before == "" && parent == nil && createdByPerson(actor) {
-			// What a person adds goes to the top, where they can find it to
-			// open it and add more (WP-73, WP-ADR35); agents' and automations'
-			// issues, and sub-tasks, go last.
 			rank, err = firstRank(ctx, t, p.ID)
 		} else {
 			rank, err = s.rankFor(ctx, t, p.ID, in.After, in.Before)
@@ -1093,7 +1068,6 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 			workflowID, step = &w.ID, w.Steps[0].Name
 		}
 		author := authorAgent(ctx, t, actor)
-		// The task the agent was working on when it wrote this (WP-275).
 		_, origin, err := s.originSets(ctx, t, actor, 0, author)
 		if err != nil {
 			return err
@@ -1119,16 +1093,15 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 			}
 		}
 		if parentID != nil && actor.actsAsPerson() {
-			// A person put it under its parent (WP-ADR50).
 			if _, err := t.ExecContext(ctx, `UPDATE issues SET parent_by = ?, parent_at = ? WHERE id = ?`, actor.id(), now, id); err != nil {
 				return err
 			}
 		}
 		key := fmt.Sprintf("%s-%d", p.Key, number)
-		if err := recordWritten(ctx, t, id, p.ID); err != nil { // WP-460
+		if err := recordWritten(ctx, t, id, p.ID); err != nil {
 			return err
 		}
-		if err := s.recordCrossFiled(ctx, t, actor, id, p.ID, author); err != nil { // WP-378
+		if err := s.recordCrossFiled(ctx, t, actor, id, p.ID, author); err != nil {
 			return err
 		}
 		s.recordMentions(ctx, t, mentionSource{typ: KIssue, id: id, project: &p.ID, text: in.Title + "\n" + in.Description,
@@ -1156,8 +1129,6 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 		}
 		s.noteIssueMentions(ctx, t, actor, id)
 		s.noteNamedRelations(ctx, t, actor, id, "")
-		// What an agent files while working on a task follows it (WP-255),
-		// unless it is a slice of that task.
 		if o, ok := origin[0].(int64); ok && o != id && o != parentID {
 			if _, err := s.insertRelation(ctx, t, newRelation{Src: id, Dst: o, Kind: "follows", Found: relationFoundSession, Basis: "inferred"}); err != nil {
 				return err
@@ -1174,8 +1145,6 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 		return nil, err
 	}
 	if in.Draft && actor.HidesDrafts() {
-		// An agent may file a draft for its person, but from now on only
-		// people see it: it gets back no more than what it wrote.
 		i, err := s.issueByID(ctx, s.db.R, id, false)
 		if err != nil {
 			return nil, err
@@ -1258,7 +1227,7 @@ func (s *Service) rankFor(ctx context.Context, t *tx, projectID int64, after, be
 		return 0, err
 	}
 	if pid != projectID {
-		return 0, notFound("issue " + ref) // don't confirm issues elsewhere exist
+		return 0, notFound("issue " + ref)
 	}
 	var crowded bool
 	if err := t.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM issues WHERE project_id = ? AND id != ? AND abs(rank - ?) < ?)`,
@@ -1402,7 +1371,6 @@ func (s *Service) addLabel(ctx context.Context, t *tx, issueID, projectID int64,
 	err := t.QueryRowContext(ctx, `SELECT id FROM labels WHERE project_id = ? AND (name = ? COLLATE NOCASE OR CAST(id AS TEXT) = ?)
 		ORDER BY name = ? DESC LIMIT 1`, projectID, name, name, name).Scan(&lid)
 	if errors.Is(err, sql.ErrNoRows) {
-		// New labels belong to the project, so guests can only use existing ones.
 		if t.actor.Automation == nil && s.requireProjectRole(ctx, t, t.actor, projectID, RoleEditor) != nil {
 			return invalid("label %q doesn't exist in this project", name)
 		}
@@ -1446,8 +1414,6 @@ func (s *Service) reindex(ctx context.Context, t queryer, issueID int64) error {
 	return err
 }
 
-// ---- update ----
-
 // IssuePatch changes an issue. Absent fields are left alone; Opt fields can
 // be set to null to clear them.
 type IssuePatch struct {
@@ -1481,10 +1447,7 @@ type IssuePatch struct {
 	// ViaLink is the URL of a pull request link on this issue that causes
 	// the status change: the link remembers the status it moved the issue
 	// from, so removing the link can undo it (WP-162).
-	ViaLink string `json:"via_link"`
-	// mergedLink is the URL of the pull request whose merge causes the
-	// change (a rule that closes tasks on merge): an objective reads a
-	// merge once, however many things act on it (WP-ADR111).
+	ViaLink    string `json:"via_link"`
 	mergedLink string
 	Step       *string `json:"step"` // a step of the issue's workflow; "" clears
 	// Comment, when set, is added in the same transaction as the change
@@ -1504,7 +1467,7 @@ const (
 // UpdateIssue applies a patch to one issue.
 func (s *Service) UpdateIssue(ctx context.Context, actor *Actor, ref string, p IssuePatch) (*IssueDetail, error) {
 	if p.Comment != "" {
-		if err := actor.need(PermIssuesComment); err != nil { // WP-111
+		if err := actor.need(PermIssuesComment); err != nil {
 			return nil, err
 		}
 	}
@@ -1557,8 +1520,6 @@ func (s *Service) BulkUpdate(ctx context.Context, actor *Actor, refs []string, p
 				return err
 			}
 			roots[id] = true
-			// Deepest first and the root last, so closing a tree closes the
-			// sub-tasks before their parent (a parent can't close over open ones).
 			if descendants {
 				rows, err := t.QueryContext(ctx, `WITH RECURSIVE d(id, depth) AS (SELECT id, 0 FROM issues WHERE parent_id = ?
 					UNION ALL SELECT i.id, d.depth + 1 FROM issues i JOIN d ON i.parent_id = d.id WHERE d.depth < 50) SELECT id FROM d ORDER BY depth DESC, id`, id)
@@ -1583,9 +1544,6 @@ func (s *Service) BulkUpdate(ctx context.Context, actor *Actor, refs []string, p
 				ids = append(ids, id)
 			}
 		}
-		// Whatever order the caller listed them in, sub-tasks go before the
-		// parent they sit under, so closing a selection never trips the
-		// open-sub-task check just because the parent came first.
 		parentOf := map[int64]int64{}
 		for _, id := range ids {
 			var par sql.NullInt64
@@ -1609,7 +1567,6 @@ func (s *Service) BulkUpdate(ctx context.Context, actor *Actor, refs []string, p
 			if err != nil {
 				return err
 			}
-			// Re-parenting every descendant would flatten the tree.
 			pp := p
 			if descendants && !roots[id] {
 				pp.Parent = Opt[string]{}
@@ -1628,7 +1585,6 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 	sets, args := []string{}, []any{}
 	wrote := false
 	ev := func(field, old, new string) {
-		// A description autosaves as it's typed: one entry per sitting (WP-81).
 		t.emit(&Event{Kind: EvIssueUpdated, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key, Field: field, Old: old, New: new,
 			coalesce: field == "description" || field == "intent"})
 	}
@@ -1638,7 +1594,6 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 			return invalid("title is required")
 		}
 		if utf8.RuneCountInString(title) > maxTitleLen {
-			// Keep the whole text in the description rather than refuse or cut it.
 			desc := i.Description
 			if p.Description != nil {
 				desc = *p.Description
@@ -1682,12 +1637,9 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 		if actor.IsAgent() {
 			by = cmp(authorAgent(ctx, t, actor), "agent")
 		}
-		// A person's intent is theirs: an agent suggests one only where none
-		// is set or its own stands, and says what it would change in a comment.
 		if by != "" && old != "" && oldAgent == "" && intent != old {
 			return invalid("the intent is a person's words; an agent can't change or clear it. Say what you'd change in a comment (wp comment %s \"…\")", i.Key)
 		}
-		// The same words from a person make an agent's suggestion theirs.
 		if intent != old || (by == "" && oldAgent != "" && intent != "") {
 			if intent == "" {
 				by = ""
@@ -1697,11 +1649,6 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 		}
 	}
 	if wrote {
-		// An automation no agent stands behind (the title model, a rule) edits
-		// text someone else wrote; it is no author, so the text stays theirs,
-		// with its chain (WP-850). No person read what it wrote (a rule's
-		// title is a template over the trigger and its steps), so a review
-		// no longer covers the text and the screen reads it again.
 		if author := authorAgent(ctx, t, actor); author == "" && actor.Automation != nil {
 			sets = append(sets, "reviewed_by = NULL", "reviewed_at = NULL")
 		} else {
@@ -1760,7 +1707,7 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 		if spec != i.Agent {
 			sets, args = append(sets, "agent = ?"), append(args, spec)
 			if agentHumansOnly(spec) {
-				sets = append(sets, "agent_order = NULL") // humans' work has no place in the agents' order
+				sets = append(sets, "agent_order = NULL")
 			}
 			ev("agent", i.Agent, spec)
 			if !actor.IsAgent() {
@@ -1796,7 +1743,7 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 		case wf != nil && (i.WorkflowID == nil || *i.WorkflowID != wf.ID):
 			sets, args = append(sets, "workflow_id = ?"), append(args, wf.ID)
 			ev("workflow", "", wf.Name)
-			step, wfID = wf.Steps[0].Name, &wf.ID // a new workflow starts at its first step
+			step, wfID = wf.Steps[0].Name, &wf.ID
 		}
 	}
 	if p.Step != nil {
@@ -1866,7 +1813,6 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 			if r < RoleViewer {
 				return notFound("issue " + *p.Parent.Value)
 			}
-			// No cycles: the new parent must not be this issue or beneath it.
 			var cyc int
 			if err := t.QueryRowContext(ctx, `WITH RECURSIVE anc(id, parent_id, depth) AS (SELECT id, parent_id, 0 FROM issues WHERE id = ?
 				UNION ALL SELECT x.id, x.parent_id, a.depth + 1 FROM issues x JOIN anc a ON x.id = a.parent_id WHERE a.depth < 50)
@@ -1884,8 +1830,6 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 		}
 		if !int64PtrEq(newParent, i.ParentID) {
 			sets, args = append(sets, "parent_id = ?"), append(args, nullInt(newParent))
-			// Who put it there: a person directly, or nobody the trace to
-			// goals counts as one (WP-ADR50).
 			var by any
 			if newParent != nil && actor.actsAsPerson() {
 				by = actor.id()
@@ -1893,7 +1837,6 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 			sets, args = append(sets, "parent_by = ?", "parent_at = max(?, coalesce(parent_at, 0) + 1)"), append(args, by, s.nowMS())
 			ev("parent", oldKey, newKey)
 			defer func() {
-				// The old parent may now have all of its remaining children done.
 				if i.ParentID != nil {
 					s.checkChildrenDone(ctx, t, *i.ParentID)
 				}
@@ -1901,11 +1844,6 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 		}
 	}
 	var newStatus *Status
-	// shipped: an agent moved it by its pull request's link (wp ship), or
-	// asked to and found it there already, moved by the project's "In
-	// Review when a PR opens" rule a moment before. The agent holds the
-	// claim, or nobody does: a turn longer than the lease lets it lapse
-	// (WP-537).
 	shipped := false
 	if p.Status != nil {
 		st, err := s.resolveStatus(ctx, t, i.ProjectID, *p.Status)
@@ -1929,7 +1867,6 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 				return invalid("sprint %q is closed", sp.Name)
 			}
 			newSprint, name = &sp.ID, sp.Name
-			// Pulling backlog work into a sprint puts it on the board.
 			cat := i.Status.Category
 			if newStatus != nil {
 				cat = newStatus.Category
@@ -1946,8 +1883,6 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 		}
 	}
 	if newStatus != nil && isClosed(newStatus.Category) && !i.Closed() {
-		// An objective in effect decides whether the close stands or the
-		// task opens again for its next round (WP-ADR111).
 		var err error
 		if newStatus, err = s.objectiveClose(ctx, t, actor, i, newStatus, &p); err != nil {
 			return err
@@ -1964,11 +1899,6 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 			}
 		}
 	}
-	// The agent holding it shipped it (wp ship): its part is done, so its
-	// run and claim end and wp next doesn't hand it back (WP-246), and an
-	// autopilot session moves on (WP-537): only a run that ended done
-	// counts as a finished task there. A workflow's steps still hand on
-	// with wp done.
 	if shipped {
 		if err := s.endRun(ctx, t, i.ID, actor.Agent, "done", nil); err != nil {
 			return err
@@ -1984,7 +1914,6 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 		}
 		sets, args = append(sets, "rank = ?"), append(args, rank)
 	}
-	// Assignees.
 	if p.Assignees != nil {
 		want := map[int64]bool{}
 		for _, a := range *p.Assignees {
@@ -2015,7 +1944,6 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 			return err
 		}
 	}
-	// Labels.
 	labelsChanged := false
 	if p.Labels != nil {
 		if _, err := t.ExecContext(ctx, `DELETE FROM issue_labels WHERE issue_id = ?`, i.ID); err != nil {
@@ -2111,7 +2039,7 @@ func authorAgent(ctx context.Context, t *tx, actor *Actor) string {
 	if err := t.QueryRowContext(ctx, `SELECT model FROM agent_sessions WHERE id = ?`, actor.Session).Scan(&model); err != nil {
 		return a
 	}
-	model, _, _ = strings.Cut(strings.TrimSpace(model), "[") // claude-opus-5-5[1m]
+	model, _, _ = strings.Cut(strings.TrimSpace(model), "[")
 	switch {
 	case model == "" || len(model) > 80:
 		return a
@@ -2135,12 +2063,8 @@ func (s *Service) setStatus(ctx context.Context, t *tx, i *Issue, st *Status, se
 	}
 	*sets, *args = append(*sets, "status_id = ?"), append(*args, st.ID)
 	if nowClosed && !wasClosed {
-		// Closed work leaves the order people set for agents (WP-D15). An
-		// agent's close waits for a person's review (WP-272).
 		agent := t.actor.agentName()
 		if agent == "" && t.actor.closesForWork() {
-			// An automation, forge sync or token closing an agent's work
-			// (the merge of its pull request) is that agent's close (WP-500).
 			var err error
 			if agent, err = s.workAgent(ctx, t, i.ID); err != nil {
 				return err
@@ -2150,8 +2074,6 @@ func (s *Service) setStatus(ctx context.Context, t *tx, i *Issue, st *Status, se
 			"close_reviewed_by = NULL", "close_reviewed_at = NULL", "agent_order = NULL")
 		*args = append(*args, s.nowMS(), nullUser(t.actor.id()), agent, agent != "")
 	} else if wasClosed && nowClosed && t.actor.agentName() != "" {
-		// An agent re-labelling a close (Done to Won't Do) is its own close
-		// and waits for review, whoever closed it before.
 		*sets = append(*sets, "resolved_at = ?", "resolved_by = ?", "resolved_agent = ?", "close_review = 1", "close_reviewed_by = NULL", "close_reviewed_at = NULL")
 		*args = append(*args, s.nowMS(), nullUser(t.actor.id()), t.actor.agentName())
 	} else if !nowClosed && wasClosed {
@@ -2166,7 +2088,6 @@ func (s *Service) setStatus(ctx context.Context, t *tx, i *Issue, st *Status, se
 	}
 	if nowClosed && !wasClosed && i.ParentID != nil {
 		parentID := *i.ParentID
-		// Check after this issue's UPDATE has run.
 		t.afterUpdate(func() { s.checkChildrenDone(ctx, t, parentID) })
 	}
 	return nil
@@ -2292,8 +2213,6 @@ func (s *Service) Transition(ctx context.Context, actor *Actor, ref, status, com
 	return s.UpdateIssue(ctx, actor, ref, IssuePatch{Status: &status, Comment: comment})
 }
 
-// ---- delete / move ----
-
 // DeleteIssue deletes an issue. Its children move up to its parent unless
 // cascade is set, in which case they are deleted too.
 // errPublishByPerson refuses publishing from anything that can't see
@@ -2314,7 +2233,6 @@ func (s *Service) PublishIssue(ctx context.Context, actor *Actor, ref string) (*
 		if !i.Draft {
 			return invalid("%s isn't a draft", i.Key)
 		}
-		// Text from outside under it waits for its own reading (WP-279).
 		ids, err := queryIDs(ctx, t, `WITH RECURSIVE d(id) AS (SELECT ? UNION SELECT x.id FROM issues x JOIN d ON x.parent_id = d.id WHERE x.outside = 0)
 			SELECT i.id FROM d JOIN issues i ON i.id = d.id WHERE i.draft = 1`, i.ID)
 		if err != nil {
@@ -2333,7 +2251,6 @@ func (s *Service) PublishIssue(ctx context.Context, actor *Actor, ref string) (*
 			if err := t.QueryRowContext(ctx, `SELECT p.key || '-' || i.number FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.id = ?`, id).Scan(&key); err != nil {
 				return err
 			}
-			// Published now, so this sets off what a new issue would have.
 			t.emit(&Event{Kind: EvIssueUpdated, ProjectID: i.ProjectID, IssueID: id, IssueKey: key, Field: "draft", Old: "draft", New: "published"})
 		}
 		return nil
@@ -2398,7 +2315,6 @@ func (s *Service) DeleteIssue(ctx context.Context, actor *Actor, ref string, cas
 		if err != nil {
 			return err
 		}
-		// Deleting needs project edit rights, not just a share.
 		if err := s.requireProjectRole(ctx, t, actor, i.ProjectID, RoleEditor); err != nil && actor.Automation == nil {
 			return err
 		}
@@ -2430,7 +2346,6 @@ func (s *Service) DeleteIssue(ctx context.Context, actor *Actor, ref string, cas
 		if _, err := t.ExecContext(ctx, `DELETE FROM issue_search WHERE rowid IN (`+ph+`)`, args...); err != nil {
 			return err
 		}
-		// Children first so parent_id SET NULL doesn't fire needlessly.
 		slices.Reverse(ids)
 		for _, id := range ids {
 			if _, err := t.ExecContext(ctx, `DELETE FROM issues WHERE id = ?`, id); err != nil {
@@ -2440,7 +2355,7 @@ func (s *Service) DeleteIssue(ctx context.Context, actor *Actor, ref string, cas
 		t.emit(&Event{Kind: EvIssueDeleted, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key, Old: i.Title, draft: i.Draft})
 		detail := "deleted “" + excerpt(i.Title, 120) + "”"
 		if i.Draft {
-			detail = "deleted a draft" // its title stays out of the audit log (WP-42)
+			detail = "deleted a draft"
 		}
 		if len(ids) > 1 {
 			detail += fmt.Sprintf(" and %d sub-issues", len(ids)-1)
@@ -2550,13 +2465,11 @@ func (s *Service) MoveToProject(ctx context.Context, actor *Actor, ref, projectR
 			newKey := fmt.Sprintf("%s-%d", dst.Key, number)
 			t.emit(&Event{Kind: EvIssueUpdated, ProjectID: dst.ID, IssueID: m.id, IssueKey: newKey, Field: "project",
 				Old: fmt.Sprintf("%s-%d", srcKey, m.number), New: newKey})
-			// Live clients of the old project need to drop it.
 			t.emit(&Event{Kind: EvProjectUpdated, ProjectID: i.ProjectID})
 			if err := s.reindex(ctx, t, m.id); err != nil {
 				return err
 			}
 		}
-		// The moved root leaves its old parent.
 		if i.ParentID != nil {
 			if _, err := t.ExecContext(ctx, `UPDATE issues SET parent_id = NULL WHERE id = ?`, i.ID); err != nil {
 				return err
@@ -2570,8 +2483,6 @@ func (s *Service) MoveToProject(ctx context.Context, actor *Actor, ref, projectR
 	}
 	return s.GetIssue(ctx, actor, itoa64(id))
 }
-
-// ---- watching & sharing ----
 
 // Watch subscribes or unsubscribes the actor from an issue's notifications.
 func (s *Service) Watch(ctx context.Context, actor *Actor, ref string, on bool) error {
@@ -2598,7 +2509,6 @@ func (s *Service) ShareIssue(ctx context.Context, actor *Actor, ref, userRef, ro
 		if err != nil {
 			return err
 		}
-		// Only project editors can share; a guest cannot re-share.
 		if err := s.requireProjectRole(ctx, t, actor, i.ProjectID, RoleEditor); err != nil {
 			return err
 		}
@@ -2625,8 +2535,6 @@ func (s *Service) ShareIssue(ctx context.Context, actor *Actor, ref, userRef, ro
 		return nil
 	})
 }
-
-// ---- relations ----
 
 func (s *Service) relations(ctx context.Context, q queryer, actor *Actor, issueID int64) ([]Relation, error) {
 	const cols = `r.id, r.kind, o.id, o.project_id, p.key || '-' || o.number, o.title, o.type, st.category, st.name, o.resolved_at, r.named_in IS NOT NULL, coalesce(r.found, ''),
@@ -2676,7 +2584,6 @@ func (s *Service) relations(ctx context.Context, q queryer, actor *Actor, issueI
 	for n := range all {
 		all[n].CreatedBy = s.userRefByID(ctx, q, byOf[n])
 	}
-	// Relations can cross projects; only show the ones the viewer can open.
 	out := []Relation{}
 	for n, r := range all {
 		if s.canSee(ctx, q, actor, r.Issue.ID, projectOf[n]) {
@@ -2754,7 +2661,7 @@ func filedAfterDone(a, b *Issue) (later, earlier *Issue) {
 func relationBasis(actor *Actor) string {
 	switch {
 	case actor.Automation != nil && actor.Automation.ID < 0:
-		return linkBasisInferred // Waypoint's own matcher (aiActorNamed)
+		return linkBasisInferred
 	case actor.Automation != nil:
 		return linkBasisAutomation
 	case !actor.actsAsPerson():
@@ -2802,13 +2709,6 @@ func (s *Service) relate(ctx context.Context, t *tx, actor *Actor, a, b *Issue, 
 	if namedIn != nil {
 		basis = linkBasisInferred
 	}
-	// Relating a task to one done before it was filed says it is more work
-	// on what that one did (WP-1003): someone chose the link, so it is a
-	// follow-up, and found says Waypoint read the kind from the order. Not
-	// a link the text made or Waypoint's own matcher guessed: nobody chose
-	// those. A pair that already has a follow-up either way keeps it, and
-	// a plain relation said again says that one: two follow-ups never point
-	// at each other, and no plain row sits beside one.
 	found := ""
 	if kind == "relates" && namedIn == nil {
 		var follower int64
@@ -2828,8 +2728,6 @@ func (s *Service) relate(ctx context.Context, t *tx, actor *Actor, a, b *Issue, 
 		}
 	}
 	if namedIn == nil {
-		// One someone chose takes the place of a link the text made between
-		// the two; a follow-up, of any plain relation between them.
 		replacement := given
 		if subkind != "" {
 			replacement += " (" + subkind + ")"
@@ -2838,7 +2736,6 @@ func (s *Service) relate(ctx context.Context, t *tx, actor *Actor, a, b *Issue, 
 			return nil, err
 		}
 	}
-	// A symmetric kind is one row per pair, whichever end made it.
 	var existing int64
 	var had string
 	symmetric := 0
@@ -2854,15 +2751,13 @@ func (s *Service) relate(ctx context.Context, t *tx, actor *Actor, a, b *Issue, 
 		inserted, err = s.insertRelation(ctx, t, newRelation{Src: src.ID, Dst: dst.ID, Kind: kind, Subkind: subkind, NamedIn: namedIn, Found: found,
 			Basis: basis, CreatedBy: actor.id(), CreatedAgent: actor.creditAgent()})
 		if err == nil && !inserted {
-			return made, nil // already there, as said: nothing more to record
+			return made, nil
 		}
 	case err != nil:
 		return nil, err
 	case subkind == "" || subkind == had:
 		return made, nil
 	default:
-		// The pair already has the kind: saying it again with a subkind
-		// changes that, and the history says who did (WP-1036).
 		sessID, sessTask := sessionStamp(ctx, t, actor)
 		_, err = t.ExecContext(ctx, `UPDATE issue_relations SET subkind = ?, basis = ?, created_by = ?, created_agent = ?, session_id = ?, session_issue_id = ? WHERE id = ?`,
 			subkind, basis, nullUser(actor.id()), actor.creditAgent(), sessID, sessTask, existing)
@@ -2870,8 +2765,6 @@ func (s *Service) relate(ctx context.Context, t *tx, actor *Actor, a, b *Issue, 
 	if err != nil {
 		return nil, err
 	}
-	// A pair a person chose to relate takes its suggestions (WP-958); an
-	// agent's or automation's relation isn't a person's decision.
 	if namedIn == nil && basis != linkBasisInferred && actor.actsAsPerson() {
 		if err := s.noteRelated(ctx, t, actor, a.ID, b.ID); err != nil {
 			return nil, err
@@ -2882,8 +2775,6 @@ func (s *Service) relate(ctx context.Context, t *tx, actor *Actor, a, b *Issue, 
 		said += " (" + subkind + ")"
 	}
 	if holder, named := relationEventHome(a, b); holder == b {
-		// Recorded on the draft, so its key stays out of the published
-		// issue's history (WP-42).
 		rel := relationFrom(kind, src.ID != b.ID)
 		if subkind != "" {
 			rel += " (" + subkind + ")"
@@ -2953,9 +2844,6 @@ func (s *Service) RemoveRelation(ctx context.Context, actor *Actor, ref string, 
 		} else if err != nil {
 			return err
 		}
-		// A relation to a task the actor can't open isn't theirs to remove,
-		// and says nothing but what a missing one does: GetIssue doesn't
-		// list it, and removing it would write its key into this history.
 		otherID := dst
 		if src != a.ID {
 			otherID = src
@@ -2983,8 +2871,6 @@ func (s *Service) RemoveRelation(ctx context.Context, actor *Actor, ref string, 
 		if _, err := t.ExecContext(ctx, `DELETE FROM issue_relations WHERE id = ?`, relationID); err != nil {
 			return err
 		}
-		// Unrelated again, a suggestion it accepted is undecided again
-		// (WP-958): it can be suggested, and dismissed.
 		if err := s.unnoteRelated(ctx, t, src, dst); err != nil {
 			return err
 		}
@@ -2992,8 +2878,6 @@ func (s *Service) RemoveRelation(ctx context.Context, actor *Actor, ref string, 
 		return nil
 	})
 }
-
-// ---- comments ----
 
 // Comment is a message on an issue.
 type Comment struct {
@@ -3184,7 +3068,6 @@ func (s *Service) UpdateComment(ctx context.Context, actor *Actor, commentID int
 		if err := t.QueryRowContext(ctx, `SELECT issue_id, author_id, agent FROM comments WHERE id = ?`, commentID).Scan(&issueID, &author, &agent); err != nil {
 			return notFound("comment")
 		}
-		// Authors lose their comments' edit rights along with the issue.
 		i, _, err := s.getIssueFor(ctx, t, actor, itoa64(issueID), RoleViewer, false)
 		if err != nil {
 			return notFound("comment")
@@ -3260,8 +3143,6 @@ func truncateBytes(s string, n int) string {
 	}
 	return s[:cut] + "…"
 }
-
-// ---- history ----
 
 // History returns an issue's events, newest first.
 func (s *Service) History(ctx context.Context, actor *Actor, ref string, limit int) ([]Event, error) {

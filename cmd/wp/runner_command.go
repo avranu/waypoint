@@ -139,7 +139,7 @@ func (p *runnerProc) execCommand(ctx context.Context, run *jobRun, in commandJob
 	cmd := shellCommand(ctx, in.Command)
 	cmd.Dir = dir
 	cmd.Env = append(jobEnv(os.Environ(), in.Env, in.KeepKeys), runnerSelfEnv(p.allowed)...)
-	cmd.Stdout, cmd.Stderr = run.out, run.out // one writer: output stays in order
+	cmd.Stdout, cmd.Stderr = run.out, run.out
 	cmd.Stdin = nil
 	setProcGroup(cmd)
 	killOnCancel(cmd)

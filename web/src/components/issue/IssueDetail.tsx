@@ -156,10 +156,7 @@ function Loaded({
   const editable = issue.role === 'owner' || issue.role === 'editor'
   const closed = issue.status.category === 'done' || issue.status.category === 'canceled'
   const publish = usePublishIssue()
-  // Empty sections stay out of sight; "+ File" and friends bring them back.
   const [opened, setOpened] = useState<string[]>([])
-  // The section a "+" just opened starts adding, once: coming back to
-  // Details later doesn't reopen its box or the file chooser.
   const [starting, setStarting] = useState('')
   const [objectiveOpen, setObjectiveOpen] = useState(false)
   const knowledge = useQuery(linksQuery({ type: 'issue', key: issue.key }))
@@ -168,12 +165,10 @@ function Loaded({
     file: (issue.attachments?.length ?? 0) > 0,
     link: issue.links.length > 0,
     relation: issue.relations.length > 0,
-    // Mentions have their own section below, as in KnowledgeLinks' skipMentions.
     knowledge: (knowledge.data ?? []).some((l) => !(l.auto && l.rel === 'mentions')),
   }
   const visible = (k: string) => filled[k] || opened.includes(k)
   const hidden = ['sub-issue', 'file', 'link', 'relation', 'knowledge'].filter((k) => !visible(k))
-  // Summary: what it's for and where it stands; Details: everything (WP-780).
   const [tab, setTab] = useIssueTab()
   const details = tab === 'details'
   useEffect(() => {
@@ -300,7 +295,6 @@ function Loaded({
             <DeliveryBanner issue={issue} className="mt-3" />
           </div>
           <IssueTabs tab={tab} setTab={setTab} />
-          {/* On narrow layouts properties sit under the title. */}
           <div className="@4xl:hidden">
             <Properties issue={issue} project={project} editable={editable} compact />
           </div>
@@ -743,15 +737,11 @@ function TitleEditor({
   const key = `title:${issueKey}`
   const [stored] = useState(() => (editable ? readDraft<string>(key) : null))
   const [draft, setDraft] = useState(stored ?? value)
-  // Dirty: the field holds an edit the server hasn't got. Only a clean field
-  // follows the saved title, so a refetch can't wipe what's being typed.
   const [dirty, setDirty] = useState(stored !== null && stored !== value)
   const [restored, setRestored] = useState(dirty)
   const [kept, setKept] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const saving = useRef(false)
-  // Set by Esc: the blur it causes fires before React re-renders, with the
-  // edit still in this render's closure, and must not save it.
   const cancelled = useRef(false)
   const ref = useRef<HTMLTextAreaElement>(null)
   useUnsaved(dirty && !kept)
@@ -780,7 +770,6 @@ function TitleEditor({
     setError(null)
     clearDraft(key)
   }
-  // True when there's nothing left to save.
   const commit = async (): Promise<boolean> => {
     if (saving.current) return false
     if (cancelled.current) {
@@ -833,7 +822,6 @@ function TitleEditor({
             const el = e.currentTarget
             if (e.key === 'Enter') {
               e.preventDefault()
-              // Stay in the field unless it saved.
               void commit().then((done) => done && el.blur())
             } else if (e.key === 'Escape') {
               e.preventDefault()
@@ -978,12 +966,8 @@ function Properties({
     Start: !!issue.start_date,
     Due: !!issue.due_date,
   }
-  // Everyone who can set a field sees all of them, each its own picker, so
-  // setting one is one click (the strip wraps; no "More" menu in between).
   const always = !editable ? [] : OPTIONAL
   const show = (k: string) => always.includes(k) || isSet[k]
-  // A row's picker takes the full width, so the lock's "Humans only" text
-  // goes under it instead of clipping "None" (WP-1196 audit).
   const lockedRow = v === 'row' && whoOf(issue.agent ?? '') === 'humans'
   const assignee = (
     <span className={clsx('flex min-w-0 items-center gap-0.5', lockedRow && 'flex-wrap')}>
@@ -1108,7 +1092,6 @@ function Properties({
       </div>
     )
   }
-  // Watchers who are only the reporter say nothing new.
   const watchersNews =
     issue.shares.length > 0 ||
     issue.watchers.some((w) => issue.reporter_agent || w.id !== issue.reporter?.id)
@@ -1126,7 +1109,6 @@ function Properties({
       </Prop>
       <Prop label="Assignees">
         {assignee}
-        {/* The agent working on it counts as an assignee while its claim lasts. */}
         <div className="px-2 empty:hidden">
           <ClaimedBy issue={issue} />
         </div>
@@ -1226,7 +1208,6 @@ function Children({
   const details = () =>
     openDetails(add, { type: childType, parent: issue.key, project: issue.project_key })
   if (!editable && issue.children.length === 0) return null
-  // With none, it waits behind "+ Sub-issue" with the other empty sections.
   if (issue.children.length === 0 && !adding && !add.text) return null
   return (
     <Block

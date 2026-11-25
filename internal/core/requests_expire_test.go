@@ -8,9 +8,6 @@ import (
 	"time"
 )
 
-// Requests a hook filed for one tool call expire once the agent has moved
-// on (WP-66); requests an agent filed itself don't.
-
 // askToRun files the permission request an agent asks for one tool call
 // (a refused call the hooks see is logged instead, WP-232); a is the
 // session's agent, nil for f's own session.
@@ -79,8 +76,6 @@ func TestRequestsExpireAtANewPrompt(t *testing.T) {
 	if _, err := f.s.DecideRequest(f.ctx, f.admin, f.byTitle("make deploy").Ref, RequestDecision{Decision: "approve"}); err != nil {
 		t.Fatal(err)
 	}
-	// The turn ends: the refused call's approval waits for the next prompt
-	// (WP-233), the rest still waits for a person.
 	if res := f.stop("I couldn't clean the build", nothingPending()); len(res.Deliver) != 0 {
 		t.Fatalf("delivered %d", len(res.Deliver))
 	}
@@ -88,7 +83,6 @@ func TestRequestsExpireAtANewPrompt(t *testing.T) {
 		t.Fatalf("waiting before the prompt: %s", got)
 	}
 
-	// A new prompt: the refused call and the terminal question are over.
 	f.hook("UserPromptSubmit", func(h *HookEvent) { h.Prompt = "clean it another way" })
 	f.s.Wait()
 	expiredWith(t, f.byTitle("rm -rf build"), expiredNewPrompt)
@@ -102,18 +96,15 @@ func TestRequestsExpireAtANewPrompt(t *testing.T) {
 	if got := f.waitingTitles(); got != "Set the deploy secret" {
 		t.Fatalf("waiting after the prompt: %s", got)
 	}
-	// Kept in history, filterable, and final.
 	if page, _ := f.s.ListRequests(f.ctx, f.admin, RequestQuery{State: RequestExpired}); page.Total != 2 {
 		t.Fatalf("expired: %d", page.Total)
 	}
 	if _, err := f.s.DecideRequest(f.ctx, f.admin, f.byTitle("rm -rf build").Ref, RequestDecision{Decision: "approve"}); err == nil || !strings.Contains(err.Error(), "already expired") {
 		t.Fatalf("approving an expired request: %v", err)
 	}
-	// Nothing about them reaches the agent.
 	if res := f.stop("cleaned it with make clean", nothingPending()); len(res.Deliver) != 0 {
 		t.Fatalf("delivered an expired request: %q", res.Text)
 	}
-	// A call asked for in this turn waits until the next prompt.
 	f.askToRun(nil, "git push --force", "tu-3")
 	if r := f.byTitle("git push"); r.State != RequestOpen {
 		t.Fatalf("this turn's request: %s", r.State)
@@ -134,7 +125,6 @@ func TestRequestsExpireWhenTheSessionEnds(t *testing.T) {
 	if got := f.waitingTitles(); got != "" {
 		t.Fatalf("still waiting: %s", got)
 	}
-	// The follow-up of a session that ended before it finished stays held.
 	if x := f.session(); x.FinishedAt != nil {
 		t.Fatal("expiring at the end finished the session")
 	}
@@ -158,14 +148,12 @@ func TestExpireRequestsSweep(t *testing.T) {
 		f.setClock(f.clockNow().Add(time.Second))
 		f.askToRun(a, cmd, "tu-"+cmd)
 	}
-	// a: a prompt after the refusal, recorded before Waypoint expired requests.
 	a, aAgent := start("cli-a")
 	deny(aAgent, "curl a")
 	f.setClock(f.clockNow().Add(time.Minute))
 	if err := f.s.sessionTimeline(f.ctx, f.s.db.W, a, f.s.nowMS(), "prompt", "", 0, "", "", "go on", sql.NullInt64{}, nil); err != nil {
 		t.Fatal(err)
 	}
-	// b: ended; its agent's own request outlives it.
 	b, bAgent := start("cli-b")
 	deny(bAgent, "curl b")
 	if _, _, err := f.s.CreateRequest(f.ctx, bAgent, RequestInput{Kind: RequestQuestion, Title: "Which region?", Questions: []Question{{Question: "Which region?"}}}); err != nil {
@@ -174,11 +162,9 @@ func TestExpireRequestsSweep(t *testing.T) {
 	if _, err := f.s.db.W.Exec(`UPDATE agent_sessions SET state = 'ended' WHERE id = ?`, b); err != nil {
 		t.Fatal(err)
 	}
-	// c: not heard from in a day.
 	_, cAgent := start("cli-c")
 	deny(cAgent, "curl c")
 	f.setClock(f.clockNow().Add(sessionEndedAfter + time.Hour))
-	// d: still going.
 	_, dAgent := start("cli-d")
 	deny(dAgent, "curl d")
 

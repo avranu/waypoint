@@ -11,11 +11,6 @@ import (
 	"time"
 )
 
-// Time-based automation triggers: an issue coming due, an issue gone quiet,
-// schedules (daily, weekly, cron …) and count thresholds. The scheduler
-// checks them every few minutes; automation_fires makes each fire once per
-// issue and period.
-
 // RunTimedAutomations fires every time-based automation that is due.
 func (s *Service) RunTimedAutomations(ctx context.Context) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT `+automationCols+` FROM automations WHERE enabled = 1 AND session_id IS NULL ORDER BY project_id, position, id`)
@@ -107,8 +102,6 @@ func (s *Service) runTimed(ctx context.Context, a *Automation) error {
 			if err != nil {
 				return err
 			}
-			// The scheduler looks every five minutes: an occurrence in the
-			// last ten is due (and fires once, by its period).
 			at, ok := c.Latest(now, 10*time.Minute)
 			if !ok {
 				return nil
@@ -118,14 +111,10 @@ func (s *Service) runTimed(ctx context.Context, a *Automation) error {
 			return nil
 		}
 		if strings.TrimSpace(a.Rule.If) == "" {
-			// A rule about no issue in particular, e.g. a recurring issue.
 			return s.fire(ctx, a, &Event{Kind: kind, ProjectID: a.ProjectID, New: today, At: s.now().UTC()}, period)
 		}
 	}
 	q := strings.TrimSpace(a.Rule.If + " " + extra)
-	// Page through every match: issues that already fired stay in the
-	// results (a rule that only notifies changes nothing), so the first page
-	// alone could hide the rest forever.
 	var issues []*Issue
 	for offset := 0; offset < 10000; offset += 500 {
 		res, err := s.Search(ctx, SystemActor(), SearchParams{Query: q, Project: projectKey, Limit: 500, Offset: offset})
@@ -141,9 +130,9 @@ func (s *Service) runTimed(ctx context.Context, a *Automation) error {
 		p := cmp(period, today)
 		switch tr.Event {
 		case "due_soon":
-			p = deref(i.DueDate) // again if the due date moves
+			p = deref(i.DueDate)
 		case "stale":
-			p = strconv.FormatInt(i.UpdatedAt.UnixMilli(), 10) // once per quiet spell
+			p = strconv.FormatInt(i.UpdatedAt.UnixMilli(), 10)
 		}
 		e := &Event{Kind: kind, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key, New: today, At: s.now().UTC()}
 		if err := s.fire(ctx, a, e, p); err != nil {
@@ -204,8 +193,6 @@ func (s *Service) projectLocation(ctx context.Context, projectID int64) *time.Lo
 	}
 	return time.UTC
 }
-
-// ---- count thresholds ----
 
 // countDebounce is how long after an issue changes the counts are checked.
 var countDebounce = 30 * time.Second

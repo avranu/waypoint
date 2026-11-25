@@ -1,9 +1,3 @@
-// A task's work log on its issue page (WP-285): autopilot's adversarial
-// review rounds with what each found and fixed, the findings of the pull
-// request reviews and what became of them, notes, and the runs and pull
-// requests around them, oldest first. Waypoint writes all of it; a note is
-// the only thing a person adds.
-
 import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -107,7 +101,6 @@ export function summaryParts(s: WorkLogSummary): string[] {
     if (s.pushed > 0) p += ` · ${s.pushed} pushed fixes`
     parts.push(p)
   } else if (s.note_found > 0) {
-    // Only notes tagged found, fixed or rejected.
     parts.push(`${s.note_found} found, ${s.note_fixed} fixed, ${s.note_rejected} rejected in notes`)
   }
   if (s.own_reviews > 0) parts.push(`${plural(s.own_reviews, 'own review')}: ${s.own_found} found`)
@@ -316,7 +309,6 @@ function NoteForm({ issueKey, onDone }: { issueKey: string; onDone: () => void }
     mutationFn: () => api.post(`/issues/${enc(issueKey)}/worklog`, { body: body.trim(), tag }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['workLog', issueKey] })
-      // The form stays for the next note; Esc or Cancel closes it.
       setBody('')
       box.current?.focus()
     },

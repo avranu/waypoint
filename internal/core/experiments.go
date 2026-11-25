@@ -1,19 +1,5 @@
 package core
 
-// Experiments (WP-254, WP-ADR53): A/B tests of how agents work. Each
-// experiment is defined here, in code: its arms (the first is the control,
-// which is always what Waypoint does when no run is live), where the arms
-// differ, and what it is measured by. An admin starts a run of one, with
-// weights, an end date and a target; tasks are randomised to an arm when
-// they reach the point the arms differ at, and keep it. Results compare the
-// arms' tasks on the usage the token ledger already attributes to tasks.
-//
-// Assignment is by a hash of the experiment, the run and the task, so it is
-// stable, independent between experiments (a task can be in several, a
-// factorial design) and re-randomised by each new run. Only agents are
-// assigned: a person's wp next, a read-only token and an older wp get the
-// control without becoming a unit.
-
 import (
 	"context"
 	"crypto/sha256"
@@ -585,8 +571,6 @@ func (s *Service) experimentArms(ctx context.Context, issueID int64, keys []stri
 			return out, err
 		}
 		if expose {
-			// The arm is stored by now, so a failed exposure still reports
-			// it (the control here would disagree with the stored arm).
 			if _, err := s.db.W.ExecContext(ctx, `UPDATE experiment_units SET exposed_at = ? WHERE run_id = ? AND issue_id = ? AND exposed_at IS NULL`, now, r.ID, issueID); err != nil {
 				s.log.WarnContext(ctx, "experiment exposure", "experiment", r.Experiment, "issue", issueID, "err", err)
 			}
@@ -667,11 +651,7 @@ func (s *Service) IssueArms(ctx context.Context, actor *Actor, key string, in Is
 		return nil, err
 	}
 	out.Arms = arms
-	// Only the agent holding the task draws its arm: the first draw is kept,
-	// so it must be the take's (WP-ADR129).
 	if in.Delegation && i.ClaimedBy != "" && i.ClaimedBy == actor.agentName() {
-		// A failed draw leaves the task as it was before the policy: the
-		// take goes on, with nothing said.
 		if out.Delegation, err = s.delegationArm(ctx, actor, i, via); err != nil {
 			s.log.WarnContext(ctx, "delegation policy: draw the task's arm", "issue", i.ID, "err", err)
 			out.Delegation = nil
@@ -683,9 +663,9 @@ func (s *Service) IssueArms(ctx context.Context, actor *Actor, key string, in Is
 // Guardrails: a live run stops by itself when an arm is plainly worse than
 // the control, so a bad arm costs a bounded amount.
 const (
-	guardRatio    = 1.5  // the arm's primary metric median at least this many times the control's
-	guardP        = 0.01 // and this sure (unadjusted: a guardrail errs toward stopping)
-	guardDoneDrop = 0.15 // or its done rate this much lower, as sure
+	guardRatio    = 1.5
+	guardP        = 0.01
+	guardDoneDrop = 0.15
 )
 
 // sweepExperiments stops live runs that reached their end date or target,

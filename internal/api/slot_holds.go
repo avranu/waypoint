@@ -32,12 +32,6 @@ func (s *Server) slotHoldsPost(w http.ResponseWriter, r *http.Request) (any, err
 		}
 		*dst = n
 	}
-	// Fields this server doesn't know are let through (a wp newer than the
-	// server must not have every batch refused), and a body that can't be
-	// read still records what the machine says is waiting, so it shows in
-	// the collector health instead of failing unseen. A hold that does not
-	// decode (a field of the wrong type) becomes an empty one, which is
-	// counted as rejected, so one bad hold does not refuse the batch.
 	var body struct {
 		Holds []json.RawMessage `json:"holds"`
 	}

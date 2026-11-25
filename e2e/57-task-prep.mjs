@@ -98,7 +98,6 @@ let providerId;
   ok(prep.notes?.files.length === 1 && prep.dropped === 1, `only picks in the bundle kept: ${JSON.stringify(prep.notes?.files)} dropped ${prep.dropped}`);
   ok(prep.notes?.questions[0] === "Is a WIP: title a draft?", "its questions are kept");
 
-  // the ledger: three sessions, one per task, closed now
   const now = Date.now();
   const h = now - (now % HOUR) - HOUR;
   const chunk = (s, k) => ({
@@ -116,7 +115,6 @@ let providerId;
   const sess = db.prepare("INSERT INTO agent_sessions(user_id, machine, cli_id, issue_id, started_at, last_seen_at) VALUES (?, 'e2ebox', ?, ?, ?, ?)");
   ["tp-a", "tp-b", "tp-c"].forEach((s, i) => sess.run(uid, s, issues[i].id, h, h));
   db.prepare("UPDATE issues SET resolved_at = ? WHERE id IN (?, ?, ?)").run(now - 60_000, issues[0].id, issues[1].id, issues[2].id);
-  // held_out is the prep policy's draw, which this setup doesn't make: set it.
   db.prepare("UPDATE task_preps SET shown_at = ?, held_out = 0 WHERE issue_id = ?").run(h, issues[0].id);
   db.prepare("INSERT INTO task_preps(issue_id, text_hash, state, bundle, held_out, shown_at, created_at, updated_at) VALUES (?, 'x', 'ready', '{}', 1, ?, ?, ?)")
     .run(issues[1].id, h, h, h);
@@ -156,7 +154,6 @@ for (const [width, scheme] of looks([[1440, "light"], [390, "light"], [390, "dar
   await page.screenshot({ path: `${out}/usage-prep-${width}-${scheme}.png` });
   await overflow("usage");
 
-  // A paid fallback: marked with its toggle, saved, and asked last on its own.
   await page.request.put(`${base}/api/v1/ai/tasks/prep`, {
     headers: H,
     data: { provider_id: providerId, model: "fake-prep", fallbacks: [{ provider_id: providerId, model: "fake-haiku" }] },

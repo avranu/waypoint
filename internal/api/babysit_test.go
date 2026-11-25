@@ -42,7 +42,6 @@ func TestBabysitAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// sam is a Waypoint person on the forge: their pull request isn't from outside (WP-281).
 	if _, err := svc.SetForgePeople(ctx, a, f.ID, []core.ForgePersonInput{{Login: "sam", User: "sam", PersonOnly: true}}); err != nil {
 		t.Fatal(err)
 	}

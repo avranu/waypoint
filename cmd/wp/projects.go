@@ -227,8 +227,6 @@ func projectShow(c *cli, args []string) error {
 	return nil
 }
 
-// ---- time ----
-
 var timerCmd = &command{
 	name: "timer", group: "Projects and time", args: "[start [KEY] | stop]",
 	summary: "start, stop or check your timer",
@@ -296,7 +294,7 @@ func timerStart(c *cli, args []string) error {
 	}
 	key, rest, err := c.currentKey(pos)
 	if err != nil && len(pos) == 0 {
-		key, err = "", nil // a timer on no issue
+		key, err = "", nil
 	}
 	if err != nil || len(rest) > 0 {
 		return c.usage("expected an issue KEY (or none)")
@@ -366,8 +364,6 @@ func cmdLog(c *cli, args []string) error {
 		return "Logged " + t.String()
 	})
 }
-
-// ---- context ----
 
 var contextCmd = &command{
 	name: "context", group: "Start here", args: "",

@@ -6,10 +6,6 @@ import (
 	"time"
 )
 
-// More committed since the review was asked (WP-1325): its audit reads what
-// was pushed when it was asked, so a ship after more commits starts over
-// instead of taking that audit for the review of the change.
-
 func (a *apEnv) auditStatus(id int64) string {
 	a.t.Helper()
 	var st string
@@ -102,7 +98,6 @@ func TestReviewKeepsAnAuditWithFindings(t *testing.T) {
 	if a.newestRoundID() != first || a.round(first).state != RoundPending {
 		t.Fatalf("round changed: %+v", a.round(first))
 	}
-	// Notice: the audit's findings are the session's to decide.
 	ra, _ := a.roundAuditRow(first)
 	if want := "is audit #" + itoa64(ra.id) + ", with 1 finding still to decide"; !strings.Contains(res.Notice, want) {
 		t.Errorf("notice = %q, want it to contain %q", res.Notice, want)
@@ -131,7 +126,7 @@ func TestShipStartsThePendingRoundsReviewer(t *testing.T) {
 		t.Fatalf("ship = %+v, %v", res, err)
 	}
 	a.lapse(time.Minute)
-	a.tick(time.Minute) // the round's step asks the reviewer it has none of
+	a.tick(time.Minute)
 	if n := a.auditsOfRound(first); n != 1 || a.newestRoundID() != first {
 		t.Fatalf("audits = %d, newest round %d", n, a.newestRoundID())
 	}
@@ -188,7 +183,6 @@ func TestReviewStartsOverOnAHeadTheAuditDidNotRead(t *testing.T) {
 	if a.round(first).state != RoundInterrupted || a.newestRoundID() == first {
 		t.Fatalf("round = %+v, newest %d", a.round(first), a.newestRoundID())
 	}
-	// The new round reads that head: shipping it again changes nothing.
 	second := a.newestRoundID()
 	if _, err := a.shipStarted(key, ShipAuto, headAt(at-200)); err != nil || a.newestRoundID() != second {
 		t.Fatalf("shipped again: newest %d, want %d (%v)", a.newestRoundID(), second, err)
@@ -522,7 +516,6 @@ func TestNoteRoundHeadKeepsAnAskedAudit(t *testing.T) {
 	if bp == nil || bp.HeadTime != at || bp.HeadSHA != "aaaa" {
 		t.Fatalf("head = %+v", bp)
 	}
-	// Control: with no audit asked, it is filled.
 	if _, err := a.s.db.W.Exec(`UPDATE work_log SET audit_id = NULL WHERE id = ?`, round); err != nil {
 		t.Fatal(err)
 	}

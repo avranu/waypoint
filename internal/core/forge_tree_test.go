@@ -50,8 +50,6 @@ func TestGitTreeID(t *testing.T) {
 	if got, _ := gitTreeID(rev); got != realTreeID {
 		t.Errorf("reversed: %q", got)
 	}
-	// git sorts a subtree as if its name ended in "/": "a-b" before "a/".
-	// (git mktree)
 	if a, _ := gitTreeID([]treeEntry{{Mode: "040000", Path: "a", SHA: realTree[0].SHA}, {Mode: "100644", Path: "a-b", SHA: realTree[1].SHA}}); a != "7d26165c257e9664f1a89d83f34f7f8ee37d12d9" {
 		t.Errorf("subtree order: %q", a)
 	}
@@ -72,7 +70,6 @@ func TestCommitTreeForgejo(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		// 10 a page, to show the pages are put together.
 		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 		lo := min((page-1)*10, len(realTree))
 		hi := min(lo+10, len(realTree))

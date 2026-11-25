@@ -1,7 +1,3 @@
-// A pull request's babysitter (WP-134): whether Waypoint is seeing it
-// through to the merge, what it waits on, and every reviewer's comments with
-// what was done about each; start and stop it.
-
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { ExternalLink } from 'lucide-react'
@@ -78,7 +74,6 @@ const CLASS: Record<RoundClass, { label: string; title: string; color?: string }
 /** "round 2 of at most 15 · sonnet", or why it ended. */
 function summary(b: Babysit) {
   if (!b.active) return b.end_reason || ''
-  // The wait often names the round already ("round 2: an agent is on it").
   const round =
     b.round > 0 && !b.wait?.startsWith(`round ${b.round}`)
       ? `round ${b.round} of at most ${b.max_rounds}`

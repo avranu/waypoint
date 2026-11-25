@@ -123,8 +123,6 @@ func TestWpBtw(t *testing.T) {
 	if got := stopReason(t, slashHook(t, c, "s1", "/x", "/wp btw")); !strings.Contains(got, "nothing noted") {
 		t.Errorf("an empty /wp btw: %q", got)
 	}
-	// Where Claude Code kept the stopped /wp line and its answer for the
-	// next request, the note isn't handed over a second time.
 	slashHook(t, c, "s1", "/x", "/wp btw kept by Claude Code")
 	transcript := keptTranscript(t, time.Now())
 	if out := slashHookIn(t, c, "s1", "/x", "hello", transcript); out != "" {
@@ -153,7 +151,6 @@ func keptTranscript(t *testing.T, at time.Time) string {
 // /wp exe runs the command in the session's directory and shows its end;
 // a long one goes on running into its log.
 func TestWpExe(t *testing.T) {
-	// the test runs in agents' sessions too: a person drives this one
 	for _, k := range []string{"WP_TASK", "WAYPOINT_FOLLOWUP", "WAYPOINT_UNATTENDED"} {
 		t.Setenv(k, "")
 	}
@@ -170,16 +167,12 @@ func TestWpExe(t *testing.T) {
 	if b, _ := os.ReadFile(logs[0]); !strings.HasPrefix(string(b), dir+"\n1\n") {
 		t.Errorf("log = %q", b)
 	}
-	// The agent reads the run with its next prompt: the command, how it
-	// ended and the end of its output.
 	next := slashHook(t, c, "s1", dir, "go on")
 	for _, want := range []string{notesHead, "/wp exe in " + dir, "exit 3, took", "$ pwd; seq 1 100; exit 3", "\\n100\\n(whole output: "} {
 		if !strings.Contains(next, want) {
 			t.Errorf("next prompt lacks %q: %q", want, next)
 		}
 	}
-	// Where Claude Code kept the answer for the agent, a run that ended
-	// within the hook isn't told twice.
 	stopReason(t, slashHook(t, c, "s1", dir, "/wp exe echo quick"))
 	if out := slashHookIn(t, c, "s1", dir, "go on", keptTranscript(t, time.Now())); out != "" {
 		t.Errorf("a kept run came again: %q", out)
@@ -196,7 +189,6 @@ func TestWpExe(t *testing.T) {
 	if !strings.Contains(got, "still running after") || !strings.Contains(got, "started") {
 		t.Errorf("a long command: %q", got)
 	}
-	// A run that outlived its hook is told as it ended, kept answer or not.
 	if exits() != ended {
 		t.Fatal("an exit file before the run ended")
 	}

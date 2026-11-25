@@ -64,7 +64,6 @@ async function run(width, scheme) {
   const proj = await api("POST", "/projects", { name: `Audit ${tag}`, key });
   const me = await api("GET", "/me");
 
-  // ---- decisions made through the API ----
   const parser = await api("POST", "/issues", {
     project: key,
     title: "Parser rewrite",
@@ -102,7 +101,6 @@ async function run(width, scheme) {
     },
   });
 
-  // ---- what the queue, pull requests and the review note record ----
   const now = Date.now();
   const rows = [
     [
@@ -197,8 +195,6 @@ async function run(width, scheme) {
     ],
   ];
   for (const r of rows) seed.run(...r);
-  // Older entries, two days back, so the feed has more than one page and
-  // more than one day.
   for (let i = 0; i < 55; i++)
     seed.run(
       me.id,
@@ -216,7 +212,6 @@ async function run(width, scheme) {
       now - 2 * 86400_000 - i * 1000,
     );
 
-  // ---- the feed ----
   await page.goto(`${base}/agents?tab=audit&project=${key}`);
   const feed = page.getByRole("tabpanel");
   await feed.locator("li").first().waitFor();
@@ -237,7 +232,6 @@ async function run(width, scheme) {
   await feed.locator("li", { hasText: "paused" }).first().scrollIntoViewIfNeeded();
   await shot("feed-more");
 
-  // Older pages load on demand.
   const before = await feed.locator("li").count();
   await feed.getByRole("button", { name: "Load older" }).click();
   await page.waitForFunction(
@@ -246,7 +240,6 @@ async function run(width, scheme) {
   );
   ok((await feed.locator("li").count()) > before, `${tag} older entries load`);
 
-  // Kind chips narrow it.
   const rowsText = () =>
     feed.locator("li").evaluateAll((els) => els.map((e) => e.innerText).join("\n"));
   const rowsWithout = (word) =>
@@ -275,7 +268,6 @@ async function run(width, scheme) {
   );
   await page.getByRole("radio", { name: "All" }).click();
 
-  // The page's agent filter: haiku concerns the haiku delegation and pause.
   await page.goto(`${base}/agents?tab=audit&project=${key}&agent=haiku`);
   await feed.getByText("delegated").first().waitFor();
   const haiku = await rowsText();
@@ -286,7 +278,6 @@ async function run(width, scheme) {
     `${tag} agent filter keeps what concerns haiku`,
   );
 
-  // Export CSV downloads the same entries.
   await page.goto(`${base}/agents?tab=audit&project=${key}`);
   await feed.locator("li").first().waitFor();
   const [download] = await Promise.all([
@@ -301,7 +292,6 @@ async function run(width, scheme) {
     `${tag} CSV export has the entries`,
   );
 
-  // ---- risky commands (WP-647) ----
   const at0 = Date.now();
   const sess = `risky-${n}`;
   const risky = [

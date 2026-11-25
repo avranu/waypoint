@@ -38,7 +38,7 @@ func emptyDir(dir string) error {
 	var errs []error
 	for _, e := range entries {
 		p := filepath.Join(dir, e.Name())
-		if e.IsDir() { // not a symlink: ReadDir doesn't follow
+		if e.IsDir() {
 			if err := emptyDir(p); err != nil {
 				errs = append(errs, err)
 				continue

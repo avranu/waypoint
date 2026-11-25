@@ -1,6 +1,3 @@
-// Pickers and chips for who work is for (agents), what kind of work it is
-// (category), and where it is in its workflow (step). See WP-D7.
-
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { Bot, Check, Lock, LockOpen, Shapes, Users, Workflow as WorkflowIcon } from 'lucide-react'

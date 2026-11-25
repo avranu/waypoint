@@ -12,11 +12,6 @@ import (
 	"time"
 )
 
-// AI features: story point estimates and sub-task suggestions, run by
-// whichever model an admin assigns to each task. Providers are an opencode
-// server (which brings free models and whatever the person has signed in to)
-// or any OpenAI-compatible API.
-
 // AIProvider is a place models come from.
 type AIProvider struct {
 	ID        int64     `json:"id"`
@@ -316,7 +311,7 @@ func (s *Service) SetAITask(ctx context.Context, actor *Actor, task string, prov
 	if providerID == 0 {
 		_, err := s.db.W.ExecContext(ctx, `DELETE FROM ai_tasks WHERE task = ?`, task)
 		if err == nil && task == "review" {
-			err = s.markReviewModels(ctx) // off stays off (EnsureReviewModels)
+			err = s.markReviewModels(ctx)
 		}
 		if err == nil {
 			entry.Detail = "turned off"
@@ -344,7 +339,7 @@ func (s *Service) SetAITask(ctx context.Context, actor *Actor, task string, prov
 		ON CONFLICT(task) DO UPDATE SET provider_id = excluded.provider_id, model = excluded.model, fallbacks = excluded.fallbacks`,
 		task, providerID, strings.TrimSpace(model), string(fb))
 	if err == nil && task == "review" {
-		err = s.markReviewModels(ctx) // an admin's chain is theirs (EnsureReviewModels)
+		err = s.markReviewModels(ctx)
 	}
 	if err == nil {
 		entry.Detail = strings.TrimSpace(model)
@@ -371,7 +366,7 @@ func (s *Service) EnsureDefaultAI(ctx context.Context, baseURL, password, model 
 	}
 	for _, t := range aiTasks {
 		if t.Task == "review" || t.Task == "verify_review" {
-			continue // EnsureReviewModels gives them the free review chain
+			continue
 		}
 		if err := s.SetAITask(ctx, SystemActor(), t.Task, p.ID, model, nil); err != nil {
 			return err
@@ -405,9 +400,6 @@ func (s *Service) runAIAnswer(ctx context.Context, task string, chain []ChainMod
 		return "", "", invalid("no AI model is set up for %q; an admin can choose one under Admin → AI", t.Label)
 	}
 	ctx = aiContext(ctx, task)
-	// A couple at a time: free tiers rate-limit, and nothing here is urgent.
-	// Surplus work has its own slot: it neither waits behind normal work nor
-	// holds it up (WP-906).
 	slots := s.aiSlots
 	if priorityOf(ctx) == prioritySurplus {
 		slots = s.surplusSlot
@@ -425,7 +417,7 @@ func (s *Service) runAIAnswer(ctx context.Context, task string, chain []ChainMod
 		s.log.WarnContext(ctx, "AI request failed", "task", task, "attempts", len(attempts), "err", err)
 		var wait *aiWaitError
 		if errors.As(err, &wait) {
-			return "", "", wait // the gateway asked to wait: callers retry after it, and it is no failed try
+			return "", "", wait
 		}
 		var be *badOutputError
 		if len(attempts) == 1 && errors.As(err, &be) {
@@ -443,7 +435,7 @@ func (s *Service) runAIAnswer(ctx context.Context, task string, chain []ChainMod
 		name = p.Name + " · " + used.Model
 	}
 	if len(attempts) > 0 {
-		requestID = attempts[len(attempts)-1].RequestID // the one that answered
+		requestID = attempts[len(attempts)-1].RequestID
 	}
 	return name, requestID, nil
 }
@@ -466,15 +458,13 @@ func aiPublicError(err error) string {
 	}
 	var me *modelError
 	if errors.As(err, &me) {
-		return excerpt(me.Error(), 200) // e.g. "APIError: free tier …": the model's own words
+		return excerpt(me.Error(), 200)
 	}
 	if msg := PublicError(err); msg != "could not connect" {
 		return msg
 	}
 	return "could not reach it"
 }
-
-// ---- estimates ----
 
 // Estimate is an AI suggestion for an issue's story points.
 type Estimate struct {
@@ -549,8 +539,6 @@ func nearestPoint(p float64) float64 {
 // project so the model matches the team's scale.
 func (s *Service) estimatePrompt(ctx context.Context, actor *Actor, i *Issue) (string, error) {
 	var b strings.Builder
-	// Calibration examples come from the whole project, so only for people
-	// who can see the whole project (and automations working in it).
 	role, err := s.projectRole(ctx, s.db.R, actor, i.ProjectID)
 	if err != nil {
 		return "", err
@@ -677,7 +665,6 @@ func (s *Service) estimateAndApply(ctx context.Context, projectID int64, key str
 	if err != nil {
 		return err
 	}
-	// Someone may have estimated it meanwhile; theirs wins.
 	cur, err := s.issueByID(ctx, s.db.R, id, false)
 	if err != nil || cur.Points != nil {
 		return err
@@ -734,7 +721,7 @@ func (s *Service) aiTaskSetUp(ctx context.Context, task string) (bool, error) {
 	ok, err := s.runAITaskConfigured(ctx, task)
 	var inv *InvalidError
 	if err != nil && errors.As(err, &inv) {
-		return false, nil // the intended "no model" answer
+		return false, nil
 	}
 	return ok, err
 }
@@ -808,8 +795,6 @@ func (s *Service) runAITaskConfigured(ctx context.Context, task string) (bool, e
 	}
 	return true, nil
 }
-
-// ---- sub-task suggestions ----
 
 // SubtaskSuggestion is one proposed sub-task.
 type SubtaskSuggestion struct {

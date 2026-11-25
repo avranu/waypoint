@@ -58,7 +58,6 @@ func TestMeanAnswers(t *testing.T) {
 	if r := got["r1"]; !near(r.Probabilities["e1"], 0.55) || !near(r.Probabilities["new"], 0.35) || r.Choice != "e1" {
 		t.Errorf("r1 = %+v", r)
 	}
-	// Only one answer gave fixes: its mean is that answer's.
 	if f := got["fixes"]; !near(f.Probabilities["complete"], 1) {
 		t.Errorf("fixes = %+v", f)
 	}
@@ -90,7 +89,6 @@ func TestDecideAgain(t *testing.T) {
 	be := newBabysitEnv(t)
 	withScoring(t, be.s, be.llm, "cosmetic")
 	qs := map[string]jevQuestion{"f1": {Type: "choice"}, "f2": {Type: "choice"}}
-	// The decision here turns on f1 alone; f2 is a call that decides nothing.
 	outcome := func(a map[string]jevAnswer) string { return sampleCall("f1", a["f1"], 0) }
 	ask := func(answer func(n int) (map[string]jevAnswer, error)) (*againDecision, map[string]jevAnswer, int, error) {
 		j := &jevSeq{answer: answer}
@@ -102,13 +100,10 @@ func TestDecideAgain(t *testing.T) {
 	serious := map[string]jevAnswer{"f1": probs("serious", 0.9)}
 	moderate := map[string]jevAnswer{"f1": probs("moderate", 0.9)}
 
-	// Agreeing: the minimum, nothing split.
 	d, ans, n, err := ask(func(int) (map[string]jevAnswer, error) { return serious, nil })
 	if err != nil || n != againSamplesMin || d.samples != againSamplesMin || d.spread != "" || ans["f1"].Choice != "serious" {
 		t.Errorf("agreeing: %d asks, %+v, %v", n, d, err)
 	}
-	// One ask in three disagrees: two more asks, and the mean decides as
-	// it did, so it stops there, the split recorded, settled.
 	d, ans, n, err = ask(func(n int) (map[string]jevAnswer, error) {
 		if n%3 == 2 {
 			return moderate, nil
@@ -121,8 +116,6 @@ func TestDecideAgain(t *testing.T) {
 	if err != nil || n != want || d.samples != want || len(spread["f1"]) != want || len(spread[spreadOutcome]) != want || spread[spreadUnsettled] != nil || ans["f1"].Choice != "serious" {
 		t.Errorf("split: %d asks, %+v, %v", n, d, err)
 	}
-	// The mean's decision flips with every step: asked to the most, and
-	// recorded unsettled, each step's decision in order.
 	d, _, n, err = ask(func(n int) (map[string]jevAnswer, error) {
 		if slices.Contains([]int{2, 3, 4, 7, 8}, n) {
 			return moderate, nil
@@ -134,8 +127,6 @@ func TestDecideAgain(t *testing.T) {
 	if err != nil || n != againSamplesMax || d.samples != againSamplesMax || !slices.Equal(spread[spreadUnsettled], []string{"serious", "moderate", "serious", "moderate"}) {
 		t.Errorf("unsettled: %d asks, %+v, %v", n, d, err)
 	}
-	// A call that splits but decides nothing: the minimum, the split
-	// recorded, no outcome in it.
 	d, _, n, err = ask(func(n int) (map[string]jevAnswer, error) {
 		a := map[string]jevAnswer{"f1": probs("serious", 0.9), "f2": probs("minor", 0.9)}
 		if n == 1 {
@@ -148,8 +139,6 @@ func TestDecideAgain(t *testing.T) {
 	if err != nil || n != againSamplesMin || len(spread["f2"]) != againSamplesMin || spread[spreadOutcome] != nil {
 		t.Errorf("a split that decides nothing: %d asks, %+v, %v", n, d, err)
 	}
-	// An ask that fails is left out and asked again: the minimum is of
-	// answers.
 	d, _, n, err = ask(func(n int) (map[string]jevAnswer, error) {
 		if n == 0 {
 			return nil, errors.New("timeout")
@@ -159,9 +148,6 @@ func TestDecideAgain(t *testing.T) {
 	if err != nil || n != againSamplesMin+1 || d.samples != againSamplesMin {
 		t.Errorf("one failed: %d asks, %+v, %v", n, d, err)
 	}
-	// A failed first ask doesn't change which rule judges the first step:
-	// the same three answers as "split" (serious, serious, moderate) are
-	// judged together, unsettled, and two more are asked.
 	d, _, n, err = ask(func(n int) (map[string]jevAnswer, error) {
 		switch n {
 		case 0:
@@ -174,8 +160,6 @@ func TestDecideAgain(t *testing.T) {
 	if err != nil || n != againSamplesMin+1+againSamplesStep || d.samples != againSamplesMin+againSamplesStep {
 		t.Errorf("a failure before a split: %d asks, %+v, %v", n, d, err)
 	}
-	// A step whose asks all fail adds nothing: an unsettled first step
-	// stays unsettled, not settled by judging the same answers twice.
 	d, _, n, err = ask(func(n int) (map[string]jevAnswer, error) {
 		switch {
 		case n == 2:
@@ -190,8 +174,6 @@ func TestDecideAgain(t *testing.T) {
 	if err != nil || n != againSamplesMax || d.samples != againSamplesMin || !slices.Equal(spread[spreadUnsettled], []string{"serious"}) {
 		t.Errorf("later asks all failed: %d asks, %+v, %v", n, d, err)
 	}
-	// Asks that keep failing while one answered: asked again to the most,
-	// no further, and the one answer decides.
 	d, ans, n, err = ask(func(n int) (map[string]jevAnswer, error) {
 		if n != 0 {
 			return nil, errors.New("timeout")
@@ -201,7 +183,6 @@ func TestDecideAgain(t *testing.T) {
 	if err != nil || n != againSamplesMax || d.samples != 1 || ans["f1"].Probabilities["serious"] != 0.9 {
 		t.Errorf("most failed: %d asks, %+v, %v", n, d, err)
 	}
-	// None answers: the first error, nothing recorded.
 	d, _, n, err = ask(func(int) (map[string]jevAnswer, error) { return nil, errNoDecider })
 	if !errors.Is(err, errNoDecider) || n != againSamplesMin || d.samples != 0 {
 		t.Errorf("none: %d asks, %+v, %v", n, d, err)

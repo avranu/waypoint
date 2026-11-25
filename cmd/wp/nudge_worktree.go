@@ -106,7 +106,7 @@ func worktreePlaceGit(args []string, dir string) string {
 	target := absFrom(gdir, rest[2+i])
 	r, ok := findRepo(gdir)
 	if !ok || filepath.Base(r.common) != ".git" {
-		return "" // a bare repository or one not found: no main checkout to measure from
+		return ""
 	}
 	root := filepath.Dir(r.common)
 	if !besideCheckout(root, realPath(target)) {
@@ -154,7 +154,7 @@ func worktreeUnwrap(words []string) (rest []string, anywhere bool) {
 			words = dropFlags(args, "-n")
 		case "timeout":
 			if words = dropFlags(args, "-s", "-k", "--signal", "--kill-after"); len(words) > 0 {
-				words = words[1:] // the duration
+				words = words[1:]
 			}
 		default:
 			return words, anywhere
@@ -170,9 +170,8 @@ func shellScriptArg(args []string) string {
 		a := args[i]
 		switch {
 		case a == "-o" || a == "+o" || a == "-O" || a == "+O":
-			i++ // takes an option name
+			i++
 		case strings.HasPrefix(a, "--"):
-			// --norc, --login…: no effect on where the script is
 		case strings.HasPrefix(a, "-") && len(a) > 1:
 			if strings.Contains(a[1:], "c") && i+1 < len(args) {
 				return args[i+1]

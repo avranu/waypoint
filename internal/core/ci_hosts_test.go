@@ -57,11 +57,10 @@ func TestBabysitRerunsRunnerFault(t *testing.T) {
 	if b := be.babysit(); !slices.Equal(be.retries(), []string{"7777777aaaa"}) || !strings.Contains(b.Wait, "re-ran 1 job (attempt 1)") || len(be.jobs()) != 0 {
 		t.Fatalf("re-run: retries %v wait %q", be.retries(), b.Wait)
 	}
-	be.step() // the old failure, before the forge says it runs again
+	be.step()
 	if len(be.retries()) != 1 {
 		t.Fatalf("re-ran while the first re-run settles: %v", be.retries())
 	}
-	// Still inside the back-off: the second re-run waits five minutes from the first.
 	be.setClock(be.clockNow().Add(faultRerunSettle))
 	be.step()
 	if b := be.babysit(); len(be.retries()) != 1 || !strings.Contains(b.Wait, "failed again after attempt 1; Waypoint re-runs it at") {
@@ -77,7 +76,6 @@ func TestBabysitRerunsRunnerFault(t *testing.T) {
 	if got := be.runnerFaultTexts(); len(be.retries()) != 3 || len(got) != 0 {
 		t.Fatalf("third re-run: retries %v tasks %q", be.retries(), got)
 	}
-	// Three re-runs and still failing: tracked once, and it carries on.
 	be.setClock(be.clockNow().Add(faultRerunSettle))
 	be.step()
 	be.step()
@@ -93,7 +91,6 @@ func TestBabysitRerunsRunnerFault(t *testing.T) {
 	if got := be.runnerFaultTexts(); len(be.retries()) != 4 || len(got) != 1 || strings.Count(got[0], "Seen again") != 0 {
 		t.Fatalf("a fourth re-run reports nothing new: retries %v tasks %q", be.retries(), got)
 	}
-	// A new head starts over.
 	be.push("8888888bbbb")
 	be.ci("8888888bbbb", CheckFailed)
 	be.setClock(be.clockNow().Add(faultRerunAfter))
@@ -121,7 +118,6 @@ func TestBabysitFaultRerunPassSeenWithoutWebhook(t *testing.T) {
 	if len(be.retries()) != 1 {
 		t.Fatalf("retries %v", be.retries())
 	}
-	// The re-run passes on the forge; Waypoint hears nothing of it.
 	be.sg.setChecks("7777777aaaa", CommitCheck{Name: "ci / test", State: CheckSuccess, URL: "https://ci.example.com/run/1"})
 	for range 3 {
 		be.setClock(be.clockNow().Add(faultRerunSettle))
@@ -222,7 +218,6 @@ func TestCIHostReports(t *testing.T) {
 	be.report("runner3", 200<<30,
 		CIContainerUsage{TaskID: 11, Job: "test", Name: "FORGEJO-ACTIONS-TASK-11_WORKFLOW-x_JOB-test", Role: "job", Started: start, CPUSeconds: 100, MemPeak: 1 << 30},
 		CIContainerUsage{TaskID: 11, Job: "test", Name: "FORGEJO-ACTIONS-TASK-11_WORKFLOW-x_JOB-test-db", Role: "service", Started: start, CPUSeconds: 20, MemPeak: 512 << 20})
-	// The next report: it finished; a late lower sample never lowers what was counted.
 	be.report("runner3", 200<<30,
 		CIContainerUsage{TaskID: 11, Job: "test", Name: "FORGEJO-ACTIONS-TASK-11_WORKFLOW-x_JOB-test", Role: "job", Started: start, Ended: &end, CPUSeconds: 1000, MemPeak: 3 << 29, MemLimit: 7 << 30, CPULimit: 3},
 		CIContainerUsage{TaskID: 11, Job: "test", Name: "FORGEJO-ACTIONS-TASK-11_WORKFLOW-x_JOB-test-db", Role: "service", Started: start, Ended: &end, CPUSeconds: 10, MemPeak: 1 << 20})
@@ -244,7 +239,6 @@ func TestCIHostReports(t *testing.T) {
 		t.Fatalf("alerts: %+v", a)
 	}
 
-	// Unnamed until the board reads the task.
 	if u, err := be.s.CIUsage(be.ctx, be.admin, "", 0); err != nil || len(u) != 0 {
 		t.Fatalf("usage before the task is known: %v %v", u, err)
 	}
@@ -259,14 +253,12 @@ func TestCIHostReports(t *testing.T) {
 		t.Fatalf("usage: %+v", g)
 	}
 
-	// Stale after a quiet spell.
 	be.setClock(be.clockNow().Add(ciHostFresh + time.Second))
 	hosts, _ = be.s.ciHosts(be.ctx)
 	if hosts[be.f.ID][1].Health != "stale" || reportedPool(hosts[be.f.ID], nil, 30) != nil {
 		t.Fatalf("stale: %+v", hosts[be.f.ID])
 	}
 
-	// Only admins report, and a token with permissions needs ci.report.
 	if _, err := be.s.ReportCIHost(be.ctx, be.agent, CIHostReport{Forge: "nowhere.example", Host: "x"}); err == nil || !strings.Contains(err.Error(), "no forge") {
 		t.Fatalf("unknown forge: %v", err)
 	}
@@ -294,11 +286,9 @@ func TestForgejoRerun(t *testing.T) {
 		{run: 3, id: 32, key: "lint", name: "lint", status: "success"},
 		{run: 3, id: 33, key: "e2e", name: "e2e", status: "failure"},
 		{run: 5, id: 50, key: "unit", name: "unit", status: "failure"},
-		{run: 5, id: 51, key: "browser", name: "browser", status: "cancelled"}, // cancelled by unit's failure
+		{run: 5, id: 51, key: "browser", name: "browser", status: "cancelled"},
 		{run: 5, id: 52, key: "deploy", name: "deploy", status: "cancelled", needs: []string{"browser"}},
 		{run: 5, id: 53, key: "lint", name: "lint", status: "success"},
-		// A matrix job's name isn't its key: the job that needs it is
-		// reopened by its re-run all the same, and not asked for again.
 		{run: 5, id: 54, key: "shard", name: "shard 1", status: "failure"},
 		{run: 5, id: 55, key: "gather", name: "gather", status: "cancelled", needs: []string{"shard"}},
 	}
@@ -311,11 +301,11 @@ func TestForgejoRerun(t *testing.T) {
 				t.Errorf("query %s", r.URL.RawQuery)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"workflow_runs": []map[string]any{
-				{"id": 4, "workflow_id": "ci.yml", "trigger_event": "pull_request", "status": "skipped"}, // an event the workflow ignores
+				{"id": 4, "workflow_id": "ci.yml", "trigger_event": "pull_request", "status": "skipped"},
 				{"id": 3, "workflow_id": "ci.yml", "trigger_event": "pull_request", "status": "failure"},
-				{"id": 2, "workflow_id": "ci.yml", "trigger_event": "pull_request", "status": "failure"}, // older attempt
+				{"id": 2, "workflow_id": "ci.yml", "trigger_event": "pull_request", "status": "failure"},
 				{"id": 1, "workflow_id": "lint.yml", "trigger_event": "pull_request", "status": "success"},
-				{"id": 5, "workflow_id": "full.yml", "trigger_event": "pull_request", "status": "cancelled"}, // fail-fast
+				{"id": 5, "workflow_id": "full.yml", "trigger_event": "pull_request", "status": "cancelled"},
 			}})
 		case strings.HasPrefix(r.URL.Path, "/api/v1/repos/me/app/actions/runs/") && strings.HasSuffix(r.URL.Path, "/jobs"):
 			id, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/repos/me/app/actions/runs/"), "/jobs"), 10, 64)
@@ -330,11 +320,10 @@ func TestForgejoRerun(t *testing.T) {
 			id, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/repos/me/app/actions/jobs/"), "/rerun"), 10, 64)
 			i := slices.IndexFunc(jobs, func(j *fakeJob) bool { return j.id == id })
 			if i < 0 || jobs[i].status == "waiting" {
-				http.Error(w, "job not done", http.StatusBadRequest) // as Forgejo refuses a reopened job
+				http.Error(w, "job not done", http.StatusBadRequest)
 				return
 			}
 			posted = append(posted, r.URL.Path)
-			// Forgejo reopens the job and, by workflow key, every job that needs it.
 			reopen := []*fakeJob{jobs[i]}
 			for len(reopen) > 0 {
 				j := reopen[0]
@@ -360,7 +349,6 @@ func TestForgejoRerun(t *testing.T) {
 		"/api/v1/repos/me/app/actions/jobs/50/rerun", "/api/v1/repos/me/app/actions/jobs/51/rerun", "/api/v1/repos/me/app/actions/jobs/54/rerun"}) {
 		t.Fatalf("n %d err %v posted %v", n, err, posted)
 	}
-	// One run by id: only its jobs (WP-551).
 	jobs[0].status, jobs[1].status, jobs[3].status = "failure", "failure", "failure"
 	posted = nil
 	if n, err := c.RetryRun(context.Background(), f, "me/app", 3); err != nil || n != 2 ||

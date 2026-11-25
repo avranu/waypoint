@@ -46,7 +46,6 @@ async function run(width, scheme) {
   const src = await api("POST", "/issues", { project: key, title: "Sanborn walk: campus towns",
     description: `Production's weekly Sanborn walk reaches a campus town and never resumes. Blocked by ${waits.key}.` });
 
-  // Its text names a task, so the Relations section is already showing (WP-781).
   await page.goto(`${base}/issue/${src.key}`);
   await page.getByRole("button", { name: "Find related" }).click();
   const dialog = page.getByRole("dialog", { name: "Related issues" });
@@ -59,12 +58,10 @@ async function run(width, scheme) {
   await dialog.locator("li", { hasText: waits.key }).getByRole("button", { name: "Added" }).waitFor();
   const rels = (await api("GET", `/issues/${src.key}`)).relations ?? [];
   ok(rels.some((r) => r.kind === "blocked_by" && r.issue.key === waits.key), `${tag} Add links it`);
-  // Not related: the row says so, and the pair isn't suggested again.
   const twinRow = dialog.locator("li", { hasText: twin.key });
   await twinRow.getByRole("button", { name: "Not related" }).click();
   await twinRow.getByText("Not related", { exact: true }).waitFor();
   ok(!(await twinRow.getByRole("button", { name: "Add" }).isVisible()), `${tag} a dismissed row has no Add`);
-  // A misclick is taken back with Undo, then dismissed again.
   await twinRow.getByRole("button", { name: "Undo" }).click();
   await twinRow.getByRole("button", { name: "Add" }).waitFor();
   const undone = (await api("GET", `/issues/${src.key}/relations/suggested`)).suggestions.map((x) => x.key);
@@ -79,7 +76,6 @@ async function run(width, scheme) {
   const back = (await api("GET", `/issues/${twin.key}/relations/suggested`)).suggestions.map((x) => x.key);
   ok(!back.includes(src.key), `${tag} and from the other end: ${back}`);
 
-  // Follow-ups (WP-255): a relation of its own, listed both ways round.
   await api("POST", `/issues/${alike.key}/relations`, { kind: "follows", issue: src.key });
   await page.goto(`${base}/issue/${alike.key}`);
   await page.getByText("Follows up on", { exact: true }).waitFor();

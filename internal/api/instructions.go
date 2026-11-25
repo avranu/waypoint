@@ -6,8 +6,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// ---- agent instructions (WP-1559, ADR146) ----
-
 func (s *Server) listInstructions(w http.ResponseWriter, r *http.Request) (any, error) {
 	return s.svc.ListInstructions(r.Context(), actorFrom(r), r.URL.Query().Get("project"))
 }

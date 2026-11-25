@@ -1,8 +1,3 @@
-// The assistant's files (WP-ADR1): what it keeps under its root, browsed
-// and managed from here. The folder is on the left and the file open in
-// it on the right; on a phone, one at a time. Where you are is the URL's
-// `path` (a folder or a file), so back, forward and links work.
-
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -32,8 +27,6 @@ export function FilesTab({ assistant }: { assistant: Assistant }) {
 
   const root = seenRoot(qc, id)?.root
   const path = search.path && trimSlash(search.path) !== root ? trimSlash(search.path) : undefined
-  // Is `path` a file? A listing already fetched may say; otherwise the
-  // folder above's listing does.
   const seen = path ? seenEntry(qc, id, path) : undefined
   const above = path && parentOf(path) !== root ? parentOf(path) : undefined
   const parent = useQuery({ ...listingQuery(id, above), enabled: up && !!path && !seen })

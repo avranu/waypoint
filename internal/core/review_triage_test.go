@@ -7,8 +7,6 @@ import (
 	"testing"
 )
 
-// Review triage (WP-692).
-
 func goDiff(path, hunk string) string {
 	return "diff --git a/" + path + " b/" + path + "\n--- a/" + path + "\n+++ b/" + path + "\n" + hunk
 }
@@ -21,15 +19,15 @@ func TestClassifyFile(t *testing.T) {
 		"web/README.md":                      fileDoc,
 		"CHANGELOG.md":                       fileDoc,
 		"notes.txt":                          fileOther,
-		"NOTES.md":                           fileOther, // not known to be a doc
-		"AGENTS.md":                          fileOther, // tells agents what to do
-		"REVIEW.md":                          fileOther, // the review bot's rules
+		"NOTES.md":                           fileOther,
+		"AGENTS.md":                          fileOther,
+		"REVIEW.md":                          fileOther,
 		"docs/agents/issue-tracker.md":       fileOther,
 		"docs/CLAUDE.md":                     fileOther,
-		"docs/requirements.txt":              fileOther, // the docs build's dependencies
+		"docs/requirements.txt":              fileOther,
 		".claude/commands/ship.md":           fileOther,
 		"plugins/waypoint/skills/x/SKILL.md": fileOther,
-		"internal/api/api_help.md":           fileOther, // embedded in the program
+		"internal/api/api_help.md":           fileOther,
 		"web/src/help.md":                    fileOther,
 		"internal/core/a_test.go":            fileTest,
 		"web/src/a.test.tsx":                 fileTest,
@@ -58,7 +56,7 @@ func TestIsComment(t *testing.T) {
 		{"go", "//nolint:errcheck", false},
 		{"go", "// nolint:errcheck", false},
 		{"go", "// #nosec G204", false},
-		{"go", "//foo()", false}, // commented-out code, more likely
+		{"go", "//foo()", false},
 		{"go", "# not a go comment", false},
 		{"ts", "// @ts-ignore", false},
 		{"ts", "// eslint-disable-next-line", false},
@@ -439,7 +437,6 @@ func TestShipTriage(t *testing.T) {
 		if len(rows) != 2 || rows[0].why != triageWhySuperseded || rows[1].rule != triageNormal || rows[1].action != triageReview {
 			t.Fatalf("%+v", rows)
 		}
-		// The review ran, so nothing was avoided.
 		st, err := a.s.GetReviewTriageStats(a.ctx, a.admin, a.p.Key, 30, true)
 		if err != nil {
 			t.Fatal(err)
@@ -525,7 +522,6 @@ func TestReviewTriageStats(t *testing.T) {
 	if _, err := a.ship(task.Key, ShipAuto, func(in *OpenPRInput) { in.Change = docsChange(); in.Head = head }); err != nil {
 		t.Fatal(err)
 	}
-	// A reviewed task, in a shadow rule, whose review found something.
 	other := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Second", Agent: "claude"})
 	if _, err := a.s.db.W.Exec(`INSERT INTO work_log(issue_id, kind, state, found, fixed, rejected, audit_id, started_at, ended_at, created_at, updated_at) VALUES (?, 'review', 'done', 2, 1, 1, NULL, ?, ?, ?, ?)`,
 		other.ID, a.clockNow().UnixMilli()-600000, a.clockNow().UnixMilli(), a.clockNow().UnixMilli(), a.clockNow().UnixMilli()); err != nil {
@@ -560,12 +556,10 @@ func TestReviewTriageStats(t *testing.T) {
 	if st.Rows[0].Task == "" || len(st.Rows[0].Features) == 0 {
 		t.Fatalf("row = %+v", st.Rows[0])
 	}
-	// Without rows it's the counts only.
 	st, err = a.s.GetReviewTriageStats(a.ctx, a.admin, "", 30, false)
 	if err != nil || len(st.Rows) != 0 || st.Total.Assessed != 2 {
 		t.Fatalf("%+v %v", st, err)
 	}
-	// A guest sees nothing of the project, by name or not.
 	guest := a.user("sam", false)
 	if err := a.s.ShareIssue(a.ctx, a.admin, task.Key, "sam", "viewer"); err != nil {
 		t.Fatal(err)
@@ -626,8 +620,6 @@ func TestReviewTriageEvidence(t *testing.T) {
 		return st.Total
 	}
 
-	// An earlier branch of the same task, reviewed, with a finding and an
-	// escape; then a docs branch the rules skipped.
 	reviewed := pr(1, "wp-1-code")
 	skipped := pr(2, "wp-1-docs")
 	finding(reviewed)
@@ -644,13 +636,11 @@ func TestReviewTriageEvidence(t *testing.T) {
 		t.Fatalf("the skipped branch's evidence: %+v", got)
 	}
 
-	// A branch assessed twice counts its evidence once.
 	row("wp-1-code", "normal", 0, triageReview, "", 0)
 	if got = stats(); got.Useful != 2 || got.Escapes != 1 {
 		t.Fatalf("assessed twice: %+v", got)
 	}
 
-	// Asked-for and floor reviews aren't samples of what the rules skip.
 	row("a", "docs", 1, triageReview, triageWhyAsked, 5)
 	row("b", "floor:binary", 0, triageReview, "", 7)
 	if got = stats(); got.Sampled != 0 || got.SampledFoundAny != 0 || got.SampledFound != 0 {

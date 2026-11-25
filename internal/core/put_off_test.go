@@ -23,11 +23,9 @@ func TestPutOffSentences(t *testing.T) {
 	if got := putOffSentences(text); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %q", got)
 	}
-	// Words that only contain a phrase don't count.
 	if got := putOffSentences("The latera list stepped 2 ways; deferral-free."); len(got) != 0 {
 		t.Errorf("false matches: %q", got)
 	}
-	// A long sentence keeps the phrase in view.
 	long := strings.Repeat("word ", 80) + "only if needed " + strings.Repeat("tail ", 40)
 	got := putOffSentences(long)
 	if len(got) != 1 || !strings.Contains(got[0], "only if needed") || !strings.HasPrefix(got[0], "…") || len([]rune(got[0])) > putOffQuote {
@@ -86,14 +84,12 @@ func TestPutOffSteps(t *testing.T) {
 		t.Errorf("open subtasks = %+v", got.Open)
 	}
 
-	// An open subtask with no matching sentence is still shown.
 	quiet := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Quiet", Description: "Do the thing."})
 	sub := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Leftover", Parent: quiet.Key})
 	if got, err := e.s.PutOffSteps(e.ctx, e.admin, quiet.Key); err != nil || got == nil || len(got.Notes) != 0 || len(got.Open) != 1 || got.Open[0].Key != sub.Key {
 		t.Errorf("open only: %+v %v", got, err)
 	}
 
-	// Many notes: the first few, and a count of the rest.
 	var many []string
 	for range maxPutOffNotes + 3 {
 		many = append(many, "Item "+strings.Repeat("x", len(many)+1)+" later.")
@@ -103,7 +99,6 @@ func TestPutOffSteps(t *testing.T) {
 		t.Errorf("capped: %+v", got)
 	}
 
-	// Someone who can't see the task gets nothing from it.
 	sam := e.user("sam", false)
 	if got, err := e.s.PutOffSteps(e.ctx, sam, task.Key); err == nil || got != nil {
 		t.Errorf("an outsider skimmed it: %+v %v", got, err)

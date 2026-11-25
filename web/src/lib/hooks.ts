@@ -56,9 +56,7 @@ export function useLocal<T>(key: string, initial: T): [T, (v: T) => void] {
     setV(nv)
     try {
       localStorage.setItem('wp:' + key, JSON.stringify(nv))
-    } catch {
-      /* storage unavailable */
-    }
+    } catch {}
   }
   return [v, set]
 }
@@ -115,7 +113,6 @@ export function useListNav(
       const inside = root.contains(t)
       if (!inside && t !== document.body) return
       const cur = inside ? t.closest<HTMLElement>('[data-nav-key]') : null
-      // Arrow keys only steer once a row has focus, so they still scroll the page.
       if (!cur && !['j', 'k'].includes(e.key)) return
       const items = [...root.querySelectorAll<HTMLElement>('[data-nav-key]')]
       if (!items.length) return
@@ -172,7 +169,6 @@ export function useListNav(
  * Sideways scrolls (wide tables, charts) leave it as it was.
  */
 export function useScrollingDown(reset?: unknown): boolean {
-  // A new page (reset changes) starts with it showing.
   const [state, setState] = useState({ reset, down: false })
   if (state.reset !== reset) setState({ reset, down: false })
   useEffect(() => {
@@ -181,8 +177,6 @@ export function useScrollingDown(reset?: unknown): boolean {
       const el = e.target instanceof Element ? e.target : document.scrollingElement
       if (!el) return
       const y = el.scrollTop
-      // A scroller seen for the first time started at its top, near enough:
-      // one jump (a keypress, a fling) may be its only scroll event.
       const prev = last.get(el) ?? 0
       last.set(el, y)
       if (Math.abs(y - prev) < 4) return

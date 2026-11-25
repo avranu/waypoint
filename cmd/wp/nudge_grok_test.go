@@ -14,9 +14,8 @@ func TestGrokCutShort(t *testing.T) {
 		cmd    string
 		bg     bool
 		toolMs float64
-		want   string // in the refusal; "" for none
+		want   string
 	}{
-		// The runs behind WP-758.
 		{"foreground at the Bash cap", "S=/x; cursor-agent" + prompt + "; echo exit=$?", false, 600000, "10 minutes"},
 		{"foreground under timeout 580", "cd /r && timeout 580 agent" + prompt, false, 600000, "10 minutes"},
 		{"background under timeout 600", "cd /r && timeout 600 cursor-agent" + prompt, true, 0, "10 minutes"},
@@ -29,12 +28,10 @@ func TestGrokCutShort(t *testing.T) {
 		{"wrapped", "nohup env -i PATH=/bin timeout 900 /usr/local/bin/cursor-agent" + prompt, true, 0, "15 minutes"},
 		{"in a substitution", "out=$(timeout 900 cursor-agent" + prompt + ")", true, 0, "15 minutes"},
 
-		// The shell timeout doesn't apply first: Bash's default stops it at 2 minutes.
 		{"foreground timeout over Bash's default", "timeout 900 cursor-agent" + prompt, false, 0, "2 minutes"},
 		{"foreground timeout 301", "timeout 301 cursor-agent" + prompt, false, 0, "2 minutes"},
 		{"quick check, Bash's default shorter", "timeout 300 cursor-agent" + prompt, false, 0, ""},
 
-		// Started with &: the Bash call doesn't wait, so only a shell timeout counts.
 		{"detached", "nohup cursor-agent" + prompt + " &", false, 600000, ""},
 		{"detached then more", "setsid nohup cursor-agent" + prompt + " &\necho started", false, 0, ""},
 		{"detached group", "(cd /r; cursor-agent" + prompt + ") &", false, 0, ""},

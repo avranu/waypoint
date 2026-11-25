@@ -49,8 +49,6 @@ func TestOwnReviewFromTranscript(t *testing.T) {
 		t.Fatalf("event = %+v", ev)
 	}
 
-	// --no-prompts keeps the report, not what it was asked or the
-	// description it was started with
 	ev = sessionEvent{}
 	ownReview(in, &ev, true)
 	if ev.AgentReport == "" || ev.AgentPrompt != "" || ev.AgentDescription != "" || ev.AgentType != "adversarial-review" {
@@ -59,9 +57,6 @@ func TestOwnReviewFromTranscript(t *testing.T) {
 }
 
 func TestOwnReviewWhich(t *testing.T) {
-	// another type, described as an adversarial review: a review; its last
-	// text is the report when nothing was handed back and Claude Code gave
-	// no last message
 	plain := `{"type":"user","message":{"content":"look"}}
 {"type":"assistant","message":{"model":"claude-haiku-5-5","content":[{"type":"text","text":"No issues found."}]}}
 `
@@ -73,8 +68,6 @@ func TestOwnReviewWhich(t *testing.T) {
 		t.Fatalf("described review: %+v", ev)
 	}
 
-	// the last message Claude Code gives is the report, not text from
-	// before the transcript's last tool call
 	midway := `{"type":"user","message":{"content":"look"}}
 {"type":"assistant","message":{"model":"claude-haiku-5-5","content":[{"type":"text","text":"Reading the diff."},{"type":"tool_use","name":"Read","input":{}}]}}
 `
@@ -86,7 +79,6 @@ func TestOwnReviewWhich(t *testing.T) {
 		t.Fatalf("last message: %+v", ev)
 	}
 
-	// "adversarial" without a review: not one
 	in, _ = writeSubagent(t, `{"agentType":"general-purpose","description":"Adversarial test cases for the parser"}`, plain)
 	ev = sessionEvent{}
 	ownReview(in, &ev, false)
@@ -94,7 +86,6 @@ func TestOwnReviewWhich(t *testing.T) {
 		t.Fatalf("test writer sent %+v", ev)
 	}
 
-	// any other subagent: nothing sent
 	in, _ = writeSubagent(t, `{"agentType":"Explore","description":"Find the gate"}`, plain)
 	ev = sessionEvent{}
 	ownReview(in, &ev, false)
@@ -102,8 +93,6 @@ func TestOwnReviewWhich(t *testing.T) {
 		t.Fatalf("explore sent %+v", ev)
 	}
 
-	// the path Claude Code gives wins; the type from the event, no meta file;
-	// a line still being written leaves what came before
 	in, path := writeSubagent(t, "", reviewTranscript+`{"type":"assistant","message":{"content":[{"type":"te`)
 	in.TranscriptPath, in.AgentID, in.AgentType, in.AgentTranscript = "", "", "adversarial-review", path
 	ev = sessionEvent{}
@@ -112,7 +101,6 @@ func TestOwnReviewWhich(t *testing.T) {
 		t.Fatalf("given path: %+v", ev)
 	}
 
-	// no transcript at all: the event's last message
 	in = hookEventInput{HookEventName: "SubagentStop", AgentType: "adversarial-review", AgentID: "zz", TranscriptPath: "/nonexistent/s.jsonl", LastMessage: "Found 2 issues."}
 	ev = sessionEvent{}
 	ownReview(in, &ev, false)

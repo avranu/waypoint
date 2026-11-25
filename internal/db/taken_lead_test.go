@@ -33,8 +33,6 @@ func TestTakenLeadBackfill(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The columns are there already (Open ran the file); its statements
-	// that move rows are run again over rows written the old way.
 	ran := 0
 	for _, stmt := range strings.Split(string(body), ";") {
 		var lines []string

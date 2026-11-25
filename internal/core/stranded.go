@@ -12,21 +12,6 @@ import (
 	"time"
 )
 
-// Stranded work (WP-567). A session that is cleared or ends mid-task (its
-// person ran /clear while a check ran in the background, say) leaves its
-// changes in a checkout, and nothing told anyone: WP-437's finished code sat
-// uncommitted for two days, the task In Progress with nobody on it. Agents
-// aren't asked to behave differently; the work is recovered after the fact:
-//
-//   - each Stop records where the session's work stands (work_state: its
-//     checkouts' git state, the background commands still running);
-//   - when the session ends with a task unfinished and work in its checkout,
-//     the task goes back to To Do with a comment saying where the work is,
-//     and a stranded_work row that wp next shows as the place to resume;
-//   - a session starting in a checkout with such work hears of it in one line;
-//   - an hourly sweep puts back to To Do the In Progress tasks nobody has
-//     held for strandedIdle, with no pull request and no live session.
-
 // HookCheckout is one checkout's git state, as a Stop or SessionStart
 // reports it.
 type HookCheckout struct {
@@ -58,7 +43,7 @@ func (c HookCheckout) shared() bool {
 const (
 	strandedFiles    = 20
 	strandedMaxCO    = 10
-	strandedShowDays = 14 // how long wp next and a session start mention stranded work
+	strandedShowDays = 14
 	// strandedIdle is how long an In Progress task sits with no claim, no
 	// open run and no live session before the sweep puts it back.
 	strandedIdle = 4 * time.Hour
@@ -181,8 +166,7 @@ type StrandedWork struct {
 	// themselves (WP-843); PushError why that failed.
 	Pushed    string `json:"pushed,omitempty"`
 	PushError string `json:"push_error,omitempty"`
-	// onHold is what the task waits for, when hereText is told while it's on hold.
-	onHold string
+	onHold    string
 }
 
 // whyText says how the task's session went: "its session was cleared".
@@ -279,8 +263,6 @@ func (w *StrandedWork) ResumeText(key string) string {
 func trimStatus(lines []string) []string {
 	out := make([]string, len(lines))
 	for n, l := range lines {
-		// The code is one or two letters (its leading space is often trimmed
-		// on the way: " M a.go" arrives as "M a.go").
 		l = strings.TrimSpace(l)
 		if sp := strings.IndexByte(l, ' '); sp == 1 || sp == 2 {
 			l = strings.TrimSpace(l[sp:])
@@ -378,17 +360,16 @@ func (w *StrandedWork) hereText(key string, since time.Time) string {
 func (s *Service) strandOnEnd(ctx context.Context, t *tx, x *AgentSession, ev *HookEvent, at int64) error {
 	ws := s.loadWorkState(ctx, t, x.ID)
 	if ev.Pending != nil {
-		ws.Background = runningTasks(ev.Pending) // the latest word on it
+		ws.Background = runningTasks(ev.Pending)
 	}
 	if len(ws.Checkouts) == 0 && len(ws.Background) == 0 {
-		return nil // nothing known to lose
+		return nil
 	}
 	type held struct {
 		issue int64
 		agent string
 		open  bool
 	}
-	// Its open runs, and those that lapsed in it with nobody on the task since.
 	rows, err := t.QueryContext(ctx, `SELECT r.issue_id, r.agent, r.ended_at IS NULL FROM agent_runs r
 		WHERE r.session_id = ? AND (r.ended_at IS NULL OR (r.outcome IN ('expired', 'timeout')
 			AND r.id = (SELECT max(id) FROM agent_runs WHERE issue_id = r.issue_id)))
@@ -422,13 +403,13 @@ func (s *Service) strandOnEnd(ctx context.Context, t *tx, x *AgentSession, ev *H
 			continue
 		}
 		if i.Closed() || i.Status.Category != CatInProgress || s.outOnPR(ctx, t, i) != nil {
-			continue // done, or shipped: nothing stranded
+			continue
 		}
 		if handed, err := s.handedOn(ctx, t, i); handed || err != nil {
-			continue // moved on, or can't tell: leave it for the next pass (WP-1406)
+			continue
 		}
 		if i.ClaimedBy != "" && i.ClaimedBy != h.agent && i.ClaimedUntil != nil && i.ClaimedUntil.UnixMilli() > now {
-			continue // another agent took it since
+			continue
 		}
 		w := pickWork(i.Key, len(list), ws, func(k string) bool { return s.taskExists(ctx, t, k) })
 		if w == nil {
@@ -471,7 +452,7 @@ func pickWork(key string, tasks int, ws workState, exists func(key string) bool)
 		}
 	}
 	if len(mine) == 0 {
-		return nil // no checkout of the task's: running work can't be said to be its
+		return nil
 	}
 	var pick *HookCheckout
 	for n := range mine {
@@ -497,11 +478,11 @@ func (s *Service) taskExists(ctx context.Context, q interface {
 }, key string) bool {
 	n := strings.LastIndexByte(key, '-')
 	if n <= 0 {
-		return true // unknown: don't claim the checkout
+		return true
 	}
 	var ok bool
 	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM issues i JOIN projects p ON p.id = i.project_id WHERE p.key = ? AND i.number = ?)`, key[:n], key[n+1:]).Scan(&ok); err != nil {
-		return true // unknown: don't claim the checkout
+		return true
 	}
 	return ok
 }
@@ -537,8 +518,6 @@ func (s *Service) strand(ctx context.Context, t *tx, i *Issue, agent string, ope
 	sys := SystemActor()
 	moved := false
 	if i.WorkflowID == nil || i.Step == "" {
-		// A workflow's steps hand the task on themselves; outside one, To Do
-		// is where an agent picks it up again.
 		st := CatTodo
 		if err := s.applyPatch(ctx, t, sys, i, IssuePatch{Status: &st}); err != nil && !IsInvalid(err) {
 			return err
@@ -548,7 +527,6 @@ func (s *Service) strand(ctx context.Context, t *tx, i *Issue, agent string, ope
 	}
 	body := w.strandComment(i.Key, moved)
 	if i.Hold.on(s.now()) {
-		// A held task can't be taken by name either: say what it waits for.
 		body = strings.Replace(body, fmt.Sprintf("`wp next %s` hands it out again and shows where to resume.", i.Key),
 			fmt.Sprintf("It is on hold %s; it is handed out again once that ends.", holdWaits(i.Hold, time.UTC)), 1)
 	}
@@ -602,7 +580,6 @@ func (s *Service) noteStrandedHere(ctx context.Context, t *tx, actor *Actor, x *
 			since time.Time
 		}
 		var cands []cand
-		// Stranded right here.
 		var id, when int64
 		var why, branch string
 		err := t.QueryRowContext(ctx, `SELECT issue_id, at, why, branch FROM stranded_work WHERE machine = ? AND top = ? AND at > ?
@@ -612,7 +589,6 @@ func (s *Service) noteStrandedHere(ctx context.Context, t *tx, actor *Actor, x *
 		} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		// Named by the branch, with an agent's run on it that ended.
 		for _, r := range branchRefs(c.Branch) {
 			iid, err := s.resolveIssueID(ctx, t, r.Key)
 			if err != nil {
@@ -638,10 +614,10 @@ func (s *Service) noteStrandedHere(ctx context.Context, t *tx, actor *Actor, x *
 				continue
 			}
 			if handed, err := s.handedOn(ctx, t, i); handed || err != nil {
-				continue // moved on, or can't tell: skip it this pass (WP-1406)
+				continue
 			}
 			if i.ClaimedBy != "" && i.ClaimedUntil != nil && i.ClaimedUntil.UnixMilli() > now {
-				continue // someone holds it
+				continue
 			}
 			var live bool
 			if err := t.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM agent_runs r JOIN agent_sessions x ON x.id = r.session_id
@@ -741,13 +717,13 @@ func (s *Service) sweepStranded(ctx context.Context) error {
 					return nil
 				}
 				if handed, err := s.handedOn(ctx, t, i); handed || err != nil {
-					return nil // moved on, or can't tell: skip it this pass (WP-1406)
+					return nil
 				}
 				if i.Draft || i.Agent == AgentHumans || i.UpdatedAt.UnixMilli() >= cut {
-					return nil // changed since the candidate query
+					return nil
 				}
 				if i.ClaimedBy != "" && i.ClaimedUntil != nil && i.ClaimedUntil.UnixMilli() > now {
-					return nil // claimed since the candidate query
+					return nil
 				}
 				var recent bool
 				if err := t.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM agent_runs WHERE issue_id = ? AND (ended_at IS NULL OR ended_at > ?))
@@ -755,7 +731,7 @@ func (s *Service) sweepStranded(ctx context.Context) error {
 					return err
 				}
 				if recent {
-					return nil // a run started or ended, or a person was assigned, since the candidate query
+					return nil
 				}
 				var agent string
 				var session sql.NullInt64
@@ -770,14 +746,14 @@ func (s *Service) sweepStranded(ctx context.Context) error {
 					var seen int64
 					if err := t.QueryRowContext(ctx, `SELECT state, last_seen_at, cwd, branch, machine FROM agent_sessions WHERE id = ?`, session.Int64).
 						Scan(&state, &seen, &cwd, &branch, &machine); err != nil && !errors.Is(err, sql.ErrNoRows) {
-						return err // can't tell whether the session is live: don't strand
+						return err
 					} else if err == nil {
 						if sessionStillAbout(state, seen, now) {
-							return nil // its session is still about: it may come back to it (WP-ADR54)
+							return nil
 						}
 						w.Machine, w.Top, w.Branch = machine, cwd, branch
 						ws := s.loadWorkState(ctx, t, session.Int64)
-						ws.Background = nil // long gone, and nothing says they died with it
+						ws.Background = nil
 						if p := pickWork(i.Key, 1, ws, func(k string) bool { return s.taskExists(ctx, t, k) }); p != nil {
 							w.Top, w.Branch, w.Files, w.FileCount, w.Unpushed = p.Top, p.Branch, p.Files, p.FileCount, p.Unpushed
 						}

@@ -37,7 +37,6 @@ func TestBenchFailingCommandShowsItsTailAndCode(t *testing.T) {
 	slotEnv(t)
 	tempRepo(t)
 	var out, errb bytes.Buffer
-	// go test fails with 1, which must not read as "target not met".
 	if code := run([]string{"bench", "--target", "1h", "--", "sh", "-c", "echo boom; exit 1"}, &out, &errb); code != benchFailedCode {
 		t.Fatalf("exit %d, want %d\n%s%s", code, benchFailedCode, out.String(), errb.String())
 	}
@@ -59,7 +58,7 @@ func TestBenchBaseRunsTheOtherTreeAndKeepsResults(t *testing.T) {
 	write(t, "sub/d.txt", "0.08\n")
 	gitDo(t, "add", "-A")
 	gitDo(t, "commit", "-q", "-m", "slow")
-	write(t, "sub/d.txt", "0.001\n") // this tree, uncommitted: faster
+	write(t, "sub/d.txt", "0.001\n")
 	t.Chdir(filepath.Join(dir, "sub"))
 
 	var out, errb bytes.Buffer
@@ -196,7 +195,6 @@ func TestBenchStopKillsTheCommandsChildren(t *testing.T) {
 	done := make(chan error, 1)
 	start := time.Now()
 	go func() {
-		// The grandchild sleep holds the output pipe; a stop must not wait for it.
 		_, _, err := benchExec(ctx, t.TempDir(), os.Environ(), []string{"sh", "-c", "sleep 30; echo done"}, nil)
 		done <- err
 	}()
@@ -220,7 +218,6 @@ func TestBenchSweepsKilledRunsWorktrees(t *testing.T) {
 	write(t, "a.txt", "x\n")
 	gitDo(t, "add", "-A")
 	gitDo(t, "commit", "-q", "-m", "one")
-	// A pid that can't be running: a wp bench killed before its cleanup.
 	dead := filepath.Join(os.TempDir(), baseTmpPrefix+"2147483646-test")
 	gitDo(t, "worktree", "add", "--detach", "--quiet", dead, "HEAD")
 	t.Cleanup(func() { _ = os.RemoveAll(dead) })
@@ -268,7 +265,7 @@ func TestBenchSweepFollowsASymlinkedTMPDIR(t *testing.T) {
 	if err := os.Symlink(real, link); err != nil {
 		t.Skip(err)
 	}
-	t.Setenv("TMPDIR", link) // as macOS's /var/folders → /private/var/folders
+	t.Setenv("TMPDIR", link)
 	dead := filepath.Join(link, baseTmpPrefix+"2147483646-test")
 	gitDo(t, "worktree", "add", "--detach", "--quiet", dead, "HEAD")
 	sweepBaseWorktrees()
@@ -323,7 +320,6 @@ func TestBenchFlagsATreeThatMovedDuringTheRuns(t *testing.T) {
 	gitDo(t, "add", "-A")
 	gitDo(t, "commit", "-q", "-m", "one")
 	var out, errb bytes.Buffer
-	// --setup's own output isn't an edit; a file written during the timed runs is.
 	if code := run([]string{"bench", "-n", "2", "--setup", "touch built", "--", "sh", "-c", "test -f built && date +%s%N > stamp"}, &out, &errb); code != 0 {
 		t.Fatalf("exit %d\n%s%s", code, out.String(), errb.String())
 	}

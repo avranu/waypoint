@@ -13,16 +13,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/codeindex"
 )
 
-// wp prep (WP-212, WP-ADR8): prepare a queued task for the agent that will
-// take it. This side gathers a bundle from the checkout's index (the code
-// half of a brief, with outlines, and the commits naming tasks that changed
-// those files); the server adds earlier tasks and glossary terms, has a free
-// model point at what the work needs among them, and keeps only picks that
-// are among them. The model gives no plan or advice: a weak model's steer
-// misleads a strong one. wp next, wp show and wp brief print the prep,
-// resolving each code pick in the live index, so the code an agent sees is
-// never the model's.
-
 var prepCmd = &command{
 	name: "prep", group: "Knowledge", args: "KEY… | show KEY…",
 	summary: "prepare a queued task: a free model points at where to look",
@@ -155,7 +145,7 @@ type prepNotes struct {
 
 const (
 	prepBundleFiles  = 15
-	prepHistoryFiles = 8 // the top files whose task commits go in the bundle
+	prepHistoryFiles = 8
 	prepHistory      = 30
 	prepBundleSyms   = 60
 	prepBodies       = 8
@@ -322,7 +312,7 @@ func buildPrepBundle(ctx context.Context, ix *codeindex.Index, title, body, extr
 		return nil, err
 	}
 	for _, h := range tc {
-		if !slices.Contains(h.Keys, key) { // the task's own commits aren't earlier work
+		if !slices.Contains(h.Keys, key) {
 			b.History = append(b.History, prepCommit{Subject: h.Subject, Keys: h.Keys, Files: h.Files, At: h.TS})
 		}
 	}
@@ -353,7 +343,7 @@ func (p *runnerProc) prepTasks(ctx context.Context) {
 	for wait := 2 * time.Minute; sleepCtx(ctx, wait); wait = prepEvery {
 		var due []prepDue
 		if err := p.c.callInto(ctx, "GET", "/api/v1/prep/due?machine="+url.QueryEscape(p.opts.Name), nil, &due); err != nil {
-			if msg := err.Error(); msg != lastErr[""] && !isNotFound(err) { // an older server has no prep
+			if msg := err.Error(); msg != lastErr[""] && !isNotFound(err) {
 				p.logf("Task prep: %v", err)
 				lastErr[""] = msg
 			}
@@ -574,8 +564,6 @@ func prepModelName(m string) string {
 func renderPrepNotes(p *prepView, ix *codeindex.Index, budget int, compact bool) string {
 	n := p.Notes
 	var b strings.Builder
-	// WP-626: name the model alone (not its gateway), then the picks; code
-	// and files are one list.
 	if m := prepModelName(p.Model); m != "" {
 		fmt.Fprintf(&b, "A weaker model, `%s`, suggested these places to start.\n", m)
 	} else {
@@ -593,7 +581,7 @@ func renderPrepNotes(p *prepView, ix *codeindex.Index, budget int, compact bool)
 		}
 		res, err := ix.Show(context.Background(), s.Path+":"+s.Name, codeindex.ShowOptions{Budget: 900})
 		if err != nil || len(res.Blocks) == 0 {
-			continue // gone since the prep was made
+			continue
 		}
 		syms = append(syms, resolved{s, res})
 	}
@@ -663,7 +651,6 @@ func renderPrepNotes(p *prepView, ix *codeindex.Index, budget int, compact bool)
 	if compact || ix == nil {
 		return out
 	}
-	// the full form: the picked symbols' lines, best first, as room allows
 	left := budget - codeindex.Tokens(out)
 	for _, s := range syms {
 		if s.res == nil {
