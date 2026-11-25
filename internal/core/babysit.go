@@ -82,6 +82,7 @@ type Babysit struct {
 	faultReruns  string
 	flakeRerun   string
 	limitedUntil int64
+	limitedAt    int64
 	limitTries   int
 	prevStreaks  string
 }
@@ -179,7 +180,7 @@ type BabysitInput struct {
 
 const babysitCols = `b.id, b.pr_id, b.state, b.round, b.max_rounds, b.max_repeats, b.model, b.owner_id, coalesce(o.username, ''), coalesce(nullif(o.display_name, ''), o.username, ''),
 	coalesce(s.username, ''), b.started_agent, b.started_via, coalesce(b.session_id, 0), b.head_sha, b.round_sha, coalesce(b.job_id, 0), b.wait, b.streaks, b.rounds,
-	b.told, coalesce(b.synced_at, 0), b.end_reason, b.created_at, b.updated_at, b.ended_at, b.notify_end, b.blocking, b.fault_reruns, b.flake_rerun, coalesce(b.wait_at, b.updated_at), b.limited_until, b.limited_tries, coalesce(b.prev_streaks, '')`
+	b.told, coalesce(b.synced_at, 0), b.end_reason, b.created_at, b.updated_at, b.ended_at, b.notify_end, b.blocking, b.fault_reruns, b.flake_rerun, coalesce(b.wait_at, b.updated_at), b.limited_until, b.limited_tries, coalesce(b.prev_streaks, ''), b.limited_at`
 
 const babysitFrom = ` FROM babysits b LEFT JOIN users o ON o.id = b.owner_id LEFT JOIN users s ON s.id = b.started_by`
 
@@ -190,7 +191,7 @@ func scanBabysit(sc interface{ Scan(...any) error }) (*Babysit, error) {
 	var ended sql.NullInt64
 	if err := sc.Scan(&b.ID, &b.PRID, &b.State, &b.Round, &b.MaxRounds, &b.MaxRepeats, &b.Model, &b.ownerID, &b.Owner.Username, &b.Owner.DisplayName,
 		&b.StartedBy, &b.Agent, &b.Via, &b.sessionID, &b.HeadSHA, &b.RoundSHA, &b.JobID, &b.Wait, &streaks, &rounds,
-		&b.told, &b.syncedAt, &b.EndReason, &created, &updated, &ended, &b.Notify, &b.Blocking, &b.faultReruns, &b.flakeRerun, &waitAt, &b.limitedUntil, &b.limitTries, &b.prevStreaks); err != nil {
+		&b.told, &b.syncedAt, &b.EndReason, &created, &updated, &ended, &b.Notify, &b.Blocking, &b.faultReruns, &b.flakeRerun, &waitAt, &b.limitedUntil, &b.limitTries, &b.prevStreaks, &b.limitedAt); err != nil {
 		return nil, err
 	}
 	b.Owner.ID = b.ownerID
@@ -1646,7 +1647,7 @@ func claudeReady(r *Runner) bool {
 // over at once: that won't change by itself, and neither will a pull request
 // the dispatch gate refuses.
 func (s *Service) roundRunnerWait(ctx context.Context, b *Babysit, pr *PullRequest) string {
-	if wait := s.limitWait(b); wait != "" {
+	if wait := s.limitWait(ctx, b); wait != "" {
 		return wait
 	}
 	if why, transient := s.babysitGateRead(ctx, pr); why != "" && !transient {

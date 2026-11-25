@@ -39,6 +39,10 @@ type DashPace struct {
 	Done4     int        `json:"done_4w"`      // finished in the last four weeks
 	DonePrev4 int        `json:"done_prev_4w"` // finished in the four before
 	Added4    int        `json:"added_4w"`     // added in the last four weeks
+	// Span4 and SpanPrev4 are the weeks of those two spans the project had
+	// work in it, so a young project's rate isn't spread over weeks before it.
+	Span4     float64 `json:"weeks_4w"`
+	SpanPrev4 float64 `json:"weeks_prev_4w"`
 	// LeadDays is the median days from filed to done over the last four
 	// weeks' finished tasks; nil when none finished.
 	LeadDays *float64 `json:"lead_days"`
@@ -296,6 +300,11 @@ func dashPace(issues []flowIssue, now time.Time) DashPace {
 	}
 	cut4 := now.AddDate(0, 0, -28).UnixMilli()
 	cut8 := now.AddDate(0, 0, -56).UnixMilli()
+	if born := earliestWork(issues); born > 0 {
+		week := float64(7 * 24 * time.Hour / time.Millisecond)
+		out.Span4 = min(4, max(0, float64(now.UnixMilli()-born)/week))
+		out.SpanPrev4 = min(4, max(0, float64(cut4-born)/week))
+	}
 	var lead []float64
 	week := func(ms int64) int {
 		if ms < first.UnixMilli() {

@@ -130,9 +130,12 @@ async function seed(api, call) {
   const uid = db.prepare("SELECT id FROM users WHERE username = 'robin'").get().id;
   const start7 = reset7 - 7 * DAY;
   const ins = db.prepare("INSERT INTO quota_samples(user_id, at, span, percent, resets_at, machine, session, model) VALUES (?,?,?,?,?,?,?,?)");
+  // The week's quota was reset two days ago, at 88% used.
+  const wiped = now - 2 * DAY;
   for (let i = 1; i <= 16; i++) {
     const at = start7 + (i * (4 * DAY - HOUR)) / 16;
-    ins.run(uid, at, "seven_day", (71 * (at - start7)) / (now - start7) * 0.98, reset7, "devhost", "", "claude-opus-5-5");
+    const pct = at < wiped ? (88 * (at - start7)) / (wiped - start7) : (69 * (at - wiped)) / (now - wiped);
+    ins.run(uid, at, "seven_day", pct, reset7, "devhost", "", "claude-opus-5-5");
   }
   for (const wk of [1, 2, 3])
     for (let i = 1; i <= 4; i++)
@@ -212,6 +215,9 @@ async function run(width, scheme) {
   ok(await page.getByRole("meter", { name: /5 hours quota used/ }).isVisible(), `${tag} the 5-hour gauge shows`);
   await page.getByRole("group", { name: /Seven-day quota used over the window/ }).waitFor();
   ok(true, `${tag} the week chart renders`);
+  const week = o.quota.windows[0];
+  ok(week.resets.length === 1 && week.paced_from === week.resets[0], `${tag} API: the week's reset restarts its pace`);
+  ok(await page.getByText("At the recent rate").first().isVisible(), `${tag} the chart projects the recent rate`);
   await page.getByRole("group", { name: "Fresh tokens per day by model family" }).waitFor();
   ok(true, `${tag} tokens by day render`);
   const led = page.getByTestId("token-ledger");

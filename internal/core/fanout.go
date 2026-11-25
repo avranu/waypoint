@@ -338,16 +338,15 @@ func (s *Service) medianTaskCalls(ctx context.Context, userID, now int64) (int, 
 // usdPerWeekPct is this week's API-equivalent spend over the share of the
 // weekly quota it used, once at least 5% is used.
 func (s *Service) usdPerWeekPct(ctx context.Context, book *priceBook, userID, now int64) (float64, bool) {
-	var resets int64
-	var pct float64
-	if err := s.db.R.QueryRowContext(ctx, `SELECT resets_at, max(percent) FROM quota_samples WHERE user_id = ? AND span = 'seven_day'
-		AND resets_at = (SELECT resets_at FROM quota_samples WHERE user_id = ? AND span = 'seven_day' ORDER BY at DESC LIMIT 1)`, userID, userID).Scan(&resets, &pct); err != nil {
+	l, err := s.currentQuota(ctx, userID, "seven_day", msTime(now))
+	if err != nil || l == nil || l.Reset < now {
 		return 0, false
 	}
-	if resets < now || pct < 5 {
+	pct := l.Used()
+	if pct < 5 {
 		return 0, false
 	}
-	byFam, err := s.usageCost(ctx, book, `user_id = ? AND hour >= ?`, userID, resets-7*day)
+	byFam, err := s.usageCost(ctx, book, `user_id = ? AND hour >= ? AND hour <= ?`, userID, l.Start, l.SeenAt)
 	if err != nil {
 		return 0, false
 	}

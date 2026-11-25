@@ -11,6 +11,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"git.jmann.me/claude/waypoint/internal/core/quota"
 )
 
 // Waypoint's defaults (WP-ADR9 has the numbers behind them).
@@ -290,6 +292,7 @@ type AutopilotMeter struct {
 	WeekEven      *float64   `json:"week_even,omitempty"`
 	WeekResetsAt  *time.Time `json:"week_resets_at,omitempty"`
 	WeekCap       *float64   `json:"week_cap,omitempty"` // the week ceiling now, by the default limits
+	FiveCap       *float64   `json:"five_cap,omitempty"` // the five-hour ceiling now, likewise
 	FiveHour      *float64   `json:"five_hour_percent,omitempty"`
 	FiveResetsAt  *time.Time `json:"five_hour_resets_at,omitempty"`
 	QuotaSampled  *time.Time `json:"quota_sampled_at,omitempty"`
@@ -415,6 +418,9 @@ func (s *Service) AutopilotOverview(ctx context.Context, a *Actor) (*AutopilotOv
 	}
 	if c := weekCap(m, o.Effective, s.now()); c > 0 {
 		m.WeekCap = ptrOf(math.Round(c*10) / 10)
+	}
+	if c := weekEndRamp(valueOf(o.Effective.FiveHourMax), m, o.Effective, s.now()); c > 0 {
+		m.FiveCap = ptrOf(math.Round(c*10) / 10)
 	}
 	o.Meter = m
 	if o.Spend, err = s.spendPlan(ctx, uid, o.Effective, m, s.now()); err != nil {
@@ -676,30 +682,23 @@ func (s *Service) autopilotMeter(ctx context.Context, uid int64) (*AutopilotMete
 		m.QuotaOffUntil = ptrOf(msTime(off))
 	}
 	m.GuardHold = s.guardHoldFor(ctx, uid)
-	read := func(span string) (pct float64, reset, at time.Time, ok bool, err error) {
-		var a, r int64
-		err = s.db.R.QueryRowContext(ctx, `SELECT at, percent, resets_at FROM quota_samples WHERE user_id = ? AND span = ? ORDER BY at DESC LIMIT 1`, uid, span).Scan(&a, &pct, &r)
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, time.Time{}, time.Time{}, false, nil
-		}
-		return pct, msTime(r), msTime(a), err == nil, err
-	}
-	pct, reset, at, ok, err := read("seven_day")
+	week, err := s.currentQuota(ctx, uid, "seven_day", now)
 	if err != nil {
 		return nil, err
 	}
-	if ok && reset.After(now) && now.Sub(at) < quotaFresh {
-		even := 100 * (1 - float64(reset.Sub(at))/float64(7*24*time.Hour))
-		m.WeekPercent, m.WeekEven, m.WeekResetsAt, m.QuotaSampled = ptrOf(pct), ptrOf(math.Round(max(0, even)*10)/10), ptrOf(reset), ptrOf(at)
+	if week != nil && week.Reset > now.UnixMilli() && now.Sub(msTime(week.SeenAt)) < quota.Fresh {
+		k := week.Last()
+		even := week.Even(k.From, week.SeenAt)
+		m.WeekPercent, m.WeekEven, m.WeekResetsAt, m.QuotaSampled = ptrOf(k.Pct), ptrOf(math.Round(even*10)/10), ptrOf(msTime(week.Reset)), ptrOf(msTime(week.SeenAt))
 	} else {
 		m.QuotaUnknown = true
 	}
-	pct, reset, at, ok, err = read("five_hour")
+	five, err := s.currentQuota(ctx, uid, "five_hour", now)
 	if err != nil {
 		return nil, err
 	}
-	if ok && reset.After(now) && now.Sub(at) < 5*time.Hour {
-		m.FiveHour, m.FiveResetsAt = ptrOf(pct), ptrOf(reset)
+	if five != nil && five.Reset > now.UnixMilli() && now.Sub(msTime(five.SeenAt)) < 5*time.Hour {
+		m.FiveHour, m.FiveResetsAt = ptrOf(five.Last().Pct), ptrOf(msTime(five.Reset))
 	}
 	return m, nil
 }
@@ -707,9 +706,6 @@ func (s *Service) autopilotMeter(ctx context.Context, uid int64) (*AutopilotMete
 // lastHourSpend is the person's spend over the last 60 minutes at list
 // price, every machine and session. usage_hours has hourly rows, so the
 // hour before this one counts for the part of it inside the window.
-// quotaFresh is how old a quota reading the limits still trust.
-const quotaFresh = 6 * time.Hour
-
 func (s *Service) lastHourSpend(ctx context.Context, uid int64, now time.Time) (float64, error) {
 	book, _, err := s.loadPrices(ctx)
 	if err != nil {
@@ -779,8 +775,9 @@ func autopilotPaused(m *AutopilotMeter, l AutopilotLimits, now time.Time) (why s
 func quotaPaused(m *AutopilotMeter, l AutopilotLimits, now time.Time) (why string, recheck time.Time) {
 	if m.FiveHour != nil && m.FiveResetsAt != nil {
 		if max := weekEndRamp(valueOf(l.FiveHourMax), m, l, now); max > 0 && *m.FiveHour >= max {
+			// Looked at again before then: the quota can be reset early.
 			return fmt.Sprintf("the five-hour window is at %.0f%% (the limit is %.0f%% now) until it resets at %s", *m.FiveHour, max, m.FiveResetsAt.UTC().Format("15:04 UTC")),
-				m.FiveResetsAt.Add(time.Minute)
+				minTime(m.FiveResetsAt.Add(time.Minute), now.Add(15*time.Minute))
 		}
 	}
 	if m.WeekPercent != nil && m.WeekEven != nil {

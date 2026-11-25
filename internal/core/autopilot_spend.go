@@ -1,12 +1,14 @@
 package core
 
 import (
+	stdcmp "cmp"
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"math"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core/quota"
 )
 
 const (
@@ -37,7 +39,7 @@ type SpendPlan struct {
 	OpensAt  *time.Time `json:"opens_at,omitempty"` // when the week's end begins, before it does
 	ResetsAt *time.Time `json:"resets_at,omitempty"`
 	// The projection: the week's use now, its slope (points an hour; nil:
-	// too few readings) and where it lands at the reset at that slope.
+	// nothing to go by) and where it lands at the reset at that slope.
 	Percent   *float64 `json:"percent,omitempty"`
 	PerHour   *float64 `json:"per_hour,omitempty"`
 	Projected *float64 `json:"projected,omitempty"`
@@ -75,40 +77,47 @@ type weekReading struct {
 }
 
 func (s *Service) weekReading(ctx context.Context, uid int64, now time.Time) (*weekReading, error) {
-	var at, reset int64
-	var pct float64
-	err := s.db.R.QueryRowContext(ctx, `SELECT at, percent, resets_at FROM quota_samples WHERE user_id = ? AND span = 'seven_day' ORDER BY at DESC LIMIT 1`, uid).Scan(&at, &pct, &reset)
-	if errors.Is(err, sql.ErrNoRows) || err == nil && reset <= now.UnixMilli() {
-		return nil, nil
-	} else if err != nil {
+	l, err := s.currentQuota(ctx, uid, "seven_day", now)
+	if err != nil || l == nil || l.Reset <= now.UnixMilli() {
 		return nil, err
 	}
-	r := &weekReading{at: msTime(at), reset: msTime(reset), pct: pct}
+	r := &weekReading{at: msTime(l.SeenAt), reset: msTime(l.Reset), pct: l.Last().Pct}
 	if now.Sub(r.at) > time.Hour {
 		r.perHour = ptrOf(0.0)
 		return r, nil
 	}
-	var baseAt int64
-	var basePct float64
-	const sameWeek = `user_id = ? AND span = 'seven_day' AND resets_at BETWEEN ? AND ?`
-	lo, hi := reset-time.Hour.Milliseconds(), reset+time.Hour.Milliseconds()
-	err = s.db.R.QueryRowContext(ctx, `SELECT at, percent FROM quota_samples WHERE `+sameWeek+` AND at BETWEEN ? AND ? ORDER BY at LIMIT 1`,
-		uid, lo, hi, at-time.Hour.Milliseconds(), at-spendSlopeMin.Milliseconds()).Scan(&baseAt, &basePct)
-	if errors.Is(err, sql.ErrNoRows) {
-		err = s.db.R.QueryRowContext(ctx, `SELECT at, percent FROM quota_samples WHERE `+sameWeek+` AND at <= ? ORDER BY at DESC LIMIT 1`,
-			uid, lo, hi, at-time.Hour.Milliseconds()).Scan(&baseAt, &basePct)
+	// The slope's base: the earliest reading of the last hour old enough to
+	// give one, else the latest before the hour, else the week's first.
+	hourAgo, newest := l.SeenAt-time.Hour.Milliseconds(), l.SeenAt-spendSlopeMin.Milliseconds()
+	inHour, before, first := 0, 0, 0
+	for i := 1; i < len(l.Knots); i++ {
+		k := l.Knots[i]
+		if k.Zeroed || k.At >= l.SeenAt {
+			continue
+		}
+		if first == 0 {
+			first = i
+		}
+		if k.At <= hourAgo {
+			before = i
+		}
+		if inHour == 0 && k.At >= hourAgo && k.At <= newest {
+			inHour = i
+		}
 	}
-	if errors.Is(err, sql.ErrNoRows) {
-		err = s.db.R.QueryRowContext(ctx, `SELECT at, percent FROM quota_samples WHERE `+sameWeek+` AND at < ? ORDER BY at LIMIT 1`,
-			uid, lo, hi, at).Scan(&baseAt, &basePct)
+	if base := stdcmp.Or(inHour, before, first); base > 0 {
+		if span := r.at.Sub(msTime(l.Knots[base].At)); span >= spendSlopeMin {
+			rose := 0.0
+			for i := base + 1; i < len(l.Knots); i++ {
+				rose += l.Rise(i)
+			}
+			r.perHour = ptrOf(rose / span.Hours())
+			return r, nil
+		}
 	}
-	if errors.Is(err, sql.ErrNoRows) {
-		return r, nil
-	} else if err != nil {
-		return nil, err
-	}
-	if span := r.at.Sub(msTime(baseAt)); span >= spendSlopeMin {
-		r.perHour = ptrOf(max(0, (pct-basePct)/span.Hours()))
+	// Too few readings for a slope: the week's recent rate.
+	if rate, watched := quota.Rate([]*quota.Line{l}, l.SeenAt, quotaSpans[0].halfLife); watched >= spendSlopeMin {
+		r.perHour = ptrOf(rate * float64(time.Hour.Milliseconds()))
 	}
 	return r, nil
 }

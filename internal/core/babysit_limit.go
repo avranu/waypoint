@@ -2,9 +2,7 @@ package core
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -62,11 +60,11 @@ func (s *Service) uncountLimitedRound(ctx context.Context, b *Babysit, jobID int
 		tries++
 	}
 	r := takeBackRound(b, i)
-	b.limitedUntil, b.limitTries, b.JobID = until.UnixMilli(), tries, 0
+	b.limitedUntil, b.limitedAt, b.limitTries, b.JobID = until.UnixMilli(), s.nowMS(), tries, 0
 	rounds, _ := json.Marshal(b.Rounds)
 	st, _ := json.Marshal(b.streaks)
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE babysits SET job_id = NULL, round = ?, round_sha = ?, rounds = ?, streaks = ?, limited_until = ?, limited_tries = ?, updated_at = ? WHERE id = ?`,
-		b.Round, b.RoundSHA, string(rounds), string(st), b.limitedUntil, b.limitTries, s.nowMS(), b.ID); err != nil {
+	if _, err := s.db.W.ExecContext(ctx, `UPDATE babysits SET job_id = NULL, round = ?, round_sha = ?, rounds = ?, streaks = ?, limited_until = ?, limited_at = ?, limited_tries = ?, updated_at = ? WHERE id = ?`,
+		b.Round, b.RoundSHA, string(rounds), string(st), b.limitedUntil, b.limitedAt, b.limitTries, s.nowMS(), b.ID); err != nil {
 		s.log.WarnContext(ctx, "record a babysit round", "babysit", b.ID, "err", err)
 		return true
 	}
@@ -105,13 +103,14 @@ func (s *Service) limitLifts(ctx context.Context, uid int64, msg string) (time.T
 	}
 	var until time.Time
 	for _, sp := range quotaSpans {
-		var pct float64
-		var reset int64
-		err := s.db.R.QueryRowContext(ctx, `SELECT percent, resets_at FROM quota_samples WHERE user_id = ? AND span = ? ORDER BY at DESC LIMIT 1`, uid, sp.span).Scan(&pct, &reset)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		l, err := s.currentQuota(ctx, uid, sp.span, now)
+		if err != nil {
 			s.log.WarnContext(ctx, "read the quota", "user", uid, "err", err)
 		}
-		if t := msTime(reset); err == nil && pct >= 99 && t.After(now) && t.After(until) {
+		if l == nil || l.Last().Pct < 99 {
+			continue
+		}
+		if t := msTime(l.Reset); t.After(now) && t.After(until) {
 			until = t
 		}
 	}
@@ -123,8 +122,8 @@ func (s *Service) limitLifts(ctx context.Context, uid int64, msg string) (time.T
 
 // limitWait is what the next round waits for while the owner's limit
 // holds, or "" once it has lifted.
-func (s *Service) limitWait(b *Babysit) string {
-	if b.limitedUntil <= s.nowMS() {
+func (s *Service) limitWait(ctx context.Context, b *Babysit) string {
+	if b.limitedUntil <= s.nowMS() || s.limitWasReset(ctx, b) {
 		return ""
 	}
 	at := msTime(b.limitedUntil)
@@ -133,6 +132,26 @@ func (s *Service) limitWait(b *Babysit) string {
 		when = at.Format("Jan 2 15:04 UTC")
 	}
 	return fmt.Sprintf("%s's usage limit stopped the last round, which doesn't count; the next goes after %s", cmp(b.Owner.DisplayName, "its owner"), when)
+}
+
+// limitWasReset: the quota window the round waits for was reset since the
+// round stopped, and has room again.
+func (s *Service) limitWasReset(ctx context.Context, b *Babysit) bool {
+	for _, sp := range quotaSpans {
+		l, err := s.currentQuota(ctx, b.ownerID, sp.span, s.now())
+		if err != nil {
+			s.log.WarnContext(ctx, "read the quota", "user", b.ownerID, "err", err)
+		}
+		if l == nil || l.Last().Pct >= 99 || max(l.Reset-b.limitedUntil, b.limitedUntil-l.Reset) > time.Hour.Milliseconds() {
+			continue
+		}
+		for i := 1; i < len(l.Knots)-1; i++ {
+			if l.Knots[i].Zeroed && l.Knots[i+1].At > b.limitedAt {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // takeBackRound removes round i from b as if it was never handed out: the

@@ -786,6 +786,26 @@ func TestForecast(t *testing.T) {
 	}
 }
 
+// Weeks before a project had work don't count as weeks nothing got done.
+func TestRatesOfAYoungProject(t *testing.T) {
+	week := 7 * 24 * time.Hour
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC) // a Wednesday
+	var all []flowIssue
+	for _, ago := range []time.Duration{week, 2 * week} {
+		at := now.Add(-ago).UnixMilli()
+		all = append(all, flowIssue{created: at, resolved: at}, flowIssue{created: at, resolved: at})
+	}
+	all = append(all, flowIssue{created: now.UnixMilli()}, flowIssue{created: now.UnixMilli()})
+	s := &Service{now: func() time.Time { return now }}
+	fc := s.forecast(all, func(flowIssue) bool { return true }, ProjectSettings{VelocityWeeks: 6}, time.UTC)
+	if len(fc.WeeklyThroughput) != 2 || fc.AveragePerWeek != 2 {
+		t.Errorf("forecast %+v", fc)
+	}
+	if p := dashPace(all, now); p.Span4 != 2 || p.SpanPrev4 != 0 {
+		t.Errorf("spans %v %v, want 2 0", p.Span4, p.SpanPrev4)
+	}
+}
+
 func TestCalendarFeed(t *testing.T) {
 	e := newEnv(t)
 	p := e.project(e.admin, "Cal", "")

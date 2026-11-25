@@ -124,7 +124,7 @@ async function run(width, scheme, n) {
   await page.waitForFunction(async ([b, k]) => {
     const o = await (await fetch(b + "/api/v1/autopilot")).json();
     const p = o.projects.find((x) => x.project_key === k);
-    return p && p.limits.hours === "09:00-18:00" && p.limits.days === "mon-fri" && p.limits.min_priority === "high" && p.limits.at_once === 2;
+    return p && p.limits.hours === "09:00-18:00" && p.limits.days === "mon-fri" && p.limits.min_priority === "high" && p.limits.at_once === 2 && p.limits.query === "-label:risky";
   }, [base, KEY]);
   ok(true, `${tag} the criteria and pace are saved in one spelling`);
   await row.getByTestId("autopilot-criteria").filter({ hasText: "mon-fri" }).waitFor({ timeout: 5000 }).catch(() => {});

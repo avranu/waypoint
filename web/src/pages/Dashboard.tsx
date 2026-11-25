@@ -27,6 +27,7 @@ import {
   dashboardApi,
   onGoalShare,
   perWeek,
+  perWeekBefore,
   type DashGoal,
   type Dashboard,
   type DashSignal,
@@ -306,7 +307,7 @@ function Tiles({ d }: { d: Dashboard }) {
       <Tile
         label="Done a week"
         value={fmtNum(wk)}
-        sub={<Trend now={wk} before={d.pace.done_prev_4w / 4} unit="a week" />}
+        sub={<Trend now={wk} before={perWeekBefore(d.pace)} unit="a week" />}
       >
         <Sparkbars
           name="Done"
@@ -880,8 +881,8 @@ const toneRank = (t: DashTone) => (t === 'bad' ? 0 : t === 'warn' ? 1 : 2)
 function AllTiles({ projects }: { projects: Dashboard[] }) {
   const sum = (f: (p: Dashboard) => number) => projects.reduce((n, p) => n + f(p), 0)
   const open = sum((p) => p.open)
-  const done4 = sum((p) => p.pace.done_4w)
-  const prev4 = sum((p) => p.pace.done_prev_4w)
+  const now = sum((p) => perWeek(p.pace))
+  const before = sum((p) => perWeekBefore(p.pace))
   const traced = sum((p) => p.traced)
   const onGoal = sum((p) => p.on_goal)
   const urgent = sum((p) => p.signals.filter((s) => s.tone !== 'info').length)
@@ -891,8 +892,8 @@ function AllTiles({ projects }: { projects: Dashboard[] }) {
       <Tile label="Open tasks" value={fmtNum(open)} sub={plural(projects.length, 'project')} />
       <Tile
         label="Done a week"
-        value={fmtNum(done4 / 4)}
-        sub={<Trend now={done4 / 4} before={prev4 / 4} unit="a week" />}
+        value={fmtNum(now)}
+        sub={<Trend now={now} before={before} unit="a week" />}
       >
         <Sparkbars
           name="Done"

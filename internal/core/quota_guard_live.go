@@ -43,8 +43,8 @@ const (
 	guardTripsSpan = 6 * time.Hour
 	guardTripsFor  = 2 * time.Hour
 	guardBurstFor  = time.Hour
-	// A pace hold lasts while the limits hold autopilot back; each sweep
-	// that still finds it renews it this far.
+	// A pace hold lasts this long; the week rising past the line again while
+	// the limits hold autopilot back starts another.
 	guardPaceFor = 15 * time.Minute
 	// guardPaceSpend: automation must still be spending (dollars since the
 	// over phase began) for a pace hold; the rise is shared out by spend,

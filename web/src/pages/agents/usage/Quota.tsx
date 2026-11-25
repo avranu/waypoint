@@ -23,9 +23,12 @@ export function QuotaSection({
       help={
         <p>
           The subscription’s limits as Claude Code’s status line reports them (Pro and Max plans):
-          the share of each window used, and when it resets. <b>Pace</b> carries the average rate so
-          far to the end of the window. It is a projection, not a promise: a quiet weekend moves it.
-          Nothing here calls Anthropic; <code>wp statusline</code> passes on what Claude Code
+          the share of each window used, and when it resets. <b>Pace</b> carries the recent rate
+          from what is used now to the end of the window: for the week, each day counts half as much
+          as the one after it, and the week before counts too; for five hours, each hour. If the
+          quota is reset inside a window, even pace starts again from the reset, and what was used
+          before it still informs the rate. It is a projection, not a promise: a quiet weekend moves
+          it. Nothing here calls Anthropic; <code>wp statusline</code> passes on what Claude Code
           already shows you.
         </p>
       }
@@ -99,7 +102,8 @@ function Gauge({ w }: { w: QuotaWindow }) {
       </p>
       {!stale && w.even > 0 && w.even < 100 && w.status !== 'too_early' && (
         <p className="mt-0.5 text-xs text-subtle">
-          Spread evenly it would be {Math.round(w.even)}% by now (the tick).
+          Spread evenly{w.resets.length > 0 && ` since the reset ${weekdayTime(w.paced_from)}`} it
+          would be {Math.round(w.even)}% by now (the tick).
         </p>
       )}
     </div>
@@ -127,13 +131,23 @@ function WeekChart({ w }: { w: QuotaWindow }) {
   const k = Math.min(STEPS - 1, Math.max(0, Math.round((lastT - start) / step)))
   used[k] = samples[samples.length - 1].v
   for (let i = k + 1; i < STEPS; i++) used[i] = null
-  const projected = used.map((_, i) =>
-    i >= k && (w.status === 'on_track' || w.status === 'will_run_out')
-      ? samples[samples.length - 1].v +
-        ((w.projected - samples[samples.length - 1].v) * (i - k)) / Math.max(1, STEPS - 1 - k)
-      : null,
+  const now = samples[samples.length - 1].v
+  const heading = w.status === 'on_track' || w.status === 'will_run_out'
+  const ahead = used.map((_, i) =>
+    i >= k && heading ? now + ((w.projected - now) * (i - k)) / Math.max(1, STEPS - 1 - k) : null,
   )
-  const even = used.map((_, i) => (i / (STEPS - 1)) * 100)
+  // The line ends where it reaches the limit.
+  const full = ahead.findIndex((v) => v !== null && v >= 100)
+  const projected = ahead.map((v, i) =>
+    v === null || (full >= 0 && i > full) ? null : Math.min(100, v),
+  )
+  // Even pace starts again from nothing at each reset.
+  const resets = w.resets.map((r) => new Date(r).getTime())
+  const even = used.map((_, i) => {
+    const t = i === STEPS - 1 ? end : start + i * step
+    const from = resets.filter((r) => r <= t && r < end).pop() ?? start
+    return ((t - from) / (end - from)) * 100
+  })
   const titles = used.map((_, i) =>
     new Date(start + i * step).toLocaleString(undefined, {
       weekday: 'short',
@@ -152,7 +166,7 @@ function WeekChart({ w }: { w: QuotaWindow }) {
           items={[
             { name: 'Used', color: viz.blue, kind: 'line' },
             { name: 'Even pace', color: viz.neutral, kind: 'dash' },
-            { name: 'At this rate', color: viz.orange, kind: 'dash' },
+            { name: 'At the recent rate', color: viz.orange, kind: 'dash' },
           ]}
         />
       </div>
@@ -165,7 +179,7 @@ function WeekChart({ w }: { w: QuotaWindow }) {
         format={(v) => `${Math.round(v)}%`}
         series={[
           { name: 'Even pace', color: viz.neutral, values: even, dashed: true },
-          { name: 'At this rate', color: viz.orange, values: projected, dashed: true },
+          { name: 'At the recent rate', color: viz.orange, values: projected, dashed: true },
           { name: 'Used', color: viz.blue, values: used, area: true },
         ]}
       />
@@ -173,11 +187,16 @@ function WeekChart({ w }: { w: QuotaWindow }) {
   )
 }
 
-/** The peak of each past seven-day window in the period. */
+/** All each past seven-day window in the period used, over every reset. */
 function PastWindows({ w }: { w: QuotaWindow }) {
-  const byWindow = new Map<string, number>()
-  for (const p of w.history)
-    byWindow.set(p.resets_at, Math.max(byWindow.get(p.resets_at) ?? 0, p.percent))
+  const byWindow = new Map<string, { used: number; last: number }>()
+  for (const p of w.history) {
+    const x = byWindow.get(p.resets_at) ?? { used: 0, last: 0 }
+    // A fall is a reset: it gives nothing back.
+    x.used += Math.max(0, p.percent - x.last)
+    x.last = p.percent
+    byWindow.set(p.resets_at, x)
+  }
   const past = [...byWindow.entries()]
     .filter(([end]) => new Date(end).getTime() < new Date(w.resets_at).getTime())
     .sort((a, b) => a[0].localeCompare(b[0]))
@@ -185,11 +204,11 @@ function PastWindows({ w }: { w: QuotaWindow }) {
   if (past.length < 2) return null
   return (
     <div className="border-t border-line px-4 pb-4 pt-3">
-      <h4 className="mb-1 text-xs font-medium text-muted">Past weeks: most used</h4>
+      <h4 className="mb-1 text-xs font-medium text-muted">Past weeks: quota used</h4>
       <Sparkbars
-        ariaLabel="Peak seven-day quota used in past windows"
-        name="Peak used"
-        values={past.map(([, v]) => v)}
+        ariaLabel="Seven-day quota used in past windows"
+        name="Used"
+        values={past.map(([, v]) => v.used)}
         labels={past.map(([end]) => `Window ending ${weekdayTime(end)}`)}
         format={(v) => `${Math.round(v)}%`}
         height={48}
