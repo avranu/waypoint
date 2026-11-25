@@ -57,7 +57,8 @@ func TestQuotaPaceAfterReset(t *testing.T) {
 	if status != "will_run_out" || math.Abs(projected-want) > 0.5 || runsOut == nil {
 		t.Fatalf("%s %.1f %v, want will_run_out %.1f", status, projected, runsOut, want)
 	}
-	if e := 100 * 15.0 / (168 - 72); math.Abs(even-e) > 0.1 {
+	// Even pace runs from the first reading after the reset, at hour 73.
+	if e := 100 * 14.0 / (168 - 73); math.Abs(even-e) > 0.1 {
 		t.Errorf("even %.2f, want %.2f", even, e)
 	}
 	if out := now.Add(time.Duration((100 - used) / 1.35 * float64(time.Hour))); runsOut.Sub(out).Abs() > time.Minute {
@@ -103,8 +104,9 @@ func TestQuotaEverywhereAfterReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Even pace runs from the reset, 20 hours ago, to the end in 96.
-	if valueOf(m.WeekPercent) != 23 || math.Abs(valueOf(m.WeekEven)-17.2) > 0.1 {
+	// Even pace runs from the first reading after the reset, 19 hours ago,
+	// to the end in 96, and is read a minute ago.
+	if valueOf(m.WeekPercent) != 23 || math.Abs(valueOf(m.WeekEven)-16.5) > 0.1 {
 		t.Errorf("meter %v even %v", valueOf(m.WeekPercent), valueOf(m.WeekEven))
 	}
 	o := e.overview(e.me, UsageQuery{})

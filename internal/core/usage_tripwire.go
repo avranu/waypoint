@@ -41,24 +41,28 @@ func (s *Service) checkQuotaJump(ctx context.Context, t *tx, uid, at int64, rese
 	if thr <= 0 {
 		return nil
 	}
-	// A day back: enough to know a reading from before a reset.
-	lines, err := quotaLines(ctx, t, uid, "seven_day", at-24*time.Hour.Milliseconds(), at+1)
-	if err != nil || len(lines) == 0 {
-		return err
-	}
-	l := lines[len(lines)-1]
-	if max(l.Reset-resetsAt, resetsAt-l.Reset) > time.Hour.Milliseconds() {
-		return nil
-	}
+	// A day back finds a rise cheaply, inside the writer; the whole window
+	// then says whether it is one, or a reading from before an older reset.
 	rise, lowAt := 0.0, at
-	// Knot 0 is the window's start, not a reading to rise from.
-	for i := len(l.Knots) - 1; i > 1 && l.Knots[i-1].At >= at-quotaJumpWindow.Milliseconds(); i-- {
-		if r := l.Rise(i); r > 0 {
-			rise, lowAt = rise+r, l.Knots[i-1].At
+	for _, back := range []time.Duration{24 * time.Hour, quotaWeek} {
+		lines, err := quotaLines(ctx, t, uid, "seven_day", at-back.Milliseconds(), at+1)
+		if err != nil || len(lines) == 0 {
+			return err
 		}
-	}
-	if rise <= 0 || rise < float64(thr) {
-		return nil
+		l := lines[len(lines)-1]
+		if max(l.Reset-resetsAt, resetsAt-l.Reset) > time.Hour.Milliseconds() {
+			return nil
+		}
+		rise, lowAt = 0.0, at
+		// Knot 0 is the window's start, not a reading to rise from.
+		for i := len(l.Knots) - 1; i > 1 && l.Knots[i-1].At >= at-quotaJumpWindow.Milliseconds(); i-- {
+			if r := l.Rise(i); r > 0 {
+				rise, lowAt = rise+r, l.Knots[i-1].At
+			}
+		}
+		if rise <= 0 || rise < float64(thr) {
+			return nil
+		}
 	}
 	var last int64
 	_ = t.QueryRowContext(ctx, `SELECT at FROM quota_alerts WHERE user_id = ?`, uid).Scan(&last)

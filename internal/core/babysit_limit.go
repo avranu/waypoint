@@ -137,6 +137,10 @@ func (s *Service) limitWait(ctx context.Context, b *Babysit) string {
 // limitWasReset: the quota window the round waits for was reset since the
 // round stopped, and has room again.
 func (s *Service) limitWasReset(ctx context.Context, b *Babysit) bool {
+	// A round stopped before its time was kept (migration 0190) waits out.
+	if b.limitedAt == 0 {
+		return false
+	}
 	for _, sp := range quotaSpans {
 		l, err := s.currentQuota(ctx, b.ownerID, sp.span, s.now())
 		if err != nil {

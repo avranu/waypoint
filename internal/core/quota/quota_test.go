@@ -47,6 +47,22 @@ func TestQuotaLineResets(t *testing.T) {
 		{"the old level repeated once after a reset", []any{
 			70.0, 97.0, "a", 72.0, 4.0, "b", 72.2, 97.0, "a", 72.5, 4.0, "b", 73.0, 4.0, "b",
 		}, 4, 101, 1},
+		{"a stale reading waiting when the reset is seen", []any{
+			70.0, 97.0, "a", 71.0, 80.0, "b", 72.0, 3.0, "a", 72.2, 80.0, "b", 72.4, 4.0, "a",
+		}, 4, 101, 1},
+		{"the reading that confirms the reset is stale", []any{
+			70.0, 97.0, "a", 72.0, 3.0, "c", 72.5, 70.0, "d", 72.6, 4.0, "e",
+		}, 4, 101, 1},
+		{"a refused old reading repeated hours later", []any{
+			70.0, 95.0, "x", 70.5, 97.0, "a", 72.0, 4.0, "a", 72.1, 97.0, "x", 74.0, 97.0, "x",
+		}, 4, 101, 1},
+		{"a session heard since the reset leaps", []any{
+			70.0, 97.0, "a", 72.0, 4.0, "a", 72.5, 4.0, "b", 72.6, 30.0, "a",
+		}, 30, 127, 1},
+		{"a leap long after the reset, while another repeats its use", []any{
+			70.0, 97.0, "a", 72.0, 4.0, "a", 72.8, 4.0, "a", 73.2, 30.0, "c",
+		}, 30, 127, 1},
+		{"two low readings hours apart", []any{70.0, 90.0, "a", 71.0, 20.0, "b", 77.0, 30.0, "c"}, 90, 90, 0},
 		{"two resets", []any{20.0, 50.0, "a", 21.0, 2.0, "a", 60.0, 40.0, "a", 61.0, 1.0, "a"}, 1, 91, 2},
 	} {
 		lines := LinesFrom(quotaAt(reset, tc.readings...), Week)
@@ -79,6 +95,38 @@ func TestQuotaReadingBeforeItsWindow(t *testing.T) {
 	l := LinesFrom(quotaAt(reset, -0.1, 12.0, "a"), Week)[0]
 	if l.Last().Pct != 12 || l.Start != l.Last().At {
 		t.Errorf("%+v", l)
+	}
+}
+
+// Pace starts again at the first reading after a reset, not over the time
+// the person was away before it.
+func TestQuotaPaceBeginsAtTheFirstReadingAfterAReset(t *testing.T) {
+	reset := time.Date(2026, 11, 28, 17, 0, 0, 0, time.UTC)
+	rs := quotaAt(reset, 72.0, 97.0, "a", 120.0, 1.0, "a")
+	l := LinesFrom(rs, Week)[0]
+	if k := l.Last(); k.From != rs[1].At || len(l.Resets()) != 1 || l.Resets()[0] != rs[1].At || l.Even(k.From, k.At) != 0 {
+		t.Errorf("from %v resets %v", time.UnixMilli(k.From), l.Resets())
+	}
+}
+
+// Time at the limit stays out of the rate when nothing was posted during it.
+func TestQuotaRateLeavesOutUnreportedTimeAtTheLimit(t *testing.T) {
+	first := time.Date(2026, 11, 21, 17, 0, 0, 0, time.UTC)
+	next := first.Add(Week)
+	now := first.Add(time.Hour).UnixMilli()
+	rate := func(rs ...Reading) float64 {
+		r, _ := Rate(LinesFrom(append(rs, quotaAt(next, 1.0, 1.0, "a")...), Week), now, 24*time.Hour)
+		return r * float64(time.Hour.Milliseconds())
+	}
+	quiet := rate(quotaAt(first, 96.0, 100.0, "a")...)
+	posted := rate(quotaAt(first, 96.0, 100.0, "a", 167.9, 100.0, "a")...)
+	if math.Abs(quiet-posted) > 0.05 {
+		t.Errorf("rate %.3f with nothing posted at the limit, %.3f with", quiet, posted)
+	}
+	// Reset while blocked: the wait for it is no idle time either.
+	l := LinesFrom(quotaAt(next, 10.0, 100.0, "a", 100.0, 1.0, "a"), Week)
+	if r, _ := Rate(l, l[0].SeenAt, 24*time.Hour); r*float64(time.Hour.Milliseconds()) < 5 {
+		t.Errorf("rate %.3f after a reset at the limit", r*float64(time.Hour.Milliseconds()))
 	}
 }
 

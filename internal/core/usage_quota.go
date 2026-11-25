@@ -32,8 +32,9 @@ type UsageQuotaWindow struct {
 	Projected float64    `json:"projected"` // percent used when the window ends, at the recent rate
 	RunsOutAt *time.Time `json:"runs_out_at"`
 	Even      float64    `json:"even"` // percent used right now if spread evenly since paced_from
-	// PacedFrom is when the pace began: the window's start, or the last reset
-	// inside it. Resets are all of those, oldest first.
+	// PacedFrom is when the pace began: the window's start, or the first
+	// reading after the last reset inside it. Resets are those readings'
+	// times, one for each reset, oldest first.
 	PacedFrom time.Time         `json:"paced_from"`
 	Resets    []time.Time       `json:"resets"`
 	History   []UsageQuotaPoint `json:"history"`
@@ -95,7 +96,8 @@ func (s *Service) usageQuota(ctx context.Context, sc *usageScope, days int) (*Us
 	q := &UsageQuota{Windows: []UsageQuotaWindow{}}
 	for _, sp := range quotaSpans {
 		var w UsageQuotaWindow
-		err := s.db.R.QueryRowContext(ctx, `SELECT machine FROM quota_samples WHERE user_id = ? AND span = ? ORDER BY at DESC, id DESC LIMIT 1`, uid, sp.span).Scan(&w.Machine)
+		var latest int64
+		err := s.db.R.QueryRowContext(ctx, `SELECT machine, at FROM quota_samples WHERE user_id = ? AND span = ? ORDER BY at DESC, id DESC LIMIT 1`, uid, sp.span).Scan(&w.Machine, &latest)
 		if err == sql.ErrNoRows {
 			continue
 		}
@@ -107,8 +109,9 @@ func (s *Service) usageQuota(ctx context.Context, sc *usageScope, days int) (*Us
 			since = now.Add(-48 * time.Hour)
 		}
 		since = since.Add(-sp.length / 4)
-		// Whole windows: the history's first, and the ones the rate reads.
-		load := minTime(since, now.Add(-sp.length-sp.lookback)).Add(-sp.length)
+		// Whole windows: the history's first, the ones the rate reads, and
+		// the latest however long ago it was.
+		load := minTime(minTime(since, now.Add(-sp.length-sp.lookback)), msTime(latest)).Add(-sp.length)
 		lines, err := quotaLines(ctx, s.db.R, uid, sp.span, load.UnixMilli(), math.MaxInt64)
 		if err != nil {
 			return nil, err

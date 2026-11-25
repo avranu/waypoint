@@ -86,7 +86,7 @@ export interface QuotaWindow {
   projected: number
   runs_out_at: string | null
   even: number
-  /** When the even pace began: the window's start, or the last reset inside it. */
+  /** When the even pace began: the window's start, or the first reading after the last reset. */
   paced_from: string
   /** Resets inside the window, oldest first. */
   resets: string[]

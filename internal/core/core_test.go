@@ -798,7 +798,8 @@ func TestRatesOfAYoungProject(t *testing.T) {
 	all = append(all, flowIssue{created: now.UnixMilli()}, flowIssue{created: now.UnixMilli()})
 	s := &Service{now: func() time.Time { return now }}
 	fc := s.forecast(all, func(flowIssue) bool { return true }, ProjectSettings{VelocityWeeks: 6}, time.UTC)
-	if len(fc.WeeklyThroughput) != 2 || fc.AveragePerWeek != 2 {
+	// Two weeks old: the two weeks of work and the fewest kept before them.
+	if len(fc.WeeklyThroughput) != forecastMinWeeks || fc.AveragePerWeek != 1 {
 		t.Errorf("forecast %+v", fc)
 	}
 	if p := dashPace(all, now); p.Span4 != 2 || p.SpanPrev4 != 0 {

@@ -9,7 +9,9 @@
 package quota
 
 import (
+	"cmp"
 	"math"
+	"slices"
 	"time"
 )
 
@@ -28,8 +30,14 @@ const (
 	// level between them, to count as a reset when no session saw its own
 	// reading fall.
 	resetHold = 15 * time.Minute
-	// staleWithin: this soon after the last reading, a leap back toward
-	// the level before a reset is a reading from before it.
+	// holdGap: lower readings this far apart don't go on from one another.
+	holdGap = time.Hour
+	// leap: points a reading must be above what is known to be used since a
+	// reset to read as one from before it.
+	leap = 2 * resetDrop
+	// staleWithin: this soon after a reset, a leap back toward the level
+	// before it is a reading from before it, unless its session has been
+	// heard since.
 	staleWithin = time.Hour
 	// fullAt: at this level nothing more can be used, so the time says
 	// nothing about how fast the person uses it.
@@ -44,8 +52,10 @@ type Reading struct {
 }
 
 // Knot is a window's use at a time. From is when the pace it belongs to
-// began: the window's start, or the last reset before it. A knot with Zeroed
-// set stands for such a reset, not for a reading.
+// began: the window's start, or the first reading after the last reset before
+// it (when the reset itself happened isn't known; this is the latest it can
+// have been). A knot with Zeroed set stands for such a reset, not for a
+// reading, and is timed at the last reading before it.
 type Knot struct {
 	At     int64
 	Pct    float64
@@ -66,12 +76,13 @@ type Line struct {
 // Last is the latest knot.
 func (l *Line) Last() Knot { return l.Knots[len(l.Knots)-1] }
 
-// Resets are the times the quota was reset inside the window.
+// Resets are the times pace began again inside the window, one for each
+// reset of the quota.
 func (l *Line) Resets() []int64 {
 	var out []int64
 	for _, k := range l.Knots {
 		if k.Zeroed {
-			out = append(out, k.At)
+			out = append(out, k.From)
 		}
 	}
 	return out
@@ -178,6 +189,8 @@ func (b *builder) add(r Reading) {
 	prev, known := b.heard[r.Session]
 	known = known && r.Session != ""
 	repeat := known && prev.pct == r.Pct
+	// heardSince: the session has reported since the last reset.
+	heardSince := known && prev.resets == b.resets
 	if repeat && prev.resets < b.resets {
 		return // what it heard before the reset
 	}
@@ -188,6 +201,9 @@ func (b *builder) add(r Reading) {
 	b.heard[r.Session] = report{r.Pct, since, b.resets}
 	level := l.Last().Pct
 	if r.Pct <= level-resetDrop {
+		if n := len(b.pending); n > 0 && r.At-b.pending[n-1].At > holdGap.Milliseconds() {
+			b.pending = nil
+		}
 		switch {
 		case known && prev.pct-r.Pct >= resetDrop:
 			b.zero(r)
@@ -199,7 +215,9 @@ func (b *builder) add(r Reading) {
 		}
 		return
 	}
-	if b.resets > 0 && r.Pct <= b.before && r.Pct-level >= 2*resetDrop && r.At-l.Last().At < staleWithin.Milliseconds() {
+	if b.resets > 0 && !heardSince && r.Pct <= b.before && r.Pct-level >= leap &&
+		r.At-l.Last().From < staleWithin.Milliseconds() {
+		b.stale(r.Session)
 		return
 	}
 	b.pending = nil
@@ -216,13 +234,31 @@ func (b *builder) push(at int64, pct float64) {
 	b.line.Knots = append(b.line.Knots, Knot{At: at, Pct: max(last.Pct, pct), From: last.From})
 }
 
+// stale marks a session's latest report as one from before the last reset, so
+// its repeats are left out.
+func (b *builder) stale(session string) {
+	if h, ok := b.heard[session]; ok && session != "" {
+		h.resets = b.resets - 1
+		b.heard[session] = h
+	}
+}
+
 // zero starts the line again: the quota was reset after the last reading at
-// the old level, and r (after any readings pending) is what was used since.
+// the old level, and r and the readings pending are what was used since. One
+// far above the least of them is from before the reset, as use never falls.
 func (b *builder) zero(r Reading) {
 	b.before = b.line.Last().Pct
 	b.resets++
-	b.line.Knots = append(b.line.Knots, Knot{At: b.highAt, From: b.highAt, Zeroed: true})
-	for _, p := range append(b.pending, r) {
+	since := append(b.pending, r)
+	least := slices.MinFunc(since, func(x, y Reading) int { return cmp.Compare(x.Pct, y.Pct) }).Pct
+	old := func(p Reading) bool { return p.Pct-least >= leap }
+	from := since[slices.IndexFunc(since, func(p Reading) bool { return !old(p) })].At
+	b.line.Knots = append(b.line.Knots, Knot{At: b.highAt, From: from, Zeroed: true})
+	for _, p := range since {
+		if old(p) {
+			b.stale(p.Session)
+			continue
+		}
 		b.push(p.At, p.Pct)
 		if p.Session != "" {
 			b.heard[p.Session] = report{p.Pct, p.At, b.resets}
@@ -257,8 +293,10 @@ func LinesFrom(readings []Reading, length time.Duration) []*Line {
 // Rate is how fast quota was being used as of to, in points a
 // millisecond: the use over the lines' time, each moment counting half as much
 // as one halfLife later. A rise is spread over the time between its readings,
-// and the time after the last reading counts as unused; time at the limit
-// counts for neither. span is how long the lines had watched.
+// and the time after the last reading counts as unused. Time at the limit
+// counts for neither: between two readings there, from a window's last such
+// reading to its end, and from one before a reset to the first reading after
+// it. span is how long the lines had watched.
 func Rate(lines []*Line, to int64, halfLife time.Duration) (rate float64, span time.Duration) {
 	if len(lines) == 0 || to <= lines[0].Start {
 		return 0, 0
@@ -267,7 +305,7 @@ func Rate(lines []*Line, to int64, halfLife time.Duration) (rate float64, span t
 	weigh := func(t int64) float64 { return math.Exp2(-float64(max(0, to-t)) / h) }
 	between := func(a, b int64) float64 { return h / math.Ln2 * (weigh(b) - weigh(a)) }
 	used, watched := 0.0, between(lines[0].Start, to)
-	for _, l := range lines {
+	for j, l := range lines {
 		for i := 1; i < len(l.Knots); i++ {
 			a, b := l.Knots[i-1], l.Knots[i]
 			if b.Zeroed {
@@ -278,10 +316,26 @@ func Rate(lines []*Line, to int64, halfLife time.Duration) (rate float64, span t
 				watched -= between(from, till)
 				continue
 			}
-			if rise := l.Rise(i); b.At > a.At {
+			// Blocked until a reset at some time between the two.
+			blocked := a.Zeroed && l.Knots[i-2].Pct >= fullAt
+			if blocked {
+				watched -= between(from, till)
+			}
+			if rise := l.Rise(i); b.At > a.At && !blocked {
 				used += rise * between(from, till) / float64(b.At-a.At)
-			} else {
+			} else if b.At <= to {
 				used += rise * weigh(b.At)
+			}
+		}
+		// Blocked from the last reading to the window's end, or to the next
+		// window's first reading.
+		if last := l.Last(); last.Pct >= fullAt {
+			till := min(l.Reset, to)
+			if j+1 < len(lines) {
+				till = min(till, lines[j+1].Knots[1].At)
+			}
+			if last.At < till {
+				watched -= between(last.At, till)
 			}
 		}
 	}
