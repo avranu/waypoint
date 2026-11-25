@@ -710,7 +710,8 @@ type traceWrite struct {
 }
 
 // writes lists the files a command writes. What counts: output sent to a
-// file, tee, sed -i and perl -i, mv and cp, git mv and git rm, a patch
+// file, tee, sed -i and perl -i, gofmt, goimports and prettier given -w or
+// --write, curl -o, mv and cp, git mv and git rm, a patch
 // applied, and a script given to an interpreter that writes files. What
 // doesn't: what a program writes of its own accord (a formatter, go mod
 // tidy, git merge or checkout), which the call doesn't show; and a plain rm,
@@ -768,6 +769,16 @@ func (c *traceCommand) writes() []traceWrite {
 			}
 		}
 		return false
+	}
+	if prog == "npx" || prog == "bunx" {
+		if ws := plain(0); len(ws) > 0 && path.Base(ws[0]) == "prettier" {
+			for i, a := range args {
+				if a == ws[0] {
+					prog, args = "prettier", args[i+1:]
+					break
+				}
+			}
+		}
 	}
 	switch prog {
 	case "tee":
@@ -833,6 +844,19 @@ func (c *traceCommand) writes() []traceWrite {
 		}
 	case "git rm":
 		each("rm", plain(0))
+	case "gofmt", "goimports", "prettier":
+		if has("-w", "--write") {
+			each("format", plain(0))
+		}
+	case "curl":
+		for i := 0; i < len(args); i++ {
+			if (args[i] == "-o" || args[i] == "--output") && i+1 < len(args) {
+				out = append(out, traceWrite{kind: "curl", w: args[i+1], whole: true})
+				i++
+			} else if f, ok := strings.CutPrefix(args[i], "--output="); ok {
+				out = append(out, traceWrite{kind: "curl", w: f, whole: true})
+			}
+		}
 	case "xargs", "find":
 		for i, a := range args {
 			if b := path.Base(a); b == "sed" && sedInPlace(args[i:]) || b == "perl" && i+1 < len(args) && perlInPlaceRE.MatchString(args[i+1]) {

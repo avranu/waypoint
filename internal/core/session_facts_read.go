@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -249,12 +250,22 @@ func (s *Service) SessionFacts(ctx context.Context, actor *Actor, q FactsQuery) 
 	if actor == nil {
 		return nil, ErrUnauthorized
 	}
-	if err := actor.requirePersonDirect("reading session facts"); err != nil {
-		return nil, err
-	}
+	// usageWho needs usage.read, refuses a runner job's scoped token and an
+	// agent token reading another person's usage.
 	uids, everyone, _, err := s.usageWho(ctx, actor, q.User)
 	if err != nil {
+		if actor.IsAgent() && errors.Is(err, ErrForbidden) && strings.TrimSpace(q.User) != "" {
+			return nil, forbidden("%v; read your own person's sessions by leaving out --user", err)
+		}
 		return nil, err
+	}
+	// An agent, even in its person's shell, reads its own person's facts but
+	// not anyone else's: decided on the resolved ids, so a differently-cased
+	// name or an alias cannot dodge it.
+	if everyone || len(uids) != 1 || uids[0] != actor.User.ID {
+		if err := actor.requirePersonDirect("reading another person's session facts"); err != nil {
+			return nil, forbidden("%v; read your own person's sessions by leaving out --user", err)
+		}
 	}
 	q.Session, q.Task = strings.TrimSpace(q.Session), strings.TrimSpace(q.Task)
 	if (q.Session == "") == (q.Task == "") {
