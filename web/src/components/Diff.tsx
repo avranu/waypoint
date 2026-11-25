@@ -1,7 +1,3 @@
-// A unified diff, as git and patch write it: line numbers, additions and
-// removals, one hunk after another. Used for change requests (WP-D16); it
-// takes the diff of one file, or a whole patch.
-
 import { useMemo, useState } from 'react'
 import clsx from 'clsx'
 import { ChevronRight } from 'lucide-react'
@@ -31,13 +27,12 @@ export function parseDiff(diff: string): DiffLine[] {
       out.push({ kind: '@', text: raw })
       continue
     }
-    if (!inHunk) continue // file headers, "diff --git", "index …"
+    if (!inHunk) continue
     const c = raw[0]
     if (c === '+') out.push({ kind: '+', text: raw.slice(1), new: n++ })
     else if (c === '-') out.push({ kind: '-', text: raw.slice(1), old: o++ })
     else if (c === '\\') out.push({ kind: '\\', text: raw.slice(1).trim() })
     else if (c === ' ') out.push({ kind: ' ', text: raw.slice(1), old: o++, new: n++ })
-    // a final empty line after the last newline is not a context line
   }
   return out
 }

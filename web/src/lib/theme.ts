@@ -1,7 +1,5 @@
 import { useSyncExternalStore } from 'react'
 
-// Light/dark theme: an explicit choice, or follow the system.
-
 export type Theme = '' | 'light' | 'dark'
 
 const media = () => matchMedia('(prefers-color-scheme: dark)')
@@ -17,7 +15,6 @@ export function storedTheme(): Theme {
 export function applyTheme(t: Theme) {
   const dark = t === 'dark' || (t === '' && media().matches)
   document.documentElement.classList.toggle('dark', dark)
-  // Both media-specific tags, so an explicit choice wins over the system scheme.
   for (const m of document.querySelectorAll('meta[name=theme-color]'))
     m.setAttribute('content', dark ? '#15171b' : '#ffffff')
 }
@@ -25,9 +22,7 @@ export function applyTheme(t: Theme) {
 export function setTheme(t: Theme) {
   try {
     localStorage.setItem('wp:theme', t)
-  } catch {
-    /* ignore */
-  }
+  } catch {}
   applyTheme(t)
 }
 

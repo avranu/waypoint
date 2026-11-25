@@ -46,8 +46,6 @@ export function IntegrationsTab({ project }: { project: Project }) {
   )
 }
 
-// ---- repositories ----
-
 /** What PATCH /projects/{key}/repos/{id} changes. */
 type RepoPatch = Partial<
   Pick<
@@ -107,8 +105,6 @@ function Repos({ project, owner }: { project: Project; owner: boolean }) {
     onError: toastError,
     onSettled: invalidate,
   })
-  // Repos whose webhook Waypoint couldn't add (or that predate it adding
-  // them and haven't heard from the forge): those need the manual steps.
   const manual = repos.filter(
     (r) => !r.covered_by && (r.hook_state === 'failed' || (r.hook_state === '' && !r.hook_seen_at)),
   )
@@ -483,8 +479,6 @@ function AutoMergeInto({
       disabled={!owner}
       onChange={(e) => {
         const into = e.target.value as NonNullable<ProjectRepo['auto_merge_into']>
-        // Branches matching nothing would arm nothing: start from the usual
-        // release branches, which the field below changes.
         save(
           into === 'match' && !r.auto_merge_bases?.length
             ? { auto_merge_into: into, auto_merge_bases: RELEASE_BRANCHES }
@@ -655,7 +649,6 @@ function HookStatus({
         </button>
       </>
     )
-  // An icon, then text that wraps under itself rather than under the icon.
   const line = (icon: ReactNode, text: ReactNode, tone = 'text-subtle') => (
     <div className={clsx('mt-1 flex items-start gap-1.5 text-xs', tone)}>
       <span className="flex h-4 shrink-0 items-center">{icon}</span>
@@ -696,8 +689,6 @@ function HookStatus({
           line(<CircleAlert className="size-3.5 text-warn" />, r.hook_note, 'text-muted')}
       </>
     )
-  // Linked before Waypoint added webhooks itself. A working hook may be an
-  // organisation's, and a repo one beside it would double every delivery.
   if (seen) return line(<CircleCheck className="size-3.5 text-ok" />, `Webhook working · ${seen}`)
   return (
     <div className="mt-1 text-xs text-subtle">
@@ -726,7 +717,6 @@ function AddRepo({ project, forges }: { project: Project; forges: Forge[] }) {
   const [forgeId, setForgeId] = useState(forges[0]?.id ?? 0)
   const [repo, setRepo] = useState('')
   const [syncIssues, setSyncIssues] = useState(false)
-  // owner/name, or a GitLab group path like grp/sub/app; never `..`.
   const path = repo.trim().replace(/^\/|\/$/g, '')
   const valid =
     /^[\w.-]+(\/[\w.-]+)+$/.test(path) &&
@@ -796,8 +786,6 @@ function AddRepo({ project, forges }: { project: Project; forges: Forge[] }) {
     </form>
   )
 }
-
-// ---- webhooks ----
 
 const EVENT_PRESETS = [
   { value: '*', label: 'Everything' },

@@ -20,7 +20,6 @@ func TestCheckThatCouldNotBeAskedIsSaidToNotHaveRun(t *testing.T) {
 	}
 	e.stopWith("Waiting.")
 	e.s.Wait()
-	// Round 2 reads nothing new: the server opens the pull request.
 	e.setClock(e.clockNow().Add(time.Minute))
 	if _, err := e.ship(e.task.Key, ShipAuto); err != nil {
 		t.Fatal(err)
@@ -59,7 +58,6 @@ func TestRoundTwoKeepsRoundOnesUncheckedMarks(t *testing.T) {
 	}
 	e.stopWith("Pushed; the review comes first.")
 	r2 := e.step().reviewID.Int64
-	// Round 2's own check is a failed audit, a copy of round 1's.
 	rows, err := e.s.db.R.Query(`SELECT name FROM pragma_table_info('code_audits') WHERE name NOT IN ('id', 'request_key')`)
 	if err != nil {
 		t.Fatal(err)

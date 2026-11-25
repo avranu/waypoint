@@ -19,7 +19,6 @@ func TestAutopilotReviewerFlags(t *testing.T) {
 	t.Chdir(t.TempDir())
 	me := e.login()
 	ctx := context.Background()
-	// Changing autopilot is for people: a person's token, not the agent's.
 	tok, _, err := e.svc.CreateToken(ctx, me, core.TokenSpec{Name: "person"})
 	if err != nil {
 		t.Fatal(err)

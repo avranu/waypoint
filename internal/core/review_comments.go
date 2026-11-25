@@ -1,16 +1,5 @@
 package core
 
-// Review comments on a pull request (WP-134, ADR2 §1-2): every reviewer's
-// (Waypoint's findings, other bots', people's), read from the forge, each
-// with a verdict that says what was done about it, marked on the forge with
-// an emoji (and a reply when there is something to say), and recorded for
-// review scorecards (WP-100). While a pull request is babysat, readiness
-// waits until every one is dealt with.
-//
-// Not review comments: the pull request author's own comments, Waypoint's
-// replies, help and status comments (its review's own body included), and
-// "@waypoint" commands.
-
 import (
 	"context"
 	"database/sql"
@@ -42,8 +31,8 @@ const (
 	VerdictFixed       = "fixed"
 	VerdictVerified    = "verified"
 	VerdictDismissed   = "dismissed"
-	VerdictResolved    = "resolved" // the thread is resolved (on the forge where it allows, else only in Waypoint)
-	VerdictDeferred    = "deferred" // real, but not this task's: a follow-up task was filed and the thread resolved (WP-440)
+	VerdictResolved    = "resolved"
+	VerdictDeferred    = "deferred"
 )
 
 // verdictEmoji is the reaction each verdict puts on the forge (GitHub's
@@ -94,9 +83,9 @@ type PRReviewComment struct {
 	threadID        string
 	findingState    string
 	findingSeverity string
-	relayID         string // the GitHub line comment a mirror's copy is of (WP-442)
-	relayAuthor     string // who wrote it on the other forge
-	mirror          string // the login its forge's mirror posts as
+	relayID         string
+	relayAuthor     string
+	mirror          string
 }
 
 // dealt says whether nothing more is owed on a comment: fixed (or the fix
@@ -192,7 +181,6 @@ func (s *Service) reviewComments(ctx context.Context, q queryer, prID int64) ([]
 		return nil, err
 	}
 	rows.Close()
-	// Who settled the ones that are: Waypoint's record, not the forge account.
 	who, err := q.QueryContext(ctx, `SELECT comment_id, by_name, by_kind FROM review_comment_events WHERE pr_id = ? AND verdict IN (?, ?) ORDER BY id`, prID, VerdictDismissed, VerdictResolved)
 	if err != nil {
 		return nil, err
@@ -253,8 +241,6 @@ func (s *Service) undealtComments(ctx context.Context, pr *PullRequest) ([]Undea
 	return out, nil
 }
 
-// ---- reading them from the forge ----
-
 // rcIn is a review comment as the forge has it.
 type rcIn struct {
 	kind, extID, threadID, author, path, sha, body, url string
@@ -278,7 +264,7 @@ func isReviewComment(pr *PullRequest, author, body, kind, state string) bool {
 	case strings.HasPrefix(strings.ToLower(b), "@waypoint"):
 		return false
 	case kind == "review" && (state == "approved" || state == "pending"):
-		return false // an approval asks for nothing
+		return false
 	}
 	return true
 }
@@ -313,14 +299,13 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 	if err != nil {
 		return 0, err
 	}
-	ours := s.waypointPosters(ctx, f) // whose markers count (WP-934)
+	ours := s.waypointPosters(ctx, f)
 	var in []rcIn
 	if th, ok := s.Forges.(ForgeThreads); ok {
 		threads, err := th.ReviewThreads(ctx, f, pr.Repo, pr.Number)
 		if err != nil {
 			return 0, fmt.Errorf("read review threads: %w", err)
 		}
-		// What strangers wrote waits for a person (WP-281).
 		for _, t := range s.screenThreads(ctx, f, pr, threads) {
 			for _, c := range t.Comments {
 				if !isReviewComment(pr, c.Author, c.Body, "inline", "") {
@@ -337,8 +322,6 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 		if err != nil {
 			return 0, fmt.Errorf("read reviews and comments: %w", err)
 		}
-		// A note dealt with as a whole before WP-413 stays whole; one already
-		// split (its head part shares its id) never does.
 		whole := map[string]bool{}
 		if prior, err := s.reviewComments(ctx, s.db.R, pr.ID); err == nil {
 			split := map[string]bool{}
@@ -355,8 +338,15 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 				}
 			}
 		}
+		own := s.ownCommentIDs(ctx, pr.ID)
 		for _, n := range s.screenNotes(ctx, f, pr, notes) {
 			if !isReviewComment(pr, n.Author, n.Body, n.Kind, n.State) {
+				continue
+			}
+			// What Waypoint posted itself, by id; the exact text of its
+			// CodeRabbit request from an account it posts as, for those
+			// posted before the ids were kept (WP-1732).
+			if n.Kind == "comment" && (own[n.ID] || (strings.TrimSpace(n.Body) == askCodeRabbit && ours.ours(n.Author))) {
 				continue
 			}
 			for _, p := range noteParts(n, whole[n.Kind+"|"+n.ID], f.MirrorAccount, ours) {
@@ -369,9 +359,6 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 			}
 		}
 	}
-	// Waypoint's own findings: a comment's marker (from an account Waypoint
-	// posts as, WP-934) or its id names one; a finding its review put in the
-	// body has no comment of its own.
 	type fnd struct {
 		id, run     int64
 		ordinal     int
@@ -417,15 +404,10 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 			in[i].author, in[i].bot = "waypoint", true
 		}
 	}
-	// A finding in the review's body, or kept past how many the review
-	// posts (WP-1421), is a comment here, so it is given to the agent and
-	// answered like one that has a thread.
 	for _, x := range findings {
 		if (x.placement != "body" && x.placement != placementLater) || x.private || x.state != FindingOpen {
 			continue
 		}
-		// The review a later finding was kept past does not show it: its
-		// link is Waypoint's page, or none (the reader of the field copes).
 		link := cmp(x.reviewURL, pr.URL)
 		if x.placement == placementLater {
 			link = prPageURL(s.BaseURL(), pr.ID)
@@ -494,7 +476,6 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 				return err
 			}
 			if _, ok := have[key]; !ok {
-				// Deleted and back (a GitLab note restored) counts as known.
 				var old int
 				if err := t.QueryRowContext(ctx, `SELECT count(*) FROM review_comment_events WHERE comment_id = ?`, id).Scan(&old); err != nil {
 					return err
@@ -507,22 +488,16 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 					}
 				}
 			}
-			// A person's hold stays through an edit: CodeRabbit rewrites its
-			// comments in place, and that doesn't answer what they held it for.
 			_, known := have[key]
 			edited := known && c.findingID == 0 && !c.resolved && reopenOnEdit(verdicts[id]) && botTextChanged(bodies[id], body)
 			byPerson := false
 			if edited && verdicts[id] == VerdictNeedsPerson {
 				var perr error
 				if byPerson, perr = s.verdictByPerson(ctx, t, id); perr != nil {
-					return perr // unread is not "nobody's call": not reopened
+					return perr
 				}
 			}
 			if edited && !byPerson {
-				// What it asks changed since it was dealt with (CodeRabbit
-				// rewrites its comments in place): it is to deal with again.
-				// A fixed comment that still makes the same point keeps its
-				// fix while the fix is on the head, checked below (WP-437).
 				if fixedVerdict(verdicts[id]) && fixes[id] != "" && similarText(stripMarkers(bodies[id]), stripMarkers(body)) {
 					held = append(held, heldFix{id: id, fix: fixes[id], author: c.author})
 					delete(have, key)
@@ -538,10 +513,7 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 				dismiss = append(dismiss, change{id: id, to: VerdictDismissed, who: cmp(c.resolvedBy, "someone")})
 			}
 		}
-		// What the forge no longer has was deleted (Waypoint's findings in
-		// a review body go when the finding is settled).
 		for _, id := range have {
-			// One now waiting as text from outside keeps none of its words.
 			if _, err := t.ExecContext(ctx, `UPDATE review_comments SET gone_at = ?, body = CASE WHEN EXISTS (SELECT 1 FROM outside_pr_text o
 				WHERE o.pr_id = review_comments.pr_id AND o.state != 'approved' AND (o.external_id = review_comments.ext_id
 				OR (review_comments.kind = 'relayed' AND review_comments.ext_id LIKE o.external_id || '.%'))) THEN '' ELSE body END
@@ -574,11 +546,7 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 		if s.fixOnHead(ctx, f, pr, h.fix) {
 			continue
 		}
-		// The fix is no longer on the head (rebased away, reverted on a
-		// force-push): the reworded comment is to deal with again.
 		err := s.write(ctx, SystemActor(), func(t *tx) error {
-			// Only if it is still the fixed comment held above: a round or
-			// person may have given it a newer verdict meanwhile.
 			var cur, curFix string
 			if err := t.QueryRowContext(ctx, `SELECT verdict, fix_sha FROM review_comments WHERE id = ?`, h.id).Scan(&cur, &curFix); err != nil {
 				return err
@@ -619,7 +587,7 @@ func (s *Service) fixOnHead(ctx context.Context, f *Forge, pr *PullRequest, fix 
 	}
 	has, err := cl.Contains(ctx, f, pr.Repo, fix, pr.HeadSHA)
 	if err != nil {
-		if readFault(err) && !isStatus(err, http.StatusNotFound) { // the forge doesn't have it: not in the history
+		if readFault(err) && !isStatus(err, http.StatusNotFound) {
 			s.log.WarnContext(ctx, "read whether a fix is in a pull request's head", "repo", pr.Repo, "number", pr.Number, "fix", short(fix), "err", err)
 		}
 		return false
@@ -650,7 +618,6 @@ func (s *Service) verifyFixes(ctx context.Context, pr *PullRequest) {
 			continue
 		}
 		if rc.Verdict == VerdictVerified {
-			// Verified before it got its reply, or the forge refused one.
 			if owed > 0 && s.answerVerified(ctx, pr, rc) {
 				owed--
 			}
@@ -723,7 +690,7 @@ func (s *Service) checkedAgain(ctx context.Context, pr *PullRequest, rc *PRRevie
 		for _, o := range all {
 			if o.id != rc.id && strings.EqualFold(o.Author, rc.Author) && o.CreatedAt.UnixMilli() > fixedAt &&
 				(rc.Path == "" || o.Path == rc.Path) && similarText(o.Body, rc.Body) {
-				return "", false // raised again
+				return "", false
 			}
 		}
 	}
@@ -755,8 +722,6 @@ func similarText(a, b string) bool {
 	return float64(both)/float64(len(wa)+len(wb)-both) >= 0.5
 }
 
-// ---- verdicts ----
-
 // rcBy is who gave a verdict: person, agent, babysitter, forge, verify.
 type rcBy struct {
 	kind, name string
@@ -780,7 +745,7 @@ func (s *Service) recordVerdict(ctx context.Context, t *tx, id, prID int64, to, 
 		return err
 	}
 	if to == VerdictSeen && old != VerdictNew {
-		return nil // someone gave it a verdict meanwhile
+		return nil
 	}
 	if _, err := t.ExecContext(ctx, `UPDATE review_comments SET verdict = ?, note = CASE WHEN ? != '' THEN ? ELSE note END,
 		fix_sha = CASE WHEN ? != '' THEN ? ELSE fix_sha END WHERE id = ?`, to, note, excerpt(note, 2000), fixSHA, fixSHA, id); err != nil {
@@ -811,14 +776,9 @@ func (s *Service) markComment(ctx context.Context, pr *PullRequest, rc *PRReview
 	text := note
 	emoji := verdictEmoji[to]
 	replyID := ""
-	// A fix with no commit named is taken to be on the head: the GitHub
-	// thread is resolved once GitHub has that, never ahead of it. The reply
-	// names that same commit.
 	sha := cmp(cmp(fixSHA, rc.FixSHA), pr.HeadSHA)
 	if body := verdictReply(rc, to, text, sha, sha); body != "" {
 		replyID = s.replyToComment(ctx, f, bot, pr, rc, body)
-		// The marker in that reply is how a mirror learns the verdict:
-		// don't record it as given while the reply hasn't gone out.
 		if replyID == "" && rc.relayID != "" {
 			return invalid("the forge didn't take the verdict reply on %s; try again", rc.Ref)
 		}
@@ -874,8 +834,6 @@ func (s *Service) markComment(ctx context.Context, pr *PullRequest, rc *PRReview
 			if fb.kind == "babysitter" {
 				fb.kind = "system"
 			}
-			// A rejected or dismissed finding is wrong; a resolved or deferred
-			// one is dealt with.
 			state := FindingDismissed
 			if to == VerdictResolved || to == VerdictDeferred {
 				state = FindingResolved
@@ -917,7 +875,7 @@ func reopenOnEdit(verdict string) bool {
 func verdictReply(rc *PRReviewComment, to, note, fixSHA, markerSHA string) string {
 	note = strings.TrimSpace(note)
 	always := rc.repliesToVerdicts()
-	var lead, bare string // bare: the reply without a note
+	var lead, bare string
 	switch to {
 	case VerdictRejected:
 		lead, bare = "Not changing this: ", "Not changing this."
@@ -928,9 +886,9 @@ func verdictReply(rc *PRReviewComment, to, note, fixSHA, markerSHA string) strin
 	case VerdictAccepted:
 		bare = "Taken; fixing in this round."
 	case VerdictResolved:
-		bare = "Resolved." // a note is the whole reply
+		bare = "Resolved."
 	case VerdictDeferred:
-		bare = "Put off to a follow-up task." // the note ("Filed as WP-12: why") is the whole reply
+		bare = "Put off to a follow-up task."
 	case VerdictFixed:
 		bare = "Fixed."
 		if fixSHA != "" {
@@ -971,8 +929,6 @@ func (s *Service) replyToComment(ctx context.Context, f, bot *Forge, pr *PullReq
 	body += "\n<!-- waypoint-reply -->"
 	switch rc.Kind {
 	case "finding":
-		// Its review's body has no thread: the reply goes in the
-		// conversation, saying which finding it answers.
 	case "inline":
 		th, ok := s.Forges.(ForgeThreads)
 		if !ok {
@@ -995,7 +951,7 @@ func (s *Service) replyToComment(ctx context.Context, f, bot *Forge, pr *PullReq
 				s.log.WarnContext(ctx, "reply in a review thread", "pr", pr.ID, "comment", rc.Ref, "err", err)
 				return ""
 			}
-			break // no thread reply here: answer in the conversation
+			break
 		}
 		body = replyLead(rc, rc.Path) + body
 	}
@@ -1010,8 +966,6 @@ func (s *Service) replyToComment(ctx context.Context, f, bot *Forge, pr *PullReq
 	}
 	return cmp(c.ID, "posted")
 }
-
-// ---- what agents and people do: wp pr ack, wp pr fixed, dismiss ----
 
 // AckInput is a verdict on review comments.
 type AckInput struct {
@@ -1070,12 +1024,10 @@ func (s *Service) loadComments(ctx context.Context, actor *Actor, ids []string, 
 		if rc.Gone {
 			return nil, nil, invalid("%s was deleted on the forge", rc.Ref)
 		}
-		// A person's call stands: an agent can't overrule it. An agent's
-		// needs_person is only a hand-off: the assessor settles it (WP-759).
 		byPerson := false
 		if guard && actor.IsAgent() {
 			if byPerson, err = s.verdictByPerson(ctx, s.db.R, rc.id); err != nil {
-				return nil, nil, err // unread is not "nobody's call": refused
+				return nil, nil, err
 			}
 		}
 		if byPerson {
@@ -1137,7 +1089,6 @@ func (s *Service) AckReviewComments(ctx context.Context, actor *Actor, in AckInp
 		return nil, err
 	}
 	if in.Verdict == VerdictDeferred {
-		// Real, but not this task's: a follow-up task keeps it (WP-440).
 		if err := s.deferComments(ctx, actor, list, prs, in.Note); err != nil {
 			return nil, err
 		}
@@ -1216,7 +1167,6 @@ func (s *Service) promoteFixing(ctx context.Context, pr *PullRequest) {
 		if rc.Verdict != VerdictFixing || rc.Gone || rc.FixSHA == "" {
 			continue
 		}
-		// The note given with wp pr fixed, kept for when the fix lands.
 		var note string
 		_ = s.db.R.QueryRowContext(ctx, `SELECT note FROM review_comment_events WHERE comment_id = ? AND verdict = ? ORDER BY id DESC LIMIT 1`,
 			rc.id, VerdictFixing).Scan(&note)
@@ -1225,8 +1175,6 @@ func (s *Service) promoteFixing(ctx context.Context, pr *PullRequest) {
 		}
 	}
 }
-
-// ---- the work packet: wp pr todo ----
 
 // PRTodo is what is left to do on a pull request: failed checks, conflicts
 // and the review comments not dealt with.
@@ -1254,10 +1202,8 @@ type PRTodo struct {
 	Refused *BabysitRound `json:"refused,omitempty"`
 	// Intent is what the pull request is for, which every verdict is
 	// weighed against (WP-440).
-	Intent *PRIntent `json:"intent,omitempty"`
-	Text   string    `json:"text"` // all of it, as `wp pr todo` prints it
-	// intent and work are Text's parts after its first line: a round's
-	// prompt names the branch itself, and the assessor's has its own intent.
+	Intent       *PRIntent `json:"intent,omitempty"`
+	Text         string    `json:"text"` // all of it, as `wp pr todo` prints it
 	intent, work string
 }
 
@@ -1313,7 +1259,7 @@ func (s *Service) assessorPacket(ctx context.Context, pr *PullRequest) (*PRTodo,
 			if readFault(err) {
 				s.log.WarnContext(ctx, "leave a comment out of the assessor's packet: who decided its verdict is unread", "comment", rc.id, "pr", pr.ID, "err", err)
 			}
-			return false // unread: left out, as a person's would be
+			return false
 		}
 		return !byPerson
 	})
@@ -1348,7 +1294,7 @@ func (s *Service) packetOf(ctx context.Context, actor *Actor, pr *PullRequest, a
 		}
 	}
 	files := map[string][]string{}
-	elsewhere := s.outsideDiff(ctx, pr, list) // nothing here to change for them (WP-432)
+	elsewhere := s.outsideDiff(ctx, pr, list)
 	for _, rc := range list {
 		if !listed(rc) || elsewhere[rc.Ref] {
 			continue
@@ -1376,8 +1322,6 @@ func (s *Service) packetOf(ctx context.Context, actor *Actor, pr *PullRequest, a
 			t.Refused = refusedRound(b, pr.HeadSHA)
 		}
 		if !all {
-			// A round's agent isn't handed again what an earlier round got
-			// (those left are for a person); `wp pr todo` still lists them.
 			t.Findings = slices.DeleteFunc(t.Findings, func(f TodoFinding) bool {
 				return f.startsRound() && slices.ContainsFunc(b.Rounds, func(r BabysitRound) bool { return slices.Contains(r.Findings, f.ID) })
 			})
@@ -1482,8 +1426,6 @@ func (t *PRTodo) render() string {
 	if r := t.Refused; r != nil {
 		files, _ := protectedRefusal(*r)
 		fmt.Fprintf(&b, "\n## Babysitting round %d's refused fix\n", r.N)
-		// The round's agent chose the files: a list of anything but plain
-		// protected paths is its text, and reads as such (WP-1266).
 		if plainProtected(strings.Split(files, ", ")) {
 			fmt.Fprintf(&b, "It changes protected files (%s), which rounds may not push (WP-D14); a session may. It is another agent's work: check it before reusing any of it.\n", files)
 		} else {
@@ -1521,7 +1463,6 @@ func (t *PRTodo) render() string {
 			text := packetBody(c.Body)
 			b.WriteString("<untrusted>\n" + untrusted(excerpt(text, packetCommentChars)) + "\n</untrusted>\n")
 			if n := utf8.RuneCountInString(strings.Join(strings.Fields(text), " ")); n > packetCommentChars {
-				// Say so: a verdict on the start isn't one on the rest.
 				fmt.Fprintf(&b, "(Cut at %d of %d characters: a verdict covers only this part.)\n", packetCommentChars, n)
 			}
 			if c.Verdict == VerdictNeedsPerson && c.Note != "" {

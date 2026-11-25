@@ -53,8 +53,6 @@ const H = { "X-Waypoint-Client": "web" };
 const KEY = "UIC";
 const CONCURRENCY = 5;
 
-// ---------- routes and tabs from source ----------
-
 const read = (f) => fs.readFileSync(path.join(root, "web/src", f), "utf8");
 function routesFromSource() {
   const src = read("router.tsx");
@@ -74,7 +72,6 @@ function routesFromSource() {
     return d.isId ? up : (up + d.seg).replace(/\/\/+/g, "/");
   };
   const all = [...defs.keys()].map((n) => ({ name: n, path: full(n) || "/" }));
-  // A layout route (project, with children) is a page too; pathless/duplicate paths collapse.
   return [...new Set(all.map((r) => r.path))]
     .filter((p) => !["/login", "/invite/$token", "/reset/$token", "/device"].includes(p))
     .sort();
@@ -89,8 +86,6 @@ const TAB_SOURCES = {
     return [...m[1].matchAll(/'(\w+)'/g)].map((x) => x[1]);
   },
 };
-
-// ---------- the in-page checks (run in the browser) ----------
 
 function inPage({ category }) {
   const cats = new Set(category);
@@ -117,7 +112,6 @@ function inPage({ category }) {
     return true;
   };
   const clipRects = (el) => {
-    // rect of every ancestor that clips, to tell whether el is cut away by a scroller
     const out = [];
     for (let a = el.parentElement; a && a !== document.documentElement; a = a.parentElement) {
       const cs = getComputedStyle(a);
@@ -141,7 +135,6 @@ function inPage({ category }) {
         if (!s.contains(el) || el === s || el.closest(SKIP) || !visible(el)) continue;
         const r = el.getBoundingClientRect();
         if (r.right <= box.right + 1 && r.left >= box.left - 1) continue;
-        // clipped or scrolled by a container between el and the scroller: not a page problem
         let contained = false;
         for (let a = el.parentElement; a && a !== s; a = a.parentElement) {
           const cs = getComputedStyle(a);
@@ -149,11 +142,11 @@ function inPage({ category }) {
           if (cs.position === "fixed") { contained = true; break; }
         }
         if (contained || getComputedStyle(el).position === "fixed") continue;
-        if (r.left >= box.right - 1 || r.right <= box.left + 1) continue; // entirely off: a hidden slide-over
+        if (r.left >= box.right - 1 || r.right <= box.left + 1) continue;
         out.add(el);
       }
       for (const el of out) {
-        if (el.parentElement && out.has(el.parentElement)) continue; // report the outermost only
+        if (el.parentElement && out.has(el.parentElement)) continue;
         add("overflow", el, `${name}: ${desc(el)} ends ${Math.round(el.getBoundingClientRect().right - box.right)}px past the edge`);
       }
     }
@@ -178,13 +171,11 @@ function inPage({ category }) {
       if (!hides(cs.overflowX) && !hides(cs.overflowY)) continue;
       if (cs.textOverflow === "ellipsis" || cs.webkitLineClamp !== "none" || cs.getPropertyValue("-webkit-line-clamp") !== "none") continue;
       if (!visible(el)) continue;
-      // own text only: a text element, not a layout box that clips its children by design
       const own = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim().length > 1);
       if (!own) continue;
       const x = hides(cs.overflowX) && el.scrollWidth > el.clientWidth + 1;
       const y = hides(cs.overflowY) && el.scrollHeight > el.clientHeight + 1;
       if (!x && !y) continue;
-      // a collapsed region (height 0-ish) opened by a toggle is not cut text
       if (el.clientHeight < 4 && y) continue;
       add("clipped", el, `${x ? `content ${el.scrollWidth}px in ${el.clientWidth}px` : `content ${el.scrollHeight}px in ${el.clientHeight}px`}: ${norm(el.textContent).slice(0, 60)}`);
     }
@@ -198,7 +189,7 @@ function inPage({ category }) {
       [/\bNaN\b/, "NaN"],
       [/\bnull\b/, "null"],
       [/\{\{|\}\}|\{[A-Za-z_.]+\}|\{\s*\}/, "braces"],
-      [/(?<![/*])\*\*(?![/*])/, "markdown bold"], // not a glob's ** (release/**, **/x)
+      [/(?<![/*])\*\*(?![/*])/, "markdown bold"],
       [/&(amp|lt|gt|quot|#\d+);/, "html entity"],
       [/\$\{/, "template"],
     ];
@@ -237,8 +228,6 @@ function inPage({ category }) {
       if (!byScope.has(s)) byScope.set(s, []);
       byScope.get(s).push(b);
     }
-    // Two items of one list (rows built alike) may say the same thing: two
-    // environments both "down since 3:55 pm" is not a repeat.
     const siblingRows = (a, b) => {
       let x = a;
       while (x.parentElement && !x.parentElement.contains(b)) x = x.parentElement;
@@ -260,7 +249,6 @@ function inPage({ category }) {
         } else m.set(b.k, b);
       }
     }
-    // a heading or summary repeated by the first text under it
     for (const h of all) {
       if (!h.matches("h1,h2,h3,h4,h5,h6,summary") || h.closest(SKIP) || !visible(h)) continue;
       const hk = key(h.innerText);
@@ -302,14 +290,11 @@ function inPage({ category }) {
         const area = iw * ih;
         const minA = Math.min(a.r.width * a.r.height, b.r.width * b.r.height);
         if (area / minA < 0.2) continue;
-        // a label wrapping its own control, or an icon inside a sibling control's label: same family
         if (a.el.closest("label") && a.el.closest("label") === b.el.closest("label")) continue;
         const cx = (Math.max(a.r.left, b.r.left) + Math.min(a.r.right, b.r.right)) / 2;
         const cy = (Math.max(a.r.top, b.r.top) + Math.min(a.r.bottom, b.r.bottom)) / 2;
         const top = document.elementFromPoint(cx, cy);
-        // something else (a panel, an overlay) covers the spot: they are not both showing there
         if (!top || !(a.el.contains(top) || b.el.contains(top) || top.contains(a.el) || top.contains(b.el))) continue;
-        // a dialog or slide-over (fixed) over the page is a layer of its own, not an overlap
         const layer = (el) => { for (let n = el; n && n !== document.body; n = n.parentElement) if (getComputedStyle(n).position === "fixed" || n.matches("[role=dialog]")) return n; return null; };
         if (layer(a.el) !== layer(b.el)) continue;
         const da = desc(a.el), db = desc(b.el);
@@ -323,9 +308,8 @@ function inPage({ category }) {
   if (cats.has("empty-section")) {
     const content = (s) => {
       if (!visible(s) && !s.matches("li,ul,ol,div,section,table")) return false;
-      if (s.matches("h1,h2,h3,h4,h5,h6") || s.querySelector(":scope > h1,:scope > h2,:scope > h3,:scope > h4,:scope > h5,:scope > h6")) return null; // next section
+      if (s.matches("h1,h2,h3,h4,h5,h6") || s.querySelector(":scope > h1,:scope > h2,:scope > h3,:scope > h4,:scope > h5,:scope > h6")) return null;
       if (!visible(s)) return false;
-      // still loading (a skeleton outlasted the wait above under load) is not empty
       if (s.matches(".animate-pulse") || s.querySelector(".animate-pulse")) return true;
       if (s.matches("button,a") || ([...s.querySelectorAll("*")].length < 8 && !norm(s.innerText ?? "") && !s.querySelector("img,input,textarea,select,table,canvas,video"))) return false;
       return !!norm(s.innerText ?? "") || !!s.querySelector("img,input,textarea,select,table,canvas,video");
@@ -369,7 +353,7 @@ function inPage({ category }) {
         if (!leaf || !visible(el)) continue;
         if (!norm(el.textContent ?? "") && !el.matches("img,svg,canvas,input,textarea,select,table")) continue;
         const b = el.getBoundingClientRect();
-        if (b.width > mr.width * 0.98 && !norm(el.textContent ?? "")) continue; // a full-width rule or background
+        if (b.width > mr.width * 0.98 && !norm(el.textContent ?? "")) continue;
         l = Math.min(l, b.left); r = Math.max(r, b.right);
       }
       const used = r > l ? (r - l) / mr.width : 0;
@@ -391,10 +375,8 @@ function inPage({ category }) {
   return found;
 }
 
-// ---------- the run ----------
-
 const browser = await chromium.launch();
-const findings = new Map(); // key -> { category, route, desc, details:Set, looks:Set }
+const findings = new Map();
 const skipped = [];
 const errors = [];
 let visited = 0;
@@ -493,7 +475,6 @@ function urlsFor(routes, ids) {
     urls.push({ route: r, url });
     if (TAB_SOURCES[r]) for (const t of new Set(TAB_SOURCES[r]())) urls.push({ route: `${r}?tab=${t}`, url: `${url}?tab=${t}` });
   }
-  // an issue opened over a project's board, a search with results
   urls.push({ route: "/p/$key/board?issue=:key", url: `/p/${ids.key}/board?issue=${ids.issue}` });
   urls.push({ route: "/p/$key/list?issue=:key", url: `/p/${ids.key}/list?issue=${ids.issue}` });
   urls.push({ route: "/search?q=:text", url: "/search?q=route" });
@@ -547,18 +528,15 @@ for (const look of lookList) {
       try {
         await page.goto(base + u.url, { waitUntil: "load" });
         await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
-        // Idle: a transient status ("Saving…", "Loading…") has 3s to go, then counts as stuck.
         await page
           .waitForFunction(() => !/\b(Saving|Loading)…/.test(document.body.innerText), undefined, { timeout: 3000 })
           .catch(() => {});
-        // a skeleton still pulsing is a section that has not loaded, not an empty one
         await page
           .waitForFunction(() => ![...document.querySelectorAll(".animate-pulse")].some((e) => e.getClientRects().length), undefined, { timeout: 4000 })
           .catch(() => {});
-        await page.waitForTimeout(300); // let entrance animations end before boxes are measured
+        await page.waitForTimeout(300);
         record(u.route, look.name, await page.evaluate(inPage, { category: look.categories.filter((c) => c !== "overlap") }));
         if (look.categories.includes("overlap")) {
-          // a tall viewport puts everything in view, so elementFromPoint can tell what is covered
           await page.setViewportSize({ width: look.vp.width, height: 2600 });
           await page.waitForTimeout(400);
           record(u.route, look.name, await page.evaluate(inPage, { category: ["overlap"] }));
@@ -569,15 +547,12 @@ for (const look of lookList) {
       }
     }
   };
-  // inPage uses its own name for a canvas cache: give it a home before it is serialised
   await Promise.all(Array.from({ length: CONCURRENCY }, (_, i) => worker(i)));
   visited += urls.length;
   console.log(`${look.name}: ${urls.length} pages in ${Math.round((Date.now() - t0) / 1000)}s`);
   await ctx.close();
 }
 await browser.close();
-
-// ---------- report and ratchet ----------
 
 const rows = [...findings.entries()].sort(([a], [b]) => (a < b ? -1 : 1));
 fs.writeFileSync(
@@ -593,12 +568,9 @@ if (!visited) console.log("FAIL no pages checked");
 
 const baseline = fs.existsSync(baselineFile) ? JSON.parse(fs.readFileSync(baselineFile, "utf8")) : {};
 if (process.env.UI_CHECKS_WRITE) {
-  // A run that missed pages would drop their entries from the baseline.
   if (errors.length || !visited) process.exit(1);
   const next = {};
   for (const [k] of rows) next[k] = baseline[k] ?? "";
-  // One look sees only some findings: keep the rest, so only a full run
-  // (E2E_LOOKS=all, ./run.sh's default) drops entries.
   if (!everyLook) for (const [k, v] of Object.entries(baseline)) if (!(k in next)) next[k] = v;
   fs.writeFileSync(baselineFile, JSON.stringify(next, null, 2) + "\n");
   console.log(`baseline written: ${rows.length} findings -> ${baselineFile}`);

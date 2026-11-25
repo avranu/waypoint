@@ -100,9 +100,9 @@ func Ran(hit []byte, i int) bool {
 
 // Suppression kinds.
 const (
-	NoSec   = "nosec"  // gosec's #nosec
-	NoLint  = "nolint" // golangci-lint's //nolint
-	WPLint  = "wplint" // wplint's //wplint:ignore (internal/wplint)
+	NoSec   = "nosec"
+	NoLint  = "nolint"
+	WPLint  = "wplint"
 	allRule = "all"
 )
 
@@ -175,7 +175,7 @@ func Decode(lines []string) (*Payload, error) {
 		case n == want && i == len(chunks)+1:
 			chunks = append(chunks, m[4])
 		default:
-			chunks, want = nil, 0 // out of order: wait for the next payload
+			chunks, want = nil, 0
 			continue
 		}
 		if len(chunks) == want {
@@ -188,7 +188,6 @@ func Decode(lines []string) (*Payload, error) {
 			return nil, bad
 		}
 		if seen {
-			// Evidence lines, but no whole payload: the log was cut.
 			return nil, errors.New("evidence: no whole payload (the log was cut?)")
 		}
 		return nil, ErrNone

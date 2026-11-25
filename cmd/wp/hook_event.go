@@ -25,15 +25,10 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// The session hooks (WP-D16): Claude Code runs `wp hook claude-event` for
-// each event it was installed for. One handler switches on the event, makes
-// one HTTP call (3 s at most) and never fails the session: an unreachable
-// server queues the event in the state file, to be sent with the next one.
-
 const (
 	hookHTTPTimeout = 3 * time.Second
-	endHTTPTimeout  = 1200 * time.Millisecond // SessionEnd has Claude Code's 1.5 s
-	maxStopAwait    = 8                       // seconds a Stop hook waits for a follow-up's message
+	endHTTPTimeout  = 1200 * time.Millisecond
+	maxStopAwait    = 8
 	outboxMax       = 200
 	outboxMaxAge    = 24 * time.Hour
 )
@@ -243,7 +238,7 @@ func (cs *cwdSession) alive() bool {
 	}
 	start := procStart(cs.Pid)
 	if start == "" {
-		return !procFSExists() // no such process, or no /proc to ask
+		return !procFSExists()
 	}
 	return start == cs.PidStart
 }
@@ -263,8 +258,6 @@ func procStart(pid int) string {
 	if err != nil {
 		return ""
 	}
-	// The command's name is in parentheses and may hold spaces: fields count
-	// from after the last ")".
 	i := bytes.LastIndexByte(b, ')')
 	if i < 0 {
 		return ""
@@ -276,7 +269,7 @@ func procStart(pid int) string {
 	if f[0] == "Z" || f[0] == "X" {
 		return ""
 	}
-	return f[19] // field 22 of the line: starttime
+	return f[19]
 }
 
 // harnessPid is the process the hook runs under that Claude Code started: the
@@ -331,8 +324,6 @@ func (c *cli) addSessionHeaders(req *http.Request) {
 	if req.Header.Get("Authorization") == "" {
 		return
 	}
-	// A task session's binding, and the context it holds (WP-34): wp next
-	// warns with them.
 	if t := taskBinding(); t != "" {
 		req.Header.Set("X-Waypoint-Task", t)
 	}
@@ -343,15 +334,13 @@ func (c *cli) addSessionHeaders(req *http.Request) {
 		req.Header.Set("X-Waypoint-Claims", c.claims)
 	}
 	if prestart() {
-		// A launcher taking the task for the session it starts: no
-		// session yet, and no person drives it (the safety screen applies).
 		req.Header.Set("X-Waypoint-Prestart", "1")
 		return
 	}
 	id := c.session
 	if id == "" {
 		if c.agentHeader() == "" {
-			return // a person at a terminal
+			return
 		}
 		id = os.Getenv("WAYPOINT_SESSION")
 	}
@@ -425,7 +414,7 @@ func (cs *cwdSession) dir(key string) string {
 	if cs.Cwd != "" {
 		return filepath.Clean(cs.Cwd)
 	}
-	return filepath.Clean(key) // an entry from before sessions were the key
+	return filepath.Clean(key)
 }
 
 // provablyAlive: the entry names the harness process and it is still running
@@ -475,15 +464,12 @@ func gitFactsAt(dir string) gitFacts {
 	if git("rev-parse", "--is-inside-work-tree") != "true" {
 		return g
 	}
-	// symbolic-ref also names a branch that has no commit yet.
 	g.Branch = git("symbolic-ref", "--short", "-q", "HEAD")
 	if g.Branch == "" {
 		g.Branch, g.Detached = "(detached "+git("rev-parse", "--short", "HEAD")+")", true
 	}
 	remote := git("remote", "get-url", "origin")
 	if remote == "" {
-		// A remote named like an option (a config's [remote "--all"]) is no
-		// remote git is told about: get-url would read it as one.
 		if first := strings.Fields(git("remote")); len(first) > 0 && codeindex.CheckRef(first[0]) == nil {
 			remote = git("remote", "get-url", first[0])
 		}
@@ -491,7 +477,6 @@ func gitFactsAt(dir string) gitFacts {
 	if r, err := repoFromRemote(remote); err == nil {
 		g.Repo = r
 	}
-	// A linked worktree's git dir isn't the repo's common dir.
 	gd, cd := git("rev-parse", "--absolute-git-dir"), git("rev-parse", "--path-format=absolute", "--git-common-dir")
 	g.Worktree = gd != "" && cd != "" && filepath.Clean(gd) != filepath.Clean(cd)
 	if cd != "" && filepath.Base(filepath.Clean(cd)) == ".git" {
@@ -507,43 +492,25 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	if err := json.NewDecoder(io.LimitReader(stdin, 4<<20)).Decode(&in); err != nil || in.SessionID == "" || in.HookEventName == "" {
 		return
 	}
-	// Every check reads a paste's text: Claude Code wraps a paste, and
-	// Waypoint's own prompts are pasted (WP-1562). What the server gets of a
-	// person's prompt is as typed, and the server unwraps it, once.
 	raw := in.Prompt
 	if in.HookEventName == "UserPromptSubmit" {
 		in.Prompt = core.UnwrapPasted(in.Prompt)
 	}
-	// A session command (WP-562): the server's go to it as only the command,
-	// prompts or not; the slash hook answers the rest on this machine.
 	slash, slashArg, shipText := "", "", ""
-	// A hook that sends no prompt text asks which text Waypoint typed is
-	// pending and compares it here, so the server learns only the id of the
-	// match, or that there was none (matchTyped).
 	var typedID int64
 	var typedKind string
-	typedAnswered := false // the server answered the lookup (matchTyped)
+	typedAnswered := false
 	if in.HookEventName == "UserPromptSubmit" {
-		// Under --no-prompts the lookup is how the server learns what the
-		// prompt was. Otherwise it is made only for the two texts Waypoint
-		// types with no visible mark, to tell them from a person typing the
-		// same words (noteAttendanceKind). The server's record is used up by
-		// the event, by digest, not by this lookup.
 		if p := strings.TrimSpace(in.Prompt); c.server() != "" && c.token() != "" && (noPrompts || p == "/compact" || p == "/exit") {
 			typedID, typedKind, typedAnswered = c.matchTyped(in)
 			if !typedAnswered {
-				c.countDrop("typed_lookup", "UserPromptSubmit", 1) // reported with the next event
+				c.countDrop("typed_lookup", "UserPromptSubmit", 1)
 			}
 		}
-		// local, so the guard knows even with no server (WP-277); a prompt
-		// automation pastes into a session the quota guard stopped goes no
-		// further (WP-932)
 		if refusal := c.noteAttendanceKind(in, typedKind, typedAnswered); refusal != "" {
 			_, _ = stdout.Write(promptStop(refusal))
 			return
 		}
-		// A wp ship Claude Code moved to the background reporting back: its
-		// --summary may end the turn here, before any model call (WP-1093).
 		if id := finishedTask(in.Prompt); id != "" {
 			stop, more := c.shipStop(in, id)
 			if stop != nil {
@@ -552,17 +519,12 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			}
 			shipText = more
 		}
-		c.forgetStopSent(in.SessionID) // a new turn: its Stop is its own
+		c.forgetStopSent(in.SessionID)
 		if !strings.HasPrefix(strings.TrimSpace(in.Prompt), "<task-notification>") {
-			// a message, a review's findings: a summary written before it
-			// mustn't end the turn it starts (WP-1093)
 			c.dropSessionSummaries(in.SessionID)
 		}
 	}
 	if in.HookEventName == "Stop" && c.stopAlreadySent(in.SessionID) {
-		// A hook ended this turn at wp ship and sent its Stop (WP-1093):
-		// this one only says what still runs, which that one couldn't
-		// know; the summary stays the session's last update.
 		in.LastMessage = ""
 	}
 	if in.HookEventName == "UserPromptSubmit" {
@@ -578,8 +540,6 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			slash = "keep"
 		}
 	}
-	// The live table of agents is local, so it is kept with no server too: the
-	// Agent gate's queue and `wp agents wait` read it (WP-1443).
 	c.trackAgentsLocally(in)
 	if c.server() == "" || c.token() == "" {
 		if slash != "" {
@@ -597,44 +557,32 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			ev.Repo, ev.Branch, ev.Worktree = git.Repo, git.Branch, git.Worktree
 		}
 	}
-	// Only the events the hook sends carry these to the server: Stop,
-	// UserPromptSubmit, SubagentStop, and the tool events it sends
-	// (AskUserQuestion, a watched Bash call); most tool events are not sent.
-	// A change mid-turn is recorded at the next of them, with that event's
-	// time (WP-1468).
 	ev.PermissionMode, ev.Effort = in.PermissionMode, in.effortLevel()
 	switch in.HookEventName {
 	case "SessionStart":
 		ev.Model, ev.Source = in.Model, in.Source
-		// A session a follow-up started: its runner job (WP-D22).
 		ev.SpawnedBy = strings.TrimSpace(os.Getenv("WAYPOINT_FOLLOWUP"))
 		if in.Source != "compact" {
-			// Work an earlier session left here, unfinished (WP-567).
-			ev.Checkouts = hookCheckouts(in.Cwd, nil) // its own checkout only
+			ev.Checkouts = hookCheckouts(in.Cwd, nil)
 		}
-		ev.Snapshot = buildSnapshot(in, git) // what it runs with, as observed (WP-1468)
+		ev.Snapshot = buildSnapshot(in, git)
 		rememberSession(c, in)
-		c.autoUpdateInBackground() // at most daily, detached: never slows the hook
+		c.autoUpdateInBackground()
 	case "UserPromptSubmit":
-		// Waypoint's own fixed prompts (a keep-warm ping, a bare /compact or
-		// /exit) are sent as their text under --no-prompts when the lookup
-		// found no record, so the server can match its record by digest.
-		prompt := in.Prompt // unwrapped above, so the digest is of what was typed
+		prompt := in.Prompt
 		p := strings.TrimSpace(prompt)
 		if noPrompts {
-			ev.TypedID = typedID // neither the text nor a digest of it leaves this machine
+			ev.TypedID = typedID
 		} else {
 			ev.PromptSum = core.PromptSum(prompt)
 		}
 		ev.Key = newHookKey()
 		if slash != "" {
-			ev.Prompt = strings.TrimSpace("/wp " + slash + " " + slashArg) // nothing else typed after it rides along
+			ev.Prompt = strings.TrimSpace("/wp " + slash + " " + slashArg)
 			if slash == "keep" && strings.EqualFold(p, "/keep") {
 				ev.Prompt = "/keep"
 			}
 		} else if key, ok := c.pastedPromptKey(in.SessionID, p); ok {
-			// Autopilot's prompt, worded by people (WP-308): marked, so it
-			// never counts as the person's; under --no-prompts, only the mark.
 			ev.Prompt = autopilotPromptMark + " started this session for " + key
 			switch {
 			case noPrompts:
@@ -644,27 +592,18 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 				ev.Prompt += "\n\n" + prompt
 			}
 		} else if !noPrompts {
-			ev.Prompt = raw // the server unwraps it, once
+			ev.Prompt = raw
 		} else if fixed := fixedWaypointPrompt(p); fixed != "" && !typedAnswered {
-			// The lookup did not answer. These texts are Waypoint's own
-			// constants, not a person's words, so sending them leaks nothing
-			// and lets the server match its record by digest.
 			ev.Prompt = fixed
 		} else if mark := harnessPromptMark(p); mark != "" {
-			ev.Prompt = mark // a background task reporting back is no person's prompt; only that much is sent
+			ev.Prompt = mark
 		}
-		// A prompt is text a person typed: it can hold a pasted key or token, so it
-		// gets the redaction the transcript upload gives (this machine's own token,
-		// then the credential patterns) before it leaves the machine (WP-1470).
 		ev.Prompt, _, _ = redactTextCounted(ev.Prompt, []string{c.token()})
-		// A typed prompt whose text --no-prompts left out is still a prompt:
-		// the server records it with no text, and counts it (WP-1470).
 		if noPrompts && ev.Prompt == "" && p != "" {
 			ev.PromptWithheld = true
 		}
 		ev.Title = in.SessionTitle
 	case "PostCompact":
-		// Only that it happened and how: the summary is the session's text.
 		ev.Source = in.Trigger
 		ev.Snapshot = buildSnapshot(in, git)
 	case "ConfigChange":
@@ -689,14 +628,12 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		case in.ToolName == "AskUserQuestion":
 			ev.Tool, ev.ToolUseID, ev.ToolResponse = in.ToolName, in.ToolUseID, in.ToolResponse
 		case in.ToolName == "Bash" && c.watching(in.SessionID):
-			// The command a person approved in this terminal ran: the request
-			// that asked for it can close (WP-126).
 			ev.Tool, ev.ToolInput, ev.ToolUseID = in.ToolName, in.ToolInput, in.ToolUseID
 		case in.ToolName == "Read":
-			c.keepScreenshot(in) // WP-263
+			c.keepScreenshot(in)
 			return
 		case in.ToolName == "Agent" || in.ToolName == "Task":
-			return // tracked above, locally
+			return
 		default:
 			return
 		}
@@ -704,21 +641,18 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		ev.LastMessage, ev.StopHookActive = in.LastMessage, in.StopHookActive
 		ev.InputTokens, ev.OutputTokens, ev.ContextTokens, ev.CacheTTL = sessionTotals(c, in)
 		ev.Pending = stopPending(in, []string{c.token()}, noPrompts)
-		// Where its work is, should the session end before it ships (WP-567).
 		ev.Checkouts = hookCheckouts(in.Cwd, c.state.sessionClaims(in.SessionID))
 	case "SubagentStart", "SubagentStop":
 		ev.AgentID, ev.AgentType = in.AgentID, in.AgentType
 		if in.HookEventName == "SubagentStop" {
-			ownReview(in, &ev, noPrompts) // its report goes to the task's work log (WP-1089)
+			ownReview(in, &ev, noPrompts)
 		} else {
-			ev.AgentModel = c.subagentModel(in) // which instructions are for it (ADR146)
+			ev.AgentModel = c.subagentModel(in)
 		}
 	case "SessionEnd":
 		ev.EndReason = in.Reason
-		ev.Pending = stopPending(in, []string{c.token()}, noPrompts) // what dies with it, if Claude Code says (WP-567)
+		ev.Pending = stopPending(in, []string{c.token()}, noPrompts)
 		ev.InputTokens, ev.OutputTokens, ev.ContextTokens, _ = sessionTotals(c, in)
-		// Its tasks' commits go to the forge once nothing else is in their
-		// checkouts; a detached process does it, after this hook (WP-843).
 		c.pushOnSessionEnd(in.SessionID, in.Cwd, in.Reason)
 	default:
 		return
@@ -731,20 +665,16 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	res := c.sendSessionEvent(ev)
 	kit := ""
 	if in.HookEventName == "SessionStart" && ev.Repo != "" {
-		kit = c.kitSessionStart(in.Cwd, ev.Repo) // the agent kit's notes, and a sync when it moved on (WP-ADR2)
+		kit = c.kitSessionStart(in.Cwd, ev.Repo)
 	}
 	switch in.HookEventName {
 	case "SessionStart":
 		if res != nil {
-			c.maybeReportMachine() // this machine's agent files, for Agents → Setup (WP-ADR44)
+			c.maybeReportMachine()
 		}
 	case "Stop":
-		// A fan-out package's session told to hand off at its budget: this
-		// stop ends it, and the next package starts (WP-148).
 		if over, spent := c.fanoutSessionOver(in.SessionID); over {
 			if res != nil {
-				// The session ends here, so a pending message can't block the
-				// stop; show it with the note rather than drop it.
 				if out := stopOutput("", strings.TrimSpace(res.Note+"\n"+res.Text)); out != nil {
 					_, _ = stdout.Write(out)
 				}
@@ -754,12 +684,9 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			return
 		}
 	case "SessionEnd":
-		// However a package's session ended, the next package may start; an
-		// item already ended (wp done, its budget) stays as it ended.
 		fanoutEnded("ended", in.TranscriptPath, c.sessionCost(in.SessionID))
 	}
 	if slash != "" && (res == nil || res.Block == "") {
-		// Never on to the model: the command file's body would answer it.
 		why := "Waypoint didn't answer"
 		if res != nil {
 			why = "Waypoint's server doesn't know it yet"
@@ -769,24 +696,20 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	}
 	if res == nil {
 		if in.HookEventName == "SessionStart" {
-			_, _ = stdout.Write(sessionStartOutput(c.withTidyHint("", in), kit)) // the hint needs no server
+			_, _ = stdout.Write(sessionStartOutput(c.withTidyHint("", in), kit))
 		}
 		if shipText != "" {
 			_, _ = stdout.Write(hookContext("UserPromptSubmit", shipText))
 		}
-		return // queued, or refused: the agent carries on
+		return
 	}
 	c.savePause(res.Pause)
 	c.saveGuard(res.Guard)
 	switch in.HookEventName {
 	case "SessionStart":
 		c.saveEnvHosts(ev.Repo, res.EnvHosts)
-		// The tidy hint shells out to git with no deadline: it runs before the
-		// pause is marked told, so nothing slow sits between the mark and the
-		// write (WP-1398).
 		text := c.withTidyHint(res.Text, in)
 		text = joinParts(c.pauseTell(in.SessionID, hookLateAfter(hookSessionStartTimeout)), text)
-		// The session's instructions first (ADR146): Claude Code cuts the end.
 		_, _ = stdout.Write(sessionStartOutput(joinParts(res.Instructions, text), kit))
 	case "SubagentStart":
 		if res.Instructions != "" {
@@ -798,14 +721,11 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 			_, _ = stdout.Write(promptStop(res.Block))
 			return
 		}
-		// A decision made in the web while the agent was idle: the start of
-		// this turn, as context; and what the stop wp ship sent got back.
 		if text := joinParts(shipText, res.Text); text != "" {
 			_, _ = stdout.Write(hookContext("UserPromptSubmit", text))
 		}
 	case "Stop":
 		if rule := c.guardStopped(in.SessionID); rule != "" {
-			// The quota guard stopped it (WP-932): nothing carries it on.
 			if out := stopOutput("", strings.TrimSpace("Quota guard: this session stays stopped ("+rule+") until you type in it.\n"+res.Note)); out != nil {
 				_, _ = stdout.Write(out)
 			}
@@ -814,11 +734,8 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		}
 		text := res.Text
 		if text == "" && res.Await > 0 {
-			// This stop set off a follow-up: its message may come in a moment.
 			text = c.awaitMessage(ev, res.Await)
 		}
-		// The server sends decisions only once per stop (never at a stop a
-		// hook already continued), and each message once.
 		if out := stopOutput(text, res.Note); out != nil {
 			_, _ = stdout.Write(out)
 		}
@@ -926,7 +843,6 @@ func rememberSession(c *cli, in hookEventInput) {
 	if f := os.Getenv("CLAUDE_ENV_FILE"); f != "" {
 		line := "export WAYPOINT_SESSION=" + quoteArg(in.SessionID) + "\nexport WAYPOINT_MACHINE=" + quoteArg(machineName()) + "\n"
 		if filepath.IsAbs(in.TranscriptPath) {
-			// wp next reads the session's context size from it (WP-34).
 			line += "export WAYPOINT_TRANSCRIPT=" + quoteArg(in.TranscriptPath) + "\n"
 		}
 		if fh, err := os.OpenFile(f, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil { // #nosec G304 G703 -- the path Claude Code gave the hook
@@ -939,9 +855,6 @@ func rememberSession(c *cli, in hookEventInput) {
 			if s.Cwds == nil {
 				s.Cwds = map[string]*cwdSession{}
 			}
-			// Entries are keyed by session, so one starting in a directory
-			// doesn't take another's there. Those from before are keyed by
-			// directory: moved under their session.
 			moved := map[string]*cwdSession{}
 			for k, old := range s.Cwds {
 				if old != nil && old.Cwd == "" && old.Session != "" {
@@ -953,7 +866,6 @@ func rememberSession(c *cli, in hookEventInput) {
 				}
 			}
 			for sid, old := range moved {
-				// An entry already keyed by the session is the newer layout: keep it.
 				if _, ok := s.Cwds[sid]; !ok {
 					s.Cwds[sid] = old
 				}
@@ -964,8 +876,6 @@ func rememberSession(c *cli, in hookEventInput) {
 					cs.Pid, cs.PidStart = pid, start
 				}
 			}
-			// One harness process has one session at a time: a /clear or a
-			// resume in the same process replaced the one it had.
 			if cs.Pid != 0 && cs.PidStart != "" {
 				for k, other := range s.Cwds {
 					if other != nil && k != in.SessionID && other.Pid == cs.Pid && other.PidStart == cs.PidStart {
@@ -974,7 +884,7 @@ func rememberSession(c *cli, in hookEventInput) {
 				}
 			}
 			s.Cwds[in.SessionID] = cs
-			for k, cs := range s.Cwds { // forget old ones, but not a session still running
+			for k, cs := range s.Cwds {
 				if cs == nil || (time.Since(cs.At) > 7*24*time.Hour && !cs.provablyAlive()) {
 					delete(s.Cwds, k)
 				}
@@ -1082,16 +992,12 @@ type hookReply struct {
 // Unreachable (or failing) servers queue it; one that refuses it (a revoked
 // token, a bad event) drops it. The reply is nil unless the server took it.
 func (c *cli) sendSessionEvent(ev sessionEvent) *hookReply {
-	c.expireOutbox() // counted before the counts are taken, so they go out in this call
+	c.expireOutbox()
 	queued := c.freshOutbox()
 	events := make([]sessionEvent, 0, len(queued)+1)
 	for _, q := range queued {
 		events = append(events, q.Event)
 	}
-	// What the outbox dropped rides with this event as a report with an id.
-	// It stays in the state until a send got through: the server ignores an
-	// id it has already applied, so sending it again after a timeout, a 5xx
-	// or a refusal (which rolls the batch back) is safe (WP-1468).
 	rep := c.claimDrops()
 	events = append(events, ev)
 	events[len(events)-1].Drops, events[len(events)-1].DropsID = rep.fields()
@@ -1104,9 +1010,6 @@ func (c *cli) sendSessionEvent(ev sessionEvent) *hookReply {
 			c.queueEvent(ev)
 			return nil
 		}
-		// The server understood and said no: sending it again won't help. But
-		// it refused the batch, not necessarily every event in it, so send
-		// them one at a time: the good queued events still get through.
 		var settled []queuedEvent
 		for _, q := range queued {
 			if _, err := c.call("POST", "/api/v1/sessions/hook", map[string]any{"events": []sessionEvent{q.Event}}); err != nil {
@@ -1117,17 +1020,15 @@ func (c *cli) sendSessionEvent(ev sessionEvent) *hookReply {
 				}
 				c.countDrop("refused", q.Event.Event, 1)
 			}
-			settled = append(settled, q) // taken, or refused for good
+			settled = append(settled, q)
 		}
 		c.dropOutbox(settled)
 		if len(queued) == 0 {
-			// Refused on its own, with nothing queued to retry: it is gone,
-			// so say so; its report stays in flight for the next send.
 			c.countDrop("refused", ev.Event, 1)
 			return nil
 		}
 		one := ev
-		rep = c.claimDrops() // the same report: nothing was settled
+		rep = c.claimDrops()
 		one.Drops, one.DropsID = rep.fields()
 		if b, err = c.call("POST", "/api/v1/sessions/hook", map[string]any{"events": []sessionEvent{one}}); err != nil {
 			if !serverRefused(err) {
@@ -1203,13 +1104,13 @@ func (c *cli) preOutputWait() time.Duration {
 func (c *cli) queueEvent(ev sessionEvent) {
 	if ev.Event == "PostToolUse" && ev.Tool != "AskUserQuestion" {
 		c.countDrop("unqueued", ev.Event, 1)
-		return // a command that ran matters now or not at all
+		return
 	}
 	if ev.Event == "UserPromptSubmit" && isSessionCommand(ev.Prompt) {
 		c.countDrop("unqueued", ev.Event, 1)
-		return // /wp next an hour late would surprise; the person was told it did nothing (WP-562)
+		return
 	}
-	ev.Drops, ev.DropsID = nil, "" // sent from the state's counts, never from a copy
+	ev.Drops, ev.DropsID = nil, ""
 	if err := c.updateStateWithin(c.preOutputWait(), func(s *State) {
 		s.Outbox = append(s.Outbox, queuedEvent{Event: ev})
 		for len(s.Outbox) > 1 && (len(s.Outbox) > outboxMax || outboxBytes(s.Outbox) > outboxMaxBytes) {
@@ -1275,7 +1176,7 @@ func (r *dropReport) fields() (map[string]int64, string) {
 // is nothing to report or the lock stayed held (they wait for the next send).
 func (c *cli) claimDrops() *dropReport {
 	if c.state.DropsOut == nil && len(c.state.Drops) == 0 {
-		return nil // this process saw nothing to report at its start
+		return nil
 	}
 	var rep *dropReport
 	_ = c.updateStateWithin(c.preOutputWait(), func(s *State) {
@@ -1317,7 +1218,7 @@ func (c *cli) expireOutbox() {
 		var keep []queuedEvent
 		for _, q := range s.Outbox {
 			if q.Event.At < cut {
-				s.addDrop("expired", q.Event.Event, 1) // too old to matter, and never sent
+				s.addDrop("expired", q.Event.Event, 1)
 				continue
 			}
 			keep = append(keep, q)
@@ -1342,7 +1243,7 @@ func (c *cli) dropOutbox(sent []queuedEvent) {
 				continue
 			}
 			if q.Event.At < cut {
-				s.addDrop("expired", q.Event.Event, 1) // too old to matter, and never sent
+				s.addDrop("expired", q.Event.Event, 1)
 				continue
 			}
 			keep = append(keep, q)
@@ -1437,7 +1338,7 @@ func (c *cli) matchTyped(in hookEventInput) (id int64, kind string, answered boo
 	if json.Unmarshal(b, &pending) != nil {
 		return 0, "", false
 	}
-	for _, sum := range sums { // its own digest first, as the server tries them
+	for _, sum := range sums {
 		for _, p := range pending {
 			if p.Sum == sum {
 				return p.ID, p.Kind, true

@@ -1,7 +1,3 @@
-// A pull request's way to merge (WP-D21): whether it is ready and why not,
-// its checks, the review gate, and the bot's findings with their states and
-// history; merge now, or merge when ready.
-
 import { useState, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'

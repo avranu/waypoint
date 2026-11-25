@@ -1,7 +1,3 @@
-// Agents page, Kit tab (WP-ADR2 §4): the agent kit's plugins and what each
-// holds, where each goes, the notes sessions start with, and which
-// checkouts are behind or drifted. Admins roll a sync out to their runners.
-
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'

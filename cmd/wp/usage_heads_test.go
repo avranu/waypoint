@@ -53,12 +53,11 @@ func TestCommandHeads(t *testing.T) {
 
 func TestRedact(t *testing.T) {
 	for in, want := range map[string]string{
-		"curl -H 'Authorization: Bearer abc123def456' https://x":  "curl -H 'Authorization: ***' https://x",
-		"export API_KEY=supersecretvalue":                         "export API_KEY=***",
-		"docker run -p 8080:80 nginx":                             "docker run -p 8080:80 nginx",
-		"git push https://x:ghp_abcdefghijklmnopqrstuvwxyz0123@h": "git push https://x:***@h",
-		"echo password=hunter22 ok":                               "echo password=*** ok",
-		// WP-860: whole risky commands carry these shapes too.
+		"curl -H 'Authorization: Bearer abc123def456' https://x":       "curl -H 'Authorization: ***' https://x",
+		"export API_KEY=supersecretvalue":                              "export API_KEY=***",
+		"docker run -p 8080:80 nginx":                                  "docker run -p 8080:80 nginx",
+		"git push https://x:ghp_abcdefghijklmnopqrstuvwxyz0123@h":      "git push https://x:***@h",
+		"echo password=hunter22 ok":                                    "echo password=*** ok",
 		"psql postgres://admin:S3cretPw@db.prod/app -c 'drop table x'": "psql postgres://admin:***@db.prod/app -c 'drop table x'",
 		"mysql -u root --password hunter2hunter2 -e 'drop'":            "mysql -u root --password *** -e 'drop'",
 		"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENG terraform destroy": "AWS_SECRET_ACCESS_KEY=*** terraform destroy",

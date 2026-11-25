@@ -51,7 +51,6 @@ async function run(width, scheme) {
   const AG = { ...H, Authorization: `Bearer ${token}` };
   const agent = (m, p, d) => call(m, p, d, AG);
 
-  // ---- the project key field keeps focus while typing ----
   await page.goto(`${base}/p/${key}/settings?tab=general`);
   const keyInput = page.getByRole("textbox", { name: "Key" });
   await keyInput.click();
@@ -72,7 +71,6 @@ async function run(width, scheme) {
   await shot("key-typing");
   await page.getByRole("button", { name: "Discard" }).click();
 
-  // ---- an agent's issue and comment, then a person's review ----
   const made = await (
     await agent("POST", "/issues", {
       project: key,
@@ -108,8 +106,6 @@ async function run(width, scheme) {
   await shot("agent-issue");
   await page.getByRole("button", { name: "Mark reviewed" }).first().click();
   await page.getByText("Reviewed by").first().waitFor();
-  // The issue and its comments refetch separately; "Reviewed by" shows as
-  // soon as the issue does, so wait for the comments' marks to clear too.
   await page.getByText("Not reviewed").first().waitFor({ state: "hidden" });
   ok(
     (await page.getByText("Not reviewed").count()) === 0,
@@ -117,7 +113,6 @@ async function run(width, scheme) {
   );
   await shot("agent-issue-reviewed");
 
-  // ---- an agent's clock: paused while idle ----
   const work = await api("POST", "/issues", {
     project: key,
     title: `Delegated ${tag}`,
@@ -126,7 +121,6 @@ async function run(width, scheme) {
   await agent("POST", `/agent/take/${work.key}`, {});
   await agent("POST", `/agent/pause/${work.key}`, {});
   await page.goto(`${base}/issue/${work.key}`);
-  // Phones show a note; wider layouts a dimmed chip that says so on hover.
   await page
     .getByText(/claude-haiku-5-5 paused/)
     .or(page.locator('[title*="is idle (its clock is paused)"]'))
@@ -145,7 +139,6 @@ async function run(width, scheme) {
     .waitFor();
   ok(true, `${tag} resumed agent's claim shows as working`);
 
-  // ---- page codes ----
   const p1 = await api("POST", "/pages", {
     title: "Roadmap",
     category: "plan",
@@ -179,7 +172,6 @@ async function run(width, scheme) {
     .waitFor();
   ok(true, `${tag} page view shows its code`);
   await shot("page-code");
-  // ---- words to avoid on a glossary entry ----
   const term = await api("POST", "/glossary", {
     term: "Share",
     definition: "Access to one issue and everything beneath it.",

@@ -48,7 +48,6 @@ export function RunnersTab({ all = false }: { all?: boolean }) {
     return m
   }, [jobs.data])
   const waiting = (jobs.data ?? []).filter((j) => j.state === 'queued')
-  // Only the latest 100 jobs are asked for, so a full list may hide older waiting ones.
   const jobsCapped = (jobs.data?.length ?? 0) >= 100
   const list = runners.data ?? []
   return (

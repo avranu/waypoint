@@ -1,27 +1,5 @@
-# golangci-lint v2. Run: `golangci-lint run ./...` (or `make lint`).
-# Install the pinned binary: `make tools`.
-#
-# Linter set rationale (stdlib-first, low-noise):
-#   govet/staticcheck/ineffassign/unused  type-aware correctness (mypy-adjacent)
-#   gofmt/goimports (formatters below)    formatting (black-adjacent)
-#   unconvert                              dead conversions
-#   gosec lives outside this file (separate binary, `make sast`): it is the
-#   SAST complement (bandit-adjacent). Upstream gosec bundles an x/tools that
-#   cannot read Go 1.27 export data, so `make tools` builds it against a newer
-#   x/tools; it runs advisory in CI until its findings are triaged.
-#
-# errcheck is gated: every unchecked error was fixed or made an explicit,
-# commented `_ =` (2026-10-12). The exclude list below covers closes and
-# response writes whose errors can't be acted on.
-#
-# Deliberately NOT gated: misspell.
-# - misspell with locale US fights this repo's vocabulary on purpose:
-#   "cancelled" is a user-facing status alias (issues.go, search.go) and
-#   must not be "fixed", and comments use en-GB forms throughout.
 version: "2"
 
-# In v2, gofmt/goimports are formatters, not linters. `run --fix` applies them,
-# which is what the pre-commit hook uses.
 formatters:
   enable:
     - gofmt
@@ -31,9 +9,6 @@ formatters:
       local-prefixes: [git.jmann.me/claude/waypoint]
 
 linters:
-  # `default: none` + an explicit list: the gate is exactly these linters.
-  # (`enable` alone only ADDS to golangci's defaults, which is how errcheck
-  # kept running after it was removed from the list below.)
   default: none
   enable:
     - errcheck
@@ -43,8 +18,6 @@ linters:
     - unconvert
     - unused
   settings:
-    # Closes and writes whose error cannot be acted on are excluded; tests
-    # are exempt.
     errcheck:
       exclude-functions:
         - (*database/sql.Rows).Close
@@ -59,9 +32,6 @@ linters:
     rules:
       - path: _test\.go
         linters: [errcheck]
-    # Backstop: npm deps can ship third-party Go code under web/node_modules
-    # (e.g. eslint's flatted dep). Make targets scope packages explicitly,
-    # but a bare `./...` invocation must never lint third-party code.
     paths:
       - web/node_modules
 

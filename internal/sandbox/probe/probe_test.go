@@ -120,9 +120,9 @@ func TestTryEgressVerdicts(t *testing.T) {
 		{"denied", "http://example.com/", Refused},
 		{"upstream", "http://example.com/", Allowed},
 		{"", "http://example.com/", Allowed},
-		{"denied", "https://example.com/", Refused},   // the CONNECT refused
-		{"upstream", "https://example.com/", Allowed}, // the CONNECT let through
-		{"", "https://example.com/", Inconclusive},    // a 200 to CONNECT, then no TLS
+		{"denied", "https://example.com/", Refused},
+		{"upstream", "https://example.com/", Allowed},
+		{"", "https://example.com/", Inconclusive},
 	} {
 		answer, r.URL = c.answer, c.url
 		if got := TryEgress(context.Background(), proxy.URL, r, nil); got.Got != c.want {
@@ -144,10 +144,8 @@ func TestJudges(t *testing.T) {
 		{"started 1\nstarted 2\nstopped: resource temporarily unavailable\n", nil, Refused},
 		{"started 1\nruntime: failed to create new OS thread\n", nil, Refused},
 		{strings.Repeat("started 9\n", 2) + "done\n", nil, Allowed},
-		// Ended some other way: a crash, a kill, another limit.
 		{"started 1\nstarted 2\n", nil, Inconclusive},
 		{"started 1\nstopped: cannot allocate memory\n", nil, Inconclusive},
-		// Refused, but only past TasksMax: something else held it.
 		{"started 40\nstopped: resource temporarily unavailable\n", nil, Inconclusive},
 		{"", nil, Inconclusive},
 		{"", errors.New("not installed"), Inconclusive},
@@ -165,9 +163,7 @@ func TestJudges(t *testing.T) {
 	}{
 		{"started 0\n", limit + time.Second, nil, Refused},
 		{"started 0\ndone\n", TimeSleep * time.Second, nil, Allowed},
-		// Ended before the limit could have: a crash or a kill.
 		{"started 0\n", time.Second, nil, Inconclusive},
-		// Ran its whole sleep yet never said so.
 		{"started 0\n", TimeSleep * time.Second, nil, Inconclusive},
 		{"", limit, nil, Inconclusive},
 		{"", 0, errors.New("x"), Inconclusive},

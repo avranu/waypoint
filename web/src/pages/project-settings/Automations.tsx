@@ -89,7 +89,6 @@ export function AutomationsPanel({ project }: { project?: Project }) {
   })
 
   const automations = list.data ?? []
-  // A link from a bot run opens that rule's editor, once.
   const wanted = useSearch({ strict: false }).automation
   const opened = useRef(0)
   useEffect(() => {
@@ -218,7 +217,6 @@ export function AutomationsPanel({ project }: { project?: Project }) {
       />
       {runs && (
         <RunsDialog
-          // The card's copy may have moved on (a toggle); the list has the latest.
           automation={automations.find((x) => x.id === runs.a.id) ?? runs.a}
           open
           initial={runs.initial}

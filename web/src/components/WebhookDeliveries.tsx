@@ -1,6 +1,3 @@
-// A webhook's delivery log: what was sent, what came back, and a way to
-// send one again. Shared by project and global webhooks.
-
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'

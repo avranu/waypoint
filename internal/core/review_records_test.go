@@ -136,7 +136,7 @@ func (re *reviewEnv) review(t *testing.T) *BotRun {
 const loginFinding = `{"findings":[{"file":"app/login.go","line":5,"severity":"high","claim":"The nil check is inverted.","suggestion":"","evidence":"if user != nil {"}]}`
 
 func TestReviewRecordsKept(t *testing.T) {
-	re := newReviewEnv(t) // diff+files and the verifier: the first arm on a tie
+	re := newReviewEnv(t)
 	re.llm.answers[museModel] = loginFinding
 	re.llm.answers[mimoModel] = `{"verdicts":[{"n":1,"verdict":"keep","reason":"yes","line":0,"severity":"","claim":""}]}`
 	run := re.review(t)
@@ -147,7 +147,6 @@ func TestReviewRecordsKept(t *testing.T) {
 	if f.Strategy != "diff+files" || f.PromptVersion != strategyDiffFiles.promptVersion() || f.Verify != VerifyKept || f.State != FindingOpen {
 		t.Errorf("finding = %+v", f)
 	}
-	// The reviewer saw the whole file at the head.
 	var prompt string
 	for n, m := range re.llm.calls {
 		if m == museModel {
@@ -189,8 +188,7 @@ func TestReviewRecordsDiffStrategyAndSkip(t *testing.T) {
 
 func TestReviewRecordsDroppedAndPostedAnyway(t *testing.T) {
 	drop := `{"verdicts":[{"n":1,"verdict":"drop","reason":"the check is right","line":0,"severity":"","claim":""}]}`
-	// Dropped: stored, not open, not posted.
-	re := newReviewEnv(t) // the drop is not posted
+	re := newReviewEnv(t)
 	re.llm.answers[museModel] = loginFinding
 	re.llm.answers[mimoModel] = drop
 	run := re.review(t)
@@ -209,8 +207,7 @@ func TestReviewRecordsDroppedAndPostedAnyway(t *testing.T) {
 		t.Errorf("open findings include the dropped one: %d %v", len(rows), err)
 	}
 
-	// Posted anyway: open, says the verifier doubted it and why.
-	re = newReviewEnv(t, 0.0) // the drop is posted anyway
+	re = newReviewEnv(t, 0.0)
 	re.llm.answers[museModel] = loginFinding
 	re.llm.answers[mimoModel] = drop
 	run = re.review(t)
@@ -264,7 +261,6 @@ func TestVerifyNewSkipsTheReviewersOwnModel(t *testing.T) {
 		t.Errorf("verified = %+v", v)
 	}
 
-	// Nothing but its own model left: the finding stays, unchecked.
 	v = pe.s.verifyNew(pe.ctx, vchain[:1], pe.f, cl, "me/app", "abc", found, splitDiff(sampleDiff))
 	if len(v.kept) != 1 || v.kept[0].Verify != VerifyUnchecked || v.unchecked != 1 || len(v.dropped) != 0 {
 		t.Errorf("only the reviewer's own model = %+v", v)

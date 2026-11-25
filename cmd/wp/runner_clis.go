@@ -174,7 +174,6 @@ func detectCLIs(ctx context.Context) []runnerCLI {
 		case "cursor":
 			c.SignedIn, c.Detail = cursorStatus(ctx, path)
 		case "opencode":
-			// Free models need no sign-in, so "no credentials" isn't "signed out".
 			o, _ := cliProbe(ctx, path, "auth", "list")
 			if m := credsRE.FindStringSubmatch(o); m != nil && m[1] != "0" {
 				c.SignedIn, c.Detail = boolp(true), m[1]+" credentials saved"

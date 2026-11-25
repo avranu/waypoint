@@ -15,12 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox"
 )
 
-// The store (PL7 §5.2): every piece of sandbox state lives under one
-// root-owned directory. The helper opens it once, O_PATH|O_NOFOLLOW, and
-// reaches everything below it through openat2 with RESOLVE_BENEATH and
-// RESOLVE_NO_SYMLINKS, so nothing a sandbox writes (a symlink, a renamed
-// directory) can point the helper anywhere else.
-
 // storeAreas are the store's top directories, each with one directory per
 // machine user.
 var storeAreas = []string{"homes", "work", "cache"}
@@ -29,11 +23,9 @@ const xfsMagic = 0x58465342
 
 type store struct {
 	path  string
-	owner int // root, but the tests' own uid
+	owner int
 	fd    int
 	pin   pin
-	// chown is unix.Fchown, but a recorder in tests (which can't chown
-	// to another uid).
 	chown func(fd, uid, gid int) error
 }
 
@@ -58,7 +50,7 @@ func openStore(path string, owner int) (*store, error) {
 		_ = unix.Close(fd)
 		return nil, err
 	}
-	if err := checkDir(path, &st, owner); err != nil { // the same, now that it's open
+	if err := checkDir(path, &st, owner); err != nil {
 		_ = unix.Close(fd)
 		return nil, err
 	}
@@ -320,7 +312,7 @@ func (s *store) sessionLeft(id string) (ws, home bool) {
 	empty := func(sub string) bool {
 		fd, err := s.beneath(sessionsArea+"/"+id+"/"+sub, unix.O_RDONLY|unix.O_DIRECTORY)
 		if err != nil {
-			return true // missing, or not ours to read: the removal says
+			return true
 		}
 		f := os.NewFile(uintptr(fd), sub)
 		defer func() { _ = f.Close() }()

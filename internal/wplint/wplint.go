@@ -49,17 +49,15 @@ var ignoreRE = regexp.MustCompile(`^//\s*wplint:ignore\s+([\w-]+)[ \t]*(.*)$`)
 
 // reporter reports a rule's findings, leaving out the waived ones.
 type reporter struct {
-	pass *analysis.Pass
-	// waived is file name → line → what a directive there covers: its own
-	// line, and the next one too when the comment stands on a line by itself.
+	pass   *analysis.Pass
 	waived map[string]map[int]waiver
 }
 
 type waiver int
 
 const (
-	thisLine waiver = iota + 1 // a comment after code
-	nextLine                   // a comment on its own line: the line below too
+	thisLine waiver = iota + 1
+	nextLine
 )
 
 func newReporter(pass *analysis.Pass) *reporter {

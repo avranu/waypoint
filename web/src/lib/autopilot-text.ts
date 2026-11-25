@@ -1,7 +1,3 @@
-// Autopilot's wording (WP-308): the prompt it pastes into a session it
-// starts on a task, and the note at the Stop that finished one. Admins word
-// it for every project (Admin → AI); a project's owners can word its own.
-
 import { api, enc } from './api'
 
 export interface AutopilotText {

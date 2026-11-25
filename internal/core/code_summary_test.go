@@ -37,7 +37,6 @@ func TestCodeSummaryUploadReadAndReviewNotes(t *testing.T) {
 		},
 		CoChange: []CodePair{{A: "core/review.go", B: "core/pulls.go", Weight: 2, Support: 7}}}
 
-	// the forge's repo id is unknown until Waypoint records it
 	if _, err := e.s.UploadCodeSummary(e.ctx, e.admin, p.Key, r.ID, up); err == nil || !strings.Contains(err.Error(), "forge id") {
 		t.Fatalf("upload without a forge repo id: %v", err)
 	}
@@ -64,7 +63,6 @@ func TestCodeSummaryUploadReadAndReviewNotes(t *testing.T) {
 		t.Errorf("top = %+v", top.Requested)
 	}
 
-	// access: strangers see nothing, viewers read but cannot upload
 	stranger := e.user("zed", false)
 	if _, err := e.s.CodeSummary(e.ctx, stranger, p.Key, r.ID, nil); err == nil {
 		t.Error("stranger read the summary")
@@ -77,7 +75,6 @@ func TestCodeSummaryUploadReadAndReviewNotes(t *testing.T) {
 		t.Errorf("viewer upload: %v", err)
 	}
 
-	// an upload replaces the old one
 	up2 := &CodeSummaryUpload{Commit: "def456", Churn: []CodeFile{{Path: "x.go", Commits: 1}}}
 	if info, err := e.s.UploadCodeSummary(e.ctx, e.admin, p.Key, r.ID, up2); err != nil || info.Stored != 1 || info.Pairs != 0 {
 		t.Fatalf("replace = %+v %v", info, err)
@@ -86,7 +83,6 @@ func TestCodeSummaryUploadReadAndReviewNotes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// review notes: hotspot / fix history flags, and partners missing from the change
 	notes := e.s.codeRiskNotes(e.ctx, f.ID, "Group/App", []string{"core/pulls.go", "core/quiet.go"})
 	if !strings.Contains(notes, "core/pulls.go: a hotspot") || !strings.Contains(notes, "5 past bug fixes") || strings.Contains(notes, "quiet.go:") {
 		t.Errorf("notes = %q", notes)

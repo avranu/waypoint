@@ -17,20 +17,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/semantic"
 )
 
-// Related-issue suggestions learn from what people do with them (WP-958),
-// without an LLM. Every suggestion a person is shown is recorded with the
-// features it was scored on (relation_suggestions); relating the pair
-// afterwards accepts it, the dialog's Dismiss says no, and one left alone
-// for a day counts as ignored. Once a day a logistic regression is fitted
-// on those decisions, deterministically, and judged against the fixed
-// blend (WP-ADR91) on the most recent month, which the fit never saw. It
-// ranks suggestions, and sets the line below which one isn't shown, only
-// while it beats the blend there; otherwise the blend ranks as before.
-//
-// The learned ranker only reorders and thins what the blend lets through:
-// people only ever decide on what they were shown, so the decisions say
-// nothing about pairs below the blend's line.
-
 const (
 	// rankerMinTrain: decisions from before the held-out month the fit
 	// needs; a few hundred, as WP-958 asked.
@@ -158,8 +144,6 @@ func (s *Service) pairFeatures(ctx context.Context, idx *simIndex, i *Issue, src
 	}
 	return out, nil
 }
-
-// ---- what people did ----
 
 // dismissedRelations are the issues a person said aren't related to this
 // one, from either end.
@@ -299,8 +283,6 @@ func (s *Service) decideRelationSuggestion(ctx context.Context, actor *Actor, re
 			return err
 		}
 		var related, recorded int
-		// A link only the text names can still be offered as what the text
-		// states, and that offer dismissed.
 		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM issue_relations WHERE ((source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?))
 			AND named_in IS NULL`,
 			a.ID, b.ID, b.ID, a.ID).Scan(&related); err != nil {
@@ -325,8 +307,6 @@ func (s *Service) decideRelationSuggestion(ctx context.Context, actor *Actor, re
 		return err
 	})
 }
-
-// ---- the ranker ----
 
 // relRanker is a fitted logistic regression on standardized features.
 type relRanker struct {
@@ -376,7 +356,7 @@ func fitLogit(names []string, x [][]float64, y []bool) *relRanker {
 	for j := range r.SD {
 		r.SD[j] = math.Sqrt(r.SD[j])
 		if r.SD[j] < 1e-12 {
-			r.SD[j] = 1 // the same for every row: it can't tell them apart
+			r.SD[j] = 1
 		}
 	}
 	z := make([][]float64, len(x))
@@ -482,7 +462,7 @@ func aucOf(score []float64, y []bool) float64 {
 		for j < len(idx) && score[idx[j]] == score[idx[i]] {
 			j++
 		}
-		avg := float64(i+j+1) / 2 // ranks i+1..j
+		avg := float64(i+j+1) / 2
 		for k := i; k < j; k++ {
 			if y[idx[k]] {
 				pos++
@@ -623,9 +603,6 @@ func (s *Service) fitRelationRanker(ctx context.Context) (*rankerFit, error) {
 		fit.Note = "the blend ranks the held-out month as well or better"
 		return fit, nil
 	}
-	// The line is set where the model fitted without the held-out month
-	// keeps rankerRecall of what people took in it: out of sample, so it
-	// doesn't overstate what it keeps of new suggestions.
 	var took []float64
 	for n, r := range test {
 		if r.y {
@@ -672,7 +649,7 @@ func (s *Service) recordFit(ctx context.Context, f *rankerFit) error {
 type rankerState struct {
 	mu      sync.Mutex
 	r       *relRanker
-	at      time.Time // the last fit
+	at      time.Time
 	loaded  bool
 	fitting bool
 	tried   time.Time

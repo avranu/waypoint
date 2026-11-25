@@ -1,11 +1,5 @@
 package core
 
-// Before/after (WP-196, WP-ADR39): usage in the days before a moment against the
-// days after it — an instruction change, a new Claude Code, a merged pull
-// request, any date. Compared per session, per task and per day, by
-// medians, with a Mann–Whitney p-value saying how likely a difference this
-// size is by chance. Few samples are said, not hidden.
-
 import (
 	"context"
 	"strings"
@@ -136,9 +130,6 @@ func (s *Service) UsageCompare(ctx context.Context, actor *Actor, uq UsageQuery,
 	if at >= now {
 		return nil, invalid("at: the moment must be in the past")
 	}
-	// Sessions and tasks: the hours on each side of the pivot (the hour
-	// holding it counts as after). Days: whole days on each side, the pivot's
-	// own day and today (not over yet) left out.
 	pivot := at - at%hourMillis
 	span := int64(q.Window) * 24 * hourMillis
 	hourFrom, hourTo := pivot-span, min(pivot+span, now)
@@ -179,7 +170,6 @@ func (s *Service) UsageCompare(ctx context.Context, actor *Actor, uq UsageQuery,
 		}
 		return u
 	}
-	// Every whole day counts, a day without usage as zero.
 	for d := dayFrom; d.Before(pivotDay); d = d.AddDate(0, 0, 1) {
 		unit(days[0], d.Format(dateLayout))
 	}

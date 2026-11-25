@@ -10,7 +10,7 @@ import (
 func TestTrailingQuestion(t *testing.T) {
 	long := strings.Repeat("Background sentence that goes on. ", 40)
 	cases := []struct {
-		name, msg, title string // title "" means no question
+		name, msg, title string
 	}{
 		{"question mark", "Fixed the matcher. The depot's pin is 1.7 m outside the Admin Building. Should a pin with no containing building fall back to the nearest one within 5 m?",
 			"Should a pin with no containing building fall back to the nearest one within 5 m?"},

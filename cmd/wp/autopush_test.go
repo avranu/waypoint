@@ -101,7 +101,6 @@ func TestAutoPushRules(t *testing.T) {
 		if p := autoPush(ctx, f.repo, "", "WP-7", none); p.Err != "" || onOrigin(t, f, "wp-7-y") != head {
 			t.Errorf("fast-forward = %+v", p)
 		}
-		// Someone else moved the branch on: never forced over.
 		other := filepath.Join(t.TempDir(), "other")
 		tgit(t, filepath.Dir(other), "clone", "-q", "-b", "wp-7-y", f.origin, other)
 		theirs := tcommit(t, other, "theirs")
@@ -143,8 +142,6 @@ func TestAutoPushRules(t *testing.T) {
 		f := pushWorld(t)
 		tgit(t, f.repo, "checkout", "-q", "-b", "production")
 		tcommit(t, f.repo, "a")
-		// origin/HEAD unset: the default can't be told, and the branch
-		// names no task, so it stays.
 		tgit(t, f.repo, "remote", "set-head", "origin", "-d")
 		for _, key := range []string{"", "WP-5"} {
 			if p := autoPush(ctx, f.repo, "", key, none); p.tried() || onOrigin(t, f, "production") != "" {
@@ -207,11 +204,11 @@ func TestPushErrorText(t *testing.T) {
 func TestOthersIn(t *testing.T) {
 	top := t.TempDir()
 	procs := []procDir{
-		{PID: 10, PPID: 1, Dir: top},            // the ended session's claude
-		{PID: 11, PPID: 10, Dir: top + "/sub"},  // its shell
-		{PID: 20, PPID: 1, Dir: "/elsewhere"},   // unrelated
-		{PID: 30, PPID: 1, Dir: os.TempDir()},   // the push itself
-		{PID: 31, PPID: 30, Dir: "/elsewhere2"}, // a child of it
+		{PID: 10, PPID: 1, Dir: top},
+		{PID: 11, PPID: 10, Dir: top + "/sub"},
+		{PID: 20, PPID: 1, Dir: "/elsewhere"},
+		{PID: 30, PPID: 1, Dir: os.TempDir()},
+		{PID: 31, PPID: 30, Dir: "/elsewhere2"},
 	}
 	if who := othersIn(procs, top, 30, 10); who != "" {
 		t.Errorf("mine counted: %s", who)
@@ -258,7 +255,7 @@ type pushServer struct {
 	mu     sync.Mutex
 	pushed []map[string]any
 	pulls  []tidyPR
-	tasks  []string // the keys Waypoint has; others are 404
+	tasks  []string
 }
 
 func (ps *pushServer) start(t *testing.T) {
@@ -309,7 +306,6 @@ func TestPushIdle(t *testing.T) {
 	head := tcommit(t, f.repo, "a")
 	tgit(t, f.repo, "checkout", "-q", "-b", "mine")
 	tcommit(t, f.repo, "b")
-	// Named like a key, but Waypoint has no task UTF-8: a person's.
 	tgit(t, f.repo, "checkout", "-q", "-b", "fix-utf-8-names")
 	tcommit(t, f.repo, "c")
 	tgit(t, f.repo, "checkout", "-q", "main")
@@ -355,8 +351,6 @@ func TestReleasePush(t *testing.T) {
 		t.Errorf("told = %+v", ps.pushed)
 	}
 
-	// Under an open pull request it stays, and wp release says so: not
-	// "pushed".
 	ps.pulls = []tidyPR{{Number: 3, HeadRef: "worktree-wp-12", State: "open"}}
 	tcommit(t, f.repo, "b")
 	errb.Reset()
@@ -368,7 +362,6 @@ func TestReleasePush(t *testing.T) {
 		t.Errorf("said %q", s)
 	}
 
-	// A person's branch in the checkout the task was taken in stays put.
 	tgit(t, f.repo, "checkout", "-q", "-b", "my-experiment")
 	tcommit(t, f.repo, "c")
 	errb.Reset()
@@ -390,7 +383,7 @@ func TestHookClaudePush(t *testing.T) {
 	oldSleep, oldList := autoPushSleep, procList
 	t.Cleanup(func() { autoPushSleep, procList = oldSleep, oldList })
 	autoPushSleep = func(time.Duration) {}
-	t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir()) // the slot's lock
+	t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
 	tgit(t, f.repo, "checkout", "-q", "-b", "wp-13-x")
 	head := tcommit(t, f.repo, "a")
 	c := &cli{out: &strings.Builder{}, err: &strings.Builder{}}
@@ -406,8 +399,6 @@ func TestHookClaudePush(t *testing.T) {
 	if err := hookClaudePush(c, append([]string{}, "--reason", "other", "--cwd", f.repo, "--keys", "WP-13", "--pid", "4242")); err != nil || onOrigin(t, f, "wp-13-x") != "" {
 		t.Fatalf("pushed on an unclear end: %v", err)
 	}
-	// The session's folder on a person's branch: not the task's, so not
-	// pushed, and nothing said on WP-13.
 	tgit(t, f.repo, "checkout", "-q", "-b", "my-experiment")
 	tcommit(t, f.repo, "mine")
 	if err := hookClaudePush(c, args); err != nil || onOrigin(t, f, "my-experiment") != "" || len(ps.pushed) != 0 {
@@ -444,7 +435,6 @@ func TestTidySessionEnded(t *testing.T) {
 	if len(asked) != 1 || asked[0] != "wp-14-done" {
 		t.Errorf("asked about %q", asked)
 	}
-	// Unpushed or dirty: never asked, kept.
 	tcommit(t, wt, "b")
 	asked = nil
 	wantVerdict(t, scan(func(p, b string) bool { asked = append(asked, b); return true }), tidyKeep, "not pushed")

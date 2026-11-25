@@ -61,7 +61,6 @@ func TestPersonVerdictsRefuseAgentShells(t *testing.T) {
 		forbid("approving a sign-in", r.s.ApproveDeviceLogin(r.ctx, who.adm, login.UserCode))
 	}
 
-	// The person, directly, still can.
 	if _, err := r.s.DecideRequest(r.ctx, r.ana, q.Ref, RequestDecision{Decision: "answer", Answers: []Answer{{Choices: []string{"sqlite"}}}}); err != nil {
 		t.Errorf("the person deciding: %v", err)
 	}

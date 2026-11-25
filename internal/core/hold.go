@@ -8,13 +8,6 @@ import (
 	"time"
 )
 
-// A hold keeps a task from agents (WP-269, WP-ADR17): wp next doesn't hand it out
-// and no one can take it, until the date it was put on hold until, or
-// until someone lifts it. It sits beside the status, so a task keeps its
-// place (To Do, say) and is handed out again on its own once the hold
-// runs out. Work a person may want an agent to pick up by name, but not
-// handed out, goes in the backlog instead.
-
 // Hold is a task's hold.
 type Hold struct {
 	At time.Time `json:"at"`
@@ -25,9 +18,8 @@ type Hold struct {
 	Waits string    `json:"waits,omitempty"`
 	Note  string    `json:"note,omitempty"`
 	// By is the person who placed it (an agent's person, when Agent is set).
-	By    string `json:"by,omitempty"`
-	Agent string `json:"agent,omitempty"`
-	// byPerson: a person placed it, so only a person may change or lift it.
+	By       string `json:"by,omitempty"`
+	Agent    string `json:"agent,omitempty"`
 	byPerson bool
 }
 
@@ -172,7 +164,6 @@ func (s *Service) LiftHold(ctx context.Context, actor *Actor, ref string) (*Issu
 		}
 		if !i.Hold.on(s.now()) {
 			if !actor.HidesDrafts() {
-				// A person letting a task out of the wait after a release.
 				if ended, err := s.endReleaseWait(ctx, t, i.ID); err != nil || ended {
 					key = i.Key
 					return err
@@ -188,7 +179,6 @@ func (s *Service) LiftHold(ctx context.Context, actor *Actor, ref string) (*Issu
 			return err
 		}
 		if !actor.HidesDrafts() {
-			// Off hold means it can go out: a release before the hold doesn't still keep it.
 			if _, err := s.endReleaseWait(ctx, t, i.ID); err != nil {
 				return err
 			}
@@ -231,7 +221,6 @@ func (s *Service) placeHold(ctx context.Context, t *tx, actor *Actor, i *Issue, 
 	} else {
 		when = nil
 	}
-	// A hold only a person can lift, however an agent came to place it.
 	byPerson := !actor.HidesDrafts() || (when != nil && when.Person)
 	if _, err := t.ExecContext(ctx, `UPDATE issues SET hold_at = ?, hold_until = ?, hold_note = ?, hold_by = ?, hold_agent = ?, hold_person = ?, hold_when = ?,
 		updated_at = ? WHERE id = ?`, now, nullInt(until), note, nullUser(actor.id()), actor.agentName(), byPerson, raw, now, i.ID); err != nil {

@@ -42,7 +42,6 @@ func TestTestsumCountNSaysHowOftenATestFailed(t *testing.T) {
 			t.Errorf("missing %q:\n%s", want, got)
 		}
 	}
-	// The first failing run's lines, once, not every run's.
 	if strings.Count(got, "never works") != 1 || strings.Contains(got, "run 4 unlucky") {
 		t.Errorf("each run's output piled up:\n%s", got)
 	}
@@ -83,8 +82,6 @@ func TestBaseArgvRunsOnlyTheFailingTests(t *testing.T) {
 	if got := baseArgv([]string{"go", "test", "-run=X", "./..."}, fails[:1]); !slices.Equal(got, []string{"go", "test", "./...", "-run=^(TestA)$"}) {
 		t.Errorf("-run=X: %q", got)
 	}
-	// A package that failed without a test of its own (timeout, build) has
-	// no name to run: the whole command runs.
 	whole := []string{"go", "test", "./..."}
 	if got := baseArgv(whole, []testFailure{{Pkg: "m/p"}, {Pkg: "m/p", Test: "TestA"}}); !slices.Equal(got, whole) {
 		t.Errorf("package failure: %q", got)
@@ -117,7 +114,7 @@ func baseModule(t *testing.T) {
 func TestTestsumBaseTellsOldFailuresFromNewOnes(t *testing.T) {
 	slotEnv(t)
 	baseModule(t)
-	t.Chdir("p") // a subfolder: the base runs in its place in the checkout
+	t.Chdir("p")
 	var out, errb bytes.Buffer
 	if code := run([]string{"testsum", "--base", "HEAD", "--", "go", "test", "."}, &out, &errb); code != 1 {
 		t.Fatalf("exit %d, want 1\n%s%s", code, out.String(), errb.String())
@@ -129,7 +126,6 @@ func TestTestsumBaseTellsOldFailuresFromNewOnes(t *testing.T) {
 			t.Errorf("missing %q:\n%s", want, got)
 		}
 	}
-	// The working tree is untouched and no checkout is left behind.
 	if b, _ := os.ReadFile("p_test.go"); !strings.Contains(string(b), "I broke it") {
 		t.Errorf("the working tree changed:\n%s", b)
 	}
@@ -187,7 +183,6 @@ func TestTestsumTimeoutAfterAFailedTestStillShows(t *testing.T) {
 	if !slices.Equal(names, []string{"m/p.TestBad", "m/p (timed out after 2s)"}) {
 		t.Fatalf("failures = %q, want the failed test and the timeout", names)
 	}
-	// A plain failed test: the package's own fail says nothing more.
 	plain := `{"Action":"run","Package":"m/p","Test":"TestBad"}
 {"Action":"fail","Package":"m/p","Test":"TestBad"}
 {"Action":"fail","Package":"m/p","Elapsed":1}

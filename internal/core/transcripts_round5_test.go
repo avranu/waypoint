@@ -13,13 +13,13 @@ import (
 // floor, refuses with its own error, counts the refusal and writes no file.
 func TestTranscriptDiskFloorRefuses(t *testing.T) {
 	e := transcriptEnv(t)
-	free := int64(1500 << 20) // the default floor is 1024 MB
+	free := int64(1500 << 20)
 	e.s.diskSpace = func(string) (int64, int64, error) { return free, 100 << 30, nil }
 	l := randomLines(600 << 10)
 	if r, err := e.s.IngestTranscript(e.ctx, e.admin, withGzip(t, piece("s1", "main", 0, l), l)); err != nil || r.Status != "stored" {
 		t.Fatalf("room above the floor: %v %v", r, err)
 	}
-	free = 1024<<20 + 100<<10 // the piece would leave less than the floor
+	free = 1024<<20 + 100<<10
 	l2 := randomLines(600 << 10)
 	in := withGzip(t, piece("s1", "main", int64(len(l)), l2), l2)
 	if _, err := e.s.IngestTranscript(e.ctx, e.admin, in); !errors.Is(err, ErrTranscriptDiskLow) {
@@ -40,7 +40,6 @@ func TestTranscriptDiskFloorRefuses(t *testing.T) {
 			t.Errorf("refusal not counted: %+v", r)
 		}
 	}
-	// a floor of 0 is no floor; a failed reading does not refuse
 	if _, err := e.s.SetResourceLimits(e.ctx, e.admin, ResourceLimits{DiskFreeMB: 0}); err != nil {
 		t.Fatal(err)
 	}

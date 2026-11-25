@@ -36,7 +36,7 @@ func kitForge(t *testing.T) *httptest.Server {
 		case strings.HasPrefix(p, "/raw/") && files[strings.TrimPrefix(p, "/raw/")] != "":
 			_, _ = w.Write([]byte(files[strings.TrimPrefix(p, "/raw/")]))
 		default:
-			w.WriteHeader(404) // webhooks and the rest
+			w.WriteHeader(404)
 		}
 	}))
 	t.Cleanup(srv.Close)
@@ -61,7 +61,6 @@ func TestKitAPI(t *testing.T) {
 		t.Fatalf("resolve without a repo: %d", code)
 	}
 
-	// An admin makes Robin/agent-kit the kit.
 	srv := kitForge(t)
 	forge, err := svc.CreateForge(ctx, &core.Actor{User: admin}, core.ForgeInput{Kind: ptrS("forgejo"), BaseURL: ptrS(srv.URL), Token: ptrS("tok")})
 	if err != nil {
@@ -110,7 +109,6 @@ func TestKitAPI(t *testing.T) {
 		t.Fatalf("resolve: %d %+v", code, res)
 	}
 
-	// A checkout reports; it shows up, behind once the kit moves on.
 	if code, b := other.do("POST", "/api/v1/kit/reports", map[string]any{"machine": "laptop", "path": "/src/app", "repo": "acme/app",
 		"kit_commit": "abc1234def", "plugins": []string{"waypoint@agent-kit"}, "drift": []map[string]string{{"plugin": "demo", "what": "disabled by hand"}},
 		"wp_version": "0.12.0", "future_field": true}); code != 204 {

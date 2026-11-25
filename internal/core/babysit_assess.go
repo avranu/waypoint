@@ -39,7 +39,7 @@ const (
 	// person's answers.
 	babysitMaxAssessors = 3
 	assessorEffort      = "high"
-	assessorJobTimeout  = 90 * 60 // seconds
+	assessorJobTimeout  = 90 * 60
 	// parkWait starts the wait of a babysit parked for a person's answer.
 	parkWait = "waiting for a person's answer: "
 	// parkRequestKey keys the question a parked babysit asks:
@@ -57,17 +57,17 @@ const (
 type rung int
 
 const (
-	rungBase     rung = iota // the babysit's own model
-	rungStrong               // escalateModel, told what was tried
-	rungAssessor             // escalateModel at high effort, fresh, with everything
-	rungPark                 // out of the line: resting, or a person is asked
+	rungBase rung = iota
+	rungStrong
+	rungAssessor
+	rungPark
 )
 
 // roundPlan is who takes a round, and why the ones before didn't settle it.
 type roundPlan struct {
 	rung rung
-	prev *BabysitRound // rungStrong: the round it takes over from, if one
-	why  string        // rungAssessor, rungPark
+	prev *BabysitRound
+	why  string
 }
 
 // sinceAnswer are the rounds after the last one a person answered: an
@@ -130,9 +130,6 @@ func planRound(b *Babysit, head string, stuck bool, worst string, worstN int, wh
 			plan = roundPlan{rung: rungStrong, prev: &last}
 		}
 	case worstN >= 2 && b.Model != escalateModel && !strongerTried(b, worst):
-		// A fix was pushed for it and it still fails: that approach didn't
-		// work, so the next round goes to the stronger model, told what was
-		// tried (WP-251).
 		if prev := pushedFixFor(b, worst); prev != nil {
 			plan = roundPlan{rung: rungStrong, prev: prev}
 		}
@@ -256,7 +253,7 @@ var closingRE = lazyre.New(`(?i)^[\s*_#-]*(question|because|wait)[*_]*\s*(?::[*_
 // closing line. Code blocks and quoted lines aren't read: they are logs and
 // other people's words, not how the assessor ended.
 func closingLines(answer string) (question, because, waiting string) {
-	var into *string // the closing line being read
+	var into *string
 	var text string
 	end := func() {
 		if into != nil && text != "" {
@@ -326,10 +323,8 @@ func (s *Service) takeUpHeldComments(ctx context.Context, b *Babysit, pr *PullRe
 	if r := lastRound(b); r != nil && sameSHA(b.RoundSHA, pr.HeadSHA) {
 		switch {
 		case r.To == "session" && !stale:
-			return true // handed over: it waits for their push
+			return true
 		case r.To == "session":
-			// The watchdog found it resting: that session has ended, and the
-			// assessor takes it instead of nothing asking anyone.
 		case r.Pushed:
 			s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("waiting for round %d's push to arrive", b.Round))
 			return true
@@ -345,7 +340,7 @@ func (s *Service) heldByAgent(ctx context.Context, b *Babysit, pr *PullRequest) 
 	var refs []string
 	for _, rc := range s.heldComments(ctx, b, pr) {
 		if byPerson, err := s.verdictByPerson(ctx, s.db.R, rc.id); err == nil && !byPerson {
-			refs = append(refs, rc.Ref) // unread: not handed to the assessor as an agent's to settle
+			refs = append(refs, rc.Ref)
 		}
 	}
 	return refs
@@ -381,7 +376,7 @@ func (s *Service) heldComments(ctx context.Context, b *Babysit, pr *PullRequest)
 func (s *Service) parkBabysit(ctx context.Context, b *Babysit, pr *PullRequest, why, question string, failed []string, conflict bool, comments, findings []string) {
 	about := parkSubject(failed, conflict, comments, findings)
 	failed = parkLifts(failed, conflict, comments, findings)
-	s.leaveQueue(ctx, pr.ID)
+	s.leaveQueue(ctx, pr)
 	s.nudgeLine(ctx, pr)
 	r := lastRound(b)
 	if r == nil {
@@ -396,7 +391,7 @@ func (s *Service) parkBabysit(ctx context.Context, b *Babysit, pr *PullRequest, 
 		r.WaitsOn = s.sharedWaits(ctx, pr, failed)
 	}
 	if r.Pushed && r.PushSHA != "" && sameSHA(r.SHA, pr.HeadSHA) {
-		r.ParkSHA = r.PushSHA // its push hasn't reached Waypoint yet
+		r.ParkSHA = r.PushSHA
 	}
 	rest := len(r.WaitsOn) == 0 && !asksPerson(r)
 	if rest {
@@ -417,8 +412,6 @@ func (s *Service) parkBabysit(ctx context.Context, b *Babysit, pr *PullRequest, 
 		return
 	}
 	if rest {
-		// Nobody is told: nothing waits on a person, and it tries again by
-		// itself.
 		s.setState(ctx, b, pr, BabysitResting, restWaitText(r))
 		s.log.Info("babysit rests out of the merge line", "repo", pr.Repo, "number", pr.Number, "why", why, "until", r.RestUntil)
 		return
@@ -518,11 +511,9 @@ func (s *Service) restOver(ctx context.Context, b *Babysit, pr *PullRequest) boo
 	now := s.now()
 	if r.RestUntil.IsZero() {
 		if len(r.WaitsOn) > 0 || asksPerson(r) {
-			return false // a person was asked, or a request asks one already
+			return false
 		}
 		if answer := s.parkAnswer(ctx, b, r); answer != "" {
-			// Its owner answered and the answer's event never reached the
-			// babysit (a restart): the answer stands, not a rest.
 			r.Reply = capText(answer, 4000)
 			if !save() {
 				r.Reply = ""
@@ -540,16 +531,12 @@ func (s *Service) restOver(ctx context.Context, b *Babysit, pr *PullRequest) boo
 	failedAgain := false
 	if !r.RerunAt.IsZero() {
 		if now.Sub(r.RerunAt) < faultRerunSettle {
-			return false // the forge hasn't taken the re-run up yet
+			return false
 		}
-		// The head as the forge has it now, not as this step read it before
-		// the re-run. Whatever it says ends the rest: failing again brings the
-		// assessor, and checks still running or passing under other names are
-		// an ordinary head's, watched as any other is (stalls included).
 		s.rereadHead(ctx, pr, faultRerunSettle)
 		fresh, err := s.prByID(ctx, s.db.R, pr.ID)
 		if err != nil || !sameSHA(fresh.HeadSHA, pr.HeadSHA) {
-			return false // unread, or a push the next step takes up
+			return false
 		}
 		*pr = *fresh
 		failedAgain = sameSHA(pr.ciSHA, pr.HeadSHA) && pr.CIState == CIFailed
@@ -560,8 +547,6 @@ func (s *Service) restOver(ctx context.Context, b *Babysit, pr *PullRequest) boo
 			}
 		}
 		if len(r.ParkedChecks) > 0 {
-			// Stored before it is sent, so a write that fails can't send it
-			// again on every step.
 			r.RerunAt = now
 			if !save() {
 				r.RerunAt = time.Time{}
@@ -570,7 +555,7 @@ func (s *Service) restOver(ctx context.Context, b *Babysit, pr *PullRequest) boo
 			if s.rerunParkedChecks(ctx, pr) {
 				return false
 			}
-			r.RerunAt = time.Time{} // the forge re-ran nothing
+			r.RerunAt = time.Time{}
 		}
 	}
 	r.Reply = restReply(b, r, failedAgain)
@@ -603,8 +588,6 @@ func (s *Service) restChange(ctx context.Context, b *Babysit, pr *PullRequest, r
 		return ""
 	}
 	for _, name := range r.ParkedChecks {
-		// updated_at is when the status was last read, so a pass from before
-		// the rest that is read again counts too: that costs one re-run.
 		var one int
 		if s.db.R.QueryRowContext(ctx, `SELECT 1 FROM ci_checks c JOIN ci_heads h ON h.id = c.head_id
 			WHERE h.forge_id = ? AND h.repo = ? COLLATE NOCASE AND h.sha != ? AND c.name = ? AND c.state = ? AND c.updated_at > ? LIMIT 1`,
@@ -629,7 +612,7 @@ func (s *Service) rerunParkedChecks(ctx context.Context, pr *PullRequest) bool {
 	if can, err := cl.CanRetryChecks(ctx, f); err != nil || !can {
 		return false
 	}
-	s.keepFailedEvidence(ctx, f, pr.Repo, pr.HeadSHA) // the re-run replaces their logs (WP-704)
+	s.keepFailedEvidence(ctx, f, pr.Repo, pr.HeadSHA)
 	n, err := cl.RetryChecks(ctx, f, pr.Repo, pr.HeadSHA)
 	if err != nil {
 		if readFault(err) {
@@ -681,8 +664,6 @@ func (s *Service) askAboutPark(ctx context.Context, b *Babysit, pr *PullRequest,
 	if err != nil || u.Disabled {
 		return
 	}
-	// Short (WP-930): what, why it is a person's, and what happens if
-	// nobody answers. The agents' work stays on the pull request.
 	var body strings.Builder
 	fmt.Fprintf(&body, "%s#%d (%q) can't merge until you answer this.\n\nWhy no agent can settle it, as the assessor put it:\n\n> %s\n\n", pr.Repo, pr.Number, pr.Title, strings.ReplaceAll(strings.TrimSpace(r.Because), "\n", "\n> "))
 	if comments := s.commentsAskedAbout(ctx, pr, r); len(comments) > 0 {
@@ -692,7 +673,6 @@ func (s *Service) askAboutPark(ctx context.Context, b *Babysit, pr *PullRequest,
 		"Answer in plain words and Waypoint carries it out, or close the pull request to drop it.\n\n" + pr.URL)
 	in := RequestInput{Kind: RequestQuestion, Title: fmt.Sprintf("%s#%d: %s", pr.Repo, pr.Number, excerpt(question, 120)), Body: body.String(),
 		Questions: []Question{{Question: question}}, ToolUseID: key, Followup: "never"}
-	// The person is asked all the same: a project that couldn't be read files it with none.
 	projectKey, err := s.attachedProjectKey(ctx, pr.ForgeID, pr.Repo)
 	if readFault(err) {
 		s.log.WarnContext(ctx, "read the project to ask about a parked pull request", "repo", pr.Repo, "number", pr.Number, "err", err)
@@ -814,7 +794,7 @@ func (s *Service) onParkAnswered(ctx context.Context, e *Event) {
 		return
 	}
 	s.goBG(func() {
-		bg := context.WithoutCancel(ctx)
+		bg := withoutLineLocks(context.WithoutCancel(ctx))
 		unlock := s.babysitLocks.lock(prID)
 		b, err := s.activeBabysit(bg, s.db.R, prID)
 		ok := err == nil && b != nil && b.ID == bid
@@ -942,7 +922,6 @@ const maxParkWaits = 3
 func (s *Service) namedRequests(ctx context.Context, pr *PullRequest, text string) []ParkRequest {
 	home, err := s.attachedProjectKey(ctx, pr.ForgeID, pr.Repo)
 	if readFault(err) {
-		// A bare R-277 is skipped (no home to read it in); one with its project's key still counts.
 		s.log.WarnContext(ctx, "read the project to find the requests a round names", "repo", pr.Repo, "number", pr.Number, "err", err)
 		home = ""
 	}
@@ -1088,10 +1067,8 @@ func (s *Service) babysitParked(ctx context.Context, pr *PullRequest) (string, e
 	return "Waypoint's rounds didn't settle it: " + lastRound(b).Parked + "; " + strings.TrimSuffix(parkWait, ": "), nil
 }
 
-// ---- the assessor's task ----
-
 const (
-	assessorDiffBudget  = 100_000 // bytes of earlier rounds' diffs, newest first
+	assessorDiffBudget  = 100_000
 	assessorIssueChars  = 4000
 	assessorIssues      = 3
 	assessorDecisionCap = 3000
@@ -1128,7 +1105,7 @@ func (s *Service) assessorPrompt(ctx context.Context, b *Babysit, pr *PullReques
 		shown[r.N] = true
 	}
 	writeLedgerHistory(&p, b, round, shown)
-	p.WriteString(t.work) // writeIntent above says what the packet's intent does, at more length
+	p.WriteString(t.work)
 	return p.String()
 }
 
@@ -1161,8 +1138,6 @@ func (s *Service) writeIntent(ctx context.Context, p *strings.Builder, b *Babysi
 			writeFenced(p, "Task "+l.issue.Key, is.Title, capText(is.Description, assessorIssueChars))
 		}
 	}
-	// The description it shipped with, the drift guard's anchor (WP-440):
-	// rounds may have edited today's since.
 	label, body := "The pull request's description when it shipped", ""
 	if fp := s.footprintOf(ctx, pr.ID); fp.Ship != nil {
 		body = fp.Ship.Body
@@ -1173,7 +1148,6 @@ func (s *Service) writeIntent(ctx context.Context, p *strings.Builder, b *Babysi
 		fmt.Fprintf(p, "\n%s:\n<untrusted>\n%s\n</untrusted>\n", label, untrusted(capText(body, assessorIssueChars)))
 	}
 	if len(issueIDs) > 0 {
-		// The approved decisions asked for in those tasks or linked to them.
 		// #nosec G202 -- a fixed column list and placeholders; values are bound
 		rows, err := s.db.R.QueryContext(ctx, designSelect(true)+` WHERE n.kind = 'decision' AND n.status = 'active' AND n.approved_at IS NOT NULL
 			AND (n.requested_issue_id IN (`+idList(len(issueIDs))+`) OR n.id IN (SELECT src_id FROM knowledge_links WHERE src_type = ? AND dst_type = ? AND dst_id IN (`+idList(len(issueIDs))+`)))
@@ -1240,7 +1214,6 @@ func writeAllRounds(p *strings.Builder, b *Babysit) {
 		if r.Answer != "" {
 			w.WriteString(r.Answer + "\n")
 		}
-		// The answer is shortened, and its closing lines are at its end.
 		if r.Question != "" {
 			w.WriteString("It ended asking a person: " + r.Question + "\n")
 		}

@@ -88,7 +88,6 @@ func TestAutopilotPace(t *testing.T) {
 	if st.state != StepWaiting || st.reason != WaitPace || st.dueAt != started+30*time.Minute.Milliseconds() || !strings.HasPrefix(st.detail, "paused: it starts tasks here 30 minutes apart") {
 		t.Fatalf("spacing: step %+v (want due %d)", st, started+30*time.Minute.Milliseconds())
 	}
-	// Start now: the gap gives way.
 	if err := a.s.AutopilotStepAction(a.ctx, a.admin, st.id, "now"); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +101,6 @@ func TestAutopilotPace(t *testing.T) {
 	if st.state != StepWaiting || st.reason != WaitPace || st.dueAt != midnight || !strings.Contains(st.detail, "it started 2 tasks here today, the most it starts in a day; it starts again tomorrow at 00:00 UTC") {
 		t.Fatalf("per day: step %+v", st)
 	}
-	// Start now doesn't pass the day's count.
 	if err := a.s.AutopilotStepAction(a.ctx, a.admin, st.id, "now"); err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +108,6 @@ func TestAutopilotPace(t *testing.T) {
 	if st := a.step(); st.state != StepWaiting || st.reason != WaitPace || len(a.jobs) != 2 {
 		t.Fatalf("start now past the day's count: jobs %d, step %+v", len(a.jobs), st)
 	}
-	// The day rolls on.
 	a.setClock(time.UnixMilli(midnight))
 	a.tick(time.Second)
 	if st := a.step(); st.state != StepStarting {
@@ -125,7 +122,6 @@ func TestAutopilotPace(t *testing.T) {
 	if st := a.step(); st.state != StepWaiting || st.reason != WaitPace {
 		t.Fatalf("the second day's count: %+v", st)
 	}
-	// Turning the cap off looks again at once, without waiting for the day.
 	a.setLimits(AutopilotLimits{PerDay: ptrOf(0)})
 	a.tick(time.Second)
 	if st := a.step(); st.state != StepStarting {
@@ -148,7 +144,6 @@ func TestAutopilotSchedule(t *testing.T) {
 	for n := range 3 {
 		a.issue(a.admin, IssueInput{Project: a.p.Key, Title: fmt.Sprintf("Task %d", n), Agent: "claude"})
 	}
-	// Monday 12:00 UTC is 14:00 in Berlin: after 9-13.
 	a.setLimits(AutopilotLimits{Hours: ptrOf("9-13"), Days: ptrOf("weekdays")})
 	a.finish(a.p.Key + "-1")
 	res := a.stopWith("Done.")
@@ -166,7 +161,6 @@ func TestAutopilotSchedule(t *testing.T) {
 	}
 	a.s.Wait()
 	a.moveOnStarted()
-	// The next waits again: Start now was once.
 	a.finishIn(a.lastKey(), 10*time.Minute, "Answered on the task.")
 	a.stopWith("Done.")
 	a.tick(61 * time.Second)
@@ -208,7 +202,6 @@ func TestAutopilotPaceValidation(t *testing.T) {
 			t.Errorf("%+v: err = %v, want %q", c.lim, err, c.want)
 		}
 	}
-	// Kept in one spelling.
 	ov, err := a.s.SetAutopilot(a.ctx, a.admin, a.p.Key, AutopilotSettingInput{Merge: true, Limits: AutopilotLimits{
 		MinPriority: ptrOf("High"), Approved: ptrOf(false), Hours: ptrOf("9 - 17:30"), Days: ptrOf("Saturday, sun"), Query: ptrOf("  label:docs "), PerDay: ptrOf(10), SpacingMinutes: ptrOf(90),
 	}})
@@ -264,7 +257,7 @@ func TestParseHoursAndDays(t *testing.T) {
 }
 
 func TestScheduleOpen(t *testing.T) {
-	at := func(day, h, m int) time.Time { return time.Date(2026, 10, day, h, m, 0, 0, time.UTC) } // the 5th is a Monday
+	at := func(day, h, m int) time.Time { return time.Date(2026, 10, day, h, m, 0, 0, time.UTC) }
 	weekdays, _ := parseDays("weekdays")
 	night, _ := parseHours("22-6")
 	day, _ := parseHours("9-17")
@@ -375,7 +368,6 @@ func TestAutopilotAtOnceCountsItsOwnSessions(t *testing.T) {
 	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude"})
 	other := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Other", Agent: "claude"})
 	a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Third", Agent: "claude"})
-	// A person's session b works on Other.
 	res, err := a.s.SessionHook(a.ctx, a.ag, []HookEvent{hook("box", "cli-b", "SessionStart", func(h *HookEvent) { h.Source = "startup"; h.Cwd = "/work/b" })})
 	if err != nil {
 		t.Fatal(err)
@@ -391,8 +383,6 @@ func TestAutopilotAtOnceCountsItsOwnSessions(t *testing.T) {
 	if st := a.step(); len(a.jobs) != 0 || st.state != StepWaiting || st.reason != WaitAtOnce || !strings.Contains(st.detail, other.Key+": your session") {
 		t.Fatalf("a person's session at work on a task should hold it: jobs %d, step %+v", len(a.jobs), st)
 	}
-	// b ships, its session still open: it no longer counts, and the
-	// finished autopilot session moves on.
 	a.setClock(a.clockNow().Add(time.Minute))
 	if _, err := a.s.AgentDone(a.ctx, &b, other.Key, AgentDoneInput{Comment: "done"}); err != nil {
 		t.Fatal(err)
@@ -406,7 +396,6 @@ func TestAutopilotAtOnceCountsItsOwnSessions(t *testing.T) {
 	}
 	a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Fourth", Agent: "claude"})
 	a.tick(autopilotRetry + time.Second)
-	// b is its person's own: it gets no step and is left alone (WP-1319).
 	var bSteps int
 	if err := a.s.db.R.QueryRow(`SELECT count(*) FROM autopilot_steps WHERE session_id = ?`, b.Session).Scan(&bSteps); err != nil {
 		t.Fatal(err)

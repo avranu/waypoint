@@ -67,7 +67,6 @@ async function run(width, scheme) {
 
   await page.goto(base + "/issue/" + issue.key);
   if (aiReady) {
-    // AI estimate from the issue page.
     await page.locator('[title="Story points"]:visible').click();
     await page
       .getByRole("button", { name: "Estimate with AI" })
@@ -85,7 +84,6 @@ async function run(width, scheme) {
       `${tag} estimate applied: ${after.points}`,
     );
 
-    // Sub-task suggestions.
     await page.getByRole("button", { name: "Suggest" }).click();
     const addBtn = page.getByRole("button", { name: /^Add \d+ sub-tasks?$/ });
     await addBtn.waitFor({ timeout: 90000 });
@@ -102,7 +100,6 @@ async function run(width, scheme) {
       "skip AI checks (no model set up; set WAYPOINT_AI_OPENCODE_URL)",
     );
 
-  // Attachments: an image and a text file.
   const png = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
     "base64",
@@ -125,7 +122,6 @@ async function run(width, scheme) {
   );
   await shot("attachments");
 
-  // Templates: create one in settings, use it in New issue.
   await page.goto(base + "/p/DEMO/settings?tab=templates");
   await page.getByRole("button", { name: "New template" }).click();
   await page.getByLabel("Template name").fill("Bug " + tag);
@@ -153,7 +149,6 @@ async function run(width, scheme) {
     `${tag} issue from template has sub-tasks: ${created?.children?.length}`,
   );
 
-  // Automation editor: a weekly schedule creating an issue.
   await page.goto(base + "/p/DEMO/settings?tab=automations");
   await page
     .getByRole("button", {
@@ -167,7 +162,6 @@ async function run(width, scheme) {
   await shot("automation");
   await page.keyboard.press("Escape");
 
-  // Admin AI tab and push section render.
   await page.goto(base + "/admin?tab=ai");
   await page.getByText("Estimate story points").waitFor();
   await shot("admin-ai");

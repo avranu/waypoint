@@ -1,6 +1,3 @@
-// The audit log (WP-D15): what people decided about agents' work and about
-// Waypoint itself, newest first, a page at a time.
-
 import { infiniteQueryOptions } from '@tanstack/react-query'
 import { api, qs } from './api'
 import type { UserRef } from './types'

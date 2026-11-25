@@ -130,7 +130,7 @@ func scanMarkdown(src []byte) Parsed {
 	var stack []open
 	fence := ""
 	i := 0
-	if len(lines) > 0 && strings.TrimSpace(lines[0]) == "---" { // front matter
+	if len(lines) > 0 && strings.TrimSpace(lines[0]) == "---" {
 		for i = 1; i < len(lines) && strings.TrimSpace(lines[i]) != "---"; i++ {
 		}
 		i++
@@ -154,7 +154,7 @@ func scanMarkdown(src []byte) Parsed {
 		}
 		level := len(m[1])
 		for len(stack) > 0 && stack[len(stack)-1].level >= level {
-			out.Symbols[stack[len(stack)-1].idx].End = i // the line before this heading, 1-based
+			out.Symbols[stack[len(stack)-1].idx].End = i
 			stack = stack[:len(stack)-1]
 		}
 		sym := Symbol{Name: collapse(m[2], 100), Kind: "heading", Sig: strings.Repeat("#", level) + " " + collapse(m[2], 100), Start: i + 1, End: len(lines), Exported: true}
@@ -164,7 +164,6 @@ func scanMarkdown(src []byte) Parsed {
 		out.Symbols = append(out.Symbols, sym)
 		stack = append(stack, open{level, len(out.Symbols) - 1})
 	}
-	// trailing blank lines don't belong to a section
 	for k := range out.Symbols {
 		e := out.Symbols[k].End
 		for e > out.Symbols[k].Start && strings.TrimSpace(lines[e-1]) == "" {
@@ -191,7 +190,7 @@ var yamlNested = map[string]bool{"jobs": true, "services": true, "stages": true,
 func scanYAML(src []byte) Parsed {
 	lines := splitLines(src)
 	var out Parsed
-	var top []int // indices of top-level key symbols in the current document
+	var top []int
 	docStart := 0
 	kind, name := "", ""
 	closeDoc := func(end int) {

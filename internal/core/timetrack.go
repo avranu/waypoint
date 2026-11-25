@@ -117,7 +117,6 @@ func (s *Service) StartTimer(ctx context.Context, actor *Actor, issueRef, note s
 			if err != nil {
 				return err
 			}
-			// Restarting the timer on the same issue is a no-op.
 			var running sql.NullInt64
 			if err := t.QueryRowContext(ctx, `SELECT id FROM time_entries WHERE user_id = ? AND agent = ? AND ended_at IS NULL AND issue_id = ?`, actor.id(), agent, i.ID).Scan(&running); err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return err
@@ -295,7 +294,6 @@ func (s *Service) entrySpan(in TimeEntryInput, curStart, curEnd *int64) (int64, 
 			return 0, nil, invalid("duration must be between 1 minute and 24 hours")
 		}
 		if in.StartedAt == nil && curStart == nil {
-			// Duration alone: it just ended.
 			e := s.nowMS()
 			start = e - d.Milliseconds()
 			end = &e
@@ -395,7 +393,7 @@ type TimeQuery struct {
 	Issue   string // entries on an issue (by anyone, if the actor can see it)
 	Project string // entries in a project (members see everyone's)
 	Limit   int
-	all     bool // reports: no limit (the date range bounds it)
+	all     bool
 }
 
 // ListTimeEntries returns entries, newest first. Without Issue or Project it
@@ -429,7 +427,7 @@ func (s *Service) ListTimeEntries(ctx context.Context, actor *Actor, q TimeQuery
 	}
 	switch {
 	case q.all:
-		q.Limit = -1 // SQLite: no limit
+		q.Limit = -1
 	case q.Limit <= 0:
 		q.Limit = 500
 	case q.Limit > 2000:

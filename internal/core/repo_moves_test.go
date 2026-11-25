@@ -63,8 +63,6 @@ func TestReposFollowedAcrossRenamesAndTransfers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Transferred to another organisation: the forge reports the same id
-	// under the new name. The project follows; nothing is made twice.
 	mem.mu.Lock()
 	mem.repos[fj.ID] = []ForgeRepo{{ID: 7, Path: "ops/infra", Group: true}}
 	mem.issues[mk(fj, "ops/infra")] = []ForgeItem{{Number: 1, Title: "Rotate the CA", State: "open", URL: "https://git.example.com/ops/infra/issues/1"},
@@ -101,7 +99,6 @@ func TestReposFollowedAcrossRenamesAndTransfers(t *testing.T) {
 		t.Errorf("pull request after the move: %s %s %s %v", prRepo, prURL, headRepo, err)
 	}
 
-	// Renamed again, and only a webhook says so.
 	if err := e.hook(fj, "ping", map[string]any{"repository": map[string]any{"id": 7, "full_name": "ops/infrastructure"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -110,8 +107,6 @@ func TestReposFollowedAcrossRenamesAndTransfers(t *testing.T) {
 		t.Fatalf("repos after the rename = %v", got)
 	}
 
-	// A new repo takes the old name: it's another repo, with a project of
-	// its own; the moved one keeps its issues.
 	mem.mu.Lock()
 	mem.repos[fj.ID] = []ForgeRepo{{ID: 7, Path: "ops/infrastructure", Group: true}, {ID: 9, Path: "acme/infra", Group: true}}
 	mem.issues[mk(fj, "acme/infra")] = []ForgeItem{{Number: 1, Title: "Fresh start", State: "open", URL: "https://git.example.com/acme/infra/issues/1"}}
@@ -190,7 +185,6 @@ func TestMoveProjectRepoTakesOverTheDuplicate(t *testing.T) {
 	if names := e.repoNames(dup.Key); len(names) != 0 {
 		t.Errorf("duplicate still attached: %v", names)
 	}
-	// Its issue's link has the new name, so syncing finds it, not a twin.
 	if err := e.s.SyncRepo(e.ctx, r.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -200,15 +194,12 @@ func TestMoveProjectRepoTakesOverTheDuplicate(t *testing.T) {
 	if l := e.get(e.admin, old[0]).Links; len(l) != 1 || l[0].URL != "https://git.example.com/ops/infra/issues/1" || !l[0].Mirror {
 		t.Errorf("links = %+v", l)
 	}
-	// A person put the project at the top: it stays there.
 	if p, _ := e.s.projectByID(e.ctx, e.s.db.R, mine.ID); p.ParentID != nil {
 		t.Errorf("a person's project was moved: parent %d", *p.ParentID)
 	}
-	// It knows the repo's id now: another repo isn't it.
 	if _, err := e.s.MoveProjectRepo(e.ctx, e.admin, mine.Key, r.ID, "ops/other", MoveOptions{}); err == nil || !strings.Contains(err.Error(), "another repository") {
 		t.Errorf("moved onto another repo: %v", err)
 	}
-	// Discovery doesn't make the duplicate again.
 	if n, err := e.s.DiscoverRepos(e.ctx, e.admin, fj.ID, nil); err != nil || n != 0 {
 		t.Errorf("rediscover = %d, %v", n, err)
 	}
@@ -245,14 +236,12 @@ func TestRelinkProjectRepo(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A move follows one repo; another repository needs a relink.
 	if _, err := e.s.MoveProjectRepo(e.ctx, e.admin, mine.Key, r.ID, "acme/new", MoveOptions{}); err == nil || !strings.Contains(err.Error(), "relink") {
 		t.Fatalf("moved onto another repository: %v", err)
 	}
 	if _, err := e.s.MoveProjectRepo(e.ctx, e.admin, mine.Key, r.ID, "acme/nope", MoveOptions{Relink: true}); err == nil {
 		t.Error("relinked to a repo the forge doesn't have")
 	}
-	// Another project links the new repo: refused unless forced.
 	theirs := e.project(e.admin, "Theirs", "")
 	if _, err := e.s.AddProjectRepo(e.ctx, e.admin, theirs.Key, fj.ID, "acme/new", false); err != nil {
 		t.Fatal(err)
@@ -288,7 +277,6 @@ func TestRelinkProjectRepo(t *testing.T) {
 		t.Errorf("issues = %v, want %v", keys, issues)
 	}
 
-	// The same name made again: only the id changes.
 	mem.mu.Lock()
 	mem.repos[fj.ID] = []ForgeRepo{{ID: 11, Path: "acme/new"}}
 	mem.mu.Unlock()

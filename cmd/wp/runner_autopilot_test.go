@@ -53,16 +53,12 @@ func TestPromptInput(t *testing.T) {
 // fakeTmux plays a Claude Code session in a pane: a paste and Enter make it
 // busy.
 type fakeTmux struct {
-	t      *testing.T
-	file   string
-	screen string
-	typed  []string
-	pasted string
-	// afterPaste is the screen once paste-buffer ran; nil is Claude Code's
-	// own: a placeholder for the paste. Enter on a paste empties the box.
+	t          *testing.T
+	file       string
+	screen     string
+	typed      []string
+	pasted     string
 	afterPaste *string
-	// lateRender is how many captures after the paste still show an empty
-	// box: a long paste Claude Code hasn't drawn yet.
 	lateRender int
 }
 
@@ -92,7 +88,7 @@ func (f *fakeTmux) run(ctx context.Context, socket string, stdin []byte, args ..
 			set("status", "busy")
 			f.screen = screenEmpty
 		}
-		if key == "C-u" { // the line's text is cut: here, the paste
+		if key == "C-u" {
 			f.screen = screenEmpty
 		}
 	case "load-buffer":
@@ -153,8 +149,6 @@ func TestAutopilotJobHoldsWhatItCantRestart(t *testing.T) {
 	if r := result(p.execAutopilot(context.Background(), newRun(time.Minute), job)); r.Outcome != "held" || r.Reason != "draft" || len(f.typed) != 0 {
 		t.Errorf("a draft: %+v, typed %q", r, f.typed)
 	}
-	// Ready, but this test binary isn't a claude that can be started again:
-	// no /clear in its place (WP-ADR57), and nothing typed.
 	f.screen = screenPlaceholder
 	r := result(p.execAutopilot(context.Background(), newRun(time.Minute), job))
 	if r.Outcome != "held" || r.Reason != "no_tmux" || !strings.Contains(r.Detail, "can't be restarted") || len(f.typed) != 0 {
@@ -246,8 +240,6 @@ func TestAutopilotReviewTakenWhilePasted(t *testing.T) {
 			return
 		}
 		asked++
-		// Wanted at the last word before typing and before the paste, not
-		// once it is pasted.
 		_, _ = w.Write([]byte(`{"wanted":` + strconv.FormatBool(asked <= 2) + `}`))
 	}))
 	t.Cleanup(srv.Close)
@@ -257,7 +249,6 @@ func TestAutopilotReviewTakenWhilePasted(t *testing.T) {
 	p := newTestProc(t, dir)
 	prompt := autopilotReviewMark + "APP-1: Grok's findings."
 	o := p.execAutopilot(context.Background(), newRun(time.Minute), autopilotJob{CLIID: "old-123", Dir: dir, Done: "APP-1", ReviewOf: "APP-1", Review: prompt, Compacted: true, Step: 7})
-	// Unwanted, and the paste taken back out (WP-1572): nothing to clear.
 	if r, _ := o.Result.(autopilotResult); o.State != "done" || r.Outcome != "unwanted" || r.Warning != "" {
 		t.Fatalf("outcome %+v", o)
 	}
@@ -353,7 +344,7 @@ func TestAutopilotReviewUnwantedAfterLateRenderWait(t *testing.T) {
 	after := screenEmpty
 	f, r, _ := reviewTypingFixture(t, &after, func(n int) (bool, bool) { return n <= 2, true }, func(n int, f *fakeTmux) {
 		if n == 1 {
-			f.lateRender = 3 // the capture right after the settle takes one
+			f.lateRender = 3
 		}
 	})
 	if r.Outcome != "unwanted" || r.Warning != "" || strings.Join(f.typed, " ") != "C-u" {
@@ -368,7 +359,7 @@ func TestAutopilotReviewUnwantedAfterLateRenderWait(t *testing.T) {
 func TestAutopilotReviewPasteDrawnAfterTheWait(t *testing.T) {
 	after := screenEmpty
 	drawLate := func(n int, f *fakeTmux) {
-		if n == 3 { // the ask once the wait ran out with the box empty
+		if n == 3 {
 			f.lateRender = 2
 		}
 	}
@@ -380,8 +371,6 @@ func TestAutopilotReviewPasteDrawnAfterTheWait(t *testing.T) {
 	if r.Outcome != "held" || strings.Contains(r.Detail, "may still be") || strings.Join(f.typed, " ") != "C-u" || f.screen != screenEmpty {
 		t.Errorf("unknown: %+v typed %q", r, f.typed)
 	}
-	// Drawn after the box was found empty just before Enter: held, and
-	// taken out, not sent.
 	f, r, _ = reviewTypingFixture(t, &after, always, drawLate)
 	if r.Outcome != "held" || r.Reason != "screen" || strings.Contains(r.Detail, "may still") || strings.Join(f.typed, " ") != "C-u" {
 		t.Errorf("wanted: %+v typed %q", r, f.typed)
@@ -393,7 +382,7 @@ func TestAutopilotReviewPasteRendersLate(t *testing.T) {
 	after := screenEmpty
 	f, r, _ := reviewTypingFixture(t, &after, always, func(n int, f *fakeTmux) {
 		if n == 1 {
-			f.lateRender = 3 // the capture right after the settle takes one
+			f.lateRender = 3
 		}
 	})
 	if r.Outcome != "reviewing" || r.Warning != "" || strings.Join(f.typed, " ") != "Enter" {
@@ -412,7 +401,6 @@ func TestAutopilotReviewDraftBeforePaste(t *testing.T) {
 	if r.Outcome != "held" || r.Reason != "draft" || f.pasted != "" || len(f.typed) != 0 {
 		t.Errorf("%+v typed %q pasted %q", r, f.typed, f.pasted)
 	}
-	// And a box that isn't on the screen.
 	f, r, _ = reviewTypingFixture(t, nil, always, func(n int, f *fakeTmux) {
 		if n == 1 {
 			f.screen = "Do you want to proceed?\n 1. Yes\n"
@@ -438,7 +426,7 @@ func TestAutopilotReviewTypedAfterPaste(t *testing.T) {
 // cleared once the step doesn't.
 func TestAutopilotReviewPersonsPasteOverTheReview(t *testing.T) {
 	theirs := "────────\n❯ [Pasted text #2 +7 lines]\n────────\n"
-	swap := func(n int, f *fakeTmux) { // the ask after the settle
+	swap := func(n int, f *fakeTmux) {
 		if n == 3 {
 			f.screen = theirs
 		}
@@ -477,7 +465,7 @@ func TestAutopilotReviewBoxEmptyAfterPaste(t *testing.T) {
 		t.Errorf("never shown: %+v typed %q", r, f.typed)
 	}
 	f, r, _ = reviewTypingFixture(t, &after, always, func(n int, f *fakeTmux) {
-		if n == 3 { // someone's Enter sent it: the session is busy
+		if n == 3 {
 			b, _ := json.Marshal(map[string]any{"pid": os.Getpid(), "sessionId": "old-123", "status": "busy", "tmux": "w:@1.%7"})
 			_ = os.WriteFile(f.file, b, 0o600)
 		}
@@ -546,7 +534,6 @@ func TestAutopilotReviewCompactsThenPrompts(t *testing.T) {
 		t.Errorf("the pasted text doesn't start with the review mark and the task key: %q", f.pasted)
 	}
 
-	// Still busy compacting when the wait runs out: nothing is pasted.
 	f.typed, f.pasted = nil, ""
 	_ = os.WriteFile(file, b, 0o600)
 	old := autopilotCompactWait
@@ -559,7 +546,6 @@ func TestAutopilotReviewCompactsThenPrompts(t *testing.T) {
 		t.Errorf("still compacting: %+v, pasted %q", r, f.pasted)
 	}
 
-	// A job without its prompt fails rather than typing anything.
 	if o := p.execAutopilot(context.Background(), newRun(time.Minute), autopilotJob{CLIID: "old-123", Dir: dir, ReviewOf: "APP-1"}); o.State != "failed" {
 		t.Errorf("no prompt: %+v", o)
 	}

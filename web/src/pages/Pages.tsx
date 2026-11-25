@@ -1,7 +1,3 @@
-// Pages: plans, ideas, decisions and notes, nested, personal or in a
-// project, linked to issues. One screen: the tree on the left, the open page
-// on the right (on phones, one or the other).
-
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -120,7 +116,6 @@ function PageTree({ selected, project }: { selected: number | null; project?: st
   const create = useCreatePage()
   const pages = all.data ?? []
   const filtering = !!debounced || !!category
-  // Group: personal first, then each project.
   const groups = useMemo(() => {
     const m = new Map<string, Page[]>()
     for (const p of pages) {
@@ -634,7 +629,6 @@ function MovePicker({
   const projects = (useQuery({ ...q.projects(), enabled: pop.open }).data ?? []).filter(
     (p) => p.role === 'owner' || p.role === 'editor',
   )
-  // Not itself or anything beneath it.
   const below = useMemo(() => {
     const tree = pageTree(pages)
     const out = new Set<number>([page.id])

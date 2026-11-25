@@ -16,7 +16,7 @@ import (
 type twoForks struct {
 	*shipForge
 	heads  map[string]bool
-	during func() // while the forge is being asked
+	during func()
 }
 
 func (g *twoForks) ForkedTwice(ctx context.Context, f *Forge, repo, tip, head string) (bool, error) {
@@ -163,7 +163,8 @@ func TestForkedTwiceJudgedAgainUnderTheLocks(t *testing.T) {
 				asked = true
 				got := make(chan struct{})
 				go func() {
-					be.s.queueLock(pr)()
+					_, unlock := be.s.queueLockCtx(be.ctx, pr)
+					unlock()
 					close(got)
 				}()
 				select {

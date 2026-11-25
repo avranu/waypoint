@@ -1,13 +1,5 @@
 package core
 
-// The drift guard (WP-440, under WP-436): babysitting rounds fix what
-// reviewers and checks found, and a reviewer can always find more. Each
-// round's packet starts from what the pull request is for (its task, its
-// description when it shipped, the decisions they cite), a finding the task
-// doesn't need is deferred to a follow-up task (`wp pr ack --defer`), and a
-// pull request whose rounds spread to new files or grew it by half again
-// gets a footprint check before it merges.
-
 import (
 	"context"
 	"encoding/json"
@@ -22,8 +14,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// ---- heavy lifts ----
-
 // heavyLiftRE is CodeRabbit's effort badge for a big change ("** Minor** ·
 // **Functional Correctness** · **Heavy lift**"), also in a mirror's relays.
 var heavyLiftRE = lazyre.New(`(?i)·\s*\*\*\s*heavy lift\s*\*\*`)
@@ -33,8 +23,6 @@ var heavyLiftRE = lazyre.New(`(?i)·\s*\*\*\s*heavy lift\s*\*\*`)
 func (rc *PRReviewComment) heavyLift() bool {
 	return rc.botComment() && heavyLiftRE.MatchString(rc.Body)
 }
-
-// ---- the intent anchor ----
 
 // PRIntent is what a pull request is for, as a round's packet opens with
 // it: the tasks it is linked to, its description when it shipped, and the
@@ -153,7 +141,7 @@ func (s *Service) prIntent(ctx context.Context, actor *Actor, pr *PullRequest) *
 				d.Code = c.String()
 			}
 			if _, _, err := s.designFor(ctx, s.db.R, actor, id, RoleViewer); err != nil {
-				continue // not one this actor may read
+				continue
 			}
 			var body string
 			if s.db.R.QueryRowContext(ctx, `SELECT title, status, body FROM design_notes WHERE id = ?`, id).Scan(&d.Title, &d.Status, &body) != nil {
@@ -255,8 +243,6 @@ func clipLines(s string, n int) string {
 	return strings.TrimRight(cut, " \n") + "\n…"
 }
 
-// ---- deferrals ----
-
 // fileDeferred files the follow-up task for review comments deferred on one
 // pull request, in the project of its first task (else its repository's),
 // related to that task. It returns the new task's key.
@@ -355,8 +341,6 @@ func (s *Service) deferComments(ctx context.Context, actor *Actor, list []*PRRev
 	}
 	return nil
 }
-
-// ---- the footprint ----
 
 // prFootprint is what a pull request was when it shipped (when its first
 // babysitting round was sent) and the footprint checks made since, kept
@@ -463,8 +447,6 @@ func (s *Service) footprintNow(ctx context.Context, b *Babysit, pr *PullRequest)
 	if b == nil || fp.Ship == nil || !fp.Ship.Known || pr.HeadSHA == "" {
 		return fp, "", false
 	}
-	// Growth is measured from the last check that ran; a skipped one only
-	// marks its head as seen, so the growth since shipping isn't forgotten.
 	ref, audited, seen := fp.Ship.footprintAt, 0, fp.Ship.SHA
 	for _, c := range fp.Checks {
 		seen = c.SHA
@@ -477,7 +459,7 @@ func (s *Service) footprintNow(ctx context.Context, b *Babysit, pr *PullRequest)
 		return fp, "", false
 	}
 	if !slices.ContainsFunc(b.Rounds, func(r BabysitRound) bool { return r.Pushed && !r.At.Before(fp.Ship.At) }) {
-		return fp, "", false // not the rounds' doing
+		return fp, "", false
 	}
 	s.loadPRFiles(ctx, pr)
 	lines, known := pr.changedLines()
@@ -525,9 +507,6 @@ func (s *Service) footprintStep(ctx context.Context, b *Babysit, pr *PullRequest
 	var a *CodeAudit
 	err := errors.New("no member's runner to run it on")
 	if owner := s.babysitOwnerFor(ctx, pr); owner != 0 {
-		// On the default chain, like every audit nobody named models for
-		// (the gateway's, WP-ADR84): a scope check reads a few
-		// round diffs against the task and needs no Opus run (WP-867).
 		a, err = s.RequestAudit(ctx, SystemActor(), AuditInput{PRID: pr.ID, Via: "system", owner: owner,
 			requestKey: fmt.Sprintf("pr-footprint:%d:%s", pr.ID, strings.ToLower(pr.HeadSHA)), purpose: AuditFootprint,
 			Instructions: footprintInstructions, prContext: s.footprintContext(ctx, b, pr, fp, why)})

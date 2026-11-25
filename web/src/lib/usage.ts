@@ -1,7 +1,3 @@
-// Knowledge use (WP-D15): when glossary entries, pages and design notes
-// were looked up by tools (the CLI, MCP, agents), named in text, or passed
-// over for a word to avoid.
-
 import { queryOptions } from '@tanstack/react-query'
 import { api, qs } from './api'
 import type { KItem, UserRef } from './types'

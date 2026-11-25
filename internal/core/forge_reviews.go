@@ -1,9 +1,5 @@
 package core
 
-// A pull request's review bodies and conversation comments, with their ids
-// and authors, and emoji on each kind of comment (WP-134): what babysitting
-// reads and marks. Comments on the diff come from ReviewThreads.
-
 import (
 	"context"
 	"fmt"
@@ -44,7 +40,6 @@ func (c *httpForgeClient) PRNotes(ctx context.Context, f *Forge, repo string, nu
 		return c.glNotes(ctx, f, repo, number)
 	}
 	var out []PRNote
-	// Reviews: GitHub pages with per_page, Forgejo with limit.
 	for page := 1; page <= maxForgePages; page++ {
 		var list []struct {
 			ID          int64      `json:"id"`
@@ -149,7 +144,6 @@ func (c *httpForgeClient) glNotes(ctx context.Context, f *Forge, repo string, nu
 
 func (c *httpForgeClient) ReactTo(ctx context.Context, f *Forge, repo string, number int, kind, commentID, emoji string) error {
 	if f.Kind == "gitlab" {
-		// Every note, on the diff or not, takes award emoji.
 		_, err := c.React(ctx, f, repo, number, commentID, emoji)
 		return err
 	}
@@ -158,13 +152,12 @@ func (c *httpForgeClient) ReactTo(ctx context.Context, f *Forge, repo string, nu
 	case "comment":
 		path = fmt.Sprintf("/repos/%s/issues/comments/%s/reactions", repo, url.PathEscape(commentID))
 	case "inline":
-		// Forgejo keeps comments on the diff with the issue's comments.
 		path = fmt.Sprintf("/repos/%s/issues/comments/%s/reactions", repo, url.PathEscape(commentID))
 		if f.Kind == "github" {
 			path = fmt.Sprintf("/repos/%s/pulls/comments/%s/reactions", repo, url.PathEscape(commentID))
 		}
 	default:
-		return ErrUnsupported // a review's body takes no emoji through the API
+		return ErrUnsupported
 	}
 	return c.do(ctx, f, http.MethodPost, path, map[string]string{"content": emoji}, nil)
 }

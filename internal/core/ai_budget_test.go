@@ -19,14 +19,14 @@ import (
 type budgetGateway struct {
 	mu      sync.Mutex
 	inner   *fakeJev
-	rpd     int  // the key's limit; 0 makes /v1/key fail
-	day     int  // requests the gateway counts today
-	quota   bool // answer 429 insufficient_quota
-	reads   int  // GET /v1/key
-	reqs    int  // chat and decision requests
+	rpd     int
+	day     int
+	quota   bool
+	reads   int
+	reqs    int
 	retryIn string
-	busy    string // answer chat requests 503 with this Retry-After, as when every candidate cools down
-	jevBusy bool   // and decision requests too
+	busy    string
+	jevBusy bool
 }
 
 func (b *budgetGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -114,14 +114,12 @@ func TestDailyQuotaParksTheGateway(t *testing.T) {
 	if !errors.As(err, &wait) || wait.why != "quota" || !IsInvalid(err) {
 		t.Fatalf("first ask: %v", err)
 	}
-	// Retry-After was 12 hours: 00:00 UTC the next day is 12 hours from noon.
 	if want := e.clockNow().Add(12 * time.Hour); !wait.until.Equal(want) {
 		t.Errorf("resets at %v, want %v", wait.until, want)
 	}
 	if n := g.requests(); n != 1 {
 		t.Fatalf("requests to the gateway = %d, want the one that met the limit", n)
 	}
-	// Every caller waits: the chat tasks, the decision model, a review chain.
 	for range 3 {
 		if err := ask(); !errors.As(err, &wait) {
 			t.Fatalf("parked ask: %v", err)
@@ -139,7 +137,6 @@ func TestDailyQuotaParksTheGateway(t *testing.T) {
 	if n := g.requests(); n != 1 {
 		t.Errorf("requests while parked = %d, want still 1", n)
 	}
-	// At the reset the key is asked again.
 	g.set(func(g *budgetGateway) { g.quota = false })
 	e.setClock(wait.until)
 	if err := ask(); err != nil {
@@ -178,7 +175,7 @@ func TestParkedKeyRecheckedForARaisedLimit(t *testing.T) {
 // used, background work asks while the gateway admits it (WP-412).
 func TestNoBudgetOfOurOwn(t *testing.T) {
 	e, g := newBudgetEnv(t)
-	g.set(func(g *budgetGateway) { g.day = 990 }) // of 1000
+	g.set(func(g *budgetGateway) { g.day = 990 })
 	var sa screenAnswer
 	for range 5 {
 		if _, err := e.s.runAI(e.ctx, "task_safety", screenSystem, "x", screenSchema, &sa); err != nil {
@@ -213,14 +210,12 @@ func TestRetryAfterParksThoseModels(t *testing.T) {
 	if n := e.s.screenAllowance(e.ctx); n != 0 {
 		t.Errorf("sweep allowance while the screen's models are busy = %d", n)
 	}
-	// The same models wait; nothing is sent for them.
 	if _, err := e.s.runAI(e.ctx, "task_safety", screenSystem, "x", screenSchema, &sa); !errors.As(err, &wait) {
 		t.Fatalf("parked ask: %v", err)
 	}
 	if n := g.requests(); n != 1 {
 		t.Fatalf("requests while parked = %d", n)
 	}
-	// A review's models are its own.
 	g.set(func(g *budgetGateway) { g.busy = "" })
 	chain, _ := e.s.taskChain(e.ctx, "review")
 	var ans struct{}
@@ -230,7 +225,6 @@ func TestRetryAfterParksThoseModels(t *testing.T) {
 	if n := g.requests(); n != 2 {
 		t.Fatalf("requests = %d", n)
 	}
-	// After the wait they are asked again.
 	e.setClock(e.clockNow().Add(10 * time.Minute))
 	if _, err := e.s.runAI(e.ctx, "task_safety", screenSystem, "x", screenSchema, &sa); err != nil {
 		t.Fatalf("after the wait: %v", err)
@@ -315,7 +309,6 @@ func TestScreensWaitOutTheDailyLimit(t *testing.T) {
 			t.Fatalf("%s: %+v", k, d.Safety)
 		}
 	}
-	// The day after, they are screened.
 	g.set(func(g *budgetGateway) { g.quota = false })
 	e.setClock(nextUTCMidnight(e.clockNow()).Add(time.Minute))
 	e.s.sweepScreens(e.ctx)
@@ -352,7 +345,6 @@ func TestReviewRunWaitsForTheDailyLimit(t *testing.T) {
 	if calls == 0 || calls > 2 {
 		t.Errorf("model calls = %d", calls)
 	}
-	// Still before the reset, retries are not tried.
 	pe.setClock(pe.clockNow().Add(botRetryAfter + 1))
 	if done := pe.drain(); len(done) != 0 {
 		t.Fatalf("ran before the reset: %+v", done)

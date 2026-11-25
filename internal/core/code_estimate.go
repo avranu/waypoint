@@ -8,11 +8,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// The story-point estimator reads the code summaries (WP-178): files a work
-// item names get their history (hotspot, past bug fixes, importers, what
-// changes with them), because risky code costs more effort than its title
-// suggests.
-
 var pathTokenRE = lazyre.New(`[A-Za-z0-9_][A-Za-z0-9_./-]*\.[A-Za-z0-9]{1,5}\b`)
 
 const (
@@ -73,7 +68,7 @@ func (s *Service) estimateRiskNotes(ctx context.Context, projectID int64, text s
 				}
 			}
 			_ = r2.Close()
-			if len(matches) != 1 { // ambiguous names say nothing
+			if len(matches) != 1 {
 				continue
 			}
 			if have[matches[0]] {

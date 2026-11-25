@@ -80,7 +80,6 @@ func TestReleaseWaitsLongerEachTime(t *testing.T) {
 		t.Errorf("the queue doesn't say it was given back: %+v", q.Waiting)
 	}
 
-	// By name it can still be taken, and a second release waits twice as long.
 	a.takeTask(task.Key)
 	if res := a.release(task.Key, ReleaseInput{}); !strings.Contains(res.Message, "1 hour") {
 		t.Errorf("second release says %q", res.Message)
@@ -90,13 +89,11 @@ func TestReleaseWaitsLongerEachTime(t *testing.T) {
 		t.Errorf("third release says %q", res.Message)
 	}
 
-	// It comes back when the wait ends.
 	a.setClock(a.clockNow().Add(2*time.Hour + time.Minute))
 	if got := a.nextKey(); got != task.Key {
 		t.Errorf("next = %q after the wait, want %s", got, task.Key)
 	}
 
-	// A person's comment ends a wait and starts the count again.
 	a.takeTask(task.Key)
 	a.release(task.Key, ReleaseInput{})
 	a.setClock(a.clockNow().Add(time.Second))
@@ -112,7 +109,6 @@ func TestReleaseWaitsLongerEachTime(t *testing.T) {
 		t.Errorf("after a person stepped in: %q", res.Message)
 	}
 
-	// wp hold --off ends a wait too, for a person, not an agent.
 	if _, err := a.s.LiftHold(a.ctx, a.ag, task.Key); !IsInvalid(err) {
 		t.Errorf("an agent lifted a release wait: %v", err)
 	}
@@ -240,7 +236,6 @@ func TestHoldWaitsForReview(t *testing.T) {
 	a := newAPEnv(t)
 	task := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Check my work", Agent: "claude"})
 	a.takeTask(task.Key)
-	// With nothing an agent wrote waiting, it asks for a person.
 	a.release(task.Key, ReleaseInput{HoldInput: HoldInput{Reviewed: true}})
 	h := a.hold(task.Key)
 	if h == nil || h.When == nil || !h.When.Person || h.When.Reviewed {
@@ -257,7 +252,6 @@ func TestHoldWaitsForReview(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// With a comment to review, the review lifts it.
 	a.setClock(a.clockNow().Add(time.Minute))
 	a.takeTask(task.Key)
 	if _, err := a.s.AddComment(a.ctx, a.ag, task.Key, "Found this; is it right?"); err != nil {
@@ -481,7 +475,7 @@ func TestAutopilotSaysWhyASessionWontContinue(t *testing.T) {
 // turning it off.
 func TestAutopilotSlowsAfterGiveBacksInARow(t *testing.T) {
 	a := newAPEnv(t)
-	a.setClock(a.clockNow().Add(time.Minute)) // after the settings were saved
+	a.setClock(a.clockNow().Add(time.Minute))
 	st := &stepRow{userID: a.admin.User.ID, projectID: a.p.ID}
 	add := func(n int) {
 		t.Helper()

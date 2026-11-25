@@ -1,6 +1,3 @@
-// Agents → Sessions (WP-D16): every agent session your hooks have seen, newest
-// first, by machine, repository, branch and state. Each opens its own page.
-
 import { useMemo } from 'react'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { Terminal } from 'lucide-react'
@@ -43,7 +40,6 @@ export function SessionsTab({ filters, setFilters }: HubTabProps) {
     staleTime: 15_000,
     placeholderData: (prev) => prev,
   })
-  // Where to pick from: the places the latest sessions ran.
   const places = useQuery(
     sessionsQuery({
       agent: filters.agent || undefined,

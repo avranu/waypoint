@@ -19,7 +19,7 @@ import (
 // Commits that don't all say so stay out of a pull request, with a notice
 // (WP-665).
 func TestShipOnBranchNamedForAnotherTask(t *testing.T) {
-	var unreadable atomic.Value // the key whose lookup fails, when not ""
+	var unreadable atomic.Value
 	unreadable.Store("")
 	e := newEnvServing(t, nil, func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +68,6 @@ func TestShipOnBranchNamedForAnotherTask(t *testing.T) {
 		return iss.Key
 	}
 	other := task("The task the branch is named for")
-	// pushed makes a branch named for the other task, one pushed commit ahead.
 	n := 0
 	pushed := func(msg ...string) {
 		t.Helper()
@@ -91,10 +90,8 @@ func TestShipOnBranchNamedForAnotherTask(t *testing.T) {
 		}
 		return e.wp("pr", "show", m[1]+m[2])
 	}
-	// wp ship doesn't say it moved the task it finished (WP-1080).
 	inReview := func(key string) bool { return strings.Contains(e.wp("show", key), "[In Review]") }
 
-	// Named on the command line: what the task reported.
 	given := task("Given by key")
 	pushed("Older copies stay private (" + given + ")")
 	out := e.wp("ship", given, "-m", "Done it")
@@ -105,7 +102,6 @@ func TestShipOnBranchNamedForAnotherTask(t *testing.T) {
 		t.Errorf("linked to the wrong task:\n%s", links)
 	}
 
-	// Held, not named: the commit still beats the branch name.
 	held := task("Held here")
 	pushed("Fix it (" + held + ")")
 	e.wp("take", held)
@@ -120,8 +116,6 @@ func TestShipOnBranchNamedForAnotherTask(t *testing.T) {
 		t.Errorf("the branch's task moved:\n%s", show)
 	}
 
-	// Commits that don't say they are this task's aren't shipped under it:
-	// it finishes, and says what it left and how to ship it.
 	review := task("A review with no code")
 	pushed("Other work")
 	out = e.wp("ship", review, "-m", "Reviewed")
@@ -132,7 +126,6 @@ func TestShipOnBranchNamedForAnotherTask(t *testing.T) {
 		t.Errorf("the task didn't finish:\n%s", show)
 	}
 
-	// A mention in the body is a reference, not whose the commit is.
 	mentioned := task("Only mentioned")
 	pushed("Other work ("+other+")", "See also "+mentioned)
 	out = e.wp("ship", mentioned, "-m", "Reviewed")
@@ -140,15 +133,12 @@ func TestShipOnBranchNamedForAnotherTask(t *testing.T) {
 		t.Errorf("a key in a commit body shipped (%d opened):\n%s", len(fg.created), out)
 	}
 
-	// --no-ship already said they aren't its: no notice.
 	declined := task("Declined")
 	pushed("Other work")
 	if out = e.wp("ship", declined, "-m", "Nope", "--no-ship"); strings.Contains(out, "Notice:") {
 		t.Errorf("--no-ship still noticed:\n%s", out)
 	}
 
-	// Running it again once the task is finished opens nothing, even where
-	// the commit (squash-merged since) is still on the branch.
 	again := task("Finished already")
 	pushed("The work (" + again + ")")
 	e.wp("ship", again, "-m", "First", "--no-ship")
@@ -156,8 +146,6 @@ func TestShipOnBranchNamedForAnotherTask(t *testing.T) {
 		t.Errorf("a finished task's commit shipped again (%d opened, exit %d):\n%s", len(fg.created), code, out)
 	}
 
-	// A task that can't be read may be open or finished: its commits neither
-	// ship nor get left behind by finishing it, and --no-ship still can.
 	unread := task("Can't be read")
 	pushed("The work (" + unread + ")")
 	unreadable.Store(unread)
@@ -176,7 +164,6 @@ func TestShipOnBranchNamedForAnotherTask(t *testing.T) {
 		t.Errorf("--no-ship didn't finish it:\n%s", show)
 	}
 
-	// One matching commit among others would arm the others under this task.
 	mixed := task("One commit of several")
 	pushed("Add the parser (" + other + ")")
 	sh(t, dir, "commit", "-q", "--allow-empty", "-m", "Fix the redirect ("+mixed+")")
@@ -186,7 +173,6 @@ func TestShipOnBranchNamedForAnotherTask(t *testing.T) {
 		t.Errorf("a branch only partly this task's shipped (%d opened):\n%s", len(fg.created), out)
 	}
 
-	// A merge's subject mentions a task; it says nothing of whose the work is.
 	merged := task("Only merged in")
 	pushed("Other work")
 	side := strings.ToLower(merged) + "-fix"
@@ -199,7 +185,6 @@ func TestShipOnBranchNamedForAnotherTask(t *testing.T) {
 		t.Errorf("a merge's subject shipped the branch (%d opened):\n%s", len(fg.created), out)
 	}
 
-	// A merge of the base doesn't stop commits that all name the task.
 	withMain := task("Merged main in")
 	pushed("The work (" + withMain + ")")
 	sh(t, dir, "checkout", "-q", "main")
@@ -212,8 +197,6 @@ func TestShipOnBranchNamedForAnotherTask(t *testing.T) {
 		t.Errorf("a merge commit stopped the task's commits shipping (%d opened):\n%s", len(fg.created), out)
 	}
 
-	// Several tasks finish together: a subject naming one doesn't refuse
-	// them, and each gets a command it can really run.
 	one, two := task("One of two"), task("Two of two")
 	pushed("Fix it (" + one + ")")
 	out = e.wp("done", one, two, "-m", "Reviewed")
@@ -224,7 +207,6 @@ func TestShipOnBranchNamedForAnotherTask(t *testing.T) {
 		t.Errorf("the task didn't finish:\n%s", show)
 	}
 
-	// --json keeps stdout for the response, and still says what it left.
 	quiet := task("In JSON")
 	pushed("Other work")
 	var stdout, stderr bytes.Buffer
@@ -233,9 +215,6 @@ func TestShipOnBranchNamedForAnotherTask(t *testing.T) {
 		t.Errorf("--json (exit %d):\nstdout: %s\nstderr: %s", code, stdout.String(), stderr.String())
 	}
 
-	// A held task keeps a claim's rules even when the commits name it: its
-	// pull request here merged, so these commits are left over (WP-493). The
-	// project has to keep such a task open for this to arise.
 	autos, err := e.svc.ListAutomations(ctx, me, p.Key)
 	if err != nil {
 		t.Fatal(err)

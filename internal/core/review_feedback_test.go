@@ -39,7 +39,7 @@ func (re *reviewEnv) reports(t *testing.T) []feedbackReport {
 // finding remembers the request, and each change in how its findings fared
 // is reported once.
 func TestReviewFeedback(t *testing.T) {
-	re := newReviewEnv(t) // diff+files, then the verifier runs
+	re := newReviewEnv(t)
 	re.asGateway(t)
 	re.llm.answers[museModel] = loginFinding
 	re.llm.answers[mimoModel] = `{"verdicts":[{"n":1,"verdict":"keep","reason":"yes","line":0,"severity":"","claim":""}]}`
@@ -67,11 +67,9 @@ func TestReviewFeedback(t *testing.T) {
 		t.Fatalf("finding's request = %q (%v), want %q", linked, err, id)
 	}
 
-	// Open: nothing to report.
 	if got := re.reports(t); len(got) != 0 {
 		t.Errorf("reported an open finding: %+v", got)
 	}
-	// Dismissed: one false positive, reported once.
 	if _, err := re.s.DismissFinding(re.ctx, re.admin, run.Findings[0].ID, "the check is right"); err != nil {
 		t.Fatal(err)
 	}
@@ -81,14 +79,12 @@ func TestReviewFeedback(t *testing.T) {
 	if got := re.reports(t); len(got) != 0 {
 		t.Errorf("reported again with nothing changed: %+v", got)
 	}
-	// Reopened: the report is withdrawn (both counts 0).
 	if _, err := re.s.ReopenFinding(re.ctx, re.admin, run.Findings[0].ID); err != nil {
 		t.Fatal(err)
 	}
 	if got := re.reports(t); len(got) != 1 || got[0] != (feedbackReport{id, 0, 0, false}) {
 		t.Errorf("after reopening: %+v", got)
 	}
-	// An agent took it in its thread: verified.
 	if _, err := re.s.db.W.Exec(`INSERT INTO review_comments(pr_id, kind, ext_id, finding_id, verdict, created_at, updated_at, seen_at) VALUES (?, 'finding', 'f1', ?, ?, 1, 1, 1)`,
 		run.PR.ID, run.Findings[0].ID, VerdictAccepted); err != nil {
 		t.Fatal(err)
@@ -97,7 +93,6 @@ func TestReviewFeedback(t *testing.T) {
 		t.Errorf("after an agent accepted it: %+v", got)
 	}
 
-	// A gateway that is down keeps the report for later.
 	if _, err := re.s.db.W.Exec(`UPDATE bot_findings SET state = ? WHERE id = ?`, FindingFixed, run.Findings[0].ID); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +135,6 @@ func TestReviewFeedbackEvidenceAndUnknown(t *testing.T) {
 	if got := re.reports(t); len(got) != 0 {
 		t.Fatal(got)
 	}
-	// Young: tried again later. Old: not within the window.
 	var id string
 	var created, next int64
 	if err := re.s.db.R.QueryRow(`SELECT request_id, created_at, next_try_at FROM review_requests`).Scan(&id, &created, &next); err != nil {
@@ -219,8 +213,6 @@ func TestGatewayFeedbackClient(t *testing.T) {
 	if ids[2] != "/v1/feedback  Bearer olm_test" || bodies[2]["request_id"] != "wp-review-7-abc" || bodies[2]["verified"] != 2.0 || bodies[2]["false_positives"] != 3.0 {
 		t.Errorf("feedback %q %v", ids[2], bodies[2])
 	}
-	// An answer that raised nothing says so, with no counts (0 and 0
-	// would withdraw a report).
 	mu.Unlock()
 	err := c.Feedback(context.Background(), p, feedbackReport{requestID: "wp-review-7-def", noFindings: true})
 	mu.Lock()

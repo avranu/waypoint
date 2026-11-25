@@ -116,7 +116,6 @@ func TestOTLPReceiver(t *testing.T) {
 	if n := messages(); n != 1 {
 		t.Errorf("messages after first post: %d", n)
 	}
-	// an exporter's retry, this time gzipped
 	if code, _, _ := otlpPost(t, ts.URL, logs, tok, "application/json; charset=utf-8", "gzip", gz(t, body)); code != 200 {
 		t.Errorf("gzip: %d", code)
 	}
@@ -140,7 +139,6 @@ func TestOTLPReceiver(t *testing.T) {
 		t.Errorf("too large: %d", code)
 	}
 
-	// metrics are accepted and dropped
 	if code, out, _ := otlpPost(t, ts.URL, metrics, tok, "application/json", "", []byte(`{"resourceMetrics":[]}`)); code != 200 || !strings.Contains(out, "partialSuccess") {
 		t.Errorf("metrics: %d %q", code, out)
 	}
@@ -151,7 +149,6 @@ func TestOTLPReceiver(t *testing.T) {
 		t.Errorf("bad metrics: %d", code)
 	}
 
-	// protobuf, as OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf sends it
 	str := func(k, v string) *commonpb.KeyValue {
 		return &commonpb.KeyValue{Key: k, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: v}}}
 	}
