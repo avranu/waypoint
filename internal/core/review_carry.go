@@ -105,6 +105,19 @@ func (s *Service) noteReviewedHead(ctx context.Context, prID, automationID int64
 	}
 }
 
+// forgetReviewedHead drops what noteReviewedHead or a carry recorded for
+// rule's review of head: a later review of it whose findings weren't saved
+// leaves nothing a later head may carry (reviewedWhole).
+func (s *Service) forgetReviewedHead(ctx context.Context, prID, automationID int64, head string) {
+	err := s.write(ctx, SystemActor(), func(t *tx) error {
+		_, err := t.ExecContext(ctx, `DELETE FROM reviewed_heads WHERE pr_id = ? AND automation_id = ? AND head_sha = ?`, prID, automationID, head)
+		return err
+	})
+	if err != nil {
+		s.log.WarnContext(ctx, "forget a reviewed head", "pr", prID, "head", short(head), "err", err)
+	}
+}
+
 // carryDecision says whether the push from old's head to fp's only merged the
 // base in, so the reviews of the head before still hold. All of these:
 //   - the new head is a merge of exactly two parents whose first is the old

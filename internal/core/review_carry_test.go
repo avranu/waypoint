@@ -455,3 +455,53 @@ func TestCarriedHeadExpectedReviewer(t *testing.T) {
 		}
 	}
 }
+
+// As above, for a head already reviewed: a forced review of it whose
+// findings fail to save takes the earlier review's row away too, so the
+// merge-only push after it is reviewed (c6952).
+func TestUnsavedReviewAgainForgetsTheHead(t *testing.T) {
+	pe := newPREnv(t, "github")
+	pe.llm.answers["opencode/muse-spark-1.3-contributor-free"] = `{"findings":[]}`
+	pe.llm.answers["opencode/nemotron-3-ultra-free"] = `{"findings":[]}`
+	pe.diffs = map[string]string{"1111111aaaa": sampleDiff, "2222222bbbb": sampleDiff}
+	pe.fg.parents = map[string][]string{"2222222bbbb": {"1111111aaaa", "basebase01"}}
+	pr := ForgePR{Number: 5, Title: "Fix login", Author: "sam", HeadRef: "fix-login", HeadSHA: "1111111aaaa", State: "open"}
+	pe.pullHook("opened", pr)
+	first := pe.drain()
+	if len(first) != 1 || first[0].Status != "done" {
+		t.Fatalf("first review: %+v", first)
+	}
+	rows := func() int {
+		var n int
+		if err := pe.s.db.R.QueryRow(`SELECT count(*) FROM reviewed_heads WHERE head_sha = '1111111aaaa'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if rows() != 1 {
+		t.Fatalf("the first review wasn't recorded")
+	}
+	finding := `{"findings":[{"file":"app/login.go","line":21,"severity":"medium","claim":"The nil check is inverted.","suggestion":""}]}`
+	pe.llm.answers["opencode/muse-spark-1.3-contributor-free"] = finding
+	pe.llm.answers["opencode/nemotron-3-ultra-free"] = finding
+	if _, err := pe.s.db.W.ExecContext(pe.ctx, `CREATE TRIGGER no_findings BEFORE INSERT ON bot_findings
+		BEGIN SELECT RAISE(ABORT, 'disk full'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := pe.s.RetryBotRun(pe.ctx, pe.admin, first[0].ID); err != nil || again.Status != "queued" {
+		t.Fatalf("review again: %+v %v", again, err)
+	}
+	if got := pe.drain(); len(got) != 1 {
+		t.Fatalf("review again: %+v", got)
+	}
+	if n := rows(); n != 0 {
+		t.Fatalf("reviewed_heads rows after the unsaved review = %d, want 0", n)
+	}
+	calls := len(pe.llm.calls)
+	pr.HeadSHA = "2222222bbbb"
+	pe.pullHook("synchronize", pr)
+	got := pe.drain()
+	if len(got) != 1 || (got[0].Status == "skipped" && strings.HasPrefix(got[0].Summary, carriedPrefix)) || len(pe.llm.calls) == calls {
+		t.Fatalf("merge-only push carried the review: %+v, %d model calls", got, len(pe.llm.calls)-calls)
+	}
+}

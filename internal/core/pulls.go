@@ -1702,6 +1702,10 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	if err := s.saveFindings(ctx, r, fp.HeadSHA, o.placed, append(slices.Clone(o.verifyDropped), noEvidence...), o.emptyRequests, private); err != nil {
 		s.log.ErrorContext(ctx, "save findings", "run", r.ID, "err", err)
 		o.unsaved = true
+		// An earlier review of this head (or one carried to it) no longer
+		// stands either: this one's findings, which the gate hasn't seen,
+		// are on the same head, so a later merge-only push must not carry it.
+		s.forgetReviewedHead(context.WithoutCancel(ctx), pr.ID, ruleID(r.AutomationID), fp.HeadSHA)
 	} else if _, err := s.syncFindings(ctx, f, pr, false); err != nil {
 		s.log.WarnContext(ctx, "link findings to their threads", "run", r.ID, "err", err) // the next sync does
 	}
