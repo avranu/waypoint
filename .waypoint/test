@@ -90,11 +90,15 @@ fi
 # workflows, the Makefile, lock files, deploy scripts. internal/cilint reads
 # the index and most of those, so it runs every time (about 20 CPU seconds);
 # the others when the files they read changed.
-guards="./internal/cilint"
+guards=
+# A changed internal/cilint runs whole below, so the guard run would repeat it.
+printf '%s\n' "$pkgs" | grep -q -x './internal/cilint' || guards="./internal/cilint"
 any '^deploy/' && guards="$guards ./internal/repocheck"
 any '(^|/)package-lock\.json$|^renovate\.json$|^go\.(mod|sum)$' && guards="$guards ./internal/depage"
-# shellcheck disable=SC2086 # the packages are words
-step guards go test -count=1 -vet=off -timeout 30m $guards
+if [ -n "$guards" ]; then
+  # shellcheck disable=SC2086 # the packages are words
+  step guards go test -count=1 -vet=off -timeout 30m $guards
+fi
 if any '^(\.forgejo/|\.gitattributes$|web/src/lib/theme\.ts$)'; then
   # The three tests of internal/core that read those files.
   step core-guards go test -count=1 -vet=off -timeout 30m -run '^(TestAdvisoriesJobIsInWorkflow|TestGitAttributesUnionMerge|TestLookPaletteMatchesWeb)$' ./internal/core
@@ -104,8 +108,8 @@ if [ -n "$golang" ]; then
   step tests wp test go -- -vet=off -timeout 30m
 fi
 
-passed=$(echo $passed | sed 's/ /, /g')
-failed=$(echo $failed | sed 's/ /, /g')
+passed=$(echo "$passed" | sed 's/^ //; s/ /, /g')
+failed=$(echo "$failed" | sed 's/^ //; s/ /, /g')
 if [ -n "$failed" ]; then
   echo ".waypoint/test: failed: $failed; passed: ${passed:-none}" >&2
   exit 1
