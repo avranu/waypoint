@@ -83,7 +83,7 @@ backups, reverse proxies and upgrades are in [docs/DEPLOY.md](docs/DEPLOY.md).
 ```sh
 make dev     # Go API on :8080 + Vite on http://localhost:5173 with live reload
 make test    # go vet, go test, TypeScript typecheck (CI also runs -race)
-make check   # test + lint (golangci-lint, gosec) + govulncheck; CI shards the tests, with its own time limits
+make check   # test + lint (golangci-lint, gosec) + govulncheck; CI runs the same
 make e2e     # Playwright browser checks against a throwaway server (e2e/); E2E_LOOKS=one for a quicker pass
 make cli     # cross-compile the wp CLI into bin/cli (served at /cli)
 make sast    # gosec (advisory)
