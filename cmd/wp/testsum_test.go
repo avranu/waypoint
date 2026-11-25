@@ -570,6 +570,27 @@ func TestKeptRedactionWholeText(t *testing.T) {
 			absent:  []string{body, "=AbCd", "GnuPG"},
 			present: []string{"-----BEGIN PGP PRIVATE KEY BLOCK-----", "after"},
 		},
+		"unterminated PGP block, more armor headers": {
+			in:      "-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v2\nCharset: UTF-8\nHash: SHA256\nMessageID: abc\n\n" + body + "\n" + body + "\nafter\n",
+			absent:  []string{body},
+			present: []string{"after"},
+		},
+		"unterminated, a header not listed": {
+			in:   begin + "\nX-Other: yes\n\n" + body + "\n" + b64(12) + "\nafter\n",
+			want: begin + "\nX-Other: yes\n\n***\n***\nafter\n",
+		},
+		"unterminated, a short line with a field after it": {
+			in:   begin + "\n" + body + "\nabcdEFGH1234 trailing\n" + body + "\nafter\n",
+			want: begin + "\n***\n***\n***\nafter\n",
+		},
+		"unterminated, another line inside the key": {
+			in:   begin + "\n" + body + "\n12:00 GET /health ok\n12:00 " + body + "\n12:00 " + b64(12) + "\nafter\n",
+			want: begin + "\n***\n12:00 GET /health ok\n***\n***\nafter\n",
+		},
+		"a key-like line past where an END is looked for": {
+			in:   begin + "\n" + numbered(400) + body + "\n",
+			want: begin + "\n" + numbered(400) + body + "\n",
+		},
 		"a PGP end line inside another key": {
 			in:   begin + "\n" + body + "\n-----END PGP PRIVATE KEY BLOCK-----\n" + body + "\n" + end + "\nafter\n",
 			want: begin + "\n***\n***\n***\n" + end + "\nafter\n",
