@@ -131,8 +131,9 @@ func (s *Server) checkPull(w http.ResponseWriter, r *http.Request) (any, error) 
 	return s.svc.CheckPullRequest(r.Context(), actorFrom(r), id)
 }
 
-// rerunPull re-runs the failed jobs of the head's newest run, or with ?job=
-// only that one, without a push (WP-1661).
+// rerunPull re-runs the failed jobs of the run that counts for each workflow
+// on the head (one count for all), or with ?job= only that one, without a
+// push (WP-1661).
 func (s *Server) rerunPull(w http.ResponseWriter, r *http.Request) (any, error) {
 	id, err := pathID(r, "id")
 	if err != nil {

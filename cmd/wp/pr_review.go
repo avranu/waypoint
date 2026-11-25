@@ -33,7 +33,8 @@ func init() {
 		{name: "retry", aliases: []string{"rerun", "again"}, args: "[N...] [--run ID]", summary: "review the pull request's head again",
 			about: `For each review rule, queues its newest finished review run again at the
 pull request's current head, reviewing even a head already reviewed. A rule
-whose review is queued or running is left as it is. --run ID retries that run.`,
+whose review is queued or running is left as it is. --run ID retries that run.
+For failed CI jobs use wp pr rerun.`,
 			examples: []string{"wp pr review retry 12", "wp pr review retry --run 345"}, run: cmdPRReviewRetry},
 		{name: "cancel", aliases: []string{"stop"}, args: "[N...] [--run ID]", summary: "stop the pull request's queued and running runs",
 			about: `Cancels every queued or running bot run on the pull request, or with --run

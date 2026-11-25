@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 type rerunForge struct {
 	core.ForgeClient
 	calls []string
+	err   error // RerunJobs answers it with the jobs it re-ran
 }
 
 func (f *rerunForge) GetItem(ctx context.Context, fg *core.Forge, repo string, n int, pr bool) (*core.ForgeItem, error) {
@@ -29,10 +31,13 @@ func (f *rerunForge) RerunJobs(ctx context.Context, fg *core.Forge, repo, sha, o
 	if only != "" {
 		jobs = []string{only}
 	}
-	return &core.RerunResult{Jobs: jobs, RunURL: "https://git.example.com/robin/waypoint/actions/runs/9"}, nil
+	return &core.RerunResult{Jobs: jobs, RunURL: "https://git.example.com/robin/waypoint/actions/runs/9"}, f.err
 }
 
-func TestCLIPRRerun(t *testing.T) {
+// rerunEnv is a pull request (robin/waypoint#3) on a forge with a token, for
+// a CLI signed in as a person: an agent merges only the pull requests it wrote.
+func rerunEnv(t *testing.T) (*env, *rerunForge) {
+	t.Helper()
 	e := newEnv(t)
 	me := e.login()
 	fg := &rerunForge{}
@@ -42,15 +47,33 @@ func TestCLIPRRerun(t *testing.T) {
 	if _, err := e.svc.UpdateForge(context.Background(), me, 1, core.ForgeInput{Token: &token}); err != nil {
 		t.Fatal(err)
 	}
+	person, _, err := e.svc.CreateToken(context.Background(), me, core.TokenSpec{Name: "person"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WAYPOINT_TOKEN", person)
 	gitRepo(t, "git@git.example.com:robin/waypoint.git")
+	return e, fg
+}
 
+// The refused rest of a partial re-run is said, with where to read what is
+// still failed.
+func TestCLIPRRerunPartial(t *testing.T) {
+	e, fg := rerunEnv(t)
+	fg.err = errors.New("502 bad gateway")
+	out := e.wp("pr", "rerun", "3")
+	for _, want := range []string{"re-ran 2 jobs (backend, e2e)", "the forge refused the rest: 502 bad gateway; `wp pr log 3` shows what is still failed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestCLIPRRerun(t *testing.T) {
+	e, _ := rerunEnv(t)
 	out, code := e.run("pr", "rerun", "3")
 	if code != 0 {
-		// The CLI's token is an agent's, which merges only its own pull requests.
-		if !strings.Contains(out, "agents merge only the pull requests they wrote") {
-			t.Fatalf("rerun: %d %s", code, out)
-		}
-		t.Skip("the test agent isn't the pull request's author; the service tests cover the rest")
+		t.Fatalf("rerun: %d %s", code, out)
 	}
 	for _, want := range []string{"robin/waypoint#3: re-ran 2 jobs (backend, e2e) on abc1233 (1 of 2 for this head).", "Run: https://git.example.com/robin/waypoint/actions/runs/9", "wp pr wait 3"} {
 		if !strings.Contains(out, want) {

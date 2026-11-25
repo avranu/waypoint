@@ -216,23 +216,12 @@ func (c *httpForgeClient) retryForgejo(ctx context.Context, f *Forge, repo, sha 
 	if !ok {
 		return 0, errForgejoNoRerun
 	}
-	var runs struct {
-		Runs []ActionRun `json:"workflow_runs"`
-	}
-	if err := c.do(ctx, f, http.MethodGet, fmt.Sprintf("/repos/%s/actions/runs?head_sha=%s&limit=50", repo, url.QueryEscape(sha)), nil, &runs); err != nil {
+	redo, _, err := c.forgejoRunsToRerun(ctx, f, repo, sha)
+	if err != nil {
 		return 0, err
 	}
-	counting := countingRuns(runs.Runs)
 	n := 0
-	for _, r := range runs.Runs { // in the forge's order, each counting run once
-		if cr, ok := counting[runGroup(r)]; !ok || cr.ID != r.ID {
-			continue
-		}
-		// A fail-fast run ends "cancelled": its first failure cancelled the
-		// rest. Its failed and cancelled jobs both go again.
-		if r.Status != "failure" && r.Status != "cancelled" {
-			continue
-		}
+	for _, r := range redo {
 		m, err := c.rerunForgejoJobs(ctx, f, repo, r.ID)
 		n += m
 		if err != nil {
@@ -300,15 +289,14 @@ func (c *httpForgeClient) rerunForgejoNamed(ctx context.Context, f *Forge, repo 
 // (any case): a job it doesn't name is neither picked nor left out of the
 // needs check (WP-1661).
 func nextRerun(jobs []ActionJob, posted map[int64]bool, only string) (ActionJob, bool) {
-	redo := func(j ActionJob) bool { return j.Status == "failure" || j.Status == "cancelled" }
 	failed := map[string]bool{}
 	for _, j := range jobs {
-		if redo(j) {
+		if actionJobFailed(j) {
 			failed[strings.ToLower(j.Name)] = true
 		}
 	}
 	for _, j := range jobs {
-		if redo(j) && !posted[j.ID] && (only == "" || strings.EqualFold(j.Name, only)) && !slices.ContainsFunc(j.Needs, func(need string) bool { return failed[strings.ToLower(need)] }) {
+		if actionJobFailed(j) && !posted[j.ID] && (only == "" || strings.EqualFold(j.Name, only)) && !slices.ContainsFunc(j.Needs, func(need string) bool { return failed[strings.ToLower(need)] }) {
 			return j, true
 		}
 	}

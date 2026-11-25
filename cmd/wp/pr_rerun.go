@@ -10,15 +10,18 @@ import (
 var prRerunCmd = &command{
 	name: "rerun", aliases: []string{"retry-ci"}, args: "[N...] [--job NAME]",
 	summary: "re-run the failed CI jobs of a pull request's head, without a push",
-	about: `Re-runs the failed and cancelled jobs of the newest run on the pull
-request's head (a flaky test, a runner that died), keeping the failed logs
-and test results as evidence first. --job NAME re-runs only that failed job
-(the name the run shows, without the workflow prefix).
+	about: `Re-runs the failed and cancelled jobs of the run that counts for each
+workflow on the pull request's head (a flaky test, a runner that died). The
+failed jobs' test results are kept first (the forge replaces the logs), and
+the failing tests are noted in the pull request's history. --job NAME
+re-runs only that failed job (the name the run shows, without the workflow
+prefix).
 
-At most twice per head: a failure that comes back twice is the code's, so
-push a fix. Whoever may merge the pull request may re-run it; the forge must
-be able to re-run jobs (Forgejo 17 or later). Each re-run is recorded in the
-pull request's activity.`,
+At most twice per head, one count for all the workflows: a failure that
+comes back twice is the code's, so push a fix. Whoever may merge the pull
+request may re-run it; the forge must be able to re-run jobs (Forgejo 17 or
+later). A run still going is not re-run: wait for it to end. Each re-run is
+recorded in the pull request's activity and history.`,
 	examples: []string{"wp pr rerun 12", "wp pr rerun 12 --job backend", "wp pr wait 12"},
 	run:      cmdPRRerun,
 }
@@ -30,6 +33,8 @@ type prRerunResult struct {
 	Head   string   `json:"head"`
 	Count  int      `json:"count"`
 	Max    int      `json:"max"`
+	// Partial is why the forge refused the rest of the jobs.
+	Partial string `json:"partial"`
 }
 
 func cmdPRRerun(c *cli, args []string) error {
@@ -63,6 +68,9 @@ func cmdPRRerun(c *cli, args []string) error {
 			fmt.Fprintf(&b, "%s#%d: re-ran %s on %s (%d of %d for this head).", d.Repo, d.Number, what, shortSHA(r.Head), r.Count, r.Max)
 			if r.RunURL != "" {
 				fmt.Fprintf(&b, "\nRun: %s", r.RunURL)
+			}
+			if r.Partial != "" {
+				fmt.Fprintf(&b, "\nthe forge refused the rest: %s; `wp pr log %d` shows what is still failed", r.Partial, d.Number)
 			}
 			fmt.Fprintf(&b, "\nWait for it: wp pr wait %d", d.Number)
 			return b.String()

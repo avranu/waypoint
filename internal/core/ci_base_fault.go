@@ -256,7 +256,7 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 		}
 		hasFault := false
 		for _, j := range jobs {
-			if j.Status != "failure" && j.Status != "cancelled" {
+			if !actionJobFailed(j) {
 				continue
 			}
 			if j.Name == advisoriesJob {

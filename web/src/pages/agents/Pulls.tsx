@@ -778,6 +778,7 @@ const KIND: Record<PRTimelineItem['kind'], { icon: ReactNode; color?: string; ve
   changes_requested: { icon: <ShieldAlert />, color: 'var(--wp-warn)', verb: 'asked for changes' },
   merged: { icon: <GitMerge />, color: 'var(--wp-accent)', verb: 'merged it' },
   closed: { icon: <GitPullRequestClosed />, color: 'var(--wp-danger)', verb: 'closed it' },
+  ci_rerun: { icon: <RotateCcw />, color: 'var(--wp-warn)', verb: 're-ran the failed CI jobs' },
   bot_review: { icon: <Bot />, color: 'var(--wp-accent)', verb: 'reviewed it' },
   agent_run: { icon: <Sparkles />, color: 'var(--wp-accent)', verb: 'worked on' },
   issue_status: { icon: <ArrowRight />, verb: 'moved' },

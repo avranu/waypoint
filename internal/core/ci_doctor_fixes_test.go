@@ -139,7 +139,7 @@ type realRerunForge struct {
 func (g *realRerunForge) CanRetryChecks(context.Context, *Forge) (bool, error) { return true, nil }
 
 func (g *realRerunForge) RerunJobs(ctx context.Context, _ *Forge, repo, sha, only string) (*RerunResult, error) {
-	return g.cl.RerunJobs(ctx, g.f, repo, sha, only)
+	return g.cl.RerunJobs(ctx, g.f, repo, strings.Repeat("a", 40), only) // the fake forge's runs carry no commit id to match a short one
 }
 
 // WP-1851: naming a failed job that Forgejo re-runs only with another failed

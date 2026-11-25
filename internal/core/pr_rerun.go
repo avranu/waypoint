@@ -5,7 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
+
+// rerunTimeout bounds what a re-run does once it is claimed: the forge's
+// answer, giving the claim back, and recording it. A caller that goes away
+// doesn't cut it short (WP-1661).
+const rerunTimeout = 2 * time.Minute
 
 // maxManualReruns is how often wp pr rerun re-runs one head's failed jobs
 // (WP-1661): a failure that comes back twice is the code's, not a flake.
@@ -21,12 +27,16 @@ type PRRerun struct {
 	// of Max.
 	Count int `json:"count"`
 	Max   int `json:"max"`
+	// Partial is why the forge refused the rest, when some jobs went again
+	// and then it refused.
+	Partial string `json:"partial,omitempty"`
 }
 
-// RerunPullRequest re-runs the failed and cancelled jobs of the newest run
-// on a pull request's head, or only the job called job, without a push
-// (WP-1661). Whoever may merge the pull request may do it, at most twice per
-// head; each is recorded in its activity.
+// RerunPullRequest re-runs the failed and cancelled jobs of the run that
+// counts for each workflow on a pull request's head, or only the job called
+// job, without a push (WP-1661). One count covers them all. Whoever may merge
+// the pull request may do it, at most twice per head; each is recorded in
+// its activity and its history, with what failed.
 func (s *Service) RerunPullRequest(ctx context.Context, actor *Actor, prID int64, job string) (*PRRerun, error) {
 	pr, err := s.prByID(ctx, s.db.R, prID)
 	if err != nil {
@@ -65,9 +75,16 @@ func (s *Service) RerunPullRequest(ctx context.Context, actor *Actor, prID int64
 	if !claimed {
 		return nil, invalid("%s's head %s was already re-run %d times: push a fix or read why it fails (wp pr log %d)", ref, short(pr.HeadSHA), maxManualReruns, pr.Number)
 	}
-	bg := context.WithoutCancel(ctx)
-	s.keepFailedEvidence(bg, f, pr.Repo, pr.HeadSHA) // the re-run replaces their logs (WP-704)
-	res, err := cl.RerunJobs(ctx, f, pr.Repo, pr.HeadSHA, job)
+	// The claim is made: a caller that goes away must not cancel the re-run
+	// or leave it unrecorded.
+	bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), rerunTimeout)
+	defer cancel()
+	failedChecks, ferr := s.flakeChecks(bg, pr) // what failed, for the history
+	if ferr != nil {
+		s.log.WarnContext(ctx, "read the failed checks before a re-run", "pr", pr.ID, "err", ferr)
+	}
+	s.keepFailedEvidence(bg, f, pr.Repo, pr.HeadSHA) // the forge replaces the failed jobs' logs (WP-704)
+	res, err := cl.RerunJobs(bg, f, pr.Repo, pr.HeadSHA, job)
 	if res == nil {
 		res = &RerunResult{}
 	}
@@ -86,26 +103,55 @@ func (s *Service) RerunPullRequest(ctx context.Context, actor *Actor, prID int64
 		return nil, invalid("%s", strings.TrimPrefix(err.Error(), ErrUnsupported.Error()+": "))
 	case err != nil && did == 0:
 		return nil, fmt.Errorf("re-run the failed jobs of %s: %w", ref, err)
+	case err == nil && did == 0 && res.Active > 0:
+		return nil, invalid("%s's runs on %s are still going: a failed job can be re-run when its run ends (wp pr wait %d)", ref, short(pr.HeadSHA), pr.Number)
 	case err == nil && did == 0:
 		return nil, invalid("nothing failed on %s's head %s: wp pr wait %d to see where it stands", ref, short(pr.HeadSHA), pr.Number)
 	}
+	partial := ""
 	if err != nil { // some went again before the forge refused
+		partial = excerpt(err.Error(), 200)
 		s.log.WarnContext(ctx, "re-run failed jobs: the forge refused part", "pr", pr.ID, "err", err)
 	}
 	what := fmt.Sprintf("%d run%s", res.Runs, plural(res.Runs))
 	if len(res.Jobs) > 0 {
 		what = strings.Join(res.Jobs, ", ")
 	}
-	if werr := s.write(ctx, actor, func(t *tx) error {
+	detail := fmt.Sprintf("re-ran %s on %s (%d of %d for this head)", excerpt(what, 200), short(pr.HeadSHA), count, maxManualReruns)
+	if partial != "" {
+		detail += "; the forge refused the rest: " + partial
+	}
+	if werr := s.write(bg, actor, func(t *tx) error {
 		t.audit(AuditEntry{Action: "pr.rerun", Category: AuditControl, ProjectID: pid, TargetType: "pr", TargetID: pr.ID,
-			Target: ref, URL: pr.URL, Detail: fmt.Sprintf("re-ran %s on %s (%d of %d for this head)", excerpt(what, 200), short(pr.HeadSHA), count, maxManualReruns), About: pr.Agent})
+			Target: ref, URL: pr.URL, Detail: detail, About: pr.Agent})
 		t.emit(&Event{Kind: EvPRActivity, ProjectID: pid, New: "rerun", Data: map[string]any{"pr_id": pr.ID, "head_sha": pr.HeadSHA}})
-		return nil
+		return s.savePREvents(bg, t, pr, []prEventRow{{kind: "ci_rerun", actor: actor.User.Username, sha: pr.HeadSHA, url: res.RunURL,
+			body: rerunHistory(detail, failedChecks), extID: fmt.Sprintf("rerun:%s:%d", pr.HeadSHA, count), at: s.nowMS()}}, pid, false)
 	}); werr != nil {
 		s.log.WarnContext(ctx, "record a re-run", "pr", pr.ID, "err", werr)
 	}
 	s.refreshPRChecks(bg, pr.ID) // the checks show pending at once
-	return &PRRerun{Jobs: res.Jobs, Runs: res.Runs, RunURL: res.RunURL, Head: pr.HeadSHA, Count: count, Max: maxManualReruns}, nil
+	return &PRRerun{Jobs: res.Jobs, Runs: res.Runs, RunURL: res.RunURL, Head: pr.HeadSHA, Count: count, Max: maxManualReruns, Partial: partial}, nil
+}
+
+// rerunHistory is a re-run's line in the pull request's history: what went
+// again, then what each failed check had failed, by its failing tests or the
+// last lines of its log.
+func rerunHistory(detail string, checks []flakeCheck) string {
+	var b strings.Builder
+	b.WriteString(detail)
+	for _, c := range checks {
+		what := strings.Join(c.Tests, ", ")
+		if what == "" {
+			lines := strings.Split(strings.TrimSpace(c.Excerpt), "\n")
+			what = strings.Join(lines[max(len(lines)-2, 0):], " / ")
+		}
+		b.WriteString("\n" + c.Name)
+		if what = strings.TrimSpace(what); what != "" {
+			b.WriteString(": " + excerpt(what, 150))
+		}
+	}
+	return b.String()
 }
 
 // claimManualRerun takes one of a head's re-runs: its new count, and false
