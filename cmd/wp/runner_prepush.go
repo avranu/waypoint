@@ -100,9 +100,12 @@ func (p *runnerProc) commitLeft(ctx context.Context, run *jobRun, in agentJob, w
 }
 
 // pushable is ctx while the job's time lasts, and a fresh bounded one for the
-// push once it has run out, as salvage has.
+// push once it has run out, as salvage has. A job a person stopped stays
+// stopped: its ctx is returned as it is, so nothing more is committed or
+// pushed (ctx is the job clock's, whose Err says DeadlineExceeded for either
+// of its limits).
 func pushable(ctx context.Context) (context.Context, context.CancelFunc) {
-	if ctx.Err() == nil {
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return ctx, func() {}
 	}
 	return context.WithTimeout(context.WithoutCancel(ctx), salvageTimeout)
@@ -144,10 +147,15 @@ func (p *runnerProc) prePush(ctx context.Context, run *jobRun, in agentJob, work
 			result["tokens"] = t
 		}
 		cctx, cancel := pushable(ctx)
-		if err := p.commitLeft(cctx, run, in, work); err != nil {
-			fmt.Fprintf(run.out, "\n%v\n", err)
-		}
+		cerr := p.commitLeft(cctx, run, in, work)
 		cancel()
+		if cerr != nil {
+			// The check would read the fix in the work tree, but only the
+			// commits are pushed: no verdict on them (c6954).
+			fmt.Fprintf(run.out, "\n%v\n", cerr)
+			result["pre_push"] = "failed: the agent's fix couldn't be committed: " + excerpt(cerr.Error(), 300)
+			return pushable(ctx)
+		}
 		if ctx.Err() == nil {
 			if again := runPrePush(ctx, run, work, chk.env); again.ran {
 				if again.ok {

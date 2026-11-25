@@ -576,6 +576,9 @@ func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare
 		}
 		ctx, cancel := p.prePush(ctx, run, in, work, baseSHA, chk, result)
 		defer cancel()
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return outcome{State: "cancelled", Error: "Stopped."} // during the check: nothing goes
+		}
 		revs, err := p.git(ctx, work, "rev-list", "--reverse", baseSHA+"..HEAD")
 		if err != nil {
 			return p.partial(result, "%v", err)
@@ -635,6 +638,11 @@ func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare
 			}
 			commits, files = h.commits, h.files
 			result["commits"], result["files"] = commits, files
+			// The check ran on the agent's protected changes, which are now
+			// taken out: its verdict is not on what is pushed.
+			if v, ok := result["pre_push"].(string); ok {
+				result["pre_push"] = "not run on the pushed commits: protected files were restored after it (it had " + v + ")"
+			}
 		}
 		if len(commits) > 0 {
 			result["commit"] = commits[len(commits)-1]

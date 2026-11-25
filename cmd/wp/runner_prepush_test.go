@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,8 +18,9 @@ case "$prompt" in
   *"pre-push check"*)
     echo "$prompt" > "$FAKE_OUT/fixprompt"
     [ -n "$FAKE_NOFIX" ] || echo ok > fixed.txt
+    [ -z "$FAKE_LOCK" ] || touch "$(git rev-parse --git-dir)/index.lock"
     ;;
-  *) echo work > work.txt ;;
+  *) echo work > work.txt; [ -z "$FAKE_PROTECT" ] || echo keep > keep.txt ;;
 esac
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"done","usage":{"input_tokens":10,"output_tokens":5},"total_cost_usd":0.01}'
 `
@@ -49,7 +51,7 @@ func prePushRepo(t *testing.T, script string) string {
 
 func runPrePushJob(t *testing.T, remote string, mod func(*agentJob)) (map[string]any, outcome, string) {
 	t.Helper()
-	passTestEnv(t, "FAKE_NOFIX")
+	passTestEnv(t, "FAKE_NOFIX", "FAKE_LOCK", "FAKE_PROTECT")
 	job := agentJob{CLI: "claude", Prompt: "Do it.", Repo: remote, Branch: "agent/round", Push: true, Permission: "edit_run", CommitMessage: "Round"}
 	if mod != nil {
 		mod(&job)
@@ -158,6 +160,58 @@ func TestPrePushCheck(t *testing.T) {
 		res, _, _ := runPrePushJob(t, remote, func(j *agentJob) { j.ReadOnly, j.Push = true, false })
 		if _, ok := res["pre_push"]; ok || timesRan(t, rec) != 0 {
 			t.Errorf("pre_push = %v, ran %d", res["pre_push"], timesRan(t, rec))
+		}
+	})
+	// A fix that can't be committed isn't pushed, so the check's pass on
+	// the work tree is no verdict on what is (c6954).
+	t.Run("fix not committed", func(t *testing.T) {
+		rec := fakeCLI(t, "claude", fakePrePushClaude)
+		t.Setenv("FAKE_LOCK", "1")
+		remote := prePushRepo(t, prePushScript)
+		res, o, log := runPrePushJob(t, remote, nil)
+		pp, _ := res["pre_push"].(string)
+		if o.State != "done" || res["pushed"] != true || !strings.HasPrefix(pp, "failed: the agent's fix couldn't be committed") || timesRan(t, rec) != 1 {
+			t.Fatalf("result = %v, ran %d\n%s", res, timesRan(t, rec), log)
+		}
+	})
+	// The check ran on a protected change that is then taken out: its
+	// verdict isn't on the pushed commits (c6953).
+	t.Run("protected files restored", func(t *testing.T) {
+		fakeCLI(t, "claude", fakePrePushClaude)
+		t.Setenv("FAKE_PROTECT", "1")
+		remote := prePushRepo(t, "true\n")
+		res, o, log := runPrePushJob(t, remote, func(j *agentJob) { j.ProtectPaths = []string{"work.txt"} })
+		pp, _ := res["pre_push"].(string)
+		if o.State != "done" || res["pushed"] != true || !strings.HasPrefix(pp, "not run on the pushed commits") {
+			t.Fatalf("result = %v\n%s", res, log)
+		}
+		if got := gitOut(t, remote, "show", "agent/round:keep.txt"); got != "keep" {
+			t.Errorf("keep.txt not pushed: %q", got)
+		}
+	})
+	// A job a person stops during the check pushes nothing (c6948).
+	t.Run("stopped during the check", func(t *testing.T) {
+		rec := fakeCLI(t, "claude", fakePrePushClaude)
+		remote := prePushRepo(t, "touch \"$FAKE_OUT/checking\"; sleep 30\n")
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			for ctx.Err() == nil {
+				if _, err := os.Stat(filepath.Join(rec, "checking")); err == nil {
+					cancel()
+					return
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+		}()
+		job := agentJob{CLI: "claude", Prompt: "Do it.", Repo: remote, Branch: "agent/round", Push: true, Permission: "edit_run", CommitMessage: "Round"}
+		run := newRun(time.Minute)
+		o := newTestProc(t).execAgent(ctx, run, "agent", job)
+		if o.State != "cancelled" {
+			t.Fatalf("outcome = %+v\n%s", o, run.out.text())
+		}
+		if err := exec.Command("git", "-C", remote, "rev-parse", "-q", "--verify", "refs/heads/agent/round").Run(); err == nil {
+			t.Errorf("the branch was pushed after the job was stopped")
 		}
 	})
 	t.Run("salvage does not run it", func(t *testing.T) {
