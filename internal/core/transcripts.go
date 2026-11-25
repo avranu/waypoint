@@ -630,6 +630,15 @@ type TranscriptFile struct {
 	LastAt         int64            `json:"last_at"`
 }
 
+// refuseAutomationTranscripts: an automation never reads raw transcripts or
+// the session facts derived from them, its person's or anyone's (audit 1907.4).
+func (a *Actor) refuseAutomationTranscripts(what string) error {
+	if a != nil && a.Automation != nil {
+		return forbidden("%s is not for automations: an automation never reads raw transcripts or session facts, even its person's", what)
+	}
+	return nil
+}
+
 type transcriptPiece struct {
 	id          int64
 	user        string
@@ -651,12 +660,25 @@ type transcriptPiece struct {
 // machine, file (main first), generation and offset: the order to read them
 // in. Raw transcripts are your own person's (also from an agent), or anyone's
 // when an admin who is a person, not an agent.
+//
+// Audit 1218.2 ruled that no agent reads raw transcripts. WP-1587 replaced
+// that rule on the owner's decision: an agent in the person's shell or session
+// must be able to run `wp usage transcript` and `wp usage facts`. The rule now:
+// your own person's, by an actor with the transcripts.read permission (the
+// person's own login, also inside an agent's shell or session, has every
+// permission; a token needs it granted, and no preset grants it, so usage.read
+// alone is not enough). What still guards it (audit 1907.4): that permission,
+// no reads by an automation, and another person's transcripts staying with a
+// person acting directly.
 func (s *Service) transcriptPieces(ctx context.Context, actor *Actor, q TranscriptQuery) ([]transcriptPiece, error) {
 	if !transcriptSessionRE.MatchString(q.Session) {
 		return nil, invalid("a session id is required")
 	}
 	if actor == nil {
 		return nil, ErrUnauthorized
+	}
+	if err := actor.refuseAutomationTranscripts("reading transcripts"); err != nil {
+		return nil, err
 	}
 	// usageWho needs usage.read, refuses a runner job's scoped token and an
 	// agent token reading another person's usage.
@@ -674,6 +696,9 @@ func (s *Service) transcriptPieces(ctx context.Context, actor *Actor, q Transcri
 		if err := actor.requirePersonDirect("reading another person's transcript"); err != nil {
 			return nil, forbidden("%v; read your own person's transcripts by leaving out --user", err)
 		}
+	}
+	if err := actor.need(PermTranscriptsRead); err != nil {
+		return nil, err
 	}
 	where, args := []string{"p.session = ?"}, []any{q.Session}
 	if !everyone {

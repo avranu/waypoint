@@ -504,6 +504,28 @@ func TestUsageForTask(t *testing.T) {
 	}
 }
 
+// A refused call wrote nothing (a hook block, a denial, a rejection): it is
+// not an edit (audit 1907.5). A shell edit that exited non-zero still counts,
+// as `sed -i ... && go test` writes before the test fails; an edit-tool call
+// that failed does not.
+func TestUsageForTaskEditsLeaveOutRefused(t *testing.T) {
+	f := newFeatureEnv(t)
+	i := f.task(-10, "v0.80.0", "v0.79.0", 500)
+	f.ingest(f.me, "tools", "m1", UsageChunk{Tools: []UsageToolRow{
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "builtin", Tool: "Edit", Calls: 1, Refusals: 1},
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "builtin", Tool: "Write", Calls: 4, Errors: 1, Refusals: 1},
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "shell_edit", Tool: "Bash", Calls: 1, Refusals: 1},
+		{Hour: f.hour(-9), Session: "s1", Repo: "acme/web", Kind: "shell_edit", Tool: "Bash", Calls: 1, Errors: 1},
+	}})
+	o, err := f.s.UsageForTask(f.ctx, f.me, UsageQuery{}, i.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Edits != 2 || o.ShellEdits != 1 {
+		t.Errorf("edits %d, shell edits %d; want 2 and 1", o.Edits, o.ShellEdits)
+	}
+}
+
 // Bash calls that wrote files are counted per hour the client marked; the
 // Bash calls of hours it did not mark leave the figure a floor, not zero.
 func TestUsageForTaskShellEdits(t *testing.T) {
@@ -518,8 +540,8 @@ func TestUsageForTaskShellEdits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o.ShellEdits != 6 || o.ShellEditsUncounted != 5 {
-		t.Errorf("shell edits %d, uncounted Bash calls %d; want 6 and 5 (the unmarked hour)", o.ShellEdits, o.ShellEditsUncounted)
+	if o.ShellEdits != 7 || o.ShellEditsUncounted != 5 {
+		t.Errorf("shell edits %d, uncounted Bash calls %d; want 7 (a failed one still wrote) and 5 (the unmarked hour)", o.ShellEdits, o.ShellEditsUncounted)
 	}
 	for _, u := range o.Used {
 		if u.Kind == "shell_edit" {

@@ -258,6 +258,9 @@ func (s *Service) SessionFacts(ctx context.Context, actor *Actor, q FactsQuery) 
 	if actor == nil {
 		return nil, ErrUnauthorized
 	}
+	if err := actor.refuseAutomationTranscripts("reading session facts"); err != nil {
+		return nil, err
+	}
 	// usageWho needs usage.read, refuses a runner job's scoped token and an
 	// agent token reading another person's usage.
 	uids, everyone, _, err := s.usageWho(ctx, actor, q.User)
@@ -274,6 +277,11 @@ func (s *Service) SessionFacts(ctx context.Context, actor *Actor, q FactsQuery) 
 		if err := actor.requirePersonDirect("reading another person's session facts"); err != nil {
 			return nil, forbidden("%v; read your own person's sessions by leaving out --user", err)
 		}
+	}
+	// The facts hold command heads (the repeated calls' targets) and search
+	// queries, so they need the permission raw transcripts do.
+	if err := actor.need(PermTranscriptsRead); err != nil {
+		return nil, err
 	}
 	q.Session, q.Task = strings.TrimSpace(q.Session), strings.TrimSpace(q.Task)
 	if (q.Session == "") == (q.Task == "") {

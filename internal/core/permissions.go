@@ -85,11 +85,13 @@ const (
 	PermAIUse             Permission = "ai.use"
 	PermAIManage          Permission = "ai.manage"
 
-	PermUsageRead    Permission = "usage.read"
-	PermAuditRead    Permission = "audit.read"
-	PermServerRead   Permission = "server.read"
-	PermForgesManage Permission = "forges.manage"
-	PermAdmin        Permission = "admin"
+	PermUsageRead Permission = "usage.read"
+	// PermTranscriptsRead: raw transcripts and session facts (WP-1587).
+	PermTranscriptsRead Permission = "transcripts.read"
+	PermAuditRead       Permission = "audit.read"
+	PermServerRead      Permission = "server.read"
+	PermForgesManage    Permission = "forges.manage"
+	PermAdmin           Permission = "admin"
 )
 
 // PermissionInfo describes a permission for the token settings page.
@@ -189,6 +191,7 @@ var permissionGroups = []PermissionGroup{
 	}},
 	{Key: "admin", Label: "Administration", Permissions: []PermissionInfo{
 		{PermUsageRead, "See usage", "Token usage, costs and prices.", RiskSafe},
+		{PermTranscriptsRead, "Read session transcripts", "The raw transcripts of your own coding-agent sessions and the facts derived from them: every command, file and tool result they hold.", RiskCareful},
 		{PermAuditRead, "Read the audit log", "Who changed access, settings and secrets.", RiskCareful},
 		{PermServerRead, "Read server diagnostics", "The server's status, recent log (secrets blanked), metrics and AI request counts, as wp server and wp ai usage show them (admins' tokens).", RiskCareful},
 		{PermForgesManage, "Manage forges", "Forge connections and their secrets.", RiskDangerous},

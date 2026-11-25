@@ -184,8 +184,8 @@ type taskUsageReport struct {
 	ToolCalls      int64             `json:"tool_calls"`
 	ToolErrors     int64             `json:"tool_errors"`
 	Edits          int64             `json:"edits"`
-	ShellEdits     int64             `json:"shell_edits"`
-	ShellUncounted int64             `json:"shell_edits_uncounted"`
+	ShellEdits     *int64            `json:"shell_edits"`
+	ShellUncounted *int64            `json:"shell_edits_uncounted"`
 	PRs            int64             `json:"prs"`
 	Files          int64             `json:"files"`
 	Lines          int64             `json:"lines"`
@@ -265,7 +265,7 @@ func taskUsageText(r *taskUsageReport) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s %s (%s)\n", r.Key, r.Title, r.Who)
 	fmt.Fprintf(&b, "$%.2f, %s tokens (%s cache reads), %s tool calls (%s failed), %s, %d subagents, %d sessions, %d active hours, %d run minutes.\n",
-		r.CostUSD, commas(r.Input+r.Output+r.CacheWrite), commas(r.CacheRead), commas(r.ToolCalls), commas(r.ToolErrors), editsText(r.Edits, r.ShellEdits, r.ShellUncounted), r.Subagents, r.Sessions, r.ActiveHours, r.RunMinutes)
+		r.CostUSD, commas(r.Input+r.Output+r.CacheWrite), commas(r.CacheRead), commas(r.ToolCalls), commas(r.ToolErrors), taskEditsText(r), r.Subagents, r.Sessions, r.ActiveHours, r.RunMinutes)
 	if a := r.AfterRun; a != nil && a.CostUSD > 0 {
 		fmt.Fprintf(&b, "After its run ended, same session, no other task claimed: $%.2f in %d session%s.\n", a.CostUSD, a.Sessions, plural(a.Sessions))
 	}
@@ -300,6 +300,23 @@ func sortedPairs(m map[string]string) string {
 		parts = append(parts, k+"="+m[k])
 	}
 	return strings.Join(parts, " ")
+}
+
+// taskEditsText is editsText for a report; ShellEdits and ShellUncounted are nil
+// when the server sent neither (an older server), which must not print as
+// "shell edits 0".
+func taskEditsText(r *taskUsageReport) string {
+	if r.ShellEdits == nil && r.ShellUncounted == nil {
+		return fmt.Sprintf("edits %s, shell edits unknown (server too old to say)", commas(r.Edits))
+	}
+	var shell, unc int64
+	if r.ShellEdits != nil {
+		shell = *r.ShellEdits
+	}
+	if r.ShellUncounted != nil {
+		unc = *r.ShellUncounted
+	}
+	return editsText(r.Edits, shell, unc)
 }
 
 // editsText says the edits of the editing tools beside the Bash calls that

@@ -386,3 +386,38 @@ func TestSessionFactsRoute(t *testing.T) {
 		}
 	}
 }
+
+// A token that holds usage.read (as the Read only preset does) gets 403 from
+// the transcript and facts routes naming transcripts.read; with it, its own
+// person's transcript is 200 (audit 1907.4, WP-1587).
+func TestTranscriptRoutesNeedTheirPermission(t *testing.T) {
+	a := newTranscriptAPI(t)
+	if code := a.put("s1", 0, `{"n":1}`+"\n"); code != 200 {
+		t.Fatalf("piece: %d", code)
+	}
+	u, err := a.svc.UserByID(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenWith := func(ps ...core.Permission) *client {
+		secret, _, err := a.svc.CreateToken(context.Background(), &core.Actor{User: u}, core.TokenSpec{Name: "t" + string(rune('a'+len(ps))), Agent: "anthropic/claude-code", Permissions: ps})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &client{t: t, base: a.ts.URL, http: http.DefaultClient, token: secret}
+	}
+	paths := []string{"/api/v1/usage/transcripts?session=s1", "/api/v1/usage/transcript?session=s1&file=main", "/api/v1/usage/facts?session=s1"}
+	usage := tokenWith(core.PermUsageRead)
+	for _, p := range paths {
+		if code, body := usage.do("GET", p, nil); code != 403 || !strings.Contains(string(body), "transcripts.read") {
+			t.Errorf("usage.read only, %s: %d %s", p, code, body)
+		}
+	}
+	both := tokenWith(core.PermUsageRead, core.PermTranscriptsRead)
+	if code, body := both.do("GET", "/api/v1/usage/transcript?session=s1&file=main", nil); code != 200 || string(body) != `{"n":1}`+"\n" {
+		t.Errorf("with transcripts.read: %d %q", code, body)
+	}
+	if code, body := both.do("GET", "/api/v1/usage/transcripts?session=s1&user=all", nil); code != 403 {
+		t.Errorf("with transcripts.read, everyone's: %d %s", code, body)
+	}
+}

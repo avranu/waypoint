@@ -28,6 +28,8 @@ func tgz(t *testing.T, s string) []byte {
 func transcriptEnv(t *testing.T) *env {
 	e := newEnv(t)
 	e.s.cfg.TranscriptDir = t.TempDir()
+	// The host's free disk must not decide these tests.
+	e.s.diskSpace = func(string) (int64, int64, error) { return 1 << 40, 1 << 40, nil }
 	return e
 }
 

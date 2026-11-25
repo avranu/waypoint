@@ -577,7 +577,7 @@ func (s *Service) taskArms(ctx context.Context, issueID int64, o *TaskUsage) err
 func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskAttribution, issueID int64, o *TaskUsage) error {
 	where, args := sc.where("hour")
 	// #nosec G202 -- where is built from fixed conditions; values are bound
-	rows, err := s.db.R.QueryContext(ctx, `SELECT machine, session, hour, kind, tool, detail, sum(calls), sum(errors) FROM tool_hours WHERE `+where+`
+	rows, err := s.db.R.QueryContext(ctx, `SELECT machine, session, hour, kind, tool, detail, sum(calls), sum(errors), sum(refusals) FROM tool_hours WHERE `+where+`
 		GROUP BY machine, session, hour, kind, tool, detail`, args...)
 	if err != nil {
 		return err
@@ -590,22 +590,26 @@ func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskA
 	for rows.Next() {
 		var k trendKey
 		var kind, tool, detail string
-		var calls, errs int64
-		if err := rows.Scan(&k.machine, &k.session, &k.hour, &kind, &tool, &detail, &calls, &errs); err != nil {
+		var calls, errs, refused int64
+		if err := rows.Scan(&k.machine, &k.session, &k.hour, &kind, &tool, &detail, &calls, &errs, &refused); err != nil {
 			return err
 		}
 		if attr.taskOf(sessKeyAt{k.machine, k.session}, k.hour) != issueID {
 			continue
 		}
 		if kind == "builtin" && transcript.IsEditTool(tool) {
-			o.Edits += calls - errs
+			// A call is an error or a refusal, never both (usage_parse.go), and
+			// neither wrote anything.
+			o.Edits += max(calls-errs-refused, 0)
 		}
 		if kind == "builtin" && tool == "Bash" {
 			bash[k] += calls
 		}
 		if kind == "shell_edit" {
 			marked[k] = true
-			o.ShellEdits += calls - errs
+			// A non-zero exit still counts (sed -i ... && go test writes before
+			// the test fails); a refused call wrote nothing.
+			o.ShellEdits += max(calls-refused, 0)
 			continue
 		}
 		name := strings.TrimSpace(tool + " " + detail)

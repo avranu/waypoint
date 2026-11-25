@@ -820,3 +820,21 @@ func TestEditsText(t *testing.T) {
 		}
 	}
 }
+
+// A server older than the shell-edits figure sends only "edits": the report
+// must not print "shell edits 0" for it (audit 1907.18).
+func TestTaskUsageTextOlderServer(t *testing.T) {
+	var old, current taskUsageReport
+	if err := json.Unmarshal([]byte(`{"key":"WP-1","edits":4}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	if got := taskUsageText(&old); !strings.Contains(got, "edits 4, shell edits unknown (server too old to say)") || strings.Contains(got, "shell edits 0") {
+		t.Errorf("older server: %q", got)
+	}
+	if err := json.Unmarshal([]byte(`{"key":"WP-1","edits":4,"shell_edits":0,"shell_edits_uncounted":0}`), &current); err != nil {
+		t.Fatal(err)
+	}
+	if got := taskUsageText(&current); !strings.Contains(got, "edits 4, shell edits 0") {
+		t.Errorf("a server that counted none: %q", got)
+	}
+}

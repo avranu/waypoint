@@ -721,7 +721,8 @@ differences (a message written again with more tokens). Cost is API-equivalent, 
                                     complete (no hole), sizes, whether every piece was redacted, and redactions (values blanked,
                                     with redaction_rules by rule; null when any piece predates the counts)
     GET  /usage/transcript?session=ID&file=main|PATH&machine=&user=&gen=   one file's JSONL, whole lines in order;
-                                    your own person's, also from an agent; `user=` another person or `all` is for admin people only. A stored piece that fails its
+                                    your own person's, also from an agent that holds the transcripts.read permission (a person's own login has it; the Read only
+                                    preset does not) but never an automation; `user=` another person or `all` is for admin people only. A stored piece that fails its
                                     check after bytes went out breaks the connection instead of ending the body
     POST /slot-holds?machine=&pending=&oldest=&dropped=   {"holds":[...]} up to 500 test slot holds a machine recorded
                                     (WP-1646); pending, oldest (queued_at ms) and dropped are the machine's outbox state, kept

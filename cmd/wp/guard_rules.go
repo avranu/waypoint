@@ -1488,6 +1488,67 @@ func (g *guard) writeHit(p string) *guardHit {
 	return nil
 }
 
+// perlInPlaceTargets are the files `perl -i`, `-pi -e CODE` or `-i.bak` edits:
+// the arguments that are not switches, when a switch cluster holds an i before
+// any e, E or I. A switch ending in e or E takes the next argument as its
+// code, as in internal/transcript's ShellWrites. Without -i perl writes nothing.
+func perlInPlaceTargets(args []string) []string {
+	inPlace := false
+	var files []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") {
+			f := a[1:]
+			if j := strings.IndexByte(f, 'i'); j >= 0 && !strings.ContainsAny(f[:j], "eEI") {
+				inPlace = true
+			}
+			if strings.HasSuffix(f, "e") || strings.HasSuffix(f, "E") {
+				i++
+			}
+			continue
+		}
+		files = append(files, a)
+	}
+	if !inPlace {
+		return nil
+	}
+	return files
+}
+
+// formatterValueFlags are the flags of gofmt, goimports and prettier whose
+// next argument is a value, not a file.
+var formatterValueFlags = map[string]bool{"-r": true, "-local": true, "-srcdir": true, "-cpuprofile": true,
+	"--config": true, "--ignore-path": true, "--parser": true, "--plugin": true, "--cache-location": true,
+	"--cache-strategy": true, "--log-level": true, "--stdin-filepath": true, "--tab-width": true, "--print-width": true,
+	"--end-of-line": true, "--config-precedence": true, "--editorconfig": true}
+
+// formatterTargets are the files gofmt, goimports or prettier rewrite: its
+// file arguments, when -w or --write is given (without it they only print or
+// list).
+func formatterTargets(args []string) []string {
+	write := false
+	var files []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			files = append(files, args[i+1:]...)
+			i = len(args)
+		case a == "-w" || a == "--write":
+			write = true
+		case formatterValueFlags[a]:
+			i++
+		case strings.HasPrefix(a, "-") && a != "-":
+		default:
+			files = append(files, a)
+		}
+	}
+	if !write {
+		return nil
+	}
+	return files
+}
+
 // writeTargets are the paths a command writes, as far as its name and
 // arguments say.
 func writeTargets(name string, args []string) []string {
@@ -1520,6 +1581,13 @@ func writeTargets(name string, args []string) []string {
 			return sc.pos[1:]
 		}
 		return sc.pos
+	case "perl":
+		return perlInPlaceTargets(args)
+	case "gofmt", "goimports", "prettier":
+		return formatterTargets(args)
+	// git apply and git am name no target files on the command line (the
+	// patch holds them), so there is nothing to check here; they are not
+	// recognised, unlike in internal/transcript's ShellWrites.
 	case "dd":
 		var out []string
 		for _, a := range args {
