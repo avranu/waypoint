@@ -214,8 +214,8 @@ func TestFrontWithACancelledRun(t *testing.T) {
 	if b, err := se.s.activeBabysit(se.ctx, se.s.db.R, p.ID); err != nil || b == nil {
 		t.Fatalf("#7 has no babysit: %v", err)
 	}
-	if se.s.frontFailed(se.ctx, p) {
-		t.Error("a cancelled run counted as failed checks under a babysit")
+	if failed, err := se.s.frontFailed(se.ctx, p); err != nil || failed {
+		t.Errorf("a cancelled run under a babysit: failed %v, %v", failed, err)
 	}
 	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE babysits SET ended_at = ? WHERE pr_id = ?`, se.s.nowMS(), p.ID); err != nil {
 		t.Fatal(err)

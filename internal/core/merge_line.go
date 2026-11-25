@@ -340,24 +340,23 @@ func (s *Service) inFrontGrace(p *PullRequest) bool {
 
 // frontFailed: past its grace, the front's failed head counts against it. A
 // run that was only cancelled is no failure while a babysit watches it: that
-// re-runs the jobs or asks a person, which takes it out of the line. Checks
-// that can't be read count for nothing.
-func (s *Service) frontFailed(ctx context.Context, p *PullRequest) bool {
+// re-runs the jobs or asks a person, which takes it out of the line.
+func (s *Service) frontFailed(ctx context.Context, p *PullRequest) (bool, error) {
 	if !failedOn(p, p.HeadSHA) {
-		return false
+		return false, nil
 	}
 	checks, err := s.prChecks(ctx, p)
 	if err != nil {
-		if readFault(err) {
-			s.log.WarnContext(ctx, "read the front's failed checks", "pr", p.ID, "err", err)
-		}
-		return false
+		return false, fmt.Errorf("read its checks: %w", err)
 	}
 	if !cancelledOnly(checks) {
-		return true
+		return true, nil
 	}
 	b, err := s.activeBabysit(ctx, s.db.R, p.ID)
-	return err == nil && b == nil
+	if err != nil {
+		return false, fmt.Errorf("read its babysit: %w", err)
+	}
+	return b == nil, nil
 }
 
 // lineLeft says why p no longer holds a place in the line, "" when it does.
@@ -380,7 +379,14 @@ func (s *Service) lineLeft(ctx context.Context, p *PullRequest) string {
 			s.askHeadAudit(ctx, p)
 			return ""
 		}
-		if s.frontFailed(ctx, p) {
+		failed, err := s.frontFailed(ctx, p)
+		if err != nil {
+			if readFault(err) {
+				s.log.WarnContext(ctx, "read whether the front's checks failed", "pr", p.ID, "err", err)
+			}
+			return ""
+		}
+		if failed {
 			return "its checks failed"
 		}
 		if why, unread := s.unsettled(ctx, p); !unread {
