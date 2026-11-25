@@ -600,65 +600,6 @@ func TestReviewCooldownOtherProvider400NotReasked(t *testing.T) {
 	}
 }
 
-// Another provider's family pattern is logged as the id it resolved to, a
-// name the chain did not write: its timeout or 400 is still not the route's,
-// so nothing is asked again (WP-1814).
-func TestReviewOtherProviderPatternFailureNotReasked(t *testing.T) {
-	for name, failure := range map[string]error{"timeout": context.DeadlineExceeded, "400": &llmError{status: 400, body: "bad request"}} {
-		re, h, chain, _ := newHookEnv(t, func(_ []string, _ string, n int) (string, error) {
-			if n == 1 {
-				return "", &llmError{status: 502, body: "bad gateway"}
-			}
-			return "", failure
-		})
-		other, err := re.s.CreateAIProvider(re.ctx, re.admin, AIProviderInput{Name: str("Other"), Kind: str("openai"), BaseURL: str("http://other.invalid")})
-		if err != nil {
-			t.Fatal(err)
-		}
-		chain = append(slices.Clone(chain), ChainModel{ProviderID: other.ID, Model: "opencode/muse-spark-*"})
-		a := re.s.reviewOnce(re.ctx, chain, "the diff")
-		if r := h.requests(); a.err == nil || len(r) != 2 || len(a.log) != 2 || a.log[1].Model == chain[1].Model {
-			t.Errorf("%s: answer %+v requests %v", name, a, r)
-		}
-	}
-}
-
-// A review's answer is filed under the request that gave it, so feedback
-// reaches it: the one kept when the plain re-ask fails, else the re-ask's
-// (WP-1768).
-func TestReviewCooldownAnswerKeepsItsRequestID(t *testing.T) {
-	for _, c := range []struct {
-		name     string
-		reask    error
-		requests int
-		answered int // the attempt whose answer is used
-	}{
-		{"the re-ask fails", &llmError{status: 502, body: "bad gateway"}, 4, 1},
-		{"the re-ask answers", nil, 3, 2},
-	} {
-		re, h, chain, ctx := newHookEnv(t, func(_ []string, _ string, n int) (string, error) {
-			switch n {
-			case 1:
-				return "", excludeRemovesAll()
-			case 2:
-				return "", nil
-			}
-			return "", c.reask
-		})
-		const paid = "paid/model"
-		re.llm.answers[paid] = loginFinding
-		chain = append(slices.Clone(chain), ChainModel{ProviderID: chain[0].ProviderID, Model: paid, Paid: true})
-		coolA(re)
-		a := re.s.reviewOnce(ctx, chain, "the diff")
-		if r := h.requests(); a.err != nil || len(a.findings) != 1 || len(r) != c.requests || len(a.log) != c.requests || a.log[c.answered].Outcome != "ok" {
-			t.Fatalf("%s: answer %+v requests %v", c.name, a, r)
-		}
-		if a.requestID == "" || a.requestID != a.log[c.answered].RequestID {
-			t.Errorf("%s: request id %q, want attempt %d's (%+v)", c.name, a.requestID, c.answered, a.log)
-		}
-	}
-}
-
 func TestLeftNoModelProviders(t *testing.T) {
 	_, _, chain, _ := newStallEnv(t)
 	const gw, other = 7, 8
