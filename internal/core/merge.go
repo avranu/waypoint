@@ -358,7 +358,7 @@ func (s *Service) reviewHolds(ctx context.Context, pr *PullRequest, settle bool,
 	// Fix-up rounds that spread past what it shipped as wait for their
 	// footprint check, which the babysitter asks for (WP-440).
 	if why, fpWake, err := s.footprintDue(ctx, pr); err != nil {
-		unread("read a pull request's babysit for its footprint check", "its babysit couldn't be read for a footprint check", err)
+		unread("read whether a pull request owes a footprint check", "whether a footprint check is due couldn't be read", err)
 	} else if why != "" {
 		no("%s", why)
 		if fpWake != nil && (r.wake == nil || fpWake.Before(*r.wake)) {
