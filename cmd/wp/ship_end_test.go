@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -266,6 +267,16 @@ func shipEndsTurn(t *testing.T, e *env, me *core.Actor, key string) {
 	}
 	if k := state().Summaries[key]; k == nil || k.Text != "{task} is in PR #{pr}." {
 		t.Errorf("summary not kept after a failed check: %+v", k)
+	}
+	// A failure whose error is above the lines shown: the whole output is
+	// kept in a file the message names (WP-1812).
+	out, code = e.run("ship", "--check", "echo a lint finding; seq 40; exit 3", "--summary", "{task} is in PR #{pr}.")
+	m := regexp.MustCompile(`All 41 lines of its output: (\S+)`).FindStringSubmatch(out)
+	if code == 0 || strings.Contains(out, "a lint finding") || m == nil {
+		t.Fatalf("long failed check: %d\n%s", code, out)
+	}
+	if kept, err := os.ReadFile(m[1]); err != nil || !strings.HasPrefix(string(kept), "a lint finding\n1\n") {
+		t.Errorf("kept output: %v\n%s", err, kept)
 	}
 	// A step put off needs the agent: the kept summary is used and kept
 	// again, and the usual reply follows. A marker this ship didn't write

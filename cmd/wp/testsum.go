@@ -273,7 +273,7 @@ func (c *cli) testsumReport(data []byte, format string, cmdFailed int, rec *test
 	if cmdFailed != 0 {
 		// The tests passed, but something else in CMD (a lint, a type
 		// check, a second suite that didn't start) failed: show its end.
-		_, _ = fmt.Fprintf(c.out, "but the command exited %d; last lines:\n%s\n", cmdFailed, lastLines(data, 20))
+		_, _ = fmt.Fprintf(c.out, "but the command exited %d; last lines:\n%s\n%s", cmdFailed, lastLines(data, 20), keptOutput(data, 20))
 		return res, exitCode(1)
 	}
 	return res, nil
@@ -288,9 +288,36 @@ func lastLines(data []byte, n int) string {
 	return strings.Join(lines, "\n")
 }
 
+// failedOutputFile holds the whole output of the last command that failed
+// with its error above the lines shown, in the checkout's git directory.
+const failedOutputFile = "wp-failed-output.log"
+
+// keptOutput saves a failed command's whole output when it is longer than
+// the shown lines, and returns a line saying where ("" when all of it was
+// shown or it can't be saved). The tail of a failed make check is its
+// passing test packages, and the lint finding that failed it is above them:
+// without the file, finding it costs another run (WP-1812).
+func keptOutput(data []byte, shown int) string {
+	n := strings.Count(strings.TrimRight(string(data), "\n"), "\n") + 1
+	if n <= shown {
+		return ""
+	}
+	p, err := localGit("rev-parse", "--git-path", failedOutputFile)
+	if err != nil || p == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	if err := os.WriteFile(p, data, 0o600); err != nil {
+		return ""
+	}
+	return fmt.Sprintf("All %d lines of its output: %s\n", n, p)
+}
+
 // emitUnparsed reports a command that failed without producing results.
 func (c *cli) emitUnparsed(data []byte, code int) error {
-	_, _ = fmt.Fprintf(c.out, "FAIL: the command exited %d and no test results were recognized; last lines:\n%s\n", code, lastLines(data, 20))
+	_, _ = fmt.Fprintf(c.out, "FAIL: the command exited %d and no test results were recognized; last lines:\n%s\n%s", code, lastLines(data, 20), keptOutput(data, 20))
 	return exitCode(1)
 }
 

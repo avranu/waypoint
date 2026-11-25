@@ -459,8 +459,11 @@ func (c *cli) runShipCheck(cmd string) error {
 	}
 	var buf bytes.Buffer
 	rec := newTestRunRecorder(argv)
-	start := time.Now()
-	code, err := c.runInSlotThen("tests", defaultSlots(), goTestJSON(argv), &buf, &buf, rec.started, func(env []string) []string {
+	// The wait for a slot isn't the check's time: a 25 minute make check
+	// that queued 44 minutes was reported as one of 69 (WP-1812).
+	queued := time.Now()
+	start := queued
+	code, err := c.runInSlotThen("tests", defaultSlots(), goTestJSON(argv), &buf, &buf, func() { rec.started(); start = time.Now() }, func(env []string) []string {
 		env, _ = testEnv(env, nil)
 		return env
 	})
@@ -489,6 +492,10 @@ func (c *cli) runShipCheck(cmd string) error {
 	if res.Passed+res.Failed+res.Skipped > 0 {
 		_, _ = fmt.Fprint(c.out, res.render())
 	}
-	_, _ = fmt.Fprintf(c.out, "Check failed: %s exited %d after %s; last lines:\n%s\n", cmd, code, took, lastLines(buf.Bytes(), 30))
+	waited := ""
+	if w := start.Sub(queued).Round(time.Second); w >= time.Minute {
+		waited = fmt.Sprintf(" (and %s waiting for a slot)", w)
+	}
+	_, _ = fmt.Fprintf(c.out, "Check failed: %s exited %d after %s%s; last lines:\n%s\n%s", cmd, code, took, waited, lastLines(buf.Bytes(), 30), keptOutput(buf.Bytes(), 30))
 	return fmt.Errorf("the check failed, so nothing was committed or shipped: fix it and run wp ship again")
 }
