@@ -324,3 +324,90 @@ func TestWhereJSONShapeAndCSV(t *testing.T) {
 }
 
 func fixedTime(year int) time.Time { return time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC) }
+
+func TestWhereCostliestCommands(t *testing.T) {
+	dir := t.TempDir()
+	var w whLines
+	w.user("2026-11-24T10:00:00Z", "look")
+	w.call("2026-11-24T10:00:01Z", "m1", "r1", "claude-fable-5", 5, bash("b1", "git log -3 && sed -n 1,5p f.go"))
+	w.call("2026-11-24T10:00:02Z", "m2", "r2", "claude-fable-5", 5, map[string]any{"type": "tool_use", "id": "t1", "name": "ToolSearch", "input": map[string]any{"query": "x"}})
+	w.call("2026-11-24T10:00:03Z", "m3", "r3", "claude-sonnet-5-5", 5, bash("b3", "grep -r x .")) // not premium
+	whWrite(t, filepath.Join(dir, "projects", "p", "s1.jsonl"), w.b.String())
+	r, _ := whRun(t, dir, whWin)
+	got := map[string]whCommandRow{}
+	for _, c := range r.Commands.Commands {
+		got[c.Head] = c
+	}
+	if got["git log"].Class != whGit || got["sed"].Class != whShellRead || got["git log"].Calls != 1 || got["ToolSearch"].Class != whOther {
+		t.Fatalf("commands %+v", r.Commands.Commands)
+	}
+	if _, ok := got["grep"]; ok {
+		t.Fatalf("a sonnet call is listed: %+v", r.Commands.Commands)
+	}
+	if d := got["git log"].Cost - got["sed"].Cost; d < -1e-9 || d > 1e-9 {
+		t.Fatalf("a compound call is split equally: %+v", got)
+	}
+	if len(r.Commands.OtherTools) != 1 || r.Commands.OtherTools[0].Head != "ToolSearch" {
+		t.Fatalf("other tools %+v", r.Commands.OtherTools)
+	}
+	if !strings.Contains(whereText(r), "Costliest commands") {
+		t.Fatal("text lacks the section")
+	}
+}
+
+func TestWherePhaseFirstShipBeforeWindow(t *testing.T) {
+	dir := t.TempDir()
+	var w whLines
+	w.user("2026-11-24T08:00:00Z", "go")
+	w.call("2026-11-24T09:00:00Z", "m1", "r1", "claude-fable-5", 5, bash("b1", "wp ship"))
+	w.call("2026-11-24T10:30:00Z", "m2", "r2", "claude-fable-5", 5)
+	whWrite(t, filepath.Join(dir, "projects", "p", "s1.jsonl"), w.b.String())
+	var w2 whLines
+	w2.user("2026-11-24T10:10:00Z", "go")
+	w2.call("2026-11-24T10:20:00Z", "n1", "q1", "claude-fable-5", 5, bash("b1", "wp ship"))
+	w2.call("2026-11-24T10:40:00Z", "n2", "q2", "claude-fable-5", 5)
+	whWrite(t, filepath.Join(dir, "projects", "p", "s2.jsonl"), w2.b.String())
+	r, _ := whRun(t, dir, "--since", "2026-11-24T10:00:00Z", "--until", "2026-11-24T12:00:00Z")
+	if r.Phase.Shipped != 2 || r.Phase.BeforeWindow != 1 {
+		t.Fatalf("phase %+v", r.Phase)
+	}
+	for _, s := range r.Phase.Sessions {
+		if s.FirstShipBeforeWindow != (s.Before == 0) {
+			t.Fatalf("row %+v", s)
+		}
+	}
+	txt := whereText(r)
+	if !strings.Contains(txt, "1 of them first shipped before the window") || strings.Count(txt, "(first ship before the window)") != 1 {
+		t.Fatalf("text:\n%s", txt)
+	}
+}
+
+func TestWhereMetaMessageKinds(t *testing.T) {
+	dir := t.TempDir()
+	var w whLines
+	w.user("2026-11-24T10:00:00Z", "go")
+	meta := func(ts, text string) {
+		w.raw(map[string]any{"type": "user", "timestamp": ts, "isMeta": true, "message": map[string]any{"role": "user", "content": text}})
+	}
+	meta("2026-11-24T10:00:01Z", "<system-reminder>\nPlan mode is active. You must not edit.\n</system-reminder>")
+	w.call("2026-11-24T10:00:02Z", "m1", "r1", "claude-sonnet-5-5", 5)
+	meta("2026-11-24T10:00:03Z", "<local-command-caveat>Caveat: x</local-command-caveat>")
+	w.call("2026-11-24T10:00:04Z", "m2", "r2", "claude-sonnet-5-5", 5)
+	meta("2026-11-24T10:00:05Z", "<system-reminder>\nPlan mode is active. You must not edit.\n</system-reminder>")
+	w.call("2026-11-24T10:00:06Z", "m3", "r3", "claude-sonnet-5-5", 5)
+	whWrite(t, filepath.Join(dir, "projects", "p", "s1.jsonl"), w.b.String())
+	r, _ := whRun(t, dir, whWin)
+	for _, tr := range r.Triggers {
+		if tr.Trigger != "meta/hook message" {
+			continue
+		}
+		if len(tr.Detail) != 2 || tr.Detail[0].Trigger != "<system-reminder> Plan mode is active. You" || tr.Detail[0].Calls != 2 || tr.Detail[1].Trigger != "<local-command-caveat>" {
+			t.Fatalf("detail %+v", tr.Detail)
+		}
+		if !strings.Contains(whereText(r), "<local-command-caveat>") {
+			t.Fatal("text lacks the breakdown")
+		}
+		return
+	}
+	t.Fatalf("no meta trigger: %+v", r.Triggers)
+}

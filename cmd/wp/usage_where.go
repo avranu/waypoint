@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -83,6 +84,8 @@ type whCall struct {
 	ts                     int64
 	model, trigger         string
 	blocks                 [][]string // the classes of each tool block
+	cmds                   [][]whCmd  // the commands of each tool block
+	sub                    string     // what kind of meta message woke the call
 	blockIDs               map[string]bool
 	ctx, size              int64
 	in, out, cw5, cw1, cr  int64
@@ -347,45 +350,64 @@ func whCommandClass(cm traceCommand, cwd string) string {
 	return class
 }
 
+// whCmd is one command of a tool block (or a tool that is not Bash), with the
+// class it was filed under.
+type whCmd struct {
+	Head  string `json:"head"`
+	Class string `json:"class"`
+	Tool  bool   `json:"tool,omitempty"` // a tool name, not a shell command
+}
+
 // whBlockClasses sorts one tool_use block: the classes of every command of
-// a Bash line, or the one class of another tool. isShip says the line holds a
+// a Bash line, or the one class of another tool. ship says the line holds a
 // real wp ship.
-func (sc *whScan) whBlockClasses(name string, input json.RawMessage, cwd string) (classes []string, ship bool) {
+func (sc *whScan) whBlockClasses(name string, input json.RawMessage, cwd string) (classes []string, ship bool, cmds []whCmd) {
 	var in traceInput
 	_ = json.Unmarshal(input, &in)
+	one := func(class string) ([]string, bool, []whCmd) {
+		return []string{class}, false, []whCmd{{Head: name, Class: class, Tool: true}}
+	}
 	switch name {
 	case "Read":
-		return []string{whReadFile}, false
+		return one(whReadFile)
 	case "Grep", "Glob", "LS":
-		return []string{whSearch}, false
+		return one(whSearch)
 	case "Edit", "Write", "MultiEdit", "NotebookEdit":
 		if _, work := traceFile(usageOr(in.FilePath, in.NotebookPath), cwd); !work {
-			return []string{whScratch}, false
+			return one(whScratch)
 		}
-		return []string{whToolEdit}, false
+		return one(whToolEdit)
 	case "Agent", "Task":
-		return []string{whDelegate}, false
+		return one(whDelegate)
 	case "Bash":
-		var cmds []traceCommand
+		var tcs []traceCommand
 		home, _ := os.UserHomeDir()
-		traceCommands(in.Command, cwd, 0, map[string]string{"HOME": home}, &sc.mem, &cmds)
+		traceCommands(in.Command, cwd, 0, map[string]string{"HOME": home}, &sc.mem, &tcs)
 		seen := map[string]bool{}
-		for _, cm := range cmds {
+		for _, cm := range tcs {
 			if cm.head == "wp ship" && !traceHasFlag(cm.words, "-h", "--help", "--review") {
 				ship = true
 			}
-			if k := whCommandClass(cm, cwd); k != "" && !seen[k] {
-				seen[k] = true
-				classes = append(classes, k)
+			if k := whCommandClass(cm, cwd); k != "" {
+				cmds = append(cmds, whCmd{Head: cm.head, Class: k})
+				if !seen[k] {
+					seen[k] = true
+					classes = append(classes, k)
+				}
 			}
 		}
 		if len(classes) == 0 {
 			classes = []string{whOther}
+			head := "(shell)"
+			if len(tcs) > 0 {
+				head = tcs[0].head
+			}
+			cmds = []whCmd{{Head: head, Class: whOther}}
 		}
 		sort.Strings(classes)
-		return classes, ship
+		return classes, ship, cmds
 	}
-	return []string{whOther}, false
+	return one(whOther)
 }
 
 func (sc *whScan) readFile(f usageFile, prices []burnPrice) error {
@@ -409,7 +431,7 @@ func (sc *whScan) readFile(f usageFile, prices []burnPrice) error {
 	if ses.project == "" {
 		ses.project, ses.dir = dirName, dirName
 	}
-	cwd, trig, started := "", "", false
+	cwd, trig, sub, started := "", "", "", false
 	toolNames := map[string]string{}
 	br := bufio.NewReaderSize(fh, 1<<20)
 	var long []byte
@@ -441,9 +463,10 @@ func (sc *whScan) readFile(f usageFile, prices []burnPrice) error {
 						}
 					}
 				case "user":
-					trig, started = sc.userTrigger(&l, f, ses, toolNames, trig, started)
+					trig, started = sc.userTrigger(&l, f, ses, toolNames, trig, started, &sub)
 				case "assistant":
-					trig = sc.assistant(&l, f, ses, ts, cwd, trig, toolNames, prices)
+					trig = sc.assistant(&l, f, ses, ts, cwd, trig, sub, toolNames, prices)
+					sub = ""
 				}
 			}
 		}
@@ -474,7 +497,8 @@ func whText(raw json.RawMessage) string {
 	return b.String()
 }
 
-func (sc *whScan) userTrigger(l *rawLine, f usageFile, ses *whSession, toolNames map[string]string, trig string, started bool) (string, bool) {
+func (sc *whScan) userTrigger(l *rawLine, f usageFile, ses *whSession, toolNames map[string]string, trig string, started bool, sub *string) (string, bool) {
+	*sub = ""
 	if l.Message == nil {
 		return trig, started
 	}
@@ -496,6 +520,7 @@ func (sc *whScan) userTrigger(l *rawLine, f usageFile, ses *whSession, toolNames
 	case l.IsCompactSummary:
 		return "compaction/resume", true
 	case l.IsMeta:
+		*sub = whMetaKind(text)
 		return "meta/hook message", true
 	case !f.Main && !started:
 		return "subagent task prompt", true
@@ -514,7 +539,7 @@ func (sc *whScan) userTrigger(l *rawLine, f usageFile, ses *whSession, toolNames
 	return "typed prompt", true
 }
 
-func (sc *whScan) assistant(l *rawLine, f usageFile, ses *whSession, ts int64, cwd, trig string, toolNames map[string]string, prices []burnPrice) string {
+func (sc *whScan) assistant(l *rawLine, f usageFile, ses *whSession, ts int64, cwd, trig, sub string, toolNames map[string]string, prices []burnPrice) string {
 	m := l.Message
 	if m == nil {
 		return trig
@@ -544,7 +569,7 @@ func (sc *whScan) assistant(l *rawLine, f usageFile, ses *whSession, ts int64, c
 			sc.synthetic++
 			for _, b := range blocks {
 				if b.Type == "tool_use" {
-					cl, _ := sc.whBlockClasses(b.Name, b.Input, cwd)
+					cl, _, _ := sc.whBlockClasses(b.Name, b.Input, cwd)
 					for _, k := range cl {
 						sc.scriptTool[k]++
 					}
@@ -562,7 +587,7 @@ func (sc *whScan) assistant(l *rawLine, f usageFile, ses *whSession, ts int64, c
 	}
 	call := sc.calls[key]
 	if call == nil {
-		call = &whCall{session: f.Session, file: f.Path, kind: f.Kind, main: f.Main, ts: ts, trigger: trig, blockIDs: map[string]bool{}, project: ses.project}
+		call = &whCall{session: f.Session, file: f.Path, kind: f.Kind, main: f.Main, ts: ts, trigger: trig, sub: sub, blockIDs: map[string]bool{}, project: ses.project}
 		if trig == "" {
 			call.trigger = "session start"
 		}
@@ -582,8 +607,9 @@ func (sc *whScan) assistant(l *rawLine, f usageFile, ses *whSession, ts int64, c
 			continue
 		}
 		call.blockIDs[b.ID] = true
-		cl, ship := sc.whBlockClasses(b.Name, b.Input, cwd)
+		cl, ship, cmds := sc.whBlockClasses(b.Name, b.Input, cwd)
 		call.blocks = append(call.blocks, cl)
+		call.cmds = append(call.cmds, cmds)
 		call.ship = call.ship || ship
 	}
 	return "continuation"
@@ -629,9 +655,26 @@ type whActivity struct {
 }
 
 type whTriggerRow struct {
-	Trigger string  `json:"trigger"`
-	Calls   int     `json:"calls"`
-	Cost    float64 `json:"cost"`
+	Trigger string         `json:"trigger"`
+	Calls   int            `json:"calls"`
+	Cost    float64        `json:"cost"`
+	Detail  []whTriggerRow `json:"detail,omitempty"` // meta messages by kind
+}
+
+// whCommandRow is a command head in the costliest-commands list.
+type whCommandRow struct {
+	Head  string  `json:"head"`
+	Class string  `json:"class"`
+	Tool  bool    `json:"tool,omitempty"`
+	Calls int     `json:"calls"`
+	Cost  float64 `json:"cost"`
+}
+
+type whCommands struct {
+	Model    string         `json:"model"` // "premium main threads"
+	Commands []whCommandRow `json:"commands"`
+	// OtherTools are the tools other than Bash filed under "other"
+	OtherTools []whCommandRow `json:"other_tools"`
 }
 
 type whPhaseRow struct {
@@ -640,6 +683,9 @@ type whPhaseRow struct {
 	Ships   int     `json:"ships"`
 	Before  float64 `json:"before_first_ship"`
 	After   float64 `json:"after_first_ship"`
+	// FirstShipBeforeWindow: the session's first ship came before --since, so
+	// Before holds only what the window shows of the time before it.
+	FirstShipBeforeWindow bool `json:"first_ship_before_window"`
 }
 
 type whPhase struct {
@@ -650,6 +696,7 @@ type whPhase struct {
 	After         float64      `json:"after_first_ship"`
 	NoShipSession int          `json:"sessions_without_ship"`
 	NoShipCost    float64      `json:"cost_without_ship"`
+	BeforeWindow  int          `json:"first_ship_before_window"`
 }
 
 type whTopRow struct {
@@ -692,6 +739,7 @@ type whReport struct {
 	Launches []whGroupRow   `json:"launch_kinds"`
 	Activity []whActivity   `json:"premium_main_activity"`
 	Triggers []whTriggerRow `json:"triggers"`
+	Commands whCommands     `json:"premium_main_costliest_commands"`
 	Phase    whPhase        `json:"phase"`
 	Top      []whTopRow     `json:"top_sessions"`
 	Limits   whLimits       `json:"limit_events"`
@@ -710,6 +758,9 @@ func (sc *whScan) report(top int) *whReport {
 	acts := map[string]*whActivity{}
 	actClass := map[string]map[string]*whClassRow{}
 	trigs := map[string]*whTriggerRow{}
+	metas := map[string]*whTriggerRow{}
+	cmdRows := map[string]*whCommandRow{}
+	cmdCalls := map[string]map[*whCall]bool{}
 	for _, s := range sc.sessions {
 		s.cost, s.mainCost, s.calls, s.ships = 0, 0, 0, 0
 	}
@@ -781,6 +832,24 @@ func (sc *whScan) report(top int) *whReport {
 			}
 		}
 		trigs[c.trigger] = bump(trigs[c.trigger], &whTriggerRow{Trigger: c.trigger}, cost)
+		if c.sub != "" {
+			metas[c.sub] = bump(metas[c.sub], &whTriggerRow{Trigger: c.sub}, cost)
+		}
+		if c.main && premiumModel(c.model) {
+			for _, cmds := range c.cmds {
+				for _, cm := range cmds {
+					k := cm.Class + "\x00" + cm.Head
+					row := cmdRows[k]
+					if row == nil {
+						row = &whCommandRow{Head: cm.Head, Class: cm.Class, Tool: cm.Tool}
+						cmdRows[k] = row
+						cmdCalls[k] = map[*whCall]bool{}
+					}
+					row.Cost += cost / float64(len(c.cmds)) / float64(len(cmds))
+					cmdCalls[k][c] = true
+				}
+			}
+		}
 	}
 	for _, mr := range models {
 		mr.MedianCtx = median(ctxs[mr.Model])
@@ -828,7 +897,30 @@ func (sc *whScan) report(top int) *whReport {
 	}
 	sort.Slice(r.Activity, func(i, j int) bool { return r.Activity[i].Cost > r.Activity[j].Cost })
 	for _, t := range trigs {
+		if t.Trigger == "meta/hook message" {
+			for _, m := range metas {
+				t.Detail = append(t.Detail, *m)
+			}
+			sort.Slice(t.Detail, func(i, j int) bool { return t.Detail[i].Cost > t.Detail[j].Cost })
+		}
 		r.Triggers = append(r.Triggers, *t)
+	}
+	r.Commands.Model = "premium main threads"
+	for k, row := range cmdRows {
+		row.Calls = len(cmdCalls[k])
+		r.Commands.Commands = append(r.Commands.Commands, *row)
+		if row.Tool && row.Class == whOther {
+			r.Commands.OtherTools = append(r.Commands.OtherTools, *row)
+		}
+	}
+	for _, l := range []*[]whCommandRow{&r.Commands.Commands, &r.Commands.OtherTools} {
+		rows := *l
+		sort.Slice(rows, func(i, j int) bool {
+			if rows[i].Cost != rows[j].Cost {
+				return rows[i].Cost > rows[j].Cost
+			}
+			return rows[i].Head < rows[j].Head
+		})
 	}
 	sort.Slice(r.Triggers, func(i, j int) bool { return r.Triggers[i].Cost > r.Triggers[j].Cost })
 
@@ -859,7 +951,10 @@ func (sc *whScan) report(top int) *whReport {
 		r.Phase.Ships += s.ships
 		r.Phase.Before += before[id]
 		r.Phase.After += after[id]
-		r.Phase.Sessions = append(r.Phase.Sessions, whPhaseRow{Session: shortID(id), Project: s.project, Ships: s.ships, Before: before[id], After: after[id]})
+		r.Phase.Sessions = append(r.Phase.Sessions, whPhaseRow{Session: shortID(id), Project: s.project, Ships: s.ships, Before: before[id], After: after[id], FirstShipBeforeWindow: s.firstShip < sc.since})
+		if s.firstShip < sc.since {
+			r.Phase.BeforeWindow++
+		}
 	}
 	sort.Slice(r.Phase.Sessions, func(i, j int) bool { return r.Phase.Sessions[i].After > r.Phase.Sessions[j].After })
 
@@ -952,4 +1047,31 @@ func (sc *whScan) writeCSV(p string) error {
 		return err
 	}
 	return fh.Close()
+}
+
+var whTagRE = regexp.MustCompile(`^<([A-Za-z][\w-]*)[^>]*>`)
+
+// whMetaKind says what a meta message is from its leading tag or first
+// words: a system-reminder is told by the words after the tag.
+func whMetaKind(text string) string {
+	t := strings.TrimSpace(text)
+	tag := ""
+	if m := whTagRE.FindStringSubmatch(t); m != nil {
+		tag, t = m[1], strings.TrimSpace(t[len(m[0]):])
+		if tag != "system-reminder" {
+			return "<" + tag + ">"
+		}
+	}
+	w := strings.Fields(t)
+	if len(w) > 5 {
+		w = w[:5]
+	}
+	kind := truncRunes(strings.Join(w, " "), 50)
+	if tag != "" {
+		return "<" + tag + "> " + kind
+	}
+	if kind == "" {
+		return "(empty)"
+	}
+	return kind
 }

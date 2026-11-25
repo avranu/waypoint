@@ -63,17 +63,36 @@ func whereText(r *whReport) string {
 		}
 	}
 
+	p("\nCostliest commands in %s (a block's cost split over its commands; --json has all)", r.Commands.Model)
+	for _, c := range whMaxRows(r.Commands.Commands, r.TopN) {
+		p("  %-26s %-13s %9s  %6d calls", truncRunes(c.Head, 26), c.Class, whMoney(c.Cost), c.Calls)
+	}
+	if len(r.Commands.OtherTools) > 0 {
+		var parts []string
+		for _, c := range whMaxRows(r.Commands.OtherTools, 5) {
+			parts = append(parts, fmt.Sprintf("%s %s (%d)", c.Head, whMoney(c.Cost), c.Calls))
+		}
+		p("  tools other than Bash in \"other\": %s", strings.Join(parts, ", "))
+	}
+
 	p("\nWhat started each call")
 	for _, t := range whMaxRows(r.Triggers, 10) {
 		p("  %-34s %10s %5s  %6d calls", truncRunes(t.Trigger, 34), whMoney(t.Cost), whPct(t.Cost, r.Cost), t.Calls)
+		for _, d := range whMaxRows(t.Detail, 3) {
+			p("      %-30s %10s %5s  %6d calls", truncRunes(d.Trigger, 30), whMoney(d.Cost), whPct(d.Cost, t.Cost), d.Calls)
+		}
 	}
 
 	ph := r.Phase
 	p("\nBefore and after a session's first wp ship (main threads)")
-	p("  %d sessions shipped (%d ships): %s before the first, %s after (%s of their spend)", ph.Shipped, ph.Ships, whMoney(ph.Before), whMoney(ph.After), strings.TrimSpace(whPct(ph.After, ph.Before+ph.After)))
+	p("  %d sessions shipped (%d ships; %d of them first shipped before the window): %s before the first, %s after (%s of their spend)", ph.Shipped, ph.Ships, ph.BeforeWindow, whMoney(ph.Before), whMoney(ph.After), strings.TrimSpace(whPct(ph.After, ph.Before+ph.After)))
 	p("  %d sessions without a ship: %s", ph.NoShipSession, whMoney(ph.NoShipCost))
 	for _, s := range whMaxRows(ph.Sessions, 5) {
-		p("  %s %-14s %2d ships  before %s  after %s", s.Session, truncRunes(s.Project, 14), s.Ships, whMoney(s.Before), whMoney(s.After))
+		note := ""
+		if s.FirstShipBeforeWindow {
+			note = "  (first ship before the window)"
+		}
+		p("  %s %-14s %2d ships  before %s  after %s%s", s.Session, truncRunes(s.Project, 14), s.Ships, whMoney(s.Before), whMoney(s.After), note)
 	}
 
 	p("\nTop %d sessions", len(r.Top))
