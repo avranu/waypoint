@@ -232,12 +232,15 @@ func (c *cli) prepShow(key string) error {
 	if p.Dropped > 0 {
 		c.printf("The model named %d thing%s that weren't among the candidates; they were left out.\n", p.Dropped, pluralS(p.Dropped))
 	}
+	var notes string
 	if p.Notes != nil {
-		c.print(renderPrepNotes(&p, nil, 4000, false))
+		notes = renderPrepNotes(&p, nil, 4000, false)
+		c.print(notes)
 	}
-	evidence, items := renderPrepEvidence(p.Evidence, projectOfKey(key), false)
+	project := projectOfKey(key)
+	evidence, listed := renderPrepEvidence(p.Evidence, project, false)
 	c.print(evidence)
-	c.noteShown("prep", items)
+	c.noteShown("prep", append(printedTerms(&p, notes, project, false), listed...))
 	return nil
 }
 
@@ -396,19 +399,11 @@ func (c *cli) prepSection(ix *codeindex.Index, key string, budget int, compact, 
 // the server as shown, whether or not this is the task it took (WP-ADR145).
 func (c *cli) renderPrepShown(key string, p *prepView, ix *codeindex.Index, budget int, compact bool) string {
 	var out string
-	var items []shownItem
 	project := projectOfKey(key)
 	if p.Notes != nil {
 		out = renderPrepNotes(p, ix, budget, compact)
-		for i, t := range p.Notes.Terms {
-			if i == prepTermLimit(compact) {
-				break
-			}
-			if strings.Contains(out, "\n    "+t.Term+": ") {
-				items = append(items, shownItem{Type: "glossary", Ref: t.Term, Project: project})
-			}
-		}
 	}
+	items := printedTerms(p, out, project, compact)
 	evidence, listed := renderPrepEvidence(p.Evidence, project, compact)
 	if evidence != "" && out != "" && !strings.HasSuffix(out, "\n") {
 		out += "\n"
@@ -418,6 +413,24 @@ func (c *cli) renderPrepShown(key string, p *prepView, ix *codeindex.Index, budg
 }
 
 func projectOfKey(key string) string { return key[:max(strings.LastIndex(key, "-"), 0)] }
+
+// printedTerms are the glossary terms in out, a prep's notes as printed: not
+// the ones the compact form or the budget left out.
+func printedTerms(p *prepView, out, project string, compact bool) []shownItem {
+	if p.Notes == nil {
+		return nil
+	}
+	var items []shownItem
+	for i, t := range p.Notes.Terms {
+		if i == prepTermLimit(compact) {
+			break
+		}
+		if strings.Contains(out, "\n    "+t.Term+": ") {
+			items = append(items, shownItem{Type: "glossary", Ref: t.Term, Project: project})
+		}
+	}
+	return items
+}
 
 // renderPrepEvidence prints a prep's recorded data and claims to test, and
 // returns the pages and decisions it named. Empty when there are none.
@@ -525,8 +538,9 @@ func (c *cli) showPrep(key string) string {
 	if p.Notes != nil {
 		out = c.showPrepNotes(key, &p)
 	}
-	evidence, items := renderPrepEvidence(p.Evidence, projectOfKey(key), true)
-	c.noteShown("prep", items)
+	project := projectOfKey(key)
+	evidence, listed := renderPrepEvidence(p.Evidence, project, true)
+	c.noteShown("prep", append(printedTerms(&p, out, project, true), listed...))
 	return out + evidence
 }
 

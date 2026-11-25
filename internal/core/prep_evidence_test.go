@@ -457,8 +457,18 @@ func TestPrepEvidenceArms(t *testing.T) {
 
 	// No live run: agents get none and are no units; people still read what a
 	// run stored.
+	stored := mk("Stored")
+	e.prep(stored.Key)
+	if got := e.one(`SELECT state || ' ' || (notes != '') FROM task_prep_evidence WHERE issue_id = ?`, stored.ID); got != "ready 1" {
+		t.Fatalf("stored while live: %s", got)
+	}
 	if _, err := e.s.StopExperiment(e.ctx, e.admin, ExpPrepEvidence, ""); err != nil {
 		t.Fatal(err)
+	}
+	// Its holder, drawing nothing now, gets none of what is stored.
+	e.claim(e.ag, stored.Key)
+	if got := e.served(e.ag, stored.Key, true); got.Evidence != nil || e.units(stored.ID) != "0 0" {
+		t.Errorf("stored, run stopped: %+v, units %s", got.Evidence, e.units(stored.ID))
 	}
 	e.llm.evidence = `{"evidence": [], "claims": [{"quote": "checks are slow", "test": "time them", "ref": null}]}`
 	late := mk("Late")

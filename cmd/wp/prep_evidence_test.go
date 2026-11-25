@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -174,5 +175,131 @@ Judge these before relying on them: could more or better data be collected, or b
 	prep = `{"key": "WP-12", "state": "ready"}`
 	if out := c.prepSection(nil, "WP-12", 4000, false, true); out != "" {
 		t.Errorf("an empty prep: %q", out)
+	}
+}
+
+// shownServer serves prep and notes what is told to the server as shown; it
+// returns what came since it was last asked.
+func shownServer(t *testing.T, prep *string) func() []string {
+	t.Helper()
+	var bodies []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/knowledge/shown" {
+			_, _ = w.Write([]byte(*prep))
+			return
+		}
+		var in struct {
+			Via   string      `json:"via"`
+			Items []shownItem `json:"items"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		var refs []string
+		for _, it := range in.Items {
+			refs = append(refs, it.Type+":"+it.Ref+"@"+it.Project)
+		}
+		bodies = append(bodies, in.Via+" "+strings.Join(refs, ","))
+		_, _ = w.Write([]byte("{}"))
+	}))
+	t.Cleanup(ts.Close)
+	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
+	t.Setenv("WAYPOINT_SERVER", ts.URL)
+	t.Setenv("WAYPOINT_TOKEN", "wpt_x")
+	// No agent but the one a test names: not one this shell would give away.
+	for _, v := range []string{"WAYPOINT_AGENT", "CLAUDECODE", "GEMINI_CLI", "OPENCODE", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "WP_NO_BRIEF"} {
+		t.Setenv(v, "")
+	}
+	t.Chdir(t.TempDir())
+	return func() []string {
+		out := bodies
+		bodies = nil
+		return out
+	}
+}
+
+// wp show and wp prep show record what they printed for an agent: the glossary
+// terms the notes had room for, and the evidence (WP-ADR145, WP-ADR157).
+func TestPrepShowsRecordWhatTheyPrinted(t *testing.T) {
+	prep := `{"key": "WP-12", "state": "ready", "notes": {"terms": [
+		{"term": "Alpha", "definition": "first", "why": "w"},
+		{"term": "Beta", "definition": "` + strings.Repeat("a long definition ", 200) + `", "why": "w"},
+		{"term": "Gamma", "definition": "third", "why": "w"}]}, "evidence": ` + evidenceJSON + `}`
+	recorded := shownServer(t, &prep)
+	var printed bytes.Buffer
+	c, _ := newCLI(&printed, &bytes.Buffer{})
+
+	// A person at a terminal records nothing.
+	c.showPrep("WP-12")
+	if err := c.prepShow("WP-12"); err != nil {
+		t.Fatal(err)
+	}
+	if got := recorded(); len(got) != 0 {
+		t.Errorf("a person recorded %q", got)
+	}
+
+	t.Setenv("WAYPOINT_AGENT", "anthropic/claude-code")
+	short := c.showPrep("WP-12")
+	if !strings.Contains(short, "Alpha: first") || strings.Contains(short, "Gamma") {
+		t.Fatalf("the short notes should cut the third term:\n%s", short)
+	}
+	// The notes, their hint, then the evidence, each on its own lines.
+	if hint := "  (wp brief WP-12 adds the code itself)\nRecorded evidence"; !strings.Contains(short, hint) || strings.Index(short, "Alpha: first") > strings.Index(short, hint) {
+		t.Errorf("notes and evidence:\n%s", short)
+	}
+	want := "prep glossary:Alpha@WP,glossary:Beta@WP,page:WP-X20@WP,page:WP-R3@WP"
+	if got := recorded(); !slices.Equal(got, []string{want}) {
+		t.Errorf("wp show recorded %q; want %q", got, want)
+	}
+
+	printed.Reset()
+	if err := c.prepShow("WP-12"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(printed.String(), "Gamma: third") {
+		t.Fatalf("wp prep show:\n%s", printed.String())
+	}
+	want = "prep glossary:Alpha@WP,glossary:Beta@WP,glossary:Gamma@WP,page:WP-X20@WP,page:WP-R3@WP,design:WP-ADR89@WP"
+	if got := recorded(); !slices.Equal(got, []string{want}) {
+		t.Errorf("wp prep show recorded %q; want %q", got, want)
+	}
+
+	// Evidence alone.
+	prep = `{"key": "WP-12", "state": "ready", "evidence": ` + evidenceJSON + `}`
+	if err := c.prepShow("WP-12"); err != nil {
+		t.Fatal(err)
+	}
+	want = "prep page:WP-X20@WP,page:WP-R3@WP,design:WP-ADR89@WP"
+	if got := recorded(); !slices.Equal(got, []string{want}) {
+		t.Errorf("wp prep show, evidence alone, recorded %q; want %q", got, want)
+	}
+}
+
+// The full form prints three evidence items and three claims at most.
+func TestRenderPrepEvidenceFullLimit(t *testing.T) {
+	var e prepEvidence
+	var items, claims []string
+	for n := range 4 {
+		items = append(items, fmt.Sprintf(`{"ref": "WP-X%d", "kind": "page", "title": "Item %d", "category": "experiment", "date": "2026-11-17", "by": "person"}`, n+1, n+1))
+		claims = append(claims, fmt.Sprintf(`{"quote": "claim %d", "test": "test it", "ref": "WP-R%d", "ref_kind": "page"}`, n+1, n+1))
+	}
+	if err := json.Unmarshal([]byte(`{"evidence": [`+strings.Join(items, ",")+`], "claims": [`+strings.Join(claims, ",")+`]}`), &e); err != nil {
+		t.Fatal(err)
+	}
+	out, shown := renderPrepEvidence(&e, "WP", false)
+	for _, w := range []string{"Item 3", "claim 3"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("lacks %q:\n%s", w, out)
+		}
+	}
+	for _, w := range []string{"Item 4", "claim 4", "WP-X4", "WP-R4"} {
+		if strings.Contains(out, w) {
+			t.Errorf("prints %q:\n%s", w, out)
+		}
+	}
+	var refs []string
+	for _, it := range shown {
+		refs = append(refs, it.Ref)
+	}
+	if got := strings.Join(refs, " "); got != "WP-X1 WP-X2 WP-X3 WP-R1 WP-R2 WP-R3" {
+		t.Errorf("shown %s", got)
 	}
 }

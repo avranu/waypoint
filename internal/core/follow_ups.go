@@ -22,6 +22,10 @@ import (
 // two tasks' pull requests both changed.
 const relationFoundFiles = "files"
 
+// relationFoundSession is found on a follow-up Waypoint recorded because an
+// agent filed it while working on the other task.
+const relationFoundSession = "session"
+
 // followFoundAfter is found on a follow-up Waypoint recorded because
 // someone related a task to one done before it was filed (WP-1003).
 const followFoundAfter = "after"

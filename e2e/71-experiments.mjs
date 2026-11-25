@@ -40,7 +40,7 @@ for (const [n, [width, scheme]] of runs.entries()) {
   await page.getByTestId("experiments").waitFor();
   const card = (key) => page.locator("section", { has: page.locator(`[data-experiment="${key}"]`) });
   await page.locator("[data-experiment]").first().waitFor();
-  ok((await page.locator("[data-experiment]").count()) === 4, `${tag} four experiments show`);
+  ok((await page.locator("[data-experiment]").count()) === 5, `${tag} five experiments show`);
   ok((await page.locator('[data-experiment="prep"]').getAttribute("data-live")) === "no", `${tag} the prep holdout is retired (the prep policy ended its run)`);
   ok(await card("prep").getByText("Prep shown (control) · 4").isVisible(), `${tag} prep's 4:1 split shows`);
   await overflow("list");

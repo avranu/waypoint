@@ -2,8 +2,10 @@ package core
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -337,5 +339,112 @@ func TestPrepEvidenceNoLiveRun(t *testing.T) {
 	}
 	if e.asked() != asked || e.row(later.ID) != "none" {
 		t.Errorf("after a failed lookup: asked %d (was %d), row %s", e.asked(), asked, e.row(later.ID))
+	}
+}
+
+// atModel waits until n evidence checks have reached the model.
+func (e *evidenceEnv) atModel(n int) {
+	e.t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); e.asked() < n; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			e.t.Fatalf("asked %d times; want %d", e.asked(), n)
+		}
+	}
+}
+
+// A check still waiting for its model after prepPendingMax isn't lost: it isn't
+// run again beside itself, and what it answers is kept.
+func TestPrepEvidenceSlowCheckNotRetried(t *testing.T) {
+	e := newRetryEnv(t)
+	gate := make(chan struct{})
+	e.llm.gate = gate
+	release := sync.OnceFunc(func() { close(gate) })
+	defer release()
+	if _, err := e.s.UploadPrep(e.ctx, e.admin, e.task.Key, e.bundle()); err != nil {
+		t.Fatal(err)
+	}
+	e.atModel(1)
+	row := func() string {
+		return e.one(`SELECT state || ' ' || created_at FROM task_prep_evidence WHERE issue_id = ?`, e.task.ID)
+	}
+	before := row()
+	e.later(prepPendingMax + time.Minute)
+	if _, err := e.s.PrepDue(e.ctx, e.admin, "box", 0); err != nil {
+		t.Fatal(err)
+	}
+	if after := row(); after != before {
+		t.Errorf("a check in flight was claimed again: %q, then %q", before, after)
+	}
+	release()
+	e.s.Wait()
+	if e.asked() != 1 || e.row(e.task.ID) != "ready" {
+		t.Fatalf("asked %d, row %s", e.asked(), e.row(e.task.ID))
+	}
+	if got := e.served(e.admin, e.task.Key, false).Evidence; got == nil || len(got.Claims) != 1 {
+		t.Fatalf("served %+v", got)
+	}
+}
+
+// A check that a later one has started over stores nothing, whether the text
+// changed or the later one began in the same millisecond.
+func TestPrepEvidenceSupersededCheck(t *testing.T) {
+	answer := func(quote, test string) string {
+		return fmt.Sprintf(`{"evidence": [], "claims": [{"quote": %q, "test": %q, "ref": null}]}`, quote, test)
+	}
+	for _, tc := range []struct {
+		name, older, newer string // the text hash each check read
+		olderFails         error
+	}{
+		{"changed text, the older answers", "old", "new", nil},
+		{"same text, the older fails", "same", "same", errors.New("boom")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEvidenceEnv(t)
+			d, err := e.s.issueByID(e.ctx, e.s.db.R, e.task.ID, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			task := func(hash string) prepEvidenceTask {
+				return prepEvidenceTask{issue: d, hash: hash, title: d.Title, desc: "The checks are slow."}
+			}
+			e.llm.evidence, e.llm.fail = answer("checks are slow", "older"), tc.olderFails
+			atModel, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+			var calls atomic.Int32
+			// The newer check starts while the older is at the model, and is
+			// still there when the older ends.
+			e.llm.during = func() {
+				if calls.Add(1) > 1 {
+					close(atModel)
+					<-release
+					return
+				}
+				e.llm.mu.Lock()
+				e.llm.evidence, e.llm.fail = answer("checks are slow", "newer"), nil
+				e.llm.mu.Unlock()
+				go func() { done <- e.s.runPrepEvidence(e.ctx, task(tc.newer)) }()
+				select {
+				case <-atModel:
+				case <-time.After(10 * time.Second):
+					t.Error("the newer check never reached the model")
+				}
+			}
+			if err := e.s.runPrepEvidence(e.ctx, task(tc.older)); (err != nil) != (tc.olderFails != nil) {
+				t.Errorf("the older check returned %v", err)
+			}
+			row := func() string {
+				return e.one(`SELECT state || ' ' || text_hash || ' [' || COALESCE(json_extract(NULLIF(notes, ''), '$.claims[0].test'), '') || ']'
+					FROM task_prep_evidence WHERE issue_id = ?`, e.task.ID)
+			}
+			if got, want := row(), "pending "+tc.newer+" []"; got != want {
+				t.Errorf("after the older check: %q; want %q", got, want)
+			}
+			close(release)
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			if got, want := row(), "ready "+tc.newer+" [newer]"; got != want {
+				t.Errorf("after the newer check: %q; want %q", got, want)
+			}
+		})
 	}
 }

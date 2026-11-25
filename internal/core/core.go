@@ -199,6 +199,7 @@ type Service struct {
 	titling     int                     // auto-title jobs waiting or running (guarded by aiMu)
 	storying    map[int64]bool          // pages whose story is queued or being written (guarded by aiMu; WP-190)
 	prepping    int                     // task preps waiting for the model or running (guarded by aiMu)
+	evidencing  map[int64]int           // prep evidence checks running in this process, by issue (guarded by aiMu; WP-ADR157)
 	prepAhead   map[int64]prepAheadMark // tasks PrepDue handed out ahead of the front, by issue (guarded by aiMu; WP-906)
 	trialing    bool                    // a prep trial sweep is running (guarded by aiMu; WP-906)
 	// The prep policy's estimate (WP-250, WP-ADR104), worked out again when

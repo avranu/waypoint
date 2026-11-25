@@ -160,6 +160,7 @@ var experimentCaveats = []string{
 	"Agents, models and instructions change during a run; randomising spreads those changes over both arms, so they add noise, not bias, as long as the run isn't paused or reweighted midway.",
 	"An agent can't be blinded: when an arm is visible to it (a brief that isn't there), it may act differently because of that, which is part of the effect.",
 	"Follow-up tasks and review findings keep arriving after a task is done and are counted to today, so a task that finished earlier has had longer to collect them.",
+	"Self-review findings count a session's own reviews however their findings were counted, leaving out review panel rows. Adversarial review findings count only reviews no model counted, so a task is left out of that measure when every one of its reviews was counted by a model.",
 }
 
 func experimentDef(key string) (*ExperimentDef, bool) {

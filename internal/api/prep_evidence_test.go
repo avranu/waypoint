@@ -71,16 +71,34 @@ func TestPrepEvidenceOnRequest(t *testing.T) {
 	if n := units(); n != 0 {
 		t.Fatalf("%d units without evidence=1", n)
 	}
-	// The arm is drawn by chance: what matters is that it is drawn.
-	code, b := agent.do("GET", "/api/v1/issues/"+key+"/prep?shown=1&evidence=1", nil)
-	if code != 200 || units() != 1 {
+	// Asked with evidence=1, the task draws an arm.
+	if code, b := agent.do("GET", "/api/v1/issues/"+key+"/prep?shown=1&evidence=1", nil); code != 200 || units() != 1 {
 		t.Fatalf("evidence=1: %d units %d %s", code, units(), b)
 	}
-	var arm string
-	if err := database.R.QueryRow(`SELECT u.arm FROM experiment_units u JOIN experiment_runs r ON r.id = u.run_id WHERE r.experiment = 'prep_evidence'`).Scan(&arm); err != nil {
-		t.Fatal(err)
+	// Which one is by chance, so what each arm is given is checked on tasks
+	// given theirs beforehand.
+	for _, arm := range []string{"none", "shown"} {
+		var made map[string]any
+		agent.json("POST", "/api/v1/issues", map[string]any{"project": "PRP", "title": "Speed up merges, " + arm, "description": "The checks are slow."}, &made)
+		key := made["key"].(string)
+		if _, err := svc.UploadPrep(ctx, me, key, core.PrepBundle{Repo: "robin/app", Files: []core.PrepFile{{Path: "merge.go", Lines: 10}}}); err != nil {
+			t.Fatal(err)
+		}
+		svc.Wait()
+		if _, err := svc.AgentTake(ctx, &core.Actor{User: u, Agent: "anthropic/claude-opus-5-5"}, key, ""); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.W.Exec(`INSERT INTO experiment_units(run_id, issue_id, arm, via, assigned_at)
+			SELECT r.id, i.id, ?, 'prep', 0 FROM experiment_runs r, issues i JOIN projects p ON p.id = i.project_id
+			WHERE r.experiment = 'prep_evidence' AND r.stopped_at IS NULL AND p.key || '-' || i.number = ?`, arm, key); err != nil {
+			t.Fatal(err)
+		}
+		code, b := agent.do("GET", "/api/v1/issues/"+key+"/prep?shown=1&evidence=1", nil)
+		if got := strings.Contains(string(b), "checks are slow"); code != 200 || got != (arm == "shown") {
+			t.Errorf("arm %s given the evidence: %v (%d %s)", arm, got, code, b)
+		}
 	}
-	if got := strings.Contains(string(b), "checks are slow"); got != (arm == "shown") {
-		t.Errorf("arm %s given the evidence: %v (%s)", arm, got, b)
+	if n := units(); n != 3 {
+		t.Errorf("%d units; want the three tasks'", n)
 	}
 }

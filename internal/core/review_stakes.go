@@ -769,10 +769,10 @@ func (s *Service) stakesOutcomes(ctx context.Context, actor *Actor, days int, ta
 		}
 		// #nosec G202 -- only placeholders are joined in
 		rows, err := s.db.R.QueryContext(ctx, `SELECT i.id, p.key || '-' || i.number, st.category,
-				(SELECT count(*) FROM issue_relations r WHERE r.target_id = i.id AND r.kind = 'follows' AND coalesce(r.found, '') != ?),
-				(SELECT count(*) FROM issue_relations r WHERE r.target_id = i.id AND r.kind = 'follows' AND r.subkind = 'fix' AND coalesce(r.found, '') != ?)
+				(SELECT count(*) FROM issue_relations r WHERE r.target_id = i.id AND r.kind = 'follows'),
+				(SELECT count(*) FROM issue_relations r WHERE r.target_id = i.id AND r.kind = 'follows' AND r.subkind = 'fix')
 			FROM issues i JOIN projects p ON p.id = i.project_id JOIN statuses st ON st.id = i.status_id
-			WHERE i.id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")+`)`, append([]any{relationFoundFiles, relationFoundFiles}, args...)...)
+			WHERE i.id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")+`)`, args...)
 		if err != nil {
 			return err
 		}

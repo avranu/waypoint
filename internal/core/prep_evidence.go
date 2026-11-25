@@ -66,6 +66,14 @@ const (
 	evidenceTestRunes    = 240
 )
 
+// supersededPage matches a page pg that something replaced. A page has no
+// retired state, so such a link retires it as evidence; a draft's link isn't
+// in force yet. Queries for pages leave these out before their limit, so they
+// don't count towards it.
+const supersededPage = `EXISTS (SELECT 1 FROM knowledge_links l
+	WHERE l.dst_type = 'page' AND l.dst_id = pg.id AND l.rel = 'supersedes'
+	AND NOT (l.src_type = 'page' AND l.src_id IN (SELECT id FROM pages WHERE draft = 1)))`
+
 // evidenceCategories are the page categories that record data.
 const evidenceCategories = `('experiment','reference','note','problem')`
 
@@ -139,18 +147,20 @@ func (s *Service) runPrepEvidence(ctx context.Context, t prepEvidenceTask) error
 		return err
 	}
 	i := t.issue
+	defer s.checkingEvidence(i.ID)()
 	// A check in flight, or one that was lost, is there to see.
-	if err := s.storePrepEvidence(ctx, t, "pending", nil, "", "", 0, 0, nil); err != nil {
+	check, err := s.beginPrepEvidence(ctx, t)
+	if err != nil {
 		return err
 	}
 	cands, err := s.evidenceCandidates(ctx, i, t.words)
 	if err != nil {
-		return s.storePrepEvidence(ctx, t, "failed", nil, "", "", 0, 0, err)
+		return s.storePrepEvidence(ctx, t, check, "failed", nil, "", "", 0, 0, err)
 	}
 	prompt := prepEvidencePrompt(i.Key, i.Type, t.title, t.desc, t.comments, cands)
 	pctx, chain, err := s.prepChain(ctx, i.Key, t.priority)
 	if err != nil {
-		return s.storePrepEvidence(ctx, t, "failed", nil, "", "", len(cands), 0, err)
+		return s.storePrepEvidence(ctx, t, check, "failed", nil, "", "", len(cands), 0, err)
 	}
 	var answer evidenceAnswer
 	model, requestID, err := s.runAIAnswer(pctx, "prep", chain, prepEvidenceSystem, prompt, prepEvidenceSchema, &answer)
@@ -160,10 +170,10 @@ func (s *Service) runPrepEvidence(ctx context.Context, t prepEvidenceTask) error
 		if t.priority == prioritySurplus && errors.As(err, &wait) {
 			state = "refused"
 		}
-		return s.storePrepEvidence(ctx, t, state, nil, "", "", len(cands), 0, err)
+		return s.storePrepEvidence(ctx, t, check, state, nil, "", "", len(cands), 0, err)
 	}
 	notes, dropped := checkPrepEvidence(&answer, cands, append([]string{t.title, t.desc}, t.comments...))
-	return s.storePrepEvidence(ctx, t, "ready", notes, model, requestID, len(cands), dropped, nil)
+	return s.storePrepEvidence(ctx, t, check, "ready", notes, model, requestID, len(cands), dropped, nil)
 }
 
 // retryPrepEvidence runs a queued task's evidence check again, in the
@@ -188,7 +198,9 @@ func (s *Service) retryPrepEvidence(ctx context.Context, issueID int64, now time
 		state == "refused" && (front || age > prepRetryFailed) ||
 		state == "pending" && age > prepPendingMax ||
 		checked != hash && now.Sub(msTime(prepped)) > prepPendingMax
-	if !due {
+	// A check still running here isn't lost, however long it has waited for the
+	// model. A restart forgets them, so what it lost is retried.
+	if !due || s.evidenceInFlight(issueID) {
 		return nil
 	}
 	// Without a live run the row stays as it is: claiming it would only leave
@@ -218,7 +230,7 @@ func (s *Service) retryPrepEvidence(ctx context.Context, issueID int64, now time
 		return nil
 	}
 	// Whoever moves the row first runs it: two callers queue one retry.
-	res, err := s.db.W.ExecContext(ctx, `UPDATE task_prep_evidence SET state = 'pending', text_hash = ?, created_at = ?
+	res, err := s.db.W.ExecContext(ctx, `UPDATE task_prep_evidence SET state = 'pending', text_hash = ?, created_at = max(?, created_at + 1)
 		WHERE issue_id = ? AND state = ? AND created_at = ? AND text_hash = ?`, hash, s.nowMS(), issueID, state, at, checked)
 	var claimed int64
 	if err == nil {
@@ -233,9 +245,46 @@ func (s *Service) retryPrepEvidence(ctx context.Context, issueID int64, now time
 	return nil
 }
 
-// storePrepEvidence keeps a task's evidence in place of any before, and
-// returns cause (why there is none) with any failure to keep it.
-func (s *Service) storePrepEvidence(ctx context.Context, t prepEvidenceTask, state string, notes *PrepEvidence, model, requestID string, candidates, dropped int, cause error) error {
+// checkingEvidence counts an issue's evidence check as running here until the
+// returned function is called.
+func (s *Service) checkingEvidence(issueID int64) (done func()) {
+	s.aiMu.Lock()
+	defer s.aiMu.Unlock()
+	if s.evidencing == nil {
+		s.evidencing = map[int64]int{}
+	}
+	s.evidencing[issueID]++
+	return func() {
+		s.aiMu.Lock()
+		defer s.aiMu.Unlock()
+		if s.evidencing[issueID]--; s.evidencing[issueID] <= 0 {
+			delete(s.evidencing, issueID)
+		}
+	}
+}
+
+func (s *Service) evidenceInFlight(issueID int64) bool {
+	s.aiMu.Lock()
+	defer s.aiMu.Unlock()
+	return s.evidencing[issueID] > 0
+}
+
+// beginPrepEvidence puts a pending row in place of any evidence before, and
+// returns the created_at that names this check: an issue's only go up, so no
+// two checks share one.
+func (s *Service) beginPrepEvidence(ctx context.Context, t prepEvidenceTask) (check int64, err error) {
+	err = s.db.W.QueryRowContext(ctx, `INSERT INTO task_prep_evidence(issue_id, text_hash, state, notes, model, request_id, candidates, dropped, error, created_at)
+		VALUES (?,?,'pending','','','',0,0,'',?)
+		ON CONFLICT(issue_id) DO UPDATE SET text_hash = excluded.text_hash, state = excluded.state, notes = '', model = '', request_id = '',
+			candidates = 0, dropped = 0, error = '', created_at = max(excluded.created_at, task_prep_evidence.created_at + 1)
+		RETURNING created_at`, t.issue.ID, t.hash, s.nowMS()).Scan(&check)
+	return check, err
+}
+
+// storePrepEvidence keeps what a check found, if the row is still the pending
+// one that check wrote: a newer check's is left alone. It returns cause (why
+// there is none) with any failure to keep it.
+func (s *Service) storePrepEvidence(ctx context.Context, t prepEvidenceTask, check int64, state string, notes *PrepEvidence, model, requestID string, candidates, dropped int, cause error) error {
 	var raw, msg string
 	if notes != nil {
 		out, err := json.Marshal(notes)
@@ -247,8 +296,10 @@ func (s *Service) storePrepEvidence(ctx context.Context, t prepEvidenceTask, sta
 	if cause != nil {
 		msg = truncateBytes(cause.Error(), 500)
 	}
-	_, err := s.db.W.ExecContext(ctx, `INSERT OR REPLACE INTO task_prep_evidence(issue_id, text_hash, state, notes, model, request_id, candidates, dropped, error, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?)`, t.issue.ID, t.hash, state, raw, model, requestID, candidates, dropped, msg, s.nowMS())
+	_, err := s.db.W.ExecContext(ctx, `UPDATE task_prep_evidence SET state = ?, notes = ?, model = ?, request_id = ?, candidates = ?, dropped = ?, error = ?,
+		created_at = max(?, created_at)
+		WHERE issue_id = ? AND text_hash = ? AND created_at = ? AND state = 'pending'`,
+		state, raw, model, requestID, candidates, dropped, msg, s.nowMS(), t.issue.ID, t.hash, check)
 	return errors.Join(cause, err)
 }
 
@@ -274,6 +325,10 @@ func prepEvidencePrompt(key, typ, title, desc string, comments []string, cands [
 	return sb.String()
 }
 
+// hasAssumptions matches a design note n with an Assumptions section. Queries
+// for decisions say it before their limit, so those without one don't count.
+const hasAssumptions = `(n.body LIKE '## Assumptions%' OR n.body LIKE '%' || char(10) || '## Assumptions%')`
+
 // evidenceCandidates are the project's recorded data that may bear on a task:
 // pages linked to it or its parent, then matching its words, and the
 // assumptions of active decisions found the same ways. It reads as the AI
@@ -294,18 +349,20 @@ func (s *Service) evidenceCandidates(ctx context.Context, i *Issue, words []stri
 				SELECT page_id FROM page_issues WHERE issue_id IN (?2, ?3)
 				UNION SELECT src_id FROM knowledge_links WHERE src_type = 'page' AND dst_type = 'issue' AND dst_id IN (?2, ?3)
 				UNION SELECT dst_id FROM knowledge_links WHERE src_type = 'issue' AND dst_type = 'page' AND src_id IN (?2, ?3))
+				AND NOT ` + supersededPage + `
 			ORDER BY pg.updated_at DESC, pg.id DESC LIMIT 20`,
 			`SELECT pg.id FROM page_search JOIN pages pg ON pg.id = page_search.rowid
 			WHERE page_search MATCH ?1 AND pg.project_id = ?2 AND pg.draft = 0 AND pg.category IN ` + evidenceCategories + `
+			AND NOT ` + supersededPage + `
 			ORDER BY bm25(page_search, 10.0, 1.0) LIMIT 20`, evidencePageMax},
 		{KDesign, `SELECT n.id FROM design_notes n WHERE n.project_id = ?1 AND n.kind = 'decision' AND n.status = 'active' AND n.id IN (
 				SELECT src_id FROM knowledge_links WHERE src_type = 'design' AND dst_type = 'issue' AND dst_id IN (?2, ?3)
 				UNION SELECT dst_id FROM knowledge_links WHERE src_type = 'issue' AND dst_type = 'design' AND src_id IN (?2, ?3))
+				AND ` + hasAssumptions + `
 			ORDER BY n.updated_at DESC, n.id DESC LIMIT 20`,
-			// Only those with the section count towards the limit.
 			`SELECT n.id FROM design_search JOIN design_notes n ON n.id = design_search.rowid
 			WHERE design_search MATCH ?1 AND n.project_id = ?2 AND n.kind = 'decision' AND n.status = 'active'
-			AND (n.body LIKE '## Assumptions%' OR n.body LIKE '%' || char(10) || '## Assumptions%')
+			AND ` + hasAssumptions + `
 			ORDER BY bm25(design_search) LIMIT 20`, evidenceDesignMax},
 	} {
 		ids, err := s.evidenceIDs(ctx, kind.linked, i.ProjectID, i.ID, parent)
@@ -378,12 +435,9 @@ func (s *Service) evidenceCand(ctx context.Context, actor *Actor, i *Issue, kind
 		if pg.Draft || pg.ProjectKey != i.ProjectKey || pg.Code == "" || !strings.Contains(evidenceCategories, "'"+pg.Category+"'") {
 			return nil, nil
 		}
-		// A page has no retired state: a link saying something replaced it
-		// retires it as evidence. A draft's link isn't in force yet.
 		var superseded bool
-		if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM knowledge_links l
-			WHERE l.dst_type = 'page' AND l.dst_id = ? AND l.rel = 'supersedes'
-			AND NOT (l.src_type = 'page' AND l.src_id IN (SELECT id FROM pages WHERE draft = 1)))`, id).Scan(&superseded); err != nil || superseded {
+		if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pages pg WHERE pg.id = ? AND `+supersededPage+`)`,
+			id).Scan(&superseded); err != nil || superseded {
 			return nil, err
 		}
 		c.Ref, c.Title, c.Category, c.Date = i.ProjectKey+"-"+pg.Code, pg.Title, pg.Category, pg.UpdatedAt.Format("2006-01-02")

@@ -118,7 +118,15 @@ stateless, same bearer token).
     POST  /issues/{key}/ai/subtasks   suggested sub-tasks {subtasks: [{title, points}], model}
     GET   /issues/{key}/prep          the task's prep (WP-212): {state, model, notes: {files, symbols, tests,
                                       related, terms, questions}, dropped, held_out, stale}; ?shown=1 from an agent
-                                      taking it records that it was shown; a held-out one has no notes for agents
+                                      taking it records that it was shown; a held-out one has no notes for agents.
+                                      ?evidence=1, for a client that prints it, adds evidence (WP-ADR157), when
+                                      the ready, current prep found some: {evidence: [{ref, kind (page|design),
+                                      title, category, date, by, bears_on, updated, changed_since}], claims:
+                                      [{quote, test, ref, ref_kind, ref_updated, changed_since}]}. People who view
+                                      the project get it, not those given only the task. An agent gets it only in
+                                      the shown arm of a live prep_evidence experiment, drawn when the agent
+                                      holding the task fetches with shown=1 (which makes the task a unit), and
+                                      never when the prep is held out
     POST  /issues/{key}/prep          a code bundle from a checkout {repo, commit, machine, files: [{path, lines, why,
                                       symbols: [{name, kind, start, end}]}], bodies, tests, docs} (editors); the
                                       prep model reads it in the background
@@ -767,7 +775,9 @@ control. Reading needs ai.manage; starting and stopping, a person who is an admi
     POST /experiments/{key}/stop {"reason"}
     GET  /experiments/{key}/results?run=ID&scope=done|all   per arm: assigned, exposed, measured, done
                                     rate; per metric the median, mean, ratio to the control with a
-                                    bootstrap 95% interval, Mann-Whitney p and Holm-adjusted p; the
+                                    bootstrap 95% interval, Mann-Whitney p and Holm-adjusted p
+                                    (followups, fixes, self_review, review_found and pr_comments are
+                                    adjusted among themselves, the other metrics among themselves); the
                                     assignment check (SRM), detectable change, verdict, notes, caveats
     POST /issues/{key}/arms {"experiments":[key],"via":"next|take"}   (an agent's wp, after taking a
                                     task) {key, arms:{experiment:{arm,run,params}}}: the arms of the

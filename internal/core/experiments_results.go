@@ -4,8 +4,9 @@ package core
 // the usage the trends already attribute to tasks, plus its pull requests'
 // review findings and babysit rounds; the arms are compared with medians,
 // a bootstrap interval on the ratio of medians, Mann-Whitney tests with a
-// Holm correction across metrics, a test on the done rates, and a sample
-// ratio check that says when the assignment itself went wrong.
+// Holm correction across metrics (those of how a task held up apart from the
+// rest), a test on the done rates, and a sample ratio check that says when
+// the assignment itself went wrong.
 
 import (
 	"context"
@@ -53,35 +54,39 @@ func (t *expTask) inScope(scope string) bool { return t.measured && (scope == "a
 type experimentMetric struct {
 	ExperimentMetric
 	get func(t *expTask) (float64, bool)
+	// heldUp marks the measures of how a task held up (WP-ADR157). Their
+	// p-values are corrected apart from the others', which adding them
+	// therefore doesn't move.
+	heldUp bool
 }
 
 var experimentMetrics = []experimentMetric{
-	{ExperimentMetric{"cost_usd", "Cost", "usd"}, func(t *expTask) (float64, bool) { return t.row.CostUSD, t.row.CostUSD > 0 }},
+	{ExperimentMetric{"cost_usd", "Cost", "usd"}, func(t *expTask) (float64, bool) { return t.row.CostUSD, t.row.CostUSD > 0 }, false},
 	{ExperimentMetric{"tokens", "Tokens", "tokens"}, func(t *expTask) (float64, bool) {
 		u := t.row.UsageTotals
 		return float64(u.Input + u.Output + u.CacheWrite + u.CacheRead), true
-	}},
-	{ExperimentMetric{"output", "Output tokens", "tokens"}, func(t *expTask) (float64, bool) { return float64(t.row.Output), true }},
-	{ExperimentMetric{"messages", "Turns", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.Messages), true }},
-	{ExperimentMetric{"tool_calls", "Tool calls", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.ToolCalls), true }},
-	{ExperimentMetric{"tool_errors", "Tool errors", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.ToolErrors), true }},
-	{ExperimentMetric{"active_hours", "Active hours", "hours"}, func(t *expTask) (float64, bool) { return float64(t.row.ActiveHours), true }},
-	{ExperimentMetric{"sessions", "Sessions", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.Sessions), true }},
-	{ExperimentMetric{"subagents", "Subagents", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.Subagents), true }},
-	{ExperimentMetric{"compactions", "Compactions", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.Compactions), true }},
+	}, false},
+	{ExperimentMetric{"output", "Output tokens", "tokens"}, func(t *expTask) (float64, bool) { return float64(t.row.Output), true }, false},
+	{ExperimentMetric{"messages", "Turns", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.Messages), true }, false},
+	{ExperimentMetric{"tool_calls", "Tool calls", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.ToolCalls), true }, false},
+	{ExperimentMetric{"tool_errors", "Tool errors", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.ToolErrors), true }, false},
+	{ExperimentMetric{"active_hours", "Active hours", "hours"}, func(t *expTask) (float64, bool) { return float64(t.row.ActiveHours), true }, false},
+	{ExperimentMetric{"sessions", "Sessions", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.Sessions), true }, false},
+	{ExperimentMetric{"subagents", "Subagents", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.Subagents), true }, false},
+	{ExperimentMetric{"compactions", "Compactions", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.Compactions), true }, false},
 	{ExperimentMetric{"avg_context", "Average context", "tokens"}, func(t *expTask) (float64, bool) {
 		if t.row.AvgContext == nil {
 			return 0, false
 		}
 		return *t.row.AvgContext, true
-	}},
-	{ExperimentMetric{"findings", "Review findings", "count"}, func(t *expTask) (float64, bool) { return t.findings, t.row.PRs > 0 }},
-	{ExperimentMetric{"rounds", "Babysit rounds", "count"}, func(t *expTask) (float64, bool) { return t.rounds, t.row.PRs > 0 }},
-	{ExperimentMetric{"followups", "Follow-up tasks", "count"}, func(t *expTask) (float64, bool) { return t.followups, true }},
-	{ExperimentMetric{"fixes", "Follow-up fixes", "count"}, func(t *expTask) (float64, bool) { return t.fixes, true }},
-	{ExperimentMetric{"self_review", "Self-review findings", "count"}, func(t *expTask) (float64, bool) { return t.selfReview, t.selfReviewed }},
-	{ExperimentMetric{"review_found", "Adversarial review findings", "count"}, func(t *expTask) (float64, bool) { return t.reviewFound, t.reviewed }},
-	{ExperimentMetric{"pr_comments", "Review comments", "count"}, func(t *expTask) (float64, bool) { return t.prComments, t.row.PRs > 0 }},
+	}, false},
+	{ExperimentMetric{"findings", "Review findings", "count"}, func(t *expTask) (float64, bool) { return t.findings, t.row.PRs > 0 }, false},
+	{ExperimentMetric{"rounds", "Babysit rounds", "count"}, func(t *expTask) (float64, bool) { return t.rounds, t.row.PRs > 0 }, false},
+	{ExperimentMetric{"followups", "Follow-up tasks", "count"}, func(t *expTask) (float64, bool) { return t.followups, true }, true},
+	{ExperimentMetric{"fixes", "Follow-up fixes", "count"}, func(t *expTask) (float64, bool) { return t.fixes, true }, true},
+	{ExperimentMetric{"self_review", "Self-review findings", "count"}, func(t *expTask) (float64, bool) { return t.selfReview, t.selfReviewed }, true},
+	{ExperimentMetric{"review_found", "Adversarial review findings", "count"}, func(t *expTask) (float64, bool) { return t.reviewFound, t.reviewed }, true},
+	{ExperimentMetric{"pr_comments", "Review comments", "count"}, func(t *expTask) (float64, bool) { return t.prComments, t.row.PRs > 0 }, true},
 }
 
 // ExperimentStat is one metric in one arm, and how it compares with the
@@ -93,7 +98,8 @@ type ExperimentStat struct {
 	Mean   *float64 `json:"mean"`
 	// Ratio is this arm's median over the control's, with a 95% bootstrap
 	// interval; P is Mann-Whitney's, PAdj that after Holm's correction for
-	// all the comparisons in the run.
+	// the run's comparisons in the metric's family: the measures of how a
+	// task held up are one, all the others the second.
 	Ratio *float64 `json:"ratio,omitempty"`
 	Low   *float64 `json:"low,omitempty"`
 	High  *float64 `json:"high,omitempty"`
@@ -301,9 +307,12 @@ func (s *Service) experimentLaterMeasures(ctx context.Context, byID map[int64]*e
 		first []any  // its arguments before the ids
 		add   func(t *expTask, a, b float64)
 	}{
-		// Not Waypoint's own guess from files two tasks both changed.
+		// Not what Waypoint recorded itself, from shared files or from an agent
+		// filing it while on the task (which takes in what it only noticed),
+		// until somebody says what kind of follow-up it is (WP-ADR101).
 		{`SELECT target_id, count(*), coalesce(sum(subkind = 'fix'), 0) FROM issue_relations
-			WHERE kind = 'follows' AND coalesce(found, '') != ? AND target_id IN ` + in + ` GROUP BY target_id`, []any{relationFoundFiles},
+			WHERE kind = 'follows' AND NOT (coalesce(found, '') IN (?, ?) AND subkind = '') AND target_id IN ` + in + ` GROUP BY target_id`,
+			[]any{relationFoundFiles, relationFoundSession},
 			func(t *expTask, all, fixes float64) { t.followups, t.fixes = all, fixes }},
 		{`SELECT issue_id, sum(found), 0 FROM work_log
 			WHERE kind = ? AND reason != ? AND found IS NOT NULL AND issue_id IN ` + in + ` GROUP BY issue_id`,
@@ -363,8 +372,9 @@ func experimentCompare(d *ExperimentDef, run *ExperimentRun, tasks map[string][]
 	// same numbers twice.
 	rng := rand.New(rand.NewPCG(uint64(run.ID), 0x5eed)) // #nosec G404 G115 -- not for secrets; run ids are positive
 	type pref struct{ arm, metric int }
-	var ps []float64
-	var pAt []pref
+	// One family of comparisons for how tasks held up, one for the rest.
+	var ps [2][]float64
+	var pAt [2][]pref
 	for ai, a := range d.Arms {
 		r := ExperimentArmResult{ExperimentArm: a, Weight: run.Weights[a.Key], Assigned: run.Assigned[a.Key], Exposed: run.Exposed[a.Key]}
 		for _, t := range tasks[a.Key] {
@@ -398,7 +408,11 @@ func experimentCompare(d *ExperimentDef, run *ExperimentRun, tasks map[string][]
 					}
 					if p := mannWhitney(v, c); p != nil {
 						st.P = p
-						ps, pAt = append(ps, *p), append(pAt, pref{ai, mi})
+						f := 0
+						if m.heldUp {
+							f = 1
+						}
+						ps[f], pAt[f] = append(ps[f], *p), append(pAt[f], pref{ai, mi})
 					}
 				}
 			}
@@ -406,8 +420,10 @@ func experimentCompare(d *ExperimentDef, run *ExperimentRun, tasks map[string][]
 		}
 		o.Arms = append(o.Arms, r)
 	}
-	for i, p := range holm(ps) {
-		o.Arms[pAt[i].arm].Stats[pAt[i].metric].PAdj = f64p(p)
+	for f := range ps {
+		for i, p := range holm(ps[f]) {
+			o.Arms[pAt[f][i].arm].Stats[pAt[f][i].metric].PAdj = f64p(p)
+		}
 	}
 	// Done rates against the control's.
 	c := &o.Arms[0]

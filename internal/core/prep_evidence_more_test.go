@@ -185,6 +185,144 @@ func TestPrepEvidenceAssumptionsLimit(t *testing.T) {
 	}
 }
 
+// Superseded pages don't count towards either page query's limit, linked or
+// matched by words.
+func TestPrepEvidenceSupersededPagesLimit(t *testing.T) {
+	filler := strings.Repeat("unrelated filler words here ", 200)
+	for _, tc := range []struct {
+		name, title, body, oldTitle, oldBody string
+		linked                               bool
+	}{
+		{"linked", "Zebra", "Zebras sleep.", "Zebra", "Zebras wake.", true},
+		{"matched", "Gate", "A merge waits for checks. " + filler, "Merge checks", "merge checks merge checks", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEvidenceEnv(t)
+			var issues []string
+			if tc.linked {
+				issues = []string{e.task.Key}
+			}
+			e.page(e.admin, "valid", "reference", e.p.Key, tc.title, tc.body, false, issues...)
+			e.page(e.admin, "newer", "plan", e.p.Key, "Replacement", "Replaced.", false)
+			for n := range 21 {
+				name := fmt.Sprint("old", n)
+				e.page(e.admin, name, "reference", e.p.Key, tc.oldTitle, tc.oldBody, false, issues...)
+				e.supersede("newer", name)
+			}
+			got := e.candidates(e.task)
+			if len(got) != 1 || got[0].Ref != e.code("valid") {
+				t.Errorf("candidates %+v; want %s", got, e.code("valid"))
+			}
+		})
+	}
+}
+
+// linkNote links a decision or design note to a task.
+func (e *evidenceEnv) linkNote(name string, issueID int64) {
+	e.t.Helper()
+	if _, err := e.s.AddItemLink(e.ctx, e.admin, LinkInput{From: LinkEnd{Type: KDesign, ID: e.notes[name].ID},
+		To: LinkEnd{Type: KIssue, ID: issueID}, Rel: "relates"}); err != nil {
+		e.t.Fatalf("link %s: %v", name, err)
+	}
+}
+
+// The newest 20 linked decisions are the newest with an Assumptions section:
+// those without one don't count towards the limit.
+func TestPrepEvidenceLinkedAssumptionsLimit(t *testing.T) {
+	e := newEvidenceEnv(t)
+	link := func(name, body string) {
+		e.decision(name, e.p.Key, "Zebra", body)
+		e.linkNote(name, e.task.ID)
+	}
+	link("older", "## Assumptions\n- Zebras sleep.")
+	for n := range 21 {
+		link(fmt.Sprint("bare", n), "## Decision\nZebra.\n\n### Assumptions\nZebra.")
+	}
+	got := e.candidates(e.task)
+	if len(got) != 1 || got[0].Ref != e.code("older") {
+		t.Errorf("candidates %+v; want %s", got, e.code("older"))
+	}
+}
+
+// Only a decision's Assumptions are evidence: another design note with such a
+// section is offered neither by its link nor by its words.
+func TestPrepEvidenceOnlyDecisions(t *testing.T) {
+	e := newEvidenceEnv(t)
+	for _, kind := range []string{"feature", "note", "requirement"} {
+		title, body := "Merge checks "+kind, "## Assumptions\n- Merge checks are quick."
+		n, err := e.s.CreateDesign(e.ctx, e.admin, DesignInput{Title: &title, Body: &body, Kind: &kind, Project: &e.p.Key})
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.notes[kind] = n
+	}
+	e.linkNote("feature", e.task.ID)
+	e.decision("matched", e.p.Key, "Merge checks decision", "## Assumptions\n- Merge checks are quick.")
+	got := e.candidates(e.task)
+	if len(got) != 1 || got[0].Ref != e.code("matched") {
+		t.Errorf("candidates %+v; want only %s", got, e.code("matched"))
+	}
+}
+
+// With no page the answer names to show and no claim, the holder is given
+// nothing and the task is no unit.
+func TestPrepEvidenceAllHidden(t *testing.T) {
+	e := newEvidenceEnv(t)
+	e.page(e.admin, "ref", "reference", e.p.Key, "Merge checks reference", "Checks take four minutes.", false)
+	e.llm.evidence = fmt.Sprintf(`{"evidence": [{"ref": %q, "bears_on": "check times"}], "claims": []}`, e.code("ref"))
+	e.prep(e.task.Key)
+	if got := e.served(e.admin, e.task.Key, false); got.Evidence == nil || len(got.Evidence.Evidence) != 1 {
+		t.Fatalf("before: %+v", got.Evidence)
+	}
+	if err := e.s.DeletePage(e.ctx, e.admin, e.pages["ref"].ID); err != nil {
+		t.Fatal(err)
+	}
+	e.claim(e.ag, e.task.Key)
+	for _, a := range []*Actor{e.ag, e.admin} {
+		if got := e.served(a, e.task.Key, true); got.Evidence != nil {
+			t.Errorf("agent %q: %+v", a.Agent, got.Evidence)
+		}
+	}
+	if got := e.units(e.task.ID); got != "0 0" {
+		t.Errorf("units %s", got)
+	}
+}
+
+// Only surplus work is refused: any other check the gateway asks to wait is a
+// failed one.
+func TestPrepEvidenceWaitAtNormalPriority(t *testing.T) {
+	e, g := newBudgetEnv(t)
+	g.set(func(g *budgetGateway) { g.busy = "600" })
+	p := e.project(e.admin, "App", "")
+	i := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Task"})
+	d, err := e.s.issueByID(e.ctx, e.s.db.R, i.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = e.s.runPrepEvidence(e.ctx, prepEvidenceTask{issue: d, priority: "normal", hash: "h", title: d.Title})
+	var wait *aiWaitError
+	if !errors.As(err, &wait) {
+		t.Fatalf("returned %v; want the gateway's wait", err)
+	}
+	if got := e.one(`SELECT state FROM task_prep_evidence WHERE issue_id = ?`, i.ID); got != "failed" {
+		t.Errorf("state = %q", got)
+	}
+}
+
+// With nothing recorded to offer, the check still reads the task for claims.
+func TestPrepEvidenceNoCandidates(t *testing.T) {
+	e := newEvidenceEnv(t)
+	e.prep(e.task.Key)
+	if len(e.llm.prompts) != 1 {
+		t.Fatalf("evidence prompts: %q", e.llm.prompts)
+	}
+	for _, want := range []string{"Candidates: none.", "Merge only when checks pass", "Most merges fail because checks are slow.", "flaky checks"} {
+		if !strings.Contains(e.llm.prompts[0], want) {
+			t.Errorf("prompt lacks %q:\n%s", want, e.llm.prompts[0])
+		}
+	}
+}
+
 func TestPrepEvidenceLongTitle(t *testing.T) {
 	e := newEvidenceEnv(t)
 	long := "Merge checks " + strings.Repeat("é", 180)
@@ -259,7 +397,11 @@ func TestPrepEvidenceSurplusError(t *testing.T) {
 		t.Errorf("state = %q", got)
 	}
 	cause := errors.New(strings.Repeat("x", 900))
-	if err := e.s.storePrepEvidence(e.ctx, task, "failed", nil, "", "", 0, 0, cause); !errors.Is(err, cause) {
+	check, err := e.s.beginPrepEvidence(e.ctx, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.s.storePrepEvidence(e.ctx, task, check, "failed", nil, "", "", 0, 0, cause); !errors.Is(err, cause) {
 		t.Errorf("returned %v", err)
 	}
 	if got := e.one(`SELECT length(CAST(error AS BLOB)) FROM task_prep_evidence WHERE issue_id = ?`, i.ID); got != "500" {

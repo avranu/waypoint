@@ -426,6 +426,7 @@ func TestExperimentHeldUpMeasures(t *testing.T) {
 	}
 	task, quiet, later, fix, other := mk("Task"), mk("Quiet"), mk("Later"), mk("Fix"), mk("Other")
 	guessed, filed := mk("Guessed"), mk("Filed")
+	guessedOnly, filedOnly, after, filedQuiet := mk("Guessed only"), mk("Filed only"), mk("After"), mk("Filed quiet")
 	f := e.forge("forgejo", "https://git.example.com", false)
 	url := "https://git.example.com/acme/app/pulls/3"
 	exec := func(q string, args ...any) {
@@ -438,8 +439,15 @@ func TestExperimentHeldUpMeasures(t *testing.T) {
 		exec(`INSERT INTO issue_relations(source_id, target_id, kind, subkind, created_at) VALUES (?,?,?,?,0)`, source, target, kind, subkind)
 	}
 	relate(later, task, "follows", "")
-	for source, found := range map[int64]string{guessed: "files", filed: "session"} {
-		exec(`INSERT INTO issue_relations(source_id, target_id, kind, subkind, found, created_at) VALUES (?,?,'follows','fix',?,0)`, source, task, found)
+	// What Waypoint found itself counts once somebody has said what it is.
+	for _, r := range []struct {
+		source, target int64
+		subkind, found string
+	}{
+		{guessed, task, "fix", "files"}, {filed, task, "fix", "session"}, {after, task, "", "after"},
+		{guessedOnly, task, "", "files"}, {filedOnly, task, "", "session"}, {filedQuiet, quiet, "", "session"},
+	} {
+		exec(`INSERT INTO issue_relations(source_id, target_id, kind, subkind, found, created_at) VALUES (?,?,'follows',?,?,0)`, r.source, r.target, r.subkind, r.found)
 	}
 	relate(fix, task, "follows", "fix")
 	relate(task, other, "follows", "fix") // the task is the later one
@@ -502,27 +510,76 @@ func TestExperimentHeldUpMeasures(t *testing.T) {
 		}
 		return strings.Join(out, " ")
 	}
-	for id, want := range map[int64]string{task: "3 2 6 5 3", quiet: "0 0 - - -", later: "0 0 - 0 -"} {
+	for id, want := range map[int64]string{task: "5 3 6 5 3", quiet: "0 0 - - -", later: "0 0 - 0 -"} {
 		if got := measured(id); got != want {
 			t.Errorf("task %d: %s; want %s", id, got, want)
 		}
 	}
-	if !slices.ContainsFunc(experimentCaveats, func(c string) bool { return strings.Contains(c, "keep arriving") }) {
-		t.Error("no caveat that later findings keep arriving")
-	}
-
-	// The stakes report counts the same follow-ups, once.
-	tiers := map[string]*StakesTierStats{StakesNormal: {}}
-	if err := e.s.stakesOutcomes(e.ctx, e.admin, 14, map[int64]string{task: StakesNormal}, tiers, &ReviewStakesStats{}); err != nil {
-		t.Fatal(err)
-	}
-	var follow []string
-	for _, o := range tiers[StakesNormal].Outcomes {
-		if strings.Contains(o.Key, "fix") || strings.Contains(o.Key, "followup") {
-			follow = append(follow, fmt.Sprintf("%s=%v", o.Key, o.Mean))
+	for _, want := range []string{"keep arriving", "review panel", "no model counted"} {
+		if !slices.ContainsFunc(experimentCaveats, func(c string) bool { return strings.Contains(c, want) }) {
+			t.Errorf("no caveat says %q", want)
 		}
 	}
-	if got := strings.Join(follow, " "); got != "followups=3 followup_fixes=2" {
-		t.Errorf("stakes follow-ups: %s", got)
+
+	// The stakes report counts every follow-up filed, once, a session's own
+	// included.
+	for id, want := range map[int64]string{task: "followups=7 followup_fixes=3", quiet: "followups=1 followup_fixes=0"} {
+		tiers := map[string]*StakesTierStats{StakesNormal: {}}
+		if err := e.s.stakesOutcomes(e.ctx, e.admin, 14, map[int64]string{id: StakesNormal}, tiers, &ReviewStakesStats{}); err != nil {
+			t.Fatal(err)
+		}
+		var follow []string
+		for _, o := range tiers[StakesNormal].Outcomes {
+			if strings.Contains(o.Key, "fix") || strings.Contains(o.Key, "followup") {
+				follow = append(follow, fmt.Sprintf("%s=%v", o.Key, o.Mean))
+			}
+		}
+		if got := strings.Join(follow, " "); got != want {
+			t.Errorf("stakes follow-ups of task %d: %s; want %s", id, got, want)
+		}
+	}
+}
+
+// The measures of how a task held up (WP-ADR157) are corrected for multiple
+// comparisons apart from the others, so they move no other adjusted p-value.
+func TestExperimentHolmFamilies(t *testing.T) {
+	d, ok := experimentDef(ExpPrepEvidence)
+	if !ok {
+		t.Fatal("no definition")
+	}
+	tasks := map[string][]*expTask{}
+	for ai, a := range d.Arms {
+		for n := range 30 {
+			x := &expTask{measured: true, done: true, selfReviewed: true, reviewed: true}
+			x.row.PRs = 1
+			x.row.CostUSD = float64(n + 1 + 12*ai)
+			x.row.Output = int64(n + 1 + 8*ai)
+			x.row.Messages = int64(n + 1 + 6*ai)
+			x.findings, x.rounds = float64(n%7+2*ai), float64(n%5+ai)
+			x.followups, x.fixes = float64(n%6+3*ai), float64(n%4+ai)
+			x.selfReview, x.reviewFound, x.prComments = float64(n%9+4*ai), float64(n%8+ai), float64(n%3+ai)
+			tasks[a.Key] = append(tasks[a.Key], x)
+		}
+	}
+	run := &ExperimentRun{ID: 1, Weights: d.Weights, Assigned: map[string]int{}, Exposed: map[string]int{}}
+	r := experimentCompare(d, run, tasks, "all", time.Now())
+	heldUp := []string{"followups", "fixes", "self_review", "review_found", "pr_comments"}
+	for name, in := range map[string]bool{"the older measures": false, "how tasks held up": true} {
+		var keys []string
+		var ps, got []float64
+		for _, st := range r.Arms[1].Stats {
+			if st.P != nil && slices.Contains(heldUp, st.Key) == in {
+				if st.PAdj == nil {
+					t.Fatalf("%s: no p_adj", st.Key)
+				}
+				keys, ps, got = append(keys, st.Key), append(ps, *st.P), append(got, *st.PAdj)
+			}
+		}
+		if len(ps) < 5 {
+			t.Fatalf("%s: only %v compared", name, keys)
+		}
+		if want := holm(ps); !slices.Equal(got, want) {
+			t.Errorf("%s %v: p_adj %v; want %v", name, keys, got, want)
+		}
 	}
 }

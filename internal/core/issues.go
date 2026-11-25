@@ -1159,7 +1159,7 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 		// What an agent files while working on a task follows it (WP-255),
 		// unless it is a slice of that task.
 		if o, ok := origin[0].(int64); ok && o != id && o != parentID {
-			if _, err := s.insertRelation(ctx, t, newRelation{Src: id, Dst: o, Kind: "follows", Found: "session", Basis: "inferred"}); err != nil {
+			if _, err := s.insertRelation(ctx, t, newRelation{Src: id, Dst: o, Kind: "follows", Found: relationFoundSession, Basis: "inferred"}); err != nil {
 				return err
 			}
 		}
