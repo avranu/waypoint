@@ -117,7 +117,7 @@ func TestRedactionPatternsArePinned(t *testing.T) {
 		{"secretRE", secretRE.String(), `(?i)([\w-]*(?:token|secret|passw(?:or)?d|api[_-]?key|apikey|access[_-]?key|private[_-]?key|authorization|credential)[\w-]*["']?\s*[=:]\s*|--(?:token|secret|password|passwd|api[_-]?key|auth|access[_-]?key)\s+|bearer\s+)(["']?)(?:(?:bearer|basic|token|negotiate|ntlm)\s+)?[^\s"']{4,}`},
 		{"digestAuthRE", digestAuthRE.String(), `(?i)(\bauthorization["']?\s*[=:]\s*["']?digest\s+)[^\r\n']+`},
 		{"schemeAuthRE", schemeAuthRE.String(), `(?i)(\bauthorization["']?\s*[=:]\s*["']?)[\w-]+\s+[^\s"']{4,}`},
-		{"tokenLikeRE", tokenLikeRE.String(), `\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|AIza[A-Za-z0-9_-]{35,}|npm_[A-Za-z0-9]{36,}|pypi-[A-Za-z0-9_-]{16,}|xapp-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,})`},
+		{"tokenLikeRE", tokenLikeRE.String(), `\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{22,}|glpat-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|AIza[A-Za-z0-9_-]{35,}|npm_[A-Za-z0-9]{36,}|pypi-[A-Za-z0-9_-]{16,}|xapp-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,})`},
 		{"urlPasswordRE", urlPasswordRE.String(), `(://[^\s/:@]+:)[^\s/@]+@`},
 		{"urlUserRE", urlUserRE.String(), `://[^\s/:@?#]{8,}(?::\*\*\*|:)?@`},
 		{"pemKeyRE", pemKeyRE.String(), `(-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----)(?s:.*?)(-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|\z)`},

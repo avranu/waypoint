@@ -544,6 +544,22 @@ func TestKeptRedactionWholeText(t *testing.T) {
 			in:      begin + "\n" + numbered(450) + end + "\n",
 			present: []string{"line 1\n", "line 450\n"},
 		},
+		"log prefix and diff mark on headers": {
+			in:   begin + "\n12:00 +Proc-Type: 4,ENCRYPTED\n12:00 +" + body + "\nrest\n",
+			want: begin + "\n***\n***\nrest\n",
+		},
+		"end at the last line searched": {
+			in:   begin + "\n" + numbered(400-1) + end + "\n",
+			want: begin + "\n" + strings.Repeat("***\n", 400-1) + end + "\n",
+		},
+		"end one line too far": {
+			in:   begin + "\n" + numbered(400) + end + "\n",
+			want: begin + "\n" + numbered(400) + end + "\n",
+		},
+		"all upper-case line after a bare begin":        {in: begin + "\n" + strings.Repeat("A", 44) + "\nrest\n", want: begin + "\n" + strings.Repeat("A", 44) + "\nrest\n"},
+		"all lower-case line after a bare begin":        {in: begin + "\n" + strings.Repeat("a", 44) + "\nrest\n", want: begin + "\n" + strings.Repeat("a", 44) + "\nrest\n"},
+		"all digits line after a bare begin":            {in: begin + "\n" + strings.Repeat("7", 44) + "\nrest\n", want: begin + "\n" + strings.Repeat("7", 44) + "\nrest\n"},
+		"mixed case without a digit after a bare begin": {in: begin + "\n" + strings.Repeat("aBcD", 11) + "\nrest\n", want: begin + "\n" + strings.Repeat("aBcD", 11) + "\nrest\n"},
 		"PGP block": {
 			in:      "-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v2\n\n" + body + "\n" + body + "\n=AbCd\n-----END PGP PRIVATE KEY BLOCK-----\nafter\n",
 			absent:  []string{body, "=AbCd", "GnuPG"},
@@ -728,5 +744,36 @@ func TestTestsumKeepsShortOutputWithFailedTests(t *testing.T) {
 		if k, _ := os.ReadFile(m[2]); !strings.Contains(string(k), "LINT FAILED") {
 			t.Errorf("%v: kept file:\n%s", args, k)
 		}
+	}
+}
+
+func TestKeptRedactionOfGitHubFineGrainedToken(t *testing.T) {
+	tok := "github_pat_" + strings.Repeat("aB3_", 21)[:82]
+	got := redactKept("a\nFAIL fetch with " + tok + " now\nb\n")
+	if strings.Contains(got, "github_pat_") || got != "a\nFAIL fetch with *** now\nb\n" {
+		t.Errorf("%q", got)
+	}
+}
+
+func TestKeptOutputOfEmptyEventsIsEmpty(t *testing.T) {
+	if got := keptOutput([]byte(`{"Action":"fail","Package":"p"}`+"\n"), 0); got != "" {
+		t.Errorf("%q", got)
+	}
+	if got := keptPlain(nil, 0); got != "" {
+		t.Errorf("%q", got)
+	}
+}
+
+func TestFailedTailIsRedacted(t *testing.T) {
+	t.Chdir(t.TempDir()) // not a checkout, so no kept file is written
+	got := failedTail([]byte("a\nb\npassword=hunter2secret\nc\n"), 3)
+	if strings.Contains(got, "hunter2secret") {
+		t.Errorf("secret in the printed tail:\n%s", got)
+	}
+	body := strings.Repeat("aB3/", 16)
+	in := "-----BEGIN RSA PRIVATE KEY-----\n" + body + "\n" + body + "\n" + body + "\n-----END RSA PRIVATE KEY-----\nafter\n"
+	got = failedTail([]byte(in), 3)
+	if strings.Contains(got, body) {
+		t.Errorf("key body in the printed tail:\n%s", got)
 	}
 }

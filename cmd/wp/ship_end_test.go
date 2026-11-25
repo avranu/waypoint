@@ -508,6 +508,9 @@ func TestShipCheckTimeLeavesOutTheSlotWait(t *testing.T) {
 	if !strings.Contains(out.String(), "Check passed: true (0s)") && !strings.Contains(out.String(), "Check passed: true (1s)") {
 		t.Errorf("the wait was counted as the check's time:\n%s", out.String())
 	}
+	if strings.Contains(out.String(), "waiting for a slot") {
+		t.Errorf("a wait below the note threshold was named:\n%s", out.String())
+	}
 }
 
 // The wait is named when it passes the threshold, for a passing check and a

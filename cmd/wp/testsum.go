@@ -303,7 +303,9 @@ const failedOutputFile = "wp-failed-output.log"
 // shown and the threshold for keeping can't drift apart.
 func failedTail(data []byte, n int) string {
 	data = plainOutput(data)
-	return lastLines(data, n) + "\n" + keptPlain(data, n)
+	// Redacted whole, so a key whose BEGIN is above the tail is blanked
+	// too; the kept file is redacted when it is written.
+	return lastLines([]byte(redactKept(string(data))), n) + "\n" + keptPlain(data, n)
 }
 
 // goStreamEvent holds exactly the fields test2json and go build -json
@@ -348,6 +350,9 @@ func keptOutput(data []byte, shown int) string {
 
 // keptPlain is keptOutput for data that is already plain text.
 func keptPlain(data []byte, shown int) string {
+	if len(bytes.Trim(data, "\n")) == 0 {
+		return ""
+	}
 	if strings.Count(strings.TrimRight(string(data), "\n"), "\n")+1 <= shown {
 		return ""
 	}
@@ -371,7 +376,7 @@ var (
 	pemBeginRE  = lazyre.New(`-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----`)
 	pemEndRE    = lazyre.New(`-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----`)
 	pemBodyRE   = lazyre.New(`^[A-Za-z0-9+/=]+$`)
-	pemHeaderRE = lazyre.New(`(?:^|\s)(?:Proc-Type|DEK-Info|Comment|Version): `)
+	pemHeaderRE = lazyre.New(`(?:^|\s)[-+>]?(?:Proc-Type|DEK-Info|Comment|Version): `)
 )
 
 // pemFullLine is the least length taken for a whole line of a key's body
