@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -249,7 +250,7 @@ func slotHolders(dir, name string) []slotHolder {
 		buf := make([]byte, 4096)
 		n, _ := f.Read(buf)
 		_ = f.Close()
-		parts := strings.SplitN(strings.TrimSpace(string(buf[:n])), "\t", 6)
+		parts := strings.SplitN(strings.TrimSpace(string(buf[:n])), "\t", 7)
 		if len(parts) < 4 {
 			continue
 		}
@@ -258,7 +259,7 @@ func slotHolders(dir, name string) []slotHolder {
 			session = parts[4]
 		}
 		cmd := slotCmdKey(parts[3])
-		if len(parts) == 6 && parts[5] != "" {
+		if len(parts) >= 6 && parts[5] != "" {
 			cmd = parts[5]
 		}
 		ts, err := strconv.ParseInt(parts[1], 10, 64)
@@ -293,13 +294,19 @@ func slotOwn(recorded string, pid int, session string, young bool) bool {
 	return young
 }
 
-// slotAddWaiter registers this process as waiting; the result removes it.
-// The file is written and locked under another name first, so nobody finds
-// it unlocked and takes it for a dead waiter's.
+// slotAddWaiter registers this process as waiting from now, for any slot.
 func slotAddWaiter(dir, name string) (remove func()) {
+	return slotAddWaiterFor(dir, name, time.Now(), nil)
+}
+
+// slotAddWaiterFor registers this process as waiting since arrival for the
+// slots in order (nil: any); the result removes it. The file is written and
+// locked under another name first, so nobody finds it unlocked and takes it
+// for a dead waiter's. Waiters are served by arrival (slotBlockedSlots).
+func slotAddWaiterFor(dir, name string, arrival time.Time, order []int) (remove func()) {
 	p := slotWaiterPath(dir, name)
 	tmp := p + ".new"
-	line := strconv.FormatInt(time.Now().UnixNano(), 10) + "\t" + slotField(slotSession())
+	line := strconv.FormatInt(arrival.UnixNano(), 10) + "\t" + slotField(slotSession()) + "\t" + slotOrderField(order)
 	f, err := os.OpenFile(tmp, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304 -- our own directory
 	if err != nil {
 		return func() {}
@@ -325,42 +332,52 @@ func slotAddWaiter(dir, name string) (remove func()) {
 	}
 }
 
-// slotWaiterLine parses a waiter file: when it began, and its session ("":
-// not recorded, by a wp from before it was).
-func slotWaiterLine(b []byte) (at int64, session string, ok bool) {
-	ts, session, _ := strings.Cut(strings.TrimSpace(string(b)), "\t")
-	at, err := strconv.ParseInt(ts, 10, 64)
-	return at, session, err == nil
+// slotOrderField is the slots as comma-separated numbers.
+func slotOrderField(order []int) string {
+	s := make([]string, len(order))
+	for i, v := range order {
+		s[i] = strconv.Itoa(v)
+	}
+	return strings.Join(s, ",")
 }
 
-// slotQueuedAhead counts the live waiters that began before this process.
-func slotQueuedAhead(dir, name string) int { return slotQueuedAheadOf(dir, name, "") }
-
-// slotQueuedAheadOf is slotQueuedAhead for a command that isn't this process
-// but one of session's (the wait hook asks about the command it is told of):
-// the waiters of that session are the command's own, not counted, and those
-// that began before the latest of them are ahead; with none, all are. With
-// session "": the waiters that began before this process.
-func slotQueuedAheadOf(dir, name, session string) int {
-	mine, minePid := time.Now().UnixNano(), os.Getpid()
-	if session == "" {
-		if b, err := os.ReadFile(slotWaiterPath(dir, name)); err == nil { // #nosec G304 -- our own directory
-			if v, _, ok := slotWaiterLine(b); ok {
-				mine = v
+// slotWaiterLine parses a waiter file: when it began (unix ns), its session
+// ("": not recorded, by a wp from before it was) and the slots it may take
+// (nil: any, as a wp from before they were recorded).
+func slotWaiterLine(b []byte) (at int64, session string, order []int, ok bool) {
+	f := strings.SplitN(strings.TrimSpace(string(b)), "\t", 3)
+	at, err := strconv.ParseInt(f[0], 10, 64)
+	if len(f) > 1 {
+		session = f[1]
+	}
+	if len(f) > 2 {
+		for _, v := range strings.Split(f[2], ",") {
+			if n, err := strconv.Atoi(v); err == nil {
+				order = append(order, n)
 			}
 		}
 	}
-	type waiter struct {
-		pid int
-		at  int64
-		own bool
-	}
-	var ws []waiter
+	return at, session, order, err == nil
+}
+
+// slotWaiter is a live waiter of a slot name.
+type slotWaiter struct {
+	pid     int
+	at      int64 // unix ns
+	session string
+	order   []int // nil: any slot
+}
+
+// slotLiveWaiters are the waiters of name whose process still holds its file
+// (the lock goes with the process, however it died); the file of one that
+// doesn't is removed. This process's own is among them.
+func slotLiveWaiters(dir, name string) []slotWaiter {
+	var ws []slotWaiter
 	files, _ := filepath.Glob(filepath.Join(dir, name+".*.wait"))
 	for _, p := range files {
 		pidStr := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(p), name+"."), ".wait")
 		pid, err := strconv.Atoi(pidStr)
-		if err != nil || (session == "" && pid == os.Getpid()) {
+		if err != nil {
 			continue
 		}
 		f, err := os.Open(p) // #nosec G304 -- our own directory
@@ -377,15 +394,70 @@ func slotQueuedAheadOf(dir, name, session string) int {
 		if err != nil {
 			continue
 		}
-		v, recorded, ok := slotWaiterLine(b)
+		at, session, order, ok := slotWaiterLine(b)
 		if !ok {
+			continue
+		}
+		ws = append(ws, slotWaiter{pid, at, session, order})
+	}
+	return ws
+}
+
+// slotBlockedSlots are the slots a waiter that came at arrival (unix ns) may
+// not try yet: those an earlier live waiter may take. Ties go to the lower
+// pid. A waiter held back behind its worktree's long run has no waiter file
+// yet, so it blocks nobody, and one that can't use a slot doesn't block it:
+// a long waiter at the head leaves the upper slots to the short ones
+// (WP-1876, WP-ADR150).
+func slotBlockedSlots(dir, name string, arrival int64) (blocked func(slot int) bool) {
+	var ahead []slotWaiter
+	for _, w := range slotLiveWaiters(dir, name) {
+		if w.pid != os.Getpid() && (w.at < arrival || (w.at == arrival && w.pid < os.Getpid())) {
+			ahead = append(ahead, w)
+		}
+	}
+	return func(slot int) bool {
+		for _, w := range ahead {
+			if w.order == nil || slices.Contains(w.order, slot) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// slotQueuedAhead counts the live waiters that began before this process.
+func slotQueuedAhead(dir, name string) int { return slotQueuedAheadOf(dir, name, "") }
+
+// slotQueuedAheadOf is slotQueuedAhead for a command that isn't this process
+// but one of session's (the wait hook asks about the command it is told of):
+// the waiters of that session are the command's own, not counted, and those
+// that began before the latest of them are ahead; with none, all are. With
+// session "": the waiters that began before this process.
+func slotQueuedAheadOf(dir, name, session string) int {
+	mine, minePid := time.Now().UnixNano(), os.Getpid()
+	if session == "" {
+		if b, err := os.ReadFile(slotWaiterPath(dir, name)); err == nil { // #nosec G304 -- our own directory
+			if v, _, _, ok := slotWaiterLine(b); ok {
+				mine = v
+			}
+		}
+	}
+	type waiter struct {
+		pid int
+		at  int64
+		own bool
+	}
+	var ws []waiter
+	for _, w := range slotLiveWaiters(dir, name) {
+		if session == "" && w.pid == os.Getpid() {
 			continue
 		}
 		own := false
 		if session != "" {
-			own = slotOwn(recorded, pid, session, time.Since(time.Unix(0, v)) < 15*time.Second)
+			own = slotOwn(w.session, w.pid, session, time.Since(time.Unix(0, w.at)) < 15*time.Second)
 		}
-		ws = append(ws, waiter{pid, v, own})
+		ws = append(ws, waiter{w.pid, w.at, own})
 	}
 	if session != "" {
 		first := true

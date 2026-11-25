@@ -44,7 +44,22 @@ is in. A run of tests drops credential-named variables, as wp testsum does
 (--keep-env NAME passes one through; WP-1065). Each successful run's time is
 kept (runs.jsonl in the slot directory); a run that has to wait, and again
 one that starts, says on stderr when it expects to finish, from the median
-of the command's recent runs, and says nothing without any (WP-1571).`,
+of the command's recent runs, and says nothing without any (WP-1571).
+
+Waiters are served first come, first served: a run tries a slot only when no
+earlier waiter that may use it is still waiting (WP-1876).
+
+Each run of a command through the slot (run, testsum, ship --check) gets one
+CPU bound, WAYPOINT_SLOT_CPU percent of one core (default 200; off for none),
+so a go test in a slot can't take every core:
+  cgroup  the process already sits under a cpu.max quota (a sandbox): nothing added
+  runner  a runner job: its load governor paces it; Go is held to the quota
+  scope   a systemd user scope (systemd-run --user) with CPUQuota and CPUWeight=50
+          in waypoint-tests.slice; needs a user bus (XDG_RUNTIME_DIR)
+  env     elsewhere: GOMAXPROCS and GOFLAGS -p set, unless you set them. This
+          binds Go builds and tests only, not other programs the command runs.
+  none    WAYPOINT_SLOT_CPU=off
+ls shows the bound of each running hold and how many runs of the last 24h had none.`,
 	examples: []string{"wp slot run tests -- go test ./...", "wp slot ls"},
 }
 
@@ -72,12 +87,26 @@ func slotDir() (string, error) {
 	return filepath.Join(d, "waypoint", "slots"), nil
 }
 
+// defaultSlots is how many runs share a slot name: half the cores. The CPU
+// quota of a run (slot_cpu.go) does not change it: replaying the recorded
+// holds with fewer slots made waits much longer, and changing both at once
+// would hide what the quota does (WP-1876).
 func defaultSlots() int { return max(1, runtime.NumCPU()/2) }
 
 // slotHold is a held slot.
 type slotHold struct {
-	f   *os.File
-	idx int
+	f      *os.File
+	idx    int
+	since  int64
+	ctxKey string
+}
+
+// write puts the holder line in the lock file: pid, start, folder, arguments,
+// session, run key and the CPU bound the run has ("" until known).
+func (h *slotHold) write(bound string) {
+	wd, _ := os.Getwd()
+	_ = h.f.Truncate(0)
+	_, _ = h.f.WriteAt([]byte(fmt.Sprintf("%d\t%d\t%s\t%s\t%s\t%s\t%s\n", os.Getpid(), h.since, slotField(wd), slotField(strings.Join(os.Args[1:], " ")), slotField(slotSession()), slotField(h.ctxKey), bound)), 0)
 }
 
 func (h *slotHold) release() { _ = h.f.Close() }
@@ -106,14 +135,18 @@ func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstM
 	}
 	start := time.Now()
 	notified := false
-	var remove func()
-	defer func() {
-		if remove != nil {
-			remove()
-		}
-	}()
+	me := slotArrival(ctx, start)
+	// Registered before the first try, so a run that comes later can't take a
+	// slot this one may use (WP-1876).
+	remove := slotAddWaiterFor(dir, name, me, order)
+	defer remove()
+	missed := false
 	for {
+		blocked := slotBlockedSlots(dir, name, me.UnixNano())
 		for _, i := range order {
+			if blocked(i) {
+				continue
+			}
 			f, err := os.OpenFile(filepath.Join(dir, fmt.Sprintf("%s.%d.lock", name, i)), os.O_RDWR|os.O_CREATE, 0o600) // #nosec G304 -- name is validated
 			if err != nil {
 				return nil, err
@@ -124,15 +157,14 @@ func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstM
 				return nil, err
 			}
 			if ok {
-				wd, _ := os.Getwd()
-				_ = f.Truncate(0)
-				_, _ = f.WriteAt([]byte(fmt.Sprintf("%d\t%d\t%s\t%s\t%s\t%s\n", os.Getpid(), time.Now().Unix(), slotField(wd), slotField(strings.Join(os.Args[1:], " ")), slotField(slotSession()), slotField(slotCtxKey(ctx)))), 0)
-				return &slotHold{f: f, idx: i}, nil
+				h := &slotHold{f: f, idx: i, since: time.Now().Unix(), ctxKey: slotCtxKey(ctx)}
+				h.write(slotBoundOf(ctx))
+				return h, nil
 			}
 			_ = f.Close()
 		}
-		if remove == nil {
-			remove = slotAddWaiter(dir, name)
+		if !missed {
+			missed = true
 			if firstMiss != nil {
 				firstMiss()
 			}
@@ -152,6 +184,27 @@ func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstM
 }
 
 type slotCtxKeyT struct{}
+
+type (
+	slotArrivalKeyT struct{}
+	slotBoundKeyT   struct{}
+)
+
+// slotArrival is when the run asking for the slot came: the time its caller
+// gave on ctx (a run that waited behind its worktree's long run came before
+// that wait), else now.
+func slotArrival(ctx context.Context, now time.Time) time.Time {
+	if t, ok := ctx.Value(slotArrivalKeyT{}).(time.Time); ok {
+		return t
+	}
+	return now
+}
+
+// slotBoundOf is the CPU bound the run on ctx is about to have, "" when not told.
+func slotBoundOf(ctx context.Context) string {
+	k, _ := ctx.Value(slotBoundKeyT{}).(string)
+	return k
+}
 
 // slotCtxKey is the run key (slotRunKey) the slot is taken for, "" when none.
 func slotCtxKey(ctx context.Context) string {
@@ -235,11 +288,13 @@ func (c *cli) runInSlotThen(name string, n int, argv []string, out, errw io.Writ
 	if own {
 		cmd = slotRunKey(os.Args, argv)
 	}
-	env, release, setExit, err := c.takeSlotExit(ctx, name, n, slotRunOf(argv), cmd)
+	bound, _ := slotBoundKind()
+	taken, err := c.takeSlotRun(context.WithValue(ctx, slotBoundKeyT{}, bound), name, n, slotRunOf(argv), cmd)
 	if err != nil {
 		return 0, err
 	}
-	defer release()
+	env, setExit := taken.env, taken.setExit
+	defer taken.release()
 	dir, derr := slotDir()
 	if cmd != "" && derr == nil {
 		if note := slotRunningNote(dir, name, cmd); note != "" {
@@ -253,7 +308,8 @@ func (c *cli) runInSlotThen(name string, n int, argv []string, out, errw io.Writ
 		env = envf(env)
 	}
 	begun := time.Now()
-	code, err := runSlotCmd(ctx, env, argv, os.Stdin, out, errw)
+	code, ran, err := runSlotBound(ctx, "", env, argv, os.Stdin, out, errw)
+	taken.setBound(ran)
 	if err == nil {
 		setExit(code)
 	}
@@ -270,8 +326,15 @@ func runSlotCmd(ctx context.Context, env, argv []string, in io.Reader, out, errw
 	return runSlotCmdIn(ctx, "", env, argv, in, out, errw)
 }
 
-// runSlotCmdIn is runSlotCmd in folder dir ("" for this one).
+// runSlotCmdIn is runSlotCmd in folder dir ("" for this one), under the CPU
+// bound slotBoundKind picks (slot_cpu.go).
 func runSlotCmdIn(ctx context.Context, dir string, env, argv []string, in io.Reader, out, errw io.Writer) (int, error) {
+	code, _, err := runSlotBound(ctx, dir, env, argv, in, out, errw)
+	return code, err
+}
+
+// runSlotPlain runs argv as it is, without a scope.
+func runSlotPlain(ctx context.Context, dir string, env, argv []string, in io.Reader, out, errw io.Writer) (int, error) {
 	cmd := exec.Command(argv[0], argv[1:]...) // #nosec G204 G702 -- running the command is the point
 	cmd.Dir = dir
 	cmd.Env = env
@@ -280,6 +343,13 @@ func runSlotCmdIn(ctx context.Context, dir string, env, argv []string, in io.Rea
 	if err := cmd.Start(); err != nil {
 		return 127, fmt.Errorf("%s: %w", argv[0], err)
 	}
+	return waitSlotCmd(ctx, cmd)
+}
+
+// waitSlotCmd waits for a started cmd and returns its exit code (128+N when
+// a signal ended it). A stop on ctx is passed on as SIGTERM and the command
+// is let finish, so a slot stays held exactly as long as the command runs.
+func waitSlotCmd(ctx context.Context, cmd *exec.Cmd) (int, error) {
 	done := make(chan struct{})
 	go func() {
 		select {
@@ -383,7 +453,7 @@ func cmdSlotLs(c *cli, args []string) error {
 		}
 		b, _ := io.ReadAll(io.LimitReader(f, 4096))
 		_ = f.Close()
-		parts := strings.SplitN(strings.TrimSpace(string(b)), "\t", 5)
+		parts := strings.SplitN(strings.TrimSpace(string(b)), "\t", 7)
 		if len(parts) < 4 {
 			_, _ = fmt.Fprintf(c.out, "%-12s held\n", label)
 			continue
@@ -392,7 +462,11 @@ func cmdSlotLs(c *cli, args []string) error {
 		if ts, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
 			since = time.Since(time.Unix(ts, 0)).Round(time.Second).String()
 		}
-		_, _ = fmt.Fprintf(c.out, "%-12s held pid %s for %s in %s: wp %s\n", label, parts[0], since, parts[2], parts[3])
+		bound := ""
+		if len(parts) == 7 && parts[6] != "" {
+			bound = " [cpu bound: " + parts[6] + "]"
+		}
+		_, _ = fmt.Fprintf(c.out, "%-12s held pid %s for %s in %s: wp %s%s\n", label, parts[0], since, parts[2], parts[3], bound)
 	}
 	c.slotQueueLs(dir)
 	return nil
@@ -418,13 +492,31 @@ func (c *cli) takeSlotFor(ctx context.Context, name string, n int, run slotRun) 
 // says when it expects to finish if it knows how long etaCmd (slotCmdKey)
 // runs; "" says nothing (WP-1571).
 func (c *cli) takeSlotExit(ctx context.Context, name string, n int, run slotRun, etaCmd string) (env []string, release func(), setExit func(int), err error) {
-	env = os.Environ()
+	t, err := c.takeSlotRun(ctx, name, n, run, etaCmd)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return t.env, t.release, t.setExit, nil
+}
+
+// slotTaken is a slot taken (or one this process tree already holds) and what
+// the run in it tells the hold: setExit what the command exited with, setBound
+// the CPU bound it ran under (slot_cpu.go).
+type slotTaken struct {
+	env      []string
+	release  func()
+	setExit  func(int)
+	setBound func(string)
+}
+
+func (c *cli) takeSlotRun(ctx context.Context, name string, n int, run slotRun, etaCmd string) (slotTaken, error) {
+	env := os.Environ()
 	if slotHeld(name) {
-		return env, func() {}, func(int) {}, nil
+		return slotTaken{env, func() {}, func(int) {}, func(string) {}}, nil
 	}
 	hold, err := c.acquireQueued(ctx, name, n, run, etaCmd)
 	if err != nil {
-		return nil, nil, nil, err
+		return slotTaken{}, err
 	}
 	held := name
 	if dir, err := slotDir(); err == nil {
@@ -440,5 +532,5 @@ func (c *cli) takeSlotExit(ctx context.Context, name string, n int, run slotRun,
 			kept = append(kept, e)
 		}
 	}
-	return append(kept, slotHeldEnv+"="+held), hold.release, hold.setExit, nil
+	return slotTaken{append(kept, slotHeldEnv+"="+held), hold.release, hold.setExit, hold.setBound}, nil
 }
