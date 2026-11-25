@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -649,6 +650,92 @@ type prepEvidenceUnit struct {
 	run                 int64
 	hash, model         string
 	candidates, dropped int
+}
+
+// notePrepEvidenceBalance adds to a prep_evidence run's results a note per
+// arm on what the tasks compared were at first exposure, from the run's
+// snapshots, so the arms' balance can be seen (WP-ADR157). tasks are the
+// results' own, as their reader sees them.
+func (s *Service) notePrepEvidenceBalance(ctx context.Context, o *ExperimentResults, tasks map[string][]*expTask) error {
+	if o.Experiment != ExpPrepEvidence {
+		return nil
+	}
+	type snapshot struct {
+		typ, risk                           string
+		priority, evidence, claims, dropped int
+	}
+	rows, err := s.db.R.QueryContext(ctx, `SELECT p.key || '-' || i.number, e.issue_type, e.risk, e.priority, e.evidence_n, e.claims_n, e.dropped
+		FROM experiment_units u JOIN prep_evidence_units e ON e.run_id = u.run_id AND e.issue_id = u.issue_id
+		JOIN issues i ON i.id = u.issue_id JOIN projects p ON p.id = i.project_id WHERE u.run_id = ?`, o.Run.ID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	snapshots := map[string]snapshot{}
+	for rows.Next() {
+		var key string
+		var u snapshot
+		if err := rows.Scan(&key, &u.typ, &u.risk, &u.priority, &u.evidence, &u.claims, &u.dropped); err != nil {
+			return err
+		}
+		snapshots[key] = u
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, a := range o.Arms {
+		if a.Weight == 0 {
+			continue
+		}
+		var n, found, withEvidence, withClaim, kept, dropped int
+		risks, types, priorities := map[string]int{}, map[string]int{}, map[int]int{}
+		for _, t := range tasks[a.Key] {
+			if !t.inScope(o.Scope) {
+				continue
+			}
+			n++
+			u, ok := snapshots[t.key]
+			if !ok {
+				continue
+			}
+			found++
+			withEvidence += min(u.evidence, 1)
+			withClaim += min(u.claims, 1)
+			kept += u.evidence + u.claims
+			dropped += u.dropped
+			risks[u.risk]++
+			types[u.typ]++
+			priorities[u.priority]++
+		}
+		if n == 0 {
+			continue
+		}
+		var parts []string
+		if found > 0 {
+			counted := func(name string, c int) string { return fmt.Sprintf("%s %d", name, c) }
+			var risk, typ, priority []string
+			for _, l := range []string{RiskHigh, RiskMedium, RiskLow} {
+				if c := risks[l]; c > 0 {
+					risk = append(risk, counted(l, c))
+				}
+			}
+			for _, name := range slices.Sorted(maps.Keys(types)) {
+				typ = append(typ, counted(name, types[name]))
+			}
+			// Most urgent first.
+			for _, p := range slices.Backward(slices.Sorted(maps.Keys(priorities))) {
+				priority = append(priority, counted(PriorityName(p), priorities[p]))
+			}
+			parts = append(parts, fmt.Sprintf("%d with evidence items, %d with a claim", withEvidence, withClaim),
+				fmt.Sprintf("mean %.1f items kept and %.1f dropped", float64(kept)/float64(found), float64(dropped)/float64(found)),
+				"risk "+strings.Join(risk, ", "), "types "+strings.Join(typ, ", "), "priority "+strings.Join(priority, ", "))
+		}
+		if missing := n - found; missing > 0 {
+			parts = append(parts, fmt.Sprintf("%d without a snapshot", missing))
+		}
+		o.Notes = append(o.Notes, fmt.Sprintf("At first exposure, %s (%s): %s.", a.Label, plural1(n, "task"), strings.Join(parts, "; ")))
+	}
+	return nil
 }
 
 // snapshotPrepEvidence keeps what a task and its evidence were when the

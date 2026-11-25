@@ -278,3 +278,91 @@ func TestPrepEvidenceRunTarget(t *testing.T) {
 		t.Errorf("exposure: %q", d.Exposure)
 	}
 }
+
+// The results say what each arm's compared tasks were at first exposure, from
+// the run's own snapshots (WP-ADR157).
+func TestPrepEvidenceBalanceNotes(t *testing.T) {
+	e := newEvidenceEnv(t)
+	ue := &uaEnv{env: e.env, me: e.admin}
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := e.s.db.W.ExecContext(e.ctx, q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := e.one(`SELECT id FROM experiment_runs WHERE experiment = ? AND stopped_at IS NULL`, ExpPrepEvidence)
+	if _, err := e.s.StopExperiment(e.ctx, e.admin, ExpPrepEvidence, ""); err != nil {
+		t.Fatal(err)
+	}
+	e.setClock(e.clockNow().Add(-20 * time.Hour))
+	if _, err := e.s.StartExperiment(e.ctx, e.admin, ExpPrepEvidence, ExperimentStart{}); err != nil {
+		t.Fatal(err)
+	}
+	e.setClock(e.clockNow().Add(20 * time.Hour))
+	run := e.one(`SELECT id FROM experiment_runs WHERE experiment = ? AND stopped_at IS NULL`, ExpPrepEvidence)
+	// The migration's run started on the real clock, later than the test's.
+	exec(`UPDATE experiment_runs SET started_at = 0 WHERE id = ?`, old)
+	n := 0
+	unit := func(arm string, exposed, used, done bool) int64 {
+		t.Helper()
+		n++
+		i := e.issue(e.admin, IssueInput{Project: e.p.Key, Title: fmt.Sprint("Unit ", n)})
+		var at any
+		if exposed {
+			at = e.s.nowMS()
+		}
+		exec(`INSERT INTO experiment_units(run_id, issue_id, arm, via, assigned_at, exposed_at) VALUES (?, ?, ?, 'prep', 0, ?)`, run, i.ID, arm, at)
+		if used {
+			cli := fmt.Sprint("s", n)
+			ue.run(ue.session(e.admin, "m1", cli, 0), i.ID, ue.hour(-10), ue.hour(-9))
+			ue.ingest(e.admin, "c"+cli, "m1", UsageChunk{Messages: []UsageMessageRow{msg(ue.hour(-10), cli, "acme/web", "claude-opus-5-5", "main", 1, 1000, 100, 0, 0, 0)}})
+		}
+		if done {
+			status := "done"
+			if _, err := e.s.UpdateIssue(e.ctx, e.admin, i.Key, IssuePatch{Status: &status}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return i.ID
+	}
+	snapshot := func(run string, id int64, typ string, priority int, risk string, evidence, claims, dropped int) {
+		t.Helper()
+		exec(`INSERT INTO prep_evidence_units(run_id, issue_id, issue_type, priority, text_len, text_hash, candidates, evidence_n, claims_n, dropped, risk, evidence, model, at)
+			VALUES (?, ?, ?, ?, 1, 'h', 5, ?, ?, ?, ?, '{}', 'm', 0)`, run, id, typ, priority, evidence, claims, dropped, risk)
+	}
+	a := unit("shown", true, true, true)
+	snapshot(run, a, "bug", 3, "high", 2, 0, 1)
+	b := unit("shown", true, true, false)
+	snapshot(run, b, "task", 2, "low", 0, 1, 0)
+	snapshot(old, unit("shown", true, true, true), "story", 4, "medium", 9, 9, 9)  // another run's
+	snapshot(run, unit("shown", true, false, true), "story", 4, "medium", 9, 9, 9) // not measured
+	snapshot(run, unit("shown", false, true, true), "story", 4, "medium", 9, 9, 9) // not exposed
+	snapshot(run, unit("none", true, true, false), "task", 0, "medium", 3, 0, 0)
+
+	check := func(scope string, want ...string) {
+		t.Helper()
+		r, err := e.s.ExperimentResults(e.ctx, e.admin, ExpPrepEvidence, 0, scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, note := range r.Notes {
+			if strings.HasPrefix(note, "At first exposure") {
+				got = append(got, note)
+			}
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("%s:\n got %q\nwant %q", scope, got, want)
+		}
+	}
+	control := "At first exposure, Evidence found, not shown (1 task): 1 with evidence items, 0 with a claim; mean 3.0 items kept and 0.0 dropped; risk medium 1; types task 1; priority none 1."
+	check("all", control,
+		"At first exposure, Evidence shown (3 tasks): 1 with evidence items, 1 with a claim; mean 1.5 items kept and 0.5 dropped; risk high 1, low 1; types bug 1, task 1; priority high 1, medium 1; 1 without a snapshot.")
+	// Only finished tasks: the control has none, so no note.
+	check("done", "At first exposure, Evidence shown (2 tasks): 1 with evidence items, 0 with a claim; mean 2.0 items kept and 1.0 dropped; risk high 1; types bug 1; priority high 1; 1 without a snapshot.")
+	exec(`DELETE FROM prep_evidence_units WHERE run_id = ? AND issue_id = ?`, run, a)
+	check("done", "At first exposure, Evidence shown (2 tasks): 2 without a snapshot.")
+	exec(`UPDATE experiment_runs SET weights = '{"none":0,"shown":1}' WHERE id = ?`, run)
+	check("all",
+		"At first exposure, Evidence shown (3 tasks): 0 with evidence items, 1 with a claim; mean 1.0 items kept and 0.0 dropped; risk low 1; types task 1; priority medium 1; 2 without a snapshot.")
+}

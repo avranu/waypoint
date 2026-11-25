@@ -373,6 +373,9 @@ func TestExperimentResultsFromUsage(t *testing.T) {
 	if measured != 6 || done != 3 || r.Kind != "few" || r.Scope != "all" {
 		t.Fatalf("results: measured %d done %d kind %s %s", measured, done, r.Kind, r.Verdict)
 	}
+	if slices.ContainsFunc(r.Notes, func(n string) bool { return strings.HasPrefix(n, "At first exposure") }) {
+		t.Errorf("another experiment's notes: %q", r.Notes)
+	}
 	if _, err := e.s.ExperimentResults(e.ctx, e.me, ExpNextBrief, 0, ""); err == nil {
 		t.Error("a non-admin reads results")
 	}

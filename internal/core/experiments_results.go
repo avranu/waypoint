@@ -45,6 +45,10 @@ type expTask struct {
 	prComments   float64 // review comments that aren't a bot finding's
 }
 
+// inScope is whether the results compare the task: it has usage and, in the
+// done scope, is finished.
+func (t *expTask) inScope(scope string) bool { return t.measured && (scope == "all" || t.done) }
+
 // experimentMetric is one measure of a task, and its value when it has one.
 type experimentMetric struct {
 	ExperimentMetric
@@ -184,7 +188,11 @@ func (s *Service) ExperimentResults(ctx context.Context, actor *Actor, key strin
 	if err != nil {
 		return nil, err
 	}
-	return experimentCompare(d, run, tasks, scope, s.now()), nil
+	o := experimentCompare(d, run, tasks, scope, s.now())
+	if err := s.notePrepEvidenceBalance(ctx, o, tasks); err != nil {
+		return nil, err
+	}
+	return o, nil
 }
 
 // experimentTasks is each exposed unit of a run, by arm, with its measures.
@@ -338,11 +346,10 @@ func experimentCompare(d *ExperimentDef, run *ExperimentRun, tasks map[string][]
 	for _, m := range experimentMetrics {
 		o.Metrics = append(o.Metrics, m.ExperimentMetric)
 	}
-	inScope := func(t *expTask) bool { return t.measured && (scope == "all" || t.done) }
 	values := func(arm string, mi int) []float64 {
 		var v []float64
 		for _, t := range tasks[arm] {
-			if !inScope(t) {
+			if !t.inScope(scope) {
 				continue
 			}
 			if x, ok := experimentMetrics[mi].get(t); ok {
@@ -367,7 +374,7 @@ func experimentCompare(d *ExperimentDef, run *ExperimentRun, tasks map[string][]
 			if t.done {
 				r.Done++
 			}
-			if inScope(t) {
+			if t.inScope(scope) {
 				r.InScope++
 			}
 		}
