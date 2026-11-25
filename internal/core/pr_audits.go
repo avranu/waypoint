@@ -88,7 +88,7 @@ func (s *Service) requestPRAudit(ctx context.Context, prID int64) {
 // auditOwed is who runs the audit pr's head owes and nobody has asked for yet
 // (the babysit owner), 0 when it owes none: AuditPRs off in every project it
 // would be asked for, an outside or fork pull request, no owner the runner
-// gate accepts, or a change already audited (in any state). The line waits for
+// gate accepts, or a change already audited (headAudited). The line waits for
 // an owed audit (unsettled), so it shares these conditions: a pull request
 // must never wait for an audit nobody will create (WP-1852). A read that
 // fails is an error: whether one is owed isn't known.

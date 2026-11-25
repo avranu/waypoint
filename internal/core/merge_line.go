@@ -414,7 +414,7 @@ func (s *Service) frontGivesWay(ctx context.Context, p *PullRequest, why string)
 		s.log.WarnContext(ctx, "put a front that must give way back to draft", "pr", p.ID, "err", err)
 		return false
 	}
-	s.log.InfoContext(ctx, "the front gave way: "+excerpt(why, 120), "repo", p.Repo, "pr", p.Number, "head", short(p.HeadSHA), "ready_for", ready.String())
+	s.log.InfoContext(ctx, "the front gave way", "repo", p.Repo, "pr", p.Number, "head", short(p.HeadSHA), "ready_for", ready.String(), "why", excerpt(why, 120))
 	p.State, p.ReadyAt = "draft", nil
 	return true
 }

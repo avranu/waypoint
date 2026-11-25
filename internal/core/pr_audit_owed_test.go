@@ -125,10 +125,10 @@ func TestAuditOwedFailsOpen(t *testing.T) {
 }
 
 // A marked-ready front tested on its own branch gets a head from Waypoint's
-// update (the base merged into the audited head). Its full run goes on past
-// frontGrace: when the line recorded the head as the same change (WP-1808's
-// carry) it owes no audit and keeps the front; when the base merge came from
-// a round that resolved conflicts (not carried) the audit is owed (WP-1852).
+// update (the base merged into the audited head). Past frontGrace: when the
+// line recorded the head as the same change (WP-1808's carry) it owes no audit
+// and keeps the front; when the base merge came from a round that resolved
+// conflicts (not carried) the audit is owed (WP-1852).
 func TestFrontWithABaseMergeHeadOwesNoAudit(t *testing.T) {
 	for name, carried := range map[string]bool{"clean base merge": true, "conflicts resolved by a round": false} {
 		t.Run(name, func(t *testing.T) {
