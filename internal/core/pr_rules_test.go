@@ -223,7 +223,7 @@ func TestReviewMinSeverityAndSkipFiles(t *testing.T) {
 	// Files to skip join the built-in list: with app/** skipped, only noise
 	// and config are left.
 	pe.onlyRule("Not app", Rule{Trigger: Trigger{Event: "pr_updated"}, Actions: []Action{{Type: "review", Extra: map[string]any{"skip_files": []any{"app/**", "deploy/**", "old.txt"}}}}})
-	pe.prHook("synchronize", ForgePR{Number: 5, Title: "Fix login", Author: "sam", HeadRef: "fix", HeadSHA: "2222222bbbb", State: "open"}, sampleDiff, nil)
+	pe.prHook("synchronize", ForgePR{Number: 5, Title: "Fix login", Author: "sam", HeadRef: "fix", HeadSHA: "2222222bbbb", State: "open"}, diffPlus("old.txt"), nil)
 	done = pe.settle()
 	if len(done) != 1 || done[0].Status != "skipped" || !strings.Contains(done[0].Summary, "nothing reviewable") {
 		t.Fatalf("skip files: %+v", done)
@@ -284,7 +284,7 @@ func TestReviewOutputsForOnlyIf(t *testing.T) {
 
 	// Nothing found: the other comment.
 	pe.llm.answers[model] = `{"findings":[]}`
-	pe.prHook("synchronize", ForgePR{Number: 5, Title: "Fix login", Author: "sam", HeadRef: "fix", HeadSHA: "2222222bbbb", State: "open"}, sampleDiff, nil)
+	pe.prHook("synchronize", ForgePR{Number: 5, Title: "Fix login", Author: "sam", HeadRef: "fix", HeadSHA: "2222222bbbb", State: "open"}, diffPlus("two.txt"), nil)
 	pe.settle()
 	if got := pe.posted(); len(got) != 2 || !strings.HasSuffix(got[1], "|Clean") {
 		t.Fatalf("comments = %q", got)

@@ -152,7 +152,6 @@ func TestReviewPipeline(t *testing.T) {
 	// Every verifier model failing posts the findings unchecked, and says so.
 	pe.llm.answers[mimo] = "!429"
 	pr.HeadSHA = "2222222bbbb"
-	pe.fg.setPR(pe.f, "me/app", pr, sampleDiff)
 	pe.llm.answers[muse] = `{"findings":[{"file":"app/login.go","line":12,"severity":"medium","claim":"A new problem on the second head.","suggestion":""}]}`
 	pe.llm.answers[nemo] = `{"findings":[]}`
 	pe.pullHook("synchronize", pr)
