@@ -179,8 +179,7 @@ export function RichTextInput({
     try {
       document.execCommand('defaultParagraphSeparator', false, 'p')
       document.execCommand('styleWithCSS', false, 'false')
-    } catch {
-    }
+    } catch {}
     for (const [n, top] of scrolled.current ?? []) if (n.isConnected) n.scrollTop = top
     markEmpty(el)
     if (autoFocus) {
