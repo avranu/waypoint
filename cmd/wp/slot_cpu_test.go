@@ -36,31 +36,6 @@ func TestSlotCPUQuota(t *testing.T) {
 	}
 }
 
-func TestSlotCPUSlots(t *testing.T) {
-	for _, c := range []struct {
-		cpus, quota int
-		on          bool
-		want        int
-	}{
-		{8, 200, true, 3},  // 3 slots of 2 cores leave 2 of 8
-		{8, 400, true, 1},  // 1.5 rounds down
-		{8, 100, true, 6},  // one core each
-		{16, 200, true, 6}, // 12 of 16 cores
-		{2, 200, true, 1},  // never none
-		{1, 800, true, 1},
-		{8, 0, false, 4}, // no bound: half the cores, as before
-		{1, 0, false, 1},
-	} {
-		if got := slotCPUSlots(c.cpus, c.quota, c.on); got != c.want {
-			t.Errorf("%d cpus, quota %d, on %v: %d slots, want %d", c.cpus, c.quota, c.on, got, c.want)
-		}
-	}
-	t.Setenv(slotCPUEnv, "")
-	if got, want := defaultSlots(), max(1, runtime.NumCPU()*75/slotCPUDefault); got != want {
-		t.Errorf("defaultSlots = %d, want %d", got, want)
-	}
-}
-
 func TestChooseCPUBound(t *testing.T) {
 	p := func(goos string, cgroup, runner, bus bool) slotCPUProbes {
 		return slotCPUProbes{goos: goos, cgroup: func() bool { return cgroup }, runnerJob: func() bool { return runner }, userBus: func() bool { return bus }}

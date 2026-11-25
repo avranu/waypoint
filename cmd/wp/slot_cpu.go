@@ -26,9 +26,6 @@ const (
 	slotCPUWeight = 50
 	// slotCPUSlice holds every scope this makes, so they share one weight.
 	slotCPUSlice = "waypoint-tests.slice"
-	// slotCPUSpare is the share of the cores (in percent) that slots times
-	// quota may take, leaving the rest to the server and sessions.
-	slotCPUSpare = 75
 )
 
 // The kinds of bound a run had (waitRec.Bound).
@@ -60,16 +57,6 @@ func slotCPUQuota() (quota int, on bool) {
 		return slotCPUDefault, true
 	}
 	return n, true
-}
-
-// slotCPUSlots is the default slot count: slots times quota take slotCPUSpare
-// percent of the cpus at most, and at least one slot. With the bound off a run
-// may use every core, so it is half of them, as before.
-func slotCPUSlots(cpus, quota int, on bool) int {
-	if !on {
-		return max(1, cpus/2)
-	}
-	return max(1, cpus*slotCPUSpare/quota)
 }
 
 // slotCPUProbes are the facts the choice of bound depends on, so tests can

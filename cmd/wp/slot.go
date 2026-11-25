@@ -29,8 +29,7 @@ var slotCmd = &command{
 	summary: "run a command once a per-machine slot is free",
 	about: `A per-host semaphore so concurrent test suites take turns. run waits for
 a free slot of NAME, runs CMD holding it and exits with CMD's code. N
-defaults to three quarters of the cores divided by the CPU quota of a run
-(8 cores, 200%: 3 slots). Runs whose last five (same repo and command) took
+defaults to half the cores. Runs whose last five (same repo and command) took
 5 minutes or more are long: they may only use the lower half of the slots, so
 short runs (the rest) never queue behind them, and a worktree runs one long
 run of a NAME at a time (a second waits behind its first; short runs from it
@@ -88,11 +87,11 @@ func slotDir() (string, error) {
 	return filepath.Join(d, "waypoint", "slots"), nil
 }
 
-// defaultSlots is how many runs share a slot name: see slotCPUSlots.
-func defaultSlots() int {
-	q, on := slotCPUQuota()
-	return slotCPUSlots(runtime.NumCPU(), q, on)
-}
+// defaultSlots is how many runs share a slot name: half the cores. The CPU
+// quota of a run (slot_cpu.go) does not change it: replaying the recorded
+// holds with fewer slots made waits much longer, and changing both at once
+// would hide what the quota does (WP-1876).
+func defaultSlots() int { return max(1, runtime.NumCPU()/2) }
 
 // slotHold is a held slot.
 type slotHold struct {
@@ -377,7 +376,7 @@ func waitSlotCmd(ctx context.Context, cmd *exec.Cmd) (int, error) {
 func cmdSlotRun(c *cli, args []string) error {
 	before, argv, found := splitDashes(args)
 	fs := c.flags()
-	n := fs.Int("n", 0, "slots to share (default: 3/4 of the cores divided by the CPU quota)")
+	n := fs.Int("n", 0, "slots to share (default: half the cores)")
 	var keep keepEnvFlag
 	fs.Var(&keep, "keep-env", "with the tests slot, pass the credential-named variable `NAME` through (repeatable)")
 	pos, err := c.parse(fs, before)
