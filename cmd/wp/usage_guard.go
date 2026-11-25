@@ -104,11 +104,16 @@ type guardReport struct {
 }
 
 type guardCheck struct {
-	From          time.Time          `json:"from"`
-	To            time.Time          `json:"to"`
-	ResetsAt      *time.Time         `json:"resets_at"`
-	WeekPercent   *float64           `json:"week_percent"`
-	WeekEven      *float64           `json:"week_even"`
+	From        time.Time  `json:"from"`
+	To          time.Time  `json:"to"`
+	ResetsAt    *time.Time `json:"resets_at"`
+	WeekPercent *float64   `json:"week_percent"`
+	WeekEven    *float64   `json:"week_even"`
+	Resets      []struct {
+		At         time.Time `json:"at"`
+		WasPercent float64   `json:"was_percent"`
+	} `json:"resets"`
+	ResetNote     string             `json:"reset_note,omitempty"`
 	Points        float64            `json:"points"`
 	Unexplained   float64            `json:"unexplained"`
 	Automation    float64            `json:"automation"`
@@ -138,17 +143,35 @@ type guardCheck struct {
 		CostUSD float64 `json:"cost_usd"`
 	} `json:"sources"`
 	Hours []struct {
-		Hour          time.Time `json:"hour"`
-		Phase         string    `json:"phase"`
-		Percent       *float64  `json:"percent"`
-		Even          *float64  `json:"even"`
-		Points        float64   `json:"points"`
-		Automation    float64   `json:"automation"`
-		CostUSD       float64   `json:"cost_usd"`
-		AutomationUSD float64   `json:"automation_usd"`
+		Hour          time.Time   `json:"hour"`
+		Phase         string      `json:"phase"`
+		Percent       *float64    `json:"percent"`
+		Even          *float64    `json:"even"`
+		Points        float64     `json:"points"`
+		Automation    float64     `json:"automation"`
+		CostUSD       float64     `json:"cost_usd"`
+		AutomationUSD float64     `json:"automation_usd"`
+		Split         []guardPart `json:"split"`
 	} `json:"hours"`
 	Breach  bool     `json:"breach"`
 	Reasons []string `json:"reasons"`
+	// Path: "stored" (the daily check as kept) or "now" (computed for this request).
+	Path  string      `json:"path"`
+	Split *guardSplit `json:"split"`
+}
+
+// guardSplit is the server's QuotaGuardSplit: the check's dollars by source.
+type guardSplit struct {
+	Path         string      `json:"path"`
+	Parts        []guardPart `json:"parts"`
+	PartsUSD     float64     `json:"parts_usd"`
+	RemainderUSD float64     `json:"remainder_usd"`
+}
+
+type guardPart struct {
+	Source  string  `json:"source"` // cli or runner
+	Machine string  `json:"machine"`
+	CostUSD float64 `json:"cost_usd"`
 }
 
 func cmdUsageGuard(c *cli, args []string) error {
@@ -185,13 +208,13 @@ func cmdUsageGuard(c *cli, args []string) error {
 	if len(live) == 0 {
 		live = []byte("null")
 	}
-	both := []byte(`{"live":` + string(live) + `,"daily":` + string(raw) + `}`)
+	both := []byte(`{"live":` + string(live) + `,"daily":` + string(raw) + `,"this_machine":` + strconv.Quote(machineName()) + `}`)
 	return c.emit(both, func() string {
 		var r guardReport
 		if json.Unmarshal(raw, &r) != nil {
 			return string(raw)
 		}
-		out := guardReportText(&r, *hours)
+		out := guardReportText(&r, *hours, machineName())
 		var l guardLiveReport
 		if json.Unmarshal(live, &l) == nil && l.Policy != nil {
 			out = guardLiveText(&l, time.Now()) + "\nDaily checks:\n" + out
@@ -202,7 +225,7 @@ func cmdUsageGuard(c *cli, args []string) error {
 
 var guardPhaseOrder = []string{"under", "ahead", "end", "over", "off", "unknown"}
 
-func guardReportText(r *guardReport, hours bool) string {
+func guardReportText(r *guardReport, hours bool, machine string) string {
 	var b strings.Builder
 	breaches := 0
 	for _, c := range r.Checks {
@@ -214,11 +237,11 @@ func guardReportText(r *guardReport, hours bool) string {
 		breaches, pluralWord(breaches, "breach", "breaches"))
 	if r.Now != nil {
 		b.WriteString("\nNow (not stored):\n")
-		guardCheckText(&b, r.Now, hours)
+		guardCheckText(&b, r.Now, hours, machine)
 	}
 	for i, c := range r.Checks {
 		b.WriteString("\n")
-		guardCheckText(&b, c, hours)
+		guardCheckText(&b, c, hours, machine)
 		if i == 0 && r.Now == nil {
 			guardLimitsText(&b, c)
 		}
@@ -229,12 +252,18 @@ func guardReportText(r *guardReport, hours bool) string {
 	return b.String()
 }
 
-func guardCheckText(b *strings.Builder, c *guardCheck, hours bool) {
+func guardCheckText(b *strings.Builder, c *guardCheck, hours bool, machine string) {
 	fmt.Fprintf(b, "%s to %s UTC", c.From.UTC().Format("Jan 2 15:04"), c.To.UTC().Format("Jan 2 15:04"))
 	if c.WeekPercent != nil && c.WeekEven != nil && c.ResetsAt != nil {
 		fmt.Fprintf(b, ": week at %.0f%% (even %.0f%%), resets %s UTC", *c.WeekPercent, *c.WeekEven, c.ResetsAt.UTC().Format("Jan 2 15:04"))
 	}
 	b.WriteString("\n")
+	for _, r := range c.Resets {
+		fmt.Fprintf(b, "  allowance reset at %s UTC (was %.0f%%); the even pace runs from there\n", r.At.UTC().Format("Jan 2 15:04"), r.WasPercent)
+	}
+	if c.ResetNote != "" {
+		fmt.Fprintf(b, "  note: %s\n", c.ResetNote)
+	}
 	fmt.Fprintf(b, "  points %.1f: automation %.1f, person %.1f, nobody's %.1f\n", c.Points, c.Automation, c.Person, c.Unexplained)
 	if c.Automation > 0 {
 		var parts []string
@@ -245,7 +274,12 @@ func guardCheckText(b *strings.Builder, c *guardCheck, hours bool) {
 		}
 		fmt.Fprintf(b, "  automation by phase: %s\n", strings.Join(parts, " · "))
 	}
-	fmt.Fprintf(b, "  list price: $%.2f, automation $%.2f\n", c.CostUSD, c.AutomationUSD)
+	fmt.Fprintf(b, "  list price: $%.2f, automation $%.2f", c.CostUSD, c.AutomationUSD)
+	if c.Path != "" {
+		fmt.Fprintf(b, " (%s)", guardPathText(c.Path))
+	}
+	b.WriteString("\n")
+	guardSplitText(b, c, machine)
 	for _, r := range c.Reasons {
 		fmt.Fprintf(b, "  BREACH: %s\n", r)
 	}
@@ -260,13 +294,13 @@ func guardCheckText(b *strings.Builder, c *guardCheck, hours bool) {
 		return
 	}
 	tw := tabwriter.NewWriter(b, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "  hour\tphase\tweek\teven\tpoints\tautomation\t$\tautomation $")
+	_, _ = fmt.Fprintln(tw, "  hour\tphase\tweek\teven\tpoints\tautomation\t$\tautomation $\tby source")
 	for _, h := range c.Hours {
 		if h.Points == 0 && h.CostUSD == 0 {
 			continue
 		}
-		_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%.1f\t%.1f\t%.2f\t%.2f\n", h.Hour.UTC().Format("Jan 2 15:04"), h.Phase, guardPct(h.Percent), guardPct(h.Even),
-			h.Points, h.Automation, h.CostUSD, h.AutomationUSD)
+		_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%.1f\t%.1f\t%.2f\t%.2f\t%s\n", h.Hour.UTC().Format("Jan 2 15:04"), h.Phase, guardPct(h.Percent), guardPct(h.Even),
+			h.Points, h.Automation, h.CostUSD, h.AutomationUSD, guardPartsInline(h.Split))
 	}
 	_ = tw.Flush()
 }
@@ -292,4 +326,57 @@ func guardPct(p *float64) string {
 		return "-"
 	}
 	return fmt.Sprintf("%.0f%%", *p)
+}
+
+func guardPathText(path string) string {
+	switch path {
+	case "stored":
+		return "the stored daily check, as kept when it ran"
+	case "now":
+		return "computed now from the usage hours, not stored"
+	}
+	return path
+}
+
+func guardPartName(p guardPart) string {
+	switch {
+	case p.Source == "runner":
+		return "runner jobs"
+	case p.Machine == "":
+		return "cli, machine unknown"
+	}
+	return "cli, " + p.Machine
+}
+
+func guardPartsInline(ps []guardPart) string {
+	var out []string
+	for _, p := range ps {
+		out = append(out, fmt.Sprintf("%s $%.2f", guardPartName(p), p.CostUSD))
+	}
+	return strings.Join(out, " · ")
+}
+
+// guardSplitText prints where a check's dollars came from, a remainder line
+// when the parts do not add up to its list price, and what the server has
+// for this machine, to set beside `wp usage where` for the same window.
+func guardSplitText(b *strings.Builder, c *guardCheck, machine string) {
+	sp := c.Split
+	if sp == nil {
+		return
+	}
+	fmt.Fprintf(b, "  by source, recomputed now from the usage hours and runner jobs: $%.2f\n", sp.PartsUSD)
+	for _, p := range sp.Parts {
+		fmt.Fprintf(b, "    %s: $%.2f\n", guardPartName(p), p.CostUSD)
+	}
+	if sp.RemainderUSD != 0 {
+		fmt.Fprintf(b, "    remainder: $%.2f (the list price above less these parts: usage or prices changed since the check was stored)\n", sp.RemainderUSD)
+	}
+	mine := 0.0
+	for _, p := range sp.Parts {
+		if p.Source == "cli" && p.Machine == machine {
+			mine += p.CostUSD
+		}
+	}
+	fmt.Fprintf(b, "  this machine (%s): $%.2f on the server; compare `wp usage where --since %s --until %s` (its dollars are this machine's transcripts only)\n",
+		machine, mine, c.From.UTC().Format("2006-01-02T15:04:05Z"), c.To.UTC().Format("2006-01-02T15:04:05Z"))
 }

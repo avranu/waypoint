@@ -46,12 +46,16 @@ var quotaSpans = []struct {
 }
 
 // quotaPace says where a window is heading: its average rate so far,
-// carried to the window's end.
-func quotaPace(now, sampledAt, resetsAt time.Time, length time.Duration, pct float64) (status string, projected float64, runsOut *time.Time, even float64) {
+// carried to the window's end. A window whose allowance was reset part-way
+// (from is when, zero if not) is paced from the reset over what remains.
+func quotaPace(now, sampledAt, resetsAt, from time.Time, length time.Duration, pct float64) (status string, projected float64, runsOut *time.Time, even float64) {
 	if !resetsAt.After(now) {
 		return "reset", pct, nil, 0
 	}
 	start := resetsAt.Add(-length)
+	if from.After(start) && resetsAt.After(from) {
+		start, length = from, resetsAt.Sub(from)
+	}
 	if e := now.Sub(start); e > 0 {
 		even = min(100, 100*float64(e)/float64(length))
 	}
@@ -94,7 +98,17 @@ func (s *Service) usageQuota(ctx context.Context, sc *usageScope, days int) (*Us
 		}
 		w.Span, w.Label, w.Seconds = sp.span, sp.label, int64(sp.length/time.Second)
 		w.SampledAt, w.ResetsAt = msTime(at), msTime(reset)
-		w.Status, w.Projected, w.RunsOutAt, w.Even = quotaPace(now, w.SampledAt, w.ResetsAt, sp.length, w.Percent)
+		var from time.Time
+		if sp.span == "seven_day" {
+			rst, err := s.lastQuotaReset(ctx, uid, reset)
+			if err != nil {
+				return nil, err
+			}
+			if rst > 0 {
+				from = msTime(rst)
+			}
+		}
+		w.Status, w.Projected, w.RunsOutAt, w.Even = quotaPace(now, w.SampledAt, w.ResetsAt, from, sp.length, w.Percent)
 		since := now.Add(-time.Duration(days) * 24 * time.Hour)
 		if sp.span == "five_hour" {
 			since = now.Add(-48 * time.Hour)

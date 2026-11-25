@@ -90,17 +90,22 @@ func (s *Service) weekReading(ctx context.Context, uid int64, now time.Time) (*w
 	}
 	var baseAt int64
 	var basePct float64
-	const sameWeek = `user_id = ? AND span = 'seven_day' AND resets_at BETWEEN ? AND ?`
+	const sameWeek = `user_id = ? AND span = 'seven_day' AND resets_at BETWEEN ? AND ? AND at >= ?`
 	lo, hi := reset-time.Hour.Milliseconds(), reset+time.Hour.Milliseconds()
+	// A slope is not read across an allowance reset (WP-1881).
+	rst, err := s.lastQuotaReset(ctx, uid, reset)
+	if err != nil {
+		return nil, err
+	}
 	err = s.db.R.QueryRowContext(ctx, `SELECT at, percent FROM quota_samples WHERE `+sameWeek+` AND at BETWEEN ? AND ? ORDER BY at LIMIT 1`,
-		uid, lo, hi, at-time.Hour.Milliseconds(), at-spendSlopeMin.Milliseconds()).Scan(&baseAt, &basePct)
+		uid, lo, hi, rst, at-time.Hour.Milliseconds(), at-spendSlopeMin.Milliseconds()).Scan(&baseAt, &basePct)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = s.db.R.QueryRowContext(ctx, `SELECT at, percent FROM quota_samples WHERE `+sameWeek+` AND at <= ? ORDER BY at DESC LIMIT 1`,
-			uid, lo, hi, at-time.Hour.Milliseconds()).Scan(&baseAt, &basePct)
+			uid, lo, hi, rst, at-time.Hour.Milliseconds()).Scan(&baseAt, &basePct)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		err = s.db.R.QueryRowContext(ctx, `SELECT at, percent FROM quota_samples WHERE `+sameWeek+` AND at < ? ORDER BY at LIMIT 1`,
-			uid, lo, hi, at).Scan(&baseAt, &basePct)
+			uid, lo, hi, rst, at).Scan(&baseAt, &basePct)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, nil

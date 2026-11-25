@@ -57,6 +57,11 @@ type QuotaGuardCheck struct {
 	ResetsAt    *time.Time `json:"resets_at,omitempty"`
 	WeekPercent *float64   `json:"week_percent,omitempty"`
 	WeekEven    *float64   `json:"week_even,omitempty"`
+	// Resets are the allowance resets inside the window (WP-1881). A check
+	// stored before they were read has none (null); ResetNote says so when the
+	// window held one, and its figures are kept as stored.
+	Resets    []QuotaGuardReset `json:"resets"`
+	ResetNote string            `json:"reset_note,omitempty"`
 	// Points: how far the week's readings rose in the window. Unexplained:
 	// the part that fell where no usage was reported, so nobody's.
 	Points      float64 `json:"points"`
@@ -71,8 +76,13 @@ type QuotaGuardCheck struct {
 	EarlySpend    []QuotaGuardStart  `json:"early_spend"`
 	Sources       []QuotaGuardSource `json:"sources"`
 	Hours         []QuotaGuardHour   `json:"hours"`
-	Breach        bool               `json:"breach"`
-	Reasons       []string           `json:"reasons"`
+	// Path says which computation made the figures above: "stored" (the
+	// daily check, kept when it ran) or "now" (computed for this request).
+	Path string `json:"path,omitempty"`
+	// Split is cost_usd by source, recomputed when read (QuotaGuardSplit).
+	Split   *QuotaGuardSplit `json:"split,omitempty"`
+	Breach  bool             `json:"breach"`
+	Reasons []string         `json:"reasons"`
 }
 
 // QuotaGuardLimits is what the check held automation to: the loosest of
@@ -97,6 +107,8 @@ type QuotaGuardHour struct {
 	Automation    float64   `json:"automation"`
 	CostUSD       float64   `json:"cost_usd"`
 	AutomationUSD float64   `json:"automation_usd"`
+	// Split is CostUSD by source, recomputed when read.
+	Split []QuotaGuardPart `json:"split,omitempty"`
 }
 
 // QuotaGuardSource is a session or runner job automation spent through.
@@ -158,6 +170,7 @@ func (s *Service) QuotaGuard(ctx context.Context, actor *Actor, q UsageQuery, fr
 			continue
 		}
 		c.ID = id
+		c.Path = GuardPathStored
 		rep.Checks = append(rep.Checks, c)
 	}
 	if err := rows.Err(); err != nil {
@@ -166,6 +179,20 @@ func (s *Service) QuotaGuard(ctx context.Context, actor *Actor, q UsageQuery, fr
 	if fresh {
 		to := s.now().UTC().Truncate(time.Hour).Add(-quotaGuardLag)
 		if rep.Now, err = s.quotaGuardCheck(ctx, uid, to.Add(-quotaGuardEvery), to); err != nil {
+			return nil, err
+		}
+		rep.Now.Path = GuardPathNow
+	}
+	for _, c := range append(append([]*QuotaGuardCheck{}, rep.Checks...), rep.Now) {
+		if c == nil {
+			continue
+		}
+		if c.Resets == nil {
+			if err := s.guardResetsOnRead(ctx, uid, c); err != nil {
+				return nil, err
+			}
+		}
+		if err := s.guardSplitInto(ctx, uid, c); err != nil {
 			return nil, err
 		}
 	}
@@ -257,10 +284,23 @@ type quotaKnot struct {
 	pct float64
 }
 
-// quotaWeekLine is one week's readings, as a rising line from 0 at its start.
+// QuotaGuardReset is the allowance restarting mid-week: the percent it stood
+// at, and when the first reading below it came.
+type QuotaGuardReset struct {
+	At         time.Time `json:"at"`
+	WasPercent float64   `json:"was_percent"`
+}
+
+// quotaWeekLine is one week's readings, as a rising line from 0 at its start
+// (and again from 0 at each allowance reset).
 type quotaWeekLine struct {
 	start, reset int64
-	knots        []quotaKnot
+	// evenFrom is where the even pace starts: the week's start, or the last
+	// allowance reset.
+	evenFrom int64
+	resets   []quotaReset
+	raw      []quotaSample
+	knots    []quotaKnot
 }
 
 // at is the week's mark at t: the line between the readings around t, the
@@ -314,16 +354,40 @@ func (s *Service) quotaWeekLines(ctx context.Context, uid, since, before int64) 
 			continue
 		case cur == nil || reset > cur.reset+hour:
 			cur = &quotaWeekLine{start: reset - quotaWeek.Milliseconds(), reset: reset}
-			cur.knots = []quotaKnot{{cur.start, 0}}
 			weeks = append(weeks, cur)
 		}
 		if at < cur.start {
 			continue
 		}
-		last := cur.knots[len(cur.knots)-1]
-		cur.knots = append(cur.knots, quotaKnot{at, max(last.pct, pct)})
+		cur.raw = append(cur.raw, quotaSample{at, pct, reset})
 	}
-	return weeks, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, w := range weeks {
+		w.build()
+	}
+	return weeks, nil
+}
+
+// build turns the week's readings into its line. A reset (quotaResetsIn)
+// starts a new segment: the line holds to the reset's time, then restarts
+// from the first reading after it, and the high-water mark restarts too.
+func (w *quotaWeekLine) build() {
+	kept, resets, startAt := quotaResetsIn(w.raw)
+	w.resets, w.evenFrom = resets, w.start
+	w.knots = []quotaKnot{{w.start, 0}}
+	next := 0
+	for i, x := range kept {
+		last := w.knots[len(w.knots)-1]
+		if next < len(startAt) && startAt[next] == i {
+			next++
+			w.evenFrom = x.at
+			w.knots = append(w.knots, quotaKnot{x.at, last.pct}, quotaKnot{x.at, x.pct})
+			continue
+		}
+		w.knots = append(w.knots, quotaKnot{x.at, max(last.pct, x.pct)})
+	}
 }
 
 // guardHour is an hour's spending, by who.
@@ -331,12 +395,16 @@ type guardHour struct {
 	cost, auto float64
 	sources    map[string]float64
 	models     map[string]float64
+	// machines is the cost of CLI sessions by the machine that reported
+	// them ("" is a row that names none); jobs is the runner jobs' cost.
+	machines map[string]float64
+	jobs     float64
 }
 
 // quotaGuardCheck judges [from, to): whole hours.
 func (s *Service) quotaGuardCheck(ctx context.Context, uid int64, from, to time.Time) (*QuotaGuardCheck, error) {
 	from, to = from.UTC().Truncate(time.Hour), to.UTC().Truncate(time.Hour)
-	c := &QuotaGuardCheck{At: s.now().UTC(), From: from, To: to, ByPhase: map[string]float64{}, EarlySpend: []QuotaGuardStart{}, Sources: []QuotaGuardSource{}, Hours: []QuotaGuardHour{}, Reasons: []string{}}
+	c := &QuotaGuardCheck{At: s.now().UTC(), From: from, To: to, ByPhase: map[string]float64{}, Resets: []QuotaGuardReset{}, EarlySpend: []QuotaGuardStart{}, Sources: []QuotaGuardSource{}, Hours: []QuotaGuardHour{}, Reasons: []string{}}
 	for _, p := range guardPhases {
 		c.ByPhase[p] = 0
 	}
@@ -458,6 +526,13 @@ func (s *Service) quotaGuardCheck(ctx context.Context, uid int64, from, to time.
 			c.ResetsAt = ptrOf(msTime(w.reset).UTC())
 			c.WeekPercent = ptrOf(round1(w.at(toMS)))
 			c.WeekEven = ptrOf(round1(weekEvenAt(w, toMS)))
+		}
+	}
+	for _, w := range weeks {
+		for _, r := range w.resets {
+			if r.At >= fromMS && r.At < toMS {
+				c.Resets = append(c.Resets, QuotaGuardReset{At: msTime(r.At).UTC(), WasPercent: round1(r.Was)})
+			}
 		}
 	}
 	if err := s.guardEarlySpend(ctx, uid, c, weeks, spendEnd); err != nil {
@@ -612,9 +687,10 @@ func guardPhase(lim AutopilotLimits, off guardOff, weeks []*quotaWeekLine, five 
 	return GuardPhaseUnder, p, e
 }
 
-// weekEvenAt is an even pace's share of the week at t.
+// weekEvenAt is an even pace's share of the allowance at t: of the week, or,
+// after an allowance reset, of what remained from the reset to resets_at.
 func weekEvenAt(w *quotaWeekLine, t int64) float64 {
-	return max(0, min(100, 100*float64(t-w.start)/float64(quotaWeek.Milliseconds())))
+	return quotaEven(w.evenFrom, w.reset, t)
 }
 
 // spanOverlap is how many ms [a, b) and [c, d) share.
@@ -636,11 +712,22 @@ func (s *Service) guardSpending(ctx context.Context, uid, first, before, from, t
 	get := func(h int64) *guardHour {
 		g := out[h]
 		if g == nil {
-			g = &guardHour{sources: map[string]float64{}, models: map[string]float64{}}
+			g = &guardHour{sources: map[string]float64{}, models: map[string]float64{}, machines: map[string]float64{}}
 			out[h] = g
 		}
 		return g
 	}
+	jobs, err := s.guardJobs(ctx, uid, first, before)
+	if err != nil {
+		return nil, err
+	}
+	bySess := map[string]int64{} // CLI session id -> the runner job that ran it
+	for _, j := range jobs {
+		if j.session != "" {
+			bySess[j.session] = j.id
+		}
+	}
+	jobSeen := map[int64]bool{} // jobs whose own session's usage hours are in the window
 	rows, err := s.db.R.QueryContext(ctx, `SELECT hour, machine, session, model, sum(input), sum(output), sum(cache_write_5m), sum(cache_write_1h), sum(cache_read)
 		FROM usage_hours WHERE user_id = ? AND hour >= ? AND hour < ? GROUP BY hour, machine, session, model`, uid, first, before)
 	if err != nil {
@@ -669,6 +756,19 @@ func (s *Service) guardSpending(ctx context.Context, uid, first, before, from, t
 			continue
 		}
 		get(hour).cost += cost
+		if id, ok := bySess[session]; ok {
+			// A runner job's session reports its hours like any other, and
+			// the job's own cost_usd is the same dollars: count them once,
+			// here, as the job's, and leave the session out of the CLI part
+			// and out of autoShare (the job is already automation's).
+			jobSeen[id] = true
+			g := get(hour)
+			g.auto += cost
+			g.jobs += cost
+			g.sources[fmt.Sprintf("job:%d", id)] += cost
+			continue
+		}
+		get(hour).machines[machine] += cost
 		if hour < from || hour >= to {
 			continue
 		}
@@ -699,25 +799,13 @@ func (s *Service) guardSpending(ctx context.Context, uid, first, before, from, t
 			g.models[sh.model] += sh.cost * share
 		}
 	}
-	jrows, err := s.db.R.QueryContext(ctx, `SELECT id, started_at, finished_at, coalesce(json_extract(result, '$.tokens.cost_usd'), 0) FROM runner_jobs
-		WHERE owner_id = ? AND cli = 'claude' AND kind IN (?,?,?) AND source != 'manual'
-		AND started_at IS NOT NULL AND finished_at IS NOT NULL AND started_at < ? AND finished_at >= ?`,
-		uid, JobAgent, JobReview, JobAudit, before, first)
-	if err != nil {
-		return nil, err
-	}
-	defer jrows.Close()
-	for jrows.Next() {
-		var id, start, end int64
-		var cost float64
-		if err := jrows.Scan(&id, &start, &end, &cost); err != nil {
-			return nil, err
-		}
-		if cost <= 0 {
+	for _, j := range jobs {
+		cost, start, end := j.cost, j.start, j.end
+		if cost <= 0 || jobSeen[j.id] {
 			continue
 		}
 		end = max(end, start+1)
-		key := fmt.Sprintf("job:%d", id)
+		key := fmt.Sprintf("job:%d", j.id)
 		for h := start - start%hourMS; h < end; h += hourMS {
 			if h < first || h >= before {
 				continue
@@ -726,10 +814,39 @@ func (s *Service) guardSpending(ctx context.Context, uid, first, before, from, t
 			g := get(h)
 			g.cost += part
 			g.auto += part
+			g.jobs += part
 			g.sources[key] += part
 		}
 	}
-	return out, jrows.Err()
+	return out, nil
+}
+
+// guardJob is a runner job that ran Claude for automation.
+type guardJob struct {
+	id, start, end int64
+	cost           float64
+	session        string // the CLI session id the runner recorded in the result; "" on older jobs
+}
+
+// guardJobs is the automation's claude runner jobs that overlap [first, before).
+func (s *Service) guardJobs(ctx context.Context, uid, first, before int64) ([]guardJob, error) {
+	rows, err := s.db.R.QueryContext(ctx, `SELECT id, started_at, finished_at, coalesce(json_extract(result, '$.tokens.cost_usd'), 0), coalesce(json_extract(result, '$.session_id'), '') FROM runner_jobs
+		WHERE owner_id = ? AND cli = 'claude' AND kind IN (?,?,?) AND source != 'manual'
+		AND started_at IS NOT NULL AND finished_at IS NOT NULL AND started_at < ? AND finished_at >= ?`,
+		uid, JobAgent, JobReview, JobAudit, before, first)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []guardJob
+	for rows.Next() {
+		var j guardJob
+		if err := rows.Scan(&j.id, &j.start, &j.end, &j.cost, &j.session); err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
 }
 
 // sessionOwner is who a session worked for from at on.
