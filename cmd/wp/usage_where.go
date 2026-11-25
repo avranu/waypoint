@@ -88,7 +88,6 @@ type whCall struct {
 	sub                    string     // what kind of meta message woke the call
 	blockIDs               map[string]bool
 	ctx, size              int64
-	in, out, cw5, cw1, cr  int64
 	parts                  whParts
 	ship                   bool
 }
@@ -136,7 +135,6 @@ type whSession struct {
 	cost, mainCost                   float64
 	calls                            int
 	models                           map[string]bool
-	files                            int
 }
 
 type whLimit struct {
@@ -160,11 +158,6 @@ type whScan struct {
 	files      int
 	since, end int64
 	mem        traceScripts
-}
-
-type whFile struct {
-	usageFile
-	project string
 }
 
 func whParseWhen(s string, now time.Time, def time.Duration) (time.Time, error) {
@@ -288,20 +281,19 @@ func whLaunch(dirName, prompt string) string {
 	return "interactive or unknown"
 }
 
-func whCost(u *rawUsage, p burnPrice) (parts whParts, cw5, cw1 int64) {
-	cw5 = u.CacheCreation
+func whCost(u *rawUsage, p burnPrice) whParts {
+	cw5, cw1 := u.CacheCreation, int64(0)
 	if cc := u.CC; cc != nil && cc.E5m+cc.E1h > 0 {
 		cw5, cw1 = cc.E5m, cc.E1h
 		if rest := u.CacheCreation - cc.E5m - cc.E1h; rest > 0 {
 			cw5 += rest
 		}
 	}
-	parts = whParts{
+	return whParts{
 		Input: float64(u.Input) * p.Input / 1e6, Output: float64(u.Output) * p.Output / 1e6,
 		Write5m: float64(cw5) * p.CacheWrite5m / 1e6, Write1h: float64(cw1) * p.CacheWrite1h / 1e6,
 		Read: float64(u.CacheRead) * p.CacheRead / 1e6,
 	}
-	return
 }
 
 // whTrivial are commands that say nothing about what a call did.
@@ -427,11 +419,11 @@ func (sc *whScan) readFile(f usageFile, prices []burnPrice) error {
 		ses = &whSession{id: f.Session, models: map[string]bool{}}
 		sc.sessions[f.Session] = ses
 	}
-	ses.files++
 	if ses.project == "" {
 		ses.project, ses.dir = dirName, dirName
 	}
 	cwd, trig, sub, started := "", "", "", false
+	n := 0 // the line being read
 	toolNames := map[string]string{}
 	br := bufio.NewReaderSize(fh, 1<<20)
 	var long []byte
@@ -444,6 +436,7 @@ func (sc *whScan) readFile(f usageFile, prices []burnPrice) error {
 		if len(long) > 0 {
 			line, long = append(long, line...), nil
 		}
+		n++
 		if len(line) > 0 && (bytes.Contains(line, markAssistant) || bytes.Contains(line, markUser) || bytes.Contains(line, markSystem)) {
 			var l rawLine
 			if json.Unmarshal(line, &l) == nil {
@@ -465,7 +458,7 @@ func (sc *whScan) readFile(f usageFile, prices []burnPrice) error {
 				case "user":
 					trig, started = sc.userTrigger(&l, f, ses, toolNames, trig, started, &sub)
 				case "assistant":
-					trig = sc.assistant(&l, f, ses, ts, cwd, trig, sub, toolNames, prices)
+					trig = sc.assistant(&l, f, ses, n, ts, cwd, trig, sub, toolNames, prices)
 					sub = ""
 				}
 			}
@@ -539,7 +532,7 @@ func (sc *whScan) userTrigger(l *rawLine, f usageFile, ses *whSession, toolNames
 	return "typed prompt", true
 }
 
-func (sc *whScan) assistant(l *rawLine, f usageFile, ses *whSession, ts int64, cwd, trig, sub string, toolNames map[string]string, prices []burnPrice) string {
+func (sc *whScan) assistant(l *rawLine, f usageFile, ses *whSession, line int, ts int64, cwd, trig, sub string, toolNames map[string]string, prices []burnPrice) string {
 	m := l.Message
 	if m == nil {
 		return trig
@@ -583,7 +576,7 @@ func (sc *whScan) assistant(l *rawLine, f usageFile, ses *whSession, ts int64, c
 	}
 	key := m.ID + "\x00" + l.RequestID
 	if m.ID == "" {
-		key = fmt.Sprintf("%s\x00%d\x00%p", f.Path, ts, l)
+		key = fmt.Sprintf("%s\x00line %d", f.Path, line)
 	}
 	call := sc.calls[key]
 	if call == nil {
@@ -597,9 +590,7 @@ func (sc *whScan) assistant(l *rawLine, f usageFile, ses *whSession, ts int64, c
 	u := m.Usage
 	if size := u.Input + u.Output + u.CacheCreation + u.CacheRead; size >= call.size {
 		p := burnPriceFor(prices, model)
-		parts, cw5, cw1 := whCost(u, p)
-		call.size, call.model, call.parts = size, model, parts
-		call.in, call.out, call.cw5, call.cw1, call.cr = u.Input, u.Output, cw5, cw1, u.CacheRead
+		call.size, call.model, call.parts = size, model, whCost(u, p)
 		call.ctx = u.Input + u.CacheRead + u.CacheCreation
 	}
 	for _, b := range blocks {

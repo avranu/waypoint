@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/transcript"
 )
 
@@ -254,8 +255,12 @@ func (s *Service) SessionFacts(ctx context.Context, actor *Actor, q FactsQuery) 
 	// agent token reading another person's usage.
 	uids, everyone, _, err := s.usageWho(ctx, actor, q.User)
 	if err != nil {
-		if actor.IsAgent() && errors.Is(err, ErrForbidden) && strings.TrimSpace(q.User) != "" {
-			return nil, forbidden("%v; read your own person's sessions by leaving out --user", err)
+		// Advise leaving out --user only where that read would succeed: not
+		// for a token that may read no usage at all.
+		if actor.HidesCommandText() && errors.Is(err, kernel.ErrForbidden) && strings.TrimSpace(q.User) != "" {
+			if _, _, _, own := s.usageWho(ctx, actor, ""); own == nil {
+				return nil, kernel.Forbidden("%v; read your own person's sessions by leaving out --user", err)
+			}
 		}
 		return nil, err
 	}
