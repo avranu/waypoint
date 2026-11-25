@@ -25,6 +25,12 @@ type OpenPRInput struct {
 	// For is the task the opener is finishing (wp ship, WP-608), when it
 	// isn't Issue: a pull request already open for other tasks is theirs.
 	For string
+	// Also are the other tasks this change does (wp ship A B: A is Issue,
+	// B is Also). The pull request is linked to each, and its adversarial
+	// review is given each one's description (WP-1426). They are checked
+	// before anything is opened: each exists, is open and is in the project,
+	// and the pull request names at most maxShipTasks tasks.
+	Also []string
 	// Urgent opens it with the ci-urgent label, so its first CI run is
 	// already on the urgent lane (WP-528); one already open gets the label.
 	// A new pull request for a task tagged ci-urgent gets it anyway (WP-697).
@@ -67,9 +73,11 @@ type OpenPRInput struct {
 // OpenPRResult is the pull request, whether it was already open, and a
 // warning when the issue could not be linked.
 type OpenPRResult struct {
-	Existing bool      `json:"existing"`
-	Warning  string    `json:"warning,omitempty"`
-	Pull     *PRDetail `json:"pull"`
+	// AlsoLinked are the Also tasks the pull request is linked to now.
+	AlsoLinked []string  `json:"also_linked,omitempty"`
+	Existing   bool      `json:"existing"`
+	Warning    string    `json:"warning,omitempty"`
+	Pull       *PRDetail `json:"pull"`
 	// ShipReply is the template for the opener's last message after wp
 	// ship (WP-390), filled in by the CLI.
 	ShipReply string `json:"ship_reply,omitempty"`
@@ -78,8 +86,9 @@ type OpenPRResult struct {
 	PutOff *PutOffSteps `json:"put_off,omitempty"`
 	// OtherTasks are the tasks an already-open pull request is linked to
 	// when the task being finished (For, else Issue) isn't one of them: it
-	// is their work, so Issue isn't linked and wp ship neither arms nor
-	// babysits it (WP-608).
+	// is their work, so wp ship neither arms nor babysits it (WP-608). Issue,
+	// when it names the task shipped, is linked to it all the same and
+	// stays In Review until the merge (WP-1426).
 	OtherTasks []string `json:"other_tasks,omitempty"`
 	// Held: the branch is pushed but no pull request opened, because the
 	// task's adversarial review comes first (WP-688); what to tell the
@@ -142,7 +151,10 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 	if err := s.requireProjectRole(ctx, s.db.R, actor, p.ID, RoleEditor); err != nil {
 		return nil, err
 	}
-	for _, ref := range []string{in.Issue, in.For} {
+	if err := s.shipAlso(ctx, actor, p, &in); err != nil {
+		return nil, err
+	}
+	for _, ref := range append([]string{in.Issue, in.For}, in.Also...) {
 		if ref == "" {
 			continue
 		}
@@ -360,13 +372,22 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 			res.Notice = joinNotes(res.Notice, note)
 		}
 	}
-	if in.Issue != "" && res.OtherTasks == nil && !linked {
+	if (in.Issue != "" && !linked) || len(in.Also) > 0 {
 		pr, err := s.prByID(ctx, s.db.R, existing)
 		if err != nil {
 			return nil, err
 		}
-		if _, err := s.AddLink(ctx, actor, in.Issue, pr.URL, ""); err != nil {
-			res.Warning = strings.TrimPrefix(res.Warning+"; couldn't link "+in.Issue+": "+err.Error(), "; ")
+		if in.Issue != "" && !linked {
+			if _, err := s.AddLink(ctx, actor, in.Issue, pr.URL, ""); err != nil {
+				res.Warning = strings.TrimPrefix(res.Warning+"; couldn't link "+in.Issue+": "+err.Error(), "; ")
+			}
+		}
+		for _, k := range in.Also {
+			if _, err := s.AddLink(ctx, actor, k, pr.URL, ""); err != nil {
+				res.Warning = strings.TrimPrefix(res.Warning+"; couldn't link "+k+": "+err.Error()+" (link it with wp link "+k+" "+pr.URL+")", "; ")
+				continue
+			}
+			res.AlsoLinked = append(res.AlsoLinked, k)
 		}
 	}
 	if res.Pull, err = s.GetPullRequest(ctx, actor, existing); err != nil {
@@ -518,4 +539,56 @@ func (s *Service) reviewedRound(ctx context.Context, issueID, run int64, branch 
 		}
 	}
 	return false
+}
+
+// maxShipTasks is the most tasks one pull request is shipped for: the
+// relation graph links a pull request naming more than six only to the task
+// it was opened for (WP-ADR120), so a seventh would be linked and not related.
+const maxShipTasks = 6
+
+// shipAlso checks the extra tasks of wp ship A B before anything is opened:
+// each is a task the actor can edit, is open and is in the project, and
+// with the first they are at most maxShipTasks. It leaves in.Also as the
+// tasks' own keys, without repeats or the first task. Each error says which
+// key and what to run.
+func (s *Service) shipAlso(ctx context.Context, actor *Actor, p *Project, in *OpenPRInput) error {
+	if len(in.Also) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, k := range []string{in.Issue, in.For} {
+		if k = strings.ToUpper(strings.TrimSpace(k)); k != "" {
+			seen[k] = true
+		}
+	}
+	var keys []string
+	for _, ref := range in.Also {
+		ref = strings.ToUpper(strings.TrimSpace(ref))
+		if ref == "" || seen[ref] {
+			continue
+		}
+		i, _, err := s.getIssueFor(ctx, s.db.R, actor, ref, RoleEditor, false)
+		if err != nil {
+			if readFault(err) && !missingOrDenied(err) {
+				return err
+			}
+			return invalid("%s isn't a task you can ship this change for: check it with wp show %s, or leave it out of wp ship", ref, ref)
+		}
+		key := i.Key
+		switch {
+		case seen[strings.ToUpper(key)]:
+			continue
+		case i.ProjectID != p.ID:
+			return invalid("%s isn't in %s, and one pull request is in one project: leave it out of wp ship and run wp ship %s from its own branch", key, p.Key, key)
+		case i.Closed():
+			return invalid("%s is closed: reopen it first (wp edit %s --status \"To Do\") if this change does it, or leave it out of wp ship", key, key)
+		}
+		seen[strings.ToUpper(key)] = true
+		keys = append(keys, key)
+	}
+	if len(seen) > maxShipTasks {
+		return invalid("a pull request is shipped for at most %d tasks (%d named): ship the rest with their own wp ship from their own branches", maxShipTasks, len(seen))
+	}
+	in.Also = keys
+	return nil
 }

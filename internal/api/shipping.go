@@ -52,16 +52,18 @@ func (s *Server) findPull(w http.ResponseWriter, r *http.Request) (any, error) {
 
 // openPullBody is the request of wp pr open and wp ship.
 type openPullBody struct {
-	Repo   string `json:"repo"`
-	Head   string `json:"head"`
-	Base   string `json:"base"`
-	Title  string `json:"title"`
-	Body   string `json:"body"`
-	Draft  bool   `json:"draft"`
-	Ready  bool   `json:"ready"`
-	Issue  string `json:"issue"`
-	For    string `json:"for"` // the task wp ship finishes (WP-608)
-	Urgent bool   `json:"urgent"`
+	Repo  string `json:"repo"`
+	Head  string `json:"head"`
+	Base  string `json:"base"`
+	Title string `json:"title"`
+	Body  string `json:"body"`
+	Draft bool   `json:"draft"`
+	Ready bool   `json:"ready"`
+	Issue string `json:"issue"`
+	For   string `json:"for"` // the task wp ship finishes (WP-608)
+	// Also: the other tasks the same change does (wp ship A B, WP-1426).
+	Also   []string `json:"also"`
+	Urgent bool     `json:"urgent"`
 	// Review: wp ship's intent about the task's review before the pull
 	// request (auto, review, pr, skip; WP-688), with what goes with it.
 	Review   string `json:"review"`
@@ -87,7 +89,7 @@ func (s *Server) openPull(w http.ResponseWriter, r *http.Request) (any, error) {
 		return nil, err
 	}
 	res, err := s.svc.OpenPullRequest(r.Context(), actorFrom(r), core.OpenPRInput{Project: r.PathValue("key"), Repo: in.Repo, Head: in.Head,
-		Base: in.Base, Title: in.Title, Body: in.Body, Draft: in.Draft, Ready: in.Ready, Issue: in.Issue, For: in.For, Urgent: in.Urgent,
+		Base: in.Base, Title: in.Title, Body: in.Body, Draft: in.Draft, Ready: in.Ready, Issue: in.Issue, For: in.For, Also: in.Also, Urgent: in.Urgent,
 		Review: in.Review, Reason: in.Reason, Force: in.Force, HeadTime: in.HeadTime, HeadSHA: in.HeadSHA, Message: in.Message, Summary: in.Summary, Change: in.Change, BodyInputs: in.BodyInputs, StackedOn: in.StackedOn})
 	if err != nil {
 		return nil, err

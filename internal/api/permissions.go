@@ -333,6 +333,7 @@ var routePermissions = map[string]core.Permission{
 	"POST /api/v1/agent/done/{key}":                 core.PermTasksWork,
 	"POST /api/v1/agent/release/{key}":              core.PermTasksWork,
 	"POST /api/v1/agent/pushed":                     core.PermTasksWork,
+	"POST /api/v1/agent/deferred":                   core.PermTasksWork,
 	"POST /api/v1/agent/decline/{key}":              core.PermTasksWork,
 	"POST /api/v1/agent/usage/{key}":                core.PermTasksWork,
 	"POST /api/v1/agent/take/{key}":                 core.PermTasksWork,
