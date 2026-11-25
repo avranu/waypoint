@@ -7,6 +7,24 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
+func TestShellEditsText(t *testing.T) {
+	for _, c := range []struct {
+		n, unknown, viaScript int
+		want                  string
+	}{
+		{7, 0, 0, "7 shell edits"},
+		{0, 0, 0, "0 shell edits"},
+		{0, 4, 0, "shell edits unknown (4 Bash calls not classified)"},
+		{3, 4, 0, "3+ shell edits (4 Bash calls not classified)"},
+		{7, 0, 2, "7 shell edits and 2 more run by REPL scripts"},
+		{3, 4, 2, "3+ shell edits (4 Bash calls not classified) and 2 more run by REPL scripts"},
+	} {
+		if got := shellEditsText(c.n, c.unknown, c.viaScript); got != c.want {
+			t.Errorf("shellEditsText(%d, %d, %d) = %q, want %q", c.n, c.unknown, c.viaScript, got, c.want)
+		}
+	}
+}
+
 func TestFactsTargetRouting(t *testing.T) {
 	for _, tc := range []struct {
 		task, session string

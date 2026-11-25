@@ -279,6 +279,13 @@ func traceFile(p, cwd string) (f tracePath, work bool) {
 	traceGit.Lock()
 	defer traceGit.Unlock()
 	rel, repo := "", ""
+	// A checkout's own root (gofmt -w . run in it) is the work, though no
+	// file of it is named.
+	if self := traceCheckoutOf(p); self.root == p {
+		return f, true
+	} else if m := traceWorktreeRE.FindStringSubmatch(p); m != nil && m[4] == "" {
+		return f, true
+	}
 	if own := traceCheckoutOf(path.Dir(p)); traceUnder(p, own.root) {
 		rel, repo = p[len(own.root)+1:], own.repo
 	} else {
@@ -392,7 +399,8 @@ func classifyTraceCall(name string, input json.RawMessage, cwd string, at, ctx i
 			if f.P != "" {
 				tc.Paths = []tracePath{f}
 			}
-		} else if name == "Write" {
+		}
+		if name == "Write" {
 			mem.Keep(trscript.ShellAt(in.FilePath, cwd), in.Content)
 		}
 	case "Agent", "Task":

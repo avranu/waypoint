@@ -2,8 +2,15 @@ package transcript
 
 // The shell-write recogniser (WP-1883): which files a Bash command line
 // writes, as the line spells them. The client's trace and `wp usage where`
-// and the server's session facts all read commands with it, so "a shell edit"
-// is one thing everywhere. It moved here from cmd/wp/usage_trace.go.
+// and the server's session facts all read commands with it, so the parser and
+// the list of what writes (sed -i, tee, redirects, formatters, scripts) are
+// shared. What differs is where a written path counts as "the work": the
+// client asks the disk (the session's checkouts, whether a target is a
+// directory); the server cannot, and counts a path under a directory the
+// session worked in, by the working directories its records show
+// (ShellSession.Edit). So the two can disagree on a path in neither a
+// checkout nor a seen working directory. It moved here from
+// cmd/wp/usage_trace.go.
 
 import (
 	"os"
@@ -38,6 +45,17 @@ type ShellScript struct {
 const (
 	ShellMaxScripts     = 24
 	traceMaxScriptPaths = 24
+
+	// Work the recogniser does for one command line is bounded, because the
+	// server reads every Bash call of every uploaded transcript: a word or
+	// variable value longer than shellMaxValue is left unexpanded (an
+	// unresolved variable, as one the line never set), a line holds at most
+	// shellMaxVars variables and shellMaxCommands commands, and a line over
+	// shellMaxCommand bytes is not read at all.
+	shellMaxValue    = 4 << 10
+	shellMaxVars     = 256
+	shellMaxCommands = 5000
+	shellMaxCommand  = 256 << 10
 )
 
 var traceScriptFileRE = lazyre.New(`\.(?:py|js|mjs|cjs|ts|rb)$`)
@@ -55,6 +73,7 @@ func (m *ShellScripts) Keep(at, body string) {
 		}
 	}
 	ps, sure := traceScriptWrites(body)
+	ps = slices.DeleteFunc(ps, func(p string) bool { return len(p) > shellMaxValue })
 	if len(ps) == 0 {
 		return
 	}
@@ -140,31 +159,55 @@ var traceVarRE = lazyre.New(`\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?`)
 func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *ShellScripts, out *[]ShellCommand, disk bool) string {
 	dir := cwd
 	fill := func(w string) string {
+		orig := w
 		if w == "~" || strings.HasPrefix(w, "~/") {
 			w = "$HOME" + w[1:]
 		}
 		if !strings.Contains(w, "$") {
 			return w
 		}
-		return traceVarRE.ReplaceAllStringFunc(w, func(m string) string {
-			name := strings.Trim(m, "${}")
-			if name == "PWD" && dir != ShellNowhere && dir != "" {
-				return dir
+		if len(w) > shellMaxValue {
+			return orig
+		}
+		var b strings.Builder
+		last := 0
+		for _, m := range traceVarRE.FindAllStringSubmatchIndex(w, -1) {
+			b.WriteString(w[last:m[0]])
+			last = m[1]
+			name := w[m[2]:m[3]]
+			switch v, ok := vars[name]; {
+			case name == "PWD" && dir != ShellNowhere && dir != "":
+				b.WriteString(dir)
+			case ok:
+				b.WriteString(v)
+			default:
+				b.WriteString(w[m[0]:m[1]])
 			}
-			if v, ok := vars[name]; ok {
-				return v
+			if b.Len() > shellMaxValue {
+				return orig
 			}
-			return m
-		})
+		}
+		b.WriteString(w[last:])
+		if b.Len() > shellMaxValue {
+			return orig
+		}
+		return b.String()
 	}
 	set := func(words []string) {
 		for _, w := range words {
 			if name, v, ok := strings.Cut(w, "="); ok && AssignRE.MatchString(w) && !strings.HasSuffix(name, "+") {
+				if _, have := vars[name]; len(v) > shellMaxValue || !have && len(vars) >= shellMaxVars {
+					delete(vars, name)
+					continue
+				}
 				vars[name] = v
 			}
 		}
 	}
 	for _, g := range ParseShell(cmd) {
+		if len(*out) >= shellMaxCommands {
+			break
+		}
 		all := make([]string, len(g.Words))
 		assigns := len(g.Words) > 0
 		for i, w := range g.Words {
@@ -174,6 +217,17 @@ func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *Shel
 		if assigns {
 			set(all)
 			continue
+		}
+		if len(all) >= 4 && all[0] == "for" && all[2] == "in" && traceIdentRE.MatchString(all[1]) {
+			// for f in LIST; do ... "$f" ...: f stands for the one word of a
+			// list of one (a name or a glob, *.go), else for any file.
+			list := "*"
+			if w := all[3]; len(all) == 4 && !strings.HasPrefix(w, "$") && !strings.Contains(w, ShellSubPlaceholder) {
+				list = w
+			}
+			if len(vars) < shellMaxVars {
+				vars[all[1]] = list
+			}
 		}
 		words := StripWords(all)
 		if len(words) == 0 {
@@ -309,7 +363,15 @@ var (
 	traceInterpreters = map[string]bool{"python": true, "python3": true, "node": true, "ruby": true, "bun": true, "deno": true}
 )
 
-const traceMaxScript = 256 << 10
+// traceMaxScript bounds the text of a script that is read, and
+// traceScriptBudget the names followed (each is a search of the text), so a
+// script cannot cost more than a fixed amount of work.
+const (
+	traceMaxScript    = 64 << 10
+	traceScriptBudget = 100
+	traceScriptScan   = 2 << 20
+	traceMaxStrings   = 200
+)
 
 // traceScriptWrites lists the paths a script writes, as the script spells
 // them. A path given as a name is followed to what the script sets the name
@@ -323,15 +385,22 @@ func traceScriptWrites(script string) (paths []string, sure bool) {
 	if !traceScriptWriteRE.MatchString(script) {
 		return nil, true
 	}
+	// Each name followed searches the text again: spend a fixed amount of
+	// scanning, so a long script is followed fewer times than a short one.
+	budget := min(traceScriptBudget, max(3, traceScriptScan/(3*len(script)+1)))
 	for _, re := range traceScriptSiteREs {
 		for _, m := range re.FindAllStringSubmatch(script, 64) {
-			paths = append(paths, traceScriptExpr(script, m[1], 0)...)
+			paths = append(paths, traceScriptExpr(script, m[1], 0, &budget)...)
 		}
 	}
 	if len(paths) > 0 {
 		return paths, true
 	}
-	for _, m := range traceScriptStrRE.FindAllStringSubmatch(script, 2000) {
+	for _, m := range traceScriptStrRE.FindAllStringSubmatch(script, traceMaxStrings) {
+		if budget <= 0 {
+			break
+		}
+		budget--
 		s := m[1] + m[2]
 		if !ShellFileShape(s) {
 			continue
@@ -349,7 +418,7 @@ func traceScriptWrites(script string) (paths []string, sure bool) {
 // can be: a string itself, Path(of one), a name the script sets to one, or
 // the first parameter of a function the script defines, by what its calls
 // pass (def sub(p, old, new): …; sub('a.go', …)).
-func traceScriptExpr(script, expr string, depth int) []string {
+func traceScriptExpr(script, expr string, depth int, budget *int) []string {
 	expr = strings.TrimSpace(expr)
 	if m := traceScriptPathRE.FindStringSubmatch(expr); m != nil {
 		expr = m[1]
@@ -360,13 +429,14 @@ func traceScriptExpr(script, expr string, depth int) []string {
 		}
 		return nil
 	}
-	if depth >= 3 || !traceIdentRE.MatchString(expr) {
+	if depth >= 3 || !traceIdentRE.MatchString(expr) || *budget <= 0 {
 		return nil
 	}
+	*budget--
 	var out []string
 	set := regexp.MustCompile(`(?m)(?:^|[;\s])(?:const |let |var )?` + expr + `\s*=\s*([^=\n;][^\n;]*)`)
 	for _, m := range set.FindAllStringSubmatch(script, 16) {
-		out = append(out, traceScriptExpr(script, m[1], depth+1)...)
+		out = append(out, traceScriptExpr(script, m[1], depth+1, budget)...)
 	}
 	loop := regexp.MustCompile(`\bfor\s+` + expr + `\s+in\s+[\[(]([^\n]*)[\])]\s*:`)
 	for _, m := range loop.FindAllStringSubmatch(script, 16) {
@@ -379,7 +449,7 @@ func traceScriptExpr(script, expr string, depth int) []string {
 		call := regexp.MustCompile(`(?:^|[^A-Za-z0-9_.])` + m[1] + `\(\s*([^,()\n]+?)\s*[,)]`)
 		for _, c := range call.FindAllStringSubmatch(script, 64) {
 			if c[1] != expr {
-				out = append(out, traceScriptExpr(script, c[1], depth+1)...)
+				out = append(out, traceScriptExpr(script, c[1], depth+1, budget)...)
 			}
 		}
 	}
@@ -391,6 +461,10 @@ type ShellWrite struct {
 	Kind  string
 	Path  string
 	Whole bool
+	// Root, for a write whose files the command does not name (Path "*"), is
+	// the directory it applies to when that is not the command's own: the
+	// root a find starts from.
+	Root string
 }
 
 // writes lists the files a command writes. What counts: output sent to a
@@ -549,11 +623,17 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 			}
 		}
 	case "xargs", "find":
+		root := ""
+		if prog == "find" {
+			if r := plain(0); len(r) > 0 && !strings.ContainsAny(r[0], "()!") {
+				root = r[0]
+			}
+		}
 		for i, a := range args {
 			b := path.Base(a)
 			formats := (b == "gofmt" || b == "goimports" || b == "prettier") && slices.ContainsFunc(args[i+1:], func(x string) bool { return x == "-w" || x == "--write" })
 			if formats || b == "sed" && sedInPlace(args[i:]) || b == "perl" && i+1 < len(args) && perlInPlaceRE.MatchString(args[i+1]) {
-				out = append(out, ShellWrite{Kind: "patch", Path: "*"})
+				out = append(out, ShellWrite{Kind: "patch", Path: "*", Root: root})
 				break
 			}
 		}
@@ -668,47 +748,4 @@ func ReadShell(cmd, cwd string, vars map[string]string, mem *ShellScripts, disk 
 	var out []ShellCommand
 	dir := shellCommands(cmd, cwd, 0, vars, mem, &out, disk)
 	return out, dir
-}
-
-// ShellEdit says a Bash command wrote a file that is the work: a redirect,
-// tee, sed -i, formatter, git apply or a script that writes, to a path that
-// is not scratch. Scratch is /tmp, /var/tmp, /dev (and mktemp results, which
-// live there), a path built from a variable or command substitution, and a
-// relative path after a cd the line does not spell out. A file a tool saves
-// with -o is not a write here. The server cannot see the checkout, so unlike
-// the client's trace this does not ask whether a path is inside the session's
-// repository.
-func ShellEdit(cmd, cwd string) bool {
-	cmds, _ := ReadShell(cmd, cwd, map[string]string{}, &ShellScripts{}, false)
-	for i := range cmds {
-		for _, w := range cmds[i].Wrote {
-			if w.Kind == "output" {
-				continue
-			}
-			p := w.Path
-			switch {
-			case p == "":
-				continue
-			case p == "*": // git apply, patch
-				return true
-			case p[0] == '$' || p[0] == '`':
-				continue
-			case !strings.HasPrefix(p, "/"):
-				d := cmds[i].Dir
-				if d == "" {
-					d = cwd
-				}
-				if d == ShellNowhere || !strings.HasPrefix(d, "/") {
-					continue
-				}
-				p = path.Join(d, p)
-			}
-			p = path.Clean(p)
-			if strings.HasPrefix(p, "/tmp/") || strings.HasPrefix(p, "/var/tmp/") || strings.HasPrefix(p, "/dev/") {
-				continue
-			}
-			return true
-		}
-	}
-	return false
 }

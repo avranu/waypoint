@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/transcript"
 )
 
 // LedgerStats is what a set of calls looked like.
@@ -691,7 +693,7 @@ func (s *Service) ledgerPrep(ctx context.Context, sc *usageScope, closed map[int
 	}
 	where, args := sc.where("hour")
 	// #nosec G202 -- where is built from fixed conditions; values are bound
-	trows, err := s.db.R.QueryContext(ctx, `SELECT machine, session, sum(calls) FROM tool_hours WHERE kind != 'shell_edit' AND `+where+` GROUP BY machine, session`, args...)
+	trows, err := s.db.R.QueryContext(ctx, `SELECT machine, session, sum(calls) FROM tool_hours WHERE kind != ? AND `+where+` GROUP BY machine, session`, append([]any{transcript.ShellEditKind}, args...)...)
 	if err != nil {
 		return nil, err
 	}

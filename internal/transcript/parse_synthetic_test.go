@@ -69,7 +69,7 @@ func TestShellEditTable(t *testing.T) {
 		{"cd /tmp/s && python3 - <<'E'\np='out.json'\nopen(p,'w').write('x')\nE", "/r", false},
 		{"cd $(mktemp -d) && echo x > a.txt", "/r", false},
 	} {
-		if got := ShellEdit(c.cmd, c.cwd); got != c.want {
+		if got, _ := (&ShellSession{}).Edit(c.cmd, c.cwd); got != c.want {
 			t.Errorf("ShellEdit(%q) = %v, want %v", c.cmd, got, c.want)
 		}
 	}
@@ -77,10 +77,10 @@ func TestShellEditTable(t *testing.T) {
 
 func TestParserMarksBashShellWrites(t *testing.T) {
 	r := parse(t, "main",
-		assistant("m1", 1, m{"output_tokens": 5},
+		withCwd(assistant("m1", 1, m{"output_tokens": 5},
 			toolUse("b1", "Bash", m{"command": "echo x > /r/a.txt"}),
 			toolUse("b2", "Bash", m{"command": "ls"}),
-			toolUse("e1", "Edit", m{"file_path": "/r/a.go"})),
+			toolUse("e1", "Edit", m{"file_path": "/r/a.go"})), "/r"),
 	)
 	got := map[string]*bool{}
 	for _, c := range r.ToolCalls {

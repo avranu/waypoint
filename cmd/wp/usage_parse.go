@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"git.jmann.me/claude/waypoint/internal/lazyre"
+	trscript "git.jmann.me/claude/waypoint/internal/transcript"
 )
 
 type usageMsgRow struct {
@@ -662,9 +663,20 @@ func (p *usageParser) assistant(b []byte, l *rawLine) {
 		}
 		call := classifyCall(bl.Name, bl.Input)
 		call.Hour, call.Model = hourOf(ts), model
+		if bl.Name == "Bash" || bl.Name == "Write" {
+			if p.st.Trace == nil {
+				p.st.Trace = &traceState{}
+			}
+		}
+		if bl.Name == "Write" {
+			var in traceInput
+			if json.Unmarshal(bl.Input, &in) == nil {
+				p.st.Trace.Scripts.Keep(trscript.ShellAt(in.FilePath, usageOr(l.Cwd, p.st.Cwd)), in.Content)
+			}
+		}
 		if bl.Name == "Bash" {
-			key := usageToolKey{Kind: shellEditKind, Tool: bl.Name}
-			if bashWritesWork(bl.Input, usageOr(l.Cwd, p.st.Cwd)) {
+			key := usageToolKey{Kind: trscript.ShellEditKind, Tool: bl.Name}
+			if bashWritesWork(bl.Input, usageOr(l.Cwd, p.st.Cwd), &p.st.Trace.Scripts) {
 				call.Keys = append(call.Keys, key)
 			} else {
 				p.tool(call.Hour, call.Model, key)
@@ -909,11 +921,7 @@ func (p *usageParser) addRisky(call *usageOpenCall, at int64, outcome, source st
 		Command: orStr(h.Command, call.Excerpt), Segment: h.Segment, Outcome: outcome, Source: source})
 }
 
-func looksRefused(text string) bool {
-	return strings.HasPrefix(text, "Permission for this") || strings.Contains(text, "denied by the Claude Code auto mode classifier") ||
-		strings.Contains(text, "hook error:") && strings.Contains(text, "Blocked") ||
-		strings.HasPrefix(text, "The user doesn't want to proceed") || strings.HasPrefix(text, "Permission to use ")
-}
+func looksRefused(text string) bool { return trscript.LooksRefused(text) }
 
 // resultText is the start of a tool result's text.
 func resultText(raw json.RawMessage, n int) string {
