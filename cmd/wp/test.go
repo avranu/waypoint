@@ -452,6 +452,9 @@ func cmdTestGo(c *cli, args []string) error {
 	fs.Var(&byFile, "by-file", "run the package `PKG` (a directory) by file as a heavy package (repeatable)")
 	rest, dashed, err := c.parseBeforeCommand(fs, args)
 	if err != nil {
+		if strings.Contains(err.Error(), "not defined") {
+			return fmt.Errorf("%w; go test's own flags go after --, as wp test go -- -vet=off", err)
+		}
 		return err
 	}
 	if len(rest) > 0 && !dashed {

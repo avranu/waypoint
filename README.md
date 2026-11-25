@@ -82,8 +82,10 @@ backups, reverse proxies and upgrades are in [docs/DEPLOY.md](docs/DEPLOY.md).
 
 ```sh
 make dev     # Go API on :8080 + Vite on http://localhost:5173 with live reload
-make test    # go vet, go test, TypeScript typecheck (CI also runs -race)
-make check   # test + lint (golangci-lint, gosec) + govulncheck; CI runs the same
+make check   # wp test: lint, vet, tests and guards for what changed against the base (.waypoint/test)
+make test    # wp test: the tests of what changed (same scoped run)
+make check-all  # the whole tree: test-all + lint + gosec + govulncheck; CI runs this before a pull request opens (20 minutes or more)
+make test-all   # go vet, go test, TypeScript typecheck over everything (CI also runs -race)
 make e2e     # Playwright browser checks against a throwaway server (e2e/); E2E_LOOKS=one for a quicker pass
 make cli     # cross-compile the wp CLI into bin/cli (served at /cli)
 make sast    # gosec (advisory)

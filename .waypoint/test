@@ -1,0 +1,113 @@
+#!/bin/sh
+# The scoped check `wp test` runs (cmd/wp/test.go, WP-ADR161, WP-1875): lint,
+# vet and the tests the change touches, not the tree. `make check` calls it.
+# CI runs the whole suite before a pull request opens, and is the authority.
+#
+# wp test runs it from anywhere, in the tests slot, with
+#   WP_TEST_BASE     the base commit
+#   WP_TEST_CHANGED  a file listing the changed paths, one per line
+#   WP_TEST_ALL=1    when asked for the whole check: make check-all
+#
+# Every applicable step runs, even after one fails, and the last line names
+# the failed and passed ones.
+set -u
+cd "$(dirname "$0")/.." || exit 1
+
+if [ "${WP_TEST_ALL:-}" = 1 ]; then
+  exec make check-all
+fi
+if [ -z "${WP_TEST_CHANGED:-}" ] || [ ! -r "$WP_TEST_CHANGED" ]; then
+  echo ".waypoint/test: WP_TEST_CHANGED isn't a readable file; run it with wp test (or wp test --all)" >&2
+  exit 1
+fi
+changed=$(cat "$WP_TEST_CHANGED")
+
+if ! gopath=$(go env GOPATH); then
+  echo ".waypoint/test: can't find Go, so nothing was checked" >&2
+  exit 1
+fi
+PATH="$gopath/bin:$PATH"
+
+# any REGEX: some changed path matches it.
+any() { printf '%s\n' "$changed" | grep -q -E "$1"; }
+
+failed=
+passed=
+step() {
+  name=$1
+  shift
+  echo ".waypoint/test: $name" >&2
+  if "$@"; then passed="$passed $name"; else failed="$failed $name"; fi
+}
+
+# The changed Go files that still exist, and the packages they sit in
+# (a deleted file leaves its package to check, a deleted package leaves none).
+gofiles=$(printf '%s\n' "$changed" | grep '\.go$' | grep -v -e '^vendor/' -e '/testdata/' -e '^testdata/' |
+  while IFS= read -r f; do [ -f "$f" ] && echo "$f"; done)
+pkgs=$(printf '%s\n' "$changed" | grep '\.go$' | grep -v -e '^vendor/' -e '/testdata/' -e '^testdata/' |
+  while IFS= read -r f; do
+    d=$(dirname "$f")
+    ls "$d"/*.go >/dev/null 2>&1 && echo "./$d"
+  done | sort -u)
+spaced() { printf '%s\n' "$1" | tr '\n' ' '; }
+
+golang=
+if any '(\.go$|^go\.(mod|sum)$|^\.golangci\.yml$)'; then
+  golang=1
+  command -v golangci-lint >/dev/null || make tools || failed="$failed tools"
+  step build go build ./...
+  if any '^\.golangci\.yml$'; then
+    # A lint configuration change reaches every package.
+    step lint make golint
+  elif [ -n "$pkgs" ]; then
+    step lint make golint GOPKGS="$(spaced "$pkgs")" GOFMTPATHS="$(spaced "${gofiles:-$pkgs}")"
+  fi
+  if [ -n "$pkgs" ]; then
+    step sast make sast GOPKGS="$(spaced "$pkgs")"
+    # wplint's analyzers cover cmd and internal, not web.
+    lintpkgs=$(printf '%s\n' "$pkgs" | grep -v -x './web')
+    [ -z "$lintpkgs" ] || step wplint make wplint-code WPLINTPKGS="$(spaced "$lintpkgs")"
+  fi
+  # wp is built for the other systems it ships for.
+  if any '^cmd/wp/.*\.go$'; then step cross-check make cross-check; fi
+fi
+
+if any '^(internal/db/migrations/|e2e/)'; then
+  step wplint-repo make wplint-repo
+fi
+if any '^go\.(mod|sum)$'; then
+  step vuln make vuln
+fi
+if any '^(\.forgejo/|\.github/|deploy/)'; then
+  command -v actionlint >/dev/null || make tools || failed="$failed tools"
+  step ops make prepush-ops
+fi
+if printf '%s\n' "$changed" | grep -v '^web/dist/' | grep -q '^web/'; then
+  step web make prepush-web
+fi
+
+# Guard tests read the repository, not the package's code: the git index, CI
+# workflows, the Makefile, lock files, deploy scripts. internal/cilint reads
+# the index and most of those, so it runs every time (about 20 CPU seconds);
+# the others when the files they read changed.
+guards="./internal/cilint"
+any '^deploy/' && guards="$guards ./internal/repocheck"
+any '(^|/)package-lock\.json$|^renovate\.json$|^go\.(mod|sum)$' && guards="$guards ./internal/depage"
+# shellcheck disable=SC2086 # the packages are words
+step guards go test -count=1 -vet=off -timeout 30m $guards
+if any '^(\.forgejo/|\.gitattributes$|web/src/lib/theme\.ts$)'; then
+  # The three tests of internal/core that read those files.
+  step core-guards go test -count=1 -vet=off -timeout 30m -run '^(TestAdvisoriesJobIsInWorkflow|TestGitAttributesUnionMerge|TestLookPaletteMatchesWeb)$' ./internal/core
+fi
+
+if [ -n "$golang" ]; then
+  step tests wp test go -- -vet=off -timeout 30m
+fi
+
+passed=$(echo $passed | sed 's/ /, /g')
+failed=$(echo $failed | sed 's/ /, /g')
+if [ -n "$failed" ]; then
+  echo ".waypoint/test: failed: $failed; passed: ${passed:-none}" >&2
+  exit 1
+fi
+echo ".waypoint/test: passed: ${passed:-nothing needed checking}" >&2
