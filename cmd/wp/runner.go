@@ -873,7 +873,7 @@ func (p *runnerProc) beginUpdate(sv string) bool {
 	backoff := p.retryEvery(sv)
 	// The poll loop's goroutine waits here: no longer than a command's claim
 	// does (c6997). A lock it misses holds it back updateHoldRecheck.
-	err := p.c.updateStateWithin(claimWait, func(s *State) {
+	err := p.c.claimStateWithin(claimWait, func(s *State) {
 		switch u := s.Update; {
 		case claimLive(u):
 			held, claimed = u.Checked.Add(updateClaimFresh), true

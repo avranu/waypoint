@@ -207,6 +207,31 @@ func TestRunnerDoesNotDownloadWithoutASavedClaim(t *testing.T) {
 	}
 }
 
+// c7017: a state file that isn't valid JSON may hold another wp's claim:
+// the runner doesn't claim over it (the file stays as it is) and doesn't
+// download.
+func TestRunnerDoesNotClaimOverAStateItCannotRead(t *testing.T) {
+	e := cliServer(t, "v1.2.0", "v1.2.0", false)
+	u := newUpdRunner(t, e, "v1.2.0")
+	c, _ := newCLI(io.Discard, io.Discard)
+	p := filepath.Join(c.dir, "state.json")
+	if err := os.WriteFile(p, []byte("{\"update\": "), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	u.p.downloadFn = func(context.Context, string) (string, string, error) {
+		t.Error("downloaded over a state it couldn't read")
+		return "", "", errors.New("x")
+	}
+	u.busy(1)
+	u.step()
+	if !u.p.heldBack("v1.2.0") || u.p.updateHeldByClaim {
+		t.Fatalf("held %v by claim %v", u.p.heldBack("v1.2.0"), u.p.updateHeldByClaim)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "{\"update\": " {
+		t.Errorf("state.json was rewritten: %q", b)
+	}
+}
+
 // ... and a wp command doesn't start the background upgrade either.
 func TestCommandDoesNotStartTheUpgradeWithoutASavedClaim(t *testing.T) {
 	cliServer(t, "v1.2.0", "v1.2.0", false)

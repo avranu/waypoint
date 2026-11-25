@@ -446,7 +446,7 @@ func (c *cli) claimAutoUpdate(seen string, due func(*updateCheck) bool) {
 	// A hook may be cut short (SessionEnd gets 2 s): a missed claim is
 	// harmless, the next command tries again. A claim that wasn't saved
 	// starts nothing: no other wp would see it (c6983).
-	err = c.updateStateWithin(claimWait, func(s *State) {
+	err = c.claimStateWithin(claimWait, func(s *State) {
 		if !due(s.Update) {
 			return
 		}
