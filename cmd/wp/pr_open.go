@@ -1090,7 +1090,6 @@ func (c *cli) issueFor(sc *scope, flag, branch, repo string, commits []commitInf
 		var is struct {
 			Key        string `json:"key"`
 			Title      string `json:"title"`
-			Outside    bool   `json:"outside"`
 			ProjectKey string `json:"project_key"`
 			Status     struct {
 				Name     string `json:"name"`
@@ -1105,11 +1104,6 @@ func (c *cli) issueFor(sc *scope, flag, branch, repo string, commits []commitInf
 		}
 		if jsonInto(raw, &is) != nil || is.Key == "" {
 			return found{}, false
-		}
-		// A title written from outside and not yet approved is not the pull
-		// request's to copy: it would reach the review and assessor prompts.
-		if is.Outside {
-			is.Title = ""
 		}
 		f := found{is.Title, is.ProjectKey, isClosedCategory(is.Status.Category), is.Status.Name, 0}
 		for _, l := range is.Links {

@@ -396,4 +396,5 @@ func TestBabysitIntentHidesOutsideIssueText(t *testing.T) {
 	if got := intent(); !strings.Contains(got, title) || !strings.Contains(got, body) || strings.Contains(got, outsideTitleInPrompt) {
 		t.Fatalf("intent after release:\n%s", got)
 	}
+
 }
