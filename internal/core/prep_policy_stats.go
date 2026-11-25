@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"sync"
 )
 
 // prepObs is one task in a fit.
@@ -460,6 +461,29 @@ func (r *prepRand) norm() float64 {
 	return m * math.Cos(2*math.Pi*v)
 }
 
+// prepNormals is the standard normals sample turns into draws, k for each of
+// prepDraws: the seed is fixed, so every fit of k arms uses the same ones and
+// they are worked out once (they were most of a fit's time).
+func prepNormals(k int) []float64 {
+	prepNormalsOf.Lock()
+	defer prepNormalsOf.Unlock()
+	if z, ok := prepNormalsOf.k[k]; ok {
+		return z
+	}
+	r := &prepRand{s: 0x5eed}
+	z := make([]float64, prepDraws*k)
+	for i := range z {
+		z[i] = r.norm()
+	}
+	prepNormalsOf.k[k] = z
+	return z
+}
+
+var prepNormalsOf = struct {
+	sync.Mutex
+	k map[int][]float64
+}{k: map[int][]float64{}}
+
 // sample draws the effects prepDraws times, once.
 func (f *prepFit) sample() [][]float64 {
 	if f.draws != nil {
@@ -481,18 +505,16 @@ func (f *prepFit) sample() [][]float64 {
 			}
 		}
 	}
-	r := &prepRand{s: 0x5eed}
+	zs := prepNormals(k)
 	out := make([][]float64, prepDraws)
-	zs := make([]float64, k)
+	rows := make([]float64, prepDraws*k)
 	for n := range out {
-		for i := range k {
-			zs[i] = r.norm()
-		}
-		row := make([]float64, k)
+		z := zs[n*k : (n+1)*k]
+		row := rows[n*k : (n+1)*k : (n+1)*k]
 		for i := range k {
 			row[i] = f.Mean[i]
 			for j := 0; j <= i; j++ {
-				row[i] += l[i][j] * zs[j]
+				row[i] += l[i][j] * z[j]
 			}
 		}
 		out[n] = row

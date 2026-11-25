@@ -280,3 +280,39 @@ func TestPrepDummies(t *testing.T) {
 		t.Errorf("a constant column: %v", s)
 	}
 }
+
+// The draws are the ones a generator started at the fixed seed gives each
+// fit, whatever was drawn before: the normals are kept between fits, and a
+// fit's shares must not depend on which fits came first.
+func TestPrepSampleDrawsAreTheSeedsOwn(t *testing.T) {
+	for _, f := range []*prepFit{
+		{Arms: []string{"a", "b"}, Mean: []float64{0.2, -0.1}, Cov: [][]float64{{0.04, 0.01}, {0.01, 0.09}}},
+		{Arms: []string{"a", "b"}, Mean: []float64{-0.3, 0}, Cov: [][]float64{{0.01, 0}, {0, 0.25}}},
+		{Arms: []string{"a"}, Mean: []float64{0.1}, Cov: [][]float64{{0.04}}},
+	} {
+		k := len(f.Arms)
+		l00 := math.Sqrt(f.Cov[0][0])
+		var l10, l11 float64
+		if k == 2 {
+			l10 = f.Cov[1][0] / l00
+			l11 = math.Sqrt(f.Cov[1][1] - l10*l10)
+		}
+		r := &prepRand{s: 0x5eed}
+		draws := f.sample()
+		if len(draws) != prepDraws {
+			t.Fatalf("%d draws, want %d", len(draws), prepDraws)
+		}
+		for n, d := range draws {
+			z0 := r.norm()
+			want := []float64{f.Mean[0] + l00*z0}
+			if k == 2 {
+				want = append(want, f.Mean[1]+l10*z0+l11*r.norm())
+			}
+			for i := range want {
+				if math.Abs(d[i]-want[i]) > 1e-12 {
+					t.Fatalf("%d arms, draw %d: %v, want %v", k, n, d, want)
+				}
+			}
+		}
+	}
+}
