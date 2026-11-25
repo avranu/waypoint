@@ -543,7 +543,7 @@ function MetricsTable({ r }: { r: ExperimentResults }) {
       <p className="mt-1 text-[11px] text-subtle">
         Change is the arm&apos;s median over the control&apos;s, with a 95% bootstrap interval; p is
         Mann–Whitney, Holm-adjusted across arms and metrics, the follow-up, self-review, adversarial
-        review and review comment measures apart from the others. Bold: p below 0.05.
+        review, review comment and review score measures apart from the others. Bold: p below 0.05.
         {r.mde != null &&
           ` With these tasks, a change in the deciding metric under about ${Math.round(100 * r.mde)}% can't be told apart`}
         {r.per_arm
