@@ -153,7 +153,7 @@ func TestTranscriptRewriteStartsNewGeneration(t *testing.T) {
 }
 
 // Raw transcripts are a person's own; an admin reads any; an agent's token
-// reads none (they hold command text it may not see).
+// reads its own person's only (TestTranscriptReadsByAgent).
 func TestTranscriptAccess(t *testing.T) {
 	e := transcriptEnv(t)
 	robin := e.admin
@@ -174,8 +174,8 @@ func TestTranscriptAccess(t *testing.T) {
 		t.Errorf("your own session id that is someone else's holds nothing of yours: %v %v", files, err)
 	}
 	agent := agentActor(jo, "anthropic/claude-code")
-	if _, err := e.s.TranscriptFiles(e.ctx, agent, TranscriptQuery{Session: "s1"}); err == nil {
-		t.Error("an agent's token read a raw transcript")
+	if _, err := e.s.TranscriptFiles(e.ctx, agent, TranscriptQuery{Session: "s1", User: "kim"}); !errors.Is(err, ErrForbidden) {
+		t.Errorf("an agent's token naming another person: %v", err)
 	}
 }
 

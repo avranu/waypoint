@@ -119,7 +119,7 @@ func (a *transcriptAPI) put(session string, from int64, lines string) int {
 }
 
 // The four routes end to end: a piece goes in, the list and the file come
-// back, an agent's shell is refused, and a stored piece that was damaged
+// back, an agent's shell reads its own person's but not everyone's, and a stored piece that was damaged
 // breaks the transfer after the first bytes instead of ending it as whole
 // (audit 1218.40).
 func TestTranscriptRoutes(t *testing.T) {
@@ -155,14 +155,23 @@ func TestTranscriptRoutes(t *testing.T) {
 	if code, _ := a.human.do("GET", "/api/v1/usage/transcript?session=nope&file=main", nil); code != 404 {
 		t.Errorf("unknown session: %d", code)
 	}
-	for _, path := range []string{"/api/v1/usage/transcripts?session=s1", "/api/v1/usage/transcript?session=s1&file=main"} {
+	resp, err = a.req("GET", "/api/v1/usage/transcript?session=s1&file=main", nil, map[string]string{"X-Waypoint-Agent-Env": "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || string(b) != l1+l2 {
+		t.Errorf("own person's transcript from an agent's shell: %d %q", resp.StatusCode, b)
+	}
+	for _, path := range []string{"/api/v1/usage/transcripts?session=s1&user=all", "/api/v1/usage/transcript?session=s1&file=main&user=all"} {
 		resp, err := a.req("GET", path, nil, map[string]string{"X-Waypoint-Agent-Env": "claude"})
 		if err != nil {
 			t.Fatal(err)
 		}
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		if resp.StatusCode != 403 || strings.Contains(string(body), `"n":1`) {
+		if resp.StatusCode != 403 || strings.Contains(string(body), `"n":1`) || !strings.Contains(string(body), "leaving out --user") {
 			t.Errorf("%s from an agent's shell: %d %q", path, resp.StatusCode, body)
 		}
 	}

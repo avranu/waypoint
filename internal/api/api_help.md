@@ -358,7 +358,7 @@ does (issues created or closed, comments, pages, requests, runs) is recorded on 
     GET  /sessions/{id}/usage        what that session used, joined from the usage tables by person, machine
                                      and CLI session id: {has_data, private, totals, models, kinds (the session
                                      and its subagents), tools, bash (command heads), refusals}. Usage is the
-                                     owner's (and admins'); others get {private:true}; agents are refused
+                                     owner's (and admins'); others get {private:true}; an agent reads its own person's sessions only
 
 ## Agents overview (WP-D16)
 
@@ -720,7 +720,7 @@ differences (a message written again with more tokens). Cost is API-equivalent, 
                                     complete (no hole), sizes, whether every piece was redacted, and redactions (values blanked,
                                     with redaction_rules by rule; null when any piece predates the counts)
     GET  /usage/transcript?session=ID&file=main|PATH&machine=&user=&gen=   one file's JSONL, whole lines in order;
-                                    a person only (an agent's shell is refused). A stored piece that fails its
+                                    your own person's, also from an agent; `user=` another person or `all` is for admin people only. A stored piece that fails its
                                     check after bytes went out breaks the connection instead of ending the body
     POST /slot-holds?machine=&pending=&oldest=&dropped=   {"holds":[...]} up to 500 test slot holds a machine recorded
                                     (WP-1646); pending, oldest (queued_at ms) and dropped are the machine's outbox state, kept

@@ -649,7 +649,8 @@ type transcriptPiece struct {
 
 // transcriptPieces lists the pieces the actor may read, ordered by person,
 // machine, file (main first), generation and offset: the order to read them
-// in. Raw transcripts are for a person: your own, or anyone's when an admin.
+// in. Raw transcripts are your own person's (also from an agent), or anyone's
+// when an admin who is a person, not an agent.
 func (s *Service) transcriptPieces(ctx context.Context, actor *Actor, q TranscriptQuery) ([]transcriptPiece, error) {
 	if !transcriptSessionRE.MatchString(q.Session) {
 		return nil, invalid("a session id is required")
@@ -657,12 +658,22 @@ func (s *Service) transcriptPieces(ctx context.Context, actor *Actor, q Transcri
 	if actor == nil {
 		return nil, ErrUnauthorized
 	}
-	if err := actor.requirePersonDirect("reading a transcript"); err != nil {
-		return nil, err
-	}
+	// usageWho needs usage.read, refuses a runner job's scoped token and an
+	// agent token reading another person's usage.
 	uids, everyone, _, err := s.usageWho(ctx, actor, q.User)
 	if err != nil {
+		if actor.IsAgent() && errors.Is(err, ErrForbidden) && strings.TrimSpace(q.User) != "" {
+			return nil, forbidden("%v; read your own person's transcripts by leaving out --user", err)
+		}
 		return nil, err
+	}
+	// An agent, even in its person's shell, reads its own person's transcripts
+	// but not anyone else's: decided on the resolved ids, so a differently-cased
+	// name or an alias cannot dodge it.
+	if everyone || len(uids) != 1 || uids[0] != actor.User.ID {
+		if err := actor.requirePersonDirect("reading another person's transcript"); err != nil {
+			return nil, forbidden("%v; read your own person's transcripts by leaving out --user", err)
+		}
 	}
 	where, args := []string{"p.session = ?"}, []any{q.Session}
 	if !everyone {
