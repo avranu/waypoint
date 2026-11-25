@@ -31,7 +31,7 @@ GOVULNCHECK_VERSION ?= v1.9.0
 ACTIONLINT_VERSION ?= v1.7.12
 KUBECONFORM_VERSION ?= v0.8.0
 
-.PHONY: e2e all build web server cli cross-check test lint golint wplint wplint-code sast vuln check prepush prepush-go prepush-ops prepush-web tools ci-image ops-lint dev docker deploy deploy-remote rollback-remote deploy-status restart-remote need-deploy-host release-dry-run clean help
+.PHONY: e2e e2e-webkit all build web server cli cross-check test lint golint wplint wplint-code sast vuln check prepush prepush-go prepush-ops prepush-web tools ci-image ops-lint dev docker deploy deploy-remote rollback-remote deploy-status restart-remote need-deploy-host release-dry-run clean help
 
 all: build
 
@@ -159,6 +159,9 @@ check: ## the full local gate (backend); web: cd web && npm run typecheck && npm
 # /api, /mcp and /cal to the Go server. Ctrl-C stops both.
 e2e: build ## browser checks (Playwright) against a throwaway server, all four looks; ARGS="05 07" picks suites, E2E_LOOKS=one does one look each
 	cd e2e && $(SLOT) ./run.sh $(ARGS)
+
+e2e-webkit: build ## the rich editor suites under WebKit in Docker (e2e/webkit.sh); ARGS="83 84 85", default 85
+	cd e2e && $(SLOT) ./webkit.sh $(ARGS)
 
 dev: ## API on :8080 + Vite on :5173 with live reload
 	@echo "API on :8080, app on http://localhost:5173"

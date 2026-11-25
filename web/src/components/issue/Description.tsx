@@ -7,7 +7,7 @@ import { renderMarkdown, toggleTask } from '@/lib/markdown'
 import { refsQuery } from '@/lib/knowledge'
 import type { TextRef } from '@/lib/types'
 import { MarkdownInput } from './MarkdownInput'
-import { RichTextInput } from './RichTextInput'
+import { DESCRIPTION_BOX, RichTextInput } from './RichTextInput'
 import { survivesRichEdit } from '@/lib/richtext'
 import { clearDraft, readDraft, tracked, useUnsaved, writeDraft } from '@/lib/drafts'
 
@@ -90,6 +90,12 @@ export function MarkdownEditor({
   const [stored] = useState(() => (draftKey ? readDraft<string>(draftKey) : null))
   const [restored, setRestored] = useState(stored !== null && stored !== value)
   const [editing, setEditing] = useState(autoEdit || restored)
+  // Where a click opened the editor: the caret goes there and the page stays
+  // where it is. A keyboard open or a restored draft has none.
+  const [clicked, setClicked] = useState<{ x: number; y: number } | undefined>()
+  useEffect(() => {
+    if (!editing) setClicked(undefined)
+  }, [editing])
   // What's on screen: the saved text plus any checkbox toggles still being
   // saved, so a quick second toggle builds on the first instead of undoing it.
   const [shown, setShown] = useState(value)
@@ -235,18 +241,25 @@ export function MarkdownEditor({
     if (!editing) setPicked(null)
   }, [editing])
   const editor = picked ?? opening
+  // The click that opened the editor placed its caret once; a later switch of
+  // mode must not reuse the point, the layout under it having changed.
   const toRich = () => {
+    setClicked(undefined)
     if (survivesRichEdit(draft)) {
       writeMode('rich')
       setPicked({ mode: 'rich', note: false })
     } else setPicked({ mode: 'md', note: true })
   }
   const toMarkdown = () => {
+    setClicked(undefined)
     writeMode('md')
     setPicked({ mode: 'md', note: false })
   }
 
   const editorKeyDown = (e: React.KeyboardEvent) => {
+    // Enter or Escape in an IME composition confirms or clears a candidate, in
+    // either editor: it neither saves nor closes. Safari reports it as 229.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
       if (autosave) void settle()
@@ -260,6 +273,33 @@ export function MarkdownEditor({
   }
 
   const uploads = !!(issueKey || attachTo)
+  // The save state shows in the rich editor's toolbar, so nothing opens under
+  // the text; a conflict is a question and still gets its own row below.
+  const inToolbar = autosave && !conflict && rich && editor?.mode === 'rich'
+  const saveState = (
+    <>
+      <button
+        type="button"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => void settle()}
+        className="rounded-md px-1.5 py-0.5 text-xs text-subtle hover:bg-hover hover:text-fg"
+      >
+        Done
+      </button>
+      {restored && state === 'idle' && (
+        <span className="whitespace-nowrap text-xs text-muted">Unsaved edit restored</span>
+      )}
+      {state === 'error' && (
+        <button
+          type="button"
+          onClick={() => void flush()}
+          className="whitespace-nowrap text-xs text-danger underline"
+        >
+          Not saved: retry
+        </button>
+      )}
+    </>
+  )
   if (editing) {
     return (
       <div className="space-y-2" onBlur={autosave && !conflict ? () => void flush() : undefined}>
@@ -275,6 +315,8 @@ export function MarkdownEditor({
             getValue={() => latest.current.draft}
             placeholder={`Write here. Type @ to mention someone${uploads ? '; paste or drop files to attach them.' : '.'}`}
             onSource={toMarkdown}
+            caretAt={clicked}
+            trailing={inToolbar ? saveState : undefined}
           />
         ) : (
           <MarkdownInput
@@ -307,7 +349,7 @@ export function MarkdownEditor({
             </button>
           </div>
         )}
-        {autosave ? (
+        {inToolbar ? null : autosave ? (
           <div className="flex items-center gap-2">
             {conflict ? (
               <>
@@ -327,27 +369,7 @@ export function MarkdownEditor({
                 </Button>
               </>
             ) : (
-              <>
-                <button
-                  type="button"
-                  onClick={() => void settle()}
-                  className="rounded-md px-1.5 py-0.5 text-xs text-subtle hover:bg-hover hover:text-fg"
-                >
-                  Done
-                </button>
-                {restored && state === 'idle' && (
-                  <span className="text-xs text-muted">Unsaved edit restored</span>
-                )}
-                {state === 'error' && (
-                  <button
-                    type="button"
-                    onClick={() => void flush()}
-                    className="text-xs text-danger underline"
-                  >
-                    Not saved: retry
-                  </button>
-                )}
-              </>
+              saveState
             )}
           </div>
         ) : (
@@ -396,15 +418,23 @@ export function MarkdownEditor({
       Promise.resolve(onSave(next)).catch(() => setShown(value))
       return
     }
-    if (editable && !window.getSelection()?.toString()) setEditing(true)
+    if (editable && !window.getSelection()?.toString()) {
+      setClicked(e.detail > 0 ? { x: e.clientX, y: e.clientY } : undefined)
+      setEditing(true)
+    }
   }
 
-  if (!shown) {
+  if (!shown.trim()) {
     return (
       <button
         disabled={!editable}
         onClick={() => setEditing(true)}
-        className="w-full rounded-lg px-1 py-2 text-left text-sm text-subtle hover:bg-hover disabled:hover:bg-transparent"
+        // The editor's box (RichTextInput), so opening it moves nothing; the
+        // box is -mx-1 wider than its parent, and a button has to say so.
+        className={clsx(
+          DESCRIPTION_BOX,
+          'block w-[calc(100%+0.5rem)] text-left text-subtle hover:bg-hover disabled:hover:bg-transparent',
+        )}
       >
         {editable ? placeholder : 'No description.'}
       </button>
@@ -421,10 +451,7 @@ export function MarkdownEditor({
         }
       }}
       title={editable ? 'Click or press Enter to edit' : undefined}
-      className={clsx(
-        'prose-wp -mx-1 rounded-lg px-1 py-1 text-sm leading-relaxed',
-        editable && 'cursor-text hover:bg-hover/50',
-      )}
+      className={clsx(DESCRIPTION_BOX, editable && 'cursor-text hover:bg-hover/50')}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   )

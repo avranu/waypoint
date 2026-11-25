@@ -2,7 +2,8 @@
 // contenteditable editor makes are handled; anything else falls back to its
 // text, so pasted markup can't smuggle itself into the source.
 
-import { renderMarkdownForEdit, hasRawHtml } from '@/lib/markdown'
+import { renderMarkdownForEdit, hasRawHtml, isPieceSrc, pieceText, PIECE_SRC } from '@/lib/markdown'
+import { PARK } from '@/lib/richinput'
 
 // `label`: text inside a link label or image alt, where any bracket would end
 // it early. `cell`: inside a table cell, which is one line (its pipes are
@@ -162,6 +163,56 @@ function target(url: string) {
   return /[()\s<>]/.test(u) ? `<${u.replace(/[\\<>]/g, (c) => (c === '\\' ? c : `\\${c}`))}>` : u
 }
 
+// A code block's text. The browser writes a newline typed in one as <br>, and
+// a <br> at the very end only holds the last line open, so it is no text; the
+// rendered form of a block likewise ends in a newline. Exactly one trailing
+// newline goes, so a blank last line the person made is kept.
+function codeText(node: Node): string {
+  const text = (n: Node): string =>
+    n.nodeType === Node.TEXT_NODE
+      ? (n as Text).data
+      : n.nodeName === 'BR'
+        ? '\n'
+        : (pieceOf(n) ?? Array.from(n.childNodes).map(text).join(''))
+  const all = text(node)
+  return all.endsWith('\n') ? all.slice(0, -1) : all
+}
+
+// The markdown of a wikilink or @mention the editor drew, or null. Only one
+// that shows what its markdown shows: markup pasted or dropped in with its own
+// attribute must not save a link or name other than the words on screen.
+function pieceOf(node: Node): string | null {
+  if (node.nodeType !== Node.ELEMENT_NODE) return null
+  const el = node as HTMLElement
+  const piece = el.getAttribute(PIECE_SRC)
+  return piece !== null &&
+    el.getAttribute('contenteditable') === 'false' &&
+    isPieceSrc(piece) &&
+    el.textContent?.replaceAll(PARK, '') === pieceText(piece)
+    ? piece
+    : null
+}
+
+// What follows a wikilink or mention must not become part of it when the
+// markdown is read again: a "(" after "]]" would make the wikilink a link's
+// label and the parenthesis its address, so it is escaped; a letter, digit or
+// "_" (with any "." or "-" before it) after "@name" would lengthen the name,
+// so a space goes between them.
+function afterPiece(a: string, piece: string, b: string) {
+  if (piece.startsWith('[[')) return b.startsWith('(') ? `${a}\\${b}` : a + b
+  const name = (s: string) => s.replace(/[.-]+$/, '')
+  const glued = /^@[a-zA-Z0-9][\w.-]{0,38}/.exec(piece + b.slice(0, 41).replaceAll('\\_', '_'))
+  return glued && name(glued[0]) !== name(piece) ? `${a} ${b}` : a + b
+}
+
+// An element's text for a code span, a piece being its markdown, not its label.
+function plainText(node: Node): string {
+  const piece = pieceOf(node)
+  if (piece !== null) return piece
+  if (node.nodeType === Node.TEXT_NODE) return (node as Text).data
+  return Array.from(node.childNodes).map(plainText).join('')
+}
+
 function serialize(node: Node, opts: Opts = {}): string {
   if (node.nodeType === Node.TEXT_NODE) {
     const data = (node as Text).data.replace(/\u00a0/g, ' ')
@@ -173,6 +224,10 @@ function serialize(node: Node, opts: Opts = {}): string {
   const el = node as HTMLElement
   const tag = el.tagName.toLowerCase()
   const inner = (o: Opts = opts) => children(el, o)
+
+  // A wikilink or @mention the editor drew: its markdown, as it was.
+  const piece = pieceOf(el)
+  if (piece !== null) return piece
 
   switch (tag) {
     case 'br':
@@ -188,12 +243,12 @@ function serialize(node: Node, opts: Opts = {}): string {
     case 'del':
       return wrap('~~', inner())
     case 'code':
-      if (el.parentElement?.tagName.toLowerCase() === 'pre') return el.textContent ?? ''
-      return codeSpan(el.textContent ?? '')
+      if (el.parentElement?.tagName.toLowerCase() === 'pre') return plainText(el)
+      return codeSpan(plainText(el))
     case 'pre': {
       const code = el.querySelector('code')
-      const lang = (code?.className.match(/language-([\w-]+)/) ?? [])[1] ?? ''
-      const body = (code ?? el).textContent?.replace(/\n$/, '') ?? ''
+      const lang = (code?.className.match(/(?:^|\s)language-(\S+)/) ?? [])[1] ?? ''
+      const body = codeText(code ?? el)
       // A table cell is one line: code pasted into one stays inline code.
       if (opts.cell) return codeSpan(oneLine(body))
       const longest = Math.max(0, ...(body.match(/`+/g) ?? []).map((r) => r.length))
@@ -272,7 +327,13 @@ function oneLine(md: string) {
 
 function children(node: Node, opts: Opts = {}) {
   let out = ''
-  for (const child of Array.from(node.childNodes)) out = join(out, serialize(child, opts))
+  let piece: string | null = null
+  for (const child of Array.from(node.childNodes)) {
+    const md = serialize(child, opts)
+    // A wikilink or mention is whole as it is: no "]" of it is escaped.
+    out = piece !== null ? afterPiece(out, piece, md) : join(out, md)
+    piece = pieceOf(child)
+  }
   return out
 }
 
@@ -303,6 +364,7 @@ function blocksOf(nodes: Node[], opts: Opts = {}) {
   let out = ''
   let run = ''
   let afterBlock = false
+  let piece: string | null = null
   // Inline text gets a blank line from a block on either side, so neither
   // joins the other: text right above a rule would become a setext heading,
   // and text right under a paragraph, quote or list would continue it.
@@ -318,18 +380,31 @@ function blocksOf(nodes: Node[], opts: Opts = {}) {
       out += text(true) + serialize(child, opts)
       run = ''
       afterBlock = true
-    } else run = join(run, serialize(child, opts))
+      piece = null
+    } else {
+      const md = serialize(child, opts)
+      run = piece !== null ? afterPiece(run, piece, md) : join(run, md)
+      piece = pieceOf(child)
+    }
   }
   return out + text(false)
 }
+
+const isListTag = (e: Element) => ['ul', 'ol'].includes(e.tagName.toLowerCase())
 
 function list(el: HTMLElement, opts: Opts = {}): string {
   const ordered = el.tagName.toLowerCase() === 'ol'
   let out = ''
   let n = ordered ? Number.parseInt(el.getAttribute('start') ?? '', 10) : 1
   if (!Number.isFinite(n)) n = 1
-  for (const child of Array.from(el.children)) {
-    if (child.tagName.toLowerCase() !== 'li') continue
+  const kids = Array.from(el.children)
+  for (const [at, child] of kids.entries()) {
+    if (child.tagName.toLowerCase() !== 'li') {
+      // A sub-list with no item before it has no parent to nest under.
+      if (isListTag(child) && !kids.slice(0, at).some((k) => k.tagName.toLowerCase() === 'li'))
+        out += list(child as HTMLElement, opts)
+      continue
+    }
     const li = child as HTMLElement
     const box = Array.from(li.children).find(
       (c) => c.tagName.toLowerCase() === 'input' && (c as HTMLInputElement).type === 'checkbox',
@@ -354,6 +429,10 @@ function list(el: HTMLElement, opts: Opts = {}): string {
     if (!box && /^\[[ xX]\]/.test(body)) body = `\\${body}`
     const bare = ordered ? `${n++}.` : '-'
     const marker = box ? `${bare} [${box.checked ? 'x' : ' '}]` : bare
+    // Chromium's indent writes the sub-list as a sibling of the item, straight
+    // inside the outer list; it belongs to the item before it.
+    for (let k = at + 1; k < kids.length && isListTag(kids[k]); k++)
+      nested.push(kids[k] as HTMLElement)
     // Nested content lines up with the parent's text: marker width + 1.
     // Lines after the first are indented by that too, or a second paragraph
     // or a code block would end the item.
@@ -445,11 +524,14 @@ function autolinks(md: string) {
 /** The markdown behind a rich editor's HTML. */
 export function htmlToMarkdown(html: string): string {
   const tpl = document.createElement('template')
-  tpl.innerHTML = html
+  // The editor parks the caret after an element in a PARK character; only that
+  // one goes, so a zero-width space in the person's own text is kept.
+  tpl.innerHTML = withoutPark(html)
   return autolinks(tidy(serialize(tpl.content)))
 }
 
-const norm = (html: string) => html.replace(/\s+/g, ' ').trim()
+const withoutPark = (s: string) => s.split(PARK).join('')
+const norm = (html: string) => withoutPark(html).replace(/\s+/g, ' ').trim()
 
 /**
  * Whether markdown can be opened in the rich editor without losing anything.
@@ -462,6 +544,9 @@ const norm = (html: string) => html.replace(/\s+/g, ' ').trim()
  */
 export function survivesRichEdit(md: string): boolean {
   if (hasRawHtml(md)) return false
+  // The editor drops every PARK on save, its own parked carets and any in the
+  // text alike, which no comparison can see: such text stays in markdown.
+  if (md.includes(PARK)) return false
   const html = renderMarkdownForEdit(md)
   return norm(renderMarkdownForEdit(htmlToMarkdown(html))) === norm(html)
 }

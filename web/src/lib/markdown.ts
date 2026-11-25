@@ -66,6 +66,28 @@ function textNodes(root: DocumentFragment) {
   return nodes
 }
 
+// The pieces below are drawn by the description view and, as uneditable
+// copies, by the rich editor (editorPieces), so both come from these two.
+function wikilinkEl(target: string, label: string | undefined, project?: string) {
+  const a = document.createElement('a')
+  const params = new URLSearchParams({ ref: target })
+  if (project) params.set('project', project)
+  a.setAttribute('href', `/go?${params}`)
+  a.className = 'wikilink'
+  a.textContent = (label ?? '').trim() || target
+  return a
+}
+
+// `name` is without the "@"; trailing punctuation isn't part of it.
+const mentionName = (name: string) => name.replace(/[.-]+$/, '')
+
+function mentionEl(user: string) {
+  const el = document.createElement('span')
+  el.className = 'mention'
+  el.textContent = '@' + user
+  return el
+}
+
 function wikilinks(root: DocumentFragment, project?: string) {
   for (const n of textNodes(root)) {
     const text = n.data
@@ -75,13 +97,7 @@ function wikilinks(root: DocumentFragment, project?: string) {
     for (const m of text.matchAll(WIKILINK)) {
       const target = m[1].trim()
       if (!target) continue
-      const a = document.createElement('a')
-      const params = new URLSearchParams({ ref: target })
-      if (project) params.set('project', project)
-      a.setAttribute('href', `/go?${params}`)
-      a.className = 'wikilink'
-      a.textContent = (m[2] ?? '').trim() || target
-      out.append(text.slice(last, m.index), a)
+      out.append(text.slice(last, m.index), wikilinkEl(target, m[2], project))
       last = m.index + m[0].length
     }
     if (last === 0) continue
@@ -110,10 +126,8 @@ function linkify(root: DocumentFragment, keys: boolean) {
         el.textContent = m[2]
         len = m[2].length
       } else {
-        const user = m[3].replace(/[.-]+$/, '') // trailing punctuation isn't part of the name
-        el = document.createElement('span')
-        el.className = 'mention'
-        el.textContent = '@' + user
+        const user = mentionName(m[3])
+        el = mentionEl(user)
         len = user.length + 1
       }
       out.append(text.slice(last, at), el)
@@ -297,10 +311,80 @@ export function renderMarkdown(
   return tpl.innerHTML
 }
 
+// Editor copies of wikilinks and @mentions carry their markdown in this
+// attribute, which htmlToMarkdown writes back as it was.
+export const PIECE_SRC = 'data-md'
+const PIECE_SRC_OK = /^(?:\[\[[^[\]\n]{1,420}\]\]|@[a-zA-Z0-9][\w.-]{0,38})$/
+
+// [[wikilinks]] and @mentions in the editor are drawn as the view draws them
+// (same elements, so the same width and the text after them stays put when
+// the editor opens), but uneditable: the caret goes before or after one, and
+// Backspace removes it whole. Issue keys are links in the view only, and a
+// link is as wide as its text, so they stay text here.
+function pieceEl(src: string, el: HTMLElement) {
+  el.setAttribute('contenteditable', 'false')
+  el.setAttribute(PIECE_SRC, src)
+  return el
+}
+
 /**
- * Markdown as HTML for a rich editor: formatting renders in place, but codes,
- * mentions and [[wikilinks]] stay as written so the text round-trips back to
- * the same markdown. Task checkboxes are the only form controls kept.
+ * The editor's piece for `src`, a wikilink's or a mention's markdown, as HTML
+ * (null if it is neither). The one place a piece's markup is made, for text
+ * already in the description and for what is typed or picked in the editor.
+ */
+export function pieceHtml(src: string): string | null {
+  const w = new RegExp(`^${WIKILINK.source}$`).exec(src)
+  if (w) {
+    const target = w[1].trim()
+    return target ? pieceEl(src, wikilinkEl(target, w[2])).outerHTML : null
+  }
+  return /^@[a-zA-Z0-9][\w.-]{0,38}$/.test(src)
+    ? pieceEl(src, mentionEl(src.slice(1))).outerHTML
+    : null
+}
+
+function editorPieces(root: DocumentFragment) {
+  const re = new RegExp(`${WIKILINK.source}|${TOKEN.source}`, 'g')
+  for (const n of textNodes(root)) {
+    const text = n.data
+    if (!text.includes('[[') && !text.includes('@')) continue
+    const out = document.createDocumentFragment()
+    let last = 0
+    for (const m of text.matchAll(re)) {
+      let at = m.index
+      let src: string
+      if (m[1] !== undefined) src = m[0]
+      else if (m[5]) {
+        src = '@' + mentionName(m[5])
+        at += m[3].length
+      } else continue // an issue key
+      const html = pieceHtml(src)
+      if (!html) continue
+      const holder = document.createElement('template')
+      holder.innerHTML = html
+      out.append(text.slice(last, at), holder.content)
+      last = at + src.length
+    }
+    if (last === 0) continue
+    out.append(text.slice(last))
+    n.replaceWith(out)
+  }
+}
+
+/** The text a piece for `src` shows: a wikilink's label or target, a mention's "@name". */
+export function pieceText(src: string): string {
+  const w = new RegExp(`^${WIKILINK.source}$`).exec(src)
+  return w ? (w[2] ?? '').trim() || w[1].trim() : src
+}
+
+/** Whether `src` is what an editor piece may carry (see PIECE_SRC). */
+export const isPieceSrc = (src: string) => PIECE_SRC_OK.test(src)
+
+/**
+ * Markdown as HTML for a rich editor: formatting renders in place. Codes
+ * stay as written; [[wikilinks]] and @mentions are uneditable pieces that
+ * keep their markdown, so the text round-trips back to the same markdown.
+ * Task checkboxes are the only form controls kept.
  */
 export function renderMarkdownForEdit(src: string): string {
   const tpl = sanitized(src, ['contenteditable'])
@@ -311,6 +395,7 @@ export function renderMarkdownForEdit(src: string): string {
       input.remove()
     }
   }
+  editorPieces(tpl.content)
   return tpl.innerHTML
 }
 
