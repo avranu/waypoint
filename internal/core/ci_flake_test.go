@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -416,5 +417,25 @@ func TestRunnerFaultWithLateMinorsTakesTheFaultWait(t *testing.T) {
 	}
 	if fr := parseFlakeRerun(b.flakeRerun); len(fr.Checks) != 0 {
 		t.Fatalf("a flake marker for a runner fault: %+v", fr)
+	}
+}
+
+// A forge that fails after taking some of the jobs has re-run them: the
+// marker stays and their results are waited for.
+func TestFlakeRerunTakenInPart(t *testing.T) {
+	be, pr, _ := parkedOnNamedComment(t)
+	be.sg.sm.Lock()
+	be.sg.retryErr, be.sg.retryPartial = errors.New("502 from the forge"), 1
+	be.sg.sm.Unlock()
+	be.checks(pr.HeadSHA, restFailing)
+	be.step()
+	if fr := parseFlakeRerun(be.babysit().flakeRerun); !sameSHA(fr.SHA, pr.HeadSHA) || fr.Cannot || len(fr.Checks) == 0 {
+		t.Fatalf("the re-run taken in part isn't remembered: %+v", fr)
+	}
+	if w := be.babysit().Wait; !strings.Contains(w, "re-ran ci / test") {
+		t.Errorf("wait = %q", w)
+	}
+	if n := len(be.retries()); n != 1 {
+		t.Errorf("retries %v", be.retries())
 	}
 }

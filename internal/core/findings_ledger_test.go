@@ -399,6 +399,34 @@ func TestCloseCoveredLooksOncePerHead(t *testing.T) {
 	}
 }
 
+// With the files unread, two comments near each other can't be told to be in
+// one function: nothing is closed until they can.
+func TestCloseCoveredClosesNothingOnAFailedRead(t *testing.T) {
+	be, pr, b, fc := coverEnv(t, "coderabbitai[bot]", coverBody)
+	fc.fail = true
+	be.s.closeCovered(be.ctx, b, pr, be.comments())
+	if _, dealt := be.commentVerdict("502"); dealt || fc.n == 0 {
+		t.Fatalf("closed on a failed read (dealt %v, reads %d)", dealt, fc.n)
+	}
+	fc.fail = false
+	be.s.closeCovered(be.ctx, b, pr, be.comments())
+	if v, dealt := be.commentVerdict("502"); v != VerdictFixed || !dealt {
+		t.Errorf("not closed once the files read: %s dealt %v", v, dealt)
+	}
+}
+
+// A round that pushed nothing carries a covered comment's cover to the next.
+func TestLedgerCarriesCovered(t *testing.T) {
+	was := LedgerEntry{ID: "c2", Kind: "comment", Class: RoundNew, Of: "c1", Round: 1, Covered: "bbb"}
+	entries, _ := classifyRound(ledgerInput{
+		Items:  []ledgerItem{{ID: "c2", Kind: "comment", Body: coverBody}},
+		Rounds: []BabysitRound{{N: 1, Pushed: true}, {N: 2, Ledger: []LedgerEntry{was}}},
+	})
+	if len(entries) != 1 || entries[0].Covered != "bbb" || entries[0].Of != "c1" {
+		t.Errorf("entries = %+v", entries)
+	}
+}
+
 func TestCloseCoveredRetriesAFailedClose(t *testing.T) {
 	be, pr, b, _ := coverEnv(t, "coderabbitai[bot]", coverBody)
 	bad := *pr

@@ -152,8 +152,8 @@ type BabysitRound struct {
 	// ParkNamed are the comments and audit findings its park's reason names
 	// (WP-1853), whatever else the round was given: a rest ends once they are
 	// dealt with, not only when the whole round's comments are. Kept only when
-	// the reason names none of the round's failed checks: one that does is
-	// over that check too, and settling a comment doesn't end it.
+	// the round had no conflict and the reason names none of its failed checks:
+	// settling a comment ends neither.
 	ParkNamed []string `json:"park_named,omitempty"`
 	// ParkedChecks are the failing checks its park was over (WP-914): their
 	// passing on the parked head, with no push, ends the park.

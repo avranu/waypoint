@@ -428,6 +428,26 @@ func TestDriftGuardStaleFootprintAuditIsCancelled(t *testing.T) {
 	}
 }
 
+// A stopped check is nothing to measure growth from: a push that changes
+// only what it was asked about still gets one.
+func TestDriftGuardCancelledCheckIsNoReference(t *testing.T) {
+	be, _, _ := footprintEnv(t)
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step()
+	c := be.footprintChecks()
+	if len(c) != 1 {
+		t.Fatalf("checks = %+v", c)
+	}
+	be.pushMine("9999999cccc")
+	be.changes("9999999cccc", c[0].Paths...) // the same files, no bigger
+	be.ci("9999999cccc", CheckSuccess)
+	be.step()
+	got := be.audits()
+	if len(got) != 2 || !strings.HasSuffix(got[0], ":cancelled") || strings.HasSuffix(got[1], ":cancelled") {
+		t.Fatalf("audits = %v, want the first cancelled and one for the new head", got)
+	}
+}
+
 // A check asked ahead for a head that has since moved doesn't count toward
 // the pull request's two: the late path still asks for the head it ends on,
 // and ahead asks are capped.
@@ -479,6 +499,11 @@ func TestDriftGuardQueuedAheadCheckWaitsFromReady(t *testing.T) {
 	}
 	if r := be.reasons(7); !strings.Contains(r, "footprint check queued") {
 		t.Fatalf("the merge isn't held by the queued check: %q", r)
+	}
+	// wp pr wait goes on waiting for it: reviewGoing no longer counts it.
+	w, err := be.s.WaitPullRequest(be.ctx, be.agent, pr.ID, PRWaitInput{})
+	if err != nil || w.Verdict != PRWaitWaiting || !strings.Contains(w.Why, "footprint check queued") {
+		t.Errorf("wait = %+v %v", w, err)
 	}
 	be.setClock(be.clockNow().Add(auditQueueWait - time.Minute))
 	if r := be.reasons(7); !strings.Contains(r, "footprint check queued") {

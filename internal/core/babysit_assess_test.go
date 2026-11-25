@@ -844,6 +844,12 @@ func TestParkNamedOnlyWhenTheReasonNamesNoFailedCheck(t *testing.T) {
 	if r := lastRound(be.babysit()); !slices.Equal(r.ParkNamed, []string{ref}) {
 		t.Fatalf("a park naming only a comment records %v", r.ParkNamed)
 	}
+	// A conflict stands whatever becomes of the comment.
+	b = be.babysit()
+	be.s.parkBabysit(be.ctx, b, pr, ref+" (app/export.go) came back", "", nil, true, []string{ref}, nil)
+	if r := lastRound(be.babysit()); !resting(r) || len(r.ParkNamed) != 0 {
+		t.Fatalf("a park over a conflict too records %v", r.ParkNamed)
+	}
 }
 
 // Rests that are not rests, and rests with more than one thing named, are not

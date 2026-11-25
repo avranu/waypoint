@@ -375,8 +375,8 @@ func (s *Service) heldComments(ctx context.Context, b *Babysit, pr *PullRequest)
 // the failing checks passing on the head ends it only when they were its
 // whole subject (parkLifts), and settling the review comments answers it
 // only when they were (parkSubject). A rest ends when the comments and
-// findings its reason names are no longer open (ParkNamed), unless that
-// reason also names one of the failed checks.
+// findings its reason names are no longer open (ParkNamed), unless the round
+// had a conflict or that reason also names one of the failed checks.
 //
 // A person isn't asked what they already were (WP-914): when the round named
 // an open request, or another pull request parked over the same check waits
@@ -395,7 +395,7 @@ func (s *Service) parkBabysit(ctx context.Context, b *Babysit, pr *PullRequest, 
 	r.Parked, r.ParkSHA = why, pr.HeadSHA
 	r.ParkedOn = s.stillOpen(ctx, pr, about)
 	r.ParkNamed = nil
-	if !namesAny(why, roundFailed) {
+	if !conflict && !namesAny(why, roundFailed) {
 		r.ParkNamed = namedIn(why, append(slices.Clone(comments), findings...))
 	}
 	r.ParkedChecks = slices.Clone(failed)

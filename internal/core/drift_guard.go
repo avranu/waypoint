@@ -476,6 +476,12 @@ func (s *Service) footprintNow(ctx context.Context, b *Babysit, pr *PullRequest)
 	// use up the budget: the late path still asks for the head it ends on.
 	ref, audited, seen := fp.Ship.footprintAt, 0, fp.Ship.SHA
 	for _, c := range fp.Checks {
+		// An audit of a head since left that was stopped, or is about to be
+		// (cancelStaleFootprints), looked at nothing: growth isn't measured
+		// from it.
+		if c.Outcome == footprintAudited && !sameSHA(c.SHA, pr.HeadSHA) && s.auditUnanswered(ctx, c.Audit) {
+			continue
+		}
 		seen = c.SHA
 		if c.Outcome == footprintAudited {
 			ref = c.footprintAt
@@ -511,7 +517,8 @@ func (s *Service) footprintNow(ctx context.Context, b *Babysit, pr *PullRequest)
 
 // footprintDue: a readiness reason while the check is owed and not asked
 // for yet, or asked ahead and still queued ("" when none), and when to look
-// again. A babysit that can't be read is an error, not "nothing due".
+// again. A babysit or queued audit that can't be read is an error, not
+// "nothing due".
 func (s *Service) footprintDue(ctx context.Context, pr *PullRequest) (string, *time.Time, error) {
 	b, err := s.activeBabysit(ctx, s.db.R, pr.ID)
 	if err != nil || b == nil {
@@ -524,7 +531,14 @@ func (s *Service) footprintDue(ctx context.Context, pr *PullRequest) (string, *t
 	// runs from when the babysit first saw it so once the pull request was
 	// otherwise ready (stamped by footprintStep), not from the ask.
 	for _, c := range s.footprintOf(ctx, pr.ID).Checks {
-		if !c.Ahead || c.Outcome != footprintAudited || !sameSHA(c.SHA, pr.HeadSHA) || !s.auditQueued(ctx, c.Audit) {
+		if !c.Ahead || c.Outcome != footprintAudited || !sameSHA(c.SHA, pr.HeadSHA) {
+			continue
+		}
+		queued, err := s.auditQueued(ctx, c.Audit)
+		if err != nil {
+			return "", nil, err
+		}
+		if !queued {
 			continue
 		}
 		wake := c.Queued.Add(auditQueueWait)
@@ -545,10 +559,23 @@ func (s *Service) footprintDue(ctx context.Context, pr *PullRequest) (string, *t
 }
 
 // auditQueued says whether an audit is still queued, no runner having taken it.
-func (s *Service) auditQueued(ctx context.Context, id int64) bool {
+func (s *Service) auditQueued(ctx context.Context, id int64) (bool, error) {
 	var n int
-	return s.db.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM code_audits a LEFT JOIN runner_jobs j ON j.id = a.job_id
-		WHERE a.id = ? AND a.status IN ('queued','running') AND coalesce(j.state, 'queued') = 'queued'`, id).Scan(&n) == nil && n > 0
+	err := s.db.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM code_audits a LEFT JOIN runner_jobs j ON j.id = a.job_id
+		WHERE a.id = ? AND a.status IN ('queued','running') AND coalesce(j.state, 'queued') = 'queued'`, id).Scan(&n)
+	return n > 0, err
+}
+
+// auditUnanswered says whether an audit was cancelled or hasn't finished. One
+// that can't be read counts as answered, so it isn't asked for again.
+func (s *Service) auditUnanswered(ctx context.Context, id int64) bool {
+	var n int
+	err := s.db.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM code_audits WHERE id = ? AND status IN (?, ?, ?)`,
+		id, AuditCancelled, AuditQueued, AuditRunning).Scan(&n)
+	if err != nil && readFault(err) {
+		s.log.WarnContext(ctx, "read a footprint check's audit", "audit", id, "err", err)
+	}
+	return err == nil && n > 0
 }
 
 // stampQueuedAhead notes the first time the babysit, with the pull request
@@ -557,7 +584,14 @@ func (s *Service) stampQueuedAhead(ctx context.Context, pr *PullRequest) {
 	fp := s.footprintOf(ctx, pr.ID)
 	changed := false
 	for i, c := range fp.Checks {
-		if c.Ahead && c.Outcome == footprintAudited && c.Queued.IsZero() && sameSHA(c.SHA, pr.HeadSHA) && s.auditQueued(ctx, c.Audit) {
+		if !c.Ahead || c.Outcome != footprintAudited || !c.Queued.IsZero() || !sameSHA(c.SHA, pr.HeadSHA) {
+			continue
+		}
+		queued, err := s.auditQueued(ctx, c.Audit)
+		if err != nil {
+			// The next step stamps it; the merge's own read holds on a fault.
+			s.log.WarnContext(ctx, "read whether a footprint check is queued", "audit", c.Audit, "err", err)
+		} else if queued {
 			fp.Checks[i].Queued, changed = s.now(), true
 		}
 	}

@@ -391,6 +391,13 @@ func (s *Service) prWaitState(ctx context.Context, prID int64, head string) (*PR
 		w.Why = why
 		return w, nil
 	}
+	// A footprint check asked ahead holds the merge from when the pull request
+	// was otherwise ready, past when reviewGoing counts its queued audit. While
+	// that is all that holds it, it is waited for (WP-1853).
+	if why, wake, err := s.footprintDue(ctx, pr); err == nil && wake != nil && slices.Equal(rd.Reasons, []string{why}) {
+		w.Why = why
+		return w, nil
+	}
 	return settle(PRWaitBlocked, strings.Join(rd.Reasons, "; "))
 }
 

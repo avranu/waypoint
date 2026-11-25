@@ -137,10 +137,12 @@ func (s *Service) rerunForFlake(ctx context.Context, b *Babysit, pr *PullRequest
 	// with them (WP-704).
 	s.keepFailedEvidence(ctx, f, pr.Repo, pr.HeadSHA)
 	n, err := cl.RetryChecks(ctx, f, pr.Repo, pr.HeadSHA)
-	if err != nil || n == 0 {
-		if err != nil {
-			s.log.WarnContext(ctx, "re-run failed checks to rule out a flake", "pr", pr.ID, "err", err)
-		}
+	if err != nil {
+		s.log.WarnContext(ctx, "re-run failed checks to rule out a flake", "pr", pr.ID, "asked", n, "err", err)
+	}
+	// A forge that failed part way has still taken the first n: those are
+	// out, so the marker stays and their results are waited for.
+	if n == 0 {
 		// A resting babysit is swept every minute with no round to end it:
 		// remember for the head that the forge can't, so it isn't asked again.
 		cleared := flakeRerun{}

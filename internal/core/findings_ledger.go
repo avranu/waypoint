@@ -202,7 +202,7 @@ func (l *ledger) check(c ledgerCheck) LedgerEntry {
 
 // withPrint is an earlier entry's class on this round's fingerprint.
 func withPrint(earlier, e LedgerEntry) LedgerEntry {
-	e.Class, e.Of, e.Round, e.Why = earlier.Class, earlier.Of, earlier.Round, earlier.Why
+	e.Class, e.Of, e.Round, e.Why, e.Covered = earlier.Class, earlier.Of, earlier.Round, earlier.Why, earlier.Covered
 	return e
 }
 
@@ -727,12 +727,18 @@ func (s *Service) closeCovered(ctx context.Context, b *Babysit, pr *PullRequest,
 		return
 	}
 	read, failed := s.forgeFileReaderTracked(ctx, pr)
+	if read == nil {
+		return // no forge to read: nothing is closed on a guess
+	}
 	in.File = read
 	entries, _ := classifyRound(in)
-	if failed == nil || !failed() {
-		for _, rc := range open {
-			memo.refs[rc.Ref] = true
-		}
+	if failed() {
+		// A file read as empty puts two functions' comments in one place:
+		// nothing is closed or remembered, and a later sweep looks again.
+		return
+	}
+	for _, rc := range open {
+		memo.refs[rc.Ref] = true
 	}
 	for _, e := range entries {
 		if e.Covered == "" {
