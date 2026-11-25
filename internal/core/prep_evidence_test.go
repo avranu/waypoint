@@ -685,6 +685,12 @@ func TestPrepAssumptions(t *testing.T) {
 		"```go x``` tail\n## Assumptions\nfound":            "found",
 		"## Assumptions\n- a\n```go x``` tail\n## Next\nno": "- a\n```go x``` tail",
 		"~~~ `x`\n## Assumptions\nin code\n~~~\n":           "",
+		// A fence indented four spaces or by a tab is indented code, not a
+		// fence; up to three spaces still open one.
+		"## Assumptions\n- a\n\n    ```\n\n## Next\nno": "- a\n\n    ```",
+		"    ```\n## Assumptions\nafter":                "after",
+		"\t```\n## Assumptions\nafter a tab":            "after a tab",
+		"   ```\n## Assumptions\nin code\n   ```\n":     "",
 	} {
 		if got := markdownSection(in, "Assumptions"); got != want {
 			t.Errorf("%q: %q; want %q", in, got, want)

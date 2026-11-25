@@ -140,7 +140,7 @@ var experimentDefs = []ExperimentDef{
 		Question: "Does showing the recorded data that bears on a task, and the claims in its text worth testing, change how the task holds up and what it costs?",
 		Arms:     []ExperimentArm{{Key: "none", Label: "Evidence found, not shown", Control: true}, {Key: "shown", Label: "Evidence shown"}},
 		Weights:  map[string]int{"none": 1, "shown": 1},
-		Where:    "wp next, wp take and wp show print the task's prep evidence, or leave it out.",
+		Where:    "The agent holding a task draws its arm when wp next, wp take, wp show or, in the checkout that took it, wp brief fetches its prep, and is given the evidence only in the shown arm. wp prep show, and wp brief elsewhere, draw none: they print an agent the evidence only of a task already in the shown arm.",
 		Exposure: "the agent holding the task fetched a ready prep with evidence for the task, with a wp that can print it",
 		Primary:  "cost_usd",
 		Caveats: []string{
@@ -160,6 +160,7 @@ var experimentCaveats = []string{
 	"Agents, models and instructions change during a run; randomising spreads those changes over both arms, so they add noise, not bias, as long as the run isn't paused or reweighted midway.",
 	"An agent can't be blinded: when an arm is visible to it (a brief that isn't there), it may act differently because of that, which is part of the effect.",
 	"Follow-up tasks and review findings keep arriving after a task is done and are counted to today, so a task that finished earlier has had longer to collect them.",
+	"Follow-ups filed counts every task recorded as following one, including what an agent only noticed and filed while on it. Follow-ups stated or classified, and follow-up fixes, leave out those Waypoint recorded itself until somebody says what kind they are.",
 	"Self-review findings count a session's own reviews however their findings were counted, leaving out review panel rows. Adversarial review findings count only reviews no model counted, so a task is left out of that measure when every one of its reviews was counted by a model.",
 }
 
@@ -200,6 +201,12 @@ type ExperimentRun struct {
 	Assigned   map[string]int    `json:"assigned"` // tasks per arm
 	Exposed    map[string]int    `json:"exposed"`
 	startedBy  int64
+}
+
+// covers reports whether the run takes in a project's tasks: every project's
+// when it names none.
+func (r *ExperimentRun) covers(project string) bool {
+	return len(r.Projects) == 0 || slices.ContainsFunc(r.Projects, func(p string) bool { return strings.EqualFold(p, project) })
 }
 
 // Experiment is a definition with its live run and past runs.
@@ -570,7 +577,7 @@ func (s *Service) experimentArms(ctx context.Context, issueID int64, keys []stri
 	now := s.nowMS()
 	for _, r := range runs {
 		d, ok := experimentDef(r.Experiment)
-		if !ok || (len(r.Projects) > 0 && !slices.ContainsFunc(r.Projects, func(p string) bool { return strings.EqualFold(p, project) })) {
+		if !ok || !r.covers(project) {
 			continue
 		}
 		if _, err := s.db.W.ExecContext(ctx, `INSERT INTO experiment_units(run_id, issue_id, arm, via, assigned_at) VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING`,

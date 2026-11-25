@@ -28,9 +28,9 @@ import (
 // the candidates are kept, and the facts shown with them (lines, titles,
 // states, definitions) are never the model's: the server fills them in, and
 // the agent's own wp resolves each code pick in its live index when it
-// prints the prep. Some prepared tasks are held out (made, never shown to
-// agents), so the ledger can compare like with like: which ones is the prep
-// experiment's arm (WP-254), one in five while its first run lasts.
+// prints the prep. Some prepared tasks are held out (made, their notes never
+// shown to agents), so the ledger can compare like with like: which ones is
+// the prep policy's "none" arm (WP-ADR104).
 
 const (
 	prepPerProject  = 3                // tasks at the front of a project's queue kept prepared
@@ -175,7 +175,7 @@ type TaskPrep struct {
 	// bundle didn't have: made up, or misremembered.
 	Dropped int    `json:"dropped"`
 	Error   string `json:"error,omitempty"`
-	// HeldOut: made, but agents aren't shown it (the comparison group).
+	// HeldOut: made, but agents aren't shown its notes (the comparison group).
 	HeldOut bool `json:"held_out"`
 	// Stale: the task's text changed since; a runner will make it again.
 	Stale bool `json:"stale,omitempty"`

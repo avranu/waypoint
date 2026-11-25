@@ -34,9 +34,11 @@ type expTask struct {
 	row      UsageTrendTask
 	findings float64
 	rounds   float64
-	// Later tasks that follow this one, and those of them that fix it.
-	followups float64
-	fixes     float64
+	// Later tasks that follow this one, those of them stated or classified as
+	// such, and those that fix it.
+	followups       float64
+	followupsStated float64
+	fixes           float64
 	// What its self-reviews found, and what its adversarial reviews did by a
 	// count no model read; the bool says there was such a count.
 	selfReview   float64
@@ -58,35 +60,39 @@ type experimentMetric struct {
 	// p-values are corrected apart from the others', which adding them
 	// therefore doesn't move.
 	heldUp bool
+	// followUp marks the counts of later tasks, which the review stakes report
+	// has its own of.
+	followUp bool
 }
 
 var experimentMetrics = []experimentMetric{
-	{ExperimentMetric{"cost_usd", "Cost", "usd"}, func(t *expTask) (float64, bool) { return t.row.CostUSD, t.row.CostUSD > 0 }, false},
+	{ExperimentMetric{"cost_usd", "Cost", "usd"}, func(t *expTask) (float64, bool) { return t.row.CostUSD, t.row.CostUSD > 0 }, false, false},
 	{ExperimentMetric{"tokens", "Tokens", "tokens"}, func(t *expTask) (float64, bool) {
 		u := t.row.UsageTotals
 		return float64(u.Input + u.Output + u.CacheWrite + u.CacheRead), true
-	}, false},
-	{ExperimentMetric{"output", "Output tokens", "tokens"}, func(t *expTask) (float64, bool) { return float64(t.row.Output), true }, false},
-	{ExperimentMetric{"messages", "Turns", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.Messages), true }, false},
-	{ExperimentMetric{"tool_calls", "Tool calls", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.ToolCalls), true }, false},
-	{ExperimentMetric{"tool_errors", "Tool errors", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.ToolErrors), true }, false},
-	{ExperimentMetric{"active_hours", "Active hours", "hours"}, func(t *expTask) (float64, bool) { return float64(t.row.ActiveHours), true }, false},
-	{ExperimentMetric{"sessions", "Sessions", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.Sessions), true }, false},
-	{ExperimentMetric{"subagents", "Subagents", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.Subagents), true }, false},
-	{ExperimentMetric{"compactions", "Compactions", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.Compactions), true }, false},
+	}, false, false},
+	{ExperimentMetric{"output", "Output tokens", "tokens"}, func(t *expTask) (float64, bool) { return float64(t.row.Output), true }, false, false},
+	{ExperimentMetric{"messages", "Turns", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.Messages), true }, false, false},
+	{ExperimentMetric{"tool_calls", "Tool calls", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.ToolCalls), true }, false, false},
+	{ExperimentMetric{"tool_errors", "Tool errors", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.ToolErrors), true }, false, false},
+	{ExperimentMetric{"active_hours", "Active hours", "hours"}, func(t *expTask) (float64, bool) { return float64(t.row.ActiveHours), true }, false, false},
+	{ExperimentMetric{"sessions", "Sessions", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.Sessions), true }, false, false},
+	{ExperimentMetric{"subagents", "Subagents", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.Subagents), true }, false, false},
+	{ExperimentMetric{"compactions", "Compactions", "count"}, func(t *expTask) (float64, bool) { return float64(t.row.Compactions), true }, false, false},
 	{ExperimentMetric{"avg_context", "Average context", "tokens"}, func(t *expTask) (float64, bool) {
 		if t.row.AvgContext == nil {
 			return 0, false
 		}
 		return *t.row.AvgContext, true
-	}, false},
-	{ExperimentMetric{"findings", "Review findings", "count"}, func(t *expTask) (float64, bool) { return t.findings, t.row.PRs > 0 }, false},
-	{ExperimentMetric{"rounds", "Babysit rounds", "count"}, func(t *expTask) (float64, bool) { return t.rounds, t.row.PRs > 0 }, false},
-	{ExperimentMetric{"followups", "Follow-up tasks", "count"}, func(t *expTask) (float64, bool) { return t.followups, true }, true},
-	{ExperimentMetric{"fixes", "Follow-up fixes", "count"}, func(t *expTask) (float64, bool) { return t.fixes, true }, true},
-	{ExperimentMetric{"self_review", "Self-review findings", "count"}, func(t *expTask) (float64, bool) { return t.selfReview, t.selfReviewed }, true},
-	{ExperimentMetric{"review_found", "Adversarial review findings", "count"}, func(t *expTask) (float64, bool) { return t.reviewFound, t.reviewed }, true},
-	{ExperimentMetric{"pr_comments", "Review comments", "count"}, func(t *expTask) (float64, bool) { return t.prComments, t.row.PRs > 0 }, true},
+	}, false, false},
+	{ExperimentMetric{"findings", "Review findings", "count"}, func(t *expTask) (float64, bool) { return t.findings, t.row.PRs > 0 }, false, false},
+	{ExperimentMetric{"rounds", "Babysit rounds", "count"}, func(t *expTask) (float64, bool) { return t.rounds, t.row.PRs > 0 }, false, false},
+	{ExperimentMetric{"followups", "Follow-ups filed", "count"}, func(t *expTask) (float64, bool) { return t.followups, true }, true, true},
+	{ExperimentMetric{"followups_stated", "Follow-ups stated or classified", "count"}, func(t *expTask) (float64, bool) { return t.followupsStated, true }, true, true},
+	{ExperimentMetric{"fixes", "Follow-up fixes", "count"}, func(t *expTask) (float64, bool) { return t.fixes, true }, true, true},
+	{ExperimentMetric{"self_review", "Self-review findings", "count"}, func(t *expTask) (float64, bool) { return t.selfReview, t.selfReviewed }, true, false},
+	{ExperimentMetric{"review_found", "Adversarial review findings", "count"}, func(t *expTask) (float64, bool) { return t.reviewFound, t.reviewed }, true, false},
+	{ExperimentMetric{"pr_comments", "Review comments", "count"}, func(t *expTask) (float64, bool) { return t.prComments, t.row.PRs > 0 }, true, false},
 }
 
 // ExperimentStat is one metric in one arm, and how it compares with the
@@ -307,13 +313,19 @@ func (s *Service) experimentLaterMeasures(ctx context.Context, byID map[int64]*e
 		first []any  // its arguments before the ids
 		add   func(t *expTask, a, b float64)
 	}{
+		// Every follow-up filed, as the review stakes report counts them, and
+		// the fixes among them (each has a kind, so none is left out below).
+		{`SELECT target_id, count(*), coalesce(sum(subkind = 'fix'), 0) FROM issue_relations
+			WHERE kind = 'follows' AND target_id IN ` + in + ` GROUP BY target_id`,
+			nil,
+			func(t *expTask, all, fixes float64) { t.followups, t.fixes = all, fixes }},
 		// Not what Waypoint recorded itself, from shared files or from an agent
 		// filing it while on the task (which takes in what it only noticed),
 		// until somebody says what kind of follow-up it is (WP-ADR101).
-		{`SELECT target_id, count(*), coalesce(sum(subkind = 'fix'), 0) FROM issue_relations
+		{`SELECT target_id, count(*), 0 FROM issue_relations
 			WHERE kind = 'follows' AND NOT (coalesce(found, '') IN (?, ?) AND subkind = '') AND target_id IN ` + in + ` GROUP BY target_id`,
 			[]any{relationFoundFiles, relationFoundSession},
-			func(t *expTask, all, fixes float64) { t.followups, t.fixes = all, fixes }},
+			func(t *expTask, stated, _ float64) { t.followupsStated = stated }},
 		{`SELECT issue_id, sum(found), 0 FROM work_log
 			WHERE kind = ? AND reason != ? AND found IS NOT NULL AND issue_id IN ` + in + ` GROUP BY issue_id`,
 			[]any{WorkOwnReview, ownReviewPanel},

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -60,7 +61,8 @@ func TestCollectorPrepEvidence(t *testing.T) {
 	}
 }
 
-// Only open tasks prepared in the last two weeks wait.
+// Only open tasks prepared in the last two weeks wait, and none for a refused
+// check: there was no spare capacity for it, which is no failure.
 func TestCollectorPrepEvidenceWaiting(t *testing.T) {
 	c := newCollectorEnv(t)
 	c.preps(t, 1, 15*24*time.Hour, "failed")
@@ -72,10 +74,38 @@ func TestCollectorPrepEvidenceWaiting(t *testing.T) {
 	}
 	c.preps(t, 1, 72*time.Hour, "ready")
 	c.preps(t, 1, 72*time.Hour, "refused")
+	c.preps(t, 1, 72*time.Hour, "failed")
 	c.preps(t, 1, time.Hour, "pending")
 	c.s.CheckCollectorHealth(c.ctx)
 	if h := c.health(t, prepEvidenceCollector); h.Waiting != 2 {
 		t.Errorf("waiting = %+v", h)
+	}
+}
+
+// What opens the gate for waiting tasks: a check that failed in the last two
+// days, or one left pending past prepPendingMax. Neither a refused check nor one
+// still in flight does.
+func TestCollectorPrepEvidenceGate(t *testing.T) {
+	for _, tc := range []struct {
+		name, state string
+		ago         time.Duration
+		waiting     int64
+	}{
+		{"refused", "refused", time.Hour, 0},
+		{"in flight", "pending", prepPendingMax - time.Minute, 0},
+		{"left unfinished", "pending", prepPendingMax + time.Minute, 2},
+		{"failed just now", "failed", time.Minute, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newCollectorEnv(t)
+			c.preps(t, 1, 72*time.Hour, "failed") // too old to open it
+			c.retried(t, c.preps(t, 1, 72*time.Hour, tc.state), tc.ago)
+			c.s.CheckCollectorHealth(c.ctx)
+			want := tc.waiting
+			if h := c.health(t, prepEvidenceCollector); int64(h.Waiting) != want {
+				t.Errorf("waiting = %+v; want %d", h, want)
+			}
+		})
 	}
 }
 
@@ -94,6 +124,37 @@ func TestCollectorPrepEvidenceOldFailure(t *testing.T) {
 	c.s.CheckCollectorHealth(c.ctx)
 	if h := c.health(t, prepEvidenceCollector); !h.Stalled || h.Waiting != 2 || h.OldestWaitAt == nil || c.clockNow().Sub(*h.OldestWaitAt) < 48*time.Hour {
 		t.Errorf("a recent failure beside it: %+v", h)
+	}
+}
+
+// A run limited to projects counts only their tasks: a left-out one's check is
+// never retried. The gate stays global, so any project's failure opens it.
+func TestCollectorPrepEvidenceRunProjects(t *testing.T) {
+	c := newCollectorEnv(t)
+	in := c.proj
+	c.preps(t, 1, 72*time.Hour, "failed")
+	c.proj = c.project(c.admin, "Elsewhere", "")
+	out := c.proj
+	c.retried(t, c.preps(t, 2, 72*time.Hour, "failed"), time.Hour)
+	for _, tc := range []struct {
+		projects string
+		waiting  int64
+	}{
+		{`[]`, 3},
+		{`null`, 3},
+		{`["` + in.Key + `"]`, 1},
+		{`["` + strings.ToLower(in.Key) + `"]`, 1},
+		{`["` + out.Key + `"]`, 2},
+		{`["` + in.Key + `","` + out.Key + `"]`, 3},
+		{`["NONE"]`, 0},
+	} {
+		if _, err := c.s.db.W.ExecContext(c.ctx, `UPDATE experiment_runs SET projects = ? WHERE experiment = ? AND stopped_at IS NULL`, tc.projects, ExpPrepEvidence); err != nil {
+			t.Fatal(err)
+		}
+		c.s.CheckCollectorHealth(c.ctx)
+		if h := c.health(t, prepEvidenceCollector); int64(h.Waiting) != tc.waiting {
+			t.Errorf("run of %s: waiting = %+v; want %d", tc.projects, h, tc.waiting)
+		}
 	}
 }
 

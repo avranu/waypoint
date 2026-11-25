@@ -140,13 +140,14 @@ type prepEvidenceTask struct {
 
 // runPrepEvidence asks the prep model for a task's evidence and claims and
 // stores what checks out. Its failure is its own: the pointer prep stands.
-// With no live prep_evidence run agents are given none, so it asks and stores
-// nothing; what an earlier run stored stays for people.
+// With no live prep_evidence run that takes in the task's project, agents are
+// given none, so it asks and stores nothing; what an earlier run stored stays
+// for people.
 func (s *Service) runPrepEvidence(ctx context.Context, t prepEvidenceTask) error {
-	if run, err := s.liveExperimentRun(ctx, ExpPrepEvidence); err != nil || run == nil {
+	i := t.issue
+	if run, err := s.liveExperimentRun(ctx, ExpPrepEvidence); err != nil || run == nil || !run.covers(i.ProjectKey) {
 		return err
 	}
-	i := t.issue
 	defer s.checkingEvidence(i.ID)()
 	// A check in flight, or one that was lost, is there to see.
 	check, err := s.beginPrepEvidence(ctx, t)
@@ -180,7 +181,7 @@ func (s *Service) runPrepEvidence(ctx context.Context, t prepEvidenceTask) error
 // background, when the one kept failed, was refused, was lost or read other
 // text than its prep. The server has all it reads, so no runner uploads
 // anything. It never makes a task's first check, and does nothing without a
-// live run.
+// live run that takes in the task's project.
 func (s *Service) retryPrepEvidence(ctx context.Context, issueID int64, now time.Time, front bool) error {
 	var hash, bundle, checked, state string
 	var prepped, at int64
@@ -203,13 +204,13 @@ func (s *Service) retryPrepEvidence(ctx context.Context, issueID int64, now time
 	if !due || s.evidenceInFlight(issueID) {
 		return nil
 	}
-	// Without a live run the row stays as it is: claiming it would only leave
-	// it pending.
-	if run, err := s.liveExperimentRun(ctx, ExpPrepEvidence); err != nil || run == nil {
-		return err
-	}
 	i, err := s.issueByID(ctx, s.db.R, issueID, true)
 	if err != nil || i.Type == "epic" {
+		return err
+	}
+	// Without a live run that takes it in the row stays as it is: claiming it
+	// would only leave it pending.
+	if run, err := s.liveExperimentRun(ctx, ExpPrepEvidence); err != nil || run == nil || !run.covers(i.ProjectKey) {
 		return err
 	}
 	title, desc, comments, cur, err := s.prepText(ctx, issueID)
@@ -325,9 +326,10 @@ func prepEvidencePrompt(key, typ, title, desc string, comments []string, cands [
 	return sb.String()
 }
 
-// hasAssumptions matches a design note n with an Assumptions section. Queries
-// for decisions say it before their limit, so those without one don't count.
-const hasAssumptions = `(n.body LIKE '## Assumptions%' OR n.body LIKE '%' || char(10) || '## Assumptions%')`
+// mentionsAssumptions narrows decisions to those that can have an Assumptions
+// section; markdownSection says which do. It passes near misses, so the queries
+// have no limit for them to fill.
+const mentionsAssumptions = `n.body LIKE '%assumptions%'`
 
 // evidenceCandidates are the project's recorded data that may bear on a task:
 // pages linked to it or its parent, then matching its words, and the
@@ -358,12 +360,12 @@ func (s *Service) evidenceCandidates(ctx context.Context, i *Issue, words []stri
 		{KDesign, `SELECT n.id FROM design_notes n WHERE n.project_id = ?1 AND n.kind = 'decision' AND n.status = 'active' AND n.id IN (
 				SELECT src_id FROM knowledge_links WHERE src_type = 'design' AND dst_type = 'issue' AND dst_id IN (?2, ?3)
 				UNION SELECT dst_id FROM knowledge_links WHERE src_type = 'issue' AND dst_type = 'design' AND src_id IN (?2, ?3))
-				AND ` + hasAssumptions + `
-			ORDER BY n.updated_at DESC, n.id DESC LIMIT 20`,
+				AND ` + mentionsAssumptions + `
+			ORDER BY n.updated_at DESC, n.id DESC`,
 			`SELECT n.id FROM design_search JOIN design_notes n ON n.id = design_search.rowid
 			WHERE design_search MATCH ?1 AND n.project_id = ?2 AND n.kind = 'decision' AND n.status = 'active'
-			AND ` + hasAssumptions + `
-			ORDER BY bm25(design_search) LIMIT 20`, evidenceDesignMax},
+			AND ` + mentionsAssumptions + `
+			ORDER BY bm25(design_search)`, evidenceDesignMax},
 	} {
 		ids, err := s.evidenceIDs(ctx, kind.linked, i.ProjectID, i.ID, parent)
 		if err != nil {
@@ -455,7 +457,9 @@ func (s *Service) evidenceCand(ctx context.Context, actor *Actor, i *Issue, kind
 		}
 		c.Ref, c.Title, c.Category, c.Date = i.ProjectKey+"-"+n.Code, n.Title, n.Kind, n.UpdatedAt.Format("2006-01-02")
 		c.Updated = n.UpdatedAt.UnixMilli()
-		byAgent, reviewed = n.CreatedAgent != "" || n.UpdatedAgent != "", n.ApprovedBy != nil
+		// A person approved it: not Approved, which is also set on one that only
+		// counts on a person's request.
+		byAgent, reviewed = n.CreatedAgent != "" || n.UpdatedAgent != "", n.approvedBy.Valid
 		c.excerpt = clipRunes(section, evidenceDesignRunes)
 	}
 	c.Title = clipRunes(prepLine(c.Title), evidenceTitleRunes)
@@ -473,44 +477,24 @@ func (s *Service) evidenceCand(ctx context.Context, actor *Actor, i *Issue, kind
 // markdownSection is the text under the level-2 heading named title, up to the
 // next heading of its level or above; code fences hold no headings.
 func markdownSection(body, title string) string {
-	var out []string
-	in, fence := false, "" // the run that opened the code fence we are in
-	for _, line := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
-		if run, rest := fenceRun(line); run != "" {
-			switch {
-			case fence == "":
-				fence = run
-			case strings.HasPrefix(run, fence) && rest == "":
-				fence = ""
+	var out strings.Builder
+	in := false
+	for _, seg := range splitFences(strings.ReplaceAll(body, "\r\n", "\n")) {
+		for _, line := range strings.SplitAfter(seg.text, "\n") {
+			if !seg.code && (strings.HasPrefix(line, "# ") || strings.HasPrefix(line, "## ")) {
+				if in {
+					return strings.TrimSpace(out.String())
+				}
+				name, ok := strings.CutPrefix(line, "## ")
+				in = ok && strings.EqualFold(strings.TrimSpace(name), title)
+				continue
 			}
-		} else if fence == "" && (strings.HasPrefix(line, "# ") || strings.HasPrefix(line, "## ")) {
 			if in {
-				break
+				out.WriteString(line)
 			}
-			name, ok := strings.CutPrefix(line, "## ")
-			in = ok && strings.EqualFold(strings.TrimSpace(name), title)
-			continue
-		}
-		if in {
-			out = append(out, line)
 		}
 	}
-	return strings.TrimSpace(strings.Join(out, "\n"))
-}
-
-// fenceRun splits a line that starts with a code fence into its run of three
-// or more backticks or tildes and what follows; run is "" for any other line,
-// such as inline code: backticks with another backtick after them (CommonMark).
-func fenceRun(line string) (run, rest string) {
-	t := strings.TrimSpace(line)
-	if !strings.HasPrefix(t, "```") && !strings.HasPrefix(t, "~~~") {
-		return "", ""
-	}
-	after := strings.TrimLeft(t, t[:1])
-	if t[0] == '`' && strings.Contains(after, "`") {
-		return "", ""
-	}
-	return t[:len(t)-len(after)], strings.TrimSpace(after)
+	return strings.TrimSpace(out.String())
 }
 
 // checkPrepEvidence keeps the picks that are candidates and the claims whose
@@ -581,8 +565,9 @@ func quotedIn(texts []string, quote string) string {
 // caller that can print it. A person is given it. The agent holding the task,
 // taking it (shown), draws its arm of the experiment and is recorded as a unit,
 // and is given it in the shown arm; any other read by an agent draws nothing
-// and gives it only to a task already in that arm. An agent whose prep is held
-// out from its pointers is given none and is no unit. A failure leaves it out.
+// and gives it only to a task already in that arm. A prep held out from its
+// pointers is treated the same, so each pointer arm sees evidence at the same
+// rate. A failure leaves it out.
 func (s *Service) AttachPrepEvidence(ctx context.Context, a *Actor, p *TaskPrep, shown bool) {
 	if err := s.attachPrepEvidence(ctx, a, p, shown); err != nil {
 		s.log.WarnContext(ctx, "prep evidence", "issue", p.Key, "err", err)
@@ -590,7 +575,7 @@ func (s *Service) AttachPrepEvidence(ctx context.Context, a *Actor, p *TaskPrep,
 }
 
 func (s *Service) attachPrepEvidence(ctx context.Context, a *Actor, p *TaskPrep, shown bool) error {
-	if p.State != "ready" || p.Stale || a.IsAgent() && p.HeldOut {
+	if p.State != "ready" || p.Stale {
 		return nil
 	}
 	// Evidence names pages and decisions, and claims can paraphrase any of

@@ -256,22 +256,29 @@ var collectors = []collector{
 	},
 	{
 		name:  "prep evidence",
-		about: "after a task prep the server asks the prep model which recorded data bears on the task (WP-ADR157), and again when a runner asks for prep work (PrepDue); a check that failed says why in task_prep_evidence.error. Nothing counts as waiting unless some check has failed or been left unfinished in the last 48 hours",
-		// Open tasks prepared of late whose evidence isn't there, while the
-		// experiment runs: without a live run none is made. A prep with no
+		about: "after a task prep the server asks the prep model which recorded data bears on the task (WP-ADR157), and again when a runner asks for prep work (PrepDue); a check that failed says why in task_prep_evidence.error. A check refused for want of spare capacity is no failure and never waits, nor does a task of a project the live run leaves out. Nothing counts as waiting unless, of the checks tried in the last 48 hours, one failed or has been pending too long to be running still",
+		// Open tasks prepared of late whose evidence isn't there, in the
+		// projects the live run takes in (ExperimentRun.covers): none is made
+		// for others, or without a live run. A prep with no
 		// check at all doesn't count: nothing retries one. Nor will much retry
 		// an old failure (its task taken, far back in the queue or not
-		// prepared by itself), so none counts unless a check was tried of late
-		// and didn't succeed: a row's created_at is its last attempt.
+		// prepared by itself), so none counts unless some check, of any task,
+		// was tried of late and failed or was lost (pending past
+		// prepPendingMax): a row's created_at is its last attempt. A refused
+		// one found no spare capacity: it neither waits nor opens that gate.
 		waiting: `SELECT COUNT(*), MIN(tp.updated_at) FROM task_preps tp
 			CROSS JOIN task_prep_evidence pe ON pe.issue_id = tp.issue_id
 			CROSS JOIN issues i ON i.id = tp.issue_id CROSS JOIN statuses st ON st.id = i.status_id
-			WHERE tp.updated_at >= ? AND tp.state = 'ready' AND pe.state != 'ready'
+			CROSS JOIN projects pj ON pj.id = i.project_id
+			WHERE tp.updated_at >= ? AND tp.state = 'ready' AND pe.state IN ('pending', 'failed')
 			AND st.category NOT IN ('` + CatDone + `', '` + CatCanceled + `')
-			AND EXISTS (SELECT 1 FROM experiment_runs er WHERE er.experiment = '` + ExpPrepEvidence + `' AND er.stopped_at IS NULL)
-			AND EXISTS (SELECT 1 FROM task_prep_evidence tried WHERE tried.state IN ('pending', 'failed', 'refused') AND tried.created_at >= ?)`,
+			AND EXISTS (SELECT 1 FROM experiment_runs er WHERE er.experiment = '` + ExpPrepEvidence + `' AND er.stopped_at IS NULL
+				AND (coalesce(json_array_length(er.projects), 0) = 0
+					OR EXISTS (SELECT 1 FROM json_each(er.projects) named WHERE named.value = pj.key COLLATE NOCASE)))
+			AND EXISTS (SELECT 1 FROM task_prep_evidence tried WHERE tried.state IN ('pending', 'failed') AND tried.created_at >= ?
+				AND (tried.state = 'failed' OR tried.created_at < ?))`,
 		args: func(now time.Time) []any {
-			return []any{now.Add(-evidenceWaitingWindow).UnixMilli(), now.Add(-evidenceFailingWindow).UnixMilli()}
+			return []any{now.Add(-evidenceWaitingWindow).UnixMilli(), now.Add(-evidenceFailingWindow).UnixMilli(), now.Add(-prepPendingMax).UnixMilli()}
 		},
 		output: `SELECT MAX(pe.created_at) FROM task_prep_evidence pe WHERE pe.state = 'ready'`,
 	},
@@ -280,8 +287,8 @@ var collectors = []collector{
 const (
 	// evidenceWaitingWindow is how recent a prep still waits for its evidence.
 	evidenceWaitingWindow = 14 * 24 * time.Hour
-	// evidenceFailingWindow is how recently some check must have failed, or
-	// been left unfinished, for any prep to be waiting.
+	// evidenceFailingWindow is how recently some check must have been tried
+	// that failed or was lost, for any prep to be waiting.
 	evidenceFailingWindow = 48 * time.Hour
 )
 

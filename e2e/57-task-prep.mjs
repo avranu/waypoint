@@ -116,7 +116,7 @@ let providerId;
   const sess = db.prepare("INSERT INTO agent_sessions(user_id, machine, cli_id, issue_id, started_at, last_seen_at) VALUES (?, 'e2ebox', ?, ?, ?, ?)");
   ["tp-a", "tp-b", "tp-c"].forEach((s, i) => sess.run(uid, s, issues[i].id, h, h));
   db.prepare("UPDATE issues SET resolved_at = ? WHERE id IN (?, ?, ?)").run(now - 60_000, issues[0].id, issues[1].id, issues[2].id);
-  // held_out follows the issue id (one in five), which other suites shift: set it.
+  // held_out is the prep policy's draw, which this setup doesn't make: set it.
   db.prepare("UPDATE task_preps SET shown_at = ?, held_out = 0 WHERE issue_id = ?").run(h, issues[0].id);
   db.prepare("INSERT INTO task_preps(issue_id, text_hash, state, bundle, held_out, shown_at, created_at, updated_at) VALUES (?, 'x', 'ready', '{}', 1, ?, ?, ?)")
     .run(issues[1].id, h, h, h);

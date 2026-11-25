@@ -11,28 +11,31 @@ import (
 	"unicode/utf8"
 )
 
-// A task held out from the pointers is held out from the evidence too: an agent
-// is given none, draws no arm and is no unit. A person is given it.
+// A task held out from the pointers has no pointer notes for agents, and
+// evidence like any other task: its holder draws an arm and is a unit, so every
+// pointer arm sees evidence at the same rate.
 func TestPrepEvidenceHeldOut(t *testing.T) {
-	e := newEvidenceEnv(t)
-	e.llm.evidence = oneClaim
-	e.prepArm(e.task.ID, prepArmNone)
-	e.prep(e.task.Key)
-	e.claim(e.ag, e.task.Key)
-	if got := e.served(e.ag, e.task.Key, true); !got.HeldOut || got.Evidence != nil {
-		t.Errorf("held out: %+v %+v", got.HeldOut, got.Evidence)
-	}
-	if got := e.units(e.task.ID); got != "0 0" {
-		t.Errorf("units %s", got)
-	}
-	e.forceArm(e.task.ID, "shown") // an arm drawn before the pointers were held out
-	for _, shown := range []bool{true, false} {
-		if got := e.served(e.ag, e.task.Key, shown); got.Evidence != nil {
-			t.Errorf("held out with an arm (shown %v): %+v", shown, got.Evidence)
-		}
-	}
-	if got := e.served(e.admin, e.task.Key, false); got.Evidence == nil {
-		t.Error("a person got none")
+	for _, arm := range []string{"shown", "none"} {
+		t.Run(arm, func(t *testing.T) {
+			e := newEvidenceEnv(t)
+			e.llm.evidence = oneClaim
+			e.prepArm(e.task.ID, prepArmNone)
+			e.prep(e.task.Key)
+			e.claim(e.ag, e.task.Key)
+			e.forceArm(e.task.ID, arm)
+			for _, shown := range []bool{true, false} {
+				got := e.served(e.ag, e.task.Key, shown)
+				if !got.HeldOut || got.Notes != nil || (got.Evidence != nil) != (arm == "shown") {
+					t.Errorf("shown %v: held out %v, notes %+v, evidence %+v", shown, got.HeldOut, got.Notes, got.Evidence)
+				}
+			}
+			if got := e.units(e.task.ID); got != "1 1" {
+				t.Errorf("units %s", got)
+			}
+			if got := e.served(e.admin, e.task.Key, false); got.Evidence == nil {
+				t.Error("a person got none")
+			}
+		})
 	}
 }
 
@@ -554,4 +557,133 @@ func TestPrepEvidenceBalanceNotes(t *testing.T) {
 	exec(`UPDATE experiment_runs SET weights = '{"none":0,"shown":1}' WHERE id = ?`, run)
 	check("all",
 		"At first exposure, Evidence shown (3 tasks): 0 with evidence items, 1 with a claim; mean 1.0 items kept and 0.0 dropped; risk low 1; types task 1; priority medium 1; 2 without a snapshot.")
+}
+
+// A decision reads as reviewed when a person approved it, not when it only
+// counts on a person's request: nobody approved that one.
+func TestPrepEvidenceDecisionReviewed(t *testing.T) {
+	e := newEvidenceEnv(t)
+	write := func(name, forTask string) {
+		title, kind, body := "Merge checks "+name, "decision", "## Assumptions\n- Merge checks are quick."
+		n, err := e.s.CreateDesign(e.ctx, e.ag, DesignInput{Title: &title, Body: &body, Kind: &kind, Project: &e.p.Key, For: forTask})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		e.notes[name] = n
+	}
+	write("approved", "")
+	write("proposed", "")
+	write("requested", e.task.Key)
+	if !e.notes["requested"].Approved || e.notes["proposed"].Approved {
+		t.Fatalf("approved: requested %v, proposed %v", e.notes["requested"].Approved, e.notes["proposed"].Approved)
+	}
+	if _, err := e.s.ApproveDesign(e.ctx, e.admin, e.notes["approved"].ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, c := range e.candidates(e.task) {
+		got[c.Ref] = c.By
+	}
+	for name, want := range map[string]string{"approved": "reviewed by a person", "proposed": "agent, unreviewed", "requested": "agent, unreviewed"} {
+		if got[e.code(name)] != want {
+			t.Errorf("%s: by %q; want %q", name, got[e.code(name)], want)
+		}
+	}
+}
+
+// Headings that are nearly "Assumptions" take no place from a decision that has
+// the section, however many there are and however it is spaced.
+func TestPrepEvidenceNearMissHeadings(t *testing.T) {
+	filler := strings.Repeat("unrelated filler words here ", 200)
+	nearMiss := "## Assumptions and risks\nmerge checks merge checks merge checks"
+	check := func(t *testing.T, e *evidenceEnv, name string) {
+		t.Helper()
+		got := e.candidates(e.task)
+		if len(got) != 1 || got[0].Ref != e.code(name) {
+			t.Errorf("candidates %+v; want %s", got, e.code(name))
+		}
+	}
+	t.Run("matched", func(t *testing.T) {
+		e := newEvidenceEnv(t)
+		for n := range 21 {
+			e.decision(fmt.Sprint("near", n), e.p.Key, "Merge checks", nearMiss)
+		}
+		e.decision("real", e.p.Key, "Gate", "## Assumptions\n- A merge waits. "+filler)
+		check(t, e, "real")
+	})
+	t.Run("linked", func(t *testing.T) {
+		e := newEvidenceEnv(t)
+		link := func(name, body string) {
+			e.decision(name, e.p.Key, "Zebra", body)
+			e.linkNote(name, e.task.ID)
+		}
+		link("older", "## Assumptions\n- Zebras sleep.")
+		for n := range 21 {
+			link(fmt.Sprint("near", n), "## Assumptions and risks\nZebra.")
+		}
+		check(t, e, "older")
+	})
+	t.Run("two spaces", func(t *testing.T) {
+		e := newEvidenceEnv(t)
+		e.decision("spaced", e.p.Key, "Merge checks", "##  Assumptions\n- Merge checks are quick.")
+		check(t, e, "spaced")
+	})
+}
+
+// A run that leaves a project out gives its tasks no evidence, so none is
+// checked for them, first or again.
+func TestPrepEvidenceRunProjects(t *testing.T) {
+	e := newRetryEnv(t)
+	e.llm.fail = errors.New("boom")
+	e.prep(e.task.Key)
+	e.llm.fail = nil
+	other := e.project(e.admin, "Elsewhere", "")
+	restart := func(projects ...string) {
+		t.Helper()
+		if _, err := e.s.StopExperiment(e.ctx, e.admin, ExpPrepEvidence, ""); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.s.StartExperiment(e.ctx, e.admin, ExpPrepEvidence, ExperimentStart{Projects: projects}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restart(other.Key)
+	asked := e.asked()
+	row := func() string {
+		return e.one(`SELECT state || ' ' || created_at FROM task_prep_evidence WHERE issue_id = ?`, e.task.ID)
+	}
+	before := row()
+	e.later(prepRetryFailed + time.Minute)
+	if e.polled(0); e.asked() != asked || row() != before {
+		t.Errorf("retry: asked %d (was %d), row %s (was %s)", e.asked(), asked, row(), before)
+	}
+	out := e.issue(e.admin, IssueInput{Project: e.p.Key, Title: "Left out", Description: "The checks are slow."})
+	e.prep(out.Key)
+	if e.asked() != asked || e.row(out.ID) != "none" {
+		t.Errorf("left out: asked %d (was %d), row %s", e.asked(), asked, e.row(out.ID))
+	}
+	in := e.issue(e.admin, IssueInput{Project: other.Key, Title: "Taken in", Description: "The checks are slow."})
+	e.prep(in.Key)
+	if e.asked() != asked+1 || e.row(in.ID) != "ready" {
+		t.Errorf("taken in: asked %d (was %d), row %s", e.asked(), asked, e.row(in.ID))
+	}
+	// A run that names the project takes it in, whatever the case.
+	restart(strings.ToLower(e.p.Key))
+	e.polled(0)
+	if got := e.row(e.task.ID); got != "ready" {
+		t.Errorf("retry in a run that names the project: row %s", got)
+	}
+}
+
+// The experiment says which commands print the evidence or leave it out.
+func TestPrepEvidenceWhere(t *testing.T) {
+	d, ok := experimentDef(ExpPrepEvidence)
+	if !ok {
+		t.Fatal("no definition")
+	}
+	for _, c := range []string{"wp next", "wp take", "wp show", "wp brief", "wp prep show"} {
+		if !strings.Contains(d.Where, c) {
+			t.Errorf("Where doesn't name %s: %s", c, d.Where)
+		}
+	}
 }

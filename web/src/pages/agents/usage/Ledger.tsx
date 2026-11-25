@@ -434,8 +434,8 @@ function PrepCompare({ groups }: { groups: LedgerPrepGroup[] }) {
       help={
         <p>
           Closed tasks by whether a free model prepared them before an agent took them (
-          <code>wp prep</code>). One prepared task in five is held out: made, but never shown to the
-          agent, so <b>held out</b> is the fair comparison for <b>shown</b>. Per task with usage;
+          <code>wp prep</code>). Some prepared tasks are held out: made, but their notes never shown
+          to the agent, so <b>held out</b> is the comparison for <b>shown</b>. Per task with usage;
           tool calls are every call the task’s sessions made.
         </p>
       }

@@ -265,7 +265,7 @@ func TestReviewRoundStakes(t *testing.T) {
 		if normal == nil || normal.Rounds != 1 || normal.SlowHandOvers != 0 || normal.Reviewers != 1 || normal.ReviewersUsed != 1 || normal.OwnReviews != 0 || len(stats.Rows) != 1 {
 			t.Errorf("stats = %+v %+v", normal, stats.Rows)
 		}
-		if normal != nil && (normal.Recomputed != 0 || len(normal.Outcomes) != len(experimentMetrics)-2+len(stakesExtraMetrics) || stats.Rows[0].Rule != StakesRule) {
+		if normal != nil && (normal.Recomputed != 0 || len(normal.Outcomes) != len(experimentMetrics)-3+len(stakesExtraMetrics) || stats.Rows[0].Rule != StakesRule) {
 			t.Errorf("outcomes = %+v, recomputed %d, rule %q", normal.Outcomes, normal.Recomputed, stats.Rows[0].Rule)
 		}
 		// The floor is every round's, so it counts as no bar; a legacy row

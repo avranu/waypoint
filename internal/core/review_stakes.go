@@ -809,9 +809,9 @@ func (s *Service) stakesOutcomes(ctx context.Context, actor *Actor, days int, ta
 	if err := s.experimentReviewMeasures(ctx, byID); err != nil {
 		return err
 	}
-	// The experiments' two follow-up counts are stakesExtraMetrics here.
+	// The experiments' follow-up counts are stakesExtraMetrics here.
 	measures := slices.Clone(experimentMetrics)
-	measures = slices.DeleteFunc(measures, func(m experimentMetric) bool { return m.Key == "followups" || m.Key == "fixes" })
+	measures = slices.DeleteFunc(measures, func(m experimentMetric) bool { return m.followUp })
 	type acc struct{ values [][]float64 }
 	n := len(measures) + len(stakesExtraMetrics)
 	per := map[string]*acc{}

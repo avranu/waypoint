@@ -24,9 +24,10 @@ const evidenceJSON = `{"evidence": [
 // joined is a prep section as printed: its notes, then its evidence.
 func joined(notes, evidence string) string { return notes + evidence }
 
-// Evidence prints after the notes, or alone for held-out pointers, two of
-// each in the compact form; an agent's showing records the pages and
-// decisions listed (WP-ADR157).
+// Evidence prints after the notes, or alone for held-out pointers, all of it
+// in either form (the server caps what it picks, and the experiment's unit
+// counts all of it); an agent's showing records the pages and decisions listed
+// (WP-ADR157).
 func TestRenderPrepEvidence(t *testing.T) {
 	var paths, bodies []string
 	prep := `{"key": "WP-12", "state": "ready", "held_out": true, "evidence": ` + evidenceJSON + `}`
@@ -85,18 +86,13 @@ Judge these before relying on them: could more or better data be collected, or b
 
 	paths, bodies = nil, nil
 	compact := c.showPrep("WP-12")
-	for _, w := range []string{"WP-X20 Prep backtests", "WP-R3 Model survey", "most merges fail", "checks are slow", "Read one: wp page show WP-X20\n", "Judge these"} {
-		if !strings.Contains(compact, w) {
-			t.Errorf("compact lacks %q:\n%s", w, compact)
-		}
-	}
-	if strings.Contains(compact, "WP-ADR89") || strings.Contains(compact, "nobody reads") || strings.Contains(compact, "wp brief") {
-		t.Errorf("compact prints too much:\n%s", compact)
+	if compact != want {
+		t.Errorf("wp show:\n%s\nwant:\n%s", compact, want)
 	}
 	if len(paths) != 1 || paths[0] != "/api/v1/issues/WP-12/prep?evidence=1&shown=1" {
 		t.Errorf("wp show asked %q", paths)
 	}
-	if len(bodies) != 1 || bodies[0] != "prep page:WP-X20@WP,page:WP-R3@WP" {
+	if len(bodies) != 1 || bodies[0] != "prep page:WP-X20@WP,page:WP-R3@WP,design:WP-ADR89@WP" {
 		t.Errorf("compact recorded %q", bodies)
 	}
 
@@ -128,7 +124,7 @@ Judge these before relying on them: could more or better data be collected, or b
 		if err := json.Unmarshal([]byte(raw), &e); err != nil {
 			t.Fatal(err)
 		}
-		out, _ := renderPrepEvidence(&e, "WP", false)
+		out, _ := renderPrepEvidence(&e, "WP")
 		return out
 	}
 	if out := one(`{"claims": [{"quote": "checks are slow", "test": "time them"}]}`); strings.Contains(out, "Recorded evidence") || strings.Contains(out, "Read one") || !strings.Contains(out, "Claims in") || !strings.Contains(out, "Judge these") {
@@ -162,7 +158,7 @@ Judge these before relying on them: could more or better data be collected, or b
 		{"quote": "the gate is flaky", "test": "rerun it", "ref": "WP-ADR89", "ref_kind": "design"}]}`), &e); err != nil {
 		t.Fatal(err)
 	}
-	out, items := renderPrepEvidence(&e, "WP", false)
+	out, items := renderPrepEvidence(&e, "WP")
 	if !strings.Contains(out, "Read one: wp page show WP-R9 · wp design show WP-ADR89\n") {
 		t.Errorf("a claim's page beside a decision:\n%s", out)
 	}
@@ -248,7 +244,7 @@ func TestPrepShowsRecordWhatTheyPrinted(t *testing.T) {
 	if hint := "  (wp brief WP-12 adds the code itself)\nRecorded evidence"; !strings.Contains(short, hint) || strings.Index(short, "Alpha: first") > strings.Index(short, hint) {
 		t.Errorf("notes and evidence:\n%s", short)
 	}
-	want := "prep glossary:Alpha@WP,glossary:Beta@WP,page:WP-X20@WP,page:WP-R3@WP"
+	want := "prep glossary:Alpha@WP,glossary:Beta@WP,page:WP-X20@WP,page:WP-R3@WP,design:WP-ADR89@WP"
 	if got := recorded(); !slices.Equal(got, []string{want}) {
 		t.Errorf("wp show recorded %q; want %q", got, want)
 	}
@@ -276,34 +272,81 @@ func TestPrepShowsRecordWhatTheyPrinted(t *testing.T) {
 	}
 }
 
-// The full form prints three evidence items and three claims at most.
-func TestRenderPrepEvidenceFullLimit(t *testing.T) {
-	var e prepEvidence
+// Everything the server sends is printed: it caps the picks, and a unit counts
+// them all.
+func TestRenderPrepEvidencePrintsAll(t *testing.T) {
 	var items, claims []string
 	for n := range 4 {
 		items = append(items, fmt.Sprintf(`{"ref": "WP-X%d", "kind": "page", "title": "Item %d", "category": "experiment", "date": "2026-11-17", "by": "person"}`, n+1, n+1))
 		claims = append(claims, fmt.Sprintf(`{"quote": "claim %d", "test": "test it", "ref": "WP-R%d", "ref_kind": "page"}`, n+1, n+1))
 	}
-	if err := json.Unmarshal([]byte(`{"evidence": [`+strings.Join(items, ",")+`], "claims": [`+strings.Join(claims, ",")+`]}`), &e); err != nil {
-		t.Fatal(err)
-	}
-	out, shown := renderPrepEvidence(&e, "WP", false)
-	for _, w := range []string{"Item 3", "claim 3"} {
+	prep := `{"key": "WP-12", "state": "ready", "evidence": {"evidence": [` + strings.Join(items, ",") + `], "claims": [` + strings.Join(claims, ",") + `]}}`
+	recorded := shownServer(t, &prep)
+	t.Setenv("WAYPOINT_AGENT", "anthropic/claude-code")
+	c, _ := newCLI(&bytes.Buffer{}, &bytes.Buffer{})
+	out := c.showPrep("WP-12")
+	for _, w := range []string{"Item 1", "Item 4", "claim 1", "claim 4"} {
 		if !strings.Contains(out, w) {
 			t.Errorf("lacks %q:\n%s", w, out)
 		}
 	}
-	for _, w := range []string{"Item 4", "claim 4", "WP-X4", "WP-R4"} {
-		if strings.Contains(out, w) {
-			t.Errorf("prints %q:\n%s", w, out)
+	want := "prep page:WP-X1@WP,page:WP-X2@WP,page:WP-X3@WP,page:WP-X4@WP,page:WP-R1@WP,page:WP-R2@WP,page:WP-R3@WP,page:WP-R4@WP"
+	if got := recorded(); !slices.Equal(got, []string{want}) {
+		t.Errorf("recorded %q; want %q", got, want)
+	}
+}
+
+// A held-out prep has no notes; wp next and wp take (the compact brief), wp
+// show, wp brief and wp prep show still print its evidence.
+func TestHeldOutPrepPrintsEvidence(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/issues/WP-12":
+			_, _ = w.Write([]byte(`{"key": "WP-12", "projectKey": "WP", "title": "Make merging wait"}`))
+		case "/api/v1/issues/WP-12/prep":
+			_, _ = w.Write([]byte(`{"key": "WP-12", "state": "ready", "held_out": true, "evidence": ` + evidenceJSON + `}`))
+		case "/api/v1/knowledge/shown":
+			_, _ = w.Write([]byte("{}"))
+		default:
+			http.NotFound(w, r)
 		}
+	}))
+	t.Cleanup(ts.Close)
+	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
+	t.Setenv("WAYPOINT_SERVER", ts.URL)
+	t.Setenv("WAYPOINT_TOKEN", "wpt_x")
+	t.Setenv("WAYPOINT_AGENT", "anthropic/claude-code")
+	t.Setenv("WP_NO_BRIEF", "")
+	t.Chdir(t.TempDir())
+	var printed bytes.Buffer
+	c, _ := newCLI(&printed, &bytes.Buffer{})
+	out := func(run func()) string {
+		printed.Reset()
+		run()
+		return printed.String()
 	}
-	var refs []string
-	for _, it := range shown {
-		refs = append(refs, it.Ref)
-	}
-	if got := strings.Join(refs, " "); got != "WP-X1 WP-X2 WP-X3 WP-R1 WP-R2 WP-R3" {
-		t.Errorf("shown %s", got)
+	for name, got := range map[string]string{
+		"wp next and wp take": out(func() { c.compactBrief("WP-12") }),
+		"wp show":             c.showPrep("WP-12"),
+		"wp brief": out(func() {
+			text, _, err := c.brief("WP-12", "", "", 4000, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.print(text)
+		}),
+		"wp prep show": out(func() {
+			if err := c.prepShow("WP-12"); err != nil {
+				t.Fatal(err)
+			}
+		}),
+	} {
+		if !strings.Contains(got, "WP-ADR89 Gate on checks") || !strings.Contains(got, "nobody reads reviews") {
+			t.Errorf("%s:\n%s", name, got)
+		}
+		if name == "wp prep show" && !strings.Contains(got, "Held out: agents aren't shown its notes (") {
+			t.Errorf("%s doesn't say what is held out:\n%s", name, got)
+		}
 	}
 }
 

@@ -221,7 +221,7 @@ func (c *cli) prepShow(key string) error {
 	}
 	c.println()
 	if p.HeldOut {
-		c.println("Held out: agents aren't shown it (the comparison group on Agents → Usage).")
+		c.println("Held out: agents aren't shown its notes (the comparison group on Agents → Usage).")
 	}
 	if p.Stale {
 		c.println("The task changed since; a runner will prepare it again.")
@@ -238,7 +238,7 @@ func (c *cli) prepShow(key string) error {
 		c.print(notes)
 	}
 	project := projectOfKey(key)
-	evidence, listed := renderPrepEvidence(p.Evidence, project, false)
+	evidence, listed := renderPrepEvidence(p.Evidence, project)
 	c.print(evidence)
 	c.noteShown("prep", append(printedTerms(&p, notes, project, false), listed...))
 	return nil
@@ -403,7 +403,7 @@ func (c *cli) renderPrepShown(key string, p *prepView, ix *codeindex.Index, budg
 		out = renderPrepNotes(p, ix, budget, compact)
 	}
 	items := printedTerms(p, out, project, compact)
-	evidence, listed := renderPrepEvidence(p.Evidence, project, compact)
+	evidence, listed := renderPrepEvidence(p.Evidence, project)
 	if evidence != "" && out != "" && !strings.HasSuffix(out, "\n") {
 		evidence = "\n" + evidence
 	}
@@ -431,15 +431,13 @@ func printedTerms(p *prepView, out, project string, compact bool) []shownItem {
 	return items
 }
 
-// renderPrepEvidence prints a prep's recorded data and claims to test, and
-// returns the pages and decisions it named. Empty when there are none.
-func renderPrepEvidence(e *prepEvidence, project string, compact bool) (string, []shownItem) {
+// renderPrepEvidence prints a prep's recorded data and claims to test, all of
+// them in every form (the server caps how many it picks, and the experiment's
+// unit counts them all), and returns the pages and decisions it named. Empty
+// when there are none.
+func renderPrepEvidence(e *prepEvidence, project string) (string, []shownItem) {
 	if e == nil || len(e.Evidence) == 0 && len(e.Claims) == 0 {
 		return "", nil
-	}
-	limit := 3
-	if compact {
-		limit = 2
 	}
 	var b strings.Builder
 	var items []shownItem
@@ -458,7 +456,7 @@ func renderPrepEvidence(e *prepEvidence, project string, compact bool) (string, 
 	}
 	if len(e.Evidence) > 0 {
 		b.WriteString("Recorded evidence that may bear on this task (matched by a weaker model):\n")
-		for _, it := range e.Evidence[:min(len(e.Evidence), limit)] {
+		for _, it := range e.Evidence {
 			category := it.Category
 			if it.Kind == "design" {
 				category += " assumptions"
@@ -474,7 +472,7 @@ func renderPrepEvidence(e *prepEvidence, project string, compact bool) (string, 
 	}
 	if len(e.Claims) > 0 {
 		b.WriteString("Claims in the task text worth testing (picked by a weaker model):\n")
-		for _, cl := range e.Claims[:min(len(e.Claims), limit)] {
+		for _, cl := range e.Claims {
 			fmt.Fprintf(&b, "  - \"%s\" — test: %s", cl.Quote, cl.Test)
 			if cl.Ref != "" {
 				b.WriteString(" (see " + cl.Ref + edited(cl.ChangedSince) + ")")
@@ -522,9 +520,10 @@ func prepIndex(ix *codeindex.Index, repo string) *codeindex.Index {
 }
 
 // showPrep is the short prep wp show prints after the comments: most
-// agents open a task with wp show, not wp next. Empty when there is none
-// (or it is held out). The index isn't built here for it: without one the
-// picks print without line numbers.
+// agents open a task with wp show, not wp next. Empty when there is no ready
+// prep with notes or evidence for this reader (a held-out one has no notes for
+// agents). The index isn't built here for it: without one the picks print
+// without line numbers.
 func (c *cli) showPrep(key string) string {
 	if c.asJSON || os.Getenv("WP_NO_BRIEF") != "" {
 		return ""
@@ -538,7 +537,7 @@ func (c *cli) showPrep(key string) string {
 		out = c.showPrepNotes(key, &p)
 	}
 	project := projectOfKey(key)
-	evidence, listed := renderPrepEvidence(p.Evidence, project, true)
+	evidence, listed := renderPrepEvidence(p.Evidence, project)
 	c.noteShown("prep", append(printedTerms(&p, out, project, true), listed...))
 	return out + evidence
 }

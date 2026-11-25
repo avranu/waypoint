@@ -496,7 +496,7 @@ func TestExperimentHeldUpMeasures(t *testing.T) {
 	}
 	measured := func(id int64) string {
 		var out []string
-		for _, key := range []string{"followups", "fixes", "self_review", "review_found", "pr_comments"} {
+		for _, key := range []string{"followups", "followups_stated", "fixes", "self_review", "review_found", "pr_comments"} {
 			mi := metricIndex(key)
 			if mi < 0 {
 				t.Fatalf("no metric %s", key)
@@ -510,7 +510,14 @@ func TestExperimentHeldUpMeasures(t *testing.T) {
 		}
 		return strings.Join(out, " ")
 	}
-	for id, want := range map[int64]string{task: "5 3 6 5 3", quiet: "0 0 - - -", later: "0 0 - 0 -"} {
+	// Every follow-up counts, as in the stakes report; those stated or
+	// classified leave out what Waypoint recorded itself.
+	for key, label := range map[string]string{"followups": "Follow-ups filed", "followups_stated": "Follow-ups stated or classified"} {
+		if mi := metricIndex(key); mi < 0 || experimentMetrics[mi].Label != label || !experimentMetrics[mi].heldUp {
+			t.Errorf("metric %s: want the held-up measure %q", key, label)
+		}
+	}
+	for id, want := range map[int64]string{task: "7 5 3 6 5 3", quiet: "1 0 0 - - -", later: "0 0 0 - 0 -"} {
 		if got := measured(id); got != want {
 			t.Errorf("task %d: %s; want %s", id, got, want)
 		}
@@ -557,13 +564,14 @@ func TestExperimentHolmFamilies(t *testing.T) {
 			x.row.Messages = int64(n + 1 + 6*ai)
 			x.findings, x.rounds = float64(n%7+2*ai), float64(n%5+ai)
 			x.followups, x.fixes = float64(n%6+3*ai), float64(n%4+ai)
+			x.followupsStated = float64(n%4 + 2*ai)
 			x.selfReview, x.reviewFound, x.prComments = float64(n%9+4*ai), float64(n%8+ai), float64(n%3+ai)
 			tasks[a.Key] = append(tasks[a.Key], x)
 		}
 	}
 	run := &ExperimentRun{ID: 1, Weights: d.Weights, Assigned: map[string]int{}, Exposed: map[string]int{}}
 	r := experimentCompare(d, run, tasks, "all", time.Now())
-	heldUp := []string{"followups", "fixes", "self_review", "review_found", "pr_comments"}
+	heldUp := []string{"followups", "followups_stated", "fixes", "self_review", "review_found", "pr_comments"}
 	for name, in := range map[string]bool{"the older measures": false, "how tasks held up": true} {
 		var keys []string
 		var ps, got []float64

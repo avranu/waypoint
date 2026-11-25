@@ -126,8 +126,9 @@ stateless, same bearer token).
                                       the project get it, not those given only the task, and a restricted token only
                                       with both pages.read and design.read. An agent gets it only in
                                       the shown arm of a live prep_evidence experiment, drawn when the agent
-                                      holding the task fetches with shown=1 (which makes the task a unit), and
-                                      never when the prep is held out
+                                      holding the task fetches with shown=1 (which makes the task a unit),
+                                      whether or not the prep's notes are held out. A run limited to
+                                      projects checks and shows only their tasks'
     POST  /issues/{key}/prep          a code bundle from a checkout {repo, commit, machine, files: [{path, lines, why,
                                       symbols: [{name, kind, start, end}]}], bodies, tests, docs} (editors); the
                                       prep model reads it in the background
@@ -777,9 +778,11 @@ control. Reading needs ai.manage; starting and stopping, a person who is an admi
     GET  /experiments/{key}/results?run=ID&scope=done|all   per arm: assigned, exposed, measured, done
                                     rate; per metric the median, mean, ratio to the control with a
                                     bootstrap 95% interval, Mann-Whitney p and Holm-adjusted p
-                                    (followups, fixes, self_review, review_found and pr_comments are
-                                    adjusted among themselves, the other metrics among themselves); the
-                                    assignment check (SRM), detectable change, verdict, notes, caveats
+                                    (followups, followups_stated, fixes, self_review, review_found and
+                                    pr_comments are adjusted among themselves, the other metrics among
+                                    themselves; followups counts every follow-up, followups_stated
+                                    leaves out those Waypoint recorded itself that nobody classified);
+                                    the assignment check (SRM), detectable change, verdict, notes, caveats
     POST /issues/{key}/arms {"experiments":[key],"via":"next|take"}   (an agent's wp, after taking a
                                     task) {key, arms:{experiment:{arm,run,params}}}: the arms of the
                                     experiments wp carries out; empty for a person or a read-only token
