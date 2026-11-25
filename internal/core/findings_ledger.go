@@ -60,6 +60,9 @@ type LedgerEntry struct {
 	Of     string `json:"of,omitempty"`    // repeat: the earlier comment or finding it makes again
 	Round  int    `json:"round,omitempty"` // repeat: the round that fixed it; caused: the round whose change it is on
 	Why    string `json:"why,omitempty"`
+	// Covered: a comment written about a head before the fix of round Round,
+	// which covers it: the commit of that fix (WP-1853). It is no repeat.
+	Covered string `json:"covered,omitempty"`
 }
 
 // ledgerItem is a comment or an audit finding, now or earlier.
@@ -147,6 +150,13 @@ func (l *ledger) item(it ledgerItem) LedgerEntry {
 		return e
 	}
 	if prior, n, ok := l.repeatOf(it, e); ok {
+		if fix, ok := l.coveredByFix(it, n); ok {
+			// Written about a head before the fix, so nothing "came back":
+			// the fix covers it (WP-1853).
+			e.Class, e.Of, e.Round, e.Covered = RoundNew, prior.ID, n, fix
+			e.Why = fmt.Sprintf("written before round %d's fix, which covers it as it does %s", n, prior.ID)
+			return e
+		}
 		e.Class, e.Of, e.Round = RoundRepeat, prior.ID, n
 		e.Why = "makes the point of " + prior.ID + " again"
 		if n > 0 {
@@ -294,6 +304,40 @@ func (l *ledger) fixedIn(p ledgerItem) int {
 		}
 	}
 	return 0
+}
+
+// coveredByFix says whether a comment was written about a head from before
+// round n's fix, and gives that fix's commit. A comment is about the head it
+// was made on (the commit the forge gives each review comment): one of the
+// heads up to the start of round n's work is before the fix. Where that
+// commit isn't one of them (an issue comment has none), it is when it was
+// written: before round n began, the fix was not yet pushed. A comment on
+// the fix's commit or any later one is the fix not holding.
+func (l *ledger) coveredByFix(it ledgerItem, n int) (string, bool) {
+	if it.Kind != "comment" {
+		return "", false // an audit finding is made of the head it read
+	}
+	for i, r := range l.in.Rounds {
+		if r.N != n || !r.Pushed {
+			continue
+		}
+		fix := pushedHead(l.in.Rounds, i, l.in.Head)
+		if fix == "" || sameSHA(fix, r.SHA) || (it.SHA != "" && sameSHA(it.SHA, fix)) {
+			return "", false
+		}
+		if it.SHA != "" {
+			for k := 0; k <= i; k++ {
+				if sameSHA(it.SHA, l.in.Rounds[k].SHA) || (k < i && sameSHA(it.SHA, pushedHead(l.in.Rounds, k, ""))) {
+					return fix, true
+				}
+			}
+		}
+		if !it.At.IsZero() && it.At.Before(r.At) {
+			return fix, true
+		}
+		return "", false
+	}
+	return "", false
 }
 
 // causedBy: the item came after the last round's push and is on what that
@@ -603,6 +647,51 @@ func (s *Service) classifyLiveRound(ctx context.Context, b *Babysit, pr *PullReq
 	}
 	round.Ledger, round.Class = classifyRound(in)
 	round.WorkClass = round.Class
+}
+
+// closeCovered closes the open comments a round's fix already covers: ones
+// written about a head from before that fix, which the ledger would not take
+// for the fix not holding (coveredByFix, WP-1853). They are marked fixed by
+// the fix's commit, as the duplicate that round was given is, so no round is
+// spent on them and none parks on "came back". It changes nothing before a
+// round has pushed.
+func (s *Service) closeCovered(ctx context.Context, b *Babysit, pr *PullRequest, comments []*PRReviewComment) {
+	if !slices.ContainsFunc(b.Rounds, func(r BabysitRound) bool { return r.Pushed }) {
+		return
+	}
+	var open []*PRReviewComment
+	in := ledgerInput{At: s.now(), Head: pr.HeadSHA, Rounds: b.Rounds}
+	for _, rc := range comments {
+		if !rc.Dealt && !rc.Gone && (rc.Verdict == VerdictNew || rc.Verdict == VerdictSeen) {
+			open = append(open, rc)
+			in.Items = append(in.Items, commentItem(rc))
+		}
+	}
+	if len(open) == 0 {
+		return
+	}
+	in.File = s.forgeFileReader(ctx, pr)
+	for _, rc := range comments {
+		in.Earlier = append(in.Earlier, commentItem(rc))
+	}
+	entries, _ := classifyRound(in)
+	for _, e := range entries {
+		if e.Covered == "" {
+			continue
+		}
+		for _, rc := range open {
+			if rc.Ref != e.ID {
+				continue
+			}
+			note := fmt.Sprintf("Written about %s, before round %d's fix (%s), which covers it as it does %s. (Closed by Waypoint; reopen it if the fix leaves this standing.)",
+				cmp(short(rc.SHA), "an earlier head"), e.Round, short(e.Covered), e.Of)
+			if err := s.markComment(ctx, pr, rc, VerdictFixed, note, e.Covered, rcBy{kind: "babysitter", name: "waypoint"}, b.Round); err != nil {
+				s.log.WarnContext(ctx, "close a comment a fix covers", "pr", pr.ID, "comment", rc.Ref, "err", err)
+				continue
+			}
+			rc.Dealt = true
+		}
+	}
 }
 
 // commentItem is a review comment as the ledger reads it.

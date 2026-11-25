@@ -516,13 +516,41 @@ func (s *Service) footprintDue(ctx context.Context, pr *PullRequest) (string, er
 // says whether it did (the babysit then waits for it). A check that can't
 // be asked for is recorded as skipped: it fails open.
 func (s *Service) footprintStep(ctx context.Context, b *Babysit, pr *PullRequest) bool {
+	a, why, asked := s.requestFootprint(ctx, b, pr)
+	if !asked {
+		return false
+	}
+	s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("footprint check #%d of what its rounds added (%s)", a.ID, why))
+	return true
+}
+
+// footprintAhead asks for the footprint check as soon as it is due for a head
+// whose checks passed, without taking the step over: it runs beside a review
+// wait, a quiet period or open comments, so it isn't asked only once nothing
+// else holds the pull request and then holds the merge for the whole audit
+// (WP-1853: "footprint check due" held 57 pull requests for 106 hours in a
+// week). The caller says where no round is about to move the head. Asking
+// again for the same head is a no-op (its request key, and the check
+// recorded for the head).
+func (s *Service) footprintAhead(ctx context.Context, b *Babysit, pr *PullRequest) {
+	if pr.CIState != CIPassed || !sameSHA(pr.ciSHA, pr.HeadSHA) {
+		return // a failed head gets a round, and its push makes a new head
+	}
+	if a, why, asked := s.requestFootprint(ctx, b, pr); asked {
+		s.log.InfoContext(ctx, "footprint check asked early", "repo", pr.Repo, "number", pr.Number, "audit", a.ID, "why", why)
+	}
+}
+
+// requestFootprint asks for the footprint check the head needs and records
+// it; asked is false when none is due or it could not be asked for (then it
+// is recorded as skipped, so the merge doesn't wait for it).
+func (s *Service) requestFootprint(ctx context.Context, b *Babysit, pr *PullRequest) (a *CodeAudit, why string, asked bool) {
 	fp, why, due := s.footprintNow(ctx, b, pr)
 	if !due {
-		return false
+		return nil, "", false
 	}
 	lines, _ := pr.changedLines()
 	check := footprintCheck{footprintAt: footprintAt{SHA: pr.HeadSHA, Paths: pr.files, Lines: lines}, At: s.now()}
-	var a *CodeAudit
 	err := errors.New("no member's runner to run it on")
 	if owner := s.babysitOwnerFor(ctx, pr); owner != 0 {
 		// On the default chain, like every audit nobody named models for
@@ -537,13 +565,12 @@ func (s *Service) footprintStep(ctx context.Context, b *Babysit, pr *PullRequest
 		fp.Checks = append(fp.Checks, check)
 		s.saveFootprint(ctx, pr.ID, fp)
 		s.log.Info("footprint check skipped", "repo", pr.Repo, "number", pr.Number, "err", err)
-		return false
+		return nil, why, false
 	}
 	check.Outcome, check.Audit = footprintAudited, a.ID
 	fp.Checks = append(fp.Checks, check)
 	s.saveFootprint(ctx, pr.ID, fp)
-	s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("footprint check #%d of what its rounds added (%s)", a.ID, why))
-	return true
+	return a, why, true
 }
 
 // footprintInstructions is what the footprint check looks for.

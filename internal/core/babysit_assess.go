@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
@@ -390,6 +391,7 @@ func (s *Service) parkBabysit(ctx context.Context, b *Babysit, pr *PullRequest, 
 	}
 	r.Parked, r.ParkSHA = why, pr.HeadSHA
 	r.ParkedOn = s.stillOpen(ctx, pr, about)
+	r.ParkNamed = namedIn(why, append(slices.Clone(comments), findings...))
 	r.ParkedChecks = slices.Clone(failed)
 	r.WaitsOn = s.namedRequests(ctx, pr, question+"\n"+r.Answer)
 	if len(r.WaitsOn) == 0 {
@@ -724,6 +726,24 @@ func parkLifts(failed []string, conflict bool, comments, findings []string) []st
 	return failed
 }
 
+// namedIn are the ids among ids that text names as a word of its own
+// ("c6974 (…) came back": c6974; "12.3." is 12.3), in the order of ids.
+func namedIn(text string, ids []string) []string {
+	words := strings.FieldsFunc(text, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '.' && r != '_' && r != '-'
+	})
+	for i, w := range words {
+		words[i] = strings.TrimRight(w, ".")
+	}
+	var out []string
+	for _, id := range ids {
+		if slices.Contains(words, id) && !slices.Contains(out, id) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // stillOpen are those of refs not dealt with. If they can't be read it is
 // none, so nothing later takes the park for answered.
 func (s *Service) stillOpen(ctx context.Context, pr *PullRequest, refs []string) []string {
@@ -846,6 +866,9 @@ func (s *Service) settledWhileParked(ctx context.Context, b *Babysit, pr *PullRe
 	r := lastRound(b)
 	reply := s.parkCommentsSettled(ctx, pr, r)
 	if reply == "" {
+		reply = s.parkNamedSettled(ctx, pr, r)
+	}
+	if reply == "" {
 		reply = s.parkChecksPassed(ctx, pr, r)
 	}
 	if reply == "" {
@@ -875,6 +898,40 @@ func (s *Service) parkCommentsSettled(ctx context.Context, pr *PullRequest, r *B
 		return ""
 	}
 	return "The review comments it asked about (" + joinAnd(r.ParkedOn) + ") were settled on the pull request."
+}
+
+// parkNamedSettled is the reply when a rest's reason named comments or audit
+// findings and none of them is open any more (fixed, rejected, dismissed,
+// resolved, verified, withdrawn or gone), else "" (WP-1853). #582 rested an
+// hour on "c6974 came back", the comment was rejected with evidence, and it
+// stayed out of the merge line until the hour was up. Only a rest: a park
+// that asked a person waits for the answer or for what parkCommentsSettled
+// reads. A comment or finding that can't be read counts as open.
+func (s *Service) parkNamedSettled(ctx context.Context, pr *PullRequest, r *BabysitRound) string {
+	if len(r.ParkNamed) == 0 || !resting(r) {
+		return ""
+	}
+	comments, err := s.reviewComments(ctx, s.db.R, pr.ID)
+	if err != nil {
+		return ""
+	}
+	open := map[string]bool{}
+	for _, rc := range comments {
+		if !rc.Dealt {
+			open[rc.Ref] = true
+		}
+	}
+	todo, err := s.auditTodoErr(ctx, pr.ID)
+	if err != nil {
+		return ""
+	}
+	for _, f := range todo {
+		open[f.ID] = true
+	}
+	if slices.ContainsFunc(r.ParkNamed, func(id string) bool { return open[id] }) {
+		return ""
+	}
+	return "What the rest was over (" + joinAnd(r.ParkNamed) + ") is dealt with: the rest ended."
 }
 
 // parkReread is how often a head parked over failing checks is read from the

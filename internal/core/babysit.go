@@ -149,6 +149,10 @@ type BabysitRound struct {
 	Parked   string `json:"parked,omitempty"`
 	// ParkedOn are the review comments its park's question is about.
 	ParkedOn []string `json:"parked_on,omitempty"`
+	// ParkNamed are the comments and audit findings its park's reason names
+	// (WP-1853), whatever else the round was given: a rest ends once they are
+	// dealt with, not only when the whole round's comments are.
+	ParkNamed []string `json:"park_named,omitempty"`
 	// ParkedChecks are the failing checks its park was over (WP-914): their
 	// passing on the parked head, with no push, ends the park.
 	ParkedChecks []string `json:"parked_checks,omitempty"`
@@ -1003,6 +1007,11 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		// failing checks passing or the requests it waits on closing moves
 		// it on.
 		if r := lastRound(b); resting(r) {
+			// A first failure on the head is ruled out as a flake while it
+			// rests too: no round runs on it meanwhile (WP-1853).
+			if s.restFlakeRerun(ctx, b, pr) {
+				return
+			}
 			s.setState(ctx, b, pr, BabysitResting, restWaitText(r))
 		} else if wait := b.Wait; b.State != BabysitNeedsPerson || !strings.HasPrefix(wait, parkWait) {
 			s.setState(ctx, b, pr, BabysitNeedsPerson, parkWait+excerpt(cmp(r.Question, "what should happen to it?"), 200))
@@ -1049,6 +1058,8 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		return
 	}
 	if going {
+		// The footprint check runs beside the reviews, not after them (WP-1853).
+		s.footprintAhead(ctx, b, pr)
 		s.reviewWait(ctx, b, pr, why)
 		return
 	}
@@ -1067,6 +1078,7 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 			return
 		}
 		if len(waits) > 0 {
+			s.footprintAhead(ctx, b, pr) // beside the quiet period (WP-1853)
 			s.reviewWait(ctx, b, pr, waits[0])
 			return
 		}
@@ -1120,12 +1132,17 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 	// A green build answers a bot's claim that the code doesn't compile
 	// before any round is spent on it (WP-437).
 	s.triageComments(ctx, b, pr, checks, comments)
+	s.closeCovered(ctx, b, pr, comments) // a comment about a head before a fix that covers it (WP-1853)
 	work, late, person := s.commentWork(ctx, pr, b, comments)
 	// Bots' comments alone that all score as nitpicks start no round
 	// either (WP-695).
 	if len(failed) == 0 && len(findings) == 0 && s.waiveNitpicks(ctx, b, pr, comments, work) {
 		late, work = append(late, work...), nil
 	}
+	// What a round would be started for, before late minors ride along: they
+	// have no round of their own, so they don't keep a failed check from its
+	// flake re-run (WP-1853).
+	ownWork := len(work)
 	if len(failed) > 0 || len(work) > 0 {
 		work = append(work, late...) // it rides along
 	} else if pr.ArmedAt == nil {
@@ -1133,7 +1150,7 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		// the round's push, so they get one closing round each (WP-750).
 		work = unoffered(b, late)
 	}
-	if len(failed) > 0 && !conflict && len(work) == 0 {
+	if len(failed) > 0 && !conflict && ownWork == 0 {
 		faults := s.headRunnerFaults(ctx, pr)
 		if faults != nil {
 			if waiting, stale := s.waitForRunner(ctx, b, pr, faults); waiting {
@@ -1151,7 +1168,9 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		// Not the runner: re-run once, in its place in the queue, before a
 		// round; a pass proves a flaky test (WP-392). A job's own time limit
 		// has had its re-runs already.
-		if faults == nil && s.rerunForFlake(ctx, b, pr, failed) {
+		// Not when a round for findings is about to push: the head moves
+		// and CI runs again anyway (WP-1853).
+		if faults == nil && len(findings) == 0 && s.rerunForFlake(ctx, b, pr, failed) {
 			return
 		}
 	}
@@ -1159,6 +1178,9 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		s.babysitRound(ctx, b, pr, failed, conflict, work, findings)
 		return
 	}
+	// No round is about to move the head: the footprint check starts now,
+	// beside open comments waiting for a person and the like (WP-1853).
+	s.footprintAhead(ctx, b, pr)
 	if len(cancelled) > 0 {
 		// Only cancellations fail the head: nothing for an agent to fix.
 		s.waitForCancelled(ctx, b, pr, cancelled)

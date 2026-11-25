@@ -221,3 +221,34 @@ func TestBabysitPromptRepeatHistory(t *testing.T) {
 		t.Error("a round with no repeats is told about them")
 	}
 }
+
+// A comment written about a head from before a round's fix, which the fix
+// covers (a bot's duplicate that came late), is not the fix coming back
+// (WP-1853): #582 parked on "c6974 came back after the assessor's fix in
+// round 5" though it was written against the commit before that fix.
+func TestClassifyRoundOlderHeadIsNotAComeBack(t *testing.T) {
+	body := "Relayed from coderabbit: on `x/x.go` line 4: the gate reads config before the lock is held so two writers race"
+	fixed := ledgerItem{ID: "c6981", Kind: "comment", SHA: "aaa", At: t0, Body: body, Dealt: true, Fixed: true}
+	rounds := []BabysitRound{{N: 5, SHA: "aaa", At: t0.Add(time.Minute), Comments: []string{"c6981"}, Pushed: true, PushSHA: "bbb", Assessor: true}}
+	classify := func(sha string, at time.Time) LedgerEntry {
+		it := ledgerItem{ID: "c6974", Kind: "comment", SHA: sha, At: at, Body: body}
+		entries, _ := classifyRound(ledgerInput{Head: "bbb", Items: []ledgerItem{it}, Earlier: []ledgerItem{fixed, it}, Rounds: rounds, File: ledgerFiles})
+		return entries[0]
+	}
+	// On the head before the fix: covered by it, a new item to close.
+	if e := classify("aaa", t0); e.Class != RoundNew || e.Covered != "bbb" || e.Round != 5 || e.Of != "c6981" {
+		t.Errorf("older head: %+v, want new, covered by bbb (round 5, of c6981)", e)
+	}
+	// No commit (an issue comment), written before the round began: the same.
+	if e := classify("", t0); e.Covered != "bbb" {
+		t.Errorf("no commit, written before the round: %+v", e)
+	}
+	// On the fix's own commit, or written after the round with a commit that
+	// isn't one before it: the fix didn't hold.
+	if e := classify("bbb", t0.Add(time.Hour)); e.Class != RoundRepeat || e.Covered != "" {
+		t.Errorf("on the fix's commit: %+v, want repeat", e)
+	}
+	if e := classify("ccc", t0.Add(time.Hour)); e.Class != RoundRepeat || e.Covered != "" {
+		t.Errorf("on a later head: %+v, want repeat", e)
+	}
+}

@@ -143,6 +143,32 @@ func (s *Service) rerunForFlake(ctx context.Context, b *Babysit, pr *PullRequest
 	return true
 }
 
+// restFlakeRerun is the flake re-run of a resting babysit's head (WP-1853):
+// the head's failed checks, re-run once before anything else is made of them,
+// whether or not a round could run. True when it re-ran them or waits for
+// that re-run's results. The same rules as a round's re-run: a check that
+// failed in a round before it is the code's, and a runner fault is not a
+// flake.
+func (s *Service) restFlakeRerun(ctx context.Context, b *Babysit, pr *PullRequest) bool {
+	if pr.HeadSHA == "" || !sameSHA(pr.ciSHA, pr.HeadSHA) || pr.CIState != CIFailed {
+		return false
+	}
+	checks, err := s.prChecks(ctx, pr)
+	if err != nil {
+		return false
+	}
+	var failed []string
+	for _, c := range checks {
+		if c.State == CheckFailed && !cancelledCheck(c.Description) {
+			failed = append(failed, c.Name)
+		}
+	}
+	if len(failed) == 0 || s.headRunnerFaults(ctx, pr) != nil {
+		return false
+	}
+	return s.rerunForFlake(ctx, b, pr, failed)
+}
+
 // flakeChecks reads the head's failed checks' kept logs: the failing part,
 // and the tests it names. A check that only reports others' failure is left
 // out.

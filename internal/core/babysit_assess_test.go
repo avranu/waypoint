@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -702,5 +703,58 @@ func TestParkAsksWhenTheNamedRequestIsClosed(t *testing.T) {
 	assessorAsks(t, be, "Will you rebuild the CI image ("+img.Code+") or "+foreign.Code+" or NOPE:R-9?")
 	if n := be.parkQuestions(); n != 1 || len(lastRound(be.babysit()).WaitsOn) != 0 {
 		t.Fatalf("%d questions, waits on %+v", n, lastRound(be.babysit()).WaitsOn)
+	}
+}
+
+// parkedOnNamedComment is #7 resting out of the merge line on a round over a
+// failing check and a comment an agent held, the way #582 rested on
+// "c6974 came back after the assessor's fix": the park names the comment, but
+// the round's failing check means its comments are not the whole subject.
+func parkedOnNamedComment(t *testing.T) (*bsEnv, *PullRequest, string) {
+	t.Helper()
+	be := newBabysitEnv(t)
+	be.sg.threads = humanThread()
+	be.runnerOnline()
+	pr := be.open()
+	be.start(pr)
+	ref := be.comment("501").Ref
+	if _, err := be.s.AckReviewComments(be.ctx, be.agent, AckInput{IDs: []string{ref}, Verdict: "needs-person", Note: "A product call."}); err != nil {
+		t.Fatal(err)
+	}
+	be.s.Wait()
+	b := be.babysit()
+	b.Rounds = append(b.Rounds, BabysitRound{N: 1, SHA: pr.HeadSHA, Checks: []string{"ci / test"}, Comments: []string{ref}, Outcome: "not fixed"})
+	be.s.parkBabysit(be.ctx, b, pr, ref+" (app/export.go) came back after the assessor's fix in round 1", "", []string{"ci / test"}, false, []string{ref}, nil)
+	b = be.babysit()
+	r := lastRound(b)
+	if !parkedOn(b, pr.HeadSHA) || !resting(r) || len(r.ParkedOn) != 0 || !slices.Equal(r.ParkNamed, []string{ref}) {
+		t.Fatalf("park = %+v", r)
+	}
+	return be, pr, ref
+}
+
+// A rest ends at the next sweep once the comment it named is rejected with
+// evidence, and stays while it is open (WP-1853).
+func TestRestEndsWhenItsNamedCommentIsRejected(t *testing.T) {
+	be, pr, ref := parkedOnNamedComment(t)
+	be.step()
+	if b := be.babysit(); !parkedOn(b, pr.HeadSHA) || b.State != BabysitResting {
+		t.Fatalf("a rest ended with its comment open: %s %+v", b.State, lastRound(b))
+	}
+	if _, err := be.s.AckReviewComments(be.ctx, be.agent, AckInput{IDs: []string{ref}, Verdict: "rejected", Note: "It builds; the claim doesn't hold."}); err != nil {
+		t.Fatal(err)
+	}
+	be.s.Wait()
+	be.step()
+	b := be.babysit()
+	if parkedOn(b, pr.HeadSHA) || b.State == BabysitResting || !strings.Contains(lastRound(b).Reply, "is dealt with") {
+		t.Fatalf("the rest outlasted its comment: %s %q %+v", b.State, b.Wait, lastRound(b))
+	}
+}
+
+func TestNamedIn(t *testing.T) {
+	got := namedIn("c6974 (app/x.go, in Run) came back after the assessor's fix; 12.3. and c69 too", []string{"c6974", "c69", "12.3", "c6", "c1"})
+	if !slices.Equal(got, []string{"c6974", "c69", "12.3"}) {
+		t.Errorf("named = %v", got)
 	}
 }

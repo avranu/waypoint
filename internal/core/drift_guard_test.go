@@ -292,3 +292,55 @@ func TestDriftGuardFootprintNotForSmallRounds(t *testing.T) {
 		t.Errorf("due with no ship footprint: %q", why)
 	}
 }
+
+// The footprint check is asked for as soon as it is due, beside a review that
+// is still going, not once nothing else holds the pull request (WP-1853).
+func TestDriftGuardFootprintBesideTheReviewWait(t *testing.T) {
+	be, _, pr := footprintEnv(t)
+	if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT INTO bot_runs(project_id, pr_id, kind, head_sha, status, created_at)
+		VALUES ((SELECT min(id) FROM projects), ?, 'review', ?, 'running', ?)`, pr.ID, "8888888bbbb", be.s.nowMS()); err != nil {
+		t.Fatal(err)
+	}
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step()
+	if n := len(be.audits()); n != 1 {
+		t.Fatalf("audits = %v, want the footprint check asked during the review", be.audits())
+	}
+	if b := be.babysit(); !strings.Contains(b.Wait, "review") {
+		t.Errorf("the wait is no longer the review's: %q", b.Wait)
+	}
+	be.step()
+	if n := len(be.audits()); n != 1 {
+		t.Errorf("asked again: %v", be.audits())
+	}
+}
+
+// With a comment open that waits for a person, the check starts too.
+func TestDriftGuardFootprintWithACommentOpen(t *testing.T) {
+	be, _, _ := footprintEnv(t)
+	be.sg.threads = humanThread()
+	if _, err := be.s.syncReviewComments(be.ctx, be.pr(7)); err != nil {
+		t.Fatal(err)
+	}
+	ref := be.comment("501").Ref
+	if _, err := be.s.AckReviewComments(be.ctx, be.agent, AckInput{IDs: []string{ref}, Verdict: "needs-person", Note: "A product call."}); err != nil {
+		t.Fatal(err)
+	}
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step()
+	if n := len(be.audits()); n != 1 {
+		t.Fatalf("audits = %v, want the footprint check asked with a comment open", be.audits())
+	}
+}
+
+// Not where the head is about to move: a head whose checks failed gets its
+// round, and the check waits for the head that round makes.
+func TestDriftGuardFootprintNotBesideARound(t *testing.T) {
+	be, _, _ := footprintEnv(t)
+	be.ci("8888888bbbb", CheckFailed)
+	be.step()
+	b := be.babysit()
+	if b.Round != 2 || len(be.audits()) != 0 {
+		t.Fatalf("round %d audits %v, want a round and no check", b.Round, be.audits())
+	}
+}

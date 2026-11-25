@@ -204,3 +204,22 @@ func TestShellWordQuotes(t *testing.T) {
 		}
 	}
 }
+
+// A resting babysit's head that failed for the first time is re-run once to
+// rule out a flake, though no round can run on it meanwhile (WP-1853).
+func TestFlakeRerunWhileResting(t *testing.T) {
+	be, pr, _ := parkedOnNamedComment(t)
+	be.checks(pr.HeadSHA, CommitCheck{Name: "ci / test", State: CheckFailed, Description: "Failing after 9m", URL: "https://ci.example.com/run/1"})
+	be.step()
+	if n := len(be.retries()); n != 1 {
+		t.Fatalf("retries = %v, want the one re-run; %+v", be.retries(), be.babysit())
+	}
+	if fr := parseFlakeRerun(be.babysit().flakeRerun); !sameSHA(fr.SHA, pr.HeadSHA) {
+		t.Errorf("no marker for the head: %+v", fr)
+	}
+	// Once only: the next sweep waits for its results, and starts nothing.
+	be.step()
+	if n := len(be.retries()); n != 1 || len(be.jobs()) != 0 {
+		t.Errorf("retries %v jobs %v", be.retries(), be.jobs())
+	}
+}
