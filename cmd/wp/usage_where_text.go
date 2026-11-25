@@ -101,14 +101,25 @@ func whereText(r *whReport) string {
 	}
 
 	p("\nLimit events")
-	if len(r.Limits.Events) == 0 {
+	if len(r.Limits.Incidents) == 0 {
 		p("  none in the window")
 	}
-	for _, e := range r.Limits.Events {
-		p("  %s session %s: %s", e.TS, shortID(e.Session), e.Text)
+	for _, e := range r.Limits.Incidents {
+		reset := ""
+		if e.ResetsAt != "" {
+			reset = ", stated reset " + e.ResetsAt
+		}
+		p("  %s session %s: %s limit%s, %d records: %s", e.Time, shortID(e.Session), e.Type, reset, e.Records, e.Text)
+		p("    %s; %s", e.ExtraUsage, e.Lockout)
+		if e.ResumedEarly {
+			p("    calls resumed before the stated reset; the allowance was reset early or the limit was for another bucket")
+		}
+		if e.SpendMayBeExtra != nil {
+			p("    spend after the message, may be extra usage: %s", whMoney(*e.SpendMayBeExtra))
+		}
 	}
-	if len(r.Limits.Events) > 0 {
-		p("  spend from the first one to the end of the window: %s", whMoney(r.Limits.SpendAfter))
+	if line := whOtherErrs(r.Limits.OtherErrs); line != "" {
+		p("  other API errors, not limits: %s", line)
 	}
 
 	n := r.NotKnown

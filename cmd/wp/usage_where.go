@@ -29,8 +29,8 @@ searching, editing through the shell or the Edit tool, tests and builds, git,
 wp, delegating, text only), counting every command of a compound line; what
 woke each call (typed prompt, notification, tool result, compaction); each
 session's spend before and after its first wp ship; the top sessions;
-limit messages and the spend after the first; and what the report cannot
-see. A call is counted once however many records stream it (the largest
+limit incidents with how long each locked calls out and what the record says
+about extra usage; and what the report cannot see. A call is counted once however many records stream it (the largest
 usage wins). --since and --until take a duration ago (24h, 3d) or a time
 (2026-11-24T15:00:00Z, 2026-11-24). --csv writes one row per call.`,
 	examples: []string{"wp usage where", "wp usage where --since 3d --top 20 --csv calls.csv", "wp usage where --since 2026-11-24T15:00:00Z --until 2026-11-25T15:00:00Z --json"},
@@ -139,11 +139,36 @@ type whSession struct {
 	files                            int
 }
 
+// whLimit is one limit error record. kind is rateLimitType from the record's
+// rate_limit_info, or "unclassified" when the record has none and only its
+// text mentions a limit.
 type whLimit struct {
-	TS      string `json:"time"`
-	Session string `json:"session"`
-	Text    string `json:"text"`
-	ts      int64
+	ts                  int64
+	session, text, kind string
+	resets              int64
+	overage, reason     string
+	usingOverage        bool
+}
+
+// whIncident is the limit records that share a limit type and stated reset
+// with no successful model call between them. Lockout is the time from the
+// first message to the next successful call in any session in the window.
+type whIncident struct {
+	Time            string   `json:"time"`
+	Session         string   `json:"session"`
+	Type            string   `json:"limit_type"`
+	ResetsAt        string   `json:"stated_reset,omitempty"`
+	Records         int      `json:"records"`
+	Text            string   `json:"text"`
+	ExtraUsage      string   `json:"extra_usage"`
+	UsingOverage    bool     `json:"is_using_overage"`
+	LockoutSeconds  *float64 `json:"lockout_seconds"`
+	Lockout         string   `json:"lockout"`
+	ResumedAt       string   `json:"resumed_at,omitempty"`
+	ResumedEarly    bool     `json:"resumed_before_stated_reset"`
+	SpendMayBeExtra *float64 `json:"spend_after_may_be_extra_usage,omitempty"`
+	startMS, endMS  int64
+	last            whLimit
 }
 
 // whScan is everything read from the transcripts.
@@ -153,6 +178,7 @@ type whScan struct {
 	sessions   map[string]*whSession
 	limits     []whLimit
 	limitSeen  map[string]bool
+	apiErrors  map[string]int
 	synthetic  int
 	scriptTool map[string]int
 	boundaries int
@@ -234,7 +260,7 @@ func cmdUsageWhere(c *cli, args []string) error {
 }
 
 func scanWhere(files []usageFile, from, to time.Time, prices []burnPrice) *whScan {
-	sc := &whScan{calls: map[string]*whCall{}, sessions: map[string]*whSession{}, limitSeen: map[string]bool{}, scriptTool: map[string]int{}, since: from.UnixMilli(), end: to.UnixMilli()}
+	sc := &whScan{calls: map[string]*whCall{}, sessions: map[string]*whSession{}, limitSeen: map[string]bool{}, apiErrors: map[string]int{}, scriptTool: map[string]int{}, since: from.UnixMilli(), end: to.UnixMilli()}
 	// the oldest file first, so that a resumed session's copy of history is
 	// credited to the session that wrote it
 	mod := map[string]time.Time{}
@@ -477,6 +503,36 @@ func (sc *whScan) readFile(f usageFile, prices []burnPrice) error {
 	return nil
 }
 
+// apiError files an API error record: a limit event when it carries
+// rate_limit_info (or, without it, when its text mentions a limit), else a
+// count of its kind.
+func (sc *whScan) apiError(l *rawLine, session, text string, ts int64) {
+	key := fmt.Sprintf("%d|%s|%s", ts, session, text)
+	if sc.limitSeen[key] {
+		return
+	}
+	sc.limitSeen[key] = true
+	ev := whLimit{ts: ts, session: session, text: truncRunes(strings.Join(strings.Fields(text), " "), 160)}
+	switch {
+	case l.APIErrorParams != nil && l.APIErrorParams.RateLimitInfo != nil:
+		ri := l.APIErrorParams.RateLimitInfo
+		ev.kind, ev.resets, ev.overage, ev.reason, ev.usingOverage = ri.RateLimitType, ri.ResetsAt, ri.OverageStatus, ri.OverageDisabledReason, ri.IsUsingOverage
+		if ev.kind == "" {
+			ev.kind = "unclassified"
+		}
+	case strings.Contains(strings.ToLower(text), "limit"):
+		ev.kind = "unclassified"
+	default:
+		kind := l.APIError
+		if kind == "" {
+			kind = "unnamed"
+		}
+		sc.apiErrors[kind]++
+		return
+	}
+	sc.limits = append(sc.limits, ev)
+}
+
 func whText(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -555,12 +611,8 @@ func (sc *whScan) assistant(l *rawLine, f usageFile, ses *whSession, ts int64, c
 	}
 	model := cleanModel(m.Model)
 	if l.IsAPIError {
-		if text := whText(m.Content); strings.Contains(strings.ToLower(text), "limit") && sc.in(ts) {
-			key := fmt.Sprintf("%d|%s|%s", ts, f.Session, text)
-			if !sc.limitSeen[key] {
-				sc.limitSeen[key] = true
-				sc.limits = append(sc.limits, whLimit{TS: time.UnixMilli(ts).UTC().Format(time.RFC3339), Session: f.Session, Text: truncRunes(strings.Join(strings.Fields(text), " "), 160), ts: ts})
-			}
+		if sc.in(ts) {
+			sc.apiError(l, f.Session, whText(m.Content), ts)
 		}
 		return trig
 	}
@@ -711,8 +763,8 @@ type whTopRow struct {
 }
 
 type whLimits struct {
-	Events     []whLimit `json:"events"`
-	SpendAfter float64   `json:"spend_after_first"`
+	Incidents []whIncident   `json:"incidents"`
+	OtherErrs map[string]int `json:"other_api_errors"`
 }
 
 type whNotKnown struct {
@@ -979,15 +1031,7 @@ func (sc *whScan) report(top int) *whReport {
 		r.Top = append(r.Top, whTopRow{Session: shortID(id), Project: s.project, Launch: s.launch, Cost: s.cost, Main: s.mainCost, Calls: s.calls, Ships: s.ships, Prompt: truncRunes(strings.Join(strings.Fields(s.prompt), " "), 100)})
 	}
 
-	sort.Slice(sc.limits, func(i, j int) bool { return sc.limits[i].ts < sc.limits[j].ts })
-	r.Limits.Events = sc.limits
-	if len(sc.limits) > 0 {
-		for _, c := range sc.order {
-			if sc.in(c.ts) && c.ts >= sc.limits[0].ts {
-				r.Limits.SpendAfter += c.parts.total()
-			}
-		}
-	}
+	r.Limits = sc.limitIncidents()
 	r.NotKnown = whNotKnown{
 		Synthetic: sc.synthetic, ScriptTools: sc.scriptTool, Compactions: sc.boundaries, Unreadable: sc.unreadable, UnreadableCnt: len(sc.unreadable), FilesRead: sc.files,
 		LaunchByDir: "project directory name (waypoint-runner-work-job, waypoint-runner-git) and the first prompt (Autopilot assigned, review prompt); the transcript has no launch field",
