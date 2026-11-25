@@ -151,6 +151,8 @@ func (s *ShellSession) Edit(cmd, cwd string) (wrote, known bool) {
 				p = "."
 				if w.Root != "" {
 					p = w.Root
+				} else if r := pipedFindRoot(cmds, i); r != "" {
+					p = r // find ROOT ... | xargs sed -i: the files are the find's
 				}
 			}
 			if p == "" || p[0] == '$' || p[0] == '`' {
@@ -168,4 +170,20 @@ func (s *ShellSession) Edit(cmd, cwd string) (wrote, known bool) {
 		}
 	}
 	return false, true
+}
+
+// pipedFindRoot is where the find feeding command i through a pipe looks
+// ("" when command i is not fed by a find): its first argument that is not
+// an option, or "." when it names none.
+func pipedFindRoot(cmds []ShellCommand, i int) string {
+	if i == 0 || !cmds[i].PipeIn || len(cmds[i-1].Words) == 0 || path.Base(cmds[i-1].Words[0]) != "find" {
+		return ""
+	}
+	for _, a := range cmds[i-1].Words[1:] {
+		if strings.HasPrefix(a, "-") || strings.ContainsAny(a, "()!") {
+			break
+		}
+		return a
+	}
+	return "."
 }

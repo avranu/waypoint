@@ -51,7 +51,9 @@ func TestShellEditNeedsAWorkingDirectoryTheSessionWorkedIn(t *testing.T) {
 		{"git apply in a clone in tmp", "cd /tmp/clone && git apply fix.patch", "/r", nil, false},
 		{"git -C a clone in tmp", "git -C /tmp/s/clone apply x.patch", "/r", nil, false},
 		{"patch after a cd the line does not spell out", "cd $d && patch -p1 < x.diff", "/r", nil, false},
-		{"find xargs in tmp", "find /tmp/s -name '*.go' | xargs sed -i s/a/b/", "/r", nil, true}, // xargs runs in the cwd: the root is the find's, not xargs's
+		{"find xargs in tmp", "find /tmp/s -name '*.go' | xargs sed -i s/a/b/", "/r", nil, false}, // the files are the find's, in scratch (audit 1923.1)
+		{"find xargs in the tree", "find internal -name '*.go' | xargs sed -i s/a/b/", "/r", nil, true},
+		{"find print0 xargs in tmp", "find /tmp/s -name '*.go' -print0 | xargs -0 gofmt -w", "/r", nil, false},
 		{"find -exec in tmp", "find /tmp/s -name '*.go' -exec sed -i s/a/b/ {} +", "/r", nil, false},
 		{"find -exec in the tree", "find internal -name '*.go' -exec sed -i s/a/b/ {} +", "/r", nil, true},
 		{"for loop over a glob", "for f in *.go; do gofmt -w \"$f\"; done", "/r", nil, true},

@@ -84,6 +84,11 @@ func newTranscriptAPIIn(t *testing.T, dir string, maxMB int) *transcriptAPI {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The host's free disk must not decide these tests: no disk floor unless a
+	// test sets one.
+	if _, err := svc.SetResourceLimits(ctx, &core.Actor{User: u}, core.ResourceLimits{MemoryFreeMB: 256}); err != nil {
+		t.Fatal(err)
+	}
 	tok, _, _ := svc.CreateAPIToken(ctx, &core.Actor{User: u}, "robin", false, 0)
 	return &transcriptAPI{t: t, ts: ts, svc: svc, dir: dir, db: d, human: &client{t: t, base: ts.URL, http: http.DefaultClient, token: tok}}
 }

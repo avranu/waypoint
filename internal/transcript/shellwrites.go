@@ -142,6 +142,8 @@ type ShellCommand struct {
 	Redirs []string
 	Script string
 	Wrote  []ShellWrite
+	// PipeIn: the command reads the one before it through a pipe.
+	PipeIn bool
 }
 
 // ShellNowhere is the directory after a cd the line doesn't spell out
@@ -179,6 +181,9 @@ func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *Shel
 			case name == "PWD" && dir != ShellNowhere && dir != "":
 				b.WriteString(dir)
 			case ok:
+				if b.Len()+len(v) > shellMaxValue {
+					return orig
+				}
 				b.WriteString(v)
 			default:
 				b.WriteString(w[m[0]:m[1]])
@@ -225,6 +230,9 @@ func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *Shel
 			if w := all[3]; len(all) == 4 && !strings.HasPrefix(w, "$") && !strings.Contains(w, ShellSubPlaceholder) {
 				list = w
 			}
+			if len(list) > shellMaxValue {
+				list = "*"
+			}
 			if len(vars) < shellMaxVars {
 				vars[all[1]] = list
 			}
@@ -243,7 +251,7 @@ func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *Shel
 				continue
 			}
 		}
-		c := ShellCommand{Words: words, Head: HeadOf(words), Dir: dir, Script: g.Heredoc}
+		c := ShellCommand{Words: words, Head: HeadOf(words), Dir: dir, Script: g.Heredoc, PipeIn: g.PipeIn}
 		for _, r := range g.Redirs {
 			c.Redirs = append(c.Redirs, fill(r))
 		}
@@ -283,7 +291,11 @@ func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *Shel
 				c.Wrote = append(c.Wrote, ShellWrite{Kind: kind, Path: w})
 			}
 		}
-		vars["_"] = words[len(words)-1]
+		if last := words[len(words)-1]; len(last) <= shellMaxValue {
+			vars["_"] = last
+		} else {
+			delete(vars, "_")
+		}
 		*out = append(*out, c)
 	}
 	return dir

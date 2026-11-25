@@ -87,3 +87,22 @@ func TestShellLongCommandIsUnknownAndFast(t *testing.T) {
 		}
 	}
 }
+
+// A long word reached through $_ or a for-loop variable is not copied again
+// for every word that names it (audit 1923.2).
+func TestShellEditLongWordVariables(t *testing.T) {
+	big := strings.Repeat("x", 100<<10)
+	for name, cmd := range map[string]string{
+		"loop variable": "for f in " + big + "; do echo " + strings.Repeat("$f ", 20000) + "; done",
+		"last word":     "echo " + big + "; echo " + strings.Repeat("$_ ", 20000),
+	} {
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		start := time.Now()
+		(&ShellSession{}).Edit(cmd, "/r")
+		runtime.ReadMemStats(&after)
+		if d, mb := time.Since(start), (after.TotalAlloc-before.TotalAlloc)>>20; d > 2*time.Second || mb > 200 {
+			t.Errorf("%s: %v and %d MB allocated", name, d, mb)
+		}
+	}
+}
