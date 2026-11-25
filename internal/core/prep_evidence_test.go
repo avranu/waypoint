@@ -260,7 +260,7 @@ func TestPrepEvidence(t *testing.T) {
 	if !strings.Contains(e.llm.systems[0], "recorded evidence") {
 		t.Errorf("system: %q", e.llm.systems[0])
 	}
-	if got := e.one(`SELECT state || ' ' || candidates || ' ' || dropped || ' ' || (model != '') || ' ' || error FROM task_prep_evidence WHERE issue_id = ?`, e.task.ID); got != "ready 4 6 1 " {
+	if got := e.one(`SELECT state || ' ' || candidates || ' ' || dropped || ' ' || (model != '') || ' ' || error FROM task_prep_evidence WHERE issue_id = ?`, e.task.ID); got != "ready 4 7 1 " {
 		t.Fatalf("row = %q", got)
 	}
 
@@ -327,7 +327,7 @@ func TestPrepEvidence(t *testing.T) {
 	}
 	textLen := utf8.RuneCountInString(e.task.Title) + utf8.RuneCountInString(e.task.Description)
 	checked := e.one(`SELECT text_hash FROM task_prep_evidence WHERE issue_id = ?`, e.task.ID) // of the text the check read
-	want := fmt.Sprintf("%s 3 %d %s 4 3 2 6 %s %s 1 %d", e.task.Type, textLen, checked, risk.Level, given, e.s.nowMS())
+	want := fmt.Sprintf("%s 3 %d %s 4 3 2 7 %s %s 1 %d", e.task.Type, textLen, checked, risk.Level, given, e.s.nowMS())
 	if got := snapshot(e.task.ID); got != want {
 		t.Errorf("snapshot = %s; want %s", got, want)
 	}
@@ -618,7 +618,13 @@ func TestCheckPrepEvidence(t *testing.T) {
 			claim(strings.Repeat("long ", 41), "over 200 runes", ""),
 			claim("ünïcode größe matters", "folds", "APP-X9"),
 			claim("every visit.", "", ""),
-		}}, quotes: []string{"The board takes nine seconds to load", "Ünïcode Größe matters"}, claimed: []string{"APP-ADR2", ""}, dropped: 5},
+		}}, quotes: []string{"The board takes nine seconds to load", "Ünïcode Größe matters"}, claimed: []string{"APP-ADR2", ""}, dropped: 6},
+		{name: "claim refs", in: evidenceAnswer{Claims: []evidenceClaim{
+			claim("The board takes", "unknown", "APP-X9"),
+			claim("nine seconds to", "blank", " \t "),
+			{Quote: "load on every", Test: "empty", Ref: new(string)},
+		}}, quotes: []string{"The board takes", "nine seconds to", "load on every"}, claimed: []string{"", "", ""}, dropped: 1},
+		{name: "dropped claim with an unknown ref counts once", in: evidenceAnswer{Claims: []evidenceClaim{claim("nine hours", "not there", "APP-X9")}}, dropped: 1},
 		{name: "twelve runes", in: evidenceAnswer{Claims: []evidenceClaim{claim("Cache the bo", "t", ""), claim("cache the BO", "again", "")}},
 			quotes: []string{"Cache the bo"}, claimed: []string{""}, dropped: 1},
 		{name: "200 runes kept, 201 not", in: evidenceAnswer{Claims: []evidenceClaim{claim(strings.Repeat("long ", 41)[:201], "t", ""), claim(strings.Repeat("long ", 41)[1:201], "u", "")}},

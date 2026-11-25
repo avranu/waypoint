@@ -498,7 +498,8 @@ func markdownSection(body, title string) string {
 }
 
 // checkPrepEvidence keeps the picks that are candidates and the claims whose
-// quote is in one of texts, and counts what it drops.
+// quote is in one of texts, and counts what it drops, a kept claim's ref that
+// is no candidate included.
 func checkPrepEvidence(a *evidenceAnswer, cands []evidenceCand, texts []string) (*PrepEvidence, int) {
 	out := &PrepEvidence{Evidence: []PrepEvidenceItem{}, Claims: []PrepClaim{}}
 	dropped := 0
@@ -536,9 +537,11 @@ func checkPrepEvidence(a *evidenceAnswer, cands []evidenceCand, texts []string) 
 			continue
 		}
 		claim := PrepClaim{Quote: quote, Test: test}
-		if c.Ref != nil {
+		if c.Ref != nil && strings.TrimSpace(*c.Ref) != "" {
 			if it, ok := cand(*c.Ref); ok {
 				claim.Ref, claim.RefKind, claim.RefUpdated = it.Ref, it.Kind, it.Updated
+			} else {
+				dropped++
 			}
 		}
 		out.Claims = append(out.Claims, claim)
