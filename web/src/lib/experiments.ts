@@ -56,7 +56,7 @@ export interface ExperimentStartInput {
 export interface ExperimentMetric {
   key: string
   label: string
-  unit: 'usd' | 'tokens' | 'count' | 'hours'
+  unit: 'usd' | 'tokens' | 'count' | 'hours' | 'score'
 }
 
 export interface ExperimentStat {

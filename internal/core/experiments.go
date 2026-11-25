@@ -130,7 +130,7 @@ var experimentDefs = []ExperimentDef{
 		Exposure: "the agent holding the task fetched a ready prep with evidence for the task, with a wp that can print it",
 		Primary:  "cost_usd",
 		Caveats: []string{
-			"Only tasks where the model found something are units, so this says nothing about the others.",
+			"Units are only tasks whose holder could be given something the model found, so this says nothing about other tasks. That is checked before the arm is drawn, the same way for both arms.",
 			"Agents in either arm can search pages and decisions themselves.",
 			"The evidence may raise cost while improving how the work holds up: read follow-up fixes and findings beside cost.",
 			"Preps made before this shipped have none.",
@@ -146,8 +146,10 @@ var experimentCaveats = []string{
 	"Agents, models and instructions change during a run; randomising spreads those changes over both arms, so they add noise, not bias, as long as the run isn't paused or reweighted midway.",
 	"An agent can't be blinded: when an arm is visible to it (a brief that isn't there), it may act differently because of that, which is part of the effect.",
 	"Follow-up tasks and review findings keep arriving after a task is done and are counted to today, so a task that finished earlier has had longer to collect them.",
-	"Follow-ups filed counts every task recorded as following one, including what an agent only noticed and filed while on it. Follow-ups stated or classified, and follow-up fixes, leave out those Waypoint recorded itself until somebody says what kind they are.",
+	"Follow-ups filed counts every task recorded as following one, including what an agent only noticed and filed while on it. Follow-ups stated or classified, and follow-up fixes, leave out those Waypoint recorded itself, a plain relates link it read as one included, until somebody says what kind they are.",
 	"Self-review findings count a session's own reviews however their findings were counted, leaving out review panel rows. Adversarial review findings count only reviews no model counted, so a task is left out of that measure when every one of its reviews was counted by a model.",
+	"Review scores come from the decision model that reads a review round before the pull request: the worst finding score is from a task's first round it scored, the fix risk from its latest. A task with no scored round, one whose review raised nothing included, is left out, so these say how serious what was found was, not how often something was found.",
+	"Code quality isn't measured as an outcome of its own.",
 }
 
 func experimentDef(key string) (*ExperimentDef, bool) {

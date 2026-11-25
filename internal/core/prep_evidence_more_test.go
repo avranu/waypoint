@@ -451,7 +451,7 @@ func TestPrepEvidenceSurplusError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e.s.storePrepEvidence(e.ctx, task, check, "failed", nil, "", "", 0, 0, cause); !errors.Is(err, cause) {
+	if err := e.s.storePrepEvidence(e.ctx, task, check, "failed", nil, "", "", nil, 0, cause); !errors.Is(err, cause) {
 		t.Errorf("returned %v", err)
 	}
 	if got := e.one(`SELECT length(CAST(error AS BLOB)) FROM task_prep_evidence WHERE issue_id = ?`, i.ID); got != "500" {

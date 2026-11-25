@@ -346,10 +346,9 @@ func TestPrepEvidence(t *testing.T) {
 		}
 	}
 
-	// What can no longer be seen is dropped, and a claim loses that ref.
-	if err := e.s.DeletePage(e.ctx, e.admin, e.pages["linked"].ID); err != nil {
-		t.Fatal(err)
-	}
+	// What is superseded or retired is dropped, and a claim loses that ref.
+	e.page(e.admin, "newer", "experiment", e.p.Key, "Newer", "Newer.", false)
+	e.supersede("newer", "linked")
 	retired := "retired"
 	if _, err := e.s.UpdateDesign(e.ctx, e.admin, e.notes["assumes"].ID, DesignInput{Status: &retired}); err != nil {
 		t.Fatal(err)

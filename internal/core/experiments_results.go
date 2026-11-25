@@ -16,7 +16,7 @@ import (
 type ExperimentMetric struct {
 	Key   string `json:"key"`
 	Label string `json:"label"`
-	Unit  string `json:"unit"` // usd, tokens, count, hours
+	Unit  string `json:"unit"` // usd, tokens, count, hours, score
 }
 
 type expTask struct {
@@ -38,6 +38,9 @@ type expTask struct {
 	reviewFound  float64
 	reviewed     bool
 	prComments   float64 // review comments that aren't a bot finding's
+	reviewWorst  float64
+	fixesRisk    float64
+	scored       bool
 }
 
 // inScope is whether the results compare the task: it has usage and, in the
@@ -85,6 +88,8 @@ var experimentMetrics = []experimentMetric{
 	{ExperimentMetric{"self_review", "Self-review findings", "count"}, func(t *expTask) (float64, bool) { return t.selfReview, t.selfReviewed }, true, false},
 	{ExperimentMetric{"review_found", "Adversarial review findings", "count"}, func(t *expTask) (float64, bool) { return t.reviewFound, t.reviewed }, true, false},
 	{ExperimentMetric{"pr_comments", "Review comments", "count"}, func(t *expTask) (float64, bool) { return t.prComments, t.row.PRs > 0 }, true, false},
+	{ExperimentMetric{"review_worst", "Worst review finding score", "score"}, func(t *expTask) (float64, bool) { return t.reviewWorst, t.scored }, true, false},
+	{ExperimentMetric{"fixes_risk", "Fix risk score", "score"}, func(t *expTask) (float64, bool) { return t.fixesRisk, t.scored }, true, false},
 }
 
 // ExperimentStat is one metric in one arm, and how it compares with the
@@ -294,7 +299,7 @@ func (s *Service) experimentReviewMeasures(ctx context.Context, byID map[int64]*
 }
 
 // experimentLaterMeasures adds, for the tasks whose ids are args, what came
-// back about each: follow-up tasks and review findings.
+// back about each: follow-up tasks, review findings and review scores.
 func (s *Service) experimentLaterMeasures(ctx context.Context, byID map[int64]*expTask, args []any) error {
 	in := "(" + strings.TrimSuffix(strings.Repeat("?,", len(args)), ",") + ")"
 	for _, m := range []struct {
@@ -308,12 +313,13 @@ func (s *Service) experimentLaterMeasures(ctx context.Context, byID map[int64]*e
 			WHERE kind = 'follows' AND target_id IN ` + in + ` GROUP BY target_id`,
 			nil,
 			func(t *expTask, all, fixes float64) { t.followups, t.fixes = all, fixes }},
-		// Not what Waypoint recorded itself, from shared files or from an agent
-		// filing it while on the task (which takes in what it only noticed),
-		// until somebody says what kind of follow-up it is (WP-ADR101).
+		// Not those Waypoint recorded itself, from shared files, from an agent
+		// filing it while on the task (which takes in what it only noticed) or
+		// from a plain relates link to a task done before, until somebody says
+		// what kind of follow-up it is (WP-ADR101).
 		{`SELECT target_id, count(*), 0 FROM issue_relations
-			WHERE kind = 'follows' AND NOT (coalesce(found, '') IN (?, ?) AND subkind = '') AND target_id IN ` + in + ` GROUP BY target_id`,
-			[]any{relationFoundFiles, relationFoundSession},
+			WHERE kind = 'follows' AND NOT (coalesce(found, '') IN (?, ?, ?) AND subkind = '') AND target_id IN ` + in + ` GROUP BY target_id`,
+			[]any{relationFoundFiles, relationFoundSession, followFoundAfter},
 			func(t *expTask, stated, _ float64) { t.followupsStated = stated }},
 		{`SELECT issue_id, sum(found), 0 FROM work_log
 			WHERE kind = ? AND reason != ? AND found IS NOT NULL AND issue_id IN ` + in + ` GROUP BY issue_id`,
@@ -324,6 +330,13 @@ func (s *Service) experimentLaterMeasures(ctx context.Context, byID map[int64]*e
 			WHERE kind = ? AND coalesce(read_by, '') IN ('', ?) AND found IS NOT NULL AND issue_id IN ` + in + ` GROUP BY issue_id`,
 			[]any{WorkReview, readByRules},
 			func(t *expTask, found, _ float64) { t.reviewFound, t.reviewed = found, true }},
+		{`SELECT issue_id, max(CASE WHEN earliest = 1 THEN worst_all END), max(CASE WHEN latest = 1 THEN fixes_mean END)
+			FROM (SELECT issue_id, worst_all, fixes_mean,
+				row_number() OVER (PARTITION BY issue_id ORDER BY created_at, id) AS earliest,
+				row_number() OVER (PARTITION BY issue_id ORDER BY created_at DESC, id DESC) AS latest
+			FROM review_again_decisions WHERE fixes_mean > 0 AND issue_id IN ` + in + `) GROUP BY issue_id`,
+			nil,
+			func(t *expTask, worst, risk float64) { t.reviewWorst, t.fixesRisk, t.scored = worst, risk, true }},
 	} {
 		rows, err := s.db.R.QueryContext(ctx, m.query, append(m.first, args...)...) // #nosec G202 -- only placeholders are joined in
 		if err != nil {

@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -246,8 +247,25 @@ func TestReviewRoundStakes(t *testing.T) {
 		if normal == nil || normal.Rounds != 1 || normal.SlowHandOvers != 0 || normal.Reviewers != 1 || normal.ReviewersUsed != 1 || normal.OwnReviews != 0 || len(stats.Rows) != 1 {
 			t.Errorf("stats = %+v %+v", normal, stats.Rows)
 		}
-		if normal != nil && (normal.Recomputed != 0 || len(normal.Outcomes) != len(experimentMetrics)-3+len(stakesExtraMetrics) || stats.Rows[0].Rule != StakesRule) {
-			t.Errorf("outcomes = %+v, recomputed %d, rule %q", normal.Outcomes, normal.Recomputed, stats.Rows[0].Rule)
+		if normal != nil && (normal.Recomputed != 0 || stats.Rows[0].Rule != StakesRule) {
+			t.Errorf("recomputed %d, rule %q", normal.Recomputed, stats.Rows[0].Rule)
+		}
+		var wantKeys, gotKeys []string
+		for _, m := range experimentMetrics {
+			if !m.followUp {
+				wantKeys = append(wantKeys, m.Key)
+			}
+		}
+		for _, m := range stakesExtraMetrics {
+			wantKeys = append(wantKeys, m.Key)
+		}
+		if normal != nil {
+			for _, o := range normal.Outcomes {
+				gotKeys = append(gotKeys, o.Key)
+			}
+		}
+		if !slices.Equal(gotKeys, wantKeys) {
+			t.Errorf("outcomes = %v; want %v", gotKeys, wantKeys)
 		}
 		barred := func(weakest string) int {
 			t.Helper()

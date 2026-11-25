@@ -410,6 +410,7 @@ func TestExperimentHeldUpMeasures(t *testing.T) {
 	task, quiet, later, fix, other := mk("Task"), mk("Quiet"), mk("Later"), mk("Fix"), mk("Other")
 	guessed, filed := mk("Guessed"), mk("Filed")
 	guessedOnly, filedOnly, after, filedQuiet := mk("Guessed only"), mk("Filed only"), mk("After"), mk("Filed quiet")
+	afterFix := mk("After fix")
 	f := e.forge("forgejo", "https://git.example.com", false)
 	url := "https://git.example.com/acme/app/pulls/3"
 	exec := func(q string, args ...any) {
@@ -427,7 +428,7 @@ func TestExperimentHeldUpMeasures(t *testing.T) {
 		source, target int64
 		subkind, found string
 	}{
-		{guessed, task, "fix", "files"}, {filed, task, "fix", "session"}, {after, task, "", "after"},
+		{guessed, task, "fix", "files"}, {filed, task, "fix", "session"}, {after, task, "", "after"}, {afterFix, task, "fix", "after"},
 		{guessedOnly, task, "", "files"}, {filedOnly, task, "", "session"}, {filedQuiet, quiet, "", "session"},
 	} {
 		exec(`INSERT INTO issue_relations(source_id, target_id, kind, subkind, found, created_at) VALUES (?,?,'follows',?,?,0)`, r.source, r.target, r.subkind, r.found)
@@ -500,7 +501,7 @@ func TestExperimentHeldUpMeasures(t *testing.T) {
 			t.Errorf("metric %s: want the held-up measure %q", key, label)
 		}
 	}
-	for id, want := range map[int64]string{task: "7 5 3 6 5 3", quiet: "1 0 0 - - -", later: "0 0 0 - 0 -"} {
+	for id, want := range map[int64]string{task: "8 5 4 6 5 3", quiet: "1 0 0 - - -", later: "0 0 0 - 0 -"} {
 		if got := measured(id); got != want {
 			t.Errorf("task %d: %s; want %s", id, got, want)
 		}
@@ -513,19 +514,83 @@ func TestExperimentHeldUpMeasures(t *testing.T) {
 
 	// The stakes report counts every follow-up filed, once, a session's own
 	// included.
-	for id, want := range map[int64]string{task: "followups=7 followup_fixes=3", quiet: "followups=1 followup_fixes=0"} {
+	for id, want := range map[int64]string{task: "followups=8 followup_fixes=4", quiet: "followups=1 followup_fixes=0"} {
 		tiers := map[string]*StakesTierStats{StakesNormal: {}}
 		if err := e.s.stakesOutcomes(e.ctx, e.admin, 14, map[int64]string{id: StakesNormal}, tiers, &ReviewStakesStats{}); err != nil {
 			t.Fatal(err)
 		}
 		var follow []string
 		for _, o := range tiers[StakesNormal].Outcomes {
-			if strings.Contains(o.Key, "fix") || strings.Contains(o.Key, "followup") {
+			if o.Key == "fixes" || strings.Contains(o.Key, "followup") {
 				follow = append(follow, fmt.Sprintf("%s=%v", o.Key, o.Mean))
 			}
 		}
 		if got := strings.Join(follow, " "); got != want {
 			t.Errorf("stakes follow-ups of task %d: %s; want %s", id, got, want)
+		}
+	}
+}
+
+// A task's review scores are the worst standing finding score of any of its
+// rounds, and how risky the fixes looked in the latest round that scored them.
+// A task with no scored round isn't measured.
+func TestExperimentReviewScoreMeasures(t *testing.T) {
+	e := newEnv(t)
+	p := e.project(e.admin, "App", "")
+	mk := func(title string) int64 {
+		return e.issue(e.admin, IssueInput{Project: p.Key, Title: title}).ID
+	}
+	task, unscored, bare, refuted, tied := mk("Task"), mk("Unscored"), mk("Bare"), mk("Refuted"), mk("Tied")
+	for n, d := range []struct {
+		issue        int64
+		worst, fixes float64
+		at           int
+	}{
+		{task, 9, 0, 1}, {task, 7.5, 3, 3}, {task, 2, 6.25, 4}, {task, 4, 8, 2}, {task, 10, 0, 5},
+		{unscored, 6, 0, 1}, {refuted, 0, 2, 1}, {tied, 3, 2, 1}, {tied, 5, 4, 1},
+	} {
+		if _, err := e.s.db.W.ExecContext(e.ctx, `INSERT INTO work_log(id, issue_id, kind, created_at, updated_at) VALUES (?,?,'review',0,0)`,
+			n+1, d.issue); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.s.db.W.ExecContext(e.ctx, `INSERT INTO review_again_decisions(round_id, issue_id, arm, worst_all, fixes_mean, created_at)
+			VALUES (?,?,'enough',?,?,?)`, n+1, d.issue, d.worst, d.fixes, d.at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	byID := map[int64]*expTask{task: {}, unscored: {}, bare: {}, refuted: {}, tied: {}}
+	if err := e.s.experimentReviewMeasures(e.ctx, byID); err != nil {
+		t.Fatal(err)
+	}
+	for key, label := range map[string]string{"review_worst": "Worst review finding score", "fixes_risk": "Fix risk score"} {
+		mi := metricIndex(key)
+		if mi < 0 {
+			t.Fatalf("no metric %s", key)
+		}
+		if m := experimentMetrics[mi]; m.Label != label || m.Unit != "score" || !m.heldUp || m.followUp {
+			t.Errorf("metric %s: %+v", key, m)
+		}
+	}
+	for id, want := range map[int64]string{task: "4 6.25", unscored: "- -", bare: "- -", refuted: "0 2", tied: "3 4"} {
+		var got []string
+		for _, key := range []string{"review_worst", "fixes_risk"} {
+			if v, ok := experimentMetrics[metricIndex(key)].get(byID[id]); ok {
+				got = append(got, fmt.Sprint(v))
+			} else {
+				got = append(got, "-")
+			}
+		}
+		if s := strings.Join(got, " "); s != want {
+			t.Errorf("task %d: %s; want %s", id, s, want)
+		}
+	}
+	for _, want := range []string{
+		"the worst finding score is from a task's first round it scored, the fix risk from its latest",
+		"not how often something was found",
+		"Code quality isn't measured",
+	} {
+		if !slices.ContainsFunc(experimentCaveats, func(c string) bool { return strings.Contains(c, want) }) {
+			t.Errorf("no caveat says %q", want)
 		}
 	}
 }
@@ -549,12 +614,13 @@ func TestExperimentHolmFamilies(t *testing.T) {
 			x.followups, x.fixes = float64(n%6+3*ai), float64(n%4+ai)
 			x.followupsStated = float64(n%4 + 2*ai)
 			x.selfReview, x.reviewFound, x.prComments = float64(n%9+4*ai), float64(n%8+ai), float64(n%3+ai)
+			x.reviewWorst, x.fixesRisk, x.scored = float64(n%11+ai)/2, float64(n%7+2*ai)+0.5, true
 			tasks[a.Key] = append(tasks[a.Key], x)
 		}
 	}
 	run := &ExperimentRun{ID: 1, Weights: d.Weights, Assigned: map[string]int{}, Exposed: map[string]int{}}
 	r := experimentCompare(d, run, tasks, "all", time.Now())
-	heldUp := []string{"followups", "followups_stated", "fixes", "self_review", "review_found", "pr_comments"}
+	heldUp := []string{"followups", "followups_stated", "fixes", "self_review", "review_found", "pr_comments", "review_worst", "fixes_risk"}
 	for name, in := range map[string]bool{"the older measures": false, "how tasks held up": true} {
 		var keys []string
 		var ps, got []float64

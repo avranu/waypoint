@@ -128,7 +128,25 @@ type evidenceAnswer struct {
 type evidenceCand struct {
 	PrepEvidenceItem
 	excerpt string
+	row     offeredRecord
 }
+
+// offeredRecord names a candidate's row, as kept beside a check's notes,
+// which may paraphrase it. Made is when the row was made: a deleted
+// decision's id can be given to another.
+type offeredRecord struct {
+	Kind string `json:"kind"`
+	ID   int64  `json:"id"`
+	Made int64  `json:"made"`
+}
+
+// offeredOutOfReach is whether a record check e offered the model is gone, a
+// draft, or outside the project ?2.
+const offeredOutOfReach = `EXISTS (SELECT 1 FROM json_each(e.offered) o WHERE NOT EXISTS (
+	SELECT 1 FROM pages pg WHERE json_extract(o.value, '$.kind') = 'page' AND pg.id = json_extract(o.value, '$.id')
+		AND pg.created_at = json_extract(o.value, '$.made') AND pg.project_id = ?2 AND pg.draft = 0
+	UNION ALL SELECT 1 FROM design_notes n WHERE json_extract(o.value, '$.kind') = 'design' AND n.id = json_extract(o.value, '$.id')
+		AND n.created_at = json_extract(o.value, '$.made') AND n.project_id = ?2))`
 
 // prepEvidenceTask is the task as the pointer prep read it.
 type prepEvidenceTask struct {
@@ -156,12 +174,12 @@ func (s *Service) runPrepEvidence(ctx context.Context, t prepEvidenceTask) error
 	}
 	cands, err := s.evidenceCandidates(ctx, i, t.words)
 	if err != nil {
-		return s.storePrepEvidence(ctx, t, check, "failed", nil, "", "", 0, 0, err)
+		return s.storePrepEvidence(ctx, t, check, "failed", nil, "", "", nil, 0, err)
 	}
 	prompt := prepEvidencePrompt(i.Key, i.Type, t.title, t.desc, t.comments, cands)
 	pctx, chain, err := s.prepChain(ctx, i.Key, t.priority)
 	if err != nil {
-		return s.storePrepEvidence(ctx, t, check, "failed", nil, "", "", len(cands), 0, err)
+		return s.storePrepEvidence(ctx, t, check, "failed", nil, "", "", cands, 0, err)
 	}
 	var answer evidenceAnswer
 	model, requestID, err := s.runAIAnswer(pctx, "prep", chain, prepEvidenceSystem, prompt, prepEvidenceSchema, &answer)
@@ -171,10 +189,10 @@ func (s *Service) runPrepEvidence(ctx context.Context, t prepEvidenceTask) error
 		if t.priority == prioritySurplus && errors.As(err, &wait) {
 			state = "refused"
 		}
-		return s.storePrepEvidence(ctx, t, check, state, nil, "", "", len(cands), 0, err)
+		return s.storePrepEvidence(ctx, t, check, state, nil, "", "", cands, 0, err)
 	}
 	notes, dropped := checkPrepEvidence(&answer, cands, append([]string{t.title, t.desc}, t.comments...))
-	return s.storePrepEvidence(ctx, t, check, "ready", notes, model, requestID, len(cands), dropped, nil)
+	return s.storePrepEvidence(ctx, t, check, "ready", notes, model, requestID, cands, dropped, nil)
 }
 
 // retryPrepEvidence runs a queued task's evidence check again, in the
@@ -274,10 +292,10 @@ func (s *Service) evidenceInFlight(issueID int64) bool {
 // returns the created_at that names this check: an issue's only go up, so no
 // two checks share one.
 func (s *Service) beginPrepEvidence(ctx context.Context, t prepEvidenceTask) (check int64, err error) {
-	err = s.db.W.QueryRowContext(ctx, `INSERT INTO task_prep_evidence(issue_id, text_hash, state, notes, model, request_id, candidates, dropped, error, created_at)
-		VALUES (?,?,'pending','','','',0,0,'',?)
+	err = s.db.W.QueryRowContext(ctx, `INSERT INTO task_prep_evidence(issue_id, text_hash, state, notes, model, request_id, candidates, offered, dropped, error, created_at)
+		VALUES (?,?,'pending','','','',0,'[]',0,'',?)
 		ON CONFLICT(issue_id) DO UPDATE SET text_hash = excluded.text_hash, state = excluded.state, notes = '', model = '', request_id = '',
-			candidates = 0, dropped = 0, error = '', created_at = max(excluded.created_at, task_prep_evidence.created_at + 1)
+			candidates = 0, offered = '[]', dropped = 0, error = '', created_at = max(excluded.created_at, task_prep_evidence.created_at + 1)
 		RETURNING created_at`, t.issue.ID, t.hash, s.nowMS()).Scan(&check)
 	return check, err
 }
@@ -285,8 +303,16 @@ func (s *Service) beginPrepEvidence(ctx context.Context, t prepEvidenceTask) (ch
 // storePrepEvidence keeps what a check found, if the row is still the pending
 // one that check wrote: a newer check's is left alone. It returns cause (why
 // there is none) with any failure to keep it.
-func (s *Service) storePrepEvidence(ctx context.Context, t prepEvidenceTask, check int64, state string, notes *PrepEvidence, model, requestID string, candidates, dropped int, cause error) error {
+func (s *Service) storePrepEvidence(ctx context.Context, t prepEvidenceTask, check int64, state string, notes *PrepEvidence, model, requestID string, cands []evidenceCand, dropped int, cause error) error {
 	var raw, msg string
+	offered := make([]offeredRecord, len(cands))
+	for n, c := range cands {
+		offered[n] = c.row
+	}
+	rows, err := json.Marshal(offered)
+	if err != nil {
+		return err
+	}
 	if notes != nil {
 		out, err := json.Marshal(notes)
 		if err != nil {
@@ -297,10 +323,10 @@ func (s *Service) storePrepEvidence(ctx context.Context, t prepEvidenceTask, che
 	if cause != nil {
 		msg = truncateBytes(cause.Error(), 500)
 	}
-	_, err := s.db.W.ExecContext(ctx, `UPDATE task_prep_evidence SET state = ?, notes = ?, model = ?, request_id = ?, candidates = ?, dropped = ?, error = ?,
+	_, err = s.db.W.ExecContext(ctx, `UPDATE task_prep_evidence SET state = ?, notes = ?, model = ?, request_id = ?, candidates = ?, offered = ?, dropped = ?, error = ?,
 		created_at = max(?, created_at)
 		WHERE issue_id = ? AND text_hash = ? AND created_at = ? AND state = 'pending'`,
-		state, raw, model, requestID, candidates, dropped, msg, s.nowMS(), t.issue.ID, t.hash, check)
+		state, raw, model, requestID, len(cands), string(rows), dropped, msg, s.nowMS(), t.issue.ID, t.hash, check)
 	return errors.Join(cause, err)
 }
 
@@ -444,6 +470,7 @@ func (s *Service) evidenceCand(ctx context.Context, actor *Actor, i *Issue, kind
 		}
 		c.Ref, c.Title, c.Category, c.Date = i.ProjectKey+"-"+pg.Code, pg.Title, pg.Category, pg.UpdatedAt.Format("2006-01-02")
 		c.Updated = pg.UpdatedAt.UnixMilli()
+		c.row = offeredRecord{Kind: kind, ID: id, Made: pg.CreatedAt.UnixMilli()}
 		byAgent, reviewed = pg.TextAgent != "", !pg.Unreviewed
 		c.excerpt = clipRunes(strings.TrimSpace(pg.Body), evidencePageRunes)
 	} else {
@@ -457,6 +484,7 @@ func (s *Service) evidenceCand(ctx context.Context, actor *Actor, i *Issue, kind
 		}
 		c.Ref, c.Title, c.Category, c.Date = i.ProjectKey+"-"+n.Code, n.Title, n.Kind, n.UpdatedAt.Format("2006-01-02")
 		c.Updated = n.UpdatedAt.UnixMilli()
+		c.row = offeredRecord{Kind: kind, ID: id, Made: n.CreatedAt.UnixMilli()}
 		// A person approved it: not Approved, which is also set on one that only
 		// counts on a person's request.
 		byAgent, reviewed = n.CreatedAgent != "" || n.UpdatedAgent != "", n.approvedBy.Valid
@@ -599,7 +627,7 @@ func (s *Service) attachPrepEvidence(ctx context.Context, a *Actor, p *TaskPrep,
 	var candidates, dropped int
 	err = s.db.R.QueryRowContext(ctx, `SELECT e.notes, e.text_hash, e.model, e.candidates, e.dropped FROM task_prep_evidence e
 		JOIN task_preps tp ON tp.issue_id = e.issue_id AND tp.text_hash = e.text_hash
-		WHERE e.issue_id = ? AND e.state = 'ready' AND tp.state = 'ready'`, i.ID).Scan(&raw, &hash, &model, &candidates, &dropped)
+		WHERE e.issue_id = ?1 AND e.state = 'ready' AND tp.state = 'ready' AND NOT `+offeredOutOfReach, i.ID, i.ProjectID).Scan(&raw, &hash, &model, &candidates, &dropped)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}

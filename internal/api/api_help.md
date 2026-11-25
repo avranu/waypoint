@@ -778,10 +778,16 @@ control. Reading needs ai.manage; starting and stopping, a person who is an admi
     GET  /experiments/{key}/results?run=ID&scope=done|all   per arm: assigned, exposed, measured, done
                                     rate; per metric the median, mean, ratio to the control with a
                                     bootstrap 95% interval, Mann-Whitney p and Holm-adjusted p
-                                    (followups, followups_stated, fixes, self_review, review_found and
-                                    pr_comments are adjusted among themselves, the other metrics among
-                                    themselves; followups counts every follow-up, followups_stated
-                                    leaves out those Waypoint recorded itself that nobody classified);
+                                    (followups, followups_stated, fixes, self_review, review_found,
+                                    pr_comments, review_worst and fixes_risk are adjusted among
+                                    themselves, the other metrics among themselves; followups counts
+                                    every follow-up, followups_stated leaves out those Waypoint
+                                    recorded itself, from a plain relates link too, that nobody
+                                    classified; review_worst is the worst standing finding score
+                                    (0-10) of the first review round before the pull request that the
+                                    decision model scored, fixes_risk how incomplete or risky the fixes
+                                    looked (1-9) in the latest one it scored; a task with no scored
+                                    round is left out of both);
                                     the assignment check (SRM), detectable change, verdict, notes, caveats
     POST /issues/{key}/arms {"experiments":[key],"via":"next|take"}   (an agent's wp, after taking a
                                     task) {key, arms:{experiment:{arm,run,params}}}: the arms of the

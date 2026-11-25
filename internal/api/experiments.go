@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -182,6 +183,8 @@ func metricValue(unit string, v *float64) string {
 	switch unit {
 	case "usd":
 		return fmt.Sprintf("$%.2f", *v)
+	case "score":
+		return strconv.FormatFloat(math.Round(*v*10)/10, 'f', -1, 64)
 	case "tokens":
 		switch {
 		case *v >= 1e6:

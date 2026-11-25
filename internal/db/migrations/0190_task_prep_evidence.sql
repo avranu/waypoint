@@ -10,6 +10,7 @@ CREATE TABLE task_prep_evidence (
     model      TEXT    NOT NULL DEFAULT '',
     request_id TEXT    NOT NULL DEFAULT '',
     candidates INTEGER NOT NULL DEFAULT 0,
+    offered    TEXT    NOT NULL DEFAULT '[]',
     dropped    INTEGER NOT NULL DEFAULT 0,   -- items the model named that didn't check out
     error      TEXT    NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL              -- of this state
