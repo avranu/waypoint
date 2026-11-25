@@ -273,7 +273,7 @@ func shipEndsTurn(t *testing.T, e *env, me *core.Actor, key string) {
 	// A failure whose error is above the lines shown: the whole output is
 	// kept in a file the message names (WP-1812).
 	out, code = e.run("ship", "--check", "printf 'a lint %s\\n' finding; seq 40; exit 3", "--summary", "{task} is in PR #{pr}.")
-	m := regexp.MustCompile(`All 41 lines of its output \(kept until the next long failure here\): (.+)`).FindStringSubmatch(out)
+	m := regexp.MustCompile(`All 41 lines of its output \(kept until the next long failure here, or until this checkout is removed\): (.+)`).FindStringSubmatch(out)
 	if code == 0 || strings.Contains(out, "a lint finding") || m == nil {
 		t.Fatalf("long failed check: %d\n%s", code, out)
 	}

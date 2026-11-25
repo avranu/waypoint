@@ -101,7 +101,7 @@ func TestRedactMoreTokenShapes(t *testing.T) {
 		"https://" + strings.Repeat("u", 20) + "@h/x":    "https://***@h/x",
 		"https://build200@host/x":                        "https://***@host/x",
 		"https://buil200@host/x":                         "https://buil200@host/x",
-		"https://example.com?email=jess@example.com":     "https://example.com?email=jess@example.com",
+		"https://example.com?email=robin@example.com":    "https://example.com?email=robin@example.com",
 		"github_pat_" + strings.Repeat("aB3_", 21)[:82]:  "***",
 		"github_pat_x":                                   "github_pat_x",
 		"https://12345678901234567890@h/x":               "https://***@h/x",
@@ -113,6 +113,15 @@ func TestRedactMoreTokenShapes(t *testing.T) {
 		if got := redact(in); got != want {
 			t.Errorf("redact(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// A PGP END line doesn't end another kind of key (audit 1816.1).
+func TestRedactPGPEndInsideAnotherKey(t *testing.T) {
+	begin, end := "-----BEGIN RSA PRIVATE KEY-----", "-----END RSA PRIVATE KEY-----"
+	in := begin + "\nMIIEsecret\n-----END PGP PRIVATE KEY BLOCK-----\nMIIEstillsecret\n" + end + "\nafter"
+	if got, want := redact(in), begin+"***"+end+"\nafter"; got != want {
+		t.Errorf("redact: %q, want %q", got, want)
 	}
 }
 

@@ -372,8 +372,10 @@ var schemeAuthRE = lazyre.New(`(?i)(\bauthorization["']?\s*[=:]\s*["']?)[\w-]+\s
 // pemKeyRE blanks a PEM private key's body between its BEGIN and END lines
 // (RSA, EC, OPENSSH, ENCRYPTED or plain), and to the end of the text when the
 // END line is missing (a key cut off by a limit). The body may hold real or
-// escaped newlines.
-var pemKeyRE = lazyre.New(`(-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----)(?s:.*?)(-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|\z)`)
+// escaped newlines. A PGP BLOCK is a pattern of its own, so its END line
+// doesn't end another key early (audit 1816.1). pemKeyRepl is what replaces
+// a match.
+var pemKeyRE = lazyre.New(`(-----BEGIN [A-Z ]*PRIVATE KEY-----)(?s:.*?)(-----END [A-Z ]*PRIVATE KEY-----|\z)|(-----BEGIN [A-Z ]*PRIVATE KEY BLOCK-----)(?s:.*?)(-----END [A-Z ]*PRIVATE KEY BLOCK-----|\z)`)
 var urlPasswordRE = lazyre.New(`(://[^\s/:@]+:)[^\s/@]+@`)
 
 // urlUserRE finds a URL user part that is not followed by a password, or
@@ -396,6 +398,8 @@ func blankURLUser(m string) string {
 	}
 	return "://***" + rest + "@"
 }
+
+const pemKeyRepl = "${1}${3}***${2}${4}"
 
 // redactStep is one pattern of redact and what replaces a match of it; sub
 // is the match and its groups, as FindStringSubmatch gives them.
@@ -445,7 +449,7 @@ func replaceStep(s string, st redactStep, fix func(m, r string) string) string {
 // redact hides credentials in text that may leave the machine. Redact
 // before cutting, so a cut never leaves part of a token.
 func redact(s string) string {
-	s = pemKeyRE.ReplaceAllString(s, "${1}***${2}")
+	s = pemKeyRE.ReplaceAllString(s, pemKeyRepl)
 	for _, st := range redactSteps {
 		s = replaceStep(s, st, nil)
 	}

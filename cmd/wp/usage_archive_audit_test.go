@@ -51,6 +51,7 @@ func TestArchiveRedactionCoversWhatRedactDoes(t *testing.T) {
 		{"-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA1234\n-----END RSA PRIVATE KEY-----", "MIIEpAIBAAKCAQEA1234"},
 		{"-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQdGBF9abcd1234\n-----END PGP PRIVATE KEY BLOCK-----", "lQdGBF9abcd1234"},
 		{long("sk-", 12, "a1"), long("", 12, "a1")}, {long("ghp_", 9, "a1B2"), long("", 9, "a1B2")}, {long("gho_", 9, "a1B2"), long("", 9, "a1B2")},
+		{long("github_pat_", 8, "aB3_"), long("", 8, "aB3_")},
 		{long("ghu_", 9, "a1B2"), long("", 9, "a1B2")}, {long("ghs_", 9, "a1B2"), long("", 9, "a1B2")}, {long("ghr_", 9, "a1B2"), long("", 9, "a1B2")},
 		{long("glpat-", 12, "a1"), long("", 12, "a1")}, {"xoxb-" + strings.Repeat("1", 12), strings.Repeat("1", 12)},
 		{"AKIA" + strings.Repeat("A1", 8), strings.Repeat("A1", 8)},

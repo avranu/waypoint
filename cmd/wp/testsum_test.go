@@ -298,13 +298,13 @@ func TestKeptOutputSaysWhenItCannotSave(t *testing.T) {
 	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got := keptAt(filepath.Join(blocker, "f.log"), data, 30)
+	got := keptAt(filepath.Join(blocker, "f.log"), "later", data, 30)
 	if !strings.HasPrefix(got, "Its 30 lines of output couldn't be saved: ") {
 		t.Errorf("write failure: %q", got)
 	}
 	// A credential above the tail isn't kept in the file.
 	p := filepath.Join(t.TempDir(), "f.log")
-	keptAt(p, []byte("fetch https://bot:hunter2secret@git.example/x\n"+string(data)), 31)
+	keptAt(p, "later", []byte("fetch https://bot:hunter2secret@git.example/x\n"+string(data)), 31)
 	if kept, err := os.ReadFile(p); err != nil || strings.Contains(string(kept), "hunter2secret") || !strings.Contains(string(kept), "https://bot:***@git.example/x\n") {
 		t.Errorf("kept file: %v\n%s", err, kept)
 	}
@@ -375,7 +375,7 @@ func keptRead(t *testing.T, data string) (pointer, file string) {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "f.log")
 	n := strings.Count(strings.TrimRight(data, "\n"), "\n") + 1
-	pointer = keptAt(p, []byte(data), n)
+	pointer = keptAt(p, "later", []byte(data), n)
 	b, err := os.ReadFile(p)
 	if err != nil {
 		t.Fatal(err)
@@ -569,6 +569,14 @@ func TestKeptRedactionWholeText(t *testing.T) {
 			in:      "-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v2\n\n" + body + "\n" + body + "\n=AbCd\nafter\n",
 			absent:  []string{body, "=AbCd", "GnuPG"},
 			present: []string{"-----BEGIN PGP PRIVATE KEY BLOCK-----", "after"},
+		},
+		"a PGP end line inside another key": {
+			in:   begin + "\n" + body + "\n-----END PGP PRIVATE KEY BLOCK-----\n" + body + "\n" + end + "\nafter\n",
+			want: begin + "\n***\n***\n***\n" + end + "\nafter\n",
+		},
+		"unterminated, a field after the first body line": {
+			in:   begin + "\n12:00 " + body + " req=1\n12:00 " + body + " req=1\n12:00 " + body + "\nall done\n",
+			want: begin + "\n***\n***\n***\nall done\n",
 		},
 		"digest header with CRLF": {
 			in:      "Authorization: Digest username=\"u\", response=\"x\"\r\nnext\r\n",

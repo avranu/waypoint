@@ -361,20 +361,26 @@ func keptPlain(data []byte, shown int) string {
 	if !bytes.HasSuffix(data, []byte("\n")) {
 		n++
 	}
+	// In a checkout the file goes when the checkout does: a runner removes
+	// its job's, so the log of an ended job must not promise it (audit
+	// 1816.2).
+	until := "the next long failure here, or until this checkout is removed"
 	p, err := localGit("rev-parse", "--git-path", failedOutputFile)
 	if err != nil || p == "" {
 		// Not in a repo: one temp file per user, which a later failure
 		// overwrites, so they don't pile up.
 		p = filepath.Join(os.TempDir(), fmt.Sprintf("wp-failed-output-%d.log", os.Getuid()))
+		until = "the next long failure here"
 	} else if abs, err := filepath.Abs(p); err == nil {
 		p = abs
 	}
-	return keptAt(p, data, n)
+	return keptAt(p, until, data, n)
 }
 
 var (
 	pemBeginRE  = lazyre.New(`-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----`)
-	pemEndRE    = lazyre.New(`-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----`)
+	pemEndRE    = lazyre.New(`-----END [A-Z ]*PRIVATE KEY-----`)
+	pgpEndRE    = lazyre.New(`-----END [A-Z ]*PRIVATE KEY BLOCK-----`)
 	pemBodyRE   = lazyre.New(`^[A-Za-z0-9+/=]+$`)
 	pemHeaderRE = lazyre.New(`(?:^|\s)[-+>]?(?:Proc-Type|DEK-Info|Comment|Version): `)
 )
@@ -394,6 +400,23 @@ func pemKeyLike(s string) bool {
 	return strings.ContainsAny(s, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") && strings.ContainsAny(s, "abcdefghijklmnopqrstuvwxyz") && strings.ContainsAny(s, "0123456789")
 }
 
+// pemBodyField is what is matched as a key's body on a line that may have a
+// log prefix, quotes, or fields after the body (audit 1819.2): the last
+// field long enough to be a full line of a key, else the last field.
+func pemBodyField(line string) string {
+	last, full := line, ""
+	for _, f := range strings.Fields(line) {
+		last = strings.TrimSuffix(strings.Trim(f, `"',;`), `\n`)
+		if len(last) >= pemFullLine && pemBodyRE.MatchString(last) {
+			full = last
+		}
+	}
+	if full != "" {
+		return full
+	}
+	return last
+}
+
 // redactKept is redact for a kept output file, returning as many lines as it
 // got, each \r kept, so "All N lines" stays true. Every line between a
 // BEGIN and an END PRIVATE KEY line becomes ***, when the END is within 400
@@ -402,7 +425,7 @@ func pemKeyLike(s string) bool {
 // headers, base64 lines of 40 or more characters (the first one mixed case
 // with a digit, so a commit SHA is not one), then one shorter line that is
 // not all letters. A diff or quote marker, a log prefix, quotes and a comma
-// around a line are allowed. Then redact's other patterns run over the whole
+// around a line are allowed, and fields after a full line's base64. Then redact's other patterns run over the whole
 // text, a match that spanned lines giving them back as *** lines.
 func redactKept(s string) string {
 	lines := strings.Split(s, "\n")
@@ -413,30 +436,35 @@ func redactKept(s string) string {
 			lines[j] = "***"
 		}
 	}
-	noEnd := false // the text has no END line below this point
+	noEnd := map[*lazyre.Regexp]bool{} // no END line of this kind below this point
 	for i := 0; i < len(lines); i++ {
 		l, _ := strings.CutSuffix(lines[i], "\r")
 		loc := pemBeginRE.FindStringIndex(l)
 		if loc == nil {
 			continue
 		}
-		if pemEndRE.MatchString(l[loc[1]:]) {
-			lines[i] = pemKeyRE.ReplaceAllString(l, "${1}***${2}") + lines[i][len(l):]
+		// A key ends at an END line of its own kind, as in pemKeyRE.
+		endRE := pemEndRE
+		if strings.HasSuffix(l[loc[0]:loc[1]], " BLOCK-----") {
+			endRE = pgpEndRE
+		}
+		if endRE.MatchString(l[loc[1]:]) {
+			lines[i] = pemKeyRE.ReplaceAllString(l, pemKeyRepl) + lines[i][len(l):]
 			continue
 		}
 		end := -1
-		if !noEnd {
+		if !noEnd[endRE] {
 			j := i + 1
 			for ; j < len(lines) && j <= i+pemMaxLines; j++ {
 				if pemBeginRE.MatchString(lines[j]) {
 					break
 				}
-				if pemEndRE.MatchString(lines[j]) {
+				if endRE.MatchString(lines[j]) {
 					end = j
 					break
 				}
 			}
-			noEnd = end < 0 && j >= len(lines)
+			noEnd[endRE] = end < 0 && j >= len(lines)
 		}
 		// Anything after BEGIN on its own line is the key (one printed
 		// with escaped newlines, say).
@@ -449,7 +477,7 @@ func redactKept(s string) string {
 			}
 			// So is what comes before END on its line, unless it is only
 			// a diff or quote prefix.
-			if at := pemEndRE.FindStringIndex(lines[end]); strings.Trim(lines[end][:at[0]], " \t-+>") != "" {
+			if at := endRE.FindStringIndex(lines[end]); strings.Trim(lines[end][:at[0]], " \t-+>") != "" {
 				lines[end] = "***" + lines[end][at[0]:]
 			}
 			i = end
@@ -463,13 +491,7 @@ func redactKept(s string) string {
 			if t != "" && strings.IndexByte("-+>", t[0]) >= 0 {
 				t = strings.TrimLeft(t[1:], " \t")
 			}
-			// A body line may come after a log prefix, or be quoted: its
-			// last field is what is matched.
-			last := t
-			if f := strings.Fields(t); len(f) > 0 {
-				last = f[len(f)-1]
-			}
-			last = strings.TrimSuffix(strings.Trim(last, `"',;`), `\n`)
+			last := pemBodyField(t)
 			switch {
 			case inHeaders && pemHeaderRE.MatchString(t):
 				sawHeader = true
@@ -542,15 +564,16 @@ func keepLines(m, r string) string {
 	return b.String()
 }
 
-// keptAt writes data, n lines, to p and says where, or why it couldn't.
+// keptAt writes data, n lines, to p and says where and until when it is
+// kept, or why it couldn't be.
 // Credentials are blanked first, since lines above the tail were never
 // shown and the file outlives the run; the write is a rename, so two
 // failures at once leave one run's output, not a mix (audit 1779).
-func keptAt(p string, data []byte, n int) string {
+func keptAt(p, until string, data []byte, n int) string {
 	if err := writeFileAtomic(p, []byte(redactKept(string(data))), 0o600); err != nil {
 		return fmt.Sprintf("Its %d lines of output couldn't be saved: %v\n", n, err)
 	}
-	return fmt.Sprintf("All %d lines of its output (kept until the next long failure here): %s\n", n, p)
+	return fmt.Sprintf("All %d lines of its output (kept until %s): %s\n", n, until, p)
 }
 
 // emitUnparsed reports a command that failed without producing results.
