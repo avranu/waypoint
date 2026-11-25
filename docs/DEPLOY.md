@@ -607,7 +607,8 @@ runners built from a release follow it:
   (counted from the first release it was to restart on, even when a newer
   one has replaced it since), it takes no new jobs until the running ones
   finish, then restarts. A server back on the runner's own release has the
-  binary put back, with no restart.
+  binary put back, with no restart; a put-back that fails is tried again
+  after 15 minutes, not 6 hours.
 
 This applies only to release builds (`vX.Y.Z`) on both sides; a runner started
 with `--once` never updates. A runner started on a `wp` from before this

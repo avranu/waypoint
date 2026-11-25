@@ -420,7 +420,9 @@ func (c *cli) autoUpdateIfBehind() {
 		return
 	}
 	c.claimAutoUpdate(seen, func(u *updateCheck) bool {
-		return u == nil || ((u.Server != seen || time.Since(u.Checked) >= updateRetryEvery) && !claimLive(u))
+		// A "started" claim no longer live is a dead upgrader's: it holds
+		// nothing off past updateClaimFresh (1847.3).
+		return u == nil || ((u.Server != seen || u.Result == "started" || time.Since(u.Checked) >= updateRetryEvery) && !claimLive(u))
 	})
 }
 

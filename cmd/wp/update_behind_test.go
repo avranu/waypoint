@@ -82,6 +82,11 @@ func TestAutoUpdateIfBehind(t *testing.T) {
 		t.Fatalf("claim = %+v", c.state.Update)
 	}
 	b.finish("v1.2.0", someCmd)
+	// The try ends (here it failed): its result, not a dead claim, holds
+	// the same release off for 6 hours (a dead claim only while fresh: 1847.3).
+	if c, _ := newCLI(io.Discard, io.Discard); c != nil {
+		c.recordUpdate("v1.2.0", "failed: no route", false)
+	}
 	b.ageRecord(5*time.Hour + 50*time.Minute)
 	b.finish("v1.2.0", someCmd)
 	if b.count() != 1 {

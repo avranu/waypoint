@@ -590,8 +590,23 @@ func (p *runnerProc) diskBehind() bool {
 func (p *runnerProc) updateDue() bool {
 	sv := p.serverVersion
 	return p.mayUpdate() && p.diskBehind() &&
-		(p.updateTriedFor != sv || p.clock().Sub(p.updateTriedAt) >= updateRetryEvery) &&
+		(p.updateTriedFor != sv || p.clock().Sub(p.updateTriedAt) >= p.retryEvery(sv)) &&
 		!p.heldBack(sv)
+}
+
+// putBackRetryEvery is how soon a failed try to put this process's release
+// back on disk is repeated: until it is, the runner's jobs, hooks and new wp
+// processes run the release the server rolled away from (1847.1).
+const putBackRetryEvery = 15 * time.Minute
+
+// retryEvery is the backoff after a failed try for release sv: 6 hours,
+// but putBackRetryEvery when sv is this process's release and the disk holds
+// another.
+func (p *runnerProc) retryEvery(sv string) time.Duration {
+	if sv == version && p.updatedTo != "" && p.updatedTo != sv {
+		return putBackRetryEvery
+	}
+	return updateRetryEvery
 }
 
 // heldBack: another wp's claim on release sv, or its failure, holds this
@@ -855,13 +870,16 @@ func (p *runnerProc) endDownload(res updateResult) {
 func (p *runnerProc) beginUpdate(sv string) bool {
 	var held time.Time
 	claimed := false // held by a download in flight, not a failure
-	err := p.c.updateState(func(s *State) {
+	backoff := p.retryEvery(sv)
+	// The poll loop's goroutine waits here: no longer than a command's claim
+	// does (c6997). A lock it misses holds it back updateHoldRecheck.
+	err := p.c.updateStateWithin(claimWait, func(s *State) {
 		switch u := s.Update; {
 		case claimLive(u):
 			held, claimed = u.Checked.Add(updateClaimFresh), true
 			return
-		case u != nil && u.Server == sv && strings.HasPrefix(u.Result, "failed") && time.Since(u.Checked) < updateRetryEvery && !p.ownFailure(u):
-			held = u.Checked.Add(updateRetryEvery)
+		case u != nil && u.Server == sv && strings.HasPrefix(u.Result, "failed") && time.Since(u.Checked) < backoff && !p.ownFailure(u):
+			held = u.Checked.Add(backoff)
 			return
 		}
 		s.Update = &updateCheck{Checked: time.Now(), Server: sv, Result: "started"}
@@ -914,7 +932,11 @@ func (p *runnerProc) finishUpdate(res updateResult) {
 		return
 	}
 	if res.err != nil {
-		p.logf("Couldn't update wp: %v. Carrying on with %s; trying again in 6 hours.", res.err, version)
+		again := "6 hours"
+		if p.retryEvery(res.sv) == putBackRetryEvery {
+			again = "15 minutes"
+		}
+		p.logf("Couldn't update wp: %v. Carrying on with %s; trying again in %s.", res.err, version, again)
 		p.c.recordUpdate(res.sv, "failed: "+res.err.Error(), false)
 		p.failedFor, p.failedAt = res.sv, time.Now()
 		return
