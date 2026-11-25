@@ -49,7 +49,10 @@ type testRun struct {
 }
 
 type testRunRecorder struct {
-	argv  []string
+	argv []string
+	// label is the command as the record says it, where that isn't argv:
+	// wp test says "wp test (scoped check)", not the script it ran.
+	label string
 	tree  string
 	start time.Time
 	snap  func() string
@@ -57,6 +60,13 @@ type testRunRecorder struct {
 
 func newTestRunRecorder(argv []string) *testRunRecorder {
 	return &testRunRecorder{argv: argv, snap: workingTree}
+}
+
+func (r *testRunRecorder) command() string {
+	if r.label != "" {
+		return r.label
+	}
+	return runCommand(r.argv)
 }
 
 // started notes the tree when the command starts, once it has its slot.
@@ -78,7 +88,7 @@ func (r *testRunRecorder) finish(res *testResult, exit int) {
 	}
 	run := testRun{
 		At: time.Now().UnixMilli(), Tree: r.tree, Moved: end != r.tree,
-		Command: runCommand(r.argv), Outcome: res.outcome(),
+		Command: r.command(), Outcome: res.outcome(),
 		Passed: res.Passed, Failed: res.Failed, Skipped: res.Skipped, Units: res.Units, UnitName: res.UnitName,
 		Seconds: res.Seconds, Duration: time.Since(r.start).Seconds(), Exit: exit,
 	}

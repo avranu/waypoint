@@ -228,14 +228,27 @@ func slotHeld(name string) bool {
 // slot is held, just before the command starts, and runs the command with
 // envf(env) when envf isn't nil.
 func (c *cli) runInSlotThen(name string, n int, argv []string, out, errw io.Writer, started func(), envf func([]string) []string) (int, error) {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	own := !slotHeld(name)
 	cmd := ""
 	if own {
 		cmd = slotRunKey(os.Args, argv)
 	}
-	env, release, setExit, err := c.takeSlotExit(ctx, name, n, slotRunOf(argv), cmd)
+	return c.runInSlotDo(name, n, slotRunOf(argv), cmd, started, func(ctx context.Context, env []string) (int, error) {
+		if envf != nil {
+			env = envf(env)
+		}
+		return runSlotCmd(ctx, env, argv, os.Stdin, out, errw)
+	})
+}
+
+// runInSlotDo holds a slot of NAME while do runs, and records the hold and
+// (when do exits 0) the run's time under cmd, the key its history is kept by
+// ("" when this process tree already held the slot). started is called once
+// the slot is held, before do.
+func (c *cli) runInSlotDo(name string, n int, run slotRun, cmd string, started func(), do func(ctx context.Context, env []string) (int, error)) (int, error) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	env, release, setExit, err := c.takeSlotExit(ctx, name, n, run, cmd)
 	if err != nil {
 		return 0, err
 	}
@@ -249,11 +262,8 @@ func (c *cli) runInSlotThen(name string, n int, argv []string, out, errw io.Writ
 	if started != nil {
 		started()
 	}
-	if envf != nil {
-		env = envf(env)
-	}
 	begun := time.Now()
-	code, err := runSlotCmd(ctx, env, argv, os.Stdin, out, errw)
+	code, err := do(ctx, env)
 	if err == nil {
 		setExit(code)
 	}
