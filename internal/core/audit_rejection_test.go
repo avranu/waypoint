@@ -293,3 +293,17 @@ func TestOtherFamilyFindingIsNotCompared(t *testing.T) {
 		t.Errorf("strength = %q", f.DecidedStrength)
 	}
 }
+
+// Only the verdict's underscores are spelled out; the reason, which can name
+// a model like my_model-1, is shown as stored (WP-1825).
+func TestRejectedAsSpellsOutOnlyTheVerdict(t *testing.T) {
+	for in, want := range map[string]string{
+		"not_compared: my_model-1 isn't a model Waypoint ranks": "m (high), not compared: my_model-1 isn't a model Waypoint ranks",
+		"at_least: opus is a stronger family than sonnet":       "m (high), at least: opus is a stronger family than sonnet",
+		"at_least": "m (high), at least",
+	} {
+		if got := RejectedAs(CodeAuditFinding{DecidedModel: "m", DecidedEffort: "high", DecidedStrength: in}); got != want {
+			t.Errorf("RejectedAs(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

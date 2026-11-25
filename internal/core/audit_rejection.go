@@ -172,7 +172,13 @@ func RejectedAs(f CodeAuditFinding) string {
 		s += " (" + f.DecidedEffort + ")"
 	}
 	if f.DecidedStrength != "" {
-		s += ", " + strings.Replace(f.DecidedStrength, "_", " ", 1)
+		// Stored as "verdict: reason"; only the verdict (at_least,
+		// not_compared) is a name to spell out, the reason is shown as is.
+		verdict, reason, ok := strings.Cut(f.DecidedStrength, ": ")
+		s += ", " + strings.ReplaceAll(verdict, "_", " ")
+		if ok {
+			s += ": " + reason
+		}
 	}
 	return s
 }
