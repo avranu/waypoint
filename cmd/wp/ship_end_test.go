@@ -581,6 +581,38 @@ func TestShipCheckFailureNamesTheSlotWait(t *testing.T) {
 	}
 }
 
+// Indexing the work tree, before the check and after it, is neither the
+// wait for a slot nor the check's time (audit 1860.2).
+func TestShipCheckTimesLeaveOutIndexing(t *testing.T) {
+	slotEnv(t)
+	t.Chdir(t.TempDir())
+	git(t, ".", "init", "-q")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	slow := "#!/bin/sh\n[ \"$1\" = add ] && sleep 2\nexec " + shellJoin([]string{realGit}) + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(slow), 0o700); err != nil { // #nosec G306 -- a test's stand-in git
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	old := slotWaitNoteMin
+	slotWaitNoteMin = time.Second
+	t.Cleanup(func() { slotWaitNoteMin = old })
+	var out bytes.Buffer
+	c, err := newCLI(&out, new(bytes.Buffer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.runShipCheck("true"); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "Check passed: true (0s)") && !strings.Contains(got, "Check passed: true (1s)") || strings.Contains(got, "waiting for a slot") {
+		t.Errorf("indexing was counted:\n%s", got)
+	}
+}
+
 // A failed check shows 30 lines of output; a pointer to the file comes only
 // with more.
 func TestShipCheckPointerPastThirtyLines(t *testing.T) {

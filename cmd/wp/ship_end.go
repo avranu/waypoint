@@ -499,11 +499,14 @@ func (c *cli) runShipCheck(cmd string) error {
 	// The wait for a slot isn't the check's time: a 25 minute make check
 	// that queued 44 minutes was reported as one of 69 (WP-1812).
 	queued := time.Now()
-	start := queued
-	code, err := c.runInSlotThen("tests", defaultSlots(), goTestJSON(argv), &buf, &buf, func() { rec.started(); start = time.Now() }, func(env []string) []string {
+	got, start := queued, queued
+	// Nor is indexing the tree, before the command and after it, either
+	// one's time (audit 1860.2).
+	code, err := c.runInSlotThen("tests", defaultSlots(), goTestJSON(argv), &buf, &buf, func() { got = time.Now(); rec.started(); start = time.Now() }, func(env []string) []string {
 		env, _ = testEnv(env, nil)
 		return env
 	})
+	took := time.Since(start).Round(time.Second)
 	if err != nil {
 		return fmt.Errorf("--check couldn't run %s: %w (nothing shipped)", cmd, err)
 	}
@@ -517,8 +520,7 @@ func (c *cli) runShipCheck(cmd string) error {
 	} else {
 		rec.finish(res, code)
 	}
-	took := time.Since(start).Round(time.Second)
-	waited := start.Sub(queued)
+	waited := got.Sub(queued)
 	if !failed {
 		line := checkPassedLine(cmd, took, waited)
 		if res.Passed+res.Failed+res.Skipped > 0 {
