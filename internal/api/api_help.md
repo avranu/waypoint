@@ -686,6 +686,7 @@ differences (a message written again with more tokens). Cost is API-equivalent, 
     GET  /usage/feature?ref=KEY|VERSION&window=30&repo=OWNER/NAME&…   tasks whose runs had a release against those
                                     whose runs didn't, from what each run recorded (WP-256): had, before, partial, unknown
     GET  /usage/task/KEY            one task's usage, each run's versions, the tools it used and (admins) its experiment arms
+    GET  /usage/no-task             spend no task was found for, split into carry-over to earlier runs and sessions that never had one (?days=N&user=)
     GET  /usage/summary             this week's tokens, cache hit rate and quota, for the overview page
     GET  /usage/breakdown?by=repo|machine|session|kind|model&limit=100   more rows than the overview shows
     GET  /usage/refusals?before=ID&limit=25     older refused calls, with their excerpts
