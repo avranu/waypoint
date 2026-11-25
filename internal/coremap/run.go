@@ -21,6 +21,9 @@ func Run(args []string, stdout, stderr io.Writer) error {
 	edge := fs.String("edge", "", "list every reference on the edge `A>B` (groups)")
 	group := fs.String("group", "", "list what `G` needs from other groups and what they need from it")
 	kc := fs.Bool("kernel-candidates", false, "list symbols referenced from at least -min-groups groups")
+	suggest := fs.Bool("suggest-order", false, "order the groups to minimise upward references (kernel first) and report under that order")
+	affinity := fs.Bool("affinity", false, "list each group with the groups it exchanges the most references with")
+	perFile := fs.Bool("per-file", false, "make every file its own group (file-level affinity and order)")
 	minGroups := fs.Int("min-groups", 10, "the group count -kernel-candidates needs")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -45,11 +48,15 @@ func Run(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", *groupsFile, err)
 	}
+	groups.PerFile = *perFile
 	ld, err := Load(*dir, groups, stderr)
 	if err != nil {
 		return err
 	}
 	a := Analyze(ld, groups)
+	if *suggest {
+		a = a.SuggestOrder()
+	}
 
 	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "  ")
@@ -61,6 +68,13 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 	queried := false
+	if *affinity {
+		queried = true
+		af := a.Affinities()
+		if err := emit(af, func() { WriteAffinity(stdout, af) }); err != nil {
+			return err
+		}
+	}
 	if *edge != "" {
 		queried = true
 		refs, err := a.EdgeRefs(from, to)
@@ -92,5 +106,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 	r := a.Report(*top)
+	if *suggest {
+		return emit(r, func() { WriteOrder(stdout, r) })
+	}
 	return emit(r, func() { WriteReport(stdout, r) })
 }

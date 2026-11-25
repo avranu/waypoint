@@ -52,12 +52,12 @@ func WriteReport(w io.Writer, r Report) {
 		for _, c := range e.Top {
 			syms = append(syms, fmt.Sprintf("%s(%d)", c.Symbol, c.Count))
 		}
-		fmt.Fprintf(w, "%2d. %s > %s: %d refs, %d calls; %s\n", i+1, e.From, e.To, e.Refs, e.Calls, strings.Join(syms, " "))
+		fmt.Fprintf(w, "%2d. %s > %s: %d refs, %d calls (reverse %d); %s\n", i+1, e.From, e.To, e.Refs, e.Calls, e.Reverse, strings.Join(syms, " "))
 	}
 
 	fmt.Fprintf(w, "\n== groups (bottom of the order first) ==\n")
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "group\tfiles\tlines\tin\tout\tup-out\tready\t")
+	_, _ = fmt.Fprintln(tw, "group\tfiles\tlines\tin\tout\tup-out\tup-symbols\tready\t")
 	for _, g := range r.Groups {
 		name := g.Name
 		if !g.Placed {
@@ -67,7 +67,7 @@ func WriteReport(w io.Writer, r Report) {
 		if g.Ready {
 			ready = "ready"
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%s\t\n", name, g.Files, g.Lines, g.Inbound, g.Outbound, g.UpOut, ready)
+		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t\n", name, g.Files, g.Lines, g.Inbound, g.Outbound, g.UpOut, g.UpSyms, ready)
 	}
 	_ = tw.Flush()
 }
@@ -126,6 +126,39 @@ func WriteCandidates(w io.Writer, minGroups int, cs []Candidate) {
 	_, _ = fmt.Fprintln(tw, "groups\trefs\tsymbol\tclass\tdeclared in\t")
 	for _, c := range cs {
 		fmt.Fprintf(tw, "%d\t%d\t%s\t%s\t%s:%d (%s)\t\n", c.Groups, c.Refs, c.Symbol, c.Class, c.DeclFile, c.DeclLine, c.Group)
+	}
+	_ = tw.Flush()
+}
+
+// WriteOrder renders a suggested order: the names, then each group's upward
+// and downward references out under it.
+func WriteOrder(w io.Writer, r Report) {
+	s := r.Summary
+	fmt.Fprintf(w, "suggested order, bottom first (kernel kept first); references down %d (%.1f%%), up %d, upward calls %d\n",
+		s.Down, pct(s.Down, s.CrossRefs), s.Up, s.UpCalls)
+	var names []string
+	for _, g := range r.Groups {
+		names = append(names, g.Name)
+	}
+	fmt.Fprintf(w, "order: %s\n\n", strings.Join(names, " "))
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "#\tgroup\tdown-out\tup-out\tup-symbols\t")
+	for i, g := range r.Groups {
+		fmt.Fprintf(tw, "%d\t%s\t%d\t%d\t%d\t\n", i+1, g.Name, g.DownOut, g.UpOut, g.UpSyms)
+	}
+	_ = tw.Flush()
+}
+
+// WriteAffinity renders each group's size and its top peers.
+func WriteAffinity(w io.Writer, af []Affinity) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "group\tfiles\tlines\tcross-refs\ttop peers (refs exchanged, share of the group's total)\t")
+	for _, x := range af {
+		var peers []string
+		for _, p := range x.Top {
+			peers = append(peers, fmt.Sprintf("%s %d (%.0f%%)", p.Group, p.Refs, p.Share))
+		}
+		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%s\t\n", x.Name, x.Files, x.Lines, x.Refs, strings.Join(peers, ", "))
 	}
 	_ = tw.Flush()
 }

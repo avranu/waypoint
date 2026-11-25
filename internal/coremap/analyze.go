@@ -53,11 +53,13 @@ type SymCount struct {
 
 // Edge is all references from one group to another.
 type Edge struct {
-	From  string     `json:"from"`
-	To    string     `json:"to"`
-	Refs  int        `json:"refs"`
-	Calls int        `json:"calls"`
-	Top   []SymCount `json:"top"`
+	From  string `json:"from"`
+	To    string `json:"to"`
+	Refs  int    `json:"refs"`
+	Calls int    `json:"calls"`
+	// Reverse counts the references the other way, To to From.
+	Reverse int        `json:"reverse"`
+	Top     []SymCount `json:"top"`
 }
 
 // GroupRow is one group's line in the per-group table.
@@ -69,7 +71,11 @@ type GroupRow struct {
 	Inbound  int    `json:"inbound"`
 	Outbound int    `json:"outbound"`
 	UpOut    int    `json:"upOut"`
-	Ready    bool   `json:"ready"`
+	// DownOut is Outbound - UpOut. UpSyms counts the distinct symbols those
+	// upward references name: what has to be cut.
+	DownOut int  `json:"downOut"`
+	UpSyms  int  `json:"upSymbols"`
+	Ready   bool `json:"ready"`
 }
 
 // Report is the default report.
@@ -134,6 +140,7 @@ func (a *Analysis) Report(top int) Report {
 	}
 	adj := map[string][]string{}
 	seen := map[[2]string]bool{}
+	upSyms := map[string]map[string]bool{}
 	for _, r := range a.ld.Refs {
 		s.CrossRefs++
 		up := a.up(r)
@@ -145,6 +152,10 @@ func (a *Analysis) Report(top int) Report {
 				s.UpCalls++
 			}
 			rows[r.FromGroup].UpOut++
+			if upSyms[r.FromGroup] == nil {
+				upSyms[r.FromGroup] = map[string]bool{}
+			}
+			upSyms[r.FromGroup][declKey(r)] = true
 		default:
 			s.Down++
 		}
@@ -188,6 +199,8 @@ func (a *Analysis) Report(top int) Report {
 	for _, g := range a.order {
 		if r := rows[g]; r != nil {
 			r.Ready = r.UpOut == 0
+			r.DownOut = r.Outbound - r.UpOut
+			r.UpSyms = len(upSyms[g])
 			if r.Ready {
 				s.Ready = append(s.Ready, g)
 			}
@@ -289,9 +302,13 @@ func (a *Analysis) edges(upOnly bool) []Edge {
 		k := [2]string{r.FromGroup, r.ToGroup}
 		by[k] = append(by[k], r)
 	}
+	rev := map[[2]string]int{}
+	for _, r := range a.ld.Refs {
+		rev[[2]string{r.FromGroup, r.ToGroup}]++
+	}
 	var out []Edge
 	for k, refs := range by {
-		e := Edge{From: k[0], To: k[1], Refs: len(refs)}
+		e := Edge{From: k[0], To: k[1], Refs: len(refs), Reverse: rev[[2]string{k[1], k[0]}]}
 		for _, r := range refs {
 			if r.Call {
 				e.Calls++
