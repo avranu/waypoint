@@ -43,7 +43,6 @@ func TestGoPackages(t *testing.T) {
 			t.Errorf("%d: got %+v, want %+v", i, g, w)
 		}
 	}
-	// A timeout panic with no package that ran that long marks nothing.
 	if got := goPackages([]string{"panic: test timed out after 30m0s", "FAIL\tgit.example.com/me/app/x\t2.0s"}, nil); got[0].outcome != "fail" {
 		t.Errorf("short failure taken for the timeout: %+v", got)
 	}
@@ -107,11 +106,11 @@ func TestParseWorkflowLimits(t *testing.T) {
 		{"Backend shard 3 (pull_request)", 40 * 60_000, 30 * 60_000},
 		{"e2e", 20 * 60_000, 0},
 		{"e2e (pull_request)", 20 * 60_000, 0},
-		{"lint", 0, 10 * 60_000}, // go test's own default
-		{"docs", 0, 0},           // no limit to watch
-		{"backend", 0, 0},        // not a shard's name
-		{"nolimit", 0, 0},        // -timeout 0 turns it off
-		{"exprlimit", 0, 0},      // a limit this can't read
+		{"lint", 0, 10 * 60_000},
+		{"docs", 0, 0},
+		{"backend", 0, 0},
+		{"nolimit", 0, 0},
+		{"exprlimit", 0, 0},
 	} {
 		l := jobLimitOf(ls, c.name)
 		if l.jobMs != c.jobMs || l.testMs != c.testMs {
@@ -199,7 +198,6 @@ func (be *bsEnv) limitTask() (key, prio, text string) {
 
 func TestCILimitsWatch(t *testing.T) {
 	be, f := limitsEnv(t)
-	// internal/core creeps up on its 30m: p90 past 85% of it.
 	be.shardRun(1, "a1", "#5", 5*time.Hour, 28*time.Minute, 1_550_000, false)
 	be.shardRun(2, "a2", "#6", 4*time.Hour, 28*time.Minute, 1_600_000, false)
 	be.shardRun(3, "a3", "#7", 3*time.Hour, 29*time.Minute, 1_650_000, false)
@@ -221,26 +219,22 @@ func TestCILimitsWatch(t *testing.T) {
 	if err := be.s.db.R.QueryRowContext(be.ctx, `SELECT coalesce(agent, '') FROM issues WHERE title = ?`, ciLimitTitle("me/app")).Scan(&agent); err != nil || agent != "claude" {
 		t.Fatalf("agent %q %v", agent, err)
 	}
-	// Within the hour: not looked at again.
 	be.shardRun(4, "a4", "#8", time.Minute, 30*time.Minute, 1_800_100, true)
 	be.s.watchCILimits(be.ctx, f, "me/app")
 	if _, _, again := be.limitTask(); again != text {
 		t.Fatalf("looked again within the hour:\n%s", again)
 	}
-	// An hour on: it got worse (a run hit it), so it is added to the task.
 	be.setClock(be.clockNow().Add(ciLimitEvery))
 	be.s.watchCILimits(be.ctx, f, "me/app")
 	_, _, text = be.limitTask()
 	if !strings.Contains(text, "Problem: `internal/core in backend shard N") || !strings.Contains(text, "1 stopped by it (running TestSyncRefreshesMergeable then)") {
 		t.Fatalf("worse, not added:\n%s", text)
 	}
-	// Another hour, no worse: nothing new until a day has gone by.
 	be.setClock(be.clockNow().Add(ciLimitEvery))
 	be.s.watchCILimits(be.ctx, f, "me/app")
 	if _, _, again := be.limitTask(); again != text {
 		t.Fatalf("added again though no worse:\n%s", again)
 	}
-	// The doctor shows it, pointing at the task.
 	d := &CIDoctor{}
 	snap := &ciSnapshot{repos: []*ciRepoData{{ref: ciRepoRef{forge: f, repo: "me/app"}}}}
 	be.s.doctorLimits(be.ctx, d, snap, func(int64, string) (string, bool) { return "APP", true })
@@ -281,10 +275,10 @@ func TestLimitLevel(t *testing.T) {
 	}{
 		{5, 10 * m, 12 * m, 30 * m, 0, ""},
 		{5, 26 * m, 27 * m, 30 * m, 0, "warn"},
-		{2, 26 * m, 27 * m, 30 * m, 0, ""}, // too few runs for the p90
+		{2, 26 * m, 27 * m, 30 * m, 0, ""},
 		{1, 29 * m, 29 * m, 30 * m, 0, "warn"},
 		{1, 10 * m, 10 * m, 30 * m, 1, "problem"},
-		{9, 29 * m, 29 * m, 0, 3, ""}, // no limit known
+		{9, 29 * m, 29 * m, 0, 3, ""},
 	} {
 		if got := limitLevel(c.runs, c.p90, c.mx, c.lim, c.hits); got != c.want {
 			t.Errorf("%+v: %q", c, got)
@@ -317,7 +311,6 @@ func TestCILimitsUrgent(t *testing.T) {
 	if key == "" || be.s.taskUrgent(be.ctx, SystemActor(), key) {
 		t.Fatalf("close to a limit only: task %q should be filed, not urgent", key)
 	}
-	// A fix is already open for it; another pull request isn't for it.
 	be.pullHook("opened", ForgePR{Number: 20, Title: "Faster shards", Author: "robin", HeadRef: strings.ToLower(key) + "-shards", HeadSHA: "aaaa1111", State: "open"})
 	be.pullHook("opened", ForgePR{Number: 21, Title: "Tidy", Author: "robin", HeadRef: "tidy", HeadSHA: "bbbb2222", State: "open"})
 	be.s.Wait()
@@ -325,7 +318,6 @@ func TestCILimitsUrgent(t *testing.T) {
 		t.Fatal("the fix is urgent before any run was stopped")
 	}
 
-	// A run is stopped by go test's -timeout: the task and its fix go urgent.
 	be.shardRun(4, "a4", "#8", time.Minute, 30*time.Minute, 1_800_100, true)
 	be.setClock(be.clockNow().Add(ciLimitEvery))
 	be.s.watchCILimits(be.ctx, f, "me/app")
@@ -333,8 +325,6 @@ func TestCILimitsUrgent(t *testing.T) {
 	if !be.s.taskUrgent(be.ctx, SystemActor(), key) || !strings.Contains(text, "this task is now tagged `ci-urgent`") {
 		t.Fatalf("stopped by a limit: task not tagged:\n%s", text)
 	}
-	// The task is for the agent that takes it: nothing about the lane or
-	// taking the tag off, which the safety screen holds (WP-1015).
 	for _, bad := range []string{"--untag", "urgent CI lane", "ahead of the merge line"} {
 		if strings.Contains(text, bad) {
 			t.Errorf("task text mentions %q:\n%s", bad, text)
@@ -350,7 +340,6 @@ func TestCILimitsUrgent(t *testing.T) {
 		t.Fatalf("doctor: %+v", d.Findings)
 	}
 
-	// A person takes the tag off: another sighting in the same spell keeps it off.
 	if _, err := be.s.UpdateIssue(be.ctx, be.admin, key, IssuePatch{RemLabels: []string{CIUrgentLabel}}); err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +349,6 @@ func TestCILimitsUrgent(t *testing.T) {
 	if be.s.taskUrgent(be.ctx, SystemActor(), key) {
 		t.Fatal("tag put back on in the same spell")
 	}
-	// Calm, then stopped again: a new spell tags it again.
 	be.s.calmCILimits(be.ctx, f.ID, "me/app")
 	if _, err := be.s.fileCILimits(be.ctx, f.ID, "me/app", "problem", nil, "Held #10."); err != nil {
 		t.Fatal(err)
@@ -368,7 +356,6 @@ func TestCILimitsUrgent(t *testing.T) {
 	if !be.s.taskUrgent(be.ctx, SystemActor(), key) {
 		t.Fatal("a new spell didn't tag the task")
 	}
-	// Calm again: the watch takes off the tag it put on, and says so.
 	be.s.calmCILimits(be.ctx, f.ID, "me/app")
 	_, _, text = be.limitTask()
 	if be.s.taskUrgent(be.ctx, SystemActor(), key) || !strings.Contains(text, "the `ci-urgent` tag is off") {

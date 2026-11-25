@@ -1,5 +1,3 @@
-// Date and duration helpers for the timesheet.
-
 import { useQueryClient } from '@tanstack/react-query'
 
 /** Local midnight at the start of the week containing d. */
@@ -85,7 +83,6 @@ export function weekLabel(from: Date): string {
 export function useInvalidateTime() {
   const qc = useQueryClient()
   return () => {
-    // 'issue' too: the issue page shows total time spent.
     for (const k of ['time', 'timer', 'timeReport', 'issueTime', 'issue'])
       qc.invalidateQueries({ queryKey: [k] })
   }

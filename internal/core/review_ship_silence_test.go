@@ -14,7 +14,7 @@ import (
 func TestShipNeverStopsRetryingInSilence(t *testing.T) {
 	hour := time.Hour.Milliseconds()
 	for name, c := range map[string]struct {
-		first, end    int64 // hours ago
+		first, end    int64
 		state         string
 		sessionEnded  bool
 		runOpen       bool
@@ -58,7 +58,6 @@ func TestShipNeverStopsRetryingInSilence(t *testing.T) {
 			if n := e.notified("gave up") + e.notified("stopped trying"); n != 1 {
 				t.Fatalf("the person was told %d times", n)
 			}
-			// And wp ship works again.
 			e.g.createErr = nil
 			if res, err := e.ship(e.task.Key, ShipAuto); err != nil || (res.Held == "" && res.Pull == nil) {
 				t.Fatalf("wp ship after the end: %+v, %v", res, err)

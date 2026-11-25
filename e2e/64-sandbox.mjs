@@ -61,14 +61,12 @@ for (const [width, scheme] of looks([
   const overflow = async (what) =>
     ok(!(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)), `${tag} ${what}: no sideways scroll`);
 
-  // A token reads the policy and can't change it.
   const tok = (await api("POST", "/me/tokens", { name: `sandbox e2e ${n}` })).body.token;
   if (n === 1) T = { Authorization: `Bearer ${tok}` };
   ok((await page.request.get(`${base}/api/v1/projects/${key}/sandbox`, { headers: T })).status() === 200, `${tag} a token reads the policy`);
   const refused = await page.request.patch(`${base}/api/v1/projects/${key}/sandbox`, { headers: T, data: { level: "off", reason: "x" } });
   ok(refused.status() === 403 && (await refused.text()).includes("Waypoint UI"), `${tag} a token can't change it`);
 
-  // Tighten: no reason asked.
   await page.goto(`${base}/p/${key}/settings?tab=sandbox`);
   const section = page.locator("section", { has: page.getByRole("heading", { name: "Sandbox", exact: true }) });
   await section.waitFor();
@@ -79,8 +77,6 @@ for (const [width, scheme] of looks([
   await page.getByText("Sandbox saved").waitFor();
   ok((await api("GET", `/projects/${key}/sandbox`)).body.level === "vm", `${tag} saved VM`);
 
-  // Loosen: a reason, and the password when the server asks for it. Signing
-  // in just now counts as entering it, so make the server ask once.
   await choose(page, "Runner jobs", "Off");
   ok(await section.getByText("Runs as you: everything you can reach").isVisible(), `${tag} Off says what it opens up`);
   const loosen = section.getByRole("button", { name: "Loosen sandbox" });
@@ -114,7 +110,6 @@ for (const [width, scheme] of looks([
   await section.screenshot({ path: `${out}/project-${width}-${scheme}.png` });
   await log.screenshot({ path: `${out}/project-log-${width}-${scheme}.png` });
 
-  // Revert the loosening: it tightens, so no reason is needed.
   await log.getByRole("button", { name: "Revert" }).first().click();
   const rd = page.getByRole("dialog", { name: /Revert change/ });
   ok(await rd.getByText("Why? (optional)").isVisible(), `${tag} reverting a loosening needs no reason`);
@@ -123,15 +118,12 @@ for (const [width, scheme] of looks([
   ok((await api("GET", `/projects/${key}/sandbox`)).body.level === "vm", `${tag} reverted to VM`);
   await log.getByText("revert of #").waitFor();
 
-  // The kill switch, on a machine of robin's.
   if (n === 1) {
     const r = await page.request.post(`${base}/api/v1/runner/register`, {
       headers: T,
       data: { name: "laptop", hostname: "laptop.local", os: "linux", arch: "amd64", version: "v1", labels: [], allowed_dirs: ["/work"], clis: [] },
     });
     ok(r.status() === 200, `register a runner: ${r.status()}`);
-    // Its sandbox helper reports through the runner's poll: ready once it
-    // pins this server's key and its store is sound.
     runnerId = (await r.json()).id;
     const fp = (await api("GET", "/sandbox/key")).body.fingerprint;
     ok(/^SHA256:/.test(fp), `the server's spec key: ${fp}`);
@@ -153,8 +145,6 @@ for (const [width, scheme] of looks([
   ok(await sb.locator("code", { hasText: /^SHA256:/ }).isVisible(), `${tag} shows the key's fingerprint`);
   await sb.screenshot({ path: `${out}/helper-${width}-${scheme}.png` });
 
-  // Remove a machine user: confirmed in the page, sent on the runner's
-  // next poll as a signed spec, done once the runner answers.
   ok(await sb.getByText("wpr-old-thing-0a0b0c", { exact: true }).isVisible(), `${tag} shows the removed history`);
   ok(await sb.getByText(/trash\/wpr-old-thing/).isVisible(), `${tag} says where a removed user's files wait`);
   ok((await sb.getByText("no project here uses it now").count()) === 2, `${tag} flags users no project uses`);
@@ -186,7 +176,7 @@ for (const [width, scheme] of looks([
   const sw = sb.getByRole("switch", { name: "Pause sandboxing on laptop" });
   const paused = await sw.getAttribute("aria-checked");
   if (paused === "true") {
-    await sw.click(); // unpausing tightens: no questions
+    await sw.click();
     await page.getByText("Sandboxing back on for laptop").waitFor();
   }
   await sw.click();

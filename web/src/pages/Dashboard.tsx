@@ -1,9 +1,3 @@
-// Dashboards (WP-780): a project, or every project, at a glance for a
-// person: what it's for, how work moves and how fast, and what may be
-// going wrong, each with a way to see the tasks behind it and, where an
-// agent can help, one click to hand it one. Everything shown is counted
-// (internal/core/dashboard.go); technical details are opt-in.
-
 import { useMemo, useState, type ReactNode } from 'react'
 import { Link, Navigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -48,8 +42,6 @@ import { GroundingBar } from '@/components/goals'
 import { ProjectIcon } from '@/components/issue/icons'
 import { useProject } from './Project'
 
-// ---- one project ----
-
 type CardID = 'attention' | 'goals' | 'flow' | 'pace'
 const CARDS: { id: CardID; label: string }[] = [
   { id: 'attention', label: 'Needs attention' },
@@ -66,7 +58,6 @@ interface Layout {
 /** The card order and what's hidden, kept per browser; cards added later show at the end. */
 function useLayout() {
   const [saved, setSaved] = useLocal<Layout>('dash-cards', { order: [], hidden: [] })
-  // Stored by hand or by an older build, it may be any shape.
   const known = (v: unknown) =>
     Array.isArray(v) ? v.filter((id): id is CardID => CARDS.some((c) => c.id === id)) : []
   const kept = known(saved?.order)
@@ -262,8 +253,6 @@ function LoadError({ message, retry }: { message: string; retry: () => void }) {
   )
 }
 
-// ---- tiles ----
-
 function Tile({
   label,
   value,
@@ -362,8 +351,6 @@ function Tiles({ d }: { d: Dashboard }) {
 }
 
 const days = (n: number) => (n < 1 ? 'under a day' : `${fmtNum(n, 0)} ${n < 1.5 ? 'day' : 'days'}`)
-
-// ---- needs attention ----
 
 const TONE: Record<DashTone, { icon: typeof Info; className: string; label: string }> = {
   bad: { icon: CircleAlert, className: 'text-danger', label: 'Problem' },
@@ -528,8 +515,6 @@ function FixButton({ s, d }: { s: DashSignal; d: Dashboard }) {
   return null
 }
 
-// ---- goals ----
-
 function GoalsCard({ d }: { d: Dashboard }) {
   const g = d.goals
   if (!g) return null
@@ -676,8 +661,6 @@ function GoalBar({
   )
 }
 
-// ---- how work moves ----
-
 function FlowCard({ d, details }: { d: Dashboard; details: boolean }) {
   const max = Math.max(1, ...d.stages.map((s) => s.count))
   return (
@@ -743,8 +726,6 @@ function StageRow({
   )
 }
 
-// ---- pace ----
-
 function PaceCard({ d, details }: { d: Dashboard; details: boolean }) {
   const weeks = d.pace.weeks
   const done = weeks.map((w) => w.done)
@@ -780,8 +761,6 @@ function PaceCard({ d, details }: { d: Dashboard; details: boolean }) {
     </Section>
   )
 }
-
-// ---- every project ----
 
 type Sort = 'attention' | 'pace' | 'name'
 

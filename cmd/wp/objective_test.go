@@ -304,8 +304,6 @@ func TestReadValue(t *testing.T) {
 		{"3 tests, took 12 ms", "ms", 12},
 		{"took 12 MS", "ms", 12},
 		{"42 Warnings", "warnings", 42},
-		// Letters whose lower case is a different length, and bytes that
-		// aren't text, sit before the number without moving where it is.
 		{"\u0130\u0130\u0130\u0130 İstanbul 7 warnings", "warnings", 7},
 		{"\xff\xfe\xff 9 ms", "ms", 9},
 	} {
@@ -351,7 +349,6 @@ func TestObjectiveSetFlagsReachTheServer(t *testing.T) {
 	if len(o.KeepPassing) != 2 || o.KeepPassing[0] != "go test ./a, ./b" {
 		t.Errorf("keep-passing %q: a comma is part of a command", o.KeepPassing)
 	}
-	// A lone empty value clears the list.
 	e.wp("objective", "set", key, "--keep-passing", "")
 	if o, _ = e.svc.GetObjective(context.Background(), me, key); len(o.KeepPassing) != 0 {
 		t.Errorf("not cleared: %q", o.KeepPassing)
@@ -464,12 +461,10 @@ func TestObjectiveDiagnoseCommand(t *testing.T) {
 			t.Errorf("%s: exit %d, %q", name, code, out)
 		}
 	}
-	// No objective yet.
 	if out, code := e.run("objective", "diagnose", key, "-m", "x"); code == 0 || !strings.Contains(out, "has no objective, so there is nothing to diagnose") {
 		t.Errorf("no objective: exit %d, %q", code, out)
 	}
 	e.setObjective(me, key, core.ObjectiveInput{Check: ptr("cat n.txt"), Until: ptr("< 10")})
-	// The server's own words say the round isn't a diagnose round, from a file too.
 	write(t, "d.md", "# Why\n\nThe check measures the wrong file.\n")
 	for _, args := range [][]string{
 		{"objective", "diagnose", key, "-m", "the check is wrong", "--ask"},
@@ -479,7 +474,6 @@ func TestObjectiveDiagnoseCommand(t *testing.T) {
 			t.Errorf("%v: exit %d, %q", args, code, out)
 		}
 	}
-	// What wp objective set and wp objective diagnose say in help.
 	if out := e.wp("help", "objective", "diagnose"); !strings.Contains(out, "KEY (-f FILE | -m TEXT) [--ask]") {
 		t.Errorf("help:\n%s", out)
 	}

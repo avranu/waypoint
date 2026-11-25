@@ -106,7 +106,7 @@ func gitVerb(args []string) string {
 			i++
 			continue
 		}
-		if strings.HasPrefix(args[i], "--") { // --literal-pathspecs and the like
+		if strings.HasPrefix(args[i], "--") {
 			continue
 		}
 		return args[i]

@@ -203,7 +203,7 @@ func sameSQL(root, mergeBase, file string) bool {
 func sqlCode(src string) string {
 	var b strings.Builder
 	var quote byte
-	space := false // whitespace is owed before the next code byte
+	space := false
 	put := func(c byte) {
 		if space && b.Len() > 0 {
 			b.WriteByte(' ')
@@ -286,8 +286,6 @@ func e2eWaits(root, mergeBase string) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Each file's live waits at mergeBase, by text; those of a file that's
-	// gone since (renamed or split) may be claimed by any file.
 	baseLines := map[string]map[string]int{}
 	gone := map[string]int{}
 	atBase := map[string]bool{}
@@ -320,8 +318,6 @@ func e2eWaits(root, mergeBase string) ([]Finding, error) {
 			baseLines[rel][w.text]++
 		}
 	}
-	// Files new since the base claim a gone file's waits before old files do:
-	// a rename or split makes new files.
 	rels := make([]string, 0, len(nowLines))
 	for rel := range nowLines {
 		rels = append(rels, rel)
@@ -339,7 +335,7 @@ func e2eWaits(root, mergeBase string) ([]Finding, error) {
 			had += n
 		}
 		if len(nowLines[rel]) <= had {
-			continue // no more than it had: an edit, not a new wait
+			continue
 		}
 		msg := fmt.Sprintf("a new page.waitForTimeout (%d here, %d at the base): wait for the thing itself (a locator or response), fixed waits are this suite's flakes; or add \"// wplint:ignore e2e-wait WHY\" above it", len(nowLines[rel]), had)
 		own := baseLines[rel]

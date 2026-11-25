@@ -24,7 +24,6 @@ func TestAgentActivityAPI(t *testing.T) {
 		t.Fatalf("next: %d %s", code, b)
 	}
 	key := strings.Fields(string(b))[0]
-	// The Claude Code hook's report names the model.
 	if code, b := agent.do("POST", "/api/v1/agent/usage/"+key, map[string]any{"input_tokens": 1500, "output_tokens": 20, "model": "claude-opus-5-5", "report_id": "r1"}); code != 200 {
 		t.Fatalf("usage: %d %s", code, b)
 	}

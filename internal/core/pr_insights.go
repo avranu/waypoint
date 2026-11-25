@@ -1,9 +1,5 @@
 package core
 
-// Pull requests on the Agents page (WP-D15): where each went, how many
-// pushes it took, who reviewed and approved it, what bots found, and what
-// agents spent on the issues it's linked to.
-
 import (
 	"context"
 	"database/sql"
@@ -126,7 +122,7 @@ func prVisible(actor *Actor, projectID int64) (string, []any) {
 	vis, args := visibleSQL("r.project_id", actor)
 	cond := `EXISTS (SELECT 1 FROM project_repos r WHERE r.forge_id = p.forge_id AND r.repo = p.repo COLLATE NOCASE AND ` + vis
 	if actor.HidesDrafts() {
-		cond = `p.outside = 0 AND ` + cond // from outside: people only (WP-281)
+		cond = `p.outside = 0 AND ` + cond
 	}
 	if projectID != 0 {
 		cond += ` AND r.project_id = ?`
@@ -368,7 +364,6 @@ func (s *Service) fillPRs(ctx context.Context, actor *Actor, prs []*PRSummary) e
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	// Waypoint's own reviews are its bot runs, posted or signed off with 👍.
 	// #nosec G202 -- in is placeholders only; values are bound
 	rows, err = s.db.R.QueryContext(ctx, `SELECT pr_id, count(*) FROM bot_runs WHERE pr_id IN (`+in+`) AND kind = 'review' AND status = 'done' GROUP BY pr_id`, ids...)
 	if err != nil {
@@ -401,7 +396,6 @@ func (s *Service) fillPRs(ctx context.Context, actor *Actor, prs []*PRSummary) e
 	}
 	rows.Close()
 
-	// Linked issues the actor can see, and which agents linked them.
 	links, err := s.prLinks(ctx, actor, ids)
 	if err != nil {
 		return err
@@ -480,7 +474,7 @@ func (s *Service) finishPRs(prs []*PRSummary) {
 type prLink struct {
 	prID  int64
 	issue PRIssue
-	agent string // the agent that linked it, if one did
+	agent string
 }
 
 // prLinks are the issues linked to the pull requests that the actor can
@@ -587,8 +581,6 @@ func (s *Service) prMentions(ctx context.Context, actor *Actor, ids []any, byID 
 	return nil
 }
 
-// ---- one pull request ----
-
 // PRTimelineItem is one thing in a pull request's story.
 type PRTimelineItem struct {
 	At      time.Time `json:"at"`
@@ -673,8 +665,6 @@ func (s *Service) GetPullRequest(ctx context.Context, actor *Actor, id int64) (*
 	if err != nil {
 		return nil, err
 	}
-	// What strangers wrote before WP-281 kept their words out of history
-	// stays out of an agent's sight.
 	var voice *prVoice
 	if actor.HidesDrafts() {
 		if pr, err := s.prByID(ctx, s.db.R, id); err == nil {

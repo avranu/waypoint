@@ -1,11 +1,3 @@
-// Agents → Audit → Refused calls (WP-232, ADR115): tool calls Claude Code's
-// auto-mode classifier refused. They are logged here, not filed as
-// requests: the agent usually works on another way, and asks for what it
-// still needs itself. A person can turn repeated ones into an allow rule
-// (WP-233, WP-ADR114): the rules that would have let them through are
-// ranked at the top, and each call offers its own; a pick is added to the
-// repo's .claude/settings.json by pull request.
-
 import { useMemo, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useInfiniteQuery } from '@tanstack/react-query'

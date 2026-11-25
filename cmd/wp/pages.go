@@ -148,7 +148,7 @@ func pageLs(c *cli, args []string) error {
 		}
 	}
 	if !c.asJSON {
-		q.Set("format", "text") // the server's lines say who wrote each page
+		q.Set("format", "text")
 	}
 	raw, err := c.call("GET", "/api/v1/pages?"+q.Encode(), nil)
 	if err != nil {
@@ -184,7 +184,6 @@ func (c *cli) pageRef(ref string) (int64, error) {
 		} else if !errors.As(err, &ae) || (ae.status != 400 && ae.status != 404) {
 			return 0, err
 		}
-		// Not a code after all: try it as a title, else say what was wrong.
 		if id, terr := c.pageByTitle(ref); terr == nil {
 			return id, nil
 		}
@@ -234,8 +233,6 @@ func pageShow(c *cli, args []string) error {
 	if len(pos) == 0 {
 		return c.usage("which page? Give its number or title")
 	}
-	// Several codes (PL13 PL14, PL13,PL14) are several pages; other words
-	// are one page's title.
 	refs := listArgs(pos)
 	for _, r := range refs {
 		if !pageCodeRE.MatchString(r) && !isDigits(r) {
@@ -250,7 +247,7 @@ func pageShow(c *cli, args []string) error {
 		}
 		path := fmt.Sprintf("/api/v1/pages/%d", id)
 		if !c.asJSON {
-			path += "?format=text" // with who wrote it and whether a person reviewed it
+			path += "?format=text"
 		}
 		raw, err := c.call("GET", path, nil)
 		if err != nil {

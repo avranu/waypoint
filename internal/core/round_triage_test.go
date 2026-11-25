@@ -31,24 +31,20 @@ func TestCompileClaim(t *testing.T) {
 		{&PRReviewComment{Kind: "relayed", Author: "mirror", Bot: true, Path: "app/a.go",
 			Body: "**coderabbitai[bot]** reviewed on `app/a.go` line 12:\n\n_⚠️ Potential issue_ | _🔴 Critical_\n\n**`fmt` is not imported, so this doesn't compile.**\n\nAdd it."}, true},
 
-		// Runtime faults and other points: not the build's to answer.
 		{bot("ListTable.tsx", "**P1** high · Accessing item.id throws a TypeError when items is undefined."+sub), false},
 		{bot("worker.go", "**P0** critical · A nil pointer dereference crashes the worker when cfg is undefined."+sub), false},
 		{bot("hooks.ts", "**P1** high · The effect re-runs on every render, an infinite render loop."+sub), false},
 		{bot("server.go", "**P0** critical · Registering the delivery route twice will cause a panic at server start."+sub), false},
 		{bot("retry.go", "**P2** medium · The new `CanRetryChecks` method is not used anywhere, making it dead code. It also uses the `slices` package without importing it, which will produce a compile error."+sub), false},
-		// Logic points in compile words that build fine (WP-579).
 		{bot("store.go", "**P1** high · err is redeclared with := so the Open error is lost."+sub), false},
 		{bot("types.go", "**P2** medium · Duplicate field tag `json:\"id\"` on ID and Ref drops one of them when encoding."+sub), false},
 		{bot("prompt.go", "**P2** medium · The prompt tells the agent to work without importing the package docs."+sub), false},
 		{bot("a.go", "**P1** high · x redeclared in this block."+sub), true},
 		{bot("a.ts", "**P1** high · Cannot redeclare block-scoped variable 'x'."+sub), true},
 		{bot("a.go", "**P1** high · It calls strings.Join without importing strings."+sub), true},
-		// Files no compiler checks, and a comment on no file.
 		{bot("resume_style.py", "**P1** high · `re` is used without being imported, causing a NameError."+sub), false},
 		{bot("deploy/probe.sh", "**P1** high · Line 27 has a syntax error."+sub), false},
 		{bot("", "**P0** critical · The change has a syntax error."+sub), false},
-		// A person's word stands.
 		{&PRReviewComment{Kind: "inline", Author: "alice", Path: "a.go", Body: "This doesn't compile: fmt isn't imported."}, false},
 	} {
 		if got := tc.rc.compileClaim(); got != tc.want {
@@ -82,7 +78,6 @@ func TestBabysitTriagesCompileClaims(t *testing.T) {
 	}
 	be.finish(be.jobs()[0], true)
 
-	// The round pushes; the build passes on the new head.
 	be.push("8888888bbbb")
 	be.ci("8888888bbbb", CheckSuccess)
 	be.step()
@@ -189,14 +184,12 @@ func TestFixedCommentRewordedStaysFixed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A later head that has the fix in its history keeps it fixed.
 	be.push("9999999cccc")
 	thread("Export also leaks its file handle; close it with defer.")
 	be.step()
 	if c := be.comment("501"); c.Verdict != VerdictFixed {
 		t.Errorf("reworded on a head with the fix = %+v", c)
 	}
-	// Force-pushed without the fix: the reworded comment is open again.
 	be.sg.sm.Lock()
 	be.sg.hidden = map[string]bool{"8888888bbbb": true}
 	be.sg.sm.Unlock()
@@ -223,8 +216,6 @@ func TestBabysitNoRoundOnEmptyPacket(t *testing.T) {
 	if n := len(be.jobs()); n != 0 {
 		t.Errorf("%d rounds on an empty packet", n)
 	}
-	// An audit finding is work the comment list doesn't show: it still
-	// goes out (WP-355).
 	be.s.babysitRound(be.ctx, b, be.pr(7), nil, false, nil, []string{"1.1"})
 	be.s.Wait()
 	if b = be.babysit(); strings.Contains(b.Wait, "work packet is empty") {

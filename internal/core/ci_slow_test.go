@@ -33,7 +33,6 @@ func TestCIPollSlowLane(t *testing.T) {
 	se.pullHook("opened", testPR)
 	se.s.Wait()
 
-	// Three hours on it is still read, then not again for ten minutes.
 	se.setClock(se.clockNow().Add(3 * time.Hour))
 	se.s.PollCI(se.ctx)
 	se.s.Wait()
@@ -53,7 +52,6 @@ func TestCIPollSlowLane(t *testing.T) {
 	if se.checkedAt(sha) == first {
 		t.Error("not read after ten minutes")
 	}
-	// A webhook that names no commit reads it too, and settles it.
 	se.sg.setChecks(sha, CommitCheck{Name: ciBackendPR, State: CheckSuccess})
 	se.s.onForgeCI(se.ctx, se.f, "me/app", "")
 	se.s.Wait()
@@ -61,7 +59,6 @@ func TestCIPollSlowLane(t *testing.T) {
 		t.Errorf("empty-sha webhook left %q", pr.CIState)
 	}
 
-	// A new head supersedes it: the old one, seen 3h ago, is left alone.
 	next := testPR
 	next.HeadSHA = "2222222bbbb"
 	se.sg.setChecks(next.HeadSHA, CommitCheck{Name: ciBackendPR, State: CheckPending})
@@ -80,8 +77,6 @@ func TestCIPollSlowLane(t *testing.T) {
 		t.Error("didn't read the live head")
 	}
 
-	// Past a day the live head is still read, hourly (Harbor#209 sat
-	// "pending" 30h on a finished run); the superseded one isn't.
 	se.setClock(se.clockNow().Add(25 * time.Hour))
 	se.forgetReads()
 	se.s.PollCI(se.ctx)
@@ -119,7 +114,6 @@ func TestCheckArmedHeads(t *testing.T) {
 	se.pullHook("opened", other)
 	se.s.Wait()
 	se.arm(5)
-	// The forge has new heads on both, and no webhook came.
 	moved := func(n int, sha string) {
 		se.fg.mu.Lock()
 		se.fg.prs[mk(se.f, "me/app", n)].HeadSHA = sha
@@ -170,7 +164,6 @@ func TestArmedMergesAfterLateUnannouncedCI(t *testing.T) {
 	}
 	se.drain()
 
-	// Five hours in the queue, then it finishes; no webhook says so.
 	se.setClock(se.clockNow().Add(5 * time.Hour))
 	se.sg.setChecks(sha, CommitCheck{Name: ciBackendPR, State: CheckSuccess}, CommitCheck{Name: gate, State: "skipped"})
 	se.setClock(se.clockNow().Add(ciPollSlowEvery))

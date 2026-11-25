@@ -109,7 +109,6 @@ func TestWorkLogReviewRound(t *testing.T) {
 	if warm != warmReview {
 		t.Errorf("warm_state = %q", warm)
 	}
-	// The compaction's quiet Stop doesn't count as the report.
 	if _, err := a.s.SessionHook(a.ctx, a.ag, []HookEvent{hook("box", a.cli, "SessionStart", func(h *HookEvent) { h.Source = "compact" })}); err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +136,6 @@ func TestWorkLogReviewRound(t *testing.T) {
 		t.Error("a running round doesn't hold the merge")
 	}
 
-	// It pushed a fix, and reported.
 	if _, err := a.s.db.W.Exec(`UPDATE pull_requests SET head_sha = 'bbb' WHERE number = 7`); err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +167,6 @@ func TestWorkLogReviewRound(t *testing.T) {
 		t.Errorf("next job = %+v, source %q", next, a.jobs[1].Source)
 	}
 
-	// Counted by the model (a list: rules can't).
 	llm := &fakeLLM{answer: `{"items":[{"claim":"merge.go read a nil map","file":"merge.go","outcome":"fixed"},{"claim":"The retry could loop","outcome":"rejected"},{"claim":"","outcome":"fixed"}]}`}
 	a.s.LLM = llm
 	if err := a.s.EnsureDefaultAI(a.ctx, "http://opencode:4096", "", "opencode/big-pickle"); err != nil {
@@ -225,7 +222,7 @@ func TestWorkLogReviewSkips(t *testing.T) {
 		t.Fatalf("jobs = %+v", a.jobs)
 	}
 
-	b := newAPEnv(t) // reviews off
+	b := newAPEnv(t)
 	one := b.issue(b.admin, IssueInput{Project: b.p.Key, Title: "One", Agent: "claude"})
 	b.finish(one.Key)
 	b.linkPR(one.ID, 3, "ccc")
@@ -437,10 +434,9 @@ func TestWorkLogNotes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s := wl.Summary; s.Notes != 2 || s.NoteFound != 2 || s.NoteFixed != 1 || s.Found != 0 || len(wl.Entries) != 2 { // a note is not a counted round
+	if s := wl.Summary; s.Notes != 2 || s.NoteFound != 2 || s.NoteFixed != 1 || s.Found != 0 || len(wl.Entries) != 2 {
 		t.Errorf("log = %+v %+v", s, wl.Entries)
 	}
-	// Someone who can't see the task can't read or add to its log.
 	stranger := e.user("stranger", false)
 	if _, err := e.s.GetWorkLog(e.ctx, stranger, i.Key); err == nil {
 		t.Error("a stranger read the log")
@@ -488,7 +484,7 @@ func TestWorkLogOneRoundPerTask(t *testing.T) {
 		a := reviewAPEnv(t)
 		first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
 		second := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Second", Agent: "claude"})
-		a.linkPR(first.ID, 7, "aaa") // out on a pull request: it stays open, and can be shipped again
+		a.linkPR(first.ID, 7, "aaa")
 		a.finish(first.Key)
 		a.stopWith("Shipped as #7.")
 		id := a.step().reviewID.Int64
@@ -500,8 +496,6 @@ func TestWorkLogOneRoundPerTask(t *testing.T) {
 		}
 		return a, first, second, id
 	}
-	// interrupt takes the session from the running round, as going on to
-	// another task does (a person's prompt doesn't, WP-1320).
 	interrupt := func(a *apEnv) {
 		a.t.Helper()
 		if err := a.s.write(a.ctx, SystemActor(), func(t *tx) error {
@@ -572,9 +566,6 @@ func TestWorkLogOneRoundPerTask(t *testing.T) {
 		movedOnTo(t, a, second.Key)
 	})
 
-	// Claude Code delivers a background agent's result as a prompt of the
-	// session. That is no person taking the session: the round runs on to
-	// the Stop that reports (WP-700).
 	for name, handBack := range map[string]string{
 		"subagent's hand-back":                      "Another Claude session sent a message:\n<agent-message from=\"reviewer\">\n[Subagent hand-back] 3 findings\n</agent-message>",
 		"subagent's hand-back, as the hook gets it": subagentHandBackHook,
@@ -603,8 +594,6 @@ func TestWorkLogOneRoundPerTask(t *testing.T) {
 		})
 	}
 
-	// A person's prompt stops the step, not the review it is running: the
-	// round goes on to the session's Stop (WP-1320).
 	t.Run("a person's prompt leaves the round running", func(t *testing.T) {
 		a, _, _, id := start(t)
 		a.prompt("wait, look at the migration first")
@@ -639,9 +628,6 @@ func TestWorkLogOneRoundPerTask(t *testing.T) {
 			t.Fatalf("an interrupted round wasn't asked for again: %+v", st)
 		}
 	})
-	// Cut short before it reported, the review hadn't happened: the person's
-	// Stop asks for it again in the same run, so the task doesn't move on
-	// unreviewed; past reviewInterruptsMax, it does (WP-823).
 	t.Run("interrupted, same run", func(t *testing.T) {
 		a, first, second, id := start(t)
 		for n := 1; n <= reviewInterruptsMax; n++ {
@@ -667,8 +653,6 @@ func TestWorkLogOneRoundPerTask(t *testing.T) {
 				t.Fatalf("interrupt %d: the new round = %+v", n, r)
 			}
 		}
-		// The person typed in it, so it's theirs: nothing starts there after
-		// the review (WP-1319).
 		a.prompt("I'll take it from here")
 		a.tick(autopilotIdleHold + time.Minute)
 		if n := a.restarts(); n != 0 {
@@ -678,8 +662,6 @@ func TestWorkLogOneRoundPerTask(t *testing.T) {
 			t.Fatalf("step = %+v", st)
 		}
 	})
-	// Finished first with nothing to review, then shipped on a pull request
-	// in the same session: that change gets its review.
 	t.Run("skipped, then a pull request", func(t *testing.T) {
 		a := reviewAPEnv(t)
 		first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
@@ -691,7 +673,7 @@ func TestWorkLogOneRoundPerTask(t *testing.T) {
 			t.Fatalf("round = %+v", r)
 		}
 		if _, err := a.s.UpdateIssue(a.ctx, a.admin, first.Key, IssuePatch{Status: ptrOf(CatInProgress)}); err != nil {
-			t.Fatal(err) // taken up again
+			t.Fatal(err)
 		}
 		a.linkPR(first.ID, 7, "aaa")
 		shipFixes(a, first.Key)
@@ -845,7 +827,7 @@ func TestReviewWaitsForPersonsPrompt(t *testing.T) {
 		a.linkPR(first.ID, 7, "aaa")
 		a.finish(first.Key)
 		a.stopWith("Shipped as #7.")
-		a.setClock(a.clockNow().Add(time.Second)) // a person's prompt comes after the Stop
+		a.setClock(a.clockNow().Add(time.Second))
 		a.prompt("what did you change in the parser?")
 		return a, first, a.step().reviewID.Int64
 	}
@@ -885,7 +867,7 @@ func TestStepStoppedWhileItsJobIsQueued(t *testing.T) {
 		a.t.Cleanup(func() { enqueueRunnerJob = enq })
 		enqueueRunnerJob = func(ctx context.Context, s *Service, ac *Actor, in RunnerJobInput) (*RunnerJob, error) {
 			j, err := enq(ctx, s, ac, in)
-			enqueueRunnerJob = enq // the first job only
+			enqueueRunnerJob = enq
 			fn()
 			return j, err
 		}
@@ -905,7 +887,6 @@ func TestStepStoppedWhileItsJobIsQueued(t *testing.T) {
 		a.stopWith("Shipped as #7.")
 		during(a, func() { a.prompt("hold on") })
 		a.tick(61 * time.Second)
-		// The review waits for the person instead (WP-816).
 		reviewComesAfterPerson(a, first.Key, a.step().reviewID.Int64)
 	})
 
@@ -937,7 +918,7 @@ func TestWorkLogTotalsKeepMeasuredModelReadAndUncountedApart(t *testing.T) {
 	none := sql.NullInt64{}
 	tot.add(RoundDone, readByRules, n(2), n(1), n(0), true)
 	tot.add(RoundDone, "opencode/big-pickle", n(5), n(3), n(1), false)
-	tot.add(RoundDone, "", none, none, none, false) // finished, never counted
+	tot.add(RoundDone, "", none, none, none, false)
 	tot.add(RoundSkipped, "", none, none, none, false)
 	tot.finish()
 	if tot.Rounds != tot.Measured.Rounds+tot.ModelRead.Rounds+tot.Uncounted+tot.NotFinished {

@@ -17,25 +17,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/semantic"
 )
 
-// The relation graph (WP-385, WP-ADR120): every way two things in Waypoint
-// are connected, read as one graph so code can say how near two things are,
-// along which links, and what lies around one of them.
-//
-// Nothing here is stored or asks a model. The graph is read from what is
-// already recorded (relations, parents, links, goal links, pages, decisions
-// written for a task, pull requests and the files they change, the tasks an
-// agent session filed, read or named, and the task a session's text came
-// from) plus one kind Waypoint infers on the fly: issues alike in words and
-// concepts (the similarity index of WP-296 and WP-779). People don't have to
-// link or approve anything for it to work; what they do link counts most.
-//
-// Distance is a weighted shortest path. Each kind of edge has a length (a
-// duplicate is nearer than a mention), a guess counts longer than an
-// agent's link, and an agent's longer than a person's. Passing through a
-// thing linked to many others costs more, as a common word says less than
-// a rare one: a release PR naming forty tasks, a goal every task serves, or
-// a file every change touches doesn't make everything near everything.
-
 // Kinds of node beyond the knowledge kinds.
 const (
 	KSession = "session"
@@ -47,7 +28,7 @@ var graphTypes = []string{KIssue, KPage, KDesign, KGlossary, KFile, KPull, KSess
 // graphEdgeKind is one kind of edge: its name read from its source, read
 // from its target, and its length.
 type graphEdgeKind struct {
-	name, inverse string // inverse "" reads the same both ways
+	name, inverse string
 	length        float64
 }
 
@@ -89,32 +70,32 @@ const graphHubWeight = 0.5
 const (
 	graphMaxHops      = 6
 	graphMaxVisited   = 20000
-	graphSimPerNode   = 5   // alike issues an issue gets as edges
-	graphSimCands     = 40  // issues nearest in concepts scored in words
-	graphSimBudget    = 400 // issues a query may score likeness for
-	graphMaxPRIssues  = 6   // a pull request naming more tasks (a release) only links its own
-	graphMaxPRFiles   = 60  // a pull request changing more files says little about each
-	graphMaxSessRefs  = 30  // a session that read more tasks than this says little about them
+	graphSimPerNode   = 5
+	graphSimCands     = 40
+	graphSimBudget    = 400
+	graphMaxPRIssues  = 6
+	graphMaxPRFiles   = 60
+	graphMaxSessRefs  = 30
 	graphDefaultLimit = 40
 )
 
 // gnodeRec is one node.
 type gnodeRec struct {
 	typ     string
-	id      int64  // issues, pages, notes, terms, sessions
-	ref     string // pull requests: URL; files: path
-	key     string // the code to show
+	id      int64
+	ref     string
+	key     string
 	title   string
 	kind    string
 	state   string
-	project int64 // 0: global
-	user    int64 // sessions: whose
+	project int64
+	user    int64
 	url     string
 }
 
 // gedgeRec is one edge, stored once and walked both ways.
 type gedgeRec struct {
-	a, b  int32 // from a to b, as the kind reads
+	a, b  int32
 	kind  string
 	sub   string
 	basis int8
@@ -127,11 +108,11 @@ type relGraph struct {
 	sig   string
 	built time.Time
 	nodes []gnodeRec
-	index map[string]int32 // nodeID → index
+	index map[string]int32
 	edges []gedgeRec
-	adj   [][]int32 // edge indexes per node
+	adj   [][]int32
 	issue map[int64]int32
-	keys  map[int64]string // project keys
+	keys  map[int64]string
 }
 
 // graphCache holds the built graph and the issues' likeness edges, which
@@ -140,7 +121,7 @@ type graphCache struct {
 	mu    sync.Mutex
 	g     *relGraph
 	simMu sync.Mutex
-	simAt string // similarity index key
+	simAt string
 	sim   map[int64][]simMatch
 }
 
@@ -386,7 +367,6 @@ func loadRelGraph(ctx context.Context, q queryer) (*relGraph, error) {
 		return nil, err
 	}
 
-	// Relations between issues.
 	if err := each(`SELECT source_id, target_id, kind, subkind, basis, coalesce(score, 0) FROM issue_relations ORDER BY id`, func(r *sql.Rows) error {
 		var src, dst int64
 		var kind, sub string
@@ -404,7 +384,6 @@ func loadRelGraph(ctx context.Context, q queryer) (*relGraph, error) {
 	}); err != nil {
 		return nil, err
 	}
-	// Pages documenting tasks.
 	if err := each(`SELECT page_id, issue_id, created_agent FROM page_issues`, func(r *sql.Rows) error {
 		var page, issue int64
 		var agent string
@@ -424,8 +403,6 @@ func loadRelGraph(ctx context.Context, q queryer) (*relGraph, error) {
 	}); err != nil {
 		return nil, err
 	}
-	// Links between knowledge items, and to files. A file is known within
-	// the project of what links to it.
 	if err := each(`SELECT src_type, src_id, dst_type, coalesce(dst_id, 0), dst_ref, rel, auto, basis, coalesce(score, 0),
 		coalesce(created_by, 0), created_agent, coalesce(confirmed_by, 0)
 		FROM knowledge_links WHERE dst_type != 'url' ORDER BY id`, func(r *sql.Rows) error {
@@ -466,8 +443,6 @@ func loadRelGraph(ctx context.Context, q queryer) (*relGraph, error) {
 		return nil, err
 	}
 
-	// Pull requests: a task's own (linked to it), and ones whose text names
-	// it. One naming many tasks (a release, a sweep) relates only its own.
 	repoProj := map[string]int64{}
 	if err := each(`SELECT lower(repo), project_id FROM project_repos ORDER BY id`, func(r *sql.Rows) error {
 		var repo string
@@ -569,15 +544,12 @@ func loadRelGraph(ctx context.Context, q queryer) (*relGraph, error) {
 		if u.verb != "" {
 			why = "its text says " + strings.ReplaceAll(strings.Trim(u.verb, ","), ",", ", ")
 		}
-		// external_links are a person's unless an agent added them; forge
-		// mentions are whoever wrote the forge text, an agent's for weight.
 		b := basisPerson
 		if u.agent {
 			b = basisAgent
 		}
 		g.addEdge(gedgeRec{a: u.issue, b: pr, kind: kind, basis: b, why: why})
 	}
-	// The files each known pull request changed, where Waypoint read them.
 	if err := each(`SELECT url, repo, files FROM pull_requests WHERE files != '' AND url != ''`, func(r *sql.Rows) error {
 		var url, repo, raw string
 		if err := r.Scan(&url, &repo, &raw); err != nil {
@@ -601,8 +573,6 @@ func loadRelGraph(ctx context.Context, q queryer) (*relGraph, error) {
 		return nil, err
 	}
 
-	// Agent sessions: the task one worked on, and the tasks it filed, read
-	// or named (WP-D16). A session that read a great many says little.
 	type sessRef struct {
 		sess, issue int64
 		how         string
@@ -661,8 +631,6 @@ func fileRef(project int64, path string) string {
 func graphPullKey(url string) string {
 	return strings.TrimRight(strings.ToLower(strings.TrimSpace(url)), "/")
 }
-
-// ---- reading it ----
 
 // GraphNode is one thing in the relation graph.
 type GraphNode struct {
@@ -776,8 +744,6 @@ func (w *graphWalk) visible(n int32) bool {
 		return true
 	}
 	if r.project == 0 {
-		// Global notes and terms are everyone's; a session with no project
-		// is its person's alone.
 		return r.typ != KSession || w.actor.isAdmin()
 	}
 	ok, seen := w.roles[r.project]
@@ -792,7 +758,6 @@ func (w *graphWalk) visible(n int32) bool {
 	if ok || r.typ != KIssue || !w.shared[r.project] {
 		return ok
 	}
-	// A guest with a share sees the shared issues alone.
 	v, seen := w.issues[n]
 	if !seen {
 		v = w.s.canSee(w.ctx, w.s.db.R, w.actor, r.id, r.project)
@@ -805,7 +770,7 @@ func (w *graphWalk) visible(n int32) bool {
 type gstep struct {
 	to   int32
 	edge gedgeRec
-	fwd  bool // walked from a to b
+	fwd  bool
 }
 
 // steps lists the ways out of n: its stored edges and, with guesses, the
@@ -869,7 +834,6 @@ func edgeLength(e gedgeRec, passDeg int) float64 {
 	k := graphKinds[e.kind]
 	l := k.length
 	if e.kind == "similar" {
-		// 1 at a blend of 1 (the same words), 2 at the lowest kept.
 		l = 1 + max(0, 1-float64(e.score))
 	}
 	l *= graphBasisFactor[e.basis]
@@ -935,7 +899,6 @@ func (idx *simIndex) nearest(id int64, n int) []simMatch {
 		for i := 0; i < len(best) && i < graphSimCands; i++ {
 			cands = append(cands, best[i].id)
 		}
-		// Ones alike in words but far in concepts still count.
 		for oid, o := range idx.docs {
 			if oid != id && o.concept == nil {
 				cands = append(cands, oid)
@@ -988,8 +951,8 @@ func (idx *simIndex) nearest(id int64, n int) []simMatch {
 type reach struct {
 	dist  map[int32]float64
 	hops  map[int32]int
-	route map[int32][]gstep // the steps that reach it, from the source
-	done  []int32           // settled, nearest first
+	route map[int32][]gstep
+	done  []int32
 }
 
 // hopState is a node reached in a given number of steps.
@@ -1035,7 +998,7 @@ func (w *graphWalk) walk(src int32, maxHops int, stop int32, maxSettled int) *re
 	best := map[hopState]float64{start: 0}
 	via := map[hopState]gstep{}
 	from := map[hopState]hopState{}
-	fewest := map[int32]int{} // the fewest steps of a state of the node expanded so far
+	fewest := map[int32]int{}
 	h := &pq{{n: src}}
 	for h.Len() > 0 && len(r.done) < maxSettled {
 		it := heap.Pop(h).(pqItem)
@@ -1141,7 +1104,7 @@ func (s *Service) graphRef(ctx context.Context, w *graphWalk, ref, project strin
 		return -1, notFound("session " + v)
 	}
 	if n, ok := w.g.index[ref]; ok && w.visible(n) {
-		return n, nil // the graph's own id, as the web app sends it
+		return n, nil
 	}
 	var sc refScope
 	if project != "" {
@@ -1174,7 +1137,7 @@ func (s *Service) graphRef(ctx context.Context, w *graphWalk, ref, project strin
 		for n, r := range w.g.nodes {
 			if r.typ == KFile && (r.key == it.Ref || strings.HasSuffix(r.key, "/"+it.Ref)) && w.visible(int32(n)) {
 				if hit >= 0 && (sc.id == 0 || r.project != sc.id) {
-					continue // the first, or the one in the project asked about
+					continue
 				}
 				hit = int32(n)
 			}
@@ -1237,8 +1200,6 @@ func (s *Service) Neighbourhood(ctx context.Context, actor *Actor, q GraphQuery)
 		shown[n], listed = true, append(listed, n)
 		view.Nodes = append(view.Nodes, GraphHit{GraphNode: w.graphNode(n), Distance: round2(r.dist[n]), Hops: r.hops[n], Path: w.edgesOf(src, r.path(n))})
 	}
-	// The edges among what's shown, each once, for drawing; likeness edges
-	// only where a path used them.
 	seen := map[string]bool{}
 	add := func(e GraphEdge) {
 		k := e.From + "|" + e.To + "|" + e.Kind
@@ -1258,12 +1219,12 @@ func (s *Service) Neighbourhood(ctx context.Context, actor *Actor, q GraphQuery)
 	for _, n := range listed {
 		at := src
 		for _, st := range r.path(n) {
-			add(w.edgeOut(st, at, 0)) // as drawn: no hub cost, like the rest
+			add(w.edgeOut(st, at, 0))
 			at = st.to
 		}
 	}
 	if !view.More && len(r.done) >= graphMaxVisited {
-		view.More = true // the walk stopped before all within reach was settled
+		view.More = true
 	}
 	sort.SliceStable(view.Edges, func(a, b int) bool {
 		if view.Edges[a].From != view.Edges[b].From {

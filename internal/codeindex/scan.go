@@ -140,7 +140,7 @@ func collapse(s string, limit int) string {
 	s = strings.Join(strings.Fields(s), " ")
 	if len(s) > limit {
 		cut := limit
-		for cut > 0 && s[cut]&0xC0 == 0x80 { // don't split a rune
+		for cut > 0 && s[cut]&0xC0 == 0x80 {
 			cut--
 		}
 		s = strings.TrimSpace(s[:cut]) + "…"

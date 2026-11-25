@@ -1,10 +1,5 @@
 package core
 
-// What happened on pull requests (WP-D15): opened, pushed, reviewed,
-// approved, merged, with who did it, as the forges report it. Webhooks
-// bring it as it happens; a periodic refresh fills in what they missed
-// without ever setting bots off on old pull requests.
-
 import (
 	"context"
 	"crypto/sha256"
@@ -60,7 +55,7 @@ type hookReview struct {
 func parsePRReview(event, action string, number int, sender, commit string, rv *hookReview, c *hookComment) *forgeReviewEvent {
 	out := &forgeReviewEvent{number: number, sha: commit}
 	switch event {
-	case "pull_request_review_comment": // GitHub: a comment on the diff
+	case "pull_request_review_comment":
 		if c == nil || action != "created" {
 			return nil
 		}
@@ -80,7 +75,7 @@ func parsePRReview(event, action string, number int, sender, commit string, rv *
 		case "commented":
 			out.kind = "reviewed"
 		default:
-			return nil // pending or dismissed
+			return nil
 		}
 		out.ForgeComment = ForgeComment{ID: "r" + strconv.FormatInt(rv.ID, 10), Author: cmp(rv.User.name(), sender), Body: rv.Body, URL: rv.HTMLURL}
 		if rv.SubmittedAt != nil {
@@ -89,7 +84,6 @@ func parsePRReview(event, action string, number int, sender, commit string, rv *
 		out.sha = cmp(rv.CommitID, commit)
 		return out
 	}
-	// Forgejo / Gitea.
 	switch event {
 	case "pull_request_approved", "pull_request_review_approved":
 		out.kind = "approved"
@@ -102,14 +96,10 @@ func parsePRReview(event, action string, number int, sender, commit string, rv *
 	if rv != nil {
 		body = rv.Content
 	}
-	// Forgejo gives reviews no id: one review is one person's kind of review
-	// with this text at this head.
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%d|%s", out.kind, sender, commit, number, body)))
 	out.ForgeComment = ForgeComment{ID: "fr" + hex.EncodeToString(sum[:8]), Author: sender, Body: body}
 	return out
 }
-
-// ---- which agent wrote a pull request ----
 
 var (
 	coAuthorClaudeRE = lazyre.New(`(?im)^co-authored-by:\s*claude\s+([a-z]+)\s+(\d+(?:\.\d+)*)\b`)
@@ -142,13 +132,11 @@ func codingAgent(body, author string) string {
 	return ""
 }
 
-// ---- history from transitions ----
-
 // prEventRow is one thing that happened, before it's stored.
 type prEventRow struct {
 	kind, actor, sha, url, body, extID string
 	bot                                bool
-	own                                bool // Waypoint posted it (WP-455)
+	own                                bool
 	at                                 int64
 }
 
@@ -251,15 +239,13 @@ func (s *Service) attachedProjectKey(ctx context.Context, forgeID int64, repo st
 	}
 	p, err := s.projectByID(ctx, s.db.R, id)
 	if errors.Is(err, ErrNotFound) {
-		return "", nil // gone since: attached to nothing
+		return "", nil
 	}
 	if err != nil {
 		return "", err
 	}
 	return p.Key, nil
 }
-
-// ---- reviews and comments ----
 
 // onPRActivity records a review, or a comment on a pull request, in its
 // history. Waypoint's own reviews aren't repeated here: its bot runs
@@ -300,7 +286,7 @@ func (s *Service) onPRActivity(ctx context.Context, f *Forge, repo string, a *fo
 	bot := isBotLogin(a.Author) || ours.botText(a.Author, a.Body)
 	row := prEventRow{kind: a.kind, actor: a.Author, bot: bot, own: s.ownPost(ctx, f, a, ours), sha: a.sha, url: a.URL, body: a.Body, extID: a.ID, at: at}
 	if s.prVoice(ctx, f).outside(ctx, s.db.R, a.Author) {
-		row.body = "" // that they acted, not what they wrote (WP-281)
+		row.body = ""
 	}
 	err = s.write(ctx, SystemActor(), func(t *tx) error {
 		if err := s.savePREvents(ctx, t, pr, []prEventRow{row}, projectID, true); err != nil {
@@ -311,7 +297,6 @@ func (s *Service) onPRActivity(ctx context.Context, f *Forge, repo string, a *fo
 		}
 		t.emit(&Event{Kind: EvPRActivity, ProjectID: projectID, New: a.kind, Data: map[string]any{"pr_id": pr.ID}})
 		if a.kind != "commented" {
-			// A review was submitted (WP-D21).
 			t.emit(&Event{Kind: EvPRReview, ProjectID: projectID, New: a.kind, Data: prEventData(pr, map[string]any{
 				"pr": pr.ID, "sha": cmp(a.sha, pr.HeadSHA), "reviewer": a.Author, "verdict": a.kind, "bot": bot})})
 		}
@@ -360,8 +345,6 @@ func (s *Service) learnPR(ctx context.Context, f *Forge, repo string, number int
 	return s.recordPR(ctx, f, repo, fp, false)
 }
 
-// ---- refresh ----
-
 // RefreshPullRequests reads each attached repo's recently updated pull
 // requests, so records and history stay right when a webhook was missed.
 // It only adds what's settled: a pull request it hasn't seen is recorded
@@ -401,7 +384,6 @@ func (s *Service) RefreshPullRequests(ctx context.Context) {
 		err = cerr
 	}
 	if readFault(err) {
-		// The repos read so far are still refreshed; the rest wait for the next run.
 		s.log.WarnContext(ctx, "pull request refresh: read the repos", "err", err)
 	}
 	seen := map[string]bool{}
@@ -426,10 +408,7 @@ func (s *Service) RefreshPullRequests(ctx context.Context) {
 		}
 		prs, err := lister.ListPRs(ctx, f, x.repo)
 		if err != nil {
-			// The repo's pull requests go unrefreshed this run: that is a
-			// problem of the job's, not a detail.
 			if isStatus(err, http.StatusNotFound) || errors.Is(err, ErrNotFound) {
-				// Moved or deleted on the forge: an answer, not a fault to warn of every tick.
 				s.log.DebugContext(ctx, "pull request refresh: the forge has no such repo", "forge", f.Name, "repo", x.repo)
 			} else if readFault(err) {
 				s.log.WarnContext(ctx, "pull request refresh: list pull requests", "forge", f.Name, "repo", x.repo, "err", err)
@@ -497,8 +476,6 @@ func (s *Service) refreshPR(ctx context.Context, f *Forge, repo string, fp *Forg
 	settled := fp.State == "closed" || fp.State == "merged"
 	switch {
 	case old != nil && old.HeadSHA == "" && !settled && fp.HeadSHA != "":
-		// Recorded headless a sync ago and its webhook never came: take it
-		// as that webhook, or it never gets reviewed, followed or merged.
 		s.onForgePull(ctx, f, repo, fp)
 		return nil
 	case old == nil && !settled:
@@ -520,9 +497,7 @@ func (s *Service) refreshPR(ctx context.Context, f *Forge, repo string, fp *Forg
 		codingAgent(fp.Body, fp.Author), codingAgent(fp.Body, fp.Author),
 		nullIntP(fp.Additions), nullIntP(fp.Deletions), nullIntP(fp.ChangedFiles), nullIntP(fp.Commits), headRepoOf(fp, repo), headRepoOf(fp, repo), old.ID)
 	if err == nil && !settled && old.ArmedAt == nil && s.autoArm(ctx, old.ID) {
-		// Merge automatically armed it (WP-133): an open pull request whose
-		// webhook came before the setting did.
-		bg := context.WithoutCancel(ctx)
+		bg := withoutLineLocks(context.WithoutCancel(ctx))
 		s.goBG(func() { s.maybeAutoMerge(bg, old.ID) })
 	}
 	if err == nil && !settled && fp.mergeMute && old.Mergeable != nil {
@@ -531,14 +506,11 @@ func (s *Service) refreshPR(ctx context.Context, f *Forge, repo string, fp *Forg
 	if err != nil || fp.Mergeable == nil || settled {
 		return err
 	}
-	// Whether it merges cleanly changes with no webhook: the base moved, or
-	// the forge finished working it out after a push (it says "no" while it
-	// checks). An armed pull request that now merges may be ready.
 	if err := s.noteMergeable(ctx, s.db.W, old, false, fp.Mergeable); err != nil {
 		return err
 	}
 	if *fp.Mergeable && (old.Mergeable == nil || !*old.Mergeable) && old.ArmedAt != nil {
-		bg := context.WithoutCancel(ctx)
+		bg := withoutLineLocks(context.WithoutCancel(ctx))
 		s.goBG(func() { s.maybeAutoMerge(bg, old.ID) })
 	}
 	if !*fp.Mergeable {

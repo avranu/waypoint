@@ -1,7 +1,3 @@
-// Goals (WP-382, WP-ADR50): how work traces back to what people intend.
-// The chips, the coverage bar, and the one-line trace an issue shows under
-// its title.
-
 import { useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -380,8 +376,6 @@ function GoalPick({
   const pick = usePopover()
   const goals = useQuery({ ...designQuery({ project, kind: 'goal' }), enabled: pick.open })
   const [hint, setHint] = useState<TaskGoalSuggestion | null>(null)
-  // Goals this made, by title: when the link after it fails, a retry links
-  // the goal instead of making a second one.
   const made = useRef(new Map<string, number>())
   const item = { type: 'issue' as const, key: issueKey }
   const link = useMutation({
@@ -411,7 +405,6 @@ function GoalPick({
   const busy = link.isPending || suggest.isPending || notThis.isPending
   const small =
     'inline-flex items-center gap-0.5 rounded px-1 text-subtle hover:bg-hover hover:text-fg disabled:opacity-60'
-  // what the server counts as a goal: approved, or asked for by a person
   const approved = (goals.data ?? []).filter(
     (n) => n.status === 'active' && (n.approved || !!n.requested) && !linked?.includes(n.id),
   )

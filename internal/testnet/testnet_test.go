@@ -20,7 +20,6 @@ import (
 func TestMain(m *testing.M) {
 	Guard()
 	code := m.Run()
-	// Only a whole run makes every try; -run picks some of them.
 	whole := flag.Lookup("test.run").Value.String() == ""
 	if want := []string{"DNS wp1065-nowhere.nohost-wp.org", "api.github.com:443"}; whole && code == 0 && !slices.Equal(Tried(), want) {
 		fmt.Fprintf(os.Stderr, "tried %q, want %q\n", Tried(), want)
@@ -41,8 +40,6 @@ func TestGuardRefusesOnlyWhatLeavesTheMachine(t *testing.T) {
 	if _, err := http.Get("https://api.github.com/"); !errors.Is(err, ErrRefused) {
 		t.Errorf("a real host: %v", err)
 	}
-	// A reserved name is refused without being recorded; a real one is
-	// recorded once, whatever search domains the resolver tries it with.
 	for _, name := range []string{"git.example.com", "wp1065-nowhere.nohost-wp.org"} {
 		if _, err := net.DefaultResolver.LookupHost(context.Background(), name); err == nil {
 			t.Errorf("%s resolved", name)
@@ -92,8 +89,6 @@ func TestReport(t *testing.T) {
 	if Report(3) != 3 {
 		t.Error("a failed run keeps its code")
 	}
-	// Make a try of our own (api.github.com is already in TestMain's list), so
-	// this holds when the test runs alone.
 	_, _ = http.Get("https://api.github.com/")
 	if Report(0) != 1 {
 		t.Error("a passing run that went out fails")
@@ -127,7 +122,6 @@ func TestEveryPackageIsGuarded(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		// The call in a TestMain, not just a mention of it.
 		src := string(b)
 		if (strings.Contains(src, "func TestMain(") && (strings.Contains(src, "testnet.Run(m)") || strings.Contains(src, "testnet.Guard()"))) || dir == filepath.Join("internal", "testnet") {
 			guarded[dir] = true

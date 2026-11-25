@@ -50,7 +50,7 @@ func TestMemorySlugIsPinned(t *testing.T) {
 // sub-directory find the main checkout's directory.
 func TestSnapshotMemoryIsTheRepositorysForWorktreesAndSubdirectories(t *testing.T) {
 	repo := gitRepo(t, "git@example.com:a/b.git")
-	snapshotHome(t, repo) // memory at the repo root's slug, written with literalSlug
+	snapshotHome(t, repo)
 	commitAll(t, repo)
 	wt := filepath.Join(t.TempDir(), "linked")
 	git(t, repo, "worktree", "add", "-q", "-b", "wt", wt)
@@ -85,7 +85,7 @@ func TestSnapshotMemoryOutsideGitUsesTheCwd(t *testing.T) {
 // lives inside CLAUDE_CONFIG_DIR when it is set.
 func TestSnapshotReadsTheUserScopeFromClaudeConfigDir(t *testing.T) {
 	repo := gitRepo(t, "git@example.com:a/b.git")
-	home := t.TempDir() // holds a decoy ~/.claude that must not be read
+	home := t.TempDir()
 	t.Setenv("HOME", home)
 	writeFile(t, filepath.Join(home, ".claude", "CLAUDE.md"), "decoy")
 	writeFile(t, filepath.Join(home, ".claude", "skills", "decoy", "SKILL.md"), "x")
@@ -131,7 +131,6 @@ func TestSnapshotReadsNothingRelativeWithoutAHome(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	work := t.TempDir()
 	t.Chdir(work)
-	// what a relative read would find
 	writeFile(t, filepath.Join(work, "settings.json"), `{"model": "relative"}`)
 	writeFile(t, filepath.Join(work, ".claude", "settings.json"), `{"model": "relative"}`)
 	writeFile(t, filepath.Join(work, "CLAUDE.md"), "relative")
@@ -170,11 +169,9 @@ func TestSnapshotSettingsKeysAndPlugins(t *testing.T) {
 	if !strings.Contains(sn.Missing["inventory.plugins"], "plugins supply are not listed") {
 		t.Errorf("no plugin note: %v", sn.Missing)
 	}
-	// mcpServers is not a settings.json key: not read from a settings file
 	if strings.Contains(string(sn.Inventory), "inline") || strings.Contains(string(sn.Inventory), "mcp_servers\":[") {
 		t.Errorf("settings mcpServers were read: %s", sn.Inventory)
 	}
-	// without plugins, no note
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	if sn := buildSnapshot(hookEventInput{HookEventName: "SessionStart", Cwd: repo}, gitFacts{}); sn.Missing["inventory.plugins"] != "" {
 		t.Error("a plugin note with no plugins enabled")
@@ -398,7 +395,6 @@ func TestFitInventoryDropsTheLargestListsAndSaysSo(t *testing.T) {
 	if miss["inventory.skills.project"] != "" || miss["inventory.env"] != "" {
 		t.Errorf("dropped more than needed: %v", miss)
 	}
-	// already fits: untouched
 	miss = map[string]string{}
 	fitInventory(inv, miss, 1<<20)
 	if len(miss) != 0 {
@@ -406,11 +402,9 @@ func TestFitInventoryDropsTheLargestListsAndSaysSo(t *testing.T) {
 	}
 }
 
-// ---- the claude process, from a fake /proc ----
-
 type fakeProc struct {
 	pid, ppid int
-	exe       string // symlink target; "" for none
+	exe       string
 	args      []string
 }
 
@@ -437,7 +431,7 @@ func fakeProcTree(t *testing.T, start int, procs ...fakeProc) {
 func claudeTree(claudeArgs ...string) []fakeProc {
 	return []fakeProc{
 		{pid: 300, ppid: 200, exe: "/usr/bin/wp", args: []string{"wp", "hook", "claude-event"}},
-		{pid: 200, ppid: 100, exe: "/usr/bin/dash", args: []string{"sh", "/home/claude/hook.sh"}}, // a wrapper whose path says claude
+		{pid: 200, ppid: 100, exe: "/usr/bin/dash", args: []string{"sh", "/home/claude/hook.sh"}},
 		{pid: 100, ppid: 1, exe: "/home/u/.local/share/claude/versions/2.1.330", args: append([]string{"claude"}, claudeArgs...)},
 	}
 }
@@ -455,11 +449,9 @@ func TestSnapshotLaunchFlagsFromTheClaudeAncestorBehindAWrapper(t *testing.T) {
 		{"skip permissions", []string{"--dangerously-skip-permissions"}, "", "", "bypassPermissions", "the launch gave no --model"},
 		{"nothing", nil, "", "", "", "the launch gave no --model"},
 		{"value with odd characters", []string{"--model=opus[1m]", "--effort", "lo w"}, "", "", "", "with a value that is not recorded (unexpected characters)"},
-		// A valued flag with no value: the next flag is not its value.
 		{"next is a flag", []string{"--model", "--verbose", "--effort", "--permission-mode", "plan"}, "", "", "plan", "the launch gave --model with no value"},
 		{"last is the flag", []string{"--model"}, "", "", "", "the launch gave --model with no value"},
 		{"empty equals form", []string{"--model="}, "", "", "", "the launch gave --model with no value"},
-		// After "--" are operands (the prompt), not flags.
 		{"after the terminator", []string{"-p", "--", "--model", "opus", "--dangerously-skip-permissions"}, "", "", "", "the launch gave no --model"},
 		{"given twice, the last wins", []string{"--model", "sonnet", "--model=opus"}, "opus", "", "", ""},
 	}
@@ -497,7 +489,6 @@ func TestSnapshotFlagWithOddValueIsNotSaidToBeAbsent(t *testing.T) {
 
 func TestSnapshotWrapperNamedClaudeIsNotTheClaudeProcess(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	// no real claude: only a shell script whose path says claude
 	fakeProcTree(t, 300,
 		fakeProc{pid: 300, ppid: 200, exe: "/usr/bin/wp", args: []string{"wp"}},
 		fakeProc{pid: 200, ppid: 1, exe: "/usr/bin/dash", args: []string{"sh", "/home/claude/x.sh", "--model=wrong"}})
@@ -542,13 +533,12 @@ func TestSnapshotRecognisesClaudeByExeOrArgv0(t *testing.T) {
 
 func TestSnapshotHarnessVersionFromTheProcessThenTheEnvironment(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("CLAUDE_CODE_EXECPATH", "/inherited/claude/versions/9.9.9") // from a parent session
+	t.Setenv("CLAUDE_CODE_EXECPATH", "/inherited/claude/versions/9.9.9")
 	fakeProcTree(t, 300, claudeTree()...)
 	sn := buildSnapshot(hookEventInput{HookEventName: "SessionStart", Cwd: t.TempDir()}, gitFacts{})
 	if sn.HarnessVersion == nil || *sn.HarnessVersion != "2.1.330" || sn.Sources["harness_version"] != "process:exe" {
 		t.Errorf("version = %v from %q", sn.HarnessVersion, sn.Sources["harness_version"])
 	}
-	// no claude process found: the environment's, labelled as such
 	fakeProcTree(t, 300, fakeProc{pid: 300, ppid: 1, exe: "/usr/bin/wp", args: []string{"wp"}})
 	sn = buildSnapshot(hookEventInput{HookEventName: "SessionStart", Cwd: t.TempDir()}, gitFacts{})
 	if sn.HarnessVersion == nil || *sn.HarnessVersion != "9.9.9" || sn.Sources["harness_version"] != "env:CLAUDE_CODE_EXECPATH" {
@@ -559,7 +549,7 @@ func TestSnapshotHarnessVersionFromTheProcessThenTheEnvironment(t *testing.T) {
 func TestSnapshotNoProcRootIsMissingNotAnError(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	old := snapshotProc
-	snapshotProc = func() (string, int) { return "", 0 } // not Linux
+	snapshotProc = func() (string, int) { return "", 0 }
 	t.Cleanup(func() { snapshotProc = old })
 	sn := buildSnapshot(hookEventInput{HookEventName: "SessionStart", Cwd: t.TempDir()}, gitFacts{})
 	if sn.RequestedModel != nil || sn.Missing["requested_model"] == "" || sn.Missing["requested_effort"] == "" {

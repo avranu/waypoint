@@ -171,8 +171,14 @@ deploy key in a CI job is readable by whatever runs beside it.
    cancel the run still testing the one before, so a busy afternoon of merges
    released nothing, WP-62). A queued run whose commit is no longer main's tip
    when it starts skips everything (its `current` job says so in a notice):
-   the newer push's own run releases both changes. On a pull request
-   `current` is skipped and the three checks queue at once (WP-156).
+   the newer push's own run releases both changes. On a ready pull request
+   `current` is skipped and the three checks queue at once (WP-156). On a push to a
+   draft ("WIP: ") it runs once, light, and skips the checks when the push only merged
+   the base in over a head whose checks passed (its notice says why not otherwise, WP-1808);
+   it reads the head's parents from the API first (a push that is not a two-parent merge
+   costs one request), counts only real, non-skipped results, walks back over at most 10
+   merge-only commits to the first with real passed ones, and bounds itself with timeouts;
+   that is a skipped draft run, never a full one: dropping "WIP: " still runs the full suite.
    `backend` and `e2e` are the statuses branch protection and Waypoint read,
    but each is a small job that waits for parallel shard jobs (`backend shard
    1`..`4`, `e2e shard 1`..`4`, WP-313, WP-314) and fails unless every shard
@@ -712,8 +718,10 @@ Any proxy works. Requirements:
   more saves the retries.
 - Allow request bodies up to 5 MB (forge webhooks; avatars are 3 MB, JSON
   2 MB). If runners reach Waypoint through the proxy and audits may run
-  through an LLM gateway (`gateway/audit`, WP design note 342), allow 22 MB: the runner uploads its packed checkout, 20 MiB at
-  most, and it must arrive within Waypoint's two-minute read timeout. A
+  through an LLM gateway (`gateway/audit`, WP-ADR84), allow the gateway's archive limit plus about 2 MB: the runner uploads
+  its packed checkout, up to what the gateway takes (20 MiB today, 64 MiB
+  once the gateway raises it; Waypoint reads the figure from the gateway),
+  and it must arrive within Waypoint's two-minute read timeout. A
   proxy that refuses the upload only fails that try (the audit goes on to
   its next model).
 - The transcript archive (`POST /api/v1/usage/transcript`, WP-1466) sends

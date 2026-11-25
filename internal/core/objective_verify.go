@@ -11,25 +11,6 @@ import (
 	"time"
 )
 
-// How Waypoint reads an objective (WP-927, WP-ADR111, WP-ADR142). A reading is taken
-// where a round's work ended (PhaseVerdict) and before the first round
-// (PhaseBaseline), in two stages:
-//
-//  1. the commands: a job on a runner of the person who put the objective
-//     in effect (objective_job.go) finds the commit the branch stands at
-//     and runs the check and the keep-passing commands there, in checkouts of its own;
-//  2. the judge, when the objective has one and the commands leave it to
-//     decide: an audit of that commit by a model that didn't do the work.
-//
-// objectiveAdvance moves a reading on as far as it can go, and is safe to
-// call at any time, by anything, any number of times: every step reads
-// where the objective stands, does the one thing that is due, and writes
-// only if the objective still stands where it was read. It is called when
-// the objective changes, when its job or its audit ends, and every minute
-// (CheckObjectives), so a lost event or a restart delays a reading and
-// never strands it. What couldn't be read is tried again, then put to a
-// person (BlockedReading); nothing here closes a task on a guess.
-
 const (
 	// AuditObjective is the purpose of a judge's audit.
 	AuditObjective = "objective"
@@ -133,9 +114,6 @@ func (s *Service) objectiveStep(ctx context.Context, issueID int64) (again bool,
 		return false, err
 	}
 	if o.issueClosed {
-		// Closed by something that asks no objective (its status became one
-		// that closes, it moved to a project where it does): a close that
-		// stood, so the objective is over.
 		return false, s.objectiveTaskClosed(ctx, issueID)
 	}
 	if o.Phase != PhaseBaseline && o.Phase != PhaseVerdict {
@@ -151,8 +129,6 @@ func (s *Service) objectiveStep(ctx context.Context, issueID int64) (again bool,
 	case o.verifyReading == nil:
 		return s.objectiveJobStep(ctx, o)
 	case o.Judge == "":
-		// The commands' reading is in and nothing was decided on it (the
-		// objective lost its judge in between): decide.
 		return false, s.write(ctx, SystemActor(), func(t *tx) error {
 			cur, err := s.objectiveRow(ctx, t, issueID)
 			if err != nil || !sameReading(o, cur) {
@@ -234,8 +210,6 @@ func (s *Service) objectiveQueue(ctx context.Context, seen *Objective) (bool, er
 			return s.objectiveBlock(ctx, t, o, BlockedRepo, objectiveRepoNote(o), o.Phase)
 		}
 		if !slices.ContainsFunc(runners, func(r *Runner) bool { return runnerCanTake(r, jobNeeds{kind: JobObjective}) }) {
-			// Not a failed try: nothing ran. The watchdog tells its person
-			// when this has gone on (objective_health.go).
 			note := who + " has no runner that can read it: connect one with wp runner (Settings → Runners), or bring its wp up to date (wp upgrade). Waypoint looks again every few minutes."
 			return s.objSet(ctx, t, o.IssueID, "verify_at", now+objectiveRunnerWait.Milliseconds(), "phase_note", note)
 		}
@@ -243,7 +217,6 @@ func (s *Service) objectiveQueue(ctx context.Context, seen *Objective) (bool, er
 			KeepPassing: o.KeepPassing, Budget: objectiveJobBudget}
 		title := fmt.Sprintf("Read where %s's objective starts from", o.Key)
 		if o.Phase == PhaseVerdict {
-			// The reading before a round compares with nothing.
 			job.Base, title = o.BaseSHA, fmt.Sprintf("Read round %d of %s's objective", o.Round, o.Key)
 		}
 		input, err := json.Marshal(job)
@@ -420,17 +393,12 @@ func (s *Service) objectiveApply(ctx context.Context, seen *Objective, job int64
 				ok := r.BaseReading.OK
 				m.BaseOK, m.BaseValue, m.BaseSHA, m.P = &ok, r.BaseReading.Value, r.Base, r.P
 			case !baseline && o.Check != "" && o.BaseSHA != "" && o.baseOK != nil && o.Measure != MeasureTime:
-				// What Waypoint read at the base when the last round ended.
-				// A time is compared only with one taken in the same run, on
-				// the same machine.
 				m.BaseOK, m.BaseValue, m.BaseSHA = o.baseOK, o.baseValue, o.BaseSHA
 			}
 			if m, err = s.objectiveKeep(ctx, t, o, m); err != nil {
 				return err
 			}
 			if baseline && numbered && (!m.OK || m.Value == nil) {
-				// A check that has never given a number most likely can't:
-				// a person looks before rounds are spent on it.
 				var read int
 				if err := t.QueryRowContext(ctx, `SELECT count(*) FROM objective_measurements WHERE issue_id = ? AND rev = ? AND source != ? AND ok AND value IS NOT NULL`,
 					o.IssueID, o.measuredRev(), SourceAgent).Scan(&read); err != nil {
@@ -482,12 +450,10 @@ func (s *Service) objectiveDecide(ctx context.Context, t *tx, o *Objective, acce
 	}
 	head := o.verifyHead
 	baseline := o.Phase == PhaseBaseline
-	// nothing: the branch stands where the round started.
 	nothing := !baseline && o.BaseSHA != "" && head == o.BaseSHA
 	met := true
 	switch {
 	case m == nil:
-		// No check, and every keep-passing command passes.
 	case len(m.Broken) > 0:
 		met = false
 	case o.Measure != "":
@@ -505,8 +471,6 @@ func (s *Service) objectiveDecide(ctx context.Context, t *tx, o *Objective, acce
 	}
 	if o.Judge != "" {
 		if nothing {
-			// The judge has read this very commit and it didn't close the
-			// task: the round is still owed, and asking again buys nothing.
 			var judged int
 			if err := t.QueryRowContext(ctx, `SELECT count(*) FROM objective_measurements WHERE issue_id = ? AND source = ? AND rev = ? AND commit_sha = ? AND ok`,
 				o.IssueID, SourceJudge, o.measuredRev(), head).Scan(&judged); err != nil {
@@ -516,7 +480,6 @@ func (s *Service) objectiveDecide(ctx context.Context, t *tx, o *Objective, acce
 				return s.objectiveSettle(ctx, t, o, roundEnd{outcome: RoundEmpty, m: m, head: head})
 			}
 		}
-		// For the judge, which is told what the round changed of the check.
 		return nil
 	}
 	if baseline {
@@ -526,8 +489,6 @@ func (s *Service) objectiveDecide(ctx context.Context, t *tx, o *Objective, acce
 		return s.objectiveBaselined(ctx, t, o, m, nil)
 	}
 	if m != nil && len(m.Touched) > 0 && !accepted && o.Measure != "" {
-		// The round changed what the check runs, and the reading says it
-		// is met: a person looks before it counts.
 		if err := s.objSet(ctx, t, o.IssueID, "pending_measurement", m.ID); err != nil {
 			return err
 		}
@@ -535,7 +496,6 @@ func (s *Service) objectiveDecide(ctx context.Context, t *tx, o *Objective, acce
 			o.Round, strings.Join(m.Touched, ", "), o.Key, o.Key), o.Phase)
 	}
 	if o.Measure == "" {
-		// A loop that reads a command: nothing is judged of it.
 		return s.objectiveSettle(ctx, t, o, roundEnd{outcome: RoundLoop, m: m, head: head})
 	}
 	return s.objectiveSettle(ctx, t, o, roundEnd{outcome: RoundMet, m: m, head: head})
@@ -588,8 +548,6 @@ func (s *Service) objectiveMetAtStart(ctx context.Context, t *tx, o *Objective, 
 	return nil
 }
 
-// ---- the judge ----
-
 // judgeCounts: a finding is at or above the bar, so it keeps the task open.
 // Nothing else about a finding counts: not what anyone marked it since, and
 // no second model's doubt of it.
@@ -627,8 +585,6 @@ func (s *Service) objectiveAskJudge(ctx context.Context, seen *Objective) (bool,
 	if err != nil {
 		return false, err
 	}
-	// The judge is never of the family of the model that did the work,
-	// where the audit has the choice (the gateway's models).
 	var model string
 	if err := s.db.R.QueryRowContext(ctx, `SELECT model FROM agent_runs WHERE issue_id = ? AND model != '' ORDER BY id DESC LIMIT 1`, seen.IssueID).Scan(&model); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, err
@@ -640,10 +596,6 @@ func (s *Service) objectiveAskJudge(ctx context.Context, seen *Objective) (bool,
 		if !IsInvalid(err) && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrForbidden) {
 			return s.objectiveReadFailed(ctx, seen, "the judge couldn't be asked: "+PublicError(err), objectiveReadRetry)
 		}
-		// Something a person puts right (no runner that runs the judge's
-		// model, a model that isn't offered any more): nothing ran, so it
-		// isn't a failed try. The watchdog tells its person when this has
-		// gone on.
 		return false, s.write(ctx, SystemActor(), func(t *tx) error {
 			o, werr := s.objectiveRow(ctx, t, seen.IssueID)
 			if werr != nil || !sameReading(seen, o) {
@@ -663,8 +615,6 @@ func (s *Service) objectiveAskJudge(ctx context.Context, seen *Objective) (bool,
 		return s.objSet(ctx, t, o.IssueID, "verify_audit", a.ID, "phase_note", "")
 	})
 	if !stored {
-		// The objective moved on while the audit was asked for: nobody
-		// waits for it.
 		s.objectiveSweep(ctx, seen.IssueID)
 	}
 	return stored, err
@@ -706,7 +656,6 @@ func (s *Service) objectiveJudgeStep(ctx context.Context, seen *Objective) (bool
 		if err != nil || !sameReading(seen, o) {
 			return err
 		}
-		// What the last judge of it found, to say whether this is nearer.
 		var before sql.NullFloat64
 		if err := t.QueryRowContext(ctx, `SELECT value FROM objective_measurements WHERE issue_id = ? AND source = ? AND rev = ? AND ok AND value IS NOT NULL ORDER BY id DESC LIMIT 1`,
 			o.IssueID, SourceJudge, o.measuredRev()).Scan(&before); err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -737,8 +686,6 @@ func (s *Service) objectiveJudgeStep(ctx context.Context, seen *Objective) (bool
 		}
 		e := roundEnd{outcome: objectiveOutcome(o, m), m: m, read: read, head: head}
 		if e.outcome == RoundWorked && read != nil && read.Improved {
-			// The judge can't say it is nearer, and the check can: the
-			// round got it to pass, or to a better reading, for the first time.
 			e.outcome = RoundProgress
 		}
 		if o.BaseSHA != "" && head == o.BaseSHA && (e.outcome == RoundNone || e.outcome == RoundWorked) {
@@ -795,8 +742,6 @@ func (s *Service) objectiveJudgeContext(ctx context.Context, o *Objective, read 
 	if o.Phase != PhaseVerdict {
 		return strings.TrimSpace(b.String()), nil
 	}
-	// What whoever did the work said of it: where they hold a finding to be
-	// wrong, this is where they say so.
 	rows, err := s.db.R.QueryContext(ctx, `SELECT c.body, coalesce(nullif(c.agent, ''), nullif(u.display_name, ''), u.username, nullif(c.external_author, ''), 'someone')
 		FROM comments c LEFT JOIN users u ON u.id = c.author_id WHERE c.issue_id = ? AND c.created_at >= ? ORDER BY c.id DESC LIMIT 5`, o.IssueID, o.roundStartedAt)
 	if err != nil {

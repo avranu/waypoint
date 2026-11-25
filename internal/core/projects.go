@@ -140,7 +140,7 @@ func (p *ProjectSettings) validate() error {
 		v    *string
 		what string
 	}{{&p.AutopilotPrompt, "prompt"}, {&p.AutopilotDone, "note"}} {
-		v, err := cleanAutopilotText(*part.v, part.what, "") // a project's own stays, even worded as the default
+		v, err := cleanAutopilotText(*part.v, part.what, "")
 		if err != nil {
 			return err
 		}
@@ -392,7 +392,7 @@ func (s *Service) projectRole(ctx context.Context, q queryer, actor *Actor, proj
 
 func (s *Service) hasShareInProject(ctx context.Context, q queryer, actor *Actor, projectID int64) bool {
 	if actor.scope != nil {
-		return false // a job's token reaches its projects through scope alone
+		return false
 	}
 	var n int
 	err := q.QueryRowContext(ctx, `SELECT count(*) FROM issue_shares sh JOIN issues i ON i.id = sh.issue_id
@@ -503,8 +503,6 @@ func matchProjectRef(all []*Project, ref string) []*Project {
 	}
 	parts := strings.Split(ref, "/")
 	for _, p := range all {
-		// The last part names the project, and each part before it the
-		// next parent up.
 		cur, ok := p, true
 		for i := len(parts) - 1; i >= 0 && ok; i-- {
 			if cur == nil || !projectNamed(cur, strings.TrimSpace(parts[i])) {
@@ -552,7 +550,6 @@ func (s *Service) ListProjects(ctx context.Context, actor *Actor, includeArchive
 			SELECT 1 FROM issue_shares sh JOIN issues i ON i.id = sh.issue_id WHERE sh.user_id = ? AND i.project_id = p.id))
 		  AND (? OR p.archived = 0)
 		ORDER BY p.archived, lower(p.name)`
-	// A job's scoped token lists all, then keeps its own projects below.
 	admin := actor.isAdmin() || actor.scope != nil
 	rows, err := s.db.R.QueryContext(ctx, q, admin, actor.id(), admin, actor.id(), includeArchived)
 	if err != nil {
@@ -591,7 +588,6 @@ func (s *Service) ListProjects(ctx context.Context, actor *Actor, includeArchive
 			if p.OpenIssues, err = s.guestOpenCount(ctx, actor, p.Key); err != nil {
 				return nil, err
 			}
-			// Issues they can't see don't say when they changed.
 			p.ActiveAt = &p.UpdatedAt
 		}
 	}
@@ -647,7 +643,6 @@ func (s *Service) FindProjects(ctx context.Context, actor *Actor, ref string, re
 		{"repo", func(p *Project) bool {
 			return slices.ContainsFunc(repos[p.ID], func(r string) bool { return strings.EqualFold(r, ref) })
 		}},
-		// A path through parents: "ACME/APP", "Harbor/Harbor".
 		{"path", func(p *Project) bool { return strings.Contains(ref, "/") && slices.Contains(path, p) }},
 		{"repo_name", func(p *Project) bool {
 			return slices.ContainsFunc(repos[p.ID], func(r string) bool { _, n := repoNamespace(r); return strings.EqualFold(n, ref) })
@@ -672,7 +667,6 @@ func (s *Service) FindProjects(ctx context.Context, actor *Actor, ref string, re
 			break
 		}
 	}
-	// Everything nested under a match, at any depth.
 	seen := map[int64]bool{}
 	for _, p := range out {
 		seen[p.ID] = true
@@ -735,8 +729,6 @@ func (s *Service) GetProject(ctx context.Context, actor *Actor, ref string) (*Pr
 	if p.Sprints, err = s.listSprints(ctx, s.db.R, p.ID, false); err != nil {
 		return nil, err
 	}
-	// Guests see the project only as far as their shares reach: no roster,
-	// and counts of their own issues (WP-D3).
 	if role == RoleNone {
 		p.Members = []Member{}
 		p.OpenIssues, err = s.guestOpenCount(ctx, actor, p.Key)
@@ -821,9 +813,7 @@ type ProjectInput struct {
 	Archived    *bool            `json:"archived"`
 	Settings    *ProjectSettings `json:"settings"`
 	// Parent nests the project under another (a key); null or "" un-nests.
-	Parent Opt[string] `json:"parent"`
-	// settingsJSON is the settings object as sent, so an update changes only
-	// the fields it names (zero values included).
+	Parent       Opt[string] `json:"parent"`
 	settingsJSON json.RawMessage
 }
 
@@ -888,8 +878,6 @@ func (s *Service) CreateProject(ctx context.Context, actor *Actor, in ProjectInp
 	if !keyRE.MatchString(key) {
 		return nil, invalid("project key must be 2-10 capital letters or digits, starting with a letter")
 	}
-	// Without a colour, icon or background of their own a project gets a look
-	// picked for it as it is created (WP-65, WP-108).
 	color := ""
 	if in.Color != nil && *in.Color != "" {
 		if !colorRE.MatchString(*in.Color) {
@@ -905,8 +893,6 @@ func (s *Service) CreateProject(ctx context.Context, actor *Actor, in ProjectInp
 	if in.Settings != nil {
 		settings = *in.Settings
 	}
-	// Story points are not estimated unless the caller asks: a model
-	// guesses them badly without knowing the code (WP-297).
 	if in.Settings == nil || (in.settingsJSON != nil && !hasJSONKey(in.settingsJSON, "auto_title")) {
 		settings.AutoTitle = true
 	}
@@ -920,7 +906,6 @@ func (s *Service) CreateProject(ctx context.Context, actor *Actor, in ProjectInp
 	var id int64
 	err := s.write(ctx, actor, func(t *tx) error {
 		now := s.nowMS()
-		// With a generated key, add a digit if it is taken.
 		if autoKey {
 			base := key
 			for n := 2; ; n++ {
@@ -985,7 +970,6 @@ func (s *Service) CreateProject(ctx context.Context, actor *Actor, in ProjectInp
 				backlogID = sid
 			}
 		}
-		// The statuses were just made, so any id passed in can't be one of them.
 		settings.DefaultStatusID = todoID
 		if settings.Mode == "sprints" {
 			settings.DefaultStatusID = backlogID
@@ -994,7 +978,6 @@ func (s *Service) CreateProject(ctx context.Context, actor *Actor, in ProjectInp
 		if _, err := t.ExecContext(ctx, `UPDATE projects SET settings = ? WHERE id = ?`, string(b), id); err != nil {
 			return err
 		}
-		// Starter tags show what tags are for.
 		for _, tag := range DefaultTags {
 			if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO labels(project_id, name, color) VALUES (?,?,?)`, id, tag.Name, tag.Color); err != nil {
 				return err
@@ -1029,8 +1012,8 @@ func (s *Service) UpdateProject(ctx context.Context, actor *Actor, ref string, i
 		return nil, err
 	}
 	sets, args := []string{}, []any{}
-	var agentsPaused *bool  // set when the project's agent pause changes
-	autoEstimateOn := false // auto-estimate was just switched on
+	var agentsPaused *bool
+	autoEstimateOn := false
 	if in.Name != nil {
 		if strings.TrimSpace(*in.Name) == "" {
 			return nil, invalid("project name is required")
@@ -1047,8 +1030,6 @@ func (s *Service) UpdateProject(ctx context.Context, actor *Actor, ref string, i
 	if in.Description != nil {
 		sets, args = append(sets, "description = ?"), append(args, *in.Description)
 	}
-	// A person changing the icon, colour or background makes the look theirs.
-	// The settings form sends all three on every save, so only a difference counts.
 	lookChanged := false
 	if in.Color != nil {
 		if !colorRE.MatchString(*in.Color) {
@@ -1082,8 +1063,6 @@ func (s *Service) UpdateProject(ctx context.Context, actor *Actor, ref string, i
 		sets, args = append(sets, "parent_id = ?"), append(args, nullInt(parent))
 	}
 	if in.Settings != nil {
-		// Fields left out keep their current values, so changing one setting
-		// doesn't reset the others.
 		st := *in.Settings
 		if in.settingsJSON != nil {
 			st = p.Settings
@@ -1127,7 +1106,6 @@ func (s *Service) UpdateProject(ctx context.Context, actor *Actor, ref string, i
 	}
 	if len(sets) > 0 {
 		err := s.write(ctx, actor, func(t *tx) error {
-			// Keep old issue keys resolvable when the project key changes.
 			if in.Key != nil && !strings.EqualFold(*in.Key, p.Key) {
 				if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO issue_aliases(project_key, number, issue_id)
 					SELECT ?, number, id FROM issues WHERE project_id = ?`, p.Key, p.ID); err != nil {
@@ -1141,7 +1119,7 @@ func (s *Service) UpdateProject(ctx context.Context, actor *Actor, ref string, i
 			}
 			if err == nil {
 				ev := &Event{Kind: EvProjectUpdated, ProjectID: p.ID}
-				if autoEstimateOn { // dispatch backfills the project's unestimated issues
+				if autoEstimateOn {
 					ev.Field, ev.New = "auto_estimate", "on"
 				}
 				t.emit(ev)
@@ -1174,8 +1152,6 @@ func (s *Service) DeleteProject(ctx context.Context, actor *Actor, ref string) e
 		return err
 	}
 	return s.write(ctx, actor, func(t *tx) error {
-		// Webhooks Waypoint added for the project's repos go too, unless
-		// another project still has the repo (checked after commit).
 		rows, err := t.QueryContext(ctx, `SELECT forge_id, repo, hook_id FROM project_repos WHERE project_id = ? AND hook_id != ''`, p.ID)
 		if err != nil {
 			return err
@@ -1197,8 +1173,6 @@ func (s *Service) DeleteProject(ctx context.Context, actor *Actor, ref string) e
 		for _, j := range hooks {
 			t.emit(&Event{Kind: EvRepoHook, repoHook: j})
 		}
-		// Automatic projects shouldn't bring its repos back on the next
-		// discovery, unless another project still has them.
 		if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO forge_repo_ignores(forge_id, repo, created_at)
 			SELECT pr.forge_id, pr.repo, ? FROM project_repos pr WHERE pr.project_id = ? AND NOT EXISTS (
 				SELECT 1 FROM project_repos o WHERE o.forge_id = pr.forge_id AND lower(o.repo) = lower(pr.repo) AND o.project_id != pr.project_id)`,
@@ -1208,7 +1182,6 @@ func (s *Service) DeleteProject(ctx context.Context, actor *Actor, ref string) e
 		if _, err := t.ExecContext(ctx, `DELETE FROM issue_search WHERE rowid IN (SELECT id FROM issues WHERE project_id = ?)`, p.ID); err != nil {
 			return err
 		}
-		// Issues reference statuses without ON DELETE, so drop them first.
 		if _, err := t.ExecContext(ctx, `DELETE FROM issues WHERE project_id = ?`, p.ID); err != nil {
 			return err
 		}
@@ -1216,8 +1189,6 @@ func (s *Service) DeleteProject(ctx context.Context, actor *Actor, ref string) e
 		return err
 	})
 }
-
-// ---- members ----
 
 // SetMember adds a user to a project or changes their role.
 func (s *Service) SetMember(ctx context.Context, actor *Actor, projectRef, userRef, role string) error {
@@ -1285,7 +1256,6 @@ func (s *Service) RemoveMember(ctx context.Context, actor *Actor, projectRef, us
 	if err != nil {
 		return err
 	}
-	// Anyone may leave; removing others needs ownership.
 	if u.ID != actor.id() {
 		if err := s.requireProjectRole(ctx, s.db.R, actor, p.ID, RoleOwner); err != nil {
 			return err
@@ -1309,8 +1279,6 @@ func (s *Service) RemoveMember(ctx context.Context, actor *Actor, projectRef, us
 		return nil
 	})
 }
-
-// ---- statuses ----
 
 // StatusInput creates or edits a status.
 type StatusInput struct {
@@ -1398,7 +1366,6 @@ func (s *Service) UpdateStatus(ctx context.Context, actor *Actor, statusID int64
 			if _, err := t.ExecContext(ctx, `UPDATE statuses SET category = ? WHERE id = ?`, *in.Category, statusID); err != nil {
 				return err
 			}
-			// Keep resolved_at consistent with the new category.
 			now := s.nowMS()
 			q, args := `UPDATE issues SET resolved_at = NULL WHERE status_id = ?`, []any{statusID}
 			if isClosed(*in.Category) {
@@ -1473,8 +1440,6 @@ func (s *Service) DeleteStatus(ctx context.Context, actor *Actor, statusID, move
 			} else if err != nil {
 				return err
 			}
-			// Each move is an ordinary status change, so history and flow
-			// reports stay right.
 			for _, id := range ids {
 				i, err := s.issueByID(ctx, t, id, false)
 				if err != nil {
@@ -1488,7 +1453,6 @@ func (s *Service) DeleteStatus(ctx context.Context, actor *Actor, statusID, move
 		if _, err := t.ExecContext(ctx, `DELETE FROM statuses WHERE id = ?`, statusID); err != nil {
 			return err
 		}
-		// Point the default status elsewhere if it was this one.
 		p, err := s.projectByID(ctx, t, projectID)
 		if err != nil {
 			return err
@@ -1511,8 +1475,6 @@ func (s *Service) DeleteStatus(ctx context.Context, actor *Actor, statusID, move
 		return nil
 	})
 }
-
-// ---- labels ----
 
 // LabelInput creates or edits a label.
 type LabelInput struct {

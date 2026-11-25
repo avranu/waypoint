@@ -70,7 +70,7 @@ func (s *Server) refreshAgentSetup(w http.ResponseWriter, r *http.Request) (any,
 
 func (s *Server) reportMachine(w http.ResponseWriter, r *http.Request) (any, error) {
 	var in core.MachineReport
-	if err := decodeLarge(w, r, &in); err != nil { // a newer wp may say more
+	if err := decodeLarge(w, r, &in); err != nil {
 		return nil, err
 	}
 	if err := s.svc.ReportMachine(r.Context(), actorFrom(r), in); err != nil {

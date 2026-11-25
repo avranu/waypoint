@@ -1,6 +1,3 @@
-// Admin → Email: the SMTP server Waypoint sends through (WP-7). Until it is
-// set, automations can't send email and the editor doesn't offer it.
-
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { q } from '@/lib/queries'
@@ -95,7 +92,6 @@ function EmailForm({ settings }: { settings: EmailSettings }) {
                 value={v.security}
                 onChange={(e) => {
                   const security = e.target.value as SMTPSecurity
-                  // Follow the usual port unless someone typed their own.
                   const port = v.port === DEFAULT_PORT[v.security] ? DEFAULT_PORT[security] : v.port
                   set({ security, port })
                 }}

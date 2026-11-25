@@ -193,7 +193,6 @@ function ResultSection({ job: j }: { job: RunnerJob }) {
     ? (r.conflicts as { path: string; reason: string }[])
     : []
   const tokens = r.tokens as { input?: number; output?: number; cost_usd?: number } | undefined
-  // A plain command's result is its exit code, which the status line has.
   const worthShowing =
     answer ||
     files.length ||
@@ -375,7 +374,6 @@ function LogSection({ job: j }: { job: RunnerJob }) {
   const text = cleanLog(j.log ?? '')
   const ref = useRef<HTMLPreElement>(null)
   const stick = useRef(true)
-  // Follow the output while it grows, unless the reader scrolled up.
   useLayoutEffect(() => {
     const el = ref.current
     if (el && stick.current) el.scrollTop = el.scrollHeight

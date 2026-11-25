@@ -19,15 +19,12 @@ import (
 // A fake server for the drop-report tests: it records every call's events,
 // and answers with what the test says for that call.
 type dropServer struct {
-	mu    sync.Mutex
-	calls [][]sessionEvent
-	reply func(call int, evs []sessionEvent) int // HTTP status
-	// pending is the body GET /api/v1/sessions/typed-prompts answers with
-	// (a JSON list of core.PendingTyped); bodies is every body posted to the
-	// hook route, as the server saw it.
+	mu      sync.Mutex
+	calls   [][]sessionEvent
+	reply   func(call int, evs []sessionEvent) int
 	pending string
 	bodies  []string
-	lists   int // GETs of the typed-prompts list
+	lists   int
 }
 
 func (d *dropServer) start(t *testing.T) {
@@ -79,7 +76,6 @@ func dropEnv(t *testing.T) *sessionEnv {
 	t.Helper()
 	s := newSessionEnv(t)
 	s.asAgent()
-	// a wait that does not depend on how old the test binary is
 	old := processAge
 	processAge = func() time.Duration { return 0 }
 	t.Cleanup(func() { processAge = old })
@@ -146,11 +142,10 @@ func TestDropReportSettleAfterAnotherProcessEmptiedTheStateDoesNotPanic(t *testi
 	if rep == nil {
 		t.Fatal("no report claimed")
 	}
-	// another process settled it and the file holds no drops at all
 	if err := freshCLI().updateState(func(s *State) { s.Drops, s.DropsOut = nil, nil }); err != nil {
 		t.Fatal(err)
 	}
-	c.settleDrops(rep) // must not panic
+	c.settleDrops(rep)
 	c.settleDrops(&dropReport{ID: "x"})
 	c.settleDrops(nil)
 	if st := freshCLI().state; st.DropsOut != nil || len(st.Drops) != 0 {
@@ -169,11 +164,11 @@ func TestDropReportCountsAddedInFlightGoInTheNextReport(t *testing.T) {
 	}}
 	ds.start(t)
 	freshCLI().sendSessionEvent(sessionEvent{Event: "Stop", At: time.Now().UnixMilli(), SessionID: "d3"})
-	freshCLI().countDrop("unqueued", "PostToolUse", 3) // while the first is in flight
+	freshCLI().countDrop("unqueued", "PostToolUse", 3)
 	freshCLI().sendSessionEvent(sessionEvent{Event: "Stop", At: time.Now().UnixMilli(), SessionID: "d3"})
 	freshCLI().sendSessionEvent(sessionEvent{Event: "Stop", At: time.Now().UnixMilli(), SessionID: "d3"})
 	id1, _ := ds.lastDrops(0)
-	id2, d2 := ds.lastDrops(1) // the in-flight report again, unchanged
+	id2, d2 := ds.lastDrops(1)
 	id3, d3 := ds.lastDrops(2)
 	if id2 != id1 || len(d2) != 1 || d2["overflow/Stop"] != 1 {
 		t.Errorf("second send: %q %v, want the first report unchanged", id2, d2)
@@ -196,7 +191,6 @@ func TestRefusedEventWithAnEmptyOutboxIsCounted(t *testing.T) {
 	if st.Drops["refused/Stop"] != 1 {
 		t.Errorf("drops = %v, want refused/Stop counted", st.Drops)
 	}
-	// the batch was rolled back by the server, so its report stays in flight
 	if st.DropsOut == nil || st.DropsOut.Counts["overflow/Stop"] != 1 {
 		t.Errorf("in flight = %+v", st.DropsOut)
 	}
@@ -225,7 +219,6 @@ func TestQueuedEventRefusedOnItsOwnIsCounted(t *testing.T) {
 	if strings.Join(taken, ",") != "GoodQ,Good" {
 		t.Errorf("taken = %v", taken)
 	}
-	// the refusal is counted, and the retry of the current event reports it
 	_, d := ds.lastDrops(len(ds.calls) - 1)
 	st := freshCLI().state
 	if d["refused/BadQ"] != 1 || len(st.Outbox) != 0 || st.DropsOut != nil || len(st.Drops) != 0 {

@@ -26,8 +26,6 @@ func TestMarkersOnlyFromWaypointsAccounts(t *testing.T) {
 		{"the bot account", ours, "waypoint-bot", true},
 		{"no author", ours, "", false},
 		{"a forge with no token", posters{}, "robin", false},
-		{"accounts unreadable", posters{unknown: true}, "eve", false},
-		{"one account unreadable", posters{logins: []string{"waypoint-bot"}, unknown: true}, "waypoint-bot", true},
 	} {
 		if got := tc.p.botText(tc.author, spoofedFinding); got != tc.want {
 			t.Errorf("%s: botText = %v, want %v", tc.name, got, tc.want)

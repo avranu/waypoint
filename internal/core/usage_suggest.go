@@ -8,9 +8,6 @@ import (
 	"strings"
 )
 
-// Suggestions (WP-D20): plain rules over the numbers, no model involved.
-// Each one shows the evidence behind it and what to do.
-
 // UsageAction is what a suggestion asks the person to do.
 type UsageAction struct {
 	Kind    string `json:"kind"` // rule (an allow rule to copy), note
@@ -29,11 +26,11 @@ type UsageAdvice struct {
 }
 
 const (
-	adviceMinMessages  = 40      // a "long" session
-	adviceMinInput     = 300_000 // and one that moved enough tokens to matter
+	adviceMinMessages  = 40
+	adviceMinInput     = 300_000
 	adviceCacheLow     = 0.7
-	adviceOutputTokens = 50_000 // a tool's output (estimated) worth a look
-	adviceOutputAvg    = 6_000  // bytes per call
+	adviceOutputTokens = 50_000
+	adviceOutputAvg    = 6_000
 	advicePromptTimes  = 3
 	adviceCompactions  = 3
 	adviceUnusedDays   = 30
@@ -62,7 +59,7 @@ func riskyCommand(line string) bool {
 	segs := strings.FieldsFunc(line, func(r rune) bool { return strings.ContainsRune(";|&\n(`{", r) })
 	for _, seg := range segs {
 		for _, w := range strings.Fields(seg) {
-			if strings.Contains(w, "=") && !strings.HasPrefix(w, "-") { // VAR=value before the command
+			if strings.Contains(w, "=") && !strings.HasPrefix(w, "-") {
 				continue
 			}
 			name := programName(strings.TrimPrefix(w, "$("))
@@ -129,7 +126,6 @@ func (s *Service) usageSuggest(ctx context.Context, sc *usageScope, book *priceB
 	if a := adviceOutput(o); a != nil {
 		out = append(out, *a)
 	}
-	// The optional advice never takes the usage data down with it.
 	if a, err := s.adviceUnused(ctx, sc); err != nil {
 		s.log.WarnContext(ctx, "usage advice: unused tools", "err", err)
 	} else if a != nil {
@@ -313,7 +309,7 @@ func adviceAllow(o *UsageOverview) *UsageAdvice {
 			parts = append(parts, fmt.Sprintf("refused %d×", c.refused))
 		}
 		ev = append(ev, fmt.Sprintf("%s: %s", name, strings.Join(parts, ", ")))
-		if r := allowRule(c.tool, c.detail); r != "" && (c.tool != "Bash" || !riskyCommand(c.detail)) { // every rule suggested passes the filter
+		if r := allowRule(c.tool, c.detail); r != "" && (c.tool != "Bash" || !riskyCommand(c.detail)) {
 			rules = append(rules, r)
 		}
 	}
@@ -338,7 +334,7 @@ func adviceOutput(o *UsageOverview) *UsageAdvice {
 	for _, t := range o.Tools {
 		switch t.Group {
 		case "builtin":
-			if t.Name != "Bash" { // its heads say more
+			if t.Name != "Bash" {
 				consider(t.Name, t)
 			}
 		case "mcp":
@@ -368,8 +364,6 @@ func adviceOutput(o *UsageOverview) *UsageAdvice {
 func (s *Service) adviceUnused(ctx context.Context, sc *usageScope) (*UsageAdvice, error) {
 	now := sc.to
 	from := now - int64(adviceUnusedDays)*24*3_600_000
-	// Only say "unused" once usage covers the whole look-back; a new
-	// install hasn't had the chance.
 	wide := &usageScope{uids: sc.uids, everyone: sc.everyone, from: 0, to: now}
 	where, args := wide.where("hour")
 	var first int64
@@ -378,7 +372,7 @@ func (s *Service) adviceUnused(ctx context.Context, sc *usageScope) (*UsageAdvic
 		return nil, err
 	}
 	if first > now-int64(adviceUnusedDays)*24*3_600_000+3*24*3_600_000 {
-		return nil, nil // fewer than about 27 days of history
+		return nil, nil
 	}
 	items, inv, err := s.usageUnusedSince(ctx, sc, from)
 	if err != nil || !inv {

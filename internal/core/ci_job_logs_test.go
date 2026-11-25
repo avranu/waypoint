@@ -36,7 +36,6 @@ func TestCILogs(t *testing.T) {
 	a.reply["GET /repos/acme/app/actions/jobs/7001/logs"] = "2026-10-30T10:00:00.0000000Z ::notice title=Already tested::the merged tree is abc's\n"
 	a.reply["GET /repos/acme/app/actions/jobs/7002/logs"] = "ok  \tpkg/a\t1.2s\n--- FAIL: TestX (0.00s)\n    x_test.go:9: boom\nFAIL\n"
 
-	// A full SHA: the failed job's failing part; the others only listed.
 	l, err := e.s.CILogs(e.ctx, e.admin, CILogInput{Repo: "ACME/app", SHA: full})
 	if err != nil {
 		t.Fatal(err)
@@ -52,8 +51,6 @@ func TestCILogs(t *testing.T) {
 		t.Error("read a log nobody asked for")
 	}
 
-	// An abbreviated SHA is found among the recent runs; --job reads a
-	// passed job, whole.
 	l, err = e.s.CILogs(e.ctx, e.admin, CILogInput{Repo: "acme/app", SHA: "AAAAAAA", Job: "Curr", Full: true})
 	if err != nil {
 		t.Fatal(err)
@@ -62,12 +59,10 @@ func TestCILogs(t *testing.T) {
 		t.Errorf("named job = %+v", l.Runs[0].Jobs)
 	}
 
-	// By run number.
 	if l, err = e.s.CILogs(e.ctx, e.admin, CILogInput{Repo: "acme/app", Run: 42}); err != nil || len(l.Runs) != 1 {
 		t.Fatalf("run 42: %+v, %v", l, err)
 	}
 
-	// Mistakes say what is wrong.
 	for name, c := range map[string]struct {
 		in   CILogInput
 		want string
@@ -88,8 +83,6 @@ func TestCILogs(t *testing.T) {
 		}
 	}
 
-	// Someone who can't see the project can't read its CI, and isn't told
-	// the repo exists.
 	_, err = e.s.CILogs(e.ctx, e.user("zed", false), CILogInput{Repo: "acme/app", SHA: full})
 	if !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "no Forgejo repo") {
 		t.Errorf("stranger: %v", err)

@@ -34,9 +34,6 @@ func (pe *prEnv) mentionOf(key, url string) *ForgeMention {
 // edit, a comment or a merge treat as such (WP-379).
 func TestForgeMentionsLinkOwnWorkOnly(t *testing.T) {
 	pe := newPREnv(t, "github")
-	// The project finishes issues when their pull request merges (a
-	// default, WP-496), but doesn't move them In Review when it opens: a
-	// link that moved its issue isn't taken back when the text drops it.
 	autos, err := pe.s.ListAutomations(pe.ctx, pe.admin, pe.p.Key)
 	if err != nil {
 		t.Fatal(err)
@@ -77,7 +74,6 @@ func TestForgeMentionsLinkOwnWorkOnly(t *testing.T) {
 		t.Errorf("all mentions of the own issue: %+v %v", all, err)
 	}
 
-	// Unlinked by hand, a new push doesn't link it back; it stays a mention.
 	if err := pe.s.RemoveLink(pe.ctx, pe.admin, own.Key, pe.linkTo(own.Key).ID); err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +86,6 @@ func TestForgeMentionsLinkOwnWorkOnly(t *testing.T) {
 	if m := pe.mentionOf(own.Key, mentionsPR); m == nil || !m.Own {
 		t.Errorf("unlinked own work isn't a mention: %+v", m)
 	}
-	// Linking it again by hand wins.
 	if _, err := pe.s.AddLink(pe.ctx, pe.admin, own.Key, mentionsPR, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -98,8 +93,6 @@ func TestForgeMentionsLinkOwnWorkOnly(t *testing.T) {
 		t.Fatalf("added link: %+v", l)
 	}
 
-	// An edit that drops the closing line takes back the link it made, and
-	// the follow-up mention is gone from the issue.
 	pr.Body = "Tidies the parser."
 	pe.pullHook("edited", pr)
 	pe.s.Wait()
@@ -113,8 +106,6 @@ func TestForgeMentionsLinkOwnWorkOnly(t *testing.T) {
 		t.Errorf("gone mention not kept: %+v", all)
 	}
 
-	// A comment naming an issue is a mention, never a link; deleting it
-	// takes it away.
 	comment := func(action, body string) {
 		pe.send("issue_comment", map[string]any{"action": action, "repository": map[string]any{"full_name": "me/app"},
 			"issue":   map[string]any{"number": 5, "pull_request": map[string]any{}},
@@ -134,7 +125,6 @@ func TestForgeMentionsLinkOwnWorkOnly(t *testing.T) {
 		t.Errorf("deleted comment's mention: %+v", m)
 	}
 
-	// Merging finishes the issue it is the work of, and only that one.
 	pr.Body = "Tidies the parser. See " + closes.Key + "."
 	pr.State = "merged"
 	pe.pullHook("closed", pr)
@@ -370,7 +360,6 @@ func TestForgeCoMentionsSuggestRelations(t *testing.T) {
 	if got[other.Key] != "relates/medium" || got[dep.Key] != "blocked_by/high" {
 		t.Errorf("suggestions with an outside comment: %+v", rel.Suggestions)
 	}
-	// From the other side it is only a shared pull request.
 	rel, _ = pe.s.SuggestRelations(pe.ctx, pe.admin, dep.Key)
 	for _, r := range rel.Suggestions {
 		if r.Key == own.Key && (r.Kind != "relates" || r.Confidence != "medium") {

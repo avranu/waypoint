@@ -31,7 +31,7 @@ type Credential struct {
 const (
 	Allowed = "allowed"
 	Denied  = "denied"
-	Failed  = "failed" // allowed, but the upstream couldn't be reached
+	Failed  = "failed"
 )
 
 // Entry is one log line: a request, or a tunnel. It never holds a query
@@ -87,7 +87,7 @@ type Broker struct {
 
 	resolve  func(context.Context, string) ([]netip.Addr, error)
 	local    map[netip.Addr]bool
-	testAddr func(netip.Addr) bool // tests: replaces the public-address check
+	testAddr func(netip.Addr) bool
 }
 
 // New checks the policy and makes a broker.
@@ -205,7 +205,6 @@ func (b *Broker) connect(w http.ResponseWriter, r *http.Request) {
 	}
 	sni, hello, err := peekSNI(conn, 15*time.Second)
 	if err != nil || strings.TrimSuffix(strings.ToLower(sni), ".") != host {
-		// No server name, or another one: domain fronting, or not TLS.
 		e.Verdict, e.Reason = Denied, "sni"
 		b.emit(e)
 		return
@@ -245,7 +244,6 @@ func (b *Broker) tunnel(conn net.Conn, rule *Rule, e Entry) {
 		done <- struct{}{}
 	}()
 	<-done
-	// One side finished: give the other a moment to drain, then cut both.
 	t := time.NewTimer(30 * time.Second)
 	pending := 1
 	select {
@@ -259,8 +257,6 @@ func (b *Broker) tunnel(conn net.Conn, rule *Rule, e Entry) {
 	t.Stop()
 	_ = conn.Close()
 	_ = up.Close()
-	// Closing both ends makes a still-running copy return; wait for it so
-	// sent and got are no longer being written.
 	for ; pending > 0; pending-- {
 		<-done
 	}
@@ -348,8 +344,6 @@ func (b *Broker) forward(w http.ResponseWriter, r *http.Request, rule *Rule, sch
 	path := r.URL.EscapedPath()
 	e := Entry{Method: r.Method, Host: rule.Host, Port: rule.port(), Path: logPath(path), Template: rule.Template}
 	if !sameHost(r.Host, rule) {
-		// The Host header names another host than the session connected
-		// to: domain fronting.
 		b.refuse(w, e, "host")
 		return
 	}
@@ -395,14 +389,11 @@ func (b *Broker) forward(w http.ResponseWriter, r *http.Request, rule *Rule, sch
 			w.WriteHeader(http.StatusBadGateway)
 		},
 	}
-	// ReverseProxy panics with http.ErrAbortHandler when a body copy fails
-	// (byte limit, client gone): log the request on the way out regardless.
 	defer func() {
 		e.Verdict, e.Status, e.BytesUp, e.BytesDown = Allowed, cw.status, sent.Load(), cw.n
 		if upErr != nil {
 			e.Verdict, e.Reason = Failed, upstreamReason(upErr)
 		} else if cw.limit {
-			// The body copy aborts without calling ErrorHandler.
 			e.Verdict, e.Reason = Failed, "limit"
 		}
 		b.emit(e)
@@ -500,8 +491,6 @@ func logPath(p string) string {
 	return p
 }
 
-// Limits.
-
 var errLimit = errors.New("session traffic limit reached")
 
 func (b *Broker) trippedLimit() string {
@@ -586,7 +575,7 @@ type countingWriter struct {
 	b      *Broker
 	status int
 	n      int64
-	limit  bool // a write was refused by the session byte limit
+	limit  bool
 }
 
 func (c *countingWriter) WriteHeader(code int) {

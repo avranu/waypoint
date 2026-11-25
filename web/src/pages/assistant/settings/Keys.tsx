@@ -1,7 +1,3 @@
-// Hermes's keys (its .env): set, replace or remove one, or add one of your
-// own. Values never come back, only a masked preview; the route that would
-// reveal one is refused on the way through Waypoint.
-
 import { useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { KeyRound, Plus, Search, Trash2 } from 'lucide-react'
@@ -45,7 +41,6 @@ export function KeysSection({ id, onConnections }: { id: number; onConnections: 
   const [show, setShow] = useState<'set' | 'all'>('set')
   const [text, setText] = useState('')
   const [adding, setAdding] = useState(false)
-  // Channels' own keys live on the Channels page.
   const rows = useMemo(
     () => Object.entries(env.data ?? {}).filter(([, v]) => !v.channel_managed),
     [env.data],

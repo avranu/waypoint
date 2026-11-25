@@ -1,5 +1,3 @@
-// AI providers, task models and per-issue suggestions (estimates, sub-tasks).
-
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, enc } from './api'
 import type { ChainModel, UserRef } from './types'

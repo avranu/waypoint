@@ -38,7 +38,6 @@ for (const width of [1280, 390]) {
   if (!seed) {
     await api("POST", "/projects", { name: "Picker checks", key: KEY });
     const issue = (title, parent) => api("POST", "/issues", { project: KEY, title, parent });
-    // Has a parent, so the parent picker shows without adding the property.
     const top = await issue("Harbor top task");
     const main = await issue("Harbor main task", top.key);
     const linked = await issue("Harbor linked task");
@@ -68,8 +67,6 @@ for (const width of [1280, 390]) {
     seed = { main, linked, unlinked, doc };
   }
   const { main, linked, unlinked, doc } = seed;
-  // A row of the open picker, found from its search box: the page itself
-  // shows the same issues and goals in its own buttons.
   let box;
   const row = (title) =>
     box.locator("xpath=ancestor::div[2]").getByRole("option", { name: new RegExp(title) });
@@ -77,9 +74,7 @@ for (const width of [1280, 390]) {
   await page.goto(`${base}/issue/${main.key}`);
   await page.getByRole("heading", { name: "Relations" }).waitFor();
 
-  // ---- relations ----
   await page.getByRole("button", { name: "Add relation" }).click();
-  // The add box lists matches inline (WP-1196); it opens focused.
   const rbox = page.getByRole("combobox", { name: "Task to relate" });
   await rbox.waitFor();
   const list = page.getByRole("listbox", { name: "Matching tasks" });
@@ -94,7 +89,6 @@ for (const width of [1280, 390]) {
   await rbox.fill("Harbor unlinked");
   await opt("Harbor unlinked task").first().waitFor();
   ok(true, `${tag}: searching still finds an unrelated issue`);
-  // A pair that's only related can still be marked as a blocker.
   await page.getByRole("combobox", { name: "Kind of relation" }).click();
   await page.getByRole("option", { name: "Blocks", exact: true }).click();
   await rbox.fill("Harbor linked");
@@ -103,7 +97,6 @@ for (const width of [1280, 390]) {
   await page.getByRole("button", { name: "Done adding" }).click();
   await rbox.waitFor({ state: "hidden" });
 
-  // ---- parent ----
   await page.locator('button:has-text("Harbor top task"):visible').first().click();
   box = page.getByPlaceholder("Search for a parent…");
   await box.fill("Harbor");
@@ -111,7 +104,6 @@ for (const width of [1280, 390]) {
   ok((await row("Harbor subtask").count()) === 0, `${tag}: a subtask isn't offered as the parent`);
   await page.keyboard.press("Escape");
 
-  // ---- goal ----
   await page.getByText("Harbor served goal").first().waitFor();
   await page.getByRole("button", { name: "Link to a goal…" }).first().click();
   box = page.getByPlaceholder("Which goal does it serve?");
@@ -124,7 +116,6 @@ for (const width of [1280, 390]) {
   );
   await page.keyboard.press("Escape");
 
-  // ---- links on a page ----
   await page.goto(`${base}/pages/${doc.id}`);
   await page.getByRole("button", { name: "Add a link" }).click();
   const links = (box = page.getByRole("combobox", { name: "Find something to link" }));

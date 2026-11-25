@@ -27,17 +27,17 @@ func TestRescreenHoldsMigration(t *testing.T) {
 		forgotten      bool
 	}
 	rows := []row{
-		{1, 1, 0, "hold", "null", true},       // model-only hold, as Go writes it
-		{2, 1, 0, "hold", "[]", true},         // model-only hold, the column default
-		{3, 2, 0, "hold", "null", true},       // backlog
-		{4, 3, 0, "hold", lineage2, true},     // in progress
-		{5, 4, 0, "hold", "null", true},       // done: reopening screens it again
-		{6, 1, 1, "hold", lineage2, true},     // draft
-		{7, 1, 0, "hold", lineage3cmd, true},  // lineage among other hits
-		{8, 1, 0, "hold", cmd, false},         // a command rule alone
-		{9, 1, 0, "clear", "null", false},     // cleared
-		{10, 1, 0, "pending", "null", false},  // not read yet
-		{11, 1, 0, "hold", "not json", false}, // unreadable: left alone
+		{1, 1, 0, "hold", "null", true},
+		{2, 1, 0, "hold", "[]", true},
+		{3, 2, 0, "hold", "null", true},
+		{4, 3, 0, "hold", lineage2, true},
+		{5, 4, 0, "hold", "null", true},
+		{6, 1, 1, "hold", lineage2, true},
+		{7, 1, 0, "hold", lineage3cmd, true},
+		{8, 1, 0, "hold", cmd, false},
+		{9, 1, 0, "clear", "null", false},
+		{10, 1, 0, "pending", "null", false},
+		{11, 1, 0, "hold", "not json", false},
 	}
 	exec := func(q string, args ...any) {
 		t.Helper()

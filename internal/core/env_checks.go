@@ -1,12 +1,5 @@
 package core
 
-// Health checks for environments (WP-D19): a worker asks each environment's
-// address at its interval (with jitter, a few at a time, through the egress
-// policy), keeps minute samples for 48 hours and hourly counts for 90 days,
-// works out up / degraded / down, and reads what runs from the version
-// endpoint. It also ends the life of dev environments: leases that ran out,
-// and ones nobody can reach.
-
 import (
 	"context"
 	"crypto/x509"
@@ -126,7 +119,6 @@ func (s *Service) runDueEnvChecks(ctx context.Context) int {
 			wg.Wait()
 			return ran
 		}
-		// Claim it before checking, so a slow check isn't started twice.
 		next := s.now().Add(jitter(time.Duration(d.interval) * time.Second)).UnixMilli()
 		if _, err := s.db.W.ExecContext(ctx, `UPDATE environments SET next_check_at = ? WHERE id = ?`, next, d.id); err != nil {
 			<-sem
@@ -167,8 +159,6 @@ func (s *Service) CheckEnvironmentNow(ctx context.Context, actor *Actor, id int6
 	}
 	return s.envDetail(ctx, id)
 }
-
-// ---- probing ----
 
 type envReport struct{ commit, branch, version string }
 
@@ -246,12 +236,11 @@ func (s *Service) probe(ctx context.Context, e *Environment) probeResult {
 	if e.VersionURL == "" {
 		return res
 	}
-	// The version often comes from the health endpoint itself.
 	vbody := body
 	if e.VersionURL != target {
 		vcode, b, _, verr := s.envGet(ctx, e.VersionURL)
 		if verr != nil || vcode < 200 || vcode > 299 {
-			return res // can't tell what runs; the environment itself is up
+			return res
 		}
 		vbody = b
 	}
@@ -298,7 +287,6 @@ func parseEnvReport(body []byte, commitField, branchField, versionField string) 
 	var r envReport
 	if commitField != "" {
 		c := strings.ToLower(strings.TrimSpace(jsonPath(doc, commitField)))
-		// Builds often append "-dirty" or a suffix: keep the hex id.
 		n := 0
 		for n < len(c) && (c[n] >= '0' && c[n] <= '9' || c[n] >= 'a' && c[n] <= 'f') {
 			n++
@@ -323,8 +311,6 @@ func sameRelease(r *envReport, commit, version string) bool {
 	}
 	return r.version != "" && r.version == version
 }
-
-// ---- recording ----
 
 // checkEnv probes an environment and records the result.
 func (s *Service) checkEnv(ctx context.Context, id int64) error {
@@ -358,7 +344,6 @@ func (s *Service) applyProbe(t *tx, id int64, res probeResult) error {
 	lat := int(res.latency.Milliseconds())
 	ok := boolInt(res.ok)
 
-	// History: a sample for the minute (a failure in it wins) and the hour's counts.
 	minute := nowT.Truncate(time.Minute).UnixMilli()
 	if _, err := t.ExecContext(ctx, `INSERT INTO environment_checks(environment_id, at, ok, latency_ms, code, error) VALUES (?,?,?,?,?,?)
 		ON CONFLICT(environment_id, at) DO UPDATE SET ok = ok AND excluded.ok, latency_ms = max(latency_ms, excluded.latency_ms),
@@ -377,7 +362,6 @@ func (s *Service) applyProbe(t *tx, id int64, res probeResult) error {
 		return err
 	}
 
-	// A failed request says nothing about what runs, so it keeps what we knew.
 	mismatch := !res.ok && e.Mismatch
 	if res.ok && res.report != nil {
 		if mismatch, err = s.reconcileVersion(t, e, *res.report, now); err != nil {
@@ -393,7 +377,6 @@ func (s *Service) applyProbe(t *tx, id int64, res probeResult) error {
 			next = EnvDegraded
 		}
 	} else {
-		// One failed check might be a blip; the second makes it real.
 		streak++
 		if streak >= envDownAfter {
 			next = EnvDown
@@ -412,7 +395,6 @@ func (s *Service) applyProbe(t *tx, id int64, res probeResult) error {
 	if res.code != 0 {
 		codeCol = res.code
 	}
-	// A failed request says nothing about the certificate we knew.
 	if res.tlsExpires != nil {
 		tlsCol = res.tlsExpires.UnixMilli()
 	} else if e.TLSExpiresAt != nil {
@@ -448,7 +430,6 @@ func (s *Service) reconcileVersion(t *tx, e *Environment, r envReport, now int64
 		return false, nil
 	}
 	if sameRelease(&r, e.Commit, e.Version) {
-		// Fill in what the endpoint adds (a branch or version CI didn't send).
 		branch, version, commit := cmp(e.Branch, r.branch), cmp(e.Version, r.version), e.Commit
 		if r.commit != "" {
 			commit = longer(e.Commit, r.commit)
@@ -470,17 +451,16 @@ func (s *Service) reconcileVersion(t *tx, e *Environment, r envReport, now int64
 	}
 	if have {
 		if sameRelease(&r, lastCommit, lastVersion) {
-			return false, nil // caught up with a deployment CI hasn't confirmed yet
+			return false, nil
 		}
 		at := started
 		if finished != nil && *finished > at {
 			at = *finished
 		}
 		if now-at < envRolloutGrace.Milliseconds() {
-			return true, nil // the old release is still answering
+			return true, nil
 		}
 	}
-	// Something was deployed that nobody told us about.
 	res, err := t.ExecContext(ctx, `INSERT INTO deployments(environment_id, commit_sha, branch, version, status, started_at, finished_at, by_kind, notes)
 		VALUES (?,?,?,?, 'detected', ?, ?, 'detected', 'seen on the version endpoint')`, e.ID, r.commit, r.branch, r.version, now, now)
 	if err != nil {
@@ -495,8 +475,6 @@ func (s *Service) reconcileVersion(t *tx, e *Environment, r envReport, now int64
 	t.emit(envEvent(EvEnvDeployed, e, map[string]any{"deployment": depID, "commit": r.commit, "branch": r.branch, "version": r.version, "status": DeployDetected}))
 	return false, nil
 }
-
-// ---- upkeep ----
 
 // envUpkeep ends leases and unreachable dev environments, forgets old
 // stopped ones, drops history past its retention, and tells owners about
@@ -524,7 +502,6 @@ func (s *Service) envUpkeep(ctx context.Context) {
 		}
 	}
 	stop(`SELECT id FROM environments WHERE stopped_at IS NULL AND expires_at IS NOT NULL AND expires_at <= ?`, "ttl", ms)
-	// Down for as long as its time to live (three days if it has none).
 	stop(`SELECT id FROM environments WHERE ephemeral = 1 AND stopped_at IS NULL AND interval_s > 0 AND status = 'down' AND status_since IS NOT NULL
 		AND status_since <= ? - COALESCE(NULLIF(ttl_s, 0), ?) * 1000`, "unreachable", ms, int64(envDefaultUnreachable/time.Second))
 	for _, q := range []struct {
@@ -543,8 +520,6 @@ func (s *Service) envUpkeep(ctx context.Context) {
 	s.checkEnvLag(ctx)
 }
 
-// ---- pushes ----
-
 // onRepoPushed remembers the head of a branch, to say how far behind an
 // environment running it is (WP-D19).
 func (s *Service) onRepoPushed(ctx context.Context, e *Event) {
@@ -553,14 +528,13 @@ func (s *Service) onRepoPushed(ctx context.Context, e *Event) {
 	after, _ := e.Data["after"].(string)
 	branch = strings.TrimPrefix(branch, "refs/heads/")
 	if repo == "" || branch == "" || strings.Trim(after, "0") == "" {
-		return // a branch deleted has no head
+		return
 	}
 	if _, err := s.db.W.ExecContext(ctx, `INSERT INTO branch_heads(repo, branch, sha, pushed_at) VALUES (?,?,?,?)
 		ON CONFLICT(repo, branch) DO UPDATE SET sha = excluded.sha, pushed_at = excluded.pushed_at`, repo, branch, strings.ToLower(after), s.nowMS()); err != nil {
 		s.log.WarnContext(ctx, "record branch head", "repo", repo, "err", err)
 		return
 	}
-	// Tell open environment pages about it.
 	pids, err := queryIDs(ctx, s.db.R, `SELECT DISTINCT e.project_id FROM environments e JOIN project_repos r ON r.project_id = e.project_id
 		WHERE e.branch = ? AND e.stopped_at IS NULL AND r.repo = ? COLLATE NOCASE`, branch, repo)
 	if err != nil {

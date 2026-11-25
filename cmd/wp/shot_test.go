@@ -67,7 +67,6 @@ func TestCLIShot(t *testing.T) {
 		t.Errorf("an open task isn't in Catch up: %+v %v", c, err)
 	}
 
-	// wp done --shot takes the pictures, then finishes.
 	got = shotJob{}
 	e.wp("done", issue.Key, "-m", "Added it", "--shot", "https://example.com/b,c", "--size", "phone")
 	if len(got.Targets) != 1 || got.Targets[0].URL != "https://example.com/b,c" || len(got.Sizes) != 1 || got.Sizes[0].Name != "phone" {
@@ -132,15 +131,13 @@ func TestShotSkipsAPictureItCannotAttach(t *testing.T) {
 				if err := os.WriteFile(f, []byte("\x89PNG\r\n\x1a\n"), 0o600); err != nil {
 					return nil, err
 				}
-			} // otherwise the file is missing, so it can't be attached
+			}
 			out = append(out, shotResult{URL: job.Targets[0].URL, Size: s.Name, File: f, Status: 200})
 		}
 		return out, nil
 	}
 	t.Cleanup(func() { shootPages = runShotBrowser })
 
-	// A file the browser names outside the pictures directory isn't read
-	// (WP-579).
 	secret := filepath.Join(t.TempDir(), "secret.txt")
 	if err := os.WriteFile(secret, []byte("token"), 0o600); err != nil {
 		t.Fatal(err)
@@ -168,7 +165,6 @@ func TestShotSkipsAPictureItCannotAttach(t *testing.T) {
 		return out, nil
 	}
 
-	// Nothing attached: the task stays open to try again.
 	good = false
 	if out, code := e.run("done", issue.Key, "-m", "Done", "--shot", "https://example.com/a"); code == 0 || !strings.Contains(out, "still open") {
 		t.Errorf("no picture attached, done went on (%d): %s", code, out)
@@ -177,7 +173,6 @@ func TestShotSkipsAPictureItCannotAttach(t *testing.T) {
 		t.Errorf("after a failed shot: %s, %d files", d.Status.Category, len(d.Files))
 	}
 
-	// One of two attached: done finishes with it, and says what it skipped.
 	good = true
 	out := e.wp("done", issue.Key, "-m", "Done", "--shot", "https://example.com/a")
 	if !strings.Contains(out, "couldn't attach") {

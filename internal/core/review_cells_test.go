@@ -7,10 +7,6 @@ import (
 	"time"
 )
 
-// The cells of a round's recorded facts that were shown to strand it or to
-// ship it falsely (WP-1370): each is a real scenario, driven through the
-// hooks, the runner and the sweeps.
-
 // endSession ends the session as its hook would.
 func (e *loopEnv) endSession() {
 	e.t.Helper()
@@ -217,8 +213,6 @@ func TestModelCountedDoneRoundIsShipped(t *testing.T) {
 	if _, err := e.s.db.W.Exec(`UPDATE work_log SET state = 'done', read_state = 'done', read_by = 'claude-haiku-5-5' WHERE id = ?`, r1); err != nil {
 		t.Fatal(err)
 	}
-	// A Done round is decided as any is: its marks are checked first, and
-	// the check agreeing, the sweep opens the pull request.
 	for range 3 {
 		e.tickAll(5 * time.Minute)
 	}
@@ -306,7 +300,6 @@ func TestReleasedRoundsFindingsHoldThePullRequest(t *testing.T) {
 	if err := e.s.db.R.QueryRow(`SELECT id FROM pull_requests ORDER BY id DESC LIMIT 1`).Scan(&prID); err != nil {
 		t.Fatal(err)
 	}
-	// The pull request's own audit, newer and clean, mustn't shadow them.
 	if _, err := e.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, pr_id, owner_id, created_at, status, finished_at, settled_at)
 		SELECT project_id, forge_id, repo, target, pr_id, owner_id, created_at + 1, 'done', coalesce(finished_at, created_at) + 60000, coalesce(finished_at, created_at) + 60000
 		FROM code_audits WHERE pr_id = ? AND request_key LIKE 'review-round:%' LIMIT 1`, prID); err != nil {
@@ -346,8 +339,6 @@ func TestUncheckedRejectionsHoldTheReleasedPullRequest(t *testing.T) {
 	if err := e.s.db.R.QueryRow(`SELECT id FROM pull_requests ORDER BY id DESC LIMIT 1`).Scan(&prID); err != nil {
 		t.Fatal(err)
 	}
-	// The release itself hands the round's audit to the pull request (no
-	// sweep has run since): the sweep that would is only a backup.
 	var handed int
 	_ = e.s.db.R.QueryRow(`SELECT count(*) FROM code_audits WHERE pr_id = ? AND request_key = ?`, prID, fmt.Sprintf("review-round:%d", r1)).Scan(&handed)
 	if handed != 1 {
@@ -429,8 +420,7 @@ func TestReleaseTextsAreTrue(t *testing.T) {
 		setup  func(e *loopEnv, r1 int64)
 		want   []string
 		absent []string
-		// round: the round Waypoint ships (nil: round 1); round2 sets it up.
-		round func(e *loopEnv, r1 int64) int64
+		round  func(e *loopEnv, r1 int64) int64
 	}{
 		{"audit ran, no check", func(e *loopEnv, r1 int64) {},
 			[]string{"before its adversarial review was settled", "its audit found 1 thing"},
@@ -487,8 +477,6 @@ func TestReleaseTextsAreTrue(t *testing.T) {
 			if c.round != nil {
 				round = c.round(e, r1)
 			}
-			// A round the loop already shipped is finished; the text under test is
-			// the release of one that wasn't.
 			e.exec(`UPDATE work_log SET state = 'running', ended_at = NULL, read_state = 'pending', before_pr = json_remove(before_pr, '$.ship_done') WHERE id = ? AND json_extract(before_pr, '$.ship_done')`, round)
 			if err := e.s.shipRound(e.ctx, shipRoundIn{round: round, why: "the session never took it up"}); err != nil {
 				t.Fatal(err)

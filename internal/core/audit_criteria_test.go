@@ -79,11 +79,9 @@ func TestAuditAnswerKeep(t *testing.T) {
 	if n := f.keep(&CodeAudit{MinSeverity: "high"}); n != 2 || len(f.Findings) != 2 {
 		t.Errorf("high floor: dropped %d, kept %+v", n, f.Findings)
 	}
-	// max_findings is how many are shown at a time, not a cut: all are kept.
 	if n := f.keep(&CodeAudit{MaxFindings: 1}); n != 0 || len(f.Findings) != 2 || f.Findings[0].Severity != "critical" {
 		t.Errorf("asked for 1: dropped %d, kept %+v", n, f.Findings)
 	}
-	// An ordinary audit with max_findings 5 whose answer holds 8 keeps 8 and says so.
 	var eight []CodeAuditFinding
 	for range 8 {
 		eight = append(eight, CodeAuditFinding{Severity: "low"})
@@ -96,7 +94,6 @@ func TestAuditAnswerKeep(t *testing.T) {
 	if note := g.keepNote(ca, 8); note != "" {
 		t.Errorf("nothing was cut, so the note is empty: %q", note)
 	}
-	// Past the guard the worst are kept and the note says how many were cut.
 	var lots []CodeAuditFinding
 	for range findingsGuard + 3 {
 		lots = append(lots, CodeAuditFinding{Severity: "low"})
@@ -155,8 +152,6 @@ func TestAuditOfRecentChangesWithCriteria(t *testing.T) {
 	res["base"], res["diff_from"], res["change_commits"] = "bbbbbbbbbbbb", "aaaaaaaaaaaa", float64(12)
 	ae.finish(claim.ID, "done", res, "")
 	got := ae.audit(a.ID)
-	// max_findings (2) is how many are shown at a time, not a cut: the three
-	// at or over the floor are kept, and the summary says what the floor left out.
 	if got.Status != AuditDone || got.Counts.Total != 3 || got.FromSHA != "aaaaaaaaaaaa" || got.ToSHA != "bbbbbbbbbbbb" || got.CommitCount == nil || *got.CommitCount != 12 ||
 		!strings.Contains(got.Summary, "(1 of the answer's 4 findings were below the audit's lowest severity, high, and are left out.)") ||
 		strings.Contains(got.Summary, "Asked for") {
@@ -226,7 +221,7 @@ func TestAuditStepCriteria(t *testing.T) {
 	}
 
 	ae.addAuto(ae.p, "Weekly", templateRule(t, "Weekly Grok audit of what landed"))
-	ae.setClock(time.Date(2026, 11, 9, 9, 1, 0, 0, time.UTC)) // a Monday
+	ae.setClock(time.Date(2026, 11, 9, 9, 1, 0, 0, time.UTC))
 	ae.s.RunTimedAutomations(ae.ctx)
 	ae.work()
 	in = agentJobOf(t, ae.take())

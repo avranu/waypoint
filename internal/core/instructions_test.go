@@ -105,7 +105,6 @@ func TestInstructionsDeliveredByAudience(t *testing.T) {
 	if want := "Ask with wp ask.\n\nCommit, push and report; don't ship."; res.Instructions != want {
 		t.Fatalf("haiku worker got %q, want %q", res.Instructions, want)
 	}
-	// A sub-agent whose model wasn't known: no guess, and the miss is counted.
 	res = e.hookIn(agent, p, "s1", "SubagentStart", func(ev *HookEvent) { ev.AgentID, ev.AgentType = "a2", "Explore" })
 	if want := "Ask with wp ask."; res.Instructions != want {
 		t.Fatalf("Explore got %q, want %q", res.Instructions, want)
@@ -150,7 +149,6 @@ func TestInstructionsAfterCompactionAndResume(t *testing.T) {
 	if got := at("compact"); got != "Always.\n\nRead the task again with wp next." {
 		t.Fatalf("compact: %q", got)
 	}
-	// A person's edit is the next thing a resumed session is told.
 	if _, err := e.s.UpdateInstruction(e.ctx, e.admin, start.ID, InstructionInput{Body: sp("Always, reworded.")}); err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +208,6 @@ func TestInstructionAgentChangesWait(t *testing.T) {
 	if got := main(); got != "Trust me." {
 		t.Fatalf("approved instruction: %q", got)
 	}
-	// An agent's edit: the approved text stays until a person decides.
 	x, err = e.s.UpdateInstruction(e.ctx, agent, proposed.ID, InstructionInput{Body: sp("Trust me more.")})
 	if err != nil {
 		t.Fatal(err)
@@ -218,8 +215,6 @@ func TestInstructionAgentChangesWait(t *testing.T) {
 	if x.Body != "Trust me." || x.Pending == nil || x.Pending.Body != "Trust me more." || x.Pending.Title != "Mine" {
 		t.Fatalf("pending edit: %+v pending %+v", x, x.Pending)
 	}
-	// A person's title edit with an agent's body still pending must not
-	// carry the agent's unreviewed body into the approved revision.
 	if x, err = e.s.UpdateInstruction(e.ctx, e.admin, proposed.ID, InstructionInput{Title: sp("Renamed")}); err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +224,6 @@ func TestInstructionAgentChangesWait(t *testing.T) {
 	if x, err = e.s.ReviewInstruction(e.ctx, e.admin, proposed.ID, 0, false); err != nil || x.Body != "Trust me." || x.Pending != nil {
 		t.Fatalf("rejected edit: %+v, %v", x, err)
 	}
-	// Off, and off for the whole project.
 	off := false
 	if _, err := e.s.UpdateInstruction(e.ctx, e.admin, proposed.ID, InstructionInput{Enabled: &off}); err != nil {
 		t.Fatal(err)
@@ -248,8 +242,6 @@ func TestInstructionProjectOptOutAndBudget(t *testing.T) {
 	small := e.instr(e.admin, InstructionInput{Title: sp("Small"), Body: sp("Short.")})
 	agent := agentActor(e.admin, "anthropic/claude-opus-5-5")
 	res := e.hookIn(agent, p, "s1", "SessionStart", func(ev *HookEvent) { ev.Source = "startup" })
-	// Every project's come first, then the project's in order; the one that
-	// no longer fits is left out whole and counted.
 	if want := "Short.\n\n" + big; res.Instructions != want {
 		t.Fatalf("got %d characters, want %d", len(res.Instructions), len(want))
 	}

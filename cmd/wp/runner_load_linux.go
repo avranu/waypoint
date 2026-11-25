@@ -17,11 +17,11 @@ import (
 // a terminal shares the terminal's, so its own share is unknown and counts
 // as other work).
 type procMeter struct {
-	root      string // "/" (tests: a fake tree)
-	cgroup    string // the unit's cgroup directory; "" none
+	root      string
+	cgroup    string
 	at        time.Time
-	busy, all uint64 // /proc/stat jiffies at the last look
-	own       uint64 // the cgroup's usage_usec at the last look
+	busy, all uint64
+	own       uint64
 }
 
 func newLoadMeter() loadMeter {
@@ -116,12 +116,12 @@ func cpuJiffies(stat string) (busy, all uint64) {
 		return 0, 0
 	}
 	for i, x := range f[1:] {
-		if i >= 8 { // guest time is already in user
+		if i >= 8 {
 			break
 		}
 		v, _ := strconv.ParseUint(x, 10, 64)
 		all += v
-		if i != 3 && i != 4 { // idle, iowait
+		if i != 3 && i != 4 {
 			busy += v
 		}
 	}

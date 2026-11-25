@@ -38,7 +38,6 @@ func TestForgeHookSizeLimit(t *testing.T) {
 		resp.Body.Close()
 		return resp.StatusCode
 	}
-	// 6 MiB (over the old 5 MiB cut) still verifies.
 	pad := bytes.Repeat([]byte("x"), 6<<20)
 	if code := send([]byte(`{"zen":"` + string(pad) + `"}`)); code != 200 {
 		t.Errorf("6 MiB hook: %d", code)

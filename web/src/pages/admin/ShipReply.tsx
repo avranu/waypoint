@@ -1,5 +1,3 @@
-// Admin → AI: the reply agents end with after wp ship (WP-390).
-
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { RotateCcw } from 'lucide-react'

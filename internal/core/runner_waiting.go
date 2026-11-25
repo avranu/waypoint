@@ -9,11 +9,6 @@ import (
 	"strings"
 )
 
-// What a queued job waits for (WP-503): a person who ran a command from a
-// request sees which runner holds it up, what that runner is busy with and
-// why it takes no more now, and how many jobs are ahead of theirs, instead of
-// a bare "Waiting for a runner".
-
 // RequestLaneSlots, MessageLaneSlots and GatewayLaneSlots are how many jobs
 // of LaneRequest, LaneMessage and LaneGateway a runner runs at once, each
 // beside its other jobs (the runner's requestSlots, messageSlots and
@@ -152,8 +147,6 @@ func (s *Service) runnerBusyWith(ctx context.Context, r *Runner, j *RunnerJobInf
 		if !sideLane(l) {
 			all++
 		}
-		// A job of a side lane waits only for the other jobs of its lane;
-		// every other job only for the jobs outside the side lanes.
 		if l == lane || !sideLane(lane) && !sideLane(l) {
 			doing = append(doing, jobNoun(kind, source))
 		}
@@ -292,7 +285,6 @@ func (s *Service) jobsAhead(ctx context.Context, j *RunnerJobInfo, online []*Run
 	for i, f := range front {
 		place[f.id] = i
 	}
-	// tier is the claimOrder tier of a job, as far as jobsAhead tells them apart.
 	tier := func(audit, urgent bool, id int64) int {
 		switch _, isFront := place[id]; {
 		case audit:

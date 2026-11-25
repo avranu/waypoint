@@ -8,11 +8,6 @@ import (
 	"time"
 )
 
-// A wp ship held for its review round waits on the server for the round's next
-// step and prints it, instead of exiting so that every step costs the agent a
-// turn end, a reply and a typed prompt (WP-1669). Run in the background (Claude
-// Code moves a long command there itself), the agent is woken when it exits.
-
 // shipWaitDefault bounds the wait. shipWaitMax is the longest it may run
 // from the start of the wp ship process: it stays under shipBgFresh so a
 // marker written at its end still counts for the background call. Claude Code
@@ -65,9 +60,9 @@ func (c *cli) canWaitShip(so shipOpts, o *openedPR) bool {
 type waitStop int
 
 const (
-	stopQuiet waitStop = iota // an older server, or no round: nothing to say
-	stopBound                 // the bound passed
-	stopLost                  // retries or the time for them ran out, or a request failed for good
+	stopQuiet waitStop = iota
+	stopBound
+	stopLost
 )
 
 // waitShipNews holds until the task's round has something for the agent, or
@@ -76,7 +71,6 @@ const (
 // waiting.
 func (c *cli) waitShipNews(task string, bound time.Duration, announce func()) (*shipNews, waitStop, error) {
 	announced := false
-	// quit is how a stop reads: silent until the wait was announced.
 	quit := func(why waitStop, err error) (*shipNews, waitStop, error) {
 		if !announced {
 			why = stopQuiet
@@ -89,7 +83,7 @@ func (c *cli) waitShipNews(task string, bound time.Duration, announce func()) (*
 		if err != nil {
 			var ae *apiError
 			if errors.As(err, &ae) && (ae.status == http.StatusNotFound || ae.status == http.StatusMethodNotAllowed) {
-				return true, nil // an older server
+				return true, nil
 			}
 			return false, err
 		}
@@ -103,7 +97,6 @@ func (c *cli) waitShipNews(task string, bound time.Duration, announce func()) (*
 			}
 			return false, nil
 		}
-		// "none", or one this client doesn't know: stop
 		return true, nil
 	})
 	var failed *pollBoundError
@@ -188,7 +181,7 @@ func (c *cli) waitHeldShip(f prOpenFlags, so shipOpts, o *openedPR, raw []byte, 
 		return o, raw, false, nil
 	case n.Outcome == "pull":
 		c.println(cmpStr(n.Text, n.pullLine()))
-		*f.review, *f.force = false, false // the round ran: this only finds its pull request
+		*f.review, *f.force = false, false
 		o2, raw2, err := reopenPR(c, f)
 		if err != nil {
 			return nil, nil, true, err
@@ -198,8 +191,6 @@ func (c *cli) waitHeldShip(f prOpenFlags, so shipOpts, o *openedPR, raw []byte, 
 	if notes := o.heldNotes(); notes != "" {
 		c.println(notes)
 	}
-	// Acked only once written: a ship that dies or can't write before this
-	// leaves the findings queued, and they are typed as before.
 	if _, err := fmt.Fprintln(c.out, n.Text); err != nil {
 		return nil, nil, true, fmt.Errorf("printing the review's findings: %w", err)
 	}

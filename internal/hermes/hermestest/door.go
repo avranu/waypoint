@@ -137,7 +137,6 @@ func (d *Door) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !strings.HasPrefix(r.URL.Path, "/gate/") {
 		if d.Frozen() {
-			// The real gate drops the agent's packets; the door times out.
 			http.Error(w, "frozen", http.StatusBadGateway)
 			return
 		}

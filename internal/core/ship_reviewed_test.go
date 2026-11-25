@@ -15,9 +15,6 @@ func roundThenShip(t *testing.T, early, late string, tamper func(a *apEnv, round
 	if tamper != nil {
 		tamper(a, id)
 	}
-	// The marks are checked first (a fixed finding of that severity), and
-	// Waypoint carries on from the check's end: the ship that reads after
-	// it is the open itself.
 	res, err := a.shipChecked(box, first)
 	if err != nil || res.Pull == nil {
 		t.Fatalf("open = %+v, %v", res, err)

@@ -62,7 +62,6 @@ func TestAwaitShipNewsReturnsTheRoundsNews(t *testing.T) {
 			t.Errorf("%s is %s before the ack", k, st)
 		}
 	}
-	// A retry before the ack gets the same findings.
 	if again := a.await(held.Key, time.Second); again.Outcome != ShipNewsFindings || again.Text != got.Text {
 		t.Fatalf("retry got %+v", again)
 	}
@@ -245,7 +244,6 @@ func TestShipNewsHeldWhileAWaiterIsOpen(t *testing.T) {
 		t.Errorf("the non-held message is still %s after the Stop", st)
 	}
 	end()
-	// Still held for the reconnect gap.
 	a.s.postToSession(a.ctx, a.session, false)
 	if st, _ := a.messageState(key); st != MessageQueued {
 		t.Errorf("round news is %s inside the linger", st)
@@ -261,7 +259,7 @@ func TestShipNewsDeliveredWhenTheWaiterLapses(t *testing.T) {
 	if _, err := a.s.db.W.Exec(`UPDATE agent_sessions SET state = 'idle' WHERE id = ?`, a.session); err != nil {
 		t.Fatal(err)
 	}
-	a.s.shipWaitLapsed(a.ctx, a.session) // too early: still registered
+	a.s.shipWaitLapsed(a.ctx, a.session)
 	if st, _ := a.messageState(key); st != MessageQueued {
 		t.Fatalf("delivered inside the linger: %s", st)
 	}
@@ -332,7 +330,6 @@ func TestShipNewsNeedsTheTaskToBeReadable(t *testing.T) {
 	if err := a.s.AckShipNews(a.ctx, ag, "cli-z", "box", held.Key, nil); err == nil {
 		t.Error("an ack on a task the actor can't read was taken")
 	}
-	// Its own session and a task it can read: answered.
 	if got := a.await(held.Key, 0); got.Outcome != ShipNewsPull {
 		t.Errorf("the task's own agent got %+v", got)
 	}

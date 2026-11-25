@@ -12,9 +12,8 @@ import (
 // request 413, merged three days ago.
 type rewriteFixture struct {
 	*escapeEnv
-	a, b *IssueDetail
-	prs  []RewrittenPR
-	// session of the round f.round() returns, once made.
+	a, b    *IssueDetail
+	prs     []RewrittenPR
 	session int64
 }
 
@@ -64,14 +63,11 @@ func TestNoteRewritesRelatesOnceAsInferred(t *testing.T) {
 	if lines != 181 || head != "head1" || note != "replaces 181 lines from PR 413, 96% of the lines it replaces" {
 		t.Errorf("evidence = %d %q %q", lines, head, note)
 	}
-	// The history says what Waypoint saw.
 	var data string
 	if err := f.s.db.R.QueryRowContext(f.ctx, `SELECT data FROM events WHERE issue_id = ? AND field = 'relation' ORDER BY id DESC LIMIT 1`, f.b.ID).Scan(&data); err != nil || !strings.Contains(data, "96% of the lines it replaces") {
 		t.Errorf("event data = %q, %v", data, err)
 	}
 
-	// A later ship (new head) reads it again: still one relation, not
-	// recorded again, the evidence the newer one.
 	f.prs[0].Lines = 190
 	got, err = f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", "head2", f.prs)
 	if err != nil || len(got) != 1 || got[0].Recorded {
@@ -121,7 +117,6 @@ func TestRelatingAgainReplacesTheInferredRelation(t *testing.T) {
 		if len(rels) != 1 || rels[0].Kind != kind || rels[0].Found == "rewrite" || rels[0].Basis == "inferred" {
 			t.Errorf("%s: relations = %+v", kind, rels)
 		}
-		// And a later ship doesn't put the inferred one back.
 		got, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", "h2", f.prs)
 		if err != nil || len(got) != 0 {
 			t.Errorf("%s: later ship named %+v, %v", kind, got, err)
@@ -138,7 +133,7 @@ func TestNoteRewritesBelowTheBarRecordsNothing(t *testing.T) {
 	if got, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", "h", f.prs); err != nil || len(got) != 0 {
 		t.Fatalf("got %+v, %v", got, err)
 	}
-	f.prs[0] = RewrittenPR{Number: 413, Lines: 90, Share: 0.9, At: f.s.now().Add(-20 * 24 * time.Hour).UnixMilli()} // too old
+	f.prs[0] = RewrittenPR{Number: 413, Lines: 90, Share: 0.9, At: f.s.now().Add(-20 * 24 * time.Hour).UnixMilli()}
 	if got, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", "h", f.prs); err != nil || len(got) != 0 {
 		t.Fatalf("old work: got %+v, %v", got, err)
 	}
@@ -212,7 +207,6 @@ func TestRoundsRegressionCheckGetsTheRewrites(t *testing.T) {
 			t.Errorf("%s was handed the rewrite", other)
 		}
 	}
-	// The agent said what it was: nothing to ask the reviewer.
 	if _, err := f.s.Relate(f.ctx, f.admin, f.b.Key, RelationInput{Kind: "supersedes", Issue: f.a.Key}); err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +245,7 @@ func TestNoteRewritesShowsAsInferredWithItsNote(t *testing.T) {
 	if _, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", "h", f.prs); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{f.b.Key, f.a.Key} { // seen from either end
+	for _, key := range []string{f.b.Key, f.a.Key} {
 		rels := f.relations(t, key)
 		if len(rels) != 1 || rels[0].Basis != "inferred" || rels[0].Note != "replaces 181 lines from PR 413, 96% of the lines it replaces" {
 			t.Errorf("%s: relations = %+v", key, rels)
@@ -313,7 +307,6 @@ func TestNoteRewritesDoesNotRecreateARemovedRelation(t *testing.T) {
 			t.Fatal(err)
 		}
 		if how == "removed" {
-			// Only the inferred one existed.
 			if rels := f.relations(t, f.b.Key); len(rels) != 0 {
 				t.Fatalf("%s: %+v", how, rels)
 			}
@@ -351,7 +344,6 @@ func TestRewriteLeadsFollowTheLatestShip(t *testing.T) {
 	if ask := askOf(h, "regressions"); !strings.Contains(ask, "181 lines") || strings.Contains(ask, "may be out of date") {
 		t.Errorf("a head given:\n%s", ask)
 	}
-	// The next ship's change no longer touches that work.
 	if _, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", "h3", []RewrittenPR{}); err != nil {
 		t.Fatal(err)
 	}
@@ -371,13 +363,11 @@ func TestRecordRewritesRereadsTheDismissalInTheWrite(t *testing.T) {
 	if _, err := f.s.NoteRewrites(f.ctx, f.admin, f.b.Key, "o/r", "h1", f.prs); err != nil {
 		t.Fatal(err)
 	}
-	// The second ship reads the work: the relation stands, so it names a.
 	d := f.get(f.admin, f.b.Key)
 	read, err := f.s.RewrittenWork(f.ctx, f.admin, f.b.Key, "o/r", f.prs)
 	if err != nil || len(read) != 1 {
 		t.Fatalf("read %+v, %v", read, err)
 	}
-	// The interleaving: the relation is removed between the read and the write.
 	if err := f.s.RemoveRelation(f.ctx, f.admin, f.b.Key, d.Relations[0].ID); err != nil {
 		t.Fatal(err)
 	}

@@ -1,11 +1,3 @@
-# docker compose -f deploy/compose.yaml up -d --build
-# Then open the admin invite link printed in the logs:
-#   docker compose -f deploy/compose.yaml logs waypoint | grep -i invite
-#
-# Per-host settings go in deploy/.env (gitignored; compose reads it
-# automatically). Example:
-#   WAYPOINT_PORT=21200
-#   WAYPOINT_BASE_URL=https://waypoint.example.com
 services:
   waypoint:
     build:
@@ -22,31 +14,17 @@ services:
       WAYPOINT_TRUST_PROXY: ${WAYPOINT_TRUST_PROXY:-1}
       WAYPOINT_METRICS_TOKEN: ${WAYPOINT_METRICS_TOKEN:-}
       WAYPOINT_LOG_LEVEL: ${WAYPOINT_LOG_LEVEL:-info}
-      # Default AI provider for estimates and sub-task suggestions (the
-      # opencode service below). Set WAYPOINT_AI_OPENCODE_URL= to opt out.
       WAYPOINT_AI_OPENCODE_URL: ${WAYPOINT_AI_OPENCODE_URL-http://opencode:4096}
-      # Judges how goals and tasks relate in meaning (the meaning service
-      # below). Set WAYPOINT_AI_MEANING_URL= to turn it off, or point it at
-      # any server with the same API.
       WAYPOINT_AI_MEANING_URL: ${WAYPOINT_AI_MEANING_URL-http://meaning:8080}
       WAYPOINT_AI_MEANING_TOKEN: ${MEANING_TOKEN:-}
       WAYPOINT_AI_MODEL: ${WAYPOINT_AI_MODEL:-opencode/big-pickle}
       WAYPOINT_AI_OPENCODE_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-}
-      # An LLM gateway (any OpenAI-compatible endpoint): with its URL and a
-      # key, it's asked first for every AI task (the opencode models stay as
-      # fallbacks). Later starts with only the key keep the URL saved the
-      # first time. EXTENSIONS names what it takes beyond the standard API
-      # (docs/DEPLOY.md); without routes it needs MODEL.
       LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-}
       LLM_GATEWAY_API_KEY: ${LLM_GATEWAY_API_KEY:-}
       LLM_GATEWAY_MODEL: ${LLM_GATEWAY_MODEL:-}
       LLM_GATEWAY_EXTENSIONS: ${LLM_GATEWAY_EXTENSIONS:-}
-      # The names before WP-1187, read for one release.
       OPENLLMS_BASE_URL: ${OPENLLMS_BASE_URL:-}
       OPENLLMS_API_KEY: ${OPENLLMS_API_KEY:-}
-      # An assistant's gate (Admin → Assistants): the header its door reads
-      # the key from, and its address as the assistant's agent reaches it.
-      # Each assistant can override both.
       WAYPOINT_ASSISTANT_KEY_HEADER: ${WAYPOINT_ASSISTANT_KEY_HEADER:-}
       WAYPOINT_ASSISTANT_AGENT_URL: ${WAYPOINT_ASSISTANT_AGENT_URL:-}
     volumes:
@@ -56,24 +34,17 @@ services:
       interval: 30s
       start_period: 10s
 
-  # AI models for Waypoint (see deploy/opencode/Dockerfile). Reachable only
-  # from this compose network.
   opencode:
     build:
       context: opencode
     image: waypoint-opencode:latest
     restart: unless-stopped
     environment:
-      # Set it in deploy/.env (e.g. `openssl rand -hex 24`); Waypoint uses
-      # the same value.
       OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-}
     volumes:
       - opencode-data:/home/opencode/.local/share/opencode
       - opencode-config:/home/opencode/.config/opencode
 
-  # Small local models that judge how texts relate in meaning (see
-  # deploy/meaning/Dockerfile). Reachable only from this compose network;
-  # it needs no key and calls nothing outside the host.
   meaning:
     build:
       context: meaning
@@ -81,13 +52,8 @@ services:
     restart: unless-stopped
     environment:
       MEANING_THREADS: ${MEANING_THREADS:-4}
-      # Optional: a bearer token both sides share.
       MEANING_TOKEN: ${MEANING_TOKEN:-}
-      # A batch running longer than this many seconds is stuck: the service
-      # exits and is restarted (WP-1602).
       MEANING_STUCK_S: ${MEANING_STUCK_S:-180}
-    # /health runs both models on a word, so wedged models fail it (the
-    # same check as the image's; here so deploy-status shows it).
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=9).status==200 else 1)"]
       interval: 30s

@@ -139,7 +139,6 @@ function useKnownRepos(): string[] {
 export function ClaudeCodeTab({ me }: { me: User }) {
   const savePrefs = useSavePrefs()
   const prefs: SessionPrefs = me.prefs.sessions ?? { all: {} }
-  // Repos added here with nothing set yet: the server keeps no empty ones.
   const [added, setAdded] = useState<string[]>([])
   const [repo, setRepo] = useState('')
   const known = useKnownRepos()

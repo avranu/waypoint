@@ -74,7 +74,6 @@ export function WorkflowTab({ project }: { project: Project }) {
     onError: toastError,
     onSettled: async () => {
       refresh()
-      // Keep the optimistic order until the new one has arrived.
       await qc.refetchQueries({ queryKey: ['project', project.key] })
       setOrder(null)
     },

@@ -48,7 +48,7 @@ func Configured() bool {
 	switch strings.ToLower(os.Getenv("OTEL_TRACES_EXPORTER")) {
 	case "", "otlp":
 	default:
-		return false // "none", or an exporter this build doesn't have
+		return false
 	}
 	return os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") != "" || os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != ""
 }
@@ -65,7 +65,6 @@ func Setup(ctx context.Context, version string, log *slog.Logger) (func(context.
 	if err != nil {
 		return nil, err
 	}
-	// Later options win, so the environment overrides these defaults.
 	res, err := resource.New(ctx,
 		resource.WithAttributes(attribute.String("service.name", "waypoint"), attribute.String("service.version", version)),
 		resource.WithFromEnv(),
@@ -74,8 +73,6 @@ func Setup(ctx context.Context, version string, log *slog.Logger) (func(context.
 	if err != nil && !errors.Is(err, resource.ErrPartialResource) {
 		return nil, err
 	}
-	// No WithSampler: the SDK reads OTEL_TRACES_SAMPLER itself (default
-	// parentbased_always_on).
 	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp), sdktrace.WithResource(res))
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) { log.Warn("tracing", "err", err) }))
 	Use(tp)
@@ -152,7 +149,7 @@ func EndRequest(span trace.Span, method, route string, status int) {
 		method, path = m, p
 	}
 	if path == "" {
-		path = "other" // nothing matched (or a pattern-less handler)
+		path = "other"
 	}
 	span.SetName(method + " " + path)
 	span.SetAttributes(attribute.String("http.route", path), attribute.Int("http.response.status_code", status))
