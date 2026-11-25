@@ -193,9 +193,9 @@ const SUPPORTED = typeof navigator === 'undefined' || /Chrome\/|Firefox\//.test(
 
 /**
  * Called after a character was typed. Converts "# ", "- ", "[ ] " and the
- * like at the start of a block, and `code`, **bold**, *italic*, ~~strike~~
- * and [text](url) as the closing delimiter is typed. True if it changed
- * anything.
+ * like at the start of a block, and `code`, **bold**, *italic*, ~~strike~~,
+ * [text](url) and ![alt](url) as the closing delimiter is typed. True if it
+ * changed anything.
  */
 export function inputRules(el: HTMLElement, e: InputEvent): boolean {
   if (!SUPPORTED) return false
@@ -260,10 +260,11 @@ function typedRules(el: HTMLElement, ch: string, committed: number): boolean {
 // insertHTML, so one undo gives back the typed text.
 const NAME_END = /^[ ,;:!?)]$/
 
-// Chromium's insertHTML splits the paragraph when an uneditable element goes in
-// at its very end. A parked caret node after the selection keeps it inline
-// (put in by hand, so it is not an undo step; undo leaves it, unseen).
-export function insertPiece(html: string) {
+// Chromium's insertHTML splits the paragraph when an uneditable element or an
+// image goes in at its very end. A parked caret node after the selection keeps
+// it inline (put in by hand, so it is not an undo step; undo
+// leaves it, unseen).
+function insertInline(html: string) {
   const r = window.getSelection()?.getRangeAt(0)
   const t = r?.endContainer
   if (
@@ -275,6 +276,10 @@ export function insertPiece(html: string) {
     t.parentNode?.appendChild(document.createTextNode(PARK))
   }
   exec('insertHTML', html)
+}
+
+export function insertPiece(html: string) {
+  insertInline(html)
   looseSpaces()
 }
 
@@ -302,12 +307,12 @@ function looseSpaces() {
   const sel = window.getSelection()
   if (!sel?.anchorNode) return
   const isPiece = (x: Node | null) => x instanceof Element && x.hasAttribute(PIECE_SRC)
-  // Chromium can leave the caret inside the piece's text; the piece is then
-  // an ancestor, else a sibling of the caret's node.
+  // Chromium can leave the caret inside the piece's text; the piece then
+  // holds the caret's node, else it is a sibling of it.
   const [node, offset] = [sel.anchorNode, sel.anchorOffset]
   let n: Node | null =
     node.nodeType === Node.ELEMENT_NODE ? (node.childNodes[offset - 1] ?? null) : node
-  const inside = (node.parentElement?.closest('[data-md]') as Node | null) ?? null
+  const inside = elementOf(node)?.closest(`[${PIECE_SRC}]`)
   if (inside) n = inside
   const from = n
   while (n && !isPiece(n)) n = n.previousSibling
@@ -319,8 +324,11 @@ function looseSpaces() {
     if (/[^\s\u00a0]\u00a0$/.test(d)) (before as Text).data = `${d.slice(0, -1)} `
   }
   let after = n.nextSibling
-  while (after?.nodeType === Node.TEXT_NODE && (after as Text).data === PARK)
-    after = after.nextSibling
+  let parked: Text | null = null
+  while (after?.nodeType === Node.TEXT_NODE && (after as Text).data === PARK) {
+    parked = after as Text
+    after = parked.nextSibling
+  }
   let lead = 0
   if (after?.nodeType === Node.TEXT_NODE) {
     const t = after as Text
@@ -329,9 +337,15 @@ function looseSpaces() {
     lead = /^\ufeff*[ \u00a0]?/.exec(t.data)?.[0].length ?? 0
   }
   // Setting text moves a caret inside it; put it back, and a caret left inside
-  // the piece goes after it and the space that follows, where typing is text.
-  if (inside && after) sel.collapse(after, lead)
-  else sel.collapse(node, offset)
+  // the piece goes after it and the space that follows, where typing is text:
+  // on a parking character when no text follows.
+  if (!inside) return sel.collapse(node, offset)
+  if (after?.nodeType === Node.TEXT_NODE) return sel.collapse(after, lead)
+  if (!parked) {
+    parked = document.createTextNode(PARK)
+    inside.after(parked)
+  }
+  sel.collapse(parked, parked.length)
 }
 
 function piece(s: Scanned, caret: Range, typed: string): boolean {
@@ -399,7 +413,8 @@ function convert(el: HTMLElement, b: Block, caret: Range, rule: BlockRule): bool
 // Marks a code block opened here by a typed "```". One opened from the saved
 // text may have had a longer fence or a "~~~" one, inside which a "```" line
 // is code, so only this one ends on a typed closing fence. Kept beside the
-// DOM, not in it: a block the browser rebuilds (undo) is one it doesn't know.
+// DOM, not in it. Undo and redo in Blink and Gecko put back the same element,
+// so it is still known after them; a copy of it would not be.
 const typedFences = new WeakSet<Element>()
 
 function codeBlock(el: HTMLElement, b: Block, lang: string): boolean {
@@ -429,13 +444,19 @@ function inline(s: Scanned, caret: Range, m: InlineMatch): boolean {
   if (m.kind === 'code' && frag.querySelector('*')) return false
   // A link inside a link is none: the browser splits the outer one.
   if (m.kind === 'link' && frag.querySelector(`a,[${PIECE_SRC}]`)) return false
+  // Alt text is text only too.
+  if (m.kind === 'img' && frag.querySelector('*')) return false
   const full = document.createRange()
   full.setStart(...open)
   full.setEnd(caret.startContainer, caret.startOffset)
   let out: string
   if (m.kind === 'code') out = `<code>${esc(frag.textContent ?? '')}</code>`
   else if (m.kind === 'link') out = `<a href="${escAttr(m.href!)}">${html(frag)}</a>`
-  else {
+  else if (m.kind === 'img') {
+    const alt = (frag.textContent ?? '').replaceAll(PARK, '').replace(/\u00a0/g, ' ')
+    // An uploaded video typed this way shows as a player once reopened.
+    out = `<img src="${escAttr(m.href!)}" alt="${escAttr(alt)}">`
+  } else {
     const tag = { strong: 'strong', em: 'em', s: 's' }[m.kind]
     out = `<${tag}>${html(frag)}</${tag}>`
   }
@@ -443,7 +464,10 @@ function inline(s: Scanned, caret: Range, m: InlineMatch): boolean {
   // The parking character after the element is where the caret goes: the
   // browser types into the element it follows, so the next characters need a
   // node of their own. htmlToMarkdown drops it.
-  exec('insertHTML', out + PARK)
+  // An image after other text needs help to stay in its line; one that is all
+  // there is before the caret stays by itself, and the help would move it out.
+  if (m.kind === 'img' && m.from > 0) insertInline(out + PARK)
+  else exec('insertHTML', out + PARK)
   return true
 }
 

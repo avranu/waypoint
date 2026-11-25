@@ -409,11 +409,49 @@ for (const [width, scheme] of looks(
     (h) => !/<a /.test(h),
   );
 
+  // An address with parentheses in it, as Wikipedia's have, and an image.
+  await typed(
+    "link with parentheses in its address",
+    async () => {
+      await type("[Wiki](https://en.wikipedia.org/wiki/Foo_(bar)) x");
+    },
+    "[Wiki](<https://en.wikipedia.org/wiki/Foo_(bar)>) x",
+    /<a href="https:\/\/en\.wikipedia\.org\/wiki\/Foo_\(bar\)">Wiki<\/a>[^<]* x/,
+  );
+  // Alone in its line, and after text at the line's end, where it stays in it.
+  for (const [lead, alt] of [
+    ["", "a pic"],
+    ["", ""],
+    ["see ", "end"],
+  ])
+    await typed(
+      `image with alt ${JSON.stringify(alt)}`,
+      async () => {
+        await type(`${lead}![${alt}](/favicon.svg) x`);
+      },
+      `${lead}![${alt}](/favicon.svg) x`,
+      new RegExp(`^<p>[^<]*<img src="/favicon.svg" alt="${alt}">[^<]* x[^<]*</p>$`),
+    );
+  await typed(
+    "undo an image",
+    async () => {
+      await type("a ![p](/favicon.svg)");
+      await press("Control+z");
+      const t = await richBox.evaluate((el) => el.innerText.replace(/\ufeff/g, ""));
+      ok(t.trim() === "a ![p](/favicon.svg)", `${tag} undo after an image is the literal text (${JSON.stringify(t)})`);
+      await press("Control+Shift+z");
+    },
+    "a ![p](/favicon.svg)",
+    /<img src="\/favicon\.svg" alt="p">/,
+  );
+
   for (const src of [
-    "![x](https://example.com)",
+    "![x](//host)",
+    "![x](mailto:a@example.com)",
     "[](https://example.com)",
     "[x](data:text/html,x)",
     "[x](//host)",
+    "[x](https://example.com/a_(b)",
   ])
     await typed(
       `link negative ${src}`,
@@ -492,6 +530,44 @@ for (const [width, scheme] of looks(
     },
     "\\`\\`\\`x",
     (h) => !/<pre/.test(h),
+  );
+
+  // A fence undone and redone is still the one typed: "```" ends it.
+  await typed(
+    "redo a fence, then close it",
+    async () => {
+      await type("```");
+      await press("Enter");
+      await type("code");
+      for (let i = 0; i < 8 && (await richBox.locator("pre").count()); i++) await press("Control+z");
+      ok((await richBox.locator("pre").count()) === 0, `${tag} the fence was undone`);
+      for (let i = 0; i < 8 && !(await richBox.innerText()).includes("code"); i++) await press("Control+Shift+z");
+      await press("End");
+      await press("Enter");
+      await type("```");
+      await press("Enter");
+      await type("after");
+    },
+    "```\ncode\n```\n\nafter",
+    /<pre><code>code(<br>)?<\/code><\/pre><p>after<\/p>/,
+  );
+
+  // Dropped text keeps a U+FEFF as a pasted one does: as U+2060.
+  await typed(
+    "dropped U+FEFF",
+    async () => {
+      await type("x ");
+      await richBox.evaluate((el) => {
+        const data = new DataTransfer();
+        data.setData("text/plain", "a\ufeffb");
+        const r = el.getBoundingClientRect();
+        el.dispatchEvent(
+          new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: data, clientX: r.right - 8, clientY: r.top + r.height / 2 }),
+        );
+      });
+    },
+    "x a\u2060b",
+    null,
   );
 
   // 12. Backspace turns a block back into a paragraph.

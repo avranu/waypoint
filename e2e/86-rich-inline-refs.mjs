@@ -408,6 +408,33 @@ for (const [width, scheme] of looks(
     ok((await pieceCount()) === 0 && back === "Start and @robin.", `${tag} one undo gives back the typed mention as text (${JSON.stringify(back)})`);
   }
 
+  // A caret the browser leaves inside a new piece is moved after it, where
+  // typing is text, also when only a parking character follows. Forced here:
+  // execCommand is wrapped to put the caret in the piece it just inserted.
+  {
+    const i = await openSmall("Caret inside a piece", "Start");
+    await press("Control+End");
+    await richBox.evaluate((el) => {
+      const real = document.execCommand;
+      window.__forced = 0;
+      document.execCommand = function (cmd, ui, arg) {
+        const done = real.call(document, cmd, ui, arg);
+        if (cmd === "insertHTML" && arg.includes("data-md")) {
+          const text = el.querySelector("[data-md]").firstChild;
+          getSelection().collapse(text, 1);
+          window.__forced++;
+        }
+        return done;
+      };
+    });
+    await type(" [[Inside]]x");
+    const forced = await page.evaluate(() => window.__forced);
+    await done.click();
+    const want = "Start [[Inside]]x";
+    const got = await waitDesc(i.key, want);
+    ok(forced === 1 && got === want, `${tag} typing goes after a piece the caret was left in (${forced} forced, ${JSON.stringify(got)})`);
+  }
+
   // What the description view draws for an issue: its wikilinks, mentions and links.
   const viewed = async (key) => {
     await page.goto(`${base}/issue/${key}`);

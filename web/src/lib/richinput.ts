@@ -53,7 +53,7 @@ export function ruleLine(text: string): boolean {
   return /^(?:-{3}|\*{3}|_{3})$/.test(text.trim())
 }
 
-export type InlineKind = 'code' | 'strong' | 'em' | 's' | 'link'
+export type InlineKind = 'code' | 'strong' | 'em' | 's' | 'link' | 'img'
 
 /** Indices into the text passed to inlineRule. */
 export type InlineMatch = {
@@ -73,6 +73,12 @@ const edge = (c: string | undefined) => c === undefined || !/[\p{L}\p{N}]/u.test
 // A root-relative path never starts "//" or "/\": browsers read a backslash
 // there as a slash, and the link would leave the site.
 const SAFE_HREF = /^(?:https?:\/\/|mailto:|\/(?![/\\])|#)\S+$/i
+// An image is fetched, so only a web address or a path on this site.
+const SAFE_SRC = /^(?:https?:\/\/|\/(?![/\\]))\S+$/i
+// "[label](address)" ending at the caret. The address may hold parentheses in
+// pairs, two deep ("/wiki/Foo_(bar)"), so the one that closes the link is
+// told from one inside it.
+const LINK = /\[([^[\]]*)\]\(((?:[^()\s]|\((?:[^()\s]|\([^()\s]*\))*\))+)\)$/
 
 /**
  * The inline markdown just completed by the character typed last, or null.
@@ -157,19 +163,25 @@ function opener(
   return null
 }
 
+// A link, or with a "!" before it an image (whose label, the alt text, may be
+// empty). A title, or an address that is neither on the web nor on this site,
+// stays as typed.
 function linkRule(before: string): InlineMatch | null {
-  const m = /\[([^[\]]+)\]\(([^()\s]+)\)$/.exec(before)
-  if (!m || before[m.index - 1] === '!') return null
-  // Each of "[", "]" and ")" is literal after an odd run of backslashes.
+  const m = LINK.exec(before)
+  if (!m) return null
+  const image = before[m.index - 1] === '!'
+  // Each of "!", "[", "]" and ")" is literal after an odd run of backslashes.
   const close = m.index + 1 + m[1].length
-  if ([m.index, close, before.length - 1].some((i) => backslashed(before, i))) return null
-  if (!SAFE_HREF.test(m[2]) || !m[1].trim()) return null
+  const marks = [m.index, close, before.length - 1]
+  if (image) marks.push(m.index - 1)
+  if (marks.some((i) => backslashed(before, i))) return null
+  if (!(image ? SAFE_SRC : SAFE_HREF).test(m[2]) || (!image && !m[1].trim())) return null
   const contentFrom = m.index + 1
   return {
-    kind: 'link',
-    from: m.index,
+    kind: image ? 'img' : 'link',
+    from: image ? m.index - 1 : m.index,
     contentFrom,
-    contentTo: contentFrom + m[1].length,
+    contentTo: close,
     href: m[2],
   }
 }

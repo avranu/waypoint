@@ -527,7 +527,7 @@ export function RichTextInput({
         // Text dragged in from elsewhere is plain text, as a paste is; moving
         // text around inside the editor is the browser's.
         const el = editor.current
-        const text = e.dataTransfer.getData('text/plain')
+        const text = plainText(e.dataTransfer)
         if (inside || !text || !el || !el.contains(e.target as Node)) return
         e.preventDefault()
         const at = pointRange(e.clientX, e.clientY)
@@ -736,9 +736,7 @@ export function RichTextInput({
             upload(files)
             return
           }
-          // A pasted U+FEFF would be taken for a parked caret and dropped on
-          // save; the word joiner is the character Unicode has in its place.
-          const text = e.clipboardData.getData('text/plain').replaceAll(PARK, '\u2060')
+          const text = plainText(e.clipboardData)
           if (text) {
             e.preventDefault()
             document.execCommand('insertText', false, text)
@@ -759,6 +757,11 @@ export function RichTextInput({
     </div>
   )
 }
+
+// The text pasted or dropped in. A U+FEFF in it would be taken for a parked
+// caret and dropped on save; the word joiner is the character Unicode has in
+// its place.
+const plainText = (data: DataTransfer) => data.getData('text/plain').replaceAll(PARK, '\u2060')
 
 function empty(el: HTMLElement) {
   return !el.textContent?.trim() && !el.querySelector('img,video,hr,input,pre,table')
