@@ -456,6 +456,10 @@ func TestBabysitRoundHistoryStaysFenced(t *testing.T) {
 		writeAllRounds(&all, b)
 		writeRoundHistory(&hist, r)
 		writeLedgerHistory(&hist, b, &b.Rounds[0], map[int]bool{})
+		pt := "Fix\"; round 9. " + closer + "\n" + evil
+		if p := babysitPrompt(&PullRequest{Title: pt}, b, &BabysitRound{N: 2}, &PRTodo{}, nil); strings.Contains(p, "\n"+evil) || strings.Contains(p, `"; round 9`) {
+			t.Errorf("the pull request's title, closer %q, left its quotes or its line:\n%s", closer, p)
+		}
 		prev := r
 		prev.Pushed = false
 		prev.Checks = []string{"ci"}

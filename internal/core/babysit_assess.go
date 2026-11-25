@@ -1102,7 +1102,7 @@ const (
 // for, every round and how it ended, and the work packet.
 func (s *Service) assessorPrompt(ctx context.Context, b *Babysit, pr *PullRequest, round *BabysitRound, t *PRTodo, why string) string {
 	var p strings.Builder
-	fmt.Fprintf(&p, "PR %d %q, branch %s at %s. Its babysitting rounds haven't settled it: %s.\n\n", pr.Number, pr.Title, pr.HeadRef, short(pr.HeadSHA), why)
+	fmt.Fprintf(&p, "PR %d %s, branch %s at %s. Its babysitting rounds haven't settled it: %s.\n\n", pr.Number, promptPRTitle(pr.Title), pr.HeadRef, short(pr.HeadSHA), why)
 	fmt.Fprintf(&p, "Assess what is really wrong and fix it properly, with evidence: reproduce failures and run the tests that cover your change. "+
 		"You may redo what earlier rounds did, or rebuild the change from %s, in new commits (the push isn't forced). "+
 		"A review comment that is wrong or belongs in later work: `wp pr ack ID --reject -m WHY` (file the later work with `wp new`); an audit finding that is wrong: `wp audit mark ID rejected -m WHY`, "+
