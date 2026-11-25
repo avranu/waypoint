@@ -88,13 +88,15 @@ forge_token() {
 }
 
 # git ARGS... in the mirror; the token travels in the environment, never argv.
-# No token, no git: the deployer never fetches without one.
+# No token, no git: the deployer never fetches without one. Git gets no copy of
+# the run lock (fd 8): a detached `git gc --auto` outlives the run and would
+# keep the lock held. (Closing an fd that is not open is harmless.)
 mgit() {
   local token
   token=$(forge_token) || exit 1
   GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader \
     GIT_CONFIG_VALUE_0="Authorization: token $token" GIT_TERMINAL_PROMPT=0 \
-    git --git-dir="$MIRROR" "$@"
+    git --git-dir="$MIRROR" "$@" 8>&-
 }
 
 fetch() {
@@ -220,7 +222,7 @@ deploy() {
   say "deploying $TAG ($SHA)"
   record started
   # remote-deploy.sh reads SSH_ORIGINAL_COMMAND first; this is a local call.
-  mgit archive --format=tar "$SHA" | env -u SSH_ORIGINAL_COMMAND "$DEPLOY" deploy "$TAG" || rc=$?
+  mgit archive --format=tar "$SHA" | env -u SSH_ORIGINAL_COMMAND "$DEPLOY" deploy "$TAG" 8>&- || rc=$?
   case $rc in
   0)
     say "deployed $TAG"

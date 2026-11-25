@@ -732,11 +732,14 @@ type reviewOutcome struct {
 	// they had finished, kept (WP-1421).
 	salvagedAnswers  int
 	salvagedFindings int
-	belowMin         int    // findings under the rule's minimum severity, not posted
-	minSev           string // that minimum
-	private          globSet
-	rule             string // the automation, for the marker
-	note             string // the line every review starts with (Admin → AI)
+	// its findings could not be saved: the gate never saw them, and the next
+	// head's review is what records them (WP-1808: such a review isn't carried).
+	unsaved  bool
+	belowMin int    // findings under the rule's minimum severity, not posted
+	minSev   string // that minimum
+	private  globSet
+	rule     string // the automation, for the marker
+	note     string // the line every review starts with (Admin → AI)
 	// The verifier models that checked the findings, what they dropped,
 	// and how many findings went unchecked (every verifier model failed on
 	// them, or their file couldn't be read).

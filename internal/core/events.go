@@ -347,13 +347,13 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 			s.dropUserTranscripts(e) // their archive's files: the rows went with the account
 		}
 		if e.Kind == EvKitSourceSet {
-			s.goBG(func() { s.RefreshKit(ctx) })
+			s.goBG(func() { s.RefreshKit(withoutLineLocks(ctx)) })
 		}
 		if e.Kind == EvReviewLoopRecorded {
-			s.goBG(func() { s.checkReviewHealth(ctx, e.ProjectID) })
+			s.goBG(func() { s.checkReviewHealth(withoutLineLocks(ctx), e.ProjectID) })
 		}
 		if e.pullLinked != nil {
-			s.goBG(func() { s.urgentFromLink(ctx, e) })
+			s.goBG(func() { s.urgentFromLink(withoutLineLocks(ctx), e) })
 		}
 		if j := e.permRule; j != nil {
 			s.addPermissionRule(ctx, actor, j) // before DecideRequest tells the agent, so it hears of the PR
@@ -373,7 +373,7 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 			s.autoRelate(ctx, e) // no model: the issues' own words (WP-296)
 		}
 		if e.Kind == EvExternalPRMerged {
-			s.goBG(func() { s.followUpsByFiles(ctx, e) }) // what this work continues (WP-255)
+			s.goBG(func() { s.followUpsByFiles(withoutLineLocks(ctx), e) }) // what this work continues (WP-255)
 		}
 		s.autoScreen(e) // agent-written text, before an agent takes it (WP-ADR10)
 		s.deliverWebhooks(ctx, e)
@@ -387,7 +387,7 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 			s.pushCommentChange(ctx, e)
 		}
 		if j := e.repoHook; j != nil {
-			s.goBG(func() { s.runRepoHook(ctx, j) })
+			s.goBG(func() { s.runRepoHook(withoutLineLocks(ctx), j) })
 		}
 		s.onPRAudit(ctx, e)         // an audit of a pull request, asked for or ended (WP-355)
 		s.onBabysitEvent(ctx, e)    // news of a babysat pull request (WP-134)

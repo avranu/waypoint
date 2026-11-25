@@ -139,6 +139,9 @@ type Service struct {
 	// Waypoint's key an audit task on: model → a gatewayRefusedModel, so the
 	// next audits skip it for an hour (audit_gateway.go).
 	gatewayRefused sync.Map
+	// gatewayLimits caches the gateway's task limits by provider
+	// (GatewayTaskLimits).
+	gatewayLimits sync.Map
 	// staleChecksRead holds prID → when the watchdog last re-read the checks
 	// of a babysit whose checks seem to have stopped (WP-750).
 	staleChecksRead sync.Map
@@ -189,6 +192,7 @@ type Service struct {
 	aiSlots     chan struct{}
 	surplusSlot chan struct{} // surplus work, one at a time beside aiSlots: it never waits for normal work nor holds it up (WP-906)
 	aiMu        sync.Mutex
+	cool        coolings // review-route models that stalled, left out for a while (WP-1768)
 	aib         aiBudget // what the AI gateway asked to wait for: the key's day, a task's Retry-After (WP-373, WP-412)
 	aiQueued    map[int64]bool
 	relating    int                     // auto-relate jobs waiting or running (guarded by aiMu)
