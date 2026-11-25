@@ -1513,6 +1513,9 @@ var untrustedTagRE = lazyre.New(`(?i)<` + markSpace + `*/?` + markSpace + `*` +
 // NEL and the Unicode spaces and separators are named too.
 const markSpace = `[\s\v\x{85}\p{Z}\p{Cf}]`
 
+// Untrusted is untrusted for the runner's own prompts (cmd/wp).
+func Untrusted(s string) string { return untrusted(s) }
+
 // untrusted makes text safe to put between <untrusted> tags: it can't
 // close them, however it nests the tag ("</untru</untrusted>sted>").
 func untrusted(s string) string {
