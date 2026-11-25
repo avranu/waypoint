@@ -56,6 +56,7 @@ type rec struct {
 	Effort         string `json:"effort"`
 	PerTurnEffort  string `json:"perTurnEffort"`
 	GitBranch      string `json:"gitBranch"`
+	Cwd            string `json:"cwd"`
 	Version        string `json:"version"`
 	IsMeta         bool   `json:"isMeta"`
 	IsCompact      bool   `json:"isCompactSummary"`
@@ -379,6 +380,7 @@ func (p *parser) assistant(r *rec, ts *int64, thread string, main bool) {
 	}
 	if strings.HasPrefix(m.Model, "<") {
 		p.ignored("assistant/synthetic")
+		p.toolBlocks(m.Content, m.ID, r, ts, thread, true)
 		return
 	}
 	if main {
@@ -434,20 +436,32 @@ func (p *parser) assistant(r *rec, ts *int64, thread string, main bool) {
 			c.Context = ptr(*u.Input + *u.CacheCreation + *u.CacheRead)
 		}
 	}
-	if bytes.Contains(m.Content, []byte(`"tool_use"`)) {
-		var blocks []block
-		if err := json.Unmarshal(m.Content, &blocks); err != nil {
-			p.undecoded("assistant_content")
-		} else {
-			for i := range blocks {
-				switch {
-				case blocks[i].Type != "tool_use":
-				case blocks[i].ID == "":
-					p.ignored("tool_use/(no id)")
-				default:
-					p.toolUse(&blocks[i], r, ts, thread, m.ID)
-				}
-			}
+	p.toolBlocks(m.Content, m.ID, r, ts, thread, false)
+}
+
+// toolBlocks records the tool_use blocks of an assistant record. A record
+// whose model is <synthetic> is not a model call (no usage, no ModelCall row);
+// its blocks are tools a script ran, marked ByScript, with no message id.
+func (p *parser) toolBlocks(content json.RawMessage, id string, r *rec, ts *int64, thread string, byScript bool) {
+	if !bytes.Contains(content, []byte(`"tool_use"`)) {
+		return
+	}
+	var blocks []block
+	if err := json.Unmarshal(content, &blocks); err != nil {
+		p.undecoded("assistant_content")
+		return
+	}
+	msgID := id
+	if byScript {
+		msgID = ""
+	}
+	for i := range blocks {
+		switch {
+		case blocks[i].Type != "tool_use":
+		case blocks[i].ID == "":
+			p.ignored("tool_use/(no id)")
+		default:
+			p.toolUse(&blocks[i], r, ts, thread, msgID, byScript)
 		}
 	}
 }
@@ -504,7 +518,7 @@ func urlHead(raw string) string {
 	return clip(u.String(), targetRunes)
 }
 
-func (p *parser) toolUse(bl *block, r *rec, ts *int64, thread, msgID string) {
+func (p *parser) toolUse(bl *block, r *rec, ts *int64, thread, msgID string, byScript bool) {
 	if _, dup := p.tools[bl.ID]; dup {
 		return
 	}
@@ -512,7 +526,7 @@ func (p *parser) toolUse(bl *block, r *rec, ts *int64, thread, msgID string) {
 	if err := json.Unmarshal(bl.Input, &in); err != nil {
 		p.undecoded("tool_input")
 	}
-	t := ToolCall{Row: p.row(bl.ID, ts, thread), ToolUseID: bl.ID, MsgID: strp(msgID), PromptID: p.prompt, Tool: bl.Name}
+	t := ToolCall{Row: p.row(bl.ID, ts, thread), ToolUseID: bl.ID, MsgID: strp(msgID), PromptID: p.prompt, Tool: bl.Name, ByScript: byScript}
 	set := func(kind, target string) {
 		if target != "" {
 			t.Target, t.TargetKind = ptr(target), ptr(kind)
@@ -533,6 +547,9 @@ func (p *parser) toolUse(bl *block, r *rec, ts *int64, thread, msgID string) {
 	case "Bash", "PowerShell":
 		set("command", commandHead(in.Command))
 		t.Background = in.Background
+		if bl.Name == "Bash" {
+			t.ShellWrite = ptr(ShellEdit(in.Command, r.Cwd))
+		}
 	case "Grep", "Glob":
 		set("pattern", clip(in.Pattern, patternRunes))
 	case "WebFetch":

@@ -251,8 +251,8 @@ func jobCommand(root *procEntry) (cmd string, ok bool) {
 		return strings.Join(root.args, " "), false
 	}
 	for _, c := range parseShell(root.args[2]) {
-		if len(c.words) >= 2 && c.words[0] == "eval" {
-			return strings.Join(c.words[1:], " "), true
+		if len(c.Words) >= 2 && c.Words[0] == "eval" {
+			return strings.Join(c.Words[1:], " "), true
 		}
 	}
 	return root.args[2], false
@@ -296,15 +296,15 @@ func wpWaiter(p *procEntry) string {
 func timeoutBound(cmd string) time.Duration {
 	var main []*guardCmd
 	for _, c := range parseShell(cmd) {
-		if len(c.words) > 0 && c.words[0] == "cd" && !c.pipeIn {
+		if len(c.Words) > 0 && c.Words[0] == "cd" && !c.PipeIn {
 			continue
 		}
 		main = append(main, c)
 	}
-	if len(main) != 1 || len(main[0].words) == 0 || filepath.Base(main[0].words[0]) != "timeout" {
+	if len(main) != 1 || len(main[0].Words) == 0 || filepath.Base(main[0].Words[0]) != "timeout" {
 		return 0
 	}
-	w := main[0].words[1:]
+	w := main[0].Words[1:]
 	for len(w) > 0 && strings.HasPrefix(w[0], "-") {
 		a := w[0]
 		w = w[1:]
@@ -362,18 +362,18 @@ func pgrepUses(cmd string) []pgrepUse {
 	var walk func([]*guardCmd)
 	walk = func(cs []*guardCmd) {
 		for _, c := range cs {
-			for _, s := range c.subs {
+			for _, s := range c.Subs {
 				walk(s)
 			}
-			if len(c.words) < 2 {
+			if len(c.Words) < 2 {
 				continue
 			}
-			tool := filepath.Base(c.words[0])
+			tool := filepath.Base(c.Words[0])
 			if tool != "pgrep" && tool != "pkill" {
 				continue
 			}
 			u := pgrepUse{tool: tool}
-			w := c.words[1:]
+			w := c.Words[1:]
 			for len(w) > 0 {
 				a := w[0]
 				w = w[1:]

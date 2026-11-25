@@ -490,3 +490,21 @@ func TestOrientation(t *testing.T) {
 		t.Errorf("startedBefore %+v", got)
 	}
 }
+
+// A <synthetic> record (a tool a REPL script ran) has an id and zero usage but
+// is no model call: it adds no message and no context sample (WP-1886).
+func TestReadSuggestFileSkipsSyntheticRecords(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "s1.jsonl")
+	now := time.Now()
+	transcript(t, p, "/src/app", now,
+		assistantLine("m1", 50_000, `[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/src/app/a.go"}}]`),
+		`{"type":"assistant","isVirtual":true,"message":{"id":"repl_1","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"tool_use","id":"repl_t1","name":"Read","input":{"file_path":"/src/app/b.go"}}]}}`,
+	)
+	s, err := readSuggestFile(usageFile{Path: p, Session: "s1", Kind: "main", Main: true}, now.Add(-time.Hour).UnixMilli(), func(string) bool { return true })
+	if err != nil || s == nil {
+		t.Fatalf("read: %v %v", s, err)
+	}
+	if s.Messages != 1 || s.StartCtx != 50_000 || s.PeakCtx != 50_000 {
+		t.Fatalf("session %+v: a synthetic record is not a model call", s)
+	}
+}

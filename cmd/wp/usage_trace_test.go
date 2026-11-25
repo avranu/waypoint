@@ -465,7 +465,7 @@ func TestTraceKeptScripts(t *testing.T) {
 	}
 	st := &traceState{Scripts: *mem}
 	cl := st.clone()
-	cl.Scripts.keep("/tmp/s/e3.py", "print(1)")
+	cl.Scripts.Keep("/tmp/s/e3.py", "print(1)")
 	if len(st.Scripts) != traceMaxScripts || st.Scripts[0].At != "/tmp/s/e3.py" {
 		t.Fatalf("a clone's change reached the original: %d %q", len(st.Scripts), st.Scripts[0].At)
 	}

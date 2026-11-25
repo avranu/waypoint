@@ -214,7 +214,7 @@ func readSuggestFile(f usageFile, cut int64, inRepo func(cwd string) bool) (*sug
 					}
 				case "assistant":
 					if m := l.Message; m != nil {
-						if m.Usage != nil && m.ID != "" {
+						if m.Usage != nil && m.ID != "" && !strings.HasPrefix(m.Model, "<") {
 							cur := msgs[m.ID]
 							if cur == nil {
 								cur = &msg{model: cleanModel(m.Model)}

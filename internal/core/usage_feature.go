@@ -391,11 +391,17 @@ type TaskUsage struct {
 	Subagents   int64             `json:"subagents"`
 	ToolCalls   int64             `json:"tool_calls"`
 	ToolErrors  int64             `json:"tool_errors"`
-	Edits       int64             `json:"edits"` // calls of the editing tools
-	PRs         int64             `json:"prs"`   // merged
-	Files       int64             `json:"files"` // changed in them
-	Lines       int64             `json:"lines"` // added + deleted in them
-	Used        []TaskUsageTool   `json:"used"`
+	Edits       int64             `json:"edits"` // calls of the editing tools that did not fail
+	// ShellEdits counts Bash calls that wrote the work (redirects, sed -i,
+	// formatters, scripts that write). It is only known for hours whose
+	// client uploaded the shell_edit marker; ShellEditsUncounted is the
+	// Bash calls of the other hours, so ShellEdits is then a floor.
+	ShellEdits          int64           `json:"shell_edits"`
+	ShellEditsUncounted int64           `json:"shell_edits_uncounted"`
+	PRs                 int64           `json:"prs"`   // merged
+	Files               int64           `json:"files"` // changed in them
+	Lines               int64           `json:"lines"` // added + deleted in them
+	Used                []TaskUsageTool `json:"used"`
 	UsageTotals
 }
 
@@ -555,6 +561,8 @@ func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskA
 	defer rows.Close()
 	type toolKey struct{ kind, name string }
 	seen := map[toolKey]*TaskUsageTool{}
+	bash := map[trendKey]int64{}
+	marked := map[trendKey]bool{}
 	for rows.Next() {
 		var k trendKey
 		var kind, tool, detail string
@@ -566,7 +574,15 @@ func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskA
 			continue
 		}
 		if kind == "builtin" && transcript.IsEditTool(tool) {
-			o.Edits += calls
+			o.Edits += calls - errs
+		}
+		if kind == "builtin" && tool == "Bash" {
+			bash[k] += calls
+		}
+		if kind == "shell_edit" {
+			marked[k] = true
+			o.ShellEdits += calls - errs
+			continue
 		}
 		name := strings.TrimSpace(tool + " " + detail)
 		t := seen[toolKey{kind, name}]
@@ -579,6 +595,11 @@ func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskA
 	}
 	if err := rows.Err(); err != nil {
 		return err
+	}
+	for k, n := range bash {
+		if !marked[k] {
+			o.ShellEditsUncounted += n
+		}
 	}
 	for _, t := range seen {
 		o.Used = append(o.Used, *t)

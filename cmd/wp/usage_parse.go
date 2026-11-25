@@ -662,6 +662,14 @@ func (p *usageParser) assistant(b []byte, l *rawLine) {
 		}
 		call := classifyCall(bl.Name, bl.Input)
 		call.Hour, call.Model = hourOf(ts), model
+		if bl.Name == "Bash" {
+			key := usageToolKey{Kind: shellEditKind, Tool: bl.Name}
+			if bashWritesWork(bl.Input, usageOr(l.Cwd, p.st.Cwd)) {
+				call.Keys = append(call.Keys, key)
+			} else {
+				p.tool(call.Hour, call.Model, key)
+			}
+		}
 		if p.f.Main && !l.Sidechain {
 			var ctx int64
 			if m.Usage != nil {

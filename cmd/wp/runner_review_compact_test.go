@@ -13,15 +13,16 @@ import (
 
 // Transcript lines as Claude Code writes them (2.1.x).
 const (
-	tlUser     = `{"type":"user","isSidechain":false,"message":{"role":"user","content":"do the task"}}`
-	tlReplyA1  = `{"type":"assistant","isSidechain":false,"message":{"id":"msg_a","role":"assistant","content":[{"type":"text","text":"on it"}]}}`
-	tlReplyA2  = `{"type":"assistant","isSidechain":false,"message":{"id":"msg_a","role":"assistant","content":[{"type":"tool_use","name":"Bash"}]}}`
-	tlReplyB   = `{"type":"assistant","isSidechain":false,"message":{"id":"msg_b","role":"assistant","content":[{"type":"text","text":"done"}]}}`
-	tlSideB    = `{"type":"assistant","isSidechain":true,"message":{"id":"msg_s","role":"assistant","content":[{"type":"text","text":"subagent"}]}}`
-	tlBoundary = `{"type":"system","subtype":"compact_boundary","isSidechain":false,"compactMetadata":{"trigger":"manual","preTokens":150000}}`
-	tlSummary  = `{"type":"user","isSidechain":false,"isCompactSummary":true,"message":{"role":"user","content":"This session is being continued from a previous conversation that ran out of context."}}`
-	tlCommand  = `{"type":"user","isSidechain":false,"message":{"role":"user","content":"<command-name>/compact</command-name>"}}`
-	tlTask     = `{"type":"user","isSidechain":false,"message":{"role":"user","content":"<task-notification>\n<task-id>b1</task-id>"}}`
+	tlUser      = `{"type":"user","isSidechain":false,"message":{"role":"user","content":"do the task"}}`
+	tlReplyA1   = `{"type":"assistant","isSidechain":false,"message":{"id":"msg_a","role":"assistant","content":[{"type":"text","text":"on it"}]}}`
+	tlReplyA2   = `{"type":"assistant","isSidechain":false,"message":{"id":"msg_a","role":"assistant","content":[{"type":"tool_use","name":"Bash"}]}}`
+	tlReplyB    = `{"type":"assistant","isSidechain":false,"message":{"id":"msg_b","role":"assistant","content":[{"type":"text","text":"done"}]}}`
+	tlSideB     = `{"type":"assistant","isSidechain":true,"message":{"id":"msg_s","role":"assistant","content":[{"type":"text","text":"subagent"}]}}`
+	tlBoundary  = `{"type":"system","subtype":"compact_boundary","isSidechain":false,"compactMetadata":{"trigger":"manual","preTokens":150000}}`
+	tlSummary   = `{"type":"user","isSidechain":false,"isCompactSummary":true,"message":{"role":"user","content":"This session is being continued from a previous conversation that ran out of context."}}`
+	tlCommand   = `{"type":"user","isSidechain":false,"message":{"role":"user","content":"<command-name>/compact</command-name>"}}`
+	tlSynthetic = `{"type":"assistant","isSidechain":false,"isVirtual":true,"message":{"id":"repl_x","model":"<synthetic>","role":"assistant","content":[{"type":"tool_use","name":"Bash"}]}}`
+	tlTask      = `{"type":"user","isSidechain":false,"message":{"role":"user","content":"<task-notification>\n<task-id>b1</task-id>"}}`
 )
 
 func writeCompactTranscript(t *testing.T, dir string, lines ...string) string {
@@ -46,6 +47,7 @@ func TestReadCompaction(t *testing.T) {
 		"a report since":   {[]string{tlUser, tlReplyA1, tlBoundary, tlSummary, tlCommand, tlTask, tlReplyB}, transcriptCompaction{compacted: true, replies: 1}},
 		"one reply, split": {[]string{tlBoundary, tlSummary, tlUser, tlReplyA1, tlReplyA2, tlReplyB}, transcriptCompaction{compacted: true, replies: 2}},
 		"subagent's only":  {[]string{tlBoundary, tlSummary, tlSideB}, transcriptCompaction{compacted: true}},
+		"script run only":  {[]string{tlBoundary, tlSummary, tlSynthetic}, transcriptCompaction{compacted: true}},
 		"the last counts":  {[]string{tlBoundary, tlUser, tlReplyA1, tlBoundary, tlSummary}, transcriptCompaction{compacted: true}},
 	} {
 		got, err := readCompaction(writeCompactTranscript(t, t.TempDir(), c.lines...))

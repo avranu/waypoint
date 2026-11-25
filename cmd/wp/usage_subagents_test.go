@@ -419,3 +419,17 @@ func TestSubagentDiscoverAndMeasure(t *testing.T) {
 		t.Fatal(fmt.Sprint(err))
 	}
 }
+
+func TestSubagentCountsSyntheticToolBlocks(t *testing.T) {
+	f := newSaFix()
+	f.t = f.t.Add(time.Minute)
+	b, _ := json.Marshal(map[string]any{"type": "assistant", "timestamp": f.t.Format(time.RFC3339Nano), "isVirtual": true,
+		"message": map[string]any{"id": "repl_1", "model": "<synthetic>", "role": "assistant", "content": []any{
+			map[string]any{"type": "tool_use", "id": "rt1", "name": "Bash", "input": map[string]any{"command": "git status"}}}}})
+	f.lines = append(f.lines, string(b))
+	f.res("rt1", "clean", false, time.Second)
+	a := saRead(t, f, false)
+	if len(a.Calls) != 1 || a.Calls[0].ID != "rt1" || !a.Calls[0].HasResult {
+		t.Fatalf("calls: %+v", a.Calls)
+	}
+}

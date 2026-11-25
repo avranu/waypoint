@@ -141,6 +141,9 @@ type SessionFacts struct {
 		Total  int            `json:"total"`
 		Errors int            `json:"errors"`
 		ByTool map[string]int `json:"by_tool"`
+		// ByScript: tool calls a REPL script ran, not the model; they are in
+		// none of the figures above.
+		ByScript int `json:"by_script"`
 	} `json:"tool_calls"`
 
 	// Injected is what went into the context that the person did not type.
@@ -163,11 +166,16 @@ type SessionFacts struct {
 		Top      []DocFetch `json:"top"`
 	} `json:"docs_fetched"`
 
-	// Changes: Edits is every edit call. Failed is those whose result was an
-	// error; every other figure counts the edits that did not fail.
+	// Changes: Edits counts the edit calls that did not fail; Failed is those
+	// whose result was an error. ShellEdits counts Bash calls that wrote a
+	// file that is not scratch; ShellUnknown is the Bash calls stored before
+	// that was recorded (so ShellEdits is a floor when it is above 0).
 	Changes struct {
 		Edits        int   `json:"edits"`
 		Failed       int   `json:"failed"`
+		ShellEdits   int   `json:"shell_edits"`
+		ShellUnknown int   `json:"shell_unknown"`
+		ScriptEdits  int   `json:"script_edits"` // edit tools a REPL script ran; not in Edits
 		FilesChanged int   `json:"files_changed"`
 		LinesAdded   Tally `json:"lines_added"`
 		LinesRemoved Tally `json:"lines_removed"`
@@ -575,7 +583,7 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *Session
 	}
 
 	// #nosec G202 -- w is built from fixed conditions; values are bound
-	rows, err = s.db.R.QueryContext(ctx, `SELECT tool, target, read_offset, read_limit, is_error, is_test, lines_added, lines_removed
+	rows, err = s.db.R.QueryContext(ctx, `SELECT tool, target, read_offset, read_limit, is_error, is_test, lines_added, lines_removed, by_script, shell_write
 		FROM fact_tool_calls WHERE `+w, args...)
 	if err != nil {
 		return err
@@ -589,9 +597,18 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *Session
 		var tool string
 		var target sql.NullString
 		var off, lim, isErr, isTest, add, rem sql.NullInt64
-		if err := rows.Scan(&tool, &target, &off, &lim, &isErr, &isTest, &add, &rem); err != nil {
+		var script int
+		var shell sql.NullInt64
+		if err := rows.Scan(&tool, &target, &off, &lim, &isErr, &isTest, &add, &rem, &script, &shell); err != nil {
 			_ = rows.Close()
 			return err
+		}
+		if script == 1 {
+			o.ToolCalls.ByScript++
+			if transcript.IsEditTool(tool) {
+				o.Changes.ScriptEdits++
+			}
+			continue
 		}
 		o.ToolCalls.Total++
 		o.ToolCalls.ByTool[tool]++
@@ -613,13 +630,21 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *Session
 			o.DocsFetched.Calls++
 			fetched[target.String]++
 		}
+		if tool == "Bash" && !failed {
+			switch {
+			case !shell.Valid:
+				o.Changes.ShellUnknown++
+			case shell.Int64 == 1:
+				o.Changes.ShellEdits++
+			}
+		}
 		if transcript.IsEditTool(tool) {
 			c := &o.Changes
-			c.Edits++
 			if failed {
 				c.Failed++
 				continue
 			}
+			c.Edits++
 			if target.Valid {
 				changed[target.String] = true
 			}

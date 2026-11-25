@@ -116,18 +116,18 @@ func (g *guard) script(cmds []*guardCmd, depth int) *guardHit {
 	fetch := false
 	for i, c := range cmds {
 		first := i == 0
-		if !c.pipeIn {
+		if !c.PipeIn {
 			fetch = false
 		}
-		if !c.andIn && (!g.inherit || !first) {
+		if !c.AndIn && (!g.inherit || !first) {
 			g.installs = false
 		}
-		for _, sub := range c.subs {
+		for _, sub := range c.Subs {
 			if h := g.child(sub, depth+1); h != nil {
 				return h
 			}
 		}
-		rest, h := g.unwrap(c.words)
+		rest, h := g.unwrap(c.Words)
 		if h != nil {
 			return h
 		}
@@ -137,15 +137,15 @@ func (g *guard) script(cmds []*guardCmd, depth int) *guardHit {
 			name, args = path.Base(rest[0]), rest[1:]
 		}
 		if isFetcher(name) {
-			for _, w := range c.words[:len(c.words)-len(rest)] {
+			for _, w := range c.Words[:len(c.Words)-len(rest)] {
 				if h := fetchHomeHit(w); h != nil {
 					return h
 				}
 			}
 		}
 		prev := g.open
-		if n := len(c.words) - len(args); len(args) > 0 && len(c.open) == len(c.words) {
-			g.open = c.open[n:]
+		if n := len(c.Words) - len(args); len(args) > 0 && len(c.Open) == len(c.Words) {
+			g.open = c.Open[n:]
 		} else {
 			g.open = nil
 		}
@@ -157,7 +157,7 @@ func (g *guard) script(cmds []*guardCmd, depth int) *guardHit {
 		switch {
 		case isFetcher(name):
 			fetch = true
-		case fetch && c.pipeIn && readsStdinAsCode(name, args):
+		case fetch && c.PipeIn && readsStdinAsCode(name, args):
 			if h := g.keep(hit(ruleWebCode, "running code downloaded from the web", "… |", name)); h != nil {
 				return h
 			}
@@ -193,11 +193,11 @@ func isFetcher(name string) bool { return fetchers[name] }
 // hasFetcher: a command of cmds, or of the substitutions in them, downloads.
 func (g *guard) hasFetcher(cmds []*guardCmd) bool {
 	for _, c := range cmds {
-		rest, _ := g.unwrap(c.words)
+		rest, _ := g.unwrap(c.Words)
 		if len(rest) > 0 && isFetcher(path.Base(rest[0])) {
 			return true
 		}
-		for _, sub := range c.subs {
+		for _, sub := range c.Subs {
 			if g.hasFetcher(sub) {
 				return true
 			}
@@ -470,13 +470,13 @@ func (g *guard) simple(c *guardCmd, name string, args []string, depth int) *guar
 	if name == "" {
 		return nil
 	}
-	if shellNames[name] && c.heredoc != "" {
-		if h := g.child(parseShell(c.heredoc), depth+1); h != nil {
+	if shellNames[name] && c.Heredoc != "" {
+		if h := g.child(parseShell(c.Heredoc), depth+1); h != nil {
 			return h
 		}
 	}
 	if (codeRunners[name] || rePython.MatchString(name)) && runsSub(name, args) {
-		for _, sub := range c.subs {
+		for _, sub := range c.Subs {
 			if g.hasFetcher(sub) {
 				if h := g.keep(hit(ruleWebCode, "running code downloaded from the web", name, "$(curl …)")); h != nil {
 					return h
@@ -526,9 +526,9 @@ func (g *guard) findExec(args []string, depth int) *guardHit {
 			for j < len(args) && args[j] != ";" && args[j] != "+" {
 				j++
 			}
-			c := &guardCmd{words: args[i+1 : j]}
+			c := &guardCmd{Words: args[i+1 : j]}
 			if len(g.open) == len(args) {
-				c.open = g.open[i+1 : j]
+				c.Open = g.open[i+1 : j]
 			}
 			if h := g.child([]*guardCmd{c}, depth+1); h != nil {
 				return h
@@ -1455,7 +1455,7 @@ func (g *guard) gitHit(args []string) *guardHit {
 // writes checks where a command writes: redirects and the files the usual
 // writers name.
 func (g *guard) writes(c *guardCmd, name string, args []string) *guardHit {
-	targets := append([]string(nil), c.redirs...)
+	targets := append([]string(nil), c.Redirs...)
 	targets = append(targets, writeTargets(name, args)...)
 	for _, t := range targets {
 		p := g.site.resolve(g.dir, t)
