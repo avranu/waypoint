@@ -14,45 +14,27 @@ import (
 	"unicode"
 )
 
-// Task prep (WP-212, WP-ADR8). Before a paid agent takes a queued task, a
-// runner on a machine with the project's checkout uploads a bundle of the
-// code the task points at, built from its local index (the code half of a
-// brief: ranked files, their outlines, the bodies of the symbols the task
-// names, the earlier commits naming tasks that changed those files). The
-// server adds what it knows: earlier tasks (from those commits and a search
-// of done ones) and glossary terms the text doesn't name. A free model only
-// points: it picks the files, symbols, tests, earlier tasks and terms the
-// work needs, from those candidates, and lists what the task text leaves
-// open. It gives no plan, advice or verdict: a confident wrong steer from a
-// weak model costs the agent more than it saves. Only picks that are among
-// the candidates are kept, and the facts shown with them (lines, titles,
-// states, definitions) are never the model's: the server fills them in, and
-// the agent's own wp resolves each code pick in its live index when it
-// prints the prep. Some prepared tasks are held out (made, never shown to
-// agents), so the ledger can compare like with like: which ones is the prep
-// experiment's arm (WP-254), one in five while its first run lasts.
-
 const (
-	prepPerProject  = 3                // tasks at the front of a project's queue kept prepared
-	prepDueMax      = 6                // tasks one runner gets at a time
-	prepSettle      = 10 * time.Minute // a task edited this recently waits: its text is still moving
-	prepPendingMax  = 30 * time.Minute // a prep still pending after this was lost (a restart); make it again
+	prepPerProject  = 3
+	prepDueMax      = 6
+	prepSettle      = 10 * time.Minute
+	prepPendingMax  = 30 * time.Minute
 	prepRetryFailed = 6 * time.Hour
 	prepBundleMax   = 256 << 10
 	prepMaxFiles    = 20
-	prepMaxSymbols  = 80 // per file
+	prepMaxSymbols  = 80
 	prepMaxBodies   = 12
-	prepBodyMax     = 6000 // bytes of one body
+	prepBodyMax     = 6000
 	prepPromptMax   = 60000
-	prepPickMax     = 8 // files or symbols kept from an answer
-	prepNoteMax     = 4 // open questions kept
+	prepPickMax     = 8
+	prepNoteMax     = 4
 	prepNoteLen     = 300
 	prepWhyLen      = 120
-	prepHistoryMax  = 30  // commits in a bundle
-	prepRelatedMax  = 5   // earlier tasks kept
-	prepTermMax     = 5   // glossary terms kept
-	prepCandMax     = 25  // earlier-task candidates shown to the model
-	prepGlossMax    = 120 // glossary candidates shown to the model
+	prepHistoryMax  = 30
+	prepRelatedMax  = 5
+	prepTermMax     = 5
+	prepCandMax     = 25
+	prepGlossMax    = 120
 )
 
 // PrepBundle is what a runner gathered for a task from its checkout.
@@ -236,8 +218,6 @@ func (s *Service) PrepDue(ctx context.Context, a *Actor, machine string, limit i
 	if limit <= 0 || limit > prepDueMax {
 		limit = prepDueMax
 	}
-	// A lookup that failed is not "no model": the caller is told, not shown
-	// an empty list.
 	ok, rerr := s.aiTaskSetUp(ctx, "prep")
 	if rerr != nil {
 		return nil, rerr
@@ -270,9 +250,6 @@ func (s *Service) PrepDue(ctx context.Context, a *Actor, machine string, limit i
 		}
 		queues = append(queues, queue{pl, ready})
 	}
-	// The front of every queue first; then, while the gateway has spare
-	// capacity, the tasks behind the front, as surplus work (prep ahead,
-	// WP-906): each queue's next few, as deep as the evidence says pays.
 	depth := 0
 	if len(queues) > 0 && s.surplusAllowed(ctx) {
 		depth = s.prepAheadDepth(ctx)
@@ -365,24 +342,15 @@ func (s *Service) UploadPrep(ctx context.Context, a *Actor, key string, b PrepBu
 	if err != nil {
 		return nil, err
 	}
-	// Held out is the prep policy's "no pointers" arm, drawn when an agent
-	// is first given the ready prep (WP-ADR104), not here. A prep made
-	// again keeps it: an agent may have seen the first one.
 	var held bool
 	if err := s.db.R.QueryRowContext(ctx, `SELECT held_out FROM task_preps WHERE issue_id = ?`, i.ID).Scan(&held); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
-	// A task PrepDue handed out behind the front is prepared at surplus
-	// (prep ahead, WP-906); any other at the gateway's default.
 	pos, marked := s.takePrepAhead(i.ID)
 	priority := "normal"
 	if pos > 0 {
 		priority = prioritySurplus
 	}
-	// Another upload while a prep made ahead is still pending (a second
-	// runner, its mark used up) stays that prep ahead: same priority, same
-	// outcome row. Not once PrepDue handed the task out at the front: its
-	// prep is then normal, never one surplus could refuse.
 	var oldState, oldPriority string
 	var oldAt int64
 	stillAhead := false
@@ -395,7 +363,6 @@ func (s *Service) UploadPrep(ctx context.Context, a *Actor, key string, b PrepBu
 	}
 	now := s.nowMS()
 	err = s.write(ctx, a, func(t *tx) error {
-		// A prep ahead made again before any agent got it was wasted.
 		if !stillAhead {
 			if _, err := t.ExecContext(ctx, `UPDATE prep_ahead SET outcome = 'redone', decided_at = ? WHERE issue_id = ? AND outcome = ''`, now, i.ID); err != nil {
 				return err
@@ -415,8 +382,6 @@ func (s *Service) UploadPrep(ctx context.Context, a *Actor, key string, b PrepBu
 	if err != nil {
 		return nil, err
 	}
-	// Read before the request is queued: a surplus prep the gateway turns
-	// away at once is deleted, and the upload it answered was still taken.
 	p, err := s.prepOf(ctx, i, false)
 	s.queuePrep(i.ID, i.Key)
 	return p, err
@@ -536,7 +501,7 @@ var prepPickSchema = map[string]any{
 	"type": "object",
 	"properties": map[string]any{
 		"path": map[string]any{"type": "string"},
-		"name": map[string]any{"type": []string{"string", "null"}}, // optional: strict mode wants it listed, null when absent
+		"name": map[string]any{"type": []string{"string", "null"}},
 		"why":  map[string]any{"type": "string"},
 	},
 	"required":             []string{"path", "name", "why"},
@@ -599,8 +564,6 @@ func (s *Service) runPrep(ctx context.Context, issueID int64) error {
 	model, requestID, err := s.runAIAnswer(pctx, "prep", chain, prepSystem, prompt, prepSchema, &answer)
 	var wait *aiWaitError
 	if err != nil && priority == prioritySurplus && errors.As(err, &wait) {
-		// No spare capacity (WP-906): no prep was made and nothing failed.
-		// The task gets a normal one when it reaches the front.
 		_, werr := s.db.W.ExecContext(ctx, `DELETE FROM task_preps WHERE issue_id = ? AND state = 'pending' AND priority = ?`, issueID, prioritySurplus)
 		s.endPrepAhead(ctx, issueID, "refused")
 		return errors.Join(err, werr)
@@ -643,7 +606,7 @@ func prepTaskText(key, typ, title, desc string, comments []string) string {
 			sb.WriteString("- " + strings.ReplaceAll(c, "\n", "\n  ") + "\n")
 			if left -= len(c); left <= 0 {
 				if more := len(comments) - n - 1; more > 0 {
-					fmt.Fprintf(&sb, "- (%d later comments not shown)\n", more) // WP-449: never dropped unsaid
+					fmt.Fprintf(&sb, "- (%d later comments not shown)\n", more)
 				}
 				break
 			}
@@ -828,12 +791,9 @@ func (s *Service) GetPrep(ctx context.Context, a *Actor, key string, shown bool)
 		p.ShownAt = &t
 	}
 	if shown && a.IsAgent() && !a.ReadOnly {
-		// A prep made ahead paid off if it is what the agent got (WP-906).
 		s.notePrepAheadShown(ctx, i.ID, p.State == "ready" && !p.Stale)
 	}
 	if a.IsAgent() {
-		// The pointers of the task's arm: nothing, the chat prep's, or the
-		// agentic prep's (WP-ADR104).
 		s.prepPolicyApply(ctx, a, i, p, shown && !a.ReadOnly)
 	}
 	return p, nil
@@ -879,7 +839,7 @@ type prepCands struct {
 
 type prepTermCand struct {
 	Term, Definition string
-	line             string // as the model reads it
+	line             string
 }
 
 // prepCandidates gathers the earlier tasks (named by commits that changed
@@ -892,7 +852,7 @@ func (s *Service) prepCandidates(ctx context.Context, i *Issue, b *PrepBundle, t
 	skip := map[string]bool{i.Key: true}
 	if d, err := s.GetIssue(ctx, ai, i.Key); err == nil {
 		for _, r := range d.Relations {
-			skip[r.Issue.Key] = true // shown with the task already
+			skip[r.Issue.Key] = true
 		}
 		if d.Parent != nil {
 			skip[d.Parent.Key] = true
@@ -943,7 +903,7 @@ func (s *Service) prepCandidates(ctx context.Context, i *Issue, b *PrepBundle, t
 			continue
 		}
 		if slices.ContainsFunc(append([]string{g.Term}, g.Aliases...), func(w string) bool { return hasWord(low, strings.ToLower(w)) }) {
-			continue // the brief shows the terms the text uses
+			continue
 		}
 		def := clipRunes(firstLine(g.Definition), 200)
 		line := g.Term

@@ -12,11 +12,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Knowledge (WP-D10): glossary entries and design notes belong to a
-// project or are global, and a project's full set is its own plus its
-// ancestors' plus the global ones. Links connect them, issues and pages to
-// each other and to files and URLs.
-
 // Kinds of item a link can join.
 const (
 	KIssue    = "issue"
@@ -187,8 +182,6 @@ func (s *Service) userRefByID(ctx context.Context, q queryer, id sql.NullInt64) 
 	return &r
 }
 
-// ---- links ----
-
 // KItem is a short description of a linked item.
 type KItem struct {
 	Type       string `json:"type"`
@@ -260,14 +253,11 @@ func (s *Service) end(ctx context.Context, q queryer, e LinkEnd, scope *int64) (
 		if ref == "" {
 			return "", 0, "", invalid("say what to link: a type and id, or a ref")
 		}
-		// ADR7 and ADR-0007 would read as issue keys: a decision code wins
-		// if a note has it.
 		if id, ok := s.designByCodeLoose(ctx, q, ref, scope); ok {
 			return KDesign, id, "", nil
 		}
 		typ, ref = splitTarget(ref)
 		if typ == "" {
-			// A page code (PL13, APPPL13) or an issue key without its dash.
 			if id, ok := s.pageByCodeLoose(ctx, q, ref, scope); ok {
 				return KPage, id, "", nil
 			}
@@ -387,7 +377,7 @@ func (s *Service) resolveName(ctx context.Context, q queryer, typ, name string, 
 		query = `SELECT id FROM design_notes WHERE ` + in + ` AND title = ? COLLATE NOCASE`
 	case KPage:
 		if len(chain) == 0 {
-			return 0, false // personal pages aren't anyone else's link targets
+			return 0, false
 		}
 		query = `SELECT id FROM pages WHERE ` + strings.Replace(in, " OR project_id IS NULL", "", 1) + ` AND title = ? COLLATE NOCASE`
 	default:
@@ -403,8 +393,6 @@ func (s *Service) resolveName(ctx context.Context, q queryer, typ, name string, 
 // an issue key, then (unless the target says its type) a glossary term, a
 // design note, a page.
 func (s *Service) resolveWikilink(ctx context.Context, q queryer, target string, scope *int64) (string, int64, bool) {
-	// [[ADR7]] and [[ADR-0007]] would read as issue keys: a decision code
-	// wins if a note has it.
 	if id, ok := s.designByCodeLoose(ctx, q, target, scope); ok {
 		return KDesign, id, true
 	}
@@ -432,8 +420,6 @@ func (s *Service) resolveWikilink(ctx context.Context, q queryer, target string,
 	case KFile, KURL:
 		return "", 0, false
 	}
-	// [[PL13]]: a page code, in this project or the nearest one above it;
-	// [[APP12]]: an issue key without its dash.
 	if id, ok := s.pageByCodeLoose(ctx, q, target, scope); ok {
 		return KPage, id, true
 	}
@@ -620,7 +606,6 @@ func (s *Service) Resolve(ctx context.Context, actor *Actor, target, project str
 	if typ == KURL || typ == KFile {
 		return s.kitem(ctx, actor, typ, 0, ref)
 	}
-	// R-28, API:R-28 and acme/waypoint#91 aren't knowledge items (WP-122).
 	if typ == "" {
 		if toks := ScanRefs(target); len(toks) == 1 && toks[0] == strings.TrimSpace(target) {
 			var sc refScope
@@ -814,8 +799,6 @@ func (s *Service) addLink(ctx context.Context, t *tx, actor *Actor, in LinkInput
 		basis = linkBasisAgent
 	}
 	if rel == "serves" && tt == KDesign {
-		// A person's no to this pair binds agents: only a person brings
-		// it back, and doing so lifts the no (WP-ADR50).
 		var no int
 		_ = t.QueryRowContext(ctx, `SELECT count(*) FROM goal_dismissals WHERE src_type = ? AND src_id = ? AND goal_id = ?`, ft, fid, tid).Scan(&no)
 		if no > 0 && basis != "" {
@@ -840,16 +823,9 @@ func (s *Service) addLink(ctx context.Context, t *tx, actor *Actor, in LinkInput
 		switch {
 		case err != nil:
 		case basis == "":
-			// A person making a link an agent or Waypoint already made
-			// stands behind it now (WP-382).
 			_, err = t.ExecContext(ctx, `UPDATE knowledge_links SET confirmed_by = ?, confirmed_at = ? WHERE id = ? AND auto = 0 AND confirmed_by IS NULL
 				AND (basis != '' OR created_agent != '' OR created_by IS NULL)`, actor.id(), s.nowMS(), id)
 		default:
-			// An agent stating a link Waypoint only guessed makes it the
-			// agent's claim: still no person's word, but no longer a
-			// guess, whichever got there first. The guess's reason goes
-			// with it; its score stays (a restatement carries none), so
-			// what the matcher thought is still on the row (WP-999).
 			_, err = t.ExecContext(ctx, `UPDATE knowledge_links SET basis = ?, created_by = ?, created_agent = ?, created_at = ?, note = ?, session_id = ?, session_issue_id = ?
 				WHERE id = ? AND confirmed_by IS NULL AND basis IN (?, ?)`,
 				basis, nullUser(actor.id()), actor.creditAgent(), s.nowMS(), strings.TrimSpace(in.Note), sessID, sessTask, id, linkBasisInferred, linkBasisSuggested)
@@ -962,7 +938,6 @@ func (s *Service) RemoveItemLink(ctx context.Context, actor *Actor, id int64) er
 		if _, err := t.ExecContext(ctx, `DELETE FROM knowledge_links WHERE id = ?`, id); err != nil {
 			return err
 		}
-		// A person removing a guess turns it down for good.
 		if isGuess(basis) && dstType == KDesign && dstID.Valid {
 			return s.recordGoalDismissal(ctx, t, actor, src.Type, src.ID, dstID.Int64, was)
 		}
@@ -1020,8 +995,6 @@ func (s *Service) ItemLinks(ctx context.Context, actor *Actor, at LinkEnd) ([]*L
 			return nil, err
 		}
 		r.l.CreatedAt = msTime(c)
-		// A restated guess keeps its score on the row, but an agent's claim
-		// is no guess: only a guess shows it (WP-999).
 		if score.Valid && isGuess(r.basis) {
 			r.l.Score = &score.Float64
 		}
@@ -1060,7 +1033,6 @@ func (s *Service) ItemLinks(ctx context.Context, actor *Actor, at LinkEnd) ([]*L
 		l.Basis = linkBasis(r.basis, l.CreatedAgent, r.by.Int64, r.confirmed.Valid)
 		out = append(out, &l)
 	}
-	// Page↔issue links live with pages.
 	switch typ {
 	case KIssue:
 		pages, err := s.issuePages(ctx, actor, id)
@@ -1160,7 +1132,7 @@ func (s *Service) relinkMentions(ctx context.Context, t *tx, names ...string) er
 		}
 		for _, it := range items {
 			if !mentions(it.text, name) {
-				continue // the name appears, but not as a [[wikilink]] to it
+				continue
 			}
 			var err error
 			if it.typ == KDesign {

@@ -100,7 +100,7 @@ func TestJobLedgerOverlap(t *testing.T) {
 	l := newJobLedger(nil, func() time.Time { return t0 })
 	first := l.start("sweep", time.Minute, t0)
 	second := l.start("sweep", time.Minute, t0.Add(time.Minute))
-	l.end(second, t0.Add(2*time.Minute)) // the second ends first
+	l.end(second, t0.Add(2*time.Minute))
 	running := l.jobsRunning()
 	if len(running) != 1 || !running[0].RunningSince.Equal(t0) {
 		t.Fatalf("one of two ended: %+v", running)
@@ -145,7 +145,6 @@ func TestJobRunResults(t *testing.T) {
 			jobSkip(ctx, "nothing to do")
 			e.s.log.WarnContext(ctx, "and yet", "err", boom)
 		}, jobWarned, "and yet"},
-		// A logger made with With and a group still counts on the run.
 		{"with", func(ctx context.Context) {
 			e.s.log.With("repo", "acme/app").WithGroup("forge").WarnContext(ctx, "grouped", "status", 502)
 		}, jobWarned, "grouped"},
@@ -163,7 +162,6 @@ func TestJobRunResults(t *testing.T) {
 			t.Errorf("%s: runs %d skips %d clean %v", c.name, j.Runs, j.Skips, j.LastCleanAt)
 		}
 	}
-	// What was not a warning made no problem; the rest did, by message.
 	for source, want := range map[string]int{"quiet": 0, "noted": 0, "skips": 0, "warns": 2, "fails": 3, "with": 1} {
 		ps, err := e.s.JobProblems(e.ctx, e.admin, JobProblemQuery{Source: source})
 		if err != nil || len(ps) != want {
@@ -218,7 +216,6 @@ func TestJobPanicIsRecorded(t *testing.T) {
 	if got != "index out of range" {
 		t.Fatalf("the panic stopped at the job: %v", got)
 	}
-	// Saved by the job itself: read without another save.
 	if r := e.one(`SELECT last_result || '|' || last_note || '|' || runs FROM job_health WHERE name = 'fragile'`); r != "crashed|index out of range|1" {
 		t.Errorf("job row: %s", r)
 	}
@@ -242,7 +239,6 @@ func TestLogSourcesAndTargets(t *testing.T) {
 	e.s.log.WarnContext(WithLogSource(e.ctx, SourceRequests), "bad request", "err", boom)
 	e.s.log.ErrorContext(WithLogSource(e.ctx, sourceEvents), "delivery failed", "automation", "Notify", "project", "WP", "err", boom)
 	e.s.log.Warn("no context at all", "err", boom)
-	// repo wins over project whatever the order; one problem a repo.
 	e.runJob("sync", time.Minute, func(ctx context.Context) {
 		e.s.log.WarnContext(ctx, "repo sync failed", "project", "WP", "repo", "acme/one", "err", boom)
 		e.s.log.WarnContext(ctx, "repo sync failed", "repo", "acme/two", "err", errors.New("token hunter2-hunter2-hunter2 refused"))
@@ -254,7 +250,7 @@ func TestLogSourcesAndTargets(t *testing.T) {
 		{sourceBackground, "loose warning", ""},
 		{sourceBackground, "no context at all", ""},
 		{SourceRequests, "bad request", ""},
-		{sourceEvents, "delivery failed", "WP"}, // project before automation
+		{sourceEvents, "delivery failed", "WP"},
 		{"sync", "repo sync failed", "acme/one"},
 		{"sync", "repo sync failed", "acme/two"},
 		{"sync", "forge unreachable", "git.example"},
@@ -327,13 +323,13 @@ func TestPersistentProblemIsTold(t *testing.T) {
 	e.pass(12 * time.Hour)
 	e.warnJob("sync", every)
 	check()
-	e.pass(11 * time.Hour) // 23h: three times, not yet a day
+	e.pass(11 * time.Hour)
 	e.warnJob("sync", every)
 	check()
 	if p := e.problemOf("sync", "repo sync failed", "acme/app"); p == nil || p.Persistent || p.StreakCount != 3 || len(e.serverNotices(e.admin)) != 0 {
 		t.Fatalf("before the hold: %+v %v", p, e.serverNotices(e.admin))
 	}
-	e.pass(2 * time.Hour) // 25h
+	e.pass(2 * time.Hour)
 	e.warnJob("sync", every)
 	check()
 	p := e.problemOf("sync", "repo sync failed", "acme/app")
@@ -353,7 +349,6 @@ func TestPersistentProblemIsTold(t *testing.T) {
 	if got := e.serverNotices(e.admin); len(got) != 1 {
 		t.Fatalf("told again at once: %v", got)
 	}
-	// A week on and nobody acknowledged it: once more, and no oftener.
 	for range 14 {
 		e.pass(12 * time.Hour)
 		e.warnJob("sync", every)
@@ -363,7 +358,6 @@ func TestPersistentProblemIsTold(t *testing.T) {
 	if len(got) != 2 || !strings.Contains(got[1], "still unacknowledged") {
 		t.Fatalf("the reminder: %v", got)
 	}
-	// Acknowledged: listed, not told again.
 	if _, err := e.s.AckJobProblem(e.ctx, e.admin, p.ID, "that repo is archived"); err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +372,6 @@ func TestPersistentProblemIsTold(t *testing.T) {
 	if p = e.problemOf("sync", "repo sync failed", "acme/app"); !p.Persistent || p.AckedBy != "robin" || p.AckReason != "that repo is archived" {
 		t.Errorf("acknowledged: %+v", p)
 	}
-	// Quiet for longer than the gap: over, and said so.
 	e.pass(24 * time.Hour)
 	e.runJob("sync", every, nil)
 	check()
@@ -395,15 +388,12 @@ func TestPersistentProblemIsTold(t *testing.T) {
 	if got = e.serverNotices(e.admin); len(got) != 3 {
 		t.Fatalf("over told twice: %v", got)
 	}
-	// It comes back a day later: the same row, a new streak, still
-	// acknowledged (it was quiet for less than ackQuiet).
 	e.pass(24 * time.Hour)
 	e.warnJob("sync", every)
 	check()
 	if p = e.problemOf("sync", "repo sync failed", "acme/app"); p.ClearedAt != nil || p.StreakCount != 1 || p.Persistent || p.AckedAt == nil || p.Count != 35 {
 		t.Errorf("back: %+v", p)
 	}
-	// Over again, quiet past ackQuiet, back: new, so told when it persists.
 	e.pass(ackQuiet + 26*time.Hour)
 	check()
 	for range 4 {
@@ -433,8 +423,6 @@ func TestStartupJobProblem(t *testing.T) {
 	if _, err := e.s.AckJobProblem(e.ctx, e.admin, p.ID, "known"); err != nil {
 		t.Fatal(err)
 	}
-	// Ten days and a restart later it fails again: the same open problem,
-	// still acknowledged, nobody told.
 	e.pass(10 * 24 * time.Hour)
 	e.s.CheckJobHealth(e.ctx)
 	e.warnJob("backfill", 0)
@@ -469,7 +457,6 @@ func TestProblemsOutsideJobs(t *testing.T) {
 		!strings.Contains(got[0], "requests: request failed: 5× over 28h") {
 		t.Fatalf("notices: %v", got)
 	}
-	// A warning outside a scheduled job persists like an error does.
 	if p := e.problemOf(SourceRequests, "request failed", ""); p == nil || !p.Persistent || p.Count != 5 {
 		t.Errorf("a request's warning: %+v", p)
 	}
@@ -500,13 +487,12 @@ func TestStuckAndSilentJobs(t *testing.T) {
 		t.Errorf("states: %+v %+v %+v", a, b, s)
 	}
 	e.s.CheckJobHealth(e.ctx)
-	e.pass(15 * time.Minute) // 31m: slow, every 10m, is silent on its own
+	e.pass(15 * time.Minute)
 	e.runJob("alone", time.Minute, nil)
 	e.s.CheckJobHealth(e.ctx)
 	if got = e.serverNotices(e.admin); len(got) != 2 || !strings.HasPrefix(got[1], "The server needs a look: slow has not started for 31m (it runs every 10m)") {
 		t.Fatalf("silent: %v", got)
 	}
-	// They run again.
 	l.end(hung, e.clockNow())
 	e.runJob("loop b", time.Minute, nil)
 	e.runJob("slow", 10*time.Minute, nil)
@@ -552,7 +538,6 @@ func TestSilenceCountsFromTheStart(t *testing.T) {
 	e.s.jobs.declare("sync", time.Minute, "")
 	e.runJob("sync", time.Minute, nil)
 	e.s.CheckJobHealth(e.ctx)
-	// Down for a day, then a new process on the same database.
 	e.pass(24 * time.Hour)
 	s2 := New(e.s.db, Config{BaseURL: "https://wp.test"}, nil)
 	s2.SetClock(e.clockNow)
@@ -583,7 +568,6 @@ func TestJobAlertIsAtomic(t *testing.T) {
 	if n := e.one(`SELECT count(*) FROM job_problems WHERE alerted_at IS NOT NULL`); n != "0" || len(e.serverNotices(e.admin)) != 0 {
 		t.Fatalf("marked told though the notification failed: %s %v", n, e.serverNotices(e.admin))
 	}
-	// The failure is itself on record.
 	if p := e.problemOf(jobHealthName, "check job health", ""); p == nil && e.problemOf(sourceBackground, "check job health", "") == nil {
 		t.Error("the failed check left no problem")
 	}
@@ -670,7 +654,7 @@ func TestProblemCaps(t *testing.T) {
 		for i := range maxProblemsPerSource + 50 {
 			e.s.log.WarnContext(ctx, fmt.Sprintf("failed on item %d", i), "err", errors.New("x"))
 		}
-		e.s.log.WarnContext(ctx, "failed on item 0", "err", errors.New("x")) // one already listed still counts as itself
+		e.s.log.WarnContext(ctx, "failed on item 0", "err", errors.New("x"))
 	})
 	e.s.saveJobHealth(e.ctx)
 	if r := e.one(`SELECT count(*) || '|' || sum(count) FROM job_problems WHERE source = 'chatty'`); r != fmt.Sprintf("%d|%d", maxProblemsPerSource+1, maxProblemsPerSource+51) {
@@ -682,7 +666,6 @@ func TestProblemCaps(t *testing.T) {
 	if r := e.one(`SELECT count FROM job_problems WHERE source = 'chatty' AND message = 'failed on item 0'`); r != "2" {
 		t.Errorf("a listed one: %s", r)
 	}
-	// On disk, across saves.
 	now := e.s.nowMS()
 	for i := range maxOpenProblems {
 		e.exec(`INSERT INTO job_problems(source, message, target, level, first_at, last_at, count, streak_since, streak_count) VALUES ('wordy', ?, '', 'warn', ?, ?, 1, ?, 1)`,
@@ -752,7 +735,7 @@ func TestPruneJobHealth(t *testing.T) {
 	e.exec(`INSERT INTO job_health(name, period_ms, last_start, last_end) VALUES ('renamed long ago', 60000, ?, ?), ('removed lately', 60000, ?, ?)`,
 		ms(jobRowKeep+time.Hour), ms(jobRowKeep+time.Hour), ms(time.Hour), ms(time.Hour))
 	e.exec(`UPDATE job_health SET last_start = ?, last_end = ? WHERE name = 'kept'`, ms(30*24*time.Hour), ms(30*24*time.Hour))
-	e.pass(time.Hour) // the prune is hourly
+	e.pass(time.Hour)
 	e.s.pruneJobHealth(e.ctx, e.clockNow(), e.s.jobs.declared())
 	if r := e.one(`SELECT group_concat(name, ',') FROM (SELECT name FROM job_health ORDER BY name)`); r != "kept,removed lately" {
 		t.Errorf("jobs: %s", r)
@@ -804,7 +787,6 @@ func TestJobHistory(t *testing.T) {
 	if _, err = e.s.JobHistory(e.ctx, e.admin, "no such job", time.Time{}, ""); !errors.Is(err, ErrNotFound) {
 		t.Errorf("unknown: %v", err)
 	}
-	// A source that is no scheduled job has a history too.
 	e.s.log.ErrorContext(WithLogSource(e.ctx, SourceRequests), "request panicked", "err", errors.New("x"))
 	if h, err = e.s.JobHistory(e.ctx, e.admin, SourceRequests, time.Time{}, ""); err != nil || h.Job != nil || len(h.Spans) != 1 || h.Spans[0].Errors != 1 || len(h.Problems) != 1 {
 		t.Errorf("requests: %+v %v", h, err)
@@ -873,8 +855,6 @@ func TestScheduleIsSound(t *testing.T) {
 	if len(at) != 66 {
 		t.Errorf("%d jobs: one was added or removed; name it above", len(at))
 	}
-	// The watchdog is started by RunScheduler on its own, not by the loop it
-	// watches; it is declared with the self-timed jobs.
 	if _, ok := at[healthWatchdogName]; ok {
 		t.Errorf("%q is in the schedule: the loop it watches would launch it", healthWatchdogName)
 	}
@@ -882,9 +862,9 @@ func TestScheduleIsSound(t *testing.T) {
 		t.Errorf("%q is not a self-timed job", healthWatchdogName)
 	}
 	for _, order := range [][2]string{
-		{"quota guard watch", "autopilot"}, // the guard holds before autopilot starts (WP-932)
+		{"quota guard watch", "autopilot"},
 		{"quota guard", "quota guard baselines"},
-		{"audits", "objectives"}, // a judge's audit is moved on before the objective that reads it (WP-ADR142)
+		{"audits", "objectives"},
 		{"forge sync", "armed heads"},
 		{"backup", "timed automations"},
 		{"timed automations", "runners"},
@@ -893,7 +873,6 @@ func TestScheduleIsSound(t *testing.T) {
 			t.Errorf("%q must come before %q", order[0], order[1])
 		}
 	}
-	// The server's start runs the hourly jobs first, as it did.
 	if startup[0] != "due reminders" || startup[len(startup)-1] != "auto question notices" {
 		t.Errorf("at the start: %v", startup)
 	}
@@ -982,7 +961,6 @@ func TestSchedulerLaneSkipsWhileBusy(t *testing.T) {
 	if j := e.jobOf("slow"); j.Runs != 2 || j.Skips != 2 || j.Running {
 		t.Errorf("after: %+v", j)
 	}
-	// The lane is free again.
 	r.mu.Lock()
 	busy := len(r.busy)
 	r.mu.Unlock()
@@ -1071,12 +1049,10 @@ func TestCalledOffWorkIsNoProblem(t *testing.T) {
 	if err != nil || len(h.Spans) != 1 || h.Spans[0].Noted != 2 || h.Spans[0].Warnings != 0 || h.Spans[0].Errors != 0 {
 		t.Errorf("counted: %+v %v", h, err)
 	}
-	// The same logged with a live context is a warning as ever.
 	e.warnJob("live", time.Minute)
 	if j := e.jobOf("live"); j.LastResult != jobWarned {
 		t.Errorf("live run: %+v", j)
 	}
-	// A deadline is no hang-up.
 	dctx, cancel := context.WithTimeout(e.ctx, time.Nanosecond)
 	defer cancel()
 	<-dctx.Done()
@@ -1084,7 +1060,6 @@ func TestCalledOffWorkIsNoProblem(t *testing.T) {
 	if e.problemOf("slow", "ran out of time", "") == nil {
 		t.Error("a deadline that ran out made no problem")
 	}
-	// A run whose context is not cancelled and which logged nothing is clean.
 	e.runJob("fine", time.Minute, nil)
 	if j := e.jobOf("fine"); j.LastResult != jobClean {
 		t.Errorf("fine: %+v", j)
@@ -1125,7 +1100,6 @@ func TestStoppedRunMovesNothing(t *testing.T) {
 	if err != nil || len(h.Spans) != 1 || h.Spans[0].Runs != 2 || h.Spans[0].Unclean != 1 {
 		t.Errorf("a stopped run was counted unclean: %+v %v", h, err)
 	}
-	// A clean run does clear it, so the check above could fail.
 	e.pass(time.Minute)
 	e.runJob("once", 0, nil)
 	if p := e.problemOf("once", "repo sync failed", "acme/app"); p == nil || p.ClearedAt == nil {

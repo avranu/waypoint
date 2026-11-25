@@ -32,8 +32,6 @@ func TestProtectedFiles(t *testing.T) {
 	if protectedFiles(nil, files) != nil {
 		t.Error("no globs protect something")
 	}
-	// "!" exempts committed templates from a broader rule, wherever it sits
-	// in the list (WP-505).
 	globs = []string{"!**/.env.example", "**/.env", "**/.env.*", "!**/.env.sample"}
 	files = []string{"deploy/.env.example", ".env.sample", "deploy/.env", ".env.production", "deploy/.env.example.bak", "main.go"}
 	got = protectedFiles(globs, files)
@@ -90,7 +88,6 @@ func TestAgentJobProtectedComparesTheTarget(t *testing.T) {
 	}{
 		{"merged the target", merge, "release", true, false},
 		{"no target known", merge, "", false, true},
-		// The edit is held for a check; the merge of the target goes (WP-ADR138).
 		{"edited it too", merge + "echo edited >> .github/workflows/ci.yml\ngit -c user.name=a -c user.email=a@example.com commit -qam edit\n", "release", true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -136,7 +133,6 @@ func TestAgentJobProtectedTakesACleanMerge(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// main changes the last step; the branch the first, or the last.
 	setup := func(t *testing.T, branchCI string) string {
 		t.Helper()
 		remote := newGitRepo(t)
@@ -169,7 +165,6 @@ func TestAgentJobProtectedTakesACleanMerge(t *testing.T) {
 	}
 	apart := "on: push\njobs:\n  a: ONE\n  b: two\n  c: three\n  d: four\n"
 	same := "on: push\njobs:\n  a: one\n  b: two\n  c: three\n  d: 4\n"
-	// What the agent left ci.yml as, where it is held ("" deleted).
 	head := "on: push\njobs:\n  a: one\n  b: two\n  c: three\n"
 	agentCI := map[string]string{
 		"and edited too":                             "on: push\njobs:\n  a: ONE\n  b: two\n  c: three\n  d: FOUR\n  e: five\n",
@@ -186,31 +181,17 @@ func TestAgentJobProtectedTakesACleanMerge(t *testing.T) {
 		name, branchCI, script string
 		pushed, held, heldAll  bool
 	}{
-		// work.txt conflicts; ci.yml merges on its own.
 		{"ci.yml merged by git", apart, merge + "echo both > work.txt\n" + commit, true, false, false},
-		// The extra line is held; the merge and work.txt go.
 		{"and edited too", apart, merge + "echo both > work.txt\necho '  e: five' >> .github/workflows/ci.yml\n" + commit, true, true, false},
-		// Both changed the same line: the agent settles it with a line of its
-		// own, which can't be split from the merge, so nothing is pushed.
 		{"ci.yml conflicted, a new line", same, merge + conflictCI("FOUR 4") + commit, false, true, true},
-		// Settled with both sides' lines whole, one after the other: the
-		// merge's own work.
 		{"ci.yml conflicted, both kept", same, merge + conflictCI(`4\n  d: FOUR`) + commit, true, false, false},
 		{"ci.yml conflicted, both kept, theirs first", same, merge + conflictCI(`FOUR\n  d: 4`) + commit, true, false, false},
-		// The target's file taken whole is the target's own (notOnBase).
 		{"ci.yml conflicted, theirs taken", same, merge + conflictCI("FOUR") + commit, true, false, false},
-		// The branch's file taken whole isn't in the round's diff, yet drops
-		// the target's change to it (audit #1091.1): held, as any other
-		// settling that drops a side's line.
 		{"ci.yml conflicted, ours taken", same, merge + conflictCI("4") + commit, false, true, true},
-		// A change of the target's that git merged on its own, set back to
-		// the branch's: the target's line dropped.
 		{"ci.yml merged by git, main's change undone", apart, merge + "echo both > work.txt\nprintf 'on: push\\njobs:\\n  a: ONE\\n  b: two\\n  c: three\\n  d: four\\n' > .github/workflows/ci.yml\n" + commit, true, true, false},
-		// A line both sides had, deleted while settling the conflict.
 		{"ci.yml conflicted, a shared line deleted", same, merge + `echo both > work.txt
 printf 'on: push\njobs:\n  a: one\n  b: two\n  d: 4\n  d: FOUR\n' > .github/workflows/ci.yml
 ` + commit, false, true, true},
-		// The file deleted while settling a conflict in it.
 		{"ci.yml conflicted, deleted", same, merge + "echo both > work.txt\ngit rm -q .github/workflows/ci.yml\n" + commit, false, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -242,13 +223,9 @@ printf 'on: push\njobs:\n  a: one\n  b: two\n  d: 4\n  d: FOUR\n' > .github/work
 			if !tc.held {
 				return
 			}
-			// How the agent settled a conflict is shown against the merge as
-			// git left it: dropping the target's side shows as its line gone.
 			if merged, _ := resultOf(o)["held_merge"].(string); tc.name == "ci.yml conflicted, ours taken" && !strings.Contains(merged, "-  d: FOUR") {
 				t.Errorf("held_merge %q", merged)
 			}
-			// The held patch applies to the branch as the round left it on the
-			// forge: pushing it later gives what the agent made.
 			patch, _ := resultOf(o)["held_patch"].(string)
 			po := p.execAgent(context.Background(), newRun(time.Minute), "agent", agentJob{Repo: remote, Base: "fix/x", Branch: "fix/x", Push: true, Patch: patch, CommitMessage: "Held"})
 			if po.State != "done" {
@@ -296,7 +273,6 @@ func TestAgentJobPermissionArguments(t *testing.T) {
 		t.Errorf("edit_run: %s", a)
 	}
 
-	// Codex: the sandbox, and network only when commands may run.
 	codex := func(job agentJob) string {
 		rec := fakeCLI(t, "codex", `#!/bin/sh
 cat > "$FAKE_OUT/stdin"
@@ -321,7 +297,6 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
 		t.Errorf("codex edit_run: %s", a)
 	}
 
-	// opencode: permissions go in the environment.
 	opencode := func(perm string) string {
 		rec := fakeCLI(t, "opencode", `#!/bin/sh
 case "$*" in *"--help"*) echo "  --format  format: default or json"; exit 0;; esac
@@ -388,7 +363,6 @@ func TestAgentJobRefusesToPushProtectedFiles(t *testing.T) {
 	job := agentJob{CLI: "claude", Prompt: "fix the test", Repo: remote, Branch: "fix/ci", Push: true, Permission: "edit_run", CommitMessage: "Fix"}
 	job.ProtectPaths = []string{".github/**", "**/package-lock.json"}
 	o := p.execAgent(context.Background(), newRun(time.Minute), "agent", job)
-	// The workflow is held and the fix goes (WP-ADR138).
 	res, _ := o.Result.(map[string]any)
 	if o.State != "done" || res["pushed"] != true {
 		t.Fatalf("outcome = %+v", o)
@@ -405,7 +379,6 @@ func TestAgentJobRefusesToPushProtectedFiles(t *testing.T) {
 	remote = newGitRepo(t)
 	gitOut(t, remote, "config", "receive.denyCurrentBranch", "ignore")
 	job.Repo = remote
-	// Without the protection the same job pushes, and says which files it changed.
 	job.ProtectPaths = nil
 	o = p.execAgent(context.Background(), newRun(time.Minute), "agent", job)
 	if o.State != "done" {
@@ -449,7 +422,6 @@ func TestAgentJobProtectedRenamesAndOddNames(t *testing.T) {
 			if o.State != "done" || !slices.Contains(files, tc.want) {
 				t.Fatalf("outcome = %+v", o)
 			}
-			// Held, whatever it was named: what was pushed has none of it.
 			pushed := gitOut(t, remote, "branch", "--list", "fix/x") != ""
 			if pushed != (tc.name == "renamed out" || tc.name == "renamed in") {
 				t.Errorf("pushed = %v", pushed)
@@ -494,17 +466,13 @@ func TestResolutionIsTheMerge(t *testing.T) {
 			}
 		})
 	}
-	// diff3 style carries the base's lines, which neither side kept.
 	diff3 := "a\n<<<<<<< ours\nmine\n||||||| base\nold\n=======\ntheirs\n>>>>>>> theirs\nb\n"
 	if !resolutionIsTheMerge("a\nmine\ntheirs\nb\n", diff3) || resolutionIsTheMerge("a\nold\nb\n", diff3) {
 		t.Error("diff3 style")
 	}
-	// A conflict git left no markers for (one side deleted the file, the
-	// other changed it): only that file as git left it is the merge's own.
 	if !resolutionIsTheMerge("kept\n", "kept\n") || resolutionIsTheMerge("", "kept\n") {
 		t.Error("modify/delete")
 	}
-	// Markers out of order are no merge git made.
 	for _, bad := range []string{"<<<<<<< a\nx\n", "=======\n", ">>>>>>> b\n", "<<<<<<< a\n<<<<<<< a\n=======\n>>>>>>> b\n"} {
 		if resolutionIsTheMerge("x\n", bad) {
 			t.Errorf("odd markers %q", bad)
@@ -552,8 +520,6 @@ func TestExecPatch(t *testing.T) {
 			}
 		})
 	}
-	// It pushes only to the branch it starts from: against a remote it could
-	// push to, with a patch that applies, the guard is what stops it.
 	remote := newGitRepo(t)
 	gitOut(t, remote, "config", "receive.denyCurrentBranch", "ignore")
 	gitOut(t, remote, "branch", "fix/x")

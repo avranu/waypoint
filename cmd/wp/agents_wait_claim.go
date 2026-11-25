@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// The wait claim (WP-1443): how `wp agents wait` learns which agent called it.
-
 // claimWait records, from the guard hook once it has decided to let the call
 // through, that a Bash call is about to run `wp agents wait`, and which agent
 // made it: the command cannot tell, since a subagent's shell has its
@@ -105,7 +103,6 @@ var ancestorCmdlines = func() []string {
 		if err != nil {
 			break
 		}
-		// pid (comm) state ppid ...: comm may hold spaces and parentheses.
 		rest := string(st)
 		k := strings.LastIndexByte(rest, ')')
 		if k < 0 {
@@ -220,7 +217,6 @@ func shellCommandsQuoted(cmd string) (out [][]string, plain [][]int) {
 		case ' ', '\t':
 			endWord()
 		case '&':
-			// The & of a redirection (2>&1, >&2, <&3, &>f, &>>f) is part of the word.
 			if (i > 0 && (rs[i-1] == '>' || rs[i-1] == '<')) || (i+1 < len(rs) && rs[i+1] == '>') {
 				w.WriteRune(r)
 				inWord = true
@@ -268,7 +264,7 @@ func skipWrappers(words []string) (rest []string, script string) {
 			for i < len(words) && (strings.HasPrefix(words[i], "-") || isAssignment(words[i]) ||
 				(w != "env" && reDigitLed.MatchString(words[i]))) {
 				if wrapperValueOpts[w][words[i]] {
-					i++ // its value is the next word: timeout -s KILL, env -u NAME
+					i++
 				}
 				i++
 			}

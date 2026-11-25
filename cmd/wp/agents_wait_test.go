@@ -62,7 +62,6 @@ func TestNoopRefusal(t *testing.T) {
 	}
 	startAgent(c, "boss", "a1", true)
 	startAgent(c, "boss", "f1", false)
-	// Nothing running (a1 has no children, no background task): not a poll.
 	for _, cmd := range []string{"echo waiting", "echo done", "true"} {
 		for _, agent := range []string{"", "a1", "f1"} {
 			if k, text := c.hookRefusalFor(bashIn(agent, cmd, false)); k != "" || text != "" {
@@ -70,8 +69,6 @@ func TestNoopRefusal(t *testing.T) {
 			}
 		}
 	}
-	// A nil cli (the doc on hookRefusalFor allows one) never panics, and
-	// refuses only for a running background task.
 	var nilC *cli
 	if k, text := nilC.hookRefusalFor(bashIn("a1", "echo done", false)); k != "" {
 		t.Errorf("nil cli, nothing running: %s %q", k, text)
@@ -83,12 +80,10 @@ func TestNoopRefusal(t *testing.T) {
 	if k, text := nilC.hookRefusalFor(bashIn("", "echo done", false)); k != "noop-poll" || !strings.Contains(text, "you are told when it exits") {
 		t.Errorf("nil cli, main, task running: %s %q", k, text)
 	}
-	// A running background task: refused.
 	if k, text := c.hookRefusalFor(bashIn("", "echo done", false)); k != "noop-poll" || !strings.Contains(text, "does nothing") || strings.Contains(text, "Monitor") {
 		t.Errorf("task running: %s %q", k, text)
 	}
 	bgTaskRunning = func(string) bool { return false }
-	// Live children: refused, with nothing else running.
 	startAgent(c, "f2", "kid9", true)
 	if k, text := c.hookRefusalFor(bashIn("f2", "echo done", false)); k != "noop-poll" || !strings.Contains(text, "agents are still running") {
 		t.Errorf("live children: %s %q", k, text)
@@ -116,7 +111,6 @@ func TestNoopRefusal(t *testing.T) {
 	if !strings.Contains(fg, "wp agents wait` in the foreground") || !strings.Contains(fg, "600000") || strings.Contains(fg, "run_in_background: true") || strings.Contains(fg, "Monitor") {
 		t.Errorf("children, foreground: %q", fg)
 	}
-	// kid belongs to a1, so the main thread has no agents of its own running
 	if strings.Contains(main, "wp agents wait") || strings.Contains(main, "agents you started") {
 		t.Errorf("children, main (not its agents): %q", main)
 	}
@@ -147,7 +141,7 @@ func TestSleepTexts(t *testing.T) {
 			if who != callerMain && strings.Contains(got, "Monitor") {
 				t.Errorf("%q: a subagent is told of Monitor: %q", cmd, got)
 			}
-			if who == callerFg { // callerOf reads an agent whose start is unknown as callerFg too
+			if who == callerFg {
 				if rest := strings.ToLower(reEndWarning.ReplaceAllString(got, "")); strings.Contains(rest, "end your turn") || strings.Contains(rest, "ending your turn") {
 					t.Errorf("%q: a foreground agent is told to end its turn: %q", cmd, got)
 				}
@@ -177,7 +171,6 @@ func TestMonitorNote(t *testing.T) {
 	if !strings.Contains(out.String(), "does not keep a subagent's run open") || strings.Contains(out.String(), "Sleeping") || !strings.Contains(out.String(), "run_in_background: true") {
 		t.Errorf("first: %q", out.String())
 	}
-	// a foreground subagent: the same note, without the advice to end the turn
 	startAgent(c, "", "f", false)
 	var fo bytes.Buffer
 	hookClaudeNudge(c, strings.NewReader(strings.Replace(in, `"agent_id":"a"`, `"agent_id":"f"`, 1)), &fo)
@@ -210,7 +203,7 @@ func TestWaitForRuns(t *testing.T) {
 			case 2:
 				delete(live, "a")
 			case 3:
-				live["b"] = liveAgent{Since: now} // b stopped and was resumed: a new run
+				live["b"] = liveAgent{Since: now}
 			}
 		},
 		live: func() (map[string]liveAgent, bool) { return live, true },
@@ -251,7 +244,6 @@ func TestAgentsWaitCommand(t *testing.T) {
 		t.Errorf("none: %v %q", err, out.String())
 	}
 
-	// the caller is identified by a claim: a1's children only
 	c, out, errb := newC()
 	c.trackAgentParent(hookEventInput{SessionID: "s", AgentID: "a1", ToolResponse: []byte(`{"agentId":"kid1"}`)})
 	c.trackAgentParent(hookEventInput{SessionID: "s", AgentID: "", ToolResponse: []byte(`{"agentId":"kid2"}`)})
@@ -267,7 +259,6 @@ func TestAgentsWaitCommand(t *testing.T) {
 		t.Errorf("claimed: %v %q %q", err, out.String(), errb.String())
 	}
 
-	// no claim: the hooks didn't see the call, so exit 2 at once, naming nothing
 	c2, out2, err2 := newC()
 	c2.trackSubagent(hookEventInput{SessionID: "s", AgentID: "kid2", AgentType: "worker", HookEventName: "SubagentStart"})
 	err := cmdAgentsWait(c2, []string{"--timeout", "100ms"})
@@ -275,8 +266,6 @@ func TestAgentsWaitCommand(t *testing.T) {
 		t.Errorf("no claim: %v %q %q", err, out2.String(), err2.String())
 	}
 
-	// a main-thread claim (empty agent id) waits for the main thread's children,
-	// never the caller itself, and the timeout lists what is left and says to call again
 	c4, _, _ := newC()
 	c4.trackAgentParent(hookEventInput{SessionID: "s", AgentID: "", ToolResponse: []byte(`{"agentId":"kid2"}`)})
 	c4.trackSubagent(hookEventInput{SessionID: "s", AgentID: "kid2", AgentType: "worker", HookEventName: "SubagentStart"})
@@ -289,7 +278,6 @@ func TestAgentsWaitCommand(t *testing.T) {
 		t.Errorf("default timeout %v", agentsWaitDefault)
 	}
 
-	// named ids, one running and one not
 	c3, out3, _ := newC()
 	c3.trackSubagent(hookEventInput{SessionID: "s", AgentID: "abcdef123", AgentType: "worker", HookEventName: "SubagentStart"})
 	go func() {

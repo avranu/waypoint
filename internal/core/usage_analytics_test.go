@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// ---- helpers ----
-
 type uaEnv struct {
 	*env
 	me *Actor
@@ -52,8 +50,6 @@ func msg(h int64, session, repo, model, kind string, n, in, out, cw5, cw1, cr in
 
 func approx(a, b float64) bool { d := a - b; return d < 1e-9 && d > -1e-9 }
 
-// ---- ingest ----
-
 func TestUsageIngestIsIdempotentAndAdditive(t *testing.T) {
 	e := newAnalyticsEnv(t)
 	h := e.hour(-1)
@@ -64,15 +60,12 @@ func TestUsageIngestIsIdempotentAndAdditive(t *testing.T) {
 	if r := e.ingest(e.me, "c1", "m1", chunk); r.Accepted != 0 || r.Duplicate != 1 {
 		t.Errorf("repeat: %+v", r)
 	}
-	// Another range of the same session adds to the same hour; a negative
-	// difference (a message written again with fewer tokens) subtracts.
 	e.ingest(e.me, "c2", "m1", UsageChunk{Messages: []UsageMessageRow{msg(h, "s1", "a/b", "claude-opus-5-5", "main", 1, 10, -5, 0, 0, 100)}})
 	o := e.overview(e.me, UsageQuery{})
 	t1 := o.Totals
 	if t1.Messages != 3 || t1.Input != 110 || t1.Output != 45 || t1.CacheWrite != 15 || t1.CacheWrite1h != 5 || t1.CacheRead != 1000 {
 		t.Errorf("totals: %+v", t1)
 	}
-	// one hour, so one usage_hours row
 	var n int
 	if err := e.s.db.R.QueryRow(`SELECT count(*) FROM usage_hours`).Scan(&n); err != nil || n != 1 {
 		t.Errorf("rows: %d %v", n, err)
@@ -95,12 +88,10 @@ func TestUsageIngestChecksWhoAndWhat(t *testing.T) {
 	if _, err := e.s.IngestUsage(e.ctx, e.me, UsageIngest{Chunks: good.Chunks}); err == nil {
 		t.Error("no machine")
 	}
-	// An agent's hooks upload too (they run inside its sessions).
 	agent := &Actor{User: e.me.User, Agent: "anthropic/claude-code"}
 	if _, err := e.s.IngestUsage(e.ctx, agent, good); err != nil {
 		t.Errorf("agent upload: %v", err)
 	}
-	// Rows with impossible hours are dropped, not stored.
 	bad := UsageIngest{Machine: "m", Chunks: []UsageChunk{{ID: "y", Messages: []UsageMessageRow{
 		msg(5, "s", "", "claude-opus-5-5", "", 1, 7, 7, 0, 0, 0),
 		msg(e.hour(24*40), "s", "", "claude-opus-5-5", "", 1, 7, 7, 0, 0, 0),
@@ -112,7 +103,6 @@ func TestUsageIngestChecksWhoAndWhat(t *testing.T) {
 	if o := e.overview(e.me, UsageQuery{}); o.Totals.Input != 1 {
 		t.Errorf("only the good row should count: %+v", o.Totals)
 	}
-	// Its agent can read it back; another person can't.
 	if o, err := e.s.UsageOverview(e.ctx, agent, UsageQuery{}); err != nil || o.Totals.Input != 1 {
 		t.Errorf("the person's agent: %+v %v", o, err)
 	}
@@ -126,11 +116,9 @@ func TestUsageIngestChecksWhoAndWhat(t *testing.T) {
 	}
 }
 
-// ---- reading ----
-
 func TestUsageOverviewTotalsCostAndBreakdowns(t *testing.T) {
 	e := newAnalyticsEnv(t)
-	d1, d2 := e.hour(-30), e.hour(-6) // the previous day and today (clock is noon)
+	d1, d2 := e.hour(-30), e.hour(-6)
 	e.ingest(e.me, "a", "devhost", UsageChunk{
 		Messages: []UsageMessageRow{
 			msg(d1, "s1", "acme/web", "claude-opus-5-5", "main", 10, 1_000_000, 200_000, 400_000, 100_000, 5_000_000),
@@ -142,8 +130,6 @@ func TestUsageOverviewTotalsCostAndBreakdowns(t *testing.T) {
 	e.ingest(e.me, "b", "prodhost", UsageChunk{Messages: []UsageMessageRow{msg(d2, "s3", "acme/web", "claude-opus-5-5", "main", 2, 10, 10, 0, 0, 0)}})
 	o := e.overview(e.me, UsageQuery{Days: 7})
 
-	// cost: opus 5.5 = 1M*4 + 200k*20 + 400k*5 + 100k*8 + 5M*0.2 = 4+4+2+0.8+1 = 11.8
-	// haiku 5.5 = 0.5M*0.1 + 10k*0.5/1e6 + 1M*0.01 = 0.05+0.005+0.01 = 0.065 (opus s3: 40/1e6+200/1e6)
 	wantCost := 11.8 + 0.065 + (10*4+10*20)/1e6
 	if !approx(o.Totals.CostUSD, wantCost) {
 		t.Errorf("cost %v, want %v", o.Totals.CostUSD, wantCost)
@@ -151,7 +137,6 @@ func TestUsageOverviewTotalsCostAndBreakdowns(t *testing.T) {
 	if o.Totals.UnpricedTokens != 2000 || len(o.Unpriced) != 1 || o.Unpriced[0] != "mystery-model-1" {
 		t.Errorf("unpriced: %d %v", o.Totals.UnpricedTokens, o.Unpriced)
 	}
-	// hit rate = reads / (uncached + writes + reads)
 	all := float64(1_000_000 + 500_000 + 1000 + 10 + 500_000 + 6_000_000)
 	if o.Totals.HitRate == nil || !approx(*o.Totals.HitRate, 6_000_000/all) {
 		t.Errorf("hit rate: %v", o.Totals.HitRate)
@@ -159,7 +144,6 @@ func TestUsageOverviewTotalsCostAndBreakdowns(t *testing.T) {
 	if o.Sessions != 3 || o.Totals.Messages != 17 {
 		t.Errorf("sessions %d messages %d", o.Sessions, o.Totals.Messages)
 	}
-	// days: two dates, the model series inside
 	dates := map[string]int{}
 	for _, d := range o.Daily {
 		dates[d.Date]++
@@ -184,12 +168,10 @@ func TestUsageOverviewTotalsCostAndBreakdowns(t *testing.T) {
 	if repos["acme/web"].Messages != 16 || repos["acme/api"].Messages != 1 {
 		t.Errorf("repos: %+v", o.Repos)
 	}
-	// sessions carry their title and are ordered by weight
 	if len(o.TopSess) != 3 || o.TopSess[0].Key != "s1" || o.TopSess[0].Label != "Build the thing" || o.TopSess[0].Compactions != 1 || !strings.Contains(o.TopSess[0].Sub, "acme/web") {
 		t.Errorf("sessions: %+v", o.TopSess)
 	}
 
-	// filters
 	if f := e.overview(e.me, UsageQuery{Machine: "prodhost"}); f.Totals.Messages != 2 {
 		t.Errorf("machine filter: %+v", f.Totals)
 	}
@@ -205,11 +187,9 @@ func TestUsageOverviewTotalsCostAndBreakdowns(t *testing.T) {
 	if f := e.overview(e.me, UsageQuery{Agent: "gemini"}); f.Totals.Messages != 0 || len(f.Models) != 0 {
 		t.Errorf("agent filter 3: %+v", f.Totals)
 	}
-	// the period: today only leaves out yesterday's opus
 	if f := e.overview(e.me, UsageQuery{Days: 1}); f.Totals.Messages != 7 {
 		t.Errorf("one day: %+v", f.Totals)
 	}
-	// more of a breakdown than the overview shows
 	list, err := e.s.UsageBreakdowns(e.ctx, e.me, UsageQuery{Days: 7}, "session", 2)
 	if err != nil || len(list) != 2 {
 		t.Errorf("breakdown: %v %v", list, err)
@@ -221,7 +201,6 @@ func TestUsageOverviewTotalsCostAndBreakdowns(t *testing.T) {
 
 func TestUsageProjectFilterFollowsAccess(t *testing.T) {
 	e := newAnalyticsEnv(t)
-	// pat can see Web but not Secret; both have repos with sessions
 	web := e.project(e.admin, "Web", "")
 	secret := e.project(e.admin, "Secret", "")
 	if err := e.s.SetMember(e.ctx, e.admin, web.Key, "pat", "viewer"); err != nil {
@@ -250,7 +229,6 @@ func TestUsageProjectFilterFollowsAccess(t *testing.T) {
 	if _, err := e.s.UsageOverview(e.ctx, e.me, UsageQuery{Project: secret.Key}); err == nil {
 		t.Error("filtered by a project pat can't see")
 	}
-	// the repo table names the project only where the viewer can see it
 	o := e.overview(e.me, UsageQuery{})
 	for _, r := range o.Repos {
 		switch strings.ToLower(r.Key) {
@@ -264,7 +242,6 @@ func TestUsageProjectFilterFollowsAccess(t *testing.T) {
 			}
 		}
 	}
-	// a parent project covers its sub-projects' repos
 	parent := e.project(e.admin, "Org", "")
 	if _, err := e.s.db.W.ExecContext(e.ctx, `UPDATE projects SET parent_id = ? WHERE id = ?`, parent.ID, web.ID); err != nil {
 		t.Fatal(err)
@@ -335,7 +312,6 @@ func TestUsageToolsBashAndUnused(t *testing.T) {
 	if b := groups["builtin"]; len(b) != 2 || b[0].Name != "Read" || b[1].Name != "Bash" || b[1].Errors != 4 || b[1].Refusals != 2 {
 		t.Errorf("builtin: %+v", b)
 	}
-	// MCP calls are grouped by server, with their tools inside
 	mcp := groups["mcp"]
 	if len(mcp) != 2 || mcp[0].Name != "notion" || mcp[0].Calls != 9 || mcp[0].Errors != 1 || len(mcp[0].Items) != 2 || mcp[0].Items[0].Name != "search" {
 		t.Errorf("mcp: %+v", mcp)
@@ -346,7 +322,6 @@ func TestUsageToolsBashAndUnused(t *testing.T) {
 	if len(o.Bash) != 2 || o.Bash[0].Name != "git status" || o.Bash[1].Errors != 3 {
 		t.Errorf("bash: %+v", o.Bash)
 	}
-	// unused: configured, and not used (names compared loosely)
 	var unused []string
 	for _, u := range o.Unused {
 		unused = append(unused, u.Kind+":"+u.Name)
@@ -358,14 +333,12 @@ func TestUsageToolsBashAndUnused(t *testing.T) {
 	if o.NoInvent {
 		t.Error("inventory was reported")
 	}
-	// a machine that reports again replaces its inventory
 	if _, err := e.s.IngestUsage(e.ctx, e.me, UsageIngest{Machine: "m", Inventory: &[]UsageInventoryItem{{Kind: "skill", Name: "only"}}}); err != nil {
 		t.Fatal(err)
 	}
 	if o = e.overview(e.me, UsageQuery{}); len(o.Unused) != 1 || o.Unused[0].Name != "only" {
 		t.Errorf("replaced inventory: %+v", o.Unused)
 	}
-	// without any inventory the tab says so rather than listing nothing as fine
 	if o = e.overview(e.user("kim", false), UsageQuery{}); !o.NoInvent {
 		t.Error("no inventory not flagged")
 	}
@@ -396,25 +369,20 @@ func TestUsageRefusals(t *testing.T) {
 	for _, c := range r.Commands {
 		rule[c.Tool+" "+c.Detail] = c.Rule
 	}
-	// an allow rule where one can help; none where a hook or the safety check said no
 	if rule["Bash git push"] != "Bash(git push:*)" || rule["Edit "] != "Edit" || rule["Bash rm"] != "" || rule["mcp__x__y y"] != "" {
 		t.Errorf("rules: %v", rule)
 	}
 	if len(r.Recent) != 8 || len([]rune(r.Recent[0].Excerpt)) != 300 {
 		t.Errorf("recent: %d, excerpt %d", len(r.Recent), len([]rune(r.Recent[0].Excerpt)))
 	}
-	// paging by id
 	page, err := e.s.UsageRefusals(e.ctx, e.me, UsageQuery{Days: 30}, r.Recent[2].ID, 3)
 	if err != nil || len(page) != 3 || page[0].ID != r.Recent[3].ID {
 		t.Errorf("page: %v %v", page, err)
 	}
-	// someone else's refusals are theirs
 	if o := e.overview(e.user("sam", false), UsageQuery{}); o.Refusals.Total != 0 || len(o.Refusals.Recent) != 0 {
 		t.Errorf("sam: %+v", o.Refusals)
 	}
 }
-
-// ---- quota ----
 
 func TestQuotaPace(t *testing.T) {
 	week := 7 * 24 * time.Hour
@@ -465,19 +433,19 @@ func TestUsageQuotaSamples(t *testing.T) {
 		return n
 	}
 	send(30, 10)
-	send(30, 10) // the same a minute later: not stored again
+	send(30, 10)
 	e.setClock(e.clockNow().Add(time.Minute))
 	send(30, 10)
 	if n := count(); n != 2 {
 		t.Errorf("same readings stored %d times", n)
 	}
 	e.setClock(e.clockNow().Add(time.Minute))
-	send(31, 10) // the seven-day figure moved
+	send(31, 10)
 	if n := count(); n != 3 {
 		t.Errorf("changed reading: %d", n)
 	}
 	e.setClock(e.clockNow().Add(20 * time.Minute))
-	send(31, 10) // unchanged but a quarter hour on: kept, so the history has a heartbeat
+	send(31, 10)
 	if n := count(); n != 5 {
 		t.Errorf("after 20 minutes: %d", n)
 	}
@@ -506,8 +474,6 @@ func TestUsageQuotaSamples(t *testing.T) {
 	}
 }
 
-// ---- prices ----
-
 func TestModelPrices(t *testing.T) {
 	e := newAnalyticsEnv(t)
 	list, err := e.s.ListModelPrices(e.ctx, e.me)
@@ -515,7 +481,6 @@ func TestModelPrices(t *testing.T) {
 		t.Fatalf("seeded prices: %d %v", len(list), err)
 	}
 	book := newPriceBook(list)
-	// the longest prefix wins, and dated ids find their family
 	for model, in := range map[string]float64{"claude-opus-5-5": 4, "claude-opus-5": 5, "claude-opus-5-5-20260401": 4, "claude-haiku-4-5-20251001": 1, "claude-sonnet-5-5[1m]": 2} {
 		if p, ok := book.find(model); !ok || p.Input != in {
 			t.Errorf("%s → %+v %v", model, p, ok)
@@ -540,7 +505,6 @@ func TestModelPrices(t *testing.T) {
 	if _, err := e.s.SetModelPrice(e.ctx, e.admin, ModelPrice{Model: "gpt-6", Input: 2, Output: 8}); err != nil {
 		t.Fatal(err)
 	}
-	// an edited price changes cost everywhere, including for data already stored
 	e.ingest(e.me, "a", "m", UsageChunk{Messages: []UsageMessageRow{msg(e.hour(-1), "s", "", "gpt-6", "main", 1, 1_000_000, 1_000_000, 0, 0, 0)}})
 	if o := e.overview(e.me, UsageQuery{}); !approx(o.Totals.CostUSD, 10) || o.Totals.UnpricedTokens != 0 {
 		t.Errorf("cost after price: %+v", o.Totals)
@@ -565,8 +529,6 @@ func TestModelPrices(t *testing.T) {
 	}
 }
 
-// ---- suggestions ----
-
 func adviceByID(o *UsageOverview) map[string]UsageAdvice {
 	m := map[string]UsageAdvice{}
 	for _, a := range o.Advice {
@@ -578,15 +540,12 @@ func adviceByID(o *UsageOverview) map[string]UsageAdvice {
 func TestUsageSuggestions(t *testing.T) {
 	e := newAnalyticsEnv(t)
 	h := e.hour(-3)
-	old := e.hour(-24 * 40) // history to say "unused for a month"
+	old := e.hour(-24 * 40)
 	e.ingest(e.me, "old", "m", UsageChunk{Messages: []UsageMessageRow{msg(old, "s0", "acme/web", "claude-opus-5-5", "main", 1, 1, 1, 0, 0, 0)}})
 	e.ingest(e.me, "a", "m", UsageChunk{
 		Messages: []UsageMessageRow{
-			// a long session that mostly misses the cache
 			msg(h, "long", "acme/web", "claude-opus-5-5", "main", 80, 100_000, 50_000, 600_000, 0, 200_000),
-			// a healthy one
 			msg(h, "good", "acme/web", "claude-opus-5-5", "main", 80, 10_000, 50_000, 50_000, 0, 2_000_000),
-			// search subagents on a premium model
 			msg(h, "good", "acme/web", "claude-opus-5-5", "Explore", 30, 2_000_000, 300_000, 500_000, 0, 4_000_000),
 		},
 		Tools: []UsageToolRow{
@@ -602,7 +561,6 @@ func TestUsageSuggestions(t *testing.T) {
 		{Kind: "mcp", Name: "drive"}, {Kind: "mcp", Name: "dusty-server"}, {Kind: "skill", Name: "dusty-skill"}, {Kind: "command", Name: "dusty-cmd"}}}); err != nil {
 		t.Fatal(err)
 	}
-	// the quota is on pace to run out
 	reset := e.clockNow().Add(3 * 24 * time.Hour)
 	if err := e.s.RecordQuota(e.ctx, e.me, UsageQuotaInput{Machine: "m", SevenDay: &QuotaWindow{Percent: 80, ResetsAt: reset.UnixMilli()}}); err != nil {
 		t.Fatal(err)
@@ -633,18 +591,15 @@ func TestUsageSuggestions(t *testing.T) {
 	if a, ok := adv["quota"]; !ok || a.Level != "warn" || !strings.Contains(strings.Join(a.Evidence, " "), "runs out") {
 		t.Errorf("quota: %+v", a)
 	}
-	// warnings come first
 	if o.Advice[0].Level != "warn" {
 		t.Errorf("order: %v", o.Advice[0])
 	}
 
-	// A person with a healthy week gets no advice at all.
 	calm := e.user("kim", false)
 	e.ingest(calm, "k", "m", UsageChunk{Messages: []UsageMessageRow{msg(h, "k1", "x/y", "claude-opus-5-5", "main", 90, 1000, 5000, 20_000, 0, 3_000_000)}})
 	if c := e.overview(calm, UsageQuery{Days: 7}); len(c.Advice) != 0 {
 		t.Errorf("calm week: %+v", c.Advice)
 	}
-	// "unused for a month" waits until there is a month of history
 	young := e.user("lou", false)
 	e.ingest(young, "l", "m", UsageChunk{Messages: []UsageMessageRow{msg(h, "l1", "x/y", "claude-opus-5-5", "main", 1, 1, 1, 0, 0, 0)}})
 	if _, err := e.s.IngestUsage(e.ctx, young, UsageIngest{Machine: "m", Inventory: &[]UsageInventoryItem{{Kind: "skill", Name: "fresh"}}}); err != nil {
@@ -731,7 +686,7 @@ func TestReplayedUploadDoesNotInflateParserStats(t *testing.T) {
 	h := e.hour(-3)
 	chunk := UsageChunk{Messages: []UsageMessageRow{msg(h, "s", "acme/web", "claude-opus-5-5", "main", 1, 10, 10, 0, 0, 0)}}
 	e.ingest(e.me, "same", "box", chunk)
-	if r := e.ingest(e.me, "same", "box", chunk); r.Duplicate != 1 || r.Accepted != 0 { // the retry of a lost answer
+	if r := e.ingest(e.me, "same", "box", chunk); r.Duplicate != 1 || r.Accepted != 0 {
 		t.Fatalf("replay: %+v", r)
 	}
 	o := e.overview(e.me, UsageQuery{})

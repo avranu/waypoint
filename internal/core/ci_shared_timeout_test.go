@@ -44,7 +44,6 @@ func timeoutAtFront(t *testing.T, others func(be *bsEnv)) (be *bsEnv, head7, hea
 		t.Fatalf("#7 isn't the front: %+v", pr)
 	}
 	others(be)
-	// #7's babysit is its agent session's.
 	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE babysits SET session_id = ? WHERE pr_id = ? AND ended_at IS NULL`, be.agent.Session, be.pr(7).ID); err != nil {
 		t.Fatal(err)
 	}
@@ -59,8 +58,8 @@ func TestSharedTimeoutGivesUpTheFront(t *testing.T) {
 	be, head7, head8 := timeoutAtFront(t, func(be *bsEnv) {
 		be.otherTimeout(100, "d145047aaaa", "main", 2*time.Hour)
 		be.otherTimeout(101, "5555555bbbb", "#5", time.Hour)
-		be.otherTimeout(102, "7777777zzzz", "#7", time.Hour)                // its own earlier head says nothing
-		be.otherTimeout(103, "6666666dddd", "wp-queue/main/7-8", time.Hour) // nor a stack that may hold it
+		be.otherTimeout(102, "7777777zzzz", "#7", time.Hour)
+		be.otherTimeout(103, "6666666dddd", "wp-queue/main/7-8", time.Hour)
 	})
 	b := be.babysitOf(7)
 	if b.State != BabysitWatching || b.Round != 0 || len(be.jobs()) != 0 ||
@@ -90,13 +89,11 @@ func TestSharedTimeoutGivesUpTheFront(t *testing.T) {
 		!strings.Contains(m, "timed out in `ci / backend (pull_request)`, as it did lately on `#5 5555555 and main d145047`") {
 		t.Errorf("told %q", m)
 	}
-	// Looking again: no second comment, no second message.
 	be.step()
 	if _, _, again := be.limitTask(); again != text || len(be.told()) != len(told) || be.pr(7).QueuedAt != nil {
 		t.Fatalf("held twice:\n%s", again)
 	}
 
-	// main moves on: #7 is back in the line, behind #8, to be tried again.
 	be.sg.baseTip = "tip-2"
 	be.sg.behind = map[string]bool{head7: true}
 	be.step()
@@ -113,7 +110,6 @@ func TestSharedTimeoutGivesUpTheFront(t *testing.T) {
 		t.Fatalf("updated %v behind #8", u)
 	}
 
-	// #8 merges: #7 is the front again and is brought up to date.
 	be.draftChecks(head8, CommitCheck{State: CheckSuccess, ID: 11, Description: "Successful in 16m"}, CommitCheck{State: CheckSuccess, ID: 12, Description: "Successful in 18m"})
 	if pr := be.pr(8); pr.State != "merged" {
 		t.Fatalf("#8: %+v (%q)", pr, be.babysitOf(8).Wait)
@@ -157,8 +153,8 @@ func TestSharedTimeoutBehindAtFirstHold(t *testing.T) {
 func TestSharedTimeoutNeedsOthers(t *testing.T) {
 	be, _, _ := timeoutAtFront(t, func(be *bsEnv) {
 		be.otherTimeout(100, "d145047aaaa", "main", 2*time.Hour)
-		be.otherTimeout(101, "5555555bbbb", "#5", 7*time.Hour) // too long ago
-		be.otherTimeout(102, "7777777zzzz", "#7", time.Hour)   // its own
+		be.otherTimeout(101, "5555555bbbb", "#5", 7*time.Hour)
+		be.otherTimeout(102, "7777777zzzz", "#7", time.Hour)
 	})
 	b := be.babysitOf(7)
 	if strings.Contains(b.Wait, "the suite is slow") {
@@ -228,7 +224,7 @@ func TestOnlyGoTimeouts(t *testing.T) {
 		"FAIL\tgit.example.com/me/app/internal/api\t12.0s\n" + timeoutLog:                          false,
 		"FAIL\tgit.example.com/me/app/internal/api [build failed]\n" + timeoutLog:                  false,
 		"FAIL\tgit.example.com/me/app/internal/core\t2.0s\nFAIL\n":                                 false,
-		"panic: test timed out after 30m0s\nFAIL\tgit.example.com/me/app/internal/core\t20.000s\n": false, // not past its limit
+		"panic: test timed out after 30m0s\nFAIL\tgit.example.com/me/app/internal/core\t20.000s\n": false,
 	} {
 		if got := onlyGoTimeouts(cleanLog(log)); got != want {
 			t.Errorf("onlyGoTimeouts(%q) = %v, want %v", log, got, want)
@@ -237,9 +233,6 @@ func TestOnlyGoTimeouts(t *testing.T) {
 }
 
 func TestCheckJobName(t *testing.T) {
-	// A shard's check and another commit's run of a sibling shard are the
-	// same kind of job: the slow package moves between shards as they are
-	// rebalanced.
 	if a, b := evidenceKind(checkJobName("ci / backend shard 1 (pull_request)")), evidenceKind("backend shard 3"); a != b {
 		t.Errorf("shard kinds differ: %q, %q", a, b)
 	}
@@ -322,7 +315,6 @@ func TestSharedTimeoutRetryTakesItsPlaceByArming(t *testing.T) {
 			if pr := be.pr(7); pr.QueuedAt != nil {
 				t.Fatalf("#7 still holds the line: %+v", pr)
 			}
-			// #8 is a plain member, not the one marked ready.
 			for _, q := range []struct {
 				sql string
 				id  int64

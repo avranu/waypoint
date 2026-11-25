@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// Subscription quota and refused tool calls (WP-D20).
-
 // UsageQuotaPoint is one status line sample.
 type UsageQuotaPoint struct {
 	At       time.Time `json:"at"`
@@ -61,11 +59,10 @@ func quotaPace(now, sampledAt, resetsAt time.Time, length time.Duration, pct flo
 		return "at_limit", pct, &sampledAt, even
 	}
 	elapsed := sampledAt.Sub(start)
-	// Very early in a window one burst reads as a huge rate.
 	if elapsed < length/20 {
 		return "too_early", pct, nil, even
 	}
-	rate := pct / float64(elapsed) // percent per nanosecond
+	rate := pct / float64(elapsed)
 	projected = rate * float64(length)
 	if projected > 100 && rate > 0 {
 		t := sampledAt.Add(time.Duration((100 - pct) / rate))
@@ -135,7 +132,7 @@ func (s *Service) quotaHistory(ctx context.Context, uid int64, span string, sinc
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if len(out) > quotaPoints { // thin evenly, keeping the last
+	if len(out) > quotaPoints {
 		step := float64(len(out)-1) / float64(quotaPoints-1)
 		thin := make([]UsageQuotaPoint, 0, quotaPoints)
 		for i := 0; i < quotaPoints; i++ {
@@ -145,8 +142,6 @@ func (s *Service) quotaHistory(ctx context.Context, uid int64, span string, sinc
 	}
 	return out, nil
 }
-
-// ---- refusals ----
 
 // allowRule is the permission rule that would let a refused call through.
 func allowRule(tool, detail string) string {
@@ -190,7 +185,7 @@ func (s *Service) usageRefusalsInto(ctx context.Context, sc *usageScope, loc *ti
 			c.Reasons = append(c.Reasons, reason)
 		}
 		if source == "hook" || source == "safety_check" {
-			hooks[k] = true // a rule can't override these
+			hooks[k] = true
 		}
 	}
 	rows.Close()
@@ -208,7 +203,7 @@ func (s *Service) usageRefusalsInto(ctx context.Context, sc *usageScope, loc *ti
 	})
 	for k, c := range cmds {
 		sort.Strings(c.Reasons)
-		if !hooks[k] && (c.Tool != "Bash" || !riskyCommand(c.Detail)) { // a destructive command is never offered as a rule
+		if !hooks[k] && (c.Tool != "Bash" || !riskyCommand(c.Detail)) {
 			c.Rule = allowRule(c.Tool, c.Detail)
 		}
 		r.Commands = append(r.Commands, *c)
@@ -304,7 +299,7 @@ func (s *Service) UsageBreakdowns(ctx context.Context, actor *Actor, q UsageQuer
 	if limit <= 0 {
 		limit = 100
 	}
-	limit = min(limit, 500) // never the whole list
+	limit = min(limit, 500)
 	sc, loc, _, _, err := s.usageScopeFor(ctx, actor, &q)
 	if err != nil {
 		return nil, err

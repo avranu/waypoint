@@ -6,10 +6,6 @@ import (
 	"testing"
 )
 
-// Audit 1236.14: every alternative of every pattern redact applies has a
-// prefilter hint, found from the patterns themselves, so a new alternative
-// without one fails here without a table to keep.
-
 // samples are strings that match re, at least one for each alternative, and
 // one for each member of a small character class and each side of an
 // optional part.
@@ -28,7 +24,7 @@ func samples(re *syntax.Regexp) []string {
 			}
 			return out
 		}
-		for _, c := range "aA0_-" { // a large class: one typical member
+		for _, c := range "aA0_-" {
 			for i := 0; i+1 < len(r.Rune); i += 2 {
 				if c >= r.Rune[i] && c <= r.Rune[i+1] {
 					return []string{string(c)}
@@ -80,7 +76,7 @@ func samples(re *syntax.Regexp) []string {
 		}
 		return out
 	}
-	return []string{""} // anchors, boundaries, the empty match
+	return []string{""}
 }
 
 func TestEverySecretPatternAlternativeHasAPrefilterHint(t *testing.T) {

@@ -1,6 +1,3 @@
-// What has been happening, at a glance: the last two weeks of finished tasks,
-// the next tasks autopilot started, and spend. Numbers show on hover.
-
 import type { ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { CircleDollarSign, ListChecks, Plane } from 'lucide-react'

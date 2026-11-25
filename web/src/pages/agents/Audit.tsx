@@ -1,10 +1,3 @@
-// Agents page, Audit tab (WP-D15): what people decided, read as sentences
-// grouped by day: approvals of agents' work, delegations, pausing and
-// ordering agents, settings and access. Filtered by the page's agent,
-// project and period, plus a kind and a person here; exportable. Its
-// other views list the risky commands agents ran (WP-647) and the tool calls
-// the auto-mode classifier refused (WP-232).
-
 import { useMemo, useState, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
@@ -243,7 +236,6 @@ function mergeRuns(items: AuditEntry[]): { e: AuditEntry; n: number }[] {
 function Row({ e, n, showProject }: { e: AuditEntry; n: number; showProject: boolean }) {
   const cat = CATEGORY_ICON[e.category] ?? CATEGORY_ICON.settings
   const s = describe(e)
-  // An entry about the project itself already names it in its sentence, linked to the board.
   const namesProject = !s.noTarget && linksOwnBoard(e)
   const project = showProject && !namesProject ? e.project : null
   const detail = s.detail === undefined ? e.detail : s.detail

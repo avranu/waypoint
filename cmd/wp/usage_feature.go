@@ -10,9 +10,6 @@ import (
 	"time"
 )
 
-// wp usage feature and wp usage task: what agents had when they did a task,
-// and what that went with (WP-256).
-
 var usageFeatureCmd = &command{
 	name: "feature", args: "KEY|VERSION [--window 30] [--repo OWNER/NAME] [--user NAME]",
 	summary: "what tasks used with a release against without it",

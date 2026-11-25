@@ -1,10 +1,3 @@
-// A what-you-see-is-what-you-get editor for task descriptions (WP-628): the
-// markdown renders in place while it is edited, and goes back to markdown on
-// every change. Opening and closing it leaves the text as it was; an edit
-// writes the whole description in the editor's canonical markdown, which
-// renders the same. @mentions and pasted or dropped files work as they do in
-// the plain textarea.
-
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -118,16 +111,8 @@ export function RichTextInput({
   const qc = useQueryClient()
   const target = attachTo ?? (issueKey ? issueTarget(issueKey) : undefined)
   const editor = useRef<HTMLDivElement | null>(null)
-  // The editor is full when React puts it in the page. React puts focus back on
-  // the element that had it right after that, before layout effects run, and
-  // with an empty editor the page is short for that moment: the focus clamps
-  // the scroll position to the top and the click would move everything.
   const initial = useRef<string | null>(null)
   if (initial.current === null) initial.current = renderMarkdownForEdit(value) || EMPTY
-  // Where the page was scrolled when a click opened the editor, read before
-  // React swaps the rendered text for the editor. Playwright's WebKit resets
-  // the scrolled box to its top across that swap, which would move the page
-  // and put the caret where the click no longer is; it is put back below.
   const scrolled = useRef<[Element, number][] | null>(null)
   if (scrolled.current === null) {
     scrolled.current = []
@@ -136,8 +121,6 @@ export function RichTextInput({
       if (n.scrollTop > 0) scrolled.current.push([n, n.scrollTop])
     }
   }
-  // The markdown the DOM currently shows. An outside change that differs from
-  // this is the only reason to replace the DOM under the person typing.
   const shown = useRef(value)
   // The formatting toolbar's row scrolls sideways when it doesn't fit; which
   // edge has more buttons past it shows as a fade.
@@ -176,14 +159,10 @@ export function RichTextInput({
   const sync = () => {
     const el = editor.current
     if (!el) return
-    // A browser leaves a <br> or an empty <p> behind when everything is
-    // deleted; that goes. An empty heading, quote or list is the block the
-    // person just asked for, and stays.
     if (blank(el) && el.innerHTML !== EMPTY) {
       el.innerHTML = EMPTY
       if (el.contains(document.activeElement)) placeCaretAtEnd(el)
     }
-    // A ticked box changes the property, not the attribute innerHTML shows.
     for (const box of Array.from(el.querySelectorAll<HTMLInputElement>('input[type=checkbox]')))
       box.toggleAttribute('checked', box.checked)
     markEmpty(el)
@@ -193,8 +172,6 @@ export function RichTextInput({
     onValueChange(md)
   }
 
-  // Render the starting markdown once, and again whenever it changes from
-  // outside (an upload's link put in the draft).
   useLayoutEffect(() => {
     const el = editor.current
     if (!el) return
@@ -202,9 +179,7 @@ export function RichTextInput({
     try {
       document.execCommand('defaultParagraphSeparator', false, 'p')
       document.execCommand('styleWithCSS', false, 'false')
-    } catch {
-      // Older browsers ignore these; the browser's own blocks still serialize.
-    }
+    } catch {}
     for (const [n, top] of scrolled.current ?? []) if (n.isConnected) n.scrollTop = top
     markEmpty(el)
     if (autoFocus) {
@@ -221,10 +196,6 @@ export function RichTextInput({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- starting value only
   }, [])
 
-  // The editor's own changes come back equal to `shown`. Anything else is
-  // newer than the DOM, so it is shown even under the caret: left out, the
-  // next keystroke would serialize the old DOM over it. The caret keeps its
-  // place in the text.
   useEffect(() => {
     const el = editor.current
     if (!el || value === shown.current) return
@@ -237,22 +208,13 @@ export function RichTextInput({
     if (caret !== null) placeCaretAt(el, caret)
   }, [value])
 
-  // Android keyboards send Enter and Backspace as keydown 229 and then
-  // beforeinput, not as a keydown with the key. `keyed` is set when a keydown
-  // did carry Enter or Backspace (keyRules has had its turn), so the
-  // beforeinput that follows is not handled a second time; `composing` is
-  // true between compositionstart and compositionend, when the DOM is not ours
-  // to change.
   const keyed = useRef(false)
   const composing = useRef(false)
   useEffect(() => {
     const el = editor.current
     if (!el) return
     const onBefore = (e: Event) => {
-      // Text in a composition is the IME's: not the menu's, not the rules'.
       if (keyed.current || composing.current || (e as InputEvent).isComposing) return
-      // Enter from a soft keyboard with the mention menu open picks the
-      // highlighted person, as the keydown branch does on a desktop.
       const t = (e as InputEvent).inputType
       if (open && e.cancelable && (t === 'insertParagraph' || t === 'insertLineBreak')) {
         e.preventDefault()
@@ -266,8 +228,6 @@ export function RichTextInput({
         }
       } catch (err) {
         console.error('typed markdown rule failed', err)
-        // The rule may have changed the DOM before it threw: the draft takes
-        // what is there, as an input event's does.
         sync()
       }
     }
@@ -275,7 +235,6 @@ export function RichTextInput({
     return () => el.removeEventListener('beforeinput', onBefore)
   })
 
-  // What the editor last wrote out; the draft's newest text while mounted.
   const latest = useRef(value)
   latest.current = value
   const mounted = useRef(true)
@@ -350,7 +309,6 @@ export function RichTextInput({
     detect()
   }
 
-  // Inline code and strikethrough have no execCommand; wrap the selection.
   const wrap = (tag: 'code' | 's') => {
     const el = editor.current
     if (!el) return
@@ -451,14 +409,9 @@ export function RichTextInput({
     sel?.removeAllRanges()
     sel?.addRange(range)
     sync()
-    // The editor may be gone when an upload ends (switched to markdown, done,
-    // Escape), or the placeholder deleted; then the draft is what to edit.
     const finish = (i: number, markdown: string | null) => {
       const ph = placeholders[i]
       const node = nodes[i]
-      // Text typed beside the placeholder joins its node: cut the
-      // placeholder out and leave the rest alone. If it was edited, fall
-      // through to the draft.
       const at0 = mounted.current && node.isConnected ? node.data.indexOf(ph) : -1
       if (at0 >= 0) {
         const mid = at0 > 0 ? node.splitText(at0) : node
@@ -472,9 +425,6 @@ export function RichTextInput({
         sync()
         return true
       }
-      // The draft holds the placeholder as the serializer wrote it (escaped),
-      // or as typed if markdown mode has rewritten it. While this editor is
-      // open, the change comes back as `value` and the effect above shows it.
       const v = draftNow()
       const at = [ph, asWritten(ph)].find((p) => v.includes(p))
       if (!at) return false
@@ -524,8 +474,6 @@ export function RichTextInput({
           upload([...e.dataTransfer.files])
           return
         }
-        // Text dragged in from elsewhere is plain text, as a paste is; moving
-        // text around inside the editor is the browser's.
         const el = editor.current
         const text = plainText(e.dataTransfer)
         if (inside || !text || !el || !el.contains(e.target as Node)) return
@@ -648,7 +596,6 @@ export function RichTextInput({
         onClick={(e) => {
           const t = e.target as HTMLElement
           if (t instanceof HTMLInputElement && t.type === 'checkbox') {
-            // The browser toggles the box; save it after it does.
             window.setTimeout(sync, 0)
             return
           }
@@ -678,17 +625,11 @@ export function RichTextInput({
           }
         }}
         onKeyDown={(e) => {
-          // A key in an IME composition belongs to the IME (Enter confirms a
-          // candidate, Escape clears it): not the menu's, the rules', or the
-          // parent's save and close. Safari reports it after the composition
-          // ended, as keyCode 229.
           if (e.nativeEvent.isComposing || e.keyCode === 229) {
             keyed.current = false
             return
           }
           keyed.current = e.key === 'Enter' || e.key === 'Backspace'
-          // Markdown has no underline; the shortcut would make one that
-          // vanishes on save.
           if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'u') {
             e.preventDefault()
             return

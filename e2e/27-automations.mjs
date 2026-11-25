@@ -40,7 +40,6 @@ async function run(width, scheme, full) {
       !(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)),
       `${tag} no sideways scroll (${where})`,
     );
-  // Nothing inside the open dialog pokes out sideways.
   const dialogFits = async (where) =>
     ok(
       await page.evaluate(() => {
@@ -81,7 +80,6 @@ async function run(width, scheme, full) {
   await toSettings();
 
   if (full) {
-    // ---- build one: trigger, only if, a named step with its own only if, a repeat ----
     await page.getByRole("button", { name: "New automation" }).click();
     let dlg = dialog("New automation");
     await choose(dlg, "Trigger", "an issue is created");
@@ -111,7 +109,6 @@ async function run(width, scheme, full) {
     await shot("editor");
     await dialogFits("editor");
 
-    // Steps move with the arrows (and drag); nothing is saved.
     await first.getByRole("button", { name: "Move down" }).click();
     ok(
       (await steps.nth(0).getByRole("combobox", { name: "Action" }).first().innerText()).includes("repeat"),
@@ -122,7 +119,6 @@ async function run(width, scheme, full) {
       (await steps.nth(0).getByRole("combobox", { name: "Action" }).first().innerText()).includes("notify"),
       `${tag} Move up puts it back`,
     );
-    // The drag handle works from the keyboard too: Space picks the step up, the arrow moves it, Space drops it.
     const firstIs = async (word) =>
       (await steps.nth(0).getByRole("combobox", { name: "Action" }).first().innerText()).includes(word);
     let dragged = false;
@@ -144,7 +140,6 @@ async function run(width, scheme, full) {
     await page.getByText("Greet new bugs").first().waitFor();
     ok(true, `${tag} the automation was created`);
 
-    // An issue that matches runs it; the run and its steps are kept.
     await api("POST", "/issues", { project: KEY, title: "Crash on save", type: "bug" });
     await card("Greet new bugs").getByText(/Ran 1 time/).waitFor();
     await card("Greet new bugs").getByRole("button", { name: "Runs", exact: true }).click();
@@ -159,10 +154,9 @@ async function run(width, scheme, full) {
     );
     await shot("run-detail");
     await dialogFits("run detail");
-    await page.keyboard.press("Escape"); // back to the list
-    await page.keyboard.press("Escape"); // and out
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
 
-    // ---- a test changes nothing ----
     await card("Greet new bugs").getByRole("button", { name: "Edit", exact: true }).click();
     dlg = dialog("Edit automation");
     await dlg.getByRole("button", { name: "Test", exact: true }).click();
@@ -176,7 +170,6 @@ async function run(width, scheme, full) {
     await card("Greet new bugs").getByText(/Ran 1 time/).waitFor();
     ok(true, `${tag} the test didn't count as a run`);
 
-    // ---- a manual automation asks for its inputs ----
     await page.getByRole("button", { name: "New automation" }).click();
     dlg = dialog("New automation");
     await choose(dlg, "Trigger", "I press Run now");
@@ -209,7 +202,6 @@ async function run(width, scheme, full) {
     await page.keyboard.press("Escape");
     await page.keyboard.press("Escape");
 
-    // ---- a webhook automation has an address ----
     await page.getByRole("button", { name: "New automation" }).click();
     dlg = dialog("New automation");
     await choose(dlg, "Trigger", "a request arrives at the webhook address");
@@ -229,7 +221,6 @@ async function run(width, scheme, full) {
     await card("Webhook intake").getByText(/Ran 1 time/).waitFor();
     ok(true, `${tag} the webhook started a run`);
 
-    // ---- run now without inputs, a switched-off one, and a long run that waits and is cancelled ----
     const manualRule = (actions, more = {}) => ({ trigger: { event: "manual" }, actions, ...more });
     await api("POST", `/projects/${KEY}/automations`, { name: "Ping", enabled: true, rule: manualRule([{ type: "notify", user: "actor", message: "ping" }], { allow_agents: true }) });
     await api("POST", `/projects/${KEY}/automations`, { name: "Pong", enabled: false, rule: manualRule([{ type: "notify", user: "actor", message: "pong" }]) });
@@ -255,7 +246,6 @@ async function run(width, scheme, full) {
     await page.keyboard.press("Escape");
     await page.keyboard.press("Escape");
 
-    // ---- cron shows when it will run ----
     await page.getByRole("button", { name: "New automation" }).click();
     dlg = dialog("New automation");
     await choose(dlg, "Trigger", "on a schedule");
@@ -267,14 +257,12 @@ async function run(width, scheme, full) {
     await dlg.getByLabel("Cron", { exact: true }).fill("nonsense");
     await dlg.locator("p.text-danger").first().waitFor();
     ok(true, `${tag} a bad cron expression says what is wrong`);
-    // What only the server can judge shows in the dialog, beside Save.
     await addStep(dlg, "choose an action", "notification", /Send a notification/);
     await dlg.getByRole("button", { name: "Create" }).click();
     await dlg.getByRole("alert").waitFor();
     ok(/cron|field/i.test(await dlg.getByRole("alert").innerText()), `${tag} the server's complaint shows in the dialog`);
     await dlg.getByRole("button", { name: "Cancel" }).click();
 
-    // ---- every trigger and every action draws its settings without breaking ----
     const cat = await api("GET", "/automation-catalog");
     await page.getByRole("button", { name: "New automation" }).click();
     dlg = dialog("New automation");
@@ -311,13 +299,11 @@ async function run(width, scheme, full) {
     await shot("sweep");
     await dlg.getByRole("button", { name: "Cancel" }).click();
 
-    // ---- rules written before steps existed open and save unchanged ----
     const OLD = [
       ["Old: ship it", { trigger: { event: "status_changed", from: "todo", to: "done" }, if: "type:bug", actions: [{ type: "set_priority", value: "high" }, { type: "add_label", value: "shipped" }, { type: "assign", user: "reporter" }] }],
       ["Old: weekly plan", { trigger: { event: "schedule", every: "week", weekday: 3, at: "10:30" }, actions: [{ type: "create_issue", title: "Weekly {{.Date}}", body: "Plan", labels: ["planning"], due: "+2d" }] }],
       ["Old: due soon", { trigger: { event: "due_soon", days: 2 }, actions: [{ type: "notify", user: "assignees", message: "Due soon: {{.Issue.Key}}" }, { type: "gotify", user: "watchers", title: "Due", message: "x", priority: 7 }] }],
       ["Old: review", { trigger: { event: "pr_updated" }, pr: { bases: ["main"], skip_labels: ["dependencies"] }, actions: [{ type: "review", focus: "security", max_findings: 5 }] }],
-      // PR conditions, review options and an "only if" on what the review found (WP-D14 phase 5).
       ["Old: PR rules", { trigger: { event: "pr_updated" },
         pr: { authors: ["*[bot]", "ann"], skip_authors: ["renovate*"], labels: ["backend"], paths: ["web/**"], skip_paths: ["docs/**"], min_changed_lines: 5, max_changed_lines: 400, repos: ["me/*"] },
         actions: [{ type: "review", id: "review", min_severity: "P1", skip_files: ["**/*.snap"] }, { type: "notify", user: "owners", only_if: "{{or .Steps.review.P0 .Steps.review.P1}}", message: "{{.Steps.review.Worst}}" }] }],
@@ -346,7 +332,6 @@ async function run(width, scheme, full) {
     await page.getByRole("heading", { name: "Ready-made" }).scrollIntoViewIfNeeded();
     await shot("gallery");
   } else {
-    // ---- the same screens at phone width ----
     await card("Greet new bugs").getByRole("button", { name: "Edit", exact: true }).click();
     const dlg = dialog("Edit automation");
     await dlg.getByText("A new bug").first().waitFor().catch(() => {});
@@ -368,7 +353,6 @@ async function run(width, scheme, full) {
     await shot("settings");
   }
 
-  // ---- Admin → Automations ----
   await page.goto(`${base}/admin?tab=automations`);
   await page.getByRole("heading", { name: "Admin automations" }).waitFor();
   await page.getByRole("heading", { name: "System limits" }).waitFor();
@@ -407,7 +391,6 @@ async function run(width, scheme, full) {
     await page.getByRole("option", { name: "a system resource", exact: true }).waitFor();
     ok(true, `${tag} admin triggers are offered in an admin automation`);
     await page.keyboard.press("Escape");
-    // Admin automations draw every action too (there are no statuses or members to pick from).
     await dlg.getByRole("combobox", { name: "Trigger", exact: true }).click();
     await page.getByRole("option", { name: "a system resource", exact: true }).click();
     await addStep(dlg, "choose an action", "notification", /Send a notification/);
@@ -428,7 +411,6 @@ async function run(width, scheme, full) {
   await overflow("admin");
   await shot("admin");
 
-  // Project automations don't offer the admin-only triggers.
   if (full) {
     await toSettings();
     await page.getByRole("button", { name: "New automation" }).click();

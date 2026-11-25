@@ -39,7 +39,6 @@ func TestDescriptionAutosavesCoalesce(t *testing.T) {
 	if got := e.get(e.admin, is.Key).Description; got != "abc" {
 		t.Fatalf("description = %q", got)
 	}
-	// The entry shows when its text was saved, not when the sitting began.
 	var at, last int64
 	if err := e.s.db.R.QueryRow(`SELECT created_at FROM events WHERE issue_id = ? AND kind = ? AND field = 'description'`, is.ID, EvIssueUpdated).Scan(&at); err != nil {
 		t.Fatal(err)
@@ -48,7 +47,6 @@ func TestDescriptionAutosavesCoalesce(t *testing.T) {
 	if at != last {
 		t.Fatalf("merged entry is stamped %d, want the last save's %d", at, last)
 	}
-	// Another person's save is its own entry, and so is the next sitting.
 	save(sam, "abcd")
 	if n := count(); n != 2 {
 		t.Fatalf("another actor: %d entries, want 2", n)
@@ -58,7 +56,6 @@ func TestDescriptionAutosavesCoalesce(t *testing.T) {
 	if n := count(); n != 3 {
 		t.Fatalf("after the window: %d entries, want 3", n)
 	}
-	// Something else in between breaks the run.
 	save(sam, "abcdef")
 	if _, err := e.s.UpdateIssue(e.ctx, sam, is.Key, IssuePatch{Priority: "high"}); err != nil {
 		t.Fatal(err)

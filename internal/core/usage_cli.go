@@ -1,10 +1,5 @@
 package core
 
-// How agents use wp (WP-618): the counters `wp usage sync` reads from the
-// transcripts, by week and by repo, for Agents → wp CLI and `wp usage cli`.
-// The upload holds command names, flag names and fixed labels only, and
-// ingest keeps to those shapes whatever a client sends.
-
 import (
 	"context"
 	"slices"
@@ -251,7 +246,6 @@ func (s *Service) UsageCLI(ctx context.Context, actor *Actor, q UsageQuery, repo
 		return nil, err
 	}
 	if repo != "" {
-		// Inside the project's repos, when a project is chosen too.
 		inScope := !sc.repoFilter || slices.ContainsFunc(sc.repos, func(r string) bool { return strings.EqualFold(r, repo) })
 		sc.repos, sc.repoFilter = nil, true
 		if inScope {
@@ -317,7 +311,7 @@ func (s *Service) cliRepos(ctx context.Context, sc *usageScope) ([]UsageCLIRepo,
 	out := make([]UsageCLIRepo, 0, len(by))
 	for _, r := range by {
 		if r.WP == 0 {
-			continue // somewhere agents worked without wp says nothing about it
+			continue
 		}
 		r.WPPerSession, r.HelpRate, r.ErrorRate = cliRatio(r.WP, r.Sessions), cliRatio(r.Help, r.WP), cliRatio(r.Errors, r.WP)
 		out = append(out, *r)
@@ -441,7 +435,7 @@ func (s *Service) cliDetails(ctx context.Context, sc *usageScope, o *UsageCLIRep
 	cmds := make([]UsageCLICommand, 0, len(by))
 	for _, a := range by {
 		if a.Calls == 0 {
-			continue // only counted a follow-up, in a period that began after the call
+			continue
 		}
 		cliByCount(a.flags)
 		a.Flags = append(a.Flags, a.flags[:min(len(a.flags), cliTopDetails)]...)

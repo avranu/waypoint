@@ -22,7 +22,7 @@ func TestForgeDown(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		err  error
-		want string // "" = returned as it is
+		want string
 	}{
 		{"timeout", timeout, "git.example.com didn't answer within 15 s; try again"},
 		{"wrapped timeout", errors.Join(errors.New("read it"), timeout), "git.example.com didn't answer within 15 s"},
@@ -82,8 +82,8 @@ func TestForgePatientClient(t *testing.T) {
 type slowForge struct {
 	*shipForge
 	defaultDown, createDown bool
-	createdAnyway           bool  // the forge opened it before going quiet
-	createErr               error // CreatePR answers with it
+	createdAnyway           bool
+	createErr               error
 }
 
 var errForgeTimeout = &url.Error{Op: "Post", URL: "https://git.example.com/api/v1/repos/acme/app/pulls", Err: context.DeadlineExceeded}
@@ -134,19 +134,15 @@ func TestOpenPullRequestForgeDown(t *testing.T) {
 	}
 	in := OpenPRInput{Project: p.Key, Head: "feature", Title: "Do it"}
 
-	// The default branch read times out: a 502 that says so, not a bug.
 	_, err = e.s.OpenPullRequest(e.ctx, e.admin, in)
 	if !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "git.example.com didn't answer") {
 		t.Fatalf("default branch down: %v", err)
 	}
-	// The open itself times out.
 	g.defaultDown, g.createDown = false, true
 	_, err = e.s.OpenPullRequest(e.ctx, e.admin, in)
 	if !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "open the pull request: git.example.com didn't answer") {
 		t.Fatalf("open down: %v", err)
 	}
-	// "Already exists", and the forge doesn't list it: a 502 to try again,
-	// not the forge's refusal.
 	g.createDown, g.createErr = false, &forgeAPIError{method: "POST", path: "/repos/acme/app/pulls", status: 422, body: "A pull request already exists for acme:feature"}
 	_, err = e.s.OpenPullRequest(e.ctx, e.admin, in)
 	var ae *forgeAPIError
@@ -154,8 +150,6 @@ func TestOpenPullRequestForgeDown(t *testing.T) {
 		t.Fatalf("already exists, not listed: %v", err)
 	}
 	g.createDown, g.createErr = true, nil
-	// It opened anyway, and no webhook said so: the forge's list has it, so
-	// it is recorded and returned.
 	g.createdAnyway = true
 	res, err := e.s.OpenPullRequest(e.ctx, e.admin, in)
 	if err != nil {
@@ -164,7 +158,6 @@ func TestOpenPullRequestForgeDown(t *testing.T) {
 	if !res.Existing || res.Pull == nil || res.Pull.HeadRef != "feature" || res.Pull.Title != "Do it" {
 		t.Fatalf("opened but unanswered: %+v", res)
 	}
-	// A retry finds it in Waypoint, without asking the forge to open it.
 	n := len(g.created)
 	again, err := e.s.OpenPullRequest(e.ctx, e.admin, in)
 	if err != nil || again.Pull.ID != res.Pull.ID || len(g.created) != n {
@@ -187,7 +180,6 @@ func TestArmedMergeForgeDownIsRetried(t *testing.T) {
 	if pr.ArmedAt == nil || !strings.Contains(pr.armedNote, "didn't answer") || strings.HasPrefix(pr.armedNote, mergeFailedNote) || pr.mergeRetryN != 1 {
 		t.Fatalf("armed = %v note %q retries %d", pr.ArmedAt, pr.armedNote, pr.mergeRetryN)
 	}
-	// A person merging now hears the forge is down: a 502, not a refusal.
 	if _, err := se.s.MergePR(se.ctx, se.admin, id, MergeInput{}); !errors.Is(err, ErrUnavailable) || IsInvalid(err) {
 		t.Fatalf("merge now: %v", err)
 	}

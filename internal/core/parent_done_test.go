@@ -20,12 +20,10 @@ func TestParentNotDoneWithOpenChildren(t *testing.T) {
 		!strings.Contains(err.Error(), a.Key) || !strings.Contains(err.Error(), b.Key) {
 		t.Fatalf("closing a parent with open sub-tasks: %v", err)
 	}
-	// An agent shipping it is refused the same way.
 	agent := asAgent(e.admin, "anthropic/claude-opus-5-5")
 	if _, err := e.s.UpdateIssue(e.ctx, agent, epic.Key, IssuePatch{Status: str("done")}); err == nil {
 		t.Fatal("an agent closed a parent with open sub-tasks")
 	}
-	// Bulk edits too.
 	if _, err := e.s.BulkUpdate(e.ctx, e.admin, []string{epic.Key}, IssuePatch{Status: str("done")}, false); err == nil ||
 		!strings.Contains(err.Error(), "sub-tasks are still open") {
 		t.Fatalf("a bulk edit on a parent with open sub-tasks: %v", err)
@@ -34,7 +32,6 @@ func TestParentNotDoneWithOpenChildren(t *testing.T) {
 		t.Fatal("a bulk edit closed a parent with open sub-tasks")
 	}
 
-	// Closing the whole tree at once closes the sub-tasks first.
 	tree := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Tree"})
 	leaf := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Leaf", Parent: tree.Key})
 	e.issue(e.admin, IssueInput{Project: p.Key, Title: "Grandchild", Parent: leaf.Key})
@@ -42,7 +39,6 @@ func TestParentNotDoneWithOpenChildren(t *testing.T) {
 		t.Fatalf("closing a whole tree: %v", err)
 	}
 
-	// One left open: still refused, and the message names it.
 	if _, err := e.s.UpdateIssue(e.ctx, e.admin, a.Key, IssuePatch{Status: str("done")}); err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +47,6 @@ func TestParentNotDoneWithOpenChildren(t *testing.T) {
 		t.Fatalf("one open sub-task: %v", err)
 	}
 
-	// A sub-task dropped (Won't Do) counts as closed.
 	if _, err := e.s.UpdateIssue(e.ctx, e.admin, b.Key, IssuePatch{Status: str("canceled")}); err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +54,6 @@ func TestParentNotDoneWithOpenChildren(t *testing.T) {
 		t.Fatalf("all sub-tasks closed, the parent should close: %v", err)
 	}
 
-	// Dropping a parent with open sub-tasks stays allowed.
 	epic2 := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Dropped epic"})
 	e.issue(e.admin, IssueInput{Project: p.Key, Title: "Open part", Parent: epic2.Key})
 	if _, err := e.s.UpdateIssue(e.ctx, e.admin, epic2.Key, IssuePatch{Status: str("canceled")}); err != nil {

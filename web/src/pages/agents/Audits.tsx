@@ -1,7 +1,3 @@
-// Agents page, Audits tab (WP-348): audits people and agents asked for,
-// newest first, narrowed by the page's project and a status here; a new one
-// starts from the button.
-
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Plus, ShieldCheck } from 'lucide-react'
@@ -23,7 +19,6 @@ export function AuditsTab({ filters }: HubTabProps) {
   const list = useQuery(
     auditsQuery({ project: filters.project || undefined, status: show as AuditStatus, limit: 100 }),
   )
-  // The page's agent filter: audits that agent asked for.
   const audits = (list.data ?? []).filter(
     (a) => !filters.agent || (!!a.agent && agentMatches(filters.agent, a.agent)),
   )

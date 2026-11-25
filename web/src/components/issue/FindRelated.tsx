@@ -1,7 +1,3 @@
-// Open issues worth linking to this one, from the issues' own words: what
-// its text says it waits for, the same title, much the same words (WP-296).
-// Adding one or saying it isn't related teaches the ranking (WP-958).
-
 import { useState } from 'react'
 import { Sparkles, X } from 'lucide-react'
 import { api, enc } from '@/lib/api'

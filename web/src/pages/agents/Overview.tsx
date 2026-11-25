@@ -1,9 +1,3 @@
-// Agents → Overview (WP-D16): which agents are working where, what they are
-// doing, what they finished, what comes next, what waits on you; the one
-// place to look. One request feeds all of it, and live events refresh it.
-// Sections fold (remembered per person, like My work's groups) and say in
-// one line what fills them when empty.
-
 import { lazy, Suspense, useMemo, useState, type ReactNode } from 'react'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
@@ -122,8 +116,6 @@ function OverviewSkeleton() {
   )
 }
 
-// ---- a foldable panel ----
-
 /** A panel that folds; the fold is remembered per person. */
 function Fold({
   id,
@@ -182,8 +174,6 @@ function Fold({
 
 const rowClass = 'flex min-w-0 items-start gap-3 px-4 py-2.5 hover:bg-hover'
 const subtleLink = 'text-xs text-muted hover:text-fg hover:underline'
-
-// ---- the summary ----
 
 const KIND_ICON: Record<string, ReactNode> = {
   issue: <CircleDot />,
@@ -297,8 +287,6 @@ function SummaryItem({ it, onRequest }: { it: OverviewItem; onRequest?: (ref: st
   )
 }
 
-// ---- sessions now ----
-
 interface Group {
   machine: string
   repos: { repo: string; branches: { branch: string; sessions: AgentSession[] }[] }[]
@@ -315,7 +303,6 @@ function groupSessions(list: AgentSession[]): Group[] {
     repos.set(s.repo ?? '', branches)
     machines.set(s.machine, repos)
   }
-  // `list` is newest first, so Map insertion order already is.
   return [...machines].map(([machine, repos]) => ({
     machine,
     count: [...repos.values()].reduce(
@@ -455,8 +442,6 @@ export function SessionRow({ s, showWhere = false }: { s: AgentSession; showWher
   )
 }
 
-// ---- up next ----
-
 function UpNext({ ov, filters }: { ov: Overview; filters: HubTabProps['filters'] }) {
   const queue = {
     tab: 'queue' as const,
@@ -534,8 +519,6 @@ function UpNext({ ov, filters }: { ov: Overview; filters: HubTabProps['filters']
   )
 }
 
-// ---- pull requests ----
-
 function PullRequests({ ov }: { ov: Overview }) {
   const p = ov.pulls
   return (
@@ -582,8 +565,6 @@ function PullRequests({ ov }: { ov: Overview }) {
   )
 }
 
-// ---- branches ----
-
 function Branches({ ov }: { ov: Overview }) {
   return (
     <Fold
@@ -602,8 +583,6 @@ function Branches({ ov }: { ov: Overview }) {
     </Fold>
   )
 }
-
-// ---- merged and stale branches on the forge (WP-140) ----
 
 /** What Waypoint's daily sweep deletes, and the branches it calls stale. */
 function RemoteBranchesFold({ project }: { project: string }) {
@@ -705,8 +684,6 @@ function BranchRow({ b }: { b: OverviewBranch }) {
   return <div className={clsx(rowClass, 'hover:bg-transparent')}>{body}</div>
 }
 
-// ---- recent changes ----
-
 const CHANGE_ICON: Record<ChangeKind, ReactNode> = {
   issue: <CircleDot />,
   page: <FileText />,
@@ -717,7 +694,6 @@ const CHANGE_ICON: Record<ChangeKind, ReactNode> = {
 function RecentChanges({ ov, filters }: { ov: Overview; filters: HubTabProps['filters'] }) {
   const [kind, setKind] = useState<ChangeKind | ''>('')
   const [more, setMore] = useState(false)
-  // The first page of all kinds came with the overview; anything else, or more, is fetched.
   const paged = kind !== '' || more
   const q = useInfiniteQuery({
     ...changesQuery({ kind, agent: filters.agent, project: filters.project }),
@@ -805,8 +781,6 @@ function ChangeRow({ c }: { c: Change }) {
   )
 }
 
-// ---- done recently ----
-
 function DoneRecently({ ov }: { ov: Overview }) {
   return (
     <Fold
@@ -857,7 +831,6 @@ function ResolvedRequests({ ov }: { ov: Overview }) {
 }
 
 function DoneBody({ it }: { it: OverviewItem }) {
-  // A request is decided by a person ("Answered by Robin"); the agent only asked.
   const what =
     it.kind === 'request'
       ? `${it.detail ?? 'Resolved'}${it.agent ? ` · asked by ${agentLabel(it.agent)}` : ''}`
@@ -876,8 +849,6 @@ function DoneBody({ it }: { it: OverviewItem }) {
     </>
   )
 }
-
-// ---- strips ----
 
 function EnvironmentsStrip({ ov }: { ov: Overview }) {
   const e = ov.environments

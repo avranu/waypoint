@@ -13,14 +13,8 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Task summaries (WP-194, WP-ADR9): the agent's last message after it
-// finished a task, kept for its person to read when they come back, from
-// every session (autopilot or not). "Waiting on you" lines in it that no
-// request of the session covers are filed as one auto request, so an agent
-// that forgot wp ask doesn't leave its person's decision in scrollback.
-
 const (
-	summaryMax     = 20000 // characters of a summary kept
+	summaryMax     = 20000
 	summaryAsksMax = 10
 )
 
@@ -58,15 +52,11 @@ func (s *Service) recordTaskSummary(ctx context.Context, t *tx, actor *Actor, x 
 	}
 	var later int
 	if err := t.QueryRowContext(ctx, `SELECT count(*) FROM agent_runs WHERE session_id = ? AND (ended_at IS NULL OR id > ?)`, x.ID, run).Scan(&later); err != nil || later > 0 {
-		return err // it took other work since: this message is about that
+		return err
 	}
-	// Once the person has prompted the session after the task, what the
-	// agent says is an answer to them, not the task's summary.
 	if prompted, err := s.promptedAfterDone(ctx, t, x.ID, run); err != nil || prompted {
 		return err
 	}
-	// The Stops of an adversarial review are its report, kept in the work
-	// log (WP-285), not the task's summary.
 	var doneIssue int64
 	if err := t.QueryRowContext(ctx, `SELECT issue_id FROM agent_runs WHERE id = ?`, run).Scan(&doneIssue); err != nil {
 		return err
@@ -82,7 +72,7 @@ func (s *Service) recordTaskSummary(ctx context.Context, t *tx, actor *Actor, x 
 	case err != nil:
 		return err
 	case reviewed.Valid:
-		return nil // read already: it stays what the person read
+		return nil
 	}
 	var issueID sql.NullInt64
 	var agent string
@@ -116,8 +106,6 @@ func (s *Service) recordTaskSummary(ctx context.Context, t *tx, actor *Actor, x 
 	if len(asks) == 0 || reqID.Valid {
 		return nil
 	}
-	// The trailing question this same Stop filed (WP-96) quotes the message
-	// already: point at it rather than file a second guess.
 	var same int64
 	if err := t.QueryRowContext(ctx, `SELECT coalesce(max(id), 0) FROM requests WHERE session_id = ? AND source = ? AND created_at = ?`, x.ID, requestAuto, at).Scan(&same); err != nil {
 		return err
@@ -148,7 +136,6 @@ func (s *Service) fileSummaryAsks(ctx context.Context, t *tx, actor *Actor, x *A
 	}
 	reqID, _, err := s.createRequestTx(ctx, t, actor, x, RequestInput{Kind: RequestQuestion, Title: title, Source: requestAuto, Body: b.String(), Questions: qs}, at)
 	if IsInvalid(err) {
-		// The asks are a guess; refusing them must not fail the Stop.
 		s.log.WarnContext(ctx, "summary asks refused", "session", x.ID, "summary", summaryID, "full", errors.Is(err, errRequestsFull), "err", err)
 		return nil
 	}
@@ -215,14 +202,12 @@ func summaryAsks(msg string) []string {
 			continue
 		}
 		table := strings.HasPrefix(l, "|")
-		// The section runs through its list or table, and the one paragraph
-		// right under the heading; a later paragraph or heading ends it.
 		if inSection && (bullet || table || !blank || len(out) == 0) && !headingRE.MatchString(l) && !boldLineRE.MatchString(l) {
 			blank = false
 			switch {
 			case table:
 				if tableSepRE.MatchString(l) || (i+1 < len(lines) && tableSepRE.MatchString(strings.TrimSpace(lines[i+1]))) {
-					continue // the separator, or the header row above it
+					continue
 				}
 				add(strings.Join(slices.DeleteFunc(tableCellRE.Split(strings.Trim(l, "| "), -1), func(c string) bool { return c == "" }), ": "))
 			default:
@@ -252,8 +237,6 @@ func (s *Service) unfiledAsks(ctx context.Context, q queryer, x *AgentSession, m
 	if len(asks) == 0 {
 		return []string{}, nil
 	}
-	// What the agent asked itself, title and text; a guessed (auto) request
-	// by its title only: its text quotes the whole message.
 	rows, err := q.QueryContext(ctx, `SELECT title, CASE WHEN source = ? THEN '' ELSE body END FROM requests WHERE session_id = ? ORDER BY id DESC LIMIT 200`, requestAuto, x.ID)
 	if err != nil {
 		return nil, err
@@ -313,7 +296,7 @@ func init() {
 func askCovered(ask string, filed []string) bool {
 	words := askWords(ask)
 	if len(words) == 0 {
-		return true // nothing to tell it by: don't file noise
+		return true
 	}
 	for _, f := range filed {
 		fw := askWords(f)
@@ -329,8 +312,6 @@ func askCovered(ask string, filed []string) bool {
 	}
 	return false
 }
-
-// ---- reading them ----
 
 // TaskSummaryQuery filters the summaries list.
 type TaskSummaryQuery struct {

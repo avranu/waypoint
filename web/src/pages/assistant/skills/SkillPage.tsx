@@ -1,6 +1,3 @@
-// One skill: what it says (rendered, or its raw SKILL.md), whether the
-// agent may use it, and an editor for it.
-
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Archive, Code2, Eye, Pencil, Sparkles } from 'lucide-react'

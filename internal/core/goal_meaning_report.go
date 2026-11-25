@@ -77,7 +77,7 @@ func (s *Service) MeaningState(ctx context.Context, actor *Actor) (*MeaningRepor
 		rep.LLM = "the " + ch.task + " task's models"
 		if ch.gateway {
 			rep.LLM = "the gateway: " + strings.Join(gatewayModels(gatewayJudgePurpose), ", then ")
-			if ex := gatewayJudgeExclude(); len(ex) > 0 && s.gatewayWith(ctx, GatewayExclude) != 0 { // else the request goes without its exclude
+			if ex := gatewayJudgeExclude(); len(ex) > 0 && s.gatewayWith(ctx, GatewayExclude) != 0 {
 				rep.LLM += ", leaving out " + strings.Join(ex, ", ")
 			}
 		}

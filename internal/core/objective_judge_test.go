@@ -20,7 +20,6 @@ func TestObjectiveJudged(t *testing.T) {
 	if next, wait := o.queued(task.Key); next || !strings.Contains(wait, "reading where its objective starts from") {
 		t.Fatalf("queue: %v %q", next, wait)
 	}
-	// The commands' stage finds the commit; there is nothing to run.
 	if j := o.read(ObjectiveJobResult{Head: shaA}); j.Check != "" || j.Base != "" || len(j.KeepPassing) != 0 {
 		t.Fatalf("job = %+v", j)
 	}
@@ -37,11 +36,8 @@ func TestObjectiveJudged(t *testing.T) {
 	if len(ob.Findings) != 1 || ob.Findings[0].Title != "There is no CSV export" {
 		t.Fatalf("findings = %+v", ob.Findings)
 	}
-	// What the worker is given names what was found.
 	hasAll(t, "the objective's text", ob.Text, "There is no CSV export")
 
-	// Round 1: work lands, one finding fewer than before isn't there, so
-	// the same count: no nearer.
 	if _, err := o.s.AddComment(o.ctx, o.ag, task.Key, "The export is in internal/export.go; the judge's finding is wrong."); err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +50,6 @@ func TestObjectiveJudged(t *testing.T) {
 	if ob.Round != 2 || ob.Rounds[0].Outcome != RoundWorked || ob.Stalled != 1 || o.status(task.Key) != "To Do" || ob.BaseSHA != shaB || ob.NextAt != nil {
 		t.Fatalf("after round 1: round %d %+v stalled %d next %v", ob.Round, ob.Rounds[0], ob.Stalled, ob.NextAt)
 	}
-	// Round 2: only a low finding left, under the bar: met.
 	o.worked(task.Key)
 	o.read(ObjectiveJobResult{Head: shaC})
 	o.judged("The export is there and tested.", finding("low", "A typo"))
@@ -73,14 +68,12 @@ func TestObjectiveCheckThenJudge(t *testing.T) {
 	o := newObjEnv(t)
 	task := o.task("Export the board")
 	o.set(task.Key, ObjectiveInput{Check: ptrOf("go test ./internal/export"), Until: ptrOf("pass"), Judge: ptrOf("The export handles every column type."), JudgeBar: ptrOf("high")})
-	// The check fails where it starts: the judge isn't asked.
 	o.read(ObjectiveJobResult{Head: shaA, Reading: passed(false)})
 	o.work()
 	if ob := o.obj(task.Key); ob.Phase != PhaseWork || ob.verifyAudit != nil {
 		t.Fatalf("after a failing start: %q", ob.Phase)
 	}
 	o.noJob()
-	// Round 1: still failing, still no judge.
 	o.worked(task.Key)
 	o.read(ObjectiveJobResult{Head: shaB, Base: shaA, Reading: passed(false)})
 	o.noJob()
@@ -88,7 +81,6 @@ func TestObjectiveCheckThenJudge(t *testing.T) {
 	if ob.Round != 2 || ob.Rounds[0].Outcome != RoundWorked {
 		t.Fatalf("round 1: %+v", ob.Rounds[0])
 	}
-	// Round 2: the check passes, so the judge reads it, and finds a gap.
 	o.worked(task.Key)
 	o.read(ObjectiveJobResult{Head: shaC, Base: shaB, Reading: passed(true)})
 	if ob = o.obj(task.Key); ob.Phase != PhaseVerdict || ob.State != ObjectiveActive {
@@ -100,7 +92,6 @@ func TestObjectiveCheckThenJudge(t *testing.T) {
 	if ob.Round != 3 || ob.Rounds[1].Outcome != RoundProgress || len(ob.Findings) != 1 {
 		t.Fatalf("round 2: %+v, findings %+v", ob.Rounds[1], ob.Findings)
 	}
-	// Round 3: the check passes and the judge finds nothing at the bar.
 	o.worked(task.Key)
 	o.read(ObjectiveJobResult{Head: shaD, Base: shaC, Reading: passed(true)})
 	o.judged("Every column type is handled.", finding("medium", "Slow on wide boards"))
@@ -121,7 +112,6 @@ func TestObjectiveKeptKeepsARoundFromBeingMet(t *testing.T) {
 	passing := func(ok bool) []ObjectiveKept {
 		return []ObjectiveKept{{Command: "go test ./...", OK: ok, Output: "FAIL TestBoard"}}
 	}
-	// A keep-passing command that fails where the work starts doesn't stop the rounds.
 	if j := o.read(ObjectiveJobResult{Head: shaA, Reading: timed(3), Kept: passing(false)}); len(j.KeepPassing) != 1 {
 		t.Fatalf("job keep-passing = %q", j.KeepPassing)
 	}
@@ -140,7 +130,6 @@ func TestObjectiveKeptKeepsARoundFromBeingMet(t *testing.T) {
 	if ob = o.obj(task.Key); ob.State != ObjectiveMet {
 		t.Fatalf("with the keep-passing command passing: %s %+v", ob.State, ob.Verdict)
 	}
-	// An answer that leaves one out isn't a reading.
 	other := o.task("Other")
 	o.set(other.Key, ObjectiveInput{Check: ptrOf("make lint"), Until: ptrOf("pass"), KeepPassing: &[]string{"make test"}})
 	o.read(ObjectiveJobResult{Head: shaA, Reading: passed(true)})
@@ -164,7 +153,6 @@ func TestObjectiveRoundThatChangedItsCheckWaitsForAPerson(t *testing.T) {
 			t.Fatalf("%s: a round that changed its check closed the task: %s %q %q", act, ob.State, ob.Phase, ob.PhaseWhy)
 		}
 		hasAll(t, "why it waits", ob.PhaseNote, "scripts/test.sh", "wp objective accept "+task.Key)
-		// The agent can't accept its own round.
 		if _, err := o.s.ObjectiveGo(o.ctx, o.ag, task.Key, ObjectiveAccept); !errors.Is(err, ErrForbidden) {
 			t.Errorf("an agent accepting: %v", err)
 		}
@@ -212,10 +200,8 @@ func TestObjectiveReadingThatFails(t *testing.T) {
 	if ob.Phase != PhaseVerdict || !strings.Contains(ob.PhaseNote, "could not resolve host") || ob.Health != "reading" {
 		t.Fatalf("after one failure: %q %q %s", ob.Phase, ob.PhaseNote, ob.Health)
 	}
-	o.noJob() // not before its wait is over
+	o.noJob()
 	o.tick(objectiveReadRetry + time.Minute)
-	// An answer that isn't a reading fails like any other: a head that is no
-	// commit, a number that is none.
 	fail(`{"head":"main","reading":{"ok":true,"value":0.5,"runs":3}}`)
 	o.tick(2*objectiveReadRetry + time.Minute)
 	fail(`{"head":"` + shaB + `","reading":{"ok":true,"value":"fast"}}`)
@@ -253,7 +239,6 @@ func TestObjectiveCheckThatReadsNothingAtTheStart(t *testing.T) {
 	if next, _ := o.queued(task.Key); next {
 		t.Fatal("a round is handed out on a check that can't run")
 	}
-	// The person puts the command right: it is read again, and the round opens.
 	o.set(task.Key, ObjectiveInput{Check: ptrOf("./scripts/coverage.sh")})
 	if j := o.read(ObjectiveJobResult{Head: shaA, Reading: &ObjectiveReading{OK: true, Value: ptrOf(61.0), Runs: 3}}); j.Check != "./scripts/coverage.sh" {
 		t.Fatalf("job check = %q", j.Check)
@@ -271,7 +256,6 @@ func TestObjectiveCheckThatReadsNothingAtTheStart(t *testing.T) {
 // moment a runner is there.
 func TestObjectiveWithNoRunnerToReadIt(t *testing.T) {
 	o := newObjEnv(t)
-	// The person's runner is an old wp that can't read objectives.
 	o.box = o.runner(o.admin, "box", func(r *RunnerRegistration) {
 		r.AllowedDirs = []string{"/work"}
 		r.CLIs = []RunnerCLI{{Name: "claude"}}
@@ -294,7 +278,6 @@ func TestObjectiveWithNoRunnerToReadIt(t *testing.T) {
 	if len(told) != 1 || !strings.Contains(told[0], "is stuck") {
 		t.Fatalf("told = %q", told)
 	}
-	// Not told again every few minutes.
 	o.tick(6 * time.Minute)
 	if told = o.told(NotifyObjective); len(told) != 1 {
 		t.Fatalf("told again: %q", told)

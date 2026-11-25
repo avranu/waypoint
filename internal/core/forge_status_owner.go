@@ -1,17 +1,5 @@
 package core
 
-// Waypoint's statuses come only from Waypoint (WP-416). A forge lets any
-// account with write access to a repo, an agent's or a CI job's token among
-// them, post a commit status under any context, and branch protection and
-// workflows read statuses by context alone: a `waypoint/review: success`
-// from another account would satisfy a branch rule that requires the review
-// gate. So a waypoint/* status counts as Waypoint's only when the account of
-// Waypoint's forge token posted it. Waypoint leaves every waypoint/* status
-// out of CI (ownCheck); one from anyone else is logged, and on a pull
-// request's head where the review gate is on Waypoint posts its own verdict
-// again, so the newest status of the context, the one the forge counts, is
-// Waypoint's.
-
 import (
 	"context"
 	"fmt"
@@ -33,11 +21,9 @@ func (s *Service) foreignOwnStatuses(ctx context.Context, f *Forge, repo, sha st
 	}
 	self := s.forgeOwnLogin(ctx, f)
 	if self == "" {
-		return // Waypoint can't tell its own statuses from others'
+		return
 	}
 	for _, c := range foreign {
-		// A check run is an app's, never Waypoint's: it posts statuses. A
-		// GitLab pipeline job comes with no creator (gitlabJobAuthors).
 		if c.Source != "check_run" && strings.EqualFold(c.Creator, self) {
 			continue
 		}
@@ -46,20 +32,15 @@ func (s *Service) foreignOwnStatuses(ctx context.Context, f *Forge, repo, sha st
 		if !warned {
 			s.warnForeign(f, repo, sha, c, self)
 		}
-		// A forged check run is logged only: Waypoint answers with a commit
-		// status, which doesn't override a check run of the same name.
 		if c.Name != gateContext || c.Source == "check_run" {
 			continue
 		}
-		// The answer is kept apart from the warning: it counts as done only
-		// once a pull request with the gate on was handled, so a status read
-		// before the pull request or the gate exists is answered on a later read.
 		if _, busy := s.foreignAnswers.LoadOrStore(key, true); busy {
 			continue
 		}
 		s.goBG(func() {
 			if !s.answerForgedGate(context.WithoutCancel(ctx), f, repo, sha, c) {
-				s.foreignAnswers.Delete(key) // try again on the next read
+				s.foreignAnswers.Delete(key)
 			}
 		})
 	}
@@ -92,7 +73,7 @@ func (s *Service) answerForgedGate(ctx context.Context, f *Forge, repo, sha stri
 		var id int64
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
-			return false // don't skip a pull request; try again on the next read
+			return false
 		}
 		ids = append(ids, id)
 	}
@@ -119,20 +100,20 @@ func (s *Service) answerForgedGate(ctx context.Context, f *Forge, repo, sha stri
 // when the forged status disagrees with it; eval when Waypoint has no
 // verdict on this head yet, so it must work one out.
 func (s *Service) reassertGate(ctx context.Context, prID int64, sha string, forged CommitCheck) (eval, applies bool, err error) {
-	defer forgeLocks.lock(fmt.Sprintf("gate:%d", prID))() // as evalGate: one post at a time
+	defer forgeLocks.lock(fmt.Sprintf("gate:%d", prID))()
 	pr, err := s.prByID(ctx, s.db.R, prID)
 	if err != nil || pr.HeadSHA != sha || (pr.State != "open" && pr.State != "draft") {
 		return false, false, err
 	}
 	on, _, err := s.gateConfigErr(ctx, pr.ForgeID, pr.Repo)
 	if err != nil || !on {
-		return false, false, err // the gate is off: Waypoint has no verdict to restore
+		return false, false, err
 	}
 	if pr.GateState == "" || pr.gateSHA != sha {
 		return true, true, nil
 	}
 	if checkState(pr.GateState) == forged.State {
-		return false, true, nil // it says what Waypoint says
+		return false, true, nil
 	}
 	return false, true, s.postGateStatus(ctx, pr, pr.GateState, pr.gateNote)
 }

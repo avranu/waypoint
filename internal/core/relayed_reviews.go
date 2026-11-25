@@ -1,33 +1,5 @@
 package core
 
-// Which parts of a review body or conversation comment are review comments
-// (WP-413): CodeRabbit's walkthrough summary and status comments ask for
-// nothing, nor does a review body that only counts the comments it posted
-// inline; and a review a mirror copied from GitHub carries its inline
-// comments in its body ("On `path` line N:"), each of which becomes a
-// review comment of its own (kind "relayed") with its path and line, so a
-// verdict is per finding.
-//
-// A mirror is a tool that keeps a repo on two forges and copies pull
-// requests and their reviews between them, posting as its own account. Its
-// copies (relays) are one header line, "**author** reviewed on GitHub:",
-// "**author** commented on GitHub:", "**author** commented on `path` line N
-// on GitHub:", "**author** approved on GitHub." or "**author**'s review on
-// GitHub was dismissed:", then the text, then a marker naming the mirror's
-// account, "<!-- NAME:review github 123 -->". A review's inline comments
-// follow its text, each "On `path` line N:\n\n" and the comment's text.
-// Only the forge's mirror account (Forge.MirrorAccount) posts relays: the
-// same text from anyone else is that person's comment.
-//
-// Each GitHub line comment's copy can name it (WP-442), "<!-- NAME:finding
-// github 123 -->", after its "On …:" line or before a lone comment's text,
-// and a reply in a GitHub thread comes across as "**author** replied in the
-// thread on `path` line N on GitHub:". A Forgejo reply carrying "<!--
-// review-verdict github 123 <answer> [<commit>] -->" can go back into that
-// thread, with the answer's reaction and, for fixed, rejected and deferred,
-// the thread resolved (verdict_replies.go). Without a mirror none of this
-// text appears, and nothing here applies.
-
 import (
 	"crypto/sha256"
 	"encoding/hex"
@@ -61,11 +33,11 @@ var (
 
 // relayed is a mirror's copy of a comment made on the other forge.
 type relayed struct {
-	header, author, verb string // verb: commented, reviewed, requested changes, approved, dismissed, replied
-	path                 string // a copied line comment's
-	line                 int    // on the new side
-	text                 string // without the header and marker
-	finding              string // the GitHub id of a copied line comment or thread reply
+	header, author, verb string
+	path                 string
+	line                 int
+	text                 string
+	finding              string
 }
 
 // parseRelay reads a mirror's copy; false for anything else.
@@ -128,9 +100,7 @@ type notePart struct {
 	kind, extID, path, body string
 	line                    int
 	bot                     bool
-	// relayID is the GitHub line comment a mirror's copy is of, which a
-	// verdict reply names; relayAuthor, who wrote it there.
-	relayID, relayAuthor string
+	relayID, relayAuthor    string
 }
 
 // noteParts are the review comments in a review body or conversation
@@ -160,12 +130,8 @@ func noteParts(n PRNote, whole bool, mirror string, ours posters) []notePart {
 	one[0].relayAuthor = r.author
 	switch {
 	case r.verb == "approved" || r.verb == "dismissed":
-		return nil // asks for nothing
+		return nil
 	case r.verb == "replied" && bot:
-		// A bot answering in a thread, mostly CodeRabbit taking in a
-		// verdict Waypoint posted there: treated as new work, each answer
-		// would draw another verdict, and the two would ping-pong. What it
-		// still finds wrong it raises in its next review.
 		return nil
 	case r.path != "" || r.verb == "replied":
 		one[0].path, one[0].line, one[0].relayID = r.path, r.line, r.finding
@@ -184,12 +150,8 @@ func noteParts(n PRNote, whole bool, mirror string, ours posters) []notePart {
 		lines[i].finding, lines[i].text = cutFinding(lines[i].text)
 	}
 	for _, l := range lines {
-		// The id comes from where the finding is, not its position in the
-		// body, so an entry added before it doesn't hand it another's verdict.
 		id := relayedID(n.ID, l.place)
 		if places[l.place] > 1 {
-			// Several findings share the place: tell them apart by their
-			// text, not their order, so an inserted one doesn't shift the rest.
 			sum := sha256.Sum256([]byte(l.text))
 			id += "-" + hex.EncodeToString(sum[:4])
 			if seen[id]++; seen[id] > 1 {
@@ -211,7 +173,7 @@ func cutInPacket(body string) bool {
 type relayLine struct {
 	place, path, text string
 	line              int
-	finding           string // its GitHub id
+	finding           string
 }
 
 // splitRelayLines parts a copied review's text into its own text and the
@@ -254,11 +216,11 @@ func statusOnly(text string, lines int) bool {
 	case !coderabbitRE.MatchString(text):
 		return false
 	case coderabbitOwnRE.MatchString(text):
-		return false // findings outside the diff, nitpicks, ones it raises again
+		return false
 	}
 	if m := actionableRE.FindStringSubmatch(text); m != nil && lines == 0 {
 		n, _ := strconv.Atoi(m[1])
-		return n == 0 // posted inline, but nothing came across with it
+		return n == 0
 	}
 	return true
 }

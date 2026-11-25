@@ -1,19 +1,5 @@
 package core
 
-// The check that every indexed transcript piece still has its file (WP-1466,
-// audit 1234.1). The database holds only an index; a database restored without
-// the transcript directory keeps rows for files that are gone, and the
-// machines never send those bytes again (their offsets are past them), so
-// nothing else would notice. The check stats each piece's path, in batches by
-// row id, and reads no file. It runs in the hourly collector-health job, at
-// most daily and at once after the server starts, and not at all when the
-// archive is off. The count is kept in transcript_totals and shown as the
-// transcript archive collector's problem.
-//
-// It only reports. Making machines send the missing bytes again needs more
-// than dropping index rows: a machine whose offset is at its file's end has
-// nothing pending, so it never asks the server where its copy ends.
-
 import (
 	"context"
 	"errors"
@@ -97,8 +83,6 @@ func (s *Service) countMissingTranscriptFiles(ctx context.Context) (int64, error
 			case errors.Is(err, fs.ErrNotExist):
 				missing++
 			default:
-				// not knowing is not missing (an unreadable directory would
-				// count every piece)
 				return 0, fmt.Errorf("stat %s: %w", p, err)
 			}
 		}

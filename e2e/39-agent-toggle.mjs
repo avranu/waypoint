@@ -49,7 +49,6 @@ for (const vp of looks([
     await api.post("/projects", { name: "Who picks up " + vp.width, key });
   const issue = await api.post("/issues", { project: key, title: "Who picks up" });
   ok(!issue.agent, `${tag}: a new issue is open to anyone (agent is empty)`);
-  // The stored value, once the save lands.
   const stored = async (k, want) => {
     let got;
     for (let i = 0; i < 25; i++) {
@@ -61,11 +60,9 @@ for (const vp of looks([
   };
 
   await page.goto(`${base}/issue/${issue.key}`);
-  // Agents are picked in the assignee list; the lock is a toggle beside it.
   const scope = (root) => ({
     lock: () => root.getByRole("button", { name: "Humans only", exact: true }).locator("visible=true"),
     assignees: () => root.getByTitle("Assignees").locator("visible=true").first(),
-    // Opens the list, picks by label, closes it.
     pick: async (name) => {
       await root.getByTitle("Assignees").locator("visible=true").first().click();
       await page.getByRole("option", { name: name instanceof RegExp ? name : new RegExp("^" + name + "\\b") }).last().click();
@@ -79,13 +76,11 @@ for (const vp of looks([
   ok((await page.getByTitle(/^For agents: /).locator("visible=true").count()) === 0, `${tag}: no agent shown on the assignee face by default`);
   await page.screenshot({ path: `${out}/${tag}-anyone.png` });
 
-  // One click: humans only.
   await who.lock().click();
   ok((await stored(issue.key, "none")) === "none", `${tag}: one click makes it humans only (stored none)`);
   ok(await pressed(), `${tag}: Humans only is on`);
   await page.screenshot({ path: `${out}/${tag}-humans.png` });
 
-  // A person on a locked task makes the lock say nothing: it hides, the value stays.
   await who.pick(/Robin Ames \(me\)/);
   await who.lock().waitFor({ state: "hidden" });
   ok((await stored(issue.key, "none")) === "none", `${tag}: a person on a humans-only task hides the lock and keeps it`);
@@ -93,26 +88,22 @@ for (const vp of looks([
   await who.lock().waitFor();
   ok(await pressed(), `${tag}: ...and taking the person off shows the lock again`);
 
-  // Picking an agent in the assignee list delegates it (and unlocks it).
   await who.pick("Any agent");
   await page.getByTitle("For agents: any").locator("visible=true").first().waitFor();
   ok((await stored(issue.key, "any")) === "any", `${tag}: Any agent in the assignee list delegates it (stored any)`);
   ok((await who.lock().count()) === 0, `${tag}: the lock hides while an agent is on it`);
   await page.screenshot({ path: `${out}/${tag}-agents.png` });
 
-  // A specific agent replaces it.
   await who.pick("sonnet");
   await page.getByTitle(/^For agents: sonnet/).locator("visible=true").first().waitFor();
   ok((await stored(issue.key, "sonnet")) === "sonnet", `${tag}: the list picks a specific agent`);
   await page.screenshot({ path: `${out}/${tag}-specific.png` });
 
-  // Picking the chosen one again hands it back to anyone.
   await who.pick("sonnet");
   await page.waitForFunction(() => !document.querySelector('[title^="For agents: "]'));
   ok((await stored(issue.key, "")) === "", `${tag}: picking it again goes back to Anyone (stored empty)`);
   await who.lock().waitFor();
 
-  // The search syntax knows all three.
   const find = async (q) =>
     ((await api.get("/issues?q=" + encodeURIComponent(`project:${key} ${q}`))).issues ?? []).map(
       (i) => i.key,
@@ -123,7 +114,6 @@ for (const vp of looks([
   ok((await find("is:human")).includes(issue.key), `${tag}: is:human finds a humans-only issue`);
   ok(!(await find("is:anyone")).includes(issue.key), `${tag}: ...and is:anyone doesn't`);
 
-  // The new-issue dialog has the same two controls: open to anyone by default.
   await page.goto(`${base}/p/${key}/list`);
   await page.getByText(issue.title).first().waitFor();
   await page.keyboard.press("c");
@@ -156,7 +146,6 @@ for (const vp of looks([
   }
   ok(!!agentKey && (await stored(agentKey, "any")) === "any", `${tag}: created from the dialog for any agent`);
 
-  // The list's bulk bar: "Assign" takes agents too, and "Humans only" locks the selection.
   const selectIt = async () => {
     await page.goto(`${base}/p/${key}/list`);
     await page.getByText("Made for agents").first().waitFor();

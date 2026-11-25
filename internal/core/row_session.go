@@ -18,8 +18,6 @@ func sessionStamp(ctx context.Context, q rowQuerier, a *Actor) (session, task an
 	}
 	var held sql.NullInt64
 	var ran, open bool
-	// The session row may be gone (deleted since the header was resolved);
-	// then the task is unknown and the session id would break the key.
 	err := q.QueryRowContext(ctx, `SELECT s.issue_id,
 			EXISTS (SELECT 1 FROM agent_runs r WHERE r.session_id = s.id AND r.issue_id = s.issue_id),
 			EXISTS (SELECT 1 FROM agent_runs r WHERE r.session_id = s.id AND r.issue_id = s.issue_id AND (r.ended_at IS NULL OR r.outcome = 'paused'))
@@ -27,14 +25,9 @@ func sessionStamp(ctx context.Context, q rowQuerier, a *Actor) (session, task an
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
-	// Any other failure (busy, I/O): the session is known from the header, the
-	// task is not. Keep the session so the row stays countable; NULL the task.
 	if err != nil {
 		return a.Session, nil
 	}
-	// agent_sessions.issue_id is the last task claimed and is never cleared:
-	// when every run of the session on it has ended, the task is finished
-	// with, not held (a session with no run on it keeps the benefit of the doubt).
 	if held.Valid && (open || !ran) {
 		task = held.Int64
 	}

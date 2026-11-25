@@ -1,12 +1,5 @@
 package core
 
-// Coding-agent CLIs on a runner as chain entries (WP-D14 phase 3, WP-6). A
-// chain entry that names a CLI ("claude", "codex", "cursor", "opencode")
-// runs as a review job on a runner of the rule's owner, read-only on a fresh
-// checkout of the pull request, instead of calling a provider. Only a bot run
-// carries a runnerScope, so only review and reply rules can use one; an
-// Admin → AI task has no owner whose subscription may serve it.
-
 import (
 	"context"
 	"encoding/json"
@@ -42,14 +35,12 @@ var runnerPollEvery = 2 * time.Second
 // (the automation's owner, 0: nobody's), and what they check out.
 type runnerScope struct {
 	owner   int64
-	repo    string // clone URL
-	base    string // what to check out: the head commit, or a fork's pull ref
+	repo    string
+	base    string
 	runID   int64
 	attempt int
-	// denied, when set, is why no runner may read this pull request: its
-	// text is untrusted input to a CLI on a person's machine.
-	denied string
-	seq    atomic.Int64
+	denied  string
+	seq     atomic.Int64
 }
 
 type runnerScopeKey struct{}
@@ -153,8 +144,6 @@ func (s *Service) cancelBotRunJobs(ctx context.Context, runID int64) {
 func (s *Service) runnerAttempt(ctx context.Context, cm ChainModel, system, prompt string, schema map[string]any, out any, perCall time.Duration) (ChainModel, ModelAttempt, error) {
 	name := runnerEntryName(cm)
 	start := time.Now()
-	// The messages are ours (or the runner's own words, shortened), never
-	// a raw error from the database or the network.
 	fail := func(outcome, msg string, cause error) (ChainModel, ModelAttempt, error) {
 		if cause == nil {
 			cause = errors.New(msg)

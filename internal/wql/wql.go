@@ -129,9 +129,9 @@ type token struct {
 	key    string
 	value  string
 	negate bool
-	quoted bool // value was quoted, so commas are literal
+	quoted bool
 	op     string
-	values []string // key:value lists, split (quoted items kept whole)
+	values []string
 }
 
 func isKeyRune(r rune) bool {
@@ -155,35 +155,28 @@ func tokenize(s string) ([]token, error) {
 			tk.negate = true
 			i++
 		}
-		// Bare quoted phrase.
 		if rs[i] == '"' {
 			v, n := readQuoted(rs, i)
 			i = n
 			if tk.negate {
-				// A negated phrase is not supported; treat literally.
 				v = "-" + v
 			}
 			tk.value = v
 			out = append(out, tk)
 			continue
 		}
-		// Read a word, which may contain key:value.
 		j := i
 		for j < len(rs) && isKeyRune(rs[j]) {
 			j++
 		}
-		// key:value, but not a URL like http://host.
 		if j < len(rs) && j > i && rs[j] == ':' && (j+1 >= len(rs) || rs[j+1] != '/') {
 			tk.key = string(rs[i:j])
-			j++ // past ':'
-			// Value: an optional operator, then a quoted string or a bare word.
+			j++
 			k := j
 			for k < len(rs) && strings.ContainsRune("<>=!", rs[k]) {
 				k++
 			}
 			op := string(rs[j:k])
-			// A comma-separated list of quoted or bare values:
-			// status:"In Review",Done
 			for {
 				if k < len(rs) && rs[k] == '"' {
 					v, n := readQuoted(rs, k)
@@ -213,7 +206,6 @@ func tokenize(s string) ([]token, error) {
 			out = append(out, tk)
 			continue
 		}
-		// Plain word.
 		for j < len(rs) && !unicode.IsSpace(rs[j]) {
 			j++
 		}
@@ -232,7 +224,7 @@ func tokenize(s string) ([]token, error) {
 // the next rune. Returns the unquoted value and the index after the closing quote.
 func readQuoted(rs []rune, i int) (string, int) {
 	var b strings.Builder
-	i++ // opening quote
+	i++
 	for i < len(rs) {
 		r := rs[i]
 		if r == '\\' && i+1 < len(rs) {

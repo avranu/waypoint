@@ -11,9 +11,6 @@ import (
 	"testing"
 )
 
-// The read-only drivers confine a CLI to its checkout (WP-6). The live check
-// with the real CLIs is runner_confine_live_test.go; these pin the arguments.
-
 func TestClaudeReadIsConfinedToTheCheckout(t *testing.T) {
 	work := t.TempDir()
 	real, _ := filepath.EvalSymlinks(work)
@@ -27,7 +24,6 @@ func TestClaudeReadIsConfinedToTheCheckout(t *testing.T) {
 			t.Errorf("args lack %q: %s", want, args)
 		}
 	}
-	// No bare tool name that would allow every path, and no Bash or edit tool.
 	for _, bad := range []string{"--allowedTools Read,Grep,Glob", "Bash", "Edit", "Write", "acceptEdits"} {
 		if strings.Contains(args, bad) {
 			t.Errorf("args contain %q: %s", bad, args)
@@ -36,11 +32,9 @@ func TestClaudeReadIsConfinedToTheCheckout(t *testing.T) {
 	if i := slices.Index(d.args, "--setting-sources"); i < 0 || d.args[i+1] != "user" || !slices.Contains(d.args, "--strict-mcp-config") {
 		t.Errorf("settings and MCP aren't limited: %v", d.args)
 	}
-	// A path Claude Code would read as a pattern can't be written into a rule.
 	if _, err := claudeDriver(agentJob{CLI: "claude", ReadOnly: true, Permission: "read"}, "p", filepath.Join(work, "a(b)")); err == nil {
 		t.Error("a path with parentheses was put in a permission rule")
 	}
-	// The edit modes are untouched.
 	e, _ := claudeDriver(agentJob{CLI: "claude", Permission: "edit"}, "p", work)
 	if a := strings.Join(e.args, " "); !strings.Contains(a, "acceptEdits") || strings.Contains(a, "dontAsk") {
 		t.Errorf("edit args = %s", a)
@@ -86,8 +80,8 @@ func TestCursorReadRulesCoverAllButTheCheckout(t *testing.T) {
 		"home/runner/.ssh/id_ed25519",
 		"home/runner/.env",
 		"home/runner/work/job2-def/secret",
-		"home/runner/work/job1-abc-older/secret", // starts with the checkout's name
-		"home/runner-two/.ssh/id",                // starts with an ancestor's name
+		"home/runner/work/job1-abc-older/secret",
+		"home/runner-two/.ssh/id",
 		"secret",
 		"home/runner/work/job1-abc/src/deep/.hidden",
 	} {
@@ -99,7 +93,6 @@ func TestCursorReadRulesCoverAllButTheCheckout(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Reached through a link, as a temporary directory can be.
 	link := filepath.Join(t.TempDir(), "link")
 	if err := os.Symlink(work, link); err != nil {
 		t.Fatal(err)
@@ -134,11 +127,9 @@ func TestCursorReadRulesCoverAllButTheCheckout(t *testing.T) {
 			t.Errorf("the checkout's %q is refused", f)
 		}
 	}
-	// The rules name the whole neighbourhood, so they can't be read back.
 	if !denied(filepath.Join(work, ".cursor", "cli.json")) {
 		t.Error("the rules file can be read")
 	}
-	// Jobs that start after the listing, whatever their id.
 	for _, name := range []string{"job0-x", "job2-x", "job9-x", "job10-x", "job19-x", "job123456-x", "job2-x.schema.json"} {
 		if !denied(filepath.Join(root, "home/runner/work", name, "secret")) {
 			t.Errorf("a later checkout %s can be read", name)
@@ -202,7 +193,6 @@ func TestConfinedJobsRefuseCLIsThatCannotBeConfined(t *testing.T) {
 			t.Errorf("%s: %v", cli, err)
 		}
 	}
-	// An agent_task asking for read access is the owner's own prompt, not marked.
 	if _, err := p.buildDriver(context.Background(), agentJob{CLI: "codex", ReadOnly: true, Permission: "read"}, "/bin/x", t.TempDir()); err != nil {
 		t.Errorf("an unmarked read job was refused: %v", err)
 	}
@@ -225,10 +215,10 @@ func TestRemoveEscapingLinks(t *testing.T) {
 	must(os.MkdirAll(filepath.Join(work, "sub"), 0o750))
 	must(os.WriteFile(filepath.Join(work, "a.txt"), []byte("a"), 0o600))
 	must(os.WriteFile(filepath.Join(root, "secret"), []byte("s"), 0o600))
-	must(os.Symlink("../a.txt", filepath.Join(work, "sub", "ok.txt")))     // stays inside
-	must(os.Symlink("../../secret", filepath.Join(work, "sub", "up.txt"))) // leaves it
-	must(os.Symlink(root, filepath.Join(work, "dir")))                     // a directory outside
-	must(os.Symlink("/nonexistent/x", filepath.Join(work, "dangling")))    // points nowhere
+	must(os.Symlink("../a.txt", filepath.Join(work, "sub", "ok.txt")))
+	must(os.Symlink("../../secret", filepath.Join(work, "sub", "up.txt")))
+	must(os.Symlink(root, filepath.Join(work, "dir")))
+	must(os.Symlink("/nonexistent/x", filepath.Join(work, "dangling")))
 	must(os.Symlink("/etc/passwd", filepath.Join(work, "abs")))
 	gone, err := removeEscapingLinks(work)
 	must(err)

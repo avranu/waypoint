@@ -25,7 +25,7 @@ func TestFixCIGate(t *testing.T) {
 		{EvPRCI, "robin", "me/app", "", ""},
 		{EvPRCI, "mallory", "me/app", "", "member"},
 		{EvPRCI, "robin", "mallory/app", "", "fork"},
-		{EvPRCI, "bot", "me/app", "claude", ""}, // an agent's pull request, in the repository
+		{EvPRCI, "bot", "me/app", "claude", ""},
 		{EvPRCI, "bot", "mallory/app", "claude", "fork"},
 		{"manual", "mallory", "mallory/app", "", ""},
 	} {

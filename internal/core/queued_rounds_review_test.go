@@ -54,7 +54,6 @@ func TestRoundLimits(t *testing.T) {
 func TestBabysitWithdrawsAStaleQueuedRoundLater(t *testing.T) {
 	be := newBabysitEnv(t)
 	job := be.failRound()
-	// The push was recorded, the withdraw wasn't.
 	if _, err := be.s.db.W.Exec(`UPDATE pull_requests SET head_sha = '8888888bbbb'`); err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +93,6 @@ func TestWithdrawnRoundIsRecordedWholeAndRestartsTheWaitClock(t *testing.T) {
 	if !be.s.withdrawQueuedRound(be.ctx, b, pr, job) {
 		t.Fatal("not withdrawn")
 	}
-	// Audit 1406.5 and 1406.7: the change is announced and counted.
 	if !hubHas(sub, EvBabysit) {
 		t.Error("no babysit event for the withdrawal")
 	}
@@ -110,7 +108,6 @@ func TestWithdrawnRoundIsRecordedWholeAndRestartsTheWaitClock(t *testing.T) {
 			t.Errorf("%s: the wait still counts from the withdrawn round: %v (queued %v)", name, got.WaitSince, queuedAt)
 		}
 	}
-	// A job a runner has is left as it is, and so is the babysit.
 	be2 := newBabysitEnv(t)
 	job2 := be2.failRound()
 	runners, _ := be2.s.ownerRunners(be2.ctx, be2.admin.User.ID)

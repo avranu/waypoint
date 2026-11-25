@@ -1,31 +1,5 @@
 package core
 
-// The reviewer's brief and model (WP-1320): what an adversarial review
-// round's reviewer is told, and who reviews. A person sets both with the
-// other review settings (Agents → Autopilot, `wp autopilot set
-// --review-text-file F --review-model M`), for all their projects or one.
-//
-//   - review_text is the reviewer's instructions, like a skill: it goes into
-//     every round audit's prompt (the gateway's model, a named model, the
-//     Sonnet reviewer) ahead of the audit's fixed rules and output form, and
-//     into the session's own prompt when the session reviews. Unset or
-//     empty: DefaultReviewText.
-//   - review_model is who reviews: "auto" (unset; the stakes-tiered chain
-//     of WP-ADR121: the gateway's audit purpose, the Sonnet reviewer when
-//     that can't be had), "session" (the working session reviews its own
-//     change, with its adversarial-review subagent), or a model as audits
-//     name one: "gateway/MODEL" for a model behind the LLM gateway,
-//     "claude/sonnet", "codex/MODEL", "cursor/grok-4.7-high" for a coding
-//     agent's CLI on the person's runner. A named model replaces the
-//     gateway's choice and the stakes bar for the round's first audit; when
-//     it fails, the round falls back as an auto round would.
-//
-// Every round audit also gets the task it reviews (title and description,
-// as data) and, from the second round on, what earlier rounds of the same
-// work raised and how the session marked it, so the reviewer checks the
-// change against what was asked and spends the round on new ground
-// (roundContext).
-
 import (
 	"context"
 	"crypto/sha256"
@@ -288,11 +262,6 @@ func (s *Service) roundContext(ctx context.Context, review *roundRow) string {
 	if !review.runID.Valid {
 		return b.String()
 	}
-	// The findings each earlier round of the change handed the session
-	// (againLoopOf: the change's rounds, through a run that stopped short
-	// and was taken up again): its Claude reviewer's, when that brought
-	// them (againAuditSQL), not the audit it replaced; the newest rounds'
-	// first.
 	loop, err := s.againLoopOf(ctx, review.id, review.runID.Int64)
 	if err != nil || loop == nil {
 		if err != nil {
@@ -321,8 +290,6 @@ func (s *Service) roundContext(ctx context.Context, review *roundRow) string {
 		}
 		item := fmt.Sprintf("- %s (%s, %s): %s", driftEscape(at), sev, cmp(state, "open"), driftEscape(clipText(strings.TrimSpace(title), 200)))
 		if state == "rejected" && strings.TrimSpace(note) != "" {
-			// Why it was rejected, so a reviewer who thinks it holds can
-			// answer the reason rather than raise it again bare.
 			item += " (rejected because: " + driftEscape(clipText(strings.TrimSpace(note), 200)) + ")"
 		}
 		lines = append(lines, item)

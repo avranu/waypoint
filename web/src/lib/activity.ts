@@ -1,5 +1,3 @@
-// What agents did (WP-D15): the Agents page's Activity tab.
-
 import { queryOptions } from '@tanstack/react-query'
 import { api, qs } from './api'
 

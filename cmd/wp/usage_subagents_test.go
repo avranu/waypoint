@@ -102,7 +102,7 @@ func TestSubagentNoopCommands(t *testing.T) {
 		"printf 'x'":                    true,
 		"true":                          true,
 		":":                             true,
-		"sleep 30":                      false, // a wait, nothing printed
+		"sleep 30":                      false,
 		"echo $X":                       false,
 		"echo `date`":                   false,
 		"echo x > f":                    false,
@@ -163,7 +163,6 @@ func TestSubagentLossPatterns(t *testing.T) {
 				f.bash("b1", "sleep 100; tail -f x", "<tool_use_error>Blocked: sleep 100 followed by: tail -f x. Use run_in_background.</tool_use_error>", true)
 				f.bash("b2", "until x; do sleep 1; done", "PreToolUse:Bash hook error: [wp]: background wait loop with no bound", true)
 				f.bash("b3", "cat transcript", "ordinary output", false)
-				// the block text appears again in an entry that is not b3's own result block
 				f.say("earlier: Blocked: sleep 100 followed by: tail -f x", mn)
 				f.use("b4", "Bash", map[string]any{"command": "ls"}, mn).add("user", []any{
 					map[string]any{"type": "tool_result", "tool_use_id": "b4", "content": "a b"},
@@ -192,7 +191,7 @@ func TestSubagentLossPatterns(t *testing.T) {
 				t := "wp testsum -- go test ./x -run 'TestA'"
 				f.bash("t1", t, "ok", false)
 				f.use("e1", "Edit", map[string]any{"file_path": "a.go"}, mn).res("e1", "<tool_use_error>String to replace not found</tool_use_error>", true, time.Second)
-				f.bash("t2", "wp  testsum --   go test ./x   -run 'TestA'", "ok", false) // whitespace differs only
+				f.bash("t2", "wp  testsum --   go test ./x   -run 'TestA'", "ok", false)
 				f.use("e2", "Edit", map[string]any{"file_path": "a.go"}, mn).res("e2", "updated", false, time.Second)
 				f.bash("t3", t, "ok", false)
 				f.bash("t4", t, "ok", false)
@@ -261,7 +260,6 @@ func TestSubagentMinutesAndCap(t *testing.T) {
 	f.use("c2", "Bash", map[string]any{"command": "ls"}, 90*time.Minute).res("c2", "ok", false, 4*time.Minute)
 	f.use("c3", "Bash", map[string]any{"command": "ls"}, time.Minute).res("c3", "ok", false, 10*time.Minute)
 	a := saRead(t, f, false)
-	// c1: 2 mn to its result, then 90 mn to the next call -> next tool_use is 92 mn away, capped
 	if got := a.Calls[0].Mins; got != 30 {
 		t.Errorf("c1 minutes %.1f, want the 30 cap", got)
 	}
@@ -282,7 +280,7 @@ func TestSubagentAfterHandback(t *testing.T) {
 	}
 	tests := []struct {
 		name   string
-		resume string // the entry that resumed the agent; "" for none
+		resume string
 		kind   string
 		loss   bool
 	}{
@@ -381,8 +379,8 @@ func TestSubagentDiscoverAndMeasure(t *testing.T) {
 	f := newSaFix()
 	f.bash("n1", "echo waiting", "waiting", false)
 	mk("-repo/sess1/subagents/agent-a1.jsonl", f, false)
-	mk("-repo/sess1/subagents/workflows/w/agent-a2.jsonl.gz", f, true) // nested and gzipped
-	mk("-repo/sess1/subagents/agent-a3.jsonl", f, false)               // both forms: read once
+	mk("-repo/sess1/subagents/workflows/w/agent-a2.jsonl.gz", f, true)
+	mk("-repo/sess1/subagents/agent-a3.jsonl", f, false)
 	mk("-repo/sess1/subagents/agent-a3.jsonl.gz", f, true)
 	mk("-repo--claude-worktrees-wp-9/sess2/subagents/agent-a4.jsonl", f, false)
 	mk("-other/sess3/subagents/agent-a5.jsonl", f, false)

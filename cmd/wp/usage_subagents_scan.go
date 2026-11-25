@@ -13,10 +13,6 @@ import (
 	"time"
 )
 
-// wp usage subagents (WP-1443): reading one subagent transcript into calls
-// (a tool_use paired with its tool_result) and the entries that resumed it,
-// then sorting each call into at most one wait/retry pattern.
-
 // saCallCap is the longest gap charged to a call: an agent idle for longer
 // was parked, not working.
 const saCallCap = 30 * time.Minute
@@ -219,8 +215,6 @@ func saLine(a *saAgent, b []byte, ln int, byID map[string]*saCall, events *[]saE
 			a.Calls = append(a.Calls, c)
 		case l.Type == "user" && bl.Type == "tool_result":
 			hasResult = true
-			// only the block for its own id counts, and only the first: later
-			// entries can echo a result
 			if c := byID[bl.ToolUseID]; c != nil && !c.HasResult {
 				c.HasResult, c.IsError, c.ResLine, c.ResTS = true, bl.IsError, ln, ts
 				c.Head = resultText(bl.Content, 600)
@@ -405,7 +399,6 @@ func saFinish(a *saAgent, events []saEvent) {
 			}
 		}
 	}
-	// refused starts
 	for i, c := range calls {
 		if (c.Name == "Agent" || c.Name == "Task") && strings.HasPrefix(c.Head, "Concurrent subagent limit reached") {
 			c.Pattern, c.Sub = patRefusedStart, "refused"
@@ -430,7 +423,6 @@ func saFinish(a *saAgent, events []saEvent) {
 			}
 		}
 	}
-	// hand-backs and nudges
 	firstHB := 0
 	var hbLines []int
 	for _, c := range calls {
@@ -497,7 +489,6 @@ func saFinish(a *saAgent, events []saEvent) {
 			s.InCall += c.InCall
 		}
 	}
-	// refused waits and no-op polls
 	for _, c := range calls {
 		if c.Name != "Bash" && c.Name != "bash" {
 			continue
@@ -514,7 +505,6 @@ func saFinish(a *saAgent, events []saEvent) {
 			c.Extra = !saOldPoll.MatchString(c.Cmd)
 		}
 	}
-	// repeated tests on an unchanged tree
 	last := map[string]int{}
 	runs := map[string]int{}
 	for _, c := range calls {
@@ -532,7 +522,6 @@ func saFinish(a *saAgent, events []saEvent) {
 		}
 		last[k] = runs[k]
 	}
-	// work after a hand-back that nobody asked for
 	for c, k := range kindOf {
 		if k != resumeRetasked && c.Pattern == "" {
 			c.Pattern, c.Sub = patPostHandback, k
