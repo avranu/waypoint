@@ -326,4 +326,12 @@ func TestGoTimeoutHintIsAboveTheLimitHit(t *testing.T) {
 	if got := strings.Join(f.Msg, "\n"); !strings.Contains(got, "e.g. -timeout 20m0s") {
 		t.Fatalf("hint = %q", got)
 	}
+	f, _ = goTimeoutFailure("x/core", []string{"panic: test timed out after soon"})
+	if got := strings.Join(f.Msg, "\n"); !strings.Contains(got, "a longer -timeout") || strings.Contains(got, "e.g.") {
+		t.Fatalf("hint for an unread limit = %q", got)
+	}
+	f, _ = goTimeoutFailure("x/core", []string{"panic: test timed out after 10m0s", "\trunning tests:", "\t\tTestHang (9m0s)"})
+	if got := strings.Join(f.Msg, "\n"); !strings.Contains(got, "may hang") || strings.Contains(got, "longer -timeout") {
+		t.Fatalf("hint for a hang = %q", got)
+	}
 }

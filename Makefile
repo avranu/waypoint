@@ -35,9 +35,13 @@ SLOT ?= $(shell echo ",$$WAYPOINT_SLOTS_HELD" | grep -q ",tests=" || { wp slot -
 
 TESTSUM ?= $(if $(SLOT),$(shell wp testsum -h >/dev/null 2>&1 && echo wp testsum -- || echo '$(SLOT)'))
 
+# internal/core is one test binary here: 10-17m on 8 CPUs, and past 30m at a
+# load of 22-50 (WP-1857). `make test TEST_TIMEOUT=2h` allows more.
+TEST_TIMEOUT ?= 60m
+
 test: ## backend tests + frontend typecheck (portable: no -race, needs cgo)
 	go vet $(GOPKGS)
-	$(TESTSUM) go test -count=1 -timeout 60m -cover $(GOPKGS)
+	$(TESTSUM) go test -count=1 -timeout $(TEST_TIMEOUT) -cover $(GOPKGS)
 	cd web && $(WEBDEPS) && npm run typecheck
 
 tools: ## install pinned Go QA binaries
