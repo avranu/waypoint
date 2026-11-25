@@ -117,7 +117,7 @@ func (s *Service) reviewOnce(ctx context.Context, chain []ChainModel, prompt str
 			used, err, ans.Findings = u2, err2, again.Findings
 		}
 	}
-	if slow := failedMidStream(chain, attempts); err != nil && ctx.Err() == nil && slow != "" && s.asksExcludingGateway(ctx, chain) {
+	if slow := failedMidStream(s.gatewayWith(ctx, GatewayExclude), chain, attempts); err != nil && ctx.Err() == nil && slow != "" && s.asksExcludingGateway(ctx, chain) {
 		s.log.InfoContext(ctx, "a review's model failed after it started; asking again without it", "model", slow)
 		// What plain excludes (the first reviewer's model) comes first, then
 		// slow, then the cooling models: the gateway takes only so many
@@ -141,8 +141,15 @@ func (s *Service) reviewOnce(ctx context.Context, chain []ChainModel, prompt str
 		out.salvaged = note.findings
 		note.mu.Unlock()
 	}
-	if err == nil && len(attempts) > 0 {
-		out.requestID = attempts[len(attempts)-1].RequestID
+	if err == nil {
+		// The last that answered, not the last asked: a plain re-ask may have
+		// failed after the answer kept.
+		for _, a := range slices.Backward(attempts) {
+			if a.Outcome == "ok" {
+				out.requestID = a.RequestID
+				break
+			}
+		}
 	}
 	return out
 }
@@ -151,15 +158,17 @@ func (s *Service) reviewOnce(ctx context.Context, chain []ChainModel, prompt str
 // that names fallbacks gets a few of them (maxCallsPerRequest).
 const reviewCallTimeout = 5 * time.Minute
 
-// failedMidStream is the model a gateway's route was serving when the last
-// request of attempts timed out or failed: a model the chain did not name,
-// so the gateway chose it and will again; "" otherwise.
-func failedMidStream(chain []ChainModel, attempts []ModelAttempt) string {
+// failedMidStream is the model the route of the gateway gw was serving when
+// the last request of attempts timed out or failed: a model the chain did not
+// name, so the gateway chose it and will again; "" otherwise. Another
+// provider's attempt carries a name the chain did not write too (a family
+// pattern resolved to its id, a runner entry), and is not the route's.
+func failedMidStream(gw int64, chain []ChainModel, attempts []ModelAttempt) string {
 	if len(attempts) == 0 {
 		return ""
 	}
 	a := attempts[len(attempts)-1]
-	if a.Model == "" || (a.Outcome != "timeout" && a.Outcome != "error") {
+	if a.providerID != gw || a.Model == "" || (a.Outcome != "timeout" && a.Outcome != "error") {
 		return ""
 	}
 	if slices.ContainsFunc(chain, func(c ChainModel) bool { return c.Model == a.Model }) {
