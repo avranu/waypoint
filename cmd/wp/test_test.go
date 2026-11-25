@@ -278,3 +278,46 @@ func TestWpTestGoSelectsFromTheChangedList(t *testing.T) {
 		t.Errorf("flags without --: %v", err)
 	}
 }
+
+// wp ship runs wp test by default in a repository that has a .waypoint/test:
+// once per tree, again after the tree changes, and not at all without one.
+func TestShipRunsTheScopedCheckOncePerTree(t *testing.T) {
+	root := scopedRepo(t)
+	runs := 0
+	old := shipScopedCheck
+	t.Cleanup(func() { shipScopedCheck = old })
+	shipScopedCheck = func(c *cli) (int, error) {
+		runs++
+		err := c.dispatch(testCmd, nil)
+		var ec exitCode
+		if errors.As(err, &ec) {
+			return int(ec), nil
+		}
+		return 0, err
+	}
+	var out bytes.Buffer
+	c := &cli{out: &out, err: &bytes.Buffer{}}
+
+	putFiles(t, root, map[string]string{"a.txt": "a\n"})
+	if err := c.runDefaultShipCheck(); err != nil || runs != 0 {
+		t.Fatalf("no .waypoint/test: err %v, runs %d", err, runs)
+	}
+
+	putExec(t, root, ".waypoint/test", "#!/bin/sh\nexit 0\n")
+	if err := c.runDefaultShipCheck(); err != nil || runs != 1 {
+		t.Fatalf("first ship: err %v, runs %d", err, runs)
+	}
+	if err := c.runDefaultShipCheck(); err != nil || runs != 1 || !strings.Contains(out.String(), "already passed on this tree; not run again") {
+		t.Fatalf("second ship on one tree: err %v, runs %d\n%s", err, runs, out.String())
+	}
+	putFiles(t, root, map[string]string{"b.txt": "b\n"})
+	if err := c.runDefaultShipCheck(); err != nil || runs != 2 {
+		t.Fatalf("after the tree changed: err %v, runs %d", err, runs)
+	}
+
+	putExec(t, root, ".waypoint/test", "#!/bin/sh\nexit 1\n")
+	err := c.runDefaultShipCheck()
+	if err == nil || runs != 3 || !strings.Contains(err.Error(), "--no-check") {
+		t.Fatalf("a failing check: err %v, runs %d", err, runs)
+	}
+}

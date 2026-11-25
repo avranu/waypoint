@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -471,4 +474,53 @@ func (c *cli) runShipCheck(cmd string) error {
 	}
 	_, _ = fmt.Fprintf(c.out, "Check failed: %s exited %d after %s; last lines:\n%s\n", cmd, code, took, lastLines(buf.Bytes(), 30))
 	return fmt.Errorf("the check failed, so nothing was committed or shipped: fix it and run wp ship again")
+}
+
+// shipScopedCheck is how wp ship runs the repository's own scoped check when
+// --check wasn't given (WP-ADR161): wp test, run as this binary and not
+// whichever wp is on PATH. It takes the tests slot and records itself.
+var shipScopedCheck = func(c *cli) (int, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return 0, err
+	}
+	cmd := exec.Command(exe, "test") // #nosec G204 -- this binary, a fixed argument
+	cmd.Stdout, cmd.Stderr = c.err, c.err
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return ee.ExitCode(), nil
+		}
+		return 0, err
+	}
+	return 0, nil
+}
+
+// runDefaultShipCheck runs wp test before a ship in a repository with a
+// .waypoint/test, unless it already passed on this tree. CI still runs the
+// whole suite before the pull request opens, so this is the quick check.
+func (c *cli) runDefaultShipCheck() error {
+	root, err := localGit("rev-parse", "--show-toplevel")
+	if err != nil || !hasTestScript(root) {
+		return nil
+	}
+	recorded := "wp test" + scopedMark
+	if tree := workingTree(); tree != "" {
+		on, _ := runsOnTree(readTestRuns(testRunsPath()), tree)
+		for _, r := range on {
+			if r.Command == recorded && r.Outcome == runPass {
+				c.println("Check: wp test already passed on this tree; not run again.")
+				return nil
+			}
+		}
+	}
+	c.println("Check: wp test (this repository's " + testScriptFile + "; --check CMD runs another, --no-check skips; CI still runs the whole suite before the pull request opens).")
+	code, err := shipScopedCheck(c)
+	if err != nil {
+		return fmt.Errorf("wp test couldn't run: %w (nothing shipped; --no-check ships without it)", err)
+	}
+	if code != 0 {
+		return fmt.Errorf("wp test failed (exit %d), so nothing was committed or shipped: fix what it names and run wp ship again, or wp ship --no-check to ship without it", code)
+	}
+	return nil
 }

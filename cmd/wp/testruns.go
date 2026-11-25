@@ -368,7 +368,8 @@ func rerunnable(cmd string) string {
 	if strings.Contains(cmd, "•••") || utf8.RuneCountInString(cmd) >= testRunCmdMax {
 		return ""
 	}
-	return cmd
+	// The mark wp test adds to what it records isn't part of the command.
+	return strings.TrimSuffix(cmd, scopedMark)
 }
 
 // sendTestEvidence reports the runs on HEAD's tree. It never stops a ship:
