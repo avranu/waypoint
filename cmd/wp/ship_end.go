@@ -467,7 +467,7 @@ func (c *cli) runShipCheck(cmd string) error {
 		return nil
 	}
 	if res.Passed+res.Failed+res.Skipped > 0 {
-		_, _ = fmt.Fprint(c.out, res.render())
+		_, _ = fmt.Fprint(c.out, res.renderSaving(buf.Bytes()))
 	}
 	_, _ = fmt.Fprintf(c.out, "Check failed: %s exited %d after %s; last lines:\n%s\n", cmd, code, took, lastLines(buf.Bytes(), 30))
 	return fmt.Errorf("the check failed, so nothing was committed or shipped: fix it and run wp ship again")

@@ -45,7 +45,7 @@ is in. A run of tests drops credential-named variables, as wp testsum does
 kept (runs.jsonl in the slot directory); a run that has to wait, and again
 one that starts, says on stderr when it expects to finish, from the median
 of the command's recent runs, and says nothing without any (WP-1571).`,
-	examples: []string{"wp slot run tests -- go test ./...", "wp slot ls"},
+	examples: []string{"wp slot run tests -- go test -run '^TestSlot' ./cmd/wp", "wp slot ls"},
 }
 
 func init() {
