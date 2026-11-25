@@ -634,7 +634,11 @@ func goTimeoutFailure(pkg string, lines []string) (testFailure, bool) {
 	if limit > 0 && longest >= limit/2 {
 		msg = append(msg, longName+" ran for "+longest.String()+" of it: it may hang")
 	} else {
-		msg = append(msg, "no test ran long, so the package as a whole was slow (a busy machine?): run it again with a longer -timeout, e.g. -timeout 30m")
+		hint := "no test ran long, so the package as a whole was slow (a busy machine?): run it again with a longer -timeout"
+		if limit > 0 {
+			hint += ", e.g. -timeout " + (2 * limit).String()
+		}
+		msg = append(msg, hint)
 	}
 	return testFailure{Name: pkg + " (timed out after " + m[1] + ")", Msg: msg, Pkg: pkg}, true
 }

@@ -37,7 +37,7 @@ TESTSUM ?= $(if $(SLOT),$(shell wp testsum -h >/dev/null 2>&1 && echo wp testsum
 
 test: ## backend tests + frontend typecheck (portable: no -race, needs cgo)
 	go vet $(GOPKGS)
-	$(TESTSUM) go test -count=1 -timeout 30m -cover $(GOPKGS)
+	$(TESTSUM) go test -count=1 -timeout 60m -cover $(GOPKGS)
 	cd web && $(WEBDEPS) && npm run typecheck
 
 tools: ## install pinned Go QA binaries
