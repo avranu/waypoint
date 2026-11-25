@@ -690,11 +690,7 @@ func guardPhase(lim AutopilotLimits, off guardOff, weeks []*quotaWeekLine, five 
 // weekEvenAt is an even pace's share of the allowance at t: of the week, or,
 // after an allowance reset, of what remained from the reset to resets_at.
 func weekEvenAt(w *quotaWeekLine, t int64) float64 {
-	from, length := w.start, quotaWeek.Milliseconds()
-	if w.evenFrom > w.start && w.reset > w.evenFrom {
-		from, length = w.evenFrom, w.reset-w.evenFrom
-	}
-	return max(0, min(100, 100*float64(t-from)/float64(length)))
+	return quotaEven(w.evenFrom, w.reset, t)
 }
 
 // spanOverlap is how many ms [a, b) and [c, d) share.

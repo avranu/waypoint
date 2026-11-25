@@ -107,15 +107,37 @@ func (s *Service) weekSamples(ctx context.Context, uid, reset, since int64) ([]q
 // lastQuotaReset is when the allowance of the week resetting near reset was
 // last reset, 0 if it was not.
 func (s *Service) lastQuotaReset(ctx context.Context, uid, reset int64) (int64, error) {
+	r, err := s.lastQuotaResetInfo(ctx, uid, reset)
+	if r == nil {
+		return 0, err
+	}
+	return r.At, nil
+}
+
+// lastQuotaResetInfo is the week's last allowance reset (nil if none).
+func (s *Service) lastQuotaResetInfo(ctx context.Context, uid, reset int64) (*quotaReset, error) {
 	xs, err := s.weekSamples(ctx, uid, reset, reset-quotaWeek.Milliseconds())
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	_, rs, _ := quotaResetsIn(xs)
 	if len(rs) == 0 {
-		return 0, nil
+		return nil, nil
 	}
-	return rs[len(rs)-1].At, nil
+	return &rs[len(rs)-1], nil
+}
+
+// quotaEven is an even pace's percent at t for a week that resets at
+// resetsAt. The allowance restarted at evenFrom (the reset, or the week's
+// start, where evenFrom is 0 or not inside the week): it is spread evenly
+// from there to resetsAt. The guard's weekEvenAt and the autopilot gate's
+// meter both read this, so they cannot disagree.
+func quotaEven(evenFrom, resetsAt, t int64) float64 {
+	start, length := resetsAt-quotaWeek.Milliseconds(), quotaWeek.Milliseconds()
+	if evenFrom > start && resetsAt > evenFrom {
+		start, length = evenFrom, resetsAt-evenFrom
+	}
+	return max(0, min(100, 100*float64(t-start)/float64(length)))
 }
 
 // guardResetsOnRead fills Resets of a check stored before resets were read:
