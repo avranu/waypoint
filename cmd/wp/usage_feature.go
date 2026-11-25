@@ -27,12 +27,23 @@ on a side is too few to say.`,
 }
 
 var usageTaskCmd = &command{
-	name: "task", args: "KEY [--user NAME]",
-	summary: "what one task used, and what its agents had",
+	name: "task", args: "KEY [--user NAME] | --none [--days N] [--user NAME]",
+	summary: "what one task used, and what its agents had; or the spend no task has",
 	about: `One task's tokens, cost, tool calls, edits, time and merged pull requests,
 each run's versions (server, wp, session start, kit, Claude Code, hooks), its
-experiment arms (admins), and the tools, skills and commands it used.`,
-	examples: []string{"wp usage task WP-192"},
+experiment arms (admins), and the tools, skills and commands it used. Also its
+review rounds (found, fixed, rejected where counted), the tokens its review
+audits used, and each pull request's state and merge time.
+
+Spend in the task's session after its run ended, that no other task claimed
+(a --skip-review ship ends the run; later review rounds follow), is printed
+apart from the cost and is not in it.
+
+--none instead splits the spend of the last --days (30) that no task has into
+carry-over (hours after a run ended in a session that had one, by the task it
+follows) and sessions that never had a run, with the same totals as the
+Trends tab. Without --user it is your own spend.`,
+	examples: []string{"wp usage task WP-192", "wp usage task --none --days 7"},
 	run:      cmdUsageTask,
 }
 
@@ -188,17 +199,50 @@ type taskUsageReport struct {
 		Name  string `json:"name"`
 		Calls int64  `json:"calls"`
 	} `json:"used"`
+	AfterRun *struct {
+		CostUSD  float64 `json:"cost_usd"`
+		Sessions int     `json:"sessions"`
+	} `json:"after_run"`
+	Rounds []struct {
+		At       time.Time `json:"at"`
+		State    string    `json:"state"`
+		Found    *int      `json:"found"`
+		Fixed    *int      `json:"fixed"`
+		Rejected *int      `json:"rejected"`
+	} `json:"rounds"`
+	Reviewer *struct {
+		Audits int   `json:"audits"`
+		Input  int64 `json:"input"`
+		Output int64 `json:"output"`
+	} `json:"reviewer"`
+	PullRequests []struct {
+		Repo     string     `json:"repo"`
+		Number   int        `json:"number"`
+		State    string     `json:"state"`
+		MergedAt *time.Time `json:"merged_at"`
+	} `json:"pull_requests"`
 }
 
 func cmdUsageTask(c *cli, args []string) error {
 	fs := c.flags()
 	user := fs.String("user", "", "admins: another person's (`NAME`, or all)")
+	none := fs.Bool("none", false, "the spend no task has, instead of one task's")
+	days := fs.Int("days", 0, "with --none: how many days back (default 30)")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
 	}
+	if *none {
+		if len(pos) != 0 {
+			return c.usage("--none is for all spend: leave out the task %s", pos[0])
+		}
+		return cmdUsageNoTask(c, *user, *days)
+	}
+	if *days != 0 {
+		return c.usage("--days goes with --none: wp usage task --none --days %d", *days)
+	}
 	if len(pos) != 1 {
-		return c.usage("say which task")
+		return c.usage("say which task, or --none: wp usage task WP-192, wp usage task --none")
 	}
 	path := "/api/v1/usage/task/" + url.PathEscape(pos[0])
 	if *user != "" {
@@ -222,9 +266,13 @@ func taskUsageText(r *taskUsageReport) string {
 	fmt.Fprintf(&b, "%s %s (%s)\n", r.Key, r.Title, r.Who)
 	fmt.Fprintf(&b, "$%.2f, %s tokens (%s cache reads), %s tool calls (%s failed), %s, %d subagents, %d sessions, %d active hours, %d run minutes.\n",
 		r.CostUSD, commas(r.Input+r.Output+r.CacheWrite), commas(r.CacheRead), commas(r.ToolCalls), commas(r.ToolErrors), editsText(r.Edits, r.ShellEdits, r.ShellUncounted), r.Subagents, r.Sessions, r.ActiveHours, r.RunMinutes)
+	if a := r.AfterRun; a != nil && a.CostUSD > 0 {
+		fmt.Fprintf(&b, "After its run ended, same session, no other task claimed: $%.2f in %d session%s.\n", a.CostUSD, a.Sessions, plural(a.Sessions))
+	}
 	if r.PRs > 0 {
 		fmt.Fprintf(&b, "Merged: %d pull requests, %s files, %s lines.\n", r.PRs, commas(r.Files), commas(r.Lines))
 	}
+	taskReviewText(&b, r)
 	for _, run := range r.Runs {
 		fmt.Fprintf(&b, "Run %s %s %s: %s\n", run.Started.UTC().Format("2006-01-02 15:04"), run.Agent, cmpStr(run.Outcome, "open"), sortedPairs(run.Features))
 	}

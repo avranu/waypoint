@@ -243,6 +243,7 @@ type trendTaskInfo struct {
 type taskAttribution struct {
 	runs  map[sessKeyAt][]runSpan
 	tasks map[int64]trendTaskInfo
+	all   map[sessKeyAt][]runSpan // every run of a session, for carryOf (loadCarry)
 }
 
 const (
@@ -340,6 +341,25 @@ func (s *Service) taskAttribution(ctx context.Context, actor *Actor, sc *usageSc
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	if err := s.loadTaskInfo(ctx, actor, ids, a.tasks); err != nil {
+		return nil, err
+	}
+	for k, spans := range a.runs {
+		kept := spans[:0]
+		for _, r := range spans {
+			if _, ok := a.tasks[r.issue]; ok {
+				kept = append(kept, r)
+			} else {
+				kept = append(kept, runSpan{issue: 0, start: r.start, end: r.end})
+			}
+		}
+		a.runs[k] = kept
+	}
+	return a, nil
+}
+
+// loadTaskInfo reads the tasks of ids the actor can see into into.
+func (s *Service) loadTaskInfo(ctx context.Context, actor *Actor, ids map[int64]bool, into map[int64]trendTaskInfo) error {
 	list := make([]int64, 0, len(ids))
 	for id := range ids {
 		list = append(list, id)
@@ -356,7 +376,7 @@ func (s *Service) taskAttribution(ctx context.Context, actor *Actor, sc *usageSc
 			JOIN projects p ON p.id = i.project_id JOIN statuses st ON st.id = i.status_id
 			WHERE `+vis+` AND i.id IN (`+placeholders(len(chunk))+`)`, qargs...)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		for rows.Next() {
 			var id, number int64
@@ -365,7 +385,7 @@ func (s *Service) taskAttribution(ctx context.Context, actor *Actor, sc *usageSc
 			var points sql.NullFloat64
 			if err := rows.Scan(&id, &key, &number, &title, &resolved, &points, &cat); err != nil {
 				rows.Close()
-				return nil, err
+				return err
 			}
 			t := trendTaskInfo{key: fmt.Sprintf("%s-%d", key, number), title: title, done: cat == CatDone}
 			if resolved.Valid {
@@ -376,25 +396,14 @@ func (s *Service) taskAttribution(ctx context.Context, actor *Actor, sc *usageSc
 				v := points.Float64
 				t.points = &v
 			}
-			a.tasks[id] = t
+			into[id] = t
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	for k, spans := range a.runs {
-		kept := spans[:0]
-		for _, r := range spans {
-			if _, ok := a.tasks[r.issue]; ok {
-				kept = append(kept, r)
-			} else {
-				kept = append(kept, runSpan{issue: 0, start: r.start, end: r.end})
-			}
-		}
-		a.runs[k] = kept
-	}
-	return a, nil
+	return nil
 }
 
 // UsageTrends answers the Trends tab.

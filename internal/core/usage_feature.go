@@ -402,6 +402,14 @@ type TaskUsage struct {
 	Files               int64           `json:"files"` // changed in them
 	Lines               int64           `json:"lines"` // added + deleted in them
 	Used                []TaskUsageTool `json:"used"`
+	// AfterRun is spend in the task's sessions after its runs ended that no
+	// other task claimed (WP-1884); nil without any. Never part of CostUSD.
+	AfterRun *TaskCarryOver `json:"after_run,omitempty"`
+	// Review rounds, the reviewers' tokens and the pull requests (WP-1882);
+	// each absent when the task has none.
+	Rounds       []TaskUsageRound   `json:"rounds,omitempty"`
+	Reviewer     *TaskUsageReviewer `json:"reviewer,omitempty"`
+	PullRequests []TaskUsagePR      `json:"pull_requests,omitempty"`
 	UsageTotals
 }
 
@@ -488,8 +496,8 @@ func (s *Service) UsageForTask(ctx context.Context, actor *Actor, uq UsageQuery,
 		return nil, err
 	}
 	o := &TaskUsage{Key: i.Key, Title: i.Title, Who: label, Arms: map[string]string{}, Used: []TaskUsageTool{}}
-	var from, to int64
-	if o.Runs, from, to, o.RunMinutes, err = s.taskRuns(ctx, i.ID); err != nil {
+	var from int64
+	if o.Runs, from, _, o.RunMinutes, err = s.taskRuns(ctx, i.ID); err != nil {
 		return nil, err
 	}
 	if actor.canReadExperiments() == nil {
@@ -503,11 +511,16 @@ func (s *Service) UsageForTask(ctx context.Context, actor *Actor, uq UsageQuery,
 		i.ID).Scan(&o.PRs, &o.Files, &o.Lines); err != nil {
 		return nil, err
 	}
+	if err := s.taskReviewInto(ctx, i.ID, o); err != nil {
+		return nil, err
+	}
 	if len(o.Runs) == 0 {
 		return o, nil
 	}
 	first := from - runLead
-	sc.from, sc.to = first-first%hourMillis, min(to+runGrace+hourMillis, sc.to)
+	// The window runs to now, not to the last run's end, to see the hours
+	// after it that carry over (carryOf).
+	sc.from = first - first%hourMillis
 	book, _, err := s.loadPrices(ctx)
 	if err != nil {
 		return nil, err
@@ -520,11 +533,22 @@ func (s *Service) UsageForTask(ctx context.Context, actor *Actor, uq UsageQuery,
 	if err != nil {
 		return nil, err
 	}
+	if err := attr.loadCarry(ctx, s, actor, sc); err != nil {
+		return nil, err
+	}
 	u := newCompareUnit()
+	carry, carrySessions := 0.0, map[sessKeyAt]bool{}
 	for k, b := range buckets {
-		if sk := (sessKeyAt{k.machine, k.session}); attr.taskOf(sk, k.hour) == i.ID {
+		sk := sessKeyAt{k.machine, k.session}
+		if attr.taskOf(sk, k.hour) == i.ID {
 			u.add(sk, k.hour, b)
+		} else if b.acc.cost > 0 && attr.carryOf(sk, k.hour) == i.ID {
+			carry += b.acc.cost
+			carrySessions[sk] = true
 		}
+	}
+	if carry > 0 {
+		o.AfterRun = &TaskCarryOver{CostUSD: carry, Sessions: len(carrySessions)}
 	}
 	o.UsageTotals, o.ActiveHours, o.Sessions = u.acc.totals(), len(u.hours), len(u.sessions)
 	o.Subagents, o.ToolCalls, o.ToolErrors = u.subagents, u.tools, u.errors
