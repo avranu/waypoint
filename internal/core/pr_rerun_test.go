@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // rerunForge answers RerunJobs for wp pr rerun (WP-1661).
@@ -499,5 +500,28 @@ func TestRerunJobsForgejoManyRuns(t *testing.T) {
 		if res, err := cl.RerunJobs(context.Background(), f, g.repo, sha, ""); err != nil || strings.Join(res.Jobs, ",") != "e2e" {
 			t.Fatalf("%d runs: %+v %v", extra+1, res, err)
 		}
+	}
+}
+
+// Pruning old heads doesn't give an open pull request's head its re-runs
+// back; a closed one's goes.
+func TestPruneCIKeepsSpentReruns(t *testing.T) {
+	be := newBabysitEnv(t)
+	pr := be.open()
+	be.s.Forges = &rerunForge{shipForge: be.sg, failed: []string{"backend"}}
+	if _, err := be.s.RerunPullRequest(be.ctx, be.agent, pr.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	be.setClock(be.clockNow().Add(31 * 24 * time.Hour))
+	be.s.pruneCI(be.ctx)
+	if got := be.manualReruns(); got != 1 {
+		t.Errorf("open: manual_reruns %d, want 1", got)
+	}
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE pull_requests SET state = 'closed' WHERE id = ?`, pr.ID); err != nil {
+		t.Fatal(err)
+	}
+	be.s.pruneCI(be.ctx)
+	if got := be.manualReruns(); got != 0 {
+		t.Errorf("closed: manual_reruns %d, want the head gone", got)
 	}
 }

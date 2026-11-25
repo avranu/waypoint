@@ -378,9 +378,11 @@ func (s *Service) PollCI(ctx context.Context) {
 }
 
 // pruneCI forgets heads older than a month, CI hosts' job usage older
-// than two months, and old CI evidence.
+// than two months, and old CI evidence. An open pull request's head that has
+// had a manual re-run stays: forgetting it would give its re-runs back
+// (WP-1661).
 func (s *Service) pruneCI(ctx context.Context) {
-	if _, err := s.db.W.ExecContext(ctx, `DELETE FROM ci_heads WHERE seen_at < ?`, s.nowMS()-30*24*time.Hour.Milliseconds()); err != nil {
+	if _, err := s.db.W.ExecContext(ctx, `DELETE FROM ci_heads AS h WHERE h.seen_at < ? AND NOT (h.manual_reruns > 0 AND `+liveHeadSQL+`)`, s.nowMS()-30*24*time.Hour.Milliseconds()); err != nil {
 		s.log.WarnContext(ctx, "best-effort write failed", "err", err)
 	}
 	if _, err := s.db.W.ExecContext(ctx, `DELETE FROM ci_job_usage WHERE started_at < ?`, s.nowMS()-ciUsageKeep.Milliseconds()); err != nil {
