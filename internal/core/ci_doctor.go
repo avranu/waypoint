@@ -395,7 +395,7 @@ func (t *doctorSteps) step(s *Service, ctx context.Context, name, what string, b
 	case late || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
 		t.missing = append(t.missing, what+" (not read in time)")
 	case err != nil:
-		s.log.WarnContext(ctx, "ci doctor: "+name, "err", err)
+		s.log.WarnContext(ctx, "ci doctor: a step failed", "step", name, "err", err)
 		t.missing = append(t.missing, what+" (failed: "+excerpt(err.Error(), 120)+")")
 	}
 }
@@ -432,7 +432,11 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 				t.missing = append(t.missing, fmt.Sprintf("the forge's runs and jobs are from the last read, %s ago (%s)", ShortDuration(age), why))
 			} else {
 				snap = &ciSnapshot{at: s.now(), runners: map[int64]ciRunners{}, prs: map[string]CIPRRef{}}
-				snap.pools, _ = s.ciPools(ctx)
+				if pools, perr := s.ciPools(ctx); perr != nil {
+					s.log.WarnContext(ctx, "ci doctor: read the pools", "err", perr)
+				} else {
+					snap.pools = pools
+				}
 				t.missing = append(t.missing, fmt.Sprintf("the forge's runs and jobs, so the pool, the main branches and the job timings (%s)", why))
 			}
 		}
