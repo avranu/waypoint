@@ -454,8 +454,9 @@ func (c *cli) claimAutoUpdate(seen string, due func(*updateCheck) bool) {
 	}
 	claimed := false
 	// A hook may be cut short (SessionEnd gets 2 s): a missed claim is
-	// harmless, the next command tries again.
-	_ = c.updateStateWithin(claimWait, func(s *State) {
+	// harmless, the next command tries again. A claim that wasn't saved
+	// starts nothing: no other wp would see it (c6983).
+	err = c.updateStateWithin(claimWait, func(s *State) {
 		if !due(s.Update) {
 			return
 		}
@@ -464,7 +465,7 @@ func (c *cli) claimAutoUpdate(seen string, due func(*updateCheck) bool) {
 		}
 		s.Update.Checked, s.Update.Server, s.Update.Result, claimed = time.Now(), seen, "started", true
 	})
-	if claimed && !backgroundStart(exe, "upgrade", "--auto") {
+	if err == nil && claimed && !backgroundStart(exe, "upgrade", "--auto") {
 		c.releaseUpdateClaim(seen)
 	}
 }

@@ -77,9 +77,31 @@ func (u *updRunner) disk() string {
 	return string(b)
 }
 
+// noted is the runner having noted release v at u.exe, the file there now,
+// since at.
+func (u *updRunner) noted(v string, at time.Time) {
+	u.t.Helper()
+	sum, err := fileSHA(u.exe)
+	if err != nil {
+		u.t.Fatal(err)
+	}
+	u.p.updatedTo, u.p.updatedExe, u.p.updatedSum, u.p.updatedAt = v, u.exe, sum, at
+}
+
+// countDownloads makes the runner's downloads the real one, counted.
+func (u *updRunner) countDownloads() *atomic.Int32 {
+	var n atomic.Int32
+	u.p.downloadFn = func(ctx context.Context, want string) (string, string, error) {
+		n.Add(1)
+		return u.p.c.selfUpdate(ctx, want)
+	}
+	return &n
+}
+
 func TestBusyRunnerUpdatesTheDiskOnceThenDrainsThenRestarts(t *testing.T) {
 	e := cliServer(t, "v1.2.0", "v1.2.0", false)
 	u := newUpdRunner(t, e, "v1.2.0")
+	downloads := u.countDownloads()
 	u.busy(2)
 
 	if exe, drain := u.step(); exe != "" || drain {
@@ -91,8 +113,6 @@ func TestBusyRunnerUpdatesTheDiskOnceThenDrainsThenRestarts(t *testing.T) {
 	if !strings.Contains(u.out.String(), "Updated "+u.exe+" to wp v1.2.0; this runner restarts on it when its 2 jobs finish.") {
 		t.Errorf("log:\n%s", u.out.String())
 	}
-	// Not downloaded again: put a marker where the binary is.
-	_ = os.WriteFile(u.exe, []byte("marker"), 0o755)
 	u.now = u.now.Add(runnerDrainAfter - time.Minute)
 	if exe, drain := u.step(); exe != "" || drain {
 		t.Fatalf("just before the limit: restart %q drain %v", exe, drain)
@@ -116,20 +136,20 @@ func TestBusyRunnerUpdatesTheDiskOnceThenDrainsThenRestarts(t *testing.T) {
 	if exe, drain := u.step(); exe != u.exe || drain {
 		t.Fatalf("idle: restart %q drain %v", exe, drain)
 	}
-	if u.disk() != "marker" {
-		t.Errorf("the restart downloaded again: %q", u.disk())
+	if downloads.Load() != 1 {
+		t.Errorf("downloaded %d times", downloads.Load())
 	}
 }
 
 func TestIdleRunnerAfterDiskUpdateRestartsWithoutDownloading(t *testing.T) {
 	e := cliServer(t, "v1.2.0", "v1.2.0", false)
 	u := newUpdRunner(t, e, "v1.2.0")
+	downloads := u.countDownloads()
 	u.busy(1)
 	u.step()
-	_ = os.WriteFile(u.exe, []byte("marker"), 0o755)
 	u.busy(0)
-	if exe, _ := u.step(); exe != u.exe || u.disk() != "marker" {
-		t.Fatalf("restart %q, disk %q", exe, u.disk())
+	if exe, _ := u.step(); exe != u.exe || downloads.Load() != 1 {
+		t.Fatalf("restart %q after %d downloads", exe, downloads.Load())
 	}
 }
 
@@ -144,14 +164,18 @@ func TestIdleRunnerUpdatesThenRestarts(t *testing.T) {
 	}
 }
 
+// The server moves on while a restart on an earlier release is pending: the
+// newer one is downloaded, and the wait for the restart doesn't start again
+// (c6972): a busy runner releases come faster than the wait for would never
+// restart.
 func TestServerMovesOnAgainAfterTheDiskUpdate(t *testing.T) {
 	e := cliServer(t, "v1.2.0", "v1.2.0", false)
 	u := newUpdRunner(t, e, "v1.2.0")
-	u.p.updatedTo, u.p.updatedExe, u.p.updatedAt = "v1.1.9", u.exe, u.now // an earlier release
+	u.noted("v1.1.9", u.now) // an earlier release
 	u.now = u.now.Add(runnerDrainAfter + time.Hour)
 	u.busy(1)
-	if _, drain := u.step(); drain {
-		t.Fatal("the old release's wait must not drain for the new one")
+	if _, drain := u.step(); !drain {
+		t.Fatal("the restart pending since the earlier release must drain")
 	}
 	if !strings.Contains(u.disk(), "wp v1.2.0") || u.p.updatedTo != "v1.2.0" {
 		t.Fatalf("no fresh update: disk %q updatedTo %q", u.disk(), u.p.updatedTo)
@@ -372,7 +396,7 @@ func (u *updRunner) record() *updateCheck {
 func TestFailedFollowUpDownloadStillRestartsOnTheBinaryOnDisk(t *testing.T) {
 	e := cliServer(t, "v1.3.0", "v1.3.0", false)
 	u := newUpdRunner(t, e, "v1.3.0")
-	u.p.updatedTo, u.p.updatedExe, u.p.updatedAt = "v1.2.0", u.exe, u.now // installed earlier
+	u.noted("v1.2.0", u.now) // installed earlier
 	u.p.downloadFn = func(ctx context.Context, want string) (string, string, error) {
 		return "", "", errors.New("no route")
 	}
@@ -410,7 +434,7 @@ func TestFailedFollowUpDownloadStillRestartsOnTheBinaryOnDisk(t *testing.T) {
 func TestIdleFailedFollowUpDownloadThenRestartsOnDisk(t *testing.T) {
 	e := cliServer(t, "v1.3.0", "v1.3.0", false)
 	u := newUpdRunner(t, e, "v1.3.0")
-	u.p.updatedTo, u.p.updatedExe, u.p.updatedAt = "v1.2.0", u.exe, u.now
+	u.noted("v1.2.0", u.now)
 	u.p.downloadFn = func(context.Context, string) (string, string, error) { return "", "", errors.New("no route") }
 	if exe, drain := u.step(); exe != u.exe || drain {
 		t.Fatalf("the failed pass: restart %q drain %v", exe, drain)

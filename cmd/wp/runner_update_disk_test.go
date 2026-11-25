@@ -82,7 +82,7 @@ func TestRunnerLooksAtTheDiskOnceAMinute(t *testing.T) {
 func TestServerBackOnTheRunnersReleasePutsTheDiskBack(t *testing.T) {
 	e := cliServer(t, "v1.2.0", "v1.1.0", false)
 	u := newUpdRunner(t, e, "v1.2.0") // this process is v1.1.0
-	u.p.updatedTo, u.p.updatedExe, u.p.updatedAt = "v1.2.0", u.exe, u.now
+	u.noted("v1.2.0", u.now)
 	u.p.serverVersion = "v1.1.0" // the server rolled back
 	var wants []string
 	u.p.downloadFn = func(ctx context.Context, want string) (string, string, error) {
@@ -114,7 +114,7 @@ func TestServerBackOnTheRunnersReleasePutsTheDiskBack(t *testing.T) {
 func TestIdleRunnerPutsItsReleaseBackWithoutRestarting(t *testing.T) {
 	e := cliServer(t, "v1.1.0", "v1.1.0", false)
 	u := newUpdRunner(t, e, "v1.1.0")
-	u.p.updatedTo, u.p.updatedExe, u.p.updatedAt = "v1.2.0", u.exe, u.now
+	u.noted("v1.2.0", u.now)
 	if exe, _ := u.step(); exe != "" {
 		t.Fatalf("restart %q", exe)
 	}
@@ -127,7 +127,7 @@ func TestIdleRunnerPutsItsReleaseBackWithoutRestarting(t *testing.T) {
 func TestFailedPutBackDoesNotRestartOnTheOtherRelease(t *testing.T) {
 	e := cliServer(t, "v1.1.0", "v1.1.0", false)
 	u := newUpdRunner(t, e, "v1.1.0")
-	u.p.updatedTo, u.p.updatedExe, u.p.updatedAt = "v1.2.0", u.exe, u.now
+	u.noted("v1.2.0", u.now)
 	u.p.downloadFn = failingDownload
 	for range 2 {
 		if exe, _ := u.step(); exe != "" {
@@ -141,7 +141,7 @@ func TestFailedPutBackDoesNotRestartOnTheOtherRelease(t *testing.T) {
 func TestNoRestartWhileADownloadRuns(t *testing.T) {
 	e := cliServer(t, "v1.2.0", "v1.2.0", false)
 	u := newUpdRunner(t, e, "v1.2.0")
-	u.p.updatedTo, u.p.updatedExe, u.p.updatedAt = "v1.2.0", u.exe, u.now
+	u.noted("v1.2.0", u.now)
 	u.p.updating, u.p.updateDone, u.p.updateCancel = true, make(chan updateResult, 1), func() {}
 	if exe := u.p.updateStep(context.Background()); exe != "" {
 		t.Fatalf("restarted on %q with a download running", exe)
@@ -157,7 +157,7 @@ func TestNoRestartWhileADownloadRuns(t *testing.T) {
 func TestRunnerWaitsForAnotherWpsClaim(t *testing.T) {
 	e := cliServer(t, "v1.3.0", "v1.3.0", false)
 	u := newUpdRunner(t, e, "v1.3.0")
-	u.p.updatedTo, u.p.updatedExe, u.p.updatedAt = "v1.2.0", u.exe, u.now
+	u.noted("v1.2.0", u.now)
 	c, _ := newCLI(io.Discard, io.Discard)
 	c.recordUpdate("v1.3.0", "started", true) // a wp command's
 	u.p.downloadFn = func(context.Context, string) (string, string, error) {

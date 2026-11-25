@@ -202,12 +202,20 @@ type runnerProc struct {
 	updateHeldFor     string
 	updateHeldUntil   time.Time
 	updateHeldByClaim bool // the hold is a download in flight, not a failure
-	// The wp on disk is already this release (updatedExe, since updatedAt)
-	// while this process still runs another one: empty when the disk holds
-	// this process's own release, as far as the runner knows. The runner
-	// learns it from its own download or from looking at the disk.
-	updatedTo, updatedExe string
-	updatedAt             time.Time
+	// This runner's last failure it recorded in the shared record (real
+	// time, after the record's): a failure there no newer is its own, which
+	// its own backoff governs.
+	failedFor string
+	failedAt  time.Time
+	claimErr  string // the last error claiming a try met, logged once
+	// The wp on disk is already this release (updatedExe, whose SHA-256 is
+	// updatedSum) while this process still runs another one: empty when the
+	// disk holds this process's own release, as far as the runner knows. The
+	// runner learns it from its own download or from looking at the disk.
+	// updatedAt is when a restart first became pending: a newer release
+	// that replaces the one noted doesn't start the drain's wait again.
+	updatedTo, updatedExe, updatedSum string
+	updatedAt                         time.Time
 	diskLookedAt          time.Time // the last look at the disk's release
 	drainLoggedFor        string
 	draining              bool             // takes no new jobs until idle, then restarts
@@ -648,29 +656,47 @@ const updateDownloadLimit = 10 * time.Minute
 // doesn't download now, runs the wp on disk to ask its release.
 const diskLookEvery = time.Minute
 
+// updateHoldRecheck is how often a runner held back by another wp's claim
+// reads the shared record again: a claim given back (its download cut
+// short) or replaced by a result holds it no longer than this (c6971). A
+// var: tests shorten it.
+var updateHoldRecheck = time.Minute
+
 // updateStep is the runner's update logic, once per loop. It replaces the
 // binary on disk as soon as the server runs another release, with jobs
 // running too: that download runs beside the loop, which goes on polling
 // and applying cancels, and a later pass collects it. It returns the path to
-// restart on once idle. A runner that has waited for idle longer than
+// restart on once idle. A runner whose restart has been pending longer than
 // runnerDrainAfter sets p.draining: lanesNow then asks for no jobs, until
-// the running ones finish.
+// it restarts.
 //
 // What it decides on is the wp on disk, not only what its own downloads
-// did: while a download runs beside the loop it decides nothing (that
-// download may yet replace the binary, and the drain clock starts again for
-// what it puts there); while it doesn't download (its backoff, another wp's
-// claim) it looks at the disk, which another wp may have updated; and a
-// server back on this process's release has the disk put back to it. A pass
-// in which a download ended, failed or not, here or beside the loop, comes
-// to the restart and drain decision below, so no poll takes a job in
-// between (1788.1).
+// did: while a download runs beside the loop it doesn't restart (that
+// download may yet replace the binary); while it doesn't download (its
+// backoff, another wp's claim) it looks at the disk, which another wp may
+// have updated; a server back on this process's release has the disk put
+// back to it; and it restarts only on the file it noted, unchanged.
+//
+// Whether it drains is decided on every pass that doesn't restart, whatever
+// that pass did (started or waited for a download, its own or another
+// wp's, or was held back): no pass lets a poll take a job while a restart
+// is pending past the wait (1788.1, c6972).
 func (p *runnerProc) updateStep(ctx context.Context) (restart string) {
-	p.draining = false
 	p.collectUpdate()
 	if !p.mayUpdate() {
+		p.draining = false
 		return ""
 	}
+	restart = p.restartNow(ctx, true)
+	p.draining = restart == "" && p.drainDue()
+	return restart
+}
+
+// restartNow does what updateStep does but drain: it downloads, looks at
+// the disk, and returns the path to restart on when the runner is idle and
+// the disk holds the release to restart on. A file found changed since it
+// was noted (another wp replaced it) is decided on afresh once, at once.
+func (p *runnerProc) restartNow(ctx context.Context, again bool) string {
 	sv := p.serverVersion
 	if p.updating {
 		return ""
@@ -695,19 +721,61 @@ func (p *runnerProc) updateStep(ctx context.Context) (restart string) {
 	if ready == "" || (ready != sv && (sv == version || inFlight || p.updateDue())) {
 		return ""
 	}
-	active := len(p.activeIDs())
-	if active == 0 {
-		p.logf("Restarting on wp %s at %s.", ready, p.updatedExe)
-		return p.updatedExe
+	if len(p.activeIDs()) > 0 {
+		return ""
 	}
-	if p.clock().Sub(p.updatedAt) >= runnerDrainAfter {
-		p.draining = true
-		if p.drainLoggedFor != ready {
-			p.drainLoggedFor = ready
+	if !p.diskStill() {
+		if again {
+			return p.restartNow(ctx, false)
+		}
+		return ""
+	}
+	p.logf("Restarting on wp %s at %s.", ready, p.updatedExe)
+	return p.updatedExe
+}
+
+// restartPending: this runner restarts once it can. The disk holds another
+// release than this process's, as far as it knows, and the server doesn't
+// run this process's: whatever a download in flight (this runner's or
+// another wp's) puts there, the runner restarts on that or on what is there.
+func (p *runnerProc) restartPending() bool {
+	return p.updatedTo != "" && p.serverVersion != version
+}
+
+// drainDue: a restart has been pending since longer than runnerDrainAfter
+// (across newer releases: one that replaces another doesn't start the wait
+// again). It logs the drain once per release on disk.
+func (p *runnerProc) drainDue() bool {
+	if !p.restartPending() || p.clock().Sub(p.updatedAt) < runnerDrainAfter {
+		return false
+	}
+	if ready := p.updatedTo; p.drainLoggedFor != ready {
+		p.drainLoggedFor = ready
+		if active := len(p.activeIDs()); active > 0 {
 			p.logf("Waiting to restart on wp %s since %s: taking no new jobs until the %d running finish, then restarting on wp %s.", ready, p.updatedAt.Format("15:04"), active, ready)
+		} else {
+			p.logf("Waiting to restart since %s: taking no new jobs until the download of wp %s ends, then restarting.", p.updatedAt.Format("15:04"), p.serverVersion)
 		}
 	}
-	return ""
+	return true
+}
+
+// diskStill says whether the wp at updatedExe is still the file noted as
+// release updatedTo (its SHA-256 unchanged). When it isn't (another wp put
+// another release there, a server rollback the runner didn't see), the
+// runner forgets it and decides afresh: it looks at the disk and may
+// download the server's again at once (c6980).
+func (p *runnerProc) diskStill() bool {
+	if sum, err := fileSHA(p.updatedExe); err == nil && sum == p.updatedSum {
+		return true
+	}
+	p.logf("The wp at %s is no longer the wp %s this runner noted there; looking again.", p.updatedExe, p.updatedTo)
+	if p.updateTriedFor == p.updatedTo {
+		p.updateTriedFor = "" // it got there: no failure to back off from
+	}
+	p.updatedTo, p.updatedExe, p.updatedSum, p.drainLoggedFor = "", "", "", ""
+	p.diskLookedAt = time.Time{}
+	return false
 }
 
 // startDownload downloads sv, claimed: beside the loop when jobs run, else
@@ -728,16 +796,18 @@ func (p *runnerProc) startDownload(ctx context.Context, sv string) {
 	p.tookDownload(res)
 }
 
-// onDisk notes that the wp at exe is release v, and says whether it is
-// another release than this process's (one to restart on).
-func (p *runnerProc) onDisk(v, exe string) (other bool) {
+// onDisk notes that the wp at exe, whose SHA-256 is sum, is release v, and
+// says whether it is another release than this process's (one to restart
+// on). The drain's wait starts when a restart first becomes pending.
+func (p *runnerProc) onDisk(v, exe, sum string) (other bool) {
 	if v == version {
-		p.updatedTo, p.updatedExe, p.drainLoggedFor = "", "", ""
+		p.updatedTo, p.updatedExe, p.updatedSum, p.drainLoggedFor = "", "", "", ""
 		return false
 	}
-	if p.updatedTo != v {
-		p.updatedTo, p.updatedExe, p.updatedAt = v, exe, p.clock()
+	if p.updatedTo == "" {
+		p.updatedAt = p.clock()
 	}
+	p.updatedTo, p.updatedExe, p.updatedSum = v, exe, sum
 	return true
 }
 
@@ -763,7 +833,7 @@ func (p *runnerProc) lookAtDisk(ctx context.Context) {
 	if err != nil || !isServersRelease(ctx, exe, sum, on) {
 		return
 	}
-	if p.onDisk(on, exe) {
+	if p.onDisk(on, exe, sum) {
 		p.logf("Another wp put wp %s at %s; this runner restarts on it when idle.", on, exe)
 	}
 }
@@ -786,7 +856,11 @@ func (p *runnerProc) tookDownload(res updateResult) {
 	if res.err != nil {
 		return
 	}
-	if !p.onDisk(res.sv, res.exe) {
+	var sum string
+	if res.sv != version {
+		sum, _ = fileSHA(res.exe) // "": diskStill takes it as changed
+	}
+	if !p.onDisk(res.sv, res.exe, sum) {
 		p.logf("Put wp %s back at %s, the release Waypoint runs again.", res.sv, res.exe)
 		return
 	}
@@ -811,31 +885,53 @@ func (p *runnerProc) endDownload(res updateResult) {
 // holds a fresh claim (on any release, as claimAutoUpdate's due says: the
 // SessionStart hook's daily one names none, and wp upgrade --auto downloads
 // what the server serves when it runs) or failed sv inside its backoff (a
-// runner that restarted keeps that backoff too): then it says false and the
-// runner waits that out. A claimed try is noted here (a failed one is
+// runner that restarted keeps that backoff too, and a failure newer than
+// this runner's own holds even once its own backoff is over: c6982): then
+// it says false and the runner waits that out. A claim is looked at again
+// every updateHoldRecheck, so one given back holds no longer (c6971). A
+// record it couldn't read, or a claim it couldn't save, holds it back as
+// long too: another wp's claim may be there unseen, and its own isn't there
+// for others to see (c6981). A claimed try is noted here (a failed one is
 // repeated after 6 hours).
 func (p *runnerProc) beginUpdate(sv string) bool {
 	var held time.Time
 	claimed := false // held by a download in flight, not a failure
-	ownTry := p.updateTriedFor == sv
-	_ = p.c.updateState(func(s *State) {
+	err := p.c.updateState(func(s *State) {
 		switch u := s.Update; {
 		case claimLive(u):
 			held, claimed = u.Checked.Add(updateClaimFresh), true
 			return
-		case !ownTry && u != nil && u.Server == sv && strings.HasPrefix(u.Result, "failed") && time.Since(u.Checked) < updateRetryEvery:
+		case u != nil && u.Server == sv && strings.HasPrefix(u.Result, "failed") && time.Since(u.Checked) < updateRetryEvery && !p.ownFailure(u):
 			held = u.Checked.Add(updateRetryEvery)
 			return
 		}
 		s.Update = &updateCheck{Checked: time.Now(), Server: sv, Result: "started"}
 	})
+	if err != nil {
+		if msg := err.Error(); p.claimErr != msg {
+			p.claimErr = msg
+			p.logf("Couldn't claim the update to wp %s in the shared state (%v); trying again every %s.", sv, err, updateHoldRecheck)
+		}
+		p.updateHeldFor, p.updateHeldUntil, p.updateHeldByClaim = sv, time.Now().Add(updateHoldRecheck), false
+		return false
+	}
+	p.claimErr = ""
 	if !held.IsZero() {
+		if look := time.Now().Add(updateHoldRecheck); claimed && look.Before(held) {
+			held = look // held again then, if still claimed
+		}
 		p.updateHeldFor, p.updateHeldUntil, p.updateHeldByClaim = sv, held, claimed
 		return false
 	}
 	p.updateTriedFor, p.updateTriedAt = sv, p.clock()
 	p.logf("Waypoint runs %s and this runner wp %s: updating wp (--no-auto-update turns this off)", sv, version)
 	return true
+}
+
+// ownFailure: the shared record's failure u is this runner's own (none newer
+// was recorded since), whose backoff the runner's own clock governs.
+func (p *runnerProc) ownFailure(u *updateCheck) bool {
+	return p.failedFor == u.Server && !u.Checked.After(p.failedAt)
 }
 
 // download puts the server's wp over this one. It only downloads: the loop's
@@ -861,6 +957,7 @@ func (p *runnerProc) finishUpdate(res updateResult) {
 	if res.err != nil {
 		p.logf("Couldn't update wp: %v. Carrying on with %s; trying again in 6 hours.", res.err, version)
 		p.c.recordUpdate(res.sv, "failed: "+res.err.Error(), false)
+		p.failedFor, p.failedAt = res.sv, time.Now()
 		return
 	}
 	p.c.recordUpdate(res.sv, "updated from "+version+" to "+res.got, false)
