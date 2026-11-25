@@ -662,6 +662,17 @@ func (s *Service) guardSpending(ctx context.Context, uid, first, before, from, t
 		}
 		return g
 	}
+	jobs, err := s.guardJobs(ctx, uid, first, before)
+	if err != nil {
+		return nil, err
+	}
+	bySess := map[string]int64{} // CLI session id -> the runner job that ran it
+	for _, j := range jobs {
+		if j.session != "" {
+			bySess[j.session] = j.id
+		}
+	}
+	jobSeen := map[int64]bool{} // jobs whose own session's usage hours are in the window
 	rows, err := s.db.R.QueryContext(ctx, `SELECT hour, machine, session, model, sum(input), sum(output), sum(cache_write_5m), sum(cache_write_1h), sum(cache_read)
 		FROM usage_hours WHERE user_id = ? AND hour >= ? AND hour < ? GROUP BY hour, machine, session, model`, uid, first, before)
 	if err != nil {
@@ -690,6 +701,18 @@ func (s *Service) guardSpending(ctx context.Context, uid, first, before, from, t
 			continue
 		}
 		get(hour).cost += cost
+		if id, ok := bySess[session]; ok {
+			// A runner job's session reports its hours like any other, and
+			// the job's own cost_usd is the same dollars: count them once,
+			// here, as the job's, and leave the session out of the CLI part
+			// and out of autoShare (the job is already automation's).
+			jobSeen[id] = true
+			g := get(hour)
+			g.auto += cost
+			g.jobs += cost
+			g.sources[fmt.Sprintf("job:%d", id)] += cost
+			continue
+		}
 		get(hour).machines[machine] += cost
 		if hour < from || hour >= to {
 			continue
@@ -721,25 +744,13 @@ func (s *Service) guardSpending(ctx context.Context, uid, first, before, from, t
 			g.models[sh.model] += sh.cost * share
 		}
 	}
-	jrows, err := s.db.R.QueryContext(ctx, `SELECT id, started_at, finished_at, coalesce(json_extract(result, '$.tokens.cost_usd'), 0) FROM runner_jobs
-		WHERE owner_id = ? AND cli = 'claude' AND kind IN (?,?,?) AND source != 'manual'
-		AND started_at IS NOT NULL AND finished_at IS NOT NULL AND started_at < ? AND finished_at >= ?`,
-		uid, JobAgent, JobReview, JobAudit, before, first)
-	if err != nil {
-		return nil, err
-	}
-	defer jrows.Close()
-	for jrows.Next() {
-		var id, start, end int64
-		var cost float64
-		if err := jrows.Scan(&id, &start, &end, &cost); err != nil {
-			return nil, err
-		}
-		if cost <= 0 {
+	for _, j := range jobs {
+		cost, start, end := j.cost, j.start, j.end
+		if cost <= 0 || jobSeen[j.id] {
 			continue
 		}
 		end = max(end, start+1)
-		key := fmt.Sprintf("job:%d", id)
+		key := fmt.Sprintf("job:%d", j.id)
 		for h := start - start%hourMS; h < end; h += hourMS {
 			if h < first || h >= before {
 				continue
@@ -752,7 +763,35 @@ func (s *Service) guardSpending(ctx context.Context, uid, first, before, from, t
 			g.sources[key] += part
 		}
 	}
-	return out, jrows.Err()
+	return out, nil
+}
+
+// guardJob is a runner job that ran Claude for automation.
+type guardJob struct {
+	id, start, end int64
+	cost           float64
+	session        string // the CLI session id the runner recorded in the result; "" on older jobs
+}
+
+// guardJobs is the automation's claude runner jobs that overlap [first, before).
+func (s *Service) guardJobs(ctx context.Context, uid, first, before int64) ([]guardJob, error) {
+	rows, err := s.db.R.QueryContext(ctx, `SELECT id, started_at, finished_at, coalesce(json_extract(result, '$.tokens.cost_usd'), 0), coalesce(json_extract(result, '$.session_id'), '') FROM runner_jobs
+		WHERE owner_id = ? AND cli = 'claude' AND kind IN (?,?,?) AND source != 'manual'
+		AND started_at IS NOT NULL AND finished_at IS NOT NULL AND started_at < ? AND finished_at >= ?`,
+		uid, JobAgent, JobReview, JobAudit, before, first)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []guardJob
+	for rows.Next() {
+		var j guardJob
+		if err := rows.Scan(&j.id, &j.start, &j.end, &j.cost, &j.session); err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
 }
 
 // sessionOwner is who a session worked for from at on.

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -81,5 +82,39 @@ func TestQuotaGuardSplitAgentAccess(t *testing.T) {
 	}
 	if _, err := g.s.QuotaGuard(g.ctx, agent, UsageQuery{User: "all"}, true); err == nil {
 		t.Error("an agent read everyone's guard")
+	}
+}
+
+// A runner job whose session reported its hours counts once, as the job's;
+// a job whose session reported none still counts by its own cost_usd; and
+// the split parts still add up to the total.
+func TestQuotaGuardJobCountedOnce(t *testing.T) {
+	g := newGuardEnv(t)
+	g.lay(50) // 6 of sessions, 1.5 of a job with no session id
+	job := func(sid string, cost float64, at time.Duration) {
+		g.exec(`INSERT INTO runner_jobs(owner_id, kind, title, cli, input, state, timeout, source, result, created_at, started_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+			g.me.User.ID, JobAgent, "agent job", "claude", "{}", "done", 600, "babysit",
+			fmt.Sprintf(`{"session_id":%q,"tokens":{"cost_usd":%v}}`, sid, cost), g.h(at), g.h(at), g.h(at+30*time.Minute))
+	}
+	job("uploaded", 2, 14*time.Hour)
+	g.usedOn("legba", "uploaded", 14*time.Hour, 100_000) // $2, the same dollars
+	job("never-uploaded", 1, 16*time.Hour)
+	c := g.check()
+	if c.CostUSD != 10.5 || c.AutomationUSD != 10.5-2 {
+		t.Fatalf("cost %v automation %v (the uploaded job counted twice?)", c.CostUSD, c.AutomationUSD)
+	}
+	got := map[string]float64{}
+	sum := 0.0
+	for _, p := range func() []QuotaGuardPart {
+		if err := g.s.guardSplitInto(g.ctx, g.me.User.ID, c); err != nil {
+			t.Fatal(err)
+		}
+		return c.Split.Parts
+	}() {
+		got[p.Source+"/"+p.Machine] = p.CostUSD
+		sum += p.CostUSD
+	}
+	if got["runner/"] != 4.5 || got["cli/box"] != 6 || len(got) != 2 || round2(sum) != c.CostUSD || c.Split.RemainderUSD != 0 {
+		t.Errorf("parts %v sum %v remainder %v of %v", got, sum, c.Split.RemainderUSD, c.CostUSD)
 	}
 }
