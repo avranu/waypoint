@@ -307,14 +307,14 @@ func (w *factWriter) store(r *transcript.Result) (produced, kept int, err error)
 		}
 	}
 	st, err = w.prepare("fact_tool_calls", "msg_id", "prompt_id", "tool", "target", "target_kind", "detail", "read_offset", "read_limit", "todo_items", "plan_chars",
-		"background", "is_test", "result_at", "duration_ms", "result_bytes", "is_error", "error", "exit_code", "interrupted", "timed_out", "lines_added", "lines_removed")
+		"background", "is_test", "result_at", "duration_ms", "result_bytes", "is_error", "error", "exit_code", "interrupted", "timed_out", "lines_added", "lines_removed", "by_script")
 	if err != nil {
 		return 0, 0, err
 	}
 	for _, c := range r.ToolCalls {
 		if err := add(w.put(st, c.Row, c.MsgID, c.PromptID, c.Tool, c.Target, c.TargetKind, c.Detail, c.ReadOffset, c.ReadLimit, c.TodoItems, c.PlanChars,
 			ptrBoolInt(c.Background), ptrBoolInt(c.IsTest), c.ResultAt, c.DurationMS, c.ResultBytes, ptrBoolInt(c.IsError), c.Error, c.ExitCode,
-			ptrBoolInt(c.Interrupted), ptrBoolInt(c.TimedOut), c.LinesAdded, c.LinesRemoved)); err != nil {
+			ptrBoolInt(c.Interrupted), ptrBoolInt(c.TimedOut), c.LinesAdded, c.LinesRemoved, boolInt(c.ByScript))); err != nil {
 			return 0, 0, err
 		}
 	}

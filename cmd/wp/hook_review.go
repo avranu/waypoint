@@ -136,7 +136,10 @@ func readSubagentLine(out subagentRead, typ, model string, content json.RawMessa
 			out.prompt = t
 		}
 	case "assistant":
-		if model != "" && model != "<synthetic>" {
+		if strings.HasPrefix(model, "<") {
+			return out
+		}
+		if model != "" {
 			out.model = model
 		}
 		if t := strings.TrimSpace(text); t != "" {

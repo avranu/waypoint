@@ -308,3 +308,13 @@ func TestBurnHookIsFast(t *testing.T) {
 		t.Errorf("a hook with nothing new took %v", best)
 	}
 }
+
+func TestBurnSkipsSyntheticRecords(t *testing.T) {
+	main, t0 := burnFixture(t)
+	appendBurn(t, main, burnLine("repl_1", "<synthetic>", t0.Add(30*time.Second), 0, 0, 0, 0, 0))
+	tree := newBurnTree()
+	tree.update(burnFiles(main), nil)
+	if m := tree.Agents["main"]; m.Calls != 2 || !near(m.Cost, 0.30008) {
+		t.Fatalf("a synthetic record is not a call and has no cost: %d calls, $%.5f", m.Calls, m.Cost)
+	}
+}

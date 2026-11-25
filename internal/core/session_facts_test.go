@@ -518,3 +518,27 @@ func TestFactsReadBeforeDerivation(t *testing.T) {
 		t.Errorf("status: %+v", f.Status)
 	}
 }
+
+func TestFactsScriptRunToolsAreCountedApart(t *testing.T) {
+	e := transcriptEnv(t)
+	jo := e.user("jo", false)
+	syn := fj(fm{"type": "assistant", "uuid": "u-s1", "timestamp": fat(3, 0), "isVirtual": true,
+		"message": fm{"id": "repl_s1", "model": "<synthetic>", "usage": fm{"input_tokens": 0, "output_tokens": 0}, "content": []fm{
+			fTool("rt1", "Bash", fm{"command": "ls"}), fTool("rt2", "Edit", fm{"file_path": "/r/b.go"})}}})
+	e.putFile(jo, "s1", "main", 0, fPrompt("a", 1, "human")+
+		fAssistant("m1", 2, 10, fTool("t1", "Edit", fm{"file_path": "/r/a.go"}))+fResult("t1", 2, false, nil)+syn)
+	e.quiet()
+	if run := e.derive(); run.Derived != 1 || run.Failed != 0 {
+		t.Fatalf("derive: %+v", run)
+	}
+	f, err := e.s.SessionFacts(e.ctx, jo, FactsQuery{Session: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.ModelCalls.Total != 1 {
+		t.Errorf("model calls = %d, a synthetic record is not one", f.ModelCalls.Total)
+	}
+	if f.ToolCalls.Total != 1 || f.ToolCalls.ByScript != 2 || f.Changes.Edits != 1 || f.Changes.ScriptEdits != 1 {
+		t.Errorf("tools %+v changes %+v: want 1 model-typed call and edit, 2 script-run calls of which 1 edit", f.ToolCalls, f.Changes)
+	}
+}

@@ -312,11 +312,11 @@ var whTestHeads = map[string]bool{"make": true, "gmake": true, "npm": true, "npx
 // whCommandClass sorts one command of a line.
 func whCommandClass(cm traceCommand, cwd string) string {
 	wrote, scratch := false, false
-	for _, w := range cm.wrote {
-		if w.kind == "output" {
+	for _, w := range cm.Wrote {
+		if w.Kind == "output" {
 			continue
 		}
-		if _, work := traceWord(w.w, cm.dir, cwd); work {
+		if _, work := traceWord(w.Path, cm.Dir, cwd); work {
 			wrote = true
 		} else {
 			scratch = true
@@ -325,7 +325,7 @@ func whCommandClass(cm traceCommand, cwd string) string {
 	if wrote {
 		return whShellEdit
 	}
-	h := cm.head
+	h := cm.Head
 	var class string
 	switch {
 	case whTrivial[h]:
@@ -385,11 +385,11 @@ func (sc *whScan) whBlockClasses(name string, input json.RawMessage, cwd string)
 		traceCommands(in.Command, cwd, 0, map[string]string{"HOME": home}, &sc.mem, &tcs)
 		seen := map[string]bool{}
 		for _, cm := range tcs {
-			if cm.head == "wp ship" && !traceHasFlag(cm.words, "-h", "--help", "--review") {
+			if cm.Head == "wp ship" && !traceHasFlag(cm.Words, "-h", "--help", "--review") {
 				ship = true
 			}
 			if k := whCommandClass(cm, cwd); k != "" {
-				cmds = append(cmds, whCmd{Head: cm.head, Class: k})
+				cmds = append(cmds, whCmd{Head: cm.Head, Class: k})
 				if !seen[k] {
 					seen[k] = true
 					classes = append(classes, k)
@@ -400,7 +400,7 @@ func (sc *whScan) whBlockClasses(name string, input json.RawMessage, cwd string)
 			classes = []string{whOther}
 			head := "(shell)"
 			if len(tcs) > 0 {
-				head = tcs[0].head
+				head = tcs[0].Head
 			}
 			cmds = []whCmd{{Head: head, Class: whOther}}
 		}

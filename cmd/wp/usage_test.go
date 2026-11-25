@@ -746,3 +746,34 @@ func TestOutdatedTranscriptsOnlyUnderTheDirectory(t *testing.T) {
 		t.Errorf("a file already in this sync came back: %+v", again)
 	}
 }
+
+func TestUsageParseSyntheticIsToolRowsNotCalls(t *testing.T) {
+	dir := t.TempDir()
+	tr := `{"type":"assistant","timestamp":"2026-10-05T10:00:01.000Z","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":3,"cache_creation_input_tokens":0},"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"assistant","isVirtual":true,"timestamp":"2026-10-05T10:00:02.000Z","message":{"id":"repl_1","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"tool_use","id":"repl_t1","name":"Bash","input":{"command":"ls"}}]}}
+`
+	p := filepath.Join(dir, "projects", "-work-app", "sess1.jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(tr), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := parseMain(t, dir, usageFileState{})
+	if len(got.Chunk.Messages) != 1 || got.Chunk.Messages[0].N != 1 || got.Chunk.Messages[0].Model != "claude-opus-5-5" {
+		t.Fatalf("messages (a synthetic record is no model call, no cost row): %+v", got.Chunk.Messages)
+	}
+	var typed, script int64
+	for _, r := range got.Chunk.Tools {
+		if r.Kind == "builtin" && r.Tool == "Bash" {
+			if r.Model == "<synthetic>" {
+				script += r.Calls
+			} else {
+				typed += r.Calls
+			}
+		}
+	}
+	if typed != 1 || script != 1 {
+		t.Fatalf("Bash rows: model-typed %d, script-run (model <synthetic>) %d, tools %+v", typed, script, got.Chunk.Tools)
+	}
+}
