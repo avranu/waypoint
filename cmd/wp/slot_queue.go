@@ -46,11 +46,16 @@ type waitRec struct {
 	Secs  int64  `json:"secs"`
 	// GaveUp marks a wait that ended without a slot (stopped or failed).
 	GaveUp bool `json:"gave_up,omitempty"`
+	// Bound is the CPU bound the run had (slotBound*); "" for a hold that
+	// ran no command of its own or from before it was kept. Kept here only:
+	// the server's slot_holds has no column for it (WP-1876).
+	Bound string `json:"bound,omitempty"`
 }
 
 // queueRec is the content of NAME.PID.queue while a run waits.
 type queueRec struct {
 	Since     int64  `json:"since"`
+	SinceNS   int64  `json:"since_ns,omitempty"` // Since to the nanosecond, to order waiters that came in the same second
 	WD        string `json:"wd"`
 	Cmd       string `json:"cmd"`
 	Class     string `json:"class"`
@@ -71,6 +76,15 @@ type queuedHold struct {
 // setExit says what the command run in the slot exited with; release
 // records it.
 func (h *queuedHold) setExit(code int) { h.exit = &code }
+
+// setBound says which CPU bound the command ran under, in the record and in
+// the lock file wp slot ls reads.
+func (h *queuedHold) setBound(kind string) {
+	if kind != h.rec.Bound {
+		h.rec.Bound = kind
+		h.slot.write(kind)
+	}
+}
 
 func (h *queuedHold) release() {
 	h.slot.release()
@@ -350,7 +364,7 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, run slotRun
 	}()
 
 	long := class == slotClassLong
-	q := queueRec{Since: start.Unix(), WD: slotField(wd), Cmd: cmdKey, Class: class, BehindOwn: long}
+	q := queueRec{Since: start.Unix(), SinceNS: start.UnixNano(), WD: slotField(wd), Cmd: cmdKey, Class: class, BehindOwn: long}
 	qpath := filepath.Join(dir, fmt.Sprintf("%s.%d.queue", name, os.Getpid()))
 	written := false
 	writeQueue := func() {
@@ -416,7 +430,10 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, run slotRun
 		}
 	}
 
-	hold, err := acquireSlotIn(context.WithValue(ctx, slotCtxKeyT{}, etaCmd), name, slotOrder(class, n), func() {
+	// A run held behind its worktree's long run came before that wait, so it
+	// queues from start (WP-1876).
+	actx := context.WithValue(context.WithValue(ctx, slotCtxKeyT{}, etaCmd), slotArrivalKeyT{}, start)
+	hold, err := acquireSlotIn(actx, name, slotOrder(class, n), func() {
 		_, _ = fmt.Fprintf(c.err, "wp slot: waiting for a free %q slot (%d on this host; wp slot ls shows who has them)\n", name, n)
 		if etaCmd == "" {
 			return
@@ -439,7 +456,7 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, run slotRun
 		full.WaitMS, full.TreeWaitMS, full.Slot = time.Since(start).Milliseconds(), treeWaited(), &hold.idx
 	}
 	return &queuedHold{slot: hold, tree: tf, dir: dir, acquired: time.Now(), full: full, rec: waitRec{
-		Name: name, Repo: repo, Cmd: cmdKey, Class: class, Wait: waited(),
+		Name: name, Repo: repo, Cmd: cmdKey, Class: class, Wait: waited(), Bound: slotBoundOf(ctx),
 	}}, nil
 }
 
@@ -533,7 +550,13 @@ func (c *cli) slotQueueLs(dir string) bool {
 		}
 		ws = append(ws, waiter{base[:i], pid, q})
 	}
-	sort.SliceStable(ws, func(i, j int) bool { return ws[i].q.Since < ws[j].q.Since })
+	sort.SliceStable(ws, func(i, j int) bool {
+		a, b := ws[i], ws[j]
+		if a.q.Since != b.q.Since {
+			return a.q.Since < b.q.Since
+		}
+		return a.q.SinceNS < b.q.SinceNS || (a.q.SinceNS == b.q.SinceNS && a.pid < b.pid)
+	})
 	for _, w := range ws {
 		what := "(" + w.q.Class + ")"
 		if w.q.BehindOwn {
@@ -545,10 +568,17 @@ func (c *cli) slotQueueLs(dir string) bool {
 	type key struct{ label, class string }
 	waits := map[key][]int64{}
 	cutoff := time.Now().Add(-24 * time.Hour).Unix()
+	unbound, runs := 0, 0
 	for _, r := range readWaitRecs(dir) {
 		if r.At >= cutoff {
 			k := key{slotRepoLabel(r.Repo), r.Class}
 			waits[k] = append(waits[k], r.Wait)
+			if !r.GaveUp {
+				runs++
+				if r.Bound == slotBoundNone {
+					unbound++
+				}
+			}
 		}
 	}
 	if len(waits) == 0 {
@@ -570,6 +600,7 @@ func (c *cli) slotQueueLs(dir string) bool {
 		sort.Slice(v, func(i, j int) bool { return v[i] < v[j] })
 		_, _ = fmt.Fprintf(c.out, "  %-11s %-5s   %s / %s (%d)\n", k.label, k.class, slotDur(slotPct(v, 0.5)), slotDur(slotPct(v, 0.95)), len(v))
 	}
+	_, _ = fmt.Fprintf(c.out, "runs with no CPU bound (%s=off): %d of %d\n", slotCPUEnv, unbound, runs)
 	return true
 }
 
