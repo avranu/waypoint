@@ -280,7 +280,16 @@ func fillEveryField(t *testing.T, v reflect.Value) {
 		case reflect.String:
 			f.SetString("x")
 		case reflect.Slice:
-			f.Set(reflect.ValueOf([]string{"x"}))
+			one := reflect.New(f.Type().Elem()).Elem()
+			switch one.Kind() {
+			case reflect.String:
+				one.SetString("x")
+			case reflect.Float64:
+				one.SetFloat(1)
+			default:
+				t.Fatalf("fill testRun.%s: add its element kind, %s", v.Type().Field(i).Name, one.Kind())
+			}
+			f.Set(reflect.Append(reflect.MakeSlice(f.Type(), 0, 1), one))
 		case reflect.Pointer:
 			if f.Type().Elem().Kind() != reflect.Float64 {
 				t.Fatalf("fill %s.%s: add its kind", v.Type().Name(), v.Type().Field(i).Name)
@@ -325,7 +334,8 @@ func TestSendTestEvidenceReachesTheServer(t *testing.T) {
 		}
 		return ev
 	}
-	base := testRun{Command: "go test ./...", Outcome: runPass, Passed: 3, Units: 1, UnitName: "packages", Packages: []string{"p"}, Seconds: 1, Duration: 2}
+	base := testRun{Command: "go test ./...", Outcome: runPass, Passed: 3, Units: 1, UnitName: "packages", Packages: []string{"p"}, Seconds: 1, Duration: 2,
+		Load: []float64{15.4, 19.2}} // the load must not reach the server, as nearest either (audit 1843)
 	keep := func(tree string, moved bool) {
 		r := base
 		r.At, r.Tree, r.Moved = 1, tree, moved
@@ -584,7 +594,11 @@ func TestTestRunReadsOldRecordsWithoutLoad(t *testing.T) {
 // sent with it would be refused (WP-1850).
 func TestRunsToSendLeavesOutTheLoad(t *testing.T) {
 	on := []testRun{{Outcome: runPass, Load: []float64{1, 2}}, {Outcome: runFail, Load: []float64{3, 4}}}
-	for _, r := range runsToSend(on) {
+	sent := runsToSend(on)
+	if len(sent) != 2 {
+		t.Fatalf("sent %d runs, want 2", len(sent))
+	}
+	for _, r := range sent {
 		if r.Load != nil {
 			t.Fatalf("sent with load: %+v", r)
 		}

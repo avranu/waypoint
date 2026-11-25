@@ -278,6 +278,13 @@ func runsOnTree(runs []testRun, tree string) (on []testRun, near *testRun) {
 	return on, near
 }
 
+// toSend is the run as the server takes it: the load stays on this machine,
+// since the server refuses a field it doesn't know (WP-1850).
+func (r testRun) toSend() testRun {
+	r.Load = nil
+	return r
+}
+
 // runsToSend is at most testRunsSend of the runs, failures first so the
 // limit can't turn a failing tree into a passing one.
 func runsToSend(on []testRun) []testRun {
@@ -285,8 +292,7 @@ func runsToSend(on []testRun) []testRun {
 	for _, wantFail := range []bool{true, false} {
 		for _, r := range on {
 			if (r.Outcome == runFail) == wantFail {
-				r.Load = nil // the server refuses a field it doesn't know
-				out = append(out, r)
+				out = append(out, r.toSend())
 			}
 		}
 	}
@@ -420,7 +426,7 @@ func (c *cli) sendTestEvidence(project, repo, key, summary string) *shipEvidence
 	on = runsToSend(on)
 	body := map[string]any{"repo": repo, "sha": head, "tree": tree, "issue": key, "summary": summary, "runs": on}
 	if len(on) == 0 && near != nil {
-		n := testRunNear{testRun: *near, FilesAway: -1}
+		n := testRunNear{testRun: near.toSend(), FilesAway: -1}
 		if !near.Moved {
 			n.FilesAway = filesBetween(near.Tree, tree)
 		}

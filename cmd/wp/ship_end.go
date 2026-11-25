@@ -467,7 +467,7 @@ func loadNote(load []float64) string {
 	if len(load) != 2 {
 		return ""
 	}
-	return fmt.Sprintf("; load %.1f at the start, %.1f at the end, on %d CPUs", load[0], load[1], cpuCount())
+	return fmt.Sprintf("; 1-minute load %.1f at the start, %.1f at the end, on %d CPUs", load[0], load[1], cpuCount())
 }
 
 // checkFailedHead is the line that comes before a failed check's last lines.

@@ -607,7 +607,7 @@ func TestCheckFailedHeadNamesTheLoad(t *testing.T) {
 	cpuCount = func() int { return 8 }
 	t.Cleanup(func() { cpuCount = old })
 	got := checkFailedHead("make check", 3, time.Minute, 0, []float64{15.4, 19.2})
-	want := "Check failed: make check exited 3 after 1m0s; load 15.4 at the start, 19.2 at the end, on 8 CPUs; last lines:\n"
+	want := "Check failed: make check exited 3 after 1m0s; 1-minute load 15.4 at the start, 19.2 at the end, on 8 CPUs; last lines:\n"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -643,7 +643,7 @@ func shipCheckWithLoad(t *testing.T, cmd string, read func() (float64, bool)) st
 
 func TestShipCheckFailureNamesTheLoad(t *testing.T) {
 	out := shipCheckWithLoad(t, "false", loadReader(15.4, 19.2))
-	if !strings.Contains(out, "load 15.4 at the start, 19.2 at the end, on 8 CPUs") {
+	if !strings.Contains(out, "1-minute load 15.4 at the start, 19.2 at the end, on 8 CPUs") {
 		t.Errorf("no load in:\n%s", out)
 	}
 }
