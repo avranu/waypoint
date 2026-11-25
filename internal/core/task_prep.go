@@ -169,6 +169,8 @@ type TaskPrep struct {
 	Commit  string     `json:"commit,omitempty"`
 	Machine string     `json:"machine,omitempty"`
 	Notes   *PrepNotes `json:"notes,omitempty"`
+	// Evidence is added by AttachPrepEvidence (WP-ADR157).
+	Evidence *PrepEvidence `json:"evidence,omitempty"`
 	// Dropped counts the files, symbols and tests the model named that the
 	// bundle didn't have: made up, or misremembered.
 	Dropped int    `json:"dropped"`
@@ -585,7 +587,7 @@ func (s *Service) runPrep(ctx context.Context, issueID int64) error {
 	if err != nil {
 		return err
 	}
-	title, desc, comments, _, err := s.prepText(ctx, issueID)
+	title, desc, comments, hash, err := s.prepText(ctx, issueID)
 	if err != nil {
 		return err
 	}
@@ -618,9 +620,18 @@ func (s *Service) runPrep(ctx context.Context, issueID int64) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.W.ExecContext(ctx, `UPDATE task_preps SET state = 'ready', notes = ?, model = ?, request_id = ?, dropped = ?, error = '', updated_at = ? WHERE issue_id = ? AND state = 'pending'`,
+	res, err := s.db.W.ExecContext(ctx, `UPDATE task_preps SET state = 'ready', notes = ?, model = ?, request_id = ?, dropped = ?, error = '', updated_at = ? WHERE issue_id = ? AND state = 'pending'`,
 		string(out), model, requestID, dropped, s.nowMS(), issueID)
-	return err
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		return err
+	}
+	if err := s.runPrepEvidence(ctx, prepEvidenceTask{issue: i, priority: priority, hash: hash, title: title, desc: desc, comments: comments, words: b.Words}); err != nil {
+		s.log.InfoContext(ctx, "prep evidence failed", "issue", i.Key, "err", err)
+	}
+	return nil
 }
 
 // prepTaskText is the task as a prep reads it: title, description and

@@ -409,3 +409,83 @@ func TestExperimentReviewMeasures(t *testing.T) {
 		t.Errorf("findings %v rounds %v; want 2 and 4", task.findings, task.rounds)
 	}
 }
+
+// How a task held up afterwards (WP-ADR157): later tasks that follow on from
+// it, those that fix it, what its self-reviews found, and the review
+// comments on its pull requests that aren't Waypoint's findings.
+func TestExperimentHeldUpMeasures(t *testing.T) {
+	e := newEnv(t)
+	p := e.project(e.admin, "App", "")
+	mk := func(title string) int64 {
+		return e.issue(e.admin, IssueInput{Project: p.Key, Title: title}).ID
+	}
+	task, quiet, later, fix, other := mk("Task"), mk("Quiet"), mk("Later"), mk("Fix"), mk("Other")
+	f := e.forge("forgejo", "https://git.example.com", false)
+	url := "https://git.example.com/acme/app/pulls/3"
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := e.s.db.W.ExecContext(e.ctx, q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	relate := func(source, target int64, kind, subkind string) {
+		exec(`INSERT INTO issue_relations(source_id, target_id, kind, subkind, created_at) VALUES (?,?,?,?,0)`, source, target, kind, subkind)
+	}
+	relate(later, task, "follows", "")
+	relate(fix, task, "follows", "fix")
+	relate(task, other, "follows", "fix") // the task is the later one
+	relate(other, task, "relates", "")
+	for _, w := range []struct {
+		issue int64
+		kind  string
+		found any
+	}{{task, "review", 2}, {task, "review", 3}, {task, "review", nil}, {task, "note", 9}, {quiet, "review", nil}, {quiet, "note", 1}, {later, "review", 0}} {
+		exec(`INSERT INTO work_log(issue_id, kind, found, created_at, updated_at) VALUES (?,?,?,0,0)`, w.issue, w.kind, w.found)
+	}
+	exec(`INSERT INTO pull_requests(forge_id, repo, number, url, state, created_at, updated_at) VALUES (?, 'acme/app', 3, ?, 'open', 0, 0)`, f.ID, url)
+	for _, u := range []string{url, url + "/files"} { // one pull request linked twice
+		exec(`INSERT INTO external_links(issue_id, provider, kind, url, repo, number, state, created_at) VALUES (?, 'forgejo', 'pull', ?, 'acme/app', 3, 'open', 0)`, task, u)
+	}
+	exec(`INSERT INTO bot_runs(project_id, pr_id, kind, head_sha, status, created_at) VALUES (?, (SELECT max(id) FROM pull_requests), 'review', 'abc', 'done', 0)`, p.ID)
+	exec(`INSERT INTO bot_findings(run_id, pr_id, severity, claim, model, state, created_at) VALUES ((SELECT max(id) FROM bot_runs), (SELECT max(id) FROM pull_requests), 'high', 'bug', 'm', 'open', 0)`)
+	comment := func(ext string, finding, gone bool) {
+		exec(`INSERT INTO review_comments(pr_id, kind, ext_id, finding_id, gone_at, created_at, updated_at, seen_at)
+			VALUES ((SELECT max(id) FROM pull_requests), 'inline', ?, CASE WHEN ? THEN (SELECT max(id) FROM bot_findings) END, CASE WHEN ? THEN 1 END, 0, 0, 0)`, ext, finding, gone)
+	}
+	comment("1", false, false)
+	comment("2", false, false)
+	comment("3", true, false)
+	comment("4", false, true)
+
+	second := "https://git.example.com/acme/app/pulls/4"
+	exec(`INSERT INTO pull_requests(forge_id, repo, number, url, state, created_at, updated_at) VALUES (?, 'acme/app', 4, ?, 'open', 0, 0)`, f.ID, second)
+	exec(`INSERT INTO external_links(issue_id, provider, kind, url, repo, number, state, created_at) VALUES (?, 'forgejo', 'pull', ?, 'acme/app', 4, 'open', 0)`, task, second)
+	comment("5", false, false) // on the second pull request
+
+	byID := map[int64]*expTask{task: {}, quiet: {}, later: {}}
+	byID[task].row.PRs = 2
+	if err := e.s.experimentReviewMeasures(e.ctx, byID); err != nil {
+		t.Fatal(err)
+	}
+	measured := func(id int64) string {
+		var out []string
+		for _, key := range []string{"followups", "fixes", "self_review", "pr_comments"} {
+			mi := metricIndex(key)
+			if mi < 0 {
+				t.Fatalf("no metric %s", key)
+			}
+			v, ok := experimentMetrics[mi].get(byID[id])
+			if !ok {
+				out = append(out, "-")
+				continue
+			}
+			out = append(out, fmt.Sprint(v))
+		}
+		return strings.Join(out, " ")
+	}
+	for id, want := range map[int64]string{task: "2 1 5 3", quiet: "0 0 - -", later: "0 0 0 -"} {
+		if got := measured(id); got != want {
+			t.Errorf("task %d: %s; want %s", id, got, want)
+		}
+	}
+}

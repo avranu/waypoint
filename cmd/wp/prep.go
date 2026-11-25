@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -107,6 +108,26 @@ type prepView struct {
 	Stale     bool       `json:"stale"`
 	ShownAt   *time.Time `json:"shown_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
+	// Evidence is the server's to give (WP-ADR157): only asked for here.
+	Evidence *prepEvidence `json:"evidence,omitempty"`
+}
+
+// prepEvidence mirrors internal/core's PrepEvidence.
+type prepEvidence struct {
+	Evidence []struct {
+		Ref      string `json:"ref"`
+		Kind     string `json:"kind"`
+		Title    string `json:"title"`
+		Category string `json:"category"`
+		Date     string `json:"date"`
+		By       string `json:"by"`
+		BearsOn  string `json:"bears_on"`
+	} `json:"evidence"`
+	Claims []struct {
+		Quote string `json:"quote"`
+		Test  string `json:"test"`
+		Ref   string `json:"ref,omitempty"`
+	} `json:"claims"`
 }
 
 type prepNotes struct {
@@ -184,7 +205,7 @@ func cmdPrepShow(c *cli, args []string) error {
 
 func (c *cli) prepShow(key string) error {
 	var p prepView
-	if err := c.do("GET", "/api/v1/issues/"+esc(key)+"/prep", nil, &p); err != nil {
+	if err := c.do("GET", "/api/v1/issues/"+esc(key)+"/prep?evidence=1", nil, &p); err != nil {
 		return err
 	}
 	if c.asJSON {
@@ -211,6 +232,9 @@ func (c *cli) prepShow(key string) error {
 	if p.Notes != nil {
 		c.print(renderPrepNotes(&p, nil, 4000, false))
 	}
+	evidence, items := renderPrepEvidence(p.Evidence, projectOfKey(key), false)
+	c.print(evidence)
+	c.noteShown("prep", items)
 	return nil
 }
 
@@ -349,37 +373,117 @@ func (p *runnerProc) prepTasks(ctx context.Context) {
 
 // prepSection is the prep printed in a brief: for the agent taking the task
 // (shown records that it was shown), with each picked symbol resolved in ix.
-// Empty when there is no ready prep, or it is held out.
+// Empty when there is no ready prep, or neither its pointers nor evidence
+// are for this reader.
 func (c *cli) prepSection(ix *codeindex.Index, key string, budget int, compact, shown bool) string {
-	path := "/api/v1/issues/" + esc(key) + "/prep"
+	path := "/api/v1/issues/" + esc(key) + "/prep?evidence=1"
 	if shown {
-		path += "?shown=1"
+		path += "&shown=1"
 	}
 	var p prepView
-	if c.do("GET", path, nil, &p) != nil || p.State != "ready" || p.Notes == nil {
+	if c.do("GET", path, nil, &p) != nil || p.State != "ready" || p.Notes == nil && p.Evidence == nil {
 		return ""
 	}
 	return c.renderPrepShown(key, &p, prepIndex(ix, p.Repo), budget, compact)
 }
 
-// renderPrepShown is renderPrepNotes for an agent: the glossary terms it
+// renderPrepShown prints a prep for an agent, its notes in about budget
+// tokens and then its evidence: the glossary terms, pages and decisions it
 // printed (not the ones the compact form or the budget left out) are told to
 // the server as shown, whether or not this is the task it took (WP-ADR145).
 func (c *cli) renderPrepShown(key string, p *prepView, ix *codeindex.Index, budget int, compact bool) string {
-	out := renderPrepNotes(p, ix, budget, compact)
+	var out string
 	var items []shownItem
-	project := key[:max(strings.LastIndex(key, "-"), 0)]
-	for i, t := range p.Notes.Terms {
-		if i == prepTermLimit(compact) {
-			break
-		}
-		if strings.Contains(out, "\n    "+t.Term+": ") {
-			items = append(items, shownItem{Type: "glossary", Ref: t.Term, Project: project})
+	project := projectOfKey(key)
+	if p.Notes != nil {
+		out = renderPrepNotes(p, ix, budget, compact)
+		for i, t := range p.Notes.Terms {
+			if i == prepTermLimit(compact) {
+				break
+			}
+			if strings.Contains(out, "\n    "+t.Term+": ") {
+				items = append(items, shownItem{Type: "glossary", Ref: t.Term, Project: project})
+			}
 		}
 	}
-	c.noteShown("prep", items)
-	return out
+	evidence, listed := renderPrepEvidence(p.Evidence, project, compact)
+	if evidence != "" && out != "" && !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	c.noteShown("prep", append(items, listed...))
+	return out + evidence
 }
+
+func projectOfKey(key string) string { return key[:max(strings.LastIndex(key, "-"), 0)] }
+
+// renderPrepEvidence prints a prep's recorded data and claims to test, and
+// returns the pages and decisions it named. Empty when there are none.
+func renderPrepEvidence(e *prepEvidence, project string, compact bool) (string, []shownItem) {
+	if e == nil || len(e.Evidence) == 0 && len(e.Claims) == 0 {
+		return "", nil
+	}
+	limit := 3
+	if compact {
+		limit = 2
+	}
+	var b strings.Builder
+	var items []shownItem
+	// One command per kind that reads something printed here.
+	read := map[string]string{}
+	canRead := func(kind, ref string) {
+		if read[kind] == "" {
+			read[kind] = "wp " + kind + " show " + ref
+		}
+	}
+	if len(e.Evidence) > 0 {
+		b.WriteString("Recorded evidence that may bear on this task (matched by a weaker model):\n")
+		for _, it := range e.Evidence[:min(len(e.Evidence), limit)] {
+			category := it.Category
+			if it.Kind == "design" {
+				category += " assumptions"
+			}
+			fmt.Fprintf(&b, "  %s %s [%s, %s, %s]", it.Ref, it.Title, category, it.Date, it.By)
+			if it.BearsOn != "" {
+				b.WriteString(" — bears on: " + it.BearsOn)
+			}
+			b.WriteByte('\n')
+			items = append(items, shownItem{Type: it.Kind, Ref: it.Ref, Project: project})
+			canRead(it.Kind, it.Ref)
+		}
+	}
+	if len(e.Claims) > 0 {
+		b.WriteString("Claims in the task text worth testing (picked by a weaker model):\n")
+		for _, cl := range e.Claims[:min(len(e.Claims), limit)] {
+			fmt.Fprintf(&b, "  - \"%s\" — test: %s", cl.Quote, cl.Test)
+			if cl.Ref != "" {
+				b.WriteString(" (see " + cl.Ref + ")")
+				kind := "page"
+				if designRefRE.MatchString(cl.Ref) {
+					kind = "design"
+				}
+				canRead(kind, cl.Ref)
+				if !slices.ContainsFunc(items, func(it shownItem) bool { return it.Ref == cl.Ref }) {
+					items = append(items, shownItem{Type: kind, Ref: cl.Ref, Project: project})
+				}
+			}
+			b.WriteByte('\n')
+		}
+	}
+	var commands []string
+	for _, kind := range []string{"page", "design"} {
+		if read[kind] != "" {
+			commands = append(commands, read[kind])
+		}
+	}
+	if len(commands) > 0 {
+		b.WriteString("  Read one: " + strings.Join(commands, " · ") + "\n")
+	}
+	b.WriteString("Judge these before relying on them: could more or better data be collected, or better controls used? Check how and when each figure was measured. A claim listed here is not known to be wrong.\n")
+	return b.String(), items
+}
+
+// designRefRE tells a decision's code from a page's.
+var designRefRE = regexp.MustCompile(`-ADR\d+$`)
 
 // prepTermLimit is how many of a prep's terms renderPrepNotes prints.
 func prepTermLimit(compact bool) int {
@@ -412,9 +516,20 @@ func (c *cli) showPrep(key string) string {
 		return ""
 	}
 	var p prepView
-	if c.do("GET", "/api/v1/issues/"+esc(key)+"/prep?shown=1", nil, &p) != nil || p.State != "ready" || p.Notes == nil {
+	if c.do("GET", "/api/v1/issues/"+esc(key)+"/prep?evidence=1&shown=1", nil, &p) != nil || p.State != "ready" {
 		return ""
 	}
+	var out string
+	if p.Notes != nil {
+		out = c.showPrepNotes(key, &p)
+	}
+	evidence, items := renderPrepEvidence(p.Evidence, projectOfKey(key), true)
+	c.noteShown("prep", items)
+	return out + evidence
+}
+
+// showPrepNotes is the notes' part of showPrep.
+func (c *cli) showPrepNotes(key string, p *prepView) string {
 	var ix *codeindex.Index
 	if cwd, err := os.Getwd(); err == nil {
 		if x, err := codeindex.Open(cwd, ""); err == nil {
@@ -426,7 +541,7 @@ func (c *cli) showPrep(key string) string {
 			}
 		}
 	}
-	return renderPrepNotes(&p, prepIndex(ix, p.Repo), 600, true) + "  (wp brief " + key + " adds the code itself)\n"
+	return renderPrepNotes(p, prepIndex(ix, p.Repo), 600, true) + "  (wp brief " + key + " adds the code itself)\n"
 }
 
 // prepModelName is a prep's model without the gateway that ran it

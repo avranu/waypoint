@@ -33,6 +33,13 @@ type expTask struct {
 	row      UsageTrendTask
 	findings float64
 	rounds   float64
+	// Later tasks that follow this one, and those of them that fix it.
+	followups float64
+	fixes     float64
+	// What its own review notes say they found; selfReviewed when any does.
+	selfReview   float64
+	selfReviewed bool
+	prComments   float64 // review comments that aren't a bot finding's
 }
 
 var experimentMetrics = []struct {
@@ -60,6 +67,10 @@ var experimentMetrics = []struct {
 	}},
 	{ExperimentMetric{"findings", "Review findings", "count"}, func(t *expTask) (float64, bool) { return t.findings, t.row.PRs > 0 }},
 	{ExperimentMetric{"rounds", "Babysit rounds", "count"}, func(t *expTask) (float64, bool) { return t.rounds, t.row.PRs > 0 }},
+	{ExperimentMetric{"followups", "Follow-up tasks", "count"}, func(t *expTask) (float64, bool) { return t.followups, true }},
+	{ExperimentMetric{"fixes", "Follow-up fixes", "count"}, func(t *expTask) (float64, bool) { return t.fixes, true }},
+	{ExperimentMetric{"self_review", "Self-review findings", "count"}, func(t *expTask) (float64, bool) { return t.selfReview, t.selfReviewed }},
+	{ExperimentMetric{"pr_comments", "Review comments", "count"}, func(t *expTask) (float64, bool) { return t.prComments, t.row.PRs > 0 }},
 }
 
 // ExperimentStat is one metric in one arm, and how it compares with the
@@ -217,8 +228,9 @@ func (s *Service) experimentTasks(ctx context.Context, actor *Actor, run *Experi
 	return out, nil
 }
 
-// experimentReviewMeasures adds each task's pull requests' review findings
-// (not withdrawn) and babysit rounds.
+// experimentReviewMeasures adds how each task held up: its pull requests'
+// review findings (not withdrawn), other review comments and babysit rounds,
+// what its own reviews found, and the tasks that follow it.
 func (s *Service) experimentReviewMeasures(ctx context.Context, byID map[int64]*expTask) error {
 	ids := make([]int64, 0, len(byID))
 	for id := range byID {
@@ -232,10 +244,14 @@ func (s *Service) experimentReviewMeasures(ctx context.Context, byID map[int64]*
 		for i, id := range chunk {
 			args[i] = id
 		}
+		if err := s.experimentLaterMeasures(ctx, byID, args); err != nil {
+			return err
+		}
 		// #nosec G202 -- only placeholders are joined in
 		rows, err := s.db.R.QueryContext(ctx, `SELECT DISTINCT el.issue_id, p.id,
 				(SELECT count(*) FROM bot_findings f WHERE f.pr_id = p.id AND f.state != 'withdrawn'),
-				(SELECT coalesce(max(b.round), 0) FROM babysits b WHERE b.pr_id = p.id)
+				(SELECT coalesce(max(b.round), 0) FROM babysits b WHERE b.pr_id = p.id),
+				(SELECT count(*) FROM review_comments c WHERE c.pr_id = p.id AND c.finding_id IS NULL AND c.gone_at IS NULL)
 			FROM external_links el JOIN pull_requests p ON el.kind = 'pull' AND (el.url = p.url OR (el.repo = p.repo COLLATE NOCASE AND el.number = p.number))
 			WHERE el.issue_id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")+`)`, args...)
 		if err != nil {
@@ -243,13 +259,51 @@ func (s *Service) experimentReviewMeasures(ctx context.Context, byID map[int64]*
 		}
 		for rows.Next() {
 			var id, prID int64 // prID keeps DISTINCT per pull request
-			var f, r float64
-			if err := rows.Scan(&id, &prID, &f, &r); err != nil {
+			var f, r, c float64
+			if err := rows.Scan(&id, &prID, &f, &r, &c); err != nil {
 				rows.Close()
 				return err
 			}
 			byID[id].findings += f
 			byID[id].rounds += r
+			byID[id].prComments += c
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// experimentLaterMeasures adds, for the tasks whose ids are args, what came
+// back about each: follow-up tasks and self-review findings.
+func (s *Service) experimentLaterMeasures(ctx context.Context, byID map[int64]*expTask, args []any) error {
+	in := "(" + strings.TrimSuffix(strings.Repeat("?,", len(args)), ",") + ")"
+	for _, m := range []struct {
+		query string // yields the task's id and two numbers
+		add   func(t *expTask, a, b float64)
+	}{
+		{`SELECT target_id, count(*), coalesce(sum(subkind = 'fix'), 0) FROM issue_relations
+			WHERE kind = 'follows' AND target_id IN ` + in + ` GROUP BY target_id`,
+			func(t *expTask, all, fixes float64) { t.followups, t.fixes = all, fixes }},
+		{`SELECT issue_id, sum(found), 0 FROM work_log
+			WHERE kind = 'review' AND found IS NOT NULL AND issue_id IN ` + in + ` GROUP BY issue_id`,
+			func(t *expTask, found, _ float64) { t.selfReview, t.selfReviewed = found, true }},
+	} {
+		rows, err := s.db.R.QueryContext(ctx, m.query, args...) // #nosec G202 -- only placeholders are joined in
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var id int64
+			var a, b float64
+			if err := rows.Scan(&id, &a, &b); err != nil {
+				rows.Close()
+				return err
+			}
+			m.add(byID[id], a, b)
 		}
 		err = rows.Err()
 		rows.Close()

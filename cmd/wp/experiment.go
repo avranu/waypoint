@@ -95,8 +95,9 @@ var experimentCmd = &command{
 	examples: []string{"wp experiment ls", "wp experiment show next_brief", "wp experiment start search_nudge --days 10 --target 40", "wp experiment stop next_brief -m \"enough\""},
 	about: `An experiment gives each task an agent takes one of its arms, at random
 and kept, and compares the tasks of each arm: cost, tokens, turns, tool
-calls, compactions, review findings and more, per task. The first arm is the
-control (today's behaviour), which every task gets while no run is live.
+calls, compactions, review findings, follow-up fixes and more, per task. The
+first arm is the control (today's behaviour), which every task gets while no
+run is live.
 
 A run's weights are fixed: changing them is a new run. A run stops by
 itself at its end date, when every arm has its target of finished tasks,

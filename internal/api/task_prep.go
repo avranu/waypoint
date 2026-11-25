@@ -27,5 +27,13 @@ func (s *Server) uploadPrep(w http.ResponseWriter, r *http.Request) (any, error)
 }
 
 func (s *Server) getPrep(w http.ResponseWriter, r *http.Request) (any, error) {
-	return s.svc.GetPrep(r.Context(), actorFrom(r), r.PathValue("key"), r.URL.Query().Get("shown") == "1")
+	q := r.URL.Query()
+	shown := q.Get("shown") == "1"
+	p, err := s.svc.GetPrep(r.Context(), actorFrom(r), r.PathValue("key"), shown)
+	// Only a wp that can print the evidence asks for it, so no other fetch
+	// counts as showing it (WP-ADR157).
+	if err == nil && q.Get("evidence") == "1" {
+		s.svc.AttachPrepEvidence(r.Context(), actorFrom(r), p, shown)
+	}
+	return p, err
 }

@@ -21,7 +21,7 @@ func llmSchemas(t *testing.T) map[string]map[string]any {
 	}
 	return map[string]map[string]any{
 		"estimate": estimateSchema, "breakdown": breakdownSchema, "title": titleSchema,
-		"prep": prepSchema, "prepPick": prepPickSchema, "task_safety": screenSchema,
+		"prep": prepSchema, "prepPick": prepPickSchema, "prep_evidence": prepEvidenceSchema, "task_safety": screenSchema,
 		"review": reviewSchema, "verify_new": verifyNewSchema, "verify": verifySchema,
 		"reply": replySchema, "review_count": reviewCountSchema, "goal_suggest": goalSuggestSchema,
 		"automation_text": textSchema, "audit": audit,

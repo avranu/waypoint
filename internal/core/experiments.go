@@ -33,6 +33,7 @@ const (
 	ExpNextBrief       = "next_brief"
 	ExpSearchNudge     = "search_nudge"
 	ExpAutopilotPhrase = "autopilot_phrase"
+	ExpPrepEvidence    = "prep_evidence"
 )
 
 // ExperimentArm is one way of doing it.
@@ -132,6 +133,21 @@ var experimentDefs = []ExperimentDef{
 		Caveats: []string{
 			"Only autopilot's tasks are units; tasks taken by hand never are, so this says nothing about them.",
 			"Each phrase is its own run: change the text by stopping the run and starting another, never mid-run.",
+		},
+	},
+	{
+		Key: ExpPrepEvidence, Title: "Prep evidence",
+		Question: "Does showing the recorded data that bears on a task, and the claims in its text worth testing, change how the task holds up and what it costs?",
+		Arms:     []ExperimentArm{{Key: "none", Label: "Evidence found, not shown", Control: true}, {Key: "shown", Label: "Evidence shown"}},
+		Weights:  map[string]int{"none": 1, "shown": 1},
+		Where:    "wp next, wp take and wp show print the task's prep evidence, or leave it out.",
+		Exposure: "an agent's wp that can print it fetched a ready prep with evidence for the task",
+		Primary:  "cost_usd",
+		Caveats: []string{
+			"Only tasks where the model found something are units, so this says nothing about the others.",
+			"Agents in either arm can search pages and decisions themselves.",
+			"The evidence may raise cost while improving how the work holds up: read follow-up fixes and findings beside cost.",
+			"Preps made before this shipped have none.",
 		},
 	},
 }

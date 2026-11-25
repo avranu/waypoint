@@ -114,6 +114,9 @@ func (prepModel) Models(ctx context.Context, p *core.AIProvider) ([]core.AIModel
 }
 
 func (prepModel) Complete(ctx context.Context, p *core.AIProvider, model, system, prompt string, schema map[string]any) (json.RawMessage, string, error) {
+	if strings.HasPrefix(prompt, "Evidence check for task ") {
+		return json.RawMessage(`{"evidence": [], "claims": [{"quote": "should say no for a draft", "test": "open a draft and ask", "ref": null}]}`), "", nil
+	}
 	if !strings.HasPrefix(prompt, "Task ") {
 		return json.RawMessage(`{"points": 3, "confidence": "high", "reason": "Small."}`), "", nil
 	}
@@ -164,5 +167,20 @@ func TestPrepAgainstServer(t *testing.T) {
 	}
 	if out := e.wp("prep", "show", is.Key); !strings.Contains(out, is.Key+" prep: ready") || !strings.Contains(out, "Is a WIP: title a draft?") {
 		t.Errorf("wp prep show:\n%s", out)
+	}
+	// The comment made that prep stale: a new one, read by a person, has the
+	// evidence everywhere it is printed.
+	e.wp("prep", is.Key)
+	e.svc.Wait()
+	tok, _, err := e.svc.CreateToken(ctx, me, core.TokenSpec{Name: "person"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WAYPOINT_TOKEN", tok)
+	t.Setenv("WAYPOINT_AGENT", "none")
+	for _, args := range [][]string{{"brief", is.Key}, {"show", is.Key}, {"prep", "show", is.Key}} {
+		if out := e.wp(args...); !strings.Contains(out, `"should say no for a draft" — test: open a draft and ask`) {
+			t.Errorf("wp %s lacks the claim:\n%s", strings.Join(args, " "), out)
+		}
 	}
 }
