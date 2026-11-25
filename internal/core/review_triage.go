@@ -392,6 +392,10 @@ var (
 	hashComment = map[string]bool{"py": true, "rb": true, "sh": true, "bash": true, "zsh": true, "pl": true, "yaml": true, "yml": true, "toml": true, "tf": true}
 )
 
+// cContinuation is the languages where a backslash at the end of a line
+// continues a // comment.
+var cContinuation = map[string]bool{"c": true, "h": true, "cpp": true, "cc": true, "hpp": true}
+
 // commentDirectives are comments that tell a tool something: they count as
 // code. (A comment with no space after its marker counts as code too: that
 // covers //go:build, //nolint, //export, #!, and commented-out code.)
@@ -420,7 +424,7 @@ func isComment(ext, line string) bool {
 	if !strings.HasPrefix(s, marker) {
 		return false
 	}
-	if strings.HasSuffix(s, `\`) {
+	if cContinuation[ext] && strings.HasSuffix(s, `\`) {
 		return false
 	}
 	rest := s[len(marker):]

@@ -261,7 +261,7 @@ func (s *Service) updateIfBehindThen(ctx context.Context, pr *PullRequest, befor
 	if bl, ok := s.Forges.(ForgeBranches); ok {
 		if in, _, err := s.headLanded(ctx, f, bl, pr.Repo, tip, pr.HeadSHA); err == nil && in {
 			s.armNote(ctx, pr.ID, "its work is already on "+cmp(pr.BaseRef, "its base")+"; finishing it instead of updating the branch")
-			p, bg := *pr, context.WithoutCancel(ctx)
+			p, bg := *pr, withoutLineLocks(context.WithoutCancel(ctx))
 			s.goBG(func() {
 				if done, err := s.landPR(bg, f, &p); err != nil {
 					s.log.WarnContext(ctx, "finish a landed pull request", "repo", p.Repo, "number", p.Number, "err", err)

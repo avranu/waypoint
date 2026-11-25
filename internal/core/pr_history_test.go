@@ -93,7 +93,7 @@ func TestPullRequestHistory(t *testing.T) {
 
 	pe.setClock(pe.clockNow().Add(time.Hour))
 	pr.HeadSHA = "bbbbbbb2222"
-	pe.fg.setPR(pe.f, "me/app", pr, sampleDiff)
+	pe.fg.setPR(pe.f, "me/app", pr, diffPlus("two.txt"))
 	pe.send("pull_request", prPayload("synchronize", pr, nil))
 	pe.drain()
 	approve := map[string]any{"action": "submitted", "review": map[string]any{"id": 77, "user": map[string]string{"login": "alex"}, "state": "APPROVED",

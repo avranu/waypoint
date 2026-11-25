@@ -376,7 +376,7 @@ func (s *Service) heldComments(ctx context.Context, b *Babysit, pr *PullRequest)
 func (s *Service) parkBabysit(ctx context.Context, b *Babysit, pr *PullRequest, why, question string, failed []string, conflict bool, comments, findings []string) {
 	about := parkSubject(failed, conflict, comments, findings)
 	failed = parkLifts(failed, conflict, comments, findings)
-	s.leaveQueue(ctx, pr.ID)
+	s.leaveQueue(ctx, pr)
 	s.nudgeLine(ctx, pr)
 	r := lastRound(b)
 	if r == nil {
@@ -794,7 +794,7 @@ func (s *Service) onParkAnswered(ctx context.Context, e *Event) {
 		return
 	}
 	s.goBG(func() {
-		bg := context.WithoutCancel(ctx)
+		bg := withoutLineLocks(context.WithoutCancel(ctx))
 		unlock := s.babysitLocks.lock(prID)
 		b, err := s.activeBabysit(bg, s.db.R, prID)
 		ok := err == nil && b != nil && b.ID == bid

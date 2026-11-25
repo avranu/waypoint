@@ -67,7 +67,7 @@ func (s *Service) onPush(ctx context.Context, f *Forge, ev *forgeEvent) {
 	s.onBaseMoved(ctx, f, ev.repo, branch)
 	if _, ok := s.Forges.(ForgeChecks); ok && ev.after != "" && f.token != "" {
 		if _, err := s.trackHead(ctx, f.ID, ev.repo, ev.after); err == nil {
-			bg := context.WithoutCancel(ctx)
+			bg := withoutLineLocks(context.WithoutCancel(ctx))
 			s.goBG(func() {
 				s.refreshHeadLogged(bg, f, ev.repo, ev.after)
 			})
@@ -106,7 +106,7 @@ func (s *Service) checkAfterActivity(ctx context.Context, f *Forge, repo string,
 	if err != nil || pr == nil {
 		return
 	}
-	bg := context.WithoutCancel(ctx)
+	bg := withoutLineLocks(context.WithoutCancel(ctx))
 	if pr.ArmedAt != nil {
 		s.goBG(func() { s.maybeAutoMerge(bg, pr.ID) })
 	}

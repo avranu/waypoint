@@ -23,8 +23,17 @@ import { IconButton } from '@/components/ui/button'
 import { useEscapeLayer } from '@/components/ui/layers'
 import { toast, toastError } from '@/components/ui/toast'
 import { issueTarget, refreshAttachments, uploadAttachment } from '@/lib/attachments'
-import { renderMarkdownForEdit } from '@/lib/markdown'
+import { pieceHtml, renderMarkdownForEdit } from '@/lib/markdown'
 import { htmlToMarkdown } from '@/lib/richtext'
+import { PARK } from '@/lib/richinput'
+import {
+  beforeInputRules,
+  composedRules,
+  inputRules,
+  insertPiece,
+  keyRules,
+  leavePiece,
+} from '@/lib/richdom'
 import type { UserRef } from '@/lib/types'
 import { MENTION_RE, MentionList, useMentionMatches } from './userMention'
 
@@ -45,9 +54,45 @@ type Props = {
   onKeyDown?: (e: React.KeyboardEvent) => void
   /** Switches to the markdown source; a button at the toolbar's end. */
   onSource?: () => void
+  /** Shown at the toolbar's right end: Done and the save state. */
+  trailing?: React.ReactNode
+  /**
+   * Where the person clicked to open the editor over the text it replaces
+   * (viewport coordinates): the caret goes there, and nothing scrolls.
+   */
+  caretAt?: { x: number; y: number }
 }
 
+// What an editor holds when it is empty: typing needs a paragraph to go in, or
+// the browser leaves the first line as bare text that no rule can see.
+const EMPTY = '<p><br></p>'
+
+// Marks the editor empty for its placeholder: one paragraph holding only a
+// <br>, no text. (CSS alone can't tell that from "text<br>text", where the
+// <br> is the only child element too.)
+const markEmpty = (el: HTMLElement) =>
+  el.toggleAttribute(
+    'data-empty',
+    el.textContent === '' &&
+      el.children.length === 1 &&
+      el.firstElementChild?.tagName === 'P' &&
+      el.firstElementChild.children.length === 1 &&
+      el.firstElementChild.firstElementChild?.tagName === 'BR',
+  )
+
 type Mention = { node: Text; start: number; end: number; text: string }
+
+// Whether a mention still means "@text" in the editor's own text: a draft
+// refresh replaces the nodes, and an upload's placeholder splits them.
+const liveMention = (el: HTMLElement, m: Mention) =>
+  el.contains(m.node) && m.node.data.slice(m.start, m.end) === `@${m.text}`
+
+/**
+ * The box a description is shown in, as rendered text and as this editor: the
+ * same padding, font and line height, so opening the editor moves nothing.
+ * Description.tsx's view, its empty-state button and the editor all use it.
+ */
+export const DESCRIPTION_BOX = 'prose-wp -mx-1 rounded-lg px-1 py-1 text-sm leading-relaxed'
 
 export function RichTextInput({
   value,
@@ -60,11 +105,46 @@ export function RichTextInput({
   getValue,
   onKeyDown,
   onSource,
+  trailing,
+  caretAt,
 }: Props) {
   const qc = useQueryClient()
   const target = attachTo ?? (issueKey ? issueTarget(issueKey) : undefined)
   const editor = useRef<HTMLDivElement | null>(null)
+  const initial = useRef<string | null>(null)
+  if (initial.current === null) initial.current = renderMarkdownForEdit(value) || EMPTY
+  const scrolled = useRef<[Element, number][] | null>(null)
+  if (scrolled.current === null) {
+    scrolled.current = []
+    const hit = caretAt && document.elementFromPoint(caretAt.x, caretAt.y)
+    for (let n = hit || null; n; n = n.parentElement) {
+      if (n.scrollTop > 0) scrolled.current.push([n, n.scrollTop])
+    }
+  }
   const shown = useRef(value)
+  // The formatting toolbar's row scrolls sideways when it doesn't fit; which
+  // edge has more buttons past it shows as a fade.
+  const bar = useRef<HTMLDivElement | null>(null)
+  const [fade, setFade] = useState({ left: false, right: false })
+  const measureBar = () => {
+    const b = bar.current
+    if (!b) return
+    const left = b.scrollLeft > 1
+    const right = b.scrollLeft + b.clientWidth < b.scrollWidth - 1
+    setFade((f) => (f.left === left && f.right === right ? f : { left, right }))
+  }
+  useLayoutEffect(measureBar)
+  useEffect(() => {
+    const b = bar.current
+    if (!b) return
+    const ro = new ResizeObserver(measureBar)
+    ro.observe(b)
+    window.addEventListener('resize', measureBar)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', measureBar)
+    }
+  }, [])
   const users = useQuery(q.users()).data ?? []
   const [mention, setMention] = useState<Mention | null>(null)
   const [active, setActive] = useState(0)
@@ -79,9 +159,13 @@ export function RichTextInput({
   const sync = () => {
     const el = editor.current
     if (!el) return
-    if (blank(el) && el.innerHTML !== '') el.innerHTML = ''
+    if (blank(el) && el.innerHTML !== EMPTY) {
+      el.innerHTML = EMPTY
+      if (el.contains(document.activeElement)) placeCaretAtEnd(el)
+    }
     for (const box of Array.from(el.querySelectorAll<HTMLInputElement>('input[type=checkbox]')))
       box.toggleAttribute('checked', box.checked)
+    markEmpty(el)
     const md = htmlToMarkdown(el.innerHTML)
     shown.current = md
     latest.current = md
@@ -91,15 +175,24 @@ export function RichTextInput({
   useLayoutEffect(() => {
     const el = editor.current
     if (!el) return
+    shown.current = value
     try {
       document.execCommand('defaultParagraphSeparator', false, 'p')
       document.execCommand('styleWithCSS', false, 'false')
-    } catch {}
-    el.innerHTML = renderMarkdownForEdit(value)
-    shown.current = value
+    } catch {
+    }
+    for (const [n, top] of scrolled.current ?? []) if (n.isConnected) n.scrollTop = top
+    markEmpty(el)
     if (autoFocus) {
-      el.focus()
-      placeCaretAtEnd(el)
+      // Focusing scrolls the caret into view, which is what opening by the
+      // keyboard wants; a click opened the editor where the person already is.
+      el.focus({ preventScroll: !!caretAt })
+      const at = caretAt && pointRange(caretAt.x, caretAt.y)
+      if (at && el.contains(at.startContainer)) {
+        const sel = window.getSelection()
+        sel?.removeAllRanges()
+        sel?.addRange(at)
+      } else placeCaretAtEnd(el)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- starting value only
   }, [])
@@ -108,10 +201,40 @@ export function RichTextInput({
     const el = editor.current
     if (!el || value === shown.current) return
     const caret = el.contains(document.activeElement) ? caretOffset(el) : null
-    el.innerHTML = renderMarkdownForEdit(value)
+    el.innerHTML = renderMarkdownForEdit(value) || EMPTY
     shown.current = value
+    markEmpty(el)
+    // An open mention's text node is gone with the old content.
+    setMention(null)
     if (caret !== null) placeCaretAt(el, caret)
   }, [value])
+
+  const keyed = useRef(false)
+  const composing = useRef(false)
+  useEffect(() => {
+    const el = editor.current
+    if (!el) return
+    const onBefore = (e: Event) => {
+      if (keyed.current || composing.current || (e as InputEvent).isComposing) return
+      const t = (e as InputEvent).inputType
+      if (open && e.cancelable && (t === 'insertParagraph' || t === 'insertLineBreak')) {
+        e.preventDefault()
+        pick(matches[active])
+        return
+      }
+      try {
+        if (beforeInputRules(el, e as InputEvent)) {
+          sync()
+          detect()
+        }
+      } catch (err) {
+        console.error('typed markdown rule failed', err)
+        sync()
+      }
+    }
+    el.addEventListener('beforeinput', onBefore)
+    return () => el.removeEventListener('beforeinput', onBefore)
+  })
 
   const latest = useRef(value)
   latest.current = value
@@ -145,18 +268,30 @@ export function RichTextInput({
   const pick = (u: UserRef) => {
     if (!mention) return
     const { node, start, end } = mention
-    const insert = `@${u.username} `
-    node.data = node.data.slice(0, start) + insert + node.data.slice(end)
-    const caret = start + insert.length
+    // The text may have been replaced since the menu opened (a draft
+    // refresh): a range into a detached node no longer means the trigger.
+    if (!editor.current || !liveMention(editor.current, mention)) {
+      setMention(null)
+      return
+    }
+    editor.current.focus()
     const range = document.createRange()
-    range.setStart(node, caret)
-    range.collapse(true)
+    range.setStart(node, start)
+    range.setEnd(node, end)
     const sel = window.getSelection()
     sel?.removeAllRanges()
     sel?.addRange(range)
+    // The same piece the editor draws for a mention already in the text, put
+    // in by execCommand so one undo takes it out. A no-break space follows it
+    // for the caret to sit in: typing there is plain text, not part of the
+    // piece, and (unlike a plain space) it is not dropped at a line's end.
+    // None is added when a space already follows, or the text would show two.
+    const html = pieceHtml(`@${u.username}`)
+    const gap = /^[\s\u00a0]/.test(node.textContent?.slice(end) ?? '') ? '' : '&nbsp;'
+    if (html) insertPiece(html + gap)
+    else document.execCommand('insertText', false, `@${u.username} `)
     setMention(null)
     sync()
-    editor.current?.focus()
   }
 
   const block = (selector: string): HTMLElement | null => {
@@ -322,10 +457,7 @@ export function RichTextInput({
 
   return (
     <div
-      className={clsx(
-        'overflow-hidden rounded-lg border border-line bg-panel transition-colors focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20',
-        dragging && 'border-accent ring-2 ring-accent/20',
-      )}
+      className="relative"
       onDragOver={(e) => {
         if (!target || !e.dataTransfer.types.includes('Files')) return
         e.preventDefault()
@@ -344,7 +476,7 @@ export function RichTextInput({
           return
         }
         const el = editor.current
-        const text = e.dataTransfer.getData('text/plain')
+        const text = plainText(e.dataTransfer)
         if (inside || !text || !el || !el.contains(e.target as Node)) return
         e.preventDefault()
         const at = pointRange(e.clientX, e.clientY)
@@ -358,49 +490,109 @@ export function RichTextInput({
         sync()
       }}
     >
-      <div
-        role="toolbar"
-        aria-label="Formatting"
-        className="flex flex-wrap items-center gap-0.5 border-b border-line px-1 py-1"
-      >
-        {tool('Bold', <Bold className="size-3.5" />, () => run('bold'))}
-        {tool('Italic', <Italic className="size-3.5" />, () => run('italic'))}
-        {tool('Strikethrough', <Strikethrough className="size-3.5" />, () => wrap('s'))}
-        {tool('Inline code', <Code className="size-3.5" />, () => wrap('code'))}
-        <span className="mx-1 h-4 w-px bg-line" />
-        {tool('Heading 1', <Heading1 className="size-3.5" />, () => heading(1))}
-        {tool('Heading 2', <Heading2 className="size-3.5" />, () => heading(2))}
-        {tool('Heading 3', <Heading3 className="size-3.5" />, () => heading(3))}
-        <span className="mx-1 h-4 w-px bg-line" />
-        {tool('Bulleted list', <List className="size-3.5" />, () => run('insertUnorderedList'))}
-        {tool('Numbered list', <ListOrdered className="size-3.5" />, () =>
-          run('insertOrderedList'),
-        )}
-        {tool('Task list', <ListTodo className="size-3.5" />, taskList)}
-        {tool('Quote', <Quote className="size-3.5" />, quote)}
-        {tool('Code block', <SquareCode className="size-3.5" />, codeBlock)}
-        <span className="mx-1 h-4 w-px bg-line" />
-        {tool('Undo', <Undo2 className="size-3.5" />, () => run('undo'))}
-        {tool('Redo', <Redo2 className="size-3.5" />, () => run('redo'))}
-        {onSource && (
-          <span className="ml-auto">
-            {tool('Edit as markdown', <FileCode className="size-3.5" />, onSource)}
-          </span>
-        )}
+      {/* The toolbar takes no room: a zero-height wrapper that sticks under
+          the page's header (3rem) with the toolbar (2.25rem and a gap) above
+          its line, so it floats over what is above the text and follows it
+          down a long description. */}
+      <div className="sticky top-[5.5rem] z-20 h-0">
+        <div className="absolute inset-x-0 bottom-full mb-1 flex h-9 items-center rounded-lg border border-line bg-panel shadow-pop">
+          <div
+            role="toolbar"
+            aria-label="Formatting"
+            ref={bar}
+            onScroll={measureBar}
+            data-fade={
+              fade.left && fade.right
+                ? 'both'
+                : fade.left
+                  ? 'left'
+                  : fade.right
+                    ? 'right'
+                    : undefined
+            }
+            style={fadeStyle(fade)}
+            className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto px-1"
+          >
+            {tool('Bold', <Bold className="size-3.5" />, () => run('bold'))}
+            {tool('Italic', <Italic className="size-3.5" />, () => run('italic'))}
+            {tool('Strikethrough', <Strikethrough className="size-3.5" />, () => wrap('s'))}
+            {tool('Inline code', <Code className="size-3.5" />, () => wrap('code'))}
+            <span className="mx-1 h-4 w-px shrink-0 bg-line" />
+            {tool('Heading 1', <Heading1 className="size-3.5" />, () => heading(1))}
+            {tool('Heading 2', <Heading2 className="size-3.5" />, () => heading(2))}
+            {tool('Heading 3', <Heading3 className="size-3.5" />, () => heading(3))}
+            <span className="mx-1 h-4 w-px shrink-0 bg-line" />
+            {tool('Bulleted list', <List className="size-3.5" />, () => run('insertUnorderedList'))}
+            {tool('Numbered list', <ListOrdered className="size-3.5" />, () =>
+              run('insertOrderedList'),
+            )}
+            {tool('Task list', <ListTodo className="size-3.5" />, taskList)}
+            {tool('Quote', <Quote className="size-3.5" />, quote)}
+            {tool('Code block', <SquareCode className="size-3.5" />, codeBlock)}
+            <span className="mx-1 h-4 w-px shrink-0 bg-line" />
+            {tool('Undo', <Undo2 className="size-3.5" />, () => run('undo'))}
+            {tool('Redo', <Redo2 className="size-3.5" />, () => run('redo'))}
+            {onSource && (
+              <>
+                <span className="mx-1 h-4 w-px shrink-0 bg-line" />
+                {tool('Edit as markdown', <FileCode className="size-3.5" />, onSource)}
+              </>
+            )}
+          </div>
+          {trailing && (
+            <div className="flex shrink-0 items-center gap-2 border-l border-line px-2">
+              {trailing}
+            </div>
+          )}
+        </div>
       </div>
       <div
         ref={editor}
         role="textbox"
         aria-multiline="true"
         aria-label={ariaLabel}
-        data-placeholder={placeholder}
         contentEditable
         suppressContentEditableWarning
+        dangerouslySetInnerHTML={{ __html: initial.current }}
         spellCheck
-        className="rich-editor prose-wp min-h-24 px-3 py-2 text-sm leading-relaxed focus:outline-none"
-        onInput={() => {
+        style={{ '--rich-placeholder': JSON.stringify(placeholder ?? '') } as React.CSSProperties}
+        // The same box as the rendered text it replaces (Description.tsx), at
+        // the size of its content, so opening it moves nothing; focus and
+        // dragging show as a ring, which takes no room.
+        className={clsx(
+          'rich-editor outline-none transition-shadow focus:ring-2 focus:ring-accent/25',
+          DESCRIPTION_BOX,
+          dragging && 'ring-2 ring-accent/40',
+        )}
+        onInput={(e) => {
+          const el = editor.current
+          // A rule that fails must not cost the person what they typed.
+          if (el) {
+            try {
+              inputRules(el, e.nativeEvent as InputEvent)
+            } catch (err) {
+              console.error('typed markdown rule failed', err)
+            }
+          }
           sync()
           detect()
+        }}
+        onCompositionStart={() => {
+          composing.current = true
+        }}
+        onCompositionEnd={(e) => {
+          composing.current = false
+          const el = editor.current
+          if (!el) return
+          try {
+            if (composedRules(el, e.data)) {
+              sync()
+              detect()
+            }
+          } catch (err) {
+            console.error('typed markdown rule failed', err)
+            sync()
+          }
         }}
         onClick={(e) => {
           const t = e.target as HTMLElement
@@ -408,12 +600,37 @@ export function RichTextInput({
             window.setTimeout(sync, 0)
             return
           }
+          // A wikilink piece is a link, and must not take the person away
+          // from their text: the click puts the caret on its nearer side.
+          const piece = t.closest?.('[data-md]')
+          if (piece && editor.current?.contains(piece)) {
+            e.preventDefault()
+            const r = piece.getBoundingClientRect()
+            const range = document.createRange()
+            if (e.clientX < r.left + r.width / 2) range.setStartBefore(piece)
+            else range.setStartAfter(piece)
+            range.collapse(true)
+            const sel = window.getSelection()
+            sel?.removeAllRanges()
+            sel?.addRange(range)
+          }
           detect()
         }}
         onKeyUp={(e) => {
-          if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) detect()
+          keyed.current = false
+          // Arrows in a composition move among its candidates.
+          if (e.nativeEvent.isComposing || e.keyCode === 229) return
+          if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
+            if (editor.current) leavePiece(editor.current)
+            detect()
+          }
         }}
         onKeyDown={(e) => {
+          if (e.nativeEvent.isComposing || e.keyCode === 229) {
+            keyed.current = false
+            return
+          }
+          keyed.current = e.key === 'Enter' || e.key === 'Backspace'
           if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'u') {
             e.preventDefault()
             return
@@ -437,6 +654,20 @@ export function RichTextInput({
               return
             }
           }
+          const el = editor.current
+          let handled = false
+          try {
+            handled = !!el && keyRules(el, e.nativeEvent)
+          } catch (err) {
+            console.error('key rule failed', err)
+            sync()
+            detect()
+          }
+          if (handled) {
+            sync()
+            detect()
+            return
+          }
           onKeyDown?.(e)
         }}
         onBlur={() => setTimeout(() => setMention(null), 150)}
@@ -447,7 +678,7 @@ export function RichTextInput({
             upload(files)
             return
           }
-          const text = e.clipboardData.getData('text/plain')
+          const text = plainText(e.clipboardData)
           if (text) {
             e.preventDefault()
             document.execCommand('insertText', false, text)
@@ -468,6 +699,11 @@ export function RichTextInput({
     </div>
   )
 }
+
+// The text pasted or dropped in. A U+FEFF in it would be taken for a parked
+// caret and dropped on save; the word joiner is the character Unicode has in
+// its place.
+const plainText = (data: DataTransfer) => data.getData('text/plain').replaceAll(PARK, '\u2060')
 
 function empty(el: HTMLElement) {
   return !el.textContent?.trim() && !el.querySelector('img,video,hr,input,pre,table')
@@ -530,14 +766,93 @@ function placeCaretAt(el: HTMLElement, n: number) {
   placeCaretAtEnd(el)
 }
 
+// Elements the caret goes into to reach the end of the text; the code of a
+// block of code is one too. Any other element (a link, code, emphasis) is
+// stepped over, since text typed at its end would extend it.
+const CONTAINERS = new Set([
+  'P',
+  'DIV',
+  'LI',
+  'UL',
+  'OL',
+  'BLOCKQUOTE',
+  'PRE',
+  'H1',
+  'H2',
+  'H3',
+  'H4',
+  'H5',
+  'H6',
+  'TR',
+  'TBODY',
+  'THEAD',
+  'TD',
+  'TH',
+])
+
+// Containers of blocks: a whitespace-only text node among their children is
+// the markup's line breaks, not text, and no caret goes in it.
+const OF_BLOCKS = new Set(['UL', 'OL', 'BLOCKQUOTE', 'TR', 'TBODY', 'THEAD'])
+
+function lastChildOf(n: Node): ChildNode | null {
+  let last = n.lastChild
+  while (
+    last &&
+    last.nodeType === Node.TEXT_NODE &&
+    !(last as Text).data.trim() &&
+    (n.nodeName === 'DIV' || OF_BLOCKS.has(n.nodeName)) &&
+    last.previousSibling
+  )
+    last = last.previousSibling
+  return last
+}
+
 function placeCaretAtEnd(el: HTMLElement) {
+  // Inside the last block, where typing goes: a caret between blocks leaves
+  // the typing rules unable to tell what is being typed in.
+  let n: Node = el
+  for (let last = lastChildOf(n); last && !VOID.has(last.nodeName); last = lastChildOf(n)) {
+    const into =
+      last.nodeType === Node.TEXT_NODE ||
+      CONTAINERS.has(last.nodeName) ||
+      (last.nodeName === 'CODE' && n.nodeName === 'PRE')
+    if (!into) break
+    n = last
+  }
   const range = document.createRange()
-  range.selectNodeContents(el)
-  range.collapse(false)
+  const last = lastChildOf(n)
+  if (n.nodeType === Node.TEXT_NODE) range.setStart(n, (n as Text).data.length)
+  else if (
+    last &&
+    last.nodeType === Node.ELEMENT_NODE &&
+    last.nodeName !== 'BR' &&
+    !VOID.has(last.nodeName)
+  ) {
+    // After an inline element: the caret needs a text node of its own there,
+    // as it does after a typed conversion. htmlToMarkdown drops it.
+    const park = document.createTextNode(PARK)
+    n.appendChild(park)
+    range.setStart(park, 1)
+  } else
+    range.setStart(
+      n,
+      n.lastChild?.nodeName === 'BR' ? n.childNodes.length - 1 : n.childNodes.length,
+    )
+  range.collapse(true)
   const sel = window.getSelection()
   sel?.removeAllRanges()
   sel?.addRange(range)
 }
+
+// A gradient over the toolbar row's edge that has more buttons beyond it.
+function fadeStyle({ left, right }: { left: boolean; right: boolean }): React.CSSProperties {
+  if (!left && !right) return {}
+  const edge = '1.5rem'
+  const mask = `linear-gradient(to right, ${left ? 'transparent' : '#000'} 0, #000 ${left ? edge : '0px'}, #000 calc(100% - ${right ? edge : '0px'}), ${right ? 'transparent' : '#000'} 100%)`
+  return { maskImage: mask, WebkitMaskImage: mask }
+}
+
+const VOID = new Set(['BR', 'HR', 'IMG', 'INPUT', 'VIDEO', 'TABLE'])
 
 function MentionMenu({
   anchor,
@@ -556,6 +871,8 @@ function MentionMenu({
 }) {
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
   useLayoutEffect(() => {
+    // A stale range would throw, or measure nothing; the menu stays where it was.
+    if (!liveMention(anchor, mention)) return
     const range = document.createRange()
     range.setStart(mention.node, mention.start)
     range.setEnd(mention.node, mention.end)

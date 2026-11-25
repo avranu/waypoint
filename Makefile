@@ -8,7 +8,7 @@ GOVULNCHECK_VERSION ?= v1.9.0
 ACTIONLINT_VERSION ?= v1.7.12
 KUBECONFORM_VERSION ?= v0.8.0
 
-.PHONY: e2e all build web server cli cross-check test lint golint wplint wplint-code sast vuln check prepush prepush-go prepush-ops prepush-web tools ci-image ops-lint dev docker deploy deploy-remote rollback-remote deploy-status restart-remote need-deploy-host release-dry-run clean help
+.PHONY: e2e e2e-webkit all build web server cli cross-check test lint golint wplint wplint-code sast vuln check prepush prepush-go prepush-ops prepush-web tools ci-image ops-lint dev docker deploy deploy-remote rollback-remote deploy-status restart-remote need-deploy-host release-dry-run clean help
 
 all: build
 
@@ -75,7 +75,7 @@ prepush: prepush-go prepush-ops prepush-web ## CI's lint job, as the pre-push ho
 prepush-go: cross-check
 	go vet $(GOPKGS)
 	test -z "$$(gofmt -l cmd internal)"
-	$(GOTOOLS) golangci-lint run $(GOPKGS)
+	$(GOTOOLS) $(SLOT) golangci-lint run $(GOPKGS)
 	go run ./cmd/wplint ./cmd/... ./internal/...
 	go run ./cmd/wplint repo -base origin/main
 
@@ -95,10 +95,18 @@ vuln: ## govulncheck: fails only for called vulnerabilities this tree adds over 
 	$(GOTOOLS) deploy/advisories.sh check go pr
 
 check: ## the full local gate (backend); web: cd web && npm run typecheck && npm run format:check && npm run audit && npm run build (lint dormant, see README)
-	@$(MAKE) --no-print-directory -k lint sast vuln test || { echo 'make check: a step above failed; every step ran' >&2; exit 1; }
+	@failed=; passed=; for s in lint sast vuln test; do \
+	  if $(MAKE) --no-print-directory -k $$s; then passed="$$passed $$s"; else failed="$$failed $$s"; fi; \
+	done; \
+	passed=$$(echo $$passed | sed 's/ /, /g'); failed=$$(echo $$failed | sed 's/ /, /g'); \
+	if [ -n "$$failed" ]; then echo "make check: failed: $$failed; passed: $${passed:-none}" >&2; exit 1; fi; \
+	echo "make check: passed: $$passed" >&2
 
 e2e: build ## browser checks (Playwright) against a throwaway server, all four looks; ARGS="05 07" picks suites, E2E_LOOKS=one does one look each
 	cd e2e && $(SLOT) ./run.sh $(ARGS)
+
+e2e-webkit: build ## the rich editor suites under WebKit in Docker (e2e/webkit.sh); ARGS="83 84 85", default 85
+	cd e2e && $(SLOT) ./webkit.sh $(ARGS)
 
 dev: ## API on :8080 + Vite on :5173 with live reload
 	@echo "API on :8080, app on http://localhost:5173"

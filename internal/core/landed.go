@@ -28,7 +28,7 @@ func (s *Service) onBaseMoved(ctx context.Context, f *Forge, repo, branch string
 		f.ID, repo, branch).Scan(&n); err != nil || n == 0 {
 		return
 	}
-	bg := context.WithoutCancel(ctx)
+	bg := withoutLineLocks(context.WithoutCancel(ctx))
 	s.goBG(func() {
 		s.checkLanded(bg, f, repo, branch)
 		s.lineChanged(bg, lineRef{forge: f.ID, repo: repo, base: branch})
@@ -172,9 +172,11 @@ func (s *Service) landPR(ctx context.Context, f *Forge, pr *PullRequest) (bool, 
 		return false, err
 	}
 	if landed == nil {
-		if _, err := prc.PostPRComment(ctx, f, pr.Repo, pr.Number, text); err != nil {
+		c, err := prc.PostPRComment(ctx, f, pr.Repo, pr.Number, text)
+		if err != nil {
 			return false, fmt.Errorf("comment: %w", err)
 		}
+		s.noteOwnComment(ctx, pr.ID, c, 0, "", "")
 		s.setLanded(ctx, pr.ID, fmt.Sprintf("landed_at = %d", now))
 	}
 	how := "marked it merged"

@@ -3,7 +3,7 @@
 // (raw HTML, comments) opens as markdown; lists, code fences and emphasis
 // are written in a form that renders back the same.
 // Run after 01-signup-flow (user robin).
-import { chromium } from "playwright";
+import { launchEngine } from "./engine.mjs";
 import fs from "node:fs";
 import { looks } from "./looks.mjs";
 const [base, out] = process.argv.slice(2);
@@ -12,7 +12,7 @@ const errors = [];
 const fail = (m) => (console.log("FAIL", m), errors.push(m));
 const ok = (c, m) => (c ? console.log("ok  ", m) : fail(m));
 const H = { "X-Waypoint-Client": "web" };
-const browser = await chromium.launch();
+const browser = await launchEngine();
 
 async function login(ctx) {
   const page = await ctx.newPage();
@@ -47,6 +47,9 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
   });
   const page = await login(ctx);
   page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
+  // The description is on the Details tab, which a fresh browser may not show.
+  const details = () =>
+    page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
   const make = async (title, description) =>
     (
       await page.request.post(base + "/api/v1/issues", {
@@ -78,6 +81,7 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
   const open = async (title, description) => {
     const issue = await make(title, description);
     await page.goto(`${base}/issue/${issue.key}`);
+    await details();
     if (description === undefined) {
       const add = page.getByRole("button", { name: "Add a description…" });
       await add.waitFor().catch(async (e) => {
@@ -93,33 +97,37 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     await field.waitFor();
     return issue;
   };
-  const typeInto = async (title, typed, want) => {
+  const insertInto = async (title, text, want) => {
     const issue = await open(title);
     await richBox.waitFor();
-    await field.pressSequentially(typed);
+    // Inserted in one piece, which the typing rules (WP-1749) leave alone: this
+    // suite is about how literal text is written, not about what typing a
+    // marker does (suite 85).
+    await field.focus();
+    await page.keyboard.insertText(text);
     const got = await saved(issue.key, want);
-    ok(got === want, `${tag} typed ${JSON.stringify(typed)} saves ${JSON.stringify(want)}: ${JSON.stringify(got)}`);
+    ok(got === want, `${tag} inserting ${JSON.stringify(text)} saves ${JSON.stringify(want)}: ${JSON.stringify(got)}`);
     await settleClose();
   };
 
-  await typeInto("Esc star", "*emph* and a*b", "\\*emph\\* and a\\*b");
-  await typeInto("Esc tick", "a `code` b", "a \\`code\\` b");
-  await typeInto("Esc under", "snake_case and _x_", "snake_case and \\_x\\_");
-  await typeInto("Esc tilde", "~/bin and ~x~", "~/bin and \\~x\\~");
-  await typeInto("Esc tag", "<div> and 1 < 2", "\\<div> and 1 < 2");
-  await typeInto("Esc link", "[x](y) and [a][b]", "[x\\](y) and [a\\][b]");
-  await typeInto("Esc image", "![a](b)", "![a\\](b)");
-  await typeInto("Esc entity", "&amp; and R&D and &#65;", "\\&amp; and R&D and \\&#65;");
-  await typeInto("Esc wiki", "see [[Some Page]] and [[A|b]]", "see [[Some Page]] and [[A|b]]");
-  await typeInto("Esc heading", "# h", "\\# h");
-  await typeInto("Esc heading root", "# not a heading", "\\# not a heading");
-  await typeInto("Esc number", "1. n", "1\\. n");
-  await typeInto("Esc number paren", "2) n", "2\\) n");
-  await typeInto("Esc quote", "> q", "\\> q");
-  await typeInto("Esc dash", "- d", "\\- d");
-  await typeInto("Esc bullet star", "* d", "\\* d");
-  await typeInto("Esc spaced star", "2 * 3 * 4", "2 * 3 * 4");
-  await typeInto("Esc line star", "a" + "\n".repeat(0) + " * b", "a * b");
+  await insertInto("Esc star", "*emph* and a*b", "\\*emph\\* and a\\*b");
+  await insertInto("Esc tick", "a `code` b", "a \\`code\\` b");
+  await insertInto("Esc under", "snake_case and _x_", "snake_case and \\_x\\_");
+  await insertInto("Esc tilde", "~/bin and ~x~", "~/bin and \\~x\\~");
+  await insertInto("Esc tag", "<div> and 1 < 2", "\\<div> and 1 < 2");
+  await insertInto("Esc link", "[x](y) and [a][b]", "[x\\](y) and [a\\][b]");
+  await insertInto("Esc image", "![a](b)", "![a\\](b)");
+  await insertInto("Esc entity", "&amp; and R&D and &#65;", "\\&amp; and R&D and \\&#65;");
+  await insertInto("Esc wiki", "see [[Some Page]] and [[A|b]]", "see [[Some Page]] and [[A|b]]");
+  await insertInto("Esc heading", "# h", "\\# h");
+  await insertInto("Esc heading root", "# not a heading", "\\# not a heading");
+  await insertInto("Esc number", "1. n", "1\\. n");
+  await insertInto("Esc number paren", "2) n", "2\\) n");
+  await insertInto("Esc quote", "> q", "\\> q");
+  await insertInto("Esc dash", "- d", "\\- d");
+  await insertInto("Esc bullet star", "* d", "\\* d");
+  await insertInto("Esc spaced star", "2 * 3 * 4", "2 * 3 * 4");
+  await insertInto("Esc line star", "a" + "\n".repeat(0) + " * b", "a * b");
 
   const writes = async (title, html, want) => {
     const issue = await open(title);
@@ -186,10 +194,10 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     await richBox.waitFor();
     await field.press("Control+End");
     await field.press("Enter");
-    await field.pressSequentially("[ ] foo");
+    await page.keyboard.insertText("[ ] foo");
     const want = "- first\n- \\[ ] foo";
     const got = await saved(i.key, want);
-    ok(got === want, `${tag} a typed [ ] in a bullet is escaped: ${JSON.stringify(got)}`);
+    ok(got === want, `${tag} an inserted [ ] in a bullet is escaped: ${JSON.stringify(got)}`);
     await settleClose();
   }
 

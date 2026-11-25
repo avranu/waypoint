@@ -69,7 +69,7 @@ func (s *Service) onPRAudit(ctx context.Context, e *Event) {
 				s.requestPRAudit(context.WithoutCancel(ctx), prID)
 			}
 		}
-		s.goBG(func() { s.maybeAutoMerge(context.WithoutCancel(ctx), prID) })
+		s.goBG(func() { s.maybeAutoMerge(withoutLineLocks(context.WithoutCancel(ctx)), prID) })
 	}
 }
 

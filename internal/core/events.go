@@ -313,13 +313,13 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 			s.dropUserTranscripts(e)
 		}
 		if e.Kind == EvKitSourceSet {
-			s.goBG(func() { s.RefreshKit(ctx) })
+			s.goBG(func() { s.RefreshKit(withoutLineLocks(ctx)) })
 		}
 		if e.Kind == EvReviewLoopRecorded {
-			s.goBG(func() { s.checkReviewHealth(ctx, e.ProjectID) })
+			s.goBG(func() { s.checkReviewHealth(withoutLineLocks(ctx), e.ProjectID) })
 		}
 		if e.pullLinked != nil {
-			s.goBG(func() { s.urgentFromLink(ctx, e) })
+			s.goBG(func() { s.urgentFromLink(withoutLineLocks(ctx), e) })
 		}
 		if j := e.permRule; j != nil {
 			s.addPermissionRule(ctx, actor, j)
@@ -337,7 +337,7 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 			s.autoRelate(ctx, e)
 		}
 		if e.Kind == EvExternalPRMerged {
-			s.goBG(func() { s.followUpsByFiles(ctx, e) })
+			s.goBG(func() { s.followUpsByFiles(withoutLineLocks(ctx), e) })
 		}
 		s.autoScreen(e)
 		s.deliverWebhooks(ctx, e)
@@ -351,7 +351,7 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 			s.pushCommentChange(ctx, e)
 		}
 		if j := e.repoHook; j != nil {
-			s.goBG(func() { s.runRepoHook(ctx, j) })
+			s.goBG(func() { s.runRepoHook(withoutLineLocks(ctx), j) })
 		}
 		s.onPRAudit(ctx, e)
 		s.onBabysitEvent(ctx, e)

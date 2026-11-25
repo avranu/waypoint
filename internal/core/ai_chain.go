@@ -48,6 +48,10 @@ type ModelAttempt struct {
 	// minimum model it held the request to, and what it chose (WP-1440).
 	// Next to RequestID, it lets a weaker model's answer be reported.
 	Bar string `json:"bar,omitempty"`
+	// providerID is the provider the attempt asked; not part of the log.
+	providerID int64
+	// status is the HTTP status the attempt got, 0 when none; not part of the log.
+	status int
 }
 
 // usageSink collects the HTTP requests one chain call took (a client retries some: a 429 with Retry-After, a schema
@@ -359,7 +363,7 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 		asked := append([]string{model}, fallbacks...)
 		names := strings.Join(asked, ",")
 		if p.ID == gwID {
-			if w := s.askParked(p.ID, names, priorityOf(ctx)); w != nil {
+			if w := s.askParked(p.ID, names, priorityOf(ctx)); w != nil && (!isReask(ctx) || priorityOf(ctx) == prioritySurplus) {
 				attempts = append(attempts, unresolved...)
 				attempts = append(attempts, ModelAttempt{Model: model, Outcome: "rate_limit", Error: w.Error()})
 				last, spent = w, w
@@ -396,9 +400,9 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 		if served != "" {
 			model = served
 		}
-		a := ModelAttempt{Model: model, Outcome: "ok", MS: time.Since(start).Milliseconds(), RequestID: requestID, Bar: usage.barSeen()}
+		a := ModelAttempt{Model: model, Outcome: "ok", MS: time.Since(start).Milliseconds(), RequestID: requestID, Bar: usage.barSeen(), providerID: p.ID, status: int(usage.status.Load())}
 		call := aiCall{task: aiTaskOf(ctx), pid: p.ID, model: model, fallbacks: len(fallbacks), paid: cm.Paid, outcome: "ok", err: err,
-			ms: a.MS, sent: usage.sent.Load(), status: int(usage.status.Load()), bar: a.Bar}
+			ms: a.MS, sent: usage.sent.Load(), status: a.status, bar: a.Bar}
 		if err != nil {
 			if ctx.Err() != nil {
 				call.outcome = "cancelled"
@@ -406,6 +410,9 @@ func (s *Service) runChainAt(ctx context.Context, chain []ChainModel, system, pr
 				return none, i, append(attempts, ModelAttempt{Model: model, Outcome: "cancelled", MS: a.MS}), ctx.Err()
 			}
 			a.Outcome, a.Error = classifyModelError(err), aiPublicError(err)
+			if le := new(llmError); a.status == 0 && errors.As(err, &le) {
+				a.status = le.status // as recordAICall reads it when the transport saw none
+			}
 			refused := surplus && surplusRefusal(err)
 			if refused {
 				a.Outcome = "refused"

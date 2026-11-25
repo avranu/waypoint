@@ -49,9 +49,10 @@ forge_token() {
 mgit() {
   local token
   token=$(forge_token) || exit 1
+  # 8>&-: a detached `git gc --auto` would otherwise keep the run lock held.
   GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader \
     GIT_CONFIG_VALUE_0="Authorization: token $token" GIT_TERMINAL_PROMPT=0 \
-    git --git-dir="$MIRROR" "$@"
+    git --git-dir="$MIRROR" "$@" 8>&-
 }
 
 fetch() {
@@ -163,7 +164,7 @@ deploy() {
   printf '%s %s\n' "$SHA" "$(date -u +%FT%TZ)" >"$TRIED/$TAG"
   say "deploying $TAG ($SHA)"
   record started
-  mgit archive --format=tar "$SHA" | env -u SSH_ORIGINAL_COMMAND "$DEPLOY" deploy "$TAG" || rc=$?
+  mgit archive --format=tar "$SHA" | env -u SSH_ORIGINAL_COMMAND "$DEPLOY" deploy "$TAG" 8>&- || rc=$?
   case $rc in
   0)
     say "deployed $TAG"

@@ -35,14 +35,16 @@ type crossRow struct {
 	agent      string
 	declinedAt sql.NullInt64
 	declinedBy string
-	why        string
-	told       string
+	// declinedAgent is the agent that wrote the decline, '' for a person's.
+	declinedAgent string
+	why           string
+	told          string
 }
 
 func (s *Service) crossRowFor(ctx context.Context, q queryer, issueID int64) (*crossRow, error) {
 	var r crossRow
-	err := q.QueryRowContext(ctx, `SELECT issue_id, project_id, repo, session_id, agent, declined_at, declined_by, declined_why, told FROM cross_filed WHERE issue_id = ?`, issueID).
-		Scan(&r.issueID, &r.projectID, &r.repo, &r.sessionID, &r.agent, &r.declinedAt, &r.declinedBy, &r.why, &r.told)
+	err := q.QueryRowContext(ctx, `SELECT issue_id, project_id, repo, session_id, agent, declined_at, declined_by, declined_agent, declined_why, told FROM cross_filed WHERE issue_id = ?`, issueID).
+		Scan(&r.issueID, &r.projectID, &r.repo, &r.sessionID, &r.agent, &r.declinedAt, &r.declinedBy, &r.declinedAgent, &r.why, &r.told)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -219,12 +221,16 @@ func (s *Service) DeclineIssue(ctx context.Context, actor *Actor, ref, agent, wh
 				return err
 			}
 		}
-		by := authorAgent(ctx, t, actor)
+		agentBy := authorAgent(ctx, t, actor)
+		if agentBy == "" {
+			agentBy = id // an agent named in the body or argument
+		}
+		by := agentBy
 		if by == "" && actor.User != nil {
 			by = cmp(actor.User.DisplayName, actor.User.Username)
 		}
-		if _, err := t.ExecContext(ctx, `UPDATE cross_filed SET declined_at = ?, declined_by = ?, declined_why = ? WHERE issue_id = ?`,
-			s.nowMS(), by, why, i.ID); err != nil {
+		if _, err := t.ExecContext(ctx, `UPDATE cross_filed SET declined_at = ?, declined_by = ?, declined_agent = ?, declined_why = ? WHERE issue_id = ?`,
+			s.nowMS(), by, agentBy, why, i.ID); err != nil {
 			return err
 		}
 		canceled := CatCanceled
@@ -240,7 +246,7 @@ func (s *Service) DeclineIssue(ctx context.Context, actor *Actor, ref, agent, wh
 func (s *Service) crossFiledEvent(ctx context.Context, e *Event) {
 	switch e.Kind {
 	case EvIssueReopened:
-		if _, err := s.db.W.ExecContext(ctx, `UPDATE cross_filed SET told = '', declined_at = NULL, declined_by = '', declined_why = '' WHERE issue_id = ?`, e.IssueID); err != nil {
+		if _, err := s.db.W.ExecContext(ctx, `UPDATE cross_filed SET told = '', declined_at = NULL, declined_by = '', declined_agent = '', declined_why = '' WHERE issue_id = ?`, e.IssueID); err != nil {
 			s.log.WarnContext(ctx, "reopen cross-filed task", "issue", e.IssueKey, "err", err)
 		}
 		return
@@ -349,7 +355,7 @@ func (s *Service) tellCrossFiled(ctx context.Context, issueID int64, cat string)
 		note += "."
 		sys := SystemActor()
 		if outcome == "declined" && r.why != "" {
-			sys.textAgent = cmp(r.declinedBy, "declining-agent")
+			sys.textAgent = r.declinedAgent
 		}
 		err := s.write(ctx, sys, func(t *tx) error {
 			for _, id := range blocked {

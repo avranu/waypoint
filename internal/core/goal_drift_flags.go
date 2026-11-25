@@ -768,7 +768,7 @@ func (s *Service) onGoalDriftEvent(ctx context.Context, e *Event) {
 	case DriftAnswerIntent:
 		s.goalsChanged()
 		if prID != 0 {
-			s.goBG(func() { s.maybeAutoMerge(context.WithoutCancel(ctx), prID) })
+			s.goBG(func() { s.maybeAutoMerge(withoutLineLocks(context.WithoutCancel(ctx)), prID) })
 		}
 	case DriftAnswerStop:
 		if prID != 0 {

@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"slices"
 	"strings"
 	"time"
@@ -108,6 +109,7 @@ func (s *Service) autoFileQuestion(ctx context.Context, t *tx, actor *Actor, x *
 		Questions: []Question{{Question: title}},
 	}, at)
 	if IsInvalid(err) {
+		s.log.WarnContext(ctx, "auto question refused", "session", x.ID, "full", errors.Is(err, errRequestsFull), "err", err)
 		return nil
 	}
 	return err

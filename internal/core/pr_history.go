@@ -497,7 +497,7 @@ func (s *Service) refreshPR(ctx context.Context, f *Forge, repo string, fp *Forg
 		codingAgent(fp.Body, fp.Author), codingAgent(fp.Body, fp.Author),
 		nullIntP(fp.Additions), nullIntP(fp.Deletions), nullIntP(fp.ChangedFiles), nullIntP(fp.Commits), headRepoOf(fp, repo), headRepoOf(fp, repo), old.ID)
 	if err == nil && !settled && old.ArmedAt == nil && s.autoArm(ctx, old.ID) {
-		bg := context.WithoutCancel(ctx)
+		bg := withoutLineLocks(context.WithoutCancel(ctx))
 		s.goBG(func() { s.maybeAutoMerge(bg, old.ID) })
 	}
 	if err == nil && !settled && fp.mergeMute && old.Mergeable != nil {
@@ -510,7 +510,7 @@ func (s *Service) refreshPR(ctx context.Context, f *Forge, repo string, fp *Forg
 		return err
 	}
 	if *fp.Mergeable && (old.Mergeable == nil || !*old.Mergeable) && old.ArmedAt != nil {
-		bg := context.WithoutCancel(ctx)
+		bg := withoutLineLocks(context.WithoutCancel(ctx))
 		s.goBG(func() { s.maybeAutoMerge(bg, old.ID) })
 	}
 	if !*fp.Mergeable {

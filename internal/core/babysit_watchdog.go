@@ -317,7 +317,8 @@ func (s *Service) readyCatchUp(ctx context.Context, b *Babysit, pr *PullRequest)
 	if pr.ArmedAt != nil || pr.Outside || pr.State != "open" || (pr.headRepo != "" && !strings.EqualFold(pr.headRepo, pr.Repo)) {
 		return false
 	}
-	defer s.queueLock(pr)()
+	ctx, unlock := s.queueLockCtx(ctx, pr)
+	defer unlock()
 	if s.readyUpdatesGoing(ctx, pr) >= readyUpdatesAtOnce {
 		return false
 	}

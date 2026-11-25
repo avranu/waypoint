@@ -298,7 +298,11 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 			} else {
 				var ae *forgeAPIError
 				if errors.As(err, &ae) && (ae.status == 409 || ae.status == 422) && strings.Contains(strings.ToLower(err.Error()), "already exist") {
-					return nil, fmt.Errorf("open the pull request: the forge says one from %s may already exist, but didn't list it: %v", in.Head, err)
+					return nil, fmt.Errorf("open the pull request: %w", &forgeDownError{
+						what: fmt.Sprintf("the forge says one from %s may already exist (%v), but didn't list it", in.Head, err),
+						then: "try again in a minute",
+						err:  errors.New(err.Error()),
+					})
 				}
 				return nil, fmt.Errorf("open the pull request: %w", s.forgeUnanswered(f, time.Since(start), err))
 			}

@@ -438,8 +438,8 @@ func (s *Service) reviewWaitOver(ctx context.Context, pr *PullRequest) bool {
 		return false
 	}
 	since := pr.UpdatedAt
-	if pr.headAt != nil {
-		since = *pr.headAt
+	if t := pr.contentSince(); t != nil {
+		since = *t
 	}
 	return !s.now().Before(since.Add(time.Duration(pol.ReviewWaitMinutes) * time.Minute))
 }

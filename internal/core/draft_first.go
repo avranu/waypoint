@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -70,7 +71,9 @@ type fullRunTally struct {
 // or the head had no checks to run again.
 func tallyFullRun(pr *PullRequest, checks []PRCheck) (fullRunTally, bool) {
 	var t fullRunTally
-	if !pr.WipAuto || pr.State != "open" || pr.ReadyAt == nil || !sameSHA(pr.readySHA, pr.HeadSHA) {
+	// A person's pull request is held too once marked at this head: made
+	// ready by their own edit (markReadyByEdit).
+	if pr.State != "open" || pr.ReadyAt == nil || !sameSHA(pr.readySHA, pr.HeadSHA) {
 		return t, false
 	}
 	if pr.readyStatusID == 0 && len(pr.readyChecks) == 0 {
@@ -128,7 +131,7 @@ func fullRunReasons(pr *PullRequest, checks []PRCheck) []string {
 // every check the edit reruns has passed since then, going by checks (the
 // head's statuses).
 func fullRunPassed(pr *PullRequest, checks []CommitCheck, now time.Time) bool {
-	if pr.readyStatusID == 0 || !sameSHA(pr.readySHA, pr.HeadSHA) {
+	if pr.readyStatusID <= 0 || !sameSHA(pr.readySHA, pr.HeadSHA) {
 		return false
 	}
 	was := *pr
@@ -353,7 +356,7 @@ func (s *Service) fullRunOutstanding(ctx context.Context, f *Forge, repo, sha st
 }
 
 func (s *Service) fullRunOutstandingErr(ctx context.Context, f *Forge, repo, sha string, checks []CommitCheck) (bool, error) {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT id FROM pull_requests WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND head_sha = ? AND state = 'open' AND wip_auto = 1 AND ready_at IS NOT NULL`, f.ID, repo, sha)
+	rows, err := s.db.R.QueryContext(ctx, `SELECT id FROM pull_requests WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND head_sha = ? AND state = 'open' AND ready_at IS NOT NULL AND ready_sha = head_sha`, f.ID, repo, sha)
 	if err != nil {
 		return false, err
 	}
@@ -486,4 +489,59 @@ func fullRunSkipped(ctx context.Context, cl ForgeActionLogs, f *Forge, repo, sha
 		})
 	}
 	return out, nil
+}
+
+// unknownReadyStatus is ready_status_id for a pull request made ready by an
+// edit before any of its head's status ids were stored: below every id.
+const unknownReadyStatus = -1
+
+// markReadyByEdit marks pr, made ready at its head by someone's title edit,
+// as markReady marks it: the newest status id of the head's checks and the
+// checks the edit runs again, so its full run is told from the draft run's
+// statuses (WP-1808). ci_state goes back to pending until they are read.
+func (s *Service) markReadyByEdit(ctx context.Context, t *tx, pr *PullRequest, now int64) error {
+	rows, err := t.QueryContext(ctx, `SELECT c.name, c.status_id FROM ci_checks c JOIN ci_heads h ON h.id = c.head_id
+		WHERE h.forge_id = ? AND h.repo = ? COLLATE NOCASE AND h.sha = ? ORDER BY c.name`, pr.ForgeID, pr.Repo, pr.HeadSHA)
+	if err != nil {
+		return err
+	}
+	names := []string{}
+	var maxID int64
+	for rows.Next() {
+		var name string
+		var id sql.NullInt64
+		if err := rows.Scan(&name, &id); err != nil {
+			rows.Close()
+			return err
+		}
+		if ownCheck(name) || !rerunByEdit(name) {
+			continue
+		}
+		names = append(names, name)
+		maxID = max(maxID, id.Int64)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if maxID == 0 {
+		// Nothing stored yet to tell the draft run's statuses from the
+		// edit's (or no ids): every status then counts as the edit's, so its
+		// skips alone don't clear the hold and only a run with a job that
+		// really ran does (audit #1748.2). Unmarked, the draft run's skipped
+		// successes, a merge-only push's among them, would merge it.
+		maxID = unknownReadyStatus
+	}
+	nm, _ := json.Marshal(names)
+	if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET ready_at = ?, ready_sha = ?, ready_status_id = ?, ready_checks = ?, ready_skipped = '[]', ready_cand = 0,
+			ci_state = 'pending', ci_announced_sha = '' WHERE id = ?`, now, pr.HeadSHA, maxID, string(nm), pr.ID); err != nil {
+		return err
+	}
+	// Follow the head's statuses again: the full run is about to start.
+	if _, err := t.ExecContext(ctx, `UPDATE ci_heads SET state = 'pending', settled_at = NULL, seen_at = ?, checked_at = 0 WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND sha = ?`,
+		now, pr.ForgeID, pr.Repo, pr.HeadSHA); err != nil {
+		return err
+	}
+	at := time.UnixMilli(now)
+	pr.ReadyAt, pr.readySHA, pr.readyStatusID, pr.readyChecks, pr.readySkipped, pr.CIState = &at, pr.HeadSHA, maxID, names, nil, CIPending
+	return nil
 }

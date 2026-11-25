@@ -93,10 +93,14 @@ const lineMemberWhere = `p.forge_id = ? AND p.repo = ? COLLATE NOCASE AND p.base
 
 // lineHolds: the pull request still holds its place in the line, read now. A
 // step reads the line once and acts on that for as long as its calls to the
-// forge take; a babysit that took the pull request out meanwhile (a round's
-// change waits for a person, its checks failed on the runner) doesn't take
-// the line's lock, so what the line does for a member alone is asked here
-// first. A read that fails is "no": the next step asks again.
+// forge take. A babysit that takes the pull request out (a round's change
+// waits for a person, its checks failed on the runner) goes through
+// leaveQueue, which waits for the line's lock the step holds, so it can't
+// take it out between this read and the step's forge calls (WP-1706). This
+// read stays for what doesn't take the lock (the disarm and end paths write
+// queued_at in their own transactions) and for a pull request whose babysit
+// changed state since the step read the line. A read that fails is "no": the
+// next step asks again.
 func (s *Service) lineHolds(ctx context.Context, ref lineRef, prID int64) bool {
 	var n int
 	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM pull_requests p WHERE p.id = ? AND `+lineMemberWhere,
@@ -331,7 +335,7 @@ func (s *Service) lineLeft(ctx context.Context, p *PullRequest) string {
 // lineDrop takes p out of the line: it has work or waiting to do first, and
 // joins again when it is settled.
 func (s *Service) lineDrop(ctx context.Context, ref lineRef, p *PullRequest, why string) {
-	s.leaveQueue(ctx, p.ID)
+	s.leaveQueue(ctx, p)
 	p.QueuedAt = nil
 	s.log.InfoContext(ctx, "pull request left the line", "repo", ref.repo, "base", ref.base, "pr", p.Number, "head", short(p.HeadSHA), "why", excerpt(why, 120))
 	s.nudgeBabysit(p.ID, false)
@@ -856,7 +860,7 @@ func (s *Service) candRefused(ctx context.Context, pr *PullRequest, st *queueSta
 // lineStep reads the line, does what planLine says, and says where each
 // pull request stands.
 func (s *Service) lineStep(ctx context.Context, ref lineRef) {
-	unlock := s.queueLock(ref.stub())
+	ctx, unlock := s.queueLockCtx(ctx, ref.stub())
 	defer unlock()
 	ls, err := s.lineGather(ctx, ref)
 	if err != nil {

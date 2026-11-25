@@ -715,6 +715,7 @@ type reviewOutcome struct {
 	guardCut         int
 	salvagedAnswers  int
 	salvagedFindings int
+	unsaved          bool
 	belowMin         int
 	minSev           string
 	private          globSet

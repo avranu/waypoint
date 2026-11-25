@@ -160,6 +160,22 @@ func TestCrossFiledNewsReachesWhoNamedIt(t *testing.T) {
 }
 
 func TestCrossFiledDeclineReachesWhatItBlocks(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		byAgent   bool
+		wantAgent string
+		wantUnrev bool
+	}{
+		{"agent declines", true, "anthropic/claude-opus-5-5", true},
+		{"person declines", false, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			crossFiledDeclineReaches(t, tc.byAgent, tc.wantAgent, tc.wantUnrev)
+		})
+	}
+}
+
+func crossFiledDeclineReaches(t *testing.T, byAgent bool, wantAgent string, wantUnrev bool) {
 	ce := newCrossEnv(t)
 	inA := ce.session("cli-a", "me/a")
 	filed := ce.issue(inA, IssueInput{Project: ce.b.Key, Title: "Add an export API"})
@@ -171,8 +187,11 @@ func TestCrossFiledDeclineReachesWhatItBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	ce.s.Wait()
-	inB := ce.session("cli-b", "me/b")
-	if _, err := ce.s.DeclineIssue(ce.ctx, inB, filed.Key, "", "B won't expose that"); err != nil {
+	decliner := ce.admin
+	if byAgent {
+		decliner = ce.session("cli-b", "me/b")
+	}
+	if _, err := ce.s.DeclineIssue(ce.ctx, decliner, filed.Key, "", "B won't expose that"); err != nil {
 		t.Fatal(err)
 	}
 	ce.s.Wait()
@@ -188,6 +207,9 @@ func TestCrossFiledDeclineReachesWhatItBlocks(t *testing.T) {
 	for _, c := range ce.comments(mine.Key) {
 		if strings.Contains(c.Body, filed.Key) && strings.Contains(c.Body, "won't expose") {
 			found = true
+			if c.Agent != wantAgent || c.Unreviewed != wantUnrev {
+				t.Errorf("the note is agent %q unreviewed %v, want %q and %v", c.Agent, c.Unreviewed, wantAgent, wantUnrev)
+			}
 		}
 	}
 	if !found {

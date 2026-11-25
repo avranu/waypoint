@@ -144,10 +144,18 @@ body {
   display: none;
 }
 
-.rich-editor:empty::before {
-  content: attr(data-placeholder);
+.rich-editor[data-empty] > p::before {
+  content: var(--rich-placeholder);
   color: var(--wp-subtle);
   pointer-events: none;
+  /* One line, whatever the hint's length, so the editor is no taller than the
+     "Add a description" button it replaces. */
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: top;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .prose-wp {

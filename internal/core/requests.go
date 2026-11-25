@@ -50,14 +50,24 @@ var decidedStates = []string{RequestAnswered, RequestApproved, RequestDenied, Re
 const (
 	maxRequestBody = 40_000
 	// maxRequestTitle: a longer title is split into a summary and the details.
-	maxRequestTitle   = 200
-	maxRequestFile    = 512 << 10
-	maxRequestFiles   = 50
-	maxRequestTotal   = 1 << 20
-	maxCellOutput     = 256 << 10
-	permissionDedupe  = 10 * time.Minute
-	maxRequestsOpenIn = 200
+	maxRequestTitle     = 200
+	maxRequestFile      = 512 << 10
+	maxRequestFiles     = 50
+	maxRequestTotal     = 1 << 20
+	maxCellOutput       = 256 << 10
+	permissionDedupe    = 10 * time.Minute
+	maxRequestsOpenIn   = 200
+	maxRequestQuestions = 8
 )
+
+// errRequestsFull is what a request refused for the open cap matches (errors.Is),
+// so a caller that must not fail on that can tell it from any other invalid input.
+var errRequestsFull = errors.New("too many open requests")
+
+type requestsFullError struct{ invalid error }
+
+func (e *requestsFullError) Error() string   { return e.invalid.Error() }
+func (e *requestsFullError) Unwrap() []error { return []error{errRequestsFull, e.invalid} }
 
 // Question is one thing asked: free text, or one or several choices.
 type Question struct {
@@ -338,8 +348,8 @@ func requestVisible(actor *Actor, alias string) (string, []any) {
 }
 
 // resolveRequestID finds a request the actor may see from a reference: a
-// number (the id), R-12 (the session's, then the person's own, then the only
-// one), or KEY:R-12 / me:R-12.
+// number (the id), R-12 (the session's, then the only one), or
+// KEY:R-12 / me:R-12.
 func (s *Service) resolveRequestID(ctx context.Context, q queryer, actor *Actor, ref string) (int64, error) {
 	ref = strings.TrimSpace(ref)
 	if actor == nil || actor.User == nil {
@@ -1035,7 +1045,7 @@ func (s *Service) createRequestTx(ctx context.Context, t *tx, actor *Actor, sess
 		return 0, false, err
 	}
 	if open >= maxRequestsOpenIn {
-		return 0, false, invalid("%d requests are already waiting; decide or dismiss some first", open)
+		return 0, false, &requestsFullError{invalid("%d requests are already waiting; decide or dismiss some first", open)}
 	}
 	var number int
 	scope := actor.id()
@@ -1143,8 +1153,8 @@ func checkQuestions(in []Question) ([]Question, error) {
 	if len(in) == 0 {
 		return nil, invalid("a question request needs at least one question")
 	}
-	if len(in) > 8 {
-		return nil, invalid("at most 8 questions in one request")
+	if len(in) > maxRequestQuestions {
+		return nil, invalid("at most %d questions in one request", maxRequestQuestions)
 	}
 	out := make([]Question, 0, len(in))
 	for _, q := range in {

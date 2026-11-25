@@ -82,7 +82,8 @@ func (s *Service) mergeBaseBehindFront(ctx context.Context, f *Forge, id int64) 
 		return
 	}
 	defer s.babysitLocks.lock(id)()
-	defer s.queueLock(pr)()
+	ctx, unlock := s.queueLockCtx(ctx, pr)
+	defer unlock()
 	now := s.mergeBaseCandidate(ctx, id)
 	if now == nil || !sameSHA(now.HeadSHA, pr.HeadSHA) {
 		return

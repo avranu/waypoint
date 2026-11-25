@@ -3,7 +3,7 @@
 // markdown; text it can't keep (raw HTML) opens as markdown with a note; the
 // toggle switches editors and keeps the text.
 // Run after 01-signup-flow (user robin).
-import { chromium } from "playwright";
+import { launchEngine } from "./engine.mjs";
 import fs from "node:fs";
 import { looks } from "./looks.mjs";
 const [base, out] = process.argv.slice(2);
@@ -12,7 +12,7 @@ const errors = [];
 const fail = (m) => (console.log("FAIL", m), errors.push(m));
 const ok = (c, m) => (c ? console.log("ok  ", m) : fail(m));
 const H = { "X-Waypoint-Client": "web" };
-const browser = await chromium.launch();
+const browser = await launchEngine();
 
 async function login(ctx) {
   const page = await ctx.newPage();
@@ -71,6 +71,9 @@ for (const [width, scheme] of looks([
   });
   const page = await login(ctx);
   page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
+  // The description is on the Details tab, which a fresh browser may not show.
+  const details = () =>
+    page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
   const make = async (title, description) =>
     (
       await page.request.post(base + "/api/v1/issues", {
@@ -105,6 +108,7 @@ for (const [width, scheme] of looks([
 
   const a = await make("Mixed", MIXED);
   await page.goto(`${base}/issue/${a.key}`);
+  await details();
   await page.getByText("Intro with snake_case").click();
   await richBox.waitFor();
   ok((await note.count()) === 0, `${tag} mixed markdown opens in the rich editor`);
@@ -116,6 +120,7 @@ for (const [width, scheme] of looks([
 
   const b = await make("Bold", "alpha beta_gamma");
   await page.goto(`${base}/issue/${b.key}`);
+  await details();
   await page.getByText("alpha beta_gamma").click();
   await richBox.waitFor();
   await field.press("Control+End");
@@ -132,6 +137,7 @@ for (const [width, scheme] of looks([
 
   const c = await make("Word", "plain text");
   await page.goto(`${base}/issue/${c.key}`);
+  await details();
   await page.getByText("plain text").click();
   await richBox.waitFor();
   await field.press("Control+End");
@@ -144,6 +150,7 @@ for (const [width, scheme] of looks([
   await settleClose();
   const t = await make("Tasks", "- [ ] first\n- [x] second");
   await page.goto(`${base}/issue/${t.key}`);
+  await details();
   await page.getByText("first").click({ position: { x: 40, y: 5 } });
   await richBox.waitFor();
   await richBox.locator("input[type=checkbox]").first().click();
@@ -153,6 +160,7 @@ for (const [width, scheme] of looks([
 
   const h = await make("Html", HTML);
   await page.goto(`${base}/issue/${h.key}`);
+  await details();
   await page.locator("summary").click();
   await mdBox.waitFor();
   ok((await note.count()) === 1, `${tag} raw HTML opens as markdown with a note`);
@@ -170,6 +178,7 @@ for (const [width, scheme] of looks([
 
   const m = await make("Toggle", "**bold** text");
   await page.goto(`${base}/issue/${m.key}`);
+  await details();
   await page.locator(".prose-wp strong").click();
   await richBox.waitFor();
   await page.getByRole("button", { name: "Edit as markdown" }).click();
@@ -191,6 +200,7 @@ for (const [width, scheme] of looks([
   await settleClose();
   const m2 = await make("Remembered", "plain");
   await page.goto(`${base}/issue/${m2.key}`);
+  await details();
   await page.getByText("plain", { exact: true }).click();
   await mdBox.waitFor();
   ok((await note.count()) === 0, `${tag} the chosen editor is remembered, without a note`);
@@ -201,6 +211,7 @@ for (const [width, scheme] of looks([
   const menu = page.getByRole("listbox", { name: "Mention someone" });
   const openRich = async (key, text) => {
     await page.goto(`${base}/issue/${key}`);
+    await details();
     await page.getByText(text, { exact: true }).click();
     await richBox.waitFor();
     await field.press("Control+End");
@@ -254,9 +265,11 @@ for (const [width, scheme] of looks([
         const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
         const dt = new DataTransfer();
         dt.items.add(new File([bytes], n, { type: "image/png" }));
-        el.dispatchEvent(
-          new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }),
-        );
+        const ev = new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true });
+        // Firefox ignores the init dictionary's clipboardData and gives the event
+        // an empty one, which still takes files; Chromium and WebKit kept ours.
+        if (!ev.clipboardData.files.length) ev.clipboardData.items.add(new File([bytes], n, { type: "image/png" }));
+        el.dispatchEvent(ev);
       },
       [PNG, name],
     );
@@ -372,6 +385,7 @@ for (const [width, scheme] of looks([
     const want = (d) => new RegExp(re.source.replace("TXT", "hi")).test(d ?? "");
     const ei = await make(`Empty ${name}`, undefined);
     await page.goto(`${base}/issue/${ei.key}`);
+    await details();
     await page.getByRole("button", { name: "Add a description…", exact: true }).click();
     await richBox.waitFor();
     await page.getByRole("button", { name, exact: true }).click();
@@ -416,6 +430,7 @@ for (const [width, scheme] of looks([
   await settleClose();
   const e = await make("Empty", undefined);
   await page.goto(`${base}/issue/${e.key}`);
+  await details();
   const emptyBtn = page.getByRole("button", { name: "Add a description…", exact: true });
   await emptyBtn.waitFor();
   ok(
@@ -425,7 +440,8 @@ for (const [width, scheme] of looks([
   );
   await page.getByRole("button", { name: "Add a description…", exact: true }).click();
   await richBox.waitFor();
-  const prompt = await richBox.evaluate((el) => getComputedStyle(el, "::before").content);
+  // An empty editor holds one empty paragraph, and the hint is that paragraph's ::before.
+  const prompt = await richBox.evaluate((el) => getComputedStyle(el.firstElementChild, "::before").content);
   ok(prompt.length > 2, `${tag} an empty editor shows its prompt: ${prompt}`);
   ok(
     !prompt.replace(/^["']/, "").startsWith("Add a description"),

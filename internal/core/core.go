@@ -131,6 +131,7 @@ type Service struct {
 	aiSlots       chan struct{}
 	surplusSlot   chan struct{}
 	aiMu          sync.Mutex
+	cool          coolings
 	aib           aiBudget
 	aiQueued      map[int64]bool
 	relating      int

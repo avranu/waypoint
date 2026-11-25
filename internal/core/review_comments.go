@@ -338,8 +338,15 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 				}
 			}
 		}
+		own := s.ownCommentIDs(ctx, pr.ID)
 		for _, n := range s.screenNotes(ctx, f, pr, notes) {
 			if !isReviewComment(pr, n.Author, n.Body, n.Kind, n.State) {
+				continue
+			}
+			// What Waypoint posted itself, by id; the exact text of its
+			// CodeRabbit request from an account it posts as, for those
+			// posted before the ids were kept (WP-1732).
+			if n.Kind == "comment" && (own[n.ID] || (strings.TrimSpace(n.Body) == askCodeRabbit && ours.ours(n.Author))) {
 				continue
 			}
 			for _, p := range noteParts(n, whole[n.Kind+"|"+n.ID], f.MirrorAccount, ours) {

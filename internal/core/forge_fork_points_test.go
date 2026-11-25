@@ -163,7 +163,8 @@ func TestForkedTwiceJudgedAgainUnderTheLocks(t *testing.T) {
 				asked = true
 				got := make(chan struct{})
 				go func() {
-					be.s.queueLock(pr)()
+					_, unlock := be.s.queueLockCtx(be.ctx, pr)
+					unlock()
 					close(got)
 				}()
 				select {

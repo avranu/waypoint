@@ -469,7 +469,15 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 		hx.join(ctx, result)
 	}
 	if !in.ReadOnly {
-		return p.deliver(ctx, run, in, bare, work, env, baseSHA, result, &pushed)
+		// Only for an agent that could already run commands, outside a
+		// confined CLI: the script is the agent's copy, so running it for an
+		// edit-only or confined agent would give it the shell it was denied,
+		// with the runner's environment (audit #1748.1).
+		var chk *prePushCheck
+		if in.perm() == "edit_run" && !in.Confine && in.Patch == "" {
+			chk = &prePushCheck{env: cmd.Env, fix: p.prePushFix(run, in, path, work, cmd.Env)}
+		}
+		return p.deliver(ctx, run, in, bare, work, env, baseSHA, result, &pushed, chk)
 	}
 	return outcome{State: "done", Result: result}
 }
@@ -513,7 +521,7 @@ func (p *runnerProc) salvage(ctx context.Context, run *jobRun, in agentJob, bare
 		return timedOut
 	}
 	fmt.Fprintf(run.out, "\nThe agent ran out of time; delivering the commits it had made\n")
-	if d := p.deliver(ctx, run, in, bare, work, env, baseSHA, result, pushed); d.State != "done" {
+	if d := p.deliver(ctx, run, in, bare, work, env, baseSHA, result, pushed, nil); d.State != "done" {
 		timedOut.Error += " Its commits weren't pushed: " + excerpt(d.Error, 300)
 	}
 	return timedOut
@@ -523,20 +531,15 @@ func (p *runnerProc) salvage(ctx context.Context, run *jobRun, in agentJob, bare
 // left uncommitted is committed, changes to protected files are held back,
 // and the branch is pushed. result gains what was done; pushed is set once
 // the branch is on the remote.
-func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare, work string, env []string, baseSHA string, result map[string]any, pushed *bool) outcome {
+func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare, work string, env []string, baseSHA string, result map[string]any, pushed *bool, chk *prePushCheck) outcome {
 	{
-		if status, _ := p.git(ctx, work, "status", "--porcelain"); status != "" {
-			msg := strings.TrimSpace(in.CommitMessage)
-			if msg == "" {
-				msg = "Agent changes"
-			}
-			fmt.Fprintf(run.out, "\nCommitting the changes the agent left\n")
-			if _, err := p.git(ctx, work, "add", "-A"); err != nil {
-				return p.partial(result, "git add failed: %v", err)
-			}
-			if _, err := p.commit(ctx, work, msg, true); err != nil {
-				return p.partial(result, "committing the agent's changes failed: %v", err)
-			}
+		if err := p.commitLeft(ctx, run, in, work); err != nil {
+			return p.partial(result, "%v", err)
+		}
+		ctx, cancel := p.prePush(ctx, run, in, work, baseSHA, chk, result)
+		defer cancel()
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return outcome{State: "cancelled", Error: "Stopped."}
 		}
 		revs, err := p.git(ctx, work, "rev-list", "--reverse", baseSHA+"..HEAD")
 		if err != nil {
@@ -588,6 +591,11 @@ func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare
 			}
 			commits, files = h.commits, h.files
 			result["commits"], result["files"] = commits, files
+			// The check ran on the agent's protected changes, which are now
+			// taken out: its verdict is not on what is pushed.
+			if v, ok := result["pre_push"].(string); ok {
+				result["pre_push"] = "not run on the pushed commits: protected files were restored after it (it had " + v + ")"
+			}
 		}
 		if len(commits) > 0 {
 			result["commit"] = commits[len(commits)-1]

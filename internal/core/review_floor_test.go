@@ -291,6 +291,36 @@ func TestPRAuditAtHeadByBar(t *testing.T) {
 	}
 }
 
+// A round does not reuse the pull request's own audit. shipAudited counts the
+// fixed and rejected marks on a round's audit as the session's own, which
+// holds only while a round never takes an audit whose findings can go to a
+// babysitter: the round's asks include the review brief, and a pull request's
+// own audit never has it in its prompt.
+func TestRoundDoesNotReuseThePullRequestsOwnAudit(t *testing.T) {
+	a, _ := auditAPEnv(t)
+	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
+	a.finish(first.Key)
+	a.grokPR(first.ID, 7, "aaa")
+	var prID int64
+	if err := a.s.db.R.QueryRow(`SELECT id FROM pull_requests WHERE number = 7`).Scan(&prID); err != nil {
+		t.Fatal(err)
+	}
+	own, err := a.s.RequestAudit(a.ctx, a.admin, AuditInput{PRID: prID, Via: "web"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.s.db.W.Exec(`UPDATE code_audits SET status = 'done', model = 'gateway/deepseek/deepseek-v4.1-flash' WHERE id = ? AND purpose = ''`, own.ID); err != nil {
+		t.Fatal(err)
+	}
+	pr := &PullRequest{ID: prID, HeadSHA: "aaa"}
+	if got, err := a.s.prAuditAtHead(a.ctx, pr, "", "", nil); err != nil || got != own.ID {
+		t.Fatalf("with no asks the pull request's own audit is taken: got %d, %v, want %d", got, err, own.ID)
+	}
+	if got, err := a.s.prAuditAtHead(a.ctx, pr, "", "", roundAsks(DefaultReviewText, "")); err != nil || got != 0 {
+		t.Errorf("a round took the pull request's own audit %d (%v) though its prompt has no review brief", got, err)
+	}
+}
+
 // The family check on reuse (the session's family can't have reviewed) does
 // not apply to an audit held to the high-stakes bar (WP-1752): it is taken
 // whoever answered or may answer, by a round at that bar or at the floor
