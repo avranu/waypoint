@@ -546,7 +546,7 @@ func TestRunnerUpdatesItself(t *testing.T) {
 	if b, _ := os.ReadFile(exe); !strings.Contains(string(b), "wp v1.2.0") {
 		t.Errorf("binary not replaced:\n%s", out.String())
 	}
-	if !strings.Contains(out.String(), "Updated "+exe+" to wp v1.2.0; restarting") {
+	if !strings.Contains(out.String(), "Updated "+exe+" to wp v1.2.0.") || !strings.Contains(out.String(), "Restarting on wp v1.2.0 at "+exe) {
 		t.Errorf("log:\n%s", out.String())
 	}
 

@@ -657,22 +657,33 @@ const diskLookEvery = time.Minute
 // the running ones finish.
 //
 // What it decides on is the wp on disk, not only what its own downloads
-// did: while a download runs it decides nothing (that download may yet
-// replace the binary); while it doesn't download (its backoff, another
-// wp's claim) it looks at the disk, which another wp may have updated; and
-// a server back on this process's release has the disk put back to it.
+// did: while a download runs beside the loop it decides nothing (that
+// download may yet replace the binary, and the drain clock starts again for
+// what it puts there); while it doesn't download (its backoff, another wp's
+// claim) it looks at the disk, which another wp may have updated; and a
+// server back on this process's release has the disk put back to it. A pass
+// in which a download ended, failed or not, here or beside the loop, comes
+// to the restart and drain decision below, so no poll takes a job in
+// between (1788.1).
 func (p *runnerProc) updateStep(ctx context.Context) (restart string) {
 	p.draining = false
 	p.collectUpdate()
-	if p.updating || !p.mayUpdate() {
+	if !p.mayUpdate() {
 		return ""
 	}
 	sv := p.serverVersion
+	if p.updating {
+		return ""
+	}
 	if p.diskBehind() {
 		if p.updateDue() && p.beginUpdate(sv) {
-			return p.startDownload(ctx, sv)
+			p.startDownload(ctx, sv) // idle, here: decided on below at once
+		} else {
+			p.lookAtDisk(ctx)
 		}
-		p.lookAtDisk(ctx)
+		if p.updating {
+			return ""
+		}
 	}
 	ready := p.updatedTo
 	// The wp on disk is ready to restart on when it is the server's, or when
@@ -700,8 +711,9 @@ func (p *runnerProc) updateStep(ctx context.Context) (restart string) {
 }
 
 // startDownload downloads sv, claimed: beside the loop when jobs run, else
-// here (nothing to poll for meanwhile), returning the path to restart on.
-func (p *runnerProc) startDownload(ctx context.Context, sv string) (restart string) {
+// here (nothing to poll for meanwhile). Either way updateStep's restart and
+// drain decision follows, on the pass this one ends in or a later one.
+func (p *runnerProc) startDownload(ctx context.Context, sv string) {
 	if len(p.activeIDs()) > 0 {
 		if p.updateDone == nil {
 			p.updateDone = make(chan updateResult, 1)
@@ -709,19 +721,11 @@ func (p *runnerProc) startDownload(ctx context.Context, sv string) (restart stri
 		dctx, cancel := context.WithCancel(ctx)
 		p.updating, p.updateCancel = true, cancel
 		go func() { p.updateDone <- p.download(dctx, sv) }()
-		return ""
+		return
 	}
 	res := p.download(ctx, sv)
 	p.finishUpdate(res)
-	if res.err != nil {
-		return ""
-	}
-	if !p.onDisk(res.sv, res.exe) {
-		p.logf("Put wp %s back at %s, the release Waypoint runs again.", res.sv, res.exe)
-		return ""
-	}
-	p.logf("Updated %s to wp %s; restarting on it.", res.exe, sv)
-	return res.exe
+	p.tookDownload(res)
 }
 
 // onDisk notes that the wp at exe is release v, and says whether it is
@@ -766,19 +770,24 @@ func (p *runnerProc) collectUpdate() {
 	select {
 	case res := <-p.updateDone:
 		p.endDownload(res)
-		if res.err != nil {
-			return
-		}
-		if !p.onDisk(res.sv, res.exe) {
-			p.logf("Put wp %s back at %s, the release Waypoint runs again.", res.sv, res.exe)
-			return
-		}
-		if n := len(p.activeIDs()); n == 0 {
-			p.logf("Updated %s to wp %s; this runner restarts on it now.", res.exe, res.sv)
-		} else {
-			p.logf("Updated %s to wp %s; this runner restarts on it when its %d job%s %s.", res.exe, res.sv, n, pluralS(n), pluralWord(n, "finishes", "finish"))
-		}
+		p.tookDownload(res)
 	default:
+	}
+}
+
+// tookDownload notes what a finished download put on disk.
+func (p *runnerProc) tookDownload(res updateResult) {
+	if res.err != nil {
+		return
+	}
+	if !p.onDisk(res.sv, res.exe) {
+		p.logf("Put wp %s back at %s, the release Waypoint runs again.", res.sv, res.exe)
+		return
+	}
+	if n := len(p.activeIDs()); n == 0 {
+		p.logf("Updated %s to wp %s.", res.exe, res.sv) // the restart, if it is the one, logs next
+	} else {
+		p.logf("Updated %s to wp %s; this runner restarts on it when its %d job%s %s.", res.exe, res.sv, n, pluralS(n), pluralWord(n, "finishes", "finish"))
 	}
 }
 

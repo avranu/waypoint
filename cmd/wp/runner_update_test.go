@@ -139,7 +139,7 @@ func TestIdleRunnerUpdatesThenRestarts(t *testing.T) {
 	if exe, drain := u.step(); exe != u.exe || drain || !strings.Contains(u.disk(), "wp v1.2.0") {
 		t.Fatalf("restart %q drain %v disk %q", exe, drain, u.disk())
 	}
-	if !strings.Contains(u.out.String(), "Updated "+u.exe+" to wp v1.2.0; restarting") {
+	if !strings.Contains(u.out.String(), "Updated "+u.exe+" to wp v1.2.0.") || !strings.Contains(u.out.String(), "Restarting on wp v1.2.0 at "+u.exe) {
 		t.Errorf("log:\n%s", u.out.String())
 	}
 }
@@ -404,17 +404,19 @@ func TestFailedFollowUpDownloadStillRestartsOnTheBinaryOnDisk(t *testing.T) {
 	}
 }
 
-// Idle, the failed follow-up download is followed at once by the restart.
+// Idle, the failed follow-up download is followed at once, in the same pass,
+// by the restart: no poll in between may take a job onto this process
+// (1788.1).
 func TestIdleFailedFollowUpDownloadThenRestartsOnDisk(t *testing.T) {
 	e := cliServer(t, "v1.3.0", "v1.3.0", false)
 	u := newUpdRunner(t, e, "v1.3.0")
 	u.p.updatedTo, u.p.updatedExe, u.p.updatedAt = "v1.2.0", u.exe, u.now
 	u.p.downloadFn = func(context.Context, string) (string, string, error) { return "", "", errors.New("no route") }
-	if exe, _ := u.step(); exe != "" {
-		t.Fatalf("the failed pass restarted on %q", exe)
+	if exe, drain := u.step(); exe != u.exe || drain {
+		t.Fatalf("the failed pass: restart %q drain %v", exe, drain)
 	}
-	if exe, _ := u.step(); exe != u.exe {
-		t.Fatalf("next pass: restart %q", exe)
+	if !strings.Contains(u.out.String(), "Couldn't update wp") {
+		t.Errorf("log:\n%s", u.out.String())
 	}
 }
 
@@ -546,7 +548,7 @@ func TestReleaseUpdateClaimLeavesOtherRecordsAlone(t *testing.T) {
 	}
 }
 
-func TestCollectUpdateWithNoJobsSaysItRestartsNow(t *testing.T) {
+func TestCollectUpdateWithNoJobsNamesNoJobCount(t *testing.T) {
 	e := cliServer(t, "v1.2.0", "v1.2.0", false)
 	u := newUpdRunner(t, e, "v1.2.0")
 	u.p.updating = true
@@ -554,7 +556,7 @@ func TestCollectUpdateWithNoJobsSaysItRestartsNow(t *testing.T) {
 	u.p.updateDone <- updateResult{sv: "v1.2.0", got: "v1.2.0", exe: u.exe}
 	u.p.collectUpdate()
 	out := u.out.String()
-	if strings.Contains(out, "0 jobs") || !strings.Contains(out, "restarts on it now.") {
+	if strings.Contains(out, "0 jobs") || !strings.Contains(out, "Updated "+u.exe+" to wp v1.2.0.") {
 		t.Errorf("log:\n%s", out)
 	}
 }
