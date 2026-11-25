@@ -107,37 +107,123 @@ func TestPRTimelineStackRuns(t *testing.T) {
 	if tl.Totals.CIWaitS != 60+120 || tl.Totals.CIRunS != 1020+1200 {
 		t.Errorf("totals = %+v", tl.Totals)
 	}
+
+	// A batch's row is its last pull request's; the others are in its heads.
+	if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO queue_stacks(forge_id, repo, base_ref, pr_id, base_sha, heads, branch, commit_sha, created_at) VALUES (?, 'me/app', 'main', ?, 'base', ?, 'wp-queue/main/8-abe', 'ccccccc3333', ?)`,
+		se.f.ID, se.pr(8).ID, fmt.Sprintf(`[{"pr_id":%d,"number":7,"sha":"8888888bbbb"},{"pr_id":%d,"number":8,"sha":"9999999cccc"}]`, pr.ID, se.pr(8).ID), min(100)); err != nil {
+		t.Fatal(err)
+	}
+	se.timelineRun(4, "ccccccc3333", "wp-queue/main/8-abe", "push", "success", min(101), min(102), min(110))
+	if tl, err = se.s.PRTimeline(se.ctx, se.admin, se.p.Key, "", 7); err != nil {
+		t.Fatal(err)
+	}
+	if len(tl.Runs) != 3 || tl.Runs[2].Number != 4 || !tl.Runs[2].Stack {
+		t.Errorf("runs = %+v, want the batch's run #4 too", tl.Runs)
+	}
+}
+
+// Runs and audit rows are read by the pull request's open time, so a run on
+// one of its heads long after it merged (a scheduled one, say) is not its.
+func TestPRTimelineLeavesOutRunsAfterItEnded(t *testing.T) {
+	se, pr, t0 := timelineEnv(t)
+	min := func(m int) int64 { return t0 + int64(m)*60000 }
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET state = 'merged', merged_at = ? WHERE id = ?`, min(100), pr.ID); err != nil {
+		t.Fatal(err)
+	}
+	se.timelineRun(1, "8888888bbbb", "#7", "pull_request", "success", min(62), min(63), min(80))
+	se.timelineRun(2, "8888888bbbb", "refs/heads/main", "schedule", "success", min(100+61), min(100+62), min(100+70))
+	tl, err := se.s.PRTimeline(se.ctx, se.admin, se.p.Key, "", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tl.Runs) != 1 || tl.Runs[0].Number != 1 || tl.State != "merged" {
+		t.Errorf("state %q, runs = %+v, want only #1", tl.State, tl.Runs)
+	}
 }
 
 func TestPRTimelineHolds(t *testing.T) {
 	se, pr, t0 := timelineEnv(t)
 	min := func(m int) int64 { return t0 + int64(m)*60000 }
+	head := "7777777aaaa"
 	add := func(what string, from, until any) {
 		t.Helper()
-		if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO merge_holds(pr_id, head_sha, what, first_at, cleared_at) VALUES (?, '7777777aaaa', ?, ?, ?)`, pr.ID, what, from, until); err != nil {
+		if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO merge_holds(pr_id, head_sha, what, first_at, cleared_at) VALUES (?, ?, ?, ?, ?)`, pr.ID, head, what, from, until); err != nil {
 			t.Fatal(err)
 		}
 	}
+	// Its CI went green at 15m: a hold is every moment it was armed and not
+	// ready, so what came before is the wait for CI, not a hold after green.
+	se.timelineRun(1, head, "#7", "pull_request", "success", min(1), min(2), min(15))
 	for i := 0; i < 9; i++ {
 		add(fmt.Sprintf("short %d", i), min(100+i), min(100+i)+30000) // under a minute each
 	}
 	add("a", min(10), min(30))
-	add("b", min(20), min(40)) // overlaps a: 10..40 is 30m
+	add("b", min(20), min(40)) // overlaps a: 15..40 after green is 25m
 	now := se.clockNow().UnixMilli()
 	add("open", now-10*60000, nil) // counts to now: 10m
+	head = "8888888bbbb"
+	add("never green", min(50), min(60)) // its head had no passing run
 
 	tl, err := se.s.PRTimeline(se.ctx, se.admin, se.p.Key, "", 7)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tl.Holds) != 12 {
-		t.Fatalf("%d holds, want all 12", len(tl.Holds))
+	if len(tl.Holds) != 13 {
+		t.Fatalf("%d holds, want all 13", len(tl.Holds))
+	}
+	if a := tl.Holds[0]; a.AfterGreenS != 15*60 {
+		t.Errorf("a is %ds after green, want 15m", a.AfterGreenS)
+	}
+	for _, h := range tl.Holds {
+		if h.What == "never green" && h.AfterGreenS != 0 {
+			t.Errorf("a hold on a head that never passed counts %ds", h.AfterGreenS)
+		}
 	}
 	if tl.Holds[0].What != "a" || tl.Holds[len(tl.Holds)-1].What != "open" || tl.Holds[len(tl.Holds)-1].Until != nil {
 		t.Errorf("order or open end wrong: %+v", tl.Holds)
 	}
-	if want := int64(30*60 + 9*30 + 10*60); tl.Totals.HeldS != want {
+	if want := int64(25*60 + 9*30 + 10*60); tl.Totals.HeldS != want {
 		t.Errorf("held_s = %d, want %d", tl.Totals.HeldS, want)
+	}
+}
+
+// A hold is cleared only while the pull request is armed and open, so one
+// left open must not keep counting after the merge, the close or the disarm.
+func TestPRTimelineOpenHoldEndsWithThePullRequest(t *testing.T) {
+	for _, c := range []struct{ name, sql, state string }{
+		{"merged", `UPDATE pull_requests SET state = 'merged', merged_at = %d WHERE id = ?`, "merged"},
+		{"closed", `UPDATE pull_requests SET state = 'closed', closed_at = %d, armed_at = NULL WHERE id = ?`, "closed"},
+		{"disarmed", `INSERT INTO audit_log(action, category, target_type, target_id, created_at) VALUES ('pr.disarm', 'control', 'pr', ?, %d)`, "open"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			se, pr, t0 := timelineEnv(t)
+			min := func(m int) int64 { return t0 + int64(m)*60000 }
+			se.timelineRun(1, "8888888bbbb", "#7", "pull_request", "success", min(62), min(63), min(80))
+			if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO merge_holds(pr_id, head_sha, what, first_at) VALUES (?, '8888888bbbb', 'behind main', ?)`, pr.ID, min(70)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := se.s.db.W.ExecContext(se.ctx, fmt.Sprintf(c.sql, min(100)), pr.ID); err != nil {
+				t.Fatal(err)
+			}
+			if c.name == "disarmed" {
+				if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET armed_at = NULL WHERE id = ?`, pr.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tl, err := se.s.PRTimeline(se.ctx, se.admin, se.p.Key, "", 7)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tl.State != c.state || tl.Totals.HeldS != 20*60 { // green at 80m, over at 100m
+				t.Errorf("state %q, held_s = %d, want %s and 20m", tl.State, tl.Totals.HeldS, c.state)
+			}
+			if h := tl.Holds[0]; h.Until == nil || !h.Until.Equal(msTime(min(100))) {
+				t.Errorf("the hold ends %v, want when the pull request did", h.Until)
+			}
+			if (tl.ClosedAt != nil) != (c.name == "closed") {
+				t.Errorf("closed_at = %v", tl.ClosedAt)
+			}
+		})
 	}
 }
 

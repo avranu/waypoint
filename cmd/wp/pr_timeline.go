@@ -12,17 +12,22 @@ var prTimelineCmd = &command{
 	name: "timeline", args: "[N] [--repo REPO]",
 	summary: "a pull request's ship-to-merge timeline: runner waits, CI runs, holds after green",
 	about: `Every push, arming, CI run and hold of one pull request in time order, and
-first how its time from open to merge split: waiting for a CI runner, running
-CI (in all runs, reruns and failed ones too) and held after green (the union of
-its holds, however short). Read from what Waypoint kept; nothing is re-run.`,
+first three totals: waiting for a CI runner and running CI, each added over all
+its runs (reruns and failed ones too, and runs at the same time each count),
+and held after green (the union of its holds from when their head's CI passed,
+however short). They are not parts of the time it was open: runs overlap, and
+a hold can wait on a merge queue run. Read from what Waypoint kept; nothing is
+re-run.`,
 	examples: []string{"wp pr timeline 12", "wp pr timeline 12 --json"},
 	run:      cmdPRTimeline,
 }
 
 // prTimeline is the response of GET /projects/{key}/pulls/{number}/timeline (WP-1806).
 type prTimeline struct {
+	State    string     `json:"state"`
 	OpenedAt time.Time  `json:"opened_at"`
 	MergedAt *time.Time `json:"merged_at"`
+	ClosedAt *time.Time `json:"closed_at"`
 	Pushes   []struct {
 		At   time.Time `json:"at"`
 		Head string    `json:"head"`
@@ -45,10 +50,11 @@ type prTimeline struct {
 		RunS     *int64    `json:"run_s"`
 	} `json:"runs"`
 	Holds []struct {
-		What  string     `json:"what"`
-		Head  string     `json:"head"`
-		From  time.Time  `json:"from"`
-		Until *time.Time `json:"until"`
+		What        string     `json:"what"`
+		Head        string     `json:"head"`
+		From        time.Time  `json:"from"`
+		Until       *time.Time `json:"until"`
+		AfterGreenS int64      `json:"after_green_s"`
 	} `json:"holds"`
 	Totals struct {
 		OpenToMergedS *int64 `json:"open_to_merged_s"`
@@ -100,13 +106,15 @@ func (t *prTimeline) text(now time.Time) string {
 	head := "open for"
 	if t.MergedAt != nil {
 		end, head = *t.MergedAt, "open to merged"
+	} else if t.ClosedAt != nil {
+		end, head = *t.ClosedAt, "closed unmerged after"
 	}
 	total := int64(end.Sub(t.OpenedAt).Seconds())
 	if t.Totals.OpenToMergedS != nil {
 		total = *t.Totals.OpenToMergedS
 	}
-	fmt.Fprintf(&b, "%s %s: %s waiting for a runner, %s running CI in %d runs, %s held after green\n",
-		head, timelineDur(total), timelineDur(t.Totals.CIWaitS), timelineDur(t.Totals.CIRunS), len(t.Runs), timelineDur(t.Totals.HeldS))
+	fmt.Fprintf(&b, "%s %s; over its %d runs %s waiting for a runner and %s running CI; %s held after green\n",
+		head, timelineDur(total), len(t.Runs), timelineDur(t.Totals.CIWaitS), timelineDur(t.Totals.CIRunS), timelineDur(t.Totals.HeldS))
 
 	type line struct {
 		at   time.Time
@@ -153,10 +161,15 @@ func (t *prTimeline) text(now time.Time) string {
 		if open {
 			s += " so far"
 		}
+		if h.AfterGreenS > 0 {
+			s += " (" + timelineDur(h.AfterGreenS) + " after green)"
+		}
 		lines = append(lines, line{h.From, s + ": " + h.What})
 	}
 	if t.MergedAt != nil {
 		lines = append(lines, line{*t.MergedAt, "merged"})
+	} else if t.ClosedAt != nil {
+		lines = append(lines, line{*t.ClosedAt, "closed"})
 	}
 	sort.SliceStable(lines, func(i, j int) bool { return lines[i].at.Before(lines[j].at) })
 	for _, l := range lines {
