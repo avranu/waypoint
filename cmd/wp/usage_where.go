@@ -186,6 +186,9 @@ type whScan struct {
 	files      int
 	since, end int64
 	mem        traceScripts
+	// shipIDs are the wp ship tool calls whose result has not come yet; the
+	// call counts as a ship once a result that is not an error does.
+	shipIDs map[string]*whCall
 }
 
 type whFile struct {
@@ -260,7 +263,7 @@ func cmdUsageWhere(c *cli, args []string) error {
 }
 
 func scanWhere(files []usageFile, from, to time.Time, prices []burnPrice) *whScan {
-	sc := &whScan{calls: map[string]*whCall{}, sessions: map[string]*whSession{}, limitSeen: map[string]bool{}, apiErrors: map[string]int{}, scriptTool: map[string]int{}, since: from.UnixMilli(), end: to.UnixMilli()}
+	sc := &whScan{calls: map[string]*whCall{}, sessions: map[string]*whSession{}, limitSeen: map[string]bool{}, apiErrors: map[string]int{}, scriptTool: map[string]int{}, shipIDs: map[string]*whCall{}, since: from.UnixMilli(), end: to.UnixMilli()}
 	// the oldest file first, so that a resumed session's copy of history is
 	// credited to the session that wrote it
 	mod := map[string]time.Time{}
@@ -564,6 +567,14 @@ func (sc *whScan) userTrigger(l *rawLine, f usageFile, ses *whSession, toolNames
 	}
 	for _, b := range blocks {
 		if b.Type == "tool_result" {
+			if c := sc.shipIDs[b.ToolUseID]; c != nil {
+				delete(sc.shipIDs, b.ToolUseID)
+				c.ship = c.ship || !b.IsError
+			}
+		}
+	}
+	for _, b := range blocks {
+		if b.Type == "tool_result" {
 			name := toolNames[b.ToolUseID]
 			if name == "" {
 				name = "unknown tool"
@@ -662,7 +673,9 @@ func (sc *whScan) assistant(l *rawLine, f usageFile, ses *whSession, ts int64, c
 		cl, ship, cmds := sc.whBlockClasses(b.Name, b.Input, cwd)
 		call.blocks = append(call.blocks, cl)
 		call.cmds = append(call.cmds, cmds)
-		call.ship = call.ship || ship
+		if ship {
+			sc.shipIDs[b.ID] = call
+		}
 	}
 	return "continuation"
 }

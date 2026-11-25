@@ -295,12 +295,11 @@ type QuotaGuardReset struct {
 // (and again from 0 at each allowance reset).
 type quotaWeekLine struct {
 	start, reset int64
-	// evenFrom is where the even pace starts: the week's start, or the last
-	// allowance reset.
-	evenFrom int64
-	resets   []quotaReset
-	raw      []quotaSample
-	knots    []quotaKnot
+	// resets are the allowance resets in the week, oldest first: the even
+	// pace at a time starts from the last one at or before it (weekEvenAt).
+	resets []quotaReset
+	raw    []quotaSample
+	knots  []quotaKnot
 }
 
 // at is the week's mark at t: the line between the readings around t, the
@@ -375,14 +374,13 @@ func (s *Service) quotaWeekLines(ctx context.Context, uid, since, before int64) 
 // from the first reading after it, and the high-water mark restarts too.
 func (w *quotaWeekLine) build() {
 	kept, resets, startAt := quotaResetsIn(w.raw)
-	w.resets, w.evenFrom = resets, w.start
+	w.resets = resets
 	w.knots = []quotaKnot{{w.start, 0}}
 	next := 0
 	for i, x := range kept {
 		last := w.knots[len(w.knots)-1]
 		if next < len(startAt) && startAt[next] == i {
 			next++
-			w.evenFrom = x.at
 			w.knots = append(w.knots, quotaKnot{x.at, last.pct}, quotaKnot{x.at, x.pct})
 			continue
 		}
@@ -688,9 +686,16 @@ func guardPhase(lim AutopilotLimits, off guardOff, weeks []*quotaWeekLine, five 
 }
 
 // weekEvenAt is an even pace's share of the allowance at t: of the week, or,
-// after an allowance reset, of what remained from the reset to resets_at.
+// after an allowance reset, of what remained from the reset in force at t (the
+// last at or before it) to resets_at. A reset after t does not touch t.
 func weekEvenAt(w *quotaWeekLine, t int64) float64 {
-	return quotaEven(w.evenFrom, w.reset, t)
+	var from int64
+	for _, r := range w.resets {
+		if r.At <= t {
+			from = r.At
+		}
+	}
+	return quotaEven(from, w.reset, t)
 }
 
 // spanOverlap is how many ms [a, b) and [c, d) share.
@@ -727,7 +732,19 @@ func (s *Service) guardSpending(ctx context.Context, uid, first, before, from, t
 			bySess[j.session] = j.id
 		}
 	}
-	jobSeen := map[int64]bool{} // jobs whose own session's usage hours are in the window
+	// A job whose own session has usage hours anywhere is counted by those
+	// hours, not by its cost_usd: asked of all the session's hours, not of the
+	// range this call reads, so the check and the split decide it alike.
+	jobSeen := map[int64]bool{}
+	for sess, id := range bySess {
+		var n int64
+		if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM usage_hours WHERE user_id = ? AND session = ?`, uid, sess).Scan(&n); err != nil {
+			return nil, err
+		}
+		if n > 0 {
+			jobSeen[id] = true
+		}
+	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT hour, machine, session, model, sum(input), sum(output), sum(cache_write_5m), sum(cache_write_1h), sum(cache_read)
 		FROM usage_hours WHERE user_id = ? AND hour >= ? AND hour < ? GROUP BY hour, machine, session, model`, uid, first, before)
 	if err != nil {
@@ -761,7 +778,6 @@ func (s *Service) guardSpending(ctx context.Context, uid, first, before, from, t
 			// the job's own cost_usd is the same dollars: count them once,
 			// here, as the job's, and leave the session out of the CLI part
 			// and out of autoShare (the job is already automation's).
-			jobSeen[id] = true
 			g := get(hour)
 			g.auto += cost
 			g.jobs += cost

@@ -118,3 +118,22 @@ func TestQuotaGuardJobCountedOnce(t *testing.T) {
 		t.Errorf("parts %v sum %v remainder %v of %v", got, sum, c.Split.RemainderUSD, c.CostUSD)
 	}
 }
+
+// A runner job whose session has usage only in the hour before the window is
+// seen in the check, so the split must not add it again (audit 1907.19).
+func TestQuotaGuardSplitJobSessionBeforeWindow(t *testing.T) {
+	g := newGuardEnv(t)
+	g.reading(-time.Hour, 20)
+	g.reading(13*time.Hour, 22)
+	g.exec(`INSERT INTO runner_jobs(owner_id, kind, title, cli, input, state, timeout, source, result, created_at, started_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		g.me.User.ID, JobReview, "review", "claude", "{}", "done", 600, "automation_step", `{"session_id":"jsess","tokens":{"cost_usd":1.5}}`,
+		g.h(-10*time.Minute), g.h(-10*time.Minute), g.h(5*time.Minute))
+	g.used("jsess", -time.Hour)
+	c := g.check()
+	if err := g.s.guardSplitInto(g.ctx, g.me.User.ID, c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Split.RemainderUSD != 0 {
+		t.Errorf("split %+v, cost %v: remainder must be 0", c.Split, c.CostUSD)
+	}
+}

@@ -208,7 +208,7 @@ func cmdUsageGuard(c *cli, args []string) error {
 	if len(live) == 0 {
 		live = []byte("null")
 	}
-	both := []byte(`{"live":` + string(live) + `,"daily":` + string(raw) + `,"this_machine":` + strconv.Quote(machineName()) + `}`)
+	both := guardBothJSON(live, raw, machineName())
 	return c.emit(both, func() string {
 		var r guardReport
 		if json.Unmarshal(raw, &r) != nil {
@@ -224,6 +224,13 @@ func cmdUsageGuard(c *cli, args []string) error {
 }
 
 var guardPhaseOrder = []string{"under", "ahead", "end", "over", "off", "unknown"}
+
+// guardBothJSON is the --json output: the live and daily reports as they came
+// and this machine's name as a JSON string.
+func guardBothJSON(live, daily []byte, machine string) []byte {
+	name, _ := json.Marshal(machine)
+	return []byte(`{"live":` + string(live) + `,"daily":` + string(daily) + `,"this_machine":` + string(name) + `}`)
+}
 
 func guardReportText(r *guardReport, hours bool, machine string) string {
 	var b strings.Builder
