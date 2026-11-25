@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -331,5 +332,27 @@ func TestRepoHeavyTestsMatchWeights(t *testing.T) {
 	}
 	if len(fromWeights) == 0 {
 		t.Error("gotest-weights.txt names no package")
+	}
+}
+
+// TestRepoWholeTargetsExportTestAll keeps make check-all and make test-all
+// running everything when typed directly: they export WP_TEST_ALL=1, which
+// stops the tests slot from narrowing their go test to the diff (WP-1877).
+func TestRepoWholeTargetsExportTestAll(t *testing.T) {
+	mk, err := os.ReadFile("../../Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"check-all", "test-all"} {
+		found := false
+		for _, l := range strings.Split(string(mk), "\n") {
+			head, rest, ok := strings.Cut(l, ":")
+			if ok && !strings.HasPrefix(l, "\t") && slices.Contains(strings.Fields(head), target) && regexp.MustCompile(`^\s*export WP_TEST_ALL\s*:?=\s*1\s*$`).MatchString(rest) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("make %s must export WP_TEST_ALL=1 (a line %q), or the tests slot narrows its go test", target, target+": export WP_TEST_ALL = 1")
+		}
 	}
 }

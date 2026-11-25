@@ -20,7 +20,7 @@ import (
 )
 
 var testsumCmd = &command{
-	name: "testsum", group: "Code and CI", args: "[--repeat N | --base REF] [--keep-env NAME] CMD… | [--format F] [FILE|-]",
+	name: "testsum", group: "Code and CI", args: "[--all] [--repeat N | --base REF] [--keep-env NAME] CMD… | [--format F] [FILE|-]",
 	summary: "run tests and summarize them: one line on pass, failures with file:line",
 	about: `Runs CMD in the "tests" host slot and prints a summary: one line on pass;
 on failure each failing test with file:line and its first lines, exit 1.
@@ -31,8 +31,14 @@ changed since the last run and how that came out; it is also printed at
 once, before waiting for the slot. --repeat and --base don't say it. Flags go before
 CMD; everything from CMD on is CMD's. CMD runs without secret-looking
 variables (*_TOKEN, *_KEY, …). FILE (an existing, non-executable file) or
-- summarizes saved output instead.`,
-	examples: []string{"wp testsum go test ./...", "wp testsum pytest -q", "wp testsum --repeat 30 go test -run TestFlaky ./internal/core", "wp testsum --base origin/main go test ./cmd/wp", "go test -json ./... | wp testsum"},
+- summarizes saved output instead.
+
+A go test of a whole heavy package or ./... with no -run, in a repository that
+lists heavy packages (.waypoint/heavy-tests), runs the tests beside what you
+changed since the base instead, and says so first with the command that runs
+everything. --all, or WP_TEST_ALL=1, runs it whole; so does a runner job (CI)
+(WP-1877).`,
+	examples: []string{"wp testsum go test ./...", "wp testsum pytest -q", "wp testsum --all go test ./internal/core", "wp testsum --repeat 30 go test -run TestFlaky ./internal/core", "wp testsum --base origin/main go test ./cmd/wp", "go test -json ./... | wp testsum"},
 	run:      cmdTestsum,
 }
 
@@ -95,6 +101,7 @@ func cmdTestsum(c *cli, args []string) error {
 	repeat := fs.Int("repeat", 0, "run CMD `N` times: which tests fail how often (flaky or broken)")
 	untilFail := fs.Bool("until-fail", false, "with --repeat, stop at the first failing run")
 	base := fs.String("base", "", "if tests fail, rerun them at `REF` in a temporary checkout (your tree is left alone): failing there too?")
+	all := fs.Bool("all", false, "run a whole-suite go test whole: without it the tests slot runs the tests beside your changes (WP-1877)")
 	var keep keepEnvFlag
 	fs.Var(&keep, "keep-env", "pass the secret-looking variable `NAME` to CMD (repeatable)")
 	rest, dashed, err := c.parseBeforeCommand(fs, args)
@@ -147,12 +154,16 @@ func cmdTestsum(c *cli, args []string) error {
 		sayUnchanged(c.err, note)
 		argv := goTestJSON(rest)
 		var dropped []string
-		code, err := c.runInSlotThen("tests", defaultSlots(), argv, &buf, &buf, rec.started, func(env []string) []string {
+		var nothing bool
+		code, err := c.runInSlotWith("tests", defaultSlots(), argv, &buf, &buf, rec.started, func(env []string) []string {
 			env, dropped = testEnv(env, keep)
 			return env
-		})
+		}, slotOpts{all: *all, who: "wp testsum", allCmd: "wp testsum --all --", rec: rec, nothing: &nothing})
 		if err != nil {
 			return err
+		}
+		if nothing {
+			return nil
 		}
 		if note != "" {
 			c.println(note)
