@@ -4,7 +4,7 @@ Waypoint: self-hosted issue tracker. Go backend (internal/), React app in web/ e
 - Mutations: Service.write + t.emit(Event); side effects happen in dispatch (events.go), not inline.
 - Schema changes: add internal/db/migrations/000N_*.sql (forward-only).
 - Frontend data: add a factory to web/src/lib/queries.ts; reuse components/ui primitives; Tailwind tokens from index.css.
-- Verify: `make check` (vet + tests + golangci-lint + gosec + govulncheck); web changes also need `cd web && npm run typecheck && npm run format:check` (`npm run lint` is dormant until typescript-eslint supports TypeScript 7; see web/eslint.config.mjs); UI changes also need a real browser check (Playwright) at desktop and 390px widths.
+- Verify: `make check`; web changes also need `cd web && npm run typecheck && npm run format:check` (`npm run lint` is dormant until typescript-eslint supports TypeScript 7; see web/eslint.config.mjs); UI changes also need a real browser check (Playwright) at desktop and 390px widths.
 - Ship a PR via `wp ship`
 - Most claude code spend is Fable and opus main threads reading code and writing the implementation themselves, while `wp code show FILE:SYMBOL` and `wp code find` went unused. Consider using a `probe` or `fanout-coordinator` to gather data, and sonnet agents for well defined work. Plans, decisions, and architecture should come from the main thread.
 - Diagnose production with `wp server status|log|metrics` and `wp ai usage` (admin token; docs/DEPLOY.md "Diagnosing production"), not ssh; ssh is for incidents a person runs.
