@@ -204,21 +204,47 @@ func TestAutoUpdateKeepsTheClaimedVersionWhenTheServerCheckFails(t *testing.T) {
 }
 
 func TestSelfUpdateSkipsTheDownloadWhenTheDiskHasIt(t *testing.T) {
+	cliServer(t, "v1.2.0", "v1.2.0", false)
 	setVersion(t, "v1.1.0")
-	t.Setenv("WAYPOINT_SERVER", "") // no server from the environment either
 	exe := installedWP(t)
-	// Another process already put v1.2.0 here; this cli has no server to download from.
-	_ = os.WriteFile(exe, []byte("#!/bin/sh\necho 'wp v1.2.0'\n"), 0o755)
-	c := &cli{dir: t.TempDir(), out: io.Discard, err: io.Discard}
+	// Another process already put the server's v1.2.0 here.
+	_ = os.WriteFile(exe, []byte(cliBin("v1.2.0")), 0o755)
+	before, _ := os.Stat(exe)
+	c, _ := newCLI(io.Discard, io.Discard)
 	got, path, err := c.selfUpdate(context.Background(), "v1.2.0")
 	if err != nil || got != "v1.2.0" || path != exe {
 		t.Fatalf("got %q %q %v", got, path, err)
 	}
-	// --force with the running version still downloads (here: fails for want of a server).
+	if after, _ := os.Stat(exe); !os.SameFile(before, after) {
+		t.Fatal("downloaded although the disk had it")
+	}
+	// --force with the running version still downloads.
 	setVersion(t, "v1.2.0")
-	// The error must be the missing download, not any other.
-	if _, _, err := c.selfUpdate(context.Background(), "v1.2.0"); err == nil || !strings.Contains(err.Error(), "no server set") {
-		t.Fatalf("a binary equal to the running one was taken as already updated, or failed otherwise: %v", err)
+	if _, _, err := c.selfUpdate(context.Background(), "v1.2.0"); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := os.Stat(exe); os.SameFile(before, after) {
+		t.Fatal("a binary equal to the running one was taken as already updated")
+	}
+}
+
+// 1788.2: a file that only says it is the wanted release (its SHA-256 isn't
+// the server's) is replaced, and never run.
+func TestSelfUpdateReplacesAFileThatOnlySaysItIsTheRelease(t *testing.T) {
+	cliServer(t, "v1.2.0", "v1.2.0", false)
+	setVersion(t, "v1.1.0")
+	exe := installedWP(t)
+	marker := filepath.Join(t.TempDir(), "ran")
+	_ = os.WriteFile(exe, []byte("#!/bin/sh\ntouch "+marker+"\necho 'wp v1.2.0'\n"), 0o755)
+	c, _ := newCLI(io.Discard, io.Discard)
+	if got, _, err := c.selfUpdate(context.Background(), "v1.2.0"); err != nil || got != "v1.2.0" {
+		t.Fatalf("got %q %v", got, err)
+	}
+	if b, _ := os.ReadFile(exe); string(b) != cliBin("v1.2.0") {
+		t.Fatalf("not replaced: %q", b)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the file on disk was run")
 	}
 }
 

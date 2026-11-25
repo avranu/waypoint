@@ -388,7 +388,7 @@ func TestSetupSetsTheMachineUpAndIsSafeToRunAgain(t *testing.T) {
 func cliServer(t *testing.T, version, binVersion string, badSum bool) *env {
 	t.Helper()
 	dir := t.TempDir()
-	bin := "#!/bin/sh\nif [ \"$1\" = version ]; then echo \"wp " + binVersion + "\"; exit 0; fi\necho \"$@\" >> \"$WP_FAKE_LOG\"\n"
+	bin := cliBin(binVersion)
 	if err := os.WriteFile(filepath.Join(dir, cliAsset()), []byte(bin), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -403,6 +403,11 @@ func cliServer(t *testing.T, version, binVersion string, badSum bool) *env {
 	return newEnvWith(t, func(cfg *api.Config, url string) {
 		cfg.Version, cfg.CLIDir, cfg.BaseURL = version, dir, url
 	})
+}
+
+// cliBin is the wp release v that cliServer serves.
+func cliBin(v string) string {
+	return "#!/bin/sh\nif [ \"$1\" = version ]; then echo \"wp " + v + "\"; exit 0; fi\necho \"$@\" >> \"$WP_FAKE_LOG\"\n"
 }
 
 // installedWP makes the "installed" wp an update replaces.

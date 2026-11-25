@@ -140,9 +140,11 @@ func (c *cli) serverVersion(ctx context.Context) (string, error) {
 // selfUpdate puts the server's wp for this computer in place of this one,
 // once it has checked the download against SHA256SUMS and run it, and it
 // said it is version want (when want isn't empty). It returns the new
-// version and the path it replaced. When the binary at that path already
-// reports version want (another process replaced it), it returns at once,
-// without downloading or checking SHA256SUMS.
+// version and the path it replaced. When the binary at that path already is
+// the server's (another process replaced it): its SHA-256 is the one
+// SHA256SUMS names, and then it runs and says it is want, it returns
+// without downloading. A file at that path that only says want is replaced
+// and never run (1788.2).
 func (c *cli) selfUpdate(ctx context.Context, want string) (got, exe string, err error) {
 	exe, err = selfExe()
 	if err != nil {
@@ -151,21 +153,15 @@ func (c *cli) selfUpdate(ctx context.Context, want string) (got, exe string, err
 	if throwawayBuild(exe) {
 		return "", exe, errors.New("this wp is a temporary build (go run, go test); install one with curl -fsSL " + orDash(c.server()) + "/cli | sh")
 	}
-	// Another process may have replaced it since this one started: a binary
-	// that already is the server's release needs no download.
-	if want != "" && want != version {
-		if on, err := binaryVersion(ctx, exe); err == nil && on == want {
-			return on, exe, nil
-		}
-	}
 	name := cliAsset()
-	var sums bytes.Buffer
-	if err := c.fetchPublic(ctx, "/cli/SHA256SUMS", &sums, 64<<10); err != nil {
+	wantSum, err := c.cliSum(ctx)
+	if err != nil {
 		return "", exe, err
 	}
-	wantSum := checksumFor(sums.String(), name)
-	if wantSum == "" {
-		return "", exe, fmt.Errorf("the server's SHA256SUMS has no %s", name)
+	// Another process may have replaced it since this one started: a binary
+	// that already is the server's release needs no download.
+	if want != "" && want != version && isServersRelease(ctx, exe, wantSum, want) {
+		return want, exe, nil
 	}
 	ext := ""
 	if runtime.GOOS == "windows" {
@@ -201,6 +197,38 @@ func (c *cli) selfUpdate(ctx context.Context, want string) (got, exe string, err
 		return "", exe, fmt.Errorf("can't replace %s: %w", exe, err)
 	}
 	return got, exe, nil
+}
+
+// cliSum is the SHA-256 the server's SHA256SUMS names for this computer's wp.
+func (c *cli) cliSum(ctx context.Context) (string, error) {
+	var sums bytes.Buffer
+	if err := c.fetchPublic(ctx, "/cli/SHA256SUMS", &sums, 64<<10); err != nil {
+		return "", err
+	}
+	name := cliAsset()
+	sum := checksumFor(sums.String(), name)
+	if sum == "" {
+		return "", fmt.Errorf("the server's SHA256SUMS has no %s", name)
+	}
+	return sum, nil
+}
+
+// isServersRelease says whether the wp at path is the server's release want:
+// its SHA-256 is wantSum (checked before it runs, so nothing else at the
+// path is run) and, run, it says it is want.
+func isServersRelease(ctx context.Context, path, wantSum, want string) bool {
+	f, err := os.Open(path) // #nosec G304 -- this wp's own install path
+	if err != nil {
+		return false
+	}
+	h := sha256.New()
+	_, err = io.Copy(h, io.LimitReader(f, 512<<20))
+	_ = f.Close()
+	if err != nil || hex.EncodeToString(h.Sum(nil)) != wantSum {
+		return false
+	}
+	on, err := binaryVersion(ctx, path)
+	return err == nil && on == want
 }
 
 // checksumFor finds name's SHA-256 in sha256sum output.

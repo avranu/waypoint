@@ -741,9 +741,11 @@ func (p *runnerProc) onDisk(v, exe string) (other bool) {
 	return true
 }
 
-// lookAtDisk runs the wp on disk (once a minute at most) to learn its
-// release: another wp (a job's, a hook's wp upgrade --auto) may have put
-// the server's there while this runner's own try failed or was held back.
+// lookAtDisk looks at the wp on disk (once a minute at most) to learn
+// whether it is the server's release: another wp (a job's, a hook's wp
+// upgrade --auto) may have put it there while this runner's own try failed
+// or was held back. Only a file whose SHA-256 is the one the server's
+// SHA256SUMS names is run to ask its release, and so restarted on (1788.2).
 func (p *runnerProc) lookAtDisk(ctx context.Context) {
 	if !p.diskLookedAt.IsZero() && p.clock().Sub(p.diskLookedAt) < diskLookEvery {
 		return
@@ -753,8 +755,12 @@ func (p *runnerProc) lookAtDisk(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	on, err := binaryVersion(ctx, exe)
-	if err != nil || on != p.serverVersion || p.updatedTo == on || (p.updatedTo == "" && on == version) {
+	on := p.serverVersion
+	if p.updatedTo == on || (p.updatedTo == "" && on == version) {
+		return
+	}
+	sum, err := p.c.cliSum(ctx)
+	if err != nil || !isServersRelease(ctx, exe, sum, on) {
 		return
 	}
 	if p.onDisk(on, exe) {

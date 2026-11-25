@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,11 +15,11 @@ import (
 // or another wp's, not only on what its own downloads did (1642.1, 1650.1,
 // 1650.4, c6694, c6695, c6697).
 
-// putWP writes a wp at exe that says it is release v, as another wp's
-// upgrade would.
+// putWP writes the wp release v that cliServer serves at exe, as another
+// wp's upgrade would.
 func putWP(t *testing.T, exe, v string) {
 	t.Helper()
-	if err := os.WriteFile(exe, []byte("#!/bin/sh\necho \"wp "+v+"\"\n"), 0o755); err != nil {
+	if err := os.WriteFile(exe, []byte(cliBin(v)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -328,5 +329,28 @@ func TestRunnerWaitsForAnyLiveClaim(t *testing.T) {
 				t.Fatalf("not held: for %q until %v", u.p.updateHeldFor, u.p.updateHeldUntil)
 			}
 		})
+	}
+}
+
+// 1788.2: a file on disk that only says it is the server's release (its
+// SHA-256 isn't the one SHA256SUMS names) is not run, and not restarted on.
+func TestRunnerDoesNotRunAFileThatOnlySaysItIsTheRelease(t *testing.T) {
+	e := cliServer(t, "v1.2.0", "v1.2.0", false)
+	u := newUpdRunner(t, e, "v1.2.0")
+	u.p.downloadFn = failingDownload
+	u.busy(1)
+	u.step()
+	marker := filepath.Join(t.TempDir(), "ran")
+	if err := os.WriteFile(u.exe, []byte("#!/bin/sh\ntouch "+marker+"\necho 'wp v1.2.0'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	u.now = u.now.Add(diskLookEvery)
+	u.step()
+	u.busy(0)
+	if exe, _ := u.step(); exe != "" || u.p.updatedTo != "" {
+		t.Fatalf("restart %q updatedTo %q", exe, u.p.updatedTo)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the file on disk was run")
 	}
 }
