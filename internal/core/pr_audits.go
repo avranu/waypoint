@@ -98,24 +98,55 @@ func (s *Service) onPRAudit(ctx context.Context, e *Event) {
 // stranger's, a fork's) is not audited, and nothing else is told.
 func (s *Service) requestPRAudit(ctx context.Context, prID int64) {
 	pr, err := s.prByID(ctx, s.db.R, prID)
-	if err != nil || pr.Outside || (pr.State != "open" && pr.State != "draft") || pr.HeadSHA == "" {
+	if err != nil {
 		return
+	}
+	s.requestHeadAudit(ctx, pr)
+}
+
+// auditOwed: pr's head owes an audit nobody has asked for yet, and who runs
+// it (the babysit owner). False wherever requestPRAudit asks for nothing: the
+// project's AuditPRs off or archived, an outside or fork pull request, no
+// owner the runner gate accepts, a head already audited (in any state). The
+// line waits for an owed audit (unsettled), so it shares these conditions:
+// a pull request must never wait for an audit nobody will create (WP-1852).
+func (s *Service) auditOwed(ctx context.Context, pr *PullRequest) (int64, bool) {
+	if pr.Outside || (pr.State != "open" && pr.State != "draft") || pr.HeadSHA == "" {
+		return 0, false
 	}
 	if pr.headRepo != "" && !strings.EqualFold(pr.headRepo, pr.Repo) {
-		return
+		return 0, false
+	}
+	pid, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
+	if err != nil {
+		return 0, false
+	}
+	if p, err := s.projectByID(ctx, s.db.R, pid); err != nil || !p.Settings.AuditPRs || p.Archived {
+		return 0, false
 	}
 	if s.headAudited(ctx, pr) {
-		return
+		return 0, false
 	}
 	owner := s.babysitOwnerFor(ctx, pr)
-	if owner == 0 {
-		return // not a member's pull request: the runner gate would refuse it
+	return owner, owner != 0 // not a member's pull request: the runner gate would refuse it
+}
+
+// requestHeadAudit asks for pr's audit when its head owes one, and says
+// whether the request was made: false when none is owed or RequestAudit
+// refused (logged), so a caller that waits on the audit waits only for one
+// that exists.
+func (s *Service) requestHeadAudit(ctx context.Context, pr *PullRequest) bool {
+	owner, owed := s.auditOwed(ctx, pr)
+	if !owed {
+		return false
 	}
-	_, err = s.RequestAudit(ctx, SystemActor(), AuditInput{PRID: pr.ID, Via: "system", owner: owner,
+	_, err := s.RequestAudit(ctx, SystemActor(), AuditInput{PRID: pr.ID, Via: "system", owner: owner,
 		requestKey: fmt.Sprintf(prAuditKey, pr.ID, strings.ToLower(pr.HeadSHA))})
 	if err != nil {
 		s.log.Info("audit a pull request skipped", "repo", pr.Repo, "number", pr.Number, "err", err)
+		return false
 	}
+	return true
 }
 
 // prAuthorModel names what wrote a pull request's change, for keeping its

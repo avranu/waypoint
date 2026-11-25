@@ -377,6 +377,14 @@ func (s *Service) stackable(ctx context.Context, pr *PullRequest, style string) 
 // of their runner time; a CodeRabbit review lands about 48 minutes after a
 // push, long after the draft tier passes).
 func (s *Service) unsettled(ctx context.Context, pr *PullRequest) string {
+	// A head that owes its audit is asked for it now, not at the ready mark
+	// the line gives it: that audit's findings start a round whose push ends
+	// the candidate that got it there (WP-1852). Once the row exists, the
+	// audit going and its findings hold it below; where nothing would create
+	// the audit (auditOwed) it is settled without.
+	if s.requestHeadAudit(ctx, pr) {
+		return "its head hasn't been audited yet"
+	}
 	going, why, err := s.reviewGoingErr(ctx, pr)
 	if err != nil {
 		return "its reviews couldn't be read" // not settled (WP-748, audit 674.2)
