@@ -125,9 +125,6 @@ func TestRunnerDoesNotRestartOnAFileThatChangedSinceItNotedIt(t *testing.T) {
 func TestReleasedClaimIsSeenBeforeItWouldHaveGoneStale(t *testing.T) {
 	e := cliServer(t, "v1.2.0", "v1.2.0", false)
 	u := newUpdRunner(t, e, "v1.2.0")
-	old := updateHoldRecheck
-	updateHoldRecheck = 20 * time.Millisecond
-	t.Cleanup(func() { updateHoldRecheck = old })
 	c, _ := newCLI(io.Discard, io.Discard)
 	c.recordUpdate("v1.2.0", "started", true)
 	var downloads atomic.Int32
@@ -140,8 +137,9 @@ func TestReleasedClaimIsSeenBeforeItWouldHaveGoneStale(t *testing.T) {
 	if downloads.Load() != 0 || !u.p.heldBack("v1.2.0") {
 		t.Fatalf("not held back by the claim: %d downloads", downloads.Load())
 	}
+	lookedBy(t, u.p)
 	c.releaseUpdateClaim("v1.2.0")
-	time.Sleep(3 * updateHoldRecheck)
+	u.p.updateHeldUntil = time.Now().Add(-time.Second) // the look is due
 	u.step()
 	if downloads.Load() != 1 || u.p.updatedTo != "v1.2.0" {
 		t.Fatalf("downloads %d updatedTo %q", downloads.Load(), u.p.updatedTo)
@@ -152,9 +150,6 @@ func TestReleasedClaimIsSeenBeforeItWouldHaveGoneStale(t *testing.T) {
 func TestLiveClaimStillHoldsAfterTheLook(t *testing.T) {
 	e := cliServer(t, "v1.2.0", "v1.2.0", false)
 	u := newUpdRunner(t, e, "v1.2.0")
-	old := updateHoldRecheck
-	updateHoldRecheck = 20 * time.Millisecond
-	t.Cleanup(func() { updateHoldRecheck = old })
 	c, _ := newCLI(io.Discard, io.Discard)
 	c.recordUpdate("v1.2.0", "started", true)
 	u.p.downloadFn = func(context.Context, string) (string, string, error) {
@@ -163,10 +158,21 @@ func TestLiveClaimStillHoldsAfterTheLook(t *testing.T) {
 	}
 	u.busy(1)
 	u.step()
-	time.Sleep(3 * updateHoldRecheck)
+	lookedBy(t, u.p)
+	u.p.updateHeldUntil = time.Now().Add(-time.Second) // the look is due
 	u.step()
 	if !u.p.heldBack("v1.2.0") || !u.p.updateHeldByClaim {
 		t.Fatal("not held back")
+	}
+	lookedBy(t, u.p)
+}
+
+// lookedBy: a claim holds the runner only until its next look at the
+// record, updateHoldRecheck away, not as long as the claim stays fresh.
+func lookedBy(t *testing.T, p *runnerProc) {
+	t.Helper()
+	if !p.updateHeldByClaim || p.updateHeldUntil.After(time.Now().Add(updateHoldRecheck)) {
+		t.Fatalf("held by claim %v until %v, past the next look", p.updateHeldByClaim, p.updateHeldUntil)
 	}
 }
 

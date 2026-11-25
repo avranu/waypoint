@@ -24,6 +24,12 @@ func putWP(t *testing.T, exe, v string) {
 	}
 }
 
+// markedWP is a script that says it is release v and, run, creates marker
+// (its path quoted: a temp dir may have spaces).
+func markedWP(marker, v string) string {
+	return "#!/bin/sh\ntouch '" + strings.ReplaceAll(marker, "'", `'\''`) + "'\necho 'wp " + v + "'\n"
+}
+
 func failingDownload(context.Context, string) (string, string, error) {
 	return "", "", errors.New("no route")
 }
@@ -341,7 +347,7 @@ func TestRunnerDoesNotRunAFileThatOnlySaysItIsTheRelease(t *testing.T) {
 	u.busy(1)
 	u.step()
 	marker := filepath.Join(t.TempDir(), "ran")
-	if err := os.WriteFile(u.exe, []byte("#!/bin/sh\ntouch "+marker+"\necho 'wp v1.2.0'\n"), 0o755); err != nil {
+	if err := os.WriteFile(u.exe, []byte(markedWP(marker, "v1.2.0")), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	u.now = u.now.Add(diskLookEvery)
@@ -350,7 +356,7 @@ func TestRunnerDoesNotRunAFileThatOnlySaysItIsTheRelease(t *testing.T) {
 	if exe, _ := u.step(); exe != "" || u.p.updatedTo != "" {
 		t.Fatalf("restart %q updatedTo %q", exe, u.p.updatedTo)
 	}
-	if _, err := os.Stat(marker); err == nil {
-		t.Fatal("the file on disk was run")
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the file on disk was run (%v)", err)
 	}
 }

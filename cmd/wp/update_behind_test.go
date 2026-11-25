@@ -240,7 +240,7 @@ func TestSelfUpdateReplacesAFileThatOnlySaysItIsTheRelease(t *testing.T) {
 	setVersion(t, "v1.1.0")
 	exe := installedWP(t)
 	marker := filepath.Join(t.TempDir(), "ran")
-	_ = os.WriteFile(exe, []byte("#!/bin/sh\ntouch "+marker+"\necho 'wp v1.2.0'\n"), 0o755)
+	_ = os.WriteFile(exe, []byte(markedWP(marker, "v1.2.0")), 0o755)
 	c, _ := newCLI(io.Discard, io.Discard)
 	if got, _, err := c.selfUpdate(context.Background(), "v1.2.0"); err != nil || got != "v1.2.0" {
 		t.Fatalf("got %q %v", got, err)
@@ -248,8 +248,8 @@ func TestSelfUpdateReplacesAFileThatOnlySaysItIsTheRelease(t *testing.T) {
 	if b, _ := os.ReadFile(exe); string(b) != cliBin("v1.2.0") {
 		t.Fatalf("not replaced: %q", b)
 	}
-	if _, err := os.Stat(marker); err == nil {
-		t.Fatal("the file on disk was run")
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the file on disk was run (%v)", err)
 	}
 }
 
