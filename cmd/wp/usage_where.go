@@ -767,7 +767,8 @@ func (sc *whScan) report(top int) *whReport {
 	sessSeen := map[string]bool{}
 	for _, c := range sc.order {
 		ses := sc.sessions[c.session]
-		if c.ship && (ses.firstShip == 0 || c.ts < ses.firstShip) {
+		// a ship after --until is not yet a ship as far as this window goes
+		if c.ship && c.ts < sc.end && (ses.firstShip == 0 || c.ts < ses.firstShip) {
 			ses.firstShip = c.ts
 		}
 	}
