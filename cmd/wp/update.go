@@ -135,22 +135,29 @@ func (c *cli) serverVersion(ctx context.Context) (string, error) {
 // without downloading. A file at that path that only says want is replaced
 // and never run (1788.2).
 func (c *cli) selfUpdate(ctx context.Context, want string) (got, exe string, err error) {
+	got, exe, _, err = c.installRelease(ctx, want)
+	return got, exe, err
+}
+
+// installRelease is selfUpdate also returning the SHA-256 it checked the
+// installed file against, the one it put at exe (c7016).
+func (c *cli) installRelease(ctx context.Context, want string) (got, exe, sum string, err error) {
 	exe, err = selfExe()
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if throwawayBuild(exe) {
-		return "", exe, errors.New("this wp is a temporary build (go run, go test); install one with curl -fsSL " + orDash(c.server()) + "/cli | sh")
+		return "", exe, "", errors.New("this wp is a temporary build (go run, go test); install one with curl -fsSL " + orDash(c.server()) + "/cli | sh")
 	}
 	name := cliAsset()
 	wantSum, err := c.cliSum(ctx)
 	if err != nil {
-		return "", exe, err
+		return "", exe, "", err
 	}
 	// Another process may have replaced it since this one started: a binary
 	// that already is the server's release needs no download.
 	if want != "" && want != version && isServersRelease(ctx, exe, wantSum, want) {
-		return want, exe, nil
+		return want, exe, wantSum, nil
 	}
 	ext := ""
 	if runtime.GOOS == "windows" {
@@ -158,7 +165,7 @@ func (c *cli) selfUpdate(ctx context.Context, want string) (got, exe string, err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(exe), ".wp-update-*"+ext)
 	if err != nil {
-		return "", exe, fmt.Errorf("can't write next to %s (%w); reinstall with curl -fsSL %s/cli | sh", exe, err, orDash(c.server()))
+		return "", exe, "", fmt.Errorf("can't write next to %s (%w); reinstall with curl -fsSL %s/cli | sh", exe, err, orDash(c.server()))
 	}
 	defer func() { _ = os.Remove(tmp.Name()) }()
 	h := sha256.New()
@@ -167,24 +174,24 @@ func (c *cli) selfUpdate(ctx context.Context, want string) (got, exe string, err
 		err = cerr
 	}
 	if err != nil {
-		return "", exe, err
+		return "", exe, "", err
 	}
 	if hex.EncodeToString(h.Sum(nil)) != wantSum {
-		return "", exe, fmt.Errorf("the downloaded %s doesn't match the server's SHA256SUMS; not installing it", name)
+		return "", exe, "", fmt.Errorf("the downloaded %s doesn't match the server's SHA256SUMS; not installing it", name)
 	}
 	if err := os.Chmod(tmp.Name(), 0o755); err != nil { // #nosec G302 -- an executable
-		return "", exe, err
+		return "", exe, "", err
 	}
 	if got, err = binaryVersion(ctx, tmp.Name()); err != nil {
-		return "", exe, err
+		return "", exe, "", err
 	}
 	if want != "" && got != want {
-		return "", exe, fmt.Errorf("the server's wp says it is %s, not %s; not installing it", got, want)
+		return "", exe, "", fmt.Errorf("the server's wp says it is %s, not %s; not installing it", got, want)
 	}
 	if err := replaceExe(exe, tmp.Name()); err != nil {
-		return "", exe, fmt.Errorf("can't replace %s: %w", exe, err)
+		return "", exe, "", fmt.Errorf("can't replace %s: %w", exe, err)
 	}
-	return got, exe, nil
+	return got, exe, wantSum, nil
 }
 
 // cliSum is the SHA-256 the server's SHA256SUMS names for this computer's wp.

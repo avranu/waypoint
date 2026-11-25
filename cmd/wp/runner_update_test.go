@@ -77,10 +77,11 @@ func (u *updRunner) disk() string {
 	return string(b)
 }
 
-// noted is the runner having noted release v at u.exe, the file there now,
-// since at.
+// noted is the runner having installed release v at u.exe and noted it
+// there since at.
 func (u *updRunner) noted(v string, at time.Time) {
 	u.t.Helper()
+	putWP(u.t, u.exe, v)
 	sum, err := fileSHA(u.exe)
 	if err != nil {
 		u.t.Fatal(err)
@@ -96,6 +97,30 @@ func (u *updRunner) countDownloads() *atomic.Int32 {
 		return u.p.c.selfUpdate(ctx, want)
 	}
 	return &n
+}
+
+// c7016: the runner notes the digest its download was checked against, not
+// what is on disk when it takes the result: another wp may have put another
+// release there in between, and the runner doesn't restart on that as this
+// one.
+func TestRunnerNotesTheDigestItsDownloadChecked(t *testing.T) {
+	e := cliServer(t, "v1.2.0", "v1.2.0", false)
+	u := newUpdRunner(t, e, "v1.2.0")
+	res := u.p.download(context.Background(), "v1.2.0")
+	if res.err != nil || !strings.Contains(u.disk(), "wp v1.2.0") {
+		t.Fatalf("download: %v, disk %q", res.err, u.disk())
+	}
+	putWP(t, u.exe, "v1.2.1") // another wp's, before the loop takes the result
+	u.p.tookDownload(res)
+	if u.p.diskStill() {
+		t.Fatal("took another release on disk for the one downloaded")
+	}
+
+	res = u.p.download(context.Background(), "v1.2.0")
+	u.p.tookDownload(res)
+	if !u.p.diskStill() {
+		t.Fatal("the download itself isn't taken as still on disk")
+	}
 }
 
 func TestBusyRunnerUpdatesTheDiskOnceThenDrainsThenRestarts(t *testing.T) {

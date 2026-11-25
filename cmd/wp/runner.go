@@ -213,7 +213,7 @@ type runnerProc struct {
 	updating                          bool             // a download runs beside the loop
 	updateDone                        chan updateResult
 	updateCancel                      context.CancelFunc                                                  // ends the download beside the loop
-	downloadFn                        func(ctx context.Context, want string) (got, exe string, err error) // nil: c.selfUpdate
+	downloadFn                        func(ctx context.Context, want string) (got, exe string, err error) // nil: c.installRelease (a test's is hashed on disk)
 
 	reportCtx  context.Context
 	stopCtx    context.Context
@@ -618,6 +618,7 @@ func (p *runnerProc) heldBack(sv string) bool {
 // updateResult is what a download that ran beside the poll loop came to.
 type updateResult struct {
 	sv, got, exe string
+	sum          string // the SHA-256 the download was checked against
 	err          error
 	interrupted  bool // the runner was stopping: not a failure
 }
@@ -830,11 +831,9 @@ func (p *runnerProc) tookDownload(res updateResult) {
 	if res.err != nil {
 		return
 	}
-	var sum string
-	if res.sv != version {
-		sum, _ = fileSHA(res.exe) // "": diskStill takes it as changed
-	}
-	if !p.onDisk(res.sv, res.exe, sum) {
+	// The digest the download checked, not the disk's now: another wp may
+	// have put another release there since ("": diskStill takes it as changed).
+	if !p.onDisk(res.sv, res.exe, res.sum) {
 		p.logf("Put wp %s back at %s, the release Waypoint runs again.", res.sv, res.exe)
 		return
 	}
@@ -914,14 +913,16 @@ func (p *runnerProc) ownFailure(u *updateCheck) bool {
 // download puts the server's wp over this one. It only downloads: the loop's
 // goroutine does the logging and the record.
 func (p *runnerProc) download(ctx context.Context, sv string) updateResult {
-	fn := p.downloadFn
-	if fn == nil {
-		fn = p.c.selfUpdate
-	}
 	dctx, cancel := context.WithTimeout(ctx, updateDownloadLimit)
 	defer cancel()
-	got, exe, err := fn(dctx, sv)
-	return updateResult{sv: sv, got: got, exe: exe, err: err, interrupted: err != nil && ctx.Err() != nil}
+	var got, exe, sum string
+	var err error
+	if p.downloadFn == nil {
+		got, exe, sum, err = p.c.installRelease(dctx, sv)
+	} else if got, exe, err = p.downloadFn(dctx, sv); err == nil {
+		sum, _ = fileSHA(exe)
+	}
+	return updateResult{sv: sv, got: got, exe: exe, sum: sum, err: err, interrupted: err != nil && ctx.Err() != nil}
 }
 
 // finishUpdate records how a download ended. One cut short by the runner
