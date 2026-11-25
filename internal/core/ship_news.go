@@ -30,7 +30,8 @@ const (
 	shipWaitLinger = 15 * time.Second
 )
 
-// ShipPull is the pull request a round's end opened.
+// ShipPull is a pull request of a round's branch. On an ended round it also
+// says the client may end the agent's turn.
 type ShipPull struct {
 	Repo   string `json:"repo"`
 	Number int    `json:"number"`
@@ -297,10 +298,14 @@ func (s *Service) shipNewsNow(ctx context.Context, session, task int64) (*ShipNe
 		case err != nil:
 			return nil, err
 		case p != nil:
-			if p.State == "open" || p.State == "draft" {
+			if p.live() {
 				return &ShipNews{Outcome: ShipNewsPull, Pull: p, Text: fmt.Sprintf("The review ended and Waypoint shipped the pull request: PR %d (%s): %s", p.Number, p.State, p.URL)}, nil
 			}
-			return &ShipNews{Outcome: ShipNewsEnded, Pull: p, Text: fmt.Sprintf("Waypoint's review round for this task is over, and its pull request, PR %d, is %s: %s Nothing more is waiting on you here.", p.Number, p.State, p.URL)}, nil
+			text := fmt.Sprintf("Waypoint's review round for this task is over, and its pull request, PR %d, is %s: %s Nothing more is waiting on you here.", p.Number, p.State, p.URL)
+			if p.State != "merged" {
+				p = nil // closed without merging: the agent's to read
+			}
+			return &ShipNews{Outcome: ShipNewsEnded, Pull: p, Text: text}, nil
 		default:
 			return &ShipNews{Outcome: ShipNewsEnded, Text: fmt.Sprintf("Waypoint's review round for this task is over and it shipped the round, but no pull request from %s in %s is recorded. Nothing more is waiting on you here.", bp.Branch, bp.Repo)}, nil
 		}
@@ -312,9 +317,10 @@ func (s *Service) shipNewsNow(ctx context.Context, session, task int64) (*ShipNe
 		}
 		return nil, err
 	}
-	// A ship Waypoint stopped (bp.ShipStop) names its pull request in the text
-	// but carries no Pull: the client ends the agent's turn on a Pull, and a
-	// stopped ship is the agent's to read.
+	// The client ends the agent's turn on a Pull, so only a round whose branch
+	// has a live pull request carries one: a merged or closed one may be an
+	// earlier round's on a reused branch, and a ship Waypoint stopped
+	// (bp.ShipStop) is the agent's to read. The text names it either way.
 	ended := func(why string) (*ShipNews, error) {
 		p, err := s.branchPull(ctx, bp)
 		if err != nil {
@@ -324,7 +330,7 @@ func (s *Service) shipNewsNow(ctx context.Context, session, task int64) (*ShipNe
 		if p != nil {
 			line = fmt.Sprintf(" PR %d (%s): %s", p.Number, p.State, p.URL)
 		}
-		if bp.ShipStop != "" {
+		if bp.ShipStop != "" || (p != nil && !p.live()) {
 			p = nil
 		}
 		return &ShipNews{Outcome: ShipNewsEnded, Pull: p, Text: fmt.Sprintf("Waypoint's review round for this task is over (%s)%s.%s Nothing more is waiting on you here.", in.State, colonIf(why), line)}, nil
@@ -342,6 +348,9 @@ func (s *Service) shipNewsNow(ctx context.Context, session, task int64) (*ShipNe
 	}
 	return nil, nil
 }
+
+// live: the pull request is neither merged nor closed.
+func (p *ShipPull) live() bool { return p.State == "open" || p.State == "draft" }
 
 // branchPull is the newest pull request recorded for the round's branch (of
 // its own repo, not a fork's); nil when there is none.

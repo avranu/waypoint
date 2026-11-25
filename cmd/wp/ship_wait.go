@@ -40,7 +40,8 @@ type shipNews struct {
 	Pull    *shipPull `json:"pull"`
 }
 
-// shipPull is the pull request the server found for the task's branch.
+// shipPull is a pull request of the task's branch; with an ended round, the
+// server sends one only when the turn may end on it.
 type shipPull struct {
 	Repo   string `json:"repo"`
 	Number int    `json:"number"`
@@ -201,12 +202,12 @@ func (c *cli) waitHeldShip(f prOpenFlags, so shipOpts, o *openedPR, raw []byte, 
 	}
 	c.ackShipNews(task, n.IDs)
 	if n.Outcome == "ended" && summary != "" && n.Pull != nil {
-		dirty, _ := localGit("status", "--porcelain", "--untracked-files=no")
+		_, clean := trackedState()
 		putOff := putOffPrompt(o.key, o.PutOff)
 		if putOff != "" {
 			c.println(putOff)
 		}
-		if shipNeedsAgent(o, so.before, nil, putOff, dirty != "") == "" && c.endTurnAfterShip(task, endedSummary(summary, task, n.Pull, n.Text)) {
+		if shipNeedsAgent(o, so.before, nil, putOff, !clean) == "" && c.endTurnAfterShip(task, endedSummary(summary, task, n.Pull, n.Text)) {
 			c.println(shipEndsLine)
 		}
 	}

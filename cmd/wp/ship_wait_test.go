@@ -7,6 +7,7 @@ import (
 	"flag"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -501,11 +502,20 @@ func TestHeldShipWithANoticeToActOnDoesNotWait(t *testing.T) {
 	}
 }
 
+// cleanRepo puts the test in a git repository with nothing uncommitted.
+func cleanRepo(t *testing.T) {
+	t.Helper()
+	t.Chdir(t.TempDir())
+	if out, err := exec.Command("git", "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+}
+
 // shipEnded is a held ship whose wait ends with the round over: summary is
 // what the agent gave (or had kept), pull what the server found.
 func shipEnded(t *testing.T, summary string, pull any) (*cli, *bytes.Buffer, bool) {
 	t.Helper()
-	t.Chdir(t.TempDir())
+	cleanRepo(t)
 	ans := map[string]any{"outcome": "ended", "text": "Waypoint's review round for this task is over (done). PR 7 (open): https://git.example/a/b/pulls/7 Nothing more is waiting on you here."}
 	if pull != nil {
 		ans["pull"] = pull
@@ -562,7 +572,7 @@ func TestHeldShipEndedWithoutASummaryEndsNothing(t *testing.T) {
 
 // A warning the held answer carries needs the agent: the turn goes on.
 func TestHeldShipEndedWithAWarningKeepsTheTurn(t *testing.T) {
-	t.Chdir(t.TempDir())
+	cleanRepo(t)
 	c, _, _ := waitEnv(t, say(map[string]any{"outcome": "ended", "text": "over", "pull": endedPull}))
 	wait := time.Hour
 	no := false
@@ -580,7 +590,7 @@ func TestHeldShipEndedWithAWarningKeepsTheTurn(t *testing.T) {
 // A summary kept by an earlier ship is the one the turn ends with, and the
 // background report of this ship takes the marker.
 func TestHeldShipEndedWithAKeptSummaryEndsTheBackgroundTurn(t *testing.T) {
-	t.Chdir(t.TempDir())
+	cleanRepo(t)
 	c, _, _ := waitEnv(t, say(map[string]any{"outcome": "ended", "text": "over", "pull": endedPull}))
 	c.noteShipBackground("sess-wait", "b1")
 	c.keepSummary("WP-9", "Kept {task}.")
@@ -598,5 +608,37 @@ func TestHeldShipEndedWithAKeptSummaryEndsTheBackgroundTurn(t *testing.T) {
 	c2, _ := newCLI(new(bytes.Buffer), new(bytes.Buffer))
 	if e := c2.takeShipEnd("sess-wait", "b1"); e == nil || e.Text != "Kept WP-9.\n\nover" {
 		t.Fatalf("the background report's marker: %+v", e)
+	}
+}
+
+// A git status that fails (here: no repository) is no clean tree, and
+// uncommitted changes need the agent: either keeps the turn.
+func TestHeldShipEndedKeepsTheTurnUnlessTheTreeIsClean(t *testing.T) {
+	for _, how := range []string{"status fails", "uncommitted"} {
+		t.Run(how, func(t *testing.T) {
+			if how == "uncommitted" {
+				cleanRepo(t)
+				if err := os.WriteFile("a.txt", []byte("a"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if out, err := exec.Command("git", "add", "a.txt").CombinedOutput(); err != nil {
+					t.Fatalf("git add: %v %s", err, out)
+				}
+			} else {
+				t.Chdir(t.TempDir())
+				t.Setenv("GIT_DIR", "missing")
+			}
+			c, out, _ := waitEnv(t, say(map[string]any{"outcome": "ended", "text": "over", "pull": endedPull}))
+			wait := time.Hour
+			no := false
+			so := shipOpts{noWait: &no, waitTimeout: &wait}
+			o := &openedPR{Held: "Pushed.", HeldNeedsAgent: new(bool)}
+			if _, _, done, err := c.waitHeldShip(heldFlags(), so, o, []byte(`{}`), "WP-9", "Shipped."); err != nil || !done {
+				t.Fatalf("done %v err %v", done, err)
+			}
+			if strings.Contains(out.String(), shipEndsLine) {
+				t.Errorf("the turn was ended:\n%s", out.String())
+			}
+		})
 	}
 }

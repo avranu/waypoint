@@ -324,9 +324,9 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 		keptWhy, putOff := "", ""
 		if summary != "" {
 			c.keepSummary(cmpStr(key, o.key), summary)
-			dirty, _ := localGit("status", "--porcelain", "--untracked-files=no")
+			_, clean := trackedState()
 			putOff = putOffPrompt(o.key, o.PutOff)
-			keptWhy = shipNeedsAgent(o, so.before, nil, putOff, dirty != "")
+			keptWhy = shipNeedsAgent(o, so.before, nil, putOff, !clean)
 		}
 		if err := c.emit(withTested(raw, o.tested), func() string { return o.heldText() + o.tested.text() }); err != nil {
 			return false, err
@@ -435,24 +435,31 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 		c.println(urgentNote(d.Number))
 	}
 	if (armed || babysat) && c.agentHeader() != "" {
-		dirty, _ := localGit("status", "--porcelain", "--untracked-files=no")
+		dirty, clean := trackedState()
 		putOff := putOffPrompt(o.key, o.PutOff)
 		if putOff != "" {
 			c.println(putOff)
 		}
 		if summary != "" {
 			c.keepSummary(cmpStr(key, o.key), summary)
-			why := shipNeedsAgent(o, so.before, wrong, putOff, dirty != "")
+			why := shipNeedsAgent(o, so.before, wrong, putOff, !clean)
 			if why == "" && c.endTurnAfterShip(cmpStr(key, o.key), fillSummary(summary, o.key, d)) {
 				c.println(shipEndsLine)
 				return false, nil
 			}
 		}
-		c.println(shipReply(o.ShipReply, o.key, d, dirty != ""))
+		c.println(shipReply(o.ShipReply, o.key, d, dirty))
 	} else if summary != "" {
 		c.keepSummary(cmpStr(key, o.key), summary)
 	}
 	return false, nil
+}
+
+// trackedState is what git says of the tracked files. Neither dirty nor
+// clean when the check failed (index.lock held): a turn ends only on clean.
+func trackedState() (dirty, clean bool) {
+	out, err := localGit("status", "--porcelain", "--untracked-files=no")
+	return err == nil && out != "", err == nil && out == ""
 }
 
 // shipEndsLine is what wp ship says once it has marked the turn to end.

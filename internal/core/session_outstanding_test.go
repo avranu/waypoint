@@ -476,7 +476,11 @@ func TestStopTextShape(t *testing.T) {
 	a, _, audit := stopOutstandingEnv(t)
 	long := "L=/tmp/x/ship9.log wp ship --summary \"Audit 1809 (check of marks on 1798): all 17 objections had one cause. " + strings.Repeat("word ", 30) + "\""
 	var tasks []PendingTask
-	for _, d := range []string{long, "Fix audit 1811 findings", "run c", "run d", "run e"} {
+	names := []string{long, "Fix audit 1811 findings", "run c"}
+	for i := range 12 {
+		names = append(names, fmt.Sprintf("run %d", i))
+	}
+	for _, d := range names {
 		tasks = append(tasks, PendingTask{Type: "local_bash", Status: "running", Description: d})
 	}
 	res := a.stopWith("Waiting.", tasks...)
@@ -487,7 +491,7 @@ func TestStopTextShape(t *testing.T) {
 	if want := "- " + excerpt(long, 100); lines[1] != want || !strings.HasSuffix(lines[1], "…") || len([]rune(lines[1])) != 102 {
 		t.Errorf("first entry %q", lines[1])
 	}
-	if lines[2] != "- Fix audit 1811 findings" || lines[3] != "- run c" || lines[4] != "- and 2 more" {
+	if lines[2] != "- Fix audit 1811 findings" || lines[3] != "- run c" || lines[4] != "- and 12 more" {
 		t.Errorf("entries: %q", lines[2:5])
 	}
 	if lines[5] != "Work of yours is waiting; do what doesn't need those results now instead of ending the turn idle:" {
@@ -506,10 +510,10 @@ func TestRunningTasksDedupesAgainstTheCut(t *testing.T) {
 	}
 }
 
-// Findings the wait hook printed (and said so) are not fresh at a Stop; a
-// new one makes the Stop name them all.
-func TestStopDoesntRepeatFindingsTheWaitPrinted(t *testing.T) {
-	a, _, audit := stopOutstandingEnv(t)
+// An answer to the wait the hook never says it printed leaves the findings
+// for the Stop to name.
+func TestStopNamesFindingsTheWaitAnsweredButDidntPrint(t *testing.T) {
+	a, _, _ := stopOutstandingEnv(t)
 	ag := *a.ag
 	ag.Session = a.session
 	run := PendingTask{Type: "local_bash", Status: "running", Description: "wp ship"}
@@ -520,9 +524,16 @@ func TestStopDoesntRepeatFindingsTheWaitPrinted(t *testing.T) {
 	if res := a.stopWith("Waiting.", run); !strings.Contains(res.Text, "wp audit mark") {
 		t.Fatalf("answered but not printed, the stop must still name them: %q", res.Text)
 	}
-	a, _, audit = stopOutstandingEnv(t)
-	ag = *a.ag
+}
+
+// Findings the wait hook printed (and said so) are not fresh at a Stop; a
+// new one makes the Stop name them all, and the next wait still names what
+// only a Stop did.
+func TestStopDoesntRepeatFindingsTheWaitPrinted(t *testing.T) {
+	a, _, audit := stopOutstandingEnv(t)
+	ag := *a.ag
 	ag.Session = a.session
+	run := PendingTask{Type: "local_bash", Status: "running", Description: "wp ship"}
 	if err := a.s.SessionFindingsNamed(a.ctx, &ag, []string{itoa64(audit) + ".1", itoa64(audit) + ".2"}); err != nil {
 		t.Fatal(err)
 	}
@@ -537,5 +548,8 @@ func TestStopDoesntRepeatFindingsTheWaitPrinted(t *testing.T) {
 		if !strings.Contains(res.Text, want) {
 			t.Errorf("after a new finding the stop lacks %q:\n%s", want, res.Text)
 		}
+	}
+	if o, err := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); err != nil || len(o.Findings) != 3 {
+		t.Errorf("the wait after a stop named the late finding: %+v %v", o, err)
 	}
 }

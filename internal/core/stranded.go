@@ -99,9 +99,15 @@ func pendingSubagent(p *HookPending) bool {
 	})
 }
 
-// runningTasks names the background tasks still running ("shell: make
-// check").
+// runningTasks names the first ten background tasks still running ("shell:
+// make check").
 func runningTasks(p *HookPending) []string {
+	all := allRunningTasks(p)
+	return all[:min(len(all), 10)]
+}
+
+// allRunningTasks is runningTasks uncut, for a count of them.
+func allRunningTasks(p *HookPending) []string {
 	if p == nil {
 		return nil
 	}
@@ -116,9 +122,6 @@ func runningTasks(p *HookPending) []string {
 		}
 		if d = excerpt(d, 200); !slices.Contains(out, d) {
 			out = append(out, d)
-		}
-		if len(out) == 10 {
-			break
 		}
 	}
 	return out

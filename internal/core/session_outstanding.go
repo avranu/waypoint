@@ -62,10 +62,9 @@ func (o *SessionOutstanding) Empty() bool {
 // do in the audit of its review round whose prompt went in (at a Stop, one
 // still running because a subagent it started runs on, roundAtStop), and the
 // decisions on its requests it hasn't been told of. It is not a plain read.
-// Findings are recorded as named, and none are named when all were named
-// before (at via, or at a Stop anywhere); when one is new, all are, so the
-// count is the whole. At the
-// wait, decisions are given as a bundled Stop would (takeDecisions) but left
+// Findings are recorded as named, and none are named when all count as named
+// already (outstandingKind's rows, as OutstandingAtWait says); when one is
+// new, all are, so the count is the whole. At the wait, decisions are given as a bundled Stop would (takeDecisions) but left
 // untold until the hook says it gave them, and only as many as fit the
 // hook's room. A Stop takes them, and gives them only with new findings: one
 // that would carry the agent on for answers alone already took those that
