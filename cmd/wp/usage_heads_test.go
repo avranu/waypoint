@@ -73,3 +73,27 @@ func TestRedact(t *testing.T) {
 		t.Error("token left")
 	}
 }
+
+func TestRedactMoreTokenShapes(t *testing.T) {
+	a36 := strings.Repeat("aB3", 12)
+	for in, want := range map[string]string{
+		"key sk_live_" + strings.Repeat("a1", 12) + " end": "key *** end",
+		"sk_test_" + strings.Repeat("a1", 8):               "***",
+		"rk_live_" + strings.Repeat("a1", 8):               "***",
+		"rk_test_" + strings.Repeat("a1", 8):               "***",
+		"k AIza" + strings.Repeat("a_-", 12) + " e":        "k *** e",
+		"npm_" + a36:                                     "***",
+		"pypi-" + strings.Repeat("aB_-", 6):              "***",
+		"xapp-1-A0123-4567-abcdef":                       "***",
+		"https://" + strings.Repeat("u", 24) + "@host/x": "https://***@host/x",
+		"ssh://git@github.com/x":                         "ssh://git@github.com/x",
+		"https://deploy@git.example/x":                   "https://deploy@git.example/x",
+		"npm_config_cache":                               "npm_config_cache",
+		"sk_live_short":                                  "sk_live_short",
+		"pypi-short":                                     "pypi-short",
+	} {
+		if got := redact(in); got != want {
+			t.Errorf("redact(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -263,6 +264,7 @@ func TestTestsumRunsCommandThroughSlot(t *testing.T) {
 // the message names; with no repo here that is a temp file (WP-1812).
 func TestTestsumKeepsLongFailedOutput(t *testing.T) {
 	slotEnv(t)
+	t.Setenv("TMPDIR", t.TempDir())
 	t.Chdir(t.TempDir())
 	pass := `printf '{"Action":"pass","Package":"p","Test":"T","Elapsed":0}\n{"Action":"pass","Package":"p","Elapsed":1}\n'; `
 	fail := `printf '{"Action":"fail","Package":"p","Test":"T","Elapsed":0}\n{"Action":"fail","Package":"p","Elapsed":1}\n'; `
@@ -365,5 +367,88 @@ func TestTestsumBareWordIsCommand(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := run([]string{"testsum", "run-tests.sh"}, &out, &errb); code == 0 || !strings.Contains(errb.String(), "wp testsum -- sh run-tests.sh") {
 		t.Errorf("unparsed file: %d %q %q", code, out.String(), errb.String())
+	}
+}
+
+// keptRead writes data through keptAt and reads the file back.
+func keptRead(t *testing.T, data string) (pointer, file string) {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "f.log")
+	n := strings.Count(strings.TrimRight(data, "\n"), "\n") + 1
+	pointer = keptAt(p, []byte(data), n)
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pointer, string(b)
+}
+
+func TestKeptRedactionKeepsEveryLine(t *testing.T) {
+	seq := ""
+	for i := 1; i <= 40; i++ {
+		seq += strconv.Itoa(i) + "\n"
+	}
+	tok := "ghp_" + strings.Repeat("a1B2c3", 5)
+	for name, c := range map[string]struct{ in, want string }{
+		"header without an end": {
+			"x\n-----BEGIN RSA PRIVATE KEY-----\nthe finding\n" + seq,
+			"x\n-----BEGIN RSA PRIVATE KEY-----***\nthe finding\n" + seq,
+		},
+		"complete key": {
+			"before\n-----BEGIN RSA PRIVATE KEY-----\nMIIEabc+/=\nQWERTY12\nzz==\n-----END RSA PRIVATE KEY-----\nafter\n",
+			"before\n-----BEGIN RSA PRIVATE KEY-----***\n***\n***\n***\n-----END RSA PRIVATE KEY-----\nafter\n",
+		},
+		"encrypted key headers": {
+			"-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,ABCD\n\nMIIEabc\n-----END RSA PRIVATE KEY-----\nafter\n",
+			"-----BEGIN RSA PRIVATE KEY-----***\n***\n***\n***\n***\n-----END RSA PRIVATE KEY-----\nafter\n",
+		},
+		"credentials": {
+			"a\ntoken=abcdef123456\n" + tok + "\nfetch https://bot:hunter2secret@git.example/x\n",
+			"a\ntoken=***\n***\nfetch https://bot:***@git.example/x\n",
+		},
+		"plain lines": {strings.Repeat("x\n", 30), strings.Repeat("x\n", 30)},
+	} {
+		_, got := keptRead(t, c.in)
+		if got != c.want {
+			t.Errorf("%s:\n got %q\nwant %q", name, got, c.want)
+		}
+		if strings.Count(got, "\n") != strings.Count(c.in, "\n") {
+			t.Errorf("%s: %d lines in, %d kept", name, strings.Count(c.in, "\n"), strings.Count(got, "\n"))
+		}
+	}
+}
+
+// Outside a repo every long failure names one file, overwritten each time,
+// so they don't pile up in the temp directory.
+func TestKeptOutputOutsideRepoUsesOneFile(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Chdir(t.TempDir())
+	one := keptOutput([]byte(strings.Repeat("first\n", 30)), 20)
+	two := keptOutput([]byte(strings.Repeat("second\n", 30)), 20)
+	re := regexp.MustCompile(`: (.+)\n`)
+	a, b := re.FindStringSubmatch(one), re.FindStringSubmatch(two)
+	if a == nil || b == nil || a[1] != b[1] {
+		t.Fatalf("paths differ: %q %q", one, two)
+	}
+	if want := filepath.Join(os.TempDir(), fmt.Sprintf("wp-failed-output-%d.log", os.Getuid())); a[1] != want {
+		t.Errorf("path %q, want %q", a[1], want)
+	}
+	if got, _ := os.ReadFile(b[1]); string(got) != strings.Repeat("second\n", 30) {
+		t.Errorf("file holds %q", got)
+	}
+}
+
+// Failing tests with a clean exit have nothing else to show: no file.
+func TestTestsumNoKeptOutputOnCleanExit(t *testing.T) {
+	slotEnv(t)
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Chdir(t.TempDir())
+	cmd := `printf '{"Action":"fail","Package":"p","Test":"T","Elapsed":0}\n{"Action":"fail","Package":"p","Elapsed":1}\n'; seq 40`
+	var out, errb bytes.Buffer
+	if code := run([]string{"testsum", "--", "sh", "-c", cmd}, &out, &errb); code != 1 {
+		t.Fatalf("exit %d %q", code, out.String())
+	}
+	if strings.Contains(out.String(), "lines of its output") {
+		t.Errorf("a pointer for a command that exited 0:\n%s", out.String())
 	}
 }

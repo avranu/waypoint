@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -160,5 +162,36 @@ func TestTestsumRepeatNoTestsRanIsNoPass(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "NO TESTS RAN in any of 2 runs") || strings.Contains(out.String(), "would likely have shown") {
 		t.Errorf("got:\n%s", out.String())
+	}
+}
+
+// With --repeat the first failing run keeps its long output as a single
+// run does (WP-1812).
+func TestTestsumRepeatKeepsLongFailedOutput(t *testing.T) {
+	slotEnv(t)
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Chdir(t.TempDir())
+	pass := `printf '{"Action":"pass","Package":"p","Test":"T","Elapsed":0}\n{"Action":"pass","Package":"p","Elapsed":1}\n'; `
+	fail := `printf '{"Action":"fail","Package":"p","Test":"T","Elapsed":0}\n{"Action":"fail","Package":"p","Elapsed":1}\n'; `
+	for name, cmd := range map[string]string{
+		"unrecognized": "echo first; seq 40; exit 3",
+		"passed, then": pass + "echo first; seq 40; exit 3",
+		"failed, and":  fail + "echo first; seq 40; exit 3",
+	} {
+		var out, errb bytes.Buffer
+		if code := run([]string{"testsum", "--repeat", "2", "--", "sh", "-c", cmd}, &out, &errb); code != 1 {
+			t.Fatalf("%s: exit %d %q %q", name, code, out.String(), errb.String())
+		}
+		m := regexp.MustCompile(`All (\d+) lines of its output: (.+)\n`).FindStringSubmatch(out.String())
+		if m == nil {
+			t.Fatalf("%s: no pointer to the output:\n%s", name, out.String())
+		}
+		kept, err := os.ReadFile(m[2])
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if n := strings.Count(string(kept), "\n"); strconv.Itoa(n) != m[1] || !strings.Contains(string(kept), "first\n1\n2\n") || !strings.HasSuffix(string(kept), "\n40\n") {
+			t.Errorf("%s: pointer says %s lines; file has %d:\n%s", name, m[1], n, kept)
+		}
 	}
 }

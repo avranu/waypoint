@@ -294,7 +294,8 @@ func lastLines(data []byte, n int) string {
 
 // failedOutputFile holds the whole output of the last failed command whose
 // output was longer than the lines shown, in the checkout's git directory;
-// each later long failure overwrites it.
+// each later long failure overwrites it. Outside a repo it is
+// wp-failed-output-UID.log in the temp directory, overwritten the same way.
 const failedOutputFile = "wp-failed-output.log"
 
 // failedTail is the last n lines of a failed command's output, then a line
@@ -316,17 +317,52 @@ func keptOutput(data []byte, shown int) string {
 	}
 	p, err := localGit("rev-parse", "--git-path", failedOutputFile)
 	if err != nil || p == "" {
-		// Not in a repo: a temp file, so the output is still kept.
-		f, err := os.CreateTemp("", "wp-failed-output-*.log")
-		if err != nil {
-			return fmt.Sprintf("Its %d lines of output couldn't be saved: %v\n", n, err)
-		}
-		p = f.Name()
-		_ = f.Close()
+		// Not in a repo: one temp file per user, which a later failure
+		// overwrites, so they don't pile up.
+		p = filepath.Join(os.TempDir(), fmt.Sprintf("wp-failed-output-%d.log", os.Getuid()))
 	} else if abs, err := filepath.Abs(p); err == nil {
 		p = abs
 	}
 	return keptAt(p, data, n)
+}
+
+var (
+	pemBeginRE  = lazyre.New(`-----BEGIN [A-Z ]*PRIVATE KEY-----`)
+	pemEndRE    = lazyre.New(`-----END [A-Z ]*PRIVATE KEY-----`)
+	pemBodyRE   = lazyre.New(`^[A-Za-z0-9+/=]+$`)
+	pemHeaderRE = lazyre.New(`^[A-Za-z][A-Za-z0-9-]*: .*$`)
+)
+
+// redactKept is redact for a kept output file: line by line, returning as
+// many lines as it got, so "All N lines" stays true and an unterminated key
+// header can't blank the rest of the file. After a BEGIN PRIVATE KEY line
+// with no END, the base64 and header lines of the key body are blanked until
+// the END line or the first line that isn't one.
+func redactKept(s string) string {
+	lines := strings.Split(s, "\n")
+	inKey, afterHdr := false, false
+	for i, l := range lines {
+		if inKey {
+			switch {
+			case pemEndRE.MatchString(l):
+				inKey = false
+				continue
+			case pemBodyRE.MatchString(l):
+				lines[i], afterHdr = "***", false
+				continue
+			case pemHeaderRE.MatchString(l):
+				lines[i], afterHdr = "***", true
+				continue
+			case l == "" && afterHdr:
+				lines[i], afterHdr = "***", false
+				continue
+			}
+		}
+		lines[i] = redact(l)
+		inKey = pemBeginRE.MatchString(l) && !pemEndRE.MatchString(l)
+		afterHdr = false
+	}
+	return strings.Join(lines, "\n")
 }
 
 // keptAt writes data, n lines, to p and says where, or why it couldn't.
@@ -334,7 +370,7 @@ func keptOutput(data []byte, shown int) string {
 // shown and the file outlives the run; the write is a rename, so two
 // failures at once leave one run's output, not a mix (audit 1779).
 func keptAt(p string, data []byte, n int) string {
-	if err := writeFileAtomic(p, []byte(redact(string(data))), 0o600); err != nil {
+	if err := writeFileAtomic(p, []byte(redactKept(string(data))), 0o600); err != nil {
 		return fmt.Sprintf("Its %d lines of output couldn't be saved: %v\n", n, err)
 	}
 	return fmt.Sprintf("All %d lines of its output: %s\n", n, p)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -283,6 +284,21 @@ func shipEndsTurn(t *testing.T, e *env, me *core.Actor, key string) {
 	if kept, err := os.ReadFile(m[1]); err != nil || string(kept) != want {
 		t.Errorf("kept output: %v\n%s", err, kept)
 	}
+	// The file is the checkout's git directory's, not a temp file.
+	gp, gerr := exec.Command("git", "rev-parse", "--git-path", "wp-failed-output.log").Output()
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	wantPath, _ := filepath.Abs(strings.TrimSpace(string(gp)))
+	if gotPath, _ := filepath.EvalSymlinks(filepath.Dir(m[1])); gotPath != "" {
+		gotPath = filepath.Join(gotPath, filepath.Base(m[1]))
+		wantDir, _ := filepath.EvalSymlinks(filepath.Dir(wantPath))
+		if gotPath != filepath.Join(wantDir, filepath.Base(wantPath)) {
+			t.Errorf("kept at %s, want %s", m[1], wantPath)
+		}
+	} else {
+		t.Errorf("kept at %s, want %s", m[1], wantPath)
+	}
 	// A step put off needs the agent: the kept summary is used and kept
 	// again, and the usual reply follows. A marker this ship didn't write
 	// (a subagent's wp ship in this session) goes when it starts, so the
@@ -433,11 +449,26 @@ func TestSlotWaitNote(t *testing.T) {
 		0:                                     "",
 		59 * time.Second:                      "",
 		59*time.Second + 400*time.Millisecond: "",
-		60 * time.Second:                      " (and 1m0s waiting for a slot)",
-		44 * time.Minute:                      " (and 44m0s waiting for a slot)",
+		59*time.Second + 500*time.Millisecond: ", and 1m0s waiting for a slot",
+		60 * time.Second:                      ", and 1m0s waiting for a slot",
+		44 * time.Minute:                      ", and 44m0s waiting for a slot",
 	} {
 		if got := slotWaitNote(w); got != want {
 			t.Errorf("slotWaitNote(%v) = %q, want %q", w, got, want)
+		}
+	}
+}
+
+func TestCheckLines(t *testing.T) {
+	wait := 43*time.Minute + 46*time.Second
+	for got, want := range map[string]string{
+		checkPassedLine("make check", 25*time.Minute+time.Second, 0):       "Check passed: make check (25m1s)",
+		checkPassedLine("make check", 25*time.Minute+time.Second, wait):    "Check passed: make check (25m1s, and 43m46s waiting for a slot)",
+		checkFailedHead("make check", 3, 25*time.Minute+time.Second, 0):    "Check failed: make check exited 3 after 25m1s; last lines:\n",
+		checkFailedHead("make check", 3, 25*time.Minute+time.Second, wait): "Check failed: make check exited 3 after 25m1s, and 43m46s waiting for a slot; last lines:\n",
+	} {
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
 		}
 	}
 }

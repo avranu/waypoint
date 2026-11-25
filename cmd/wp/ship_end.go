@@ -440,12 +440,22 @@ func checkArgv(cmd string) []string {
 
 // slotWaitNote says how long a check waited for a slot, as text to follow
 // its own time, when that is a minute or more. Under a minute is left out:
-// it is noise next to the check's time, and waits.jsonl has every wait.
+// it is noise next to the check's time, and waits.jsonl has the recent waits.
 func slotWaitNote(w time.Duration) string {
 	if w = w.Round(time.Second); w < time.Minute {
 		return ""
 	}
-	return fmt.Sprintf(" (and %s waiting for a slot)", w)
+	return fmt.Sprintf(", and %s waiting for a slot", w)
+}
+
+// checkPassedLine is the line for a check that passed, before the tests.
+func checkPassedLine(cmd string, took, waited time.Duration) string {
+	return fmt.Sprintf("Check passed: %s (%s%s)", cmd, took, slotWaitNote(waited))
+}
+
+// checkFailedHead is the line that comes before a failed check's last lines.
+func checkFailedHead(cmd string, code int, took, waited time.Duration) string {
+	return fmt.Sprintf("Check failed: %s exited %d after %s%s; last lines:\n", cmd, code, took, slotWaitNote(waited))
 }
 
 // runShipCheck runs --check CMD in the tests slot, as wp testsum does, and
@@ -491,9 +501,9 @@ func (c *cli) runShipCheck(cmd string) error {
 		rec.finish(res, code)
 	}
 	took := time.Since(start).Round(time.Second)
-	waited := slotWaitNote(start.Sub(queued))
+	waited := start.Sub(queued)
 	if !failed {
-		line := fmt.Sprintf("Check passed: %s (%s%s)", cmd, took, waited)
+		line := checkPassedLine(cmd, took, waited)
 		if res.Passed+res.Failed+res.Skipped > 0 {
 			line += "; " + strings.TrimSpace(res.render())
 		}
@@ -503,6 +513,6 @@ func (c *cli) runShipCheck(cmd string) error {
 	if res.Passed+res.Failed+res.Skipped > 0 {
 		_, _ = fmt.Fprint(c.out, res.render())
 	}
-	_, _ = fmt.Fprintf(c.out, "Check failed: %s exited %d after %s%s; last lines:\n%s", cmd, code, took, waited, failedTail(buf.Bytes(), 30))
+	_, _ = fmt.Fprint(c.out, checkFailedHead(cmd, code, took, waited)+failedTail(buf.Bytes(), 30))
 	return fmt.Errorf("the check failed, so nothing was committed or shipped: fix it and run wp ship again")
 }
