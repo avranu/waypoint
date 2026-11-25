@@ -358,6 +358,9 @@ var (
 	pemEndRE    = lazyre.New(`-----END [A-Z ]*PRIVATE KEY-----`)
 	pemBodyRE   = lazyre.New(`^[A-Za-z0-9+/=]+$`)
 	pemHeaderRE = lazyre.New(`^(Proc-Type|DEK-Info|Comment): `)
+	// keyAsValueRE is a name's match whose whole value is the start of a
+	// key's BEGIN line.
+	keyAsValueRE = lazyre.New(`[\s=:"']-----BEGIN$`)
 )
 
 // pemFullLine is the least length taken for a whole line of a key's body
@@ -427,14 +430,20 @@ func redactKept(s string) string {
 			if strings.HasPrefix(t, "-") || strings.HasPrefix(t, ">") {
 				t = strings.TrimLeft(t[1:], " \t")
 			}
+			// A body line may come after a log prefix: its last field
+			// is what is matched.
+			last := t
+			if f := strings.Fields(t); len(f) > 1 {
+				last = f[len(f)-1]
+			}
 			switch {
 			case inHeaders && pemHeaderRE.MatchString(t):
 				sawHeader = true
 			case inHeaders && sawHeader && t == "":
 				inHeaders = false
-			case pemBodyRE.MatchString(t) && len(t) >= pemFullLine:
+			case pemBodyRE.MatchString(last) && len(last) >= pemFullLine:
 				inHeaders, sawFull = false, true
-			case pemBodyRE.MatchString(t) && sawFull:
+			case sawFull && (pemBodyRE.MatchString(t) || pemBodyRE.MatchString(last) && strings.HasSuffix(last, "=")):
 				star(j)
 				break body
 			default:
@@ -447,7 +456,7 @@ func redactKept(s string) string {
 	s = strings.Join(lines, "\n")
 	for _, st := range redactSteps {
 		s = replaceStep(s, st, func(m, r string) string {
-			if strings.HasSuffix(m, "-----BEGIN") {
+			if keyAsValueRE.MatchString(m) {
 				// "api_key:" and a key's BEGIN line after it: the value
 				// is the key, blanked above, and the line stays readable.
 				return m

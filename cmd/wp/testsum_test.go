@@ -489,8 +489,13 @@ func TestKeptRedactionWholeText(t *testing.T) {
 		"unterminated, body on the begin line":        {in: "key: \"" + begin + `\n` + body + `\n` + body + "\nall done\n", absent: []string{body}, present: []string{begin, "all done"}},
 		"terminated, body on the begin and end lines": {in: begin + body + "\n" + body + end + "\nafter\n", want: begin + "***\n***" + end + "\nafter\n"},
 		"name alone before a key":                     {in: "api_key:\n" + begin + "\n" + body + "\n" + end + "\n", want: "api_key:\n" + begin + "\n***\n" + end + "\n"},
-		"CRLF credential on the next line":            {in: "Authorization: Basic\r\nSECRETSECRET\r\nnext\r\n", absent: []string{"SECRETSECRET"}, present: []string{"next"}},
-		"CRLF flag value":                             {in: "--password\r\nhunter2hunter2\r\nnext\r\n", want: "--password\r\n***\r\nnext\r\n"},
+		"unterminated, log prefixes": {
+			in:   begin + "\n12:00 " + body + "\n12:00 " + body + "\n12:00 zz9=\n12:01 all done\n",
+			want: begin + "\n***\n***\n***\n12:01 all done\n",
+		},
+		"value glued to a begin line":      {in: "password=hunter2hunter2" + begin + "\n" + body + "\n" + end + "\n", absent: []string{"hunter2hunter2", body}, present: []string{end}},
+		"CRLF credential on the next line": {in: "Authorization: Basic\r\nSECRETSECRET\r\nnext\r\n", absent: []string{"SECRETSECRET"}, present: []string{"next"}},
+		"CRLF flag value":                  {in: "--password\r\nhunter2hunter2\r\nnext\r\n", want: "--password\r\n***\r\nnext\r\n"},
 	} {
 		_, got := keptRead(t, c.in)
 		if c.want != "" && got != c.want {
