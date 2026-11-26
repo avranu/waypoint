@@ -106,8 +106,8 @@ func TestDelegationDraws(t *testing.T) {
 // before delegPolicyRetry, so takes don't queue behind a failing compute.
 func TestDelegationPolicyCache(t *testing.T) {
 	e := newPolEnv(t)
-	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
-	e.s.SetClock(func() time.Time { return now })
+	// The env's clock: goal events read it from other goroutines.
+	e.setClock(time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC))
 	gone, cancel := context.WithCancel(e.ctx)
 	cancel()
 	pol, err := e.s.delegPolicyNow(gone)
@@ -115,23 +115,23 @@ func TestDelegationPolicyCache(t *testing.T) {
 		t.Fatalf("a cancelled request's estimate: %v %v", pol, err)
 	}
 
-	now = now.Add(delegPolicyAge + time.Minute)
+	e.setClock(e.clockNow().Add(delegPolicyAge + time.Minute))
 	e.exec(`ALTER TABLE delegation_assignments RENAME TO delegation_off`)
 	if got, err := e.s.delegPolicyNow(e.ctx); err != nil || got != pol {
 		t.Errorf("failed compute: %v %v, want the last estimate", got, err)
 	}
 	e.exec(`ALTER TABLE delegation_off RENAME TO delegation_assignments`)
-	now = now.Add(delegPolicyRetry / 2)
+	e.setClock(e.clockNow().Add(delegPolicyRetry / 2))
 	if got, _ := e.s.delegPolicyNow(e.ctx); got != pol {
 		t.Error("tried again before delegPolicyRetry")
 	}
-	now = now.Add(delegPolicyRetry)
+	e.setClock(e.clockNow().Add(delegPolicyRetry))
 	if got, err := e.s.delegPolicyNow(e.ctx); err != nil || got == pol {
 		t.Errorf("not worked out again after delegPolicyRetry: %v", err)
 	}
 
 	e.s.delegPol = nil
-	now = now.Add(delegPolicyAge + time.Minute)
+	e.setClock(e.clockNow().Add(delegPolicyAge + time.Minute))
 	e.exec(`ALTER TABLE delegation_assignments RENAME TO delegation_off`)
 	if _, err := e.s.delegPolicyNow(e.ctx); err == nil {
 		t.Error("no estimate and a failed compute: no error")
