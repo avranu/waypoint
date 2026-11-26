@@ -24,6 +24,7 @@ var (
 	reLoop       = lazyre.New(`\b(while|until|for)\b`)
 	reSleep      = lazyre.New(`\bsleep\s+\d`)
 	rePolled     = lazyre.New(`\b(curl|wget|gh|ci_wait|ci_wait\.py)\b|\bwp\s+pr\b|\bgit\s+ls-remote\b`)
+	reForgePoll  = lazyre.New(`\b(gh|ci_wait|ci_wait\.py)\b|\bwp\s+pr\b|\bgit\s+ls-remote\b`)
 	reCIWait     = lazyre.New(`\bci_wait(\.py)?\b`)
 	reWPWait     = lazyre.New(`\bwp\s+pr\s+wait\b`)
 	reFetcher    = lazyre.New(`(^|[\s;&|(])(curl|wget)\s`)
@@ -40,7 +41,7 @@ var nudgeRules = []nudgeRule{
 		if reWPWait.MatchString(cmd) {
 			return false
 		}
-		return reCIWait.MatchString(cmd) || (reSleep.MatchString(cmd) && rePolled.MatchString(cmd) && (reLoop.MatchString(cmd) || sleepSeconds(cmd) >= sleepWaitSecs))
+		return reCIWait.MatchString(cmd) || (reSleep.MatchString(cmd) && polledForge(cmd) && (reLoop.MatchString(cmd) || sleepSeconds(cmd) >= sleepWaitSecs))
 	}, text: "`wp pr wait N` blocks on the server and prints failing logs; `wp ship` hands the wait to Waypoint."},
 	{kind: "forge-api", match: func(cmd, _ string) bool {
 		return reFetcher.MatchString(cmd) && forgeAPIPulls(cmd)
@@ -55,8 +56,20 @@ var nudgeRules = []nudgeRule{
 		return reWorktreeRm.MatchString(cmd) &&
 			(len(reWorktreeRm.FindAllString(cmd, -1)) > 1 || reLoop.MatchString(cmd) || strings.Contains(cmd, "xargs"))
 	}, text: "`wp tidy` shows what's safe to remove."},
-	{kind: "sleep-wait", match: func(cmd, _ string) bool { return sleepWait(cmd) },
+	{kind: "sleep-wait", match: func(cmd, _ string) bool { return sleepWait(cmd) || sleepLoop(cmd) },
 		text: sleepWaitMainText},
+}
+
+// polledForge: the command asks a forge or CI for something. A curl or wget of
+// a local address asks a server the agent started, not the forge.
+func polledForge(cmd string) bool {
+	if !rePolled.MatchString(cmd) {
+		return false
+	}
+	if reLocalHost.MatchString(cmd) {
+		return reForgePoll.MatchString(cmd)
+	}
+	return true
 }
 
 // forgeAPIPulls: a URL of a forge API for pull requests, statuses or commits.
