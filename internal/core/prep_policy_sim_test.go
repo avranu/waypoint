@@ -63,10 +63,14 @@ type simTask struct {
 	x    []float64
 	y    float64
 	seen bool
-	load []float64 // the arm as prepObs.Arm has it
 }
 
 var simArms = []string{prepArmChat, prepArmAgent}
+
+// simLoads is each arm (none, chat, agent) as prepObs.Arm has it: the
+// policies read a task's arm through it, so the arm they fit on is the one
+// played. The rows are shared and only read.
+var simLoads = [][]float64{{0, 0}, {1, 0}, {0, 1}}
 
 // simThompson is the policy as built, with a half-life (0: nothing ages).
 type simThompson struct{ halfLife float64 }
@@ -82,10 +86,10 @@ func (p simThompson) shares(day int, tasks []simTask) []float64 {
 		if p.halfLife > 0 {
 			w = prepRecency(float64(day-t.day), p.halfLife)
 		}
-		obs = append(obs, prepObs{Y: t.y, X: t.x, Arm: t.load, Age: float64(day - t.day), W: w})
+		obs = append(obs, prepObs{Y: t.y, X: t.x, Arm: simLoads[t.arm], Age: float64(day - t.day), W: w})
 	}
 	f := fitPrepArms(simArms, obs, simSpread)
-	return prepShares(f.pBest([][]float64{{0, 0}, {1, 0}, {0, 1}}), nil)
+	return prepShares(f.pBest(simLoads), nil)
 }
 
 // simMix is the policy as built: fits at every half-life, mixed by how well
@@ -114,7 +118,7 @@ func (p *simMix) shares(day int, tasks []simTask) []float64 {
 		if !t.seen {
 			continue
 		}
-		obs = append(obs, prepObs{Y: t.y, X: t.x, Arm: t.load, Age: float64(day - t.day)})
+		obs = append(obs, prepObs{Y: t.y, X: t.x, Arm: simLoads[t.arm], Age: float64(day - t.day)})
 		if t.day == day-1 {
 			yesterday = append(yesterday, &obs[len(obs)-1])
 		}
@@ -231,11 +235,7 @@ func simRun(sc simScenario, pol simPolicy, days int, seed uint64) simResult {
 			text := r.norm()
 			x := []float64{1, pb, pc, text, float64(day)/float64(days) - 0.5}
 			y := 2.2 + level + 0.2*text + eff[arm] + simSpread*r.norm()
-			load := make([]float64, 2)
-			if arm > 0 {
-				load[arm-1] = 1
-			}
-			tasks = append(tasks, simTask{day: day, arm: arm, x: x, y: y, load: load})
+			tasks = append(tasks, simTask{day: day, arm: arm, x: x, y: y})
 			regret += eff[arm] - best
 			if eff[arm]-best > 0.05 {
 				worse++

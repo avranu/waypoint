@@ -461,25 +461,31 @@ func (r *prepRand) norm() float64 {
 	return m * math.Cos(2*math.Pi*v)
 }
 
+// prepSeed starts the generator of the standard normals every fit draws from.
+const prepSeed = 0x5eed
+
 // prepNormals is the standard normals sample turns into draws, k for each of
 // prepDraws: the seed is fixed, so every fit of k arms uses the same ones and
-// they are worked out once (they were most of a fit's time).
+// they are worked out once. Each is a log, a square root and a sine or cosine,
+// where a draw from them is k(k+1)/2 multiply-adds, so they were most of
+// sample's work. The slice is shared and never written after it is stored.
 func prepNormals(k int) []float64 {
-	prepNormalsOf.Lock()
-	defer prepNormalsOf.Unlock()
-	if z, ok := prepNormalsOf.k[k]; ok {
+	prepNormalsByArms.Lock()
+	defer prepNormalsByArms.Unlock()
+	if z, ok := prepNormalsByArms.k[k]; ok {
 		return z
 	}
-	r := &prepRand{s: 0x5eed}
+	r := &prepRand{s: prepSeed}
 	z := make([]float64, prepDraws*k)
 	for i := range z {
 		z[i] = r.norm()
 	}
-	prepNormalsOf.k[k] = z
+	prepNormalsByArms.k[k] = z
 	return z
 }
 
-var prepNormalsOf = struct {
+// prepNormalsByArms keeps prepNormals' normals by arm count.
+var prepNormalsByArms = struct {
 	sync.Mutex
 	k map[int][]float64
 }{k: map[int][]float64{}}

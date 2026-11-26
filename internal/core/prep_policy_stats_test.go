@@ -2,6 +2,7 @@ package core
 
 import (
 	"math"
+	"slices"
 	"testing"
 )
 
@@ -283,36 +284,93 @@ func TestPrepDummies(t *testing.T) {
 
 // The draws are the ones a generator started at the fixed seed gives each
 // fit, whatever was drawn before: the normals are kept between fits, and a
-// fit's shares must not depend on which fits came first.
+// fit's draws (so its shares) must not depend on which fits came first.
 func TestPrepSampleDrawsAreTheSeedsOwn(t *testing.T) {
-	for _, f := range []*prepFit{
-		{Arms: []string{"a", "b"}, Mean: []float64{0.2, -0.1}, Cov: [][]float64{{0.04, 0.01}, {0.01, 0.09}}},
-		{Arms: []string{"a", "b"}, Mean: []float64{-0.3, 0}, Cov: [][]float64{{0.01, 0}, {0, 0.25}}},
-		{Arms: []string{"a"}, Mean: []float64{0.1}, Cov: [][]float64{{0.04}}},
-	} {
-		k := len(f.Arms)
-		l00 := math.Sqrt(f.Cov[0][0])
-		var l10, l11 float64
-		if k == 2 {
-			l10 = f.Cov[1][0] / l00
-			l11 = math.Sqrt(f.Cov[1][1] - l10*l10)
+	fits := func() []*prepFit {
+		return []*prepFit{
+			{Arms: []string{"a", "b"}, Mean: []float64{0.2, -0.1}, Cov: [][]float64{{0.04, 0.01}, {0.01, 0.09}}},
+			{Arms: []string{"a", "b"}, Mean: []float64{-0.3, 0}, Cov: [][]float64{{0.01, 0}, {0, 0.25}}},
+			{Arms: []string{"a"}, Mean: []float64{0.1}, Cov: [][]float64{{0.04}}},
+			{Arms: []string{"a", "b", "c"}, Mean: []float64{0, 0.1, -0.2}, Cov: [][]float64{{0.04, 0.01, 0}, {0.01, 0.09, 0.02}, {0, 0.02, 0.16}}},
+			{Arms: []string{"a", "b"}, Mean: []float64{0, 0}, Cov: [][]float64{{0, 0}, {0, 0}}},
+			{},
 		}
-		r := &prepRand{s: 0x5eed}
+	}
+	// The generator's first normals from the seed, pinned so a change to the
+	// seed or to the generator shows here and not only as moved shares.
+	r := &prepRand{s: prepSeed}
+	for i, want := range []float64{-1.2669898075097235, 2.2115371059329378, -1.3229606993117367} {
+		if z := r.norm(); math.Abs(z-want) > 1e-12 {
+			t.Fatalf("normal %d from the seed: %v, want %v", i, z, want)
+		}
+	}
+
+	prepNormalsByArms.Lock()
+	prepNormalsByArms.k = map[int][]float64{}
+	prepNormalsByArms.Unlock()
+	first := map[int][][]float64{}
+	for n, f := range fits() {
+		k := len(f.Arms)
+		// The lower Cholesky factor of Cov, with sample's floor on the
+		// diagonal (the all-zero fit reaches it).
+		l := make([][]float64, k)
+		for i := range k {
+			l[i] = make([]float64, k)
+			for j := 0; j <= i; j++ {
+				sum := f.Cov[i][j]
+				for m := range j {
+					sum -= l[i][m] * l[j][m]
+				}
+				if i == j {
+					l[i][i] = math.Sqrt(max(sum, 1e-12))
+				} else {
+					l[i][j] = sum / l[j][j]
+				}
+			}
+		}
+		r := &prepRand{s: prepSeed}
 		draws := f.sample()
 		if len(draws) != prepDraws {
 			t.Fatalf("%d draws, want %d", len(draws), prepDraws)
 		}
-		for n, d := range draws {
-			z0 := r.norm()
-			want := []float64{f.Mean[0] + l00*z0}
-			if k == 2 {
-				want = append(want, f.Mean[1]+l10*z0+l11*r.norm())
+		for d, got := range draws {
+			z := make([]float64, k)
+			for i := range z {
+				z[i] = r.norm()
 			}
-			for i := range want {
-				if math.Abs(d[i]-want[i]) > 1e-12 {
-					t.Fatalf("%d arms, draw %d: %v, want %v", k, n, d, want)
+			if len(got) != k {
+				t.Fatalf("%d arms, draw %d: %v", k, d, got)
+			}
+			for i := range k {
+				want := f.Mean[i]
+				for j := 0; j <= i; j++ {
+					want += l[i][j] * z[j]
+				}
+				if math.Abs(got[i]-want) > 1e-12 {
+					t.Fatalf("%d arms, draw %d: %v, want arm %d %v", k, d, got, i, want)
 				}
 			}
+		}
+		first[n] = draws
+	}
+
+	// The same fits again, last first, with the kept normals dropped: each
+	// gets exactly what it got before, and its kept normals are reused.
+	prepNormalsByArms.Lock()
+	prepNormalsByArms.k = map[int][]float64{}
+	prepNormalsByArms.Unlock()
+	again := fits()
+	for n := len(again) - 1; n >= 0; n-- {
+		f := again[n]
+		draws := f.sample()
+		for d := range draws {
+			if !slices.Equal(draws[d], first[n][d]) {
+				t.Fatalf("fit %d (%d arms), drawn after the others: draw %d is %v, was %v", n, len(f.Arms), d, draws[d], first[n][d])
+			}
+		}
+		k := len(f.Arms)
+		if z := prepNormals(k); k > 0 && &z[0] != &prepNormals(k)[0] {
+			t.Errorf("%d arms: the normals are worked out again, not kept", k)
 		}
 	}
 }
