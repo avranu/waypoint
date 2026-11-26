@@ -141,10 +141,11 @@ type governor struct {
 	calmOver  string
 	profile   *loadProfile
 	memShort  string
+	lightMax  int // the light lane's ceiling (runnerProc.lightCeiling)
 }
 
 func newGovernor(maxJobs int, profile *loadProfile) *governor {
-	return &governor{max: maxJobs, limit: 1, profile: profile}
+	return &governor{max: maxJobs, limit: 1, profile: profile, lightMax: lightSlots}
 }
 
 // observe takes a new look at the machine; heavy is the heavy jobs running.
@@ -203,7 +204,11 @@ func (g *governor) observe(s loadSample, now time.Time, heavy int) string {
 	case level == was && (level != levelCalm || g.limit == wasLimit):
 		return ""
 	case level == levelOverloaded:
-		return fmt.Sprintf("Machine overloaded (%s): one job at a time until it calms down (a request's commands still run)", why)
+		still := "audits, reviews and a request's commands still run"
+		if g.memShort != "" {
+			still = "a request's commands still run; no more audits or reviews while memory is short"
+		}
+		return fmt.Sprintf("Machine overloaded (%s): one heavy job at a time until it calms down (%s)", why, still)
 	case level == levelBusy:
 		return fmt.Sprintf("Machine busy (%s): up to %d heavy job%s at once for now", why, g.limit, pluralS(g.limit))
 	}
@@ -239,19 +244,18 @@ func (g *governor) heavyLimit() int {
 
 // lanes are the kinds of job it takes now, with heavy, light and request
 // jobs running; none when it is full. The request lane never waits for the
-// governor.
+// governor, and the light lane (an LLM CLI reading a checkout) only for its
+// own slots and for memory, so an audit neither takes a heavy job's place nor
+// waits for the machine's load (WP-1943); overloaded, one heavy job runs.
 func (g *governor) lanes(heavy, light, req int) []string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	out := []string{}
-	if heavy+light < g.max && (g.level != levelOverloaded || heavy+light == 0) {
-		l := g.heavyLimit()
-		if heavy < l {
-			out = append(out, laneHeavy)
-		}
-		if light < max(l, min(lightSlots, g.max-1)) {
-			out = append(out, laneLight)
-		}
+	if heavy < g.max && heavy < g.heavyLimit() && (g.level != levelOverloaded || heavy == 0) {
+		out = append(out, laneHeavy)
+	}
+	if light < g.lightMax && g.memShort == "" {
+		out = append(out, laneLight)
 	}
 	return withRequestLane(out, req)
 }
@@ -415,7 +419,7 @@ func (s loadSample) watchesMemory() bool {
 }
 
 // loadMeter looks at the machine; a sample that isn't measured means it
-// can't. A runner that never measured takes up to --max-jobs; after a
+// can't. A runner that never measured takes up to --max-jobs heavy jobs; after a
 // measurement, an unmeasured sample leaves the last verdict.
 type loadMeter interface{ sample() loadSample }
 
@@ -435,6 +439,16 @@ func (p *runnerProc) agentCeiling() int {
 		return min(max(p.opts.MaxJobs, 1), core.DefaultMaxAgents)
 	}
 	return core.DefaultMaxAgents
+}
+
+// lightCeiling is the most reviews and audits it runs at once: lightSlots,
+// and where it can't measure memory, which is all that stops the light lane,
+// no more than --max-jobs.
+func (p *runnerProc) lightCeiling() int {
+	if p.memUnwatched {
+		return min(max(p.opts.MaxJobs, 1), lightSlots)
+	}
+	return lightSlots
 }
 
 // running counts the jobs running now by lane. An agent job counts as heavy
@@ -488,6 +502,21 @@ func (p *runnerProc) agentsStopped() string {
 	return p.gov.agentsStopped()
 }
 
+// lightStopped is why it takes no more audits or reviews now ("" when it
+// takes them): the machine is short of memory.
+func (p *runnerProc) lightStopped() string {
+	return p.agentsStopped()
+}
+
+// addLightReport puts the light lane's ceiling, and what stops it, in the
+// capacity report.
+func (p *runnerProc) addLightReport(r map[string]any, light int) {
+	r["max_light"] = p.lightCeiling()
+	if why := p.lightStopped(); why != "" && light < p.lightCeiling() {
+		r["light_stopped"] = why
+	}
+}
+
 // addAgentReport puts the agent jobs in the capacity report.
 func (p *runnerProc) addAgentReport(r map[string]any) {
 	n, held := p.agents()
@@ -498,10 +527,10 @@ func (p *runnerProc) addAgentReport(r map[string]any) {
 }
 
 // slotsNow are the lanes the next poll asks for (none when full) and how
-// many more jobs it can take. Without a governor heavy and light jobs share
-// --max-jobs; the request, message, gateway and agent lanes have their own
-// slots either way, which the governor never holds (the agent lane waits only
-// for --max-agents and for memory).
+// many more jobs it can take. Heavy jobs have --max-jobs; the light, request,
+// message, gateway and agent lanes have their own slots either way, which the
+// governor never holds (the light and agent lanes wait only for their
+// ceilings and for memory).
 func (p *runnerProc) slotsNow() ([]string, int) {
 	heavy, light, req, msg, gw := p.running()
 	var lanes []string
@@ -509,8 +538,11 @@ func (p *runnerProc) slotsNow() ([]string, int) {
 		lanes = p.gov.lanes(heavy, light, req)
 	} else {
 		lanes = []string{}
-		if heavy+light < p.opts.MaxJobs {
-			lanes = append(lanes, laneHeavy, laneLight)
+		if heavy < p.opts.MaxJobs {
+			lanes = append(lanes, laneHeavy)
+		}
+		if light < p.lightCeiling() {
+			lanes = append(lanes, laneLight)
 		}
 		lanes = withRequestLane(lanes, req)
 	}
@@ -531,8 +563,11 @@ func (p *runnerProc) slotsNow() ([]string, int) {
 		return lanes, 0
 	}
 	free := 0
-	if slices.Contains(lanes, laneHeavy) || slices.Contains(lanes, laneLight) {
-		free += max(p.opts.MaxJobs-heavy-light, 0)
+	if slices.Contains(lanes, laneHeavy) {
+		free += max(p.opts.MaxJobs-heavy, 0)
+	}
+	if slices.Contains(lanes, laneLight) {
+		free += max(p.lightCeiling()-light, 0)
 	}
 	free += agentRoom
 	if slices.Contains(lanes, laneRequest) {
@@ -555,6 +590,10 @@ func (p *runnerProc) watchLoad(ctx context.Context) {
 	p.gov = newGovernor(p.opts.MaxJobs, loadLoadProfile(filepath.Join(p.cacheDir(), "load-profile.json")))
 	first := m.sample()
 	p.memUnwatched = !first.watchesMemory()
+	p.gov.lightMax = p.lightCeiling()
+	if p.memUnwatched {
+		p.logf("Can't measure this machine's memory: up to %d audit%s or review%s at once", p.gov.lightMax, pluralS(p.gov.lightMax), pluralS(p.gov.lightMax))
+	}
 	if p.memUnwatched && p.opts.MaxAgents < 1 {
 		p.logf("Can't measure this machine's memory: up to %d agent job%s at once (--max-agents sets it)", p.agentCeiling(), pluralS(p.agentCeiling()))
 	}

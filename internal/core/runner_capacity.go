@@ -38,6 +38,12 @@ import (
 // runner is the gateway's to bound (GatewayTasksInFlight). A runner whose
 // wp has no gateway lane takes them in the light lane.
 //
+// A runner with FeatureLightLane (WP-1943) runs light jobs in LightLaneSlots
+// of their own (where it can't measure memory, no more than --max-jobs): they
+// take no heavy job's place, wait for no load level, and
+// stop only while memory is short. Older runners share --max-jobs and the load
+// governor between heavy and light jobs.
+//
 // LaneAgent is a sixth (WP-1915, WP-ADR149 point 3 as changed by WP-ADR163
 // point 5): an agent job (JobAgent: a fix-up round, an automation's agent)
 // spends nearly all its life waiting for a model or for a test slot, and the
@@ -114,9 +120,8 @@ func claimLane(r *Runner, n jobNeeds, lanes []string) (string, bool) {
 // RunnerCapacity is what a runner last said about its machine and how many
 // jobs it takes because of it.
 type RunnerCapacity struct {
-	// Limit is how many heavy jobs it takes at once now (light ones have a
-	// lane beside them at least as wide, WP-761); Max is --max-jobs, all
-	// kinds.
+	// Limit is how many heavy jobs it takes at once now; Max is --max-jobs
+	// (all kinds, for a runner without FeatureLightLane).
 	Limit int `json:"limit"`
 	Max   int `json:"max"`
 	// Level is calm, busy (no more heavy jobs than are running) or
@@ -137,6 +142,12 @@ type RunnerCapacity struct {
 	Heavy   int `json:"heavy"`
 	Light   int `json:"light"`
 	Gateway int `json:"gateway,omitempty"`
+	// MaxLight is the light lane's ceiling (at most LightLaneSlots); LightStopped
+	// says why it takes no more reviews or audits while it has room
+	// (memory), "" otherwise. Zero MaxLight: a runner whose light lane
+	// shares --max-jobs and the load level with heavy jobs.
+	MaxLight     int    `json:"max_light,omitempty"`
+	LightStopped string `json:"light_stopped,omitempty"`
 	// Agents are the agent jobs it runs, of those AgentSlots hold a test
 	// slot now, of MaxAgents (--max-agents). AgentsStopped says why it takes
 	// no more while it has room (memory), "" otherwise. Zero MaxAgents: an
@@ -160,6 +171,8 @@ func (c *RunnerCapacity) clean() bool {
 	c.Limit = min(max(c.Limit, 0), c.Max)
 	c.Heavy, c.Light = min(max(c.Heavy, 0), MaxRunnerJobs), min(max(c.Light, 0), MaxRunnerJobs)
 	c.Gateway = min(max(c.Gateway, 0), GatewayLaneSlots)
+	c.MaxLight = min(max(c.MaxLight, 0), LightLaneSlots)
+	c.LightStopped = cleanReport(c.LightStopped)
 	c.MaxAgents = min(max(c.MaxAgents, 0), MaxRunnerJobs)
 	c.Agents = min(max(c.Agents, 0), MaxRunnerJobs)
 	c.AgentSlots = min(max(c.AgentSlots, 0), c.Agents)

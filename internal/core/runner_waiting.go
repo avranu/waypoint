@@ -20,6 +20,11 @@ const (
 	GatewayLaneSlots = GatewayTasksInFlight
 )
 
+// LightLaneSlots is the most reviews and audits a runner with FeatureLightLane
+// runs at once, beside its heavy jobs (the runner's lightSlots; see
+// lightPlaces).
+const LightLaneSlots = 3
+
 // sideLane: a lane with slots of its own, whose jobs wait only for each other.
 // The agent lane's places are the runner's own --max-agents (see agentPlaces).
 func sideLane(l string) bool {
@@ -35,6 +40,22 @@ func agentPlaces(c *RunnerCapacity) int {
 	return DefaultMaxAgents
 }
 
+// lightPlaces is how many reviews and audits a runner with FeatureLightLane
+// runs at once: its last report (fewer than LightLaneSlots where it can't
+// measure memory), else LightLaneSlots.
+func lightPlaces(c *RunnerCapacity) int {
+	if c != nil && c.MaxLight > 0 {
+		return c.MaxLight
+	}
+	return LightLaneSlots
+}
+
+// sideLaneOn is sideLane on runner r: the light lane is one when r's wp has
+// FeatureLightLane.
+func sideLaneOn(r *Runner, l string) bool {
+	return sideLane(l) || l == LaneLight && slices.Contains(r.Features, FeatureLightLane)
+}
+
 // sideLaneSlots is how many jobs side lane l runs at once.
 func sideLaneSlots(l string) int {
 	switch l {
@@ -44,6 +65,8 @@ func sideLaneSlots(l string) int {
 		return MessageLaneSlots
 	case LaneGateway:
 		return GatewayLaneSlots
+	case LaneLight:
+		return LightLaneSlots
 	}
 	return 0
 }
@@ -156,13 +179,13 @@ func (s *Service) runnerBusyWith(ctx context.Context, r *Runner, j *RunnerJobInf
 		if l == lane {
 			inLane++
 		}
-		if !sideLane(l) {
+		if !sideLaneOn(r, l) {
 			all++
 		}
 		if l == LaneAgent {
 			agents++
 		}
-		if l == lane || !sideLane(lane) && !sideLane(l) {
+		if l == lane || !sideLaneOn(r, lane) && !sideLaneOn(r, l) {
 			doing = append(doing, jobNoun(kind, source))
 		}
 	}
@@ -171,14 +194,27 @@ func (s *Service) runnerBusyWith(ctx context.Context, r *Runner, j *RunnerJobInf
 	}
 	c := s.capacityOf(r.ID)
 	places := sideLaneSlots(lane)
-	if lane == LaneAgent {
+	switch lane {
+	case LaneAgent:
 		places = agentPlaces(c)
+	case LaneLight:
+		places = lightPlaces(c)
 	}
-	stopped := lane == LaneAgent && c != nil && c.AgentsStopped != ""
+	stopped := lane == LaneAgent && c != nil && c.AgentsStopped != "" || lane == LaneLight && c != nil && c.LightStopped != ""
+	why := ""
+	if c != nil {
+		why = c.AgentsStopped
+		if lane == LaneLight {
+			why = c.LightStopped
+		}
+	}
+	if lane == LaneLight && stopped && len(doing) == 0 {
+		return fmt.Sprintf("%s takes no more reviews or audits while memory is short (%s).", r.Name, why), nil
+	}
 	// holding are the agent jobs in a test slot, which count against the heavy
 	// and light jobs' limits: the last report's, and no more than still run.
 	holding := 0
-	if c != nil && !sideLane(lane) {
+	if c != nil && !sideLaneOn(r, lane) {
 		holding = min(c.AgentSlots, agents)
 	}
 	// filled is what the lane's own limit counts.
@@ -188,7 +224,7 @@ func (s *Service) runnerBusyWith(ctx context.Context, r *Runner, j *RunnerJobInf
 	}
 	all += holding
 	blocked := holding > 0 && (c.Level == "overloaded" || all >= c.Max || lane == LaneHeavy && filled >= c.Limit)
-	if !stopped && !blocked && (len(doing) == 0 || sideLane(lane) && inLane < places) {
+	if !stopped && !blocked && (len(doing) == 0 || sideLaneOn(r, lane) && inLane < places) {
 		return r.Name + " is online and should take it within seconds.", nil
 	}
 	running := "it is running no other job."
@@ -208,8 +244,12 @@ func (s *Service) runnerBusyWith(ctx context.Context, r *Runner, j *RunnerJobInf
 		}
 	}
 	switch {
+	case stopped && inLane < places && lane == LaneLight:
+		return fmt.Sprintf("%s takes no more reviews or audits while memory is short (%s); %s", r.Name, why, running), nil
 	case stopped && inLane < places:
-		return fmt.Sprintf("%s takes no more agent jobs while memory is short (%s); %s", r.Name, c.AgentsStopped, running), nil
+		return fmt.Sprintf("%s takes no more agent jobs while memory is short (%s); %s", r.Name, why, running), nil
+	case lane == LaneLight && sideLaneOn(r, lane):
+		return fmt.Sprintf("%s runs up to %d review%s or audit%s at once beside its heavy jobs; %s", r.Name, places, plural(places), plural(places), running), nil
 	case lane == LaneAgent:
 		return fmt.Sprintf("%s runs up to %d agent job%s at once (--max-agents); %s", r.Name, places, plural(places), running), nil
 	case lane == LaneRequest:
@@ -219,7 +259,11 @@ func (s *Service) runnerBusyWith(ctx context.Context, r *Runner, j *RunnerJobInf
 	case lane == LaneGateway:
 		return fmt.Sprintf("%s runs %d audits through the gateway at once beside its other jobs; %s", r.Name, GatewayLaneSlots, running), nil
 	case c != nil && c.Level == "overloaded":
-		return fmt.Sprintf("%s is overloaded (%s), so it runs one job at a time; %s", r.Name, c.Reason, running), nil
+		one := "one job"
+		if sideLaneOn(r, LaneLight) {
+			one = "one heavy job"
+		}
+		return fmt.Sprintf("%s is overloaded (%s), so it runs %s at a time; %s", r.Name, c.Reason, one, running), nil
 	case c != nil && c.Level != "" && filled >= c.Limit && c.Limit < c.Max:
 		why := ""
 		if c.Reason != "" {
