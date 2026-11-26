@@ -38,16 +38,18 @@ func (t *Tx) RunDeferred() {
 }
 
 // Part runs f as a part of the transaction that is undone whole when f
-// fails: its writes roll back to a savepoint and its events are dropped,
-// while the rest of the transaction goes on. For a side job a caller logs
-// and moves past, so a half of it doesn't commit without the other.
+// fails: its writes roll back to a savepoint, and its events and the work it
+// deferred are dropped, while the rest of the transaction goes on. For a side
+// job a caller logs and moves past, so a half of it doesn't commit without
+// the other.
 func (t *Tx) Part(ctx context.Context, f func() error) error {
-	n := len(t.events)
+	n, queued := len(t.events), len(t.pending)
 	if _, err := t.ExecContext(ctx, `SAVEPOINT part`); err != nil {
 		return err
 	}
 	if err := f(); err != nil {
 		t.events = t.events[:n]
+		t.pending = t.pending[:min(queued, len(t.pending))]
 		if _, rerr := t.ExecContext(ctx, `ROLLBACK TO part`); rerr != nil {
 			return errors.Join(err, rerr)
 		}
