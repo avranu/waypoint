@@ -600,7 +600,7 @@ func aiActorNamed(label string, projectID int64, model string) *Actor {
 	if model != "" {
 		u.DisplayName += " (" + model + ")"
 	}
-	return &Actor{User: &u, Automation: &Automation{ID: -1, ProjectID: projectID, Name: u.DisplayName}, Depth: maxAutomationDepth}
+	return &Actor{User: &u, Automation: &AutomationRef{ID: -1, ProjectID: projectID, Name: u.DisplayName}, Depth: maxAutomationDepth}
 }
 
 // autoEstimate fills in points for a new issue when the project asks for it.

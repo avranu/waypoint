@@ -20,6 +20,14 @@ func automationRunnerOwner(a *Automation) int64 {
 }
 
 // usesRunner: some step runs on a runner.
+// ref is the part of the automation an Actor carries.
+func (a *Automation) ref() *AutomationRef {
+	if a == nil {
+		return nil
+	}
+	return &AutomationRef{ID: a.ID, Name: a.Name, ProjectID: a.ProjectID, SavedBy: a.savedBy}
+}
+
 func (r *Rule) usesRunner() bool {
 	for _, a := range flatSteps(r.Actions) {
 		if d := actionDef(a.Type); d != nil && d.Runner {

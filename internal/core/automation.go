@@ -518,7 +518,7 @@ func (s *Service) runAction(c *StepCtx) error {
 		if u.ID == 0 {
 			return nil
 		}
-		_, err = s.StartTimer(ctx, &Actor{User: u, Automation: a, Depth: actor.Depth}, itoa64(issue.ID), "")
+		_, err = s.StartTimer(ctx, &Actor{User: u, Automation: a.ref(), Depth: actor.Depth}, itoa64(issue.ID), "")
 		return err
 	case "stop_timer":
 		if err := needIssue(); err != nil {
@@ -528,7 +528,7 @@ func (s *Service) runAction(c *StepCtx) error {
 		if err != nil || u.ID == 0 {
 			return err
 		}
-		ua := &Actor{User: u, Automation: a, Depth: actor.Depth}
+		ua := &Actor{User: u, Automation: a.ref(), Depth: actor.Depth}
 		running, err := s.RunningTimer(ctx, ua)
 		if err != nil || running == nil || running.Issue == nil || running.Issue.ID != issue.ID {
 			return err

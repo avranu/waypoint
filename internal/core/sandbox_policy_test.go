@@ -44,7 +44,7 @@ func TestProjectSandboxPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	mcp := &Actor{User: owner.User, MCP: true}
-	auto := &Actor{User: owner.User, Automation: &Automation{ID: 1}}
+	auto := &Actor{User: owner.User, Automation: &AutomationRef{ID: 1}}
 	agentInBrowser := *web
 	agentInBrowser.Agent = "anthropic/claude-code"
 	for name, a := range map[string]*Actor{"token": tokActor, "mcp": mcp, "automation": auto, "agent": &agentInBrowser, "no session": owner} {

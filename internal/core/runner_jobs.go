@@ -541,7 +541,7 @@ func (s *Service) EnqueueRunnerJob(ctx context.Context, a *Actor, in RunnerJobIn
 	}
 	switch {
 	case a.Automation != nil:
-		if automationRunnerOwner(a.Automation) != owner {
+		if a.Automation.RunnerOwner() != owner {
 			return nil, fmt.Errorf("an automation runs jobs only on the runners of the person who last saved it: %w", ErrForbidden)
 		}
 	case a.User.ID != 0 && owner != a.User.ID:

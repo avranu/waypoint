@@ -285,7 +285,7 @@ func (s *Service) StartBabysit(ctx context.Context, actor *Actor, prID int64, in
 	}
 	owner := actor.ID()
 	if actor.Automation != nil {
-		owner, via = automationRunnerOwner(actor.Automation), "automation"
+		owner, via = actor.Automation.RunnerOwner(), "automation"
 	}
 	return s.startBabysit(ctx, actor, pr, owner, strings.TrimSpace(in.Model), via, in.Notify || in.Blocking, in.Blocking)
 }

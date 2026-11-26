@@ -271,6 +271,26 @@ func (s *Service) goBG(f func()) {
 	}()
 }
 
+// AutomationRef is what an Actor carries of the automation that performs a
+// change: the only fields read through the actor.
+type AutomationRef struct {
+	ID        int64
+	Name      string
+	ProjectID int64
+	// SavedBy is the id of the person who last saved the automation (WP-D18),
+	// 0 when an agent did.
+	SavedBy int64
+}
+
+// RunnerOwner is the user whose runners the automation's steps may use: the
+// one who last saved it; 0 when there is none (or no automation).
+func (r *AutomationRef) RunnerOwner() int64 {
+	if r == nil {
+		return 0
+	}
+	return r.SavedBy
+}
+
 // Actor is who is performing an operation.
 type Actor struct {
 	User *User
@@ -301,7 +321,7 @@ type Actor struct {
 	Prestart bool
 	// Automation is set when an automation performs the change on behalf of
 	// User (the person whose action triggered it).
-	Automation  *Automation
+	Automation  *AutomationRef
 	Depth       int
 	SessionHash string
 	// Session is the agent session (WP-D16) the request came from, set from

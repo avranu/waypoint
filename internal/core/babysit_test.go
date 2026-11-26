@@ -881,7 +881,7 @@ func TestBabysitAutomationStep(t *testing.T) {
 	}
 	pr := be.open()
 	a := &Automation{ID: 1, ProjectID: be.p.ID, Name: "Babysit agents' pull requests", savedBy: be.admin.User.ID}
-	actor := &Actor{User: be.admin.User, Automation: a}
+	actor := &Actor{User: be.admin.User, Automation: a.ref()}
 	b, err := be.s.StartBabysit(be.ctx, actor, pr.ID, BabysitInput{})
 	if err != nil || b.Via != "automation" || b.Owner.ID != be.admin.User.ID {
 		t.Fatalf("automation start = %+v %v", b, err)

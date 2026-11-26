@@ -285,7 +285,7 @@ func (s *Service) TestAutomation(ctx context.Context, actor *Actor, id int64, in
 	}
 	n := automationBudget
 	run := &AutomationRun{AutomationID: a.ID, Automation: a.Name, ProjectID: a.ProjectID, Inputs: vals, Event: e}
-	auto := &Actor{User: actor.User, Automation: a, Depth: 1, Budget: &n}
+	auto := &Actor{User: actor.User, Automation: a.ref(), Depth: 1, Budget: &n}
 	x := &execution{s: s, run: run, a: a, rule: &a.Rule, ev: e, actor: auto, dry: true,
 		trig:  s.triggerView(a, e, "test", eventBy(e), actor.User.Ref()),
 		steps: map[string]map[string]any{}, prev: map[string]any{}, rows: map[string]*RunStep{}}

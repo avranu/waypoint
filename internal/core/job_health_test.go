@@ -617,7 +617,7 @@ func TestAckJobProblemAccess(t *testing.T) {
 		"no admin":         sam,
 		"an agent's shell": {User: e.admin.User, AgentEnv: "claude-code"},
 		"a session":        {User: e.admin.User, Session: 7},
-		"an automation":    {User: e.admin.User, Automation: &Automation{}},
+		"an automation":    {User: e.admin.User, Automation: &AutomationRef{}},
 		"the system":       SystemActor(),
 	} {
 		if _, err := e.s.AckJobProblem(e.ctx, a, p.ID, "fine"); !errors.Is(err, ErrForbidden) {

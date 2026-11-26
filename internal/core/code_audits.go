@@ -495,7 +495,7 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 	}
 	owner := actor.ID()
 	if actor.Automation != nil {
-		if owner = automationRunnerOwner(actor.Automation); owner == 0 {
+		if owner = actor.Automation.RunnerOwner(); owner == 0 {
 			return nil, invalid("this automation has no owner for its runners: an agent saved it, or it was never saved. Save it yourself to use your runners")
 		}
 	}
