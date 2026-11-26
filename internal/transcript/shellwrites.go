@@ -1130,10 +1130,32 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 			for i := 0; i < len(args); i++ {
 				a := args[i]
 				switch {
-				case a == "-e" || a == "-f" || a == "--expression" || a == "--file":
+				case a == "--expression" || a == "--file":
 					skip = 0
 					i++
-				case strings.HasPrefix(a, "-"):
+				case strings.HasPrefix(a, "--expression=") || strings.HasPrefix(a, "--file="):
+					skip = 0
+				case strings.HasPrefix(a, "--"):
+				case strings.HasPrefix(a, "-") && len(a) > 1:
+					// One-letter options in a row: -e and -f take the script
+					// from the rest of the word or the next one (-es/a/b/, -ne
+					// s/a/b/), -l a number likewise, and -i its suffix from
+					// the rest of the word.
+				letters:
+					for j := 1; j < len(a); j++ {
+						switch a[j] {
+						case 'e', 'f':
+							skip = 0
+							fallthrough
+						case 'l':
+							if j == len(a)-1 {
+								i++
+							}
+							break letters
+						case 'i':
+							break letters
+						}
+					}
 				default:
 					files = append(files, a)
 				}

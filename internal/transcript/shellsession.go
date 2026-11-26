@@ -203,8 +203,8 @@ func (s *ShellSession) Edit(cmd, cwd string) (wrote, known bool) {
 				continue
 			}
 			if !strings.HasPrefix(p, "/") {
-				if dir != "" && !strings.HasPrefix(dir, "/") {
-					known = false // after a cd not spelled out, or in a working directory that is no path: anywhere
+				if !strings.HasPrefix(dir, "/") {
+					known = false // after a cd not spelled out, or in a working directory that is no path or not recorded: anywhere
 				}
 				if dir == ShellNowhere || !strings.HasPrefix(dir, "/") {
 					continue

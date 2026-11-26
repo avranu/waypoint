@@ -114,6 +114,7 @@ func (p *shellParser) list(end byte) []*ShellCmd {
 	pipe := false
 	and := false
 	listStart := 0
+	inner := 0 // { } groups open inside ${ cmd; }
 	var groups []int
 	var grp *ShellGroup
 	var outer []*ShellGroup
@@ -210,8 +211,22 @@ func (p *shellParser) list(end byte) []*ShellCmd {
 			return out
 		case (c == '<' || c == '>') && p.peek(1) != '(':
 			p.redirect(cur)
+		case c == '}' && end == '}' && len(cur.Words) == 0 && inner == 0:
+			// The } that closes ${ cmd; }: a word of its own where a command
+			// would begin, and not the end of a { } group inside.
+			p.i++
+			flush(false)
+			return out
 		default:
 			w, quoted := p.word(cur)
+			if end == '}' && !quoted && len(cur.Words) == 0 {
+				switch w {
+				case "{":
+					inner++
+				case "}":
+					inner--
+				}
+			}
 			if !quoted && IsDigits(w) && (p.peek(0) == '<' || p.peek(0) == '>') {
 				p.fd = w
 				continue
@@ -331,7 +346,8 @@ const ShellSubPlaceholder = "$(…)"
 // shell may make other words of it, which the guard doesn't see: an
 // unquoted $ or substitution (split into words), or a glob or brace at its
 // start ({-d,x=1} is -d x=1; ?d can be a file named -d). A ${ } expansion
-// is one word to its closing brace, spaces and # included (${x:- #}).
+// is one word to its closing brace, spaces and # included (${x:- #}); ${ cmd; }
+// is a substitution, and the { after $$ is a plain character.
 func (p *shellParser) word(cur *ShellCmd) (string, bool) {
 	var b strings.Builder
 	quoted := false
@@ -372,6 +388,16 @@ func (p *shellParser) word(cur *ShellCmd) (string, bool) {
 			open = true
 		case c == '$' && p.peek(1) == '\'':
 			p.i++
+		case c == '$' && p.peek(1) == '$':
+			// The shell's own number: the second $ opens no expansion ($${).
+			open = true
+			b.WriteString("$$")
+			p.i += 2
+		case c == '$' && p.peek(1) == '{' && isFunsub(p.peek(2)):
+			p.i += 3
+			cur.Subs = append(cur.Subs, p.list('}'))
+			b.WriteString(ShellSubPlaceholder)
+			open = true
 		case c == '$' && p.peek(1) == '{':
 			braces++
 			open = true
@@ -430,9 +456,18 @@ func (p *shellParser) dquote(b *strings.Builder, cur *ShellCmd) {
 			p.i++
 			cur.Subs = append(cur.Subs, p.list('`'))
 			b.WriteString(ShellSubPlaceholder)
+		case c == '$' && p.peek(1) == '{' && isFunsub(p.peek(2)):
+			p.i += 3
+			cur.Subs = append(cur.Subs, p.list('}'))
+			b.WriteString(ShellSubPlaceholder)
 		default:
 			b.WriteByte(c)
 			p.i++
 		}
 	}
 }
+
+// isFunsub says the byte after ${ makes it bash 5.3's command substitution
+// (${ cmd; } and ${| cmd; }), whose commands run in the shell itself, not a
+// parameter's expansion.
+func isFunsub(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '|' }

@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"os"
 
 	trscript "git.jmann.me/claude/waypoint/internal/transcript"
 )
@@ -28,14 +27,16 @@ func traceCommands(cmd, cwd string, vars map[string]string, mem *traceScripts, o
 }
 
 // traceVars is the variables a line starts with: HOME as the session's own
-// machine had it, inferred from its cwd as the server does, else this
-// machine's (a transcript uploaded from another machine than it ran on).
+// machine had it, inferred from its cwd as the server does
+// (trscript.ShellSession.Edit). Outside any home there is none, as there:
+// this machine's home is not the session's (a transcript uploaded from
+// another machine than it ran on), and the two readings must agree.
 func traceVars(cwd string) map[string]string {
-	home := trscript.ShellHomeOf(cwd)
-	if home == "" {
-		home, _ = os.UserHomeDir()
+	vars := map[string]string{}
+	if home := trscript.ShellHomeOf(cwd); home != "" {
+		vars["HOME"] = home
 	}
-	return map[string]string{"HOME": home}
+	return vars
 }
 
 // shell is the session's memory in the form the shared recogniser takes; put

@@ -270,10 +270,19 @@ func (s guardSite) confined(p string) bool {
 
 // trackedClean says a file is the project's own: its text is what the
 // default branch of origin holds at that path (origin/HEAD, else origin/main
-// or origin/master). A file the session wrote, edited or committed itself,
-// one whose edits are hidden from git status (skip-worktree), an ignored one
-// and one outside a repository are not; nor is any file where no such branch
-// is known. The name is given to git as a path, never as a pattern.
+// or origin/master), at that branch's tip or at the commit the checkout left
+// it at (a worktree behind origin after a fetch). It compares text and reads
+// nothing else of git's: a file the session wrote, edited or committed itself
+// differs, whatever git status says of it (skip-worktree, ignored), and an
+// ignored file holding origin's own text is the project's. A file outside a
+// repository is not, nor is any file where no such branch is known. The name
+// is given to git as a path, never as a pattern.
+//
+// This tells apart what a session wrote in the course of its work. It is no
+// proof against one that sets out to deceive the guard by rewriting the
+// repository's remote-tracking refs or its filters: such a session can as
+// well put its commands in a Makefile, which runs unread. Containment holds
+// that line (PL7), not this check.
 func trackedClean(p string) bool {
 	dir, base := filepath.Dir(p), filepath.Base(p)
 	git := func(args ...string) string {
@@ -290,9 +299,14 @@ func trackedClean(p string) bool {
 		return false
 	}
 	for _, ref := range []string{"refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master"} {
-		if git("rev-parse", "-q", "--verify", ref+"^{commit}") != "" {
-			return git("rev-parse", "-q", "--verify", ref+":./"+base) == have
+		if git("rev-parse", "-q", "--verify", ref+"^{commit}") == "" {
+			continue
 		}
+		if git("rev-parse", "-q", "--verify", ref+":./"+base) == have {
+			return true
+		}
+		at := git("merge-base", "HEAD", ref)
+		return at != "" && git("rev-parse", "-q", "--verify", at+":./"+base) == have
 	}
 	return false
 }

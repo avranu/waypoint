@@ -1699,7 +1699,6 @@ func TestTrackedClean(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "tools", "hidden.sh"), "echo a\n")
 	writeFile(t, filepath.Join(dir, "tools", "mine.sh"), "echo a\n")
 	writeFile(t, filepath.Join(dir, "tools", "b.sh"), "echo a\n")
-	writeFile(t, filepath.Join(dir, "tools", "nohead.sh"), "echo a\n")
 	git("add", ".")
 	git("commit", "-q", "-m", "x")
 	if trackedClean(filepath.Join(dir, "tools", "a.sh")) {
@@ -1728,7 +1727,7 @@ func TestTrackedClean(t *testing.T) {
 		filepath.Join(dir, "tools", "*.sh"):       false,
 		filepath.Join(dir, "tools", "b.sh"):       true,
 		filepath.Join(dir, "tools", "new.sh"):     false,
-		filepath.Join(dir, "ignored.sh"):          false,
+		filepath.Join(dir, "ignored.sh"):          false, // not in origin's tree; that git ignores it is not read
 		outside:                                   false,
 	} {
 		if got := trackedClean(f); got != want {

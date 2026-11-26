@@ -586,9 +586,9 @@ func (g *guard) shellBody(c *guardCmd, args []string, depth int) *guardHit {
 
 // guardMaxScript is the longest script file the guard reads, on disk or as
 // the line wrote it; a longer one is refused when run, not read in part
-// (see blindHit). The bound keeps the hook's time and memory small. No
-// shell script or configure in the checkouts on the machine this was written
-// on is over 300 KB (2026-11-26), so the refusal should be rare.
+// (see blindHit). The bound keeps the hook's time and memory small; it is a
+// choice, not a measured size, set well past what a script written by hand
+// runs to.
 const guardMaxScript = 1 << 20
 
 var reShebang = lazyre.New(`^#![ \t]*(?:\S*/)?(?:env[ \t]+(?:-\S+[ \t]+)*)?([A-Za-z0-9._+-]+)`)
@@ -638,7 +638,7 @@ func (g *guard) fileText(raw string) (text string, kept, ok bool) {
 
 // ranFile checks a script file a command runs: bash F, source F, or F
 // itself (shell says the command names a shell; otherwise the file's #! line
-// or its .sh name does). A shell script is read as the commands it is. One
+// does, and a file with none is run by the shell that was asked to run it). A shell script is read as the commands it is. One
 // the line itself wrote is judged like commands typed on the line, and so is
 // one on disk that is not the project's (untracked, changed or committed by
 // the session, outside a repository: the session may have written it in an
@@ -670,7 +670,7 @@ func (g *guard) ranFile(raw string, depth int, shell bool) *guardHit {
 			prog = m[1]
 		}
 		switch {
-		case shellNames[prog], prog == "" && strings.HasSuffix(raw, ".sh"):
+		case shellNames[prog], prog == "": // with no #! line the shell runs the file itself
 		case trscript.ScriptFile([]string{prog, "x.py"}) != "":
 			for _, t := range trscript.ScriptWrites(text) {
 				if p := g.site.resolve(g.dir, t); p != "" {
