@@ -1,25 +1,30 @@
 # Grouping of internal/core's non-test files into domains (WP-1664, WP-ADR151).
 #
 # Each line is `domain: glob glob ...`; a glob matches a file name (path.Match),
-# and a name without wildcards beats any glob, so the order of lines never
-# decides which group a file is in. A file no line matches falls to the group
-# named by its stem before the first underscore; a test requires every
-# non-test file of internal/core to match a line, so a new file has to be placed
-# here, in the domain it belongs to or in a line of its own.
+# and a name without wildcards beats any glob. A file no line matches falls to
+# the group named by its stem before the first underscore. A test requires every
+# non-test file of internal/core to match a line, and refuses a file that the
+# globs of two lines match unless a line names it, so the order of lines never
+# decides which group a file is in. A new file goes in the domain it belongs to
+# or in a line of its own.
 #
-# The ORDER of the lines is the provider-first layer order, bottom first, and it
-# is a measurement: the order that minimises the references pointing up (to a
-# later line) as of the commit that last changed this file, kernel first. It is
-# regenerated, not edited by hand, whenever files or groups change:
+# The `kernel` line is a group of package core's own root files (Service, tx and
+# the kernel shims), not the package internal/core/kernel.
 #
-#   go run ./cmd/coremap -suggest-order     # the "order:" line is this file's order
+# The ORDER of the lines is the provider-first layer order, bottom first. A
+# reference from a line to a later one is "upward" and has to be cut before the
+# lower group can move out of core. The order is a measured snapshot, kernel
+# first, from a heuristic that reduces upward references (not a proven minimum):
 #
-# The core split's plan follows the measured order, not the other way round.
-# A reference from a line to a later one is "upward" and has to be cut before
-# the lower group can move out of core. Small groups whose references go
-# mostly (>= 50%) to one domain are merged into it by name; files that many
-# groups use (contracts, users, work, knowledge, permissions...) stay groups of
-# their own so they sort low rather than hiding inside a consumer.
+#   go run ./cmd/coremap -suggest-order     # the "order:" line, pasted by hand
+#
+# No test compares this file with that output, which shifts as the code does. A
+# new line goes where it adds the fewest upward references; measure the whole
+# order again before a domain moves. Small groups whose references go mostly
+# (>= 50%, from -affinity, judged by hand) to one domain are merged into it by
+# name; files that many groups use (contracts, users, work, knowledge,
+# permissions...) stay groups of their own so they sort low rather than hiding
+# inside a consumer.
 kernel: core.go events.go kernel_shims.go
 egress: egress.go egress_*.go
 push: push.go push_*.go
@@ -118,6 +123,7 @@ front: front.go front_*.go
 drift: drift.go drift_*.go
 relation: relation*.go related.go
 goal: goal*.go
+deferred: deferred.go deferred_*.go
 scheduler: scheduler.go scheduler_*.go
 landed: landed.go landed_*.go
 nitpicks: nitpicks.go nitpicks_*.go
