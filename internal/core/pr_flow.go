@@ -217,6 +217,7 @@ type flowPull struct {
 // know whether the rest was cut off.
 func (s *Service) flowPulls(ctx context.Context, actor *Actor, projectID int64, repo, cond string, condArgs []any, limit int, order string) ([]flowPull, bool, error) {
 	vis, args := prVisible(actor, projectID)
+	// #nosec G202 -- vis, cond and order are fixed conditions; values are bound
 	q := `SELECT p.id, p.number FROM pull_requests p WHERE ` + vis + ` AND ` + cond
 	args = append(args, condArgs...)
 	if repo != "" {
