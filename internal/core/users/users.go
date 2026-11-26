@@ -57,8 +57,8 @@ type Hooks struct {
 	CredentialsChanged func(ctx context.Context, t *kernel.Tx, userID int64) error
 	// JobScope is the projects a runner job's token reaches, by role. It is
 	// not an event because the actor being built needs the answer. When it is
-	// nil a job token's Scope is empty and non-nil: the token reaches no
-	// project.
+	// nil, or answers nil, a job token's Scope is empty and non-nil: the token
+	// reaches no project.
 	JobScope func(ctx context.Context, jobID int64, u *kernel.User) (map[int64]int, error)
 	// BeforeDelete runs in the transaction that deletes an account, before the
 	// row goes: by is who deletes it. It is not called when no one (actor id
@@ -588,11 +588,13 @@ func (s *Store) ActorFor(ctx context.Context, hash string, tokenID int64, touch 
 	}
 	a := &kernel.Actor{User: u, ReadOnly: ro, Agent: agent, Permissions: ps, TokenID: id, RunnerJob: job.Int64}
 	if job.Valid {
-		a.Scope = map[int64]int{}
 		if s.hooks.JobScope != nil {
 			if a.Scope, err = s.hooks.JobScope(ctx, job.Int64, u); err != nil {
 				return nil, err
 			}
+		}
+		if a.Scope == nil { // a job token is never unscoped
+			a.Scope = map[int64]int{}
 		}
 		nu := *u
 		nu.IsAdmin = false

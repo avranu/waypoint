@@ -441,3 +441,16 @@ func TestFailedCredentialsChangedRollsBackChangePassword(t *testing.T) {
 		t.Errorf("%d sessions, want both kept", n)
 	}
 }
+
+func TestJobTokenWithNilScopeFromTheHookReachesNoProject(t *testing.T) {
+	r := newRig(t, Hooks{JobScope: func(context.Context, int64, *kernel.User) (map[int64]int, error) { return nil, nil }})
+	u, _ := r.person(t, "robin")
+	jobToken(t, r, u, "h", true)
+	a, err := r.st.ActorFor(r.Ctx, "h", 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Scope == nil || len(a.Scope) != 0 {
+		t.Errorf("scope = %#v, want non-nil and empty", a.Scope)
+	}
+}
