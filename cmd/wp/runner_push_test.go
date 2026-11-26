@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +50,10 @@ func TestRoundPushRebasesOntoAMovedBranch(t *testing.T) {
 	res := o.Result.(map[string]any)
 	if res["pushed"] != true || res["rebased"] != true {
 		t.Errorf("result = %v", res)
+	}
+	// The round's own change is what it made, not what it was rebased onto.
+	if own, _ := res["own_files"].([]string); !slices.Equal(own, []string{"made-by-claude.txt"}) || res["lines"] != 1 {
+		t.Errorf("own files %v lines %v", res["own_files"], res["lines"])
 	}
 	if got := gitOut(t, remote, "log", "--format=%s", "-2", "feat"); got != "Add the file\nsomeone else pushed" {
 		t.Errorf("branch = %q", got)

@@ -49,6 +49,8 @@ func (p *runnerProc) pushMoved(ctx context.Context, run *jobRun, work string, en
 		result["commits"], result["files"], result["rebased"] = []string{}, []string{}, true
 		delete(result, "commit")
 		delete(result, "diff")
+		delete(result, "own_files")
+		delete(result, "lines")
 		return errOnBranch
 	}
 	names, err := p.gitPaths(ctx, work, "diff", "--name-only", "--no-renames", tip+"..HEAD")

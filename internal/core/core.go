@@ -106,6 +106,8 @@ type Service struct {
 	gatewayLimits   sync.Map
 	staleChecksRead sync.Map
 
+	footprintUnknown sync.Map
+
 	baseMerged     sync.Map
 	baseRed        sync.Map
 	rerunRefusedAt sync.Map
