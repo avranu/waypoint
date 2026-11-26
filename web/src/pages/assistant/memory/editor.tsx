@@ -6,14 +6,14 @@ import { Button } from '@/components/ui/button'
 import { Confirm } from '@/components/ui/dialog'
 import { MarkdownField } from '@/components/editor/MarkdownField'
 
-/**
- * Formatted text (or its markdown source) for a memory file, persona or
- * skill. Ctrl/Cmd+S saves. Text with front matter opens as markdown.
- */
 // Hermes splits a memory file at a line holding only §; the editor would fold
 // that line into the item or quote above it.
 const keepsEntries = (md: string) => !/^§$/m.test(md)
 
+/**
+ * Formatted text (or its markdown source) for a memory file, persona or
+ * skill. Ctrl/Cmd+S saves. Text with front matter opens as markdown.
+ */
 export function MarkdownEditor({
   value,
   onChange,

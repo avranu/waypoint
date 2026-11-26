@@ -19,7 +19,7 @@ import TaskList from '@tiptap/extension-task-list'
 import { Placeholder } from '@tiptap/extensions'
 import StarterKit from '@tiptap/starter-kit'
 import { ATTACHED_VIDEO, isPieceSrc, pieceHtml, PIECE_SRC, pieceText } from '@/lib/markdown'
-import { SAFE_HREF, SAFE_SRC } from '@/lib/richtext'
+import { htmlToMarkdown, SAFE_HREF, SAFE_SRC } from '@/lib/richtext'
 
 // The editor's schema is what Waypoint's markdown renders: it is also what
 // survivesRichEdit round-trips text through, so what the schema can't hold
@@ -510,7 +510,7 @@ function openFence(view: EditorView, space: boolean): boolean {
   while (before.lastChild?.type.name === 'hardBreak')
     before = before.cut(0, before.size - before.lastChild.nodeSize)
   const rest = para.content.cut($from.parentOffset)
-  const text = rest.textBetween(0, rest.size, undefined, '\n')
+  const text = rest.textBetween(0, rest.size, undefined, sourceOf)
   const block = schema.nodes.codeBlock.create(
     { language: m[1] || null },
     text ? schema.text(text) : null,
@@ -529,6 +529,18 @@ function openFence(view: EditorView, space: boolean): boolean {
     tr.setMeta(rules, { transform: tr, from: $from.pos, to: $from.pos, text: space ? ' ' : '' })
   view.dispatch(tr)
   return true
+}
+
+/** The markdown of a node that holds no text, as a block of code takes it in. */
+function sourceOf(leaf: PMNode): string {
+  const { src, alt } = leaf.attrs as { src?: string; alt?: string }
+  if (leaf.type.name === 'hardBreak') return '\n'
+  if (leaf.type.name === 'piece') return src ?? ''
+  if (leaf.type.name !== 'image' && leaf.type.name !== 'video') return ''
+  const img = document.createElement('img')
+  img.setAttribute('src', src ?? '')
+  img.setAttribute('alt', alt ?? '')
+  return htmlToMarkdown(img.outerHTML).trim()
 }
 
 /**

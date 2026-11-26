@@ -2,8 +2,7 @@
 // bullets, numbers and tasks, one level at a time; Enter on an empty nested item
 // and Backspace at its start un-nest it; undo reverses one Tab; and the saved
 // markdown (and a reopened one) shows the same nesting. RICH_TYPING_BROWSER=
-// firefox|webkit runs it under that engine (engine.mjs); the rules are on only
-// where richdom.ts SUPPORTED says (WP-1758).
+// firefox|webkit runs it under that engine (engine.mjs).
 // Run after 01-signup-flow (user robin).
 import { launchEngine } from "./engine.mjs";
 import fs from "node:fs";

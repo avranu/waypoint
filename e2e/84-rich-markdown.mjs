@@ -187,6 +187,12 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     "<table><tbody><tr><th>h</th><th>k</th></tr><tr><td><code>c\\|d</code></td><td>e</td></tr></tbody></table>",
     "| h | k |\n| --- | --- |\n| `c\\|d` | e |",
   );
+  await writes(
+    "Mixed list",
+    '<ul><li><p>a</p></li></ul><ul data-type="taskList"><li data-type="taskItem" data-checked="false"><div><p>b</p></div></li></ul>',
+    "- a\n- [ ] b",
+  );
+  await writes("Entity in address", '<p><a href="/x?a=1&amp;amp;y">l</a></p>', "[l](/x?a=1&amp;amp;y)");
   await writes("Script and style", "<p>a<style>p{}</style><script>x()</script>b</p>", "ab");
   await writes("Heading break", "<h2>a<br>b</h2>", "## a b");
   await writes("Heading closer", "<h2>Issue #</h2>", "## Issue \\#");

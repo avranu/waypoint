@@ -127,9 +127,10 @@ for (const [width, scheme] of looks([
     `${tag} a comment draft survives a refresh`,
   );
   await page.getByRole("button", { name: "Comment", exact: true }).click();
-  await page.waitForFunction(() =>
-    [...document.querySelectorAll('[aria-label=Comment]')].every((n) => (n.value ?? n.innerText).trim() === ""),
-  );
+  await page.waitForFunction(() => {
+    const boxes = [...document.querySelectorAll('[aria-label=Comment]')];
+    return boxes.length > 0 && boxes.every((n) => (n.value ?? n.innerText).trim() === "");
+  });
   await page.reload();
   await box.waitFor();
   ok((await markdownOf(box)).trim() === "", `${tag} a posted comment leaves no draft: ${JSON.stringify(await markdownOf(box))}`);

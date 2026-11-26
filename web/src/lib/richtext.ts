@@ -153,10 +153,14 @@ function codeSpan(text: string) {
 }
 
 // A link or image destination. A backslash before punctuation would be read
-// as an escape, a line break can't be in one, and `<` or `>` would end the
-// angle form, so those are escaped or encoded.
+// as an escape, an `&` that starts an entity as the character it names, a line
+// break can't be in one, and `<` or `>` would end the angle form, so those are
+// escaped or encoded.
 function target(url: string) {
-  const u = url.replace(/\\(?=[!-/:-@[-`{-~])/g, '\\\\').replace(/[\r\n]/g, encodeURIComponent)
+  const u = url
+    .replace(/\\(?=[!-/:-@[-`{-~])/g, '\\\\')
+    .replace(/&(?=(?:#\d+|#[xX][\da-fA-F]+|[A-Za-z][A-Za-z\d]*);)/g, '&amp;')
+    .replace(/[\r\n]/g, encodeURIComponent)
   return /[()\s<>]/.test(u) ? `<${u.replace(/[\\<>]/g, (c) => (c === '\\' ? c : `\\${c}`))}>` : u
 }
 

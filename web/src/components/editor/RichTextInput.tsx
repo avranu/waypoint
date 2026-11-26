@@ -36,7 +36,12 @@ import { fieldBoxLook, Input } from '@/components/ui/input'
 import { useEscapeLayer } from '@/components/ui/layers'
 import { Popover } from '@/components/ui/popover'
 import { toast, toastError } from '@/components/ui/toast'
-import { issueTarget, refreshAttachments, uploadAttachment } from '@/lib/attachments'
+import {
+  issueTarget,
+  refreshAttachments,
+  uploadAttachment,
+  uploadPlaceholder,
+} from '@/lib/attachments'
 import { toEditorHtml, fromEditorHtml } from '@/lib/editor-html'
 import { looksLikeMarkdown } from '@/lib/looksLikeMarkdown'
 import { hasRawHtml, pieceHtml } from '@/lib/markdown'
@@ -98,10 +103,20 @@ type Mention = { from: number; to: number; text: string }
 type LinkDraft = { from: number; to: number; href: string; text: string | null }
 
 /** Markdown parsed into the schema as a slice, the way a paste of it is. */
-function markdownSlice(schema: Schema, md: string) {
+function markdownSlice(schema: Schema, md: string, blob = false) {
   const t = document.createElement('template')
-  t.innerHTML = toEditorHtml(md)
+  t.innerHTML = toEditorHtml(md, { blob })
   return DOMParser.fromSchema(schema).parseSlice(t.content)
+}
+
+/**
+ * Whether copied HTML says more than its plain text (links, emphasis, headings,
+ * lists, tables). A code editor's coloured spans around markdown source don't.
+ */
+function hasFormatting(html: string) {
+  if (!html) return false
+  const { body } = new window.DOMParser().parseFromString(html, 'text/html')
+  return !!body.querySelector('a[href], strong, b, em, i, h1, h2, h3, h4, h5, h6, ul, ol, table')
 }
 
 /** Plain text as htmlToMarkdown writes it, escapes included. */
@@ -279,7 +294,8 @@ export const RichTextInput = forwardRef<RichTextHandle, Props>(function RichText
       ed.chain().focus().insertContent(content).run()
       return
     }
-    const placeholders = files.map((f) => `[Uploading ${f.name || 'pasted image'}…]()`)
+    const held = files.map((f) => uploadPlaceholder(f.name || 'pasted image'))
+    const placeholders = held.map((h) => h.text)
     ed.chain()
       .focus()
       .insertContent(
@@ -313,9 +329,11 @@ export const RichTextInput = forwardRef<RichTextHandle, Props>(function RichText
           refreshAttachments(qc, to)
           if (!finish(i, a.markdown))
             toast(`${f.name || 'The file'} was attached but not inserted: its place was deleted.`)
+          held[i].done()
         },
         (err) => {
           finish(i, null)
+          held[i].done()
           toastError(err)
         },
       )
@@ -374,7 +392,7 @@ export const RichTextInput = forwardRef<RichTextHandle, Props>(function RichText
         const html = data.getData('text/html')
         if (html.includes('data-pm-slice')) return false
         const text = data.getData('text/plain')
-        if (text && looksLikeMarkdown(text)) {
+        if (text && looksLikeMarkdown(text) && !hasFormatting(html)) {
           event.preventDefault()
           // Markup in it would not survive the sanitiser: it goes in as the text it is.
           if (hasRawHtml(text)) {
@@ -385,7 +403,7 @@ export const RichTextInput = forwardRef<RichTextHandle, Props>(function RichText
               pasteLiteral.current = false
             }
           }
-          const slice = markdownSlice(view.state.schema, text)
+          const slice = markdownSlice(view.state.schema, text, !!props.current.deferUploads)
           view.dispatch(
             view.state.tr
               .replaceSelection(slice)

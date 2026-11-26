@@ -4,13 +4,7 @@
 // and opening the editor with a click moves nothing on the page.
 // Run after 01-signup-flow (user robin). RICH_TYPING_BROWSER=firefox|webkit
 // runs it under that engine (engine.mjs; `make e2e-webkit` runs WebKit in
-// Docker). Measured with E2E_LOOKS=one, 315 checks: Chromium and Firefox pass
-// all of them, and richdom.ts turns the rules on in both. With the rules
-// forced on, Playwright's WebKit fails 54 real checks (27 cases at two widths;
-// the click-to-edit checks pass there since WP-1758), plus page errors from
-// fetches a navigation cancels. So the rules stay off there (richdom.ts SUPPORTED, WP-1758)
-// and under WebKit the conversion cases FAIL by design: that mode measures
-// them, it does not pass.
+// Docker).
 import { launchEngine } from "./engine.mjs";
 import fs from "node:fs";
 import { looks } from "./looks.mjs";
@@ -288,7 +282,7 @@ for (const [width, scheme] of looks(
     "```\n# not a heading `x` **y**\n```\n\nafter",
     /<pre><code>[^<]*(<br>)?<\/code><\/pre><p>after<\/p>/,
   );
-  // A fence typed on a line after Shift+Enter, in a paragraph (Jess, WP-1855).
+  // A fence typed on a line after Shift+Enter, in a paragraph (WP-1855).
   await typed(
     "fence after a line break",
     async () => {
@@ -769,8 +763,9 @@ for (const [width, scheme] of looks(
     await type("t");
     const h = await shape(richBox);
     ok(/<li>first<\/li><\/ul><ul><li><input[^>]*class="task"[^>]*>[^<]*t<\/li>/.test(h), `${tag} "[ ] " typed at the start of a bullet makes it a task (${h.slice(0, 160)})`);
-    // A list is all bullets or all tasks: the task item starts its own list.
-    await closeAndCheck(i, "task in a bullet", "- first\n\n- [ ] t");
+    // The editor's list is all bullets or all tasks, so the task item starts
+    // its own; saved, the two are the one list again.
+    await closeAndCheck(i, "task in a bullet", "- first\n- [ ] t");
   }
 
   // Tables: the caret in a cell is in the cell, not in "the table".

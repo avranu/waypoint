@@ -184,14 +184,19 @@ function Form({ defaults, onClose }: { defaults: Defaults; onClose: () => void }
   // The issue exists (made without the files' temporary addresses): files the
   // description still points at go to it, and their tokens become the
   // attachments' markdown in one edit.
-  const attachFiles = async (key: string, text: string) => {
-    const next = await files.attach(`issue:${key}`, text)
-    if (next === stripBlobTokens(text)) return
+  const attachFiles = async (made: IssueDetail, text: string) => {
+    const { key } = made
+    const filled = await files.attach(`issue:${key}`, text)
+    if (filled.text === stripBlobTokens(text)) return
+    const url = `/issues/${encodeURIComponent(key)}`
     try {
-      const d = await tracked(
-        api.patch<IssueDetail>(`/issues/${encodeURIComponent(key)}`, { description: next }),
-      )
-      qc.setQueryData(['issue', key], d)
+      // Edited while the files uploaded: they go after what is there now.
+      const now = await api.get<IssueDetail>(url)
+      const description =
+        !now || now.description === made.description
+          ? filled.text
+          : [now.description?.trimEnd(), ...filled.added].filter(Boolean).join('\n\n')
+      qc.setQueryData(['issue', key], await api.patch<IssueDetail>(url, { description }))
     } catch (err) {
       toastError(err)
     }
@@ -228,7 +233,8 @@ function Form({ defaults, onClose }: { defaults: Defaults; onClose: () => void }
       onSuccess: (d) => {
         clearDraft(DRAFT)
         setRestored(false)
-        void attachFiles(d.key, description)
+        // Tracked, so leaving the page while the files upload asks first.
+        void tracked(attachFiles(d, description))
         toast(`Created ${d.draft ? 'draft ' : ''}${d.key}`, {
           href: `/issue/${d.key}`,
           action: {

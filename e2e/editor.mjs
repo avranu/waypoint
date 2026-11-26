@@ -54,7 +54,10 @@ export async function fillMarkdown(box, md) {
   );
 }
 
-/** The box's markdown as the person would save it: the textarea's value, or the editor's text. */
+/**
+ * The box's text: a textarea's markdown, or the formatted editor's text as a
+ * person reads it, without markdown syntax (check shape() for formatting).
+ */
 export async function markdownOf(box) {
   const el = box.first();
   return (await el.evaluate((n) => n.tagName)) === "TEXTAREA"

@@ -6,7 +6,7 @@
 import { launchEngine } from "./engine.mjs";
 import fs from "node:fs";
 import { looks } from "./looks.mjs";
-import { formattedSwitch, toolbarOf, navigationAbort } from "./editor.mjs";
+import { formattedSwitch, toolbarOf, navigationAbort, pasteText } from "./editor.mjs";
 const [base, out] = process.argv.slice(2);
 fs.mkdirSync(out, { recursive: true });
 const errors = [];
@@ -547,6 +547,91 @@ for (const [width, scheme] of looks([
   );
   await page.unrouteAll({ behavior: "ignoreErrors" });
   await settleClose();
+
+  if (routedUploads) {
+    // The first file's upload lands last: each still fills its own place.
+    const two = await make("Upload same name", "pic");
+    await openRich(two.key, "pic");
+    let sent = 0;
+    await page.route(/\/api\/v1\/attachments\?/, async (route) => {
+      if (sent++ === 0) await new Promise((r) => setTimeout(r, 1500));
+      await route.continue();
+    });
+    await richBox.evaluate((el, b64) => {
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const dt = new DataTransfer();
+      for (let i = 0; i < 2; i++) dt.items.add(new File([bytes], "same.png", { type: "image/png" }));
+      el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    }, PNG);
+    const ids = (d) => [...d.matchAll(/attachments\/(\d+)\/same\.png/g)].map((m) => +m[1]);
+    const twod = await waitDesc(two.key, (d) => ids(d).length === 2 && !d.includes("Uploading"));
+    ok(
+      ids(twod).length === 2 && ids(twod)[0] > ids(twod)[1] && !twod.includes("Uploading"),
+      `${tag} two files of one name keep their own places: ${JSON.stringify(twod)}`,
+    );
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+    await settleClose();
+  }
+
+  const fence = await make("Fence before pieces", "lead\n\n[[Some Page]] and @robin");
+  await openRich(fence.key, "lead");
+  await field.press("Home");
+  await page.keyboard.type("``` ");
+  const fenced = "lead\n\n```\n[[Some Page]] and @robin\n```";
+  const fd = await waitDesc(fence.key, fenced);
+  ok(fd === fenced, `${tag} a fence opened before a wikilink and a mention keeps both: ${JSON.stringify(fd)}`);
+  await settleClose();
+
+  const prose = await make("Paste choices", "x");
+  await openRich(prose.key, "x");
+  await field.press("Control+a");
+  await pasteText(richBox, "x**2 + y**2");
+  ok(
+    (await richBox.locator("strong").count()) === 0,
+    `${tag} exponents in pasted prose are not read as bold`,
+  );
+  await field.press("Control+a");
+  await pasteText(richBox, "1. see label", {
+    html: '<p>1. see <a href="https://example.com/">label</a></p>',
+  });
+  ok(
+    (await richBox.locator('a[href="https://example.com/"]').count()) === 1,
+    `${tag} pasted HTML keeps its link when its text looks like markdown`,
+  );
+  await settleClose();
+
+  if (routedUploads) {
+    // The New issue dialog: an edit made while its files upload is kept.
+    await page.goto(`${base}/p/RICH/backlog`);
+    await page.getByLabel("Add to backlog").waitFor();
+    await page.locator("body").press("c");
+    const dialog = page.getByRole("dialog");
+    await dialog.getByLabel("Issue title").fill(`Files after create ${tag}`);
+    await dialog.getByRole("textbox", { name: "Description" }).click();
+    await page.keyboard.type("typed first");
+    await dialog.getByRole("textbox", { name: "Description" }).evaluate((el, b64) => {
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const dt = new DataTransfer();
+      dt.items.add(new File([bytes], "new.png", { type: "image/png" }));
+      el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    }, PNG);
+    await slow(1500);
+    const made = page.waitForResponse(
+      (r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/api/v1/issues",
+    );
+    await dialog.getByRole("button", { name: "Create issue" }).click();
+    const { key } = await (await made).json();
+    await page.request.patch(base + `/api/v1/issues/${key}`, {
+      headers: H,
+      data: { description: "edited meanwhile" },
+    });
+    const after = await waitDesc(key, (d) => link("new.png").test(d));
+    ok(
+      after.startsWith("edited meanwhile\n\n") && link("new.png").test(after),
+      `${tag} an edit made while a new issue's file uploads is kept: ${JSON.stringify(after)}`,
+    );
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+  }
 
   const tools = [
     ["Italic", /^[*_]TXT[*_]$/],

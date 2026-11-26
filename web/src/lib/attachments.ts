@@ -41,3 +41,17 @@ export function fileSize(n: number) {
 export const PREVIEW_BYTES = 256 * 1024
 
 export const downloadURL = (a: Attachment) => `${a.url}?download=1`
+
+const uploading = new Set<string>()
+
+/**
+ * The text that holds a file's place while it uploads. No two uploads under way
+ * share one, so files of one name don't take each other's place; call done once
+ * the place has been filled.
+ */
+export function uploadPlaceholder(name: string) {
+  let text = `[Uploading ${name}…]()`
+  for (let n = 2; uploading.has(text); n++) text = `[Uploading ${name} (${n})…]()`
+  uploading.add(text)
+  return { text, done: () => void uploading.delete(text) }
+}

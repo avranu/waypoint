@@ -39,24 +39,27 @@ export function deferredFiles() {
     /**
      * Uploads the files `text` still points at to `target`; resolves with the
      * text, each token replaced by the attachment's markdown (a failed upload's
-     * token goes, with a toast). Takes the files, so later calls find none.
+     * token goes, with a toast, as does one no file is held for), and that
+     * markdown on its own. Takes the files, so later calls find none.
      */
     async attach(target: string, text: string) {
       const todo = [...files]
       files.clear()
       let out = text
+      const added: string[] = []
       for (const [url, file] of todo) {
         if (!out.includes(url)) continue
         try {
           const a = await uploadAttachment(target, file)
           out = out.replace(tokenRe(url), () => a.markdown)
+          added.push(a.markdown)
         } catch (err) {
           toastError(err)
           out = out.replace(tokenRe(url), '')
         }
       }
       for (const [url] of todo) URL.revokeObjectURL(url)
-      return out
+      return { text: stripBlobTokens(out), added }
     },
   }
 }

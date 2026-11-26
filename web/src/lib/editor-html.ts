@@ -84,7 +84,7 @@ export function fromEditorHtml(html: string): string {
   for (const ul of Array.from(tpl.content.querySelectorAll('ul'))) {
     let next = ul.nextElementSibling
     while (
-      ul.isConnected &&
+      ul.parentNode &&
       next &&
       next.tagName === 'UL' &&
       ul.nextSibling === next &&
