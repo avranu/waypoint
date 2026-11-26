@@ -46,11 +46,22 @@ type waitRec struct {
 	Secs  int64  `json:"secs"`
 	// GaveUp marks a wait that ended without a slot (stopped or failed).
 	GaveUp bool `json:"gave_up,omitempty"`
+	// Bound is the CPU bound the run had (slotBound*); "" for a hold that
+	// ran no command of its own or from before it was kept. Kept here only:
+	// the server's slot_holds has no column for it (WP-1876).
+	Bound string `json:"bound,omitempty"`
+	// Narrowed marks a go test narrowed to the diff (WP-1877) and All one
+	// asked to run everything with --all or WP_TEST_ALL=1. Kept here only: the
+	// server's decoder refuses a field it doesn't know, so sending them would
+	// break clients newer than the server.
+	Narrowed bool `json:"narrowed,omitempty"`
+	All      bool `json:"all,omitempty"`
 }
 
 // queueRec is the content of NAME.PID.queue while a run waits.
 type queueRec struct {
 	Since     int64  `json:"since"`
+	SinceNS   int64  `json:"since_ns,omitempty"` // Since to the nanosecond, to order waiters that came in the same second
 	WD        string `json:"wd"`
 	Cmd       string `json:"cmd"`
 	Class     string `json:"class"`
@@ -71,6 +82,15 @@ type queuedHold struct {
 // setExit says what the command run in the slot exited with; release
 // records it.
 func (h *queuedHold) setExit(code int) { h.exit = &code }
+
+// setBound says which CPU bound the command ran under, in the record and in
+// the lock file wp slot ls reads.
+func (h *queuedHold) setBound(kind string) {
+	if kind != h.rec.Bound {
+		h.rec.Bound = kind
+		h.slot.write(kind)
+	}
+}
 
 func (h *queuedHold) release() {
 	h.slot.release()
@@ -109,17 +129,24 @@ func slotCmdOf(args []string) string {
 // secret values blanked argument by argument, so a value with spaces after
 // --password is blanked whole. Joined with spaces the argument boundaries
 // are lost, so shown is never made from key.
-type slotRun struct{ key, shown string }
+type slotRun struct {
+	key, shown string
+	// narrowed: the run is a go test narrowed to the diff (key and shown end in
+	// narrowedMark). all: it was asked to run everything though it could have
+	// been narrowed. whole: it runs a whole heavy package or ./... with no -run
+	// (planGoTest), which makes it long.
+	narrowed, all, whole bool
+}
 
 // slotRunOf is the run of argv, whichever of wp testsum, wp ship --check or
 // wp slot run asked for it.
 func slotRunOf(argv []string) slotRun {
-	return slotRun{slotKey(argv), slotShown(goTestJSON(argv))}
+	return slotRun{key: slotKey(argv), shown: slotShown(goTestJSON(argv))}
 }
 
 // slotRunFor is the run of a hold that is several runs of argv (slotKeyFor).
 func slotRunFor(kind string, argv []string) slotRun {
-	return slotRun{slotKeyFor(kind, argv), kind + ": " + slotShown(goTestJSON(argv))}
+	return slotRun{key: slotKeyFor(kind, argv), shown: kind + ": " + slotShown(goTestJSON(argv))}
 }
 
 // slotRunOfArgs is the run of a wp command line (os.Args[1:]): what follows
@@ -129,7 +156,7 @@ func slotRunOfArgs(args []string) slotRun {
 	if i := slices.Index(args, "--"); i >= 0 {
 		shown = args[i+1:]
 	}
-	return slotRun{slotCmdOf(args), slotShown(shown)}
+	return slotRun{key: slotCmdOf(args), shown: slotShown(shown)}
 }
 
 // slotShown is argv shell-quoted with secrets blanked per argument, each
@@ -205,6 +232,22 @@ func classifyRunStats(recs []waitRec, name, repo, cmd string) (class string, med
 	}
 	class, median = slotClassOf(secs, slotLongRun)
 	return class, median, len(secs)
+}
+
+// slotClassFor is the class of a run. Inputs: the recorded runs (recs) of the
+// same name, repo and command key, as classifyRunStats reads them; and
+// run.whole, which planGoTest sets for a direct go test that, once the
+// narrowing is decided, runs a whole heavy package or ./... with no -run in a
+// repository with .waypoint/heavy-tests. That one is long on its first run,
+// whatever the history says (WP-1877). Everything else, a narrowed run, a
+// -run run and any command that isn't a direct go test included, follows
+// its history (WP-ADR150). median and runs are the history's either way.
+func slotClassFor(recs []waitRec, name, repo, cmd string, run slotRun) (class string, median float64, runs int) {
+	class, median, runs = classifyRunStats(recs, name, repo, cmd)
+	if run.whole {
+		class = slotClassLong
+	}
+	return class, median, runs
 }
 
 // slotClassOf is the class a run gets from the run times (secs) of its latest
@@ -321,7 +364,7 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, run slotRun
 		repo = wd
 	}
 	cmdKey := slotField(run.key)
-	class, median, runs := classifyRunStats(readWaitRecs(dir), name, repo, cmdKey)
+	class, median, runs := slotClassFor(readWaitRecs(dir), name, repo, cmdKey, run)
 	waited := func() int64 { return int64(time.Since(start).Round(time.Second) / time.Second) }
 	var full *core.SlotHold
 	if slotSendOn(c) {
@@ -345,12 +388,12 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, run slotRun
 				g.GaveUp, g.WaitMS, g.TreeWaitMS = true, time.Since(start).Milliseconds(), treeWaited()
 				gave = &g
 			}
-			appendWaitRecFull(dir, waitRec{Name: name, Repo: repo, Cmd: cmdKey, Class: class, At: time.Now().Unix(), Wait: waited(), GaveUp: true}, gave)
+			appendWaitRecFull(dir, waitRec{Name: name, Repo: repo, Cmd: cmdKey, Class: class, At: time.Now().Unix(), Wait: waited(), GaveUp: true, Narrowed: run.narrowed, All: run.all}, gave)
 		}
 	}()
 
 	long := class == slotClassLong
-	q := queueRec{Since: start.Unix(), WD: slotField(wd), Cmd: cmdKey, Class: class, BehindOwn: long}
+	q := queueRec{Since: start.Unix(), SinceNS: start.UnixNano(), WD: slotField(wd), Cmd: cmdKey, Class: class, BehindOwn: long}
 	qpath := filepath.Join(dir, fmt.Sprintf("%s.%d.queue", name, os.Getpid()))
 	written := false
 	writeQueue := func() {
@@ -416,7 +459,10 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, run slotRun
 		}
 	}
 
-	hold, err := acquireSlotIn(context.WithValue(ctx, slotCtxKeyT{}, etaCmd), name, slotOrder(class, n), func() {
+	// A run held behind its worktree's long run came before that wait, so it
+	// queues from start (WP-1876).
+	actx := context.WithValue(context.WithValue(ctx, slotCtxKeyT{}, etaCmd), slotArrivalKeyT{}, start)
+	hold, err := acquireSlotIn(actx, name, slotOrder(class, n), func() {
 		_, _ = fmt.Fprintf(c.err, "wp slot: waiting for a free %q slot (%d on this host; wp slot ls shows who has them)\n", name, n)
 		if etaCmd == "" {
 			return
@@ -439,7 +485,7 @@ func (c *cli) acquireQueued(ctx context.Context, name string, n int, run slotRun
 		full.WaitMS, full.TreeWaitMS, full.Slot = time.Since(start).Milliseconds(), treeWaited(), &hold.idx
 	}
 	return &queuedHold{slot: hold, tree: tf, dir: dir, acquired: time.Now(), full: full, rec: waitRec{
-		Name: name, Repo: repo, Cmd: cmdKey, Class: class, Wait: waited(),
+		Name: name, Repo: repo, Cmd: cmdKey, Class: class, Wait: waited(), Bound: slotBoundOf(ctx), Narrowed: run.narrowed, All: run.all,
 	}}, nil
 }
 
@@ -533,7 +579,13 @@ func (c *cli) slotQueueLs(dir string) bool {
 		}
 		ws = append(ws, waiter{base[:i], pid, q})
 	}
-	sort.SliceStable(ws, func(i, j int) bool { return ws[i].q.Since < ws[j].q.Since })
+	sort.SliceStable(ws, func(i, j int) bool {
+		a, b := ws[i], ws[j]
+		if a.q.Since != b.q.Since {
+			return a.q.Since < b.q.Since
+		}
+		return a.q.SinceNS < b.q.SinceNS || (a.q.SinceNS == b.q.SinceNS && a.pid < b.pid)
+	})
 	for _, w := range ws {
 		what := "(" + w.q.Class + ")"
 		if w.q.BehindOwn {
@@ -545,10 +597,23 @@ func (c *cli) slotQueueLs(dir string) bool {
 	type key struct{ label, class string }
 	waits := map[key][]int64{}
 	cutoff := time.Now().Add(-24 * time.Hour).Unix()
+	unbound, runs, narrowed, all := 0, 0, 0, 0
 	for _, r := range readWaitRecs(dir) {
 		if r.At >= cutoff {
 			k := key{slotRepoLabel(r.Repo), r.Class}
 			waits[k] = append(waits[k], r.Wait)
+			if !r.GaveUp {
+				runs++
+				if r.Bound == slotBoundNone {
+					unbound++
+				}
+				if r.Narrowed {
+					narrowed++
+				}
+				if r.All {
+					all++
+				}
+			}
 		}
 	}
 	if len(waits) == 0 {
@@ -570,6 +635,8 @@ func (c *cli) slotQueueLs(dir string) bool {
 		sort.Slice(v, func(i, j int) bool { return v[i] < v[j] })
 		_, _ = fmt.Fprintf(c.out, "  %-11s %-5s   %s / %s (%d)\n", k.label, k.class, slotDur(slotPct(v, 0.5)), slotDur(slotPct(v, 0.95)), len(v))
 	}
+	_, _ = fmt.Fprintf(c.out, "runs with no CPU bound (%s=off): %d of %d\n", slotCPUEnv, unbound, runs)
+	_, _ = fmt.Fprintf(c.out, "go test runs narrowed to the diff: %d; run whole with --all or %s=1: %d\n", narrowed, envTestAll, all)
 	return true
 }
 

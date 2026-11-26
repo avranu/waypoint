@@ -23,6 +23,10 @@ const (
 	status429Src   = `(?i)\b(?:error|status|code|http)\b[^\n\d]{0,12}\b429\b`
 )
 
+// PlanLimitText: the text says a plan's usage limit was spent (weekly,
+// five-hour, ...): not a context limit, nor a transient HTTP 429.
+func PlanLimitText(text string) bool { return usagePhrase.MatchString(text) }
+
 // limitText: the text says a usage or rate limit stopped the run.
 func limitText(text string) bool {
 	low := strings.ToLower(text)

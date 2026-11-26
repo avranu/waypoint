@@ -190,7 +190,7 @@ var permissionGroups = []PermissionGroup{
 	{Key: "admin", Label: "Administration", Permissions: []PermissionInfo{
 		{PermUsageRead, "See usage", "Token usage, costs and prices.", RiskSafe},
 		{PermAuditRead, "Read the audit log", "Who changed access, settings and secrets.", RiskCareful},
-		{PermServerRead, "Read server diagnostics", "The server's status, recent log (secrets blanked), metrics and AI request counts, as wp server and wp ai usage show them (admins' tokens).", RiskCareful},
+		{PermServerRead, "Read server diagnostics", "The server's status, recent log (secrets blanked), metrics, profiles (goroutine dumps, CPU and heap; a CPU profile samples the running server) and AI request counts, as wp server and wp ai usage show them (admins' tokens).", RiskCareful},
 		{PermForgesManage, "Manage forges", "Forge connections and their secrets.", RiskDangerous},
 		{PermAdmin, "Administer Waypoint", "Users, invites, global webhooks, system limits (admins only).", RiskDangerous},
 	}},

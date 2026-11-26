@@ -257,6 +257,22 @@ type shipOpts struct {
 	summary                                            *string
 	summaryGiven                                       bool
 	before                                             string
+	// deadline is when --wait-timeout runs out, taken once at the start of
+	// shipWork and shared by the review wait and the checks wait (zero:
+	// not taken, as in a test that calls a wait directly).
+	deadline time.Time
+}
+
+// shipNow is the clock of the ship's deadline (replaced in tests).
+var shipNow = time.Now
+
+// waitLeft is how long a wait may still run: what is left of --wait-timeout,
+// and no more than what is left of the process's own limit (shipLeft).
+func (so shipOpts) waitLeft() time.Duration {
+	if so.deadline.IsZero() {
+		return min(*so.waitTimeout, shipLeft())
+	}
+	return min(so.deadline.Sub(shipNow()), shipLeft())
 }
 
 func addShipFlags(fs *flag.FlagSet) shipOpts {
@@ -266,8 +282,8 @@ func addShipFlags(fs *flag.FlagSet) shipOpts {
 		noBabysit:   fs.Bool("no-babysit", false, "don't babysit it"),
 		notify:      fs.Bool("notify", false, "wake me when it merges (only if work must follow)"),
 		blocking:    fs.Bool("blocking", false, "wake me within minutes (only if other work waits on it)"),
-		noWait:      fs.Bool("no-wait", false, "when the pull request waits on a review round, don't wait for the round's findings: end as before"),
-		waitTimeout: fs.Duration("wait-timeout", shipWaitDefault, "how long to wait on a review round before ending as with --no-wait (at most "+waitMaxText()+"; `DURATION`)"),
+		noWait:      fs.Bool("no-wait", false, "don't wait for the review round's findings or the pull request's first checks: end as before"),
+		waitTimeout: fs.Duration("wait-timeout", shipWaitDefault, "how long to wait on a review round and the first checks before ending as with --no-wait (at most "+waitMaxText()+"; `DURATION`)"),
 		summary:     fs.String("summary", "", "your final reply to the person, shown as the turn ends if the ship goes as expected (no reply turn after it); {task}, {pr} and {url} are filled in (`TEXT`)"),
 	}
 }
@@ -279,6 +295,7 @@ func addShipFlags(fs *flag.FlagSet) shipOpts {
 // other tasks is theirs: pushed to, never armed, babysat or linked, and
 // the task finishes as wp done would (other is true then).
 func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, keys []string, given bool) (other bool, err error) {
+	so.deadline = shipNow().Add(*so.waitTimeout)
 	key := ""
 	if len(keys) > 0 {
 		key = strings.ToUpper(keys[0])
@@ -445,21 +462,40 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 	if noteUrgent {
 		c.println(urgentNote(d.Number))
 	}
+	// What the agent's turn is still wanted for, read once for the wait and
+	// for the end of the ship below.
+	dirty, putOff := false, ""
+	if armed || babysat {
+		status, _ := localGit("status", "--porcelain", "--untracked-files=no")
+		dirty, putOff = status != "", putOffPrompt(o.key, o.PutOff)
+	}
+	if task := cmpStr(key, o.key); task != "" && babysat {
+		why := shipNeedsAgent(o, so.before, wrong, putOff, dirty)
+		if c.canWaitChecks(so, o, babysat, why) {
+			if summary != "" {
+				// The wait may end on failed checks: the next wp ship is the
+				// one that ends the turn with this summary.
+				c.keepSummaries(keys, cmpStr(key, o.key), summary)
+			}
+			head, _ := localGit("rev-parse", "HEAD")
+			if done, err := c.waitShipChecks(task, d.ID, d.Number, strings.TrimSpace(head), so.waitLeft()); err != nil || done {
+				return false, err
+			}
+		}
+	}
 	if (armed || babysat) && c.agentHeader() != "" {
-		dirty, _ := localGit("status", "--porcelain", "--untracked-files=no")
-		putOff := putOffPrompt(o.key, o.PutOff)
 		if putOff != "" {
 			c.println(putOff)
 		}
 		if summary != "" {
 			c.keepSummaries(keys, cmpStr(key, o.key), summary)
-			why := shipNeedsAgent(o, so.before, wrong, putOff, dirty != "")
+			why := shipNeedsAgent(o, so.before, wrong, putOff, dirty)
 			if why == "" && c.endTurnAfterShip(cmpStr(key, o.key), fillSummary(summary, o.key, d)) {
 				c.println("Waypoint ends the turn here and shows the person your --summary as the reply (should the turn go on, end it with that summary).")
 				return false, nil
 			}
 		}
-		c.println(shipReply(o.ShipReply, o.key, d, dirty != ""))
+		c.println(shipReply(o.ShipReply, o.key, d, dirty))
 	} else if summary != "" {
 		c.keepSummaries(keys, cmpStr(key, o.key), summary)
 	}
