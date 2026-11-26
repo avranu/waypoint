@@ -132,12 +132,14 @@ func (s *Service) schedule() []scheduled {
 		bg(hourly("instruction history backfill", s.BackfillUsageMarks)),
 	}
 	if s.cfg.BackupDir != "" {
-		jobs = append(jobs, hourly("backup", func(ctx context.Context) {
+		// A background lane: VACUUM INTO took two minutes on a 2.5 GB database,
+		// and nothing in the loop depends on a backup having finished.
+		jobs = append(jobs, bg(hourly("backup", func(ctx context.Context) {
 			if err := s.dailyBackup(ctx); err != nil {
 				s.log.ErrorContext(ctx, "backup failed", "err", err)
 				s.backupFailed(ctx, err)
 			}
-		}))
+		})))
 	}
 	return append(jobs,
 		scheduled{name: "timed automations", every: fiveMin, run: s.RunTimedAutomations, atStart: true},
