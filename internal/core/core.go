@@ -306,7 +306,8 @@ type queryer interface {
 	ExecContext(ctx context.Context, q string, args ...any) (sql.Result, error)
 }
 
-// write runs f in a write transaction and dispatches its events afterwards.
+// write runs f in a write transaction, then any afterUpdate work still queued,
+// commits, and dispatches the events. When f fails, the queued work is dropped.
 func (s *Service) write(ctx context.Context, actor *Actor, f func(t *tx) error) error {
 	return s.k.WriteSkip(ctx, actor, 1, func(kt *kernel.Tx) error { return f(&tx{Tx: kt, s: s}) })
 }
