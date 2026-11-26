@@ -181,3 +181,20 @@ func TestPRLinksUseIndexes(t *testing.T) {
 		})
 	}
 }
+
+// A review run's findings are read by run_id (a pull request's page, the
+// review step): both reads use the index on it, not a scan of the table.
+func TestFindingsByRunUseTheRunIndex(t *testing.T) {
+	e := newEnv(t)
+	for name, q := range map[string]string{
+		"runFindings": `SELECT ` + findingCols + ` FROM bot_findings f WHERE f.run_id = ? ORDER BY f.id`,
+		"review step": `SELECT severity, placement FROM bot_findings WHERE run_id = ? AND state != 'dropped'`,
+	} {
+		plan := e.explainPlan(q, 1)
+		if !slices.ContainsFunc(plan, func(d string) bool {
+			return strings.Contains(d, "USING INDEX bot_findings_run (run_id=") || strings.Contains(d, "USING COVERING INDEX bot_findings_run (run_id=")
+		}) {
+			t.Errorf("%s does not use bot_findings_run: %v", name, plan)
+		}
+	}
+}

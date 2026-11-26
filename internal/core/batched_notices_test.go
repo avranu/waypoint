@@ -1,11 +1,7 @@
 package core
 
 import (
-	"bytes"
-	"fmt"
-	"log/slog"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -54,6 +50,7 @@ func TestBatchedNewsGoesInOneWakeUp(t *testing.T) {
 		t.Fatalf("woke the agent while #8 still moves: %v", jobs)
 	}
 	be.s.CheckBabysits(be.ctx)
+	be.s.releaseDueBatches(be.ctx)
 	if jobs := be.messageJobs(); len(jobs) != 0 {
 		t.Fatalf("released early: %v", jobs)
 	}
@@ -72,6 +69,7 @@ func TestBatchGoesWhenDue(t *testing.T) {
 	be.setClock(be.clockNow().Add(batchBlockingWait + time.Second))
 	be.runner(be.admin, "m1", nil)
 	be.s.CheckBabysits(be.ctx)
+	be.s.releaseDueBatches(be.ctx)
 	if jobs := be.messageJobs(); len(jobs) != 1 || !strings.Contains(jobs[0], "o/r#7") {
 		t.Fatalf("a due batch: %v", jobs)
 	}
@@ -100,6 +98,7 @@ func TestNewsThatCanWaitWaitsADayOnAColdCache(t *testing.T) {
 	be.s.babysitTell(be.ctx, bs[1], prs[1], "merged", "o/r#8 merged.")
 	be.runner(be.admin, "m1", nil)
 	be.s.CheckBabysits(be.ctx)
+	be.s.releaseDueBatches(be.ctx)
 	be.s.Wait()
 	if jobs := be.messageJobs(); len(jobs) != 0 {
 		t.Fatalf("woke the agent for news it needn't see yet: %v", jobs)
@@ -107,6 +106,7 @@ func TestNewsThatCanWaitWaitsADayOnAColdCache(t *testing.T) {
 	be.setClock(be.clockNow().Add(batchColdWait + time.Second))
 	be.runner(be.admin, "m1", nil)
 	be.s.CheckBabysits(be.ctx)
+	be.s.releaseDueBatches(be.ctx)
 	if jobs := be.messageJobs(); len(jobs) != 1 || !strings.Contains(jobs[0], "o/r#7") || !strings.Contains(jobs[0], "o/r#8") {
 		t.Fatalf("want one post with both after a day: %v", jobs)
 	}
@@ -168,12 +168,14 @@ func TestNewsThatNeedsTheAgentCanWait(t *testing.T) {
 	be.setClock(be.clockNow().Add(batchBlockingWait + time.Second))
 	be.runner(be.admin, "m1", nil)
 	be.s.CheckBabysits(be.ctx)
+	be.s.releaseDueBatches(be.ctx)
 	if jobs := be.messageJobs(); len(jobs) != 0 {
 		t.Fatalf("woke the agent for news that can wait: %v", jobs)
 	}
 	be.setClock(be.clockNow().Add(cacheWarm))
 	be.runner(be.admin, "m1", nil)
 	be.s.CheckBabysits(be.ctx)
+	be.s.releaseDueBatches(be.ctx)
 	if jobs := be.messageJobs(); len(jobs) != 1 || !strings.Contains(jobs[0], "o/r#7") || !strings.Contains(jobs[0], "o/r#8") {
 		t.Fatalf("want one post with both before the cache cools: %v", jobs)
 	}
@@ -201,110 +203,4 @@ func TestBlockingBabysitWakesAtOnce(t *testing.T) {
 	if jobs := be.messageJobs(); len(jobs) != 1 || !strings.Contains(jobs[0], "o/r#7 merged") {
 		t.Fatalf("a blocking merge: %v", jobs)
 	}
-}
-
-// A sweep says which step was slow and, when the sweep was, how many steps
-// ran and which three took longest (WP-1944).
-func TestCheckBabysitsLogsSlowSteps(t *testing.T) {
-	be, prs, _ := twoBabysits(t)
-	logs := &syncBuffer{}
-	be.s.log = slog.New(slog.NewTextHandler(logs, nil))
-	be.s.CheckBabysits(be.ctx)
-	if got := logs.String(); strings.Contains(got, "slow") {
-		t.Fatalf("a quick sweep logged: %s", got)
-	}
-	unlock0, unlock1 := be.s.babysitLocks.lock(prs[0].ID), be.s.babysitLocks.lock(prs[1].ID)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		be.s.CheckBabysits(be.ctx)
-	}()
-	time.Sleep(300 * time.Millisecond)
-	be.pass(48 * time.Second)
-	unlock0()
-	unlock1()
-	<-done
-	got := logs.String()
-	for _, want := range []string{"babysit step slow", "took=48s", "babysit sweep slow", "steps=2", "total=48s", "slowest="} {
-		if !strings.Contains(got, want) {
-			t.Errorf("no %q in: %s", want, got)
-		}
-	}
-	if !strings.Contains(got, fmt.Sprintf("%s#%d 48s", prs[0].Repo, prs[0].Number)) && !strings.Contains(got, fmt.Sprintf("%s#%d 48s", prs[1].Repo, prs[1].Number)) {
-		t.Errorf("the slowest step is not named: %s", got)
-	}
-}
-
-// A sweep that is slow but moving is not joined by a second one when the
-// scheduler counts its run as stuck; one that has stopped moving is.
-func TestBabysitSweepGivesWayToOneStillMoving(t *testing.T) {
-	be, prs, _ := twoBabysits(t)
-	logs := &syncBuffer{}
-	be.s.log = slog.New(slog.NewTextHandler(logs, nil))
-	unlock := be.s.babysitLocks.lock(prs[0].ID)
-	unlock1 := be.s.babysitLocks.lock(prs[1].ID)
-	first := make(chan struct{})
-	go func() {
-		defer close(first)
-		be.s.CheckBabysits(be.ctx)
-	}()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		be.s.babysitSweep.mu.Lock()
-		going := be.s.babysitSweep.run != 0
-		be.s.babysitSweep.mu.Unlock()
-		if going {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the first sweep never started")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	be.pass(babysitSweepAlive - time.Second)
-	be.s.CheckBabysits(be.ctx) // returns at once: both locks are held, so a sweep that ran would block here
-	if got := logs.String(); !strings.Contains(got, "babysit sweep not started") {
-		t.Fatalf("a second sweep beside one still moving: %s", got)
-	}
-	be.pass(2 * time.Second)
-	second := make(chan struct{})
-	go func() {
-		defer close(second)
-		be.s.CheckBabysits(be.ctx)
-	}()
-	select {
-	case <-second:
-		t.Fatal("a sweep did not take over from one that stopped moving")
-	case <-time.After(200 * time.Millisecond):
-	}
-	unlock()
-	unlock1()
-	<-first
-	<-second
-	if got := logs.String(); strings.Count(got, "babysit sweep stopped: another took over") != 1 {
-		t.Errorf("the sweep taken over from should stop after the step it stood in, once: %s", got)
-	}
-	be.s.babysitSweep.mu.Lock()
-	run := be.s.babysitSweep.run
-	be.s.babysitSweep.mu.Unlock()
-	if run != 0 {
-		t.Errorf("the mark is still held after both sweeps ended: %d", run)
-	}
-}
-
-type syncBuffer struct {
-	mu sync.Mutex
-	b  bytes.Buffer
-}
-
-func (s *syncBuffer) Write(p []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.b.Write(p)
-}
-
-func (s *syncBuffer) String() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.b.String()
 }

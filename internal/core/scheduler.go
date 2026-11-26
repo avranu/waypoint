@@ -169,6 +169,7 @@ func (s *Service) schedule() []scheduled {
 			s.sweepLines(ctx)
 			s.watchLines(ctx)
 		}},
+		scheduled{name: "batched news", every: minute, run: s.releaseDueBatches},
 		scheduled{name: "audits", every: minute, run: s.CheckAudits},
 		scheduled{name: "objectives", every: minute, run: s.CheckObjectives},
 		scheduled{name: "request conditions", every: minute, run: s.CheckRequestWatches},
@@ -210,6 +211,11 @@ func checkSchedule(jobs []scheduled) error {
 		}
 		if _, ok := lanes[j.lane]; !ok {
 			lanes[j.lane] = j
+		}
+	}
+	for _, j := range jobs {
+		if _, ok := lanes[j.name]; ok && j.lane == "" {
+			return fmt.Errorf("scheduled job %q is in the loop and has the name of a lane", j.name)
 		}
 	}
 	return nil
@@ -271,10 +277,7 @@ func (s *Service) RunScheduler(ctx context.Context) {
 }
 
 // loopJobPatience is how long the loop waits for one of its own jobs before
-// it goes on to the next and leaves that one running as a lane of its own
-// (WP-1944). Production's babysit sweep took 10 to 35 minutes a run and the
-// merge line, CI polling, audits and runner checks, which wait behind it in
-// the loop, ran once per sweep instead of every 30 s to 2 minutes.
+// it goes on to the next and leaves that one running (WP-1944).
 const loopJobPatience = 20 * time.Second
 
 // fire runs the jobs that are due, in the table's order: the loop's own one
@@ -311,11 +314,13 @@ func (r *scheduler) fire(ctx context.Context, due func(scheduled) bool, patience
 
 // runInLoop runs one of the loop's jobs and waits for it up to patience. One
 // still going then keeps its place in r.busy, as a background lane named
-// after it does: its next due times are skipped and counted, and it counts
-// as stuck as a lane does (goLane). The wait ends with ctx too: the job
-// itself is waited for at stop with the other background work (Wait).
+// after it does: its next due times are skipped and counted for as long as
+// it goes on, and it counts as stuck as a lane does (jobTrouble). It is
+// never started again beside itself, as a lane's job is (goLane): the loop's
+// jobs were written to run one at a time. The wait ends with ctx too: the
+// job itself is waited for at stop with the other background work (Wait).
 func (r *scheduler) runInLoop(ctx context.Context, j scheduled, patience time.Duration) {
-	run := r.claim([]scheduled{{name: j.name, every: j.every, lane: j.name}})
+	run := r.claim([]scheduled{{name: j.name, every: j.every, lane: j.name}}, false)
 	if run == nil {
 		return
 	}
@@ -326,7 +331,11 @@ func (r *scheduler) runInLoop(ctx context.Context, j scheduled, patience time.Du
 		r.s.job(ctx, j.name, j.every, j.run)
 	})
 	if patience <= 0 {
+		// The loop waits for this job without limit: a stuck one holds
+		// everything after it (jobTrouble).
+		r.s.jobs.holdLoop(j.name)
 		<-done
+		r.s.jobs.holdLoop("")
 		return
 	}
 	wait := time.NewTimer(patience)
@@ -339,13 +348,15 @@ func (r *scheduler) runInLoop(ctx context.Context, j scheduled, patience time.Du
 }
 
 // claim takes a lane for a run, or returns nil and counts the lane's jobs as
-// skipped when its last run is still going.
-func (r *scheduler) claim(lane []scheduled) *laneRun {
+// skipped when its last run is still going. With again, a run that has gone
+// on past jobOverdue does not keep the lane: a new one starts beside it.
+// Without, the lane is skipped for as long as the run goes on.
+func (r *scheduler) claim(lane []scheduled, again bool) *laneRun {
 	s := r.s
 	name, now := lane[0].lane, s.now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if cur := r.busy[name]; cur != nil && now.Sub(cur.since) <= jobOverdue(lane[0].every) {
+	if cur := r.busy[name]; cur != nil && (!again || now.Sub(cur.since) <= jobOverdue(lane[0].every)) {
 		for _, j := range lane {
 			s.jobs.skip(j.name, j.every, now)
 		}
@@ -370,7 +381,7 @@ func (r *scheduler) release(name string, run *laneRun) {
 // long that it counts as stuck, a new one starts beside it: a run that
 // hangs must not end the job until the next restart.
 func (r *scheduler) goLane(ctx context.Context, lane []scheduled) {
-	run := r.claim(lane)
+	run := r.claim(lane, true)
 	if run == nil {
 		return
 	}

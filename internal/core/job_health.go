@@ -561,8 +561,10 @@ const (
 
 // jobTrouble finds the jobs whose run has gone on too long and the ones
 // that should have started and haven't. behind names, for a silent job, the
-// stuck job it waits its turn after.
-func (s *Service) jobTrouble(now time.Time, running []JobStatus, declared []jobDecl, lastActive map[string]int64, busy map[string]time.Time) (state, line, behind map[string]string) {
+// stuck job it waits its turn after: one in its own lane, or, for the loop's
+// jobs, the stuck one that loopWaits names, which the loop waits for without
+// limit. A stuck loop job the loop does not wait for holds nobody.
+func (s *Service) jobTrouble(now time.Time, running []JobStatus, declared []jobDecl, lastActive map[string]int64, busy map[string]time.Time, loopWaits string) (state, line, behind map[string]string) {
 	state, line, behind = map[string]string{}, map[string]string{}, map[string]string{}
 	isRunning := map[string]bool{}
 	stuckIn := map[string]string{}
@@ -571,7 +573,7 @@ func (s *Service) jobTrouble(now time.Time, running []JobStatus, declared []jobD
 		if took := now.Sub(*j.RunningSince); took > jobOverdue(time.Duration(j.PeriodMS)*time.Millisecond) {
 			state[j.Name] = jobStuck
 			line[j.Name] = fmt.Sprintf("%s has been running for %s", j.Name, spanText(took))
-			if _, ok := stuckIn[j.Lane]; !ok {
+			if _, ok := stuckIn[j.Lane]; !ok && j.Lane != "" {
 				stuckIn[j.Lane] = j.Name
 			}
 		}
@@ -583,9 +585,12 @@ func (s *Service) jobTrouble(now time.Time, running []JobStatus, declared []jobD
 		}
 		state[d.name] = jobStuck
 		line[d.name] = fmt.Sprintf("%s has skipped every run since %s: the last run is still going", d.name, since.UTC().Format("15:04 MST"))
-		if _, ok := stuckIn[d.lane]; !ok {
+		if _, ok := stuckIn[d.lane]; !ok && d.lane != "" {
 			stuckIn[d.lane] = d.name
 		}
+	}
+	if loopWaits != "" && state[loopWaits] == jobStuck {
+		stuckIn[""] = loopWaits
 	}
 	for _, d := range declared {
 		if d.period <= 0 || isRunning[d.name] || state[d.name] != "" {
@@ -626,7 +631,7 @@ func (s *Service) jobsStuck(ctx context.Context, t *tx, now time.Time, running [
 	if err != nil {
 		return nil, nil, err
 	}
-	state, line, behind := s.jobTrouble(now, running, declared, lastActive, s.jobs.busySinces())
+	state, line, behind := s.jobTrouble(now, running, declared, lastActive, s.jobs.busySinces(), s.jobs.loopHeldBy())
 	if back, err = jobsBack(ctx, t, state); err != nil {
 		return nil, nil, err
 	}
@@ -871,7 +876,7 @@ func (s *Service) jobHealth(ctx context.Context) ([]JobStatus, error) {
 	declared := s.jobs.declared()
 	running := s.jobs.jobsRunning()
 	busy := s.jobs.busySinces()
-	state, _, _ := s.jobTrouble(s.now(), running, declared, lastActive, busy)
+	state, _, _ := s.jobTrouble(s.now(), running, declared, lastActive, busy, s.jobs.loopHeldBy())
 	since := map[string]*time.Time{}
 	for _, r := range running {
 		since[r.Name] = r.RunningSince
