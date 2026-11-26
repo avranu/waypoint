@@ -620,6 +620,9 @@ func ScriptFile(words []string) string {
 			if traceScriptFileRE.MatchString(w) {
 				return w
 			}
+			if strings.HasPrefix(words[j-1], "-") {
+				continue // taken as the value of an option not listed (node --title build edit.js)
+			}
 			return ""
 		}
 	}

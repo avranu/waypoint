@@ -316,6 +316,8 @@ func TestScriptFileSkipsOptionValues(t *testing.T) {
 		{"node --require ./hook.js edit.js", "edit.js"},
 		{"python3 edit.py -X utf8", "edit.py"},
 		{"python3 -m edit.py", ""},
+		{"node --title build edit.js", "edit.js"}, // mark check 2097.4: a value of an option not listed
+		{"node build edit.js", ""},
 	} {
 		if got := ScriptFile(strings.Fields(c.words)); got != c.want {
 			t.Errorf("ScriptFile(%s) = %q, want %q", c.words, got, c.want)

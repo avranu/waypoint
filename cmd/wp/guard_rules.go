@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"io"
 	"os"
 	"path"
@@ -65,8 +66,8 @@ type guard struct {
 	disk bool
 	read map[string]bool
 
-	// project says a file on disk is the project's own: one git tracks, with
-	// nothing changed (trackedClean). nil says none is.
+	// project says a file on disk is the project's own: its text is what
+	// origin's default branch holds (trackedClean). nil says none is.
 	project func(path string) bool
 
 	// wrote are the files the line wrote in a way the guard cannot read (a
@@ -618,7 +619,16 @@ func (g *guard) fileText(raw string) (text string, kept, ok bool) {
 		return "", false, false
 	}
 	defer func() { _ = fh.Close() }()
-	b, _ := io.ReadAll(io.LimitReader(fh, guardMaxScript+1))
+	// A program is not a script, however long: a NUL in the first line is a
+	// binary, as bash takes it (/usr/bin/git, ./bin/tool).
+	head := make([]byte, 512)
+	n, _ := io.ReadFull(fh, head)
+	head = head[:n]
+	if first, _, _ := bytes.Cut(head, []byte("\n")); bytes.IndexByte(first, 0) >= 0 {
+		return "", false, false
+	}
+	rest, _ := io.ReadAll(io.LimitReader(fh, guardMaxScript+1-int64(n)))
+	b := append(head, rest...)
 	if len(b) > guardMaxScript {
 		g.blind, g.long = raw, true
 		return "", false, false
@@ -630,9 +640,10 @@ func (g *guard) fileText(raw string) (text string, kept, ok bool) {
 // itself (shell says the command names a shell; otherwise the file's #! line
 // or its .sh name does). A shell script is read as the commands it is. One
 // the line itself wrote is judged like commands typed on the line, and so is
-// one on disk that is not the project's (untracked, changed since its commit,
-// outside a repository: the session may have written it in an earlier call).
-// A script of the project (g.project: git tracks it, unchanged) is judged
+// one on disk that is not the project's (untracked, changed or committed by
+// the session, outside a repository: the session may have written it in an
+// earlier call). A script of the project (g.project: its text is what
+// origin's default branch holds) is judged
 // only for what it changes of the guard's own (Claude Code's settings and
 // hooks, Waypoint's local state): a project's scripts run sudo, installs and
 // downloads as make and npm run do, unread, and a file such a script writes

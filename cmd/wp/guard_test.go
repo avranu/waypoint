@@ -1581,6 +1581,7 @@ func TestGuardAudit2075(t *testing.T) {
 	under := pad[:guardMaxScript-64*100]
 	writeFile(t, filepath.Join(repo, "big.sh"), pad+"echo x > .claude/settings.json\n")
 	writeFile(t, filepath.Join(repo, "big.py"), pad+"open('.claude/settings.json','w').write('{}')\n")
+	writeFile(t, filepath.Join(repo, "bin", "tool"), "\x7fELF\x02\x01\x01\x00"+strings.Repeat("\x00\n", guardMaxScript))
 	writeFile(t, filepath.Join(repo, "long.sh"), under+"echo x > .claude/settings.json\n")
 	writeFile(t, filepath.Join(repo, "longok.sh"), under+"echo x > docs/a.md\n")
 	const mine, project = false, true
@@ -1655,6 +1656,9 @@ func TestGuardAudit2075(t *testing.T) {
 		{"cat > /tmp/s.sh <<'EOF'\n" + pad + "echo ok\nEOF\nsh /tmp/s.sh", mine, ruleGuard},
 		{"cat > /tmp/s.sh <<'EOF'\n" + under + "echo ok > docs/a.md\nEOF\nsh /tmp/s.sh", mine, ""},
 		{"cat > /tmp/s.sh <<'EOF'\n" + under + "echo ok > .claude/settings.json\nEOF\nsh /tmp/s.sh", mine, ruleGuard},
+		// Mark check 2097.3: a program run by its path is not a script, however long.
+		{`./bin/tool status`, mine, ""},
+		{`./bin/tool status`, project, ""},
 		// .19: an empty line inside a hunk is a line of the hunk.
 		{`git apply blank.patch`, mine, ""},
 		// .20: bun x runs the tool as bunx does.
@@ -1692,8 +1696,25 @@ func TestTrackedClean(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "tools", "a.sh"), "echo a\n")
 	writeFile(t, filepath.Join(dir, "tools", "changed.sh"), "echo a\n")
 	writeFile(t, filepath.Join(dir, ".gitignore"), "ignored.sh\n")
+	writeFile(t, filepath.Join(dir, "tools", "hidden.sh"), "echo a\n")
+	writeFile(t, filepath.Join(dir, "tools", "mine.sh"), "echo a\n")
+	writeFile(t, filepath.Join(dir, "tools", "b.sh"), "echo a\n")
+	writeFile(t, filepath.Join(dir, "tools", "nohead.sh"), "echo a\n")
 	git("add", ".")
 	git("commit", "-q", "-m", "x")
+	if trackedClean(filepath.Join(dir, "tools", "a.sh")) {
+		t.Error("with no branch of origin to compare with, no script is the project's")
+	}
+	git("update-ref", "refs/remotes/origin/main", "HEAD")
+	git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+	// Mark check 2097.1: edits hidden from git status, a commit of the
+	// session's own, and a name git would read as a pattern.
+	writeFile(t, filepath.Join(dir, "tools", "hidden.sh"), "sudo ls\n")
+	git("update-index", "--skip-worktree", "tools/hidden.sh")
+	writeFile(t, filepath.Join(dir, "tools", "mine.sh"), "sudo ls\n")
+	writeFile(t, filepath.Join(dir, "tools", "*.sh"), "sudo ls\n")
+	git("add", "tools/mine.sh")
+	git("commit", "-q", "-m", "mine")
 	writeFile(t, filepath.Join(dir, "tools", "changed.sh"), "sudo ls\n")
 	writeFile(t, filepath.Join(dir, "tools", "new.sh"), "sudo ls\n")
 	writeFile(t, filepath.Join(dir, "ignored.sh"), "sudo ls\n")
@@ -1702,6 +1723,10 @@ func TestTrackedClean(t *testing.T) {
 	for f, want := range map[string]bool{
 		filepath.Join(dir, "tools", "a.sh"):       true,
 		filepath.Join(dir, "tools", "changed.sh"): false,
+		filepath.Join(dir, "tools", "hidden.sh"):  false,
+		filepath.Join(dir, "tools", "mine.sh"):    false,
+		filepath.Join(dir, "tools", "*.sh"):       false,
+		filepath.Join(dir, "tools", "b.sh"):       true,
 		filepath.Join(dir, "tools", "new.sh"):     false,
 		filepath.Join(dir, "ignored.sh"):          false,
 		outside:                                   false,
