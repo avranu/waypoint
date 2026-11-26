@@ -895,6 +895,28 @@ func TestParkNamedSettledOnlyWhenAllNamedAreClosed(t *testing.T) {
 	}
 }
 
+// A reason naming only what the round just closed records nothing to wait
+// for: the rest isn't ended by it at the next sweep.
+func TestParkNamedIgnoresWhatIsAlreadyClosed(t *testing.T) {
+	be := newBabysitEnv(t)
+	be.sg.threads = humanThread()
+	be.runnerOnline()
+	pr := be.open()
+	be.start(pr)
+	ref := be.comment("501").Ref
+	if _, err := be.s.AckReviewComments(be.ctx, be.agent, AckInput{IDs: []string{ref}, Verdict: "rejected", Note: "It builds; the claim doesn't hold."}); err != nil {
+		t.Fatal(err)
+	}
+	be.s.Wait()
+	b := be.babysit()
+	b.Rounds = append(b.Rounds, BabysitRound{N: 1, SHA: pr.HeadSHA, Comments: []string{ref}, Outcome: "not fixed"})
+	be.s.parkBabysit(be.ctx, b, pr, ref+" was rejected; waiting on the nightly job", "", nil, false, []string{ref}, nil)
+	r := lastRound(be.babysit())
+	if !resting(r) || len(r.ParkNamed) != 0 {
+		t.Fatalf("park = %+v", r)
+	}
+}
+
 // A rest ended early by what it named says so in the log and in the reply the
 // assessor reads.
 func TestRestEndsWhenNamedIsClosedSaysNoLongerOpen(t *testing.T) {
