@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -107,6 +108,113 @@ func TestClassifyFlowWhy(t *testing.T) {
 	})
 	if len(spans) != 1 || spans[0].Why != "waiting for round N on N" {
 		t.Fatalf("spans = %+v, want the wait with head and count blanked", spans)
+	}
+}
+
+// A recorded stay makes a moment integrating whatever it waits for; out of a
+// stay it is converging, even for a stage only the line is likely to see.
+func TestClassifyFlowGroupsByLineStay(t *testing.T) {
+	m := func(x int64) int64 { return x * 60000 }
+	spans := classifyFlow(flowHistory{
+		End: m(60),
+		Holds: []flowHold{
+			{What: "checks still running", From: 0, Until: m(30)},
+			{What: stackMergedPrefix + " #N", From: m(40), Until: m(60)},
+		},
+		Lines: []flowLineSpan{{From: m(10), To: m(20)}},
+	})
+	var got []string
+	for _, s := range spans {
+		got = append(got, fmt.Sprintf("%s %d-%d %s", s.Stage, s.From/60000, s.To/60000, s.group()))
+	}
+	want := []string{
+		flowCIRunning + " 0-10 " + FlowConverging,
+		flowCIRunning + " 10-20 " + FlowIntegrating,
+		flowCIRunning + " 20-30 " + FlowConverging,
+		flowWork + " 30-40 " + FlowConverging,
+		flowStacked + " 40-60 " + FlowConverging,
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("spans\n got %v\nwant %v", got, want)
+	}
+}
+
+// Before stays were recorded the draft hold says the line, whatever stays came
+// later; after that only the stays do.
+func TestClassifyFlowDraftHoldBeforeRecording(t *testing.T) {
+	m := func(x int64) int64 { return x * 60000 }
+	spans := classifyFlow(flowHistory{
+		End: m(100), LinesFrom: m(50),
+		Holds: []flowHold{{What: "still a draft", From: 0, Until: m(100)}},
+		Lines: []flowLineSpan{{From: m(70), To: m(80)}},
+	})
+	var got []string
+	for _, s := range spans {
+		got = append(got, fmt.Sprintf("%s %d-%d", s.Stage, s.From/60000, s.To/60000))
+	}
+	want := []string{flowLine + " 0-50", flowUnattribute + " 50-70", flowLine + " 70-80", flowWork + " 80-100"}
+	if !slices.Equal(got, want) {
+		t.Errorf("spans\n got %v\nwant %v", got, want)
+	}
+}
+
+// A stretch is cut where what the babysit waited for changed, and an unread
+// hold names the time after a stay rather than it counting as work.
+func TestClassifyFlowWaitsAndUnknownAfterStay(t *testing.T) {
+	m := func(x int64) int64 { return x * 60000 }
+	spans := classifyFlow(flowHistory{
+		End:   m(60),
+		Holds: []flowHold{{What: "held by thing 42", From: m(40), Until: m(60)}},
+		Lines: []flowLineSpan{{From: 0, To: m(10)}},
+		Waits: []flowWait{{At: m(10), Wait: "first"}, {At: m(25), Wait: "second"}},
+	})
+	var got []string
+	for _, s := range spans {
+		got = append(got, fmt.Sprintf("%s %d-%d %s", s.Stage, s.From/60000, s.To/60000, s.Why))
+	}
+	want := []string{
+		flowLine + " 0-10 ",
+		flowWork + " 10-25 first",
+		flowWork + " 25-40 second",
+		flowUnattribute + " 40-60 held by thing N",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("spans\n got %q\nwant %q", got, want)
+	}
+}
+
+// The readiness texts, as merge_holds keeps them, and the stage each is.
+func TestHoldStage(t *testing.T) {
+	for what, want := range map[string]string{
+		"required check build is failed":                               flowCIFailed,
+		"required check build is pending":                              flowCIRunning,
+		"required check build hasn't reported":                         flowCIRunning,
+		"behind main; updating the branch, then waiting for checks":    flowCIRunning,
+		"behind release; updating the branch, then waiting for checks": flowCIRunning,
+		stackMergedPrefix + " #N":                                      flowStacked,
+		stackClosedPrefix + " #N":                                      flowStacked,
+		"footprint check queued (audit #N)":                            flowFootprint,
+		"audit #N, a footprint check, named N change beyond the task":  flowWork,
+		"whether a round is still working couldn't be read":            "",
+		"the audits it merges after couldn't be read":                  "",
+	} {
+		if _, got := holdStage(what); got != want {
+			t.Errorf("%q: stage %q, want %q", what, got, want)
+		}
+	}
+}
+
+// A span across UTC midnight counts on each day for the time spent there.
+func TestFlowAggSplitsDays(t *testing.T) {
+	a := newFlowAgg()
+	a.add(1, classifyFlow(flowHistory{
+		Opened: dayMS - 3600_000, End: dayMS + 2*3600_000,
+		Holds: []flowHold{{What: "checks still running", From: 1}},
+	}), true)
+	for day, want := range map[string]float64{"1970-01-01": 1, "1970-01-02": 2} {
+		if h, _, _ := a.dayReport(day); h != want {
+			t.Errorf("%s: %v h, want %v", day, h, want)
+		}
 	}
 }
 

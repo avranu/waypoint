@@ -52,7 +52,8 @@ func TestPRFlowReport(t *testing.T) {
 	if len(f.Groups) != 2 || f.Groups[0].Group != FlowConverging || f.Groups[1].Group != FlowIntegrating {
 		t.Fatalf("groups = %+v", f.Groups)
 	}
-	if got := f.Groups[1].Hours; got < 110.0/60-.001 || got > 110.0/60+.001 {
+	// The footprint check while in line is integrating too.
+	if got := f.Groups[1].Hours; got < 2-.001 || got > 2+.001 {
 		t.Errorf("integrating %.3f h", got)
 	}
 	if f.Watch.Heads != 2 || f.Watch.FullRuns != 2 || f.Watch.Rounds != 0 {
@@ -104,9 +105,21 @@ func TestBabysitSaysWhyAHandedRoundWaits(t *testing.T) {
 	if b := be.babysit(); !strings.Contains(b.Wait, "handed over") {
 		t.Fatalf("wait %q", b.Wait)
 	}
+	waits := func() (n int) {
+		t.Helper()
+		if err := be.s.db.R.QueryRow(`SELECT count(*) FROM babysit_waits`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
 	be.step()
 	if b := be.babysit(); !strings.Contains(b.Wait, "went to a session") || b.State != BabysitNeedsPerson {
 		t.Errorf("after a sweep with nothing new: %s %q", b.State, b.Wait)
+	}
+	n := waits()
+	be.step()
+	if got := waits(); got != n {
+		t.Errorf("an unchanged wait was recorded again: %d rows, then %d", n, got)
 	}
 }
 

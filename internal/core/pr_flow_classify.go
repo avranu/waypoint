@@ -186,8 +186,8 @@ type flowInterval struct {
 //     work to do: the work stage;
 //  8. nothing recorded.
 //
-// A moment is in the line (integrating) when a recorded stay covers it,
-// whatever its stage, or when its stage is the line's. Holds are read as they
+// A moment is in the line (integrating) when a recorded stay, or a "still a
+// draft" hold that counts, covers it, whatever its stage. Holds are read as they
 // were stored, uncapped and however short. A pull request that left the line
 // and came back has its time in between counted as the holds then say; a hold
 // left open runs to End.
@@ -266,9 +266,8 @@ func classifyFlow(h flowHistory) []flowSpan {
 	points = slices.Compact(points)
 
 	var out []flowSpan
-	stayed := false // the moment at hand is in a recorded stay
+	inLine := false // the moment at hand holds a place in the merge line
 	emit := func(stage string, from, to int64, why string) {
-		inLine := stayed || stage == flowLine
 		if n := len(out); n > 0 && out[n-1].Stage == stage && out[n-1].To == from && out[n-1].InLine == inLine && out[n-1].Why == why {
 			out[n-1].To = to
 			return
@@ -287,7 +286,6 @@ func classifyFlow(h flowHistory) []flowSpan {
 	}
 	for i := 0; i+1 < len(points); i++ {
 		from, to := points[i], points[i+1]
-		stayed = slices.ContainsFunc(h.Lines, func(l flowLineSpan) bool { return l.From <= from && (l.To == 0 || l.To >= to) })
 		var round, gates, other []string
 		var unknown []string
 		gap := false
@@ -308,6 +306,7 @@ func classifyFlow(h flowHistory) []flowSpan {
 				other = append(other, iv.stage)
 			}
 		}
+		inLine = slices.Contains(other, flowLine)
 		switch {
 		case len(round) > 0:
 			emit(pickStage(round, flowRoundRun, flowRoundWait, flowRoundJob), from, to, "")
