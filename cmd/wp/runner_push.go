@@ -2,10 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 )
+
+// errOnBranch is pushMoved finding nothing left to push: the moved branch
+// already has the round's changes.
+var errOnBranch = errors.New("the branch already has the round's changes")
 
 // pushMoved is what a round does when the forge refuses its push because
 // the branch moved while it ran (a person's session pushed, a merge of the
@@ -33,6 +38,19 @@ func (p *runnerProc) pushMoved(ctx context.Context, run *jobRun, work string, en
 		_, _ = p.gitIn(ctx, work, nil, env, "rebase", "--abort")
 		return fmt.Errorf("%s moved while the round ran and its commits don't rebase onto the new tip: %v", in.Branch, err)
 	}
+	revs, err := p.git(ctx, work, "rev-list", "--reverse", tip+"..HEAD")
+	if err != nil {
+		return err
+	}
+	commits := strings.Fields(revs)
+	if len(commits) == 0 {
+		// The rebase dropped every commit: the new tip has them, or the
+		// same changes.
+		result["commits"], result["files"], result["rebased"] = []string{}, []string{}, true
+		delete(result, "commit")
+		delete(result, "diff")
+		return errOnBranch
+	}
 	names, err := p.gitPaths(ctx, work, "diff", "--name-only", "--no-renames", tip+"..HEAD")
 	if err != nil {
 		return err
@@ -44,11 +62,6 @@ func (p *runnerProc) pushMoved(ctx context.Context, run *jobRun, work string, en
 	if _, err := p.gitIn(ctx, work, nil, env, "push", "origin", ref+":"+ref); err != nil {
 		return err
 	}
-	revs, err := p.git(ctx, work, "rev-list", "--reverse", tip+"..HEAD")
-	if err != nil {
-		return err
-	}
-	commits := strings.Fields(revs)
 	result["commits"], result["files"], result["commit"], result["rebased"] = commits, names, commits[len(commits)-1], true
 	if diff, err := p.git(ctx, work, "diff", tip+"..HEAD"); err == nil {
 		result["diff"] = capDiff(diff, maxResultDiff)

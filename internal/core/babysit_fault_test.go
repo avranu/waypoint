@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-const cloneFault = "can't get the repository: git clone: fatal: could not read Username for 'https://git.jmann.me': terminal prompts disabled"
+const cloneFault = "can't get the repository: git clone: fatal: could not read Username for 'https://git.example.net': terminal prompts disabled"
 
 func (be *bsEnv) endRound(id int64, state, msg string, result map[string]any) {
 	be.t.Helper()
