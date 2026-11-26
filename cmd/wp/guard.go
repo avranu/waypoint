@@ -151,7 +151,7 @@ func (c *cli) guardCheck(in hookEventInput) *guardHit {
 	origin := sync.OnceValue(func() string { return originURLOf(cwd) })
 	g := &guard{site: newGuardSite(cwd), origin: func() string { return remoteHost(origin()) },
 		envHosts:  func() []string { return c.state.envHostsFor(origin()) },
-		contained: c.contained()}
+		contained: c.contained(), project: trackedClean}
 	g.dir = g.site.cwd
 	if u, err := url.Parse(c.server()); err == nil {
 		g.server = strings.ToLower(u.Hostname())

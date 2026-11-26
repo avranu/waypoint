@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -139,6 +141,10 @@ func TestGuardBashRules(t *testing.T) {
 		{`npm install --prefix web`, ""},
 		{`pnpm install --frozen-lockfile`, ""},
 		{`yarn install`, ""},
+		// A comment after a command is not code (audit 2047.18).
+		{"ls # it's here\nsed -i 's/a/b/' .claude/settings.json", ruleGuard},
+		{`echo ok # > .claude/settings.json`, ""},
+		{`pnpm prettier --write .claude/settings.json`, ruleGuard},
 		{`yarn`, ""},
 		{`cd web && npm run typecheck`, ""},
 		{`npx prettier --check .`, ""},
@@ -403,6 +409,42 @@ func TestGuardBashRules(t *testing.T) {
 		{`mv x ~/.claude/commands/c.md`, ruleGuard},
 		{`rm -rf ~/.claude/agents`, ruleGuard},
 		{`sed -i 's/x/y/' ~/.claude/skills/s/SKILL.md`, ruleGuard},
+		{`perl -pi -e s/a/b/ ~/.claude/settings.json`, ruleGuard},
+		{`perl -i.bak -pe 's/a/b/' .claude/settings.json`, ruleGuard},
+		{`perl -pie 's/a/b/' ~/.claude/settings.json`, ruleGuard},
+		{`perl -e 'print 1' ~/.claude/settings.json`, ""},
+		{`perl -pe 's/a/b/' ~/.claude/settings.json`, ""},
+		{`perl -pi -e s/a/b/ notes.md`, ""},
+		{`perl -Mstrict -ne 'print' ~/.claude/settings.json`, ""},
+		{`perl -MFile::Basename -Ilib -ne 'print' ~/.claude/settings.json`, ""},
+		{`perl -Mstrict -pi -e s/a/b/ ~/.claude/settings.json`, ruleGuard},
+		{`gofmt -w ~/.claude/settings.json`, ruleGuard},
+		{`gofmt -l -w -r 'a -> b' .claude/settings.json`, ruleGuard},
+		{`goimports -local x -w ~/.claude/hooks/pre.sh`, ruleGuard},
+		{`gofmt -l ~/.claude/settings.json`, ""},
+		{`gofmt -d ~/.claude/settings.json`, ""},
+		{`gofmt -w main.go`, ""},
+		{`prettier --write ~/.claude/skills/s/SKILL.md`, ruleGuard},
+		{`prettier --config x.json -w .claude/settings.json`, ruleGuard},
+		{`prettier --check ~/.claude/settings.json`, ""},
+		{`prettier --write README.md`, ""},
+		{`npx prettier --write .claude/settings.json`, ruleGuard},
+		{`bunx prettier --write .claude/settings.json`, ruleGuard},
+		{`npx --yes prettier -w .claude/settings.json`, ruleGuard},
+		{`npx -p prettier@3 prettier --write .claude/settings.json`, ruleGuard},
+		{`npx --no-install prettier --write .claude/settings.json`, ruleGuard},
+		{`npx -- prettier --write .claude/settings.json`, ruleGuard},
+		{`pnpm exec prettier --write .claude/settings.json`, ruleGuard},
+		{`pnpm dlx prettier --write .claude/settings.json`, ruleGuard},
+		{`yarn prettier --write .claude/settings.json`, ruleGuard},
+		{`yarn dlx prettier --write .claude/settings.json`, ruleGuard},
+		{`yarn exec prettier --write .claude/settings.json`, ruleGuard},
+		{`npm exec prettier -- --write .claude/settings.json`, ruleGuard},
+		{`npx sed -i s/a/b/ .claude/settings.json`, ruleGuard},
+		{`npx prettier --check .claude/settings.json`, ""},
+		{`npx prettier --write src/a.ts`, ""},
+		{`pnpm exec prettier --write src/a.ts`, ""},
+		{`yarn install`, ""},
 		{`wp hook claude --uninstall`, ruleGuard},
 		{`./wp hook claude --uninstall`, ruleGuard},
 		{`git config core.hooksPath /dev/null`, ruleGuard},
@@ -448,6 +490,7 @@ func TestGuardBashRules(t *testing.T) {
 		{`git -C ` + other + ` add .`, ruleRepo},
 		{`git -C ` + other + ` checkout -b x`, ruleRepo},
 		{`git --git-dir=` + other + `/.git --work-tree=` + other + ` reset --hard`, ruleRepo},
+		{`git --git-dir ` + other + `/.git --work-tree ` + other + ` reset --hard`, ruleRepo},
 		{`cd ` + other + ` && echo x > f`, ruleRepo},
 		{`echo x > ` + other + `/f`, ruleRepo},
 		{`cp a ` + other + `/f`, ruleRepo},
@@ -1267,5 +1310,428 @@ func TestDecodeGuardInputAtTheLimit(t *testing.T) {
 	}
 	if err := decodeGuardInput(strings.NewReader(exact+" "), &in); err == nil || !strings.Contains(err.Error(), "over") {
 		t.Errorf("%d bytes: %v", guardInputMax+1, err)
+	}
+}
+
+// A line longer than the patch reader's buffer is read by its start, and the
+// headers after it are still found (audit 1985.18).
+func TestPatchFilesReadsPastAnOverLongLine(t *testing.T) {
+	long := strings.Repeat("y", 200<<10)
+	got := patchFiles("+" + long + "\n--- a/one.go\n+++ b/one.go\n+++ b/two.go\t" + long + "\ndiff --git a/three.go b/three.go\n")
+	for _, want := range []string{"a/one.go", "one.go", "b/two.go", "two.go", "three.go"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("%s not among %v", want, got)
+		}
+	}
+	for _, f := range got {
+		if len(f) > 100 {
+			t.Errorf("a name of %d bytes", len(f))
+		}
+	}
+}
+
+// A patch names the files it changes in its own text, not on the command
+// line: the guard reads the patch (a file named to git apply, git am or
+// patch, one fed with <, or a heredoc) and checks each file it changes
+// (audits 1933.2 and 1931.6). A script given to an interpreter is read for
+// the files it opens for writing (audit 1931.1).
+func TestGuardReadsPatchesAndScripts(t *testing.T) {
+	g0, repo := guardTestSite(t)
+	home, _ := os.UserHomeDir()
+	settings := "--- a/.claude/settings.json\n+++ b/.claude/settings.json\n@@ -1 +1 @@\n-{}\n+{\"hooks\":{}}\n"
+	writeFile(t, filepath.Join(repo, "bad.patch"), "diff --git a/.claude/settings.json b/.claude/settings.json\n"+settings)
+	writeFile(t, filepath.Join(repo, "ok.patch"), "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-a\n+b\n")
+	writeFile(t, filepath.Join(repo, "mail.patch"), "From abc Mon Sep 17 00:00:00 2001\nSubject: [PATCH] x\n\n---\n .claude/settings.local.json | 1 +\n\ndiff --git a/.claude/settings.local.json b/.claude/settings.local.json\nnew file mode 100644\n--- /dev/null\n+++ b/.claude/settings.local.json\n@@ -0,0 +1 @@\n+exit 0\n")
+	writeFile(t, filepath.Join(repo, "home.patch"), "--- "+home+"/.claude/settings.json\n+++ "+home+"/.claude/settings.json\n@@ -1 +1 @@\n-{}\n+{\"hooks\":{}}\n")
+	// Audit 1954: a patch past the first megabyte, one listed ninth, and
+	// patch's own output and target files.
+	writeFile(t, filepath.Join(repo, "big.patch"), "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1,40001 @@\n-a\n"+strings.Repeat("+"+strings.Repeat("x", 60)+"\n", 40001)+"diff --git a/.claude/settings.json b/.claude/settings.json\n"+settings)
+	writeFile(t, filepath.Join(repo, "sub.patch"), "diff --git a/settings.json b/settings.json\n--- a/settings.json\n+++ b/settings.json\n@@ -1 +1 @@\n-{}\n+{\"hooks\":{}}\n")
+	writeFile(t, filepath.Join(repo, "rename.patch"), "similarity index 100%\nrename from old.txt\nrename to .claude/settings.json\n")
+	writeFile(t, filepath.Join(repo, "copy.patch"), "similarity index 100%\ncopy from old.txt\ncopy to .claude/settings.json\n")
+	writeFile(t, filepath.Join(repo, "plain.patch"), "--- x\n+++ x\n@@ -1 +1 @@\n-{}\n+{\"hooks\":{}}\n")
+	for _, c := range []struct{ cmd, want string }{
+		{`git apply bad.patch`, ruleGuard},
+		{`git apply big.patch`, ruleGuard},
+		{`git apply ok.patch ok.patch ok.patch ok.patch ok.patch ok.patch ok.patch ok.patch ok.patch bad.patch`, ruleGuard},
+		{`patch -o .claude/settings.json main.go ok.patch`, ruleGuard},
+		{`patch -o.claude/settings.json main.go < ok.patch`, ruleGuard},
+		{`patch --output=.claude/settings.json main.go < ok.patch`, ruleGuard},
+		{`patch --output .claude/settings.json main.go < ok.patch`, ruleGuard},
+		{`patch .claude/settings.json plain.patch`, ruleGuard},
+		{`patch -p 1 .claude/settings.json < plain.patch`, ruleGuard},
+		{`patch -r .claude/settings.json -p1 < ok.patch`, ruleGuard},
+		{`patch -o out.go main.go ok.patch`, ""},
+		{`patch -p 1 -i ok.patch`, ""},
+		{`patch -Ni ok.patch .claude/settings.json`, ruleGuard},
+		{`patch -ui ok.patch .claude/settings.json`, ruleGuard},
+		{`patch -Niok.patch .claude/settings.json`, ruleGuard},
+		{`patch -Np1 -i ok.patch .claude/settings.json`, ruleGuard},
+		{`patch -Nbi ok.patch .claude/settings.json`, ruleGuard},
+		{`patch -so /tmp/out -i ok.patch src/a.go`, ""},
+		{`patch -so .claude/settings.json -i ok.patch src/a.go`, ruleGuard},
+		{`patch main.go plain.patch`, ""},
+		{`git apply --3way bad.patch`, ruleGuard},
+		{`git --no-pager apply ok.patch bad.patch`, ruleGuard},
+		{`git apply < bad.patch`, ruleGuard},
+		{`git am mail.patch`, ruleGuard},
+		{`git am < mail.patch`, ruleGuard},
+		{`patch -p1 < bad.patch`, ruleGuard},
+		{`patch -p1 -i bad.patch`, ruleGuard},
+		{`patch -p0 < home.patch`, ruleGuard},
+		{"git apply <<'EOF'\n" + settings + "EOF", ruleGuard},
+		{"patch -p1 <<'EOF'\n" + settings + "EOF", ruleGuard},
+		{`git apply ok.patch`, ""},
+		{`patch -p1 < ok.patch`, ""},
+		{`git apply --check bad.patch`, ""},
+		{`git apply --stat bad.patch`, ""},
+		{`patch --dry-run -p1 < bad.patch`, ""},
+		// Audit 1985.3: --apply after a listing flag applies; --directory with a
+		// space; git's own flags with a value before the verb.
+		{`git apply --check --apply bad.patch`, ruleGuard},
+		{`git apply --stat --apply bad.patch`, ruleGuard},
+		{`git apply --directory .claude sub.patch`, ruleGuard},
+		{`git apply --directory=.claude sub.patch`, ruleGuard},
+		{`git --work-tree . apply bad.patch`, ruleGuard},
+		{`git --git-dir .git apply bad.patch`, ruleGuard},
+		{`git apply --directory web sub.patch`, ""},
+		// Audit 2027.2: --work-tree moves where git writes, in both forms.
+		{`git --work-tree .claude apply sub.patch`, ruleGuard},
+		{`git --work-tree=.claude apply sub.patch`, ruleGuard},
+		{`git --work-tree ` + home + `/.claude apply sub.patch`, ruleGuard},
+		{`git -C .claude --work-tree=. apply sub.patch`, ruleGuard},
+		{`git --work-tree web apply sub.patch`, ""},
+		{`git --work-tree=web apply sub.patch`, ""},
+		{`git --git-dir .claude apply ok.patch`, ""},
+		// Audit 2027.15: patch -d, --input=, --reject-file, rename/copy headers.
+		{`patch -d .claude -p1 < sub.patch`, ruleGuard},
+		{`patch -d web -p1 < sub.patch`, ""},
+		{`patch --input=bad.patch -p1`, ruleGuard},
+		{`patch --input=ok.patch -p1`, ""},
+		{`patch --reject-file .claude/settings.json -p1 < ok.patch`, ruleGuard},
+		{`patch --reject-file=.claude/settings.json -p1 < ok.patch`, ruleGuard},
+		{`patch --reject-file=out.rej -p1 < ok.patch`, ""},
+		{`git apply rename.patch`, ruleGuard},
+		{`git apply copy.patch`, ruleGuard},
+		// 1985.14: the patch a command only reads is not written.
+		{`patch -p1 main.go /etc/fix.patch`, ""},
+		// 1985.2 and 1985.4: a long script is read whole; a script that only
+		// reads a protected file is not refused.
+		{"python3 - <<'EOF'\n" + strings.Repeat("x = 1\n", 12000) + "open('.claude/settings.json','w').write('{}')\nEOF", ruleGuard},
+		{"python3 - <<'EOF'\nimport os, tempfile\nd = open('.claude/settings.json', 'r').read()\nout = os.path.join(tempfile.gettempdir(), 's.txt')\nopen(out, 'w').write(d)\nEOF", ""},
+		{"python3 - <<'EOF'\nimport os, tempfile\nd = open('.claude/settings.json', encoding='utf-8').read()\nopen(os.path.join(tempfile.gettempdir(), 's.txt'), 'w').write(d)\nEOF", ""},
+		{"python3 - <<'EOF'\nimport os\nopen(os.path.join('.claude', 'x'), 'w').write(open('.claude/settings.json', 'r+').read())\nEOF", ruleGuard},
+		{`perl tools/check.pl --config .claude/settings.json`, ""},
+		// Mark check 2054.3: a path held in a name the script only reads is read,
+		// not written; any other use of the name keeps the refusal.
+		{"python3 - <<'EOF'\nimport json, sys\np = '.claude/settings.json'\nd = json.load(open(p))\nopen(sys.argv[1], 'w').write(json.dumps(d))\nEOF", ""},
+		{"python3 - <<'EOF'\nimport json, sys\np = '.claude/settings.json'\nd = json.load(open(p))\nopen(p, 'w').write(json.dumps(d))\nEOF", ruleGuard},
+		{"python3 - <<'EOF'\nimport sys\np = '.claude/settings.json'\nd = open(p).read()\nq = p\nopen(q, 'w').write(d)\nEOF", ruleGuard},
+		{"python3 - <<'EOF'\nimport sys\np = '.claude/settings.json'\nopen(sys.argv[1], 'w').write('x')\nEOF", ruleGuard},
+		// Mark check 2054.1: a runner's shell string is read as a shell's is.
+		{`npx -c 'prettier --write .claude/settings.json'`, ruleGuard},
+		{`bunx -c 'prettier --write .claude/settings.json'`, ruleInstall}, // refused before the string is read
+		{`npx --call 'prettier --write .claude/settings.json'`, ruleGuard},
+		{`npx --call='prettier --write .claude/settings.json'`, ruleGuard},
+		{`npm exec -c 'prettier --write .claude/settings.json'`, ruleGuard},
+		{`pnpm exec -c 'prettier --write .claude/settings.json'`, ruleGuard},
+		{`pnpm -c exec 'prettier --write .claude/settings.json'`, ruleGuard},
+		{`npx bash -c 'echo x > .claude/settings.json'`, ruleInstall}, // refused before the string is read
+		{`npx -c 'prettier --check .claude/settings.json'`, ""},
+		{`npx -c 'prettier --write src/a.ts'`, ""},
+		{`perl -pi -e 's/a/b/' .claude/settings.json`, ruleGuard},
+		{`git apply missing.patch`, ""},
+		{`git diff | git apply`, ""},
+		{"python3 - <<'EOF'\nopen('" + home + "/.claude/settings.json','w').write('{}')\nEOF", ruleGuard},
+		{"python3 - <<'EOF'\nfrom pathlib import Path\nPath('.claude/settings.json').write_text('{}')\nEOF", ruleGuard},
+		{`python3 -c "open('.claude/settings.json','w').write('{}')"`, ruleGuard},
+		{`node -e "require('fs').writeFileSync('.claude/settings.json', '{}')"`, ruleGuard},
+		{"python3 - <<'EOF'\np = '.claude/settings.json'\nopen(p, 'w').write('{}')\nEOF", ruleGuard},
+		{`python3 -c "print(open('.claude/settings.json').read())"`, ""},
+		{`python3 -c "open('notes.md','w').write('x')"`, ""},
+		{"python3 - <<'EOF'\nprint(1)\nEOF", ""},
+	} {
+		g := &guard{site: g0.site, server: g0.server, origin: g0.origin, dir: g0.site.cwd}
+		got := ""
+		if h := g.bashHit(c.cmd); h != nil {
+			got = h.rule
+		}
+		if got != c.want {
+			t.Errorf("%q: rule %q, want %q", c.cmd, got, c.want)
+		}
+	}
+}
+
+// Audit 2062: scripts and patches kept in a file and then run or applied,
+// continuation lines, deep nesting, patch -o, and hunk text that looks like
+// a header.
+func TestGuardAudit2062(t *testing.T) {
+	g0, repo := guardTestSite(t)
+	bad := "open('.claude/settings.json','w').write('{}')\n"
+	settings := "--- a/.claude/settings.json\n+++ b/.claude/settings.json\n@@ -1 +1 @@\n-{}\n+{\"hooks\":{}}\n"
+	writeFile(t, filepath.Join(repo, "tools", "bad.py"), bad)
+	writeFile(t, filepath.Join(repo, "tools", "ok.py"), "open('docs/a.md','w').write('x')\n")
+	writeFile(t, filepath.Join(repo, "tools", "bad.sh"), "#!/bin/sh\necho x > .claude/settings.json\n")
+	writeFile(t, filepath.Join(repo, "tools", "ok.sh"), "#!/bin/sh\necho x > docs/a.md\n")
+	writeFile(t, filepath.Join(repo, "tools", "setup.sh"), "#!/bin/sh\nsudo apt-get install -y jq\n")
+	writeFile(t, filepath.Join(repo, "tools", "loop.sh"), "#!/bin/sh\nbash tools/loop.sh\n")
+	writeFile(t, filepath.Join(repo, "ok.patch"), "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-a\n+b\n")
+	writeFile(t, filepath.Join(repo, "sql.patch"), "diff --git a/db/x.sql b/db/x.sql\n--- a/db/x.sql\n+++ b/db/x.sql\n@@ -1,3 +1,3 @@\n--- .claude/settings.json\n+++ .claude/settings.local.json\n keep\n rename to .claude/settings.json\n")
+	writeFile(t, filepath.Join(repo, "hide.patch"), "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-a\n+b\n"+settings)
+	writeFile(t, filepath.Join(repo, "short.patch"), "--- a/main.go\n+++ b/main.go\n@@ -1,9 +1,9 @@\n-a\n+b\ndiff --git a/.claude/settings.json b/.claude/settings.json\n"+settings)
+	nest := func(n int, inner string) string {
+		return "echo " + strings.Repeat("$(echo ", n) + inner + strings.Repeat(")", n)
+	}
+	for _, c := range []struct{ cmd, want string }{
+		// .1: a script kept in a file, by this line or before it, then run.
+		{"cat > /tmp/s.py <<'EOF'\n" + bad + "EOF\npython3 /tmp/s.py", ruleGuard},
+		{"cat > /tmp/s.py <<'EOF'\nopen('docs/a.md','w').write('x')\nEOF\npython3 /tmp/s.py", ""},
+		{"tee /tmp/s.py <<'EOF'\n" + bad + "EOF\npython3 /tmp/s.py", ruleGuard},
+		{`python3 tools/bad.py`, ruleGuard},
+		{`uv run python tools/bad.py --fast`, ruleGuard},
+		{`python3 tools/ok.py`, ""},
+		{`python3 tools/missing.py`, ""},
+		{"cat > /tmp/s.sh <<'EOF'\necho x > .claude/settings.json\nEOF\nbash /tmp/s.sh", ruleGuard},
+		{"cat > /tmp/s.sh <<'EOF'\nsudo rm -rf /var/x\nEOF\nsh /tmp/s.sh", ruleRoot},
+		{`printf 'echo x > .claude/settings.json\n' > /tmp/s.sh && sh /tmp/s.sh`, ruleGuard},
+		{"cat > /tmp/s.sh <<'EOF'\necho x > .claude/settings.json\nEOF\nchmod +x /tmp/s.sh && /tmp/s.sh", ruleGuard},
+		{"cat > /tmp/s.sh <<'EOF'\necho x > .claude/settings.json\nEOF\n. /tmp/s.sh", ruleGuard},
+		{`bash tools/bad.sh`, ruleGuard},
+		{`./tools/bad.sh`, ruleGuard},
+		{`bash tools/ok.sh`, ""},
+		{`bash tools/setup.sh`, ""}, // a script of the project is judged for what it writes of the guard's, not as typed commands
+		{`bash tools/loop.sh`, ""},
+		{`bash -x tools/bad.sh arg`, ruleGuard},
+		// A script or patch the line wrote in a way the guard cannot read
+		// (audit 2068.1) is not run or applied by the same line.
+		{`python3 -c "open('/tmp/s.sh','w').write('echo x > .claude/settings.json')" && sh /tmp/s.sh`, ruleGuard},
+		{`cp tools/bad.sh /tmp/s.sh && sh /tmp/s.sh`, ruleGuard},
+		{`cp tools/bad.sh /tmp && /tmp/bad.sh`, ruleGuard},
+		{`base64 -d blob > /tmp/s.py; python3 /tmp/s.py`, ruleGuard},
+		{`sed -i s/a/b/ tools/ok.sh && bash tools/ok.sh`, ruleGuard},
+		{`python3 gen.py > fix3.patch && git apply fix3.patch`, ruleGuard},
+		{"python3 gen.py > /tmp/s.sh; cat >> /tmp/s.sh <<'EOF'\necho ok\nEOF\nsh /tmp/s.sh", ruleGuard},
+		{"cat > /tmp/s.sh <<'EOF'\necho ok > docs/a.md\nEOF\nsed -i s/docs/.claude/ /tmp/s.sh; sh /tmp/s.sh", ruleGuard},
+		{`chmod +x tools/ok.sh && ./tools/ok.sh`, ""},
+		{`touch tools/ok.sh; bash tools/ok.sh`, ""},
+		{`python3 gen.py > /tmp/out.txt && cat /tmp/out.txt`, ""},
+		{`cp tools/ok.sh /tmp/s.sh`, ""},
+		// .3: a command on a continuation line.
+		{"true && \\\n  sed -i 's/x/y/' .claude/settings.json", ruleGuard},
+		{"true |\\\n tee .claude/settings.json", ruleGuard},
+		{"true && \\\n  sed -i 's/x/y/' main.go", ""},
+		// .4: nesting past what used to be read, and past what is.
+		{nest(7, "x > .claude/settings.json"), ruleGuard},
+		{nest(7, "x"), ""},
+		{nest(20, "x"), ruleGuard},
+		{strings.Repeat("eval ", 40) + "true", ruleGuard},
+		// .14: patch -o writes its output only.
+		{`patch -o /tmp/x .claude/settings.json < ok.patch`, ""},
+		{`patch --output=/tmp/x .claude/settings.json ok.patch`, ""},
+		{`patch -so /tmp/x .claude/settings.json ok.patch`, ""},
+		{`patch -r /tmp/x.rej .claude/settings.json < ok.patch`, ruleGuard},
+		{`patch .claude/settings.json < ok.patch`, ruleGuard},
+		// .15: lines of a hunk are not headers; a header after the hunk still is.
+		{`git apply sql.patch`, ""},
+		{`git apply hide.patch`, ruleGuard},
+		{`git apply short.patch`, ruleGuard},
+		// .17: a patch the line itself wrote.
+		{"cat > fix.patch <<'EOF'\n" + settings + "EOF\ngit apply fix.patch", ruleGuard},
+		{"cat > fix.patch <<'EOF'\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-a\n+b\nEOF\ngit apply fix.patch", ""},
+		{`printf -- '--- a/.claude/settings.json\n+++ b/.claude/settings.json\n@@ -1 +1 @@\n-{}\n+{}\n' > fix2.patch && git apply fix2.patch`, ruleGuard},
+	} {
+		g := &guard{site: g0.site, server: g0.server, origin: g0.origin, dir: g0.site.cwd, project: func(string) bool { return true }}
+		got := ""
+		if h := g.bashHit(c.cmd); h != nil {
+			got = h.rule
+		}
+		if got != c.want {
+			t.Errorf("%q: rule %q, want %q", c.cmd, got, c.want)
+		}
+	}
+	// .22: the shell string of bunx -c and npx bash -c, which the install rule
+	// refuses before the guard reads it, is still what the runner hands back.
+	for _, c := range []struct {
+		name string
+		args []string
+	}{{"bunx", []string{"-c", "echo x > f"}}, {"npx", []string{"--yes", "-c", "echo x > f"}}} {
+		if n, a := runnerCommand(c.name, c.args); n != "sh" || len(a) != 2 || a[1] != "echo x > f" {
+			t.Errorf("runnerCommand(%s %v) = %s %v", c.name, c.args, n, a)
+		}
+	}
+	if n, a := runnerCommand("npx", []string{"bash", "-c", "echo x > f"}); n != "bash" || len(a) != 2 {
+		t.Errorf("runnerCommand(npx bash -c) = %s %v", n, a)
+	}
+}
+
+// Audit 2075: scripts on disk that are not the project's, files the line
+// patched or added to and then runs, scripts on the input, printf and echo
+// text, and scripts longer than the guard reads.
+func TestGuardAudit2075(t *testing.T) {
+	g0, repo := guardTestSite(t)
+	writeFile(t, filepath.Join(repo, "tools", "bad.py"), "open('.claude/settings.json','w').write('{}')\n")
+	writeFile(t, filepath.Join(repo, "tools", "bad.sh"), "#!/bin/sh\necho x > .claude/settings.json\n")
+	writeFile(t, filepath.Join(repo, "tools", "ok.sh"), "#!/bin/sh\necho x > docs/a.md\n")
+	writeFile(t, filepath.Join(repo, "tools", "setup.sh"), "#!/bin/sh\nsudo apt-get install -y jq\n")
+	writeFile(t, filepath.Join(repo, "tools", "build.sh"), "#!/bin/sh\ncp tools/ok.sh /tmp/s.sh\nsh /tmp/s.sh\n")
+	writeFile(t, filepath.Join(repo, "run.sh"), "#!/bin/sh\necho ok\n")
+	writeFile(t, filepath.Join(repo, "run.patch"), "--- a/run.sh\n+++ b/run.sh\n@@ -1,2 +1,2 @@\n #!/bin/sh\n-echo ok\n+echo x > .claude/settings.json\n")
+	writeFile(t, filepath.Join(repo, "blank.patch"), "--- a/main.go\n+++ b/main.go\n@@ -1,4 +1,4 @@\n a\n\n--- .claude/settings.json\n+++ .claude/settings.local.json\n z\n")
+	pad := strings.Repeat("# "+strings.Repeat("x", 61)+"\n", guardMaxScript/64+1) // just past guardMaxScript
+	under := pad[:guardMaxScript-64*100]
+	writeFile(t, filepath.Join(repo, "big.sh"), pad+"echo x > .claude/settings.json\n")
+	writeFile(t, filepath.Join(repo, "big.py"), pad+"open('.claude/settings.json','w').write('{}')\n")
+	writeFile(t, filepath.Join(repo, "bin", "tool"), "\x7fELF\x02\x01\x01\x00"+strings.Repeat("\x00\n", guardMaxScript))
+	writeFile(t, filepath.Join(repo, "long.sh"), under+"echo x > .claude/settings.json\n")
+	writeFile(t, filepath.Join(repo, "longok.sh"), under+"echo x > docs/a.md\n")
+	const mine, project = false, true
+	for _, c := range []struct {
+		cmd     string
+		project bool
+		want    string
+	}{
+		// .1: only a script git tracks unchanged is the project's.
+		{`bash tools/setup.sh`, project, ""},
+		{`bash tools/setup.sh`, mine, ruleRoot},
+		{`./tools/setup.sh`, mine, ruleRoot},
+		{`bash tools/bad.sh`, project, ruleGuard},
+		// .2: a file the line patched and then runs.
+		{`git apply run.patch && bash run.sh`, project, ruleGuard},
+		{`patch -p1 < run.patch; ./run.sh`, project, ruleGuard},
+		{`git apply --check run.patch && bash run.sh`, project, ""},
+		// .3: a # inside an expansion is no comment.
+		{`echo ${x:- #}; echo y > .claude/settings.json`, mine, ruleGuard},
+		{"echo `true #`; echo y > .claude/settings.json", mine, ruleGuard},
+		{`echo a # > .claude/settings.json`, mine, ""},
+		// .4: text added to a file that was there, or sent to another descriptor.
+		{`echo '#' >> tools/bad.sh && bash tools/bad.sh`, project, ruleGuard},
+		{`echo '#' >> tools/bad.py && python3 tools/bad.py`, project, ruleGuard},
+		{`echo hi 2>> tools/bad.sh; bash tools/bad.sh`, project, ruleGuard},
+		{`echo hi 2> tools/ok.sh; bash tools/ok.sh`, project, ruleGuard},
+		{"cat tools/bad.sh - > /tmp/s.sh <<'EOF'\ntrue\nEOF\nsh /tmp/s.sh", mine, ruleGuard},
+		{"tee -a tools/bad.sh <<'EOF'\ntrue\nEOF\nsh tools/bad.sh", mine, ruleGuard},
+		{`echo 'echo ok > docs/a.md' >> new.sh && sh new.sh`, mine, ""},
+		{`echo 'echo ok > .claude/settings.json' >> new.sh && sh new.sh`, mine, ruleGuard},
+		// .5 and .16: printf's format is used again for each argument left.
+		{`printf '%s\n' 'true' 'echo x > .claude/settings.json' > /tmp/s.sh && sh /tmp/s.sh`, mine, ruleGuard},
+		{`printf '%s\n' 'echo x > .claude/settings.json' > /tmp/s.sh && sh /tmp/s.sh`, mine, ruleGuard},
+		{`printf '%s > %s\n' 'echo x' docs/a.md > /tmp/s.sh && sh /tmp/s.sh`, mine, ""},
+		{`printf '%s\n' 'true' 'echo x > docs/a.md' > /tmp/s.sh && sh /tmp/s.sh`, mine, ""},
+		{`printf '%b\n' 'echo x > .claude/settings.json' > /tmp/s.sh && sh /tmp/s.sh`, mine, ruleGuard},
+		{`printf 'echo \x3e .claude/settings.json\n' > /tmp/s.sh && sh /tmp/s.sh`, mine, ruleGuard},
+		{`printf '100%%\n' > /tmp/s.txt`, mine, ""},
+		// .6: a script on the input.
+		{`sh < tools/bad.sh`, project, ruleGuard},
+		{`bash -s < tools/bad.sh`, project, ruleGuard},
+		{`bash -s -- arg < tools/bad.sh`, project, ruleGuard},
+		{`python3 < tools/bad.py`, project, ruleGuard},
+		{`python3 - < tools/bad.py`, project, ruleGuard},
+		{`sh < tools/ok.sh`, project, ""},
+		{`bash tools/ok.sh < tools/bad.sh`, project, ""},
+		{"cat > /tmp/s.sh <<'EOF'\necho x > .claude/settings.json\nEOF\nsh < /tmp/s.sh", mine, ruleGuard},
+		// .7: -c after the script's name is the script's own argument.
+		{`bash tools/bad.sh -c 1`, project, ruleGuard},
+		{`bash tools/ok.sh -c 'echo x > .claude/settings.json'`, project, ""},
+		{`bash -o pipefail -c 'echo x > .claude/settings.json'`, mine, ruleGuard},
+		{`bash -ec 'echo x > .claude/settings.json'`, mine, ruleGuard},
+		// .8: an interpreter option's value is not the script.
+		{`python3 -W ignore tools/bad.py`, project, ruleGuard},
+		{`python3 -X utf8 tools/bad.py`, project, ruleGuard},
+		// .9: a script of the project that writes a file and runs it.
+		{`bash tools/build.sh`, project, ""},
+		{`bash tools/build.sh`, mine, ruleGuard},
+		{`bash tools/build.sh && sh /tmp/s.sh`, project, ruleGuard},
+		// .10: a second > replaces the text; >> adds to it; echo -n ends no line.
+		{`echo 'sudo rm -rf x' > /tmp/s.sh; echo 'echo ok' > /tmp/s.sh; sh /tmp/s.sh`, mine, ""},
+		{`echo 'echo ok' > /tmp/s.sh; echo 'sudo rm -rf x' >> /tmp/s.sh; sh /tmp/s.sh`, mine, ruleRoot},
+		{`echo -n 'echo ok #' > /tmp/s.sh; echo ' sudo ls' >> /tmp/s.sh; echo 'true' >> /tmp/s.sh; sh /tmp/s.sh`, mine, ""},
+		// .17: echo -e reads its escapes.
+		{`echo -e 'echo ok #\nsudo ls' > /tmp/s.sh && sh /tmp/s.sh`, mine, ruleRoot},
+		{`echo 'echo ok #\nsudo ls' > /tmp/s.sh && sh /tmp/s.sh`, mine, ""},
+		// .12 and .18: a script longer than the guard reads is not run unread.
+		{`bash big.sh`, project, ruleGuard},
+		{`python3 big.py`, project, ruleGuard},
+		{`bash long.sh`, project, ruleGuard},
+		{`bash longok.sh`, project, ""},
+		{"cat > /tmp/s.sh <<'EOF'\n" + pad + "echo ok\nEOF\nsh /tmp/s.sh", mine, ruleGuard},
+		{"cat > /tmp/s.sh <<'EOF'\n" + under + "echo ok > docs/a.md\nEOF\nsh /tmp/s.sh", mine, ""},
+		{"cat > /tmp/s.sh <<'EOF'\n" + under + "echo ok > .claude/settings.json\nEOF\nsh /tmp/s.sh", mine, ruleGuard},
+		// Mark check 2097.3: a program run by its path is not a script, however long.
+		{`./bin/tool status`, mine, ""},
+		{`./bin/tool status`, project, ""},
+		// .19: an empty line inside a hunk is a line of the hunk.
+		{`git apply blank.patch`, mine, ""},
+		// .20: bun x runs the tool as bunx does.
+		{`bun x prettier --write .claude/settings.json`, mine, ruleGuard},
+	} {
+		g := &guard{site: g0.site, server: g0.server, origin: g0.origin, dir: g0.site.cwd, project: func(string) bool { return c.project }}
+		got := ""
+		if h := g.bashHit(c.cmd); h != nil {
+			got = h.rule
+		}
+		if got != c.want {
+			cmd := c.cmd
+			if len(cmd) > 200 {
+				cmd = cmd[:60] + " … " + cmd[len(cmd)-60:]
+			}
+			t.Errorf("%q (project %v): rule %q, want %q", cmd, c.project, got, c.want)
+		}
+	}
+}
+
+// trackedClean says a file is one git tracks and nothing has changed.
+func TestTrackedClean(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	dir := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.test"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	writeFile(t, filepath.Join(dir, "tools", "a.sh"), "echo a\n")
+	writeFile(t, filepath.Join(dir, "tools", "changed.sh"), "echo a\n")
+	writeFile(t, filepath.Join(dir, ".gitignore"), "ignored.sh\n")
+	writeFile(t, filepath.Join(dir, "tools", "hidden.sh"), "echo a\n")
+	writeFile(t, filepath.Join(dir, "tools", "mine.sh"), "echo a\n")
+	writeFile(t, filepath.Join(dir, "tools", "b.sh"), "echo a\n")
+	git("add", ".")
+	git("commit", "-q", "-m", "x")
+	if trackedClean(filepath.Join(dir, "tools", "a.sh")) {
+		t.Error("with no branch of origin to compare with, no script is the project's")
+	}
+	git("update-ref", "refs/remotes/origin/main", "HEAD")
+	git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+	// Mark check 2097.1: edits hidden from git status, a commit of the
+	// session's own, and a name git would read as a pattern.
+	writeFile(t, filepath.Join(dir, "tools", "hidden.sh"), "sudo ls\n")
+	git("update-index", "--skip-worktree", "tools/hidden.sh")
+	writeFile(t, filepath.Join(dir, "tools", "mine.sh"), "sudo ls\n")
+	writeFile(t, filepath.Join(dir, "tools", "*.sh"), "sudo ls\n")
+	git("add", "tools/mine.sh")
+	git("commit", "-q", "-m", "mine")
+	writeFile(t, filepath.Join(dir, "tools", "changed.sh"), "sudo ls\n")
+	writeFile(t, filepath.Join(dir, "tools", "new.sh"), "sudo ls\n")
+	writeFile(t, filepath.Join(dir, "ignored.sh"), "sudo ls\n")
+	outside := filepath.Join(t.TempDir(), "s.sh")
+	writeFile(t, outside, "sudo ls\n")
+	for f, want := range map[string]bool{
+		filepath.Join(dir, "tools", "a.sh"):       true,
+		filepath.Join(dir, "tools", "changed.sh"): false,
+		filepath.Join(dir, "tools", "hidden.sh"):  false,
+		filepath.Join(dir, "tools", "mine.sh"):    false,
+		filepath.Join(dir, "tools", "*.sh"):       false,
+		filepath.Join(dir, "tools", "b.sh"):       true,
+		filepath.Join(dir, "tools", "new.sh"):     false,
+		filepath.Join(dir, "ignored.sh"):          false, // not in origin's tree; that git ignores it is not read
+		outside:                                   false,
+	} {
+		if got := trackedClean(f); got != want {
+			t.Errorf("trackedClean(%s) = %v, want %v", f, got, want)
+		}
 	}
 }
