@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"sort"
 	"strconv"
@@ -17,35 +19,80 @@ const slotWaitsEnv = "WAYPOINT_SLOT_WAITS"
 // slotWaitWarn is where a wait that can't be noted is said.
 var slotWaitWarn io.Writer = os.Stderr
 
+// slotFreeTries and slotFreeRetry bound how hard a holder tries to note that
+// it let its slot go: until it does, or its process ends, the runner counts
+// the job as holding one.
+var (
+	slotFreeTries = 3
+	slotFreeRetry = 100 * time.Millisecond
+)
+
 // noteSlotWait appends "wait <unix-ms> <pid> <name>" to the waits file, if
-// there is one, and returns what appends the matching "got" line, and what
-// appends "free" when the holder lets the slot go (WP-1915: the runner counts
-// an agent job as heavy only while one of its processes holds a slot). A
-// holder that dies writes no "free" line; the reader sees its process gone.
-// A line that can't be written is dropped, and said once: the wait itself
-// goes on regardless, and counts as the job's work.
-func noteSlotWait(name string) (got, free func()) {
+// there is one, and returns what ends the wait and what notes the release
+// (WP-1915: the runner counts an agent job as heavy only while one of its
+// processes holds a slot). ended(true) appends "got"; ended(false), for a
+// wait that took no slot, appends "got" and "free" in one write, so no line
+// lost between them can leave it reading as a hold. free appends "free" when
+// the holder lets the slot go, trying again a few times, since a hold it
+// can't note the end of counts until its process ends. A holder that dies
+// writes no "free"; the reader sees its process gone. A line that can't be
+// written is dropped, and what that costs is said: the wait itself, and the
+// release, go on regardless.
+func noteSlotWait(name string) (ended func(held bool), free func()) {
 	path := os.Getenv(slotWaitsEnv)
 	if path == "" {
-		return func() {}, func() {}
+		return func(bool) {}, func() {}
+	}
+	write := func(what ...string) error {
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600) // #nosec G304 G703 -- see above
+		if err != nil {
+			return err
+		}
+		now, pid := time.Now().UnixMilli(), os.Getpid()
+		var b strings.Builder
+		for _, w := range what {
+			fmt.Fprintf(&b, "%s %d %d %s\n", w, now, pid, name)
+		}
+		_, err = f.WriteString(b.String())
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		return err
+	}
+	say := func(err error, format string) {
+		_, _ = fmt.Fprintf(slotWaitWarn, "wp: "+format+": %v\n", name, err)
 	}
 	warned := false
-	note := func(what string) {
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600) // #nosec G304 G703 -- see above
-		if err == nil {
-			_, err = fmt.Fprintf(f, "%s %d %d %s\n", what, time.Now().UnixMilli(), os.Getpid(), name)
-			if cerr := f.Close(); err == nil {
-				err = cerr
-			}
-		}
+	warn := func(err error, format string) {
 		if err != nil && !warned {
 			warned = true
-			_, _ = fmt.Fprintf(slotWaitWarn, "wp: this wait for a %q slot couldn't be noted for the runner, so it counts against the job's time: %v\n", name, err)
+			say(err, format)
 		}
 	}
-	note("wait")
+	warn(write("wait"), "this wait for a %q slot couldn't be noted for the runner, so it counts against the job's time")
 	var once sync.Once
-	return func() { note("got") }, func() { once.Do(func() { note("free") }) }
+	ended = func(held bool) {
+		if held {
+			warn(write("got"), "couldn't note for the runner that this process took a %q slot, so it counts its time from here as waiting while the process lives, and the job as holding no slot")
+			return
+		}
+		once.Do(func() {}) // nothing to let go
+		warn(write("got", "free"), "couldn't note for the runner that this wait for a %q slot ended, so it counts its time from here as waiting while the process lives")
+	}
+	free = func() {
+		once.Do(func() {
+			err := write("free")
+			for i := 1; i < slotFreeTries && err != nil && !errors.Is(err, fs.ErrNotExist); i++ {
+				time.Sleep(slotFreeRetry)
+				err = write("free")
+			}
+			// Gone: the job ended, and no runner counts it any more.
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				say(err, "couldn't note for the runner that this process let its %q slot go, so it counts the job as holding one until this process ends")
+			}
+		})
+	}
+	return ended, free
 }
 
 // slotWaitReader reads a waits file: "wait", "got" and "free" lines. It keeps when it first saw a waiting

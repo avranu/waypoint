@@ -276,3 +276,34 @@ func TestAgentJobTakingASlotRestartsTheGrowthClock(t *testing.T) {
 		t.Error("holding on restarted the growth clock again")
 	}
 }
+
+// Audit 1998.4: a look that opens the agent lane as it closes the light one
+// asks for as many lanes as before, and still ends the held poll.
+func TestLookWakesTheRunnerWhenALaneOpensAsAnotherCloses(t *testing.T) {
+	p := agentProc(2, 3)
+	p.c = &cli{out: &strings.Builder{}, err: &strings.Builder{}}
+	p.freed = make(chan struct{}, 1)
+	p.mu.Lock()
+	p.jobs[1] = &activeJob{id: 1, lane: laneHeavy}
+	p.mu.Unlock()
+	short := calmSample()
+	short.MemSome = 3 // busy, and short of memory
+	p.look(short)
+	before, _ := p.slotsNow()
+	select {
+	case <-p.freed:
+	default:
+	}
+	over := calmSample()
+	over.Load1 = 40 // overloaded, memory fine
+	p.look(over)
+	after, _ := p.slotsNow()
+	if slices.Contains(before, laneAgent) || !slices.Contains(before, laneLight) || !slices.Contains(after, laneAgent) || slices.Contains(after, laneLight) || len(after) != len(before) {
+		t.Fatalf("not a swap: %v, then %v", before, after)
+	}
+	select {
+	case <-p.freed:
+	default:
+		t.Error("the agent lane opened and the held poll went on")
+	}
+}

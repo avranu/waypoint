@@ -102,14 +102,9 @@ func acquireSlot(ctx context.Context, name string, n int, notify func()) (*slotH
 // acquireSlotIn is acquireSlot trying only the slots in order, in that order.
 // firstMiss, when not nil, is called once when the first pass finds none free.
 func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstMiss func()) (*slotHold, error) {
-	got, free := noteSlotWait(name)
+	ended, free := noteSlotWait(name)
 	held := false
-	defer func() {
-		got()
-		if !held { // a failed acquire holds nothing
-			free()
-		}
-	}()
+	defer func() { ended(held) }() // a failed acquire holds nothing
 	dir, err := slotDir()
 	if err != nil {
 		return nil, err
