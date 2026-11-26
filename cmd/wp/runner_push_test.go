@@ -77,6 +77,24 @@ func TestRoundPushFailsWhenTheRebaseConflicts(t *testing.T) {
 	}
 }
 
+// A moved branch that already has the round's change leaves nothing to push:
+// the round is done, and reports no commit of its own.
+func TestRoundPushWithNothingLeftAfterTheRebase(t *testing.T) {
+	p, remote, job := movedBranchJob(t, "made-by-claude.txt", "made by claude")
+	run := newRun(time.Minute)
+	o := p.execAgent(context.Background(), run, "agent", job)
+	if o.State != "done" {
+		t.Fatalf("outcome = %+v\n%s", o, run.out.text())
+	}
+	res := o.Result.(map[string]any)
+	if commits, _ := res["commits"].([]string); len(commits) != 0 || res["commit"] != nil || res["pushed"] == true {
+		t.Errorf("result = %v", res)
+	}
+	if got := gitOut(t, remote, "log", "-1", "--format=%s", "feat"); got != "someone else pushed" {
+		t.Errorf("branch = %q", got)
+	}
+}
+
 // A job that ends before its agent starts says so in its result, so the
 // round isn't counted.
 func TestAgentJobFaultsBeforeTheAgentStarts(t *testing.T) {
