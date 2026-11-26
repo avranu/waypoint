@@ -590,7 +590,7 @@ func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare
 		if own, lines, ok := p.ownChanges(ctx, bare, work, env, in.Target, baseSHA, heldOut); ok {
 			result["own_files"], result["lines"] = own, lines
 		} else {
-			fmt.Fprintln(run.out, "Couldn't measure the agent's own change")
+			fmt.Fprintf(run.out, "Couldn't measure the agent's own change\n")
 		}
 		if len(bad) > 0 {
 			h, ok := p.holdProtected(ctx, work, in, baseSHA, bad, mc, result)
