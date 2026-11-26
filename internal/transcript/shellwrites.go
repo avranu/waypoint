@@ -25,7 +25,7 @@ import (
 var traceExts = map[string]bool{}
 
 func init() {
-	for _, e := range strings.Fields("go ts tsx js jsx mjs cjs py sql md sh yml yaml json css scss html rs kt kts java toml mk tf proto vue svelte rb php c h cpp txt xml gradle ini cfg conf service tmpl") {
+	for _, e := range strings.Fields("go ts tsx js jsx mjs cjs py sql md sh yml yaml json css scss html rs kt kts java toml mk tf proto vue svelte rb php c h cpp txt xml gradle ini cfg conf service tmpl graphql gql swift cs dart lua nix hcl tfvars scala ex exs erl hs ml zig m mm r pl pm clj groovy prisma rst adoc tex less sass cc hpp") {
 		traceExts[e] = true
 	}
 }
@@ -153,6 +153,9 @@ type ShellCommand struct {
 	Wrote  []ShellWrite
 	// PipeIn: the command reads the one before it through a pipe.
 	PipeIn bool
+	// Sub: the command stands inside a substitution ($( ), backticks, <( ))
+	// of the next command that is not one.
+	Sub bool
 	// Unread: the command runs a script longer than the part that is read
 	// (traceMaxScript), and that part writes nothing: what the rest writes is
 	// not known.
@@ -172,6 +175,11 @@ var traceVarRE = lazyre.New(`\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?`)
 // `S=/tmp/s; cat > $S/x.py` writes a scratch file. It returns the directory
 // the line ends in.
 func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *ShellScripts, out *[]ShellCommand, disk bool, spent *int) string {
+	return shellParsed(ParseShell(cmd), cwd, depth, vars, mem, out, disk, spent)
+}
+
+// shellParsed is shellCommands for a line already parsed.
+func shellParsed(parsed []*ShellCmd, cwd string, depth int, vars map[string]string, mem *ShellScripts, out *[]ShellCommand, disk bool, spent *int) string {
 	dir := cwd
 	fill := func(w string) string {
 		orig := w
@@ -231,7 +239,7 @@ func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *Shel
 		began string
 	}
 	var scopes []scope
-	for _, g := range ParseShell(cmd) {
+	for _, g := range parsed {
 		if len(*out) >= shellMaxCommands {
 			break
 		}
@@ -250,6 +258,21 @@ func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *Shel
 		}
 		for _, x := range chain[k:] {
 			scopes = append(scopes, scope{x, dir})
+		}
+		// The commands inside $( ), backticks and <( ) run too, before the
+		// command they are part of; their cd and variables end with them.
+		if depth < 3 {
+			for _, sub := range g.Subs {
+				inner := map[string]string{}
+				for k, v := range vars {
+					inner[k] = v
+				}
+				from := len(*out)
+				shellParsed(sub, dir, depth+1, inner, mem, out, disk, spent)
+				for i := from; i < len(*out); i++ {
+					(*out)[i].Sub = true
+				}
+			}
 		}
 		all := make([]string, len(g.Words))
 		assigns := len(g.Words) > 0
@@ -277,6 +300,18 @@ func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *Shel
 		}
 		words := StripWords(all)
 		if len(words) == 0 {
+			// A redirect with no command of its own stands after a group or a
+			// loop ({ ...; } > FILE, done > FILE): what the commands before it
+			// printed goes to the file, so it is the last one's write.
+			if n := len(*out); n > 0 {
+				last := &(*out)[n-1]
+				for _, r := range g.Redirs {
+					r = fill(r)
+					if !strings.HasPrefix(r, "/dev/") && shellSourceName(path.Base(r)) {
+						last.Wrote = append(last.Wrote, ShellWrite{Kind: "redirect", Path: ShellAt(r, dir)})
+					}
+				}
+			}
 			continue
 		}
 		if depth < 3 && Shells[path.Base(words[0])] {
@@ -316,6 +351,15 @@ func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *Shel
 				c.Wrote[i].Path = fill(w.Path)
 			}
 		}
+		if f := shellFeeder(*out); c.PipeIn && f != nil && path.Base(words[0]) == "tee" {
+			// tee keeps what the command before it printed: the same write, or
+			// report, as that command's output sent to the file.
+			for i, w := range c.Wrote {
+				if w.Kind == "tee" && !shellOutputCounts(path.Base(f.Words[0]), f.Words[1:], w.Path) {
+					c.Wrote[i].Kind = "output"
+				}
+			}
+		}
 		if prog := path.Base(words[0]); c.Script != "" && (prog == "cat" || prog == "tee") {
 			// The first few files only: each one kept reads the script again.
 			for _, w := range c.Wrote[:min(len(c.Wrote), traceMaxScriptPaths)] {
@@ -342,6 +386,42 @@ func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *Shel
 		dir = scopes[0].began // the line ended inside a group: its cd ends with it
 	}
 	return dir
+}
+
+// shellOutputCounts says a program's output kept in file r (a redirect, or
+// tee after a pipe) is a write of the work as far as the name tells: what
+// the agent typed (cat, echo, printf) wherever it goes; a reporter's output
+// unless the file is named as a report is; any other program's when the file
+// is named like a source, document or configuration file.
+func shellOutputCounts(prog string, args []string, r string) bool {
+	base := path.Base(r)
+	switch {
+	case (traceReporters[prog] || prog == "git" && !traceGitWritesText(args)) && traceReportRE.MatchString(base):
+		return false
+	case prog == "cat" || prog == "echo" || prog == "printf":
+		return true
+	}
+	return shellSourceName(base)
+}
+
+var shellDotfileRE = lazyre.New(`^\.[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$`)
+var shellDotReportRE = lazyre.New(`(?i)^\.(log|out|err|tmp|pid|lock|coverage|cache)$`)
+
+// shellSourceName says a file name is a source, document or configuration
+// file's: ShellFileShape, or a dotfile (.env, .gitignore, .env.local).
+func shellSourceName(base string) bool {
+	return ShellFileShape(base) || shellDotfileRE.MatchString(base) && !shellDotReportRE.MatchString(base)
+}
+
+// shellFeeder is the command whose output the next command of the line reads
+// through a pipe: the last one that is not inside a substitution.
+func shellFeeder(cmds []ShellCommand) *ShellCommand {
+	for i := len(cmds) - 1; i >= 0; i-- {
+		if !cmds[i].Sub {
+			return &cmds[i]
+		}
+	}
+	return nil
 }
 
 // traceCd is the directory after `cd ARGS` in dir.
@@ -521,7 +601,10 @@ func traceScriptWrites(script string, whole bool) (paths []string, sure, unfollo
 	var scratch map[string]bool
 	missed := false
 	if !whole {
-		for _, m := range traceScriptWriteRE.FindAllStringIndex(script, sites) {
+		ms := traceScriptWriteRE.FindAllStringIndex(script, sites)
+		// More writes than are read: the ones past the last are not known.
+		missed = len(ms) == sites
+		for _, m := range ms {
 			from := lineOf(m[0])
 			if followed[from] {
 				continue
@@ -770,26 +853,25 @@ type ShellWrite struct {
 
 // writes lists the files a command writes. What counts: output sent to a
 // file, tee, sed -i and perl -i, gofmt, goimports and prettier given -w or
-// --write, curl -o, dd of=, mv and cp, git mv and git rm, a patch
-// applied, and a script given to an interpreter that writes files. What
+// --write, the formatters that rewrite unless told to check (black, rustfmt,
+// ruff format, ruff check --fix, eslint --fix, go fmt, cargo fmt), an archive
+// unpacked (tar x, unzip), curl -o, dd of=, mv and cp, git mv and git rm, a
+// patch applied, and a script given to an interpreter that writes files. What
 // doesn't: what a program writes of its own accord (a code generator, go mod
 // tidy, git merge or checkout), which the call doesn't show; a plain rm,
 // which is as often clearing up; and touch or mkdir, which write no text. A script the session kept in a file and
 // runs later is added by shellCommands, which remembers them.
 //
-// Output sent to a file is a write of what the agent typed (cat, echo,
-// printf) wherever it goes; of another program's output only when the file
-// is named like a source, document or configuration file (docs/CLI.md, not
-// server.log).
+// Output sent to a file is judged by shellOutputCounts, and so is what tee
+// keeps of the command piped into it. A redirect after a group or loop is
+// added by shellParsed, as are the commands inside a substitution.
 func (c *ShellCommand) writes(disk bool) []ShellWrite {
 	var out []ShellWrite
 	prog, args := path.Base(c.Words[0]), c.Words[1:]
 	for _, r := range c.Redirs {
 		switch {
 		case strings.HasPrefix(r, "/dev/"):
-		case (traceReporters[prog] || prog == "git" && !traceGitWritesText(args)) && traceReportRE.MatchString(path.Base(r)):
-			out = append(out, ShellWrite{Kind: "output", Path: r})
-		case prog == "cat" || prog == "echo" || prog == "printf" || ShellFileShape(path.Base(r)):
+		case shellOutputCounts(prog, args, r):
 			out = append(out, ShellWrite{Kind: "redirect", Path: r, Whole: prog == "cat" && c.Script != ""})
 		default:
 			out = append(out, ShellWrite{Kind: "output", Path: r})
@@ -834,8 +916,8 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 		// prettier among the first few, whatever flags and their values
 		// come before it.
 		for i, a := range args[:min(len(args), 4)] {
-			if path.Base(a) == "prettier" {
-				prog, args = "prettier", args[i+1:]
+			if b := path.Base(a); b == "prettier" || b == "eslint" {
+				prog, args = b, args[i+1:]
 				break
 			}
 		}
@@ -890,6 +972,49 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 		each("rm", plain(0))
 	case "gofmt", "goimports", "prettier":
 		each("format", FormatterFiles(args))
+	case "black", "rustfmt":
+		// These rewrite the files they are given unless told only to check.
+		if !has("--check", "--diff", "--version", "--help", "-h", "--emit=stdout") {
+			each("format", plain(0))
+		}
+	case "ruff":
+		if len(args) > 0 && (args[0] == "format" && !has("--check", "--diff") ||
+			args[0] == "check" && has("--fix", "--fix-only", "--unsafe-fixes") && !has("--diff")) {
+			if ws := plain(1); len(ws) > 0 {
+				each("format", ws)
+			} else {
+				out = append(out, ShellWrite{Kind: "format", Path: "*"})
+			}
+		}
+	case "eslint":
+		if has("--fix") && !has("--fix-dry-run") {
+			if ws := plain(0); len(ws) > 0 {
+				each("format", ws)
+			} else {
+				out = append(out, ShellWrite{Kind: "format", Path: "*"})
+			}
+		}
+	case "go", "cargo":
+		// go fmt and cargo fmt rewrite the packages of the directory they run in.
+		if len(args) > 0 && args[0] == "fmt" && !has("-n", "--check") {
+			out = append(out, ShellWrite{Kind: "format", Path: "*"})
+		}
+	case "tar":
+		if root, ok := tarExtracts(args); ok {
+			out = append(out, ShellWrite{Kind: "extract", Path: "*", Root: root})
+		}
+	case "unzip":
+		if !has("-l", "-t", "-v", "-p", "-c", "-Z", "-z") {
+			root := ""
+			for i, a := range args {
+				if a == "-d" && i+1 < len(args) {
+					root = args[i+1]
+				} else if strings.HasPrefix(a, "-d") && len(a) > 2 {
+					root = a[2:]
+				}
+			}
+			out = append(out, ShellWrite{Kind: "extract", Path: "*", Root: root})
+		}
 	case "curl":
 		for i := 0; i < len(args); i++ {
 			if (args[i] == "-o" || args[i] == "--output") && i+1 < len(args) {
@@ -923,7 +1048,7 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 	case "patch", "git apply", "git am":
 		// A run that only checks or lists writes nothing, unless git is also
 		// told to apply.
-		if !has("--check", "--stat", "--numstat", "--summary", "--dry-run", "-R", "--reverse") || prog != "patch" && has("--apply") {
+		if !has("--check", "--stat", "--numstat", "--summary", "--dry-run") || prog != "patch" && has("--apply") {
 			root, to := "", "" // patch -d DIR: the files are under DIR; patch -o FILE: the one file written
 			for i, a := range args {
 				next := ""
@@ -967,6 +1092,33 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 		c.Unread = unfollowed || len(script) > traceMaxScript && !traceScriptWriteRE.MatchString(script[:traceMaxScript])
 	}
 	return out
+}
+
+// tarExtracts says tar is asked to extract (x among its first word's letters
+// or its short options, --extract, --get), and into which directory (-C DIR,
+// --directory DIR; "" is the command's own).
+func tarExtracts(args []string) (root string, ok bool) {
+	for i, a := range args {
+		switch {
+		case a == "--extract" || a == "--get":
+			ok = true
+		case a == "-C" || a == "--directory":
+			if i+1 < len(args) {
+				root = args[i+1]
+			}
+		case strings.HasPrefix(a, "--directory="):
+			root = a[len("--directory="):]
+		case strings.HasPrefix(a, "--"):
+		case strings.HasPrefix(a, "-C") && len(a) > 2:
+			root = a[2:]
+		case strings.HasPrefix(a, "-") || i == 0:
+			ok = ok || strings.ContainsRune(a, 'x')
+			if strings.HasSuffix(a, "C") && i+1 < len(args) && strings.HasPrefix(a, "-") {
+				root = args[i+1]
+			}
+		}
+	}
+	return root, ok
 }
 
 // PerlInPlaceFiles are the files `perl -i`, `-pi -e CODE` or `-i.bak` edits,

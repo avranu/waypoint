@@ -159,6 +159,11 @@ func (s *Service) UsageNoTask(ctx context.Context, actor *Actor, q UsageQuery) (
 			continue
 		}
 		o.NoTaskUSD += b.acc.cost
+		if b.acc.cost <= 0 {
+			// An hour of tool calls with no priced messages is no spend:
+			// it makes no carry-over task and no never-ran session.
+			continue
+		}
 		if id := attr.carryOf(sk, k.hour); id != 0 {
 			c := carry[id]
 			if c == nil {
@@ -166,9 +171,7 @@ func (s *Service) UsageNoTask(ctx context.Context, actor *Actor, q UsageQuery) (
 				carry[id] = c
 			}
 			c.cost += b.acc.cost
-			if b.acc.cost > 0 {
-				c.sessions[sk] = true
-			}
+			c.sessions[sk] = true
 			o.CarryUSD += b.acc.cost
 			continue
 		}

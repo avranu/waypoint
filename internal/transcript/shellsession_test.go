@@ -43,7 +43,6 @@ func TestShellEditNeedsAWorkingDirectoryTheSessionWorkedIn(t *testing.T) {
 		{"home shorthand", "echo x > ~/proj/a.go", "/home/u/proj", nil, true},
 		{"$HOME", "echo x > $HOME/notes/a.md", "/home/u/proj", nil, false},
 		{"cd ~/proj", "cd ~/proj && sed -i s/a/b/ a.go", "/home/u/proj", nil, true},
-		{"home with no home to infer", "echo x > ~/a.go", "/srv/r", nil, false},
 		{"macOS home", "cd ~/proj && sed -i s/a/b/ a.go", "/Users/u/proj", nil, true},
 		{"root home", "echo x > ~/a.go", "/root", nil, true},
 		{"cd to a sibling checkout never a cwd", "cd /srv/sibling && python3 - <<'EOF'\nopen('a.go','w').write('x')\nEOF", "/r", nil, true},

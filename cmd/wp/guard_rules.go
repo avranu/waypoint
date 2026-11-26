@@ -1463,6 +1463,7 @@ func (g *guard) gitHit(args []string) *guardHit {
 // writers name.
 func (g *guard) writes(c *guardCmd, name string, args []string) *guardHit {
 	targets := append([]string(nil), c.Redirs...)
+	name, args = runnerCommand(name, args) // npx prettier --write X writes X as prettier does
 	targets = append(targets, writeTargets(name, args)...)
 	targets = append(targets, g.patchTargets(c, name, args)...)
 	targets = append(targets, scriptTargets(c, name, args)...)
@@ -1598,6 +1599,28 @@ func (g *guard) patchTargets(c *guardCmd, name string, args []string) []string {
 			files = append(files, a[2:])
 		case isPatch && (strings.HasPrefix(a, "-o") || strings.HasPrefix(a, "-r")) && len(a) > 2:
 			wrote = append(wrote, a[2:])
+		case isPatch && strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && len(a) > 2:
+			// Short options run together (-Ni FILE, -Nifix.diff, -so OUT): the
+			// first letter that takes a value takes the rest of the word, or
+			// the next word when nothing follows.
+			for j := 1; j < len(a); j++ {
+				if !strings.ContainsRune("iordpDBYzgFV", rune(a[j])) {
+					continue
+				}
+				v := a[j+1:]
+				if v == "" {
+					v, _ = next()
+				}
+				switch a[j] {
+				case 'i':
+					files = append(files, v)
+				case 'd':
+					cd(v)
+				case 'o', 'r':
+					wrote = append(wrote, v)
+				}
+				break
+			}
 		case strings.HasPrefix(a, "-"):
 		default:
 			if isPatch && first {
@@ -1775,4 +1798,68 @@ func writeTargets(name string, args []string) []string {
 		return scanArgs(args, "d").val["-d"]
 	}
 	return nil
+}
+
+// runnerCommand reads through a package runner (npx, bunx, npm exec, pnpm
+// exec or dlx, yarn exec or dlx, a bare pnpm BIN or yarn BIN, bun x) to the program it
+// runs and its arguments, which the write rules then judge as if run
+// directly. Its own options, and the values of those that take one, are
+// skipped; a command that is not a runner comes back unchanged.
+func runnerCommand(name string, args []string) (string, []string) {
+	for range 4 {
+		var rest []string
+		runner := name
+		switch name {
+		case "npx", "bunx":
+			rest = args
+		case "npm", "bun":
+			r, _, ok := pmExec(name, args)
+			if !ok {
+				return name, args
+			}
+			rest = r
+		case "pnpm", "yarn":
+			rest = dropFlags(args, "-C", "--dir", "--cwd", "--filter", "-F")
+			if len(rest) == 0 {
+				return name, args
+			}
+			switch rest[0] {
+			case "exec", "dlx":
+				rest = rest[1:]
+			case "run", "install", "i", "add", "remove", "rm", "up", "update", "upgrade", "init", "link", "unlink", "publish", "pack",
+				"test", "start", "build", "cache", "config", "info", "why", "list", "ls", "audit", "outdated", "global", "create", "set", "node", "workspace", "workspaces":
+				return name, args
+			}
+		default:
+			return name, args
+		}
+		// The runner's own options: -p/--package and the like take a value,
+		// -c runs a shell string (left as it is).
+		for len(rest) > 0 && strings.HasPrefix(rest[0], "-") && rest[0] != "-" {
+			w := rest[0]
+			rest = rest[1:]
+			switch {
+			case w == "--":
+				w = ""
+			case w == "-c" || w == "--call":
+				return name, args
+			case !strings.Contains(w, "=") && (w == "--package" || w == "--prefix" || w == "--workspace" || w == "--cache" || w == "--registry" ||
+				!strings.HasPrefix(w, "--") && strings.HasSuffix(w, "p") || w == "-w"):
+				if len(rest) > 0 {
+					rest = rest[1:]
+				}
+			}
+			if w == "" {
+				break
+			}
+		}
+		if len(rest) == 0 {
+			return name, args
+		}
+		name, args = path.Base(rest[0]), rest[1:]
+		if len(args) > 0 && args[0] == "--" && (runner == "npm" || runner == "bun") {
+			args = args[1:] // npm exec CMD -- ARGS: the -- only ends npm's options
+		}
+	}
+	return name, args
 }

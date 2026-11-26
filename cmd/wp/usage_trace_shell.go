@@ -63,9 +63,10 @@ func (t *traceState) note(cwd string) {
 // not be read whole (over the reader's limit, or it runs a script too long to
 // read in which the part read writes nothing): "no write" is then not the
 // answer. cwd is the record's own directory, as on the server.
-// (trscript.ShellEditKind is what the count is uploaded as: a row for every
-// hour a session ran Bash, calls = those that did; rows uploaded before that
-// kind have none, which is "unknown").
+// (Each Bash call gets one key: trscript.ShellEditKind if it wrote,
+// ShellNoneKind if it was read whole and wrote nothing, ShellUnknownKind if
+// it could not be read. Rows uploaded by an older client have none of the
+// three, which is "unknown".)
 func (t *traceState) shellEdit(input json.RawMessage, cwd string) (wrote, known bool) {
 	var in struct {
 		Command string `json:"command"`

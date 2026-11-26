@@ -132,6 +132,56 @@ func TestQuotaPaceAfterReset(t *testing.T) {
 	}
 }
 
+// A from at or before the week's start, or at or after resets_at, is no
+// reset inside the week: the pace is the whole week's, as with no from.
+func TestQuotaPaceIgnoresOutOfWeekFrom(t *testing.T) {
+	reset := time.Date(2026, 11, 28, 17, 0, 0, 0, time.UTC)
+	start := reset.Add(-quotaWeek)
+	now := start.Add(2 * 24 * time.Hour)
+	st0, p0, r0, e0 := quotaPace(now, now, reset, time.Time{}, quotaWeek, 50)
+	for name, from := range map[string]time.Time{
+		"at the start":     start,
+		"before the start": start.Add(-time.Hour),
+		"at resets_at":     reset,
+		"after resets_at":  reset.Add(time.Hour),
+	} {
+		st, p, r, e := quotaPace(now, now, reset, from, quotaWeek, 50)
+		if st != st0 || p != p0 || e != e0 || (r == nil) != (r0 == nil) || r != nil && !r.Equal(*r0) {
+			t.Errorf("from %s: %s %.2f %.2f %v, want %s %.2f %.2f %v", name, st, p, e, r, st0, p0, e0, r0)
+		}
+	}
+}
+
+// usageQuota reads the week's last allowance reset and paces from it.
+func TestUsageQuotaPacesFromReset(t *testing.T) {
+	e := newAnalyticsEnv(t)
+	now := e.clockNow()
+	reset := now.Add(3 * 24 * time.Hour).UnixMilli()
+	for _, r := range []struct {
+		ago time.Duration
+		pct float64
+	}{{3 * 24 * time.Hour, 60}, {2 * 24 * time.Hour, 62}, {24 * time.Hour, 3}, {12 * time.Hour, 4}, {0, 5}} {
+		if _, err := e.s.db.W.Exec(`INSERT INTO quota_samples(user_id, at, span, percent, resets_at, machine) VALUES (?,?,?,?,?,?)`,
+			e.me.User.ID, now.Add(-r.ago).UnixMilli(), "seven_day", r.pct, reset, "box"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	o := e.overview(e.me, UsageQuery{})
+	if o.Quota == nil || len(o.Quota.Windows) == 0 || o.Quota.Windows[0].Span != "seven_day" {
+		t.Fatalf("quota: %+v", o.Quota)
+	}
+	w := o.Quota.Windows[0]
+	// The reset was a day ago and the week ends in three: 25% of the span
+	// has gone, at 5% used, so 20% by the end.
+	if math.Abs(w.Even-25) > 0.1 || math.Abs(w.Projected-20) > 0.1 || w.Status != "on_track" {
+		t.Errorf("even %.2f projected %.2f status %s, want 25, 20, on_track", w.Even, w.Projected, w.Status)
+	}
+	_, p0, _, e0 := quotaPace(now, now, time.UnixMilli(reset), time.Time{}, quotaWeek, 5)
+	if math.Abs(w.Even-e0) < 1 || math.Abs(w.Projected-p0) < 1 {
+		t.Errorf("same as with no reset: even %.2f projected %.2f", e0, p0)
+	}
+}
+
 // A check stored before resets were read keeps its figures; on read it gets
 // the resets in its window and a note saying so.
 func TestQuotaGuardStoredPreResetCheck(t *testing.T) {

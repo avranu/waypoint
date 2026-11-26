@@ -47,6 +47,7 @@ var shellWorktreeRE = regexp.MustCompile(`^(.*?)/(\.claude/worktrees|\.worktrees
 // the worktree's root and the main checkout X, since a session in a worktree
 // names the main checkout's files by the same paths.
 func (s *ShellSession) Note(cwd string) {
+	cwd = ShellPosixDir(cwd)
 	if cwd == "" || !strings.HasPrefix(cwd, "/") {
 		return
 	}
@@ -76,12 +77,24 @@ func (s *ShellSession) KeepWrite(file, cwd, content string) {
 	s.Scripts.Keep(ShellAt(file, cwd), content)
 }
 
+var shellDriveRE = regexp.MustCompile(`^([A-Za-z]):[\\/]`)
+
+// ShellPosixDir is a working directory as the shell of the session names it:
+// a Windows one (C:\Users\x\repo) is /c/Users/x/repo to the bash Claude
+// Code runs there, and any other is itself.
+func ShellPosixDir(cwd string) string {
+	if m := shellDriveRE.FindStringSubmatch(cwd); m != nil {
+		return "/" + strings.ToLower(m[1]) + "/" + strings.TrimLeft(strings.ReplaceAll(cwd[2:], `\`, "/"), "/")
+	}
+	return cwd
+}
+
 func under(p, dir string) bool {
 	return p == dir || strings.HasPrefix(p, dir+"/")
 }
 
 // shellHomeRE is a home directory by where operating systems put them.
-var shellHomeRE = regexp.MustCompile(`^(/home/[^/]+|/Users/[^/]+|/root)(/|$)`)
+var shellHomeRE = regexp.MustCompile(`^(/home/[^/]+|(?:/[a-z])?/Users/[^/]+|/root)(/|$)`)
 
 // ShellHomeOf infers the home directory of whoever ran a session from its
 // working directory; "" when the directory is not under a home.
@@ -140,13 +153,17 @@ func (s *ShellSession) workPath(p string, cd ...string) bool {
 // does not spell out; nor does a variable set in an earlier Bash call, which
 // is truly unknown: environment variables do not persist between Claude
 // Code's Bash calls (only the working directory does). A file curl saves with
-// -o counts like any other write. known is false when the command is too long
+// -o counts like any other write. A Windows working directory is read as bash
+// there names it (see ShellPosixDir). known is false when a write is under a
+// home the reading could not infer, or relative to a working directory that
+// is no path; when the command is too long
 // to read, or runs a script too long to read whole in which the part read
 // writes nothing (the answer is then "unknown", not "no").
 func (s *ShellSession) Edit(cmd, cwd string) (wrote, known bool) {
 	if len(cmd) > shellMaxCommand {
 		return false, false
 	}
+	cwd = ShellPosixDir(cwd)
 	s.Note(cwd)
 	vars := map[string]string{}
 	if h := ShellHomeOf(cwd); h != "" {
@@ -172,10 +189,17 @@ func (s *ShellSession) Edit(cmd, cwd string) (wrote, known bool) {
 				continue
 			}
 			p := WritePlace(cmds, i, w)
+			if p == "$HOME" || strings.HasPrefix(p, "$HOME/") {
+				known = false // a home this reading could not infer: anywhere
+				continue
+			}
 			if p == "" || p[0] == '$' || p[0] == '`' {
 				continue
 			}
 			if !strings.HasPrefix(p, "/") {
+				if dir != "" && dir != ShellNowhere && !strings.HasPrefix(dir, "/") {
+					known = false // a working directory that is no path: anywhere
+				}
 				if dir == ShellNowhere || !strings.HasPrefix(dir, "/") {
 					continue
 				}
@@ -219,6 +243,9 @@ func WritePlace(cmds []ShellCommand, i int, w ShellWrite) string {
 // pipe (find … | grep -v x | xargs sed -i).
 func pipedFindRoot(cmds []ShellCommand, i int) string {
 	for ; i > 0 && cmds[i].PipeIn; i-- {
+		for i > 1 && cmds[i-1].Sub {
+			i-- // a substitution's commands stand before the command they are in
+		}
 		if f := cmds[i-1]; len(f.Words) > 0 && path.Base(f.Words[0]) == "find" {
 			for _, a := range f.Words[1:] {
 				if strings.HasPrefix(a, "-") || strings.ContainsAny(a, "()!") {

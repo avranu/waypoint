@@ -280,3 +280,30 @@ func TestUsageNoTaskOldRunIsCarryOverInAnyWindow(t *testing.T) {
 		}
 	}
 }
+
+// An hour with no cost (tool calls and no priced messages) makes no session
+// of its own in the never-ran list and no entry in the carry-over list.
+func TestUsageNoTaskIgnoresZeroCostHours(t *testing.T) {
+	f := newFeatureEnv(t)
+	z := f.issue(f.me, IssueInput{Project: f.p.Key, Title: "Zero carry"})
+	f.session(f.me, "m1", "s-priced", 0)
+	f.hours("s-priced", -3, -3)
+	f.session(f.me, "m1", "s-tools", 0)
+	run := f.session(f.me, "m1", "s-z", 0)
+	f.run(run, z.ID, f.hour(-20), f.hour(-19))
+	f.hours("s-z", -20, -20)
+	f.ingest(f.me, "tools", "m1", UsageChunk{Tools: []UsageToolRow{
+		{Hour: f.hour(-5), Session: "s-tools", Repo: "acme/web", Kind: "builtin", Tool: "Read", Calls: 3},
+		{Hour: f.hour(-15), Session: "s-z", Repo: "acme/web", Kind: "builtin", Tool: "Read", Calls: 3},
+	}})
+	o, err := f.s.UsageNoTask(f.ctx, f.me, UsageQuery{Days: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.NeverSessions != 1 || len(o.Never) != 1 || o.Never[0].Session != "s-priced" {
+		t.Errorf("never sessions %d: %+v", o.NeverSessions, o.Never)
+	}
+	if o.CarryTasks != 0 || len(o.CarryOver) != 0 {
+		t.Errorf("carry tasks %d: %+v", o.CarryTasks, o.CarryOver)
+	}
+}

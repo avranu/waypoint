@@ -405,12 +405,15 @@ type TaskUsage struct {
 	// ScriptEdits and ScriptShellEdits are the edit-tool calls and writing
 	// Bash calls a REPL script ran (model <synthetic>), not the model: they
 	// are in none of the figures above, as in session facts.
-	ScriptEdits      int64           `json:"script_edits"`
-	ScriptShellEdits int64           `json:"script_shell_edits"`
-	PRs              int64           `json:"prs"`   // merged
-	Files            int64           `json:"files"` // changed in them
-	Lines            int64           `json:"lines"` // added + deleted in them
-	Used             []TaskUsageTool `json:"used"`
+	ScriptEdits      int64 `json:"script_edits"`
+	ScriptShellEdits int64 `json:"script_shell_edits"`
+	// ScriptShellUncounted is the Bash calls REPL scripts ran that the client
+	// did not read (too long, or an older client); not in ShellEditsUncounted.
+	ScriptShellUncounted int64           `json:"script_shell_uncounted"`
+	PRs                  int64           `json:"prs"`   // merged
+	Files                int64           `json:"files"` // changed in them
+	Lines                int64           `json:"lines"` // added + deleted in them
+	Used                 []TaskUsageTool `json:"used"`
 	// AfterRun is spend in the task's sessions after its runs ended that no
 	// other task claimed (WP-1884); nil without any. Never part of CostUSD.
 	AfterRun *TaskCarryOver `json:"after_run,omitempty"`
@@ -505,8 +508,8 @@ func (s *Service) UsageForTask(ctx context.Context, actor *Actor, uq UsageQuery,
 		return nil, err
 	}
 	o := &TaskUsage{Key: i.Key, Title: i.Title, Who: label, Arms: map[string]string{}, Used: []TaskUsageTool{}}
-	var from int64
-	if o.Runs, from, _, o.RunMinutes, err = s.taskRuns(ctx, i.ID); err != nil {
+	var from, to int64
+	if o.Runs, from, to, o.RunMinutes, err = s.taskRuns(ctx, i.ID); err != nil {
 		return nil, err
 	}
 	if actor.canReadExperiments() == nil {
@@ -541,6 +544,14 @@ func (s *Service) UsageForTask(ctx context.Context, actor *Actor, uq UsageQuery,
 	attr, err := s.taskAttribution(ctx, actor, sc)
 	if err != nil {
 		return nil, err
+	}
+	// A session that holds the task with no run of its own (another session
+	// took the run) is the task's while the task's runs last, not for as long
+	// as it lives: what it spends after the last run ended is not this cost.
+	for k, spans := range attr.runs {
+		if spans[0].start == 0 && spans[0].issue == i.ID {
+			attr.runs[k] = []runSpan{{issue: i.ID, start: 1, end: to}}
+		}
 	}
 	if err := attr.loadCarry(ctx, s, actor, sc); err != nil {
 		return nil, err
@@ -595,7 +606,8 @@ func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskA
 	type toolKey struct{ kind, name string }
 	seen := map[toolKey]*TaskUsageTool{}
 	bash := map[trendKey]int64{}
-	read := map[trendKey]int64{} // Bash calls the client read whole
+	scriptBash, scriptRead := map[trendKey]int64{}, map[trendKey]int64{} // the same, of REPL scripts' calls
+	read := map[trendKey]int64{}                                         // Bash calls the client read whole
 	for rows.Next() {
 		var k trendKey
 		var kind, tool, detail, via string
@@ -624,8 +636,12 @@ func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskA
 				o.Edits += max(calls-errs-inCalls, 0)
 			}
 		}
-		if kind == "builtin" && tool == "Bash" && !byScript {
-			bash[k] += calls
+		if kind == "builtin" && tool == "Bash" {
+			if byScript {
+				scriptBash[k] += calls
+			} else {
+				bash[k] += calls
+			}
 		}
 		switch kind {
 		case transcript.ShellUnknownKind:
@@ -633,7 +649,9 @@ func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskA
 			// client could not read: uncounted, by not being among the read.
 			continue
 		case transcript.ShellNoneKind:
-			if !byScript {
+			if byScript {
+				scriptRead[k] += calls
+			} else {
 				read[k] += calls
 			}
 			continue
@@ -641,6 +659,7 @@ func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskA
 			// A non-zero exit still counts (sed -i ... && go test writes before
 			// the test fails); a refused call wrote nothing.
 			if byScript {
+				scriptRead[k] += calls
 				o.ScriptShellEdits += max(calls-inCalls, 0)
 			} else {
 				read[k] += calls
@@ -667,6 +686,9 @@ func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskA
 		r := min(read[k], n)
 		o.ShellEditsCounted += r
 		o.ShellEditsUncounted += n - r
+	}
+	for k, n := range scriptBash {
+		o.ScriptShellUncounted += n - min(scriptRead[k], n)
 	}
 	for _, t := range seen {
 		o.Used = append(o.Used, *t)

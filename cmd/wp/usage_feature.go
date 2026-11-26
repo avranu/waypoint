@@ -189,17 +189,18 @@ type taskUsageReport struct {
 	ShellCounted   int64             `json:"shell_edits_counted"` // absent from an older server: 0
 	// Edit-tool calls and writing Bash calls REPL scripts ran: in neither
 	// figure above.
-	ScriptEdits      int64   `json:"script_edits"`
-	ScriptShellEdits int64   `json:"script_shell_edits"`
-	PRs              int64   `json:"prs"`
-	Files            int64   `json:"files"`
-	Lines            int64   `json:"lines"`
-	Input            int64   `json:"input"`
-	Output           int64   `json:"output"`
-	CacheWrite       int64   `json:"cache_write"`
-	CacheRead        int64   `json:"cache_read"`
-	CostUSD          float64 `json:"cost_usd"`
-	Used             []struct {
+	ScriptEdits          int64   `json:"script_edits"`
+	ScriptShellEdits     int64   `json:"script_shell_edits"`
+	ScriptShellUncounted int64   `json:"script_shell_uncounted"`
+	PRs                  int64   `json:"prs"`
+	Files                int64   `json:"files"`
+	Lines                int64   `json:"lines"`
+	Input                int64   `json:"input"`
+	Output               int64   `json:"output"`
+	CacheWrite           int64   `json:"cache_write"`
+	CacheRead            int64   `json:"cache_read"`
+	CostUSD              float64 `json:"cost_usd"`
+	Used                 []struct {
 		Kind  string `json:"kind"`
 		Name  string `json:"name"`
 		Calls int64  `json:"calls"`
@@ -324,14 +325,17 @@ func taskEditsText(r *taskUsageReport) string {
 	if r.ShellUncounted != nil {
 		unc = *r.ShellUncounted
 	}
-	return editsText(r.Edits, shell, unc, r.ShellCounted) + scriptEditsText(r.ScriptEdits, r.ScriptShellEdits)
+	return editsText(r.Edits, shell, unc, r.ShellCounted) + scriptEditsText(r.ScriptEdits, r.ScriptShellEdits, r.ScriptShellUncounted)
 }
 
 // scriptEditsText says the edits REPL scripts ran, which the figures before
 // it leave out (as wp usage facts does); "" without any.
-func scriptEditsText(edits, shell int64) string {
-	if edits == 0 && shell == 0 {
+func scriptEditsText(edits, shell, uncounted int64) string {
+	switch {
+	case edits == 0 && shell == 0 && uncounted == 0:
 		return ""
+	case uncounted > 0:
+		return fmt.Sprintf(" (REPL scripts ran %s more edits and %s+ more shell edits; %s of their Bash calls not counted)", commas(edits), commas(shell), commas(uncounted))
 	}
 	return fmt.Sprintf(" (REPL scripts ran %s more edits and %s more shell edits)", commas(edits), commas(shell))
 }

@@ -125,7 +125,9 @@ func (p *shellParser) list(end byte) []*ShellCmd {
 			flush(false)
 			listStart = len(out)
 			p.readHeredocs()
-		case c == '#' && len(cur.Words) == 0:
+		case c == '#':
+			// A word that begins with # begins a comment, wherever on the line
+			// (a # inside a word is read by word, and never comes here).
 			for p.i < len(p.s) && p.s[p.i] != '\n' {
 				p.i++
 			}

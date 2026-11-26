@@ -34,12 +34,17 @@ func TestShellVariableDoublingIsBounded(t *testing.T) {
 func TestShellFillAndStoredValuesAreCapped(t *testing.T) {
 	vars := map[string]string{"a": strings.Repeat("x", shellMaxValue)}
 	cmds, _ := ReadShell("cat > "+strings.Repeat("$a", 1000)+"/f.go", "/r", vars, nil, false)
+	wrote := 0
 	for _, c := range cmds {
 		for _, w := range c.Wrote {
+			wrote++
 			if len(w.Path) > 4*shellMaxValue {
 				t.Errorf("a filled word is %d bytes", len(w.Path))
 			}
 		}
+	}
+	if wrote != 1 {
+		t.Errorf("%d writes recorded, want 1", wrote)
 	}
 	v := map[string]string{}
 	ReadShell("a=x; "+strings.Repeat("a=$a$a$a$a; ", 8), "/r", v, nil, false)

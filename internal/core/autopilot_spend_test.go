@@ -268,6 +268,28 @@ func TestSpendLeftSlopeAfterIdle(t *testing.T) {
 	}
 }
 
+// A reset inside the slope's hour is not read across: the rate comes from
+// the readings after it, not from a fall of 88 points.
+func TestSpendLeftSlopeAfterReset(t *testing.T) {
+	a := newSweepEnv(t)
+	a.spendOn(AutopilotLimits{})
+	now := a.clockNow()
+	reset := now.Add(10 * time.Hour).UnixMilli()
+	for _, r := range []struct {
+		ago time.Duration
+		pct float64
+	}{{5 * time.Hour, 88}, {40 * time.Minute, 90}, {30 * time.Minute, 2}, {20 * time.Minute, 2}, {0, 4}} {
+		if _, err := a.s.db.W.Exec(`INSERT INTO quota_samples(user_id, at, span, percent, resets_at, machine) VALUES (?,?,?,?,?,?)`,
+			a.admin.User.ID, now.Add(-r.ago).UnixMilli(), "seven_day", r.pct, reset, "box"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := a.plan()
+	if p.PerHour == nil || *p.PerHour < 3.9 || *p.PerHour > 4.1 {
+		t.Fatalf("plan = %+v, per hour %v, want about 4 from the readings after the reset", p, valueOf(p.PerHour))
+	}
+}
+
 // The web's defaults form replaces the limits: it leaves the week's-end
 // settings as they are, so a save just after the switch can't undo it.
 func TestSpendLeftDefaultsFormKeepsIt(t *testing.T) {

@@ -12,18 +12,20 @@ import (
 
 func TestShellEditsText(t *testing.T) {
 	for _, c := range []struct {
-		n, unknown, none, viaScript int
-		want                        string
+		n, unknown, none, viaScript, scriptUnknown int
+		want                                       string
 	}{
-		{7, 0, 0, 0, "7 shell edits"},
-		{0, 0, 5, 0, "0 shell edits"},
-		{0, 4, 0, 0, "shell edits unknown (4 Bash calls not classified)"},
-		{0, 4, 6, 0, "0+ shell edits (4 Bash calls not classified)"},
-		{3, 4, 0, 0, "3+ shell edits (4 Bash calls not classified)"},
-		{7, 0, 0, 2, "7 shell edits and 2 more run by REPL scripts"},
-		{3, 4, 0, 2, "3+ shell edits (4 Bash calls not classified) and 2 more run by REPL scripts"},
+		{7, 0, 0, 0, 0, "7 shell edits"},
+		{0, 0, 5, 0, 0, "0 shell edits"},
+		{0, 4, 0, 0, 0, "shell edits unknown (4 Bash calls not classified)"},
+		{0, 4, 6, 0, 0, "0+ shell edits (4 Bash calls not classified)"},
+		{3, 4, 0, 0, 0, "3+ shell edits (4 Bash calls not classified)"},
+		{7, 0, 0, 2, 0, "7 shell edits and 2 more run by REPL scripts"},
+		{3, 4, 0, 2, 0, "3+ shell edits (4 Bash calls not classified) and 2 more run by REPL scripts"},
+		{7, 0, 0, 2, 3, "7 shell edits and 2+ more run by REPL scripts (3 of their Bash calls not classified)"},
+		{7, 0, 0, 0, 3, "7 shell edits and 0+ more run by REPL scripts (3 of their Bash calls not classified)"},
 	} {
-		if got := shellEditsText(c.n, c.unknown, c.none, c.viaScript); got != c.want {
+		if got := shellEditsText(c.n, c.unknown, c.none, c.viaScript, c.scriptUnknown); got != c.want {
 			t.Errorf("shellEditsText(%d, %d, %d, %d) = %q, want %q", c.n, c.unknown, c.none, c.viaScript, got, c.want)
 		}
 	}

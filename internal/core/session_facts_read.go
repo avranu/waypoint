@@ -185,6 +185,8 @@ type SessionFacts struct {
 		ScriptEdits int `json:"script_edits"` // edit tools a REPL script ran; not in Edits
 		// ScriptShellEdits: Bash calls a REPL script ran that wrote a file; not in ShellEdits.
 		ScriptShellEdits int `json:"script_shell_edits"`
+		// ScriptShellUnknown: Bash calls a REPL script ran with no answer; not in ShellUnknown.
+		ScriptShellUnknown int `json:"script_shell_unknown"`
 		// FilesChanged and the line counts are the edit tools' only: a Bash
 		// call's record says neither which files it wrote nor how many lines.
 		FilesChanged int   `json:"files_changed"`
@@ -632,6 +634,8 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *Session
 				o.Changes.ScriptEdits++
 			case tool == "Bash" && shell.Valid && shell.Int64 == 1:
 				o.Changes.ScriptShellEdits++
+			case tool == "Bash" && !shell.Valid:
+				o.Changes.ScriptShellUnknown++
 			}
 			continue
 		}

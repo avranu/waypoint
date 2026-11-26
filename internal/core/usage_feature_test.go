@@ -621,7 +621,8 @@ func TestUsageForTaskScriptEditsAreApart(t *testing.T) {
 	f.ingest(f.me, "tools", "m1", UsageChunk{Tools: []UsageToolRow{
 		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Model: "claude-opus-5-5", Kind: "builtin", Tool: "Edit", Calls: 2},
 		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Model: "<synthetic>", Kind: "builtin", Tool: "Edit", Calls: 3},
-		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Model: "<synthetic>", Kind: "builtin", Tool: "Bash", Calls: 4},
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Model: "<synthetic>", Kind: "builtin", Tool: "Bash", Calls: 6},
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Model: "<synthetic>", Kind: "shell_unknown", Tool: "Bash", Calls: 2},
 		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Model: "<synthetic>", Kind: "shell_edit", Tool: "Bash", Calls: 1},
 		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Model: "<synthetic>", Kind: "shell_none", Tool: "Bash", Calls: 3},
 	}})
@@ -632,6 +633,11 @@ func TestUsageForTaskScriptEditsAreApart(t *testing.T) {
 	if o.Edits != 2 || o.ScriptEdits != 3 || o.ShellEdits != 0 || o.ScriptShellEdits != 1 || o.ShellEditsUncounted != 0 || o.ShellEditsCounted != 0 {
 		t.Errorf("edits %d (+%d by scripts), shell edits %d (+%d by scripts), uncounted %d, counted %d; want 2 (+3), 0 (+1), 0, 0",
 			o.Edits, o.ScriptEdits, o.ShellEdits, o.ScriptShellEdits, o.ShellEditsUncounted, o.ShellEditsCounted)
+	}
+	// The script-run Bash calls the client could not read are reported too
+	// (audit 2047.6).
+	if o.ScriptShellUncounted != 2 {
+		t.Errorf("script shell calls uncounted %d, want 2", o.ScriptShellUncounted)
 	}
 }
 
@@ -681,5 +687,37 @@ func TestUsageForTaskOnlyUnknownRowIsUncounted(t *testing.T) {
 	}
 	if o.ShellEdits != 0 || o.ShellEditsUncounted != 2 || o.ShellEditsCounted != 0 {
 		t.Errorf("shell edits %d, uncounted %d, counted %d; want 0, 2, 0", o.ShellEdits, o.ShellEditsUncounted, o.ShellEditsCounted)
+	}
+}
+
+// A session that holds the task with no run of its own (another session took
+// the run) is the task's up to the end of the task's last run; what it spends
+// days later is not the task's cost (audit 2047.3).
+func TestUsageForTaskRunlessSessionEndsWithTheRuns(t *testing.T) {
+	f := newFeatureEnv(t)
+	i := f.task(-72, "v0.80.0", "v0.80.0", 500)
+	before, err := f.s.UsageForTask(f.ctx, f.me, UsageQuery{}, i.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.session(f.me, "m1", "s-held", i.ID)
+	f.hours("s-held", -72, -72)
+	with, err := f.s.UsageForTask(f.ctx, f.me, UsageQuery{}, i.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if with.CostUSD <= before.CostUSD {
+		t.Fatalf("the run-less session's hour during the run is the task's: %.4f, was %.4f", with.CostUSD, before.CostUSD)
+	}
+	f.hours("s-held", -24, -20)
+	f.ingest(f.me, "late-tools", "m1", UsageChunk{Tools: []UsageToolRow{
+		{Hour: f.hour(-24), Session: "s-held", Repo: "acme/web", Kind: "builtin", Tool: "Edit", Calls: 7},
+	}})
+	late, err := f.s.UsageForTask(f.ctx, f.me, UsageQuery{}, i.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if late.CostUSD != with.CostUSD || late.Edits != with.Edits {
+		t.Errorf("spend two days after the last run is in the task: cost %.4f edits %d, want %.4f and %d", late.CostUSD, late.Edits, with.CostUSD, with.Edits)
 	}
 }
