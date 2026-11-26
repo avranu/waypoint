@@ -557,7 +557,7 @@ func (s *Service) CheckShipTasks(ctx context.Context, actor *Actor, project stri
 	if actor == nil || actor.User == nil {
 		return ErrUnauthorized
 	}
-	if err := actor.need(PermPullsWrite); err != nil {
+	if err := actor.Need(PermPullsWrite); err != nil {
 		return err
 	}
 	p, err := s.projectByRef(ctx, s.db.R, project)
