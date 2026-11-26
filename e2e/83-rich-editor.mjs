@@ -774,7 +774,7 @@ for (const [width, scheme] of looks([
   await ppage.locator(".prose-wp strong").click();
   const prich = ppage.locator('[contenteditable="true"][aria-label="Description"]');
   await prich.waitFor();
-  // The new-comment box is a formatted editor too, with its own button.
+  // The description editor's own Edit as markdown button makes the choice.
   await toolbarOf(prich).getByRole("button", { name: "Edit as markdown" }).click();
   await ppage.locator("textarea[aria-label=Description]").waitFor();
   await ppage.getByRole("textbox", { name: "Description" }).press("Escape");

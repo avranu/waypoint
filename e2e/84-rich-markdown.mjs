@@ -160,9 +160,11 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
     "Autolinks",
     '<p>see <a href="https://example.com/a_b">https://example.com/a_b</a>. (<a href="https://example.com/">https://example.com/</a>)</p>' +
       '<p><em><a href="https://example.com/">https://example.com/</a></em></p>' +
+      '<p><a href="https://example.com/">https://example.com/</a>more</p>' +
       '<p><a href="/issue/a b">/issue/a b</a> <a href="mailto:a@example.com">mailto:a@example.com</a> <a href="https://example.com/"></a></p>',
     "see https://example.com/a_b. (https://example.com/)\n\n" +
       "[*https://example.com/*](https://example.com/)\n\n" +
+      "https://example.com/more\n\n" +
       "/issue/a b <mailto:a@example.com>",
   );
   {
