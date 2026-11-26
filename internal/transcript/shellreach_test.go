@@ -67,6 +67,21 @@ func TestShellEditReach(t *testing.T) {
 		{"unzip", "unzip -o a.zip", "/home/u/proj", true, true},
 		{"unzip -d scratch", "unzip a.zip -d /tmp/x", "/home/u/proj", false, true},
 		{"unzip -l", "unzip -l a.zip", "/home/u/proj", false, true},
+		// Mark check 2054.2: a generator's output into a data file is an edit; a
+		// check's is a report.
+		{"go run to json", "go run ./cmd/schema > openapi.json", "/home/u/proj", true, true},
+		{"go generate to html", "go run ./cmd/docs > docs/index.html", "/home/u/proj", true, true},
+		{"npm script to json", "npm run gen:schema > web/schema.json", "/home/u/proj", true, true},
+		{"make target to xml", "make sitemap > public/sitemap.xml", "/home/u/proj", true, true},
+		{"go run to tee json", "go run ./cmd/schema | tee openapi.json", "/home/u/proj", true, true},
+		{"go test -json", "go test -json ./... > out.json", "/home/u/proj", false, true},
+		{"go run to a log", "go run ./cmd/schema > out.log", "/home/u/proj", false, true},
+		{"go run to txt", "go run ./cmd/schema > out.txt", "/home/u/proj", false, true},
+		{"npm test to json", "npm run test -- --json > results.json", "/home/u/proj", false, true},
+		{"npm lint to json", "npm run lint > lint.json", "/home/u/proj", false, true},
+		{"make check to xml", "make check > report.xml", "/home/u/proj", false, true},
+		{"curl to json", "curl -s https://x/y > page.json", "/home/u/proj", false, true},
+		{"go list to json", "go list -json ./... > pkgs.json", "/home/u/proj", false, true},
 		// .16: a report kept with tee is a report.
 		{"tee a test log", "go test ./... 2>&1 | tee test.log", "/home/u/proj", false, true},
 		{"tee a build log", "make build 2>&1 | tee build.log", "/home/u/proj", false, true},

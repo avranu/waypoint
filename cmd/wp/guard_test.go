@@ -1421,6 +1421,23 @@ func TestGuardReadsPatchesAndScripts(t *testing.T) {
 		{"python3 - <<'EOF'\nimport os, tempfile\nd = open('.claude/settings.json', encoding='utf-8').read()\nopen(os.path.join(tempfile.gettempdir(), 's.txt'), 'w').write(d)\nEOF", ""},
 		{"python3 - <<'EOF'\nimport os\nopen(os.path.join('.claude', 'x'), 'w').write(open('.claude/settings.json', 'r+').read())\nEOF", ruleGuard},
 		{`perl tools/check.pl --config .claude/settings.json`, ""},
+		// Mark check 2054.3: a path held in a name the script only reads is read,
+		// not written; any other use of the name keeps the refusal.
+		{"python3 - <<'EOF'\nimport json, sys\np = '.claude/settings.json'\nd = json.load(open(p))\nopen(sys.argv[1], 'w').write(json.dumps(d))\nEOF", ""},
+		{"python3 - <<'EOF'\nimport json, sys\np = '.claude/settings.json'\nd = json.load(open(p))\nopen(p, 'w').write(json.dumps(d))\nEOF", ruleGuard},
+		{"python3 - <<'EOF'\nimport sys\np = '.claude/settings.json'\nd = open(p).read()\nq = p\nopen(q, 'w').write(d)\nEOF", ruleGuard},
+		{"python3 - <<'EOF'\nimport sys\np = '.claude/settings.json'\nopen(sys.argv[1], 'w').write('x')\nEOF", ruleGuard},
+		// Mark check 2054.1: a runner's shell string is read as a shell's is.
+		{`npx -c 'prettier --write .claude/settings.json'`, ruleGuard},
+		{`bunx -c 'prettier --write .claude/settings.json'`, ruleInstall}, // refused before the string is read
+		{`npx --call 'prettier --write .claude/settings.json'`, ruleGuard},
+		{`npx --call='prettier --write .claude/settings.json'`, ruleGuard},
+		{`npm exec -c 'prettier --write .claude/settings.json'`, ruleGuard},
+		{`pnpm exec -c 'prettier --write .claude/settings.json'`, ruleGuard},
+		{`pnpm -c exec 'prettier --write .claude/settings.json'`, ruleGuard},
+		{`npx bash -c 'echo x > .claude/settings.json'`, ruleInstall}, // refused before the string is read
+		{`npx -c 'prettier --check .claude/settings.json'`, ""},
+		{`npx -c 'prettier --write src/a.ts'`, ""},
 		{`perl -pi -e 's/a/b/' .claude/settings.json`, ruleGuard},
 		{`git apply missing.patch`, ""},
 		{`git diff | git apply`, ""},

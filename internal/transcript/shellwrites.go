@@ -397,11 +397,53 @@ func shellOutputCounts(prog string, args []string, r string) bool {
 	base := path.Base(r)
 	switch {
 	case (traceReporters[prog] || prog == "git" && !traceGitWritesText(args)) && traceReportRE.MatchString(base):
-		return false
+		// A generator's output into a data file (go run ./cmd/schema >
+		// openapi.json) is a file of the work, not a report.
+		if !(traceDataRE.MatchString(base) && shellGenerates(prog, args)) {
+			return false
+		}
 	case prog == "cat" || prog == "echo" || prog == "printf":
 		return true
 	}
 	return shellSourceName(base)
+}
+
+var traceDataRE = lazyre.New(`(?i)\.(json|csv|tsv|html|xml)$`)
+
+// shellCheckNameRE is a script or target named as a check is, whose output
+// is a report whatever the file is called.
+var shellCheckNameRE = lazyre.New(`(?i)test|lint|check|vet|audit|bench|cover|build|tsc|verify|typecheck|ci\b`)
+
+// shellGenerates says a reporter program is running code of the project
+// that is not named as a check: go run, go generate, cargo run, an npm,
+// pnpm or yarn script, an npx binary, a make target.
+func shellGenerates(prog string, args []string) bool {
+	var words []string
+	for _, a := range args {
+		if a == "--" {
+			break
+		}
+		if !strings.HasPrefix(a, "-") && !strings.Contains(a, "=") {
+			words = append(words, a)
+		}
+	}
+	if len(words) == 0 {
+		return false
+	}
+	switch prog {
+	case "go":
+		return words[0] == "run" || words[0] == "generate"
+	case "cargo":
+		return words[0] == "run"
+	case "npm", "pnpm", "yarn":
+		if words[0] != "run" && words[0] != "run-script" && words[0] != "exec" {
+			return false
+		}
+		return len(words) > 1 && !shellCheckNameRE.MatchString(words[1])
+	case "npx", "make":
+		return !shellCheckNameRE.MatchString(words[0])
+	}
+	return false
 }
 
 var shellDotfileRE = lazyre.New(`^\.[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$`)
@@ -649,7 +691,7 @@ func traceScriptWrites(script string, whole bool) (paths []string, sure, unfollo
 		if scriptScratchAt(script, m[0], scratch) {
 			continue // a name under the temporary directory, not a path of its own
 		}
-		if scriptReadsAt(script, m[0], m[1]) {
+		if scriptReadsAt(script, m[0], m[1]) || scriptNameOnlyRead(script, m[0], m[1]) {
 			reads[str] = true
 		}
 		names = append(names, str)
@@ -768,6 +810,38 @@ func scriptReadsAt(script string, from, to int) bool {
 		return scriptOpenReads(after[:end])
 	}
 	return false
+}
+
+var scriptHeldRE = lazyre.New(`^[ \t]*(?:const |let |var )?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*$`)
+
+// scriptNameOnlyRead says the string at from..to is all a name is set to
+// (p = '.claude/settings.json') and every other place the script spells the
+// name, at least one, reads it (open(p)). A use that is anything else, or a
+// second setting of the name, leaves the answer no.
+func scriptNameOnlyRead(script string, from, to int) bool {
+	start := strings.LastIndexByte(script[:from], '\n') + 1
+	m := scriptHeldRE.FindStringSubmatch(script[start:from])
+	if m == nil {
+		return false
+	}
+	rest := script[to:]
+	if i := strings.IndexByte(rest, '\n'); i >= 0 {
+		rest = rest[:i]
+	}
+	if strings.Trim(rest, " \t\r;") != "" {
+		return false
+	}
+	uses := 0
+	for _, u := range scriptIdentRE.FindAllStringIndex(script, 4096) {
+		if script[u[0]:u[1]] != m[1] || u[0] >= start && u[1] <= from {
+			continue
+		}
+		if !scriptReadsAt(script, u[0], u[1]) {
+			return false
+		}
+		uses++
+	}
+	return uses > 0 && uses < 4096
 }
 
 // scriptOpenReads reads the arguments after open's path: it only reads when

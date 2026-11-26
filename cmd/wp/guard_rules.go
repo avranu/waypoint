@@ -495,6 +495,9 @@ func (g *guard) simple(c *guardCmd, name string, args []string, depth int) *guar
 			return h
 		}
 	}
+	if n, a := runnerCommand(name, args); n != name && shellNames[n] {
+		return g.shellBody(a, depth) // npx -c '…', npx bash -c '…'
+	}
 	switch {
 	case shellNames[name]:
 		return g.shellBody(args, depth)
@@ -1823,6 +1826,11 @@ func runnerCommand(name string, args []string) (string, []string) {
 			if len(rest) == 0 {
 				return name, args
 			}
+			for _, w := range args[:len(args)-len(rest)] {
+				if (w == "-c" || w == "--shell-mode") && rest[0] == "exec" {
+					return "sh", []string{"-c", strings.Join(rest[1:], " ")} // pnpm -c exec '…'
+				}
+			}
 			switch rest[0] {
 			case "exec", "dlx":
 				rest = rest[1:]
@@ -1834,15 +1842,27 @@ func runnerCommand(name string, args []string) (string, []string) {
 			return name, args
 		}
 		// The runner's own options: -p/--package and the like take a value,
-		// -c runs a shell string (left as it is).
+		// -c runs a shell string, which is handed back as sh -c's.
 		for len(rest) > 0 && strings.HasPrefix(rest[0], "-") && rest[0] != "-" {
 			w := rest[0]
 			rest = rest[1:]
 			switch {
 			case w == "--":
 				w = ""
-			case w == "-c" || w == "--call":
-				return name, args
+			case w == "-c" || w == "--call" || w == "--shell-mode":
+				// The next word is a shell string (pnpm's shell mode: the words left).
+				if runner == "pnpm" || runner == "yarn" {
+					if len(rest) > 0 && rest[0] == "exec" {
+						rest = rest[1:]
+					}
+					return "sh", []string{"-c", strings.Join(rest, " ")}
+				}
+				if len(rest) == 0 {
+					return name, args
+				}
+				return "sh", []string{"-c", rest[0]}
+			case strings.HasPrefix(w, "--call="):
+				return "sh", []string{"-c", strings.TrimPrefix(w, "--call=")}
 			case !strings.Contains(w, "=") && (w == "--package" || w == "--prefix" || w == "--workspace" || w == "--cache" || w == "--registry" ||
 				!strings.HasPrefix(w, "--") && strings.HasSuffix(w, "p") || w == "-w"):
 				if len(rest) > 0 {
