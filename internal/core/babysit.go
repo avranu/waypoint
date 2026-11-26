@@ -478,6 +478,25 @@ func (k *keyedLocks) lock(id int64) func() {
 	return l.Unlock
 }
 
+// tryLock is lock for a caller that does not wait: ok is false when the
+// lock is held.
+func (k *keyedLocks) tryLock(id int64) (unlock func(), ok bool) {
+	k.mu.Lock()
+	if k.m == nil {
+		k.m = map[int64]*sync.Mutex{}
+	}
+	l := k.m[id]
+	if l == nil {
+		l = &sync.Mutex{}
+		k.m[id] = l
+	}
+	k.mu.Unlock()
+	if !l.TryLock() {
+		return nil, false
+	}
+	return l.Unlock, true
+}
+
 // namedLocks is keyedLocks for string keys.
 type namedLocks struct {
 	mu sync.Mutex
@@ -723,37 +742,167 @@ func (s *Service) refreshFromForge(ctx context.Context, prID int64) {
 	}
 }
 
+// babysitStepSlow and babysitSweepSlow are how long one step and a whole
+// sweep may take before they are logged, with the slowest steps named.
+const (
+	babysitStepSlow  = 5 * time.Second
+	babysitSweepSlow = 30 * time.Second
+)
+
+// babysitSweepAlive is how long after its last finished step a running sweep
+// still counts as going. A new sweep gives way to one that finished a step
+// this recently and takes over from one that has not, saying which pull
+// request that one stands in. The sweep taken over from starts no further
+// step: it stops when the step it stands in returns, and the new one passes
+// over that pull request because its lock is held. A new sweep arrives
+// beside a running one once the scheduler no longer skips the lane for it
+// (goLane).
+const babysitSweepAlive = 5 * time.Minute
+
+// sweepMark is the running sweep, when it last finished a step and the pull
+// request whose step it is in.
+type sweepMark struct {
+	mu  sync.Mutex
+	run int64 // 0: none
+	n   int64
+	at  time.Time
+	in  string // "": between steps
+}
+
+// begin takes the mark for a new sweep, or returns 0 when another sweep
+// moved within alive. When it takes the mark from a sweep still running,
+// stood is how long that one has finished no step and in the pull request
+// whose step it is in.
+func (m *sweepMark) begin(now time.Time, alive time.Duration) (run int64, in string, stood time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.run != 0 {
+		if now.Sub(m.at) < alive {
+			return 0, "", 0
+		}
+		in, stood = m.in, now.Sub(m.at)
+	}
+	m.n++
+	m.run, m.at, m.in = m.n, now, ""
+	return m.run, in, stood
+}
+
+// step notes that sweep run starts the step of pr, and stepDone that it
+// finished one. Each reports whether the mark is still run's own: false once
+// another sweep has taken over, which is when run stops. end notes that run
+// is over, and does nothing for a sweep another has taken over from.
+func (m *sweepMark) step(run int64, pr string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.run != run {
+		return false
+	}
+	m.in = pr
+	return true
+}
+
+func (m *sweepMark) stepDone(run int64, now time.Time) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.run != run {
+		return false
+	}
+	m.at, m.in = now, ""
+	return true
+}
+
+func (m *sweepMark) end(run int64) {
+	m.mu.Lock()
+	if m.run == run {
+		m.run, m.in = 0, ""
+	}
+	m.mu.Unlock()
+}
+
 // CheckBabysits moves every babysit on once a minute: waits end with time
 // (the review wait, the quiet period), and forges without webhooks bring
 // no news.
 func (s *Service) CheckBabysits(ctx context.Context) {
+	sweep, in, stood := s.babysitSweep.begin(s.now(), babysitSweepAlive)
+	if sweep == 0 {
+		jobBusy(ctx, "the last sweep is still going")
+		return
+	}
+	defer s.babysitSweep.end(sweep)
+	if stood > 0 {
+		s.log.WarnContext(ctx, "babysit sweep took over from one that finished no step", "for", stood.Round(time.Second).String(), "in", cmp(in, "none: it was between steps"))
+	}
 	s.enrollArmedTroubled(ctx)
-	defer s.releaseDueBatches(ctx)
-	rows, err := s.db.R.QueryContext(ctx, `SELECT pr_id, coalesce(synced_at, 0) FROM babysits WHERE ended_at IS NULL ORDER BY updated_at LIMIT 200`)
+	rows, err := s.db.R.QueryContext(ctx, `SELECT b.pr_id, coalesce(b.synced_at, 0), coalesce(p.repo, ''), coalesce(p.number, 0)
+		FROM babysits b LEFT JOIN pull_requests p ON p.id = b.pr_id WHERE b.ended_at IS NULL ORDER BY b.updated_at LIMIT 200`)
 	if err != nil {
 		return
 	}
 	type item struct {
 		pr     int64
 		synced int64
+		repo   string
+		number int
 	}
 	var list []item
 	for rows.Next() {
 		var x item
-		if rows.Scan(&x.pr, &x.synced) == nil {
+		if rows.Scan(&x.pr, &x.synced, &x.repo, &x.number) == nil {
 			list = append(list, x)
 		}
 	}
 	rows.Close()
+	type took struct {
+		pr string
+		d  time.Duration
+	}
+	var steps []took
+	began := s.now()
+	// report logs the sweep's steps, its time and its three slowest steps.
+	report := func(msg string) {
+		slices.SortStableFunc(steps, func(a, b took) int { return int(b.d.Milliseconds() - a.d.Milliseconds()) })
+		var slowest []string
+		for _, st := range steps[:min(3, len(steps))] {
+			slowest = append(slowest, st.pr+" "+st.d.Round(time.Second).String())
+		}
+		s.log.InfoContext(ctx, msg, "steps", len(steps), "total", s.now().Sub(began).Round(time.Second).String(), "slowest", strings.Join(slowest, ", "))
+	}
+	const stopped = "babysit sweep stopped: another took over"
 	for _, x := range list {
 		if ctx.Err() != nil {
 			return
 		}
-		s.babysitStep(ctx, x.pr, s.nowMS()-x.synced >= babysitResyncEvery.Milliseconds())
+		unlock, free := s.babysitLocks.tryLock(x.pr)
+		if !free {
+			// Its step is running now: an event's, or one an earlier sweep
+			// still stands in.
+			continue
+		}
+		pr := fmt.Sprintf("%s#%d", x.repo, x.number)
+		if !s.babysitSweep.step(sweep, pr) {
+			unlock()
+			report(stopped)
+			return
+		}
+		at := s.now()
+		func() {
+			defer unlock()
+			s.babysitStepHeld(ctx, x.pr, s.nowMS()-x.synced >= babysitResyncEvery.Milliseconds())
+		}()
+		d := s.now().Sub(at)
+		mine := s.babysitSweep.stepDone(sweep, s.now())
+		steps = append(steps, took{pr, d})
+		if d >= babysitStepSlow {
+			s.log.InfoContext(ctx, "babysit step slow", "pr", pr, "took", d.Round(time.Second).String())
+		}
+		if !mine {
+			report(stopped)
+			return
+		}
 	}
-	s.sweepLines(ctx)
-	s.watchLines(ctx)
-	s.reviveStaleBabysits(ctx)
+	if s.now().Sub(began) >= babysitSweepSlow {
+		report("babysit sweep slow")
+	}
 }
 
 // babysitOwnerFor is the person whose runner does the rounds of a babysit
@@ -881,8 +1030,13 @@ func (s *Service) enrollArmedTroubled(ctx context.Context) {
 // comments seen, start a round when something needs work, or say it is
 // ready. With sync, review comments are read from the forge first.
 func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
-	unlock := s.babysitLocks.lock(prID)
-	defer unlock()
+	defer s.babysitLocks.lock(prID)()
+	s.babysitStepHeld(ctx, prID, sync)
+}
+
+// babysitStepHeld is babysitStep for a caller that holds the pull request's
+// lock.
+func (s *Service) babysitStepHeld(ctx context.Context, prID int64, sync bool) {
 	b, err := s.activeBabysit(ctx, s.db.R, prID)
 	if err != nil || b == nil {
 		return

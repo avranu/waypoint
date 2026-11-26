@@ -181,3 +181,31 @@ func TestPRLinksUseIndexes(t *testing.T) {
 		})
 	}
 }
+
+// A review run's findings are read by run_id (a pull request's page, the
+// review step, agent activity's count by model): each statement is explained
+// as the code sends it (agent activity's through reviewRunsSQL, with the
+// condition visibleSQL gives a person who is not an admin, with and without
+// the project filter reviewBots appends) and must use the index on run_id,
+// not scan the table.
+func TestFindingsByRunUseTheRunIndex(t *testing.T) {
+	e := newEnv(t)
+	everyone, everyoneArgs := visibleSQL("r.project_id", e.user("viewer", false))
+	const byProject = " AND r.project_id = (SELECT id FROM projects WHERE key = ?)"
+	for _, c := range []struct {
+		name, q string
+		args    []any
+	}{
+		{"runFindings", runFindingsSQL, []any{1}},
+		{"review step", runFindingKindsSQL, []any{1}},
+		{"by model, every project", reviewRunsSQL(everyone), append(slices.Clone(everyoneArgs), 0)},
+		{"by model, one project", reviewRunsSQL(everyone + byProject), append(slices.Clone(everyoneArgs), "WP", 0)},
+	} {
+		plan := e.explainPlan(c.q, c.args...)
+		if !slices.ContainsFunc(plan, func(d string) bool {
+			return strings.Contains(d, "USING INDEX bot_findings_run (run_id=") || strings.Contains(d, "USING COVERING INDEX bot_findings_run (run_id=")
+		}) {
+			t.Errorf("%s does not use bot_findings_run: %v", c.name, plan)
+		}
+	}
+}

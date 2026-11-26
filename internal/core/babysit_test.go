@@ -12,6 +12,9 @@ import (
 // PRNotes and ReactTo make the shipping fake list review bodies and
 // conversation comments and take emoji on them.
 func (g *shipForge) PRNotes(ctx context.Context, f *Forge, repo string, n int) ([]PRNote, error) {
+	if g.notesHold != nil {
+		g.notesHold(n)
+	}
 	g.sm.Lock()
 	defer g.sm.Unlock()
 	return slices.Clone(g.notes), nil
