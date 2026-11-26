@@ -1,6 +1,11 @@
 package core
 
-import "git.jmann.me/claude/waypoint/internal/core/kernel"
+import (
+	"database/sql"
+	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
+)
 
 var (
 	ErrNotFound     = kernel.ErrNotFound
@@ -30,3 +35,7 @@ func int64Args(ids []int64) []any { return kernel.Int64Args(ids) }
 
 func (t *tx) audit(e AuditEntry)            { t.Audit(e) }
 func auditable(a *Actor, e AuditEntry) bool { return kernel.Auditable(a, e) }
+
+func msTime(ms int64) time.Time          { return kernel.MSTime(ms) }
+func ptrTime(n sql.NullInt64) *time.Time { return kernel.PtrTime(n) }
+func boolInt(b bool) int                 { return kernel.BoolInt(b) }

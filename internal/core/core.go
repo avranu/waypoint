@@ -300,11 +300,7 @@ type tx struct {
 	s *Service
 }
 
-type queryer interface {
-	QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error)
-	QueryRowContext(ctx context.Context, q string, args ...any) *sql.Row
-	ExecContext(ctx context.Context, q string, args ...any) (sql.Result, error)
-}
+type queryer = kernel.Queryer
 
 // write runs f in a write transaction and dispatches its events afterwards.
 func (s *Service) write(ctx context.Context, actor *Actor, f func(t *tx) error) error {
@@ -380,23 +376,6 @@ func ptrFloat(n sql.NullFloat64) *float64 {
 	}
 	v := n.Float64
 	return &v
-}
-
-func ptrTime(n sql.NullInt64) *time.Time {
-	if !n.Valid {
-		return nil
-	}
-	t := time.UnixMilli(n.Int64).UTC()
-	return &t
-}
-
-func msTime(ms int64) time.Time { return time.UnixMilli(ms).UTC() }
-
-func boolInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 // placeholders returns "?,?,?" for n values.
