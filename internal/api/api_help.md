@@ -144,6 +144,7 @@ for itself unless it says `anyone`). Search: `is:anyone`, `is:human`, `is:agent`
                                       a task never taken (not delegated) is taken first, as take does, then finished
     POST /agent/release/{key} {"comment"}   POST /agent/usage/{key} {"input_tokens",…}
     POST /agent/decline/{key} {"comment"}   cancel a task filed from another repo (filed_from); the filer hears why
+    POST /agent/deferred {"project","keys","via"}   the ready tasks the calling Opus/Fable session filed while on keys and was not offered yet (once each; "text" is what wp ship prints, empty when none; needs the session header and autopilot on with deferred on)
     POST /agent/take/{key} {"cross_project"}   take a named task (even if humans only; an epic with open sub-tasks for agents hands out the first one the agent can take): assigns it to the agent, In Progress, clock starts; cross_project is kept on its history as why it was taken from outside the session's project
     POST /agent/pause/{key}           idle: stop the clock on a held task, keeping it   POST /agent/resume/{key}
     GET  /agents                      agent identities seen at work on what you can see, and your agent tokens
@@ -1018,7 +1019,7 @@ steers or clears one in effect.
     past lag_alert_m minutes); env.updated is live-only. Webhooks can subscribe to env.*.
 ## Review gate, CI and merging (WP-D21)
 
-    POST /projects/{key}/pulls {repo, head, base, title, body, body_inputs, draft, ready, issue, for, urgent, review, reason, force, head_time, message, summary, stacked_on}
+    POST /projects/{key}/pulls {repo, head, base, title, body, body_inputs, draft, ready, issue, for, also, urgent, review, reason, force, head_time, message, summary, stacked_on}
                                      open a pull request from a pushed branch (wp pr open, wp ship). Without
                                      base, the first of stacked_on (the branches head was built on, nearest
                                      first) with a pull request open is the base, else the default branch; the
@@ -1035,6 +1036,7 @@ steers or clears one in effect.
                                      needs acting on. When held_needs_agent and notice_needs_agent are false
                                      there is nothing for the agent to run: it ends its turn and Waypoint
                                      opens the pull request itself. Without review, held is a 400 error.
+    POST /projects/{key}/pulls/tasks {keys}   refuse, as the open would, tasks that can't share one pull request (wp ship A B asks before it commits): {"ok":true} or the error
     GET /projects/{key}/pulls/{number}?repo=owner/name   a pull request by number: the detail above plus
                                      "shipping": {ci, checks[{name,state,url,description,has_log}],
                                      gate{enabled,severity,state,note,open,below}, findings[{id,path,line,
@@ -1194,8 +1196,9 @@ an agent). Only the owner's work runs on a runner. Jobs: `command`, `apply`, `ag
         cancel lists running jobs a person stopped, and jobs in running that the server
         ended itself more than 45 s ago (stop them). Jobs the server thinks the runner has
         that it doesn't list in running are failed as lost. server_version is the server's
-        version: a runner on a release build that differs updates itself between jobs
-        (/cli/wp-OS-ARCH, checked against /cli/SHA256SUMS)
+        version: a runner on a release build that differs replaces its binary at once
+        (/cli/wp-OS-ARCH, checked against /cli/SHA256SUMS), restarts on it when no job
+        is running, and takes no new jobs after waiting 15 minutes for that
     POST /runner/jobs/{id}/log   {offset, text} → {size, cancel, truncated}
         append output; offset (bytes) makes a resent chunk harmless; 1 MB kept per job;
         cancel true = stop the job

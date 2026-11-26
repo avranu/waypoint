@@ -2,7 +2,25 @@ import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { q, useSavePrefs } from '@/lib/queries'
 
+// Sets whose write to storage failed, so a remount still sees them.
+// Each is kept with what storage held then, and applies only while storage
+// still holds that, so another tab's later save shows.
+const unsaved = new Map<string, { set: Set<string>; stored: string | null }>()
+
+function raw(key: string): string | null {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
 function read(key: string): Set<string> {
+  const kept = unsaved.get(key)
+  if (kept) {
+    if (kept.stored === raw(key)) return new Set(kept.set)
+    unsaved.delete(key)
+  }
   try {
     const v: unknown = JSON.parse(localStorage.getItem(key) ?? '[]')
     return new Set(Array.isArray(v) ? v.map(String) : [])
@@ -25,7 +43,10 @@ export function useStoredSet(key: string) {
       f(next)
       try {
         localStorage.setItem(key, JSON.stringify([...next]))
-      } catch {}
+        unsaved.delete(key)
+      } catch {
+        unsaved.set(key, { set: next, stored: raw(key) })
+      }
       return { key, set: next }
     })
   return {
