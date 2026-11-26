@@ -120,9 +120,10 @@ func TestPRAuditRerunHoldsTheMerge(t *testing.T) {
 	holds("no runner took it", false)
 }
 
-// A runner that went silent has held the pull request long enough.
+// A pass that timed out, whose runner went silent, or whose job no runner
+// took in a day has held the pull request long enough.
 func TestPRAuditNotRerunAfterASlowPass(t *testing.T) {
-	for name, why := range map[string]string{"timed out": "the audit timed out", "silent": ""} {
+	for name, why := range map[string]string{"timed out": "the audit timed out", "silent": "", "untaken": ""} {
 		t.Run(name, func(t *testing.T) {
 			be, box, _ := retryEnv(t)
 			var got *CodeAudit
@@ -130,9 +131,15 @@ func TestPRAuditNotRerunAfterASlowPass(t *testing.T) {
 				got = be.failChain(box, why)
 			} else {
 				for range 8 {
-					job := be.takeAudit(box)
+					var id int64
+					if name == "silent" {
+						id = be.takeAudit(box).ID
+					} else {
+						be.s.Wait()
+						id = *be.ownAudit().JobID
+					}
 					if err := be.s.write(be.ctx, SystemActor(), func(tx *tx) error {
-						return tx.finishRunnerJob(be.ctx, job.ID, "expired", nil, nil, "The runner didn't report back.")
+						return tx.finishRunnerJob(be.ctx, id, "expired", nil, nil, "The runner didn't report back.")
 					}); err != nil {
 						t.Fatal(err)
 					}

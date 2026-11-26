@@ -1142,7 +1142,7 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 		s.endAudit(ctx, a, AuditCancelled, att.Error, nil)
 		return
 	case "expired":
-		att.Outcome, att.Error = "unavailable", "no runner took it within a day"
+		att.Outcome, att.Error = "unavailable", runnerUntakenError
 		if j.StartedAt > 0 {
 			att.Error = runnerSilentError
 		}
@@ -1224,9 +1224,10 @@ func (s *Service) endAuditChain(ctx context.Context, a *CodeAudit, last string) 
 // auditRetryStep, as its merge would otherwise go ahead with the head
 // unaudited (WP-1916); auditGoingErr holds the merge meanwhile. It does so
 // once, however many passes busy models took before, and only while the pull
-// request is open on the change the audit read. A pass that timed out, or
-// whose runner went silent, is not run again: the pull request waits on an
-// audit that is going, and a second long wait would hold it twice as long.
+// request is open on the change the audit read. A pass that timed out, whose
+// runner went silent, or whose job no runner took in a day, is not run again:
+// the pull request waits on an audit that is going, and a second long wait
+// would hold it twice as long.
 // A pass that hit a usage limit is not run again either.
 func (s *Service) endAuditFailed(ctx context.Context, a *CodeAudit, why string) {
 	own, err := s.isPRAudit(ctx, a)
@@ -1258,7 +1259,7 @@ func (s *Service) owesRerun(ctx context.Context, a *CodeAudit) (bool, error) {
 		return false, nil
 	}
 	for _, x := range a.Attempts {
-		slow := x.Outcome == "timeout" || x.Outcome == "spent" || x.Error == runnerSilentError
+		slow := x.Outcome == "timeout" || x.Outcome == "spent" || x.Error == runnerSilentError || x.Error == runnerUntakenError
 		if x.Rerun || x.Round == a.Retries && slow {
 			return false, nil
 		}
@@ -1338,6 +1339,10 @@ const runnerStoppedError = "The runner was stopped."
 // runnerSilentError is the error of an attempt whose runner took the job and
 // never reported back.
 const runnerSilentError = "the runner that took it went silent and never reported back"
+
+// runnerUntakenError is the error of an attempt whose job expired with no
+// runner having taken it.
+const runnerUntakenError = "no runner took it within a day"
 
 // jobWhy is a failed job's reason in a line.
 func jobWhy(j *stepJob) string {
