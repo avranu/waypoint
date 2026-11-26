@@ -46,7 +46,7 @@ func (a *Analysis) AllPairs() int {
 // "from>to" line per pair.
 func WriteUpward(w io.Writer, pairs map[string][]Ref) error {
 	fmt.Fprintf(w, "# Group pairs of internal/core that refer upward today, by the line order of groups.txt (WP-1925, WP-ADR151).\n")
-	fmt.Fprintf(w, "# TestNoNewUpwardReferences fails on a pair that is not listed here and on a listed pair that is gone.\n")
+	fmt.Fprintf(w, "# TestNoNewUpwardReferences fails on a pair that is not listed here; `make coremap-upward` drops pairs that are gone.\n")
 	fmt.Fprintf(w, "# Regenerate with `make coremap-upward`; do not add lines by hand to make a test pass.\n")
 	for _, k := range sortedKeys(pairs) {
 		if _, err := fmt.Fprintln(w, k); err != nil {
@@ -117,7 +117,7 @@ func CheckUpward(found map[string][]Ref, allowed map[string]bool) (added, gone s
 	if len(stale) > 0 {
 		sort.Strings(stale)
 		gone = fmt.Sprintf("%d pair(s) in internal/coremap/upward.txt no longer refer upward: %s. "+
-			"Remove those lines from internal/coremap/upward.txt (the list only shrinks), or run `make coremap-upward` to regenerate it.",
+			"Run `make coremap-upward` to drop them.",
 			len(stale), strings.Join(stale, ", "))
 	}
 	return added, gone

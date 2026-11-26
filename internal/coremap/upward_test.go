@@ -85,8 +85,8 @@ func TestCheckUpwardCapsTheList(t *testing.T) {
 
 // TestNoNewUpwardReferences loads the real internal/core (about as long as
 // `make coremap`) and holds its upward group pairs to upward.txt (WP-1925,
-// WP-ADR151 section 6): a pair not listed fails with its references, and a
-// listed pair that is gone fails so the list only shrinks. It checks pairs,
+// WP-ADR151 section 6): a pair not listed fails with its references; a
+// listed pair that is gone is only logged. It checks pairs,
 // not the count of references on a pair, so an existing edge can grow without
 // touching the list. Up is decided by the line order of groups.txt; groups in
 // one cycle are not special: whichever of the two directions the order makes
@@ -119,7 +119,10 @@ func TestNoNewUpwardReferences(t *testing.T) {
 	if added != "" {
 		t.Error(added)
 	}
+	// A pair that is gone is not a failure: a change that removes the last
+	// upward reference of a pair, or lands beside one that does, must not be
+	// sent round CI again for it. make coremap-upward prunes the list.
 	if gone != "" {
-		t.Error(gone)
+		t.Log(gone)
 	}
 }

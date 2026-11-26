@@ -1,5 +1,5 @@
 # Group pairs of internal/core that refer upward today, by the line order of groups.txt (WP-1925, WP-ADR151).
-# TestNoNewUpwardReferences fails on a pair that is not listed here and on a listed pair that is gone.
+# TestNoNewUpwardReferences fails on a pair that is not listed here; `make coremap-upward` drops pairs that are gone.
 # Regenerate with `make coremap-upward`; do not add lines by hand to make a test pass.
 agent>automation
 agent>autopilot
