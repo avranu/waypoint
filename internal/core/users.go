@@ -23,6 +23,7 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -1014,7 +1015,7 @@ func (s *Service) UpdateUser(ctx context.Context, actor *Actor, id int64, p User
 			return nil, invalid("cache_warm must be compact or empty")
 		}
 		var err error
-		if next.Sessions, err = validateSessionPrefs(next.Sessions); err != nil {
+		if next.Sessions, err = kernel.ValidateSessionPrefs(next.Sessions); err != nil {
 			return nil, err
 		}
 		if len(next.ProjectOrder) > maxProjectOrder {
