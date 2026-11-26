@@ -267,10 +267,10 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 		}
 		var err error
 		if path, err = exec.LookPath(bin); err != nil {
-			return failed("%s isn't installed on this machine.", bin)
+			return outcome{State: "failed", Error: fmt.Sprintf("%s isn't installed on this machine.", bin), Result: faultResult("cli")}
 		}
 		if c := p.cliInfo(in.CLI); c != nil && c.SignedIn != nil && !*c.SignedIn {
-			return failed("%s isn't signed in on this machine: run %s", bin, signInHint(in.CLI))
+			return outcome{State: "failed", Error: fmt.Sprintf("%s isn't signed in on this machine: run %s", bin, signInHint(in.CLI)), Result: faultResult("cli")}
 		}
 	}
 	ctx, cancel, clock := p.jobClock(ctx, run, in.WorkTimeout)
@@ -580,6 +580,18 @@ func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare
 				}
 			}
 		}
+		// Measured before holdProtected, which squashes a merge's parents
+		// away. What it holds is counted when that is pushed, unless it is
+		// the whole change.
+		var heldOut []string
+		if len(mc.conflicted) == 0 {
+			heldOut = bad
+		}
+		if own, lines, ok := p.ownChanges(ctx, bare, work, env, in.Target, baseSHA, heldOut); ok {
+			result["own_files"], result["lines"] = own, lines
+		} else {
+			fmt.Fprintf(run.out, "Couldn't measure the agent's own change\n")
+		}
 		if len(bad) > 0 {
 			h, ok := p.holdProtected(ctx, work, in, baseSHA, bad, mc, result)
 			if !ok {
@@ -607,7 +619,15 @@ func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare
 			fmt.Fprintf(run.out, "Pushing %s\n", in.Branch)
 			ref := "refs/heads/" + in.Branch
 			if _, err := p.gitIn(ctx, work, nil, env, "push", "origin", ref+":"+ref); err != nil {
-				return p.partial(result, "pushing %s failed: %v", in.Branch, err)
+				err = p.pushMoved(ctx, run, work, env, in, baseSHA, files, result, err)
+				if errors.Is(err, errOnBranch) {
+					fmt.Fprintf(run.out, "%s already has the round's changes; nothing to push\n", in.Branch)
+					*pushed = true
+					return outcome{State: "done", Result: result}
+				}
+				if err != nil {
+					return p.partial(result, "pushing %s failed: %v", in.Branch, err)
+				}
 			}
 			*pushed = true
 			result["pushed"] = true
@@ -1115,6 +1135,75 @@ func (p *runnerProc) holdProtected(ctx context.Context, work string, in agentJob
 	return h, true
 }
 
+// ownChanges is what the agent itself changed from from, where its job
+// started, to HEAD: the files, and the lines added and removed, which the
+// footprint check measures a round by (WP-1939). What a merge of target (the
+// default branch when "") brought in isn't the round's: HEAD is then compared
+// with the merge git makes of from and the target's commit it has, so only
+// how a conflict was settled and the agent's edits count. Files in skip
+// aren't counted. ok is false when git can't say.
+func (p *runnerProc) ownChanges(ctx context.Context, bare, work string, env []string, target, from string, skip []string) (files []string, lines int, ok bool) {
+	since, ok := p.withMerged(ctx, bare, work, env, target, from)
+	if !ok {
+		return nil, 0, false
+	}
+	out, err := p.gitRaw(ctx, work, nil, nil, "diff", "--numstat", "--no-renames", "-z", since, "HEAD")
+	if err != nil {
+		return nil, 0, false
+	}
+	files, lines = numstat(out, skip)
+	return files, lines, true
+}
+
+// withMerged is from with what HEAD took of target since: from itself when it
+// took nothing, else the tree of their merge (with conflict markers where they
+// conflict).
+func (p *runnerProc) withMerged(ctx context.Context, bare, work string, env []string, target, from string) (string, bool) {
+	revs, err := p.git(ctx, work, "rev-list", "--merges", from+"..HEAD")
+	if err != nil {
+		return "", false
+	}
+	main, err := p.resolveBase(ctx, bare, target, env)
+	if err != nil {
+		// Without a merge there is nothing of the target's to take out.
+		return from, revs == ""
+	}
+	taken, err := p.git(ctx, work, "merge-base", "HEAD", main)
+	if err != nil {
+		return from, revs == ""
+	}
+	if _, err := p.git(ctx, work, "merge-base", "--is-ancestor", taken, from); err == nil {
+		return from, true
+	}
+	out, err := p.gitRaw(ctx, work, nil, nil, "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", from, taken)
+	tree, rest, _ := strings.Cut(out, "\x00")
+	tree = strings.TrimSpace(tree)
+	// A merge with conflicts exits with an error and names them after the tree.
+	if !hexObjectID.MatchString(tree) || err != nil && strings.Trim(rest, "\x00") == "" {
+		return "", false
+	}
+	return tree, true
+}
+
+// numstat reads `git diff --numstat --no-renames -z`: the files, less those in
+// skip, and their lines added and removed. A binary file's "-" counts as none.
+func numstat(out string, skip []string) ([]string, int) {
+	files, lines := []string{}, 0
+	for _, rec := range strings.Split(out, "\x00") {
+		f := strings.SplitN(rec, "\t", 3)
+		if len(f) < 3 || slices.Contains(skip, f[2]) {
+			continue
+		}
+		files = append(files, f[2])
+		add, err1 := strconv.Atoi(f[0])
+		del, err2 := strconv.Atoi(f[1])
+		if err1 == nil && err2 == nil {
+			lines += add + del
+		}
+	}
+	return files, lines
+}
+
 // hexObjectID is a git object id (SHA-1 or SHA-256).
 var hexObjectID = lazyre.New(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
 
@@ -1133,12 +1222,16 @@ func (p *runnerProc) jobTokenEnv(run *jobRun, in agentJob) []string {
 func (p *runnerProc) agentError(ctx context.Context, run *jobRun, format string, a ...any) outcome {
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return outcome{State: "failed", Error: fmt.Sprintf("Timed out after %s while preparing the checkout.", run.timeout.Round(time.Second))}
+		return outcome{State: "failed", Error: fmt.Sprintf("Timed out after %s while preparing the checkout.", run.timeout.Round(time.Second)), Result: faultResult("checkout")}
 	case ctx.Err() != nil:
 		return outcome{State: "cancelled", Error: "Stopped."}
 	}
-	return failed(format, a...)
+	return outcome{State: "failed", Error: fmt.Sprintf(format, a...), Result: faultResult("checkout")}
 }
+
+// faultResult marks a job that ended before its agent started, which a
+// babysit round doesn't count and tries again (WP-1914).
+func faultResult(kind string) map[string]any { return map[string]any{"fault": kind} }
 
 // partial is a failure after the agent's work: what it did is still reported.
 func (p *runnerProc) partial(result map[string]any, format string, a ...any) outcome {
