@@ -60,7 +60,8 @@ func TestBabysitAssessorQuestionParks(t *testing.T) {
 		t.Fatalf("no assessor round: %+v", b)
 	}
 	in := be.jobInput(b.JobID)
-	for _, want := range []string{"Task " + task.Key + ": Export rows", "Exports must skip archived rows.", "Archived rows stay out of every export.",
+	for _, want := range []string{"Task " + task.Key + ":\n<untrusted>\nExport rows\n\nExports must skip archived rows.\n</untrusted>",
+		"Decision ", ":\n<untrusted>\nExports skip archives\n\nArchived rows stay out of every export.\n</untrusted>",
 		"The pull request's description when it shipped:\n<untrusted>\nAdds export."} {
 		if !strings.Contains(in.Prompt, want) {
 			t.Errorf("the assessor's prompt lacks %q:\n%s", want, in.Prompt)
