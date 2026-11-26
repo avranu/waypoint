@@ -177,3 +177,25 @@ func TestShellFollowReviewCases(t *testing.T) {
 		t.Errorf("InlineScript past an unknown option's value = %q, want X", got)
 	}
 }
+
+// Scratch is judged where a write stands, not by a temporary directory used
+// anywhere in the script (mark check 2039.1), and a name set from a join
+// under the temporary directory is scratch too (2039.2).
+func TestShellEditScratchIsJudgedPerWrite(t *testing.T) {
+	py := func(body string) string { return "python3 - <<'E'\n" + body + "\nE" }
+	for _, c := range []struct {
+		name, cmd    string
+		wrote, known bool
+	}{
+		{"temp dir elsewhere, built write", py("import tempfile, pathlib\nlog = tempfile.mktemp()\nfor p in pathlib.Path('internal').rglob('*.go'):\n    p.write_text(p.read_text())"), false, false},
+		{"write to a temp name", py("import tempfile\nout = tempfile.mktemp()\nopen(out, 'w').write('x')"), false, true},
+		{"built write under a temp dir", py("import os, tempfile\nd = tempfile.mkdtemp()\nfor n in names:\n    open(os.path.join(d, n), 'w').write('x')"), false, true},
+		{"loop over a temp dir", py("import pathlib, tempfile\nd = pathlib.Path(tempfile.mkdtemp())\nfor p in d.rglob('*.go'):\n    p.write_text('x')"), false, true},
+		{"name set from a join under gettempdir", py("import os, tempfile\nd = os.path.join(tempfile.gettempdir(), 'w')\nopen(os.path.join(d, 'x.go'), 'w').write('s')"), false, true},
+	} {
+		var s ShellSession
+		if wrote, known := s.Edit(c.cmd, "/home/u/proj"); wrote != c.wrote || known != c.known {
+			t.Errorf("%s: wrote %v known %v, want %v %v", c.name, wrote, known, c.wrote, c.known)
+		}
+	}
+}

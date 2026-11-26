@@ -503,20 +503,42 @@ func traceScriptWrites(script string, whole bool) (paths []string, sure, unfollo
 	// Each name followed searches the text again: spend a fixed amount of
 	// scanning, so a long script is followed fewer times than a short one.
 	budget := min(traceScriptBudget, max(3, traceScriptScan/(3*len(script)+1)))
-	followed := 0
+	lineOf := func(at int) int { return strings.LastIndexByte(script[:at], '\n') + 1 }
+	followed := map[int]bool{} // the lines whose write was followed to a path
 	for _, re := range traceScriptSiteREs {
-		for _, m := range re.FindAllStringSubmatch(script, sites) {
-			ps := traceScriptExpr(script, m[1], 0, &budget)
+		for _, m := range re.FindAllStringSubmatchIndex(script, sites) {
+			ps := traceScriptExpr(script, script[m[2]:m[3]], 0, &budget)
 			if len(ps) > 0 {
-				followed++
+				followed[lineOf(m[0])] = true
 			}
 			paths = append(paths, ps...)
 		}
 	}
-	// A write among others that were followed, itself not followed and with
-	// no temporary directory in the script to explain it, is as unknown as a
-	// script with none followed: the paths found are not all it writes.
-	missed := !whole && len(traceScriptWriteRE.FindAllStringIndex(script, sites)) > followed && !scriptScratchRE.MatchString(script)
+	// A write that was not followed, on a line with no temporary directory
+	// (or name set from one) to explain it, leaves the answer unknown: the
+	// paths found, if any, are not all the script writes. Scratch is judged
+	// where the write stands, not by a temporary directory used elsewhere.
+	var scratch map[string]bool
+	missed := false
+	if !whole {
+		for _, m := range traceScriptWriteRE.FindAllStringIndex(script, sites) {
+			from := lineOf(m[0])
+			if followed[from] {
+				continue
+			}
+			if scratch == nil {
+				scratch = scriptScratchNames(script)
+			}
+			end := len(script)
+			if i := strings.IndexByte(script[m[0]:], '\n'); i >= 0 {
+				end = m[0] + i
+			}
+			if !scriptScratchLine(script[from:end], scratch) {
+				missed = true
+				break
+			}
+		}
+	}
 	// A whole reading that ran out of names to follow cannot say which paths
 	// the names left over stand for: it lists every path the script spells
 	// and does not read as well, so none is passed over (audit 2008.1).
@@ -528,7 +550,9 @@ func traceScriptWrites(script string, whole bool) (paths []string, sure, unfollo
 	// Each string is judged where it stands (no second search of the text),
 	// and one the script reads anywhere is left out.
 	var names []string
-	scratchNames := map[string]bool{}
+	if scratch == nil {
+		scratch = scriptScratchNames(script)
+	}
 	reads := map[string]bool{}
 	for _, m := range traceScriptStrRE.FindAllStringSubmatchIndex(script, strs) {
 		at := m[2]
@@ -539,7 +563,7 @@ func traceScriptWrites(script string, whole bool) (paths []string, sure, unfollo
 		if !ShellFileShape(str) {
 			continue
 		}
-		if scriptScratchAt(script, m[0], scratchNames) {
+		if scriptScratchAt(script, m[0], scratch) {
 			continue // a name under the temporary directory, not a path of its own
 		}
 		if scriptReadsAt(script, m[0], m[1]) {
@@ -557,43 +581,80 @@ func traceScriptWrites(script string, whole bool) (paths []string, sure, unfollo
 			paths = append(paths, n)
 		}
 	}
-	return paths, sure, len(paths) == 0 && !scriptScratchRE.MatchString(script)
+	return paths, sure, len(paths) == 0 && missed
 }
 
-// scriptScratchRE: the script uses a temporary directory somewhere. A script
-// that writes, with no path to name, and uses one is taken to write there.
-var scriptScratchRE = lazyre.New(`\btempfile\.|\bmkdtemp|\bos\.tmpdir\(|['"]/tmp\b`)
+// scriptScratchRE: text that names the temporary directory.
+var scriptScratchRE = lazyre.New(`\btempfile\.|\bmkdtemp|\bmkstemp|\bos\.tmpdir\(|['"]/tmp\b`)
+
+var (
+	scriptSetRE   = lazyre.New(`(?m)^[ \t]*(?:const |let |var )?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^=\n][^\n]*)$`)
+	scriptBindRE  = lazyre.New(`(?m)^[ \t]*(?:with|for)\b([^\n]*?)\b(?:as|in)\b([^\n]*)$`)
+	scriptIdentRE = lazyre.New(`[A-Za-z_][A-Za-z0-9_]*`)
+)
+
+// scriptScratchNames are the names a script sets from the temporary
+// directory: d = tempfile.mkdtemp(), d = os.path.join(tempfile.gettempdir(),
+// 'w'), with TemporaryDirectory() as d, for p in d.rglob(...), and names set
+// from those names in turn.
+func scriptScratchNames(script string) map[string]bool {
+	names := map[string]bool{}
+	sets := scriptSetRE.FindAllStringSubmatch(script, 256)
+	binds := scriptBindRE.FindAllStringSubmatch(script, 256)
+	for pass := 0; pass < 3; pass++ {
+		n := len(names)
+		for _, m := range sets {
+			if scriptScratchLine(m[2], names) {
+				names[m[1]] = true
+			}
+		}
+		for _, m := range binds {
+			// with EXPR as NAME: the value is before the name; for NAME in
+			// EXPR: after it.
+			val, bound := m[1], m[2]
+			if strings.HasPrefix(strings.TrimSpace(m[0]), "for") {
+				val, bound = m[2], m[1]
+			}
+			if scriptScratchLine(val, names) {
+				for _, id := range scriptIdentRE.FindAllString(bound, 4) {
+					names[id] = true
+				}
+			}
+		}
+		if len(names) == n {
+			break
+		}
+	}
+	return names
+}
+
+// scriptScratchLine says a piece of script names the temporary directory or
+// a name set from it.
+func scriptScratchLine(text string, names map[string]bool) bool {
+	if scriptScratchRE.MatchString(text) {
+		return true
+	}
+	if len(names) == 0 {
+		return false
+	}
+	for _, id := range scriptIdentRE.FindAllString(text, 64) {
+		if names[id] {
+			return true
+		}
+	}
+	return false
+}
 
 // scriptScratchAt says the string at script[at:] stands in a join whose
 // first argument is the temporary directory: a call to tempfile.*, os.tmpdir,
-// a '/tmp…' literal, or a name the script sets to one of those (d =
-// tempfile.mkdtemp(); with TemporaryDirectory() as d). seen caches the names
-// judged.
-func scriptScratchAt(script string, at int, seen map[string]bool) bool {
+// a '/tmp…' literal, or a name the script set from one (names).
+func scriptScratchAt(script string, at int, names map[string]bool) bool {
 	before := script[max(0, at-64):at]
 	if scriptScratchBeforeRE.MatchString(before) {
 		return true
 	}
 	m := scriptJoinNameBeforeRE.FindStringSubmatch(before)
-	if m == nil {
-		return false
-	}
-	name := m[1]
-	if v, ok := seen[name]; ok {
-		return v
-	}
-	re := regexp.MustCompile(`\b` + name + `\s*=\s*(?:[\w.]*\b(?:tempfile\.|mkdtemp|mkstemp)|os\.tmpdir\(|['"]/tmp\b)`)
-	v := re.MatchString(script)
-	if !v {
-		// with tempfile.TemporaryDirectory() as d: the call is before the name.
-		as := regexp.MustCompile(`\bas\s+` + name + `\b`)
-		for _, w := range as.FindAllStringIndex(script, 8) {
-			line := script[strings.LastIndexByte(script[:w[0]], '\n')+1 : w[0]]
-			v = v || scriptScratchRE.MatchString(line)
-		}
-	}
-	seen[name] = v
-	return v
+	return m != nil && names[m[1]]
 }
 
 var (
