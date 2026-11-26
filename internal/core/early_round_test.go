@@ -36,6 +36,7 @@ func TestEarlyRoundNamesRunningChecks(t *testing.T) {
 	be := earlyEnv(t, true, nil,
 		CommitCheck{Name: "ci / test", State: CheckPending},
 		CommitCheck{Name: "ci / lint", State: CheckFailed},
+		CommitCheck{Name: "ci / e2e", State: CheckFailed, Description: "Has been cancelled"},
 		CommitCheck{Name: "ci / build", State: CheckSuccess})
 	b := be.babysit()
 	jobs := be.jobs()
@@ -60,15 +61,109 @@ func TestEarlyRoundNamesRunningChecks(t *testing.T) {
 	}
 }
 
-// A check that hasn't reported at all is told so.
-func TestEarlyRoundBeforeAnyCheckReported(t *testing.T) {
+// No round goes out before a first check has reported on the head; it goes
+// once one has.
+func TestEarlyRoundWaitsForFirstCheck(t *testing.T) {
 	be := earlyEnv(t, true, nil)
-	jobs := be.jobs()
-	if len(jobs) != 1 {
-		t.Fatalf("no round before CI reported: %d jobs", len(jobs))
+	b := be.babysit()
+	if len(be.jobs()) != 0 || !strings.Contains(b.Wait, "a first check to report") {
+		t.Fatalf("round before any check reported: %d jobs, %s %q", len(be.jobs()), b.State, b.Wait)
 	}
-	if p := be.jobInput(jobs[0]).Prompt; !strings.Contains(p, "no check had reported") {
-		t.Errorf("the prompt: %s", p)
+	be.setCI(CommitCheck{Name: "ci / test", State: CheckPending})
+	be.step()
+	if len(be.jobs()) != 1 {
+		b = be.babysit()
+		t.Fatalf("no round once a check reported: %s %q", b.State, b.Wait)
+	}
+}
+
+// A prompt with no check shown running still says a listed failure may not be
+// the only one, and doesn't claim that none is listed.
+func TestEarlyRoundNoteWithNothingRunning(t *testing.T) {
+	var p strings.Builder
+	writeEarlyCI(&p, &BabysitRound{Early: true, Checks: []string{"ci / lint"}})
+	if got := p.String(); !strings.Contains(got, "CI has not finished on this head. Any failed check listed below") || strings.Contains(got, "still running") {
+		t.Errorf("note = %q", got)
+	}
+}
+
+// Audit findings beside a failed check, with no comment work, wait for the
+// checks to finish: the runner-fault and flake gates look at the failure
+// before any round does.
+func TestEarlyRoundHoldsFindingsOnFailedCheck(t *testing.T) {
+	be := newBabysitEnv(t)
+	box := be.auditBox()
+	be.auditOn()
+	be.runnerOnline()
+	pr := be.openMine()
+	be.sg.setChecks(bsPR.HeadSHA, CommitCheck{Name: "ci / test", State: CheckPending}, CommitCheck{Name: "ci / lint", State: CheckFailed})
+	be.poll()
+	be.start(pr)
+	be.endAudit(box, "done", [2]string{"medium", "No limit on rows"})
+	be.runnerOnline()
+	be.step()
+	b := be.babysit()
+	if len(be.jobs()) != 0 || !strings.Contains(b.Wait, "flaky test") {
+		t.Fatalf("round before the failure was looked at: %d jobs, %s %q", len(be.jobs()), b.State, b.Wait)
+	}
+}
+
+// An early round no runner can take yet is held and says so, and goes once
+// one can.
+func TestEarlyRoundWaitsForRunner(t *testing.T) {
+	be := earlyEnv(t, true, nil)
+	be.setClock(be.clockNow().Add(time.Hour))
+	be.sg.setChecks(bsPR.HeadSHA, CommitCheck{Name: "ci / test", State: CheckPending})
+	be.poll()
+	be.step()
+	b := be.babysit()
+	if len(b.Rounds) != 0 || !strings.Contains(b.Wait, "checks running") || !strings.Contains(b.Wait, "waiting for a runner") {
+		t.Fatalf("with no runner: %+v %s %q", b.Rounds, b.State, b.Wait)
+	}
+	be.runnerOnline()
+	be.step()
+	if len(be.jobs()) != 1 {
+		b = be.babysit()
+		t.Fatalf("no round once a runner could take it: %s %q", b.State, b.Wait)
+	}
+}
+
+// Comments no round would be given (here: copied from a bot, on files the
+// pull request doesn't change) stay new while the checks run.
+func TestEarlyRoundWithNoWorkLeavesCommentsNew(t *testing.T) {
+	be := newBabysitEnv(t)
+	be.runnerOnline()
+	if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT OR IGNORE INTO forge_people(forge_id, login, user_id) VALUES (?, 'mirror', NULL)`, be.f.ID); err != nil {
+		t.Fatal(err)
+	}
+	be.sg.setNotes(PRNote{ID: "702", Kind: "comment", Author: "mirror", Body: crReview, At: be.clockNow().Add(-time.Minute)})
+	pr := be.open()
+	be.changes(bsPR.HeadSHA, "app/other.go")
+	be.sg.setChecks(bsPR.HeadSHA, CommitCheck{Name: "ci / test", State: CheckPending})
+	be.poll()
+	be.start(pr)
+	be.step()
+	cs := be.comments()
+	if len(be.jobs()) != 0 || len(cs) == 0 {
+		t.Fatalf("%d jobs, %d comments", len(be.jobs()), len(cs))
+	}
+	for _, c := range cs {
+		if c.Verdict != VerdictNew {
+			t.Errorf("comment %s is %s with no round sent", c.Ref, c.Verdict)
+		}
+	}
+}
+
+// An early round is told of a merge conflict the forge reports.
+func TestEarlyRoundCarriesConflict(t *testing.T) {
+	be := earlyEnv(t, true, nil)
+	be.exec(`UPDATE pull_requests SET mergeable = 0`)
+	be.setClock(be.clockNow().Add(mergeCheckingLimit))
+	be.setCI(CommitCheck{Name: "ci / test", State: CheckPending})
+	be.step()
+	b := be.babysit()
+	if len(b.Rounds) != 1 || !b.Rounds[0].Early || !b.Rounds[0].Conflict {
+		t.Fatalf("rounds = %+v: %s %q", b.Rounds, b.State, b.Wait)
 	}
 }
 
@@ -78,7 +173,7 @@ func TestEarlyRoundWaitsForMissingReviewer(t *testing.T) {
 	be := earlyEnv(t, true, &MergePolicyInput{ExternalReviewers: &[]string{"llm-review"}, ReviewWaitMinutes: ptr(30), QuietMinutes: ptr(0)},
 		CommitCheck{Name: "ci / test", State: CheckPending})
 	b := be.babysit()
-	if len(be.jobs()) != 0 || !strings.Contains(b.Wait, "checks running") || !strings.Contains(b.Wait, "waiting for llm-review") {
+	if len(be.jobs()) != 0 || !strings.Contains(b.Wait, "checks running") || !strings.Contains(b.Wait, "; a round for its review work is held: waiting for llm-review") {
 		t.Fatalf("round before the reviewer: %d jobs, %s %q", len(be.jobs()), b.State, b.Wait)
 	}
 }
@@ -138,6 +233,16 @@ func TestQuietPeriodShortensOnReports(t *testing.T) {
 	if !waits(false) {
 		t.Error("the merge's quiet period was shortened")
 	}
+	post("llm-review")
+	if !waits(true) {
+		t.Error("a later post didn't start the quiet period before a round again")
+	}
+	be.setClock(be.clockNow().Add(3 * time.Minute))
+	be.exec(`UPDATE automations SET enabled = 0`)
+	pol.ExternalReviewers = nil
+	if !waits(true) {
+		t.Error("the quiet period was shortened with no reviewer expected")
+	}
 }
 
 func postReview(be *bsEnv, pr *PullRequest, actor string) {
@@ -181,6 +286,9 @@ func TestEarlyRoundThenNewFailureIsOrdinaryRound(t *testing.T) {
 		t.Fatalf("rounds = %d: %s %q", len(b.Rounds), b.State, b.Wait)
 	}
 	r := b.Rounds[1]
+	if r.Early || strings.Contains(be.jobInput(be.jobs()[1]).Prompt, "CI has not finished") {
+		t.Error("the round after CI ended is told it hadn't")
+	}
 	if !slices.Contains(r.Checks, "ci / lint") || r.Model == escalateModel || r.Assessor {
 		t.Errorf("round 2 = checks %v model %q assessor %v, want the ordinary model carrying ci / lint", r.Checks, r.Model, r.Assessor)
 	}

@@ -70,7 +70,11 @@ const urgentRoundJob = `(source = '` + babysitSource + `' AND source_id IN (SELE
 	WHERE b.ended_at IS NULL AND ` + urgentPR + `))`
 
 // earlyCI is what a round sent before CI finished is told about it.
-type earlyCI struct{ running []string }
+type earlyCI struct {
+	running []string
+	// wait is set when the round couldn't be sent yet, to what it waits for.
+	wait string
+}
 
 // earlyOutcome is what earlyRound did: sent a round, held one back for
 // something it names, or had no round to send.
@@ -86,9 +90,12 @@ const (
 // checks still run, and says what it did (WP-686, WP-ADR163). The round's push
 // replaces the head and starts the full run again, so waiting for this run
 // only delays the round. It still waits for the reviews to settle, so their
-// findings go in one round; failed checks alone, or no work, wait for the run
-// to end; and nothing merges before its checks have passed. When it holds a
-// round back, why names what for.
+// findings go in one round, and for a first check to report, so it never goes
+// out on a head whose CI Waypoint knows nothing of; failed checks alone, or no
+// work, wait for the run to end, as does a failed check with only audit
+// findings beside it, which the runner-fault and flake gates look at first;
+// and nothing merges before its checks have passed. When it holds a round
+// back, why names what for.
 func (s *Service) earlyRound(ctx context.Context, b *Babysit, pr *PullRequest) (earlyOutcome, string) {
 	if pr.Outside || sameSHA(b.RoundSHA, pr.HeadSHA) {
 		return roundNone, ""
@@ -127,6 +134,9 @@ func (s *Service) earlyRound(ctx context.Context, b *Babysit, pr *PullRequest) (
 			return roundHeld, waits[0]
 		}
 	}
+	if len(checks) == 0 {
+		return roundHeld, "a first check to report on this head"
+	}
 	var failed, running []string
 	for _, c := range checks {
 		switch c.State {
@@ -141,21 +151,30 @@ func (s *Service) earlyRound(ctx context.Context, b *Babysit, pr *PullRequest) (
 	if len(failed) == 0 && slices.ContainsFunc(comments, func(rc *PRReviewComment) bool { return !rc.Dealt && !rc.Gone && rc.compileClaim() }) {
 		return roundHeld, "the build to report on a bot's claim that it doesn't compile"
 	}
-	s.markSeen(ctx, b, pr, comments)
 	s.closeCovered(ctx, b, pr, comments)
 	work, late, _ := s.commentWork(ctx, pr, b, comments)
-	if len(findings) == 0 && s.waiveNitpicks(ctx, b, pr, comments, work) {
+	if len(failed) == 0 && len(findings) == 0 && s.waiveNitpicks(ctx, b, pr, comments, work) {
 		work = nil
 	}
 	if len(work) == 0 && len(findings) == 0 {
 		return roundNone, ""
 	}
+	conflict := s.roundConflict(ctx, pr)
+	if len(failed) > 0 && !conflict && len(work) == 0 {
+		return roundHeld, "the checks to finish, to rule out a runner fault or a flaky test first"
+	}
 	if len(work) > 0 {
 		work = append(work, late...)
 	}
-	b.early = &earlyCI{running: running}
+	// Only now: with no round to send, the comments stay new.
+	s.markSeen(ctx, b, pr, comments)
+	early := &earlyCI{running: running}
+	b.early = early
 	defer func() { b.early = nil }()
-	s.babysitRound(ctx, b, pr, failed, false, work, findings)
+	s.babysitRound(ctx, b, pr, failed, conflict, work, findings)
+	if early.wait != "" {
+		return roundHeld, early.wait
+	}
 	return roundSent, ""
 }
 
