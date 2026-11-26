@@ -540,11 +540,40 @@ func TestExecPatch(t *testing.T) {
 	}
 }
 
-// A round's result says how many lines it pushed, added and removed; a
-// binary file counts none (WP-1939).
-func TestRoundResultNumstatLines(t *testing.T) {
-	out := "3\t1\tmain.go\n-\t-\tlogo.png\n10\t0\tdocs/a b.md\n\n"
-	if got := numstatLines(out); got != 14 {
-		t.Errorf("numstatLines = %d, want 14", got)
+// A round's result says the files and lines it changed; a binary file counts
+// no lines, and a file held back isn't listed (WP-1939).
+func TestRoundResultNumstat(t *testing.T) {
+	out := "3\t1\tmain.go\x00-\t-\tlogo.png\x0010\t0\tdocs/a b.md\x007\t0\tci.yml\x00broken\x00"
+	files, lines := numstat(out, []string{"ci.yml"})
+	if want := []string{"main.go", "logo.png", "docs/a b.md"}; !slices.Equal(files, want) || lines != 14 {
+		t.Errorf("numstat = %q %d, want %q 14", files, lines, want)
+	}
+}
+
+// What a merge of main brought into a round isn't its own change: only the
+// file it wrote is counted, though the whole merge is pushed (WP-1939).
+func TestRoundResultLeavesOutWhatItMerged(t *testing.T) {
+	fakeCLI(t, "claude", fakeClaudeMerger)
+	remote := newGitRepo(t)
+	gitOut(t, remote, "config", "receive.denyCurrentBranch", "ignore")
+	gitOut(t, remote, "branch", "fix/ci")
+	for name, body := range map[string]string{"main-one.txt": strings.Repeat("x\n", 80), "main-two.txt": "y\n"} {
+		if err := os.WriteFile(filepath.Join(remote, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitOut(t, remote, "add", "-A")
+	gitOut(t, remote, "-c", "user.name=m", "-c", "user.email=m@example.com", "commit", "-q", "-m", "main moves")
+	job := agentJob{CLI: "claude", Prompt: "resolve the conflict", Repo: remote, Base: "fix/ci", Branch: "fix/ci", Target: "main", Push: true, Permission: "edit_run", CommitMessage: "Fix"}
+	o := newTestProc(t).execAgent(context.Background(), newRun(time.Minute), "agent", job)
+	res, _ := o.Result.(map[string]any)
+	if o.State != "done" || res["pushed"] != true {
+		t.Fatalf("outcome = %+v", o)
+	}
+	if own, _ := res["own_files"].([]string); !slices.Equal(own, []string{"fix.txt"}) || res["lines"] != 1 {
+		t.Errorf("own files %v lines %v, want fix.txt and 1", res["own_files"], res["lines"])
+	}
+	if files, _ := res["files"].([]string); len(files) != 3 {
+		t.Errorf("files = %v, want everything pushed", res["files"])
 	}
 }

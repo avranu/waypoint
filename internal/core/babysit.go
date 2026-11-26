@@ -105,11 +105,14 @@ type BabysitRound struct {
 	Answer   string    `json:"answer,omitempty"`   // how its agent ended, shortened
 	Diff     string    `json:"diff,omitempty"`     // what it pushed, as the runner reported it (capped)
 	PushSHA  string    `json:"push_sha,omitempty"` // the head its push made
-	// Files and Lines are what its push changed: the files, and the lines
-	// added and removed (WP-1939). Neither is kept for a round that pushed
-	// nothing.
-	Files []string `json:"files,omitempty"`
-	Lines int      `json:"lines,omitempty"`
+	// Files and Lines are what its agent changed: the files, and the lines
+	// added and removed, without what a merge of the base brought in
+	// (WP-1939). Measured says the runner counted them; an older runner's
+	// Files include what it merged. Kept for a round that pushed, or whose
+	// whole change was held.
+	Files    []string `json:"files,omitempty"`
+	Lines    int      `json:"lines,omitempty"`
+	Measured bool     `json:"measured,omitempty"`
 	// PushFailed: the runner's push of its commits was refused; the head
 	// is as the round found it, so what is left says nothing of its work.
 	PushFailed bool `json:"push_failed,omitempty"`
@@ -602,8 +605,10 @@ func (s *Service) recordRoundOutcome(ctx context.Context, bid, jobID int64) {
 		Answer  string   `json:"answer"`
 		Diff    string   `json:"diff"`
 		Files   []string `json:"files"`
-		Lines   *int     `json:"lines"`
-		Commit  string   `json:"commit"`
+		// The agent's own files and lines; absent from an older runner.
+		OwnFiles []string `json:"own_files"`
+		Lines    *int     `json:"lines"`
+		Commit   string   `json:"commit"`
 		// What the runner held back of its agent's change to protected files.
 		HeldPatch string   `json:"held_patch"`
 		HeldFiles []string `json:"held_files"`
@@ -657,12 +662,14 @@ func (s *Service) recordRoundOutcome(ctx context.Context, bid, jobID int64) {
 			}
 			if b.Rounds[i].Pushed {
 				b.Rounds[i].Diff, b.Rounds[i].PushSHA = res.Diff, res.Commit
-				b.Rounds[i].Files = res.Files
-				if b.Rounds[i].Lines = diffLines(res.Diff); res.Lines != nil {
-					b.Rounds[i].Lines = *res.Lines
-				}
 			} else if _, refused := protectedRefusal(b.Rounds[i]); refused {
 				b.Rounds[i].Diff = res.Diff
+			}
+			if h := b.Rounds[i].Held; b.Rounds[i].Pushed || h != nil && h.All {
+				b.Rounds[i].Files = res.Files
+				if res.OwnFiles != nil && res.Lines != nil {
+					b.Rounds[i].Files, b.Rounds[i].Lines, b.Rounds[i].Measured = res.OwnFiles, *res.Lines, true
+				}
 			}
 			if !b.Rounds[i].Pushed && b.Rounds[i].Class != "" {
 				b.Rounds[i].Class = RoundNothingPushed

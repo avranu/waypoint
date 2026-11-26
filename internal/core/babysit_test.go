@@ -209,7 +209,7 @@ func (be *bsEnv) finish(id int64, pushed bool) {
 // commits touched and the lines it added and removed (WP-1939).
 func (be *bsEnv) finishPushing(id int64, pushed bool, files []string, lines int) {
 	be.t.Helper()
-	res, _ := json.Marshal(map[string]any{"pushed": pushed, "commits": []string{"abc"}, "commit": "abc1234", "answer": "Round over.", "diff": "+bounded the table\n", "files": files, "lines": lines})
+	res, _ := json.Marshal(map[string]any{"pushed": pushed, "commits": []string{"abc"}, "commit": "abc1234", "answer": "Round over.", "diff": "+bounded the table\n", "files": files, "own_files": files, "lines": lines})
 	if err := be.s.write(be.ctx, SystemActor(), func(t *tx) error { return t.finishRunnerJob(be.ctx, id, "done", nil, res, "") }); err != nil {
 		be.t.Fatal(err)
 	}

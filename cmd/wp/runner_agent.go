@@ -548,7 +548,6 @@ func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare
 		commits := append([]string{}, strings.Fields(revs)...)
 		result["commits"] = commits
 		files := []string{}
-		result["lines"] = 0
 		if len(commits) > 0 {
 			names, err := p.gitPaths(ctx, work, "diff", "--name-only", "--no-renames", baseSHA+"..HEAD")
 			if err != nil {
@@ -558,7 +557,6 @@ func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare
 			if diff, err := p.git(ctx, work, "diff", baseSHA+"..HEAD"); err == nil {
 				result["diff"] = capDiff(diff, maxResultDiff)
 			}
-			result["lines"] = p.pushedLines(ctx, work, baseSHA)
 		}
 		result["files"] = files
 		bad := protectedFiles(in.ProtectPaths, files)
@@ -581,6 +579,18 @@ func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare
 					mc.tree, mc.main = d.tree, d.main
 				}
 			}
+		}
+		// Measured before holdProtected, which squashes a merge's parents
+		// away. What it holds is counted when that is pushed, unless it is
+		// the whole change.
+		var heldOut []string
+		if len(mc.conflicted) == 0 {
+			heldOut = bad
+		}
+		if own, lines, ok := p.ownChanges(ctx, bare, work, env, in.Target, baseSHA, heldOut); ok {
+			result["own_files"], result["lines"] = own, lines
+		} else {
+			fmt.Fprintln(run.out, "Couldn't measure the agent's own change")
 		}
 		if len(bad) > 0 {
 			h, ok := p.holdProtected(ctx, work, in, baseSHA, bad, mc, result)
@@ -1101,7 +1111,6 @@ func (p *runnerProc) holdProtected(ctx context.Context, work string, in agentJob
 	}
 	h := &held{commits: []string{}, files: []string{}}
 	delete(result, "diff")
-	result["lines"] = 0
 	if _, err := p.git(ctx, work, "diff", "--cached", "--quiet"); err == nil {
 		return h, true
 	}
@@ -1123,37 +1132,76 @@ func (p *runnerProc) holdProtected(ctx context.Context, work string, in agentJob
 	if diff, err := p.git(ctx, work, "diff", baseSHA+"..HEAD"); err == nil {
 		result["diff"] = capDiff(diff, maxResultDiff)
 	}
-	result["lines"] = p.pushedLines(ctx, work, baseSHA)
 	return h, true
 }
 
-// pushedLines is the lines added and removed between base and HEAD, which
-// the footprint check measures a round's growth by (WP-1939). Binary files
-// count none; 0 when git can't say.
-func (p *runnerProc) pushedLines(ctx context.Context, work, baseSHA string) int {
-	out, err := p.git(ctx, work, "diff", "--numstat", "--no-renames", baseSHA+"..HEAD")
-	if err != nil {
-		return 0
+// ownChanges is what the agent itself changed from from, where its job
+// started, to HEAD: the files, and the lines added and removed, which the
+// footprint check measures a round by (WP-1939). What a merge of target (the
+// default branch when "") brought in isn't the round's: HEAD is then compared
+// with the merge git makes of from and the target's commit it has, so only
+// how a conflict was settled and the agent's edits count. Files in skip
+// aren't counted. ok is false when git can't say.
+func (p *runnerProc) ownChanges(ctx context.Context, bare, work string, env []string, target, from string, skip []string) (files []string, lines int, ok bool) {
+	since, ok := p.withMerged(ctx, bare, work, env, target, from)
+	if !ok {
+		return nil, 0, false
 	}
-	return numstatLines(out)
+	out, err := p.gitRaw(ctx, work, nil, nil, "diff", "--numstat", "--no-renames", "-z", since, "HEAD")
+	if err != nil {
+		return nil, 0, false
+	}
+	files, lines = numstat(out, skip)
+	return files, lines, true
 }
 
-// numstatLines sums the added and removed lines of `git diff --numstat`;
-// a binary file's "-" counts as none.
-func numstatLines(out string) int {
-	n := 0
-	for _, l := range strings.Split(out, "\n") {
-		f := strings.SplitN(l, "\t", 3)
-		if len(f) < 3 {
+// withMerged is from with what HEAD took of target since: from itself when it
+// took nothing, else the tree of their merge (with conflict markers where they
+// conflict).
+func (p *runnerProc) withMerged(ctx context.Context, bare, work string, env []string, target, from string) (string, bool) {
+	revs, err := p.git(ctx, work, "rev-list", "--merges", from+"..HEAD")
+	if err != nil {
+		return "", false
+	}
+	main, err := p.resolveBase(ctx, bare, target, env)
+	if err != nil {
+		// Without a merge there is nothing of the target's to take out.
+		return from, revs == ""
+	}
+	taken, err := p.git(ctx, work, "merge-base", "HEAD", main)
+	if err != nil {
+		return from, revs == ""
+	}
+	if _, err := p.git(ctx, work, "merge-base", "--is-ancestor", taken, from); err == nil {
+		return from, true
+	}
+	out, err := p.gitRaw(ctx, work, nil, nil, "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", from, taken)
+	tree, rest, _ := strings.Cut(out, "\x00")
+	tree = strings.TrimSpace(tree)
+	// A merge with conflicts exits with an error and names them after the tree.
+	if !hexObjectID.MatchString(tree) || err != nil && strings.Trim(rest, "\x00") == "" {
+		return "", false
+	}
+	return tree, true
+}
+
+// numstat reads `git diff --numstat --no-renames -z`: the files, less those in
+// skip, and their lines added and removed. A binary file's "-" counts as none.
+func numstat(out string, skip []string) ([]string, int) {
+	files, lines := []string{}, 0
+	for _, rec := range strings.Split(out, "\x00") {
+		f := strings.SplitN(rec, "\t", 3)
+		if len(f) < 3 || slices.Contains(skip, f[2]) {
 			continue
 		}
+		files = append(files, f[2])
 		add, err1 := strconv.Atoi(f[0])
 		del, err2 := strconv.Atoi(f[1])
 		if err1 == nil && err2 == nil {
-			n += add + del
+			lines += add + del
 		}
 	}
-	return n
+	return files, lines
 }
 
 // hexObjectID is a git object id (SHA-1 or SHA-256).
