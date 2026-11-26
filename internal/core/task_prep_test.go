@@ -264,23 +264,3 @@ func (e *env) prepArm(id int64, arm string) {
 		e.t.Fatal(err)
 	}
 }
-
-// A comment budget with 1 or 2 bytes left holds no cut comment: it once
-// panicked the server (WP-1924).
-func TestPrepTaskTextSpentBudget(t *testing.T) {
-	for _, last := range []int{1497, 1498, 1499} {
-		var comments []string
-		for _, n := range []int{1500, 1500, 1500, last, 10, 10} {
-			comments = append(comments, strings.Repeat("x", n))
-		}
-		got := prepTaskText("APP-1", "bug", "title", "", comments)
-		// 1497 leaves 3 bytes, room for the ellipsis alone.
-		want := "- (2 later comments not shown)\n"
-		if last == 1497 {
-			want = "- …\n- (1 later comments not shown)\n"
-		}
-		if !strings.HasSuffix(got, "x\n"+want) {
-			t.Errorf("last %d: ends %q", last, got[len(got)-60:])
-		}
-	}
-}

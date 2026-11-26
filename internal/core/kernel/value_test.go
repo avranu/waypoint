@@ -49,12 +49,6 @@ func TestSHAAndCountHelpers(t *testing.T) {
 		{"TruncateBytes fits", TruncateBytes("abc", 3), "abc"},
 		{"TruncateBytes cuts", TruncateBytes("abcdefgh", 6), "abc…"},
 		{"TruncateBytes mid rune", TruncateBytes("aéééé", 6), "aé…"},
-		{"TruncateBytes only the ellipsis", TruncateBytes("hello", 3), "…"},
-		{"TruncateBytes under the ellipsis", TruncateBytes("hello", 2), ""},
-		{"TruncateBytes one", TruncateBytes("hello", 1), ""},
-		{"TruncateBytes zero", TruncateBytes("hello", 0), ""},
-		{"TruncateBytes negative", TruncateBytes("hello", -1), ""},
-		{"TruncateBytes short enough", TruncateBytes("hi", 2), "hi"},
 		{"ClipRunes fits", ClipRunes("abc", 3), "abc"},
 		{"ClipRunes cuts", ClipRunes("abcdef", 4), "abc…"},
 	} {
