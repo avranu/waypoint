@@ -570,8 +570,17 @@ func requiredChecksReasons(pol MergePolicy, checks []PRCheck, sha string) []stri
 // posted for the quiet period). wake is the earliest time one of the waits
 // ends, nil when it waits for none.
 func (s *Service) settleWaits(ctx context.Context, pr *PullRequest, pol MergePolicy, checks []PRCheck) (reasons []string, wake *time.Time, err error) {
-	return s.settleWaitsFor(ctx, pr, pol, checks, false)
+	return s.settleWaitsFor(ctx, pr, pol, checks, settleForMerge)
 }
+
+// settleFor is whom settleWaitsFor waits for: a merge keeps the policy's
+// quiet period, a round may end it early (burstQuietMinutes).
+type settleFor bool
+
+const (
+	settleForMerge settleFor = false
+	settleForRound settleFor = true
+)
 
 // burstQuietMinutes is the quiet period before a round once every expected
 // reviewer has reported: reviewers post in bursts, and this is for the burst
@@ -582,21 +591,23 @@ func (s *Service) settleWaits(ctx context.Context, pr *PullRequest, pol MergePol
 // 10-minute quiet period caught.
 const burstQuietMinutes = 2
 
-// settleWaitsFor is settleWaits; forRound shortens the quiet period to
+// settleWaitsFor is settleWaits; for a round it shortens the quiet period to
 // burstQuietMinutes when the policy names expected reviewers and every one
 // has reported on this head's content.
-func (s *Service) settleWaitsFor(ctx context.Context, pr *PullRequest, pol MergePolicy, checks []PRCheck, forRound bool) (reasons []string, wake *time.Time, err error) {
+func (s *Service) settleWaitsFor(ctx context.Context, pr *PullRequest, pol MergePolicy, checks []PRCheck, forWhom settleFor) (reasons []string, wake *time.Time, err error) {
 	now := s.now()
 	until := func(t time.Time) {
 		if wake == nil || t.Before(*wake) {
 			wake = &t
 		}
 	}
+	// The review wait and the reports that shorten the quiet period count
+	// from the same moment: when this head's content arrived.
+	since := pr.UpdatedAt
+	if t := pr.contentSince(); t != nil {
+		since = *t
+	}
 	if pol.ReviewWaitMinutes > 0 {
-		since := pr.UpdatedAt
-		if t := pr.contentSince(); t != nil {
-			since = *t
-		}
 		deadline := since.Add(time.Duration(pol.ReviewWaitMinutes) * time.Minute)
 		if now.Before(deadline) {
 			missing, err := s.reviewersMissing(ctx, pr, pol, checks, since)
@@ -616,11 +627,7 @@ func (s *Service) settleWaitsFor(ctx context.Context, pr *PullRequest, pol Merge
 		}
 		if !last.IsZero() {
 			quiet := time.Duration(pol.QuietMinutes) * time.Minute
-			if burst := burstQuietMinutes * time.Minute; forRound && burst < quiet {
-				since := pr.UpdatedAt
-				if t := pr.contentSince(); t != nil {
-					since = *t
-				}
+			if burst := burstQuietMinutes * time.Minute; forWhom == settleForRound && burst < quiet {
 				expected, missing, err := s.reviewerReports(ctx, pr, pol, checks, since)
 				if err != nil {
 					return nil, nil, err

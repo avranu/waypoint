@@ -59,7 +59,7 @@ func TestUrgentRoundDoesntWaitForChecks(t *testing.T) {
 	}
 }
 
-func (be *bsEnv) urgentRound(b *Babysit) bool {
+func (be *bsEnv) sendEarlyRound(b *Babysit) bool {
 	be.t.Helper()
 	sent, _ := be.s.earlyRound(be.ctx, b, be.pr(7))
 	return sent == roundSent
@@ -87,13 +87,13 @@ func TestUrgentRoundWaitsOnFailedReads(t *testing.T) {
 			if _, err := be.s.db.W.ExecContext(be.ctx, tc.breakSQL); err != nil {
 				t.Fatal(err)
 			}
-			if be.urgentRound(b) {
+			if be.sendEarlyRound(b) {
 				t.Fatal("a round started on a read that failed")
 			}
 			if _, err := be.s.db.W.ExecContext(be.ctx, tc.mendSQL); err != nil {
 				t.Fatal(err)
 			}
-			if !be.urgentRound(b) {
+			if !be.sendEarlyRound(b) {
 				t.Fatal("no round once the read works")
 			}
 		})

@@ -82,7 +82,7 @@ func TestUrgentRoundLogsFailedReads(t *testing.T) {
 			be.sg.setChecks(bsPR.HeadSHA, CommitCheck{Name: "ci / test", State: CheckPending})
 			be.poll()
 			be.exec(tc.breakSQL)
-			if be.urgentRound(b) {
+			if be.sendEarlyRound(b) {
 				t.Fatal("a round started on a read that failed")
 			}
 			if !strings.Contains(logs.String(), tc.logs) {

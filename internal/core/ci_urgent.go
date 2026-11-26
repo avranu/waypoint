@@ -72,18 +72,23 @@ const urgentRoundJob = `(source = '` + babysitSource + `' AND source_id IN (SELE
 // earlyCI is what a round sent before CI finished is told about it.
 type earlyCI struct {
 	running []string
-	// wait is set when the round couldn't be sent yet, to what it waits for.
-	wait string
+	// outcome is what babysitRound did with the round, and wait, when it
+	// held it back, what for.
+	outcome earlyOutcome
+	wait    string
 }
 
 // earlyOutcome is what earlyRound did: sent a round, held one back for
-// something it names, or had no round to send.
+// something it names, had no round to send, or stopped short of one for a
+// reason babysitRound put in the babysit's state (a protected-file change
+// being decided, a park).
 type earlyOutcome int
 
 const (
 	roundNone earlyOutcome = iota
 	roundHeld
 	roundSent
+	roundStopped
 )
 
 // earlyRound starts the round for what the reviews left on a head while its
@@ -108,31 +113,12 @@ func (s *Service) earlyRound(ctx context.Context, b *Babysit, pr *PullRequest) (
 	if len(findings) == 0 && !slices.ContainsFunc(comments, func(rc *PRReviewComment) bool { return !rc.Dealt }) {
 		return roundNone, ""
 	}
-	going, why, err := s.babysitReviewGoing(ctx, pr)
-	if err != nil {
-		s.log.WarnContext(ctx, "read whether its reviews settled", "pr", pr.ID, "err", err)
+	checks, hold, ok := s.reviewsSettled(ctx, pr)
+	if !ok {
 		return roundNone, ""
 	}
-	if going {
-		return roundHeld, why
-	}
-	checks, err := s.prChecks(ctx, pr)
-	if err != nil {
-		return roundNone, ""
-	}
-	pol, attached, err := s.repoMergePolicy(ctx, pr.ForgeID, pr.Repo)
-	if err != nil {
-		s.log.WarnContext(ctx, "read its merge policy", "pr", pr.ID, "err", err)
-		return roundNone, ""
-	}
-	if attached {
-		waits, _, err := s.settleWaitsFor(ctx, pr, pol, checks, true)
-		if err != nil {
-			return roundNone, ""
-		}
-		if len(waits) > 0 {
-			return roundHeld, waits[0]
-		}
+	if hold.why != "" {
+		return roundHeld, hold.why
 	}
 	if len(checks) == 0 {
 		return roundHeld, "a first check to report on this head"
@@ -151,11 +137,7 @@ func (s *Service) earlyRound(ctx context.Context, b *Babysit, pr *PullRequest) (
 	if len(failed) == 0 && slices.ContainsFunc(comments, func(rc *PRReviewComment) bool { return !rc.Dealt && !rc.Gone && rc.compileClaim() }) {
 		return roundHeld, "the build to report on a bot's claim that it doesn't compile"
 	}
-	s.closeCovered(ctx, b, pr, comments)
-	work, late, _ := s.commentWork(ctx, pr, b, comments)
-	if len(failed) == 0 && len(findings) == 0 && s.waiveNitpicks(ctx, b, pr, comments, work) {
-		work = nil
-	}
+	work, late, _ := s.roundComments(ctx, b, pr, checks, comments, failed, findings)
 	if len(work) == 0 && len(findings) == 0 {
 		return roundNone, ""
 	}
@@ -166,16 +148,16 @@ func (s *Service) earlyRound(ctx context.Context, b *Babysit, pr *PullRequest) (
 	if len(work) > 0 {
 		work = append(work, late...)
 	}
-	// Only now: with no round to send, the comments stay new.
-	s.markSeen(ctx, b, pr, comments)
 	early := &earlyCI{running: running}
 	b.early = early
 	defer func() { b.early = nil }()
+	prior := b.Round
 	s.babysitRound(ctx, b, pr, failed, conflict, work, findings)
-	if early.wait != "" {
-		return roundHeld, early.wait
+	if early.outcome == roundSent {
+		// Only once a round went: until then the comments stay new.
+		s.markSeen(ctx, b, pr, comments, prior)
 	}
-	return roundSent, ""
+	return early.outcome, early.wait
 }
 
 // SetPRUrgent puts the ci-urgent label on a pull request (on) or takes it

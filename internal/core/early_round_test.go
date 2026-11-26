@@ -120,11 +120,24 @@ func TestEarlyRoundWaitsForRunner(t *testing.T) {
 	if len(b.Rounds) != 0 || !strings.Contains(b.Wait, "checks running") || !strings.Contains(b.Wait, "waiting for a runner") {
 		t.Fatalf("with no runner: %+v %s %q", b.Rounds, b.State, b.Wait)
 	}
+	verdicts := func() []string {
+		var out []string
+		for _, c := range be.comments() {
+			out = append(out, c.Verdict)
+		}
+		return out
+	}
+	if v := verdicts(); len(v) == 0 || slices.ContainsFunc(v, func(x string) bool { return x != VerdictNew }) {
+		t.Errorf("comments of a held round: %v, want all new", v)
+	}
 	be.runnerOnline()
 	be.step()
 	if len(be.jobs()) != 1 {
 		b = be.babysit()
 		t.Fatalf("no round once a runner could take it: %s %q", b.State, b.Wait)
+	}
+	if v := verdicts(); slices.Contains(v, VerdictNew) {
+		t.Errorf("comments of the round sent: %v, want seen", v)
 	}
 }
 
@@ -210,7 +223,7 @@ func TestQuietPeriodShortensOnReports(t *testing.T) {
 	}
 	waits := func(forRound bool) bool {
 		t.Helper()
-		r, _, err := be.s.settleWaitsFor(be.ctx, be.pr(7), pol, nil, forRound)
+		r, _, err := be.s.settleWaitsFor(be.ctx, be.pr(7), pol, nil, settleFor(forRound))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -993,7 +993,7 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 	}
 	if pr.ciSHA != pr.HeadSHA || pr.CIState == "" || pr.CIState == CIPending {
 		held, why := s.earlyRound(ctx, b, pr)
-		if held == roundSent {
+		if held == roundSent || held == roundStopped {
 			return
 		}
 		if stalled := s.fullRunStalled(ctx, pr); stalled != "" {
@@ -1018,41 +1018,24 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		s.sharedTimeoutOver(ctx, b)
 	}
 	s.cancelStaleFootprints(ctx, pr)
-	going, why, err := s.babysitReviewGoing(ctx, pr)
-	if err != nil {
-		s.log.WarnContext(ctx, "read whether its reviews settled", "pr", pr.ID, "err", err)
+	checks, hold, ok := s.reviewsSettled(ctx, pr)
+	if !ok {
 		return
 	}
-	if going {
-		s.reviewWait(ctx, b, pr, why)
-		return
-	}
-	checks, err := s.prChecks(ctx, pr)
-	if err != nil {
-		return
-	}
-	pol, attached, err := s.repoMergePolicy(ctx, pr.ForgeID, pr.Repo)
-	if err != nil {
-		s.log.WarnContext(ctx, "read its merge policy", "pr", pr.ID, "err", err)
-		return
-	}
-	if attached {
-		waits, _, err := s.settleWaitsFor(ctx, pr, pol, checks, true)
-		if err != nil {
-			return
-		}
-		if len(waits) > 0 {
+	if hold.why != "" {
+		if hold.policy {
 			s.footprintAhead(ctx, b, pr) // beside the quiet period (WP-1853)
-			s.reviewWait(ctx, b, pr, waits[0])
-			return
 		}
+		s.reviewWait(ctx, b, pr, hold.why)
+		return
 	}
 
 	comments, err := s.reviewComments(ctx, s.db.R, pr.ID)
 	if err != nil {
 		return
 	}
-	s.markSeen(ctx, b, pr, comments)
+	// Taken up now, whether a round goes or something below waits.
+	s.markSeen(ctx, b, pr, comments, b.Round)
 	var failed, cancelled []string
 	if pr.CIState == CIFailed {
 		if !sameSHA(b.RoundSHA, pr.HeadSHA) {
@@ -1075,12 +1058,7 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 	}
 	conflict := s.roundConflict(ctx, pr)
 	findings := s.auditRoundWork(ctx, b, pr.ID)
-	s.triageComments(ctx, b, pr, checks, comments)
-	s.closeCovered(ctx, b, pr, comments) // a comment about a head before a fix that covers it (WP-1853)
-	work, late, person := s.commentWork(ctx, pr, b, comments)
-	if len(failed) == 0 && len(findings) == 0 && s.waiveNitpicks(ctx, b, pr, comments, work) {
-		late, work = append(late, work...), nil
-	}
+	work, late, person := s.roundComments(ctx, b, pr, checks, comments, failed, findings)
 	// What a round would be started for, before late minors ride along: they
 	// have no round of their own, so a failed head with only late minors takes
 	// the runner-fault wait, the shared-timeout wait and the flake re-run below
@@ -1191,11 +1169,68 @@ func (s *Service) roundConflict(ctx context.Context, pr *PullRequest) bool {
 	return conflict || pr.ArmedAt != nil && s.conflictOnTip(ctx, pr)
 }
 
-// markSeen marks pr's new review comments seen by the babysitter.
-func (s *Service) markSeen(ctx context.Context, b *Babysit, pr *PullRequest, comments []*PRReviewComment) {
+// roundHold is why a round waits for a head's reviews to settle: a review
+// still going, or (policy) a wait of the repo's merge policy.
+type roundHold struct {
+	why    string
+	policy bool
+}
+
+// reviewsSettled is the gate every round on pr's head passes first, the
+// round after CI and the early round alike (WP-ADR163): the head's reviews
+// have settled, so their findings go in one round. It returns the head's
+// checks and, while the round waits, why. ok is false when something
+// couldn't be read; no round goes then.
+func (s *Service) reviewsSettled(ctx context.Context, pr *PullRequest) (checks []PRCheck, hold roundHold, ok bool) {
+	going, why, err := s.babysitReviewGoing(ctx, pr)
+	if err != nil {
+		s.log.WarnContext(ctx, "read whether its reviews settled", "pr", pr.ID, "err", err)
+		return nil, roundHold{}, false
+	}
+	if going {
+		return nil, roundHold{why: why}, true
+	}
+	checks, err = s.prChecks(ctx, pr)
+	if err != nil {
+		return nil, roundHold{}, false
+	}
+	pol, attached, err := s.repoMergePolicy(ctx, pr.ForgeID, pr.Repo)
+	if err != nil {
+		s.log.WarnContext(ctx, "read its merge policy", "pr", pr.ID, "err", err)
+		return nil, roundHold{}, false
+	}
+	if attached {
+		waits, _, err := s.settleWaitsFor(ctx, pr, pol, checks, settleForRound)
+		if err != nil {
+			return nil, roundHold{}, false
+		}
+		if len(waits) > 0 {
+			return checks, roundHold{why: waits[0], policy: true}, true
+		}
+	}
+	return checks, roundHold{}, true
+}
+
+// roundComments readies pr's open review comments for a round and sorts
+// them as commentWork does, for the round after CI and the early round alike:
+// compile claims a green build answers are rejected, comments a later fix
+// covers are closed (WP-1853), and a set of nitpicks is waived, into late,
+// only on a head with no failed check and no audit finding.
+func (s *Service) roundComments(ctx context.Context, b *Babysit, pr *PullRequest, checks []PRCheck, comments []*PRReviewComment, failed, findings []string) (work, late, person []string) {
+	s.triageComments(ctx, b, pr, checks, comments)
+	s.closeCovered(ctx, b, pr, comments)
+	work, late, person = s.commentWork(ctx, pr, b, comments)
+	if len(failed) == 0 && len(findings) == 0 && s.waiveNitpicks(ctx, b, pr, comments, work) {
+		late, work = append(late, work...), nil
+	}
+	return work, late, person
+}
+
+// markSeen marks pr's new review comments seen by the babysitter in round.
+func (s *Service) markSeen(ctx context.Context, b *Babysit, pr *PullRequest, comments []*PRReviewComment, round int) {
 	for _, rc := range comments {
 		if rc.Verdict == VerdictNew && !rc.Gone {
-			if err := s.markComment(ctx, pr, rc, VerdictSeen, "", "", rcBy{kind: "babysitter", name: "waypoint"}, b.Round); err != nil {
+			if err := s.markComment(ctx, pr, rc, VerdictSeen, "", "", rcBy{kind: "babysitter", name: "waypoint"}, round); err != nil {
 				s.log.WarnContext(ctx, "mark a review comment seen", "pr", pr.ID, "comment", rc.Ref, "err", err)
 			}
 		}
@@ -1243,6 +1278,10 @@ func (s *Service) babysitRound(ctx context.Context, b *Babysit, pr *PullRequest,
 // forced isn't nil: the watchdog sends the assessor to a babysit that has
 // rested too long, whatever its rounds so far would have called for.
 func (s *Service) babysitRoundBy(ctx context.Context, b *Babysit, pr *PullRequest, failed []string, conflict bool, comments, findings []string, forced *roundPlan) {
+	if b.early != nil {
+		// Unless set below, this call said in the state why it sent nothing.
+		b.early.outcome = roundStopped
+	}
 	if pr.Outside {
 		s.setState(ctx, b, pr, BabysitWatching, "waiting for a person to approve this pull request from outside (WP-281)")
 		return
@@ -1276,6 +1315,11 @@ func (s *Service) babysitRoundBy(ctx context.Context, b *Babysit, pr *PullReques
 		stuck = true
 	}
 	if forced == nil && len(failed) == 0 && len(findings) == 0 && s.packetEmpty(ctx, pr) {
+		if b.early != nil {
+			// No round while the checks run: they say what comes next.
+			b.early.outcome = roundNone
+			return
+		}
 		s.setState(ctx, b, pr, BabysitWatching, "nothing for a round to do on "+short(pr.HeadSHA)+": its work packet is empty")
 		return
 	}
@@ -1327,7 +1371,7 @@ func (s *Service) babysitRoundBy(ctx context.Context, b *Babysit, pr *PullReques
 	if wait != "" && b.early != nil {
 		// No round can move the head yet, so its run goes on: it keeps its
 		// place in the line and stays ready.
-		b.early.wait = wait
+		b.early.outcome, b.early.wait = roundHeld, wait
 		return
 	}
 	keepFront = keepFront && wait == "" && jobID != 0
@@ -1369,6 +1413,9 @@ func (s *Service) babysitRoundBy(ctx context.Context, b *Babysit, pr *PullReques
 		return
 	}
 	b.Round, b.RoundSHA, b.JobID = round.N, pr.HeadSHA, jobID
+	if b.early != nil {
+		b.early.outcome = roundSent
+	}
 	if jobID != 0 {
 		s.setState(ctx, b, pr, BabysitWorking, s.roundWait(ctx, round.N, jobID))
 		return
