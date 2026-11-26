@@ -23,7 +23,7 @@ may not be counted yet, and the output says how much of the archive it covers.
 A bare argument that looks like a task key (APP-12) is one; for a session id
 that looks like a key, use --session.
 A value the transcript did not carry is shown as unknown, never 0; cache expiry
-is inferred from timing, and says so. Your own person's sessions, also from an agent;
+is inferred from timing, and says so. Your own person's sessions, also from an agent (which sees repeated commands redacted);
 an admin (a person, not an agent) can read anyone's with --user.`,
 	examples: []string{"wp usage facts 0b1c…", "wp usage facts WP-1467 --json", "wp usage facts --session abc123"},
 	run:      cmdUsageFacts,

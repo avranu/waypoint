@@ -174,6 +174,7 @@ func TestWherePhaseAroundShip(t *testing.T) {
 	w.user("2026-11-24T10:00:00Z", "Handle WP-1 and ship")
 	w.call("2026-11-24T10:00:01Z", "m1", "r1", "claude-fable-5", 5, bash("b1", "wp ship -h"))
 	w.call("2026-11-24T10:00:02Z", "m2", "r2", "claude-fable-5", 5, bash("b2", "wp ship --review"))
+	w.result("2026-11-24T10:00:02Z", "b2")
 	w.call("2026-11-24T10:00:03Z", "m3", "r3", "claude-fable-5", 5, bash("b3", "git add -A && wp ship"))
 	w.result("2026-11-24T10:00:03Z", "b3")
 	w.call("2026-11-24T10:00:04Z", "m4", "r4", "claude-fable-5", 5)
@@ -182,21 +183,22 @@ func TestWherePhaseAroundShip(t *testing.T) {
 	whWrite(t, filepath.Join(dir, "projects", "p", "s1.jsonl"), w.b.String())
 	var w2 whLines
 	w2.user("2026-11-24T10:00:00Z", "never ships")
-	w2.call("2026-11-24T10:00:01Z", "n1", "q1", "claude-fable-5", 5)
+	w2.call("2026-11-24T10:00:01Z", "n1", "q1", "claude-fable-5", 5, bash("c1", "wp ship --no-ship"))
 	whWrite(t, filepath.Join(dir, "projects", "p", "s2.jsonl"), w2.b.String())
 	r, _ := whRun(t, dir, whWin)
 	ph := r.Phase
-	if ph.Shipped != 1 || ph.Ships != 2 || ph.NoShipSession != 1 {
+	// --review pushes the branch, so it is a ship; -h and --no-ship are not
+	if ph.Shipped != 1 || ph.Ships != 3 || ph.NoShipSession != 1 {
 		t.Fatalf("phase %+v", ph)
 	}
 	one := r.Parts.total() / 6 // six calls, equal cost
-	if d := ph.Before - 3*one; d < -1e-9 || d > 1e-9 {
-		t.Fatalf("before %v, want three calls (%v each)", ph.Before, one)
+	if d := ph.Before - 2*one; d < -1e-9 || d > 1e-9 {
+		t.Fatalf("before %v, want two calls (%v each)", ph.Before, one)
 	}
-	if d := ph.After - 2*one; d < -1e-9 || d > 1e-9 {
-		t.Fatalf("after %v, want two calls", ph.After)
+	if d := ph.After - 3*one; d < -1e-9 || d > 1e-9 {
+		t.Fatalf("after %v, want three calls", ph.After)
 	}
-	if len(r.Top) == 0 || r.Top[0].Ships != 2 || !strings.HasPrefix(r.Top[0].Prompt, "Handle WP-1") {
+	if len(r.Top) == 0 || r.Top[0].Model != "claude-fable-5" || r.Top[0].AvgCtx != 1210 || r.Top[0].Ships != 3 || !strings.HasPrefix(r.Top[0].Prompt, "Handle WP-1") {
 		t.Fatalf("top %+v", r.Top)
 	}
 }
@@ -327,7 +329,7 @@ func TestWhereLimitIncidentsSplit(t *testing.T) {
 func TestWhereLimitUnclassifiedAndOtherErrors(t *testing.T) {
 	var w whLines
 	w.user("2026-11-24T10:00:00Z", "go")
-	w.limitErr("2026-11-24T10:00:02Z", "e1", "Rate limit reached, try later", nil)
+	w.limitErr("2026-11-24T10:00:02Z", "e1", "You've hit your weekly limit, try later", nil)
 	w.raw(map[string]any{"type": "assistant", "timestamp": "2026-11-24T10:00:03Z", "isApiErrorMessage": true, "apiError": "connection_failed", "message": map[string]any{"id": "e2", "model": "<synthetic>",
 		"content": []any{map[string]any{"type": "text", "text": "Connection lost, retrying"}}}})
 	w.call("2026-11-24T10:00:04Z", "m1", "r1", "claude-sonnet-5-5", 5)
@@ -648,5 +650,108 @@ func TestLimitRecordAsRecorded(t *testing.T) {
 	at := time.Unix(ri.ResetsAt, 0).UTC()
 	if ri.RateLimitType != "seven_day" || ri.OverageDisabledReason != "org_level_disabled" || at.Hour() != 17 || at.Year() != 2026 {
 		t.Errorf("rate limit %+v, resets %v; want seven_day resetting at 17:00 UTC in 2026", ri, at)
+	}
+}
+
+// A command is classed by what it does, whichever tool or wrapper runs it.
+func TestWhereCommandClasses(t *testing.T) {
+	tool := func(name string, input map[string]any) map[string]any {
+		return map[string]any{"type": "tool_use", "id": "t", "name": name, "input": input}
+	}
+	sc := &whScan{}
+	cwd := "/work/proj"
+	for _, c := range []struct {
+		block map[string]any
+		want  string
+		ships int
+	}{
+		{bash("b", "make test"), whTests, 0},
+		{bash("b", "npm run typecheck"), whTests, 0},
+		{bash("b", "cargo test"), whTests, 0},
+		{bash("b", "npx vitest run"), whTests, 0},
+		{bash("b", "go test ./... 2>&1 | tail -20"), whTests, 0},
+		{bash("b", "go run ./cmd/server"), whOther, 0},
+		{bash("b", "go mod tidy"), whOther, 0},
+		{bash("b", "npm install"), whOther, 0},
+		{bash("b", "wp slot run tests -- go test ./..."), whTests, 0},
+		{bash("b", "wp slot run tests -- sh -c 'make check'"), whTests, 0},
+		{bash("b", "sleep 600"), whWait, 0},
+		{bash("b", "wp pr wait 12"), whWait, 0},
+		{bash("b", "echo x | grep x"), whOther, 0},
+		{bash("b", "cat f.go | grep x"), whShellRead, 0},
+		{bash("b", "curl -s -o /dev/null https://example.com"), whOther, 0},
+		{bash("b", "curl -sLo docs/spec.md https://example.com"), whShellEdit, 0},
+		{bash("b", "curl -o build.log https://example.com"), whOther, 0},
+		{bash("b", "curl -o - https://example.com"), whOther, 0},
+		{bash("b", "npx prettier@3.3.3 --write src/x.ts"), whShellEdit, 0},
+		{bash("b", "git add -A && wp done -m x"), "git+wp", 1},
+		{bash("b", "wp ship -m a; wp finish -m b"), whWP, 2},
+		{tool("TaskOutput", map[string]any{}), whWait, 0},
+		{tool("SendMessage", map[string]any{}), whDelegate, 0},
+		{tool("Write", map[string]any{"file_path": "/tmp/patch.py", "content": "open('f.go','w').write('x')\n"}), whScratch, 0},
+		{bash("b", "python3 /tmp/patch.py"), whShellEdit, 0},
+	} {
+		in, _ := json.Marshal(c.block["input"])
+		got, ships, _ := sc.whBlockClasses(c.block["name"].(string), in, cwd)
+		if strings.Join(got, "+") != c.want || ships != c.ships {
+			t.Errorf("%s: %v, %d ships; want %s, %d", in, got, ships, c.want, c.ships)
+		}
+	}
+}
+
+// A main transcript's sidechain records are a subagent's calls, a fork's
+// copies are the main thread's, and only the main thread's ships split its
+// spend.
+func TestWhereMainAndSubagentRecords(t *testing.T) {
+	dir := t.TempDir()
+	var w whLines
+	w.user("2026-11-24T10:00:00Z", "go")
+	w.call("2026-11-24T10:00:02Z", "m1", "r1", "claude-fable-5", 5)
+	w.raw(map[string]any{"type": "assistant", "timestamp": "2026-11-24T10:00:03Z", "isSidechain": true,
+		"message": map[string]any{"model": "claude-fable-5", "usage": map[string]any{"input_tokens": 999999}}})
+	main := filepath.Join(dir, "projects", "p", "s1.jsonl")
+	whWrite(t, main, w.b.String())
+	var f whLines
+	f.call("2026-11-24T10:00:02Z", "m1", "r1", "claude-fable-5", 5) // the parent's call, copied
+	f.call("2026-11-24T10:00:01Z", "a1", "q1", "claude-fable-5", 5, bash("b1", "wp ship"))
+	fork := filepath.Join(dir, "projects", "p", "s1", "subagents", "agent-f.jsonl")
+	whWrite(t, fork, f.b.String())
+	older := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(fork, older, older); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := whRun(t, dir, whWin)
+	got := map[string]int{}
+	for _, a := range r.Agents {
+		got[a.Agent] = a.Calls
+	}
+	if r.Calls != 2 || got["main"] != 1 {
+		t.Fatalf("calls %d agents %v", r.Calls, got)
+	}
+	if r.Phase.Shipped != 0 || r.Phase.After != 0 || r.Top[0].Ships != 0 {
+		t.Fatalf("a subagent's ship split the main thread: %+v", r.Phase)
+	}
+}
+
+// Only a spent plan limit is a limit event.
+func TestWhereOtherErrorsAreNotLimits(t *testing.T) {
+	dir := t.TempDir()
+	var w whLines
+	for i, text := range []string{"Context limit reached · /compact or /clear to continue", "API Error: 429 rate_limit_error"} {
+		w.raw(map[string]any{"type": "assistant", "timestamp": fmt.Sprintf("2026-11-24T10:00:0%dZ", i), "isApiErrorMessage": true, "message": map[string]any{"model": "<synthetic>",
+			"content": []any{map[string]any{"type": "text", "text": text}}}})
+	}
+	w.call("2026-11-24T10:00:05Z", "m1", "r1", "acme-large", 5)
+	whWrite(t, filepath.Join(dir, "projects", "x-waypoint-runner-work-job1-2", "s1.jsonl"), w.b.String())
+	whWrite(t, filepath.Join(dir, "projects", "x-waypoint-runner-work-job1-2", jobSidecarFile), `{"kind":"audit","sessions":["s1"]}`)
+	r, _ := whRun(t, dir, whWin)
+	if len(r.Limits.Incidents) != 0 {
+		t.Fatalf("limits %+v", r.Limits)
+	}
+	if len(r.NotKnown.AssumedPrices) != 1 || !strings.Contains(whereText(r), "no price is known for acme-large") {
+		t.Fatalf("assumed prices %v", r.NotKnown.AssumedPrices)
+	}
+	if len(r.Launches) != 1 || r.Launches[0].Name != "runner job: audit" {
+		t.Fatalf("launches %+v", r.Launches)
 	}
 }

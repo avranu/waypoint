@@ -295,3 +295,11 @@ func TestBuildFlagsKeepWhatATestSees(t *testing.T) {
 		t.Errorf("buildFlags = %q, want %q", got, want)
 	}
 }
+
+func TestBaseTextWithNoResultsShowsPlainText(t *testing.T) {
+	data := []byte(`{"Action":"output","Package":"p","Output":"build failed: boom\n"}` + "\n")
+	text := baseText("main", "abcdef1234", nil, nil, 1, data, false, nil)
+	if !strings.Contains(text, "build failed: boom") || strings.Contains(text, `{"Action"`) {
+		t.Errorf("%s", text)
+	}
+}

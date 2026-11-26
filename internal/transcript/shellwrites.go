@@ -588,6 +588,24 @@ func InlineScript(words []string, heredoc string) string {
 var interpreterValueFlags = map[string]bool{"-W": true, "-X": true, "-r": true, "--require": true, "--import": true,
 	"--loader": true, "--experimental-loader": true, "--conditions": true, "-C": true}
 
+// Reword is the command with other words in its place (what a wrapper such
+// as wp slot run runs after its "--"), and the files those words write.
+func (c ShellCommand) Reword(words []string, mem *ShellScripts, disk bool) ShellCommand {
+	n := ShellCommand{Words: words, Head: HeadOf(words), Dir: c.Dir, Redirs: c.Redirs, Script: c.Script, In: c.In, PipeIn: c.PipeIn, Sub: c.Sub, Unread: c.Unread}
+	n.Wrote = n.writes(disk)
+	if k := mem.at(ShellAt(n.ran(), n.Dir)); k != nil {
+		kind := "script"
+		if k.Unsure {
+			kind = "script?"
+		}
+		for _, w := range k.Writes {
+			n.Wrote = append(n.Wrote, ShellWrite{Kind: kind, Path: w})
+		}
+		n.Unread = n.Unread || k.Unfollowed
+	}
+	return n
+}
+
 // ran is the script file a command hands its interpreter (python3 edit.py),
 // "" when it runs none.
 func (c *ShellCommand) ran() string {
@@ -1109,7 +1127,7 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 			if shellRunnerVerbs[a] {
 				break
 			}
-			if b := path.Base(a); shellRunTools[b] {
+			if b, _, _ := strings.Cut(path.Base(a), "@"); shellRunTools[b] { // prettier@3
 				prog, args = b, args[i+1:]
 				if len(args) > 0 && args[0] == "--" {
 					args = args[1:] // npm exec prettier -- --write .
@@ -1247,8 +1265,14 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 				i++
 				f, ok = args[i], true
 			}
-			if ok && f != "" {
-				out = append(out, ShellWrite{Kind: "curl", Path: f, Whole: true})
+			// - is standard output; a download not named like a file of the
+			// work is output kept for reading, as when redirected
+			if ok && f != "" && f != "-" && !strings.HasPrefix(f, "/dev/") {
+				kind := "curl"
+				if !ShellFileShape(path.Base(f)) {
+					kind = "output"
+				}
+				out = append(out, ShellWrite{Kind: kind, Path: f, Whole: true})
 			}
 		}
 	case "dd":

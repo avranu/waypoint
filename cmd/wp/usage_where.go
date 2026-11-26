@@ -7,15 +7,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"git.jmann.me/claude/waypoint/internal/core"
+	"git.jmann.me/claude/waypoint/internal/lazyre"
+	trscript "git.jmann.me/claude/waypoint/internal/transcript"
 )
 
 var usageWhereCmd = &command{
@@ -26,7 +29,8 @@ workflow agents) and prints one report in list-price dollars: totals by
 model with the cache split; by agent, project and how the session was
 started; what the premium-model main threads spent each call on (reading,
 searching, editing through the shell or the Edit tool, tests and builds, git,
-wp, delegating, text only), counting every command of a compound line; what
+wp, delegating, waiting, text only), counting the commands of a compound line
+(a command that only filters a pipe doesn't count); what
 woke each call (typed prompt, notification, tool result, compaction); each
 session's spend before and after its first wp ship; the top sessions;
 limit incidents with how long each locked calls out and what the record says
@@ -53,6 +57,7 @@ const (
 	whGit       = "git"
 	whWP        = "wp"
 	whDelegate  = "delegate"
+	whWait      = "wait"
 	whOther     = "other"
 	whTextOnly  = "text only"
 )
@@ -88,9 +93,9 @@ type whCall struct {
 	sub                    string     // what kind of meta message woke the call
 	blockIDs               map[string]bool
 	ctx, size              int64
-	in, out, cw5, cw1, cr  int64
 	parts                  whParts
-	ship                   bool
+	ships                  int  // wp ship commands the call ran
+	assumed                bool // no price is known for the model
 }
 
 func (c *whCall) classes() []string {
@@ -135,8 +140,10 @@ type whSession struct {
 	ships                            int
 	cost, mainCost                   float64
 	calls                            int
-	models                           map[string]bool
-	files                            int
+	jobKind                          string             // from the runner's wp-job.json
+	models                           map[string]float64 // main-thread dollars by model
+	mainCtx                          int64
+	mainCalls                        int
 }
 
 // whLimit is one limit error record. kind is rateLimitType from the record's
@@ -171,6 +178,12 @@ type whIncident struct {
 	last            whLimit
 }
 
+// whShip is the wp ship commands of one tool call of a model call.
+type whShip struct {
+	call *whCall
+	n    int
+}
+
 // whScan is everything read from the transcripts.
 type whScan struct {
 	calls      map[string]*whCall
@@ -186,14 +199,9 @@ type whScan struct {
 	files      int
 	since, end int64
 	mem        traceScripts
-	// shipIDs are the wp ship tool calls whose result has not come yet; the
-	// call counts as a ship once a result that is not an error does.
-	shipIDs map[string]*whCall
-}
-
-type whFile struct {
-	usageFile
-	project string
+	// shipIDs are the tool calls that ran wp ship whose result has not come
+	// yet; their ships count once a result that is not an error does.
+	shipIDs map[string]whShip
 }
 
 func whParseWhen(s string, now time.Time, def time.Duration) (time.Time, error) {
@@ -222,7 +230,7 @@ func cmdUsageWhere(c *cli, args []string) error {
 	since := fs.String("since", "", "from `TIME` or this long ago (default 24h)")
 	until := fs.String("until", "", "to `TIME` or this long ago (default now)")
 	dir := fs.String("dir", "", "Claude Code config `DIR` (default CLAUDE_CONFIG_DIR, ~/.claude)")
-	top := fs.Int("top", 10, "list the `N` costliest sessions")
+	top := fs.Int("top", 10, "list the `N` costliest sessions and commands")
 	csvPath := fs.String("csv", "", "also write one row per call to `FILE`")
 	pos, err := c.parse(fs, args)
 	if err != nil {
@@ -263,16 +271,22 @@ func cmdUsageWhere(c *cli, args []string) error {
 }
 
 func scanWhere(files []usageFile, from, to time.Time, prices []burnPrice) *whScan {
-	sc := &whScan{calls: map[string]*whCall{}, sessions: map[string]*whSession{}, limitSeen: map[string]bool{}, apiErrors: map[string]int{}, scriptTool: map[string]int{}, shipIDs: map[string]*whCall{}, since: from.UnixMilli(), end: to.UnixMilli()}
-	// the oldest file first, so that a resumed session's copy of history is
-	// credited to the session that wrote it
+	sc := &whScan{calls: map[string]*whCall{}, sessions: map[string]*whSession{}, limitSeen: map[string]bool{}, apiErrors: map[string]int{}, scriptTool: map[string]int{}, shipIDs: map[string]whShip{}, since: from.UnixMilli(), end: to.UnixMilli()}
+	// Main transcripts first, since a fork's starts with copies of its
+	// parent's calls; then the oldest file first, so that a resumed session's
+	// copy of history is usually credited to the session that wrote it.
 	mod := map[string]time.Time{}
 	for _, f := range files {
 		if fi, err := os.Lstat(f.Path); err == nil {
 			mod[f.Path] = fi.ModTime()
 		}
 	}
-	sort.SliceStable(files, func(i, j int) bool { return mod[files[i].Path].Before(mod[files[j].Path]) })
+	sort.SliceStable(files, func(i, j int) bool {
+		if files[i].Main != files[j].Main {
+			return files[i].Main
+		}
+		return mod[files[i].Path].Before(mod[files[j].Path])
+	})
 	sc.files = len(files)
 	for _, f := range files {
 		if err := sc.readFile(f, prices); err != nil {
@@ -286,8 +300,9 @@ func (sc *whScan) in(ts int64) bool { return ts >= sc.since && ts < sc.end }
 
 var whProjectCut = []string{"/.claude/worktrees/", "/.worktrees/"}
 
-// whProject names the project a session worked in: the checkout's name, from
-// the working directory, else the transcript's directory.
+// whProject names the project a session worked in, as wp usage sync does:
+// the repository of the working directory's checkout, else the directory's
+// name; the transcript's directory when it has no working directory.
 func whProject(cwd, dirName string) string {
 	if strings.Contains(dirName, "waypoint-runner-work-job") {
 		return "runner jobs"
@@ -298,15 +313,17 @@ func whProject(cwd, dirName string) string {
 				cwd = cwd[:i]
 			}
 		}
-		if b := strings.TrimSuffix(path.Base(cwd), ".git"); b != "" && b != "." && b != "/" {
+		if b := strings.TrimSuffix(resolveRepo(cwd), ".git"); b != "" && b != "." && b != "/" {
 			return b
 		}
 	}
 	return dirName
 }
 
-func whLaunch(dirName, prompt string) string {
+func whLaunch(dirName, prompt, jobKind string) string {
 	switch {
+	case jobKind != "":
+		return "runner job: " + jobKind
 	case strings.Contains(dirName, "waypoint-runner-work-job"):
 		return "runner job"
 	case strings.Contains(dirName, "waypoint-runner-git"):
@@ -317,26 +334,64 @@ func whLaunch(dirName, prompt string) string {
 	return "interactive or unknown"
 }
 
-func whCost(u *rawUsage, p burnPrice) (parts whParts, cw5, cw1 int64) {
-	cw5 = u.CacheCreation
+func whCost(u *rawUsage, p burnPrice) whParts {
+	cw5, cw1 := u.CacheCreation, int64(0)
 	if cc := u.CC; cc != nil && cc.E5m+cc.E1h > 0 {
 		cw5, cw1 = cc.E5m, cc.E1h
 		if rest := u.CacheCreation - cc.E5m - cc.E1h; rest > 0 {
 			cw5 += rest
 		}
 	}
-	parts = whParts{
+	return whParts{
 		Input: float64(u.Input) * p.Input / 1e6, Output: float64(u.Output) * p.Output / 1e6,
 		Write5m: float64(cw5) * p.CacheWrite5m / 1e6, Write1h: float64(cw1) * p.CacheWrite1h / 1e6,
 		Read: float64(u.CacheRead) * p.CacheRead / 1e6,
 	}
-	return
 }
 
 // whTrivial are commands that say nothing about what a call did.
 var whTrivial = map[string]bool{"cd": true, "echo": true, "printf": true, "true": true, "false": true, "export": true, "set": true, "pwd": true, "sleep": true, "test": true, "[": true, "[[": true, "exit": true, "unset": true, "source": true, ".": true, "mkdir": true, "rm": true, "wait": true, "popd": true, "pushd": true, "": true}
 
-var whTestHeads = map[string]bool{"make": true, "gmake": true, "npm": true, "npx": true, "pnpm": true, "yarn": true, "bun": true, "cargo": true, "pytest": true, "python -m pytest": true, "tsc": true, "vitest": true, "jest": true, "golangci-lint": true, "gosec": true, "govulncheck": true, "playwright": true, "wp testsum": true, "mvn": true, "gradle": true, "dotnet": true, "ruff": true, "mypy": true, "eslint": true, "prettier": true, "gofmt": true, "staticcheck": true}
+// whTestHeads are the programs that test, build or check by themselves.
+var whTestHeads = map[string]bool{"pytest": true, "python -m pytest": true, "tsc": true, "vite": true, "vitest": true, "jest": true, "golangci-lint": true, "gosec": true, "govulncheck": true, "playwright": true, "wp testsum": true, "mvn": true, "gradle": true, "dotnet": true, "ruff": true, "mypy": true, "eslint": true, "prettier": true, "gofmt": true, "staticcheck": true}
+
+// whScriptPrefixes start the names of package scripts that test, build or
+// check.
+var whScriptPrefixes = []string{"test", "run", "build", "lint", "check", "type", "format", "e2e"}
+
+// whIsTest says a command tests, builds or checks. A tool that also installs
+// or runs programs counts only for the subcommands that do.
+func whIsTest(cm traceCommand) bool {
+	prog, sub, _ := strings.Cut(cm.Head, " ")
+	switch prog {
+	case "go":
+		return sub == "test" || sub == "build" || sub == "vet"
+	case "make", "gmake":
+		return sub != "install" && sub != "tools"
+	case "cargo":
+		return slices.Contains([]string{"test", "build", "check", "clippy", "nextest", "bench", "doc", "fmt"}, sub)
+	case "npm", "pnpm", "yarn", "bun", "deno":
+		return sub == "t" || whTestHeads[sub] || slices.ContainsFunc(whScriptPrefixes, func(p string) bool { return strings.HasPrefix(sub, p) })
+	case "npx", "bunx":
+		for _, w := range cm.Words[1:] {
+			if !strings.HasPrefix(w, "-") {
+				tool, _, _ := strings.Cut(path.Base(w), "@")
+				return whTestHeads[tool]
+			}
+		}
+		return false
+	}
+	return whTestHeads[cm.Head] || whTestHeads[prog]
+}
+
+// whIsWait says a command only waits for something Waypoint runs.
+func whIsWait(cm traceCommand) bool {
+	switch cm.Head {
+	case "wp pr", "wp ci", "wp request":
+		return len(cm.Words) > 2 && cm.Words[2] == "wait"
+	}
+	return false
+}
 
 // whCommandClass sorts one command of a line.
 func whCommandClass(cmds []traceCommand, i int, cwd string) string {
@@ -357,12 +412,16 @@ func whCommandClass(cmds []traceCommand, i int, cwd string) string {
 	}
 	h := cm.Head
 	var class string
+	// a filter of another command's output reads and searches no file
+	filter := cm.PipeIn && (traceReadH[h] || traceSearchH[h])
 	switch {
 	case cm.Sub && !scratch && (traceReadH[h] || traceSearchH[h] || h == "git grep" || h == "git ls-files"):
 		return "" // a read inside $( ) is not what the call did
-	case whTrivial[h]:
+	case whTrivial[h], filter:
 		class = ""
-	case h == "wp testsum", whTestHeads[h], strings.HasPrefix(h, "go ") && h != "go doc":
+	case whIsWait(cm):
+		class = whWait
+	case whIsTest(cm):
 		class = whTests
 	case h == "wp code" || h == "wp brief" || traceSearchH[h] || h == "git grep" || h == "git ls-files":
 		class = whSearch
@@ -376,10 +435,33 @@ func whCommandClass(cmds []traceCommand, i int, cwd string) string {
 	if scratch && (class == "" || class == whShellRead) {
 		return whScratch
 	}
-	if class == "" && !whTrivial[h] {
+	if class == "" && !whTrivial[h] && !filter {
 		return whOther
 	}
 	return class
+}
+
+// whUnwrap gives the commands a wp slot run line runs after its "--", so that
+// they are classed as themselves; any other command is returned as it is.
+func whUnwrap(cm traceCommand, cwd string, mem *traceScripts) []traceCommand {
+	i := slices.Index(cm.Words, "--")
+	if cm.Head != "wp slot" || i < 0 {
+		return []traceCommand{cm}
+	}
+	words := stripWords(cm.Words[i+1:])
+	if len(words) == 0 {
+		return []traceCommand{cm}
+	}
+	if shells[path.Base(words[0])] {
+		if inner, ok := shellDashC(words[1:]); ok {
+			var out []traceCommand
+			traceCommands(inner, cm.Dir, traceVars(cwd), mem, &out)
+			if len(out) > 0 {
+				return out
+			}
+		}
+	}
+	return []traceCommand{cm.Reword(words, mem, true)}
 }
 
 // whCmd is one command of a tool block (or a tool that is not Bash), with the
@@ -391,13 +473,13 @@ type whCmd struct {
 }
 
 // whBlockClasses sorts one tool_use block: the classes of every command of
-// a Bash line, or the one class of another tool. ship says the line holds a
-// real wp ship.
-func (sc *whScan) whBlockClasses(name string, input json.RawMessage, cwd string) (classes []string, ship bool, cmds []whCmd) {
+// a Bash line, or the one class of another tool. ships counts the line's real
+// wp ship commands (or its aliases, wp done and wp finish).
+func (sc *whScan) whBlockClasses(name string, input json.RawMessage, cwd string) (classes []string, ships int, cmds []whCmd) {
 	var in traceInput
 	_ = json.Unmarshal(input, &in)
-	one := func(class string) ([]string, bool, []whCmd) {
-		return []string{class}, false, []whCmd{{Head: name, Class: class, Tool: true}}
+	one := func(class string) ([]string, int, []whCmd) {
+		return []string{class}, 0, []whCmd{{Head: name, Class: class, Tool: true}}
 	}
 	switch name {
 	case "Read":
@@ -406,20 +488,34 @@ func (sc *whScan) whBlockClasses(name string, input json.RawMessage, cwd string)
 		return one(whSearch)
 	case "Edit", "Write", "MultiEdit", "NotebookEdit":
 		if _, work := traceFile(usageOr(in.FilePath, in.NotebookPath), cwd); !work {
+			if name == "Write" {
+				sc.mem.Keep(trscript.ShellAt(in.FilePath, cwd), in.Content)
+			}
 			return one(whScratch)
 		}
 		return one(whToolEdit)
-	case "Agent", "Task":
+	case "Agent", "Task", "SendMessage", "TaskStop", "Workflow":
 		return one(whDelegate)
+	case "TaskOutput", "AgentOutputTool", "BashOutput", "Monitor":
+		return one(whWait)
 	case "Bash":
-		var tcs []traceCommand
+		var tcs, all []traceCommand
 		traceCommands(in.Command, cwd, traceVars(cwd), &sc.mem, &tcs)
+		for _, cm := range tcs {
+			all = append(all, whUnwrap(cm, cwd, &sc.mem)...)
+		}
 		seen := map[string]bool{}
-		for i, cm := range tcs {
-			if cm.Head == "wp ship" && !traceHasFlag(cm.Words, "-h", "--help", "--review") {
-				ship = true
+		waits := ""
+		for i, cm := range all {
+			switch cm.Head {
+			case "wp ship", "wp done", "wp finish":
+				if !traceHasFlag(cm.Words, "-h", "--help", "--no-ship") {
+					ships++
+				}
+			case "sleep", "wait":
+				waits = cm.Head
 			}
-			if k := whCommandClass(tcs, i, cwd); k != "" {
+			if k := whCommandClass(all, i, cwd); k != "" {
 				cmds = append(cmds, whCmd{Head: cm.Head, Class: k})
 				if !seen[k] {
 					seen[k] = true
@@ -428,15 +524,19 @@ func (sc *whScan) whBlockClasses(name string, input json.RawMessage, cwd string)
 			}
 		}
 		if len(classes) == 0 {
-			classes = []string{whOther}
-			head := "(shell)"
-			if len(tcs) > 0 {
-				head = tcs[0].Head
+			// a line that only waits is waiting; beside other work a sleep
+			// is not counted
+			head, class := "(shell)", whOther
+			if waits != "" {
+				head, class = waits, whWait
+			} else if len(all) > 0 {
+				head = all[0].Head
 			}
-			cmds = []whCmd{{Head: head, Class: whOther}}
+			classes = []string{class}
+			cmds = []whCmd{{Head: head, Class: class}}
 		}
 		sort.Strings(classes)
-		return classes, ship, cmds
+		return classes, ships, cmds
 	}
 	return one(whOther)
 }
@@ -455,14 +555,20 @@ func (sc *whScan) readFile(f usageFile, prices []burnPrice) error {
 	}
 	ses := sc.sessions[f.Session]
 	if ses == nil {
-		ses = &whSession{id: f.Session, models: map[string]bool{}}
+		ses = &whSession{id: f.Session, models: map[string]float64{}}
 		sc.sessions[f.Session] = ses
 	}
-	ses.files++
 	if ses.project == "" {
 		ses.project, ses.dir = dirName, dirName
 	}
+	if f.Main && strings.Contains(dirName, "waypoint-runner-work-job") {
+		ses.jobKind = whJobKind(filepath.Dir(f.Path), f.Session)
+	}
+	// a script one transcript kept says nothing of another's run of that name
+	sc.mem = nil
 	cwd, trig, sub, started := "", "", "", false
+	n := 0       // the line being read
+	var at int64 // the last time a record gave
 	toolNames := map[string]string{}
 	br := bufio.NewReaderSize(fh, 1<<20)
 	var long []byte
@@ -475,9 +581,12 @@ func (sc *whScan) readFile(f usageFile, prices []burnPrice) error {
 		if len(long) > 0 {
 			line, long = append(long, line...), nil
 		}
+		n++
 		if len(line) > 0 && (bytes.Contains(line, markAssistant) || bytes.Contains(line, markUser) || bytes.Contains(line, markSystem)) {
 			var l rawLine
-			if json.Unmarshal(line, &l) == nil {
+			// a main transcript's sidechain records mirror a subagent's, which
+			// has its own file
+			if json.Unmarshal(line, &l) == nil && (!f.Main || !l.Sidechain) {
 				if l.Cwd != "" {
 					cwd = l.Cwd
 					if f.Main && !ses.projSet {
@@ -485,6 +594,10 @@ func (sc *whScan) readFile(f usageFile, prices []burnPrice) error {
 					}
 				}
 				ts := parseTS(l.Timestamp)
+				if ts == 0 {
+					ts = at
+				}
+				at = ts
 				switch l.Type {
 				case "system":
 					if l.Subtype == "compact_boundary" {
@@ -496,23 +609,41 @@ func (sc *whScan) readFile(f usageFile, prices []burnPrice) error {
 				case "user":
 					trig, started = sc.userTrigger(&l, f, ses, toolNames, trig, started, &sub)
 				case "assistant":
-					trig = sc.assistant(&l, f, ses, ts, cwd, trig, sub, toolNames, prices)
+					trig = sc.assistant(&l, f, ses, n, ts, cwd, trig, sub, toolNames, prices)
 					sub = ""
 				}
 			}
 		}
+		if errors.Is(rerr, io.EOF) {
+			return nil
+		}
 		if rerr != nil {
-			break
+			return rerr
 		}
 	}
-	return nil
+}
+
+// whJobKind is the kind of the runner job that ran a session, from the
+// sidecar the runner writes beside its transcripts ("" when none says).
+func whJobKind(dir, session string) string {
+	fh, err := openRegularTranscript(filepath.Join(dir, jobSidecarFile))
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = fh.Close() }()
+	var m jobMeta
+	if json.NewDecoder(io.LimitReader(fh, 1<<20)).Decode(&m) != nil || !slices.Contains(m.Sessions, session) && m.SessionID != session {
+		return ""
+	}
+	return m.Kind
 }
 
 // apiError files an API error record: a limit event when it carries
 // rate_limit_info (or, without it, when its text mentions a limit), else a
 // count of its kind.
-func (sc *whScan) apiError(l *rawLine, session, text string, ts int64) {
-	key := fmt.Sprintf("%d|%s|%s", ts, session, text)
+func (sc *whScan) apiError(l *rawLine, text, session string, ts int64) {
+	// a resumed session's copy of the record is the same event
+	key := fmt.Sprintf("%d|%s", ts, text)
 	if sc.limitSeen[key] {
 		return
 	}
@@ -525,7 +656,7 @@ func (sc *whScan) apiError(l *rawLine, session, text string, ts int64) {
 		if ev.kind == "" {
 			ev.kind = "unclassified"
 		}
-	case strings.Contains(strings.ToLower(text), "limit"):
+	case core.PlanLimitText(text):
 		ev.kind = "unclassified"
 	default:
 		kind := l.APIError
@@ -569,9 +700,11 @@ func (sc *whScan) userTrigger(l *rawLine, f usageFile, ses *whSession, toolNames
 	}
 	for _, b := range blocks {
 		if b.Type == "tool_result" {
-			if c := sc.shipIDs[b.ToolUseID]; c != nil {
+			if s, ok := sc.shipIDs[b.ToolUseID]; ok {
 				delete(sc.shipIDs, b.ToolUseID)
-				c.ship = c.ship || !b.IsError
+				if !b.IsError {
+					s.call.ships += s.n
+				}
 			}
 		}
 	}
@@ -585,6 +718,12 @@ func (sc *whScan) userTrigger(l *rawLine, f usageFile, ses *whSession, toolNames
 		}
 	}
 	text := whText(l.Message.Content)
+	// what /compact prints after its summary does not wake the next call
+	if trig == "compaction/resume" {
+		if t := strings.TrimSpace(text); strings.HasPrefix(t, "<local-command") || strings.HasPrefix(t, "<command-name>") {
+			return trig, started
+		}
+	}
 	switch {
 	case l.IsCompactSummary:
 		return "compaction/resume", true
@@ -608,7 +747,7 @@ func (sc *whScan) userTrigger(l *rawLine, f usageFile, ses *whSession, toolNames
 	return "typed prompt", true
 }
 
-func (sc *whScan) assistant(l *rawLine, f usageFile, ses *whSession, ts int64, cwd, trig, sub string, toolNames map[string]string, prices []burnPrice) string {
+func (sc *whScan) assistant(l *rawLine, f usageFile, ses *whSession, line int, ts int64, cwd, trig, sub string, toolNames map[string]string, prices []burnPrice) string {
 	m := l.Message
 	if m == nil {
 		return trig
@@ -625,7 +764,7 @@ func (sc *whScan) assistant(l *rawLine, f usageFile, ses *whSession, ts int64, c
 	model := cleanModel(m.Model)
 	if l.IsAPIError {
 		if sc.in(ts) {
-			sc.apiError(l, f.Session, whText(m.Content), ts)
+			sc.apiError(l, whText(m.Content), f.Session, ts)
 		}
 		return trig
 	}
@@ -635,9 +774,7 @@ func (sc *whScan) assistant(l *rawLine, f usageFile, ses *whSession, ts int64, c
 			for _, b := range blocks {
 				if b.Type == "tool_use" {
 					cl, _, _ := sc.whBlockClasses(b.Name, b.Input, cwd)
-					for _, k := range cl {
-						sc.scriptTool[k]++
-					}
+					sc.scriptTool[strings.Join(cl, "+")]++
 				}
 			}
 		}
@@ -648,7 +785,7 @@ func (sc *whScan) assistant(l *rawLine, f usageFile, ses *whSession, ts int64, c
 	}
 	key := m.ID + "\x00" + l.RequestID
 	if m.ID == "" {
-		key = fmt.Sprintf("%s\x00%d\x00%p", f.Path, ts, l)
+		key = fmt.Sprintf("%s\x00line %d", f.Path, line)
 	}
 	call := sc.calls[key]
 	if call == nil {
@@ -661,10 +798,8 @@ func (sc *whScan) assistant(l *rawLine, f usageFile, ses *whSession, ts int64, c
 	}
 	u := m.Usage
 	if size := u.Input + u.Output + u.CacheCreation + u.CacheRead; size >= call.size {
-		p := burnPriceFor(prices, model)
-		parts, cw5, cw1 := whCost(u, p)
-		call.size, call.model, call.parts = size, model, parts
-		call.in, call.out, call.cw5, call.cw1, call.cr = u.Input, u.Output, cw5, cw1, u.CacheRead
+		p, known := burnPriceKnown(prices, model)
+		call.size, call.model, call.parts, call.assumed = size, model, whCost(u, p), !known
 		call.ctx = u.Input + u.CacheRead + u.CacheCreation
 	}
 	for _, b := range blocks {
@@ -672,11 +807,14 @@ func (sc *whScan) assistant(l *rawLine, f usageFile, ses *whSession, ts int64, c
 			continue
 		}
 		call.blockIDs[b.ID] = true
-		cl, ship, cmds := sc.whBlockClasses(b.Name, b.Input, cwd)
+		cl, ships, cmds := sc.whBlockClasses(b.Name, b.Input, cwd)
 		call.blocks = append(call.blocks, cl)
 		call.cmds = append(call.cmds, cmds)
-		if ship {
-			sc.shipIDs[b.ID] = call
+		switch {
+		case ships > 0 && b.ID != "":
+			sc.shipIDs[b.ID] = whShip{call, ships}
+		case ships > 0:
+			call.ships += ships
 		}
 	}
 	return "continuation"
@@ -774,7 +912,10 @@ type whTopRow struct {
 	Main    float64 `json:"main_cost"`
 	Calls   int     `json:"calls"`
 	Ships   int     `json:"ships"`
-	Prompt  string  `json:"first_typed_prompt"`
+	// Model is the main thread's costliest, AvgCtx its mean context per call.
+	Model  string `json:"model"`
+	AvgCtx int64  `json:"average_context"`
+	Prompt string `json:"first_typed_prompt"`
 }
 
 type whLimits struct {
@@ -791,6 +932,9 @@ type whNotKnown struct {
 	Notes         []string       `json:"notes"`
 	LaunchByDir   string         `json:"launch_kind_basis"`
 	UnreadableCnt int            `json:"unreadable_count"`
+	// AssumedPrices are the models in the window with no known price, costed
+	// at the dearest.
+	AssumedPrices []string `json:"models_priced_by_assumption,omitempty"`
 }
 
 type whReport struct {
@@ -829,13 +973,15 @@ func (sc *whScan) report(top int) *whReport {
 	cmdRows := map[string]*whCommandRow{}
 	cmdCalls := map[string]map[*whCall]bool{}
 	for _, s := range sc.sessions {
-		s.cost, s.mainCost, s.calls, s.ships = 0, 0, 0, 0
+		s.cost, s.mainCost, s.calls, s.ships, s.firstShip, s.mainCtx, s.mainCalls = 0, 0, 0, 0, 0, 0, 0
+		s.models = map[string]float64{}
 	}
+	assumed := map[string]bool{}
 	sessSeen := map[string]bool{}
 	for _, c := range sc.order {
 		ses := sc.sessions[c.session]
 		// a ship after --until is not yet a ship as far as this window goes
-		if c.ship && c.ts < sc.end && (ses.firstShip == 0 || c.ts < ses.firstShip) {
+		if c.main && c.ships > 0 && c.ts < sc.end && (ses.firstShip == 0 || c.ts < ses.firstShip) {
 			ses.firstShip = c.ts
 		}
 	}
@@ -851,12 +997,15 @@ func (sc *whScan) report(top int) *whReport {
 		sessSeen[c.session] = true
 		ses.cost += cost
 		ses.calls++
-		ses.models[c.model] = true
+		if c.assumed {
+			assumed[c.model] = true
+		}
 		if c.main {
 			ses.mainCost += cost
-		}
-		if c.ship {
-			ses.ships++
+			ses.models[c.model] += cost
+			ses.mainCtx += c.ctx
+			ses.mainCalls++
+			ses.ships += c.ships
 		}
 		mr := models[c.model]
 		if mr == nil {
@@ -923,7 +1072,10 @@ func (sc *whScan) report(top int) *whReport {
 		mr.MedianCtx = median(ctxs[mr.Model])
 		r.Models = append(r.Models, *mr)
 	}
-	sort.Slice(r.Models, func(i, j int) bool { return r.Models[i].Cost > r.Models[j].Cost })
+	sort.Slice(r.Models, func(i, j int) bool {
+		a, b := r.Models[i], r.Models[j]
+		return a.Cost > b.Cost || a.Cost == b.Cost && a.Model < b.Model
+	})
 	for a, byRun := range runs {
 		row := whAgentRow{Agent: a, Runs: len(byRun), Calls: agentCalls[a]}
 		var v []float64
@@ -936,10 +1088,13 @@ func (sc *whScan) report(top int) *whReport {
 		row.Median = v[len(v)/2]
 		r.Agents = append(r.Agents, row)
 	}
-	sort.Slice(r.Agents, func(i, j int) bool { return r.Agents[i].Cost > r.Agents[j].Cost })
+	sort.Slice(r.Agents, func(i, j int) bool {
+		a, b := r.Agents[i], r.Agents[j]
+		return a.Cost > b.Cost || a.Cost == b.Cost && a.Agent < b.Agent
+	})
 	for id := range sessSeen {
 		s := sc.sessions[id]
-		launch := whLaunch(s.dir, s.prompt)
+		launch := whLaunch(s.dir, s.prompt, s.jobKind)
 		s.launch = launch
 		for _, g := range []struct {
 			m    map[string]*whGroupRow
@@ -1043,22 +1198,35 @@ func (sc *whScan) report(top int) *whReport {
 			break
 		}
 		s := sc.sessions[id]
-		r.Top = append(r.Top, whTopRow{Session: shortID(id), Project: s.project, Launch: s.launch, Cost: s.cost, Main: s.mainCost, Calls: s.calls, Ships: s.ships, Prompt: truncRunes(strings.Join(strings.Fields(s.prompt), " "), 100)})
+		row := whTopRow{Session: shortID(id), Project: s.project, Launch: s.launch, Cost: s.cost, Main: s.mainCost, Calls: s.calls, Ships: s.ships, Prompt: truncRunes(strings.Join(strings.Fields(s.prompt), " "), 100)}
+		for m, cost := range s.models {
+			if row.Model == "" || cost > s.models[row.Model] || cost == s.models[row.Model] && m < row.Model {
+				row.Model = m
+			}
+		}
+		if s.mainCalls > 0 {
+			row.AvgCtx = s.mainCtx / int64(s.mainCalls)
+		}
+		r.Top = append(r.Top, row)
 	}
 
 	r.Limits = sc.limitIncidents()
 	r.NotKnown = whNotKnown{
 		Synthetic: sc.synthetic, ScriptTools: sc.scriptTool, Compactions: sc.boundaries, Unreadable: sc.unreadable, UnreadableCnt: len(sc.unreadable), FilesRead: sc.files,
-		LaunchByDir: "project directory name (waypoint-runner-work-job, waypoint-runner-git) and the first prompt (Autopilot assigned, review prompt); the transcript has no launch field",
+		LaunchByDir: "a runner job's kind from its wp-job.json, else the project directory name (waypoint-runner-work-job, waypoint-runner-git) and the first prompt (Autopilot assigned, review prompt); the transcript has no launch field",
 		Notes: []string{
 			"dollars are list price from wp's price table, not percent of a quota: no client code converts one to the other",
 			"<synthetic> records carry no usage (zero-usage inner calls of REPL scripts): left out of calls and cost; their tool blocks are counted under tool_blocks_run_by_scripts",
 			"compaction boundaries: the summarising call carries no usage in transcripts, so its cost is not in the totals",
 			"other machines are not included: this reads only the transcripts under --dir; runner jobs that delete their transcripts are missing",
-			"launch kinds are guessed from directory names and first prompts; a session that matches none is listed as interactive or unknown",
+			"launch kinds, but for runner jobs that say theirs, are guessed from directory names and first prompts; a session that matches none is listed as interactive or unknown",
 			"activity classes split a call's cost equally over its tool blocks (and a block's over the classes of its commands): a judgement, not a measurement",
 		},
 	}
+	for m := range assumed {
+		r.NotKnown.AssumedPrices = append(r.NotKnown.AssumedPrices, m)
+	}
+	sort.Strings(r.NotKnown.AssumedPrices)
 	return r
 }
 
@@ -1067,7 +1235,9 @@ func groupRows(m map[string]*whGroupRow) []whGroupRow {
 	for _, v := range m {
 		out = append(out, *v)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Cost > out[j].Cost })
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Cost > out[j].Cost || out[i].Cost == out[j].Cost && out[i].Name < out[j].Name
+	})
 	return out
 }
 
@@ -1109,7 +1279,7 @@ func (sc *whScan) writeCSV(p string) error {
 	return fh.Close()
 }
 
-var whTagRE = regexp.MustCompile(`^<([A-Za-z][\w-]*)[^>]*>`)
+var whTagRE = lazyre.New(`^<([A-Za-z][\w-]*)[^>]*>`)
 
 // whMetaKind says what a meta message is from its leading tag or first
 // words: a system-reminder is told by the words after the tag.

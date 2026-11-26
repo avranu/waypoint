@@ -27,7 +27,7 @@ const (
 	runnerInputMax        = 4 << 20
 )
 
-var runnerJobSources = []string{"request_apply", "request_cell", "request_decision", "automation_step", "bot_run", "babysit", "session_message", "session_batch", "manual", "kit_rollout", "autopilot", autopilotReviewSource, "audit", cacheWarmSource, reviewCompactSource, prepAgentSource, babysitHeldSource}
+var runnerJobSources = []string{"request_apply", "request_cell", "request_decision", "automation_step", "bot_run", "babysit", "session_message", "session_batch", "manual", "kit_rollout", "autopilot", autopilotReviewSource, "audit", cacheWarmSource, reviewCompactSource, deferredCompactSource, prepAgentSource, babysitHeldSource}
 
 // default timeouts, seconds
 var runnerTimeouts = map[string]int{JobCommand: 600, JobApply: 300, JobAgent: 1800, JobReview: 900, JobSession: 120, JobMessage: 60, JobAutopilot: 900, JobAutopilotStart: 900, JobAudit: 2700, JobObjective: objectiveJobTimeout}
