@@ -169,3 +169,18 @@ How to use the list:
 - Everything not on the list: read the whole change as you would have without it. The list narrows nothing you read or report.`)
 	return b.String(), nil
 }
+
+// followUpInstructions end the prompt of an audit that reads what changed
+// since an earlier audited head (WP-1938): the change at the end of the prompt
+// is that range, and the list above is what the earlier read and the reviews
+// found. The last paragraph is the drift guard's scope question (WP-1939),
+// asked here so a head with a follow-up owes no separate footprint check.
+const followUpInstructions = `## This is a follow-up audit
+
+The whole change was audited in full at an earlier commit, and the list of points above is what that audit and the reviews found, and what was done about each. This audit is of what changed since then: the diff above is only that. The whole change from the base is in the checkout too, so you can read it.
+
+- For every point the list shows as fixed, and every point still open, read the code as it is now. If a fix is wrong, incomplete or missing, report it as a finding and put the point's id in its refers_to field.
+- Audit what the diff above adds or changes as you would any change: read the code around it, what it calls and what calls it, anywhere in the repository, and report what it breaks.
+- A defect in code that the diff above neither changes nor affects is yours to report only if it is critical or high. Lesser ones were the earlier audit's to find and are not this one's.
+- The list narrows nothing else: a defect in the changed code is reported whether or not the list mentions the area.
+- Also ask what the pull request is for (its task and description, above). A change in the diff above that none of the list's points, no failed check and not the task needs is reported as one medium finding at the file and line where it starts: say what it is, and whether to undo it or split it out into its own pull request. A change a review point or a failed check needed for the task to be correct is in scope.`

@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -455,6 +456,13 @@ func (s *Service) footprintNow(ctx context.Context, b *Babysit, pr *PullRequest)
 	if b == nil || fp.Ship == nil || !fp.Ship.Known || pr.HeadSHA == "" {
 		return fp, "", false, nil
 	}
+	// The head's own audit is a follow-up that answers the scope question
+	// too (WP-1938): until it fell back to the whole change or failed, the
+	// check isn't owed.
+	following, err := s.followUpGoing(ctx, pr)
+	if err != nil || following {
+		return fp, "", false, err
+	}
 	// A check asked ahead for a head the pull request has since left doesn't
 	// use up the budget: the late path still asks for the head it ends on.
 	ref, audited, seen := fp.Ship.footprintAt, 0, fp.Ship.SHA
@@ -502,6 +510,24 @@ func (s *Service) footprintNow(ctx context.Context, b *Babysit, pr *PullRequest)
 		return fp, "", false, nil
 	}
 	return fp, strings.Join(why, ", "), true, nil
+}
+
+// followUpGoing: the pull request's audit of its head is a follow-up audit
+// that is queued, running, or done and read the range it was asked for.
+func (s *Service) followUpGoing(ctx context.Context, pr *PullRequest) (bool, error) {
+	var status, over, followed string
+	err := s.db.R.QueryRowContext(ctx, `SELECT status, over_ref, followed_up FROM code_audits WHERE request_key = ?`,
+		fmt.Sprintf(prAuditKey, pr.ID, strings.ToLower(pr.HeadSHA))).Scan(&status, &over, &followed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if over == "" {
+		return false, nil
+	}
+	return status == AuditQueued || status == AuditRunning || status == AuditDone && followed != "", nil
 }
 
 // footprintDue: a readiness reason while the check is owed and not asked
