@@ -754,33 +754,36 @@ func (s *Service) CheckBabysits(ctx context.Context) {
 // nobody started in a session: the one who armed the pull request, else its
 // author when a member who can edit the project (0: nobody).
 func (s *Service) babysitOwnerFor(ctx context.Context, pr *PullRequest) int64 {
+	id, err := s.babysitOwnerErr(ctx, pr)
+	if err != nil && readFault(err) {
+		s.log.WarnContext(ctx, "read who may own a babysit", "repo", pr.Repo, "number", pr.Number, "err", err)
+	}
+	return id
+}
+
+// babysitOwnerErr is babysitOwnerFor, also reporting a failed read (not
+// "nobody may own it").
+func (s *Service) babysitOwnerErr(ctx context.Context, pr *PullRequest) (int64, error) {
 	if pr.armedBy != nil {
-		if u, err := s.userByID(ctx, s.db.R, *pr.armedBy); err == nil && !u.Disabled {
-			return u.ID
+		u, err := s.userByID(ctx, s.db.R, *pr.armedBy)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return 0, err
+		}
+		if err == nil && !u.Disabled {
+			return u.ID, nil
 		}
 	}
 	projectID, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
-	if err != nil {
-		if readFault(err) {
-			s.log.WarnContext(ctx, "read the project to find a babysit's owner", "repo", pr.Repo, "number", pr.Number, "err", err)
-		}
-		return 0
+	if err != nil || pr.Author == "" {
+		return 0, err
 	}
 	var id int64
-	if pr.Author == "" {
-		return 0
+	err = s.db.R.QueryRowContext(ctx, `SELECT u.id FROM project_members m JOIN users u ON u.id = m.user_id
+		WHERE m.project_id = ? AND m.role IN ('owner','editor') AND u.disabled = 0 AND u.username = ? COLLATE NOCASE`, projectID, pr.Author).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
 	}
-	switch err := s.db.R.QueryRowContext(ctx, `SELECT u.id FROM project_members m JOIN users u ON u.id = m.user_id
-		WHERE m.project_id = ? AND m.role IN ('owner','editor') AND u.disabled = 0 AND u.username = ? COLLATE NOCASE`, projectID, pr.Author).Scan(&id); {
-	case errors.Is(err, sql.ErrNoRows):
-		return 0
-	case err != nil:
-		if readFault(err) {
-			s.log.WarnContext(ctx, "read who may own a babysit", "repo", pr.Repo, "number", pr.Number, "err", err)
-		}
-		return 0
-	}
-	return id
+	return id, err
 }
 
 // armedOwnerFor is babysitOwnerFor, else an owner of the repo's project for a

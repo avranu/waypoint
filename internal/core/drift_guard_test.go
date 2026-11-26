@@ -181,7 +181,7 @@ func TestDriftGuardFootprintCheck(t *testing.T) {
 	if id, _, _ := be.s.newestAudit(be.ctx, pr.ID); id != 0 {
 		t.Errorf("a footprint check counted as the audit")
 	}
-	if be.s.headAudited(be.ctx, be.pr(7)) {
+	if read, err := be.s.headAudited(be.ctx, be.pr(7)); err != nil || read {
 		t.Error("a footprint check stood in for the head's audit")
 	}
 	be.step()

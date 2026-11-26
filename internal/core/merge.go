@@ -45,6 +45,7 @@ type PRReadiness struct {
 	// audit that ended without findings (WP-355).
 	Notes  []string `json:"notes,omitempty"`
 	wake   *time.Time
+	unread int // how many of reviewHolds' reasons say only that a read failed
 	behind bool
 	stack  *queueStack
 }
@@ -271,6 +272,7 @@ func (s *Service) reviewHolds(ctx context.Context, pr *PullRequest, settle bool,
 	var reasons []string
 	no := func(format string, args ...any) { reasons = append(reasons, fmt.Sprintf(format, args...)) }
 	retry := func() {
+		r.unread++
 		if next := s.now().Add(driftRetry); r.wake == nil || next.Before(*r.wake) {
 			r.wake = &next
 		}
@@ -335,6 +337,9 @@ func (s *Service) reviewHolds(ctx context.Context, pr *PullRequest, settle bool,
 	driftWhy, driftAt := s.driftHold(ctx, pr, settle)
 	if driftWhy != "" {
 		no("%s", driftWhy)
+		if driftWhy == driftUnread {
+			r.unread++
+		}
 	}
 	if driftAt != nil && (r.wake == nil || driftAt.Before(*r.wake)) {
 		r.wake = driftAt
