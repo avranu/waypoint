@@ -589,6 +589,37 @@ binary starts against a newer schema without complaint but may misbehave, so
 (`waypoint backup`, or rely on the daily one), then swap the binary or image
 (`make deploy`; production deploys itself, see Continuous delivery). `waypoint version` prints the running build.
 
+A server built with a version names it on every answer (`X-Waypoint-Version`;
+one built without sends no header, and nothing follows it), and `wp` and
+runners built from a release follow it:
+
+- **`wp`**: any command that sees the server on another release starts
+  `wp upgrade --auto` in the background when it ends, once per server
+  version, and tries again after 6 hours if it didn't take. The SessionStart
+  hook also looks once a day. One download runs at a time: the others wait
+  for its claim (15 minutes at most).
+- **Runner**: the download starts as soon as the server's version differs,
+  even with jobs running, and once it succeeds the binary is replaced, so
+  `wp` calls on that machine use it at once; until then (or for 6 hours
+  after a failed download) jobs run the old one. The runner process restarts
+  on the new binary when no job is running, whichever `wp` put it there, as
+  long as the file is still the one it checked. If it has waited 15 minutes
+  (counted from the first release it was to restart on, even when a newer
+  one has replaced it since), it takes no new jobs until the running ones
+  finish, then restarts. A server back on the runner's own release has the
+  binary put back, with no restart; a put-back that fails is tried again
+  after 15 minutes, not 6 hours.
+
+This applies only to release builds (`vX.Y.Z`) on both sides; a runner started
+with `--once` never updates. A runner started on a `wp` from before this
+change keeps the old rule (it updates only when no job is running), so run
+`wp upgrade` and restart the runner once on each machine.
+
+`WAYPOINT_NO_AUTO_UPDATE=1` stops all of this, and `wp runner --no-auto-update`
+stops it for one runner. A runner that doesn't update (those two, or `--once`)
+passes `WAYPOINT_NO_AUTO_UPDATE=1` on to everything it starts (jobs, sessions,
+autopilot), so the `wp` they run stays as it is too.
+
 ## Observability
 
 - `GET /healthz`, `/readyz` — database reachability (both; there is no
