@@ -101,7 +101,7 @@ func (c *StepCtx) setReviewOutputs(id int64) error {
 	case "cancelled":
 		return fmt.Errorf("the review was cancelled")
 	}
-	rows, err := c.S.db.R.QueryContext(c.Ctx, `SELECT severity, placement FROM bot_findings WHERE run_id = ? AND state != 'dropped'`, id)
+	rows, err := c.S.db.R.QueryContext(c.Ctx, runFindingKindsSQL, id)
 	if err != nil {
 		return err
 	}

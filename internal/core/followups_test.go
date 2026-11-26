@@ -587,6 +587,7 @@ func TestTellAgentThatCanWaitGoesWithTheBatch(t *testing.T) {
 	f.setClock(f.clockNow().Add(cacheWarm))
 	f.poll(f.admin, box, RunnerPoll{})
 	f.s.CheckBabysits(f.ctx)
+	f.s.releaseDueBatches(f.ctx)
 	w := f.poll(f.admin, box, RunnerPoll{})
 	if w.Job == nil || w.Job.Kind != JobMessage || !strings.Contains(string(w.Job.Input), "Tidy the branches.") {
 		t.Fatalf("job: %+v", w.Job)

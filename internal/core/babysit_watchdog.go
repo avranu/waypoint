@@ -78,9 +78,15 @@ func (s *Service) refreshStaleChecks(ctx context.Context, prID int64) {
 // reviveRound hands a stale needs_person babysit to the assessor, or files
 // the request a person-only wait needs. It reports whether the babysit is
 // instead waiting on checks that should be read again (outside the babysit's
-// lock: reading them can step it).
+// lock: reading them can step it). A babysit whose lock is held has a step
+// running, so it is being moved: it is passed over, and the next run of the
+// job looks again.
 func (s *Service) reviveRound(ctx context.Context, prID int64) (readChecks bool) {
-	defer s.babysitLocks.lock(prID)()
+	unlock, ok := s.babysitLocks.tryLock(prID)
+	if !ok {
+		return false
+	}
+	defer unlock()
 	b, err := s.activeBabysit(ctx, s.db.R, prID)
 	if err != nil || b == nil || b.JobID != 0 {
 		return false

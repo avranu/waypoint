@@ -227,7 +227,12 @@ func (s *Service) lineGather(ctx context.Context, ref lineRef) (*lineState, erro
 	var keep []*PullRequest
 	for _, p := range members {
 		ls.prs[p.ID] = p
-		if why := s.lineLeft(ctx, p); why != "" {
+		why, unread := s.lineStanding(ctx, p)
+		if unread {
+			s.log.WarnContext(ctx, "read whether a line member is settled; it keeps its place", "pr", p.ID, "why", why)
+			why = ""
+		}
+		if why != "" {
 			if queueHolder(p) && !s.frontGivesWay(ctx, p, why) {
 				// Still marked ready (the title edit failed): it stays a
 				// member, not half out, and the next step tries again. The
@@ -359,17 +364,33 @@ func (s *Service) frontFailed(ctx context.Context, p *PullRequest) (bool, error)
 	return b == nil, nil
 }
 
-// lineLeft says why p no longer holds a place in the line, "" when it does.
-// A pull request that isn't Waypoint's marked-ready front must be settled:
-// its checks passed at its head and nothing is left that could move the head.
-// The front keeps its place through a round (WP-455) for frontGrace; past
-// that it must not have failed its checks or be unsettled either (WP-1852). A
-// read that fails doesn't take the front out: the next look asks again.
-// Its full run still going, being behind the base and the forge still
-// reading mergeability are the line's own business and never count.
+// lineLeft says why p can't hold or take a place in the line, "" when it can.
+// A read that failed counts as a reason for a pull request that isn't the
+// front, so one outside the line doesn't join on a state nobody could read.
+// The line's members are judged with lineStanding, which keeps a place through
+// such a read.
 func (s *Service) lineLeft(ctx context.Context, p *PullRequest) string {
+	why, unread := s.lineStanding(ctx, p)
+	if unread && queueHolder(p) {
+		return ""
+	}
+	return why
+}
+
+// lineStanding says why p no longer holds a place in the line, "" when it
+// does. A pull request that isn't Waypoint's marked-ready front must be
+// settled: its checks passed at its head and nothing is left that could move
+// the head. The front keeps its place through a round (WP-455) for
+// frontGrace; past that it must not have failed its checks or be unsettled
+// either (WP-1852). unread: a read failed, so why only says what couldn't be
+// read. A member whose read failed keeps its place, front or not, and the
+// next look asks again; ending candidates and putting it out on a failed read
+// is what WP-ADR163 point 4 rules out. Its full run still going, being behind
+// the base and the forge still reading mergeability are the line's own
+// business and never count.
+func (s *Service) lineStanding(ctx context.Context, p *PullRequest) (why string, unread bool) {
 	if p.HeadSHA == "" {
-		return "its head isn't known"
+		return "its head isn't known", false
 	}
 	if queueHolder(p) {
 		if s.inFrontGrace(p) {
@@ -377,31 +398,27 @@ func (s *Service) lineLeft(ctx context.Context, p *PullRequest) string {
 			// moves under the front, and its merge holds only for an audit
 			// that exists.
 			s.askHeadAudit(ctx, p)
-			return ""
+			return "", false
 		}
 		failed, err := s.frontFailed(ctx, p)
 		if err != nil {
 			if readFault(err) {
 				s.log.WarnContext(ctx, "read whether the front's checks failed", "pr", p.ID, "err", err)
 			}
-			return ""
+			return "its checks couldn't be read", true
 		}
 		if failed {
-			return "its checks failed"
+			return "its checks failed", false
 		}
-		if why, unread := s.unsettled(ctx, p); !unread {
-			return why
-		}
-		return ""
+		return s.unsettled(ctx, p)
 	}
 	if failedOn(p, p.HeadSHA) {
-		return "its checks failed"
+		return "its checks failed", false
 	}
 	if p.ciSHA != p.HeadSHA || p.CIState != CIPassed {
-		return "its checks haven't passed on its head"
+		return "its checks haven't passed on its head", false
 	}
-	why, _ := s.unsettled(ctx, p)
-	return why
+	return s.unsettled(ctx, p)
 }
 
 // frontGivesWay takes a marked-ready front that lineLeft says has left back
@@ -507,9 +524,11 @@ func (s *Service) lineFallback(ctx context.Context, ref lineRef) bool {
 	return on
 }
 
-// lineBatchDepth is how many places a batch covers: one more than the last
-// batch on the line that merged (up to batchMaxDepth), two after one that
-// failed, two when there is none.
+// lineBatchDepth is how many places a batch covers (WP-1992): twice the last
+// batch's size after one that merged whole, the same after one that ended on
+// a conflict (it removes one pull request and says nothing about the others'
+// tests), two after one that failed or when there is none; never above
+// batchMaxDepth.
 func (s *Service) lineBatchDepth(ctx context.Context, ref lineRef) int {
 	var state, raw string
 	if err := s.db.R.QueryRowContext(ctx, `SELECT state, heads FROM queue_stacks WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND base_ref = ?
@@ -519,8 +538,11 @@ func (s *Service) lineBatchDepth(ctx context.Context, ref lineRef) int {
 	}
 	var heads []stackHead
 	_ = json.Unmarshal([]byte(raw), &heads)
-	if state == stackMerged {
-		return min(len(heads)+1, batchMaxDepth)
+	switch state {
+	case stackMerged:
+		return min(2*len(heads), batchMaxDepth)
+	case stackConflict:
+		return min(max(len(heads), 2), batchMaxDepth)
 	}
 	return 2
 }
@@ -663,6 +685,26 @@ func (s *Service) candMerged(ctx context.Context, ls *lineState, st *queueStack)
 	return -1, nil
 }
 
+// newestStatus is the latest Created among all's statuses that parse, never
+// later than now; zero when none does. Any status row the forge posted is
+// movement of a candidate's run.
+func newestStatus(all []CommitCheck, now time.Time) time.Time {
+	var newest time.Time
+	for _, c := range all {
+		t, err := time.Parse(time.RFC3339, c.Created)
+		if err != nil {
+			continue
+		}
+		if t.After(now) {
+			t = now
+		}
+		if t.After(newest) {
+			newest = t
+		}
+	}
+	return newest
+}
+
 // pollCand follows a running candidate's run.
 func (s *Service) pollCand(ctx context.Context, f *Forge, st *queueStack) candPoll {
 	running := candPoll{state: candRunning}
@@ -671,9 +713,17 @@ func (s *Service) pollCand(ctx context.Context, f *Forge, st *queueStack) candPo
 		return running
 	}
 	age := s.now().Sub(st.CreatedAt)
+	moved := st.CreatedAt
+	if st.RerunAt != 0 && msTime(st.RerunAt).After(moved) {
+		moved = msTime(st.RerunAt)
+	}
+	read := false
 	overdue := func(what string) candPoll {
-		if age >= stackRunMax {
-			return candPoll{state: candLost, reason: endLost, note: what + " after " + fmtMinutes(stackRunMax)}
+		switch {
+		case age >= stackRunCeiling:
+			return candPoll{state: candLost, reason: endLost, note: what + " " + fmtMinutes(stackRunCeiling) + " after it was made"}
+		case read && s.now().Sub(moved) >= stackRunMax:
+			return candPoll{state: candLost, reason: endLost, note: what + " and nothing about its checks changed in " + fmtMinutes(stackRunMax)}
 		}
 		return running
 	}
@@ -681,6 +731,10 @@ func (s *Service) pollCand(ctx context.Context, f *Forge, st *queueStack) candPo
 	if err != nil {
 		s.log.WarnContext(ctx, "read a candidate's checks", "candidate", st.ID, "err", err)
 		return overdue("its checks couldn't be read")
+	}
+	read = true
+	if t := newestStatus(all, s.now()); t.After(moved) {
+		moved = t
 	}
 	var checks []CommitCheck
 	for _, c := range dropSuperseded(all) {
@@ -1172,10 +1226,19 @@ func (s *Service) lineMergeAct(ctx context.Context, ls *lineState, a lineAction)
 		if st == nil {
 			return
 		}
-		if st.State != stackReady {
+		// The candidate is ready from its first merge on; each head after it
+		// is still a draft until its own turn (WP-1994).
+		draft := pr.WipAuto && (pr.ReadyAt == nil || !sameSHA(pr.readySHA, pr.HeadSHA))
+		if st.State != stackReady || draft {
 			if pr.WipAuto {
 				if err := s.candMarkReady(ctx, ls.f, pr, st); err != nil {
 					s.log.WarnContext(ctx, "mark a pull request ready on its candidate", "repo", pr.Repo, "number", pr.Number, "err", err)
+					if st.State == stackReady && s.now().Sub(st.CreatedAt) < stackRunCeiling {
+						// Pull requests already merged on this candidate's run:
+						// the next step asks again rather than end it and test
+						// the rest a second time.
+						return
+					}
 					s.postStackFailure(ctx, ls.f, pr, st, "Waypoint couldn't mark it ready on the candidate")
 					//wplint:ignore blankerr candEndAs logs a failed end; it returns here either way, and the candidate, live and not ready, is planned again next step
 					_ = s.candEnd(ctx, ls.f, st, stackCancelled, endLineChanged, "couldn't mark it ready: "+excerpt(err.Error(), 120))

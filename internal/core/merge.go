@@ -882,6 +882,11 @@ func (s *Service) maybeAutoMerge(ctx context.Context, prID int64) {
 			s.retryArmedMerge(ctx, pr, down.what)
 			return
 		}
+		// A pull request merged or closed meanwhile (another armed merge, a
+		// line or the forge got there first) is not a failed merge.
+		if cur, rerr := s.prByID(ctx, s.db.R, pr.ID); rerr == nil && cur.State != "open" && cur.State != "draft" {
+			return
+		}
 		s.log.WarnContext(ctx, "merge when ready", "repo", pr.Repo, "number", pr.Number, "err", err)
 		s.armNote(ctx, pr.ID, mergeFailedNote+mergeNote(err))
 	}

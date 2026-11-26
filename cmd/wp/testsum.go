@@ -20,10 +20,11 @@ import (
 )
 
 var testsumCmd = &command{
-	name: "testsum", group: "Code and CI", args: "[--repeat N | --base REF] [--keep-env NAME] CMD… | [--format F] [FILE|-]",
+	name: "testsum", group: "Code and CI", args: "[--all] [--repeat N | --base REF] [--keep-env NAME] CMD… | [--format F] [FILE|-]",
 	summary: "run tests and summarize them: one line on pass, failures with file:line",
 	about: `Runs CMD in the "tests" host slot and prints a summary: one line on pass;
 on failure each failing test with file:line and its first lines, exit 1.
+A summary that is cut ends with the file holding the command's whole output.
 The run is kept against the tree it tested, for wp ship. Run again with the
 same command (as typed; GOFLAGS and the like aren't compared) on a
 content-identical tree, it still runs, and the first line says nothing
@@ -31,8 +32,15 @@ changed since the last run and how that came out; it is also printed at
 once, before waiting for the slot. --repeat and --base don't say it. Flags go before
 CMD; everything from CMD on is CMD's. CMD runs without secret-looking
 variables (*_TOKEN, *_KEY, …). FILE (an existing, non-executable file) or
-- summarizes saved output instead.`,
-	examples: []string{"wp testsum go test ./...", "wp testsum pytest -q", "wp testsum --repeat 30 go test -run TestFlaky ./internal/core", "wp testsum --base origin/main go test ./cmd/wp", "go test -json ./... | wp testsum"},
+- summarizes saved output instead.
+
+A go test of a whole heavy package or ./... with no -run, in a repository that
+lists heavy packages (.waypoint/heavy-tests), runs the tests beside what you
+changed since the base instead, and says so first with the command that runs
+everything. --all, or WP_TEST_ALL=1, runs it whole; so does a runner job (CI),
+and so does a command with a flag that names a file (-coverprofile, -o,
+-cpuprofile, -trace, …), with the reason said (WP-1877).`,
+	examples: []string{"wp testsum -- go test -run '^TestSlot' ./cmd/wp", "wp testsum pytest -q", "wp testsum --repeat 30 go test -run TestFlaky ./internal/core", "wp testsum --base origin/main go test ./cmd/wp", "go test -json -run '^TestSlot' ./cmd/wp | wp testsum"},
 	run:      cmdTestsum,
 }
 
@@ -95,6 +103,7 @@ func cmdTestsum(c *cli, args []string) error {
 	repeat := fs.Int("repeat", 0, "run CMD `N` times: which tests fail how often (flaky or broken)")
 	untilFail := fs.Bool("until-fail", false, "with --repeat, stop at the first failing run")
 	base := fs.String("base", "", "if tests fail, rerun them at `REF` in a temporary checkout (your tree is left alone): failing there too?")
+	all := fs.Bool("all", false, "run a whole-suite go test whole: without it the tests slot runs the tests beside your changes (WP-1877)")
 	var keep keepEnvFlag
 	fs.Var(&keep, "keep-env", "pass the secret-looking variable `NAME` to CMD (repeatable)")
 	rest, dashed, err := c.parseBeforeCommand(fs, args)
@@ -147,12 +156,16 @@ func cmdTestsum(c *cli, args []string) error {
 		sayUnchanged(c.err, note)
 		argv := goTestJSON(rest)
 		var dropped []string
-		code, err := c.runInSlotThen("tests", defaultSlots(), argv, &buf, &buf, rec.started, func(env []string) []string {
+		var nothing bool
+		code, err := c.runInSlotWith("tests", defaultSlots(), argv, &buf, &buf, rec.started, func(env []string) []string {
 			env, dropped = testEnv(env, keep)
 			return env
-		})
+		}, slotOpts{all: *all, who: "wp testsum", allCmd: "wp testsum --all --", rec: rec, nothing: &nothing})
 		if err != nil {
 			return err
+		}
+		if nothing {
+			return nil
 		}
 		if note != "" {
 			c.println(note)
@@ -261,7 +274,7 @@ func (c *cli) testsumReport(data []byte, format string, cmdFailed int, rec *test
 		}
 		return nil, fmt.Errorf("no test results found in the %s output", f)
 	}
-	_, _ = fmt.Fprint(c.out, res.render())
+	_, _ = fmt.Fprint(c.out, res.renderSaving(data))
 	rec.finish(res, cmdFailed)
 	if res.Failed > 0 || len(res.Failures) > 0 {
 		if cmdFailed != 0 {
@@ -626,7 +639,11 @@ func parseTestOutput(data []byte, format string) (res *testResult, f string, err
 	return res, f, nil
 }
 
-func (r *testResult) render() string {
+func (r *testResult) render() string { return r.renderCut(nil) }
+
+// renderCut is render; when it cuts lines, the cut line is followed by what
+// full returns (a line saying where the whole output is), if that is not "".
+func (r *testResult) renderCut(full func() string) string {
 	var out []string
 	total := r.Passed + r.Failed + r.Skipped
 	units := ""
@@ -654,8 +671,18 @@ func (r *testResult) render() string {
 		}
 	}
 	if len(out) > testsumMaxLines {
-		more := len(out) - (testsumMaxLines - 1)
-		out = append(out[:testsumMaxLines-1], fmt.Sprintf("... %d more lines (run the tests directly for the rest)", more))
+		note := ""
+		if full != nil {
+			note = full()
+		}
+		keep := testsumMaxLines - 1
+		if note != "" {
+			keep--
+		}
+		out = append(out[:keep], fmt.Sprintf("... %d more lines", len(out)-keep))
+		if note != "" {
+			out = append(out, note)
+		}
 	}
 	return strings.Join(out, "\n") + "\n"
 }

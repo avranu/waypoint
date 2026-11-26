@@ -332,6 +332,33 @@ func shipEndsTurn(t *testing.T, e *env, me *core.Actor, key string) {
 	if out = e.wp("ship", "--summary", "x"); strings.Contains(out, "Waypoint ends the turn") {
 		t.Errorf("a person's ship ended a turn:\n%s", out)
 	}
+
+	// The repository's own check runs by default; --check runs its command
+	// instead, and --no-check skips it (audit 1896.50). .waypoint/ is
+	// excluded above, so the script leaves the tree as it is.
+	if err := os.MkdirAll(".waypoint", 0o755); err != nil { // #nosec G301 -- a test fixture
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(".waypoint", "test"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil { // #nosec G306 -- a test script
+		t.Fatal(err)
+	}
+	scoped := 0
+	oldScoped := shipScopedCheck
+	t.Cleanup(func() { shipScopedCheck = oldScoped })
+	shipScopedCheck = func(*cli) (int, error) { scoped++; return 1, nil }
+	if out, code := e.run("ship"); code == 0 || scoped != 1 || !strings.Contains(out, "wp test failed (exit 1)") {
+		t.Errorf("the default check: exit %d, ran %d\n%s", code, scoped, out)
+	}
+	if out = e.wp("ship", "--check", "true"); scoped != 1 || strings.Contains(out, "wp test") {
+		t.Errorf("--check ran the default check too: ran %d\n%s", scoped, out)
+	}
+	if out = e.wp("ship", "--no-check"); scoped != 1 || strings.Contains(out, "wp test") || strings.Contains(out, "Check") {
+		t.Errorf("--no-check ran a check: ran %d\n%s", scoped, out)
+	}
+	shipScopedCheck = oldScoped
+	if err := os.RemoveAll(".waypoint"); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // --check runs a command with an environment prefix through the shell:

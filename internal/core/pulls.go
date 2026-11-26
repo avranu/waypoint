@@ -795,7 +795,7 @@ func (s *Service) ListBotRunsFiltered(ctx context.Context, actor *Actor, project
 }
 
 func (s *Service) runFindings(ctx context.Context, runID int64) ([]BotFinding, error) {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT `+findingCols+` FROM bot_findings f WHERE f.run_id = ? ORDER BY f.id`, runID)
+	rows, err := s.db.R.QueryContext(ctx, runFindingsSQL, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -1093,10 +1093,19 @@ type errProvidersDown struct {
 
 func (e *errProvidersDown) Error() string {
 	if e.noBar {
-		return providersDownText + noBarText() + "; not retrying, ask for a review again later"
+		return providersDownText + noBarText() + downGaveUp
 	}
 	return providersDownText + "is unavailable (rate limited, down or timing out); not retrying, ask for a review again later"
 }
+
+// downWaitText turns the text of a run whose models were all unavailable
+// into the one it shows while it waits for its next attempt (WP-1916).
+func downWaitText(text string, at time.Time, next int) string {
+	text = strings.TrimSuffix(text, downGaveUp)
+	return fmt.Sprintf("%s; trying again at %s UTC (attempt %d of %d)", text, at.UTC().Format("15:04"), next, botMaxAttempts)
+}
+
+const downGaveUp = "; not retrying, ask for a review again later"
 
 // noBarText: what a run's error says when no model at the minimum answered.
 func noBarText() string {
@@ -1114,9 +1123,9 @@ func runErrorText(err error, log []ModelAttempt) string {
 	sum := attemptSummary(log)
 	switch {
 	case sum != "" && errors.As(err, &down) && down.noBar:
-		return providersDownText + noBarText() + ": " + sum + "; not retrying, ask for a review again later"
+		return providersDownText + noBarText() + ": " + sum + downGaveUp
 	case sum != "" && errors.As(err, &down):
-		return providersDownText + "was unavailable: " + sum + "; not retrying, ask for a review again later"
+		return providersDownText + "was unavailable: " + sum + downGaveUp
 	case errors.As(err, &down):
 		return down.Error()
 	case sum != "" && (errors.Is(err, errAllModelsFailed) || strings.HasPrefix(err.Error(), "every model failed")):
@@ -1219,6 +1228,20 @@ func (s *Service) carryOut(ctx context.Context, r *BotRun) {
 		return
 	case s.bgCtx.Err() != nil:
 		return
+	case errors.As(err, &down) && !down.noBar && r.Attempts < botMaxAttempts:
+		at := s.now().Add(botRetryAfter * time.Duration(r.Attempts))
+		s.log.WarnContext(ctx, "bot run failed; every model unavailable, will retry", "run", r.ID, "attempt", r.Attempts)
+		lb, _ := json.Marshal(res.log)
+		_, err = s.db.W.ExecContext(done, `UPDATE bot_runs SET status = 'queued', error = ?, log = ?, not_before = ? WHERE id = ? AND status = 'running'`,
+			downWaitText(runErrorText(err, res.log), at, r.Attempts+1), string(lb), at.UnixMilli(), r.ID)
+		if err == nil {
+			// The gate may have passed while the run sat queued past the
+			// review wait; waiting to run again holds it (computeGate).
+			if gerr := s.evalGate(done, r.PR.ID); gerr != nil {
+				s.log.WarnContext(ctx, "review gate", "pull request", r.PR.ID, "err", gerr)
+				s.markGatePending(done, r.PR.ID)
+			}
+		}
 	case errors.As(err, &down):
 		s.log.WarnContext(ctx, "bot run failed; every model unavailable", "run", r.ID)
 		s.botFailedReaction(done, r)
@@ -1308,7 +1331,9 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	if err != nil {
 		return res, err
 	}
-	fp.Body = s.approvedBody(ctx, f, pr, fp)
+	// Only a title and description a Waypoint person wrote, or ones
+	// approved, are read (WP-281).
+	fp.Title, fp.Body = s.approvedTitle(ctx, f, pr, fp), s.approvedBody(ctx, f, pr, fp)
 	if fp.State == "closed" || fp.State == "merged" {
 		return res, &errSkip{"the pull request was " + fp.State}
 	}
