@@ -16,14 +16,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Roles, ordered so a higher value includes everything below it.
-const (
-	RoleNone   = 0
-	RoleViewer = 1
-	RoleEditor = 2
-	RoleOwner  = 3
-)
-
 var roleNames = map[int]string{RoleNone: "", RoleViewer: "viewer", RoleEditor: "editor", RoleOwner: "owner"}
 
 func roleFromName(n string) (int, bool) {
@@ -341,30 +333,6 @@ func (s *Service) parentProject(ctx context.Context, q queryer, actor *Actor, ch
 		}
 	}
 	return &parent.ID, nil
-}
-
-// MemberProjects is the SQL set, for `project_id IN <set>`, of the projects
-// the actor is a member of with at least role min; for a job's scoped token
-// (WP-418), those of its projects it has that role in.
-func (a *Actor) MemberProjects(min int) (string, []any) {
-	if a.Scope != nil {
-		ids := make([]int64, 0, len(a.Scope))
-		for id, r := range a.Scope {
-			if r >= min {
-				ids = append(ids, id)
-			}
-		}
-		slices.Sort(ids)
-		return "(" + placeholders(len(ids)) + ")", int64Args(ids)
-	}
-	roles := ""
-	switch {
-	case min >= RoleOwner:
-		roles = " AND role = 'owner'"
-	case min == RoleEditor:
-		roles = " AND role IN ('editor','owner')"
-	}
-	return "(SELECT project_id FROM project_members WHERE user_id = ?" + roles + ")", []any{a.ID()}
 }
 
 // projectRole is the actor's role in a project; admins are owners everywhere.

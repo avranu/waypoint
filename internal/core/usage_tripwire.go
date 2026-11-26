@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 )
 
 // EvQuotaJump: the week's quota rose fast (WP-146). It reaches only its user.
@@ -15,18 +17,10 @@ const NotifyQuota = "quota"
 
 const (
 	// DefaultQuotaJump is the rise, in points of the week, that trips the alert.
-	DefaultQuotaJump = 4
+	DefaultQuotaJump = kernel.DefaultQuotaJump
 	quotaJumpWindow  = time.Hour
 	quotaJumpEvery   = time.Hour
 )
-
-// QuotaJumpThreshold is the person's setting: unset means the default, 0 off.
-func (p UserPrefs) QuotaJumpThreshold() int {
-	if p.QuotaJump == nil {
-		return DefaultQuotaJump
-	}
-	return *p.QuotaJump
-}
 
 // checkQuotaJump runs after a seven_day reading was stored. It compares it
 // with the lowest reading of the same week in the last hour and, when the

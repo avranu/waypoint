@@ -199,12 +199,6 @@ func (s *Service) assistantRow(ctx context.Context, id int64) (*assistantRow, er
 	return rs[0], nil
 }
 
-// person is a signed-in person in a browser: not a token, an automation or
-// an MCP client.
-func (a *Actor) Person() bool {
-	return a != nil && a.User != nil && a.User.ID != 0 && a.TokenID == 0 && a.Automation == nil && !a.MCP && a.Agent == ""
-}
-
 func (s *Service) finishAssistant(ctx context.Context, actor *Actor, r *assistantRow) *Assistant {
 	a := r.Assistant
 	a.Mine = actor.ID() == r.ownerID

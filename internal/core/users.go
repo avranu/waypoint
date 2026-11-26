@@ -26,59 +26,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// User is an account. Secrets in Prefs are only returned to the user themself.
-type User struct {
-	ID            int64     `json:"id"`
-	Username      string    `json:"username"`
-	Email         string    `json:"email"`
-	DisplayName   string    `json:"display_name"`
-	IsAdmin       bool      `json:"is_admin"`
-	Disabled      bool      `json:"disabled"`
-	AvatarURL     string    `json:"avatar_url"`
-	Timezone      string    `json:"timezone"`
-	Prefs         UserPrefs `json:"prefs"`
-	CreatedAt     time.Time `json:"created_at"`
-	AvatarVersion int64     `json:"-"`
-	PasswordHash  string    `json:"-"`
-}
-
-// UserPrefs are per-user settings.
-type UserPrefs struct {
-	Theme       string `json:"theme,omitempty"` // "", "light", "dark"
-	GotifyURL   string `json:"gotify_url,omitempty"`
-	GotifyToken string `json:"gotify_token,omitempty"`
-	// Notification kinds that are *not* forwarded to Gotify.
-	GotifyMuted []string `json:"gotify_muted,omitempty"`
-	// Notification kinds that are *not* pushed to subscribed browsers.
-	PushMuted []string `json:"push_muted,omitempty"`
-	// QuotaJump is the rise in the week's quota, in points within an hour,
-	// that pushes an alert (WP-146). Unset means 4; 0 turns it off.
-	QuotaJump *int `json:"quota_jump,omitempty"`
-	// WeekStart: 0 Sunday, 1 Monday.
-	WeekStart int `json:"week_start"`
-	// HiddenHelp names the explainers this person folded away.
-	HiddenHelp []string `json:"hidden_help,omitempty"`
-	// OpenHelp names the explainers this person opened; the rest start folded.
-	OpenHelp []string `json:"open_help,omitempty"`
-	// ProjectSort is how the sidebar orders this person's projects: "recent"
-	// (latest activity first) or "custom" (ProjectOrder). Empty means custom
-	// once they have dragged a project, recent before.
-	ProjectSort string `json:"project_sort,omitempty"`
-	// ProjectOrder is the sidebar's custom order, project ids first to last.
-	// Projects missing from it (new ones) come first.
-	ProjectOrder []int64 `json:"project_order,omitempty"`
-	// CacheWarm is how Waypoint keeps the prompt cache of this person's
-	// sessions warm (WP-192, WP-534): "" pings them, CacheWarmCompact
-	// compacts them instead.
-	CacheWarm string `json:"cache_warm,omitempty"`
-	// DismissedWarnings are the goal wording warnings this person waved off,
-	// each "NOTE_ID:WARNING", newest last, so they stay gone on every device.
-	DismissedWarnings []string `json:"dismissed_warnings,omitempty"`
-	// Sessions is how Waypoint starts this person's Claude Code sessions
-	// (WP-1265): for all of them, and for single repos.
-	Sessions *SessionPrefs `json:"sessions,omitempty"`
-}
-
 // maxDismissedWarnings bounds DismissedWarnings; the oldest go first.
 const maxDismissedWarnings = 500
 
@@ -89,42 +36,8 @@ const CacheWarmCompact = "compact"
 // maxProjectOrder bounds ProjectOrder; no one keeps more projects than this.
 const maxProjectOrder = 2000
 
-// gotifyMask stands in for a saved Gotify token in API responses; sending
-// it back unchanged keeps the token.
-const gotifyMask = "••••••••"
-
-// MarshalJSON hides the Gotify token: it's write-only over the API.
-func (p UserPrefs) MarshalJSON() ([]byte, error) {
-	type plain UserPrefs
-	out := plain(p)
-	if out.GotifyToken != "" {
-		out.GotifyToken = gotifyMask
-	}
-	return json.Marshal(out)
-}
-
 // storedPrefs is UserPrefs as written to the database, token included.
 type storedPrefs UserPrefs
-
-// UserRef is the public view of a user.
-type UserRef struct {
-	ID          int64  `json:"id"`
-	Username    string `json:"username"`
-	DisplayName string `json:"display_name"`
-	AvatarURL   string `json:"avatar_url,omitempty"`
-}
-
-// Name is the display name, falling back to the username.
-func (u *User) Name() string {
-	if u.DisplayName != "" {
-		return u.DisplayName
-	}
-	return u.Username
-}
-
-func (u *User) Ref() UserRef {
-	return UserRef{ID: u.ID, Username: u.Username, DisplayName: u.Name(), AvatarURL: u.AvatarURL}
-}
 
 func avatarURL(id, version int64) string {
 	if version == 0 {
@@ -1101,7 +1014,7 @@ func (s *Service) UpdateUser(ctx context.Context, actor *Actor, id int64, p User
 			return nil, invalid("cache_warm must be compact or empty")
 		}
 		var err error
-		if next.Sessions, err = next.Sessions.Validate(); err != nil {
+		if next.Sessions, err = validateSessionPrefs(next.Sessions); err != nil {
 			return nil, err
 		}
 		if len(next.ProjectOrder) > maxProjectOrder {

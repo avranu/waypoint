@@ -24,3 +24,6 @@ func notFound(what string) error                 { return kernel.NotFound(what) 
 func readFault(err error) bool                   { return kernel.ReadFault(err) }
 func missingOrDenied(err error) bool             { return kernel.MissingOrDenied(err) }
 func excerpt(s string, n int) string             { return kernel.Excerpt(s, n) }
+
+func placeholders(n int) string   { return kernel.Placeholders(n) }
+func int64Args(ids []int64) []any { return kernel.Int64Args(ids) }
