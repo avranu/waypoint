@@ -40,9 +40,9 @@ const EvUserDeleted = "user.deleted"
 type Options struct {
 	// BaseURL is the server's public address, for invite and reset links.
 	BaseURL string
-	// ArchivesTranscripts says transcripts are kept on disk; deleting an
-	// account says their removal follows.
-	ArchivesTranscripts bool
+	// ArchivesTranscripts says whether transcripts are kept on disk; deleting
+	// an account says their removal follows. Nil is no.
+	ArchivesTranscripts func() bool
 }
 
 // Hooks are what the users domain needs of the domains above it. A nil hook
@@ -73,10 +73,6 @@ type Store struct {
 func NewStore(k *kernel.Kernel, opt Options, hooks Hooks) *Store {
 	return &Store{k: k, opt: opt, hooks: hooks}
 }
-
-// SetOptions replaces the options, for a test that changes the configuration
-// after the server is built.
-func (s *Store) SetOptions(opt Options) { s.opt = opt }
 
 // Service is the checked operations: every exported method takes an *Actor.
 type Service struct{ st *Store }
@@ -115,7 +111,7 @@ func scanUser(sc interface{ Scan(...any) error }) (*kernel.User, error) {
 		return nil, err
 	}
 	_ = json.Unmarshal([]byte(prefs), &u.Prefs)
-	u.CreatedAt = kernel.MSTime(created)
+	u.CreatedAt = kernel.MillisToTime(created)
 	u.AvatarURL = AvatarURL(u.ID, u.AvatarVersion)
 	if u.DisplayName == "" {
 		u.DisplayName = u.Username
@@ -456,7 +452,7 @@ func (s *Store) CreateToken(ctx context.Context, q kernel.Queryer, actor *kernel
 	if err != nil {
 		return "", nil, err
 	}
-	t := &APIToken{ID: id, Name: name, Prefix: tok[:12], ReadOnly: spec.ReadOnly, Agent: agent, Permissions: perms, CreatedAt: kernel.MSTime(now)}
+	t := &APIToken{ID: id, Name: name, Prefix: tok[:12], ReadOnly: spec.ReadOnly, Agent: agent, Permissions: perms, CreatedAt: kernel.MillisToTime(now)}
 	if exp != nil {
 		t.ExpiresAt = kernel.PtrTime(sql.NullInt64{Int64: exp.(int64), Valid: true})
 	}
@@ -501,7 +497,7 @@ func (s *Store) Tokens(ctx context.Context, actor *kernel.Actor, id int64) ([]AP
 		if err := rows.Scan(&t.ID, &t.Name, &t.Prefix, &t.ReadOnly, &t.Agent, &perms, &created, &used, &exp); err != nil {
 			return nil, err
 		}
-		t.CreatedAt, t.LastUsedAt, t.ExpiresAt = kernel.MSTime(created), kernel.PtrTime(used), kernel.PtrTime(exp)
+		t.CreatedAt, t.LastUsedAt, t.ExpiresAt = kernel.MillisToTime(created), kernel.PtrTime(used), kernel.PtrTime(exp)
 		if t.Permissions = ParsePermissions(perms); t.Permissions != nil {
 			limited = append(limited, t.ID)
 		}
@@ -644,7 +640,7 @@ func (s *Service) CreateInvite(ctx context.Context, actor *kernel.Actor, email s
 		detail += " as an admin"
 	}
 	s.st.k.Audit(ctx, actor, kernel.AuditEntry{Action: "invite.create", Category: kernel.AuditAccess, TargetType: "invite", Target: cmp.Or(email, "an invite link"), Detail: detail})
-	return &UserLink{Kind: "invite", Email: email, IsAdmin: isAdmin, ExpiresAt: kernel.MSTime(now + ttl.Milliseconds()), URL: s.st.linkURL("invite", tok)}, nil
+	return &UserLink{Kind: "invite", Email: email, IsAdmin: isAdmin, ExpiresAt: kernel.MillisToTime(now + ttl.Milliseconds()), URL: s.st.linkURL("invite", tok)}, nil
 }
 
 // CreateResetLink makes a password reset link for a user (admin only, or
@@ -674,7 +670,7 @@ func (s *Service) CreateResetLink(ctx context.Context, actor *kernel.Actor, user
 	}
 	s.st.k.Audit(ctx, actor, kernel.AuditEntry{Action: "user.reset_link", Category: kernel.AuditAccess, TargetType: "user", TargetID: u.ID, Target: u.Name(),
 		Detail: "made a password reset link for " + u.Name()})
-	return &UserLink{Kind: "reset", Username: u.Username, ExpiresAt: kernel.MSTime(now + ttl.Milliseconds()), URL: s.st.linkURL("reset", tok)}, nil
+	return &UserLink{Kind: "reset", Username: u.Username, ExpiresAt: kernel.MillisToTime(now + ttl.Milliseconds()), URL: s.st.linkURL("reset", tok)}, nil
 }
 
 // PendingInvite is an unused invite, for the admin dashboard.
@@ -705,7 +701,7 @@ func (s *Service) ListInvites(ctx context.Context, actor *kernel.Actor) ([]Pendi
 		if err := rows.Scan(&h, &p.Email, &p.IsAdmin, &c, &e); err != nil {
 			return nil, err
 		}
-		p.ID, p.CreatedAt, p.ExpiresAt = h[:16], kernel.MSTime(c), kernel.MSTime(e)
+		p.ID, p.CreatedAt, p.ExpiresAt = h[:16], kernel.MillisToTime(c), kernel.MillisToTime(e)
 		out = append(out, p)
 	}
 	return out, rows.Err()
@@ -912,7 +908,7 @@ func (s *Service) ListSessions(ctx context.Context, actor *kernel.Actor) ([]Sess
 		if err := rows.Scan(&h, &c, &l, &se.UserAgent, &se.IP); err != nil {
 			return nil, err
 		}
-		se.ID, se.CreatedAt, se.LastSeenAt, se.Current = h[:sessionIDLen], kernel.MSTime(c), kernel.MSTime(l), h == actor.SessionHash
+		se.ID, se.CreatedAt, se.LastSeenAt, se.Current = h[:sessionIDLen], kernel.MillisToTime(c), kernel.MillisToTime(l), h == actor.SessionHash
 		out = append(out, se)
 	}
 	return out, rows.Err()
@@ -1180,7 +1176,7 @@ func (s *Service) DeleteUser(ctx context.Context, actor *kernel.Actor, id int64)
 			return err
 		}
 		detail := "deleted the account; their issues stay"
-		if s.st.opt.ArchivesTranscripts {
+		if f := s.st.opt.ArchivesTranscripts; f != nil && f() {
 			detail += "; their archived transcripts are removed from the disk next"
 		}
 		t.Audit(kernel.AuditEntry{Action: "user.delete", Category: kernel.AuditAccess, TargetType: "user", TargetID: id, Target: name, Detail: detail})

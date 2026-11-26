@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -488,7 +489,7 @@ type ProjectRepo struct {
 
 var (
 	repoRE   = lazyre.New(`^[\w.-]+/[\w.-]+$`)
-	nestedRE = lazyre.New(`^[\w.-]+(/[\w.-]+)+$`)
+	nestedRE = kernel.NestedRepoRE
 )
 
 // validRepoFor accepts owner/name (group/subgroup/…/name on GitLab); "."
@@ -1390,8 +1391,6 @@ func parseGitHubHook(event string, body []byte) (*forgeEvent, error) {
 	}
 	return ev, nil
 }
-
-func ptr[T any](v T) *T { return &v }
 
 // importForgeIssue creates or updates the Waypoint issue mirroring a forge
 // issue in every project syncing that repo. Imports of one forge issue (and

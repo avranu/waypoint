@@ -222,7 +222,7 @@ func New(d *db.DB, cfg Config, log *slog.Logger) *Service {
 	}
 	s.mailer = email.NewMailer(s.k)
 	s.emailService = email.New(s.mailer)
-	s.users = users.NewStore(s.k, users.Options{BaseURL: cfg.BaseURL, ArchivesTranscripts: cfg.TranscriptDir != ""}, users.Hooks{
+	s.users = users.NewStore(s.k, users.Options{BaseURL: cfg.BaseURL, ArchivesTranscripts: func() bool { return s.cfg.TranscriptDir != "" }}, users.Hooks{
 		CredentialsChanged: func(ctx context.Context, t *kernel.Tx, userID int64) error {
 			return dropPushSubscriptions(ctx, t, userID)
 		},
@@ -345,13 +345,6 @@ func nullUser(id int64) any {
 		return nil
 	}
 	return id
-}
-
-func nullInt(v *int64) any {
-	if v == nil {
-		return nil
-	}
-	return *v
 }
 
 func nullStr(v *string) any {

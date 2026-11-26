@@ -603,6 +603,10 @@ func prepTaskText(key, typ, title, desc string, comments []string) string {
 				continue
 			}
 			c = truncateBytes(c, min(left, 1500))
+			if c == "" { // what is left can't hold even the ellipsis
+				fmt.Fprintf(&sb, "- (%d later comments not shown)\n", len(comments)-n)
+				break
+			}
 			sb.WriteString("- " + strings.ReplaceAll(c, "\n", "\n  ") + "\n")
 			if left -= len(c); left <= 0 {
 				if more := len(comments) - n - 1; more > 0 {

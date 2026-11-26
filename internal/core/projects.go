@@ -964,13 +964,6 @@ func (s *Service) CreateProject(ctx context.Context, actor *Actor, in ProjectInp
 	return s.GetProject(ctx, actor, itoa64(id))
 }
 
-func deref(p *string) string {
-	if p == nil {
-		return ""
-	}
-	return strings.TrimSpace(*p)
-}
-
 // UpdateProject edits a project's name, style, settings or archived state.
 func (s *Service) UpdateProject(ctx context.Context, actor *Actor, ref string, in ProjectInput) (*Project, error) {
 	p, err := s.projectByRef(ctx, s.db.R, ref)
@@ -1539,8 +1532,7 @@ func (s *Service) DeleteLabel(ctx context.Context, actor *Actor, labelID int64) 
 	return err
 }
 
-func itoa(n int) string     { return strconv.Itoa(n) }
-func itoa64(n int64) string { return strconv.FormatInt(n, 10) }
+func itoa(n int) string { return strconv.Itoa(n) }
 
 // hasJSONKey reports whether a JSON object names key at its top level.
 func hasJSONKey(obj json.RawMessage, key string) bool {

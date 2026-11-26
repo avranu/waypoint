@@ -196,9 +196,9 @@ func (s *SessionSettings) Validate(where string) error {
 // maxSessionRepos bounds Repos.
 const maxSessionRepos = 200
 
-// sessionRepoRE is a repo name as a forge shows it: owner/name, or
+// NestedRepoRE is a repo name as a forge shows it: owner/name, or
 // group/subgroup/…/name.
-var sessionRepoRE = lazyre.New(`^[\w.-]+(/[\w.-]+)+$`)
+var NestedRepoRE = lazyre.New(`^[\w.-]+(/[\w.-]+)+$`)
 
 // ValidateSessionPrefs checks the settings and tidies them: repo names lower case,
 // repos with nothing set dropped. Empty is nil.
@@ -215,7 +215,7 @@ func ValidateSessionPrefs(p *SessionPrefs) (*SessionPrefs, error) {
 	repos := map[string]SessionSettings{}
 	for name, s := range p.Repos {
 		key := strings.ToLower(strings.TrimSpace(name))
-		if !sessionRepoRE.MatchString(key) || len(key) > 200 {
+		if !NestedRepoRE.MatchString(key) || len(key) > 200 {
 			return nil, Invalid("%q isn't a repo like owner/name", name)
 		}
 		if _, dup := repos[key]; dup {

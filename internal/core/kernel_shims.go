@@ -38,9 +38,7 @@ func int64Args(ids []int64) []any { return kernel.Int64Args(ids) }
 func (t *tx) audit(e AuditEntry)            { t.Audit(e) }
 func auditable(a *Actor, e AuditEntry) bool { return kernel.Auditable(a, e) }
 
-func msTime(ms int64) time.Time          { return kernel.MSTime(ms) }
 func ptrTime(n sql.NullInt64) *time.Time { return kernel.PtrTime(n) }
-func boolInt(b bool) int                 { return kernel.BoolInt(b) }
 
 // The users domain's unchecked helpers, under the names core used before the move.
 func (s *Service) userByID(ctx context.Context, q queryer, id int64) (*User, error) {
@@ -68,3 +66,16 @@ func avatarURL(id, version int64) string             { return users.AvatarURL(id
 func permissionsJSON(ps []Permission) any            { return users.PermissionsJSON(ps) }
 func parsePermissions(v sql.NullString) []Permission { return users.ParsePermissions(v) }
 func permissionSet(ps []Permission) PermissionSet    { return users.NewPermissionSet(ps) }
+func cmp(a, b string) string                         { return kernel.FirstNonEmpty(a, b) }
+func msTime(ms int64) time.Time                      { return kernel.MillisToTime(ms) }
+func boolInt(b bool) int                             { return kernel.BoolInt(b) }
+func nullInt(v *int64) any                           { return kernel.NullInt(v) }
+func itoa64(n int64) string                          { return kernel.Itoa64(n) }
+func deref(p *string) string                         { return kernel.TrimDeref(p) }
+func short(sha string) string                        { return kernel.ShortSHA(sha) }
+func plural(n int) string                            { return kernel.PluralS(n) }
+func plural1(n int, one string) string               { return kernel.CountNoun(n, one) }
+func truncateBytes(s string, n int) string           { return kernel.TruncateBytes(s, n) }
+func sameSHA(a, b string) bool                       { return kernel.SameSHA(a, b) }
+func clipRunes(s string, n int) string               { return kernel.ClipRunes(s, n) }
+func ptr[T any](v T) *T                              { return kernel.Ptr(v) }

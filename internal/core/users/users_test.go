@@ -26,7 +26,7 @@ type rig struct {
 func newRig(t *testing.T, hooks Hooks) *rig {
 	t.Helper()
 	e := kerneltest.New(t)
-	st := NewStore(e.K, Options{BaseURL: "https://wp.test/", ArchivesTranscripts: true}, hooks)
+	st := NewStore(e.K, Options{BaseURL: "https://wp.test/", ArchivesTranscripts: func() bool { return true }}, hooks)
 	return &rig{Env: e, st: st, svc: New(st), admin: e.User("admin", true)}
 }
 

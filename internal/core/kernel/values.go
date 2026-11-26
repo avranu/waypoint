@@ -14,22 +14,11 @@ type Queryer interface {
 	ExecContext(ctx context.Context, q string, args ...any) (sql.Result, error)
 }
 
-// MSTime is Unix milliseconds as a UTC time.
-func MSTime(ms int64) time.Time { return time.UnixMilli(ms).UTC() }
-
 // PtrTime is a nullable Unix-milliseconds column as a UTC time, nil for NULL.
 func PtrTime(n sql.NullInt64) *time.Time {
 	if !n.Valid {
 		return nil
 	}
-	t := MSTime(n.Int64)
+	t := MillisToTime(n.Int64)
 	return &t
-}
-
-// BoolInt is a bool as 0 or 1, for a column that holds one.
-func BoolInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }

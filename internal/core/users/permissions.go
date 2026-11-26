@@ -155,7 +155,7 @@ func (s *Store) TokenRefusals(ctx context.Context, ids []int64) (map[int64][]Tok
 		if err := rows.Scan(&id, &p, &r.Count, &at, &r.What); err != nil {
 			return nil, err
 		}
-		r.Permission, r.LastAt = kernel.Permission(p), kernel.MSTime(at)
+		r.Permission, r.LastAt = kernel.Permission(p), kernel.MillisToTime(at)
 		out[id] = append(out[id], r)
 	}
 	return out, rows.Err()
