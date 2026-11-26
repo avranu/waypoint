@@ -1026,7 +1026,7 @@ func TestSetFieldsAndFieldDiffs(t *testing.T) {
 		m    map[string]int
 		zero int
 	}
-	got := setFields(&held{i8: -1, u16: 2, f32: 1.5, c: 1, p: &n, arr: [2]uint8{0, 3}, err: errors.New("x"), l: &taskLLM{}, when: time.Unix(1, 0), m: map[string]int{"a": 1}})
+	got := setFields(&held{i8: -1, u16: 2, f32: 1.5, c: 1, p: &n, arr: [2]uint8{0, 3}, err: errors.New("x"), l: &taskLLM{}, when: time.Unix(1, 0), m: map[string]int{"a": 1}, zero: 0})
 	want := map[string]string{".i8": "-1", ".u16": "2", ".f32": "1.5", ".c": "(1+0i)", ".p": "7", ".arr[1]": "3", ".err": "*errors.errorString", ".l": "*core.taskLLM", ".when": "set", ".m": "1"}
 	if !maps.Equal(got, want) {
 		t.Errorf("setFields = %v, want %v", got, want)
