@@ -524,9 +524,11 @@ func (s *Service) lineFallback(ctx context.Context, ref lineRef) bool {
 	return on
 }
 
-// lineBatchDepth is how many places a batch covers: one more than the last
-// batch on the line that merged (up to batchMaxDepth), two after one that
-// failed, two when there is none.
+// lineBatchDepth is how many places a batch covers (WP-1992): twice the last
+// batch's size after one that merged whole, the same after one that ended on
+// a conflict (it removes one pull request and says nothing about the others'
+// tests), two after one that failed or when there is none; never above
+// batchMaxDepth.
 func (s *Service) lineBatchDepth(ctx context.Context, ref lineRef) int {
 	var state, raw string
 	if err := s.db.R.QueryRowContext(ctx, `SELECT state, heads FROM queue_stacks WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND base_ref = ?
@@ -536,8 +538,11 @@ func (s *Service) lineBatchDepth(ctx context.Context, ref lineRef) int {
 	}
 	var heads []stackHead
 	_ = json.Unmarshal([]byte(raw), &heads)
-	if state == stackMerged {
-		return min(len(heads)+1, batchMaxDepth)
+	switch state {
+	case stackMerged:
+		return min(2*len(heads), batchMaxDepth)
+	case stackConflict:
+		return min(max(len(heads), 2), batchMaxDepth)
 	}
 	return 2
 }
@@ -680,6 +685,26 @@ func (s *Service) candMerged(ctx context.Context, ls *lineState, st *queueStack)
 	return -1, nil
 }
 
+// newestStatus is the latest Created among all's statuses that parse, never
+// later than now; zero when none does. Any status row the forge posted is
+// movement of a candidate's run.
+func newestStatus(all []CommitCheck, now time.Time) time.Time {
+	var newest time.Time
+	for _, c := range all {
+		t, err := time.Parse(time.RFC3339, c.Created)
+		if err != nil {
+			continue
+		}
+		if t.After(now) {
+			t = now
+		}
+		if t.After(newest) {
+			newest = t
+		}
+	}
+	return newest
+}
+
 // pollCand follows a running candidate's run.
 func (s *Service) pollCand(ctx context.Context, f *Forge, st *queueStack) candPoll {
 	running := candPoll{state: candRunning}
@@ -688,9 +713,17 @@ func (s *Service) pollCand(ctx context.Context, f *Forge, st *queueStack) candPo
 		return running
 	}
 	age := s.now().Sub(st.CreatedAt)
+	moved := st.CreatedAt
+	if st.RerunAt != 0 && msTime(st.RerunAt).After(moved) {
+		moved = msTime(st.RerunAt)
+	}
+	read := false
 	overdue := func(what string) candPoll {
-		if age >= stackRunMax {
-			return candPoll{state: candLost, reason: endLost, note: what + " after " + fmtMinutes(stackRunMax)}
+		switch {
+		case age >= stackRunCeiling:
+			return candPoll{state: candLost, reason: endLost, note: what + " " + fmtMinutes(stackRunCeiling) + " after it was made"}
+		case read && s.now().Sub(moved) >= stackRunMax:
+			return candPoll{state: candLost, reason: endLost, note: what + " and nothing about its checks changed in " + fmtMinutes(stackRunMax)}
 		}
 		return running
 	}
@@ -698,6 +731,10 @@ func (s *Service) pollCand(ctx context.Context, f *Forge, st *queueStack) candPo
 	if err != nil {
 		s.log.WarnContext(ctx, "read a candidate's checks", "candidate", st.ID, "err", err)
 		return overdue("its checks couldn't be read")
+	}
+	read = true
+	if t := newestStatus(all, s.now()); t.After(moved) {
+		moved = t
 	}
 	var checks []CommitCheck
 	for _, c := range dropSuperseded(all) {
@@ -1189,10 +1226,19 @@ func (s *Service) lineMergeAct(ctx context.Context, ls *lineState, a lineAction)
 		if st == nil {
 			return
 		}
-		if st.State != stackReady {
+		// The candidate is ready from its first merge on; each head after it
+		// is still a draft until its own turn (WP-1994).
+		draft := pr.WipAuto && (pr.ReadyAt == nil || !sameSHA(pr.readySHA, pr.HeadSHA))
+		if st.State != stackReady || draft {
 			if pr.WipAuto {
 				if err := s.candMarkReady(ctx, ls.f, pr, st); err != nil {
 					s.log.WarnContext(ctx, "mark a pull request ready on its candidate", "repo", pr.Repo, "number", pr.Number, "err", err)
+					if st.State == stackReady && s.now().Sub(st.CreatedAt) < stackRunCeiling {
+						// Pull requests already merged on this candidate's run:
+						// the next step asks again rather than end it and test
+						// the rest a second time.
+						return
+					}
 					s.postStackFailure(ctx, ls.f, pr, st, "Waypoint couldn't mark it ready on the candidate")
 					//wplint:ignore blankerr candEndAs logs a failed end; it returns here either way, and the candidate, live and not ready, is planned again next step
 					_ = s.candEnd(ctx, ls.f, st, stackCancelled, endLineChanged, "couldn't mark it ready: "+excerpt(err.Error(), 120))

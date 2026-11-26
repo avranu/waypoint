@@ -119,7 +119,8 @@ type auditView struct {
 	FromSHA     string                `json:"from_sha"`
 	ToSHA       string                `json:"to_sha"`
 	CommitCount *int                  `json:"commit_count"`
-	Purpose     string                `json:"purpose"` // footprint: the drift guard's check (WP-440)
+	FollowUpOf  string                `json:"follow_up_of"` // the earlier audited head this read the change since (WP-1938)
+	Purpose     string                `json:"purpose"`      // footprint: the drift guard's check (WP-440)
 	Models      []string              `json:"models"`
 	Weakest     string                `json:"weakest"` // the gateway's quality bar (WP-916)
 	Fix         bool                  `json:"fix"`
@@ -277,6 +278,9 @@ func (a *auditView) text() string {
 			read += fmt.Sprintf(", %d commit%s", *a.CommitCount, plural(*a.CommitCount))
 		}
 		fmt.Fprintf(&s, "  Read: %s\n", read)
+	}
+	if a.FollowUpOf != "" {
+		fmt.Fprintf(&s, "  Follow-up of the audit at %s: read what changed since it, with the earlier points as a list\n", shortSHA(a.FollowUpOf))
 	}
 	if len(a.Attempts) > 0 {
 		var tried []string

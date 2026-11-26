@@ -394,21 +394,21 @@ var reviewSchema = map[string]any{
 // diff+files uses it), within budget characters.
 func reviewPrompt(pr *ForgePR, rules, focus, conversation, intent, history string, ch reviewChunk, part, parts int, st reviewStrategy, head func(string) string, budget int) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, promptTitle, excerpt(pr.Title, 200))
+	fmt.Fprintf(&b, promptTitle, untrusted(excerpt(oneLine(pr.Title), 200)))
 	if d := strings.TrimSpace(pr.Body); d != "" {
-		fmt.Fprintf(&b, promptBody, excerpt(d, 2000))
+		fmt.Fprintf(&b, promptBody, untrusted(excerpt(d, 2000)))
 	}
 	if rules != "" {
-		fmt.Fprintf(&b, promptRules, rules)
+		fmt.Fprintf(&b, promptRules, untrusted(rules))
 	}
 	if focus != "" {
 		fmt.Fprintf(&b, promptFocus, focus)
 	}
 	if conversation != "" {
-		fmt.Fprintf(&b, promptConversation, conversation, conversationRules)
+		fmt.Fprintf(&b, promptConversation, untrusted(conversation), conversationRules)
 	}
 	if intent != "" {
-		fmt.Fprintf(&b, promptIntent, intent)
+		fmt.Fprintf(&b, promptIntent, untrusted(intent))
 	}
 	if history != "" {
 		fmt.Fprintf(&b, promptHistory, history)

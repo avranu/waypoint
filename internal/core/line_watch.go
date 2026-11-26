@@ -60,9 +60,14 @@ func (s *Service) ResumeBabysits(ctx context.Context) {
 }
 
 // resumeBabysit starts the pull request's babysit again when it gave up or
-// waits on a person for no person's reason, and wasn't resumed lately.
+// waits on a person for no person's reason, and wasn't resumed lately. One
+// whose lock is held has a step running, so it is passed over (false) and the
+// next pass looks again.
 func (s *Service) resumeBabysit(ctx context.Context, prID int64) bool {
-	unlock := s.babysitLocks.lock(prID)
+	unlock, free := s.babysitLocks.tryLock(prID)
+	if !free {
+		return false
+	}
 	b, pr, ok := s.resumable(ctx, prID)
 	var owner int64
 	if ok {
@@ -151,7 +156,7 @@ func (l lineRef) key() string {
 
 // watchLines frees the merge lines that have armed pull requests and none of
 // them moving, files a request for each still stuck after lineStalledAfter,
-// and expires the requests of lines that move again (from CheckBabysits).
+// and expires the requests of lines that move again (the merge lines job).
 func (s *Service) watchLines(ctx context.Context) {
 	now := s.now()
 	rows, err := s.db.R.QueryContext(ctx, `SELECT p.forge_id, p.repo, p.base_ref,

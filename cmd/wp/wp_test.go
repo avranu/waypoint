@@ -43,6 +43,7 @@ func TestMain(m *testing.M) {
 	_ = os.Setenv("WP_NO_GIT", "1")
 	_ = os.Setenv("WP_CODE_UPLOAD", "off")
 	_ = os.Setenv(slotSendEnv, "off")
+	_ = os.Setenv(slotCPUEnv, "off") // tests that want a bound set it
 	sandboxHelperSocket = "/nonexistent/waypoint-sandboxd.sock"
 	testnet.Guard()
 	runWpNext = func(context.Context, string, []string, string, string) (string, error) {
