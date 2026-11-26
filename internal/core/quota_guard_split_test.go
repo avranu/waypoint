@@ -17,7 +17,7 @@ func (g *guardEnv) usedOn(machine, cli string, d time.Duration, output int) {
 func TestQuotaGuardSplit(t *testing.T) {
 	g := newGuardEnv(t)
 	g.lay(50)
-	g.usedOn("legba", "far", 5*time.Hour, 50_000)
+	g.usedOn("runner2", "far", 5*time.Hour, 50_000)
 	g.usedOn("", "old", 6*time.Hour, 10_000)
 	g.s.RunQuotaGuard(g.ctx)
 	rep, err := g.s.QuotaGuard(g.ctx, g.me, UsageQuery{}, true)
@@ -36,7 +36,7 @@ func TestQuotaGuardSplit(t *testing.T) {
 		for _, p := range sp.Parts {
 			got[p.Source+"/"+p.Machine] = p.CostUSD
 		}
-		if got["cli/box"] != 6 || got["cli/legba"] != 1 || got["cli/"] != 0.2 || got["runner/"] != 1.5 || len(got) != 4 {
+		if got["cli/box"] != 6 || got["cli/runner2"] != 1 || got["cli/"] != 0.2 || got["runner/"] != 1.5 || len(got) != 4 {
 			t.Errorf("%s: parts %v", c.Path, got)
 		}
 		if sp.PartsUSD != 8.7 || sp.PartsUSD+sp.RemainderUSD != c.CostUSD || sp.RemainderUSD != 0 {
@@ -45,7 +45,7 @@ func TestQuotaGuardSplit(t *testing.T) {
 	}
 	// Usage that arrived after the check was stored is a remainder of the
 	// stored figure, not a silent difference.
-	g.usedOn("legba", "late", 7*time.Hour, 100_000)
+	g.usedOn("runner2", "late", 7*time.Hour, 100_000)
 	rep, err = g.s.QuotaGuard(g.ctx, g.me, UsageQuery{}, false)
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +97,7 @@ func TestQuotaGuardJobCountedOnce(t *testing.T) {
 			fmt.Sprintf(`{"session_id":%q,"tokens":{"cost_usd":%v}}`, sid, cost), g.h(at), g.h(at), g.h(at+30*time.Minute))
 	}
 	job("uploaded", 2, 14*time.Hour)
-	g.usedOn("legba", "uploaded", 14*time.Hour, 100_000) // $2, the same dollars
+	g.usedOn("runner2", "uploaded", 14*time.Hour, 100_000) // $2, the same dollars
 	job("never-uploaded", 1, 16*time.Hour)
 	c := g.check()
 	if c.CostUSD != 10.5 || c.AutomationUSD != 10.5-2 {
@@ -155,20 +155,20 @@ func TestQuotaGuardJobCostBeyondItsHours(t *testing.T) {
 	t.Run("unpriced model", func(t *testing.T) {
 		c := run(t, func(g *guardEnv) {
 			g.exec(`INSERT INTO usage_hours(user_id, hour, machine, session, repo, model, output) VALUES (?,?,?,?,?,?,?)`,
-				g.me.User.ID, g.h(14*time.Hour), "legba", "jx", "acme/app", "no-such-model", 100_000)
+				g.me.User.ID, g.h(14*time.Hour), "runner2", "jx", "acme/app", "no-such-model", 100_000)
 		})
 		if c.CostUSD != base+5 || c.AutomationUSD != auto+5 {
 			t.Errorf("cost %v automation %v, want %v and %v", c.CostUSD, c.AutomationUSD, base+5, auto+5)
 		}
 	})
 	t.Run("hours cover part", func(t *testing.T) {
-		c := run(t, func(g *guardEnv) { g.usedOn("legba", "jx", 14*time.Hour, 100_000) }) // $2
+		c := run(t, func(g *guardEnv) { g.usedOn("runner2", "jx", 14*time.Hour, 100_000) }) // $2
 		if c.CostUSD != base+5 || c.AutomationUSD != auto+5 {
 			t.Errorf("cost %v automation %v, want %v and %v", c.CostUSD, c.AutomationUSD, base+5, auto+5)
 		}
 	})
 	t.Run("hours cover all", func(t *testing.T) {
-		c := run(t, func(g *guardEnv) { g.usedOn("legba", "jx", 14*time.Hour, 250_000) }) // $5
+		c := run(t, func(g *guardEnv) { g.usedOn("runner2", "jx", 14*time.Hour, 250_000) }) // $5
 		if c.CostUSD != base+5 || c.AutomationUSD != auto+5 {
 			t.Errorf("cost %v automation %v, want %v and %v", c.CostUSD, c.AutomationUSD, base+5, auto+5)
 		}
