@@ -501,7 +501,8 @@ func TestGoBoundEnvKeepsFlagsSavedWithGoEnvW(t *testing.T) {
 
 // The lock file wp slot ls reads shows the bound the command runs under from
 // the moment it starts, not only after it returns: a scope that did not start
-// ran under the env bound, and one with no quota bounded nothing.
+// ran under the env bound, and so did one with no quota, as its marker set the
+// Go limits.
 func TestSlotLsShowsTheBoundOfARunThatDiffersFromTheOneDecidedWhileItRuns(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -509,7 +510,7 @@ func TestSlotLsShowsTheBoundOfARunThatDiffersFromTheOneDecidedWhileItRuns(t *tes
 		want string
 	}{
 		{"scope did not start", func(t *testing.T) { fakeSystemdRun(t, false) }, "env"},
-		{"scope without a quota", func(t *testing.T) { fakeSystemdScope(t, true, "max 100000") }, "none"},
+		{"scope without a quota", func(t *testing.T) { fakeSystemdScope(t, true, "max 100000") }, "env"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			c.fake(t)
