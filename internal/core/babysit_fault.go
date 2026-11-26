@@ -27,7 +27,12 @@ const (
 
 // faultTexts are what the runner said before it set a fault in its result
 // (runners that haven't upgraded), and what Waypoint says for a job it ended.
-var faultTexts = []string{"can't get the repository:", "isn't signed in on this machine", "isn't installed on this machine", "while preparing the checkout.", "The runner lost this job", "No runner took this job within a day.", runnerStoppedError}
+var faultTexts = []string{"can't get the repository:", "isn't signed in on this machine", "isn't installed on this machine", "while preparing the checkout.", "No runner took this job within a day."}
+
+// roundFaultLost is the fault of a job the runner lost or that was stopped: its
+// agent may have run, and a round that itself kills the runner would go
+// again for ever, so only the first faultsToTell in a row go uncounted.
+const roundFaultLost = "lost"
 
 // roundFault is the fault that ended the round's job before its agent
 // started, or "". An agent's own error and a work timeout aren't faults.
@@ -47,6 +52,9 @@ func roundFault(job *RunnerJob) string {
 	if slices.ContainsFunc(faultTexts, func(t string) bool { return strings.Contains(job.Error, t) }) {
 		return "runner"
 	}
+	if strings.Contains(job.Error, "The runner lost this job") || strings.Contains(job.Error, runnerStoppedError) {
+		return roundFaultLost
+	}
 	return ""
 }
 
@@ -62,13 +70,16 @@ func roundFaultBackoff(n int) time.Duration {
 // uncountFaultedRound drops the round of job jobID, which ended in a fault,
 // from the babysit and sets when the next may go. After faultsToTell in a row
 // it tells the admins, once; it keeps going at the longest wait.
-func (s *Service) uncountFaultedRound(ctx context.Context, b *Babysit, jobID int64, msg string) bool {
+func (s *Service) uncountFaultedRound(ctx context.Context, b *Babysit, jobID int64, msg, kind string) bool {
 	i := slices.IndexFunc(b.Rounds, func(r BabysitRound) bool { return r.Job == jobID })
 	if i < 0 {
 		return false
 	}
 	var tries int
 	_ = s.db.R.QueryRowContext(ctx, `SELECT fault_tries FROM babysits WHERE id = ?`, b.ID).Scan(&tries)
+	if kind == roundFaultLost && tries >= faultsToTell {
+		return false
+	}
 	tries++
 	r := takeBackRound(b, i)
 	until := s.now().Add(roundFaultBackoff(tries))

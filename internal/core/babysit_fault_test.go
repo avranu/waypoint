@@ -118,9 +118,9 @@ func TestRoundFault(t *testing.T) {
 		{RunnerJob{State: "failed", Error: cloneFault}, "runner"},
 		{RunnerJob{State: "failed", Error: "claude isn't signed in on this machine: run claude auth login"}, "runner"},
 		{RunnerJob{State: "failed", Error: "Timed out after 5m0s while preparing the checkout."}, "runner"},
-		{RunnerJob{State: "failed", Error: "The runner lost this job (it restarted, or never received it)."}, "runner"},
+		{RunnerJob{State: "failed", Error: "The runner lost this job (it restarted, or never received it)."}, roundFaultLost},
 		{RunnerJob{State: "expired", Error: "No runner took this job within a day."}, "runner"},
-		{RunnerJob{State: "cancelled", Error: "The runner was stopped."}, "runner"},
+		{RunnerJob{State: "cancelled", Error: "The runner was stopped."}, roundFaultLost},
 		{RunnerJob{State: "failed", Error: "x", Result: json.RawMessage(`{"fault":"checkout"}`)}, "checkout"},
 		{RunnerJob{State: "failed", Error: "claude reported an error: can't get the repository: x"}, ""},
 		{RunnerJob{State: "failed", Error: "The claude timed out after 1h30m0s and was stopped."}, ""},
@@ -139,5 +139,60 @@ func TestRoundFaultBackoff(t *testing.T) {
 		if got := roundFaultBackoff(n); got != want*time.Minute {
 			t.Errorf("roundFaultBackoff(%d) = %v", n, got)
 		}
+	}
+}
+
+// A job the runner lost may have run its agent: after faultsToTell in a row
+// the next is a counted round, so a round that kills its runner ends at the
+// cap.
+func TestBabysitLostRunnerFaultsEndUpCounted(t *testing.T) {
+	be := newBabysitEnv(t)
+	be.runnerOnline()
+	be.start(be.open())
+	be.failedCheck()
+	b := be.babysit()
+	for i := 1; i <= faultsToTell+1; i++ {
+		be.endRound(b.JobID, "failed", "The runner lost this job (it restarted, or never received it).", nil)
+		b = be.babysit()
+		if i <= faultsToTell {
+			if len(b.Rounds) != 0 || b.JobID != 0 {
+				t.Fatalf("lost %d: %d rounds, job %d", i, len(b.Rounds), b.JobID)
+			}
+			be.setClock(be.clockNow().Add(faultWaitMax + time.Minute))
+			be.runnerOnline()
+			be.step()
+			b = be.babysit()
+		}
+	}
+	if len(b.Rounds) == 0 || !strings.Contains(b.Rounds[0].Outcome, "The runner lost this job") {
+		t.Fatalf("the fourth lost job wasn't counted: %+v", b.Rounds)
+	}
+}
+
+// A branch a round job works on isn't updated from its base, and is once
+// the job has ended (WP-1914).
+func TestUpdateHeldWhileARoundRuns(t *testing.T) {
+	be := newBabysitEnv(t)
+	be.runnerOnline()
+	be.start(be.open())
+	be.failedCheck()
+	b := be.babysit()
+	if b.JobID == 0 {
+		t.Fatal("no round job")
+	}
+	if _, err := be.s.db.W.Exec(`UPDATE pull_requests SET base_ref = 'main' WHERE id = ?`, be.pr(7).ID); err != nil {
+		t.Fatal(err)
+	}
+	be.sg.sm.Lock()
+	be.sg.behind = map[string]bool{"7777777aaaa": true}
+	be.sg.sm.Unlock()
+	if got := be.s.updateIfBehind(be.ctx, be.pr(7)); got != upHeld || be.sg.updated() != 0 {
+		t.Fatalf("with a round running: outcome %d, %d updates", got, be.sg.updated())
+	}
+	if _, err := be.s.db.W.Exec(`UPDATE runner_jobs SET state = 'done' WHERE id = ?`, b.JobID); err != nil {
+		t.Fatal(err)
+	}
+	if got := be.s.updateIfBehind(be.ctx, be.pr(7)); got != upUpdated || be.sg.updated() != 1 {
+		t.Fatalf("after it ended: outcome %d, %d updates", got, be.sg.updated())
 	}
 }

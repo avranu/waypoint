@@ -614,7 +614,7 @@ func (s *Service) recordRoundOutcome(ctx context.Context, bid, jobID int64) {
 	if roundLimited(job) && s.uncountLimitedRound(ctx, b, jobID, job.Error) {
 		return
 	}
-	if roundFault(job) != "" && s.uncountFaultedRound(ctx, b, jobID, job.Error) {
+	if kind := roundFault(job); kind != "" && s.uncountFaultedRound(ctx, b, jobID, job.Error, kind) {
 		return
 	}
 	_ = json.Unmarshal(job.Result, &res)

@@ -195,6 +195,7 @@ const (
 	upFailed
 	upStale
 	upLanded
+	upHeld // a round job is working on the branch; it isn't updated until that ends
 )
 
 // baseUpdate is what came of bringing a branch up to date with a tip: from
@@ -236,7 +237,7 @@ func (s *Service) updateIfBehindThen(ctx context.Context, pr *PullRequest, befor
 	if running, err := s.roundRunning(ctx, pr.ID); err == nil && running {
 		// The round's push would be refused: the branch moved under it
 		// (WP-1914, #569 round 1).
-		return upWaiting
+		return upHeld
 	}
 	tip, behind, stale := s.behindBase(ctx, pr)
 	if stale {
