@@ -52,6 +52,7 @@ func newEnv(t *testing.T) *env {
 	}
 	t.Cleanup(func() { d.Close() })
 	s := New(d, Config{BaseURL: "https://wp.test"}, nil)
+	s.prSyncDelay = 0
 	s.StartHub()
 	e := &env{t: t, s: s, ctx: ctx, clock: time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)}
 	s.SetClock(e.clockNow)

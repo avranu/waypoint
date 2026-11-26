@@ -535,6 +535,10 @@ func (s *Service) onBabysitEvent(ctx context.Context, e *Event) {
 	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM babysits WHERE pr_id = ? AND ended_at IS NULL`, id).Scan(&n); err != nil || n == 0 {
 		return
 	}
+	if isReviewNews(e) {
+		s.requestPRSync(id, syncBabysit)
+		return
+	}
 	s.nudgeBabysit(id, e.Kind != EvPRCI && e.Kind != EvPRReviewGate)
 }
 

@@ -36,6 +36,7 @@ type shipForge struct {
 	reacts        map[string][]Reaction
 	fileAt        map[string]string
 	reads         int
+	onRead        func() // called by ReviewThreads before it reads, outside the lock
 	replyErr      error
 	reactErr      map[string]error
 
@@ -132,6 +133,9 @@ func (g *shipForge) FileAt(ctx context.Context, f *Forge, repo, path, ref string
 }
 
 func (g *shipForge) ReviewThreads(ctx context.Context, f *Forge, repo string, n int) ([]ReviewThread, error) {
+	if g.onRead != nil {
+		g.onRead()
+	}
 	g.sm.Lock()
 	defer g.sm.Unlock()
 	g.reads++

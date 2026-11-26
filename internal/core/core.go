@@ -195,6 +195,12 @@ type Service struct {
 	ciLimits         workflowLimitCache
 	envs             *envRunner
 
+	// Webhook-driven re-reads of a pull request, coalesced (pr_sync.go).
+	prSyncMu    sync.Mutex
+	prSyncs     map[int64]*prSyncState
+	prSyncDelay time.Duration
+	prSyncAfter func(time.Duration) <-chan time.Time // tests; time.After if nil
+
 	bgCtx    context.Context
 	bgCancel context.CancelFunc
 }
@@ -211,6 +217,8 @@ func New(d *db.DB, cfg Config, log *slog.Logger) *Service {
 		http: cfg.Egress.client(15 * time.Second),
 		Hub:  NewHub(),
 		now:  time.Now,
+
+		prSyncDelay: prSyncDelay,
 	}
 	s.started = s.now()
 	s.jobs = newJobLedger(cfg.Logs, func() time.Time { return s.now() })

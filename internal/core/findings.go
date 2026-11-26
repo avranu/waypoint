@@ -272,7 +272,7 @@ func (s *Service) syncFindings(ctx context.Context, f *Forge, pr *PullRequest, w
 		}
 		return res, nil
 	}
-	threads, err := cl.ReviewThreads(ctx, f, pr.Repo, pr.Number)
+	threads, err := s.reviewThreads(ctx, cl, f, pr, true)
 	if err != nil {
 		return nil, err
 	}

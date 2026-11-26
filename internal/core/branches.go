@@ -115,7 +115,7 @@ func (s *Service) checkAfterActivity(ctx context.Context, f *Forge, repo string,
 	if findings == 0 && pr.GateState == "" {
 		return
 	}
-	s.goBG(func() { s.checkPR(bg, pr.ID, "review or comment") })
+	s.requestPRSync(pr.ID, syncCheck)
 }
 
 // BranchPR is the pull request a branch has.

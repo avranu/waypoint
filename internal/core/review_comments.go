@@ -302,7 +302,7 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 	ours := s.waypointPosters(ctx, f)
 	var in []rcIn
 	if th, ok := s.Forges.(ForgeThreads); ok {
-		threads, err := th.ReviewThreads(ctx, f, pr.Repo, pr.Number)
+		threads, err := s.reviewThreads(ctx, th, f, pr, false)
 		if err != nil {
 			return 0, fmt.Errorf("read review threads: %w", err)
 		}
