@@ -57,7 +57,8 @@ After it opens and babysits the pull request (not with --no-babysit), wp
 ship also waits, within the same limit, for the first checks on your commit: a failure is printed with the command
 that reads each failing part, for you to fix, commit and ship again (Waypoint
 sends a round if no new commit comes in 30 minutes); a pass is printed and the
-ship ends as usual. Babysitting takes any failure after you stop waiting.
+ship ends as usual. A failure in the minute after you stop waiting still
+comes to you, as a message; babysitting takes any later one.
 --summary is your final reply to the person, written before you know the
 outcome: when the ship goes as expected (the pull request armed or babysat,
 or held for its review, with no notice or warning), Waypoint ends your turn

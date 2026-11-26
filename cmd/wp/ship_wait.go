@@ -239,6 +239,12 @@ func olderServer(e *apiError) bool {
 		(e.status == http.StatusBadRequest && strings.Contains(e.msg+e.body, "unknown field") && strings.Contains(e.msg+e.body, "pull_id"))
 }
 
+// checksAfterWait is who takes a failure once the checks wait stops: one in
+// the minute after still comes to this session (ciWaitWindow on the server),
+// as a message that babysitting gives it up to 30 minutes to fix
+// (authorHandBack) before it sends a round.
+const checksAfterWait = "a failure within a minute still comes to this session as a message, to fix within 30 minutes; after that Waypoint's babysitting takes it."
+
 // waitShipChecks is wp ship's wait, after it opened the pull request, for the
 // outcome of the head's first checks (WP-1878). done: a failure was printed
 // for the agent to fix (the ship is over, with no marker, as for review
@@ -279,7 +285,7 @@ func (c *cli) waitShipChecks(task string, pull int64, number int, head string, b
 		if !announced {
 			what = "Couldn't ask Waypoint to wait"
 		}
-		c.println(fmt.Sprintf("%s for PR %d's checks (%v); Waypoint's babysitting takes any failure from here.", what, number, cause))
+		c.println(fmt.Sprintf("%s for PR %d's checks (%v); %s", what, number, cause, checksAfterWait))
 	}
 	var lost *pollBoundError
 	switch {
@@ -288,7 +294,7 @@ func (c *cli) waitShipChecks(task string, pull int64, number int, head string, b
 		return false, nil
 	case errors.Is(err, errPollBound):
 		if announced {
-			c.println(cmpStr(still, fmt.Sprintf("PR %d's checks are still running.", number)) + " Stopped waiting here; Waypoint's babysitting takes any failure from here.")
+			c.println(cmpStr(still, fmt.Sprintf("PR %d's checks are still running.", number)) + " Stopped waiting here; "+checksAfterWait)
 		}
 		return false, nil
 	case err != nil:

@@ -187,7 +187,7 @@ func TestShipChecksStopsAtTheLimit(t *testing.T) {
 	if err := e.ship(t, "--wait-timeout=1500ms"); err != nil {
 		t.Fatal(err)
 	}
-	if s := e.out.String(); !strings.Contains(s, "a/b#5: 2 checks still running Stopped waiting here; Waypoint's babysitting takes any failure from here.") {
+	if s := e.out.String(); !strings.Contains(s, "a/b#5: 2 checks still running Stopped waiting here; "+checksAfterWait) {
 		t.Fatalf("output:\n%s", s)
 	}
 }
