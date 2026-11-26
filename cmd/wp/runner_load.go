@@ -548,27 +548,17 @@ func (p *runnerProc) slotsNow() ([]string, int) {
 }
 
 // watchLoad starts the governor: one look now, so the first poll already
-// goes by it, then one every loadEvery. When it allows more than before it
-// ends a heartbeat poll, so the runner asks for work at once.
+// goes by it, then one every loadEvery. When it opens a lane it ends a
+// heartbeat poll, so the runner asks for work at once.
 func (p *runnerProc) watchLoad(ctx context.Context) {
 	m := newLoadMeterFn()
 	p.gov = newGovernor(p.opts.MaxJobs, loadLoadProfile(filepath.Join(p.cacheDir(), "load-profile.json")))
-	look := func(s loadSample) {
-		heavy, _, _, _, _ := p.running()
-		before, _ := p.slotsNow()
-		if line := p.gov.observe(s, time.Now(), heavy); line != "" {
-			p.logf("%s", line)
-		}
-		if after, _ := p.slotsNow(); len(after) > len(before) {
-			p.wake()
-		}
-	}
 	first := m.sample()
 	p.memUnwatched = !first.watchesMemory()
 	if p.memUnwatched && p.opts.MaxAgents < 1 {
 		p.logf("Can't measure this machine's memory: up to %d agent job%s at once (--max-agents sets it)", p.agentCeiling(), pluralS(p.agentCeiling()))
 	}
-	look(first)
+	p.look(first)
 	go func() {
 		t := time.NewTicker(loadEvery)
 		defer t.Stop()
@@ -577,8 +567,23 @@ func (p *runnerProc) watchLoad(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				look(m.sample())
+				p.look(m.sample())
 			}
 		}
 	}()
+}
+
+// look has the governor observe one sample. When that opens a lane it ends a
+// heartbeat poll: a lane it didn't ask for before, even as another closes
+// (memory back as the heavy limit comes down), is work the held poll can't
+// bring.
+func (p *runnerProc) look(s loadSample) {
+	heavy, _, _, _, _ := p.running()
+	before, _ := p.slotsNow()
+	if line := p.gov.observe(s, time.Now(), heavy); line != "" {
+		p.logf("%s", line)
+	}
+	if after, _ := p.slotsNow(); slices.ContainsFunc(after, func(l string) bool { return !slices.Contains(before, l) }) {
+		p.wake()
+	}
 }

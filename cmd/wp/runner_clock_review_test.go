@@ -282,7 +282,7 @@ func TestNoteSlotWaitSaysWhenItCannotWrite(t *testing.T) {
 	t.Cleanup(func() { slotWaitWarn = old })
 	t.Setenv(slotWaitsEnv, filepath.Join(t.TempDir(), "gone", "waits"))
 	done, _ := noteSlotWait("tests")
-	done()
+	done(true)
 	if n := strings.Count(warn.String(), "counts against the job's time"); n != 1 {
 		t.Errorf("warned %d times: %q", n, warn.String())
 	}
@@ -300,7 +300,7 @@ func TestNoteSlotWaitSaysWhenTheWriteFails(t *testing.T) {
 	t.Cleanup(func() { slotWaitWarn = old })
 	t.Setenv(slotWaitsEnv, "/dev/full")
 	got, _ := noteSlotWait("tests")
-	got()
+	got(true)
 	if n := strings.Count(warn.String(), "counts against the job's time"); n != 1 {
 		t.Errorf("warned %d times: %q", n, warn.String())
 	}
@@ -379,5 +379,73 @@ func TestProcStarted(t *testing.T) {
 	}
 	if got := procStarted(1 << 30); got != "" {
 		t.Errorf("procStarted(no such pid) = %q", got)
+	}
+}
+
+// Review c7195: a release whose "free" line can't be written leaves the job
+// reading as holding a slot while the process lives, and the warning says so,
+// not that a wait counts against the job's time. A file already gone (the job
+// ended) is said nothing about.
+func TestNoteSlotWaitSaysWhenTheFreeCannotBeWritten(t *testing.T) {
+	old, oldTries, oldRetry := slotWaitWarn, slotFreeTries, slotFreeRetry
+	t.Cleanup(func() { slotWaitWarn, slotFreeTries, slotFreeRetry = old, oldTries, oldRetry })
+	slotFreeTries, slotFreeRetry = 2, time.Millisecond
+	for _, tc := range []struct {
+		name  string
+		after func(path string) error
+		want  string
+	}{
+		{"unwritable", func(path string) error {
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+			return os.Mkdir(path, 0o700)
+		}, "counts the job as holding one until this process ends"},
+		{"gone", os.Remove, ""},
+	} {
+		var warn strings.Builder
+		slotWaitWarn = &warn
+		path := filepath.Join(t.TempDir(), "waits")
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(slotWaitsEnv, path)
+		ended, free := noteSlotWait("tests")
+		ended(true)
+		if warn.Len() != 0 {
+			t.Fatalf("%s: warned before the release: %q", tc.name, warn.String())
+		}
+		if err := tc.after(path); err != nil {
+			t.Fatal(err)
+		}
+		free()
+		free()
+		switch got := warn.String(); {
+		case tc.want == "" && got != "":
+			t.Errorf("%s: warned %q", tc.name, got)
+		case tc.want != "" && (strings.Count(got, tc.want) != 1 || strings.Contains(got, "job's time")):
+			t.Errorf("%s: warned %q, want one %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// Audit 1998.2: a wait that took no slot ends with its "got" and "free" in
+// one write, so it never reads as a hold, even for a moment.
+func TestNoteSlotWaitEndsAFailedWaitInOneWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "waits")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(slotWaitsEnv, path)
+	ended, free := noteSlotWait("tests")
+	ended(false)
+	free() // nothing held: notes nothing more
+	b, _ := os.ReadFile(path)
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) != 3 || !strings.HasPrefix(lines[1], "got ") || !strings.HasPrefix(lines[2], "free ") || strings.Fields(lines[1])[1] != strings.Fields(lines[2])[1] {
+		t.Fatalf("waits file: %q", b)
+	}
+	if _, since, holding := newSlotWaitReader(path).scan(time.Now()); holding || !since.IsZero() {
+		t.Errorf("holding %v, waiting since %v", holding, since)
 	}
 }
