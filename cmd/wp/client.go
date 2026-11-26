@@ -137,6 +137,7 @@ func (c *cli) send(ctx context.Context, method, path, contentType string, rd io.
 		return nil, fmt.Errorf("can't reach %s: %w", server, err)
 	}
 	defer resp.Body.Close()
+	c.seeServerVersion(resp.Header.Get(serverVersionHeader))
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
 		return nil, err
