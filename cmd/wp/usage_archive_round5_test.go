@@ -258,7 +258,7 @@ func TestArchiveCountsTranscriptsOutsideTheWindow(t *testing.T) {
 		t.Errorf("older: %d files, %d bytes (file is %d)", res.Archive.OlderFiles, res.Archive.OlderBytes, fi.Size())
 	}
 	txt := usageSyncText(&res)
-	if !strings.Contains(txt, "1 older transcript") || !strings.Contains(txt, "wp usage sync --all") {
+	if !strings.Contains(txt, "1 older transcript") || !strings.Contains(txt, "wp record usage --from-transcripts --all") {
 		t.Errorf("text: %s", txt)
 	}
 	if res = archiveSync(t, e, dir); res.Archive.OlderFiles != 0 || strings.Contains(usageSyncText(&res), "older transcript") {

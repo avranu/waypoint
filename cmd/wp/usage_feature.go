@@ -26,18 +26,8 @@ on a side is too few to say.`,
 	run:      cmdUsageFeature,
 }
 
-var usageTaskCmd = &command{
-	name: "task", args: "KEY [--user NAME]",
-	summary: "what one task used, and what its agents had",
-	about: `One task's tokens, cost, tool calls, edits, time and merged pull requests,
-each run's versions (server, wp, session start, kit, Claude Code, hooks), its
-experiment arms (admins), and the tools, skills and commands it used.`,
-	examples: []string{"wp usage task WP-192"},
-	run:      cmdUsageTask,
-}
-
 func init() {
-	usageCmd.subs = append(usageCmd.subs, usageFeatureCmd, usageTaskCmd)
+	usageCmd.subs = append(usageCmd.subs, usageFeatureCmd)
 }
 
 type featureSide struct {

@@ -59,7 +59,7 @@ func (s *Service) pruneAICalls(ctx context.Context) {
 	}
 }
 
-// AIUsageQuery is what `wp ai usage` asks for.
+// AIUsageQuery is what `wp report ai` asks for.
 type AIUsageQuery struct {
 	Since, Until time.Time // zero Since: 24h ago; zero Until: now
 	By           string    // task (default), model, outcome, status, hour, day, provider, priority, bar
@@ -179,7 +179,7 @@ func (s *Service) AIUsage(ctx context.Context, actor *Actor, q AIUsageQuery) (*A
 	return out, nil
 }
 
-// String is the usage as a table, for `wp ai usage`.
+// String is the usage as a table, for `wp report ai`.
 func (u *AIUsage) String() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "AI requests %s to %s UTC, by %s\n", u.Since.UTC().Format("2006-01-02 15:04"), u.Until.UTC().Format("2006-01-02 15:04"), u.By)

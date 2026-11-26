@@ -14,19 +14,15 @@ import (
 var usageCLICmd = &command{
 	name: "cli", args: "[--since 7d] [--repo REPO] [--user NAME] [-v]",
 	summary: "how agents use wp: calls, help and error rates, what follows each command",
-	about: `What wp usage sync counted in Claude Code's transcripts: sessions, wp calls,
+	about: `What wp record usage --from-transcripts counted in Claude Code's transcripts: sessions, wp calls,
 help lookups and usage errors by week, the commands used most, the flags and
 commands agents tried that don't exist, and what they ran next. Sessions
 include subagents; help/main is per session a person's agent started; forge/s
 is curl against a forge's API, ci-sleep a sleep beside wp pr or wp ci. Each
 machine's next sync counts the transcripts it had synced before. Charts:
 Agents → wp CLI.`,
-	examples: []string{"wp usage cli", "wp usage cli --since 30d -v", "wp usage cli --repo claude/waypoint"},
+	examples: []string{"wp report behavior cli", "wp report behavior cli --since 30d -v", "wp report behavior cli --repo claude/waypoint"},
 	run:      cmdUsageCLI,
-}
-
-func init() {
-	usageCmd.subs = append(usageCmd.subs, usageCLICmd)
 }
 
 type cliPeriodJSON struct {

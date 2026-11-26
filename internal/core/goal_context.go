@@ -767,7 +767,7 @@ type GoalContextReport struct {
 	Guards  []GoalContextGuard     `json:"guards"`
 }
 
-// GoalContextPolicy reports the policy (wp usage goal-context): every
+// GoalContextPolicy reports the policy (wp report behavior goal-context): every
 // project's tasks, in sums, so admins only.
 func (s *Service) GoalContextPolicy(ctx context.Context, actor *Actor) (*GoalContextReport, error) {
 	if err := actor.need(PermUsageRead); err != nil {
@@ -860,7 +860,7 @@ func goalFigures(rows []*goalRow) GoalContextFigures {
 	return f
 }
 
-// String is the report as wp usage goal-context prints it: figures, no
+// String is the report as wp report behavior goal-context prints it: figures, no
 // verdict.
 func (r *GoalContextReport) String() string {
 	var b strings.Builder

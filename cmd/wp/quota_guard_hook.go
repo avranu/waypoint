@@ -179,7 +179,7 @@ func (l guardLook) handOff() string {
 }
 
 // guardStopTail ends every stop's reason, which the person sees.
-const guardStopTail = " A prompt you type carries the session on. `wp usage guard` shows the guard; `wp usage guard set` changes its lines or turns it off."
+const guardStopTail = " A prompt you type carries the session on. `wp report usage guard` shows the guard; `wp guard set` changes its lines or turns it off."
 
 // decide runs the rules: text to tell the session, stop to stop it now,
 // and the trip to report.

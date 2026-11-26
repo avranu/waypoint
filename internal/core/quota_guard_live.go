@@ -1067,7 +1067,7 @@ func (s *Service) notifyQuotaGuardLive(ctx context.Context, e *Event) {
 	switch e.Kind {
 	case EvQuotaGuardHold:
 		s.notifyURL(ctx, e.UserID, e, NotifyQuota, "Quota guard: automation held back",
-			strings.TrimSpace(e.New)+". Autopilot starts nothing and running automation sessions wind down until it passes; wp usage guard lift ends it.", "/agents?tab=autopilot")
+			strings.TrimSpace(e.New)+". Autopilot starts nothing and running automation sessions wind down until it passes; wp guard lift ends it.", "/agents?tab=autopilot")
 	case EvQuotaGuardStop:
 		title := "Quota guard stopped a session"
 		if t, _ := e.Data["title"].(string); t != "" {

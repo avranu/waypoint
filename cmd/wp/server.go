@@ -104,41 +104,6 @@ TYPE lines.`,
 	},
 }
 
-var aiCmd = &command{
-	name: "ai", group: "Agent work", args: "[usage|surplus …]",
-	summary:  "what the server's AI requests went on, by task, model, outcome or hour (admins)",
-	examples: []string{"wp ai usage", "wp ai usage --since 7d --by day"},
-	subs: []*command{
-		{name: "usage", args: "[--since 24h] [--until T] [--by task|model|outcome|status|hour|day|provider|priority|bar] [--task NAME]",
-			summary: "the server's AI requests in a window, grouped: requests, failures, rate limits, tokens, latency",
-			about: `Counts the requests Waypoint sent its AI providers (safety screens, reviews,
-replies, automations, Jev's decisions, …), kept 30 days, with the AI key's
-day as the gateway counts it. --since and --until take a duration back from
-now (3h, 2d) or a time (UTC); --since defaults to 24h. --by groups them
-(default task); --task keeps one task's requests.`,
-			examples: []string{"wp ai usage", "wp ai usage --by hour --since 12h", "wp ai usage --task task_safety --by outcome"},
-			run:      cmdAIUsage},
-		{name: "surplus", args: "",
-			summary: "optional AI work at the gateway's surplus priority: refusals, prep ahead's payoff, prep picks reported, agentic trials, the prep policy",
-			about: `Surplus work (WP-906) is sent only on capacity the gateway would otherwise leave
-unused, and refused when there is none. Shows the last day's surplus requests
-by task and outcome, how often a prep made ahead of a queue's front was what an
-agent got (by position, and the depth that follows), and, by model, how the
-file picks of preps and trials matched the files the task's merged work
-changed, and how many of those reports the gateway has taken. The models'
-ratings are the gateway's, under its prep purpose. Last, agentic prep trials
-(WP-ADR104: a gateway agent task reads the repository with tools) against
-the chat preps of the same tasks: recall, precision and files a task. Then
-the prep policy: the share of tasks whose agent gets no pointers, the chat
-prep's or the agentic prep's, each arm's estimated effect on the searches and
-reads an agent makes before its first edit (against no pointers, with its 90%
-interval, now and over all time), the guard measures that take an arm out,
-how the picks score without being shown, and when the shares last moved.`,
-			examples: []string{"wp ai surplus", "wp ai surplus --json"},
-			run:      cmdAISurplus},
-	},
-}
-
 func cmdAISurplus(c *cli, args []string) error {
 	fs := c.flags()
 	pos, err := c.parse(fs, args)
@@ -324,6 +289,9 @@ func cmdAIUsage(c *cli, args []string) error {
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
+	}
+	if !c.asJSON {
+		c.println("Spend and quota of Claude Code sessions are in wp report usage; this is the server's own AI requests.")
 	}
 	q := url.Values{}
 	setIf(q, "since", *since)

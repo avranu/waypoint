@@ -101,7 +101,7 @@ type UsageLedger struct {
 	// agent that took it, held out (made, not shown), or none.
 	Prep []LedgerPrepGroup `json:"prep"`
 	// Unmeasured: usage from before the ledger existed that hasn't been read
-	// again yet (run `wp usage sync`).
+	// again yet (run `wp record usage --from-transcripts`).
 	Unmeasured int64 `json:"unmeasured_messages"`
 	Truncated  bool  `json:"truncated,omitempty"`
 }

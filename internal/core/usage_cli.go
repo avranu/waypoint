@@ -206,7 +206,7 @@ type UsageCLIRepo struct {
 	ErrorRate    *float64 `json:"error_rate"`
 }
 
-// UsageCLIReport answers Agents → wp CLI and `wp usage cli`.
+// UsageCLIReport answers Agents → wp CLI and `wp report behavior cli`.
 type UsageCLIReport struct {
 	From            time.Time             `json:"from"`
 	To              time.Time             `json:"to"`

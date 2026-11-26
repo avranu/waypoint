@@ -655,7 +655,7 @@ lists carry "uses" (90 days) and "last_used_at".
 
 ## Usage analytics (WP-D20)
 
-`wp usage sync` (from the Claude Code hooks, a runner, or by hand) uploads what Claude Code sessions
+`wp record usage --from-transcripts` (from the Claude Code hooks, a runner, or by hand) uploads what Claude Code sessions
 used, read from their transcripts; `wp statusline` uploads the subscription quota. One person's
 data: they and admins read it back, never agents or project members. Uploads are idempotent by
 chunk id (one per transcript file range), so repeating one counts it once; negative counts are

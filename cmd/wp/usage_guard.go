@@ -43,8 +43,8 @@ automation sessions told, then stopped 10 minutes or $2 later) when:
   trips    3 sessions were stopped in 6 hours
 
 A hold ends by itself (an hour; 15 minutes for pace, 2 hours for trips)
-or with ` + "`wp usage guard lift`" + `. Lines you don't set follow your
-usual usage (the last 28 days); ` + "`wp usage guard set`" + ` sets or
+or with ` + "`wp guard lift`" + `. Lines you don't set follow your
+usual usage (the last 28 days); ` + "`wp guard set`" + ` sets or
 resets them, or turns the guard off. Only you change your guard: from the
 web, your terminal, or a session you typed in.
 
@@ -68,9 +68,8 @@ A check is a breach when automation used 3 or more points while the limits
 held it back, or a use-what's-left start came before the week's last
 week_end_hours; you are notified. --now checks the last 24 hours without
 storing it; --hours lists each hour that spent anything.`,
-	examples: []string{"wp usage guard", "wp usage guard --now --hours", "wp usage guard --days 30"},
+	examples: []string{"wp report usage guard", "wp report usage guard --now --hours", "wp report usage guard --days 30"},
 	run:      cmdUsageGuard,
-	subs:     []*command{usageGuardSetCmd, usageGuardLiftCmd},
 }
 
 var usageGuardSetCmd = &command{
@@ -81,19 +80,15 @@ puts lines back to the usual (or default) ones: churn_usd, session_usd,
 hours, idle_hours, model_usd, models, burst_usd, pace, or all. --models
 names the models automation may use (id prefixes); without it, the ones
 it usually uses.`,
-	examples: []string{"wp usage guard set --churn 40 --session 150", "wp usage guard set --off", "wp usage guard set --default all", "wp usage guard set --pace off"},
+	examples: []string{"wp guard set --churn 40 --session 150", "wp guard set --off", "wp guard set --default all", "wp guard set --pace off"},
 	run:      cmdUsageGuardSet,
 }
 
 var usageGuardLiftCmd = &command{
 	name: "lift", args: "[--for 2h]",
 	summary:  "end the quota guard's hold on automation, and keep a new one off a while",
-	examples: []string{"wp usage guard lift", "wp usage guard lift --for 6h"},
+	examples: []string{"wp guard lift", "wp guard lift --for 6h"},
 	run:      cmdUsageGuardLift,
-}
-
-func init() {
-	usageCmd.subs = append(usageCmd.subs, usageGuardCmd)
 }
 
 type guardReport struct {

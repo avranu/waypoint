@@ -19,7 +19,7 @@ import (
 // Its picks are kept as a trial of kind 'agent', scored like any trial
 // when the work merges, reported to the gateway on its task id (the gateway
 // keeps a task unreported until then), and compared with the
-// chat prep's on the same tasks (wp ai surplus). Whether agents are shown
+// chat prep's on the same tasks (wp report ai surplus). Whether agents are shown
 // them is the prep policy's to decide, by how agents do with them
 // (prep_policy.go).
 //
@@ -485,7 +485,7 @@ func (s *Service) prepAgentPairs(ctx context.Context) (*PrepAgentPairs, error) {
 	return p, err
 }
 
-// String is the comparison as wp ai surplus prints it.
+// String is the comparison as wp report ai surplus prints it.
 func (p *PrepAgentPairs) String() string {
 	var b strings.Builder
 	days := int(prepScoreWindow / (24 * time.Hour))

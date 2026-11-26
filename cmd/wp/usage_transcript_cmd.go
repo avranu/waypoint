@@ -23,12 +23,8 @@ stored before that was counted). With --file (main, or a path from the list) wri
 that file's JSONL to stdout, every line whole, in the order it was written.
 Your own sessions; an admin can read anyone's with --user. Redaction removes
 credentials of known shapes, not everything private: treat the text as private.`,
-	examples: []string{"wp usage transcript 0b1c…", "wp usage transcript 0b1c… --file main > session.jsonl"},
+	examples: []string{"wp transcript 0b1c…", "wp transcript 0b1c… --file main > session.jsonl"},
 	run:      cmdUsageTranscript,
-}
-
-func init() {
-	usageCmd.subs = append(usageCmd.subs, usageTranscriptCmd)
 }
 
 func cmdUsageTranscript(c *cli, args []string) error {

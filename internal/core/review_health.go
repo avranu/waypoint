@@ -94,7 +94,7 @@ func reviewHealthIssues(byRound []AgainRoundStat, agree *AgainAgreement, helpers
 	}
 	if scoring >= healthMinRuns && unscored*2 > scoring {
 		add("Review loop: the decision model mostly can't score rounds",
-			"Of %d review rounds whose findings went to the decision model in the last %d days, it scored none of the findings in %d (%.0f%%): it wasn't set, was waiting on its budget, or failed. Those rounds were read by their reviewers' labels alone, with no repeat told and the bars unread. Read the server log's \"decision model failed\" lines and wp ai usage.",
+			"Of %d review rounds whose findings went to the decision model in the last %d days, it scored none of the findings in %d (%.0f%%): it wasn't set, was waiting on its budget, or failed. Those rounds were read by their reviewers' labels alone, with no repeat told and the bars unread. Read the server log's \"decision model failed\" lines and wp report ai.",
 			scoring, reviewHealthDays, unscored, pct(unscored, scoring))
 	}
 	if checks >= healthMinRuns && passed*2 > checks {

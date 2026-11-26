@@ -186,7 +186,7 @@ func TestBurnHookFiresOnceThenOnDoubling(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &o); err != nil || o.S.Name != "PostToolUse" {
 		t.Fatalf("output %q: %v", out, err)
 	}
-	if !strings.HasPrefix(o.S.Ctx, "Unusual spend: this session and 2 agents are running at $146/h (avg context ") || !strings.Contains(o.S.Ctx, "`wp burn` shows which.") {
+	if !strings.HasPrefix(o.S.Ctx, "Unusual spend: this session and 2 agents are running at $146/h (avg context ") || !strings.Contains(o.S.Ctx, "`wp report usage --session` shows which.") {
 		t.Fatalf("line: %s", o.S.Ctx)
 	}
 	if got := burnRun(t, c, "fast", main, now.Add(time.Minute)); got != "" {

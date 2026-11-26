@@ -12,7 +12,7 @@ import (
 )
 
 // Production diagnostics (WP-375): `wp server status|log|metrics` and
-// `wp ai usage`, for admins, so agents need no ssh to the host.
+// `wp report ai`, for admins, so agents need no ssh to the host.
 func (s *Server) serverDiagRoutes(mux *http.ServeMux) {
 	a := s.authed
 	mux.HandleFunc("GET /api/v1/server/status", a(s.serverStatus))
@@ -137,7 +137,7 @@ func (s *Server) aiUsage(w http.ResponseWriter, r *http.Request) (any, error) {
 	return textResponse(u.String()), nil
 }
 
-// aiSurplus is `wp ai surplus` (WP-906).
+// aiSurplus is `wp report ai surplus` (WP-906).
 func (s *Server) aiSurplus(w http.ResponseWriter, r *http.Request) (any, error) {
 	rep, err := s.svc.SurplusReport(r.Context(), actorFrom(r))
 	if err != nil || !wantsText(r) {

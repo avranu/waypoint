@@ -98,7 +98,7 @@ func TestHooksRefreshThemselves(t *testing.T) {
 
 	newCLIq().refreshHooks()
 	got := readSettings(t, path)
-	for _, want := range []string{"/opt/wp/bin/wp hook claude-event --no-prompts", "SessionStart", "SubagentStop", "/opt/wp/bin/wp usage sync --hook", `"guard"`, `"opus"`} {
+	for _, want := range []string{"/opt/wp/bin/wp hook claude-event --no-prompts", "SessionStart", "SubagentStop", "/opt/wp/bin/wp record usage --from-transcripts --hook", `"guard"`, `"opus"`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("after the refresh the settings lack %q:\n%s", want, got)
 		}

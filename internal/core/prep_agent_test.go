@@ -247,7 +247,7 @@ func TestPrepAgentPreparedAgain(t *testing.T) {
 }
 
 // An agent's picks are scored like any trial's but never reported, and
-// wp ai surplus compares them with the chat prep's on the same tasks.
+// wp report ai surplus compares them with the chat prep's on the same tasks.
 func TestPrepAgentScored(t *testing.T) {
 	e, _, p := surplusEnv(t)
 	i := e.issue(e.admin, IssueInput{Project: p.Key, Title: "T"})

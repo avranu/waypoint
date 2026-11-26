@@ -14,7 +14,7 @@ var usageOtelCmd = &command{
 	name: "otel", args: "[--install | --uninstall] [--metrics]",
 	summary: "set up Claude Code's OpenTelemetry export to Waypoint",
 	about: `Prints the environment variables that make Claude Code send usage events
-to Waypoint over OTLP/HTTP with your token: for machines where wp usage sync
+to Waypoint over OTLP/HTTP with your token: for machines where wp record usage --from-transcripts
 can't read transcripts (cloud or remote sessions). --install writes them
 into ~/.claude/settings.json (backed up first), --uninstall removes them;
 unrelated settings are kept; the OpenTelemetry keys it prints
@@ -23,11 +23,11 @@ synced from a transcript are not counted twice. Prompts are never stored.
 
 The token lands in settings.json: use one made for this (Settings → API
 tokens, then wp token) so it can be revoked on its own.`,
-	examples: []string{"wp usage otel --install"},
+	examples: []string{"wp setup otel --install"},
 	run:      cmdUsageOtel,
 }
 
-func init() { usageCmd.subs = append(usageCmd.subs, usageOtelCmd) }
+func init() { setupCmd.subs = append(setupCmd.subs, usageOtelCmd) }
 
 // otelEnv is what Claude Code's settings.json env needs.
 func otelEnv(server, token string, metrics bool) map[string]string {

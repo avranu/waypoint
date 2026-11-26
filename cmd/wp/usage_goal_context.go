@@ -25,12 +25,8 @@ on at least 20 tasks, gets none.
 
 Per arm, as the tasks came out: done, pull requests, drift flags, review
 findings and follow-up fix tasks. Admins only.`,
-	examples: []string{"wp usage goal-context", "wp usage goal-context --json"},
+	examples: []string{"wp report behavior goal-context", "wp report behavior goal-context --json"},
 	run:      cmdUsageGoalContext,
-}
-
-func init() {
-	usageCmd.subs = append(usageCmd.subs, usageGoalContextCmd)
 }
 
 func cmdUsageGoalContext(c *cli, args []string) error {

@@ -342,7 +342,7 @@ func TestTranscriptQuotaRefuses(t *testing.T) {
 	}
 }
 
-// wp usage machines reads the machines with their archive record: your own,
+// wp report usage machines reads the machines with their archive record: your own,
 // anyone's for an admin (audit 1218.35).
 func TestUsageMachinesListsTheArchiveRecord(t *testing.T) {
 	e := transcriptEnv(t)

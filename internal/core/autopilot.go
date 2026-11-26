@@ -309,7 +309,7 @@ type AutopilotMeter struct {
 	QuotaOffUntil *time.Time `json:"quota_off_until,omitempty"`
 	QuotaHeld     string     `json:"quota_held,omitempty"`
 	// GuardHold: the live quota guard holds automation back (WP-932); it
-	// holds while the quota limits are off too, and lifts by wp usage guard
+	// holds while the quota limits are off too, and lifts by wp report usage guard
 	// lift or turning the guard off.
 	GuardHold *GuardHold `json:"guard_hold,omitempty"`
 }

@@ -72,7 +72,7 @@ var experimentDefs = []ExperimentDef{
 		Where:    "The prep is made for both arms (so making it can't differ); only agents in the shown arm get its notes.",
 		Exposure: "an agent fetched the task's ready prep",
 		Primary:  "cost_usd",
-		Retired:  "the prep policy (WP-ADR104, wp ai surplus), which draws no pointers as one arm among the kinds of pointers and moves each arm's share with what agents do",
+		Retired:  "the prep policy (WP-ADR104, wp report ai surplus), which draws no pointers as one arm among the kinds of pointers and moves each arm's share with what agents do",
 		Caveats: []string{
 			"Only tasks in projects with task prep on, whose prep was ready when the agent took it, are exposed: the result is about those tasks, not all.",
 			"Replaces the old fixed 1-in-5 holdout; its preps carry over as the first run, so the first run is long and spans changes to prep itself.",

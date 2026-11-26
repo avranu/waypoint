@@ -14,7 +14,7 @@ const EvRiskyCommand = "usage.risky_command"
 // NotifyRisky is the notification kind of a risky command.
 const NotifyRisky = "risky"
 
-// UsageRisky is one risky command as `wp usage sync` sends it.
+// UsageRisky is one risky command as `wp record usage --from-transcripts` sends it.
 type UsageRisky struct {
 	At      int64  `json:"t"`
 	Session string `json:"s"`

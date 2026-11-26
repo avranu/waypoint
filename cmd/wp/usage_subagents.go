@@ -35,12 +35,8 @@ minutes run from the call to its result. A call counts in one pattern only
 project folders, its worktrees included; --all-projects reads every project.
 --spans FILE writes a row per counted call so a count can be audited. -v lists
 the five agents with the most calls in each pattern and the no-op commands.`,
-	examples: []string{"wp usage subagents --since 3d", "wp usage subagents --session cd44a3de,af965eb1 --spans /tmp/spans.tsv -v"},
+	examples: []string{"wp report behavior subagents --since 3d", "wp report behavior subagents --session cd44a3de,af965eb1 --spans /tmp/spans.tsv -v"},
 	run:      cmdUsageSubagents,
-}
-
-func init() {
-	usageCmd.subs = append(usageCmd.subs, usageSubagentsCmd)
 }
 
 func cmdUsageSubagents(c *cli, args []string) error {
@@ -78,7 +74,7 @@ func cmdUsageSubagents(c *cli, args []string) error {
 	if !*all {
 		top, err := gitOutput("", "rev-parse", "--show-toplevel")
 		if err != nil {
-			return fmt.Errorf("run wp usage subagents in a git checkout of the repository, or give --all-projects: %w", err)
+			return fmt.Errorf("run wp report behavior subagents in a git checkout of the repository, or give --all-projects: %w", err)
 		}
 		names = saProjectNames(top)
 	}

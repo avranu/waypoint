@@ -244,7 +244,7 @@ func (s *Service) storeQuotaGuard(ctx context.Context, uid int64, c *QuotaGuardC
 
 // quotaGuardText is the notification's body: the window, then each reason.
 func quotaGuardText(c *QuotaGuardCheck) string {
-	return fmt.Sprintf("%s to %s: %s. See wp usage guard.", c.From.UTC().Format("Jan 2 15:04"), c.To.UTC().Format("Jan 2 15:04 UTC"), strings.Join(c.Reasons, "; "))
+	return fmt.Sprintf("%s to %s: %s. See wp report usage guard.", c.From.UTC().Format("Jan 2 15:04"), c.To.UTC().Format("Jan 2 15:04 UTC"), strings.Join(c.Reasons, "; "))
 }
 
 func (s *Service) notifyQuotaGuard(ctx context.Context, e *Event) {

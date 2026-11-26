@@ -128,8 +128,8 @@ var collectors = []collector{
 		name:    "transcript archive",
 		problem: (*Service).transcriptProblem,
 		unit:    "machines",
-		about:   "each machine's wp uploads its sessions' transcripts to the archive (wp usage sync); what it dropped and what it could not send yet is in wp usage machines",
-		group:   "machine", groupHelp: "Check that wp usage sync runs there and that the archive is not full (wp server status); a machine that should not archive sets WP_USAGE_ARCHIVE=off (or its passes use --no-archive), which it tells the server. A machine not heard from for 30 days is not counted.",
+		about:   "each machine's wp uploads its sessions' transcripts to the archive (wp record usage --from-transcripts); what it dropped and what it could not send yet is in wp report usage machines",
+		group:   "machine", groupHelp: "Check that wp record usage --from-transcripts runs there and that the archive is not full (wp server status); a machine that should not archive sets WP_USAGE_ARCHIVE=off (or its passes use --no-archive), which it tells the server. A machine not heard from for 30 days is not counted.",
 		waiting: `SELECT COUNT(*), MIN(` + archiveSince + `) FROM usage_machines m WHERE ` + archiveWaitingWhere,
 		args: func(now time.Time) []any {
 			return []any{collectorStallAfter.Milliseconds(), now.Add(-archiveWaitingWindow).UnixMilli()}
@@ -614,7 +614,7 @@ func (s *Service) notifyCollector(ctx context.Context, e *Event) {
 // notifyCollectorDropped tells the admins a collector's lost total grew.
 func (s *Service) notifyCollectorDropped(ctx context.Context, e *Event) {
 	title := fmt.Sprintf("%s has dropped %d (up %d)", dataStr(e, "name"), dataInt(e, "dropped"), dataInt(e, "grew_by"))
-	body := fmt.Sprintf("%s. What it dropped is not in the archive and will not get there unless someone acts (a stubbed line, a file the server refuses, unsent bytes of a deleted file): wp usage machines shows which machine and why. This tells when the total grows, at most once a day.", dataStr(e, "about"))
+	body := fmt.Sprintf("%s. What it dropped is not in the archive and will not get there unless someone acts (a stubbed line, a file the server refuses, unsent bytes of a deleted file): wp report usage machines shows which machine and why. This tells when the total grows, at most once a day.", dataStr(e, "about"))
 	if e.Data["again"] == true {
 		body = "Still dropping. " + body
 	}

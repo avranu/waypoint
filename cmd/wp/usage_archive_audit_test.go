@@ -758,7 +758,7 @@ func TestArchiveTextNamesTheUnit(t *testing.T) {
 	}
 }
 
-// `wp usage transcript --file` writes the stored file; an agent's marker and
+// `wp transcript --file` writes the stored file; an agent's marker and
 // the session headers reach the server as for any other call.
 func TestUsageTranscriptFileCommand(t *testing.T) {
 	e := newEnv(t)

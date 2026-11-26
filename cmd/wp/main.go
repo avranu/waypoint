@@ -39,6 +39,7 @@ type command struct {
 	subs     []*command
 	group    string
 	hidden   bool
+	window   bool // takes --since or --days, either (acceptWindow)
 	parent   *command
 }
 
@@ -65,15 +66,16 @@ func (cmd *command) sub(name string) *command {
 var commands []*command
 
 // groups orders the headings of `wp help`.
-var groups = []string{"Start here", "Tasks", "Code and CI", "Knowledge", "Issues", "Projects and time", "Pages", "Setup", "Hooks"}
+var groups = []string{"Start here", "Tasks", "Reports", "Code and CI", "Knowledge", "Issues", "Projects and time", "Pages", "Setup", "Hooks"}
 
 func init() {
 	commands = []*command{
 		contextCmd,
 		runnerCmd,
-		nextCmd, batchCmd, startCmd, shipCmd, shotCmd, previewCmd, releaseCmd, declineCmd, claimsCmd, pauseCmd, resumeCmd, usageCmd, queueCmd, agentsCmd, autopilotCmd, followupCmd, activityCmd,
+		nextCmd, batchCmd, startCmd, shipCmd, shotCmd, previewCmd, releaseCmd, declineCmd, claimsCmd, pauseCmd, resumeCmd, usageCmd, quotaGuardCmd, usageTranscriptCmd, queueCmd, agentsCmd, autopilotCmd, followupCmd, activityCmd,
+		reportCmd, recordCmd,
 		specCmd, defineCmd, searchCmd, briefCmd, prepCmd, codeCmd, glossaryCmd, instructionCmd, designCmd, reviewCmd, riskCmd, goalsCmd, goalCmd, traceCmd, graphCmd, unlinkCmd,
-		prCmd, tidyCmd, worktreeCmd, unshippedCmd, slotCmd, testsumCmd, benchCmd, burnCmd, fanoutCmd, ciCmd, codeqlCmd, auditCmd, mistakesCmd, escapesCmd, serverCmd, aiCmd, experimentCmd, objectiveCmd,
+		prCmd, tidyCmd, worktreeCmd, unshippedCmd, slotCmd, testsumCmd, benchCmd, fanoutCmd, ciCmd, codeqlCmd, auditCmd, mistakesCmd, escapesCmd, serverCmd, experimentCmd, objectiveCmd,
 		lsCmd, showCmd, newCmd, editCmd, publishCmd, draftCmd, holdCmd, mvCmd, assignCmd, unassignCmd, commentCmd, worklogCmd, attachCmd, filesCmd, linkCmd, relateCmd, rmCmd, openCmd,
 		projectCmd, envCmd, timerCmd, logCmd, automationCmd,
 		pageCmd,
@@ -120,6 +122,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if len(args) == 0 {
 			args = []string{"ls"}
 		}
+	}
+	if nargs, r := rewriteLegacy(args); r != nil {
+		if slices.ContainsFunc(args, isHelpFlag) {
+			c.println(legacyNote(r))
+		}
+		args = nargs
 	}
 	cmd := findCommand(args[0])
 	if cmd == nil {
@@ -305,6 +313,13 @@ func cmdHelp(c *cli, args []string) error {
 	case pos[0] == "query" || pos[0] == "wql":
 		c.print(wql.Help)
 		return nil
+	}
+	if nargs, r := rewriteLegacy(pos); r != nil {
+		c.println(legacyNote(r))
+		pos = nargs
+		if i := slices.IndexFunc(pos, func(w string) bool { return strings.HasPrefix(w, "-") }); i >= 0 {
+			pos = pos[:i]
+		}
 	}
 	cmd := findPath(pos)
 	if cmd == nil {

@@ -23,12 +23,8 @@ manual pass is not timed; the last one can be 12 hours old), why
 the last pass stopped early (blank: it ran to the end), how many passes
 were cut short since the machine began, and when its last piece was stored.
 "unknown" means that machine has not said (an older wp, or never reported).`,
-	examples: []string{"wp usage machines", "wp usage machines --user robin"},
+	examples: []string{"wp report usage machines", "wp report usage machines --user robin"},
 	run:      cmdUsageMachines,
-}
-
-func init() {
-	usageCmd.subs = append(usageCmd.subs, usageMachinesCmd)
 }
 
 func cmdUsageMachines(c *cli, args []string) error {
@@ -114,7 +110,7 @@ func droppedText(d map[string]int64) string {
 	return strings.Join(parts, "; ")
 }
 
-// transcriptFilesText is the table `wp usage transcript` prints.
+// transcriptFilesText is the table `wp transcript` prints.
 func transcriptFilesText(files []core.TranscriptFile) string {
 	var b strings.Builder
 	tw := tabwriter.NewWriter(&b, 0, 4, 2, ' ', 0)

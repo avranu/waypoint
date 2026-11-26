@@ -678,7 +678,7 @@ type DelegationReport struct {
 	Guards   []DelegationGuard     `json:"guards"`
 }
 
-// DelegationPolicy reports the policy (wp usage delegation): every
+// DelegationPolicy reports the policy (wp report behavior delegation): every
 // person's tasks, in sums, so admins only.
 func (s *Service) DelegationPolicy(ctx context.Context, actor *Actor) (*DelegationReport, error) {
 	if err := actor.need(PermUsageRead); err != nil {
@@ -812,7 +812,7 @@ func delegFigures(rows []*delegRow, now time.Time) DelegationFigures {
 	return f
 }
 
-// String is the report as wp usage delegation prints it: figures, no
+// String is the report as wp report behavior delegation prints it: figures, no
 // verdict.
 func (r *DelegationReport) String() string {
 	var b strings.Builder

@@ -27,12 +27,8 @@ ping_needs; a compaction when its share used again is enough for the
 session's context ("now" names the context from which it pays). With fewer
 than the minimum sample of decisions the rules alone decide. The same
 figures decide each ping and compaction.`,
-	examples: []string{"wp usage warm", "wp usage warm --days 7 --user all"},
+	examples: []string{"wp report behavior warm", "wp report behavior warm --days 7 --user all"},
 	run:      cmdUsageWarm,
-}
-
-func init() {
-	usageCmd.subs = append(usageCmd.subs, usageWarmCmd)
 }
 
 type warmReport struct {

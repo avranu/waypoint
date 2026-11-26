@@ -29,12 +29,8 @@ main thread or subagents), subagents, tool calls, context, compactions,
 done, pull requests, review findings by severity, audit findings by
 verdict, follow-up fixes, tasks filed, escapes and review stakes tiers.
 Admins only: it sums every person's usage.`,
-	examples: []string{"wp usage delegation", "wp usage delegation --json"},
+	examples: []string{"wp report behavior delegation", "wp report behavior delegation --json"},
 	run:      cmdUsageDelegation,
-}
-
-func init() {
-	usageCmd.subs = append(usageCmd.subs, usageDelegationCmd)
 }
 
 func cmdUsageDelegation(c *cli, args []string) error {

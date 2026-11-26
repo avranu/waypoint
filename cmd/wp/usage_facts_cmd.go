@@ -25,12 +25,8 @@ that looks like a key, use --session.
 A value the transcript did not carry is shown as unknown, never 0; cache expiry
 is inferred from timing, and says so. Your own person's sessions, also from an agent (which sees repeated commands redacted);
 an admin (a person, not an agent) can read anyone's with --user.`,
-	examples: []string{"wp usage facts 0b1c…", "wp usage facts WP-1467 --json", "wp usage facts --session abc123"},
+	examples: []string{"wp report behavior facts 0b1c…", "wp report behavior facts WP-1467 --json", "wp report behavior facts --session abc123"},
 	run:      cmdUsageFacts,
-}
-
-func init() {
-	usageCmd.subs = append(usageCmd.subs, usageFactsCmd)
 }
 
 // factsTarget says which of --task, --session or the bare argument names what

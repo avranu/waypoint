@@ -45,11 +45,11 @@ func guardLiveText(l *guardLiveReport, now time.Time) string {
 	var b strings.Builder
 	state := "on"
 	if l.Settings.Off {
-		state = "OFF (`wp usage guard set --on` turns it on)"
+		state = "OFF (`wp guard set --on` turns it on)"
 	}
 	fmt.Fprintf(&b, "Live quota guard (%s): %s. Automation spent $%.2f in the last hour.\n", l.Who, state, l.HourUSD)
 	if h := l.Hold; h != nil {
-		fmt.Fprintf(&b, "HOLD (%s) since %s until %s UTC: %s `wp usage guard lift` ends it.\n", h.Rule, h.Since.UTC().Format("Jan 2 15:04"),
+		fmt.Fprintf(&b, "HOLD (%s) since %s until %s UTC: %s `wp guard lift` ends it.\n", h.Rule, h.Since.UTC().Format("Jan 2 15:04"),
 			h.Until.UTC().Format("Jan 2 15:04"), strings.TrimSpace(h.Reason))
 	}
 	if l.QuietUntil != nil && l.QuietUntil.After(now) {
@@ -109,7 +109,7 @@ func guardLiveText(l *guardLiveReport, now time.Time) string {
 	return b.String()
 }
 
-// guardSetBody is the PUT for wp usage guard set; given: the flags given.
+// guardSetBody is the PUT for wp guard set; given: the flags given.
 func guardSetBody(given map[string]bool, nums map[string]float64, models, pace, def string, off, on bool) (map[string]any, error) {
 	fields := map[string]string{"churn": "churn_usd", "session": "session_usd", "hours": "hours", "idle-hours": "idle_hours", "model-usd": "model_usd", "burst": "burst_usd"}
 	set := map[string]any{}

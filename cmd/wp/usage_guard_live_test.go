@@ -20,7 +20,7 @@ func TestGuardLiveText(t *testing.T) {
 	out := guardLiveText(&l, time.Date(2026, 11, 15, 9, 30, 0, 0, time.UTC))
 	for _, want := range []string{
 		"Live quota guard (pat): on. Automation spent $200.00 in the last hour.",
-		"HOLD (burst) since Nov 15 09:00 until Nov 15 10:00 UTC: automation spent $200 in the last hour. `wp usage guard lift` ends it.",
+		"HOLD (burst) since Nov 15 09:00 until Nov 15 10:00 UTC: automation spent $200 in the last hour. `wp guard lift` ends it.",
 		"churn    $45   usual",
 		"session  $120  set",
 		"hours    12h   default",

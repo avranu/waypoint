@@ -412,18 +412,6 @@ func (c *cli) currentTranscript(session, cwd string) (string, error) {
 	return best, nil
 }
 
-var burnCmd = &command{
-	name: "burn", group: "Code and CI", args: "[--session ID]",
-	summary: "what this session and its subagents have spent",
-	about: `Per agent: kind, model, calls, average and largest context per call and
-cost, then totals and $/hour. The session is --session (an id or transcript
-path), else this shell's, else the newest for this directory. Most of a long
-session's cost is the context re-read on every call. A hook warns you once
-when the last 10 minutes run above $100/h (WP_BURN_ALERT_PER_HOUR; 0: off).`,
-	examples: []string{"wp burn"},
-	run:      cmdBurn,
-}
-
 type burnRow struct {
 	ID    string  `json:"id"`
 	Kind  string  `json:"kind"`
@@ -702,5 +690,5 @@ func (st *burnState) decide(now time.Time) (string, bool) {
 	if s.Agents > 0 {
 		who = fmt.Sprintf("this session and %d agents are", s.Agents)
 	}
-	return fmt.Sprintf("Unusual spend: %s running at $%.0f/h (avg context %s). If that's not intended, stop or narrow the agents; `wp burn` shows which.", who, rate, kTokens(s.avgCtx())), true
+	return fmt.Sprintf("Unusual spend: %s running at $%.0f/h (avg context %s). If that's not intended, stop or narrow the agents; `wp report usage --session` shows which.", who, rate, kTokens(s.avgCtx())), true
 }

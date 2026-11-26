@@ -834,7 +834,7 @@ func (s *Service) prepSnapshot(ctx context.Context, p *prepPolicy) {
 	}
 }
 
-// prepPolicyReport reads the report (for wp ai surplus).
+// prepPolicyReport reads the report (for wp report ai surplus).
 func (s *Service) prepPolicyReport(ctx context.Context) (*PrepPolicyReport, error) {
 	p, err := s.prepPolicyNow(ctx)
 	if err != nil {
@@ -885,7 +885,7 @@ func (s *Service) prepPolicyReport(ctx context.Context) (*PrepPolicyReport, erro
 	return rep, rows.Err()
 }
 
-// String is the report as wp ai surplus prints it: figures, no verdict.
+// String is the report as wp report ai surplus prints it: figures, no verdict.
 func (r *PrepPolicyReport) String() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "\nWhat agents are shown of a prep (WP-ADR104), decided on %s:\n", r.Outcome)

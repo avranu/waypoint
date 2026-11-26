@@ -30,7 +30,7 @@ func installUsageIntegration(settings map[string]any, exe string, uninstall bool
 		changed = changed || ch
 	}
 	if changed && !uninstall {
-		notes = append(notes, "upload what the session used (wp usage sync) in the background after each turn")
+		notes = append(notes, "upload what the session used (wp record usage --from-transcripts) in the background after each turn")
 	}
 	ch, note, err := installStatusLine(settings, exe, uninstall)
 	if err != nil {

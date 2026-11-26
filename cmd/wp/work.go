@@ -817,17 +817,10 @@ func cmdDecline(c *cli, args []string) error {
 	})
 }
 
-var usageCmd = &command{
-	name: "usage", group: "Hooks", args: "[KEY] --tokens-in N --tokens-out N [--cost USD]",
-	summary:  "report a task's token usage (the hook does it)",
-	about:    "With Claude Code, wp hook claude reports usage for you. KEY defaults to the task taken here.",
-	examples: []string{"wp usage --tokens-in 12000 --tokens-out 800 --cost 0.21"},
-	run:      cmdUsage,
-}
-
 func cmdUsage(c *cli, args []string) error {
 	fs := c.flags()
 	u := addUsageFlags(fs)
+	fs.Bool("from-transcripts", false, "upload what Claude Code sessions used, read from their transcripts, instead (takes --all, --since, --dry-run, --dir…; wp record usage --from-transcripts -h)")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err

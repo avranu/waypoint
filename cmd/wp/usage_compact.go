@@ -82,12 +82,8 @@ typed by a person or by Waypoint):
   each tool call cut to 2,000 characters.
 
 Nothing is sent anywhere.`,
-	examples: []string{"wp usage compact", "wp usage compact --since 30d --json"},
+	examples: []string{"wp report behavior compact", "wp report behavior compact --since 30d --json"},
 	run:      cmdUsageCompact,
-}
-
-func init() {
-	usageCmd.subs = append(usageCmd.subs, usageCompactCmd)
 }
 
 const (
@@ -104,7 +100,7 @@ const (
 	cmpHistoryCut     = 2000
 )
 
-// cmpReport is what wp usage compact prints.
+// cmpReport is what wp report behavior compact prints.
 type cmpReport struct {
 	Days           float64        `json:"days"`
 	Transcripts    int            `json:"transcripts"`

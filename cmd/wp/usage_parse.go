@@ -216,7 +216,7 @@ const (
 	// riskyCommandRunes: a risky command is sent whole up to this (WP-860);
 	// the server keeps as much.
 	riskyCommandRunes = 16 << 10
-	// riskyLineRunes: wp usage risky's text shows a command on one line of
+	// riskyLineRunes: wp report behavior risky's text shows a command on one line of
 	// this much; --json has it whole.
 	riskyLineRunes = 300
 )
@@ -298,7 +298,7 @@ type rawLine struct {
 	AiTitle   string `json:"aiTitle"`
 	Sidechain bool   `json:"isSidechain"`
 	// RequestID, with the message id, names one API call: a streamed answer
-	// is written as several records of it. The rest are read by wp usage where.
+	// is written as several records of it. The rest are read by wp report usage.
 	RequestID        string `json:"requestId"`
 	IsAPIError       bool   `json:"isApiErrorMessage"`
 	IsMeta           bool   `json:"isMeta"`

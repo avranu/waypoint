@@ -20,30 +20,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-var usageWhereCmd = &command{
-	name: "where", args: "[--since 24h] [--until T] [--dir CLAUDE_CONFIG_DIR] [--top N] [--csv FILE] [--json]",
-	summary: "where this machine's Claude Code spend went in a window, and what looks wasteful",
-	about: `Reads this machine's Claude Code transcripts (main sessions, subagents and
-workflow agents) and prints one report in list-price dollars: totals by
-model with the cache split; by agent, project and how the session was
-started; what the premium-model main threads spent each call on (reading,
-searching, editing through the shell or the Edit tool, tests and builds, git,
-wp, delegating, waiting, text only), counting the commands of a compound line
-(a command that only filters a pipe doesn't count); what
-woke each call (typed prompt, notification, tool result, compaction); each
-session's spend before and after its first wp ship; the top sessions;
-limit messages and the spend after the first; and what the report cannot
-see. A call is counted once however many records stream it (the largest
-usage wins). --since and --until take a duration ago (24h, 3d) or a time
-(2026-11-24T15:00:00Z, 2026-11-24). --csv writes one row per call.`,
-	examples: []string{"wp usage where", "wp usage where --since 3d --top 20 --csv calls.csv", "wp usage where --since 2026-11-24T15:00:00Z --until 2026-11-25T15:00:00Z --json"},
-	run:      cmdUsageWhere,
-}
-
-func init() {
-	usageCmd.subs = append(usageCmd.subs, usageWhereCmd)
-}
-
 // The classes a model call's cost is split over.
 const (
 	whReadFile  = "read file"
@@ -196,6 +172,8 @@ func cmdUsageWhere(c *cli, args []string) error {
 	dir := fs.String("dir", "", "Claude Code config `DIR` (default CLAUDE_CONFIG_DIR, ~/.claude)")
 	top := fs.Int("top", 10, "list the `N` costliest sessions and commands")
 	csvPath := fs.String("csv", "", "also write one row per call to `FILE`")
+	fs.String("task", "", "show what one task `KEY` used instead")
+	fs.Bool("session", false, "show one session and its subagents instead (--session ID names it; else this shell's, else the newest here)")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
@@ -264,7 +242,7 @@ func (sc *whScan) in(ts int64) bool { return ts >= sc.since && ts < sc.end }
 
 var whProjectCut = []string{"/.claude/worktrees/", "/.worktrees/"}
 
-// whProject names the project a session worked in, as wp usage sync does:
+// whProject names the project a session worked in, as wp record usage --from-transcripts does:
 // the repository of the working directory's checkout, else the directory's
 // name; the transcript's directory when it has no working directory.
 func whProject(cwd, dirName string) string {

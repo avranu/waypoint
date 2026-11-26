@@ -30,12 +30,8 @@ which the share of spells quiet that long that were stuck reaches
 precision_needs; with fewer than min_sample spells the setting stands.
 Cold sessions are woken while at least cold_needs of cold wakes were acted
 on. Set the times under Admin → AI, or a project's under its settings.`,
-	examples: []string{"wp usage stalled", "wp usage stalled --days 7 --user all"},
+	examples: []string{"wp report behavior stalled", "wp report behavior stalled --days 7 --user all"},
 	run:      cmdUsageStalled,
-}
-
-func init() {
-	usageCmd.subs = append(usageCmd.subs, usageStalledCmd)
 }
 
 type stallPolicyJSON struct {

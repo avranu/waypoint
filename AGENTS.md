@@ -7,7 +7,7 @@ Waypoint: self-hosted issue tracker. Go backend (internal/), React app in web/ e
 - Verify: `make check` (vet + tests + golangci-lint + gosec + govulncheck); web changes also need `cd web && npm run typecheck && npm run format:check` (`npm run lint` is dormant until typescript-eslint supports TypeScript 7; see web/eslint.config.mjs); UI changes also need a real browser check (Playwright) at desktop and 390px widths.
 - Ship a PR via `wp ship`
 - Most claude code spend is Fable and opus main threads reading code and writing the implementation themselves, while `wp code show FILE:SYMBOL` and `wp code find` went unused. Consider using a `probe` or `fanout-coordinator` to gather data, and sonnet agents for well defined work. Plans, decisions, and architecture should come from the main thread.
-- Diagnose production with `wp server status|log|metrics` and `wp ai usage` (admin token; docs/DEPLOY.md "Diagnosing production"), not ssh; ssh is for incidents a person runs.
+- Diagnose production with `wp server status|log|metrics` and `wp report ai` (admin token; docs/DEPLOY.md "Diagnosing production"), not ssh; ssh is for incidents a person runs.
 - Prefer a request (`wp request ask|change|run|todo`) to stopping when a hook or the permission classifier blocks you or a person must decide; add `--followup never` when you won't act on the answer.
 - Docs: how each feature works is in WP feature notes (`wp design ls --kind feature`, `wp design show N`); a change that alters what a note says edits it in the same task (`wp design edit N -f FILE`). Running Waypoint: docs/DEPLOY.md. CLI: `wp help --all`.
 - Waypoint tracks itself in project WP; `wp` (run in this repo) reads and records there. Where a skill names CONTEXT.md or docs/adr, use these instead:

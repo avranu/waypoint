@@ -22,15 +22,11 @@ comment-heavy files, raw forge calls and sleep polling, unused MCP servers
 and skills, search subagents on a premium model, and grep chains where wp
 code or wp brief answer in one call. --until compares a past window with now
 (--since 14d --until 7d is the week before last). Nothing is sent anywhere.`,
-	examples: []string{"wp usage suggest", "wp usage suggest --since 14d --until 7d"},
+	examples: []string{"wp report behavior suggest", "wp report behavior suggest --since 14d --until 7d"},
 	run:      cmdUsageSuggest,
 }
 
-func init() {
-	usageCmd.subs = append(usageCmd.subs, usageSuggestCmd)
-}
-
-// sugReport is what wp usage suggest prints.
+// sugReport is what wp report behavior suggest prints.
 type sugReport struct {
 	Repo        string          `json:"repo"`
 	Days        float64         `json:"days"`
@@ -79,7 +75,7 @@ func cmdUsageSuggest(c *cli, args []string) error {
 	}
 	root, err := gitOutput("", "rev-parse", "--show-toplevel")
 	if err != nil {
-		return fmt.Errorf("run wp usage suggest in a git checkout of the repository: %w", err)
+		return fmt.Errorf("run wp report behavior suggest in a git checkout of the repository: %w", err)
 	}
 	rep, err := buildSuggestReport(root, claudeDir(*dir), d, u, c.server() != "", func(ids []string) (*sugMeasured, string) { return measuredStart(c, ids) })
 	if err != nil {

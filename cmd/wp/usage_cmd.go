@@ -19,10 +19,10 @@ var usageSyncCmd = &command{
 	about: `Counts what each session used from Claude Code's transcripts and uploads
 hourly records: tokens per model, tool, MCP, skill and command use, Bash
 command heads (never arguments) and permission refusals. Risky commands
-(recursive deletes, force pushes, production, disks: wp usage risky) and
+(recursive deletes, force pushes, production, disks: wp report behavior risky) and
 refused ones go with their start, redacted. How wp itself is used goes as
 counts per command: help lookups, flag names (never their values), classes
-of usage error and which commands follow (wp usage cli). Prompts, replies,
+of usage error and which commands follow (wp report behavior cli). Prompts, replies,
 file contents and tool output stay here. For each task a session takes
 (wp next, wp take) it sends one row: the calls until wp ship, done or
 release by what they were for (finding files, searching in one, reading,
@@ -30,12 +30,8 @@ editing), before and after the first edit, the context size at both, and
 the repo-relative names of the files touched. Also reports what is configured
 (MCP servers, skills, plugins, hooks by name). Only what is new is read;
 wp hook claude runs it after every turn. Shown on Agents → Usage.`,
-	examples: []string{"wp usage sync --all --dry-run"},
+	examples: []string{"wp record usage --from-transcripts --all --dry-run"},
 	run:      cmdUsageSync,
-}
-
-func init() {
-	usageCmd.subs = append(usageCmd.subs, usageSyncCmd)
 }
 
 const defaultSyncSince = 7 * 24 * time.Hour
@@ -78,7 +74,7 @@ func cmdUsageSync(c *cli, args []string) error {
 	}
 	res, err := usageSync(c, o)
 	if errors.Is(err, errUsageBusy) {
-		c.println("Another wp usage sync is running; it will pick this up.")
+		c.println("Another wp record usage --from-transcripts is running; it will pick this up.")
 		return nil
 	}
 	if res != nil {
@@ -131,7 +127,7 @@ func usageSyncText(r *usageSyncResult) string {
 				fmt.Fprintf(&b, "  stopped early: %s\n", a.Stopped)
 			}
 			if a.OlderFiles > 0 {
-				fmt.Fprintf(&b, "  %d older transcript%s (%s) never uploaded, outside the archive window (the last 30 days unless --since says more): wp usage sync --all archives them\n",
+				fmt.Fprintf(&b, "  %d older transcript%s (%s) never uploaded, outside the archive window (the last 30 days unless --since says more): wp record usage --from-transcripts --all archives them\n",
 					a.OlderFiles, map[bool]string{true: "", false: "s"}[a.OlderFiles == 1], bytesText(a.OlderBytes))
 			}
 		}

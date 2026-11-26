@@ -10,7 +10,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// The transcript archive (WP-1466): `wp usage sync` uploads pieces of a
+// The transcript archive (WP-1466): `wp record usage --from-transcripts` uploads pieces of a
 // session's transcript files and reports its upload health; a person reads
 // a session's transcript back, whole and in order.
 func (s *Server) usageTranscriptRoutes(mux *http.ServeMux) {
@@ -109,7 +109,7 @@ func (s *Server) transcriptRead(w http.ResponseWriter, r *http.Request) (any, er
 		return nil, err
 	}
 	if q.File == "" {
-		return nil, fmt.Errorf("%w: file is required (wp usage transcript SESSION lists them)", errBadRequest)
+		return nil, fmt.Errorf("%w: file is required (wp transcript SESSION lists them)", errBadRequest)
 	}
 	cw := &countWriter{w: w}
 	w.Header().Set("Content-Type", "application/x-ndjson")

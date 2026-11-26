@@ -134,6 +134,9 @@ func parseWPInvocation(words []string) cliInvocation {
 	descending := true
 	seen := map[string]bool{}
 	args := words[1:]
+	if re, r := rewriteLegacy(args); r != nil {
+		args = re // an old name counts as the command that replaced it
+	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {

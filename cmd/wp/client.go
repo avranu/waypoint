@@ -209,6 +209,9 @@ func (c *cli) flags() *flag.FlagSet {
 // -h prints the command's help, flags included.
 func (c *cli) parse(fs *flag.FlagSet, args []string) ([]string, error) {
 	c.fs = fs
+	if c.cur != nil && c.cur.window {
+		acceptWindow(fs)
+	}
 	var pos []string
 	for {
 		if err := fs.Parse(args); err != nil {

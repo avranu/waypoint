@@ -94,7 +94,7 @@ func (s *Service) surplusState(ctx context.Context) (allowed bool, why string, e
 	return true, "", nil
 }
 
-// SurplusReport is `wp ai surplus`: what surplus work did and what the
+// SurplusReport is `wp report ai surplus`: what surplus work did and what the
 // evidence says about it.
 type SurplusReport struct {
 	Allowed bool            `json:"allowed"` // surplus work may be sent now

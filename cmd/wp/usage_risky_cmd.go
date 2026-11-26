@@ -14,7 +14,7 @@ var usageRiskyCmd = &command{
 	summary: "risky shell commands agents ran: deletes, force pushes, production",
 	about: `Lists, newest first, the shell commands agents ran that delete, discard or
 overwrite what can't be had back, or reach production, another machine, a
-cluster or a disk, as wp usage sync found them in Claude Code's
+cluster or a disk, as wp record usage --from-transcripts found them in Claude Code's
 transcripts: what it did, whether it ran, the task its session held, and
 the command, redacted, on one line of up to 300 characters (--json has it
 whole). high: production, other machines, shared
@@ -22,12 +22,8 @@ history, deletes outside any checkout; medium: local work or state a
 person might want back. Kinds: delete, discard, force_push, push_main,
 branch_delete, history, sql, cluster, deploy, service, docker, disk, power,
 permissions, remote_script. Also under Agents → Audit → Risky commands.`,
-	examples: []string{"wp usage risky --high", "wp usage risky --days 30 --kind force_push"},
+	examples: []string{"wp report behavior risky --high", "wp report behavior risky --days 30 --kind force_push"},
 	run:      cmdUsageRisky,
-}
-
-func init() {
-	usageCmd.subs = append(usageCmd.subs, usageRiskyCmd)
 }
 
 type riskyListRow struct {

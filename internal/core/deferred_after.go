@@ -29,7 +29,7 @@ const (
 	compactBreakEvenDrop  = 78_000
 	compactBreakEvenCalls = 30
 	// deferredCompactKeeps is the context a manual compaction leaves: the
-	// median of wp usage compact over the 14 days to 2026-11-25.
+	// median of wp report behavior compact over the 14 days to 2026-11-25.
 	deferredCompactKeeps = 46_000
 	// deferredCompactSource is the runner job that compacts a session for an
 	// offer; its source id is the session.

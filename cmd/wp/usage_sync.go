@@ -587,7 +587,7 @@ type usageTokenSums struct {
 	CacheRead  int64 `json:"cache_read"`
 }
 
-var errUsageBusy = errors.New("another wp usage sync is running")
+var errUsageBusy = errors.New("another wp record usage --from-transcripts is running")
 
 // outdated says this wp would count rows the last read of the file didn't.
 func (s *usageFileState) outdated() bool {

@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// wp usage suggest reads the sizes the hooks measured at session start, says
+// wp report behavior suggest reads the sizes the hooks measured at session start, says
 // how many sessions they come from, and says so when there are none (WP-1470).
 func TestSuggestUsesMeasuredSessionStartSizes(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

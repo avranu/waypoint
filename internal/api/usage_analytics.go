@@ -10,7 +10,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Usage analytics (WP-D20): `wp usage sync` and `wp statusline` upload, the
+// Usage analytics (WP-D20): `wp record usage --from-transcripts` and `wp statusline` upload, the
 // Agents → Usage tab reads. One person's data; admins may read anyone's.
 func (s *Server) usageAnalyticsRoutes(mux *http.ServeMux) {
 	a := s.authed
