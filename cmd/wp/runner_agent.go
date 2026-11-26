@@ -267,10 +267,10 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 		}
 		var err error
 		if path, err = exec.LookPath(bin); err != nil {
-			return failed("%s isn't installed on this machine.", bin)
+			return outcome{State: "failed", Error: fmt.Sprintf("%s isn't installed on this machine.", bin), Result: faultResult("cli")}
 		}
 		if c := p.cliInfo(in.CLI); c != nil && c.SignedIn != nil && !*c.SignedIn {
-			return failed("%s isn't signed in on this machine: run %s", bin, signInHint(in.CLI))
+			return outcome{State: "failed", Error: fmt.Sprintf("%s isn't signed in on this machine: run %s", bin, signInHint(in.CLI)), Result: faultResult("cli")}
 		}
 	}
 	ctx, cancel, clock := p.jobClock(ctx, run, in.WorkTimeout)
@@ -607,7 +607,9 @@ func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare
 			fmt.Fprintf(run.out, "Pushing %s\n", in.Branch)
 			ref := "refs/heads/" + in.Branch
 			if _, err := p.gitIn(ctx, work, nil, env, "push", "origin", ref+":"+ref); err != nil {
-				return p.partial(result, "pushing %s failed: %v", in.Branch, err)
+				if err = p.pushMoved(ctx, run, work, env, in, baseSHA, files, result, err); err != nil {
+					return p.partial(result, "pushing %s failed: %v", in.Branch, err)
+				}
 			}
 			*pushed = true
 			result["pushed"] = true
@@ -1133,12 +1135,16 @@ func (p *runnerProc) jobTokenEnv(run *jobRun, in agentJob) []string {
 func (p *runnerProc) agentError(ctx context.Context, run *jobRun, format string, a ...any) outcome {
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return outcome{State: "failed", Error: fmt.Sprintf("Timed out after %s while preparing the checkout.", run.timeout.Round(time.Second))}
+		return outcome{State: "failed", Error: fmt.Sprintf("Timed out after %s while preparing the checkout.", run.timeout.Round(time.Second)), Result: faultResult("checkout")}
 	case ctx.Err() != nil:
 		return outcome{State: "cancelled", Error: "Stopped."}
 	}
-	return failed(format, a...)
+	return outcome{State: "failed", Error: fmt.Sprintf(format, a...), Result: faultResult("checkout")}
 }
+
+// faultResult marks a job that ended before its agent started, which a
+// babysit round doesn't count and tries again (WP-1914).
+func faultResult(kind string) map[string]any { return map[string]any{"fault": kind} }
 
 // partial is a failure after the agent's work: what it did is still reported.
 func (p *runnerProc) partial(result map[string]any, format string, a ...any) outcome {

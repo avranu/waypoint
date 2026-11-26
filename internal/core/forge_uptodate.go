@@ -195,6 +195,7 @@ const (
 	upFailed
 	upStale
 	upLanded
+	upHeld // a round job is working on the branch; it isn't updated until that ends
 )
 
 // baseUpdate is what came of bringing a branch up to date with a tip: from
@@ -222,7 +223,8 @@ const updateAttempts = 3
 // An update whose new head has come in and still lacks the tip it was made
 // for was made against a base that wasn't current (WP-316); that is updated
 // again at once instead of being tested. A base that doesn't show Waypoint's
-// last merge yet isn't updated with at all.
+// last merge yet isn't updated with at all. A branch a round job is working
+// on isn't updated until it ends.
 func (s *Service) updateIfBehind(ctx context.Context, pr *PullRequest) int {
 	return s.updateIfBehindThen(ctx, pr, nil)
 }
@@ -232,6 +234,11 @@ func (s *Service) updateIfBehind(ctx context.Context, pr *PullRequest) int {
 // merge queue marks itself ready there, so the update's push runs the full
 // tier (WP-456).
 func (s *Service) updateIfBehindThen(ctx context.Context, pr *PullRequest, before func()) int {
+	if running, err := s.roundRunning(ctx, pr.ID); err == nil && running {
+		// The round's push would be refused: the branch moved under it
+		// (WP-1914, #569 round 1).
+		return upHeld
+	}
 	tip, behind, stale := s.behindBase(ctx, pr)
 	if stale {
 		return upStale
