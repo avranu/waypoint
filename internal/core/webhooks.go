@@ -265,7 +265,7 @@ func (s *Service) webhookPayload(e *Event, issue *Issue) map[string]any {
 
 // deliverWebhooks queues deliveries of a persisted event to matching webhooks.
 func (s *Service) deliverWebhooks(ctx context.Context, e *Event) {
-	if !persisted[e.Kind] && e.Kind != EvIssueDeleted && e.Kind != EvIssueChildrenDone && e.Kind != EvIssueReopened && !isEnvEvent(e.Kind) {
+	if !s.k.Persisted(e.Kind) && e.Kind != EvIssueDeleted && e.Kind != EvIssueChildrenDone && e.Kind != EvIssueReopened && !isEnvEvent(e.Kind) {
 		return
 	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT id, url, secret, events FROM webhooks WHERE enabled = 1 AND (project_id IS NULL OR project_id = ?)`, e.ProjectID)

@@ -36,12 +36,12 @@ type AuditEntry struct {
 // Automations and Waypoint's own work aren't people deciding, so they
 // aren't recorded unless a forge names who acted.
 func (t *tx) audit(e AuditEntry) {
-	if !auditable(t.actor, e) {
+	if !auditable(t.Actor, e) {
 		return
 	}
 	var userID any
 	agent := ""
-	if a := t.actor; a != nil && a.User != nil && a.User.ID != 0 {
+	if a := t.Actor; a != nil && a.User != nil && a.User.ID != 0 {
 		userID, agent = a.User.ID, a.AgentName()
 	}
 	var project, target any
@@ -54,7 +54,7 @@ func (t *tx) audit(e AuditEntry) {
 	if _, err := t.ExecContext(context.Background(), `INSERT INTO audit_log(user_id, actor, agent, about_agent, action, category, project_id, target_type, target_id, target, url, detail, created_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, userID, e.Actor, agent, e.About, e.Action, e.Category, project, e.TargetType, target,
 		excerpt(e.Target, 200), e.URL, excerpt(strings.Join(strings.Fields(e.Detail), " "), 300), t.s.nowMS()); err != nil {
-		t.s.log.ErrorContext(t.ctx, "record audit entry", "action", e.Action, "err", err)
+		t.s.log.ErrorContext(t.Ctx, "record audit entry", "action", e.Action, "err", err)
 	}
 }
 

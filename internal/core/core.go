@@ -11,22 +11,16 @@ package core
 import (
 	"context"
 	"database/sql"
-	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
-
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/core/meaning"
 	"git.jmann.me/claude/waypoint/internal/db"
-	"git.jmann.me/claude/waypoint/internal/tracing"
 )
 
 // Config holds settings the domain needs from the environment.
@@ -73,7 +67,7 @@ type Service struct {
 	pushHTTP *http.Client
 	Hub      *Hub
 
-	now func() time.Time
+	k *kernel.Kernel
 
 	afterTranscriptFile func()
 
@@ -210,11 +204,15 @@ func New(d *db.DB, cfg Config, log *slog.Logger) *Service {
 		log:  log,
 		http: cfg.Egress.client(15 * time.Second),
 		Hub:  NewHub(),
-		now:  time.Now,
+		k:    kernel.New(d, log),
 	}
+	s.k.Persist(persistedKinds...)
+	s.k.OnEmit(stampEvent)
+	s.k.AfterCommit = s.dispatch
 	s.started = s.now()
 	s.jobs = newJobLedger(cfg.Logs, func() time.Time { return s.now() })
 	s.log = slog.New(&sourceHandler{ledger: s.jobs, next: log.Handler()})
+	s.k.Log = s.log
 	forgeEgress := cfg.Egress
 	forgeEgress.AllowLoopback = true
 	s.Forges = &httpForgeClient{http: forgeEgress.client(forgeTimeout), patient: forgeEgress.client(forgePatientTimeout)}
@@ -240,7 +238,7 @@ func New(d *db.DB, cfg Config, log *slog.Logger) *Service {
 }
 
 // SetClock replaces the clock; for tests.
-func (s *Service) SetClock(f func() time.Time) { s.now = f }
+func (s *Service) SetClock(f func() time.Time) { s.k.SetClock(f) }
 
 // Close stops queued background work (AI estimates); in-flight deliveries
 // still finish, so call Wait after it.
@@ -261,7 +259,10 @@ func (s *Service) Ping(ctx context.Context) error {
 // BaseURL is the configured external URL without a trailing slash.
 func (s *Service) BaseURL() string { return strings.TrimRight(s.cfg.BaseURL, "/") }
 
-func (s *Service) nowMS() int64 { return s.now().UnixMilli() }
+// now is the time by the service's clock (the kernel's).
+func (s *Service) now() time.Time { return s.k.Now() }
+
+func (s *Service) nowMS() int64 { return s.k.NowMS() }
 
 func (s *Service) goBG(f func()) {
 	s.bg.Add(1)
@@ -280,14 +281,11 @@ func draftsHidden(actor *Actor, t string) string {
 	return "1"
 }
 
-// tx wraps a write transaction and collects events to dispatch on commit.
+// tx wraps a write transaction and collects events to dispatch on commit; the
+// transaction itself is the kernel's.
 type tx struct {
-	*sql.Tx
-	s       *Service
-	actor   *Actor
-	ctx     context.Context
-	events  []*Event
-	pending []func()
+	*kernel.Tx
+	s *Service
 }
 
 type queryer interface {
@@ -298,85 +296,7 @@ type queryer interface {
 
 // write runs f in a write transaction and dispatches its events afterwards.
 func (s *Service) write(ctx context.Context, actor *Actor, f func(t *tx) error) error {
-	if actor != nil && actor.ReadOnly {
-		return fmt.Errorf("read-only token: %w", ErrForbidden)
-	}
-	var span trace.Span
-	if tracing.Enabled() {
-		ctx, span = tracing.Start(ctx, "db.write "+callerName(2))
-		defer span.End()
-	}
-	queued := time.Now()
-	sqlTx, err := s.db.W.BeginTx(ctx, nil)
-	if err != nil {
-		if span != nil {
-			tracing.Fail(span, "begin")
-		}
-		return err
-	}
-	if span != nil {
-		span.SetAttributes(attribute.Int64("db.wait_ms", time.Since(queued).Milliseconds()))
-	}
-	t := &tx{Tx: sqlTx, s: s, actor: actor, ctx: ctx}
-	defer func() {
-		if p := recover(); p != nil {
-			_ = sqlTx.Rollback()
-			panic(p)
-		}
-	}()
-	if err := f(t); err != nil {
-		_ = sqlTx.Rollback()
-		if span != nil {
-			tracing.Fail(span, errorKind(err))
-		}
-		return err
-	}
-	t.runPending()
-	if err := sqlTx.Commit(); err != nil {
-		if span != nil {
-			tracing.Fail(span, "commit")
-		}
-		return err
-	}
-	s.dispatch(ctx, actor, t.events)
-	return nil
-}
-
-// callerName is the Service method skip frames up ("CreateIssue"), for
-// span names.
-func callerName(skip int) string {
-	pc, _, _, ok := runtime.Caller(skip)
-	if !ok {
-		return "unknown"
-	}
-	f := runtime.FuncForPC(pc)
-	if f == nil {
-		return "unknown"
-	}
-	name := f.Name()
-	name = name[strings.LastIndex(name, "/")+1:]
-	name = strings.TrimPrefix(name, "core.")
-	name = strings.TrimPrefix(name, "(*Service).")
-	name, _, _ = strings.Cut(name, ".")
-	return name
-}
-
-// errorKind sorts an error into a category safe to put in a trace.
-func errorKind(err error) string {
-	var inv *InvalidError
-	switch {
-	case errors.As(err, &inv):
-		return "invalid"
-	case errors.Is(err, ErrNotFound):
-		return "not_found"
-	case errors.Is(err, ErrForbidden), errors.Is(err, ErrUnauthorized):
-		return "forbidden"
-	case errors.Is(err, ErrConflict):
-		return "conflict"
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		return "canceled"
-	}
-	return "error"
+	return s.k.WriteSkip(ctx, actor, 1, func(kt *kernel.Tx) error { return f(&tx{Tx: kt, s: s}) })
 }
 
 // queryIDs runs a query returning one integer column.

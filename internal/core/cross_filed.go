@@ -363,7 +363,7 @@ func (s *Service) tellCrossFiled(ctx context.Context, issueID int64, cat string)
 				if err != nil {
 					return err
 				}
-				if _, err := s.addComment(ctx, t, t.actor, b, note); err != nil {
+				if _, err := s.addComment(ctx, t, t.Actor, b, note); err != nil {
 					return err
 				}
 			}

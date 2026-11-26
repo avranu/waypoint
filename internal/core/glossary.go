@@ -590,7 +590,7 @@ func (s *Service) afterGlossaryChange(ctx context.Context, t *tx, id int64) erro
 		return err
 	}
 	if _, err := t.ExecContext(ctx, `INSERT INTO glossary_revisions(entry_id, term, aliases, avoid, definition, locked, user_id, agent, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?)`, id, term, aliases, avoid, def, locked, nullUser(t.actor.ID()), t.actor.AgentName(), s.nowMS()); err != nil {
+		VALUES (?,?,?,?,?,?,?,?,?)`, id, term, aliases, avoid, def, locked, nullUser(t.Actor.ID()), t.Actor.AgentName(), s.nowMS()); err != nil {
 		return err
 	}
 	var list, avoided []string

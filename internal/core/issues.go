@@ -1375,7 +1375,7 @@ func (s *Service) addLabel(ctx context.Context, t *tx, issueID, projectID int64,
 	err := t.QueryRowContext(ctx, `SELECT id FROM labels WHERE project_id = ? AND (name = ? COLLATE NOCASE OR CAST(id AS TEXT) = ?)
 		ORDER BY name = ? DESC LIMIT 1`, projectID, name, name, name).Scan(&lid)
 	if errors.Is(err, sql.ErrNoRows) {
-		if t.actor.Automation == nil && s.requireProjectRole(ctx, t, t.actor, projectID, RoleEditor) != nil {
+		if t.Actor.Automation == nil && s.requireProjectRole(ctx, t, t.Actor, projectID, RoleEditor) != nil {
 			return invalid("label %q doesn't exist in this project", name)
 		}
 		if utf8.RuneCountInString(name) > 50 {
@@ -2063,8 +2063,8 @@ func (s *Service) setStatus(ctx context.Context, t *tx, i *Issue, st *Status, se
 	}
 	*sets, *args = append(*sets, "status_id = ?"), append(*args, st.ID)
 	if nowClosed && !wasClosed {
-		agent := t.actor.AgentName()
-		if agent == "" && closesForWork(t.actor) {
+		agent := t.Actor.AgentName()
+		if agent == "" && closesForWork(t.Actor) {
 			var err error
 			if agent, err = s.workAgent(ctx, t, i.ID); err != nil {
 				return err
@@ -2072,10 +2072,10 @@ func (s *Service) setStatus(ctx context.Context, t *tx, i *Issue, st *Status, se
 		}
 		*sets = append(*sets, "resolved_at = ?", "resolved_by = ?", "resolved_agent = ?", "close_review = ?",
 			"close_reviewed_by = NULL", "close_reviewed_at = NULL", "agent_order = NULL")
-		*args = append(*args, s.nowMS(), nullUser(t.actor.ID()), agent, agent != "")
-	} else if wasClosed && nowClosed && t.actor.AgentName() != "" {
+		*args = append(*args, s.nowMS(), nullUser(t.Actor.ID()), agent, agent != "")
+	} else if wasClosed && nowClosed && t.Actor.AgentName() != "" {
 		*sets = append(*sets, "resolved_at = ?", "resolved_by = ?", "resolved_agent = ?", "close_review = 1", "close_reviewed_by = NULL", "close_reviewed_at = NULL")
-		*args = append(*args, s.nowMS(), nullUser(t.actor.ID()), t.actor.AgentName())
+		*args = append(*args, s.nowMS(), nullUser(t.Actor.ID()), t.Actor.AgentName())
 	} else if !nowClosed && wasClosed {
 		*sets = append(*sets, "resolved_at = NULL", "resolved_by = NULL", "resolved_agent = ''",
 			"close_review = 0", "close_reviewed_by = NULL", "close_reviewed_at = NULL")
@@ -2157,18 +2157,10 @@ func (s *Service) workAgent(ctx context.Context, t *tx, issueID int64) (string, 
 // when the callback returns, before it commits, so a caller that writes its
 // own UPDATE (removing a pull link) can't lose it. The work returns no error:
 // it logs its failures and the transaction carries on.
-func (t *tx) afterUpdate(f func()) {
-	t.pending = append(t.pending, f)
-}
+func (t *tx) afterUpdate(f func()) { t.Defer(f) }
 
 // runPending runs queued afterUpdate work, including work that queues more.
-func (t *tx) runPending() {
-	for len(t.pending) > 0 {
-		f := t.pending[0]
-		t.pending = t.pending[1:]
-		f()
-	}
-}
+func (t *tx) runPending() { t.RunDeferred() }
 
 // checkChildrenDone emits children_done on a parent when its last open
 // child closes.
@@ -3054,7 +3046,7 @@ func (s *Service) addLocalComment(ctx context.Context, t *tx, actor *Actor, i *I
 	if err != nil {
 		return nil, err
 	}
-	for _, e := range t.events {
+	for _, e := range t.Events() {
 		if e.Kind == EvIssueCommented && dataInt(e, "comment_id") == c.ID {
 			e.Data["local"] = true
 		}

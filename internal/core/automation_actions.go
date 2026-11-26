@@ -294,7 +294,7 @@ func knownEventKind(k string) bool {
 	if k == "" {
 		return false
 	}
-	return isTriggerEvent(k) || persisted[k] || slices.Contains(waitableKinds, k)
+	return isTriggerEvent(k) || slices.Contains(persistedKinds, k) || slices.Contains(waitableKinds, k)
 }
 
 // eventMap is an event as templates read it from a step's output.

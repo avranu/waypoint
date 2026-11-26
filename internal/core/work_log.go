@@ -788,10 +788,10 @@ func (s *Service) countReport(ctx context.Context, id int64) error {
 
 // fillWorkLogEvent gives the last event of t its issue's project and key.
 func (s *Service) fillWorkLogEvent(ctx context.Context, t *tx) {
-	if len(t.events) == 0 {
+	if len(t.Events()) == 0 {
 		return
 	}
-	e := t.events[len(t.events)-1]
+	e := t.Events()[len(t.Events())-1]
 	_ = t.QueryRowContext(ctx, `SELECT i.project_id, p.key || '-' || i.number FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.id = ?`, e.IssueID).Scan(&e.ProjectID, &e.IssueKey)
 }
 

@@ -889,9 +889,9 @@ func (s *Service) insertEnv(t *tx, e *Environment) error {
 		e.Position = pos
 	}
 	var by any
-	if t.actor != nil && t.actor.User != nil && t.actor.User.ID != 0 {
-		by = t.actor.User.ID
-		e.createdByID = &t.actor.User.ID
+	if t.Actor != nil && t.Actor.User != nil && t.Actor.User.ID != 0 {
+		by = t.Actor.User.ID
+		e.createdByID = &t.Actor.User.ID
 	}
 	var expires any
 	if e.ExpiresAt != nil {
@@ -906,7 +906,7 @@ func (s *Service) insertEnv(t *tx, e *Environment) error {
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		e.ProjectID, nullInt(e.RepoID), e.Name, e.Kind, e.URL, e.HealthURL, e.ExpectedStatus, e.IntervalS,
 		e.VersionURL, e.CommitField, e.BranchField, e.VersionField, e.Ephemeral, e.TTLS, expires, e.Branch, e.Commit, e.Version, e.Position,
-		by, t.actor.AgentName(), addressAgent(t.actor), e.LagAlertM, now, now)
+		by, t.Actor.AgentName(), addressAgent(t.Actor), e.LagAlertM, now, now)
 	if err != nil {
 		if isUnique(err) {
 			return invalid("%s already has an environment called %s", e.Project, e.Name)
@@ -914,7 +914,7 @@ func (s *Service) insertEnv(t *tx, e *Environment) error {
 		return err
 	}
 	e.ID, _ = res.LastInsertId()
-	e.AddressAgent = addressAgent(t.actor)
+	e.AddressAgent = addressAgent(t.Actor)
 	e.CreatedAt, e.UpdatedAt = msTime(now), msTime(now)
 	return nil
 }

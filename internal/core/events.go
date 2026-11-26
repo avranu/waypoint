@@ -2,13 +2,10 @@ package core
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
 	"sync"
-	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -54,14 +51,15 @@ const (
 // (tx.storeNotice); nothing else sees it.
 const evNotificationStored = "notification.stored"
 
-// persisted kinds are written to the events table (issue history).
-var persisted = map[string]bool{
-	EvIssueCreated: true, EvIssueUpdated: true, EvIssueStatus: true, EvIssueAssigned: true,
-	EvIssueUnassigned: true, EvIssueCommented: true, EvIssueLinked: true, EvIssueShared: true,
-	EvExternalPROpened: true, EvExternalPRMerged: true, EvExternalPRClosed: true, EvExternalIssueClose: true,
-	EvSprintStarted: true, EvSprintClosed: true,
-	EvProjectMember: true,
-	EvIssueStep:     true,
+// persistedKinds are written to the events table (issue history); New
+// registers them with the kernel.
+var persistedKinds = []string{
+	EvIssueCreated, EvIssueUpdated, EvIssueStatus, EvIssueAssigned,
+	EvIssueUnassigned, EvIssueCommented, EvIssueLinked, EvIssueShared,
+	EvExternalPROpened, EvExternalPRMerged, EvExternalPRClosed, EvExternalIssueClose,
+	EvSprintStarted, EvSprintClosed,
+	EvProjectMember,
+	EvIssueStep,
 }
 
 // pullRef names a pull request on a forge.
@@ -93,159 +91,25 @@ func hint[T any](e *Event) T {
 	return v
 }
 
-// coalesceWindow is how long autosaves of one text field by one actor stay
-// a single history entry and a single issue.updated event.
-const coalesceWindow = 10 * time.Minute
+// part runs f as a part of the transaction that is undone whole when f fails
+// (kernel.Tx.Part).
+func (t *tx) part(ctx context.Context, f func() error) error { return t.Part(ctx, f) }
 
 // emit records an event in the transaction; it is dispatched after commit.
-// part runs f as a part of the transaction that is undone whole when f
-// fails: its writes roll back to a savepoint and its events are dropped,
-// while the rest of the transaction goes on. For a side job a caller logs
-// and moves past, so a half of it doesn't commit without the other.
-func (t *tx) part(ctx context.Context, f func() error) error {
-	n := len(t.events)
-	if _, err := t.ExecContext(ctx, `SAVEPOINT part`); err != nil {
-		return err
-	}
-	if err := f(); err != nil {
-		t.events = t.events[:n]
-		if _, rerr := t.ExecContext(ctx, `ROLLBACK TO part`); rerr != nil {
-			return errors.Join(err, rerr)
-		}
-		_, rerr := t.ExecContext(ctx, `RELEASE part`)
-		return errors.Join(err, rerr)
-	}
-	_, err := t.ExecContext(ctx, `RELEASE part`)
-	return err
-}
+func (t *tx) emit(e *Event) { t.Emit(e) }
 
-// noteSession records the agent session behind an event (WP-999): its id, and
-// the task it holds when that isn't the one the event is about and is in the
-// event's own project, so history shows an agent editing a task other than
-// its own without naming one of another project. A few primary-key lookups,
-// only for an actor with a session. An event that already names a session
-// (the session events themselves) keeps its own.
-func (t *tx) noteSession(e *Event) {
-	if t.actor == nil || t.actor.Session == 0 {
-		return
-	}
-	if e.Data == nil {
-		e.Data = map[string]any{}
-	}
-	if _, ok := e.Data["session"]; !ok {
-		e.Data["session"] = t.actor.Session
-	}
-	if e.IssueID == 0 {
-		return
-	}
-	var held sql.NullInt64
-	if err := t.QueryRowContext(context.Background(), `SELECT issue_id FROM agent_sessions WHERE id = ?`, t.actor.Session).Scan(&held); err != nil || !held.Valid || held.Int64 == e.IssueID {
-		return
-	}
-	here := e.ProjectID
-	if here == 0 {
-		if err := t.QueryRowContext(context.Background(), `SELECT project_id FROM issues WHERE id = ?`, e.IssueID).Scan(&here); err != nil {
-			return
-		}
-	}
-	var key string
-	var heldProject int64
-	if err := t.QueryRowContext(context.Background(), `SELECT i.project_id, p.key || '-' || i.number FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.id = ? AND i.draft = 0`, held.Int64).Scan(&heldProject, &key); err == nil && heldProject == here {
-		e.Data["session_task"] = key
-	}
-}
+// coalesceWindow is how long autosaves of one text field by one actor stay
+// a single history entry and a single issue.updated event.
+const coalesceWindow = kernel.CoalesceWindow
 
-func (t *tx) emit(e *Event) {
-	e.At = t.s.now().UTC()
-	if t.actor != nil && t.actor.User != nil && t.actor.User.ID != 0 && e.Actor == nil {
-		r := t.actor.User.Ref()
-		e.Actor = &r
-	}
-	if t.actor != nil && t.actor.Automation != nil {
-		e.ViaAutomation = t.actor.Automation.Name
-	}
-	if agent := t.actor.AgentName(); agent != "" && t.actor.ViaAutomation() == nil {
-		if e.Data == nil {
-			e.Data = map[string]any{}
-		}
-		e.Data["via"] = agent
-		e.ViaAutomation = agent
-	}
-	t.noteSession(e)
-	if t.actor != nil && t.actor.User != nil && t.actor.User.ID == 0 && t.actor.ViaAutomation() == nil {
-		if via := t.actor.User.DisplayName; via != "" && via != SystemActor().User.DisplayName {
-			if e.Data == nil {
-				e.Data = map[string]any{}
-			}
-			e.Data["via"] = via
-			e.ViaAutomation = via
-		}
-	}
+// stampEvent is what core adds to every event Emit records: whether it is
+// about a draft issue, which hides it from people who may not see drafts.
+func stampEvent(t *kernel.Tx, e *Event) {
 	if e.IssueID != 0 && e.Kind != EvIssueDeleted {
 		if err := t.QueryRowContext(context.Background(), `SELECT draft FROM issues WHERE id = ?`, e.IssueID).Scan(&e.Draft); err != nil {
 			e.Draft = true
 		}
 	}
-	if e.Coalesce {
-		e.Merged = t.mergesIntoLast(e)
-	}
-	if persisted[e.Kind] && !e.Merged {
-		data := "{}"
-		if len(e.Data) > 0 {
-			b, _ := json.Marshal(e.Data)
-			data = string(b)
-		}
-		var actorID, issueID, projectID any
-		if e.Actor != nil {
-			actorID = e.Actor.ID
-		}
-		if e.IssueID != 0 {
-			issueID = e.IssueID
-		}
-		if e.ProjectID != 0 {
-			projectID = e.ProjectID
-		}
-		res, err := t.ExecContext(context.Background(), `INSERT INTO events(project_id, issue_id, actor_id, kind, field, old_value, new_value, data, via_automation, created_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?)`, projectID, issueID, actorID, e.Kind, e.Field, e.Old, e.New, data, t.actor.ViaAutomation(), e.At.UnixMilli())
-		if err == nil {
-			e.ID, _ = res.LastInsertId()
-		} else {
-			t.s.log.ErrorContext(t.ctx, "record event", "kind", e.Kind, "err", err)
-		}
-	}
-	t.events = append(t.events, e)
-}
-
-// mergesIntoLast reports whether the issue's latest recorded event is an
-// earlier save of the same field by the same actor inside the window. A
-// merged save carries its text and its time into that entry, so the history
-// shows the latest words (an intent's) with the time they were saved, not the
-// first save's. A sitting is therefore a run of saves less than the window
-// apart, not one window from the first.
-func (t *tx) mergesIntoLast(e *Event) bool {
-	var id int64
-	var kind, field string
-	var via sql.NullInt64
-	var actor sql.NullInt64
-	var at int64
-	err := t.QueryRowContext(context.Background(), `SELECT id, kind, field, actor_id, via_automation, created_at
-		FROM events WHERE issue_id = ? ORDER BY id DESC LIMIT 1`, e.IssueID).Scan(&id, &kind, &field, &actor, &via, &at)
-	if err != nil || kind != e.Kind || field != e.Field || e.At.UnixMilli()-at > coalesceWindow.Milliseconds() {
-		return false
-	}
-	var want int64
-	if e.Actor != nil {
-		want = e.Actor.ID
-	}
-	wantVia, _ := t.actor.ViaAutomation().(int64)
-	if actor.Int64 != want || via.Int64 != wantVia {
-		return false
-	}
-	if _, err := t.ExecContext(context.Background(), `UPDATE events SET new_value = ?, created_at = ? WHERE id = ?`, e.New, e.At.UnixMilli(), id); err != nil {
-		t.s.log.ErrorContext(t.ctx, "merge event", "kind", e.Kind, "err", err)
-		return false
-	}
-	return true
 }
 
 // maxAutomationDepth stops automations that trigger each other forever.

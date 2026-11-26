@@ -151,7 +151,7 @@ func TestRecordSlotHoldsEmitsQuietEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	ev := next(mine)
-	if ev == nil || !ev.quiet || ev.UserID != e.admin.User.ID || ev.Data["machine"] != "box" || ev.Data["stored"] != 1 ||
+	if ev == nil || !ev.Quiet || ev.UserID != e.admin.User.ID || ev.Data["machine"] != "box" || ev.Data["stored"] != 1 ||
 		ev.Data["pending"] != int64(2) || ev.Data["refused"] != false {
 		t.Fatalf("event %+v", ev)
 	}

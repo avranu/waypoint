@@ -318,7 +318,7 @@ func (s *Service) sampleEvent(ctx context.Context, actor *Actor, a *Automation, 
 		}
 		return &Event{Kind: EvWebhookIn, ProjectID: a.ProjectID, At: now, Data: data}, true, "Add sample data to see how templates read the body."
 	}
-	if persisted[d.Event] {
+	if s.k.Persisted(d.Event) {
 		where, args := `e.kind = ?`, []any{d.Event}
 		if a.ProjectID != 0 {
 			where += ` AND e.project_id = ?`

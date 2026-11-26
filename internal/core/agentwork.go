@@ -1239,7 +1239,7 @@ func (s *Service) endRun(ctx context.Context, t *tx, issueID int64, id, outcome 
 	if err := s.closeRun(ctx, t, issueID, id, outcome, u); err != nil {
 		return err
 	}
-	s.recordRunChanges(ctx, t, t.actor, issueID, id)
+	s.recordRunChanges(ctx, t, t.Actor, issueID, id)
 	return nil
 }
 
@@ -1249,11 +1249,11 @@ func (s *Service) closeRun(ctx context.Context, t *tx, issueID int64, id, outcom
 	}
 	now := s.nowMS()
 	var sess any
-	if t.actor != nil {
-		sess = nullUser(t.actor.Session)
+	if t.Actor != nil {
+		sess = nullUser(t.Actor.Session)
 	}
 	if _, err := t.ExecContext(ctx, `UPDATE time_entries SET ended_at = ? WHERE user_id = ? AND agent = ? AND issue_id = ? AND ended_at IS NULL`,
-		now, t.actor.ID(), id, issueID); err != nil {
+		now, t.Actor.ID(), id, issueID); err != nil {
 		return err
 	}
 	if _, err := t.ExecContext(ctx, `UPDATE time_entries SET paused = 0 WHERE agent = ? AND issue_id = ? AND paused = 1`, id, issueID); err != nil {
@@ -1286,9 +1286,9 @@ func (s *Service) closeRun(ctx context.Context, t *tx, issueID int64, id, outcom
 		return err
 	}
 	_, err = t.ExecContext(ctx, `INSERT INTO agent_runs(issue_id, agent, step, user_id, started_at, ended_at, input_tokens, output_tokens, cost_usd, outcome, model, session_id)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, issueID, id, step, nullUser(t.actor.ID()), now, now, u.InputTokens, u.OutputTokens, u.CostUSD, outcome, u.Model, sess)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, issueID, id, step, nullUser(t.Actor.ID()), now, now, u.InputTokens, u.OutputTokens, u.CostUSD, outcome, u.Model, sess)
 	if err == nil {
-		s.recordRunFeatures(ctx, t, t.actor, issueID, id)
+		s.recordRunFeatures(ctx, t, t.Actor, issueID, id)
 	}
 	return err
 }

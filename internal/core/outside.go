@@ -227,16 +227,16 @@ func (s *Service) screenForgeText(ctx context.Context, f *Forge, cur *Issue, ite
 func (s *Service) addForgeComment(ctx context.Context, t *tx, f *Forge, i *Issue, author, externalID, url, body string, createdAt int64, quiet bool) error {
 	via := kindLabel(f.Kind)
 	_, agent := s.forgeWriter(ctx, t, f, author)
-	prev := t.actor
-	t.actor = forgeSyncActor(f, author, agent)
-	n := len(t.events)
-	added, err := s.addComment(ctx, t, t.actor, i, body)
-	t.actor = prev
+	prev := t.Actor
+	t.Actor = forgeSyncActor(f, author, agent)
+	n := len(t.Events())
+	added, err := s.addComment(ctx, t, t.Actor, i, body)
+	t.Actor = prev
 	if err != nil {
 		return err
 	}
 	if quiet {
-		for _, e := range t.events[n:] {
+		for _, e := range t.Events()[n:] {
 			e.Quiet = true
 		}
 	}

@@ -220,7 +220,7 @@ func (s *Service) recordDeployTx(t *tx, e *Environment, in DeployInput) (*Deploy
 	}
 	ci := strings.TrimSpace(in.URL)
 	notes := excerpt(in.Notes, 1000)
-	by, agent := DeployByPerson, t.actor.AgentName()
+	by, agent := DeployByPerson, t.Actor.AgentName()
 	switch {
 	case in.Source == "ci":
 		by = DeployByCI
@@ -230,8 +230,8 @@ func (s *Service) recordDeployTx(t *tx, e *Environment, in DeployInput) (*Deploy
 		by = DeployByCI
 	}
 	var byUser any
-	if t.actor != nil && t.actor.User != nil && t.actor.User.ID != 0 {
-		byUser = t.actor.User.ID
+	if t.Actor != nil && t.Actor.User != nil && t.Actor.User.ID != 0 {
+		byUser = t.Actor.User.ID
 	}
 	now := s.nowMS()
 
@@ -292,8 +292,8 @@ func (s *Service) recordDeployTx(t *tx, e *Environment, in DeployInput) (*Deploy
 		}
 		d.ID, _ = res.LastInsertId()
 	}
-	if t.actor != nil && t.actor.User != nil && t.actor.User.ID != 0 && d.By == nil {
-		r := t.actor.User.Ref()
+	if t.Actor != nil && t.Actor.User != nil && t.Actor.User.ID != 0 && d.By == nil {
+		r := t.Actor.User.Ref()
 		d.By = &r
 	}
 

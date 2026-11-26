@@ -746,16 +746,16 @@ func (s *Service) designEvent(ctx context.Context, actor *Actor, id int64, scope
 // written from an agent's shell, session or automation: only a person's own
 // verdict (ReviewDesign) approves one (WP-409, WP-ADR96).
 func (s *Service) addRevision(ctx context.Context, t *tx, noteID int64, kind, title, body string, base *int64, state string) error {
-	if state == RevApproved && t.actor.WritesAsAgent() {
+	if state == RevApproved && t.Actor.WritesAsAgent() {
 		return forbidden("an agent's change can't be recorded as approved")
 	}
 	var rby, rat any
 	if state == RevApproved {
-		rby, rat = nullUser(t.actor.ID()), s.nowMS()
+		rby, rat = nullUser(t.Actor.ID()), s.nowMS()
 	}
 	sessID, sessTask := t.sessionStamp(ctx)
 	_, err := t.ExecContext(ctx, `INSERT INTO design_revisions(note_id, kind, title, body, base_id, state, user_id, agent, created_at, reviewed_by, reviewed_at, session_id, session_issue_id)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, noteID, kind, title, body, nullInt(base), state, nullUser(t.actor.ID()), t.actor.CreditAgent(), s.nowMS(), rby, rat, sessID, sessTask)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, noteID, kind, title, body, nullInt(base), state, nullUser(t.Actor.ID()), t.Actor.CreditAgent(), s.nowMS(), rby, rat, sessID, sessTask)
 	return err
 }
 
