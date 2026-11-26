@@ -1,6 +1,7 @@
 package core
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -144,5 +145,142 @@ func postReview(be *bsEnv, pr *PullRequest, actor string) {
 	if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT INTO pr_events(pr_id, kind, actor, bot, sha, created_at) VALUES (?, 'reviewed', ?, 1, ?, ?)`,
 		pr.ID, actor, bsPR.HeadSHA, be.s.nowMS()); err != nil {
 		be.t.Fatal(err)
+	}
+}
+
+func (be *bsEnv) setCI(cs ...CommitCheck) {
+	be.t.Helper()
+	be.sg.setChecks(bsPR.HeadSHA, cs...)
+	from := be.clockNow().UnixMilli()
+	be.runnerOnline()
+	be.poll()
+	be.s.Wait()
+	for _, c := range cs {
+		if c.State == CheckFailed && be.flakeRerunSince(bsPR.HeadSHA, from) {
+			be.rerunFails()
+			break
+		}
+	}
+}
+
+// An early round that pushed nothing, then CI failing a check it wasn't
+// given, is an ordinary round carrying that check: new work, not a stuck
+// head, so the same model (WP-ADR163).
+func TestEarlyRoundThenNewFailureIsOrdinaryRound(t *testing.T) {
+	be := earlyEnv(t, true, nil, CommitCheck{Name: "ci / test", State: CheckPending}, CommitCheck{Name: "ci / lint", State: CheckPending})
+	jobs := be.jobs()
+	if len(jobs) != 1 {
+		t.Fatalf("no early round: %d jobs", len(jobs))
+	}
+	be.finish(jobs[0], false)
+	be.setCI(CommitCheck{Name: "ci / test", State: CheckPending}, CommitCheck{Name: "ci / lint", State: CheckFailed})
+	be.setCI(CommitCheck{Name: "ci / test", State: CheckSuccess}, CommitCheck{Name: "ci / lint", State: CheckFailed})
+	be.step()
+	b := be.babysit()
+	if len(b.Rounds) != 2 {
+		t.Fatalf("rounds = %d: %s %q", len(b.Rounds), b.State, b.Wait)
+	}
+	r := b.Rounds[1]
+	if !slices.Contains(r.Checks, "ci / lint") || r.Model == escalateModel || r.Assessor {
+		t.Errorf("round 2 = checks %v model %q assessor %v, want the ordinary model carrying ci / lint", r.Checks, r.Model, r.Assessor)
+	}
+}
+
+// The twin: the early round was given the failed check, pushed nothing, and
+// CI ends with only that check failed. That is a head a round already had
+// the failure of, so it is stuck and the ladder climbs: the stronger model.
+func TestEarlyRoundThenSameFailureClimbsTheLadder(t *testing.T) {
+	be := earlyEnv(t, true, nil, CommitCheck{Name: "ci / test", State: CheckFailed}, CommitCheck{Name: "ci / lint", State: CheckPending})
+	jobs := be.jobs()
+	if len(jobs) != 1 {
+		t.Fatalf("no early round: %d jobs", len(jobs))
+	}
+	if r := be.babysit().Rounds[0]; len(r.Checks) != 1 || r.Checks[0] != "ci / test" || !r.Early {
+		t.Fatalf("round 1 = %+v", r)
+	}
+	be.finish(jobs[0], false)
+	be.setCI(CommitCheck{Name: "ci / test", State: CheckFailed}, CommitCheck{Name: "ci / lint", State: CheckSuccess})
+	be.step()
+	b := be.babysit()
+	if len(b.Rounds) != 2 || b.Rounds[1].Model != escalateModel {
+		t.Fatalf("rounds = %+v: %s %q", b.Rounds, b.State, b.Wait)
+	}
+}
+
+// Audit findings alone are early-round work.
+func TestEarlyRoundForAuditFindings(t *testing.T) {
+	be := newBabysitEnv(t)
+	box := be.auditBox()
+	be.auditOn()
+	be.runnerOnline()
+	pr := be.openMine()
+	be.sg.setChecks(bsPR.HeadSHA, CommitCheck{Name: "ci / test", State: CheckPending})
+	be.poll()
+	be.start(pr)
+	be.endAudit(box, "done", [2]string{"medium", "No limit on rows"})
+	be.runnerOnline()
+	be.step()
+	b := be.babysit()
+	jobs := be.jobs()
+	if len(jobs) != 1 || len(b.Rounds) != 1 || len(b.Rounds[0].Findings) != 1 || !b.Rounds[0].Early {
+		t.Fatalf("no early round for a finding: %d jobs, %+v, %s %q", len(jobs), b.Rounds, b.State, b.Wait)
+	}
+	if p := be.jobInput(jobs[0]).Prompt; !strings.Contains(p, "No limit on rows") || !strings.Contains(p, "CI has not finished") {
+		t.Errorf("the prompt:\n%s", p)
+	}
+}
+
+// A bot's claim that the build breaks waits for the build while no check has
+// failed, and gets its round once one has.
+func TestEarlyRoundHoldsCompileClaim(t *testing.T) {
+	be := newBabysitEnv(t)
+	be.runnerOnline()
+	claim := "**P0** critical · Duplicate definition of `Export` causes a compile error, breaking the build."
+	be.sg.threads = []ReviewThread{{ID: "T1", Path: "app/export.go", Line: 4, Comments: []ThreadComment{
+		{ID: "501", Author: "llm-review", Body: claim, SHA: bsPR.HeadSHA, At: be.clockNow().Add(-time.Minute)}}}}
+	pr := be.open()
+	be.sg.setChecks(bsPR.HeadSHA, CommitCheck{Name: "ci / test", State: CheckPending}, CommitCheck{Name: "ci / lint", State: CheckPending})
+	be.poll()
+	be.start(pr)
+	be.step()
+	b := be.babysit()
+	if len(be.jobs()) != 0 || !strings.Contains(b.Wait, "checks running") || !strings.Contains(b.Wait, "compile") {
+		t.Fatalf("round on an unchecked compile claim: %d jobs, %s %q", len(be.jobs()), b.State, b.Wait)
+	}
+	be.setCI(CommitCheck{Name: "ci / test", State: CheckFailed}, CommitCheck{Name: "ci / lint", State: CheckPending})
+	be.step()
+	if len(be.jobs()) != 1 {
+		b = be.babysit()
+		t.Fatalf("no round once a check failed: %s %q", b.State, b.Wait)
+	}
+}
+
+// A review still running holds the early round, and the state says so;
+// the round goes once it ends.
+func TestEarlyRoundWaitsForRunningReview(t *testing.T) {
+	be := newBabysitEnv(t)
+	be.runnerOnline()
+	be.sg.threads = []ReviewThread{{ID: "T1", Path: "app/export.go", Line: 4, Comments: []ThreadComment{
+		{ID: "501", Author: "alice", Body: "This loop never ends when rows is empty.", SHA: bsPR.HeadSHA, At: be.clockNow().Add(-time.Minute)}}}}
+	pr := be.open()
+	res, err := be.s.db.W.ExecContext(be.ctx, `INSERT INTO bot_runs(project_id, pr_id, kind, head_sha, status, created_at) VALUES (?, ?, 'review', ?, 'running', ?)`,
+		be.p.ID, pr.ID, bsPR.HeadSHA, be.s.nowMS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	be.sg.setChecks(bsPR.HeadSHA, CommitCheck{Name: "ci / test", State: CheckPending})
+	be.poll()
+	be.start(pr)
+	be.step()
+	b := be.babysit()
+	if len(be.jobs()) != 0 || !strings.Contains(b.Wait, "a review is running") {
+		t.Fatalf("round while a review runs: %d jobs, %s %q", len(be.jobs()), b.State, b.Wait)
+	}
+	id, _ := res.LastInsertId()
+	be.exec(`UPDATE bot_runs SET status = 'done', finished_at = created_at WHERE id = ` + itoa64(id))
+	be.step()
+	if len(be.jobs()) != 1 {
+		b = be.babysit()
+		t.Fatalf("no round once the review ended: %s %q", b.State, b.Wait)
 	}
 }

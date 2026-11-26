@@ -575,7 +575,11 @@ func (s *Service) settleWaits(ctx context.Context, pr *PullRequest, pol MergePol
 
 // burstQuietMinutes is the quiet period before a round once every expected
 // reviewer has reported: reviewers post in bursts, and this is for the burst
-// (WP-ADR163). The merge keeps the policy's own quiet period.
+// (WP-ADR163, WP-1917). The merge keeps the policy's own quiet period. Over
+// 85 heads of 30 merged pull requests, a CodeRabbit post came more than 2
+// minutes after its previous one on 29 heads, and the same 29 at 5 and at 10
+// minutes (no gap fell between 2 and 14.6 minutes), so 2 loses nothing the
+// 10-minute quiet period caught.
 const burstQuietMinutes = 2
 
 // settleWaitsFor is settleWaits; forRound shortens the quiet period to
