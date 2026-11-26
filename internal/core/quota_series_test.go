@@ -120,8 +120,11 @@ func TestQuotaEverywhereAfterReset(t *testing.T) {
 		}
 	}
 	l, err := e.s.currentQuota(e.ctx, e.me.User.ID, "seven_day", now)
-	if err != nil || l.Used() != 120 {
-		t.Errorf("used %v %v", l.Used(), err)
+	if err != nil || l == nil {
+		t.Fatalf("current quota: %v %v", l, err)
+	}
+	if l.Used() != 120 {
+		t.Errorf("used %v", l.Used())
 	}
 	// The guard reads the week as the gates do, not at its old high.
 	weeks, err := e.s.quotaWeekLines(e.ctx, e.me.User.ID, now.Add(-quotaWeek).UnixMilli(), now.UnixMilli()+1)
