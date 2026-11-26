@@ -2971,13 +2971,6 @@ func (s *Service) commentFiles(ctx context.Context, issueID int64, cs []Comment)
 	return frows.Err()
 }
 
-func cmp(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
-}
-
 // AddComment comments on an issue. Viewers may comment.
 func (s *Service) AddComment(ctx context.Context, actor *Actor, ref, body string) (*Comment, error) {
 	body = strings.TrimSpace(body)
@@ -3135,18 +3128,6 @@ func (s *Service) DeleteComment(ctx context.Context, actor *Actor, commentID int
 		s.noteIssueMentions(ctx, t, actor, issueID)
 		return s.reindex(ctx, t, issueID)
 	})
-}
-
-// truncateBytes cuts s to at most n bytes without splitting a character.
-func truncateBytes(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	cut := n - len("…")
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut] + "…"
 }
 
 // History returns an issue's events, newest first.
