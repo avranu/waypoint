@@ -40,8 +40,11 @@ func WriteReport(w io.Writer, r Report) {
 	nk := s.NonKernelDown + s.NonKernelUp
 	fmt.Fprintf(w, "  not touching the kernel group: %d; down %d (%.1f%%), up %d, upward calls %d\n",
 		nk, s.NonKernelDown, pct(s.NonKernelDown, nk), s.NonKernelUp, s.NonKernelUpCalls)
+	for _, c := range s.Cycles {
+		writeList(w, "  cycle", c)
+	}
 	writeList(w, "unplaced groups (not in the grouping file, at the top of the order)", s.Unplaced)
-	writeList(w, "ready groups (no upward references)", s.Ready)
+	writeList(w, "ready groups (no upward references and none to the kernel group)", s.Ready)
 	if s.TypeErrors > 0 {
 		fmt.Fprintf(w, "WARNING: %d type errors; the map may be incomplete\n", s.TypeErrors)
 	}
@@ -57,7 +60,7 @@ func WriteReport(w io.Writer, r Report) {
 
 	fmt.Fprintf(w, "\n== groups (bottom of the order first) ==\n")
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "group\tfiles\tlines\tin\tout\tup-out\tup-symbols\tready\t")
+	_, _ = fmt.Fprintln(tw, "group\tfiles\tlines\tin\tout\tup-out\tup-symbols\tto-kernel\tready\t")
 	for _, g := range r.Groups {
 		name := g.Name
 		if !g.Placed {
@@ -67,7 +70,7 @@ func WriteReport(w io.Writer, r Report) {
 		if g.Ready {
 			ready = "ready"
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t\n", name, g.Files, g.Lines, g.Inbound, g.Outbound, g.UpOut, g.UpSyms, ready)
+		fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t\n", name, g.Files, g.Lines, g.Inbound, g.Outbound, g.UpOut, g.UpSyms, g.ToKernel, ready)
 	}
 	_ = tw.Flush()
 }

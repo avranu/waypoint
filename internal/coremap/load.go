@@ -43,6 +43,7 @@ type Ref struct {
 	DeclLine  int    `json:"declLine"`
 	Class     string `json:"class"`
 	Call      bool   `json:"call"`
+	col       int    // the use's column, so that the order of Refs is total
 }
 
 // Loaded is the type-checked package: every cross-group reference plus the
@@ -54,6 +55,10 @@ type Loaded struct {
 	Files []string
 	// Lines is the line count per type-checked file.
 	Lines map[string]int
+	// Top and Subpackages count the Go files of Dir and of each directory below
+	// it, by file name (build constraints are not applied).
+	Top         PkgSize
+	Subpackages []PkgSize
 	// Refs holds the references between files of different groups, sorted by
 	// file, line and symbol.
 	Refs          []Ref
@@ -62,8 +67,9 @@ type Loaded struct {
 	TypeErrors    int
 }
 
-// Load type-checks the package in dir (linux, default build tags, no tests)
-// once and collects its references. Phase timings go to log.
+// Load type-checks the package in dir (as built for linux/amd64 without cgo,
+// whatever the host is; no tests) once and collects its references. Phase
+// timings go to log. Type errors are counted, not returned.
 func Load(dir string, groups *Groups, log io.Writer) (*Loaded, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -88,6 +94,11 @@ func Load(dir string, groups *Groups, log io.Writer) (*Loaded, error) {
 	}
 	lap("go list")
 
+	top, subs, err := sizes(abs)
+	if err != nil {
+		return nil, fmt.Errorf("sizes: %w", err)
+	}
+
 	eout, err := goList(abs, "-export", "-deps", "-f", "{{.ImportPath}}|{{.Export}}", ".")
 	if err != nil {
 		return nil, err
@@ -101,7 +112,7 @@ func Load(dir string, groups *Groups, log io.Writer) (*Loaded, error) {
 	lap("export data")
 
 	fset := token.NewFileSet()
-	ld := &Loaded{Dir: abs, ImportPath: info.ImportPath, Lines: map[string]int{}}
+	ld := &Loaded{Dir: abs, ImportPath: info.ImportPath, Lines: map[string]int{}, Top: top, Subpackages: subs}
 	var files []*ast.File
 	for _, f := range info.GoFiles {
 		src, err := os.ReadFile(filepath.Join(abs, f)) // #nosec G304 -- a file of the package go list named
@@ -147,7 +158,7 @@ func Load(dir string, groups *Groups, log io.Writer) (*Loaded, error) {
 		}
 	}
 
-	owners := fieldOwners(pkg)
+	owners := fieldOwners(pkg, files)
 	callees := calleePositions(files)
 	for id, obj := range ti.Uses {
 		sym, class, ok := describe(pkg, obj, owners)
@@ -165,7 +176,7 @@ func Load(dir string, groups *Groups, log io.Writer) (*Loaded, error) {
 		}
 		ld.Refs = append(ld.Refs, Ref{FromGroup: fg, ToGroup: tg, File: rf, Line: rp.Line,
 			Symbol: sym, DeclFile: df, DeclLine: dp.Line, Class: class,
-			Call: callees[id.Pos()] && class != ClassType})
+			Call: callees[id.Pos()] && class != ClassType, col: rp.Column})
 	}
 	sort.Slice(ld.Refs, func(i, j int) bool {
 		a, b := ld.Refs[i], ld.Refs[j]
@@ -178,7 +189,13 @@ func Load(dir string, groups *Groups, log io.Writer) (*Loaded, error) {
 		if a.Symbol != b.Symbol {
 			return a.Symbol < b.Symbol
 		}
-		return a.DeclFile < b.DeclFile
+		if a.DeclFile != b.DeclFile {
+			return a.DeclFile < b.DeclFile
+		}
+		if a.DeclLine != b.DeclLine {
+			return a.DeclLine < b.DeclLine
+		}
+		return a.col < b.col
 	})
 	lap("references")
 	return ld, nil
@@ -187,6 +204,8 @@ func Load(dir string, groups *Groups, log io.Writer) (*Loaded, error) {
 func goList(dir string, args ...string) ([]byte, error) {
 	cmd := exec.Command("go", append([]string{"list"}, args...)...) // #nosec G204 -- go list with this tool's own fixed flags
 	cmd.Dir = dir
+	// One fixed target, so that every host maps the same files.
+	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -204,9 +223,23 @@ func countLines(b []byte) int {
 	return n
 }
 
-// fieldOwners names the struct type that declares each field of the package's
-// named struct types, so a field reads as Type.field.
-func fieldOwners(pkg *types.Package) map[*types.Var]string {
+// fieldOwners names the struct type whose declaration writes each field of the
+// package's named struct types, so a field reads as Type.field. A type defined
+// from another (type storedPrefs UserPrefs) has the same fields but does not
+// write them, so it does not own them.
+func fieldOwners(pkg *types.Package, files []*ast.File) map[*types.Var]string {
+	specs := map[token.Pos]*ast.TypeSpec{} // by the position of the type's name
+	for _, af := range files {
+		for _, d := range af.Decls {
+			if gd, ok := d.(*ast.GenDecl); ok {
+				for _, sp := range gd.Specs {
+					if ts, ok := sp.(*ast.TypeSpec); ok {
+						specs[ts.Name.Pos()] = ts
+					}
+				}
+			}
+		}
+	}
 	m := map[*types.Var]string{}
 	sc := pkg.Scope()
 	for _, name := range sc.Names() {
@@ -214,9 +247,12 @@ func fieldOwners(pkg *types.Package) map[*types.Var]string {
 		if !ok {
 			continue
 		}
-		if st, ok := tn.Type().Underlying().(*types.Struct); ok {
+		spec := specs[tn.Pos()]
+		if st, ok := tn.Type().Underlying().(*types.Struct); ok && spec != nil {
 			for i := range st.NumFields() {
-				m[st.Field(i)] = name
+				if f := st.Field(i); f.Pos() >= spec.Pos() && f.Pos() < spec.End() {
+					m[f] = name
+				}
 			}
 		}
 	}

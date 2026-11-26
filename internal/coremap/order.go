@@ -1,27 +1,33 @@
 package coremap
 
 import (
+	"maps"
+	"slices"
 	"sort"
 )
 
-// suggestOrder returns an order of nodes, providers first, that minimises the
-// weight of upward references: w[{a, b}] is the number of references from a to
-// b, and one points up when b comes after a. A pinned node (if not "") stays
-// first. It runs Eades-Lin-Smyth greedy on the sorted nodes, then moves single
-// nodes to their best position until no move lowers the cost. The result
-// depends only on the nodes and weights.
-func suggestOrder(nodes []string, w map[[2]string]int, pinned string) []string {
-	var free []string
+// suggestOrder returns an order of nodes, providers first, with a low weight of
+// upward references: w[{a, b}] is the number of references from a to b, and one
+// points up when b comes after a. The pinned nodes come first, ordered among
+// themselves the same way. It runs Eades-Lin-Smyth greedy on the sorted nodes,
+// then moves single nodes to their best position until no move lowers the cost:
+// a heuristic, not a proven minimum. The result depends only on the nodes, the
+// pins and the weights.
+func suggestOrder(nodes []string, w map[[2]string]int, pinned ...string) []string {
+	var first, free []string
 	for _, n := range nodes {
-		if n != pinned {
+		if slices.Contains(pinned, n) {
+			first = append(first, n)
+		} else {
 			free = append(free, n)
 		}
 	}
-	sort.Strings(free)
-	order := elsOrder(free, w)
-	improve(order, w)
-	if pinned != "" {
-		order = append([]string{pinned}, order...)
+	order := make([]string, 0, len(nodes))
+	for _, part := range [][]string{first, free} {
+		sort.Strings(part)
+		o := elsOrder(part, w)
+		improve(o, w)
+		order = append(order, o...)
 	}
 	return order
 }
@@ -89,23 +95,6 @@ func elsOrder(nodes []string, w map[[2]string]int) []string {
 		left = append(left, right[i])
 	}
 	return left
-}
-
-// upCost is the weight of upward references under order.
-func upCost(order []string, w map[[2]string]int) int {
-	pos := map[string]int{}
-	for i, n := range order {
-		pos[n] = i
-	}
-	c := 0
-	for k, x := range w {
-		pa, ok1 := pos[k[0]]
-		pb, ok2 := pos[k[1]]
-		if ok1 && ok2 && pb > pa {
-			c += x
-		}
-	}
-	return c
 }
 
 // improve moves single nodes to their cheapest position until no move helps.
@@ -177,15 +166,11 @@ func (a *Analysis) withOrder(order []string) *Analysis {
 	return &b
 }
 
-// SuggestOrder returns a copy of a ordered to minimise upward references,
-// with the kernel group kept first.
+// SuggestOrder returns a copy of a ordered to reduce upward references, with
+// the kernel groups kept first.
 func (a *Analysis) SuggestOrder() *Analysis {
-	nodes := a.groupNames()
-	pinned := ""
-	if a.hasGroup("kernel") {
-		pinned = "kernel"
-	}
-	return a.withOrder(suggestOrder(nodes, a.groupWeights(), pinned))
+	pinned := slices.Collect(maps.Keys(a.kernel))
+	return a.withOrder(suggestOrder(a.groupNames(), a.groupWeights(), pinned...))
 }
 
 // Affinity is one group's size and the groups it exchanges the most references with.

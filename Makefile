@@ -66,7 +66,7 @@ wplint: wplint-code ## Waypoint's own analyzers + the migration and e2e-wait che
 wplint-code: ## Waypoint's own analyzers over cmd and internal
 	$(SLOT) go run ./cmd/wplint ./cmd/... ./internal/...
 
-coremap: ## map the references between internal/core's file groups (CORE_ARGS='-group pr' for a query; see internal/coremap/doc.go)
+coremap: ## map the references between internal/core's file groups (CORE_ARGS="-group pr" or "-edge 'pr>issues'"; see internal/coremap/doc.go)
 	$(SLOT) go run ./cmd/coremap $(CORE_ARGS)
 
 cross-check: ## build wp for windows/amd64 and darwin/arm64 (no output)

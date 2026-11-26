@@ -1,6 +1,7 @@
 package coremap
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -29,8 +30,42 @@ func TestSuggestOrderChain(t *testing.T) {
 	}
 }
 
-// improve must repair what the greedy pass leaves: it never ends worse than
-// the sorted order and, on a tournament-like graph, finds the known optimum.
+// upCost is the weight of upward references under order.
+func upCost(order []string, w map[[2]string]int) int {
+	pos := map[string]int{}
+	for i, n := range order {
+		pos[n] = i
+	}
+	c := 0
+	for k, x := range w {
+		pa, ok1 := pos[k[0]]
+		pb, ok2 := pos[k[1]]
+		if ok1 && ok2 && pb > pa {
+			c += x
+		}
+	}
+	return c
+}
+
+func TestImproveMovesANode(t *testing.T) {
+	// a uses b and c, so it belongs last.
+	w := map[[2]string]int{{"a", "b"}: 2, {"a", "c"}: 2}
+	order := []string{"a", "b", "c"}
+	improve(order, w)
+	if c := upCost(order, w); c != 0 || order[2] != "a" {
+		t.Errorf("order %v, cost %d, want a last and 0", order, c)
+	}
+}
+
+func TestSuggestOrderPinsSeveral(t *testing.T) {
+	w := map[[2]string]int{{"p", "q"}: 3, {"p", "a"}: 9, {"q", "a"}: 9}
+	got := suggestOrder([]string{"a", "p", "q"}, w, "p", "q")
+	if want := []string{"q", "p", "a"}; !slices.Equal(got, want) {
+		t.Errorf("order %v, want %v", got, want)
+	}
+}
+
+// On a tournament-like graph suggestOrder finds the known optimum.
 func TestSuggestOrderBeatsSorted(t *testing.T) {
 	// Layers x > y > z > w (x uses y, y uses z, ...) with lighter back references.
 	names := []string{"w", "x", "y", "z"}
@@ -57,8 +92,8 @@ func TestSuggestOrderFixture(t *testing.T) {
 		t.Errorf("order %v: want kernel first and extra last", names)
 	}
 	r := b.Report(5)
-	if r.Summary.Up != 2 || r.Summary.Down != 12 {
-		t.Errorf("under the suggested order: up %d down %d, want 2 and 12", r.Summary.Up, r.Summary.Down)
+	if r.Summary.Up != 2 || r.Summary.Down != 13 {
+		t.Errorf("under the suggested order: up %d down %d, want 2 and 13", r.Summary.Up, r.Summary.Down)
 	}
 	af := a.Affinities()
 	byName := map[string]Affinity{}
@@ -74,8 +109,6 @@ func TestSuggestOrderFixture(t *testing.T) {
 	}
 }
 
-// Every non-test file of internal/core has to be placed by a line of
-// groups.txt, so a new file cannot fall silently to the stem rule.
 func TestNamedFileBeatsGlob(t *testing.T) {
 	g, err := ParseGroups(strings.NewReader("a: x_*.go\nb: x_one.go\n"))
 	if err != nil {
@@ -89,6 +122,8 @@ func TestNamedFileBeatsGlob(t *testing.T) {
 	}
 }
 
+// Every non-test file of internal/core has to be placed by a line of
+// groups.txt, so a new file cannot fall silently to the stem rule.
 func TestEveryCoreFileIsPlaced(t *testing.T) {
 	f, err := os.Open("groups.txt")
 	if err != nil {
@@ -98,6 +133,9 @@ func TestEveryCoreFileIsPlaced(t *testing.T) {
 	g, err := ParseGroups(f)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !g.Placed(kernelGroup) {
+		t.Errorf("groups.txt has no %q line", kernelGroup)
 	}
 	names, err := filepath.Glob(filepath.Join("..", "core", "*.go"))
 	if err != nil || len(names) == 0 {
@@ -120,5 +158,37 @@ func TestEveryCoreFileIsPlaced(t *testing.T) {
 	}
 	if len(missing) > 0 {
 		t.Errorf("files matching no line of internal/coremap/groups.txt (place them; see its header): %s", strings.Join(missing, " "))
+	}
+}
+
+// With PerFile the grouping file's domain names order nothing, even when one
+// is also a file's stem, and its kernel files are still pinned and counted
+// apart.
+func TestPerFile(t *testing.T) {
+	g, err := ParseGroups(strings.NewReader("kernel: core.go\nextra_thing: nothing_*.go\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.PerFile = true
+	ld, err := Load(fixtureDir, g, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := Analyze(ld, g)
+	if got, want := a.groupNames(), []string{"core", "issues_close", "pr_open", "extra_thing"}; !slices.Equal(got, want) {
+		t.Errorf("order %v, want %v", got, want)
+	}
+	s := a.Report(5).Summary
+	if len(s.Unplaced) != 0 || s.NonKernelDown+s.NonKernelUp >= s.CrossRefs {
+		t.Errorf("unplaced %v, non-kernel %d+%d of %d", s.Unplaced, s.NonKernelDown, s.NonKernelUp, s.CrossRefs)
+	}
+	u, err := a.Group("issues_close")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range u.Needs {
+		if l.Other == "core" && l.Up {
+			t.Errorf("a use of the kernel file points up: %+v", l)
+		}
 	}
 }
