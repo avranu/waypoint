@@ -941,6 +941,9 @@ func TestAssessorPromptAsksForTheIDsOfAWait(t *testing.T) {
 	if !strings.Contains(p, "`Wait: …`") || !strings.Contains(p, "IDs of the review comments or audit findings") {
 		t.Errorf("the Wait: line doesn't ask for ids:\n%s", p)
 	}
+	if !strings.Contains(p, dependencyAgeRule) {
+		t.Errorf("the assessor isn't told to wait out a dependency-age failure:\n%s", p)
+	}
 }
 
 // The rest's own re-run (restOver) doesn't repeat a re-run the flake gate
