@@ -313,6 +313,49 @@ func TestWpTestCompilesAHeavyPackageWithNoTestBeside(t *testing.T) {
 	}
 }
 
+// A script whose wp test go selected no test exits 0, and that run is not
+// kept as a pass.
+func TestWpTestScriptThatRanNoTestRecordsNoPass(t *testing.T) {
+	root := scopedRepo(t)
+	putExec(t, root, ".waypoint/test", "#!/bin/sh\necho 'no go test was selected' >\"$WP_TEST_NO_TEST\"\n")
+	out, _, err := runWpTest(t)
+	if err != nil || !strings.Contains(out, "exited 0, but no go test was selected; not recorded as a pass.") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if runs := readTestRuns(testRunsPath()); len(runs) != 0 {
+		t.Errorf("a run with no test was recorded: %+v", runs)
+	}
+	// The whole check is given no such file.
+	putExec(t, root, ".waypoint/test", "#!/bin/sh\ntest -z \"${WP_TEST_NO_TEST:-}\"\n")
+	if out, _, err := runWpTest(t, "--all"); err != nil {
+		t.Errorf("--all: %v\n%s", err, out)
+	}
+}
+
+// wp test go says to the script that runs it when it selected no test.
+func TestWpTestGoNotesThatNoTestRan(t *testing.T) {
+	root := scopedRepo(t)
+	putFiles(t, root, map[string]string{"go.mod": "module example.com/m\n\ngo 1.21\n"})
+	gitDo(t, "add", "-A")
+	gitDo(t, "commit", "-q", "-m", "module")
+	gitDo(t, "update-ref", "refs/heads/main", "HEAD")
+	putFiles(t, root, map[string]string{"README.md": "x\n"})
+	note := filepath.Join(t.TempDir(), "note")
+	t.Setenv(envTestNoTest, note)
+	if out, _, err := runWpTest(t, "go", "--print"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if _, err := os.Stat(note); err == nil {
+		t.Error("--print wrote the note")
+	}
+	if out, _, err := runWpTest(t, "go"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if b, err := os.ReadFile(note); err != nil || !strings.Contains(string(b), "no go test was selected") {
+		t.Errorf("note: %q, %v", b, err)
+	}
+}
+
 // wp test and wp test go keep the full output of a failure they cut.
 func TestWpTestKeepsTheFullOutputOfALongFailure(t *testing.T) {
 	root := scopedRepo(t)

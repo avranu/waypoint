@@ -53,8 +53,9 @@ type testRunRecorder struct {
 	// label is the command as the record says it, where that isn't argv:
 	// wp test says "wp test (scoped check)", not the script it ran.
 	label string
-	// compileOnly: the run only compiled packages and ran no test. A pass is
-	// then not kept, as it would read as the tests passing; a failure is.
+	// compileOnly: the run only compiled packages, or selected no test, and
+	// ran none. A pass is then not kept, as it would read as the tests
+	// passing; a failure is.
 	compileOnly bool
 	tree        string
 	start       time.Time

@@ -517,8 +517,7 @@ func (c *cli) runShipCheck(cmd string) error {
 		return fmt.Errorf("--check couldn't run %s: %w (nothing shipped)", cmd, err)
 	}
 	if nothing {
-		c.println("Check: " + cmd + " has nothing to run: no changed file is in the packages it asks for; not recorded as a pass.")
-		return nil
+		return fmt.Errorf("--check %s has nothing to run: no changed file is in the packages it asks for, so nothing was committed or shipped. Drop --check (wp ship then runs the repository's wp test, if it has one), name a check that runs something, or ship with --no-check", cmd)
 	}
 	res, _, _ := parseTestOutput(buf.Bytes(), "auto")
 	if res == nil {

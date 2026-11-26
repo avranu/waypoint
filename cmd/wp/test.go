@@ -30,6 +30,10 @@ const (
 	envTestChanged = "WP_TEST_CHANGED"
 	envTestAll     = "WP_TEST_ALL"
 	envTestWP      = "WP_TEST_WP"
+	// envTestNoTest names a file wp test gives its script, where a wp test go
+	// that ran no test says so: the script exits 0 all the same, and the run
+	// must not be kept as a pass.
+	envTestNoTest = "WP_TEST_NO_TEST"
 
 	// testGoTimeout is the built-in Go check's -timeout, as make test had it.
 	testGoTimeout = "30m"
@@ -315,14 +319,20 @@ func (t *scopedTest) runScript(ctx context.Context, env []string, rec *testRunRe
 	if cerr := list.Close(); werr != nil || cerr != nil {
 		return 0, errors.Join(werr, cerr)
 	}
+	noTest := list.Name() + ".no-test"
+	defer func() { _ = os.Remove(noTest) }()
 	vars := []string{envTestBase + "=" + t.base, envTestChanged + "=" + list.Name()}
 	if exe, err := os.Executable(); err == nil {
 		vars = append(vars, envTestWP+"="+exe)
 	}
+	// The whole check runs the tree's tests, some of which may select nothing
+	// on purpose, so none of them is given the file.
 	if t.all {
 		vars = append(vars, envTestAll+"=1")
+	} else {
+		vars = append(vars, envTestNoTest+"="+noTest)
 	}
-	env = withEnvVars(env, []string{envTestBase, envTestChanged, envTestAll, envTestWP}, vars)
+	env = withEnvVars(env, []string{envTestBase, envTestChanged, envTestAll, envTestWP, envTestNoTest}, vars)
 	tail := &tailWriter{}
 	w := io.MultiWriter(t.c.err, tail)
 	code, err := runSlotCmdIn(ctx, t.root, env, []string{t.script}, nil, w, w)
@@ -331,6 +341,10 @@ func (t *scopedTest) runScript(ctx context.Context, env []string, rec *testRunRe
 	}
 	if code == 0 {
 		*verdict = testScriptFile + " exited 0."
+		if why, err := os.ReadFile(noTest); err == nil { // #nosec G304 -- beside the list wp made
+			rec.compileOnly = true
+			*verdict = fmt.Sprintf("%s exited 0, but %s; not recorded as a pass.", testScriptFile, strings.TrimSpace(string(why)))
+		}
 		rec.finish(&testResult{}, 0)
 		return 0, nil
 	}
@@ -501,6 +515,9 @@ func cmdTestGo(c *cli, args []string) error {
 		c.println(l)
 	}
 	if len(cmds) == 0 {
+		if !*printOnly {
+			noteNoTest("no go test was selected")
+		}
 		c.println("wp test go: no changed file belongs to a Go package (or is a testdata or embedded file of one), so no go test runs.")
 		return nil
 	}
@@ -517,6 +534,8 @@ func cmdTestGo(c *cli, args []string) error {
 	var raw []byte
 	code, err := c.runInSlotDo("tests", defaultSlots(), slotRun{key: "wp test go", shown: "wp test go"}, slotRunCmdFor("wp test go"), rec.started, func(ctx context.Context, env []string) (int, error) {
 		env, dropped = testEnv(env, nil)
+		// The tests themselves don't write to the caller's file.
+		env = withEnvVars(env, []string{envTestNoTest}, nil)
 		var code int
 		var err error
 		res, raw, code, err = runGoTests(ctx, root, env, cmds)
@@ -537,6 +556,7 @@ func cmdTestGo(c *cli, args []string) error {
 	rec.compileOnly = sel.compileOnly()
 	rec.finish(res, code)
 	if sel.compileOnly() && code == 0 && res.outcome() != runFail {
+		noteNoTest("the Go packages were only compiled and no test ran")
 		c.println("wp test go: only compiled, no test ran; not recorded as a pass.")
 	}
 	if code != 0 || res.outcome() == runFail {
@@ -544,6 +564,13 @@ func cmdTestGo(c *cli, args []string) error {
 		return exitCode(1)
 	}
 	return nil
+}
+
+// noteNoTest tells the wp test that runs this one, if any, that no test ran.
+func noteNoTest(why string) {
+	if f := os.Getenv(envTestNoTest); f != "" {
+		_ = os.WriteFile(f, []byte(why+"\n"), 0o600) // #nosec G703 -- the file wp test named for its script
+	}
 }
 
 // changedForGo is the changed paths wp test handed down in WP_TEST_CHANGED,
