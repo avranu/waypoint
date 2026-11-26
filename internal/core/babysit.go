@@ -126,6 +126,12 @@ type BabysitRound struct {
 	Parked   string `json:"parked,omitempty"`
 	// ParkedOn are the review comments its park's question is about.
 	ParkedOn []string `json:"parked_on,omitempty"`
+	// ParkNamed are the comments and audit findings its park's reason names
+	// (WP-1853), whatever else the round was given: a rest ends once they are
+	// dealt with, not only when the whole round's comments are. Kept only when
+	// the round had no conflict and the reason names none of its failed checks:
+	// settling a comment ends neither.
+	ParkNamed []string `json:"park_named,omitempty"`
 	// ParkedChecks are the failing checks its park was over (WP-914): their
 	// passing on the parked head, with no push, ends the park.
 	ParkedChecks []string `json:"parked_checks,omitempty"`
@@ -765,33 +771,36 @@ func (s *Service) CheckBabysits(ctx context.Context) {
 // nobody started in a session: the one who armed the pull request, else its
 // author when a member who can edit the project (0: nobody).
 func (s *Service) babysitOwnerFor(ctx context.Context, pr *PullRequest) int64 {
+	id, err := s.babysitOwnerErr(ctx, pr)
+	if err != nil && readFault(err) {
+		s.log.WarnContext(ctx, "read who may own a babysit", "repo", pr.Repo, "number", pr.Number, "err", err)
+	}
+	return id
+}
+
+// babysitOwnerErr is babysitOwnerFor, also reporting a failed read (not
+// "nobody may own it").
+func (s *Service) babysitOwnerErr(ctx context.Context, pr *PullRequest) (int64, error) {
 	if pr.armedBy != nil {
-		if u, err := s.userByID(ctx, s.db.R, *pr.armedBy); err == nil && !u.Disabled {
-			return u.ID
+		u, err := s.userByID(ctx, s.db.R, *pr.armedBy)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return 0, err
+		}
+		if err == nil && !u.Disabled {
+			return u.ID, nil
 		}
 	}
 	projectID, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
-	if err != nil {
-		if readFault(err) {
-			s.log.WarnContext(ctx, "read the project to find a babysit's owner", "repo", pr.Repo, "number", pr.Number, "err", err)
-		}
-		return 0
+	if err != nil || pr.Author == "" {
+		return 0, err
 	}
 	var id int64
-	if pr.Author == "" {
-		return 0
+	err = s.db.R.QueryRowContext(ctx, `SELECT u.id FROM project_members m JOIN users u ON u.id = m.user_id
+		WHERE m.project_id = ? AND m.role IN ('owner','editor') AND u.disabled = 0 AND u.username = ? COLLATE NOCASE`, projectID, pr.Author).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
 	}
-	switch err := s.db.R.QueryRowContext(ctx, `SELECT u.id FROM project_members m JOIN users u ON u.id = m.user_id
-		WHERE m.project_id = ? AND m.role IN ('owner','editor') AND u.disabled = 0 AND u.username = ? COLLATE NOCASE`, projectID, pr.Author).Scan(&id); {
-	case errors.Is(err, sql.ErrNoRows):
-		return 0
-	case err != nil:
-		if readFault(err) {
-			s.log.WarnContext(ctx, "read who may own a babysit", "repo", pr.Repo, "number", pr.Number, "err", err)
-		}
-		return 0
-	}
-	return id
+	return id, err
 }
 
 // armedOwnerFor is babysitOwnerFor, else an owner of the repo's project for a
@@ -956,8 +965,23 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		s.parkBabysit(ctx, b, pr, closingWhy(r), r.Question, r.Checks, r.Conflict, r.Comments, r.Findings)
 		return
 	}
+	if r := lastRound(b); r != nil && parkedOn(b, pr.HeadSHA) && resting(r) && len(r.ParkNamed) > 0 {
+		// A rest that named a bot's duplicate of what a fix covers ends with
+		// the duplicate closed, not an hour later (WP-1853).
+		if comments, err := s.reviewComments(ctx, s.db.R, pr.ID); err == nil {
+			s.closeCovered(ctx, b, pr, comments)
+		}
+	}
 	if parkedOn(b, pr.HeadSHA) && !s.settledWhileParked(ctx, b, pr) && !s.restOver(ctx, b, pr) {
 		if r := lastRound(b); resting(r) {
+			// A first failure on the head is ruled out as a flake while it
+			// rests too: no round runs on it meanwhile (WP-1853).
+			// A re-run that passed is filed as the flake it was; the rest
+			// ends by its own rules, not by that.
+			s.flakeProven(ctx, b, pr)
+			if s.restFlakeRerun(ctx, b, pr) {
+				return
+			}
 			s.setState(ctx, b, pr, BabysitResting, restWaitText(r))
 		} else if wait := b.Wait; b.State != BabysitNeedsPerson || !strings.HasPrefix(wait, parkWait) {
 			s.setState(ctx, b, pr, BabysitNeedsPerson, parkWait+excerpt(cmp(r.Question, "what should happen to it?"), 200))
@@ -994,7 +1018,8 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		s.faultSpellOver(ctx, b, pr)
 		s.sharedTimeoutOver(ctx, b)
 	}
-	going, why, err := s.reviewGoingErr(ctx, pr)
+	s.cancelStaleFootprints(ctx, pr)
+	going, why, err := s.babysitReviewGoing(ctx, pr)
 	if err != nil {
 		s.log.WarnContext(ctx, "read whether its reviews settled", "pr", pr.ID, "err", err)
 		return
@@ -1018,6 +1043,7 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 			return
 		}
 		if len(waits) > 0 {
+			s.footprintAhead(ctx, b, pr) // beside the quiet period (WP-1853)
 			s.reviewWait(ctx, b, pr, waits[0])
 			return
 		}
@@ -1057,10 +1083,16 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 	}
 	findings := s.auditRoundWork(ctx, b, pr.ID)
 	s.triageComments(ctx, b, pr, checks, comments)
+	s.closeCovered(ctx, b, pr, comments) // a comment about a head before a fix that covers it (WP-1853)
 	work, late, person := s.commentWork(ctx, pr, b, comments)
 	if len(failed) == 0 && len(findings) == 0 && s.waiveNitpicks(ctx, b, pr, comments, work) {
 		late, work = append(late, work...), nil
 	}
+	// What a round would be started for, before late minors ride along: they
+	// have no round of their own, so a failed head with only late minors takes
+	// the runner-fault wait, the shared-timeout wait and the flake re-run below
+	// as one with none (WP-1853).
+	ownWork := len(work)
 	if len(failed) > 0 || len(work) > 0 {
 		work = append(work, late...)
 	} else if pr.ArmedAt == nil {
@@ -1069,7 +1101,7 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 	if len(failed) > 0 && s.authorHolds(ctx, b, pr) {
 		return
 	}
-	if len(failed) > 0 && !conflict && len(work) == 0 {
+	if len(failed) > 0 && !conflict && ownWork == 0 {
 		faults := s.headRunnerFaults(ctx, pr)
 		if faults != nil {
 			if waiting, stale := s.waitForRunner(ctx, b, pr, faults); waiting {
@@ -1086,7 +1118,7 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 			return
 		}
 	}
-	if len(failed) > 0 && !conflict && len(work) == 0 && len(findings) == 0 && s.handToAuthor(ctx, b, pr, failed) {
+	if len(failed) > 0 && !conflict && ownWork == 0 && len(findings) == 0 && s.handToAuthor(ctx, b, pr, failed) {
 		return
 	}
 	if len(failed) > 0 || conflict || len(work) > 0 || len(findings) > 0 {
@@ -1094,6 +1126,9 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		s.babysitRound(ctx, b, pr, failed, conflict, work, findings)
 		return
 	}
+	// No round is about to move the head: the footprint check starts now,
+	// beside open comments waiting for a person and the like (WP-1853).
+	s.footprintAhead(ctx, b, pr)
 	if len(cancelled) > 0 {
 		s.waitForCancelled(ctx, b, pr, cancelled)
 		return

@@ -351,7 +351,7 @@ func TestKitSessionStart(t *testing.T) {
 	k := newKitTestEnv(t)
 	var started [][]string
 	old := backgroundStart
-	backgroundStart = func(exe string, args ...string) { started = append(started, args) }
+	backgroundStart = func(exe string, args ...string) bool { started = append(started, args); return true }
 	t.Cleanup(func() { backgroundStart = old })
 
 	text := k.c.kitSessionStart(k.dir, "acme/app")

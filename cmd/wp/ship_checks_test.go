@@ -95,7 +95,7 @@ func (e *checksEnv) ship(t *testing.T, args ...string) error {
 		t.Fatal(err)
 	}
 	fs.Visit(func(fl *flag.Flag) { so.summaryGiven = so.summaryGiven || fl.Name == "summary" })
-	_, err := e.c.shipWork(f, so, "", false, "WP-9", true)
+	_, err := e.c.shipWork(f, so, "", false, []string{"WP-9"}, true)
 	return err
 }
 

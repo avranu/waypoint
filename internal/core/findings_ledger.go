@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"slices"
@@ -50,9 +51,12 @@ type LedgerEntry struct {
 	Symbol string `json:"symbol,omitempty"` // the function or type its line is in
 	Gist   string `json:"gist,omitempty"`   // the words that matter, for matching later ones
 	Class  string `json:"class"`
-	Of     string `json:"of,omitempty"`    // repeat: the earlier comment or finding it makes again
-	Round  int    `json:"round,omitempty"` // repeat: the round that fixed it; caused: the round whose change it is on
+	Of     string `json:"of,omitempty"`    // repeat: the earlier comment, finding or check it makes again; a covered comment: the one whose fix covers it
+	Round  int    `json:"round,omitempty"` // repeat: the round that fixed it; covered: the round whose fix covers it; caused: the round whose change it is on
 	Why    string `json:"why,omitempty"`
+	// Covered: a comment written about a head before the fix of round Round,
+	// which covers it: the commit of that fix (WP-1853). It is no repeat.
+	Covered string `json:"covered,omitempty"`
 }
 
 // ledgerItem is a comment or an audit finding, now or earlier.
@@ -138,6 +142,13 @@ func (l *ledger) item(it ledgerItem) LedgerEntry {
 		return e
 	}
 	if prior, n, ok := l.repeatOf(it, e); ok {
+		if fix, ok := l.coveredByFix(it, n); ok {
+			// Written about a head before the fix, so nothing "came back":
+			// the fix covers it (WP-1853).
+			e.Class, e.Of, e.Round, e.Covered = RoundNew, prior.ID, n, fix
+			e.Why = fmt.Sprintf("written before round %d's fix, which covers it as it does %s", n, prior.ID)
+			return e
+		}
 		e.Class, e.Of, e.Round = RoundRepeat, prior.ID, n
 		e.Why = "makes the point of " + prior.ID + " again"
 		if n > 0 {
@@ -182,7 +193,7 @@ func (l *ledger) check(c ledgerCheck) LedgerEntry {
 
 // withPrint is an earlier entry's class on this round's fingerprint.
 func withPrint(earlier, e LedgerEntry) LedgerEntry {
-	e.Class, e.Of, e.Round, e.Why = earlier.Class, earlier.Of, earlier.Round, earlier.Why
+	e.Class, e.Of, e.Round, e.Why, e.Covered = earlier.Class, earlier.Of, earlier.Round, earlier.Why, earlier.Covered
 	return e
 }
 
@@ -282,6 +293,60 @@ func (l *ledger) fixedIn(p ledgerItem) int {
 		}
 	}
 	return 0
+}
+
+// coveredByFix says whether a comment was written about a head from before
+// round n's fix, and gives that fix's commit. A comment is about the head it
+// was made on (the commit the forge gives each review comment): one of the
+// heads up to the start of round n's work is before the fix. Where that
+// commit isn't one of them (an issue comment has none), it is when it was
+// written: before round n began, the fix was not yet pushed. A comment on
+// the fix's commit or any later one is the fix not holding.
+func (l *ledger) coveredByFix(it ledgerItem, n int) (string, bool) {
+	if it.Kind != "comment" {
+		return "", false // an audit finding is made of the head it read
+	}
+	for i, r := range l.in.Rounds {
+		if r.N != n || !r.Pushed {
+			continue
+		}
+		fix := pushedHead(l.in.Rounds, i, l.in.Head)
+		if fix == "" || sameSHA(fix, r.SHA) || (it.SHA != "" && sameSHA(it.SHA, fix)) {
+			return "", false
+		}
+		// A fix that never touched the comment's file doesn't cover it. A
+		// round whose diff wasn't kept can't say, and isn't held to this.
+		if place, _ := itemPlace(it); place != "" && r.Diff != "" {
+			if _, touched := diffNewLines(r.Diff)[place]; !touched {
+				return "", false
+			}
+		}
+		if it.SHA != "" {
+			for k := 0; k <= i; k++ {
+				if sameSHA(it.SHA, l.in.Rounds[k].SHA) || (k < i && sameSHA(it.SHA, pushedHead(l.in.Rounds, k, ""))) {
+					return fix, true
+				}
+			}
+		}
+		if !it.At.IsZero() && it.At.Before(r.At) {
+			return fix, true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// olderThanAFix is the cheap precondition of coveredByFix: the comment was
+// written before some pushed round's fix. No forge read.
+func (l *ledger) olderThanAFix(it ledgerItem) bool {
+	for _, r := range l.in.Rounds {
+		if r.Pushed {
+			if _, ok := l.coveredByFix(it, r.N); ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // causedBy: the item came after the last round's push and is on what that
@@ -587,6 +652,127 @@ func (s *Service) classifyLiveRound(ctx context.Context, b *Babysit, pr *PullReq
 	round.WorkClass = round.Class
 }
 
+// coverMemo is what closeCovered has looked at for one pull request: on a
+// head, with so many comments dealt with, the open comments it classified.
+type coverMemo struct {
+	head  string
+	dealt int
+	refs  map[string]bool
+}
+
+// closeCovered closes the open bot comments a round's fix already covers:
+// ones written about a head from before that fix, which the ledger would not
+// take for the fix not holding (coveredByFix, WP-1853). They are marked fixed
+// by the fix's commit, as the duplicate that round was given is, so no round
+// is spent on them and none parks on "came back". A person's comment is never
+// closed this way. It changes nothing before a round has pushed.
+func (s *Service) closeCovered(ctx context.Context, b *Babysit, pr *PullRequest, comments []*PRReviewComment) {
+	if !slices.ContainsFunc(b.Rounds, func(r BabysitRound) bool { return r.Pushed }) {
+		return
+	}
+	// Classifying reads files from the forge for every item, and the sweep
+	// runs every minute: each open comment is classified once per head and
+	// count of comments dealt with (a closed comment can make another one a
+	// duplicate), and only when some earlier comment or finding of the round
+	// ledgers could be the one it repeats.
+	dealt := 0
+	for _, rc := range comments {
+		if rc.Dealt {
+			dealt++
+		}
+	}
+	memo := coverMemo{head: strings.ToLower(pr.HeadSHA), dealt: dealt, refs: map[string]bool{}}
+	if v, ok := s.coverLooked.Load(pr.ID); ok {
+		if m := v.(coverMemo); m.head == memo.head && m.dealt == dealt {
+			memo = m
+		}
+	}
+	in := ledgerInput{At: s.now(), Head: pr.HeadSHA, Rounds: b.Rounds}
+	for _, rc := range comments {
+		in.Earlier = append(in.Earlier, commentItem(rc))
+	}
+	var open []*PRReviewComment
+	probe := &ledger{in: in}
+	for _, rc := range comments {
+		if rc.Dealt || rc.Gone || (rc.Verdict != VerdictNew && rc.Verdict != VerdictSeen) || !rc.botComment() || memo.refs[rc.Ref] {
+			continue
+		}
+		it := commentItem(rc)
+		if !probe.olderThanAFix(it) || !probe.mayRepeat(it) {
+			continue
+		}
+		open = append(open, rc)
+		in.Items = append(in.Items, it)
+	}
+	if len(open) == 0 {
+		s.coverLooked.Store(pr.ID, memo)
+		return
+	}
+	read, failed := s.forgeFileReaderTracked(ctx, pr)
+	if read == nil {
+		return // no forge to read: nothing is closed on a guess
+	}
+	in.File = read
+	entries, _ := classifyRound(in)
+	if failed() {
+		// A file read as empty puts two functions' comments in one place:
+		// nothing is closed or remembered, and a later sweep looks again.
+		return
+	}
+	for _, rc := range open {
+		memo.refs[rc.Ref] = true
+	}
+	for _, e := range entries {
+		if e.Covered == "" {
+			continue
+		}
+		for _, rc := range open {
+			if rc.Ref != e.ID {
+				continue
+			}
+			note := fmt.Sprintf("Written about %s, before round %d's fix (%s), which covers it as it does %s. (Closed by Waypoint; reopen it if the fix leaves this standing.)",
+				cmp(short(rc.SHA), "an earlier head"), e.Round, short(e.Covered), e.Of)
+			if err := s.markComment(ctx, pr, rc, VerdictFixed, note, e.Covered, rcBy{kind: "babysitter", name: "waypoint"}, b.Round); err != nil {
+				s.log.WarnContext(ctx, "close a comment a fix covers", "pr", pr.ID, "comment", rc.Ref, "err", err)
+				delete(memo.refs, rc.Ref)
+				continue
+			}
+			rc.Dealt = true
+			memo.dealt++
+			s.log.InfoContext(ctx, "closed a comment a fix covers", "repo", pr.Repo, "number", pr.Number, "comment", rc.Ref, "of", e.Of, "fix", short(e.Covered))
+		}
+	}
+	s.coverLooked.Store(pr.ID, memo)
+}
+
+// mayRepeat is the cheap local test before classifying a comment: some other
+// comment that was dealt with or fixed (or given to a round that pushed)
+// shares its file or its exact gist, or a round's ledger holds a finding on
+// its file. When none does, the comment can repeat nothing.
+func (l *ledger) mayRepeat(it ledgerItem) bool {
+	place, _ := itemPlace(it)
+	gist := gistOf(it.Body)
+	for _, p := range l.in.Earlier {
+		if p.ID == it.ID || (!p.Dealt && !p.Fixed && l.pushedWith(p.ID) <= 0) {
+			continue
+		}
+		if pp, _ := itemPlace(p); (pp != "" && pp == place) || (gist != "" && gistOf(p.Body) == gist) {
+			return true
+		}
+	}
+	for _, r := range l.in.Rounds {
+		if !r.Pushed {
+			continue
+		}
+		for _, pe := range r.Ledger {
+			if pe.Kind == "finding" && pe.Path != "" && pe.Path == place {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // commentItem is a review comment as the ledger reads it.
 func commentItem(rc *PRReviewComment) ledgerItem {
 	return ledgerItem{ID: rc.Ref, Kind: "comment", Path: rc.Path, Line: rc.Line, SHA: rc.SHA, Body: rc.Body, At: rc.CreatedAt,
@@ -641,12 +827,20 @@ func (s *Service) earlierFindings(ctx context.Context, prID int64, now []TodoFin
 // forgeFileReader reads a pull request's files at a commit from its forge,
 // each once.
 func (s *Service) forgeFileReader(ctx context.Context, pr *PullRequest) func(string, string) string {
+	read, _ := s.forgeFileReaderTracked(ctx, pr)
+	return read
+}
+
+// forgeFileReaderTracked is forgeFileReader, also giving a func that says
+// whether any read failed (the file then reads as empty).
+func (s *Service) forgeFileReaderTracked(ctx context.Context, pr *PullRequest) (func(string, string) string, func() bool) {
 	f, err := s.forgeByID(ctx, pr.ForgeID)
 	prc, ok := s.Forges.(ForgePRs)
 	if err != nil || !ok {
-		return nil
+		return nil, nil
 	}
 	cache := map[string]string{}
+	bad := false
 	return func(file, sha string) string {
 		key := sha + "\x00" + file
 		if body, ok := cache[key]; ok {
@@ -655,8 +849,9 @@ func (s *Service) forgeFileReader(ctx context.Context, pr *PullRequest) func(str
 		body, err := prc.FileAt(ctx, f, pr.Repo, file, sha)
 		if err != nil {
 			body = ""
+			bad = bad || !errors.Is(err, ErrNotFound) // a file that isn't there is an answer
 		}
 		cache[key] = body
 		return body
-	}
+	}, func() bool { return bad }
 }

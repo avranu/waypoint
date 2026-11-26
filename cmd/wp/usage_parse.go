@@ -297,7 +297,13 @@ type rawLine struct {
 	Version   string `json:"version"`
 	AiTitle   string `json:"aiTitle"`
 	Sidechain bool   `json:"isSidechain"`
-	Message   *struct {
+	// RequestID, with the message id, names one API call: a streamed answer
+	// is written as several records of it. The rest are read by wp usage where.
+	RequestID        string `json:"requestId"`
+	IsAPIError       bool   `json:"isApiErrorMessage"`
+	IsMeta           bool   `json:"isMeta"`
+	IsCompactSummary bool   `json:"isCompactSummary"`
+	Message          *struct {
 		ID      string          `json:"id"`
 		Model   string          `json:"model"`
 		Usage   *rawUsage       `json:"usage"`
