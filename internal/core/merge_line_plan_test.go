@@ -74,6 +74,12 @@ func TestPlanLine(t *testing.T) {
 		{name: "failed batch ends and places start one by one", snap: lineSnap{
 			Entries: []lineEntry{e(1), e(2)}, BatchDepth: 2,
 			Cands: []lineCand{rerun(cand(6, candFailed, 1, 2))}}, want: []lineAction{ends(6, endBatchSplit), start(1), start(1, 2)}},
+		{name: "saturated: a failed batch of eight is followed by two places, not the same eight", snap: lineSnap{
+			Entries: []lineEntry{e(1), e(2), e(3), e(4), e(5), e(6), e(7), e(8), e(9)}, Saturated: true, BatchDepth: 8,
+			Cands: []lineCand{rerun(cand(6, candFailed, 1, 2, 3, 4, 5, 6, 7, 8))}}, want: []lineAction{ends(6, endBatchSplit), start(1, 2)}},
+		{name: "saturated: a failed batch of two is followed by the front alone", snap: lineSnap{
+			Entries: []lineEntry{e(1), e(2), e(3)}, Saturated: true, BatchDepth: 2,
+			Cands: []lineCand{rerun(cand(6, candFailed, 1, 2))}}, want: []lineAction{ends(6, endBatchSplit), start(1)}},
 		{name: "a tried batch isn't started again", snap: lineSnap{
 			Entries: []lineEntry{e(1), e(2)}, Saturated: true, BatchDepth: 2, Tried: tried([]int{1, 2})}, want: []lineAction{start(1)}},
 		{name: "conflict ejects the pull request that didn't merge", snap: lineSnap{

@@ -1646,3 +1646,52 @@ func TestLineMarksEachDraftOfACandidateReadyAsItsTurnComes(t *testing.T) {
 		t.Errorf("candidates made: %v", se.madeHeads())
 	}
 }
+
+// failStackStatusOnce fails the first post of the stack status.
+type failStackStatusOnce struct {
+	*shipForge
+	failed bool
+}
+
+func (f *failStackStatusOnce) SetCommitStatus(ctx context.Context, fg *Forge, repo, sha string, st CommitStatusPost) error {
+	if st.Context == stackContext && !f.failed {
+		f.failed = true
+		return fmt.Errorf("the forge answered 502")
+	}
+	return f.shipForge.SetCommitStatus(ctx, fg, repo, sha, st)
+}
+
+// A later head that couldn't be marked ready is asked again on the next step:
+// the candidate, whose run already merged the head before it, is kept.
+func TestLineKeepsACandidateWhoseLaterHeadCouldNotBeMarkedReady(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.draftGreen(head8s, 7)
+	se.step()
+	se.line()
+	se.stackRun(1, CheckSuccess, treeB, "7 "+head7s, "8 "+head8s)
+	se.sg.trees = map[string]string{"3e7000000": treeA, "3e8000000": treeB}
+	se.line()
+	f := &failStackStatusOnce{shipForge: se.sg}
+	se.s.Forges = f
+	se.editSkipped(head7s, 30)
+	se.step()
+	if m := se.sg.merged(); len(m) != 1 || m[0].HeadSHA != head7s {
+		t.Fatalf("merges %+v (%q)", m, se.babysitOf(7).Wait)
+	}
+	if !f.failed {
+		t.Fatal("the step never posted the stack status for #8")
+	}
+	se.line()
+	if pr := se.pr(8); pr.State != "open" || pr.ReadyAt == nil {
+		t.Fatalf("#8 not marked ready on the next step: %+v (%q)", pr, se.babysitOf(8).Wait)
+	}
+	se.editSkipped(head8s, 40)
+	se.step()
+	if m := se.sg.merged(); len(m) != 2 || m[1].HeadSHA != head8s {
+		t.Fatalf("merges %+v (%q)", m, se.babysitOf(8).Wait)
+	}
+	if len(se.made) != 2 {
+		t.Errorf("candidates made: %v", se.madeHeads())
+	}
+}

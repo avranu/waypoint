@@ -1211,11 +1211,17 @@ func (s *Service) lineMergeAct(ctx context.Context, ls *lineState, a lineAction)
 		}
 		// The candidate is ready from its first merge on; each head after it
 		// is still a draft until its own turn (WP-1994).
-		marked := pr.ReadyAt != nil && sameSHA(pr.readySHA, pr.HeadSHA)
-		if st.State != stackReady || !marked {
+		draft := pr.WipAuto && (pr.ReadyAt == nil || !sameSHA(pr.readySHA, pr.HeadSHA))
+		if st.State != stackReady || draft {
 			if pr.WipAuto {
 				if err := s.candMarkReady(ctx, ls.f, pr, st); err != nil {
 					s.log.WarnContext(ctx, "mark a pull request ready on its candidate", "repo", pr.Repo, "number", pr.Number, "err", err)
+					if st.State == stackReady && s.now().Sub(st.CreatedAt) < stackRunCeiling {
+						// Pull requests already merged on this candidate's run:
+						// the next step asks again rather than end it and test
+						// the rest a second time.
+						return
+					}
 					s.postStackFailure(ctx, ls.f, pr, st, "Waypoint couldn't mark it ready on the candidate")
 					//wplint:ignore blankerr candEndAs logs a failed end; it returns here either way, and the candidate, live and not ready, is planned again next step
 					_ = s.candEnd(ctx, ls.f, st, stackCancelled, endLineChanged, "couldn't mark it ready: "+excerpt(err.Error(), 120))
