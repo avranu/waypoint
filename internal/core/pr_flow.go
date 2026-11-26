@@ -448,7 +448,7 @@ func (a *flowAgg) report(isMerged bool) (float64, []PRFlowGroup, []PRFlowStage) 
 func (a *flowAgg) dayReport(day string) (float64, []PRFlowGroup, []PRFlowTop) {
 	tot := a.day[day]
 	all := sumValues(tot)
-	var top []PRFlowTop
+	top := []PRFlowTop{}
 	for _, name := range flowStages {
 		if sec := tot[flowKey{name, FlowConverging}] + tot[flowKey{name, FlowIntegrating}]; sec > 0 {
 			top = append(top, PRFlowTop{name, sec / all})
