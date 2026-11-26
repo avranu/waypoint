@@ -216,6 +216,12 @@ func (f *fromAddr) RoundTrip(r *http.Request) (*http.Response, error) {
 
 func loginServer(t *testing.T, tune func(*Server)) *httptest.Server {
 	t.Helper()
+	ts, _ := loginServerDB(t, tune)
+	return ts
+}
+
+func loginServerDB(t *testing.T, tune func(*Server)) (*httptest.Server, *db.DB) {
+	t.Helper()
 	d, err := db.OpenFresh(context.Background(), filepath.Join(t.TempDir(), "api.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -232,7 +238,7 @@ func loginServer(t *testing.T, tune func(*Server)) *httptest.Server {
 	}
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return ts
+	return ts, d
 }
 
 func loginFrom(t *testing.T, ts *httptest.Server, ip, password string) int {
@@ -314,6 +320,38 @@ func TestLoginAccountLimitStopsRotatingGuesser(t *testing.T) {
 	}
 	if code := loginFrom(t, ts, "203.0.113.9", "correct horse battery"); code != 200 {
 		t.Errorf("an address that signed in before, after the account-wide limit: %d", code)
+	}
+}
+
+// A locked-out address is refused from memory, and refusals by the
+// account counts count against the address, so hammering ends there too.
+func TestLoginRefusalsCountAgainstTheAddress(t *testing.T) {
+	var srv *Server
+	ts := loginServer(t, func(s *Server) { srv = s; s.userAddrLimiter = newRateLimiter(1, 10*time.Minute) })
+	if code := loginFrom(t, ts, "198.51.100.7", "wrong password"); code != 400 {
+		t.Fatalf("first guess: %d", code)
+	}
+	for n := 0; n < 9; n++ {
+		if code := loginFrom(t, ts, "198.51.100.7", "wrong password"); code != 429 {
+			t.Fatalf("refusal %d: %d", n, code)
+		}
+	}
+	if !srv.loginAddrBlocked("198.51.100.7") {
+		t.Error("ten refused attempts didn't use up the address's own limit")
+	}
+}
+
+// A server fault after the lookup isn't a wrong password: not a 400, and
+// no lockout counts it.
+func TestLoginServerFaultIsNotCounted(t *testing.T) {
+	var srv *Server
+	ts, d := loginServerDB(t, func(s *Server) { srv = s })
+	d.R.Close() // where the account is looked up
+	if code := loginFrom(t, ts, "198.51.100.7", "correct horse battery"); code == 400 || code == 429 || code < 400 {
+		t.Errorf("sign-in with the database closed: %d", code)
+	}
+	if n := len(srv.limiter.hits) + len(srv.userLimiter.hits) + len(srv.userAddrLimiter.hits); n != 0 {
+		t.Errorf("a server fault was counted: %d keys", n)
 	}
 }
 
@@ -442,6 +480,11 @@ func TestClientIPBehindProxy(t *testing.T) {
 		{"127.0.0.1", []string{"198.51.100.7, 10.9.0.1"}, "198.51.100.7"}, // two proxies
 		{"10.9.0.1", []string{"10.9.0.9"}, "10.9.0.9"},                    // a LAN client
 		{"10.9.0.1", []string{"not-an-ip"}, "10.9.0.1"},
+		// One address is written one way on every path, peer or hop.
+		{"::ffff:10.9.0.1", nil, "10.9.0.1"},
+		{"::ffff:10.9.0.1", []string{"not-an-ip"}, "10.9.0.1"},
+		{"::ffff:203.0.113.5", nil, "203.0.113.5"},
+		{"10.9.0.1", []string{"::FFFF:198.51.100.7"}, "198.51.100.7"},
 		// Straight from the internet: its headers are its own, so ignored.
 		{"203.0.113.5", []string{"1.2.3.4"}, "203.0.113.5"},
 	} {

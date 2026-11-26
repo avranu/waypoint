@@ -9,7 +9,7 @@ All configuration is environment variables.
 | `WAYPOINT_ADDR` | `:8080` | listen address |
 | `WAYPOINT_DB` | `data/waypoint.db` | SQLite file (directory is created) |
 | `WAYPOINT_BASE_URL` | `http://localhost:8080` | public URL, no trailing slash; used in links (invites, notifications, calendar, webhooks). `https://` also makes cookies Secure |
-| `WAYPOINT_TRUST_PROXY` | off | which reverse proxies to believe: `1` trusts loopback and private addresses (10/8, 172.16/12, 192.168/16, fc00::/7), or give a comma list of addresses and CIDRs (`10.0.0.1, 2001:db8::/64`). Only a request arriving *from* a trusted proxy has its `X-Forwarded-For` read, from the right, skipping trusted hops (anything further left is client-supplied), and its `X-Forwarded-Proto: https` marks cookies Secure. Anyone else's headers are ignored, so the port being reachable directly from the internet can't be used to forge an address and dodge the login rate limit |
+| `WAYPOINT_TRUST_PROXY` | off | which reverse proxies to believe: `1` trusts loopback and private addresses (10/8, 172.16/12, 192.168/16, fc00::/7), or give a comma list of addresses and CIDRs (`10.0.0.1, 2001:db8::/64`). Only a request arriving *from* a trusted proxy has its `X-Forwarded-For` read, from the right, skipping trusted hops (anything further left is client-supplied), and its `X-Forwarded-Proto: https` marks cookies Secure. Anyone else's headers are ignored, so the port being reachable directly from the internet can't be used to forge an address and dodge the login rate limit. A host *inside* a trusted range is believed like a proxy: with `1`, any machine on the private network that can reach the port directly can name any address and get a fresh sign-in count for each. Where other hosts share that network, give the proxy's own address instead of `1`, or bind the port where only the proxy reaches it |
 | `WAYPOINT_BACKUP_DIR` | `backups/` next to the database (Docker image: `/data/backups`) | a consistent copy of the DB is written there daily (mode 0600); `off` disables backups |
 | `WAYPOINT_BACKUP_KEEP` | `14` | how many daily backups to keep |
 | `WAYPOINT_MAX_ATTACHMENT_MB` | `25` | the size limit of one attached file (issues, pages, design notes, comments, requests, sessions); 1 to 1024. A reverse proxy needs a body limit at least this large (nginx: `client_max_body_size`) |
@@ -703,7 +703,8 @@ Any proxy works. Requirements:
 
 - Pass `Host`, append `X-Forwarded-For`, set `X-Forwarded-Proto`, and set
   `WAYPOINT_TRUST_PROXY=1` (or the proxy's own address, if it isn't on a
-  private network).
+  private network or other machines on that network can reach Waypoint's
+  port: everything a trusted address sends in `X-Forwarded-For` is believed).
 - Don't buffer `/api/v1/stream` (server-sent events). Waypoint sends
   `X-Accel-Buffering: no`, which nginx honours; keep read timeouts above the
   25-second keep-alive ping the stream sends. `wp pr wait` holds a request up

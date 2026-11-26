@@ -149,6 +149,9 @@ func (s *Server) reauth(w http.ResponseWriter, r *http.Request) (any, error) {
 	}
 	a := actorFrom(r)
 	ip := s.clientIP(r)
+	if s.loginAddrBlocked(ip) {
+		return nil, errTooMany
+	}
 	if blocked, err := s.loginBlocked(r.Context(), userAcct(a.User.ID), ip); err != nil {
 		return nil, err
 	} else if blocked {

@@ -344,9 +344,11 @@ func peerIP(r *http.Request) string {
 // isn't itself a trusted proxy is the client. Anything to its left was
 // supplied by the client and can be forged.
 func (s *Server) clientIP(r *http.Request) string {
-	peer := peerIP(r)
+	// Every return is canonical, so one address is one lockout bucket
+	// whichever path names it.
+	peer := canonicalIP(peerIP(r))
 	if !s.trusted(peer) {
-		return canonicalIP(peer)
+		return peer
 	}
 	var hops []string
 	for _, v := range r.Header.Values("X-Forwarded-For") {
@@ -367,14 +369,8 @@ func (s *Server) clientIP(r *http.Request) string {
 	return peer
 }
 
-// canonicalIP writes an address one way (lowercase, IPv4-mapped unmapped), so
-// one address is one lockout bucket and matches its session's address.
-func canonicalIP(ip string) string {
-	if a, err := netip.ParseAddr(ip); err == nil {
-		return a.Unmap().String()
-	}
-	return ip
-}
+// canonicalIP is core.CanonicalIP, the spelling sessions are matched in.
+func canonicalIP(ip string) string { return core.CanonicalIP(ip) }
 
 const sessionCookie = "wp_session"
 
@@ -757,19 +753,29 @@ func (s *Server) loginAccount(ctx context.Context, login string) (loginAcct, err
 // refused. The account-wide limit guards against a guesser rotating
 // addresses; it spares an address the account already signed in from.
 // An error looking for that session is returned, not taken as a yes or no.
+// The caller checks loginAddrBlocked first, before looking acct up.
+//
+// A refusal here counts against ip's own limit, so an address that keeps
+// sending attempts its account count refuses soon hits that limit, which
+// refuses before any database lookup.
 func (s *Server) loginBlocked(ctx context.Context, acct loginAcct, ip string) (bool, error) {
-	if s.limiter.blocked("login:"+ip) || s.userAddrLimiter.blocked("login-user:"+acct.key+"|"+ip) {
-		return true, nil
+	blocked := s.userAddrLimiter.blocked("login-user:" + acct.key + "|" + ip)
+	if !blocked && s.userLimiter.blocked("login-user:"+acct.key) {
+		spared, err := s.svc.SignedInFrom(ctx, acct.id, ip)
+		if err != nil {
+			return false, fmt.Errorf("checking for a session from this address: %w", err)
+		}
+		blocked = !spared
 	}
-	if !s.userLimiter.blocked("login-user:" + acct.key) {
-		return false, nil
+	if blocked {
+		s.limiter.hit("login:" + ip)
 	}
-	spared, err := s.svc.SignedInFrom(ctx, acct.id, ip)
-	if err != nil {
-		return false, fmt.Errorf("checking for a session from this address: %w", err)
-	}
-	return !spared, nil
+	return blocked, nil
 }
+
+// loginAddrBlocked reports whether ip has used up its password attempts,
+// from memory alone, so a locked-out address costs no database lookup.
+func (s *Server) loginAddrBlocked(ip string) bool { return s.limiter.blocked("login:" + ip) }
 
 func (s *Server) loginFailed(acct loginAcct, ip string) {
 	s.limiter.hit("login:" + ip)
