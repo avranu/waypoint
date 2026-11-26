@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -264,50 +263,6 @@ func (s guardSite) confined(p string) bool {
 				return true
 			}
 		}
-	}
-	return false
-}
-
-// trackedClean says a file is the project's own: its text is what the
-// default branch of origin holds at that path (origin/HEAD, else origin/main
-// or origin/master), at that branch's tip or at the commit the checkout left
-// it at (a worktree behind origin after a fetch). It compares text and reads
-// nothing else of git's: a file the session wrote, edited or committed itself
-// differs, whatever git status says of it (skip-worktree, ignored), and an
-// ignored file holding origin's own text is the project's. A file outside a
-// repository is not, nor is any file where no such branch is known. The name
-// is given to git as a path, never as a pattern.
-//
-// This tells apart what a session wrote in the course of its work, and the
-// guard refuses the git commands that set a remote-tracking ref by hand
-// (forgesRemoteRef). It is no proof against a session that sets out to
-// deceive the guard another way (a clean filter, a write under .git, a new
-// URL for origin): such a session can as well put its commands in a
-// Makefile, which runs unread. Containment holds that line (PL7).
-func trackedClean(p string) bool {
-	dir, base := filepath.Dir(p), filepath.Base(p)
-	git := func(args ...string) string {
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) // #nosec G204 -- git on the path of the script the command is about to run
-		cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
-		out, err := cmd.Output()
-		if err != nil {
-			return ""
-		}
-		return strings.TrimSpace(string(out))
-	}
-	have := git("hash-object", "--", base)
-	if have == "" {
-		return false
-	}
-	for _, ref := range []string{"refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master"} {
-		if git("rev-parse", "-q", "--verify", ref+"^{commit}") == "" {
-			continue
-		}
-		if git("rev-parse", "-q", "--verify", ref+":./"+base) == have {
-			return true
-		}
-		at := git("merge-base", "HEAD", ref)
-		return at != "" && git("rev-parse", "-q", "--verify", at+":./"+base) == have
 	}
 	return false
 }
