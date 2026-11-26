@@ -271,7 +271,7 @@ func takeFlag(args []string, name string, optional bool) (rest []string, val str
 		if _, v, ok := strings.Cut(a, "="); ok {
 			return rest, v, true, nil
 		}
-		if i+1 < len(args) && !(optional && strings.HasPrefix(args[i+1], "-")) {
+		if i+1 < len(args) && (!optional || !strings.HasPrefix(args[i+1], "-")) {
 			return append(slices.Clone(args[:i]), args[i+2:]...), args[i+1], true, nil
 		}
 		if !optional {
