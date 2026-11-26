@@ -275,6 +275,9 @@ type AuditAttempt struct {
 	// 0 on an attempt no runner took.
 	QueuedAt int64 `json:"queued_at,omitempty"`
 	TakenAt  int64 `json:"taken_at,omitempty"`
+	// Rerun marks the attempt after which a pull request's own audit was
+	// queued to run its whole chain once more (WP-1916).
+	Rerun bool `json:"rerun,omitempty"`
 }
 
 // AuditInput asks for an audit.
@@ -1141,7 +1144,7 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 	case "expired":
 		att.Outcome, att.Error = "unavailable", "no runner took it within a day"
 		if j.StartedAt > 0 {
-			att.Error = "the runner that took it went silent and never reported back"
+			att.Error = runnerSilentError
 		}
 	default:
 		att.Outcome, att.Error = auditFailureKind(j), excerpt(jobWhy(j), 300)
@@ -1219,35 +1222,67 @@ func (s *Service) endAuditChain(ctx context.Context, a *CodeAudit, last string) 
 // endAuditFailed ends a chain that failed on an error. A pull request's own
 // audit that failed on a passing fault runs its whole chain once more after
 // auditRetryStep, as its merge would otherwise go ahead with the head
-// unaudited (WP-1916). A pass that timed out is not run again: the pull
-// request waits on an audit that is going, and a second long timeout would
-// hold it twice as long. A pass that hit a usage limit ends as limited.
+// unaudited (WP-1916); auditGoingErr holds the merge meanwhile. It does so
+// once, however many passes busy models took before, and only while the pull
+// request is open on the change the audit read. A pass that timed out, or
+// whose runner went silent, is not run again: the pull request waits on an
+// audit that is going, and a second long wait would hold it twice as long.
+// A pass that hit a usage limit is not run again either.
 func (s *Service) endAuditFailed(ctx context.Context, a *CodeAudit, why string) {
-	if a.Retries == 0 && s.isPRAudit(ctx, a) {
-		spentOrSlow := false
-		for _, x := range a.Attempts {
-			if x.Round == a.Retries && (x.Outcome == "timeout" || x.Outcome == "spent") {
-				spentOrSlow = true
-			}
-		}
-		if !spentOrSlow {
-			at := s.now().Add(auditRetryStep)
-			s.requeueAudit(ctx, a, 0, 1, &at)
-			return
-		}
+	own, err := s.isPRAudit(ctx, a)
+	var rerun bool
+	if err == nil && own {
+		rerun, err = s.owesRerun(ctx, a)
 	}
-	if a.Retries > 0 && s.isPRAudit(ctx, a) {
+	if err != nil {
+		// Not ended on a guess: CheckAudits comes to it again.
+		s.log.WarnContext(ctx, "read whether a failed audit runs again", "audit", a.ID, "err", err)
+		return
+	}
+	if rerun {
+		a.Attempts[len(a.Attempts)-1].Rerun = true
+		at := s.now().Add(auditRetryStep)
+		s.requeueAudit(ctx, a, 0, a.Retries+1, &at)
+		return
+	}
+	if own && a.Retries > 0 {
 		why += fmt.Sprintf(" (tried %d times, the whole chain each time)", a.Retries+1)
 	}
 	s.failAudit(ctx, a, why)
 }
 
+// owesRerun says whether a pull request's own audit, its chain just failed,
+// runs once more (endAuditFailed).
+func (s *Service) owesRerun(ctx context.Context, a *CodeAudit) (bool, error) {
+	if len(a.Attempts) == 0 || a.PRID == nil {
+		return false, nil
+	}
+	for _, x := range a.Attempts {
+		slow := x.Outcome == "timeout" || x.Outcome == "spent" || x.Error == runnerSilentError
+		if x.Rerun || x.Round == a.Retries && slow {
+			return false, nil
+		}
+	}
+	pr, err := s.prByID(ctx, s.db.R, *a.PRID)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil || (pr.State != "open" && pr.State != "draft") {
+		return false, err
+	}
+	heads, err := s.sameChangeHeads(ctx, pr)
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(heads, func(h string) bool { return sameSHA(a.Ref, h) }), nil
+}
+
 // isPRAudit: the audit is a pull request's own (WP-1852), as against one a
 // person, an automation or a review round asked for.
-func (s *Service) isPRAudit(ctx context.Context, a *CodeAudit) bool {
+func (s *Service) isPRAudit(ctx context.Context, a *CodeAudit) (bool, error) {
 	var own bool
-	_ = s.db.R.QueryRowContext(ctx, `SELECT purpose = '' AND request_key LIKE 'pr-audit:%' FROM code_audits WHERE id = ?`, a.ID).Scan(&own)
-	return own
+	err := s.db.R.QueryRowContext(ctx, `SELECT purpose = '' AND request_key LIKE 'pr-audit:%' FROM code_audits WHERE id = ?`, a.ID).Scan(&own)
+	return own, err
 }
 
 // auditLimitAdvice says when a chain whose every model hit a usage limit
@@ -1299,6 +1334,10 @@ func (s *Service) requeueAuditTx(ctx context.Context, t *tx, a *CodeAudit, slot,
 // runnerStoppedError is the error of a job whose runner was stopped under it
 // (cmd/wp/runner.go), as against one a person cancelled.
 const runnerStoppedError = "The runner was stopped."
+
+// runnerSilentError is the error of an attempt whose runner took the job and
+// never reported back.
+const runnerSilentError = "the runner that took it went silent and never reported back"
 
 // jobWhy is a failed job's reason in a line.
 func jobWhy(j *stepJob) string {
