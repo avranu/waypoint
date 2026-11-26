@@ -7,11 +7,6 @@ import (
 	"testing"
 )
 
-// WP-1547 / audit 1278.6: each path that lists what is still to do drops a
-// finding filed as an issue (confirmed, issue linked, medium or lower) and
-// keeps a confirmed one with no issue. Each test fails if its path goes back
-// to counting every open or confirmed finding.
-
 type filedEnv struct {
 	*apEnv
 	prID, forge, issue int64
@@ -35,10 +30,10 @@ func filedPR(t *testing.T) *filedEnv {
 
 type seedFinding struct {
 	severity string
-	filed    bool // confirmed with the issue linked; else confirmed with none
+	filed    bool
 	state    string
-	cat      string // the linked issue's status category when filed ("": the shared issue)
-	dupOf    string // when set, the issue duplicates another in this status category
+	cat      string
+	dupOf    string
 }
 
 // issueIn makes an issue in a status of this category and returns its ID.

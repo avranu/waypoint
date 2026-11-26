@@ -15,10 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/wql"
 )
 
-// MCP: a stateless Model Context Protocol server over streamable HTTP.
-// Each POST carries one JSON-RPC message; responses are plain JSON. Agents
-// authenticate with the same bearer tokens as the REST API.
-
 var mcpVersions = []string{"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"}
 
 type rpcRequest struct {
@@ -55,7 +51,6 @@ func (s *Server) mcp(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "read error", http.StatusBadRequest)
 		return
 	}
-	// Only agents speak MCP: changes made here count as an agent's (WP-D10).
 	actor.MCP = true
 	ctx := context.WithValue(r.Context(), actorKey, actor)
 	trimmed := strings.TrimSpace(string(body))
@@ -97,7 +92,7 @@ func (s *Server) mcp(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) mcpHandle(ctx context.Context, actor *core.Actor, req rpcRequest) *rpcResponse {
 	if len(req.ID) == 0 {
-		return nil // notification
+		return nil
 	}
 	resp := &rpcResponse{JSONRPC: "2.0", ID: req.ID}
 	switch req.Method {
@@ -105,7 +100,6 @@ func (s *Server) mcpHandle(ctx context.Context, actor *core.Actor, req rpcReques
 		var p struct {
 			ProtocolVersion string `json:"protocolVersion"`
 		}
-		// Malformed params fall back to the default version below.
 		if len(req.Params) > 0 {
 			_ = json.Unmarshal(req.Params, &p)
 		}
@@ -146,7 +140,6 @@ func (s *Server) mcpHandle(ctx context.Context, actor *core.Actor, req rpcReques
 		if err != nil {
 			msg := err.Error()
 			if !core.IsInvalid(err) && !errors.Is(err, core.ErrNotFound) && !errors.Is(err, core.ErrForbidden) && !errors.Is(err, core.ErrUnauthorized) && !errors.Is(err, core.ErrConflict) && !errors.Is(err, errBadRequest) {
-				// Same rule as REST: unexpected errors are logged, not shown.
 				s.log.ErrorContext(ctx, "mcp tool failed", "tool", p.Name, "err", err)
 				msg = "internal error"
 			}

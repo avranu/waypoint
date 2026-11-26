@@ -26,7 +26,6 @@ export function QuickAddDetailsButton({ onOpen }: { onOpen: () => void }) {
       size="xs"
       label={`Add details (${DETAILS_HINT})`}
       icon={<Maximize2 className="size-3.5" />}
-      // Keeps focus in the box, so a blur doesn't close it before the click lands.
       onMouseDown={(e) => e.preventDefault()}
       onClick={onOpen}
     />

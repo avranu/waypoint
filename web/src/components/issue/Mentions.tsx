@@ -1,9 +1,3 @@
-// What an issue's text names, and what names it (WP-101): automatic links
-// from keys, page codes, [[wikilinks]] and glossary terms. Muted and
-// compact; nothing renders when there are none. Forge items (pull requests,
-// commits, forge issues) that name the issue without being its work are a
-// group of their own (WP-379).
-
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { GitCommit, GitPullRequest, CircleDot } from 'lucide-react'

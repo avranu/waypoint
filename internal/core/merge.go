@@ -1,13 +1,5 @@
 package core
 
-// Merge when ready (WP-D21). A pull request is ready when it is open, not a
-// draft, mergeable, every check on its head passed and the review gate (if
-// on) is green, and no person asked for changes. Waypoint merges a ready
-// pull request on request, or when an armed one becomes ready (armed with
-// `wp pr merge N --when-ready`, the Arm button, the `automerge` label, or
-// the repo's Merge automatically setting, merge_policy.go), always passing
-// the head it checked so a newer push is never merged unseen.
-
 import (
 	"context"
 	"database/sql"
@@ -51,10 +43,11 @@ type PRReadiness struct {
 	Checking bool `json:"checking,omitempty"`
 	// Notes say what doesn't hold the merge but is worth knowing, like an
 	// audit that ended without findings (WP-355).
-	Notes  []string    `json:"notes,omitempty"`
-	wake   *time.Time  // when the first of those waits ends
-	behind bool        // the head lacks the base's tip
-	stack  *queueStack // the passed merge queue stack that stands in for being behind (WP-404)
+	Notes  []string `json:"notes,omitempty"`
+	wake   *time.Time
+	unread int // how many of reviewHolds' reasons say only that a read failed
+	behind bool
+	stack  *queueStack
 }
 
 // PRArmed is merge-when-ready set on a pull request.
@@ -227,18 +220,11 @@ func (s *Service) readinessFor(ctx context.Context, pr *PullRequest, settle bool
 		return nil, err
 	}
 	r.Reasons = append(r.Reasons, holds...)
-	// Another pull request it merges after, still open (WP-912): added last,
-	// so what else holds it is worked out as without. Not behind its base,
-	// though: brought up to date while it waits, it would only run CI again
-	// on a head that can't merge yet.
 	after, notes := s.mergeWaitReasons(ctx, pr)
 	r.Notes = append(r.Notes, notes...)
 	if settle && attached && len(r.Reasons) == 0 && len(after) == 0 {
-		// Everything else is green: is it green for the base as it is now? A
-		// base that doesn't show Waypoint's last merge yet isn't known (WP-316).
 		tip, behind, stale, err := s.behindBaseErr(ctx, pr)
 		if err != nil {
-			// Not known to be up to date: held, and looked at again soon (WP-1406).
 			if readFault(err) {
 				s.log.WarnContext(ctx, "read whether a pull request is behind its base", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
 			}
@@ -247,8 +233,6 @@ func (s *Service) readinessFor(ctx context.Context, pr *PullRequest, settle bool
 				r.wake = &next
 			}
 		} else if behind || stale {
-			// A passed stack it was marked ready on stands in for the
-			// update while the base is the stack's heads merged (WP-404).
 			if st := s.readyCand(ctx, pr, tip); st != nil && !stale {
 				r.stack = st
 			} else {
@@ -256,8 +240,6 @@ func (s *Service) readinessFor(ctx context.Context, pr *PullRequest, settle bool
 				no("%s", reasonBehind(pr.BaseRef))
 			}
 		} else if st := s.readyCand(ctx, pr, tip); st != nil {
-			// The first head of a batch (WP-509) holds the base as it is:
-			// its merge follows the batch all the same.
 			r.stack = st
 		}
 	}
@@ -273,7 +255,7 @@ func (s *Service) readinessFor(ctx context.Context, pr *PullRequest, settle bool
 		}
 	}
 	if len(after) > 0 && (len(r.Reasons) == 0 || r.OnlyWaiting) {
-		r.OnlyWaiting = true // a person may merge it now all the same
+		r.OnlyWaiting = true
 	}
 	r.Reasons = append(r.Reasons, after...)
 	r.Ready = len(r.Reasons) == 0
@@ -289,10 +271,8 @@ func (s *Service) readinessFor(ctx context.Context, pr *PullRequest, settle bool
 func (s *Service) reviewHolds(ctx context.Context, pr *PullRequest, settle bool, r *PRReadiness) ([]string, error) {
 	var reasons []string
 	no := func(format string, args ...any) { reasons = append(reasons, fmt.Sprintf(format, args...)) }
-	// A hold that can't be read holds the merge: it isn't "no hold". The
-	// reason says what couldn't be read, the log names the pull request, and
-	// the merge is looked at again soon.
 	retry := func() {
+		r.unread++
 		if next := s.now().Add(driftRetry); r.wake == nil || next.Before(*r.wake) {
 			r.wake = &next
 		}
@@ -308,7 +288,7 @@ func (s *Service) reviewHolds(ctx context.Context, pr *PullRequest, settle bool,
 		if readFault(err) {
 			s.log.WarnContext(ctx, "read a repo's review gate setting for its merge", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
 		}
-		no("the review gate setting couldn't be read") // not "gate off"
+		no("the review gate setting couldn't be read")
 		retry()
 	} else if on {
 		switch {
@@ -333,12 +313,6 @@ func (s *Service) reviewHolds(ctx context.Context, pr *PullRequest, settle bool,
 	if n := len(undealt); n > 0 {
 		no("%d review comment%s not dealt with", n, plural(n))
 	}
-	// The newest finished audit's worst findings hold it; one that ended
-	// without findings holds nothing, and says so (WP-355).
-	// One look at the running audit serves both the hold and its wake, so a
-	// timeout between two looks can't leave a hold with no wake.
-	// A failed read of the running audits holds it: it isn't "no audit
-	// running" (WP-748, audit 674.1).
 	going, _, auditErr := s.auditGoingErr(ctx, pr.ID)
 	if auditErr != nil {
 		if readFault(auditErr) {
@@ -355,24 +329,24 @@ func (s *Service) reviewHolds(ctx context.Context, pr *PullRequest, settle bool,
 	if note != "" {
 		r.Notes = append(r.Notes, note)
 	}
-	// Fix-up rounds that spread past what it shipped as wait for their
-	// footprint check, which the babysitter asks for (WP-440).
-	if why, err := s.footprintDue(ctx, pr); err != nil {
-		unread("read a pull request's babysit for its footprint check", "its babysit couldn't be read for a footprint check", err)
+	if why, fpWake, err := s.footprintDue(ctx, pr); err != nil {
+		unread("read whether a pull request owes a footprint check", "whether a footprint check is due couldn't be read", err)
 	} else if why != "" {
 		no("%s", why)
+		if fpWake != nil && (r.wake == nil || fpWake.Before(*r.wake)) {
+			r.wake = fpWake
+		}
 	}
-	// A person who said to stop an agent's change holds it; a model's flag
-	// only tells them (WP-559, WP-821). An armed merge also starts the check.
 	driftWhy, driftAt := s.driftHold(ctx, pr, settle)
 	if driftWhy != "" {
 		no("%s", driftWhy)
+		if driftWhy == driftUnread {
+			r.unread++
+		}
 	}
 	if driftAt != nil && (r.wake == nil || driftAt.Before(*r.wake)) {
 		r.wake = driftAt
 	}
-	// A round's commits reach the branch only when its job ends, so a merge
-	// before then would leave out what the round fixed.
 	if running, err := s.roundRunning(ctx, pr.ID); err != nil {
 		unread("read whether a babysitting round is running", "whether a babysitting round is still working on it couldn't be read", err)
 	} else if running {
@@ -384,11 +358,8 @@ func (s *Service) reviewHolds(ctx context.Context, pr *PullRequest, settle bool,
 		no("%s", why)
 	}
 	if going != 0 && settle {
-		// The hold ends by itself when the audit times out: look again then.
 		at, err := s.auditDeadline(ctx, going)
 		if err != nil {
-			// The audit still holds the merge; without its deadline, look
-			// again soon instead of never (WP-1406).
 			if readFault(err) {
 				s.log.WarnContext(ctx, "read when a running audit stops holding a merge", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "audit", going, "err", err)
 			}
@@ -400,8 +371,6 @@ func (s *Service) reviewHolds(ctx context.Context, pr *PullRequest, settle bool,
 		}
 	}
 	if settle {
-		// An adversarial review of one of its tasks pushes its fixes to it
-		// (WP-285): an armed merge waits for it, for so long.
 		if why, until, err := s.reviewHold(ctx, pr); err != nil {
 			unread("read the adversarial reviews that hold a pull request", "whether an adversarial review is still working on it couldn't be read", err)
 		} else if why != "" {
@@ -430,7 +399,7 @@ func (s *Service) PRReadiness(ctx context.Context, actor *Actor, prID int64) (*P
 func (s *Service) prShipping(ctx context.Context, actor *Actor, pr *PullRequest) (*PRShipping, error) {
 	sh := &PRShipping{CI: pr.CIState, Mergeable: pr.Mergeable, Findings: []BotFinding{}}
 	if _, checking := pr.mergeState(s.now()); checking {
-		sh.Mergeable = nil // not known yet
+		sh.Mergeable = nil
 	}
 	if pr.ciSHA != pr.HeadSHA {
 		sh.CI = ""
@@ -552,9 +521,8 @@ type MergeInput struct {
 	WhenReady    bool // arm the pull request instead of merging now
 	// Head, when set, is the only head to merge: if the pull request's
 	// head moved since (wp pr wait --merge waited on it), it isn't merged.
-	Head  string
-	armed bool // merging because it was armed: it waits for reviews to settle
-	// notice, when set, is told what the merge did instead of what was asked.
+	Head   string
+	armed  bool
 	notice *string
 }
 
@@ -627,7 +595,7 @@ func (s *Service) refuseDiagnoseMerge(ctx context.Context, pr *PullRequest) erro
 // merge when it becomes ready (at once if it already is). Agents may use it
 // on their own pull requests. Merges are audited.
 func (s *Service) MergePR(ctx context.Context, actor *Actor, prID int64, in MergeInput) (res *MergeResult, err error) {
-	if err := actor.need(PermPullsMerge); err != nil { // WP-111
+	if err := actor.need(PermPullsMerge); err != nil {
 		return nil, err
 	}
 	pr, err := s.prByID(ctx, s.db.R, prID)
@@ -648,10 +616,8 @@ func (s *Service) MergePR(ctx context.Context, actor *Actor, prID int64, in Merg
 			return nil, err
 		}
 	}
-	// Read first, as merging releases the claim the warning is about. The
-	// claim itself waits for an arm that worked (WP-117).
 	warning := s.prClaimWarning(ctx, actor, pr.ID)
-	var notice string // what the merge did differently from what was asked
+	var notice string
 	defer func() {
 		if err != nil || res == nil || (!res.Merged && !res.Armed) {
 			return
@@ -662,8 +628,6 @@ func (s *Service) MergePR(ctx context.Context, actor *Actor, prID int64, in Merg
 		}
 	}()
 	if in.WhenReady {
-		// The record can lag the forge: one closed or merged there isn't
-		// armed (WP-1670). A forge that doesn't answer leaves the record.
 		if s.forgeEnded(ctx, pr.ID) {
 			cur, err := s.prByID(ctx, s.db.R, pr.ID)
 			if err != nil {
@@ -671,15 +635,12 @@ func (s *Service) MergePR(ctx context.Context, actor *Actor, prID int64, in Merg
 			}
 			return nil, invalid("this pull request is %s", cur.State)
 		}
-		s.settleStack(ctx, pr, false) // so its stack wait is read right
-		pr = s.afterSettle(ctx, pr)   // and the base it moved to is the one the policy reads
+		s.settleStack(ctx, pr, false)
+		pr = s.afterSettle(ctx, pr)
 		if pr.Outside {
-			return nil, errPROutside(pr) // a head no person approved never merges by itself (WP-281)
+			return nil, errPROutside(pr)
 		}
 		if actor.IsAgent() {
-			// A repo with Merge automatically off merges by hand: an agent's
-			// arm (wp ship) would put it in the merge line, where it holds
-			// the front until a person merges it (WP-520).
 			pol, ok, err := s.repoMergePolicy(ctx, pr.ForgeID, pr.Repo)
 			if err != nil {
 				return nil, err
@@ -690,8 +651,6 @@ func (s *Service) MergePR(ctx context.Context, actor *Actor, prID int64, in Merg
 			case !pol.AutoMerge:
 				byHand = pr.Repo + " merges by hand (Merge automatically is off): a person merges it"
 			default:
-				// Merge automatically for some base branches only (WP-1041):
-				// a pull request into another merges by hand too.
 				why, known := s.autoMergeBaseSkip(ctx, pr, pol, false)
 				switch {
 				case !known:
@@ -701,14 +660,13 @@ func (s *Service) MergePR(ctx context.Context, actor *Actor, prID int64, in Merg
 				}
 			}
 			if byHand != "" {
-				if pr.ArmedAt != nil { // a person's arm stands; the agent's request changes nothing
+				if pr.ArmedAt != nil {
 					return &MergeResult{Armed: true}, nil
 				}
 				return &MergeResult{ByHand: true, Reasons: []string{byHand}}, nil
 			}
 		}
 		if in.Head != "" && !sameSHA(pr.HeadSHA, in.Head) {
-			// Armed for the head that was reviewed, not whatever it moved to.
 			return nil, invalid("its head is %s, not %s; not armed", short(pr.HeadSHA), short(in.Head))
 		}
 		return s.armMerge(ctx, actor, pr, in.Style)
@@ -725,7 +683,7 @@ func (s *Service) MergePR(ctx context.Context, actor *Actor, prID int64, in Merg
 
 // DisarmMerge takes merge-when-ready off a pull request.
 func (s *Service) DisarmMerge(ctx context.Context, actor *Actor, prID int64) error {
-	if err := actor.need(PermPullsMerge); err != nil { // WP-111
+	if err := actor.need(PermPullsMerge); err != nil {
 		return err
 	}
 	pr, err := s.prByID(ctx, s.db.R, prID)
@@ -736,14 +694,11 @@ func (s *Service) DisarmMerge(ctx context.Context, actor *Actor, prID int64) err
 		return err
 	}
 	projectID, rerr := s.prAuthority(ctx, actor, pr, RoleViewer)
-	if readFault(rerr) && !missingOrDenied(rerr) { // no rights to see it: no project to name
+	if readFault(rerr) && !missingOrDenied(rerr) {
 		s.log.WarnContext(ctx, "read the project of a pull request whose merge is taken off", "pr", pr.ID, "err", rerr)
 	}
-	// Not while an armed merge is under way: it would go ahead regardless.
 	defer forgeLocks.lock(fmt.Sprintf("merge:%d", pr.ID))()
 	return s.write(ctx, actor, func(t *tx) error {
-		// An armed label stays on the forge: remember not to arm from it again;
-		// nor does Merge automatically arm it again (WP-133).
 		if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET armed_at = NULL, armed_by = NULL, armed_agent = '', armed_style = '', armed_note = '',
 			armed_label = CASE WHEN armed_label = 1 THEN 2 ELSE armed_label END, arm_declined = 1, merge_wake_at = NULL, merge_retry_n = 0, queued_at = NULL WHERE id = ?`, pr.ID); err != nil {
 			return err
@@ -785,7 +740,6 @@ func (s *Service) armMerge(ctx context.Context, actor *Actor, pr *PullRequest, s
 	if err != nil {
 		return nil, err
 	}
-	// Ready already? Then now. Otherwise the next pr.ci or gate change does it.
 	bg := context.WithoutCancel(ctx)
 	s.maybeAutoMerge(bg, pr.ID)
 	pr, err = s.prByID(ctx, s.db.R, pr.ID)
@@ -817,8 +771,6 @@ func (s *Service) armByLabel(ctx context.Context, t *tx, pr *PullRequest, live b
 		_, err := t.ExecContext(ctx, `UPDATE pull_requests SET armed_at = ?, armed_by = NULL, armed_agent = '', armed_style = '', armed_label = 1, armed_note = '' WHERE id = ?`, now.UnixMilli(), pr.ID)
 		return err
 	case !has && (pr.ArmedLabel || pr.labelOff):
-		// The label was taken off: a pull request it armed isn't armed any
-		// more, and Merge automatically doesn't arm it again (WP-133).
 		pr.ArmedAt, pr.ArmedLabel, pr.labelOff = nil, false, false
 		_, err := t.ExecContext(ctx, `UPDATE pull_requests SET armed_at = CASE WHEN armed_label = 1 THEN NULL ELSE armed_at END,
 			armed_by = CASE WHEN armed_label = 1 THEN NULL ELSE armed_by END, arm_declined = CASE WHEN armed_label = 1 THEN 1 ELSE arm_declined END,
@@ -832,10 +784,9 @@ func (s *Service) armByLabel(ctx context.Context, t *tx, pr *PullRequest, live b
 func (s *Service) maybeAutoMerge(ctx context.Context, prID int64) {
 	pr, err := s.prByID(ctx, s.db.R, prID)
 	if errors.Is(err, ErrNotFound) {
-		return // gone
+		return
 	}
 	if err != nil {
-		// Not "nothing to merge": the armed pull request stays armed, and is looked at again.
 		if readFault(err) {
 			s.log.WarnContext(ctx, "read an armed pull request", "pr", prID, "err", err)
 		}
@@ -844,12 +795,12 @@ func (s *Service) maybeAutoMerge(ctx context.Context, prID int64) {
 		return
 	}
 	if pr.ArmedAt == nil || (pr.State != "open" && pr.State != "draft") || pr.Outside {
-		return // a head from outside waits for a person's approval first (WP-281)
+		return
 	}
-	s.ensureArmedBabysit(ctx, pr) // an armed pull request is always babysat (WP-188)
-	s.settleStack(ctx, pr, true)  // a move off a merged parent that was left is made now (WP-1670)
+	s.ensureArmedBabysit(ctx, pr)
+	s.settleStack(ctx, pr, true)
 	if cur, err := s.prByID(ctx, s.db.R, pr.ID); err == nil {
-		pr = cur // a move changed its base
+		pr = cur
 	}
 	rd, err := s.readiness(ctx, pr)
 	if err != nil {
@@ -857,13 +808,11 @@ func (s *Service) maybeAutoMerge(ctx context.Context, prID int64) {
 		return
 	}
 	s.recordHolds(ctx, pr, rd.Reasons)
-	s.setMergeWake(ctx, pr.ID, rd.wake) // waiting on reviews or quiet: look again then
+	s.setMergeWake(ctx, pr.ID, rd.wake)
 	if rd.Checking {
-		s.scheduleMergeRecheck(ctx, pr.ID) // the forge's "no" may be it still working
+		s.scheduleMergeRecheck(ctx, pr.ID)
 	}
 	if rd.behind || queueable(pr, rd.Reasons) {
-		// The merge line tests it on a candidate or updates it at its turn
-		// (WP-ADR152). A babysit joins it there; one nobody babysits does so here.
 		s.joinUnbabysat(ctx, pr)
 	}
 	if rd.behind {
@@ -872,7 +821,6 @@ func (s *Service) maybeAutoMerge(ctx context.Context, prID int64) {
 	if !rd.Ready {
 		return
 	}
-	// On whose authority: the person who armed it, if they can still merge it.
 	actor, how := SystemActor(), "armed with the automerge label"
 	switch {
 	case pr.ArmedAgent == mergeSettingAgent:
@@ -892,12 +840,11 @@ func (s *Service) maybeAutoMerge(ctx context.Context, prID int64) {
 		}
 		agent := pr.ArmedAgent
 		if automationOf(agent) != "" {
-			agent = "" // an automation armed it for the person; they merge as themselves
+			agent = ""
 		}
 		actor = &Actor{User: u, Agent: agent}
 		if err := s.mayMerge(ctx, actor, pr); err != nil {
 			if !errors.Is(err, ErrForbidden) && !errors.Is(err, ErrUnauthorized) && !errors.Is(err, ErrNotFound) {
-				// A read that failed says nothing of their rights.
 				s.armedMergeUnread(ctx, pr, "read whether the person who armed a pull request may merge it", "whether "+u.DisplayName+" may merge it couldn't be read", err)
 				return
 			}
@@ -914,12 +861,12 @@ func (s *Service) maybeAutoMerge(ctx context.Context, prID int64) {
 		var down *forgeDownError
 		switch {
 		case errors.Is(err, errArmOutOfScope):
-			return // the arming came off
+			return
 		case errors.As(err, &fc):
-			s.retryArmedMerge(ctx, pr, "the forge is still checking whether it merges") // the forge will say yes shortly (WP-138)
+			s.retryArmedMerge(ctx, pr, "the forge is still checking whether it merges")
 			return
 		case errors.As(err, &down):
-			s.retryArmedMerge(ctx, pr, down.what) // the forge didn't answer: no person needed yet (WP-265)
+			s.retryArmedMerge(ctx, pr, down.what)
 			return
 		}
 		s.log.WarnContext(ctx, "merge when ready", "repo", pr.Repo, "number", pr.Number, "err", err)
@@ -1012,7 +959,6 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 			return "", s.heldRead(ctx, pr, "check an armed merge is still in scope", "whether the arming is still in scope couldn't be read", err)
 		}
 	}
-	// Fresh checks and gate for the head about to be merged.
 	start = time.Now()
 	if err := s.refreshHead(ctx, f, pr.Repo, fp.HeadSHA); err != nil {
 		return "", fmt.Errorf("read the checks: %w", s.forgeUnanswered(f, time.Since(start), err))
@@ -1023,20 +969,15 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 	if cur, err = s.prByID(ctx, s.db.R, pr.ID); err != nil {
 		return "", err
 	}
-	// A person merging now doesn't wait for reviews to settle; an armed merge does.
 	rd, err := s.readinessFor(ctx, cur, in.armed)
 	if err != nil {
 		return "", s.heldRead(ctx, pr, "work out whether a pull request may merge", "whether it may merge couldn't be read", err)
 	}
-	// Nor for the pull requests it is set to merge after: merging it now
-	// is their call (WP-912).
 	if !in.armed && !actor.IsAgent() {
 		if rd.Reasons = withoutMergeWaits(rd.Reasons); len(rd.Reasons) == 0 {
 			rd.Ready = true
 		}
 	}
-	// An agent merging now starts the drift check as an armed merge does:
-	// only a person's own merge goes without one (WP-559).
 	if !in.armed && actor.IsAgent() {
 		if why, _ := s.driftHold(ctx, cur, true); why != "" && !slices.Contains(rd.Reasons, why) {
 			rd.Reasons = append(rd.Reasons, why)
@@ -1054,16 +995,9 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 		del = *in.DeleteBranch
 	}
 	askedDelete := in.DeleteBranch != nil && *in.DeleteBranch
-	// A forge may delete the branch inside the merge call and close (or
-	// retarget itself) the pull requests open into it. So when some are, the
-	// merge doesn't ask for that: they move off the branch first, then it
-	// goes (afterStackMerge; WP-ADR153). Where the forge can't say whether
-	// the branch is one the repo keeps, nothing is deleted or moved: they
-	// hold as stacked on a merged pull request, and settleStack moves them.
 	var stacked []*PullRequest
 	if del {
 		if stacked, err = s.prsStackedOn(ctx, cur); err != nil {
-			// Before anything merges, as the project read below.
 			return "", s.heldRead(ctx, pr, "list the pull requests stacked on the branch being merged", "the pull requests stacked on it couldn't be read", err)
 		}
 		if len(stacked) > 0 {
@@ -1073,8 +1007,6 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 				s.log.WarnContext(ctx, "left a merged branch for the pull requests stacked on it", "repo", cur.Repo, "branch", cur.HeadRef)
 				in.say(askedDelete, cur.HeadRef+" was not deleted: pull requests are open into it and the forge didn't say whether the repo keeps it")
 			case kept:
-				// A branch the repo keeps: they are not stacked on it, and
-				// it isn't deleted under them.
 				del, stacked = false, nil
 				s.log.WarnContext(ctx, "left a kept branch with pull requests open into it", "repo", cur.Repo, "branch", cur.HeadRef)
 				in.say(askedDelete, cur.HeadRef+" was not deleted: pull requests are open into it and the repo keeps it")
@@ -1084,23 +1016,17 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 	style := cmp(in.Style, cur.ArmedStyle)
 	projectID, err := s.attachedProjectFor(ctx, actor, cur)
 	if err != nil {
-		// Before anything merges, and a read that failed isn't a verdict on
-		// the merge: an armed merge tries again rather than asking a person.
 		if readFault(err) {
 			s.log.WarnContext(ctx, "read the project a merge is audited under", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
 		}
 		return "", &forgeDownError{what: "the project the merge is audited under couldn't be read", then: "try again", err: err}
 	}
-	// The base is being merged into: until the merge shows in a read of it,
-	// the next in the queue isn't updated with that read (WP-316).
 	s.noteMerging(cur)
 	start = time.Now()
 	err = cl.MergePR(ctx, f, pr.Repo, fp, MergeOptions{Style: style, HeadSHA: fp.HeadSHA, DeleteBranch: del && len(stacked) == 0, Title: in.Title, Message: in.Message})
 	var kept *branchNotDeleted
 	if err != nil && !errors.As(err, &kept) {
 		if down := s.forgeUnanswered(f, time.Since(start), err); errors.Is(down, ErrUnavailable) {
-			// It may have merged regardless, so the base mark stays (it
-			// expires on its own); trying again reads the pull request first.
 			return "", fmt.Errorf("merge: %w", down)
 		}
 		s.noteNotMerged(cur)
@@ -1108,9 +1034,6 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 			return "", checkingErr("the forge is still checking whether it merges, so it refused: " + mergeRefusal(err))
 		}
 		if rd.stack != nil && (isStatus(err, http.StatusMethodNotAllowed) || isStatus(err, http.StatusUnprocessableEntity)) {
-			// The forge wants what the stack stood in for (WP-404): an
-			// outdated branch or a missing check. A newer push (409) ends
-			// the stack as a moved head; a token refusal isn't the stack's.
 			s.candRefused(ctx, cur, rd.stack, mergeRefusal(err))
 		}
 		return "", invalid("the forge refused the merge: %s", mergeRefusal(err))
@@ -1134,16 +1057,14 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 		e.Actor = "automation “" + actor.Automation.Name + "”"
 	}
 	s.audit(ctx, actor, e)
-	// The forge's word, so the page shows it merged before the webhook arrives.
 	var sha string
 	if fresh, err := prc.GetPR(ctx, f, pr.Repo, pr.Number); err != nil {
-		// It did merge: the page and the merge sha wait for the forge's webhook or the next sync.
 		if readFault(err) {
 			s.log.WarnContext(ctx, "read a pull request after merging it", "repo", pr.Repo, "number", pr.Number, "err", err)
 		}
 	} else {
 		sha = fresh.MergeSHA
-		s.noteMerged(cur, sha) // before the page shows it merged: the next front reads the base after this
+		s.noteMerged(cur, sha)
 		if _, err := s.recordPR(ctx, f, pr.Repo, fresh, false); err != nil {
 			if readFault(err) {
 				s.log.WarnContext(ctx, "record a pull request after merging it", "repo", pr.Repo, "number", pr.Number, "err", err)
@@ -1297,7 +1218,7 @@ func holdKind(reason string) string {
 // twice. The read before it only spares the writer when nothing changed.
 func (s *Service) recordHolds(ctx context.Context, pr *PullRequest, reasons []string) {
 	want := map[string]bool{}
-	said := map[string]string{} // a kind's reason as given, for the log
+	said := map[string]string{}
 	for _, r := range reasons {
 		k := holdKind(r)
 		want[k] = true
@@ -1335,8 +1256,6 @@ func (s *Service) recordHolds(ctx context.Context, pr *PullRequest, reasons []st
 		s.log.WarnContext(ctx, "record merge holds", "pr", pr.ID, "err", err)
 		return
 	}
-	// In the server log too, so `wp server log --grep '#377'` says what held
-	// a merge and when, next to everything else that happened (WP-893).
 	ref := fmt.Sprintf("%s#%d", pr.Repo, pr.Number)
 	for _, h := range ended {
 		s.log.Info("merge hold cleared", "pr", ref, "what", h.what, "held", time.Duration(now-h.firstAt)*time.Millisecond)

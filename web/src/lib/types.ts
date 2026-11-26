@@ -1,5 +1,3 @@
-// Types mirroring the Go API's JSON.
-
 export type Category = 'backlog' | 'todo' | 'in_progress' | 'done' | 'canceled'
 export type IssueType = 'epic' | 'story' | 'task' | 'bug' | 'subtask'
 export type Role = 'owner' | 'editor' | 'viewer' | 'guest' | ''
@@ -1491,8 +1489,6 @@ export interface Session {
   current: boolean
 }
 
-// ---- knowledge: glossary, design notes, links (WP-D10) ----
-
 /** Where a glossary entry or design note lives: a project, or global (project_id null). */
 export interface KScope {
   project_id: number | null
@@ -1731,8 +1727,6 @@ export interface KLink {
 
 /** text: a [[wikilink]], whoever wrote the text */
 export type LinkBasis = 'person' | 'agent' | 'inferred'
-
-// ---- goals and traces (WP-382, WP-ADR50) ----
 
 /** How an item reaches a goal, best first. */
 export const GROUNDINGS = [
@@ -2086,8 +2080,6 @@ export interface WorkLog {
   summary: WorkLogSummary
   entries: WorkLogEntry[]
 }
-
-// ---- relation graph (WP-385) ----
 
 export type GraphNodeType = 'issue' | 'page' | 'design' | 'glossary' | 'pull' | 'file' | 'session'
 

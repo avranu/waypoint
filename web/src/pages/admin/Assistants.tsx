@@ -1,7 +1,3 @@
-// Admin → Assistants (WP-ADR1): connect a person's Hermes agent through
-// its gate, change how Waypoint reaches it, or disconnect it. This is the
-// only place its secrets are typed; the API never sends them back.
-
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
@@ -253,7 +249,6 @@ function AssistantDialog({
     else if (clearCa) body.ca_pem = ''
     if (key.trim()) body.key = key.trim()
     if (password) body.password = password
-    // Only the owner's own tokens fit; moving it to someone else drops it.
     if (ownerIsMe) {
       if (creating ? token : token !== (a?.token_id ?? 0)) body.token_id = token
     } else if (a?.token_id && owner !== a.owner.id) body.token_id = 0

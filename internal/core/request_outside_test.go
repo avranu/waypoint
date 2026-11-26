@@ -8,8 +8,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core/udiff"
 )
 
-// Change requests for files outside any git repository (WP-115).
-
 func outsideChange(r *reqEnv, org bool, base, content string) *Request {
 	f := RequestFileInput{Path: "/work/CLAUDE.md", Outside: true, Content: content}
 	if base != "" {
@@ -28,7 +26,6 @@ func TestOutsideRepoChangeIsFiledInTheOrganizationProject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A file above the repo goes to the organization; one elsewhere stays in the repo's project.
 	above := outsideChange(r, true, "# Org\n", "# Org\nbe nice\n")
 	if above.projectID.Int64 != org.ID {
 		t.Fatalf("filed in project %d, want the organization %d", above.projectID.Int64, org.ID)
@@ -42,7 +39,6 @@ func TestOutsideRepoChangeIsFiledInTheOrganizationProject(t *testing.T) {
 		t.Fatalf("a file not above the repo was filed in project %d", elsewhere.projectID.Int64)
 	}
 
-	// Without a parent, an organization file stays in the project.
 	if _, err := r.s.db.W.Exec(`UPDATE projects SET parent_id = NULL WHERE id = ?`, r.p.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +75,6 @@ func TestOutsideRepoChangeAppliesThroughTheRunnerOnly(t *testing.T) {
 	base := "# Org\n"
 	q := outsideChange(r, false, base, "# Org\nbe nice\n")
 
-	// A PR is refused when deciding, with the reason, and the request stays open.
 	_, err := r.s.DecideRequest(r.ctx, r.ana, q.Ref, RequestDecision{Decision: "approve", ApplyPath: "pr"})
 	if !IsInvalid(err) || !strings.Contains(err.Error(), "outside any git repository") {
 		t.Fatalf("--apply pr: %v", err)
@@ -88,8 +83,6 @@ func TestOutsideRepoChangeAppliesThroughTheRunnerOnly(t *testing.T) {
 		t.Fatalf("state after the refusal: %s", got.State)
 	}
 
-	// With no choice it is the runner, never a PR; the job writes just the named
-	// file, in its directory, uncommitted.
 	got, err := r.s.DecideRequest(r.ctx, r.ana, q.Ref, RequestDecision{Decision: "approve"})
 	if err != nil {
 		t.Fatal(err)
@@ -112,7 +105,7 @@ func TestOutsideRepoChangeAppliesThroughTheRunnerOnly(t *testing.T) {
 }
 
 func TestOutsideRepoChangeNeedsARunner(t *testing.T) {
-	r := newReqEnv(t) // no runner connected
+	r := newReqEnv(t)
 	q := outsideChange(r, false, "", "x\n")
 	got, err := r.s.DecideRequest(r.ctx, r.ana, q.Ref, RequestDecision{Decision: "approve", ApplyPath: "runner"})
 	if err != nil {

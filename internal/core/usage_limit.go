@@ -8,12 +8,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Usage limits in an agent's error (WP-683). Claude Code ends a run on a
-// plan limit with a line like "You've hit your weekly limit · resets 5pm
-// (UTC)", "5-hour limit reached ∙ resets 3am" or, from older releases,
-// "Claude AI usage limit reached|1762534800"; the word lists matched only
-// "hit your limit", so a weekly limit read as the work failing.
-
 // limitPhrase matches a plan's usage limit in any of Claude Code's forms,
 // and not its "Context limit reached", which is the conversation's length;
 // and HTTP 429 as a status ("API Error: 429", "returned error: 429"), not
@@ -28,6 +22,10 @@ const (
 	usagePhraseSrc = `(?i)\b(?:hit|reached) your (?:[\w-]+ )?limit\b|\b(?:usage|session|weekly|daily|monthly|hourly|5-hour|five-hour|opus|sonnet|haiku|fable|mythos) limit (?:reached|hit)\b`
 	status429Src   = `(?i)\b(?:error|status|code|http)\b[^\n\d]{0,12}\b429\b`
 )
+
+// PlanLimitText: the text says a plan's usage limit was spent (weekly,
+// five-hour, ...): not a context limit, nor a transient HTTP 429.
+func PlanLimitText(text string) bool { return usagePhrase.MatchString(text) }
 
 // limitText: the text says a usage or rate limit stopped the run.
 func limitText(text string) bool {
@@ -74,7 +72,7 @@ func limitResetIn(text string, now time.Time) (time.Time, bool) {
 		}
 	case "":
 		if m[4] == "" {
-			return time.Time{}, false // "resets 5" with no minutes or am/pm isn't a time
+			return time.Time{}, false
 		}
 	}
 	if hour > 23 || minute > 59 {
@@ -97,11 +95,9 @@ func limitResetIn(text string, now time.Time) (time.Time, bool) {
 		}
 		t := time.Date(local.Year(), month, day, hour, minute, 0, 0, loc)
 		if t.Before(now.Add(-24 * time.Hour)) {
-			t = t.AddDate(1, 0, 0) // "resets Jan 2" read on Dec 30
+			t = t.AddDate(1, 0, 0)
 		}
 		if !t.After(now) {
-			// Already past (a wrong zone, a late read): it says nothing of
-			// when the limit lifts, and a past time would retry at once.
 			return time.Time{}, false
 		}
 		return t.UTC(), true

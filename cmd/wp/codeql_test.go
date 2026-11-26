@@ -43,9 +43,9 @@ func files(sizes map[string]int64) []treeFile {
 
 func TestCodeqlLanguages(t *testing.T) {
 	langs, skipped := codeqlLanguages(files(map[string]int64{
-		"a.go": 600, "b/c.go": 600, // 1200 bytes of go
-		"web/app.tsx": 5000, "web/node_modules/x/y.js": 900000, // only app.tsx counts
-		"tools/x.py":                999, // under 1000
+		"a.go": 600, "b/c.go": 600,
+		"web/app.tsx": 5000, "web/node_modules/x/y.js": 900000,
+		"tools/x.py":                999,
 		"vendor/z.py":               50000,
 		"README.md":                 90000,
 		".forgejo/workflows/ci.yml": 10,
@@ -56,7 +56,6 @@ func TestCodeqlLanguages(t *testing.T) {
 	if len(skipped) != 1 || skipped[0] != "python: 999 bytes, under 1000" {
 		t.Errorf("skipped = %q", skipped)
 	}
-	// Only a workflow file directly in a workflow directory makes actions.
 	for _, p := range []string{".github/workflows/sub/x.yml", ".forgejo/workflows/notes.md", "docs/.forgejo/workflows/ci.yml"} {
 		if l, _ := codeqlLanguages(files(map[string]int64{p: 5000})); len(l) != 0 {
 			t.Errorf("%s: languages %v", p, l)
@@ -108,7 +107,6 @@ func TestParseSarifAndBlocking(t *testing.T) {
 	if n := by["go/unused"]; n.Blocking || n.Severity != "note" || n.Message != "unused" {
 		t.Errorf("note: %+v", n)
 	}
-	// Level error blocks without a security severity; 7.0 blocks at warning.
 	g, _ := parseSarif([]byte(`{"runs":[{"tool":{"driver":{"rules":[{"id":"r","properties":{"security-severity":"7.0"}}]}},"results":[
 	  {"ruleId":"r","level":"warning","message":{"text":"m"}},{"ruleId":"q","level":"error","message":{"text":"m"}}]}]}`))
 	if len(g) != 2 || !g[0].Blocking || !g[1].Blocking {
@@ -120,7 +118,6 @@ func TestParseSarifAndBlocking(t *testing.T) {
 }
 
 func TestCodeqlTriage(t *testing.T) {
-	// The key is the first 16 hex digits of sha256 of "rule|path|fingerprint".
 	if got := codeqlKey("r", "p", "f"); got != "3e918b697c2355f4" {
 		t.Errorf("key %q", got)
 	}
@@ -144,8 +141,6 @@ func TestCodeqlTriage(t *testing.T) {
 			t.Errorf("%s blocks although triaged or not blocking", x.Rule)
 		}
 	}
-	// Unreasoned entries are ignored, so the note stays untriaged. A triaged
-	// high finding sorts after one that blocks.
 	markTriaged(f, map[string]bool{})
 	if !f[0].blocks() || f[0].Rule != "go/uncontrolled-allocation-size" {
 		t.Errorf("blocking first: %+v", f[0])
@@ -178,10 +173,10 @@ type fakeDocker struct {
 	missing   error
 	sarif     map[string]string
 	exit      map[string]int
-	fetch     string // the dependency fetch's output; it fails when set
+	fetch     string
 	ran       [][]string
 	fetched   int
-	inspected []string // the images HasImage was asked about
+	inspected []string
 }
 
 func (f *fakeDocker) HasImage(_ context.Context, image string) error {
@@ -205,7 +200,7 @@ func (f *fakeDocker) Run(_ context.Context, log io.Writer, args ...string) (int,
 		}
 		return 0, nil
 	}
-	f.ran = append(f.ran, args) // the scans, not the fetches
+	f.ran = append(f.ran, args)
 	lang := strings.Fields(strings.SplitN(script, "--language=", 2)[1])[0]
 	if code := f.exit[lang]; code != 0 {
 		_, _ = io.WriteString(log, "boom\n")
@@ -239,7 +234,7 @@ func scan(t *testing.T, fd *fakeDocker, dir string, args ...string) (out, errOut
 	t.Setenv("WAYPOINT_SERVER", "https://waypoint.example.com")
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	if _, set := os.LookupEnv("WP_CODEQL_IMAGE"); !set {
-		t.Setenv("WP_CODEQL_IMAGE", "codeql-test:1") // a test that sets it, even to "", decides
+		t.Setenv("WP_CODEQL_IMAGE", "codeql-test:1")
 	}
 	prev := codeqlDockerClient
 	codeqlDockerClient = fd
@@ -269,7 +264,6 @@ func TestCodeqlScanBlocksAndShowsTheFlow(t *testing.T) {
 	if len(fd.ran) != 2 {
 		t.Fatalf("docker ran %d times", len(fd.ran))
 	}
-	// Go reads the tree itself; actions gets the workflows copied to .github.
 	if a := strings.Join(fd.ran[0], " "); strings.Contains(a, "actions-src") || !strings.Contains(a, ":/work/src:ro") {
 		t.Errorf("go mounts: %s", a)
 	}
@@ -312,7 +306,6 @@ func TestCodeqlScanUnavailableAndFailed(t *testing.T) {
 	if code != 3 || out != "" || !strings.Contains(errOut, "go: codeql exited 1; log ") || !strings.Contains(errOut, "boom") {
 		t.Errorf("failed: exit %d\n%s%s", code, out, errOut)
 	}
-	// Exit 32 is no code left: not a failure.
 	fd = &fakeDocker{exit: map[string]int{"go": 32}, sarif: map[string]string{"actions": `{"runs":[]}`}}
 	if _, errOut, code = scan(t, fd, scanTree(t, "[]")); code != 0 {
 		t.Errorf("no source: exit %d\n%s", code, errOut)
@@ -414,7 +407,6 @@ func TestCodeqlScanPicksThePullRequestsLanguages(t *testing.T) {
 			mu.Unlock()
 			if r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/pulls/3") && ch != nil {
 				_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "repo": "robin/waypoint", "number": 3, "state": "open", "head_ref": "b3",
-					// Two CodeQL checks: the failed one is read.
 					"shipping": map[string]any{"checks": []map[string]any{{"name": "ci / backend", "state": "success"}, {"name": "ci / CodeQL (push)", "state": "success"}, ch}}})
 				return
 			}
@@ -458,7 +450,6 @@ func TestCodeqlScanPicksThePullRequestsLanguages(t *testing.T) {
 		return langs, out
 	}
 
-	// The check passed (here: there is none yet): every language.
 	if langs, out := scanned(); strings.Join(langs, ",") != "go,javascript-typescript" || !strings.Contains(out, "codeql: languages go, javascript-typescript: every language here (#3 has no CodeQL check)\n") {
 		t.Errorf("no check: %v\n%s", langs, out)
 	}
@@ -470,15 +461,12 @@ func TestCodeqlScanPicksThePullRequestsLanguages(t *testing.T) {
 		strings.Join(fetched, " ") != "http://checks.example.com/reports/robin/waypoint/abc.md" {
 		t.Errorf("failed check: %v %v\n%s", langs, fetched, out)
 	}
-	// --lang still decides.
 	if langs, out := scanned("--lang", "javascript-typescript"); strings.Join(langs, ",") != "javascript-typescript" || !strings.Contains(out, "codeql: languages javascript-typescript: --lang\n") || len(fetched) != 1 {
 		t.Errorf("--lang: %v\n%s", langs, out)
 	}
-	// Another tree than this repo: every language there, no lookup.
 	if langs, out := scanned(scanTree(t, "[]")); strings.Join(langs, ",") != "go,actions" || !strings.Contains(out, ": every language there\n") || len(fetched) != 1 {
 		t.Errorf("another tree: %v\n%s", langs, out)
 	}
-	// A report that can't be read: every language, and why.
 	codeqlFetchReport = func(context.Context, string) (string, error) {
 		return "", errors.New("checks.example.com answered 404 Not Found")
 	}
@@ -639,7 +627,6 @@ func TestCodeqlActionsSourceRefusesAStagePrefixedFile(t *testing.T) {
 	if _, err := codeqlActionsSource(dir, t.TempDir()); err == nil || !strings.Contains(err.Error(), codeqlStagePrefix) {
 		t.Errorf("want an error naming %s, got %v", codeqlStagePrefix, err)
 	}
-	// With nothing staged the repo's own name is its own path, so it is fine.
 	only := t.TempDir()
 	writeTree(t, only, map[string]string{".github/workflows/wp-stage-forgejo--ci.yml": "x\n"})
 	if stage, err := codeqlActionsSource(only, t.TempDir()); err != nil || stage != only {

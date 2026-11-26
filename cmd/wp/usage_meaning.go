@@ -6,8 +6,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// wp usage meaning: the judgements of meaning about goals (WP-1035).
-
 var usageMeaningCmd = &command{
 	name: "meaning", args: "",
 	summary: "how the judgements of meaning about goals stand: deciders, labels, scorers",

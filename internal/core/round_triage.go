@@ -1,25 +1,5 @@
 package core
 
-// Packet triage (WP-437, WP-ADR30). A third of the babysitting rounds on 2026-11-02
-// pushed nothing, and most of them could have been told in advance without
-// an agent: an empty work packet, a comment already fixed on the head's
-// history and listed again, and free-model findings claiming code that
-// builds doesn't compile. Before a round goes out, Waypoint settles what a
-// fact on hand settles, and nothing else:
-//
-//   - a packet with nothing in it starts no round (babysitRound);
-//   - a fixed comment that an edit on the forge only reworded stays fixed
-//     while its fix is on the head (syncReviewComments);
-//   - a bot's claim that the code doesn't compile, a name is undefined or an
-//     import is broken is rejected when this head's build passed (here).
-//
-// Only deterministic facts decide: the head's green checks, the head's
-// history and the comment's own text. The text match is narrow on purpose
-// (compile and import vocabulary in a typed source file); anything it
-// doesn't match goes to the round as before. Each rejection is recorded by
-// "triage", so how often one is overturned can be counted, and an agent or
-// a person can still accept the comment.
-
 import (
 	"context"
 	"fmt"
@@ -47,9 +27,6 @@ var compileClaimRE = lazyre.New(`(?i)` + strings.Join([]string{
 	`\b(?:breaks?|breaking|will break|would break) the build\b`,
 	`\bbuild (?:will )?(?:fail|fails|break|breaks)\b`,
 	`\bsyntax error\b`,
-	// Compiler wording only: "err is redeclared with := so the error is
-	// lost", a duplicate JSON field tag or a duplicate function body are
-	// logic points that build fine (WP-579).
 	`\bredeclared in (?:this|the same) (?:block|scope)\b`,
 	`\bcannot redeclare\b`,
 	`\bduplicate (?:import|identifier|declaration)s?\b`,

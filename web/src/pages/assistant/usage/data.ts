@@ -1,6 +1,3 @@
-// Hermes's analytics (GET /api/analytics/usage and /models), with every
-// number that SQL may hand back as null made a number.
-
 export interface UsageDay {
   day: string
   input_tokens: number | null

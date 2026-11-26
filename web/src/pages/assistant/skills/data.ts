@@ -1,6 +1,3 @@
-// The assistant's skills, from Hermes: each a SKILL.md (YAML frontmatter,
-// then instructions) that it loads when a task fits its description.
-
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { hermes, hermesQuery } from '@/lib/assistant'
 
@@ -148,7 +145,6 @@ export function useSkillMutations(id: number) {
     toggle: useMutation({
       mutationFn: (b: { name: string; enabled: boolean }) => hermes(id, 'PUT', 'skills/toggle', b),
       onMutate: (b) => {
-        // Not awaited: the switch flips in this frame; a fetch in flight is dropped.
         void qc.cancelQueries({ queryKey: key })
         const before = qc.getQueryData<Skill[]>(key)
         qc.setQueryData<Skill[]>(key, (l) =>

@@ -1,5 +1,3 @@
-// Agent runs on the issue page, and starting a page from an issue.
-
 import { useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
@@ -22,7 +20,6 @@ export function AgentRuns({ runs }: { runs: AgentRun[] }) {
     1000,
     runs.some((r) => !r.ended_at),
   )
-  // A running run's time counts up from its start.
   const secs = (r: AgentRun) =>
     r.ended_at ? r.seconds : Math.max(r.seconds, (Date.now() - Date.parse(r.started_at)) / 1000)
   const total = runs.reduce(
@@ -34,7 +31,6 @@ export function AgentRuns({ runs }: { runs: AgentRun[] }) {
     }),
     { s: 0, i: 0, o: 0, c: 0 },
   )
-  // The server sends the latest 100 runs (agentwork.go), so a full list may be more.
   const capped = runs.length >= RUNS_MAX
   const shown = all ? runs : runs.slice(0, 5)
   return (

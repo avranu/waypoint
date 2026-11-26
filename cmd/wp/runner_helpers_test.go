@@ -96,8 +96,6 @@ func TestAuditHelpersAroundTheModel(t *testing.T) {
 	if strings.Contains(string(panel), "before its review") {
 		t.Errorf("the panel's prompt says its output goes to a reviewer:\n%s", panel)
 	}
-	// The model's prompt has nothing of the panel: not its leads, not that it
-	// ran, and not what it found or didn't.
 	prompt, _ := os.ReadFile(filepath.Join(rec, "reviewer-prompt"))
 	ps := strings.ToLower(string(prompt))
 	for _, banned := range []string{"panel", "lead", "goal ignored", "haiku", "no leads", "found no"} {
@@ -111,9 +109,6 @@ func TestAuditHelpersAroundTheModel(t *testing.T) {
 		t.Fatalf("helper runs = %+v", runs)
 	}
 	g, q, v, c := runs[0], runs[1], runs[2], runs[3]
-	// goals raised 3 leads after pruning (Ghost is outside the checkout).
-	// goals.1 (Goal ignored) is confirmed; goals.2 (Shaky) refuted and goals.3
-	// (Vague) unsupported. Three reads at $0.003 and the check's $0.001.
 	if g.Check != "goals" || g.State != "done" || len(g.Leads) != 1 || g.Leads[0].ID != "goals.1" || !g.Leads[0].Confirmed || g.Leads[0].ReadSeverity != "medium" ||
 		g.Leads[0].Evidence != "a.txt:1 reads one" || g.Leads[0].ReadTitle != "Read title" || g.Leads[0].ReadProblem != "Read problem" || g.Leads[0].ReadPath != "a.txt" || g.Leads[0].ReadLine != 1 || g.Leads[0].Title != "Goal ignored" || g.Leads[0].Severity != "high" || g.dropWhy != "1 at a path outside the checkout" || g.CostUSD < 0.0099 || g.CostUSD > 0.0101 {
 		t.Errorf("goals = %+v", g)
@@ -129,7 +124,6 @@ func TestAuditHelpersAroundTheModel(t *testing.T) {
 	if q.Check != "quality" || q.State != "failed" || !strings.Contains(q.Error, "rate limited") {
 		t.Errorf("quality = %+v", q)
 	}
-	// Three checks: the refuted finding is asked twice.
 	if v.Check != helperVerifyName || v.State != "done" || v.Error != "" || v.CostUSD < 0.0059 || v.CostUSD > 0.0061 {
 		t.Errorf("verify = %+v", v)
 	}
@@ -153,15 +147,9 @@ func TestAuditHelpersAroundTheModel(t *testing.T) {
 	if r1.Verdict != "refuted" || !strings.HasPrefix(r1.Note, "Asked twice, refuted both times. ") || r1.Lead != "" {
 		t.Errorf("reviewer's first = %+v", r1)
 	}
-	// The reviewer's own lead and "Panel leads:" line are cleared: only the
-	// runner names a panel's.
 	if r2.Verdict != "confirmed" || r2.Lead != "" || len(r2.Leads) != 0 || r2.Note != "a.txt:1 reads two" {
 		t.Errorf("reviewer's second = %+v", r2)
 	}
-	// The panel's finding: after the reviewer's, with the worst severity of
-	// what it merges (the read's, medium, not the combine's critical), the
-	// leads it stands for as data ("leads"), and the
-	// read's verdict and evidence, so the check of findings never read it.
 	if pf.Title != "The count is one" || pf.Severity != "medium" || pf.Lead != "" || !slices.Equal(pf.Leads, []string{"goals.1"}) || pf.Verdict != "confirmed" || pf.Note != "a.txt:1 reads one" ||
 		pf.Problem != "two wanted, one there" {
 		t.Errorf("panel finding = %+v", pf)
@@ -169,11 +157,9 @@ func TestAuditHelpersAroundTheModel(t *testing.T) {
 	if n := countLines(filepath.Join(rec, "verify-runs")); n != 3 {
 		t.Errorf("verify ran %d times, want 3 (the panel's finding is not checked twice)", n)
 	}
-	// The reviewer's own tokens stay its own: the helpers' cost is in their runs.
 	if tok := res["tokens"].(tokenUse); tok.CostUSD != 0.05 {
 		t.Errorf("tokens = %+v", tok)
 	}
-	// The combine read both sides, by number and id.
 	cp, _ := os.ReadFile(filepath.Join(rec, "combine-prompt"))
 	if !strings.Contains(string(cp), "[R1]") || !strings.Contains(string(cp), "[R2]") || !strings.Contains(string(cp), "[goals.1]") || strings.Contains(string(cp), "Shaky") || !strings.Contains(string(cp), "Read title") || strings.Contains(string(cp), "Goal ignored") {
 		t.Errorf("combine prompt:\n%s", cp)
@@ -245,9 +231,6 @@ func TestPanelBesideModel(t *testing.T) {
 		t.Errorf("runs = %+v", e.runs)
 	}
 
-	// The model fails (no join): the panel isn't stopped. It runs on to its
-	// end, and finish takes its runs with every second read's outcome
-	// (WP-1320).
 	ran := func(_ context.Context, _, schema string, _ time.Duration) (json.RawMessage, float64, error) {
 		if strings.Contains(schema, `"leads"`) {
 			return json.RawMessage(`{"leads":[{"title":"t","severity":"high","problem":"p"},{"title":"u","severity":"low","problem":"q"}]}`), 0.01, nil
@@ -262,8 +245,6 @@ func TestPanelBesideModel(t *testing.T) {
 		t.Errorf("runs after a failed model = %+v", e.runs)
 	}
 
-	// The job ending (a cancel) stops the panel mid-check; what finished is
-	// still taken.
 	started2 := make(chan struct{}, 8)
 	exec2 := func(ctx context.Context, _, _ string, _ time.Duration) (json.RawMessage, float64, error) {
 		started2 <- struct{}{}
@@ -280,8 +261,6 @@ func TestPanelBesideModel(t *testing.T) {
 		t.Errorf("runs after the job was cancelled = %+v", e.runs)
 	}
 
-	// The model answers nothing readable: the join does nothing, and the
-	// panel's finished runs are taken as they are, with their cost.
 	e = testHelperEnv(t, h, ran)
 	e.startPanel(context.Background(), "## The change", nil)
 	<-e.pj.done
@@ -304,7 +283,6 @@ func TestCombineLossless(t *testing.T) {
 		return panelLead{ID: id, Title: "t " + id, Severity: "low", ReadSeverity: sev, Path: path, Line: line, Problem: "p " + id, Confirmed: true, Evidence: "e " + id}
 	}
 	leads := []panelLead{lead("goals.1", "high", "a.go", 3), lead("goals.2", "low", "a.go", 3), lead("tests.1", "medium", "b.go", 0), lead("tests.2", "low", "c.go", 5)}
-	// tests.2 restates the reviewer's R1: the same place and a similar claim.
 	leads[3].Problem = "the registry entry leaks when the handle closes early"
 	reviewer := []any{map[string]any{"title": "Mine", "path": "c.go", "line": float64(5), "problem": "when the handle closes early the registry entry leaks"}, map[string]any{"title": "Other", "path": "d.go", "line": float64(1)}}
 	runs := func(extra ...helperRun) []helperRun {
@@ -316,12 +294,12 @@ func TestCombineLossless(t *testing.T) {
 		name    string
 		answer  json.RawMessage
 		err     error
-		titles  []string // the added findings' titles, in order
+		titles  []string
 		sevs    []string
 		froms   []string
 		cutWhy  map[string]string
 		runWant string
-		failed  bool // the combine run ends "failed"
+		failed  bool
 	}{
 		{name: "merged, one left out, an unknown id and a repeat ignored, tests.2 the same as R1",
 			answer: answer(`{"findings":[{"title":"Both","path":"a.go","line":3,"severity":"low","problem":"both","from":["goals.1","goals.2","goals.1","nope.1"]},{"title":"Nothing left","problem":"x","from":["goals.1"]}],"same":[{"lead":"tests.2","finding":"R1"},{"lead":"tests.2","finding":"R2"},{"lead":"goals.1","finding":"R9"}]}`),
@@ -371,7 +349,6 @@ func TestCombineLossless(t *testing.T) {
 			}
 		})
 	}
-	// Every lead is in the findings exactly once, whatever the answer.
 	got, same := losslessCombine(t.TempDir(), combineAnswer{}, leads, []string{"", ""})
 	if len(got) != 4 || len(same) != 0 {
 		t.Errorf("an empty answer = %+v %v", got, same)
@@ -450,7 +427,6 @@ func TestHelpersSkipped(t *testing.T) {
 		t.Errorf("runs = %+v", e.runs)
 	}
 
-	// Signed out of claude: skipped, with why.
 	no := false
 	p.clis = []runnerCLI{{Name: "claude", SignedIn: &no}}
 	fakeCLI(t, "claude", "#!/bin/sh\nexit 0\n")
@@ -458,7 +434,6 @@ func TestHelpersSkipped(t *testing.T) {
 		t.Errorf("skip = %q", e.skip)
 	}
 
-	// No change to read: the panel is skipped, run by run.
 	e = testHelperEnv(t, &auditHelpers{CLI: "claude", Panel: []panelCheck{{Name: "goals"}}}, func(context.Context, string, string, time.Duration) (json.RawMessage, float64, error) {
 		t.Error("a check ran with no change")
 		return nil, 0, nil
@@ -498,7 +473,6 @@ func TestVerifyFindings(t *testing.T) {
 		}
 		return json.RawMessage(`{"verdict":"Confirmed","evidence":"read it"}`), 0.01, nil
 	})
-	// A text answer: JSON in prose, as some CLIs give it.
 	res := map[string]any{"answer": "Here: {\"findings\":[" + strings.Join(findings, ",") + "]} done"}
 	e.verify(context.Background(), res, 0)
 	if len(asked) != helperVerifyMax {
@@ -509,8 +483,6 @@ func TestVerifyFindings(t *testing.T) {
 			t.Errorf("critical %s wasn't checked", crit)
 		}
 	}
-	// 21 critical and 84 low: the server keeps the 21 and the first 79
-	// lows, so the last 5 lows aren't checked.
 	for _, low := range []string{"f99", "f101", "f102", "f103", "f104"} {
 		if asked[low] {
 			t.Errorf("%s, past the guard the server keeps, was checked", low)
@@ -535,12 +507,6 @@ func TestVerifyFindings(t *testing.T) {
 		t.Errorf("verdicts = %v", verdicts)
 	}
 
-	// Past the cap, the findings checked are the ones the server keeps:
-	// the first 30 with a title or problem, worst first (core's
-	// parseAuditAnswer), not the first 30 in the answer's order (the live
-	// check of round 6's marks, WP-1320). A blank finding is neither checked
-	// nor counted; a severity the server reads as another (a label, upper
-	// case, an unknown word) ranks as the server ranks it.
 	findings = []string{`{"title":"","problem":"  "}`}
 	for i := range helperVerifyMax {
 		findings = append(findings, fmt.Sprintf(`{"title":"m%d","severity":"medium"}`, i))
@@ -562,8 +528,6 @@ func TestVerifyFindings(t *testing.T) {
 		t.Errorf("run = %+v", r)
 	}
 
-	// The first 30 low and the last 5 critical: the 5 critical are checked,
-	// the last 5 lows aren't, and the note counts 5.
 	findings = nil
 	for i := range helperVerifyMax + 5 {
 		sev := "low"
@@ -596,7 +560,6 @@ func TestVerifyFindings(t *testing.T) {
 	if r := e.runs[0]; !strings.Contains(r.Error, "5 finding(s) past the first 100") {
 		t.Errorf("run = %+v", r)
 	}
-	// Every check failing: the run failed.
 	e = testHelperEnv(t, &auditHelpers{CLI: "claude", Verify: true}, func(context.Context, string, string, time.Duration) (json.RawMessage, float64, error) {
 		return nil, 0, errors.New("down")
 	})
@@ -604,7 +567,6 @@ func TestVerifyFindings(t *testing.T) {
 	if len(e.runs) != 1 || e.runs[0].State != "failed" {
 		t.Errorf("runs = %+v", e.runs)
 	}
-	// No findings, or no answer: nothing runs, nothing is recorded.
 	for _, res := range []map[string]any{{"structured": json.RawMessage(`{"findings":[]}`)}, {"answer": "no JSON"}} {
 		e = testHelperEnv(t, &auditHelpers{CLI: "claude", Verify: true}, func(context.Context, string, string, time.Duration) (json.RawMessage, float64, error) {
 			t.Error("checked nothing")
@@ -672,7 +634,6 @@ the copy|low|a.go|0|p`
 	if got, want := strings.Join(cuts, "\n"), "|with no title or problem\nno problem|with no title or problem\nescapes|at a path outside the checkout\nabsolute outside|at a path outside the checkout\nabsolute|repeats"; got != want {
 		t.Errorf("cut\n%s\nwant\n%s", got, want)
 	}
-	// No count is cut: forty leads stay forty.
 	var many []rawLead
 	for i := range 40 {
 		many = append(many, rawLead{Title: fmt.Sprintf("l%d", i), Path: "a.go", Severity: "low", Problem: "p"})
@@ -683,7 +644,6 @@ the copy|low|a.go|0|p`
 	if strings.Contains(panelLeadSchema, "maxItems") {
 		t.Error("the panel's schema caps its leads")
 	}
-	// The change's copy of a file is read as the file, without the copy's line.
 	kept, cut, why = pruneLeads(work, []rawLead{{Title: "the copy", Path: auditChangeDir + "/diff/a.go.diff", Line: 1, Severity: "low", Problem: "p"}})
 	if got := show(kept); got != "the copy|low|a.go|0|p" || len(cut) != 0 || why != "" {
 		t.Errorf("the copy: %s, cut %d %q", got, len(cut), why)
@@ -739,7 +699,6 @@ func TestMergeLeads(t *testing.T) {
 	if fmt.Sprint(runs) != before {
 		t.Error("merging merged leads again changed them")
 	}
-	// No limit on size: 300 leads of a few hundred bytes all go through.
 	var many []panelLead
 	for i := range 300 {
 		many = append(many, panelLead{Title: fmt.Sprintf("lead %d", i), Path: "a.go", Line: i + 1, Severity: "low", Problem: strings.Repeat("p", 300)})
@@ -759,7 +718,7 @@ func TestMergeLeads(t *testing.T) {
 func TestVerifyReasksRefuted(t *testing.T) {
 	var mu sync.Mutex
 	asks := map[string]int{}
-	var order []int // each ask's number for its finding, in the order asked
+	var order []int
 	e := testHelperEnv(t, &auditHelpers{CLI: "claude", Verify: true}, func(_ context.Context, prompt, _ string, _ time.Duration) (json.RawMessage, float64, error) {
 		title := strings.SplitN(strings.SplitN(prompt, "Title: ", 2)[1], "\n", 2)[0]
 		mu.Lock()
@@ -780,8 +739,6 @@ func TestVerifyReasksRefuted(t *testing.T) {
 	if asks["twice"] != 2 || asks["flip"] != 2 || asks["fails"] != 2 || asks["real"] != 1 {
 		t.Errorf("asks = %v", asks)
 	}
-	// Every finding's first ask comes before any second one, so a second
-	// ask never takes a first one's time.
 	if !slices.IsSorted(order) {
 		t.Errorf("asks in order %v", order)
 	}
@@ -884,8 +841,6 @@ func TestHelperStopped(t *testing.T) {
 	if len(e.runs) != 2 || e.runs[0].State != "stopped" || e.runs[1].State != "stopped" || !strings.Contains(e.runs[1].Error, "stopped with the job") {
 		t.Errorf("runs = %+v", e.runs)
 	}
-	// Stopped on the second ask of a refuted finding: a stop too, and the
-	// finding is left unchecked, not refuted on one answer.
 	asked := 0
 	e = testHelperEnv(t, &auditHelpers{CLI: "claude", Verify: true}, func(context.Context, string, string, time.Duration) (json.RawMessage, float64, error) {
 		if asked++; asked == 1 {
@@ -906,9 +861,6 @@ func TestHelperBudget(t *testing.T) {
 	if got := budget(context.Background(), time.Minute, helperCombineBudget); got != time.Minute {
 		t.Errorf("no deadline = %s", got)
 	}
-	// The job's deadline is the model's time plus the extra the server adds:
-	// a panel that must leave room for the check and the combine ends that
-	// much before it.
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Second)
 	defer cancel()
 	after := helperVerifyBudget + helperCombineBudget
@@ -996,12 +948,10 @@ func TestPanelReusesPriorRuns(t *testing.T) {
 	if e.runs[1].Check != "tests" || e.runs[1].Reused || e.runs[1].State != "done" || e.runs[1].From != "aaa" || e.runs[1].To != "bbb" {
 		t.Errorf("tests should run anew with its range: %+v", e.runs[1])
 	}
-	// One check's question and its one lead's second read: two asks, none for goals.
 	if got := asks.Load(); got != 2 {
 		t.Errorf("model asks = %d, want 2 (tests only)", got)
 	}
 
-	// The head moved: nothing is reused.
 	asks.Store(0)
 	e = testHelperEnv(t, h, exec)
 	e.startPanel(context.Background(), "## The change", &auditRange{from: "aaa", to: "ccc"})
@@ -1037,7 +987,6 @@ func TestPanelReusedRunReadsUnreadLeads(t *testing.T) {
 	e := testHelperEnv(t, &auditHelpers{CLI: "claude", Panel: []panelCheck{{Name: "goals"}}, Prior: prior}, exec)
 	e.startPanel(context.Background(), "## The change", &auditRange{from: "aaa", to: "bbb"})
 	e.finish()
-	// The failed read's lead is read again too: two reads, no check.
 	if questions.Load() != 0 || reads.Load() != 2 {
 		t.Errorf("asks: %d questions, %d reads; want 0 and 2", questions.Load(), reads.Load())
 	}
@@ -1056,7 +1005,7 @@ func TestSecondReadsSayTheJobWasStopped(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	exec := func(_ context.Context, _, schema string, _ time.Duration) (json.RawMessage, float64, error) {
 		if strings.Contains(schema, `"leads"`) {
-			cancel() // the job is stopped as the check answers
+			cancel()
 			return json.RawMessage(`{"leads":[{"title":"t","severity":"high","problem":"p"}]}`), 0.01, nil
 		}
 		t.Error("a lead was read after the job was stopped")
@@ -1130,7 +1079,6 @@ func TestCombineVerdictsAndPlaces(t *testing.T) {
 	if !strings.Contains(prompt, "Mine (checked against the code: refuted)") || strings.Contains(prompt, "Other (checked") {
 		t.Errorf("the prompt's verdicts: %s", prompt)
 	}
-	// The fallback keeps a lead out of a refuted finding's place.
 	at := panelLead{ID: "goals.1", Title: "t", Severity: "high", Problem: "the cache entry is never evicted", Confirmed: true, ReadTitle: "RT", ReadPath: "a.go", ReadLine: 3}
 	if o, s := unmerged([]panelLead{at}, reviewer); len(o) != 1 || len(s) != 0 {
 		t.Errorf("unmerged at a refuted finding's place: %+v %v", o, s)
@@ -1167,9 +1115,9 @@ func TestUnmergedMergesRestatedPanelLeads(t *testing.T) {
 	leads := []panelLead{
 		lead("tests.1", "low", "a.go", 10, claim),
 		lead("quality.1", "high", "a.go", 14, restated),
-		lead("goals.1", "high", "a.go", 40, restated),                                        // too far
-		lead("goals.2", "high", "b.go", 12, restated),                                        // another file
-		lead("goals.3", "high", "a.go", 12, "an unrelated race on the queue length counter"), // another claim
+		lead("goals.1", "high", "a.go", 40, restated),
+		lead("goals.2", "high", "b.go", 12, restated),
+		lead("goals.3", "high", "a.go", 12, "an unrelated race on the queue length counter"),
 	}
 	out, same := unmerged(leads, nil)
 	if len(same) != 0 {

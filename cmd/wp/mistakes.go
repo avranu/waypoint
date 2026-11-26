@@ -2,8 +2,6 @@ package main
 
 import "net/url"
 
-// wp mistakes (WP-710): the kinds of mistake that keep coming up.
-
 var mistakesCmd = &command{
 	name: "mistakes", group: "Code and CI", args: "[-p PROJECT]", summary: "recurring kinds of mistake, their tasks, and whether a check stopped them",
 	about: `Each hour Waypoint groups its own records, without a model: bug tasks by the

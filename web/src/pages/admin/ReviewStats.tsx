@@ -1,7 +1,3 @@
-// Admin → AI → Review stats (WP-371): how the review bot's findings held up,
-// per reviewer model × strategy × prompt version and per verifier model, with
-// the verifier on against off. wp pr review-stats prints the same.
-
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {

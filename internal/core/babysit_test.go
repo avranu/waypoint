@@ -44,8 +44,8 @@ func (g *shipForge) setNotes(notes ...PRNote) {
 type bsEnv struct {
 	*shipEnv
 	agent  *Actor
-	online bool // the admin's runner keeps checking in
-	away   bool // the runners stopped checking in
+	online bool
+	away   bool
 }
 
 func newBabysitEnv(t *testing.T) *bsEnv { return newBabysitEnvOn(t, "github") }
@@ -54,7 +54,6 @@ func newBabysitEnvOn(t *testing.T, kind string) *bsEnv {
 	se := newShipEnv(t, kind)
 	se.llm.answers["opencode/muse-spark-1.3-contributor-free"] = noFindings
 	se.noWaits()
-	// The fixtures' relays are posted as "mirror", the forge's mirror account.
 	if _, err := se.s.UpdateForge(se.ctx, se.admin, se.f.ID, ForgeInput{MirrorAccount: str("mirror")}); err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +126,7 @@ func (be *bsEnv) ci(sha, state string) {
 	be.t.Helper()
 	be.sg.setChecks(sha, CommitCheck{Name: "ci / test", State: state, URL: "https://ci.example.com/run/1"})
 	if be.online {
-		be.runnerOnline() // a runner checks in every few seconds; the test clock jumps
+		be.runnerOnline()
 	}
 	from := be.clockNow().UnixMilli()
 	be.poll()
@@ -145,8 +144,6 @@ func (be *bsEnv) rerunFails() {
 		be.t.Fatalf("no flake re-run of %s: %+v", be.pr(7).HeadSHA, fr)
 	}
 	be.setClock(be.clockNow().Add(faultRerunSettle))
-	// Runners check in every few seconds; the test clock jumps. Unless the
-	// test took them away.
 	if !be.away {
 		if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE runners SET last_seen_at = ? WHERE last_seen_at IS NOT NULL`, be.clockNow().UnixMilli()); err != nil {
 			be.t.Fatal(err)
@@ -272,7 +269,7 @@ func TestReviewCommentsFromTheForge(t *testing.T) {
 	be.sg.threads = []ReviewThread{
 		{ID: "T1", Path: "app/export.go", Line: 3, Comments: []ThreadComment{
 			{ID: "501", Author: "alice", Body: "This loop never ends when rows is empty.", SHA: "7777777aaaa", At: at},
-			{ID: "502", Author: "claude", Body: "Looking at it.", At: at}, // the author's own
+			{ID: "502", Author: "claude", Body: "Looking at it.", At: at},
 			{ID: "503", Author: "waypoint-bot", Body: "Fixed.\n<!-- waypoint-reply -->", At: at},
 		}},
 		{ID: "T2", Path: "app/export.go", Line: 9, Comments: []ThreadComment{{ID: "511", Author: "dave", Body: "Typo: recieve.", At: at}}},
@@ -286,7 +283,6 @@ func TestReviewCommentsFromTheForge(t *testing.T) {
 		PRNote{ID: "606", Kind: "review", Author: "erin", Body: "", State: "commented", At: at},
 	)
 	pr := be.open()
-	// Not babysat: nothing is read, and comments hold nothing.
 	if n := len(be.comments()); n != 0 {
 		t.Fatalf("comments read before babysitting: %d", n)
 	}
@@ -311,14 +307,12 @@ func TestReviewCommentsFromTheForge(t *testing.T) {
 		t.Errorf("readiness = %q", r)
 	}
 
-	// An edit updates the text and keeps the verdict; a deleted comment is
-	// gone; a thread a person resolves is dismissed.
 	be.sg.setNotes(
 		PRNote{ID: "601", Kind: "review", Author: "llm-review", Body: "Consider caching the export.", State: "commented", SHA: "7777777aaaa", At: at},
 		PRNote{ID: "603", Kind: "comment", Author: "carol", Body: "Please add a test for the empty and the nil case.", At: at, UpdatedAt: at.Add(time.Minute)},
 	)
 	be.sg.sm.Lock()
-	be.sg.threads = be.sg.threads[:1] // dave deleted his
+	be.sg.threads = be.sg.threads[:1]
 	be.sg.sm.Unlock()
 	be.sg.resolve(0, "alice")
 	be.step()
@@ -351,13 +345,13 @@ func TestUndealtCommentStates(t *testing.T) {
 		{PRReviewComment{Verdict: VerdictAccepted}, false},
 		{PRReviewComment{Verdict: VerdictFixing}, false},
 		{PRReviewComment{Verdict: VerdictNeedsPerson, Note: "a product call"}, false},
-		{PRReviewComment{Verdict: VerdictRejected}, false}, // no reply
+		{PRReviewComment{Verdict: VerdictRejected}, false},
 		{PRReviewComment{Verdict: VerdictRejected, Note: "wrong"}, true},
 		{PRReviewComment{Verdict: VerdictPartial, Note: "half"}, true},
 		{PRReviewComment{Verdict: VerdictFixed}, true},
 		{PRReviewComment{Verdict: VerdictVerified}, true},
 		{PRReviewComment{Verdict: VerdictDismissed}, true},
-		{PRReviewComment{Verdict: VerdictAccepted, Outdated: true}, true}, // a later push changed the code
+		{PRReviewComment{Verdict: VerdictAccepted, Outdated: true}, true},
 		{PRReviewComment{Verdict: VerdictSeen, Outdated: true}, false},
 		{PRReviewComment{Verdict: VerdictSeen, Gone: true}, true},
 		{PRReviewComment{Verdict: VerdictSeen, findingState: FindingFixed}, true},
@@ -394,20 +388,15 @@ func TestBabysitFailedCheckRounds(t *testing.T) {
 		!strings.Contains(in.Prompt, "--- FAIL: TestExport") || !strings.Contains(in.Prompt, "Reproduce each here") || !strings.Contains(in.Prompt, "round 1. This is branch") {
 		t.Fatalf("job = %+v", in)
 	}
-	// Never twice for one head.
 	be.step()
 	if n := len(be.jobs()); n != 1 {
 		t.Fatalf("%d jobs for one head", n)
 	}
-	// The round ends without fixing it and the check still fails: one more
-	// round on this head, on a stronger model that hears how the first ended.
 	be.finish(jobs[0], false)
 	b = be.babysit()
 	if jobs = be.jobs(); b.State != BabysitWorking || b.Round != 2 || len(jobs) != 2 || b.Rounds[1].Model != escalateModel {
 		t.Fatalf("after a round that changed nothing: %+v", b)
 	}
-	// The ledger (WP-438): round 1 was given a failed check and pushed
-	// nothing; round 2, on the same head, carries its class.
 	if r := b.Rounds[0]; r.Class != RoundNothingPushed || r.WorkClass != RoundCIConflict || len(r.Ledger) != 1 || r.Ledger[0].ID != "ci / test" {
 		t.Errorf("round 1 ledger: %+v", r)
 	}
@@ -418,8 +407,6 @@ func TestBabysitFailedCheckRounds(t *testing.T) {
 		!strings.Contains(in.Prompt, "Round over.") || !strings.Contains(in.Prompt, "--- FAIL: TestExport") {
 		t.Fatalf("escalated job = %+v", in)
 	}
-	// That one changes nothing either: the assessor takes it, fresh, at
-	// high effort, with the change's intent and every round (WP-439).
 	be.finish(jobs[1], false)
 	b = be.babysit()
 	if jobs = be.jobs(); b.State != BabysitWorking || b.Round != 3 || len(jobs) != 3 || !b.Rounds[2].Assessor || b.Rounds[2].Effort != assessorEffort {
@@ -432,13 +419,9 @@ func TestBabysitFailedCheckRounds(t *testing.T) {
 	}
 	var timeout int
 	_ = be.s.db.R.QueryRow(`SELECT timeout FROM runner_jobs WHERE id = ?`, jobs[2]).Scan(&timeout)
-	// The assessor's own time is its work; the job's limit leaves room for
-	// its commands' waits for a test slot (WP-1618).
 	if in := be.jobInput(jobs[2]); in.WorkTimeout != 5400 || timeout != 7200 {
 		t.Errorf("assessor work timeout %d, job timeout %d", in.WorkTimeout, timeout)
 	}
-	// The assessor leaves it too: out of the merge line, resting, nobody
-	// asked: a failing check is no call of a person's (WP-930).
 	be.finish(jobs[2], false)
 	b = be.babysit()
 	if b.State != BabysitResting || !strings.HasPrefix(b.Wait, restWait) || len(be.jobs()) != 3 || !resting(&b.Rounds[2]) {
@@ -451,14 +434,11 @@ func TestBabysitFailedCheckRounds(t *testing.T) {
 	if len(be.jobs()) != 3 || !resting(lastRound(be.babysit())) {
 		t.Fatalf("a resting babysit ran again: %+v", be.babysit())
 	}
-	// A push starts it again, back on its own model.
 	be.push("8888888bbbb")
 	be.ci("8888888bbbb", CheckFailed)
 	if b = be.babysit(); b.Round != 4 || b.State != BabysitWorking || len(be.jobs()) != 4 || b.Rounds[3].Model != "" {
 		t.Fatalf("round 4: %+v", b)
 	}
-	// The check the assessor had still fails after a push: no second
-	// assessor round on it, it rests instead.
 	be.finish(b.JobID, true)
 	be.push("9999999cccc")
 	be.ci("9999999cccc", CheckFailed)
@@ -466,7 +446,6 @@ func TestBabysitFailedCheckRounds(t *testing.T) {
 	if !resting(&b.Rounds[3]) || !b.Active || !strings.Contains(b.Rounds[3].Parked, "ci / test still open after the assessor's round 3") || len(be.jobs()) != 4 {
 		t.Fatalf("second assessor on the same check: %+v", b)
 	}
-	// Resting still holds the merge, until a person stops it.
 	if !be.s.babysitBlocks(be.ctx, pr.ID) {
 		t.Error("a parked babysit doesn't hold the merge")
 	}
@@ -505,8 +484,6 @@ func TestBabysitEscalatesAfterAFixThatFailed(t *testing.T) {
 	if b = be.babysit(); b.Round != 2 || b.State != BabysitWorking || b.Rounds[1].Model != escalateModel {
 		t.Fatalf("round 2: %+v", b)
 	}
-	// The ledger: round 1 pushed a fix with its diff's head, and round 2's
-	// failure is that check again (WP-438).
 	if r := b.Rounds[0]; r.Class != RoundCIConflict || r.PushSHA == "" {
 		t.Errorf("round 1: class %q push %q", r.Class, r.PushSHA)
 	}
@@ -521,8 +498,6 @@ func TestBabysitEscalatesAfterAFixThatFailed(t *testing.T) {
 		!strings.Contains(in.Prompt, "Round 1 on 7777777:\n<untrusted>\n```diff\n+bounded the table\n```\nRound over.") || strings.Contains(in.Prompt, "git log") {
 		t.Fatalf("escalated job = %+v", in)
 	}
-	// The stronger round's fix fails too: the assessor takes the third
-	// failure in a row, with both fixes (WP-439).
 	be.finish(b.JobID, true)
 	be.push("9999999cccc")
 	be.sg.setChecks("9999999cccc", CommitCheck{Name: "forge-checks/codeql", State: CheckFailed})
@@ -535,7 +510,6 @@ func TestBabysitEscalatesAfterAFixThatFailed(t *testing.T) {
 		!strings.Contains(in.Prompt, "Round 2 on 8888888 (opus), given failing forge-checks/codeql; pushed 1 commit.") {
 		t.Fatalf("assessor job = %+v", in)
 	}
-	// The assessor's fix fails too: out of the line, resting.
 	be.finish(b.JobID, true)
 	be.push("aaaaaaa1111")
 	be.sg.setChecks("aaaaaaa1111", CommitCheck{Name: "forge-checks/codeql", State: CheckFailed})
@@ -587,7 +561,6 @@ func TestBabysitRoundLimit(t *testing.T) {
 	if b.State != BabysitWorking || !b.Rounds[1].Assessor || !strings.Contains(be.jobInput(b.JobID).Prompt, "1 round, the most a babysit runs, and still failing ci / lint") {
 		t.Fatalf("after the last round: %+v", b)
 	}
-	// Past the cap the assessor runs once; then it rests.
 	be.finish(b.JobID, false)
 	if b = be.babysit(); !resting(&b.Rounds[1]) || len(be.jobs()) != 2 || !strings.Contains(b.Rounds[1].Parked, "the assessor's round 2 on this head") {
 		t.Fatalf("after the assessor past the cap: %+v", b)
@@ -610,7 +583,6 @@ func TestBabysitCommentsRound(t *testing.T) {
 	pr := be.open()
 	be.start(pr)
 	be.ci("7777777aaaa", CheckSuccess)
-	// Green, but comments are waiting: no merge; 👀 on each; round 1.
 	if m := be.sg.merged(); len(m) != 0 {
 		t.Fatalf("merged with comments not dealt with: %+v", m)
 	}
@@ -638,7 +610,6 @@ func TestBabysitCommentsRound(t *testing.T) {
 		}
 	}
 
-	// The round's agent deals with them.
 	if _, err := be.s.AckReviewComments(be.ctx, be.agent, AckInput{IDs: []string{alice.Ref}, Verdict: "accept"}); err != nil {
 		t.Fatal(err)
 	}
@@ -678,7 +649,6 @@ func TestBabysitCommentsRound(t *testing.T) {
 		t.Errorf("replied in the thread of an accepted comment: %v", be.sg.replies)
 	}
 
-	// The runner pushes: the fix becomes fixed (🎉, thread resolved, no reply).
 	be.finish(jobs[0], true)
 	be.push("8888888bbbb")
 	if c := be.comment("501"); c.Verdict != VerdictFixed {
@@ -695,8 +665,6 @@ func TestBabysitCommentsRound(t *testing.T) {
 	if !strings.Contains(lastOf(be.told()), "need") || !be.notified("needs you") {
 		t.Errorf("not told: %v", be.told())
 	}
-	// A person dismisses it: everything is dealt with, and the armed pull
-	// request merges; the session hears.
 	if _, err := be.s.DismissReviewComment(be.ctx, be.admin, carol.Ref, "Not for this pull request."); err != nil {
 		t.Fatal(err)
 	}
@@ -712,7 +680,6 @@ func TestBabysitCommentsRound(t *testing.T) {
 	if m := lastOf(be.told()); !strings.Contains(m, "merged") {
 		t.Errorf("told %q", m)
 	}
-	// Babysit messages read as news, not a task.
 	if txt := MessagesText([]*SessionMessage{{Body: "x merged", stepKey: "babysit:1:merged"}}); !strings.HasPrefix(txt, "Waypoint's babysitter: x merged") {
 		t.Errorf("message text = %q", txt)
 	}
@@ -734,12 +701,10 @@ func TestBabysitHandsOverWithoutRunner(t *testing.T) {
 	if !be.notified("wp pr todo 7") {
 		t.Error("the owner wasn't notified")
 	}
-	// Once for the head.
 	be.step()
 	if n := len(be.told()); n != 1 {
 		t.Errorf("told %d times", n)
 	}
-	// A fork never goes to a runner.
 	be.runnerOnline()
 	fork := bsPR
 	fork.Number, fork.HeadRepo, fork.HeadSHA = 8, "someone/app", "8888888aaaa"
@@ -760,7 +725,7 @@ func TestBabysitWaitsForItsRunner(t *testing.T) {
 		be := newBabysitEnv(t)
 		pr := be.open()
 		be.runnerOnline()
-		be.online, be.away = false, true // it stops checking in
+		be.online, be.away = false, true
 		be.setClock(be.clockNow().Add(2 * time.Minute))
 		be.start(pr)
 		be.ci("7777777aaaa", CheckFailed)
@@ -827,7 +792,6 @@ func TestBabysitVerifiedHeart(t *testing.T) {
 	if finding == nil || finding.Author != "waypoint" || !finding.Bot {
 		t.Fatalf("Waypoint's finding isn't a review comment: %+v", list)
 	}
-	// Waypoint's next review finds its finding fixed: ❤️.
 	if err := be.s.write(be.ctx, SystemActor(), func(t *tx) error {
 		_, err := be.s.setFindingState(be.ctx, t, finding.FindingID, FindingFixed, byVerify("m"), "8888888bbbb", "")
 		return err
@@ -838,7 +802,6 @@ func TestBabysitVerifiedHeart(t *testing.T) {
 	if c := be.comment(finding.extID); c.Verdict != VerdictVerified || !slices.Contains(be.sg.reacted(), "inline:"+finding.extID+":heart") {
 		t.Errorf("finding fixed = %+v %v", c, be.sg.reacted())
 	}
-	// The bot that made a comment reviews a later head and doesn't raise it again: ❤️.
 	llm := be.comment("901")
 	if _, err := be.s.FixedReviewComments(be.ctx, be.agent, FixedInput{IDs: []string{llm.Ref}, Note: "Closed with defer."}); err != nil {
 		t.Fatal(err)
@@ -878,7 +841,6 @@ func TestBabysitStartStop(t *testing.T) {
 	if _, err := be.s.StartBabysit(be.ctx, be.admin, pr.ID, BabysitInput{Model: "no spaces allowed"}); !IsInvalid(err) {
 		t.Errorf("bad model: %v", err)
 	}
-	// A viewer may look but not start or stop.
 	viewer := be.user("vic", false)
 	if err := be.s.SetMember(be.ctx, be.admin, be.p.Key, viewer.User.Username, "viewer"); err != nil {
 		t.Fatal(err)
@@ -960,20 +922,17 @@ func TestBabysitArmedPullRequests(t *testing.T) {
 	pr := be.open()
 	forget(pr)
 
-	// Armed by a person: their runner.
 	arm(pr, be.admin.User.ID)
 	be.s.maybeAutoMerge(be.ctx, pr.ID)
 	if b := latest(pr); b == nil || b.ownerID != be.admin.User.ID || !b.Active || b.StartedBy != "" {
 		t.Fatalf("armed by a person: %+v", b)
 	}
-	// Armed by the label or the setting: the author's runner.
 	forget(pr)
 	arm(pr, nil)
 	be.s.maybeAutoMerge(be.ctx, pr.ID)
 	if b := latest(pr); b == nil || b.ownerID != author.User.ID {
 		t.Fatalf("armed with nobody: %+v", b)
 	}
-	// A person stopped it: arming again doesn't start it again.
 	if _, err := be.s.StopBabysit(be.ctx, be.admin, pr.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -982,7 +941,6 @@ func TestBabysitArmedPullRequests(t *testing.T) {
 		t.Fatalf("started again after a stop: %+v", b)
 	}
 
-	// The sweep: armed, checks failed, no babysit.
 	forget(pr)
 	be.s.enrollArmedTroubled(be.ctx)
 	if b := latest(pr); b != nil {
@@ -996,7 +954,6 @@ func TestBabysitArmedPullRequests(t *testing.T) {
 		t.Fatalf("sweep: %+v", b)
 	}
 
-	// A fork's pull request is not enrolled.
 	fork := bsPR
 	fork.Number, fork.HeadRef, fork.HeadRepo = 8, "fork-branch", "stranger/app"
 	be.pullHook("opened", fork)
@@ -1025,7 +982,6 @@ func TestBabysitLateCommentRound(t *testing.T) {
 	if b.State != BabysitWorking || len(jobs) != 1 {
 		t.Fatalf("no round for the comment: %+v", b)
 	}
-	// The round leaves it: the stronger model takes it (WP-439).
 	be.finish(jobs[0], false)
 	if b = be.babysit(); b.State != BabysitWorking || len(be.jobs()) != 2 || b.Rounds[1].Model != escalateModel {
 		t.Fatalf("after round 1 left it: %+v", b)
@@ -1034,7 +990,6 @@ func TestBabysitLateCommentRound(t *testing.T) {
 		t.Fatalf("round 2 prompt:\n%s", in.Prompt)
 	}
 
-	// The real review lands on the same head while round 2 runs.
 	be.sg.setNotes(placeholder, PRNote{ID: "602", Kind: "comment", Author: "carol", Body: "Export never closes the file.", At: at.Add(time.Minute)})
 	be.runnerOnline()
 	be.poll()
@@ -1048,7 +1003,6 @@ func TestBabysitLateCommentRound(t *testing.T) {
 	if in := be.jobInput(jobs[2]); !strings.Contains(in.Prompt, "Export never closes the file.") || !slices.Contains(b.Rounds[2].Comments, late.Ref) {
 		t.Fatalf("round 3 = %+v, prompt:\n%s", b.Rounds[2], in.Prompt)
 	}
-	// Left again: the stronger model already had this head, so the assessor.
 	be.finish(jobs[2], false)
 	be.step()
 	if b = be.babysit(); b.State != BabysitWorking || len(be.jobs()) != 4 || !b.Rounds[3].Assessor {

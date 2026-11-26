@@ -61,7 +61,6 @@ func TestAgentOverviewGathersEverything(t *testing.T) {
 	agent := *o.agent
 	agent.Session = working
 
-	// A question waits on ana; a second one is snoozed.
 	ask := func(title string) *Request {
 		r, _, err := s.CreateRequest(ctx, &agent, RequestInput{Kind: RequestQuestion, Title: title, Questions: choiceQ()})
 		if err != nil {
@@ -80,7 +79,6 @@ func TestAgentOverviewGathersEverything(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Queue: two ready tasks for claude, one for haiku, one backlog.
 	mk := func(title, agentSpec, prio, status string) *IssueDetail {
 		return o.issue(o.admin, IssueInput{Project: o.p.Key, Title: title, Agent: agentSpec, Priority: prio, Status: status})
 	}
@@ -89,7 +87,6 @@ func TestAgentOverviewGathersEverything(t *testing.T) {
 	mk("Haiku chore", "haiku", "", "")
 	mk("Someday", "claude", "", "backlog")
 
-	// An agent finishes a task and files another for later.
 	tok, _, _ := s.CreateToken(ctx, o.admin, TokenSpec{Name: "code", Agent: "anthropic/claude-code"})
 	code, _ := s.TokenActor(ctx, tok)
 	ship := mk("Ship the thing", "claude", "high", "")
@@ -103,13 +100,11 @@ func TestAgentOverviewGathersEverything(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// And one it holds right now.
 	held := mk("In flight", "claude", "urgent", "")
 	if task, err := s.AgentTake(ctx, code, held.Key, ""); err != nil || task == nil {
 		t.Fatalf("take = %+v, %v", task, err)
 	}
 
-	// Knowledge by the agent.
 	pg, err := s.CreatePage(ctx, &agent, PageInput{Title: str("Parser notes"), Category: str("note"), Project: Some(o.p.Key)})
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +113,6 @@ func TestAgentOverviewGathersEverything(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Pull requests: one open (by the agent), one merged.
 	body := "Fixes the parser.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 	open := ForgePR{Number: 12, Title: "Parser fix", Author: "robin", HeadRef: "feat/parser", HeadSHA: "aaaaaaa1111", State: "open", Body: body}
 	o.fg.setPR(o.f, "me/app", open, sampleDiff)
@@ -134,11 +128,9 @@ func TestAgentOverviewGathersEverything(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Waiting on you.
 	if len(ov.Waiting.Requests) != 1 || ov.Waiting.Requests[0].Title != "Which database?" || ov.Waiting.Total < 1 {
 		t.Errorf("waiting: %+v", ov.Waiting)
 	}
-	// Sessions: both live, the working one first by recency or at least present with its place.
 	if ov.SessionsTotal != 2 || len(ov.Sessions) != 2 {
 		t.Fatalf("sessions: %d/%d", len(ov.Sessions), ov.SessionsTotal)
 	}
@@ -151,7 +143,6 @@ func TestAgentOverviewGathersEverything(t *testing.T) {
 	if w == nil || w.State != SessionWorking || w.Title != "Parser fix" || w.Machine != "box" || w.Branch != "feat/parser" || w.URL != fmt.Sprintf("/agents/sessions/%d", working) || w.OpenRequests != 1 {
 		t.Errorf("working session: %+v", w)
 	}
-	// Up next: claude's head in the order next hands out; haiku has its own.
 	byAgent := map[string]*OverviewNext{}
 	for _, n := range ov.Next {
 		byAgent[n.Agent] = n
@@ -172,11 +163,9 @@ func TestAgentOverviewGathersEverything(t *testing.T) {
 	if len(ov.Claims) != 1 || ov.Claims[0].Key != held.Key {
 		t.Errorf("claims: %+v", ov.Claims)
 	}
-	// Pull requests.
 	if ov.Pulls.Total != 1 || len(ov.Pulls.Open) != 1 || ov.Pulls.Open[0].Number != 12 {
 		t.Errorf("pulls: %+v", ov.Pulls)
 	}
-	// Branches: the pull request's and the session's, with the session on its branch.
 	var parser *OverviewBranch
 	for i := range ov.Branches {
 		if ov.Branches[i].Branch.Branch == "feat/parser" {
@@ -186,7 +175,6 @@ func TestAgentOverviewGathersEverything(t *testing.T) {
 	if parser == nil || parser.PR == nil || parser.PR.Number != 12 || len(parser.Sessions) != 1 || parser.Sessions[0].ID != working {
 		t.Errorf("branches: %+v", ov.Branches)
 	}
-	// Changes: the page, the term and the issues, newest first, with the agent named.
 	if len(ov.Changes.Changes) != ovChanges || ov.Changes.NextBefore != 0 && ov.Changes.NextBefore > o.clockNow().UnixMilli() {
 		t.Errorf("changes: %d, next %d", len(ov.Changes.Changes), ov.Changes.NextBefore)
 	}
@@ -201,7 +189,6 @@ func TestAgentOverviewGathersEverything(t *testing.T) {
 	if !kinds[ChangePage] || !kinds[ChangeGlossary] || !kinds[ChangeIssue] {
 		t.Errorf("changes: %+v", every.Changes)
 	}
-	// The summary.
 	sum := ov.Summary
 	if sum.Doing.Count < 2 || sum.Doing.Items[0].Title != "Parser fix" || !strings.HasPrefix(sum.Doing.Items[0].URL, "/agents/sessions/") {
 		t.Errorf("doing: %+v", sum.Doing)
@@ -218,7 +205,6 @@ func TestAgentOverviewGathersEverything(t *testing.T) {
 	if sum.Waiting.Count != ov.Waiting.Total || !hasPart(sum.Waiting, "request", 1) {
 		t.Errorf("waiting: %+v (total %d)", sum.Waiting, ov.Waiting.Total)
 	}
-	// A request a person answered is theirs: named for them, kept out of what the agents did.
 	if sum.Resolved.Count != 1 || len(ov.Resolved) != 1 || ov.Resolved[0].By != "ana" || ov.Resolved[0].Detail != "Answered by ana" || ov.Resolved[0].Agent != "anthropic/claude-code" {
 		t.Errorf("resolved: %+v %+v", sum.Resolved, ov.Resolved)
 	}
@@ -232,7 +218,6 @@ func TestAgentOverviewGathersEverything(t *testing.T) {
 	}
 	_ = pg
 
-	// An agent filter narrows every part.
 	only, err := s.AgentOverview(ctx, o.ana, OverviewQuery{Agent: "haiku", Days: 7})
 	if err != nil {
 		t.Fatal(err)
@@ -244,7 +229,6 @@ func TestAgentOverviewGathersEverything(t *testing.T) {
 	if len(only.Next) != 1 || only.Next[0].Agent != "haiku" {
 		t.Errorf("haiku's next: %+v", only.Next)
 	}
-	// A project filter, and a stranger's view.
 	if _, err := s.AgentOverview(ctx, o.bob, OverviewQuery{Project: o.p.Key}); !IsForbiddenOrNotFound(err) {
 		t.Errorf("a non-member read the project's overview: %v", err)
 	}
@@ -300,7 +284,6 @@ func TestRecentChangesPagingKindsAndVisibility(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Newest first across kinds; her own personal page, nothing of Secret.
 	all, err := s.RecentChanges(ctx, o.ana, ChangeQuery{Limit: 100})
 	if err != nil {
 		t.Fatal(err)
@@ -313,7 +296,6 @@ func TestRecentChangesPagingKindsAndVisibility(t *testing.T) {
 			t.Error("a change in a project ana isn't in")
 		}
 	}
-	// Kinds, and paging by time without repeats or gaps.
 	design, _ := s.RecentChanges(ctx, o.ana, ChangeQuery{Kind: ChangeDesign})
 	if len(design.Changes) != 1 || design.Changes[0].Verb != "proposed an edit to" && design.Changes[0].Verb != "wrote" || design.Changes[0].Agent != "anthropic/claude-code" || design.Changes[0].URL == "" {
 		t.Errorf("design: %+v", design.Changes)
@@ -336,14 +318,13 @@ func TestRecentChangesPagingKindsAndVisibility(t *testing.T) {
 	if len(seen) != 5 || len(slices.Compact(slices.Clone(seen))) != 5 {
 		t.Errorf("paged issue changes: %v", seen)
 	}
-	// By agent: only what agents made.
 	byAgent, _ := s.RecentChanges(ctx, o.ana, ChangeQuery{Agent: "claude", Limit: 100})
 	for _, c := range byAgent.Changes {
 		if c.Agent == "" {
 			t.Errorf("a person's change in an agent's list: %+v", c)
 		}
 	}
-	if len(byAgent.Changes) != 7 { // five issues, the term, the note
+	if len(byAgent.Changes) != 7 {
 		t.Errorf("agent changes: %d", len(byAgent.Changes))
 	}
 	if none, _ := s.RecentChanges(ctx, o.ana, ChangeQuery{Agent: "haiku"}); len(none.Changes) != 0 {
@@ -371,7 +352,7 @@ func TestAgentOverviewIsQuickOnABusyDatabase(t *testing.T) {
 		}
 		o.issue(o.admin, IssueInput{Project: o.p.Key, Title: fmt.Sprintf("Issue %d", n), Agent: spec})
 	}
-	if _, err := s.AgentOverview(ctx, o.ana, OverviewQuery{Days: 30}); err != nil { // warm up
+	if _, err := s.AgentOverview(ctx, o.ana, OverviewQuery{Days: 30}); err != nil {
 		t.Fatal(err)
 	}
 	start := time.Now()

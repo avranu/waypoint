@@ -64,7 +64,6 @@ func TestEnvLagAlerts(t *testing.T) {
 	}
 	advance := func(d time.Duration) { x.setClock(x.clockNow().Add(d)) }
 
-	// Production follows its branch by default; a preview doesn't.
 	deploy("aaaaaaa1111")
 	prod, _ := x.s.GetEnvironmentNamed(x.ctx, x.viewer, x.p.Key, "production")
 	if prod.LagAlertM != envLagDefault {
@@ -79,8 +78,6 @@ func TestEnvLagAlerts(t *testing.T) {
 		t.Fatalf("at its head: %v", a)
 	}
 
-	// Merges keep coming and nothing deploys them: the latest push is always
-	// recent, but the first merge it missed is what counts.
 	merge("bbbbbbb2222")
 	advance(30 * time.Minute)
 	merge("ccccccc3333")
@@ -97,7 +94,6 @@ func TestEnvLagAlerts(t *testing.T) {
 	if ev == nil || ev.ProjectID != x.p.ID || ev.Data["behind_m"] != 50 || ev.Data["head"] != "ccccccc3333" {
 		t.Errorf("event: %+v", ev)
 	}
-	// Told once, not every minute; again a day later.
 	advance(time.Hour)
 	if a := alerts(); len(a) != 1 {
 		t.Fatalf("repeated within the day: %v", a)
@@ -107,7 +103,6 @@ func TestEnvLagAlerts(t *testing.T) {
 		t.Fatalf("a day later: %v", a)
 	}
 
-	// Deploying the head ends it; a newer merge starts a new clock.
 	deploy("ccccccc3333")
 	advance(time.Hour)
 	if a := alerts(); len(a) != 2 {
@@ -123,7 +118,6 @@ func TestEnvLagAlerts(t *testing.T) {
 		t.Fatalf("46 minutes after a merge: %v", a)
 	}
 
-	// A rollback to an older release is behind from when it was deployed.
 	deploy("ddddddd4444")
 	advance(time.Minute)
 	deploy("ccccccc3333")
@@ -136,7 +130,6 @@ func TestEnvLagAlerts(t *testing.T) {
 		t.Fatalf("50 minutes after a rollback: %v", a)
 	}
 
-	// Redeploying the release it already runs doesn't restart the clock.
 	deploy("ddddddd4444")
 	merge("eeeeeee5555")
 	advance(30 * time.Minute)
@@ -146,8 +139,6 @@ func TestEnvLagAlerts(t *testing.T) {
 		t.Fatalf("50 minutes after a merge, redeployed since: %v", a)
 	}
 
-	// A merge whose push never reached Waypoint, then a deploy of it: the head
-	// on record is older than what runs, so it can't tell, and says nothing.
 	deploy("eeeeeee5555")
 	advance(time.Minute)
 	pr++
@@ -162,7 +153,6 @@ func TestEnvLagAlerts(t *testing.T) {
 		t.Fatalf("after a missed push: %v", a)
 	}
 
-	// An archived project is left alone.
 	merge("ggggggg7777")
 	advance(2 * time.Hour)
 	if _, err := x.s.db.W.Exec(`UPDATE projects SET archived = 1 WHERE id = ?`, x.p.ID); err != nil {
@@ -178,7 +168,6 @@ func TestEnvLagAlerts(t *testing.T) {
 		t.Fatalf("unarchived: %v", a)
 	}
 
-	// A limit left at its default follows a change of kind.
 	dev := x.create("dev", "")
 	staging := EnvStaging
 	d, err := x.s.UpdateEnvironment(x.ctx, x.editor, dev.ID, EnvironmentInput{Kind: &staging})
@@ -186,7 +175,6 @@ func TestEnvLagAlerts(t *testing.T) {
 		t.Errorf("dev made staging: %v, %+v", err, d)
 	}
 
-	// Off: never told.
 	zero := 0
 	if _, err := x.s.UpdateEnvironment(x.ctx, x.editor, prod.ID, EnvironmentInput{LagAlertM: &zero}); err != nil {
 		t.Fatal(err)

@@ -20,13 +20,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Session commands (WP-562, WP-ADR108): /wp SUB typed in a Claude Code session ends at
-// its UserPromptSubmit hooks, so no model call runs and the person sees one
-// line. The event hook sends the server's commands (next, stop, continue,
-// status, keep: what Waypoint does with the session); this hook answers the
-// rest on this machine: help, btw (a note for the agent's next prompt or
-// tool result) and exe (a command run in the session's directory).
-
 // wpCommands maps what may be typed after /wp to the command it is. The
 // server's (core.SessionCommand) are the ones wpServerCommand names.
 var wpCommands = map[string]string{
@@ -156,7 +149,7 @@ func (c *cli) addNote(session string, n *sessionNote) error {
 // so only a /wp exe run that outlived its hook is told again, as it ended.
 func (c *cli) takeNotes(session, transcript string) string {
 	if session == "" || len(c.state.Notes[session]) == 0 {
-		return "" // the state loaded with the process: no lock, no write on every call
+		return ""
 	}
 	var list []*sessionNote
 	_ = c.updateState(func(s *State) {
@@ -212,7 +205,7 @@ func keptStopSince(transcript string, at time.Time) bool {
 	}
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1<<20), 8<<20)
-	since := at.Add(-2 * time.Second) // the hook's clock and Claude Code's
+	since := at.Add(-2 * time.Second)
 	for sc.Scan() {
 		line := sc.Bytes()
 		if !bytes.Contains(line, []byte(`"promptKept":true`)) {
@@ -296,12 +289,12 @@ func hookClaudeSlash(c *cli, stdin io.Reader, stdout io.Writer) {
 	if err := json.NewDecoder(io.LimitReader(stdin, 4<<20)).Decode(&in); err != nil || in.SessionID == "" {
 		return
 	}
-	in.Prompt = core.UnwrapPasted(in.Prompt) // a paste's text (WP-1562)
+	in.Prompt = core.UnwrapPasted(in.Prompt)
 	p := strings.TrimSpace(in.Prompt)
 	cmd, word, rest, ok := parseWpCommand(p)
 	if !ok {
 		if strings.EqualFold(p, "/keep") || core.IsKeepWarmPing(p) || p == "/compact" {
-			return // a note waits for the agent's next real prompt
+			return
 		}
 		if note := c.takeNotes(in.SessionID, in.TranscriptPath); note != "" {
 			_, _ = stdout.Write(hookContext("UserPromptSubmit", note))
@@ -309,7 +302,7 @@ func hookClaudeSlash(c *cli, stdin io.Reader, stdout io.Writer) {
 		return
 	}
 	if wpServerCommand(cmd) {
-		return // the event hook sends it to Waypoint
+		return
 	}
 	_, _ = stdout.Write(promptStop(c.slashAnswer(in, p, cmd, word, rest)))
 }
@@ -328,9 +321,6 @@ func (c *cli) slashAnswer(in hookEventInput, prompt, cmd, word, rest string) str
 		}
 		return "Waypoint: noted; the agent reads it with its next prompt or tool result."
 	case "exe":
-		// Keyed on the digest of the prompt the runner noted locally, not on
-		// any mark, and it only refuses: typing the mark gets a person nothing
-		// here (WP-1370).
 		if c.isPastedPrompt(in.SessionID, prompt) || unattendedEnv() {
 			return "Waypoint: /wp exe runs only what a person types, in a session a person drives; nothing ran."
 		}
@@ -382,12 +372,11 @@ func (c *cli) runExe(in hookEventInput, command string) string {
 	if runtime.GOOS == "windows" {
 		cmd = exec.Command("cmd", "/C", command) // #nosec G204 G702 -- the person typed it in their own session (/wp exe)
 	} else {
-		// Its exit code goes to a file too, for a run that outlives the hook.
 		run.Status = logPath + ".exit"
 		cmd = exec.Command("sh", "-c", `sh -c "$1"; c=$?; echo "$c" > "$2"; exit "$c"`, "wp-exe", command, run.Status) // #nosec G204 G702 -- as above
 	}
 	cmd.Dir, cmd.Stdout, cmd.Stderr, cmd.Stdin = dir, f, f, nil
-	cmd.SysProcAttr = detachedProc() // it outlives the hook if it runs long
+	cmd.SysProcAttr = detachedProc()
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		return "Waypoint: it didn't start: " + err.Error()

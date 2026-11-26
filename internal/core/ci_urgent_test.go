@@ -37,7 +37,6 @@ func TestTaskTagMakesPRUrgent(t *testing.T) {
 		t.Errorf("tagged task: urgent=%v notice %q", res.Pull.Urgent, res.Notice)
 	}
 
-	// Taken off, opening again leaves it off, as does the task's tag.
 	if _, err := e.s.SetPRUrgent(e.ctx, agent, res.Pull.ID, false); err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +45,6 @@ func TestTaskTagMakesPRUrgent(t *testing.T) {
 		t.Errorf("opened again after --off: %+v %v", again, err)
 	}
 
-	// The tag on the task that's finished counts, and another tag doesn't.
 	viaFor, err := e.s.OpenPullRequest(e.ctx, agent, OpenPRInput{Project: p.Key, Head: "fix-ci-2", Title: "Again", For: tagged.Key})
 	if err != nil || !viaFor.Pull.Urgent {
 		t.Errorf("tagged task named by For: %+v %v", viaFor, err)
@@ -82,7 +80,6 @@ func TestForgePRLinkedToTaggedTask(t *testing.T) {
 		t.Fatalf("the tagged task's pull request: %+v %v", pr, err)
 	}
 
-	// Taken off, another push doesn't put it back: the link already exists.
 	if err := pe.s.labelPRUrgent(pe.ctx, SystemActor(), pr, false); err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +89,6 @@ func TestForgePRLinkedToTaggedTask(t *testing.T) {
 		t.Errorf("label ops after a push = %v", ops)
 	}
 
-	// The pull request's row isn't there (recording it failed): nothing to label.
 	pe.s.urgentFromLink(pe.ctx, &Event{IssueKey: tagged.Key, pullLinked: &pullRef{forgeID: pe.f.ID, repo: "me/app", number: 99}})
 	if _, ops, _, _ := g.snapshot(); !slices.Equal(ops, []string{"+" + CIUrgentLabel, "-" + CIUrgentLabel}) {
 		t.Errorf("label ops after a link to a missing pull request = %v", ops)
@@ -117,7 +113,6 @@ func TestPRUrgent(t *testing.T) {
 	}
 	agent := &Actor{User: e.admin.User, Agent: "anthropic/claude-opus-5-5"}
 
-	// Opened urgent: the label goes on with the pull request itself.
 	res, err := e.s.OpenPullRequest(e.ctx, agent, OpenPRInput{Project: p.Key, Head: "fix-ci", Title: "Fix CI", Urgent: true})
 	if err != nil {
 		t.Fatal(err)
@@ -130,7 +125,6 @@ func TestPRUrgent(t *testing.T) {
 		t.Errorf("opened urgent: urgent=%v warning %q", res.Pull.Urgent, res.Warning)
 	}
 
-	// Off and on again: the forge's label changes and so does the record.
 	d, err := e.s.SetPRUrgent(e.ctx, agent, res.Pull.ID, false)
 	if err != nil {
 		t.Fatal(err)
@@ -148,7 +142,6 @@ func TestPRUrgent(t *testing.T) {
 		t.Errorf("label ops = %v (an unchanged state calls nothing)", ops)
 	}
 
-	// An existing pull request opened again with --urgent gets the label.
 	plain, err := e.s.OpenPullRequest(e.ctx, agent, OpenPRInput{Project: p.Key, Head: "feature", Title: "Feature"})
 	if err != nil || plain.Pull.Urgent {
 		t.Fatalf("plain open: %+v %v", plain, err)
@@ -158,7 +151,6 @@ func TestPRUrgent(t *testing.T) {
 		t.Errorf("existing made urgent: %+v %v", again, err)
 	}
 
-	// Another agent can't change it; a person who may merge can.
 	other := &Actor{User: e.admin.User, Agent: "openai/gpt-6"}
 	if _, err := e.s.SetPRUrgent(e.ctx, other, res.Pull.ID, false); err == nil {
 		t.Error("another agent took the label off")
@@ -170,7 +162,6 @@ func TestPRUrgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The audit names the change.
 	var n int
 	if err := e.s.db.R.QueryRowContext(e.ctx, `SELECT COUNT(*) FROM audit_log WHERE action = 'pr.urgent'`).Scan(&n); err != nil || n < 3 {
 		t.Errorf("audit entries = %d %v", n, err)

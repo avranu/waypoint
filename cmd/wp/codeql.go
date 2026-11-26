@@ -170,8 +170,6 @@ func codeqlConfig(dir string) (text string, repo bool) {
 	return codeqlDefaultConfig, false
 }
 
-// ---- findings ----
-
 // codeqlStep is one step of a finding's data-flow path.
 type codeqlStep struct {
 	Path    string `json:"path"`
@@ -386,8 +384,6 @@ func markTriaged(findings []codeqlFinding, triaged map[string]bool) {
 	})
 }
 
-// ---- docker ----
-
 // codeqlUnavailable is docker or the image missing (exit 2).
 type codeqlUnavailable struct{ msg string }
 
@@ -469,7 +465,6 @@ func (dockerCLI) Run(ctx context.Context, log io.Writer, args ...string) (int, e
 func codeqlScript(lang string) string {
 	mode := "--build-mode=none"
 	if lang == "go" {
-		// Autobuild would run the Makefile (npm and all).
 		mode = "--build-mode=manual --command='go build ./...'"
 	}
 	return fmt.Sprintf("codeql database create /work/db/%[1]s --language=%[1]s %[2]s --source-root=/work/src --codescanning-config=/work/cfg.yml --overwrite --threads=0", lang, mode) +
@@ -530,8 +525,6 @@ func codeqlImageGoTooOld(image, logPath string) error {
 		"(it builds offline with the image's own Go) until the image has go %s. That is the image, not a finding: rebuilding it is the fix, "+
 		"or a go line in go.mod the image has (with a toolchain line for the newer Go)", image, m[2], m[1], m[1])}
 }
-
-// ---- which languages ----
 
 // codeqlRuleLangs is the language of a rule's prefix (go/… is go).
 var codeqlRuleLangs = map[string]string{"go": "go", "js": "javascript-typescript", "py": "python", "actions": "actions"}
@@ -638,7 +631,6 @@ func (c *cli) codeqlPRLangs(dir string) (langs []string, why string) {
 	case err != nil:
 		return nil, fmt.Sprintf("every language here (couldn't look up this branch's pull request: %v)", err)
 	}
-	// The CodeQL check: one with "codeql" in its name, a failed one first.
 	var check *prCheck
 	if d.Shipping != nil {
 		for i, ch := range d.Shipping.Checks {
@@ -673,8 +665,6 @@ func (c *cli) codeqlPRLangs(dir string) (langs []string, why string) {
 	}
 	return langs, fmt.Sprintf("what #%d's %s failed on (%s)", d.Number, check.Name, on)
 }
-
-// ---- the scan ----
 
 // codeqlOpts is what one scan is told.
 type codeqlOpts struct {
@@ -796,7 +786,7 @@ func runCodeqlScan(ctx context.Context, d codeqlDocker, o codeqlOpts) (*codeqlRe
 			return nil, codeqlFailed{fmt.Sprintf("%s: no results file; log %s", lang, logPath)}
 		}
 		var found []codeqlFinding
-		if lang == "actions" && src != o.Dir { // only a staged tree has renamed paths
+		if lang == "actions" && src != o.Dir {
 			found, err = parseSarifPaths(data, codeqlActionsRepoPath)
 		} else {
 			found, err = parseSarif(data)
@@ -825,7 +815,7 @@ func runCodeqlScan(ctx context.Context, d codeqlDocker, o codeqlOpts) (*codeqlRe
 	}
 	rep.Findings = append(rep.Findings, all...)
 	rep.Seconds = int(time.Since(started).Round(time.Second).Seconds())
-	_ = os.RemoveAll(work) // a failed scan keeps its logs (see codeqlSweep)
+	_ = os.RemoveAll(work)
 	return rep, nil
 }
 
@@ -1039,14 +1029,12 @@ func codeqlTree(ctx context.Context, dir string) ([]treeFile, error) {
 	}
 	files := make([]treeFile, 0, len(paths))
 	for _, p := range paths {
-		if info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(p))); err == nil && info.Mode().IsRegular() { // a deleted or special file isn't code
+		if info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(p))); err == nil && info.Mode().IsRegular() {
 			files = append(files, treeFile{Path: p, Size: info.Size()})
 		}
 	}
 	return files, nil
 }
-
-// ---- output ----
 
 // render is the scan as text: one line per finding, the flow of each blocking
 // one, then a summary line.
@@ -1129,7 +1117,6 @@ func cmdCodeqlScan(c *cli, args []string) error {
 	o := codeqlOpts{Dir: dir, Image: *image, CacheDir: filepath.Join(cache, "waypoint", "codeql"), UID: os.Getuid(), GID: os.Getgid(), Progress: c.err}
 	switch {
 	case o.Image == "":
-		// Before the pull request lookup: nothing runs without an image.
 	case *lang != "":
 		for _, l := range strings.Split(*lang, ",") {
 			if l = strings.TrimSpace(l); l != "" {

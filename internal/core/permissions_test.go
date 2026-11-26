@@ -29,7 +29,6 @@ func TestAutomationKeepsTokenPermissions(t *testing.T) {
 	if r := ae.runStatus(runs[0]); r.Status != RunFailed || !strings.Contains(r.Error, "runners.run") {
 		t.Errorf("run = %s %q", r.Status, r.Error)
 	}
-	// The same change by Robin herself runs the step.
 	ae.issue(ae.admin, IssueInput{Project: ae.p.Key, Title: "hello"})
 	ae.work()
 	if w := ae.rpoll(ae.admin, ae.box); w.Job == nil {

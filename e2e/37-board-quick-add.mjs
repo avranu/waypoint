@@ -41,7 +41,7 @@ for (const vp of looks([
       ).json(),
   };
 
-  const key = "QA" + vp.width; // a fresh project per viewport
+  const key = "QA" + vp.width;
   if (!(await api.get("/projects")).some((p) => p.key === key))
     await api.post("/projects", { name: "Quick add " + vp.width, key });
   const titles = (c) =>
@@ -50,7 +50,6 @@ for (const vp of looks([
   await page.goto(`${base}/p/${key}/board`);
   await page.waitForSelector("section[data-col]");
 
-  // WP-63: clicking "Nothing here" opens the inline create for that column.
   const last = page.locator("section[data-col]").last();
   await last.getByText("Nothing here").click();
   const lastBox = last.getByLabel("New issue title");
@@ -62,13 +61,11 @@ for (const vp of looks([
   await page.screenshot({ path: `${out}/${tag}-empty-click.png` });
   await page.keyboard.press("Escape");
 
-  // WP-73: seed the first column, then add through the box.
   const first = page.locator("section[data-col]").first();
   for (const t of ["Seed one", "Seed two"])
     await api.post("/issues", { project: key, title: t });
   await page.reload();
   await page.waitForSelector("section[data-col]");
-  // The seeds are on the board before the box opens, so the new ones have a top to go above.
   await first.locator("[data-nav-key]").filter({ hasText: "Seed two" }).waitFor();
   await first.getByRole("button", { name: "Add issue" }).click();
   const input = first.getByLabel("New issue title");
@@ -80,11 +77,9 @@ for (const vp of looks([
       (await input.evaluate((e) => e === document.activeElement)),
     `${tag}: the box stays open and focused`,
   );
-  // Rapid entry: the next one goes in at once, without waiting for a refetch.
   await input.fill("Added second");
   await input.press("Enter");
   await first.locator("[data-nav-key]").filter({ hasText: "Added second" }).waitFor();
-  // The seeds, added through the API as the dialog does, went to the top too.
   const order = ["Added second", "Added first", "Seed two", "Seed one"];
   const got = (await titles(first)).map((t) => order.find((x) => t.includes(x)));
   ok(

@@ -12,16 +12,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Ending the turn at wp ship (WP-1093). An agent's turn used to go on after
-// wp ship for one more model call, the final reply to the person: the whole
-// context read again to write a few lines it knew before it shipped. With
-// --summary the reply goes with wp ship; when the ship goes as expected the
-// hooks end the turn there, show it to the person and send the Stop
-// themselves, so no model call follows. When anything needs the agent (a
-// failed check, a warning, a notice, uncommitted changes, a message waiting
-// at the stop) the turn goes on as before, and the summary is kept for the
-// next wp ship of the task.
-
 // shipStopReason marks the Stop event a hook sent for a turn wp ship ended:
 // Reason is a field older servers already take, so the event reaches them.
 const shipStopReason = "ship"
@@ -76,8 +66,6 @@ func pruneShipEnds(s *State, now time.Time) {
 				delete(e.Bg, t)
 			}
 		}
-		// A marker a background wp ship may still report is kept as long
-		// as that report may come.
 		if age := now.Sub(e.Ready); age > shipBgFresh || (age > shipEndFresh && len(e.Bg) == 0) {
 			e.Ready, e.Text, e.Key = time.Time{}, "", ""
 		}
@@ -120,6 +108,44 @@ func (c *cli) shipSession(session string, change func(*shipEnd)) {
 
 // keepSummary keeps text for key's next wp ship; "" drops what was kept.
 func (c *cli) keepSummary(key, text string) {
+	c.keepSummaryFor(key, text, c.thisSession())
+}
+
+// keepSummaries keeps text under every task a ship names (WP-1426), else
+// under fallback: whichever of them the next wp ship is run for finds it.
+func (c *cli) keepSummaries(keys []string, fallback, text string) {
+	if len(keys) == 0 {
+		c.keepSummary(fallback, text)
+		return
+	}
+	for _, k := range keys {
+		c.keepSummary(k, text)
+	}
+}
+
+// alsoKeys are the tasks after the first of wp ship A B, upper-cased and
+// without repeats.
+func alsoKeys(keys []string) []string {
+	if len(keys) < 2 {
+		return nil
+	}
+	first := strings.ToUpper(strings.TrimSpace(keys[0]))
+	seen := map[string]bool{first: true}
+	var out []string
+	for _, k := range upperKeys(keys[1:]) {
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// keepSummaryFor is keepSummary for a summary that waits through a turn
+// boundary: with session "" the next prompt doesn't drop it, only age does.
+// The ship Waypoint compacts a session before is one: the offer that comes
+// after the compaction is a prompt, and the summary is for the ship after it.
+func (c *cli) keepSummaryFor(key, text, session string) {
 	key = strings.ToUpper(strings.TrimSpace(key))
 	if key == "" {
 		return
@@ -133,7 +159,7 @@ func (c *cli) keepSummary(key, text string) {
 		if s.Summaries == nil {
 			s.Summaries = map[string]*keptSummary{}
 		}
-		s.Summaries[key] = &keptSummary{Text: text, At: time.Now(), Session: c.thisSession()}
+		s.Summaries[key] = &keptSummary{Text: text, At: time.Now(), Session: session}
 	})
 }
 
@@ -210,7 +236,7 @@ func heldSummary(text string) string {
 // session whose hooks reach the server can have its turn ended.
 func (c *cli) endTurnAfterShip(key, text string) bool {
 	if c.agentHeader() == "" {
-		return false // a person's ship: no turn to end
+		return false
 	}
 	session := c.thisSession()
 	if session == "" || c.server() == "" || c.token() == "" {
@@ -257,7 +283,7 @@ func isShipCall(command string) bool {
 	}
 	w := segs[len(segs)-1]
 	for len(w) > 0 && strings.Contains(w[0], "=") && !strings.HasPrefix(w[0], "-") {
-		w = w[1:] // VAR=value wp ship
+		w = w[1:]
 	}
 	if len(w) < 2 || filepath.Base(w[0]) != "wp" {
 		return false
@@ -347,7 +373,7 @@ func (c *cli) noteShipBackground(session, id string) {
 			e.Bg = map[string]time.Time{}
 		}
 		e.Bg[id] = time.Now()
-		e.Ready, e.Text, e.Key = time.Time{}, "", "" // only what this call writes counts
+		e.Ready, e.Text, e.Key = time.Time{}, "", ""
 	})
 }
 
@@ -359,7 +385,7 @@ func (c *cli) stopAlreadySent(session string) bool {
 	if e == nil || e.Stopped.IsZero() {
 		return false
 	}
-	stopped := e.Stopped // read before shipSession clears it (it may mutate e itself)
+	stopped := e.Stopped
 	c.shipSession(session, func(e *shipEnd) { e.Stopped = time.Time{} })
 	return time.Since(stopped) <= shipStopFresh
 }
@@ -391,18 +417,12 @@ func (c *cli) shipStop(in hookEventInput, bg string) (stop []byte, context strin
 		ev.Repo, ev.Branch, ev.Worktree = gitInfo(in.Cwd)
 	}
 	ev.InputTokens, ev.OutputTokens, ev.ContextTokens, ev.CacheTTL = sessionTotals(c, in)
-	// PostToolUse and a prompt don't say what still runs, as a Stop does: a
-	// turn that ends at its last step, wp ship, is taken to leave nothing
-	// running. The Stop hook, should Claude Code run it after, sends what
-	// it reports.
 	ev.Pending = &hookPending{Tasks: []pendingTask{}, Crons: []pendingCron{}}
 	ev.Checkouts = hookCheckouts(in.Cwd, c.state.sessionClaims(in.SessionID))
 	c.hookTimeout = hookHTTPTimeout
-	// Not through the outbox: a Stop that arrives later than the turn
-	// that went on after it would say the session stopped when it didn't.
 	b, err := c.call("POST", "/api/v1/sessions/hook", map[string]any{"events": []sessionEvent{ev}})
 	if err != nil {
-		return nil, "" // wp ship's output told the agent to reply should the turn go on
+		return nil, ""
 	}
 	var res hookReply
 	_ = json.Unmarshal(b, &res)
@@ -413,12 +433,10 @@ func (c *cli) shipStop(in hookEventInput, bg string) (stop []byte, context strin
 		text = c.awaitMessage(ev, res.Await)
 	}
 	if text != "" {
-		// The agent has something to read: the turn goes on with it, and
-		// its own Stop comes later, as after a Stop hook's block.
 		return nil, text
 	}
 	c.shipSession(in.SessionID, func(e *shipEnd) { e.Stopped = time.Now() })
-	c.keepSummary(end.Key, "") // shown: kept until now, for a turn that went on
+	c.keepSummary(end.Key, "")
 	if over, spent := c.fanoutSessionOver(in.SessionID); over {
 		endBackgroundSession(in.SessionID)
 		fanoutEnded("budget", in.TranscriptPath, spent)
@@ -436,6 +454,30 @@ func checkArgv(cmd string) []string {
 		return []string{"sh", "-c", cmd}
 	}
 	return strings.Fields(cmd)
+}
+
+// slotWaitNoteMin is the wait slotWaitNote leaves out below; a var so a test
+// can lower it.
+var slotWaitNoteMin = time.Minute
+
+// slotWaitNote says how long a check waited for a slot, as text to follow
+// its own time, when that is a minute or more. Under a minute is left out:
+// it is noise next to the check's time, and waits.jsonl has the recent waits.
+func slotWaitNote(w time.Duration) string {
+	if w = w.Round(time.Second); w < slotWaitNoteMin {
+		return ""
+	}
+	return fmt.Sprintf(", and %s waiting for a slot", w)
+}
+
+// checkPassedLine is the line for a check that passed, before the tests.
+func checkPassedLine(cmd string, took, waited time.Duration) string {
+	return fmt.Sprintf("Check passed: %s (%s%s)", cmd, took, slotWaitNote(waited))
+}
+
+// checkFailedHead is the line that comes before a failed check's last lines.
+func checkFailedHead(cmd string, code int, took, waited time.Duration) string {
+	return fmt.Sprintf("Check failed: %s exited %d after %s%s; last lines:\n", cmd, code, took, slotWaitNote(waited))
 }
 
 // runShipCheck runs --check CMD in the tests slot, as wp testsum does, and
@@ -459,8 +501,11 @@ func (c *cli) runShipCheck(cmd string) error {
 	}
 	var buf bytes.Buffer
 	rec := newTestRunRecorder(argv)
-	start := time.Now()
-	code, err := c.runInSlotThen("tests", defaultSlots(), goTestJSON(argv), &buf, &buf, rec.started, func(env []string) []string {
+	// The wait for a slot isn't the check's time: a 25 minute make check
+	// that queued 44 minutes was reported as one of 69 (WP-1812).
+	queued := time.Now()
+	start := queued
+	code, err := c.runInSlotThen("tests", defaultSlots(), goTestJSON(argv), &buf, &buf, func() { rec.started(); start = time.Now() }, func(env []string) []string {
 		env, _ = testEnv(env, nil)
 		return env
 	})
@@ -478,8 +523,9 @@ func (c *cli) runShipCheck(cmd string) error {
 		rec.finish(res, code)
 	}
 	took := time.Since(start).Round(time.Second)
+	waited := start.Sub(queued)
 	if !failed {
-		line := fmt.Sprintf("Check passed: %s (%s)", cmd, took)
+		line := checkPassedLine(cmd, took, waited)
 		if res.Passed+res.Failed+res.Skipped > 0 {
 			line += "; " + strings.TrimSpace(res.render())
 		}
@@ -489,6 +535,6 @@ func (c *cli) runShipCheck(cmd string) error {
 	if res.Passed+res.Failed+res.Skipped > 0 {
 		_, _ = fmt.Fprint(c.out, res.render())
 	}
-	_, _ = fmt.Fprintf(c.out, "Check failed: %s exited %d after %s; last lines:\n%s\n", cmd, code, took, lastLines(buf.Bytes(), 30))
+	_, _ = fmt.Fprint(c.out, checkFailedHead(cmd, code, took, waited)+failedTail(buf.Bytes(), 30))
 	return fmt.Errorf("the check failed, so nothing was committed or shipped: fix it and run wp ship again")
 }

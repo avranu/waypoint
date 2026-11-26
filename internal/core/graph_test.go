@@ -14,7 +14,7 @@ type graphFixture struct {
 	goal              *DesignNote
 	page              *Page
 	child, sibling    *IssueDetail
-	prA, prB          *IssueDetail // tasks whose pull requests change the same file
+	prA, prB          *IssueDetail
 	hub               *IssueDetail
 	viaHub, viaDirect *IssueDetail
 	project           string
@@ -57,7 +57,6 @@ func newGraphFixture(e *env) graphFixture {
 			e.t.Fatal(err)
 		}
 	}
-	// Two pull requests, one per task, change the same file.
 	pid := e.projectID(f.project)
 	now := e.clockNow().UnixMilli()
 	e.exec(`INSERT INTO forges(id, name, kind, base_url, created_at) VALUES (90, 'f', 'forgejo', 'https://git.test', ?)`, now)
@@ -130,7 +129,6 @@ func TestGraphHopLimitAndGuessEdges(t *testing.T) {
 		t.Errorf("middle at its nearest: %+v", h)
 	}
 
-	// A stored guess: drawn only with guesses on.
 	g1, g2, g3 := mk("Guess one"), mk("Guess two"), mk("Guess three")
 	for _, r := range [][3]string{{g1.Key, "blocks", g2.Key}, {g2.Key, "blocks", g3.Key}, {g1.Key, "relates", g3.Key}} {
 		if err := e.s.AddRelation(e.ctx, e.admin, r[0], r[1], r[2]); err != nil {
@@ -150,11 +148,9 @@ func TestGraphHopLimitAndGuessEdges(t *testing.T) {
 			t.Errorf("a guess drawn with guesses off: %+v", ed)
 		}
 	}
-	// Unknown kinds are refused, not an empty list.
 	if _, err := e.s.Neighbourhood(e.ctx, e.admin, GraphQuery{Ref: g1.Key, Types: []string{"isue"}}); err == nil {
 		t.Error("unknown kind accepted")
 	}
-	// The whole graph's size is for admins.
 	if v, err := e.s.Neighbourhood(e.ctx, f.member, GraphQuery{Ref: f.src.Key}); err != nil || v.Size != nil {
 		t.Errorf("member sees size: %+v %v", v, err)
 	}
@@ -205,20 +201,17 @@ func TestGraphNeighbourhood(t *testing.T) {
 	if goal.Hops != 1 || goal.Path[0].Label != "serves" || goal.Type != KDesign {
 		t.Errorf("goal: %+v", goal)
 	}
-	// The page documents the linked task, which the source relates to.
 	if p := hits["page:"+itoa64(f.page.ID)]; p.Hops != 2 || p.Path[1].Label != "documented by" {
 		t.Errorf("page: %+v (%v)", p, hits)
 	}
 	if w := hits[f.waits.Key]; w.Hops != 1 {
 		t.Errorf("a key the text names relates it: %+v", w)
 	}
-	// Nearest first.
 	for n := 1; n < len(v.Nodes); n++ {
 		if v.Nodes[n].Distance < v.Nodes[n-1].Distance {
 			t.Fatalf("not nearest first: %v then %v", v.Nodes[n-1], v.Nodes[n])
 		}
 	}
-	// The edges drawn join only what's shown.
 	shown := map[string]bool{v.Center.Node: true}
 	for _, h := range v.Nodes {
 		shown[h.Node] = true
@@ -227,20 +220,16 @@ func TestGraphNeighbourhood(t *testing.T) {
 		if !shown[ed.From] || !shown[ed.To] {
 			t.Errorf("edge to something not shown: %+v", ed)
 		}
-		// Drawn edges carry the link's own length, however a route reached
-		// them: no hub cost, which depends on the route.
 		bare := gedgeRec{kind: ed.Kind, basis: int8(slices.Index(basisNames, ed.Basis)), score: float32(ed.Score)}
 		if want := round2(edgeLength(bare, 0)); ed.Length != want {
 			t.Errorf("drawn edge %s→%s length %v, want %v", ed.From, ed.To, ed.Length, want)
 		}
 	}
-	// Without guesses nothing is merely alike; Sam's project stays hidden.
 	for _, h := range v.Nodes {
 		if h.Ref == f.private.Key || h.Ref == f.alike.Key {
 			t.Errorf("listed %s", h.Ref)
 		}
 	}
-	// Two steps through the parent: a sibling.
 	cv, err := e.s.Neighbourhood(e.ctx, f.member, GraphQuery{Ref: f.child.Key, Hops: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -265,8 +254,6 @@ func TestGraphGuessesAndHubs(t *testing.T) {
 	if _, ok := hits[f.private.Key]; ok {
 		t.Error("a guess reached a project the member can't see")
 	}
-	// A route through a task twelve others hang from is longer than a
-	// route through a plain link of the same kind.
 	hub, err := e.s.Path(e.ctx, e.admin, f.prA.Key, f.viaHub.Key, "", false)
 	if err != nil || !hub.Found || hub.Hops != 2 {
 		t.Fatalf("via hub: %+v %v", hub, err)
@@ -283,7 +270,6 @@ func TestGraphGuessesAndHubs(t *testing.T) {
 func TestGraphPath(t *testing.T) {
 	e := newEnv(t)
 	f := newGraphFixture(e)
-	// Two tasks whose pull requests change the same file.
 	p, err := e.s.Path(e.ctx, e.admin, f.prA.Key, f.prB.Key, "", false)
 	if err != nil {
 		t.Fatal(err)
@@ -295,20 +281,16 @@ func TestGraphPath(t *testing.T) {
 	if !p.Found || strings.Join(labels, ", ") != "worked in, changes, changed by, works on" || p.Nodes[2].Ref != "tiles/cache.go" || p.Nodes[1].Ref != "acme/maps#1" {
 		t.Errorf("path = %+v", p)
 	}
-	// From a file too.
 	if fp, err := e.s.Path(e.ctx, e.admin, "tiles/cache.go", f.prB.Key, f.project, false); err != nil || !fp.Found || fp.Hops != 2 {
 		t.Errorf("from a file: %+v %v", fp, err)
 	}
-	// Nothing joins them: found is false, not an error.
 	lone := e.issue(e.admin, IssueInput{Project: f.project, Title: "Unrelated chore"})
 	if np, err := e.s.Path(e.ctx, e.admin, lone.Key, f.prA.Key, "", false); err != nil || np.Found {
 		t.Errorf("no path: %+v %v", np, err)
 	}
-	// What the actor can't see can't be asked about.
 	if _, err := e.s.Path(e.ctx, f.member, f.src.Key, f.private.Key, "", false); err == nil {
 		t.Error("a path to an issue the member can't see")
 	}
-	// A new relation shows at once.
 	if err := e.s.AddRelation(e.ctx, e.admin, lone.Key, "blocks", f.prA.Key); err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +314,6 @@ func TestGraphNearbyWork(t *testing.T) {
 	if len(task.Nearby) != 1 || task.Nearby[0].Ref != f.prB.Key || task.Nearby[0].Hops != 4 {
 		t.Fatalf("nearby: %+v", task.Nearby)
 	}
-	// Related already: not listed twice.
 	if err := e.s.AddRelation(e.ctx, e.admin, f.prA.Key, "relates", f.prB.Key); err != nil {
 		t.Fatal(err)
 	}

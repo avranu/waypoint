@@ -83,7 +83,6 @@ var AutomationTemplates = []AutomationTemplate{
 		Rule: Rule{Trigger: Trigger{Event: "schedule", Every: "week", Weekday: 1, At: "09:00"},
 			Actions: []Action{{Type: "create_issue", Title: "Plan the week of {{.Date}}", Due: "+2d"}}},
 	},
-	// Pull requests (WP-D14).
 	{
 		Name: "Review pull requests", Default: true,
 		Description: "Each new pull request, and each push to one, gets a review from the review models (Admin → AI): one review with line comments, 👀 while it works and 👍 when it finds nothing. Not people's drafts, bots' or release PRs.",
@@ -100,13 +99,10 @@ var AutomationTemplates = []AutomationTemplate{
 		Rule:        Rule{Trigger: Trigger{Event: "pr_comment"}, Actions: []Action{{Type: "reply"}}},
 	},
 	{
-		// WP-1599. Not on pushes: CodeRabbit reviews the twin again on each
-		// request, all on the one account forge-sync opens twins with, and
-		// every review starts a babysitting round; twins had 1 to 20 commits.
 		Name:        "Ask CodeRabbit to review",
 		Description: "Each new pull request, or draft marked ready, gets \"@coderabbitai review\" from the bot account, once, not on pushes. For repos a mirror copies to GitHub, where CodeRabbit reviews the twin: forge-sync passes the command on when the bot account is one of its command_authors. Added on, by migration, to projects with a repo on a forge that has a mirror account.",
 		Rule: Rule{Trigger: Trigger{Event: "pr_updated", Extra: map[string]any{"on": "new"}}, PR: reviewFilter,
-			Actions: []Action{{Type: "pr_comment", Message: "@coderabbitai review"}}},
+			Actions: []Action{{Type: "pr_comment", Message: askCodeRabbit}}},
 	},
 	{
 		Name:        "Security review of pull requests",
@@ -145,8 +141,6 @@ func (s *Service) createDefaultAutomations(ctx context.Context, t *tx, projectID
 	}
 	return nil
 }
-
-// ---- engine ----
 
 // matches reports whether an event starts an automation with this trigger.
 func (tr Trigger) matches(e *Event) bool {
@@ -192,8 +186,6 @@ func (s *Service) runAction(c *StepCtx) error {
 	ctx, actor, a, act, e := c.Ctx, c.Actor, c.Automation, *c.Step, c.Event
 	data := c.Data()
 	issue := data.Issue
-	// Admin automations have no project of their own: they act in the
-	// event's.
 	projectID := cmpID(a.ProjectID, e.ProjectID)
 	render := func(tpl, fallback string) (string, error) {
 		if tpl == "" {
@@ -211,7 +203,7 @@ func (s *Service) runAction(c *StepCtx) error {
 	case "reply":
 		findingID := dataInt(e, "finding_id")
 		if findingID == 0 {
-			return nil // not a reply in a finding's thread
+			return nil
 		}
 		commentID, _ := e.Data["comment_id"].(string)
 		var autoID *int64
@@ -237,7 +229,24 @@ func (s *Service) runAction(c *StepCtx) error {
 		if err != nil || strings.TrimSpace(msg) == "" {
 			return cmpErr(err, invalid("pr_comment needs a message"))
 		}
-		_, err = cl.PostPRComment(ctx, botForge(f), data.PR.Repo, data.PR.Number, msg)
+		// "Ask CodeRabbit to review" is not repeated on a head it was asked on
+		// (WP-1808, WP-1732): "once" holds across a draft marked ready twice.
+		// Other comments post as they always did.
+		if msg == askCodeRabbit {
+			asked, err := s.askedOnHead(ctx, data.PR.ID, a.ID, data.PR.HeadSHA, msg)
+			if err != nil {
+				return err
+			}
+			if asked {
+				c.note("skipped", "already asked on "+short(data.PR.HeadSHA))
+				s.log.InfoContext(ctx, "not asking again on this head", "pr", data.PR.ID, "head", short(data.PR.HeadSHA), "automation", a.ID)
+				return nil
+			}
+		}
+		c, err := cl.PostPRComment(ctx, botForge(f), data.PR.Repo, data.PR.Number, msg)
+		if err == nil {
+			s.noteOwnComment(ctx, data.PR.ID, c, a.ID, data.PR.HeadSHA, msg)
+		}
 		return err
 	case "set_status":
 		if err := needIssue(); err != nil {
@@ -246,10 +255,10 @@ func (s *Service) runAction(c *StepCtx) error {
 		st := act.Status
 		patch := IssuePatch{Status: &st}
 		if e.Kind == EvExternalPROpened {
-			patch.ViaLink = e.New // the link remembers it moved the issue (WP-162)
+			patch.ViaLink = e.New
 		}
 		if e.Kind == EvExternalPRMerged {
-			patch.mergedLink = e.New // an objective has read this merge already (WP-ADR111)
+			patch.mergedLink = e.New
 		}
 		_, err := s.UpdateIssue(ctx, actor, itoa64(issue.ID), patch)
 		return err
@@ -347,8 +356,6 @@ func (s *Service) runAction(c *StepCtx) error {
 		}
 		who := s.actionUser(issue, actor, act.User)
 		if who == "" {
-			// "actor" or "reporter" with nobody behind it (a forge sync, a
-			// deleted reporter): leave assignees alone rather than clear them.
 			return nil
 		}
 		var p IssuePatch
@@ -428,7 +435,6 @@ func (s *Service) runAction(c *StepCtx) error {
 			if err != nil || u.Disabled || u.Prefs.GotifyURL == "" || u.Prefs.GotifyToken == "" {
 				continue
 			}
-			// Same rule as notifications: only people who can see the issue.
 			if issue != nil && !s.canSee(ctx, s.db.R, &Actor{User: u}, issue.ID, issue.ProjectID) {
 				continue
 			}
@@ -465,7 +471,6 @@ func (s *Service) runAction(c *StepCtx) error {
 				if err != nil || u.Disabled || u.Email == "" {
 					continue
 				}
-				// Same rule as notifications: only people who can see the issue.
 				if issue != nil && !s.canSee(ctx, s.db.R, &Actor{User: u}, issue.ID, issue.ProjectID) {
 					continue
 				}
@@ -568,7 +573,7 @@ func (s *Service) runAction(c *StepCtx) error {
 			}
 			n := w.stepIndex(issue.Step)
 			if n < 0 || n == len(w.Steps)-1 {
-				return nil // already at the end
+				return nil
 			}
 			step = w.Steps[n+1].Name
 		}
@@ -588,7 +593,7 @@ func (s *Service) runAction(c *StepCtx) error {
 		}
 		project := itoa64(projectID)
 		if p := anyString(act.Extra["project"]); p != "" {
-			project = p // admin automations name the project
+			project = p
 		}
 		if project == "0" {
 			return invalid("create_issue needs a project: name one in the step")
@@ -606,8 +611,6 @@ func (s *Service) runAction(c *StepCtx) error {
 		if err != nil {
 			return err
 		}
-		// An agent's answer carried into the issue is that agent's text, not
-		// the saver's: unreviewed, and screened before agents take it (ADR10).
 		if w := strings.Join(strings.Fields(writtenBy), "/"); w != "" {
 			if len(w) > 100 {
 				return invalid("written_by can be at most 100 characters")

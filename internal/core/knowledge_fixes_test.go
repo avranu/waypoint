@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// Regressions from the WP-D10 adversarial review.
-
 func TestDesignMoveGuards(t *testing.T) {
 	e := newEnv(t)
 	alpha := e.project(e.admin, "Alpha", "")
@@ -18,7 +16,6 @@ func TestDesignMoveGuards(t *testing.T) {
 	parent, _ := e.s.CreateDesign(e.ctx, e.admin, DesignInput{Title: str("Parent"), Project: &alpha.Key})
 	child, _ := e.s.CreateDesign(e.ctx, e.admin, DesignInput{Title: str("Child"), Parent: Some(parent.ID)})
 	top, _ := e.s.CreateDesign(e.ctx, e.admin, DesignInput{Title: str("Top"), Project: &alpha.Key})
-	// Agents can't move approved notes, however the request is phrased.
 	if _, err := e.s.UpdateDesign(e.ctx, agent, child.ID, DesignInput{Project: &beta.Key, Parent: Some(parent.ID)}); !errors.Is(err, ErrForbidden) && !IsInvalid(err) {
 		t.Errorf("agent move with same parent = %v", err)
 	}
@@ -28,7 +25,6 @@ func TestDesignMoveGuards(t *testing.T) {
 	if n, _ := e.s.GetDesign(e.ctx, e.admin, top.ID); n.ProjectKey != alpha.Key {
 		t.Errorf("top moved to %s", n.ProjectKey)
 	}
-	// A person's move can't leave a sub-note under a parent elsewhere.
 	if _, err := e.s.UpdateDesign(e.ctx, e.admin, child.ID, DesignInput{Project: &beta.Key, Parent: Some(parent.ID)}); !IsInvalid(err) {
 		t.Errorf("move keeping a parent in another project = %v", err)
 	}
@@ -36,7 +32,6 @@ func TestDesignMoveGuards(t *testing.T) {
 	if err != nil || n.ProjectKey != beta.Key || n.ParentID != nil || n.UpdatedBy == nil {
 		t.Fatalf("person move = %+v, %v", n, err)
 	}
-	// Viewers of Alpha don't see notes in Beta through children lists.
 	bob := e.user("bob", false)
 	if err := e.s.SetMember(e.ctx, e.admin, alpha.Key, "bob", "viewer"); err != nil {
 		t.Fatal(err)
@@ -47,7 +42,6 @@ func TestDesignMoveGuards(t *testing.T) {
 	if _, err := e.s.UpdateDesign(e.ctx, e.admin, parent.ID, DesignInput{}); err != nil {
 		t.Fatal(err)
 	}
-	// Force the inconsistent state an old bug could leave, then read as bob.
 	if _, err := e.s.db.W.Exec(`UPDATE design_notes SET project_id = ? WHERE id = ?`, beta.ID, child.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -69,10 +63,6 @@ func TestCommentSearchCapAfterAccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 304 copies of it, more than the search's cap of 300 with the first. In
-	// one statement: through AddComment, each scans its text for mentions, and
-	// under -race the 305 took five to seven minutes (comment_search is filled
-	// by a trigger either way).
 	if _, err := e.s.db.W.ExecContext(e.ctx, `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 304)
 		INSERT INTO comments(issue_id, author_id, agent, body, created_at, updated_at)
 		SELECT c.issue_id, c.author_id, c.agent, c.body, c.created_at, c.updated_at FROM comments c, n WHERE c.id = ?`, first.ID); err != nil {
@@ -93,7 +83,6 @@ func TestWikilinkScopeAndProvenance(t *testing.T) {
 	alpha := e.project(e.admin, "Alpha", "")
 	beta := e.project(e.admin, "Beta", "")
 	agent := agentActor(e.admin, "x/y")
-	// A term only in Beta isn't what [[Orbit]] in Alpha means.
 	if _, err := e.s.CreateGlossary(e.ctx, e.admin, GlossaryInput{Term: str("Orbit"), Project: &beta.Key}); err != nil {
 		t.Fatal(err)
 	}
@@ -101,8 +90,6 @@ func TestWikilinkScopeAndProvenance(t *testing.T) {
 	if links, _ := e.s.ItemLinks(e.ctx, e.admin, LinkEnd{Type: KPage, ID: pg.ID}); len(links) != 0 {
 		t.Errorf("cross-project wikilink: %+v", links)
 	}
-	// Typed forward references connect when their target appears; links a
-	// locked entry gains are credited to its author, not the agent.
 	yes := true
 	locked, err := e.s.CreateGlossary(e.ctx, e.admin, GlossaryInput{Term: str("Locked"), Project: &alpha.Key, Locked: &yes,
 		Definition: str("See [[Later]], [[glossary:Typed]] and [[design:Dn|the note]]; Later is plain text here.")})
@@ -130,7 +117,6 @@ func TestWikilinkScopeAndProvenance(t *testing.T) {
 	if out != 3 {
 		t.Errorf("locked entry links = %d, want 3: %+v", out, links)
 	}
-	// Re-saving keeps the links' dates.
 	before := links[0].CreatedAt
 	e.setClock(e.clockNow().Add(time.Hour))
 	if _, err := e.s.UpdateGlossary(e.ctx, e.admin, locked.ID, GlossaryInput{Definition: str("See [[Later]], [[glossary:Typed]] and [[design:Dn|the note]]. Edited.")}); err != nil {
@@ -139,7 +125,6 @@ func TestWikilinkScopeAndProvenance(t *testing.T) {
 	if again, _ := e.s.ItemLinks(e.ctx, e.admin, LinkEnd{Type: KGlossary, ID: locked.ID}); !again[0].CreatedAt.Equal(before) {
 		t.Errorf("resync rewrote link dates: %v → %v", before, again[0].CreatedAt)
 	}
-	// Pending agent additions don't add links; approved ones do.
 	note, _ := e.s.CreateDesign(e.ctx, e.admin, DesignInput{Title: str("Host"), Project: &alpha.Key})
 	n, _ := e.s.AddDesignAddition(e.ctx, agent, note.ID, "Relates to [[Later]].")
 	if l, _ := e.s.ItemLinks(e.ctx, e.admin, LinkEnd{Type: KDesign, ID: note.ID}); len(l) != 0 {
@@ -151,7 +136,6 @@ func TestWikilinkScopeAndProvenance(t *testing.T) {
 	if l, _ := e.s.ItemLinks(e.ctx, e.admin, LinkEnd{Type: KDesign, ID: note.ID}); len(l) != 1 {
 		t.Errorf("approved addition links = %+v", l)
 	}
-	// Resolve doesn't reveal private projects.
 	bob := e.user("bob", false)
 	_, err1 := e.s.Resolve(e.ctx, bob, "nothing", alpha.Key)
 	_, err2 := e.s.Resolve(e.ctx, bob, "nothing", "NOPE")
@@ -225,7 +209,6 @@ func TestApproveVersionAndTakeSteps(t *testing.T) {
 	if got, err := e.s.ApproveDesign(e.ctx, e.admin, n.ID, cur.UpdatedAt.Format(time.RFC3339Nano)); err != nil || !got.Approved {
 		t.Errorf("approve current = %v", err)
 	}
-	// A workflow step for another agent can't be taken by name.
 	w, err := e.s.CreateWorkflow(e.ctx, e.admin, p.Key, WorkflowInput{Name: str("W"), Steps: &[]WorkflowStep{{Name: "a", Agent: "openai"}, {Name: "b"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -261,12 +244,11 @@ func TestAgentTimeOverlapsAndLapses(t *testing.T) {
 	if rep.AgentSeconds != 30*60 {
 		t.Errorf("three parallel runs over 30 min = %d s", rep.AgentSeconds)
 	}
-	// Coming back after the lease lapsed doesn't count the gap.
 	e.setClock(e.clockNow().Add(time.Hour))
 	if _, err := e.s.AgentTake(e.ctx, opus, keys[0], ""); err != nil {
 		t.Fatal(err)
 	}
-	e.setClock(e.clockNow().Add(ClaimLease + time.Hour)) // lapsed, sweep not run
+	e.setClock(e.clockNow().Add(ClaimLease + time.Hour))
 	if _, err := e.s.AgentTake(e.ctx, opus, keys[0], ""); err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +258,6 @@ func TestAgentTimeOverlapsAndLapses(t *testing.T) {
 	if rep.AgentSeconds != want {
 		t.Errorf("with a lapse = %d s, want %d", rep.AgentSeconds, want)
 	}
-	// The sweep clears lapsed claims.
 	e.setClock(e.clockNow().Add(ClaimLease + time.Minute))
 	if err := e.s.expireRuns(e.ctx); err != nil {
 		t.Fatal(err)

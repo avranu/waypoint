@@ -51,7 +51,7 @@ func activityText(a *core.Activity, spec string) string {
 	for _, x := range a.Agents {
 		if x.Done == 0 && x.Runs == 0 && x.Seconds == 0 && x.InputTokens+x.OutputTokens == 0 && x.CostUSD == 0 && x.PRsMerged == 0 &&
 			x.Comments == 0 && x.IssuesCreated == 0 && x.Released == 0 && x.Expired == 0 {
-			continue // an agent with nothing in the period
+			continue
 		}
 		fmt.Fprintf(&b, "%s: %d done, %s, %s, %s tokens", x.Identity, x.Done, activityPlural(x.Runs, "run"), activityHours(x.Seconds),
 			activityCount(x.InputTokens+x.OutputTokens))

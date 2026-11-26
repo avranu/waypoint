@@ -1,6 +1,3 @@
-// What an objective's state means to a person (WP-927): the words for its
-// health, what is theirs to do about it, and which controls fit.
-
 import type {
   Objective,
   ObjectiveAction,

@@ -28,7 +28,6 @@ func (s *Service) claimPR(ctx context.Context, actor *Actor, prID int64) string 
 			return err
 		}
 		now := s.nowMS()
-		// A session renewing its own claim keeps when it started.
 		_, err = t.ExecContext(ctx, `INSERT INTO pr_claims(pull_id, session_id, claimed_at, expires_at) VALUES (?,?,?,?)
 			ON CONFLICT(pull_id) DO UPDATE SET
 				claimed_at = CASE WHEN session_id = excluded.session_id THEN claimed_at ELSE excluded.claimed_at END,

@@ -15,17 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Rewritten work (WP-782, WP-ADR131): when a change replaces lines another
-// task's pull request put on the base branch days before, the two tasks may
-// pull against each other (WP-232 rewrote half of what WP-233 had merged
-// hours earlier) or the later one may supersede the earlier. Which it is
-// takes reading both; that it happened is a fact git blame gives for free.
-// wp ship blames the lines the branch replaces and asks here which tasks
-// those pull requests were for; the agent is told, and records supersedes or
-// tension when that is what it did. Words alone don't say it reliably: a
-// lexical stance reader and "filed together" both measured too weak to show
-// (the decision note has the figures).
-
 const (
 	// rewriteMaxAge: work merged longer ago than this is the base the change
 	// builds on, not someone's recent intent. Every rewrite measured
@@ -39,7 +28,7 @@ const (
 	rewriteMinLines = 15
 	rewriteMinShare = 0.25
 	rewriteBigLines = 60
-	rewriteMaxPRs   = 50 // read from one ship
+	rewriteMaxPRs   = 50
 	rewriteMaxShown = 5
 )
 
@@ -145,15 +134,10 @@ func (s *Service) RewrittenWork(ctx context.Context, actor *Actor, ref, repo str
 	}
 	skip := map[int64]bool{d.ID: true}
 	for _, r := range d.Relations {
-		// Waypoint's own relation from an earlier ship doesn't answer the
-		// pair: it is read again (NoteRewrites), unless something else
-		// relates them too.
 		if r.Found != rewriteFound {
 			skip[r.Issue.ID] = true
 		}
 	}
-	// A pair whose inferred relation someone removed or replaced stays
-	// unrelated, whichever of the two ships (rewrite_dismissals).
 	dismissed, err := s.rewriteDismissed(ctx, s.db.R, d.ID)
 	if err != nil {
 		return nil, err
@@ -169,7 +153,7 @@ func (s *Service) RewrittenWork(ctx context.Context, actor *Actor, ref, repo str
 	}
 	now := s.now()
 	byTask := map[int64]*RewrittenTask{}
-	top := map[int64]int{} // lines of the pull request each task is named by
+	top := map[int64]int{}
 	for i, p := range prs {
 		if i == rewriteMaxPRs {
 			break
@@ -186,8 +170,6 @@ func (s *Service) RewrittenWork(ctx context.Context, actor *Actor, ref, repo str
 				continue
 			}
 			if t := byTask[id]; t != nil {
-				// One task's work spread over several pull requests is
-				// judged whole; the one named is the largest.
 				if p.Lines > top[id] {
 					t.PR, t.At, top[id] = p.Number, p.At, p.Lines
 				}
@@ -285,8 +267,6 @@ func RewriteSpan(lines, pr, prs int) string {
 // actor can't see. A call without head and with nothing found says too little
 // to drop anything.
 func (s *Service) NoteRewrites(ctx context.Context, actor *Actor, ref, repo, head string, prs []RewrittenPR) ([]*RewrittenTask, error) {
-	// The call records relations and evidence, so it is an edit whatever the
-	// route says: core is the authority (WP-1370).
 	if err := actor.need(PermIssuesEdit); err != nil {
 		return nil, err
 	}
@@ -317,12 +297,10 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 	var got []*RewrittenTask
 	err := s.write(ctx, actor, func(t *tx) error {
 		got = nil
-		// The role is checked again here: it may have been taken away since
-		// NoteRewrites read it, and then nothing is recorded or dropped.
 		if err := s.requireProjectRole(ctx, t, actor, d.ProjectID, RoleEditor); err != nil {
 			return nil
 		}
-		have := map[int64]bool{} // pairs Waypoint's own relation already stands for
+		have := map[int64]bool{}
 		gone, err := s.rewriteDismissed(ctx, t, d.ID)
 		if err != nil {
 			return err
@@ -342,10 +320,6 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 			if !s.canSee(ctx, t, actor, o.ID, o.ProjectID) {
 				continue
 			}
-			// What the pair has now, read in this write: Waypoint's own
-			// relation is refreshed; anything else (a person's or an agent's,
-			// either way round, made since RewrittenWork read) stands alone,
-			// and nothing is recorded for the pair.
 			var kind string
 			var how sql.NullString
 			err = t.QueryRowContext(ctx, `SELECT kind, found FROM issue_relations
@@ -362,20 +336,10 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 			}
 			got = append(got, r)
 		}
-		// The round is told what the latest ship saw: evidence for a pair
-		// this ship's change no longer replaces goes (the relation stays;
-		// a dismissal is kept). Only what this call can speak for goes: the
-		// same repo (evidence for another repo's lines is not this call's to
-		// judge), and, without a commit to say which change was read, not on
-		// an empty reading (an older wp, or a call that says too little);
-		// and never the evidence for a task the actor can't see, which
-		// another shipper recorded and this one has no view of.
 		keep := map[int64]bool{}
 		for _, r := range got {
 			id, err := s.resolveIssueID(ctx, t, r.Key)
 			if err != nil {
-				// An unreadable key must not read as "no longer replaced":
-				// the evidence stays and the whole record fails.
 				return err
 			}
 			keep[id] = true
@@ -426,7 +390,6 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 				}
 				if inserted {
 					r.Recorded = true
-					// Where relate puts it: a draft's key stays out of this task's history.
 					o, err := s.issueByID(ctx, t, otherID, false)
 					if err != nil {
 						return err
@@ -492,7 +455,7 @@ func (s *Service) rewriteDismissed(ctx context.Context, q queryer, id int64) ([]
 // reach a model's prompt and from there the session.
 func (s *Service) rewriteLeads(ctx context.Context, actor *Actor, issueID int64) []string {
 	if actor == nil {
-		return nil // nobody it acts as: no task's title leaves its project
+		return nil
 	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT o.id, o.project_id, e.pr, e.lines, e.merged_at, e.updated_at, e.head FROM rewrite_evidence e
 		JOIN issues o ON o.id = e.other_id
@@ -522,11 +485,11 @@ func (s *Service) rewriteLeads(ctx context.Context, actor *Actor, issueID int64)
 	var out []string
 	for _, r := range got {
 		if len(out) == rewriteMaxShown {
-			break // evidence piles up over repos and ships; the prompt gets the largest few
+			break
 		}
 		o, err := s.issueByID(ctx, s.db.R, r.id, false)
 		if err != nil || !s.canSee(ctx, s.db.R, actor, o.ID, o.ProjectID) {
-			continue // a task the round's actor can't see contributes nothing
+			continue
 		}
 		ago := "today"
 		switch days := int(time.UnixMilli(r.updatedAt).Sub(time.UnixMilli(r.mergedAt)) / (24 * time.Hour)); {
@@ -535,12 +498,8 @@ func (s *Service) rewriteLeads(ctx context.Context, actor *Actor, issueID int64)
 		case days > 1:
 			ago = fmt.Sprintf("%d days ago", days)
 		}
-		// %q leaves no newline or control character in the title; untrusted
-		// leaves nothing that closes the wrapper the lead goes into.
 		lead := untrusted(fmt.Sprintf("this change replaces %d lines that %s (%q) added in PR %d, %s: does it undo what %s did, on purpose?", r.lines, o.Key, clipText(strings.TrimSpace(o.Title), 120), r.pr, ago, o.Key))
 		if r.head == "" {
-			// An older wp sent no commit: the round can't tell which change
-			// the lines were traced for.
 			lead += " (traced by an older wp without the commit it read, so this may be out of date)"
 		}
 		out = append(out, lead)

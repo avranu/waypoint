@@ -60,7 +60,6 @@ for (const [n, [width, scheme]] of runs.entries()) {
     ok(live && live.note === "does the brief pay?" && live.ends_at, `the run is kept: ${JSON.stringify(live)}`);
     ok(await brief.getByText("does the brief pay?").isVisible(), `${tag} the run's note shows`);
 
-    // Results of the live run: too few tasks yet, with the caveats folded.
     await brief.getByRole("button", { name: /Run \d+ \(live\)/ }).click();
     const res = brief.getByTestId("experiment-results");
     await res.getByText(/Too few/).first().waitFor();
@@ -78,7 +77,6 @@ for (const [n, [width, scheme]] of runs.entries()) {
     await page.locator('[data-experiment="next_brief"][data-live="no"]').waitFor();
     ok(await brief.getByRole("button", { name: /Run \d+ · / }).isVisible(), `${tag} the stopped run's results stay`);
   } else {
-    // Phone: the prep run's results fit.
     await card("prep").getByRole("button", { name: /Run \d+ · / }).click();
     await card("prep").getByTestId("experiment-results").getByText(/Too few/).first().waitFor();
     await overflow("prep results");

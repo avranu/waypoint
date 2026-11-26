@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// The pieces that tie sessions, requests, files and usage together (WP-D16).
-
 func TestAttachmentsOnRequestsAndSessions(t *testing.T) {
 	r := newReqEnv(t)
 	q := r.ask(RequestInput{Kind: RequestQuestion, Title: "Which one?", Questions: choiceQ()})
@@ -16,7 +14,6 @@ func TestAttachmentsOnRequestsAndSessions(t *testing.T) {
 	req := AttachTarget{Type: TargetRequest, ID: q.ID}
 	sess := AttachTarget{Type: TargetSession, ID: r.session}
 
-	// The person it is for, and the agent acting for them (in the session).
 	if _, err := r.attach(r.ana, req, "shot.png", pngBytes); err != nil {
 		t.Fatalf("ana on her request: %v", err)
 	}
@@ -26,7 +23,6 @@ func TestAttachmentsOnRequestsAndSessions(t *testing.T) {
 	if _, err := r.attach(r.admin, req, "admin.png", pngBytes); err != nil {
 		t.Fatalf("admin on the request: %v", err)
 	}
-	// A viewer of the project can't see the request, so it doesn't exist for them.
 	if _, err := r.attach(r.bob, req, "x.png", pngBytes); !errors.Is(err, ErrNotFound) {
 		t.Errorf("bob on the request: %v", err)
 	}
@@ -36,13 +32,11 @@ func TestAttachmentsOnRequestsAndSessions(t *testing.T) {
 	if list, err := r.s.ListAttachments(r.ctx, r.ana, req); err != nil || len(list) != 3 || list[0].TargetType != TargetRequest {
 		t.Errorf("request files: %v %v", list, err)
 	}
-	// A read-only token reads, never adds.
 	ro := &Actor{User: r.ana.User, ReadOnly: true}
 	if _, err := r.attach(ro, req, "y.png", pngBytes); !errors.Is(err, ErrForbidden) {
 		t.Errorf("read-only: %v", err)
 	}
 
-	// The session: its person and admins add; project members read.
 	shot, err := r.attach(r.agent, sess, "screen.png", pngBytes)
 	if err != nil {
 		t.Fatalf("agent on its own session: %v", err)
@@ -85,8 +79,6 @@ func TestResolveRequestAndSessionTargets(t *testing.T) {
 	if _, err := r.s.ResolveAttachTarget(r.ctx, r.ana, "request:R-99", ""); !errors.Is(err, ErrNotFound) {
 		t.Errorf("a request that isn't: %v", err)
 	}
-	// "session": the CLI's own id (what WAYPOINT_SESSION holds) from inside the
-	// session, from anywhere of hers, or the number Waypoint gave it.
 	for name, c := range map[string]struct {
 		actor *Actor
 		spec  string
@@ -99,7 +91,6 @@ func TestResolveRequestAndSessionTargets(t *testing.T) {
 			t.Errorf("%s: %+v %v", name, tg, err)
 		}
 	}
-	// Someone else's CLI id is nobody's session of mine.
 	if _, err := r.s.ResolveAttachTarget(r.ctx, r.bob, "session:cli-1", ""); !errors.Is(err, ErrNotFound) {
 		t.Errorf("bob resolving ana's CLI id: %v", err)
 	}
@@ -127,7 +118,6 @@ func TestSessionUsageJoinsTheUsageTables(t *testing.T) {
 	if _, err := r.s.IngestUsage(r.ctx, r.ana, UsageIngest{Machine: "box", Chunks: []UsageChunk{chunk}}); err != nil {
 		t.Fatal(err)
 	}
-	// The same CLI id on another machine is another session.
 	if _, err := r.s.IngestUsage(r.ctx, r.ana, UsageIngest{Machine: "lap", Chunks: []UsageChunk{{ID: "c2", Messages: []UsageMessageRow{
 		msg(hour, "cli-1", "acme/app", "claude-opus-5-5", "main", 1, 5555, 0, 0, 0, 0)}}}}); err != nil {
 		t.Fatal(err)
@@ -156,8 +146,6 @@ func TestSessionUsageJoinsTheUsageTables(t *testing.T) {
 	if !builtin || !bash || u.Refusals.Total != 1 || u.Refusals.Recent[0].Reason != "Production Deploy" {
 		t.Errorf("tools %+v, bash %+v, refusals %+v", u.Tools, u.Bash, u.Refusals)
 	}
-	// Private to the person: the project's viewer sees a session but not its usage;
-	// admins may look; an agent reads its own person's and no one else's.
 	if bobs, err := r.s.GetSessionUsage(r.ctx, r.bob, r.session); err != nil || bobs.HasData || !bobs.Private {
 		t.Errorf("bob: %+v %v", bobs, err)
 	}
@@ -174,7 +162,6 @@ func TestSessionUsageJoinsTheUsageTables(t *testing.T) {
 	if _, err := r.s.GetSessionUsage(r.ctx, r.user("stranger", false), r.session); !errors.Is(err, ErrNotFound) {
 		t.Errorf("stranger: %v", err)
 	}
-	// A session with nothing reported says so.
 	res, err := r.s.SessionHook(r.ctx, agentActor(r.ana, "anthropic/claude-code"), []HookEvent{hook("box", "cli-new", "SessionStart", nil)})
 	if err != nil {
 		t.Fatal(err)
@@ -183,7 +170,6 @@ func TestSessionUsageJoinsTheUsageTables(t *testing.T) {
 		t.Errorf("empty: %+v %v", none, err)
 	}
 
-	// The usage tab's session rows know the session Waypoint holds, per machine.
 	rows, err := r.s.UsageBreakdowns(r.ctx, r.ana, UsageQuery{Days: 30}, "session", 50)
 	if err != nil {
 		t.Fatal(err)

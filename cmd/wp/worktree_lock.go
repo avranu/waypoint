@@ -16,25 +16,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Locked worktrees whose owner is gone (WP-1370). Claude Code locks the
-// worktree it makes for an agent with the reason
-//
-//	claude agent NAME (pid N start T)   (a subagent's worktree)
-//	claude session NAME (pid N start T) (claude --worktree NAME)
-//
-// where T is the process's start time as /proc/N/stat field 22 records it.
-// Nothing ever unlocked them, so a task whose worktree (or whose branch's
-// worktree) an agent had left behind could not be continued on its own
-// branch. A lock is stale when it names a process that provably no longer
-// exists: pid not running, or running with another start time (the pid was
-// reused), or a zombie. Anything else (a reason in other words, no reason, a
-// process still running, no view of /proc) is not shown gone, and the lock is
-// left alone: age is no evidence, and a lock someone wrote by hand says what
-// it is for in words only a person can judge. An owner in another pid
-// namespace, a pid that /proc hides (hidepid) but the kernel says exists, and a
-// host with no /proc (not Linux) are "can't tell", never gone; a pid namespace
-// on this same kernel that shows nothing of the owner can't be detected.
-
 // The start time is optional: an older Claude Code wrote only the pid.
 //
 // Claude Code records no host. A reason that does name one ("... start T host
@@ -50,8 +31,8 @@ var lockHost = func() string { h, _ := os.Hostname(); return h }
 
 // lockProc is what /proc says of one process.
 type lockProc struct {
-	start  uint64 // /proc/N/stat field 22: start time in clock ticks after boot
-	zombie bool   // exited, waiting to be reaped
+	start  uint64
+	zombie bool
 }
 
 // lockProcLookup reads process pid. found is false when there is no such
@@ -67,13 +48,11 @@ var (
 )
 
 func readLockProc(pid int) (e lockProc, found bool, err error) {
-	// Without a /proc of our own there is no view: a missing entry means nothing.
 	if _, err := os.Stat(filepath.Join(lockProcRoot, "self", "stat")); err != nil {
 		return e, false, errors.New("no /proc to look in")
 	}
 	b, err := os.ReadFile(filepath.Join(lockProcRoot, strconv.Itoa(pid), "stat")) // #nosec G304 -- a pid read from a lock reason, as digits
 	if errors.Is(err, fs.ErrNotExist) {
-		// A pid the kernel knows but /proc hides (hidepid) is not absent.
 		if lockPidSignal(pid) {
 			return e, false, errors.New("the pid exists but /proc doesn't show it")
 		}
@@ -82,8 +61,6 @@ func readLockProc(pid int) (e lockProc, found bool, err error) {
 	if err != nil {
 		return e, false, err
 	}
-	// "pid (comm) S ppid ...": comm may hold spaces and parentheses, so count
-	// from the last ")". After it come fields 3 onward; start time is field 22.
 	s := string(b)
 	i := strings.LastIndexByte(s, ')')
 	if i < 0 {
@@ -168,12 +145,11 @@ func lockOwner(reason string, lockedAt time.Time) (gone bool, why string) {
 		if err != nil {
 			return false, fmt.Sprintf("its lock names pid %d, and wp can't read this host's clock (%v)", pid, err)
 		}
-		// In ticks, so a start too large for a Duration is "later than up".
 		upTicks := int64((up + lockSlack) / lockTick)
 		if upTicks < 0 || start > math.MaxInt64 || int64(start) > upTicks {
 			return false, fmt.Sprintf("its lock names pid %d, started at tick %d after a boot, later than this host has been up (%s): another host or container wrote it, or the start is no real time, so wp can't tell", pid, start, up.Round(time.Second))
 		}
-		startAfterBoot := time.Duration(int64(start)) * lockTick // no later than up, so no overflow
+		startAfterBoot := time.Duration(int64(start)) * lockTick
 		boot := now.Add(-up)
 		switch {
 		case lockedAt.IsZero():
@@ -316,7 +292,7 @@ func unlockHeld(ctx context.Context, dir, common, path string, judged *string) (
 		}
 		return w.lockReason, nil
 	}
-	return "", nil // no longer registered: nothing to unlock
+	return "", nil
 }
 
 // relock puts back a lock unlockStale removed, when what was to follow it
@@ -331,10 +307,10 @@ func relock(ctx context.Context, dir, path, reason string) {
 
 // lockedFor is what reclaimTask found for a task.
 type lockedFor struct {
-	taken   []string // worktrees whose stale lock was removed, each with why, for one line
-	revive  string   // a branch of the task whose worktree's folder is gone, record pruned: check it out again
+	taken   []string
+	revive  string
 	blocked *tidyWorktree
-	why     string // why blocked can't be taken
+	why     string
 }
 
 // reclaimTask frees what holds the task key's branches (see reclaimWhere).
@@ -389,9 +365,6 @@ func reclaimWhere(ctx context.Context, repo *worktreeRepo, top string, match fun
 		}
 	}
 	if prune {
-		// git worktree prune drops every unlocked missing folder's record: not
-		// those of other work outside the repo's own folder, where a disk may
-		// only be unmounted.
 		for _, w := range repo.wts {
 			if !w.main && !w.bare && !w.locked && !dirExists(w.path) && !inside(tidyReal(w.path), home) &&
 				!match(w) {

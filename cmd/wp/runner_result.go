@@ -68,7 +68,6 @@ func withRuns(o outcome, m map[string]any, runs []helperRun) outcome {
 // a copy of the runs, changes them and says what it did ("" when it found
 // nothing to change). None touches the findings.
 var shrinkSteps = []func(runs []helperRun) string{
-	// 1. A cut lead keeps only its id, title and why.
 	func(runs []helperRun) string {
 		n := 0
 		for i := range runs {
@@ -85,7 +84,6 @@ var shrinkSteps = []func(runs []helperRun) string{
 		}
 		return fmt.Sprintf("cut leads reduced to their id, title and why (%d)", n)
 	},
-	// 2. The cut leads are dropped, counted in Dropped.
 	func(runs []helperRun) string {
 		n := 0
 		for i := range runs {
@@ -104,7 +102,6 @@ var shrinkSteps = []func(runs []helperRun) string{
 		}
 		return fmt.Sprintf("%d cut leads dropped and counted", n)
 	},
-	// 3. The evidence of the kept leads is clipped.
 	func(runs []helperRun) string {
 		n := 0
 		for i := range runs {

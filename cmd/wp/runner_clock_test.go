@@ -42,13 +42,12 @@ func ended(ctx context.Context, d time.Duration) bool {
 func TestJobClockLeavesSlotWaitsOutOfWork(t *testing.T) {
 	p := clockProc(t)
 	run := &jobRun{id: 5, timeout: time.Minute, out: newLogSink()}
-	// The work limit is 1 s: the shortest the claim can say.
 	ctx, cancel, c := p.jobClock(context.Background(), run, 1)
 	defer cancel()
 	if c.r == nil || !strings.Contains(strings.Join(c.env(), ""), slotWaitsEnv+"="+c.path) {
 		t.Fatalf("no waits file: %q %v", c.path, c.env())
 	}
-	appendWait(t, c, "wait") // by this live process
+	appendWait(t, c, "wait")
 	if ended(ctx, 1500*time.Millisecond) {
 		t.Fatalf("ended at the work limit while waiting: %v", ctx.Err())
 	}
@@ -100,7 +99,6 @@ func TestJobClockWithoutWorkLimitIsPlainTimeout(t *testing.T) {
 	if _, err := os.Stat(c.path); err == nil {
 		t.Error("waits file left behind")
 	}
-	// A cancel is still a cancel.
 	parent, stop := context.WithCancel(context.Background())
 	ctx2, cancel2, _ := p.jobClock(parent, &jobRun{id: 8, timeout: time.Minute, out: newLogSink()}, 0)
 	defer cancel2()

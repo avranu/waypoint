@@ -51,13 +51,15 @@ func (ae *agentEnv) agentTrial(issueID int64) string {
 // its checked picks are kept as a trial of kind 'agent'.
 func TestPrepAgentTrial(t *testing.T) {
 	ae, gw, box, i := prepAgentEnv(t)
+	gw.limits = GatewayLimits{ArchiveBytes: 10 << 20, FileBytes: 1 << 20}
 	ae.s.queuePrepAgent(ae.ctx)
 	ae.s.queuePrepAgent(ae.ctx)
 	if got := ae.one(`SELECT COUNT(*) FROM runner_jobs WHERE source = ? AND source_id = ?`, prepAgentSource, i.ID); got != "1" {
 		t.Fatalf("jobs = %s", got)
 	}
-
-	// While 4 of the gateway's 6 places are taken, audits get the rest.
+	if got := ae.one(`SELECT json_extract(input, '$.gateway_archive_max') || ' ' || json_extract(input, '$.gateway_file_max') FROM runner_jobs WHERE source = ?`, prepAgentSource); got != fmt.Sprint(10<<20, " ", 1<<20) {
+		t.Errorf("job's limits = %q", got)
+	}
 	for range GatewayTasksInFlight - prepAgentReserve {
 		if _, err := ae.s.db.W.Exec(`INSERT INTO runner_jobs(owner_id, created_by, label, kind, title, input, timeout, source, source_id, cli, state, created_at)
 			SELECT owner_id, created_by, label, kind, 'an audit', input, timeout, 'audit', 0, cli, 'running', created_at FROM runner_jobs WHERE source = ?`, prepAgentSource); err != nil {
@@ -127,12 +129,10 @@ func TestPrepAgentTrial(t *testing.T) {
 		t.Errorf("notes = %+v", notes)
 	}
 
-	// A task with a trial isn't asked again.
 	ae.s.queuePrepAgent(ae.ctx)
 	if got := ae.one(`SELECT COUNT(*) FROM runner_jobs WHERE source = ?`, prepAgentSource); got != "1" {
 		t.Errorf("jobs after the trial = %s", got)
 	}
-	// Chat trials still come for the task: an agent's isn't one of theirs.
 	if got := ae.one(`SELECT COUNT(*) FROM prep_trials WHERE issue_id = ? AND kind = 'chat'`, i.ID); got != "0" {
 		t.Errorf("chat trials = %s", got)
 	}
@@ -153,8 +153,6 @@ func TestPrepAgentTries(t *testing.T) {
 		t.Errorf("a failed trial was asked again at once: %s jobs", got)
 	}
 
-	// No runner of that name: not queued, and not recorded: it may come, and
-	// the tasks after it still get their turn (the next one below).
 	j := ae.issue(ae.admin, IssueInput{Project: ae.p.Key, Title: "Another"})
 	ae.readyPrep(j.ID, "elsewhere")
 	ae.s.queuePrepAgent(ae.ctx)
@@ -162,7 +160,6 @@ func TestPrepAgentTries(t *testing.T) {
 		t.Errorf("unknown machine kept %s trials", got)
 	}
 
-	// An answer that isn't the form.
 	k := ae.issue(ae.admin, IssueInput{Project: ae.p.Key, Title: "A third"})
 	ae.readyPrep(k.ID, "gwbox")
 	ae.s.queuePrepAgent(ae.ctx)
@@ -172,8 +169,6 @@ func TestPrepAgentTries(t *testing.T) {
 		t.Errorf("unreadable = %s", got)
 	}
 
-	// The task's text changed since its prep: not asked now, and not
-	// recorded (it is prepared again).
 	l := ae.issue(ae.admin, IssueInput{Project: ae.p.Key, Title: "A fourth"})
 	ae.readyPrep(l.ID, "gwbox")
 	if _, err := ae.s.db.W.Exec(`UPDATE issues SET title = 'Retitled' WHERE id = ?`, l.ID); err != nil {
@@ -301,9 +296,6 @@ func TestPrepAgentScored(t *testing.T) {
 	if !strings.Contains(s, "agent      recall 1.000, precision 1.000, 2.0 files a task") || !strings.Contains(s, "chat prep  recall 0.500, precision 0.500, 2.0 files a task") {
 		t.Errorf("after scoring:\n%s", s)
 	}
-	// More of the work merges: scored again, and only the reports that
-	// would say something else are sent again (the chat prep's other pick
-	// is a hit now); the agent's stands.
 	if _, err := e.s.db.W.Exec(`UPDATE prep_scores SET reported_at = 1 WHERE issue_id = ?`, i.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +314,6 @@ func TestPrepAgentScored(t *testing.T) {
 	if err := e.s.scorePrep(e.ctx, i.ID, merged); err != nil {
 		t.Fatal(err)
 	}
-	// The chat trials' tally leaves the agent's out.
 	stats, err := e.s.PrepModelStats(e.ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -504,14 +495,12 @@ func TestPrepAgentBacktest(t *testing.T) {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	// the open task has had its trial
 	exec(`INSERT INTO prep_trials(issue_id, kind, text_hash, model, notes, request_id, created_at) SELECT issue_id, 'agent', text_hash, 'agent/x/y', '{}', 'task_0', ? FROM task_preps WHERE issue_id = ?`, now, open.ID)
 	done := func(title string, resolved int64) *IssueDetail {
 		i := ae.issue(ae.admin, IssueInput{Project: ae.p.Key, Title: title, Description: "Something to do."})
 		ae.readyPrep(i.ID, "gwbox")
 		exec(`UPDATE issues SET resolved_at = ? WHERE id = ?`, resolved, i.ID)
 		exec(`INSERT INTO prep_scores(issue_id, source, priority, model, picked, truth, hits, scored_at) VALUES (?, 'prep', 'normal', 'old/a', 2, 2, 1, ?)`, i.ID, now)
-		// its prep made again by another model: still one candidate
 		exec(`INSERT INTO prep_scores(issue_id, source, priority, model, picked, truth, hits, scored_at) VALUES (?, 'prep', 'normal', 'new/b', 2, 2, 1, ?)`, i.ID, now)
 		return i
 	}
@@ -542,8 +531,6 @@ func TestPrepAgentBacktest(t *testing.T) {
 	ae.finish(claim.ID, "failed", map[string]any{"model": "x/y"}, "the gateway has no surplus")
 	ae.work()
 
-	// scored beside the chat prep on enough tasks, with nothing left to
-	// learn: no more backtests
 	another := done("Done earlier", now-9000)
 	for n := range prepOfflineMin {
 		i := ae.issue(ae.admin, IssueInput{Project: ae.p.Key, Title: fmt.Sprintf("Scored %d", n)})

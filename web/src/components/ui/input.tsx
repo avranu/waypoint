@@ -42,9 +42,6 @@ export const Textarea = forwardRef<
   const grow = () => {
     const el = inner.current
     if (el && autoGrow) {
-      // Collapsing to auto shrinks the page for a moment and the browser
-      // clamps every scroller above it, so the caret jumps off screen. Put
-      // the scroll positions back after measuring.
       const saved: [Element, number][] = []
       for (let p = el.parentElement; p; p = p.parentElement) {
         if (p.scrollTop) saved.push([p, p.scrollTop])
@@ -95,10 +92,6 @@ export function Field({
 }) {
   const labelClass = 'text-[13px] font-medium leading-5'
   const outer = !hint && className
-  // Notes and errors sit outside the <label>, so they (and any buttons in
-  // them) aren't read out as part of the control's name. The wrapper is
-  // always there: swapping it in when a note appears would remount the
-  // control mid-typing and drop its focus.
   const field = (
     <div className={clsx('space-y-1.5', outer)}>
       <label className="block space-y-1.5">
@@ -113,8 +106,6 @@ export function Field({
     </div>
   )
   if (!hint) return field
-  // The (?) sits just after the label text but outside the <label>, so the
-  // label still names (and focuses) the control and not the (?).
   return (
     <div className={clsx('relative', className)}>
       {field}
@@ -278,7 +269,6 @@ export function Select({
     } else if (e.key === 'Tab') {
       pop.close()
     } else if (e.key.length === 1) {
-      // Type-ahead: jump to the next option starting with that letter.
       const k = e.key.toLowerCase()
       const n = enabled.findIndex((o, i) => i > active && o.label.toLowerCase().startsWith(k))
       const m = n >= 0 ? n : enabled.findIndex((o) => o.label.toLowerCase().startsWith(k))

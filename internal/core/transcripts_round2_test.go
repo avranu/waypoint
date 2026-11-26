@@ -10,10 +10,6 @@ import (
 	"time"
 )
 
-// Audit 1218, second round: collector health per machine and drops (.10,
-// .20), redaction counts (.33), the pass record and opt-out (.34, .35), the
-// archive's size and quota (.36, .50).
-
 func i64(n int64) *int64    { return &n }
 func strp(s string) *string { return &s }
 func yes(b bool) *bool      { return &b }
@@ -80,7 +76,6 @@ func TestTranscriptCollectorStallIsPerMachine(t *testing.T) {
 	if len(n) != 1 || !strings.Contains(n[0], e.admin.User.Username+"/stuck") || strings.Contains(n[0], "busy") {
 		t.Fatalf("notices = %v", n)
 	}
-	// the busy one alone is not stalled
 	e.machineRow("stuck", `transcript_pending_bytes = 0, transcript_pending_since = NULL`)
 	if h := e.archiveHealth(); h.Stalled {
 		t.Errorf("only an uploading machine waits, yet %+v", h)
@@ -144,7 +139,6 @@ func TestTranscriptCollectorDropsAreCountedAndTold(t *testing.T) {
 	if len(got) != 2 || !strings.Contains(got[1], "6") {
 		t.Errorf("growth after the day is told: %v", got)
 	}
-	// a collector that counts no drops has none
 	for _, h := range mustHealth(t, e) {
 		if h.Name != "transcript archive" && h.Name != "slot holds" && h.Name != "session data" && h.Dropped != nil {
 			t.Errorf("%s has a dropped total %d", h.Name, *h.Dropped)
@@ -179,7 +173,6 @@ func TestTranscriptRedactionCounts(t *testing.T) {
 	if fs[0].Redactions == nil || *fs[0].Redactions != 5 || fs[0].RedactionRules["key"] != 2 || fs[0].RedactionRules["known"] != 2 || fs[0].RedactionRules["pattern"] != 1 {
 		t.Errorf("file: %+v", fs[0])
 	}
-	// a piece with no count makes the file's total unknown, not 5
 	e.put(e.admin, piece("s1", "main", 2*int64(len(l)), l), l)
 	fs, _ = e.s.TranscriptFiles(e.ctx, e.admin, TranscriptQuery{Session: "s1"})
 	if fs[0].Redactions != nil {
@@ -189,7 +182,6 @@ func TestTranscriptRedactionCounts(t *testing.T) {
 	if err := e.s.db.R.QueryRow(`SELECT redactions FROM transcript_pieces WHERE from_off = ?`, 2*int64(len(l))).Scan(&n); err != nil || n != nil {
 		t.Errorf("stored %v %v, want NULL", n, err)
 	}
-	// only rule names are kept: a name that is not one is refused
 	bad := piece("s2", "main", 0, l)
 	bad.Redactions, bad.RedactionRules = i64(1), map[string]int64{"password=hunter2": 1}
 	bad.Gzip = tgz(t, l)
@@ -215,7 +207,6 @@ func TestTranscriptStatusKeepsPassRecordAndOptOut(t *testing.T) {
 		}
 		return *ms[0].Transcripts
 	}
-	// an old client says none of it: unknown
 	if err := e.s.ReportTranscriptStatus(e.ctx, e.admin, TranscriptStatus{Machine: "box", PendingBytes: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +224,6 @@ func TestTranscriptStatusKeepsPassRecordAndOptOut(t *testing.T) {
 	if *m.PassMS != 900 || *m.PassMaxMS != 900 || *m.Stop != "time limit" || *m.Cut != 2 || *m.Off {
 		t.Errorf("after the first: %+v", m)
 	}
-	// a shorter pass: last changes, longest stays; "" is a pass that ran to the end
 	st.PassMS, st.PassMaxMS, st.Stop = i64(100), nil, strp("")
 	if err := e.s.ReportTranscriptStatus(e.ctx, e.admin, st); err != nil {
 		t.Fatal(err)
@@ -241,7 +231,6 @@ func TestTranscriptStatusKeepsPassRecordAndOptOut(t *testing.T) {
 	if m := machines(); m.PassMS == nil || m.PassMaxMS == nil || m.Stop == nil || *m.PassMS != 100 || *m.PassMaxMS != 900 || *m.Stop != "" {
 		t.Errorf("after a short pass: %+v", m)
 	}
-	// off is kept, and it does not erase what is pending
 	if err := e.s.ReportTranscriptStatus(e.ctx, e.admin, TranscriptStatus{Machine: "box", PendingBytes: 7, Off: yes(false)}); err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +289,6 @@ func TestTranscriptArchiveIsAResource(t *testing.T) {
 	if r := find(); !r.Low || r.Count != 2 {
 		t.Errorf("over the limit: %+v", r)
 	}
-	// the total follows the pieces when an account goes
 	jo := e.user("jo", false)
 	e.put(jo, piece("s9", "main", 0, l), l)
 	if err := e.s.DeleteUser(e.ctx, e.admin, jo.User.ID); err != nil {
@@ -343,13 +331,11 @@ func TestTranscriptQuotaRefuses(t *testing.T) {
 			t.Errorf("refusal not counted: %+v", r)
 		}
 	}
-	// a duplicate of what is held is answered, not refused
 	dup := piece("s1", "main", 0, l)
 	dup.Gzip = tgz(t, l)
 	if r, err := e.s.IngestTranscript(e.ctx, e.admin, dup); err != nil || r.Status != "duplicate" {
 		t.Errorf("duplicate under the cap: %v %v", r, err)
 	}
-	// no cap: stored
 	e.s.cfg.TranscriptMaxMB = 0
 	if r, err := e.s.IngestTranscript(e.ctx, e.admin, in); err != nil || r.Status != "stored" {
 		t.Errorf("no cap: %v %v", r, err)

@@ -67,17 +67,14 @@ func TestGoalChainArms(t *testing.T) {
 // by their words, and never rewords one.
 func TestGoalChainPruned(t *testing.T) {
 	ps := steps("The interface is intuitive", "Storage stays reliable", "Alpha thinking")
-	// Judged covered: out, whatever it shares with anything.
 	got, above := goalChain(goalArmPruned, ps, map[int64]bool{1: true})
 	if !slices.Equal(stepTitles(got), []string{"Storage stays reliable", "Alpha thinking"}) || above != 1 {
 		t.Errorf("covered = %v above %d", got, above)
 	}
-	// No judgement: nothing is left out.
 	got, above = goalChain(goalArmPruned, ps, nil)
 	if !slices.Equal(stepTitles(got), stepTitles(ps)) || above != 0 {
 		t.Errorf("no judgement = %v above %d", got, above)
 	}
-	// Two parents with the same words: only the judged one goes.
 	twins := steps("Customers trust billing accuracy", "Billing accuracy and customers trust")
 	got, above = goalChain(goalArmPruned, twins, map[int64]bool{2: true})
 	if len(got) != 1 || got[0].ID != 1 || above != 1 {
@@ -207,7 +204,6 @@ func TestGoalParents(t *testing.T) {
 		t.Errorf("a top goal has none: %+v", got)
 	}
 
-	// An agent's goal no person approved is skipped; the walk goes past it.
 	other := agentActor(e.admin, "anthropic/claude-code")
 	mine := e.child(other, e.top, "Pages load quickly")
 	if mine.Approved {
@@ -218,7 +214,6 @@ func TestGoalParents(t *testing.T) {
 		t.Errorf("unapproved parent = %+v", got)
 	}
 
-	// A parent in a project the actor can't read is left out.
 	hidden := e.project(e.admin, "Hidden", "")
 	secret := e.goal(e.admin, hidden.Key, "Secret ambition")
 	e.exec(`UPDATE design_notes SET parent_id = ? WHERE id = ?`, secret.ID, e.top.ID)
@@ -227,14 +222,12 @@ func TestGoalParents(t *testing.T) {
 	}
 	e.exec(`UPDATE design_notes SET parent_id = NULL WHERE id = ?`, e.top.ID)
 
-	// A cycle ends the walk.
 	e.exec(`UPDATE design_notes SET parent_id = ? WHERE id = ?`, e.leaf.ID, e.top.ID)
 	if got := e.s.goalParents(e.ctx, e.s.db.R, e.ag, e.leaf.ID); !slices.Equal(ids(got), []int64{e.mid.ID, e.top.ID}) {
 		t.Errorf("cycle = %+v", got)
 	}
 	e.exec(`UPDATE design_notes SET parent_id = NULL WHERE id = ?`, e.top.ID)
 
-	// A runaway hierarchy stops at the cap.
 	prev := e.top
 	for k := range 11 {
 		prev = e.child(e.admin, prev, fmt.Sprintf("Deeper level %s", uniqWords(50+k, 1)[0]))
@@ -249,7 +242,6 @@ func TestGoalParents(t *testing.T) {
 func TestGoalContextDraws(t *testing.T) {
 	e := newGoalCtxEnv(t)
 
-	// A read without an assignment shows the goal alone and writes nothing.
 	first := e.serving("Restyle the save button", e.leaf)
 	if g := e.read(e.ag, first.Key); len(g.Chain) != 0 || g.Arm != "" {
 		t.Fatalf("a read shows %+v", g)
@@ -258,7 +250,6 @@ func TestGoalContextDraws(t *testing.T) {
 		t.Error("a read drew an arm")
 	}
 
-	// A person gets no draw, nor a stale claim.
 	if got := e.task(e.admin, first.ID); len(got.Issue.Goal.Chain) != 0 || e.rows(first.ID) != 0 {
 		t.Errorf("a person: %+v rows %d", got.Issue.Goal, e.rows(first.ID))
 	}
@@ -266,13 +257,10 @@ func TestGoalContextDraws(t *testing.T) {
 	if got := e.task(e.ag, first.ID); len(got.Issue.Goal.Chain) != 0 || e.rows(first.ID) != 0 {
 		t.Errorf("a stale claim: %+v rows %d", got.Issue.Goal, e.rows(first.ID))
 	}
-	// The same task, its claim fresh again, draws: the reader, the person and
-	// the claim's age were what held it back.
 	e.exec(`UPDATE issues SET claimed_at = ? WHERE id = ?`, e.s.nowMS(), first.ID)
 	if e.task(e.ag, first.ID); e.rows(first.ID) != 1 {
 		t.Error("a fresh claim didn't draw")
 	}
-	// A task whose goal has no parents: every arm reads alike, no row.
 	flat := e.serving("Rename the page", e.top)
 	e.task(e.ag, flat.ID)
 	if e.rows(flat.ID) != 0 {
@@ -299,7 +287,6 @@ func TestGoalContextDraws(t *testing.T) {
 		if (arm == goalArmGoal) != (len(g.Chain) == 0) || (len(g.Chain) > 0 && g.Arm != arm) {
 			t.Errorf("%s drawn %s shows %+v", i.Key, arm, g)
 		}
-		// Kept: a second take, and a plain read, show the same arm.
 		again := e.task(e.ag, i.ID)
 		if again.Issue.Goal.Arm != g.Arm || len(again.Issue.Goal.Chain) != len(g.Chain) {
 			t.Errorf("%s changed: %+v then %+v", i.Key, g, again.Issue.Goal)
@@ -380,9 +367,6 @@ func TestGoalContextOutcome(t *testing.T) {
 func TestGoalContextRows(t *testing.T) {
 	e := newGoalCtxEnv(t)
 	f := e.forge("forgejo", "https://git.example.com", false)
-	// mk is a task drawn under chain with one pull request per check: a
-	// "flag" check points at a drift flag with that answer, any other
-	// check has no flag (flag_id NULL).
 	mk := func(title string, checks ...[2]string) *IssueDetail {
 		i := e.serving(title, e.leaf)
 		e.task(e.ag, i.ID)
@@ -421,7 +405,7 @@ func TestGoalContextRows(t *testing.T) {
 	if err := e.s.db.R.QueryRow(`SELECT count(*) FILTER (WHERE flag_id IS NULL), count(*) FILTER (WHERE flag_id = 0) FROM pr_goal_checks`).Scan(&noFlag, &zeroFlag); err != nil {
 		t.Fatal(err)
 	}
-	if noFlag != 3 || zeroFlag != 0 { // clear, pending, error
+	if noFlag != 3 || zeroFlag != 0 {
 		t.Fatalf("checks without a flag: %d NULL, %d zero", noFlag, zeroFlag)
 	}
 
@@ -459,9 +443,6 @@ func TestGoalContextRows(t *testing.T) {
 		t.Errorf("bare = %+v", r)
 	}
 
-	// The drift value, every task done: flagged and fine have one; pending,
-	// errored and bare have none, and the same task has one once its own
-	// reason is gone, so none of them goes without for another reason.
 	now := e.s.now().Add(time.Hour)
 	done := func(r *goalRow) *goalRow {
 		c := *r
@@ -492,7 +473,6 @@ func TestGoalContextRows(t *testing.T) {
 			t.Errorf("%s, that reason gone, has no value: %v %v", c.name, y, ok)
 		}
 	}
-	// Each done task the outcome leaves out is counted under its own reason.
 	for _, c := range []struct {
 		i    *IssueDetail
 		want GoalContextFigures
@@ -510,8 +490,7 @@ func TestGoalContextRows(t *testing.T) {
 
 	e.exec(`UPDATE issues SET status_id = (SELECT st.id FROM statuses st WHERE st.category = 'done' LIMIT 1) WHERE id IN (?,?,?,?,?)`,
 		flagged.ID, fine.ID, pending.ID, errored.ID, bare.ID)
-	e.s.goalPol.pol = nil // the draws cached an estimate before these rows
-	// The report is admins' only, and has the figures.
+	e.s.goalPol.pol = nil
 	if _, err := e.s.GoalContextPolicy(e.ctx, e.me); err == nil {
 		t.Error("a member read the report")
 	}
@@ -519,7 +498,6 @@ func TestGoalContextRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Given counts every task with an arm, bare's with no pull request too.
 	if rep.Given != 5 || len(rep.Arms) != 3 || rep.Arms[0].Arm != goalArmGoal || !strings.Contains(rep.String(), "chain") {
 		t.Errorf("report = %+v", rep)
 	}
@@ -537,8 +515,6 @@ func TestGoalContextRows(t *testing.T) {
 		t.Errorf("chain: drawn %d, figures %+v, want %+v", chain.Drawn, chain.GoalContextFigures, want)
 	}
 
-	// The fine task's flag, its answer taken back, counts: only the answer
-	// left it out.
 	e.exec(`UPDATE goal_drift_flags SET answer = '' WHERE pr_id IN (SELECT p.id FROM pull_requests p JOIN external_links el ON el.url = p.url WHERE el.issue_id = ?)`, fine.ID)
 	if r := read()[fine.ID]; r.drift != 1 {
 		t.Errorf("unanswered, fine's flag = %+v", r)

@@ -70,8 +70,6 @@ func TestAgentTaskNamed(t *testing.T) {
 	}
 	desc := fmt.Sprintf("Like %s, see %s and %s (and %s again). Not %s, %s, %s, ADR-0007 or UTF-8.",
 		named.Key, secret.Key, named.Key, named.Key, task.Key, parent.Key, child.Key)
-	// An agent's text: what a person names becomes a relation (WP-781), and
-	// the list leaves out relations.
 	writer := *ann
 	writer.Agent = "anthropic/claude-opus-5-5"
 	if _, err := e.s.UpdateIssue(e.ctx, &writer, task.Key, IssuePatch{Description: &desc}); err != nil {
@@ -99,7 +97,6 @@ func TestAgentTaskNamed(t *testing.T) {
 		t.Errorf("sam (can't see %s): %s\nwant %s", secret.Key, g, want)
 	}
 
-	// The cap.
 	var many []string
 	for n := range namedMax + 3 {
 		many = append(many, e.issue(ann, IssueInput{Project: p.Key, Title: fmt.Sprint("m", n)}).Key)
@@ -141,12 +138,10 @@ func TestAgentTakeEpicHandsOutItsSubTask(t *testing.T) {
 	if d := e.get(e.admin, epic.Key); d.ClaimedBy != "" || runsOn(epic.ID) != 0 {
 		t.Errorf("the epic was taken: claimed by %q, %d runs", d.ClaimedBy, runsOn(epic.ID))
 	}
-	// Asked again, the sub-task it holds comes back.
 	if again, err := e.s.AgentTake(e.ctx, opus, epic.Key, ""); err != nil || again.Issue.Key != urgent.Key || !again.Resumed {
 		t.Fatalf("again = %+v, %v", again, err)
 	}
 
-	// Nothing under it can be taken: the epic is, as named.
 	blocker := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Blocker", Agent: "none"})
 	if err := e.s.AddRelation(e.ctx, e.admin, blocker.Key, "blocks", low.Key); err != nil {
 		t.Fatal(err)

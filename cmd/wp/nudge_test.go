@@ -26,7 +26,6 @@ func TestNudgeRules(t *testing.T) {
 	for _, c := range []struct {
 		cmd, host, want string
 	}{
-		// polling CI
 		{`while true; do curl -s https://git.example.net/api/v1/repos/a/b/commits/x/status | jq .state; sleep 30; done`, forgejo, wait},
 		{`until gh pr checks 12 | grep -q pass; do sleep 20; done`, "github.com", wait},
 		{`for i in $(seq 1 40); do wp pr show 12 | grep -q ready && break; sleep 15; done`, forgejo, wait},
@@ -36,7 +35,6 @@ func TestNudgeRules(t *testing.T) {
 		{`wp pr show 5 && while true; do sleep 60; wget -qO- https://example.com/x; done`, forgejo, wait},
 		{`sleep 595; wp pr ls | grep -E "#(40|41)"`, forgejo, wait},
 		{`sleep 1m; gh pr checks 3`, "github.com", wait},
-		// a long sleep before a check (WP-191)
 		{`sleep 598; tail -c 300 /tmp/w37.out`, forgejo, slept},
 		{`sleep 2m && make status`, forgejo, slept},
 		{`sleep 20; sleep 15; cat out.log`, forgejo, slept},
@@ -45,7 +43,6 @@ func TestNudgeRules(t *testing.T) {
 		{`until [ -s out ]; do sleep 60; done`, forgejo, ""},
 		{`docker compose up -d; sleep 8; curl -s localhost:1/health`, forgejo, ""},
 		{`python3 -c "import time; time.sleep(60)"`, forgejo, ""},
-		// not polling
 		{`sleep 5 && echo done`, forgejo, ""},
 		{`while read l; do echo $l; done < file`, forgejo, ""},
 		{`for f in *.go; do gofmt -l $f; sleep 1; done`, forgejo, ""},
@@ -53,7 +50,6 @@ func TestNudgeRules(t *testing.T) {
 		{`while true; do sleep 30; wp pr wait 12; done`, forgejo, ""},
 		{`make check`, forgejo, ""},
 		{`echo ci_waiting`, forgejo, ""},
-		// the forge API for pulls, statuses, commits
 		{`curl -s -H "Authorization: token $T" https://git.example.net/api/v1/repos/Robin/waypoint/pulls/12`, forgejo, api},
 		{`curl https://git.example.net/api/v1/repos/Robin/waypoint/commits/abc/statuses`, forgejo, api},
 		{`curl -s https://api.github.com/repos/o/r/pulls?state=open | jq`, "github.com", api},
@@ -64,7 +60,6 @@ func TestNudgeRules(t *testing.T) {
 		{`curl -s https://example.com/pulls`, forgejo, ""},
 		{`git log --grep "api/v1/repos/a/b/pulls"`, forgejo, ""},
 		{`curl -s https://git.example.net/api/v1/user`, forgejo, ""},
-		// gh pr off github
 		{`gh pr view 12`, forgejo, gh},
 		{`cd repo && gh pr create --fill`, forgejo, gh},
 		{`gh pr list | head`, "git.example.org", gh},
@@ -73,7 +68,6 @@ func TestNudgeRules(t *testing.T) {
 		{`git commit -m "fix gh pr merge text"`, forgejo, ""},
 		{`gh issue list`, forgejo, ""},
 		{`echo gh pr`, forgejo, ""},
-		// branch sweeps
 		{`git branch -D a b c`, forgejo, sweep},
 		{`git branch -D old-1 old-2`, forgejo, sweep},
 		{`git branch --merged main | xargs git branch -D`, forgejo, sweep},
@@ -96,11 +90,9 @@ func TestNudgeRules(t *testing.T) {
 			t.Errorf("%q (remote %q): nudge %q, want %q", c.cmd, c.host, got, c.want)
 		}
 	}
-	// A giant command (a heredoc of code) is never matched.
 	if r := nudgeFor("sleep 1; while true; do curl x; done\n"+strings.Repeat("a", 30000), func() string { return "" }); r != nil {
 		t.Errorf("huge command nudged: %s", r.kind)
 	}
-	// The remote is only looked up for the rules that need it.
 	looked := 0
 	nudgeFor("make check", func() string { looked++; return "" })
 	nudgeFor("gh pr view 1", func() string { looked++; return "" })
@@ -201,7 +193,7 @@ func TestBigReadNudges(t *testing.T) {
 	}
 	write("big.txt", 900)
 	write("small.txt", 100)
-	write("huge.txt", 50000) // beyond the sample: estimated
+	write("huge.txt", 50000)
 	for _, c := range []struct {
 		tool, path string
 		limit      int
@@ -241,7 +233,6 @@ func TestBigReadNudges(t *testing.T) {
 	if n := fileLines(filepath.Join(dir, "huge.txt")); n < 40000 || n > 60000 {
 		t.Errorf("estimate %d", n)
 	}
-	// Through the hook: Read is nudged as context only.
 	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
 	in, _ := json.Marshal(map[string]any{"hook_event_name": "PreToolUse", "tool_name": "Read", "cwd": dir,
 		"tool_input": map[string]any{"file_path": "big.txt"}})
@@ -301,8 +292,6 @@ func TestTaskNudges(t *testing.T) {
 		}
 	}
 
-	// Through the hook: the refusal is a deny with the reason; a background
-	// call is never refused, nor a background sleep loop noted.
 	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
 	t.Setenv("WP_GUARD", "")
 	tc := &cli{dir: t.TempDir()}
@@ -321,9 +310,6 @@ func TestTaskNudges(t *testing.T) {
 	if out := hook("sleep 60; cat "+running, false, ""); out != "" {
 		t.Errorf("the nudge answered a refused call: %q", out)
 	}
-	// A sub-agent's too (WP-1443): the notice of its background task is as
-	// certain, and a sub-agent that ends its turn with one running is not asked
-	// for its report.
 	startAgent(tc, "", "agent-1", true)
 	if out := guard("sleep 60; cat "+running, false, "agent-1"); !strings.Contains(out, `"permissionDecision":"deny"`) || !strings.Contains(out, "brun1 is still running") {
 		t.Errorf("the guard did not refuse a background sub-agent: %q", out)
@@ -331,9 +317,6 @@ func TestTaskNudges(t *testing.T) {
 	if out := hook("sleep 60; cat "+running, false, "agent-1"); out != "" {
 		t.Errorf("the nudge answered a refused sub-agent call: %q", out)
 	}
-	// A foreground sub-agent (or one not known to be a background one) is
-	// only noted: its shells are reaped when it answers, so ending the turn
-	// would stop the task.
 	if out := guard("sleep 60; cat "+running, false, "agent-fg"); strings.Contains(out, `"permissionDecision":"deny"`) {
 		t.Errorf("the guard refused a foreground sub-agent: %q", out)
 	}

@@ -13,13 +13,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/tracing"
 )
 
-// Outbound requests to user-supplied URLs (webhooks, Gotify, automation
-// actions) go through an egress policy, so a project owner can't use
-// Waypoint to reach the server itself or a cloud metadata endpoint.
-//
-// Private networks stay reachable by default: self-hosted Gotify and Kestra
-// usually live on the LAN. WAYPOINT_EGRESS_BLOCK_PRIVATE turns that off.
-
 // EgressPolicy says which addresses outbound requests may reach.
 type EgressPolicy struct {
 	BlockPrivate  bool // RFC 1918, ULA, CGNAT (Tailscale) ranges
@@ -45,8 +38,6 @@ func embeddedIPv4(ip netip.Addr) (netip.Addr, bool) {
 	case nat64.Contains(ip):
 		return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}), true
 	case nat64Local.Contains(ip):
-		// A /48 prefix: the address sits in bits 48-63 and 72-87 (bits
-		// 64-71 are reserved, RFC 6052 section 2.2).
 		return netip.AddrFrom4([4]byte{b[6], b[7], b[9], b[10]}), true
 	case sixToFour.Contains(ip):
 		return netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]}), true
@@ -64,7 +55,6 @@ func (p EgressPolicy) allowed(ip netip.Addr) bool {
 		return p.AllowLoopback
 	case ip.IsUnspecified(), ip.IsLinkLocalUnicast(), ip.IsLinkLocalMulticast(),
 		ip.IsInterfaceLocalMulticast(), ip.IsMulticast():
-		// Link-local covers 169.254.169.254, the cloud metadata service.
 		return false
 	case ip.IsPrivate(), cgnat.Contains(ip):
 		return !p.BlockPrivate
@@ -100,7 +90,7 @@ func (p EgressPolicy) newClient(timeout, headers time.Duration) *http.Client {
 		},
 	}
 	tr := &http.Transport{
-		Proxy:                 nil, // a proxy would hide the real destination from Control
+		Proxy:                 nil,
 		DialContext:           d.DialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          20,

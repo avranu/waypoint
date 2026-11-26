@@ -1,6 +1,3 @@
-// A compact view of this week's agent usage (WP-D20): tokens, cache hit rate
-// and the subscription quota, linking to Agents → Usage. For the overview page.
-
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'

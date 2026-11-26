@@ -15,8 +15,8 @@ type usageEnv struct {
 	claim  *GlossaryEntry
 	page   *Page
 	note   *DesignNote
-	agent  *Actor // a tool: an agent through Robin's token
-	person *Actor // Robin in the browser
+	agent  *Actor
+	person *Actor
 }
 
 func newUsageEnv(t *testing.T) *usageEnv {
@@ -58,14 +58,14 @@ func TestKnowledgeLookups(t *testing.T) {
 		u.s.NoteGlossaryLookup(u.ctx, a, res)
 	}
 	look(u.agent, "claim")
-	look(u.agent, "Claim")  // the same tool again soon: the same use
-	look(u.person, "claim") // the browser isn't a tool
+	look(u.agent, "Claim")
+	look(u.person, "claim")
 	if c := u.usage(u.admin, KGlossary, u.claim.ID).Counts; c.Lookups != 1 || c.Agents != 1 {
 		t.Fatalf("counts after repeats = %+v", c)
 	}
 	u.setClock(u.clockNow().Add(11 * time.Minute))
-	look(u.agent, "lease")  // by an alias
-	look(u.agent, "ticket") // a word to avoid leads to the entry
+	look(u.agent, "lease")
+	look(u.agent, "ticket")
 	us := u.usage(u.admin, KGlossary, u.claim.ID)
 	if us.Counts.Lookups != 2 || len(us.Uses) != 2 || us.Uses[0].Word != "lease" || us.Uses[0].Agent != "anthropic/claude-code" {
 		t.Fatalf("usage = %+v", us)
@@ -75,7 +75,6 @@ func TestKnowledgeLookups(t *testing.T) {
 	if us := u.usage(u.admin, KGlossary, u.claim.ID); us.Uses[0].Word != "ticket" || us.LastUsedAt == nil {
 		t.Errorf("avoided-word lookup = %+v", us.Uses[0])
 	}
-	// Pages and notes read by tools; another person's token counts as theirs.
 	u.s.NoteLookup(u.ctx, u.agent, KPage, u.page.ID, "")
 	u.s.NoteLookup(u.ctx, u.agent, KDesign, u.note.ID, "")
 	u.s.NoteLookup(u.ctx, u.person, KPage, u.page.ID, "")
@@ -85,7 +84,6 @@ func TestKnowledgeLookups(t *testing.T) {
 	if c := u.usage(u.admin, KDesign, u.note.ID).Counts; c.Lookups != 1 {
 		t.Errorf("note lookups = %+v", c)
 	}
-	// Usage follows the item's access.
 	bob := u.user("bob", false)
 	if _, err := u.s.ItemUsage(u.ctx, bob, KGlossary, u.claim.ID); err == nil {
 		t.Error("bob read the usage of a project he isn't in")
@@ -98,8 +96,6 @@ func TestKnowledgeLookups(t *testing.T) {
 func TestKnowledgeMentions(t *testing.T) {
 	u := newUsageEnv(t)
 	code := u.p.Key + "-" + u.page.Code
-	// A person writes the term (plural), its alias, a page code and a word
-	// to avoid; code spans name words without using them.
 	i := u.issue(u.admin, IssueInput{Project: u.p.Key, Title: "Claims expire",
 		Description: "The lease is per " + code + ", not a ticket.\n\n```\nticket := claim()\n```"})
 	us := u.usage(u.admin, KGlossary, u.claim.ID)
@@ -119,7 +115,6 @@ func TestKnowledgeMentions(t *testing.T) {
 	if c := u.usage(u.admin, KPage, u.page.ID); c.Counts.Mentions != 1 || c.Uses[0].Word != code {
 		t.Errorf("page by code = %+v", c)
 	}
-	// Saving again records nothing new; a comment by an agent is its own source.
 	if _, err := u.s.UpdateIssue(u.ctx, u.admin, i.Key, IssuePatch{Description: str("The lease, again, and a ticket.")}); err != nil {
 		t.Fatal(err)
 	}
@@ -136,8 +131,6 @@ func TestKnowledgeMentions(t *testing.T) {
 	if c := u.usage(u.admin, KDesign, u.note.ID).Counts; c.Mentions != 1 {
 		t.Errorf("note mentions = %+v", c)
 	}
-	// A definition saying which word to avoid isn't using it, nor is an
-	// entry naming itself; another entry naming the term is.
 	if _, err := u.s.UpdateGlossary(u.ctx, u.admin, u.claim.ID, GlossaryInput{Definition: str("A Claim is a lease. Not a ticket.")}); err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +142,6 @@ func TestKnowledgeMentions(t *testing.T) {
 	if us.Counts.Mentions != 3 || us.Counts.Avoided != 1 {
 		t.Errorf("after definitions = %+v", us.Counts)
 	}
-	// Another project's entries aren't meant in this one.
 	other := u.project(u.admin, "Other", "")
 	oterm, odef := "Widget", "A thing."
 	widget, err := u.s.CreateGlossary(u.ctx, u.admin, GlossaryInput{Term: &oterm, Definition: &odef, Project: &other.Key})
@@ -160,7 +152,6 @@ func TestKnowledgeMentions(t *testing.T) {
 	if c := u.usage(u.admin, KGlossary, widget.ID).Counts; c.Mentions != 0 {
 		t.Errorf("out-of-scope widget mentions = %+v", c)
 	}
-	// Glossary lists say how much each entry is used.
 	list, err := u.s.ListGlossary(u.ctx, u.admin, GlossaryQuery{Project: u.p.Key})
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +165,6 @@ func TestKnowledgeMentions(t *testing.T) {
 
 func TestKnowledgeOverview(t *testing.T) {
 	u := newUsageEnv(t)
-	// An entry from long ago that nobody uses.
 	u.setClock(u.clockNow().Add(-60 * 24 * time.Hour))
 	term, def := "Burndown", "Work left over time."
 	old, err := u.s.CreateGlossary(u.ctx, u.admin, GlossaryInput{Term: &term, Definition: &def, Project: &u.p.Key})
@@ -211,7 +201,6 @@ func TestKnowledgeOverview(t *testing.T) {
 	if !found {
 		t.Errorf("unused = %+v", ov.Unused)
 	}
-	// Agents' use only; another agent's is none.
 	ov, _ = u.s.KnowledgeOverview(u.ctx, u.admin, KnowledgeQuery{Agent: "claude", Days: 30})
 	if ov.Totals.Mentions != 0 || ov.Totals.Avoided != 1 || ov.Totals.Lookups != 2 {
 		t.Errorf("claude's = %+v", ov.Totals)
@@ -220,7 +209,6 @@ func TestKnowledgeOverview(t *testing.T) {
 	if ov.Totals.ItemsUsed != 0 || len(ov.Top) != 0 {
 		t.Errorf("codex's = %+v", ov.Totals)
 	}
-	// Someone outside the project sees none of it.
 	bob := u.user("bob", false)
 	ov, err = u.s.KnowledgeOverview(u.ctx, bob, KnowledgeQuery{Days: 30})
 	if err != nil || ov.Totals.ItemsUsed != 0 || len(ov.Unused) != 0 {
@@ -231,7 +219,6 @@ func TestKnowledgeOverview(t *testing.T) {
 func TestKnowledgeBackfillAndPRs(t *testing.T) {
 	u := newUsageEnv(t)
 	i := u.issue(u.admin, IssueInput{Project: u.p.Key, Title: "Expire each claim"})
-	// As if written before use was recorded.
 	if _, err := u.s.db.W.ExecContext(u.ctx, `DELETE FROM knowledge_uses`); err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +228,6 @@ func TestKnowledgeBackfillAndPRs(t *testing.T) {
 	if us.Counts.Mentions != 1 || !us.Uses[0].At.Equal(i.CreatedAt) {
 		t.Errorf("backfilled = %+v (issue created %v)", us.Uses, i.CreatedAt)
 	}
-	// Once only.
 	if _, err := u.s.db.W.ExecContext(u.ctx, `DELETE FROM knowledge_uses`); err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +235,6 @@ func TestKnowledgeBackfillAndPRs(t *testing.T) {
 	if c := u.usage(u.admin, KGlossary, u.claim.ID).Counts; c.Mentions != 0 {
 		t.Errorf("second backfill = %+v", c)
 	}
-	// A pull request citing the page by code, on a repo the project has.
 	f, err := u.s.CreateForge(u.ctx, u.admin, ForgeInput{Name: str("Forgejo"), Kind: str("forgejo"), BaseURL: str("https://git.example.com"), Token: str("t")})
 	if err != nil {
 		t.Fatal(err)

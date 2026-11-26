@@ -15,11 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Test runs against the exact tree they tested (WP-715). wp testsum CMD
-// keeps each run in this worktree's git directory; wp ship sends the runs on
-// the tree it ships, so a task and its pull request can say what was tested
-// without anyone's word for it. Recording never fails a test command.
-
 const (
 	runPass  = "pass"
 	runFail  = "fail"
@@ -29,7 +24,7 @@ const (
 	testRunsKeep    = 100
 	testRunsMaxSize = 512 * 1024
 	testRunsSend    = 10
-	testRunCmdMax   = 4000 // the server's limit too (WP-860)
+	testRunCmdMax   = 4000
 	testRunNames    = 500
 	testRunFailures = 20
 )
@@ -57,7 +52,7 @@ type testRunRecorder struct {
 	argv  []string
 	tree  string
 	start time.Time
-	snap  func() string // workingTree
+	snap  func() string
 }
 
 func newTestRunRecorder(argv []string) *testRunRecorder {
@@ -88,7 +83,7 @@ func (r *testRunRecorder) finish(res *testResult, exit int) {
 		Seconds: res.Seconds, Duration: time.Since(r.start).Seconds(), Exit: exit,
 	}
 	if exit != 0 && run.Outcome != runFail {
-		run.Outcome = runFail // the tests passed but the command didn't
+		run.Outcome = runFail
 	}
 	run.Packages = res.Names[:min(len(res.Names), testRunNames)]
 	for _, f := range res.Failures[:min(len(res.Failures), testRunFailures)] {
@@ -123,7 +118,6 @@ func workingTree() string {
 	defer func() { _ = os.Remove(name) }()
 	src, err := os.Open(index) // #nosec G304 -- git's own index path
 	if err != nil {
-		// No index yet (a fresh repo): git starts one, but not from an empty file.
 		_ = tmp.Close()
 		_ = os.Remove(name)
 	} else {
@@ -133,9 +127,6 @@ func workingTree() string {
 		if err := tmp.Close(); err != nil || cerr != nil {
 			return ""
 		}
-		// The copy keeps the index's own time: git trusts a file's cached
-		// entry when the file is older than the index, so a newer copy hides
-		// an edit of the same size made just after the index was written.
 		if serr == nil {
 			_ = os.Chtimes(name, info.ModTime(), info.ModTime())
 		}
@@ -261,7 +252,7 @@ func runsToSend(on []testRun) []testRun {
 }
 
 func filesBetween(a, b string) int {
-	if codeindex.CheckRef(a) != nil || codeindex.CheckRef(b) != nil { // read from a file: never an option
+	if codeindex.CheckRef(a) != nil || codeindex.CheckRef(b) != nil {
 		return -1
 	}
 	out, err := localGit("diff", "--name-only", a, b)
@@ -282,8 +273,6 @@ type shipEvidence struct {
 	Notices    []string `json:"notices"`
 	// CITests: the repo's CI runs tests (WP-1080).
 	CITests bool `json:"ci_tests,omitempty"`
-	// command is the test command to suggest: the last one run here, or
-	// one the checkout looks like it takes.
 	command string
 }
 
@@ -323,7 +312,7 @@ func guessTestCommand(root string) string {
 		return string(b)
 	}
 	makefile := ""
-	for _, name := range []string{"GNUmakefile", "makefile", "Makefile"} { // make's own order
+	for _, name := range []string{"GNUmakefile", "makefile", "Makefile"} {
 		if has(name) {
 			makefile = read(name)
 			break
@@ -331,7 +320,7 @@ func guessTestCommand(root string) string {
 	}
 	switch {
 	case makeTestRE.MatchString(makefile):
-		return "make test" // the repo's own idea of its tests, over the language's
+		return "make test"
 	case has("go.mod"):
 		return "go test ./..."
 	case npmTests(read("package.json")):
@@ -395,8 +384,6 @@ func (c *cli) sendTestEvidence(project, repo, key, summary string) *shipEvidence
 	}
 	bench := benchToSend(readBenchRecords(benchPath()), tree)
 	if len(bench) > 0 {
-		// Only when there are some: a server from before bench evidence
-		// refuses the field.
 		body["bench"] = bench
 	}
 	raw, err := c.call("POST", "/api/v1/projects/"+esc(project)+"/test-evidence", body)
@@ -429,8 +416,6 @@ func benchToSend(recs []benchRecord, tree string) []benchRecord {
 	seen := map[[4]string]bool{}
 	for i := len(recs) - 1; i >= 0 && len(out) < 5; i-- {
 		r := recs[i]
-		// The base is part of the key: a quick re-time without --base
-		// mustn't hide the comparison a "faster" rests on.
 		k := [4]string{r.Command, r.Dir, r.Setup, r.BaseRef}
 		if r.Tree != tree || r.Moved || seen[k] {
 			continue

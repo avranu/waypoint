@@ -32,7 +32,6 @@ export function TimePage() {
 
   const list = entries.data ?? []
   const thisWeek = offset === 0
-  // Adding time while looking at a past week defaults to that week's first day.
   const defaultDate = thisWeek ? undefined : localISO(from)
 
   return (

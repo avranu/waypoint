@@ -18,7 +18,6 @@ func (s *Server) serverDiagRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/server/status", a(s.serverStatus))
 	mux.HandleFunc("GET /api/v1/server/log", a(s.serverLog))
 	mux.HandleFunc("GET /api/v1/server/metrics", a(s.serverMetrics))
-	// What keeps going wrong, and each scheduled job over time (WP-ADR139).
 	mux.HandleFunc("GET /api/v1/server/problems", a(s.serverProblems))
 	mux.HandleFunc("POST /api/v1/server/problems/{id}/ack", a(s.ackServerProblem))
 	mux.HandleFunc("DELETE /api/v1/server/problems/{id}/ack", a(s.unackServerProblem))
@@ -98,7 +97,7 @@ func (s *Server) serverLog(w http.ResponseWriter, r *http.Request) (any, error) 
 	if err != nil {
 		return nil, err
 	}
-	if since.IsZero() { // the hour before until
+	if since.IsZero() {
 		since = now.Add(-time.Hour)
 		if !until.IsZero() {
 			since = until.Add(-time.Hour)

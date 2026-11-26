@@ -26,11 +26,8 @@ func TestInstallSandboxScript(t *testing.T) {
 		"printf '%s\\n' 'ed25519:AAAA' > " + sandbox.KeyFile + ".new",
 		"Fingerprint SHA256:xyz",
 		"checksum mismatch",
-		// the capabilities tried on devhost (WP-448), and no
-		// RestrictSUIDSGID, which fails openat2
 		"\nCapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_READ_SEARCH\n",
 		"\nNoNewPrivileges=yes\n",
-		// Contained sessions (WP-470): the brokers' user and the slices
 		"useradd --system --gid " + sandbox.EgressUser,
 		"cat > /etc/systemd/system/" + sandbox.Slice,
 		"\nMemoryMax=22G\n",
@@ -44,8 +41,6 @@ func TestInstallSandboxScript(t *testing.T) {
 	if strings.Contains(s, "RestrictSUIDSGID") || strings.Contains(s, "DAC_OVERRIDE") {
 		t.Error("the unit has RestrictSUIDSGID or CAP_DAC_OVERRIDE")
 	}
-	// A Documentation= link would point at one Waypoint's own notes, which
-	// another install doesn't have (WP-459).
 	if strings.Contains(s, "Documentation=") || strings.Contains(s, "/design/") {
 		t.Error("the unit links to a page outside the tree")
 	}
@@ -101,7 +96,7 @@ func TestMountInfo(t *testing.T) {
 
 func TestOpenAbove(t *testing.T) {
 	base := t.TempDir()
-	if err := os.Chmod(base, 0o777); err != nil { // world-writable, no sticky bit
+	if err := os.Chmod(base, 0o777); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(base, "ok", "store"), 0o755); err != nil {

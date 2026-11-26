@@ -9,11 +9,6 @@ import (
 	"time"
 )
 
-// Risk reads a change (a list of files) against the index's history: which
-// files are hotspots, which had bug fixes, which files usually change with
-// them but are not in the change, who owns them, how far they reach and
-// which tests cover them. It answers "what should I check before shipping".
-
 // FileRisk is one changed file.
 type FileRisk struct {
 	Path        string    `json:"path"`
@@ -267,7 +262,7 @@ func riskScore(f FileRisk) float64 {
 	case f.Importers >= 5:
 		s += 1
 	}
-	s += f.HotPct // 0..1 breaks ties by churn
+	s += f.HotPct
 	return s
 }
 
@@ -289,8 +284,6 @@ func (ix *Index) testsFor(p string, importers []string) []string {
 	dir := path.Dir(p)
 	stem := strings.TrimSuffix(path.Base(p), path.Ext(p))
 	if strings.HasSuffix(p, ".go") {
-		// One query or the other: a second one while the first's rows are
-		// open waits forever on the index's single connection.
 		var rows *sql.Rows
 		var err error
 		if dir == "." {

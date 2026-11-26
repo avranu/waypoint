@@ -14,13 +14,6 @@ import (
 	"time"
 )
 
-// wp statusline (WP-D20): Claude Code pipes JSON about the session to its
-// status line command, including the subscription's quota windows
-// (rate_limits: five-hour and seven-day percent used and when they reset).
-// This reports them to Waypoint, at most once a minute and without ever
-// delaying the status line, and prints the person's own status line (the
-// command it wraps), or a compact one of its own.
-
 var statuslineCmd = &command{
 	name: "statusline", group: "Hooks", args: "[-- COMMAND [ARGS…]]",
 	summary: "Claude Code status line; reports your quota to Waypoint",
@@ -121,7 +114,7 @@ func epochMS(f float64) int64 {
 	switch {
 	case f <= 0:
 		return 0
-	case f < 1e11: // seconds
+	case f < 1e11:
 		return int64(f * 1000)
 	}
 	return int64(f)
@@ -195,7 +188,7 @@ func spawnStatusPost(payload []byte) {
 	}
 	if _, err := in.Write(payload); err != nil {
 		_ = in.Close()
-		_ = cmd.Process.Kill() // it would read a truncated report
+		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		return
 	}
@@ -225,7 +218,6 @@ func statusPost(c *cli, payload []byte) {
 	if info.Context.Used != nil {
 		body["context_pct"] = *info.Context.Used
 	}
-	// A short wait of its own: the shared client keeps its timeout.
 	was := c.hookTimeout
 	c.hookTimeout = statusPostWait
 	defer func() { c.hookTimeout = was }()
@@ -256,9 +248,6 @@ func (c *cli) boundTask(info *statusInfo) string {
 		cl = c.state.sessionClaim("", info.SessionID)
 	}
 	if cl == nil && filepath.IsAbs(info.Cwd) {
-		// Taken in this very directory, by this session or one that didn't
-		// say. No parent walk: that asks git which checkout a directory is
-		// in, and the status line never waits on a process.
 		if here := c.state.Claims[filepath.Clean(info.Cwd)]; here != nil && (here.Session == "" || here.Session == info.SessionID) {
 			cl = here
 		}
@@ -320,5 +309,5 @@ func runWrapped(c *cli, wrapped []string, payload []byte) {
 	}
 	cmd.Stdin = bytes.NewReader(payload)
 	cmd.Stdout, cmd.Stderr = c.out, c.err
-	_ = cmd.Run() // its failure is its own; the status line shows what it printed
+	_ = cmd.Run()
 }

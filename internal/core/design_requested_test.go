@@ -26,7 +26,6 @@ func TestDesignRequestedByAPerson(t *testing.T) {
 		return n
 	}
 
-	// Written for a person's task: accepted, linked, recorded.
 	n := write("Export format", mine.Key)
 	if !n.Approved || n.Requested == nil || n.Requested.Issue != mine.Key || n.Requested.By == nil || n.Requested.By.ID != e.admin.User.ID {
 		t.Fatalf("requested note = %+v", n)
@@ -40,12 +39,10 @@ func TestDesignRequestedByAPerson(t *testing.T) {
 	if !slicesAnyLink(n.Links, mine.Key) {
 		t.Errorf("the task isn't linked: %+v", n.Links)
 	}
-	// Nothing waits for the person.
 	if q, err := e.s.DesignReview(e.ctx, e.admin, p.Key); err != nil || len(q) != 0 {
 		t.Errorf("review queue = %+v %v", q, err)
 	}
 
-	// For an agent's own task, or none: a proposal.
 	for _, c := range []struct{ title, task string }{{"Own task", theirs.Key}, {"No task", ""}} {
 		o := write(c.title, c.task)
 		if o.Approved || o.Requested != nil || !strings.Contains(o.Notice, "proposal") {
@@ -56,7 +53,6 @@ func TestDesignRequestedByAPerson(t *testing.T) {
 		t.Errorf("review queue has %d, want the 2 proposals", len(q))
 	}
 
-	// Later agent changes to the requested note apply, with no pending item.
 	got, err := e.s.UpdateDesign(e.ctx, &agent, n.ID, DesignInput{Body: str("Because, and more.")})
 	if err != nil || got.Body != "Because, and more." || got.Notice != "" {
 		t.Fatalf("agent edit = %+v %v", got, err)
@@ -71,7 +67,6 @@ func TestDesignRequestedByAPerson(t *testing.T) {
 	if h := got.History; len(h) == 0 || !strings.Contains(h[0].ReviewNote, "requested in "+mine.Key) {
 		t.Errorf("history = %+v", h)
 	}
-	// The agent's edit and addition took effect, but nobody reviewed them.
 	for _, r := range got.History {
 		if r.Agent != "" && (r.State != RevApplied || r.ReviewedBy != nil || r.ReviewedAt != nil) {
 			t.Errorf("agent revision recorded as a person's: %+v", r)
@@ -81,7 +76,6 @@ func TestDesignRequestedByAPerson(t *testing.T) {
 		t.Errorf("additions = %+v", got.Additions)
 	}
 
-	// A note a person approved the usual way still turns agent edits into proposals.
 	plain := e.admin
 	own, err := e.s.CreateDesign(e.ctx, plain, DesignInput{Title: str("Person's"), Kind: str("decision"), Body: str("x"), Project: &p.Key})
 	if err != nil {

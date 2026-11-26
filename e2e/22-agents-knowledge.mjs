@@ -54,7 +54,6 @@ async function run(width, scheme) {
   const agent = (m, p, d) =>
     call(m, p, d, AG).then((r) => (r.status() === 204 ? null : r.json()));
 
-  // ---- what there is to use ----
   const claim = await api("POST", "/glossary", {
     term: "Claim",
     definition: "An agent's lease on a task, renewed while it works.",
@@ -81,7 +80,6 @@ async function run(width, scheme) {
   });
   const code = `${key}-${decision.code}`;
 
-  // ---- an agent reads them, then writes a task naming them ----
   await agent("GET", `/glossary/lookup?term=lease&project=${key}`);
   await agent("GET", `/pages/${decision.id}`);
   await agent("GET", `/spec?topic=${encodeURIComponent("Agent queue")}&project=${key}`);
@@ -94,7 +92,6 @@ async function run(width, scheme) {
     body: "Each claim should say which step it's at.",
   });
 
-  // ---- the Knowledge tab ----
   await page.goto(`${base}/agents?tab=knowledge&project=${key}`);
   await page.getByText("Words to avoid that were written").waitFor();
   await settle();
@@ -118,13 +115,11 @@ async function run(width, scheme) {
   );
   await shot("knowledge-tab");
 
-  // Another agent: nothing.
   await page.goto(`${base}/agents?tab=knowledge&project=${key}&agent=codex`);
   await page.getByText(/No knowledge used/).waitFor();
   ok(true, `${tag} another agent's knowledge use is empty`);
   await shot("knowledge-empty");
 
-  // ---- the glossary list and the entry ----
   await page.goto(`${base}/p/${key}/glossary`);
   await page.getByText("Claim", { exact: true }).first().waitFor();
   ok(await visible(/used \d+× ·/), `${tag} glossary rows say how much a term is used`);
@@ -144,7 +139,6 @@ async function run(width, scheme) {
   await usage.scrollIntoViewIfNeeded();
   await shot("glossary-entry");
 
-  // ---- the page and the design note ----
   await page.goto(`${base}/pages/${decision.id}`);
   const pu = page.getByRole("region", { name: "Usage" });
   await pu.waitFor();
@@ -162,7 +156,6 @@ async function run(width, scheme) {
   await nu.scrollIntoViewIfNeeded();
   await shot("design-usage");
 
-  // No horizontal scroll on phones.
   if (width < 500) {
     await page.goto(`${base}/agents?tab=knowledge&project=${key}`);
     await page.getByText("Words to avoid that were written").waitFor();

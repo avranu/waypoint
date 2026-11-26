@@ -1,7 +1,3 @@
-// The assistant's settings (WP-ADR1): its model, Hermes's configuration
-// (as a form or as YAML), its keys, messaging channels, how the system is
-// doing, and how Waypoint reaches it. Sections are ?view=… in the URL.
-
 import { useState } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { Cable, Cpu, KeyRound, MessageCircle, Server, SlidersHorizontal } from 'lucide-react'
@@ -35,7 +31,6 @@ export function SettingsTab({ assistant }: { assistant: Assistant }) {
       search: (s: AssistantSearch) => ({ ...s, view: v === 'model' ? undefined : v }),
       replace: true,
     })
-  // Unsaved form changes outlive a visit to another section.
   const [draft, setDraft] = useState<Record<string, unknown>>({})
   const id = assistant.id
   return (

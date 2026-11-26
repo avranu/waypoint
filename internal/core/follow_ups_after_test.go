@@ -49,7 +49,6 @@ func TestFollowUpAfterDone(t *testing.T) {
 	tick()
 	later := e.issue(e.admin, IssueInput{Project: p.Key, Title: "CSV export drops quotes"})
 
-	// From the later task: it follows the earlier one.
 	if made := relate(e.admin, later.Key, "relates", first.Key); made.Kind != "follows" || made.Found != followFoundAfter {
 		t.Errorf("made = %+v, want follows/after", made)
 	}
@@ -59,7 +58,6 @@ func TestFollowUpAfterDone(t *testing.T) {
 	if r := find(first.Key, later.Key); r == nil || r.Kind != "followed_by" {
 		t.Errorf("first's relation = %+v, want followed_by", r)
 	}
-	// Saying it again, from either end, keeps the one follow-up and says so.
 	if made := relate(e.admin, later.Key, "relates", first.Key); made.Kind != "follows" || made.Found != followFoundAfter {
 		t.Errorf("again from later: made = %+v, want follows/after", made)
 	}
@@ -72,7 +70,6 @@ func TestFollowUpAfterDone(t *testing.T) {
 		t.Errorf("relations between the pair = %d (%v), want 1", rows, err)
 	}
 
-	// From the earlier task, by an agent: the later one still follows it.
 	again := e.issue(e.admin, IssueInput{Project: p.Key, Title: "CSV export: add a header row"})
 	if made := relate(asAgent(e.admin, "anthropic/claude-opus-5-5"), first.Key, "relates", again.Key); made.Kind != "followed_by" {
 		t.Errorf("made = %+v, want followed_by", made)
@@ -81,35 +78,28 @@ func TestFollowUpAfterDone(t *testing.T) {
 		t.Errorf("again's relation = %+v, want follows, found after, basis agent", r)
 	}
 
-	// The earlier task wasn't done when this was filed (it was open, and
-	// done only after): a plain relation.
 	tick()
 	finish(open.Key)
 	if made := relate(e.admin, later.Key, "relates", open.Key); made.Kind != "relates" || made.Found != "" {
 		t.Errorf("not done first: made = %+v", made)
 	}
-	// Other kinds stay what was said.
 	if made := relate(e.admin, later.Key, "blocked_by", first.Key); made.Kind != "blocked_by" {
 		t.Errorf("blocked_by: made = %+v", made)
 	}
 
-	// A sub-task filed under a done task is a slice of it.
 	tick()
 	slice := e.issue(e.admin, IssueInput{Project: p.Key, Title: "CSV export: escape commas", Parent: first.Key})
 	if made := relate(e.admin, slice.Key, "relates", first.Key); made.Kind != "relates" {
 		t.Errorf("sub-task: made = %+v", made)
 	}
 
-	// Waypoint's own matcher chose nothing: a plain relation.
 	guess := e.issue(e.admin, IssueInput{Project: p.Key, Title: "CSV import"})
 	if made := relate(aiActorNamed("Auto relate", p.ID, ""), guess.Key, "relates", first.Key); made.Kind != "relates" {
 		t.Errorf("auto-relate: made = %+v", made)
 	}
 
-	// A pair that already has a follow-up, either way, keeps it: no second
-	// follow-up pointing back.
 	back := e.issue(e.admin, IssueInput{Project: p.Key, Title: "CSV export docs"})
-	relate(e.admin, first.Key, "follows", back.Key) // against the order
+	relate(e.admin, first.Key, "follows", back.Key)
 	if made := relate(e.admin, back.Key, "relates", first.Key); made.Found != "" {
 		t.Errorf("already following: made = %+v", made)
 	}
@@ -119,9 +109,8 @@ func TestFollowUpAfterDone(t *testing.T) {
 		t.Errorf("follows between the pair = %d (%v), want 1", follows, err)
 	}
 
-	// A plain relation made earlier gives way to the follow-up.
 	other := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Reports page"})
-	relate(e.admin, other.Key, "relates", later.Key) // neither done: plain
+	relate(e.admin, other.Key, "relates", later.Key)
 	tick()
 	finish(later.Key)
 	tick()

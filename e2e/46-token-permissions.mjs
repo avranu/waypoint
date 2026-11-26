@@ -50,7 +50,6 @@ for (const vp of looks([
       data: { name: "Tokens " + vp.width, key },
     });
 
-  // Make the token in the dialog: Custom starts from the Assistant preset.
   await page.goto(base + "/settings?tab=tokens");
   await page.getByRole("button", { name: "New token" }).click();
   const dialog = page.getByRole("dialog");
@@ -81,7 +80,6 @@ for (const vp of looks([
   ok(/^wpt_/.test(secret ?? ""), `${tag}: the token is shown once`);
   await dialog.getByRole("button", { name: "Done" }).click();
 
-  // The token works for what it was given, and is refused the rest.
   const as = (method, path, data) =>
     page.request.fetch(base + "/api/v1" + path, {
       method,
@@ -105,7 +103,6 @@ for (const vp of looks([
     `${tag}: deleting is refused: ${refused.status()}`,
   );
 
-  // Robin sees the refusal on the row and allows it.
   await page.reload();
   const row = page.locator("li", { hasText: name });
   ok(
@@ -146,7 +143,6 @@ for (const vp of looks([
   const again = await as("DELETE", `/issues/${issue.key}`);
   ok(again.ok(), `${tag}: deleting works once allowed: ${again.status()}`);
 
-  // Back to read-only from the same dialog.
   await row.getByRole("button", { name: "Permissions" }).click();
   await page
     .getByRole("dialog")

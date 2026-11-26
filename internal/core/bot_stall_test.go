@@ -24,8 +24,6 @@ func TestOutcomesOfProviderErrors(t *testing.T) {
 			t.Errorf("%v: outcome %q, want %q", c.err, got, c.want)
 		}
 	}
-	// A pass of provider-side failures ends the run; a model's bad answer
-	// does not.
 	down := []reviewerAnswer{{log: []ModelAttempt{{Outcome: "unavailable"}, {Outcome: "rate_limit"}}}}
 	if !providersDown(down) {
 		t.Error("unavailable and rate limited should count as providers down")
@@ -58,13 +56,11 @@ func TestStaleRunsAreSkippedWhenQueued(t *testing.T) {
 	pr := ForgePR{Number: 12, Title: "Fix", Author: "sam", HeadRef: "fix", HeadSHA: "aaaaaaa1111", State: "open"}
 	pe.pullHook("opened", pr)
 	pr.HeadSHA = "bbbbbbb2222"
-	pe.pullHook("synchronize", pr) // before the first run was claimed
+	pe.pullHook("synchronize", pr)
 	runs := pe.runs()
 	if len(runs) != 2 || runs[1].Status != "skipped" || !strings.Contains(runs[1].Summary, "newer push") || runs[0].Status != "queued" {
 		t.Fatalf("the older head's run should be skipped: %+v", runs)
 	}
-	// A pull request that merged while its run waited: skipped when
-	// claimed, with no model called.
 	pr.State = "merged"
 	pe.pullHook("closed", pr)
 	before := len(pe.llm.calls)

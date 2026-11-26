@@ -9,9 +9,6 @@ import (
 	"text/tabwriter"
 )
 
-// wp usage warm: keep-warm decisions and what became of the sessions
-// (WP-1000, WP-ADR95).
-
 var usageWarmCmd = &command{
 	name: "warm", args: "[--days 28] [--user NAME]",
 	summary: "keep-warm pings and compactions, and whether the sessions were used again",

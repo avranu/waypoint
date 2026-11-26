@@ -28,9 +28,6 @@ func min2(m float64) time.Duration { return time.Duration(m * float64(time.Minut
 func TestSlotMedianRunUsesRecentRunsOfThisCommandHere(t *testing.T) {
 	h := append(recs("tests", "make check", "/r", 100, 100, 100), recs("tests", "make check", "/other", 1)...)
 	h = append(h, recs("tests", "go vet", "/r", 2)...)
-	// The latest ten, an even count: the middle pair is 20 and 40, so 30. Without
-	// the window the three 100s before them would make it 40; one middle value
-	// alone would be 20 or 40.
 	h = append(h, recs("tests", "make check", "/r", 10, 10, 10, 10, 20, 40, 40, 40, 40, 40)...)
 	if got, ok := slotMedianRun(h, "tests", "make check", "/r"); !ok || got != min2(30) {
 		t.Errorf("median = %v %v, want 30m", got, ok)
@@ -46,40 +43,32 @@ func TestSlotMedianRunUsesRecentRunsOfThisCommandHere(t *testing.T) {
 func TestSlotWaitETA(t *testing.T) {
 	h := recs("tests", "make check", "/r", 30, 30, 30)
 	holders := []slotHolder{{Cmd: "make check", Elapsed: min2(10)}}
-	// The one holder has 20 of its usual 30 minutes left.
 	if w, ok := slotWaitETA(h, "tests", holders, 0, min2(30)); !ok || w != min2(20) {
 		t.Errorf("one holder, nobody ahead: %v %v", w, ok)
 	}
-	// Someone queued ahead takes the slot when it frees and holds it 30 minutes.
 	if w, ok := slotWaitETA(h, "tests", holders, 1, min2(30)); !ok || w != min2(50) {
 		t.Errorf("one holder, one ahead: %v %v", w, ok)
 	}
-	// Two holders: the earlier to finish frees a slot first.
 	two := []slotHolder{{Cmd: "make check", Elapsed: min2(25)}, {Cmd: "make check", Elapsed: min2(5)}}
 	if w, ok := slotWaitETA(h, "tests", two, 0, min2(30)); !ok || w != min2(5) {
 		t.Errorf("two holders: %v %v", w, ok)
 	}
-	// A holder past its usual time is about to end.
 	late := []slotHolder{{Cmd: "make check", Elapsed: min2(45)}}
 	if w, ok := slotWaitETA(h, "tests", late, 0, min2(30)); !ok || w != 0 {
 		t.Errorf("a late holder: %v %v", w, ok)
 	}
-	// Two queued ahead each take the slot in turn.
 	if w, ok := slotWaitETA(h, "tests", holders, 2, min2(30)); !ok || w != min2(80) {
 		t.Errorf("one holder, two ahead: %v %v", w, ok)
 	}
-	// No holders: nothing to estimate from.
 	if _, ok := slotWaitETA(h, "tests", nil, 0, min2(30)); ok {
 		t.Error("an estimate with no holders")
 	}
-	// A holder whose command has no history: unknown.
 	if _, ok := slotWaitETA(h, "tests", []slotHolder{{Cmd: "pytest", Elapsed: min2(1)}}, 0, min2(30)); ok {
 		t.Error("an estimate from a holder nobody has timed")
 	}
 }
 
 func TestSlotETAMessage(t *testing.T) {
-	// Queued: wait plus run, padded by 20% and rounded to minutes: (20+30)*1.2 = 60.
 	got := slotETAMessage("tests", true, min2(20), min2(30), true)
 	want := "The test is queued, and is expected to complete in 60 minutes. If you have other work to do in the meantime, handle it while you wait. Otherwise, end your turn and you'll be notified when the test concludes."
 	if got != want {
@@ -94,16 +83,12 @@ func TestSlotETAMessage(t *testing.T) {
 	if got := slotETAMessage("tests", false, 0, min2(1), true); !strings.Contains(got, "in 1 minute.") {
 		t.Errorf("singular: %s", got)
 	}
-	// Queued with no way to tell the wait: only the run is said.
 	if got := slotETAMessage("tests", true, -1, min2(10), true); !strings.Contains(got, "queued") || !strings.Contains(got, "once it starts") || !strings.Contains(got, "12 minutes") {
 		t.Errorf("unknown wait: %s", got)
 	}
-	// Without the advice (the stderr of a foreground run, read after the run
-	// ends) only the ETA sentence is said.
 	if got := slotETAMessage("tests", true, min2(20), min2(30), false); got != "The test is queued, and is expected to complete in 60 minutes." {
 		t.Errorf("no advice: %q", got)
 	}
-	// Nothing to say: no run time, or under half a minute in all.
 	if got := slotETAMessage("tests", true, min2(5), 0, true); got != "" {
 		t.Errorf("no run history: %q", got)
 	}
@@ -132,7 +117,6 @@ func TestSlotRunSaysItsETAFromTheRecordedRuns(t *testing.T) {
 		t.Fatalf("record = %+v %v", rec, err)
 	}
 
-	// Runs that took ten minutes: the next says twelve.
 	seeded := ""
 	for range 3 {
 		rec.Secs = 600
@@ -149,7 +133,6 @@ func TestSlotRunSaysItsETAFromTheRecordedRuns(t *testing.T) {
 	if strings.Contains(errb.String(), "end your turn") {
 		t.Errorf("a foreground run's stderr gave the advice for a backgrounded one: %q", errb.String())
 	}
-	// A failed run is not a run to expect.
 	if code := run([]string{"slot", "run", "tests", "-n", "1", "--", "sh", "-c", "exit 3"}, &out, &errb); code != 3 {
 		t.Fatal(code)
 	}
@@ -168,7 +151,6 @@ func TestSlotRunQueuedSaysItsETA(t *testing.T) {
 	t.Cleanup(func() { slotWaitNotice, slotPoll = oldNotice, oldPoll })
 	dir, _ := slotDir()
 
-	// The holder started 10 minutes ago on the same command, which takes 30.
 	hold, err := acquireSlot(t.Context(), "tests", 1, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -204,7 +186,6 @@ func TestSlotRunQueuedSaysItsETA(t *testing.T) {
 	}
 	hold.release()
 	<-done
-	// (20 left + 30 run) * 1.2 = 60
 	if got := eb.String(); !strings.Contains(got, "The test is queued, and is expected to complete in 60 minutes.") || strings.Contains(got, "end your turn") {
 		t.Errorf("stderr:\n%s", got)
 	}
@@ -233,9 +214,6 @@ func TestSlotQueuedAheadCountsLiveEarlierWaiters(t *testing.T) {
 	dir, _ := slotDir()
 	_ = os.MkdirAll(dir, 0o700)
 	now := time.Now().UnixNano()
-	// Waiting and earlier; waiting and later; dead and earlier; and the file
-	// a waiter killed with SIGKILL left, whose pid a live process has now
-	// (pid 1): it holds no lock, so it is no one's (audit #1382.2).
 	writeWaiter(t, dir, os.Getppid(), now-1e9)
 	writeWaiter(t, dir, os.Getpid()+1, now+1e12)
 	_ = os.WriteFile(filepath.Join(dir, "tests.4194999.wait"), []byte(strconv.FormatInt(now-2e9, 10)), 0o600)
@@ -300,7 +278,6 @@ func TestSlotQueuedAheadTieBreaksOnPid(t *testing.T) {
 	writeWaiter(t, dir, os.Getpid(), ts)
 	writeWaiter(t, dir, 1, ts)
 	writeWaiter(t, dir, child.Process.Pid, ts)
-	// Began at the same instant: the lower pid is ahead.
 	want := 1
 	if child.Process.Pid < os.Getpid() {
 		want = 2
@@ -318,17 +295,14 @@ func TestSlotQueuedAheadForASession(t *testing.T) {
 	own, other := os.Getppid(), 1
 	stubPidSessions(t, map[int]string{own: "s1", other: "s2", os.Getpid(): "s2"})
 	writeWaiter(t, dir, own, now-60e9)
-	// The command's own waiter is not ahead of it, and with nobody else: 0.
 	if got := slotQueuedAheadOf(dir, "tests", "s1"); got != 0 {
 		t.Errorf("own waiter counted: %d", got)
 	}
-	// One that began before it is ahead; one that began after is not.
 	writeWaiter(t, dir, other, now-300e9)
 	writeWaiter(t, dir, os.Getpid(), now-10e9)
 	if got := slotQueuedAheadOf(dir, "tests", "s1"); got != 1 {
 		t.Errorf("ahead = %d, want 1", got)
 	}
-	// No waiter of the session yet (it has not started to wait): both are ahead.
 	if got := slotQueuedAheadOf(dir, "tests", "s9"); got != 3 {
 		t.Errorf("a session with no waiter: ahead = %d, want 3", got)
 	}
@@ -351,8 +325,6 @@ func TestSlotWaiterIsRegisteredWhenTheWaitBegins(t *testing.T) {
 		h, _ := acquireSlot(t.Context(), "tests", 1, nil)
 		got <- h
 	}()
-	// Someone else (as another session's process) counts it ahead, long before
-	// slotWaitNotice.
 	stubPidSessions(t, map[int]string{os.Getpid(): "waiter"})
 	deadline := time.After(5 * time.Second)
 	for slotQueuedAheadOf(dir, "tests", "newcomer") != 1 {
@@ -392,8 +364,6 @@ func TestSlotWaiterAndHolderRecordTheirSession(t *testing.T) {
 	if !strings.HasSuffix(strings.TrimSpace(string(b)), "\tsess-x") {
 		t.Errorf("waiter file = %q", b)
 	}
-	// Another process asking for sess-x's command counts the waiter as its
-	// own, old as it is; for another session it is ahead.
 	stubPidSessions(t, map[int]string{})
 	if got := slotQueuedAheadOf(dir, "tests", "sess-x"); got != 0 {
 		t.Errorf("own waiter ahead: %d", got)

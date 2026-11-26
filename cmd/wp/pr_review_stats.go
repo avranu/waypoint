@@ -6,8 +6,6 @@ import (
 	"strconv"
 )
 
-// wp pr review-stats (WP-371): how the review bot's findings held up.
-
 var prReviewStatsCmd = &command{
 	name: "review-stats", args: "[-p PROJECT] [--since 30d]", summary: "how the review bot's findings held up, per reviewer and verifier model",
 	about: `Counts the review bot's findings of a window (default the last 30 days, at

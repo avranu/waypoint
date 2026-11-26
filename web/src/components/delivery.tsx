@@ -1,6 +1,3 @@
-// Where a task's work stands on its way to production (WP-389): the stage
-// icons and words the What's live page and the issue page share.
-
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
