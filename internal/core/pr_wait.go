@@ -180,15 +180,6 @@ func (s *Service) WaitPullRequest(ctx context.Context, actor *Actor, prID int64,
 	}
 }
 
-// sameSHA: one is the other, or its abbreviation.
-func sameSHA(a, b string) bool {
-	if a == "" || b == "" {
-		return false
-	}
-	a, b = strings.ToLower(a), strings.ToLower(b)
-	return strings.HasPrefix(a, b) || strings.HasPrefix(b, a)
-}
-
 // prWaitRefresh reads the pull request from the forge for a wait, at most
 // every prWaitReadEvery.
 func (s *Service) prWaitRefresh(ctx context.Context, pr *PullRequest) {
