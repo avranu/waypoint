@@ -401,7 +401,7 @@ func (a storyAnswer) markdown() string {
 
 // storyPrompt gives the model the plan, the person's words that asked for
 // it, and the tasks it is linked to (a task's description only when a
-// person wrote it).
+// person wrote it; neither of an issue from outside not yet published).
 func (s *Service) storyPrompt(ctx context.Context, pg *Page) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Plan title: %s\n", pg.Title)
@@ -420,6 +420,12 @@ func (s *Service) storyPrompt(ctx context.Context, pg *Page) (string, error) {
 	if len(tasks) > 0 {
 		b.WriteString("\nTasks the plan is for:\n")
 		for _, i := range tasks {
+			// Text from outside no person has published yet is not for a
+			// model, nor a person's words (WP-281, WP-1788).
+			if i.Outside {
+				fmt.Fprintf(&b, "- %s: %s\n", i.Key, outsideTitleInPrompt)
+				continue
+			}
 			fmt.Fprintf(&b, "- %s: %s\n", i.Key, i.Title)
 			if d := strings.TrimSpace(i.Description); d != "" && i.TextAgent == "" {
 				fmt.Fprintf(&b, "  The person wrote: %s\n", truncateBytes(strings.Join(strings.Fields(d), " "), storyTaskDesc))
