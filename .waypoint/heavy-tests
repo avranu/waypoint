@@ -1,0 +1,6 @@
+# Packages `wp test` runs by file, not whole (cmd/wp/testgo_select.go): the tests in changed
+# test files and in the test files beside changed source files. One directory a line.
+# These are the packages .forgejo/scripts/gotest-weights.txt weighs; a test in
+# internal/cilint fails if the two lists differ.
+internal/core
+cmd/wp

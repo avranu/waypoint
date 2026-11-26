@@ -28,7 +28,7 @@ func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool,
 	rec := newTestRunRecorder(argv)
 	key := slotRunFor("wp testsum --repeat", argv)
 	argv = goTestCount1(goTestJSON(argv))
-	env, release, err := c.takeSlotFor(ctx, "tests", defaultSlots(), key)
+	held, env, release, err := c.takeSlotBound(ctx, "tests", defaultSlots(), key)
 	if err != nil {
 		if ctx.Err() != nil {
 			_, _ = fmt.Fprintln(c.err, "wp testsum: stopped while waiting for the slot")
@@ -51,7 +51,7 @@ func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool,
 	for i := 0; i < n; i++ {
 		var buf bytes.Buffer
 		start := time.Now()
-		code, err := runSlotCmd(ctx, env, argv, nil, &buf, &buf)
+		code, err := runSlotCmd(held, env, argv, nil, &buf, &buf)
 		if err != nil {
 			return err
 		}
@@ -123,11 +123,15 @@ func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool,
 	}
 	if firstFailRun > 0 && firstFail != nil {
 		_, _ = fmt.Fprintf(c.out, "run %d, the first that failed:\n%s", firstFailRun, firstFail.render())
+		if firstFailCode != 0 && firstFail.outcome() == runFail {
+			// None of the output is shown, so all of it is kept.
+			_, _ = fmt.Fprint(c.out, keptOutput(firstFailData, 0))
+		}
 		if firstFailCode != 0 && firstFail.outcome() != runFail {
-			_, _ = fmt.Fprintf(c.out, "but the command exited %d; last lines:\n%s\n", firstFailCode, lastLines(firstFailData, 20))
+			_, _ = fmt.Fprintf(c.out, "but the command exited %d; last lines:\n%s", firstFailCode, failedTail(firstFailData, 20))
 		}
 	} else if firstFailRun > 0 {
-		_, _ = fmt.Fprintf(c.out, "run %d exited %d and no test results were recognized; last lines:\n%s\n", firstFailRun, firstFailCode, lastLines(firstFailData, 20))
+		_, _ = fmt.Fprintf(c.out, "run %d exited %d and no test results were recognized; last lines:\n%s", firstFailRun, firstFailCode, failedTail(firstFailData, 20))
 	}
 	if firstFailRun > 0 {
 		c.withheld(dropped)

@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // A repository can carry a check its agents' commits must pass before they
@@ -35,7 +37,7 @@ type prePushCheck struct {
 func prePushFixPrompt(output string) string {
 	return "The repository's pre-push check (" + filepath.ToSlash(prePushFile) + ") failed on the commits made on this branch. " +
 		"Fix what it reports and commit the fix; change nothing else. Run `sh " + filepath.ToSlash(prePushFile) + "` to confirm before you end.\n\n" +
-		"The end of its output:\n<untrusted>\n" + output + "\n</untrusted>\n"
+		"The end of its output:\n<untrusted>\n" + core.Untrusted(output) + "\n</untrusted>\n"
 }
 
 // prePushRun is how one run of the script ended.

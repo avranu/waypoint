@@ -683,6 +683,15 @@ func (s *Service) takeMessages(ctx context.Context, t *tx, x *AgentSession, via 
 		m.deliveredAt = sql.NullInt64{Int64: now, Valid: true}
 		t.emit(sessionEvent(EvSessionMessage, x, map[string]any{"message": m.ID, "via": via}))
 	}
+	// Tasks the session filed after its ship ride along with work it is being
+	// handed anyway (WP-1858); they never make a turn by themselves.
+	if via != "prompt" && slices.ContainsFunc(out, func(m *SessionMessage) bool { return !m.passive }) {
+		if m, err := s.deferredBundle(ctx, t, x); err != nil {
+			s.log.WarnContext(ctx, "deferred offer: bundle it with a message", "session", x.ID, "err", err)
+		} else if m != nil {
+			out = append(out, m)
+		}
+	}
 	_, err := t.ExecContext(ctx, `UPDATE agent_sessions SET state = 'working', wait_reason = '', pending = '', finished_at = NULL WHERE id = ?`, x.ID)
 	return out, err
 }
@@ -747,6 +756,14 @@ func MessagesText(list []*SessionMessage) string {
 		}
 		if strings.HasPrefix(m.stepKey, "check:") {
 			parts = append(parts, "Waypoint, the check of your marks on the adversarial review's findings:\n\n"+m.Body)
+			continue
+		}
+		if strings.HasPrefix(m.stepKey, "ci:") {
+			parts = append(parts, "Waypoint, the checks of your pull request failed (the change is yours, so the fix is yours):\n\n"+m.Body)
+			continue
+		}
+		if strings.HasPrefix(m.stepKey, "deferred:") {
+			parts = append(parts, m.Body)
 			continue
 		}
 		if strings.HasPrefix(m.stepKey, "shipped:") {
@@ -976,7 +993,7 @@ func (s *Service) moveOrphanMessages(ctx context.Context, t *tx, x *AgentSession
 }
 
 // stepKeySource is what a message's step key says it is news of: the kind
-// ("shipped", "audit", "check") and that row's id. messageTask reads nothing
+// ("shipped", "audit", "check", "ci") and that row's id. messageTask reads nothing
 // else of the key, which is what lets shipWaits.holder keep one answer per
 // source.
 func stepKeySource(stepKey string) (kind, id string) {
@@ -997,6 +1014,11 @@ func messageTask(ctx context.Context, q queryer, stepKey string) (task int64, bo
 		if err == nil {
 			_ = q.QueryRowContext(ctx, `SELECT issue_id FROM work_log WHERE id = ?`, n).Scan(&task)
 		}
+	case "ci":
+		bound = true
+		if err == nil {
+			task = prTaskID(ctx, q, n)
+		}
 	case "audit", "check":
 		bound = true
 		if err == nil {
@@ -1013,6 +1035,13 @@ func messageTask(ctx context.Context, q queryer, stepKey string) (task int64, bo
 	return task, bound
 }
 
+// prTaskID is the task a pull request is linked to (0: none).
+func prTaskID(ctx context.Context, q queryer, pr int64) (task int64) {
+	_ = q.QueryRowContext(ctx, `SELECT el.issue_id FROM pull_requests p
+		JOIN external_links el ON el.kind = 'pull' AND (el.url = p.url OR (el.repo = p.repo COLLATE NOCASE AND el.number = p.number)) WHERE p.id = ? LIMIT 1`, pr).Scan(&task)
+	return task
+}
+
 // expireOrphanNews drops the news of a task that stayed with a session that
 // ended, once orphanMessageAge has passed since the session ended (the age
 // moveOrphanMessages goes by) with no session of that task to take it: it is
@@ -1022,7 +1051,7 @@ func messageTask(ctx context.Context, q queryer, stepKey string) (task int64, bo
 func (s *Service) expireOrphanNews(ctx context.Context) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT m.id, m.step_key, m.session_id FROM session_messages m JOIN agent_sessions x ON x.id = m.session_id
 		WHERE m.state = 'queued' AND x.ended_at IS NOT NULL AND x.ended_at < ?
-		AND (m.step_key LIKE 'audit:%' OR m.step_key LIKE 'check:%' OR m.step_key LIKE 'shipped:%') LIMIT 100`, s.nowMS()-orphanMessageAge.Milliseconds())
+		AND (m.step_key LIKE 'audit:%' OR m.step_key LIKE 'check:%' OR m.step_key LIKE 'ci:%' OR m.step_key LIKE 'shipped:%') LIMIT 100`, s.nowMS()-orphanMessageAge.Milliseconds())
 	if err != nil {
 		s.log.WarnContext(ctx, "orphan news to expire", "err", err)
 		return

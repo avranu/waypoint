@@ -465,7 +465,8 @@ func (s *Service) hookDelivers(ctx context.Context, forgeID int64, repo string) 
 }
 
 // refreshPR applies a listed pull request: new ones are recorded headless,
-// known open ones only get their dates, size and title, unless they are
+// known open ones only get their dates, size and title (one from outside
+// keeps the title it was screened to, or none), unless they are
 // still headless (their webhook was missed); closing and merging (which
 // never set bots off) are applied in full.
 func (s *Service) refreshPR(ctx context.Context, f *Forge, repo string, fp *ForgePR) error {
@@ -487,7 +488,7 @@ func (s *Service) refreshPR(ctx context.Context, f *Forge, repo string, fp *Forg
 		_, err = s.recordPR(ctx, f, repo, fp, false)
 		return err
 	}
-	_, err = s.db.W.ExecContext(ctx, `UPDATE pull_requests SET title = ?, opened_at = coalesce(?, opened_at), merged_at = coalesce(?, merged_at),
+	_, err = s.db.W.ExecContext(ctx, `UPDATE pull_requests SET title = CASE WHEN outside = 1 THEN title ELSE ? END, opened_at = coalesce(?, opened_at), merged_at = coalesce(?, merged_at),
 		closed_at = coalesce(?, closed_at), merged_by = CASE WHEN ? != '' THEN ? ELSE merged_by END,
 		merge_sha = CASE WHEN ? != '' THEN ? ELSE merge_sha END,
 		agent = CASE WHEN ? != '' THEN ? ELSE agent END,

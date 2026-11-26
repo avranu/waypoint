@@ -389,3 +389,23 @@ func TestStalledLineReadsTheCurrentWait(t *testing.T) {
 		t.Error("the protected-file wait doesn't read as a session's")
 	}
 }
+
+// A pull request whose babysit has a step running is passed over, not waited
+// for; once the step is over the same call resumes it.
+func TestResumeBabysitPassesOverALockedBabysit(t *testing.T) {
+	be, pr := armedBabysit(t)
+	be.setBabysitState(BabysitGaveUp, "5 rounds and still 1 review comment", true)
+	before := be.babysitCount()
+	unlock := be.s.babysitLocks.lock(pr.ID)
+	var resumed bool
+	func() {
+		defer unlock()
+		within(t, "resumeBabysit", func() { resumed = be.s.resumeBabysit(be.ctx, pr.ID) })
+		if resumed || be.babysitCount() != before {
+			t.Fatalf("resumed under a running step: %v, %d babysits", resumed, be.babysitCount())
+		}
+	}()
+	if !be.s.resumeBabysit(be.ctx, pr.ID) || be.babysitCount() != before+1 {
+		t.Fatalf("not resumed once the step was over: %d babysits", be.babysitCount())
+	}
+}

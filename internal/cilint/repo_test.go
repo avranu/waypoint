@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -291,4 +292,67 @@ func githubShardProblems(src []byte) []string {
 		out = append(out, fmt.Sprintf("e2e: matrix.shard is %q, want %q (one list per choice of e2e_shards)", job.Strategy.Matrix.Shard, want))
 	}
 	return out
+}
+
+// TestRepoHeavyTestsMatchWeights keeps the packages `wp test` runs by file
+// (.waypoint/heavy-tests, WP-1875) the packages CI deals out by test name
+// (gotest-weights.txt): the two lists name the same heavy packages, so a
+// package that grows heavy for one doesn't stay whole for the other.
+func TestRepoHeavyTestsMatchWeights(t *testing.T) {
+	skipWithoutForgejo(t)
+	weights, err := os.ReadFile("../../.forgejo/scripts/gotest-weights.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	heavy, err := os.ReadFile("../../.waypoint/heavy-tests")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromWeights := map[string]bool{}
+	for _, l := range strings.Split(string(weights), "\n") {
+		if f := strings.Fields(l); len(f) >= 3 && !strings.HasPrefix(f[0], "#") {
+			fromWeights[f[1]] = true
+		}
+	}
+	fromHeavy := map[string]bool{}
+	for _, l := range strings.Split(string(heavy), "\n") {
+		if l, _, _ = strings.Cut(l, "#"); strings.TrimSpace(l) != "" {
+			fromHeavy[strings.TrimSpace(l)] = true
+		}
+	}
+	for p := range fromWeights {
+		if !fromHeavy[p] {
+			t.Errorf("%s has tests weighed in gotest-weights.txt but isn't in .waypoint/heavy-tests", p)
+		}
+	}
+	for p := range fromHeavy {
+		if !fromWeights[p] {
+			t.Errorf("%s is in .waypoint/heavy-tests but has no tests weighed in gotest-weights.txt", p)
+		}
+	}
+	if len(fromWeights) == 0 {
+		t.Error("gotest-weights.txt names no package")
+	}
+}
+
+// TestRepoWholeTargetsExportTestAll keeps make check-all and make test-all
+// running everything when typed directly: they export WP_TEST_ALL=1, which
+// stops the tests slot from narrowing their go test to the diff (WP-1877).
+func TestRepoWholeTargetsExportTestAll(t *testing.T) {
+	mk, err := os.ReadFile("../../Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"check-all", "test-all"} {
+		found := false
+		for _, l := range strings.Split(string(mk), "\n") {
+			head, rest, ok := strings.Cut(l, ":")
+			if ok && !strings.HasPrefix(l, "\t") && slices.Contains(strings.Fields(head), target) && regexp.MustCompile(`^\s*export WP_TEST_ALL\s*:?=\s*1\s*$`).MatchString(rest) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("make %s must export WP_TEST_ALL=1 (a line %q), or the tests slot narrows its go test", target, target+": export WP_TEST_ALL = 1")
+		}
+	}
 }

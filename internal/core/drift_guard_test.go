@@ -1,6 +1,10 @@
 package core
 
 import (
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -129,26 +133,56 @@ func TestDriftGuardDeferNeedsAProject(t *testing.T) {
 	}
 }
 
-func TestFootprintGrowth(t *testing.T) {
+func TestFootprintMeasureRounds(t *testing.T) {
 	ref := footprintAt{Paths: []string{"a.go", "b.go"}, Lines: 100}
+	at := time.Now()
+	round := func(n int, lines int, files ...string) BabysitRound {
+		return BabysitRound{N: n, At: at, Pushed: true, Files: files, Lines: lines}
+	}
 	for _, c := range []struct {
-		paths []string
-		lines int
-		added int
-		grew  bool
+		name   string
+		rounds []BabysitRound
+		after  int
+		added  int
+		grew   bool
 	}{
-		{[]string{"a.go", "b.go"}, 140, 0, false},
-		{[]string{"a.go", "b.go"}, 151, 0, true},
-		{[]string{"a.go"}, 90, 0, false},
-		{[]string{"a.go", "c.go"}, 100, 1, false},
+		{"kept to the files, 50 lines", []BabysitRound{round(1, 50, "a.go")}, 0, 0, false},
+		{"151 lines is more than half of 100", []BabysitRound{round(1, 51, "a.go"), round(2, 100, "b.go")}, 0, 0, true},
+		{"a new file", []BabysitRound{round(1, 3, "a.go", "c.go")}, 0, 1, false},
+		{"20 lines is under half", []BabysitRound{round(1, 20, "a.go")}, 0, 0, false},
+		{"a file two rounds pushed is counted once", []BabysitRound{round(1, 3, "c.go"), round(2, 3, "c.go")}, 0, 1, false},
+		{"a round sent before the ship doesn't count", []BabysitRound{{N: 1, At: at.Add(-time.Hour), Pushed: true, Lines: 900, Files: []string{"z.go"}}}, 0, 0, false},
+		{"a held change pushed later counts", []BabysitRound{{N: 1, At: at, Held: &HeldEdit{State: heldApplied, Files: []string{"ci.yml"}, Patch: "+x\n"}}}, 0, 1, false},
+		{"a held change not pushed doesn't", []BabysitRound{{N: 1, At: at, Held: &HeldEdit{State: heldJudging, Files: []string{"ci.yml"}, Patch: "+x\n"}}}, 0, 0, false},
+		{"a held whole change is counted as the runner measured it", []BabysitRound{{N: 1, At: at, Conflict: true, Measured: true, Files: []string{"c.go"}, Lines: 2, Held: &HeldEdit{State: heldApplied, All: true, Files: []string{"c.go"}, Patch: strings.Repeat("+main\n", 900)}}}, 0, 1, false},
+		{"rounds before the last check don't count", []BabysitRound{round(1, 500, "z.go"), round(2, 1, "a.go")}, 1, 0, false},
+		{"a round that pushed nothing doesn't count", []BabysitRound{{N: 1, At: at, Lines: 900, Files: []string{"z.go"}}}, 0, 0, false},
 	} {
-		added, grew := footprintGrowth(ref, c.paths, c.lines)
-		if len(added) != c.added || grew != c.grew {
-			t.Errorf("%v %d: added %v grew %v", c.paths, c.lines, added, grew)
+		m := measureRounds(c.rounds, at, c.after, ref)
+		if len(m.added) != c.added || m.grew(ref) != c.grew {
+			t.Errorf("%s: added %v lines %d grew %v", c.name, m.added, m.lines, m.grew(ref))
 		}
 	}
-	if _, grew := footprintGrowth(footprintAt{Lines: 4}, nil, 20); grew {
-		t.Error("4 → 20 lines counted as growth")
+	if m := measureRounds([]BabysitRound{{N: 1, At: at, Pushed: true, Diff: "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1,2 @@\n-a\n+b\n+c\n--- a comment\n"}}, at, 0, ref); m.lines != 4 || len(m.unknown) != 0 {
+		t.Errorf("a round with only its diff: lines %d unknown %v, want 4 (a removed line starting with -- counts) and known", m.lines, m.unknown)
+	} else if !slices.Equal(m.added, []string{"x"}) {
+		t.Errorf("a round with only its diff: added %v, want the file its diff names", m.added)
+	}
+	// What an unmeasured round given a conflict reports includes what it
+	// merged: it counts for nothing, and the rounds after it still do.
+	merged := BabysitRound{N: 1, At: at, Pushed: true, Conflict: true, Files: []string{"main.go"}, Lines: 5000}
+	if m := measureRounds([]BabysitRound{merged, round(2, 60, "c.go")}, at, 0, ref); m.lines != 60 || !slices.Equal(m.added, []string{"c.go"}) || !slices.Equal(m.unknown, []int{1}) {
+		t.Errorf("an unmeasured merge: lines %d added %v unknown %v", m.lines, m.added, m.unknown)
+	}
+	// A measured round that changed nothing of its own is known to be zero.
+	nothing := BabysitRound{N: 1, At: at, Pushed: true, Measured: true, Diff: "diff --git a/main.go b/main.go\n@@ -1 +1 @@\n+x\n"}
+	if m := measureRounds([]BabysitRound{nothing}, at, 0, ref); m.lines != 0 || len(m.added) != 0 || len(m.unknown) != 0 {
+		t.Errorf("a merge alone: lines %d added %v unknown %v", m.lines, m.added, m.unknown)
+	}
+	// The minimum decides where the pull request is small.
+	small := footprintAt{Lines: 20}
+	if measureRounds([]BabysitRound{round(1, 25)}, at, 0, small).grew(small) || !measureRounds([]BabysitRound{round(1, 31)}, at, 0, small).grew(small) {
+		t.Error("growth under the minimum counted, or over it didn't")
 	}
 }
 
@@ -181,7 +215,7 @@ func TestDriftGuardFootprintCheck(t *testing.T) {
 	if id, _, _ := be.s.newestAudit(be.ctx, pr.ID); id != 0 {
 		t.Errorf("a footprint check counted as the audit")
 	}
-	if be.s.headAudited(be.ctx, be.pr(7)) {
+	if read, err := be.s.headAudited(be.ctx, be.pr(7)); err != nil || read {
 		t.Error("a footprint check stood in for the head's audit")
 	}
 	be.step()
@@ -227,7 +261,7 @@ func footprintEnv(t *testing.T) (*bsEnv, *Runner, *PullRequest) {
 	if len(jobs) != 1 {
 		t.Fatalf("no round: %+v", be.babysit())
 	}
-	be.finish(jobs[0], true)
+	be.finishPushing(jobs[0], true, []string{"app/xlsx.go", "app/xlsx_test.go"}, 40)
 	be.pushMine("8888888bbbb")
 	be.changes("8888888bbbb", "app/xlsx.go", "app/xlsx_test.go")
 	return be, box, pr
@@ -278,7 +312,507 @@ func TestDriftGuardFootprintNotForSmallRounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	be.changes("8888888bbbb", "app/new.go")
-	if why, _ := be.s.footprintDue(be.ctx, be.pr(7)); why != "" {
+	if why, _, _ := be.s.footprintDue(be.ctx, be.pr(7)); why != "" {
 		t.Errorf("due with no ship footprint: %q", why)
 	}
+}
+
+// botRun records a review run of the pull request in a state ("done" ends
+// now).
+func (be *bsEnv) botRun(status string) {
+	be.t.Helper()
+	if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT INTO bot_runs(project_id, pr_id, kind, head_sha, status, created_at, finished_at)
+		VALUES ((SELECT min(id) FROM projects), ?, 'review', ?, ?, ?, ?)`, be.pr(7).ID, be.pr(7).HeadSHA, status, be.s.nowMS(),
+		map[bool]any{true: be.s.nowMS(), false: nil}[status == "done"]); err != nil {
+		be.t.Fatal(err)
+	}
+}
+
+// footprintChecks are the footprint checks kept for the pull request.
+func (be *bsEnv) footprintChecks() []footprintCheck {
+	be.t.Helper()
+	return be.s.footprintOf(be.ctx, be.pr(7).ID).Checks
+}
+
+// A review still going is no reason to ask for the footprint check: it
+// usually ends in a round, and the round's push makes the audit stale. Once the
+// run is over the check is asked (WP-1853).
+func TestDriftGuardNoFootprintWhileAReviewRuns(t *testing.T) {
+	be, _, _ := footprintEnv(t)
+	be.botRun("running")
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step()
+	if n := len(be.audits()); n != 0 {
+		t.Fatalf("audits = %v, want none while a review runs", be.audits())
+	}
+	if b := be.babysit(); !strings.Contains(b.Wait, "review") {
+		t.Errorf("the wait is not the review's: %q", b.Wait)
+	}
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE bot_runs SET status = 'done', finished_at = ?`, be.s.nowMS()); err != nil {
+		t.Fatal(err)
+	}
+	be.step()
+	if n := len(be.audits()); n != 1 {
+		t.Fatalf("audits = %v, want the check once the review is over", be.audits())
+	}
+	if c := be.footprintChecks(); len(c) != 1 || !c[0].Ahead {
+		t.Errorf("checks = %+v, want one asked ahead", c)
+	}
+}
+
+// The quiet period holds the merge, not the check: it starts beside it.
+func TestDriftGuardFootprintInTheQuietPeriod(t *testing.T) {
+	be, _, _ := footprintEnv(t)
+	be.policy(MergePolicyInput{ReviewWaitMinutes: ptr(0), QuietMinutes: ptr(10)})
+	be.botRun("done")
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step()
+	if n := len(be.audits()); n != 1 {
+		t.Fatalf("audits = %v, want the check asked in the quiet period; %+v", be.audits(), be.babysit())
+	}
+	if w := be.babysit().Wait; !strings.Contains(w, "quiet") {
+		t.Errorf("the wait is not the quiet period's: %q", w)
+	}
+	be.step()
+	if n := len(be.audits()); n != 1 {
+		t.Errorf("asked again: %v", be.audits())
+	}
+}
+
+// With a comment open that waits for a person, the check starts too.
+func TestDriftGuardFootprintWithACommentOpen(t *testing.T) {
+	be, _, _ := footprintEnv(t)
+	be.sg.threads = humanThread()
+	if _, err := be.s.syncReviewComments(be.ctx, be.pr(7)); err != nil {
+		t.Fatal(err)
+	}
+	ref := be.comment("501").Ref
+	if _, err := be.s.AckReviewComments(be.ctx, be.agent, AckInput{IDs: []string{ref}, Verdict: "needs-person", Note: "A product call."}); err != nil {
+		t.Fatal(err)
+	}
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step()
+	if n := len(be.audits()); n != 1 {
+		t.Fatalf("audits = %v, want the footprint check asked with a comment open", be.audits())
+	}
+}
+
+// Not where the head is about to move: a head whose checks failed gets its
+// round, and the check waits for the head that round makes.
+func TestDriftGuardFootprintNotBesideARound(t *testing.T) {
+	be, _, _ := footprintEnv(t)
+	be.ci("8888888bbbb", CheckFailed)
+	be.step()
+	b := be.babysit()
+	if b.Round != 2 || len(be.audits()) != 0 {
+		t.Fatalf("round %d audits %v, want a round and no check", b.Round, be.audits())
+	}
+}
+
+// A footprint audit that is going holds the merge, not the babysit: a comment
+// that makes work gets its round while it runs, and with nothing else to do
+// the babysit still says it waits for the check (WP-1853).
+func TestDriftGuardFootprintAuditDoesNotHoldARound(t *testing.T) {
+	be, _, pr := footprintEnv(t)
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step()
+	id := be.auditID()
+	if g, going := be.s.auditGoing(be.ctx, pr.ID); !going || g != id {
+		t.Fatalf("audit %d is not going: %d %v", id, g, going)
+	}
+	be.step()
+	if b := be.babysit(); b.State != BabysitWatching || !strings.Contains(b.Wait, "footprint check") {
+		t.Errorf("with nothing else to do: %s %q, want it waiting on the footprint check", b.State, b.Wait)
+	}
+	if r := be.reasons(7); !strings.Contains(r, "waiting for audit") {
+		t.Errorf("the merge isn't held by the audit: %q", r)
+	}
+	be.sg.threads = humanThread()
+	if _, err := be.s.syncReviewComments(be.ctx, be.pr(7)); err != nil {
+		t.Fatal(err)
+	}
+	be.step()
+	if b := be.babysit(); b.Round != 2 || len(be.jobs()) != 2 {
+		t.Fatalf("no round for the comment while the footprint audit runs: round %d jobs %v %s %q", b.Round, be.jobs(), b.State, b.Wait)
+	}
+}
+
+// A footprint audit asked for a head the pull request has left is stopped.
+func TestDriftGuardStaleFootprintAuditIsCancelled(t *testing.T) {
+	be, _, _ := footprintEnv(t)
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step()
+	be.pushMine("9999999cccc")
+	be.changes("9999999cccc", "app/xlsx.go", "app/xlsx_test.go", "app/pdf.go", "app/pdf_test.go")
+	be.ci("9999999cccc", CheckSuccess)
+	be.step()
+	got := be.audits()
+	if len(got) != 2 || !strings.HasSuffix(got[0], ":cancelled") || strings.HasSuffix(got[1], ":cancelled") {
+		t.Fatalf("audits = %v, want the first cancelled and a second asked for the new head", got)
+	}
+}
+
+// A stopped check is nothing to measure growth from: a push that changes
+// only what it was asked about still gets one.
+func TestDriftGuardCancelledCheckIsNoReference(t *testing.T) {
+	be, _, _ := footprintEnv(t)
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step()
+	c := be.footprintChecks()
+	if len(c) != 1 {
+		t.Fatalf("checks = %+v", c)
+	}
+	be.pushMine("9999999cccc")
+	be.changes("9999999cccc", c[0].Paths...) // the same files, no bigger
+	be.ci("9999999cccc", CheckSuccess)
+	be.step()
+	got := be.audits()
+	if len(got) != 2 || !strings.HasSuffix(got[0], ":cancelled") || strings.HasSuffix(got[1], ":cancelled") {
+		t.Fatalf("audits = %v, want the first cancelled and one for the new head", got)
+	}
+}
+
+// A check asked ahead for a head that has since moved doesn't count toward
+// the pull request's two: the late path still asks for the head it ends on,
+// and ahead asks are capped.
+func TestDriftGuardAheadChecksOfOldHeadsDontCount(t *testing.T) {
+	be, _, _ := footprintEnv(t)
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step()
+	more := []string{"app/xlsx.go", "app/xlsx_test.go"}
+	for _, sha := range []string{"9999999cccc", "aaaaaaadddd"} {
+		more = append(more, "app/"+sha+".go")
+		be.pushMine(sha)
+		be.changes(sha, more...)
+		be.ci(sha, CheckSuccess)
+		be.step()
+	}
+	c := be.footprintChecks()
+	var ahead []bool
+	for _, x := range c {
+		ahead = append(ahead, x.Ahead)
+	}
+	if len(c) != 3 || !slices.Equal(ahead, []bool{true, true, false}) || !sameSHA(c[2].SHA, "aaaaaaadddd") {
+		t.Fatalf("checks = %+v, want two asked ahead (the old heads) and the late one for the head", c)
+	}
+	if n := len(be.audits()); n != 3 {
+		t.Errorf("audits = %v", be.audits())
+	}
+}
+
+// A check asked ahead whose audit is still queued once the pull request is
+// otherwise ready holds the merge for the queue wait from then, not from the
+// ask: the babysit stamps the first time it sees it then.
+func TestDriftGuardQueuedAheadCheckWaitsFromReady(t *testing.T) {
+	be, _, pr := footprintEnv(t)
+	be.policy(MergePolicyInput{ReviewWaitMinutes: ptr(0), QuietMinutes: ptr(10)})
+	be.botRun("done")
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step() // the quiet period: the check is asked ahead
+	if c := be.footprintChecks(); len(c) != 1 || !c[0].Ahead {
+		t.Fatalf("checks = %+v", c)
+	}
+	// No runner takes it, and the queue wait passes before the babysit is ready.
+	be.setClock(be.clockNow().Add(auditQueueWait + 5*time.Minute))
+	if _, going := be.s.auditGoing(be.ctx, pr.ID); going {
+		t.Fatal("the queued audit still counts as going")
+	}
+	be.step() // the babysit sees it queued: the wait starts here
+	if fp := be.s.footprintOf(be.ctx, pr.ID); len(fp.Checks) != 1 || fp.Checks[0].Queued.IsZero() {
+		t.Fatalf("not stamped: %+v", fp.Checks)
+	}
+	if r := be.reasons(7); !strings.Contains(r, "footprint check queued") {
+		t.Fatalf("the merge isn't held by the queued check: %q", r)
+	}
+	// wp pr wait goes on waiting for it: reviewGoing no longer counts it.
+	w, err := be.s.WaitPullRequest(be.ctx, be.agent, pr.ID, PRWaitInput{})
+	if err != nil || w.Verdict != PRWaitWaiting || !strings.Contains(w.Why, "footprint check queued") {
+		t.Errorf("wait = %+v %v", w, err)
+	}
+	be.setClock(be.clockNow().Add(auditQueueWait - time.Minute))
+	if r := be.reasons(7); !strings.Contains(r, "footprint check queued") {
+		t.Errorf("released early: %q", r)
+	}
+	be.setClock(be.clockNow().Add(2 * time.Minute))
+	if r := be.reasons(7); strings.Contains(r, "footprint") {
+		t.Errorf("held past the queue wait: %q", r)
+	}
+}
+
+// An ahead check the babysit never stamped (it rests, or was set off) stops
+// holding the merge once it is older than an audit may take.
+func TestDriftGuardUnstampedAheadCheckStopsHolding(t *testing.T) {
+	be, _, _ := footprintEnv(t)
+	be.policy(MergePolicyInput{ReviewWaitMinutes: ptr(0), QuietMinutes: ptr(10)})
+	be.botRun("done")
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step() // asked ahead
+	be.setClock(be.clockNow().Add(auditWaitMax - time.Minute))
+	if r := be.reasons(7); !strings.Contains(r, "footprint check queued") {
+		t.Fatalf("not held while unstamped: %q", r)
+	}
+	be.setClock(be.clockNow().Add(2 * time.Minute))
+	if r := be.reasons(7); strings.Contains(r, "footprint") {
+		t.Errorf("held for good by an unstamped check: %q", r)
+	}
+}
+
+// An ahead ask that can't be made (nobody's runner) records nothing: the head
+// stays unseen and the late path decides, as it always did.
+func TestDriftGuardAheadSkipIsNotRecorded(t *testing.T) {
+	be, _, pr := footprintEnv(t)
+	be.policy(MergePolicyInput{ReviewWaitMinutes: ptr(0), QuietMinutes: ptr(10)})
+	be.botRun("done")
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE pull_requests SET author = '' WHERE id = ?`, pr.ID); err != nil {
+		t.Fatal(err)
+	}
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step()
+	if c := be.footprintChecks(); len(c) != 0 {
+		t.Fatalf("the ahead ask recorded %+v", c)
+	}
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE pull_requests SET author = ? WHERE id = ?`, be.admin.User.Username, pr.ID); err != nil {
+		t.Fatal(err)
+	}
+	be.setClock(be.clockNow().Add(11 * time.Minute))
+	be.step()
+	if c := be.footprintChecks(); len(c) != 1 || c[0].Outcome != footprintAudited {
+		t.Errorf("checks = %+v, want the audit asked now", c)
+	}
+}
+
+// sizedDiff is the forge's diff of the pull request at sha: lines added in
+// the first path, and one changed line in each of the others.
+func (be *bsEnv) sizedDiff(sha string, lines int, paths ...string) {
+	be.t.Helper()
+	var d strings.Builder
+	for i, p := range paths {
+		n := 1
+		if i == 0 {
+			n = lines
+		}
+		fmt.Fprintf(&d, "diff --git a/%[1]s b/%[1]s\n--- a/%[1]s\n+++ b/%[1]s\n@@ -1 +1,%[2]d @@\n", p, n)
+		d.WriteString(strings.Repeat("+x\n", n))
+	}
+	be.sg.mu.Lock()
+	be.sg.diffs[sha] = d.String()
+	be.sg.mu.Unlock()
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE pull_requests SET files_sha = '' WHERE id = ?`, be.pr(7).ID); err != nil {
+		be.t.Fatal(err)
+	}
+}
+
+// shippedEnv is a babysat pull request that shipped touching app/login.go
+// with shipLines lines, whose first round (its job is returned) is out.
+func shippedEnv(t *testing.T, shipLines int) (*bsEnv, int64) {
+	t.Helper()
+	be := newBabysitEnv(t)
+	be.runnerOnline()
+	taskGateway(t, be.s)
+	pr := be.openMine()
+	be.task("Add a CSV export", "CSV only.")
+	be.sizedDiff("7777777aaaa", shipLines, "app/login.go")
+	be.start(pr)
+	be.ci("7777777aaaa", CheckFailed)
+	jobs := be.jobs()
+	if len(jobs) != 1 {
+		t.Fatalf("no round: %+v", be.babysit())
+	}
+	if fp := be.s.footprintOf(be.ctx, pr.ID); fp.Ship == nil || fp.Ship.Lines != shipLines || !slices.Equal(fp.Ship.Paths, []string{"app/login.go"}) {
+		t.Fatalf("ship = %+v", fp.Ship)
+	}
+	return be, jobs[0]
+}
+
+// footprintWhy is why a check is due at the head, "" when none is.
+func (be *bsEnv) footprintWhy() string {
+	be.t.Helper()
+	why, _, err := be.s.footprintDue(be.ctx, be.pr(7))
+	if err != nil {
+		be.t.Fatal(err)
+	}
+	return why
+}
+
+// What main gained while the forge's merge base was stale is not the rounds'
+// doing: a round that pushed 5 lines in a file the pull request had owes no
+// check however big the forge says the pull request grew (WP-1939, #590).
+func TestFootprintIgnoresWhatMainGained(t *testing.T) {
+	be, job := shippedEnv(t, 100)
+	be.finishPushing(job, true, []string{"app/login.go"}, 5)
+	be.pushMine("8888888bbbb")
+	paths := []string{"app/login.go"}
+	for i := range 80 {
+		paths = append(paths, fmt.Sprintf("main/moved%d.go", i))
+	}
+	be.sizedDiff("8888888bbbb", 50000, paths...)
+	if why := be.footprintWhy(); why != "" {
+		t.Errorf("due for what main gained: %q", why)
+	}
+	pr := be.pr(7)
+	be.s.loadPRFiles(be.ctx, pr)
+	if len(pr.files) != 81 {
+		t.Errorf("the forge's files weren't the jump the test needs: %d", len(pr.files))
+	}
+}
+
+// The runner's own measure of a round is the one kept: what it merged is in
+// its files, and counts for nothing (WP-1939).
+func TestFootprintKeepsTheRunnersOwnMeasure(t *testing.T) {
+	be, job := shippedEnv(t, 100)
+	be.finishRound(job, map[string]any{"files": []string{"app/login.go", "main/moved.go"}, "own_files": []string{"app/login.go"}, "lines": 2,
+		"diff": "diff --git a/main/moved.go b/main/moved.go\n@@ -1 +1 @@\n" + strings.Repeat("+x\n", 500)})
+	be.pushMine("8888888bbbb")
+	if r := be.babysit().Rounds[0]; !r.Measured || r.Lines != 2 || !slices.Equal(r.Files, []string{"app/login.go"}) {
+		t.Errorf("round = %+v", r)
+	}
+	if why := be.footprintWhy(); why != "" {
+		t.Errorf("due for what the round merged: %q", why)
+	}
+}
+
+// A check recorded before rounds were numbered on it, or by an earlier
+// babysit, covers the rounds sent before it and no later ones.
+func TestFootprintCheckOfAnotherBabysitCoversByTime(t *testing.T) {
+	for name, edit := range map[string]func(*footprintCheck){
+		"recorded before WP-1939": func(c *footprintCheck) { c.Round, c.Babysit = 0, 0 },
+		"an earlier babysit's":    func(c *footprintCheck) { c.Round, c.Babysit = 9, c.Babysit+100 },
+	} {
+		be, box, pr := footprintEnv(t)
+		be.ci("8888888bbbb", CheckSuccess)
+		be.step()
+		be.endAudit(box, "done")
+		fp := be.s.footprintOf(be.ctx, pr.ID)
+		edit(&fp.Checks[0])
+		be.s.saveFootprint(be.ctx, pr.ID, fp)
+		b := be.babysit()
+		later := BabysitRound{N: 2, At: fp.Checks[0].At.Add(time.Second), Pushed: true, Measured: true, Files: []string{"app/more.go"}, Lines: 1}
+		b.Rounds[0].At = fp.Checks[0].At.Add(-time.Second)
+		b.Rounds = append(b.Rounds[:1], later)
+		head := be.pr(7)
+		head.HeadSHA = "9999999cccc"
+		_, why, due, err := be.s.footprintNow(be.ctx, b, head)
+		if err != nil || !due || why != "its fix-up rounds touched 1 new file" {
+			t.Errorf("%s: due %v why %q err %v", name, due, why, err)
+		}
+	}
+}
+
+func TestFootprintDueForANewFileOfARound(t *testing.T) {
+	be, job := shippedEnv(t, 100)
+	be.finishPushing(job, true, []string{"app/login.go", "app/export.go"}, 5)
+	be.pushMine("8888888bbbb")
+	if why := be.footprintWhy(); !strings.Contains(why, "its fix-up rounds touched 1 new file") {
+		t.Errorf("why = %q", why)
+	}
+}
+
+func TestFootprintDueForALotOfLinesInRounds(t *testing.T) {
+	for _, c := range []struct {
+		lines int
+		due   bool
+	}{{200, true}, {20, false}, {40, false}} {
+		be, job := shippedEnv(t, 100)
+		be.finishPushing(job, true, []string{"app/login.go"}, c.lines)
+		be.pushMine("8888888bbbb")
+		why := be.footprintWhy()
+		if (why != "") != c.due || c.due && !strings.Contains(why, "its fix-up rounds changed 200 lines (it was 100 before them)") {
+			t.Errorf("%d lines: why = %q", c.lines, why)
+		}
+	}
+}
+
+// A check measures from the round it covered: a later round's small push
+// owes none, its new file does, and two late checks are all a pull request
+// gets.
+func TestFootprintCountsRoundsAfterTheLastCheck(t *testing.T) {
+	be, box, _ := footprintEnv(t)
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step()
+	be.endAudit(box, "done", [2]string{"medium", "XLSX export is beyond the task"})
+	c := be.footprintChecks()
+	if len(c) != 1 || c[0].Round != 1 || !slices.Contains(c[0].Paths, "app/xlsx.go") {
+		t.Fatalf("checks = %+v", c)
+	}
+	// Round 2 is the check's finding, round 3 comes of a red check on its head.
+	jobs := be.jobs()
+	if len(jobs) != 2 {
+		t.Fatalf("no round for the finding: %+v", be.babysit())
+	}
+	be.finishPushing(jobs[1], true, []string{"app/xlsx.go"}, 5)
+	be.pushMine("9999999cccc")
+	be.sizedDiff("9999999cccc", 3, "app/login.go")
+	if why := be.footprintWhy(); why != "" {
+		t.Fatalf("due again for a small push in a file the check saw: %q", why)
+	}
+	be.ci("9999999cccc", CheckFailed)
+	jobs = be.jobs()
+	if len(jobs) != 3 {
+		t.Fatalf("no round for the red check: %+v", be.babysit())
+	}
+	be.finishPushing(jobs[2], true, []string{"app/more.go"}, 5)
+	be.pushMine("aaaaaaadddd")
+	be.sizedDiff("aaaaaaadddd", 3, "app/login.go")
+	if why := be.footprintWhy(); !strings.Contains(why, "touched 1 new file") {
+		t.Fatalf("not due for a new file after the check: %q", why)
+	}
+	be.ci("aaaaaaadddd", CheckSuccess)
+	be.step()
+	first := c[0].Lines
+	c = be.footprintChecks()
+	if len(c) != 2 || c[1].Round != 3 || !slices.Contains(c[1].Paths, "app/more.go") || c[1].Lines != first+10 {
+		t.Fatalf("checks = %+v", c)
+	}
+	be.endAudit(box, "done")
+	// The cap counts checks asked late; one asked ahead for a head since left
+	// doesn't use it up.
+	fp := be.s.footprintOf(be.ctx, be.pr(7).ID)
+	for i := range fp.Checks {
+		fp.Checks[i].Ahead = false
+	}
+	be.s.saveFootprint(be.ctx, be.pr(7).ID, fp)
+	b := be.babysit()
+	b.Rounds = append(b.Rounds, BabysitRound{N: 4, At: c[1].At.Add(time.Second), Pushed: true, Measured: true, Files: []string{"app/last.go"}, Lines: 500})
+	head := be.pr(7)
+	head.HeadSHA = "bbbbbbbeeee"
+	if _, why, due, err := be.s.footprintNow(be.ctx, b, head); due || err != nil {
+		t.Errorf("a third check: %q %v", why, err)
+	}
+}
+
+// A round that reported neither files nor a diff can't be measured: it owes
+// no check, that is logged once, and a later round is still measured.
+func TestFootprintFailsOpenForARoundThatReportedNothing(t *testing.T) {
+	be, job := shippedEnv(t, 100)
+	logs := new(strings.Builder)
+	be.s.log = slog.New(slog.NewTextHandler(logs, nil))
+	be.finishRound(job, nil)
+	be.pushMine("8888888bbbb")
+	be.sizedDiff("8888888bbbb", 5000, "app/login.go", "app/new.go")
+	for range 3 {
+		if why := be.footprintWhy(); why != "" {
+			t.Fatalf("due for a round that reported nothing: %q", why)
+		}
+	}
+	if n := strings.Count(logs.String(), "footprint not measured"); n != 1 {
+		t.Errorf("logged %d times, want once:\n%s", n, logs)
+	}
+	b := be.babysit()
+	b.Rounds = append(b.Rounds, BabysitRound{N: 2, At: b.Rounds[0].At, Pushed: true, Measured: true, Files: []string{"app/new.go"}, Lines: 1})
+	if _, why, due, err := be.s.footprintNow(be.ctx, b, be.pr(7)); !due || err != nil {
+		t.Errorf("a later round isn't measured: %q %v", why, err)
+	}
+}
+
+// finishRound ends a round's job as pushed, with more in its result.
+func (be *bsEnv) finishRound(job int64, more map[string]any) {
+	be.t.Helper()
+	res := map[string]any{"pushed": true, "commits": []string{"abc"}, "commit": "abc1234", "answer": "Round over."}
+	maps.Copy(res, more)
+	raw, _ := json.Marshal(res)
+	if err := be.s.write(be.ctx, SystemActor(), func(t *tx) error { return t.finishRunnerJob(be.ctx, job, "done", nil, raw, "") }); err != nil {
+		be.t.Fatal(err)
+	}
+	be.s.Wait()
+	be.s.Wait()
 }

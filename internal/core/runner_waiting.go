@@ -214,6 +214,8 @@ func jobNoun(kind, source string) string {
 		return "keep-warm ping"
 	case reviewCompactSource:
 		return "review compaction"
+	case deferredCompactSource:
+		return "compaction before an offer"
 	case prepAgentSource:
 		return "prep trial"
 	case sessionMessageSource, sessionBatchSource:

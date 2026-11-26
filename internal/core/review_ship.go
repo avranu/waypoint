@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 )
@@ -287,7 +288,7 @@ func (s *Service) shipTried(ctx context.Context, round int64, key string, now in
 			}
 		}
 		tries = next.ShipTries
-		if next == *bp {
+		if reflect.DeepEqual(next, *bp) {
 			return nil
 		}
 		raw, e := json.Marshal(next)
