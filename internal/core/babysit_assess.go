@@ -1176,6 +1176,7 @@ func (s *Service) assessorPrompt(ctx context.Context, b *Babysit, pr *PullReques
 		"or real but for later work: file it with `wp new` and `wp audit mark ID confirmed --issue KEY` (not a critical or high one: fix or reject those); "+
 		"one you fixed: `wp pr fixed ID`. Commit each piece of work as soon as it is done: Waypoint pushes your commits when you end, and if your time runs out first (90 minutes, waits for a test slot included) it pushes the commits you had made and anything uncommitted is lost. "+
 		"Commits that change CI configuration, lockfiles or secrets are refused.\n"+
+		dependencyAgeRule+"\n"+
 		"What the code, its tests and a reviewer can settle is yours to settle: fix it, defer a finding to a follow-up task, reject a comment with a reason, take one side of a conflict. "+
 		"You don't have to settle what you can't or shouldn't, and a change you doubt is worse than none. Two other ways to end:\n"+
 		"- What holds it up is outside the pull request and nothing you can change (a broken CI image, a service that is down, another change that has to land first): "+

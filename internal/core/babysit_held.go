@@ -303,7 +303,11 @@ func (s *Service) askHeld(ctx context.Context, b *Babysit, pr *PullRequest, r *B
 			len(patch)>>10, len(shown)>>10, stat, shown)
 		tail.WriteString("The rest of it isn't shown here. Push it and Waypoint pushes all of it to the branch, shown or not: leave it out if you can't judge it from this.")
 	}
-	tail.WriteString(" If the answer is no, or nobody answers, the change is not pushed: the checks it was meant to fix keep failing and the pull request stays out of the merge line until another round or a person fixes them.\n\n" + pr.URL)
+	unfixed := "whatever needed it stays unfixed"
+	if len(r.Checks) > 0 {
+		unfixed = "any of those failing checks that needed it keeps failing"
+	}
+	tail.WriteString(" If nobody answers, it stays unpushed and the pull request stays out of the merge line. If the answer is no, it stays unpushed, and " + unfixed + " until another round or a person fixes it.\n\n" + pr.URL)
 	in := RequestInput{Kind: RequestQuestion, Title: title, Body: head.String() + tail.String(),
 		Questions: []Question{{Question: "Push this change to the pull request?", Choices: []Choice{{Label: heldPush}, {Label: heldLeave}}}}, ToolUseID: key, Followup: "never"}
 	projectKey, err := s.attachedProjectKey(ctx, pr.ForgeID, pr.Repo)

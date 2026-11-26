@@ -134,7 +134,7 @@ func TestHeldChangeWeakeningAsksOnePerson(t *testing.T) {
 			if err := be.s.db.R.QueryRow(`SELECT body FROM requests WHERE tool_use_id LIKE ?`, heldRequestKey+"%").Scan(&body); err != nil {
 				t.Fatal(err)
 			}
-			for _, want := range []string{"responding to the failing check", "What the round said when it ended", "> Done.", "the checks it was meant to fix keep failing"} {
+			for _, want := range []string{"responding to the failing check", "What the round said when it ended", "> Done.", "any of those failing checks that needed it keeps failing"} {
 				if !strings.Contains(body, want) {
 					t.Errorf("request body lacks %q:\n%s", want, body)
 				}

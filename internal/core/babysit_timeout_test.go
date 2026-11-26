@@ -123,8 +123,6 @@ func TestBabysitTimedOutRoundTellsTheNext(t *testing.T) {
 	}
 }
 
-// A round that pushed as it ran out of time and left the checks failing hands
-// the next how it ended too, not only what it pushed.
 // A dependency-age failure is waiting, not something a round fixes by
 // changing versions.
 func TestBabysitPromptLeavesDependencyAgeAlone(t *testing.T) {
@@ -136,6 +134,8 @@ func TestBabysitPromptLeavesDependencyAgeAlone(t *testing.T) {
 	}
 }
 
+// A round that pushed as it ran out of time and left the checks failing hands
+// the next how it ended too, not only what it pushed.
 func TestBabysitPromptSaysAPushedRoundRanOutOfTime(t *testing.T) {
 	prev := BabysitRound{N: 1, Pushed: true, Checks: []string{"test"}, Outcome: "failed: The claude timed out after 1h0m0s and was stopped. The 1 commit it had made was pushed."}
 	b := &Babysit{Rounds: []BabysitRound{prev}}
