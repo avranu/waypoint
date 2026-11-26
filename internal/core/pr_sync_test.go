@@ -105,6 +105,7 @@ func TestReviewCommentDuringSyncReadsAgain(t *testing.T) {
 		e.comment(520 + i)
 	}
 	close(proceed)
+	e.release <- time.Time{} // the second run waits for its burst too
 	e.s.Wait()
 	if got := e.reads() - base; got != 2 {
 		t.Errorf("reads = %d, want 2 (the running sync, then one for what arrived during it)", got)
