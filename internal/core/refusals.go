@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"slices"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 )
 
 const (
