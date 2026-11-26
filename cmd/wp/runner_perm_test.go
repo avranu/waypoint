@@ -373,6 +373,9 @@ func TestAgentJobRefusesToPushProtectedFiles(t *testing.T) {
 	if files, _ := res["files"].([]string); len(files) != 1 || files[0] != "fix.txt" {
 		t.Errorf("files = %v", res["files"])
 	}
+	if res["lines"] != 1 {
+		t.Errorf("lines = %v, want the one line of fix.txt that was pushed (WP-1939)", res["lines"])
+	}
 	if got := gitOut(t, remote, "ls-tree", "-r", "--name-only", "fix/ci"); strings.Contains(got, ".github") || !strings.Contains(got, "fix.txt") {
 		t.Errorf("pushed tree: %q", got)
 	}
@@ -386,6 +389,9 @@ func TestAgentJobRefusesToPushProtectedFiles(t *testing.T) {
 	}
 	if files := o.Result.(map[string]any)["files"].([]string); len(files) != 2 || files[0] != ".github/workflows/ci.yml" {
 		t.Errorf("files = %v", files)
+	}
+	if lines := o.Result.(map[string]any)["lines"]; lines != 2 {
+		t.Errorf("lines = %v, want fix.txt and ci.yml's one line each", lines)
 	}
 }
 
@@ -531,5 +537,14 @@ func TestExecPatch(t *testing.T) {
 	}
 	if after := strings.TrimSpace(gitOut(t, remote, "rev-parse", "fix/x")); after != before {
 		t.Errorf("fix/x moved: %s -> %s", before, after)
+	}
+}
+
+// A round's result says how many lines it pushed, added and removed; a
+// binary file counts none (WP-1939).
+func TestRoundResultNumstatLines(t *testing.T) {
+	out := "3\t1\tmain.go\n-\t-\tlogo.png\n10\t0\tdocs/a b.md\n\n"
+	if got := numstatLines(out); got != 14 {
+		t.Errorf("numstatLines = %d, want 14", got)
 	}
 }

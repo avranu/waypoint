@@ -348,6 +348,12 @@ func (s *Service) deferComments(ctx context.Context, actor *Actor, list []*PRRev
 type prFootprint struct {
 	Ship   *footprintShip   `json:"ship,omitempty"`
 	Checks []footprintCheck `json:"checks,omitempty"`
+	// next is the reference the check footprintNow found due will leave for
+	// the one after, and upTo the last round it covers; never stored.
+	next footprintAt
+	upTo int
+	// rounds are the files the rounds since the last check brought in.
+	rounds footprintRounds
 }
 
 // footprintAt is the files a pull request touched at a head and its size.
@@ -375,6 +381,10 @@ type footprintCheck struct {
 	// queued once it was ready; the 15-minute queue wait is counted from there.
 	Ahead  bool      `json:"ahead,omitempty"`
 	Queued time.Time `json:"queued,omitzero"`
+	// Round is the last round the check covered (WP-1939): later rounds are
+	// measured from it. Zero in a record made before: every pushed round
+	// since the pull request shipped counts.
+	Round int `json:"round,omitempty"`
 }
 
 const (
@@ -433,23 +443,80 @@ func (s *Service) recordShip(ctx context.Context, b *Babysit, pr *PullRequest) {
 	s.saveFootprint(ctx, pr.ID, fp)
 }
 
-// footprintGrowth is how the head grew from ref: the files it touches now
-// that ref didn't, and whether its size grew by half again (and by more
-// than footprintMinLines).
-func footprintGrowth(ref footprintAt, paths []string, lines int) (added []string, grew bool) {
-	for _, p := range paths {
-		if !slices.Contains(ref.Paths, p) {
-			added = append(added, p)
+// footprintRounds is what the fix-up rounds pushed since the last check
+// (WP-1939): their own files and lines, not the forge's size of the whole
+// pull request, which counts what main gained when the merge base is stale.
+type footprintRounds struct {
+	added   []string // files they touched that the reference didn't have
+	files   []string // every file they touched
+	lines   int
+	last    int   // the last round counted
+	unknown []int // counted rounds that reported neither files nor a diff
+}
+
+// roundLines is the lines a round pushed: as its runner counted them, else
+// from its kept diff (a capped diff is a lower bound).
+func roundLines(r BabysitRound) int {
+	if r.Lines > 0 {
+		return r.Lines
+	}
+	return diffLines(r.Diff)
+}
+
+// diffLines counts the added and removed lines of a unified diff, not its
+// file headers.
+func diffLines(diff string) int {
+	n, header := 0, false
+	for _, l := range strings.Split(diff, "\n") {
+		switch {
+		case strings.HasPrefix(l, "diff --git "):
+			header = true
+		case strings.HasPrefix(l, "@@"):
+			header = false
+		case header:
+		case strings.HasPrefix(l, "+"), strings.HasPrefix(l, "-"):
+			n++
 		}
 	}
-	grew = lines*2 > ref.Lines*3 && lines-ref.Lines > footprintMinLines
-	return added, grew
+	return n
+}
+
+// measureRounds reads the pushed rounds after round `after` that came once
+// the pull request shipped, against ref.
+func measureRounds(rounds []BabysitRound, shipped time.Time, after int, ref footprintAt) footprintRounds {
+	var m footprintRounds
+	for _, r := range rounds {
+		if !r.Pushed || r.At.Before(shipped) || r.N <= after {
+			continue
+		}
+		m.last = max(m.last, r.N)
+		m.lines += roundLines(r)
+		if len(r.Files) == 0 && r.Diff == "" {
+			m.unknown = append(m.unknown, r.N)
+		}
+		for _, f := range r.Files {
+			if !slices.Contains(m.files, f) {
+				m.files = append(m.files, f)
+				if !slices.Contains(ref.Paths, f) {
+					m.added = append(m.added, f)
+				}
+			}
+		}
+	}
+	return m
+}
+
+// grew is whether the rounds changed more than footprintMinLines lines and
+// more than half of what the reference was.
+func (m footprintRounds) grew(ref footprintAt) bool {
+	return m.lines > footprintMinLines && m.lines*2 > ref.Lines
 }
 
 // footprintNow says whether the head needs a footprint check: rounds pushed
-// since it shipped, and since the last check it spread to new files or grew
-// by half again. Anything not known (its files, its size) fails open; an
-// earlier check's audit that can't be read is an error.
+// since it shipped, and since the last check they touched new files or
+// changed more than half again of what it shipped with. A round that
+// reported nothing of what it pushed fails open, as does anything else not
+// known; an earlier check's audit that can't be read is an error.
 func (s *Service) footprintNow(ctx context.Context, b *Babysit, pr *PullRequest) (prFootprint, string, bool, error) {
 	fp := s.footprintOf(ctx, pr.ID)
 	if b == nil || fp.Ship == nil || !fp.Ship.Known || pr.HeadSHA == "" {
@@ -457,7 +524,7 @@ func (s *Service) footprintNow(ctx context.Context, b *Babysit, pr *PullRequest)
 	}
 	// A check asked ahead for a head the pull request has since left doesn't
 	// use up the budget: the late path still asks for the head it ends on.
-	ref, audited, seen := fp.Ship.footprintAt, 0, fp.Ship.SHA
+	ref, audited, seen, covered := fp.Ship.footprintAt, 0, fp.Ship.SHA, 0
 	for _, c := range fp.Checks {
 		// An audit of a head since left that was stopped, or is about to be
 		// (cancelStaleFootprints), looked at nothing: growth isn't measured
@@ -473,7 +540,7 @@ func (s *Service) footprintNow(ctx context.Context, b *Babysit, pr *PullRequest)
 		}
 		seen = c.SHA
 		if c.Outcome == footprintAudited {
-			ref = c.footprintAt
+			ref, covered = c.footprintAt, c.Round
 			if !c.Ahead || sameSHA(c.SHA, pr.HeadSHA) {
 				audited++
 			}
@@ -482,26 +549,32 @@ func (s *Service) footprintNow(ctx context.Context, b *Babysit, pr *PullRequest)
 	if audited >= footprintMaxChecks || sameSHA(seen, pr.HeadSHA) {
 		return fp, "", false, nil
 	}
-	if !slices.ContainsFunc(b.Rounds, func(r BabysitRound) bool { return r.Pushed && !r.At.Before(fp.Ship.At) }) {
+	m := measureRounds(b.Rounds, fp.Ship.At, covered, ref)
+	if m.last == 0 {
 		return fp, "", false, nil
 	}
-	s.loadPRFiles(ctx, pr)
-	lines, known := pr.changedLines()
-	if !pr.filesKnown || !known {
+	if len(m.unknown) > 0 {
+		for _, n := range m.unknown {
+			if _, seen := s.footprintUnknown.LoadOrStore(fmt.Sprintf("%d:%d", pr.ID, n), true); !seen {
+				s.log.InfoContext(ctx, "footprint not measured: a round reported neither files nor a diff", "repo", pr.Repo, "number", pr.Number, "round", n)
+			}
+		}
 		return fp, "", false, nil
 	}
-	added, grew := footprintGrowth(ref, pr.files, lines)
+	grew := m.grew(ref)
 	var why []string
-	if len(added) > 0 {
-		why = append(why, fmt.Sprintf("%d new file%s", len(added), plural(len(added))))
+	if len(m.added) > 0 {
+		why = append(why, fmt.Sprintf("touched %d new file%s", len(m.added), plural(len(m.added))))
 	}
 	if grew {
-		why = append(why, fmt.Sprintf("%d → %d lines changed", ref.Lines, lines))
+		why = append(why, fmt.Sprintf("changed %d lines (it shipped with %d)", m.lines, ref.Lines))
 	}
 	if len(why) == 0 {
 		return fp, "", false, nil
 	}
-	return fp, strings.Join(why, ", "), true, nil
+	fp.rounds, fp.upTo = m, m.last
+	fp.next = footprintAt{Paths: append(slices.Clone(ref.Paths), m.added...), Lines: ref.Lines + m.lines}
+	return fp, "its fix-up rounds " + strings.Join(why, " and "), true, nil
 }
 
 // footprintDue: a readiness reason while the check is owed and not asked
@@ -518,7 +591,7 @@ func (s *Service) footprintDue(ctx context.Context, pr *PullRequest) (string, *t
 		return "", nil, err
 	}
 	if due {
-		return "footprint check due: its fix-up rounds grew it since it shipped (" + why + ")", nil, nil
+		return "footprint check due: " + why, nil, nil
 	}
 	// A check asked ahead, whose audit no runner has taken: the queue wait
 	// runs from when the babysit first saw it so once the pull request was
@@ -660,8 +733,8 @@ func (s *Service) requestFootprint(ctx context.Context, b *Babysit, pr *PullRequ
 	if !due {
 		return nil, "", false
 	}
-	lines, _ := pr.changedLines()
-	check := footprintCheck{footprintAt: footprintAt{SHA: pr.HeadSHA, Paths: pr.files, Lines: lines}, At: s.now(), Ahead: ahead}
+	check := footprintCheck{footprintAt: fp.next, Round: fp.upTo, At: s.now(), Ahead: ahead}
+	check.SHA = pr.HeadSHA
 	err = errors.New("no member's runner to run it on")
 	if owner := s.babysitOwnerFor(ctx, pr); owner != 0 {
 		a, err = s.RequestAudit(ctx, SystemActor(), AuditInput{PRID: pr.ID, Via: "system", owner: owner,
@@ -696,11 +769,12 @@ const footprintInstructions = `Compare what the fix-up rounds added after the pu
 // round pushed.
 func (s *Service) footprintContext(ctx context.Context, b *Babysit, pr *PullRequest, fp prFootprint, why string) string {
 	var c strings.Builder
+	s.loadPRFiles(ctx, pr)
 	lines, _ := pr.changedLines()
 	fmt.Fprintf(&c, "This is pull request %s#%d, <untrusted>%s</untrusted>. It shipped at %s touching %d file%s (%d lines changed); babysitting rounds have changed it since, and at its head %s it touches %d file%s (%d lines): %s.\n",
 		pr.Repo, pr.Number, untrusted(pr.Title), short(fp.Ship.SHA), len(fp.Ship.Paths), plural(len(fp.Ship.Paths)), fp.Ship.Lines,
 		short(pr.HeadSHA), len(pr.files), plural(len(pr.files)), lines, why)
-	added, _ := footprintGrowth(fp.Ship.footprintAt, pr.files, lines)
+	added := measureRounds(b.Rounds, fp.Ship.At, 0, fp.Ship.footprintAt).added
 	writePaths := func(title string, paths []string) {
 		if len(paths) == 0 {
 			return

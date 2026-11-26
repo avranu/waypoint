@@ -548,6 +548,7 @@ func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare
 		commits := append([]string{}, strings.Fields(revs)...)
 		result["commits"] = commits
 		files := []string{}
+		result["lines"] = 0
 		if len(commits) > 0 {
 			names, err := p.gitPaths(ctx, work, "diff", "--name-only", "--no-renames", baseSHA+"..HEAD")
 			if err != nil {
@@ -557,6 +558,7 @@ func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare
 			if diff, err := p.git(ctx, work, "diff", baseSHA+"..HEAD"); err == nil {
 				result["diff"] = capDiff(diff, maxResultDiff)
 			}
+			result["lines"] = p.pushedLines(ctx, work, baseSHA)
 		}
 		result["files"] = files
 		bad := protectedFiles(in.ProtectPaths, files)
@@ -1091,6 +1093,7 @@ func (p *runnerProc) holdProtected(ctx context.Context, work string, in agentJob
 	}
 	h := &held{commits: []string{}, files: []string{}}
 	delete(result, "diff")
+	result["lines"] = 0
 	if _, err := p.git(ctx, work, "diff", "--cached", "--quiet"); err == nil {
 		return h, true
 	}
@@ -1112,7 +1115,37 @@ func (p *runnerProc) holdProtected(ctx context.Context, work string, in agentJob
 	if diff, err := p.git(ctx, work, "diff", baseSHA+"..HEAD"); err == nil {
 		result["diff"] = capDiff(diff, maxResultDiff)
 	}
+	result["lines"] = p.pushedLines(ctx, work, baseSHA)
 	return h, true
+}
+
+// pushedLines is the lines added and removed between base and HEAD, which
+// the footprint check measures a round's growth by (WP-1939). Binary files
+// count none; 0 when git can't say.
+func (p *runnerProc) pushedLines(ctx context.Context, work, baseSHA string) int {
+	out, err := p.git(ctx, work, "diff", "--numstat", "--no-renames", baseSHA+"..HEAD")
+	if err != nil {
+		return 0
+	}
+	return numstatLines(out)
+}
+
+// numstatLines sums the added and removed lines of `git diff --numstat`;
+// a binary file's "-" counts as none.
+func numstatLines(out string) int {
+	n := 0
+	for _, l := range strings.Split(out, "\n") {
+		f := strings.SplitN(l, "\t", 3)
+		if len(f) < 3 {
+			continue
+		}
+		add, err1 := strconv.Atoi(f[0])
+		del, err2 := strconv.Atoi(f[1])
+		if err1 == nil && err2 == nil {
+			n += add + del
+		}
+	}
+	return n
 }
 
 // hexObjectID is a git object id (SHA-1 or SHA-256).

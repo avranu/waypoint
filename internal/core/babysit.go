@@ -105,6 +105,11 @@ type BabysitRound struct {
 	Answer   string    `json:"answer,omitempty"`   // how its agent ended, shortened
 	Diff     string    `json:"diff,omitempty"`     // what it pushed, as the runner reported it (capped)
 	PushSHA  string    `json:"push_sha,omitempty"` // the head its push made
+	// Files and Lines are what its push changed: the files, and the lines
+	// added and removed (WP-1939). Neither is kept for a round that pushed
+	// nothing.
+	Files []string `json:"files,omitempty"`
+	Lines int      `json:"lines,omitempty"`
 	// Held is the change to protected files its agent made that the runner
 	// held back, and what became of it (WP-ADR138).
 	Held *HeldEdit `json:"held,omitempty"`
@@ -593,6 +598,8 @@ func (s *Service) recordRoundOutcome(ctx context.Context, bid, jobID int64) {
 		Pushed  bool     `json:"pushed"`
 		Answer  string   `json:"answer"`
 		Diff    string   `json:"diff"`
+		Files   []string `json:"files"`
+		Lines   *int     `json:"lines"`
 		Commit  string   `json:"commit"`
 		// What the runner held back of its agent's change to protected files.
 		HeldPatch string   `json:"held_patch"`
@@ -642,6 +649,10 @@ func (s *Service) recordRoundOutcome(ctx context.Context, bid, jobID int64) {
 			}
 			if b.Rounds[i].Pushed {
 				b.Rounds[i].Diff, b.Rounds[i].PushSHA = res.Diff, res.Commit
+				b.Rounds[i].Files = res.Files
+				if b.Rounds[i].Lines = diffLines(res.Diff); res.Lines != nil {
+					b.Rounds[i].Lines = *res.Lines
+				}
 			} else if _, refused := protectedRefusal(b.Rounds[i]); refused {
 				b.Rounds[i].Diff = res.Diff
 			}
