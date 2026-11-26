@@ -369,7 +369,7 @@ export function AddEnvironmentDialog({
       >
         <Field
           label="Name"
-          note="Letters, digits, dots and dashes. CI uses it: wp env deploy staging …"
+          note="Letters, digits, dots and dashes. CI uses it: wp record deploy staging …"
         >
           <Input
             autoFocus

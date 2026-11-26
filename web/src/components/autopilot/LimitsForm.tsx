@@ -397,7 +397,7 @@ export function LimitsForm({
         <>
           <Field
             label="Low-risk changes"
-            hint="Whether a small change that only touches docs or comments skips the review. Risky changes are always reviewed, and one in five that could skip is reviewed anyway, to check the rules. wp worklog triage shows how it’s doing."
+            hint="Whether a small change that only touches docs or comments skips the review. Risky changes are always reviewed, and one in five that could skip is reviewed anyway, to check the rules. wp report quality triage shows how it’s doing."
           >
             <Select
               id={`${idPrefix}-review_skip`}

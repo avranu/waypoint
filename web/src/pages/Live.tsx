@@ -57,7 +57,7 @@ export function LivePage() {
                 {d.environments.length === 0 ? (
                   <Empty icon={<Rocket />} title="No production or staging environment">
                     Add one in a project’s Environments tab, or have CI record deploys with{' '}
-                    <code className="font-mono text-xs">wp env deploy</code>, to see when merged
+                    <code className="font-mono text-xs">wp record deploy</code>, to see when merged
                     work goes live.
                   </Empty>
                 ) : (

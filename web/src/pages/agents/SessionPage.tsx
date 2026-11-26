@@ -398,7 +398,8 @@ function UsageSection({ s }: { s: SessionSummary['session'] }) {
         <p className="px-4 py-3 text-[13px] text-muted">
           Nothing reported for this session yet.{' '}
           <code className="rounded bg-sunken px-1">wp runner</code> uploads usage every 10 minutes,
-          and <code className="rounded bg-sunken px-1">wp usage sync</code> does it by hand.
+          and <code className="rounded bg-sunken px-1">wp record usage --from-transcripts</code>{' '}
+          does it by hand.
         </p>
       </Section>
     )

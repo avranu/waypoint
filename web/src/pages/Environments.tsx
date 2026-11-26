@@ -78,7 +78,7 @@ export function EnvironmentsPage() {
             <LoadError what="Environments" error={query.error} />
           ) : groups.length === 0 ? (
             <Empty icon={<Server />} title="No environments yet">
-              <span title="Add them in a project’s Environments tab, or have CI record a deployment with wp env deploy">
+              <span title="Add them in a project’s Environments tab, or have CI record a deployment with wp record deploy">
                 Add the places your code runs in a project’s Environments tab.
               </span>
             </Empty>
@@ -169,7 +169,7 @@ export function ProjectEnvironmentsPage() {
                 )
               }
             >
-              <span title="CI can record deployments with wp env deploy, and a cluster can register dev environments with wp env up">
+              <span title="CI can record deployments with wp record deploy, and a cluster can register dev environments with wp env up">
                 Add production and staging to see whether they are up and what they run.
               </span>
             </Empty>

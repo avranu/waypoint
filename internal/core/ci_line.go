@@ -26,7 +26,7 @@ type CILineInput struct {
 	Days int
 }
 
-// CILineReport is wp ci line.
+// CILineReport is wp report ci line.
 type CILineReport struct {
 	GeneratedAt time.Time     `json:"generated_at"`
 	From        time.Time     `json:"from"` // the start of the first day

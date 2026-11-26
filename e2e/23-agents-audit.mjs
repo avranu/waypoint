@@ -6,7 +6,7 @@
 // approved and merged on a forge) read as sentences grouped by day; the
 // kind chips and the person filter narrow it; the agent filter finds what
 // concerns an agent; older entries load on demand; Export CSV downloads.
-// Risky commands (WP-647): what wp usage sync sends is listed with its level,
+// Risky commands (WP-647): what wp record usage --from-transcripts sends is listed with its level,
 // outcome and command, the level and outcome filters narrow it, a high one
 // that ran notifies, and the notification's link opens the view.
 // Run after 01-signup-flow (user robin, an admin).

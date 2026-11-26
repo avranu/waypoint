@@ -26,12 +26,8 @@ Per question: the decider, the labels by source and answer, the last
 evaluation and every candidate's held-out figures, the labels since and
 the decider's errors on them. Then the reports sent to the gateway and how
 often a goal's nearest goal by embedding is its parent. Admins only.`,
-	examples: []string{"wp usage meaning", "wp usage meaning --json"},
+	examples: []string{"wp report meaning", "wp report meaning --json"},
 	run:      cmdUsageMeaning,
-}
-
-func init() {
-	usageCmd.subs = append(usageCmd.subs, usageMeaningCmd)
 }
 
 func cmdUsageMeaning(c *cli, args []string) error {

@@ -123,7 +123,7 @@ escape that motivated it. A deliberate exception is waived on the line above
 or at the end of its line with `//wplint:ignore RULE why` (`// wplint:ignore
 e2e-wait why` in e2e, `-- wplint:ignore migrations why` added to a
 migration whose edit changes only comments); waivers are counted with the
-`#nosec` and `//nolint` ones (`wp ci suppressions`).
+`#nosec` and `//nolint` ones (`wp report ci suppressions`).
 
 Known gaps (all verified, not guesses):
 - **eslint is dormant.** typescript-eslint v8 hard-errors on this repo's

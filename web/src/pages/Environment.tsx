@@ -217,7 +217,7 @@ function EnvironmentView({ env, canEdit }: { env: EnvironmentDetail; canEdit: bo
         {env.deployments.length === 0 ? (
           <p className="px-4 py-6 text-center text-[13px] text-muted">
             None recorded yet. CI can report them with{' '}
-            <code className="font-mono text-xs">wp env deploy {env.name} --commit SHA</code>
+            <code className="font-mono text-xs">wp record deploy {env.name} --commit SHA</code>
             {env.version_url
               ? '.'
               : ', or set a version address below and Waypoint will see new releases itself.'}

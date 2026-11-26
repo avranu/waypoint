@@ -13,7 +13,7 @@ it a check, with the instances listed. At most 2 tasks a day per project.
 A class is filed once. Closing its task as Won't Do declines it; Done counts
 as the check landing, and instances after that are shown as recurrences.
 A project's settings can turn the filing off.`,
-	examples: []string{"wp mistakes", "wp mistakes -p WP", "wp mistakes --json"},
+	examples: []string{"wp report quality mistakes", "wp report quality mistakes -p WP", "wp report quality mistakes --json"},
 	run:      cmdMistakes,
 }
 

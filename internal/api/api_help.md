@@ -163,27 +163,27 @@ The CI board (WP-225): Forgejo Actions on the attached repos, with ETAs:
                                       per day or week jobs, failures, runner time, runner wait, full-run
                                       time, merges and time per merge; the last 7 days against the 7 before;
                                       each full-tier job's p50 now and before (?repo=OWNER/NAME, ?days=N
-                                      up to 730, default 30; ?bucket=day|week; ?format=text: wp ci history)
+                                      up to 730, default 30; ?bucket=day|week; ?format=text: wp report ci history)
     GET  /ci/line                     each merge line (WP-1658): its armed pull requests in order with their
                                       babysit and live stack or batch; per UTC day the stacks and batches
                                       started, by state and why they ended, merges and how many used one,
                                       full-tier runs per merge (?repo=OWNER/NAME, ?days=N up to 90,
-                                      default 7; ?format=text: wp ci line)
+                                      default 7; ?format=text: wp report ci line)
     GET  /ci/tests                    from the backend test jobs' evidence (WP-704): flaky tests (passed and
                                       failed on one commit, with a score), the slowest tests and packages,
                                       tests failing on the default branch (?repo, ?view=flaky|slow|failing,
-                                      ?days=N up to 30, ?package=P, ?limit=N; ?format=text: wp ci tests)
+                                      ?days=N up to 30, ?package=P, ?limit=N; ?format=text: wp report ci tests)
     GET  /ci/coverage                 a commit's coverage, shards merged: per package, or ?path= a directory,
                                       package or file; the default branch's trend (?repo, ?sha=PREFIX;
-                                      default the default branch's newest; ?format=text: wp ci coverage)
+                                      default the default branch's newest; ?format=text: wp report ci coverage)
     GET  /ci/suppressions             the default branch's #nosec, //nolint and //wplint:ignore comments:
                                       count by rule, added and removed (?repo, ?days=N default 30, ?all=1
-                                      lists them; ?format=text: wp ci suppressions)
+                                      lists them; ?format=text: wp report ci suppressions)
 
 The escape ledger (WP-705, WP-ADR68): bug fixes traced to the change that introduced them.
 
     GET  /escapes/stats               escapes per week, median lifetime, stage found and detector split, reopens, proofs,
-                                      fixes of fixes (?project=KEY, ?repo=OWNER/NAME, ?days=N; ?format=text: wp escapes)
+                                      fixes of fixes (?project=KEY, ?repo=OWNER/NAME, ?days=N; ?format=text: wp report quality escapes)
     GET  /escapes                     the rows, newest first (same filters, ?key=KEY-N, ?limit=N; ?format=text)
     GET  /escapes/files?repo=O/N      per-file counts that wp code risk scores with, and the repo's total
     GET  /escapes/due                 merged bug fixes not traced yet (?machine=NAME, ?repo=O/N, ?limit=N; runners)
@@ -950,7 +950,7 @@ steers or clears one in effect.
                                      admins only; days up to 730; ?format=text: wp pr review-stats)
     GET  /mistakes?project=KEY       recurring mistakes filed as check tasks (WP-710): key, label, issue,
                                      state (open, landed, declined), instances, recurred since the
-                                     check landed (?format=text: wp mistakes)
+                                     check landed (?format=text: wp report quality mistakes)
     GET  /projects/{key}/templates   POST /projects/{key}/templates {"name","type","title",
                                      "description","labels":[],"points","subtasks":[]}
     PATCH|DELETE /projects/{key}/templates/{id}

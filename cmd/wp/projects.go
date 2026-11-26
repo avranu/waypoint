@@ -230,7 +230,7 @@ func projectShow(c *cli, args []string) error {
 var timerCmd = &command{
 	name: "timer", group: "Projects and time", args: "[start [KEY] | stop]",
 	summary: "start, stop or check your timer",
-	about: `Without a subcommand, shows the running timer. wp log records time
+	about: `Without a subcommand, shows the running timer. wp record time records time
 after the fact.`,
 	examples: []string{"wp timer start APP-12", "wp timer stop"},
 	run:      timerStatus,
@@ -333,7 +333,7 @@ var logCmd = &command{
 	name: "log", group: "Projects and time", args: "[KEY] DURATION [-m NOTE]",
 	summary:  "record time spent on an issue",
 	about:    `Time already spent, ending now. DURATION: 1h30m, 45m, 1:30 or 90 (minutes).`,
-	examples: []string{`wp log APP-12 45m -m "Pairing on the parser"`},
+	examples: []string{`wp record time APP-12 45m -m "Pairing on the parser"`},
 	run:      cmdLog,
 }
 

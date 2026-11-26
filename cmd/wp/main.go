@@ -72,12 +72,12 @@ func init() {
 	commands = []*command{
 		contextCmd,
 		runnerCmd,
-		nextCmd, batchCmd, startCmd, shipCmd, shotCmd, previewCmd, releaseCmd, declineCmd, claimsCmd, pauseCmd, resumeCmd, usageCmd, quotaGuardCmd, usageTranscriptCmd, queueCmd, agentsCmd, autopilotCmd, followupCmd, activityCmd,
+		nextCmd, batchCmd, startCmd, shipCmd, shotCmd, previewCmd, releaseCmd, declineCmd, claimsCmd, pauseCmd, resumeCmd, quotaGuardCmd, usageTranscriptCmd, queueCmd, agentsCmd, autopilotCmd, followupCmd,
 		reportCmd, recordCmd,
 		specCmd, defineCmd, searchCmd, briefCmd, prepCmd, codeCmd, glossaryCmd, instructionCmd, designCmd, reviewCmd, riskCmd, goalsCmd, goalCmd, traceCmd, graphCmd, unlinkCmd,
-		prCmd, tidyCmd, worktreeCmd, unshippedCmd, slotCmd, testsumCmd, benchCmd, fanoutCmd, ciCmd, codeqlCmd, auditCmd, mistakesCmd, escapesCmd, serverCmd, experimentCmd, objectiveCmd,
+		prCmd, tidyCmd, worktreeCmd, unshippedCmd, slotCmd, testsumCmd, benchCmd, fanoutCmd, ciCmd, codeqlCmd, auditCmd, escapesCmd, serverCmd, experimentCmd, objectiveCmd,
 		lsCmd, showCmd, newCmd, editCmd, publishCmd, draftCmd, holdCmd, mvCmd, assignCmd, unassignCmd, commentCmd, worklogCmd, attachCmd, filesCmd, linkCmd, relateCmd, rmCmd, openCmd,
-		projectCmd, envCmd, timerCmd, logCmd, automationCmd,
+		projectCmd, envCmd, timerCmd, automationCmd,
 		pageCmd,
 		requestCmd, askCmd,
 		setupCmd, authCmd, configCmd, doctorCmd, hookCmd, kitCmd, sandboxCmd, statuslineCmd, updateCmd, versionCmd, helpCmd,
@@ -191,7 +191,7 @@ var aliases = map[string]string{
 	"list": "ls", "view": "show", "get": "show", "cat": "show",
 	"create": "new", "add": "new", "update": "edit", "set": "edit", "move": "mv", "status": "mv", "transition": "mv",
 	"delete": "rm", "remove": "rm", "del": "rm", "take": "next", "claim": "next", "pickup": "next", "finish": "done", "complete": "done",
-	"projects": "project", "pages": "page", "login": "auth", "whoami": "context", "where": "context", "time": "log",
+	"projects": "project", "pages": "page", "login": "auth", "whoami": "context", "where": "context",
 }
 
 func findCommand(name string) *command {

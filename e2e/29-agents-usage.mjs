@@ -1,7 +1,7 @@
 // Usage analytics (WP-D20), in a real browser at desktop and phone widths,
 // light and dark: before anything is reported the Usage tab teaches how to
-// start; then a month of usage, tools, refusals and quota samples (as `wp
-// usage sync` and `wp statusline` upload them) fills the tab: quota gauges
+// start; then a month of usage, tools, refusals and quota samples (as `wp record
+// usage --from-transcripts` and `wp statusline` upload them) fills the tab: quota gauges
 // with pace, tokens by day and model, the cache split, sortable breakdowns,
 // tools with unused ones, Bash command heads, refusals with allow rules and
 // suggestions with their evidence. The Trends tab (WP-196) draws any measure
@@ -194,7 +194,7 @@ async function run(width, scheme) {
   if (!before.has_data) {
     await page.goto(`${base}/agents?tab=usage`);
     await page.getByText("No usage reported yet").waitFor();
-    ok(await page.getByText("wp usage sync --all").first().isVisible(), `${tag} the empty state teaches the commands`);
+    ok(await page.getByText("wp record usage --from-transcripts --all").first().isVisible(), `${tag} the empty state teaches the commands`);
     ok(await page.getByText("wp hook claude").first().isVisible(), `${tag} ... and the hook`);
     await shot("usage-empty");
     await overflow("empty");

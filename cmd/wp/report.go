@@ -18,21 +18,23 @@ import (
 
 var reportCmd = &command{
 	name: "report", group: "Reports", args: "SUBJECT [TOPIC] [FLAGS]",
-	summary: "reports over a window: AI spend and quota, how agents behaved, the server's AI requests",
+	summary: "read-only reports: CI, activity, quality, AI spend and behavior, goals' meaning, a release's effect",
 	about: `A report reads and summarises over a window or a scope; it never changes
-anything. wp report with no subject lists them. Every report takes --since
-(a duration back from now, or a time) and --json; --days N means --since Nd.`,
-	examples: []string{"wp report usage --since 24h", "wp report behavior risky", "wp report ai"},
+anything. wp report with no subject lists them. A report that looks back takes
+--since (a duration back from now, or a time) or --days N (--since Nd), and
+all take --json.`,
+	examples: []string{"wp report ci history --days 14", "wp report quality mistakes", "wp report activity claude --days 7", "wp report usage --since 24h"},
 	run:      cmdSubjects,
 }
 
 var recordCmd = &command{
 	name: "record", group: "Reports", args: "SUBJECT [FLAGS]",
-	summary: "write down something that happened: a task's tokens, what sessions used",
+	summary: "write down something that happened: time spent, a deployment, a task's tokens, what sessions used",
 	about:   "wp record with no subject lists them.",
 	examples: []string{
 		"wp record usage --tokens-in 12000 --tokens-out 800 --cost 0.21",
 		"wp record usage --from-transcripts",
+		"wp record time WP-12 45m", "wp record deploy staging --commit \"$GIT_SHA\"",
 	},
 	run: cmdSubjects,
 }
@@ -110,8 +112,18 @@ var quotaGuardCmd = &command{
 // reportSubjects is each report's behavior topics, in the order wp report
 // behavior lists them.
 func init() {
-	reportCmd.subs = []*command{reportUsageCmd, reportBehaviorCmd, reportAICmd}
-	recordCmd.subs = []*command{recordUsageCmd}
+	reportCICmd.subs = takeSubs(ciCmd, "history", "line", "tests", "coverage", "suppressions")
+	reportQualityCmd.subs = []*command{mistakesCmd, qualityEscapesCmd, qualityReviewsCmd, qualityTriageCmd, qualityStakesCmd}
+	envCmd.subs = slices.DeleteFunc(envCmd.subs, func(s *command) bool { return s == envDeployCmd })
+	logCmd.name = "time"
+	reportCmd.subs = []*command{reportUsageCmd, reportBehaviorCmd, reportAICmd, reportCICmd, activityCmd, reportQualityCmd,
+		usageMeaningCmd, usageFeatureCmd, reportTasksCmd, reportRequestsCmd}
+	recordCmd.subs = []*command{recordUsageCmd, logCmd, envDeployCmd}
+	for _, cmd := range []*command{activityCmd, mistakesCmd, logCmd, usageMeaningCmd, usageFeatureCmd, envDeployCmd} {
+		cmd.group = ""
+	}
+	escapesCmd.run = nil
+	escapesCmd.summary = "the escape ledger's rows, one bug's fix, trace and prove rounds (the summary is wp report quality escapes)"
 	reportUsageCmd.subs = []*command{usageMachinesCmd, usageGuardCmd}
 	reportAICmd.subs = []*command{aiSurplusCmd}
 	reportBehaviorCmd.subs = []*command{usageCLICmd, usageRiskyCmd, usageStalledCmd, usageWarmCmd, usageCompactCmd,
@@ -121,28 +133,19 @@ func init() {
 	quotaGuardCmd.examples = []string{"wp guard", "wp guard set --churn 40 --session 150", "wp guard lift --for 6h"}
 	usageGuardCmd.examples = []string{"wp report usage guard", "wp report usage guard --now --hours", "wp report usage guard --days 30"}
 	// The reports that take a window take it as --since or as --days.
-	for _, cmd := range slices.Concat([]*command{reportUsageCmd, reportAICmd, usageGuardCmd, quotaGuardCmd}, reportBehaviorCmd.subs) {
+	windowed := []*command{reportUsageCmd, reportAICmd, usageGuardCmd, quotaGuardCmd, activityCmd, qualityEscapesCmd, qualityReviewsCmd,
+		qualityTriageCmd, qualityStakesCmd}
+	for _, cmd := range slices.Concat(windowed, reportBehaviorCmd.subs, reportCICmd.subs) {
 		cmd.window = true
 	}
-}
-
-// usageCmd is where stage 2's reports (meaning, feature) wait for their move
-// to wp report; it is out of the help listing, which has no group for it.
-var usageCmd = &command{
-	name:     "usage",
-	args:     "meaning|feature",
-	summary:  "reports not yet moved to wp report: meaning, feature",
-	examples: []string{"wp usage meaning", "wp usage feature WP-192"},
-	about: `The rest of what wp usage did has new names: wp report usage (spend), wp report
-behavior TOPIC (how agents worked), wp record usage (write a task's tokens;
---from-transcripts uploads sessions), wp guard, wp transcript, wp setup otel.
-The old names still run.`,
 }
 
 // legacyRoute is an old name that runs a new command.
 type legacyRoute struct {
 	from string
 	to   string
+	// only, when set, limits the route to the words after the old name it is true for.
+	only func(rest []string) bool
 	// args rewrites the words after the old name; nil keeps them.
 	args func(rest []string) []string
 }
@@ -181,6 +184,27 @@ var legacyRoutes = func() []legacyRoute {
 		{from: "ai surplus", to: "report ai surplus"},
 		{from: "ai", to: "report ai"},
 		{from: "report requests ai", to: "report ai"},
+		{from: "activity", to: "report activity"},
+		{from: "mistakes", to: "report quality mistakes"},
+		// wp escapes ls|show|trace|prove stay; the rest of it was the summary.
+		{from: "escapes", to: "report quality escapes", only: func(rest []string) bool {
+			return len(rest) == 0 || !slices.Contains([]string{"ls", "show", "trace", "prove"}, rest[0])
+		}},
+		{from: "worklog stats", to: "report quality reviews"},
+		{from: "worklog triage", to: "report quality triage"},
+		{from: "worklog stakes", to: "report quality stakes"},
+		{from: "log", to: "record time"},
+		{from: "time", to: "record time"},
+		{from: "usage meaning", to: "report meaning"},
+		{from: "usage feature", to: "report feature"},
+	}
+	for _, t := range []string{"history", "line", "tests", "coverage", "suppressions"} {
+		rs = append(rs, legacyRoute{from: "ci " + t, to: "report ci " + t})
+	}
+	for _, e := range []string{"env", "envs", "environment", "environments"} {
+		for _, d := range []string{"deploy", "deployed"} {
+			rs = append(rs, legacyRoute{from: e + " " + d, to: "record deploy"})
+		}
 	}
 	for _, t := range behaviorTopics {
 		rs = append(rs, legacyRoute{from: "usage " + t, to: "report behavior " + t})
@@ -197,13 +221,13 @@ func rewriteLegacy(args []string) ([]string, *legacyRoute) {
 	for i := range legacyRoutes {
 		r := &legacyRoutes[i]
 		f := strings.Fields(r.from)
-		if len(f) > bestN && len(args) >= len(f) && slices.Equal(args[:len(f)], f) {
+		if len(f) > bestN && len(args) >= len(f) && slices.Equal(args[:len(f)], f) && (r.only == nil || r.only(args[len(f):])) {
 			best, bestN = r, len(f)
 		}
 	}
 	if best == nil {
 		// Bare wp usage writes: wp usage KEY --tokens-in N.
-		if len(args) > 0 && args[0] == "usage" && (len(args) == 1 || !slices.Contains([]string{"meaning", "feature"}, args[1])) {
+		if len(args) > 0 && args[0] == "usage" {
 			return append([]string{"record", "usage"}, args[1:]...), &legacyRoute{from: "usage", to: "record usage"}
 		}
 		return args, nil
@@ -338,19 +362,26 @@ how the picks score without being shown, and when the shares last moved.`,
 	run:      cmdAISurplus,
 }
 
-// cmdSubjects is wp report, wp record and wp report behavior: with nothing
-// after it, the list of what it holds; with a word that is none of them, the
-// list again, the closest first.
+// cmdSubjects is wp report, wp record, wp report behavior and the other
+// parents that only list what they hold: with nothing after it, the list; with
+// a word that is none of them, the list again. A word that is a near miss
+// (a typo of one name, or the start of one) is named as the closest, and under
+// wp report, which only reads, run.
 func cmdSubjects(c *cli, args []string) error {
 	cmd := c.cur
 	if len(args) > 0 && isHelpFlag(args[0]) {
 		return c.usage("help")
 	}
 	noun := "subject"
-	if cmd.name == "behavior" {
+	if cmd.name != "report" && cmd.name != "record" {
 		noun = "topic"
 	}
-	subs := slices.Clone(cmd.subs)
+	var subs []*command
+	for _, s := range cmd.subs {
+		if !s.hidden {
+			subs = append(subs, s)
+		}
+	}
 	if len(args) == 0 {
 		c.println(strings.TrimSpace(fmt.Sprintf("wp %s %s", cmd.path(), strings.ToUpper(noun))) + ": " + cmd.summary)
 		c.println()
@@ -358,60 +389,93 @@ func cmdSubjects(c *cli, args []string) error {
 		return nil
 	}
 	word := args[0]
-	slices.SortStableFunc(subs, func(a, b *command) int { return nameDistance(word, a) - nameDistance(word, b) })
-	_, _ = fmt.Fprintf(c.err, "wp: unknown %s %s %q; the closest is wp %s %s:\n", cmd.name, noun, word, cmd.path(), subs[0].name)
+	if near := nearMiss(word, subs); near != nil {
+		if strings.HasPrefix(cmd.path(), "report") {
+			_, _ = fmt.Fprintf(c.err, "wp: %q is not a %s %s; ran wp %s %s\n", word, cmd.path(), noun, cmd.path(), near.name)
+			return c.dispatch(near, args[1:])
+		}
+		_, _ = fmt.Fprintf(c.err, "wp: unknown %s %s %q; the closest is wp %s %s:\n", cmd.path(), noun, word, cmd.path(), near.name)
+	} else {
+		_, _ = fmt.Fprintf(c.err, "wp: unknown %s %s %q; the %ss are:\n", cmd.path(), noun, word, noun)
+	}
 	printSubjectList(c.err, subs)
 	return exitCode(2)
+}
+
+// nearMiss is the one command a word is clearly a slip for: a typo of its name
+// (one edit, a swap of two letters, or a quarter of its length) or the start
+// of it, three letters or more. Two equally close names, or none, give nil.
+func nearMiss(word string, subs []*command) *command {
+	if len(word) < 3 {
+		return nil
+	}
+	var best *command
+	bestD, tie := math.MaxInt, false
+	for _, s := range subs {
+		d := math.MaxInt
+		qualifies := false
+		for _, n := range append([]string{s.name}, s.aliases...) {
+			ed := editDistance(word, n)
+			if ed <= max(1, len(n)/4) || strings.HasPrefix(n, word) || strings.HasPrefix(word, n) && ed <= 2 {
+				qualifies = true
+				d = min(d, ed)
+			}
+		}
+		if !qualifies {
+			continue
+		}
+		switch {
+		case d < bestD:
+			best, bestD, tie = s, d, false
+		case d == bestD:
+			tie = true
+		}
+	}
+	if tie {
+		return nil
+	}
+	return best
 }
 
 func printSubjectList(w io.Writer, subs []*command) {
 	width := 0
 	for _, s := range subs {
-		width = max(width, len(s.path())+3)
+		width = max(width, len(s.path())+4)
 	}
 	for _, s := range subs {
 		_, _ = fmt.Fprintf(w, "  %-*s %s\n", width, "wp "+s.path(), s.summary)
 	}
 }
 
-// nameDistance is how far a word is from a command's name or aliases: the
-// edit distance, less when one starts the other.
-func nameDistance(word string, cmd *command) int {
-	best := math.MaxInt
-	for _, n := range append([]string{cmd.name}, cmd.aliases...) {
-		d := editDistance(word, n) * 2
-		if strings.HasPrefix(n, word) || strings.HasPrefix(word, n) {
-			d--
-		}
-		best = min(best, d)
-	}
-	return best
-}
-
+// editDistance counts single-letter edits and swaps of two neighbours.
 func editDistance(a, b string) int {
-	prev := make([]int, len(b)+1)
-	for j := range prev {
-		prev[j] = j
+	d := make([][]int, len(a)+1)
+	for i := range d {
+		d[i] = make([]int, len(b)+1)
+		d[i][0] = i
+	}
+	for j := range d[0] {
+		d[0][j] = j
 	}
 	for i := 1; i <= len(a); i++ {
-		cur := make([]int, len(b)+1)
-		cur[0] = i
 		for j := 1; j <= len(b); j++ {
 			cost := 1
 			if a[i-1] == b[j-1] {
 				cost = 0
 			}
-			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+			d[i][j] = min(d[i-1][j]+1, d[i][j-1]+1, d[i-1][j-1]+cost)
+			if i > 1 && j > 1 && a[i-1] == b[j-2] && a[i-2] == b[j-1] {
+				d[i][j] = min(d[i][j], d[i-2][j-2]+1)
+			}
 		}
-		prev = cur
 	}
-	return prev[len(b)]
+	return d[len(a)][len(b)]
 }
 
 // acceptWindow lets a report that takes --since take --days N (as --since
 // Nd), and one that takes --days take --since Nd, so no one has to know
 // which a report was written with. A report's own default window stays.
-func acceptWindow(fs *flag.FlagSet) {
+func acceptWindow(fs *flag.FlagSet, w io.Writer) {
 	switch {
 	case fs.Lookup("since") != nil && fs.Lookup("days") == nil:
 		fs.Func("days", "(hidden) N days back: --since Nd", func(v string) error {
@@ -426,7 +490,15 @@ func acceptWindow(fs *flag.FlagSet) {
 			if err != nil {
 				return err
 			}
-			return fs.Set("days", strconv.Itoa(max(1, int(math.Ceil(float64(d)/float64(24*time.Hour))))))
+			days := max(1, int(math.Ceil(float64(d)/float64(24*time.Hour))))
+			if time.Duration(days)*24*time.Hour != d {
+				plural := "s"
+				if days == 1 {
+					plural = ""
+				}
+				_, _ = fmt.Fprintf(w, "wp: this report counts whole days: --since %s is read as the last %d day%s\n", v, days, plural)
+			}
+			return fs.Set("days", strconv.Itoa(days))
 		})
 	}
 }

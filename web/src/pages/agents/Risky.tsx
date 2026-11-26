@@ -77,11 +77,11 @@ export function RiskyCommands({ filters, setFilters }: HubTabProps) {
       <Explainer id="agents:risky" label="What counts as risky">
         Shell commands agents ran that delete, discard or overwrite what can’t be had back, or reach
         production, another machine, a cluster or a disk, found by plain patterns in Claude Code’s
-        transcripts when <code>wp usage sync</code> runs. <b>High</b>: production, other machines,
-        shared history, deletes outside any checkout. <b>Medium</b>: local work or state a person
-        might want back. A high one that ran notifies you. The whole command is kept (older rows:
-        its first 300 characters), with obvious secrets hidden, visible to you and admins only. Also{' '}
-        <code>wp usage risky</code>.
+        transcripts when <code>wp record usage --from-transcripts</code> runs. <b>High</b>:
+        production, other machines, shared history, deletes outside any checkout. <b>Medium</b>:
+        local work or state a person might want back. A high one that ran notifies you. The whole
+        command is kept (older rows: its first 300 characters), with obvious secrets hidden, visible
+        to you and admins only. Also <code>wp report behavior risky</code>.
       </Explainer>
 
       {counts && (
@@ -174,7 +174,7 @@ export function RiskyCommands({ filters, setFilters }: HubTabProps) {
           >
             {narrowed
               ? 'Nothing matches these filters. Try All, or a longer period.'
-              : 'Force pushes, deletes, production commands and the like appear here once wp usage sync reads the sessions that ran them.'}
+              : 'Force pushes, deletes, production commands and the like appear here once wp record usage --from-transcripts reads the sessions that ran them.'}
           </Empty>
         </div>
       ) : (

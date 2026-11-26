@@ -33,8 +33,8 @@ export function LedgerSection({ filters }: { filters: UsageFilters }) {
       {l.unmeasured_messages > 0 && (
         <p className="rounded-lg border border-line bg-sunken px-3 py-2 text-xs text-muted">
           {l.unmeasured_messages.toLocaleString()} messages in this period were reported before the
-          ledger existed. Run <code>wp usage sync</code> on each machine to measure them; it reads
-          the transcripts again once and counts nothing twice.
+          ledger existed. Run <code>wp record usage --from-transcripts</code> on each machine to
+          measure them; it reads the transcripts again once and counts nothing twice.
         </p>
       )}
       {l.overall.calls > 0 && (

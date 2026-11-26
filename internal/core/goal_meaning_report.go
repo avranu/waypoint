@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// MeaningReport is how the judgements of meaning stand (wp usage meaning,
+// MeaningReport is how the judgements of meaning stand (wp report meaning,
 // WP-1035): figures, no verdicts.
 type MeaningReport struct {
 	At         time.Time               `json:"at"`

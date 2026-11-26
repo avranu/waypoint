@@ -418,7 +418,7 @@ gh run list -R avranu/waypoint -w github-ci -e push -s completed --created ">=$(
   done | jq -rs 'def p50: if length == 0 then "-" else sort[(length - 1) / 2 | floor] / 6 | round / 10 end;
       group_by(.name)[] | map(select(.time)) as $done
       | "\(.[0].name): \($done | length) finished, \($done | map(select(.conclusion == "failure")) | length) failed, \(length - ($done | length)) cancelled, p50 wait \($done | map(.wait) | p50) min, p50 time when green \($done | map(select(.conclusion == "success").time) | p50) min"'
-wp ci history --days 7   # ours, under "Full-tier jobs": lint, e2e shard N, backend shard N
+wp report ci history --days 7   # ours, under "Full-tier jobs": lint, e2e shard N, backend shard N
 ```
 
 Read the two with these in mind:

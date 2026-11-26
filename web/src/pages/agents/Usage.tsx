@@ -159,11 +159,11 @@ function HowToStart() {
             keeps it current: uploads after each turn and reports your quota from the status line
             (your own status line keeps working)
           </Step>
-          <Step n={2} cmd="wp usage sync --all">
+          <Step n={2} cmd="wp record usage --from-transcripts --all">
             back-fills the sessions you already have (<code>--dry-run</code> first shows what would
             be sent)
           </Step>
-          <Step n={3} cmd="wp usage otel --install">
+          <Step n={3} cmd="wp setup otel --install">
             optional, for machines whose transcripts <code>wp</code> can’t read: sends Claude Code’s
             OpenTelemetry events instead (a synced transcript always wins, so nothing counts twice)
           </Step>

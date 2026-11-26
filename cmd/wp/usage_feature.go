@@ -22,12 +22,8 @@ when they disagree; unknown when part of it wasn't recorded (runs or sessions
 from before recording began, dev builds). Runs are those of the person and
 repo asked about. Only had and before are compared. Medians, with a Mann-Whitney p-value; fewer than five
 on a side is too few to say.`,
-	examples: []string{"wp usage feature WP-192", "wp usage feature v0.80.0 --window 14"},
+	examples: []string{"wp report feature WP-192", "wp report feature v0.80.0 --window 14"},
 	run:      cmdUsageFeature,
-}
-
-func init() {
-	usageCmd.subs = append(usageCmd.subs, usageFeatureCmd)
 }
 
 type featureSide struct {

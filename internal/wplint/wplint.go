@@ -12,7 +12,7 @@
 //
 //	//wplint:ignore RULE why this one is fine
 //
-// The reason is required; `wp ci suppressions` lists the waivers. What the
+// The reason is required; `wp report ci suppressions` lists the waivers. What the
 // rules check and why, waivers and merged migrations: WP-ADR136.
 package wplint
 

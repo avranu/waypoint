@@ -20,7 +20,7 @@ func (s *Server) ciLine(w http.ResponseWriter, r *http.Request) (any, error) {
 	return textResponse(ciLineText(rep)), nil
 }
 
-// ciLineText is wp ci line: per line the armed pull requests in order, a row
+// ciLineText is wp report ci line: per line the armed pull requests in order, a row
 // per day, the totals, and how the ended rows ended.
 func ciLineText(rep *core.CILineReport) string {
 	var o strings.Builder

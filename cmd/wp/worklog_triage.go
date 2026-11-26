@@ -66,7 +66,7 @@ type triageTotals struct {
 	EscapesSkip  int `json:"escapes_on_skipped"`
 }
 
-// cmdWorklogTriage is wp worklog triage: what review triage decided and how
+// cmdWorklogTriage is wp report quality triage: what review triage decided and how
 // it turned out.
 func cmdWorklogTriage(c *cli, args []string) error {
 	fs := c.flags()

@@ -19,7 +19,7 @@ func (s *Server) mistakes(w http.ResponseWriter, r *http.Request) (any, error) {
 	return textResponse(mistakesText(project, list)), nil
 }
 
-// mistakesText is wp mistakes.
+// mistakesText is wp report quality mistakes.
 func mistakesText(project string, list []*core.MistakeClass) string {
 	if len(list) == 0 {
 		return fmt.Sprintf("No recurring mistakes filed in %s yet: a class needs 3 independent instances within 14 days.\n", project)

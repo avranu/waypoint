@@ -85,7 +85,7 @@ func flakyRepro(f core.CIFlakyTest) string {
 		core.ShellWord("^"+regexp.QuoteMeta(top)+"$"), core.ShellWord(pkg))
 }
 
-// ciTestsText is wp ci tests.
+// ciTestsText is wp report ci tests.
 func ciTestsText(t *core.CITests) string {
 	var o strings.Builder
 	scope := "all repos"
@@ -157,7 +157,7 @@ func ciTestsText(t *core.CITests) string {
 	return o.String()
 }
 
-// ciCoverageText is wp ci coverage.
+// ciCoverageText is wp report ci coverage.
 func ciCoverageText(c *core.CICoverage) string {
 	var o strings.Builder
 	what := c.Repo
@@ -200,7 +200,7 @@ func ciCoverageText(c *core.CICoverage) string {
 	return o.String()
 }
 
-// ciSuppressionsText is wp ci suppressions.
+// ciSuppressionsText is wp report ci suppressions.
 func ciSuppressionsText(s *core.CISuppressions) string {
 	var o strings.Builder
 	fmt.Fprintf(&o, "Suppressions in %s", s.Repo)

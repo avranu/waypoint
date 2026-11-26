@@ -71,8 +71,25 @@ func TestLegacyNamesRunTheNewCommand(t *testing.T) {
 		{"report quota", "report usage"},
 		{"report requests ai", "report ai"},
 		{"report behaviour risky", "report behavior risky"},
-		{"usage meaning", "usage meaning"},
-		{"usage feature WP-1", "usage feature WP-1"},
+		{"usage meaning", "report meaning"},
+		{"usage feature WP-1", "report feature WP-1"},
+		{"ci history --days 9 --week", "report ci history --days 9 --week"},
+		{"ci line", "report ci line"},
+		{"ci tests --flaky", "report ci tests --flaky"},
+		{"ci coverage internal/core", "report ci coverage internal/core"},
+		{"ci suppressions --all", "report ci suppressions --all"},
+		{"activity claude --days 7", "report activity claude --days 7"},
+		{"mistakes -p WP", "report quality mistakes -p WP"},
+		{"escapes --days 30 -p WP", "report quality escapes --days 30 -p WP"},
+		{"escapes", "report quality escapes"},
+		{"escapes ls --limit 5", "escapes ls --limit 5"},
+		{"worklog stats -p WP", "report quality reviews -p WP"},
+		{"worklog triage --rows", "report quality triage --rows"},
+		{"worklog stakes --days 3", "report quality stakes --days 3"},
+		{"log WP-1 45m -m x", "record time WP-1 45m -m x"},
+		{"time WP-1 1h", "record time WP-1 1h"},
+		{"env deploy staging --status started", "record deploy staging --status started"},
+		{"envs deployed prod", "record deploy prod"},
 	} {
 		oc, orest := resolveWords(strings.Fields(tc.old))
 		nc, nrest := resolveWords(strings.Fields(tc.new))
@@ -110,7 +127,7 @@ func TestHelpListsNewNamesOnly(t *testing.T) {
 			t.Errorf("wp help lacks %q:\n%s", want, list)
 		}
 	}
-	for _, old := range []string{"  usage ", "  burn ", "  ai "} {
+	for _, old := range []string{"  usage ", "  burn ", "  ai ", "  activity ", "  mistakes ", "\n  log "} {
 		if strings.Contains(list, old) {
 			t.Errorf("wp help lists the old name %q", old)
 		}
@@ -120,12 +137,12 @@ func TestHelpListsNewNamesOnly(t *testing.T) {
 		t.Fatal(out.String())
 	}
 	all := out.String()
-	for _, old := range []string{"\n## wp burn\n", "\n## wp ai\n", "\n## wp usage sync\n", "\n## wp usage where\n", "\n## wp usage guard\n"} {
+	for _, old := range []string{"\n## wp burn\n", "\n## wp ai\n", "\n## wp usage sync\n", "\n## wp usage where\n", "\n## wp usage guard\n", "\n## wp usage meaning\n", "\n## wp activity\n", "\n## wp mistakes\n", "\n## wp log\n", "\n## wp env deploy\n", "\n## wp ci history\n", "\n## wp worklog stats\n"} {
 		if strings.Contains(all, old) {
 			t.Errorf("wp help --all documents the old name %q", strings.TrimSpace(old))
 		}
 	}
-	for _, want := range []string{"\n## wp report usage\n", "\n## wp report behavior cli\n", "\n## wp report ai surplus\n", "\n## wp record usage\n", "\n## wp guard set\n", "\n## wp transcript\n", "\n## wp setup otel\n", "\n## wp usage meaning\n"} {
+	for _, want := range []string{"\n## wp report usage\n", "\n## wp report behavior cli\n", "\n## wp report ai surplus\n", "\n## wp record usage\n", "\n## wp guard set\n", "\n## wp transcript\n", "\n## wp setup otel\n", "\n## wp report meaning\n", "\n## wp report feature\n", "\n## wp report ci history\n", "\n## wp report activity\n", "\n## wp report quality mistakes\n", "\n## wp report quality reviews\n", "\n## wp record time\n", "\n## wp record deploy\n", "\n## wp ci status\n", "\n## wp escapes ls\n"} {
 		if !strings.Contains(all, want) {
 			t.Errorf("wp help --all lacks %q", strings.TrimSpace(want))
 		}
@@ -142,6 +159,13 @@ func TestLegacyHelpNamesTheNewCommand(t *testing.T) {
 		{"usage -h", "wp usage is now wp record usage", "wp record usage "},
 		{"usage sync -h", "wp usage sync is now wp record usage --from-transcripts:", "wp record usage --from-transcripts "},
 		{"usage guard set -h", "wp usage guard set is now wp guard set:", "wp guard set "},
+		{"ci history -h", "wp ci history is now wp report ci history:", "wp report ci history "},
+		{"activity -h", "wp activity is now wp report activity:", "wp report activity "},
+		{"mistakes -h", "wp mistakes is now wp report quality mistakes:", "wp report quality mistakes "},
+		{"worklog stats -h", "wp worklog stats is now wp report quality reviews:", "wp report quality reviews "},
+		{"log -h", "wp log is now wp record time:", "wp record time "},
+		{"env deploy -h", "wp env deploy is now wp record deploy:", "wp record deploy "},
+		{"usage meaning -h", "wp usage meaning is now wp report meaning:", "wp report meaning"},
 	} {
 		var out, errb bytes.Buffer
 		if code := run(strings.Fields(tc.args), &out, &errb); code != 0 {
@@ -166,8 +190,10 @@ func TestReportAndBehaviorListTheirContents(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{[]string{"report"}, []string{"wp report usage ", "wp report behavior ", "wp report ai "}},
-		{[]string{"record"}, []string{"wp record usage "}},
+		{[]string{"report"}, []string{"wp report usage ", "wp report behavior ", "wp report ai ", "wp report ci ", "wp report activity ", "wp report quality ", "wp report meaning ", "wp report feature "}},
+		{[]string{"record"}, []string{"wp record usage ", "wp record time ", "wp record deploy "}},
+		{[]string{"report", "ci"}, []string{"wp report ci history ", "wp report ci line ", "wp report ci tests ", "wp report ci coverage ", "wp report ci suppressions "}},
+		{[]string{"report", "quality"}, []string{"wp report quality mistakes ", "wp report quality escapes ", "wp report quality reviews ", "wp report quality triage ", "wp report quality stakes "}},
 		{[]string{"report", "behavior"}, []string{"wp report behavior cli ", "wp report behavior risky ", "wp report behavior facts "}},
 		{[]string{"report", "behaviour"}, []string{"wp report behavior cli "}},
 	} {
@@ -188,24 +214,107 @@ func TestReportAndBehaviorListTheirContents(t *testing.T) {
 	}
 }
 
-func TestUnknownSubjectListsClosestFirst(t *testing.T) {
+// Under wp report a clear near miss runs, with one stderr line; elsewhere it
+// is only named; a word near nothing, or equally near two, lists the subjects.
+func TestUnknownSubjectNearMisses(t *testing.T) {
 	reportEnv(t)
+	linkCommands()
 	for _, tc := range []struct {
-		args    []string
-		closest string
+		word string
+		subs []*command
+		want string
 	}{
-		{[]string{"report", "usgae"}, "wp report usage"},
-		{[]string{"report", "behavor", "x"}, "wp report behavior"},
-		{[]string{"report", "behavior", "rsky"}, "wp report behavior risky"},
+		{"usagee", reportCmd.subs, "usage"},
+		{"usgae", reportCmd.subs, "usage"},
+		{"beh", reportCmd.subs, "behavior"},
+		{"behavor", reportCmd.subs, "behavior"},
+		{"riksy", reportBehaviorCmd.subs, "risky"},
+		{"zzzzz", reportCmd.subs, ""},
+		{"xy", reportCmd.subs, ""},
+		{"stalx", []*command{{name: "stalla"}, {name: "stallb"}}, ""}, // equally near two
+	} {
+		got := ""
+		if n := nearMiss(tc.word, tc.subs); n != nil {
+			got = n.name
+		}
+		if got != tc.want {
+			t.Errorf("nearMiss(%q) = %q, want %q", tc.word, got, tc.want)
+		}
+	}
+	for _, tc := range []struct {
+		args []string
+		ran  string
+	}{
+		{[]string{"report", "usagee", "-h"}, "wp: \"usagee\" is not a report subject; ran wp report usage"},
+		{[]string{"report", "beh", "-h"}, "wp: \"beh\" is not a report subject; ran wp report behavior"},
+		{[]string{"report", "behavior", "riksy", "-h"}, "wp: \"riksy\" is not a report behavior topic; ran wp report behavior risky"},
+	} {
+		var out, errb bytes.Buffer
+		run(tc.args, &out, &errb)
+		if first, _, _ := strings.Cut(errb.String(), "\n"); first != tc.ran {
+			t.Errorf("wp %v: stderr starts %q, want %q", tc.args, first, tc.ran)
+		}
+	}
+	for _, tc := range []struct {
+		args []string
+		want string // the stderr's first line
+	}{
+		{[]string{"record", "usag"}, "wp: unknown record subject \"usag\"; the closest is wp record usage:"},
+		{[]string{"report", "zzzzz"}, "wp: unknown report subject \"zzzzz\"; the subjects are:"},
+		{[]string{"report", "xy"}, "wp: unknown report subject \"xy\"; the subjects are:"},
+		{[]string{"report", "quality", "m"}, "wp: unknown report quality topic \"m\"; the topics are:"},
 	} {
 		var out, errb bytes.Buffer
 		if code := run(tc.args, &out, &errb); code != 2 || out.Len() != 0 {
 			t.Errorf("wp %v: code %d, stdout %q", tc.args, code, out.String())
 		}
-		lines := strings.Split(errb.String(), "\n")
-		if len(lines) < 2 || !strings.HasPrefix(lines[0], "wp: unknown ") || !strings.HasPrefix(strings.TrimSpace(lines[1]), tc.closest+" ") {
-			t.Errorf("wp %v: %q", tc.args, lines)
+		if first, _, _ := strings.Cut(errb.String(), "\n"); first != tc.want {
+			t.Errorf("wp %v: stderr starts %q, want %q", tc.args, first, tc.want)
 		}
+	}
+	// wp guard is the control: it never runs a guess.
+	var out, errb bytes.Buffer
+	run([]string{"guard", "sett"}, &out, &errb)
+	if strings.Contains(errb.String(), "; ran wp") {
+		t.Errorf("wp guard ran a guess: %s", errb.String())
+	}
+}
+
+// wp report tasks and requests are named by the ADR but not built: one line, exit 2.
+func TestReportNotBuilt(t *testing.T) {
+	reportEnv(t)
+	for _, tc := range []struct {
+		args []string
+		line string
+	}{
+		{[]string{"report", "tasks"}, "wp report tasks is not built yet; nearest now: wp ls, wp report activity\n"},
+		{[]string{"report", "requests"}, "wp report requests is not built yet; nearest now: wp request ls --open\n"},
+	} {
+		var out, errb bytes.Buffer
+		if code := run(tc.args, &out, &errb); code != 2 || out.Len() != 0 || errb.String() != tc.line {
+			t.Errorf("wp %v: code %d, stdout %q, stderr %q", tc.args, code, out.String(), errb.String())
+		}
+	}
+	var out bytes.Buffer
+	run([]string{"report"}, &out, &out)
+	if strings.Contains(out.String(), "report tasks") || strings.Contains(out.String(), "report requests") {
+		t.Errorf("wp report lists reports that are not built:\n%s", out.String())
+	}
+}
+
+// Stage 2 leaves no command defined under its old name: usageCmd is gone.
+func TestStage2OldCommandsAreOffTheList(t *testing.T) {
+	linkCommands()
+	for _, name := range []string{"activity", "mistakes", "log", "time", "usage"} {
+		if cmd := findCommand(name); cmd != nil {
+			t.Errorf("wp %s is still a top-level command", name)
+		}
+	}
+	if ci := findCommand("ci"); ci == nil || ci.sub("history") != nil || ci.sub("status") == nil || ci.sub("log") == nil || ci.sub("lint") == nil {
+		t.Errorf("wp ci keeps status, log, lint and loses history")
+	}
+	if e := findCommand("escapes"); e == nil || e.sub("ls") == nil || e.sub("prove") == nil {
+		t.Errorf("wp escapes keeps ls, show, trace and prove")
 	}
 }
 
@@ -234,6 +343,20 @@ func TestWindowAcceptsDaysAndSince(t *testing.T) {
 		if _, err := c.parse(fs, []string{"--since", tc.since}); err != nil || *days != tc.days {
 			t.Errorf("--since %s on a --days report: %d, %v", tc.since, *days, err)
 		}
+	}
+	// widening says so on stderr, once; whole days say nothing
+	var werr bytes.Buffer
+	wc := &cli{err: &werr, out: &bytes.Buffer{}, cur: c.cur}
+	wfs := wc.flags()
+	wfs.Int("days", 28, "")
+	if _, err := wc.parse(wfs, []string{"--since", "12h"}); err != nil || werr.String() != "wp: this report counts whole days: --since 12h is read as the last 1 day\n" {
+		t.Errorf("--since 12h: %q, %v", werr.String(), err)
+	}
+	werr.Reset()
+	wfs = wc.flags()
+	wfs.Int("days", 28, "")
+	if _, err := wc.parse(wfs, []string{"--since", "3d"}); err != nil || werr.Len() != 0 {
+		t.Errorf("--since 3d said %q", werr.String())
 	}
 	// the default stays
 	fs = c.flags()

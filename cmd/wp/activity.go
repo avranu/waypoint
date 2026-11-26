@@ -10,7 +10,7 @@ var activityCmd = &command{
 	summary: "what agents did lately: tasks, time, cost, PRs",
 	about: `SPEC narrows to an agent as when delegating (claude, opus,
 anthropic/claude-code). Same numbers as the Agents page.`,
-	examples: []string{"wp activity claude --days 7", "wp activity -A"},
+	examples: []string{"wp report activity claude --days 7", "wp report activity -A"},
 	run:      cmdActivity,
 }
 

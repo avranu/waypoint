@@ -25,7 +25,7 @@ const help = (
     cache is cold the notice waits for its next turn, unless the job stays stuck past the wake time.
     Unless the times are fixed, Waypoint lengthens the stall time for kinds of jobs that are often
     quiet and fine, and stops waking cold sessions when those wakes aren’t acted on (
-    <Code>wp usage stalled</Code> shows the figures).
+    <Code>wp report behavior stalled</Code> shows the figures).
   </>
 )
 

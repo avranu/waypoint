@@ -10,7 +10,7 @@ import (
 )
 
 var worklogCmd = &command{
-	name: "worklog", group: "Issues", args: `[KEY] [-m "TEXT" [--tag found|fixed|rejected]] | [KEY] --review -f FILE|-m "REPORT" | stats [-p PROJECT] [--days N] | triage [-p PROJECT] [--days N] [--rows] | stakes [-p PROJECT] [--days N] [--rows]`,
+	name: "worklog", group: "Issues", args: `[KEY] [-m "TEXT" [--tag found|fixed|rejected]] | [KEY] --review -f FILE|-m "REPORT"`,
 	summary: "a task's work log: review rounds, findings; add a note",
 	about: `Oldest first, recorded automatically. -m adds a note; --tag counts it as
 an issue found, fixed or rejected. KEY defaults to your current task.
@@ -19,23 +19,12 @@ an issue found, fixed or rejected. KEY defaults to your current task.
 takes it as the task's review round, asking you for its findings (wp
 audit report) before the pull request opens. An adversarial-review
 subagent's report is attached on its own when it finishes.
-stats sums review rounds over the last --days (30), for -p or all
-projects. stakes sorts them by stakes tier (high, elevated, normal):
-what their audits and Claude reviews did, cost and found (--days 14).`,
-	examples: []string{"wp worklog WP-12", `wp worklog WP-12 -m "Missed the nil map" --tag found`, "wp worklog WP-12 --review -f review.md", "wp worklog stats -p WP --days 90"},
+The sums over many tasks are wp report quality reviews, triage and stakes.`,
+	examples: []string{"wp worklog WP-12", `wp worklog WP-12 -m "Missed the nil map" --tag found`, "wp worklog WP-12 --review -f review.md"},
 	run:      cmdWorklog,
 }
 
 func cmdWorklog(c *cli, args []string) error {
-	if len(args) > 0 && args[0] == "stats" {
-		return cmdWorklogStats(c, args[1:])
-	}
-	if len(args) > 0 && args[0] == "triage" {
-		return cmdWorklogTriage(c, args[1:])
-	}
-	if len(args) > 0 && args[0] == "stakes" {
-		return cmdWorklogStakes(c, args[1:])
-	}
 	fs := c.flags()
 	msg := fs.String("message", "", "add a note (`TEXT`)")
 	short(fs, "m", "message")

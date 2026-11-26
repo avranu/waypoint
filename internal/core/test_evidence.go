@@ -807,7 +807,7 @@ func (s *Service) statementsAtStop(ctx context.Context, t *tx, x *AgentSession, 
 	return err
 }
 
-// EvidenceWeek counts a week's ships (Monday, UTC) for wp worklog stats.
+// EvidenceWeek counts a week's ships (Monday, UTC) for wp report quality reviews.
 type EvidenceWeek struct {
 	Week string `json:"week"`
 	// Ships: commits with a record; OnTree: of them, with a run on the

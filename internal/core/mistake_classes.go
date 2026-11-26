@@ -832,7 +832,7 @@ func mistakeTaskText(g *mistakeGroup) string {
 	b.WriteString(untrustedText(strings.TrimRight(inst.String(), "\n")) + "\n")
 	b.WriteString("\n**Make the next one fail a check that costs no tokens.** Pick what fits: an analyzer rule, a contract test on a recorded payload, a production invariant, a property test.\n\n")
 	b.WriteString("**Done when** the check fires on each instance above (at the commit before its fix) and is quiet on the default branch.\n\n")
-	b.WriteString("If these aren't the same mistake or a check isn't worth it, close this as Won't Do: Waypoint won't file this class again. Once it is done, `wp mistakes` counts whatever comes back.\n")
+	b.WriteString("If these aren't the same mistake or a check isn't worth it, close this as Won't Do: Waypoint won't file this class again. Once it is done, `wp report quality mistakes` counts whatever comes back.\n")
 	return b.String()
 }
 

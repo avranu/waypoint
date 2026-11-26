@@ -27,7 +27,7 @@ func (s *Server) agentActivity(w http.ResponseWriter, r *http.Request) (any, err
 	return act, nil
 }
 
-// activityText is the activity in a few lines, for wp activity.
+// activityText is the activity in a few lines, for wp report activity.
 func activityText(a *core.Activity, spec string) string {
 	var b strings.Builder
 	who := "Agents"

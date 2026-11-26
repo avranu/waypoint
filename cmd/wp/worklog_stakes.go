@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// cmdWorklogStakes is wp worklog stakes (WP-1231, WP-1248): review rounds by
+// cmdWorklogStakes is wp report quality stakes (WP-1231, WP-1248): review rounds by
 // stakes tier, what their free audits and Claude reviews did, cost and
 // found, and what the tasks in each tier took and led to.
 func cmdWorklogStakes(c *cli, args []string) error {

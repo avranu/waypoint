@@ -16,11 +16,11 @@ var envCmd = &command{
 	summary: "environments: is it up, what does it run, deploys",
 	about: `A place a project's code runs: production, staging, or dev environments
 that come and go. Waypoint health-checks each address. CI records
-deployments with wp env deploy; a cluster calls wp env up / down for dev
+deployments with wp record deploy; a cluster calls wp env up / down for dev
 environments. Scope: wp help scope.`,
 	examples: []string{
 		"wp env up a23x42s --branch fix/login --commit 3fa9c1e --ttl 3d",
-		"wp env deploy staging --commit \"$GIT_SHA\" --status succeeded",
+		"wp record deploy staging --commit \"$GIT_SHA\" --status succeeded",
 	},
 }
 
@@ -238,7 +238,7 @@ func envLs(c *cli, args []string) error {
 		return c.emit(b, func() string { return "" })
 	}
 	if len(all) == 0 {
-		c.println("No environments. Record a deploy (wp env deploy NAME --commit SHA) or bring a dev one up (wp env up NAME --url URL).")
+		c.println("No environments. Record a deploy (wp record deploy NAME --commit SHA) or bring a dev one up (wp env up NAME --url URL).")
 		return nil
 	}
 	rank := map[string]int{"down": 0, "degraded": 1, "unknown": 2, "up": 3}
@@ -508,8 +508,8 @@ again with succeeded or failed for the same commit to finish it; the
 default is succeeded. --commit defaults to the checked-out commit, unless you give --version
 alone. Needs a token with write access.`,
 	examples: []string{
-		"wp env deploy staging --commit \"$SHA\" --status started --url \"$RUN_URL\"",
-		"wp env deploy production --status failed --notes \"migration 0021 failed\"",
+		"wp record deploy staging --commit \"$SHA\" --status started --url \"$RUN_URL\"",
+		"wp record deploy production --status failed --notes \"migration 0021 failed\"",
 	},
 	run: func(c *cli, args []string) error {
 		fs := c.flags()

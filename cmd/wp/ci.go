@@ -17,11 +17,12 @@ import (
 
 var ciCmd = &command{
 	name: "ci", group: "Code and CI", args: "[SUBCOMMAND]",
-	summary:  "CI health, what is running, history, tests, coverage, job logs, workflow lint",
+	summary:  "CI health, what is running, job logs, workflow lint (history, tests, coverage: wp report ci)",
 	examples: []string{"wp ci doctor", "wp ci status", "wp ci log 3917043"},
 	about: `doctor says whether CI and the merge lines are healthy and what to do. log
 reads any CI job's log, such as main's push run, which wp pr log can't
-reach. lint needs no server or model.`,
+reach. lint needs no server or model. History, the merge line, tests, coverage
+and suppressions are wp report ci.`,
 	subs: []*command{
 		{name: "doctor", args: "[--repo OWNER/NAME]", summary: "is CI healthy? the bottleneck, what is stuck, what to do",
 			about: `A verdict (OK, WARN or PROBLEM), the bottleneck, each finding with the
@@ -39,7 +40,7 @@ here; -p, -A or --repo change that): one line each, soonest first.
 			about: `Finished runs and jobs by UTC day (--week: by week): failures, runner time,
 runner wait, full-run times, merges. First the last 7 days against the 7
 before. --days N looks back N days (default 30, at most 730).`,
-			examples: []string{"wp ci history --days 90 --week"},
+			examples: []string{"wp report ci history --days 90 --week"},
 			run:      cmdCIHistory},
 		{name: "line", args: "[--repo OWNER/NAME] [--days N]", summary: "each merge line: its armed pull requests, and what became of its stacks and batches per day",
 			about: `Per merge line, the armed pull requests in order with what each waits for
@@ -48,7 +49,7 @@ started, how each ended (merged on, failed, conflict, cancelled), the merges
 and how many used one, full-tier CI runs and full runs per merge, then the
 totals and why the ended ones ended. --days N looks back N days (default 7,
 at most 90). Reads Waypoint's own tables: no forge calls.`,
-			examples: []string{"wp ci line --days 14", "wp ci line --json"},
+			examples: []string{"wp report ci line --days 14", "wp report ci line --json"},
 			run:      cmdCILine},
 		{name: "tests", args: "[--flaky|--slow|--failing] [--days N] [--package P] [--repo OWNER/NAME]", summary: "flaky, slow and failing tests, from every CI job's results",
 			about: `Flaky: tests that passed and failed on one commit (in one tier), scored by
@@ -56,19 +57,19 @@ the share of commits they did. Slow: tests and packages by their average in
 full runs. Failing: tests whose newest default-branch result is a failure.
 Without a flag, the top few of each. --days N looks back N days (default 14,
 at most 30); --package narrows to a package and those under it.`,
-			examples: []string{"wp ci tests --flaky", "wp ci tests --slow --package internal/core"},
+			examples: []string{"wp report ci tests --flaky", "wp report ci tests --slow --package internal/core"},
 			run:      cmdCITests},
 		{name: "coverage", args: "[PATH] [--sha SHA] [--repo OWNER/NAME]", summary: "a commit's test coverage, per package or file, and its trend",
 			about: `The default branch's newest commit (--sha: any commit CI tested), its shards'
 profiles merged: the repo's packages, or with PATH the packages under a
 directory, a package's files or one file, then the default branch's last
 commits. A commit whose shards were not all read says "partial".`,
-			examples: []string{"wp ci coverage", "wp ci coverage internal/core --sha 9ad7499"},
+			examples: []string{"wp report ci coverage", "wp report ci coverage internal/core --sha 9ad7499"},
 			run:      cmdCICoverage},
 		{name: "suppressions", args: "[--days N] [--all] [--repo OWNER/NAME]", summary: "the default branch's #nosec, //nolint and //wplint:ignore comments, added and removed",
 			about: `Counts by rule, the last scans' totals, and the comments added or removed in
 the last N days (default 30). --all lists every current one.`,
-			examples: []string{"wp ci suppressions --days 7", "wp ci suppressions --all"},
+			examples: []string{"wp report ci suppressions --days 7", "wp report ci suppressions --all"},
 			run:      cmdCISuppressions},
 		{name: "log", args: "[SHA] [--run N] [--repo OWNER/NAME] [--job NAME] [--full]", summary: "a CI job's log, for a commit or a run",
 			about: `Prints the failing part (at most 200 lines a job) of each failed job of a

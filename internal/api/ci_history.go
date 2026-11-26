@@ -20,7 +20,7 @@ func (s *Server) ciHistory(w http.ResponseWriter, r *http.Request) (any, error) 
 	return textResponse(ciHistoryText(h, queryBool(r, "verbose"))), nil
 }
 
-// ciHistoryText is wp ci history: the last seven days against the seven
+// ciHistoryText is wp report ci history: the last seven days against the seven
 // before, the latest buckets (all of them if verbose), then the jobs that changed.
 func ciHistoryText(h *core.CIHistory, verbose bool) string {
 	var o strings.Builder

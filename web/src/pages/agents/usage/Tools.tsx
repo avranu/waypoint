@@ -130,8 +130,8 @@ function Unused({ o }: { o: UsageOverview }) {
     return (
       <p className="border-t border-line px-4 py-3 text-xs text-subtle">
         To see what is configured but never used, run{' '}
-        <code className="rounded bg-sunken px-1">wp usage sync</code> on each machine: it reports
-        the names of your MCP servers, skills, commands and agents.
+        <code className="rounded bg-sunken px-1">wp record usage --from-transcripts</code> on each
+        machine: it reports the names of your MCP servers, skills, commands and agents.
       </p>
     )
   const kinds = (Object.keys(UNUSED_TITLES) as UsageUnused['kind'][]).filter((k) =>

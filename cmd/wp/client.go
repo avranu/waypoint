@@ -210,7 +210,7 @@ func (c *cli) flags() *flag.FlagSet {
 func (c *cli) parse(fs *flag.FlagSet, args []string) ([]string, error) {
 	c.fs = fs
 	if c.cur != nil && c.cur.window {
-		acceptWindow(fs)
+		acceptWindow(fs, c.err)
 	}
 	var pos []string
 	for {

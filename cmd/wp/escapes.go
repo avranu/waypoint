@@ -24,7 +24,7 @@ blamed for it, how it was found and how long it lived. Prints escapes per
 week, median lifetime, the split by stage and detector, and how many fixes
 a test proves (it fails without the fix). Runners fill it; wp escapes trace
 and wp escapes prove run a round in this checkout.`,
-	examples: []string{"wp escapes", "wp escapes --days 30 -p WP", "wp escapes show WP-580"},
+	examples: []string{"wp report quality escapes", "wp report quality escapes --days 30 -p WP", "wp escapes show WP-580"},
 	run:      cmdEscapes,
 	subs: []*command{
 		{name: "ls", args: "[-p KEY] [--repo R] [--days N] [--limit N]", summary: "the ledger's rows, newest first", run: cmdEscapesLs},

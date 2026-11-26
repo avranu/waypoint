@@ -703,7 +703,7 @@ export interface UsageLedger {
   merged_prs: LedgerYield
   /** Closed tasks split by task prep (WP-212): shown to the agent, held out, or none. */
   prep?: LedgerPrepGroup[]
-  /** Messages from before the ledger that `wp usage sync` hasn't re-read yet. */
+  /** Messages from before the ledger that `wp record usage --from-transcripts` hasn't re-read yet. */
   unmeasured_messages: number
   truncated?: boolean
 }
