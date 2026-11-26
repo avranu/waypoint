@@ -57,3 +57,21 @@ func TestAudit(t *testing.T) {
 		t.Errorf("a forge-named entry: %d rows, user %v, actor %q", n, uid, actor)
 	}
 }
+
+func TestKernelAudit(t *testing.T) {
+	k := newKernel(t)
+	ctx := context.Background()
+	if _, err := k.DB.W.Exec(`INSERT INTO users(id, username, email, created_at, updated_at) VALUES (7, 'robin', 'r@example.com', 0, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	entry := AuditEntry{Action: "token.create", Category: AuditAccess, Target: "T", Detail: "x"}
+	k.Audit(ctx, SystemActor(), entry)
+	k.Audit(ctx, &Actor{User: &User{ID: 7}, ReadOnly: true}, entry) // a write the actor may not make: logged, not recorded
+	if n, _, _, _ := auditRows(t, k); n != 0 {
+		t.Fatalf("recorded %d rows for the system actor and a read-only one", n)
+	}
+	k.Audit(ctx, &Actor{User: &User{ID: 7}}, entry)
+	if n, uid, _, _ := auditRows(t, k); n != 1 || uid == nil || *uid != 7 {
+		t.Fatalf("a person's entry: %d rows, user %v", n, uid)
+	}
+}

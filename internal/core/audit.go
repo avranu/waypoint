@@ -2,16 +2,8 @@ package core
 
 import "context"
 
-// audit records a decision outside a write (one that changed nothing in
-// Waypoint's own tables, or a forge's report).
-func (s *Service) audit(ctx context.Context, actor *Actor, e AuditEntry) {
-	if !auditable(actor, e) {
-		return
-	}
-	if err := s.write(ctx, actor, func(t *tx) error { t.audit(e); return nil }); err != nil {
-		s.log.ErrorContext(ctx, "record audit entry", "action", e.Action, "err", err)
-	}
-}
+// audit records a decision outside a write; see kernel.Audit.
+func (s *Service) audit(ctx context.Context, actor *Actor, e AuditEntry) { s.k.Audit(ctx, actor, e) }
 
 func derefInt(p *int64) int64 {
 	if p == nil {
