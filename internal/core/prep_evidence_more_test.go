@@ -62,6 +62,37 @@ func TestPrepEvidenceHolder(t *testing.T) {
 	}
 }
 
+// An agent that isn't holding the task is given its evidence only when the
+// task is a unit in the shown arm already, and never makes it one.
+func TestPrepEvidenceNonHolder(t *testing.T) {
+	for _, c := range []struct {
+		arm, units string
+		given      bool
+	}{
+		{arm: "shown", units: "1 0", given: true},
+		{arm: "none", units: "1 0"},
+		{units: "0 0"},
+	} {
+		t.Run(cmp(c.arm, "no unit"), func(t *testing.T) {
+			e := newEvidenceEnv(t)
+			e.llm.evidence = oneClaim
+			e.prep(e.task.Key)
+			e.claim(agentActor(e.admin, "openai/codex"), e.task.Key)
+			if c.arm != "" {
+				e.forceArm(e.task.ID, c.arm)
+			}
+			for _, shown := range []bool{true, false} {
+				if got := e.served(e.ag, e.task.Key, shown).Evidence; (got != nil) != c.given {
+					t.Errorf("shown %v: evidence %+v", shown, got)
+				}
+			}
+			if got := e.units(e.task.ID); got != c.units {
+				t.Errorf("units %s; want %s", got, c.units)
+			}
+		})
+	}
+}
+
 // A snapshot that can't be kept leaves the arm in force; the next fetch keeps it.
 func TestPrepEvidenceSnapshotFailure(t *testing.T) {
 	e := newEvidenceEnv(t)

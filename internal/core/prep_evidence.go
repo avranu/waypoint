@@ -197,15 +197,19 @@ func (s *Service) runPrepEvidence(ctx context.Context, t prepEvidenceTask) error
 
 // retryPrepEvidence runs a queued task's evidence check again, in the
 // background, when the one kept failed, was refused, was lost or read other
-// text than its prep. The server has all it reads, so no runner uploads
-// anything. It never makes a task's first check, and does nothing without a
-// live run that takes in the task's project.
-func (s *Service) retryPrepEvidence(ctx context.Context, issueID int64, now time.Time, front bool) error {
+// text than its prep, or is ready but offered a record now out of the task's
+// reach (offeredOutOfReach), so nobody is served it. The server has all it
+// reads, so no runner uploads anything. It never makes a task's first check,
+// and does nothing without a live run that takes in the task's project.
+func (s *Service) retryPrepEvidence(ctx context.Context, queued *Issue, now time.Time, front bool) error {
+	issueID := queued.ID
 	var hash, bundle, checked, state string
 	var prepped, at int64
-	err := s.db.R.QueryRowContext(ctx, `SELECT tp.text_hash, tp.updated_at, tp.bundle, e.text_hash, e.state, e.created_at
+	var unreachable bool
+	err := s.db.R.QueryRowContext(ctx, `SELECT tp.text_hash, tp.updated_at, tp.bundle, e.text_hash, e.state, e.created_at,
+			e.state = 'ready' AND `+offeredOutOfReach+`
 		FROM task_preps tp JOIN task_prep_evidence e ON e.issue_id = tp.issue_id
-		WHERE tp.issue_id = ? AND tp.state = 'ready'`, issueID).Scan(&hash, &prepped, &bundle, &checked, &state, &at)
+		WHERE tp.issue_id = ?1 AND tp.state = 'ready'`, issueID, queued.ProjectID).Scan(&hash, &prepped, &bundle, &checked, &state, &at, &unreachable)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -216,6 +220,7 @@ func (s *Service) retryPrepEvidence(ctx context.Context, issueID int64, now time
 	due := state == "failed" && age > prepRetryFailed ||
 		state == "refused" && (front || age > prepRetryFailed) ||
 		state == "pending" && age > prepPendingMax ||
+		unreachable ||
 		checked != hash && now.Sub(msTime(prepped)) > prepPendingMax
 	// A check still running here isn't lost, however long it has waited for the
 	// model. A restart forgets them, so what it lost is retried.

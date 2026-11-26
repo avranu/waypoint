@@ -224,6 +224,116 @@ func TestPrepEvidenceRetryBehindFront(t *testing.T) {
 	if r := routingOf(g.last()); r["priority"] != prioritySurplus {
 		t.Errorf("asked at %v", r["priority"])
 	}
+	if _, err := e.s.db.W.Exec(`UPDATE task_prep_evidence SET state = 'ready', offered = '[{"kind":"page","id":0,"made":0}]' WHERE issue_id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	before, calls = row(), len(g.bodies)
+	poll()
+	if row() == before || len(g.bodies) != calls+1 {
+		t.Fatalf("out of reach: row %s, asked %d times", row(), len(g.bodies)-calls)
+	}
+	if r := routingOf(g.last()); r["priority"] != prioritySurplus {
+		t.Errorf("out of reach asked at %v", r["priority"])
+	}
+}
+
+// A ready check is served to nobody once a record it offered is out of the
+// task's reach, so the poll runs it again at once, against the project the
+// task is in now (WP-ADR157).
+func TestPrepEvidenceRetryOutOfReach(t *testing.T) {
+	setup := func(t *testing.T) *evidenceEnv {
+		e := newRetryEnv(t)
+		e.seed()
+		e.llm.evidence = e.answer()
+		e.prep(e.task.Key)
+		if e.asked() != 1 || e.served(e.admin, e.task.Key, false).Evidence == nil {
+			t.Fatalf("the setup: asked %d, row %s", e.asked(), e.row(e.task.ID))
+		}
+		return e
+	}
+	offers := func(e *evidenceEnv, name string) bool {
+		id := int64(0)
+		if pg := e.pages[name]; pg != nil {
+			id = pg.ID
+		}
+		return e.one(`SELECT EXISTS (SELECT 1 FROM task_prep_evidence ev, json_each(ev.offered) o
+			WHERE ev.issue_id = ? AND json_extract(o.value, '$.kind') = 'page' AND json_extract(o.value, '$.id') = ?)`, e.task.ID, id) == "1"
+	}
+	rechecked := func(t *testing.T, e *evidenceEnv, key string) {
+		t.Helper()
+		if keys := e.polled(0); e.asked() != 2 || len(keys) != 0 || e.row(e.task.ID) != "ready" {
+			t.Fatalf("recheck: asked %d, due %v, row %s", e.asked(), keys, e.row(e.task.ID))
+		}
+		if e.served(e.admin, key, false).Evidence == nil {
+			t.Error("none served after the recheck")
+		}
+		e.later(7 * 24 * time.Hour)
+		if e.polled(0); e.asked() != 2 {
+			t.Errorf("checked a third time: asked %d", e.asked())
+		}
+	}
+	t.Run("uncited page deleted", func(t *testing.T) {
+		e := setup(t)
+		if !offers(e, "note") {
+			t.Fatal("the page isn't offered")
+		}
+		if err := e.s.DeletePage(e.ctx, e.admin, e.pages["note"].ID); err != nil {
+			t.Fatal(err)
+		}
+		if e.served(e.admin, e.task.Key, false).Evidence != nil {
+			t.Fatal("served before the recheck")
+		}
+		rechecked(t, e, e.task.Key)
+		if offers(e, "note") {
+			t.Error("the deleted page is offered still")
+		}
+	})
+	t.Run("task moved", func(t *testing.T) {
+		e := setup(t)
+		other := e.project(e.admin, "Third", "")
+		other.Settings.AutoPrep = true
+		if _, err := e.s.UpdateProject(e.ctx, e.admin, other.Key, ProjectInput{Settings: &other.Settings}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.s.SessionHook(e.ctx, e.ag, []HookEvent{hook("box", "s2", "SessionStart", nil)}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.s.db.W.Exec(`UPDATE agent_sessions SET project_id = ? WHERE cli_id = 's2'`, other.ID); err != nil {
+			t.Fatal(err)
+		}
+		e.page(e.admin, "there", "reference", other.Key, "Merge checks there", "Merge checks run nightly.", false)
+		moved, err := e.s.MoveToProject(e.ctx, e.admin, e.task.Key, other.Key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e.served(e.admin, moved.Key, false).Evidence != nil {
+			t.Fatal("served before the recheck")
+		}
+		rechecked(t, e, moved.Key)
+		if !offers(e, "there") || offers(e, "ref") {
+			t.Error("not checked against the new project's records")
+		}
+	})
+	t.Run("all in reach", func(t *testing.T) {
+		e := setup(t)
+		e.later(7 * 24 * time.Hour)
+		if e.polled(0); e.asked() != 1 {
+			t.Errorf("asked %d", e.asked())
+		}
+	})
+	t.Run("superseded and retired", func(t *testing.T) {
+		e := setup(t)
+		e.page(e.admin, "newer", "experiment", e.p.Key, "Newer", "Newer.", false)
+		e.supersede("newer", "linked")
+		retired := "retired"
+		if _, err := e.s.UpdateDesign(e.ctx, e.admin, e.notes["assumes"].ID, DesignInput{Status: &retired}); err != nil {
+			t.Fatal(err)
+		}
+		e.later(7 * 24 * time.Hour)
+		if e.polled(0); e.asked() != 1 {
+			t.Errorf("asked %d", e.asked())
+		}
+	})
 }
 
 // Only preps that have a row are looked at (none made before the check existed

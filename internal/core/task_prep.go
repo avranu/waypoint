@@ -272,7 +272,7 @@ func (s *Service) PrepDue(ctx context.Context, a *Actor, machine string, limit i
 				case !due:
 					// A prep that stands may still lack its evidence. The
 					// server runs that again itself, outside limit.
-					if err := s.retryPrepEvidence(ctx, qi.issue.ID, now, pass == 0); err != nil {
+					if err := s.retryPrepEvidence(ctx, qi.issue, now, pass == 0); err != nil {
 						s.log.WarnContext(ctx, "prep evidence retry", "issue", qi.issue.Key, "err", err)
 					}
 				case len(out) < limit:
