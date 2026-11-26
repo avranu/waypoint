@@ -1649,6 +1649,9 @@ func (s *Service) SyncRepo(ctx context.Context, repoID int64) error {
 	if len(failed) > 0 {
 		return fmt.Errorf("%d of %d issues failed to sync: %w", len(failed), len(items), errors.Join(failed...))
 	}
+	// The forge answered for this repo, from any caller (a webhook or a person's
+	// sync as well as the periodic one), so the periodic sync stops waiting.
+	s.clearRepoMissing(repoID)
 	_, err = s.db.W.ExecContext(ctx, `UPDATE project_repos SET last_synced_at = ? WHERE id = ?`, started, repoID)
 	return err
 }
