@@ -1,11 +1,99 @@
 package core
 
 import (
+	"context"
 	"fmt"
+	"maps"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/db"
 )
+
+// loopSnapshot is a loopEnv at rest, kept so that many tests that start from
+// the same round (newLoopEnv, then one review) build it once. Building it
+// is most of such a test's time: each env creates a database, a project, a
+// runner, a forge and issues through the Service, and every statement is
+// parsed again. env starts a new, independent loopEnv from it: its own
+// database, a copy of the snapshot's, and its own Service, with the
+// in-memory state the build left rebuilt to what it was. Caches that the
+// Service fills from the database as it is used (goal traces, similar
+// issues, locks) start empty, as they do after a restart.
+type loopSnapshot struct {
+	src *loopEnv
+	db  []byte
+}
+
+// snapshotLoopEnv takes src's database and in-memory state as they are.
+// Nothing may use src after.
+func snapshotLoopEnv(t *testing.T, src *loopEnv) *loopSnapshot {
+	t.Helper()
+	src.s.Wait()
+	src.s.quiesceGoals(t)
+	out := filepath.Join(t.TempDir(), "snapshot.db")
+	if _, err := src.s.db.W.Exec(`VACUUM INTO ?`, out); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(out) // #nosec G304 -- our own temp file
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &loopSnapshot{src: src, db: data}
+}
+
+// env is a new loopEnv in the snapshot's state.
+func (sn *loopSnapshot) env(t *testing.T) *loopEnv {
+	t.Helper()
+	src, ctx := sn.src, context.Background()
+	path := filepath.Join(t.TempDir(), "test.db")
+	if err := os.WriteFile(path, sn.db, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := db.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	// newEnv: a Service on the database, the test's clock where it stood.
+	s := New(d, Config{BaseURL: "https://wp.test"}, nil)
+	s.StartHub()
+	e := &env{t: t, s: s, ctx: ctx, clock: src.clockNow()}
+	s.SetClock(e.clockNow)
+	t.Cleanup(s.Wait)
+	admin := *src.admin
+	admin.User = new(User)
+	*admin.User = *src.admin.User
+	e.admin = &admin
+
+	// newTaskEnv: the agent's actor, in the session the hook opened.
+	ag := *src.ag
+	ag.User = new(User)
+	*ag.User = *src.ag.User
+	ag.scope = maps.Clone(src.ag.scope)
+	te := &taskEnv{env: e, ag: &ag, cli: src.cli, session: src.session}
+
+	// newAPEnv: the project, and the jobs caught so far with their results.
+	p := *src.p
+	a := &apEnv{taskEnv: te, p: &p, jobs: slices.Clone(src.jobs), res: maps.Clone(src.res)}
+	a.catchJobs()
+
+	// taskGateway, firstEnv, newLoopEnv: the fake gateway, the fake forge
+	// that has seen the round's head, and the decision model's script.
+	sl := src.s.LLM.(*gatewayScoringLLM)
+	g := newShipForge()
+	g.heads = maps.Clone(src.g.heads)
+	s.Forges = g
+	tl := &taskLLM{LLM: s.LLM, tasks: map[string]*gatewayTask{}, limitsCalls: sl.limitsCalls}
+	j := &jevScript{choice: maps.Clone(src.j.choice), calls: src.j.calls, states: slices.Clone(src.j.states)}
+	s.LLM = &gatewayScoringLLM{taskLLM: tl, jevScript: j}
+	box := *src.box
+	return &loopEnv{apEnv: a, box: &box, g: g, j: j, task: src.task}
+}
 
 // doneRound makes the round e.review ran an ended one (the session's turn is
 // over, its report read): the shape the scenarios start from.
@@ -183,9 +271,11 @@ func TestSessionAndServerShipsReachTheSameOutcome(t *testing.T) {
 	for _, a := range []string{"none", "nothing", "failed"} {
 		cells = append(cells, cell{a, "none", false, true, true})
 	}
+	src := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
+	r := src.review("Merge loses an update")
+	snap := snapshotLoopEnv(t, src)
 	build := func(t *testing.T, c cell) (*loopEnv, int64) {
-		e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
-		r := e.review("Merge loses an update")
+		e := snap.env(t)
 		_, au := e.roundAuditRow(r)
 		if c.own != "none" {
 			e.ownReport(r, c.own == "open")
@@ -533,5 +623,68 @@ func TestShipPastTheWaitIsNotHeldForUndecidedFindings(t *testing.T) {
 	var reason string
 	if err := e.s.db.R.QueryRow(`SELECT reason FROM work_log WHERE id = ?`, r).Scan(&reason); err != nil || !strings.Contains(reason, "weren't decided") {
 		t.Fatalf("the round's record says %q (%v), want why it was released", reason, err)
+	}
+}
+
+// An env started from a snapshot is the env a build makes: the same rows in
+// every table, the same state in what the test keeps in memory, and the same
+// answer to what a cell does next.
+func TestLoopSnapshotEnvMatchesABuild(t *testing.T) {
+	choice := map[string]string{"": "critical", "fixes": "complete"}
+	build := func(t *testing.T) *loopEnv {
+		e := newLoopEnv(t, choice)
+		e.review("Merge loses an update")
+		return e
+	}
+	fresh, src := build(t), build(t)
+	cloned := snapshotLoopEnv(t, src).env(t)
+
+	counts := func(e *loopEnv) string {
+		var names []string
+		rows, err := e.s.db.R.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var n string
+			_ = rows.Scan(&n)
+			names = append(names, n)
+		}
+		_ = rows.Close()
+		var out []string
+		for _, n := range names {
+			var c int
+			if err := e.s.db.R.QueryRow(`SELECT count(*) FROM "` + n + `"`).Scan(&c); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, fmt.Sprintf("%s=%d", n, c))
+		}
+		return strings.Join(out, " ")
+	}
+	memory := func(e *loopEnv) string {
+		sl := e.s.LLM.(*gatewayScoringLLM)
+		who := func(a *Actor) string {
+			return fmt.Sprintf("%d/%s/admin=%v agent=%q token=%d session=%d", a.User.ID, a.User.Username, a.User.IsAdmin, a.Agent, a.TokenID, a.Session)
+		}
+		return fmt.Sprintf("clock=%v session=%d cli=%s admin=%s ag=%s project=%+v jobs=%+v res=%+v heads=%v created=%d limitsCalls=%d tasks=%d jev=%v/%d/%v box=%d/%s task=%s",
+			e.clockNow(), e.session, e.cli, who(e.admin), who(e.ag), *e.p, e.jobs, e.res, e.g.heads, len(e.g.created), sl.limitsCalls, len(sl.tasks),
+			e.j.choice, e.j.calls, e.j.states, e.box.ID, e.box.Name, e.task.Key)
+	}
+	if f, c := counts(fresh), counts(cloned); f != c {
+		t.Errorf("rows differ:\nbuilt  %s\ncloned %s", f, c)
+	}
+	if f, c := memory(fresh), memory(cloned); f != c {
+		t.Errorf("memory differs:\nbuilt  %s\ncloned %s", f, c)
+	}
+	next := func(e *loopEnv) string {
+		round := e.round(1)
+		res, err := e.ship(e.task.Key, ShipAuto)
+		e.tick(2 * time.Minute)
+		out, aerr := e.s.advanceRound(e.ctx, round.id)
+		e.s.Wait()
+		return fmt.Sprintf("%+v %v | %+v %v | jobs=%d pulls=%d", res, err, out, aerr, len(e.jobs), len(e.g.created))
+	}
+	if f, c := next(fresh), next(cloned); f != c {
+		t.Errorf("the next step differs:\nbuilt  %s\ncloned %s", f, c)
 	}
 }
