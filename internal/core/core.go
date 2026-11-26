@@ -207,6 +207,7 @@ func New(d *db.DB, cfg Config, log *slog.Logger) *Service {
 		k:    kernel.New(d, log),
 	}
 	s.k.Persist(persistedKinds...)
+	s.k.OnEmit(noteSession)
 	s.k.OnEmit(stampEvent)
 	s.k.AfterCommit = s.dispatch
 	s.started = s.now()

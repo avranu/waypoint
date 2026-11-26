@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"slices"
 	"strings"
@@ -109,6 +110,44 @@ func stampEvent(t *kernel.Tx, e *Event) {
 		if err := t.QueryRowContext(context.Background(), `SELECT draft FROM issues WHERE id = ?`, e.IssueID).Scan(&e.Draft); err != nil {
 			e.Draft = true
 		}
+	}
+}
+
+// noteSession records the agent session behind an event (WP-999): its id, and
+// the task it holds when that isn't the one the event is about and is in the
+// event's own project, so history shows an agent editing a task other than
+// its own without naming one of another project. A few primary-key lookups,
+// only for an actor with a session. An event that already names a session
+// (the session events themselves) keeps its own. It is a stamp on Emit
+// (OnEmit) because it reads the sessions, issues and projects tables, which
+// the kernel does not know.
+func noteSession(t *kernel.Tx, e *Event) {
+	if t.Actor == nil || t.Actor.Session == 0 {
+		return
+	}
+	if e.Data == nil {
+		e.Data = map[string]any{}
+	}
+	if _, ok := e.Data["session"]; !ok {
+		e.Data["session"] = t.Actor.Session
+	}
+	if e.IssueID == 0 {
+		return
+	}
+	var held sql.NullInt64
+	if err := t.QueryRowContext(context.Background(), `SELECT issue_id FROM agent_sessions WHERE id = ?`, t.Actor.Session).Scan(&held); err != nil || !held.Valid || held.Int64 == e.IssueID {
+		return
+	}
+	here := e.ProjectID
+	if here == 0 {
+		if err := t.QueryRowContext(context.Background(), `SELECT project_id FROM issues WHERE id = ?`, e.IssueID).Scan(&here); err != nil {
+			return
+		}
+	}
+	var key string
+	var heldProject int64
+	if err := t.QueryRowContext(context.Background(), `SELECT i.project_id, p.key || '-' || i.number FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.id = ? AND i.draft = 0`, held.Int64).Scan(&heldProject, &key); err == nil && heldProject == here {
+		e.Data["session_task"] = key
 	}
 }
 
