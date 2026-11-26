@@ -409,6 +409,24 @@ func TestTestsumCutOutputIsKept(t *testing.T) {
 	}
 }
 
+// The count bound leaves files another session was only just told about.
+func TestTestOutputKeepsFreshFilesBeyondTheCount(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WAYPOINT_TESTOUT_DIR", dir)
+	for i := 0; i < testOutKeep+5; i++ {
+		if _, _, ok := saveTestOutput([]byte("y\n")); !ok {
+			t.Fatal("not saved")
+		}
+	}
+	if ents, _ := os.ReadDir(dir); len(ents) != testOutKeep+5 {
+		t.Errorf("%d fresh files kept, want %d", len(ents), testOutKeep+5)
+	}
+	pruneTestOutput(dir, time.Now().Add(testOutFresh+time.Minute))
+	if ents, _ := os.ReadDir(dir); len(ents) != testOutKeep {
+		t.Errorf("%d files kept once no longer fresh, want %d", len(ents), testOutKeep)
+	}
+}
+
 func TestTestOutputFilesAreBounded(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("WAYPOINT_TESTOUT_DIR", dir)
@@ -418,7 +436,7 @@ func TestTestOutputFilesAreBounded(t *testing.T) {
 		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		mod := now.Add(-time.Duration(i) * time.Minute)
+		mod := now.Add(-testOutFresh - time.Duration(i+1)*time.Minute)
 		if err := os.Chtimes(p, mod, mod); err != nil {
 			t.Fatal(err)
 		}

@@ -13,10 +13,13 @@ import (
 
 // A summary that cuts lines points at a file with the whole output, so the
 // agent reads it instead of running the tests again outside the slot
-// (WP-1874). The files are bounded by count and by age.
+// (WP-1874). The files are bounded by count and by age. Sessions share the
+// folder, so the count never removes a file young enough that the session
+// told its path may not have read it yet.
 const (
-	testOutKeep = 20
-	testOutAge  = 7 * 24 * time.Hour
+	testOutKeep  = 20
+	testOutFresh = time.Hour
+	testOutAge   = 7 * 24 * time.Hour
 )
 
 // testOutDir is where those files are kept, beside the other per-user cache
@@ -56,8 +59,8 @@ func saveTestOutput(data []byte) (path string, lines int, ok bool) {
 	return f.Name(), bytes.Count(text, []byte("\n")), true
 }
 
-// pruneTestOutput removes files past testOutAge and all but the newest
-// testOutKeep.
+// pruneTestOutput removes files past testOutAge, and those beyond the newest
+// testOutKeep once they are older than testOutFresh.
 func pruneTestOutput(dir string, now time.Time) {
 	ents, err := os.ReadDir(dir)
 	if err != nil {
@@ -77,7 +80,7 @@ func pruneTestOutput(dir string, now time.Time) {
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].mod.After(files[j].mod) })
 	for i, f := range files {
-		if i >= testOutKeep || now.Sub(f.mod) > testOutAge {
+		if age := now.Sub(f.mod); age > testOutAge || i >= testOutKeep && age > testOutFresh {
 			_ = os.Remove(f.path)
 		}
 	}
