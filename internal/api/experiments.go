@@ -9,9 +9,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Experiments (WP-254): A/B tests of how agents work, for admins; and the
-// arms of a task an agent's wp asks for after taking it.
-
 func (s *Server) listExperiments(w http.ResponseWriter, r *http.Request) (any, error) {
 	l, err := s.svc.ListExperiments(r.Context(), actorFrom(r))
 	if err != nil || !wantsText(r) {

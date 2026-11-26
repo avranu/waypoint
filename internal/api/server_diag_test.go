@@ -59,7 +59,6 @@ func TestServerStatusTextJobsAndProblems(t *testing.T) {
 			t.Errorf("%q is not for the status:\n%s", not, out)
 		}
 	}
-	// Problems none of which persists are a count, not a list.
 	st.ProblemsPersistent, st.Problems = 0, st.Problems[2:]
 	if out := serverStatusText(st, now); !strings.Contains(out, "Problems: 3 open, none persistent and unacknowledged (wp server problems).\n") || strings.Contains(out, "#9") {
 		t.Errorf("no persistent problem:\n%s", out)
@@ -117,7 +116,6 @@ func TestServerJobText(t *testing.T) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
 	}
-	// Its states, each said in words.
 	h.Job.RunningSince, h.Job.State, h.Job.LastCleanAt = at(2*time.Hour), "stuck", nil
 	if out := serverJobText(h, now); !strings.Contains(out, "Running for 2h00m. No run of it has been clean. STUCK: this run has gone on too long.\n") {
 		t.Errorf("stuck:\n%s", out)

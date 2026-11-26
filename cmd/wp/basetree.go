@@ -8,10 +8,6 @@ import (
 	"strings"
 )
 
-// A temporary checkout of another commit, for comparing this tree with it:
-// wp bench --base times both, wp testsum --base asks whether failures were
-// already there.
-
 // baseTmpPrefix names the checkouts, so a later run can sweep the ones a
 // killed run left.
 const baseTmpPrefix = "wp-base-"
@@ -34,8 +30,6 @@ func baseWorktree(ref string) (dir string, cleanup func(), sha string, err error
 		return "", nil, "", err
 	}
 	sweepBaseWorktrees()
-	// The pid in the name lets a later run remove a checkout whose wp bench
-	// was killed before it could.
 	root, err := os.MkdirTemp("", baseTmpPrefix+strconv.Itoa(os.Getpid())+"-")
 	if err != nil {
 		return "", nil, "", err
@@ -45,7 +39,6 @@ func baseWorktree(ref string) (dir string, cleanup func(), sha string, err error
 		return "", nil, "", err
 	}
 	cleanup = func() {
-		// Our own temporary checkout: nothing in it is anyone's work.
 		_, _ = localGit("worktree", "remove", "--force", root)
 		_ = os.RemoveAll(root)
 		_, _ = localGit("worktree", "prune")
@@ -72,7 +65,7 @@ func sweepBaseWorktrees() {
 		pidText, _, _ := strings.Cut(rest, "-")
 		pid, err := strconv.Atoi(pidText)
 		if err != nil || pid <= 0 || pid == os.Getpid() || processAlive(pid) {
-			continue // not ours by name, or its wp bench is still running
+			continue
 		}
 		_, _ = localGit("worktree", "remove", "--force", path)
 		_ = os.RemoveAll(path)

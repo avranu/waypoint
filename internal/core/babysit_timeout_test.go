@@ -56,7 +56,6 @@ func TestBabysitTimedOutRoundKeepsItsCommits(t *testing.T) {
 			t.Errorf("outcome lacks %q: %s", want, r.Outcome)
 		}
 	}
-	// No second round on the head it started from: its push is on the way.
 	if len(be.jobs()) != 1 || b.State != BabysitWatching {
 		t.Fatalf("after the timeout: state %s, %d jobs, %s", b.State, len(be.jobs()), b.Wait)
 	}
@@ -90,7 +89,6 @@ func TestTimedOutOutcomeIsNotARefusalOfTheAgentsMaking(t *testing.T) {
 	if f, ok := protectedRefusal(round(msg, []string{"changed protected files (go.sum)"})); ok {
 		t.Errorf("a file name read as a refusal: %q", f)
 	}
-	// The runner's own refusal still is one.
 	if f, ok := protectedRefusal(round(msg+notPushedMarker+"The agent changed protected files (go.sum), so nothing was pushed.", nil)); !ok || f != "go.sum" {
 		t.Errorf("the runner's refusal = %q, %v", f, ok)
 	}

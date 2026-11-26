@@ -1,7 +1,3 @@
-// A task's Summary tab (WP-780, WP-1196): what it's for (the intent, its own
-// short text), its life so far at a glance, and what it waits on. The
-// write-up, links, runs and the work log sit behind the Details tab.
-
 import { Link } from '@tanstack/react-router'
 import clsx from 'clsx'
 import { Bot, Check, Hourglass, Link2 } from 'lucide-react'
@@ -156,11 +152,8 @@ function Intent({
   const saved = issue.intent ?? ''
   const [text, setText] = useState(saved)
   const [focused, setFocused] = useState(false)
-  // Typed words stay while they save, and after a failed save (the error
-  // shows as a toast), so leaving the box never throws them away.
   const [held, setHeld] = useState(false)
   const ref = useRef<HTMLTextAreaElement>(null)
-  // Someone else's save shows unless this person is mid-edit.
   useEffect(() => {
     if (!focused && !held) setText(saved)
   }, [saved, focused, held])
@@ -170,8 +163,6 @@ function Intent({
     el.style.height = 'auto'
     el.style.height = el.scrollHeight + 'px'
   }, [text])
-  // The server counts characters (runes); a textarea's maxLength counts
-  // UTF-16 units, so an emoji would count twice. Count the same way here.
   const over = [...text.trim()].length - MAX_INTENT
   const commit = () => {
     const t = text.trim()
@@ -179,7 +170,6 @@ function Intent({
       setHeld(false)
       return
     }
-    // Too long: the words stay in the box with the count below, unsaved.
     if (over > 0) {
       setHeld(true)
       return

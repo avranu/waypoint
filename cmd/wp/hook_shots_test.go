@@ -51,17 +51,15 @@ func TestHookAttachesScreenshotsTheAgentReads(t *testing.T) {
 	}
 	shot := write("shot.png", png, 0)
 	read("sess-1", s.repo, shot)
-	read("sess-1", s.repo, shot)                                     // the same image again
-	read("sess-1", s.repo, write("old.png", png+"old", time.Hour))   // made before the task was taken
-	read("sess-1", s.repo, write("notes.txt", "text", 0))            // not an image
-	read("sess-1", s.repo, write("wp-files/WP-1/a.png", png+"a", 0)) // someone's attachment, fetched
+	read("sess-1", s.repo, shot)
+	read("sess-1", s.repo, write("old.png", png+"old", time.Hour))
+	read("sess-1", s.repo, write("notes.txt", "text", 0))
+	read("sess-1", s.repo, write("wp-files/WP-1/a.png", png+"a", 0))
 	got := files()
 	if len(got) != 1 || got[0].Name != "shot.png" || got[0].Caption != autoShotCaption || got[0].Agent == "" {
 		t.Fatalf("attachments = %+v", got)
 	}
-	// From a worktree (another directory) the session's own task is found.
 	read("sess-1", t.TempDir(), write("after.png", png+"after", 0))
-	// Another session in another directory has no task: nothing.
 	read("sess-2", t.TempDir(), write("other.png", png+"other", 0))
 	t.Setenv("WP_SHOTS", "off")
 	read("sess-1", s.repo, write("off.png", png+"off", 0))

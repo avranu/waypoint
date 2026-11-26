@@ -33,7 +33,6 @@ func TestAutomationAPI(t *testing.T) {
 		t.Fatalf("project: %d %s", code, b)
 	}
 
-	// The catalog.
 	var cat core.Catalog
 	if code := person.json("GET", "/api/v1/automation-catalog", nil, &cat); code != 200 || len(cat.Triggers) < 30 || len(cat.Actions) < 25 {
 		t.Fatalf("catalog: %d %d triggers, %d actions", code, len(cat.Triggers), len(cat.Actions))
@@ -50,7 +49,6 @@ func TestAutomationAPI(t *testing.T) {
 		t.Errorf("catalog without a token: %d", code)
 	}
 
-	// Create a manual automation that allows agents, with inputs; run it.
 	rule := map[string]any{
 		"trigger": map[string]any{"event": "manual"}, "allow_agents": true, "concurrency": "skip",
 		"inputs":  []any{map[string]any{"name": "title", "type": "text", "required": true}},
@@ -89,7 +87,6 @@ func TestAutomationAPI(t *testing.T) {
 	if code, b := person.do("POST", autoPath("/api/v1/automations/", a.ID, "/run"), map[string]any{"inputs": map[string]any{}}); code != 400 || !strings.Contains(string(b), "title is required") {
 		t.Errorf("missing input: %d %s", code, b)
 	}
-	// An agent may run it, since it allows agents; not a stricter one.
 	if code, b := agent.do("POST", autoPath("/api/v1/automations/", a.ID, "/run"), map[string]any{"inputs": map[string]any{"title": "by agent"}}); code != 200 {
 		t.Errorf("agent run of an agent-friendly automation: %d %s", code, b)
 	}
@@ -103,7 +100,6 @@ func TestAutomationAPI(t *testing.T) {
 	if code, b := agent.do("POST", autoPath("/api/v1/automations/", s2.ID, "/run"), nil); code != 403 {
 		t.Errorf("agent ran an automation that doesn't allow agents: %d %s", code, b)
 	}
-	// Cancel, and run again.
 	var cancelled core.AutomationRun
 	if code := person.json("POST", autoPath("/api/v1/automation-runs/", run.ID, "/cancel"), nil, &cancelled); code != 200 || cancelled.Status != core.RunCancelled {
 		t.Errorf("cancel: %d %+v", code, cancelled)
@@ -113,13 +109,11 @@ func TestAutomationAPI(t *testing.T) {
 		t.Errorf("rerun: %d %+v", code, again)
 	}
 
-	// A test run changes nothing.
 	var res core.TestResult
 	if code := person.json("POST", autoPath("/api/v1/automations/", a.ID, "/test"), map[string]any{"inputs": map[string]any{"title": "Dry"}}, &res); code != 200 || len(res.Steps) != 2 || res.Steps[0].Status != "would_run" {
 		t.Errorf("test: %d %+v", code, res)
 	}
 
-	// Cron preview.
 	var next struct {
 		Next []string `json:"next"`
 	}
@@ -130,7 +124,6 @@ func TestAutomationAPI(t *testing.T) {
 		t.Errorf("bad cron: %d", code)
 	}
 
-	// The incoming webhook.
 	hook := map[string]any{"trigger": map[string]any{"event": "webhook", "secret": "s3cret"}, "actions": []any{map[string]any{"type": "create_issue", "title": "{{.Trigger.Data.what}}"}}}
 	var h core.Automation
 	if code, b := person.do("POST", "/api/v1/projects/WID/automations", map[string]any{"name": "Inbox", "rule": hook}); code != 200 {
@@ -180,7 +173,6 @@ func TestAutomationAPI(t *testing.T) {
 		t.Errorf("oversized body: %v %v", resp, err)
 	}
 
-	// Admin automations.
 	if code, _ := agent.do("GET", "/api/v1/admin/automations", nil); code != 403 {
 		t.Errorf("agent listed admin automations: %d", code)
 	}
@@ -206,7 +198,6 @@ func TestAutomationAPI(t *testing.T) {
 		t.Errorf("agent set limits: %d", code)
 	}
 
-	// MCP tools.
 	text := callMCPTool(t, ts.URL, agentTok, "list_automations", map[string]any{"project": "WID"})
 	if !strings.Contains(text, "Make") || !strings.Contains(text, "you may") || !strings.Contains(text, "Strict") || !strings.Contains(text, "you may not") {
 		t.Errorf("list_automations: %s", text)

@@ -9,10 +9,6 @@ import (
 	"strconv"
 )
 
-// The gate's control API (the gate's docs/waypoint.md). What it lets Waypoint
-// do is deliberately narrow: read, freeze, and add or remove connections.
-// Approving, denying and unfreezing stay with a person on Signal.
-
 // Approval is one action waiting on (or decided by) the owner on Signal.
 type Approval struct {
 	Code    string   `json:"code"`

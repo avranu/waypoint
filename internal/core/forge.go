@@ -294,7 +294,6 @@ func (s *Service) UpdateForge(ctx context.Context, actor *Actor, id int64, in Fo
 		return nil, err
 	}
 	sets, args := []string{}, []any{}
-	// What changed, for the log (never the secrets themselves).
 	var changes []string
 	if in.Name != nil && strings.TrimSpace(*in.Name) != cur.Name {
 		changes = append(changes, "renamed from "+cur.Name)
@@ -328,7 +327,6 @@ func (s *Service) UpdateForge(ctx context.Context, actor *Actor, id int64, in Fo
 		sets, args = append(sets, "token = ?"), append(args, *in.Token)
 	}
 	if in.WebhookSecret != nil {
-		// An empty secret would make every webhook fail verification.
 		if strings.TrimSpace(*in.WebhookSecret) == "" {
 			return nil, invalid("webhook secret can't be empty")
 		}
@@ -377,9 +375,6 @@ func (s *Service) UpdateForge(ctx context.Context, actor *Actor, id int64, in Fo
 			if in.Token == nil && in.WebhookSecret == nil && in.BotToken == nil {
 				return nil
 			}
-			// A new secret or token (webhooks may be managed with the bot
-			// token): refresh the webhooks Waypoint added (or tried to), so
-			// they sign with the new secret or get made now.
 			return s.refreshRepoHooks(ctx, t, id)
 		})
 		if err != nil {
@@ -415,7 +410,6 @@ func (s *Service) DeleteForge(ctx context.Context, actor *Actor, id int64) error
 		return err
 	}
 	return s.write(ctx, actor, func(t *tx) error {
-		// The webhooks Waypoint added would only bounce off from now on.
 		rows, err := t.QueryContext(ctx, `SELECT DISTINCT repo, hook_id FROM project_repos WHERE forge_id = ? AND hook_id != ''`, id)
 		if err != nil {
 			return err
@@ -454,8 +448,6 @@ func (s *Service) DeleteForge(ctx context.Context, actor *Actor, id int64) error
 		return nil
 	})
 }
-
-// ---- project repos ----
 
 // ProjectRepo attaches a forge repository to a project.
 type ProjectRepo struct {
@@ -496,7 +488,7 @@ type ProjectRepo struct {
 
 var (
 	repoRE   = lazyre.New(`^[\w.-]+/[\w.-]+$`)
-	nestedRE = lazyre.New(`^[\w.-]+(/[\w.-]+)+$`) // GitLab: group/subgroup/…/name
+	nestedRE = lazyre.New(`^[\w.-]+(/[\w.-]+)+$`)
 )
 
 // validRepoFor accepts owner/name (group/subgroup/…/name on GitLab); "."
@@ -588,7 +580,6 @@ func (s *Service) AddProjectRepo(ctx context.Context, actor *Actor, projectRef s
 		}
 		return nil, invalid("repo must look like owner/name")
 	}
-	// The forge webhook is added (or refreshed) after commit, in dispatch.
 	var id int64
 	err = s.write(ctx, actor, func(t *tx) error {
 		if _, err := t.ExecContext(ctx, `INSERT INTO project_repos(project_id, forge_id, repo, sync_issues, created_at, hook_state) VALUES (?,?,?,?,?,?)
@@ -596,11 +587,9 @@ func (s *Service) AddProjectRepo(ctx context.Context, actor *Actor, projectRef s
 			p.ID, f.ID, repo, boolInt(syncIssues), s.nowMS(), hookPending); err != nil {
 			return err
 		}
-		// Attached on purpose: automatic projects may pick it up again later.
 		if _, err := t.ExecContext(ctx, `DELETE FROM forge_repo_ignores WHERE forge_id = ? AND repo = ?`, f.ID, repo); err != nil {
 			return err
 		}
-		// LastInsertId is unreliable on the upsert path; look the row up.
 		if err := t.QueryRowContext(ctx, `SELECT id FROM project_repos WHERE project_id = ? AND forge_id = ? AND repo = ?`, p.ID, f.ID, repo).Scan(&id); err != nil {
 			return err
 		}
@@ -693,7 +682,6 @@ func (s *Service) RemoveProjectRepo(ctx context.Context, actor *Actor, projectRe
 			return notFound("project repo")
 		}
 		if f, err := s.forgeByID(ctx, forgeID); err == nil && hookID != "" {
-			// Removed once no other project has the repo.
 			t.emit(&Event{Kind: EvRepoHook, ProjectID: p.ID, repoHook: &repoHookJob{remove: f, repo: repo, hookID: hookID}})
 		}
 		if _, err := t.ExecContext(ctx, `DELETE FROM project_repos WHERE id = ?`, id); err != nil {
@@ -701,15 +689,12 @@ func (s *Service) RemoveProjectRepo(ctx context.Context, actor *Actor, projectRe
 		}
 		t.audit(AuditEntry{Action: "repo.detach", Category: AuditSettings, ProjectID: p.ID, TargetType: "repo", TargetID: id,
 			Target: repo, Detail: "detached; its imported issues stay"})
-		// Only when no other project still has it: then it's really unwanted.
 		_, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO forge_repo_ignores(forge_id, repo, created_at)
 			SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM project_repos WHERE forge_id = ? AND lower(repo) = lower(?))`,
 			forgeID, repo, s.nowMS(), forgeID, repo)
 		return err
 	})
 }
-
-// ---- links ----
 
 var (
 	ghPathRE    = lazyre.New(`^/([\w.-]+/[\w.-]+)/(issues|pull|pulls|commit)/([0-9a-fA-F]+)/?$`)
@@ -778,7 +763,6 @@ func (s *Service) parseLink(ctx context.Context, raw string) (ExternalLink, erro
 	}
 	n, err := strconv.ParseInt(m[3], 10, 64)
 	if err != nil || n <= 0 {
-		// Not an issue or PR number (hex is only valid for commits).
 		return ExternalLink{Provider: "url", Kind: "url", URL: l.URL}, nil
 	}
 	l.Number = &n
@@ -821,9 +805,6 @@ func (s *Service) AddLink(ctx context.Context, actor *Actor, issueRef, rawURL, t
 			return err
 		}
 		issueID = i.ID
-		// An agent linking its pull request is how its work is traced to the
-		// PR (WP-D15), so the link remembers which agent made it.
-		// Added, it stays however the item's text changes (WP-379).
 		res, err := t.ExecContext(ctx, `INSERT INTO external_links(issue_id, provider, kind, url, repo, number, title, state, created_at, created_agent, via) VALUES (?,?,?,?,?,?,?,?,?,?,'added')
 			ON CONFLICT(issue_id, url) DO UPDATE SET title = CASE WHEN excluded.title != '' THEN excluded.title ELSE title END,
 				created_agent = CASE WHEN created_agent = '' THEN excluded.created_agent ELSE created_agent END, via = 'added'`,
@@ -874,8 +855,6 @@ func (s *Service) RemoveLink(ctx context.Context, actor *Actor, issueRef string,
 			return err
 		}
 		if !mirror && (kind == "pull" || kind == "commit" || kind == "issue") {
-			// Its text is scanned again on every change: it must not link
-			// the item back (WP-379). It stays a mention.
 			var by any
 			if actor.User != nil && actor.User.ID != 0 {
 				by = actor.User.ID
@@ -898,7 +877,7 @@ func (s *Service) RemoveLink(ctx context.Context, actor *Actor, issueRef string,
 		}
 		back, err := s.statusByID(ctx, t, from.Int64)
 		if err != nil {
-			return nil // the status is gone: leave the issue alone
+			return nil
 		}
 		var pid int64
 		if err := t.QueryRowContext(ctx, `SELECT project_id FROM statuses WHERE id = ?`, back.ID).Scan(&pid); err != nil || pid != i.ProjectID {
@@ -933,7 +912,6 @@ func (s *Service) forgeForLink(ctx context.Context, l ExternalLink) *Forge {
 			return f
 		}
 	}
-	// Unauthenticated access works for public repos.
 	if strings.EqualFold(u.Host, "github.com") {
 		return &Forge{Kind: "github", BaseURL: "https://github.com"}
 	}
@@ -998,7 +976,7 @@ func (s *Service) repoAttached(ctx context.Context, projectID, forgeID int64, re
 // emits events when a PR opens, merges or closes.
 func (s *Service) applyLinkState(ctx context.Context, linkURL string, item *ForgeItem) {
 	if item.Confidential {
-		return // not even its title
+		return
 	}
 	if _, err := s.db.W.ExecContext(ctx, `UPDATE forge_mentions SET title = ?, state = ? WHERE item_url = ? AND (title != ? OR state != ?)`,
 		item.Title, item.State, linkURL, item.Title, item.State); err != nil {
@@ -1043,15 +1021,12 @@ func (s *Service) applyLinkState(ctx context.Context, linkURL string, item *Forg
 				kind = EvExternalPRMerged
 			case item.IsPR && item.State == "closed":
 				kind = EvExternalPRClosed
-			case item.IsPR && item.State == "open": // new, reopened, or out of draft
+			case item.IsPR && item.State == "open":
 				kind = EvExternalPROpened
 			case !item.IsPR && item.State == "closed":
 				kind = EvExternalIssueClose
 			}
 			if kind != "" {
-				// New is the link's own URL, so a rule's move through it is
-				// remembered on that link (WP-162) even when the forge's item
-				// spells its URL differently.
 				t.emit(&Event{Kind: kind, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key, New: linkURL, Old: r.state,
 					Data: map[string]any{"title": item.Title, "number": item.Number}})
 			} else {
@@ -1065,8 +1040,6 @@ func (s *Service) applyLinkState(ctx context.Context, linkURL string, item *Forg
 	}
 }
 
-// ---- inbound webhooks ----
-
 // HandleForgeWebhook verifies and processes a webhook from a forge.
 func (s *Service) HandleForgeWebhook(ctx context.Context, forgeID int64, h http.Header, body []byte) error {
 	f, err := s.forgeByID(ctx, forgeID)
@@ -1078,7 +1051,6 @@ func (s *Service) HandleForgeWebhook(ctx context.Context, forgeID int64, h http.
 	}
 	var ev *forgeEvent
 	if f.Kind == "gitlab" {
-		// GitLab sends the secret itself rather than a signature.
 		if subtle.ConstantTimeCompare([]byte(h.Get("X-Gitlab-Token")), []byte(f.secret)) != 1 {
 			return ErrUnauthorized
 		}
@@ -1111,34 +1083,30 @@ func (s *Service) HandleForgeWebhook(ctx context.Context, forgeID int64, h http.
 
 // forgeEvent is a webhook, whichever forge sent it.
 type forgeEvent struct {
-	kind    string // ping, pull, issue, push, comment
-	repo    string
-	repoID  int64  // the forge's id for the repo, which survives renames (WP-166)
-	group   *bool  // whether the repo's owner is an organisation or group, if the payload says
-	org     string // an organisation hook's ping: the organisation
-	item    *ForgeItem
-	pr      *ForgePR // a pull request event's details, for bots
-	branch  string
-	commits []forgeCommit
-	comment *forgeCommentEvent
-	review  *forgeReviewEvent
-	sender  string // who caused it, when the payload says
-	// push (WP-D21): the ref pushed, the commits before and after, who
-	// pushed and whether it made or deleted the branch.
+	kind                       string
+	repo                       string
+	repoID                     int64
+	group                      *bool
+	org                        string
+	item                       *ForgeItem
+	pr                         *ForgePR
+	branch                     string
+	commits                    []forgeCommit
+	comment                    *forgeCommentEvent
+	review                     *forgeReviewEvent
+	sender                     string
 	ref, before, after, pusher string
 	created, deleted           bool
-	defaultBranch              string // the repo's, when the payload says
-	// ci: the commit whose checks changed ("" when the payload doesn't say).
-	sha string
-	// release: a release published.
-	release *forgeRelease
+	defaultBranch              string
+	sha                        string
+	release                    *forgeRelease
 }
 
 type forgeCommit struct {
 	id, message, url string
-	at               string   // its timestamp as the payload gives it (RFC 3339)
-	author           string   // its author's forge login, when the forge knows it
-	paths            []string // files the commit added, removed or changed
+	at               string
+	author           string
+	paths            []string
 }
 
 // forgeRelease is a published release.
@@ -1147,14 +1115,14 @@ type forgeRelease struct{ tag, name, url string }
 // forgeReviewEvent is a review, or a comment on a pull request's diff.
 type forgeReviewEvent struct {
 	number int
-	kind   string // approved, changes_requested, reviewed, commented
+	kind   string
 	sha    string
 	ForgeComment
 }
 
 type forgeCommentEvent struct {
-	action string // created, edited, deleted
-	number int    // the issue it's on
+	action string
+	number int
 	onPR   bool
 	ForgeComment
 }
@@ -1171,24 +1139,18 @@ func (s *Service) handleForgeEvent(ctx context.Context, f *Forge, ev *forgeEvent
 	switch ev.kind {
 	case "pull":
 		if ev.branch == "" && ev.item != nil {
-			// A payload without its branch must not make the scan take back
-			// the links the branch made: use the one recorded before.
 			_ = s.db.R.QueryRowContext(ctx, `SELECT head_ref FROM pull_requests WHERE forge_id = ? AND url = ?`, f.ID, ev.item.URL).Scan(&ev.branch)
 		}
 		if ev.pr != nil {
 			s.onForgePull(ctx, f, ev.repo, ev.pr)
 		}
-		// Links on issues show its title only when a Waypoint person wrote
-		// it, or a person approved it (WP-281).
 		link := s.linkItem(ctx, f, ev.item)
-		// Its own work is linked, other keys are mentions (WP-379); a
-		// closed pull request links nothing new.
 		open := ev.item.State == "open" || ev.item.State == "draft" || ev.item.State == "merged"
 		if _, err := s.scanPull(ctx, f, ev.repo, ev.item, link, ev.branch, open); err != nil {
 			s.log.WarnContext(ctx, "record forge mentions", "url", ev.item.URL, "err", err)
 		}
 		s.applyLinkState(ctx, ev.item.URL, link)
-		s.onPRActivity(ctx, f, ev.repo, ev.review) // GitLab approvals come as merge request events
+		s.onPRActivity(ctx, f, ev.repo, ev.review)
 	case "review":
 		if ev.review.Body != "" {
 			s.scanComment(ctx, f, ev.repo, true, ev.review.number, "review", "created", ev.review.ForgeComment)
@@ -1196,8 +1158,6 @@ func (s *Service) handleForgeEvent(ctx context.Context, f *Forge, ev *forgeEvent
 		s.onPRActivity(ctx, f, ev.repo, ev.review)
 		s.checkAfterActivity(ctx, f, ev.repo, ev.review.number)
 	case "issue":
-		// Links on other issues show its title only when a Waypoint person
-		// wrote it (WP-279).
 		link := s.linkItem(ctx, f, ev.item)
 		if !ev.item.Confidential {
 			if _, err := s.scanForgeIssue(ctx, f, ev.repo, ev.item, link); err != nil {
@@ -1356,7 +1316,6 @@ func parseGitHubHook(event string, body []byte) (*forgeEvent, error) {
 		ev.kind, ev.branch, ev.pr = "pull", pr.HeadRef, pr
 		ev.item = &ForgeItem{Number: pr.Number, Title: stripWIP(pr.Title), Body: pr.Body, State: pr.State, URL: pr.URL, IsPR: true, Author: pr.Author}
 	case "pull_request_review", "pull_request_review_comment",
-		// Forgejo and Gitea: a review approving, asking for changes, or commenting.
 		"pull_request_approved", "pull_request_rejected", "pull_request_comment",
 		"pull_request_review_approved", "pull_request_review_rejected":
 		if p.PullRequest == nil {
@@ -1392,7 +1351,6 @@ func parseGitHubHook(event string, body []byte) (*forgeEvent, error) {
 	case "push":
 		ev.kind = "push"
 		if p.Before != "" && p.Before == p.After {
-			// Forgejo's "test delivery": the latest commit, pushed again.
 			ev.kind = "ping"
 			break
 		}
@@ -1435,8 +1393,6 @@ func parseGitHubHook(event string, body []byte) (*forgeEvent, error) {
 
 func ptr[T any](v T) *T { return &v }
 
-// ---- issue sync ----
-
 // importForgeIssue creates or updates the Waypoint issue mirroring a forge
 // issue in every project syncing that repo. Imports of one forge issue (and
 // of its twins on mirror forges, which share owner/name and number) run one
@@ -1444,9 +1400,6 @@ func ptr[T any](v T) *T { return &v }
 func (s *Service) importForgeIssue(ctx context.Context, f *Forge, repo string, item ForgeItem) error {
 	unlock := forgeLocks.lock(fmt.Sprintf("issue|%s|%d", strings.ToLower(repo), item.Number))
 	defer unlock()
-	// Forges allow longer text than Waypoint does: a title that is too long
-	// keeps its whole text at the start of the description (WP-175); the body
-	// is cut only past the description limit.
 	if len(item.Title) > maxTitleLen {
 		item.Title, item.Body = splitTitle(item.Title, item.Body, true)
 	}
@@ -1467,9 +1420,6 @@ func (s *Service) importForgeIssue(ctx context.Context, f *Forge, repo string, i
 	rows.Close()
 	sys := &Actor{User: SystemActor().User, ReadOnly: false}
 	sys.User.DisplayName = f.Name
-	// Who isn't a Waypoint person writes only drafts and held text, which
-	// nothing but people read until a person approves it (WP-279). A login
-	// agents may write as writes unreviewed agent text (WP-282).
 	outside, agent := s.forgeWriter(ctx, s.db.R, f, item.Author)
 	writer := *sys
 	writer.textAgent = agent
@@ -1478,7 +1428,6 @@ func (s *Service) importForgeIssue(ctx context.Context, f *Forge, repo string, i
 		err := s.db.R.QueryRowContext(ctx, `SELECT el.issue_id FROM external_links el JOIN issues i ON i.id = el.issue_id
 			WHERE el.url = ? AND el.mirror = 1 AND i.project_id = ?`, item.URL, pid).Scan(&issueID)
 		if item.Confidential {
-			// Made confidential on GitLab: keep the task, drop what it said.
 			if err == nil {
 				if err := s.hideConfidential(ctx, sys, f, issueID, item); err != nil {
 					return err
@@ -1489,8 +1438,6 @@ func (s *Service) importForgeIssue(ctx context.Context, f *Forge, repo string, i
 			continue
 		}
 		if errors.Is(err, sql.ErrNoRows) {
-			// The same issue on a mirror of this repo (another forge): same
-			// number and title. Link it there rather than import a twin.
 			err = s.db.R.QueryRowContext(ctx, `SELECT el.issue_id FROM external_links el JOIN issues i ON i.id = el.issue_id
 				WHERE i.project_id = ? AND el.mirror = 1 AND el.number = ? AND lower(el.repo) = lower(?) AND el.url != ?
 				  AND lower(trim(i.title)) = lower(trim(?)) LIMIT 1`, pid, item.Number, repo, item.URL, item.Title).Scan(&issueID)
@@ -1527,7 +1474,6 @@ func (s *Service) importForgeIssue(ctx context.Context, f *Forge, repo string, i
 		} else if err != nil {
 			return err
 		}
-		// Existing: mirror title, description and open/closed.
 		cur, err := s.issueByID(ctx, s.db.R, issueID, true)
 		if err != nil {
 			return err
@@ -1556,8 +1502,6 @@ func (s *Service) importForgeIssue(ctx context.Context, f *Forge, repo string, i
 			}
 			writer.forgeSync = false
 			if p.Status != nil {
-				// Not pushed back to this forge (it said so), but its mirrors
-				// elsewhere follow.
 				s.pushStateToMirrors(ctx, issueID, pid, closed, item.URL)
 			}
 		}
@@ -1629,8 +1573,6 @@ func (s *Service) SyncRepo(ctx context.Context, repoID int64) error {
 	if err != nil {
 		return err
 	}
-	// One bad item must not hold back the rest. If any failed, the sync
-	// point stays put so the next run retries them (imports are idempotent).
 	var failed []error
 	for _, it := range items {
 		if err := s.importForgeIssue(ctx, f, repo, it); err != nil {
@@ -1657,7 +1599,6 @@ func (s *Service) SyncRepo(ctx context.Context, repoID int64) error {
 // links and pull request records. Run periodically as a fallback for
 // missed webhooks.
 func (s *Service) SyncAllRepos(ctx context.Context) {
-	// Forges that make projects automatically: pick up new repos first.
 	if forges, err := s.forges(ctx); err == nil {
 		for _, f := range forges {
 			if f.AutoProjects && f.token != "" {
@@ -1667,8 +1608,8 @@ func (s *Service) SyncAllRepos(ctx context.Context) {
 			}
 		}
 	}
-	s.checkRepoNames(ctx)  // renamed and transferred repos (WP-166)
-	s.seedForgePeople(ctx) // whose text isn't from outside (WP-279)
+	s.checkRepoNames(ctx)
+	s.seedForgePeople(ctx)
 	type syncRepo struct {
 		id   int64
 		repo string
@@ -1692,8 +1633,6 @@ func (s *Service) SyncAllRepos(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		// The repo by name: each one that fails is its own problem in
-		// wp server problems (WP-ADR139).
 		if err := s.SyncRepo(ctx, r.id); err != nil && ctx.Err() == nil {
 			s.log.WarnContext(ctx, "repo sync failed", "repo", r.repo, "id", r.id, "err", err)
 		}
@@ -1723,7 +1662,7 @@ func (s *Service) SyncAllRepos(ctx context.Context) {
 		}
 	}
 	s.RefreshPullRequests(ctx)
-	s.CheckLandedPRs(ctx) // WP-140
+	s.CheckLandedPRs(ctx)
 }
 
 // pushIssueState closes or reopens the forge issue mirrored by a Waypoint
@@ -1740,7 +1679,7 @@ func (s *Service) pushIssueState(ctx context.Context, e *Event) {
 	}
 	for _, l := range links {
 		if !l.Mirror || l.Number == nil {
-			continue // a forge issue that only mentions this one isn't closed with it
+			continue
 		}
 		var synced int
 		if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM project_repos r JOIN forges f ON f.id = r.forge_id
@@ -1766,15 +1705,11 @@ func (s *Service) pushIssueState(ctx context.Context, e *Event) {
 	}
 }
 
-// ---- HTTP client ----
-
 // httpForgeClient calls forges' APIs: http in the background, patient for
 // calls a person waits on (forgePatient).
 type httpForgeClient struct {
 	http, patient *http.Client
-	// glJobs remembers which GitLab commit statuses are pipeline jobs
-	// (gitlabJobAuthors); a status's kind never changes.
-	glJobs glJobCache
+	glJobs        glJobCache
 }
 
 func apiBase(f *Forge) string {
@@ -1834,11 +1769,8 @@ type forgeAPIError struct {
 	method, path string
 	status       int
 	body         string
-	// retryAfter is what the forge asked to wait (Retry-After); limited: the
-	// forge refused for rate, not for the request (429, or a 403 that says
-	// so), which trying later can change.
-	retryAfter time.Duration
-	limited    bool
+	retryAfter   time.Duration
+	limited      bool
 }
 
 // apiErrorOf is the error of a response that wasn't a success.

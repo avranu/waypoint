@@ -91,7 +91,6 @@ func TestOrgHookAndDeliveryLogAccess(t *testing.T) {
 	if err := svc.SetMember(ctx, robin, key, "bob", "editor"); err != nil {
 		t.Fatal(err)
 	}
-	// A webhook to an address the egress policy refuses: logged, not sent.
 	u, ev := "http://127.0.0.1:1/hook", "issue.created"
 	h, err := svc.CreateWebhook(ctx, robin, key, core.WebhookInput{URL: &u, Events: &ev})
 	if err != nil {

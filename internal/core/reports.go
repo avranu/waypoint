@@ -13,8 +13,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/wql"
 )
 
-// ---- sprint burndown ----
-
 // BurndownPoint is one day of a sprint.
 type BurndownPoint struct {
 	Date            string   `json:"date"`
@@ -55,7 +53,7 @@ func (s *Service) SprintBurndown(ctx context.Context, actor *Actor, sprintID int
 	}
 	type item struct {
 		points   float64
-		resolved int64 // 0 = open
+		resolved int64
 	}
 	var items []item
 	for rows.Next() {
@@ -98,8 +96,6 @@ func (s *Service) SprintBurndown(ctx context.Context, actor *Actor, sprintID int
 	return b, nil
 }
 
-// ---- velocity ----
-
 // VelocityEntry is one closed sprint's commitment and delivery.
 type VelocityEntry struct {
 	SprintID  int64   `json:"sprint_id"`
@@ -141,8 +137,6 @@ func (s *Service) Velocity(ctx context.Context, actor *Actor, projectRef string,
 	return out, rows.Err()
 }
 
-// ---- weekly throughput / burnup ----
-
 // WeekStat is one week of flow.
 type WeekStat struct {
 	Week            string  `json:"week"` // Monday, YYYY-MM-DD
@@ -159,7 +153,7 @@ type WeekStat struct {
 
 func weekStart(t time.Time) time.Time {
 	d := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
-	offset := (int(d.Weekday()) + 6) % 7 // Monday = 0
+	offset := (int(d.Weekday()) + 6) % 7
 	return d.AddDate(0, 0, -offset)
 }
 
@@ -168,7 +162,7 @@ type flowIssue struct {
 	points   float64
 	pointsOK bool
 	created  int64
-	resolved int64 // 0 = not done
+	resolved int64
 	canceled bool
 	typ      string
 	children int
@@ -202,7 +196,7 @@ func (s *Service) flowIssues(ctx context.Context, projectID int64, extra string,
 		}
 		f.canceled = cat == CatCanceled
 		if f.children > 0 {
-			continue // containers: their children carry the work
+			continue
 		}
 		out = append(out, f)
 	}
@@ -258,8 +252,6 @@ func (s *Service) Throughput(ctx context.Context, actor *Actor, projectRef strin
 	}
 	return out, nil
 }
-
-// ---- cumulative flow ----
 
 // FlowDay counts issues per status category at the end of a day.
 type FlowDay struct {
@@ -324,7 +316,7 @@ func (s *Service) CumulativeFlow(ctx context.Context, actor *Actor, projectRef s
 			New string `json:"new_category"`
 		}
 		if err := json.Unmarshal([]byte(data), &d); err != nil {
-			continue // corrupt history row: skip rather than record an empty change
+			continue
 		}
 		h.changes = append(h.changes, change{at: at, old: d.Old, new: d.New})
 	}
@@ -341,7 +333,6 @@ func (s *Service) CumulativeFlow(ctx context.Context, actor *Actor, projectRef s
 				continue
 			}
 			cat := h.current
-			// The state at cutoff is the "old" side of the first change after it.
 			for _, c := range h.changes {
 				if c.at >= cutoff {
 					cat = c.old
@@ -356,8 +347,6 @@ func (s *Service) CumulativeFlow(ctx context.Context, actor *Actor, projectRef s
 	}
 	return out, nil
 }
-
-// ---- forecast ----
 
 // Forecast projects when remaining work will be done from recent throughput.
 type Forecast struct {
@@ -391,7 +380,6 @@ func (s *Service) ForecastWork(ctx context.Context, actor *Actor, projectRef, qu
 	if err != nil {
 		return nil, err
 	}
-	// Scope: open leaf issues, optionally filtered by query.
 	scope := map[int64]bool{}
 	if query != "" {
 		q, err := wql.Parse(query)
@@ -467,7 +455,6 @@ func (s *Service) forecast(all []flowIssue, inScope func(flowIssue) bool, settin
 			fc.Remaining += size(f)
 		}
 	}
-	// Weekly throughput over the window, across the whole project.
 	weeks := settings.VelocityWeeks
 	now := s.now().In(loc)
 	first := weekStart(now).AddDate(0, 0, -7*weeks)
@@ -496,9 +483,6 @@ func (s *Service) forecast(all []flowIssue, inScope func(flowIssue) bool, settin
 		fc.Message = "No work finished in the last " + itoa(weeks) + " weeks, so there's nothing to project from yet."
 		return fc
 	}
-	// Monte Carlo: sample past weeks with replacement until the work is done.
-	// The seed is intentionally fixed so identical inputs produce identical
-	// forecasts; this is simulation sampling, not cryptography.
 	rng := rand.New(rand.NewPCG(42, uint64(len(all)))) // #nosec G404 -- deterministic forecast seed by design
 	const runs = 2000
 	results := make([]int, runs)
@@ -552,7 +536,6 @@ func (s *Service) Roadmap(ctx context.Context, actor *Actor, projectRef string) 
 	if err != nil {
 		return nil, err
 	}
-	// Map each leaf to its epic via ancestors.
 	parents := map[int64]int64{}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT id, coalesce(parent_id, 0) FROM issues WHERE project_id = ?`, p.ID)
 	if err != nil {
@@ -605,8 +588,6 @@ func (s *Service) Roadmap(ctx context.Context, actor *Actor, projectRef string) 
 	}
 	return out, nil
 }
-
-// ---- time report ----
 
 // TimeReport sums tracked time.
 type TimeReport struct {
@@ -661,7 +642,6 @@ func (s *Service) GetTimeReport(ctx context.Context, actor *Actor, from, to time
 		}
 		secs := (end - start) / 1000
 		r.TotalSeconds += secs
-		// Split across days at local midnight.
 		for t := start; t < end; {
 			lt := time.UnixMilli(t).In(loc)
 			next := time.Date(lt.Year(), lt.Month(), lt.Day()+1, 0, 0, 0, 0, loc).UnixMilli()
@@ -724,8 +704,6 @@ func (s *Service) agentTime(ctx context.Context, actor *Actor, fromMS, toMS int6
 		cond, arg = "i.project_id = ?", p.ID
 	}
 	now := s.nowMS()
-	// A run still open counts until now, or until its lease ran out if the
-	// agent went quiet (the sweep hasn't closed it yet).
 	// #nosec G202 -- cond is one of two fixed conditions
 	rows, err := s.db.R.QueryContext(ctx, `SELECT agent, start, stop FROM (
 			SELECT r.agent AS agent, max(r.started_at, ?) AS start, min(coalesce(r.ended_at, min(?, coalesce(
@@ -737,8 +715,6 @@ func (s *Service) agentTime(ctx context.Context, actor *Actor, fromMS, toMS int6
 		return nil, err
 	}
 	defer rows.Close()
-	// One agent working on several tasks at once (a batch) is one span of
-	// time, not several: overlapping runs are merged per agent.
 	out := map[string]int64{}
 	var agent string
 	var curStart, curEnd int64

@@ -1,13 +1,5 @@
 package core
 
-// The failing part of a CI job's log (WP-132, WP-ADR2 §1): what `wp pr log`
-// and `wp pr wait` print instead of a 300 KB log. Cleaning is ported from
-// infrastructure/bin/ci_wait.py (colour codes and timestamps go); finding
-// the failure goes further than its "first error": every Go test failure,
-// panic and data race, Python traceback, pytest failure, compiler and
-// linter error, Playwright failure and make error, each with the lines
-// around it, the same text only once, capped.
-
 import (
 	"fmt"
 	"slices"
@@ -17,10 +9,10 @@ import (
 )
 
 const (
-	excerptMaxLines = 200 // an excerpt is cut here; --full prints everything
-	excerptLineMax  = 400 // longer lines are cut
-	excerptTailLen  = 30  // without a recognisable failure: this many lines before the job ended
-	blockMax        = 45  // the most lines one failure's block reaches past its first
+	excerptMaxLines = 200
+	excerptLineMax  = 400
+	excerptTailLen  = 30
+	blockMax        = 45
 )
 
 var (
@@ -42,7 +34,7 @@ func cleanLog(log string) []string {
 	for _, l := range raw {
 		l = strings.TrimRight(l, "\r")
 		if i := strings.LastIndexByte(l, '\r'); i >= 0 {
-			l = l[i+1:] // what the terminal showed last
+			l = l[i+1:]
 		}
 		l = ansiRE.ReplaceAllString(l, "")
 		l = logStamp.ReplaceAllString(l, "")
@@ -57,15 +49,9 @@ func cleanLog(log string) []string {
 type logRule struct {
 	re            *lazyre.Regexp
 	before, after int
-	// back, when set, says where the failure starts: the index of its
-	// first line.
-	back func(lines []string, i int) int
-	// block, when set, says where the failure ends: the index after its
-	// last line.
-	block func(lines []string, i int) int
-	// closing: the line only says the job ended badly ("Process completed
-	// with exit code 1"); alone, it shows the lines before it instead.
-	closing bool
+	back          func(lines []string, i int) int
+	block         func(lines []string, i int) int
+	closing       bool
 }
 
 func indented(l string) bool { return l != "" && (l[0] == ' ' || l[0] == '\t') }
@@ -139,41 +125,33 @@ var (
 
 // logRules, most specific first: a line counts for the first that matches.
 var logRules = []logRule{
-	// Go tests
 	{re: lazyre.New(`^\s*--- FAIL: `), block: whileIndented(false), back: goRunBefore},
 	{re: lazyre.New(`^FAIL\t`)},
 	{re: lazyre.New(`^(?:panic: |fatal error: )`), block: untilRE(panicEnd, true)},
 	{re: lazyre.New(`^WARNING: DATA RACE$`), before: 1, block: untilRE(raceEnd, true)},
-	// Python
 	{re: lazyre.New(`^\s*Traceback \(most recent call last\):$`), block: whileIndented(true)},
 	{re: lazyre.New(`^E {2,}\S`), before: 3},
 	{re: lazyre.New(`^(?:FAILED|ERROR) \S+(?:::| - )`)},
 	{re: lazyre.New(`^=+ .*\b\d+ (?:failed|errors?)\b.* =+$`)},
 	{re: lazyre.New(`^\S+\.py:\d+: \w+`)},
-	// Playwright: a failure's header and its error, and the summary
 	{re: playwrightHd, block: untilRE(playwrightEnd, false)},
 	{re: lazyre.New(`^\s+✘ `)},
 	{re: lazyre.New(`^\s+\d+ failed$`), after: 6},
-	// TypeScript, ESLint, Go vet and compilers, other compilers
 	{re: lazyre.New(`\berror TS\d+:`), after: 2},
 	{re: lazyre.New(`^\s+\d+:\d+\s+error\s`), back: headerBefore},
 	{re: lazyre.New(`^✖ \d+ problems? `)},
 	{re: lazyre.New(`^\S+\.go:\d+(?::\d+)?: `)},
 	{re: lazyre.New(`^\S+:\d+(?::\d+)?: (?:fatal )?error: `), after: 2},
-	// Rust
 	{re: lazyre.New(`^thread '.*' panicked at`), after: 3},
 	{re: lazyre.New(`^test result: FAILED`)},
-	// Jest, unittest, and harnesses that print "FAIL <what>"
 	{re: lazyre.New(`^\s*● `), after: 12},
 	{re: lazyre.New(`^(?:FAIL|ERROR): \w+ \(`), before: 1},
 	{re: lazyre.New(`^FAIL[ :]\S`)},
-	// How the job ended
 	{re: lazyre.New(`##\[error\]Process completed with exit code`), closing: true},
 	{re: lazyre.New(`^ERROR: Job failed\b`), closing: true},
 	{re: lazyre.New(`^⚙️ \[runner\]: exitcode '\d+'`), closing: true},
 	{re: lazyre.New(`^❌\s+Failure - `), closing: true},
 	{re: lazyre.New(`🏁\s+Job failed`), closing: true},
-	// Generic errors, and GitHub's annotations
 	{re: lazyre.New(`^make(?:\[\d+\])?: \*\*\* `), before: 2},
 	{re: lazyre.New(`^npm ERR! `)},
 	{re: lazyre.New(`^\s*(?:Error|ERROR|error)(?:\[[^\]]*\])?: `), before: 1, after: 2},
@@ -193,7 +171,7 @@ type LogExcerpt struct {
 	Fault *RunnerFault `json:"runner_fault,omitempty"`
 }
 
-type logSpan struct{ from, to int } // lines[from:to]
+type logSpan struct{ from, to int }
 
 // failingExcerpt finds the failures in a job log and returns them with the
 // lines around each, separated by "…", in at most limit lines (0: the
@@ -224,7 +202,7 @@ func failingExcerpt(log string, limit int) LogExcerpt {
 				}
 				break
 			}
-			if seen[l] { // the same failure said again
+			if seen[l] {
 				break
 			}
 			seen[l] = true
@@ -240,7 +218,6 @@ func failingExcerpt(log string, limit int) LogExcerpt {
 		}
 	}
 	if ex.Fault = findRunnerFault(lines); ex.Fault != nil {
-		// The line that says so, wherever it is.
 		at := ex.Fault.at
 		spans = append(spans, logSpan{max(0, at-2), min(len(lines), at+3)})
 		slices.SortStableFunc(spans, func(a, b logSpan) int { return a.from - b.from })
@@ -253,7 +230,6 @@ func failingExcerpt(log string, limit int) LogExcerpt {
 		}
 		spans = []logSpan{{max(0, end-excerptTailLen), end}}
 	}
-	// Merge what overlaps or touches.
 	merged := spans[:1]
 	for _, sp := range spans[1:] {
 		if last := &merged[len(merged)-1]; sp.from <= last.to {
@@ -271,7 +247,7 @@ func failingExcerpt(log string, limit int) LogExcerpt {
 			continue
 		}
 		texts[key] = true
-		sep := min(used, 1) // a "…" between blocks
+		sep := min(used, 1)
 		room := limit - used - sep
 		if room <= 0 || (len(block) > room && used > 0) {
 			ex.Cut = true
@@ -300,7 +276,7 @@ func cutLine(l string) string {
 		return l
 	}
 	cut := excerptLineMax
-	for cut > 0 && l[cut]&0xC0 == 0x80 { // not inside a UTF-8 character
+	for cut > 0 && l[cut]&0xC0 == 0x80 {
 		cut--
 	}
 	return l[:cut] + fmt.Sprintf("… (%d more characters)", len(l)-cut)

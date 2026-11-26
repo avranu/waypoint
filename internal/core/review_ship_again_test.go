@@ -43,7 +43,6 @@ func TestShipWorksAgainAfterTheServerGaveUp(t *testing.T) {
 			if err != nil || res.Held == "" {
 				t.Fatalf("wp ship after the end: %+v, %v", res, err)
 			}
-			// It starts a new review round, which a clean audit takes to the pull request.
 			e.stopWith("Pushed; the review comes first.")
 			r2 := e.step().reviewID.Int64
 			if r2 == 0 || r2 == r1 {

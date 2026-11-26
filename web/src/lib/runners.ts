@@ -1,6 +1,3 @@
-// Runners (WP-D17): `wp runner` on a person's machine, and the work it
-// does there: shell commands, file changes, coding agents.
-
 import { queryOptions, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, qs } from './api'
 import type { UserRef } from './types'
@@ -82,7 +79,6 @@ export interface RunnerJob {
   created_at: string
   started_at: string | null
   finished_at: string | null
-  // detail only, and only for the job's owner and creator
   input?: Record<string, unknown>
   result?: Record<string, unknown>
   log?: string

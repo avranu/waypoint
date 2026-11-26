@@ -1,5 +1,3 @@
-// Hermes's own MCP servers and toolsets (its /api/mcp and /api/tools).
-
 import { hermesQuery } from '@/lib/assistant'
 
 export interface McpServer {

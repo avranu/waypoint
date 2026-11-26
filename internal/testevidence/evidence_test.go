@@ -15,7 +15,6 @@ import (
 // cut ones is unreadable rather than without evidence.
 func TestEncodeDecode(t *testing.T) {
 	p := &Payload{Shard: "2/4", Tests: []Test{{Package: "internal/core", Name: "TestA", Outcome: Pass, Ms: 1200}}}
-	// Big enough for several lines.
 	for i := range 3000 {
 		p.Cover = append(p.Cover, File{Path: strings.Repeat("x", i%40) + ".go", Stmts: []int{i % 7, 3}, Hit: []byte{byte(i)}})
 	}
@@ -32,7 +31,7 @@ func TestEncodeDecode(t *testing.T) {
 			t.Fatalf("line of %d characters", len(l))
 		}
 	}
-	log := append([]string{"ok  \tpkg\t1s", "wp-evidence v1 1/3 AAAA"}, lines...) // a cut payload first
+	log := append([]string{"ok  \tpkg\t1s", "wp-evidence v1 1/3 AAAA"}, lines...)
 	got, err := Decode(append(log, "done"))
 	if err != nil {
 		t.Fatal(err)
@@ -170,8 +169,6 @@ func TestTextSuppressions(t *testing.T) {
 		t.Fatalf("got  %+v\nwant %+v", got, want)
 	}
 
-	// The ledger reads e2e scripts as wplint does: a quote in a regex
-	// doesn't open a string, and a template that spans lines does.
 	mjs2 := strings.Join([]string{
 		`s.replace(/'/g, ""); await page.waitForTimeout(1); // wplint:ignore e2e-wait after a regex`,
 		"const html = `",
@@ -186,8 +183,6 @@ func TestTextSuppressions(t *testing.T) {
 		t.Errorf("e2e waivers on lines %v, want [1 4]", lines)
 	}
 
-	// A backslash is a plain character in a SQL string: the quote after it
-	// closes the string, so the trailing waiver is a comment.
 	sql2 := "ALTER TABLE x ADD b TEXT DEFAULT 'a\\'; -- wplint:ignore migrations after a backslash\n" +
 		"ALTER TABLE x ADD c TEXT DEFAULT 'it''s -- not a comment';\n"
 	lines = nil

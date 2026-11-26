@@ -1,9 +1,4 @@
 # CodeQL on GitHub's runners (WP-1624), for main: findings land in the
-# repository's Security tab. It gates nothing. Pull requests are scanned on
-# Forgejo by forge-checks (`forge-checks/codeql`), which reads the triaged
-# findings in .forgejo/codeql/; that file is private to Forgejo, so a finding
-# triaged there is dismissed by hand here. The rules in ci.yml's header apply:
-# no secrets, GitHub's runners only, no pull request triggers.
 name: github-codeql
 
 on:
@@ -28,7 +23,7 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-      security-events: write # uploads the findings; the job token, not a secret
+      security-events: write
     strategy:
       fail-fast: false
       matrix:

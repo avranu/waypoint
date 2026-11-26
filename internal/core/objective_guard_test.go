@@ -26,7 +26,6 @@ func TestObjectiveRoundEndsWhenItsPullRequestMerges(t *testing.T) {
 	if got := o.status(task.Key); got != "To Do" {
 		t.Fatalf("status = %s while the round is read", got)
 	}
-	// The same merge, told again, ends nothing more.
 	if err := o.s.objectiveMerged(o.ctx, o.issueID(task.Key), pr); err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +34,6 @@ func TestObjectiveRoundEndsWhenItsPullRequestMerges(t *testing.T) {
 	if ob.Round != 2 || len(ob.Rounds) != 1 || ob.Rounds[0].Outcome != RoundWorked || o.status(task.Key) != "To Do" {
 		t.Fatalf("after the reading: round %d %+v %s", ob.Round, ob.Rounds, o.status(task.Key))
 	}
-	// Round 2 isn't out on round 1's merged pull request.
 	if next, wait := o.queued(task.Key); !next {
 		t.Fatalf("round 2 isn't handed out: %q", wait)
 	}
@@ -63,7 +61,6 @@ func TestObjectiveMergesOutOfTurn(t *testing.T) {
 	prs := []string{o.pull(task.Key, 7), o.pull(task.Key, 8), o.pull(task.Key, 9), o.pull(task.Key, 10)}
 	o.setClock(o.clockNow().Add(time.Minute))
 	o.linkState(prs[0], "merged")
-	// A second lands while round 1 is read: the reading starts over.
 	_, first := o.job()
 	o.linkState(prs[1], "merged")
 	ob := o.obj(task.Key)
@@ -76,8 +73,6 @@ func TestObjectiveMergesOutOfTurn(t *testing.T) {
 	if ob = o.obj(task.Key); ob.Round != 2 || len(ob.Rounds) != 1 || ob.Phase != PhaseWork {
 		t.Fatalf("after the reading: round %d %+v", ob.Round, ob.Rounds)
 	}
-	// A third lands while round 2 waits in To Do: no round ends, and where
-	// round 2 starts from is read again.
 	o.linkState(prs[2], "merged")
 	if ob = o.obj(task.Key); ob.Phase != PhaseBaseline || ob.Round != 2 || len(ob.Rounds) != 1 {
 		t.Fatalf("a merge while the round waits: %q round %d", ob.Phase, ob.Round)
@@ -91,7 +86,6 @@ func TestObjectiveMergesOutOfTurn(t *testing.T) {
 	if ob = o.obj(task.Key); ob.Phase != PhaseWork || ob.BaseSHA != shaC || ob.Round != 2 {
 		t.Fatalf("after reading the new start: %q %s", ob.Phase, ob.BaseSHA)
 	}
-	// The fourth lands while the agent works round 2: the round goes on.
 	o.setClock(o.clockNow().Add(time.Minute))
 	o.take1(task.Key)
 	o.setClock(o.clockNow().Add(time.Minute))
@@ -139,7 +133,6 @@ func TestObjectiveIsAPersonsToEnd(t *testing.T) {
 	if ob.State != ObjectiveActive || ob.Round != 1 || ob.Until != "2x" || o.status(task.Key) != "In Progress" {
 		t.Fatalf("after all that: %s round %d %s %s", ob.State, ob.Round, ob.Until, o.status(task.Key))
 	}
-	// A person's cancel stands and ends it.
 	if _, err := o.s.UpdateIssue(o.ctx, o.admin, task.Key, IssuePatch{Status: &st}); err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +140,6 @@ func TestObjectiveIsAPersonsToEnd(t *testing.T) {
 		t.Fatalf("after a person's cancel: %s %q", ob.State, ob.EndedWhy)
 	}
 
-	// A person ends one and the task stays an ordinary, open task.
 	other := o.task("Other")
 	o.set(other.Key, ObjectiveInput{Check: ptrOf("make lint"), Until: ptrOf("pass")})
 	if _, err := o.s.ObjectiveGo(o.ctx, o.admin, other.Key, ObjectiveEnd); err != nil {
@@ -156,11 +148,10 @@ func TestObjectiveIsAPersonsToEnd(t *testing.T) {
 	if ob = o.obj(other.Key); ob.State != ObjectiveEnded || o.status(other.Key) == "Done" {
 		t.Fatalf("ended: %s %s", ob.State, o.status(other.Key))
 	}
-	o.noJob() // its reading was called off
+	o.noJob()
 	if res := o.worked(other.Key); !res.Finished {
 		t.Fatalf("an ended objective still holds the task open: %+v", res)
 	}
-	// A person deletes a task with one in effect.
 	third := o.task("Third")
 	o.set(third.Key, ObjectiveInput{Check: ptrOf("make lint"), Until: ptrOf("pass")})
 	if err := o.s.DeleteIssue(o.ctx, o.admin, third.Key, false); err != nil {
@@ -201,7 +192,6 @@ func TestObjectiveRoundLeftIsHandedOutAgain(t *testing.T) {
 	if d.ClaimedUntil == nil {
 		t.Fatal("no claim")
 	}
-	// The claim runs out; not handed back before an hour has gone by.
 	o.setClock(d.ClaimedUntil.Add(30 * time.Minute))
 	o.s.CheckObjectives(o.ctx)
 	if got := o.status(task.Key); got != "In Progress" {
@@ -215,7 +205,6 @@ func TestObjectiveRoundLeftIsHandedOutAgain(t *testing.T) {
 	if next, wait := o.queued(task.Key); !next {
 		t.Fatalf("the round isn't handed out again: %q", wait)
 	}
-	// Taken again, a pull request opened, and closed unmerged.
 	o.take1(task.Key)
 	pr := o.pull(task.Key, 7)
 	d = o.get(o.admin, task.Key)
@@ -261,13 +250,11 @@ func TestObjectiveStuckIsTold(t *testing.T) {
 	if told := o.told(NotifyObjective); len(told) != 2 || !strings.Contains(told[0]+told[1], "still stuck") {
 		t.Fatalf("not told again after a day: %q", told)
 	}
-	// Taken up, it isn't stuck any more.
 	o.take1(task.Key)
 	o.tick(6 * time.Minute)
 	if ob = o.obj(task.Key); ob.Health == "stuck" || ob.StuckSince != nil {
 		t.Fatalf("taken up: %s", ob.Health)
 	}
-	// Out on a pull request for three days.
 	o.pull(task.Key, 7)
 	o.tick(73 * time.Hour)
 	if ob = o.obj(task.Key); ob.Health != "stuck" || !strings.Contains(ob.HealthNote, "hasn't merged") {

@@ -1,7 +1,3 @@
-// The limits as fields (Agents → Autopilot settings): for your defaults and for
-// each project. Empty fields inherit, and say what they inherit as their
-// placeholder; changes save by themselves.
-
 import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -108,7 +104,6 @@ const draftOf = (l: AutopilotLimits): LimitsDraft => ({
   spacing_minutes: l.spacing_minutes?.toString() ?? '',
   at_once: l.at_once?.toString() ?? '',
   merge_wait_hours: l.merge_wait_hours?.toString() ?? '',
-  // Set but empty overrides an inherited window with any time, every day.
   hours: l.hours === undefined ? '' : l.hours || 'any',
   days: l.days === undefined ? '' : l.days || 'all',
 })
@@ -159,7 +154,6 @@ function limitsOf(d: LimitsDraft): { limits: AutopilotLimits; error?: string } {
   if (prompt) limits.review_prompt = prompt
   const brief = d.review_text.trim()
   if (brief) limits.review_text = brief
-  // Set but empty: the built-in brief, over a custom one inherited.
   else if (d.review_builtin) limits.review_text = ''
   const query = d.query.trim()
   if (query) limits.query = query
@@ -224,16 +218,11 @@ export function LimitsForm({
 }) {
   const initial = useMemo(() => draftOf(value), [value])
   const [draft, setDraft] = useState(initial)
-  // A change from elsewhere (another tab, a reset) replaces what isn't being edited.
   const [seen, setSeen] = useState(JSON.stringify(initial))
   const sent = useSent()
   if (seen !== JSON.stringify(initial)) {
     const before = JSON.parse(seen) as LimitsDraft
     setSeen(JSON.stringify(initial))
-    // What this form saved comes back as it is: keep what is typed since.
-    // Anything else (another tab, a reset, a save the server spelled its own
-    // way: "9-18" comes back "09:00-18:00") replaces only the fields not
-    // changed here, so a typed value is never lost.
     if (!sent.mine(JSON.stringify(limitsOf(initial).limits)))
       setDraft((d) => {
         const next = { ...d }
@@ -244,7 +233,6 @@ export function LimitsForm({
   }
   const { limits, error } = limitsOf(draft)
   const limitsKey = JSON.stringify(limits)
-  // Selects save at once; typed fields on blur or Enter, never half-typed.
   const instant = useRef(false)
   const { done, flush } = useAutosave(
     limitsKey,
@@ -256,8 +244,6 @@ export function LimitsForm({
       const was = draft
       return onSave(limits).then((back) => {
         if (!back) return
-        // Show a saved field as the server keeps it ("9-18" → "09:00-18:00"),
-        // unless it was changed again meanwhile.
         const kept = draftOf(back)
         sent.add(JSON.stringify(limitsOf(kept).limits))
         setDraft((d) => {
@@ -270,8 +256,6 @@ export function LimitsForm({
     },
   )
   const reviewers = useQuery(q.reviewModels()).data
-  // The brief is set to the built-in one, and the one an empty field stands
-  // for (shown in grey): the built-in, or the one inherited.
   const builtin = draft.review_builtin === 'on'
   const shownBrief = (!builtin && inherit.review_text) || reviewers?.default_text || ''
   const set = (k: keyof LimitsDraft) => (e: { target: { value: string } }) => {
@@ -327,7 +311,6 @@ export function LimitsForm({
     <form
       className="space-y-3"
       onBlur={flush}
-      // Enter in a field saves (a form of several fields doesn't submit on it).
       onKeyDown={(e) => e.key === 'Enter' && e.target instanceof HTMLInputElement && flush()}
       onSubmit={(e) => e.preventDefault()}
     >
@@ -527,9 +510,6 @@ export function LimitsForm({
               id={`${idPrefix}-review_text`}
               rows={8}
               autoGrow
-              // Past the limit by enough that a paste over it is seen and
-              // said, not cut off silently; twice it, since the browser
-              // counts an emoji as two and the limit as one.
               maxLength={2 * MAX_REVIEW_TEXT + 100}
               value={draft.review_text}
               placeholder={shownBrief}

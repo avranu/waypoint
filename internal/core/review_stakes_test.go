@@ -17,20 +17,15 @@ func TestChangeStakes(t *testing.T) {
 	}{
 		{TriageFeatures{Files: 3, Added: 300, Deleted: 100}, StakesNormal, ""},
 		{TriageFeatures{Provenance: RiskMedium}, StakesNormal, ""},
-		// Size: over 400 lines elevated, over 1000 high.
 		{TriageFeatures{Files: 30, Added: 900}, StakesElevated, "it changes 900 lines"},
 		{TriageFeatures{Files: 30, Added: 900, Deleted: 101}, StakesHigh, "it changes 1001 lines"},
-		// Facts triage couldn't read say nothing; a risk it couldn't read is
-		// elevated.
 		{TriageFeatures{NoFacts: true}, StakesUnknown, "no facts"},
 		{TriageFeatures{Added: 10, RiskErr: true}, StakesElevated, "risk couldn't be read"},
 		{TriageFeatures{Provenance: RiskHigh}, StakesHigh, "risk is high"},
 		{TriageFeatures{Sensitive: []string{"internal/db/migrations/0001.sql"}}, StakesHigh, "deployment paths (internal/db/migrations/0001.sql)"},
 		{TriageFeatures{Sensitive: []string{"internal/auth/login.go"}}, StakesHigh, "internal/auth/login.go"},
 		{TriageFeatures{Sensitive: []string{".forgejo/workflows/ci.yml"}}, StakesHigh, "workflows"},
-		// A test of a sensitive path is no more than elevated.
 		{TriageFeatures{Sensitive: []string{"internal/auth/login_test.go"}}, StakesElevated, "sensitive paths"},
-		// The looser sensitive names only raise it to elevated.
 		{TriageFeatures{Sensitive: []string{"internal/core/hooks.go", "go.mod"}}, StakesElevated, "sensitive paths (internal/core/hooks.go, go.mod)"},
 		{TriageFeatures{RiskyFiles: 2, Added: 100}, StakesElevated, "2 files with past bug fixes"},
 		{TriageFeatures{RiskyFiles: 2, Added: 300, Deleted: 200}, StakesHigh, "500 changed lines touch 2 files"},
@@ -51,7 +46,6 @@ func TestChangeStakes(t *testing.T) {
 	if r.barFor(reviewOtherAuditKey) != trustedAuditBar || r.reviewer().Model != "sonnet" || r.reviewerName() != "Sonnet review" {
 		t.Errorf("high: %q %v", r.barFor(reviewOtherAuditKey), r.reviewer())
 	}
-	// WP-1306: every tier has a Claude reviewer; unknown stakes keep Sonnet.
 	if (roundStakes{}).reviewer().Model != "sonnet" || (roundStakes{tier: StakesNormal}).reviewer().Model != "haiku" {
 		t.Error("unknown stakes get Sonnet, normal ones Haiku")
 	}
@@ -108,7 +102,6 @@ func TestReviewRoundStakes(t *testing.T) {
 		if au == nil || au.Weakest != elevatedAuditBar {
 			t.Fatalf("first audit = %+v", au)
 		}
-		// The tier is kept: new facts don't change what the round was given.
 		if _, err := a.s.db.W.Exec(`UPDATE review_triage SET features = '{"files":90,"added":5000}' WHERE round_id = ?`, id); err != nil {
 			t.Fatal(err)
 		}
@@ -129,13 +122,11 @@ func TestReviewRoundStakes(t *testing.T) {
 		if rv, _ := a.s.roundReviewer(a.ctx, id); rv != nil {
 			t.Errorf("a Sonnet review started: %+v", rv)
 		}
-		// The free audit answers: its findings are the round's.
 		a.endAudit(box, "done", "Merge reads a nil map")
 		a.tick(time.Second)
 		if len(a.jobs) != 1 || !strings.Contains(string(a.jobs[0].Input), "Merge reads a nil map") {
 			t.Fatalf("jobs = %+v", a.jobs)
 		}
-		// A later round triage never saw takes this one's tier.
 		var issueID int64
 		if err := a.s.db.R.QueryRow(`SELECT issue_id FROM work_log WHERE id = ?`, id).Scan(&issueID); err != nil {
 			t.Fatal(err)
@@ -153,9 +144,6 @@ func TestReviewRoundStakes(t *testing.T) {
 		}
 	})
 
-	// slowReviewed: past its patience a normal change's slow audit starts the
-	// Haiku reviewer beside it (WP-1306); a runner takes the audit, and the
-	// reviewer ends first, so the audit goes on as the pull request's.
 	slowReviewed := func(t *testing.T, a *apEnv, box *Runner, id int64) *RunnerClaim {
 		t.Helper()
 		a.tick(61 * time.Second)
@@ -175,7 +163,6 @@ func TestReviewRoundStakes(t *testing.T) {
 		}
 		a.endReviewerAs(box, "haiku", "done", "Merge reads a nil map")
 		a.tick(time.Second)
-		// The runner types the findings in: the round starts.
 		if err := a.s.write(a.ctx, SystemActor(), func(tx *tx) error {
 			_, err := a.s.startRound(a.ctx, tx, id, a.clockNow().UnixMilli())
 			return err
@@ -198,7 +185,6 @@ func TestReviewRoundStakes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// A member's pull request: the runner gate lets its audit run.
 		if _, err := a.s.db.W.Exec(`UPDATE pull_requests SET author = ? WHERE id = ?`, a.admin.User.Username, *au.PRID); err != nil {
 			t.Fatal(err)
 		}
@@ -222,13 +208,15 @@ func TestReviewRoundStakes(t *testing.T) {
 		if n := prAudits(); n != 2 {
 			t.Fatalf("the pull request didn't ask for its own audit: %d audits", n)
 		}
-		// The pull request's own audit failing asks for nothing more: it
-		// still counts as the head's audit.
 		a.endAudit(box, "failed")
 		if n := prAudits(); n != 2 {
 			t.Fatalf("the pull request's own failed audit asked again: %d audits", n)
 		}
-		if pr, err := a.s.prByID(a.ctx, a.s.db.R, *au.PRID); err != nil || !a.s.headAudited(a.ctx, pr) {
+		pr, err := a.s.prByID(a.ctx, a.s.db.R, *au.PRID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if read, err := a.s.headAudited(a.ctx, pr); err != nil || !read {
 			t.Fatalf("the pull request's own failed audit doesn't count (%v)", err)
 		}
 	})
@@ -237,7 +225,6 @@ func TestReviewRoundStakes(t *testing.T) {
 		a, box := auditAPEnv(t)
 		id := start(a, `{"files":2,"added":20}`)
 		slowReviewed(t, a, box, id)
-		// The Haiku review's findings are typed in for the session.
 		var in AutopilotJob
 		if len(a.jobs) != 1 || json.Unmarshal(a.jobs[0].Input, &in) != nil || !strings.Contains(in.Review, "Merge reads a nil map") || !strings.Contains(in.Review, "Claude Haiku") {
 			t.Fatalf("jobs = %+v", a.jobs)
@@ -246,12 +233,10 @@ func TestReviewRoundStakes(t *testing.T) {
 		if !strings.HasPrefix(ra.note, roundAuditOutwaited) || !strings.Contains(ra.note, "Haiku review #") || strings.Contains(ra.note, stakesNoClaude) || au == nil || au.Status != AuditRunning {
 			t.Fatalf("round = %+v, audit = %+v", ra, au)
 		}
-		// The sweep makes the audit the pull request's, where it holds the merge.
 		a.s.handOverRoundAudits(a.ctx)
 		if _, au := a.roundAuditRow(id); au.Purpose != "" || au.PRID == nil {
 			t.Errorf("not handed over: %+v", au)
 		}
-		// And the report counts it.
 		stats, err := a.s.GetReviewStakesStats(a.ctx, a.admin, "", 14, true)
 		if err != nil {
 			t.Fatal(err)
@@ -268,8 +253,6 @@ func TestReviewRoundStakes(t *testing.T) {
 		if normal != nil && (normal.Recomputed != 0 || len(normal.Outcomes) != len(experimentMetrics)+len(stakesExtraMetrics) || stats.Rows[0].Rule != StakesRule) {
 			t.Errorf("outcomes = %+v, recomputed %d, rule %q", normal.Outcomes, normal.Recomputed, stats.Rows[0].Rule)
 		}
-		// The floor is every round's, so it counts as no bar; a legacy row
-		// ('') too; a tier bar above it is a barred round (WP-1440).
 		barred := func(weakest string) int {
 			t.Helper()
 			if _, err := a.s.db.W.Exec(`UPDATE code_audits SET weakest = ? WHERE id = ?`, weakest, au.ID); err != nil {
@@ -295,8 +278,6 @@ func TestReviewRoundStakes(t *testing.T) {
 				t.Errorf("a round whose audit was held to %q: Barred = %d, want %d", weakest, got, want)
 			}
 		}
-		// Outcomes read every person's usage: someone not an admin gets the
-		// tiers without them, and a note saying why.
 		member := *a.admin.User
 		member.IsAdmin = false
 		stats, err = a.s.GetReviewStakesStats(a.ctx, &Actor{User: &member}, "", 14, false)
@@ -313,9 +294,6 @@ func TestReviewRoundStakes(t *testing.T) {
 		}
 	})
 
-	// WP-1306: a round that ends before its reviewer's findings were typed
-	// in (the runner couldn't type them) hands them to the pull request with
-	// its audit; once the pull request merges, they get a fix task.
 	t.Run("a finished review the round never typed goes to the pull request", func(t *testing.T) {
 		a, box := auditAPEnv(t)
 		id := start(a, `{"files":2,"added":20}`)
@@ -349,7 +327,6 @@ func TestReviewRoundStakes(t *testing.T) {
 		}
 	})
 
-	// A round whose prompt went in had the findings: nothing is handed over.
 	t.Run("a typed review stays the round's", func(t *testing.T) {
 		a, box := auditAPEnv(t)
 		id := start(a, `{"files":2,"added":20}`)

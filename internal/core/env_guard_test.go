@@ -38,7 +38,6 @@ func TestEnvGuardHosts(t *testing.T) {
 		t.Errorf("another repo: %#v", got)
 	}
 
-	// An agent's environment doesn't count.
 	ag := agentActor(x.editor, "anthropic/claude-code")
 	name := "staging"
 	st, err := x.s.CreateEnvironment(x.ctx, ag, x.p.Key, EnvironmentInput{Name: &name, URL: ptr("https://evil.example")})
@@ -49,8 +48,6 @@ func TestEnvGuardHosts(t *testing.T) {
 		t.Fatalf("agent's environment: %q, hosts %v", st.AddressAgent, hosts())
 	}
 
-	// An agent saving the same addresses leaves them the person's; changing
-	// one makes them the agent's.
 	same := "https://App.example.com"
 	if d, err := x.s.UpdateEnvironment(x.ctx, ag, prod.ID, EnvironmentInput{URL: &same}); err != nil || d.AddressAgent != "" {
 		t.Fatalf("agent's unchanged save: %v %+v", err, d)
@@ -62,15 +59,12 @@ func TestEnvGuardHosts(t *testing.T) {
 	if got := hosts(); len(got) != 0 {
 		t.Fatalf("after an agent's change: %v", got)
 	}
-	// A person's save vouches for the addresses again.
 	if d, err := x.s.UpdateEnvironment(x.ctx, x.editor, st.ID, EnvironmentInput{URL: ptr("https://staging.example.com")}); err != nil || d.AddressAgent != "" {
 		t.Fatalf("person's save: %v %+v", err, d)
 	}
 	if got := hosts(); !slices.Equal(got, []string{"staging.example.com:443"}) {
 		t.Fatalf("after a person's save: %v", got)
 	}
-	// A person setting one address doesn't vouch for another an agent set;
-	// setting them all does.
 	qa := "qa"
 	q, err := x.s.CreateEnvironment(x.ctx, ag, x.p.Key, EnvironmentInput{Name: &qa, URL: ptr("https://qa.example.com"), HealthURL: ptr("https://evil.example/h")})
 	if err != nil {
@@ -92,9 +86,6 @@ func TestEnvGuardHosts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// wp env up from an agent's shell moves a dev environment's address:
-	// the agent's. A person's token with an agent's shell header counts as
-	// the shell's, not the person's.
 	dev, err := x.s.UpEnvironment(x.ctx, x.editor, x.p.Key, EnvUpInput{Name: "a23x42s", URL: "https://a23x42s.example.com"})
 	if err != nil || dev.AddressAgent != "" {
 		t.Fatalf("person's up: %v %+v", err, dev)
@@ -104,7 +95,6 @@ func TestEnvGuardHosts(t *testing.T) {
 	if dev, err = x.s.UpEnvironment(x.ctx, &shell, x.p.Key, EnvUpInput{Name: "a23x42s", URL: "https://x.evil.example"}); err != nil || dev.AddressAgent != "agent-shell" {
 		t.Fatalf("agent shell's up: %v %+v", err, dev)
 	}
-	// A stopped environment doesn't count.
 	if _, err := x.s.StopEnvironment(x.ctx, x.editor, st.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -112,8 +102,6 @@ func TestEnvGuardHosts(t *testing.T) {
 		t.Fatalf("after stopping: %v", got)
 	}
 
-	// The SessionStart reply carries the list for the repo; other events don't.
-	// (A person saving every address vouches for the ones an agent changed.)
 	if _, err := x.s.UpdateEnvironment(x.ctx, x.editor, prod.ID, EnvironmentInput{URL: ptr("https://app.example.com"),
 		HealthURL: ptr("https://app.example.com/healthz"), VersionURL: ptr("https://status.example.com/version")}); err != nil {
 		t.Fatal(err)
@@ -129,8 +117,6 @@ func TestEnvGuardHosts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Each prompt carries them too, so a vouch answered mid-session reaches
-	// the guard at the next turn (WP-1087); a Stop carries none.
 	if !slices.Equal(r.EnvHosts, []string{"app.example.com:443", "status.example.com:443"}) {
 		t.Errorf("UserPromptSubmit env_hosts %v", r.EnvHosts)
 	}

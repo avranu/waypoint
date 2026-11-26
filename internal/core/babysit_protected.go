@@ -12,15 +12,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// A babysitting round that changes protected files (WP-D14) is refused at
-// the push: the runner says "The agent changed protected files (…), so
-// nothing was pushed." A review comment on a CI script or workflow can only
-// be fixed there, so every round on it is refused the same way, and the
-// pull request used to sit in needs_person with only a message to a session
-// that had often ended (three pull requests in two repos waited
-// a day or more each). A session may change those files, so the fix goes to
-// one as a task in the pull request's project, which `wp next` hands out.
-
 // protectedRefusalPrefix is how the runner's error names the refused files.
 const protectedRefusalPrefix = "changed protected files ("
 
@@ -106,8 +97,6 @@ func (s *Service) fileProtectedPush(ctx context.Context, b *Babysit, pr *PullReq
 		return "", nil
 	}
 	var have string
-	// Filed since counts even when done: a session that finished it without
-	// a push isn't asked again for the same round.
 	err = s.db.R.QueryRowContext(ctx, `SELECT p.key || '-' || i.number FROM issues i JOIN projects p ON p.id = i.project_id JOIN statuses st ON st.id = i.status_id
 		WHERE i.project_id = ? AND i.title = ? AND (st.category NOT IN ('done','canceled') OR i.created_at >= ?) ORDER BY i.id DESC LIMIT 1`,
 		projectID, title, since.UnixMilli()).Scan(&have)
@@ -115,7 +104,7 @@ func (s *Service) fileProtectedPush(ctx context.Context, b *Babysit, pr *PullReq
 		return have, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return "", err // a failed lookup isn't "none": don't file a duplicate
+		return "", err
 	}
 	writer := Actor{User: owner}
 	writer.textAgent = "waypoint"

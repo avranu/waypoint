@@ -1,10 +1,5 @@
 package core
 
-// Pull request reviews (WP-D14): the diff is split per file, noise is left
-// out, the rest is cut into chunks a model can read, each new-side line is
-// numbered, and the model's findings are kept only where they point at a
-// line the diff shows, so line comments always land.
-
 import (
 	"fmt"
 	"regexp"
@@ -17,14 +12,11 @@ import (
 
 // fileDiff is one file's part of a unified diff.
 type fileDiff struct {
-	path    string // new path (old path for a deletion)
-	oldPath string // the path before a rename or edit, when the diff says
-	text    string
-	// right holds the new-side lines the diff shows (added or context), by
-	// number.
-	right map[int]bool
-	lines map[int]string
-	// firstChanged is the first added line, 0 if none.
+	path         string
+	oldPath      string
+	text         string
+	right        map[int]bool
+	lines        map[int]string
 	firstChanged int
 }
 
@@ -52,7 +44,6 @@ func splitDiff(diff string) []fileDiff {
 		case strings.HasPrefix(l, "diff --git "):
 			flush()
 			cur = &fileDiff{right: map[int]bool{}, lines: map[int]string{}}
-			// "diff --git a/x b/x": the new path, until ---/+++ say better.
 			if _, b, ok := strings.Cut(l, " b/"); ok {
 				cur.path = b
 			}
@@ -62,10 +53,8 @@ func splitDiff(diff string) []fileDiff {
 		case !inHunk && strings.HasPrefix(l, "rename from "):
 			cur.oldPath = strings.TrimPrefix(l, "rename from ")
 		case !inHunk && strings.HasPrefix(l, "rename to "):
-			// A pure rename has no ---/+++ lines; git quotes an unusual new path.
 			cur.path = strings.TrimPrefix(l, "rename to ")
 		case !inHunk && strings.HasPrefix(l, "--- "):
-			// git ends the name with a tab when it contains a space.
 			oldPath = strings.TrimPrefix(strings.TrimRight(strings.TrimPrefix(l, "--- "), "\t"), "a/")
 			if oldPath != "/dev/null" {
 				cur.oldPath = oldPath
@@ -289,10 +278,10 @@ func tomlStrings(s string) ([]string, error) {
 
 // Review limits.
 const (
-	reviewChunkChars   = 35_000 // what free models answer within a few minutes
+	reviewChunkChars   = 35_000
 	reviewMaxChunks    = 4
-	reviewMaxChunk     = 60_000 // one file bigger than a chunk is cut to this
-	reviewDefaultShown = 8      // how many a review posts when its rule sets no number (the model is told none)
+	reviewMaxChunk     = 60_000
+	reviewDefaultShown = 8
 )
 
 // placementLater is the placement of a finding kept but not posted: it is
@@ -302,8 +291,8 @@ const placementLater = "later"
 
 type reviewChunk struct {
 	files []fileDiff
-	text  string // annotated
-	cut   bool   // a file was cut to fit
+	text  string
+	cut   bool
 }
 
 // chunkDiff packs files into chunks greedily, in diff order. Files beyond
@@ -389,7 +378,7 @@ var reviewSchema = map[string]any{
 					"severity":   map[string]any{"type": "string", "enum": severities},
 					"claim":      map[string]any{"type": "string"},
 					"suggestion": map[string]any{"type": "string"},
-					"evidence":   map[string]any{"type": "string"}, // may be left out: see answerMayOmit
+					"evidence":   map[string]any{"type": "string"},
 				},
 				"required":             []string{"file", "line", "severity", "claim", "suggestion", "evidence"},
 				"additionalProperties": false,
@@ -526,18 +515,17 @@ func normalizeFindings(in []Finding, max int) []Finding {
 		f.File = strings.Trim(strings.TrimSpace(f.File), "`")
 		f.File = strings.TrimPrefix(strings.TrimPrefix(f.File, "a/"), "b/")
 		if strings.Contains(f.Suggestion, "\n") || strings.Contains(f.Suggestion, "```") {
-			f.Suggestion = "" // only one-line fixes become suggestions
+			f.Suggestion = ""
 		}
 		out = append(out, f)
 	}
-	// Most severe first; among equals, what more reviewers raised.
 	slices.SortStableFunc(out, func(a, b Finding) int {
 		if d := severityRank(a.Severity) - severityRank(b.Severity); d != 0 {
 			return d
 		}
 		return b.Agreed - a.Agreed
 	})
-	if max > 0 && len(out) > max { // 0: no limit
+	if max > 0 && len(out) > max {
 		out = out[:max]
 	}
 	return out
@@ -596,9 +584,9 @@ func claimWords(s string) map[string]bool {
 // placedFinding is a finding with where it will appear.
 type placedFinding struct {
 	Finding
-	placement string // inline, body, withheld, later
-	note      string // e.g. " (line 40)" when moved to the first changed line
-	marker    string // what names the run and place of its comment, so syncing finds it again
+	placement string
+	note      string
+	marker    string
 }
 
 // findingMarker tells a finding's comment which run and place it has.
@@ -703,9 +691,6 @@ func reviewedSHAs(posts []ForgeComment, rule string, ours posters) map[string]bo
 			continue
 		}
 		for _, m := range reviewMarkerRE.FindAllStringSubmatch(c.Body, -1) {
-			// Another bot's account counts only for the llm-review marker it
-			// leaves; Waypoint's own marker needs Waypoint's account, since
-			// anyone can register an app named [bot].
 			if !mine && m[1] != "llm-review:v1" {
 				continue
 			}
@@ -719,41 +704,30 @@ func reviewedSHAs(posts []ForgeComment, rule string, ours posters) map[string]bo
 
 // reviewOutcome is everything the review body reports.
 type reviewOutcome struct {
-	models   []string // which answered, in order
-	placed   []placedFinding
-	repeated int      // findings already raised on this PR
-	dropped  []string // files not reviewed (too large, out of time, every model failed)
-	cut      bool
-	noise    int
-	later    int    // findings kept but past how many the review posts
-	readAt   string // how to read those: the command and, where Waypoint has an address, the page
-	guardCut int    // findings past the guard (findingsGuard), not kept
-	// answers a reviewer's cut off at its length limit, and the findings
-	// they had finished, kept (WP-1421).
+	models           []string
+	placed           []placedFinding
+	repeated         int
+	dropped          []string
+	cut              bool
+	noise            int
+	later            int
+	readAt           string
+	guardCut         int
 	salvagedAnswers  int
 	salvagedFindings int
-	// its findings could not be saved: the gate never saw them, and the next
-	// head's review is what records them (WP-1808: such a review isn't carried).
-	unsaved  bool
-	belowMin int    // findings under the rule's minimum severity, not posted
-	minSev   string // that minimum
-	private  globSet
-	rule     string // the automation, for the marker
-	note     string // the line every review starts with (Admin → AI)
-	// The verifier models that checked the findings, what they dropped,
-	// and how many findings went unchecked (every verifier model failed on
-	// them, or their file couldn't be read).
-	verifiers     []string
-	verifyDropped []droppedFinding
-	unverified    int
-	trusted       int // findings no verifier was asked about: their reviewer is trusted (WP-696)
-	// doubted: dropped by the verifier but posted anyway, to judge its
-	// drops (WP-363); noEvidence: dropped before the verifier, their quoted
-	// line not being in the file.
-	doubted    int
-	noEvidence int
-	// emptyRequests: the gateway requests whose answers raised no findings.
-	emptyRequests []string
+	unsaved          bool
+	belowMin         int
+	minSev           string
+	private          globSet
+	rule             string
+	note             string
+	verifiers        []string
+	verifyDropped    []droppedFinding
+	unverified       int
+	trusted          int
+	doubted          int
+	noEvidence       int
+	emptyRequests    []string
 }
 
 // doubtNote says a finding is one the verifier would have dropped.
@@ -802,7 +776,7 @@ func reviewBody(sha string, o reviewOutcome) string {
 	}
 	switch {
 	case inline == 0 && len(loose) == 0 && withheld == 0:
-		b.WriteString("\nNo issues found in what was reviewed.\n") // posted only when part wasn't (signOff)
+		b.WriteString("\nNo issues found in what was reviewed.\n")
 	case inline > 0:
 		fmt.Fprintf(&b, "\n%d finding%s inline", inline, plural(inline))
 		if agreed > 0 {
@@ -841,8 +815,6 @@ func reviewBody(sha string, o reviewOutcome) string {
 		notes = append(notes, s)
 	}
 	if n := o.later; n > 0 {
-		// Not "the least severe": a finding on a private file is posted past
-		// the number whatever its severity (WP-1421).
 		s := fmt.Sprintf("%d more finding%s past the %d posted, kept in Waypoint and not posted here", n, plural(n), inline+len(loose))
 		if o.readAt != "" {
 			s += ": " + o.readAt

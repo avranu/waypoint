@@ -1,9 +1,3 @@
-// Audits (WP-348, WP-ADR20): a model, the one the gateway picks by default
-// (WP-871), reads a checkout from the asker's runner (a repository, branch,
-// commit, range, what landed on a branch lately (WP-548) or a pull request)
-// and reports findings; it never changes anything. Not the audit log
-// (lib/audit.ts), which records what people decided.
-
 import { queryOptions } from '@tanstack/react-query'
 import { api, qs } from './api'
 import type { UserRef } from './types'
@@ -217,8 +211,6 @@ export const cancelAudit = (id: number) => api.post<CodeAudit>(`/audits/${id}/ca
 export const fixAudit = (id: number) => api.post<CodeAudit>(`/audits/${id}/fix`)
 export const markFindings = (ids: string[], state: FindingState, note = '') =>
   api.post<AuditFinding[]>('/audits/findings', { ids, state, note })
-
-// ---- words ----
 
 export const STATUS: Record<
   AuditStatus,

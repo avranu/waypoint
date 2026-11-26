@@ -36,7 +36,6 @@ export function SegmentedControl<T extends string>({
   className?: string
 }) {
   const ref = useRef<HTMLDivElement>(null)
-  // Arrow keys move between the choices, like any radio group.
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const step =
       e.key === 'ArrowRight' || e.key === 'ArrowDown'
@@ -83,7 +82,6 @@ export function SegmentedControl<T extends string>({
             {o.icon}
             <span
               className={clsx(
-                // The chosen one always says what it is; the rest collapse to icons.
                 !on && textFrom === 'sm' && 'hidden sm:inline',
                 !on && textFrom === 'md' && 'hidden md:inline',
                 !on && textFrom === 'selected' && 'hidden',

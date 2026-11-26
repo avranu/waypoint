@@ -1,9 +1,3 @@
-// The gate's connections, in the browser's terms: the policy in words, the
-// form's checks (the same rules the gate applies, so a mistake shows while
-// typing rather than as a 400), and which saves the gate will hold for
-// the owner's approval. The gate's connection rules are in
-// the gate's docs.
-
 import type { Assistant, GateApproval, GateConnection } from '@/lib/assistant'
 
 /**
@@ -30,8 +24,6 @@ export function connFromUrl(gate: string, url: string | null | undefined): strin
 
 /** Hermes MCP servers the assistant's deploy pins: removing one is undone. */
 export const PINNED_SERVERS = new Set(['gate', 'waypoint'])
-
-// ---- policy ----
 
 export const METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] as const
 export type Method = (typeof METHODS)[number]
@@ -88,7 +80,6 @@ export function policyWords(c: Pick<GateConnection, 'kind' | 'policy'>): string 
     parts.push(
       `${h.approve_methods.join(', ')} ${h.approve_methods.length === 1 ? 'asks' : 'ask'} you`,
     )
-  // OPTIONS is refused by default and not worth a word unless it's let in.
   const refused = METHODS.filter(
     (m) => m !== 'OPTIONS' && !h.allow_methods.includes(m) && !h.approve_methods.includes(m),
   )
@@ -103,8 +94,6 @@ export function policyWords(c: Pick<GateConnection, 'kind' | 'policy'>): string 
   )
   return parts.join(' · ')
 }
-
-// ---- checks (the gate's rules) ----
 
 export const NAME = /^[a-z0-9][a-z0-9-]{0,39}$/
 const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$/
@@ -195,8 +184,6 @@ export function globError(g: string): string | undefined {
   return undefined
 }
 
-// ---- what the gate holds for approval ----
-
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 
 /** Policies as the gate compares them: list by list, in order. */
@@ -235,8 +222,6 @@ export function widens(
   if (!samePolicy(old.policy, next.policy)) return true
   return !same([...(old.header_names ?? [])].sort(), Object.keys(next.headers).sort())
 }
-
-// ---- approvals of connections ----
 
 export const approvalConn = (a: GateApproval) =>
   a.tool.startsWith('connection:') ? a.tool.slice('connection:'.length) : null

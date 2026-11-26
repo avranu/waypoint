@@ -9,9 +9,6 @@ import (
 	"time"
 )
 
-// Follow-ups (WP-D22): steps queued on an agent session that run once, when
-// the agent truly finishes.
-
 func running(desc string) *HookPending {
 	return &HookPending{Tasks: []PendingTask{{Type: "shell", Status: "running", Description: desc}}, Crons: []PendingCron{}}
 }
@@ -23,7 +20,7 @@ func nothingPending() *HookPending {
 // fuEnv is an admin's agent session on the machine "box", in /work/app.
 type fuEnv struct {
 	*env
-	ag  *Actor // the agent, through the hooks
+	ag  *Actor
 	sid int64
 }
 
@@ -107,23 +104,19 @@ func TestStopTellsWhetherTheAgentFinished(t *testing.T) {
 		}
 	}
 
-	// A background task still runs: it will wake the agent.
 	f.stop("started the tests", running("go test ./..."))
 	x := f.session()
 	if x.State != SessionWorking || x.Pending != "a background task" || x.FinishedAt != nil || finished() != 0 {
 		t.Fatalf("with a background task: state %s pending %q finished %v", x.State, x.Pending, x.FinishedAt)
 	}
-	// A wakeup it set (ScheduleWakeup) and a recurring cron.
 	f.stop("checking back later", &HookPending{Crons: []PendingCron{{Schedule: "in 20m"}, {Schedule: "*/5 * * * *", Recurring: true}}})
 	if x = f.session(); x.Pending != "a wakeup, a recurring cron" || x.FinishedAt != nil {
 		t.Fatalf("with a wakeup: %q", x.Pending)
 	}
-	// Tasks that ended don't count.
 	f.stop("done", &HookPending{Tasks: []PendingTask{{Type: "shell", Status: "completed"}}})
 	if x = f.session(); x.FinishedAt == nil || x.Pending != "" || x.State != SessionIdle || finished() != 1 {
 		t.Fatalf("finished: %+v", x)
 	}
-	// Working again clears it; a Claude Code that doesn't say can't finish.
 	f.hook("UserPromptSubmit", func(h *HookEvent) { h.Prompt = "more" })
 	if x = f.session(); x.FinishedAt != nil {
 		t.Fatal("still finished after a prompt")
@@ -133,7 +126,6 @@ func TestStopTellsWhetherTheAgentFinished(t *testing.T) {
 		t.Fatalf("unknown: pending %q finished %v", x.Pending, x.FinishedAt)
 	}
 
-	// An open request holds it; deciding the last one finishes it.
 	asker := *f.ag
 	asker.Session = f.sid
 	r, _, err := f.s.CreateRequest(f.ctx, &asker, RequestInput{Kind: "action", Title: "Set the deploy secret"})
@@ -165,14 +157,12 @@ func TestFollowUpTellsTheAgentAtItsStop(t *testing.T) {
 	if fu.State != "armed" || len(fu.Steps) != 2 || !strings.Contains(fu.Held, "finish") {
 		t.Fatalf("queued: %+v", fu)
 	}
-	// Not while a background task runs.
 	if res := f.stop("waiting on the build", running("make")); res.Await != 0 {
 		t.Fatal("a stop with background work set the follow-up off")
 	}
 	if fu = f.followUp(); fu.State != "armed" || fu.Held != "Still running a background task." {
 		t.Fatalf("held: %+v", fu)
 	}
-	// Truly finished: the follow-up starts and the hook is told to wait.
 	res := f.stop("the parser is done", nothingPending())
 	if res.Await == 0 || res.Text != "" {
 		t.Fatalf("finished stop: %+v", res)
@@ -192,7 +182,6 @@ func TestFollowUpTellsTheAgentAtItsStop(t *testing.T) {
 	if x := f.session(); x.FinishedAt != nil {
 		t.Fatal("still finished after it was told something")
 	}
-	// It finishes that: the next step runs, with its answer.
 	f.stop("tests written, all pass", nothingPending())
 	f.work()
 	fu = f.followUp()
@@ -203,17 +192,14 @@ func TestFollowUpTellsTheAgentAtItsStop(t *testing.T) {
 	if err != nil || len(notes) == 0 || !strings.Contains(notes[0].Body+notes[0].Title, "all pass") {
 		t.Fatalf("notifications: %+v %v", notes, err)
 	}
-	// Spent: the next stop sets nothing off.
 	f.hook("UserPromptSubmit", func(h *HookEvent) { h.Prompt = "thanks" })
 	if res := f.stop("ok", nothingPending()); res.Await != 0 || res.Text != "" {
 		t.Fatalf("a spent follow-up fired again: %+v", res)
 	}
-	// The session list shows it.
 	list := sessionsFor(t, f.env, f.admin, AgentSessionQuery{})
 	if list[0].FollowUp == nil || list[0].FollowUp.State != RunSucceeded || list[0].FollowUp.Steps != 2 {
 		t.Fatalf("brief: %+v", list[0].FollowUp)
 	}
-	// Saving again re-arms it, and a session that already finished runs it now.
 	f.queue(Action{Type: "notify", User: "actor", Message: "again"})
 	f.work()
 	if fu = f.followUp(); fu.State != RunSucceeded || fu.Run.Via != "event" {
@@ -224,7 +210,6 @@ func TestFollowUpTellsTheAgentAtItsStop(t *testing.T) {
 func TestTellAgentWaitsForTheNextStopWithoutARunner(t *testing.T) {
 	f := newFUEnv(t)
 	f.queue(step("tell_agent", map[string]any{"message": "Commit it.", "wait": false}))
-	// Run now while it works: no hook waits, no runner: the next stop delivers it.
 	if _, err := f.s.RunFollowUpNow(f.ctx, f.admin, f.sid); err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +246,6 @@ func TestTellAgentThroughTheRunnersSocket(t *testing.T) {
 	if err := json.Unmarshal(w.Job.Input, &in); err != nil || in.CLIID != "cli-1" || !strings.Contains(in.Body, "Open a PR.") {
 		t.Fatalf("message job: %+v %v", in, err)
 	}
-	// Taken by the runner: a stop now doesn't deliver it twice.
 	if res := f.stop("still going", running("x")); strings.Contains(res.Text, "Open a PR") {
 		t.Fatal("delivered twice")
 	}
@@ -279,8 +263,7 @@ func TestTellAgentThroughTheRunnersSocket(t *testing.T) {
 		t.Fatalf("after: %s %+v", fu.State, fu.Run.Steps[0].Outputs)
 	}
 
-	// A runner that can't post it puts it back for the next stop.
-	f.setClock(f.clockNow().Add(time.Minute)) // the last stop's hook is long gone
+	f.setClock(f.clockNow().Add(time.Minute))
 	f.hook("UserPromptSubmit", func(h *HookEvent) { h.Prompt = "go" })
 	f.queue(step("tell_agent", map[string]any{"message": "Now merge it.", "wait": false}))
 	if _, err := f.s.RunFollowUpNow(f.ctx, f.admin, f.sid); err != nil {
@@ -317,12 +300,10 @@ func TestFollowUpStartsAFreshAgent(t *testing.T) {
 	f.s.FinishRunnerJob(f.ctx, f.admin, w.Job.ID, RunnerFinish{State: "done", Result: json.RawMessage(`{"attach_id":"b50893f0"}`)})
 	f.work()
 
-	// Another job's id, or none, doesn't link a session.
 	stranger, err := f.s.SessionHook(f.ctx, f.ag, []HookEvent{hook("box", "cli-x", "SessionStart", func(h *HookEvent) { h.SpawnedBy = "999" })})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The new session starts, carrying the job's id from WAYPOINT_FOLLOWUP.
 	opus := agentActor(f.admin, "anthropic/claude-code")
 	news, err := f.s.SessionHook(f.ctx, opus, []HookEvent{hook("box", "cli-2", "SessionStart", func(h *HookEvent) {
 		h.SpawnedBy, h.Model = itoa64(w.Job.ID), "claude-opus-5-5"
@@ -335,14 +316,12 @@ func TestFollowUpStartsAFreshAgent(t *testing.T) {
 	if fu.State != "running" || fu.Run.Steps[0].Status != "waiting" {
 		t.Fatalf("while the new agent works: %+v", fu.Run.Steps[0])
 	}
-	// The same job can't be claimed twice.
 	again, _ := f.s.SessionHook(f.ctx, opus, []HookEvent{hook("box", "cli-3", "SessionStart", func(h *HookEvent) { h.SpawnedBy = itoa64(w.Job.ID) })})
 	var linked int
 	f.s.db.R.QueryRow(`SELECT count(*) FROM agent_sessions WHERE spawned_by_job IS NOT NULL`).Scan(&linked)
 	if linked != 1 || stranger.Session == news.Session || again.Session == news.Session {
 		t.Fatalf("linked sessions: %d", linked)
 	}
-	// The new agent finishes.
 	if _, err := f.s.SessionHook(f.ctx, opus, []HookEvent{hook("box", "cli-2", "Stop", func(h *HookEvent) {
 		h.LastMessage, h.Pending = "reviewed; three fixes pushed", nothingPending()
 	})}); err != nil {
@@ -395,11 +374,9 @@ func TestFollowUpsAreTheSessionPersons(t *testing.T) {
 	if a.Admin {
 		t.Fatal("a follow-up without a project reads as an admin automation")
 	}
-	// Its trigger can't change through the automation API.
 	if _, err := f.s.UpdateAutomation(f.ctx, f.admin, a.ID, AutomationInput{Rule: &Rule{Trigger: Trigger{Event: "manual"}, Actions: a.Rule.Actions}}); err == nil {
 		t.Fatal("changed a follow-up's trigger")
 	}
-	// Clear removes it.
 	if err := f.s.ClearFollowUp(f.ctx, f.admin, f.sid); err != nil {
 		t.Fatal(err)
 	}
@@ -432,8 +409,6 @@ func TestFollowUpRunsAnAutomation(t *testing.T) {
 		t.Fatalf("notes: %+v", notes)
 	}
 }
-
-// ---- what a review found (WP-D22) ----
 
 func TestFollowUpRunsOncePerArming(t *testing.T) {
 	f := newFUEnv(t)
@@ -479,7 +454,6 @@ func TestAFinishBeforeTheRunnerReportsCounts(t *testing.T) {
 	if w.Job == nil {
 		t.Fatal("no job")
 	}
-	// The agent does the turn and finishes before the runner reports.
 	f.hook("UserPromptSubmit", func(h *HookEvent) { h.Prompt = "Say ok." })
 	f.stop("ok", nothingPending())
 	f.s.FinishRunnerJob(f.ctx, f.admin, w.Job.ID, RunnerFinish{State: "done", Result: json.RawMessage(`{"delivered":true}`)})
@@ -525,7 +499,6 @@ func TestCurrentAgentSessionIsYourOwn(t *testing.T) {
 	if _, err := f.s.CurrentAgentSession(f.ctx, bob, "cli-1", "box"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("bob found the admin's session: %v", err)
 	}
-	// Without an id, the session the request came from.
 	from := *f.admin
 	from.Session = f.sid
 	if x, err := f.s.CurrentAgentSession(f.ctx, &from, "", ""); err != nil || x.ID != f.sid {
@@ -577,7 +550,6 @@ func TestRunAutomationActsAsTheSaver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Set off by the scheduler (an admin actor), it still acts as bob.
 	e.s.startRun(e.ctx, SystemActor(), a, &Event{Kind: EvManual, ProjectID: mine.ID, At: e.s.now()}, fireOpts{Via: "schedule"})
 	e.s.DrainAutomationRuns(e.ctx)
 	if runs, _ := e.s.ListAutomationRuns(e.ctx, e.admin, target.ID, 5, 0); len(runs) != 0 {
@@ -605,7 +577,7 @@ func TestASessionElsewhereCantClaimAFreshAgentJob(t *testing.T) {
 func TestTellAgentThatCanWaitGoesWithTheBatch(t *testing.T) {
 	f := newFUEnv(t)
 	box := f.runner(f.admin, "box", nil)
-	f.stop("done", nothingPending()) // finished and idle
+	f.stop("done", nothingPending())
 	f.setClock(f.clockNow().Add(time.Minute))
 	f.queue(step("tell_agent", map[string]any{"message": "Tidy the branches.", "blocking": false, "wait": false}))
 	f.work()

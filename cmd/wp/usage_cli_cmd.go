@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// wp usage cli: how agents use wp (WP-618), short enough to read in one call.
-
 var usageCLICmd = &command{
 	name: "cli", args: "[--since 7d] [--repo REPO] [--user NAME] [-v]",
 	summary: "how agents use wp: calls, help and error rates, what follows each command",

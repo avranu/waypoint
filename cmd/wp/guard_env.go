@@ -7,16 +7,6 @@ import (
 	"strings"
 )
 
-// The repo's own environments (WP-749, WP-ADR90 amending WP-ADR10): an unattended
-// session may read from the hosts of the environments a person recorded
-// for the repo's projects (their address, health and version addresses),
-// so it can check its own production's health and look into its data over
-// HTTP(S). Anything there but a plain read (guard_env_read.go) still needs
-// a person, as does anything else that reaches the machine (ssh, kubectl, a
-// database client). The server lists the hosts
-// at SessionStart and the hook keeps them in state.json, which the guard
-// keeps agents from writing; addresses an agent set are not listed.
-
 // allowedHostsText names what a fetch may reach, for refusals.
 const allowedHostsText = "this machine, the Waypoint server, the repo's forge or one of the environments a person recorded for its project"
 

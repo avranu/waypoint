@@ -145,7 +145,6 @@ func TestClassifyRoundCausedByDiff(t *testing.T) {
 	if entries[0].Class != RoundCaused || entries[0].Round != 1 || entries[1].Class != RoundNew {
 		t.Errorf("entries = %+v, want c7 caused by round 1 and c8 new", entries)
 	}
-	// A comment made on the head the round started from was there before it.
 	in.Items = []ledgerItem{{ID: "c7", Kind: "comment", Path: "x/x.go", Line: 10, SHA: "aaa", Body: "the blank assignment hides an unused value"}}
 	if _, class := classifyRound(in); class != RoundNew {
 		t.Errorf("made before the push: class = %s, want new", class)

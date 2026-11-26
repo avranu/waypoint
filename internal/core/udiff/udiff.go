@@ -32,7 +32,7 @@ func splitLines(s string) []string {
 }
 
 type diffOp struct {
-	kind byte // ' ', '-', '+'
+	kind byte
 	line string
 }
 
@@ -78,7 +78,6 @@ func myers(a, b []string, maxEdits int) []diffOp {
 	maxD := min(n+m, maxEdits)
 	off := maxD + 1
 	v := make([]int, 2*off+1)
-	// snaps[d] is v for diagonals -d-1..d+1 before round d, to walk back.
 	var snaps [][]int
 	found := -1
 rounds:
@@ -132,10 +131,10 @@ rounds:
 			rev = append(rev, diffOp{' ', a[x]})
 		}
 		if d > 0 {
-			if x == px { // a line of b was added
+			if x == px {
 				y--
 				rev = append(rev, diffOp{'+', b[y]})
-			} else { // a line of a was removed
+			} else {
 				x--
 				rev = append(rev, diffOp{'-', a[x]})
 			}
@@ -166,8 +165,7 @@ func Unified(path, old, new string, isNew, deleted bool) (diff string, added, re
 	}
 	fmt.Fprintf(&sb, "--- %s\n+++ %s\n", from, to)
 	const ctx = 3
-	// Find the changed regions and group those within 2*ctx lines.
-	type span struct{ start, end int } // indexes into ops
+	type span struct{ start, end int }
 	var spans []span
 	for i := 0; i < len(ops); i++ {
 		if ops[i].kind == ' ' {
@@ -180,7 +178,6 @@ func Unified(path, old, new string, isNew, deleted bool) (diff string, added, re
 				j++
 				continue
 			}
-			// a run of context: does another change follow within 2*ctx?
 			k := j
 			for k < len(ops) && ops[k].kind == ' ' {
 				k++
@@ -199,7 +196,6 @@ func Unified(path, old, new string, isNew, deleted bool) (diff string, added, re
 		}
 		i = j
 	}
-	// Line numbers at each op index.
 	aLine, bLine := make([]int, len(ops)+1), make([]int, len(ops)+1)
 	for i, op := range ops {
 		aLine[i+1], bLine[i+1] = aLine[i], bLine[i]

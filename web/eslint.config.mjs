@@ -36,7 +36,6 @@ export default [
       globals: { ...globals.browser },
     },
   },
-  // Config files and tooling run under Node, not the browser.
   {
     files: ['**/*.config.{js,mjs,cjs,ts}'],
     languageOptions: {

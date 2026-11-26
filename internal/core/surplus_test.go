@@ -116,7 +116,6 @@ func TestPrepAheadAtSurplus(t *testing.T) {
 		t.Fatalf("taken while current: %q", got)
 	}
 
-	// No spare capacity: the gateway turns the request away.
 	g.set(func(g *fakeGateway) { g.status = 503 })
 	refused := due[4].Key
 	if _, err := e.s.UploadPrep(e.ctx, e.admin, refused, prepTestBundle()); err != nil {
@@ -136,7 +135,6 @@ func TestPrepAheadAtSurplus(t *testing.T) {
 	if e.s.surplusAllowed(e.ctx) {
 		t.Error("surplus work is still sent after a refusal")
 	}
-	// Normal work goes on, and the next poll has no tasks ahead.
 	g.set(func(g *fakeGateway) { g.status = 0 })
 	for _, d := range due[1:3] {
 		if _, err := e.s.UploadPrep(e.ctx, e.admin, d.Key, prepTestBundle()); err != nil {
@@ -161,7 +159,6 @@ func TestPrepAheadAtSurplus(t *testing.T) {
 	if txt := rep.String(); !strings.Contains(txt, "held now") || !strings.Contains(txt, "1 ok, 1 refused") {
 		t.Errorf("report:\n%s", txt)
 	}
-	// After the wait it is sent again.
 	e.setClock(e.clockNow().Add(surplusRetry + time.Second))
 	if !e.s.surplusAllowed(e.ctx) {
 		t.Error("surplus work still held after the wait")
@@ -211,7 +208,6 @@ func TestPrepAheadDepth(t *testing.T) {
 	if d := e.s.prepAheadDepth(e.ctx); d != 1 {
 		t.Fatalf("0 of 12 used (upper bound %.2f): depth %d, want 1", wilsonUpper(0, 12), d)
 	}
-	// Outcomes past the window age out, and the position is tried again.
 	e.setClock(e.clockNow().Add(prepAheadWindow + time.Hour))
 	if d := e.s.prepAheadDepth(e.ctx); d != prepAheadMax {
 		t.Fatalf("after the window: depth %d", d)
@@ -260,8 +256,6 @@ func TestPrepModels(t *testing.T) {
 		t.Fatalf("surplus prep: chain %v, priority %q", names(chain), priorityOf(ctx))
 	}
 
-	// Another task's reports: tested/a has prepTestedFindings reported
-	// findings, new/c fewer.
 	other := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Other"})
 	score := func(model string, n, picked, hits int) {
 		for k := range n {
@@ -274,13 +268,11 @@ func TestPrepModels(t *testing.T) {
 	}
 	score("tested/a", 10, 2, 1)
 	score("new/c", 3, 2, 1)
-	// A score past the gateway's log can't be reported: not "to send".
 	if _, err := e.s.db.W.Exec(`INSERT INTO prep_scores(issue_id, source, priority, model, picked, truth, hits, scored_at, request_id, asked_at)
 		VALUES (?, 'prep', 'normal', 'new/c', 2, 2, 1, ?, 'gone', ?)`, other.ID, e.s.nowMS(), e.clockNow().Add(-prepFeedbackAge-time.Hour).UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 
-	// A normal prep, then a trial: the prep's model and tested/a left out.
 	e.setClock(e.clockNow().Add(15 * time.Minute))
 	g.set(func(g *fakeGateway) { g.served = "opencode/space-bunny-free" })
 	if _, err := e.s.UploadPrep(e.ctx, e.admin, i.Key, prepTestBundle()); err != nil {
@@ -313,8 +305,6 @@ func TestPrepModels(t *testing.T) {
 		t.Fatalf("requests sent as %q; kept %q, %q", sent, prepID, trialID)
 	}
 
-	// The work merges and the task is done: the prep and the trial are
-	// scored against the files it changed, tests and docs left out.
 	f := e.forge("forgejo", "https://git.example.com", false)
 	url := "https://git.example.com/acme/app/pulls/3"
 	for _, q := range []struct {
@@ -334,8 +324,6 @@ func TestPrepModels(t *testing.T) {
 	if _, err := e.s.UpdateIssue(e.ctx, e.admin, i.Key, IssuePatch{Status: &done}); err != nil {
 		t.Fatal(err)
 	}
-	// A follow-up pull request still open: the work isn't all in yet, and
-	// a score is final, so nothing is scored.
 	url4 := "https://git.example.com/acme/app/pulls/4"
 	if _, err := e.s.db.W.Exec(`INSERT INTO pull_requests(forge_id, repo, number, url, state, head_sha, created_at, updated_at) VALUES (?, 'acme/app', 4, ?, 'open', 'h4', 0, 0)`, f.ID, url4); err != nil {
 		t.Fatal(err)
@@ -363,19 +351,15 @@ func TestPrepModels(t *testing.T) {
 		got = append(got, s)
 	}
 	rows.Close()
-	// Both picked internal/merge.go (a file and its symbol): 1 of the 2
-	// changed non-test files.
 	want := []string{"prep normal opencode/space-bunny-free 1/2/1 " + prepID, "trial surplus new/d 1/2/1 " + trialID}
 	if !slices.Equal(got, want) {
 		t.Fatalf("scores = %q, want %q", got, want)
 	}
-	e.s.ScorePreps(e.ctx) // scored once
+	e.s.ScorePreps(e.ctx)
 	if n := e.one(`SELECT COUNT(*) FROM prep_scores WHERE issue_id = ?`, i.ID); n != "2" {
 		t.Errorf("after a second sweep: %s scores", n)
 	}
 
-	// Each request is reported once, by its id: verified = hits, false
-	// positives = the other picks; the already reported aren't sent again.
 	e.s.ReportReviewFeedback(e.ctx)
 	e.s.ReportReviewFeedback(e.ctx)
 	g.mu.Lock()
@@ -395,8 +379,6 @@ func TestPrepModels(t *testing.T) {
 		t.Errorf("%s reports remembered", n)
 	}
 
-	// A later pull request merges: the task is scored again; its picks
-	// score as before, so the reports sent stand and none is sent again.
 	later := e.clockNow().Add(2 * time.Hour).UnixMilli()
 	if _, err := e.s.db.W.Exec(`UPDATE prep_scores SET scored_at = ? WHERE issue_id = ?`, later-1, i.ID); err != nil {
 		t.Fatal(err)
@@ -466,12 +448,10 @@ func TestPrepTrialTries(t *testing.T) {
 		defer g.mu.Unlock()
 		return len(g.bodies)
 	}
-	// The gateway serves the prep's own model anyway: dropped, but a try.
 	e.s.RunPrepTrials(e.ctx)
 	if got := e.one(`SELECT model || ' ' || error FROM prep_trials WHERE issue_id = ? AND kind = 'chat'`, i.ID); got != "opencode/space-bunny-free served a model left out" {
 		t.Fatalf("trial = %q", got)
 	}
-	// Then every answer is bad: a failed try.
 	g.set(func(g *fakeGateway) { g.served, g.answer = "new/d", "not json" })
 	e.s.RunPrepTrials(e.ctx)
 	if got := e.one(`SELECT COUNT(*) FROM prep_trials WHERE issue_id = ? AND kind = 'chat' AND model = '' AND error != ''`, i.ID); got != "1" {

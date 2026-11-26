@@ -59,9 +59,9 @@ func TestLongForTitle(t *testing.T) {
 		want bool
 	}{
 		{"Fix the login redirect", false},
-		{"Fix login. Users on Safari loop forever.", false}, // two sentences, but short
+		{"Fix login. Users on Safari loop forever.", false},
 		{"Fix the login redirect loop. Users on Safari get bounced between two pages.", true},
-		{strings.Repeat("word ", 21), true}, // one long run-on
+		{strings.Repeat("word ", 21), true},
 		{"Add dark mode to the settings page and the board and the timeline views", false},
 	} {
 		if got := longForTitle(c.in); got != c.want {
@@ -97,7 +97,6 @@ func TestAITitleWritesTitleAndKeepsText(t *testing.T) {
 	if !credited {
 		t.Errorf("history doesn't credit the AI title: %+v", hist)
 	}
-	// The list rows carry a peek at the description for hovering.
 	res, err := e.s.Search(e.ctx, e.admin, SearchParams{Project: p.Key, Limit: 10})
 	if err != nil || len(res.Issues) != 1 {
 		t.Fatalf("search: %v %+v", err, res)
@@ -138,7 +137,6 @@ func TestAITitleLeavesTextAlone(t *testing.T) {
 		t.Errorf("a short title was sent to the model: %v", llm.prompts)
 	}
 
-	// Switched off for the project.
 	off := e.project(e.admin, "Quiet", "")
 	q := e.issue(e.admin, IssueInput{Project: off.Key, Title: rambling})
 	e.s.Wait()
@@ -146,7 +144,6 @@ func TestAITitleLeavesTextAlone(t *testing.T) {
 		t.Errorf("auto_title off: %q / %q, %d prompts", got.Title, got.Description, len(llm.prompts))
 	}
 
-	// The model errors, or answers with nothing usable: the text stays where it was.
 	for name, f := range map[string]*titleLLM{
 		"error":   {err: errors.New("rate limited")},
 		"empty":   {title: " . "},
@@ -160,7 +157,6 @@ func TestAITitleLeavesTextAlone(t *testing.T) {
 		}
 	}
 
-	// No title model: nothing is asked.
 	if err := e.s.SetAITask(e.ctx, e.admin, "title", 0, "", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +185,6 @@ func TestAutomationEditKeepsWhoWroteTheText(t *testing.T) {
 		return
 	}
 
-	// Bound to a person's task, so the text records where it came from.
 	person := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Speed up the board", Agent: "claude"})
 	writer := agentActor(e.admin, opus)
 	sess, err := e.s.SessionHook(e.ctx, writer, []HookEvent{hook("box", "retitle-a", "SessionStart", func(ev *HookEvent) { ev.Task = person.Key })})
@@ -222,15 +217,12 @@ func TestAutomationEditKeepsWhoWroteTheText(t *testing.T) {
 		t.Errorf("the screen doesn't read the agent's text: %+v", in)
 	}
 
-	// A person's long title: theirs afterwards, not nobody's.
 	byPerson := e.issue(e.admin, IssueInput{Project: p.Key, Title: rambling})
 	e.s.Wait()
 	if by, agent, _, _, _ := row(byPerson.Key); by == nil || agent != "" {
 		t.Errorf("a person's retitled task: text_by %v, text_agent %q", by, agent)
 	}
 
-	// A rule's title edit counts the same as the model's. No person read the
-	// rule's text, so a review is gone and the screen reads the new title.
 	reviewed := e.issue(writer, IssueInput{Project: p.Key, Title: "Check the index"})
 	e.s.Wait()
 	if _, err := e.s.Review(e.ctx, e.admin, ReviewIssue, reviewed.Key, ""); err != nil {
@@ -250,7 +242,6 @@ func TestAutomationEditKeepsWhoWroteTheText(t *testing.T) {
 		t.Errorf("the screen doesn't read the rule's title: %+v", in)
 	}
 
-	// An agent editing through an automation is an author, as before.
 	viaAgent := *rule
 	viaAgent.Agent = "anthropic/claude-sonnet-5-5"
 	retitle := "Check the board's index"
@@ -269,7 +260,6 @@ func TestAITitleYieldsToEdits(t *testing.T) {
 	e.s.Wait()
 	i := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Short", Description: "Notes"})
 	e.s.Wait()
-	// Asked about a title that is no longer there.
 	if err := e.s.retitle(e.ctx, p.ID, i.ID, rambling); err != nil {
 		t.Fatal(err)
 	}

@@ -69,118 +69,57 @@ type Service struct {
 	db       *db.DB
 	cfg      Config
 	log      *slog.Logger
-	http     *http.Client // user-supplied URLs, under cfg.Egress
-	pushHTTP *http.Client // browser push services: public internet only
+	http     *http.Client
+	pushHTTP *http.Client
 	Hub      *Hub
 
 	now func() time.Time
 
-	// afterTranscriptFile is a test hook: it runs after a transcript piece's
-	// file is on disk and before the write that records it.
 	afterTranscriptFile func()
 
-	// transcriptFilesChecked: this process has checked the transcript files
-	// once, so the next check waits its day (WP-1466).
 	transcriptFilesChecked atomic.Bool
 
-	// removeAll is a test seam for os.RemoveAll over a deleted account's
-	// transcript directory (nil: the real one).
 	removeAll func(string) error
 
-	// diskSpace is a test seam for the free-space reading the transcript
-	// archive's floor uses (nil: the real one).
 	diskSpace func(dir string) (free, total int64, err error)
 
-	// started is when New ran; jobs counts the scheduled jobs' runs and
-	// what is logged, by where (WP-375, WP-ADR139).
 	started time.Time
 	jobs    *jobLedger
 
-	// feedbackBusy is set while a review-feedback sweep runs.
 	feedbackBusy atomic.Bool
 
-	// rnd draws the random numbers of review experiments (WP-363): nil
-	// means math/rand; tests script it.
-	rnd func() float64
-	// beta draws from Beta(a, b) for review arms (WP-365): nil means
-	// math/rand; tests set it.
-	beta func(a, b float64) float64
-	// trustSeeds are the reviewers trusted before their findings are
-	// measured (WP-696): nil means trustedReviewerSeeds; tests set it.
-	trustSeeds []string
-	// againTrustFault, when set, is the error reading a reviewer's record
-	// for another review round gives (WP-1320); tests set it.
+	rnd             func() float64
+	beta            func(a, b float64) float64
+	trustSeeds      []string
 	againTrustFault error
-	// healthReadFault, when set, is the error reading a project's review
-	// loop record for its health gives (WP-1320); tests set it.
 	healthReadFault func(projectID int64) error
-	// healthMu keeps the review loop's health checks one at a time
-	// (checkReviewHealth).
-	healthMu sync.Mutex
+	healthMu        sync.Mutex
 
-	// tracesLanded, when set, sees the tasks whose navigation traces an
-	// upload changed (WP-250); tests set it.
 	tracesLanded func(issueIDs []int64)
 
-	// beforeRoundWrite, when set, runs once just before a ship writes its
-	// review round, after it read the run's newest round: a test makes
-	// another ship go first, so the write meets the conflict (WP-1370).
 	beforeRoundWrite func(ctx context.Context)
 
-	// failFanoutItems, when set, fails the write of a new fan-out's
-	// packages; tests use it for the half-made path.
 	failFanoutItems func() error
 
-	// baseUpdated holds "prID@baseTip" → a baseUpdate (upUpdated, upConflict)
-	// for each pull request whose branch was already brought up to date
-	// with that tip, or found to conflict with it: once per tip, no loop.
-	baseUpdated sync.Map
-	// gatewayRefused holds the models the gateway refused this
-	// Waypoint's key an audit task on: model → a gatewayRefusedModel, so the
-	// next audits skip it for an hour (audit_gateway.go).
-	gatewayRefused sync.Map
-	// gatewayLimits caches the gateway's task limits by provider
-	// (GatewayTaskLimits).
-	gatewayLimits sync.Map
-	// staleChecksRead holds prID → when the watchdog last re-read the checks
-	// of a babysit whose checks seem to have stopped (WP-750).
+	baseUpdated     sync.Map
+	gatewayRefused  sync.Map
+	gatewayLimits   sync.Map
 	staleChecksRead sync.Map
 
-	// baseMerged holds "forgeID/repo/base" → the baseMerge of the last merge
-	// Waypoint made into that base (WP-316): a read of the base that doesn't
-	// show it yet is stale.
-	baseMerged sync.Map
-	// baseRed holds what the line's ordering found (WP-428): "holds:tip:head"
-	// → whether the head holds the base's tip.
-	baseRed sync.Map
-	// rerunRefusedAt: when a forge last refused a candidate's re-run, by
-	// candidate id (lineRerunRetry). In memory: a restart asks once more.
+	baseMerged     sync.Map
+	baseRed        sync.Map
 	rerunRefusedAt sync.Map
-	// stackOpt holds baseKey → stackOpt: whether the base gets merge queue
-	// stacks (WP-404), read again after stackOptTTL. stackCommits holds "repo\x00sha" → the commit's
-	// parents (commits don't change).
-	stackOpt     sync.Map
-	stackCommits sync.Map
-	// poolSat holds forge id → poolVerdict: whether that forge's CI runners
-	// are saturated (WP-509), with poolSatReading set while it is read
-	// again.
+	stackOpt       sync.Map
+	stackCommits   sync.Map
 	poolSat        sync.Map
 	poolSatReading atomic.Bool
-	// workLogReading is set while review reports are counted (WP-285).
 	workLogReading atomic.Bool
-	// prBodyWriting is set while a model words PR descriptions (WP-55).
-	prBodyWriting atomic.Bool
+	prBodyWriting  atomic.Bool
 
-	// contains holds "repo\x00base\x00head" → whether commit head is in
-	// commit base, as the forge said (WP-389). Commits don't change, so
-	// neither does the answer.
 	contains sync.Map
 
-	// Background deliveries (webhooks, Gotify) — Wait lets tests and
-	// shutdown drain them.
 	bg sync.WaitGroup
 
-	// assistants' doors, one client each (WP-ADR1)
 	assistants assistantClients
 
 	// forge API access, swappable in tests
@@ -188,128 +127,74 @@ type Service struct {
 	// language models for AI tasks, swappable in tests
 	LLM LLM
 	// Meaning is the meaning service (package meaning); nil without one.
-	Meaning     meaning.Models
-	aiSlots     chan struct{}
-	surplusSlot chan struct{} // surplus work, one at a time beside aiSlots: it never waits for normal work nor holds it up (WP-906)
-	aiMu        sync.Mutex
-	cool        coolings // review-route models that stalled, left out for a while (WP-1768)
-	aib         aiBudget // what the AI gateway asked to wait for: the key's day, a task's Retry-After (WP-373, WP-412)
-	aiQueued    map[int64]bool
-	relating    int                     // auto-relate jobs waiting or running (guarded by aiMu)
-	titling     int                     // auto-title jobs waiting or running (guarded by aiMu)
-	storying    map[int64]bool          // pages whose story is queued or being written (guarded by aiMu; WP-190)
-	prepping    int                     // task preps waiting for the model or running (guarded by aiMu)
-	prepAhead   map[int64]prepAheadMark // tasks PrepDue handed out ahead of the front, by issue (guarded by aiMu; WP-906)
-	trialing    bool                    // a prep trial sweep is running (guarded by aiMu; WP-906)
-	// The prep policy's estimate (WP-250, WP-ADR104), worked out again when
-	// it is stale or old (prep_policy.go).
-	prepPolMu    sync.Mutex
-	prepPol      *prepPolicy
-	prepPolStale bool
-	// The delegation policy's estimate (WP-1262), worked out again hourly
-	// (delegation_policy.go). delegPolMu guards the fields; delegPolComp
-	// lets one compute run at a time.
+	Meaning       meaning.Models
+	aiSlots       chan struct{}
+	surplusSlot   chan struct{}
+	aiMu          sync.Mutex
+	cool          coolings
+	aib           aiBudget
+	aiQueued      map[int64]bool
+	relating      int
+	titling       int
+	storying      map[int64]bool
+	prepping      int
+	prepAhead     map[int64]prepAheadMark
+	trialing      bool
+	prepPolMu     sync.Mutex
+	prepPol       *prepPolicy
+	prepPolStale  bool
 	delegPolMu    sync.Mutex
 	delegPolComp  sync.Mutex
 	delegPol      *delegPolicy
 	delegPolBusy  bool
 	delegPolRetry time.Time
 	delegPolErr   error
-	// The goal context policy's estimate (WP-1035), worked out again hourly
-	// (goal_context.go).
-	goalPol     goalCtxCache
-	screening   map[int64]bool // safety screens waiting or running (guarded by aiMu; WP-270)
-	drilling    bool           // a safety drill is running (guarded by aiMu; WP-278)
-	driftChecks map[int64]bool // goal drift checks of pull requests waiting or running (guarded by aiMu; WP-559)
+	goalPol       goalCtxCache
+	screening     map[int64]bool
+	drilling      bool
+	driftChecks   map[int64]bool
 
-	// bot runs (WP-D14): a nudge for the workers, and how to stop each
-	// running one.
-	botKick    chan struct{}
-	botMu      sync.Mutex
-	botCancels map[int64]context.CancelFunc
-	// ownDrafts counts the opens under way as Waypoint's own drafts
-	// (expectOwnDraft), by ownDraftKey.
-	ownDraftsMu sync.Mutex
-	ownDrafts   map[string]int
-	// tidyCache keeps remote branch listings for a few minutes (WP-140).
-	tidyCache sync.Map
-	// goneRepos are repos the forge answered 404 for, logged once each.
-	goneRepos sync.Map
-	// defaultBranches remembers repos' default branches for Merge
-	// automatically's base scope (repoDefaultBranch, WP-1041).
+	botKick         chan struct{}
+	botMu           sync.Mutex
+	botCancels      map[int64]context.CancelFunc
+	ownDraftsMu     sync.Mutex
+	ownDrafts       map[string]int
+	tidyCache       sync.Map
+	goneRepos       sync.Map
 	defaultBranches sync.Map
-	// botLogins caches the account behind each forge's bot token (else
-	// its token) and its token, by tokenLoginKey (forgeBotLogin,
-	// forgeOwnLogin).
-	botLogins sync.Map
-	// foreignStatuses are waypoint/* statuses posted by another account
-	// that were already logged (WP-416); foreignAnswers are those being or
-	// already answered with Waypoint's own gate verdict.
+	botLogins       sync.Map
 	foreignStatuses sync.Map
 	foreignAnswers  sync.Map
 
-	// runners holds what long-polling runners share (WP-D17).
-	runners runnerState
-	// prWait wakes `wp pr wait`s held on a pull request (WP-132).
-	prWait prWaiters
-	// durable automation runs and count checks (WP-D18)
-	autoRuns autoRuns
-	// countMu keeps two checks of a count from both seeing the old state.
-	countMu sync.Mutex
-	// dashFixMu keeps two "Ask an agent" clicks from both filing (WP-780).
+	runners   runnerState
+	prWait    prWaiters
+	autoRuns  autoRuns
+	countMu   sync.Mutex
 	dashFixMu sync.Mutex
 
-	// terms finds glossary words in text that's saved (WP-D15).
-	terms termsCache
-	// similar scores how alike issues are, for related issues (WP-296).
+	terms   termsCache
 	similar similarCache
-	// graph is every way things relate, read as one graph (WP-385).
-	graph graphCache
-	// meaning is the concept model learned from the server's text (WP-779).
+	graph   graphCache
 	meaning conceptState
-	// ranker orders related-issue suggestions once people's decisions
-	// teach it better than the blend (WP-958).
-	ranker rankerState
-	// goals keeps goal_traces current (WP-382).
-	goals goalState
+	ranker  rankerState
+	goals   goalState
 
-	// sessCache remembers which agent session a header names (WP-D16).
-	sessCache sessionCache
-	// stopWaits: Stop hooks waiting for a follow-up's message (WP-D22).
-	stopWaits stopWaits
-	// shipWaits: wp ship calls waiting on a review round's news (WP-1669).
-	shipWaits shipWaits
-	// babysitLocks: one babysit step at a time per pull request (WP-134).
-	babysitLocks keyedLocks
-	// coverLooked: by pull request id, a coverMemo: the open comments
-	// closeCovered has classified on a head, with how many comments were dealt
-	// with then, so a sweep doesn't read the forge for them again (WP-1853).
-	// One entry per pull request; a new head or another count replaces it.
-	// Lost on a restart: one more look each.
-	coverLooked sync.Map
-	// shipLocks: one server-side ship at a time per review round (WP-1370).
-	shipLocks keyedLocks
-	// branchLocks: one open of a pull request per branch at a time, so the
-	// session's ship and Waypoint's own can't both open one (WP-1370).
-	branchLocks namedLocks
-	// objectiveLocks: one step of an objective's reading at a time
-	// (WP-ADR111); objectiveWatched: when objectiveWatch last looked.
+	sessCache        sessionCache
+	stopWaits        stopWaits
+	shipWaits        shipWaits
+	babysitLocks     keyedLocks
+	coverLooked      sync.Map
+	shipLocks        keyedLocks
+	branchLocks      namedLocks
 	objectiveLocks   keyedLocks
 	objectiveWatched atomic.Int64
-	// heldChecks are the rounds whose held change is being checked now.
-	heldChecks sync.Map
-	// auditLocks: one step of an audit at a time (WP-348).
-	auditLocks keyedLocks
-	// ciBoard keeps what the CI board read from the forges (WP-225).
-	ciBoard ciBoardCache
-	// runnerFaults: jobs that failed on their runner lately (WP-230).
-	runnerFaults runnerFaultLog
-	// ciLimits keeps the time limits read from workflows (WP-922).
-	ciLimits workflowLimitCache
-	// envs runs environment health checks (WP-D19).
-	envs *envRunner
+	heldChecks       sync.Map
+	auditLocks       keyedLocks
+	ciBoard          ciBoardCache
+	runnerFaults     runnerFaultLog
+	ciLimits         workflowLimitCache
+	envs             *envRunner
 
-	// bgCtx ends with the service (Close), so queued background work stops.
 	bgCtx    context.Context
 	bgCancel context.CancelFunc
 }
@@ -328,18 +213,11 @@ func New(d *db.DB, cfg Config, log *slog.Logger) *Service {
 		now:  time.Now,
 	}
 	s.started = s.now()
-	// Everything the service logs is counted on its source (job_runs.go).
 	s.jobs = newJobLedger(cfg.Logs, func() time.Time { return s.now() })
 	s.log = slog.New(&sourceHandler{ledger: s.jobs, next: log.Handler()})
-	// Forges are configured by admins and may run on the same host.
 	forgeEgress := cfg.Egress
 	forgeEgress.AllowLoopback = true
 	s.Forges = &httpForgeClient{http: forgeEgress.client(forgeTimeout), patient: forgeEgress.client(forgePatientTimeout)}
-	// AI providers are admin-configured too, and answers can take a while:
-	// a review of a large diff takes minutes, and a gateway request trying
-	// several models in turn longer still. Each call's context sets its
-	// limit; the client only bounds the wait for the headers, which a
-	// provider that doesn't stream sends with the whole answer.
 	s.LLM = &httpLLM{http: forgeEgress.streamClient(llmHeaderTimeout)}
 	if strings.TrimSpace(cfg.MeaningURL) != "" {
 		s.Meaning = meaning.NewHTTP(cfg.MeaningURL, cfg.MeaningToken, forgeEgress.client(meaning.Timeout), s.log, func() time.Time { return s.now() })
@@ -393,8 +271,6 @@ func (s *Service) goBG(f func()) {
 	}()
 }
 
-// ---- actors ----
-
 // Actor is who is performing an operation.
 type Actor struct {
 	User *User
@@ -408,10 +284,7 @@ type Actor struct {
 	// RunnerJob is the runner job whose own token (WP-418) is behind the
 	// request, if any.
 	RunnerJob int64
-	// scope limits a runner job's token to the job's project and its
-	// sub-projects (WP-418, WP-ADR28 §7.3): the role it has in each, at
-	// most editor. nil for every other actor.
-	scope map[int64]int
+	scope     map[int64]int
 	// Agent is the acting LLM's identity ("anthropic/claude-opus-5-5"), from
 	// an agent token or the X-Waypoint-Agent header; empty for people.
 	Agent string
@@ -430,25 +303,16 @@ type Actor struct {
 	// User (the person whose action triggered it).
 	Automation *Automation
 	depth      int
-	// session is the hash of the browser session behind this actor, if any.
-	session string
+	session    string
 	// Session is the agent session (WP-D16) the request came from, set from
 	// the X-Waypoint-Session header: what the actor does is recorded on it.
 	Session int64
 	// ClientVersion is the wp that made the request, from its User-Agent
 	// (WP-256); "" for anything else.
 	ClientVersion string
-	// budget is shared by every automation one change sets off, so rules
-	// that trigger each other can't multiply without bound.
-	budget *int
-	// forgeSync marks changes mirrored from a forge, so they are not
-	// pushed back to it.
-	forgeSync bool
-	// textAgent is the agent the text this actor writes counts as written
-	// by: a forge sync's, when agents may write as its forge login (WP-282),
-	// or an automation's create_issue passing on an agent's answer (WP-305).
-	// It is unreviewed agent text, as if that agent had written it here.
-	textAgent string
+	budget        *int
+	forgeSync     bool
+	textAgent     string
 }
 
 func (a *Actor) id() int64 {
@@ -557,7 +421,7 @@ func (a *Actor) isAdmin() bool { return a != nil && a.User != nil && a.User.IsAd
 
 func (a *Actor) viaAutomation() any {
 	if a == nil || a.Automation == nil || a.Automation.ID <= 0 {
-		return nil // built-in helpers (AI) aren't stored automations
+		return nil
 	}
 	return a.Automation.ID
 }
@@ -577,19 +441,13 @@ func SystemActor() *Actor {
 	return &Actor{User: &User{ID: 0, Username: "system", DisplayName: "Waypoint", IsAdmin: true}}
 }
 
-// ---- transactions ----
-
 // tx wraps a write transaction and collects events to dispatch on commit.
 type tx struct {
 	*sql.Tx
-	s     *Service
-	actor *Actor
-	// ctx is the write's context, kept only so what the transaction logs is
-	// tied to the request or scheduled job that made it. Statements run on
-	// the transaction, not on this.
-	ctx    context.Context
-	events []*Event
-	// pending runs after the current issue UPDATE (see afterUpdate)
+	s       *Service
+	actor   *Actor
+	ctx     context.Context
+	events  []*Event
 	pending []func()
 }
 
@@ -618,11 +476,9 @@ func (s *Service) write(ctx context.Context, actor *Actor, f func(t *tx) error) 
 		return err
 	}
 	if span != nil {
-		// SQLite has one writer; this is the time spent waiting for it.
 		span.SetAttributes(attribute.Int64("db.wait_ms", time.Since(queued).Milliseconds()))
 	}
 	t := &tx{Tx: sqlTx, s: s, actor: actor, ctx: ctx}
-	// A panic must not leave the only write connection inside a transaction.
 	defer func() {
 		if p := recover(); p != nil {
 			_ = sqlTx.Rollback()
@@ -657,7 +513,7 @@ func callerName(skip int) string {
 	if f == nil {
 		return "unknown"
 	}
-	name := f.Name() // .../core.(*Service).CreateIssue.func1
+	name := f.Name()
 	name = name[strings.LastIndex(name, "/")+1:]
 	name = strings.TrimPrefix(name, "core.")
 	name = strings.TrimPrefix(name, "(*Service).")

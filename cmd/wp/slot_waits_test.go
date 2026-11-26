@@ -28,7 +28,6 @@ func TestSlotWaitReader(t *testing.T) {
 		return r
 	}
 
-	// Closed intervals, two overlapping: the union counts the overlap once.
 	r := newReader(write(
 		"wait "+ms(0)+" 10 tests", "got "+ms(30)+" 10 tests",
 		"wait "+ms(20)+" 11 tests", "got "+ms(50)+" 11 tests",
@@ -38,7 +37,6 @@ func TestSlotWaitReader(t *testing.T) {
 		t.Errorf("union: %v %v", total, since)
 	}
 
-	// An open wait of a live pid runs to now and joins the stretch it overlaps.
 	r = newReader(write(
 		"wait "+ms(0)+" 10 tests", "got "+ms(30)+" 10 tests",
 		"wait "+ms(20)+" 11 tests",
@@ -47,7 +45,6 @@ func TestSlotWaitReader(t *testing.T) {
 		t.Errorf("open: %v %v", total, since)
 	}
 
-	// Once its pid is gone the wait ends when the reader first saw that.
 	live[11] = false
 	if total, since := r.read(at(120)); total != 120*time.Second || !since.IsZero() {
 		t.Errorf("dead pid: %v %v", total, since)
@@ -56,7 +53,6 @@ func TestSlotWaitReader(t *testing.T) {
 		t.Errorf("dead pid's wait kept growing: %v", total)
 	}
 
-	// Malformed lines, a got with no wait and a missing file count for nothing.
 	r = newReader(write(
 		"garbage", "wait x 10 tests", "wait "+ms(0)+" 0 tests", "wait "+ms(0)+" 10",
 		"got "+ms(5)+" 10 tests", "wait "+ms(10)+" 10 tests", "got "+ms(15)+" 10 tests",
@@ -86,7 +82,6 @@ func TestTakeSlotNotesItsWait(t *testing.T) {
 		release()
 	}
 
-	// Unset: nothing is written (and nothing is created).
 	t.Setenv(slotWaitsEnv, "")
 	take()
 	if _, err := os.Stat(waits); err == nil {
@@ -105,7 +100,6 @@ func TestTakeSlotNotesItsWait(t *testing.T) {
 		t.Fatalf("waits file: %q", read())
 	}
 
-	// A nested run uses the slot it is in and has nothing to wait for.
 	if err := os.WriteFile(waits, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}

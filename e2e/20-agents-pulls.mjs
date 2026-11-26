@@ -37,7 +37,7 @@ const pr = {
   number: 7,
   title: "Checkout totals skip the first item",
   body: "Fixes the cart total.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
-  html_url: "", // the fake's own address, so links to it count as its pull request
+  html_url: "",
   state: "open",
   merged: false,
   draft: false,
@@ -144,7 +144,6 @@ let key, prID, forge;
     return runs;
   };
 
-  // A review model, and the note worded in Admin → AI.
   let provider = (await api("GET", "/ai/providers")).find((p) => p.name === "Fake pulls models");
   if (!provider)
     provider = await api("POST", "/ai/providers", { kind: "openai", name: "Fake pulls models", base_url: `${fake}/v1` });
@@ -156,7 +155,6 @@ let key, prID, forge;
   await note.fill(NOTE);
   await page.getByText("Low-trust review by a free model (fake/muse-spark-1.3)").waitFor();
   ok(true, "the preview fills in the model");
-  // Admin → AI has more than one form with a Save button (the wp ship reply too).
   const noteForm = page.locator("form").filter({ has: note });
   await noteForm.getByRole("button", { name: "Save" }).click();
   await noteForm.getByRole("button", { name: "Use the default" }).waitFor();
@@ -169,10 +167,8 @@ let key, prID, forge;
     kind: "github", name: "Fake GitHub pulls", base_url: fake, token: "tok", webhook_secret: SECRET,
   });
   await api("POST", `/projects/${key}/repos`, { forge_id: forge.id, repo: REPO, sync_issues: false });
-  // Their forge logins are Waypoint people here: text from anyone else waits for a person (WP-281).
   await api("PUT", `/forges/${forge.id}/people`, { people: [{ login: "robin", user: "robin" }, { login: "alex", user: "robin" }, { login: "renovate[bot]", user: "robin" }] });
 
-  // Opened: a review that starts with the note.
   await hook("pull_request", { action: "opened", pull_request: pr, sender: { login: "robin" } });
   let runs = await waitRuns(1);
   ok(runs[0]?.status === "done", `first review: ${runs[0]?.status} ${runs[0]?.error ?? ""}`);
@@ -184,7 +180,6 @@ let key, prID, forge;
     /<sub>Low-trust review by a free model/.test(seen.reviews[0]?.comments?.[0]?.body ?? ""),
     "line comments are signed with the note",
   );
-  // Pushed, approved by a person, a comment, then merged.
   pr.head.sha = "2222222bbbb";
   await hook("pull_request", { action: "synchronize", pull_request: pr, sender: { login: "robin" } });
   await waitRuns(2);
@@ -198,7 +193,6 @@ let key, prID, forge;
     issue: { number: 7, title: pr.title, pull_request: {} },
     comment: { id: 601, body: "Could we add a test for an empty cart?", user: { login: "alex" }, html_url: `${pr.html_url}#issuecomment-601` },
   });
-  // An agent works the issue it's linked to.
   const issue = await api("POST", "/issues", { project: key, title: "Cart total is wrong", agent: "any" });
   await api("POST", `/issues/${issue.key}/links`, { url: pr.html_url });
   const { token } = await api("POST", "/me/tokens", { name: "pulls agent", agent: "anthropic/claude-code" });
@@ -209,7 +203,6 @@ let key, prID, forge;
   Object.assign(pr, { state: "closed", merged: true, merged_at: new Date().toISOString(), merged_by: { login: "alex" } });
   await hook("pull_request", { action: "closed", pull_request: pr, sender: { login: "alex" } });
 
-  // A second, still-open pull request by a bot.
   const bump = { ...pr, number: 8, title: "Bump lodash", state: "open", merged: false, merged_at: null, merged_by: null,
     user: { login: "renovate[bot]" }, html_url: `${fake}/${REPO}/pull/8`, body: "", head: { ref: "renovate/lodash", sha: "3333333cccc" } };
   await hook("pull_request", { action: "opened", pull_request: bump, sender: { login: "renovate[bot]" } });
@@ -255,7 +248,6 @@ async function look(width, scheme) {
   await page.waitForTimeout(300);
   await shot("pulls");
   await overflow("pulls");
-  // Filter by state and by an agent chip.
   await page.getByRole("radio", { name: "Merged" }).click();
   await page.getByRole("button", { name: "Bump lodash" }).waitFor({ state: "detached" });
   ok(true, `${tag} the Merged filter hides the open one`);

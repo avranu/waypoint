@@ -10,15 +10,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Waiting nudges (WP-191, WP-ADR16): an agent that sleeps and then checks
-// pays a turn per check, its whole context read again each time. Claude Code
-// tells a session when its background command exits, and `wp pr wait` or
-// Monitor block without turns, so the note names those. One case is refused
-// instead of noted: sleeping on a background command of the session's that is
-// still running (a process still holds its output file open), since the
-// notice that it exited is certain to come.
-
-const sleepWaitSecs = 30 // a sleep this long before a check is a wait
+const sleepWaitSecs = 30
 
 var (
 	reSleepFor   = lazyre.New(`\bsleep\s+(\d+(?:\.\d+)?)([smhd]?)(?:[\s;&|)]|$)`)
@@ -74,7 +66,7 @@ func taskNudge(tool, cmd, path string, who caller) (kind, text string, deny bool
 			return "agent-output", "That file is sub-agent " + id + "'s whole transcript. Its report comes when it finishes; reading the transcript fills your context.", false
 		}
 		if !heldOpen(file) {
-			continue // finished, or not knowable here: reading the output is fine
+			continue
 		}
 		switch who {
 		case callerBg:
@@ -120,7 +112,7 @@ var heldOpen = func(file string) bool {
 		dir := "/proc/" + name + "/fd/"
 		fds, err := os.ReadDir(dir)
 		if err != nil {
-			continue // another user's process
+			continue
 		}
 		for _, fd := range fds {
 			if l, err := os.Readlink(dir + fd.Name()); err == nil && l == want {

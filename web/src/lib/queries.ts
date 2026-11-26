@@ -1,6 +1,3 @@
-// Query definitions and mutations. Every read goes through a queryOptions
-// factory so route loaders can prefetch exactly what components render.
-
 import {
   infiniteQueryOptions,
   queryOptions,
@@ -219,14 +216,11 @@ export const q = {
       queryKey: ['time', from, to],
       queryFn: () => api.get<TimeEntry[]>(`/time${qs({ from, to })}`),
     }),
-  // The Inbox sorted and grouped (WP-1141); under the notifications key so
-  // whatever refreshes notifications refreshes it.
   inbox: () =>
     queryOptions({
       queryKey: ['notifications', 'inbox'],
       queryFn: () => api.get<InboxView>('/inbox'),
     }),
-  // The badge needs the counts, not every group: a fraction of the payload.
   inboxCounts: () =>
     queryOptions({
       queryKey: ['notifications', 'inbox-counts'],
@@ -307,16 +301,12 @@ export const q = {
         api.get<Objective[]>(
           `/objectives${qs({ project: opts.project || undefined, all: opts.all ? 1 : undefined })}`,
         ),
-      // A wait runs out and a reading is taken without an event for either.
       refetchInterval: MIN,
     }),
   repos: (key: string) =>
     queryOptions({
       queryKey: ['repos', key],
       queryFn: () => api.get<ProjectRepo[]>(`/projects/${enc(key)}/repos`),
-      // Waypoint adds a repo's forge webhook in the background; check back
-      // until it has, and briefly after for the forge's first delivery
-      // (GitHub pings a new webhook).
       refetchInterval: (query) =>
         query.state.data?.some(
           (r) =>
@@ -414,7 +404,6 @@ export const q = {
     queryOptions({
       queryKey: ['sandbox', 'machines'],
       queryFn: () => api.get<SandboxMachine[]>('/sandbox/machines'),
-      // while a helper action someone asked for is on its way, watch it land
       refetchInterval: (query) =>
         query.state.data?.some((m) =>
           m.ops?.some((o) => o.state === 'waiting' || o.state === 'sent'),
@@ -439,8 +428,6 @@ export const q = {
     queryOptions({
       queryKey: ['orgHooks', forgeId],
       queryFn: () => api.get<OrgHook[]>(`/forges/${forgeId}/org-hooks`),
-      // Added in the background: check back until the forge has answered,
-      // and briefly after for its first delivery (the ping), as for repos.
       refetchInterval: (query) =>
         query.state.data?.some(
           (h) =>
@@ -573,8 +560,6 @@ export const pageQ = {
 
 /** Open work nobody has touched in a month (the "coming back after a break" nudge). */
 export const STALE_QUERY = 'is:open updated:<-30d order:updated'
-
-// ---- issue list helpers for optimistic updates ----
 
 type IssueLike = Issue | IssueDetail
 
@@ -726,15 +711,13 @@ function stripDetail(d: IssueDetail): Issue {
 export function useCreateIssue() {
   const qc = useQueryClient()
   return useMutation({
-    // Text too long for a title is split, not refused (WP-68): every create
-    // box in the app goes through here.
     mutationFn: (in_: IssueInput) => {
       const { title, description } = splitLongTitle(in_.title)
       const body = description
         ? {
             ...in_,
             title,
-            title_is_text: true, // the server's title model may write a better one (WP-67)
+            title_is_text: true,
             description: in_.description?.trim()
               ? `${description}\n\n${in_.description}`
               : description,
@@ -756,7 +739,7 @@ export function usePublishIssue() {
     mutationFn: (key: string) => api.post<IssueDetail>(`/issues/${enc(key)}/publish`),
     onSuccess: (d) => {
       qc.setQueryData(['issue', d.key], d)
-      qc.invalidateQueries({ queryKey: ['issue'] }) // its sub-issues were published too
+      qc.invalidateQueries({ queryKey: ['issue'] })
       invalidateProject(qc, d.project_key)
     },
   })
@@ -800,7 +783,6 @@ export function useObjective(key: string) {
         : 'confirm' in v
           ? api.post<Objective>(path + '/confirm', { rev: v.confirm })
           : api.del<void>(path),
-    // On error too: a stale-rev confirm, or a control the server's state no longer allows, shows what is there now.
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ['issue', key] })
       qc.invalidateQueries({ queryKey: ['objectives'] })
@@ -818,7 +800,6 @@ export function useObjectiveGo(key: string) {
   return useMutation({
     mutationFn: (action: ObjectiveAction) =>
       api.post<Objective>(`/issues/${enc(key)}/objective/go`, { action }),
-    // On error too: a stale-rev confirm, or a control the server's state no longer allows, shows what is there now.
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ['issue', key] })
       qc.invalidateQueries({ queryKey: ['objectives'] })
@@ -960,7 +941,7 @@ export function useTimer() {
     qc.invalidateQueries({ queryKey: ['time'] })
     qc.invalidateQueries({ queryKey: ['issueTime'] })
     qc.invalidateQueries({ queryKey: ['timeReport'] })
-    qc.invalidateQueries({ queryKey: ['issue'] }) // time spent on the issue page
+    qc.invalidateQueries({ queryKey: ['issue'] })
   }
   const start = useMutation({
     mutationFn: (v: { issue?: string; note?: string }) =>
@@ -1046,7 +1027,6 @@ export function usePrefetch<T, K extends QueryKey>(
     }
     const t = setTimeout(run, 300)
     return () => clearTimeout(t)
-    // The key stands in for the options object, which is new each render.
   }, [qc, key, enabled]) // eslint-disable-line react-hooks/exhaustive-deps
 }
 
@@ -1155,7 +1135,6 @@ export function useSetAutopilot() {
         body,
       ),
     onSuccess: (o) => qc.setQueryData(['autopilot'], o),
-    // Saves from different forms can answer out of order: read it again after.
     onSettled: () => qc.invalidateQueries({ queryKey: ['autopilot'] }),
   })
 }

@@ -22,14 +22,14 @@ type hookForge struct {
 	kind   string
 	mu     sync.Mutex
 	next   int64
-	hooks  map[string]map[string]map[string]any // repo → id → body
+	hooks  map[string]map[string]map[string]any
 	calls  []string
-	status int            // answer every request with this, when set
-	body   string         // ... and this
-	orgs   []string       // what /user/orgs and /groups list
-	refuse map[string]int // repo (or "org:o") → status to answer its hook calls with
-	tests  []string       // repos (or "org:o") asked for a test delivery
-	writer string         // when set, only this token may change webhooks
+	status int
+	body   string
+	orgs   []string
+	refuse map[string]int
+	tests  []string
+	writer string
 }
 
 func (h *hookForge) tested() []string {
@@ -61,8 +61,6 @@ func (h *hookForge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(401)
 		return
 	}
-	// /repos/o/n/hooks[/id[/test]], /projects/o%2Fn/hooks[/id[/test]],
-	// /orgs/o/hooks…, /groups/g%2Fs/hooks…; organisations are kept as "org:o".
 	if r.Method == "GET" && (path == "/user/orgs" || path == "/groups") {
 		out := []map[string]any{}
 		for _, o := range h.orgs {
@@ -232,7 +230,6 @@ func TestRepoHookLifecycle(t *testing.T) {
 				t.Errorf("hook points at %v with %v; want %s with the forge secret", gotURL, gotSecret, f.WebhookURL)
 			}
 
-			// Retry, and a second project with the same repo: still one hook.
 			if err := e.s.RetryRepoHook(e.ctx, e.admin, a.Key, ra.ID); err != nil {
 				t.Fatal(err)
 			}
@@ -245,7 +242,6 @@ func TestRepoHookLifecycle(t *testing.T) {
 			}
 			fake.only(repo)
 
-			// A new secret is pushed to the hook.
 			if _, err := e.s.UpdateForge(e.ctx, e.admin, f.ID, ForgeInput{WebhookSecret: ptr("rotated-secret")}); err != nil {
 				t.Fatal(err)
 			}
@@ -255,7 +251,6 @@ func TestRepoHookLifecycle(t *testing.T) {
 				t.Errorf("secret not refreshed: %v", body)
 			}
 
-			// Detaching from one project keeps it; from the last removes it.
 			if err := e.s.RemoveProjectRepo(e.ctx, e.admin, a.Key, ra.ID); err != nil {
 				t.Fatal(err)
 			}
@@ -276,7 +271,6 @@ func TestRepoHookReusesExisting(t *testing.T) {
 	e := newEnv(t)
 	fake, srv := newHookForge(t, "github")
 	f, _ := e.s.CreateForge(e.ctx, e.admin, ForgeInput{Kind: ptr("github"), BaseURL: ptr(srv.URL), Token: ptr("tok")})
-	// Someone set it up by hand earlier, with an old secret and one event.
 	fake.hooks["acme/app"] = map[string]map[string]any{"77": {"config": map[string]any{"url": f.WebhookURL + "/", "secret": "old"}, "events": []any{"push"}}}
 	p := e.project(e.admin, "Alpha", "kanban")
 	r, err := e.s.AddProjectRepo(e.ctx, e.admin, p.Key, f.ID, "acme/app", false)
@@ -290,7 +284,6 @@ func TestRepoHookReusesExisting(t *testing.T) {
 	if id != "77" || hookConfig(body)["secret"] == "old" || !slices.Contains(fake.calls, "PATCH /repos/acme/app/hooks/77") {
 		t.Errorf("existing hook not reused and refreshed: id %s body %v calls %v", id, body, fake.calls)
 	}
-	// A forge removed takes the hook Waypoint manages with it.
 	if err := e.s.DeleteForge(e.ctx, e.admin, f.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +326,6 @@ func TestRepoHookFailures(t *testing.T) {
 		if c.token != "" {
 			continue
 		}
-		// Giving the forge a token installs the hooks that failed for want of one.
 		if _, err := e.s.UpdateForge(e.ctx, e.admin, f.ID, ForgeInput{Token: ptr("tok")}); err != nil {
 			t.Fatal(err)
 		}
@@ -358,12 +350,10 @@ func TestRepoHookBotToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The API token may only read: the note says so, in the forge's words.
 	if st := e.repoState(p.Key, r.ID); st.HookState != hookFailed || !strings.Contains(st.HookNote, "The forge token can't manage webhooks") ||
 		!strings.Contains(st.HookNote, "Forgejo said: token does not have at least one of required scope(s)") {
 		t.Fatalf("read-only token: %+v", st)
 	}
-	// A bot token that may write: saving it installs the hook with it.
 	if _, err := e.s.UpdateForge(e.ctx, e.admin, f.ID, ForgeInput{BotToken: ptr("bot-tok")}); err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +365,6 @@ func TestRepoHookBotToken(t *testing.T) {
 	if got := fake.tested(); !slices.Equal(got, []string{"acme/app"}) {
 		t.Errorf("test deliveries = %v", got)
 	}
-	// Detaching removes it with the token that may.
 	if err := e.s.RemoveProjectRepo(e.ctx, e.admin, p.Key, r.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +375,6 @@ func TestRepoHookBotToken(t *testing.T) {
 	if n != 0 {
 		t.Errorf("%d webhooks left after detaching", n)
 	}
-	// Neither token may: the note names both.
 	fake.mu.Lock()
 	fake.writer = "admin-tok"
 	fake.mu.Unlock()
@@ -486,14 +474,13 @@ func TestHookProblemsWaitOnOwners(t *testing.T) {
 	fake.mu.Unlock()
 	broken, _ := e.s.AddProjectRepo(e.ctx, e.admin, alpha.Key, f.ID, "acme/broken", false)
 	quiet, _ := e.s.AddProjectRepo(e.ctx, e.admin, alpha.Key, f.ID, "acme/quiet", false)
-	if _, err := e.s.AddProjectRepo(e.ctx, e.admin, beta.Key, f.ID, "acme/broken", false); err != nil { // the same repo, twice
+	if _, err := e.s.AddProjectRepo(e.ctx, e.admin, beta.Key, f.ID, "acme/broken", false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.s.AddProjectRepo(e.ctx, e.admin, alpha.Key, f.ID, "acme/fine", false); err != nil {
 		t.Fatal(err)
 	}
 	e.s.Wait()
-	// A delivery for acme/fine.
 	body := []byte(`{"repository":{"full_name":"acme/fine"}}`)
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
@@ -512,7 +499,6 @@ func TestHookProblemsWaitOnOwners(t *testing.T) {
 		}
 		return strings.Join(out, " ")
 	}
-	// At once only the failed one: an added hook gets a while to deliver.
 	w, err := e.s.WaitingOnYou(e.ctx, sam)
 	if err != nil {
 		t.Fatal(err)
@@ -524,21 +510,18 @@ func TestHookProblemsWaitOnOwners(t *testing.T) {
 	if w, _ = e.s.WaitingOnYou(e.ctx, sam); repos(w) != alpha.Key+":acme/broken:failed "+alpha.Key+":acme/quiet:silent" || w.Total != 1 || w.Hooks[1].RepoID != quiet.ID {
 		t.Errorf("later: %q total %d", repos(w), w.Total)
 	}
-	// Only owners: not an editor; an admin sees every project's, one row a repo.
 	if w, _ = e.s.WaitingOnYou(e.ctx, viv); len(w.Hooks) != 0 || w.Total != 0 {
 		t.Errorf("editor: %+v", w)
 	}
 	if w, _ = e.s.WaitingOnYou(e.ctx, e.admin); repos(w) != alpha.Key+":acme/broken:failed "+alpha.Key+":acme/quiet:silent" {
 		t.Errorf("admin: %q", repos(w))
 	}
-	// Narrowed to a project, or to an agent.
 	if w, _ = e.s.waitingOnYou(e.ctx, e.admin, beta.Key, ""); repos(w) != beta.Key+":acme/broken:failed" {
 		t.Errorf("beta: %q", repos(w))
 	}
 	if w, _ = e.s.waitingOnYou(e.ctx, e.admin, "", "claude"); len(w.Hooks) != 0 {
 		t.Errorf("agent narrowed: %q", repos(w))
 	}
-	// Fixed: the forge lets Waypoint add it, and a delivery comes.
 	fake.mu.Lock()
 	delete(fake.refuse, "acme/broken")
 	fake.mu.Unlock()

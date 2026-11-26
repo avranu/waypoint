@@ -16,17 +16,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core/kernel"
 )
 
-// Audits (WP-348, WP-ADR20): an adversarial review a person, an agent or an
-// automation asks for, of a repository, a branch, a commit, a range of
-// commits or a pull request. A model reads the requester's runner's checkout
-// read-only (by default Grok through Cursor on the runner, then the one the
-// LLM gateway picks, defaultAuditChain) and reports findings in a fixed
-// form, which Waypoint keeps.
-// The model never changes anything. A pull request's audit is posted on it;
-// a task for Claude to check and fix the findings is made only when someone
-// asks for one. The findings are the model's claims: they never feed the
-// review gate, babysit or a merge.
-
 const (
 	auditSource = "audit"
 	// EvCodeAudit: an audit changed (New: its status; Field "fix" when a
@@ -39,16 +28,16 @@ const (
 	AuditRunning   = "running"
 	AuditDone      = "done"
 	AuditFailed    = "failed"
-	AuditLimited   = "limited" // a usage limit stopped every model
+	AuditLimited   = "limited"
 	AuditCancelled = "cancelled"
 
-	auditTimeout = 2700 // seconds: Grok at high effort reads a large repository slowly
+	auditTimeout = 2700
 	// AuditCLITimeoutSecs and AuditGatewayTimeoutSecs are the runner job's time
 	// for an audit by a CLI model and by the gateway's agent, before a helper
 	// panel's extra: what wp says of how long an audit may take.
 	AuditCLITimeoutSecs     = auditTimeout
 	AuditGatewayTimeoutSecs = gatewayAuditTimeout
-	auditMaxRetries         = 3 // times a chain whose models were all busy is tried again
+	auditMaxRetries         = 3
 	// auditUnreadableRetries: times the chain's last runner model is asked
 	// again after an answer out of form.
 	auditUnreadableRetries = 1
@@ -212,26 +201,19 @@ type CodeAudit struct {
 	Helpers    *AuditHelpers    `json:"helpers,omitempty"`
 	HelperRuns []AuditHelperRun `json:"helper_runs,omitempty"`
 
-	projectID    int64
-	forgeID      int64
-	chain        []AgentModel
-	prompt       string
-	ownerID      int64
-	requestedBy  int64
-	automationID int64
-	sessionID    int64
-	blocking     bool
-	fixIssueID   int64
-	// authorModel is the model that wrote the code, when Waypoint knows
-	// (a review round's session): a gateway audit leaves its family out.
-	authorModel string
-	// reviewText is the reviewer's brief a person set for review rounds
-	// (review_profile.go), and roundContext the task the change was made
-	// for with what earlier rounds raised: a review round's audit only.
+	projectID                int64
+	forgeID                  int64
+	chain                    []AgentModel
+	prompt                   string
+	ownerID                  int64
+	requestedBy              int64
+	automationID             int64
+	sessionID                int64
+	blocking                 bool
+	fixIssueID               int64
+	authorModel              string
 	reviewText, roundContext string
-	// claims are what a check of a round's marks checks (AuditCheck,
-	// checkMarks): the rejected and fixed findings with the session's notes.
-	claims string
+	claims                   string
 }
 
 // AuditCounts sums an audit's findings.
@@ -328,30 +310,17 @@ type AuditInput struct {
 	Blocking bool   `json:"blocking"` // the asking session waits on it
 	Via      string `json:"via"`      // web, cli, api, automation
 
-	requestKey string
-	chain      []AgentModel
-	// owner is whose runner runs it when Waypoint itself asks (WP-355): the
-	// system has no runner of its own.
-	owner int64
-	// purpose is what Waypoint asked it for ("" an audit, AuditFootprint
-	// the drift guard's check, WP-440), and prContext then replaces the
-	// pull request's description in its prompt.
-	purpose   string
-	prContext string
-	// authorModel: see CodeAudit.authorModel.
-	authorModel string
-	// weakest: see CodeAudit.Weakest. Only Waypoint sets one above the
-	// floor (a review round of a high or elevated change, a rerun of such an
-	// audit); RequestAudit gives any other gateway audit the floor.
-	weakest string
-	// reviewText and roundContext: see CodeAudit's. Only a review round's
-	// audit has them (WP-1320).
+	requestKey               string
+	head                     string // the commit a pull request's audit is asked for; empty: the forge's head
+	chain                    []AgentModel
+	owner                    int64
+	purpose                  string
+	prContext                string
+	authorModel              string
+	weakest                  string
 	reviewText, roundContext string
-	// claims: see CodeAudit's.
-	claims string
-	// helpers: the Haiku checks around the model (CodeAudit.Helpers); nil
-	// leaves them to auditHelpersFor.
-	helpers *AuditHelpers
+	claims                   string
+	helpers                  *AuditHelpers
 }
 
 // AuditDefaults is what a request starts from.
@@ -430,8 +399,6 @@ func parseAuditModel(v string) (AgentModel, error) {
 	}
 	return m, nil
 }
-
-// ---- asking for one ----
 
 // RequestAudit records an audit and sets it going on the runner of whoever
 // asked (an automation: of the person who last saved it).
@@ -517,8 +484,6 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 		return nil, invalid("an audit can try at most %d models", auditMaxModels)
 	}
 	if in.chain == nil {
-		// A chain Waypoint chose skips the gateway when it has none; a
-		// person who named it is told.
 		for _, m := range chain {
 			if m.CLI != GatewayCLI {
 				continue
@@ -583,7 +548,9 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 		case fp.State == "merged" || fp.State == "closed":
 			a.Ref, a.Base = prHeadRef(repo.Forge, in.PR), fp.BaseRef
 		default:
-			a.Ref, a.Base = fp.HeadSHA, fp.BaseRef
+			// The head the request is for, where the forge's answer lags it
+			// or runs ahead: the audit's key names that commit (WP-1852).
+			a.Ref, a.Base = cmp(in.head, fp.HeadSHA), fp.BaseRef
 		}
 		if a.Base == "" {
 			if fc, ok := s.Forges.(ForgeCommitter); ok {
@@ -610,12 +577,11 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 		}
 		prContext = fmt.Sprintf("This is pull request %s#%d, %q, by %s, at its %s %s. Its description, as its author wrote it:\n\n<untrusted>\n%s\n</untrusted>",
 			repo.Repo, fp.Number, fp.Title, cmp(fp.Author, "someone"), map[bool]string{true: "merge commit", false: "head"}[fp.State == "merged" && fp.MergeSHA != ""],
-			short(cmp(fp.MergeSHA, fp.HeadSHA)), excerpt(untrusted(cmp(strings.TrimSpace(fp.Body), "(none)")), 4000))
+			short(cmp(fp.MergeSHA, cmp(in.head, fp.HeadSHA))), excerpt(untrusted(cmp(strings.TrimSpace(fp.Body), "(none)")), 4000))
 		if in.prContext != "" {
 			prContext = in.prContext
 		}
 	case "branch":
-		// No branch: the default branch, which is the whole repository.
 		a.Ref, a.Base = strings.TrimSpace(in.Ref), strings.TrimSpace(in.Base)
 		if a.Base == "" || a.Ref == "" {
 			if fc, ok := s.Forges.(ForgeCommitter); ok {
@@ -629,7 +595,6 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 			a.Ref = a.Base
 		}
 		if a.Base == a.Ref {
-			// The default branch itself: there is no change, so the whole tree.
 			a.Target, a.Base = "repo", ""
 			a.Title = fmt.Sprintf("%s at %s", repo.Repo, a.Ref)
 		} else {
@@ -653,8 +618,6 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 		a.Ref, a.Base = to, from
 		a.Title = fmt.Sprintf("%s %s..%s", repo.Repo, short(from), short(to))
 	case "recent":
-		// What landed on a branch (default: the default branch) since a
-		// time: the runner finds the branch's last commit before it.
 		a.Ref = strings.TrimSpace(in.Ref)
 		if a.Ref == "" {
 			if fc, ok := s.Forges.(ForgeCommitter); ok {
@@ -683,10 +646,6 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 		}
 	}
 	a.Purpose, a.Weakest = in.purpose, in.weakest
-	// The floor is recorded only on an audit whose chain asks the gateway to
-	// choose its model (WP-1440). A chain of models a person or a tier named
-	// has none: they picked those. A floor passed in for such a chain (a
-	// round's, with no gateway set) is dropped.
 	if slices.Contains(chain, AgentModel{CLI: GatewayCLI, Model: gatewayAuditModel}) {
 		if a.Weakest == "" {
 			a.Weakest = reviewFloorBar
@@ -696,8 +655,6 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 	}
 	a.reviewText, a.roundContext, a.claims = in.reviewText, in.roundContext, in.claims
 	if a.Purpose == AuditObjective {
-		// What Waypoint tells a judge of the task and its round
-		// (objectiveJudgeContext); it reads the repository, not a pull request.
 		prContext = in.prContext
 	}
 	a.Helpers = auditHelpersFor(in, prContext)
@@ -842,8 +799,6 @@ func (s *Service) auditRunnersWhy(ctx context.Context, owner int64, chain []Agen
 		}
 	}
 	if len(clis) == 0 {
-		// Only the gateway's models: any runner can send one, once its wp
-		// knows how.
 		return "no runner of yours runs a wp that can send an audit to the gateway yet: it updates itself, or run wp upgrade"
 	}
 	name := strings.Join(clis, " or ")
@@ -922,7 +877,6 @@ func codeAuditPrompt(a *CodeAudit, prContext string) string {
 		b.WriteString("What to look for: " + a.Instructions + " Report other serious problems you come across too.\n\n")
 	}
 	b.WriteString(auditCriteriaPrompt(a))
-	// No audit's model is told a number (WP-1421): min_severity asks for less.
 	count := "Report every problem you find, worst first."
 	fmt.Fprintf(&b, `Rules:
 - Report only problems you can point to in the code: the file (relative to the repository's root) and line, what goes wrong, and when.
@@ -936,8 +890,6 @@ func codeAuditPrompt(a *CodeAudit, prContext string) string {
 	}
 	return b.String()
 }
-
-// ---- moving it along ----
 
 // advanceAudit queues the next model's job for a queued audit.
 func (s *Service) advanceAudit(ctx context.Context, id int64) {
@@ -956,16 +908,12 @@ func (s *Service) advanceAudit(ctx context.Context, id int64) {
 		return
 	}
 	if err != nil {
-		// Not a forge that is gone: the audit stays queued for the next pass.
 		if readFault(err) {
 			s.log.WarnContext(ctx, "read an audit's forge", "audit", a.ID, "repo", a.Repo, "err", err)
 		}
 		return
 	}
 	repo := &stepRepo{Forge: f, Repo: a.Repo}
-	// ran: a model of this pass of the chain did run, and how it ended (the
-	// gateway busy, or out of allowance) is why a later entry was passed
-	// over; the chain then ends as it does after a model's failure.
 	ran := false
 	for a.Slot < len(a.chain) {
 		m := a.chain[a.Slot]
@@ -985,14 +933,10 @@ func (s *Service) advanceAudit(ctx context.Context, id int64) {
 			in.GatewayExclude = auditFamilyExclude(a.Weakest, a.authorModel)
 			timeout = gatewayAuditTimeout + a.Helpers.extraTimeout()
 			if a.Weakest != reviewFloorBar || m.Model == gatewayAuditModel {
-				in.GatewayWeakest = a.Weakest // the floor is for the audit purpose, not a model named for the audit
+				in.GatewayWeakest = a.Weakest
 			}
 		}
 		raw, _ := json.Marshal(in)
-		// A runner that is registered but offline would hold the job for a
-		// day, where a later entry could have run the audit: only the
-		// chain's last entry waits for one (passQueuedAudit is the same rule
-		// for a runner that went away after the job was queued).
 		if m.CLI != GatewayCLI && a.Slot < len(a.chain)-1 && !s.hasOnlineRunner(ctx, a.ownerID, JobAudit, raw) {
 			a.Attempts = append(a.Attempts, AuditAttempt{Model: auditModelName(m), Round: a.Retries, Outcome: "unavailable", Error: "no runner with " + m.CLI + " is online", At: s.nowMS()})
 			a.Slot++
@@ -1023,8 +967,6 @@ func (s *Service) advanceAudit(ctx context.Context, id int64) {
 		a.Slot++
 	}
 	if len(a.Attempts) == 0 {
-		// A chain with no model left to try and none tried: nothing to report
-		// but that (a round now advances its audit at once, WP-1725).
 		s.failAudit(ctx, a, "no model of the chain could be started: its chain names none left to try")
 		return
 	}
@@ -1064,7 +1006,7 @@ func (s *Service) endAudit(ctx context.Context, a *CodeAudit, status, why string
 			return err
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			return nil // cancelled meanwhile
+			return nil
 		}
 		if found != nil {
 			for i, f := range found.Findings {
@@ -1077,7 +1019,7 @@ func (s *Service) endAudit(ctx context.Context, a *CodeAudit, status, why string
 		if err := s.insertHelperRuns(ctx, t, a.ID, a.HelperRuns, found != nil, s.nowMS()); err != nil {
 			return err
 		}
-		if len(a.HelperRuns) > 0 || a.Helpers != nil { // the review loop's helpers' record changed (review_health.go)
+		if len(a.HelperRuns) > 0 || a.Helpers != nil {
 			t.emit(&Event{Kind: EvReviewLoopRecorded, ProjectID: a.projectID})
 		}
 		t.emit(&Event{Kind: EvCodeAudit, ProjectID: a.projectID, Old: a.Status, New: status, Data: map[string]any{"audit": a.ID}})
@@ -1141,8 +1083,6 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 	switch j.State {
 	case "done":
 		if why := strings.TrimSpace(anyString(j.Result["nothing"])); why != "" {
-			// The runner found nothing to read (no change, or none in the
-			// paths asked for) and ran no model.
 			att.Outcome = "nothing"
 			a.Attempts = append(a.Attempts, att)
 			a.Summary = excerpt(why, 2000)
@@ -1152,7 +1092,7 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 		found, err := doneAuditAnswer(j.Result, a.HelperRuns)
 		a.Answer = excerpt(anyString(j.Result["answer"]), 60000)
 		if err == nil {
-			raised := found.raised // as written: before blanks, the floor and the cap
+			raised := found.raised
 			att.Outcome = "answered"
 			a.Attempts = append(a.Attempts, att)
 			found.keep(a)
@@ -1163,8 +1103,6 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 			found.Summary = summaryWithNote(found.Summary, found.keepNote(a, raised))
 			a.Model, a.Summary = auditModelName(m), found.Summary
 			if m.CLI == GatewayCLI {
-				// Which of the gateway's models answered, and that its
-				// findings are to be reported on.
 				a.Model = s.gatewayAuditAnswered(ctx, jobID, m, raised)
 			}
 			if t, ok := j.Result["tokens"].(map[string]any); ok {
@@ -1176,8 +1114,6 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 		att.Outcome, att.Error = "unreadable", err.Error()
 	case "cancelled":
 		if j.Error == runnerStoppedError {
-			// The runner restarting isn't anyone calling the audit off, and
-			// says nothing about the model (WP-820): it goes again.
 			att.Outcome, att.Error = "stopped", j.Error
 			a.Attempts = append(a.Attempts, att)
 			stops := 0
@@ -1202,8 +1138,6 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 	default:
 		att.Outcome, att.Error = auditFailureKind(j), excerpt(jobWhy(j), 300)
 		if kind := anyString(j.Result["gateway_error"]); m.CLI == GatewayCLI && kind != "" {
-			// The gateway said what went wrong in a word; no guessing
-			// from the text.
 			if att.Outcome = gatewayOutcome(kind); att.Outcome == "unreadable" {
 				a.Answer = excerpt(anyString(j.Result["answer"]), 60000)
 			}
@@ -1211,9 +1145,6 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 	}
 	a.Attempts = append(a.Attempts, att)
 	next := a.Slot + 1
-	// Whether a round asked for it decides if an error ends the chain. Unread
-	// (logged by roundsAudit), the chain goes on: the audit isn't failed with
-	// models still to try on a guess (WP-1406).
 	rounds := a.Purpose == AuditReview || a.Purpose == AuditObjective
 	if !rounds && att.Outcome == "error" && next < len(a.chain) {
 		var rerr error
@@ -1221,29 +1152,15 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 			rounds = true
 		}
 	}
-	// The gateway reads the checkout its own way and costs no plan: a
-	// runner's CLI failing, or no runner taking its job, is no reason to
-	// leave it unasked (the default chain, WP-1725).
 	toGateway := m.CLI != GatewayCLI && next < len(a.chain) && slices.ContainsFunc(a.chain[next:], func(x AgentModel) bool { return x.CLI == GatewayCLI })
 	switch {
 	case (j.State == "expired" || att.Outcome == "error" && (next >= len(a.chain) || !rounds)) && !toGateway:
-		// A review round's chain goes on after any failure (WP-820): an
-		// error text no list knows mustn't end it with models still to try.
-		// So does one handed from its round to the pull request (WP-1059),
-		// and an objective's judge, which decides whether a task closes
-		// (WP-ADR111).
 		s.failAudit(ctx, a, att.Error)
 		return
 	case next < len(a.chain):
 		s.requeueAudit(ctx, a, next, a.Retries, nil)
 		return
 	case att.Outcome == "unreadable" && unreadableTries(a) <= auditUnreadableRetries:
-		// The chain's last model answered out of form: it's asked again
-		// before the audit fails. Claude Code's structured output can
-		// refuse every try in one run and take the next (WP-1320's live
-		// round 3: a check of marks that found nothing, answered in text).
-		// A gateway's invalid_output gets the same one retry: whether it
-		// tried again itself isn't known here.
 		s.requeueAudit(ctx, a, a.Slot, a.Retries, nil)
 		return
 	}
@@ -1323,8 +1240,6 @@ func (s *Service) requeueAuditTx(ctx context.Context, t *tx, a *CodeAudit, slot,
 	if err != nil {
 		return err
 	}
-	// The attempt's helpers ran and cost what they cost though its
-	// reviewer didn't answer (WP-1320's live round 6): kept, unanswered.
 	n, err := res.RowsAffected()
 	if err != nil {
 		return err
@@ -1384,20 +1299,12 @@ func auditFailureKind(j *stepJob) string {
 
 // auditAnswer is a model's answer, cleaned.
 type auditAnswer struct {
-	Summary  string
-	Findings []CodeAuditFinding
-	// raised is how many findings the answer held, as written: before any
-	// was dropped as blank, and before a severity floor or the audit's
-	// limit on findings (WP-1230: only an answer that raised none is reported to
-	// the gateway as having found nothing).
-	raised int
-	// floorCut and guardCut are how many keep took out below the severity
-	// floor and past the guard.
+	Summary            string
+	Findings           []CodeAuditFinding
+	raised             int
 	floorCut, guardCut int
-	// cutJSON is the findings past the guard, as JSON, for the audit's
-	// answer text (cutShort: cut at auditCutMax).
-	cutJSON  string
-	cutShort bool
+	cutJSON            string
+	cutShort           bool
 }
 
 // flexInt is a number a model may write as a string ("123", "L123").
@@ -1487,10 +1394,6 @@ func parseAuditAnswer(result map[string]any) (*auditAnswer, error) {
 		err = errNoFindingsList
 	}
 	if err != nil {
-		// A reviewer that answers in words may say just "no findings".
-		// Text that says more ("no findings in a.go, but b.go…") may name
-		// a problem or be cut short (WP-1253): it is no answer, rather
-		// than an audit that found nothing.
 		text := strings.TrimSpace(anyString(result["answer"]))
 		if strings.Trim(strings.ToUpper(text), " \n.!*_`") == "NO FINDINGS" {
 			return &auditAnswer{Summary: "No findings."}, nil
@@ -1512,10 +1415,6 @@ func parseAuditAnswer(result map[string]any) (*auditAnswer, error) {
 			Problem: excerpt(problem, 4000), Confirm: excerpt(strings.TrimSpace(f.Confirm), 2000), Verdict: cleanVerdict(f.Verdict),
 			VerdictNote: excerpt(strings.TrimSpace(f.Evidence), 2000), Lead: strings.Join(leadIDs(strings.Join(append([]string{f.Lead}, f.Leads...), ",")), ",")})
 	}
-	// Worst first, keeping the answer's order within a severity (the
-	// reviewer's findings come before the panel's in it). The limit is the
-	// audit's, so keep applies it, and says so when it cuts: a limit here
-	// dropped findings with no word of it (WP-1320).
 	slices.SortStableFunc(a.Findings, func(x, y CodeAuditFinding) int {
 		return AuditSeverityRank(x.Severity) - AuditSeverityRank(y.Severity)
 	})
@@ -1594,9 +1493,6 @@ func (s *Service) passQueuedAudit(ctx context.Context, id, jobID int64) {
 	}
 	a.Attempts = append(a.Attempts, AuditAttempt{Model: auditModelName(a.chain[a.Slot]), Job: jobID, Round: a.Retries, Outcome: "unavailable",
 		Error: "no runner took it in " + ShortDuration(auditRunnerWait), At: s.nowMS()})
-	// The job's state is read, the job cancelled and the audit sent on in
-	// one write, which a runner's claim (also a write) can't come between:
-	// a job claimed since runs on as the audit's, and the audit waits for it.
 	var taken bool
 	err = s.write(ctx, SystemActor(), func(t *tx) error {
 		var state string
@@ -1615,8 +1511,6 @@ func (s *Service) passQueuedAudit(ctx context.Context, id, jobID int64) {
 	unlock()
 	switch {
 	case err != nil:
-		// Nothing was written: the audit is still on its job, and the next
-		// check looks again.
 		s.log.WarnContext(ctx, "pass over an audit's unclaimed job", "audit", id, "job", jobID, "err", err)
 	case !taken:
 		s.kickRunners()
@@ -1638,7 +1532,6 @@ func (s *Service) codeAuditEvent(ctx context.Context, e *Event) {
 	case e.Field == "findings":
 		s.withdrawDecidedAuditNews(ctx, id)
 	case e.Field == "fix":
-		// Asked for after the fact: made now, so the caller gets its key.
 		s.auditFixTask(ctx, id)
 	case e.New == AuditQueued:
 		s.goBG(func() { s.advanceAudit(context.Background(), id) })
@@ -1673,7 +1566,6 @@ func (s *Service) auditEnded(ctx context.Context, id int64) {
 		}
 	}
 	s.tellAudit(ctx, a)
-	// Settled: an automation step waiting on it reads it whole now.
 	if err := s.write(ctx, SystemActor(), func(t *tx) error {
 		res, err := t.ExecContext(ctx, `UPDATE code_audits SET settled_at = ? WHERE id = ? AND settled_at IS NULL`, s.nowMS(), id)
 		if err != nil {
@@ -1928,8 +1820,6 @@ Record each verdict on the audit as you go: wp audit mark %d.1 fixed -m "what yo
 			todo = append(todo, f)
 		}
 	}
-	// The first findings shown at a time, worst first; the rest are counted
-	// and marked too (WP-1421).
 	shown := todo[:min(len(todo), AuditShown(a))]
 	writeAuditFindings(&b, shown)
 	if more := len(todo) - len(shown); more > 0 {
@@ -1979,9 +1869,6 @@ func writeAuditFinding(b *strings.Builder, f CodeAuditFinding) {
 // limit, findings.
 func (s *Service) tellAudit(ctx context.Context, a *CodeAudit) {
 	if a.Purpose == AuditCheck {
-		// A round's check of its marks is the round's: its findings go to
-		// the session in one message, and a check that found nothing lets
-		// Waypoint carry the round on (WP-1370).
 		s.tellCheck(ctx, a)
 		return
 	}
@@ -1989,28 +1876,18 @@ func (s *Service) tellAudit(ctx context.Context, a *CodeAudit) {
 	if a.sessionID != 0 {
 		quiet := a.Status == AuditDone && a.Counts.Total == 0 && a.Via == "system"
 		if quiet && !a.readNothing() {
-			// Waypoint started it (a review round, a pull request's audit):
-			// finding nothing is not news to the session (WP-1370). One
-			// somebody asked for always answers, clean or not.
 			return
 		}
-		// Only someone waiting on it is told of a failure as news; for anyone
-		// else it waits for the next prompt. An audit of Waypoint's that read
-		// nothing is no clean one, and is said so without waking the session.
 		passive := (a.Status != AuditDone && !a.blocking) || quiet
 		s.messageSessionAs(ctx, a, text, auditNewsKey(a.ID, a.Status), passive)
 		return
 	}
 	if a.Status == AuditCancelled {
-		return // whoever cancelled it knows
+		return
 	}
 	who := a.requestedBy
 	if a.automationID != 0 {
 		who = a.ownerID
-		// A usage limit that stopped it doesn't tell the owner: a recurring
-		// automation on a spent pool would tell every run until the plan
-		// comes back, and its run already shows Limited (auditStep). A
-		// person's own audit is told once (below).
 		needed := a.Status == AuditFailed || (a.Status == AuditDone && !a.Fix && a.Counts.Total > 0)
 		if !needed {
 			return
@@ -2037,8 +1914,6 @@ func (s *Service) messageSessionAs(ctx context.Context, a *CodeAudit, text, key 
 		s.log.WarnContext(ctx, "tell a session about its audit", "audit", a.ID, "err", err)
 		return
 	}
-	// News of a finished audit whose findings were all decided while its
-	// comment posted is withdrawn as it is stored (WP-1525).
 	if m.State == MessageQueued && !passive && (key != auditNewsKey(a.ID, AuditDone) || !s.withdrawDecidedAuditNews(ctx, a.ID)) {
 		s.batchOrTell(ctx, a.sessionID, 0, a.blocking, func(until int64) error {
 			_, err := s.writeRows(ctx, `UPDATE session_messages SET batch_until = ?, blocking = ? WHERE id = ? AND state = 'queued'`, until, a.blocking, m.ID)
@@ -2135,7 +2010,6 @@ func auditNews(a *CodeAudit, base string) string {
 	switch a.Status {
 	case AuditDone:
 		if a.readNothing() {
-			// Not a clean audit: no model ran.
 			b.WriteString(": " + untrusted(strings.TrimRight(a.Summary, ". ")) + ". No model ran, so this says nothing about the code.")
 			break
 		}
@@ -2153,8 +2027,6 @@ func auditNews(a *CodeAudit, base string) string {
 		}
 		b.WriteString(", by " + a.Model + ".")
 		if len(a.Findings) > 0 {
-			// Each one, so the reader needn't open the audit to know what is
-			// at stake (WP-1370).
 			b.WriteString("\n" + findingLines(a.Findings))
 		}
 		if a.FixIssue != "" {
@@ -2168,15 +2040,12 @@ func auditNews(a *CodeAudit, base string) string {
 			b.WriteString(": " + a.Error)
 		}
 		if a.sessionID != 0 && a.blocking && a.Status != AuditCancelled {
-			// Someone is waiting on it: say what happened and what is left to do.
 			b.WriteString("\nThe audit you waited on has no result. Run `wp audit` again if you still need it; otherwise go on without it.")
 		}
 	}
 	fmt.Fprintf(&b, "\n%s/audits/%d · wp audit show %d", base, a.ID, a.ID)
 	return b.String()
 }
-
-// ---- reading ----
 
 const auditCols = `a.id, a.project_id, p.key, p.name, a.forge_id, a.repo, a.target, a.ref, a.base, a.pr_id, a.pr_number, coalesce(pr.url, ''), a.title, a.instructions,
 	a.prompt, a.models, a.post_comment, a.fix, a.status, a.slot, a.job_id, coalesce(j.state, ''), a.attempts, a.retries, a.retry_at, a.model, a.summary, a.answer,
@@ -2366,7 +2235,7 @@ func forgeFileURL(f *Forge, repo, ref, file string, line int) string {
 		u = base + "/-/blob/" + ref + "/" + file
 	case "github":
 		u = base + "/blob/" + ref + "/" + file
-	default: // Forgejo, Gitea
+	default:
 		u = base + "/src/commit/" + ref + "/" + file
 		if !shaRE.MatchString(ref) {
 			u = base + "/src/branch/" + ref + "/" + file
@@ -2473,8 +2342,6 @@ func (s *Service) ListAudits(ctx context.Context, actor *Actor, f AuditFilter) (
 	return out, nil
 }
 
-// ---- acting on one ----
-
 // auditToChange reads an audit the actor may change.
 func (s *Service) auditToChange(ctx context.Context, actor *Actor, id int64) (*CodeAudit, error) {
 	if err := actor.canWrite(); err != nil {
@@ -2533,7 +2400,6 @@ func (s *Service) CancelAudit(ctx context.Context, actor *Actor, id int64) (*Cod
 	if seen, err := s.auditToChange(ctx, actor, id); err != nil {
 		return nil, err
 	} else if seen.Purpose == AuditObjective && actor.id() != 0 && !objectivePerson(actor) {
-		// The judge of a round isn't stopped by whoever worked the round.
 		return nil, forbidden("audit #%d judges an objective: a person stops it, or ends the objective (wp objective end)", id)
 	}
 	unlock := s.auditLocks.lock(id)
@@ -2546,9 +2412,6 @@ func (s *Service) CancelAudit(ctx context.Context, actor *Actor, id int64) (*Cod
 		unlock()
 		return nil, invalid("audit #%d has ended (%s)", id, a.Status)
 	}
-	// The session whose marks the check reads can't end it: a cancelled
-	// check passes the round (WP-1390). Waypoint cancels it itself when it
-	// is past its patience, and a person may.
 	if a.Purpose == AuditCheck && actor.IsAgent() {
 		unlock()
 		return nil, invalid("audit #%d is Waypoint's check of a review round's marks: it ends by itself, and only a person can cancel it", id)
@@ -2557,9 +2420,6 @@ func (s *Service) CancelAudit(ctx context.Context, actor *Actor, id int64) (*Cod
 	if who == "" && actor.User != nil {
 		who = actor.User.DisplayName
 	}
-	// One winner: the transition happens only if the audit is still going when
-	// the write runs, so a finish that landed since the read above (or another
-	// cancel) is never overwritten and never emits a second event.
 	err = s.write(ctx, actor, func(t *tx) error {
 		res, err := t.ExecContext(ctx, `UPDATE code_audits SET status = ?, error = ?, finished_at = ? WHERE id = ? AND status IN (?, ?)`,
 			AuditCancelled, "Cancelled by "+cmp(who, "someone")+".", s.nowMS(), id, AuditQueued, AuditRunning)
@@ -2597,17 +2457,9 @@ func (s *Service) RerunAudit(ctx context.Context, actor *Actor, id int64, via st
 		Focus: a.Focus, Paths: a.Paths, Exclude: a.Exclude, MinSeverity: a.MinSeverity, MaxFindings: a.MaxFindings, weakest: a.Weakest}
 	cursor := auditModelNames(cursorAuditChain)
 	if slices.Equal(a.Models, cursor) || slices.Equal(a.Models, append(cursor, auditModelName(AgentModel{CLI: GatewayCLI, Model: gatewayAuditModel}))) {
-		// A default is stored as if it had been named: today's, or the one
-		// of a Waypoint with no gateway (and of before the gateway ran
-		// audits, WP-871). A rerun asks today's default, which a change of
-		// the default or a gateway that is gone would otherwise leave it
-		// without. (The gateway alone, the default between WP-871 and
-		// WP-1725, can't be told from a person's naming it, and stays.)
 		in.Models = nil
 	}
 	if a.Agent == leftoverAgent {
-		// Made from a review's findings, with no model of its own to repeat:
-		// a rerun is the default audit of the pull request.
 		in.Models, in.Instructions, in.Fix = nil, "", false
 	}
 	switch a.Target {
@@ -2620,7 +2472,6 @@ func (s *Service) RerunAudit(ctx context.Context, actor *Actor, id int64, via st
 	case "range":
 		in.Ref = a.Base + ".." + a.Ref
 	case "recent":
-		// The same period back from now (a date stays that date).
 		in.Ref, in.Since = a.Ref, a.Since
 	}
 	return s.RequestAudit(ctx, actor, in)
@@ -2631,9 +2482,6 @@ func (s *Service) RerunAudit(ctx context.Context, actor *Actor, id int64, via st
 // running it is made when the audit finishes (WP-359), as if it had been
 // asked for with --fix.
 func (s *Service) FixAudit(ctx context.Context, actor *Actor, id int64) (*CodeAudit, error) {
-	// The request is written only while the audit is in the status it was
-	// checked in; one that moved on meanwhile is checked again. Statuses
-	// only move forward, so this ends in a few rounds.
 	for range 4 {
 		a, err := s.auditToChange(ctx, actor, id)
 		if err != nil {
@@ -2668,11 +2516,6 @@ func (s *Service) FixAudit(ctx context.Context, actor *Actor, id int64) (*CodeAu
 		if !kept {
 			continue
 		}
-		// The "fix" event makes the task if the audit is done by now; one
-		// that finishes later makes it in auditEnded, which reads fix after
-		// its status is written. One that finished in between may not have
-		// got there yet: it is made here, so the caller gets its key.
-		// auditFixTask makes it once either way.
 		b, err := s.GetAudit(ctx, actor, id)
 		if err == nil && going && b.Status == AuditDone && b.FixIssue == "" && b.Counts.Open > 0 {
 			s.auditFixTask(ctx, id)
@@ -2710,8 +2553,6 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 	if utf8.RuneCountInString(note) > 2000 {
 		return nil, invalid("a note is at most 2000 characters")
 	}
-	// As for a bot's finding (DismissFinding): an agent says why it is wrong or
-	// not worth fixing, so its dismissal can be judged and isn't a bare click.
 	if state == "rejected" && note == "" && actor.IsAgent() {
 		return nil, invalid("say why the finding is wrong or not worth fixing (a note)")
 	}
@@ -2763,9 +2604,6 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 					return err
 				}
 			}
-			// A mark without --issue keeps the finding's issue, except
-			// confirmed: confirmed with no issue is still to do, so it
-			// unfiles a finding filed before (findingFiled).
 			res, err := t.ExecContext(ctx, `UPDATE code_audit_findings SET state = ?, note = CASE WHEN ? = '' THEN note ELSE ? END, issue_id = CASE WHEN ? IS NOT NULL THEN ? WHEN ? = 'confirmed' THEN NULL ELSE issue_id END,
 				decided_by = ?, decided_agent = ?, decided_at = ? WHERE audit_id = ? AND ordinal = ?`,
 				state, note, note, issueID, issueID, state, by, actor.agentName(), s.nowMS(), r.audit, r.n)
@@ -2775,7 +2613,6 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 			if n, _ := res.RowsAffected(); n == 0 {
 				return notFound(fmt.Sprintf("finding %d.%d", r.audit, r.n))
 			}
-			// A review finding left open at merge is settled by the verdict (WP-367).
 			if err := s.settleLeftoverFindings(ctx, t, actor, r.audit, r.n, state, note); err != nil {
 				return err
 			}
@@ -2814,7 +2651,7 @@ func (s *Service) refuseMarkAfterCheck(ctx context.Context, t *tx, audit int64, 
 	var key, was string
 	err := t.QueryRowContext(ctx, `SELECT a.request_key, f.state FROM code_audit_findings f JOIN code_audits a ON a.id = f.audit_id WHERE f.audit_id = ? AND f.ordinal = ?`, audit, n).Scan(&key, &was)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil // the update says it is not found
+		return nil
 	}
 	if err != nil {
 		return err

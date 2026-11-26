@@ -37,7 +37,6 @@ for (const [width, scheme] of looks([
   const noSideways = async (what) =>
     ok(!(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)), `${tag} ${what}: no sideways scroll`);
 
-  // Every project's wording.
   await page.goto(`${base}/admin?tab=ai`);
   let section = page.locator("section", { has: page.getByRole("heading", { name: "Autopilot’s wording" }) });
   let [prompt, done] = [section.getByRole("textbox").nth(0), section.getByRole("textbox").nth(1)];
@@ -48,7 +47,7 @@ for (const [width, scheme] of looks([
 
   await prompt.fill("Do the next task.");
   ok(await section.getByText("Name the task with {key} or {next}").isVisible(), `${tag} a prompt without its task is refused`);
-  await page.waitForTimeout(2800); // well past the 900 ms autosave pause
+  await page.waitForTimeout(2800);
   ok(!(await api("GET", "/autopilot/text")).custom_prompt, `${tag} and isn't saved`);
   await prompt.fill("Take {key} ({title}).\n\n{next}");
   await done.fill("{key} done. {status}");
@@ -60,7 +59,6 @@ for (const [width, scheme] of looks([
   await section.scrollIntoViewIfNeeded();
   await section.screenshot({ path: `${out}/admin-${width}-${scheme}.png` });
 
-  // A project's own, over every project's.
   await page.goto(`${base}/p/${KEY}/settings?tab=general`);
   section = page.locator("section", { has: page.getByRole("heading", { name: "Autopilot’s wording" }) });
   [prompt, done] = [section.getByRole("textbox").nth(0), section.getByRole("textbox").nth(1)];
@@ -83,7 +81,6 @@ for (const [width, scheme] of looks([
   own = await api("GET", `/projects/${KEY}/autopilot-text`);
   ok(own.done === "{key} done. {status}", `${tag} cleared, the project falls back to every project's note`);
 
-  // Back to the default for the next look.
   await api("PUT", "/admin/autopilot-text", { prompt: "", done: "" });
   ok(!(await api("GET", "/autopilot/text")).custom_prompt, `${tag} back to the default`);
   await ctx.close();

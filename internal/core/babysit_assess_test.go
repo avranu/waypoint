@@ -50,8 +50,6 @@ func TestBabysitAssessorQuestionParks(t *testing.T) {
 	pr := be.open()
 	be.start(pr)
 	be.ci("7777777aaaa", CheckFailed)
-	// A round widened the description after it shipped: the assessor
-	// weighs the work against the one it shipped with (WP-440).
 	be.fg.mu.Lock()
 	be.fg.prs[mk(be.f, "me/app", 7)].Body = "Adds export and rewrites the importer."
 	be.fg.mu.Unlock()
@@ -75,7 +73,6 @@ func TestBabysitAssessorQuestionParks(t *testing.T) {
 		t.Errorf("the task is in the assessor's prompt %d times, want once:\n%s", n, in.Prompt)
 	}
 
-	// It holds the front of its merge line while the assessor works.
 	if _, err := be.s.db.W.Exec(`UPDATE pull_requests SET armed_at = 1, queued_at = 1 WHERE id = ?`, pr.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +87,6 @@ func TestBabysitAssessorQuestionParks(t *testing.T) {
 		!strings.Contains(q.Body, "as the assessor put it:\n\n> it changes what the task asks for.") || len(q.Questions) != 1 || q.Questions[0].Question != "Should exports include archived rows?" {
 		t.Fatalf("question = %+v", q)
 	}
-	// Short: the agents' own account stays on the pull request (WP-930).
 	if strings.Contains(q.Body, "archived rows are exported") || len(q.Body) > 600 {
 		t.Errorf("the request quotes the agent's account (%d bytes):\n%s", len(q.Body), q.Body)
 	}
@@ -100,11 +96,9 @@ func TestBabysitAssessorQuestionParks(t *testing.T) {
 	if why, _ := be.s.babysitParked(be.ctx, be.pr(7)); !strings.Contains(why, "the assessor says a person has to settle it") {
 		t.Errorf("readiness hold = %q", why)
 	}
-	// Waypoint restarting doesn't start it again: the question stands.
 	if _, _, ok := be.s.resumable(be.ctx, pr.ID); ok {
 		t.Error("a parked babysit is resumable")
 	}
-	// Steps don't ask twice.
 	be.step()
 	be.step()
 	var asked int
@@ -112,7 +106,6 @@ func TestBabysitAssessorQuestionParks(t *testing.T) {
 	if asked != 1 || len(be.jobs()) != 3 {
 		t.Fatalf("%d questions, %d jobs", asked, len(be.jobs()))
 	}
-	// A dismissed question leaves it parked: nothing runs on its own.
 	if _, err := be.s.DecideRequest(be.ctx, be.admin, q.Ref, RequestDecision{Decision: "dismiss"}); err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +114,6 @@ func TestBabysitAssessorQuestionParks(t *testing.T) {
 	if b = be.babysit(); b.State != BabysitNeedsPerson || len(be.jobs()) != 3 {
 		t.Fatalf("after a dismissal: %+v", b)
 	}
-	// A push does.
 	be.push("8888888bbbb")
 	be.ci("8888888bbbb", CheckFailed)
 	if b = be.babysit(); b.State != BabysitWorking || b.Round != 4 || len(be.jobs()) != 4 {
@@ -136,18 +128,16 @@ func TestClosingLines(t *testing.T) {
 		"Done.\n- **Question:** Which one?": {"Which one?"},
 		"Question: first\nmore\nQuestion:":  {"first more"},
 		"Question:   \n":                    {},
-		"**Question:** Restart the host?\n**Because:** I have no access to it.": {"Restart the host?", "I have no access to it."},
-		"Because: only its owner knows.\nQuestion: Drop the export?":            {"Drop the export?", "only its owner knows."},
-		"It isn't the code.\n\nWait: the CodeQL image needs Go 1.27.4":          {"", "", "the CodeQL image needs Go 1.27.4"},
-		"I would wait: nothing to do. Because of that, no question: none.":      {},
-		// The reason on the lines after its word, and a question over two lines.
+		"**Question:** Restart the host?\n**Because:** I have no access to it.":         {"Restart the host?", "I have no access to it."},
+		"Because: only its owner knows.\nQuestion: Drop the export?":                    {"Drop the export?", "only its owner knows."},
+		"It isn't the code.\n\nWait: the CodeQL image needs Go 1.27.4":                  {"", "", "the CodeQL image needs Go 1.27.4"},
+		"I would wait: nothing to do. Because of that, no question: none.":              {},
 		"Question: May I drop it?\nBecause:\n- it can't be undone":                      {"May I drop it?", "it can't be undone"},
 		"**Question**\nMay I\nrotate the key?\n\n**Because**\nOnly its owner holds it.": {"May I rotate the key?", "Only its owner holds it."},
 		"question: Drop it?\nbecause: it is theirs.\n\nThat is all.":                    {"Drop it?", "it is theirs."},
-		// Logs and other people's words aren't how the assessor ended.
-		"Pushed a fix for:\n> Wait: lock held by other job\n\nDone.":      {},
-		"The log:\n```\nQuestion: retry?\nBecause: flaky\n```\nFixed it.": {},
-		"Because the test fails, I changed it.\nWait for it to pass.":     {},
+		"Pushed a fix for:\n> Wait: lock held by other job\n\nDone.":                    {},
+		"The log:\n```\nQuestion: retry?\nBecause: flaky\n```\nFixed it.":               {},
+		"Because the test fails, I changed it.\nWait for it to pass.":                   {},
 	}
 	for in, want := range cases {
 		if q, why, w := closingLines(in); q != want[0] || why != want[1] || w != want[2] {
@@ -179,13 +169,11 @@ func TestPlanRoundBudget(t *testing.T) {
 	if p := planRound(b, "zzz", false, "", 0, "work"); p.rung != rungAssessor || !strings.Contains(p.why, "3 rounds made no progress") {
 		t.Fatalf("3 stalled: %+v", p)
 	}
-	// The assessor's round starts the count again.
 	b.Round++
 	b.Rounds = append(b.Rounds, BabysitRound{N: b.Round, SHA: "zzz", Assessor: true, Model: escalateModel, Class: RoundRepeat, Pushed: true})
 	if p := planRound(b, "yyy", false, "", 0, "work"); p.rung != rungBase {
 		t.Fatalf("after the assessor: %+v", p)
 	}
-	// The cap.
 	for b.Round < babysitMaxRounds {
 		add(RoundNew)
 	}
@@ -208,7 +196,6 @@ func TestAssessorBlocked(t *testing.T) {
 	if why := assessorBlocked(b, "ccc", &BabysitRound{Comments: []string{"c2"}}); why != "" {
 		t.Errorf("new work: %q", why)
 	}
-	// A person's answer starts it again.
 	b.Rounds[1].Reply = "Drop the test."
 	if why := assessorBlocked(b, "bbb", &BabysitRound{Checks: []string{"ci / test"}}); why != "" {
 		t.Errorf("after an answer: %q", why)
@@ -352,7 +339,6 @@ func TestPersonSettlingTheCommentEndsThePark(t *testing.T) {
 	if b := be.babysit(); !parkedOn(b, pr.HeadSHA) {
 		t.Fatalf("not parked: %+v", b)
 	}
-	// An agent's held comment is an engineering call: it rests, nobody asked.
 	if !resting(lastRound(be.babysit())) {
 		t.Fatalf("not resting: %+v", lastRound(be.babysit()))
 	}
@@ -560,7 +546,6 @@ func TestParkEndsWhenItsChecksPass(t *testing.T) {
 	be := newBabysitEnv(t)
 	pr := assessorAsks(t, be, "Will you rebuild the CI image?")
 	q := be.parkRequest(3)
-	// The re-run's status comes with no webhook: Waypoint reads the head again.
 	be.sg.setChecks("7777777aaaa", CommitCheck{Name: "ci / test", State: CheckSuccess, URL: "https://ci.example.com/run/2"})
 	be.step()
 	if b := be.babysit(); !parkedOn(b, pr.HeadSHA) {

@@ -42,7 +42,6 @@ func TestInsertRelationJudgesTheReverseForEveryKind(t *testing.T) {
 			if err := e.s.db.R.QueryRow(`SELECT count(*) FROM issue_relations WHERE kind = ? AND source_id IN (?,?) AND target_id IN (?,?)`, k.Kind, a.ID, b.ID, a.ID, b.ID).Scan(&n); err != nil || n != 1 {
 				t.Errorf("%d %s rows for the pair, %v; want 1", n, k.Kind, err)
 			}
-			// Another kind the other way round is its own statement.
 			other := "relates"
 			if k.Kind == "relates" {
 				other = "blocks"
@@ -68,7 +67,6 @@ func TestRelateRefusesAContradiction(t *testing.T) {
 			t.Errorf("%s %s %s: err = %v, want a contradiction", c.from, c.kind, c.to, err)
 		}
 	}
-	// What was said before still stands, once.
 	if got := e.get(e.admin, a.Key).Relations; len(got) != 1 || got[0].Kind != "blocks" {
 		t.Errorf("relations = %+v", got)
 	}

@@ -103,7 +103,6 @@ for (const vp of looks([
   const proj = await api.get(`/projects/${key}`);
   ok(proj.settings.auto_title === true, `${tag}: a new project has auto_title on`);
 
-  // 1. Quick-add on the board: the long text lands, then the model's title replaces it.
   mode = "ok";
   const t1 = text(tag);
   await page.goto(`${base}/p/${key}/board`);
@@ -132,7 +131,6 @@ for (const vp of looks([
     `${tag}: history credits the AI title`,
   );
 
-  // 2. The same on a list row.
   await page.goto(`${base}/p/${key}/list`);
   const row = page.locator(`[data-nav-key="${key1}"]`);
   await row.waitFor();
@@ -143,7 +141,6 @@ for (const vp of looks([
   );
   await page.screenshot({ path: `${out}/${tag}-list-row.png` });
 
-  // 3. A failing model loses nothing: the text stays as typed.
   mode = "fail";
   const before = titleCalls;
   const t2 = text(tag + " again");
@@ -154,7 +151,6 @@ for (const vp of looks([
   ok(titleCalls > before, `${tag}: the model was asked`);
   ok(kept.title === t2 && !kept.description, `${tag}: a failed model leaves the text as typed`);
 
-  // 4. The project switch, in settings.
   mode = "ok";
   await page.goto(`${base}/p/${key}/settings`);
   const sw = page.getByRole("switch", { name: "Write titles for long text automatically" });

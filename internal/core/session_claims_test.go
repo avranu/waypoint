@@ -59,13 +59,11 @@ func TestNextLeavesAnotherSessionsTask(t *testing.T) {
 		t.Errorf("a resume = %+v", again)
 	}
 
-	// Session a ends: a new session of the identity picks x up.
 	endSession(t, e, ag, "cli-a", "/work/a", "logout")
 	c := sessionAgent(t, e, ag, "cli-c", "/work/c", nil)
 	if task, err := e.s.AgentNext(e.ctx, c, AgentQuery{}); err != nil || task == nil || task.Issue.Key != x.Key || !task.Resumed {
 		t.Fatalf("c next = %+v, %v", task, err)
 	}
-	// And it is c's now: b doesn't get it back.
 	if task, _ := e.s.AgentNext(e.ctx, b, AgentQuery{}); task == nil || task.Issue.Key != y.Key {
 		t.Errorf("b next after c took x = %+v", task)
 	}
@@ -109,8 +107,6 @@ func TestNextLeavesAQuietSessionsTask(t *testing.T) {
 		t.Errorf("a resume = %+v", again)
 	}
 
-	// a is still at its permission prompt when its lease runs out: x stays
-	// a's, since a carries on with it once its person answers (WP-672).
 	e.setClock(e.clockNow().Add(ClaimLease + time.Minute))
 	if err := e.s.expireRuns(e.ctx); err != nil {
 		t.Fatal(err)
@@ -127,7 +123,6 @@ func TestNextLeavesAQuietSessionsTask(t *testing.T) {
 		t.Fatalf("b's queue after a's lease ran out: ready %d, waiting %d %q, %v", len(ready), len(waiting), waiting[0].detail, err)
 	}
 
-	// A day without a word ends a: x is anyone's.
 	e.setClock(e.clockNow().Add(sessionEndedAfter))
 	if task, err := e.s.AgentNext(e.ctx, b, AgentQuery{}); err != nil || task == nil || task.Issue.Key != x.Key {
 		t.Fatalf("b next after a ended = %+v, %v", task, err)
@@ -157,13 +152,11 @@ func TestLapsedClaimStaysWithItsQuietSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Another session (wp next, or autopilot picking for it) takes y.
 	b := sessionAgent(t, e, ag, "cli-b", "/work/b", nil)
 	ready, _, err := e.s.agentWork(e.ctx, b, []string{b.Agent}, AgentQuery{Agent: b.Agent, Peek: true})
 	if err != nil || len(ready) != 1 || ready[0].issue.Key != y.Key {
 		t.Fatalf("b's ready while a is quiet = %v, %v", ready, err)
 	}
-	// a, back at work, gets x again.
 	if _, err := e.s.SessionHook(e.ctx, ag, []HookEvent{hook("m1", "cli-a", "UserPromptSubmit", func(h *HookEvent) { h.Cwd = "/work/a" })}); err != nil {
 		t.Fatal(err)
 	}
@@ -171,8 +164,6 @@ func TestLapsedClaimStaysWithItsQuietSession(t *testing.T) {
 		t.Fatalf("a next after its lease ran out = %+v, %v", task, err)
 	}
 
-	// a goes quiet again, not waiting on its person: after strandedIdle
-	// without a word it counts as gone, and x is anyone's.
 	e.setClock(e.clockNow().Add(ClaimLease + time.Minute))
 	if err := e.s.expireRuns(e.ctx); err != nil {
 		t.Fatal(err)
@@ -185,7 +176,6 @@ func TestLapsedClaimStaysWithItsQuietSession(t *testing.T) {
 		t.Fatalf("b's ready once a is gone = %d", len(ready))
 	}
 
-	// A session that moved on to other work doesn't hold its old task.
 	c := sessionAgent(t, e, ag, "cli-c", "/work/c", nil)
 	if task, err := e.s.AgentNext(e.ctx, c, AgentQuery{}); err != nil || task == nil || task.Issue.Key != x.Key {
 		t.Fatalf("c next = %+v, %v", task, err)
@@ -275,7 +265,6 @@ func TestNextLeavesAnotherSessionsPausedTask(t *testing.T) {
 		t.Errorf("skipped = %q", task.Skipped)
 	}
 
-	// a works again (its next prompt): the run it resumes is still a's.
 	if _, err := e.s.AgentResume(e.ctx, a, x.Key, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -289,8 +278,6 @@ func TestNextLeavesAnotherSessionsPausedTask(t *testing.T) {
 		t.Errorf("b resumes its own = %+v", task)
 	}
 
-	// /clear in a while idle: the new session holds x, and b, done with y,
-	// takes z rather than x.
 	if _, err := e.s.AgentPause(e.ctx, a, x.Key, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -333,8 +320,6 @@ func TestHookResumeLeavesAnotherSessionsTask(t *testing.T) {
 	if _, err := e.s.AgentPause(e.ctx, a, x.Key, ""); err != nil {
 		t.Fatal(err)
 	}
-	// a exits (autopilot's restart, or its person): b starts in the same
-	// directory, and its first prompt's hook finds a's claim there.
 	endSession(t, e, ag, "cli-a", "/work/a", "prompt_input_exit")
 	b := sessionAgent(t, e, ag, "cli-b", "/work/a", nil)
 	if _, err := e.s.AgentResumeOwn(e.ctx, b, x.Key, ""); err == nil || !strings.Contains(err.Error(), "another session") {
@@ -343,12 +328,10 @@ func TestHookResumeLeavesAnotherSessionsTask(t *testing.T) {
 	if n := open(b); n != 0 {
 		t.Errorf("b holds %d runs it never took", n)
 	}
-	// Asked for by name, it is b's to take (wp resume).
 	if _, err := e.s.AgentResume(e.ctx, b, x.Key, ""); err != nil || open(b) != 1 {
 		t.Errorf("wp resume in b = %v, open %d", err, open(b))
 	}
 
-	// b's own task: paused at its Stop, resumed at its next prompt.
 	c := sessionAgent(t, e, ag, "cli-c", "/work/c", nil)
 	if task, err := e.s.AgentNext(e.ctx, c, AgentQuery{}); err != nil || task == nil || task.Issue.Key != y.Key {
 		t.Fatalf("c next = %v, %v", task, err)
@@ -359,8 +342,6 @@ func TestHookResumeLeavesAnotherSessionsTask(t *testing.T) {
 	if _, err := e.s.AgentResumeOwn(e.ctx, c, y.Key, ""); err != nil || open(c) != 1 {
 		t.Errorf("c resuming its own = %v, open %d", err, open(c))
 	}
-	// /clear while idle carries the task over: the fresh session's prompt
-	// resumes it.
 	if _, err := e.s.AgentPause(e.ctx, c, y.Key, ""); err != nil {
 		t.Fatal(err)
 	}

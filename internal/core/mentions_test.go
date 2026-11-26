@@ -77,18 +77,15 @@ func TestIssueTextMentions(t *testing.T) {
 	got := mentionsOf(t, e, c.Key)
 	want := []string{"glossary:1", "issue:" + itoa64(a1.ID), "issue:" + itoa64(a2.ID), "issue:" + itoa64(b1.ID), "page:" + itoa64(pg.ID)}
 	slices.Sort(want)
-	if !slices.Equal(got, want) { // "run" is under four letters: not linked without [[ ]]
+	if !slices.Equal(got, want) {
 		t.Errorf("mentions = %v, want %v", got, want)
 	}
 
-	// They show as mentions, both ways; a person's text relates the issues
-	// too (WP-781), which related_named_test.go covers.
 	out, err := e.s.ItemLinks(e.ctx, e.admin, LinkEnd{Type: KIssue, Key: a2.Key})
 	if err != nil || len(out) != 1 || out[0].Direction != "in" || out[0].Rel != "mentions" || !out[0].Auto || out[0].Item.Key != c.Key {
 		t.Errorf("a2 links = %+v, %v", out, err)
 	}
 
-	// Editing replaces the automatic links; a manual link stays.
 	if _, err := e.s.AddItemLink(e.ctx, e.admin, LinkInput{From: LinkEnd{Type: KIssue, Key: c.Key}, To: LinkEnd{Type: KIssue, Key: a2.Key}}); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +103,6 @@ func TestIssueTextMentions(t *testing.T) {
 		t.Errorf("manual links = %d", manual)
 	}
 
-	// Comments are scanned too, and deleting one drops its links.
 	cm, err := e.s.AddComment(e.ctx, e.admin, c.Key, "Compare with "+a1.Key)
 	if err != nil {
 		t.Fatal(err)
@@ -138,7 +134,6 @@ func TestMentionTermsCapAndLongest(t *testing.T) {
 	if n := len(mentionsOf(t, e, i.Key)); n != termLinkCap {
 		t.Errorf("term links = %d, want %d", n, termLinkCap)
 	}
-	// Longest match first, whole words, any case, not inside code; ab is too short.
 	j := e.issue(e.admin, IssueInput{Project: p.Key, Title: "words", Description: "The Work Items and ab. Also `work` and networking."})
 	if n := len(mentionsOf(t, e, j.Key)); n != 1 {
 		t.Errorf("links = %d, want 1 (work item)", n)
@@ -163,12 +158,10 @@ func TestMentionsRespectPermissions(t *testing.T) {
 	if got := mentionsOf(t, e, mine.Key); len(got) != 0 {
 		t.Errorf("bob linked a project he can't see: %v", got)
 	}
-	// An admin writing the same text links it.
 	adm := e.issue(e.admin, IssueInput{Project: p.Key, Title: "adm", Description: "see " + secret.Key})
 	if got := mentionsOf(t, e, adm.Key); len(got) != 1 {
 		t.Errorf("admin mentions = %v", got)
 	}
-	// Bob can't see that link from either end.
 	if l, err := e.s.ItemLinks(e.ctx, bob, LinkEnd{Type: KIssue, Key: adm.Key}); err != nil || len(l) != 0 {
 		t.Errorf("bob sees %+v, %v", l, err)
 	}
@@ -186,7 +179,6 @@ func TestBackfillMentionLinks(t *testing.T) {
 	if err := e.s.AddRelation(e.ctx, e.admin, b.Key, "relates", a.Key); err != nil {
 		t.Fatal(err)
 	}
-	// As if written before the scan existed.
 	if _, err := e.s.db.W.Exec(`DELETE FROM knowledge_links`); err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +189,6 @@ func TestBackfillMentionLinks(t *testing.T) {
 	if r.Issues != 3 || r.Comments != 1 || r.Added != 2 || r.IssueLinks != 2 || r.Unrelated != 1 {
 		t.Errorf("first run = %+v", r)
 	}
-	// Idempotent: once done it does nothing; forced, it changes nothing.
 	if r, _ = e.s.BackfillMentionLinks(e.ctx, false); r.Issues != 0 {
 		t.Errorf("rerun = %+v", r)
 	}
@@ -216,7 +207,6 @@ func TestSessionsAlwaysHaveAKind(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// Even a row written without one (an older caller) gets it.
 	if _, err := e.s.db.W.Exec(`INSERT INTO agent_sessions(user_id, machine, cli_id, started_at, last_seen_at) VALUES (?, 'box', 'raw', 1, 1)`, e.admin.id()); err != nil {
 		t.Fatal(err)
 	}

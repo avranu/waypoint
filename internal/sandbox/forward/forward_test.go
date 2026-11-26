@@ -21,7 +21,6 @@ func TestProxy(t *testing.T) {
 	go func() { _ = Proxy(ln, sock) }()
 	t.Cleanup(func() { _ = ln.Close() })
 
-	// No broker yet: a proxy client gets a 502.
 	c, err := net.Dial("tcp", ln.Addr().String())
 	if err != nil {
 		t.Fatal(err)
@@ -32,8 +31,6 @@ func TestProxy(t *testing.T) {
 		t.Errorf("without a broker: %q", b)
 	}
 
-	// An echoing broker: bytes go through both ways, and a half-close
-	// reaches it.
 	bl, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +84,6 @@ func TestLoadAndRun(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(dir, "out")); string(b) != dir+"\ny\n" {
 		t.Errorf("the command saw %q", b)
 	}
-	// Killed by a signal: 128 plus it, as a shell says.
 	l.Argv = []string{"/bin/sh", "-c", "kill -TERM $$"}
 	if code, err := Run(l); code != 143 || err != nil {
 		t.Errorf("signalled: %d %v", code, err)
@@ -96,7 +92,6 @@ func TestLoadAndRun(t *testing.T) {
 	if code, err := Run(l); code != 127 || err == nil {
 		t.Errorf("missing command: %d %v", code, err)
 	}
-	// The proxy port taken: no silent start without it.
 	held, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

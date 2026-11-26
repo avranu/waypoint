@@ -2,13 +2,6 @@ package core
 
 import "context"
 
-// Whose runners an automation uses (WP-D18). Runner steps (agent_task,
-// run_command) queue jobs on the runners of the person who last saved the
-// automation, never anyone else's: an automation runs as whoever triggered
-// it, and a rule anyone could edit must not be able to run commands on
-// another person's machine. Saving an automation, including turning on a
-// gallery card, makes the saver its owner.
-
 // AutomationRunners is what the editor says about the runners an automation
 // will use.
 type AutomationRunners struct {

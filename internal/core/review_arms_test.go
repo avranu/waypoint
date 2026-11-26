@@ -18,7 +18,6 @@ func TestBetaQuantile(t *testing.T) {
 			t.Errorf("q%.1f Beta(%g,%g) = %f, want %f", c.q, c.a, c.b, got, c.want)
 		}
 	}
-	// None of 15 held up: its 90% bound is under 20%; one of 15 is not yet.
 	if u := betaQuantile(armBenchQ, 1, 16); u >= armBenchBound {
 		t.Errorf("0 of 15 bound = %f", u)
 	}
@@ -89,14 +88,12 @@ func keys(arms []reviewArm) []string {
 
 func TestChooseArms(t *testing.T) {
 	s := &Service{beta: func(a, b float64) float64 { return a / (a + b) }, rnd: func() float64 { return 0.99 }}
-	// Untried arms tie: the first wins; without a verifier only none arms.
 	if got := keys(s.chooseArms(freshTallies(true), 1)); !slices.Equal(got, []string{"diff+files/verify"}) {
 		t.Errorf("fresh = %v", got)
 	}
 	if got := keys(s.chooseArms(freshTallies(false), 1)); !slices.Equal(got, []string{"diff+files/none"}) {
 		t.Errorf("no verifier = %v", got)
 	}
-	// Better precision wins; cost divides it.
 	tl := freshTallies(true)
 	tl["diff/verify"].useful, tl["diff/verify"].falsePos = 8, 2
 	if got := keys(s.chooseArms(tl, 1)); got[0] != "diff/verify" {
@@ -106,12 +103,11 @@ func TestChooseArms(t *testing.T) {
 	if got := keys(s.chooseArms(tl, 1)); got[0] == "diff/verify" {
 		t.Errorf("three times the tokens still won: %v", got)
 	}
-	// A benched arm is left out, but drawn on 1 run in 20.
 	tl = freshTallies(true)
 	for k, t := range tl {
 		t.useful, t.falsePos, t.explore = 10, 10, false
 		if k == "diff/none" {
-			t.useful, t.falsePos, t.benched = 30, 0.5, true // the best, if it weren't benched
+			t.useful, t.falsePos, t.benched = 30, 0.5, true
 		}
 	}
 	if got := keys(s.chooseArms(tl, 1)); got[0] == "diff/none" {
@@ -122,7 +118,6 @@ func TestChooseArms(t *testing.T) {
 		t.Errorf("the benched arm's 1 in 20: %v", got)
 	}
 	s.rnd = func() float64 { return 0.99 }
-	// Pins: off removes it, on makes every review use it.
 	tl = freshTallies(true)
 	tl["diff+files/verify"].pin = "off"
 	if got := keys(s.chooseArms(tl, 1)); got[0] != "diff+files/none" {
@@ -132,8 +127,6 @@ func TestChooseArms(t *testing.T) {
 	if got := keys(s.chooseArms(tl, 2)); !slices.Equal(got, []string{"diff/none", "diff/none"}) {
 		t.Errorf("pinned on = %v", got)
 	}
-	// A second reviewer explores: the best draw among arms under 15
-	// judged findings with the same verifier half.
 	tl = freshTallies(true)
 	tl["diff+files/verify"].useful, tl["diff+files/verify"].falsePos, tl["diff+files/verify"].explore = 20, 5, false
 	tl["diff/verify"].useful = 1
@@ -187,7 +180,6 @@ func TestReviewArmsRecorded(t *testing.T) {
 	if err := re.s.db.R.QueryRow(`SELECT reviewer_models FROM bot_runs WHERE id = ?`, run.ID).Scan(&models); err != nil || models != `["`+museModel+`"]` {
 		t.Errorf("reviewer models = %s %v", models, err)
 	}
-	// The verifier asked the gateway to leave out the reviewer's model.
 	for n, m := range re.llm.calls {
 		if m == mimoModel && !slices.Contains(re.llm.exclude[n], museModel) {
 			t.Errorf("the verifier's exclude = %v", re.llm.exclude[n])

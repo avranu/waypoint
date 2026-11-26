@@ -47,7 +47,6 @@ func TestProveFixFailsWithoutTheFixAndConfirmsTheBlame(t *testing.T) {
 	if got.Outcome != ProofProven || !slices.Equal(got.Failed, []string{"calc.TestAdd"}) {
 		t.Fatalf("proof = %+v", got)
 	}
-	// TestZero is in the package but the fix didn't touch it.
 	if !slices.Equal(got.Tests, []string{"calc.TestAdd", "calc.TestAddZero"}) {
 		t.Fatalf("tests = %v", got.Tests)
 	}
@@ -120,7 +119,6 @@ func TestTouchedTests(t *testing.T) {
 	if got := touchedTests(src, []int{8}); !slices.Equal(got, []string{"TestA"}) {
 		t.Fatalf("a line in TestA: %v", got)
 	}
-	// Only the helper changed: every test in the file may depend on it.
 	if got := touchedTests(src, []int{5}); !slices.Equal(got, []string{"TestA", "TestB"}) {
 		t.Fatalf("a helper: %v", got)
 	}

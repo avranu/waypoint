@@ -39,7 +39,7 @@ func TestInitStaysCheap(t *testing.T) {
 	cmd.Env = append(os.Environ(), "GODEBUG=inittrace=1", "HOME="+t.TempDir())
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	_ = cmd.Run() // only the init trace matters
+	_ = cmd.Run()
 	type pkg struct {
 		name  string
 		bytes int

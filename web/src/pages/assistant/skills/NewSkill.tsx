@@ -1,6 +1,3 @@
-// A new skill: a name, a category, the one-line description the agent
-// picks it by, and the instructions. The form writes the frontmatter.
-
 import { useId, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'

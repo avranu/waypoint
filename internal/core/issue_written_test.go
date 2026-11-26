@@ -43,7 +43,7 @@ func TestIssueWritten(t *testing.T) {
 	deploy("production", "1111111aaaa", "1.0.0")
 	first := create("Written against 1.0.0")
 	deploy("production", "2222222bbbb", "1.1.0")
-	deploy("production", "2222222bbbb", "1.1.0") // a redeploy isn't another release
+	deploy("production", "2222222bbbb", "1.1.0")
 	deploy("production", "3333333cccc", "1.2.0")
 
 	if w := get(before.Key); w != nil {
@@ -62,7 +62,6 @@ func TestIssueWritten(t *testing.T) {
 		t.Fatalf("written against what runs now: %+v", w)
 	}
 
-	// Issues from before WP-460 come from the deployment history.
 	if _, err := x.s.db.W.ExecContext(x.ctx, `UPDATE issues SET written_env = NULL, written_version = '', written_commit = ''`); err != nil {
 		t.Fatal(err)
 	}
@@ -91,8 +90,6 @@ func TestIssueWritten(t *testing.T) {
 	if w := get(first.Key); w == nil || w.Environment != "production" || w.Version != "1.0.0" || w.Releases != 2 {
 		t.Fatalf("backfill: written against 1.0.0: %+v", w)
 	}
-	// The project has production now, so the backfill reads its history:
-	// production hadn't been deployed when this one was written.
 	if w := get(onStaging.Key); w != nil {
 		t.Fatalf("backfill: production had nothing yet: %+v", w)
 	}

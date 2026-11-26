@@ -18,20 +18,16 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Claude Code integration: hooks report each session's token usage to the
-// task taken in the session's directory, so the agent spends nothing on
-// it, and stop the task's clock while the session is idle (WP-D11).
-
 const (
-	hookCommand = "hook claude-report" // Stop, SessionEnd: report usage, pause the clock
-	hookResume  = "hook claude-resume" // UserPromptSubmit: restart the clock
-	hookEvent   = "hook claude-event"  // everything else: sessions and requests (WP-D16)
-	hookNudge   = "hook claude-nudge"  // PreToolUse(Bash|Read): the better tool, in one line (WP-47); notes a poll of a running background task (WP-191); lets a Read of a project, task or scratchpad picture through unasked (WP-1137); never refuses (WP-1411)
-	hookGate    = "hook claude-gate"   // PreToolUse(Agent): forks and model (WP-143); holds a start while Claude Code's agent limit is reached (WP-1443)
-	hookBurn    = "hook claude-burn"   // PostToolUse(all): silent unless the tree burns above $100/h (WP-144)
-	hookGuard   = "hook claude-guard"  // PreToolUse(Bash|Write|Edit|web): refuses risky calls in unattended sessions (WP-270), and the nudge refusals in every session (WP-1411)
-	hookPause   = "hook claude-pause"  // PostToolUse(all), async: pulls the person's session pause to a local file (WP-146)
-	hookSlash   = "hook claude-slash"  // UserPromptSubmit: /wp help, btw and exe, and a waiting /wp btw note (WP-562)
+	hookCommand = "hook claude-report"
+	hookResume  = "hook claude-resume"
+	hookEvent   = "hook claude-event"
+	hookNudge   = "hook claude-nudge"
+	hookGate    = "hook claude-gate"
+	hookBurn    = "hook claude-burn"
+	hookGuard   = "hook claude-guard"
+	hookPause   = "hook claude-pause"
+	hookSlash   = "hook claude-slash"
 )
 
 // hookSlashTimeout is the slash hook's timeout: /wp exe waits up to exeWait
@@ -61,16 +57,16 @@ const hookSubagentStartTimeout = 5
 
 // hookOpts are the settings of a hook entry beyond its command.
 type hookOpts struct {
-	matcher string // which tools or notifications (empty: all)
-	async   bool   // runs in the background, so the agent never waits on it
-	timeout int    // seconds; 0: wp's default (30)
+	matcher string
+	async   bool
+	timeout int
 }
 
 // claudeHook is a hook wp installs.
 type claudeHook struct {
 	event, command string
 	opts           hookOpts
-	prompts        bool // passes --no-prompts when asked
+	prompts        bool
 }
 
 // claudeHooks are the hooks wp installs. The first three report usage to the
@@ -84,34 +80,25 @@ var claudeHooks = []claudeHook{
 	{event: "SessionEnd", command: hookCommand},
 	{event: "UserPromptSubmit", command: hookResume},
 	{event: "SessionStart", command: hookEvent, opts: hookOpts{timeout: hookSessionStartTimeout}},
-	// + the news that waits for a prompt (WP-176); + the stop a background wp ship sends when it reports (WP-1093)
 	{event: "UserPromptSubmit", command: hookEvent, opts: hookOpts{timeout: 20}, prompts: true},
-	// Local only, silent for any other prompt; /wp exe may wait minutes (WP-562).
 	{event: "UserPromptSubmit", command: hookSlash, opts: hookOpts{timeout: hookSlashTimeout}},
 	{event: "Notification", command: hookEvent, opts: hookOpts{async: true}},
 	{event: "PermissionDenied", command: hookEvent, opts: hookOpts{async: true}},
 	{event: "PreToolUse", command: hookEvent, opts: hookOpts{matcher: "AskUserQuestion", async: true}},
-	// + a Bash call that satisfies a request (WP-126), silent unless the session has one; + a screenshot the agent read, to its task (WP-263); + who started a background agent (WP-1443)
 	{event: "PostToolUse", command: hookEvent, opts: hookOpts{matcher: "AskUserQuestion|Bash|Read|Agent|Task", async: true}},
-	{event: "Stop", command: hookEvent, opts: hookOpts{timeout: 20}}, // + a follow-up's message (WP-D22)
-	// Answered with the sub-agent's instructions (ADR146), so it waits; fails open.
+	{event: "Stop", command: hookEvent, opts: hookOpts{timeout: 20}},
 	{event: "SubagentStart", command: hookEvent, opts: hookOpts{timeout: hookSubagentStartTimeout}},
-	{event: "SubagentStop", command: hookEvent, opts: hookOpts{async: true}, prompts: true}, // + an adversarial review's report and prompt (WP-1089)
+	{event: "SubagentStop", command: hookEvent, opts: hookOpts{async: true}, prompts: true},
 	{event: "SessionEnd", command: hookEvent, opts: hookOpts{timeout: 2}},
-	// What the session runs with (WP-1468): the snapshot after a compaction and after a settings change, each instruction file as it loads, a model switch.
 	{event: "PostCompact", command: hookEvent, opts: hookOpts{async: true}},
 	{event: "ConfigChange", command: hookEvent, opts: hookOpts{async: true}},
 	{event: "InstructionsLoaded", command: hookEvent, opts: hookOpts{async: true}},
 	{event: "PostModelSwitch", command: hookEvent, opts: hookOpts{async: true}},
-	{event: "PreToolUse", command: hookNudge, opts: hookOpts{matcher: "Bash|Read|Monitor", timeout: hookNudgeTimeout}}, // no network; Read for big whole-file reads (WP-145), task output (WP-191) and the pictures it lets through unasked (WP-1137); Monitor by name, or a Bash matcher gets it as a Bash call (WP-1443)
-	{event: "PreToolUse", command: hookGate, opts: hookOpts{matcher: "Agent|Task", timeout: hookGateTimeout}},          // local only; refuses in every session
-	// The guard: local only, no subprocess; refuses risky calls in unattended sessions (WP-270, WP-ADR10) and the nudge refusals in every session (WP-1411).
+	{event: "PreToolUse", command: hookNudge, opts: hookOpts{matcher: "Bash|Read|Monitor", timeout: hookNudgeTimeout}},
+	{event: "PreToolUse", command: hookGate, opts: hookOpts{matcher: "Agent|Task", timeout: hookGateTimeout}},
 	{event: "PreToolUse", command: hookGuard, opts: hookOpts{matcher: "Bash|Write|Edit|MultiEdit|NotebookEdit", timeout: hookGuardTimeout}},
-	// Local, incremental, under 50 ms; + the stop after a wp ship with --summary, which waits on the server like the Stop hook (WP-1093).
 	{event: "PostToolUse", command: hookBurn, opts: hookOpts{timeout: 20}},
-	// The pause copy: async, asks the server at most every 30 s (WP-146).
 	{event: "PostToolUse", command: hookPause, opts: hookOpts{async: true}},
-	// Foreground, since it answers the agent: after a Bash call that starts a wait, the work to do meanwhile (WP-1571); silent for any other call, and fails open.
 	{event: "PostToolUse", command: hookWait, opts: hookOpts{matcher: "Bash", timeout: hookWaitTimeout}},
 }
 
@@ -157,50 +144,50 @@ report. Without a server answer a prompt reads as a person's. --uninstall remove
 				}
 				hookClaudeEvent(c, os.Stdin, c.out, *noPrompts)
 				c.refreshHooks()
-				return nil // a hook must never fail the session
+				return nil
 			}},
 		{name: "claude-push", hidden: true, summary: "pushes an ended session's commits (its SessionEnd hook starts it, WP-843)",
 			run: hookClaudePush},
 		{name: "claude-nudge", hidden: true, summary: "the Bash and Read nudges (run by Claude Code): names the better tool in one line; lets a Read of the project's pictures through unasked",
 			run: func(c *cli, args []string) error {
 				hookClaudeNudge(c, os.Stdin, c.out)
-				return nil // never blocks, never fails
+				return nil
 			}},
 		{name: "claude-burn", hidden: true, summary: "the burn meter (run by Claude Code): silent unless the session tree burns irregularly fast (over $100/h)",
 			run: func(c *cli, args []string) error {
 				hookClaudeBurn(c, os.Stdin, c.out)
-				return nil // never blocks, never fails
+				return nil
 			}},
 		{name: "claude-gate", hidden: true, summary: "the Agent-call gate (run by Claude Code): forks and model",
 			run: func(c *cli, args []string) error {
 				hookClaudeGate(c, os.Stdin, c.out)
-				return nil // fails open
+				return nil
 			}},
 		{name: "claude-guard", hidden: true, summary: "the unattended-session guard (run by Claude Code): refuses installs, other machines, host changes and writes to other repos",
 			run: func(c *cli, args []string) error {
 				hookClaudeGuard(c, os.Stdin, c.out)
-				return nil // fails open
+				return nil
 			}},
 		{name: "claude-slash", hidden: true, summary: "the session commands (run by Claude Code): /wp help, btw and exe",
 			run: func(c *cli, args []string) error {
 				hookClaudeSlash(c, os.Stdin, c.out)
-				return nil // never fails
+				return nil
 			}},
 		{name: "claude-wait", hidden: true, summary: "the wait hook (run by Claude Code): after a slow Bash call, names the work to do meanwhile",
 			run: func(c *cli, args []string) error {
 				hookClaudeWait(c, os.Stdin, c.out)
-				return nil // fails quiet
+				return nil
 			}},
 		{name: "claude-pause", hidden: true, summary: "the pause pull (run by Claude Code): keeps a local copy of the person's session pause",
 			run: func(c *cli, args []string) error {
 				hookClaudePause(c, os.Stdin, slices.Contains(args, "--now"))
-				return nil // async; never fails
+				return nil
 			}},
 		{name: "claude-report", hidden: true, summary: "the hook itself (run by Claude Code)",
 			run: func(c *cli, args []string) error {
 				hookClaudeReport(c, os.Stdin)
 				c.refreshHooks()
-				return nil // a hook must never fail the session
+				return nil
 			}},
 		{name: "claude-resume", hidden: true, summary: "the prompt hook (run by Claude Code): restarts the task's clock",
 			run: func(c *cli, args []string) error {
@@ -284,21 +271,19 @@ type hooksInstalled struct {
 
 // hookInstallOpts says how to install the hooks.
 type hookInstallOpts struct {
-	exe       string
-	noPrompts bool
-	uninstall bool
-	// keepNoPrompts keeps --no-prompts where the installed hooks have it;
-	// onlyIfInstalled changes nothing unless some of our hooks are there.
+	exe                            string
+	noPrompts                      bool
+	uninstall                      bool
 	keepNoPrompts, onlyIfInstalled bool
-	dryRun                         bool // only say what would change
+	dryRun                         bool
 }
 
 // hookInstallResult says what installClaudeHooks did.
 type hookInstallResult struct {
-	path      string // the file written (a symlink's target)
+	path      string
 	changed   bool
-	present   bool // some of our hooks were there before
-	noPrompts bool // what the hooks now do
+	present   bool
+	noPrompts bool
 	backup    string
 	notes     []string
 }
@@ -324,7 +309,7 @@ func installClaudeHooks(path string, o hookInstallOpts) (hookInstallResult, erro
 	res := hookInstallResult{path: path, noPrompts: o.noPrompts}
 	commandsDir := filepath.Join(filepath.Dir(path), "commands")
 	if target, err := filepath.EvalSymlinks(path); err == nil {
-		res.path = target // a dotfile manager's link: edit (and back up) what it points to
+		res.path = target
 	}
 	path = res.path
 	settings := map[string]any{}
@@ -360,7 +345,6 @@ func installClaudeHooks(path string, o hookInstallOpts) (hookInstallResult, erro
 		}
 		res.changed = res.changed || ch
 	}
-	// usage analytics (WP-D20): background upload hooks and the status line
 	ch, notes, err := installUsageIntegration(settings, o.exe, o.uninstall)
 	if err != nil {
 		return res, fmt.Errorf("%s: %w, so it was left alone", path, err)
@@ -490,7 +474,7 @@ func (c *cli) recordHooks(settingsPath string, res hookInstallResult, exe string
 // day, keeping --no-prompts, and only in a settings file that has our
 // hooks. It never fails, and does nothing for a temporary build.
 func (c *cli) refreshHooks() {
-	defer func() { _ = recover() }() // a hook must never fail the session
+	defer func() { _ = recover() }()
 	exe := hookExe()
 	if exe == "wp" || throwawayBuild(exe) || os.Getenv("WAYPOINT_NO_HOOK_REFRESH") != "" {
 		return
@@ -504,7 +488,6 @@ func (c *cli) refreshHooks() {
 	}
 	var path string
 	claimed := false
-	// Only one of the hooks that start together does it.
 	_ = c.updateState(func(s *State) {
 		if !due(s.Hooks) {
 			return
@@ -542,8 +525,6 @@ func quoteArg(s string) string {
 		return s
 	}
 	if runtime.GOOS == "windows" {
-		// Windows paths can't contain double quotes; forward slashes keep a
-		// POSIX shell (Git Bash) from reading backslashes as escapes.
 		return `"` + strings.ReplaceAll(s, `\`, "/") + `"`
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
@@ -589,7 +570,6 @@ func addHookOpts(settings map[string]any, event, command, marker string, o hookO
 					}
 					changed = true
 				}
-				// An old install of ours has the default timeout; newer entries say theirs.
 				if o.timeout != 0 && fmt.Sprint(hm["timeout"]) != fmt.Sprint(o.timeout) {
 					hm["timeout"], changed = o.timeout, true
 				}
@@ -668,12 +648,8 @@ type transcriptUsage struct {
 	model         string
 	offset        int64
 	seen          []string
-	// context: what the last main-conversation call read (input, cache
-	// reads and writes), whenever it was written; 0 if no call was read.
-	context int64
-	// ttl: the cache tier ("1h", "5m") the last main-conversation call that
-	// wrote the cache asked for; "" if none did (WP-192).
-	ttl string
+	context       int64
+	ttl           string
 }
 
 // readTranscriptUsage sums assistant usage from offset onwards, counting
@@ -701,7 +677,7 @@ func readTranscriptUsage(r io.ReadSeeker, offset int64, seen []string, since tim
 			Minutes int64 `json:"ephemeral_5m_input_tokens"`
 		} `json:"cache_creation"`
 	}
-	latest := map[string]usage{} // per message: the last (most complete) usage line
+	latest := map[string]usage{}
 	var order []string
 	br := bufio.NewReaderSize(r, 1<<20)
 	for {
@@ -744,7 +720,7 @@ func readTranscriptUsage(r io.ReadSeeker, offset int64, seen []string, since tim
 			}
 		}
 		if err != nil {
-			break // EOF; a partial last line is read next time
+			break
 		}
 	}
 	for _, id := range order {
@@ -778,18 +754,15 @@ func hookClaudeReport(c *cli, stdin io.Reader) {
 	if cl == nil || c.server() == "" || c.token() == "" {
 		return
 	}
-	c.session = in.SessionID // its usage belongs to the session (WP-D16)
-	// The session is idle (or gone) once the usage is in: stop the clock.
+	c.session = in.SessionID
 	defer func() { _, _ = c.clock("pause", cl.Key) }()
 	var sess sessionState
 	if s := c.state.Sessions[in.SessionID]; s != nil {
 		sess = *s
 	}
-	// A report that may not have landed goes again first, unchanged (same
-	// id, so the server counts it once either way).
 	if p := sess.Pending; p != nil {
 		if !c.sendUsage(p) {
-			return // try again next time
+			return
 		}
 		sess = sessionState{Offset: p.Offset, Seen: p.Seen}
 		c.saveSession(in.SessionID, &sess)
@@ -816,13 +789,11 @@ func hookClaudeReport(c *cli, stdin io.Reader) {
 		body["agent"] = agent
 	}
 	if u.model != "" {
-		body["model"] = u.model // the model behind the run, whatever the identity says
+		body["model"] = u.model
 	}
 	id := sha256.Sum256(fmt.Appendf(nil, "%s:%d-%d", in.SessionID, sess.Offset, u.offset))
 	body["report_id"] = hex.EncodeToString(id[:16])
 	p := &pendingReport{Path: "/api/v1/agent/usage/" + esc(cl.Key), Body: body, Model: u.model, Offset: u.offset, Seen: u.seen}
-	// Remembered before sending: if the response is lost or this process is
-	// killed mid-request, the next Stop sends this same report again.
 	c.saveSession(in.SessionID, &sessionState{Offset: sess.Offset, Seen: sess.Seen, Pending: p})
 	if !c.sendUsage(p) {
 		return
@@ -835,8 +806,6 @@ func (c *cli) sendUsage(p *pendingReport) bool {
 	_, err := c.call("POST", p.Path, p.Body)
 	var ae *apiError
 	if errors.As(err, &ae) && ae.status == 400 && p.Body["agent"] == nil && p.Model != "" {
-		// The token isn't an agent token and nothing is configured: use the
-		// model the transcript names.
 		p.Body["agent"] = "anthropic/" + p.Model
 		_, err = c.call("POST", p.Path, p.Body)
 	}
@@ -848,11 +817,11 @@ func (c *cli) saveSession(id string, sess *sessionState) {
 		if s.Sessions == nil {
 			s.Sessions = map[string]*sessionState{}
 		}
-		if old := s.Sessions[id]; old != nil { // the whole-session totals are kept
+		if old := s.Sessions[id]; old != nil {
 			sess.TotOffset, sess.TotSeen, sess.TotIn, sess.TotOut, sess.TotCtx = old.TotOffset, old.TotSeen, old.TotIn, old.TotOut, old.TotCtx
 		}
 		s.Sessions[id] = sess
-		for old := range s.Sessions { // forget old sessions
+		for old := range s.Sessions {
 			if len(s.Sessions) <= 50 {
 				break
 			}
@@ -885,17 +854,17 @@ func hookClaudeResume(c *cli, stdin io.Reader) {
 	if err := json.NewDecoder(io.LimitReader(stdin, 1<<20)).Decode(&in); err != nil || !filepath.IsAbs(in.Cwd) {
 		return
 	}
-	in.Prompt = core.UnwrapPasted(in.Prompt) // a paste's text (WP-1562)
+	in.Prompt = core.UnwrapPasted(in.Prompt)
 	if core.IsKeepWarmPing(in.Prompt) || isSessionCommand(in.Prompt) {
-		return // a keep-warm ping, or a /wp command, is no work on the task (WP-192, WP-562)
+		return
 	}
 	_, cl := c.state.claimFor(in.Cwd)
 	if cl == nil || c.server() == "" || c.token() == "" {
 		return
 	}
 	if in.SessionID == "" {
-		return // ownership can't be told without the prompt's session
+		return
 	}
-	c.session = in.SessionID // the prompt's session, not the directory's last one
+	c.session = in.SessionID
 	_, _ = c.clockWith("resume", cl.Key, map[string]any{"only_own": true})
 }

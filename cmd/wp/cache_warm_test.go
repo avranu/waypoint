@@ -14,8 +14,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Keep-warm pings (WP-192).
-
 func TestKeepWarmMarkMatchesCore(t *testing.T) {
 	if keepWarmMark != core.KeepWarmMark {
 		t.Fatalf("cmd/wp says %q, core says %q", keepWarmMark, core.KeepWarmMark)
@@ -108,7 +106,6 @@ func TestCompactJobTypesIntoAnIdlePane(t *testing.T) {
 		t.Fatalf("typed %q", typed)
 	}
 
-	// A draft in the box, a busy session, no tmux: nothing typed.
 	typed = nil
 	screen = screenDraft
 	if o := p.execMessage(context.Background(), newRun(time.Minute), messageJob{CLIID: "abc-123", Compact: true}); o.State != "done" || len(typed) != 0 {
@@ -157,7 +154,6 @@ func TestMessageJobTypesIntoAnIdlePane(t *testing.T) {
 		t.Fatalf("loaded %q, typed %q", loaded, typed)
 	}
 
-	// A draft in the box: nothing typed, and nothing posted to the inbox.
 	typed = nil
 	screen = screenDraft
 	o = p.execMessage(context.Background(), newRun(time.Minute), job)
@@ -190,7 +186,7 @@ func TestCompactAndPingJobsTypeIntoAShellSession(t *testing.T) {
 	if o := p.execMessage(context.Background(), newRun(time.Minute), messageJob{CLIID: "abc-123", Body: "ping", IfIdle: true, Type: true}); o.Result.(map[string]any)["delivered"] != true {
 		t.Fatalf("ping: %+v", o)
 	}
-	if len(typed) != 5 { // /compact, Enter; load-buffer, paste-buffer, Enter
+	if len(typed) != 5 {
 		t.Errorf("typed %q", typed)
 	}
 }

@@ -22,10 +22,6 @@ func TestRetitleProvenanceRepair(t *testing.T) {
 		`INSERT INTO users(id, username, email, created_at, updated_at) VALUES (1, 'robin', 'j@example.com', 0, 0)`,
 		`INSERT INTO projects(id, key, name, created_at, updated_at) VALUES (1, 'WP', 'Waypoint', 0, 0)`,
 		`INSERT INTO statuses(id, project_id, name, category) VALUES (1, 1, 'To Do', 'todo')`,
-		// 1 retitled and untouched; 2 reviewed afterwards; 3 a person edited it
-		// first; 4 a person edited it after; 5 a person's own, retitled; 6 an
-		// agent edited it after (already has an author); 7 written from 1; 8
-		// unrelated, with a verdict.
 		`INSERT INTO issues(id, project_id, number, title, status_id, reporter_id, reporter_agent, text_by, text_agent, reviewed_by, reviewed_at, origin_issue_id, created_at, updated_at) VALUES
 			(1, 1, 1, 'a', 1, 1, 'anthropic/claude-haiku-5-5', NULL, '', NULL, NULL, NULL, 0, 100),
 			(2, 1, 2, 'b', 1, 1, 'anthropic/claude-haiku-5-5', NULL, '', 1, 50, NULL, 0, 100),

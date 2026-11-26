@@ -7,15 +7,10 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Questions in chat (WP-96). Agents end turns with a question or decision
-// for a person; it scrolls by unseen. trailingQuestion spots one at the end
-// of a turn's last message, deterministically and for free, so the Stop hook
-// can file it as a request.
-
 const (
-	tailChars       = 1200 // how much of the message end the detector reads
-	tailParagraphs  = 3    // ... at most this many paragraphs of it
-	autoBodyChars   = 1500 // how much of it a filed request shows
+	tailChars       = 1200
+	tailParagraphs  = 3
+	autoBodyChars   = 1500
 	maskQ, maskStop = '\ue000', '\ue001'
 )
 
@@ -50,11 +45,11 @@ var (
 
 // qUnit is one sentence of the message tail.
 type qUnit struct {
-	text     string // markup kept (code, bold); punctuation inside code masked
+	text     string
 	bullet   bool
-	endOfRun bool // last sentence of its line or paragraph, or only waiting follows: nothing answers it
-	heading  bool // a heading or a bold line standing alone
-	inLast   bool // in the message's last paragraph
+	endOfRun bool
+	heading  bool
+	inLast   bool
 }
 
 // trailingQuestion reports whether msg, an agent's last message of a turn,
@@ -66,7 +61,7 @@ func trailingQuestion(msg string) (title string, ok bool) {
 	var kept []string
 	for _, line := range strings.Split(text, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), ">") {
-			continue // quoted
+			continue
 		}
 		kept = append(kept, line)
 	}
@@ -84,7 +79,6 @@ func trailingQuestion(msg string) (title string, ok bool) {
 	if len(paras) > tailParagraphs {
 		paras = paras[len(paras)-tailParagraphs:]
 	}
-	// Within the tail's size, from the end.
 	size, from := 0, len(paras)
 	for from > 0 {
 		size += utf8.RuneCountInString(paras[from-1])
@@ -97,7 +91,6 @@ func trailingQuestion(msg string) (title string, ok bool) {
 	var units []qUnit
 	for pi, p := range paras {
 		last := pi == len(paras)-1
-		// Bullets are sentences of their own; other lines run together.
 		var run []string
 		flush := func() {
 			if len(run) == 0 {
@@ -135,7 +128,7 @@ func trailingQuestion(msg string) (title string, ok bool) {
 		}
 		t := u.text
 		if strings.HasSuffix(strings.TrimSpace(t), ":") && i+1 < len(units) && units[i+1].bullet {
-			t += " " + units[i+1].text // "Still waiting on you:" and its first item
+			t += " " + units[i+1].text
 		}
 		return questionTitle(t), true
 	}
@@ -157,10 +150,10 @@ func isAsk(u qUnit) bool {
 	plain := strings.TrimSpace(strings.ReplaceAll(u.text, "**", ""))
 	plain = strings.TrimLeft(plain, "*_ ")
 	if u.heading && !u.inLast {
-		return false // "**What changed?**" labels what follows; it asks nothing
+		return false
 	}
 	if strings.HasSuffix(strings.TrimRight(plain, "*_\")]”’' `"), "?") {
-		return u.endOfRun // "Why did it fail? The cache was stale." answers itself
+		return u.endOfRun
 	}
 	if courtesyRE.MatchString(plain) {
 		return false

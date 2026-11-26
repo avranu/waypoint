@@ -100,7 +100,6 @@ func TestEndTellsOfCommitsLeftOnPRBranch(t *testing.T) {
 	if err := u.s.db.R.QueryRow(`SELECT count(*) FROM session_events WHERE kind = 'unpushed' AND label = 'app-1-ship'`).Scan(&n); err != nil || n != 1 {
 		t.Errorf("timeline rows = %d, %v", n, err)
 	}
-	// The sweep doesn't say it again.
 	u.setClock(u.clockNow().Add(2 * time.Hour))
 	if err := u.s.sweepUnpushed(u.ctx); err != nil {
 		t.Fatal(err)
@@ -275,7 +274,6 @@ func TestUnpushedCommentStaysOffForge(t *testing.T) {
 	if len(mem.posted) != 0 {
 		t.Errorf("posted to the forge: %q", mem.posted)
 	}
-	// A person's comment on the same task does reach it.
 	if _, err := u.s.AddComment(u.ctx, u.admin, u.key, "On it"); err != nil {
 		t.Fatal(err)
 	}

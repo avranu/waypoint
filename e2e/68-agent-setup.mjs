@@ -151,7 +151,6 @@ const repoRow = (page, name) =>
   ok(by["setco/lib"].opted_out && by["setco/lib"].root_file === "AGENTS.md", `lib opted out, its root file AGENTS.md: ${by["setco/lib"].root_file}`);
   ok(mine(s).every((r) => r.shared === "none"), "no shared text yet");
 
-  // Two machines report: devhost in line, the laptop without wp's hooks.
   const report = (machine, hooks) =>
     api("POST", "/agent-setup/machines", {
       machine, os: "linux/amd64", wp_version: "0.25.1",
@@ -181,8 +180,6 @@ for (const [width, scheme] of looks([
   await page.goto(`${base}/agents?tab=setup`);
   const glance = page.getByLabel("At a glance");
   await glance.waitFor();
-  // Machines is the last tile; a repo an earlier suite left needing fixing
-  // shows the same words in the Repos tile.
   ok(await glance.getByText("1 needs fixing", { exact: true }).last().isVisible(), `${tag} the laptop needs fixing`);
   ok(await page.getByText(/wp hooks installed: not installed: run wp setup/).first().isVisible(), `${tag} says why`);
   const api = repoRow(page, "setco/api");
@@ -192,7 +189,6 @@ for (const [width, scheme] of looks([
   ok(await lib.getByText("opted out").isVisible(), `${tag} lib is opted out`);
 
   if (width === 1280) {
-    // Write the shared instructions and publish them.
     ok(await page.getByText("No shared instructions yet.").isVisible(), "no shared instructions yet");
     await page.getByRole("button", { name: "Edit", exact: true }).click();
     await page.getByRole("textbox", { name: "Shared instructions" }).fill("- Ship with wp ship.\n- Never sleep-poll CI.");
@@ -223,7 +219,6 @@ for (const [width, scheme] of looks([
     ok(true, "the repo row links its pull request");
   }
 
-  // Open app's files: step through them; edit one into a pull request.
   await repoRow(page, "setco/app").locator("button[aria-expanded]").click();
   await page.getByRole("button", { name: /^CLAUDE\.md/ }).first().click();
   const dlg = page.getByRole("dialog");

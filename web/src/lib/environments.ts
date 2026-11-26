@@ -1,6 +1,3 @@
-// Environments and deployments (WP-D19): where a project's code runs,
-// whether it is up, and what it runs.
-
 import { queryOptions, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, enc, qs } from './api'
 import type { UserRef } from './types'
@@ -254,8 +251,6 @@ export const NAME_FONT = "[font-feature-settings:'calt'_0]"
 
 export const shortSha = (sha: string) => sha.slice(0, 7)
 
-// ---- queries ----
-
 const POLL = 30_000
 
 export const envsQuery = (project: string | undefined, stopped = false) =>
@@ -293,8 +288,6 @@ export const envAtQuery = (repo: string, shas: string[]) =>
     enabled: !!repo && shas.length > 0,
     staleTime: 30_000,
   })
-
-// ---- changes ----
 
 const useRefresh = () => {
   const qc = useQueryClient()

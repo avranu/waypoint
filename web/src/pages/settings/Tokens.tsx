@@ -176,8 +176,6 @@ export function CreateTokenDialog({ open, onClose }: { open: boolean; onClose: (
     setDays('')
     setSecret(null)
   }
-  // Blank means never; anything else must be a whole number of days, so a
-  // typo can't silently create a token that never expires.
   const n = days.trim() ? Number(days) : null
   const badDays = n !== null && !(Number.isInteger(n) && n > 0 && n <= 3650)
   const create = useMutation({

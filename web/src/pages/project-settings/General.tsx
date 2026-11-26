@@ -54,8 +54,6 @@ const fromProject = (p: Project): Form => ({
   color: p.color,
   background: p.background,
   parent_id: p.parent_id ?? null,
-  // Autopilot's wording and the stalled-job times save on their own: kept
-  // out so saving it doesn't reset this form.
   settings: (({ autopilot_prompt: _p, autopilot_done: _d, stalled_jobs: _s, ...rest }) => rest)(
     p.settings,
   ),
@@ -69,7 +67,6 @@ export function GeneralTab({ project }: { project: Project }) {
   const aiTitles = useAITask('title')
   const aiPrep = useAITask('prep')
   const projects = useQuery(q.projects()).data ?? []
-  // Possible parents: not this project or anything beneath it.
   const parentChoices = useMemo(() => {
     const below = new Set([project.id])
     for (let grew = true; grew;) {
@@ -82,15 +79,12 @@ export function GeneralTab({ project }: { project: Project }) {
   }, [projects, project.id])
   const [form, setForm] = useState<Form>(() => fromProject(project))
   const initial = useMemo(() => JSON.stringify(fromProject(project)), [project])
-  // Reset the form when the saved settings change (after a save, or someone
-  // else's edit) but not when unrelated fields like issue counts refresh.
   const [base, setBase] = useState(initial)
   if (base !== initial) {
     setBase(initial)
     setForm(fromProject(project))
   }
   const dirty = JSON.stringify(form) !== initial
-  // Preview color and background live on the page around the form.
   useEffect(() => {
     setProjectPreview(project.key, { color: form.color, background: form.background.trim() })
   }, [project.key, form.color, form.background])

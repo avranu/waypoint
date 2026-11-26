@@ -1,7 +1,3 @@
-// Hermes's own MCP servers: where the agent's outside tools come from. The
-// gate's and Waypoint's are pinned by the assistant's deploy, and the ones at the
-// gate's /conn/<name>/mcp are connections (Connections.tsx).
-
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'

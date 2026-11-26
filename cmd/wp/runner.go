@@ -20,12 +20,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox"
 )
 
-// `wp runner` (WP-D17): this machine does work for Waypoint. It connects
-// out to the server (so it works behind NAT), registers once, then
-// long-polls for jobs: shell commands and file changes in the directories
-// it was told to allow, and coding-agent CLIs run headless on a fresh
-// checkout. It signs in as its owner and only their jobs reach it.
-
 var runnerCmd = &command{
 	name: "runner", group: "Setup", args: "[install|uninstall|status] [FLAGS]",
 	summary: "run Waypoint's jobs on this machine",
@@ -92,9 +86,7 @@ type runnerOpts struct {
 	// For tests: repositories on this machine may be cloned, and files go here.
 	AllowLocalRepos bool
 	CacheDir        string
-	// given is the flags on the command line, so install keeps the installed
-	// runner's settings for the rest.
-	given map[string]bool
+	given           map[string]bool
 }
 
 // runnerFlags defines the flags of `wp runner` and (install) of
@@ -155,7 +147,7 @@ func runRunner(ctx context.Context, c *cli, o runnerOpts) error {
 	if c.token() == "" {
 		return errors.New("not logged in: run wp auth login first (as yourself, not as an agent)")
 	}
-	c.agent = "none" // a runner acts as its owner
+	c.agent = "none"
 	if o.MaxJobs < 1 || o.MaxJobs > maxRunnerJobs {
 		return c.usage("--max-jobs is between 1 and %d", maxRunnerJobs)
 	}
@@ -168,7 +160,7 @@ func runRunner(ctx context.Context, c *cli, o runnerOpts) error {
 	}
 	host, _ := os.Hostname()
 	if o.Name == "" {
-		o.Name = machineName() // what sessions report, so requests find this runner
+		o.Name = machineName()
 	}
 	if o.Name == "" {
 		return c.usage("no host name found; give the runner a --name")
@@ -188,61 +180,48 @@ type runnerProc struct {
 	host    string
 	id      int64
 
-	// The server's version (each poll says it), and the last time this
-	// runner tried to update to it.
 	serverVersion  string
 	updateTriedFor string
 	updateTriedAt  time.Time
 
-	reportCtx context.Context // ends when the runner has stopped waiting to report
-	// stopCtx ends when a runner stop begins (stopAll); nil in a runner built by hand
+	reportCtx  context.Context
 	stopCtx    context.Context
 	stopCancel context.CancelFunc
 
 	mu            sync.Mutex
 	jobs          map[int64]*activeJob
 	wg            sync.WaitGroup
-	freed         chan struct{} // a job ended, or the governor allows more
-	gov           *governor     // nil: up to MaxJobs whatever the load
+	freed         chan struct{}
+	gov           *governor
 	clis          []runnerCLI
 	clisDirty     bool
 	repoLocks     map[string]*sync.Mutex
 	ocFormat      bool
 	ocFormatKnown bool
-	ocLogs        bool // opencode can print its own log (--print-logs)
+	ocLogs        bool
 	logMu         sync.Mutex
-	sb            sandboxState // guarded by mu
+	sb            sandboxState
 }
 
 type activeJob struct {
-	id        int64
-	lane      string // jobLane of its kind
-	cancel    context.CancelFunc
-	cancelled atomic.Bool
-	// slotWaitSince is since when a command of the job has been waiting for
-	// a slot (zero: none is); guarded by runnerProc.mu (WP-1618).
+	id            int64
+	lane          string
+	cancel        context.CancelFunc
+	cancelled     atomic.Bool
 	slotWaitSince time.Time
 }
 
 // jobRun is what an executor gets besides the input.
 type jobRun struct {
-	id      int64
-	kind    string
-	title   string
-	timeout time.Duration
-	out     *logSink
-	// token is the job's own Waypoint token (WP-418), for the jobs that run
-	// wp; empty for the others, and from a server that doesn't mint them.
-	token string
-	// launch is the owner's session settings (WP-1265), for a job that
-	// starts a session.
-	launch *sessionPrefs
-	// cancelled is set when a person cancels the job; nil in a job nothing
-	// can cancel.
+	id        int64
+	kind      string
+	title     string
+	timeout   time.Duration
+	out       *logSink
+	token     string
+	launch    *sessionPrefs
 	cancelled *atomic.Bool
-	// job is the runner's record of it (nil in tests), which an agent's
-	// clock tells when it waits for a slot (WP-1618).
-	job *activeJob
+	job       *activeJob
 }
 
 type claimedJob struct {
@@ -307,8 +286,6 @@ func (p *runnerProc) register(ctx context.Context) error {
 	body := map[string]any{
 		"name": p.opts.Name, "hostname": p.host, "os": runtime.GOOS, "arch": runtime.GOARCH, "version": version,
 		"labels": orEmpty(p.opts.Labels), "allowed_dirs": toSlash(p.allowed), "clis": p.snapshotCLIs(), "max_jobs": p.opts.MaxJobs,
-		// what this wp can do: "confine" = it limits a review's CLI to its
-		// checkout; "autopilot" = it runs autopilot jobs (WP-ADR9)
 		"features": runnerFeatureList(),
 	}
 	delay := time.Second
@@ -397,12 +374,6 @@ func (p *runnerProc) poll(ctx context.Context, free int, lanes []string) (*pollA
 	case p.opts.PollWait >= 0:
 		body["wait"] = p.opts.PollWait
 	case len(lanes) > 0 && (p.gov != nil || !slices.Contains(lanes, laneHeavy)):
-		// A lane is open: a short poll, so the runner asks again soon after a
-		// job ends or the load changes. The server reads the lanes once per
-		// poll, so a long hold could claim a heavy job after the machine got
-		// busy, or hold up the next heavy job while only the request,
-		// message and gateway lanes are open (a poll that may take a job can't be ended
-		// early, as a full runner's heartbeat can).
 		body["wait"] = 5
 	}
 	p.mu.Lock()
@@ -464,7 +435,7 @@ func (p *runnerProc) run(ctx context.Context, reportStop context.CancelFunc) err
 		go p.watchStalled(ctx)
 	}
 	if !p.opts.Once {
-		p.reapInterruptedStarts(ctx) // before it takes a job: none of these can be this run's
+		p.reapInterruptedStarts(ctx)
 	}
 	if p.opts.MaxJobs > 1 {
 		p.watchLoad(ctx)
@@ -473,7 +444,6 @@ func (p *runnerProc) run(ctx context.Context, reportStop context.CancelFunc) err
 	delay := time.Second
 	var err error
 	for ctx.Err() == nil {
-		// Between jobs, never during one: catch up with the server's wp.
 		if p.updateDue() && len(p.activeIDs()) == 0 {
 			if exe, ok := p.updateSelf(ctx); ok {
 				err = &restartError{exe: exe}
@@ -481,9 +451,6 @@ func (p *runnerProc) run(ctx context.Context, reportStop context.CancelFunc) err
 			}
 		}
 		lanes, free := p.slotsNow()
-		// While full, the poll is only a heartbeat that listens for cancels;
-		// it ends when a slot frees (it can't have taken a job, so ending it
-		// loses nothing).
 		pctx, pcancel := context.WithCancel(ctx)
 		if free <= 0 {
 			go func() {
@@ -536,17 +503,10 @@ func (p *runnerProc) run(ctx context.Context, reportStop context.CancelFunc) err
 			p.start(ctx, ans.Job)
 			continue
 		}
-		// Only a poll that asked for a job of any kind (the heavy and light
-		// lanes; a request's job goes in its kind's lane when the request
-		// lane is full) and got none means the queue is empty; a heartbeat
-		// taken while full, or a poll for a request's jobs only, says
-		// nothing, since a job may have finished since and the queue may
-		// still hold more.
 		if p.opts.Once && free > 0 && slices.Contains(lanes, laneHeavy) && slices.Contains(lanes, laneLight) && len(p.activeIDs()) == 0 {
 			break
 		}
 		if len(ans.Cancel) > 0 {
-			// A job is being stopped; the server repeats the cancel until it has.
 			sleepCtx(ctx, 2*time.Second)
 		}
 	}
@@ -648,7 +608,7 @@ func (p *runnerProc) syncUsage(ctx context.Context) {
 			switch {
 			case errors.Is(err, errUsageBusy):
 			case err != nil:
-				if msg := err.Error(); msg != lastErr { // say it once, not every 10 minutes
+				if msg := err.Error(); msg != lastErr {
 					p.logf("Usage sync failed: %v", err)
 					lastErr = msg
 				}
@@ -722,7 +682,7 @@ func (p *runnerProc) waitJobs(d time.Duration) {
 // otherwise one could outlast the wait and the finish report would be lost.
 func (p *runnerProc) stopAll(reportStop context.CancelFunc) {
 	if p.stopCancel != nil {
-		p.stopCancel() // cuts a job's transcript upload short (keepTranscripts), which would outlast the wait below
+		p.stopCancel()
 	}
 	p.mu.Lock()
 	for _, aj := range p.jobs {
@@ -747,7 +707,7 @@ func settleOutcome(ctx context.Context, cancelled *atomic.Bool, o outcome) outco
 	if cancelled != nil && cancelled.Load() && o.State != "done" {
 		o.State, o.Error = "cancelled", "Cancelled by a person."
 	} else if ctx.Err() != nil && o.State == "cancelled" && o.Error == "Stopped." {
-		o.Error = "The runner was stopped." // internal/core's runnerStoppedError: such an audit goes again
+		o.Error = "The runner was stopped."
 	}
 	return o
 }
@@ -847,7 +807,7 @@ func (p *runnerProc) sendLog(id int64) func(ctx context.Context, offset int64, t
 		}
 		err := p.c.callInto(ctx, "POST", fmt.Sprintf("/api/v1/runner/jobs/%d/log", id), map[string]any{"offset": offset, "text": text}, &ack)
 		if isNotFound(err) {
-			return true, true, nil // the job is gone: stop it and stop sending
+			return true, true, nil
 		}
 		return ack.Cancel, ack.Truncated, err
 	}
@@ -870,9 +830,6 @@ func (p *runnerProc) finish(id int64, o outcome) {
 		if err == nil {
 			return
 		}
-		// The server says the result is too large (it measures what this
-		// estimate missed): once, the helper runs go back as their kept
-		// leads only, so the findings' work isn't lost.
 		var ae *apiError
 		if !reduced && errors.As(err, &ae) && ae.status == 400 && strings.Contains(ae.msg, core.RunnerResultTooLarge) {
 			reduced = true

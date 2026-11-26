@@ -11,14 +11,6 @@ import (
 	"time"
 )
 
-// wp usage compact (WP-1097): what Claude Code's compactions cost, what
-// agents did after them and what a compaction of our own could carry over,
-// from this machine's transcripts. It is the measure a change to how
-// sessions are compacted (steering the summary, a carry, a summary or a
-// hand-off of our own) is judged by beside the experiment's per-task
-// outcomes, so it prints figures and no verdict. Everything stays on this
-// machine; no model is involved.
-
 var usageCompactCmd = &command{
 	name: "compact", args: "[--since 14d] [--dir CLAUDE_CONFIG_DIR]",
 	summary: "what compactions cost, what agents did after them, what one could carry over",
@@ -105,11 +97,11 @@ const (
 	// summary kept: the model writes an <analysis> block first, which Claude
 	// Code drops. Assumed, not measured (WP-1097).
 	cmpAnalysisFactor = 1.35
-	cmpPlaceboCalls   = 60    // calls a compaction needs before it for a "before" window
-	cmpPromptCalls    = 20    // calls a session needs before a prompt counts
-	cmpBigContext     = 90000 // the prompts compared at a compaction-sized context
-	cmpStartCalls     = 10    // calls a session needs for its start to count
-	cmpHistoryCut     = 2000  // characters of a tool input or result a summariser of ours would be given
+	cmpPlaceboCalls   = 60
+	cmpPromptCalls    = 20
+	cmpBigContext     = 90000
+	cmpStartCalls     = 10
+	cmpHistoryCut     = 2000
 )
 
 // cmpReport is what wp usage compact prints.
@@ -347,7 +339,7 @@ var cmpRowNames = [cmpRows][2]string{
 
 var cmpIdleBuckets = []struct {
 	name string
-	upTo int64 // seconds
+	upTo int64
 }{{"under 5m", 300}, {"5-45m", 2700}, {"45-60m", 3600}, {"over 60m", 1 << 62}}
 
 // cmpTriggerAcc gathers one trigger's compactions.
@@ -418,8 +410,6 @@ func (a *cmpAcc) session(ev []cmpEvent) {
 	seen := cmpFirstSeen(ev)
 	usd := func(e *cmpEvent) cmpUSD {
 		p := burnPriceFor(a.prices, e.model)
-		// each write at its own cache's price; a call that does not say is
-		// taken to have used the session's
 		hour := min(e.cw1h, e.cw)
 		if !e.split && hourCache {
 			hour = e.cw
@@ -451,7 +441,6 @@ func (a *cmpAcc) session(ev []cmpEvent) {
 	}
 	a.reviewRounds(ev, comps, ttl, seen, usd)
 	a.reviewSignals(ev, comps, seen, usd)
-	// prompts with no compaction near
 	seenCalls, nextComp := 0, 0
 	for i := range ev {
 		switch ev[i].kind {
@@ -644,7 +633,6 @@ func (a *cmpAcc) compaction(ev []cmpEvent, from, at, to int, before, after []int
 		write = price.CacheWrite1h
 	}
 
-	// idle: from the session's last call to when the compaction began
 	cold, bucket := false, -1
 	if last != nil && last.ts > 0 && c.ts > 0 {
 		idle := c.ts - c.durMs - last.ts
@@ -675,7 +663,6 @@ func (a *cmpAcc) compaction(ev []cmpEvent, from, at, to int, before, after []int
 		row, full, placebo = cmpAfterManual, cmpAfterManualFull, cmpBeforeManual
 	}
 	if len(before) >= cmpPlaceboCalls {
-		// from just before the call 30 back, so the window is those calls and their tools
 		a.rows[placebo].add(cmpFollow(ev, before[len(before)-cmpWindowCalls]-1, at, seen, usd))
 	}
 
@@ -715,7 +702,6 @@ func (a *cmpAcc) compaction(ev []cmpEvent, from, at, to int, before, after []int
 	w := cmpFollow(ev, at, to, seen, usd)
 	a.rows[row].add(w)
 	if w.Calls == cmpWindowCalls {
-		// the windows the 30 calls before one can be held beside
 		a.rows[full].add(w)
 	}
 
@@ -910,7 +896,7 @@ func compactText(r *cmpReport) string {
 		}
 		seen, per, tokens := fmt.Sprintf("%d (%s)", f.SeenBefore, cmpShare(f.SeenBefore, f.FileLookups)), fmt.Sprintf("%.2f", f.SeenPerWindow), strconv.FormatInt(f.TokensAgain, 10)
 		if f.Point == cmpRowNames[cmpStart][0] {
-			seen, per, tokens = "-", "-", "-" // nothing came before it
+			seen, per, tokens = "-", "-", "-"
 		}
 		_, _ = fmt.Fprintf(tw, "%s\t%d\t%.1f\t%.1f\t%d\t%s\t%s\t%s\t%.2f\t%s\t%s\t%d\t%d\t%d\n", f.text, f.N, f.Calls, f.Lookups, f.FileLookups, seen,
 			per, tokens, f.Orientation, cmpShare(f.Failed, f.Tools), cmpShare(f.ReachedEdit, f.N), f.CallsToEdit, f.LookupsToEdit, f.OutputPerCall)

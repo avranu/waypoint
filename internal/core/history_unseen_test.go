@@ -86,7 +86,6 @@ func TestHistoryNeverNamesATaskTheReaderCannotSee(t *testing.T) {
 	if !strings.Contains(where["history"], "a task you can't see") {
 		t.Errorf("history reads %q: want the other end as a task you can't see", where["history"])
 	}
-	// Someone who sees both reads the key.
 	adminHist, _ := e.s.History(e.ctx, e.admin, x.Key, 50)
 	var seen string
 	for _, ev := range adminHist {
@@ -119,7 +118,6 @@ func TestHideUnseenAsksWhatTheReadPathAsks(t *testing.T) {
 	if got := e.s.hideUnseen(e.ctx, e.s.db.R, e.admin, ev()); !strings.Contains(got.New, draft.Key) {
 		t.Errorf("an admin as a person lost the key: %q", got.New)
 	}
-	// A key that no longer resolves is left as it is.
 	gone := &Event{Field: "relation", New: "relates NOPE-9"}
 	if got := e.s.hideUnseen(e.ctx, e.s.db.R, agent, gone); got != gone {
 		t.Errorf("an unresolvable key was changed: %q", got.New)

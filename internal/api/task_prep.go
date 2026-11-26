@@ -8,9 +8,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Task prep (WP-212, WP-ADR8): runners ask which tasks to prepare and
-// upload a code bundle for each; wp next and wp brief read the result.
-
 // maxPrepBody bounds one bundle upload; the service holds it to less.
 const maxPrepBody = 1 << 20
 

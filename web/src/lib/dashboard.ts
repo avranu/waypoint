@@ -1,6 +1,3 @@
-// Dashboards (WP-780): a project, or every project, at a glance, counted
-// from the tracker. See internal/core/dashboard.go.
-
 import { api, enc } from './api'
 import type { GoalCoverage, GoalDrift, Grounding, IssueDetail, IssueRef } from './types'
 

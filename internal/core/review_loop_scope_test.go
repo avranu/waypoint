@@ -47,8 +47,6 @@ func TestAgainLoopOf(t *testing.T) {
 		t.Fatalf("in the run that asked for both: %s, want %s", got, with)
 	}
 
-	// From a later run of the task, after this one stopped short: the
-	// same loop. After one that ended any other way: another change.
 	for outcome, want := range map[string]string{"paused": with, "expired": with, "timeout": with, "done": "[]", "released": "[]"} {
 		exec(`UPDATE agent_runs SET ended_at = started_at + 1, outcome = ? WHERE id = ?`, outcome, run)
 		if got := loop(run + 1); got != want {
@@ -57,7 +55,6 @@ func TestAgainLoopOf(t *testing.T) {
 	}
 	exec(`UPDATE agent_runs SET ended_at = NULL, outcome = '' WHERE id = ?`, run)
 
-	// Another branch is another change.
 	var bp string
 	if err := e.s.db.R.QueryRow(`SELECT before_pr FROM work_log WHERE id = ?`, r1).Scan(&bp); err != nil {
 		t.Fatal(err)
@@ -68,8 +65,6 @@ func TestAgainLoopOf(t *testing.T) {
 	}
 	exec(`UPDATE work_log SET before_pr = ? WHERE id = ?`, bp, r1)
 
-	// A decision that opened the pull request ended the loop before it; a
-	// probe's, like another round's, went on.
 	for arm, want := range map[string]string{AgainEnough: "[]", AgainRepeat: "[]", AgainCap: "[]", AgainRejected: "[]", AgainProbe: with, AgainReview: with} {
 		exec(`UPDATE review_again_decisions SET arm = ? WHERE round_id = ?`, arm, r1)
 		if got := loop(run); got != want {
@@ -77,10 +72,6 @@ func TestAgainLoopOf(t *testing.T) {
 		}
 	}
 
-	// A round that was decided ran, whatever became of it afterwards (a
-	// decision is made on findings); one that never ran has no decision
-	// and found nothing to repeat. (The arm is set here: the range above
-	// leaves whichever came last.)
 	exec(`UPDATE review_again_decisions SET arm = ? WHERE round_id = ?`, AgainReview, r1)
 	exec(`UPDATE work_log SET state = ? WHERE id = ?`, RoundSkipped, r1)
 	if got := loop(run); got != with {
@@ -92,8 +83,6 @@ func TestAgainLoopOf(t *testing.T) {
 	}
 	exec(`UPDATE work_log SET state = ? WHERE id = ?`, RoundDone, r1)
 
-	// A round after the pull request has no loop, nor has a row that
-	// isn't a round.
 	exec(`UPDATE work_log SET before_pr = '' WHERE id = ?`, r2)
 	if l, err := e.s.againLoopOf(e.ctx, r2, run); err != nil || l != nil {
 		t.Errorf("a round after its pull request: %+v, %v", l, err)
@@ -170,7 +159,6 @@ func TestRoundRisk(t *testing.T) {
 	if got := risk(); got != StakesUnknown {
 		t.Errorf("nothing known of the change: %q", got)
 	}
-	// Kept as decided: asked again it is read, not decided again.
 	var n int
 	if err := e.s.db.R.QueryRow(`SELECT count(*) FROM review_stakes WHERE round_id = ? AND tier = ?`, r1, StakesUnknown).Scan(&n); err != nil || n != 1 {
 		t.Errorf("the decided tier is kept %d times, %v", n, err)

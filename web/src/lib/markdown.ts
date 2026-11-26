@@ -26,7 +26,6 @@ marked.use({
 const TOKEN = /(^|[\s(])(?:([A-Z][A-Z0-9]{1,9}-\d+)\b|@([a-zA-Z0-9][\w.-]{0,38}))/g
 
 DOMPurify.addHook('uponSanitizeElement', (node, data) => {
-  // Only our own task checkboxes survive; raw form controls could overlay the UI.
   if (
     data.tagName === 'input' &&
     !(
@@ -119,7 +118,7 @@ function linkify(root: DocumentFragment, keys: boolean) {
       let el: HTMLElement
       let len: number
       if (m[2] && !keys) {
-        continue // the server decides which codes are references
+        continue
       } else if (m[2]) {
         el = document.createElement('a')
         el.setAttribute('href', `/issue/${m[2]}`)

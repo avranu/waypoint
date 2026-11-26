@@ -45,7 +45,6 @@ func TestUnifiedDiff(t *testing.T) {
 			t.Errorf("diff lacks %q:\n%s", frag, d)
 		}
 	}
-	// Changes far apart are separate hunks.
 	var many []string
 	for i := 1; i <= 30; i++ {
 		many = append(many, "line"+string(rune('a'+i%26))+"\n")
@@ -78,7 +77,7 @@ func TestUnifiedPastTheEditCap(t *testing.T) {
 		b = append(b, "new"+strconv.Itoa(i)+"\n")
 	}
 	for i := 0; i < 1000; i++ {
-		b = append(b, "old"+strconv.Itoa(i)+"\n") // shared with a, so the shortest script is 2000 edits
+		b = append(b, "old"+strconv.Itoa(i)+"\n")
 	}
 	a = append(a, "tail\n")
 	b = append(b, "tail\n")
@@ -96,7 +95,7 @@ func TestUnifiedPastTheEditCap(t *testing.T) {
 	}
 	d, add, del := Unified("big.txt", strings.Join(a, ""), strings.Join(b, ""), false, false)
 	plus, minus := 0, 0
-	for _, l := range strings.Split(d, "\n")[2:] { // after the two file lines
+	for _, l := range strings.Split(d, "\n")[2:] {
 		switch {
 		case strings.HasPrefix(l, "+"):
 			plus++

@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// ---- a forge that opens pull requests, and a runner that is driven by hand ----
-
 func (g *shipForge) DefaultBranch(ctx context.Context, f *Forge, repo string) (string, error) {
 	g.sm.Lock()
 	defer g.sm.Unlock()
@@ -210,8 +208,6 @@ func (a *agentEnv) runStatus(r *AutomationRun) *AutomationRun {
 	return a.run(r.ID)
 }
 
-// ---- ownership ----
-
 func TestAutomationsRecordWhoSavedThem(t *testing.T) {
 	e := newEnv(t)
 	bob := e.user("bob", false)
@@ -224,7 +220,6 @@ func TestAutomationsRecordWhoSavedThem(t *testing.T) {
 	if a.SavedBy == nil || a.SavedBy.ID != e.admin.User.ID {
 		t.Fatalf("created by robin, saved by %+v", a.SavedBy)
 	}
-	// Anyone who saves it takes it over, even to turn it on or off.
 	off := false
 	a2, err := e.s.UpdateAutomation(e.ctx, bob, a.ID, AutomationInput{Enabled: &off})
 	if err != nil || a2.SavedBy == nil || a2.SavedBy.ID != bob.User.ID {
@@ -233,7 +228,6 @@ func TestAutomationsRecordWhoSavedThem(t *testing.T) {
 	if got := automationRunnerOwner(&Automation{savedBy: bob.User.ID}); got != bob.User.ID {
 		t.Errorf("runner owner = %d", got)
 	}
-	// The editor is told whose runners it uses, and whether one is online.
 	if a2.Runners == nil || a2.Runners.Owner.ID != bob.User.ID || a2.Runners.Total != 0 || a2.Runners.Online != 0 {
 		t.Errorf("runners = %+v", a2.Runners)
 	}
@@ -242,12 +236,10 @@ func TestAutomationsRecordWhoSavedThem(t *testing.T) {
 	if err != nil || got.Runners == nil || got.Runners.Total != 1 || got.Runners.Online != 1 {
 		t.Errorf("with a runner: %+v %v", got.Runners, err)
 	}
-	// An automation without runner steps says nothing about runners.
 	plain := e.addAuto(p, "Plain", Rule{Trigger: Trigger{Event: "manual"}, Actions: []Action{{Type: "notify", User: "owners", Message: "hi"}}})
 	if plain.Runners != nil {
 		t.Errorf("plain automation has runners: %+v", plain.Runners)
 	}
-	// An agent saving one names nobody, so its runner steps are refused until a person saves it.
 	agent := &Actor{User: e.admin.User, Agent: "anthropic/claude-code"}
 	b, err := e.s.CreateAutomation(e.ctx, agent, p.Key, AutomationInput{Name: str("By an agent"), Rule: &rule})
 	if err != nil {
@@ -269,7 +261,6 @@ func TestAutomationsReachOnlyTheSaversRunners(t *testing.T) {
 	job := func(owner int64) RunnerJobInput {
 		return RunnerJobInput{Kind: JobCommand, OwnerID: owner, Input: cmdInput("true", "/work"), Source: "automation_step", SourceID: 9}
 	}
-	// The automation was saved by robin: her runners, not bob's.
 	auto := &Actor{User: &User{ID: 0, Username: "system"}, Automation: &Automation{ID: 1, Name: "nightly", savedBy: e.admin.User.ID}}
 	if _, err := e.s.EnqueueRunnerJob(e.ctx, auto, job(bob.User.ID)); !errors.Is(err, ErrForbidden) {
 		t.Errorf("an automation saved by robin used bob's runner: %v", err)
@@ -284,19 +275,15 @@ func TestAutomationsReachOnlyTheSaversRunners(t *testing.T) {
 	if w := e.poll(e.admin, mine, RunnerPoll{}); w.Job == nil || w.Job.ID != j.ID {
 		t.Errorf("robin's runner should take it: %+v", w.Job)
 	}
-	// Run as bob (he triggered it), it still goes to robin's runner, never his.
 	asBob := &Actor{User: bob.User, Automation: auto.Automation}
 	if _, err := e.s.EnqueueRunnerJob(e.ctx, asBob, job(bob.User.ID)); !errors.Is(err, ErrForbidden) {
 		t.Errorf("triggering the automation gave bob's runner to it: %v", err)
 	}
-	// Saved by nobody: no runner at all.
 	orphan := &Actor{User: bob.User, Automation: &Automation{ID: 2, Name: "orphan"}}
 	if _, err := e.s.EnqueueRunnerJob(e.ctx, orphan, job(bob.User.ID)); !errors.Is(err, ErrForbidden) {
 		t.Errorf("an automation nobody saved used a runner: %v", err)
 	}
 }
-
-// ---- agent_task ----
 
 func TestAgentTaskRunsOnARunnerAndWaitsForIt(t *testing.T) {
 	ae := newAgentEnv(t)
@@ -311,7 +298,6 @@ func TestAgentTaskRunsOnARunnerAndWaitsForIt(t *testing.T) {
 	if r := ae.runStatus(run); r.Status != RunWaiting {
 		t.Fatalf("status = %s (%s)", r.Status, r.Error)
 	}
-	// The job went to the person who saved the automation, never to bob's runner.
 	if w := ae.rpoll(bob, bobBox); w.Job != nil {
 		t.Fatalf("bob's runner took the job: %+v", w.Job)
 	}
@@ -321,7 +307,6 @@ func TestAgentTaskRunsOnARunnerAndWaitsForIt(t *testing.T) {
 		in.Repo != "https://git.example.com/me/app.git" || in.Branch != "review/2026-10-05" || !in.Push || in.Permission != AgentEdit || in.CommitMessage != "Suggestions" {
 		t.Fatalf("job input = %+v", in)
 	}
-	// Running the step again (a restart) doesn't queue a second job.
 	ae.s.resumeRuns(ae.ctx)
 	ae.work()
 	if w := ae.rpoll(ae.admin, ae.box); w.Job != nil {
@@ -356,7 +341,6 @@ func TestAgentTaskModelChainAndPermissions(t *testing.T) {
 	if in := agentJobOf(t, first); in.CLI != "opencode" || in.Model != "opencode/free-model" || in.Permission != AgentRead || !in.ReadOnly || in.Branch != "" || in.Push {
 		t.Fatalf("first job = %+v", in)
 	}
-	// A rate limit is the model's fault: the next model is tried.
 	ae.finish(first.ID, "failed", nil, "opencode reported an error: rate limit exceeded (429)")
 	ae.work()
 	second := ae.take()
@@ -371,7 +355,6 @@ func TestAgentTaskModelChainAndPermissions(t *testing.T) {
 		t.Fatalf("run = %s %q outputs %+v log %q", r.Status, r.Error, st.Outputs, st.Log)
 	}
 
-	// A failure that isn't the model's (the repository couldn't be fetched) stops there.
 	run2 := ae.manual(a, nil)
 	ae.work()
 	j := ae.take()
@@ -385,7 +368,6 @@ func TestAgentTaskModelChainAndPermissions(t *testing.T) {
 		t.Errorf("the next model was tried after a git failure: %+v", w.Job)
 	}
 
-	// Edit and run commands is passed on, and a chain needs a valid CLI.
 	b := ae.addAuto(ae.p, "Fixes", Rule{Trigger: Trigger{Event: "manual"}, Actions: []Action{{Type: "agent_task", Extra: map[string]any{
 		"agents": museChain("claude sonnet"), "permission": AgentEditRun, "prompt": "Fix the tests", "branch": "fix/x", "push": false,
 	}}}})
@@ -431,7 +413,6 @@ func TestAgentTaskTimesOutAndCancelsTheJob(t *testing.T) {
 	run := ae.manual(a, nil)
 	ae.work()
 	claim := ae.take()
-	// The runner never reports: after the job's time and the day a job may sit, the step gives up.
 	ae.setClock(ae.clockNow().Add(26 * time.Hour))
 	ae.work()
 	r := ae.runStatus(run)
@@ -443,8 +424,6 @@ func TestAgentTaskTimesOutAndCancelsTheJob(t *testing.T) {
 		t.Errorf("job = %+v %v", info, err)
 	}
 }
-
-// ---- run_command ----
 
 func TestRunCommandStep(t *testing.T) {
 	ae := newAgentEnv(t)
@@ -469,7 +448,6 @@ func TestRunCommandStep(t *testing.T) {
 	ae.work()
 	r := ae.runStatus(run)
 	st := stepByID(r, "deploy")
-	// The step failed but the run carried on, with the exit code and the end of the output.
 	if r.Status != RunSucceeded || st.Status != "failed" || st.Outputs["ExitCode"] != 3.0 || st.Outputs["OK"] != false || st.Outputs["Output"] != "building\nboom\n" {
 		t.Fatalf("run = %s %q, step %+v", r.Status, r.Error, st)
 	}
@@ -478,7 +456,6 @@ func TestRunCommandStep(t *testing.T) {
 		t.Errorf("notification = %+v", ns)
 	}
 
-	// A directory the runner doesn't allow is refused, saying so.
 	b := ae.addAuto(ae.p, "Elsewhere", Rule{Trigger: Trigger{Event: "manual"}, Actions: []Action{{Type: "run_command", Extra: map[string]any{"command": "ls", "dir": "/etc"}}}})
 	run2 := ae.manual(b, nil)
 	ae.work()
@@ -486,7 +463,6 @@ func TestRunCommandStep(t *testing.T) {
 	if r2.Status != RunFailed || !strings.Contains(r2.Error, "no runner allows /etc") {
 		t.Errorf("outside the allowed dirs: %s %q", r2.Status, r2.Error)
 	}
-	// Success sets OK.
 	c := ae.addAuto(ae.p, "Fine", Rule{Trigger: Trigger{Event: "manual"}, Actions: []Action{{Type: "run_command", ID: "x", Extra: map[string]any{"command": "true", "dir": "/work"}}}})
 	run3 := ae.manual(c, nil)
 	ae.work()
@@ -517,14 +493,13 @@ func stepIter(r *AutomationRun, id string, iter int) *RunStep {
 func TestWeeklyReviewIntoAPullRequest(t *testing.T) {
 	ae := newAgentEnv(t)
 	ae.gate("P2")
-	ae.policy(MergePolicyInput{AutoMerge: ptr(false), ReviewWaitMinutes: ptr(0), QuietMinutes: ptr(0)}) // the rule merges, not the setting
+	ae.policy(MergePolicyInput{AutoMerge: ptr(false), ReviewWaitMinutes: ptr(0), QuietMinutes: ptr(0)})
 	ae.llm.answers["opencode/muse-spark-1.3-contributor-free"] = noFindings
 	card := ae.addAuto(ae.p, "Weekly code review into a PR", templateRule(t, "Weekly code review into a PR"))
 	if card.Runners == nil || card.Runners.Owner.ID != ae.admin.User.ID || card.Runners.Online != 1 {
 		t.Fatalf("the card should say whose runners it uses: %+v", card.Runners)
 	}
 
-	// Tuesday, just after 12:00.
 	ae.setClock(time.Date(2026, 10, 6, 12, 1, 0, 0, time.UTC))
 	ae.s.RunTimedAutomations(ae.ctx)
 	ae.work()
@@ -534,7 +509,6 @@ func TestWeeklyReviewIntoAPullRequest(t *testing.T) {
 	}
 	run := runs[0]
 
-	// 1. The agent reviews on a branch, on the model the card names.
 	claim := ae.take()
 	in := agentJobOf(t, claim)
 	if in.CLI != "opencode" || in.Model != "opencode/muse-spark-1.3-contributor-free" || in.Permission != AgentEdit || in.Branch != "review/2026-10-06" || !in.Push ||
@@ -548,7 +522,6 @@ func TestWeeklyReviewIntoAPullRequest(t *testing.T) {
 	ae.finish(claim.ID, "done", map[string]any{"answer": "Tightened two error paths.", "branch": "review/2026-10-06", "commits": []string{"c1"}, "commit": "c1", "pushed": true, "files": []string{"parse.go", "util.go"}}, "")
 	ae.work()
 
-	// 2. A pull request is open and CI fails on it, so a second agent is asked to fix it.
 	created, _, _, _ := ae.sg.snapshot()
 	if len(created) != 1 || created[0].Head != "review/2026-10-06" || created[0].Title != "Weekly code review 2026-10-06" || !strings.Contains(created[0].Body, "Tightened two error paths.") {
 		t.Fatalf("pull request = %+v", created)
@@ -562,13 +535,11 @@ func TestWeeklyReviewIntoAPullRequest(t *testing.T) {
 		!strings.Contains(fin.Prompt, "unexpected token") || !slices.Contains(fin.ProtectPaths, ".forgejo/**") {
 		t.Fatalf("fix job = %+v", fin)
 	}
-	// It pushes a fix; CI passes on the new head.
 	ae.sg.pushTo(ae.f, "me/app", 101, fixedHead)
 	ae.sg.setChecks(fixedHead, CommitCheck{Name: ciBackend, State: CheckSuccess}, CommitCheck{Name: ciWeb, State: CheckSuccess})
 	ae.finish(fixClaim.ID, "done", map[string]any{"answer": "The parser rejected valid input.", "commits": []string{"c2"}, "commit": "c2", "pushed": true, "files": []string{"parse.go"}}, "")
 	ae.work()
 
-	// 3. The review bot looks at the new head; its gate goes green and the rule merges.
 	ae.drain()
 	ae.work()
 	got := ae.runStatus(run)

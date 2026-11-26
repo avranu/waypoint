@@ -1,13 +1,5 @@
 package core
 
-// Waiting on a pull request (WP-132, WP-ADR2 §1): `wp pr wait` holds one
-// request open on the server until the head's checks settle, a conflict
-// appears, it merges or closes, it becomes ready, or the request's time
-// is up (at most five minutes; the CLI asks again). What wakes it are the
-// events about the pull request (pr.ci when its checks settle, the review
-// gate, merges and history) and, once a minute, a fresh read of it from
-// the forge, which notices what sends no event (conflicts, a new head).
-
 import (
 	"context"
 	"database/sql"
@@ -23,18 +15,18 @@ import (
 
 // Wait verdicts.
 const (
-	PRWaitReady    = "ready"    // ready to merge
-	PRWaitMerged   = "merged"   // merged (perhaps by merge when ready)
-	PRWaitClosed   = "closed"   // closed without merging
-	PRWaitFailed   = "failed"   // a check failed
-	PRWaitConflict = "conflict" // conflicts with its base
-	PRWaitBlocked  = "blocked"  // checks passed, but review stops it: findings, changes asked for, a draft
-	PRWaitWaiting  = "waiting"  // nothing settled before the time was up
+	PRWaitReady    = "ready"
+	PRWaitMerged   = "merged"
+	PRWaitClosed   = "closed"
+	PRWaitFailed   = "failed"
+	PRWaitConflict = "conflict"
+	PRWaitBlocked  = "blocked"
+	PRWaitWaiting  = "waiting"
 )
 
 const (
-	prWaitMax     = 5 * time.Minute // the longest one request is held
-	prWaitRecheck = time.Minute     // how often a held request reads the pull request from the forge
+	prWaitMax     = 5 * time.Minute
+	prWaitRecheck = time.Minute
 )
 
 // PRWait is where a pull request stands when a wait ends.
@@ -69,9 +61,8 @@ type PRWaitInput struct {
 // prWaiters wakes held waits when an event about their pull request is
 // dispatched.
 type prWaiters struct {
-	mu sync.Mutex
-	m  map[int64]map[chan struct{}]bool
-	// read: when each pull request was last read from the forge for a wait.
+	mu   sync.Mutex
+	m    map[int64]map[chan struct{}]bool
 	read map[int64]time.Time
 }
 
@@ -144,7 +135,7 @@ func (w *prWaiters) wake(e *Event) {
 	for ch := range w.m[id] {
 		select {
 		case ch <- struct{}{}:
-		default: // already nudged
+		default:
 		}
 	}
 }
@@ -164,7 +155,7 @@ func (s *Service) WaitPullRequest(ctx context.Context, actor *Actor, prID int64,
 	defer done()
 	s.scheduleMergeRecheck(ctx, prID)
 	if in.Head != "" && !sameSHA(pr.HeadSHA, in.Head) {
-		s.prWaitRefresh(ctx, pr) // the push's webhook may not have come yet
+		s.prWaitRefresh(ctx, pr)
 	}
 	deadline := time.NewTimer(in.Timeout)
 	defer deadline.Stop()
@@ -232,7 +223,7 @@ func (s *Service) CheckArmedHeads(ctx context.Context) {
 			return
 		}
 		if pr, err := s.prByID(ctx, s.db.R, id); err == nil {
-			s.prWaitRead(ctx, pr, true) // skips forges without a token
+			s.prWaitRead(ctx, pr, true)
 		}
 	}
 }
@@ -240,7 +231,7 @@ func (s *Service) CheckArmedHeads(ctx context.Context) {
 // prWaitRead is prWaitRefresh; force skips the rate limit. It returns the
 // head the forge says the pull request has now (empty when it wasn't read).
 func (s *Service) prWaitRead(ctx context.Context, pr *PullRequest, force bool) string {
-	ctx = context.WithoutCancel(ctx) // a write half done when the client leaves helps no one
+	ctx = context.WithoutCancel(ctx)
 	f, err := s.forgeByID(ctx, pr.ForgeID)
 	prc, ok := s.Forges.(ForgePRs)
 	if err != nil || !ok || f.token == "" || (!force && !s.prWait.mayRead(pr.ID)) {
@@ -257,7 +248,7 @@ func (s *Service) prWaitRead(ctx context.Context, pr *PullRequest, force bool) s
 	}
 	switch {
 	case cur.HeadSHA != pr.HeadSHA || cur.ciSHA != cur.HeadSHA:
-		s.afterPRRecorded(ctx, f, cur) // follows the new head's checks, merges if armed and ready
+		s.afterPRRecorded(ctx, f, cur)
 	case cur.ArmedAt != nil:
 		s.goBG(func() { s.maybeAutoMerge(ctx, cur.ID) })
 	}
@@ -339,7 +330,6 @@ func (s *Service) prWaitState(ctx context.Context, prID int64, head string) (*PR
 		w.Why = "Waypoint hasn't seen " + short(head) + " on it yet"
 		return w, nil
 	case rd.Checking:
-		// Forgejo says "no" while it checks; wait for the answer to be repeated (WP-138).
 		w.Why = "the forge is still checking whether it merges with " + cmp(pr.BaseRef, "its base")
 		return w, nil
 	case conflict:
@@ -348,11 +338,6 @@ func (s *Service) prWaitState(ctx context.Context, prID int64, head string) (*PR
 		w.Why = "checks haven't been read yet"
 		return w, nil
 	case w.CI == CIFailed || (w.CI == CIPending && failedNotCancelled(w.Checks)):
-		// A failed check settles it even while others run (WP-155), once the
-		// forge confirms this is still the head (WP-153). A cancelled one
-		// doesn't while others run: a new run of the same head cancels the
-		// old one, whose statuses stand until the new run's jobs start
-		// (WP-352).
 		if moved, ok := s.headSuperseded(ctx, pr); ok {
 			w.Why = "a newer head, " + short(moved) + ", is being read"
 			return w, nil
@@ -375,14 +360,13 @@ func (s *Service) prWaitState(ctx context.Context, prID int64, head string) (*PR
 		_, w.Why = ciSummary(CIPending, w.Checks)
 		return w, nil
 	}
-	// Checks passed (or there are none). Ready, or what stops it.
 	if rd.Ready {
 		if w.Armed && w.ArmedNote == "" {
 			w.Why = "ready; merge when ready is merging it"
 			return w, nil
 		}
 		if w.Armed && pr.mergeRetryN > 0 && pr.mergeRetrySHA == pr.HeadSHA {
-			w.Why = w.ArmedNote // the forge refused as "try again later"; it is tried again
+			w.Why = w.ArmedNote
 			return w, nil
 		}
 		return settle(PRWaitReady, "")
@@ -464,7 +448,7 @@ func (s *Service) reviewGoingBy(ctx context.Context, pr *PullRequest, notFootpri
 		return false, "", nil
 	}
 	if s.reviewWaitOver(ctx, pr) {
-		return false, "", nil // waited the review wait: it doesn't hold any longer
+		return false, "", nil
 	}
 	return true, "a review is queued", nil
 }

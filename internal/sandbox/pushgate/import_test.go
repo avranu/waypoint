@@ -43,7 +43,6 @@ func TestImportChecksWithoutPushing(t *testing.T) {
 	e := newEnv(t)
 	base := e.forgeRef("refs/heads/main")
 	c1 := e.commit("one", map[string]string{"a.txt": "a\n"})
-	// What the agent left uncommitted becomes the last commit.
 	writeFile(t, filepath.Join(e.work, "b.txt"), "b\n")
 	res := e.importBundle(ImportRequest{Base: base}, e.bundle(base))
 	if res.Verdict != "" || len(res.Commits) != 2 || res.Commits[0] != c1 || res.Tip != res.Commits[1] {
@@ -74,11 +73,9 @@ func TestImportPushesToABranch(t *testing.T) {
 	if ev := e.lastEvent(); ev.Verdict != Pushed {
 		t.Errorf("event %+v", ev)
 	}
-	// The same bundle again: the forge has it.
 	if res := e.importBundle(ImportRequest{Base: base, Branch: "agent/wp-1", Push: true}, e.bundle(base)); res.Verdict != Pushed {
 		t.Errorf("again: %+v", res)
 	}
-	// Onto the default branch: refused, as a push would be.
 	res = e.importBundle(ImportRequest{Base: base, Branch: "main", Push: true}, e.bundle(base))
 	if res.Verdict != Refused || !strings.Contains(res.Reason, "pull request") {
 		t.Errorf("main: %+v", res)
@@ -178,7 +175,6 @@ func TestImportRefusesBadBundles(t *testing.T) {
 			t.Errorf("%s: err = %v, want ErrBadBundle", name, err)
 		}
 	}
-	// What's left fine.
 	if res := e.importBundle(ImportRequest{Base: base}, good); len(res.Commits) != 2 {
 		t.Errorf("good: %+v", res)
 	}
@@ -188,7 +184,6 @@ func TestImportBadRequests(t *testing.T) {
 	e := newEnv(t)
 	base := e.forgeRef("refs/heads/main")
 	e.commit("one", map[string]string{"a.txt": "a\n"})
-	// A good bundle, so only the request can be what's refused.
 	good := e.bundle(base)
 	for name, c := range map[string]struct {
 		req  ImportRequest
@@ -230,8 +225,6 @@ func TestReadBundleHeader(t *testing.T) {
 func TestImportTipOffTheBase(t *testing.T) {
 	e := newEnv(t)
 	root := e.forgeRef("refs/heads/main")
-	// The forge moves main on; the job started from there (base), but
-	// its work builds on the old main.
 	seed := filepath.Join(e.dir, "seed")
 	writeFile(t, filepath.Join(seed, "later.txt"), "later\n")
 	mustGit(t, seed, "add", "-A")
@@ -257,7 +250,6 @@ func TestImportTipOffTheBase(t *testing.T) {
 	if e.forgeRef("refs/heads/agent/off") != "" {
 		t.Error("work off the base reached the forge")
 	}
-	// The same work on the base is taken.
 	if res := e.importBundle(ImportRequest{Base: root}, b); res.Verdict != "" || !slices.Equal(res.Files, []string{"a.txt"}) {
 		t.Errorf("on its base: %+v", res)
 	}
@@ -301,7 +293,6 @@ func TestImportStalledStreamDoesNotBlockTheRepo(t *testing.T) {
 		t.Fatal("a stalled stream blocked another import of the repo")
 	}
 
-	// The rest arrives: the stalled import finishes too.
 	if _, err := pw.Write(good[len(good)/2:]); err != nil {
 		t.Fatal(err)
 	}

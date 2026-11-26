@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// Fan-outs (WP-148).
-
 type fanoutEnv struct {
 	*taskEnv
 	p *Project
@@ -88,7 +86,6 @@ func TestFanoutStartsPackagesAFewAtATime(t *testing.T) {
 	if f.State != FanoutRunning || len(f.Items) != 3 || f.Parallel != 2 {
 		t.Fatalf("fan-out: %+v", f)
 	}
-	// Defaults: sonnet at $0.06 a call, 150 calls; budget twice the estimate.
 	a, b := f.Items[0], f.Items[1]
 	if a.Model != "sonnet" || a.Estimate != 9 || a.Budget != 18 || b.Model != "opus" || b.Estimate != 15 || b.Budget != 12 {
 		t.Errorf("items: %+v %+v", a, b)
@@ -106,7 +103,6 @@ func TestFanoutStartsPackagesAFewAtATime(t *testing.T) {
 			t.Errorf("%s: %s %q", it.Key, i.Status.Name, i.Description)
 		}
 	}
-	// Queued packages are the fan-out's: nothing else hands them out.
 	if fe.s.fanoutOf(fe.ctx, a.issueIDFor(fe)) == 0 {
 		t.Error("a queued package isn't the fan-out's")
 	}
@@ -120,14 +116,12 @@ func TestFanoutStartsPackagesAFewAtATime(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The package's session takes its task by name.
 	if _, err := fe.s.AgentTake(fe.ctx, fe.ag, a.Key, ""); err != nil {
 		t.Fatalf("take the package: %v", err)
 	}
 	if c = fe.claim(f.ID); len(c.Start) != 0 || !strings.Contains(c.Waiting, "All 2 slots") {
 		t.Fatalf("full: %q %q", claimed(c), c.Waiting)
 	}
-	// Another machine can't start them: the worktrees are on box.
 	if _, err := fe.s.ClaimFanout(fe.ctx, fe.ag, f.ID, "elsewhere"); !IsInvalid(err) {
 		t.Errorf("claim elsewhere: %v", err)
 	}
@@ -140,7 +134,6 @@ func TestFanoutStartsPackagesAFewAtATime(t *testing.T) {
 		t.Fatalf("after one ended: %q %q", claimed(c), c.Waiting)
 	}
 	_ = fe.s.FanoutItemStarted(fe.ctx, fe.ag, f.ID, f.Items[2].Key, "")
-	// Ending twice (wp done, then the session's end) keeps the first.
 	if err := fe.s.EndFanoutItem(fe.ctx, fe.ag, f.ID, a.Key, OutcomeEnded, 8, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +144,6 @@ func TestFanoutStartsPackagesAFewAtATime(t *testing.T) {
 		t.Fatal(err)
 	}
 	fe.s.bg.Wait()
-	// The package stopped at its budget isn't retried: its task is let go.
 	if i := fe.issueKey(b.Key); i.ClaimedBy != "" {
 		t.Errorf("%s still claimed by %q after its budget stop", b.Key, i.ClaimedBy)
 	}
@@ -184,7 +176,7 @@ func TestFanoutOverTheLineAsksFirst(t *testing.T) {
 	fe := newFanoutEnv(t)
 	in := fe.plan(4, func(in *FanoutInput) { in.Model = "opus" })
 	for n := range in.Packages {
-		in.Packages[n].Calls = 200 // 4 × $20 = $80, 4.4% of a week
+		in.Packages[n].Calls = 200
 	}
 	dry := in
 	dry.DryRun = true
@@ -221,7 +213,6 @@ func TestFanoutOverTheLineAsksFirst(t *testing.T) {
 		t.Fatalf("after Start: %q %q", claimed(c), c.Waiting)
 	}
 
-	// Don't start: nothing runs and the tasks stay where they are.
 	f2 := fe.create(in)
 	if _, err := fe.s.DecideRequest(fe.ctx, fe.admin, f2.Request, RequestDecision{Decision: "answer", Answers: []Answer{{Choices: []string{fanoutDontStart}}}}); err != nil {
 		t.Fatal(err)
@@ -242,7 +233,6 @@ func TestFanoutStopAndSweep(t *testing.T) {
 	c := fe.claim(f.ID)
 	a, b := c.Start[0], c.Start[1]
 	_ = fe.s.FanoutItemStarted(fe.ctx, fe.ag, f.ID, a.Key, "aaaa1111")
-	// b never says it started: after 10 minutes it failed.
 	fe.setClock(fe.clockNow().Add(11 * time.Minute))
 	fe.s.CheckFanouts(fe.ctx)
 	fe.s.bg.Wait()
@@ -250,7 +240,6 @@ func TestFanoutStopAndSweep(t *testing.T) {
 	if d.Items[1].State != ItemFailed {
 		t.Fatalf("a launch that never reported: %s", d.Items[1].State)
 	}
-	// a's session was never seen for an hour: taken as ended.
 	fe.setClock(fe.clockNow().Add(50 * time.Minute))
 	fe.s.CheckFanouts(fe.ctx)
 	fe.s.bg.Wait()
@@ -260,7 +249,6 @@ func TestFanoutStopAndSweep(t *testing.T) {
 	if i := fe.issueKey(a.Key); i.ClaimedBy != "" {
 		t.Errorf("a lost package's task still claimed by %q", i.ClaimedBy)
 	}
-	// Nothing runs and the third could start: the coordinator is nudged.
 	if msgs := strings.Join(fe.messages(), "\n"); !strings.Contains(msgs, "nothing running") {
 		t.Errorf("no nudge: %q", msgs)
 	}
@@ -325,7 +313,6 @@ func TestFanoutPlanChecks(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	// Another person's fan-out is not found.
 	f := fe.create(fe.plan(1, nil))
 	other := fe.user("olga", false)
 	if _, err := fe.s.GetFanout(fe.ctx, other, f.ID); !errors.Is(err, ErrNotFound) {

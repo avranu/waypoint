@@ -1,9 +1,3 @@
-// Connections (WP-385): what lies around a thing in the relation graph,
-// drawn as rings by steps out, with the list nearest first and the route
-// between two things. Every relation, parent, link, page, decision, goal,
-// pull request, changed file and agent session is one graph; nothing here
-// asks a person to link or approve anything.
-
 import { useMemo, useState, type FormEvent } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
@@ -37,8 +31,6 @@ interface GraphSearch {
   open?: boolean
   to?: string
 }
-
-// ---- kinds: four groups, so the validated categorical slots suffice ----
 
 type Group = 'work' | 'knowledge' | 'code' | 'session'
 
@@ -122,8 +114,6 @@ function routeText(path: GraphEdge[] | null, names: Map<string, string>): string
     .join(' → ')
 }
 
-// ---- layout: rings by steps out, each node near the one it hangs from ----
-
 const SIZE = 640
 const MID = SIZE / 2
 
@@ -148,7 +138,6 @@ export function layoutRings(view: GraphView): Map<string, Placed> {
       const p = n.path ?? []
       return p.length ? p[p.length - 1].from : ''
     }
-    // The first ring spreads evenly from the top.
     if (h === 1) {
       ring.sort((a, b) => a.distance - b.distance)
       ring.forEach((n, i) => {
@@ -162,8 +151,6 @@ export function layoutRings(view: GraphView): Map<string, Placed> {
       })
       continue
     }
-    // Further out, each node wants its parent's angle; siblings fan out
-    // around it, and the ring is then pushed apart to a minimum gap.
     const gap = Math.min(TAU / ring.length, Math.max(56 / r, 0.5))
     const byParent = new Map<string, GraphHit[]>()
     for (const n of ring) {
@@ -179,7 +166,6 @@ export function layoutRings(view: GraphView): Map<string, Placed> {
     want.sort((x, y) => x.a - y.a)
     const wanted = want.map((w) => w.a)
     for (let i = 1; i < want.length; i++) want[i].a = Math.max(want[i].a, want[i - 1].a + gap)
-    // Pushing only forward drifts the ring; shift it back by the mean push.
     const drift = want.reduce((s, w, i) => s + w.a - wanted[i], 0) / want.length
     for (const { n, a } of want) {
       const angle = a - drift
@@ -201,7 +187,6 @@ function GraphMap({
   const placed = useMemo(() => layoutRings(view), [view])
   const [hover, setHover] = useState<string | null>(null)
   const focus = hover ?? selected
-  // The route to the node in focus stands out.
   const onRoute = new Set<string>()
   const focusHit = focus ? placed.get(focus)?.hit : undefined
   for (const e of focusHit?.path ?? []) onRoute.add(e.from + '|' + e.to)
@@ -272,7 +257,6 @@ function GraphMap({
             onBlur={() => setHover(null)}
           >
             <title>{`${hit.ref} ${hit.title}${hit.state ? ' [' + hit.state + ']' : ''}`}</title>
-            {/* A hit target bigger than the mark. */}
             <circle cx={x} cy={y} r={14} fill="transparent" />
             <circle
               cx={x}

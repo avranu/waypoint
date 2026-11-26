@@ -1,8 +1,3 @@
-// Picking an allow rule for a refused call (WP-233, WP-ADR114): WP-233's
-// narrow suggestions, another rule typed, or (when approving a permission
-// request) none. Used on a permission request and on refused calls in the
-// log (WP-232).
-
 import type { ReactNode } from 'react'
 import clsx from 'clsx'
 import { Check } from 'lucide-react'

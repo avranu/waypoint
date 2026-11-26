@@ -1,10 +1,3 @@
-// The CI board (WP-225): what the shared Forgejo Actions runners are running
-// and for how long, what waits and why, what finished and how long it took,
-// and when it will all be done. ETAs come from the server, which plays the
-// queue forward over the runner pool with each job's usual (p50) and slow
-// (p90) run time; this page lays them out and keeps the clocks ticking
-// between reads.
-
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -142,8 +135,6 @@ function Board({ b, now }: { b: CIBoard; now: number }) {
     </>
   )
 }
-
-// ---- alerts and tiles ----
 
 const ALERT_LOOK: Record<CIAlert['level'], { icon: ReactNode; cls: string }> = {
   error: { icon: <XCircle />, cls: 'border-danger/40 bg-danger/5 [&_svg]:text-danger' },
@@ -311,8 +302,6 @@ function Tiles({ b, now }: { b: CIBoard; now: number }) {
     </div>
   )
 }
-
-// ---- forecast ----
 
 function what(r: CIRef): string {
   if (r.hidden) return 'Another project'
@@ -500,8 +489,6 @@ function Forecast({ b, now }: { b: CIBoard; now: number }) {
   )
 }
 
-// ---- runs, running, queue ----
-
 function RunsSection({ runs, now }: { runs: CIRun[]; now: number }) {
   if (!runs.length) return null
   return (
@@ -672,8 +659,6 @@ function QueueSection({ jobs, now }: { jobs: CIJob[]; now: number }) {
     </Section>
   )
 }
-
-// ---- the last day ----
 
 function ActivitySection({ b }: { b: CIBoard }) {
   const tl = b.timeline
@@ -980,8 +965,6 @@ function ReposSection({ b }: { b: CIBoard }) {
   )
 }
 
-// ---- the hosts ----
-
 function HostsSection({ hosts, now }: { hosts: CIHost[]; now: number }) {
   if (!hosts.length) return null
   return (
@@ -1041,8 +1024,6 @@ function HostsSection({ hosts, now }: { hosts: CIHost[]; now: number }) {
     </Section>
   )
 }
-
-// ---- the pool ----
 
 const SOURCE_TEXT: Record<CIPool['source'], string> = {
   configured: 'set by an admin',
