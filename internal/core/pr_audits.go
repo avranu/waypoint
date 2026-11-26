@@ -79,23 +79,87 @@ func (s *Service) onPRAudit(ctx context.Context, e *Event) {
 // stranger's, a fork's) is not audited, and nothing else is told.
 func (s *Service) requestPRAudit(ctx context.Context, prID int64) {
 	pr, err := s.prByID(ctx, s.db.R, prID)
-	if err != nil || pr.Outside || (pr.State != "open" && pr.State != "draft") || pr.HeadSHA == "" {
+	if err != nil {
 		return
+	}
+	s.askHeadAudit(ctx, pr)
+}
+
+// auditOwed is who runs the audit pr's head owes and nobody has asked for yet
+// (the babysit owner), 0 when it owes none: AuditPRs off in every project it
+// would be asked for, an outside or fork pull request, no owner the runner
+// gate accepts, or a change already audited (headAudited). The line waits for
+// an owed audit (unsettled), so it shares these conditions: a pull request
+// must never wait for an audit nobody will create (WP-1852). A read that
+// fails is an error: whether one is owed isn't known.
+func (s *Service) auditOwed(ctx context.Context, pr *PullRequest) (int64, error) {
+	if pr.Outside || (pr.State != "open" && pr.State != "draft") || pr.HeadSHA == "" {
+		return 0, nil
 	}
 	if pr.headRepo != "" && !strings.EqualFold(pr.headRepo, pr.Repo) {
-		return
+		return 0, nil
 	}
-	if s.headAudited(ctx, pr) {
-		return
+	if on, err := s.auditsWanted(ctx, pr); err != nil || !on {
+		return 0, err
 	}
-	owner := s.babysitOwnerFor(ctx, pr)
-	if owner == 0 {
-		return
+	if read, err := s.headAudited(ctx, pr); err != nil || read {
+		return 0, err
 	}
-	_, err = s.RequestAudit(ctx, SystemActor(), AuditInput{PRID: pr.ID, Via: "system", owner: owner,
+	return s.babysitOwnerErr(ctx, pr) // 0: not a member's, the runner gate would refuse it
+}
+
+// auditsWanted: AuditPRs is on, unarchived, in a project that hears of pr's
+// opening (botProjects) or of its ready mark (attachedProject).
+func (s *Service) auditsWanted(ctx context.Context, pr *PullRequest) (bool, error) {
+	first, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
+	if err != nil {
+		return false, err
+	}
+	ids, err := s.botProjects(ctx, pr.ForgeID, pr.Repo)
+	if err != nil {
+		return false, err
+	}
+	for _, id := range append(ids, first) {
+		if id == 0 {
+			continue
+		}
+		p, err := s.projectByID(ctx, s.db.R, id)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		if p.Settings.AuditPRs && !p.Archived {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// requestHeadAudit asks for pr's audit when its head owes one, and says
+// whether an audit of the head now exists to wait for: false when none is
+// owed, RequestAudit refused (logged), or the request's key already names an
+// audit of another commit, which nothing would replace.
+func (s *Service) requestHeadAudit(ctx context.Context, pr *PullRequest) (bool, error) {
+	owner, err := s.auditOwed(ctx, pr)
+	if err != nil || owner == 0 {
+		return false, err
+	}
+	a, err := s.RequestAudit(ctx, SystemActor(), AuditInput{PRID: pr.ID, Via: "system", owner: owner, head: pr.HeadSHA,
 		requestKey: fmt.Sprintf(prAuditKey, pr.ID, strings.ToLower(pr.HeadSHA))})
 	if err != nil {
 		s.log.Info("audit a pull request skipped", "repo", pr.Repo, "number", pr.Number, "err", err)
+		return false, nil
+	}
+	return sameSHA(a.Ref, pr.HeadSHA), nil
+}
+
+// askHeadAudit is requestHeadAudit for a caller that doesn't wait on the
+// answer: a read that fails is logged, and the next look asks again.
+func (s *Service) askHeadAudit(ctx context.Context, pr *PullRequest) {
+	if _, err := s.requestHeadAudit(ctx, pr); err != nil && readFault(err) {
+		s.log.WarnContext(ctx, "read whether a pull request's head owes an audit", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
 	}
 }
 
@@ -115,26 +179,62 @@ func (s *Service) prAuthorModel(ctx context.Context, pr *PullRequest) string {
 }
 
 // headAudited: some audit of the pull request, in any state, read this
-// head (a footprint check isn't one). A review round's audit handed to the
-// pull request that ended without an answer doesn't count: it was the
+// head's change (a footprint check isn't one). A review round's audit handed
+// to the pull request that ended without an answer doesn't count: it was the
 // change's review, and nothing else would replace it (WP-1250). The pull
 // request's own audit still counts in any state, even when a round reused
 // it: asking again by its key would only find it.
-func (s *Service) headAudited(ctx context.Context, pr *PullRequest) bool {
+func (s *Service) headAudited(ctx context.Context, pr *PullRequest) (bool, error) {
+	heads, err := s.sameChangeHeads(ctx, pr)
+	if err != nil {
+		return false, err
+	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT a.ref FROM code_audits a WHERE a.pr_id = ? AND a.purpose = ''
 		AND NOT (a.status IN (?, ?) AND a.request_key NOT LIKE 'pr-audit:%'
 			AND EXISTS (SELECT 1 FROM work_log w WHERE w.kind = 'review' AND w.audit_id = a.id))`, pr.ID, AuditFailed, AuditLimited)
 	if err != nil {
-		return true
+		return false, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var ref string
-		if rows.Scan(&ref) == nil && sameSHA(ref, pr.HeadSHA) {
-			return true
+		if err := rows.Scan(&ref); err != nil {
+			return false, err
+		}
+		if slices.ContainsFunc(heads, func(h string) bool { return sameSHA(ref, h) }) {
+			return true, nil
 		}
 	}
-	return false
+	return false, rows.Err()
+}
+
+// sameChangeHeads are the commits an audit of which covers pr's head: the
+// head, and, when it only merged the base in over an earlier head, cleanly,
+// every head known to carry the same diff. The record is WP-1808's carry, made
+// when the head was first seen (carryDecision: two parents, the first the old
+// head, the diff's hash equal), so a base merge a round made to resolve
+// conflicts changes the diff and isn't carried. Without a review rule to carry
+// (a project whose bots are off) nothing is recorded (WP-1852).
+func (s *Service) sameChangeHeads(ctx context.Context, pr *PullRequest) ([]string, error) {
+	heads := []string{pr.HeadSHA}
+	from := pr.contentHeadSHA()
+	if from == pr.HeadSHA {
+		return heads, nil
+	}
+	rows, err := s.db.R.QueryContext(ctx, `SELECT DISTINCT head_sha FROM reviewed_heads WHERE pr_id = ? AND content_sha = ?`, pr.ID, from)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	heads = append(heads, from)
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, err
+		}
+		heads = append(heads, h)
+	}
+	return heads, rows.Err()
 }
 
 // auditGoing is the pull request's audit that holds the babysitter and the

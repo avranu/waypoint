@@ -37,6 +37,7 @@ interface LimitsDraft {
   five_hour_max: string
   merge: '' | MergePolicy
   grace_seconds: string
+  deferred: Tri
   review: Tri
   review_prompt: string
   review_skip: '' | ReviewSkip
@@ -88,6 +89,7 @@ const draftOf = (l: AutopilotLimits): LimitsDraft => ({
   five_hour_max: l.five_hour_max?.toString() ?? '',
   merge: l.merge ?? '',
   grace_seconds: l.grace_seconds?.toString() ?? '',
+  deferred: tri(l.deferred),
   review: tri(l.review),
   review_prompt: l.review_prompt ?? '',
   review_skip: l.review_skip ?? '',
@@ -144,6 +146,7 @@ function limitsOf(d: LimitsDraft): { limits: AutopilotLimits; error?: string } {
     num('at_once', 'Sessions at once', 20, true) ??
     num('merge_wait_hours', 'Longest merge wait', 168, true, 1)
   if (d.merge) limits.merge = d.merge
+  if (d.deferred) limits.deferred = d.deferred === 'on'
   if (d.review) limits.review = d.review === 'on'
   if (d.review_skip) limits.review_skip = d.review_skip
   if (d.review_model) limits.review_model = d.review_model
@@ -298,7 +301,11 @@ export function LimitsForm({
       />
     </Field>
   )
-  const onOff = (k: 'review' | 'approved' | 'planned', label: string, hint: ReactNode) => (
+  const onOff = (
+    k: 'deferred' | 'review' | 'approved' | 'planned',
+    label: string,
+    hint: ReactNode,
+  ) => (
     <Field label={label} hint={hint}>
       <Select id={`${idPrefix}-${k}`} value={draft[k]} onChange={set(k)} aria-label={label}>
         <option value="">{`Inherit (${inherit[k] ? 'on' : 'off'})`}</option>
@@ -374,6 +381,11 @@ export function LimitsForm({
           'Longest merge wait (hours)',
           'How long a task waits for a merge at most, then starts anyway. Start now skips the wait.',
           '1',
+        )}
+        {onOff(
+          'deferred',
+          'Offer deferred tasks at ship',
+          'When an Opus or Fable agent ships and filed other tasks meanwhile, Waypoint lists them once, before the ship or after it, so the agent can do the fitting ones.',
         )}
         {onOff(
           'review',

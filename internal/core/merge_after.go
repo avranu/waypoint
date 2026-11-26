@@ -359,12 +359,15 @@ func linkOnForge(l, forge string) string {
 			AND %[1]s.url LIKE (SELECT rtrim(base_url, '/') || '/%%' FROM forges WHERE id = %[2]s)`, l, forge)
 }
 
+// mergeAfterUnread is mergeWaitReasons' answer when it couldn't read them.
+const mergeAfterUnread = "the pull requests it merges after couldn't be read"
+
 // mergeWaitReasons are pr's merge check reasons for the pull requests it
 // still waits for, and a note for a pair that waits both ways.
 func (s *Service) mergeWaitReasons(ctx context.Context, pr *PullRequest) (reasons, notes []string) {
 	waits, err := s.mergeAfter(ctx, s.db.R, pr)
 	if err != nil {
-		return []string{"the pull requests it merges after couldn't be read"}, nil
+		return []string{mergeAfterUnread}, nil
 	}
 	for _, w := range waits {
 		switch {

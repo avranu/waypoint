@@ -183,6 +183,7 @@ type Service struct {
 	stopWaits        stopWaits
 	shipWaits        shipWaits
 	babysitLocks     keyedLocks
+	coverLooked      sync.Map
 	shipLocks        keyedLocks
 	branchLocks      namedLocks
 	objectiveLocks   keyedLocks
