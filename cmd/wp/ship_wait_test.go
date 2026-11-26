@@ -378,7 +378,7 @@ func shipWorkHeld(t *testing.T, c *cli, answers ...*openedPR) (other bool, err e
 	if err := fs.Parse([]string{"--no-arm", "--no-babysit", "--no-move", "--wait-timeout=5s"}); err != nil {
 		t.Fatal(err)
 	}
-	return c.shipWork(f, so, "", false, "WP-9", true)
+	return c.shipWork(f, so, "", false, []string{"WP-9"}, true)
 }
 
 // The wait ends with findings: shipWork returns after printing them, without

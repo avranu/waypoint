@@ -846,13 +846,13 @@ func TestScheduleIsSound(t *testing.T) {
 		"forge rechecks", "pull requests", "resume babysits", "forge sync", "armed heads", "CI history", "CI health", "review gates",
 		"pending checks", "system resources", "armed merges", "babysits", "audits", "objectives", "request conditions", "hold conditions", "safety screens",
 		"quota guard watch", "autopilot", "warm caches", "work logs", "PR descriptions", "fan-outs", "log secrets",
-		"session facts", "front rounds",
+		"session facts", "front rounds", "deferred offers",
 	} {
 		if _, ok := at[name]; !ok {
 			t.Errorf("no job %q", name)
 		}
 	}
-	if len(at) != 66 {
+	if len(at) != 67 {
 		t.Errorf("%d jobs: one was added or removed; name it above", len(at))
 	}
 	if _, ok := at[healthWatchdogName]; ok {
