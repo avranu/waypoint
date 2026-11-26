@@ -915,6 +915,10 @@ func TestCommandCells(t *testing.T) {
 	if len(got.Cells[0].Runs) != 1 || got.Cells[0].Runs[0].State != "queued" || got.Cells[0].Runs[0].Command != "make migrate ARGS=--dry-run" {
 		t.Fatalf("run: %+v", got.Cells[0].Runs)
 	}
+	if loaded, err := r.s.GetRequest(r.ctx, r.ana, q.Ref, 0); err != nil || loaded.Cells[0].Command != "make migrate" ||
+		len(loaded.Cells[0].Runs) != 1 || loaded.Cells[0].Runs[0].Command != "make migrate ARGS=--dry-run" {
+		t.Fatalf("reloaded cell: %+v %v", loaded.Cells[0], err)
+	}
 	if _, err := r.s.RunCell(r.ctx, r.ana, q.Ref, 2, ""); err != nil {
 		t.Fatal(err)
 	}

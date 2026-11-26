@@ -212,7 +212,11 @@ func TestReviewRoundStakes(t *testing.T) {
 		if n := prAudits(); n != 2 {
 			t.Fatalf("the pull request's own failed audit asked again: %d audits", n)
 		}
-		if pr, err := a.s.prByID(a.ctx, a.s.db.R, *au.PRID); err != nil || !a.s.headAudited(a.ctx, pr) {
+		pr, err := a.s.prByID(a.ctx, a.s.db.R, *au.PRID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if read, err := a.s.headAudited(a.ctx, pr); err != nil || !read {
 			t.Fatalf("the pull request's own failed audit doesn't count (%v)", err)
 		}
 	})
