@@ -1186,8 +1186,9 @@ an agent). Only the owner's work runs on a runner. Jobs: `command`, `apply`, `ag
         cancel lists running jobs a person stopped, and jobs in running that the server
         ended itself more than 45 s ago (stop them). Jobs the server thinks the runner has
         that it doesn't list in running are failed as lost. server_version is the server's
-        version: a runner on a release build that differs updates itself between jobs
-        (/cli/wp-OS-ARCH, checked against /cli/SHA256SUMS)
+        version: a runner on a release build that differs replaces its binary at once
+        (/cli/wp-OS-ARCH, checked against /cli/SHA256SUMS), restarts on it when no job
+        is running, and takes no new jobs after waiting 15 minutes for that
     POST /runner/jobs/{id}/log   {offset, text} → {size, cancel, truncated}
         append output; offset (bytes) makes a resent chunk harmless; 1 MB kept per job;
         cancel true = stop the job

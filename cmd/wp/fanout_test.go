@@ -66,7 +66,7 @@ func TestFanoutRunsPackagesAsTaskSessions(t *testing.T) {
 	var detached [][]string
 	old := backgroundStart
 	t.Cleanup(func() { backgroundStart = old })
-	backgroundStart = func(exe string, args ...string) { detached = append(detached, args) }
+	backgroundStart = func(exe string, args ...string) bool { detached = append(detached, args); return true }
 
 	plan := filepath.Join(t.TempDir(), "plan.toml")
 	if err := os.WriteFile(plan, []byte(`parallel = 2

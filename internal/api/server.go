@@ -176,6 +176,9 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "same-origin")
 		h.Set("X-Frame-Options", "DENY")
+		if s.cfg.Version != "" {
+			h.Set("X-Waypoint-Version", s.cfg.Version) // a wp that differs upgrades itself
+		}
 		defer func() {
 			p := recover()
 			var stack string
