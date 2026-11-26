@@ -45,7 +45,7 @@ func TestPRAuditCarriesEarlierFindingsWithStatesAndReasons(t *testing.T) {
 		}
 	}
 	open, rej, fixed := strings.Index(p, "| open:"), strings.Index(p, "| rejected:"), strings.Index(p, "| fixed:")
-	if !(open < rej && rej < fixed) {
+	if open >= rej || rej >= fixed {
 		t.Errorf("order is open, rejected, fixed: got %d %d %d", open, rej, fixed)
 	}
 }
@@ -123,5 +123,28 @@ func TestFindingThatNamesAnEarlierIdIsItsRepeat(t *testing.T) {
 	in.Items, in.Earlier = []ledgerItem{now}, []ledgerItem{earlier, now}
 	if _, class := classifyRound(in); class == RoundRepeat {
 		t.Fatal("a finding sharing no words and naming nothing was taken for a repeat")
+	}
+}
+
+func TestNamedPointNoRoundIsKnownToHaveFixedNamesNoRound(t *testing.T) {
+	t0 := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	rejected := ledgerItem{ID: "5.1", Kind: "finding", Path: "a.go", Line: 10, SHA: "aaa", Body: "Export leaks rows. Strangers read them", Dealt: true, At: t0}
+	now := ledgerItem{ID: "6.1", Kind: "finding", Path: "b.go", Line: 90, SHA: "bbb", Body: "Quota unchecked. Anyone exceeds it", At: t0.Add(2 * time.Hour), RefersTo: "5.1"}
+	rounds := []BabysitRound{{N: 1, SHA: "aaa", PushSHA: "bbb", Pushed: true, At: t0.Add(time.Hour), Findings: []string{"5.1"},
+		Ledger: []LedgerEntry{{ID: "5.1", Kind: "finding"}}}}
+	for name, earlier := range map[string][]ledgerItem{
+		"rejected by a round that pushed": {rejected, now},
+		"known only from a round":         {now},
+	} {
+		entries, _ := classifyRound(ledgerInput{Head: "bbb", Items: []ledgerItem{now}, Earlier: earlier, Rounds: rounds, File: ledgerFiles})
+		if e := entries[0]; e.Class != RoundRepeat || e.Of != "5.1" || e.Round != 0 || strings.Contains(e.Why, "fixed") {
+			t.Errorf("%s: entry %+v: a repeat of 5.1 that names no round as its fix", name, e)
+		}
+	}
+	fixed := rejected
+	fixed.Fixed = true
+	entries, _ := classifyRound(ledgerInput{Head: "bbb", Items: []ledgerItem{now}, Earlier: []ledgerItem{fixed, now}, Rounds: rounds, File: ledgerFiles})
+	if entries[0].Round != 1 {
+		t.Errorf("entry %+v: round 1 fixed 5.1", entries[0])
 	}
 }

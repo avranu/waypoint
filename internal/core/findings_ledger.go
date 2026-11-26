@@ -236,12 +236,18 @@ func (l *ledger) repeatOf(it ledgerItem, e LedgerEntry) (ledgerItem, int, bool) 
 	if it.RefersTo != "" && it.RefersTo != it.ID {
 		for _, p := range l.in.Earlier {
 			if p.ID == it.RefersTo {
+				if p.Dealt && !p.Fixed {
+					// Rejected, dismissed or deferred: a round that was
+					// given it and pushed didn't fix it.
+					return p, 0, true
+				}
 				return p, l.fixedIn(p), true
 			}
 		}
 		for _, r := range l.in.Rounds {
 			if r.Pushed && slices.ContainsFunc(r.Ledger, func(pe LedgerEntry) bool { return pe.ID == it.RefersTo }) {
-				return ledgerItem{ID: it.RefersTo, Kind: "finding"}, r.N, true
+				// A round's ledger doesn't say how the point ended.
+				return ledgerItem{ID: it.RefersTo, Kind: "finding"}, 0, true
 			}
 		}
 	}
