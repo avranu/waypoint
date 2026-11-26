@@ -10,25 +10,18 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// What counts as a read from one of the repo's environments (WP-749,
-// WP-ADR90). The guard lists what leaves a request a read, rather than what
-// makes it a change: it can't keep up with every way a tool sends a body or
-// another method (abbreviated long options, config files, curl --next and
-// --expand-*, wget -e, other protocols), so anything it doesn't know is
-// refused there.
-
 // readMethods are the HTTP methods that only read.
 var readMethods = map[string]bool{"GET": true, "HEAD": true, "OPTIONS": true}
 
 // readSpec lists the options of a fetch tool that leave a request a read.
 type readSpec struct {
-	short    string   // short options without a value
-	shortVal string   // short options with one
-	long     []string // long options without a value
-	longVal  []string // long options with one
-	method   []string // options whose value is the request method
-	header   []string // options whose value is a header
-	format   []string // options whose value is an output format (curl -w)
+	short    string
+	shortVal string
+	long     []string
+	longVal  []string
+	method   []string
+	header   []string
+	format   []string
 }
 
 var (
@@ -92,7 +85,7 @@ func scanRead(args []string, spec readSpec) (pos []string, seen map[string]bool,
 	seen = map[string]bool{}
 	value := func(flag, v, arg string) string {
 		switch {
-		case slices.Contains(spec.method, flag) && !readMethods[v]: // curl sends -X get as get
+		case slices.Contains(spec.method, flag) && !readMethods[v]:
 			return flag + " " + v
 		case slices.Contains(spec.header, flag) && methodHeader(v):
 			return arg
@@ -166,7 +159,6 @@ func envChange(name string, args []string) string {
 	case "curl":
 		_, seen, bad := scanRead(args, curlRead)
 		if bad != "" && (seen["-G"] || seen["--get"]) {
-			// With -G, curl puts the data in the query of a GET.
 			if _, seen, b := scanRead(args, curlGetRead); b == "" && (seen["-G"] || seen["--get"]) {
 				return ""
 			}
@@ -175,8 +167,6 @@ func envChange(name string, args []string) string {
 	case "wget":
 		_, seen, bad := scanRead(args, wgetRead)
 		if bad == "" && !seen["-O"] && !seen["--output-document"] && !seen["--spider"] {
-			// Without one, wget saves into the working directory under a
-			// name from the URL, over any file of that name.
 			return "no -O, so wget writes a file in the working directory"
 		}
 		return bad
@@ -185,7 +175,6 @@ func envChange(name string, args []string) string {
 		if bad != "" {
 			return bad
 		}
-		// seen holds options, not their values: -oIx is -o with the value Ix.
 		stdin := seen["--ignore-stdin"] || seen["-I"]
 		if len(pos) > 1 && httpMethod(pos[0]) {
 			if !readMethods[strings.ToUpper(pos[0])] {
@@ -198,7 +187,7 @@ func envChange(name string, args []string) string {
 		}
 		for _, item := range pos[min(1, len(pos)):] {
 			i := strings.IndexAny(item, ":=@")
-			if i < 0 || strings.Contains(item, `\`) { // a\==b is the data field a= (httpie escapes)
+			if i < 0 || strings.Contains(item, `\`) {
 				return item
 			}
 			next := byte(0)
@@ -206,15 +195,15 @@ func envChange(name string, args []string) string {
 				next = item[i+1]
 			}
 			switch {
-			case item[i] == '=' && next == '=': // query
-			case item[i] == ':' && next != '=' && !methodHeader(item): // header
+			case item[i] == '=' && next == '=':
+			case item[i] == ':' && next != '=' && !methodHeader(item):
 			default:
 				return item
 			}
 		}
 		return ""
 	}
-	return name + " (use curl)" // aria2c, fetch
+	return name + " (use curl)"
 }
 
 // fetchConfig is a settings file the tool reads on its own, which could
@@ -222,8 +211,6 @@ func envChange(name string, args []string) string {
 // is none. The variables that move them are refused (fetchSettingsVar).
 func fetchConfig(name string) string {
 	var files []string
-	// HOME, and the account's home, which the tools fall back on when a
-	// command unsets HOME.
 	for _, home := range []string{os.Getenv("HOME"), passwdHome()} {
 		xdg := os.Getenv("XDG_CONFIG_HOME")
 		if xdg == "" && home != "" {

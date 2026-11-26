@@ -6,13 +6,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// What Waypoint asks a runner for when it reads an objective, and what the
-// runner answers (WP-927, WP-ADR111, WP-ADR142). The job is Waypoint's own kind: no
-// person or agent can queue one, and only the runner that took it answers.
-// It runs on a runner of the person who put the objective in effect, in
-// checkouts the runner makes itself, so the agent that worked the round
-// has no hand in the reading.
-
 const (
 	// JobObjective reads an objective in fresh checkouts: the check, at the
 	// commit the branch stands at and beside the commit the round started
@@ -172,7 +165,6 @@ func (r *ObjectiveJobResult) clean(j *ObjectiveJob) (why string) {
 	if r.BaseReading == nil {
 		r.Base, r.P = "", nil
 	}
-	// Every keep-passing command the job named ran, once, and nothing else did.
 	kept := make([]ObjectiveKept, 0, len(j.KeepPassing))
 	for _, cmd := range j.KeepPassing {
 		found := false

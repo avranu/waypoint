@@ -22,7 +22,7 @@ type reqEnv struct {
 	p       *Project
 	ana     *Actor
 	bob     *Actor
-	agent   *Actor // ana's token as an agent, in her session
+	agent   *Actor
 	session int64
 }
 
@@ -88,7 +88,6 @@ func TestQuestionRequestFlow(t *testing.T) {
 	if q2 := r.ask(RequestInput{Kind: RequestAction, Title: "Set the DEPLOY_KEY secret"}); q2.Code != "R-2" {
 		t.Fatalf("second request is %s", q2.Code)
 	}
-	// Outside a project (no session): personal, numbered for the person.
 	personal, _, err := r.s.CreateRequest(r.ctx, agentActor(r.ana, "anthropic/claude-code"), RequestInput{Kind: RequestAction, Title: "Renew the certificate"})
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +96,6 @@ func TestQuestionRequestFlow(t *testing.T) {
 		t.Fatalf("personal: %+v", personal)
 	}
 
-	// People who can't decide can't even see it; the agent can't decide.
 	if _, err := r.s.GetRequest(r.ctx, r.bob, q.Ref, 0); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("bob (viewer) reads: %v", err)
 	}
@@ -107,7 +105,6 @@ func TestQuestionRequestFlow(t *testing.T) {
 	if _, err := r.s.DecideRequest(r.ctx, r.bob, q.Ref, RequestDecision{Decision: "answer", Text: "sqlite"}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("bob decided: %v", err)
 	}
-	// Not a choice, and the wrong decision for the kind.
 	if _, err := r.s.DecideRequest(r.ctx, r.ana, q.Ref, RequestDecision{Decision: "answer", Answers: []Answer{{Choices: []string{"mysql"}}}}); !IsInvalid(err) {
 		t.Fatalf("a bad choice: %v", err)
 	}
@@ -121,7 +118,6 @@ func TestQuestionRequestFlow(t *testing.T) {
 	if n := r.s.AnsweredRequests(r.ctx, r.agent); n != 0 {
 		t.Fatalf("answered before deciding: %d", n)
 	}
-	// Nothing to deliver yet.
 	if res := r.stop(); len(res.Deliver) != 0 {
 		t.Fatalf("delivered %d before any decision", len(res.Deliver))
 	}
@@ -139,7 +135,6 @@ func TestQuestionRequestFlow(t *testing.T) {
 		t.Fatalf("answered requests: %d", n)
 	}
 
-	// The Stop hook delivers it once; a Stop that already continued doesn't.
 	if res, _ := r.s.SessionHook(r.ctx, agentActor(r.ana, "anthropic/claude-code"), []HookEvent{hook("box", "cli-1", "Stop", func(h *HookEvent) { h.StopHookActive = true })}); len(res.Deliver) != 0 {
 		t.Fatal("a Stop that already continued was blocked again")
 	}
@@ -154,7 +149,6 @@ func TestQuestionRequestFlow(t *testing.T) {
 		t.Fatalf("answered after delivery: %d", n)
 	}
 
-	// The audit log has the decision; the person was notified of the ask.
 	page, err := r.s.ListAudit(r.ctx, r.admin, AuditQuery{Category: AuditApproval})
 	if err != nil {
 		t.Fatal(err)
@@ -181,8 +175,6 @@ func TestQuestionRequestFlow(t *testing.T) {
 func TestSessionStartListsDecisionsOfEarlierSessions(t *testing.T) {
 	r := newReqEnv(t)
 	q := r.ask(RequestInput{Kind: RequestQuestion, Title: "Use tabs?", Questions: []Question{{Question: "Use tabs?"}}})
-	// The session ends; the answer comes later; a new session in the same
-	// worktree hears about it.
 	r.s.SessionHook(r.ctx, agentActor(r.ana, "anthropic/claude-code"), []HookEvent{hook("box", "cli-1", "SessionEnd", nil)})
 	if _, err := r.s.DecideRequest(r.ctx, r.ana, q.Ref, RequestDecision{Decision: "answer", Text: "spaces"}); err != nil {
 		t.Fatal(err)
@@ -194,7 +186,6 @@ func TestSessionStartListsDecisionsOfEarlierSessions(t *testing.T) {
 	if len(res.Deliver) != 1 || !strings.Contains(res.Text, "spaces") {
 		t.Fatalf("session start: %d %q", len(res.Deliver), res.Text)
 	}
-	// Another worktree is not told.
 	r.ask(RequestInput{Kind: RequestAction, Title: "x"})
 	other, _ := r.s.SessionHook(r.ctx, agentActor(r.ana, "anthropic/claude-code"), []HookEvent{hook("box", "cli-3", "SessionStart", func(h *HookEvent) { h.Cwd = "/elsewhere" })})
 	if len(other.Deliver) != 0 {
@@ -243,13 +234,11 @@ func TestRefusedCallsAreLoggedNotAsked(t *testing.T) {
 		f.Project == nil || f.Project.Key != r.p.Key || !strings.Contains(f.Agent, "claude-code") || f.RanAt != nil {
 		t.Fatalf("refusal: %+v", f)
 	}
-	// The same call again (keys in another order, a new tool_use_id) counts on the same row.
 	r.setClock(r.clockNow().Add(5 * time.Minute))
 	denied(`{"description":"clean","command":"rm -rf build"}`)
 	if page := log(r.ana, RefusalQuery{}); len(page.Refusals) != 1 || page.Refusals[0].Repeats != 2 {
 		t.Fatalf("a repeat within ten minutes: %+v", page.Refusals)
 	}
-	// A different call is another row; after ten minutes the same call is too.
 	denied(`{"command":"make deploy"}`)
 	r.setClock(r.clockNow().Add(11 * time.Minute))
 	denied(`{"command":"rm -rf build","description":"clean"}`)
@@ -257,11 +246,9 @@ func TestRefusedCallsAreLoggedNotAsked(t *testing.T) {
 	if c := page.Counts; len(page.Refusals) != 3 || c == nil || c.Refusals != 3 || c.Calls != 4 || c.Sessions != 1 || c.Tools["Bash"] != 4 {
 		t.Fatalf("log %d rows, counts %+v", len(page.Refusals), page.Counts)
 	}
-	// Still nothing to decide.
 	if page, _ := r.s.ListRequests(r.ctx, r.ana, RequestQuery{State: "all"}); page.Total != 0 {
 		t.Fatalf("refused calls filed %d requests", page.Total)
 	}
-	// A person allows make deploy in the terminal: it runs, and the log says so.
 	if _, err := r.s.SessionHook(r.ctx, ag, []HookEvent{hook("box", "cli-1", "PostToolUse", func(h *HookEvent) {
 		h.Tool, h.ToolInput, h.ToolUseID = "Bash", json.RawMessage(`{"command":"make deploy"}`), "tu-ran"
 	})}); err != nil {
@@ -276,7 +263,6 @@ func TestRefusedCallsAreLoggedNotAsked(t *testing.T) {
 	if page.Counts.Ran != 1 {
 		t.Errorf("counts ran %d", page.Counts.Ran)
 	}
-	// Paging, filters.
 	first := log(r.ana, RefusalQuery{Limit: 2})
 	if len(first.Refusals) != 2 || !first.More {
 		t.Fatalf("first page %d more %v", len(first.Refusals), first.More)
@@ -293,14 +279,12 @@ func TestRefusedCallsAreLoggedNotAsked(t *testing.T) {
 	if n := len(log(r.ana, RefusalQuery{Project: r.p.Key, Session: r.session}).Refusals); n != 3 {
 		t.Errorf("project and session: %d", n)
 	}
-	// Visible as a request is: admins, not the project's viewers.
 	if n := len(log(r.admin, RefusalQuery{}).Refusals); n != 3 {
 		t.Errorf("admin sees %d", n)
 	}
 	if n := len(log(r.bob, RefusalQuery{}).Refusals); n != 0 {
 		t.Errorf("bob, a viewer, sees %d", n)
 	}
-	// On the session's timeline: the command for ana, not for bob.
 	for who, want := range map[*Actor]bool{r.ana: true, r.bob: false} {
 		sum, err := r.s.GetAgentSession(r.ctx, who, r.session)
 		if err != nil {
@@ -319,8 +303,6 @@ func TestRefusedCallsAreLoggedNotAsked(t *testing.T) {
 			t.Errorf("%s's timeline has %d refused lines", who.User.Username, n)
 		}
 	}
-	// The request the agent then files shows what was refused before it,
-	// to the person deciding it, not to the agent.
 	q := r.ask(RequestInput{Kind: RequestAction, Title: "Clean the build"})
 	got, err := r.s.GetRequest(r.ctx, r.ana, q.Ref, 0)
 	if err != nil {
@@ -332,7 +314,6 @@ func TestRefusedCallsAreLoggedNotAsked(t *testing.T) {
 	if mine, _ := r.s.GetRequest(r.ctx, r.agent, q.Ref, 0); len(mine.Refused) != 0 {
 		t.Fatalf("the agent reads %d refusals", len(mine.Refused))
 	}
-	// Hours on, refusals are no longer its context.
 	r.setClock(r.clockNow().Add(2 * time.Hour))
 	q2 := r.ask(RequestInput{Kind: RequestAction, Title: "Rotate the key"})
 	if got, _ := r.s.GetRequest(r.ctx, r.ana, q2.Ref, 0); len(got.Refused) != 0 {
@@ -354,17 +335,14 @@ func TestAskUserQuestionHooks(t *testing.T) {
 	if x := sessionsFor(t, r.env, r.ana, AgentSessionQuery{})[0]; x.State != SessionWaiting || x.OpenRequests != 1 {
 		t.Fatalf("session: %s open %d", x.State, x.OpenRequests)
 	}
-	// The same PreToolUse again doesn't ask twice.
 	r.s.SessionHook(r.ctx, ag, []HookEvent{hook("box", "cli-1", "PreToolUse", func(h *HookEvent) { h.Tool, h.ToolUseID, h.ToolInput = "AskUserQuestion", "toolu_1", input })})
 	if p, _ := r.s.ListRequests(r.ctx, r.ana, RequestQuery{State: "all"}); p.Total != 1 {
 		t.Fatalf("asked twice: %d", p.Total)
 	}
-	// Other tools are not requests.
 	r.s.SessionHook(r.ctx, ag, []HookEvent{hook("box", "cli-1", "PreToolUse", func(h *HookEvent) { h.Tool, h.ToolUseID = "Bash", "toolu_2" })})
 	if p, _ := r.s.ListRequests(r.ctx, r.ana, RequestQuery{State: "all"}); p.Total != 1 {
 		t.Fatalf("a Bash call became a request: %d", p.Total)
 	}
-	// Answered in the terminal: closed, and not delivered back to the agent.
 	r.s.SessionHook(r.ctx, ag, []HookEvent{hook("box", "cli-1", "PostToolUse", func(h *HookEvent) {
 		h.Tool, h.ToolUseID = "AskUserQuestion", "toolu_1"
 		h.ToolResponse = json.RawMessage(`{"answers":{"Which approach?":"B"}}`)
@@ -392,7 +370,6 @@ func TestWithdrawSnoozeAndWaiting(t *testing.T) {
 	if err != nil || len(w.Requests) != 2 || w.Total < 2 {
 		t.Fatalf("waiting: %+v %v", w, err)
 	}
-	// Snooze hides one until a time, then it is back.
 	until := r.clockNow().Add(time.Hour)
 	if _, err := r.s.SnoozeRequest(r.ctx, r.ana, a.Ref, &until); err != nil {
 		t.Fatal(err)
@@ -424,7 +401,6 @@ func TestWithdrawSnoozeAndWaiting(t *testing.T) {
 		t.Fatalf("snooze into the past: %v", err)
 	}
 
-	// Only the asker withdraws, and only while open.
 	if _, err := r.s.WithdrawRequest(r.ctx, r.admin, a.Ref, ""); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("someone else withdrew: %v", err)
 	}
@@ -438,7 +414,6 @@ func TestWithdrawSnoozeAndWaiting(t *testing.T) {
 	if res := r.stop(); len(res.Deliver) != 0 {
 		t.Fatal("a withdrawn request was delivered")
 	}
-	// An editor of the project (not the asker) may decide; admins too.
 	cara := r.user("cara", false)
 	if err := r.s.SetMember(r.ctx, r.admin, r.p.Key, "cara", "editor"); err != nil {
 		t.Fatal(err)
@@ -462,7 +437,6 @@ func TestRequestRefs(t *testing.T) {
 	if mine.Number != 1 || elsewhere.Number != 1 {
 		t.Fatalf("numbers %d %d", mine.Number, elsewhere.Number)
 	}
-	// R-1 is the session's own; from nowhere in particular it is ambiguous.
 	if got, err := r.s.GetRequest(r.ctx, r.agent, "R-1", 0); err != nil || got.ID != mine.ID {
 		t.Fatalf("R-1 in the session: %v", err)
 	}
@@ -494,7 +468,6 @@ func TestGetRequestWaitsForADecision(t *testing.T) {
 	if time.Since(start) > 4*time.Second {
 		t.Fatal("waited the whole time")
 	}
-	// Reading a decided request is being told: the Stop hook has nothing left.
 	if res := r.stop(); len(res.Deliver) != 0 {
 		t.Fatal("delivered what the agent already read")
 	}
@@ -526,7 +499,6 @@ func TestRequestValidation(t *testing.T) {
 			t.Errorf("bad input %d (%s %q) was accepted", i, in.Kind, in.Title)
 		}
 	}
-	// A read-only token can't ask; a stranger's project is not found.
 	ro := *r.agent
 	ro.ReadOnly = true
 	if _, _, err := r.s.CreateRequest(r.ctx, &ro, RequestInput{Kind: RequestAction, Title: "x"}); !errors.Is(err, ErrForbidden) {
@@ -559,7 +531,6 @@ func TestChangeRequestDiffIsComputedHere(t *testing.T) {
 	if !got.Files[1].New || !got.Files[2].Delete || got.Files[2].Deletions != 1 {
 		t.Fatalf("new/delete: %+v %+v", got.Files[1], got.Files[2])
 	}
-	// The list leaves the diffs out; the new contents are never listed.
 	page, _ := r.s.ListRequests(r.ctx, r.ana, RequestQuery{})
 	b, _ := json.Marshal(page)
 	if strings.Contains(string(b), "be brief") {
@@ -571,8 +542,6 @@ func TestChangeRequestDiffIsComputedHere(t *testing.T) {
 	}
 }
 
-// ---- applying changes ----
-
 type fakeForgejo struct {
 	t      *testing.T
 	mu     sync.Mutex
@@ -580,7 +549,7 @@ type fakeForgejo struct {
 	commit []map[string]any
 	prs    []map[string]any
 	calls  []string
-	failPR bool // answer the pull request call with an error
+	failPR bool
 }
 
 func (f *fakeForgejo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -644,7 +613,6 @@ func TestApproveChangeThroughTheForge(t *testing.T) {
 	fake := r.forgejo(map[string]string{"CLAUDE.md": udiff.GitBlobSHA(base)})
 	q := claudeMDChange(r, base, "# Rules\nbe brief\n")
 
-	// Agents can't approve; a viewer can't either.
 	if _, err := r.s.DecideRequest(r.ctx, r.agent, q.Ref, RequestDecision{Decision: "approve", ApplyPath: "pr"}); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("an agent approved: %v", err)
 	}
@@ -678,16 +646,13 @@ func TestApproveChangeThroughTheForge(t *testing.T) {
 	if pr["head"] != got.Result.Branch || pr["base"] != "main" || pr["title"] != "Update CLAUDE.md" || !strings.Contains(pr["body"].(string), q.Ref) {
 		t.Fatalf("pr: %+v", pr)
 	}
-	// The agent is told where the change went.
 	res := r.stop()
 	if len(res.Deliver) != 1 || !strings.Contains(res.Text, "pulls/7") || !strings.Contains(res.Text, "not in your worktree") {
 		t.Fatalf("delivery: %q", res.Text)
 	}
-	// Already applied: nothing more to decide.
 	if _, err := r.s.DecideRequest(r.ctx, r.ana, q.Ref, RequestDecision{Decision: "approve"}); !IsInvalid(err) {
 		t.Fatalf("approved twice: %v", err)
 	}
-	// The audit log has the approval and the apply.
 	page, _ := r.s.ListAudit(r.ctx, r.admin, AuditQuery{})
 	actions := map[string]bool{}
 	for _, a := range page.Entries {
@@ -711,7 +676,6 @@ func TestApproveChangeWithoutAPRIsNotApplied(t *testing.T) {
 	if got.State != RequestFailed || got.Result.PRURL != "" || got.Result.Branch == "" || !strings.Contains(got.Error, "could not open the PR") || !strings.Contains(got.Error, got.Result.Branch) {
 		t.Fatalf("a pushed branch without a PR: %s %+v %q", got.State, got.Result, got.Error)
 	}
-	// A failed apply can be approved again.
 	fake.failPR = false
 	if again, err := r.s.DecideRequest(r.ctx, r.ana, q.Ref, RequestDecision{Decision: "approve", ApplyPath: "pr"}); err != nil || again.State != RequestApplied {
 		t.Fatalf("retry: %v %+v", err, again)
@@ -721,8 +685,6 @@ func TestApproveChangeWithoutAPRIsNotApplied(t *testing.T) {
 func TestApproveChangeConflictWritesNothing(t *testing.T) {
 	r := newReqEnv(t)
 	base := "# Rules\n"
-	// The file changed on the forge since the agent made its change; the
-	// other file already exists though the agent thought it new.
 	fake := r.forgejo(map[string]string{"CLAUDE.md": udiff.GitBlobSHA("# Rules\nsomeone else's edit\n"), "docs/new.md": "abc"})
 	q := claudeMDChange(r, base, "# Rules\nbe brief\n")
 	got, err := r.s.DecideRequest(r.ctx, r.ana, q.Ref, RequestDecision{Decision: "approve", ApplyPath: "pr"})
@@ -739,7 +701,6 @@ func TestApproveChangeConflictWritesNothing(t *testing.T) {
 	if !strings.Contains(res.Text, "nothing was written") {
 		t.Fatalf("delivery: %q", res.Text)
 	}
-	// A conflict can't be approved again; the agent must ask anew.
 	if _, err := r.s.DecideRequest(r.ctx, r.ana, q.Ref, RequestDecision{Decision: "approve"}); !IsInvalid(err) {
 		t.Fatalf("approved a conflict: %v", err)
 	}
@@ -748,8 +709,6 @@ func TestApproveChangeConflictWritesNothing(t *testing.T) {
 func TestApproveChangeAuthorisation(t *testing.T) {
 	r := newReqEnv(t)
 	fake := r.forgejo(map[string]string{"CLAUDE.md": udiff.GitBlobSHA("x")})
-	// bob is only a viewer of the project: his agent may ask, but approving
-	// would write to the repository with the forge's token.
 	bobAgent := agentActor(r.bob, "anthropic/claude-code")
 	q, _, err := r.s.CreateRequest(r.ctx, bobAgent, RequestInput{Kind: RequestChange, Title: "Edit", Project: r.p.Key,
 		Files: []RequestFileInput{{Path: "CLAUDE.md", BaseSHA: udiff.GitBlobSHA("x"), Base: "x", Content: "y"}}})
@@ -841,7 +800,6 @@ func TestApproveChangeOnTheRunner(t *testing.T) {
 		apply.Dir != "/work/app" || apply.Commit != "Tighten the rules" || len(apply.Files) != 2 || apply.Files[0].BaseSHA != udiff.GitBlobSHA(base) || apply.Files[0].Content != "# Rules\nbe brief\n" || apply.Push {
 		t.Fatalf("job: %+v apply %+v", j, apply)
 	}
-	// Nothing delivered while it is being applied.
 	if res := r.stop(); len(res.Deliver) != 0 {
 		t.Fatal("told the agent before it was applied")
 	}
@@ -854,7 +812,6 @@ func TestApproveChangeOnTheRunner(t *testing.T) {
 	if len(res.Deliver) != 1 || !strings.Contains(res.Text, "applied in your worktree as commit abcdef01") {
 		t.Fatalf("delivery: %q", res.Text)
 	}
-	// A late duplicate of the finish event changes nothing.
 	run.finish(r, 1, RunnerJob{State: "failed", Error: "boom"})
 	if got, _ = r.s.GetRequest(r.ctx, r.ana, q.Ref, 0); got.State != RequestApplied {
 		t.Fatalf("a repeated event changed the state to %s", got.State)
@@ -867,7 +824,7 @@ func TestJobThatFinishesAtOnceIsNotOverwrittenByTheQueuedNote(t *testing.T) {
 	enq := enqueueRunnerJob
 	enqueueRunnerJob = func(ctx context.Context, s *Service, a *Actor, in RunnerJobInput) (*RunnerJob, error) {
 		j, err := enq(ctx, s, a, in)
-		if err == nil { // the runner is quicker than the code that queued the job
+		if err == nil {
 			run.finish(r, j.ID, RunnerJob{State: "done", Result: json.RawMessage(`{"commit":"abcdef0123"}`)})
 		}
 		return j, err
@@ -892,7 +849,6 @@ func TestRunnerFailureAndConflict(t *testing.T) {
 	if got.State != RequestFailed || got.Error != "git commit failed" {
 		t.Fatalf("failed: %s %q", got.State, got.Error)
 	}
-	// A failed apply can be approved again.
 	again, err := r.s.DecideRequest(r.ctx, r.ana, q1.Ref, RequestDecision{Decision: "approve", ApplyPath: "runner"})
 	if err != nil || again.State != RequestApplying {
 		t.Fatalf("retry: %v %+v", err, again)
@@ -908,7 +864,6 @@ func TestNoRunnerOnTheMachine(t *testing.T) {
 	r := newReqEnv(t)
 	run := r.runner()
 	run.noRunner = true
-	// Explicitly asking for the runner fails with a message that says what to do.
 	q := claudeMDChange(r, "# a\n", "# b\n")
 	got, err := r.s.DecideRequest(r.ctx, r.ana, q.Ref, RequestDecision{Decision: "approve", ApplyPath: "runner"})
 	if err != nil {
@@ -917,7 +872,6 @@ func TestNoRunnerOnTheMachine(t *testing.T) {
 	if got.State != RequestFailed || got.Error != "No runner online on box; connect one or open a PR instead" {
 		t.Fatalf("explicit runner: %s %q", got.State, got.Error)
 	}
-	// By default, with no runner online, a pull request is opened.
 	fake := r.forgejo(map[string]string{"CLAUDE.md": udiff.GitBlobSHA("# a\n")})
 	q2 := claudeMDChange(r, "# a\n", "# c\n")
 	got, err = r.s.DecideRequest(r.ctx, r.ana, q2.Ref, RequestDecision{Decision: "approve"})
@@ -948,7 +902,6 @@ func TestCommandCells(t *testing.T) {
 	if _, err := r.s.RunCell(r.ctx, r.ana, q.Ref, 9, ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("no such cell: %v", err)
 	}
-	// Run it, edited; then it finishes.
 	got, err := r.s.RunCell(r.ctx, r.ana, q.Ref, 1, "make migrate ARGS=--dry-run")
 	if err != nil {
 		t.Fatal(err)
@@ -962,7 +915,10 @@ func TestCommandCells(t *testing.T) {
 	if len(got.Cells[0].Runs) != 1 || got.Cells[0].Runs[0].State != "queued" || got.Cells[0].Runs[0].Command != "make migrate ARGS=--dry-run" {
 		t.Fatalf("run: %+v", got.Cells[0].Runs)
 	}
-	// The second cell has no directory of its own: the session's.
+	if loaded, err := r.s.GetRequest(r.ctx, r.ana, q.Ref, 0); err != nil || loaded.Cells[0].Command != "make migrate" ||
+		len(loaded.Cells[0].Runs) != 1 || loaded.Cells[0].Runs[0].Command != "make migrate ARGS=--dry-run" {
+		t.Fatalf("reloaded cell: %+v %v", loaded.Cells[0], err)
+	}
 	if _, err := r.s.RunCell(r.ctx, r.ana, q.Ref, 2, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -970,7 +926,7 @@ func TestCommandCells(t *testing.T) {
 	if cj.Dir != "/work/app" || cj.Command != "make seed" {
 		t.Fatalf("second job: %+v", cj)
 	}
-	big := strings.Repeat("0123456789", 40_000) // 400 KB
+	big := strings.Repeat("0123456789", 40_000)
 	exit := 3
 	run.finish(r, 1, RunnerJob{State: "failed", ExitCode: &exit, Output: big})
 	got, _ = r.s.GetRequest(r.ctx, r.ana, q.Ref, 0)
@@ -981,7 +937,6 @@ func TestCommandCells(t *testing.T) {
 	if got.State != RequestFailed {
 		t.Fatalf("a run that exited 3 left it %s", got.State)
 	}
-	// A job that ends without saying how is a failure, not a success.
 	if _, err := r.s.RunCell(r.ctx, r.ana, q.Ref, 2, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -990,7 +945,6 @@ func TestCommandCells(t *testing.T) {
 	if st := got.Cells[1].Runs[0].State; st != "failed" || got.Cells[1].Runs[0].Error == "" {
 		t.Fatalf("a run with no state was saved as %q (%q)", st, got.Cells[1].Runs[0].Error)
 	}
-	// Run again keeps the history, newest first.
 	if _, err := r.s.RunCell(r.ctx, r.ana, q.Ref, 1, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -1001,12 +955,10 @@ func TestCommandCells(t *testing.T) {
 	if len(runs) != 2 || runs[0].Output != "ok\n" || *runs[0].ExitCode != 0 || runs[1].ExitCode == nil || *runs[1].ExitCode != 3 || runs[0].RunBy.Username != "ana" {
 		t.Fatalf("history: %+v", runs)
 	}
-	// The list shows only the latest run.
 	page, _ := r.s.ListRequests(r.ctx, r.ana, RequestQuery{})
 	if len(page.Requests[0].Cells[0].Runs) != 1 {
 		t.Fatalf("list has %d runs", len(page.Requests[0].Cells[0].Runs))
 	}
-	// Done: the agent hears the outputs; no more runs.
 	if _, err := r.s.DecideRequest(r.ctx, r.ana, q.Ref, RequestDecision{Decision: "done"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1042,17 +994,14 @@ func TestFailedRunGoesBackToTheAgent(t *testing.T) {
 		return got
 	}
 	one, zero := 1, 0
-	// The runner never ran it: still the person's.
 	run.finish(r, runIt(q.Ref), RunnerJob{State: "failed", Error: "no such directory"})
 	if got := state(q.Ref); got.State != RequestOpen {
 		t.Fatalf("a run with no exit code made it %s", got.State)
 	}
-	// Cancelled: still the person's.
 	run.finish(r, runIt(q.Ref), RunnerJob{State: "cancelled", ExitCode: &one})
 	if got := state(q.Ref); got.State != RequestOpen {
 		t.Fatalf("a cancelled run made it %s", got.State)
 	}
-	// It ran and exited 1: back to the agent, with the output.
 	run.finish(r, runIt(q.Ref), RunnerJob{State: "failed", ExitCode: &one, Output: "STOP: this checkout has uncommitted changes.\n"})
 	got := state(q.Ref)
 	if got.State != RequestFailed || got.Error != "exit 1" || got.DecidedBy == nil || got.DecidedBy.Username != "ana" || got.DecidedAt == nil {
@@ -1065,7 +1014,6 @@ func TestFailedRunGoesBackToTheAgent(t *testing.T) {
 	if _, err := r.s.DecideRequest(r.ctx, r.ana, q.Ref, RequestDecision{Decision: "done"}); !IsInvalid(err) {
 		t.Fatalf("decided a request that went back: %v", err)
 	}
-	// Run again reopens it; a success leaves it for the person to mark done.
 	run.finish(r, runIt(q.Ref), RunnerJob{State: "done", ExitCode: &zero, Output: "ok\n"})
 	if got := state(q.Ref); got.State != RequestOpen || got.DecidedAt != nil || got.Error != "" || len(got.Cells[0].Runs) != 4 {
 		t.Fatalf("run again: %s %v %q runs %d", got.State, got.DecidedAt, got.Error, len(got.Cells[0].Runs))
@@ -1073,7 +1021,6 @@ func TestFailedRunGoesBackToTheAgent(t *testing.T) {
 	if res := r.stop(); strings.Contains(res.Text, "Roll out devhost") {
 		t.Fatalf("a reopened request was delivered: %q", res.Text)
 	}
-	// An action's command failing doesn't send the action back.
 	a := r.ask(RequestInput{Kind: RequestAction, Title: "Set the secret, then check", Cells: []CellInput{{Command: "make check-secret"}}})
 	run.finish(r, runIt(a.Ref), RunnerJob{State: "failed", ExitCode: &one})
 	if got := state(a.Ref); got.State != RequestOpen {
@@ -1187,7 +1134,6 @@ func TestAgentClosesOwnRequest(t *testing.T) {
 		t.Fatalf("withdrew it twice: %v", err)
 	}
 
-	// The same agent name with a person's token in an agent's shell.
 	shell := *r.ana
 	shell.AgentEnv = "anthropic/claude-code"
 	b := r.ask(RequestInput{Kind: RequestCommand, Title: "Run the migration", Cells: []CellInput{{Command: "make migrate"}}})
@@ -1195,15 +1141,12 @@ func TestAgentClosesOwnRequest(t *testing.T) {
 		t.Fatalf("shell's dismiss: %v %+v", err, got)
 	}
 
-	// Answering or approving its own stays refused, pointing at withdraw.
 	q := r.ask(RequestInput{Kind: RequestQuestion, Title: "Which database?", Questions: choiceQ()})
 	_, err = r.s.DecideRequest(r.ctx, r.agent, q.Ref, RequestDecision{Decision: "answer", Answers: []Answer{{Choices: []string{"sqlite"}}}})
 	if !errors.Is(err, ErrForbidden) || !strings.Contains(err.Error(), "wp request withdraw "+q.Ref) {
 		t.Fatalf("agent answered its own: %v", err)
 	}
 
-	// Another agent can't close it, on the same unrestricted token or a
-	// restricted one; another user's agent neither.
 	for _, op := range []string{"done", "dismiss"} {
 		if _, err := r.s.DecideRequest(r.ctx, agentActor(r.ana, "openai/codex"), q.Ref, RequestDecision{Decision: op, Note: "x"}); !errors.Is(err, ErrForbidden) {
 			t.Fatalf("another agent on the same token %s it: %v", op, err)
@@ -1227,7 +1170,6 @@ func TestAgentClosesOwnRequest(t *testing.T) {
 		t.Fatalf("another person's agent closed it: %v", err)
 	}
 
-	// A permission token without requests.create can't withdraw.
 	noCreate := *r.agent
 	noCreate.Permissions = PermissionSet{PermRequestsRead: true}
 	var perm *PermissionError
@@ -1235,7 +1177,6 @@ func TestAgentClosesOwnRequest(t *testing.T) {
 		t.Fatalf("token without requests.create: %v", err)
 	}
 
-	// A person deciding directly is unchanged.
 	if got, err := r.s.DecideRequest(r.ctx, r.ana, q.Ref, RequestDecision{Decision: "dismiss", Note: "not now"}); err != nil || got.State != RequestDismissed {
 		t.Fatalf("person's dismiss: %v %+v", err, got)
 	}

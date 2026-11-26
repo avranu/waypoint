@@ -55,7 +55,7 @@ func ParseCron(expr string) (*Cron, error) {
 	if c.dow, c.dowAny, err = cronField(f[4], 0, 7, cronDays); err != nil {
 		return nil, fmt.Errorf("day of week: %w", err)
 	}
-	if c.dow&(1<<7) != 0 { // 7 is Sunday too
+	if c.dow&(1<<7) != 0 {
 		c.dow |= 1
 	}
 	return &c, nil
@@ -106,7 +106,7 @@ func cronField(s string, lo, hi int, names map[string]int) (bits uint64, star bo
 				return 0, false, err
 			}
 			if hasStep {
-				b = hi // 5/10 means 5-max step 10
+				b = hi
 			} else {
 				b = a
 			}

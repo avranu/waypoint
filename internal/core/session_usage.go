@@ -30,14 +30,13 @@ func (s *Service) GetSessionUsage(ctx context.Context, actor *Actor, id int64) (
 	who := ""
 	if x.userID != actor.id() {
 		if !actor.isAdmin() || actor.IsAgent() {
-			out.Private = true // usage is private to each person
+			out.Private = true
 			return out, nil
 		}
 		if who, err = s.usernameOf(ctx, x.userID); err != nil {
 			return nil, err
 		}
 	}
-	// From the day it started (at most a year back) to now.
 	days := int(s.now().Sub(x.StartedAt).Hours()/24) + 2
 	q := UsageQuery{Days: min(days, 365), Machine: x.Machine, Session: x.CLIID, User: who}
 	sc, loc, first, _, err := s.usageScopeFor(ctx, actor, &q)

@@ -9,14 +9,6 @@ import (
 	"testing"
 )
 
-// A simulation of the prep policy's allocation (WP-250, WP-ADR104), run on
-// the real arithmetic (fitPrepArms, pBest, prepShares): tasks arrive at
-// simPerDay a day, each with covariates that move the outcome, an arm is
-// drawn from the shares of the estimate as it stood that morning, and the
-// outcome is seen a day later. It answers what the constants cost: how
-// many tasks get an arm that is worse, and how fast the shares follow a
-// change, against a fixed split and a test-then-commit schedule.
-
 // simPerDay is exposed tasks a day: 29 a day were measured over the prep
 // experiment's 16 days (page WP-X19). WP_PREP_SIM_PER_DAY sets another, for
 // when only some of the takers send traces.
@@ -66,7 +58,7 @@ type simPolicy interface {
 
 type simTask struct {
 	day  int
-	arm  int // 0 none, 1 chat, 2 agent
+	arm  int
 	x    []float64
 	y    float64
 	seen bool
@@ -103,10 +95,10 @@ func (p simThompson) shares(day int, tasks []simTask) []float64 {
 // day to day here (each morning's fits score that day's tasks once they are
 // seen), which is the same sum prepForecastScore works out afresh.
 type simMix struct {
-	halfLives []float64    // nil: prepHalfLives
-	window    int          // 0: prepForecastDays
-	fits      [][]*prepFit // by day, by half-life
-	score     [][]float64  // by day, by half-life: that day's tasks under that morning's fits
+	halfLives []float64
+	window    int
+	fits      [][]*prepFit
+	score     [][]float64
 }
 
 func (p *simMix) shares(day int, tasks []simTask) []float64 {
@@ -164,7 +156,7 @@ func (simFixed) shares(int, []simTask) []float64 { return []float64{1.0 / 3, 1.0
 // everyone, and the test again 30 days after.
 type simCommit struct {
 	testing  bool
-	from     int // the day the test or the choice began
+	from     int
 	choice   int
 	nextTest int
 }
@@ -197,10 +189,10 @@ func (p *simCommit) shares(day int, tasks []simTask) []float64 {
 }
 
 type simResult struct {
-	regret   float64 // mean excess of the outcome over the best arm's, per task
-	worse    float64 // share of tasks given an arm more than 0.05 worse than the best
+	regret   float64
+	worse    float64
 	last     []float64
-	afterAt  int // days after day 60 until the best arm then holds half the tasks (-1: never)
+	afterAt  int
 	shareSum []float64
 }
 
@@ -233,8 +225,6 @@ func simRun(sc simScenario, pol simPolicy, days int, seed uint64) simResult {
 		}
 		for range simPerDay {
 			arm := prepPick(sh, r.float())
-			// Covariates that move the outcome: a project (three, of
-			// different sizes and levels), the text's length, and the day.
 			u := r.float()
 			pb, pc := 0.0, 0.0
 			level := 0.0
@@ -291,32 +281,24 @@ func TestPrepPolicySimulation(t *testing.T) {
 	}
 	mk := func() simPolicy { return &simMix{} }
 	const reps = 4
-	// Chat worse: it ends with few tasks, and gets far fewer than a fixed
-	// split gives it.
 	worse := simMean(simScenarios[1], mk, 60, reps)
 	if worse.last[1] > 0.05 || worse.shareSum[1] > 0.12 {
 		t.Errorf("chat 35%% worse: it still has %.2f of new tasks after 60 days and had %.2f of all (a fixed split gives 0.33)", worse.last[1], worse.shareSum[1])
 	}
-	// Agent better: it ends with most tasks.
 	better := simMean(simScenarios[2], mk, 60, reps)
 	if better.last[2] < 0.8 {
 		t.Errorf("agent 26%% better: it has %.2f of new tasks after 60 days", better.last[2])
 	}
-	// Nothing does anything: no arm is starved for good, and none takes all.
 	null := simMean(simScenarios[0], mk, 60, reps)
 	for i, s := range null.shareSum {
 		if s < 0.1 || s > 0.6 {
 			t.Errorf("no arm does anything: arm %d had %.2f of the tasks", i, s)
 		}
 	}
-	// A change is followed: chat, better until day 60 and worse after, is
-	// under a fifth of new tasks 60 days on.
 	drift := simMean(simScenarios[4], mk, 120, reps)
 	if drift.last[1] > 0.2 {
 		t.Errorf("chat worse from day 60: it has %.2f of new tasks at day 120", drift.last[1])
 	}
-	// And the policy costs less than a fixed split or test-then-commit when
-	// an arm is worse.
 	fixed := simMean(simScenarios[1], func() simPolicy { return simFixed{} }, 60, reps)
 	if worse.regret > fixed.regret/2 {
 		t.Errorf("chat 35%% worse: regret %.3f against a fixed split's %.3f", worse.regret, fixed.regret)
@@ -347,7 +329,6 @@ func TestPrepPolicySimulationTable(t *testing.T) {
 			{"mix 7-240, 28 days", func() simPolicy { return &simMix{halfLives: []float64{7, 14, 30, 60, 120, 240}, window: 28} }},
 		}
 	case "few":
-		// As built against the two designs it replaces, for another rate.
 		pols = append(pols, []named{
 			{"thompson, half-life 60d", func() simPolicy { return simThompson{60} }},
 			{"fixed thirds", func() simPolicy { return simFixed{} }},

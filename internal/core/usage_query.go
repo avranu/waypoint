@@ -11,20 +11,14 @@ import (
 	"time"
 )
 
-// Reading usage back (WP-D20): one overview for the Usage tab, with
-// drill-downs. Everything is computed from hourly buckets, so months of
-// data stay fast; the person's own data only, and admins may look at
-// anyone's.
-
 // UsageQuery narrows the usage shown.
 type UsageQuery struct {
-	Days    int    // the period, ending now (default 30, at most 365)
-	Agent   string // an agent spec matched against the model: opus, haiku 5.5…
-	Project string // a project key: its repos (and its sub-projects') sessions
-	Machine string
-	Session string // a CLI session id
-	User    string // "" = you; admins: a username, or "all"
-	// allTasks keeps every task in UsageTrends, uncut (experiments).
+	Days     int    // the period, ending now (default 30, at most 365)
+	Agent    string // an agent spec matched against the model: opus, haiku 5.5…
+	Project  string // a project key: its repos (and its sub-projects') sessions
+	Machine  string
+	Session  string // a CLI session id
+	User     string // "" = you; admins: a username, or "all"
 	allTasks bool
 }
 
@@ -228,16 +222,15 @@ type UsageOverview struct {
 }
 
 type usageScope struct {
-	uids       []int64
-	everyone   bool
-	from, to   int64
-	machine    string
-	session    string
-	repos      []string
-	repoFilter bool
-	models     []string
-	modelsOn   bool
-	// hideCommands replaces the text of commands (Actor.HidesCommandText).
+	uids         []int64
+	everyone     bool
+	from, to     int64
+	machine      string
+	session      string
+	repos        []string
+	repoFilter   bool
+	models       []string
+	modelsOn     bool
 	hideCommands bool
 }
 
@@ -404,7 +397,7 @@ func (s *Service) repoProjects(ctx context.Context, actor *Actor) (map[string]st
 		if err := rows.Scan(&repo, &key); err != nil {
 			return nil, err
 		}
-		out[repo] = key // the lowest project id wins: the loop ends on it
+		out[repo] = key
 	}
 	return out, rows.Err()
 }
@@ -526,7 +519,6 @@ func (s *Service) usageHasData(ctx context.Context, sc *usageScope) (bool, error
 	// #nosec G202 -- where is built from fixed conditions; values are bound
 	err := s.db.R.QueryRowContext(ctx, `SELECT 1 FROM usage_hours WHERE `+where+` LIMIT 1`, args...).Scan(&one)
 	if err == sql.ErrNoRows {
-		// A status line report alone is something to show too.
 		w2, a2 := all.where("at")
 		// #nosec G202 -- as above
 		err = s.db.R.QueryRowContext(ctx, `SELECT 1 FROM quota_samples WHERE `+w2+` LIMIT 1`, a2...).Scan(&one)
@@ -578,8 +570,6 @@ func (s *Service) usageMachines(ctx context.Context, sc *usageScope) ([]UsageMac
 	default:
 		where = "0"
 	}
-	// One row per person's machine, merged by name here: a name two people
-	// share is one line, with each person's unknown-kind counts added up.
 	// #nosec G202 -- where is built from fixed conditions; values are bound
 	rows, err := s.db.R.QueryContext(ctx, `SELECT machine, last_sync_at, last_status_at, wp_version, parsed, skipped, unknown,
 			transcript_pending_bytes, transcript_pending_files, transcript_dropped, transcript_status_at, transcript_piece_at,
@@ -631,7 +621,7 @@ func (s *Service) usageMachines(ctx context.Context, sc *usageScope) ([]UsageMac
 		for k, v := range m.Unknown {
 			o.Unknown[k] += v
 		}
-		o.Version = cmp(m.Version, o.Version) // rows come oldest sync first: the newest version wins
+		o.Version = cmp(m.Version, o.Version)
 		if m.LastSyncAt != nil && (o.LastSyncAt == nil || m.LastSyncAt.After(*o.LastSyncAt)) {
 			o.LastSyncAt = m.LastSyncAt
 		}
@@ -650,8 +640,6 @@ func (s *Service) usageMachines(ctx context.Context, sc *usageScope) ([]UsageMac
 				if t := m.Transcripts.LastPieceAt; t != nil && (o.Transcripts.LastPieceAt == nil || t.After(*o.Transcripts.LastPieceAt)) {
 					o.Transcripts.LastPieceAt = t
 				}
-				// one name, two people's machines: off only when both are, the
-				// passes cut short add up, the longest is the longest
 				if o.Transcripts.Off != nil && m.Transcripts.Off != nil {
 					b := *o.Transcripts.Off && *m.Transcripts.Off
 					o.Transcripts.Off = &b
@@ -668,16 +656,13 @@ func (s *Service) usageMachines(ctx context.Context, sc *usageScope) ([]UsageMac
 	return out, rows.Err()
 }
 
-// ---- tokens ----
-
 type usageTokenData struct {
-	total   usageAcc
-	models  map[string]*usageAcc
-	repos   map[string]*usageAcc
-	machine map[string]*usageAcc
-	kinds   map[string]*usageAcc
-	session map[string]*usageAcc
-	// per (kind, model), for the subagent advice
+	total     usageAcc
+	models    map[string]*usageAcc
+	repos     map[string]*usageAcc
+	machine   map[string]*usageAcc
+	kinds     map[string]*usageAcc
+	session   map[string]*usageAcc
 	kindModel map[[2]string]*usageAcc
 	sessMeta  map[string]sessKey
 	unpriced  map[string]bool
@@ -734,7 +719,6 @@ func (s *Service) usageTokens(ctx context.Context, sc *usageScope, book *priceBo
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// The daily series: hour buckets into the person's days.
 	// #nosec G202 -- as above
 	rows, err = s.db.R.QueryContext(ctx, `SELECT hour, model, sum(messages), sum(input), sum(output), sum(cache_write_5m), sum(cache_write_1h), sum(cache_read)
 		FROM usage_hours WHERE `+where+` GROUP BY hour, model`, args...)
@@ -865,7 +849,6 @@ func (s *Service) usageSessionMetaN(ctx context.Context, sc *usageScope, o *Usag
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	// The sessions the hooks registered, by machine and CLI session id.
 	known := map[string]int64{}
 	// #nosec G202 -- where is built from fixed conditions; values are bound
 	srows, err := s.db.R.QueryContext(ctx, `SELECT id, machine, cli_id FROM agent_sessions WHERE `+where+` AND cli_id IN (`+placeholders(len(keys))+`)`, append(args, keys...)...)
@@ -907,8 +890,6 @@ func cmpOr(a, b string) string {
 	}
 	return b
 }
-
-// ---- tools ----
 
 func (s *Service) usageToolsInto(ctx context.Context, sc *usageScope, o *UsageOverview) error {
 	where, args := sc.where("hour")
@@ -1081,7 +1062,7 @@ func (s *Service) usageUnusedSince(ctx context.Context, sc *usageScope, from int
 			continue
 		}
 		k := u.Kind + "\x00" + u.Name
-		if seen[k] { // the same thing on several machines is listed once
+		if seen[k] {
 			continue
 		}
 		seen[k] = true

@@ -37,8 +37,6 @@ func TestAuditNewsToTheSession(t *testing.T) {
 		return a
 	}
 
-	// F1: one somebody asked for says so when it is clean, blocking or not;
-	// one Waypoint started says nothing.
 	for _, blocking := range []bool{false, true} {
 		a := audit("cli", AuditDone, blocking, nil)
 		body, passive, ok := e.auditNote(a.ID, AuditDone)
@@ -51,7 +49,6 @@ func TestAuditNewsToTheSession(t *testing.T) {
 		}
 	}
 
-	// F2: an audit that read nothing says so, and why, and isn't "found nothing".
 	a := audit("cli", AuditDone, false, func(a *CodeAudit) {
 		a.Summary = "no change in the paths asked for"
 		a.Attempts = []AuditAttempt{{Outcome: "nothing"}}
@@ -61,8 +58,6 @@ func TestAuditNewsToTheSession(t *testing.T) {
 		t.Errorf("an audit that read nothing told %q", body)
 	}
 
-	// F2b: one Waypoint started that read nothing isn't clean either: the
-	// session is told, passively (it wakes for nothing).
 	a = audit("system", AuditDone, false, func(a *CodeAudit) {
 		a.Summary = "no change in the paths asked for"
 		a.Attempts = []AuditAttempt{{Outcome: "nothing"}}
@@ -73,7 +68,6 @@ func TestAuditNewsToTheSession(t *testing.T) {
 		t.Errorf("a system audit that read nothing told %q (passive %v, told %v)", body, passive, ok)
 	}
 
-	// F3: a failure is passive unless someone waits on it, and then it says so.
 	a = audit("cli", AuditFailed, false, func(a *CodeAudit) { a.Error = "the runner went away" })
 	body, passive, ok = e.auditNote(a.ID, AuditFailed)
 	if !ok || !passive {

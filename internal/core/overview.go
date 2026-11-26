@@ -8,21 +8,15 @@ import (
 	"time"
 )
 
-// The Agents overview (WP-D16): which agents are working where, what they
-// finished, what comes next, what waits on a person, in one round trip. It
-// is built from the queries each part of the app already has (sessions,
-// requests, the queue, pull requests, branches, environments, usage) plus a
-// few small ones for changes and what was done; nothing is stored for it.
-
 const (
-	ovSessions = 100 // live sessions listed
-	ovPulls    = 30  // open pull requests listed
+	ovSessions = 100
+	ovPulls    = 30
 	ovBranches = 30
 	ovChanges  = 12
 	ovDone     = 15
-	ovHeads    = 3   // issues shown per agent under up next
-	ovTop      = 5   // items the summary lists link to
-	ovScan     = 200 // rows read to count what was done
+	ovHeads    = 3
+	ovTop      = 5
+	ovScan     = 200
 )
 
 // OverviewQuery narrows the overview.
@@ -211,7 +205,6 @@ func (s *Service) AgentOverview(ctx context.Context, actor *Actor, q OverviewQue
 	if o.Environments, err = s.summarizeEnvironments(ctx, actor, q.Project); err != nil {
 		return nil, err
 	}
-	// Usage is a person's own, and their agents'.
 	if u, err := s.UsageSummary(ctx, actor); err == nil && u.HasData {
 		o.Usage = u
 	}
@@ -228,8 +221,6 @@ func (s *Service) overviewQueue(ctx context.Context, actor *Actor, q OverviewQue
 	if err != nil {
 		return err
 	}
-	// Heads, grouped by the agent the work was delegated to, in the order
-	// next would hand them out.
 	by := map[string]*OverviewNext{}
 	var pinned []int64
 	type pick struct {
@@ -259,7 +250,7 @@ func (s *Service) overviewQueue(ctx context.Context, actor *Actor, q OverviewQue
 			pinned = append(pinned, i.ID)
 		}
 		picks = append(picks, p)
-		g.Items = append(g.Items, NextItem{Key: i.Key}) // filled below, once the pinners are known
+		g.Items = append(g.Items, NextItem{Key: i.Key})
 	}
 	pinners, err := s.pinners(ctx, pinned)
 	if err != nil {
@@ -273,8 +264,6 @@ func (s *Service) overviewQueue(ctx context.Context, actor *Actor, q OverviewQue
 			Why: whyQueued(i, p.pin, pinners[i.ID], today, p.plan, p.unb), Position: p.pos, Pinned: i.AgentOrder != nil}
 		filled[p.grp]++
 	}
-	// The agent with the most waiting first; "" is work anyone may take
-	// (WP-93), after all the delegated work.
 	slices.SortStableFunc(o.Next, func(a, b *OverviewNext) int {
 		if (a.Agent == "") != (b.Agent == "") {
 			if a.Agent == "" {
@@ -285,7 +274,6 @@ func (s *Service) overviewQueue(ctx context.Context, actor *Actor, q OverviewQue
 		return cmpInt(int64(len(b.Items)+b.More), int64(len(a.Items)+a.More))
 	})
 
-	// What agents hold now.
 	res, err := s.Search(ctx, actor, SearchParams{Query: "is:claimed order:-updated", Project: q.Project, Limit: 50})
 	if err != nil {
 		return err
@@ -334,7 +322,6 @@ func (s *Service) ovBranches(ctx context.Context, actor *Actor, q OverviewQuery,
 		}
 		o.Branches = append(o.Branches, OverviewBranch{Branch: b, Sessions: nonNilSessions(ss)})
 	}
-	// Sessions on branches nothing was pushed from yet.
 	for _, x := range o.Sessions {
 		kk := k(x.Repo, x.Branch)
 		if x.Repo == "" || x.Branch == "" || have[kk] {
@@ -347,7 +334,6 @@ func (s *Service) ovBranches(ctx context.Context, actor *Actor, q OverviewQuery,
 		})
 	}
 	slices.SortStableFunc(o.Branches, func(a, b OverviewBranch) int {
-		// Live sessions first, then the newest push.
 		if (len(a.Sessions) > 0) != (len(b.Sessions) > 0) {
 			if len(a.Sessions) > 0 {
 				return -1
@@ -386,8 +372,6 @@ func (s *Service) overviewSummary(ctx context.Context, actor *Actor, q OverviewQ
 		}
 	}
 
-	// Doing: sessions at work (or waiting for a person), and issues agents
-	// hold that no listed session is on.
 	held := map[string]bool{}
 	var doing []*AgentSession
 	for _, x := range o.Sessions {
@@ -418,8 +402,6 @@ func (s *Service) overviewSummary(ctx context.Context, actor *Actor, q OverviewQ
 	}
 	add(&sum.Doing, "issue", "task claimed", "tasks claimed", tasks)
 
-	// Done in the period: issues agents closed and pull requests they merged.
-	// Requests a person resolved are kept apart: a person did that work.
 	issues, err := s.doneIssues(ctx, actor, projectID, since, q.Agent)
 	if err != nil {
 		return err
@@ -438,8 +420,6 @@ func (s *Service) overviewSummary(ctx context.Context, actor *Actor, q OverviewQ
 	sum.Resolved.Items = resolved[:min(len(resolved), ovTop)]
 	o.Resolved = resolved[:min(len(resolved), ovDone)]
 
-	// Deferred: what agents filed into the backlog or To Do, requests put
-	// off, and pull requests waiting to merge.
 	filed, err := s.filedIssues(ctx, actor, projectID, since, q.Agent)
 	if err != nil {
 		return err
@@ -459,7 +439,6 @@ func (s *Service) overviewSummary(ctx context.Context, actor *Actor, q OverviewQ
 	slices.SortStableFunc(items, func(a, b OverviewItem) int { return b.At.Compare(a.At) })
 	sum.Deferred.Items = items[:min(len(items), ovTop)]
 
-	// Waiting on you: open requests, design notes to approve, agent text to review.
 	w := o.Waiting
 	for _, r := range w.Requests {
 		sum.Waiting.Items = append(sum.Waiting.Items, OverviewItem{Kind: "request", Ref: r.Code, Title: r.Title, Detail: kindWords[r.Kind], URL: "/requests/" + r.Ref, Agent: r.Agent, At: r.CreatedAt})
@@ -536,7 +515,7 @@ func prItems(list []*PRSummary) []OverviewItem {
 // visibleIssues limits issues i to projects the actor can read (and one).
 func visibleIssues(actor *Actor, projectID int64) (string, []any) {
 	where, args := visibleSQL("i.project_id", actor)
-	where += " AND " + draftsHidden(actor, "i") // WP-42
+	where += " AND " + draftsHidden(actor, "i")
 	if projectID != 0 {
 		where, args = where+" AND i.project_id = ?", append(args, projectID)
 	}
@@ -627,7 +606,7 @@ func (s *Service) requestItems(ctx context.Context, actor *Actor, projectID int6
 		ref := requestRef(key, int(number))
 		_, code, _ := strings.Cut(ref, ":")
 		it := OverviewItem{Kind: "request", Ref: code, Title: title, URL: "/requests/" + ref, Agent: agent, By: by, At: msTime(at), Detail: detail}
-		if detail == "" { // a decided request: what the person did
+		if detail == "" {
 			it.Detail = decisionWords(state, by)
 		}
 		out = append(out, it)

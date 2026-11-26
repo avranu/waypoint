@@ -16,11 +16,6 @@ import (
 	"unicode/utf8"
 )
 
-// The agent kit (WP-ADR2 §4): shared plugins (skills, agents, commands,
-// hooks, MCP servers, tools) from a marketplace repo, which Waypoint says
-// where to send. wp kit sync makes a checkout match, the way ansible
-// does: idempotent, with check and diff modes.
-
 var kitCmd = &command{
 	name: "kit", group: "Setup", args: "SUBCOMMAND",
 	summary: "sync this checkout's shared Claude Code plugins",
@@ -160,8 +155,6 @@ func gitTop(dir string) string {
 	return filepath.Clean(strings.TrimSpace(string(out)))
 }
 
-// ---- wp kit sync ----
-
 var kitSyncCmd = &command{
 	name: "sync", args: "[DIR...] [FLAGS]",
 	summary: "make this checkout's kit plugins match what the kit sends it",
@@ -274,9 +267,6 @@ func (c *cli) syncKitDir(ctx context.Context, dir string, resolved *kitResolved,
 	if st != nil {
 		managed = st.Managed
 	}
-	// Nothing changed since the last sync: the kit's commit, what it sends
-	// here, every plugin wp enabled still on, and the compact window within
-	// the kit's.
 	if st != nil && !o.force && !o.check && !o.diff && st.Commit == r.Commit && slices.Equal(st.Wanted, want.Plugins) {
 		on := enabledPlugins(top)
 		capped, _ := planCompact(want.CompactWindow, readCompactHave(top))
@@ -311,7 +301,6 @@ func (c *cli) syncKitDir(ctx context.Context, dir string, resolved *kitResolved,
 	for _, err := range applyKitPlan(ctx, cl, top, want, plan) {
 		res.Errors = append(res.Errors, err.Error())
 	}
-	// As the state below forgets checkouts that are gone, so does Claude Code.
 	if n, err := forgetGoneInstalls(want.Marketplace); err != nil {
 		_, _ = fmt.Fprintln(c.err, "wp: couldn't forget the kit installs of removed checkouts:", err)
 	} else if n > 0 && !o.quiet {
@@ -320,7 +309,7 @@ func (c *cli) syncKitDir(ctx context.Context, dir string, resolved *kitResolved,
 	res.failed = len(res.Errors) > 0
 	applied := r.Commit
 	if res.failed && st != nil {
-		applied = st.Commit // try again next time
+		applied = st.Commit
 	} else if res.failed {
 		applied = ""
 	}
@@ -328,7 +317,6 @@ func (c *cli) syncKitDir(ctx context.Context, dir string, resolved *kitResolved,
 		if s.Kit == nil {
 			s.Kit = map[string]*kitCheckout{}
 		}
-		// Forget checkouts that are gone.
 		for d := range s.Kit {
 			if _, err := os.Stat(d); err != nil {
 				delete(s.Kit, d)
@@ -474,8 +462,6 @@ func findCheckouts(root string, depth int) []string {
 	return out
 }
 
-// ---- wp kit status ----
-
 var kitStatusCmd = &command{
 	name: "status", args: "[DIR]",
 	summary:  "this checkout's kit commit, plugins and drift",
@@ -541,7 +527,7 @@ func kitStatus(c *cli, args []string) error {
 		c.printf("Drift: %s %s\n", d.Plugin, d.What)
 	}
 	if notes := c.kitNotesFor(r, top); len(notes) > 0 && c.agentHeader() != "" {
-		c.printf("Notes: %d, added at session start\n", len(notes)) // an agent has them already
+		c.printf("Notes: %d, added at session start\n", len(notes))
 	} else if len(notes) > 0 {
 		c.printf("Notes (added at session start):\n")
 		for _, n := range notes {
@@ -550,8 +536,6 @@ func kitStatus(c *cli, args []string) error {
 	}
 	return nil
 }
-
-// ---- wp kit ls ----
 
 var kitLsCmd = &command{
 	name: "ls", aliases: []string{"list"}, args: "",
@@ -655,8 +639,6 @@ func excerptCLI(s string, n int) string {
 	r := []rune(s)
 	return string(r[:n-1]) + "…"
 }
-
-// ---- wp kit add ----
 
 var kitAddCmd = &command{
 	name: "add", args: "skill|agent|command|hook PATH --plugin NAME [-m MSG]",

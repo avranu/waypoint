@@ -1,6 +1,3 @@
-// Admin → AI: the template wp ship gives an agent for its last message
-// (WP-390), so wrap-ups say what shipped and stop.
-
 import { api } from './api'
 
 export interface ShipReply {

@@ -24,7 +24,6 @@ func TestVouchEnvironment(t *testing.T) {
 	hosts := func() []string { return x.s.EnvGuardHosts(x.ctx, x.viewer, "acme/app") }
 	ag := agentActor(x.editor, "anthropic/claude-code")
 
-	// An agent asks; nothing is recorded yet.
 	if _, err := x.s.VouchEnvironment(x.ctx, ag, x.p.Key, "production", EnvVouchInput{URL: ptr("ftp://app.example.com")}); !IsInvalid(err) {
 		t.Fatalf("ftp address: %v", err)
 	}
@@ -47,39 +46,31 @@ func TestVouchEnvironment(t *testing.T) {
 	if _, err := x.s.GetEnvironmentNamed(x.ctx, x.editor, x.p.Key, "production"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("the ask created the environment: %v", err)
 	}
-	// Asking again, from another agent, finds the open one; a viewer's agent
-	// isn't shown the other person's reason.
 	again, err := x.s.VouchEnvironment(x.ctx, agentActor(x.viewer, "openai/codex"), x.p.Key, "production", in)
 	if err != nil || again.New || again.Request == nil || again.Request.ID != r.ID || again.Request.Body != "" || again.Request.Ref != r.Ref {
 		t.Fatalf("repeat: %v %+v", err, again)
 	}
-	// Names are cleaned as environments' names are; a version address needs
-	// the field to read, which only the web sets, or "Allow reads" would fail.
 	if _, err := x.s.VouchEnvironment(x.ctx, ag, x.p.Key, "prod/../x", in); !IsInvalid(err) {
 		t.Fatalf("bad name: %v", err)
 	}
 	if _, err := x.s.VouchEnvironment(x.ctx, ag, x.p.Key, "production", EnvVouchInput{URL: in.URL, VersionURL: ptr("https://app.example.com/version")}); !IsInvalid(err) {
 		t.Fatalf("version address without a field: %v", err)
 	}
-	// The API can't make an env read ask: the field isn't settable.
 	q, _, err := x.s.CreateRequest(x.ctx, ag, RequestInput{Kind: RequestQuestion, Title: "x", Project: x.p.Key,
 		Questions: []Question{{Question: "allow?", Choices: []Choice{{Label: EnvReadAllow}, {Label: "no"}}}}})
 	if err != nil || q.EnvRead != nil {
 		t.Fatalf("plain question: %v %+v", err, q)
 	}
 
-	// Someone who can't decide it can't vouch through it.
 	if _, err := x.s.DecideRequest(x.ctx, x.viewer, r.Ref, RequestDecision{Decision: "answer", Answers: []Answer{{Choices: []string{EnvReadAllow}}}}); err == nil {
 		t.Fatal("a viewer answered it")
 	}
-	// A typed answer records nothing and leaves it open.
 	if _, err := x.s.DecideRequest(x.ctx, x.editor, r.Ref, RequestDecision{Decision: "answer", Text: EnvReadAllow}); !IsInvalid(err) {
 		t.Fatalf("typed answer: %v", err)
 	}
 	if _, err := x.s.GetEnvironmentNamed(x.ctx, x.editor, x.p.Key, "production"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a typed answer vouched: %v", err)
 	}
-	// "Allow reads" records the addresses as the person's.
 	if _, err := x.s.DecideRequest(x.ctx, x.editor, r.Ref, RequestDecision{Decision: "answer", Answers: []Answer{{Choices: []string{EnvReadAllow}}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -90,12 +81,10 @@ func TestVouchEnvironment(t *testing.T) {
 	if got := hosts(); !slices.Equal(got, []string{"app.example.com:443"}) {
 		t.Fatalf("hosts %v", got)
 	}
-	// Vouched with these addresses already: nothing asked.
 	if v, err := x.s.VouchEnvironment(x.ctx, ag, x.p.Key, "production", EnvVouchInput{}); err != nil || !v.Vouched || v.Request != nil {
 		t.Fatalf("already vouched: %v %+v", err, v)
 	}
 
-	// "Don't allow" records nothing.
 	st, err := x.s.VouchEnvironment(x.ctx, ag, x.p.Key, "staging", EnvVouchInput{URL: ptr("https://staging.example.com")})
 	if err != nil {
 		t.Fatal(err)
@@ -107,8 +96,6 @@ func TestVouchEnvironment(t *testing.T) {
 		t.Fatalf("denied ask created the environment: %v", err)
 	}
 
-	// A person's own call vouches for an agent's addresses at once,
-	// keeping those not given.
 	qa := "qa"
 	if _, err := x.s.CreateEnvironment(x.ctx, ag, x.p.Key, EnvironmentInput{Name: &qa, URL: ptr("https://qa.example.com"), HealthURL: ptr("https://qa.example.com/h")}); err != nil {
 		t.Fatal(err)
@@ -120,7 +107,6 @@ func TestVouchEnvironment(t *testing.T) {
 	if !slices.Contains(hosts(), "qa.example.com:443") {
 		t.Fatalf("hosts after person's vouch: %v", hosts())
 	}
-	// A stopped environment isn't vouched for, even with its addresses.
 	stopped, err := x.s.StopEnvironment(x.ctx, x.editor, v.Environment.ID)
 	if err != nil || !stopped.Stopped {
 		t.Fatalf("stop: %v", err)
@@ -128,7 +114,6 @@ func TestVouchEnvironment(t *testing.T) {
 	if _, err := x.s.VouchEnvironment(x.ctx, ag, x.p.Key, "qa", EnvVouchInput{}); !IsInvalid(err) {
 		t.Fatalf("stopped: %v", err)
 	}
-	// A viewer can ask but not vouch.
 	if _, err := x.s.VouchEnvironment(x.ctx, x.viewer, x.p.Key, "dev", EnvVouchInput{URL: ptr("https://dev.example.com")}); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("viewer's vouch: %v", err)
 	}

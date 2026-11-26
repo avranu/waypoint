@@ -1,6 +1,3 @@
-// Requests (WP-D16): what an agent asks a person while it keeps working,
-// and what waits on you in one place.
-
 import {
   infiniteQueryOptions,
   queryOptions,

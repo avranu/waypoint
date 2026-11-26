@@ -1,6 +1,3 @@
-// Automation vocabulary: friendly names for triggers and actions, which
-// fields each action uses, and a plain-English rendering of a rule.
-
 import type { ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { chainText, shortModel } from '@/components/ModelChain'
@@ -105,8 +102,6 @@ export const isCategory = (v: string): v is Category =>
   (CATEGORIES as string[]).includes(v.replace(/ /g, '_').toLowerCase())
 
 export const fieldLabel = (f: string) => f.replace(/_/g, ' ')
-
-// ---- actions ----
 
 export type ActionField =
   | 'status'
@@ -269,8 +264,6 @@ export const SET_FIELDS: { value: string; label: string; hint: string }[] = [
   { value: 'title', label: 'Title', hint: 'A template, e.g. [Bug] {{.Issue.Title}}' },
 ]
 
-// ---- plain-English rendering ----
-
 const B = ({ children }: { children: ReactNode }) => (
   <b className="font-semibold text-fg">{children}</b>
 )
@@ -328,7 +321,6 @@ function hostOf(url = ''): string {
 /** A setting's value as it reads in a sentence. */
 function valueNode(p: ParamDef | undefined, v: unknown, statuses: Status[]): ReactNode {
   if (v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0)) {
-    // A choice whose empty value means something ("any").
     const none = p?.type === 'select' ? p.options?.find((o) => o.value === '') : undefined
     return <B>{none ? none.label.toLowerCase() : '…'}</B>
   }

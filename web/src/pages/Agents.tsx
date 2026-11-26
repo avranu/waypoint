@@ -1,10 +1,3 @@
-// The Agents page (WP-D15, WP-D16): the overview of who is working on what
-// and what waits on you, what agents will take next and in what order, their
-// sessions, what they did, the pull requests that came of it, how they used
-// the glossary, pages and design notes, and what people decided. One filter
-// bar (agent, project, period) carries across the tabs, so switching tabs
-// keeps the question being asked.
-
 import { useEffect, useMemo, useRef, type ReactNode } from 'react'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
@@ -114,7 +107,6 @@ export function AgentsPage() {
         view: undefined,
       }),
     })
-  // On a phone the tab strip scrolls: bring the open tab (a link from a notification) into view.
   const strip = useRef<HTMLElement>(null)
   useEffect(() => {
     strip.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({

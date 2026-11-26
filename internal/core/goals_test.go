@@ -54,7 +54,6 @@ func TestGoalTraces(t *testing.T) {
 	agent := *e.admin
 	agent.Agent = "anthropic/claude-opus-5-5"
 
-	// No goals yet: everything reads as it is, and the view asks for one.
 	o := e.goals(e.admin, p.Key)
 	if o.Scoped || len(o.Goals) != 0 || len(o.Ask) == 0 || !strings.Contains(o.Ask[0], "What should Alpha do") {
 		t.Fatalf("empty view = %+v", o)
@@ -70,7 +69,6 @@ func TestGoalTraces(t *testing.T) {
 	stray := e.issue(&agent, IssueInput{Project: p.Key, Title: "Rename the sidebar colours"})
 	own := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Fix the login page typo"})
 
-	// Waypoint guesses the search work serves the search goal; the rest it leaves.
 	e.goals(e.admin, p.Key)
 	for key, want := range map[string]string{mine.Key: GroundInferredGoal, sub.Key: GroundInferredGoal, stray.Key: GroundNone, own.Key: GroundPersonRequest} {
 		if got := e.grounding(key); got != want {
@@ -78,7 +76,6 @@ func TestGoalTraces(t *testing.T) {
 		}
 	}
 
-	// A person's link (here, the same as the guess) grounds the task and, through the parent, the agent's subtask.
 	e.serve(e.admin, mine.Key, search.ID)
 	o = e.goals(e.admin, p.Key)
 	if got := e.grounding(mine.Key); got != GroundPersonGoal {
@@ -107,7 +104,6 @@ func TestGoalTraces(t *testing.T) {
 		t.Errorf("coverage = %+v", cov)
 	}
 
-	// The agent's untraced task is a medium risk; the person's own isn't.
 	r, err := e.s.RiskOf(e.ctx, e.admin, "issue", stray.Key, "")
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +137,6 @@ func TestGoalTraces(t *testing.T) {
 		t.Errorf("untraced = %d %+v", o.UntracedAll, o.Untraced)
 	}
 
-	// An agent's link counts as an agent's until a person confirms it.
 	l := e.serve(&agent, own.Key, export.ID)
 	e.goals(e.admin, p.Key)
 	if got := e.grounding(own.Key); got != GroundAgentGoal {
@@ -161,7 +156,6 @@ func TestGoalTraces(t *testing.T) {
 	if slices.ContainsFunc(o.Links, func(x GoalLink) bool { return x.LinkID == l.ID }) {
 		t.Error("a confirmed link still waits for a person")
 	}
-	// An agent can't take back a link a person confirmed.
 	if err := e.s.RemoveItemLink(e.ctx, &agent, l.ID); err == nil {
 		t.Error("an agent removed a confirmed link")
 	}
@@ -198,14 +192,12 @@ func TestGoalMatcher(t *testing.T) {
 	if gl == nil || gl.Basis != "inferred" || gl.Goal.ID != invoices.ID || gl.Score == nil || !strings.Contains(gl.Note, "invoice") {
 		t.Fatalf("guess = %+v (links %+v)", gl, o.Links)
 	}
-	// An agent can't drop Waypoint's guess; a person dismisses it.
 	if err := e.s.RemoveItemLink(e.ctx, &agent, gl.LinkID); err == nil {
 		t.Error("an agent removed a guess")
 	}
 	if err := e.s.DismissGoalLink(e.ctx, e.admin, gl.LinkID); err != nil {
 		t.Fatal(err)
 	}
-	// The no keeps the guess as it was: its score, basis and age.
 	var score sql.NullFloat64
 	var basis string
 	var madeAt sql.NullInt64

@@ -8,9 +8,6 @@ import (
 	"strings"
 )
 
-// Provenance risk (WP-554): how far to trust something, from who wrote it
-// and who checked it.
-
 var riskCmd = &command{
 	name: "risk", group: "Knowledge", args: "THING...",
 	summary: "how far to trust something: risk low, medium or high, and why",
@@ -53,7 +50,6 @@ func cmdRisk(c *cli, args []string) error {
 			return err
 		}
 		var raw []byte
-		// APP12 or PL13 could be an issue or a page: the first that exists.
 		for _, t := range targets {
 			path := "/api/v1/risk/" + t[0] + "/" + esc(t[1])
 			if home != "" {

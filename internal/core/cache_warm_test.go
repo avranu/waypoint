@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// Keeping prompt caches warm (WP-192).
-
 func TestDecideWarm(t *testing.T) {
 	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
@@ -17,41 +15,34 @@ func TestDecideWarm(t *testing.T) {
 		action string
 		why    string
 	}{
-		"background task":       {warmFacts{WarmSince: ago(time.Hour), Pending: "a background task"}, warmPinged, "waiting on a background task"},
-		"paused":                {warmFacts{WarmSince: ago(time.Hour), Pending: "a background task", ContextTokens: 300_000, Paused: true}, warmCool, "its person paused agents"},
-		"babysits":              {warmFacts{WarmSince: ago(time.Hour), Babysits: 2}, warmPinged, "waiting on 2 babysat pull requests"},
-		"work too long":         {warmFacts{WarmSince: ago(3 * time.Hour), Pending: "a background task"}, warmCool, "waited over 3 hours on a background task"},
-		"work too long and big": {warmFacts{WarmSince: ago(3 * time.Hour), Babysits: 1, ContextTokens: 250_000}, warmCompacting, "waited over 3 hours on a babysat pull request"},
-		"requests, active":      {warmFacts{WarmSince: ago(time.Hour), Pending: "requests", Requests: 1, PersonActive: true}, warmPinged, "an open request while its person is active"},
-		"requests, away":        {warmFacts{WarmSince: ago(time.Hour), Pending: "requests", Requests: 2}, warmCool, "2 open requests, and its person is away"},
-		"requests, away, big":   {warmFacts{WarmSince: ago(time.Hour), Requests: 1, ContextTokens: 300_000}, warmCompacting, "an open request, and its person is away"},
-		"requests too long":     {warmFacts{WarmSince: ago(8 * time.Hour), Requests: 1, PersonActive: true}, warmCool, "an open request, unanswered for over 8 hours"},
-		"chat":                  {warmFacts{WarmSince: ago(time.Hour), Finished: true, TypedLast: true, PersonActive: true}, warmPinged, "its person was working with it and is active"},
-		"chat, big":             {warmFacts{WarmSince: ago(3 * time.Hour), Finished: true, TypedLast: true, PersonActive: true, ContextTokens: 400_000}, warmCool, "its person hasn't come back to it in 2 hours"},
-		"chat, away":            {warmFacts{WarmSince: ago(time.Hour), Finished: true, TypedLast: true}, warmCool, "finished, nothing waits on it"},
-		"autopilot's prompt":    {warmFacts{WarmSince: ago(time.Hour), Finished: true, PersonActive: true}, warmCool, "finished, nothing waits on it"},
-		"task session":          {warmFacts{WarmSince: ago(time.Hour), Kind: SessionTask, Finished: true, TypedLast: true, PersonActive: true}, warmCool, "finished, nothing waits on it"},
-		"unknown":               {warmFacts{WarmSince: ago(time.Hour), Pending: "?", ContextTokens: 500_000}, warmCool, "nothing it waits on is known"},
-		// WP-534.
-		"said it can be cleared": {warmFacts{WarmSince: ago(time.Hour), Babysits: 1, ContextTokens: 300_000, Clearable: true}, warmCool, "it said it can be cleared"},
-		"compact instead":        {warmFacts{WarmSince: ago(time.Hour), Pending: "a background task", CompactInstead: true}, warmCompacting, "waiting on a background task; compacted instead of a ping, as its person asks"},
-		"over the limit":         {warmFacts{WarmSince: ago(time.Hour), Pending: "a background task", ContextTokens: 210_000}, warmCompacting, "waiting on a background task; compacted instead of a ping, its context being over the 200k limit"},
-		"over the kit's limit":   {warmFacts{WarmSince: ago(time.Hour), Babysits: 1, ContextTokens: 160_000, Limit: 150_000, CompactInstead: true}, warmCompacting, "waiting on a babysat pull request; compacted instead of a ping, its context being over the 150k limit"},
-		"compact instead, cools": {warmFacts{WarmSince: ago(3 * time.Hour), Pending: "a background task", CompactInstead: true}, warmCool, "waited over 3 hours on a background task"},
-		// WP-644: one ping per wait, and only for a small context.
-		"second ping":       {warmFacts{WarmSince: ago(2 * time.Hour), Pending: "a background task", Pings: 1, ContextTokens: 20_000}, warmCompacting, "waiting on a background task; compacted instead of a second ping"},
-		"too big to ping":   {warmFacts{WarmSince: ago(time.Hour), Requests: 1, PersonActive: true, ContextTokens: 101_292}, warmCompacting, "an open request while its person is active; compacted instead of a ping, its context being over 100k"},
-		"chat, second ping": {warmFacts{WarmSince: ago(time.Hour + 55*time.Minute), Finished: true, TypedLast: true, PersonActive: true, Pings: 1}, warmCompacting, "its person was working with it and is active; compacted instead of a second ping"},
-		// Autopilot's sessions: only their own work keeps them warm.
+		"background task":            {warmFacts{WarmSince: ago(time.Hour), Pending: "a background task"}, warmPinged, "waiting on a background task"},
+		"paused":                     {warmFacts{WarmSince: ago(time.Hour), Pending: "a background task", ContextTokens: 300_000, Paused: true}, warmCool, "its person paused agents"},
+		"babysits":                   {warmFacts{WarmSince: ago(time.Hour), Babysits: 2}, warmPinged, "waiting on 2 babysat pull requests"},
+		"work too long":              {warmFacts{WarmSince: ago(3 * time.Hour), Pending: "a background task"}, warmCool, "waited over 3 hours on a background task"},
+		"work too long and big":      {warmFacts{WarmSince: ago(3 * time.Hour), Babysits: 1, ContextTokens: 250_000}, warmCompacting, "waited over 3 hours on a babysat pull request"},
+		"requests, active":           {warmFacts{WarmSince: ago(time.Hour), Pending: "requests", Requests: 1, PersonActive: true}, warmPinged, "an open request while its person is active"},
+		"requests, away":             {warmFacts{WarmSince: ago(time.Hour), Pending: "requests", Requests: 2}, warmCool, "2 open requests, and its person is away"},
+		"requests, away, big":        {warmFacts{WarmSince: ago(time.Hour), Requests: 1, ContextTokens: 300_000}, warmCompacting, "an open request, and its person is away"},
+		"requests too long":          {warmFacts{WarmSince: ago(8 * time.Hour), Requests: 1, PersonActive: true}, warmCool, "an open request, unanswered for over 8 hours"},
+		"chat":                       {warmFacts{WarmSince: ago(time.Hour), Finished: true, TypedLast: true, PersonActive: true}, warmPinged, "its person was working with it and is active"},
+		"chat, big":                  {warmFacts{WarmSince: ago(3 * time.Hour), Finished: true, TypedLast: true, PersonActive: true, ContextTokens: 400_000}, warmCool, "its person hasn't come back to it in 2 hours"},
+		"chat, away":                 {warmFacts{WarmSince: ago(time.Hour), Finished: true, TypedLast: true}, warmCool, "finished, nothing waits on it"},
+		"autopilot's prompt":         {warmFacts{WarmSince: ago(time.Hour), Finished: true, PersonActive: true}, warmCool, "finished, nothing waits on it"},
+		"task session":               {warmFacts{WarmSince: ago(time.Hour), Kind: SessionTask, Finished: true, TypedLast: true, PersonActive: true}, warmCool, "finished, nothing waits on it"},
+		"unknown":                    {warmFacts{WarmSince: ago(time.Hour), Pending: "?", ContextTokens: 500_000}, warmCool, "nothing it waits on is known"},
+		"said it can be cleared":     {warmFacts{WarmSince: ago(time.Hour), Babysits: 1, ContextTokens: 300_000, Clearable: true}, warmCool, "it said it can be cleared"},
+		"compact instead":            {warmFacts{WarmSince: ago(time.Hour), Pending: "a background task", CompactInstead: true}, warmCompacting, "waiting on a background task; compacted instead of a ping, as its person asks"},
+		"over the limit":             {warmFacts{WarmSince: ago(time.Hour), Pending: "a background task", ContextTokens: 210_000}, warmCompacting, "waiting on a background task; compacted instead of a ping, its context being over the 200k limit"},
+		"over the kit's limit":       {warmFacts{WarmSince: ago(time.Hour), Babysits: 1, ContextTokens: 160_000, Limit: 150_000, CompactInstead: true}, warmCompacting, "waiting on a babysat pull request; compacted instead of a ping, its context being over the 150k limit"},
+		"compact instead, cools":     {warmFacts{WarmSince: ago(3 * time.Hour), Pending: "a background task", CompactInstead: true}, warmCool, "waited over 3 hours on a background task"},
+		"second ping":                {warmFacts{WarmSince: ago(2 * time.Hour), Pending: "a background task", Pings: 1, ContextTokens: 20_000}, warmCompacting, "waiting on a background task; compacted instead of a second ping"},
+		"too big to ping":            {warmFacts{WarmSince: ago(time.Hour), Requests: 1, PersonActive: true, ContextTokens: 101_292}, warmCompacting, "an open request while its person is active; compacted instead of a ping, its context being over 100k"},
+		"chat, second ping":          {warmFacts{WarmSince: ago(time.Hour + 55*time.Minute), Finished: true, TypedLast: true, PersonActive: true, Pings: 1}, warmCompacting, "its person was working with it and is active; compacted instead of a second ping"},
 		"autopilot, small, working":  {warmFacts{WarmSince: ago(time.Hour), Pending: "a background task", ContextTokens: 30_000, Unattended: true}, warmPinged, "waiting on a background task"},
 		"autopilot, working":         {warmFacts{WarmSince: ago(time.Hour), Babysits: 1, ContextTokens: 60_000, Unattended: true}, warmCompacting, "waiting on a babysat pull request; compacted instead of a ping, its context being over 40k"},
 		"autopilot, second ping":     {warmFacts{WarmSince: ago(2 * time.Hour), Pending: "a background task", ContextTokens: 30_000, Pings: 1, Unattended: true}, warmCompacting, "waiting on a background task; compacted instead of a second ping"},
 		"autopilot, requests":        {warmFacts{WarmSince: ago(time.Hour), Pending: "requests", Requests: 1, PersonActive: true, ContextTokens: 300_000, Unattended: true}, warmCool, "autopilot runs it, and no work of its own is running"},
 		"autopilot, finished, typed": {warmFacts{WarmSince: ago(time.Hour), Finished: true, TypedLast: true, PersonActive: true, Unattended: true}, warmCool, "autopilot runs it, and no work of its own is running"},
-		// WP-1306: a session whose task isn't merged yet is compacted before
-		// it cools, said it can be cleared or not, keeping why it would cool;
-		// under 60k it cools as it would have; its own work still keeps it
-		// warm first.
 		"unmerged":                   {warmFacts{WarmSince: ago(time.Hour), Finished: true, ContextTokens: 120_000, Unattended: true, Clearable: true, Unmerged: true}, warmCompacting, "it said it can be cleared; its task isn't merged yet, so compacted before its cache cools"},
 		"unmerged, clearable small":  {warmFacts{WarmSince: ago(time.Hour), Finished: true, ContextTokens: 59_000, Clearable: true, Unmerged: true}, warmCool, "it said it can be cleared"},
 		"unmerged, unattended":       {warmFacts{WarmSince: ago(time.Hour), Finished: true, ContextTokens: 120_000, Unattended: true, Unmerged: true}, warmCompacting, "autopilot runs it, and no work of its own is running; its task isn't merged yet, so compacted before its cache cools"},
@@ -72,8 +63,6 @@ func TestDecideWarm(t *testing.T) {
 		if got.Action != c.action || got.Why != c.why {
 			t.Errorf("%s: %+v, want %s %q", name, got, c.action, c.why)
 		}
-		// An unmerged session keeps the class it cools in; one compacted
-		// because it is unmerged is weighed and counted as such (WP-1306).
 		if want, ok := unmergedClass[name]; ok && got.Class != want {
 			t.Errorf("%s: class %q, want %q", name, got.Class, want)
 		}
@@ -184,7 +173,7 @@ func TestKeepWarmPingsASessionWaitingOnWork(t *testing.T) {
 	if jobs := be.warmJobs(); len(jobs) != 0 {
 		t.Fatalf("pinged with half an hour left: %+v", jobs)
 	}
-	be.warmSweep(25 * time.Minute) // 55 minutes after the stop
+	be.warmSweep(25 * time.Minute)
 	jobs := be.warmJobs()
 	if len(jobs) != 1 || jobs[0].Body != keepWarmBody || !jobs[0].IfIdle || !jobs[0].Type || jobs[0].CLIID != "cli-1" {
 		t.Fatalf("want one ping: %+v", jobs)
@@ -201,7 +190,6 @@ func TestKeepWarmPingsASessionWaitingOnWork(t *testing.T) {
 		t.Fatalf("pinged twice for one stop: %+v", jobs)
 	}
 
-	// The ping's turn leaves the session as it was.
 	prompts := len(be.timeline("prompt"))
 	be.typed(TypedKeepWarm, keepWarmBody)
 	if x := be.session(); x.LastPrompt == keepWarmBody || x.Pending != "a background task" {
@@ -216,8 +204,6 @@ func TestKeepWarmPingsASessionWaitingOnWork(t *testing.T) {
 		t.Errorf("the ping is on the timeline: %d prompts, updates %q", n, be.timeline("update"))
 	}
 
-	// 55 minutes after the ping's stop it is compacted, not pinged again
-	// (WP-644), and nothing more happens for this stop.
 	be.warmSweep(55 * time.Minute)
 	if jobs := be.warmJobs(); len(jobs) != 2 || !jobs[1].Compact || be.session().Cache.Pings != 1 {
 		t.Fatalf("want a compaction second: %+v %+v", jobs, be.session().Cache)
@@ -232,7 +218,6 @@ func TestKeepWarmPingsASessionWaitingOnWork(t *testing.T) {
 		t.Fatalf("acted after the compaction: %+v", jobs)
 	}
 
-	// A real turn starts the count again.
 	be.hookEv(HookEvent{Event: "UserPromptSubmit", Prompt: "How did the build go?"})
 	be.stop(&HookPending{Tasks: []PendingTask{{Type: "shell", Status: "running"}}}, "1h", "Still building.")
 	if x := be.session(); x.Cache.Pings != 0 || x.Cache.Decision != "" || x.LastUpdate != "Still building." {
@@ -249,7 +234,6 @@ func TestKeepWarmPingsASessionWaitingOnWork(t *testing.T) {
 func TestKeepWarmAutopilotSession(t *testing.T) {
 	be := newBabysitEnv(t)
 	be.runner(be.admin, "m1", nil)
-	// Autopilot's task finished, its person on the web.
 	be.typed(TypedKickoff, AutopilotPromptMark+" started this session for WP-1")
 	if _, err := be.s.db.W.Exec(`INSERT INTO sessions(token_hash, user_id, created_at, last_seen_at, expires_at, user_agent, ip, reauth_at) VALUES ('h', ?, ?, ?, ?, '', '', 0)`,
 		be.admin.id(), be.clockNow().UnixMilli(), be.clockNow().Add(time.Hour).UnixMilli(), be.clockNow().Add(2*time.Hour).UnixMilli()); err != nil {
@@ -261,8 +245,6 @@ func TestKeepWarmAutopilotSession(t *testing.T) {
 		t.Fatalf("autopilot's finished session: %+v %+v", be.warmJobs(), x.Cache)
 	}
 
-	// Its own background task, at 60k: compacted, where a person's session
-	// would be pinged.
 	be.typed(TypedKickoff, AutopilotPromptMark+" review of WP-1")
 	running := &HookPending{Tasks: []PendingTask{{Type: "shell", Status: "running"}}}
 	be.hookEv(HookEvent{Event: "Stop", Pending: running, CacheTTL: "1h", LastMessage: "Started the build.", ContextTokens: 60_000})
@@ -271,7 +253,6 @@ func TestKeepWarmAutopilotSession(t *testing.T) {
 		t.Fatalf("want a compaction: %+v", jobs)
 	}
 
-	// A person types into it: it is theirs, and the person rules apply.
 	be.setClock(be.clockNow().Add(time.Minute))
 	be.hookEv(HookEvent{Event: "UserPromptSubmit", Prompt: "Why that file?"})
 	be.hookEv(HookEvent{Event: "Stop", Pending: &HookPending{}, CacheTTL: "1h", LastMessage: "Because.", ContextTokens: 60_000})
@@ -279,7 +260,6 @@ func TestKeepWarmAutopilotSession(t *testing.T) {
 		t.Fatal("still autopilot's after its person typed")
 	}
 
-	// Autopilot takes it again; its person keeps it: no turn, but theirs.
 	be.setClock(be.clockNow().Add(time.Minute))
 	be.typed(TypedKickoff, AutopilotPromptMark+" started this session for WP-2")
 	if !be.s.unattendedSession(be.ctx, be.agent.Session) {
@@ -291,10 +271,6 @@ func TestKeepWarmAutopilotSession(t *testing.T) {
 		t.Fatal("still autopilot's after its person kept it")
 	}
 
-	// A prompt stored before this branch kept Claude Code's paste wrapper and
-	// has no typed record: it reads as a person's, by what it says (not at
-	// all by how it opens), unless migration 0188's backfill gave it a kind
-	// (db.TestTypedPromptsBackfillReadsWrappedRows), which keeps it autopilot's.
 	be.setClock(be.clockNow().Add(time.Minute))
 	legacy := excerpt(pasted(AutopilotPromptMark+" started this session for WP-3"), 500)
 	for _, typedKind := range []string{"", TypedKickoff} {
@@ -306,8 +282,6 @@ func TestKeepWarmAutopilotSession(t *testing.T) {
 		}
 		be.setClock(be.clockNow().Add(time.Minute))
 	}
-	// Its person types, then pastes something with typed text naming
-	// autopilot after it: that prompt is theirs.
 	if _, err := be.s.db.W.Exec(`UPDATE agent_sessions SET typed_at = ? WHERE id = ?`, be.clockNow().Add(30*time.Second).UnixMilli(), be.agent.Session); err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +309,7 @@ func TestKeepWarmOnlyOnAnHourCache(t *testing.T) {
 
 func TestKeepWarmNeedsTheRunner(t *testing.T) {
 	be := warmEnv(t)
-	be.setClock(be.clockNow().Add(55 * time.Minute)) // its runner stopped checking in
+	be.setClock(be.clockNow().Add(55 * time.Minute))
 	be.s.KeepCachesWarm(be.ctx)
 	if jobs := be.warmJobs(); len(jobs) != 0 {
 		t.Fatalf("pinged with no runner: %+v", jobs)
@@ -348,7 +322,6 @@ func TestKeepWarmNeedsTheRunner(t *testing.T) {
 func TestFinishedSessionCoolsUnlessItsPersonIsWorkingWithIt(t *testing.T) {
 	be := newBabysitEnv(t)
 	be.runner(be.admin, "m1", nil)
-	// Autopilot's prompt: not the person's.
 	be.typed(TypedKickoff, AutopilotPromptMark+": next task")
 	be.stop(&HookPending{}, "1h", "Done.")
 	be.warmSweep(55 * time.Minute)
@@ -357,7 +330,6 @@ func TestFinishedSessionCoolsUnlessItsPersonIsWorkingWithIt(t *testing.T) {
 	}
 	finished := len(be.timeline("finished"))
 
-	// The person types; it finishes; they're still about.
 	be.hookEv(HookEvent{Event: "UserPromptSubmit", Prompt: "Rename it."})
 	be.stop(&HookPending{}, "1h", "Renamed.")
 	if n := len(be.timeline("finished")); n != finished+1 {
@@ -378,7 +350,6 @@ func TestFinishedSessionCoolsUnlessItsPersonIsWorkingWithIt(t *testing.T) {
 	if x := be.session(); len(be.warmJobs()) != 1 || x.Cache.Decision != "warm" || x.Cache.Note != "its person was working with it and is active" {
 		t.Fatalf("person on the web: %+v", x.Cache)
 	}
-	// The ping's stop doesn't finish it again.
 	be.typed(TypedKeepWarm, keepWarmBody)
 	be.stop(&HookPending{}, "1h", "ok")
 	if n := len(be.timeline("finished")); n != finished+2 {
@@ -410,7 +381,6 @@ func TestCompactBeforeCooling(t *testing.T) {
 	be.runner(be.admin, "m1", nil)
 	running := &HookPending{Tasks: []PendingTask{{Type: "shell", Status: "running"}}}
 	be.hookEv(HookEvent{Event: "Stop", Pending: running, CacheTTL: "1h", LastMessage: "Started.", ContextTokens: 260_000})
-	// Its last real turn was over 3 hours ago (the ping's stop keeps it).
 	if _, err := be.s.db.W.Exec(`UPDATE agent_sessions SET warm_since = ? WHERE id = ?`, be.clockNow().Add(-3*time.Hour).UnixMilli(), be.agent.Session); err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +392,6 @@ func TestCompactBeforeCooling(t *testing.T) {
 	if x := be.session(); x.Cache.Decision != "compacting" {
 		t.Fatalf("cache = %+v", x.Cache)
 	}
-	// Claude Code compacts and starts again from the summary.
 	be.typed(TypedCompact, "/compact")
 	if res := be.hookEv(HookEvent{Event: "SessionStart", Source: "compact"}); res.Text != "" {
 		t.Errorf("the compaction's start said %q", res.Text)
@@ -473,7 +442,6 @@ func TestKeepWarmLeavesAClearableSessionAlone(t *testing.T) {
 	if x := be.session(); len(be.warmJobs()) != 0 || x.Cache.Decision != "cool" || x.Cache.Note != "it said it can be cleared" {
 		t.Fatalf("pinged or compacted a cleared session: %+v %+v", be.warmJobs(), x.Cache)
 	}
-	// A later real turn that says no such thing is kept warm again.
 	be.hookEv(HookEvent{Event: "UserPromptSubmit", Prompt: "One more thing."})
 	be.hookEv(HookEvent{Event: "Stop", Pending: running, CacheTTL: "1h", ContextTokens: 50_000, LastMessage: "On it; this cannot be cleared yet."})
 	be.warmSweep(55 * time.Minute)
@@ -507,7 +475,6 @@ func TestKeepWarmCompactsAnUnmergedSession(t *testing.T) {
 	if jobs, x := be.warmJobs(), be.session(); len(jobs) != 1 || !jobs[0].Compact || x.Cache.Note != "it said it can be cleared; its task isn't merged yet, so compacted before its cache cools" {
 		t.Fatalf("not compacted: %+v %+v", jobs, x.Cache)
 	}
-	// Another session took the task: this one holds nothing unmerged.
 	if _, err := be.s.db.W.Exec(`INSERT INTO agent_runs(issue_id, agent, step, user_id, started_at, outcome) VALUES (?, 'claude', 'work', ?, ?, '')`,
 		task.ID, be.admin.User.ID, be.clockNow().UnixMilli()); err != nil {
 		t.Fatal(err)
@@ -518,8 +485,6 @@ func TestKeepWarmCompactsAnUnmergedSession(t *testing.T) {
 	if _, err := be.s.db.W.Exec(`DELETE FROM agent_runs WHERE session_id IS NULL AND issue_id = ?`, task.ID); err != nil {
 		t.Fatal(err)
 	}
-	// A run a diagnosis ended shipped nothing (WP-1449): nothing of it is on
-	// its way to a merge.
 	for _, c := range []struct {
 		outcome string
 		holds   bool
@@ -531,7 +496,6 @@ func TestKeepWarmCompactsAnUnmergedSession(t *testing.T) {
 			t.Errorf("a run that ended %q: holds unmerged work = %v, want %v", c.outcome, got, c.holds)
 		}
 	}
-	// Merged: the task is done.
 	if _, err := be.s.db.W.Exec(`UPDATE issues SET status_id = (SELECT id FROM statuses WHERE category = 'done' ORDER BY id LIMIT 1) WHERE id = ?`, task.ID); err != nil {
 		t.Fatal(err)
 	}

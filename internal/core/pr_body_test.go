@@ -50,7 +50,6 @@ func TestPRBodies(t *testing.T) {
 		return
 	}
 
-	// A description the opener wrote is theirs: nothing to reword.
 	own := open("own", "Mine.", false)
 	var n int
 	_ = e.s.db.R.QueryRowContext(e.ctx, `SELECT count(*) FROM pr_bodies WHERE pr_id = ?`, own.Pull.ID).Scan(&n)
@@ -58,7 +57,6 @@ func TestPRBodies(t *testing.T) {
 		t.Fatalf("a written description was queued: %d", n)
 	}
 
-	// Shadow: written and kept, the forge's description left alone.
 	first := open("one", "Stop the redirect loop after login.", true)
 	e.s.writePRBodies(e.ctx)
 	if st, sum, uns, used := row(first.Pull.ID); st != "written" || !strings.Contains(sum, "redirect loop") || uns != "[]" || used != 0 {
@@ -71,7 +69,6 @@ func TestPRBodies(t *testing.T) {
 		t.Errorf("published in shadow: %v", g.bodyEdits)
 	}
 
-	// Only a person who is an admin switches the mode.
 	if err := e.s.SetPRBodyMode(e.ctx, agent, PRBodyModel); err == nil {
 		t.Error("an agent switched the mode")
 	}
@@ -82,7 +79,6 @@ func TestPRBodies(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A made-up file name keeps the template's description.
 	llm.mu.Lock()
 	llm.answer = `{"summary": "Changes session.go to stop the redirect loop."}`
 	llm.mu.Unlock()
@@ -95,7 +91,6 @@ func TestPRBodies(t *testing.T) {
 		t.Errorf("published a made-up name: %v", g.bodyEdits)
 	}
 
-	// One that passes replaces the Summary alone.
 	llm.mu.Lock()
 	llm.answer = `{"summary": "## Summary\nLogin no longer redirects forever."}`
 	llm.mu.Unlock()
@@ -119,7 +114,6 @@ func TestPRBodies(t *testing.T) {
 		t.Error("a non-admin read the comparison")
 	}
 
-	// Template: no model is asked.
 	if err := e.s.SetPRBodyMode(e.ctx, e.admin, PRBodyTemplate); err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +132,7 @@ func TestUnsupportedClaims(t *testing.T) {
 	}{
 		{"Fixes login in `renderPRBody` (cmd/wp/pr_open.go) for WP-12.", nil},
 		{"pr_open.go reads pr_body_mode across 30 PRs (#431).", nil},
-		{"Touches 3 files.", nil}, // one digit: words and numbers alike
+		{"Touches 3 files.", nil},
 		{"Adds `newThing` in internal/core/x.go for WP-99 and #12, 45% faster, https://example.com", []string{"newThing", "WP-99", "#12", "https://example.com", "internal/core/x.go", "x.go", "45%"}},
 	} {
 		got := unsupportedClaims(c.summary, inputs)

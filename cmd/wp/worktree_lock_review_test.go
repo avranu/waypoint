@@ -27,7 +27,7 @@ func fakeClock(t *testing.T) time.Time {
 func TestLockOwnerStartOverflow(t *testing.T) {
 	now := fakeClock(t)
 	old := lockProcLookup
-	lockProcLookup = func(int) (lockProc, bool, error) { return lockProc{}, false, nil } // would read as gone
+	lockProcLookup = func(int) (lockProc, bool, error) { return lockProc{}, false, nil }
 	t.Cleanup(func() { lockProcLookup = old })
 	for _, start := range []uint64{144115188075855872, 1152921504606846976, 1844674407370955162, 18446744073709551615} {
 		gone, why := lockOwner(fmt.Sprintf("claude agent a (pid 12 start %d)", start), now)
@@ -63,7 +63,7 @@ func TestLockOwnerHost(t *testing.T) {
 	oldProc, oldHost := lockProcLookup, lockHost
 	t.Cleanup(func() { lockProcLookup, lockHost = oldProc, oldHost })
 	lockHost = func() string { return "here" }
-	lockProcLookup = func(int) (lockProc, bool, error) { return lockProc{}, false, nil } // no such pid
+	lockProcLookup = func(int) (lockProc, bool, error) { return lockProc{}, false, nil }
 	at := now
 	for name, c := range map[string]struct {
 		reason string
@@ -116,7 +116,6 @@ func TestLockOwnerKilledChildAndZombie(t *testing.T) {
 	if err := cmd.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
-	// Killed and not yet waited for: a zombie. Wait for the kernel to show it.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if e, found, _ := readLockProc(pid); found && e.zombie {
@@ -200,7 +199,6 @@ func TestUnlockJudgedOneWinner(t *testing.T) {
 func TestUnlockJudgedChangedLock(t *testing.T) {
 	f := newTidyFixture(t)
 	p := lockedWorktree(t, f, "wp-1", "worktree-wp-1", deadReason(t))
-	// Judged as another dead lock; the one there now is a different dead one.
 	if _, err := unlockJudged(context.Background(), f.repo, p, "claude agent other (pid 999999 start 1)"); err == nil || !isLocked(t, f, p) {
 		t.Errorf("unlocked a lock that is not the one judged: %v", err)
 	}
@@ -211,7 +209,7 @@ func TestUnlockJudgedChangedLock(t *testing.T) {
 func TestReadLockProcWithoutProcIsCantTell(t *testing.T) {
 	oldRoot, oldSig := lockProcRoot, lockPidSignal
 	t.Cleanup(func() { lockProcRoot, lockPidSignal = oldRoot, oldSig })
-	lockProcRoot = t.TempDir() // no self/stat in it
+	lockProcRoot = t.TempDir()
 	lockPidSignal = func(int) bool { return false }
 	if _, found, err := readLockProc(4242); err == nil || found {
 		t.Fatalf("no /proc: found %v, err %v; want an error", found, err)

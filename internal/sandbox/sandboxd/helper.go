@@ -53,24 +53,18 @@ type Config struct {
 
 // Helper serves requests. Open it, then Serve.
 type Helper struct {
-	cfg   Config
-	sys   System
-	now   func() time.Time
-	log   *slog.Logger
-	mu    sync.Mutex
-	led   *ledger
-	store *store
-	// drift found while reconciling, until the next start.
+	cfg            Config
+	sys            System
+	now            func() time.Time
+	log            *slog.Logger
+	mu             sync.Mutex
+	led            *ledger
+	store          *store
 	reconcileDrift []string
-	// chown replaces the store's fchown in tests, which can't give a
-	// directory to another uid.
-	chown func(fd, uid, gid int) error
-	// ca is the sandbox CA the brokers inspect TLS with.
-	ca *broker.CA
-	// sessions are the sessions running or being cleared now (under mu).
-	sessions map[string]*session
-	// sessionWait bounds how long a broker may take to listen.
-	sessionWait time.Duration
+	chown          func(fd, uid, gid int) error
+	ca             *broker.CA
+	sessions       map[string]*session
+	sessionWait    time.Duration
 }
 
 // New makes a helper; Open loads its ledger and store.
@@ -264,7 +258,7 @@ func (h *Helper) ensureUsers(sd *sandbox.Signed) ([]sandbox.User, error) {
 	for _, r := range s.Repos {
 		repoUser, err := h.ensureUser(sandbox.KindRepo, r.ID, r.Slug, s.Runner)
 		if err != nil {
-			_ = h.led.save(h.ledgerPath()) // keep the nonce and what was made
+			_ = h.led.save(h.ledgerPath())
 			return nil, err
 		}
 		out = append(out, repoUser)
@@ -394,12 +388,11 @@ func (h *Helper) ensureUser(kind, key, slug string, runner int64) (sandbox.User,
 	now := h.now().Unix()
 	if u := h.led.byKey(kind, key); u != nil {
 		u.Slug, u.LastUsed = slug, now
-		if err := h.create(*u, runner); err != nil { // repairs a removed account or directory
+		if err := h.create(*u, runner); err != nil {
 			return sandbox.User{}, err
 		}
 		return *u, nil
 	}
-	// An interrupted create for this identity is finished, not duplicated.
 	if in := h.led.creating(kind, key); in != nil {
 		u, id := in.User, in.ID
 		u.Slug, u.LastUsed = slug, now
@@ -419,7 +412,7 @@ func (h *Helper) ensureUser(kind, key, slug string, runner int64) (sandbox.User,
 		}
 		name = userName(kind, slug, key, salt)
 		if h.led.byName(name) != nil || h.led.intending(name) != nil {
-			continue // another forge identity has it
+			continue
 		}
 		if _, found, err := h.sys.UserByName(name); err != nil {
 			return sandbox.User{}, err
@@ -444,7 +437,7 @@ func (h *Helper) ensureUser(kind, key, slug string, runner int64) (sandbox.User,
 			return sandbox.User{}, err
 		}
 		if err := h.create(u, runner); err != nil {
-			return sandbox.User{}, err // the intent stays: the next start finishes it
+			return sandbox.User{}, err
 		}
 		h.led.Users = append(h.led.Users, u)
 		h.led.dropIntent(in.ID)

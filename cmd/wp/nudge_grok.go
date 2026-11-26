@@ -9,24 +9,17 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Cut-short Grok runs (WP-758). Agents asked for a Grok review ran
-// cursor-agent by hand under Bash's 10-minute cap. Grok at high effort often
-// takes longer, and cursor-agent prints only at the end, so the run was killed
-// with nothing kept and its quota lost. A note arrives too late (a foreground
-// call's context comes back with its result), so this one call is refused,
-// and the refusal names what works: wp audit, whose limit is auditTimeout.
-
 const (
-	grokProbeSecs = 300  // a limit this short was chosen for a quick check, not a review
-	grokRunSecs   = 1800 // the shortest limit a review has been seen to finish in
-	bashCapSecs   = 600  // the longest a foreground Bash call may run
-	bashDefSecs   = 120  // a foreground Bash call that names no timeout
+	grokProbeSecs = 300
+	grokRunSecs   = 1800
+	bashCapSecs   = 600
+	bashDefSecs   = 120
 )
 
 // grokRun is a headless Grok run through Cursor found in a command.
 type grokRun struct {
-	secs     float64 // the shortest `timeout` around it; 0: none
-	detached bool    // started with &, so the Bash call doesn't wait for it
+	secs     float64
+	detached bool
 }
 
 // findGrokRuns looks through the commands, substitutions included. A `wait`
@@ -71,7 +64,6 @@ func grokRunWords(words []string) (found bool, secs float64) {
 			if len(words) == 0 {
 				return false, 0
 			}
-			// timeout takes sleep's durations; 0, like an unreadable one, is no limit.
 			if s := sleepSeconds("sleep " + words[0]); s > 0 && (secs == 0 || s < secs) {
 				secs = s
 			}
@@ -122,7 +114,7 @@ func (run grokRun) stopsAt(bg bool, toolMs float64) (limit float64, quick bool) 
 // before it can finish, or "".
 func grokCutShort(cmd string, bg bool, toolMs float64) string {
 	if !strings.Contains(cmd, "grok") || !strings.Contains(cmd, "agent") {
-		return "" // keeps the parser off nearly every call
+		return ""
 	}
 	for _, run := range findGrokRuns(parseShell(cmd), false) {
 		limit, quick := run.stopsAt(bg, toolMs)

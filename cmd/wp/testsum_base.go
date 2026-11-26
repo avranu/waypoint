@@ -12,21 +12,16 @@ import (
 	"syscall"
 )
 
-// wp testsum --base REF: is a failure this change's, or was it failing
-// before? Agents answered it by stashing their work or checking main's files
-// out over it, in a tree others may share; this runs the failing tests in a
-// temporary checkout of REF instead (WP-935).
-
 // baseVerdicts, in the order they're listed. The first counts as already
 // there; the next five as this change's (or a flake); the last as neither.
 const (
 	baseFailsToo   = "fails there too"
 	basePasses     = "passes there"
-	baseOtherwise  = "fails differently" // the package failed there, but not this way
+	baseOtherwise  = "fails differently"
 	baseSkipped    = "skipped there"
 	baseMissing    = "isn't there"
-	baseNotFailing = "didn't fail there" // a format that names only failures
-	baseUnknown    = "no result there"   // its package failed there first
+	baseNotFailing = "didn't fail there"
+	baseUnknown    = "no result there"
 )
 
 var baseVerdictOrder = []string{baseFailsToo, basePasses, baseOtherwise, baseSkipped, baseMissing, baseNotFailing, baseUnknown}
@@ -37,8 +32,8 @@ func (c *cli) testsumBase(argv []string, format, ref string, keep []string) erro
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	rec := newTestRunRecorder(argv)              // as typed
-	key := slotRunFor("wp testsum --base", argv) // the hold can include a second run at the base
+	rec := newTestRunRecorder(argv)
+	key := slotRunFor("wp testsum --base", argv)
 	argv = goTestJSON(argv)
 	env, release, err := c.takeSlotFor(ctx, "tests", defaultSlots(), key)
 	if err != nil {
@@ -65,7 +60,7 @@ func (c *cli) testsumBase(argv []string, format, ref string, keep []string) erro
 		c.withheld(dropped)
 	}
 	if res == nil || len(res.Failures) == 0 {
-		return exit // nothing failed, or nothing to name: nothing to compare
+		return exit
 	}
 
 	dir, cleanup, sha, err := baseWorktree(ref)
@@ -75,7 +70,6 @@ func (c *cli) testsumBase(argv []string, format, ref string, keep []string) erro
 	}
 	defer cleanup()
 	if _, err := os.Stat(dir); err != nil {
-		// The folder this ran in is new: so is everything in it.
 		c.println(fmt.Sprintf("\nAt %s (%s), this folder isn't there: every failure is this change's.", ref, shortSHA(sha)))
 		return exit
 	}
@@ -124,15 +118,13 @@ func baseArgv(argv []string, failures []testFailure) []string {
 		name, _, hasVal := strings.Cut(strings.TrimLeft(a, "-"), "=")
 		if strings.HasPrefix(a, "-") && (name == "run" || name == "test.run") {
 			if !hasVal {
-				i++ // its value is the next word
+				i++
 			}
 			continue
 		}
 		out = append(out, a)
 	}
 	run := "-run=^(" + strings.Join(names, "|") + ")$"
-	// Before -args, after the other flags (go test reads flags before the
-	// packages too, so the place among them doesn't matter).
 	if k := slices.Index(out, "-args"); k >= 0 {
 		return slices.Concat(out[:k], []string{run}, out[k:])
 	}
@@ -144,7 +136,7 @@ func baseVerdict(f testFailure, base *testResult) string {
 	if base == nil {
 		return baseUnknown
 	}
-	pkgFailed, testFailed := false, false // in f's package, there
+	pkgFailed, testFailed := false, false
 	for _, b := range base.Failures {
 		if b.Name == f.Name {
 			return baseFailsToo
@@ -159,13 +151,8 @@ func baseVerdict(f testFailure, base *testResult) string {
 	}
 	switch {
 	case base.Ran == nil:
-		// Only failures are named (pytest, junit, go test's plain text):
-		// not failing there is all that's known.
 		return baseNotFailing
 	case f.Test == "":
-		// A package that timed out or didn't build here: there, a test of
-		// it failed, or it failed as a whole some other way (a timeout
-		// here, a build error there), or it didn't.
 		if testFailed || pkgFailed {
 			return baseOtherwise
 		}
@@ -173,11 +160,11 @@ func baseVerdict(f testFailure, base *testResult) string {
 	case base.Ran[f.Name]:
 		return basePasses
 	case pkgFailed:
-		return baseUnknown // didn't build, or timed out before the test ran
+		return baseUnknown
 	case base.Skips[f.Name]:
 		return baseSkipped
 	}
-	return baseMissing // a new or renamed test
+	return baseMissing
 }
 
 func baseText(ref, sha string, failures []testFailure, base *testResult, code int, data []byte, whole bool, argv []string) string {
@@ -188,7 +175,7 @@ func baseText(ref, sha string, failures []testFailure, base *testResult, code in
 	}
 	fmt.Fprintf(&b, "\nAt %s (%s), %s:", ref, shortSHA(sha), what)
 	if base == nil {
-		fmt.Fprintf(&b, "\n  no test results there (exit %d), so nothing to compare; last lines:\n%s", code, lastLines(data, 10))
+		fmt.Fprintf(&b, "\n  no test results there (exit %d), so nothing to compare; last lines:\n%s", code, lastLines(plainOutput(data), 10))
 		return b.String()
 	}
 	byVerdict := map[string][]testFailure{}

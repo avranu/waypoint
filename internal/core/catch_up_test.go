@@ -77,7 +77,6 @@ func TestCatchUp(t *testing.T) {
 		t.Errorf("everywhere: %+v %v", all, err)
 	}
 
-	// Looks good is the close's review; it leaves Catch up.
 	if n, err := e.s.ReviewCloses(e.ctx, e.admin, []string{b.Key}); err != nil || n != 1 {
 		t.Fatalf("review: %d %v", n, err)
 	}
@@ -85,7 +84,6 @@ func TestCatchUp(t *testing.T) {
 		t.Errorf("after review: %+v", c.Items)
 	}
 
-	// Not finished reopens it with the person's note, and it leaves too.
 	if _, err := e.s.NotFinished(e.ctx, agent, a.Key, "no"); !errors.Is(err, ErrForbidden) {
 		t.Errorf("an agent sent work back: %v", err)
 	}
@@ -106,8 +104,6 @@ func TestCatchUp(t *testing.T) {
 		t.Errorf("after not finished: %+v", c.Items)
 	}
 
-	// A problem is a new bug related to the task; with no note it is named
-	// after the task.
 	bug, err := e.s.ReportProblem(e.ctx, e.admin, b.Key, "Button overlaps the title\nOnly at 390px.")
 	if err != nil {
 		t.Fatal(err)

@@ -50,8 +50,6 @@ func (s *Service) shipAuthority(ctx context.Context, r *roundRow, bp *beforePR, 
 		if t.ReadOnly {
 			return nil, "the token the ship came with is read-only", nil
 		}
-		// What the token may do, as the ship it came with could; the agent
-		// and session are the round's.
 		t.Agent, t.Session = actor.Agent, actor.Session
 		actor = t
 	}
@@ -107,8 +105,6 @@ func (s *Service) stopShipWith(ctx context.Context, r *roundRow, in shipRoundIn,
 			return err
 		}
 		s.emitWorkLog(ctx, t, r.issueID, r.id, RoundDone)
-		// The person is told by the write that ends the ship (dispatch
-		// sends it): the round ends and the notice stands or falls together.
 		who := in.userID
 		if in.user != nil {
 			who = in.user.ID
@@ -128,8 +124,6 @@ func (s *Service) stopShipWith(ctx context.Context, r *roundRow, in shipRoundIn,
 	if err != nil {
 		return err
 	}
-	// The run and the task's claim are let go: nothing is left that would try
-	// this ship again, and the task is free for a person.
 	if err := s.write(ctx, SystemActor(), func(t *tx) error {
 		var open int
 		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM agent_runs WHERE issue_id = ? AND agent = ? AND ended_at IS NULL`, r.issueID, in.agent).Scan(&open); err != nil {
@@ -140,8 +134,6 @@ func (s *Service) stopShipWith(ctx context.Context, r *roundRow, in shipRoundIn,
 				return err
 			}
 		}
-		// No event for the claim itself: endRun says the run ended, and a
-		// claim's release is evented nowhere else either (dropClaim).
 		_, err := t.ExecContext(ctx, `UPDATE issues SET claimed_by = '', claimed_until = NULL, claimed_at = NULL WHERE id = ? AND claimed_by = ?`, r.issueID, in.agent)
 		return err
 	}); err != nil {

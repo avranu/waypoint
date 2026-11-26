@@ -16,13 +16,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Rewritten work at ship time (WP-782, WP-ADR131, WP-1370): git blame says
-// which pull requests put the lines this change replaces on the base; the
-// server relates the tasks itself (inferred, with what it saw), and the
-// review round's check of earlier work undone reads that. The agent gets one
-// informational line, with the commands that say what the relation is when
-// it knows. Nothing is held and no turn is kept open for it.
-
 type rewrittenPR struct {
 	Number int     `json:"number"`
 	Lines  int     `json:"lines"`
@@ -54,12 +47,10 @@ var rewrittenTasksFn = (*cli).rewrittenTasks
 // (shipNeedsAgent doesn't hear of it) and asks for no tool call.
 func (c *cli) noteRewrites(key, baseFlag string) {
 	s := rewritesText(key, rewrittenTasksFn(c, key, baseFlag))
-	// Recorded even when empty, so tasks that return after a ship that
-	// named nobody are news again.
 	if rewritesSeen(key, s) || s == "" {
 		return
 	}
-	_, _ = fmt.Fprintln(c.err, s) // stderr: --json keeps stdout for the response
+	_, _ = fmt.Fprintln(c.err, s)
 }
 
 // rewrittenTasks are the tasks whose recent lines a change to task key
@@ -69,7 +60,6 @@ func (c *cli) rewrittenTasks(key, baseFlag string) []rewrittenTask {
 	if key == "" {
 		return nil
 	}
-	// A --base git would read as an option is refused before git runs.
 	if err := codeindex.CheckRef(baseFlag); err != nil {
 		_, _ = fmt.Fprintf(c.err, "wp: not noting rewritten work: base: %v\n", err)
 		return nil
@@ -92,9 +82,8 @@ func (c *cli) rewrittenTasks(key, baseFlag string) []rewrittenTask {
 	go func() {
 		head := "HEAD"
 		if sha, err := localGit("rev-parse", "HEAD"); err == nil && sha != "" {
-			head = sha // the commit the evidence is for
+			head = sha
 		}
-		// wp ship commits what is staged only after this: blame that too.
 		if _, err := localGit("diff", "--cached", "--quiet"); err != nil && isExit(err, 1) {
 			c, err := codeindex.IndexCommit(root, "HEAD")
 			if err != nil {
@@ -117,14 +106,12 @@ func (c *cli) rewrittenTasks(key, baseFlag string) []rewrittenTask {
 	case <-time.After(rewriteTimeout):
 		return nil
 	}
-	prs := []rewrittenPR{} // sent even when empty: the server drops what an earlier ship found
+	prs := []rewrittenPR{}
 	for _, in := range tr.Introducers {
 		if in.PR > 0 {
 			prs = append(prs, rewrittenPR{Number: in.PR, Lines: in.Lines, Share: in.Share, At: in.At})
 		}
 	}
-	// Refused here, before it is sent, with the field and limit the server
-	// would name: a repo or commit this long is not one git handed us.
 	if err := checkRewriteSend(repo, head, prs); err != nil {
 		_, _ = fmt.Fprintf(c.err, "wp: not noting rewritten work: %v\n", err)
 		return nil
@@ -205,8 +192,6 @@ func rewritesText(key string, got []rewrittenTask) string {
 
 // excerptLine shortens s to n runes on one line.
 func excerptLine(s string, n int) string {
-	// A control character (an escape sequence) is not text: it would act on
-	// the terminal that prints another task's title.
 	s = strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
 			return ' '

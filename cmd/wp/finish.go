@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"net/url"
@@ -23,7 +24,14 @@ babysits it and moves the task to In Review; Waypoint merges it. It is not
 armed, and a person merges it, where the repo's Merge automatically is off or
 covers only other base branches than this pull request's, and for a pull
 request whose head is outside the repo. A pull request already open from the
-branch for another task is pushed to but not armed, babysat or linked.
+branch for another task is pushed to but not armed or babysat: the task is
+linked to it and stays In Review until it merges.
+wp ship A B [...] ships one change that does several tasks (at most 6, all
+in one project): one pull request linked to every task, one adversarial
+review given every task's description, every task In Review and Done when it
+merges. -m, --summary and --shot apply to all of them (--shot attaches its
+pictures to every task). A task that can't go along is refused before
+anything is committed.
 With nothing to ship, the task moves to its next workflow step, or Done.
 -m is the commit message for staged changes, the task's comment and the
 lead of the pull request's description, which Waypoint writes: don't write
@@ -86,7 +94,7 @@ func cmdFinish(c *cli, args []string) error {
 		checkGiven = checkGiven || fl.Name == "check"
 	})
 	keys, rest, keyErr := c.currentKeys(pos)
-	given := keyErr == nil && len(rest) < len(pos) // named, not held
+	given := keyErr == nil && len(rest) < len(pos)
 	if keyErr != nil {
 		if len(pos) > 0 && codeShape(pos[0]) != "" {
 			return keyErr
@@ -103,7 +111,7 @@ func cmdFinish(c *cli, args []string) error {
 		return c.usage("usage is one task's: give one KEY")
 	}
 	if !given && len(keys) == 1 && !*noShip && c.finished(keys[0]) {
-		keys = nil // a claim finished on the board isn't what ships
+		keys = nil
 	}
 	shipping := false
 	if !*noShip {
@@ -111,11 +119,12 @@ func cmdFinish(c *cli, args []string) error {
 			return err
 		}
 	}
-	if shipping && len(keys) > 1 {
-		return c.usage("a pull request ships one task: give one KEY (the others finish with wp ship KEY once it is open)")
+	if shipping {
+		if err := c.checkShipKeys(f, keys); err != nil {
+			return err
+		}
 	}
 	if shipping {
-		// Before anything is committed or pushed (WP-1449).
 		if err := c.refuseDiagnoseRound(keys); err != nil {
 			return err
 		}
@@ -143,12 +152,12 @@ func cmdFinish(c *cli, args []string) error {
 		if !so.summaryGiven {
 			return
 		}
-		// For the task's next wp ship (WP-1093): the task named or taken,
-		// else the one the branch names, as wp ship links it.
 		switch {
-		case len(keys) == 1:
-			c.keepSummary(keys[0], *so.summary)
-		case len(keys) == 0:
+		case len(keys) > 0:
+			for _, k := range upperKeys(keys) {
+				c.keepSummary(k, *so.summary)
+			}
+		default:
 			if branch, err := localGit("rev-parse", "--abbrev-ref", "HEAD"); err == nil {
 				if m := branchKeyRE.FindStringSubmatch(branch); m != nil {
 					c.keepSummary(m[1], *so.summary)
@@ -156,8 +165,16 @@ func cmdFinish(c *cli, args []string) error {
 			}
 		}
 	}
-	// A marker this call didn't write (a subagent's wp ship in this
-	// session, one a hook never took) mustn't end the turn after it.
+	if shipping {
+		if held, compact, err := c.offerDeferred(f, so, keys); err != nil {
+			return err
+		} else if held {
+			if !compact {
+				keepSummary()
+			}
+			return nil
+		}
+	}
 	c.clearShipEnd()
 	switch {
 	case !shipping && (checkGiven || so.summaryGiven):
@@ -171,39 +188,39 @@ func cmdFinish(c *cli, args []string) error {
 		}
 	}
 	for _, k := range keys {
-		c.objectiveShipNote(k) // WP-927: Waypoint reads a round's end itself; nothing is measured here
+		c.objectiveShipNote(k)
 	}
 	if shipping {
-		c.noteRewrites(shipKey(keys), *f.base) // information only (WP-1370): it keeps no turn open
+		if len(keys) == 0 {
+			c.noteRewrites(shipKey(nil), *f.base)
+		}
+		for _, k := range upperKeys(keys) {
+			c.noteRewrites(k, *f.base)
+		}
 	}
 	if len(shots) > 0 {
-		if len(keys) != 1 {
-			return c.usage("--shot is one task's: give one KEY, or run wp shot KEY URL for each")
+		if len(keys) == 0 {
+			return c.usage("--shot goes on a task: give a KEY, or run wp shot KEY URL")
 		}
 		o, err := shotOpts()
 		if err != nil {
 			return c.usage("%s", err)
 		}
-		// The pictures go first: a failed shot leaves the task open to retry.
-		if err := c.shoot(keys[0], shots, o); err != nil {
-			keepSummary()
-			return fmt.Errorf("%w (the task is still open: fix the page or drop --shot, then run this again)", err)
+		for _, k := range keys {
+			if err := c.shoot(k, shots, o); err != nil {
+				keepSummary()
+				return fmt.Errorf("%w (%s is still open: fix the page or drop --shot, then run this again)", err, k)
+			}
 		}
 	}
 	if shipping {
-		key := ""
-		if len(keys) == 1 {
-			key = keys[0]
-		}
-		other, err := c.shipWork(f, so, *msg, msgGiven, key, given)
+		other, err := c.shipWork(f, so, *msg, msgGiven, keys, given)
 		if err != nil {
 			keepSummary()
 		}
 		if err != nil || !other || len(keys) == 0 {
 			return err
 		}
-		// The branch's pull request is another task's: this one has nothing
-		// of its own to ship.
 	}
 	if err := c.finishDone(keys, *msg, u); err != nil {
 		if len(shots) > 0 {
@@ -213,7 +230,7 @@ func cmdFinish(c *cli, args []string) error {
 	}
 	if !shipping && !*noShip {
 		if s := commitsLeftNotice(f, keys); s != "" {
-			_, _ = fmt.Fprintln(c.err, "Notice: "+s) // stderr: --json keeps stdout for the response
+			_, _ = fmt.Fprintln(c.err, "Notice: "+s)
 		}
 	}
 	return nil
@@ -261,8 +278,6 @@ func (c *cli) codeToShip(f prOpenFlags, keys []string) (bool, error) {
 			return true, nil
 		}
 	}
-	// One task only: a pull request ships one, and a mention shouldn't stop
-	// wp done A B finishing both.
 	if len(keys) == 1 && commitsAllName(base, branch, keys[0]) {
 		closed, err := c.taskClosed(keys[0])
 		if err != nil {
@@ -328,10 +343,10 @@ func commitsLeftNotice(f prOpenFlags, keys []string) string {
 		for i, k := range keys {
 			cmds[i] = "wp pr open --issue " + k
 		}
-		return left + "a pull request ships one task. If they are one of these tasks' work: " + strings.Join(cmds, " or ")
+		return left + "no one task of these is named by the branch or every commit. If they are one of these tasks' work: " + strings.Join(cmds, " or ") + " (then wp ship " + strings.Join(keys, " ") + " finishes them all)"
 	}
 	if commitsAllName(base, branch, keys[0]) {
-		return "" // the task's own, and finished: nothing is unaccounted for
+		return ""
 	}
 	return left + fmt.Sprintf("neither the branch name nor every commit subject names %s. If they are that task's work: wp pr open --issue %s", keys[0], keys[0])
 }
@@ -439,13 +454,128 @@ func (c *cli) refuseDiagnoseRound(keys []string) error {
 	}
 	var o objective
 	if err := c.do("GET", "/api/v1/issues/"+esc(key)+"/objective", nil, &o); err != nil {
-		if isNotFound(err) { // no objective on it: nothing to refuse
+		if isNotFound(err) {
 			return nil
 		}
-		return err // not knowing is not leave to commit or push
+		return err
 	}
 	if o.State != "active" || o.Phase != "" || o.RoundKind != "diagnose" {
 		return nil
 	}
 	return fmt.Errorf("%s's round %d is a diagnose round: it ships no code, so there is nothing to ship yet. Record what you found with wp objective diagnose %s -f FILE; the same round then opens again as a work round, and that is the round to ship in (a person can skip the diagnosis with wp objective next %s)", key, o.Round, key, key)
+}
+
+// offerDeferred is the stop an Opus or Fable agent's wp ship makes once for
+// the tasks its session filed meanwhile (WP-1858): Waypoint lists those it
+// could do with the change, and the ship runs again to ship as it is. true:
+// the offer was printed and nothing is to be shipped now. Nothing here may
+// block a ship, so a server that doesn't know the route, or fails, is
+// ignored.
+func (c *cli) offerDeferred(f prOpenFlags, so shipOpts, keys []string) (held, compactOffer bool, err error) {
+	if c.agentHeader() == "" || c.thisSession() == "" {
+		return false, false, nil
+	}
+	task := keys
+	if len(task) == 0 {
+		if branch, err := localGit("rev-parse", "--abbrev-ref", "HEAD"); err == nil {
+			if m := branchKeyRE.FindStringSubmatch(branch); m != nil {
+				task = []string{m[1]}
+			}
+		}
+	}
+	project := c.shipHome(f)
+	if project == "" {
+		return false, false, nil
+	}
+	raw, err := c.call("POST", "/api/v1/agent/deferred", map[string]any{"project": project, "keys": task, "via": "ship"})
+	if err != nil {
+		return false, false, nil
+	}
+	var o struct {
+		Text    string `json:"text"`
+		Compact bool   `json:"compact"`
+	}
+	if jsonInto(raw, &o) != nil || strings.TrimSpace(o.Text) == "" && !o.Compact {
+		return false, false, nil
+	}
+	if o.Compact {
+		// The session is large: Waypoint compacts it once it idles, and then
+		// lists the tasks. The turn ends here, as a held ship's does, with the
+		// summary kept for the ship that follows.
+		text := "Not shipped yet: Waypoint will compact this session and then list the tasks it filed meanwhile. Stop now; nothing else is needed from you."
+		if err := c.emit(raw, func() string { return text }); err != nil {
+			return false, false, err
+		}
+		// The summary waits for the ship after the offer, through the prompt
+		// the offer arrives as, and the marker has no key: the Stop it ends
+		// the turn with must not drop what was kept.
+		if so.summaryGiven {
+			for _, k := range task {
+				c.keepSummaryFor(k, *so.summary, "")
+			}
+		}
+		c.endTurnAfterShip("", "Not shipped yet: Waypoint is compacting the session, then lists the tasks it filed.")
+		return true, true, nil
+	}
+	c.clearShipEnd()
+	return true, false, c.emit(raw, func() string { return o.Text })
+}
+
+func upperKeys(keys []string) []string {
+	out := make([]string, len(keys))
+	for i, k := range keys {
+		out[i] = strings.ToUpper(strings.TrimSpace(k))
+	}
+	return out
+}
+
+// shipHome is the project this checkout (or -p) belongs to, "" when it
+// can't be told.
+func (c *cli) shipHome(f prOpenFlags) string {
+	sc, err := c.scopeFor(f.sf)
+	if err != nil {
+		return ""
+	}
+	project, err := sc.home()
+	if err != nil {
+		return ""
+	}
+	return project
+}
+
+// checkShipKeys refuses a wp ship A B that can't go along before anything is
+// committed or pushed. Waypoint's open makes the checks (how many tasks, each
+// one existing, editable, open, in the project and not on a diagnose round);
+// this asks it to make them now, so there is one copy of them (WP-1426). A
+// refusal names the key and what to run instead.
+func (c *cli) checkShipKeys(f prOpenFlags, keys []string) error {
+	if len(keys) < 2 {
+		return nil
+	}
+	keys = upperKeys(keys)
+	project := c.shipHome(f)
+	if project == "" {
+		var i struct {
+			ProjectKey string `json:"project_key"`
+		}
+		if err := c.do("GET", "/api/v1/issues/"+esc(keys[0]), nil, &i); err != nil {
+			return c.shipKeysRefused(keys[0], err)
+		}
+		project = i.ProjectKey
+	}
+	err := c.do("POST", "/api/v1/projects/"+esc(project)+"/pulls/tasks", map[string]any{"keys": keys}, nil)
+	return c.shipKeysRefused("", err)
+}
+
+// shipKeysRefused is a refused key as a usage error (exit 2), with what to
+// run; a server that can't answer is an error of its own.
+func (c *cli) shipKeysRefused(key string, err error) error {
+	var ae *apiError
+	if err == nil || !errors.As(err, &ae) || ae.status >= 500 {
+		return err
+	}
+	if key != "" {
+		return c.usage("%s: %s (check the key with wp show %s, or leave it out of wp ship and run wp ship %s later)", key, ae.msg, key, key)
+	}
+	return c.usage("%s", ae.msg)
 }

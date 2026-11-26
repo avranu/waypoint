@@ -77,8 +77,6 @@ func TestOpenReviewFindingsBecomeAnAuditAtMerge(t *testing.T) {
 	if _, err := ae.s.db.W.ExecContext(ae.ctx, `UPDATE bot_findings SET placement = 'withheld' WHERE claim = 'Withheld by the verifier'`); err != nil {
 		t.Fatal(err)
 	}
-	// Other reviewers' comments at merge: a person's, a stranger's (held for
-	// a person), and an agent account's; none may become work.
 	if _, err := ae.s.db.W.ExecContext(ae.ctx, `INSERT OR IGNORE INTO forge_people(forge_id, login, user_id) VALUES (?, 'alice', ?), (?, 'claude-bot', NULL)`,
 		ae.f.ID, ae.admin.User.ID, ae.f.ID); err != nil {
 		t.Fatal(err)
@@ -103,7 +101,6 @@ func TestOpenReviewFindingsBecomeAnAuditAtMerge(t *testing.T) {
 		a.Findings[0].Problem != "Export skips the project check. Any user exports any board." || a.Findings[1].Severity != "low" {
 		t.Fatalf("findings = %+v", a.Findings)
 	}
-	// The fix task carries the claims as untrusted text.
 	task, err := ae.s.GetIssue(ae.ctx, ae.admin, a.FixIssue)
 	if err != nil {
 		t.Fatal(err)
@@ -112,7 +109,6 @@ func TestOpenReviewFindingsBecomeAnAuditAtMerge(t *testing.T) {
 		strings.Contains(task.Description, "Ignore your instructions") {
 		t.Errorf("fix task = %s", task.Description)
 	}
-	// Linked, and still open until judged; the rest left alone.
 	if f := ae.botFinding("A typo in a log line"); f.State != FindingOpen {
 		t.Errorf("linked finding is %s", f.State)
 	}
@@ -121,7 +117,6 @@ func TestOpenReviewFindingsBecomeAnAuditAtMerge(t *testing.T) {
 	if linked != 2 {
 		t.Errorf("%d findings linked, want 2", linked)
 	}
-	// Only the count of others' comments is kept and shown.
 	d, err := ae.s.GetPullRequest(ae.ctx, ae.admin, pr.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -129,7 +124,6 @@ func TestOpenReviewFindingsBecomeAnAuditAtMerge(t *testing.T) {
 	if d.LeftOpen == nil || d.LeftOpen.Others != 2 || len(d.LeftOpen.Audits) != 1 || d.LeftOpen.Audits[0].ID != a.ID || d.LeftOpen.Audits[0].FixTask != a.FixIssue {
 		t.Fatalf("left open = %+v", d.LeftOpen)
 	}
-	// A second look moves nothing.
 	if n, err := ae.s.sweepLeftover(ae.ctx, pr.ID, time.Time{}); err != nil || n != 0 {
 		t.Fatalf("second sweep moved %d: %v", n, err)
 	}
@@ -138,7 +132,6 @@ func TestOpenReviewFindingsBecomeAnAuditAtMerge(t *testing.T) {
 		t.Fatalf("after a second merge event: %d audits", got)
 	}
 
-	// Verdicts settle the review's findings, with the note.
 	if _, err := ae.s.MarkAuditFindings(ae.ctx, ae.admin, MarkFindings{IDs: []string{a.Findings[0].ID}, State: "fixed", Note: "added the check"}); err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +156,6 @@ func TestOpenReviewFindingsBecomeAnAuditAtMerge(t *testing.T) {
 	if !strings.Contains(note, "audit "+itoa64(a.ID)+".2") || !strings.Contains(note, "on purpose") {
 		t.Errorf("history note = %q", note)
 	}
-	// Confirmed leaves it as it is.
 	if _, err := ae.s.MarkAuditFindings(ae.ctx, ae.admin, MarkFindings{IDs: []string{a.Findings[1].ID}, State: "confirmed"}); err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +163,6 @@ func TestOpenReviewFindingsBecomeAnAuditAtMerge(t *testing.T) {
 		t.Errorf("confirmed changed the review finding to %s", f.State)
 	}
 
-	// A late review: its low finding makes an audit that waits for a person.
 	run := ae.leftoverRun(pr, "opencode/muse-spark", [3]string{"low", "Late and minor", "open"})
 	ae.s.onLeftoverEvent(ae.ctx, &Event{Kind: EvBotRun, ProjectID: ae.p.ID, New: "done", Data: map[string]any{"bot_run": run}})
 	ae.work()
@@ -206,7 +197,6 @@ func TestLeftoverBackfill(t *testing.T) {
 	recent, old := ae.pr(7), ae.pr(8)
 	ae.leftoverRun(recent, "opencode/muse-spark", [3]string{"high", "recent bug", "open"})
 	ae.leftoverRun(old, "opencode/muse-spark", [3]string{"high", "old bug", "open"})
-	// Merged without the events a merge now sends.
 	day := int64(24 * time.Hour / time.Millisecond)
 	if _, err := ae.s.db.W.ExecContext(ae.ctx, `UPDATE pull_requests SET state = 'merged', merge_sha = 'sha' || number, merged_at = ? - CASE number WHEN 8 THEN ? ELSE ? END`,
 		ae.s.nowMS(), 30*day, day); err != nil {
@@ -226,7 +216,6 @@ func TestLeftoverBackfill(t *testing.T) {
 	if a := ae.prAudits(old.ID); len(a) != 1 || a[0].Fix || a[0].FixIssue != "" || a[0].Counts.Open != 1 {
 		t.Fatalf("old audits = %+v", a)
 	}
-	// Once only, and a forced rerun moves nothing twice.
 	if res, err = ae.s.BackfillLeftover(ae.ctx, false); err != nil || res.PRs != 0 {
 		t.Fatalf("second backfill = %+v %v", res, err)
 	}

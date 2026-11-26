@@ -133,8 +133,6 @@ func runWriteClosure(pass *analysis.Pass) (any, error) {
 	r := newReporter(pass)
 	decls := funcDecls(pass)
 
-	// effect: what each function reaches, directly or through helpers in
-	// this package, and through which callee.
 	type reach struct {
 		what string
 		via  []string
@@ -143,13 +141,8 @@ func runWriteClosure(pass *analysis.Pass) (any, error) {
 	calls := map[*types.Func][]*types.Func{}
 	for fn, fd := range decls {
 		if fn.Name() == "write" && recvName(fn) == "Service" {
-			// write dispatches after its commit, which is the point: what
-			// calls write is not inside one because of it.
 			continue
 		}
-		// Work handed to goBG or a go statement is followed into, so a
-		// background notification still counts; a background write of a
-		// note does not.
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
 			switch n := n.(type) {
 			case *ast.CallExpr:
@@ -249,8 +242,6 @@ func runActorUsed(pass *analysis.Pass) (any, error) {
 				if typeName(pass.TypesInfo.TypeOf(field.Type)) != "Actor" {
 					continue
 				}
-				// An unnamed parameter, as in X(*Actor), can't be read any
-				// more than `_` can (c5781).
 				if len(field.Names) == 0 {
 					r.report(field.Pos(), "%s takes an *Actor and drops it: no access check can run", fd.Name.Name)
 				}
@@ -361,14 +352,12 @@ func checkClock(pass *analysis.Pass, r *reporter, fd *ast.FuncDecl) {
 func measured(pass *analysis.Pass, real map[types.Object]bool, stack []ast.Node, call *ast.CallExpr) bool {
 	switch p := stack[len(stack)-2].(type) {
 	case *ast.SelectorExpr:
-		// time.Now().Sub(x): x must be real time.
 		if p.X != call || p.Sel.Name != "Sub" || len(stack) < 3 {
 			return false
 		}
 		sub, ok := stack[len(stack)-3].(*ast.CallExpr)
 		return ok && sub.Fun == p && len(sub.Args) == 1 && isReal(pass, real, sub.Args[0])
 	case *ast.CallExpr:
-		// x.Sub(time.Now()): x must be real time.
 		if sel, ok := ast.Unparen(p.Fun).(*ast.SelectorExpr); ok && sel.Sel.Name == "Sub" && len(p.Args) == 1 && p.Args[0] == call {
 			return isReal(pass, real, sel.X)
 		}
@@ -411,7 +400,6 @@ func isReal(pass *analysis.Pass, real map[types.Object]bool, e ast.Expr) bool {
 // time.Now(), and every use is a time.Since, or a Sub against real time, or
 // another such assignment (`start = time.Now()` for the next step).
 func realVars(pass *analysis.Pass, fd *ast.FuncDecl) map[types.Object]bool {
-	// Candidates: locals assigned time.Now and nothing else.
 	cand := map[types.Object]bool{}
 	bad := map[types.Object]bool{}
 	ast.Inspect(fd.Body, func(n ast.Node) bool {
@@ -422,7 +410,6 @@ func realVars(pass *analysis.Pass, fd *ast.FuncDecl) map[types.Object]bool {
 					obj := pass.TypesInfo.Defs[id]
 					switch {
 					case len(vs.Values) == 0:
-						// var start time.Time: the zero value, set later.
 					case len(vs.Names) == len(vs.Values) && isNowCall(pass, vs.Values[i]):
 						cand[obj] = true
 					default:
@@ -458,8 +445,6 @@ func realVars(pass *analysis.Pass, fd *ast.FuncDecl) map[types.Object]bool {
 			real[obj] = true
 		}
 	}
-	// Uses: drop a variable used any other way, until nothing changes (a
-	// Sub between two candidates needs both to stay real).
 	for changed := true; changed; {
 		changed = false
 		var stack []ast.Node
@@ -489,7 +474,7 @@ func realUse(pass *analysis.Pass, real map[types.Object]bool, stack []ast.Node, 
 	case *ast.AssignStmt:
 		for _, l := range p.Lhs {
 			if l == use {
-				return true // checked as an assignment above
+				return true
 			}
 		}
 	case *ast.CallExpr:
@@ -497,12 +482,10 @@ func realUse(pass *analysis.Pass, real map[types.Object]bool, stack []ast.Node, 
 		if isPkgFunc(c, "time", "Since") || isPkgFunc(c, "time", "Until") {
 			return true
 		}
-		// x.Sub(use): x real.
 		if sel, ok := ast.Unparen(p.Fun).(*ast.SelectorExpr); ok && sel.Sel.Name == "Sub" && len(p.Args) == 1 && p.Args[0] == use {
 			return isReal(pass, real, sel.X)
 		}
 	case *ast.SelectorExpr:
-		// use.Sub(x): x real.
 		if p.X == use && p.Sel.Name == "Sub" && len(stack) >= 3 {
 			if call, ok := stack[len(stack)-3].(*ast.CallExpr); ok && call.Fun == p && len(call.Args) == 1 {
 				return isReal(pass, real, call.Args[0])
@@ -615,7 +598,7 @@ func runStatusCreator(pass *analysis.Pass) (any, error) {
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch n := n.(type) {
 			case *ast.TypeSpec:
-				if strings.HasSuffix(n.Name.Name, "Post") { // what Waypoint sends, not what it reads
+				if strings.HasSuffix(n.Name.Name, "Post") {
 					return false
 				}
 			case *ast.StructType:

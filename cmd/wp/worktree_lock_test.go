@@ -15,9 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// What Claude Code writes as a worktree lock's reason, and what wp makes of
-// it (WP-1370): only a process shown gone makes the lock stale.
-
 // deadReason is the lock reason of an agent that has exited: a real child
 // that ran to the end, with a start time that is not its own.
 func deadReason(t *testing.T) string {
@@ -48,7 +45,7 @@ func TestLockOwner(t *testing.T) {
 	t.Cleanup(func() { lockProcLookup = old })
 	now := time.Now()
 	oldClock := lockClock
-	lockClock = func() (time.Time, time.Duration, error) { return now, 1000 * time.Second, nil } // booted at now-1000s
+	lockClock = func() (time.Time, time.Duration, error) { return now, 1000 * time.Second, nil }
 	t.Cleanup(func() { lockClock = oldClock })
 	boot := now.Add(-1000 * time.Second)
 	procs := map[int]lockProc{10: {start: 500}, 11: {start: 500, zombie: true}, 13: {start: 90000}}
@@ -61,22 +58,21 @@ func TestLockOwner(t *testing.T) {
 	}
 	for name, c := range map[string]struct {
 		reason string
-		at     time.Time // when the lock was written; now when zero
+		at     time.Time
 		gone   bool
 		why    string
 	}{
-		"no reason":                {"", time.Time{}, false, "records no owner"},
-		"free text":                {"WP-999 rework in progress (session waypoint-c5)", time.Time{}, false, "names no process"},
-		"pid not running":          {"claude agent a (pid 12 start 500)", time.Time{}, true, "no longer runs"},
-		"claude --worktree's form": {"claude session lk (pid 12 start 500)", time.Time{}, true, "no longer runs"},
-		"zombie":                   {"claude agent a (pid 11 start 500)", time.Time{}, true, "has exited"},
-		"pid reused":               {"claude agent a (pid 10 start 400)", time.Time{}, true, "another process"},
-		"same process, running":    {"claude agent a (pid 10 start 500)", time.Time{}, false, "still running"},
-		"no view of /proc":         {"claude agent a (pid 99 start 500)", time.Time{}, false, "can't tell"},
-		"pid zero":                 {"claude agent a (pid 0 start 500)", time.Time{}, false, "names no process"},
-		"age says nothing":         {"claude agent a (pid 10 start 500) from last year", time.Time{}, false, "names no process"},
-		"trailing newline, alive":  {"claude agent a (pid 10 start 500)\n", time.Time{}, false, "still running"},
-		// A lock this host's current boot can't have written is never judged by its /proc.
+		"no reason":                          {"", time.Time{}, false, "records no owner"},
+		"free text":                          {"WP-999 rework in progress (session waypoint-c5)", time.Time{}, false, "names no process"},
+		"pid not running":                    {"claude agent a (pid 12 start 500)", time.Time{}, true, "no longer runs"},
+		"claude --worktree's form":           {"claude session lk (pid 12 start 500)", time.Time{}, true, "no longer runs"},
+		"zombie":                             {"claude agent a (pid 11 start 500)", time.Time{}, true, "has exited"},
+		"pid reused":                         {"claude agent a (pid 10 start 400)", time.Time{}, true, "another process"},
+		"same process, running":              {"claude agent a (pid 10 start 500)", time.Time{}, false, "still running"},
+		"no view of /proc":                   {"claude agent a (pid 99 start 500)", time.Time{}, false, "can't tell"},
+		"pid zero":                           {"claude agent a (pid 0 start 500)", time.Time{}, false, "names no process"},
+		"age says nothing":                   {"claude agent a (pid 10 start 500) from last year", time.Time{}, false, "names no process"},
+		"trailing newline, alive":            {"claude agent a (pid 10 start 500)\n", time.Time{}, false, "still running"},
 		"start later than uptime":            {"claude agent a (pid 12 start 200000)", time.Time{}, false, "later than this host has been up"},
 		"written before this boot":           {"claude agent a (pid 12 start 500)", boot.Add(-time.Hour), false, "before this host last booted"},
 		"written before the process started": {"claude agent a (pid 13 start 90000)", boot.Add(100 * time.Second), false, "before that process started"},
@@ -220,7 +216,6 @@ func TestReclaimTask(t *testing.T) {
 		if held.blocked == nil || !held.blocked.main || !strings.Contains(held.why, "main checkout") {
 			t.Errorf("%+v", held)
 		}
-		// In the main checkout itself it is where the task is.
 		if _, held := reclaimTask(ctx, repo, "WP-1", f.repo); held.blocked != nil {
 			t.Errorf("in the main checkout: %+v", held)
 		}
@@ -235,7 +230,6 @@ func TestReclaimTask(t *testing.T) {
 		if held.revive != "wp-1" || held.blocked != nil {
 			t.Fatalf("%+v", held)
 		}
-		// The branch is free again, with its commits.
 		tgit(t, f.repo, "worktree", "add", "-q", p, "wp-1")
 	})
 	t.Run("folder gone, lock alive", func(t *testing.T) {
@@ -362,7 +356,6 @@ func TestNextLockedWorktree(t *testing.T) {
 		return i.Key
 	}
 	lock := func(wt, reason string) { git(t, s.repo, "worktree", "lock", "--reason", reason, wt) }
-	// the earlier agent's worktree on the task's branch, with one commit
 	earlier := func(key, branch, reason string) string {
 		wt := filepath.Join(home, worktreeSlug(key))
 		git(t, s.repo, "worktree", "add", "-q", "-b", branch, wt, "origin/main")
@@ -378,7 +371,6 @@ func TestNextLockedWorktree(t *testing.T) {
 		return r.find(wt)
 	}
 
-	// 1. owner gone, clean: taken over, the task goes on in it.
 	k1 := mk("Stale and clean")
 	wt1 := earlier(k1, "worktree-"+worktreeSlug(k1), deadReason(t))
 	out := s.wp("next", k1, "-p", p)
@@ -391,7 +383,6 @@ func TestNextLockedWorktree(t *testing.T) {
 		t.Errorf("still locked: %+v", w)
 	}
 
-	// 2. owner gone, work in it: reused with the work in place, said once.
 	k2 := mk("Stale and dirty")
 	wt2 := earlier(k2, "wp-"+strings.ToLower(k2), deadReason(t))
 	if err := os.WriteFile(filepath.Join(wt2, "wip.txt"), []byte("x"), 0o600); err != nil {
@@ -405,8 +396,6 @@ func TestNextLockedWorktree(t *testing.T) {
 		t.Errorf("work gone: %v", err)
 	}
 
-	// 3. owner alive: not taken; the task goes on a branch cut from its work,
-	// named so Waypoint maps it, and the output says which.
 	k3 := mk("Alive")
 	b3 := "wp-" + strings.ToLower(k3)
 	wt3 := earlier(k3, b3, liveReason(t))
@@ -426,7 +415,6 @@ func TestNextLockedWorktree(t *testing.T) {
 		t.Errorf("%s-2 doesn't map to %s: %v", b3, k3, m)
 	}
 
-	// 4. a lock that names nobody: not taken either, and said.
 	k4 := mk("Unknown owner")
 	b4 := "wp-" + strings.ToLower(k4)
 	wt4 := earlier(k4, b4, "WP-999 rework in progress (session waypoint-c5)")
@@ -438,7 +426,6 @@ func TestNextLockedWorktree(t *testing.T) {
 		t.Errorf("took a lock it couldn't judge: %+v", w)
 	}
 
-	// 5. the worktree's folder is gone, its lock stale: the branch comes back.
 	k5 := mk("Folder gone")
 	b5 := "wp-" + strings.ToLower(k5)
 	wt5 := earlier(k5, b5, deadReason(t))

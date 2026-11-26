@@ -124,7 +124,6 @@ func TestTaskPrep(t *testing.T) {
 		t.Fatalf("an agent taking it: %+v %v", got, err)
 	}
 
-	// The text changes: the prep says it's stale.
 	desc := "Use `mergeReady`, and the required checks."
 	if _, err := e.s.UpdateIssue(e.ctx, e.admin, i.Key, IssuePatch{Description: &desc}); err != nil {
 		t.Fatal(err)
@@ -133,7 +132,6 @@ func TestTaskPrep(t *testing.T) {
 		t.Fatalf("after an edit: %+v", got)
 	}
 
-	// A task whose arm is no pointers: made, but agents see no notes.
 	held := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Another"})
 	e.prepArm(held.ID, prepArmNone)
 	if _, err := e.s.UploadPrep(e.ctx, e.admin, held.Key, prepTestBundle()); err != nil {
@@ -157,7 +155,7 @@ func TestPrepDue(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := e.project(e.admin, "App", "")
-	p.Settings.AutoPrep = true // as new projects have it unless told otherwise; e.project tells it otherwise
+	p.Settings.AutoPrep = true
 	if _, err := e.s.UpdateProject(e.ctx, e.admin, p.Key, ProjectInput{Settings: &p.Settings}); err != nil {
 		t.Fatal(err)
 	}

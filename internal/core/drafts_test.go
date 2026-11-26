@@ -76,7 +76,6 @@ func TestDraftsHiddenFromAgents(t *testing.T) {
 	}
 	for name, a := range w.agents() {
 		t.Run(name, func(t *testing.T) {
-			// show, comments, history: as if it didn't exist.
 			for _, k := range hidden {
 				if _, err := e.s.GetIssue(e.ctx, a, k); !errors.Is(err, ErrNotFound) {
 					t.Errorf("show %s: %v, want not found", k, err)
@@ -88,7 +87,6 @@ func TestDraftsHiddenFromAgents(t *testing.T) {
 					t.Errorf("history %s: %v", k, err)
 				}
 			}
-			// ls and search, with and without asking for drafts.
 			for _, q := range []string{"", "zebra", "is:draft", w.draft.Key, "is:children"} {
 				res, err := e.s.Search(e.ctx, a, SearchParams{Query: q, Project: w.p.Key})
 				if err != nil {
@@ -110,7 +108,6 @@ func TestDraftsHiddenFromAgents(t *testing.T) {
 					leaks(t, "search "+g.Kind, h.Key+" "+h.Title+" "+h.Snippet)
 				}
 			}
-			// links: relations, linked pages and the issues a page links to.
 			pub, err := e.s.GetIssue(e.ctx, a, w.pub.Key)
 			if err != nil {
 				t.Fatal(err)
@@ -128,7 +125,6 @@ func TestDraftsHiddenFromAgents(t *testing.T) {
 			for _, i := range lp.Issues {
 				leaks(t, "page issues", i.Key)
 			}
-			// pages
 			if _, err := e.s.GetPage(e.ctx, a, w.draftPage.ID); !errors.Is(err, ErrNotFound) {
 				t.Errorf("draft page: %v", err)
 			}
@@ -139,7 +135,6 @@ func TestDraftsHiddenFromAgents(t *testing.T) {
 			for _, pg := range pages {
 				leaks(t, "page ls", pg.Title)
 			}
-			// the board, activity and the change feed
 			b, err := e.s.GetBoard(e.ctx, a, w.p.Key, "")
 			if err != nil {
 				t.Fatal(err)
@@ -163,7 +158,6 @@ func TestDraftsHiddenFromAgents(t *testing.T) {
 			for _, c := range ch.Changes {
 				leaks(t, "changes", c.Ref+" "+c.Title)
 			}
-			// Nor can they act on a draft, or publish one.
 			if _, err := e.s.AddComment(e.ctx, a, w.draft.Key, "hi"); !errors.Is(err, ErrNotFound) {
 				t.Errorf("comment on a draft: %v", err)
 			}
@@ -178,7 +172,6 @@ func TestDraftsHiddenFromAgents(t *testing.T) {
 			}
 		})
 	}
-	// next and batch: the draft is delegated to claude but never handed out.
 	claude := w.agents()["agent"]
 	for range 3 {
 		task, err := e.s.AgentBatch(e.ctx, claude, AgentQuery{Agent: "anthropic/claude-opus-5-5"})
@@ -199,7 +192,6 @@ func TestDraftsHiddenFromAgents(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Even a person can't hand a draft to an agent (a runner acts as its owner).
 	if _, err := e.s.AgentTake(e.ctx, e.admin, w.draft.Key, "anthropic/claude-opus-5-5"); err == nil {
 		t.Error("a draft was handed to an agent")
 	}
@@ -208,7 +200,6 @@ func TestDraftsHiddenFromAgents(t *testing.T) {
 func TestDraftsForPeople(t *testing.T) {
 	w := newDraftWorld(t)
 	e := w.e
-	// People see drafts, marked, and can list just them.
 	res, err := e.s.Search(e.ctx, e.admin, SearchParams{Query: "is:draft", Project: w.p.Key})
 	if err != nil {
 		t.Fatal(err)
@@ -224,8 +215,6 @@ func TestDraftsForPeople(t *testing.T) {
 		t.Errorf("a person sees draft pages: %d", len(pages))
 	}
 
-	// An agent may file a draft for its person; it gets back what it wrote,
-	// and then can't see it.
 	agent := w.agents()["agent-env"]
 	d, err := e.s.CreateIssue(e.ctx, agent, IssueInput{Project: w.p.Key, Title: "Robin's idea", Draft: true})
 	if err != nil || d.Key == "" || !d.Draft {
@@ -235,7 +224,6 @@ func TestDraftsForPeople(t *testing.T) {
 		t.Errorf("agent sees its draft: %v", err)
 	}
 
-	// Publishing makes the draft and its sub-tasks visible to agents.
 	if _, err := e.s.PublishIssue(e.ctx, e.admin, w.pub.Key); err == nil {
 		t.Error("publishing a published issue should fail")
 	}
@@ -302,7 +290,7 @@ func TestDraftAgain(t *testing.T) {
 	parent := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Unfinished idea", Agent: "claude"})
 	child := e.issue(e.admin, IssueInput{Parent: parent.Key, Title: "Part of it"})
 	agent := &Actor{User: e.admin.User, AgentEnv: "anthropic/claude-code"}
-	d, err := e.s.DraftIssue(e.ctx, agent, parent.Key) // hiding leaks nothing, so an agent may
+	d, err := e.s.DraftIssue(e.ctx, agent, parent.Key)
 	if err != nil || !d.Draft {
 		t.Fatalf("draft: %+v %v", d, err)
 	}
@@ -338,7 +326,6 @@ func TestPublishReachesNestedDrafts(t *testing.T) {
 	if _, err := e.s.CreateIssue(e.ctx, agent, IssueInput{Parent: top.Key, Title: "probe", Draft: true}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("an agent filed under a draft it can't see: %v", err)
 	}
-	// Top a draft, mid published, low a draft again.
 	if _, err := e.s.PublishIssue(e.ctx, e.admin, mid.Key); err != nil {
 		t.Fatal(err)
 	}

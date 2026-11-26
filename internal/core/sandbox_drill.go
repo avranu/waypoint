@@ -14,24 +14,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox/probe"
 )
 
-// The sandbox escape drill (WP-473, WP-ADR28, WP-ADR93, PL7 §13). A Contained
-// session's walls are systemd's and the broker's, set up by a root helper
-// on each machine; a helper update, a systemd or kernel upgrade or a
-// changed default could open one, and nothing in a normal job would show
-// it. So on each machine whose helper is ready, weekly and whenever the
-// helper's version changes, Waypoint queues a drill job for that machine's
-// runner. The claim carries start specs for three Contained sessions
-// (internal/sandbox/probe), run as one of the machine's repo users: the
-// probe tries to read the runner user's keys and Waypoint's files, list
-// other repos, write outside its workspace, see other processes, reach
-// host sockets, the machine's ports and the internet past the broker, the
-// broker's refusals, and the kernel surface; the other two start
-// processes past their limit and outlive their time. The runner judges
-// what it can only see from outside and reports every try. A try the
-// sandbox let through, or a control it refused, fails the drill and tells
-// the admins and the runner's owner. Only Waypoint queues a drill job:
-// the API can't (checkRunnerInput knows no such kind).
-
 // JobSandboxDrill is the drill's runner job kind.
 const JobSandboxDrill = "sandbox_drill"
 
@@ -66,8 +48,8 @@ const (
 	DrillQueued  = "queued"
 	DrillRunning = "running"
 	DrillPassed  = "passed"
-	DrillFailed  = "failed" // something got out, or a control was refused
-	DrillError   = "error"  // the drill couldn't run or judge enough
+	DrillFailed  = "failed"
+	DrillError   = "error"
 )
 
 // SandboxDrill is one drill on a machine.
@@ -355,7 +337,6 @@ func (t *tx) finishSandboxDrill(ctx context.Context, drillID int64, state string
 		c := &res.Cases[i]
 		c.Name, c.Group, c.Want, c.Got, c.Detail = clip(c.Name, 200), clip(c.Group, 20), clip(c.Want, 20), clip(c.Got, 20), clip(c.Detail, maxReportText)
 	}
-	// Judged on everything the runner reported; only the record is capped.
 	sum := probe.Summarize(res.Cases)
 	missing := probe.Missing(res.Cases)
 	reported := len(res.Cases)
@@ -385,8 +366,6 @@ func (t *tx) finishSandboxDrill(ctx context.Context, drillID int64, state string
 		drill, sum.Passed, sum.Escaped, sum.Controls, sum.Inconclusive, string(cases), clip(why, maxReportText), t.s.nowMS(), drillID); err != nil {
 		return err
 	}
-	// A machine whose drill can't run twice running is worth a word, once:
-	// the drill before couldn't run, and the one before that could.
 	var prev []string
 	rows, err := t.QueryContext(ctx, `SELECT state FROM sandbox_drills WHERE runner_id = ? AND id < ? ORDER BY id DESC LIMIT 2`, runnerID, drillID)
 	if err != nil {

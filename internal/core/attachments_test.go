@@ -41,7 +41,6 @@ func TestAttachmentKinds(t *testing.T) {
 		{"conf.yaml", []byte("a: 1\n"), "text/yaml", KindText, "text"},
 		{"fix.diff", []byte("--- a\n+++ b\n"), "text/x-diff", KindText, "text"},
 		{"notes", []byte("plain words"), "text/plain", KindText, "text"},
-		// Never shown from our origin: they download.
 		{"x.html", []byte("<html><script>alert(1)</script>"), "text/html", KindFile, ""},
 		{"x.svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`), "image/svg+xml", KindFile, ""},
 		{"x.svg.txt", []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"/>`), "text/xml", KindFile, ""},
@@ -54,7 +53,6 @@ func TestAttachmentKinds(t *testing.T) {
 			t.Errorf("%s: %q %s/%s, want %q %s/%s", tc.name, ct, kind, preview, tc.ct, tc.kind, tc.preview)
 		}
 	}
-	// A cut in the middle of a multi-byte character is still text.
 	long := append(bytes.Repeat([]byte("a"), 64<<10-1), []byte("é more")...)
 	if !looksLikeText(long) {
 		t.Error("text cut mid-character judged binary")
@@ -91,8 +89,6 @@ func TestAttachmentTargetsAndAccess(t *testing.T) {
 	issue, page, design := AttachTarget{TargetIssue, i.ID}, AttachTarget{TargetPage, pg.ID}, AttachTarget{TargetDesign, note.ID}
 	comment, personal := AttachTarget{TargetComment, c.ID}, AttachTarget{TargetPage, mine.ID}
 
-	// Editors attach to all four; the file shows in the target's list with its
-	// kind and uploader.
 	for _, tg := range []AttachTarget{issue, page, design} {
 		a, err := e.attach(sam, tg, "shot.png", pngBytes)
 		if err != nil {
@@ -106,11 +102,9 @@ func TestAttachmentTargetsAndAccess(t *testing.T) {
 			t.Errorf("%s list = %v %v", tg, list, err)
 		}
 	}
-	// The issue payload still carries its own files, and no one else's.
 	if d := e.get(e.admin, i.Key); len(d.Files) != 1 || d.Files[0].TargetType != TargetIssue {
 		t.Errorf("issue files = %+v", d.Files)
 	}
-	// A viewer can see files but not add them; they may attach to their own comment.
 	if _, err := e.attach(lee, page, "x.txt", []byte("x")); !errors.Is(err, ErrForbidden) {
 		t.Errorf("viewer attached to a page: %v", err)
 	}
@@ -124,7 +118,6 @@ func TestAttachmentTargetsAndAccess(t *testing.T) {
 	if cs, _ := e.s.ListComments(e.ctx, e.admin, i.Key); len(cs) != 1 || len(cs[0].Files) != 1 || cs[0].Files[0].ID != ca.ID {
 		t.Errorf("comment files = %+v", cs)
 	}
-	// Someone else's comment: only editors.
 	if _, err := e.attach(lee, AttachTarget{TargetComment, c.ID + 99}, "x.txt", []byte("x")); !errors.Is(err, ErrNotFound) {
 		t.Errorf("missing comment: %v", err)
 	}
@@ -132,14 +125,12 @@ func TestAttachmentTargetsAndAccess(t *testing.T) {
 	if _, err := e.attach(lee, AttachTarget{TargetComment, other.ID}, "x.txt", []byte("x")); !errors.Is(err, ErrForbidden) {
 		t.Errorf("attached to another's comment: %v", err)
 	}
-	// Personal pages: their author only; everyone else sees nothing.
 	if _, err := e.attach(sam, personal, "d.md", []byte("# d")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.s.ListAttachments(e.ctx, e.admin, personal); !errors.Is(err, ErrNotFound) {
 		t.Errorf("admin listed a personal page's files: %v", err)
 	}
-	// Global design notes: anyone reads, only admins write.
 	if _, err := e.attach(sam, AttachTarget{TargetDesign, global.ID}, "x.txt", []byte("x")); err == nil {
 		t.Error("non-admin attached to a global design note")
 	}
@@ -149,7 +140,6 @@ func TestAttachmentTargetsAndAccess(t *testing.T) {
 	if l, err := e.s.ListAttachments(e.ctx, lee, AttachTarget{TargetDesign, global.ID}); err != nil || len(l) != 1 {
 		t.Errorf("global list = %v %v", l, err)
 	}
-	// Outsiders get not found, not a hint the page exists.
 	out := e.user("out", false)
 	if _, err := e.s.ListAttachments(e.ctx, out, page); !errors.Is(err, ErrNotFound) {
 		t.Errorf("outsider list: %v", err)
@@ -167,14 +157,12 @@ func TestAttachmentTargetsAndAccess(t *testing.T) {
 	if err := e.s.DeleteAttachment(e.ctx, lee, list[0].ID); !errors.Is(err, ErrForbidden) {
 		t.Errorf("viewer delete: %v", err)
 	}
-	// Editors delete; so does a comment's author for their own file.
 	if err := e.s.DeleteAttachment(e.ctx, sam, list[0].ID); err != nil {
 		t.Error(err)
 	}
 	if err := e.s.DeleteAttachment(e.ctx, lee, ca.ID); err != nil {
 		t.Errorf("author deleting own comment file: %v", err)
 	}
-	// Captions.
 	a, _ := e.s.AddAttachment(e.ctx, sam, page, AttachmentInput{Name: "x.png", Data: pngBytes, Caption: "  the plan  "})
 	if a.Caption != "the plan" {
 		t.Errorf("caption %q", a.Caption)
@@ -185,7 +173,6 @@ func TestAttachmentTargetsAndAccess(t *testing.T) {
 	if _, err := e.s.SetAttachmentCaption(e.ctx, lee, a.ID, "no"); !errors.Is(err, ErrForbidden) {
 		t.Errorf("viewer set caption: %v", err)
 	}
-	// Request and session targets are placeholders until their slices land.
 	for _, typ := range []string{TargetRequest, TargetSession} {
 		if _, err := e.attach(e.admin, AttachTarget{typ, 1}, "x.txt", []byte("x")); !errors.Is(err, ErrNotFound) {
 			t.Errorf("%s: %v", typ, err)
@@ -201,7 +188,6 @@ func TestAttachmentProvenanceAndLimits(t *testing.T) {
 	p := e.project(e.admin, "Limits", "")
 	i := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Many"})
 	it := AttachTarget{TargetIssue, i.ID}
-	// An agent's upload says which agent.
 	bot := &Actor{User: e.admin.User, Agent: "anthropic/claude-code"}
 	a, err := e.attach(bot, it, "shot.png", pngBytes)
 	if err != nil || a.Agent != "anthropic/claude-code" {
@@ -210,11 +196,9 @@ func TestAttachmentProvenanceAndLimits(t *testing.T) {
 	if a, _ := e.attach(e.admin, it, "mine.png", pngBytes); a.Agent != "" {
 		t.Errorf("person's upload marked %q", a.Agent)
 	}
-	// Read-only tokens can't upload.
 	if _, err := e.attach(&Actor{User: e.admin.User, ReadOnly: true}, it, "x.txt", []byte("x")); err == nil {
 		t.Error("read-only token uploaded")
 	}
-	// Empty files and the per-file limit (WAYPOINT_MAX_ATTACHMENT_MB).
 	if _, err := e.attach(e.admin, it, "empty", nil); !IsInvalid(err) {
 		t.Errorf("empty file: %v", err)
 	}
@@ -232,7 +216,6 @@ func TestAttachmentProvenanceAndLimits(t *testing.T) {
 	if _, err := e.attach(e.admin, it, "big.bin", bytes.Repeat([]byte("x"), 1<<20+1)); err != nil {
 		t.Errorf("raised limit: %v", err)
 	}
-	// Per target: 100 files, 100 MB, counted per target not per project.
 	pg, _ := e.s.CreatePage(e.ctx, e.admin, PageInput{Title: str("Many"), Project: Some(p.Key)})
 	pt := AttachTarget{TargetPage, pg.ID}
 	for n := 0; n < maxAttachmentsPerTarget; n++ {

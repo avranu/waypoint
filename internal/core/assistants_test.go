@@ -85,9 +85,9 @@ type asstEnv struct {
 	door   *hermestest.Door
 	hermes *asstHermes
 	url    string
-	down   atomic.Bool // the door stops answering
-	owner  *Actor      // ann, not an admin
-	other  *Actor      // bob
+	down   atomic.Bool
+	owner  *Actor
+	other  *Actor
 	a      *Assistant
 }
 
@@ -101,7 +101,7 @@ func newAsstEnv(t *testing.T) *asstEnv {
 	e.door = hermestest.NewDoor(asstKey, e.hermes)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if e.down.Load() {
-			panic(http.ErrAbortHandler) // the connection drops, like a stopped gate
+			panic(http.ErrAbortHandler)
 		}
 		e.door.ServeHTTP(w, r)
 	}))
@@ -114,7 +114,7 @@ func newAsstEnv(t *testing.T) *asstEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.s.Wait() // the first check
+	e.s.Wait()
 	e.a = a
 	t.Cleanup(func() { _ = e.s.DeleteAssistant(e.ctx, e.admin, a.ID) })
 	return e
@@ -165,8 +165,8 @@ func TestAssistantAccess(t *testing.T) {
 	actors := []struct {
 		name string
 		a    *Actor
-		get  bool // may read its settings (owner, admins)
-		use  bool // may use it (owner, in a browser)
+		get  bool
+		use  bool
 	}{
 		{"owner in a browser", e.owner, true, true},
 		{"another person", e.other, false, false},
@@ -197,7 +197,6 @@ func TestAssistantAccess(t *testing.T) {
 			if len(list) == 1 && list[0].Mine != c.use {
 				t.Errorf("Mine = %v", list[0].Mine)
 			}
-			// Everything that drives the door.
 			uses := map[string]error{}
 			_, _, uses["UseAssistant"] = e.s.UseAssistant(e.ctx, c.a, id)
 			_, _, uses["AssistantGateway"] = e.s.AssistantGateway(e.ctx, c.a, id)
@@ -210,8 +209,6 @@ func TestAssistantAccess(t *testing.T) {
 			}
 			uses["AssistantAPI"] = err
 			if !c.use {
-				// These would act; only check they're refused (with a
-				// working door they'd succeed for the owner).
 				_, uses["FreezeAssistant"] = e.s.FreezeAssistant(e.ctx, c.a, id)
 				_, uses["AssistantCall"] = e.s.AssistantCall(e.ctx, c.a, id, "session.list", nil)
 				uses["AnswerAssistant"] = e.s.AnswerAssistant(e.ctx, c.a, id, "a1", nil)
@@ -265,7 +262,6 @@ func TestAssistantAdminCRUD(t *testing.T) {
 		}
 	}
 
-	// Validation.
 	ann := e.owner.User.ID
 	nobody := int64(9999)
 	bobTok, bobInfo, _ := e.s.CreateToken(e.ctx, e.other, TokenSpec{Name: "bob"})
@@ -293,7 +289,6 @@ func TestAssistantAdminCRUD(t *testing.T) {
 		}
 	}
 
-	// The owner's agent token ties the agent's own work to it.
 	_, tok, err := e.s.CreateToken(e.ctx, e.owner, TokenSpec{Name: "sage", Agent: "nous/hermes"})
 	if err != nil {
 		t.Fatal(err)
@@ -306,7 +301,6 @@ func TestAssistantAdminCRUD(t *testing.T) {
 	if got.Name != "Sage 2" || got.TokenID == nil || *got.TokenID != tok.ID || got.Token != "sage" || got.Agent != "nous/hermes" {
 		t.Errorf("updated = %+v", got)
 	}
-	// Empty secrets kept the stored ones: the rebuilt client still gets in.
 	c, _, err := e.s.UseAssistant(e.ctx, e.owner, id)
 	if err != nil {
 		t.Fatal(err)
@@ -322,7 +316,6 @@ func TestAssistantAdminCRUD(t *testing.T) {
 	}
 	e.s.Wait()
 
-	// Admins delete; the owner then has nothing to use.
 	if err := e.s.DeleteAssistant(e.ctx, e.admin, id); err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +357,6 @@ func TestAssistantGateSettings(t *testing.T) {
 		return a
 	}
 
-	// The site's header and address, for every assistant without its own.
 	e.s.Wait()
 	e.s.cfg.Assistant = AssistantDefaults{KeyHeader: " X-Site-Key ", AgentURL: "http://10.9.0.1:8080/"}
 	e.door.Header = "X-Site-Key"
@@ -374,7 +366,6 @@ func TestAssistantGateSettings(t *testing.T) {
 	}
 	works("the site's header")
 
-	// The assistant's own win.
 	e.door.Header = "X-Own-Key"
 	a = update(AssistantInput{KeyHeader: str("X-Own-Key"), AgentURL: str(" http://gate.internal:8080/ ")})
 	if a.KeyHeader != "X-Own-Key" || a.AgentURL != "http://gate.internal:8080" {
@@ -385,7 +376,6 @@ func TestAssistantGateSettings(t *testing.T) {
 		t.Errorf("the owner reads %+v", got)
 	}
 
-	// Emptied, the site's apply again.
 	e.door.Header = "X-Site-Key"
 	a = update(AssistantInput{KeyHeader: str(""), AgentURL: str("")})
 	if a.KeyHeader != "" || a.AgentURL != "" {
@@ -420,7 +410,6 @@ func TestAssistantSecretsNeverInJSON(t *testing.T) {
 			}
 		}
 	}
-	// Nor the audit trail.
 	entries, err := e.s.ListAudit(e.ctx, e.admin, AuditQuery{Limit: 50})
 	if err == nil {
 		b, _ := json.Marshal(entries)
@@ -511,7 +500,6 @@ func TestAssistantMethodAllowlist(t *testing.T) {
 func TestAssistantAPIAndCallRefusals(t *testing.T) {
 	e := newAsstEnv(t)
 	id := e.a.ID
-	// Refused paths never reach Hermes, whoever asks.
 	for _, p := range []string{"env/reveal", "hermes/update", "auth/password-login", "../auth/me"} {
 		resp, err := e.s.AssistantAPI(e.ctx, e.owner, id, http.MethodGet, p, nil, nil, "", nil)
 		if resp != nil {
@@ -537,7 +525,6 @@ func TestAssistantAPIAndCallRefusals(t *testing.T) {
 	if _, err := e.s.AssistantCall(e.ctx, e.owner, id, "shell.exec", nil); !IsInvalid(err) {
 		t.Errorf("refused method: %v", err)
 	}
-	// While frozen, nothing goes through to Hermes.
 	if _, err := e.s.FreezeAssistant(e.ctx, e.owner, id); err != nil {
 		t.Fatal(err)
 	}
@@ -638,8 +625,6 @@ func TestAssistantWatcher(t *testing.T) {
 	check()
 	want("thawed", 4, "running again")
 
-	// An outage: nothing at first (a deploy restarts the gate), one notice
-	// once it has lasted, then one when it's back.
 	e.down.Store(true)
 	st = check()
 	if st.Reachable || st.DownSince == nil || st.Error == "" {
@@ -665,7 +650,6 @@ func TestAssistantWatcher(t *testing.T) {
 	check()
 	want("steady", 6, "")
 
-	// The owner hears live; nobody else does.
 	sub := e.s.Hub.Subscribe(e.owner.User.ID)
 	defer e.s.Hub.Unsubscribe(sub)
 	bob := e.s.Hub.Subscribe(e.other.User.ID)
@@ -730,7 +714,6 @@ func TestAssistantLinks(t *testing.T) {
 	if l.SessionID != "s-123" || l.Issue == nil || l.Issue.Key != i.Key || l.Assistant != "Sage" || l.Title != "Passport chat" {
 		t.Errorf("link = %+v", l)
 	}
-	// Linking again updates the title, not a second row.
 	if l2, err := e.s.LinkAssistantSession(e.ctx, e.owner, id, "s-123", i.Key, "Renamed"); err != nil || l2.ID != l.ID || l2.Title != "Renamed" {
 		t.Errorf("relink = %+v %v", l2, err)
 	}
@@ -749,7 +732,6 @@ func TestAssistantLinks(t *testing.T) {
 	if ls, err := e.s.IssueAssistantLinks(e.ctx, e.owner, i.Key); err != nil || len(ls) != 1 {
 		t.Errorf("issue links for the owner = %d %v", len(ls), err)
 	}
-	// An admin who can see the issue still doesn't see the owner's chats.
 	if ls, err := e.s.IssueAssistantLinks(e.ctx, e.admin, i.Key); err == nil && len(ls) != 0 {
 		t.Errorf("issue links for an admin = %d", len(ls))
 	}

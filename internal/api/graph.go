@@ -8,9 +8,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// The relation graph (WP-385): what lies around a thing, and the nearest
-// route between two.
-
 func (s *Server) graphNear(w http.ResponseWriter, r *http.Request) (any, error) {
 	v := r.URL.Query()
 	q := core.GraphQuery{Ref: v.Get("ref"), Project: v.Get("project"), Hops: min(max(queryInt(r, "hops", 3), 1), 6),

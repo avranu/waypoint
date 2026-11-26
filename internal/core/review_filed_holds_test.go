@@ -7,9 +7,6 @@ import (
 	"time"
 )
 
-// WP-1555: filing a finding instead of fixing it ends a round, and a ship
-// held for findings still to decide leaves a row, so both can be read back.
-
 // fileFinding marks the round's only finding medium, confirmed, filed under
 // the task itself (findingFiled).
 func (e *loopEnv) fileFinding(round int64) {
@@ -61,7 +58,6 @@ func TestReviewRoundRecordsFiled(t *testing.T) {
 			e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
 			r1 := e.review("Merge loses an update")
 			e.mark(r1, "fixed")
-			// Waypoint scheduled round 2 itself when the check agreed (shipReviewed), so this ship only finds it pending.
 			if res, err := e.shipChecked(e.box, e.task.Key); err != nil || !strings.Contains(res.Held, "Nothing more to run") {
 				t.Fatalf("round 1's ship = %+v, %v", res, err)
 			}
@@ -114,11 +110,11 @@ func TestAgainHelperStatsFiled(t *testing.T) {
 		fx.exec(`INSERT INTO code_audit_findings(audit_id, ordinal, title, path, line, severity, problem, state, verdict, lead, issue_id) VALUES (?, ?, 'F', 'a.go', 1, ?, 'x', ?, ?, ?, ?)`, a, n, severity, state, verdict, lead, iss)
 	}
 	finding(1, "fixed", "high", "", "goals.1", false)
-	finding(2, "confirmed", "medium", "", "goals.2", true) // filed
-	finding(3, "confirmed", "high", "", "goals.3", true)   // high: not filed, still confirmed
+	finding(2, "confirmed", "medium", "", "goals.2", true)
+	finding(3, "confirmed", "high", "", "goals.3", true)
 	finding(4, "rejected", "medium", "", "goals.4", false)
 	finding(5, "fixed", "high", "refuted", "", false)
-	finding(6, "confirmed", "low", "refuted", "", true) // filed
+	finding(6, "confirmed", "low", "refuted", "", true)
 	got, err := fx.s.againHelperStats(fx.ctx, "i.project_id = ?", []any{p.ID}, 50)
 	if err != nil {
 		t.Fatal(err)
@@ -175,8 +171,6 @@ func TestReviewHealthFiledAndHolds(t *testing.T) {
 			t.Errorf("%s: body doesn't name the window: %s", c.name, got[0].body)
 		}
 	}
-	// Two tasks looping are two tasks to file: the open one of one doesn't
-	// stand for the other.
 	got := reviewHealthIssues(nil, nil, nil, []AgainHoldStat{{Issue: "WP-1", Holds: 3, Repeats: 3}, {Issue: "WP-2", Holds: 5, Repeats: 4}})
 	if len(got) != 2 || got[0].title == got[1].title {
 		t.Errorf("two looping tasks = %q", healthTitles(got))
@@ -201,21 +195,16 @@ func TestAgainHolds(t *testing.T) {
 	hold := func(issue, audit int64, check string, findings int, h int64) {
 		pe.mexec(`INSERT INTO review_ship_holds(issue_id, audit_id, round_id, check_name, findings, created_at) VALUES (?, ?, 1, ?, ?, ?)`, issue, audit, check, findings, base+h*hour)
 	}
-	// A: audit 1 held with 4, 3, 2, 1 left: marks each time, no repeat.
 	for i, n := range []int{4, 3, 2, 1} {
 		hold(a.ID, 1, "round", n, int64(i))
 	}
-	// Audit 2: its first hold, then repeats at hours 5, 6 and 29 (a day
-	// after 5), and the check's first hold of it.
 	hold(a.ID, 2, "round", 2, 4)
 	hold(a.ID, 2, "round", 2, 5)
 	hold(a.ID, 2, "round", 2, 6)
 	hold(a.ID, 2, "marks", 2, 7)
 	hold(a.ID, 2, "round", 2, 29)
-	// B: a hold before the window, then its repeat inside it.
 	hold(b.ID, 3, "round", 1, -10)
 	hold(b.ID, 3, "round", 1, 1)
-	// C, another project's: three repeats.
 	for h := range int64(4) {
 		hold(c.ID, 4, "round", 1, h)
 	}
@@ -263,8 +252,6 @@ func TestShipHoldsLoopFilesHealth(t *testing.T) {
 	if n := filed(); n != 1 {
 		t.Fatalf("three holds with nothing marked filed %d, want 1 (holds %v)", n, e.holds())
 	}
-	// The task names the audit the ship was held for, which wp pr rounds
-	// shows too.
 	var audit int64
 	var body string
 	if err := e.s.db.R.QueryRow(`SELECT audit_id FROM review_ship_holds WHERE issue_id = ? ORDER BY id DESC LIMIT 1`, e.task.ID).Scan(&audit); err != nil {
@@ -303,7 +290,7 @@ func (e *loopEnv) holds() (out []string) {
 // hold is recorded; one whose record can't be written still returns its text.
 func TestShipHoldRecordedByRound(t *testing.T) {
 	e := newLoopEnv(t, map[string]string{"": "cosmetic", "fixes": "complete"})
-	r1 := e.review("Merge loses an update") // high: filing it holds
+	r1 := e.review("Merge loses an update")
 	_, au := e.roundAuditRow(r1)
 	id := fmt.Sprintf("%d.1", au.ID)
 	if _, err := e.s.MarkAuditFindings(e.ctx, e.ag, MarkFindings{IDs: []string{id}, State: "confirmed", Issue: e.task.Key}); err != nil {
@@ -316,7 +303,6 @@ func TestShipHoldRecordedByRound(t *testing.T) {
 	if want := fmt.Sprintf("round/%d/%d/1", au.ID, r1); fmt.Sprint(e.holds()) != fmt.Sprint([]string{want}) {
 		t.Fatalf("holds = %v, want %s", e.holds(), want)
 	}
-	// A record that can't be written leaves the hold as it was.
 	if _, err := e.s.db.W.Exec(`DROP TABLE review_ship_holds`); err != nil {
 		t.Fatal(err)
 	}
@@ -418,8 +404,6 @@ func TestAgainYieldCountsFiledFinding(t *testing.T) {
 		if err := e.s.db.R.QueryRow(`SELECT arm FROM review_again_decisions WHERE round_id = ?`, r1).Scan(&arm); err != nil {
 			t.Fatal(err)
 		}
-		// A round of only low findings is still running after the ship,
-		// and the draw reads done rounds only, so the test ends it.
 		if _, err := e.s.db.W.Exec(`UPDATE work_log SET state = 'done' WHERE id = ?`, r2); err != nil {
 			t.Fatal(err)
 		}

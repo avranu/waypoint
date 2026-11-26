@@ -62,7 +62,6 @@ func TestPRDismissReopenAuditFinding(t *testing.T) {
 	if _, err := run("reopen", cmdPRReopen, "#280"); err != nil || len(calls) != 1 || calls[0].path != "/api/v1/findings/280/reopen" {
 		t.Fatalf("integer id reopen: %v %+v", err, calls)
 	}
-	// Not a finding in either form.
 	calls = nil
 	if _, err := run("dismiss", cmdPRDismiss, "12.", "-m", "n"); err == nil || len(calls) != 0 {
 		t.Errorf("12. accepted: %v %+v", err, calls)

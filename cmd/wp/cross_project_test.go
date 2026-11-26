@@ -92,7 +92,6 @@ func TestNoScopeStopsWorkCommands(t *testing.T) {
 	if out := e.wp("next", "--peek", "-A"); !strings.Contains(out, "Fix the map") && !strings.Contains(out, "Sharpen") {
 		t.Errorf("next --peek -A looks at every project:\n%s", out)
 	}
-	// A named task: it can say which project to pass.
 	if out, code := e.run("next", otherTask.Key); code == 0 || !strings.Contains(out, "-p "+other.Key) {
 		t.Errorf("next KEY with no scope: %d %s", code, out)
 	}
@@ -105,7 +104,6 @@ func TestCrossProjectTakeNeedsReason(t *testing.T) {
 	e, me, _, other, homeTask, otherTask := crossEnv(t)
 	gitRepo(t, "git@github.com:robin/harbor.git")
 
-	// Without a reason it says what to do instead; -p and -A don't get past.
 	for _, args := range [][]string{{"next", otherTask.Key}, {"take", otherTask.Key}, {"batch", otherTask.Key},
 		{"next", otherTask.Key, "-p", other.Key}, {"next", otherTask.Key, "-A"}, {"next", otherTask.Key, "--cross-project", "  "}} {
 		out, code := e.run(args...)
@@ -119,7 +117,6 @@ func TestCrossProjectTakeNeedsReason(t *testing.T) {
 		}
 	}
 
-	// Its own project takes no reason, and records none.
 	if out := e.wp("next", homeTask.Key, "--cross-project", "not needed", "--no-brief"); !strings.Contains(out, homeTask.Key) {
 		t.Errorf("own task:\n%s", out)
 	}
@@ -144,7 +141,6 @@ func TestKeylessClaimBeyondHomeNeedsReason(t *testing.T) {
 			t.Errorf("wp %v: %d %s", args, code, out)
 		}
 	}
-	// Looking crosses nothing.
 	if out := e.wp("next", "--peek", "-p", other.Key); !strings.Contains(out, "Sharpen") {
 		t.Errorf("peek at another project:\n%s", out)
 	}

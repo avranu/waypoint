@@ -29,8 +29,6 @@ export function ProfileTab({ me }: { me: User }) {
   const [name, setName] = useState(me.display_name)
   const [email, setEmail] = useState(me.email)
   const [tz, setTz] = useState(me.timezone || 'UTC')
-  // A field follows the saved value only while it still holds the last one,
-  // so words typed while a save was in flight aren't replaced by its answer.
   const synced = useRef({ name: me.display_name, email: me.email, tz: me.timezone || 'UTC' })
   useEffect(() => {
     const prev = synced.current

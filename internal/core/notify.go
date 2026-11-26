@@ -38,7 +38,7 @@ const (
 	NotifyDue       = "due"
 	NotifyPR        = "pr"
 	NotifyAutomated = "automation"
-	NotifyRequest   = "request" // an agent asks you something (WP-D16)
+	NotifyRequest   = "request"
 )
 
 var mentionRE = lazyre.New(`(?:^|[^\w@])@([a-zA-Z0-9][a-zA-Z0-9_.-]{0,38})`)
@@ -77,8 +77,6 @@ func dataInt(e *Event, key string) int64 {
 // notifyFor creates notifications for an event.
 func (s *Service) notifyFor(ctx context.Context, actor *Actor, e *Event) {
 	if e.Kind == EvTokenCreated {
-		// Always, even though the person approved it themselves: it's the
-		// trail that shows up a login they were tricked into approving.
 		body := "From " + fmt.Sprint(e.Data["ip"]) + ". If this wasn't you, revoke it in Settings → Tokens."
 		if a, _ := e.Data["agent"].(string); a != "" {
 			body = "Acting as agent " + a + ". " + body
@@ -158,7 +156,6 @@ func (s *Service) notifyFor(ctx context.Context, actor *Actor, e *Event) {
 			if err != nil || mentioned[u.ID] {
 				continue
 			}
-			// Only people who can see the issue hear about it.
 			r, rerr := s.issueRole(ctx, s.db.R, &Actor{User: u}, &Issue{ID: e.IssueID, ProjectID: e.ProjectID})
 			if rerr != nil {
 				if readFault(rerr) {
@@ -199,8 +196,6 @@ func (s *Service) notifyURL(ctx context.Context, userID int64, e *Event, kind, t
 	if err != nil || u.Disabled {
 		return
 	}
-	// Whatever the route here (watching, assignment, a rule), only people
-	// who can currently see the issue hear about it.
 	if e != nil && e.IssueID != 0 {
 		i, err := s.issueByID(ctx, s.db.R, e.IssueID, false)
 		if err != nil {
@@ -368,7 +363,7 @@ func (s *Service) ListNotifications(ctx context.Context, actor *Actor, unreadOnl
 	}
 	where := "n.user_id = ?"
 	if actor.HidesDrafts() {
-		where += " AND coalesce(i.draft, 0) = 0" // WP-42
+		where += " AND coalesce(i.draft, 0) = 0"
 	}
 	if unreadOnly {
 		where += " AND n.read_at IS NULL"
@@ -392,7 +387,7 @@ func (s *Service) ListNotifications(ctx context.Context, actor *Actor, unreadOnl
 		}
 		n.ReadAt, n.CreatedAt = ptrTime(read), msTime(created)
 		if n.Kind == NotifyRisky && actor.HidesCommandText() {
-			n.Body = "" // it quotes the commands
+			n.Body = ""
 		}
 		if uid.Valid {
 			n.Actor = &UserRef{ID: uid.Int64, Username: uname.String, DisplayName: cmp(dname.String, uname.String), AvatarURL: avatarURL(uid.Int64, av.Int64)}
@@ -402,7 +397,6 @@ func (s *Service) ListNotifications(ctx context.Context, actor *Actor, unreadOnl
 		}
 		out = append(out, n)
 	}
-	// Requests that wait on you are counted as such (Waiting on you), not twice.
 	var unread int
 	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM notifications WHERE user_id = ? AND read_at IS NULL AND kind != 'request'`, actor.id()).Scan(&unread); err != nil {
 		return nil, 0, err

@@ -27,7 +27,6 @@ func TestSessionLifecycleAndStates(t *testing.T) {
 	e := newEnv(t)
 	p := e.project(e.admin, "App", "kanban")
 	if _, err := e.s.db.W.Exec(`INSERT INTO project_repos(project_id, forge_id, repo, created_at) VALUES (?, 0, 'acme/app', 1)`, p.ID); err != nil {
-		// forge_id is a foreign key: make a forge first.
 		f, ferr := e.s.CreateForge(e.ctx, e.admin, ForgeInput{Kind: ptr("forgejo"), BaseURL: ptr("https://git.example.com"), Token: ptr("t")})
 		if ferr != nil {
 			t.Fatal(ferr)
@@ -53,7 +52,6 @@ func TestSessionLifecycleAndStates(t *testing.T) {
 		t.Fatalf("session after start: %+v project=%+v", x, x.Project)
 	}
 
-	// A prompt, a notification, a stop.
 	e.setClock(e.clockNow().Add(time.Minute))
 	if _, err := e.s.SessionHook(e.ctx, ag, []HookEvent{hook("box", "cli-1", "UserPromptSubmit", func(h *HookEvent) {
 		h.Prompt, h.Title = strings.Repeat("p", 400), "Fix the thing"
@@ -70,7 +68,6 @@ func TestSessionLifecycleAndStates(t *testing.T) {
 	if x.State != SessionWaiting || x.WaitReason != "permission_prompt" {
 		t.Fatalf("after notification: %s %s", x.State, x.WaitReason)
 	}
-	// An unrelated notification type changes nothing.
 	e.s.SessionHook(e.ctx, ag, []HookEvent{hook("box", "cli-1", "Notification", func(h *HookEvent) { h.NotificationType = "auth_success" })})
 	if sessionsFor(t, e, e.admin, AgentSessionQuery{})[0].State != SessionWaiting {
 		t.Fatal("an auth notification shouldn't change the state")
@@ -84,7 +81,6 @@ func TestSessionLifecycleAndStates(t *testing.T) {
 		t.Fatalf("after stop: %s update %d tokens %d/%d", x.State, len([]rune(x.LastUpdate)), x.InputTokens, x.OutputTokens)
 	}
 
-	// Working again; then silence: idle after 30 minutes, ended after 24 hours.
 	e.s.SessionHook(e.ctx, ag, []HookEvent{hook("box", "cli-1", "UserPromptSubmit", func(h *HookEvent) { h.Prompt = "go" })})
 	e.setClock(e.clockNow().Add(29 * time.Minute))
 	if got := sessionsFor(t, e, e.admin, AgentSessionQuery{})[0].State; got != SessionWorking {
@@ -108,7 +104,6 @@ func TestSessionLifecycleAndStates(t *testing.T) {
 		t.Fatalf("active filter finds %d ended", n)
 	}
 
-	// A resumed session is the same row, and SessionEnd ends it at once.
 	e.s.SessionHook(e.ctx, ag, []HookEvent{hook("box", "cli-1", "SessionStart", func(h *HookEvent) { h.Source = "resume" })})
 	list = sessionsFor(t, e, e.admin, AgentSessionQuery{})
 	if len(list) != 1 || list[0].State != SessionWorking || list[0].Repo != "acme/app" {
@@ -120,7 +115,6 @@ func TestSessionLifecycleAndStates(t *testing.T) {
 		t.Fatalf("after end: %s", x.State)
 	}
 
-	// Another machine's session with the same CLI id is its own row.
 	e.s.SessionHook(e.ctx, ag, []HookEvent{hook("laptop", "cli-1", "SessionStart", nil)})
 	if n := len(sessionsFor(t, e, e.admin, AgentSessionQuery{})); n != 2 {
 		t.Fatalf("two machines, %d sessions", n)
@@ -142,7 +136,6 @@ func TestSessionLifecycleAndStates(t *testing.T) {
 		t.Fatalf("paging: total %d len %d next %d", page.Total, len(page.Sessions), page.Next)
 	}
 
-	// The session as people read it: timeline and counts.
 	sum, err := e.s.GetAgentSession(e.ctx, e.admin, list[0].ID)
 	if err != nil {
 		t.Fatal(err)
@@ -190,7 +183,7 @@ func TestSessionPromptKeptWhole(t *testing.T) {
 	if len(prompts) != 2 {
 		t.Fatalf("prompts: %+v", prompts)
 	}
-	short, whole := prompts[0], prompts[1] // newest first
+	short, whole := prompts[0], prompts[1]
 	if short.Detail != "short one" || short.Text != "" {
 		t.Errorf("short: %+v", short)
 	}
@@ -214,7 +207,6 @@ func TestSessionVisibility(t *testing.T) {
 	if _, err := e.s.GetAgentSession(e.ctx, bob, id); err == nil {
 		t.Fatal("bob read ana's session")
 	}
-	// A colleague in the same project sees the session, but not the prompts.
 	p := e.project(e.admin, "Shared", "kanban")
 	if err := e.s.SetMember(e.ctx, e.admin, p.Key, "ana", "editor"); err != nil {
 		t.Fatal(err)
@@ -232,7 +224,6 @@ func TestSessionVisibility(t *testing.T) {
 	if got := sessionsFor(t, e, ana, AgentSessionQuery{}); got[0].LastPrompt != "secret plans" {
 		t.Fatal("ana lost her own prompt")
 	}
-	// Nor in the timeline, whole or as its line (WP-860).
 	long := "more secret plans " + strings.Repeat("x", 400)
 	e.s.SessionHook(e.ctx, ag, []HookEvent{hook("box", "c1", "UserPromptSubmit", func(h *HookEvent) { h.Prompt = long })})
 	sum, err := e.s.GetAgentSession(e.ctx, bob, id)
@@ -296,7 +287,6 @@ func TestSessionRecordsWhatTheActorDoes(t *testing.T) {
 	if len(sum.Done.Pages) != 1 || sum.Done.Pages[0].Label != pg.Title {
 		t.Fatalf("pages: %+v", sum.Done.Pages)
 	}
-	// Issues filed into the backlog or To Do are what it deferred.
 	if len(sum.Deferred.Issues) == 0 {
 		t.Fatalf("nothing deferred though %s was filed: %+v", one.Key, sum.Done.IssuesCreated)
 	}
@@ -324,7 +314,6 @@ func TestQueuedHookEventsKeepTheirTimes(t *testing.T) {
 	e := newEnv(t)
 	ag := agentActor(e.admin, "anthropic/claude-code")
 	t0 := e.clockNow().Add(-10 * time.Minute).UnixMilli()
-	// Sent late and out of order: the prompt happened before the stop.
 	_, err := e.s.SessionHook(e.ctx, ag, []HookEvent{
 		hook("box", "c1", "SessionStart", func(h *HookEvent) { h.At = t0 }),
 		hook("box", "c1", "UserPromptSubmit", func(h *HookEvent) { h.At = t0 + 1000; h.Prompt = "first" }),
@@ -340,7 +329,6 @@ func TestQueuedHookEventsKeepTheirTimes(t *testing.T) {
 	if x.StartedAt.UnixMilli() != t0 || x.LastSeenAt.UnixMilli() != t0+2000 {
 		t.Fatalf("times: started %v seen %v", x.StartedAt, x.LastSeenAt)
 	}
-	// An older event arriving after a newer one doesn't change the state.
 	e.s.SessionHook(e.ctx, ag, []HookEvent{hook("box", "c1", "Notification", func(h *HookEvent) { h.At = t0 + 500; h.NotificationType = "idle_prompt" })})
 	if got := sessionsFor(t, e, e.admin, AgentSessionQuery{})[0].stored; got != SessionIdle {
 		t.Fatalf("a stale notification set the state to %s", got)
@@ -363,7 +351,6 @@ func TestIssueAuthorIsTheSessionModel(t *testing.T) {
 	if i.ReporterAgent != "anthropic/claude-opus-5-5" || i.TextAgent != "anthropic/claude-opus-5-5" {
 		t.Fatalf("author %q, text %q", i.ReporterAgent, i.TextAgent)
 	}
-	// Without a session, or with a model in the identity, it stands.
 	if j := e.issue(ag, IssueInput{Project: p.Key, Title: "Other"}); j.ReporterAgent != "anthropic/claude-code" {
 		t.Fatalf("no session: %q", j.ReporterAgent)
 	}

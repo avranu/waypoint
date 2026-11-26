@@ -1,17 +1,5 @@
 package core
 
-// CI history (WP-490). The CI board reads the forge's last day of Forgejo
-// Actions and keeps it in memory, the CI hosts' usage was pruned after two
-// months and the doctor looks back a week, so nothing could say whether CI
-// is faster or slower than it was. Every finished run and job (task) of an
-// attached repo is now kept in ci_runs and ci_jobs: recorded whenever the
-// board reads a repo's history (ciRepoHistory), read every ten minutes by
-// the scheduler so that happens with nobody looking, and backfilled once
-// per repo from everything the forge still lists. Merges come from the pull
-// requests Waypoint already keeps. CIHistory buckets it all by day or week
-// for the CI page's history charts and wp ci history, and sets the last
-// seven days against the seven before.
-
 import (
 	stdcmp "cmp"
 	"context"
@@ -26,15 +14,15 @@ import (
 )
 
 const (
-	ciBackfillKey     = "ci_history_backfill:" // server_settings, + forge id|repo: when it was backfilled
-	ciRetierKey       = "ci_history_retier:"   // server_settings, + forge id|repo: when its tiers were corrected
-	ciBackfillPages   = 200                    // 10,000 runs and tasks a repo at most
-	ciRetierBatch     = 200                    // tests one write of the re-tier covers
+	ciBackfillKey     = "ci_history_backfill:"
+	ciRetierKey       = "ci_history_retier:"
+	ciBackfillPages   = 200
+	ciRetierBatch     = 200
 	ciHistoryMaxDays  = 730
 	ciHistoryDefault  = 30
-	ciHistoryCompare  = 7 * 24 * time.Hour // "now" and "before" are this long
+	ciHistoryCompare  = 7 * 24 * time.Hour
 	ciHistoryJobsMax  = 25
-	ciHistoryWeekFrom = 120 // days shown by week from this many, unless asked
+	ciHistoryWeekFrom = 120
 )
 
 // ciHistoryBusy keeps two scheduled reads or backfills from overlapping.
@@ -66,7 +54,6 @@ func (s *Service) recordCIRuns(ctx context.Context, forgeID int64, repo string, 
 		if ciPending(r.Status) || !validTime(r.Created) {
 			continue
 		}
-		// a re-run makes a finished run unfinished and finishes it again
 		if _, err := tx.ExecContext(ctx, `INSERT INTO ci_runs(forge_id, repo, number, workflow, event, ref, sha, title, tier, status, created_at, started_at, stopped_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(forge_id, repo, number) DO UPDATE SET status = excluded.status, started_at = excluded.started_at, stopped_at = excluded.stopped_at`,
@@ -237,14 +224,14 @@ func (s *Service) RecordCIHistory(ctx context.Context) {
 			}
 			continue
 		}
-		if err := s.readStepFailed(ctx, r.forge, r.repo); err != nil && ctx.Err() == nil { // WP-513
+		if err := s.readStepFailed(ctx, r.forge, r.repo); err != nil && ctx.Err() == nil {
 			s.log.Debug("CI history: read cancelled jobs' logs", "repo", r.repo, "err", err)
 		}
-		s.checkBaseFaults(ctx, r.forge, r.repo, h.runs)                                    // WP-551
-		if err := s.readCIEvidence(ctx, r.forge, r.repo); err != nil && ctx.Err() == nil { // WP-704
+		s.checkBaseFaults(ctx, r.forge, r.repo, h.runs)
+		if err := s.readCIEvidence(ctx, r.forge, r.repo); err != nil && ctx.Err() == nil {
 			s.log.Debug("CI history: read jobs' evidence", "repo", r.repo, "err", err)
 		}
-		s.watchCILimits(ctx, r.forge, r.repo) // WP-922
+		s.watchCILimits(ctx, r.forge, r.repo)
 	}
 }
 
@@ -283,9 +270,9 @@ func (s *Service) BackfillCIHistory(ctx context.Context) {
 			continue
 		}
 		if s.recordCIHistory(ctx, r.forge.ID, r.repo, tasks, runs) != nil {
-			continue // tried again the next hour
+			continue
 		}
-		var oldest time.Time // zero: it read the first task
+		var oldest time.Time
 		if len(tasks) >= ciBackfillPages*50 {
 			oldest = tasks[len(tasks)-1].Created
 		}
@@ -311,7 +298,7 @@ func (s *Service) ciBackfillRead(ctx context.Context, cl ForgeActions, f *Forge,
 			return nil, nil, err
 		}
 		for _, t := range list {
-			if !seen[t.ID] { // pages shift while new tasks arrive
+			if !seen[t.ID] {
 				seen[t.ID] = true
 				tasks = append(tasks, t)
 			}
@@ -451,8 +438,6 @@ func (s *Service) markDraftTests(ctx context.Context, forgeID int64, repo string
 	}
 	return nil
 }
-
-// ---- the report ----
 
 // CIHistoryInput picks what CIHistory covers: one repo or all, how many
 // days back, and day or week buckets.
@@ -606,7 +591,6 @@ func (s *Service) CIHistory(ctx context.Context, actor *Actor, in CIHistoryInput
 		from = beforeFrom
 	}
 
-	// which repos have history, and since when
 	rows, err := s.db.R.QueryContext(ctx, `SELECT forge_id, repo, min(started_at) FROM ci_jobs GROUP BY forge_id, repo`)
 	if err != nil {
 		return nil, err
@@ -636,7 +620,6 @@ func (s *Service) CIHistory(ctx context.Context, actor *Actor, in CIHistoryInput
 	}
 	slices.SortFunc(h.Repos, func(a, b string) int { return stdcmp.Compare(strings.ToLower(a), strings.ToLower(b)) })
 
-	// buckets, and the two periods
 	var accs []*ciStatsAcc
 	for t := h.From; t.Before(now); t = ciBucketNext(t, bucket) {
 		end := ciBucketNext(t, bucket)
@@ -647,7 +630,6 @@ func (s *Service) CIHistory(ctx context.Context, actor *Actor, in CIHistoryInput
 	}
 	nowAcc := &ciStatsAcc{st: CIHistoryStats{From: nowFrom, To: now}}
 	beforeAcc := &ciStatsAcc{st: CIHistoryStats{From: beforeFrom, To: nowFrom}}
-	// the accumulators t counts in
 	into := func(t time.Time) []*ciStatsAcc {
 		var out []*ciStatsAcc
 		if !t.Before(h.From) && t.Before(now) {
@@ -670,7 +652,6 @@ func (s *Service) CIHistory(ctx context.Context, actor *Actor, in CIHistoryInput
 		return out
 	}
 
-	// jobs
 	type jobAcc struct {
 		CIHistoryJobDiff
 		durs, before []float64
@@ -754,7 +735,6 @@ func (s *Service) CIHistory(ctx context.Context, actor *Actor, in CIHistoryInput
 		h.Jobs = h.Jobs[:ciHistoryJobsMax]
 	}
 
-	// full-tier runs
 	rows, err = s.db.R.QueryContext(ctx, `SELECT forge_id, repo, status, created_at, stopped_at FROM ci_runs
 		WHERE created_at >= ? AND tier = '' AND status IN ('success', 'failure', 'cancelled')`, from.UnixMilli())
 	if err != nil {
@@ -783,7 +763,6 @@ func (s *Service) CIHistory(ctx context.Context, actor *Actor, in CIHistoryInput
 		return nil, err
 	}
 
-	// merges, with the one before the window on each line
 	if err := s.ciHistoryMerges(ctx, from, want, into); err != nil {
 		return nil, err
 	}
@@ -804,7 +783,7 @@ func (s *Service) ciHistoryMerges(ctx context.Context, from time.Time, want func
 		return err
 	}
 	defer rows.Close()
-	last := map[string]int64{} // forge|repo|base → the merge before
+	last := map[string]int64{}
 	for rows.Next() {
 		var fid, merged, start, opened int64
 		var repo, base string
@@ -834,8 +813,6 @@ func (s *Service) ciHistoryMerges(ctx context.Context, from time.Time, want func
 	return rows.Err()
 }
 
-// ---- the board's last day (WP-508) ----
-
 // ciWholeKey + forge id|repo in server_settings is "from|to" (ms; 0 for
 // from: since the first job): the jobs kept of the repo have no hole
 // between them, as far as the reads tell.
@@ -857,9 +834,6 @@ func (s *Service) noteCIWhole(ctx context.Context, forgeID int64, repo string, o
 			from = pf
 		}
 	case errors.Is(err, sql.ErrNoRows):
-		// Nothing noted it before WP-508. A legacy backfill marker doesn't
-		// say whether the page cap cut that backfill short, so coverage
-		// starts from this read.
 	default:
 		s.log.WarnContext(ctx, "read CI history coverage", "repo", repo, "err", err)
 		return oldest

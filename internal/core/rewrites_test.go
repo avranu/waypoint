@@ -20,7 +20,7 @@ func TestRewrittenWork(t *testing.T) {
 	}
 	b := task("Refused calls are logged, not filed", 0)
 	a := task("Accepting a request adds an allow rule", 463)
-	e.link(t, a.ID, 477) // a second pull request for the same task
+	e.link(t, a.ID, 477)
 	related := task("Related already", 470)
 	if err := e.s.AddRelation(e.ctx, e.admin, b.Key, "follows", related.Key); err != nil {
 		t.Fatal(err)
@@ -30,16 +30,13 @@ func TestRewrittenWork(t *testing.T) {
 	old := task("Old work", 300)
 	small := task("A light touch", 472)
 	big := task("A big rewrite at a low share", 473)
-	// Work spread over two pull requests, each below the bar alone.
 	split := task("Split over two pull requests", 475)
 	e.link(t, split.ID, 476)
-	// A pull request known by URL only: its link has no repo or number.
 	byURL := task("Linked by URL", 0)
 	e.mergedPR(t, 474, now.Add(-day), "m474")
 	if _, err := e.s.db.W.ExecContext(e.ctx, `INSERT INTO external_links(issue_id, provider, kind, url, created_at) VALUES (?, 'forgejo', 'pull', ?, 1)`, byURL.ID, "http://f.test/o/r/pulls/474"); err != nil {
 		t.Fatal(err)
 	}
-	// Someone else's project the actor can't see.
 	sam := e.user("sam", false)
 	lee := e.user("lee", false)
 	lp := e.project(lee, "Lee", "kanban")
@@ -56,7 +53,7 @@ func TestRewrittenWork(t *testing.T) {
 		{Number: 472, Lines: 14, Share: 0.9, At: at(day)},
 		{Number: 473, Lines: 60, Share: 0.1, At: at(3 * day)},
 		{Number: 474, Lines: 20, Share: 0.3, At: at(day)},
-		{Number: 999, Lines: 50, Share: 0.5, At: at(day)}, // no task
+		{Number: 999, Lines: 50, Share: 0.5, At: at(day)},
 		{Number: 475, Lines: 12, Share: 0.15, At: at(day)},
 		{Number: 476, Lines: 12, Share: 0.15, At: at(2 * day)},
 		{Number: 477, Lines: 30, Share: 0.2, At: at(day)},
@@ -78,7 +75,6 @@ func TestRewrittenWork(t *testing.T) {
 			t.Fatalf("got %v, want %v", keys, want)
 		}
 	}
-	// A task's lines are all its pull requests'; the one named is its largest.
 	if got[0].PR != 463 || got[0].PRs != 2 || got[0].Lines != 110 || got[0].Share < 0.68 || got[0].Share > 0.70 || got[0].Title != a.Title {
 		t.Fatalf("first = %+v", got[0])
 	}
@@ -109,7 +105,6 @@ func TestRewriteLeadsHideTasksTheActorCannotSee(t *testing.T) {
 	secret := e.issue(sam, IssueInput{Project: sp.Key, Title: "Rotate the leaked signing key"})
 	e.link(t, secret.ID, 480)
 	b := e.issue(e.admin, IssueInput{Project: e.proj.Key, Title: "Refused calls are logged"})
-	// Evidence and its relation, as a ship by someone who saw both made them.
 	if _, err := e.s.db.W.ExecContext(e.ctx, `INSERT INTO issue_relations(source_id, target_id, kind, created_at, found) VALUES (?, ?, 'relates', 1, ?)`, b.ID, secret.ID, rewriteFound); err != nil {
 		t.Fatal(err)
 	}

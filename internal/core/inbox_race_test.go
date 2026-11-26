@@ -16,7 +16,6 @@ func TestInboxMarkReadLeavesWhatWasNotShown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A mention lands on the same issue after the view was drawn.
 	if _, err := e.s.db.W.Exec(`INSERT INTO notifications(user_id, kind, title, body, url, created_at, issue_id) VALUES (?, 'mentioned', 'new', 'late', '', ?, ?)`, sam.id(), e.s.nowMS(), is.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +68,6 @@ func TestInboxOwedStaysLiveAndRemovedMembersSeeNothing(t *testing.T) {
 	if v, _ := e.s.Inbox(e.ctx, sam); len(v.Live) != 0 || v.Summary.LiveUnread != 0 {
 		t.Errorf("a removed member still sees the project's issues: %+v", v.Summary)
 	}
-	// Alerts with no link are not told apart by kind alone.
 	e.s.notify(e.ctx, sam.id(), nil, NotifyQuota, "5h window at 90%", "")
 	e.s.notify(e.ctx, sam.id(), nil, NotifyQuota, "7d window at 80%", "")
 	if v, _ := e.s.Inbox(e.ctx, sam); len(v.Live) != 2 {

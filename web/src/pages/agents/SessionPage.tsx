@@ -1,7 +1,3 @@
-// One agent session (WP-D16): what it is doing, what it finished, what it put
-// off, what waits on you, its requests, its files, what it cost and which
-// tools it used, and the timeline of what happened. /agents/sessions/$id
-
 import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
@@ -197,8 +193,6 @@ function TaskBinding({ tasks }: { tasks: string[] }) {
   )
 }
 
-// ---- the summary ----
-
 function Col4({ title, count, children }: { title: string; count?: number; children: ReactNode }) {
   return (
     <div className="min-w-0 p-4">
@@ -342,8 +336,6 @@ function RequestLine({ r, onOpen }: { r: WRequest; onOpen: (ref: string) => void
   )
 }
 
-// ---- requests ----
-
 function Requests({ sum, onOpen }: { sum: SessionSummary; onOpen: (ref: string) => void }) {
   return (
     <Section title={`Requests · ${sum.requests.length}`}>
@@ -377,8 +369,6 @@ function Requests({ sum, onOpen }: { sum: SessionSummary; onOpen: (ref: string) 
     </Section>
   )
 }
-
-// ---- usage ----
 
 function UsageSection({ s }: { s: SessionSummary['session'] }) {
   const { data: u, error } = useQuery(sessionUsageQuery(s.id))
@@ -450,7 +440,6 @@ function UsageBody({ u, s }: { u: SessionUsage; s: SessionSummary['session'] }) 
   const t = u.totals
   const me = useQuery(q.me()).data
   const total = t.input + t.cache_write + t.cache_read
-  // The tools sections read a usage overview; this is the part of one a session has.
   const o = {
     tools: u.tools,
     bash: u.bash,
@@ -516,8 +505,6 @@ function UsageBody({ u, s }: { u: SessionUsage; s: SessionSummary['session'] }) 
     </div>
   )
 }
-
-// ---- runs and timeline ----
 
 function Runs({ sum }: { sum: SessionSummary }) {
   if (sum.runs.length === 0) return null
@@ -638,7 +625,6 @@ function Timeline({ entries }: { entries: TimelineEntry[] }) {
                 <div className="min-w-0 flex-1">
                   <span className="text-muted">{TIMELINE_WORD[e.kind] ?? e.kind} </span>
                   {e.url && /^https?:/i.test(e.url) ? (
-                    // a forge's page (a pull request): the router can't go there
                     <a
                       href={safeUrl(e.url)}
                       target="_blank"

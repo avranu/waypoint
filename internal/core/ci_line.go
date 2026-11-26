@@ -1,13 +1,5 @@
 package core
 
-// CI line (WP-1658): per merge line (forge, repo, base ref), the armed pull
-// requests in order with what each waits for, and per UTC day what became of
-// the speculative runs (stacks and batches, rows of queue_stacks) made for
-// it: how many started, how each ended and why, how many merges used one,
-// and how many full-tier CI runs the repo ran. Read-only: a few indexed
-// reads of Waypoint's own tables, no forge calls. WP-1657 measures its
-// redesign of the line with it.
-
 import (
 	stdcmp "cmp"
 	"context"
@@ -24,7 +16,7 @@ const (
 	ciLineDefaultDays  = 7
 	ciLineMaxDays      = 90
 	ciLineExamples     = 5
-	ciLineMergedPrefix = "merged as " // the note stackMerged ends a stack with
+	ciLineMergedPrefix = "merged as "
 )
 
 // CILineInput picks the repo (all you can see when empty) and how many UTC
@@ -123,7 +115,6 @@ var ciLineSHA = regexp.MustCompile(`\b[0-9a-f]{7,64}\b`)
 func ciLineReason(state, note string) string {
 	n := strings.ToLower(note)
 	n = ciLineSHA.ReplaceAllString(n, "")
-	// A rider or a stack built on ended because another ended: its reason is the other's.
 	if i := strings.Index(n, " ended: "); i >= 0 && (strings.HasPrefix(n, "the batch it rides") || strings.HasPrefix(n, "the stack it builds on")) {
 		return ciLineReason(state, n[i+len(" ended: "):])
 	}
@@ -168,9 +159,8 @@ func ciLineKey(forgeID int64, repo, base string) string {
 type ciLineAcc struct {
 	line   *CIMergeLine
 	byDate map[string]*CILineDay
-	notes  map[string]map[string]int // reason → raw note → rows
-	// branch → [first created day, rows, used]
-	runs map[string]*ciLineRun
+	notes  map[string]map[string]int
+	runs   map[string]*ciLineRun
 }
 
 type ciLineRun struct {
@@ -231,7 +221,6 @@ func (s *Service) CILine(ctx context.Context, actor *Actor, in CILineInput) (*CI
 		return a
 	}
 
-	// 1. the armed pull requests, with their active babysits
 	// #nosec G202 -- a fixed column list; values are bound
 	rows, err := s.db.R.QueryContext(ctx, `SELECT `+prColsAs("p")+`, coalesce(b.state, ''), coalesce(b.wait, ''), coalesce(b.wait_at, b.updated_at, 0)
 		FROM pull_requests p LEFT JOIN babysits b ON b.pr_id = p.id AND b.ended_at IS NULL
@@ -262,7 +251,6 @@ func (s *Service) CILine(ctx context.Context, actor *Actor, in CILineInput) (*CI
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// the order the line has: the holder first, then by when it joined the queue (queueAhead, lineAhead)
 	slices.SortStableFunc(armed, func(x, y armedPR) int {
 		a, b := x.pr, y.pr
 		switch {
@@ -291,13 +279,11 @@ func (s *Service) CILine(ctx context.Context, actor *Actor, in CILineInput) (*CI
 		l.Armed = append(l.Armed, e)
 		prIDs = append(prIDs, [2]any{p, l})
 	}
-	// pointers only once the slices stopped growing
 	for _, x := range prIDs {
 		p, l := x[0].(*PullRequest), x[1].(*CIMergeLine)
 		byPR[p.ID] = &l.Armed[slices.IndexFunc(l.Armed, func(e CILineEntry) bool { return e.Number == p.Number })]
 	}
 
-	// 2. the stack rows made in the window, and the live ones
 	type stackRow struct {
 		id, forge, prID, created int64
 		repo, base, branch       string
@@ -311,7 +297,7 @@ func (s *Service) CILine(ctx context.Context, actor *Actor, in CILineInput) (*CI
 		return nil, err
 	}
 	var stacks []stackRow
-	rowsOf := map[string]int{} // branch → rows, to tell a batch from a stack
+	rowsOf := map[string]int{}
 	for rows.Next() {
 		var r stackRow
 		if err := rows.Scan(&r.id, &r.forge, &r.repo, &r.base, &r.prID, &r.branch, &r.state, &r.note, &r.heads, &r.pos, &r.created, &r.ended); err != nil {
@@ -343,7 +329,7 @@ func (s *Service) CILine(ctx context.Context, actor *Actor, in CILineInput) (*CI
 			}
 		}
 		if created.Before(from) {
-			continue // live from before the window
+			continue
 		}
 		a := acc(r.forge, r.repo, r.base)
 		day := a.byDate[created.Format("2006-01-02")]
@@ -382,7 +368,6 @@ func (s *Service) CILine(ctx context.Context, actor *Actor, in CILineInput) (*CI
 		}
 	}
 
-	// 3. merges into each base, and how many were made on a stack or batch
 	rows, err = s.db.R.QueryContext(ctx, `SELECT p.forge_id, p.repo, p.base_ref, strftime('%Y-%m-%d', p.merged_at / 1000, 'unixepoch'), count(*),
 		  coalesce(sum(EXISTS(SELECT 1 FROM queue_stacks s WHERE s.pr_id = p.id AND s.state = ? AND s.note LIKE ? || '%')), 0)
 		FROM pull_requests p WHERE p.state = 'merged' AND p.merged_at >= ?
@@ -404,8 +389,6 @@ func (s *Service) CILine(ctx context.Context, actor *Actor, in CILineInput) (*CI
 		k := ciLineKey(fid, repo, base)
 		a := accs[k]
 		if a == nil || a.byDate[date] == nil {
-			// a base with merges only isn't a line, but its merges count on
-			// a line of the same name that has rows or armed pull requests
 			continue
 		}
 		a.byDate[date].Merges += n
@@ -416,8 +399,6 @@ func (s *Service) CILine(ctx context.Context, actor *Actor, in CILineInput) (*CI
 		return nil, err
 	}
 
-	// 4. full-tier runs per repo and day: not the stacks' own runs, which
-	// the workflow runs on wp-queue/ branches at the full tier too
 	rows, err = s.db.R.QueryContext(ctx, `SELECT forge_id, repo, strftime('%Y-%m-%d', created_at / 1000, 'unixepoch'), count(*) FROM ci_runs
 		WHERE created_at >= ? AND tier = '' AND status IN ('success', 'failure', 'cancelled')
 		  AND ref NOT LIKE 'wp-queue/%' AND ref NOT LIKE 'refs/heads/wp-queue/%'
@@ -425,7 +406,7 @@ func (s *Service) CILine(ctx context.Context, actor *Actor, in CILineInput) (*CI
 	if err != nil {
 		return nil, err
 	}
-	full := map[string]map[string]int{} // forge|repo → day → runs
+	full := map[string]map[string]int{}
 	for rows.Next() {
 		var fid int64
 		var repo, date string
@@ -445,7 +426,6 @@ func (s *Service) CILine(ctx context.Context, actor *Actor, in CILineInput) (*CI
 		return nil, err
 	}
 
-	// the lines, totals and reasons
 	repoLines := map[string]int{}
 	for _, a := range accs {
 		repoLines[strconv.FormatInt(a.line.ForgeID, 10)+"|"+strings.ToLower(a.line.Repo)]++

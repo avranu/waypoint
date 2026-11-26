@@ -22,12 +22,12 @@ func TestSettleTaskEnds(t *testing.T) {
 		2: {Index: 2, Status: "running"},
 	}
 	got := settleTaskEnds([]ActionTask{
-		{ID: 1, RunNumber: 1, Status: "success", Started: m(0), Updated: m(26 * 60)}, // touched a day later
-		{ID: 2, RunNumber: 1, Status: "success", Started: m(0), Updated: m(20)},      // already right
-		{ID: 3, RunNumber: 2, Status: "success", Started: m(0), Updated: m(10)},      // run still going
-		{ID: 4, RunNumber: 9, Status: "failure", Started: m(0), Updated: m(20 * 60)}, // unknown run, hours
-		{ID: 5, RunNumber: 9, Status: "failure", Started: m(0), Updated: m(15)},      // unknown run, minutes
-		{ID: 6, RunNumber: 9, Status: "running", Started: m(0), Updated: m(9 * 60)},  // still running
+		{ID: 1, RunNumber: 1, Status: "success", Started: m(0), Updated: m(26 * 60)},
+		{ID: 2, RunNumber: 1, Status: "success", Started: m(0), Updated: m(20)},
+		{ID: 3, RunNumber: 2, Status: "success", Started: m(0), Updated: m(10)},
+		{ID: 4, RunNumber: 9, Status: "failure", Started: m(0), Updated: m(20 * 60)},
+		{ID: 5, RunNumber: 9, Status: "failure", Started: m(0), Updated: m(15)},
+		{ID: 6, RunNumber: 9, Status: "running", Started: m(0), Updated: m(9 * 60)},
 	}, runs)
 	ends := map[int64]time.Time{}
 	for _, t := range got {
@@ -79,7 +79,7 @@ func TestHoldKind(t *testing.T) {
 func TestMergeHolds(t *testing.T) {
 	be, pr := armedBabysit(t)
 	be.s.Wait()
-	if _, err := be.s.db.W.ExecContext(be.ctx, `DELETE FROM merge_holds`); err != nil { // what arming it held
+	if _, err := be.s.db.W.ExecContext(be.ctx, `DELETE FROM merge_holds`); err != nil {
 		t.Fatal(err)
 	}
 	start := be.clockNow()
@@ -91,11 +91,11 @@ func TestMergeHolds(t *testing.T) {
 	}
 	codeql := "waiting for forge-checks/codeql on " + pr.HeadSHA[:7] + " until 21:05 UTC"
 	step(0, "CI is running")
-	step(10*time.Minute, codeql)                                    // green at +10
-	step(5*time.Minute, codeql, "2 review comments not dealt with") // +15
-	step(5*time.Minute, codeql)                                     // +20
-	step(20*time.Minute, "quiet until 21:50 UTC")                   // +40
-	step(10 * time.Minute)                                          // +50, merged
+	step(10*time.Minute, codeql)
+	step(5*time.Minute, codeql, "2 review comments not dealt with")
+	step(5*time.Minute, codeql)
+	step(20*time.Minute, "quiet until 21:50 UTC")
+	step(10 * time.Minute)
 
 	var n, open int
 	if err := be.s.db.R.QueryRowContext(be.ctx, `SELECT count(*), count(*) - count(cleared_at) FROM merge_holds WHERE pr_id = ?`, pr.ID).Scan(&n, &open); err != nil {
@@ -112,7 +112,6 @@ func TestMergeHolds(t *testing.T) {
 	if fmt.Sprint(held) != fmt.Sprint(want) {
 		t.Errorf("held = %v, want %v", held, want)
 	}
-	// wp pr show lists them, oldest first (WP-893)...
 	holds, err := be.s.prHolds(be.ctx, pr.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +126,6 @@ func TestMergeHolds(t *testing.T) {
 	if want := []string{"+0s CI is running 10m0s", "+10m0s waiting for forge-checks/codeql 30m0s", "+15m0s N review comments not dealt with 5m0s", "+40m0s quiet 10m0s"}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("holds = %q, want %q", got, want)
 	}
-	// ...and the server log says each as it opens, as given, and clears.
 	recs, _, _ := ring.query(LogQuery{Grep: regexp.MustCompile(`^merge hold`)})
 	var lines []string
 	for _, r := range recs {
@@ -142,7 +140,6 @@ func TestMergeHolds(t *testing.T) {
 	if n := strings.Count(log, "\n") + 1; n != 8 {
 		t.Errorf("%d hold lines, want 8 (4 opened, 4 cleared):\n%s", n, log)
 	}
-	// A new head ends what the old one had open.
 	step(0, codeql)
 	p2 := *pr
 	p2.HeadSHA = "f00dfeedf00dfeedf00dfeedf00dfeedf00dfeed"
@@ -224,10 +221,10 @@ func TestJobFates(t *testing.T) {
 		return ActionTask{ID: id, RunNumber: run, WorkflowID: "ci.yml", Name: name, SHA: fmt.Sprintf("sha%d", run), Status: status, Started: m(0), Updated: m(end)}
 	}
 	r := &ciRepoData{ref: ciRepoRef{forge: f, repo: "Robin/juno"}, hist: &ciHistory{tasks: []ActionTask{
-		task(1, 1, "e2e", "failure", 10), task(2, 1, "browser", "cancelled", 10), // stopped by e2e
-		task(3, 2, "e2e", "cancelled", 8), task(4, 2, "browser", "cancelled", 8), // e2e stopped itself
-		task(5, 3, "browser", "cancelled", 5),                                   // a plain cancel
-		task(6, 4, "e2e", "failure", 30), task(7, 4, "browser", "cancelled", 5), // cancelled before e2e failed
+		task(1, 1, "e2e", "failure", 10), task(2, 1, "browser", "cancelled", 10),
+		task(3, 2, "e2e", "cancelled", 8), task(4, 2, "browser", "cancelled", 8),
+		task(5, 3, "browser", "cancelled", 5),
+		task(6, 4, "e2e", "failure", 30), task(7, 4, "browser", "cancelled", 5),
 	}}}
 	self := map[string]bool{selfStoppedKey(3, "Robin/juno", "sha2", "e2e"): true}
 	fates := fatesOf(r, self, nil, nil, m(-60))
@@ -272,21 +269,14 @@ func TestJobFatesMore(t *testing.T) {
 	}
 	queued := func(t ActionTask) ActionTask { t.Branch = "wp-queue/main/7"; return t }
 	r := &ciRepoData{ref: ciRepoRef{forge: f, repo: "Robin/w"}, hist: &ciHistory{tasks: []ActionTask{
-		// The aggregate fails after its shard did: not its own.
 		task(1, 1, "shard 3", "failure", 0, 10), task(2, 1, "e2e", "failure", 11, 12),
-		// Both fail at once: each its own.
 		task(3, 2, "shard 3", "failure", 0, 10), task(4, 2, "e2e", "failure", 0, 9),
-		// A stack whose heads didn't merge: the step fails, the rest stop.
 		queued(task(5, 3, "images", "failure", 20, 21)), queued(task(6, 3, "browser", "cancelled", 20, 21)),
-		// A stack the queue dropped.
 		queued(task(7, 4, "browser", "cancelled", 30, 40)),
-		// release: failed, then passed twice.
 		task(8, 5, "release", "failure", 0, 5), task(9, 6, "release", "failure", 10, 15),
 		task(10, 7, "release", "success", 20, 25), task(11, 8, "release", "success", 30, 35),
-		// lint: flaky, passing twice after passing before.
 		task(12, 9, "lint", "success", 0, 5), task(13, 10, "lint", "failure", 10, 15),
 		task(14, 11, "lint", "success", 20, 25), task(15, 12, "lint", "success", 30, 35),
-		// pack: failed, then passed twice, then failed after a shard did: the last isn't its own.
 		task(16, 13, "pack", "failure", 40, 45), task(17, 14, "pack", "success", 50, 55), task(18, 15, "pack", "success", 60, 65),
 		task(19, 16, "shard 9", "failure", 70, 75), task(20, 16, "pack", "failure", 80, 85),
 	}}}

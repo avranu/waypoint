@@ -1,5 +1,3 @@
-// Small pieces of the runner screens used in more than one place.
-
 import { Link } from '@tanstack/react-router'
 import clsx from 'clsx'
 import { relativeTime } from '@/lib/format'
