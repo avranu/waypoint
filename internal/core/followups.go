@@ -683,6 +683,15 @@ func (s *Service) takeMessages(ctx context.Context, t *tx, x *AgentSession, via 
 		m.deliveredAt = sql.NullInt64{Int64: now, Valid: true}
 		t.emit(sessionEvent(EvSessionMessage, x, map[string]any{"message": m.ID, "via": via}))
 	}
+	// Tasks the session filed after its ship ride along with work it is being
+	// handed anyway (WP-1858); they never make a turn by themselves.
+	if via != "prompt" && slices.ContainsFunc(out, func(m *SessionMessage) bool { return !m.passive }) {
+		if m, err := s.deferredBundle(ctx, t, x); err != nil {
+			s.log.WarnContext(ctx, "deferred offer: bundle it with a message", "session", x.ID, "err", err)
+		} else if m != nil {
+			out = append(out, m)
+		}
+	}
 	_, err := t.ExecContext(ctx, `UPDATE agent_sessions SET state = 'working', wait_reason = '', pending = '', finished_at = NULL WHERE id = ?`, x.ID)
 	return out, err
 }
@@ -747,6 +756,10 @@ func MessagesText(list []*SessionMessage) string {
 		}
 		if strings.HasPrefix(m.stepKey, "check:") {
 			parts = append(parts, "Waypoint, the check of your marks on the adversarial review's findings:\n\n"+m.Body)
+			continue
+		}
+		if strings.HasPrefix(m.stepKey, "deferred:") {
+			parts = append(parts, m.Body)
 			continue
 		}
 		if strings.HasPrefix(m.stepKey, "shipped:") {

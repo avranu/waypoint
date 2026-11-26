@@ -34,11 +34,14 @@ type beforePR struct {
 	// run and the session never ships (WP-752). Urgent is only for a pull
 	// request not open yet: one already open is labelled by the held ship
 	// itself (WP-774).
-	Title  string `json:"title,omitempty"`
-	Body   string `json:"body,omitempty"`
-	Draft  bool   `json:"draft,omitempty"`
-	Ready  bool   `json:"ready,omitempty"`
-	Urgent bool   `json:"urgent,omitempty"`
+	Title string `json:"title,omitempty"`
+	// Also are the other tasks the ship is for (wp ship A B): the round is
+	// A's, and the review is given each one's description (WP-1426).
+	Also   []string `json:"also,omitempty"`
+	Body   string   `json:"body,omitempty"`
+	Draft  bool     `json:"draft,omitempty"`
+	Ready  bool     `json:"ready,omitempty"`
+	Urgent bool     `json:"urgent,omitempty"`
 	// Message is the ship's -m, which wp ship posts on the task once the
 	// pull request opens, and Summary its --summary (the reply to the
 	// person, with {task} {pr} {url} still unfilled): the newest ship's
@@ -131,6 +134,9 @@ func (s *Service) refreshBeforePR(ctx context.Context, actor *Actor, id int64, f
 	}
 	if fresh.TokenID != 0 {
 		next.TokenID = fresh.TokenID
+	}
+	if len(fresh.Also) > 0 {
+		next.Also = fresh.Also
 	}
 	if message != nil {
 		next.Message = *message
@@ -528,7 +534,7 @@ func (s *Service) reviewFirst(ctx context.Context, actor *Actor, p *Project, in 
 	if asked == "" && slices.ContainsFunc(in.StackedOn, func(b string) bool { return strings.TrimSpace(b) == base }) {
 		stacked = base
 	}
-	bp := beforePR{Project: p.Key, Repo: repo, Branch: head, Base: base, Asked: asked, Stacked: stacked, Title: in.Title, Body: in.Body, BodyInputs: in.BodyInputs, TokenID: actor.TokenID, Message: deref(in.Message), Summary: deref(in.Summary), Draft: in.Draft, Ready: in.Ready, Urgent: in.Urgent && !existing, HeadTime: in.HeadTime, HeadSHA: in.HeadSHA}
+	bp := beforePR{Project: p.Key, Repo: repo, Branch: head, Base: base, Asked: asked, Stacked: stacked, Title: in.Title, Also: in.Also, Body: in.Body, BodyInputs: in.BodyInputs, TokenID: actor.TokenID, Message: deref(in.Message), Summary: deref(in.Summary), Draft: in.Draft, Ready: in.Ready, Urgent: in.Urgent && !existing, HeadTime: in.HeadTime, HeadSHA: in.HeadSHA}
 	wait := fmt.Sprintf("Pushed %s. Waypoint reviews %s before its pull request and opens the pull request itself when the review leaves nothing for you to do; findings that need you come to this session. Nothing more to run: end your turn.", head, g.key)
 	if existing {
 		wait = fmt.Sprintf("Pushed %s. Waypoint reviews %s, and its open pull request doesn't merge before the review ends; findings that need you come to this session. Nothing more to run: end your turn.", head, g.key)

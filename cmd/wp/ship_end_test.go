@@ -5,7 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -240,11 +243,40 @@ func shipEndsTurn(t *testing.T, e *env, me *core.Actor, key string) {
 		return c.state
 	}
 	out, code := e.run("ship", "--check", "false", "--summary", "{task} is in PR #{pr}.")
-	if code == 0 || !strings.Contains(out, "Check failed: false exited 1") || !strings.Contains(out, "nothing was committed or shipped") {
+	if code == 0 || !strings.Contains(out, "Check failed: false exited 1") || !strings.Contains(out, "nothing was committed or shipped") || strings.Contains(out, "lines of its output") {
 		t.Errorf("failed check: %d\n%s", code, out)
 	}
 	if k := state().Summaries[key]; k == nil || k.Text != "{task} is in PR #{pr}." {
 		t.Errorf("summary not kept after a failed check: %+v", k)
+	}
+	// A failure whose error is above the lines shown: the whole output is
+	// kept in a file the message names (WP-1812).
+	out, code = e.run("ship", "--check", "printf 'a lint %s\\n' finding; seq 40; exit 3", "--summary", "{task} is in PR #{pr}.")
+	m := regexp.MustCompile(`All 41 lines of its output \(kept until the next long failure here, or until this checkout is removed\): (.+)`).FindStringSubmatch(out)
+	if code == 0 || strings.Contains(out, "a lint finding") || m == nil {
+		t.Fatalf("long failed check: %d\n%s", code, out)
+	}
+	want := "a lint finding\n"
+	for i := 1; i <= 40; i++ {
+		want += strconv.Itoa(i) + "\n"
+	}
+	if kept, err := os.ReadFile(m[1]); err != nil || string(kept) != want {
+		t.Errorf("kept output: %v\n%s", err, kept)
+	}
+	// The file is the checkout's git directory's, not a temp file.
+	gp, gerr := exec.Command("git", "rev-parse", "--git-path", "wp-failed-output.log").Output()
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	wantPath, _ := filepath.Abs(strings.TrimSpace(string(gp)))
+	if gotPath, _ := filepath.EvalSymlinks(filepath.Dir(m[1])); gotPath != "" {
+		gotPath = filepath.Join(gotPath, filepath.Base(m[1]))
+		wantDir, _ := filepath.EvalSymlinks(filepath.Dir(wantPath))
+		if gotPath != filepath.Join(wantDir, filepath.Base(wantPath)) {
+			t.Errorf("kept at %s, want %s", m[1], wantPath)
+		}
+	} else {
+		t.Errorf("kept at %s, want %s", m[1], wantPath)
 	}
 	c, _ := newCLI(new(bytes.Buffer), new(bytes.Buffer))
 	c.shipSession("sess-ship", func(e *shipEnd) { e.Ready, e.Text = time.Now(), "A subagent's." })
@@ -377,5 +409,163 @@ func TestShipEndMarkerAfterALongBackgroundWait(t *testing.T) {
 	}
 	if e := c.takeShipEnd("sess-long", "b1"); e == nil || e.Text != "Shipped." {
 		t.Fatalf("the marker written at the end of an hour's wait was refused: %+v", e)
+	}
+}
+
+func TestSlotWaitNote(t *testing.T) {
+	for w, want := range map[time.Duration]string{
+		0:                                     "",
+		59 * time.Second:                      "",
+		59*time.Second + 400*time.Millisecond: "",
+		59*time.Second + 500*time.Millisecond: ", and 1m0s waiting for a slot",
+		60 * time.Second:                      ", and 1m0s waiting for a slot",
+		44 * time.Minute:                      ", and 44m0s waiting for a slot",
+	} {
+		if got := slotWaitNote(w); got != want {
+			t.Errorf("slotWaitNote(%v) = %q, want %q", w, got, want)
+		}
+	}
+}
+
+func TestCheckLines(t *testing.T) {
+	wait := 43*time.Minute + 46*time.Second
+	for got, want := range map[string]string{
+		checkPassedLine("make check", 25*time.Minute+time.Second, 0):       "Check passed: make check (25m1s)",
+		checkPassedLine("make check", 25*time.Minute+time.Second, wait):    "Check passed: make check (25m1s, and 43m46s waiting for a slot)",
+		checkFailedHead("make check", 3, 25*time.Minute+time.Second, 0):    "Check failed: make check exited 3 after 25m1s; last lines:\n",
+		checkFailedHead("make check", 3, 25*time.Minute+time.Second, wait): "Check failed: make check exited 3 after 25m1s, and 43m46s waiting for a slot; last lines:\n",
+	} {
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	}
+}
+
+// A check that queued behind another reports its own time, not the wait
+// (WP-1812): the slots are held for about 2s, the check itself takes none.
+func TestShipCheckTimeLeavesOutTheSlotWait(t *testing.T) {
+	slotEnv(t)
+	t.Chdir(t.TempDir())
+	var holds []*slotHold
+	for range defaultSlots() {
+		h, err := acquireSlot(t.Context(), "tests", defaultSlots(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		holds = append(holds, h)
+	}
+	go func() {
+		time.Sleep(2 * time.Second)
+		for _, h := range holds {
+			h.release()
+		}
+	}()
+	var out bytes.Buffer
+	c, err := newCLI(&out, new(bytes.Buffer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t0 := time.Now()
+	if err := c.runShipCheck("true"); err != nil {
+		t.Fatal(err)
+	}
+	if waited := time.Since(t0); waited < 1500*time.Millisecond {
+		t.Fatalf("the check didn't wait for the slots: %v", waited)
+	}
+	// 1s allows for a loaded machine; the wait alone would make it 2s.
+	if !strings.Contains(out.String(), "Check passed: true (0s)") && !strings.Contains(out.String(), "Check passed: true (1s)") {
+		t.Errorf("the wait was counted as the check's time:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "waiting for a slot") {
+		t.Errorf("a wait below the note threshold was named:\n%s", out.String())
+	}
+}
+
+// The wait is named when it passes the threshold, for a passing check and a
+// failing one; the threshold is lowered so the test stays short.
+func TestShipCheckNamesTheSlotWait(t *testing.T) {
+	slotEnv(t)
+	t.Chdir(t.TempDir())
+	old := slotWaitNoteMin
+	slotWaitNoteMin = time.Second
+	t.Cleanup(func() { slotWaitNoteMin = old })
+	var holds []*slotHold
+	for range defaultSlots() {
+		h, err := acquireSlot(t.Context(), "tests", defaultSlots(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		holds = append(holds, h)
+	}
+	go func() {
+		time.Sleep(2 * time.Second)
+		for _, h := range holds {
+			h.release()
+		}
+	}()
+	var out bytes.Buffer
+	c, err := newCLI(&out, new(bytes.Buffer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.runShipCheck("true"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Check passed: true") || !strings.Contains(out.String(), "waiting for a slot") {
+		t.Errorf("passing check:\n%s", out.String())
+	}
+}
+
+func TestShipCheckFailureNamesTheSlotWait(t *testing.T) {
+	slotEnv(t)
+	t.Chdir(t.TempDir())
+	old := slotWaitNoteMin
+	slotWaitNoteMin = time.Second
+	t.Cleanup(func() { slotWaitNoteMin = old })
+	var holds []*slotHold
+	for range defaultSlots() {
+		h, err := acquireSlot(t.Context(), "tests", defaultSlots(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		holds = append(holds, h)
+	}
+	go func() {
+		time.Sleep(2 * time.Second)
+		for _, h := range holds {
+			h.release()
+		}
+	}()
+	var out bytes.Buffer
+	c, err := newCLI(&out, new(bytes.Buffer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.runShipCheck("false"); err == nil {
+		t.Fatal("a failing check passed")
+	}
+	if !strings.Contains(out.String(), "Check failed: false exited 1") || !strings.Contains(out.String(), "waiting for a slot") {
+		t.Errorf("failing check:\n%s", out.String())
+	}
+}
+
+// A failed check shows 30 lines of output; a pointer to the file comes only
+// with more.
+func TestShipCheckPointerPastThirtyLines(t *testing.T) {
+	slotEnv(t)
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Chdir(t.TempDir())
+	for n, want := range map[int]bool{30: false, 31: true} {
+		var out bytes.Buffer
+		c, err := newCLI(&out, new(bytes.Buffer))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.runShipCheck("seq " + strconv.Itoa(n) + "; exit 3"); err == nil {
+			t.Fatalf("%d lines: the check passed", n)
+		}
+		if got := strings.Contains(out.String(), "lines of its output"); got != want {
+			t.Errorf("%d lines: pointer %v, want %v:\n%s", n, got, want, out.String())
+		}
 	}
 }
