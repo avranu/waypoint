@@ -861,6 +861,9 @@ func TestScheduleIsSound(t *testing.T) {
 	var startup []string
 	for i, j := range jobs {
 		at[j.name] = i
+		if j.name == "backup" && j.lane == "" {
+			t.Error("the backup runs in the loop and holds up the jobs after it; it belongs in a background lane")
+		}
 		if (j.every == 0 || j.atStart) && j.lane == "" {
 			startup = append(startup, j.name)
 		}

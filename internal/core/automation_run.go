@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -54,13 +55,6 @@ func (s *Service) kickRuns() {
 // automate runs the automations an event triggers, for events that are not
 // otherwise dispatched (knowledge, timers).
 func (s *Service) automate(ctx context.Context, actor *Actor, e *Event) {
-	depth := 0
-	if actor != nil {
-		depth = actor.depth
-	}
-	if depth >= maxAutomationDepth {
-		return
-	}
 	if e.At.IsZero() {
 		e.At = s.now().UTC()
 	}
@@ -74,7 +68,10 @@ func (s *Service) runAutomations(ctx context.Context, actor *Actor, e *Event) {
 	if e.Kind == EvProjectUpdated {
 		return
 	}
-	s.matchWaits(ctx, e)
+	limited := actor != nil && actor.depth >= maxAutomationDepth
+	if !limited {
+		s.matchWaits(ctx, e)
+	}
 	if !isTriggerEvent(e.Kind) {
 		return
 	}
@@ -96,13 +93,22 @@ func (s *Service) runAutomations(ctx context.Context, actor *Actor, e *Event) {
 	counts := strings.HasPrefix(e.Kind, "issue.")
 	for _, a := range list {
 		if counts && a.Rule.Trigger.Event == "count_crossed" {
-			s.scheduleCountCheck(a)
+			if !limited {
+				s.scheduleCountCheck(a)
+			}
 			continue
 		}
 		if !a.Rule.Trigger.matches(e) {
 			continue
 		}
 		if actor != nil && actor.Automation != nil && actor.Automation.ID == a.ID {
+			continue
+		}
+		if limited {
+			// Said only for an automation that would have run: the limit
+			// stops chains of automations that trigger each other.
+			s.log.WarnContext(ctx, "automation skipped: depth limit reached",
+				"automation", a.Name, "automation_id", a.ID, "event", e.Kind, "depth", actor.depth, "limit", maxAutomationDepth, "actor", actorLabel(actor))
 			continue
 		}
 		if d := triggerDef(a.Rule.Trigger.Event); d != nil && d.Watch != nil {
@@ -840,4 +846,18 @@ func (s *Service) adminAutomations(ctx context.Context, enabledOnly bool) ([]*Au
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// actorLabel names who an event came from, for a log line: the automation
+// whose run caused it, else the user.
+func actorLabel(a *Actor) string {
+	switch {
+	case a == nil:
+		return "none"
+	case a.Automation != nil:
+		return fmt.Sprintf("automation %q (#%d)", a.Automation.Name, a.Automation.ID)
+	case a.User != nil:
+		return fmt.Sprintf("user #%d", a.User.ID)
+	}
+	return "none"
 }
