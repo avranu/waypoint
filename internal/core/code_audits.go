@@ -311,6 +311,7 @@ type AuditInput struct {
 	Via      string `json:"via"`      // web, cli, api, automation
 
 	requestKey               string
+	head                     string // the commit a pull request's audit is asked for; empty: the forge's head
 	chain                    []AgentModel
 	owner                    int64
 	purpose                  string
@@ -547,7 +548,9 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 		case fp.State == "merged" || fp.State == "closed":
 			a.Ref, a.Base = prHeadRef(repo.Forge, in.PR), fp.BaseRef
 		default:
-			a.Ref, a.Base = fp.HeadSHA, fp.BaseRef
+			// The head the request is for, where the forge's answer lags it
+			// or runs ahead: the audit's key names that commit (WP-1852).
+			a.Ref, a.Base = cmp(in.head, fp.HeadSHA), fp.BaseRef
 		}
 		if a.Base == "" {
 			if fc, ok := s.Forges.(ForgeCommitter); ok {
@@ -574,7 +577,7 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 		}
 		prContext = fmt.Sprintf("This is pull request %s#%d, %q, by %s, at its %s %s. Its description, as its author wrote it:\n\n<untrusted>\n%s\n</untrusted>",
 			repo.Repo, fp.Number, fp.Title, cmp(fp.Author, "someone"), map[bool]string{true: "merge commit", false: "head"}[fp.State == "merged" && fp.MergeSHA != ""],
-			short(cmp(fp.MergeSHA, fp.HeadSHA)), excerpt(untrusted(cmp(strings.TrimSpace(fp.Body), "(none)")), 4000))
+			short(cmp(fp.MergeSHA, cmp(in.head, fp.HeadSHA))), excerpt(untrusted(cmp(strings.TrimSpace(fp.Body), "(none)")), 4000))
 		if in.prContext != "" {
 			prContext = in.prContext
 		}

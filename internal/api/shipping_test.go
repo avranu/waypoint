@@ -137,6 +137,24 @@ func TestShippingAPI(t *testing.T) {
 	if code, _ := stranger.do("GET", path, nil); code != 404 {
 		t.Errorf("a stranger read it: %d", code)
 	}
+	var tl struct {
+		OpenedAt string           `json:"opened_at"`
+		Runs     []map[string]any `json:"runs"`
+		Holds    []map[string]any `json:"holds"`
+		Totals   map[string]any   `json:"totals"`
+	}
+	if code := robin.json("GET", path+"/timeline", nil, &tl); code != 200 || tl.OpenedAt == "" || tl.Runs == nil || tl.Holds == nil || tl.Totals["held_s"] != float64(0) {
+		t.Errorf("timeline: %d %+v", code, tl)
+	}
+	if code, _ := stranger.do("GET", path+"/timeline", nil); code != 404 {
+		t.Errorf("a stranger read the timeline: %d", code)
+	}
+	if code, _ := robin.do("GET", fmt.Sprintf("/api/v1/projects/%s/pulls/99/timeline", p.Key), nil); code != 404 {
+		t.Errorf("timeline of an unknown number: %d", code)
+	}
+	if code, _ := robin.do("GET", path+"/timeline?repo=other/repo", nil); code != 404 {
+		t.Errorf("timeline of another repo: %d", code)
+	}
 
 	var res map[string]any
 	pull := fmt.Sprintf("/api/v1/pulls/%d", d.ID)

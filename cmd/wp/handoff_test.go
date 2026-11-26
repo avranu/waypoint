@@ -36,7 +36,7 @@ func TestTaskSessionEndsWhenFinished(t *testing.T) {
 	var stopped [][]string
 	old := backgroundStart
 	t.Cleanup(func() { backgroundStart = old })
-	backgroundStart = func(exe string, args ...string) { stopped = append(stopped, args) }
+	backgroundStart = func(exe string, args ...string) bool { stopped = append(stopped, args); return true }
 	fakeCLI(t, "claude", fakeClaudeStart)
 
 	sid := "c24e7b58-1111-2222-3333-444455556666"
@@ -83,7 +83,7 @@ func TestTaskSessionNotEndedAfterAPersonPromptsOrWithARequestOpen(t *testing.T) 
 	var stopped [][]string
 	old := backgroundStart
 	t.Cleanup(func() { backgroundStart = old })
-	backgroundStart = func(exe string, args ...string) { stopped = append(stopped, args) }
+	backgroundStart = func(exe string, args ...string) bool { stopped = append(stopped, args); return true }
 	fakeCLI(t, "claude", fakeClaudeStart)
 	finish := func(sid string) {
 		s.hook(in(sid, "Stop", s.repo, map[string]any{"background_tasks": []any{}, "session_crons": []any{}}))

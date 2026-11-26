@@ -108,6 +108,44 @@ func (c *cli) shipSession(session string, change func(*shipEnd)) {
 
 // keepSummary keeps text for key's next wp ship; "" drops what was kept.
 func (c *cli) keepSummary(key, text string) {
+	c.keepSummaryFor(key, text, c.thisSession())
+}
+
+// keepSummaries keeps text under every task a ship names (WP-1426), else
+// under fallback: whichever of them the next wp ship is run for finds it.
+func (c *cli) keepSummaries(keys []string, fallback, text string) {
+	if len(keys) == 0 {
+		c.keepSummary(fallback, text)
+		return
+	}
+	for _, k := range keys {
+		c.keepSummary(k, text)
+	}
+}
+
+// alsoKeys are the tasks after the first of wp ship A B, upper-cased and
+// without repeats.
+func alsoKeys(keys []string) []string {
+	if len(keys) < 2 {
+		return nil
+	}
+	first := strings.ToUpper(strings.TrimSpace(keys[0]))
+	seen := map[string]bool{first: true}
+	var out []string
+	for _, k := range upperKeys(keys[1:]) {
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// keepSummaryFor is keepSummary for a summary that waits through a turn
+// boundary: with session "" the next prompt doesn't drop it, only age does.
+// The ship Waypoint compacts a session before is one: the offer that comes
+// after the compaction is a prompt, and the summary is for the ship after it.
+func (c *cli) keepSummaryFor(key, text, session string) {
 	key = strings.ToUpper(strings.TrimSpace(key))
 	if key == "" {
 		return
@@ -121,7 +159,7 @@ func (c *cli) keepSummary(key, text string) {
 		if s.Summaries == nil {
 			s.Summaries = map[string]*keptSummary{}
 		}
-		s.Summaries[key] = &keptSummary{Text: text, At: time.Now(), Session: c.thisSession()}
+		s.Summaries[key] = &keptSummary{Text: text, At: time.Now(), Session: session}
 	})
 }
 

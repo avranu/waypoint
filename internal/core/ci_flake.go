@@ -24,6 +24,9 @@ type flakeRerun struct {
 	Read bool `json:"read,omitempty"`
 	// Filed: the re-run passed and the flake was filed.
 	Filed bool `json:"filed,omitempty"`
+	// Cannot: the forge re-ran nothing for the head while it rested, so the
+	// resting sweeps don't ask again (WP-1853). Not a re-run: it files nothing.
+	Cannot bool `json:"cannot,omitempty"`
 }
 
 type flakeCheck struct {
@@ -66,9 +69,17 @@ func (s *Service) rerunForFlake(ctx context.Context, b *Babysit, pr *PullRequest
 	}
 	fr := parseFlakeRerun(b.flakeRerun)
 	now := s.now()
+	if fr.Cannot && sameSHA(fr.SHA, pr.HeadSHA) && !restingOn(b, pr) {
+		// The rest's "can't" spared its sweeps: before a round the forge is
+		// asked once more, since what it couldn't re-run then it may now.
+		fr = flakeRerun{}
+	}
 	if sameSHA(fr.SHA, pr.HeadSHA) {
+		if fr.Cannot {
+			return false
+		}
 		if now.Sub(msTime(fr.At)) < faultRerunSettle {
-			s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("re-ran %s on %s to rule out a flaky test; waiting for the results", joinAnd(failed), short(pr.HeadSHA)))
+			s.flakeState(ctx, b, pr, fmt.Sprintf("re-ran %s on %s to rule out a flaky test; waiting for the results", joinAnd(failed), short(pr.HeadSHA)))
 			return true
 		}
 		if !fr.Read {
@@ -95,6 +106,7 @@ func (s *Service) rerunForFlake(ctx context.Context, b *Babysit, pr *PullRequest
 	if can, err := cl.CanRetryChecks(ctx, f); err != nil || !can {
 		return false
 	}
+	resting := restingOn(b, pr)
 	checks, err := s.flakeChecks(ctx, pr)
 	if err != nil {
 		s.log.WarnContext(ctx, "read the failed checks before a flake re-run", "pr", pr.ID, "err", err)
@@ -107,17 +119,77 @@ func (s *Service) rerunForFlake(ctx context.Context, b *Babysit, pr *PullRequest
 	}
 	s.keepFailedEvidence(ctx, f, pr.Repo, pr.HeadSHA)
 	n, err := cl.RetryChecks(ctx, f, pr.Repo, pr.HeadSHA)
-	if err != nil || n == 0 {
-		if err != nil {
-			s.log.WarnContext(ctx, "re-run failed checks to rule out a flake", "pr", pr.ID, "err", err)
+	if err != nil {
+		s.log.WarnContext(ctx, "re-run failed checks to rule out a flake", "pr", pr.ID, "asked", n, "err", err)
+	}
+	// A forge that failed part way has still taken the first n: those are
+	// out, so the marker stays and their results are waited for.
+	if n == 0 {
+		// A resting babysit is swept every minute with no round to end it:
+		// remember for the head that the forge can't, so it isn't asked again.
+		cleared := flakeRerun{}
+		if resting {
+			cleared = flakeRerun{SHA: pr.HeadSHA, At: now.UnixMilli(), Cannot: true}
 		}
-		if err := s.saveFlakeRerun(ctx, b, flakeRerun{}); err != nil {
+		if err := s.saveFlakeRerun(ctx, b, cleared); err != nil {
 			s.log.WarnContext(ctx, "clear a flake re-run", "pr", pr.ID, "err", err)
 		}
 		return false
 	}
-	s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("%s failed on %s; Waypoint re-ran %d job%s once to rule out a flaky test before a round", joinAnd(failed), short(pr.HeadSHA), n, plural(n)))
+	s.log.InfoContext(ctx, "re-ran failed checks to rule out a flake", "repo", pr.Repo, "number", pr.Number, "head", short(pr.HeadSHA), "checks", joinAnd(failed), "resting", resting)
+	text := fmt.Sprintf("%s failed on %s; Waypoint re-ran %d job%s once to rule out a flaky test", joinAnd(failed), short(pr.HeadSHA), n, plural(n))
+	if !resting {
+		text += " before a round"
+	}
+	s.flakeState(ctx, b, pr, text)
 	return true
+}
+
+// flakeState is what a babysit says while its flake re-run is out. A resting
+// babysit stays resting, with the re-run added to its wait: the rest's round,
+// end time and rules are the park's, and a re-run's result changes none of
+// them (WP-1853).
+func (s *Service) flakeState(ctx context.Context, b *Babysit, pr *PullRequest, text string) {
+	if restingOn(b, pr) {
+		r := lastRound(b)
+		s.setState(ctx, b, pr, BabysitResting, restWaitText(r)+"; "+text)
+		return
+	}
+	s.setState(ctx, b, pr, BabysitWatching, text)
+}
+
+// restingOn says whether the babysit rests out of the merge line on this head.
+func restingOn(b *Babysit, pr *PullRequest) bool {
+	return resting(lastRound(b)) && parkedOn(b, pr.HeadSHA)
+}
+
+// restFlakeRerun is the flake re-run of a resting babysit's head (WP-1853):
+// the head's failed checks, re-run once before anything else is made of them,
+// whether or not a round could run. True when it re-ran them or waits for
+// that re-run's results. The same rules as a round's re-run: a check that
+// failed in a round before it is the code's, and a runner fault is not a
+// flake. Not when the rest's own re-run (restOver) already happened here.
+func (s *Service) restFlakeRerun(ctx context.Context, b *Babysit, pr *PullRequest) bool {
+	if r := lastRound(b); r != nil && !r.RerunAt.IsZero() {
+		return false
+	}
+	if pr.HeadSHA == "" || !sameSHA(pr.ciSHA, pr.HeadSHA) || pr.CIState != CIFailed {
+		return false
+	}
+	checks, err := s.prChecks(ctx, pr)
+	if err != nil {
+		return false
+	}
+	var failed []string
+	for _, c := range checks {
+		if c.State == CheckFailed && !cancelledCheck(c.Description) {
+			failed = append(failed, c.Name)
+		}
+	}
+	if len(failed) == 0 || s.headRunnerFaults(ctx, pr) != nil {
+		return false
+	}
+	return s.rerunForFlake(ctx, b, pr, failed)
 }
 
 // flakeChecks reads the head's failed checks' kept logs: the failing part,
@@ -250,7 +322,7 @@ func checkBaseName(name string) string {
 // babysit's session not to fix it in the pull request.
 func (s *Service) flakeProven(ctx context.Context, b *Babysit, pr *PullRequest) {
 	fr := parseFlakeRerun(b.flakeRerun)
-	if fr.Filed || fr.SHA == "" || !sameSHA(fr.SHA, pr.HeadSHA) || pr.CIState != CIPassed || !sameSHA(pr.ciSHA, pr.HeadSHA) {
+	if fr.Filed || fr.Cannot || fr.SHA == "" || !sameSHA(fr.SHA, pr.HeadSHA) || pr.CIState != CIPassed || !sameSHA(pr.ciSHA, pr.HeadSHA) {
 		return
 	}
 	key, err := s.fileFlake(ctx, b, pr, fr)

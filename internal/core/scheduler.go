@@ -171,6 +171,7 @@ func (s *Service) schedule() []scheduled {
 		scheduled{name: "safety screens", every: minute, run: s.sweepScreens},
 		scheduled{name: "quota guard watch", every: minute, run: s.RunGuardWatch},
 		scheduled{name: "autopilot", every: minute, run: s.RunAutopilot},
+		scheduled{name: "deferred offers", every: minute, run: s.deferredSweep},
 		scheduled{name: "warm caches", every: minute, run: s.KeepCachesWarm},
 		scheduled{name: "work logs", every: minute, run: s.RunWorkLog},
 		scheduled{name: "PR descriptions", every: minute, run: s.RunPRBodies},

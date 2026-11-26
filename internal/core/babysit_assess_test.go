@@ -2,9 +2,11 @@ package core
 
 import (
 	"encoding/json"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // finishWith ends a round's job with the agent's own last words.
@@ -687,5 +689,280 @@ func TestParkAsksWhenTheNamedRequestIsClosed(t *testing.T) {
 	assessorAsks(t, be, "Will you rebuild the CI image ("+img.Code+") or "+foreign.Code+" or NOPE:R-9?")
 	if n := be.parkQuestions(); n != 1 || len(lastRound(be.babysit()).WaitsOn) != 0 {
 		t.Fatalf("%d questions, waits on %+v", n, lastRound(be.babysit()).WaitsOn)
+	}
+}
+
+// parkedOnNamedComment is #7 resting out of the merge line on a round over a
+// failing check and a comment an agent held, the way #582 rested on
+// "c6974 came back after the assessor's fix": the park names the comment, but
+// the round's failing check ("ci / build") means its comments are not the
+// whole subject. The head's own failing check, "ci / test", is a different
+// one, failing for the first time (no streak) once a test reads it.
+func parkedOnNamedComment(t *testing.T) (*bsEnv, *PullRequest, string) {
+	t.Helper()
+	be := newBabysitEnv(t)
+	be.sg.threads = humanThread()
+	be.runnerOnline()
+	pr := be.open()
+	be.start(pr)
+	ref := be.comment("501").Ref
+	if _, err := be.s.AckReviewComments(be.ctx, be.agent, AckInput{IDs: []string{ref}, Verdict: "needs-person", Note: "A product call."}); err != nil {
+		t.Fatal(err)
+	}
+	be.s.Wait()
+	b := be.babysit()
+	b.Rounds = append(b.Rounds, BabysitRound{N: 1, SHA: pr.HeadSHA, Checks: []string{"ci / build"}, Comments: []string{ref}, Outcome: "not fixed"})
+	be.s.parkBabysit(be.ctx, b, pr, ref+" (app/export.go) came back after the assessor's fix in round 1", "", []string{"ci / build"}, false, []string{ref}, nil)
+	b = be.babysit()
+	r := lastRound(b)
+	if !parkedOn(b, pr.HeadSHA) || !resting(r) || len(r.ParkedOn) != 0 || !slices.Equal(r.ParkNamed, []string{ref}) {
+		t.Fatalf("park = %+v", r)
+	}
+	return be, pr, ref
+}
+
+// A rest ends at the next sweep once the comment it named is rejected with
+// evidence, and stays while it is open (WP-1853).
+func TestRestEndsWhenItsNamedCommentIsRejected(t *testing.T) {
+	be, pr, ref := parkedOnNamedComment(t)
+	be.step()
+	if b := be.babysit(); !parkedOn(b, pr.HeadSHA) || b.State != BabysitResting {
+		t.Fatalf("a rest ended with its comment open: %s %+v", b.State, lastRound(b))
+	}
+	if _, err := be.s.AckReviewComments(be.ctx, be.agent, AckInput{IDs: []string{ref}, Verdict: "rejected", Note: "It builds; the claim doesn't hold."}); err != nil {
+		t.Fatal(err)
+	}
+	be.s.Wait()
+	be.step()
+	b := be.babysit()
+	if parkedOn(b, pr.HeadSHA) || b.State == BabysitResting || !strings.Contains(lastRound(b).Reply, "is no longer open") {
+		t.Fatalf("the rest outlasted its comment: %s %q %+v", b.State, b.Wait, lastRound(b))
+	}
+}
+
+func TestNamedIn(t *testing.T) {
+	ids := []string{"c6974", "c69", "12.3", "c6", "c1"}
+	for _, c := range []struct {
+		name, text string
+		ids, want  []string
+	}{
+		{"words of their own", "c6974 (app/x.go, in Run) came back after the assessor's fix; 12.3. and c69 too", ids, []string{"c6974", "c69", "12.3"}},
+		{"any case", "C6974 came back, and the finding 12.3 too", ids, []string{"c6974", "12.3"}},
+		{"a hyphen splits words", "the c6974-style duplicate (see c1-c69)", ids, []string{"c6974", "c69", "c1"}},
+		{"named twice, listed once", "c69 came back; c69 again", ids, []string{"c69"}},
+		{"no text", "", ids, nil},
+		{"no ids", "c69 came back", nil, nil},
+		{"a prefix is not the id", "c697 and c6975", ids, nil},
+	} {
+		got := namedIn(c.text, c.ids)
+		if len(got) == 0 && len(c.want) == 0 {
+			continue
+		}
+		slices.Sort(got)
+		want := slices.Clone(c.want)
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: named = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// A rest that names a bot's duplicate which an earlier round's fix covers
+// ends at the next sweep with the duplicate closed (WP-1853: #582 rested on
+// "c6974 came back").
+func TestRestEndsWhenItsNamedCommentIsCoveredByAFix(t *testing.T) {
+	be := newBabysitEnv(t)
+	be.sg.threads = []ReviewThread{
+		{ID: "T1", Path: "app/export.go", Line: 4, Comments: []ThreadComment{{ID: "501", Author: "coderabbitai[bot]", Body: coverBody, SHA: "7777777aaaa", At: time.Now()}}},
+		{ID: "T2", Path: "app/export.go", Line: 4, Comments: []ThreadComment{{ID: "502", Author: "coderabbitai[bot]", Body: coverBody, SHA: "7777777aaaa", At: time.Now()}}},
+	}
+	be.runnerOnline()
+	pr := be.open()
+	be.start(pr)
+	old, dup := be.comment("501").Ref, be.comment("502").Ref
+	if _, err := be.s.AckReviewComments(be.ctx, be.agent, AckInput{IDs: []string{old}, Verdict: VerdictRejected, Note: "It builds; the claim doesn't hold."}); err != nil {
+		t.Fatal(err)
+	}
+	be.s.Wait()
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE pull_requests SET head_sha = '8888888bbbb' WHERE id = ?`, pr.ID); err != nil {
+		t.Fatal(err)
+	}
+	pr = be.pr(7)
+	b := be.babysit()
+	b.Rounds = append(b.Rounds,
+		BabysitRound{N: 1, SHA: "7777777aaaa", At: time.Now(), Comments: []string{old}, Pushed: true, PushSHA: "8888888bbbb"},
+		BabysitRound{N: 2, SHA: "8888888bbbb", At: time.Now(), Comments: []string{dup}, Outcome: "not fixed"})
+	be.s.parkBabysit(be.ctx, b, pr, dup+" (app/export.go) came back after the assessor's fix in round 1", "", nil, false, []string{dup}, nil)
+	if b = be.babysit(); !parkedOn(b, pr.HeadSHA) || !resting(lastRound(b)) {
+		t.Fatalf("not resting: %s %+v", b.State, lastRound(b))
+	}
+	be.step()
+	b = be.babysit()
+	if c := be.comment("502"); !c.Dealt || c.Verdict != VerdictFixed {
+		t.Fatalf("the duplicate stays open: %s dealt %v", c.Verdict, c.Dealt)
+	}
+	if parkedOn(b, pr.HeadSHA) || b.State == BabysitResting {
+		t.Fatalf("the rest outlasted its covered comment: %s %q %+v", b.State, b.Wait, lastRound(b))
+	}
+}
+
+var restFailing = CommitCheck{Name: "ci / test", State: CheckFailed, Description: "Failing after 9m", URL: "https://ci.example.com/run/1"}
+
+// A park whose reason names a check the round failed on is over that check
+// too: it records no named comments, so settling one can't end it (WP-1853).
+func TestParkNamedOnlyWhenTheReasonNamesNoFailedCheck(t *testing.T) {
+	be := newBabysitEnv(t)
+	be.sg.threads = humanThread()
+	be.runnerOnline()
+	pr := be.open()
+	be.start(pr)
+	be.checks(pr.HeadSHA, restFailing) // the head really has the failing check
+	ref := be.comment("501").Ref
+	b := be.babysit()
+	b.Rounds = append(b.Rounds, BabysitRound{N: 1, SHA: pr.HeadSHA, Checks: []string{"ci / test"}, Comments: []string{ref}, Outcome: "not fixed"})
+	be.s.parkBabysit(be.ctx, b, pr, "ci / test still fails and "+ref+" is open", "", []string{"ci / test"}, false, []string{ref}, nil)
+	if r := lastRound(be.babysit()); !resting(r) || len(r.ParkNamed) != 0 {
+		t.Fatalf("a park naming its failed check records %v", r.ParkNamed)
+	}
+	b = be.babysit()
+	be.s.parkBabysit(be.ctx, b, pr, ref+" (app/export.go) came back", "", []string{"ci / test"}, false, []string{ref}, nil)
+	if r := lastRound(be.babysit()); !slices.Equal(r.ParkNamed, []string{ref}) {
+		t.Fatalf("a park naming only a comment records %v", r.ParkNamed)
+	}
+	// A conflict stands whatever becomes of the comment.
+	b = be.babysit()
+	be.s.parkBabysit(be.ctx, b, pr, ref+" (app/export.go) came back", "", nil, true, []string{ref}, nil)
+	if r := lastRound(be.babysit()); !resting(r) || len(r.ParkNamed) != 0 {
+		t.Fatalf("a park over a conflict too records %v", r.ParkNamed)
+	}
+}
+
+// Rests that are not rests, and rests with more than one thing named, are not
+// ended by one of them (WP-1853).
+func TestParkNamedSettledOnlyWhenAllNamedAreClosed(t *testing.T) {
+	be := newBabysitEnv(t)
+	be.sg.threads = []ReviewThread{
+		{ID: "T1", Path: "app/export.go", Line: 4, Comments: []ThreadComment{{ID: "501", Author: "alice", Body: "Handle empty rows.", SHA: "7777777aaaa", At: time.Now()}}},
+		{ID: "T2", Path: "app/export.go", Line: 9, Comments: []ThreadComment{{ID: "502", Author: "alice", Body: "Close the file.", SHA: "7777777aaaa", At: time.Now()}}},
+	}
+	be.runnerOnline()
+	box := be.auditBox()
+	be.auditOn()
+	pr := be.openMine()
+	be.start(pr)
+	be.endAudit(box, "done", [2]string{"medium", "No limit on rows"})
+	todo, err := be.s.auditTodoErr(be.ctx, pr.ID)
+	if err != nil || len(todo) != 1 {
+		t.Fatalf("todo = %+v %v", todo, err)
+	}
+	finding, one, two := todo[0].ID, be.comment("501").Ref, be.comment("502").Ref
+	b := be.babysit()
+	b.Rounds = append(b.Rounds, BabysitRound{N: 1, SHA: pr.HeadSHA, Comments: []string{one, two}, Findings: []string{finding}, Outcome: "not fixed"})
+	be.s.parkBabysit(be.ctx, b, pr, one+" and "+two+" and "+finding+" came back", "", nil, false, []string{one, two}, []string{finding})
+	r := lastRound(be.babysit())
+	if !resting(r) || len(r.ParkNamed) != 3 {
+		t.Fatalf("park = %+v", r)
+	}
+	reject := func(ref string) {
+		t.Helper()
+		if _, err := be.s.AckReviewComments(be.ctx, be.agent, AckInput{IDs: []string{ref}, Verdict: "rejected", Note: "It builds; the claim doesn't hold."}); err != nil {
+			t.Fatal(err)
+		}
+		be.s.Wait()
+	}
+	settled := func() string { return be.s.parkNamedSettled(be.ctx, be.pr(7), lastRound(be.babysit())) }
+	reject(one)
+	if got := settled(); got != "" {
+		t.Errorf("one of three closed: %q", got)
+	}
+	reject(two)
+	if got := settled(); got != "" {
+		t.Errorf("the audit finding is still open: %q", got)
+	}
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE code_audit_findings SET state = 'dismissed', note = 'checked' WHERE audit_id = ?`, be.auditID()); err != nil {
+		t.Fatal(err)
+	}
+	if got := settled(); !strings.Contains(got, "is no longer open") {
+		t.Errorf("all three closed: %q", got)
+	}
+	// A park that asked a person is not a rest: the comment's closing doesn't
+	// end it.
+	b = be.babysit()
+	r = lastRound(b)
+	r.Question, r.Because, r.RestUntil, r.RestedAt = "Ship it?", "A product call.", time.Time{}, time.Time{}
+	if got := be.s.parkNamedSettled(be.ctx, be.pr(7), r); got != "" {
+		t.Errorf("a person's park ended by its named comments: %q", got)
+	}
+}
+
+// A rest ended early by what it named says so in the log and in the reply the
+// assessor reads.
+func TestRestEndsWhenNamedIsClosedSaysNoLongerOpen(t *testing.T) {
+	be, pr, ref := parkedOnNamedComment(t)
+	if _, err := be.s.AckReviewComments(be.ctx, be.agent, AckInput{IDs: []string{ref}, Verdict: "rejected", Note: "It builds; the claim doesn't hold."}); err != nil {
+		t.Fatal(err)
+	}
+	be.s.Wait()
+	be.step()
+	if r := lastRound(be.babysit()); !strings.Contains(r.Reply, "is no longer open") || strings.Contains(r.Reply, "dealt with") {
+		t.Fatalf("reply = %q (head %s)", r.Reply, short(pr.HeadSHA))
+	}
+}
+
+// The assessor is asked to name the comments and findings a Wait: is about.
+func TestAssessorPromptAsksForTheIDsOfAWait(t *testing.T) {
+	be := newBabysitEnv(t)
+	pr := be.open()
+	be.start(pr)
+	p := be.s.assessorPrompt(be.ctx, be.babysit(), pr, &BabysitRound{N: 1}, &PRTodo{}, "why")
+	if !strings.Contains(p, "`Wait: …`") || !strings.Contains(p, "IDs of the review comments or audit findings") {
+		t.Errorf("the Wait: line doesn't ask for ids:\n%s", p)
+	}
+}
+
+// The rest's own re-run (restOver) doesn't repeat a re-run the flake gate
+// made on the head during the rest, and the flake gate doesn't repeat the
+// rest's.
+func TestRestRerunsOncePerHead(t *testing.T) {
+	// A park over a failing check alone, resting; the head's check fails
+	// afterwards, for the first time.
+	setup := func() (*bsEnv, *PullRequest) {
+		be := newBabysitEnv(t)
+		be.runnerOnline()
+		pr := be.open()
+		be.start(pr)
+		b := be.babysit()
+		b.Rounds = append(b.Rounds, BabysitRound{N: 1, SHA: pr.HeadSHA, Checks: []string{"ci / test"}, Outcome: "not fixed"})
+		be.s.parkBabysit(be.ctx, b, pr, "ci / test keeps failing", "", []string{"ci / test"}, false, nil, nil)
+		if r := lastRound(be.babysit()); !resting(r) || !slices.Equal(r.ParkedChecks, []string{"ci / test"}) {
+			t.Fatalf("park = %+v", r)
+		}
+		return be, pr
+	}
+	// The flake gate re-ran it during the rest; when the rest's time ends its
+	// own re-run is not made again.
+	be, pr := setup()
+	be.checks(pr.HeadSHA, restFailing)
+	if n := len(be.retries()); n != 1 {
+		t.Fatalf("flake re-run: retries %v", be.retries())
+	}
+	be.setClock(lastRound(be.babysit()).RestUntil.Add(time.Second))
+	be.step()
+	if n := len(be.retries()); n != 1 {
+		t.Errorf("the rest's own re-run came on top of the flake gate's: %v", be.retries())
+	}
+	// The rest's own re-run is made first; the flake gate leaves the head alone.
+	be, pr = setup()
+	be.setClock(lastRound(be.babysit()).RestUntil.Add(time.Second))
+	be.checks(pr.HeadSHA, restFailing)
+	if n := len(be.retries()); n != 1 {
+		t.Fatalf("the rest's re-run: retries %v", be.retries())
+	}
+	if r := lastRound(be.babysit()); r.RerunAt.IsZero() {
+		t.Fatalf("no RerunAt: %+v", r)
+	}
+	be.step()
+	if n := len(be.retries()); n != 1 {
+		t.Errorf("the flake gate re-ran what the rest already re-ran: %v", be.retries())
 	}
 }
