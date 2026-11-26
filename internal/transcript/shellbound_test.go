@@ -67,13 +67,21 @@ func TestShellFillAndStoredValuesAreCapped(t *testing.T) {
 	}
 }
 
+// shellSlow is the time past which a bounded reading has plainly stopped
+// being bounded. The readings here take tens of milliseconds on an idle
+// machine and the blow-ups these tests were written for took minutes, so the
+// limit is set far from both: a loaded machine or the race detector does not
+// trip it (audit 2062.27). The allocation limits count what the process
+// allocated meanwhile, and the package runs no test in parallel.
+const shellSlow = 20 * time.Second
+
 func TestShellLongCommandIsUnknownAndFast(t *testing.T) {
 	long := "echo " + strings.Repeat("x ", shellMaxCommand/2) + "> /r/a.go"
 	start := time.Now()
 	if _, known := (&ShellSession{}).Edit(long, "/r"); known {
 		t.Errorf("a command over the cap should be unknown")
 	}
-	if d := time.Since(start); d > 200*time.Millisecond {
+	if d := time.Since(start); d > shellSlow {
 		t.Errorf("giving up took %v", d)
 	}
 	for name, cmd := range map[string]string{
@@ -87,14 +95,14 @@ func TestShellLongCommandIsUnknownAndFast(t *testing.T) {
 		cmd = cmd[:min(len(cmd), shellMaxCommand)]
 		start := time.Now()
 		wrote, known := (&ShellSession{}).Edit(cmd, "/r")
-		if d := time.Since(start); d > time.Second {
+		if d := time.Since(start); d > shellSlow {
 			t.Errorf("%s: %v", name, d)
 		}
-		// None writes a file it names: the kept script is never run, and the
-		// python names no path that can be followed, so what it writes is
-		// unknown. The inline script of "many strings" is longer than the part
-		// that is read and that part writes nothing, so that is unknown too.
-		if wantKnown := name != "many strings" && name != "python script"; wrote || known != wantKnown {
+		// None is seen to write a file it names. Only the line of assignments
+		// is read to its end: the others hold more commands than are read
+		// (shellMaxCommands), a script longer than the part read, or a script
+		// whose paths cannot be followed, so what they write is unknown.
+		if wantKnown := name == "many commands"; wrote || known != wantKnown {
 			t.Errorf("%s: wrote %v known %v, want false %v", name, wrote, known, wantKnown)
 		}
 	}
@@ -113,7 +121,7 @@ func TestShellEditLongWordVariables(t *testing.T) {
 		start := time.Now()
 		wrote, known := (&ShellSession{}).Edit(cmd, "/r")
 		runtime.ReadMemStats(&after)
-		if d, mb := time.Since(start), (after.TotalAlloc-before.TotalAlloc)>>20; d > 2*time.Second || mb > 200 {
+		if d, mb := time.Since(start), (after.TotalAlloc-before.TotalAlloc)>>20; d > shellSlow || mb > 200 {
 			t.Errorf("%s: %v and %d MB allocated", name, d, mb)
 		}
 		if wrote || !known {
@@ -128,25 +136,27 @@ func TestShellEditLongWordVariables(t *testing.T) {
 func TestShellEditLongLiteralWords(t *testing.T) {
 	big := strings.Repeat("b", 100<<10)
 	for name, c := range map[string]struct {
-		cmd   string
-		wrote bool
+		cmd          string
+		wrote, known bool
 	}{
-		"cp many sources":   {"cp " + strings.Repeat("a ", 3000) + big + "/", true},
-		"cp into a dir":     {"cp " + strings.Repeat("a ", 3000) + "internal/", true},
-		"cd long then many": {"cd /" + big + ";" + strings.Repeat("cd b;", 2000) + "echo x > a.go", false},
-		"cd deeper":         {strings.Repeat("cd "+strings.Repeat("d", 3000)+";", 40) + "echo x > a.go", false},
-		"tee many scripts":  {"tee " + strings.Repeat("/tmp/s/a.py ", 8000) + "<<E\n" + strings.Repeat("open('/tmp/x','w')\n", 3000) + "E\n", false},
+		"cp many sources": {"cp " + strings.Repeat("a ", 3000) + big + "/", true, true},
+		"cp into a dir":   {"cp " + strings.Repeat("a ", 3000) + "internal/", true, true},
+		// A directory longer than any path is nowhere, so the write after it
+		// cannot be placed: unknown (audit 2062.5).
+		"cd long then many": {"cd /" + big + ";" + strings.Repeat("cd b;", 2000) + "echo x > a.go", false, false},
+		"cd deeper":         {strings.Repeat("cd "+strings.Repeat("d", 3000)+";", 40) + "echo x > a.go", false, false},
+		"tee many scripts":  {"tee " + strings.Repeat("/tmp/s/a.py ", 8000) + "<<E\n" + strings.Repeat("open('/tmp/x','w')\n", 3000) + "E\n", false, true},
 	} {
 		var before, after runtime.MemStats
 		runtime.ReadMemStats(&before)
 		start := time.Now()
 		wrote, known := (&ShellSession{}).Edit(c.cmd, "/r")
 		runtime.ReadMemStats(&after)
-		if d, mb := time.Since(start), (after.TotalAlloc-before.TotalAlloc)>>20; d > 2*time.Second || mb > 50 {
+		if d, mb := time.Since(start), (after.TotalAlloc-before.TotalAlloc)>>20; d > shellSlow || mb > 50 {
 			t.Errorf("%s: %v and %d MB allocated", name, d, mb)
 		}
-		if wrote != c.wrote || !known {
-			t.Errorf("%s: wrote %v known %v, want %v true", name, wrote, known, c.wrote)
+		if wrote != c.wrote || known != c.known {
+			t.Errorf("%s: wrote %v known %v, want %v %v", name, wrote, known, c.wrote, c.known)
 		}
 	}
 }

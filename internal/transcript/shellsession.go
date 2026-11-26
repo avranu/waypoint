@@ -148,17 +148,18 @@ func (s *ShellSession) workPath(p string, cd ...string) bool {
 
 // Edit says a Bash command wrote a file that is the work: a redirect, tee,
 // sed -i, formatter, git apply or a script that writes, to a path that is
-// not scratch (see workPath). A path built from a variable or command
-// substitution does not count, nor does a relative one after a cd the line
-// does not spell out; nor does a variable set in an earlier Bash call, which
-// is truly unknown: environment variables do not persist between Claude
-// Code's Bash calls (only the working directory does). A file curl saves with
-// -o counts like any other write. A Windows working directory is read as bash
-// there names it (see ShellPosixDir). known is false when a write is under a
-// home the reading could not infer, or relative to a working directory that
-// is no path; when the command is too long
-// to read, or runs a script too long to read whole in which the part read
-// writes nothing (the answer is then "unknown", not "no").
+// not scratch (see workPath). A file curl saves with -o counts like any other
+// write. A Windows working directory is read as bash there names it (see
+// ShellPosixDir).
+//
+// known is false when the reading cannot say no: a write to a path it cannot
+// place (one built from a substitution or from a variable the line does not
+// set, a relative one after a cd the line does not spell out or in a working
+// directory that is no path, one under a home it could not infer); a command
+// too long to read, with more commands or deeper nesting than are read, or
+// one that runs a script too long to read whole, whose paths it could not
+// follow, or that the session no longer remembers. The answer is then
+// "unknown", not "no". A file named by $(mktemp) or under $TMPDIR is scratch.
 func (s *ShellSession) Edit(cmd, cwd string) (wrote, known bool) {
 	if len(cmd) > shellMaxCommand {
 		return false, false
@@ -169,6 +170,7 @@ func (s *ShellSession) Edit(cmd, cwd string) (wrote, known bool) {
 	if h := ShellHomeOf(cwd); h != "" {
 		vars["HOME"] = h
 	}
+	vars["TMPDIR"] = "/tmp" // scratch wherever it is
 	cmds, _ := ReadShell(cmd, cwd, vars, &s.Scripts, false)
 	known = true
 	for i := range cmds {
@@ -193,12 +195,16 @@ func (s *ShellSession) Edit(cmd, cwd string) (wrote, known bool) {
 				known = false // a home this reading could not infer: anywhere
 				continue
 			}
-			if p == "" || p[0] == '$' || p[0] == '`' {
+			if p == "" {
+				continue
+			}
+			if p[0] == '$' || p[0] == '`' {
+				known = false // a path only the shell that ran it knew: anywhere
 				continue
 			}
 			if !strings.HasPrefix(p, "/") {
-				if dir != "" && dir != ShellNowhere && !strings.HasPrefix(dir, "/") {
-					known = false // a working directory that is no path: anywhere
+				if dir != "" && !strings.HasPrefix(dir, "/") {
+					known = false // after a cd not spelled out, or in a working directory that is no path: anywhere
 				}
 				if dir == ShellNowhere || !strings.HasPrefix(dir, "/") {
 					continue

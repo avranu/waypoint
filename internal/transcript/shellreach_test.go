@@ -120,3 +120,136 @@ func TestParseShellComment(t *testing.T) {
 		t.Fatalf("a#b is a word and the comment has no redirect: %+v", cmds[0])
 	}
 }
+
+// Audit 2062: a continuation line, places a write cannot be put, runners,
+// and the caps that cut a reading short.
+func TestShellEditAudit2062(t *testing.T) {
+	for _, c := range []struct {
+		name, cmd, cwd string
+		wrote, know    bool
+	}{
+		// .3: a command on a continuation line.
+		{"continuation after &&", "cd web && \\\n  sed -i s/a/b/ x.go", "/home/u/proj", true, true},
+		{"continuation after a pipe", "ls |\\\n tee out.go", "/home/u/proj", true, true},
+		{"continuation before a redirect target", "echo x > \\\n  a.go", "/home/u/proj", true, true},
+		// .5: a write that cannot be placed is unknown, not no.
+		{"files from a substitution", "sed -i 's/Old/New/' $(grep -rl Old internal/)", "/home/u/proj", false, false},
+		{"gofmt on a substitution", "gofmt -w $(git diff --name-only)", "/home/u/proj", false, false},
+		{"while read", "git ls-files | while read f; do sed -i s/a/b/ \"$f\"; done", "/home/u/proj", false, false},
+		{"cd to a substitution", "cd \"$(git rev-parse --show-toplevel)\" && sed -i s/a/b/ main.go", "/home/u/proj", false, false},
+		{"an unset variable", "sed -i s/a/b/ $REPO/a.go", "/home/u/proj", false, false},
+		{"mktemp is scratch", "f=$(mktemp); echo x > $f; echo y > \"$f.go\"", "/home/u/proj", false, true},
+		{"mktemp -d is scratch", "d=$(mktemp -d) && echo x > $d/a.go", "/home/u/proj", false, true},
+		{"TMPDIR is scratch", "echo x > $TMPDIR/a.go", "/home/u/proj", false, true},
+		{"a report to a variable stays a report", "go test ./... > $OUT/test.log", "/home/u/proj", false, true},
+		// .7: formatters through a runner, and curl's -o among other letters.
+		{"pnpm exec prettier", "pnpm exec prettier --write src", "/home/u/proj", true, true},
+		{"pnpm prettier", "pnpm prettier --write .", "/home/u/proj", true, true},
+		{"yarn eslint --fix", "yarn eslint --fix src", "/home/u/proj", true, true},
+		{"npm exec prettier", "npm exec prettier -- --write .", "/home/u/proj", true, true},
+		{"uv run ruff format", "uv run ruff format", "/home/u/proj", true, true},
+		{"poetry run black", "poetry run black .", "/home/u/proj", true, true},
+		{"python -m black", "python -m black .", "/home/u/proj", true, true},
+		{"python3 -m ruff check", "python3 -m ruff check .", "/home/u/proj", false, true},
+		{"pnpm prettier --check", "pnpm prettier --check .", "/home/u/proj", false, true},
+		{"yarn add prettier", "yarn add prettier", "/home/u/proj", false, true},
+		{"curl -fsSLo", "curl -fsSLo vendor/x.js https://x/y", "/home/u/proj", true, true},
+		{"curl -ovendor", "curl -s -ovendor/x.js https://x/y", "/home/u/proj", true, true},
+		{"curl -fsSL", "curl -fsSL https://x/y", "/home/u/proj", false, true},
+		// .10: a generator's csv or tsv.
+		{"go run to csv", "go run ./cmd/export > data/rates.csv", "/home/u/proj", true, true},
+		{"npm script to tsv", "npm run export > data/rates.tsv", "/home/u/proj", true, true},
+		{"go test to csv", "go test ./... > out.csv", "/home/u/proj", false, true},
+		// .11: more commands than are read.
+		{"a write past the commands read", strings.Repeat("true;", shellMaxCommands+1) + "echo x > a.go", "/home/u/proj", false, false},
+		{"under the cap", strings.Repeat("true;", 100) + "echo x > a.go", "/home/u/proj", true, true},
+		// nesting deeper than is read.
+		{"a write nested past the depth read", "echo $(echo $(echo $(echo $(echo x > a.go))))", "/home/u/proj", false, false},
+		{"parens past the parser's depth", "echo " + strings.Repeat("$(echo ", 20) + "x > a.go" + strings.Repeat(")", 20), "/home/u/proj", false, false},
+	} {
+		wrote, known := (&ShellSession{}).Edit(c.cmd, c.cwd)
+		if wrote != c.wrote || known != c.know {
+			t.Errorf("%s: wrote %v known %v, want %v %v", c.name, wrote, known, c.wrote, c.know)
+		}
+	}
+}
+
+// .12 and .18: a kept script whose list of writes was cut, and one that was
+// forgotten to make room, are unknown when run, not "wrote nothing".
+func TestShellScriptCutsAreUnknown(t *testing.T) {
+	var s ShellSession
+	body := ""
+	for i := 0; i < traceMaxScriptPaths; i++ {
+		body += "open('/tmp/x/a" + strings.Repeat("b", i) + ".go','w').write('x')\n"
+	}
+	s.KeepWrite("/tmp/many.py", "/r", body+"open('main.go','w').write('x')\n")
+	if wrote, known := s.Edit("python3 /tmp/many.py", "/r"); wrote || known {
+		t.Errorf("a script with more writes than are kept: wrote %v known %v, want false false", wrote, known)
+	}
+	s = ShellSession{}
+	s.KeepWrite("/tmp/first.py", "/r", "open('a.go','w').write('x')\n")
+	if wrote, known := s.Edit("python3 /tmp/never.py", "/r"); wrote || !known {
+		t.Errorf("a script nobody kept, nothing forgotten: wrote %v known %v", wrote, known)
+	}
+	for i := 0; i < ShellMaxScripts+3; i++ {
+		s.KeepWrite("/tmp/x"+strings.Repeat("a", i)+".py", "/r", "open('a.go','w').write('x')\n")
+	}
+	if len(s.Scripts) > ShellMaxScripts {
+		t.Errorf("remembers %d scripts", len(s.Scripts))
+	}
+	if wrote, known := s.Edit("python3 /tmp/first.py", "/r"); wrote || known {
+		t.Errorf("a forgotten script: wrote %v known %v, want false false", wrote, known)
+	}
+	if wrote, known := s.Edit("go test ./...", "/r"); wrote || !known {
+		t.Errorf("a command that runs no script stays known: wrote %v known %v", wrote, known)
+	}
+}
+
+// .2: a name set many times is followed to every value, and .20: a string
+// only looked for in text the script read is not a file it writes.
+func TestScriptWritesAudit2062(t *testing.T) {
+	script := strings.Repeat("p = 'a.txt'\n", 20) + "p = '.claude/settings.json'\nopen(p, 'w').write('x')\n"
+	if got := ScriptWrites(script); !strings.Contains(strings.Join(got, " "), ".claude/settings.json") {
+		t.Errorf("the 21st value of a name is not followed: %v", got)
+	}
+	if ps, _, unf := traceScriptWrites(script, false); !strings.Contains(strings.Join(ps, " "), ".claude/settings.json") && !unf {
+		t.Errorf("the short reading neither follows the name nor says unknown: %v", ps)
+	}
+	search := "import glob\nfor f in glob.glob('docs/*.md'):\n    s = open(f).read()\n    if '.claude/settings.json' in s:\n        open(f, 'w').write(s.replace('x', 'y'))\n"
+	if got := ScriptWrites(search); strings.Contains(strings.Join(got, " "), "settings.json") {
+		t.Errorf("a string looked for in text read is listed as written: %v", got)
+	}
+	filter := "import glob\nfor f in glob.glob('**/*.json'):\n    if '.claude/settings.json' in f:\n        open(f, 'w').write('{}')\n"
+	if got := ScriptWrites(filter); !strings.Contains(strings.Join(got, " "), "settings.json") {
+		t.Errorf("a string that picks the file written must stay listed: %v", got)
+	}
+}
+
+// .24: a write whose word was left unfilled once the line's expansions were
+// spent cannot be placed, so the answer is unknown.
+func TestShellEditWritePastExpansionBudget(t *testing.T) {
+	cmd := "d=/home/u/proj; a=" + strings.Repeat("x", 4000) + "; echo " + strings.Repeat("$a ", 400) + "; echo x > $d/a.go"
+	if wrote, known := (&ShellSession{}).Edit(cmd, "/home/u/proj"); wrote || known {
+		t.Errorf("wrote %v known %v, want false false (the path was not filled in)", wrote, known)
+	}
+	if wrote, known := (&ShellSession{}).Edit("d=/home/u/proj; echo x > $d/a.go", "/home/u/proj"); !wrote || !known {
+		t.Errorf("under the budget: wrote %v known %v", wrote, known)
+	}
+}
+
+func TestParseShellContinuation(t *testing.T) {
+	cmds := ParseShell("true && \\\n  sed -i s/a/b/ x.go ;\\\n rm y")
+	if len(cmds) != 3 || cmds[1].Words[0] != "sed" || cmds[2].Words[0] != "rm" || !cmds[1].AndIn {
+		t.Fatalf("got %d commands: %+v", len(cmds), cmds)
+	}
+	if cmds = ParseShell("echo '' a\\\nb"); len(cmds) != 1 || len(cmds[0].Words) != 3 || cmds[0].Words[1] != "" || cmds[0].Words[2] != "ab" {
+		t.Fatalf("an empty quoted word stays, a continuation joins: %+v", cmds[0])
+	}
+	deep := "echo " + strings.Repeat("$(echo ", 20) + "x" + strings.Repeat(")", 20)
+	if cmds = ParseShell(deep); len(cmds) == 0 || !cmds[len(cmds)-1].Cut {
+		t.Fatalf("a line nested past the depth read is not marked cut")
+	}
+	if cmds = ParseShell("echo $(echo x)"); cmds[0].Cut {
+		t.Fatalf("a shallow line is marked cut")
+	}
+}

@@ -129,3 +129,34 @@ func TestFactsOldServerShellEditsUnknown(t *testing.T) {
 		t.Errorf("--json invented shell_edits:\n%s", out.String())
 	}
 }
+
+// Only the changes line says the server is too old: an earlier line that
+// happens to hold the same words is left as it is.
+func TestFactsOldServerRewritesOnlyChangesLine(t *testing.T) {
+	const body = `{"scope":"session","key":"s1","sources":[{"user":"0 shell edits","machine":"m","session":"s1"}],"changes":{"edits":3}}`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(body)) }))
+	defer ts.Close()
+	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
+	t.Setenv("WAYPOINT_SERVER", ts.URL)
+	t.Setenv("WAYPOINT_TOKEN", "wpt_x")
+	var out bytes.Buffer
+	c, _ := newCLI(&out, &bytes.Buffer{})
+	if err := cmdUsageFacts(c, []string{"--session", "s1"}); err != nil {
+		t.Fatal(err)
+	}
+	var src, changes string
+	for _, l := range strings.Split(out.String(), "\n") {
+		switch {
+		case strings.HasPrefix(l, "  source:"):
+			src = l
+		case strings.HasPrefix(l, "changes:"):
+			changes = l
+		}
+	}
+	if !strings.Contains(src, "0 shell edits m s1") {
+		t.Errorf("source line was rewritten: %q", src)
+	}
+	if !strings.Contains(changes, "shell edits unknown (server too old to say)") || strings.Contains(changes, "0 shell edits") {
+		t.Errorf("changes line: %q", changes)
+	}
+}

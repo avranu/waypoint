@@ -87,11 +87,7 @@ func cmdUsageFacts(c *cli, args []string) error {
 	// With --json the body is printed as the server sent it: re-marshalling
 	// the struct would invent shell_edits: 0 for a server too old to count them.
 	return c.emit(raw, func() string {
-		text := factsText(&f)
-		if !factsHaveShellEdits(raw) {
-			text = strings.Replace(text, shellEditsText(f.Changes.ShellEdits, f.Changes.ShellUnknown, f.Changes.ShellNone, f.Changes.ScriptShellEdits, f.Changes.ScriptShellUnknown), "shell edits unknown (server too old to say)", 1)
-		}
-		return text
+		return factsRender(&f, !factsHaveShellEdits(raw))
 	})
 }
 
@@ -144,7 +140,11 @@ func countsText[N int | int64](m map[string]N) string {
 	return strings.Join(parts, ", ")
 }
 
-func factsText(f *core.SessionFacts) string {
+func factsText(f *core.SessionFacts) string { return factsRender(f, false) }
+
+// factsRender writes the facts; oldServer says the reply left shell_edits
+// out, so the changes line says it does not know.
+func factsRender(f *core.SessionFacts, oldServer bool) string {
 	var b strings.Builder
 	p := func(format string, a ...any) { _, _ = fmt.Fprintf(&b, format+"\n", a...) }
 	p("%s %s", f.Scope, f.Key)
@@ -206,7 +206,11 @@ func factsText(f *core.SessionFacts) string {
 		p("  %s x%d", d.URL, d.Times)
 	}
 	c := f.Changes
-	p("changes: %d edits (%d failed; %d more run by REPL scripts), %s; the edits changed %d files, lines added %s, removed %s (what shell edits changed is not counted)", c.Edits, c.Failed, c.ScriptEdits, shellEditsText(c.ShellEdits, c.ShellUnknown, c.ShellNone, c.ScriptShellEdits, c.ScriptShellUnknown), c.FilesChanged,
+	shell := shellEditsText(c.ShellEdits, c.ShellUnknown, c.ShellNone, c.ScriptShellEdits, c.ScriptShellUnknown)
+	if oldServer {
+		shell = "shell edits unknown (server too old to say)"
+	}
+	p("changes: %d edits (%d failed; %d more run by REPL scripts), %s; the edits changed %d files, lines added %s, removed %s (what shell edits changed is not counted)", c.Edits, c.Failed, c.ScriptEdits, shell, c.FilesChanged,
 		tallyText(c.LinesAdded, nil), tallyText(c.LinesRemoved, nil))
 	p("  test files edited: %d edits of %d test files, lines added %s", c.TestEdits, c.TestFiles, tallyText(c.TestLinesAdd, nil))
 	r := f.Repeated

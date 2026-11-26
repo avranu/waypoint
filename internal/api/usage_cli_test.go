@@ -46,7 +46,7 @@ func TestUsageCLIAPI(t *testing.T) {
 	if code := agent.json("GET", "/api/v1/usage/cli?days=30", nil, &r); code != 200 || r.Total.WP != 2 {
 		t.Errorf("agent: %d %+v", code, r.Total)
 	}
-	for _, path := range []string{"/api/v1/usage/overview", "/api/v1/usage/ledger", "/api/v1/usage/trends", "/api/v1/usage/summary", "/api/v1/usage/refusals", "/api/v1/usage/risky", "/api/v1/usage/warm", "/api/v1/usage/guard",
+	for _, path := range []string{"/api/v1/usage/overview", "/api/v1/usage/no-task?days=7", "/api/v1/usage/ledger", "/api/v1/usage/trends", "/api/v1/usage/summary", "/api/v1/usage/refusals", "/api/v1/usage/risky", "/api/v1/usage/warm", "/api/v1/usage/guard",
 		"/api/v1/usage/breakdown?by=repo", "/api/v1/autopilot", "/api/v1/autopilot/summaries"} {
 		if code, b := agent.do("GET", path, nil); code != 200 {
 			t.Errorf("agent on %s: %d %s", path, code, b)

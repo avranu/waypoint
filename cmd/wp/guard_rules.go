@@ -7,6 +7,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"git.jmann.me/claude/waypoint/internal/lazyre"
@@ -54,6 +55,15 @@ type guard struct {
 	contained bool
 	envHosts  func() []string
 	open      []bool
+
+	// kept is the text of files the line itself wrote (cat > F <<EOF, tee F,
+	// printf … > F), by resolved path: a later command of the line that runs
+	// or applies F is read from it. disk is set while the guard reads a script
+	// file that was on disk before the call; read marks the texts already read,
+	// so a script that runs itself ends.
+	kept map[string]string
+	disk bool
+	read map[string]bool
 }
 
 // walled are the rules a Contained sandbox enforces itself (PL7 §3): it has
@@ -70,9 +80,10 @@ var walled = map[string]bool{
 }
 
 // keep drops a hit the sandbox's walls make moot, so the check goes on to
-// what they don't cover.
+// what they don't cover. It drops the same hits inside a script file that
+// was on disk before the call (g.disk): see ranFile.
 func (g *guard) keep(h *guardHit) *guardHit {
-	if h != nil && g.contained && walled[h.rule] {
+	if h != nil && (g.contained || g.disk) && walled[h.rule] {
 		return nil
 	}
 	return h
@@ -109,12 +120,21 @@ func (g *guard) bashHit(command string) *guardHit {
 	return g.script(parseShell(command), 0)
 }
 
-const guardMaxDepth = 5
+// guardMaxDepth is how deep the guard follows commands that run commands
+// ($( ), bash -c, eval, a script file). It is past what the parser nests
+// (transcript.shellMaxNest), so every substitution the parser reads is
+// checked; a line that goes deeper by either count is refused, not let
+// through unread.
+const guardMaxDepth = 16
+
+func tooDeep() *guardHit {
+	return hit(ruleGuard, "a command nested deeper than the guard reads", "nested commands")
+}
 
 // script checks a list of simple commands.
 func (g *guard) script(cmds []*guardCmd, depth int) *guardHit {
 	if depth > guardMaxDepth {
-		return nil
+		return tooDeep()
 	}
 	fetch := false
 	for i, c := range cmds {
@@ -124,6 +144,9 @@ func (g *guard) script(cmds []*guardCmd, depth int) *guardHit {
 		}
 		if !c.AndIn && (!g.inherit || !first) {
 			g.installs = false
+		}
+		if c.Cut {
+			return tooDeep()
 		}
 		for _, sub := range c.Subs {
 			if h := g.child(sub, depth+1); h != nil {
@@ -141,7 +164,7 @@ func (g *guard) script(cmds []*guardCmd, depth int) *guardHit {
 		}
 		if isFetcher(name) {
 			for _, w := range c.Words[:len(c.Words)-len(rest)] {
-				if h := fetchHomeHit(w); h != nil {
+				if h := fetchHomeHit(w); h != nil && !g.disk {
 					return h
 				}
 			}
@@ -153,10 +176,14 @@ func (g *guard) script(cmds []*guardCmd, depth int) *guardHit {
 			g.open = nil
 		}
 		h = g.simple(c, name, args, depth)
+		if h == nil && len(rest) > 0 && strings.Contains(rest[0], "/") {
+			h = g.ranFile(rest[0], depth, false) // ./fix.sh, /tmp/s.sh
+		}
 		g.open = prev
 		if h != nil {
 			return h
 		}
+		g.keepText(c, name, args)
 		switch {
 		case isFetcher(name):
 			fetch = true
@@ -501,6 +528,8 @@ func (g *guard) simple(c *guardCmd, name string, args []string, depth int) *guar
 	switch {
 	case shellNames[name]:
 		return g.shellBody(args, depth)
+	case (name == "source" || name == ".") && len(args) > 0:
+		return g.ranFile(args[0], depth, true)
 	case name == "eval":
 		return g.script(parseShell(strings.Join(args, " ")), depth+1)
 	case name == "find":
@@ -513,14 +542,162 @@ func (g *guard) simple(c *guardCmd, name string, args []string, depth int) *guar
 	return nil
 }
 
-// shellBody checks the script given to `bash -c`.
+// shellBody checks the script given to `bash -c`, or the script file a shell
+// is told to run (bash fix.sh).
 func (g *guard) shellBody(args []string, depth int) *guardHit {
 	for i, a := range args {
 		if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.Contains(a, "c") && i+1 < len(args) {
 			return g.child(parseShell(args[i+1]), depth+1)
 		}
 	}
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "-o" || a == "+o" || a == "-O" || a == "+O" || a == "--rcfile" || a == "--init-file":
+			i++ // an option's value
+		case a == "-s" || a == "-":
+			return nil // commands from its input
+		case strings.HasPrefix(a, "-") || strings.HasPrefix(a, "+"):
+		default:
+			return g.ranFile(a, depth, true)
+		}
+	}
 	return nil
+}
+
+// guardMaxScript is how much of a script file on disk the guard reads.
+const guardMaxScript = 1 << 20
+
+var reShebang = lazyre.New(`^#![ \t]*(?:\S*/)?(?:env[ \t]+(?:-\S+[ \t]+)*)?([A-Za-z0-9._+-]+)`)
+
+// fileText is the text of a file a command runs or applies: what the line
+// itself wrote there (g.kept), else what is on disk, up to guardMaxScript.
+// kept says which; ok is false for a file that is not there to read (one a
+// program writes at run time, a directory, a device).
+func (g *guard) fileText(raw string) (text string, kept, ok bool) {
+	p := g.site.resolve(g.dir, raw)
+	if p == "" {
+		return "", false, false
+	}
+	if t, has := g.kept[p]; has {
+		return t, true, true
+	}
+	if st, err := os.Stat(p); err != nil || !st.Mode().IsRegular() {
+		return "", false, false
+	}
+	fh, err := os.Open(p) // #nosec G304 G703 -- the script the command is about to run, read to see what it changes
+	if err != nil {
+		return "", false, false
+	}
+	defer func() { _ = fh.Close() }()
+	b, _ := io.ReadAll(io.LimitReader(fh, guardMaxScript))
+	return string(b), false, true
+}
+
+// ranFile checks a script file a command runs: bash F, source F, or F
+// itself (shell says the command names a shell; otherwise the file's #! line
+// or its .sh name does). A shell script is read as the commands it is. One
+// the line itself wrote is judged like commands typed on the line. One that
+// was on disk before the call is judged only for what it changes of the
+// guard's own (Claude Code's settings and hooks, Waypoint's local state): a
+// project's scripts run sudo, installs and downloads as make and npm run do,
+// unread, and the sandbox is the wall for those; what keeps the guard on is
+// the guard's to hold. A script for python, node or ruby is read for the
+// files it writes, as python3 F is (scriptTargets).
+func (g *guard) ranFile(raw string, depth int, shell bool) *guardHit {
+	text, kept, ok := g.fileText(raw)
+	if !ok || strings.IndexByte(text, 0) >= 0 { // not there, or a binary
+		return nil
+	}
+	if !shell {
+		prog := ""
+		if m := reShebang.FindStringSubmatch(text); m != nil {
+			prog = m[1]
+		}
+		switch {
+		case shellNames[prog], prog == "" && strings.HasSuffix(raw, ".sh"):
+		case trscript.ScriptFile([]string{prog, "x.py"}) != "":
+			for _, t := range trscript.ScriptWrites(text) {
+				if p := g.site.resolve(g.dir, t); p != "" {
+					if h := g.keep(g.writeHit(p)); h != nil {
+						return h
+					}
+				}
+			}
+			return nil
+		default:
+			return nil
+		}
+	}
+	key := g.site.resolve(g.dir, raw) + "\x00" + strconv.Itoa(len(text))
+	if g.read[key] {
+		return nil
+	}
+	if g.read == nil {
+		g.read = map[string]bool{}
+	}
+	g.read[key] = true
+	disk := g.disk
+	g.disk = g.disk || !kept
+	defer func() { g.disk = disk }()
+	return g.child(parseShell(text), depth+1)
+}
+
+// keepText remembers the text a command of the line writes to a file: a
+// heredoc through cat or tee, or what echo or printf prints. Text added to a
+// file the line already wrote is added to what is kept, so a later reading
+// sees all of it.
+func (g *guard) keepText(c *guardCmd, name string, args []string) {
+	var text string
+	files := c.Redirs
+	switch name {
+	case "cat":
+		text = c.Heredoc
+	case "tee":
+		text = c.Heredoc
+		files = append(append([]string(nil), files...), scanArgs(args, "").pos...)
+	case "echo":
+		esc := false
+		for len(args) > 0 && len(args[0]) > 1 && args[0][0] == '-' && strings.Trim(args[0][1:], "neE") == "" {
+			esc = esc || strings.Contains(args[0], "e")
+			args = args[1:]
+		}
+		text = strings.Join(args, " ") + "\n"
+		if esc {
+			text = printfText(text)
+		}
+	case "printf":
+		if len(args) > 0 && args[0] == "--" {
+			args = args[1:]
+		}
+		if len(args) == 0 {
+			return
+		}
+		text = printfText(args[0])
+		for _, a := range args[1:] {
+			text = strings.Replace(text, "%s", a, 1)
+		}
+		text = strings.ReplaceAll(text, "%%", "%")
+	}
+	if text == "" || len(files) == 0 {
+		return
+	}
+	for _, f := range files {
+		p := g.site.resolve(g.dir, f)
+		if p == "" || strings.HasPrefix(p, "/dev/") {
+			continue
+		}
+		if g.kept == nil {
+			g.kept = map[string]string{}
+		}
+		if len(g.kept[p])+len(text) <= guardMaxScript {
+			g.kept[p] += text
+		}
+	}
+}
+
+// printfText is a printf format with its \n, \t and \\ escapes read.
+func printfText(s string) string {
+	return strings.NewReplacer(`\\`, `\`, `\n`, "\n", `\t`, "\t").Replace(s)
 }
 
 // findExec checks the commands find -exec runs.
@@ -1470,6 +1647,11 @@ func (g *guard) writes(c *guardCmd, name string, args []string) *guardHit {
 	targets = append(targets, writeTargets(name, args)...)
 	targets = append(targets, g.patchTargets(c, name, args)...)
 	targets = append(targets, scriptTargets(c, name, args)...)
+	if f := trscript.ScriptFile(append([]string{name}, args...)); f != "" {
+		if text, _, ok := g.fileText(f); ok {
+			targets = append(targets, trscript.ScriptWrites(text)...) // python3 edit.py: what the file writes
+		}
+	}
 	for _, t := range targets {
 		p := g.site.resolve(g.dir, t)
 		if p == "" || strings.HasPrefix(p, "/dev/") {
@@ -1511,7 +1693,9 @@ var patchValueFlags = map[string]bool{"-p": true, "--strip": true, "-F": true, "
 // patch names most of them, not the command line: it is read, whole, from
 // every file the command names, from one fed with <, or from a heredoc.
 // patch also writes the file it is told to patch (its first file argument),
-// its output (-o) and its reject file (-r). A patch that arrives through a
+// its output (-o) and its reject file (-r); with -o the output is all it
+// writes besides rejects. A patch the line itself wrote to a file (cat >
+// fix.patch <<EOF) is read from what the line wrote. A patch that arrives through a
 // pipe (git diff | git apply), from something that is not a regular file, or
 // from a file that is not there yet cannot be read, and is let through. A
 // run that only checks or lists (--check, --stat, --dry-run) writes nothing,
@@ -1552,7 +1736,8 @@ func (g *guard) patchTargets(c *guardCmd, name string, args []string) []string {
 	default:
 		return nil
 	}
-	var files, wrote []string // patches to read; files the command line itself names as written
+	var files, wrote []string   // patches to read; files the command line itself names as written
+	orig, toOutput := "", false // patch FILE: the file patched; -o: the result goes there instead
 	cd := func(to string) {
 		if p := g.site.resolve(dir, to); p != "" {
 			dir = p
@@ -1585,6 +1770,7 @@ func (g *guard) patchTargets(c *guardCmd, name string, args []string) []string {
 		case isPatch && (a == "-o" || a == "--output" || a == "-r" || a == "--reject-file"):
 			if v, ok := next(); ok {
 				wrote = append(wrote, v)
+				toOutput = toOutput || a == "-o" || a == "--output"
 			}
 		case isPatch && patchValueFlags[a]:
 			i++
@@ -1594,6 +1780,7 @@ func (g *guard) patchTargets(c *guardCmd, name string, args []string) []string {
 			cd(a[len("--directory="):])
 		case isPatch && strings.HasPrefix(a, "--output="):
 			wrote = append(wrote, a[len("--output="):])
+			toOutput = true
 		case isPatch && strings.HasPrefix(a, "--reject-file="):
 			wrote = append(wrote, a[len("--reject-file="):])
 		case isPatch && strings.HasPrefix(a, "-d") && len(a) > 2:
@@ -1602,6 +1789,7 @@ func (g *guard) patchTargets(c *guardCmd, name string, args []string) []string {
 			files = append(files, a[2:])
 		case isPatch && (strings.HasPrefix(a, "-o") || strings.HasPrefix(a, "-r")) && len(a) > 2:
 			wrote = append(wrote, a[2:])
+			toOutput = toOutput || a[1] == 'o'
 		case isPatch && strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && len(a) > 2:
 			// Short options run together (-Ni FILE, -Nifix.diff, -so OUT): the
 			// first letter that takes a value takes the rest of the word, or
@@ -1621,13 +1809,14 @@ func (g *guard) patchTargets(c *guardCmd, name string, args []string) []string {
 					cd(v)
 				case 'o', 'r':
 					wrote = append(wrote, v)
+					toOutput = toOutput || a[j] == 'o'
 				}
 				break
 			}
 		case strings.HasPrefix(a, "-"):
 		default:
 			if isPatch && first {
-				wrote = append(wrote, a) // patch FILE [PATCH]: the file patched
+				orig = a // patch FILE [PATCH]: the file patched
 			}
 			first = false
 			files = append(files, a) // git: a patch; patch: read too, in case it is the patch
@@ -1647,6 +1836,12 @@ func (g *guard) patchTargets(c *guardCmd, name string, args []string) []string {
 	for _, f := range wrote {
 		add(f)
 	}
+	if toOutput {
+		return out // patch -o OUT: the result is written there and no file is patched in place
+	}
+	if orig != "" {
+		add(orig)
+	}
 	patchFilesIn(strings.NewReader(c.Heredoc), add)
 	read := map[string]bool{}
 	for _, f := range files {
@@ -1656,6 +1851,10 @@ func (g *guard) patchTargets(c *guardCmd, name string, args []string) []string {
 				continue
 			}
 			read[p] = true
+			if text, ok := g.kept[p]; ok { // a patch the line itself wrote
+				patchFilesIn(strings.NewReader(text), add)
+				continue
+			}
 			if st, err := os.Stat(p); err != nil || !st.Mode().IsRegular() {
 				continue
 			}
@@ -1668,6 +1867,8 @@ func (g *guard) patchTargets(c *guardCmd, name string, args []string) []string {
 	return out
 }
 
+var rePatchHunk = lazyre.New(`^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@`)
+
 // patchFiles are the files a patch's headers name: see patchFilesIn.
 func patchFiles(text string) []string {
 	var out []string
@@ -1678,7 +1879,10 @@ func patchFiles(text string) []string {
 // patchFilesIn reads a patch to its end and gives add each file its headers
 // name (---, +++, diff --git, rename and copy lines), as written and with
 // its first directory dropped: git writes a/ and b/ before a path and -p1
-// strips it, and the guard does not know which -p the command uses. It holds
+// strips it, and the guard does not know which -p the command uses. The
+// lines of a hunk are not headers, though one may look like one (a removed
+// SQL comment "-- x" reads "--- x"): a hunk is as many lines as its @@ line
+// counts, and ends early at a line no hunk can hold. It holds
 // one line at a time, so the patch's size is no limit; a line longer than
 // the buffer is read by its start, which is where a header is.
 func patchFilesIn(r io.Reader, add func(string)) {
@@ -1697,6 +1901,7 @@ func patchFilesIn(r io.Reader, add func(string)) {
 		}
 	}
 	br := bufio.NewReaderSize(r, 64<<10)
+	old, fresh := 0, 0 // lines the hunk being read still has, of the old file and the new
 	for {
 		b, more, err := br.ReadLine()
 		if err != nil {
@@ -1705,6 +1910,37 @@ func patchFilesIn(r io.Reader, add func(string)) {
 		line := strings.TrimRight(string(b), "\r")
 		for more && err == nil {
 			_, more, err = br.ReadLine()
+		}
+		if m := rePatchHunk.FindStringSubmatch(line); m != nil {
+			count := func(s string) int {
+				if s == "" {
+					return 1
+				}
+				n, _ := strconv.Atoi(s)
+				return n
+			}
+			old, fresh = count(m[1]), count(m[2])
+			continue
+		}
+		if old > 0 || fresh > 0 {
+			c := byte(' ') // an empty line is a context line whose space was trimmed
+			if line != "" {
+				c = line[0]
+			}
+			switch c {
+			case ' ':
+				old, fresh = old-1, fresh-1
+				continue
+			case '-':
+				old--
+				continue
+			case '+':
+				fresh--
+				continue
+			case '\\':
+				continue
+			}
+			old, fresh = 0, 0 // not a hunk's line: the hunk was shorter than it said
 		}
 		for _, pre := range []string{"+++ ", "--- ", "rename to ", "rename from ", "copy to "} {
 			if f, ok := strings.CutPrefix(line, pre); ok {

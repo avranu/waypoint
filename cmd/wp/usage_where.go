@@ -339,13 +339,14 @@ var whTrivial = map[string]bool{"cd": true, "echo": true, "printf": true, "true"
 var whTestHeads = map[string]bool{"make": true, "gmake": true, "npm": true, "npx": true, "pnpm": true, "yarn": true, "bun": true, "cargo": true, "pytest": true, "python -m pytest": true, "tsc": true, "vitest": true, "jest": true, "golangci-lint": true, "gosec": true, "govulncheck": true, "playwright": true, "wp testsum": true, "mvn": true, "gradle": true, "dotnet": true, "ruff": true, "mypy": true, "eslint": true, "prettier": true, "gofmt": true, "staticcheck": true}
 
 // whCommandClass sorts one command of a line.
-func whCommandClass(cm traceCommand, cwd string) string {
+func whCommandClass(cmds []traceCommand, i int, cwd string) string {
+	cm := cmds[i]
 	wrote, scratch := false, false
 	for _, w := range cm.Wrote {
 		if w.Kind == "output" {
 			continue
 		}
-		if _, work := traceWord(w.Path, cm.Dir, cwd); work {
+		if _, work := traceWritePlace(cmds, i, w, cwd); work {
 			wrote = true
 		} else {
 			scratch = true
@@ -357,6 +358,8 @@ func whCommandClass(cm traceCommand, cwd string) string {
 	h := cm.Head
 	var class string
 	switch {
+	case cm.Sub && !scratch && (traceReadH[h] || traceSearchH[h] || h == "git grep" || h == "git ls-files"):
+		return "" // a read inside $( ) is not what the call did
 	case whTrivial[h]:
 		class = ""
 	case h == "wp testsum", whTestHeads[h], strings.HasPrefix(h, "go ") && h != "go doc":
@@ -412,11 +415,11 @@ func (sc *whScan) whBlockClasses(name string, input json.RawMessage, cwd string)
 		var tcs []traceCommand
 		traceCommands(in.Command, cwd, traceVars(cwd), &sc.mem, &tcs)
 		seen := map[string]bool{}
-		for _, cm := range tcs {
+		for i, cm := range tcs {
 			if cm.Head == "wp ship" && !traceHasFlag(cm.Words, "-h", "--help", "--review") {
 				ship = true
 			}
-			if k := whCommandClass(cm, cwd); k != "" {
+			if k := whCommandClass(tcs, i, cwd); k != "" {
 				cmds = append(cmds, whCmd{Head: cm.Head, Class: k})
 				if !seen[k] {
 					seen[k] = true

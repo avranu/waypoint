@@ -40,8 +40,8 @@ type ShellScript struct {
 	At     string   `json:"a"`
 	Writes []string `json:"w"`
 	Unsure bool     `json:"u,omitempty"` // no written path could be followed: every file it names
-	// Unfollowed: it writes, but to paths it builds and nothing names: what it
-	// writes is unknown.
+	// Unfollowed: it writes, but to paths it builds and nothing names, or to
+	// more paths than are kept: what it writes is not all known.
 	Unfollowed bool `json:"n,omitempty"`
 }
 
@@ -89,12 +89,23 @@ func (m *ShellScripts) Keep(at, body string) {
 		return
 	}
 	if len(ps) > traceMaxScriptPaths {
-		ps = ps[:traceMaxScriptPaths]
+		ps, unf = ps[:traceMaxScriptPaths], true // the rest of what it writes is not kept
 	}
 	if len(*m) >= ShellMaxScripts {
-		*m = append((*m)[:0:0], (*m)[1:]...)
+		// The oldest is forgotten to make room, and a mark that one was takes
+		// the first place: a script run later that is not here may be it.
+		// (Its place and the mark's, or the old mark's, make two.)
+		*m = append(ShellScripts{{At: shellForgot}}, (*m)[2:]...)
 	}
 	*m = append(*m, ShellScript{At: at, Writes: ps, Unsure: !sure, Unfollowed: unf})
+}
+
+// shellForgot is the place of the mark that a kept script was forgotten.
+const shellForgot = "\x00forgot"
+
+// forgot says a script once kept is no longer remembered.
+func (m *ShellScripts) forgot() bool {
+	return m != nil && len(*m) > 0 && (*m)[0].At == shellForgot
 }
 
 func (m *ShellScripts) at(at string) *ShellScript {
@@ -156,9 +167,11 @@ type ShellCommand struct {
 	// Sub: the command stands inside a substitution ($( ), backticks, <( ))
 	// of the next command that is not one.
 	Sub bool
-	// Unread: the command runs a script longer than the part that is read
-	// (traceMaxScript), and that part writes nothing: what the rest writes is
-	// not known.
+	// Unread: what the command writes is not all known. It runs a script
+	// longer than the part that is read (traceMaxScript), one whose paths
+	// could not be followed or one the session no longer remembers; or the
+	// line goes on past what is read of it (shellMaxCommands, the depth of
+	// nesting), and this is the last command read.
 	Unread bool
 }
 
@@ -241,7 +254,11 @@ func shellParsed(parsed []*ShellCmd, cwd string, depth int, vars map[string]stri
 	var scopes []scope
 	for _, g := range parsed {
 		if len(*out) >= shellMaxCommands {
+			shellMarkUnread(out) // the commands past the cap are not read
 			break
+		}
+		if g.Cut {
+			defer shellMarkUnread(out) // the parser stopped at its depth
 		}
 		var chain []*ShellGroup
 		for x := g.Group; x != nil; x = x.Parent {
@@ -273,6 +290,8 @@ func shellParsed(parsed []*ShellCmd, cwd string, depth int, vars map[string]stri
 					(*out)[i].Sub = true
 				}
 			}
+		} else if len(g.Subs) > 0 {
+			shellMarkUnread(out) // substitutions nested deeper than are read
 		}
 		all := make([]string, len(g.Words))
 		assigns := len(g.Words) > 0
@@ -281,6 +300,12 @@ func shellParsed(parsed []*ShellCmd, cwd string, depth int, vars map[string]stri
 			assigns = assigns && AssignRE.MatchString(w)
 		}
 		if assigns {
+			// f=$(mktemp), d=$(mktemp -d): a scratch file or directory.
+			if len(all) == 1 && len(g.Subs) == 1 && strings.HasSuffix(all[0], "="+ShellSubPlaceholder) {
+				if sub := g.Subs[0]; len(sub) > 0 && len(sub[len(sub)-1].Words) > 0 && path.Base(sub[len(sub)-1].Words[0]) == "mktemp" {
+					all[0] = strings.TrimSuffix(all[0], ShellSubPlaceholder) + "/tmp/mktemp.x"
+				}
+			}
 			set(all)
 			continue
 		}
@@ -314,14 +339,17 @@ func shellParsed(parsed []*ShellCmd, cwd string, depth int, vars map[string]stri
 			}
 			continue
 		}
-		if depth < 3 && Shells[path.Base(words[0])] {
-			if inner, ok := ShellDashC(words[1:]); ok {
+		if Shells[path.Base(words[0])] {
+			inner, ok := ShellDashC(words[1:])
+			if !ok && g.Heredoc != "" {
+				inner, ok = g.Heredoc, true
+			}
+			switch {
+			case ok && depth < 3:
 				shellCommands(inner, dir, depth+1, vars, mem, out, disk, spent)
 				continue
-			}
-			if g.Heredoc != "" {
-				shellCommands(g.Heredoc, dir, depth+1, vars, mem, out, disk, spent)
-				continue
+			case ok:
+				defer shellMarkUnread(out) // shells nested deeper than are read
 			}
 		}
 		c := ShellCommand{Words: words, Head: HeadOf(words), Dir: dir, Script: g.Heredoc, PipeIn: g.PipeIn}
@@ -374,6 +402,8 @@ func shellParsed(parsed []*ShellCmd, cwd string, depth int, vars map[string]stri
 				c.Wrote = append(c.Wrote, ShellWrite{Kind: kind, Path: w})
 			}
 			c.Unread = c.Unread || k.Unfollowed
+		} else if mem.forgot() && c.ran() != "" {
+			c.Unread = true // perhaps a script that was kept and then forgotten
 		}
 		if last := words[len(words)-1]; len(last) <= shellMaxValue {
 			vars["_"] = last
@@ -388,6 +418,16 @@ func shellParsed(parsed []*ShellCmd, cwd string, depth int, vars map[string]stri
 	return dir
 }
 
+// shellMarkUnread records that the line holds more than was read of it, on
+// the last command read (one that stands for the rest when there is none).
+func shellMarkUnread(out *[]ShellCommand) {
+	if n := len(*out); n > 0 {
+		(*out)[n-1].Unread = true
+		return
+	}
+	*out = append(*out, ShellCommand{Words: []string{":"}, Head: ":", Unread: true})
+}
+
 // shellOutputCounts says a program's output kept in file r (a redirect, or
 // tee after a pipe) is a write of the work as far as the name tells: what
 // the agent typed (cat, echo, printf) wherever it goes; a reporter's output
@@ -399,9 +439,7 @@ func shellOutputCounts(prog string, args []string, r string) bool {
 	case (traceReporters[prog] || prog == "git" && !traceGitWritesText(args)) && traceReportRE.MatchString(base):
 		// A generator's output into a data file (go run ./cmd/schema >
 		// openapi.json) is a file of the work, not a report.
-		if !(traceDataRE.MatchString(base) && shellGenerates(prog, args)) {
-			return false
-		}
+		return traceDataRE.MatchString(base) && shellGenerates(prog, args)
 	case prog == "cat" || prog == "echo" || prog == "printf":
 		return true
 	}
@@ -547,11 +585,21 @@ var interpreterValueFlags = map[string]bool{"-W": true, "-X": true, "-r": true, 
 // ran is the script file a command hands its interpreter (python3 edit.py),
 // "" when it runs none.
 func (c *ShellCommand) ran() string {
-	i := c.interpreter()
-	if i < 0 || c.Script != "" {
+	if c.Script != "" {
 		return ""
 	}
-	for _, w := range c.Words[i+1:] {
+	return ScriptFile(c.Words)
+}
+
+// ScriptFile is the script file a command's words hand an interpreter
+// (python3 edit.py, uv run python edit.py), "" when they run none. The guard
+// reads that file where the write recogniser recalls it.
+func ScriptFile(words []string) string {
+	i := interpreterAt(words)
+	if i < 0 {
+		return ""
+	}
+	for _, w := range words[i+1:] {
 		switch {
 		case w == "-c" || w == "-e" || w == "-m" || w == "-":
 			return ""
@@ -668,6 +716,9 @@ func traceScriptWrites(script string, whole bool) (paths []string, sure, unfollo
 	// the names left over stand for: it lists every path the script spells
 	// and does not read as well, so none is passed over (audit 2008.1).
 	spent := whole && budget <= 0
+	if !whole && budget <= 0 {
+		missed = true // names were left unfollowed: the paths found are not all
+	}
 	if len(paths) > 0 && !spent {
 		return paths, true, missed
 	}
@@ -691,7 +742,7 @@ func traceScriptWrites(script string, whole bool) (paths []string, sure, unfollo
 		if scriptScratchAt(script, m[0], scratch) {
 			continue // a name under the temporary directory, not a path of its own
 		}
-		if scriptReadsAt(script, m[0], m[1]) || scriptNameOnlyRead(script, m[0], m[1]) {
+		if scriptReadsAt(script, m[0], m[1]) || scriptNameOnlyRead(script, m[0], m[1]) || scriptLookedFor(script, m[1]) {
 			reads[str] = true
 		}
 		names = append(names, str)
@@ -844,6 +895,25 @@ func scriptNameOnlyRead(script string, from, to int) bool {
 	return uses > 0 && uses < 4096
 }
 
+var scriptInNameRE = lazyre.New(`^\s+(?:not\s+)?in\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:[:)\]]|and\b|or\b|$)`)
+
+// scriptLookedFor says the string ending at to is only looked for in text
+// the script read ('x.json' in s, where s = open(f).read()): no path of a
+// file. A name not set from a read may be the path being written (the string
+// picks which file), so that stays a no.
+func scriptLookedFor(script string, to int) bool {
+	after := script[to:min(len(script), to+200)]
+	if i := strings.IndexByte(after, '\n'); i >= 0 {
+		after = after[:i]
+	}
+	m := scriptInNameRE.FindStringSubmatch(after)
+	if m == nil {
+		return false
+	}
+	set := regexp.MustCompile(`(?m)(?:^|[;\s])` + m[1] + `\s*=[^=\n][^\n]*\bread(?:_text|_bytes|lines)?\(`)
+	return set.MatchString(script)
+}
+
 // scriptOpenReads reads the arguments after open's path: it only reads when
 // its mode (the second argument, or mode=) is absent or has none of w, a, x
 // and +.
@@ -893,19 +963,22 @@ func traceScriptExpr(script, expr string, depth int, budget *int) []string {
 	*budget--
 	var out []string
 	set := regexp.MustCompile(`(?m)(?:^|[;\s])(?:const |let |var )?` + expr + `\s*=\s*([^=\n;][^\n;]*)`)
-	for _, m := range set.FindAllStringSubmatch(script, 16) {
+	// Every setting of the name is followed (the budget bounds the searches,
+	// the script's length the matches): a value past a fixed count would be
+	// one the guard let through.
+	for _, m := range set.FindAllStringSubmatch(script, -1) {
 		out = append(out, traceScriptExpr(script, m[1], depth+1, budget)...)
 	}
 	loop := regexp.MustCompile(`\bfor\s+` + expr + `\s+in\s+[\[(]([^\n]*)[\])]\s*:`)
-	for _, m := range loop.FindAllStringSubmatch(script, 16) {
-		for _, s := range traceScriptStrRE.FindAllStringSubmatch(m[1], 64) {
+	for _, m := range loop.FindAllStringSubmatch(script, -1) {
+		for _, s := range traceScriptStrRE.FindAllStringSubmatch(m[1], -1) {
 			out = append(out, s[1]+s[2])
 		}
 	}
 	def := regexp.MustCompile(`\bdef\s+([A-Za-z_][A-Za-z0-9_]*)\(\s*` + expr + `\s*[,):=]`)
-	for _, m := range def.FindAllStringSubmatch(script, 4) {
+	for _, m := range def.FindAllStringSubmatch(script, -1) {
 		call := regexp.MustCompile(`(?:^|[^A-Za-z0-9_.])` + m[1] + `\(\s*([^,()\n]+?)\s*[,)]`)
-		for _, c := range call.FindAllStringSubmatch(script, 64) {
+		for _, c := range call.FindAllStringSubmatch(script, -1) {
 			if c[1] != expr {
 				out = append(out, traceScriptExpr(script, c[1], depth+1, budget)...)
 			}
@@ -985,13 +1058,21 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 		}
 		return false
 	}
-	if prog == "npx" || prog == "bunx" {
-		// npx [--prefix DIR] prettier ...: the tool is the first word named
-		// prettier among the first few, whatever flags and their values
-		// come before it.
-		for i, a := range args[:min(len(args), 4)] {
-			if b := path.Base(a); b == "prettier" || b == "eslint" {
+	if shellRunners[prog] || strings.HasPrefix(prog, "python3.") {
+		// npx [--prefix DIR] prettier ..., pnpm exec prettier, yarn eslint,
+		// uv run ruff, python -m black: the tool is the first word named as
+		// one among the first few, whatever flags and their values come
+		// before it. A runner asked to install or remove names packages, not
+		// a tool to run.
+		for i, a := range args[:min(len(args), 6)] {
+			if shellRunnerVerbs[a] {
+				break
+			}
+			if b := path.Base(a); shellRunTools[b] {
 				prog, args = b, args[i+1:]
+				if len(args) > 0 && args[0] == "--" {
+					args = args[1:] // npm exec prettier -- --write .
+				}
 				break
 			}
 		}
@@ -1091,10 +1172,19 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 		}
 	case "curl":
 		for i := 0; i < len(args); i++ {
-			if (args[i] == "-o" || args[i] == "--output") && i+1 < len(args) {
-				out = append(out, ShellWrite{Kind: "curl", Path: args[i+1], Whole: true})
+			a := args[i]
+			f, ok := strings.CutPrefix(a, "--output=")
+			if j := strings.IndexByte(a, 'o'); !ok && j > 0 && a[0] == '-' && a[1] != '-' && strings.Trim(a[1:j], curlBareFlags) == "" {
+				// -o FILE, -fsSLo FILE, -oFILE: o after letters that take no value.
+				if f, ok = a[j+1:], true; f == "" && i+1 < len(args) {
+					i++
+					f = args[i]
+				}
+			} else if a == "--output" && i+1 < len(args) {
 				i++
-			} else if f, ok := strings.CutPrefix(args[i], "--output="); ok {
+				f, ok = args[i], true
+			}
+			if ok && f != "" {
 				out = append(out, ShellWrite{Kind: "curl", Path: f, Whole: true})
 			}
 		}
@@ -1167,6 +1257,20 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 	}
 	return out
 }
+
+// shellRunners run a tool of the project for the agent, and shellRunTools
+// are the tools read through them: the formatters writes() knows.
+var (
+	shellRunners = map[string]bool{"npx": true, "bunx": true, "pnpm": true, "yarn": true, "npm": true, "bun": true, "uv": true, "uvx": true,
+		"poetry": true, "pipx": true, "pdm": true, "hatch": true, "rye": true, "python": true, "python3": true}
+	shellRunTools    = map[string]bool{"prettier": true, "eslint": true, "black": true, "ruff": true, "rustfmt": true, "gofmt": true, "goimports": true}
+	shellRunnerVerbs = map[string]bool{"install": true, "i": true, "add": true, "remove": true, "rm": true, "uninstall": true, "update": true, "upgrade": true,
+		"up": true, "why": true, "info": true, "view": true, "ls": true, "list": true, "outdated": true, "link": true, "publish": true, "pip": true}
+)
+
+// curlBareFlags are curl's one-letter options that take no value, so an o
+// after them in one word is -o.
+const curlBareFlags = "fsSLkiIvJNgqOR46#"
 
 // tarExtracts says tar is asked to extract (x among its first word's letters
 // or its short options, --extract, --get), and into which directory (-C DIR,

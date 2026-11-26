@@ -430,6 +430,17 @@ func classifyTraceCall(name string, input json.RawMessage, cwd string, at, ctx i
 	return tc
 }
 
+// traceWritePlace is where write w of command i lands, and whether that is
+// the work. A write that names no file (find … -exec, xargs, patch -d, tar
+// -C) is placed where its files are, as session facts place it.
+func traceWritePlace(cmds []traceCommand, i int, w trscript.ShellWrite, cwd string) (tracePath, bool) {
+	at := w.Path
+	if place := trscript.WritePlace(cmds, i, w); at == "*" && place != "." {
+		at = strings.TrimSuffix(place, "/") + "/*"
+	}
+	return traceWord(at, cmds[i].Dir, cwd)
+}
+
 // classifyTraceBash sorts a Bash call. It is an edit when any of its
 // commands writes a file of the work (traceCommand.writes); the files are
 // the ones written. Otherwise it is navigation when it begins with a search
@@ -449,11 +460,7 @@ func classifyTraceBash(cmds []traceCommand, cwd string) (class string, paths []t
 			}
 			// A write that names no file (find … -exec, xargs, patch -d) is
 			// placed where its files are, as session facts place it.
-			at := w.Path
-			if place := trscript.WritePlace(cmds, i, w); at == "*" && place != "." {
-				at = strings.TrimSuffix(place, "/") + "/*"
-			}
-			f, work := traceWord(at, cmds[i].Dir, cwd)
+			f, work := traceWritePlace(cmds, i, w, cwd)
 			edit = edit || work
 			whole = whole && (!work || w.Whole)
 			if work && f.P != "" && !hasPath(edits, f) && len(edits) < traceMaxCmdPath {
@@ -468,6 +475,9 @@ func classifyTraceBash(cmds []traceCommand, cwd string) (class string, paths []t
 	first := ""
 	for i, c := range cmds {
 		h := c.Head
+		if c.Sub {
+			continue // a substitution's command is not what the call did
+		}
 		if first == "" && h != "cd" {
 			first = h
 		}

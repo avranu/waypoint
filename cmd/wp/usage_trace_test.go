@@ -467,14 +467,15 @@ func TestTraceKeptScripts(t *testing.T) {
 	for i := 0; i < traceMaxScripts+3; i++ {
 		call(mem, "Write", map[string]any{"file_path": fmt.Sprintf("/tmp/s/e%d.py", i), "content": "open('a.go','w').write('x')\n"})
 	}
-	if len(*mem) != traceMaxScripts || (*mem)[0].At != "/tmp/s/e3.py" {
-		t.Fatalf("kept %d, first %q", len(*mem), (*mem)[0].At)
+	// The oldest are forgotten, and a mark that some were stands first.
+	if len(*mem) != traceMaxScripts || (*mem)[1].At != "/tmp/s/e4.py" {
+		t.Fatalf("kept %d, first %q", len(*mem), (*mem)[1].At)
 	}
 	st := &traceState{Scripts: *mem}
 	cl := st.clone()
-	cl.Scripts.Keep("/tmp/s/e3.py", "print(1)")
-	if len(st.Scripts) != traceMaxScripts || st.Scripts[0].At != "/tmp/s/e3.py" {
-		t.Fatalf("a clone's change reached the original: %d %q", len(st.Scripts), st.Scripts[0].At)
+	cl.Scripts.Keep("/tmp/s/e4.py", "print(1)")
+	if len(st.Scripts) != traceMaxScripts || st.Scripts[1].At != "/tmp/s/e4.py" {
+		t.Fatalf("a clone's change reached the original: %d %q", len(st.Scripts), st.Scripts[1].At)
 	}
 }
 
@@ -542,6 +543,7 @@ func TestTraceFile(t *testing.T) {
 		{"main session, a worktree's file", wt + "/internal/x.go", main, tracePath{"internal/x.go", app}, true},
 		{"main session, a worktree beside it", side + "/internal/x.go", main, tracePath{"internal/x.go", app}, true},
 		{"main session, a settings file of the repository", main + "/.claude/settings.json", main, tracePath{".claude/settings.json", app}, true},
+		// A checkout's or worktree's own root is the work, as `gofmt -w .` run in it writes it (see traceFile).
 		{"main session, the worktree directory itself", wt, main, tracePath{}, true},
 		{"a checkout's root itself (gofmt -w .)", main, main, tracePath{}, true},
 		{"a Claude Code worktree's root itself", wt, wt, tracePath{}, true},

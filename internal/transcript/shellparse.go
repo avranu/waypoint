@@ -16,6 +16,10 @@ type ShellCmd struct {
 
 	Detached bool
 
+	// Cut, on the last command of a line, says the line nests deeper than the
+	// parser reads (shellMaxNest): what stands past that depth was not read.
+	Cut bool
+
 	// Group is the innermost ( ) group the command stands in (nil at the top
 	// level of the line): a subshell, whose cd and variables end with it.
 	Group *ShellGroup
@@ -43,6 +47,7 @@ type shellParser struct {
 	nest    int
 	pending []shellHeredoc
 	open    bool
+	cut     bool
 }
 
 const shellMaxNest = 12
@@ -50,7 +55,14 @@ const shellMaxNest = 12
 // ParseShell reads a command line into simple commands.
 func ParseShell(s string) []*ShellCmd {
 	p := &shellParser{s: s}
-	return p.list(0)
+	out := p.list(0)
+	if p.cut {
+		if len(out) == 0 {
+			out = append(out, &ShellCmd{})
+		}
+		out[len(out)-1].Cut = true
+	}
+	return out
 }
 
 // shellKeywords begin a command without being one.
@@ -113,6 +125,7 @@ func (p *shellParser) list(end byte) []*ShellCmd {
 	}
 	if p.nest > shellMaxNest {
 		p.i = len(p.s)
+		p.cut = true
 		return nil
 	}
 	for p.i < len(p.s) {
@@ -120,6 +133,8 @@ func (p *shellParser) list(end byte) []*ShellCmd {
 		switch {
 		case c == ' ' || c == '\t' || c == '\r':
 			p.i++
+		case c == '\\' && p.peek(1) == '\n':
+			p.i += 2 // a line continued: no word of its own
 		case c == '\n':
 			p.i++
 			flush(false)
@@ -251,8 +266,15 @@ func (p *shellParser) redirect(cur *ShellCmd) {
 }
 
 func (p *shellParser) skipSpaces() {
-	for p.i < len(p.s) && (p.s[p.i] == ' ' || p.s[p.i] == '\t') {
-		p.i++
+	for p.i < len(p.s) {
+		switch {
+		case p.s[p.i] == ' ' || p.s[p.i] == '\t':
+			p.i++
+		case p.s[p.i] == '\\' && p.peek(1) == '\n':
+			p.i += 2 // > \<newline> FILE
+		default:
+			return
+		}
 	}
 }
 
@@ -300,13 +322,14 @@ func (p *shellParser) word(cur *ShellCmd) (string, bool) {
 		c := p.s[p.i]
 		switch {
 		case c == '\\':
-			quoted = true
 			if p.peek(1) == '\n' {
-				p.i += 2
+				p.i += 2 // a continued line quotes nothing
 			} else if p.i+1 < len(p.s) {
+				quoted = true
 				b.WriteByte(p.s[p.i+1])
 				p.i += 2
 			} else {
+				quoted = true
 				p.i++
 			}
 		case c == '\'':

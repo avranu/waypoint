@@ -110,8 +110,10 @@ func TestShellEditNeedsAWorkingDirectoryTheSessionWorkedIn(t *testing.T) {
 		for _, d := range c.seen {
 			s.Note(d)
 		}
-		if got, known := s.Edit(c.cmd, c.cwd); !known || got != c.want {
-			t.Errorf("%s: Edit(%q) = %v, %v; want %v", c.name, c.cmd, got, known, c.want)
+		// A write the reading cannot place is unknown, not no (audit 2062.5).
+		unplaced := c.name == "patch after a cd the line does not spell out" || c.name == "a variable set by an earlier call is unknown"
+		if got, known := s.Edit(c.cmd, c.cwd); known == unplaced || got != c.want {
+			t.Errorf("%s: Edit(%q) = %v, %v; want %v, %v", c.name, c.cmd, got, known, c.want, !unplaced)
 		}
 	}
 }
