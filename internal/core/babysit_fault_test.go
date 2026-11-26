@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-const cloneFault = "can't get the repository: git clone: fatal: could not read Username for 'https://git.jmann.me': terminal prompts disabled"
+const cloneFault = "can't get the repository: git clone: fatal: could not read Username for 'https://git.example.net': terminal prompts disabled"
 
 func (be *bsEnv) endRound(id int64, state, msg string, result map[string]any) {
 	be.t.Helper()
@@ -110,6 +110,21 @@ func TestBabysitRefusedPushDoesNotEscalate(t *testing.T) {
 	}
 }
 
+// A timed-out round whose salvaged commits were refused is a refused push too.
+func TestPushRefused(t *testing.T) {
+	refused := "pushing feat failed: git push: ! [rejected] feat -> feat (fetch first)"
+	for msg, want := range map[string]bool{
+		refused: true,
+		"The claude timed out after 1h0m0s and was stopped." + notPushedMarker + refused: true,
+		"The claude timed out after 1h0m0s and was stopped.":                             false,
+		"claude reported an error: " + refused:                                           false,
+	} {
+		if got := pushRefused.MatchString(msg); got != want {
+			t.Errorf("pushRefused(%q) = %v", msg, got)
+		}
+	}
+}
+
 func TestRoundFault(t *testing.T) {
 	for _, c := range []struct {
 		job  RunnerJob
@@ -166,6 +181,33 @@ func TestBabysitLostRunnerFaultsEndUpCounted(t *testing.T) {
 	}
 	if len(b.Rounds) == 0 || !strings.Contains(b.Rounds[0].Outcome, "The runner lost this job") {
 		t.Fatalf("the fourth lost job wasn't counted: %+v", b.Rounds)
+	}
+}
+
+// A fault that persists ends up counted, and stays counted until a round
+// runs, so it ends at the round cap and not in retries for ever.
+func TestBabysitPersistingFaultsEndUpCounted(t *testing.T) {
+	be := newBabysitEnv(t)
+	be.runnerOnline()
+	be.start(be.open())
+	be.failedCheck()
+	b := be.babysit()
+	for i := 1; i <= faultsUncounted; i++ {
+		be.endRound(b.JobID, "failed", cloneFault, nil)
+		if b = be.babysit(); len(b.Rounds) != 0 {
+			t.Fatalf("fault %d: counted early: %+v", i, b.Rounds)
+		}
+		be.setClock(be.clockNow().Add(faultWaitMax + time.Minute))
+		be.runnerOnline()
+		be.step()
+		b = be.babysit()
+	}
+	for i := 1; i <= 2; i++ {
+		be.endRound(b.JobID, "failed", cloneFault, nil)
+		b = be.babysit()
+		if len(b.Rounds) != i+1 || b.JobID == 0 {
+			t.Fatalf("counted fault %d: %d rounds, job %d: %+v", i, len(b.Rounds), b.JobID, b.Rounds)
+		}
 	}
 }
 

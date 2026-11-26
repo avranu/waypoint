@@ -609,7 +609,13 @@ func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare
 			fmt.Fprintf(run.out, "Pushing %s\n", in.Branch)
 			ref := "refs/heads/" + in.Branch
 			if _, err := p.gitIn(ctx, work, nil, env, "push", "origin", ref+":"+ref); err != nil {
-				if err = p.pushMoved(ctx, run, work, env, in, baseSHA, files, result, err); err != nil {
+				err = p.pushMoved(ctx, run, work, env, in, baseSHA, files, result, err)
+				if errors.Is(err, errOnBranch) {
+					fmt.Fprintf(run.out, "%s already has the round's changes; nothing to push\n", in.Branch)
+					*pushed = true
+					return outcome{State: "done", Result: result}
+				}
+				if err != nil {
 					return p.partial(result, "pushing %s failed: %v", in.Branch, err)
 				}
 			}

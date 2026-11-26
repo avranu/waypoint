@@ -621,7 +621,8 @@ func (s *Service) recordRoundOutcome(ctx context.Context, bid, jobID int64) {
 	if roundLimited(job) && s.uncountLimitedRound(ctx, b, jobID, job.Error) {
 		return
 	}
-	if kind := roundFault(job); kind != "" && s.uncountFaultedRound(ctx, b, jobID, job.Error, kind) {
+	fault := roundFault(job)
+	if fault != "" && s.uncountFaultedRound(ctx, b, jobID, job.Error, fault) {
 		return
 	}
 	_ = json.Unmarshal(job.Result, &res)
@@ -669,7 +670,8 @@ func (s *Service) recordRoundOutcome(ctx context.Context, bid, jobID int64) {
 		}
 	}
 	rounds, _ := json.Marshal(b.Rounds)
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE babysits SET job_id = NULL, rounds = ?, limited_tries = 0, fault_tries = 0, fault_text = '', updated_at = ? WHERE id = ?`, string(rounds), s.nowMS(), bid); err != nil {
+	if _, err := s.db.W.ExecContext(ctx, `UPDATE babysits SET job_id = NULL, rounds = ?, limited_tries = 0, fault_tries = CASE WHEN ? THEN fault_tries ELSE 0 END, fault_text = '', updated_at = ? WHERE id = ?`,
+		string(rounds), fault != "", s.nowMS(), bid); err != nil {
 		s.log.WarnContext(ctx, "record a babysit round", "babysit", bid, "err", err)
 	}
 	if delivered && res.Pushed {

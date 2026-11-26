@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -62,6 +63,28 @@ func TestRoundPushRebasesOntoAMovedBranch(t *testing.T) {
 	}
 }
 
+// The pre-push check ran before the rebase, so its verdict isn't reported as
+// one on the pushed commits.
+func TestRoundPushRebaseDropsThePrePushVerdict(t *testing.T) {
+	p, remote, job := movedBranchJob(t, "other.txt", "theirs")
+	if err := os.MkdirAll(filepath.Join(remote, ".waypoint"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, prePushFile), []byte("true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitOut(t, remote, "add", "-A")
+	gitOut(t, remote, "commit", "-q", "-m", "Add the check")
+	gitOut(t, remote, "branch", "-f", "feat")
+	job.Permission = "edit_run"
+	run := newRun(time.Minute)
+	o := p.execAgent(context.Background(), run, "agent", job)
+	res, _ := o.Result.(map[string]any)
+	if v, _ := res["pre_push"].(string); o.State != "done" || !strings.HasPrefix(v, "not run on the pushed commits:") || !strings.Contains(v, "(it had passed)") {
+		t.Fatalf("outcome = %+v\n%s", o, run.out.text())
+	}
+}
+
 func TestRoundPushFailsWhenTheRebaseConflicts(t *testing.T) {
 	p, remote, job := movedBranchJob(t, "made-by-claude.txt", "theirs")
 	run := newRun(time.Minute)
@@ -74,6 +97,24 @@ func TestRoundPushFailsWhenTheRebaseConflicts(t *testing.T) {
 	}
 	if left, _ := os.ReadDir(p.cacheDir() + "/work"); len(left) != 0 {
 		t.Errorf("work trees left: %v", left)
+	}
+}
+
+// A moved branch that already has the round's change leaves nothing to push:
+// the round is done, and reports no commit of its own.
+func TestRoundPushWithNothingLeftAfterTheRebase(t *testing.T) {
+	p, remote, job := movedBranchJob(t, "made-by-claude.txt", "made by claude")
+	run := newRun(time.Minute)
+	o := p.execAgent(context.Background(), run, "agent", job)
+	if o.State != "done" {
+		t.Fatalf("outcome = %+v\n%s", o, run.out.text())
+	}
+	res := o.Result.(map[string]any)
+	if commits, _ := res["commits"].([]string); len(commits) != 0 || res["commit"] != nil || res["pushed"] == true {
+		t.Errorf("result = %v", res)
+	}
+	if got := gitOut(t, remote, "log", "-1", "--format=%s", "feat"); got != "someone else pushed" {
+		t.Errorf("branch = %q", got)
 	}
 }
 

@@ -234,9 +234,9 @@ func (s *Service) updateIfBehind(ctx context.Context, pr *PullRequest) int {
 // merge queue marks itself ready there, so the update's push runs the full
 // tier (WP-456).
 func (s *Service) updateIfBehindThen(ctx context.Context, pr *PullRequest, before func()) int {
-	if running, err := s.roundRunning(ctx, pr.ID); err == nil && running {
+	if running, err := s.roundRunning(ctx, pr.ID); err != nil || running {
 		// The round's push would be refused: the branch moved under it
-		// (WP-1914, #569 round 1).
+		// (WP-1914, #569 round 1). A failed read holds too.
 		return upHeld
 	}
 	tip, behind, stale := s.behindBase(ctx, pr)

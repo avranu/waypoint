@@ -23,6 +23,10 @@ const (
 	faultWaitMax   = 30 * time.Minute
 	// faultsToTell is how many faults in a row on one babysit reach the admins.
 	faultsToTell = 3
+	// faultsUncounted is how many faults in a row go uncounted: with the waits
+	// above, about three and a half hours of an outage. A fault that persists
+	// past it (a base branch that is gone) counts, so the round cap ends it.
+	faultsUncounted = 10
 )
 
 // faultTexts are what the runner said before it set a fault in its result
@@ -69,7 +73,8 @@ func roundFaultBackoff(n int) time.Duration {
 
 // uncountFaultedRound drops the round of job jobID, which ended in a fault,
 // from the babysit and sets when the next may go. After faultsToTell in a row
-// it tells the admins, once; it keeps going at the longest wait.
+// it tells the admins, once. It reports false, leaving the round to be
+// counted, past faultsUncounted in a row (faultsToTell for a lost job).
 func (s *Service) uncountFaultedRound(ctx context.Context, b *Babysit, jobID int64, msg, kind string) bool {
 	i := slices.IndexFunc(b.Rounds, func(r BabysitRound) bool { return r.Job == jobID })
 	if i < 0 {
@@ -77,7 +82,11 @@ func (s *Service) uncountFaultedRound(ctx context.Context, b *Babysit, jobID int
 	}
 	var tries int
 	_ = s.db.R.QueryRowContext(ctx, `SELECT fault_tries FROM babysits WHERE id = ?`, b.ID).Scan(&tries)
-	if kind == roundFaultLost && tries >= faultsToTell {
+	limit := faultsUncounted
+	if kind == roundFaultLost {
+		limit = faultsToTell
+	}
+	if tries >= limit {
 		return false
 	}
 	tries++
@@ -105,7 +114,7 @@ func (s *Service) tellFaultedRounds(ctx context.Context, b *Babysit, tries int, 
 	var number int
 	_ = s.db.R.QueryRowContext(ctx, `SELECT repo, number FROM pull_requests WHERE id = ?`, b.PRID).Scan(&repo, &number)
 	title := fmt.Sprintf("%s#%d: %d babysit rounds in a row failed before their agent started", repo, number, tries)
-	body := fmt.Sprintf("%s. They aren't counted and the next goes at most %s after the last, but they don't stop on their own: look at the runner (wp server status, wp server log --level warn).", excerpt(msg, 300), ShortDuration(faultWaitMax))
+	body := fmt.Sprintf("%s. Up to %d in a row aren't counted (%d for a job the runner lost), each at most %s after the last; further ones count towards the round cap. Look at the runner (wp server status, wp server log --level warn).", excerpt(msg, 300), faultsUncounted, faultsToTell, ShortDuration(faultWaitMax))
 	for _, id := range s.userIDsWhere(ctx, `SELECT id FROM users WHERE is_admin = 1 AND disabled = 0 ORDER BY id`) {
 		s.notifyURL(ctx, id, nil, NotifyJobs, title, body, "")
 	}
@@ -125,9 +134,10 @@ func (s *Service) faultWait(ctx context.Context, b *Babysit) string {
 	return fmt.Sprintf("the last round didn't start, so it isn't counted (%s); the next goes after %s", text, msTime(b.limitedUntil).Format("15:04 UTC"))
 }
 
-// pushRefused starts the error of a round whose commits the runner couldn't
-// push (cmd/wp/runner_agent.go).
-var pushRefused = lazyre.New(`^pushing \S+ failed: `)
+// pushRefused finds, in a round's error, that the runner couldn't push its
+// commits (cmd/wp/runner_agent.go): at its start, or after notPushedMarker
+// for a timed-out round's commits.
+var pushRefused = lazyre.New(`(^|` + notPushedMarker + `)pushing \S+ failed: `)
 
 // lastPushFailed: the last round's push was refused, so the head it left
 // is not evidence that the model's work failed to fix anything.
