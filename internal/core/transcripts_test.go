@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"git.jmann.me/claude/waypoint/internal/core/users"
 )
 
 func tgz(t *testing.T, s string) []byte {
@@ -27,8 +29,15 @@ func tgz(t *testing.T, s string) []byte {
 // transcriptEnv is an env whose server keeps an archive.
 func transcriptEnv(t *testing.T) *env {
 	e := newEnv(t)
-	e.s.cfg.TranscriptDir = t.TempDir()
+	e.setTranscriptDir(t.TempDir())
 	return e
+}
+
+// setTranscriptDir keeps the transcript archive in dir, for the users domain
+// too (it words an account's deletion by whether one is kept).
+func (e *env) setTranscriptDir(dir string) {
+	e.s.cfg.TranscriptDir = dir
+	e.s.users.SetOptions(users.Options{BaseURL: e.s.cfg.BaseURL, ArchivesTranscripts: dir != ""})
 }
 
 func piece(session, file string, from int64, lines string) TranscriptPieceIn {

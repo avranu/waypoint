@@ -319,7 +319,7 @@ func TestUserDeleteAuditWordingFollowsTheArchive(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEnv(t)
 			if tc.keeps {
-				e.s.cfg.TranscriptDir = t.TempDir()
+				e.setTranscriptDir(t.TempDir())
 			}
 			jo := e.user("jo", false)
 			if err := e.s.DeleteUser(e.ctx, e.admin, jo.User.ID); err != nil {

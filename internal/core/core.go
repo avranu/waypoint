@@ -21,6 +21,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core/email"
 	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/core/meaning"
+	"git.jmann.me/claude/waypoint/internal/core/users"
 	"git.jmann.me/claude/waypoint/internal/db"
 )
 
@@ -64,8 +65,12 @@ type Config struct {
 // methods are the facade's.
 type emailService = email.Service
 
+// usersService is the users domain's operations, embedded the same way.
+type usersService = users.Service
+
 type Service struct {
 	*emailService
+	*usersService
 
 	db       *db.DB
 	cfg      Config
@@ -76,6 +81,7 @@ type Service struct {
 
 	k      *kernel.Kernel
 	mailer *email.Mailer // no access checks: automation sends through it
+	users  *users.Store  // no access checks: sign-in, and what other domains need
 
 	afterTranscriptFile func()
 
@@ -216,6 +222,14 @@ func New(d *db.DB, cfg Config, log *slog.Logger) *Service {
 	}
 	s.mailer = email.NewMailer(s.k)
 	s.emailService = email.New(s.mailer)
+	s.users = users.NewStore(s.k, users.Options{BaseURL: cfg.BaseURL, ArchivesTranscripts: cfg.TranscriptDir != ""}, users.Hooks{
+		CredentialsChanged: func(ctx context.Context, t *kernel.Tx, userID int64) error {
+			return dropPushSubscriptions(ctx, t, userID)
+		},
+		JobScope:     s.jobScope,
+		BeforeDelete: s.handOverProjects,
+	})
+	s.usersService = users.New(s.users)
 	s.k.Persist(persistedKinds...)
 	s.k.OnEmit(noteSession)
 	s.k.OnEmit(stampEvent)

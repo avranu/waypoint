@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core/users"
 	"git.jmann.me/claude/waypoint/internal/db"
 )
 
@@ -1296,13 +1297,13 @@ func TestHiddenHelpPrefs(t *testing.T) {
 	if got, _ := e.s.UserByID(e.ctx, e.admin.User.ID); got == nil || len(got.Prefs.DismissedWarnings) != 1 {
 		t.Errorf("dismissed warnings not stored: %+v", got)
 	}
-	tooMany := UserPrefs{DismissedWarnings: make([]string, maxDismissedWarnings+1)}
+	tooMany := UserPrefs{DismissedWarnings: make([]string, users.MaxDismissedWarnings+1)}
 	for i := range tooMany.DismissedWarnings {
 		tooMany.DismissedWarnings[i] = "w"
 	}
 	tooMany.DismissedWarnings[0] = "oldest"
 	if u, err := e.s.UpdateUser(e.ctx, e.admin, e.admin.User.ID, UserPatch{Prefs: &tooMany}); err != nil ||
-		len(u.Prefs.DismissedWarnings) != maxDismissedWarnings || u.Prefs.DismissedWarnings[0] == "oldest" {
+		len(u.Prefs.DismissedWarnings) != users.MaxDismissedWarnings || u.Prefs.DismissedWarnings[0] == "oldest" {
 		t.Errorf("over-cap dismissed warnings should drop the oldest: %v", err)
 	}
 	long := UserPrefs{HiddenHelp: []string{strings.Repeat("x", 65)}}
@@ -1329,7 +1330,7 @@ func TestProjectOrderPrefs(t *testing.T) {
 		"unknown sort": {ProjectSort: "alphabetical"},
 		"duplicate id": {ProjectOrder: []int64{1, 2, 1}},
 		"bad id":       {ProjectOrder: []int64{0}},
-		"too many":     {ProjectOrder: make([]int64, maxProjectOrder+1)},
+		"too many":     {ProjectOrder: make([]int64, users.MaxProjectOrder+1)},
 	} {
 		if save(p) == nil {
 			t.Errorf("%s was saved", name)

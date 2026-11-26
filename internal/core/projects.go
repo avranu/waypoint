@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode"
 
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -1209,6 +1210,19 @@ func (s *Service) ensureAnotherOwner(ctx context.Context, t *tx, projectID, user
 		return invalid("a project needs at least one owner")
 	}
 	return nil
+}
+
+// handOverProjects makes by an owner of every project userID is the only
+// owner of, so deleting the account leaves none without one. users.DeleteUser
+// runs it in the deleting transaction, before the account's memberships go
+// with its row (Hooks.BeforeDelete).
+func (s *Service) handOverProjects(ctx context.Context, t *kernel.Tx, userID, by int64) error {
+	_, err := t.ExecContext(ctx, `INSERT INTO project_members(project_id, user_id, role, created_at)
+		SELECT m.project_id, ?, 'owner', ? FROM project_members m
+		WHERE m.user_id = ? AND m.role = 'owner'
+		  AND NOT EXISTS (SELECT 1 FROM project_members o WHERE o.project_id = m.project_id AND o.role = 'owner' AND o.user_id != m.user_id)
+		ON CONFLICT(project_id, user_id) DO UPDATE SET role = 'owner'`, by, s.nowMS(), userID)
+	return err
 }
 
 // RemoveMember removes a user from a project.
