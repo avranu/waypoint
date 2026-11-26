@@ -275,6 +275,12 @@ func (s *Service) askHeld(ctx context.Context, b *Babysit, pr *PullRequest, r *B
 	var head, tail strings.Builder
 	fmt.Fprintf(&head, "Babysitting round %d on %s#%d (%q) changed protected files (%s), which can only be pushed once someone has judged that they can't weaken what CI checks or reach secrets. Why it's yours: %s.\n\n",
 		r.N, pr.Repo, pr.Number, pr.Title, strings.Join(h.Files, ", "), h.Why)
+	if len(r.Checks) > 0 {
+		fmt.Fprintf(&head, "The round was responding to the failing check%s: %s.\n\n", plural(len(r.Checks)), joinAnd(r.Checks))
+	}
+	if a := strings.TrimSpace(r.Answer); a != "" {
+		fmt.Fprintf(&head, "What the round said when it ended, its own account of why (the agent's words, not checked):\n\n> %s\n\n", strings.ReplaceAll(a, "\n", "\n> "))
+	}
 	if h.All {
 		tail.WriteString("It settles a merge conflict otherwise than by keeping both sides' lines, so nothing else of the round was pushed either: pushing it pushes the round's whole change.\n\n")
 	}
@@ -297,7 +303,7 @@ func (s *Service) askHeld(ctx context.Context, b *Babysit, pr *PullRequest, r *B
 			len(patch)>>10, len(shown)>>10, stat, shown)
 		tail.WriteString("The rest of it isn't shown here. Push it and Waypoint pushes all of it to the branch, shown or not: leave it out if you can't judge it from this.")
 	}
-	tail.WriteString(" If nobody answers, it stays unpushed and the pull request stays out of the merge line.\n\n" + pr.URL)
+	tail.WriteString(" If the answer is no, or nobody answers, the change is not pushed: the checks it was meant to fix keep failing and the pull request stays out of the merge line until another round or a person fixes them.\n\n" + pr.URL)
 	in := RequestInput{Kind: RequestQuestion, Title: title, Body: head.String() + tail.String(),
 		Questions: []Question{{Question: "Push this change to the pull request?", Choices: []Choice{{Label: heldPush}, {Label: heldLeave}}}}, ToolUseID: key, Followup: "never"}
 	projectKey, err := s.attachedProjectKey(ctx, pr.ForgeID, pr.Repo)

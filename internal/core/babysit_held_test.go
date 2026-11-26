@@ -129,6 +129,17 @@ func TestHeldChangeWeakeningAsksOnePerson(t *testing.T) {
 		if h == nil || h.State != heldAsked || !strings.Contains(h.Why, "skips the tests") {
 			t.Fatalf("held %+v", h)
 		}
+		if push {
+			var body string
+			if err := be.s.db.R.QueryRow(`SELECT body FROM requests WHERE tool_use_id LIKE ?`, heldRequestKey+"%").Scan(&body); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"responding to the failing check", "What the round said when it ended", "> Done.", "the checks it was meant to fix keep failing"} {
+				if !strings.Contains(body, want) {
+					t.Errorf("request body lacks %q:\n%s", want, body)
+				}
+			}
+		}
 		if be.heldRequests() != 1 || len(be.heldJobs()) != 0 || len(be.protectedTasks()) != 0 {
 			t.Fatalf("requests %d jobs %v tasks %v", be.heldRequests(), be.heldJobs(), be.protectedTasks())
 		}
