@@ -496,6 +496,20 @@ func (c *cli) takeSlotFor(ctx context.Context, name string, n int, run slotRun) 
 	return env, release, err
 }
 
+// takeSlotBound is takeSlotFor for a caller that runs its commands with
+// runSlotCmd under ctx: the hold and its wait record carry the CPU bound the
+// run is about to have, and the returned ctx lets runSlotBound tell the hold
+// the bound each command actually ran under (a scope that can't start falls
+// back to the env bound).
+func (c *cli) takeSlotBound(ctx context.Context, name string, n int, run slotRun) (context.Context, []string, func(), error) {
+	bound, _ := slotBoundKind()
+	t, err := c.takeSlotRun(context.WithValue(ctx, slotBoundKeyT{}, bound), name, n, run, "")
+	if err != nil {
+		return ctx, nil, nil, err
+	}
+	return context.WithValue(ctx, slotRanKeyT{}, &slotRan{set: t.setBound}), t.env, t.release, nil
+}
+
 // takeSlotExit is takeSlotFor that also returns setExit, which tells the hold
 // what the command run in the slot exited with before release (WP-1646). A
 // caller that doesn't call it leaves the exit unknown. While it waits it also

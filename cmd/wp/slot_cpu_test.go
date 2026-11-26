@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -32,6 +33,11 @@ func TestSlotCPUQuota(t *testing.T) {
 		q, on := slotCPUQuota()
 		if q != c.quota || on != c.on || (warn.Len() > 0) != c.warn {
 			t.Errorf("%s=%q: quota %d on %v warn %q, want %d %v warn %v", slotCPUEnv, c.env, q, on, warn.String(), c.quota, c.on, c.warn)
+		}
+		// A run asks twice (to hold the slot, then to run): a bad value is said once.
+		warn.Reset()
+		if q, on := slotCPUQuota(); q != c.quota || on != c.on || warn.Len() > 0 {
+			t.Errorf("%s=%q asked again: quota %d on %v warn %q", slotCPUEnv, c.env, q, on, warn.String())
 		}
 	}
 }
@@ -548,5 +554,38 @@ func TestSlotLsShowsTheBoundOfARunThatDiffersFromTheOneDecidedWhileItRuns(t *tes
 				t.Errorf("a running hold shows the bound it runs under (%s):\n%s", c.want, got)
 			}
 		})
+	}
+}
+
+// A slot taken for commands its caller runs (wp testsum --base and --repeat)
+// carries the bound they run under, in the lock file while they run and in
+// the wait record (audit 1896.31).
+func TestTakeSlotBoundRecordsTheBound(t *testing.T) {
+	slotEnv(t)
+	t.Setenv(slotHeldEnv, "")
+	sqRepo(t)
+	sqArgs(t)
+	probesAre(t, false, false, false) // env
+	t.Setenv(slotCPUEnv, "200")
+	cl, _, _ := sqCLI()
+	held, env, release, err := cl.takeSlotBound(t.Context(), "tests", 2, slotRunFor("wp testsum --base", []string{"true"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctxLs, ls, _ := sqCLI()
+	if code, err := runSlotCmd(held, env, []string{"true"}, nil, io.Discard, io.Discard); err != nil || code != 0 {
+		t.Fatalf("run: %d %v", code, err)
+	}
+	if err := cmdSlotLs(ctxLs, nil); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if !strings.Contains(ls.String(), "[cpu bound: env]") {
+		t.Errorf("the hold shows no bound:\n%s", ls.String())
+	}
+	dir, _ := slotDir()
+	recs := readWaitRecs(dir)
+	if len(recs) == 0 || recs[len(recs)-1].Bound != slotBoundEnv {
+		t.Errorf("wait record: %+v", recs)
 	}
 }

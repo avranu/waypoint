@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -40,6 +41,10 @@ const (
 // slotCPUWarn is where a bad WAYPOINT_SLOT_CPU is said.
 var slotCPUWarn io.Writer = os.Stderr
 
+// slotCPUWarned holds the bad values already said (with where they were
+// said), so a run that asks for its bound twice says one once.
+var slotCPUWarned sync.Map
+
 // slotCPUQuota is the quota in percent of one core; on false means off. A
 // value that is not a number is said once on stderr and the default is used:
 // the run is not refused over a setting.
@@ -53,6 +58,13 @@ func slotCPUQuota() (quota int, on bool) {
 	}
 	n, err := strconv.Atoi(strings.TrimSuffix(v, "%"))
 	if err != nil || n <= 0 {
+		type said struct {
+			w io.Writer
+			v string
+		}
+		if _, again := slotCPUWarned.LoadOrStore(said{slotCPUWarn, v}, true); again {
+			return slotCPUDefault, true
+		}
 		_, _ = fmt.Fprintf(slotCPUWarn, "wp slot: %s=%q is not a percent of one core (for example 200) or off; using %d\n", slotCPUEnv, v, slotCPUDefault)
 		return slotCPUDefault, true
 	}
