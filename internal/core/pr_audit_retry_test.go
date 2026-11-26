@@ -81,4 +81,9 @@ func TestAuditJobExpiredAfterATakeGoesToTheNextModel(t *testing.T) {
 	if got.Status == AuditFailed || len(got.Attempts) != 1 || got.Attempts[0].Outcome != "unavailable" || !strings.Contains(got.Attempts[0].Error, "went silent") || got.Slot != 1 {
 		t.Fatalf("after the expiry: %s slot %d %+v", got.Status, got.Slot, got.Attempts)
 	}
+	// The attempt says when its job was queued and when a runner took it, so
+	// the wait for a runner can be told from the run.
+	if at := got.Attempts[0]; at.QueuedAt == 0 || at.TakenAt < at.QueuedAt {
+		t.Errorf("queued %d, taken %d", at.QueuedAt, at.TakenAt)
+	}
 }

@@ -78,8 +78,9 @@ func reviewsDownState(down []bool) string {
 
 // notifyReviewsDown tells the site admins and the project's owners that
 // reviews keep failing with every model unavailable, and again when one
-// answers. Nothing retries those runs (WP-215), so without this nobody hears
-// of the outage but from a 😕 on each pull request.
+// answers. Each run was tried again twice before it counted (WP-1916), so
+// by then the outage has lasted, and without this nobody hears of it but
+// from a 😕 on each pull request.
 func (s *Service) notifyReviewsDown(ctx context.Context, e *Event) {
 	var key string
 	_ = s.db.R.QueryRowContext(ctx, `SELECT key FROM projects WHERE id = ?`, e.ProjectID).Scan(&key)
