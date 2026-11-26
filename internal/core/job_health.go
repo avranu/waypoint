@@ -561,10 +561,9 @@ const (
 
 // jobTrouble finds the jobs whose run has gone on too long and the ones
 // that should have started and haven't. behind names, for a silent job, the
-// stuck job it waits its turn after: one in its own lane, or, for the loop's
-// jobs, the stuck one that loopWaits names, which the loop waits for without
-// limit. A stuck loop job the loop does not wait for holds nobody.
-func (s *Service) jobTrouble(now time.Time, running []JobStatus, declared []jobDecl, lastActive map[string]int64, busy map[string]time.Time, loopWaits string) (state, line, behind map[string]string) {
+// stuck job in its lane that it waits its turn after. A stuck job of the
+// loop holds nobody: the loop leaves it running and goes on (runInLoop).
+func (s *Service) jobTrouble(now time.Time, running []JobStatus, declared []jobDecl, lastActive map[string]int64, busy map[string]time.Time) (state, line, behind map[string]string) {
 	state, line, behind = map[string]string{}, map[string]string{}, map[string]string{}
 	isRunning := map[string]bool{}
 	stuckIn := map[string]string{}
@@ -588,9 +587,6 @@ func (s *Service) jobTrouble(now time.Time, running []JobStatus, declared []jobD
 		if _, ok := stuckIn[d.lane]; !ok && d.lane != "" {
 			stuckIn[d.lane] = d.name
 		}
-	}
-	if loopWaits != "" && state[loopWaits] == jobStuck {
-		stuckIn[""] = loopWaits
 	}
 	for _, d := range declared {
 		if d.period <= 0 || isRunning[d.name] || state[d.name] != "" {
@@ -631,7 +627,7 @@ func (s *Service) jobsStuck(ctx context.Context, t *tx, now time.Time, running [
 	if err != nil {
 		return nil, nil, err
 	}
-	state, line, behind := s.jobTrouble(now, running, declared, lastActive, s.jobs.busySinces(), s.jobs.loopHeldBy())
+	state, line, behind := s.jobTrouble(now, running, declared, lastActive, s.jobs.busySinces())
 	if back, err = jobsBack(ctx, t, state); err != nil {
 		return nil, nil, err
 	}
@@ -876,7 +872,7 @@ func (s *Service) jobHealth(ctx context.Context) ([]JobStatus, error) {
 	declared := s.jobs.declared()
 	running := s.jobs.jobsRunning()
 	busy := s.jobs.busySinces()
-	state, _, _ := s.jobTrouble(s.now(), running, declared, lastActive, busy, s.jobs.loopHeldBy())
+	state, _, _ := s.jobTrouble(s.now(), running, declared, lastActive, busy)
 	since := map[string]*time.Time{}
 	for _, r := range running {
 		since[r.Name] = r.RunningSince

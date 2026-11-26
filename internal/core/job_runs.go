@@ -190,7 +190,6 @@ type jobLedger struct {
 	active                  map[*jobRun]struct{}
 	blankNew, blankAgain    []string
 	learned                 []string
-	loopHeld                string // the loop job the loop is waiting for without limit, if any
 }
 
 func newJobLedger(ring *LogRing, now func() time.Time) *jobLedger {
@@ -590,19 +589,14 @@ func (l *jobLedger) jobsRunning() []JobStatus {
 	return out
 }
 
-// holdLoop says the loop is waiting for the named job to end, without limit
-// (the server's start pass); "" says it no longer is.
-func (l *jobLedger) holdLoop(name string) {
-	l.mu.Lock()
-	l.loopHeld = name
-	l.mu.Unlock()
-}
-
-// loopHeldBy is the job the loop is waiting for without limit, or "".
-func (l *jobLedger) loopHeldBy() string {
+// lastTook is how long the job's last run that ended took (0: none has).
+func (l *jobLedger) lastTook(name string) time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.loopHeld
+	if st := l.jobs[name]; st != nil && st.ended {
+		return time.Duration(st.lastMS) * time.Millisecond
+	}
+	return 0
 }
 
 // busySinces is when each job that is skipping its runs for an earlier one

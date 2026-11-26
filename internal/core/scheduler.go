@@ -250,7 +250,7 @@ func (s *Service) RunScheduler(ctx context.Context) {
 	context.AfterFunc(ctx, s.jobs.stop)
 	s.goBG(func() { s.watchJobHealth(ctx) })
 	s.goBG(func() { s.runHealthWatchdog(ctx) })
-	r.fire(ctx, func(j scheduled) bool { return j.every == 0 || j.atStart }, 0)
+	r.fire(ctx, func(j scheduled) bool { return j.every == 0 || j.atStart }, startPatience, true)
 	s.goBG(func() { s.RunEnvChecks(ctx) })
 	s.goBG(func() { s.WatchAssistants(ctx) })
 
@@ -272,20 +272,30 @@ func (s *Service) RunScheduler(ctx context.Context) {
 			return
 		}
 		period := periods[k-1]
-		r.fire(ctx, func(j scheduled) bool { return j.every == period }, loopJobPatience)
+		r.fire(ctx, func(j scheduled) bool { return j.every == period }, loopJobPatience, false)
 	}
 }
 
 // loopJobPatience is how long the loop waits for one of its own jobs before
-// it goes on to the next and leaves that one running (WP-1944).
+// it goes on to the next and leaves that one running. A job whose last run
+// took longer is not waited for at all: waiting for it again would hold the
+// jobs after it for nothing.
 const loopJobPatience = 20 * time.Second
+
+// startPatience is how long the server's start waits for its jobs, all of
+// them together, before the scheduler's loop begins without the ones still
+// running. It is less than jobOverdueMin, so no job counts as silent because
+// the start waited.
+const startPatience = 10 * time.Minute
 
 // fire runs the jobs that are due, in the table's order: the loop's own one
 // after another, a background lane started the first time one of its jobs
-// comes up. patience is how long the loop waits for one of its own jobs
-// before leaving it running (loopJobPatience); 0 waits for it, as the
-// server's start does, where the order matters.
-func (r *scheduler) fire(ctx context.Context, due func(scheduled) bool, patience time.Duration) {
+// comes up. The loop waits for each of its own jobs up to patience, and not
+// at all for one whose last run outlasted it. At the server's start the order
+// matters more than the time: the jobs are waited for whatever their last
+// runs took, up to patience for all of them together.
+func (r *scheduler) fire(ctx context.Context, due func(scheduled) bool, patience time.Duration, start bool) {
+	began := r.s.now()
 	started := map[string]bool{}
 	for _, j := range r.jobs {
 		if !due(j) {
@@ -295,7 +305,14 @@ func (r *scheduler) fire(ctx context.Context, due func(scheduled) bool, patience
 			return
 		}
 		if j.lane == "" {
-			r.runInLoop(ctx, j, patience)
+			wait := patience
+			switch {
+			case start:
+				wait = patience - r.s.now().Sub(began)
+			case r.s.jobs.lastTook(j.name) > patience:
+				wait = 0
+			}
+			r.runInLoop(ctx, j, wait)
 			continue
 		}
 		if started[j.lane] {
@@ -312,23 +329,18 @@ func (r *scheduler) fire(ctx context.Context, due func(scheduled) bool, patience
 	}
 }
 
-// runInLoop runs one of the loop's jobs and waits for it up to patience. One
-// still going then keeps its place in r.busy, as a background lane named
-// after it does: its next due times are skipped and counted for as long as
-// it goes on, and it counts as stuck as a lane does (jobTrouble). It is
-// never started again beside itself, as a lane's job is (goLane): the loop's
-// jobs were written to run one at a time. The wait ends with ctx too: the
-// job itself is waited for at stop with the other background work (Wait).
-func (r *scheduler) runInLoop(ctx context.Context, j scheduled, patience time.Duration) {
+// runInLoop starts one of the loop's jobs and waits for it up to wait, or
+// until ctx ends. One still going then keeps its place in r.busy, as a
+// background lane named after it does: its next due times are skipped and
+// counted for as long as it goes on, and it counts as stuck as a lane does
+// (jobTrouble). Unlike a lane's job (goLane), it is never started again
+// beside itself, however long its run goes on: the loop's jobs were written
+// to run one at a time. The job itself is waited for at stop with the other
+// background work (Wait).
+func (r *scheduler) runInLoop(ctx context.Context, j scheduled, wait time.Duration) {
 	run := r.claim([]scheduled{{name: j.name, every: j.every, lane: j.name}}, false)
 	if run == nil {
 		return
-	}
-	if patience <= 0 {
-		// The loop waits for this job without limit: a stuck one holds
-		// everything after it (jobTrouble).
-		r.s.jobs.holdLoop(j.name)
-		defer r.s.jobs.holdLoop("")
 	}
 	done := make(chan struct{})
 	r.s.goBG(func() {
@@ -336,15 +348,14 @@ func (r *scheduler) runInLoop(ctx context.Context, j scheduled, patience time.Du
 		defer r.release(j.name, run)
 		r.s.job(ctx, j.name, j.every, j.run)
 	})
-	if patience <= 0 {
-		<-done
+	if wait <= 0 {
 		return
 	}
-	wait := time.NewTimer(patience)
-	defer wait.Stop()
+	left := time.NewTimer(wait)
+	defer left.Stop()
 	select {
 	case <-done:
-	case <-wait.C:
+	case <-left.C:
 	case <-ctx.Done():
 	}
 }
