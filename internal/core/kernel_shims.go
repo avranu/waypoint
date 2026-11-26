@@ -27,3 +27,6 @@ func excerpt(s string, n int) string             { return kernel.Excerpt(s, n) }
 
 func placeholders(n int) string   { return kernel.Placeholders(n) }
 func int64Args(ids []int64) []any { return kernel.Int64Args(ids) }
+
+func (t *tx) audit(e AuditEntry)            { t.Audit(e) }
+func auditable(a *Actor, e AuditEntry) bool { return kernel.Auditable(a, e) }

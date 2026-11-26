@@ -118,3 +118,14 @@ func PermissionLabel(p Permission) string { return kernel.PermissionLabel(p) }
 
 // Event is something that happened; see kernel.Event.
 type Event = kernel.Event
+
+// Audit entries and their categories are the kernel's (it writes audit_log).
+type AuditEntry = kernel.AuditEntry
+
+const (
+	AuditApproval   = kernel.AuditApproval
+	AuditDelegation = kernel.AuditDelegation
+	AuditControl    = kernel.AuditControl
+	AuditSettings   = kernel.AuditSettings
+	AuditAccess     = kernel.AuditAccess
+)
