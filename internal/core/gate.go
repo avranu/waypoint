@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Gate states, the words forges use for a commit status.
@@ -122,11 +123,12 @@ func (s *Service) computeGate(ctx context.Context, pr *PullRequest, sev string) 
 	case running > 0:
 		return GatePending, "Review in progress", open, below, nil
 	case last == "failed":
-		note = "The review didn't run (every model failed); comment @waypoint review to try again"
+		const tail = "; comment @waypoint review to try again"
+		reason := "The review didn't run (every model failed)"
 		if lastErr != "" {
-			note = "The review didn't run: " + lastErr + "; comment @waypoint review to try again"
+			reason = clipRunes("The review didn't run: "+lastErr, gateNoteLimit-utf8.RuneCountInString(tail))
 		}
-		return GateFailure, clipRunes(note, gateNoteLimit), open, below, nil
+		return GateFailure, reason + tail, open, below, nil
 	case open > 0:
 		items := make([]string, 0, open)
 		for _, f := range blocking {

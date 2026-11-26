@@ -270,6 +270,11 @@ type AuditAttempt struct {
 	// "350 binary files (16.9 MiB)"; "" when nothing, or no gateway model.
 	LeftOut string `json:"left_out,omitempty"`
 	At      int64  `json:"at"`
+	// QueuedAt and TakenAt (ms) are when the attempt's runner job was queued
+	// and when a runner took it, so the wait for a runner shows (WP-1916);
+	// 0 on an attempt no runner took.
+	QueuedAt int64 `json:"queued_at,omitempty"`
+	TakenAt  int64 `json:"taken_at,omitempty"`
 }
 
 // AuditInput asks for an audit.
@@ -1074,7 +1079,7 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 	if a.Slot < len(a.chain) {
 		m = a.chain[a.Slot]
 	}
-	att := AuditAttempt{Model: auditModelName(m), Job: jobID, Round: a.Retries, At: s.nowMS()}
+	att := AuditAttempt{Model: auditModelName(m), Job: jobID, Round: a.Retries, At: s.nowMS(), QueuedAt: j.CreatedAt, TakenAt: j.StartedAt}
 	if m.CLI == GatewayCLI {
 		att.LeftOut = kernel.Excerpt(strings.TrimSpace(anyString(j.Result["left_out"])), 300)
 	}
@@ -1135,6 +1140,9 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 		return
 	case "expired":
 		att.Outcome, att.Error = "unavailable", "no runner took it within a day"
+		if j.StartedAt > 0 {
+			att.Error = "the runner that took it went silent and never reported back"
+		}
 	default:
 		att.Outcome, att.Error = auditFailureKind(j), excerpt(jobWhy(j), 300)
 		if kind := anyString(j.Result["gateway_error"]); m.CLI == GatewayCLI && kind != "" {
@@ -1154,8 +1162,8 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 	}
 	toGateway := m.CLI != GatewayCLI && next < len(a.chain) && slices.ContainsFunc(a.chain[next:], func(x AgentModel) bool { return x.CLI == GatewayCLI })
 	switch {
-	case (j.State == "expired" || att.Outcome == "error" && (next >= len(a.chain) || !rounds)) && !toGateway:
-		s.failAudit(ctx, a, att.Error)
+	case (j.State == "expired" && j.StartedAt == 0 || att.Outcome == "error" && (next >= len(a.chain) || !rounds)) && !toGateway:
+		s.endAuditFailed(ctx, a, att.Error)
 		return
 	case next < len(a.chain):
 		s.requeueAudit(ctx, a, next, a.Retries, nil)
@@ -1202,10 +1210,44 @@ func (s *Service) endAuditChain(ctx context.Context, a *CodeAudit, last string) 
 	case busy:
 		s.failAudit(ctx, a, fmt.Sprintf("Every model was still busy after %d tries: %s", auditMaxRetries+1, last))
 	case unreadable:
-		s.failAudit(ctx, a, "No model answered in the findings form; the last answer is kept as it came.")
+		s.endAuditFailed(ctx, a, "No model answered in the findings form; the last answer is kept as it came.")
 	default:
-		s.failAudit(ctx, a, last)
+		s.endAuditFailed(ctx, a, last)
 	}
+}
+
+// endAuditFailed ends a chain that failed on an error. A pull request's own
+// audit that failed on a passing fault runs its whole chain once more after
+// auditRetryStep, as its merge would otherwise go ahead with the head
+// unaudited (WP-1916). A pass that timed out is not run again: the pull
+// request waits on an audit that is going, and a second long timeout would
+// hold it twice as long. A pass that hit a usage limit ends as limited.
+func (s *Service) endAuditFailed(ctx context.Context, a *CodeAudit, why string) {
+	if a.Retries == 0 && s.isPRAudit(ctx, a) {
+		spentOrSlow := false
+		for _, x := range a.Attempts {
+			if x.Round == a.Retries && (x.Outcome == "timeout" || x.Outcome == "spent") {
+				spentOrSlow = true
+			}
+		}
+		if !spentOrSlow {
+			at := s.now().Add(auditRetryStep)
+			s.requeueAudit(ctx, a, 0, 1, &at)
+			return
+		}
+	}
+	if a.Retries > 0 && s.isPRAudit(ctx, a) {
+		why += fmt.Sprintf(" (tried %d times, the whole chain each time)", a.Retries+1)
+	}
+	s.failAudit(ctx, a, why)
+}
+
+// isPRAudit: the audit is a pull request's own (WP-1852), as against one a
+// person, an automation or a review round asked for.
+func (s *Service) isPRAudit(ctx context.Context, a *CodeAudit) bool {
+	var own bool
+	_ = s.db.R.QueryRowContext(ctx, `SELECT purpose = '' AND request_key LIKE 'pr-audit:%' FROM code_audits WHERE id = ?`, a.ID).Scan(&own)
+	return own
 }
 
 // auditLimitAdvice says when a chain whose every model hit a usage limit
