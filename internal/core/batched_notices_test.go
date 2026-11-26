@@ -1,7 +1,11 @@
 package core
 
 import (
+	"bytes"
+	"fmt"
+	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -197,4 +201,53 @@ func TestBlockingBabysitWakesAtOnce(t *testing.T) {
 	if jobs := be.messageJobs(); len(jobs) != 1 || !strings.Contains(jobs[0], "o/r#7 merged") {
 		t.Fatalf("a blocking merge: %v", jobs)
 	}
+}
+
+// A sweep says which step was slow and, when the sweep was, how many steps
+// ran and which three took longest (WP-1944).
+func TestCheckBabysitsLogsSlowSteps(t *testing.T) {
+	be, prs, _ := twoBabysits(t)
+	logs := &syncBuffer{}
+	be.s.log = slog.New(slog.NewTextHandler(logs, nil))
+	be.s.CheckBabysits(be.ctx)
+	if got := logs.String(); strings.Contains(got, "slow") {
+		t.Fatalf("a quick sweep logged: %s", got)
+	}
+	unlock0, unlock1 := be.s.babysitLocks.lock(prs[0].ID), be.s.babysitLocks.lock(prs[1].ID)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		be.s.CheckBabysits(be.ctx)
+	}()
+	time.Sleep(300 * time.Millisecond)
+	be.pass(48 * time.Second)
+	unlock0()
+	unlock1()
+	<-done
+	got := logs.String()
+	for _, want := range []string{"babysit step slow", "took=48s", "babysit sweep slow", "steps=2", "total=48s", "slowest="} {
+		if !strings.Contains(got, want) {
+			t.Errorf("no %q in: %s", want, got)
+		}
+	}
+	if !strings.Contains(got, fmt.Sprintf("%s#%d 48s", prs[0].Repo, prs[0].Number)) && !strings.Contains(got, fmt.Sprintf("%s#%d 48s", prs[1].Repo, prs[1].Number)) {
+		t.Errorf("the slowest step is not named: %s", got)
+	}
+}
+
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }

@@ -163,7 +163,12 @@ func (s *Service) schedule() []scheduled {
 
 		scheduled{name: "system resources", every: minute, run: s.SampleResources},
 		scheduled{name: "armed merges", every: minute, run: s.CheckArmedMerges},
-		scheduled{name: "babysits", every: minute, run: s.CheckBabysits},
+		bg(scheduled{name: "babysits", every: minute, run: s.CheckBabysits}),
+		scheduled{name: "stale babysits", every: minute, run: s.reviveStaleBabysits},
+		scheduled{name: "merge lines", every: minute, run: func(ctx context.Context) {
+			s.sweepLines(ctx)
+			s.watchLines(ctx)
+		}},
 		scheduled{name: "audits", every: minute, run: s.CheckAudits},
 		scheduled{name: "objectives", every: minute, run: s.CheckObjectives},
 		scheduled{name: "request conditions", every: minute, run: s.CheckRequestWatches},
@@ -239,7 +244,7 @@ func (s *Service) RunScheduler(ctx context.Context) {
 	context.AfterFunc(ctx, s.jobs.stop)
 	s.goBG(func() { s.watchJobHealth(ctx) })
 	s.goBG(func() { s.runHealthWatchdog(ctx) })
-	r.fire(ctx, func(j scheduled) bool { return j.every == 0 || j.atStart })
+	r.fire(ctx, func(j scheduled) bool { return j.every == 0 || j.atStart }, 0)
 	s.goBG(func() { s.RunEnvChecks(ctx) })
 	s.goBG(func() { s.WatchAssistants(ctx) })
 
@@ -261,14 +266,23 @@ func (s *Service) RunScheduler(ctx context.Context) {
 			return
 		}
 		period := periods[k-1]
-		r.fire(ctx, func(j scheduled) bool { return j.every == period })
+		r.fire(ctx, func(j scheduled) bool { return j.every == period }, loopJobPatience)
 	}
 }
 
+// loopJobPatience is how long the loop waits for one of its own jobs before
+// it goes on to the next and leaves that one running as a lane of its own
+// (WP-1944). Production's babysit sweep took 10 to 35 minutes a run and the
+// merge line, CI polling, audits and runner checks, which wait behind it in
+// the loop, ran once per sweep instead of every 30 s to 2 minutes.
+const loopJobPatience = 20 * time.Second
+
 // fire runs the jobs that are due, in the table's order: the loop's own one
 // after another, a background lane started the first time one of its jobs
-// comes up.
-func (r *scheduler) fire(ctx context.Context, due func(scheduled) bool) {
+// comes up. patience is how long the loop waits for one of its own jobs
+// before leaving it running (loopJobPatience); 0 waits for it, as the
+// server's start does, where the order matters.
+func (r *scheduler) fire(ctx context.Context, due func(scheduled) bool, patience time.Duration) {
 	started := map[string]bool{}
 	for _, j := range r.jobs {
 		if !due(j) {
@@ -278,7 +292,7 @@ func (r *scheduler) fire(ctx context.Context, due func(scheduled) bool) {
 			return
 		}
 		if j.lane == "" {
-			r.s.job(ctx, j.name, j.every, j.run)
+			r.runInLoop(ctx, j, patience)
 			continue
 		}
 		if started[j.lane] {
@@ -295,38 +309,79 @@ func (r *scheduler) fire(ctx context.Context, due func(scheduled) bool) {
 	}
 }
 
+// runInLoop runs one of the loop's jobs and waits for it up to patience. One
+// still going then keeps its place in r.busy, as a background lane named
+// after it does: its next due times are skipped and counted, and it counts
+// as stuck as a lane does (goLane). The wait ends with ctx too: the job
+// itself is waited for at stop with the other background work (Wait).
+func (r *scheduler) runInLoop(ctx context.Context, j scheduled, patience time.Duration) {
+	run := r.claim([]scheduled{{name: j.name, every: j.every, lane: j.name}})
+	if run == nil {
+		return
+	}
+	done := make(chan struct{})
+	r.s.goBG(func() {
+		defer close(done)
+		defer r.release(j.name, run)
+		r.s.job(ctx, j.name, j.every, j.run)
+	})
+	if patience <= 0 {
+		<-done
+		return
+	}
+	wait := time.NewTimer(patience)
+	defer wait.Stop()
+	select {
+	case <-done:
+	case <-wait.C:
+	case <-ctx.Done():
+	}
+}
+
+// claim takes a lane for a run, or returns nil and counts the lane's jobs as
+// skipped when its last run is still going.
+func (r *scheduler) claim(lane []scheduled) *laneRun {
+	s := r.s
+	name, now := lane[0].lane, s.now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if cur := r.busy[name]; cur != nil && now.Sub(cur.since) <= jobOverdue(lane[0].every) {
+		for _, j := range lane {
+			s.jobs.skip(j.name, j.every, now)
+		}
+		return nil
+	}
+	run := &laneRun{since: now}
+	r.busy[name] = run
+	return run
+}
+
+func (r *scheduler) release(name string, run *laneRun) {
+	r.mu.Lock()
+	if r.busy[name] == run {
+		delete(r.busy, name)
+	}
+	r.mu.Unlock()
+}
+
 // goLane runs a lane's jobs in the background, one after another. While its
 // last run is still going the jobs are skipped, and counted as skipped: two
 // runs of one job at once do the work twice. Once that run has gone on so
 // long that it counts as stuck, a new one starts beside it: a run that
 // hangs must not end the job until the next restart.
 func (r *scheduler) goLane(ctx context.Context, lane []scheduled) {
-	s := r.s
-	name, now := lane[0].lane, s.now()
-	r.mu.Lock()
-	if cur := r.busy[name]; cur != nil && now.Sub(cur.since) <= jobOverdue(lane[0].every) {
-		r.mu.Unlock()
-		for _, j := range lane {
-			s.jobs.skip(j.name, j.every, now)
-		}
+	run := r.claim(lane)
+	if run == nil {
 		return
 	}
-	run := &laneRun{since: now}
-	r.busy[name] = run
-	r.mu.Unlock()
-	s.goBG(func() {
-		defer func() {
-			r.mu.Lock()
-			if r.busy[name] == run {
-				delete(r.busy, name)
-			}
-			r.mu.Unlock()
-		}()
+	name := lane[0].lane
+	r.s.goBG(func() {
+		defer r.release(name, run)
 		for _, j := range lane {
 			if ctx.Err() != nil {
 				return
 			}
-			s.job(ctx, j.name, j.every, j.run)
+			r.s.job(ctx, j.name, j.every, j.run)
 		}
 	})
 }

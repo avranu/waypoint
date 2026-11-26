@@ -151,7 +151,7 @@ func (l lineRef) key() string {
 
 // watchLines frees the merge lines that have armed pull requests and none of
 // them moving, files a request for each still stuck after lineStalledAfter,
-// and expires the requests of lines that move again (from CheckBabysits).
+// and expires the requests of lines that move again (the merge lines job).
 func (s *Service) watchLines(ctx context.Context) {
 	now := s.now()
 	rows, err := s.db.R.QueryContext(ctx, `SELECT p.forge_id, p.repo, p.base_ref,

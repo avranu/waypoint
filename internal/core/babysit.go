@@ -723,37 +723,66 @@ func (s *Service) refreshFromForge(ctx context.Context, prID int64) {
 	}
 }
 
+// babysitStepSlow and babysitSweepSlow are how long one step and a whole
+// sweep may take before they are logged (WP-1944: sweeps of 10 to 35
+// minutes, and nothing said which step was slow).
+const (
+	babysitStepSlow  = 5 * time.Second
+	babysitSweepSlow = 30 * time.Second
+)
+
 // CheckBabysits moves every babysit on once a minute: waits end with time
 // (the review wait, the quiet period), and forges without webhooks bring
 // no news.
 func (s *Service) CheckBabysits(ctx context.Context) {
 	s.enrollArmedTroubled(ctx)
 	defer s.releaseDueBatches(ctx)
-	rows, err := s.db.R.QueryContext(ctx, `SELECT pr_id, coalesce(synced_at, 0) FROM babysits WHERE ended_at IS NULL ORDER BY updated_at LIMIT 200`)
+	rows, err := s.db.R.QueryContext(ctx, `SELECT b.pr_id, coalesce(b.synced_at, 0), coalesce(p.repo, ''), coalesce(p.number, 0)
+		FROM babysits b LEFT JOIN pull_requests p ON p.id = b.pr_id WHERE b.ended_at IS NULL ORDER BY b.updated_at LIMIT 200`)
 	if err != nil {
 		return
 	}
 	type item struct {
 		pr     int64
 		synced int64
+		repo   string
+		number int
 	}
 	var list []item
 	for rows.Next() {
 		var x item
-		if rows.Scan(&x.pr, &x.synced) == nil {
+		if rows.Scan(&x.pr, &x.synced, &x.repo, &x.number) == nil {
 			list = append(list, x)
 		}
 	}
 	rows.Close()
+	type took struct {
+		pr string
+		d  time.Duration
+	}
+	var steps []took
+	began := s.now()
 	for _, x := range list {
 		if ctx.Err() != nil {
 			return
 		}
+		at := s.now()
 		s.babysitStep(ctx, x.pr, s.nowMS()-x.synced >= babysitResyncEvery.Milliseconds())
+		d := s.now().Sub(at)
+		pr := fmt.Sprintf("%s#%d", x.repo, x.number)
+		steps = append(steps, took{pr, d})
+		if d >= babysitStepSlow {
+			s.log.InfoContext(ctx, "babysit step slow", "pr", pr, "took", d.Round(time.Second).String())
+		}
 	}
-	s.sweepLines(ctx)
-	s.watchLines(ctx)
-	s.reviveStaleBabysits(ctx)
+	if total := s.now().Sub(began); total >= babysitSweepSlow {
+		slices.SortFunc(steps, func(a, b took) int { return int(b.d.Nanoseconds()/1e6 - a.d.Nanoseconds()/1e6) })
+		var slowest []string
+		for _, st := range steps[:min(3, len(steps))] {
+			slowest = append(slowest, st.pr+" "+st.d.Round(time.Second).String())
+		}
+		s.log.InfoContext(ctx, "babysit sweep slow", "steps", len(steps), "total", total.Round(time.Second).String(), "slowest", strings.Join(slowest, ", "))
+	}
 }
 
 // babysitOwnerFor is the person whose runner does the rounds of a babysit
