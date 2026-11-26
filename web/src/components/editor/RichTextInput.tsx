@@ -430,6 +430,16 @@ export function RichTextInput({
           pasteLiteral.current = false
           return false
         },
+        // A click into an @name reopens its menu. prosemirror-view 1.44
+        // settles a click's caret during mouse selection, where the
+        // transaction's check can miss it, so look again once it is done.
+        mouseup: () => {
+          window.setTimeout(() => {
+            const ed = editorRef.current
+            if (ed && !ed.isDestroyed) detect(ed)
+          })
+          return false
+        },
         blur: () => {
           window.setTimeout(() => {
             const ed = editorRef.current
