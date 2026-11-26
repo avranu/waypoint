@@ -219,6 +219,34 @@ func TestPastTheCapReconstructs(t *testing.T) {
 	}
 }
 
+// nested builds inputs where each anchor split exposes just one more
+// anchor and leaves the rest, ending in a core of n unshared lines, still
+// past the cap: layer i's anchor u(i) has a second copy in the layer above,
+// beside it, so it is unique only once that layer is split off.
+func nested(layers, n int) (a, b []string) {
+	u := func(i int) string { return "u" + strconv.Itoa(i) + "\n" }
+	for i := 0; i < layers; i++ {
+		s := strconv.Itoa(i) + "\n"
+		a = append(a, "pa"+s, u(i+1), "qa"+s, u(i))
+		b = append(b, "pb"+s, u(i+1), "qb"+s, u(i))
+	}
+	a = append(append(a, "ca\n", u(layers)), numbered("old", 0, n)...)
+	b = append(append(b, "cb\n", u(layers)), numbered("new", 0, n)...)
+	return a, b
+}
+
+// However deeply anchors nest, a piece is split at most maxSplits times, so
+// the capped search isn't rerun on the same lines once per layer.
+func TestPastTheCapNestedAnchors(t *testing.T) {
+	a, b := nested(400, 2000)
+	ops := checkOps(t, a, b)
+	// Each split keeps its anchor and the shared line in the gap before it.
+	p, m := count(ops)
+	if ctx := len(ops) - p - m; ctx != 2*maxSplits {
+		t.Fatalf("%d context lines, want %d: two for each of %d splits", ctx, 2*maxSplits, maxSplits)
+	}
+}
+
 // pastCapInputs: a large file with >1500 scattered edits, and one with no
 // line in common.
 func pastCapInputs() (scA, scB, nvA, nvB []string) {

@@ -40,16 +40,24 @@ type diffOp struct {
 // split on anchors instead.
 const maxEdits = 1500
 
+// maxSplits bounds how deeply pieces are split. A search that fails costs
+// the most, and a file can be built so that each split leaves nearly all of
+// its lines to be searched again; this keeps any line to maxSplits+1
+// searches.
+const maxSplits = 4
+
 // diffLines is the shortest edit script from a to b (Myers, O(ND)), after
 // trimming what both share at the ends. Where a piece needs more than
 // maxEdits differences it is split on lines that occur exactly once on each
-// side (see anchored); a piece with no such line is replaced wholesale.
+// side (see uniqueAnchors), and the gaps between them likewise; a piece
+// with no such line, or already split maxSplits deep, is replaced wholesale.
 func diffLines(a, b []string) []diffOp {
-	return diffRange(a, b, make([]diffOp, 0, len(a)+len(b)))
+	return diffRange(a, b, 0, make([]diffOp, 0, len(a)+len(b)))
 }
 
-// diffRange appends the edit script from a to b to out.
-func diffRange(a, b []string, out []diffOp) []diffOp {
+// diffRange appends the edit script from a to b to out; depth is how many
+// splits led to this piece.
+func diffRange(a, b []string, depth int, out []diffOp) []diffOp {
 	pre := 0
 	for pre < len(a) && pre < len(b) && a[pre] == b[pre] {
 		pre++
@@ -61,7 +69,7 @@ func diffRange(a, b []string, out []diffOp) []diffOp {
 	for _, l := range a[:pre] {
 		out = append(out, diffOp{' ', l})
 	}
-	out = diffMiddle(a[pre:len(a)-suf], b[pre:len(b)-suf], out)
+	out = diffMiddle(a[pre:len(a)-suf], b[pre:len(b)-suf], depth, out)
 	for _, l := range a[len(a)-suf:] {
 		out = append(out, diffOp{' ', l})
 	}
@@ -69,24 +77,27 @@ func diffRange(a, b []string, out []diffOp) []diffOp {
 }
 
 // diffMiddle diffs pieces with no shared ends: capped Myers, then anchors.
-func diffMiddle(a, b []string, out []diffOp) []diffOp {
+func diffMiddle(a, b []string, depth int, out []diffOp) []diffOp {
 	if len(a) == 0 || len(b) == 0 {
 		return appendReplace(a, b, out)
 	}
 	if ops, ok := myers(a, b, maxEdits); ok {
 		return append(out, ops...)
 	}
-	anchors := uniqueAnchors(a, b)
+	var anchors []anchor
+	if depth < maxSplits {
+		anchors = uniqueAnchors(a, b)
+	}
 	if len(anchors) == 0 {
 		return appendReplace(a, b, out)
 	}
 	pa, pb := 0, 0
 	for _, an := range anchors {
-		out = diffRange(a[pa:an.a], b[pb:an.b], out)
+		out = diffRange(a[pa:an.a], b[pb:an.b], depth+1, out)
 		out = append(out, diffOp{' ', a[an.a]})
 		pa, pb = an.a+1, an.b+1
 	}
-	return diffRange(a[pa:], b[pb:], out)
+	return diffRange(a[pa:], b[pb:], depth+1, out)
 }
 
 func appendReplace(a, b []string, out []diffOp) []diffOp {
