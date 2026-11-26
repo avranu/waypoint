@@ -467,8 +467,7 @@ func (a *activityBuilder) reviewBots(ctx context.Context, actor *Actor, project 
 		where, args = where+" AND r.project_id = (SELECT id FROM projects WHERE key = ?)", append(args, project)
 	}
 	// #nosec G202 -- where is built from fixed conditions; values are bound
-	rows, err := a.s.db.R.QueryContext(ctx, `SELECT r.id, r.status, r.log,
-			(SELECT json_group_object(model, n) FROM (SELECT f.model, count(*) AS n FROM bot_findings f WHERE f.run_id = r.id AND f.state != 'dropped' GROUP BY f.model))
+	rows, err := a.s.db.R.QueryContext(ctx, `SELECT r.id, r.status, r.log, `+runFindingsByModelSQL+`
 		FROM bot_runs r WHERE `+where+` AND r.kind = 'review' AND coalesce(r.finished_at, r.created_at) >= ?`, append(args, a.from)...)
 	if err != nil {
 		return err

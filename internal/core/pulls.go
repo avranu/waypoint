@@ -786,7 +786,7 @@ func (s *Service) ListBotRunsFiltered(ctx context.Context, actor *Actor, project
 }
 
 func (s *Service) runFindings(ctx context.Context, runID int64) ([]BotFinding, error) {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT `+findingCols+` FROM bot_findings f WHERE f.run_id = ? ORDER BY f.id`, runID)
+	rows, err := s.db.R.QueryContext(ctx, runFindingsSQL, runID)
 	if err != nil {
 		return nil, err
 	}

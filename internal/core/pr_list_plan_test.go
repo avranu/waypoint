@@ -183,20 +183,23 @@ func TestPRLinksUseIndexes(t *testing.T) {
 }
 
 // A review run's findings are read by run_id (a pull request's page, the
-// review step, agent activity's count by model): each read uses the index on
-// it, not a scan of the table.
+// review step, agent activity's count by model): each read, as the code
+// sends it, uses the index on it and not a scan of the table.
 func TestFindingsByRunUseTheRunIndex(t *testing.T) {
 	e := newEnv(t)
-	for name, q := range map[string]string{
-		"runFindings": `SELECT ` + findingCols + ` FROM bot_findings f WHERE f.run_id = ? ORDER BY f.id`,
-		"review step": `SELECT severity, placement FROM bot_findings WHERE run_id = ? AND state != 'dropped'`,
-		"by model":    `SELECT f.model, count(*) AS n FROM bot_findings f WHERE f.run_id = ? AND f.state != 'dropped' GROUP BY f.model`,
+	for _, c := range []struct {
+		name, q string
+		args    []any
+	}{
+		{"runFindings", runFindingsSQL, []any{1}},
+		{"review step", runFindingKindsSQL, []any{1}},
+		{"by model", `SELECT r.id, ` + runFindingsByModelSQL + ` FROM bot_runs r WHERE r.kind = 'review'`, nil},
 	} {
-		plan := e.explainPlan(q, 1)
+		plan := e.explainPlan(c.q, c.args...)
 		if !slices.ContainsFunc(plan, func(d string) bool {
 			return strings.Contains(d, "USING INDEX bot_findings_run (run_id=") || strings.Contains(d, "USING COVERING INDEX bot_findings_run (run_id=")
 		}) {
-			t.Errorf("%s does not use bot_findings_run: %v", name, plan)
+			t.Errorf("%s does not use bot_findings_run: %v", c.name, plan)
 		}
 	}
 }
