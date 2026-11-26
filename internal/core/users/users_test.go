@@ -455,23 +455,20 @@ func TestJobTokenWithNilScopeFromTheHookReachesNoProject(t *testing.T) {
 	}
 }
 
-// The system actor is no account, so there is nobody to hand projects to:
-// BeforeDelete is not run for it.
-func TestDeleteUserBySystemActorSkipsBeforeDelete(t *testing.T) {
-	called := false
-	r := newRig(t, Hooks{BeforeDelete: func(context.Context, *kernel.Tx, int64, int64) error {
-		called = true
+// The hook hears of a delete by the system actor too, as by 0, and can refuse
+// it.
+func TestDeleteUserBySystemActorRunsBeforeDelete(t *testing.T) {
+	var by int64 = -1
+	r := newRig(t, Hooks{BeforeDelete: func(_ context.Context, _ *kernel.Tx, _, b int64) error {
+		by = b
 		return nil
 	}})
 	u, _ := r.person(t, "robin")
 	if err := r.svc.DeleteUser(r.Ctx, kernel.SystemActor(), u.ID); err != nil {
 		t.Fatal(err)
 	}
-	if called {
-		t.Error("BeforeDelete ran for the system actor")
-	}
-	if _, err := r.st.UserByID(r.Ctx, u.ID); !errors.Is(err, kernel.ErrNotFound) {
-		t.Errorf("the user is still there: %v", err)
+	if by != 0 {
+		t.Errorf("BeforeDelete by = %d, want 0", by)
 	}
 }
 

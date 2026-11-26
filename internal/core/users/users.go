@@ -61,9 +61,9 @@ type Hooks struct {
 	// reaches no project.
 	JobScope func(ctx context.Context, jobID int64, u *kernel.User) (map[int64]int, error)
 	// BeforeDelete runs in the transaction that deletes an account, before the
-	// row goes: by is who deletes it. It is not called when no one (actor id
-	// 0) deletes. It is not an event because it must run before the account's
-	// memberships go with the row.
+	// row goes: by is who deletes it, 0 for the system actor, which is no
+	// account. An error refuses the delete. It is not an event because it must
+	// run before the account's memberships go with the row.
 	BeforeDelete func(ctx context.Context, t *kernel.Tx, userID, by int64) error
 }
 
@@ -1179,7 +1179,7 @@ func (s *Service) DeleteUser(ctx context.Context, actor *kernel.Actor, id int64)
 		return kernel.Invalid("you cannot delete yourself")
 	}
 	return s.st.k.Write(ctx, actor, func(t *kernel.Tx) error {
-		if actor.ID() != 0 && s.st.hooks.BeforeDelete != nil {
+		if s.st.hooks.BeforeDelete != nil {
 			if err := s.st.hooks.BeforeDelete(ctx, t, id, actor.ID()); err != nil {
 				return err
 			}
