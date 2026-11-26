@@ -294,7 +294,7 @@ func (c *cli) waitShipChecks(task string, pull int64, number int, head string, b
 		return false, nil
 	case errors.Is(err, errPollBound):
 		if announced {
-			c.println(cmpStr(still, fmt.Sprintf("PR %d's checks are still running.", number)) + " Stopped waiting here; "+checksAfterWait)
+			c.println(cmpStr(still, fmt.Sprintf("PR %d's checks are still running.", number)) + " Stopped waiting here; " + checksAfterWait)
 		}
 		return false, nil
 	case err != nil:
