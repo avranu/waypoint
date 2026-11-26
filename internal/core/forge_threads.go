@@ -267,7 +267,7 @@ func (c *httpForgeClient) graphql(ctx context.Context, f *Forge, query string, v
 	if f.token != "" {
 		req.Header.Set("Authorization", "Bearer "+f.token)
 	}
-	resp, err := c.client(ctx).Do(req)
+	resp, err := c.send(f, req)
 	if err != nil {
 		return err
 	}

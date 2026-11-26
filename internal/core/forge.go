@@ -1750,7 +1750,7 @@ func (c *httpForgeClient) do(ctx context.Context, f *Forge, method, path string,
 			req.Header.Set("Authorization", "token "+f.token)
 		}
 	}
-	resp, err := c.client(ctx).Do(req)
+	resp, err := c.send(f, req)
 	if err != nil {
 		return err
 	}

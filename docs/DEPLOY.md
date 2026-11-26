@@ -715,7 +715,11 @@ tokens never qualify):
   was called off: a server stopping, a caller hanging up), average and longest time (hours
   are kept 90 days), with its problems.
 - `wp server metrics [--grep RE]`: the `/metrics` text, without the metrics
-  token.
+  token. What Waypoint asks the forges is counted in
+  `waypoint_forge_requests_total{kind,method,route,code}` (route a template
+  like `/repos/{repo}/pulls/{n}`; code `2xx`, `404`, `429`, `5xx`, or `error`
+  when no answer came) and `waypoint_forge_request_duration_seconds`:
+  `wp server metrics --grep waypoint_forge_requests_total`.
 - `wp ai usage [--since 24h] [--by task|model|outcome|status|hour|day|provider]
   [--task NAME]`: every request Waypoint sent an AI provider (table
   `ai_calls`, kept 30 days): requests, failures, rate limits, tokens and
