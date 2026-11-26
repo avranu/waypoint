@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 const goJSONPass = `{"Action":"run","Package":"x/a","Test":"TestA"}
@@ -364,6 +365,99 @@ func TestTestsumBareWordIsCommand(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := run([]string{"testsum", "run-tests.sh"}, &out, &errb); code == 0 || !strings.Contains(errb.String(), "wp testsum -- sh run-tests.sh") {
 		t.Errorf("unparsed file: %d %q %q", code, out.String(), errb.String())
+	}
+}
+
+func TestTestsumCutOutputIsKept(t *testing.T) {
+	t.Setenv("WAYPOINT_TESTOUT_DIR", t.TempDir())
+	var b strings.Builder
+	for i := 0; i < 30; i++ {
+		name := fmt.Sprintf("T%02d", i)
+		b.WriteString(`{"Action":"output","Package":"p","Test":"` + name + `","Output":"f_test.go:1: boom ` + name + `\n"}` + "\n")
+		b.WriteString(`{"Action":"fail","Package":"p","Test":"` + name + `"}` + "\n")
+	}
+	data := []byte(b.String())
+	res, _ := parseGoJSON(data)
+	got := res.renderSaving(data)
+	if n := strings.Count(got, "\n"); n > testsumMaxLines {
+		t.Errorf("%d lines, cap %d", n, testsumMaxLines)
+	}
+	if strings.Contains(got, "run the tests directly") {
+		t.Errorf("still tells the agent to run the tests outside the slot:\n%s", got)
+	}
+	m := regexp.MustCompile(`Full output: (\S+) \((\d+) lines\)\n$`).FindStringSubmatch(got)
+	if m == nil {
+		t.Fatalf("no path on the last line:\n%s", got)
+	}
+	body, err := os.ReadFile(m[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "boom T29") || strings.Contains(string(body), `"Action"`) {
+		t.Errorf("file is not the plain output of every test:\n%s", body)
+	}
+	if fi, _ := os.Stat(m[1]); fi.Mode().Perm() != 0o600 {
+		t.Errorf("mode %v, want 0600", fi.Mode().Perm())
+	}
+
+	short := &testResult{Passed: 3, Seconds: 1}
+	if out := short.renderSaving([]byte("x\n")); strings.Contains(out, "Full output") {
+		t.Errorf("a summary that was not cut names a file:\n%s", out)
+	}
+	if ents, _ := os.ReadDir(filepath.Dir(m[1])); len(ents) != 1 {
+		t.Errorf("%d files, want 1: an uncut summary must not save", len(ents))
+	}
+}
+
+// The count bound leaves files another session was only just told about.
+func TestTestOutputKeepsFreshFilesBeyondTheCount(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WAYPOINT_TESTOUT_DIR", dir)
+	for i := 0; i < testOutKeep+5; i++ {
+		if _, _, ok := saveTestOutput([]byte("y\n")); !ok {
+			t.Fatal("not saved")
+		}
+	}
+	if ents, _ := os.ReadDir(dir); len(ents) != testOutKeep+5 {
+		t.Errorf("%d fresh files kept, want %d", len(ents), testOutKeep+5)
+	}
+	pruneTestOutput(dir, time.Now().Add(testOutFresh+time.Minute))
+	if ents, _ := os.ReadDir(dir); len(ents) != testOutKeep {
+		t.Errorf("%d files kept once no longer fresh, want %d", len(ents), testOutKeep)
+	}
+}
+
+func TestTestOutputFilesAreBounded(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WAYPOINT_TESTOUT_DIR", dir)
+	now := time.Now()
+	for i := 0; i < testOutKeep+5; i++ {
+		p := filepath.Join(dir, fmt.Sprintf("testsum-%02d.txt", i))
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		mod := now.Add(-testOutFresh - time.Duration(i+1)*time.Minute)
+		if err := os.Chtimes(p, mod, mod); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := filepath.Join(dir, "testsum-old.txt")
+	_ = os.WriteFile(old, []byte("x"), 0o600)
+	_ = os.Chtimes(old, now.Add(-2*testOutAge), now.Add(-2*testOutAge))
+	other := filepath.Join(dir, "notes.txt")
+	_ = os.WriteFile(other, []byte("x"), 0o600)
+	if _, _, ok := saveTestOutput([]byte("y\n")); !ok {
+		t.Fatal("not saved")
+	}
+	ents, _ := os.ReadDir(dir)
+	if len(ents) != testOutKeep+1 { // the newest testOutKeep, plus a file that isn't ours
+		t.Errorf("%d files kept, want %d", len(ents), testOutKeep+1)
+	}
+	if _, err := os.Stat(old); err == nil {
+		t.Error("a file past the age limit was kept")
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Error("a file that isn't ours was removed")
 	}
 }
 

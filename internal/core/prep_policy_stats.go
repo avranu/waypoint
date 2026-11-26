@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"sync"
 )
 
 // prepObs is one task in a fit.
@@ -460,6 +461,35 @@ func (r *prepRand) norm() float64 {
 	return m * math.Cos(2*math.Pi*v)
 }
 
+// prepSeed starts the generator of the standard normals every fit draws from.
+const prepSeed = 0x5eed
+
+// prepNormals is the standard normals sample turns into draws, k for each of
+// prepDraws: the seed is fixed, so every fit of k arms uses the same ones and
+// they are worked out once. Each is a log, a square root and a sine or cosine,
+// where a draw from them is k(k+1)/2 multiply-adds, so they were most of
+// sample's work. The slice is shared and never written after it is stored.
+func prepNormals(k int) []float64 {
+	prepNormalsByArms.Lock()
+	defer prepNormalsByArms.Unlock()
+	if z, ok := prepNormalsByArms.k[k]; ok {
+		return z
+	}
+	r := &prepRand{s: prepSeed}
+	z := make([]float64, prepDraws*k)
+	for i := range z {
+		z[i] = r.norm()
+	}
+	prepNormalsByArms.k[k] = z
+	return z
+}
+
+// prepNormalsByArms keeps prepNormals' normals by arm count.
+var prepNormalsByArms = struct {
+	sync.Mutex
+	k map[int][]float64
+}{k: map[int][]float64{}}
+
 // sample draws the effects prepDraws times, once.
 func (f *prepFit) sample() [][]float64 {
 	if f.draws != nil {
@@ -481,18 +511,16 @@ func (f *prepFit) sample() [][]float64 {
 			}
 		}
 	}
-	r := &prepRand{s: 0x5eed}
+	zs := prepNormals(k)
 	out := make([][]float64, prepDraws)
-	zs := make([]float64, k)
+	rows := make([]float64, prepDraws*k)
 	for n := range out {
-		for i := range k {
-			zs[i] = r.norm()
-		}
-		row := make([]float64, k)
+		z := zs[n*k : (n+1)*k]
+		row := rows[n*k : (n+1)*k : (n+1)*k]
 		for i := range k {
 			row[i] = f.Mean[i]
 			for j := 0; j <= i; j++ {
-				row[i] += l[i][j] * zs[j]
+				row[i] += l[i][j] * z[j]
 			}
 		}
 		out[n] = row

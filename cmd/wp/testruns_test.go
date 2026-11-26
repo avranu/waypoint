@@ -256,6 +256,21 @@ func TestRecorderKeepsNoRunWhenTheEndTreeIsUnknown(t *testing.T) {
 	}
 }
 
+// A run that only compiled is not kept as a pass; a failure of it is.
+func TestRecorderKeepsNoCompileOnlyPass(t *testing.T) {
+	tempRepo(t)
+	r := &testRunRecorder{argv: []string{"go", "test"}, compileOnly: true, snap: func() string { return "abc" }}
+	r.started()
+	r.finish(&testResult{}, 0)
+	if runs := readTestRuns(testRunsPath()); len(runs) != 0 {
+		t.Fatalf("a compile-only pass was kept: %+v", runs)
+	}
+	r.finish(&testResult{}, 1)
+	if runs := readTestRuns(testRunsPath()); len(runs) != 1 || runs[0].Outcome != runFail {
+		t.Errorf("a compile-only failure: %+v", runs)
+	}
+}
+
 // What wp ship really sends has to get past the real endpoint, whose decoder
 // refuses a field it doesn't know at any depth (WP-802).
 // fillEveryField sets each field to something that survives omitempty, so a
@@ -474,6 +489,7 @@ func TestRecordedCommandReruns(t *testing.T) {
 	for cmd, want := range map[string]string{
 		"go test ./...":                    "go test ./...",
 		"curl -H••• x":                     "",
+		"wp test" + scopedMark:             "wp test",
 		strings.Repeat("a", testRunCmdMax): "",
 	} {
 		if got := rerunnable(cmd); got != want {

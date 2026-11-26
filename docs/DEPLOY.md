@@ -349,6 +349,23 @@ and the merge line's candidates, carry no labels and keep their usual runners.
 puts it ahead in its merge line and its babysit rounds ahead of the line
 (WP design note 357, "An urgent pull request cuts the line", WP-686).
 
+**The priority lane** (WP-1991, WP-ADR32): `current` and the `backend` and
+`e2e` aggregates, the jobs of seconds that every run waits on, ask for
+`forgejo-ci-priority`. Forgejo gives a free slot to the job that became ready
+first, so on a full pool each of them waited a whole turn, three turns a run.
+The runner pool's configuration keeps two slots that take only this label, so
+these jobs start in seconds; every other runner offers the label too, so
+while those two slots are down the jobs wait their turn as before and never
+wait forever. An urgent pull request's go to the urgent lane with its other
+jobs. Only jobs of seconds belong on it: `release` and `deploy` run for
+minutes and ask for `forgejo-ci`. The two slots are a runner of their own in
+the pool's configuration; until it is started the label reserves nothing
+(`wp ci status -A --json` gives each host's `labels` and `capacity`).
+
+A merge line candidate whose heads don't merge fails in `current`, which
+builds the merges first, and its other jobs skip: the line reads the conflict
+from that one light job instead of waiting for a heavy job to get a slot.
+
 **The CI job image** (WP-402): the heavy jobs (backend shards, lint, e2e
 shards) don't run in the pool's image but in Waypoint's own,
 the `waypoint-ci` package `.forgejo/ci-image/build.sh` pushes (its `REPO`), built from `.forgejo/ci-image/Dockerfile`.

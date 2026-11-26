@@ -33,6 +33,19 @@ type RoundStats struct {
 	// Nitpicks: what scoring review comments and review findings did
 	// (WP-695).
 	Nitpicks *NitpickStats `json:"nitpicks,omitempty"`
+	// Failed checks a waiting author took instead of a round (WP-1878): how
+	// many; of them a new head came before the deadline (any new head, not
+	// only the author's), a round took, the checks passed on the same head, or
+	// the hand-off is still pending. The four add up to the first.
+	AuthorHandoffs int `json:"author_handoffs"`
+	AuthorFixed    int `json:"author_fixed"`
+	AuthorFellBack int `json:"author_fell_back"`
+	AuthorCleared  int `json:"author_cleared"`
+	AuthorPending  int `json:"author_pending"`
+	// AuthorFixedMedianMinutes: the median minutes from hand-off to a new head,
+	// over the fixed hand-offs that recorded when they closed (older ones
+	// didn't); zero when none did.
+	AuthorFixedMedianMinutes float64 `json:"author_fixed_median_minutes,omitempty"`
 }
 
 // maxReplayDays bounds a replay: it reads each pull request's files from
@@ -69,21 +82,22 @@ func (s *Service) GetRoundStats(ctx context.Context, actor *Actor, projectRef st
 	since := s.now().AddDate(0, 0, -days)
 	vis, args := prVisible(actor, projectID)
 	// #nosec G202 -- fixed conditions; values are bound
-	rows, err := s.db.R.QueryContext(ctx, `SELECT b.pr_id, b.rounds, b.state = ? AND coalesce(b.ended_at, 0) >= ? FROM babysits b JOIN pull_requests p ON p.id = b.pr_id
+	rows, err := s.db.R.QueryContext(ctx, `SELECT b.pr_id, b.rounds, b.state = ? AND coalesce(b.ended_at, 0) >= ?, b.author_handoffs FROM babysits b JOIN pull_requests p ON p.id = b.pr_id
 		WHERE `+vis+` AND b.updated_at >= ? ORDER BY b.id`, append([]any{BabysitMerged, since.UnixMilli()}, append(args, since.UnixMilli())...)...)
 	if err != nil {
 		return nil, err
 	}
 	type kept struct {
-		pr     int64
-		rounds []BabysitRound
-		merged bool
+		pr       int64
+		rounds   []BabysitRound
+		merged   bool
+		handoffs string
 	}
 	var all []kept
 	for rows.Next() {
 		var k kept
 		var raw string
-		if err := rows.Scan(&k.pr, &raw, &k.merged); err != nil {
+		if err := rows.Scan(&k.pr, &raw, &k.merged, &k.handoffs); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
@@ -99,11 +113,19 @@ func (s *Service) GetRoundStats(ctx context.Context, actor *Actor, projectRef st
 	}
 	out := &RoundStats{Days: days, Class: map[string]int{}, WorkClass: map[string]int{}}
 	prs := map[int64]bool{}
+	var fixedMinutes []float64
 	for _, k := range all {
 		if k.merged {
 			out.Merged++
 			out.MergedRounds += len(k.rounds)
 		}
+		h := handoffCounts(k.handoffs, since)
+		out.AuthorHandoffs += h.Handed
+		out.AuthorFixed += h.Fixed
+		out.AuthorFellBack += h.FellBack
+		out.AuthorCleared += h.Cleared
+		out.AuthorPending += h.Pending
+		fixedMinutes = append(fixedMinutes, h.FixedMinutes...)
 		var inSpan []BabysitRound
 		for _, r := range k.rounds {
 			if !r.At.Before(since) {
@@ -135,6 +157,14 @@ func (s *Service) GetRoundStats(ctx context.Context, actor *Actor, projectRef st
 		}
 	}
 	out.PRs = len(prs)
+	if len(fixedMinutes) > 0 {
+		slices.Sort(fixedMinutes)
+		m := len(fixedMinutes) / 2
+		out.AuthorFixedMedianMinutes = fixedMinutes[m]
+		if len(fixedMinutes)%2 == 0 {
+			out.AuthorFixedMedianMinutes = (fixedMinutes[m-1] + fixedMinutes[m]) / 2
+		}
+	}
 	n, err := s.nitpickStats(ctx, actor, projectID, since.UnixMilli())
 	if err != nil {
 		return nil, err

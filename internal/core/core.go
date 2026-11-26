@@ -88,6 +88,12 @@ type Service struct {
 
 	feedbackBusy atomic.Bool
 
+	// syncMiss is the repos whose forge sync last answered 404, by repo id:
+	// the periodic sync waits longer after each one (repoMissBackoff). Kept in
+	// memory: a restart tries them again and says so again.
+	syncMissMu sync.Mutex
+	syncMiss   map[int64]repoMiss
+
 	rnd             func() float64
 	beta            func(a, b float64) float64
 	trustSeeds      []string
@@ -183,6 +189,7 @@ type Service struct {
 	stopWaits        stopWaits
 	shipWaits        shipWaits
 	babysitLocks     keyedLocks
+	babysitSweep     sweepMark // the babysit sweep that is running, if one is (CheckBabysits)
 	coverLooked      sync.Map
 	shipLocks        keyedLocks
 	branchLocks      namedLocks

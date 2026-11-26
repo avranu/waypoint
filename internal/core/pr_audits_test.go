@@ -335,6 +335,10 @@ func TestPRAuditLimitedHoldsNothing(t *testing.T) {
 	pr := be.openMine()
 	be.start(pr)
 	be.endAudit(box, "failed")
+	be.setClock(be.clockNow().Add(auditRetryStep + time.Minute))
+	be.runnerOnline()
+	be.s.CheckAudits(be.ctx)
+	be.endAudit(box, "failed")
 	be.step()
 	if b := be.babysit(); b.Round != 0 || len(be.jobs()) != 0 {
 		t.Fatalf("a round after a failed audit: %+v jobs %v", b, be.jobs())
