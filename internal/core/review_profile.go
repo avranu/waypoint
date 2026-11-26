@@ -192,7 +192,7 @@ var runnerReviewModels = map[string][]string{
 
 // ReviewModelOptions lists what the person can pick for review_model.
 func (s *Service) ReviewModelOptions(ctx context.Context, a *Actor) (*ReviewModelOptions, error) {
-	if err := a.need(PermAgentsRead); err != nil {
+	if err := a.Need(PermAgentsRead); err != nil {
 		return nil, err
 	}
 	out := &ReviewModelOptions{DefaultText: DefaultReviewText, MaxText: maxReviewText,
@@ -226,7 +226,7 @@ func (s *Service) ReviewModelOptions(ctx context.Context, a *Actor) (*ReviewMode
 	}
 	seen := map[string]bool{}
 	for _, r := range runners {
-		if r.Owner.ID != a.id() {
+		if r.Owner.ID != a.ID() {
 			continue
 		}
 		for _, c := range r.CLIs {

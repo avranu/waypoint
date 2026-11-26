@@ -20,10 +20,10 @@ func TestInboxGroupsAndStale(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := e.s.nowMS() - 5*24*3600*1000
-	if _, err := e.s.db.W.Exec(`INSERT INTO notifications(user_id, kind, title, body, url, created_at) VALUES (?, 'quota', 'old alert', '', '', ?)`, sam.id(), old); err != nil {
+	if _, err := e.s.db.W.Exec(`INSERT INTO notifications(user_id, kind, title, body, url, created_at) VALUES (?, 'quota', 'old alert', '', '', ?)`, sam.ID(), old); err != nil {
 		t.Fatal(err)
 	}
-	e.s.notify(e.ctx, sam.id(), nil, NotifyQuota, "fresh alert", "")
+	e.s.notify(e.ctx, sam.ID(), nil, NotifyQuota, "fresh alert", "")
 
 	v, err := e.s.Inbox(e.ctx, sam)
 	if err != nil {

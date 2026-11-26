@@ -73,11 +73,11 @@ func (s *Service) compileQuery(ctx context.Context, actor *Actor, q wql.Query, p
 	c.with = `WITH RECURSIVE shared(id, depth) AS (
 		SELECT issue_id, 0 FROM issue_shares WHERE user_id = ?
 		UNION ALL SELECT x.id, sh.depth + 1 FROM issues x JOIN shared sh ON x.parent_id = sh.id WHERE sh.depth < 50)`
-	c.jargs = append(c.jargs, actor.id())
-	switch member, margs := actor.memberProjects(RoleViewer); {
-	case actor.scope != nil:
+	c.jargs = append(c.jargs, actor.ID())
+	switch member, margs := actor.MemberProjects(RoleViewer); {
+	case actor.Scope != nil:
 		c.add(`i.project_id IN `+member, margs...)
-	case !actor.isAdmin():
+	case !actor.IsAdmin():
 		c.add(`(i.project_id IN `+member+` OR i.id IN (SELECT id FROM shared))`, margs...)
 	}
 	if actor.HidesDrafts() {
@@ -607,7 +607,7 @@ func (s *Service) isCond(actor *Actor, v, today, key string) (string, []any, err
 	case "active", "started", "in_progress", "wip":
 		return "st.category = 'in_progress'", nil, nil
 	case "mine":
-		return "EXISTS (SELECT 1 FROM issue_assignees x WHERE x.issue_id = i.id AND x.user_id = ?)", []any{actor.id()}, nil
+		return "EXISTS (SELECT 1 FROM issue_assignees x WHERE x.issue_id = i.id AND x.user_id = ?)", []any{actor.ID()}, nil
 	case "unassigned":
 		return "NOT EXISTS (SELECT 1 FROM issue_assignees x WHERE x.issue_id = i.id)", nil, nil
 	case "assigned", "assignee", "assignees":
@@ -626,7 +626,7 @@ func (s *Service) isCond(actor *Actor, v, today, key string) (string, []any, err
 	case "superseded", "replaced":
 		return "EXISTS (SELECT 1 FROM issue_relations r WHERE r.target_id = i.id AND r.kind = 'supersedes')", nil, nil
 	case "watching", "watched":
-		return "EXISTS (SELECT 1 FROM issue_watchers x WHERE x.issue_id = i.id AND x.user_id = ?)", []any{actor.id()}, nil
+		return "EXISTS (SELECT 1 FROM issue_watchers x WHERE x.issue_id = i.id AND x.user_id = ?)", []any{actor.ID()}, nil
 	case "shared":
 		return "EXISTS (SELECT 1 FROM issue_shares x WHERE x.issue_id = i.id)", nil, nil
 	case "points", "estimate", "estimated":

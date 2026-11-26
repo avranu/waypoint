@@ -291,7 +291,7 @@ func (s *Service) SessionDecisionsTold(ctx context.Context, actor *Actor, ids []
 	return s.write(ctx, actor, func(t *tx) error {
 		// #nosec G202 -- only ? placeholders are joined in
 		_, err := t.ExecContext(ctx, `UPDATE requests SET delivered_at = ? WHERE session_id = ? AND user_id = ? AND delivered_at IS NULL AND decided_at IS NOT NULL AND via = '' AND id IN (`+placeholders(len(ids))+`)`,
-			append([]any{s.nowMS(), actor.Session, actor.id()}, int64Args(ids)...)...)
+			append([]any{s.nowMS(), actor.Session, actor.ID()}, int64Args(ids)...)...)
 		return err
 	})
 }

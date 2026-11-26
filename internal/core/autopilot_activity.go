@@ -25,7 +25,7 @@ type AutopilotActivity struct {
 // it started and the spend at list price. `offsetMin` is the viewer's UTC
 // offset in minutes, so days are theirs.
 func (s *Service) AutopilotActivity(ctx context.Context, a *Actor, days, offsetMin int) (*AutopilotActivity, error) {
-	if err := a.need(PermAgentsRead); err != nil {
+	if err := a.Need(PermAgentsRead); err != nil {
 		return nil, err
 	}
 	if days < 1 || days > 60 {
@@ -34,7 +34,7 @@ func (s *Service) AutopilotActivity(ctx context.Context, a *Actor, days, offsetM
 	if offsetMin < -14*60 || offsetMin > 14*60 {
 		offsetMin = 0
 	}
-	uid := a.id()
+	uid := a.ID()
 	off := int64(offsetMin) * 60_000
 	const dayMS = int64(24 * time.Hour / time.Millisecond)
 	now := s.nowMS()

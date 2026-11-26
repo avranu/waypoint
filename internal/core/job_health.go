@@ -960,10 +960,10 @@ func (s *Service) AckJobProblem(ctx context.Context, a *Actor, id int64, reason 
 	if err := a.canReadServer(); err != nil {
 		return nil, err
 	}
-	if err := a.need(PermAdmin); err != nil {
+	if err := a.Need(PermAdmin); err != nil {
 		return nil, err
 	}
-	if err := a.requirePersonDirect("acknowledging a server problem"); err != nil {
+	if err := a.RequirePersonDirect("acknowledging a server problem"); err != nil {
 		return nil, err
 	}
 	if a.User == nil || a.User.ID == 0 {

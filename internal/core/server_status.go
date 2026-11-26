@@ -19,10 +19,10 @@ import (
 
 // canReadServer is the access check of every server read.
 func (a *Actor) canReadServer() error {
-	if err := a.need(PermServerRead); err != nil {
+	if err := a.Need(PermServerRead); err != nil {
 		return err
 	}
-	if !a.isAdmin() {
+	if !a.IsAdmin() {
 		return forbidden("the server's status, log and metrics are for admins")
 	}
 	return nil

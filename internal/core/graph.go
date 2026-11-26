@@ -738,11 +738,11 @@ func (s *Service) newWalk(ctx context.Context, actor *Actor, guesses bool) (*gra
 // visible: the actor may read the node.
 func (w *graphWalk) visible(n int32) bool {
 	r := &w.g.nodes[n]
-	if r.typ == KSession && r.user == w.actor.id() && w.actor.scope == nil {
+	if r.typ == KSession && r.user == w.actor.ID() && w.actor.Scope == nil {
 		return true
 	}
 	if r.project == 0 {
-		return r.typ != KSession || w.actor.isAdmin()
+		return r.typ != KSession || w.actor.IsAdmin()
 	}
 	ok, seen := w.roles[r.project]
 	if !seen {
@@ -1182,7 +1182,7 @@ func (s *Service) Neighbourhood(ctx context.Context, actor *Actor, q GraphQuery)
 	q.Limit = min(q.Limit, 500)
 	r := w.walk(src, q.Hops, -1, graphMaxVisited)
 	view := &GraphView{Center: w.graphNode(src), Nodes: []GraphHit{}, Edges: []GraphEdge{}, Guesses: q.Guesses}
-	if actor.isAdmin() {
+	if actor.IsAdmin() {
 		view.Size = &GraphSize{Nodes: len(w.g.nodes), Edges: len(w.g.edges), Built: w.g.built}
 	}
 	shown := map[int32]bool{src: true}

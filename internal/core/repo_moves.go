@@ -171,7 +171,7 @@ type MoveOptions struct {
 // made under the new name (automatic projects took the repo for a new
 // one) is replaced; the project it made stays, for a person to delete.
 func (s *Service) MoveProjectRepo(ctx context.Context, actor *Actor, projectRef string, id int64, newRepo string, opt MoveOptions) (*ProjectRepo, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	p, err := s.projectByRef(ctx, s.db.R, projectRef)
@@ -286,7 +286,7 @@ func (s *Service) moveRepo(ctx context.Context, actor *Actor, f *Forge, old, rep
 	}
 	var moved []int64
 	forgeActor := ""
-	if actor.id() == 0 {
+	if actor.ID() == 0 {
 		forgeActor = f.Name
 	}
 	err := s.write(ctx, actor, func(t *tx) error {

@@ -55,11 +55,11 @@ func validOrgFor(kind, org string) bool {
 
 func (s *Service) adminForge(ctx context.Context, actor *Actor, forgeID int64, write bool) (*Forge, error) {
 	if write {
-		if err := actor.canWrite(); err != nil {
+		if err := actor.CanWrite(); err != nil {
 			return nil, err
 		}
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, ErrForbidden
 	}
 	return s.forgeByID(ctx, forgeID)

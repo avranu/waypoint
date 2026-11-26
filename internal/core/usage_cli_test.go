@@ -191,7 +191,7 @@ func TestUsageAgentsReadWithoutCommandText(t *testing.T) {
 			t.Errorf("an admin's agent reading %s: %v", who, err)
 		}
 	}
-	if _, err := e.s.UsageOverview(e.ctx, &Actor{User: e.me.User, Agent: "x", scope: map[int64]int{}}, UsageQuery{Days: 30}); !errors.Is(err, ErrForbidden) {
+	if _, err := e.s.UsageOverview(e.ctx, &Actor{User: e.me.User, Agent: "x", Scope: map[int64]int{}}, UsageQuery{Days: 30}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("a job's token: %v", err)
 	}
 	narrow := &Actor{User: e.me.User, Agent: "x", Permissions: PermissionSet{PermAgentsRead: true}}

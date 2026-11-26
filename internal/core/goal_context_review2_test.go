@@ -26,7 +26,7 @@ func TestGoalContextDrawOnlyNewClaim(t *testing.T) {
 		t.Fatal("a peek or resume drew")
 	}
 	e.exec(`INSERT INTO agent_runs(issue_id, agent, started_at, ended_at, outcome) VALUES (?,?,?,?,'expired')`,
-		i.ID, e.ag.agentName(), e.s.nowMS()-3600_000, e.s.nowMS()-1800_000)
+		i.ID, e.ag.AgentName(), e.s.nowMS()-3600_000, e.s.nowMS()-1800_000)
 	e.take(e.ag, i.ID, "next")
 	if e.rows(i.ID) != 0 {
 		t.Fatal("a claim after earlier work drew")

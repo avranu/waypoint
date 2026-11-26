@@ -155,10 +155,10 @@ func cleanAutopilotText(v, what, def string) (string, error) {
 
 // SetAutopilotText words autopilot for every project (admins, people only).
 func (s *Service) SetAutopilotText(ctx context.Context, actor *Actor, in AutopilotTextInput) (*AutopilotText, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("only admins can word autopilot for every project")
 	}
-	if err := actor.requireHuman("wording autopilot"); err != nil {
+	if err := actor.RequireHuman("wording autopilot"); err != nil {
 		return nil, err
 	}
 	parts := []struct {

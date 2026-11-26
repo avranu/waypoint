@@ -207,7 +207,7 @@ func TestSessionsAlwaysHaveAKind(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.s.db.W.Exec(`INSERT INTO agent_sessions(user_id, machine, cli_id, started_at, last_seen_at) VALUES (?, 'box', 'raw', 1, 1)`, e.admin.id()); err != nil {
+	if _, err := e.s.db.W.Exec(`INSERT INTO agent_sessions(user_id, machine, cli_id, started_at, last_seen_at) VALUES (?, 'box', 'raw', 1, 1)`, e.admin.ID()); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := e.s.db.R.Query(`SELECT cli_id, kind FROM agent_sessions`)

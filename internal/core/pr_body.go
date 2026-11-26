@@ -446,7 +446,7 @@ type PRBodyReport struct {
 // PRBodies reports the comparison (admins): counts over days, and the
 // latest show pairs.
 func (s *Service) PRBodies(ctx context.Context, actor *Actor, days, show int) (*PRBodyReport, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("only admins can read the PR description comparison")
 	}
 	if days <= 0 {
@@ -524,10 +524,10 @@ func (s *Service) PRBodies(ctx context.Context, actor *Actor, days, show int) (*
 // SetPRBodyMode switches what the model's descriptions are for (admins,
 // people only): shadow, model or template.
 func (s *Service) SetPRBodyMode(ctx context.Context, actor *Actor, mode string) error {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return forbidden("only admins can switch PR descriptions")
 	}
-	if err := actor.requireHuman("switching PR descriptions"); err != nil {
+	if err := actor.RequireHuman("switching PR descriptions"); err != nil {
 		return err
 	}
 	mode = strings.TrimSpace(mode)

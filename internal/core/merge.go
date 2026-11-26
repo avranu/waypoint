@@ -595,7 +595,7 @@ func (s *Service) refuseDiagnoseMerge(ctx context.Context, pr *PullRequest) erro
 // merge when it becomes ready (at once if it already is). Agents may use it
 // on their own pull requests. Merges are audited.
 func (s *Service) MergePR(ctx context.Context, actor *Actor, prID int64, in MergeInput) (res *MergeResult, err error) {
-	if err := actor.need(PermPullsMerge); err != nil {
+	if err := actor.Need(PermPullsMerge); err != nil {
 		return nil, err
 	}
 	pr, err := s.prByID(ctx, s.db.R, prID)
@@ -683,7 +683,7 @@ func (s *Service) MergePR(ctx context.Context, actor *Actor, prID int64, in Merg
 
 // DisarmMerge takes merge-when-ready off a pull request.
 func (s *Service) DisarmMerge(ctx context.Context, actor *Actor, prID int64) error {
-	if err := actor.need(PermPullsMerge); err != nil {
+	if err := actor.Need(PermPullsMerge); err != nil {
 		return err
 	}
 	pr, err := s.prByID(ctx, s.db.R, prID)
@@ -716,7 +716,7 @@ func (s *Service) armMerge(ctx context.Context, actor *Actor, pr *PullRequest, s
 		return nil, err
 	}
 	err = s.write(ctx, actor, func(t *tx) error {
-		agent := actor.agentName()
+		agent := actor.AgentName()
 		if agent == "" && actor.Automation != nil {
 			agent = automationAgentPrefix + actor.Automation.Name
 		}

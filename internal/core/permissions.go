@@ -316,7 +316,7 @@ func (a *Actor) Allows(p Permission) bool { return a == nil || a.Permissions.Has
 
 // need refuses an actor whose token lacks p, and records the refusal so
 // the token's owner sees it on the settings page.
-func (a *Actor) need(p Permission) error {
+func (a *Actor) Need(p Permission) error {
 	if a.Allows(p) {
 		return nil
 	}
@@ -402,11 +402,11 @@ func (s *Service) tokenRefusals(ctx context.Context, ids []int64) (map[int64][]T
 
 // ClearTokenRefusals forgets a token's refusals.
 func (s *Service) ClearTokenRefusals(ctx context.Context, actor *Actor, id int64) error {
-	if err := actor.canManageTokens(); err != nil {
+	if err := actor.CanManageTokens(); err != nil {
 		return err
 	}
 	var n int
-	if err := s.db.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_tokens WHERE id = ? AND user_id = ?`, id, actor.id()).Scan(&n); err != nil {
+	if err := s.db.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_tokens WHERE id = ? AND user_id = ?`, id, actor.ID()).Scan(&n); err != nil {
 		return err
 	}
 	if n == 0 {
@@ -416,11 +416,11 @@ func (s *Service) ClearTokenRefusals(ctx context.Context, actor *Actor, id int64
 	return err
 }
 
-// canManageTokens refuses permission tokens: whatever they were granted,
+// CanManageTokens refuses permission tokens: whatever they were granted,
 // they can't make, change or reveal tokens, so they can't grant themselves
 // more.
-func (a *Actor) canManageTokens() error {
-	if err := a.canWrite(); err != nil {
+func (a *Actor) CanManageTokens() error {
+	if err := a.CanWrite(); err != nil {
 		return err
 	}
 	if a.Restricted() {
@@ -441,7 +441,7 @@ type TokenPatch struct {
 // UpdateAPIToken changes one of the actor's tokens. Changing what a token
 // may do is for people: an agent can't widen its own or another's access.
 func (s *Service) UpdateAPIToken(ctx context.Context, actor *Actor, id int64, p TokenPatch) (*APIToken, error) {
-	if err := actor.canManageTokens(); err != nil {
+	if err := actor.CanManageTokens(); err != nil {
 		return nil, err
 	}
 	if (p.SetPermissions || p.ReadOnly != nil) && actor.IsAgent() {
@@ -473,7 +473,7 @@ func (s *Service) UpdateAPIToken(ctx context.Context, actor *Actor, id int64, p 
 		t.ReadOnly = false
 	}
 	if _, err := s.db.W.ExecContext(ctx, `UPDATE api_tokens SET name = ?, read_only = ?, permissions = ? WHERE id = ? AND user_id = ?`,
-		t.Name, boolInt(t.ReadOnly), permissionsJSON(t.Permissions), id, actor.id()); err != nil {
+		t.Name, boolInt(t.ReadOnly), permissionsJSON(t.Permissions), id, actor.ID()); err != nil {
 		return nil, err
 	}
 	if detail := accessChange(old, &t); detail != "" {

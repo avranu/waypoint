@@ -650,7 +650,7 @@ func (s *Service) fileCILimits(ctx context.Context, forgeID int64, repo, level s
 		return "", nil
 	}
 	writer := Actor{User: u}
-	writer.textAgent = "waypoint"
+	writer.TextAgent = "waypoint"
 	open := s.ciLimitsTask(ctx, forgeID, repo)
 	urge := level == "problem" && (open == "" || s.ciLimitUrged(ctx, forgeID, repo) != open)
 	if urge {

@@ -991,7 +991,7 @@ func roundEndWhy(reason, detail string) string {
 // typed over.
 func (s *Service) AutopilotStepWanted(ctx context.Context, a *Actor, id, job int64) (bool, error) {
 	var n int
-	err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM autopilot_steps WHERE id = ? AND user_id = ? AND state = ? AND job_id = ?`, id, a.id(), StepStarting, job).Scan(&n)
+	err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM autopilot_steps WHERE id = ? AND user_id = ? AND state = ? AND job_id = ?`, id, a.ID(), StepStarting, job).Scan(&n)
 	return n > 0, err
 }
 
@@ -2703,20 +2703,20 @@ func (st *stepRow) doneKey(ctx context.Context, s *Service) string {
 // (the person's Stop button), or, with now, starts it at once: no grace,
 // no merge wait.
 func (s *Service) AutopilotStepAction(ctx context.Context, a *Actor, id int64, action string) error {
-	if err := a.need(PermSessionsStart); err != nil {
+	if err := a.Need(PermSessionsStart); err != nil {
 		return err
 	}
-	check := a.requireHuman
+	check := a.RequireHuman
 	if action == "now" {
-		check = a.requirePersonDirect
+		check = a.RequirePersonDirect
 	}
 	if err := check("changing what autopilot does"); err != nil {
 		return err
 	}
-	if err := a.canWrite(); err != nil {
+	if err := a.CanWrite(); err != nil {
 		return err
 	}
-	st, err := scanStep(s.db.R.QueryRowContext(ctx, `SELECT `+stepCols+` FROM autopilot_steps WHERE id = ? AND user_id = ?`, id, a.id()))
+	st, err := scanStep(s.db.R.QueryRowContext(ctx, `SELECT `+stepCols+` FROM autopilot_steps WHERE id = ? AND user_id = ?`, id, a.ID()))
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	} else if err != nil {

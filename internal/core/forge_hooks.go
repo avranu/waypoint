@@ -289,7 +289,7 @@ func (s *Service) hookProblems(ctx context.Context, actor *Actor, project string
 		return out, nil
 	}
 	quiet := s.now().Add(-hookSilentAfter).UnixMilli()
-	owned, oargs := actor.memberProjects(RoleOwner)
+	owned, oargs := actor.MemberProjects(RoleOwner)
 	// #nosec G202 -- owned is placeholders; values are bound
 	rows, err := s.db.R.QueryContext(ctx, `SELECT p.key, min(r.id), r.repo, r.hook_state, r.hook_note
 		FROM project_repos r JOIN projects p ON p.id = r.project_id
@@ -299,7 +299,7 @@ func (s *Service) hookProblems(ctx context.Context, actor *Actor, project string
 			AND (? = '' OR p.key = ?)
 		GROUP BY r.forge_id, lower(r.repo)
 		ORDER BY lower(r.repo)`,
-		append(append([]any{hookFailed, hookInstalled, quiet, actor.isAdmin()}, oargs...), project, project)...)
+		append(append([]any{hookFailed, hookInstalled, quiet, actor.IsAdmin()}, oargs...), project, project)...)
 	if err != nil {
 		return nil, err
 	}

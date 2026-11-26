@@ -915,7 +915,7 @@ func (s *Service) AddWorkNote(ctx context.Context, actor *Actor, ref string, in 
 	if in.Review && in.Tag != "" {
 		return nil, invalid("Waypoint counts a review's findings itself: leave out the tag")
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	var out *WorkLogEntry
@@ -926,13 +926,13 @@ func (s *Service) AddWorkNote(ctx context.Context, actor *Actor, ref string, in 
 		}
 		now := s.nowMS()
 		var uid, sess any
-		if actor.id() != 0 {
-			uid = actor.id()
+		if actor.ID() != 0 {
+			uid = actor.ID()
 		}
 		if actor.Session != 0 {
 			sess = actor.Session
 		}
-		agent := actor.agentName()
+		agent := actor.AgentName()
 		if in.Review {
 			out, err = s.attachOwnReview(ctx, t, actor, i, body, uid, sess, now)
 			return err
@@ -944,7 +944,7 @@ func (s *Service) AddWorkNote(ctx context.Context, actor *Actor, ref string, in 
 		}
 		id, _ := res.LastInsertId()
 		out = &WorkLogEntry{ID: id, Kind: WorkNote, At: msTime(now), Tag: in.Tag, Title: workTitle(body), Body: body, Agent: agent}
-		if actor.User != nil && actor.id() != 0 {
+		if actor.User != nil && actor.ID() != 0 {
 			r := actor.User.Ref()
 			out.Author = &r
 		}

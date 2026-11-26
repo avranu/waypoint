@@ -185,9 +185,9 @@ func (s *Service) issueChanges(ctx context.Context, actor *Actor, project int64,
 }
 
 func (s *Service) pageChanges(ctx context.Context, actor *Actor, project int64, agentOnly bool, before int64, limit int, cache map[int64]*UserRef) ([]Change, error) {
-	member, margs := actor.memberProjects(RoleViewer)
+	member, margs := actor.MemberProjects(RoleViewer)
 	where := `((pg.project_id IS NULL AND pg.owner_id = ? AND ?) OR (pg.project_id IS NOT NULL AND (? OR pg.project_id IN ` + member + `)))`
-	args := append([]any{actor.id(), actor.scope == nil, actor.isAdmin()}, margs...)
+	args := append([]any{actor.ID(), actor.Scope == nil, actor.IsAdmin()}, margs...)
 	if project != 0 {
 		where, args = where+" AND pg.project_id = ?", append(args, project)
 	}

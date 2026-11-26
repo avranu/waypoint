@@ -263,7 +263,7 @@ func (s *Service) babysitBlocks(ctx context.Context, prID int64) bool {
 // model, if one is given). The rounds run on the starter's runners; an
 // agent's session is told when it ends or needs it.
 func (s *Service) StartBabysit(ctx context.Context, actor *Actor, prID int64, in BabysitInput) (*Babysit, error) {
-	if err := actor.need(PermPullsWrite); err != nil {
+	if err := actor.Need(PermPullsWrite); err != nil {
 		return nil, err
 	}
 	if actor.RunnerJob != 0 {
@@ -279,11 +279,11 @@ func (s *Service) StartBabysit(ctx context.Context, actor *Actor, prID int64, in
 	via := in.Via
 	if !slices.Contains([]string{"cli", "ship", "web", "automation"}, via) {
 		via = "cli"
-		if actor.session != "" {
+		if actor.SessionHash != "" {
 			via = "web"
 		}
 	}
-	owner := actor.id()
+	owner := actor.ID()
 	if actor.Automation != nil {
 		owner, via = automationRunnerOwner(actor.Automation), "automation"
 	}
@@ -378,7 +378,7 @@ func (s *Service) startBabysit(ctx context.Context, actor *Actor, pr *PullReques
 // the web's Stop): a round's agent still at work is stopped too. A babysit
 // that gave up is cleared, so its comments no longer hold the merge.
 func (s *Service) StopBabysit(ctx context.Context, actor *Actor, prID int64) (*Babysit, error) {
-	if err := actor.need(PermPullsWrite); err != nil {
+	if err := actor.Need(PermPullsWrite); err != nil {
 		return nil, err
 	}
 	pr, err := s.prByID(ctx, s.db.R, prID)
@@ -447,7 +447,7 @@ func (s *Service) BabysitStatus(ctx context.Context, actor *Actor, prID int64) (
 	if v.Comments, err = s.reviewComments(ctx, s.db.R, prID); err != nil {
 		return nil, err
 	}
-	if actor.need(PermPullsWrite) == nil {
+	if actor.Need(PermPullsWrite) == nil {
 		_, err := s.prAuthority(ctx, actor, pr, RoleEditor)
 		v.CanEdit = err == nil
 	}

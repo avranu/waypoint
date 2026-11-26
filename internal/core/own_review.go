@@ -53,7 +53,7 @@ func (s *Service) recordOwnReview(ctx context.Context, t *tx, actor *Actor, x *A
 	}
 	res, err := t.ExecContext(ctx, `INSERT INTO work_log(issue_id, kind, state, session_id, run_id, user_id, agent, prompt, body, reason, read_state, read_at, ended_at, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		issueID, WorkOwnReview, RoundDone, x.ID, run, uid, actor.agentName(), clipText(strings.TrimSpace(ev.AgentPrompt), ownReviewPromptMax),
+		issueID, WorkOwnReview, RoundDone, x.ID, run, uid, actor.AgentName(), clipText(strings.TrimSpace(ev.AgentPrompt), ownReviewPromptMax),
 		clipText(report, reviewReportMax), ownReviewBy(ev), readPending, at, at, at, at)
 	if err != nil {
 		s.log.WarnContext(ctx, "own review not recorded", "session", x.ID, "task", key, "err", err)
@@ -80,7 +80,7 @@ func (s *Service) attachOwnReview(ctx context.Context, t *tx, actor *Actor, i *I
 			run = r
 		}
 	}
-	agent := actor.agentName()
+	agent := actor.AgentName()
 	res, err := t.ExecContext(ctx, `INSERT INTO work_log(issue_id, kind, state, session_id, run_id, user_id, agent, body, reason, read_state, read_at, ended_at, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		i.ID, WorkOwnReview, RoundDone, sess, run, uid, agent, body, ownReviewAttached, readPending, now, now, now, now)
@@ -90,7 +90,7 @@ func (s *Service) attachOwnReview(ctx context.Context, t *tx, actor *Actor, i *I
 	id, _ := res.LastInsertId()
 	out := &WorkLogEntry{ID: id, Kind: WorkOwnReview, At: msTime(now), State: RoundDone, Title: ownReviewTitle(sql.NullInt64{}), Body: body,
 		Agent: agent, Reason: ownReviewAttached, ReadState: readPending}
-	if actor.User != nil && actor.id() != 0 {
+	if actor.User != nil && actor.ID() != 0 {
 		r := actor.User.Ref()
 		out.Author = &r
 	}

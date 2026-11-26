@@ -174,7 +174,7 @@ func (t *tx) emit(e *Event) {
 	if t.actor != nil && t.actor.Automation != nil {
 		e.ViaAutomation = t.actor.Automation.Name
 	}
-	if agent := t.actor.agentName(); agent != "" && t.actor.viaAutomation() == nil {
+	if agent := t.actor.AgentName(); agent != "" && t.actor.ViaAutomation() == nil {
 		if e.Data == nil {
 			e.Data = map[string]any{}
 		}
@@ -182,7 +182,7 @@ func (t *tx) emit(e *Event) {
 		e.ViaAutomation = agent
 	}
 	t.noteSession(e)
-	if t.actor != nil && t.actor.User != nil && t.actor.User.ID == 0 && t.actor.viaAutomation() == nil {
+	if t.actor != nil && t.actor.User != nil && t.actor.User.ID == 0 && t.actor.ViaAutomation() == nil {
 		if via := t.actor.User.DisplayName; via != "" && via != SystemActor().User.DisplayName {
 			if e.Data == nil {
 				e.Data = map[string]any{}
@@ -216,7 +216,7 @@ func (t *tx) emit(e *Event) {
 			projectID = e.ProjectID
 		}
 		res, err := t.ExecContext(context.Background(), `INSERT INTO events(project_id, issue_id, actor_id, kind, field, old_value, new_value, data, via_automation, created_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?)`, projectID, issueID, actorID, e.Kind, e.Field, e.Old, e.New, data, t.actor.viaAutomation(), e.At.UnixMilli())
+			VALUES (?,?,?,?,?,?,?,?,?,?)`, projectID, issueID, actorID, e.Kind, e.Field, e.Old, e.New, data, t.actor.ViaAutomation(), e.At.UnixMilli())
 		if err == nil {
 			e.ID, _ = res.LastInsertId()
 		} else {
@@ -247,7 +247,7 @@ func (t *tx) mergesIntoLast(e *Event) bool {
 	if e.Actor != nil {
 		want = e.Actor.ID
 	}
-	wantVia, _ := t.actor.viaAutomation().(int64)
+	wantVia, _ := t.actor.ViaAutomation().(int64)
 	if actor.Int64 != want || via.Int64 != wantVia {
 		return false
 	}
@@ -341,13 +341,13 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 		}
 		s.autoScreen(e)
 		s.deliverWebhooks(ctx, e)
-		if e.Kind == EvIssueStatus && (actor == nil || !actor.forgeSync) {
+		if e.Kind == EvIssueStatus && (actor == nil || !actor.ForgeSync) {
 			s.pushIssueState(ctx, e)
 		}
 		if e.Kind == EvIssueCommented {
 			s.pushComment(ctx, e)
 		}
-		if e.forgeComment != nil && (actor == nil || !actor.forgeSync) {
+		if e.forgeComment != nil && (actor == nil || !actor.ForgeSync) {
 			s.pushCommentChange(ctx, e)
 		}
 		if j := e.repoHook; j != nil {
@@ -370,7 +370,7 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 	s.afterDispatch(ctx, actor, events)
 	depth := 0
 	if actor != nil {
-		depth = actor.depth
+		depth = actor.Depth
 	}
 	if depth < maxAutomationDepth {
 		for _, e := range events {

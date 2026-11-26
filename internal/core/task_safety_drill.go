@@ -117,7 +117,7 @@ type SafetyDrills struct {
 
 // SafetyDrillStatus is the last drill and each model's pass rate (admins).
 func (s *Service) SafetyDrillStatus(ctx context.Context, actor *Actor) (*SafetyDrills, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("the safety drill is for admins")
 	}
 	configured, err := s.screenConfigured(ctx)
@@ -217,16 +217,16 @@ func (s *Service) lastDrill(ctx context.Context) (*SafetyDrill, error) {
 
 // RunSafetyDrill starts a drill now, in the background (admins).
 func (s *Service) RunSafetyDrill(ctx context.Context, actor *Actor) (*SafetyDrills, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("the safety drill is for admins")
 	}
 	if _, err := s.runAITaskConfigured(ctx, "task_safety"); err != nil {
 		return nil, err
 	}
-	if !s.startDrill(actor.id()) {
+	if !s.startDrill(actor.ID()) {
 		return nil, invalid("a safety drill is already running")
 	}
 	return s.SafetyDrillStatus(ctx, actor)

@@ -285,7 +285,7 @@ func (s *Service) targetAccess(ctx context.Context, q queryer, actor *Actor, t A
 		}
 		author = authorNull.Int64
 		need := min
-		if author != 0 && author == actor.id() && min <= RoleEditor {
+		if author != 0 && author == actor.ID() && min <= RoleEditor {
 			need = RoleViewer
 		}
 		i, _, err := s.getIssueFor(ctx, q, actor, itoa64(issueID), need, false)
@@ -296,7 +296,7 @@ func (s *Service) targetAccess(ctx context.Context, q queryer, actor *Actor, t A
 			return nil, err
 		}
 		if need < min {
-			if err := actor.canWrite(); err != nil {
+			if err := actor.CanWrite(); err != nil {
 				return nil, err
 			}
 		}
@@ -315,7 +315,7 @@ func (s *Service) targetAccess(ctx context.Context, q queryer, actor *Actor, t A
 			return nil, err
 		}
 		if min > RoleViewer {
-			if err := actor.canWrite(); err != nil {
+			if err := actor.CanWrite(); err != nil {
 				return nil, err
 			}
 		}
@@ -326,10 +326,10 @@ func (s *Service) targetAccess(ctx context.Context, q queryer, actor *Actor, t A
 			return nil, err
 		}
 		if min > RoleViewer {
-			if err := actor.canWrite(); err != nil {
+			if err := actor.CanWrite(); err != nil {
 				return nil, err
 			}
-			if x.userID != actor.id() && !actor.isAdmin() {
+			if x.userID != actor.ID() && !actor.IsAdmin() {
 				return nil, ErrForbidden
 			}
 		}
@@ -422,7 +422,7 @@ func (s *Service) resolveSessionRef(ctx context.Context, actor *Actor, ref strin
 	}
 	if actor.Session != 0 {
 		var cli string
-		if err := s.db.R.QueryRowContext(ctx, `SELECT cli_id FROM agent_sessions WHERE id = ? AND user_id = ?`, actor.Session, actor.id()).Scan(&cli); err == nil && (cli == ref || ref == "") {
+		if err := s.db.R.QueryRowContext(ctx, `SELECT cli_id FROM agent_sessions WHERE id = ? AND user_id = ?`, actor.Session, actor.ID()).Scan(&cli); err == nil && (cli == ref || ref == "") {
 			return actor.Session, nil
 		}
 	}
@@ -431,7 +431,7 @@ func (s *Service) resolveSessionRef(ctx context.Context, actor *Actor, ref strin
 			return n, nil
 		}
 	}
-	if id := s.SessionForHeader(ctx, actor.id(), ref, ""); id != 0 {
+	if id := s.SessionForHeader(ctx, actor.ID(), ref, ""); id != 0 {
 		return id, nil
 	}
 	return 0, notFound("session " + ref)
@@ -488,7 +488,7 @@ func (s *Service) AddAttachment(ctx context.Context, actor *Actor, t AttachTarge
 			issueID = tg.issue.ID
 		}
 		res, err := t2.ExecContext(ctx, `INSERT INTO attachments(target_type, target_id, issue_id, uploader_id, agent, name, content_type, size, sha256, caption, data, created_at, review)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, t.Type, t.ID, issueID, nullUser(actor.id()), actor.agentName(), name, ct, len(in.Data), hex.EncodeToString(sum[:]), caption, in.Data, s.nowMS(), in.Review)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, t.Type, t.ID, issueID, nullUser(actor.ID()), actor.AgentName(), name, ct, len(in.Data), hex.EncodeToString(sum[:]), caption, in.Data, s.nowMS(), in.Review)
 		if err != nil {
 			return err
 		}
@@ -602,7 +602,7 @@ func (s *Service) attachmentTarget(ctx context.Context, t *tx, actor *Actor, id 
 		}
 		return nil, err
 	}
-	if actor.Restricted() && (uploader.Int64 != actor.id() || agent != actor.agentName()) {
+	if actor.Restricted() && (uploader.Int64 != actor.ID() || agent != actor.AgentName()) {
 		return nil, forbidden("a token with permissions can change only the files it uploaded")
 	}
 	return tg, nil

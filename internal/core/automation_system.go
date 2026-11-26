@@ -42,7 +42,7 @@ type ResourceStatus struct {
 
 // ResourceLimits returns the limits (admins only).
 func (s *Service) GetResourceLimits(ctx context.Context, actor *Actor) (ResourceLimits, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return ResourceLimits{}, forbidden("system limits are for admins")
 	}
 	return s.resourceLimits(ctx), nil
@@ -59,7 +59,7 @@ func (s *Service) resourceLimits(ctx context.Context) ResourceLimits {
 
 // SetResourceLimits saves the limits (admins, people only).
 func (s *Service) SetResourceLimits(ctx context.Context, actor *Actor, lim ResourceLimits) (ResourceLimits, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return lim, err
 	}
 	if err := s.requireAdminHuman(actor); err != nil {
@@ -80,7 +80,7 @@ func (s *Service) SetResourceLimits(ctx context.Context, actor *Actor, lim Resou
 
 // ResourceStatuses reads the resources now.
 func (s *Service) ResourceStatuses(ctx context.Context, actor *Actor) ([]ResourceStatus, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("system status is for admins")
 	}
 	return s.readResources(ctx), nil

@@ -143,7 +143,7 @@ func (s *Service) checkWatch(ctx context.Context, t *tx, actor *Actor, sess *Age
 			return nil, invalid("cmd-ok runs on the machine of the request's session; this request has none")
 		}
 		w.every = clampEvery(every, watchCmdEvery, watchMinCmdEvery)
-		w.machine, w.dir, w.runBy = sess.Machine, sess.Cwd, actor.id()
+		w.machine, w.dir, w.runBy = sess.Machine, sess.Cwd, actor.ID()
 	default:
 		return nil, invalid("a condition is one of %s", strings.Join(WatchKinds, ", "))
 	}
@@ -186,7 +186,7 @@ func (s *Service) AddRequestWatch(ctx context.Context, actor *Actor, ref string,
 		if err != nil {
 			return err
 		}
-		if r.userID != actor.id() && !s.canDecide(ctx, actor, r, map[int64]int{}) {
+		if r.userID != actor.ID() && !s.canDecide(ctx, actor, r, map[int64]int{}) {
 			return fmt.Errorf("only %s or an editor of the project can change this: %w", userName(r.User), ErrForbidden)
 		}
 		if r.State != RequestOpen {

@@ -162,7 +162,7 @@ func (s *Service) suggestRelations(ctx context.Context, actor *Actor, ref string
 	if len(out.Suggestions) > maxRelationSuggestions {
 		out.Suggestions = out.Suggestions[:maxRelationSuggestions]
 	}
-	if actor.actsAsPerson() && !actor.ReadOnly && len(out.Suggestions) > 0 {
+	if actor.ActsAsPerson() && !actor.ReadOnly && len(out.Suggestions) > 0 {
 		if role, err := s.issueRole(ctx, s.db.R, actor, i); err == nil && role >= RoleEditor {
 			s.noteShown(ctx, actor, idx, i, src, concept, out.Suggestions, probs)
 		}
@@ -304,7 +304,7 @@ func (s *Service) syncNamedRelations(ctx context.Context, t *tx, actor *Actor, i
 // web or their terminal. A system write or a person's account carrying an
 // agent's or a forge's text isn't.
 func writesOwnText(a *Actor) bool {
-	return a.actsAsPerson() && a.User.ID != 0 && createdByPerson(a)
+	return a.ActsAsPerson() && a.User.ID != 0 && createdByPerson(a)
 }
 
 // textNames: i's title or description names the issue id.

@@ -108,7 +108,7 @@ func (s *Service) cachedUser(ctx context.Context, cache map[int64]*UserRef, id s
 // glossaryFor loads an entry and checks the actor's access.
 func (s *Service) glossaryFor(ctx context.Context, q queryer, actor *Actor, id int64, min int) (*GlossaryEntry, int, error) {
 	if min > RoleViewer {
-		if err := actor.canWrite(); err != nil {
+		if err := actor.CanWrite(); err != nil {
 			return nil, 0, err
 		}
 	}
@@ -519,7 +519,7 @@ func (s *Service) CreateGlossary(ctx context.Context, actor *Actor, in GlossaryI
 	}
 	locked := in.Locked != nil && *in.Locked
 	if locked {
-		if err := actor.requirePersonDirect("locking glossary entries"); err != nil {
+		if err := actor.RequirePersonDirect("locking glossary entries"); err != nil {
 			return nil, err
 		}
 	}
@@ -538,12 +538,12 @@ func (s *Service) CreateGlossary(ctx context.Context, actor *Actor, in GlossaryI
 		now := s.nowMS()
 		var lockedBy, lockedAt any
 		if locked {
-			lockedBy, lockedAt = nullUser(actor.id()), now
+			lockedBy, lockedAt = nullUser(actor.ID()), now
 		}
 		res, err := t.ExecContext(ctx, `INSERT INTO glossary(project_id, term, aliases, avoid, definition, locked_by, locked_at,
 			created_by, created_agent, created_at, updated_by, updated_agent, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			nullInt(scope), term, string(aj), string(vj), def, lockedBy, lockedAt, nullUser(actor.id()), actor.agentName(), now,
-			nullUser(actor.id()), actor.agentName(), now)
+			nullInt(scope), term, string(aj), string(vj), def, lockedBy, lockedAt, nullUser(actor.ID()), actor.AgentName(), now,
+			nullUser(actor.ID()), actor.AgentName(), now)
 		if err != nil {
 			return err
 		}
@@ -590,7 +590,7 @@ func (s *Service) afterGlossaryChange(ctx context.Context, t *tx, id int64) erro
 		return err
 	}
 	if _, err := t.ExecContext(ctx, `INSERT INTO glossary_revisions(entry_id, term, aliases, avoid, definition, locked, user_id, agent, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?)`, id, term, aliases, avoid, def, locked, nullUser(t.actor.id()), t.actor.agentName(), s.nowMS()); err != nil {
+		VALUES (?,?,?,?,?,?,?,?,?)`, id, term, aliases, avoid, def, locked, nullUser(t.actor.ID()), t.actor.AgentName(), s.nowMS()); err != nil {
 		return err
 	}
 	var list, avoided []string
@@ -671,11 +671,11 @@ func (s *Service) UpdateGlossary(ctx context.Context, actor *Actor, id int64, in
 			sets, args = append(sets, "project_id = ?"), append(args, nullInt(scope))
 		}
 		if in.Locked != nil && *in.Locked != g.Locked {
-			if err := actor.requirePersonDirect("locking and unlocking glossary entries"); err != nil {
+			if err := actor.RequirePersonDirect("locking and unlocking glossary entries"); err != nil {
 				return err
 			}
 			if *in.Locked {
-				sets, args = append(sets, "locked_by = ?", "locked_at = ?"), append(args, nullUser(actor.id()), s.nowMS())
+				sets, args = append(sets, "locked_by = ?", "locked_at = ?"), append(args, nullUser(actor.ID()), s.nowMS())
 			} else {
 				sets = append(sets, "locked_by = NULL", "locked_at = NULL")
 			}
@@ -693,7 +693,7 @@ func (s *Service) UpdateGlossary(ctx context.Context, actor *Actor, id int64, in
 			return err
 		}
 		sets, args = append(sets, "updated_by = ?", "updated_agent = ?", "updated_at = ?", "reviewed_by = NULL", "reviewed_at = NULL"),
-			append(args, nullUser(actor.id()), actor.agentName(), s.nowMS(), id)
+			append(args, nullUser(actor.ID()), actor.AgentName(), s.nowMS(), id)
 		// #nosec G202 -- only fixed column names and ? placeholders are joined in
 		if _, err := t.ExecContext(ctx, `UPDATE glossary SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...); err != nil {
 			return err

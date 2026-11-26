@@ -284,7 +284,7 @@ type Actor struct {
 	// RunnerJob is the runner job whose own token (WP-418) is behind the
 	// request, if any.
 	RunnerJob int64
-	scope     map[int64]int
+	Scope     map[int64]int
 	// Agent is the acting LLM's identity ("anthropic/claude-opus-5-5"), from
 	// an agent token or the X-Waypoint-Agent header; empty for people.
 	Agent string
@@ -301,21 +301,21 @@ type Actor struct {
 	Prestart bool
 	// Automation is set when an automation performs the change on behalf of
 	// User (the person whose action triggered it).
-	Automation *Automation
-	depth      int
-	session    string
+	Automation  *Automation
+	Depth       int
+	SessionHash string
 	// Session is the agent session (WP-D16) the request came from, set from
 	// the X-Waypoint-Session header: what the actor does is recorded on it.
 	Session int64
 	// ClientVersion is the wp that made the request, from its User-Agent
 	// (WP-256); "" for anything else.
 	ClientVersion string
-	budget        *int
-	forgeSync     bool
-	textAgent     string
+	Budget        *int
+	ForgeSync     bool
+	TextAgent     string
 }
 
-func (a *Actor) id() int64 {
+func (a *Actor) ID() int64 {
 	if a == nil || a.User == nil {
 		return 0
 	}
@@ -349,9 +349,9 @@ func draftsHidden(actor *Actor, t string) string {
 	return "1"
 }
 
-// agentName is the agent's identity for provenance ("mcp" when an MCP
+// AgentName is the agent's identity for provenance ("mcp" when an MCP
 // client didn't say); empty for people.
-func (a *Actor) agentName() string {
+func (a *Actor) AgentName() string {
 	switch {
 	case a == nil:
 		return ""
@@ -363,21 +363,21 @@ func (a *Actor) agentName() string {
 	return ""
 }
 
-// requireHuman refuses agents: approving, locking and deleting intent is
+// RequireHuman refuses agents: approving, locking and deleting intent is
 // for people.
-func (a *Actor) requireHuman(what string) error {
+func (a *Actor) RequireHuman(what string) error {
 	if a.IsAgent() {
 		return forbidden("%s is for people, not agents", what)
 	}
 	return nil
 }
 
-// requirePersonDirect is requireHuman for what an agent mustn't do even
+// RequirePersonDirect is RequireHuman for what an agent mustn't do even
 // with its person's token (WP-ADR9): the request comes from the web or the
 // person's own terminal, not from a coding agent's shell, an agent session
 // or an automation.
-func (a *Actor) requirePersonDirect(what string) error {
-	if err := a.requireHuman(what); err != nil {
+func (a *Actor) RequirePersonDirect(what string) error {
+	if err := a.RequireHuman(what); err != nil {
 		return err
 	}
 	if a.AgentEnv != "" || a.Session != 0 || a.Automation != nil {
@@ -386,29 +386,29 @@ func (a *Actor) requirePersonDirect(what string) error {
 	return nil
 }
 
-// actsAsPerson: the actor is a person acting directly (requirePersonDirect
+// ActsAsPerson: the actor is a person acting directly (RequirePersonDirect
 // would let them through). Only such an act counts as a person's intent
 // in the trace to goals (WP-ADR50); anything else counts as an agent's.
-func (a *Actor) actsAsPerson() bool {
-	return a != nil && a.User != nil && a.requirePersonDirect("") == nil
+func (a *Actor) ActsAsPerson() bool {
+	return a != nil && a.User != nil && a.RequirePersonDirect("") == nil
 }
 
-// writesAsAgent: what the actor writes isn't a person's own act (an agent's
+// WritesAsAgent: what the actor writes isn't a person's own act (an agent's
 // token, or a person's token in an agent's shell, session or automation), so
 // it never approves itself: a design note it writes is a proposal, or counts
 // on a person's task, and its edits are applied or pending (WP-ADR96).
-func (a *Actor) writesAsAgent() bool { return !a.actsAsPerson() }
+func (a *Actor) WritesAsAgent() bool { return !a.ActsAsPerson() }
 
-// creditAgent is the agent an act is credited to in provenance: the
+// CreditAgent is the agent an act is credited to in provenance: the
 // agent's own name, or for a person's account acting through an agent's
 // shell, session or an automation, a stand-in, so it never reads as the
 // person's own act. "" only for a person acting directly (or no user).
-func (a *Actor) creditAgent() string {
-	if n := a.agentName(); n != "" {
+func (a *Actor) CreditAgent() string {
+	if n := a.AgentName(); n != "" {
 		return n
 	}
 	switch {
-	case a == nil || a.User == nil || a.actsAsPerson():
+	case a == nil || a.User == nil || a.ActsAsPerson():
 		return ""
 	case a.Automation != nil:
 		return "automation"
@@ -416,17 +416,17 @@ func (a *Actor) creditAgent() string {
 	return "agent-shell"
 }
 
-// isAdmin: a job's scoped token is never an admin, whoever's it is.
-func (a *Actor) isAdmin() bool { return a != nil && a.User != nil && a.User.IsAdmin && a.scope == nil }
+// IsAdmin: a job's scoped token is never an admin, whoever's it is.
+func (a *Actor) IsAdmin() bool { return a != nil && a.User != nil && a.User.IsAdmin && a.Scope == nil }
 
-func (a *Actor) viaAutomation() any {
+func (a *Actor) ViaAutomation() any {
 	if a == nil || a.Automation == nil || a.Automation.ID <= 0 {
 		return nil
 	}
 	return a.Automation.ID
 }
 
-func (a *Actor) canWrite() error {
+func (a *Actor) CanWrite() error {
 	if a == nil || a.User == nil {
 		return ErrUnauthorized
 	}

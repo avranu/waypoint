@@ -717,10 +717,10 @@ func (s *Service) DiscoverRepos(ctx context.Context, actor *Actor, forgeID int64
 }
 
 func (s *Service) discoverForge(ctx context.Context, actor *Actor, forgeID int64) (*Forge, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, ErrForbidden
 	}
 	f, err := s.forgeByID(ctx, forgeID)

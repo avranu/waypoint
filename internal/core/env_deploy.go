@@ -130,7 +130,7 @@ type DeployInput struct {
 // RecordDeployment records a deployment to an environment by id. A token
 // with editor access on the project may (this is what CI uses).
 func (s *Service) RecordDeployment(ctx context.Context, actor *Actor, envID int64, in DeployInput) (*Deployment, error) {
-	if err := actor.need(PermEnvironmentsWrite); err != nil {
+	if err := actor.Need(PermEnvironmentsWrite); err != nil {
 		return nil, err
 	}
 	e, err := s.envFor(ctx, s.db.R, actor, envID, RoleEditor)
@@ -157,7 +157,7 @@ func (s *Service) RecordDeployment(ctx context.Context, actor *Actor, envID int6
 // its name (production, staging and dev by name, else a preview). Creating
 // needs what recording does: editor access to the project.
 func (s *Service) RecordDeploymentNamed(ctx context.Context, actor *Actor, projectRef, name string, in DeployInput) (*Deployment, error) {
-	if err := actor.need(PermEnvironmentsWrite); err != nil {
+	if err := actor.Need(PermEnvironmentsWrite); err != nil {
 		return nil, err
 	}
 	p, err := s.projectByRef(ctx, s.db.R, projectRef)
@@ -220,7 +220,7 @@ func (s *Service) recordDeployTx(t *tx, e *Environment, in DeployInput) (*Deploy
 	}
 	ci := strings.TrimSpace(in.URL)
 	notes := excerpt(in.Notes, 1000)
-	by, agent := DeployByPerson, t.actor.agentName()
+	by, agent := DeployByPerson, t.actor.AgentName()
 	switch {
 	case in.Source == "ci":
 		by = DeployByCI

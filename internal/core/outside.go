@@ -137,7 +137,7 @@ func forgeSyncActor(f *Forge, author, agent string) *Actor {
 	via := kindLabel(f.Kind)
 	u := *SystemActor().User
 	u.DisplayName = cmp(author, via) + " (via " + via + ")"
-	return &Actor{User: &u, forgeSync: true, textAgent: agent}
+	return &Actor{User: &u, ForgeSync: true, TextAgent: agent}
 }
 
 // heldText is outside text to keep for a person.
@@ -329,7 +329,7 @@ func (s *Service) outsideFor(ctx context.Context, actor *Actor, id int64) (*outs
 	if actor.HidesDrafts() {
 		return nil, nil, errOutsideByPerson
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, nil, err
 	}
 	o, err := s.outsideRow(ctx, s.db.R, id)
@@ -545,13 +545,13 @@ func (s *Service) forgePeople(ctx context.Context, forgeID int64) ([]ForgePerson
 // or agents' accounts, and lets in what was waiting from the ones added. Admins only, and only
 // as themselves: whose word counts is never an agent's call.
 func (s *Service) SetForgePeople(ctx context.Context, actor *Actor, forgeID int64, people []ForgePersonInput) ([]ForgePerson, error) {
-	if err := actor.requirePersonDirect("saying who is a Waypoint person on a forge"); err != nil {
+	if err := actor.RequirePersonDirect("saying who is a Waypoint person on a forge"); err != nil {
 		return nil, err
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, ErrForbidden
 	}
 	f, err := s.forgeByID(ctx, forgeID)

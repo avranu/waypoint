@@ -89,7 +89,7 @@ func (s *Service) aiProvider(ctx context.Context, id int64) (*AIProvider, error)
 
 // ListAIProviders returns the configured providers (admins only).
 func (s *Service) ListAIProviders(ctx context.Context, actor *Actor) ([]*AIProvider, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, ErrForbidden
 	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT `+aiProviderCols+` FROM ai_providers ORDER BY id`)
@@ -130,10 +130,10 @@ func providerBase(kind, base string) string {
 
 // CreateAIProvider adds a provider (admins only).
 func (s *Service) CreateAIProvider(ctx context.Context, actor *Actor, in AIProviderInput) (*AIProvider, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, ErrForbidden
 	}
 	kind := deref(in.Kind)
@@ -164,10 +164,10 @@ func (s *Service) CreateAIProvider(ctx context.Context, actor *Actor, in AIProvi
 
 // UpdateAIProvider edits a provider (admins only). An empty api_key clears it.
 func (s *Service) UpdateAIProvider(ctx context.Context, actor *Actor, id int64, in AIProviderInput) (*AIProvider, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, ErrForbidden
 	}
 	cur, err := s.aiProvider(ctx, id)
@@ -215,10 +215,10 @@ func (s *Service) UpdateAIProvider(ctx context.Context, actor *Actor, id int64, 
 
 // DeleteAIProvider removes a provider and unassigns its tasks.
 func (s *Service) DeleteAIProvider(ctx context.Context, actor *Actor, id int64) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return ErrForbidden
 	}
 	cur, err := s.aiProvider(ctx, id)
@@ -241,7 +241,7 @@ func (s *Service) DeleteAIProvider(ctx context.Context, actor *Actor, id int64) 
 
 // AIModels lists the models a provider offers, free ones first.
 func (s *Service) AIModels(ctx context.Context, actor *Actor, id int64) ([]AIModel, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, ErrForbidden
 	}
 	p, err := s.aiProvider(ctx, id)
@@ -297,10 +297,10 @@ func (s *Service) AITasks(ctx context.Context, actor *Actor) ([]AITask, error) {
 // SetAITask picks the model for a task and the models to try after it; a
 // zero provider turns the task off.
 func (s *Service) SetAITask(ctx context.Context, actor *Actor, task string, providerID int64, model string, fallbacks []ChainModel) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return ErrForbidden
 	}
 	def, ok := aiTaskByName(task)
@@ -600,7 +600,7 @@ func aiActorNamed(label string, projectID int64, model string) *Actor {
 	if model != "" {
 		u.DisplayName += " (" + model + ")"
 	}
-	return &Actor{User: &u, Automation: &Automation{ID: -1, ProjectID: projectID, Name: u.DisplayName}, depth: maxAutomationDepth}
+	return &Actor{User: &u, Automation: &Automation{ID: -1, ProjectID: projectID, Name: u.DisplayName}, Depth: maxAutomationDepth}
 }
 
 // autoEstimate fills in points for a new issue when the project asks for it.

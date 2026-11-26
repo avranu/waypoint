@@ -355,7 +355,7 @@ func (s *Service) tellCrossFiled(ctx context.Context, issueID int64, cat string)
 		note += "."
 		sys := SystemActor()
 		if outcome == "declined" && r.why != "" {
-			sys.textAgent = r.declinedAgent
+			sys.TextAgent = r.declinedAgent
 		}
 		err := s.write(ctx, sys, func(t *tx) error {
 			for _, id := range blocked {

@@ -140,7 +140,7 @@ func (s *Service) fileRunnerFault(ctx context.Context, userID int64, at faultSub
 		return "", err
 	}
 	writer := Actor{User: owner}
-	writer.textAgent = "waypoint"
+	writer.TextAgent = "waypoint"
 	f := firstFault(faults)
 	seen := s.runnerFaultSighting(ctx, at, faults, why)
 	open, err := s.openRunnerFault(ctx, at.forgeID, f)

@@ -125,7 +125,7 @@ func TestServerDiagnosticsNeedAdmin(t *testing.T) {
 			t.Errorf("%s by an admin: %v", name, err)
 		}
 	}
-	job := &Actor{User: e.admin.User, scope: map[int64]int{1: 1}}
+	job := &Actor{User: e.admin.User, Scope: map[int64]int{1: 1}}
 	if err := calls["log"](job); !errors.Is(err, ErrForbidden) {
 		t.Errorf("a job token read the server log: %v", err)
 	}

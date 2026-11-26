@@ -104,7 +104,7 @@ func (s *Service) pagePrompt(ctx context.Context, actor *Actor, pg *Page) *PageP
 		return nil
 	}
 	p, uid, err := s.promptText(ctx, pg.promptEvent.Int64)
-	if err != nil || (uid != actor.id() && !actor.isAdmin()) {
+	if err != nil || (uid != actor.ID() && !actor.IsAdmin()) {
 		return nil
 	}
 	return p
@@ -114,7 +114,7 @@ func (s *Service) pagePrompt(ctx context.Context, actor *Actor, pg *Page) *PageP
 // keeps a story; an agent's attempt is dropped with a notice, not refused,
 // so the rest of its edit goes through.
 func (s *Service) storySets(actor *Actor, pg *Page, text string, body *string) (sets []string, args []any, notice string, err error) {
-	if actor.requirePersonDirect("writing a plan's story") != nil {
+	if actor.RequirePersonDirect("writing a plan's story") != nil {
 		return nil, nil, StoryAgentNotice, nil
 	}
 	text = strings.TrimSpace(text)
@@ -129,7 +129,7 @@ func (s *Service) storySets(actor *Actor, pg *Page, text string, body *string) (
 		b = *body
 	}
 	sets = []string{"story = ?", "story_agent = ''", "story_by = ?", "story_at = ?", "story_base = ?"}
-	args = []any{text, actor.id(), s.nowMS(), storyHash(b)}
+	args = []any{text, actor.ID(), s.nowMS(), storyHash(b)}
 	if text != pg.Story {
 		sets = append(sets, "story_model = ''")
 	}
@@ -145,7 +145,7 @@ func (s *Service) keepStory(ctx context.Context, t *tx, actor *Actor, id, now in
 	}
 	base := storyHash(body)
 	return t.ExecContext(ctx, `UPDATE pages SET story_agent = '', story_by = ?, story_at = ?, story_base = ?
-		WHERE id = ? AND story != '' AND (story_agent != '' OR story_base != ?)`, actor.id(), now, base, id, base)
+		WHERE id = ? AND story != '' AND (story_agent != '' OR story_base != ?)`, actor.ID(), now, base, id, base)
 }
 
 // storyChain is the AI task that writes stories: its own, else the
@@ -231,7 +231,7 @@ func (s *Service) sweepStories(ctx context.Context) {
 // they edit or clear it. Agents don't ask: their plans get stories on their
 // own, and asking spends the story model (audit #973).
 func (s *Service) SuggestStory(ctx context.Context, actor *Actor, id int64) (*Page, error) {
-	if err := actor.requirePersonDirect("asking for a plan's story (agents' plans get one on their own)"); err != nil {
+	if err := actor.RequirePersonDirect("asking for a plan's story (agents' plans get one on their own)"); err != nil {
 		return nil, err
 	}
 	pg, _, err := s.pageFor(ctx, s.db.R, actor, id, RoleEditor, true)

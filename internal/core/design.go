@@ -171,15 +171,15 @@ func (s *Service) fillDesignPeople(ctx context.Context, cache map[int64]*UserRef
 // designRights sets what the actor may do with a note given their role.
 func designRights(n *DesignNote, actor *Actor, role int) {
 	write := role >= RoleEditor && !actor.ReadOnly
-	n.CanEdit = write && (!actor.writesAsAgent() || n.agentsEdit())
+	n.CanEdit = write && (!actor.WritesAsAgent() || n.agentsEdit())
 	n.CanPropose = write
-	n.CanApprove = write && actor.actsAsPerson()
+	n.CanApprove = write && actor.ActsAsPerson()
 }
 
 // designFor loads a note (with its body) and checks the actor's access.
 func (s *Service) designFor(ctx context.Context, q queryer, actor *Actor, id int64, min int) (*DesignNote, int, error) {
 	if min > RoleViewer {
-		if err := actor.canWrite(); err != nil {
+		if err := actor.CanWrite(); err != nil {
 			return nil, 0, err
 		}
 	}
@@ -571,7 +571,7 @@ func (s *Service) CreateDesign(ctx context.Context, actor *Actor, in DesignInput
 	var id int64
 	var scope *int64
 	var req *designRequest
-	goalProposal := kind == "goal" && !actor.actsAsPerson()
+	goalProposal := kind == "goal" && !actor.ActsAsPerson()
 	err = s.write(ctx, actor, func(t *tx) error {
 		if f := strings.TrimSpace(in.For); f != "" {
 			if req, err = s.requestFor(ctx, t, actor, f); err != nil {
@@ -592,18 +592,18 @@ func (s *Service) CreateDesign(ctx context.Context, actor *Actor, in DesignInput
 		var approvedBy, approvedAt any
 		state := RevApplied
 		var reqIssue, reqBy any
-		agent := actor.creditAgent()
+		agent := actor.CreditAgent()
 		switch {
 		case goalProposal:
-		case !actor.writesAsAgent():
-			approvedBy, approvedAt, state = nullUser(actor.id()), now, RevApproved
+		case !actor.WritesAsAgent():
+			approvedBy, approvedAt, state = nullUser(actor.ID()), now, RevApproved
 		case req.accepts():
 			approvedAt, reqIssue, reqBy = now, req.issue, req.by
 		}
 		res, err := t.ExecContext(ctx, `INSERT INTO design_notes(project_id, parent_id, kind, title, body, status, approved_by, approved_at,
 			created_by, created_agent, created_at, updated_by, updated_agent, updated_at, requested_issue_id, requested_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			nullInt(scope), nullInt(parentID), kind, title, body, status, approvedBy, approvedAt,
-			nullUser(actor.id()), agent, now, nullUser(actor.id()), agent, now, reqIssue, reqBy)
+			nullUser(actor.ID()), agent, now, nullUser(actor.ID()), agent, now, reqIssue, reqBy)
 		if err != nil {
 			return err
 		}
@@ -619,7 +619,7 @@ func (s *Service) CreateDesign(ctx context.Context, actor *Actor, in DesignInput
 		if err := s.addRevision(ctx, t, id, "edit", title, body, nil, state); err != nil {
 			return err
 		}
-		if !goalProposal && actor.writesAsAgent() && req.accepts() {
+		if !goalProposal && actor.WritesAsAgent() && req.accepts() {
 			if err := s.stampRequested(ctx, t, id, req); err != nil {
 				return err
 			}
@@ -641,12 +641,12 @@ func (s *Service) CreateDesign(ctx context.Context, actor *Actor, in DesignInput
 	}
 	s.publishKnowledge(scope, KDesign, id)
 	s.noteSession(ctx, actor, "design", "design", id, title, fmt.Sprintf("/design/%d", id), scope)
-	accepted := !goalProposal && actor.writesAsAgent() && req.accepts()
+	accepted := !goalProposal && actor.WritesAsAgent() && req.accepts()
 	event := "proposed"
 	switch {
 	case accepted:
 		event = "requested"
-	case !goalProposal && !actor.writesAsAgent():
+	case !goalProposal && !actor.WritesAsAgent():
 		event = "approved"
 	}
 	s.designEvent(ctx, actor, id, scope, event)
@@ -657,9 +657,9 @@ func (s *Service) CreateDesign(ctx context.Context, actor *Actor, in DesignInput
 		n.Notice = "Saved as a suggested goal: a goal is what people want, so it counts only once a person approves it, even when written for a person's task."
 	case accepted:
 		n.Notice = "Saved for " + req.key + ", which " + req.byName + " filed: it counts as carrying out that request, and the link to " + req.key + " shows why. Nobody approved it, so don't report it as approved or accepted. Your later edits to it apply directly."
-	case actor.writesAsAgent() && req != nil:
+	case actor.WritesAsAgent() && req != nil:
 		n.Notice = "Saved as a proposal: " + req.key + " wasn't filed by a person, so a person has to approve this note before it counts as intended."
-	case actor.writesAsAgent():
+	case actor.WritesAsAgent():
 		n.Notice = "Saved as a proposal: a person has to approve this note before it counts as intended. (If you wrote it for a task a person filed, say so with --for TASK and it counts on their request.)"
 	}
 	return n, err
@@ -746,16 +746,16 @@ func (s *Service) designEvent(ctx context.Context, actor *Actor, id int64, scope
 // written from an agent's shell, session or automation: only a person's own
 // verdict (ReviewDesign) approves one (WP-409, WP-ADR96).
 func (s *Service) addRevision(ctx context.Context, t *tx, noteID int64, kind, title, body string, base *int64, state string) error {
-	if state == RevApproved && t.actor.writesAsAgent() {
+	if state == RevApproved && t.actor.WritesAsAgent() {
 		return forbidden("an agent's change can't be recorded as approved")
 	}
 	var rby, rat any
 	if state == RevApproved {
-		rby, rat = nullUser(t.actor.id()), s.nowMS()
+		rby, rat = nullUser(t.actor.ID()), s.nowMS()
 	}
 	sessID, sessTask := t.sessionStamp(ctx)
 	_, err := t.ExecContext(ctx, `INSERT INTO design_revisions(note_id, kind, title, body, base_id, state, user_id, agent, created_at, reviewed_by, reviewed_at, session_id, session_issue_id)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, noteID, kind, title, body, nullInt(base), state, nullUser(t.actor.id()), t.actor.creditAgent(), s.nowMS(), rby, rat, sessID, sessTask)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, noteID, kind, title, body, nullInt(base), state, nullUser(t.actor.ID()), t.actor.CreditAgent(), s.nowMS(), rby, rat, sessID, sessTask)
 	return err
 }
 
@@ -879,7 +879,7 @@ func (s *Service) UpdateDesign(ctx context.Context, actor *Actor, id int64, in D
 		if !int64PtrEq(parentID, n.ParentID) {
 			sets, args = append(sets, "parent_id = ?"), append(args, nullInt(parentID))
 		}
-		if actor.writesAsAgent() && !n.agentsEdit() && (moving || len(sets) > 0) {
+		if actor.WritesAsAgent() && !n.agentsEdit() && (moving || len(sets) > 0) {
 			return forbidden("a person approved this note, so agents can't change its kind, status, place or parent; add your suggestion with an addition")
 		}
 		if moving {
@@ -891,7 +891,7 @@ func (s *Service) UpdateDesign(ctx context.Context, actor *Actor, id int64, in D
 			sets = append(sets, "project_id = project_id")
 			scope = to
 		}
-		if actor.writesAsAgent() && !n.agentsEdit() {
+		if actor.WritesAsAgent() && !n.agentsEdit() {
 			if !textChanged {
 				return nil
 			}
@@ -904,13 +904,13 @@ func (s *Service) UpdateDesign(ctx context.Context, actor *Actor, id int64, in D
 		if textChanged {
 			sets, args = append(sets, "title = ?", "body = ?"), append(args, title, body)
 			state := RevApproved
-			if actor.writesAsAgent() {
+			if actor.WritesAsAgent() {
 				state = RevApplied
 			}
 			if err := s.addRevision(ctx, t, id, "edit", title, body, latestEdit(ctx, t, id), state); err != nil {
 				return err
 			}
-			if req := s.noteRequest(ctx, t, n); req != nil && actor.writesAsAgent() {
+			if req := s.noteRequest(ctx, t, n); req != nil && actor.WritesAsAgent() {
 				if err := s.stampRequested(ctx, t, id, req); err != nil {
 					return err
 				}
@@ -919,7 +919,7 @@ func (s *Service) UpdateDesign(ctx context.Context, actor *Actor, id int64, in D
 		if len(sets) == 0 {
 			return nil
 		}
-		sets, args = append(sets, "updated_by = ?", "updated_agent = ?", "updated_at = ?"), append(args, nullUser(actor.id()), actor.creditAgent(), s.nowMS(), id)
+		sets, args = append(sets, "updated_by = ?", "updated_agent = ?", "updated_at = ?"), append(args, nullUser(actor.ID()), actor.CreditAgent(), s.nowMS(), id)
 		// #nosec G202 -- only fixed column names and ? placeholders are joined in
 		if _, err := t.ExecContext(ctx, `UPDATE design_notes SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...); err != nil {
 			return err
@@ -974,22 +974,22 @@ func (s *Service) AddDesignAddition(ctx context.Context, actor *Actor, id int64,
 		state := RevApproved
 		req := s.noteRequest(ctx, t, n)
 		switch {
-		case actor.writesAsAgent() && req == nil:
+		case actor.WritesAsAgent() && req == nil:
 			state = RevPending
-		case actor.writesAsAgent():
+		case actor.WritesAsAgent():
 			state = RevApplied
 		}
 		if err := s.addRevision(ctx, t, id, "addition", "", body, nil, state); err != nil {
 			return err
 		}
-		if actor.writesAsAgent() && req != nil {
+		if actor.WritesAsAgent() && req != nil {
 			if err := s.stampRequested(ctx, t, id, req); err != nil {
 				return err
 			}
 		}
 		if state != RevPending {
 			if _, err := t.ExecContext(ctx, `UPDATE design_notes SET updated_by = ?, updated_agent = ?, updated_at = ? WHERE id = ?`,
-				nullUser(actor.id()), actor.creditAgent(), s.nowMS(), id); err != nil {
+				nullUser(actor.ID()), actor.CreditAgent(), s.nowMS(), id); err != nil {
 				return err
 			}
 		}
@@ -1000,7 +1000,7 @@ func (s *Service) AddDesignAddition(ctx context.Context, actor *Actor, id int64,
 	}
 	s.publishKnowledge(scope, KDesign, id)
 	n, err := s.GetDesign(ctx, actor, id)
-	if err == nil && actor.writesAsAgent() && n.Requested == nil {
+	if err == nil && actor.WritesAsAgent() && n.Requested == nil {
 		n.Notice = "Addition saved; it shows as an unapproved agent addition until a person approves it."
 	}
 	return n, err
@@ -1010,7 +1010,7 @@ func (s *Service) AddDesignAddition(ctx context.Context, actor *Actor, id int64,
 // edit replaces the title and body; an addition stays as an approved
 // addition), reject, or merge (an addition is appended to the body).
 func (s *Service) ReviewDesign(ctx context.Context, actor *Actor, revID int64, action, note string) (*DesignNote, error) {
-	if err := actor.requirePersonDirect("reviewing design changes"); err != nil {
+	if err := actor.RequirePersonDirect("reviewing design changes"); err != nil {
 		return nil, err
 	}
 	action = strings.ToLower(strings.TrimSpace(action))
@@ -1046,7 +1046,7 @@ func (s *Service) ReviewDesign(ctx context.Context, actor *Actor, revID int64, a
 		now := s.nowMS()
 		newState := map[string]string{"approve": RevApproved, "reject": RevRejected, "merge": RevMerged}[action]
 		if _, err := t.ExecContext(ctx, `UPDATE design_revisions SET state = ?, reviewed_by = ?, reviewed_at = ?, review_note = ? WHERE id = ?`,
-			newState, nullUser(actor.id()), now, strings.TrimSpace(note), revID); err != nil {
+			newState, nullUser(actor.ID()), now, strings.TrimSpace(note), revID); err != nil {
 			return err
 		}
 		detail := "the " + r.Kind
@@ -1066,12 +1066,12 @@ func (s *Service) ReviewDesign(ctx context.Context, actor *Actor, revID int64, a
 			title, body = n.Title, strings.TrimSpace(n.Body+"\n\n"+r.Body)
 			if _, err := t.ExecContext(ctx, `INSERT INTO design_revisions(note_id, kind, title, body, base_id, state, user_id, agent, created_at, reviewed_by, reviewed_at, review_note, session_id, session_issue_id)
 				SELECT note_id, 'edit', ?, ?, ?, 'approved', user_id, agent, ?, ?, ?, 'merged addition #' || id, session_id, session_issue_id FROM design_revisions WHERE id = ?`,
-				title, body, nullInt(latestEdit(ctx, t, n.ID)), now, nullUser(actor.id()), now, revID); err != nil {
+				title, body, nullInt(latestEdit(ctx, t, n.ID)), now, nullUser(actor.ID()), now, revID); err != nil {
 				return err
 			}
 		case action == "approve":
 			if _, err := t.ExecContext(ctx, `UPDATE design_notes SET updated_by = ?, updated_agent = '', updated_at = ? WHERE id = ?`,
-				nullUser(actor.id()), now, n.ID); err != nil {
+				nullUser(actor.ID()), now, n.ID); err != nil {
 				return err
 			}
 			return s.afterDesignChange(ctx, t, n.ID)
@@ -1079,7 +1079,7 @@ func (s *Service) ReviewDesign(ctx context.Context, actor *Actor, revID int64, a
 			return s.afterDesignChange(ctx, t, n.ID)
 		}
 		if _, err := t.ExecContext(ctx, `UPDATE design_notes SET title = ?, body = ?, updated_by = ?, updated_agent = '', updated_at = ? WHERE id = ?`,
-			title, body, nullUser(actor.id()), now, n.ID); err != nil {
+			title, body, nullUser(actor.ID()), now, n.ID); err != nil {
 			return err
 		}
 		if err := s.afterDesignChange(ctx, t, n.ID); err != nil {
@@ -1101,7 +1101,7 @@ func (s *Service) ReviewDesign(ctx context.Context, actor *Actor, revID int64, a
 // version, if given, is the note's updated_at as the person saw it: if the
 // note changed since, nothing is approved (ErrConflict).
 func (s *Service) ApproveDesign(ctx context.Context, actor *Actor, id int64, version string) (*DesignNote, error) {
-	if err := actor.requirePersonDirect("approving design notes"); err != nil {
+	if err := actor.RequirePersonDirect("approving design notes"); err != nil {
 		return nil, err
 	}
 	var scope *int64
@@ -1125,7 +1125,7 @@ func (s *Service) ApproveDesign(ctx context.Context, actor *Actor, id int64, ver
 				return fmt.Errorf("the note changed since you opened it; look again before approving: %w", ErrConflict)
 			}
 		}
-		if _, err = t.ExecContext(ctx, `UPDATE design_notes SET approved_by = ?, approved_at = ? WHERE id = ?`, nullUser(actor.id()), s.nowMS(), id); err != nil {
+		if _, err = t.ExecContext(ctx, `UPDATE design_notes SET approved_by = ?, approved_at = ? WHERE id = ?`, nullUser(actor.ID()), s.nowMS(), id); err != nil {
 			return err
 		}
 		detail := "approved a proposed " + n.Kind
@@ -1136,7 +1136,7 @@ func (s *Service) ApproveDesign(ctx context.Context, actor *Actor, id int64, ver
 			Target: n.Title, URL: fmt.Sprintf("/design/%d", id), Detail: detail, About: n.CreatedAgent})
 		if n.Kind == "goal" && n.CreatedAgent == goalSuggestAgent {
 			if _, err := t.ExecContext(ctx, `UPDATE knowledge_links SET confirmed_by = ?, confirmed_at = ? WHERE dst_type = 'design' AND dst_id = ?
-				AND rel = 'serves' AND basis = ? AND confirmed_by IS NULL`, actor.id(), s.nowMS(), id, linkBasisSuggested); err != nil {
+				AND rel = 'serves' AND basis = ? AND confirmed_by IS NULL`, actor.ID(), s.nowMS(), id, linkBasisSuggested); err != nil {
 				return err
 			}
 		}
@@ -1155,7 +1155,7 @@ func (s *Service) ApproveDesign(ctx context.Context, actor *Actor, id int64, ver
 // DeleteDesign removes a note (people only); its sub-notes move up to the
 // top level.
 func (s *Service) DeleteDesign(ctx context.Context, actor *Actor, id int64) error {
-	if err := actor.requireHuman("deleting design notes"); err != nil {
+	if err := actor.RequireHuman("deleting design notes"); err != nil {
 		return err
 	}
 	var scope *int64
@@ -1198,7 +1198,7 @@ func (s *Service) DesignReview(ctx context.Context, actor *Actor, project string
 	out := []ReviewItem{}
 	cache := map[int64]*UserRef{}
 	for _, n := range notes {
-		if !n.CanApprove && !actor.writesAsAgent() {
+		if !n.CanApprove && !actor.WritesAsAgent() {
 			continue
 		}
 		if !n.Approved {

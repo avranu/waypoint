@@ -94,7 +94,7 @@ func (s *Service) RequestSandboxOp(ctx context.Context, actor *Actor, runnerID i
 	if err != nil {
 		return nil, err
 	}
-	if !actor.isAdmin() && r.Owner.ID != actor.id() {
+	if !actor.IsAdmin() && r.Owner.ID != actor.ID() {
 		return nil, notFound("runner")
 	}
 	h, err := s.sandboxHelper(ctx, s.db.R, r.ID)
@@ -129,7 +129,7 @@ func (s *Service) RequestSandboxOp(ctx context.Context, actor *Actor, runnerID i
 			return err
 		}
 		if err := t.QueryRowContext(ctx, `INSERT INTO sandbox_ops(runner_id, op, user_name, user_kind, user_key, requested_by, requested_at)
-			VALUES (?,?,?,?,?,?,?) RETURNING id`, r.ID, in.Op, in.User, kind, key, actor.id(), s.nowMS()).Scan(&id); err != nil {
+			VALUES (?,?,?,?,?,?,?) RETURNING id`, r.ID, in.Op, in.User, kind, key, actor.ID(), s.nowMS()).Scan(&id); err != nil {
 			return err
 		}
 		t.emit(&Event{Kind: EvSandboxOp, AdminOnly: true, Data: map[string]any{"runner": r.ID, "name": r.Name,

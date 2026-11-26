@@ -63,7 +63,7 @@ func (s *Service) liveTaskSessions(ctx context.Context, q queryer, userID, excep
 // leased (by this agent's other sessions too), and reserves it, plus with
 // batch the related ones wp batch would take, for a session about to start.
 func (s *Service) Handoff(ctx context.Context, actor *Actor, q AgentQuery, batch bool) (*HandoffResult, error) {
-	if err := actor.need(PermSessionsStart); err != nil {
+	if err := actor.Need(PermSessionsStart); err != nil {
 		return nil, err
 	}
 	id, err := agentIdentity(actor, q.Agent)
@@ -93,7 +93,7 @@ func (s *Service) Handoff(ctx context.Context, actor *Actor, q AgentQuery, batch
 	res := &HandoffResult{Status: HandoffNone}
 	err = s.write(ctx, actor, func(t *tx) error {
 		res = &HandoffResult{Status: HandoffNone}
-		live, err := s.liveTaskSessions(ctx, t, actor.id(), actor.Session, id)
+		live, err := s.liveTaskSessions(ctx, t, actor.ID(), actor.Session, id)
 		if err != nil {
 			return err
 		}
@@ -240,7 +240,7 @@ func (s *Service) RecordHandoff(ctx context.Context, actor *Actor, outcome, deta
 	var title string
 	var project sql.NullInt64
 	err := s.write(ctx, actor, func(t *tx) error {
-		if err := t.QueryRowContext(ctx, `SELECT title, project_id FROM agent_sessions WHERE id = ? AND user_id = ?`, actor.Session, actor.id()).Scan(&title, &project); err != nil {
+		if err := t.QueryRowContext(ctx, `SELECT title, project_id FROM agent_sessions WHERE id = ? AND user_id = ?`, actor.Session, actor.ID()).Scan(&title, &project); err != nil {
 			return err
 		}
 		return s.sessionTimeline(ctx, t, actor.Session, s.nowMS(), "handoff", "", 0, outcome, "", detail, project, map[string]any{"outcome": outcome})
@@ -249,7 +249,7 @@ func (s *Service) RecordHandoff(ctx context.Context, actor *Actor, outcome, deta
 		return err
 	}
 	if outcome == OutcomeFailed {
-		s.notify(ctx, actor.id(), nil, NotifyAutomated, "A task session couldn't start the next task", fmt.Sprintf("%s: %s. The session stays open; start the next task with wp start KEY --bg.", strings.TrimSpace(title), detail))
+		s.notify(ctx, actor.ID(), nil, NotifyAutomated, "A task session couldn't start the next task", fmt.Sprintf("%s: %s. The session stays open; start the next task with wp start KEY --bg.", strings.TrimSpace(title), detail))
 	}
 	s.publishSession(ctx, actor.Session)
 	return nil

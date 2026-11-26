@@ -183,7 +183,7 @@ func (s *Service) labelPRUrgent(ctx context.Context, actor *Actor, pr *PullReque
 			return err
 		}
 		t.audit(AuditEntry{Action: "pr.urgent", Category: AuditControl, ProjectID: projectID, TargetType: "pr", TargetID: pr.ID,
-			Target: fmt.Sprintf("%s#%d", pr.Repo, pr.Number), URL: pr.URL, Detail: detail + " for “" + excerpt(pr.Title, 120) + "”", About: actor.agentName()})
+			Target: fmt.Sprintf("%s#%d", pr.Repo, pr.Number), URL: pr.URL, Detail: detail + " for “" + excerpt(pr.Title, 120) + "”", About: actor.AgentName()})
 		t.emit(&Event{Kind: EvPRActivity, ProjectID: projectID, New: map[bool]string{true: "urgent", false: "not urgent"}[on], Data: map[string]any{"pr_id": pr.ID}})
 		return nil
 	})

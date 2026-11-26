@@ -38,8 +38,8 @@ type User struct {
 	Timezone      string    `json:"timezone"`
 	Prefs         UserPrefs `json:"prefs"`
 	CreatedAt     time.Time `json:"created_at"`
-	avatarVersion int64
-	passwordHash  string
+	AvatarVersion int64     `json:"-"`
+	PasswordHash  string    `json:"-"`
 }
 
 // UserPrefs are per-user settings.
@@ -139,13 +139,13 @@ func scanUser(sc interface{ Scan(...any) error }) (*User, error) {
 	var u User
 	var prefs string
 	var created int64
-	if err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.passwordHash, &u.IsAdmin, &u.Disabled,
-		&u.avatarVersion, &u.Timezone, &prefs, &created); err != nil {
+	if err := sc.Scan(&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.IsAdmin, &u.Disabled,
+		&u.AvatarVersion, &u.Timezone, &prefs, &created); err != nil {
 		return nil, err
 	}
 	_ = json.Unmarshal([]byte(prefs), &u.Prefs)
 	u.CreatedAt = msTime(created)
-	u.AvatarURL = avatarURL(u.ID, u.avatarVersion)
+	u.AvatarURL = avatarURL(u.ID, u.AvatarVersion)
 	if u.DisplayName == "" {
 		u.DisplayName = u.Username
 	}
@@ -211,7 +211,7 @@ func (s *Service) ListUsers(ctx context.Context, actor *Actor) ([]*User, error) 
 			return nil, err
 		}
 		u.Prefs = UserPrefs{}
-		if !actor.isAdmin() && u.ID != actor.id() {
+		if !actor.IsAdmin() && u.ID != actor.ID() {
 			u.Email = ""
 		}
 		out = append(out, u)
@@ -317,7 +317,7 @@ func (s *Service) Login(ctx context.Context, login, password, userAgent, ip stri
 		CheckPassword(dummyHash(), password)
 		return "", nil, ErrUnauthorized
 	}
-	if !CheckPassword(u.passwordHash, password) || u.Disabled {
+	if !CheckPassword(u.PasswordHash, password) || u.Disabled {
 		return "", nil, ErrUnauthorized
 	}
 	tok, err := s.createSession(ctx, u.ID, userAgent, ip)
@@ -343,7 +343,7 @@ func (s *Service) SessionActor(ctx context.Context, tok string) (*Actor, error) 
 	if err != nil {
 		return nil, err
 	}
-	return &Actor{User: u, session: hashToken(tok)}, nil
+	return &Actor{User: u, SessionHash: hashToken(tok)}, nil
 }
 
 func (s *Service) SessionUser(ctx context.Context, tok string) (*User, error) {
@@ -442,7 +442,7 @@ func tokenAudit(action string, t *APIToken) AuditEntry {
 }
 
 func (s *Service) createToken(ctx context.Context, q queryer, actor *Actor, spec TokenSpec) (string, *APIToken, error) {
-	if err := actor.canManageTokens(); err != nil {
+	if err := actor.CanManageTokens(); err != nil {
 		return "", nil, err
 	}
 	perms, err := normalizePermissions(spec.Permissions)
@@ -467,7 +467,7 @@ func (s *Service) createToken(ctx context.Context, q queryer, actor *Actor, spec
 		exp = now + spec.TTL.Milliseconds()
 	}
 	res, err := q.ExecContext(ctx, `INSERT INTO api_tokens(user_id, name, token_hash, prefix, read_only, agent, permissions, created_at, expires_at)
-		VALUES (?,?,?,?,?,?,?,?,?)`, actor.id(), name, hashToken(tok), tok[:12], boolInt(spec.ReadOnly), agent, permissionsJSON(perms), now, exp)
+		VALUES (?,?,?,?,?,?,?,?,?)`, actor.ID(), name, hashToken(tok), tok[:12], boolInt(spec.ReadOnly), agent, permissionsJSON(perms), now, exp)
 	if err != nil {
 		return "", nil, err
 	}
@@ -502,10 +502,10 @@ func (s *Service) apiToken(ctx context.Context, actor *Actor, id int64) (*APITok
 // apiTokens lists the actor's tokens, or just token id when it isn't 0.
 func (s *Service) apiTokens(ctx context.Context, actor *Actor, id int64) ([]APIToken, error) {
 	if actor.Restricted() {
-		return nil, actor.canManageTokens()
+		return nil, actor.CanManageTokens()
 	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT id, name, prefix, read_only, agent, permissions, created_at, last_used_at, expires_at
-		FROM api_tokens WHERE user_id = ? AND (? = 0 OR id = ?) AND runner_job_id IS NULL ORDER BY id DESC`, actor.id(), id, id)
+		FROM api_tokens WHERE user_id = ? AND (? = 0 OR id = ?) AND runner_job_id IS NULL ORDER BY id DESC`, actor.ID(), id, id)
 	if err != nil {
 		return nil, err
 	}
@@ -541,11 +541,11 @@ func (s *Service) apiTokens(ctx context.Context, actor *Actor, id int64) ([]APIT
 
 // RevokeAPIToken deletes one of the actor's tokens.
 func (s *Service) RevokeAPIToken(ctx context.Context, actor *Actor, id int64) error {
-	if err := actor.canManageTokens(); err != nil {
+	if err := actor.CanManageTokens(); err != nil {
 		return err
 	}
 	t := APIToken{ID: id}
-	err := s.db.W.QueryRowContext(ctx, `DELETE FROM api_tokens WHERE id = ? AND user_id = ? AND runner_job_id IS NULL RETURNING name, read_only, agent`, id, actor.id()).
+	err := s.db.W.QueryRowContext(ctx, `DELETE FROM api_tokens WHERE id = ? AND user_id = ? AND runner_job_id IS NULL RETURNING name, read_only, agent`, id, actor.ID()).
 		Scan(&t.Name, &t.ReadOnly, &t.Agent)
 	if errors.Is(err, sql.ErrNoRows) {
 		return notFound("token")
@@ -603,7 +603,7 @@ func (s *Service) tokenActor(ctx context.Context, hash string, tokenID int64, to
 	}
 	a := &Actor{User: u, ReadOnly: ro, Agent: agent, Permissions: ps, TokenID: id, RunnerJob: job.Int64}
 	if job.Valid {
-		if a.scope, err = s.jobScope(ctx, job.Int64, u); err != nil {
+		if a.Scope, err = s.jobScope(ctx, job.Int64, u); err != nil {
 			return nil, err
 		}
 		nu := *u
@@ -630,10 +630,10 @@ func (s *Service) linkURL(kind, tok string) string {
 // CreateInvite makes a single-use signup link. Only admins can invite:
 // there is no public signup.
 func (s *Service) CreateInvite(ctx context.Context, actor *Actor, email string, isAdmin bool, ttl time.Duration) (*UserLink, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, ErrForbidden
 	}
 	email = strings.TrimSpace(email)
@@ -648,8 +648,8 @@ func (s *Service) CreateInvite(ctx context.Context, actor *Actor, email string, 
 	tok := newToken("")
 	now := s.nowMS()
 	var by any
-	if actor.id() != 0 {
-		by = actor.id()
+	if actor.ID() != 0 {
+		by = actor.ID()
 	}
 	_, err := s.db.W.ExecContext(ctx, `INSERT INTO user_links(token_hash, kind, email, is_admin, created_by, created_at, expires_at)
 		VALUES (?, 'invite', ?, ?, ?, ?, ?)`, hashToken(tok), email, boolInt(isAdmin), by, now, now+ttl.Milliseconds())
@@ -667,10 +667,10 @@ func (s *Service) CreateInvite(ctx context.Context, actor *Actor, email string, 
 // CreateResetLink makes a password reset link for a user (admin only, or
 // the CLI via SystemActor).
 func (s *Service) CreateResetLink(ctx context.Context, actor *Actor, userID int64) (*UserLink, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, ErrForbidden
 	}
 	u, err := s.userByID(ctx, s.db.R, userID)
@@ -681,8 +681,8 @@ func (s *Service) CreateResetLink(ctx context.Context, actor *Actor, userID int6
 	now := s.nowMS()
 	ttl := 48 * time.Hour
 	var by any
-	if actor.id() != 0 {
-		by = actor.id()
+	if actor.ID() != 0 {
+		by = actor.ID()
 	}
 	_, err = s.db.W.ExecContext(ctx, `INSERT INTO user_links(token_hash, kind, user_id, created_by, created_at, expires_at)
 		VALUES (?, 'reset', ?, ?, ?, ?)`, hashToken(tok), u.ID, by, now, now+ttl.Milliseconds())
@@ -705,7 +705,7 @@ type PendingInvite struct {
 
 // ListInvites returns unused, unexpired invites.
 func (s *Service) ListInvites(ctx context.Context, actor *Actor) ([]PendingInvite, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, ErrForbidden
 	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT token_hash, email, is_admin, created_at, expires_at FROM user_links
@@ -730,10 +730,10 @@ func (s *Service) ListInvites(ctx context.Context, actor *Actor) ([]PendingInvit
 
 // RevokeInvite deletes a pending invite by the ID from ListInvites.
 func (s *Service) RevokeInvite(ctx context.Context, actor *Actor, id string) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return ErrForbidden
 	}
 	if len(id) != 16 {
@@ -869,14 +869,14 @@ func (s *Service) ResetPassword(ctx context.Context, tok, password string) error
 
 // ChangePassword changes the actor's own password.
 func (s *Service) ChangePassword(ctx context.Context, actor *Actor, oldPW, newPW string) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
-	u, err := s.userByID(ctx, s.db.R, actor.id())
+	u, err := s.userByID(ctx, s.db.R, actor.ID())
 	if err != nil {
 		return err
 	}
-	if !CheckPassword(u.passwordHash, oldPW) {
+	if !CheckPassword(u.PasswordHash, oldPW) {
 		return invalid("current password is incorrect")
 	}
 	if err := validatePassword(newPW); err != nil {
@@ -887,7 +887,7 @@ func (s *Service) ChangePassword(ctx context.Context, actor *Actor, oldPW, newPW
 		if _, err := t.ExecContext(ctx, `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`, HashPassword(newPW), now, u.ID); err != nil {
 			return err
 		}
-		if _, err := t.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND token_hash != ?`, u.ID, actor.session); err != nil {
+		if _, err := t.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND token_hash != ?`, u.ID, actor.SessionHash); err != nil {
 			return err
 		}
 		if err := dropPushSubscriptions(ctx, t, u.ID); err != nil {
@@ -916,7 +916,7 @@ func (s *Service) ListSessions(ctx context.Context, actor *Actor) ([]Session, er
 		return nil, ErrUnauthorized
 	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT token_hash, created_at, last_seen_at, user_agent, ip FROM sessions
-		WHERE user_id = ? AND expires_at > ? ORDER BY last_seen_at DESC`, actor.id(), s.nowMS())
+		WHERE user_id = ? AND expires_at > ? ORDER BY last_seen_at DESC`, actor.ID(), s.nowMS())
 	if err != nil {
 		return nil, err
 	}
@@ -929,7 +929,7 @@ func (s *Service) ListSessions(ctx context.Context, actor *Actor) ([]Session, er
 		if err := rows.Scan(&h, &c, &l, &se.UserAgent, &se.IP); err != nil {
 			return nil, err
 		}
-		se.ID, se.CreatedAt, se.LastSeenAt, se.Current = h[:sessionIDLen], msTime(c), msTime(l), h == actor.session
+		se.ID, se.CreatedAt, se.LastSeenAt, se.Current = h[:sessionIDLen], msTime(c), msTime(l), h == actor.SessionHash
 		out = append(out, se)
 	}
 	return out, rows.Err()
@@ -938,19 +938,19 @@ func (s *Service) ListSessions(ctx context.Context, actor *Actor) ([]Session, er
 // RevokeSession signs out one of the actor's sessions, or with id "others"
 // every session except the current one.
 func (s *Service) RevokeSession(ctx context.Context, actor *Actor, id string) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
 	if id == "others" {
-		if _, err := s.db.W.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND token_hash != ?`, actor.id(), actor.session); err != nil {
+		if _, err := s.db.W.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND token_hash != ?`, actor.ID(), actor.SessionHash); err != nil {
 			return err
 		}
-		return dropPushSubscriptions(ctx, s.db.W, actor.id())
+		return dropPushSubscriptions(ctx, s.db.W, actor.ID())
 	}
 	if len(id) != sessionIDLen {
 		return notFound("session")
 	}
-	res, err := s.db.W.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND substr(token_hash, 1, ?) = ?`, actor.id(), sessionIDLen, id)
+	res, err := s.db.W.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND substr(token_hash, 1, ?) = ?`, actor.ID(), sessionIDLen, id)
 	if err != nil {
 		return err
 	}
@@ -971,10 +971,10 @@ type CreateUserInput struct {
 
 // CreateUser creates an account directly (admin only).
 func (s *Service) CreateUser(ctx context.Context, actor *Actor, in CreateUserInput) (*User, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, ErrForbidden
 	}
 	if err := validateUsername(in.Username); err != nil {
@@ -1021,10 +1021,10 @@ type UserPatch struct {
 
 // UpdateUser edits a user: themself, or anyone when the actor is an admin.
 func (s *Service) UpdateUser(ctx context.Context, actor *Actor, id int64, p UserPatch) (*User, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
-	if actor.id() != id && !actor.isAdmin() {
+	if actor.ID() != id && !actor.IsAdmin() {
 		return nil, ErrForbidden
 	}
 	u, err := s.userByID(ctx, s.db.R, id)
@@ -1033,7 +1033,7 @@ func (s *Service) UpdateUser(ctx context.Context, actor *Actor, id int64, p User
 	}
 	sets, args := []string{}, []any{}
 	if p.Username != nil {
-		if !actor.isAdmin() {
+		if !actor.IsAdmin() {
 			return nil, invalid("only an admin can change a username")
 		}
 		if err := validateUsername(*p.Username); err != nil {
@@ -1057,7 +1057,7 @@ func (s *Service) UpdateUser(ctx context.Context, actor *Actor, id int64, p User
 		sets, args = append(sets, "timezone = ?"), append(args, *p.Timezone)
 	}
 	if p.Prefs != nil {
-		if actor.id() != id {
+		if actor.ID() != id {
 			return nil, invalid("preferences can only be changed by their owner")
 		}
 		next := *p.Prefs
@@ -1101,7 +1101,7 @@ func (s *Service) UpdateUser(ctx context.Context, actor *Actor, id int64, p User
 			return nil, invalid("cache_warm must be compact or empty")
 		}
 		var err error
-		if next.Sessions, err = next.Sessions.validate(); err != nil {
+		if next.Sessions, err = next.Sessions.Validate(); err != nil {
 			return nil, err
 		}
 		if len(next.ProjectOrder) > maxProjectOrder {
@@ -1124,10 +1124,10 @@ func (s *Service) UpdateUser(ctx context.Context, actor *Actor, id int64, p User
 		sets, args = append(sets, "prefs = ?"), append(args, string(b))
 	}
 	if p.IsAdmin != nil || p.Disabled != nil {
-		if !actor.isAdmin() {
+		if !actor.IsAdmin() {
 			return nil, ErrForbidden
 		}
-		if actor.id() == id && ((p.IsAdmin != nil && !*p.IsAdmin) || (p.Disabled != nil && *p.Disabled)) {
+		if actor.ID() == id && ((p.IsAdmin != nil && !*p.IsAdmin) || (p.Disabled != nil && *p.Disabled)) {
 			return nil, invalid("you cannot remove your own admin access or disable yourself")
 		}
 		if p.IsAdmin != nil {
@@ -1158,7 +1158,7 @@ func (s *Service) UpdateUser(ctx context.Context, actor *Actor, id int64, p User
 		if p.Disabled != nil && *p.Disabled != u.Disabled {
 			changes = append(changes, map[bool]string{true: "disabled " + u.Name(), false: "re-enabled " + u.Name()}[*p.Disabled])
 		}
-		if p.Username != nil && *p.Username != u.Username && actor.id() != u.ID {
+		if p.Username != nil && *p.Username != u.Username && actor.ID() != u.ID {
 			changes = append(changes, "renamed "+u.Username+" to "+*p.Username)
 		}
 		if len(changes) > 0 {
@@ -1171,22 +1171,22 @@ func (s *Service) UpdateUser(ctx context.Context, actor *Actor, id int64, p User
 
 // DeleteUser removes an account (admin only). Their issues remain.
 func (s *Service) DeleteUser(ctx context.Context, actor *Actor, id int64) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return ErrForbidden
 	}
-	if actor.id() == id {
+	if actor.ID() == id {
 		return invalid("you cannot delete yourself")
 	}
 	return s.write(ctx, actor, func(t *tx) error {
-		if actor.id() != 0 {
+		if actor.ID() != 0 {
 			if _, err := t.ExecContext(ctx, `INSERT INTO project_members(project_id, user_id, role, created_at)
 				SELECT m.project_id, ?, 'owner', ? FROM project_members m
 				WHERE m.user_id = ? AND m.role = 'owner'
 				  AND NOT EXISTS (SELECT 1 FROM project_members o WHERE o.project_id = m.project_id AND o.role = 'owner' AND o.user_id != m.user_id)
-				ON CONFLICT(project_id, user_id) DO UPDATE SET role = 'owner'`, actor.id(), s.nowMS(), id); err != nil {
+				ON CONFLICT(project_id, user_id) DO UPDATE SET role = 'owner'`, actor.ID(), s.nowMS(), id); err != nil {
 				return err
 			}
 		}
@@ -1202,7 +1202,7 @@ func (s *Service) DeleteUser(ctx context.Context, actor *Actor, id int64) error 
 			detail += "; their archived transcripts are removed from the disk next"
 		}
 		t.audit(AuditEntry{Action: "user.delete", Category: AuditAccess, TargetType: "user", TargetID: id, Target: name, Detail: detail})
-		t.emit(&Event{Kind: EvUserDeleted, UserID: id, AdminOnly: true, Data: map[string]any{"user": id, "name": name, "by": actor.id()}})
+		t.emit(&Event{Kind: EvUserDeleted, UserID: id, AdminOnly: true, Data: map[string]any{"user": id, "name": name, "by": actor.ID()}})
 		return nil
 	})
 }
@@ -1211,10 +1211,10 @@ const maxAvatarBytes = 2 << 20
 
 // SetAvatar stores an avatar image for a user (themself, or by an admin).
 func (s *Service) SetAvatar(ctx context.Context, actor *Actor, id int64, data []byte) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
-	if actor.id() != id && !actor.isAdmin() {
+	if actor.ID() != id && !actor.IsAdmin() {
 		return ErrForbidden
 	}
 	if len(data) > maxAvatarBytes {
@@ -1279,15 +1279,15 @@ func (s *Service) BootstrapInvite(ctx context.Context) (*UserLink, error) {
 // CalendarToken returns (creating if needed) the secret for the user's ICS feed.
 func (s *Service) CalendarToken(ctx context.Context, actor *Actor, rotate bool) (string, error) {
 	var tok string
-	if err := s.db.R.QueryRowContext(ctx, `SELECT calendar_token FROM users WHERE id = ?`, actor.id()).Scan(&tok); err != nil {
+	if err := s.db.R.QueryRowContext(ctx, `SELECT calendar_token FROM users WHERE id = ?`, actor.ID()).Scan(&tok); err != nil {
 		return "", err
 	}
 	if tok == "" || rotate {
-		if err := actor.canWrite(); err != nil {
+		if err := actor.CanWrite(); err != nil {
 			return "", err
 		}
 		tok = newToken("")
-		if _, err := s.db.W.ExecContext(ctx, `UPDATE users SET calendar_token = ? WHERE id = ?`, tok, actor.id()); err != nil {
+		if _, err := s.db.W.ExecContext(ctx, `UPDATE users SET calendar_token = ? WHERE id = ?`, tok, actor.ID()); err != nil {
 			return "", err
 		}
 	}

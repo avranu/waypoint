@@ -337,7 +337,7 @@ func (s *Service) recordGoalDismissal(ctx context.Context, t *tx, actor *Actor, 
 		VALUES (?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT (src_type, src_id, goal_id) DO UPDATE SET link_score = excluded.link_score, link_basis = excluded.link_basis,
 			link_by = excluded.link_by, link_agent = excluded.link_agent, link_created_at = excluded.link_created_at
-		WHERE goal_dismissals.link_created_at IS NULL AND excluded.link_created_at IS NOT NULL`, typ, id, goal, nullUser(actor.id()), s.nowMS(), score, basis, by, agent, at)
+		WHERE goal_dismissals.link_created_at IS NULL AND excluded.link_created_at IS NOT NULL`, typ, id, goal, nullUser(actor.ID()), s.nowMS(), score, basis, by, agent, at)
 	return err
 }
 
@@ -577,7 +577,7 @@ func (s *Service) ListGoals(ctx context.Context, actor *Actor, project string) (
 	}
 	out := &GoalsOverview{Project: p.Key, ProjectName: p.Name, Goals: []*GoalView{}, Links: []GoalLink{}, Untraced: []UntracedItem{},
 		Unapproved: []KItem{}, Totals: map[string]int{}, Ask: []string{}, Words: groundingWords,
-		CanEdit: role >= RoleEditor && !actor.ReadOnly, CanApprove: role >= RoleEditor && !actor.ReadOnly && actor.actsAsPerson()}
+		CanEdit: role >= RoleEditor && !actor.ReadOnly, CanApprove: role >= RoleEditor && !actor.ReadOnly && actor.ActsAsPerson()}
 	notes, err := s.ListDesign(ctx, actor, DesignQuery{Project: p.Key, Kind: "goal", Limit: 1000})
 	if err != nil {
 		return nil, err
@@ -598,7 +598,7 @@ func (s *Service) ListGoals(ctx context.Context, actor *Actor, project string) (
 	if err != nil {
 		return nil, err
 	}
-	if actor.actsAsPerson() {
+	if actor.ActsAsPerson() {
 		s.recordMeaningShown(ctx, shown)
 	}
 	subtree, err := s.projectSubtree(ctx, p.ID)
@@ -1453,7 +1453,7 @@ func (tr *tracer) commit(ctx context.Context, q TraceQuery) (*ItemTrace, error) 
 // ConfirmGoalLink makes an agent's link or Waypoint's guess the person's
 // own: it counts as a person's link from then on.
 func (s *Service) ConfirmGoalLink(ctx context.Context, actor *Actor, id int64) (*Link, error) {
-	if err := actor.requirePersonDirect("confirming a link"); err != nil {
+	if err := actor.RequirePersonDirect("confirming a link"); err != nil {
 		return nil, err
 	}
 	var src KItem
@@ -1471,7 +1471,7 @@ func (s *Service) ConfirmGoalLink(ctx context.Context, actor *Actor, id int64) (
 		if _, err := s.canEditSource(ctx, t, actor, src.Type, src.ID); err != nil {
 			return err
 		}
-		_, err := t.ExecContext(ctx, `UPDATE knowledge_links SET confirmed_by = ?, confirmed_at = ? WHERE id = ? AND confirmed_by IS NULL`, actor.id(), s.nowMS(), id)
+		_, err := t.ExecContext(ctx, `UPDATE knowledge_links SET confirmed_by = ?, confirmed_at = ? WHERE id = ? AND confirmed_by IS NULL`, actor.ID(), s.nowMS(), id)
 		return err
 	})
 	if err != nil {
@@ -1484,7 +1484,7 @@ func (s *Service) ConfirmGoalLink(ctx context.Context, actor *Actor, id int64) (
 // DismissGoalLink removes an agent's link or Waypoint's guess to a goal and
 // keeps the no, so Waypoint never guesses it again.
 func (s *Service) DismissGoalLink(ctx context.Context, actor *Actor, id int64) error {
-	if err := actor.requirePersonDirect("dismissing a link"); err != nil {
+	if err := actor.RequirePersonDirect("dismissing a link"); err != nil {
 		return err
 	}
 	var src KItem
@@ -1533,7 +1533,7 @@ func (s *Service) DismissGoalLink(ctx context.Context, actor *Actor, id int64) e
 // DismissGoalMatch says an item doesn't serve a goal Waypoint offered for
 // it, without a link to remove.
 func (s *Service) DismissGoalMatch(ctx context.Context, actor *Actor, item LinkEnd, goal int64) error {
-	if err := actor.requirePersonDirect("dismissing a suggestion"); err != nil {
+	if err := actor.RequirePersonDirect("dismissing a suggestion"); err != nil {
 		return err
 	}
 	var src KItem
@@ -1563,7 +1563,7 @@ func (s *Service) DismissGoalMatch(ctx context.Context, actor *Actor, item LinkE
 // agent's) and only leaves the waiting list. It returns how many it
 // acknowledged; links already confirmed, acknowledged or gone are skipped.
 func (s *Service) AcknowledgeGoalLinks(ctx context.Context, actor *Actor, ids []int64) (int, error) {
-	if err := actor.requirePersonDirect("acknowledging links"); err != nil {
+	if err := actor.RequirePersonDirect("acknowledging links"); err != nil {
 		return 0, err
 	}
 	if len(ids) == 0 || len(ids) > 500 {
@@ -1584,7 +1584,7 @@ func (s *Service) AcknowledgeGoalLinks(ctx context.Context, actor *Actor, ids []
 			if _, err := s.canEditSource(ctx, t, actor, src.Type, src.ID); err != nil {
 				continue
 			}
-			if _, err := t.ExecContext(ctx, `UPDATE knowledge_links SET acknowledged_by = ?, acknowledged_at = ? WHERE id = ?`, actor.id(), s.nowMS(), id); err != nil {
+			if _, err := t.ExecContext(ctx, `UPDATE knowledge_links SET acknowledged_by = ?, acknowledged_at = ? WHERE id = ?`, actor.ID(), s.nowMS(), id); err != nil {
 				return err
 			}
 			n++

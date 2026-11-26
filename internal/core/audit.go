@@ -42,7 +42,7 @@ func (t *tx) audit(e AuditEntry) {
 	var userID any
 	agent := ""
 	if a := t.actor; a != nil && a.User != nil && a.User.ID != 0 {
-		userID, agent = a.User.ID, a.agentName()
+		userID, agent = a.User.ID, a.AgentName()
 	}
 	var project, target any
 	if e.ProjectID != 0 {

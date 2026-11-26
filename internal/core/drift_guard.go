@@ -313,7 +313,7 @@ func (s *Service) fileDeferred(ctx context.Context, actor *Actor, pr *PullReques
 // comments, then marks them deferred with "Filed as KEY: why" as the
 // reply, which resolves their threads.
 func (s *Service) deferComments(ctx context.Context, actor *Actor, list []*PRReviewComment, prs map[int64]*PullRequest, why string) error {
-	if err := actor.need(PermIssuesCreate); err != nil {
+	if err := actor.Need(PermIssuesCreate); err != nil {
 		return err
 	}
 	var order []int64

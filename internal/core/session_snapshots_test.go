@@ -159,7 +159,7 @@ func TestDropsIDMakesAReportIdempotent(t *testing.T) {
 func TestDropsReportsOlderThan30DaysArePruned(t *testing.T) {
 	e := newEnv(t)
 	old := e.s.nowMS() - 31*24*3600*1000
-	if _, err := e.s.db.W.Exec(`INSERT INTO hook_drop_reports(user_id, report_id, at) VALUES (?,?,?)`, e.admin.id(), "old", old); err != nil {
+	if _, err := e.s.db.W.Exec(`INSERT INTO hook_drop_reports(user_id, report_id, at) VALUES (?,?,?)`, e.admin.ID(), "old", old); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.s.SessionHook(e.ctx, e.admin, []HookEvent{hook("box", "pr-1", "Stop", func(ev *HookEvent) {

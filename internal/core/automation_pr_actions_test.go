@@ -348,7 +348,7 @@ func TestFixCIStep(t *testing.T) {
 	if in.CLI != "claude" || in.Permission != AgentEditRun || in.Base != "fix-login" || in.Branch != "fix-login" || !in.Push || in.Repo != "https://git.example.com/me/app.git" {
 		t.Fatalf("job = %+v", in)
 	}
-	if act, err := ae.s.TokenActor(ae.ctx, claim.Token); err != nil || act.scope[ae.p.ID] != RoleEditor || len(act.scope) != 1 {
+	if act, err := ae.s.TokenActor(ae.ctx, claim.Token); err != nil || act.Scope[ae.p.ID] != RoleEditor || len(act.Scope) != 1 {
 		t.Errorf("the job's token reaches %v (%v), want only the repo's project %d", act, err, ae.p.ID)
 	}
 	for _, want := range []string{"pull request #5", ciBackend, "want 200, got 500", "<untrusted>", "Do not change CI configuration", "https://x/b"} {

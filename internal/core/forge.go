@@ -221,10 +221,10 @@ func mirrorPrivate(in []string) (string, error) {
 
 // CreateForge connects a forge (admin only, since it holds a token).
 func (s *Service) CreateForge(ctx context.Context, actor *Actor, in ForgeInput) (*Forge, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, ErrForbidden
 	}
 	kind := deref(in.Kind)
@@ -264,7 +264,7 @@ func (s *Service) CreateForge(ctx context.Context, actor *Actor, in ForgeInput) 
 		return nil, err
 	}
 	res, err := s.db.W.ExecContext(ctx, `INSERT INTO forges(kind, name, base_url, token, webhook_secret, auto_projects, created_by, created_at, bot_token, mirror_private, mirror_account) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-		kind, name, base, deref(in.Token), secret, boolInt(auto), nullUser(actor.id()), s.nowMS(), strings.TrimSpace(deref(in.BotToken)), mirror, account)
+		kind, name, base, deref(in.Token), secret, boolInt(auto), nullUser(actor.ID()), s.nowMS(), strings.TrimSpace(deref(in.BotToken)), mirror, account)
 	if err != nil {
 		return nil, err
 	}
@@ -283,10 +283,10 @@ func validForgeURL(base string) error {
 }
 
 func (s *Service) UpdateForge(ctx context.Context, actor *Actor, id int64, in ForgeInput) (*Forge, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, ErrForbidden
 	}
 	cur, err := s.forgeByID(ctx, id)
@@ -387,7 +387,7 @@ func (s *Service) UpdateForge(ctx context.Context, actor *Actor, id int64, in Fo
 // ForgeSecret reveals a forge's webhook secret to an admin (to paste into
 // the forge's webhook settings).
 func (s *Service) ForgeSecret(ctx context.Context, actor *Actor, id int64) (string, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return "", ErrForbidden
 	}
 	f, err := s.forgeByID(ctx, id)
@@ -399,10 +399,10 @@ func (s *Service) ForgeSecret(ctx context.Context, actor *Actor, id int64) (stri
 
 // DeleteForge removes a forge connection.
 func (s *Service) DeleteForge(ctx context.Context, actor *Actor, id int64) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return ErrForbidden
 	}
 	f, err := s.forgeByID(ctx, id)
@@ -559,7 +559,7 @@ func (s *Service) ListProjectRepos(ctx context.Context, actor *Actor, projectRef
 // AddProjectRepo attaches a repo; with syncIssues its issues are imported
 // and kept in sync both ways.
 func (s *Service) AddProjectRepo(ctx context.Context, actor *Actor, projectRef string, forgeID int64, repo string, syncIssues bool) (*ProjectRepo, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	p, err := s.projectByRef(ctx, s.db.R, projectRef)
@@ -665,7 +665,7 @@ func (s *Service) UpdateProjectRepo(ctx context.Context, actor *Actor, projectRe
 // projects remember that, so the repo isn't attached again on the next
 // discovery.
 func (s *Service) RemoveProjectRepo(ctx context.Context, actor *Actor, projectRef string, id int64) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
 	p, err := s.projectByRef(ctx, s.db.R, projectRef)
@@ -808,7 +808,7 @@ func (s *Service) AddLink(ctx context.Context, actor *Actor, issueRef, rawURL, t
 		res, err := t.ExecContext(ctx, `INSERT INTO external_links(issue_id, provider, kind, url, repo, number, title, state, created_at, created_agent, via) VALUES (?,?,?,?,?,?,?,?,?,?,'added')
 			ON CONFLICT(issue_id, url) DO UPDATE SET title = CASE WHEN excluded.title != '' THEN excluded.title ELSE title END,
 				created_agent = CASE WHEN created_agent = '' THEN excluded.created_agent ELSE created_agent END, via = 'added'`,
-			i.ID, l.Provider, l.Kind, l.URL, l.Repo, nullInt(l.Number), l.Title, l.State, s.nowMS(), actor.agentName())
+			i.ID, l.Provider, l.Kind, l.URL, l.Repo, nullInt(l.Number), l.Title, l.State, s.nowMS(), actor.AgentName())
 		if err != nil {
 			return err
 		}
@@ -860,7 +860,7 @@ func (s *Service) RemoveLink(ctx context.Context, actor *Actor, issueRef string,
 				by = actor.User.ID
 			}
 			if _, err := t.ExecContext(ctx, `INSERT OR REPLACE INTO issue_unlinks(issue_id, url, user_id, agent, created_at) VALUES (?,?,?,?,?)`,
-				i.ID, linkURL, by, actor.agentName(), s.nowMS()); err != nil {
+				i.ID, linkURL, by, actor.AgentName(), s.nowMS()); err != nil {
 				return err
 			}
 		}
@@ -1422,7 +1422,7 @@ func (s *Service) importForgeIssue(ctx context.Context, f *Forge, repo string, i
 	sys.User.DisplayName = f.Name
 	outside, agent := s.forgeWriter(ctx, s.db.R, f, item.Author)
 	writer := *sys
-	writer.textAgent = agent
+	writer.TextAgent = agent
 	for _, pid := range projects {
 		var issueID int64
 		err := s.db.R.QueryRowContext(ctx, `SELECT el.issue_id FROM external_links el JOIN issues i ON i.id = el.issue_id
@@ -1496,11 +1496,11 @@ func (s *Service) importForgeIssue(ctx context.Context, f *Forge, repo string, i
 			p.Status = &st
 		}
 		if p.Title != nil || p.Description != nil || p.Status != nil {
-			writer.forgeSync = true
+			writer.ForgeSync = true
 			if _, err := s.UpdateIssue(ctx, &writer, itoa64(issueID), p); err != nil {
 				return err
 			}
-			writer.forgeSync = false
+			writer.ForgeSync = false
 			if p.Status != nil {
 				s.pushStateToMirrors(ctx, issueID, pid, closed, item.URL)
 			}
@@ -1525,7 +1525,7 @@ func (s *Service) hideConfidential(ctx context.Context, sys *Actor, f *Forge, is
 	title := fmt.Sprintf("Confidential %s issue #%d", kindLabel(f.Kind), item.Number)
 	desc := "This issue was made confidential on " + kindLabel(f.Kind) + ", so its text and comments are no longer copied here."
 	a := *sys
-	a.forgeSync = true
+	a.ForgeSync = true
 	if _, err := s.UpdateIssue(ctx, &a, itoa64(issueID), IssuePatch{Title: &title, Description: &desc}); err != nil {
 		return err
 	}

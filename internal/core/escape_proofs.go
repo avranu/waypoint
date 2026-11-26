@@ -41,7 +41,7 @@ type ProofDue struct {
 // takes minutes of test time, so a round proves only a few.
 func (s *Service) EscapeProofsDue(ctx context.Context, a *Actor, machine, repo string, limit int) ([]*ProofDue, error) {
 	out := []*ProofDue{}
-	if err := a.requireHuman("proving fixes on a machine"); err != nil {
+	if err := a.RequireHuman("proving fixes on a machine"); err != nil {
 		return nil, err
 	}
 	if a.User == nil || a.User.ID == 0 || (machine == "" && repo == "") {
@@ -170,7 +170,7 @@ func (in *FixProofInput) validate() error {
 // RecordFixProof stores a runner's proof and redoes the fix's escapes: a
 // check on the blamed change can change which cause they carry.
 func (s *Service) RecordFixProof(ctx context.Context, a *Actor, in FixProofInput) error {
-	if err := a.requireHuman("recording a fix's proof"); err != nil {
+	if err := a.RequireHuman("recording a fix's proof"); err != nil {
 		return err
 	}
 	if err := in.validate(); err != nil {

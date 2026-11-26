@@ -836,7 +836,7 @@ func (s *Service) cancelRun(ctx context.Context, actor *Actor, r *BotRun) (*BotR
 	if r.Status != "queued" && r.Status != "running" {
 		return nil, invalid("this run has already finished")
 	}
-	if actor.writesAsAgent() && r.Kind == "review" && sameSHA(r.HeadSHA, r.PR.HeadSHA) && (r.PR.State == "open" || r.PR.State == "draft") {
+	if actor.WritesAsAgent() && r.Kind == "review" && sameSHA(r.HeadSHA, r.PR.HeadSHA) && (r.PR.State == "open" || r.PR.State == "draft") {
 		return nil, forbidden("agents can't cancel the review of a pull request's head: a cancelled review counts as done, so it would merge unreviewed; a person can cancel it")
 	}
 	ended, err := s.endBotRun(ctx, r.ID, "cancelled", "Cancelled by "+actor.User.DisplayName+".", "", nil, "")

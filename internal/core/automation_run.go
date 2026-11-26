@@ -56,7 +56,7 @@ func (s *Service) kickRuns() {
 func (s *Service) automate(ctx context.Context, actor *Actor, e *Event) {
 	depth := 0
 	if actor != nil {
-		depth = actor.depth
+		depth = actor.Depth
 	}
 	if depth >= maxAutomationDepth {
 		return
@@ -154,18 +154,18 @@ func (s *Service) startRun(ctx context.Context, actor *Actor, a *Automation, e *
 	var perms PermissionSet
 	if actor != nil && actor.User != nil {
 		user = actor.User
-		depth = actor.depth
-		budget = actor.budget
+		depth = actor.Depth
+		budget = actor.Budget
 		perms = actor.Permissions
 	}
 	if budget == nil {
 		n := automationBudget
 		budget = &n
 		if actor != nil {
-			actor.budget = budget
+			actor.Budget = budget
 		}
 	}
-	auto := &Actor{User: user, Automation: a, depth: depth + 1, budget: budget, Permissions: perms}
+	auto := &Actor{User: user, Automation: a, Depth: depth + 1, Budget: budget, Permissions: perms}
 	via := cmp(o.Via, "event")
 	run := &AutomationRun{
 		AutomationID: a.ID, Automation: a.Name, ProjectID: a.ProjectID, Status: RunRunning, Via: via, Trigger: a.Rule.Trigger.Event,
@@ -336,7 +336,7 @@ func (s *Service) runFinished(ctx context.Context, a *Automation, run *Automatio
 		s.Hub.Publish(e)
 		return
 	}
-	s.dispatch(ctx, &Actor{User: SystemActor().User, Automation: a, depth: run.depth}, []*Event{e})
+	s.dispatch(ctx, &Actor{User: SystemActor().User, Automation: a, Depth: run.depth}, []*Event{e})
 }
 
 const automationWorkers = 4
@@ -465,7 +465,7 @@ func (s *Service) executeRun(ctx context.Context, run *AutomationRun) {
 		e = &Event{Kind: EvManual, ProjectID: run.ProjectID}
 	}
 	x := &execution{s: s, run: run, a: a, rule: rule, ev: e, durable: true, budget: &n,
-		actor: &Actor{User: user, Automation: a, depth: run.depth, budget: &n, Permissions: permissionSet(run.permissions)},
+		actor: &Actor{User: user, Automation: a, Depth: run.depth, Budget: &n, Permissions: permissionSet(run.permissions)},
 		trig:  s.triggerView(a, e, run.Via, cmp(runBy(run), eventBy(e)), user.Ref()),
 		steps: map[string]map[string]any{}, prev: map[string]any{}, rows: map[string]*RunStep{}}
 	steps, err := s.runSteps(ctx, run.ID)

@@ -366,7 +366,7 @@ func (s *Service) fileFlake(ctx context.Context, b *Babysit, pr *PullRequest, fr
 		return "", nil
 	}
 	writer := Actor{User: owner}
-	writer.textAgent = "waypoint"
+	writer.TextAgent = "waypoint"
 	title := flakeTitle(fr.Checks)
 	seen := flakeSighting(pr, fr, s.now())
 	var open string

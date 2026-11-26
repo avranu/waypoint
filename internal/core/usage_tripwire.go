@@ -20,8 +20,8 @@ const (
 	quotaJumpEvery   = time.Hour
 )
 
-// quotaJumpThreshold is the person's setting: unset means the default, 0 off.
-func (p UserPrefs) quotaJumpThreshold() int {
+// QuotaJumpThreshold is the person's setting: unset means the default, 0 off.
+func (p UserPrefs) QuotaJumpThreshold() int {
 	if p.QuotaJump == nil {
 		return DefaultQuotaJump
 	}
@@ -38,7 +38,7 @@ func (s *Service) checkQuotaJump(ctx context.Context, t *tx, uid, at int64, pct 
 	if err != nil {
 		return nil
 	}
-	thr := u.Prefs.quotaJumpThreshold()
+	thr := u.Prefs.QuotaJumpThreshold()
 	if thr <= 0 {
 		return nil
 	}

@@ -74,7 +74,7 @@ func (s *Service) CatchUp(ctx context.Context, actor *Actor, project string) (*C
 	if actor == nil || actor.User == nil {
 		return nil, ErrUnauthorized
 	}
-	if err := actor.need(PermIssuesRead); err != nil {
+	if err := actor.Need(PermIssuesRead); err != nil {
 		return nil, err
 	}
 	cond, args := "", []any{}
@@ -287,7 +287,7 @@ func (s *Service) AddTryLink(ctx context.Context, actor *Actor, ref, raw string)
 	if err != nil {
 		return nil, err
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	out := &TryLink{Raw: link}
@@ -309,7 +309,7 @@ func (s *Service) AddTryLink(ctx context.Context, actor *Actor, ref, raw string)
 			return invalid("%s has %d try links already", i.Key, n)
 		}
 		res, err := t.ExecContext(ctx, `INSERT INTO try_links(issue_id, url, user_id, agent, created_at) VALUES (?,?,?,?,?)`,
-			i.ID, link, nullUser(actor.id()), actor.agentName(), s.nowMS())
+			i.ID, link, nullUser(actor.ID()), actor.AgentName(), s.nowMS())
 		if err != nil {
 			return err
 		}
@@ -329,10 +329,10 @@ func (s *Service) AddTryLink(ctx context.Context, actor *Actor, ref, raw string)
 // NotFinished reopens a task a person found unfinished, with their note
 // as a comment (WP-245). Reopening clears the close's review.
 func (s *Service) NotFinished(ctx context.Context, actor *Actor, ref, note string) (*IssueDetail, error) {
-	if err := actor.requireHuman("sending finished work back"); err != nil {
+	if err := actor.RequireHuman("sending finished work back"); err != nil {
 		return nil, err
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	note = strings.TrimSpace(note)
@@ -370,7 +370,7 @@ func (s *Service) NotFinished(ctx context.Context, actor *Actor, ref, note strin
 // person's note (WP-245). The note may be empty: a screenshot attached to
 // the new bug can say it all.
 func (s *Service) ReportProblem(ctx context.Context, actor *Actor, ref, note string) (*IssueDetail, error) {
-	if err := actor.requireHuman("reporting a problem from Catch up"); err != nil {
+	if err := actor.RequireHuman("reporting a problem from Catch up"); err != nil {
 		return nil, err
 	}
 	note = strings.TrimSpace(note)

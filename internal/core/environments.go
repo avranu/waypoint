@@ -139,7 +139,7 @@ func addressAgent(a *Actor) string {
 	if a == nil || a.User == nil {
 		return "unknown"
 	}
-	return a.creditAgent()
+	return a.CreditAgent()
 }
 
 // nextAddressAgent is who an environment's addresses are after actor saves
@@ -906,7 +906,7 @@ func (s *Service) insertEnv(t *tx, e *Environment) error {
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		e.ProjectID, nullInt(e.RepoID), e.Name, e.Kind, e.URL, e.HealthURL, e.ExpectedStatus, e.IntervalS,
 		e.VersionURL, e.CommitField, e.BranchField, e.VersionField, e.Ephemeral, e.TTLS, expires, e.Branch, e.Commit, e.Version, e.Position,
-		by, t.actor.agentName(), addressAgent(t.actor), e.LagAlertM, now, now)
+		by, t.actor.AgentName(), addressAgent(t.actor), e.LagAlertM, now, now)
 	if err != nil {
 		if isUnique(err) {
 			return invalid("%s already has an environment called %s", e.Project, e.Name)
@@ -925,7 +925,7 @@ func isUnique(err error) bool {
 
 // CreateEnvironment adds an environment to a project. Editors may.
 func (s *Service) CreateEnvironment(ctx context.Context, actor *Actor, projectRef string, in EnvironmentInput) (*EnvironmentDetail, error) {
-	if err := actor.need(PermEnvironmentsWrite); err != nil {
+	if err := actor.Need(PermEnvironmentsWrite); err != nil {
 		return nil, err
 	}
 	p, err := s.projectByRef(ctx, s.db.R, projectRef)
@@ -967,7 +967,7 @@ func (s *Service) CreateEnvironment(ctx context.Context, actor *Actor, projectRe
 
 // UpdateEnvironment changes an environment's settings. Editors may.
 func (s *Service) UpdateEnvironment(ctx context.Context, actor *Actor, id int64, in EnvironmentInput) (*EnvironmentDetail, error) {
-	if err := actor.need(PermEnvironmentsWrite); err != nil {
+	if err := actor.Need(PermEnvironmentsWrite); err != nil {
 		return nil, err
 	}
 	e, err := s.envFor(ctx, s.db.R, actor, id, RoleEditor)
@@ -1031,7 +1031,7 @@ func (s *Service) UpdateEnvironment(ctx context.Context, actor *Actor, id int64,
 // is listed folded. Dev and preview ones go after a week; others stay until
 // deleted. Editors (and their agents) may.
 func (s *Service) StopEnvironment(ctx context.Context, actor *Actor, id int64) (*EnvironmentDetail, error) {
-	if err := actor.need(PermEnvironmentsWrite); err != nil {
+	if err := actor.Need(PermEnvironmentsWrite); err != nil {
 		return nil, err
 	}
 	e, err := s.envFor(ctx, s.db.R, actor, id, RoleEditor)
@@ -1069,10 +1069,10 @@ func (s *Service) stopEnvTx(t *tx, e *Environment, reason string) error {
 // DeleteEnvironment removes an environment and its history. Editors may,
 // people only: agents stop environments, they don't erase them.
 func (s *Service) DeleteEnvironment(ctx context.Context, actor *Actor, id int64) error {
-	if err := actor.need(PermEnvironmentsWrite); err != nil {
+	if err := actor.Need(PermEnvironmentsWrite); err != nil {
 		return err
 	}
-	if err := actor.requireHuman("deleting an environment"); err != nil {
+	if err := actor.RequireHuman("deleting an environment"); err != nil {
 		return err
 	}
 	e, err := s.envFor(ctx, s.db.R, actor, id, RoleEditor)
@@ -1105,7 +1105,7 @@ type EnvUpInput struct {
 // the one with that name. The address comes from in.URL or the project's
 // dev environment pattern. Editors may; agents too.
 func (s *Service) UpEnvironment(ctx context.Context, actor *Actor, projectRef string, in EnvUpInput) (*EnvironmentDetail, error) {
-	if err := actor.need(PermEnvironmentsWrite); err != nil {
+	if err := actor.Need(PermEnvironmentsWrite); err != nil {
 		return nil, err
 	}
 	p, err := s.projectByRef(ctx, s.db.R, projectRef)
@@ -1219,7 +1219,7 @@ func (s *Service) UpEnvironment(ctx context.Context, actor *Actor, projectRef st
 
 // DownEnvironment is `wp env down`: stop an environment by name.
 func (s *Service) DownEnvironment(ctx context.Context, actor *Actor, projectRef, name string) (*EnvironmentDetail, error) {
-	if err := actor.need(PermEnvironmentsWrite); err != nil {
+	if err := actor.Need(PermEnvironmentsWrite); err != nil {
 		return nil, err
 	}
 	e, err := s.envByRef(ctx, actor, projectRef, name, RoleEditor)

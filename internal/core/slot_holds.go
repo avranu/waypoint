@@ -91,7 +91,7 @@ func slotWriter(actor *Actor) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return 0, err
 	}
 	return uid, nil

@@ -122,7 +122,7 @@ func (s *Service) IngestOTLP(ctx context.Context, actor *Actor, events []OTLPEve
 	if err != nil {
 		return nil, err
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	if len(events) > otlpMaxEvents {

@@ -53,7 +53,7 @@ func (s *Service) SuggestGoals(ctx context.Context, actor *Actor, project string
 	if actor == nil || actor.User == nil {
 		return nil, ErrUnauthorized
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	p, err := s.projectByRef(ctx, s.db.R, project)

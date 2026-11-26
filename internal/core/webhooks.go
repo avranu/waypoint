@@ -75,7 +75,7 @@ func scanWebhook(sc interface{ Scan(...any) error }) (*Webhook, error) {
 // webhookScope returns the project id for a ref; "" means global (admin only).
 func (s *Service) webhookScope(ctx context.Context, actor *Actor, projectRef string) (*int64, error) {
 	if projectRef == "" {
-		if !actor.isAdmin() {
+		if !actor.IsAdmin() {
 			return nil, ErrForbidden
 		}
 		return nil, nil
@@ -118,7 +118,7 @@ func validHookURL(u string) bool {
 
 // CreateWebhook adds a webhook.
 func (s *Service) CreateWebhook(ctx context.Context, actor *Actor, projectRef string, in WebhookInput) (*Webhook, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	pid, err := s.webhookScope(ctx, actor, projectRef)
@@ -151,7 +151,7 @@ func (s *Service) webhookFor(ctx context.Context, actor *Actor, id int64) (*Webh
 		return nil, notFound("webhook")
 	}
 	if w.ProjectID == nil {
-		if !actor.isAdmin() {
+		if !actor.IsAdmin() {
 			return nil, notFound("webhook")
 		}
 	} else if err := s.requireProjectRole(ctx, s.db.R, actor, *w.ProjectID, RoleOwner); err != nil {
@@ -162,7 +162,7 @@ func (s *Service) webhookFor(ctx context.Context, actor *Actor, id int64) (*Webh
 
 // UpdateWebhook edits a webhook.
 func (s *Service) UpdateWebhook(ctx context.Context, actor *Actor, id int64, in WebhookInput) (*Webhook, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	if _, err := s.webhookFor(ctx, actor, id); err != nil {
@@ -201,7 +201,7 @@ func (s *Service) UpdateWebhook(ctx context.Context, actor *Actor, id int64, in 
 
 // DeleteWebhook removes a webhook.
 func (s *Service) DeleteWebhook(ctx context.Context, actor *Actor, id int64) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
 	if _, err := s.webhookFor(ctx, actor, id); err != nil {
@@ -432,7 +432,7 @@ func (s *Service) WebhookDeliveries(ctx context.Context, actor *Actor, id int64)
 // (signed with its current secret, under a new delivery id) and returns
 // the new log entry.
 func (s *Service) ReplayWebhookDelivery(ctx context.Context, actor *Actor, id, deliveryID int64) (*WebhookDelivery, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	if _, err := s.webhookFor(ctx, actor, id); err != nil {

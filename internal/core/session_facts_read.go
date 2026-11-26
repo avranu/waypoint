@@ -249,7 +249,7 @@ func (s *Service) SessionFacts(ctx context.Context, actor *Actor, q FactsQuery) 
 	if actor == nil {
 		return nil, ErrUnauthorized
 	}
-	if err := actor.requirePersonDirect("reading session facts"); err != nil {
+	if err := actor.RequirePersonDirect("reading session facts"); err != nil {
 		return nil, err
 	}
 	uids, everyone, _, err := s.usageWho(ctx, actor, q.User)

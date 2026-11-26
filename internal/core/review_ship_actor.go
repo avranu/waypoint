@@ -53,7 +53,7 @@ func (s *Service) shipAuthority(ctx context.Context, r *roundRow, bp *beforePR, 
 		t.Agent, t.Session = actor.Agent, actor.Session
 		actor = t
 	}
-	if err := actor.need(PermPullsWrite); err != nil {
+	if err := actor.Need(PermPullsWrite); err != nil {
 		return nil, "the token the ship came with can't open pull requests (it lacks pulls.write)", nil
 	}
 	i, err := s.issueByID(ctx, s.db.R, r.issueID, false)

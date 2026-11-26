@@ -111,13 +111,13 @@ func (s *Service) sessionPlaces(ctx context.Context, userID int64, need jobNeeds
 // person's runner (TaskSessionPlaces), bound to the task from birth. The
 // runner job's audit entry records who started it.
 func (s *Service) StartTaskSession(ctx context.Context, a *Actor, key string) (*TaskSessionStart, error) {
-	if err := a.need(PermSessionsStart); err != nil {
+	if err := a.Need(PermSessionsStart); err != nil {
 		return nil, err
 	}
-	if err := a.canWrite(); err != nil {
+	if err := a.CanWrite(); err != nil {
 		return nil, err
 	}
-	if err := a.requireHuman("starting a session on a person's machine"); err != nil {
+	if err := a.RequireHuman("starting a session on a person's machine"); err != nil {
 		return nil, err
 	}
 	issue, err := s.GetIssue(ctx, a, key)

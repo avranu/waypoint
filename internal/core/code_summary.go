@@ -145,7 +145,7 @@ func (s *Service) UploadCodeSummary(ctx context.Context, actor *Actor, projectRe
 			}
 		}
 		if _, err := t.ExecContext(ctx, `INSERT INTO code_summaries(forge_id, forge_repo_id, repo, commit_sha, indexed_at, uploaded_at, uploaded_by, files, symbols, commits, languages)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?)`, r.forgeID, r.forgeRepoID, r.repo, in.Commit, indexed.Unix(), now.Unix(), actor.id(), in.Files, in.Symbols, in.Commits, string(langs)); err != nil {
+			VALUES (?,?,?,?,?,?,?,?,?,?,?)`, r.forgeID, r.forgeRepoID, r.repo, in.Commit, indexed.Unix(), now.Unix(), actor.ID(), in.Files, in.Symbols, in.Commits, string(langs)); err != nil {
 			return err
 		}
 		fs, err := t.PrepareContext(ctx, `INSERT OR REPLACE INTO code_summary_files(forge_id, forge_repo_id, path, lang, size, lines, symbols, importers, commits, churn, hot_pct, hotspot, fixes, last_fix_at, last_change_at, last_author, owner, owner_pct)

@@ -520,10 +520,10 @@ func (s *Service) issueRole(ctx context.Context, q queryer, actor *Actor, i *Iss
 		return RoleEditor, nil
 	}
 	r, err := s.projectRole(ctx, q, actor, i.ProjectID)
-	if err != nil || r > RoleNone || actor.scope != nil {
+	if err != nil || r > RoleNone || actor.Scope != nil {
 		return r, err
 	}
-	return s.shareRole(ctx, q, actor.id(), i.ID)
+	return s.shareRole(ctx, q, actor.ID(), i.ID)
 }
 
 // isDraft reports whether the issue is a draft (WP-42), from the database
@@ -566,7 +566,7 @@ func (s *Service) hideParents(ctx context.Context, q queryer, actor *Actor, issu
 			}
 		}
 	}
-	if actor.isAdmin() {
+	if actor.IsAdmin() {
 		return
 	}
 	member := map[int64]bool{}
@@ -641,7 +641,7 @@ func (s *Service) listExtras(ctx context.Context, actor *Actor, issues []*Issue)
 // getIssueFor loads an issue and checks the actor has at least min access.
 func (s *Service) getIssueFor(ctx context.Context, q queryer, actor *Actor, ref string, min int, withDesc bool) (*Issue, int, error) {
 	if min > RoleViewer {
-		if err := actor.canWrite(); err != nil {
+		if err := actor.CanWrite(); err != nil {
 			return nil, 0, err
 		}
 	}
@@ -766,7 +766,7 @@ func (s *Service) GetIssue(ctx context.Context, actor *Actor, ref string) (*Issu
 			r.DisplayName = r.Username
 		}
 		d.Watchers = append(d.Watchers, r)
-		if r.ID == actor.id() {
+		if r.ID == actor.ID() {
 			d.Watching = true
 		}
 	}
@@ -861,7 +861,7 @@ func parsePriorityAny(v any) (int, error) {
 
 // CreateIssue creates an issue.
 func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) (*IssueDetail, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	if in.Agent != "" {
@@ -972,10 +972,10 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 				}
 				return ErrForbidden
 			}
-			if actor.scope != nil {
+			if actor.Scope != nil {
 				return ErrForbidden
 			}
-			r, rerr := s.shareRole(ctx, t, actor.id(), parent.ID)
+			r, rerr := s.shareRole(ctx, t, actor.ID(), parent.ID)
 			if rerr != nil {
 				if readFault(rerr) {
 					s.log.WarnContext(ctx, "share role failed", "parent", parent.ID, "err", rerr)
@@ -1048,12 +1048,12 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 			resolved = now
 		}
 		var reporter, parentID, resolvedBy any
-		if actor.id() != 0 {
-			reporter = actor.id()
+		if actor.ID() != 0 {
+			reporter = actor.ID()
 		}
 		resolvedAgent := ""
 		if resolved != nil {
-			resolvedBy, resolvedAgent = reporter, actor.agentName()
+			resolvedBy, resolvedAgent = reporter, actor.AgentName()
 		}
 		if parent != nil {
 			parentID = parent.ID
@@ -1092,8 +1092,8 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 				return err
 			}
 		}
-		if parentID != nil && actor.actsAsPerson() {
-			if _, err := t.ExecContext(ctx, `UPDATE issues SET parent_by = ?, parent_at = ? WHERE id = ?`, actor.id(), now, id); err != nil {
+		if parentID != nil && actor.ActsAsPerson() {
+			if _, err := t.ExecContext(ctx, `UPDATE issues SET parent_by = ?, parent_at = ? WHERE id = ?`, actor.ID(), now, id); err != nil {
 				return err
 			}
 		}
@@ -1105,15 +1105,15 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 			return err
 		}
 		s.recordMentions(ctx, t, mentionSource{typ: KIssue, id: id, project: &p.ID, text: in.Title + "\n" + in.Description,
-			user: actor.id(), agent: actor.agentName()})
+			user: actor.ID(), agent: actor.AgentName()})
 		t.emit(&Event{Kind: EvIssueCreated, ProjectID: p.ID, IssueID: id, IssueKey: key, New: in.Title,
 			Data:    map[string]any{"status_id": st.ID, "category": st.Category, "type": in.Type},
 			retitle: in.TitleIsText || longForTitle(in.Title)})
 		if delegated && !actor.IsAgent() {
 			auditDelegation(t, p.ID, id, key, "", in.Agent)
 		}
-		if actor.id() != 0 {
-			if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO issue_watchers(issue_id, user_id) VALUES (?,?)`, id, actor.id()); err != nil {
+		if actor.ID() != 0 {
+			if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO issue_watchers(issue_id, user_id) VALUES (?,?)`, id, actor.ID()); err != nil {
 				return err
 			}
 		}
@@ -1265,7 +1265,7 @@ func (s *Service) rankFor(ctx context.Context, t *tx, projectID int64, after, be
 // their own terminal, not an agent (or an agent's shell or session), an
 // automation or a forge sync.
 func createdByPerson(a *Actor) bool {
-	return !a.HidesDrafts() && !a.forgeSync && a.textAgent == ""
+	return !a.HidesDrafts() && !a.ForgeSync && a.TextAgent == ""
 }
 
 // rankRoom is how close two ranks may get before they are spread out again.
@@ -1339,7 +1339,7 @@ func (s *Service) grantForAssignment(ctx context.Context, t *tx, actor *Actor, i
 		}
 	}
 	if _, err := t.ExecContext(ctx, `INSERT INTO issue_shares(issue_id, user_id, role, created_by, created_at) VALUES (?,?,'editor',?,?)
-		ON CONFLICT(issue_id, user_id) DO NOTHING`, issueID, u.ID, nullUser(actor.id()), s.nowMS()); err != nil {
+		ON CONFLICT(issue_id, user_id) DO NOTHING`, issueID, u.ID, nullUser(actor.ID()), s.nowMS()); err != nil {
 		return err
 	}
 	return nil
@@ -1467,7 +1467,7 @@ const (
 // UpdateIssue applies a patch to one issue.
 func (s *Service) UpdateIssue(ctx context.Context, actor *Actor, ref string, p IssuePatch) (*IssueDetail, error) {
 	if p.Comment != "" {
-		if err := actor.need(PermIssuesComment); err != nil {
+		if err := actor.Need(PermIssuesComment); err != nil {
 			return nil, err
 		}
 	}
@@ -1668,7 +1668,7 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 			desc = *p.Description
 		}
 		s.recordMentions(ctx, t, mentionSource{typ: KIssue, id: i.ID, project: &project, text: title + "\n" + desc,
-			user: actor.id(), agent: actor.agentName()})
+			user: actor.ID(), agent: actor.AgentName()})
 	}
 	if p.Type != nil {
 		typ := strings.ToLower(*p.Type)
@@ -1831,8 +1831,8 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 		if !int64PtrEq(newParent, i.ParentID) {
 			sets, args = append(sets, "parent_id = ?"), append(args, nullInt(newParent))
 			var by any
-			if newParent != nil && actor.actsAsPerson() {
-				by = actor.id()
+			if newParent != nil && actor.ActsAsPerson() {
+				by = actor.ID()
 			}
 			sets, args = append(sets, "parent_by = ?", "parent_at = max(?, coalesce(parent_at, 0) + 1)"), append(args, by, s.nowMS())
 			ev("parent", oldKey, newKey)
@@ -2017,7 +2017,7 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 // writing waits for a person's review again; a person's is theirs.
 func textWritten(actor *Actor, author string) (sets []string, args []any) {
 	return []string{"text_by = ?", "text_agent = ?", "reviewed_by = NULL", "reviewed_at = NULL"},
-		[]any{nullUser(actor.id()), author}
+		[]any{nullUser(actor.ID()), author}
 }
 
 // agentTools are identities that name a coding tool, not the model in it.
@@ -2028,10 +2028,10 @@ var agentTools = map[string]bool{"anthropic/claude-code": true, "google/gemini-c
 // in an Opus session writes as anthropic/claude-opus-5-5), so people read
 // which model wrote it. Claims and matching keep actor.agentName().
 func authorAgent(ctx context.Context, t *tx, actor *Actor) string {
-	if actor != nil && actor.textAgent != "" {
-		return actor.textAgent
+	if actor != nil && actor.TextAgent != "" {
+		return actor.TextAgent
 	}
-	a := actor.agentName()
+	a := actor.AgentName()
 	if !agentTools[a] || actor.Session == 0 {
 		return a
 	}
@@ -2063,7 +2063,7 @@ func (s *Service) setStatus(ctx context.Context, t *tx, i *Issue, st *Status, se
 	}
 	*sets, *args = append(*sets, "status_id = ?"), append(*args, st.ID)
 	if nowClosed && !wasClosed {
-		agent := t.actor.agentName()
+		agent := t.actor.AgentName()
 		if agent == "" && t.actor.closesForWork() {
 			var err error
 			if agent, err = s.workAgent(ctx, t, i.ID); err != nil {
@@ -2072,10 +2072,10 @@ func (s *Service) setStatus(ctx context.Context, t *tx, i *Issue, st *Status, se
 		}
 		*sets = append(*sets, "resolved_at = ?", "resolved_by = ?", "resolved_agent = ?", "close_review = ?",
 			"close_reviewed_by = NULL", "close_reviewed_at = NULL", "agent_order = NULL")
-		*args = append(*args, s.nowMS(), nullUser(t.actor.id()), agent, agent != "")
-	} else if wasClosed && nowClosed && t.actor.agentName() != "" {
+		*args = append(*args, s.nowMS(), nullUser(t.actor.ID()), agent, agent != "")
+	} else if wasClosed && nowClosed && t.actor.AgentName() != "" {
 		*sets = append(*sets, "resolved_at = ?", "resolved_by = ?", "resolved_agent = ?", "close_review = 1", "close_reviewed_by = NULL", "close_reviewed_at = NULL")
-		*args = append(*args, s.nowMS(), nullUser(t.actor.id()), t.actor.agentName())
+		*args = append(*args, s.nowMS(), nullUser(t.actor.ID()), t.actor.AgentName())
 	} else if !nowClosed && wasClosed {
 		*sets = append(*sets, "resolved_at = NULL", "resolved_by = NULL", "resolved_agent = ''",
 			"close_review = 0", "close_reviewed_by = NULL", "close_reviewed_at = NULL")
@@ -2131,7 +2131,7 @@ func (s *Service) refuseDoneWithOpenChildren(ctx context.Context, t *tx, i *Issu
 // the work rather than as a person deciding to: an automation (the merge
 // rule), a forge sync, a permission token or a runner job (WP-500).
 func (a *Actor) closesForWork() bool {
-	return a != nil && (a.Automation != nil || a.forgeSync || a.Permissions != nil || a.RunnerJob != 0)
+	return a != nil && (a.Automation != nil || a.ForgeSync || a.Permissions != nil || a.RunnerJob != 0)
 }
 
 // workAgent is the agent that last worked on an issue: its latest run, or
@@ -2206,7 +2206,7 @@ func needDelegate(actor *Actor, agent *string) error {
 	if agent == nil || !actor.Restricted() {
 		return nil
 	}
-	return actor.need(PermAgentsManage)
+	return actor.Need(PermAgentsManage)
 }
 
 func (s *Service) Transition(ctx context.Context, actor *Actor, ref, status, comment string) (*IssueDetail, error) {
@@ -2486,7 +2486,7 @@ func (s *Service) MoveToProject(ctx context.Context, actor *Actor, ref, projectR
 
 // Watch subscribes or unsubscribes the actor from an issue's notifications.
 func (s *Service) Watch(ctx context.Context, actor *Actor, ref string, on bool) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
 	i, _, err := s.getIssueFor(ctx, s.db.R, actor, ref, RoleViewer, false)
@@ -2494,9 +2494,9 @@ func (s *Service) Watch(ctx context.Context, actor *Actor, ref string, on bool) 
 		return err
 	}
 	if on {
-		_, err = s.db.W.ExecContext(ctx, `INSERT OR IGNORE INTO issue_watchers(issue_id, user_id) VALUES (?,?)`, i.ID, actor.id())
+		_, err = s.db.W.ExecContext(ctx, `INSERT OR IGNORE INTO issue_watchers(issue_id, user_id) VALUES (?,?)`, i.ID, actor.ID())
 	} else {
-		_, err = s.db.W.ExecContext(ctx, `DELETE FROM issue_watchers WHERE issue_id = ? AND user_id = ?`, i.ID, actor.id())
+		_, err = s.db.W.ExecContext(ctx, `DELETE FROM issue_watchers WHERE issue_id = ? AND user_id = ?`, i.ID, actor.ID())
 	}
 	return err
 }
@@ -2524,7 +2524,7 @@ func (s *Service) ShareIssue(ctx context.Context, actor *Actor, ref, userRef, ro
 			return invalid("share role must be editor or viewer")
 		}
 		if _, err := t.ExecContext(ctx, `INSERT INTO issue_shares(issue_id, user_id, role, created_by, created_at) VALUES (?,?,?,?,?)
-			ON CONFLICT(issue_id, user_id) DO UPDATE SET role = excluded.role`, i.ID, u.ID, role, actor.id(), s.nowMS()); err != nil {
+			ON CONFLICT(issue_id, user_id) DO UPDATE SET role = excluded.role`, i.ID, u.ID, role, actor.ID(), s.nowMS()); err != nil {
 			return err
 		}
 		if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO issue_watchers(issue_id, user_id) VALUES (?,?)`, i.ID, u.ID); err != nil {
@@ -2664,7 +2664,7 @@ func relationBasis(actor *Actor) string {
 		return linkBasisInferred
 	case actor.Automation != nil:
 		return linkBasisAutomation
-	case !actor.actsAsPerson():
+	case !actor.ActsAsPerson():
 		return linkBasisAgent
 	}
 	return ""
@@ -2749,7 +2749,7 @@ func (s *Service) relate(ctx context.Context, t *tx, actor *Actor, a, b *Issue, 
 	case errors.Is(err, sql.ErrNoRows):
 		var inserted bool
 		inserted, err = s.insertRelation(ctx, t, newRelation{Src: src.ID, Dst: dst.ID, Kind: kind, Subkind: subkind, NamedIn: namedIn, Found: found,
-			Basis: basis, CreatedBy: actor.id(), CreatedAgent: actor.creditAgent()})
+			Basis: basis, CreatedBy: actor.ID(), CreatedAgent: actor.CreditAgent()})
 		if err == nil && !inserted {
 			return made, nil
 		}
@@ -2760,12 +2760,12 @@ func (s *Service) relate(ctx context.Context, t *tx, actor *Actor, a, b *Issue, 
 	default:
 		sessID, sessTask := sessionStamp(ctx, t, actor)
 		_, err = t.ExecContext(ctx, `UPDATE issue_relations SET subkind = ?, basis = ?, created_by = ?, created_agent = ?, session_id = ?, session_issue_id = ? WHERE id = ?`,
-			subkind, basis, nullUser(actor.id()), actor.creditAgent(), sessID, sessTask, existing)
+			subkind, basis, nullUser(actor.ID()), actor.CreditAgent(), sessID, sessTask, existing)
 	}
 	if err != nil {
 		return nil, err
 	}
-	if namedIn == nil && basis != linkBasisInferred && actor.actsAsPerson() {
+	if namedIn == nil && basis != linkBasisInferred && actor.ActsAsPerson() {
 		if err := s.noteRelated(ctx, t, actor, a.ID, b.ID); err != nil {
 			return nil, err
 		}
@@ -2979,7 +2979,7 @@ func (s *Service) AddComment(ctx context.Context, actor *Actor, ref, body string
 	if body == "" {
 		return nil, invalid("comment is empty")
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	var c *Comment
@@ -3000,10 +3000,10 @@ func (s *Service) addComment(ctx context.Context, t *tx, actor *Actor, i *Issue,
 	}
 	now := s.nowMS()
 	var author any
-	if actor.id() != 0 {
-		author = actor.id()
+	if actor.ID() != 0 {
+		author = actor.ID()
 	}
-	agent := cmp(actor.textAgent, actor.agentName())
+	agent := cmp(actor.TextAgent, actor.AgentName())
 	sessID, sessTask := sessionStamp(ctx, t, actor)
 	res, err := t.ExecContext(ctx, `INSERT INTO comments(issue_id, author_id, agent, body, created_at, updated_at, session_id, session_issue_id) VALUES (?,?,?,?,?,?,?,?)`, i.ID, author, agent, body, now, now, sessID, sessTask)
 	if err != nil {
@@ -3013,10 +3013,10 @@ func (s *Service) addComment(ctx context.Context, t *tx, actor *Actor, i *Issue,
 	if c.ID, err = res.LastInsertId(); err != nil {
 		return nil, err
 	}
-	if actor.id() != 0 {
+	if actor.ID() != 0 {
 		r := actor.User.Ref()
 		c.Author = &r
-		if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO issue_watchers(issue_id, user_id) VALUES (?,?)`, i.ID, actor.id()); err != nil {
+		if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO issue_watchers(issue_id, user_id) VALUES (?,?)`, i.ID, actor.ID()); err != nil {
 			return nil, err
 		}
 	}
@@ -3026,7 +3026,7 @@ func (s *Service) addComment(ctx context.Context, t *tx, actor *Actor, i *Issue,
 	t.emit(&Event{Kind: EvIssueCommented, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key, New: excerpt(body, 280),
 		Data: map[string]any{"comment_id": c.ID}})
 	project := i.ProjectID
-	s.recordMentions(ctx, t, mentionSource{typ: "comment", id: c.ID, project: &project, text: body, user: actor.id(), agent: agent})
+	s.recordMentions(ctx, t, mentionSource{typ: "comment", id: c.ID, project: &project, text: body, user: actor.ID(), agent: agent})
 	s.noteIssueMentions(ctx, t, actor, i.ID)
 	return c, s.reindex(ctx, t, i.ID)
 }
@@ -3058,7 +3058,7 @@ func (s *Service) UpdateComment(ctx context.Context, actor *Actor, commentID int
 	if len(body) > maxCommentLen {
 		return invalid("comment is too long")
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
 	return s.write(ctx, actor, func(t *tx) error {
@@ -3075,7 +3075,7 @@ func (s *Service) UpdateComment(ctx context.Context, actor *Actor, commentID int
 		if actor.IsAgent() && agent == "" {
 			return forbidden("a person wrote this comment; agents can only edit comments agents wrote")
 		}
-		if author.Int64 != actor.id() {
+		if author.Int64 != actor.ID() {
 			return ErrForbidden
 		}
 		fc, err := s.forgeCommentChanged(ctx, t, issueID, commentID, false)
@@ -3083,12 +3083,12 @@ func (s *Service) UpdateComment(ctx context.Context, actor *Actor, commentID int
 			return err
 		}
 		if _, err := t.ExecContext(ctx, `UPDATE comments SET body = ?, updated_at = ?, agent = ?, reviewed_by = NULL, reviewed_at = NULL WHERE id = ?`,
-			body, s.nowMS(), actor.agentName(), commentID); err != nil {
+			body, s.nowMS(), actor.AgentName(), commentID); err != nil {
 			return err
 		}
 		project := i.ProjectID
 		s.recordMentions(ctx, t, mentionSource{typ: "comment", id: commentID, project: &project, text: body,
-			user: actor.id(), agent: actor.agentName()})
+			user: actor.ID(), agent: actor.AgentName()})
 		t.emit(&Event{Kind: EvProjectUpdated, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key, forgeComment: fc})
 		s.noteIssueMentions(ctx, t, actor, issueID)
 		return s.reindex(ctx, t, issueID)
@@ -3097,7 +3097,7 @@ func (s *Service) UpdateComment(ctx context.Context, actor *Actor, commentID int
 
 // DeleteComment removes a comment (its author, or a project owner).
 func (s *Service) DeleteComment(ctx context.Context, actor *Actor, commentID int64) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
 	return s.write(ctx, actor, func(t *tx) error {
@@ -3114,7 +3114,7 @@ func (s *Service) DeleteComment(ctx context.Context, actor *Actor, commentID int
 		if actor.IsAgent() && agent == "" {
 			return forbidden("a person wrote this comment; agents can only delete comments agents wrote")
 		}
-		if author.Int64 != actor.id() {
+		if author.Int64 != actor.ID() {
 			if err := s.requireProjectRole(ctx, t, actor, i.ProjectID, RoleOwner); err != nil {
 				return ErrForbidden
 			}

@@ -110,7 +110,7 @@ func (s *Service) Delivery(ctx context.Context, actor *Actor, q DeliveryQuery) (
 		return nil, ErrUnauthorized
 	}
 	for _, p := range []Permission{PermEnvironmentsRead, PermPullsRead, PermIssuesRead} {
-		if err := actor.need(p); err != nil {
+		if err := actor.Need(p); err != nil {
 			return nil, err
 		}
 	}

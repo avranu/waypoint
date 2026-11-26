@@ -82,7 +82,7 @@ func (p *SessionPrefs) For(repo string) SessionSettings {
 	return p.All.Over(p.Repos[strings.ToLower(repo)])
 }
 
-func (s *SessionSettings) validate(where string) error {
+func (s *SessionSettings) Validate(where string) error {
 	s.Model = strings.TrimSpace(s.Model)
 	switch {
 	case s.Model != "" && !sessionModelRE.MatchString(s.Model):
@@ -97,11 +97,11 @@ func (s *SessionSettings) validate(where string) error {
 
 // validate checks the settings and tidies them: repo names lower case,
 // repos with nothing set dropped. Empty is nil.
-func (p *SessionPrefs) validate() (*SessionPrefs, error) {
+func (p *SessionPrefs) Validate() (*SessionPrefs, error) {
 	if p == nil {
 		return nil, nil
 	}
-	if err := p.All.validate("all sessions"); err != nil {
+	if err := p.All.Validate("all sessions"); err != nil {
 		return nil, err
 	}
 	if len(p.Repos) > maxSessionRepos {
@@ -116,7 +116,7 @@ func (p *SessionPrefs) validate() (*SessionPrefs, error) {
 		if _, dup := repos[key]; dup {
 			return nil, invalid("%s has two sets of session settings", key)
 		}
-		if err := s.validate(key); err != nil {
+		if err := s.Validate(key); err != nil {
 			return nil, err
 		}
 		if !s.Empty() {

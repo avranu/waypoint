@@ -293,14 +293,14 @@ func (s *Service) ListTags(ctx context.Context, actor *Actor) ([]TagUse, error) 
 	if actor == nil || actor.User == nil {
 		return nil, ErrUnauthorized
 	}
-	member, margs := actor.memberProjects(RoleViewer)
+	member, margs := actor.MemberProjects(RoleViewer)
 	// #nosec G202 -- member is placeholders; values are bound
 	rows, err := s.db.R.QueryContext(ctx, `WITH mine AS (SELECT id FROM labels
 			WHERE ? OR project_id IN `+member+`)
 		SELECT l.name, min(l.color), (SELECT count(*) FROM issue_labels il WHERE il.label_id IN
 			(SELECT m.id FROM mine m JOIN labels l2 ON l2.id = m.id WHERE lower(l2.name) = lower(l.name)))
 		FROM labels l WHERE l.id IN (SELECT id FROM mine)
-		GROUP BY lower(l.name) ORDER BY 3 DESC, lower(l.name) LIMIT 500`, append([]any{actor.isAdmin()}, margs...)...)
+		GROUP BY lower(l.name) ORDER BY 3 DESC, lower(l.name) LIMIT 500`, append([]any{actor.IsAdmin()}, margs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -343,13 +343,13 @@ func (s *Service) parentProject(ctx context.Context, q queryer, actor *Actor, ch
 	return &parent.ID, nil
 }
 
-// memberProjects is the SQL set, for `project_id IN <set>`, of the projects
+// MemberProjects is the SQL set, for `project_id IN <set>`, of the projects
 // the actor is a member of with at least role min; for a job's scoped token
 // (WP-418), those of its projects it has that role in.
-func (a *Actor) memberProjects(min int) (string, []any) {
-	if a.scope != nil {
-		ids := make([]int64, 0, len(a.scope))
-		for id, r := range a.scope {
+func (a *Actor) MemberProjects(min int) (string, []any) {
+	if a.Scope != nil {
+		ids := make([]int64, 0, len(a.Scope))
+		for id, r := range a.Scope {
 			if r >= min {
 				ids = append(ids, id)
 			}
@@ -364,7 +364,7 @@ func (a *Actor) memberProjects(min int) (string, []any) {
 	case min == RoleEditor:
 		roles = " AND role IN ('editor','owner')"
 	}
-	return "(SELECT project_id FROM project_members WHERE user_id = ?" + roles + ")", []any{a.id()}
+	return "(SELECT project_id FROM project_members WHERE user_id = ?" + roles + ")", []any{a.ID()}
 }
 
 // projectRole is the actor's role in a project; admins are owners everywhere.
@@ -372,14 +372,14 @@ func (s *Service) projectRole(ctx context.Context, q queryer, actor *Actor, proj
 	if actor == nil || actor.User == nil {
 		return RoleNone, nil
 	}
-	if actor.scope != nil {
-		return actor.scope[projectID], nil
+	if actor.Scope != nil {
+		return actor.Scope[projectID], nil
 	}
-	if actor.isAdmin() {
+	if actor.IsAdmin() {
 		return RoleOwner, nil
 	}
 	var role string
-	err := q.QueryRowContext(ctx, `SELECT role FROM project_members WHERE project_id = ? AND user_id = ?`, projectID, actor.id()).Scan(&role)
+	err := q.QueryRowContext(ctx, `SELECT role FROM project_members WHERE project_id = ? AND user_id = ?`, projectID, actor.ID()).Scan(&role)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RoleNone, nil
 	}
@@ -391,12 +391,12 @@ func (s *Service) projectRole(ctx context.Context, q queryer, actor *Actor, proj
 }
 
 func (s *Service) hasShareInProject(ctx context.Context, q queryer, actor *Actor, projectID int64) bool {
-	if actor.scope != nil {
+	if actor.Scope != nil {
 		return false
 	}
 	var n int
 	err := q.QueryRowContext(ctx, `SELECT count(*) FROM issue_shares sh JOIN issues i ON i.id = sh.issue_id
-		WHERE sh.user_id = ? AND i.project_id = ?`, actor.id(), projectID).Scan(&n)
+		WHERE sh.user_id = ? AND i.project_id = ?`, actor.ID(), projectID).Scan(&n)
 	if err != nil {
 		if readFault(err) {
 			s.log.WarnContext(ctx, "read has share in project", "projectID", projectID, "err", err)
@@ -408,7 +408,7 @@ func (s *Service) hasShareInProject(ctx context.Context, q queryer, actor *Actor
 
 func (s *Service) requireProjectRole(ctx context.Context, q queryer, actor *Actor, projectID int64, min int) error {
 	if min > RoleViewer {
-		if err := actor.canWrite(); err != nil {
+		if err := actor.CanWrite(); err != nil {
 			return err
 		}
 	}
@@ -550,8 +550,8 @@ func (s *Service) ListProjects(ctx context.Context, actor *Actor, includeArchive
 			SELECT 1 FROM issue_shares sh JOIN issues i ON i.id = sh.issue_id WHERE sh.user_id = ? AND i.project_id = p.id))
 		  AND (? OR p.archived = 0)
 		ORDER BY p.archived, lower(p.name)`
-	admin := actor.isAdmin() || actor.scope != nil
-	rows, err := s.db.R.QueryContext(ctx, q, admin, actor.id(), admin, actor.id(), includeArchived)
+	admin := actor.IsAdmin() || actor.Scope != nil
+	rows, err := s.db.R.QueryContext(ctx, q, admin, actor.ID(), admin, actor.ID(), includeArchived)
 	if err != nil {
 		return nil, err
 	}
@@ -571,11 +571,11 @@ func (s *Service) ListProjects(ctx context.Context, actor *Actor, includeArchive
 		_ = json.Unmarshal([]byte(settings), &p.Settings)
 		p.Settings.fill()
 		p.CreatedAt, p.UpdatedAt = msTime(c), msTime(u)
-		if actor.scope != nil {
-			if actor.scope[p.ID] == RoleNone {
+		if actor.Scope != nil {
+			if actor.Scope[p.ID] == RoleNone {
 				continue
 			}
-			p.Role = roleNames[actor.scope[p.ID]]
+			p.Role = roleNames[actor.Scope[p.ID]]
 		}
 		out = append(out, &p)
 	}
@@ -860,7 +860,7 @@ var defaultStatuses = []Status{
 // CreateProject makes a project with default statuses and automations; the
 // creator becomes its owner.
 func (s *Service) CreateProject(ctx context.Context, actor *Actor, in ProjectInput) (*Project, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	if in.Name == nil || strings.TrimSpace(*in.Name) == "" {
@@ -935,8 +935,8 @@ func (s *Service) CreateProject(ctx context.Context, actor *Actor, in ProjectInp
 			icon, color, bg, look = l.Icon, l.Color, l.Background, LookGenerated
 		}
 		var by any
-		if actor.id() != 0 {
-			by = actor.id()
+		if actor.ID() != 0 {
+			by = actor.ID()
 		}
 		parent, err := s.parentProject(ctx, t, actor, 0, in.Parent)
 		if err != nil {
@@ -951,8 +951,8 @@ func (s *Service) CreateProject(ctx context.Context, actor *Actor, in ProjectInp
 			return err
 		}
 		id, _ = res.LastInsertId()
-		if actor.id() != 0 {
-			if _, err := t.ExecContext(ctx, `INSERT INTO project_members(project_id, user_id, role, created_at) VALUES (?,?,'owner',?)`, id, actor.id(), now); err != nil {
+		if actor.ID() != 0 {
+			if _, err := t.ExecContext(ctx, `INSERT INTO project_members(project_id, user_id, role, created_at) VALUES (?,?,'owner',?)`, id, actor.ID(), now); err != nil {
 				return err
 			}
 		}
@@ -1245,7 +1245,7 @@ func (s *Service) ensureAnotherOwner(ctx context.Context, t *tx, projectID, user
 
 // RemoveMember removes a user from a project.
 func (s *Service) RemoveMember(ctx context.Context, actor *Actor, projectRef, userRef string) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
 	p, err := s.projectByRef(ctx, s.db.R, projectRef)
@@ -1256,7 +1256,7 @@ func (s *Service) RemoveMember(ctx context.Context, actor *Actor, projectRef, us
 	if err != nil {
 		return err
 	}
-	if u.ID != actor.id() {
+	if u.ID != actor.ID() {
 		if err := s.requireProjectRole(ctx, s.db.R, actor, p.ID, RoleOwner); err != nil {
 			return err
 		}
@@ -1269,7 +1269,7 @@ func (s *Service) RemoveMember(ctx context.Context, actor *Actor, projectRef, us
 			return err
 		}
 		detail := "removed " + u.Name()
-		if u.ID == actor.id() {
+		if u.ID == actor.ID() {
 			detail = "left the project"
 		}
 		t.audit(AuditEntry{Action: "member.remove", Category: AuditAccess, ProjectID: p.ID, TargetType: "user", TargetID: u.ID,
@@ -1484,7 +1484,7 @@ type LabelInput struct {
 
 // CreateLabel adds a label to a project.
 func (s *Service) CreateLabel(ctx context.Context, actor *Actor, projectRef string, in LabelInput) (*Label, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	p, err := s.projectByRef(ctx, s.db.R, projectRef)
@@ -1516,7 +1516,7 @@ func (s *Service) CreateLabel(ctx context.Context, actor *Actor, projectRef stri
 
 // UpdateLabel renames or recolors a label.
 func (s *Service) UpdateLabel(ctx context.Context, actor *Actor, labelID int64, in LabelInput) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
 	var projectID int64
@@ -1542,7 +1542,7 @@ func (s *Service) UpdateLabel(ctx context.Context, actor *Actor, labelID int64, 
 
 // DeleteLabel removes a label from a project and its issues.
 func (s *Service) DeleteLabel(ctx context.Context, actor *Actor, labelID int64) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
 	var projectID int64

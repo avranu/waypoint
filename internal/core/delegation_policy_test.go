@@ -12,7 +12,7 @@ import (
 
 func (e *polEnv) delegation(a *Actor, i *IssueDetail, ask bool) *DelegationArm {
 	e.t.Helper()
-	e.exec(`UPDATE issues SET claimed_by = ?, claimed_at = coalesce(claimed_at, ?) WHERE id = ?`, a.agentName(), e.s.nowMS(), i.ID)
+	e.exec(`UPDATE issues SET claimed_by = ?, claimed_at = coalesce(claimed_at, ?) WHERE id = ?`, a.AgentName(), e.s.nowMS(), i.ID)
 	got, err := e.s.IssueArms(e.ctx, a, i.Key, IssueArmsInput{Via: "next", Delegation: ask})
 	if err != nil {
 		e.t.Fatal(err)

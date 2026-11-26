@@ -417,14 +417,14 @@ func (s *Service) searchCommentsFor(ctx context.Context, actor *Actor, words str
 	}
 	with, wargs := "", []any{}
 	where, args := []string{"comment_search MATCH ?", draftsHidden(actor, "i")}, []any{m}
-	switch member, margs := actor.memberProjects(RoleViewer); {
-	case actor.scope != nil:
+	switch member, margs := actor.MemberProjects(RoleViewer); {
+	case actor.Scope != nil:
 		where, args = append(where, "i.project_id IN "+member), append(args, margs...)
-	case !actor.isAdmin():
+	case !actor.IsAdmin():
 		with = `WITH RECURSIVE shared(id, depth) AS (
 			SELECT issue_id, 0 FROM issue_shares WHERE user_id = ?
 			UNION ALL SELECT x.id, sh.depth + 1 FROM issues x JOIN shared sh ON x.parent_id = sh.id WHERE sh.depth < 50) `
-		wargs = append(wargs, actor.id())
+		wargs = append(wargs, actor.ID())
 		where, args = append(where, "(i.project_id IN "+member+" OR i.id IN (SELECT id FROM shared))"), append(args, margs...)
 	}
 	if len(projects) > 0 {

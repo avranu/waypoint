@@ -375,11 +375,11 @@ func (in WorkflowInput) apply(w *Workflow) error {
 // requireWorkflowEdit: project owners edit their project's workflows;
 // admins edit everyone's.
 func (s *Service) requireWorkflowEdit(ctx context.Context, actor *Actor, projectID *int64) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
 	if projectID == nil {
-		if !actor.isAdmin() {
+		if !actor.IsAdmin() {
 			return invalid("only admins can change workflows shared by every project")
 		}
 		return nil

@@ -125,7 +125,7 @@ func (s *Service) ReviewStats(ctx context.Context, actor *Actor, in ReviewStatsI
 			return nil, err
 		}
 		projectID = p.ID
-	} else if !actor.isAdmin() {
+	} else if !actor.IsAdmin() {
 		return nil, forbidden("review stats across every project are for admins: name a project")
 	}
 	since := s.now().Add(-time.Duration(days) * 24 * time.Hour)

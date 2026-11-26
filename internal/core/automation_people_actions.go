@@ -32,7 +32,7 @@ func (c *StepCtx) asker(userID int64) (*Actor, error) {
 	if err != nil || u.Disabled {
 		return nil, invalid("that person can't be asked")
 	}
-	return &Actor{User: u, Automation: c.Automation, Agent: "automation/" + c.Automation.Name, depth: c.Actor.depth, budget: c.Actor.budget}, nil
+	return &Actor{User: u, Automation: c.Automation, Agent: "automation/" + c.Automation.Name, Depth: c.Actor.Depth, Budget: c.Actor.Budget}, nil
 }
 
 // makeRequest creates the request of an ask_person or create_request step

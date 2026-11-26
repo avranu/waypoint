@@ -318,14 +318,14 @@ func (s *Service) sessionForFollowUp(ctx context.Context, actor *Actor, id int64
 	if actor == nil || actor.User == nil || actor.User.ID == 0 {
 		return nil, ErrUnauthorized
 	}
-	if err := actor.requireHuman("follow-ups"); err != nil {
+	if err := actor.RequireHuman("follow-ups"); err != nil {
 		return nil, err
 	}
 	x, err := s.sessionByID(ctx, s.db.R, actor, id)
 	if err != nil {
 		return nil, err
 	}
-	if x.userID != actor.id() {
+	if x.userID != actor.ID() {
 		return nil, forbidden("only the session's person can queue steps on it")
 	}
 	return x, nil
@@ -391,10 +391,10 @@ func heldReason(x *AgentSession) string {
 // SaveFollowUp queues steps on a session (replacing what was queued) and
 // arms them. A session that already finished runs them now.
 func (s *Service) SaveFollowUp(ctx context.Context, actor *Actor, sessionID int64, in FollowUpInput) (*FollowUp, error) {
-	if err := actor.need(PermSessionsStart); err != nil {
+	if err := actor.Need(PermSessionsStart); err != nil {
 		return nil, err
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	x, err := s.sessionForFollowUp(ctx, actor, sessionID)
@@ -417,11 +417,11 @@ func (s *Service) SaveFollowUp(ctx context.Context, actor *Actor, sessionID int6
 	err = s.write(ctx, actor, func(t *tx) error {
 		if a == nil {
 			_, err := t.ExecContext(ctx, `INSERT INTO automations(project_id, session_id, name, enabled, rule, position, created_by, saved_by, created_at, updated_at, rule_agent)
-				VALUES (?,?,?,1,?,0,?,?,?,?,?)`, nullInt(ptrInt(x.projectID)), x.ID, name, ruleJSON(rule), actor.id(), actor.id(), now, now, ruleAgentOf(actor))
+				VALUES (?,?,?,1,?,0,?,?,?,?,?)`, nullInt(ptrInt(x.projectID)), x.ID, name, ruleJSON(rule), actor.ID(), actor.ID(), now, now, ruleAgentOf(actor))
 			return err
 		}
 		_, err := t.ExecContext(ctx, `UPDATE automations SET name = ?, enabled = 1, rule = ?, saved_by = ?, rule_agent = ?, updated_at = ? WHERE id = ?`,
-			name, ruleJSON(rule), actor.id(), ruleAgentOf(actor), now, a.ID)
+			name, ruleJSON(rule), actor.ID(), ruleAgentOf(actor), now, a.ID)
 		return err
 	})
 	if err != nil {
@@ -440,10 +440,10 @@ func (s *Service) SaveFollowUp(ctx context.Context, actor *Actor, sessionID int6
 
 // RunFollowUpNow runs a session's follow-up at once, whatever the agent is doing.
 func (s *Service) RunFollowUpNow(ctx context.Context, actor *Actor, sessionID int64) (*FollowUp, error) {
-	if err := actor.need(PermSessionsStart); err != nil {
+	if err := actor.Need(PermSessionsStart); err != nil {
 		return nil, err
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	x, err := s.sessionForFollowUp(ctx, actor, sessionID)
@@ -466,7 +466,7 @@ func (s *Service) RunFollowUpNow(ctx context.Context, actor *Actor, sessionID in
 
 // ClearFollowUp removes a session's follow-up, cancelling its run.
 func (s *Service) ClearFollowUp(ctx context.Context, actor *Actor, sessionID int64) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
 	x, err := s.sessionForFollowUp(ctx, actor, sessionID)
@@ -507,7 +507,7 @@ func (s *Service) followUpBriefs(ctx context.Context, actor *Actor, list []*Agen
 	var own []int64
 	byID := map[int64]*AgentSession{}
 	for _, x := range list {
-		if x.userID == actor.id() {
+		if x.userID == actor.ID() {
 			own = append(own, x.ID)
 			byID[x.ID] = x
 		}
@@ -857,7 +857,7 @@ func (s *Service) AwaitMessage(ctx context.Context, actor *Actor, cliID, machine
 	if actor == nil || actor.User == nil || actor.User.ID == 0 {
 		return nil, ErrUnauthorized
 	}
-	id := s.SessionForHeader(ctx, actor.id(), cliID, machine)
+	id := s.SessionForHeader(ctx, actor.ID(), cliID, machine)
 	if id == 0 {
 		return nil, notFound("session")
 	}
@@ -869,7 +869,7 @@ func (s *Service) AwaitMessage(ctx context.Context, actor *Actor, cliID, machine
 	defer deadline.Stop()
 	res := &HookResult{Session: id}
 	for {
-		if p, err := s.sessionPause(ctx, actor.id(), pausedAgent(actor)); err != nil {
+		if p, err := s.sessionPause(ctx, actor.ID(), pausedAgent(actor)); err != nil {
 			return nil, err
 		} else if p != nil {
 			return res, nil
@@ -915,7 +915,7 @@ func (s *Service) linkSpawned(ctx context.Context, t *tx, actor *Actor, x *Agent
 		WHERE j.id = ? AND j.owner_id = ? AND j.kind = ? AND j.created_at > ? AND j.state IN ('running','done')
 		AND r.name = ? COLLATE NOCASE
 		AND NOT EXISTS (SELECT 1 FROM agent_sessions WHERE spawned_by_job = j.id)`,
-		job, actor.id(), JobSession, s.nowMS()-time.Hour.Milliseconds(), x.Machine).Scan(&n); err != nil || n == 0 {
+		job, actor.ID(), JobSession, s.nowMS()-time.Hour.Milliseconds(), x.Machine).Scan(&n); err != nil || n == 0 {
 		return 0
 	}
 	if _, err := t.ExecContext(ctx, `UPDATE agent_sessions SET spawned_by_job = ? WHERE id = ?`, job, x.ID); err != nil {
