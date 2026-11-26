@@ -217,7 +217,19 @@ func (s *Service) RecordCIHistory(ctx context.Context) {
 		if r.forge.token == "" || ctx.Err() != nil {
 			continue
 		}
+		key := ciGateKey(r.forge.ID, r.repo)
+		s.ciBoard.mu.Lock()
+		idle := s.ciBoard.idle(key, s.now(), false)
+		s.ciBoard.mu.Unlock()
+		if idle {
+			continue // nothing has run there; read in full every ciIdleReread (WP-1980)
+		}
 		h := s.ciRepoHistory(ctx, cl, r.forge, r.repo, direct)
+		if h.err == nil || noActions(h.err) {
+			s.ciBoard.mu.Lock()
+			s.ciBoard.gateFor(key).histAt = s.now()
+			s.ciBoard.mu.Unlock()
+		}
 		if h.err != nil {
 			if !errors.Is(h.err, ErrNotFound) {
 				s.log.Debug("CI history: read", "repo", r.repo, "err", h.err)

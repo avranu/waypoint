@@ -1078,6 +1078,7 @@ func (s *Service) HandleForgeWebhook(ctx context.Context, forgeID int64, h http.
 		return nil
 	}
 	s.noteHookDelivery(ctx, f, ev.repo, ev.org)
+	s.noteCIActive(f.ID, ev.repo) // any event may start CI (WP-1980)
 	return s.handleForgeEvent(ctx, f, ev)
 }
 

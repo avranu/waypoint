@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net/http"
 	"slices"
 	"strconv"
@@ -23,6 +24,18 @@ const (
 	ciBucket        = 15 * time.Minute
 	ciReadParallel  = 6
 	ciPoolKey       = "ci_pool"
+
+	// A repo with no CI activity is not asked again (WP-1980): readCIRepo
+	// and RecordCIHistory reuse what they last read of it until something
+	// marks it active (a forge webhook, a read that found unfinished runs
+	// or running tasks, Waypoint re-running a job), and for ciActiveFor
+	// after. An idle repo is still read in full about every ciIdleReread,
+	// which covers scheduled workflows and repos with no webhook; each
+	// repo's due time is brought forward by up to ciIdleSpread, by a hash
+	// of its key, so the repos' full reads fall in different sweeps.
+	ciActiveFor  = 15 * time.Minute
+	ciIdleReread = 30 * time.Minute
+	ciIdleSpread = 10 * time.Minute
 )
 
 // CIBoard is the page (and wp ci status).
@@ -220,7 +233,69 @@ type ciBoardCache struct {
 	runners  map[int64]ciRunners
 	stall    map[string]ciStall
 	tests    map[string][]string
+	gate     map[string]*ciGate
 	building chan struct{}
+}
+
+// ciGate is what readCIRepo and RecordCIHistory know of a repo's CI
+// activity, to leave an idle repo alone (WP-1980).
+type ciGate struct {
+	activeAt time.Time   // last sign of CI activity
+	readAt   time.Time   // last full read by readCIRepo
+	histAt   time.Time   // last history read by RecordCIHistory
+	data     *ciRepoData // the last read, reused while the repo is idle
+}
+
+func ciGateKey(forgeID int64, repo string) string {
+	return strconv.FormatInt(forgeID, 10) + "|" + strings.ToLower(repo)
+}
+
+// noteCIActive marks a repo as having CI activity now.
+func (s *Service) noteCIActive(forgeID int64, repo string) {
+	if repo == "" {
+		return
+	}
+	c := &s.ciBoard
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.gateFor(ciGateKey(forgeID, repo)).activeAt = s.now()
+}
+
+// gateFor needs c.mu held.
+func (c *ciBoardCache) gateFor(key string) *ciGate {
+	if c.gate == nil {
+		c.gate = map[string]*ciGate{}
+	}
+	g := c.gate[key]
+	if g == nil {
+		g = &ciGate{}
+		c.gate[key] = g
+	}
+	return g
+}
+
+// idle: the repo showed no CI activity for ciActiveFor, its last read
+// (the board's when board is true, else the history's) didn't fail, and
+// that read is less than its share of ciIdleReread old. Needs c.mu held.
+func (c *ciBoardCache) idle(key string, now time.Time, board bool) bool {
+	g := c.gate[key]
+	if g == nil {
+		return false
+	}
+	at := g.histAt
+	if board {
+		at = g.readAt
+		if g.data == nil || g.data.err != nil {
+			return false
+		}
+	}
+	if at.IsZero() || now.Sub(g.activeAt) < ciActiveFor {
+		return false
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	due := ciIdleReread - time.Duration(h.Sum32())%ciIdleSpread
+	return now.Sub(at) < due
 }
 
 type ciRunners struct {
@@ -470,12 +545,26 @@ func (s *Service) ciForgeRunners(ctx context.Context, cl ForgeActions, f *Forge)
 // readCIRepo reads a repo's unfinished runs and their jobs, its running
 // tasks, and (when stale) its history.
 func (s *Service) readCIRepo(ctx context.Context, cl ForgeActions, d *ciRepoData, sem chan struct{}) {
-	f, repo := d.ref.forge, d.ref.repo
+	f, repo, ref := d.ref.forge, d.ref.repo, d.ref
 	call := func(fn func() error) error {
 		sem <- struct{}{}
 		defer func() { <-sem }()
 		return fn()
 	}
+	key := ciGateKey(f.ID, repo)
+	c := &s.ciBoard
+	c.mu.Lock()
+	if c.idle(key, s.now(), true) {
+		*d = *c.gate[key].data
+		d.ref = ref
+		if h := c.history[key]; h != nil {
+			d.hist = h
+		}
+		c.mu.Unlock()
+		return
+	}
+	c.mu.Unlock()
+	defer func() { s.noteCIRead(key, d) }()
 	err := call(func() (err error) {
 		d.active, err = cl.ActionRuns(ctx, f, repo, []string{"waiting", "running", "blocked"}, 1, 50)
 		return err
@@ -528,6 +617,22 @@ func (s *Service) readCIRepo(ctx context.Context, cl ForgeActions, d *ciRepoData
 	}
 	if d.hist.err != nil {
 		d.err = d.hist.err
+	}
+}
+
+// noteCIRead keeps a read of a repo for the gate; one that found unfinished
+// runs or running tasks marks the repo active.
+func (s *Service) noteCIRead(key string, d *ciRepoData) {
+	now := s.now()
+	c := &s.ciBoard
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	g := c.gateFor(key)
+	g.readAt = now
+	cp := *d
+	g.data = &cp
+	if len(d.active) > 0 || len(d.running) > 0 {
+		g.activeAt = now
 	}
 }
 

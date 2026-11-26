@@ -337,6 +337,7 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 	}
 	n, ran := 0, 0
 	var rerr error
+	s.noteCIActive(f.ID, repo) // the re-run starts CI (WP-1980)
 	for _, r := range runs {
 		m, err := rc.RetryRun(ctx, f, repo, r.ID)
 		n += m
