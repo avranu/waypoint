@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core/email"
 	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/core/meaning"
 	"git.jmann.me/claude/waypoint/internal/db"
@@ -59,7 +60,13 @@ type Config struct {
 }
 
 // Service is the domain API.
+// emailService is the email domain's operations; Service embeds it, so their
+// methods are the facade's.
+type emailService = email.Service
+
 type Service struct {
+	*emailService
+
 	db       *db.DB
 	cfg      Config
 	log      *slog.Logger
@@ -67,7 +74,8 @@ type Service struct {
 	pushHTTP *http.Client
 	Hub      *Hub
 
-	k *kernel.Kernel
+	k      *kernel.Kernel
+	mailer *email.Mailer // no access checks: automation sends through it
 
 	afterTranscriptFile func()
 
@@ -206,6 +214,8 @@ func New(d *db.DB, cfg Config, log *slog.Logger) *Service {
 		Hub:  NewHub(),
 		k:    kernel.New(d, log),
 	}
+	s.mailer = email.NewMailer(s.k)
+	s.emailService = email.New(s.mailer)
 	s.k.Persist(persistedKinds...)
 	s.k.OnEmit(noteSession)
 	s.k.OnEmit(stampEvent)

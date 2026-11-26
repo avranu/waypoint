@@ -4,7 +4,12 @@ package core
 // (WP-ADR151). These aliases and re-exports are the names the API and the CLI
 // use; they stay for good.
 
-import "git.jmann.me/claude/waypoint/internal/core/kernel"
+import (
+	"context"
+
+	"git.jmann.me/claude/waypoint/internal/core/email"
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
+)
 
 type (
 	Actor           = kernel.Actor
@@ -129,3 +134,19 @@ const (
 	AuditSettings   = kernel.AuditSettings
 	AuditAccess     = kernel.AuditAccess
 )
+
+// The email domain's types (internal/core/email).
+type (
+	EmailSettings      = email.Settings
+	EmailSettingsInput = email.SettingsInput
+)
+
+const (
+	SMTPStartTLS = email.StartTLS
+	SMTPTLS      = email.TLS
+	SMTPNone     = email.None
+)
+
+// EmailConfigured says whether email can be sent. It takes no actor, so it is
+// not on the email domain's Service.
+func (s *Service) EmailConfigured(ctx context.Context) bool { return s.mailer.Configured(ctx) }

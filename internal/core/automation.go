@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"git.jmann.me/claude/waypoint/internal/core/email"
 	"git.jmann.me/claude/waypoint/internal/wql"
 )
 
@@ -446,12 +447,12 @@ func (s *Service) runAction(c *StepCtx) error {
 		}
 		return nil
 	case "email":
-		es, err := s.emailSettings(ctx)
+		es, err := s.mailer.Settings(ctx)
 		if err != nil {
 			return err
 		}
 		if !es.Configured {
-			return errEmailOff
+			return email.ErrOff
 		}
 		msg, err := render(act.Message, eventText(e))
 		if err != nil {
@@ -461,7 +462,7 @@ func (s *Service) runAction(c *StepCtx) error {
 		if err != nil {
 			return err
 		}
-		to, err := parseRecipients(anyString(act.Extra["to"]))
+		to, err := email.ParseRecipients(anyString(act.Extra["to"]))
 		if err != nil {
 			return err
 		}
@@ -480,7 +481,7 @@ func (s *Service) runAction(c *StepCtx) error {
 		slices.Sort(to)
 		for _, addr := range slices.Compact(to) {
 			s.goBG(func() {
-				if err := sendEmail(context.Background(), es, addr, subject, msg, data.URL); err != nil {
+				if err := s.mailer.Send(context.Background(), es, addr, subject, msg, data.URL); err != nil {
 					s.log.WarnContext(ctx, "automation email failed", "automation", a.Name, "err", err)
 				}
 			})
