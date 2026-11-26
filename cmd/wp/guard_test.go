@@ -409,6 +409,9 @@ func TestGuardBashRules(t *testing.T) {
 		{`perl -e 'print 1' ~/.claude/settings.json`, ""},
 		{`perl -pe 's/a/b/' ~/.claude/settings.json`, ""},
 		{`perl -pi -e s/a/b/ notes.md`, ""},
+		{`perl -Mstrict -ne 'print' ~/.claude/settings.json`, ""},
+		{`perl -MFile::Basename -Ilib -ne 'print' ~/.claude/settings.json`, ""},
+		{`perl -Mstrict -pi -e s/a/b/ ~/.claude/settings.json`, ruleGuard},
 		{`gofmt -w ~/.claude/settings.json`, ruleGuard},
 		{`gofmt -l -w -r 'a -> b' .claude/settings.json`, ruleGuard},
 		{`goimports -local x -w ~/.claude/hooks/pre.sh`, ruleGuard},
@@ -1283,5 +1286,57 @@ func TestDecodeGuardInputAtTheLimit(t *testing.T) {
 	}
 	if err := decodeGuardInput(strings.NewReader(exact+" "), &in); err == nil || !strings.Contains(err.Error(), "over") {
 		t.Errorf("%d bytes: %v", guardInputMax+1, err)
+	}
+}
+
+// A patch names the files it changes in its own text, not on the command
+// line: the guard reads the patch (a file named to git apply, git am or
+// patch, one fed with <, or a heredoc) and checks each file it changes
+// (audits 1933.2 and 1931.6). A script given to an interpreter is read for
+// the files it opens for writing (audit 1931.1).
+func TestGuardReadsPatchesAndScripts(t *testing.T) {
+	g0, repo := guardTestSite(t)
+	home, _ := os.UserHomeDir()
+	settings := "--- a/.claude/settings.json\n+++ b/.claude/settings.json\n@@ -1 +1 @@\n-{}\n+{\"hooks\":{}}\n"
+	writeFile(t, filepath.Join(repo, "bad.patch"), "diff --git a/.claude/settings.json b/.claude/settings.json\n"+settings)
+	writeFile(t, filepath.Join(repo, "ok.patch"), "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-a\n+b\n")
+	writeFile(t, filepath.Join(repo, "mail.patch"), "From abc Mon Sep 17 00:00:00 2001\nSubject: [PATCH] x\n\n---\n .claude/settings.local.json | 1 +\n\ndiff --git a/.claude/settings.local.json b/.claude/settings.local.json\nnew file mode 100644\n--- /dev/null\n+++ b/.claude/settings.local.json\n@@ -0,0 +1 @@\n+exit 0\n")
+	writeFile(t, filepath.Join(repo, "home.patch"), "--- "+home+"/.claude/settings.json\n+++ "+home+"/.claude/settings.json\n@@ -1 +1 @@\n-{}\n+{\"hooks\":{}}\n")
+	for _, c := range []struct{ cmd, want string }{
+		{`git apply bad.patch`, ruleGuard},
+		{`git apply --3way bad.patch`, ruleGuard},
+		{`git --no-pager apply ok.patch bad.patch`, ruleGuard},
+		{`git apply < bad.patch`, ruleGuard},
+		{`git am mail.patch`, ruleGuard},
+		{`git am < mail.patch`, ruleGuard},
+		{`patch -p1 < bad.patch`, ruleGuard},
+		{`patch -p1 -i bad.patch`, ruleGuard},
+		{`patch -p0 < home.patch`, ruleGuard},
+		{"git apply <<'EOF'\n" + settings + "EOF", ruleGuard},
+		{"patch -p1 <<'EOF'\n" + settings + "EOF", ruleGuard},
+		{`git apply ok.patch`, ""},
+		{`patch -p1 < ok.patch`, ""},
+		{`git apply --check bad.patch`, ""},
+		{`git apply --stat bad.patch`, ""},
+		{`patch --dry-run -p1 < bad.patch`, ""},
+		{`git apply missing.patch`, ""},
+		{`git diff | git apply`, ""},
+		{"python3 - <<'EOF'\nopen('" + home + "/.claude/settings.json','w').write('{}')\nEOF", ruleGuard},
+		{"python3 - <<'EOF'\nfrom pathlib import Path\nPath('.claude/settings.json').write_text('{}')\nEOF", ruleGuard},
+		{`python3 -c "open('.claude/settings.json','w').write('{}')"`, ruleGuard},
+		{`node -e "require('fs').writeFileSync('.claude/settings.json', '{}')"`, ruleGuard},
+		{"python3 - <<'EOF'\np = '.claude/settings.json'\nopen(p, 'w').write('{}')\nEOF", ruleGuard},
+		{`python3 -c "print(open('.claude/settings.json').read())"`, ""},
+		{`python3 -c "open('notes.md','w').write('x')"`, ""},
+		{"python3 - <<'EOF'\nprint(1)\nEOF", ""},
+	} {
+		g := &guard{site: g0.site, server: g0.server, origin: g0.origin, dir: g0.site.cwd}
+		got := ""
+		if h := g.bashHit(c.cmd); h != nil {
+			got = h.rule
+		}
+		if got != c.want {
+			t.Errorf("%q: rule %q, want %q", c.cmd, got, c.want)
+		}
 	}
 }

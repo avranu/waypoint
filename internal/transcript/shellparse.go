@@ -9,6 +9,7 @@ type ShellCmd struct {
 	Open    []bool
 	Subs    [][]*ShellCmd
 	Redirs  []string
+	Ins     []string // files it reads with <
 	Heredoc string
 	PipeIn  bool
 	AndIn   bool
@@ -214,6 +215,9 @@ func (p *shellParser) redirect(cur *ShellCmd) {
 	}
 	p.skipSpaces()
 	w, _ := p.word(cur)
+	if c == '<' && w != "" {
+		cur.Ins = append(cur.Ins, w)
+	}
 	if c == '<' || w == "" || (amp && (IsDigits(w) || w == "-")) {
 		return
 	}

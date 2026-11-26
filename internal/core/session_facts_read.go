@@ -181,13 +181,15 @@ type SessionFacts struct {
 		ShellUnknown int `json:"shell_unknown"`
 		ScriptEdits  int `json:"script_edits"` // edit tools a REPL script ran; not in Edits
 		// ScriptShellEdits: Bash calls a REPL script ran that wrote a file; not in ShellEdits.
-		ScriptShellEdits int   `json:"script_shell_edits"`
-		FilesChanged     int   `json:"files_changed"`
-		LinesAdded       Tally `json:"lines_added"`
-		LinesRemoved     Tally `json:"lines_removed"`
-		TestEdits        int   `json:"test_edits"` // edits of test files (not failed)
-		TestFiles        int   `json:"test_files"`
-		TestLinesAdd     Tally `json:"test_lines_added"`
+		ScriptShellEdits int `json:"script_shell_edits"`
+		// FilesChanged and the line counts are the edit tools' only: a Bash
+		// call's record says neither which files it wrote nor how many lines.
+		FilesChanged int   `json:"files_changed"`
+		LinesAdded   Tally `json:"lines_added"`
+		LinesRemoved Tally `json:"lines_removed"`
+		TestEdits    int   `json:"test_edits"` // edits of test files (not failed)
+		TestFiles    int   `json:"test_files"`
+		TestLinesAdd Tally `json:"test_lines_added"`
 	} `json:"changes"`
 
 	Repeated struct {

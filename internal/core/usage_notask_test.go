@@ -233,6 +233,15 @@ func TestTaskUsageReviewRoundsAuditsAndPRs(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Pull requests the task has no link to stay out: another repository's
+	// with a linked number, and this repository's with another number
+	// (audit 1931.25).
+	for _, pr := range [][2]any{{"other/web", 8}, {"acme/web", 9}} {
+		if _, err := f.s.db.W.ExecContext(f.ctx, `INSERT INTO pull_requests(forge_id, repo, number, url, state, created_at, updated_at) SELECT forge_id, ?, ?, ?, 'open', 1, 1 FROM pull_requests LIMIT 1`,
+			pr[0], pr[1], fmt.Sprintf("https://x/%s/%d", pr[0], pr[1])); err != nil {
+			t.Fatal(err)
+		}
+	}
 	o, err := f.s.UsageForTask(f.ctx, f.me, UsageQuery{}, i.Key)
 	if err != nil {
 		t.Fatal(err)

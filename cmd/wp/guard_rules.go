@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"git.jmann.me/claude/waypoint/internal/lazyre"
+	trscript "git.jmann.me/claude/waypoint/internal/transcript"
 )
 
 // Rule ids, as they appear in guard.log.
@@ -1457,6 +1459,8 @@ func (g *guard) gitHit(args []string) *guardHit {
 func (g *guard) writes(c *guardCmd, name string, args []string) *guardHit {
 	targets := append([]string(nil), c.Redirs...)
 	targets = append(targets, writeTargets(name, args)...)
+	targets = append(targets, g.patchTargets(c, name, args)...)
+	targets = append(targets, scriptTargets(c, name, args)...)
 	for _, t := range targets {
 		p := g.site.resolve(g.dir, t)
 		if p == "" || strings.HasPrefix(p, "/dev/") {
@@ -1488,65 +1492,158 @@ func (g *guard) writeHit(p string) *guardHit {
 	return nil
 }
 
-// perlInPlaceTargets are the files `perl -i`, `-pi -e CODE` or `-i.bak` edits:
-// the arguments that are not switches, when a switch cluster holds an i before
-// any e, E or I. A switch ending in e or E takes the next argument as its
-// code, as in internal/transcript's ShellWrites. Without -i perl writes nothing.
-func perlInPlaceTargets(args []string) []string {
-	inPlace := false
-	var files []string
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") {
-			f := a[1:]
-			if j := strings.IndexByte(f, 'i'); j >= 0 && !strings.ContainsAny(f[:j], "eEI") {
-				inPlace = true
-			}
-			if strings.HasSuffix(f, "e") || strings.HasSuffix(f, "E") {
+// guardMaxPatch bounds the patch text read from one file, and
+// guardMaxPatches the files read for one command.
+const (
+	guardMaxPatch   = 1 << 20
+	guardMaxPatches = 8
+)
+
+// patchTargets are the files a patch applied by `git apply`, `git am` or
+// `patch` changes. The command line does not name them, the patch does: it is
+// read from the files the command names, from one fed with <, or from a
+// heredoc. A patch that arrives through a pipe (git diff | git apply) or from
+// a file that is not there yet cannot be read, and is let through. A run
+// that only checks or lists (--check, --stat, --dry-run) writes nothing.
+func (g *guard) patchTargets(c *guardCmd, name string, args []string) []string {
+	dir := g.dir
+	switch name {
+	case "git":
+		verb := -1
+		for i := 0; i < len(args) && verb < 0; i++ {
+			switch a := args[i]; {
+			case a == "-C" && i+1 < len(args):
 				i++
+				if p := g.site.resolve(dir, args[i]); p != "" {
+					dir = p
+				}
+			case a == "-c" || a == "--namespace" || a == "--exec-path":
+				i++
+			case strings.HasPrefix(a, "-"):
+			default:
+				verb = i
 			}
-			continue
 		}
-		files = append(files, a)
-	}
-	if !inPlace {
+		if verb < 0 || args[verb] != "apply" && args[verb] != "am" {
+			return nil
+		}
+		args = args[verb+1:]
+	case "patch":
+	default:
 		return nil
 	}
-	return files
-}
-
-// formatterValueFlags are the flags of gofmt, goimports and prettier whose
-// next argument is a value, not a file.
-var formatterValueFlags = map[string]bool{"-r": true, "-local": true, "-srcdir": true, "-cpuprofile": true,
-	"--config": true, "--ignore-path": true, "--parser": true, "--plugin": true, "--cache-location": true,
-	"--cache-strategy": true, "--log-level": true, "--stdin-filepath": true, "--tab-width": true, "--print-width": true,
-	"--end-of-line": true, "--config-precedence": true, "--editorconfig": true}
-
-// formatterTargets are the files gofmt, goimports or prettier rewrite: its
-// file arguments, when -w or --write is given (without it they only print or
-// list).
-func formatterTargets(args []string) []string {
-	write := false
 	var files []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
-		case a == "--":
-			files = append(files, args[i+1:]...)
-			i = len(args)
-		case a == "-w" || a == "--write":
-			write = true
-		case formatterValueFlags[a]:
+		case a == "--check" || a == "--stat" || a == "--numstat" || a == "--summary" || a == "--dry-run":
+			return nil
+		case name == "patch" && (a == "-i" || a == "--input" || a == "-d" || a == "--directory") && i+1 < len(args):
 			i++
-		case strings.HasPrefix(a, "-") && a != "-":
+			if a[len(a)-1] == 'i' || a == "--input" {
+				files = append(files, args[i])
+			} else if p := g.site.resolve(dir, args[i]); p != "" {
+				dir = p
+			}
+		case strings.HasPrefix(a, "--input="):
+			files = append(files, a[len("--input="):])
+		case strings.HasPrefix(a, "--directory="):
+			if p := g.site.resolve(dir, a[len("--directory="):]); p != "" {
+				dir = p
+			}
+		case name == "patch" && strings.HasPrefix(a, "-d") && len(a) > 2:
+			if p := g.site.resolve(dir, a[2:]); p != "" {
+				dir = p
+			}
+		case name == "patch" && strings.HasPrefix(a, "-i") && len(a) > 2:
+			files = append(files, a[2:])
+		case strings.HasPrefix(a, "-"):
 		default:
-			files = append(files, a)
+			files = append(files, a) // git: a patch; patch: the file patched or the patch
 		}
 	}
-	if !write {
+	files = append(files, c.Ins...)
+	texts := []string{c.Heredoc}
+	for _, f := range files[:min(len(files), guardMaxPatches)] {
+		for _, from := range slices.Compact([]string{dir, g.dir}) { // after -C or -d, or as the shell opens a < file
+			p := g.site.resolve(from, f)
+			if p == "" {
+				continue
+			}
+			if fh, err := os.Open(p); err == nil { // #nosec G304 G703 -- the patch the command is about to apply, read to see what it changes
+				b, _ := io.ReadAll(io.LimitReader(fh, guardMaxPatch))
+				_ = fh.Close()
+				texts = append(texts, string(b))
+			}
+		}
+	}
+	var out []string
+	for _, text := range texts {
+		for _, f := range patchFiles(text) {
+			if !filepath.IsAbs(f) {
+				f = filepath.Join(dir, f)
+			}
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// patchFiles are the files a patch's headers name (---, +++, diff --git,
+// rename and copy lines), each as written and with its first directory
+// dropped: git writes a/ and b/ before a path and -p1 strips it, and the
+// guard does not know which -p the command uses.
+func patchFiles(text string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(f string) {
+		f, _, _ = strings.Cut(f, "\t")
+		f = strings.Trim(strings.TrimSpace(f), `"`)
+		if f == "" || f == "/dev/null" {
+			return
+		}
+		for _, v := range []string{f, f[strings.IndexByte(f, '/')+1:]} {
+			if v != "" && !seen[v] && len(out) < 4096 {
+				seen[v] = true
+				out = append(out, v)
+			}
+		}
+	}
+	for line := range strings.Lines(text) {
+		line = strings.TrimRight(line, "\r\n")
+		for _, pre := range []string{"+++ ", "--- ", "rename to ", "rename from ", "copy to "} {
+			if f, ok := strings.CutPrefix(line, pre); ok {
+				add(f)
+			}
+		}
+		if f, ok := strings.CutPrefix(line, "diff --git "); ok {
+			if i := strings.LastIndex(f, " b/"); i >= 0 {
+				add(f[:i])
+				add(f[i+1:])
+			}
+		}
+	}
+	return out
+}
+
+// scriptTargets are the files a script given to an interpreter (python3 -c,
+// node -e, a heredoc on its input) opens for writing, as far as the script
+// spells them: the same reading the usage report's write recogniser makes
+// (internal/transcript). A path the script builds at run time is not seen.
+func scriptTargets(c *guardCmd, name string, args []string) []string {
+	if !rePython.MatchString(name) && name != "node" && name != "ruby" && name != "bun" && name != "deno" {
 		return nil
 	}
-	return files
+	script := c.Heredoc
+	for i := 0; i+1 < len(args) && script == ""; i++ {
+		if args[i] == "-c" || args[i] == "-e" {
+			script = args[i+1]
+		}
+	}
+	if script == "" {
+		return nil
+	}
+	return trscript.ScriptWrites(script)
 }
 
 // writeTargets are the paths a command writes, as far as its name and
@@ -1582,12 +1679,9 @@ func writeTargets(name string, args []string) []string {
 		}
 		return sc.pos
 	case "perl":
-		return perlInPlaceTargets(args)
+		return trscript.PerlInPlaceFiles(args) // one rule with the usage report's recogniser
 	case "gofmt", "goimports", "prettier":
-		return formatterTargets(args)
-	// git apply and git am name no target files on the command line (the
-	// patch holds them), so there is nothing to check here; they are not
-	// recognised, unlike in internal/transcript's ShellWrites.
+		return trscript.FormatterFiles(args)
 	case "dd":
 		var out []string
 		for _, a := range args {

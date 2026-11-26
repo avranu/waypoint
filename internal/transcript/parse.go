@@ -90,7 +90,12 @@ type rec struct {
 		Content    json.RawMessage `json:"content"`
 	} `json:"message"`
 	ToolUseResult json.RawMessage `json:"toolUseResult"`
-	Attachment    json.RawMessage `json:"attachment"`
+	// PermissionDecision is how a tool call's permission was settled, on the
+	// record that carries its result: "reject" is a refusal whatever the text.
+	PermissionDecision *struct {
+		Decision string `json:"decision"`
+	} `json:"permissionDecision"`
+	Attachment json.RawMessage `json:"attachment"`
 }
 
 type block struct {
@@ -728,10 +733,11 @@ func (p *parser) results(blocks []block, r *rec, ts *int64, n int) {
 		if ts != nil && t.At != nil && *ts >= *t.At {
 			t.DurationMS = ptr(*ts - *t.At)
 		}
+		rejected := r.PermissionDecision != nil && r.PermissionDecision.Decision == "reject"
+		if t.Tool == "Bash" && (rejected || bl.IsError && LooksRefused(text)) {
+			t.ShellWrite = ptr(false) // it never ran
+		}
 		if bl.IsError {
-			if t.Tool == "Bash" && LooksRefused(text) {
-				t.ShellWrite = ptr(false) // it never ran
-			}
 			t.Error = strp(clip(text, errorRunes))
 			if m := exitCodeRE.FindStringSubmatch(text); m != nil {
 				if c, err := strconv.ParseInt(m[1], 10, 64); err == nil {

@@ -89,7 +89,7 @@ func TestFactsTextChangesLine(t *testing.T) {
 	f.Changes.ShellUnknown = 15
 	f.Changes.ScriptShellEdits = 16
 	f.Changes.FilesChanged = 17
-	want := "changes: 11 edits (12 failed; 13 more run by REPL scripts), 14+ shell edits (15 Bash calls not classified) and 16 more run by REPL scripts, 17 files; lines added 0, removed 0"
+	want := "changes: 11 edits (12 failed; 13 more run by REPL scripts), 14+ shell edits (15 Bash calls not classified) and 16 more run by REPL scripts; the edits changed 17 files, lines added 0, removed 0 (what shell edits changed is not counted)"
 	var got string
 	for _, l := range strings.Split(factsText(&f), "\n") {
 		if strings.HasPrefix(l, "changes:") {

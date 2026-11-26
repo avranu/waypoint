@@ -570,3 +570,22 @@ func TestUsageForTaskShellEdits(t *testing.T) {
 		}
 	}
 }
+
+// An hour the client counted and found no shell edit in carries a zero-call
+// marker: its Bash calls are counted (none wrote), not left as uncounted
+// (audit 1931.22).
+func TestUsageForTaskZeroShellEditMarkerCountsTheHour(t *testing.T) {
+	f := newFeatureEnv(t)
+	i := f.task(-10, "v0.80.0", "v0.79.0", 500)
+	f.ingest(f.me, "tools", "m1", UsageChunk{Tools: []UsageToolRow{
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "builtin", Tool: "Bash", Calls: 20},
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "shell_edit", Tool: "Bash", Calls: 0},
+	}})
+	o, err := f.s.UsageForTask(f.ctx, f.me, UsageQuery{}, i.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.ShellEdits != 0 || o.ShellEditsUncounted != 0 {
+		t.Errorf("shell edits %d, uncounted Bash calls %d; want 0 and 0 (the hour was counted)", o.ShellEdits, o.ShellEditsUncounted)
+	}
+}

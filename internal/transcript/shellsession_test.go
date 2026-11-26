@@ -56,6 +56,30 @@ func TestShellEditNeedsAWorkingDirectoryTheSessionWorkedIn(t *testing.T) {
 		{"find print0 xargs in tmp", "find /tmp/s -name '*.go' -print0 | xargs -0 gofmt -w", "/r", nil, false},
 		{"find -exec in tmp", "find /tmp/s -name '*.go' -exec sed -i s/a/b/ {} +", "/r", nil, false},
 		{"find -exec in the tree", "find internal -name '*.go' -exec sed -i s/a/b/ {} +", "/r", nil, true},
+		{"find xargs perl reading", "find internal -name '*.go' | xargs perl -MFile::Basename -ne print", "/r", nil, false},
+		{"find xargs perl in place", "find internal -name '*.go' | xargs perl -Mstrict -pi -e s/a/b/", "/r", nil, true},
+		{"perl reading with a module", "perl -MFile::Basename -ne 'print' a.go", "/r", nil, false}, // audit 1933.4
+		{"perl reading with an include dir", "perl -Ilib -ne 'print' a.go", "/r", nil, false},
+		{"perl in place with a module", "perl -Mstrict -pi -e s/a/b/ a.go", "/r", nil, true},
+		{"perl in place, clustered", "perl -pie s/a/b/ a.go", "/r", nil, true},
+		{"gofmt rewrite rule is no file", "gofmt -w -r 'a -> b' /tmp/x.go", "/r", nil, false}, // audit 1933.7
+		{"prettier config is no file", "prettier --config .prettierrc.json --write /tmp/x.md", "/r", nil, false},
+		{"prettier writes its file", "prettier --config .prettierrc.json --write web/x.md", "/r", nil, true},
+		{"find through a filter to xargs in tmp", "find /tmp/s -name '*.go' | grep -v test | xargs sed -i s/a/b/", "/r", nil, false}, // audit 1931.3
+		{"find through a filter to xargs in the tree", "find internal -name '*.go' | grep -v test | sort | xargs sed -i s/a/b/", "/r", nil, true},
+		{"a find earlier on the line feeds nothing", "find /tmp/s -name x; ls | xargs sed -i s/a/b/", "/r", nil, true},
+		{"patch -d into tmp", "patch -d /tmp/s -p1 < fix.diff", "/r", nil, false}, // audit 1931.4
+		{"patch -dDIR into tmp", "patch -d/tmp/s -p1 -i fix.diff", "/r", nil, false},
+		{"patch --directory into the tree", "patch --directory=web -p1 < fix.diff", "/r", nil, true},
+		{"curl -o into the tree", "curl -sS -o internal/data.json https://example.com/d", "/r", nil, true}, // audit 1931.20
+		{"curl -o into tmp", "curl -sS -o /tmp/d.json https://example.com/d", "/r", nil, false},
+		{"mv into the tree", "mv /tmp/a.go internal/", "/r", nil, true}, // audit 1931.21
+		{"mv within tmp", "mv /tmp/a.go /tmp/b.go", "/r", nil, false},
+		{"cp into the tree", "cp /tmp/a.go internal/a.go", "/r", nil, true},
+		{"cp to a backup beside the file", "cp internal/a.go internal/a.go.bak", "/r", nil, false},
+		{"git rm", "git rm internal/a.go", "/r", nil, true},
+		{"git mv", "git mv internal/a.go internal/b.go", "/r", nil, true},
+		{"touch makes no text", "touch internal/new.go", "/r", nil, false},
 		{"for loop over a glob", "for f in *.go; do gofmt -w \"$f\"; done", "/r", nil, true},
 		{"for loop over a substitution", "for f in $(git ls-files); do sed -i s/a/b/ $f; done", "/r", nil, true},
 		{"for loop in tmp", "cd /tmp/s && for f in *.go; do gofmt -w \"$f\"; done", "/r", nil, false},
@@ -135,6 +159,15 @@ func TestParserRefusedBashDidNotWrite(t *testing.T) {
 		result("b2", 2, true, "Exit code 1\nFAIL", nil),
 		result("b3", 2, true, "The user doesn't want to proceed with this tool use.", nil),
 	)
+	// A hook's refusal whose text has none of the known phrases is marked by
+	// the record's permissionDecision alone (audit 1933.5).
+	r2 := parse(t, "main",
+		withCwd(assistant("m1", 1, m{"output_tokens": 1}, toolUse("b4", "Bash", cmd)), "/r"),
+		strings.Replace(result("b4", 2, true, "PreToolUse:Bash hook error: [wp]: refused", nil), `{"`, `{"permissionDecision":{"decision":"reject","source":"hook"},"`, 1),
+	)
+	if c := r2.ToolCalls[0]; c.ShellWrite == nil || *c.ShellWrite {
+		t.Errorf("a call the record marks rejected never ran: shell write %v", c.ShellWrite)
+	}
 	got := map[string]bool{}
 	for _, c := range r.ToolCalls {
 		got[c.ToolUseID] = c.ShellWrite != nil && *c.ShellWrite

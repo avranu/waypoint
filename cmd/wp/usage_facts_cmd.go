@@ -206,7 +206,7 @@ func factsText(f *core.SessionFacts) string {
 		p("  %s x%d", d.URL, d.Times)
 	}
 	c := f.Changes
-	p("changes: %d edits (%d failed; %d more run by REPL scripts), %s, %d files; lines added %s, removed %s", c.Edits, c.Failed, c.ScriptEdits, shellEditsText(c.ShellEdits, c.ShellUnknown, c.ScriptShellEdits), c.FilesChanged,
+	p("changes: %d edits (%d failed; %d more run by REPL scripts), %s; the edits changed %d files, lines added %s, removed %s (what shell edits changed is not counted)", c.Edits, c.Failed, c.ScriptEdits, shellEditsText(c.ShellEdits, c.ShellUnknown, c.ScriptShellEdits), c.FilesChanged,
 		tallyText(c.LinesAdded, nil), tallyText(c.LinesRemoved, nil))
 	p("  test files edited: %d edits of %d test files, lines added %s", c.TestEdits, c.TestFiles, tallyText(c.TestLinesAdd, nil))
 	r := f.Repeated

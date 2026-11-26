@@ -21,7 +21,7 @@ func traceFileShape(w string) bool { return trscript.ShellFileShape(w) }
 
 // traceCommands lists the commands of a line (see trscript.ReadShell) and
 // returns the directory the line ends in.
-func traceCommands(cmd, cwd string, depth int, vars map[string]string, mem *traceScripts, out *[]traceCommand) string {
+func traceCommands(cmd, cwd string, vars map[string]string, mem *traceScripts, out *[]traceCommand) string {
 	cmds, dir := trscript.ReadShell(cmd, cwd, vars, mem, true)
 	*out = append(*out, cmds...)
 	return dir
@@ -42,7 +42,7 @@ func bashWritesWork(input json.RawMessage, cwd string, mem *traceScripts) bool {
 	}
 	home, _ := os.UserHomeDir()
 	var cmds []traceCommand
-	traceCommands(in.Command, cwd, 0, map[string]string{"HOME": home}, mem, &cmds)
+	traceCommands(in.Command, cwd, map[string]string{"HOME": home}, mem, &cmds)
 	class, _, _ := classifyTraceBash(cmds, cwd)
 	return class == trEdit
 }

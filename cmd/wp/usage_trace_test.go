@@ -387,6 +387,13 @@ func TestClassifyTraceCall(t *testing.T) {
 		{"git apply behind a global flag", "Bash", bash("git --no-pager apply /tmp/x/fix.patch"), trEdit, nil},
 		{"sed over what find names", "Bash", bash("find internal -name '*.go' | xargs sed -i s/a/b/"), trEdit, nil},
 		{"sed by find", "Bash", bash("find internal -name '*.go' -exec sed -i s/a/b/ {} +"), trEdit, nil},
+		{"sed over what find names in scratch", "Bash", bash("find /tmp/s -name '*.go' | xargs sed -i s/a/b/"), trLocate, nil},
+		{"sed by find in scratch", "Bash", bash("find /tmp/s -name '*.go' -exec sed -i s/a/b/ {} +"), trLocate, nil},
+		{"sed over what find names in scratch, through a filter", "Bash", bash("find /tmp/s -name '*.go' | grep -v test | xargs sed -i s/a/b/"), trLocate, nil},
+		{"a patch applied in scratch", "Bash", bash("patch -d /tmp/s -p1 < fix.diff"), trOther, nil},
+		{"a patch applied in the tree", "Bash", bash("patch -d internal -p1 < fix.diff"), trEdit, nil},
+		{"perl reading with a module", "Bash", bash("perl -MFile::Basename -ne 'print' internal/a.go > /dev/null"), trOther, nil},
+		{"a gofmt rule is no file", "Bash", bash("gofmt -w -r 'a -> b' /tmp/x.go"), trOther, nil},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

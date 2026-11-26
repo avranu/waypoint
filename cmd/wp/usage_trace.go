@@ -409,7 +409,7 @@ func classifyTraceCall(name string, input json.RawMessage, cwd string, at, ctx i
 		tc.Scan = true
 		var cmds []traceCommand
 		home, _ := os.UserHomeDir()
-		traceCommands(in.Command, cwd, 0, map[string]string{"HOME": home}, mem, &cmds)
+		traceCommands(in.Command, cwd, map[string]string{"HOME": home}, mem, &cmds)
 		for _, c := range cmds {
 			switch c.Head {
 			case "wp next", "wp take":
@@ -444,7 +444,13 @@ func classifyTraceBash(cmds []traceCommand, cwd string) (class string, paths []t
 			if w.Kind == "output" {
 				continue
 			}
-			f, work := traceWord(w.Path, cmds[i].Dir, cwd)
+			// A write that names no file (find … -exec, xargs, patch -d) is
+			// placed where its files are, as session facts place it.
+			at := w.Path
+			if place := trscript.WritePlace(cmds, i, w); at == "*" && place != "." {
+				at = strings.TrimSuffix(place, "/") + "/*"
+			}
+			f, work := traceWord(at, cmds[i].Dir, cwd)
 			edit = edit || work
 			whole = whole && (!work || w.Whole)
 			if work && f.P != "" && !hasPath(edits, f) && len(edits) < traceMaxCmdPath {

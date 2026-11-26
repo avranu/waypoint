@@ -117,9 +117,10 @@ func (s *ShellSession) workPath(p, cd string) bool {
 // substitution does not count, nor does a relative one after a cd the line
 // does not spell out; nor does a variable set in an earlier Bash call, which
 // is truly unknown: environment variables do not persist between Claude
-// Code's Bash calls (only the working directory does). A file a tool saves
-// with -o is not a write here. known is false when the command is too long to
-// read (the answer is then "unknown", not "no").
+// Code's Bash calls (only the working directory does). A file curl saves with
+// -o counts like any other write. known is false when the command is too long
+// to read, or runs a script too long to read whole in which the part read
+// writes nothing (the answer is then "unknown", not "no").
 func (s *ShellSession) Edit(cmd, cwd string) (wrote, known bool) {
 	if len(cmd) > shellMaxCommand {
 		return false, false
@@ -130,7 +131,9 @@ func (s *ShellSession) Edit(cmd, cwd string) (wrote, known bool) {
 		vars["HOME"] = h
 	}
 	cmds, _ := ReadShell(cmd, cwd, vars, &s.Scripts, false)
+	known = true
 	for i := range cmds {
+		known = known && !cmds[i].Unread
 		dir := cmds[i].Dir
 		if dir == "" {
 			dir = cwd
@@ -146,15 +149,7 @@ func (s *ShellSession) Edit(cmd, cwd string) (wrote, known bool) {
 			if w.Kind == "output" {
 				continue
 			}
-			p := w.Path
-			if p == "*" { // git apply, patch, find ... -exec: the files are not named
-				p = "."
-				if w.Root != "" {
-					p = w.Root
-				} else if r := pipedFindRoot(cmds, i); r != "" {
-					p = r // find ROOT ... | xargs sed -i: the files are the find's
-				}
-			}
+			p := WritePlace(cmds, i, w)
 			if p == "" || p[0] == '$' || p[0] == '`' {
 				continue
 			}
@@ -169,21 +164,42 @@ func (s *ShellSession) Edit(cmd, cwd string) (wrote, known bool) {
 			}
 		}
 	}
-	return false, true
+	return false, known
+}
+
+// WritePlace is where a write lands, as the line spells it: its path, or for
+// one whose files the command does not name (Path "*": git apply, patch,
+// find ... -exec, xargs) the directory they are under: the write's own root
+// (patch -d DIR, find DIR -exec), else the root of the find that feeds the
+// command through a pipe, else "." (the command's directory).
+func WritePlace(cmds []ShellCommand, i int, w ShellWrite) string {
+	if w.Path != "*" {
+		return w.Path
+	}
+	if w.Root != "" {
+		return w.Root
+	}
+	if r := pipedFindRoot(cmds, i); r != "" {
+		return r // find ROOT ... | xargs sed -i: the files are the find's
+	}
+	return "."
 }
 
 // pipedFindRoot is where the find feeding command i through a pipe looks
-// ("" when command i is not fed by a find): its first argument that is not
-// an option, or "." when it names none.
+// ("" when no find feeds it): its first argument that is not an option, or
+// "." when it names none. The find may be several commands back along the
+// pipe (find … | grep -v x | xargs sed -i).
 func pipedFindRoot(cmds []ShellCommand, i int) string {
-	if i == 0 || !cmds[i].PipeIn || len(cmds[i-1].Words) == 0 || path.Base(cmds[i-1].Words[0]) != "find" {
-		return ""
-	}
-	for _, a := range cmds[i-1].Words[1:] {
-		if strings.HasPrefix(a, "-") || strings.ContainsAny(a, "()!") {
-			break
+	for ; i > 0 && cmds[i].PipeIn; i-- {
+		if f := cmds[i-1]; len(f.Words) > 0 && path.Base(f.Words[0]) == "find" {
+			for _, a := range f.Words[1:] {
+				if strings.HasPrefix(a, "-") || strings.ContainsAny(a, "()!") {
+					break
+				}
+				return a
+			}
+			return "."
 		}
-		return a
 	}
-	return "."
+	return ""
 }

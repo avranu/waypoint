@@ -12,13 +12,11 @@ import (
 // among high ones, and one high reading among low ones after a reset, are
 // outliers: left out, and never fed to the week's running maximum.
 const (
-	quotaResetDrop     = 30.0 // a fall of at least this many points…
-	quotaResetFloor    = 5.0  // …or to this percent or less from…
-	quotaResetFrom     = 50.0 // …this percent or more
+	quotaResetDrop     = 30.0 // a fall of at least this many points
 	quotaResetConfirm  = 3    // the readings after it looked at
 	quotaResetNeedLow  = 2    // how many of them must stay low (fewer when fewer exist)
 	quotaOutlierRise   = 30.0 // a rise of at least this many points is an outlier unless the readings after it stay up
-	quotaResetStayBand = 30.0 // "low" is below the pre-drop value less this; "up" is above the jump less this
+	quotaResetStayBand = 30.0 // "low" is below the pre-drop value less this, or nearer where it fell to than where it fell from; "up" is above the jump less this
 )
 
 // quotaSample is one stored seven_day reading.
@@ -45,8 +43,12 @@ func quotaResetsIn(in []quotaSample) (kept []quotaSample, resets []quotaReset, s
 		if prev >= 0 {
 			after := in[i+1:]
 			switch {
-			case prev-s.pct >= quotaResetDrop || s.pct <= quotaResetFloor && prev >= quotaResetFrom:
-				if stays(after, func(p float64) bool { return p < prev-quotaResetStayBand }) {
+			case prev-s.pct >= quotaResetDrop:
+				// Use climbs straight after a reset, so a fall of just 30 could
+				// never stay 30 under the old level: nearer the new level than
+				// the old one is low too.
+				low := max(prev-quotaResetStayBand, (prev+s.pct)/2)
+				if stays(after, func(p float64) bool { return p < low }) {
 					resets = append(resets, quotaReset{At: s.at, Was: prev})
 					startAt = append(startAt, len(kept))
 					kept = append(kept, s)

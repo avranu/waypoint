@@ -631,3 +631,22 @@ func TestWhereMetaMessageKinds(t *testing.T) {
 	}
 	t.Fatalf("no meta trigger: %+v", r.Triggers)
 }
+
+// A limit record as Claude Code wrote it (2.1.x, November 2026; ids changed):
+// rate_limit_info sits under apiErrorParams and resetsAt is Unix seconds, the
+// 5pm UTC the record's own text names (audit 1931.30).
+func TestLimitRecordAsRecorded(t *testing.T) {
+	const line = `{"type":"assistant","timestamp":"2026-11-13T09:12:44.120Z","isApiErrorMessage":true,"message":{"id":"m1","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"You've hit your weekly limit · resets 5pm (UTC)"}],"context_management":null},"requestId":"req_x","apiError":"usage_limit_reached","apiErrorParams":{"rate_limit_info":{"status":"rejected","resetsAt":1794675600,"rateLimitType":"seven_day","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false}}}`
+	var l rawLine
+	if err := json.Unmarshal([]byte(line), &l); err != nil {
+		t.Fatal(err)
+	}
+	if l.APIError != "usage_limit_reached" || l.APIErrorParams == nil || l.APIErrorParams.RateLimitInfo == nil {
+		t.Fatalf("record not read: %+v", l)
+	}
+	ri := l.APIErrorParams.RateLimitInfo
+	at := time.Unix(ri.ResetsAt, 0).UTC()
+	if ri.RateLimitType != "seven_day" || ri.OverageDisabledReason != "org_level_disabled" || at.Hour() != 17 || at.Year() != 2026 {
+		t.Errorf("rate limit %+v, resets %v; want seven_day resetting at 17:00 UTC in 2026", ri, at)
+	}
+}

@@ -304,6 +304,12 @@ func newEnvServing(t *testing.T, configure func(cfg *api.Config, url string), wr
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
+	// The host's free disk must not decide these tests (a full disk refuses
+	// transcript uploads): no disk floor unless a test sets one.
+	lim, _ := json.Marshal(core.ResourceLimits{MemoryFreeMB: 256})
+	if _, err := d.W.ExecContext(ctx, `INSERT INTO server_settings(key, value) VALUES ('resource_limits', ?)`, string(lim)); err != nil {
+		t.Fatal(err)
+	}
 	svc := core.New(d, core.Config{BaseURL: "http://wp.test", TranscriptDir: t.TempDir()}, nil)
 	svc.StartHub()
 	ts := httptest.NewUnstartedServer(nil)

@@ -51,11 +51,19 @@ const (
 	// variable value longer than shellMaxValue is left unexpanded (an
 	// unresolved variable, as one the line never set), a line holds at most
 	// shellMaxVars variables and shellMaxCommands commands, and a line over
-	// shellMaxCommand bytes is not read at all.
+	// shellMaxCommand bytes is not read at all. Variables filled in across the
+	// whole line come to at most shellMaxExpand bytes (words past that stay
+	// unexpanded), a directory longer than shellMaxValue is nowhere, and a cp
+	// or mv of more than shellMaxSources files into a directory is one write
+	// of any file there, so no literal word is copied once per word either.
+	// The caps are sized to bound cost, not from a measurement of real calls
+	// (WP-1902 asks for one).
 	shellMaxValue    = 4 << 10
 	shellMaxVars     = 256
 	shellMaxCommands = 5000
 	shellMaxCommand  = 256 << 10
+	shellMaxExpand   = 1 << 20
+	shellMaxSources  = 64
 )
 
 var traceScriptFileRE = lazyre.New(`\.(?:py|js|mjs|cjs|ts|rb)$`)
@@ -132,8 +140,6 @@ func ShellFileShape(w string) bool {
 	return i > 0 && traceExts[base[i+1:]] && !strings.HasSuffix(w, "/")
 }
 
-// tracePath names a file of the work: its path from the root of its checkout
-
 // ShellCommand is one command of a Bash call.
 type ShellCommand struct {
 	Words  []string
@@ -144,6 +150,10 @@ type ShellCommand struct {
 	Wrote  []ShellWrite
 	// PipeIn: the command reads the one before it through a pipe.
 	PipeIn bool
+	// Unread: the command runs a script longer than the part that is read
+	// (traceMaxScript), and that part writes nothing: what the rest writes is
+	// not known.
+	Unread bool
 }
 
 // ShellNowhere is the directory after a cd the line doesn't spell out
@@ -158,7 +168,7 @@ var traceVarRE = lazyre.New(`\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?`)
 // variables hold: `cd web && cat src/x.ts` reads web/src/x.ts, and
 // `S=/tmp/s; cat > $S/x.py` writes a scratch file. It returns the directory
 // the line ends in.
-func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *ShellScripts, out *[]ShellCommand, disk bool) string {
+func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *ShellScripts, out *[]ShellCommand, disk bool, spent *int) string {
 	dir := cwd
 	fill := func(w string) string {
 		orig := w
@@ -168,7 +178,7 @@ func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *Shel
 		if !strings.Contains(w, "$") {
 			return w
 		}
-		if len(w) > shellMaxValue {
+		if len(w) > shellMaxValue || *spent > shellMaxExpand {
 			return orig
 		}
 		var b strings.Builder
@@ -196,6 +206,7 @@ func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *Shel
 		if b.Len() > shellMaxValue {
 			return orig
 		}
+		*spent += b.Len()
 		return b.String()
 	}
 	set := func(words []string) {
@@ -243,11 +254,11 @@ func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *Shel
 		}
 		if depth < 3 && Shells[path.Base(words[0])] {
 			if inner, ok := ShellDashC(words[1:]); ok {
-				shellCommands(inner, dir, depth+1, vars, mem, out, disk)
+				shellCommands(inner, dir, depth+1, vars, mem, out, disk, spent)
 				continue
 			}
 			if g.Heredoc != "" {
-				shellCommands(g.Heredoc, dir, depth+1, vars, mem, out, disk)
+				shellCommands(g.Heredoc, dir, depth+1, vars, mem, out, disk, spent)
 				continue
 			}
 		}
@@ -279,7 +290,8 @@ func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *Shel
 			}
 		}
 		if prog := path.Base(words[0]); c.Script != "" && (prog == "cat" || prog == "tee") {
-			for _, w := range c.Wrote {
+			// The first few files only: each one kept reads the script again.
+			for _, w := range c.Wrote[:min(len(c.Wrote), traceMaxScriptPaths)] {
 				mem.Keep(ShellAt(w.Path, c.Dir), c.Script)
 			}
 		} else if k := mem.at(ShellAt(c.ran(), c.Dir)); k != nil {
@@ -311,8 +323,8 @@ func traceCd(dir string, args []string) string {
 		}
 	}
 	switch {
-	case to == "" || to == "-" || strings.ContainsAny(to, "$`*?"):
-		return ShellNowhere
+	case to == "" || to == "-" || strings.ContainsAny(to, "$`*?") || len(dir)+len(to) > shellMaxValue:
+		return ShellNowhere // not spelled out, or longer than any real path
 	case strings.HasPrefix(to, "/"):
 		return path.Clean(to)
 	case dir == "" || dir == ShellNowhere:
@@ -320,11 +332,6 @@ func traceCd(dir string, args []string) string {
 	}
 	return path.Join(dir, to)
 }
-
-// traceWord places a word of a command as a file, like traceFile. A word the
-// line spells out only the start of (internal/*.go, clusters/$site/app.yaml)
-// is placed by that start and not named. One it doesn't spell out the start
-// of ($f, a substitution), or a relative one after a cd it doesn't spell
 
 // interpreter finds the interpreter a command runs (python3, uv run python,
 // node), as its place among the words, or -1.
@@ -481,11 +488,11 @@ type ShellWrite struct {
 
 // writes lists the files a command writes. What counts: output sent to a
 // file, tee, sed -i and perl -i, gofmt, goimports and prettier given -w or
-// --write, curl -o, mv and cp, git mv and git rm, a patch
+// --write, curl -o, dd of=, mv and cp, git mv and git rm, a patch
 // applied, and a script given to an interpreter that writes files. What
-// doesn't: what a program writes of its own accord (a formatter, go mod
-// tidy, git merge or checkout), which the call doesn't show; and a plain rm,
-// which is as often clearing up. A script the session kept in a file and
+// doesn't: what a program writes of its own accord (a code generator, go mod
+// tidy, git merge or checkout), which the call doesn't show; a plain rm,
+// which is as often clearing up; and touch or mkdir, which write no text. A script the session kept in a file and
 // runs later is added by shellCommands, which remembers them.
 //
 // Output sent to a file is a write of what the agent typed (cat, echo,
@@ -576,30 +583,14 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 			}
 		}
 	case "perl":
-		inPlace := false
-		var files []string
-		for i := 0; i < len(args); i++ {
-			a := args[i]
-			if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") {
-				f := a[1:]
-				if j := strings.IndexByte(f, 'i'); j >= 0 && !strings.ContainsAny(f[:j], "eEI") {
-					inPlace = true
-				}
-				if strings.HasSuffix(f, "e") || strings.HasSuffix(f, "E") {
-					i++
-				}
-				continue
-			}
-			files = append(files, a)
-		}
-		if inPlace {
-			each("perl", files)
-		}
+		each("perl", PerlInPlaceFiles(args))
 	case "mv", "cp", "git mv":
 		if ws := plain(0); len(ws) >= 2 {
 			to, from := ws[len(ws)-1], ws[:len(ws)-1]
 			kind := strings.TrimPrefix(prog, "git ")
 			switch {
+			case len(from) > shellMaxSources && traceIntoDir(to, c.Dir, len(from), disk):
+				out = append(out, ShellWrite{Kind: kind, Path: strings.TrimSuffix(to, "/") + "/*", Whole: true})
 			case traceIntoDir(to, c.Dir, len(from), disk):
 				for _, s := range from {
 					out = append(out, ShellWrite{Kind: kind, Path: strings.TrimSuffix(to, "/") + "/" + path.Base(s), Whole: true})
@@ -616,9 +607,7 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 	case "git rm":
 		each("rm", plain(0))
 	case "gofmt", "goimports", "prettier":
-		if has("-w", "--write") {
-			each("format", plain(0))
-		}
+		each("format", FormatterFiles(args))
 	case "curl":
 		for i := 0; i < len(args); i++ {
 			if (args[i] == "-o" || args[i] == "--output") && i+1 < len(args) {
@@ -644,14 +633,28 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 		for i, a := range args {
 			b := path.Base(a)
 			formats := (b == "gofmt" || b == "goimports" || b == "prettier") && slices.ContainsFunc(args[i+1:], func(x string) bool { return x == "-w" || x == "--write" })
-			if formats || b == "sed" && sedInPlace(args[i:]) || b == "perl" && i+1 < len(args) && perlInPlaceRE.MatchString(args[i+1]) {
+			if formats || b == "sed" && sedInPlace(args[i:]) || b == "perl" && perlInPlace(args[i+1:]) {
 				out = append(out, ShellWrite{Kind: "patch", Path: "*", Root: root})
 				break
 			}
 		}
 	case "patch", "git apply", "git am":
 		if !has("--check", "--stat", "--numstat", "--summary", "--dry-run", "-R", "--reverse") {
-			out = append(out, ShellWrite{Kind: "patch", Path: "*"})
+			root := ""
+			if prog == "patch" { // patch -d DIR: the files are under DIR
+				for i, a := range args {
+					if v, ok := strings.CutPrefix(a, "--directory="); ok {
+						root = v
+					} else if v, ok := strings.CutPrefix(a, "-d"); ok && !strings.HasPrefix(a, "--") {
+						if root = v; v == "" && i+1 < len(args) {
+							root = args[i+1]
+						}
+					} else if a == "--directory" && i+1 < len(args) {
+						root = args[i+1]
+					}
+				}
+			}
+			out = append(out, ShellWrite{Kind: "patch", Path: "*", Root: root})
 		}
 	}
 	if i := c.interpreter(); i >= 0 {
@@ -667,8 +670,113 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 			kind = "script?"
 		}
 		each(kind, ps)
+		c.Unread = len(script) > traceMaxScript && !traceScriptWriteRE.MatchString(script[:traceMaxScript])
 	}
 	return out
+}
+
+// PerlInPlaceFiles are the files `perl -i`, `-pi -e CODE` or `-i.bak` edits:
+// the arguments that are not switches, when a switch asks for in-place
+// editing. Without -i perl writes nothing the call shows. The guard reads the
+// same rule, so the two cannot drift apart.
+func PerlInPlaceFiles(args []string) []string {
+	inPlace := false
+	var files []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			files = append(files, args[i+1:]...)
+			break
+		}
+		if len(a) < 2 || a[0] != '-' {
+			files = append(files, a)
+			continue
+		}
+		in, next := perlSwitch(a)
+		inPlace = inPlace || in
+		if next {
+			i++
+		}
+	}
+	if !inPlace {
+		return nil
+	}
+	return files
+}
+
+// perlInPlace says the switches that begin args (perl's own, before its
+// script or files) ask for in-place editing.
+func perlInPlace(args []string) bool {
+	for i := 0; i < len(args) && len(args[i]) >= 2 && args[i][0] == '-' && args[i] != "--"; i++ {
+		in, next := perlSwitch(args[i])
+		if in {
+			return true
+		}
+		if next {
+			i++
+		}
+	}
+	return false
+}
+
+// perlSwitch reads one cluster of perl switches (-pi, -i.bak, -Mstrict,
+// -0777pe). inPlace: it holds -i. next: it ends in -e or -E, whose code is
+// the next argument. A switch that takes the rest of the cluster as its
+// value ends the reading: -M and -m (a module), -I (a directory), -x, -F, -C,
+// -D, -V and -e's own code, so the i of -Mstrict or -Ilib is no -i.
+func perlSwitch(a string) (inPlace, next bool) {
+	for j := 1; j < len(a); j++ {
+		switch a[j] {
+		case 'i':
+			return true, false // the rest is the backup suffix
+		case 'e', 'E':
+			return false, j == len(a)-1
+		case 'M', 'm', 'I', 'x', 'F', 'C', 'D', 'V':
+			return false, false
+		}
+	}
+	return false, false
+}
+
+// formatterValueFlags are the flags of gofmt, goimports and prettier whose
+// next argument is a value, not a file.
+var formatterValueFlags = map[string]bool{"-r": true, "-local": true, "-srcdir": true, "-cpuprofile": true,
+	"--config": true, "--ignore-path": true, "--parser": true, "--plugin": true, "--cache-location": true,
+	"--cache-strategy": true, "--log-level": true, "--stdin-filepath": true, "--tab-width": true, "--print-width": true,
+	"--end-of-line": true, "--config-precedence": true, "--editorconfig": true}
+
+// FormatterFiles are the files gofmt, goimports or prettier rewrite: its file
+// arguments, when -w or --write is given (without it they only print or
+// list). The guard reads the same rule.
+func FormatterFiles(args []string) []string {
+	write := false
+	var files []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			files = append(files, args[i+1:]...)
+			i = len(args)
+		case a == "-w" || a == "--write":
+			write = true
+		case formatterValueFlags[a]:
+			i++
+		case strings.HasPrefix(a, "-") && a != "-":
+		default:
+			files = append(files, a)
+		}
+	}
+	if !write {
+		return nil
+	}
+	return files
+}
+
+// ScriptWrites lists the paths a script given to an interpreter (python,
+// node, ruby) writes, as the script spells them: see traceScriptWrites.
+func ScriptWrites(script string) []string {
+	ps, _ := traceScriptWrites(script)
+	return ps
 }
 
 // sedInPlaceRE: -i alone, with a suffix, or after sed's other one-letter
@@ -702,8 +810,6 @@ func sedInPlace(words []string) bool {
 	}
 	return false
 }
-
-var perlInPlaceRE = lazyre.New(`^-[a-zA-DF-HJ-Za-df-hj-z0-9]*i`)
 
 // traceIntoDir says whether the last operand of mv or cp is a directory the
 // others go into. The command says so with a trailing slash or with several
@@ -757,7 +863,11 @@ var traceGitValueFlags = map[string]bool{"-C": true, "-c": true, "--git-dir": tr
 // target of mv or cp is a directory; the server has no such disk to ask.
 // It returns the directory the line ends in.
 func ReadShell(cmd, cwd string, vars map[string]string, mem *ShellScripts, disk bool) ([]ShellCommand, string) {
+	if len(cmd) > shellMaxCommand {
+		return nil, cwd // too long to read: every reader gives the same answer
+	}
 	var out []ShellCommand
-	dir := shellCommands(cmd, cwd, 0, vars, mem, &out, disk)
+	spent := 0
+	dir := shellCommands(cmd, cwd, 0, vars, mem, &out, disk, &spent)
 	return out, dir
 }

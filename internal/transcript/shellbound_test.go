@@ -81,9 +81,16 @@ func TestShellLongCommandIsUnknownAndFast(t *testing.T) {
 	} {
 		cmd = cmd[:min(len(cmd), shellMaxCommand)]
 		start := time.Now()
-		(&ShellSession{}).Edit(cmd, "/r")
+		wrote, known := (&ShellSession{}).Edit(cmd, "/r")
 		if d := time.Since(start); d > time.Second {
 			t.Errorf("%s: %v", name, d)
+		}
+		// None writes a file it names: the kept script is never run, and the
+		// python names no path that can be followed. The inline script of
+		// "many strings" is longer than the part that is read and that part
+		// writes nothing, so what it does is unknown.
+		if wantKnown := name != "many strings"; wrote || known != wantKnown {
+			t.Errorf("%s: wrote %v known %v, want false %v", name, wrote, known, wantKnown)
 		}
 	}
 }
@@ -99,10 +106,76 @@ func TestShellEditLongWordVariables(t *testing.T) {
 		var before, after runtime.MemStats
 		runtime.ReadMemStats(&before)
 		start := time.Now()
-		(&ShellSession{}).Edit(cmd, "/r")
+		wrote, known := (&ShellSession{}).Edit(cmd, "/r")
 		runtime.ReadMemStats(&after)
 		if d, mb := time.Since(start), (after.TotalAlloc-before.TotalAlloc)>>20; d > 2*time.Second || mb > 200 {
 			t.Errorf("%s: %v and %d MB allocated", name, d, mb)
 		}
+		if wrote || !known {
+			t.Errorf("%s: wrote %v known %v; an echo writes nothing", name, wrote, known)
+		}
+	}
+}
+
+// Literal words are bounded too: a destination or directory far longer than
+// any path is not copied once per source or per cd (audit 1933.1), and a
+// heredoc is not read again for every file it is sent to.
+func TestShellEditLongLiteralWords(t *testing.T) {
+	big := strings.Repeat("b", 100<<10)
+	for name, c := range map[string]struct {
+		cmd   string
+		wrote bool
+	}{
+		"cp many sources":   {"cp " + strings.Repeat("a ", 3000) + big + "/", true},
+		"cp into a dir":     {"cp " + strings.Repeat("a ", 3000) + "internal/", true},
+		"cd long then many": {"cd /" + big + ";" + strings.Repeat("cd b;", 2000) + "echo x > a.go", false},
+		"cd deeper":         {strings.Repeat("cd "+strings.Repeat("d", 3000)+";", 40) + "echo x > a.go", false},
+		"tee many scripts":  {"tee " + strings.Repeat("/tmp/s/a.py ", 8000) + "<<E\n" + strings.Repeat("open('/tmp/x','w')\n", 3000) + "E\n", false},
+	} {
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		start := time.Now()
+		wrote, known := (&ShellSession{}).Edit(c.cmd, "/r")
+		runtime.ReadMemStats(&after)
+		if d, mb := time.Since(start), (after.TotalAlloc-before.TotalAlloc)>>20; d > 2*time.Second || mb > 50 {
+			t.Errorf("%s: %v and %d MB allocated", name, d, mb)
+		}
+		if wrote != c.wrote || !known {
+			t.Errorf("%s: wrote %v known %v, want %v true", name, wrote, known, c.wrote)
+		}
+	}
+}
+
+// A variable under the per-word cap, named by tens of thousands of words, is
+// not filled in for all of them: the line's expansions have a total bound
+// (audit 1931.10).
+func TestShellEditManyExpansionsBounded(t *testing.T) {
+	cmd := "a=" + strings.Repeat("x", 4000) + "; echo " + strings.Repeat("$a ", 80000)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	wrote, known := (&ShellSession{}).Edit(cmd, "/r")
+	runtime.ReadMemStats(&after)
+	if mb := (after.TotalAlloc - before.TotalAlloc) >> 20; mb > 50 {
+		t.Errorf("%d MB allocated", mb)
+	}
+	if wrote || !known {
+		t.Errorf("wrote %v known %v; an echo writes nothing", wrote, known)
+	}
+}
+
+// A script longer than the part that is read, whose write lies past the cut,
+// is unknown, not "wrote nothing" (audit 1931.7). One whose write is in the
+// part read is still counted.
+func TestShellEditScriptPastTheCutIsUnknown(t *testing.T) {
+	pad := strings.Repeat("# padding\n", traceMaxScript/10+10)
+	write := "open('a.go','w').write('x')\n"
+	if wrote, known := (&ShellSession{}).Edit("python3 - <<'E'\n"+pad+write+"E\n", "/r"); wrote || known {
+		t.Errorf("write past the cut: wrote %v known %v, want false false", wrote, known)
+	}
+	if wrote, known := (&ShellSession{}).Edit("python3 - <<'E'\n"+write+pad+"E\n", "/r"); !wrote || !known {
+		t.Errorf("write before the cut: wrote %v known %v, want true true", wrote, known)
+	}
+	if wrote, known := (&ShellSession{}).Edit("python3 - <<'E'\nprint(1)\nE\n", "/r"); wrote || !known {
+		t.Errorf("a short script that writes nothing: wrote %v known %v, want false true", wrote, known)
 	}
 }
