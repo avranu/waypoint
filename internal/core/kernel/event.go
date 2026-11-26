@@ -31,6 +31,9 @@ type Event struct {
 	Draft bool `json:"-"`
 	// Quiet keeps an event from the people who would be told of it.
 	Quiet bool `json:"-"`
+	// Private keeps the event to its emitter's own subscriber: only a stage
+	// that SeesPrivate runs for it.
+	Private bool `json:"-"`
 	// Coalesce asks Emit to merge the event into the issue's latest recorded
 	// one when it is an earlier save of the same field by the same actor;
 	// Merged reports that it did, and the event is then not recorded again.

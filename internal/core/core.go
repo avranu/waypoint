@@ -210,6 +210,7 @@ func New(d *db.DB, cfg Config, log *slog.Logger) *Service {
 	s.k.OnEmit(noteSession)
 	s.k.OnEmit(stampEvent)
 	s.k.AfterCommit = s.dispatch
+	s.subscribe()
 	s.started = s.now()
 	s.jobs = newJobLedger(cfg.Logs, func() time.Time { return s.now() })
 	s.log = slog.New(&sourceHandler{ledger: s.jobs, next: log.Handler()})
