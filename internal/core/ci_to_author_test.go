@@ -241,6 +241,73 @@ func TestAuthorHandoffSurvivesARestart(t *testing.T) {
 	}
 }
 
+// News the author hasn't taken when the server restarts is held until the
+// client has had ciWaitWindow to ask again.
+func TestUndeliveredHandoffWaitsOutARestart(t *testing.T) {
+	be, pr, _ := authorEnv(t)
+	be.openWait(pr.ID)
+	be.ci("7777777aaaa", CheckFailed)
+	be.s.shipWaits.mu.Lock()
+	be.s.shipWaits.by = nil
+	be.s.shipWaits.mu.Unlock()
+	be.s.started = be.clockNow()
+	be.step()
+	if h := be.handoffs(); len(be.jobs()) != 0 || len(h) != 1 || h[0].Outcome != "" {
+		t.Fatalf("just after a start: jobs %v handoffs %+v", be.jobs(), h)
+	}
+	be.later(ciWaitWindow + time.Second)
+	be.step()
+	be.step()
+	if h := be.handoffs(); len(be.jobs()) != 1 || h[0].Outcome != handoffFellBack {
+		t.Fatalf("the client never asked again: jobs %v handoffs %+v", be.jobs(), h)
+	}
+}
+
+// A hand-off whose news was withdrawn has nobody to fix it: a round.
+func TestHandoffWithWithdrawnNewsFallsBack(t *testing.T) {
+	be, pr, _ := authorEnv(t)
+	be.openWait(pr.ID)
+	be.ci("7777777aaaa", CheckFailed)
+	be.s.cancelCINews(be.ctx, pr.ID, "7777777aaaa")
+	be.step()
+	be.step()
+	if h := be.handoffs(); len(be.jobs()) != 1 || len(h) != 1 || h[0].Outcome != handoffFellBack {
+		t.Fatalf("jobs %v handoffs %+v", be.jobs(), h)
+	}
+}
+
+// Stopping the babysit, or the pull request closing, ends a pending hand-off
+// and withdraws its news.
+func TestHandoffEndsWithItsBabysit(t *testing.T) {
+	for _, how := range []string{"stopped", "closed"} {
+		t.Run(how, func(t *testing.T) {
+			be, pr, _ := authorEnv(t)
+			be.openWait(pr.ID)
+			be.ci("7777777aaaa", CheckFailed)
+			if how == "stopped" {
+				if _, err := be.s.StopBabysit(be.ctx, be.admin, pr.ID); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE pull_requests SET state = 'closed' WHERE id = ?`, pr.ID); err != nil {
+					t.Fatal(err)
+				}
+				be.step()
+			}
+			b, err := be.s.latestBabysit(be.ctx, be.s.db.R, pr.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if h := b.handoffList(); b.Active || len(h) != 1 || h[0].Outcome != handoffCleared {
+				t.Fatalf("active %v handoffs %+v", b.Active, h)
+			}
+			if n := be.ciNews(pr.ID); len(n) != 1 || n[0] != messageCancelled {
+				t.Errorf("news: %v", n)
+			}
+		})
+	}
+}
+
 // After a restart nobody is waiting for a failure that comes next: a round.
 func TestFailureAfterARestartGoesToARound(t *testing.T) {
 	be, pr, _ := authorEnv(t)

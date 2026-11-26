@@ -421,6 +421,8 @@ func (s *Service) StopBabysit(ctx context.Context, actor *Actor, prID int64) (*B
 	if b.JobID != 0 {
 		s.cancelStepJob(context.WithoutCancel(ctx), b.JobID, "The babysit was stopped by "+who+".")
 	}
+	// Its news goes too: nothing more is waiting for the author's fix.
+	s.settleHandoffs(ctx, b, pr, handoffCleared)
 	if err := s.endBabysit(ctx, b, pr, BabysitStopped, "stopped by "+who); err != nil {
 		return nil, err
 	}
@@ -913,6 +915,7 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		}
 		return
 	case "closed":
+		s.settleHandoffs(ctx, b, pr, handoffCleared)
 		if err := s.endBabysit(ctx, b, pr, BabysitStopped, "closed without merging"); err == nil {
 			s.nudgeLine(ctx, pr)
 			s.babysitTell(ctx, b, pr, "closed", fmt.Sprintf("%s#%d was closed without merging; Waypoint stopped babysitting it.", pr.Repo, pr.Number))

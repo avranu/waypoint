@@ -340,7 +340,7 @@ func (s *Service) AwaitShipNews(ctx context.Context, actor *Actor, cliID, machin
 // round's state says.
 func (s *Service) shipNewsNow(ctx context.Context, session, task int64) (*ShipNews, error) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT `+messageCols+` FROM session_messages m LEFT JOIN users u ON u.id = m.created_by
-		WHERE m.session_id = ? AND m.state = 'queued' AND (m.step_key LIKE 'audit:%' OR m.step_key LIKE 'check:%' OR m.step_key LIKE 'ci:%') ORDER BY m.id`, session)
+		WHERE m.session_id = ? AND m.state = 'queued' AND (m.step_key LIKE 'audit:%' OR m.step_key LIKE 'check:%') ORDER BY m.id`, session)
 	if err != nil {
 		return nil, err
 	}
@@ -360,14 +360,6 @@ func (s *Service) shipNewsNow(ctx context.Context, session, task int64) (*ShipNe
 	var found []*SessionMessage
 	var ids []int64
 	for _, m := range mine {
-		if strings.HasPrefix(m.stepKey, "ci:") {
-			// A pull request may be linked to several tasks, and which one
-			// prTaskID names is arbitrary: the session's own message is bound
-			// by its step key (the query is of this session's news only).
-			found = append(found, m)
-			ids = append(ids, m.ID)
-			continue
-		}
 		if n, bound := messageTask(ctx, s.db.R, m.stepKey); bound && n == task {
 			found = append(found, m)
 			ids = append(ids, m.ID)
@@ -429,8 +421,8 @@ func (s *Service) shipNewsNow(ctx context.Context, session, task int64) (*ShipNe
 
 // AckShipNews says the client has printed the findings AwaitShipNews returned:
 // they are delivered (via 'ship') so nothing types them again. Only what a
-// wait on this task returns can be acked (the task's queued audit and check
-// news); any other id is left as it is.
+// ship's wait returns can be acked (the task's queued audit and check news,
+// and the session's failed-check news); any other id is left as it is.
 func (s *Service) AckShipNews(ctx context.Context, actor *Actor, cliID, machine, taskKey string, ids []int64) error {
 	session, task, err := s.shipWaitTarget(ctx, actor, cliID, machine, taskKey)
 	if err != nil {
@@ -453,8 +445,9 @@ func (s *Service) AckShipNews(ctx context.Context, actor *Actor, cliID, machine,
 				continue
 			}
 			if !strings.HasPrefix(key, "ci:") {
-				// A ci: key is bound by this session and its exact step key,
-				// not by task (a pull request may link to several).
+				// A ci: key (AwaitShipChecks) is bound by this session and its
+				// exact step key, not by task: a pull request may link to
+				// several.
 				if of, bound := messageTask(ctx, t, key); !bound || of != task {
 					continue
 				}
@@ -481,8 +474,9 @@ func (s *Service) AckShipNews(ctx context.Context, actor *Actor, cliID, machine,
 	return nil
 }
 
-// shipNewsKey: the step key is news a wp ship's wait delivers: an audit's, the
-// check of a session's marks, or the failed checks of its pull request.
+// shipNewsKey: the step key is news a wp ship's wait delivers: an audit's or
+// the check of a session's marks (the review's wait), or the failed checks of
+// its pull request (the checks' wait).
 func shipNewsKey(key string) bool {
 	return strings.HasPrefix(key, "audit:") || strings.HasPrefix(key, "check:") || strings.HasPrefix(key, "ci:")
 }

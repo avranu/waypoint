@@ -22,7 +22,9 @@ const authorFixingWait = "the session that wrote it is fixing its failed checks"
 const (
 	handoffFixed    = "fixed"     // a new head arrived
 	handoffFellBack = "fell_back" // a round took it
-	handoffCleared  = "cleared"   // its checks passed on the same head
+	// cleared: its checks passed on the same head, or the pull request closed
+	// or its babysit was stopped with the hand-off pending.
+	handoffCleared = "cleared"
 )
 
 // authorHandoff is one head whose failed checks went to the author.
@@ -117,16 +119,21 @@ func (s *Service) handToAuthor(ctx context.Context, b *Babysit, pr *PullRequest,
 // any cause, since a draft with a failed check isn't in the merge line and
 // what else is pending can wait for the author's new head, the deadline, or
 // the author being gone. A hand-off past authorHandBack, whose session ended,
-// or whose news is still undelivered while the session has no checks wait
-// open or seen within ciWaitWindow, ends as fell back (the next step then
-// handles whatever is pending as it always did).
+// whose news was withdrawn, or whose news is still undelivered while the
+// session has no checks wait open or seen within ciWaitWindow, ends as fell
+// back (the next step then handles whatever is pending as it always did). The
+// waits are in memory, so for ciWaitWindow after a start a missing one says
+// nothing: the client hasn't had that long to ask again.
 func (s *Service) authorHolds(ctx context.Context, b *Babysit, pr *PullRequest) bool {
 	for i, h := range b.handoffList() {
 		if !sameSHA(h.Head, pr.HeadSHA) || h.Outcome != "" {
 			continue
 		}
-		if s.now().Sub(msTime(h.At)) >= authorHandBack || !s.sessionLive(ctx, b.sessionID) ||
-			(s.ciNewsQueued(ctx, pr.ID, h.Head) && !s.authorWaiting(ctx, b, pr)) {
+		news := s.ciNewsState(ctx, pr.ID, h.Head)
+		up := s.now().Sub(s.started)
+		starting := up >= 0 && up < ciWaitWindow
+		if s.now().Sub(msTime(h.At)) >= authorHandBack || !s.sessionLive(ctx, b.sessionID) || news == messageCancelled ||
+			(news == MessageQueued && !starting && !s.authorWaiting(ctx, b, pr)) {
 			s.closeHandoff(ctx, b, pr, i, handoffFellBack)
 			return false
 		}
@@ -136,10 +143,17 @@ func (s *Service) authorHolds(ctx context.Context, b *Babysit, pr *PullRequest) 
 	return false
 }
 
-// ciNewsQueued says whether the head's failure news waits undelivered.
-func (s *Service) ciNewsQueued(ctx context.Context, pr int64, head string) bool {
-	var n int
-	return s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM session_messages WHERE step_key = ? AND state = 'queued'`, ciNewsKey(pr, head)).Scan(&n) == nil && n > 0
+// messageCancelled is the state of a message withdrawn undelivered.
+const messageCancelled = "cancelled"
+
+// ciNewsState is the state of the head's failure news, empty when there is
+// none or it can't be read.
+func (s *Service) ciNewsState(ctx context.Context, pr int64, head string) string {
+	var state string
+	if err := s.db.R.QueryRowContext(ctx, `SELECT state FROM session_messages WHERE step_key = ? ORDER BY id DESC LIMIT 1`, ciNewsKey(pr, head)).Scan(&state); err != nil {
+		return ""
+	}
+	return state
 }
 
 // maxCheckName bounds a check name in the news: forge names are free text.
