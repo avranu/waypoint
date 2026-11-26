@@ -42,7 +42,7 @@ var (
 
 // inBrowser says whether the actor is a person in the Waypoint UI: a
 // browser session, not a token, MCP, an agent or an automation.
-func (a *Actor) inBrowser() bool {
+func inBrowser(a *Actor) bool {
 	return a.Person() && a.SessionHash != "" && !a.ReadOnly
 }
 
@@ -50,7 +50,7 @@ func (a *Actor) inBrowser() bool {
 // browser session, so they may loosen the sandbox for the next ten
 // minutes. It returns when that ends.
 func (s *Service) Reauth(ctx context.Context, actor *Actor, password string) (time.Time, error) {
-	if !actor.inBrowser() {
+	if !inBrowser(actor) {
 		return time.Time{}, fmt.Errorf("re-entering your password is done in the Waypoint UI: %w", ErrForbidden)
 	}
 	u, err := s.userByID(ctx, s.db.R, actor.ID())
@@ -71,7 +71,7 @@ func (s *Service) Reauth(ctx context.Context, actor *Actor, password string) (ti
 // ReauthUntil is when the actor's last password check stops counting, if
 // it still counts.
 func (s *Service) ReauthUntil(ctx context.Context, actor *Actor) *time.Time {
-	if !actor.inBrowser() {
+	if !inBrowser(actor) {
 		return nil
 	}
 	var at sql.NullInt64
@@ -88,7 +88,7 @@ func (s *Service) ReauthUntil(ctx context.Context, actor *Actor) *time.Time {
 // sandboxWriter refuses anyone but a person in the browser, and a change
 // that loosens without a recent password check or a reason.
 func (s *Service) sandboxWriter(ctx context.Context, actor *Actor, loosens bool, reason string) error {
-	if !actor.inBrowser() {
+	if !inBrowser(actor) {
 		return ErrSandboxUI
 	}
 	if !loosens {
@@ -220,7 +220,7 @@ func (s *Service) ProjectSandbox(ctx context.Context, actor *Actor, ref string) 
 	if err != nil {
 		return nil, err
 	}
-	if actor.inBrowser() {
+	if inBrowser(actor) {
 		r, rerr := s.projectRole(ctx, s.db.R, actor, p.ID)
 		if rerr != nil {
 			if readFault(rerr) {
@@ -259,7 +259,7 @@ func (s *Service) SetProjectSandbox(ctx context.Context, actor *Actor, ref strin
 }
 
 func (s *Service) setProjectSandbox(ctx context.Context, actor *Actor, ref string, in SandboxPolicyInput, reverts *int64) (*SandboxPolicy, error) {
-	if !actor.inBrowser() {
+	if !inBrowser(actor) {
 		return nil, ErrSandboxUI
 	}
 	p, err := s.projectByRef(ctx, s.db.R, ref)
@@ -368,7 +368,7 @@ func (s *Service) SandboxMachines(ctx context.Context, actor *Actor) ([]*Sandbox
 		if err != nil {
 			return nil, err
 		}
-		m.CanEdit = actor.inBrowser() && (actor.IsAdmin() || r.Owner.ID == actor.ID())
+		m.CanEdit = inBrowser(actor) && (actor.IsAdmin() || r.Owner.ID == actor.ID())
 		out = append(out, m)
 	}
 	return out, nil
@@ -418,7 +418,7 @@ func (s *Service) SetSandboxMachine(ctx context.Context, actor *Actor, runnerID 
 }
 
 func (s *Service) setSandboxMachine(ctx context.Context, actor *Actor, runnerID int64, in SandboxMachineInput, reverts *int64) (*SandboxMachine, error) {
-	if !actor.inBrowser() {
+	if !inBrowser(actor) {
 		return nil, ErrSandboxUI
 	}
 	r, err := s.runnerByID(ctx, s.db.R, runnerID)
@@ -577,7 +577,7 @@ func (s *Service) sandboxFieldValue(ctx context.Context, q queryer, scope string
 // other: in the browser, and with a password check and a reason if putting
 // it back loosens the sandbox.
 func (s *Service) RevertSandboxChange(ctx context.Context, actor *Actor, id int64, reason string) error {
-	if !actor.inBrowser() {
+	if !inBrowser(actor) {
 		return ErrSandboxUI
 	}
 	var c SandboxChange

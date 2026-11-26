@@ -18,7 +18,7 @@ import (
 )
 
 // canReadServer is the access check of every server read.
-func (a *Actor) canReadServer() error {
+func canReadServer(a *Actor) error {
 	if err := a.Need(PermServerRead); err != nil {
 		return err
 	}
@@ -120,7 +120,7 @@ const statusProblems = 20
 // scheduler's jobs, its queues, the AI key's day and the last hour's
 // warnings.
 func (s *Service) ServerStatus(ctx context.Context, actor *Actor) (*ServerStatus, error) {
-	if err := actor.canReadServer(); err != nil {
+	if err := canReadServer(actor); err != nil {
 		return nil, err
 	}
 	now := s.now()
@@ -307,7 +307,7 @@ func ParseLogLevel(s string) (slog.Level, error) {
 
 // ServerLog reads the server's recent log records (WP-375).
 func (s *Service) ServerLog(ctx context.Context, actor *Actor, q ServerLogQuery) (*ServerLog, error) {
-	if err := actor.canReadServer(); err != nil {
+	if err := canReadServer(actor); err != nil {
 		return nil, err
 	}
 	if s.cfg.Logs == nil {
@@ -344,7 +344,7 @@ func (s *Service) ServerLog(ctx context.Context, actor *Actor, q ServerLogQuery)
 // ServerMetrics is the server's Prometheus metrics in the text format; with
 // a pattern, only the metrics whose name or sample line matches it.
 func (s *Service) ServerMetrics(ctx context.Context, actor *Actor, grep string) (string, error) {
-	if err := actor.canReadServer(); err != nil {
+	if err := canReadServer(actor); err != nil {
 		return "", err
 	}
 	re, err := compileGrep(grep)

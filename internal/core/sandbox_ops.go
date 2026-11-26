@@ -87,7 +87,7 @@ type SandboxLastJob struct {
 // RequestSandboxOp queues an action for a runner machine's helper: its
 // owner or an admin, in the browser.
 func (s *Service) RequestSandboxOp(ctx context.Context, actor *Actor, runnerID int64, in SandboxOpInput) (*SandboxOp, error) {
-	if !actor.inBrowser() {
+	if !inBrowser(actor) {
 		return nil, ErrSandboxUI
 	}
 	r, err := s.runnerByID(ctx, s.db.R, runnerID)

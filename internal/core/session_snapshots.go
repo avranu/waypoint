@@ -438,7 +438,7 @@ func (s *Service) SessionObserved(ctx context.Context, actor *Actor, sessionID i
 // HookDrops is the counts of hook data dropped, for every person and machine
 // (server status; admins only).
 func (s *Service) HookDrops(ctx context.Context, actor *Actor) ([]HookDrop, error) {
-	if err := actor.canReadServer(); err != nil {
+	if err := canReadServer(actor); err != nil {
 		return nil, err
 	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT h.user_id, coalesce(u.username, ''), coalesce(u.display_name, ''), h.machine, h.reason, h.event, sum(h.dropped), min(h.first_at), max(h.last_at)

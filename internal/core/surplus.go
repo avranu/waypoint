@@ -119,7 +119,7 @@ type SurplusCalls struct {
 
 // SurplusReport reads it (admins: the server's own record).
 func (s *Service) SurplusReport(ctx context.Context, a *Actor) (*SurplusReport, error) {
-	if err := a.canReadServer(); err != nil {
+	if err := canReadServer(a); err != nil {
 		return nil, err
 	}
 	rep := &SurplusReport{Allowed: s.surplusAllowed(ctx)}

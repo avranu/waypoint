@@ -202,7 +202,7 @@ func (s *Service) maybeSandboxDrills(ctx context.Context) {
 // StartSandboxDrill runs a drill on a machine now: its owner or an admin,
 // in the browser.
 func (s *Service) StartSandboxDrill(ctx context.Context, actor *Actor, runnerID int64) (*SandboxDrill, error) {
-	if !actor.inBrowser() {
+	if !inBrowser(actor) {
 		return nil, ErrSandboxUI
 	}
 	r, err := s.runnerByID(ctx, s.db.R, runnerID)

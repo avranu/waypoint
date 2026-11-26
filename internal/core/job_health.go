@@ -903,7 +903,7 @@ type JobProblemQuery struct {
 // JobProblems lists what goes wrong on the server: the persistent ones
 // nobody acknowledged first, then the latest. Admins only.
 func (s *Service) JobProblems(ctx context.Context, a *Actor, q JobProblemQuery) ([]JobProblem, error) {
-	if err := a.canReadServer(); err != nil {
+	if err := canReadServer(a); err != nil {
 		return nil, err
 	}
 	s.saveJobHealth(ctx)
@@ -957,7 +957,7 @@ func (s *Service) jobProblems(ctx context.Context, q JobProblemQuery, id int64) 
 // A person's to say: an agent that could acknowledge would silence the
 // alert about its own failures.
 func (s *Service) AckJobProblem(ctx context.Context, a *Actor, id int64, reason string) (*JobProblem, error) {
-	if err := a.canReadServer(); err != nil {
+	if err := canReadServer(a); err != nil {
 		return nil, err
 	}
 	if err := a.Need(PermAdmin); err != nil {
@@ -1035,7 +1035,7 @@ type JobHistory struct {
 // JobHistory is what one source did since a time, by hour or by day, with
 // its problems, past ones included. Admins only.
 func (s *Service) JobHistory(ctx context.Context, a *Actor, source string, since time.Time, by string) (*JobHistory, error) {
-	if err := a.canReadServer(); err != nil {
+	if err := canReadServer(a); err != nil {
 		return nil, err
 	}
 	source = strings.TrimSpace(source)

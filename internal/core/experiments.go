@@ -278,15 +278,15 @@ func (s *Service) liveExperimentRun(ctx context.Context, key string) (*Experimen
 // canReadExperiments: an admin, an agent working for one too (it reads
 // results to say what to try next); canRunExperiments: a person who is an
 // admin, since starting one changes what every agent gets.
-func (a *Actor) canReadExperiments() error {
+func canReadExperiments(a *Actor) error {
 	if !a.IsAdmin() {
 		return forbidden("experiments are for admins")
 	}
 	return nil
 }
 
-func (a *Actor) canRunExperiments() error {
-	if err := a.canReadExperiments(); err != nil {
+func canRunExperiments(a *Actor) error {
+	if err := canReadExperiments(a); err != nil {
 		return err
 	}
 	return a.RequireHuman("running experiments")
@@ -294,7 +294,7 @@ func (a *Actor) canRunExperiments() error {
 
 // ListExperiments is every experiment with its runs.
 func (s *Service) ListExperiments(ctx context.Context, actor *Actor) (*Experiments, error) {
-	if err := actor.canReadExperiments(); err != nil {
+	if err := canReadExperiments(actor); err != nil {
 		return nil, err
 	}
 	runs, err := s.experimentRuns(ctx, "1")
@@ -342,7 +342,7 @@ const (
 
 // StartExperiment starts a run of an experiment.
 func (s *Service) StartExperiment(ctx context.Context, actor *Actor, key string, in ExperimentStart) (*Experiment, error) {
-	if err := actor.canRunExperiments(); err != nil {
+	if err := canRunExperiments(actor); err != nil {
 		return nil, err
 	}
 	d, ok := experimentDef(key)
@@ -445,7 +445,7 @@ func (s *Service) StartExperiment(ctx context.Context, actor *Actor, key string,
 // StopExperiment stops an experiment's live run. From then on every task
 // gets the control.
 func (s *Service) StopExperiment(ctx context.Context, actor *Actor, key, reason string) (*Experiment, error) {
-	if err := actor.canRunExperiments(); err != nil {
+	if err := canRunExperiments(actor); err != nil {
 		return nil, err
 	}
 	if _, ok := experimentDef(key); !ok {

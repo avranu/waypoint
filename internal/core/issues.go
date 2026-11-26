@@ -2064,7 +2064,7 @@ func (s *Service) setStatus(ctx context.Context, t *tx, i *Issue, st *Status, se
 	*sets, *args = append(*sets, "status_id = ?"), append(*args, st.ID)
 	if nowClosed && !wasClosed {
 		agent := t.actor.AgentName()
-		if agent == "" && t.actor.closesForWork() {
+		if agent == "" && closesForWork(t.actor) {
 			var err error
 			if agent, err = s.workAgent(ctx, t, i.ID); err != nil {
 				return err
@@ -2130,7 +2130,7 @@ func (s *Service) refuseDoneWithOpenChildren(ctx context.Context, t *tx, i *Issu
 // closesForWork reports whether the actor closes on behalf of whoever did
 // the work rather than as a person deciding to: an automation (the merge
 // rule), a forge sync, a permission token or a runner job (WP-500).
-func (a *Actor) closesForWork() bool {
+func closesForWork(a *Actor) bool {
 	return a != nil && (a.Automation != nil || a.ForgeSync || a.Permissions != nil || a.RunnerJob != 0)
 }
 
