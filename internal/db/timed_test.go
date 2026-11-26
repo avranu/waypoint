@@ -16,7 +16,7 @@ const slowCTE = `WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WH
 func openSlow(t *testing.T) (*DB, *[]SlowStatement) {
 	t.Helper()
 	t.Setenv("WAYPOINT_SLOW_STATEMENT", "20ms")
-	d, err := Open(context.Background(), filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(context.Background(), filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestSlowStatementWriteTransaction(t *testing.T) {
 
 func TestSlowStatementOff(t *testing.T) {
 	t.Setenv("WAYPOINT_SLOW_STATEMENT", "0")
-	d, err := Open(context.Background(), filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(context.Background(), filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestSlowStatementOff(t *testing.T) {
 // A modernc upgrade that adds an interface to its conn, stmt or rows has to be
 // forwarded too, so the wrapper is compared with the driver rather than a list.
 func TestTimedDriverForwardsInterfaces(t *testing.T) {
-	d, err := Open(context.Background(), filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(context.Background(), filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

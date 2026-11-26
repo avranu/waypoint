@@ -19,7 +19,7 @@ import (
 // quiet on the shapes main uses on purpose (testdata/src/RULE).
 func TestAnalyzers(t *testing.T) {
 	dir := analysistest.TestData()
-	defer wplint.SetCoreOrder("forge", "pr", "merge", "top")()
+	t.Cleanup(wplint.SetCoreOrder("forge", "pr", "merge", "top"))
 	cases := map[string][]string{
 		"apidb":         {"apidb/internal/api", "apidb/internal/core"},
 		"writeclosure":  {"writeclosure/internal/core"},
@@ -45,6 +45,7 @@ func TestAnalyzers(t *testing.T) {
 		}
 		seen[a.Name] = true
 		t.Run(a.Name, func(t *testing.T) {
+			t.Parallel()
 			if testVariant[a.Name] {
 				runTestVariant(t, dir, a, pkgs...)
 				return

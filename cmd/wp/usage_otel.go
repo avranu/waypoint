@@ -31,7 +31,7 @@ tokens, then wp token) so it can be revoked on its own.`,
 func init() { usageCmd.subs = append(usageCmd.subs, usageOtelCmd) }
 
 // otelTokenPlaceholder stands for the token where the settings are shown.
-const otelTokenPlaceholder = "YOUR_WP_TOKEN"
+const otelTokenPlaceholder = "YOUR_WP_TOKEN" // #nosec G101 -- documentation placeholder, not a credential
 
 // otelEnv is what Claude Code's settings.json env needs.
 func otelEnv(server, token string, metrics bool) map[string]string {

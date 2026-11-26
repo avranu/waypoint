@@ -14,9 +14,16 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"go/ast"
+	"go/build"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"git.jmann.me/claude/waypoint/internal/testevidence"
 )
@@ -39,8 +46,12 @@ func run(args []string) error {
 	var covers list
 	fs.Var(&covers, "cover", "a cover `profile` (repeatable)")
 	sup := fs.Bool("suppressions", false, "list the tree's #nosec, //nolint and //wplint:ignore comments")
+	listDir := fs.String("list-tests", "", "print top-level Test* functions in `DIR` (AST only, no compile)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *listDir != "" {
+		return listTests(*listDir)
 	}
 	if *shard != "" {
 		if _, _, ok := testevidence.ShardOf(*shard); !ok {
@@ -143,4 +154,67 @@ func modulePath(gomod string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%s names no module", gomod)
+}
+
+// listTests prints the sorted top-level Test* functions of the Go package in
+// dir without compiling it, respecting build constraints via go/build.
+func listTests(dir string) error {
+	pkg, err := build.Default.ImportDir(dir, 0)
+	if err != nil {
+		return err
+	}
+	fset := token.NewFileSet()
+	var names []string
+	files := append(slices.Clone(pkg.TestGoFiles), pkg.XTestGoFiles...)
+	for _, f := range files {
+		af, err := parser.ParseFile(fset, filepath.Join(dir, f), nil, 0)
+		if err != nil {
+			return err
+		}
+		for _, d := range af.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil {
+				continue
+			}
+			name := fn.Name.Name
+			if name == "TestMain" || !isTestFuncName(name) {
+				continue
+			}
+			if fn.Type.Results != nil && len(fn.Type.Results.List) > 0 {
+				continue
+			}
+			if fn.Type.Params == nil || countFields(fn.Type.Params.List) != 1 {
+				continue
+			}
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	for _, n := range names {
+		fmt.Println(n)
+	}
+	return nil
+}
+
+func isTestFuncName(name string) bool {
+	if !strings.HasPrefix(name, "Test") {
+		return false
+	}
+	if len(name) == len("Test") {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(name[len("Test"):])
+	return !unicode.IsLower(r)
+}
+
+func countFields(list []*ast.Field) int {
+	n := 0
+	for _, f := range list {
+		if len(f.Names) == 0 {
+			n++
+		} else {
+			n += len(f.Names)
+		}
+	}
+	return n
 }
