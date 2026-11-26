@@ -291,7 +291,7 @@ func (m *Mailer) Send(ctx context.Context, es *Settings, to, subject, body, link
 	if err != nil {
 		return kernel.Invalid("the sender %q isn't an email address", es.From)
 	}
-	msg, err := emailMessage(es.From, to, subject, body, link, time.Now())
+	msg, err := emailMessage(es.From, to, subject, body, link, m.k.Now())
 	if err != nil {
 		return err
 	}

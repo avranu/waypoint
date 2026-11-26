@@ -27,3 +27,11 @@ func inTx(t *kernel.Tx) time.Time {
 func withKernel(k *kernel.Kernel) int64 {
 	return time.Now().UnixMilli() // want `use s.now\(\)`
 }
+
+// Unchecked is a domain's type for other domains: it holds the kernel, so it
+// is on the clock too.
+type Unchecked struct{ k *kernel.Kernel }
+
+func (u *Unchecked) Stamp() time.Time {
+	return time.Now() // want `use s.now\(\)`
+}
