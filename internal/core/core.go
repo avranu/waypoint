@@ -106,6 +106,9 @@ type Service struct {
 	gatewayLimits   sync.Map
 	staleChecksRead sync.Map
 
+	// babysitSweep is the babysit sweep that is running, if one is (CheckBabysits).
+	babysitSweep sweepMark
+
 	baseMerged     sync.Map
 	baseRed        sync.Map
 	rerunRefusedAt sync.Map

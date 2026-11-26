@@ -235,6 +235,63 @@ func TestCheckBabysitsLogsSlowSteps(t *testing.T) {
 	}
 }
 
+// A sweep that is slow but moving is not joined by a second one when the
+// scheduler counts its run as stuck; one that has stopped moving is.
+func TestBabysitSweepGivesWayToOneStillMoving(t *testing.T) {
+	be, prs, _ := twoBabysits(t)
+	logs := &syncBuffer{}
+	be.s.log = slog.New(slog.NewTextHandler(logs, nil))
+	unlock := be.s.babysitLocks.lock(prs[0].ID)
+	unlock1 := be.s.babysitLocks.lock(prs[1].ID)
+	first := make(chan struct{})
+	go func() {
+		defer close(first)
+		be.s.CheckBabysits(be.ctx)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		be.s.babysitSweep.mu.Lock()
+		going := be.s.babysitSweep.run != 0
+		be.s.babysitSweep.mu.Unlock()
+		if going {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the first sweep never started")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	be.pass(babysitSweepAlive - time.Second)
+	be.s.CheckBabysits(be.ctx) // returns at once: both locks are held, so a sweep that ran would block here
+	if got := logs.String(); !strings.Contains(got, "babysit sweep not started") {
+		t.Fatalf("a second sweep beside one still moving: %s", got)
+	}
+	be.pass(2 * time.Second)
+	second := make(chan struct{})
+	go func() {
+		defer close(second)
+		be.s.CheckBabysits(be.ctx)
+	}()
+	select {
+	case <-second:
+		t.Fatal("a sweep did not take over from one that stopped moving")
+	case <-time.After(200 * time.Millisecond):
+	}
+	unlock()
+	unlock1()
+	<-first
+	<-second
+	if got := logs.String(); strings.Count(got, "babysit sweep stopped: another took over") != 1 {
+		t.Errorf("the sweep taken over from should stop after the step it stood in, once: %s", got)
+	}
+	be.s.babysitSweep.mu.Lock()
+	run := be.s.babysitSweep.run
+	be.s.babysitSweep.mu.Unlock()
+	if run != 0 {
+		t.Errorf("the mark is still held after both sweeps ended: %d", run)
+	}
+}
+
 type syncBuffer struct {
 	mu sync.Mutex
 	b  bytes.Buffer
