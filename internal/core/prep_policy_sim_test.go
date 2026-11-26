@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -66,6 +67,11 @@ type simTask struct {
 
 var simArms = []string{prepArmChat, prepArmAgent}
 
+// simLoads is each arm (none, chat, agent) as prepObs.Arm has it: the
+// policies read a task's arm through it, so the arm they fit on is the one
+// played. The rows are shared and only read.
+var simLoads = [][]float64{{0, 0}, {1, 0}, {0, 1}}
+
 // simThompson is the policy as built, with a half-life (0: nothing ages).
 type simThompson struct{ halfLife float64 }
 
@@ -76,18 +82,14 @@ func (p simThompson) shares(day int, tasks []simTask) []float64 {
 		if !t.seen {
 			continue
 		}
-		load := make([]float64, 2)
-		if t.arm > 0 {
-			load[t.arm-1] = 1
-		}
 		w := 1.0
 		if p.halfLife > 0 {
 			w = prepRecency(float64(day-t.day), p.halfLife)
 		}
-		obs = append(obs, prepObs{Y: t.y, X: t.x, Arm: load, Age: float64(day - t.day), W: w})
+		obs = append(obs, prepObs{Y: t.y, X: t.x, Arm: simLoads[t.arm], Age: float64(day - t.day), W: w})
 	}
 	f := fitPrepArms(simArms, obs, simSpread)
-	return prepShares(f.pBest([][]float64{{0, 0}, {1, 0}, {0, 1}}), nil)
+	return prepShares(f.pBest(simLoads), nil)
 }
 
 // simMix is the policy as built: fits at every half-life, mixed by how well
@@ -116,11 +118,7 @@ func (p *simMix) shares(day int, tasks []simTask) []float64 {
 		if !t.seen {
 			continue
 		}
-		load := make([]float64, 2)
-		if t.arm > 0 {
-			load[t.arm-1] = 1
-		}
-		obs = append(obs, prepObs{Y: t.y, X: t.x, Arm: load, Age: float64(day - t.day)})
+		obs = append(obs, prepObs{Y: t.y, X: t.x, Arm: simLoads[t.arm], Age: float64(day - t.day)})
 		if t.day == day-1 {
 			yesterday = append(yesterday, &obs[len(obs)-1])
 		}
@@ -249,11 +247,17 @@ func simRun(sc simScenario, pol simPolicy, days int, seed uint64) simResult {
 	return res
 }
 
+// simMean is the mean of reps runs, each with its own seed, side by side.
 func simMean(sc simScenario, mk func() simPolicy, days, reps int) simResult {
+	runs := make([]simResult, reps)
+	var wg sync.WaitGroup
+	for rep := range reps {
+		wg.Go(func() { runs[rep] = simRun(sc, mk(), days, uint64(1000+rep)) })
+	}
+	wg.Wait()
 	out := simResult{shareSum: make([]float64, 3), last: make([]float64, 3)}
 	after, afterN := 0.0, 0
-	for rep := range reps {
-		r := simRun(sc, mk(), days, uint64(1000+rep))
+	for _, r := range runs {
 		out.regret += r.regret / float64(reps)
 		out.worse += r.worse / float64(reps)
 		for i := range 3 {
@@ -274,32 +278,41 @@ func simMean(sc simScenario, mk func() simPolicy, days, reps int) simResult {
 
 // TestPrepPolicySimulation holds the allocation to what it is for, on a
 // short run of each case: an arm that is worse loses its tasks, one that
-// is better gets them, and a change is followed.
+// is better gets them, and a change is followed. Under the race detector it
+// is one run of each case, not the mean of four: the arithmetic is some
+// hundred times slower there, and four were nearly six minutes of a CI shard
+// (WP-1011). The cases run side by side.
 func TestPrepPolicySimulation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("simulation")
 	}
 	mk := func() simPolicy { return &simMix{} }
-	const reps = 4
-	worse := simMean(simScenarios[1], mk, 60, reps)
+	reps := 4
+	if raceEnabled {
+		reps = 1
+	}
+	var worse, better, null, drift, fixed simResult
+	var wg sync.WaitGroup
+	wg.Go(func() { worse = simMean(simScenarios[1], mk, 60, reps) })
+	wg.Go(func() { better = simMean(simScenarios[2], mk, 60, reps) })
+	wg.Go(func() { null = simMean(simScenarios[0], mk, 60, reps) })
+	wg.Go(func() { drift = simMean(simScenarios[4], mk, 120, reps) })
+	wg.Go(func() { fixed = simMean(simScenarios[1], func() simPolicy { return simFixed{} }, 60, reps) })
+	wg.Wait()
 	if worse.last[1] > 0.05 || worse.shareSum[1] > 0.12 {
 		t.Errorf("chat 35%% worse: it still has %.2f of new tasks after 60 days and had %.2f of all (a fixed split gives 0.33)", worse.last[1], worse.shareSum[1])
 	}
-	better := simMean(simScenarios[2], mk, 60, reps)
 	if better.last[2] < 0.8 {
 		t.Errorf("agent 26%% better: it has %.2f of new tasks after 60 days", better.last[2])
 	}
-	null := simMean(simScenarios[0], mk, 60, reps)
 	for i, s := range null.shareSum {
 		if s < 0.1 || s > 0.6 {
 			t.Errorf("no arm does anything: arm %d had %.2f of the tasks", i, s)
 		}
 	}
-	drift := simMean(simScenarios[4], mk, 120, reps)
 	if drift.last[1] > 0.2 {
 		t.Errorf("chat worse from day 60: it has %.2f of new tasks at day 120", drift.last[1])
 	}
-	fixed := simMean(simScenarios[1], func() simPolicy { return simFixed{} }, 60, reps)
 	if worse.regret > fixed.regret/2 {
 		t.Errorf("chat 35%% worse: regret %.3f against a fixed split's %.3f", worse.regret, fixed.regret)
 	}

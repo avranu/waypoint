@@ -10,7 +10,7 @@ import (
 // and never person-only (WP-283), and keeps the logins listed before it.
 func TestForgeAgentLoginsRebuild(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
