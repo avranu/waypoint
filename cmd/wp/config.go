@@ -449,7 +449,7 @@ func setBadStateAside(path string, readErr error) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path+".bad", b, 0o600)
+	return os.WriteFile(path+".bad", b, 0o600) // #nosec G703 -- beside our own state file
 }
 
 // lockFile takes an exclusive lock by creating path (works on every OS).
