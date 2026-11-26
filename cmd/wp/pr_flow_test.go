@@ -21,9 +21,9 @@ func TestPRFlowText(t *testing.T) {
 	}
 	out := f.text()
 	for _, want := range []string{
-		"2 merged pull requests, open 10 h", "p50 5h0m", "p90 7h0m",
+		"2 merged pull requests, open 10 h", "p50 5h00m", "p90 7h00m",
 		"converging 6 h (60%), integrating 4 h (40%)",
-		"2026-11-25   2 merged  p50 5h0m", "draft with nothing else holding it 40%",
+		"2026-11-25   2 merged  p50 5h00m", "draft with nothing else holding it 40%",
 		"  4 h  40%", "120 /  150  integrating",
 		"waiting: waiting for round N",
 		"4.5 heads, 3.0 full CI runs, 2.5 rounds",
