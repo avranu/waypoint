@@ -397,6 +397,9 @@ type guardHour struct {
 	// them ("" is a row that names none); jobs is the runner jobs' cost.
 	machines map[string]float64
 	jobs     float64
+	// jobSessions are the sources (job:N) of runner jobs whose cost came from
+	// their session's usage hours, so a baseline counts each as a session.
+	jobSessions map[string]bool
 }
 
 // quotaGuardCheck judges [from, to): whole hours.
@@ -781,7 +784,18 @@ func (s *Service) guardSpending(ctx context.Context, uid, first, before, from, t
 			g := get(hour)
 			g.auto += cost
 			g.jobs += cost
-			g.sources[fmt.Sprintf("job:%d", id)] += cost
+			key := fmt.Sprintf("job:%d", id)
+			g.sources[key] += cost
+			if hour >= from && hour < to {
+				// Inside the window it is also a session and a model of
+				// automation's, as the CLI sessions below are (guardBaseline
+				// reads both).
+				g.models[model] += cost
+				if g.jobSessions == nil {
+					g.jobSessions = map[string]bool{}
+				}
+				g.jobSessions[key] = true
+			}
 			continue
 		}
 		get(hour).machines[machine] += cost

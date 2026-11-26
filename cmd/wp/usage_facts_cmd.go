@@ -76,12 +76,34 @@ func cmdUsageFacts(c *cli, args []string) error {
 	if *user != "" {
 		q.Set("user", *user)
 	}
-	var f core.SessionFacts
-	if err := c.do("GET", "/api/v1/usage/facts?"+q.Encode(), nil, &f); err != nil {
+	raw, err := c.call("GET", "/api/v1/usage/facts?"+q.Encode(), nil)
+	if err != nil {
 		return err
 	}
-	raw, _ := json.Marshal(f)
-	return c.emit(raw, func() string { return factsText(&f) })
+	var f core.SessionFacts
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return err
+	}
+	// With --json the body is printed as the server sent it: re-marshalling
+	// the struct would invent shell_edits: 0 for a server too old to count them.
+	return c.emit(raw, func() string {
+		text := factsText(&f)
+		if !factsHaveShellEdits(raw) {
+			text = strings.Replace(text, shellEditsText(f.Changes.ShellEdits, f.Changes.ShellUnknown, f.Changes.ScriptShellEdits), "shell edits unknown (server too old to say)", 1)
+		}
+		return text
+	})
+}
+
+// factsHaveShellEdits is whether the reply's changes carry shell_edits at
+// all: an older server leaves it out, and the int field then reads 0.
+func factsHaveShellEdits(raw []byte) bool {
+	var r struct {
+		Changes struct {
+			ShellEdits *int `json:"shell_edits"`
+		} `json:"changes"`
+	}
+	return json.Unmarshal(raw, &r) == nil && r.Changes.ShellEdits != nil
 }
 
 // tallyText: the sum, or unknown when no row carried it, or the sum with how

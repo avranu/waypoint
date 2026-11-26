@@ -767,6 +767,9 @@ func (s *Service) guardBaseline(ctx context.Context, uid int64, now time.Time) (
 				sessions[k] += c
 			}
 		}
+		for k := range h.jobSessions {
+			sessions[k] += h.sources[k]
+		}
 		for m, c := range h.models {
 			b.Models[m] += c
 			modelTotal += c

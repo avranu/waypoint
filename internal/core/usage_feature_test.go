@@ -526,6 +526,27 @@ func TestUsageForTaskEditsLeaveOutRefused(t *testing.T) {
 	}
 }
 
+// OTLP counts a rejected tool_decision as calls 0, refusals 1, beside the
+// tool_result events (calls 1): a refusal is not inside the calls there, so
+// five edit results and two rejects are five edits (audit 1933.9).
+func TestUsageForTaskOTLPRefusalsAreNotInCalls(t *testing.T) {
+	f := newFeatureEnv(t)
+	i := f.task(-10, "v0.80.0", "v0.79.0", 500)
+	// The two kinds of event add into one row of the hour (the key has no
+	// event kind): calls 5 from the results, refusals 2 from the rejects.
+	if _, err := f.s.db.W.ExecContext(f.ctx, `INSERT INTO tool_hours(user_id, hour, machine, session, repo, model, kind, tool, detail, via, calls, errors, refusals)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, f.me.User.ID, f.hour(-10), "m1", "s1", "acme/web", "", "builtin", "Edit", "", "otlp", 5, 0, 2); err != nil {
+		t.Fatal(err)
+	}
+	o, err := f.s.UsageForTask(f.ctx, f.me, UsageQuery{}, i.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Edits != 5 {
+		t.Errorf("edits %d; want 5 (the two rejects are not subtracted from the results)", o.Edits)
+	}
+}
+
 // Bash calls that wrote files are counted per hour the client marked; the
 // Bash calls of hours it did not mark leave the figure a floor, not zero.
 func TestUsageForTaskShellEdits(t *testing.T) {

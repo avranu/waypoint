@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -59,11 +61,24 @@ func TestGuardSplitText(t *testing.T) {
 }
 
 func TestGuardJSONNamesPath(t *testing.T) {
+	// The real command against a server that has no live guard: the output
+	// is what cmdUsageGuard builds through guardBothJSON, with this machine's
+	// name from machineName().
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/live") {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(guardSplitRaw))
+	}))
+	defer ts.Close()
+	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
+	t.Setenv("WAYPOINT_SERVER", ts.URL)
+	t.Setenv("WAYPOINT_TOKEN", "wpt_x")
+	t.Setenv("WAYPOINT_MACHINE", "chiron")
 	var buf bytes.Buffer
-	c := &cli{asJSON: true, out: &buf}
-	raw := []byte(guardSplitRaw)
-	both := []byte(`{"live":null,"daily":` + string(raw) + `,"this_machine":"chiron"}`)
-	if err := c.emit(both, func() string { return "" }); err != nil {
+	c, _ := newCLI(&buf, &bytes.Buffer{})
+	if err := cmdUsageGuard(c, []string{"--json"}); err != nil {
 		t.Fatal(err)
 	}
 	var v struct {

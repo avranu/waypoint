@@ -209,10 +209,16 @@ func TestTaskUsageReviewRoundsAuditsAndPRs(t *testing.T) {
 	if _, err := f.s.db.W.ExecContext(f.ctx, `UPDATE work_log SET fixed = 2, rejected = 1 WHERE id = ?`, rounds[0]); err != nil {
 		t.Fatal(err)
 	}
-	for n, key := range []string{fmt.Sprintf("review-round:%d", rounds[0]), fmt.Sprintf("review-round:%d:check", rounds[0]), fmt.Sprintf("review-round:%d1", rounds[0])} {
+	for n, key := range []string{fmt.Sprintf("review-round:%d", rounds[0]), fmt.Sprintf("review-round:%d:check", rounds[0]), fmt.Sprintf("review-round:%d1", rounds[0]),
+		fmt.Sprintf("review-round:%d:sonnet", rounds[0]), fmt.Sprintf("review-round:%d:other", rounds[0])} {
 		tokens := `{"input": 1000, "output": 200}`
-		if n == 2 {
+		switch n {
+		case 2:
 			tokens = `{"input": 99999, "output": 99999}` // another round's: ids 1 and 11 differ
+		case 3:
+			tokens = `{"input": 0, "output": 0}` // an audit that spent nothing is not an audit
+		case 4:
+			tokens = `{"input": 5000, "output": ` // malformed: not counted
 		}
 		if _, err := f.s.db.W.ExecContext(f.ctx, `INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at, request_key, tokens) VALUES (?, ?, 'acme/web', 'pr', ?, 0, ?, ?)`,
 			f.p.ID, f.forge("github", "", false).ID, f.me.id(), key, tokens); err != nil {

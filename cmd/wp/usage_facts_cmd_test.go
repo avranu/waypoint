@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -71,5 +74,55 @@ func TestFactsTextNamesWhatItCounts(t *testing.T) {
 	}
 	if strings.Contains(out, "tests written") {
 		t.Errorf("old label is still there")
+	}
+}
+
+// The changes line carries seven different counts: distinct values so that
+// swapping two arguments of the format fails (audit 1933.14).
+func TestFactsTextChangesLine(t *testing.T) {
+	var f core.SessionFacts
+	f.Scope, f.Key = "session", "s1"
+	f.Changes.Edits = 11
+	f.Changes.Failed = 12
+	f.Changes.ScriptEdits = 13
+	f.Changes.ShellEdits = 14
+	f.Changes.ShellUnknown = 15
+	f.Changes.ScriptShellEdits = 16
+	f.Changes.FilesChanged = 17
+	want := "changes: 11 edits (12 failed; 13 more run by REPL scripts), 14+ shell edits (15 Bash calls not classified) and 16 more run by REPL scripts, 17 files; lines added 0, removed 0"
+	var got string
+	for _, l := range strings.Split(factsText(&f), "\n") {
+		if strings.HasPrefix(l, "changes:") {
+			got = l
+		}
+	}
+	if got != want {
+		t.Errorf("changes line:\n got %q\nwant %q", got, want)
+	}
+}
+
+// An older server leaves shell_edits out of the facts: the text says it does
+// not know, not "0 shell edits", and --json prints the body as sent.
+func TestFactsOldServerShellEditsUnknown(t *testing.T) {
+	const body = `{"scope":"session","key":"s1","changes":{"edits":3,"failed":1,"files_changed":2}}`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(body)) }))
+	defer ts.Close()
+	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
+	t.Setenv("WAYPOINT_SERVER", ts.URL)
+	t.Setenv("WAYPOINT_TOKEN", "wpt_x")
+	var out bytes.Buffer
+	c, _ := newCLI(&out, &bytes.Buffer{})
+	if err := cmdUsageFacts(c, []string{"--session", "s1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "shell edits unknown") || strings.Contains(got, "0 shell edits") {
+		t.Errorf("text:\n%s", got)
+	}
+	out.Reset()
+	if err := cmdUsageFacts(c, []string{"--session", "s1", "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "shell_edits") {
+		t.Errorf("--json invented shell_edits:\n%s", out.String())
 	}
 }
