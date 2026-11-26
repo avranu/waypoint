@@ -594,7 +594,7 @@ func TestPlanGoTestGoModChangeIsNotNarrowed(t *testing.T) {
 	}
 }
 
-// wp ship --check "go test ./..." that narrows to nothing is refused and
+// wp ship --check "go test ./..." that narrows to nothing prints that and
 // records no pass; one that only compiles says so and records none either.
 func TestRunShipCheckNarrowedToNothingOrToACompileRecordsNoPass(t *testing.T) {
 	log := narrowedSlot(t, []string{"README.md"}, "0", "0", "0")
@@ -615,8 +615,11 @@ func TestRunShipCheckNarrowedToNothingOrToACompileRecordsNoPass(t *testing.T) {
 	var out bytes.Buffer
 	c := &cli{out: &out, err: &bytes.Buffer{}}
 
-	if err := c.runShipCheck("go test ./..."); err == nil || !strings.Contains(err.Error(), "--check go test ./... has nothing to run") || !strings.Contains(err.Error(), "nothing was committed or shipped") || passes() != 0 {
-		t.Errorf("nothing to run: err %v, passes %d\n%s", err, passes(), out.String())
+	if err := c.runShipCheck("go test ./..."); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Check: go test ./... has nothing to run: no changed file is in the packages it asks for; not recorded as a pass.") || passes() != 0 {
+		t.Errorf("nothing to run: passes %d\n%s", passes(), out.String())
 	}
 	// go list may run (to see what a changed file is embedded by); go test not.
 	if b, _ := os.ReadFile(log); strings.Contains(string(b), "|test ") {

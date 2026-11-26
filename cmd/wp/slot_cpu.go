@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -157,9 +158,30 @@ func cgroupBounded(procCgroup, root string) bool {
 // slotScopeMarker runs first in the scope: it says on fd 3 that the scope
 // started, "x" when the scope's cgroup has a cpu.max quota and "n" when it
 // has none (unreadable counts as none), closes fd 3 so the command doesn't
-// have it, and becomes the command. systemd-run exits 1 when it can't start
-// the scope, as a command may, so without it the two can't be told apart.
-const slotScopeMarker = `q=; { read q _ < /sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)/cpu.max; } 2>/dev/null; m=n; [ -n "$q" ] && [ "$q" != max ] && m=x; printf %s "$m" >&3; exec 3>&-; exec "$@"`
+// have it, and becomes the command. A scope with no quota bounds nothing, so
+// there it first sets the Go limits runInScope handed it (slotNoQuota…), and
+// in either case drops them. systemd-run exits 1 when it can't start the
+// scope, as a command may, so without the marker the two can't be told apart.
+const slotScopeMarker = `q=; { read q _ < /sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)/cpu.max; } 2>/dev/null; m=n; [ -n "$q" ] && [ "$q" != max ] && m=x; if [ $m = n ]; then [ -n "${WP_SLOT_NOQUOTA_GOMAXPROCS:-}" ] && export GOMAXPROCS="$WP_SLOT_NOQUOTA_GOMAXPROCS"; [ -n "${WP_SLOT_NOQUOTA_GOFLAGS:-}" ] && export GOFLAGS="$WP_SLOT_NOQUOTA_GOFLAGS"; fi; unset WP_SLOT_NOQUOTA_GOMAXPROCS WP_SLOT_NOQUOTA_GOFLAGS; printf %s "$m" >&3; exec 3>&-; exec "$@"`
+
+// slotNoQuotaPrefix names the variables that carry the Go limits into a
+// scope, for slotScopeMarker to apply should the scope have no quota.
+const slotNoQuotaPrefix = "WP_SLOT_NOQUOTA_"
+
+// noQuotaEnv is env (nil: this process's) with what goBoundEnv would add to
+// it carried beside, under slotNoQuotaPrefix.
+func noQuotaEnv(env []string, quota int) []string {
+	if env == nil {
+		env = os.Environ()
+	}
+	out := slices.Clone(env)
+	for _, e := range goBoundEnv(env, quota, slotSavedGoFlagsFn) {
+		if (strings.HasPrefix(e, "GOMAXPROCS=") || strings.HasPrefix(e, "GOFLAGS=")) && !slices.Contains(env, e) {
+			out = append(out, slotNoQuotaPrefix+e)
+		}
+	}
+	return out
+}
 
 // scopeArgv is the command line that runs argv in a systemd user scope with
 // the quota (percent); bin is systemd-run.
@@ -248,7 +270,7 @@ func runSlotBound(ctx context.Context, dir string, env, argv []string, in io.Rea
 			// The marker says the scope started: from here the command runs
 			// under it, and the lock file says so before its work begins.
 			if !bounded {
-				kind = slotBoundNone // a scope that bounds nothing
+				kind = slotBoundEnv // no quota: the marker set the Go limits
 			}
 			tell()
 		})
@@ -300,7 +322,7 @@ func runInScope(ctx context.Context, dir string, env, argv []string, quota int, 
 	defer func() { _ = r.Close() }()
 	full := scopeArgv(bin, quota, argv)
 	cmd := exec.Command(full[0], full[1:]...) // #nosec G204 G702 -- running the command is the point
-	cmd.Dir, cmd.Env, cmd.Stdin, cmd.Stdout, cmd.Stderr = dir, env, in, out, errw
+	cmd.Dir, cmd.Env, cmd.Stdin, cmd.Stdout, cmd.Stderr = dir, noQuotaEnv(env, quota), in, out, errw
 	cmd.ExtraFiles = []*os.File{w}
 	serr := cmd.Start()
 	_ = w.Close()

@@ -62,8 +62,8 @@ so a go test in a slot can't take every core:
   cgroup  the process already sits under a cpu.max quota (a sandbox): nothing added
   runner  a runner job: its load governor paces it; Go is held to the quota
   scope   a systemd user scope (systemd-run --user) with CPUQuota in
-          waypoint-tests.slice (a scope whose cgroup shows no quota counts as
-          none); needs a user bus (XDG_RUNTIME_DIR)
+          waypoint-tests.slice; needs a user bus (XDG_RUNTIME_DIR). A scope
+          whose cgroup shows no quota gets the env bound instead
   env     elsewhere: GOMAXPROCS and GOFLAGS -p set, unless you set them. This
           binds Go builds and tests only, not other programs the command runs.
   none    WAYPOINT_SLOT_CPU=off

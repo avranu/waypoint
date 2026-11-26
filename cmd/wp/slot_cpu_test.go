@@ -330,23 +330,32 @@ func TestRunSlotBoundStopReachesTheCommandInTheScope(t *testing.T) {
 	}
 }
 
-func TestRunSlotBoundScopeWithoutQuotaIsRecordedAsNone(t *testing.T) {
-	for _, c := range []struct{ name, cpuMax, kind string }{
-		{"quota", "150000 100000", slotBoundScope},
-		{"max", "max 100000", slotBoundNone},
-		{"unreadable", "", slotBoundNone},
+// A scope with no quota bounds nothing, so the command gets the Go limits
+// there; neither gets the variables that carried them.
+func TestRunSlotBoundScopeWithoutQuotaGetsTheEnvBound(t *testing.T) {
+	for _, c := range []struct{ name, cpuMax, kind, procs string }{
+		{"quota", "150000 100000", slotBoundScope, ""},
+		{"max", "max 100000", slotBoundEnv, "2"},
+		{"unreadable", "", slotBoundEnv, "2"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			fakeSystemdScope(t, true, c.cpuMax)
 			probesAre(t, false, false, true)
 			t.Setenv(slotCPUEnv, "200")
 			count := filepath.Join(t.TempDir(), "count")
-			code, kind, _ := runBound(t, context.Background(), "", os.Environ(), "sh", "-c", "echo ran >> "+count+"; exit 4")
+			env := slices.DeleteFunc(os.Environ(), func(e string) bool {
+				return strings.HasPrefix(e, "GOMAXPROCS=") || strings.HasPrefix(e, "GOFLAGS=")
+			})
+			code, kind, _ := runBound(t, context.Background(), "", env, "sh", "-c", `echo "ran ${GOMAXPROCS:-} ${GOFLAGS:-} $(env | grep -c '^WP_SLOT_NOQUOTA_')" >> `+count+`; exit 4`)
 			if code != 4 || kind != c.kind {
 				t.Errorf("code %d kind %q, want 4 and %q", code, kind, c.kind)
 			}
-			if b, _ := os.ReadFile(count); string(b) != "ran\n" {
-				t.Errorf("the command ran %q, want once", b)
+			want := "ran   0\n"
+			if c.procs != "" {
+				want = "ran " + c.procs + " -p=" + c.procs + " 0\n"
+			}
+			if b, _ := os.ReadFile(count); string(b) != want {
+				t.Errorf("the command ran %q, want once: %q", b, want)
 			}
 		})
 	}

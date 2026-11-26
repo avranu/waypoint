@@ -163,7 +163,7 @@ func TestRoundStatsText(t *testing.T) {
 		}
 	}
 	got = (&roundStats{Days: 7, Rounds: 2, PRs: 1, AuthorHandoffs: 12, AuthorFixed: 8, AuthorFellBack: 3, AuthorCleared: 1}).text()
-	if want := "Failed first checks handed to the author: 12 (new head before the deadline 8, fell back to a round 3, checks passed unchanged 1, still pending 0)"; !strings.Contains(got, want) {
+	if want := "Failed first checks handed to the author: 12 (answered with a new head, its checks not counted here, 8; fell back to a round 3; cleared on the same head: passed, closed or stopped, 1; still pending 0)"; !strings.Contains(got, want) {
 		t.Errorf("stats lack %q:\n%s", want, got)
 	}
 	got = (&roundStats{Days: 7, Rounds: 2, PRs: 1, AuthorHandoffs: 1, AuthorFixed: 1, AuthorFixedMedianMinutes: 11.6}).text()

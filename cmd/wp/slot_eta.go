@@ -300,7 +300,8 @@ func slotAddWaiter(dir, name string) (remove func()) {
 }
 
 // slotAddWaiterFor registers this process as waiting since arrival for the
-// slots in order (nil: any); the result removes it. The file is written and
+// slots in order (nil, which only slotAddWaiter passes: none is recorded);
+// the result removes it. The file is written and
 // locked under another name first, so nobody finds it unlocked and takes it
 // for a dead waiter's. Waiters are served by arrival (slotBlockedSlots).
 func slotAddWaiterFor(dir, name string, arrival time.Time, order []int) (remove func()) {

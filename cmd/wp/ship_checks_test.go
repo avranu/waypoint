@@ -168,6 +168,19 @@ func TestShipChecksAgainstAnOlderServer(t *testing.T) {
 	}
 }
 
+// A request that fails before the wait was announced is said, not silent.
+func TestShipChecksFailedRequestIsSaid(t *testing.T) {
+	e := newChecksEnv(t, func(w http.ResponseWriter) {
+		http.Error(w, `{"error":"you may not see this pull request"}`, http.StatusForbidden)
+	})
+	if err := e.ship(t, "--wait-timeout=5s"); err != nil {
+		t.Fatal(err)
+	}
+	if s := e.out.String(); !strings.Contains(s, "Couldn't ask Waypoint to wait for PR 5's checks (you may not see this pull request)") || strings.Contains(s, "Waiting for PR") {
+		t.Fatalf("output:\n%s", s)
+	}
+}
+
 // At the limit, what is still running is said, and babysitting takes over.
 func TestShipChecksStopsAtTheLimit(t *testing.T) {
 	e := newChecksEnv(t, checksAnswer("waiting", "a/b#5: 2 checks still running"))

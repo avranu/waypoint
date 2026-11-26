@@ -228,6 +228,13 @@ func (c *cli) canWaitChecks(so shipOpts, o *openedPR, babysat bool, why string) 
 	return babysat && why == "" && !*so.noWait && !c.asJSON && c.agentHeader() != "" && c.thisSession() != "" && c.server() != "" && c.token() != ""
 }
 
+// olderServer: the answer of a server that predates the wait for checks: no
+// such route, or one that refuses the field it doesn't know.
+func olderServer(e *apiError) bool {
+	return e.status == http.StatusNotFound || e.status == http.StatusMethodNotAllowed ||
+		(e.status == http.StatusBadRequest && strings.Contains(e.msg+e.body, "unknown field") && strings.Contains(e.msg+e.body, "pull_id"))
+}
+
 // waitShipChecks is wp ship's wait, after it opened the pull request, for the
 // outcome of the head's first checks (WP-1878). done: a failure was printed
 // for the agent to fix (the ship is over, with no marker, as for review
@@ -242,7 +249,7 @@ func (c *cli) waitShipChecks(task string, pull int64, number int, head string, b
 		n, err := c.shipChecksOnce(task, pull, head, hold, limit)
 		if err != nil {
 			var ae *apiError
-			if errors.As(err, &ae) && (ae.status == http.StatusNotFound || ae.status == http.StatusMethodNotAllowed) {
+			if errors.As(err, &ae) && olderServer(ae) {
 				return true, nil
 			}
 			return false, err
@@ -261,10 +268,14 @@ func (c *cli) waitShipChecks(task string, pull int64, number int, head string, b
 		news = n
 		return true, nil
 	})
+	// A request that failed is said even before the wait was announced: the
+	// author would else take the silence for a ship with nothing to wait for.
 	lostTouch := func(cause error) {
-		if announced {
-			c.println(fmt.Sprintf("Lost touch with Waypoint while waiting for PR %d's checks (%v); Waypoint's babysitting takes any failure from here.", number, cause))
+		what := "Lost touch with Waypoint while waiting"
+		if !announced {
+			what = "Couldn't ask Waypoint to wait"
 		}
+		c.println(fmt.Sprintf("%s for PR %d's checks (%v); Waypoint's babysitting takes any failure from here.", what, number, cause))
 	}
 	var lost *pollBoundError
 	switch {

@@ -70,6 +70,11 @@ type shipWaitEntry struct {
 	// the babysit hand a failed check to the session instead of a round.
 	checks bool
 	pr     int64
+	// checksOpen counts the checks calls open now, and checksUntil is how
+	// long the last one's hold lasts: the review wait of the same task
+	// neither is a checks wait nor keeps one alive.
+	checksOpen  int
+	checksUntil time.Time
 	// since is when the checks wait first opened: what the bound on a head
 	// whose checks Waypoint can't read counts from.
 	since time.Time
@@ -113,7 +118,7 @@ func (w *shipWaits) checksHeld(session, pr int64, now time.Time) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	for _, e := range w.by[session] {
-		if e.checks && e.pr == pr && (e.open > 0 || now.Before(e.until)) {
+		if e.checks && e.pr == pr && (e.checksOpen > 0 || now.Before(e.checksUntil)) {
 			return true
 		}
 	}
@@ -188,14 +193,14 @@ func (s *Service) openWait(session, task, pr int64) func(linger bool) {
 			e.since = s.now()
 		}
 		e.checks, e.pr = true, pr
+		e.checksOpen++
 	}
-	checks := e.checks
 	w.mu.Unlock()
 	var once sync.Once
 	return func(linger bool) {
 		once.Do(func() {
 			hold := shipWaitLinger
-			if checks {
+			if pr != 0 {
 				hold = ciWaitWindow
 			}
 			if !linger {
@@ -204,6 +209,12 @@ func (s *Service) openWait(session, task, pr int64) func(linger bool) {
 			w.mu.Lock()
 			e.open--
 			e.until = s.now().Add(hold)
+			if pr != 0 {
+				e.checksOpen--
+				e.checksUntil = e.until
+			} else if e.checksUntil.After(e.until) {
+				e.until = e.checksUntil
+			}
 			w.mu.Unlock()
 			time.AfterFunc(hold+time.Second, func() {
 				s.goBG(func() { s.shipWaitLapsed(context.Background(), session) })

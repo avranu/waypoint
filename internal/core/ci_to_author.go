@@ -20,7 +20,7 @@ const authorFixingWait = "the session that wrote it is fixing its failed checks"
 
 // Outcomes of a hand-off, besides pending (empty).
 const (
-	handoffFixed    = "fixed"     // a new head arrived
+	handoffFixed    = "fixed"     // a new head arrived, whether or not it passes
 	handoffFellBack = "fell_back" // a round took it
 	// cleared: its checks passed on the same head, or the pull request closed
 	// or its babysit was stopped with the hand-off pending.
@@ -421,8 +421,18 @@ func (s *Service) shipChecksNow(ctx context.Context, session, task, prID int64, 
 	return &ShipNews{Outcome: ShipNewsWaiting, Checks: true, Text: text}, nil
 }
 
-// checksStanding says where a pull request with passing checks stands.
+// checksStanding says where a pull request with passing checks stands. A
+// draft's passing checks are the draft's own: what runs once it is marked
+// ready is still to come.
 func checksStanding(w *PRWait) string {
+	later := ""
+	if w.State == "draft" {
+		later = " These are the draft's checks: any that run when it is marked ready are still to come, and babysitting takes their failures."
+	}
+	return strings.TrimSpace(readyStanding(w) + later)
+}
+
+func readyStanding(w *PRWait) string {
 	switch {
 	case w.Verdict == PRWaitReady && w.Armed:
 		return "It is ready and armed, so it merges when its turn comes."

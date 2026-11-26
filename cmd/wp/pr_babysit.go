@@ -628,7 +628,7 @@ func (st *roundStats) classText() string {
 		fmt.Fprintf(&b, "Merged: %d, after %.1f rounds each.\n", st.Merged, float64(st.MergedRounds)/float64(st.Merged))
 	}
 	if st.AuthorHandoffs > 0 {
-		fmt.Fprintf(&b, "Failed first checks handed to the author: %d (new head before the deadline %d, fell back to a round %d, checks passed unchanged %d, still pending %d)", st.AuthorHandoffs, st.AuthorFixed, st.AuthorFellBack, st.AuthorCleared, st.AuthorPending)
+		fmt.Fprintf(&b, "Failed first checks handed to the author: %d (answered with a new head, its checks not counted here, %d; fell back to a round %d; cleared on the same head: passed, closed or stopped, %d; still pending %d)", st.AuthorHandoffs, st.AuthorFixed, st.AuthorFellBack, st.AuthorCleared, st.AuthorPending)
 		if st.AuthorFixedMedianMinutes > 0 {
 			fmt.Fprintf(&b, "; a new head came after %.0f minutes at the median", st.AuthorFixedMedianMinutes)
 		}

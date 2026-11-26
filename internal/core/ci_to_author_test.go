@@ -432,6 +432,25 @@ func TestAwaitShipChecksNoChecksEndsTheWait(t *testing.T) {
 	}
 }
 
+// A review wait of the same task neither is a checks wait nor keeps one alive.
+func TestReviewWaitDoesNotExtendAChecksWait(t *testing.T) {
+	be, pr, _ := authorEnv(t)
+	held := func() bool { return be.s.shipWaits.checksHeld(be.agent.Session, pr.ID, be.s.now()) }
+	be.openWait(pr.ID)(true)
+	review := be.s.openShipWait(be.agent.Session, 1)
+	if !held() {
+		t.Fatal("the checks wait lingers for ciWaitWindow")
+	}
+	be.later(ciWaitWindow + time.Second)
+	if held() {
+		t.Error("an open review wait counts as a checks wait")
+	}
+	review()
+	if held() {
+		t.Error("a review wait's linger counts as a checks wait")
+	}
+}
+
 // While a hand-off is pending inside its deadline no round goes out for any
 // cause; after the deadline one round carries both the failure and the conflict.
 func TestPendingHandoffHoldsEveryRound(t *testing.T) {
