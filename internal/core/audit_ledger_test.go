@@ -45,7 +45,7 @@ func TestPRAuditCarriesEarlierFindingsWithStatesAndReasons(t *testing.T) {
 		}
 	}
 	open, rej, fixed := strings.Index(p, "| open:"), strings.Index(p, "| rejected:"), strings.Index(p, "| fixed:")
-	if !(open < rej && rej < fixed) {
+	if open >= rej || rej >= fixed {
 		t.Errorf("order is open, rejected, fixed: got %d %d %d", open, rej, fixed)
 	}
 }
