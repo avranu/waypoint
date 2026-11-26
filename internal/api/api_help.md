@@ -144,6 +144,7 @@ for itself unless it says `anyone`). Search: `is:anyone`, `is:human`, `is:agent`
                                       a task never taken (not delegated) is taken first, as take does, then finished
     POST /agent/release/{key} {"comment"}   POST /agent/usage/{key} {"input_tokens",…}
     POST /agent/decline/{key} {"comment"}   cancel a task filed from another repo (filed_from); the filer hears why
+    POST /agent/deferred {"project","keys","via"}   the ready tasks the calling Opus/Fable session filed while on keys and was not offered yet (once each; "text" is what wp ship prints, empty when none; needs the session header and autopilot on with deferred on)
     POST /agent/take/{key} {"cross_project"}   take a named task (even if humans only; an epic with open sub-tasks for agents hands out the first one the agent can take): assigns it to the agent, In Progress, clock starts; cross_project is kept on its history as why it was taken from outside the session's project
     POST /agent/pause/{key}           idle: stop the clock on a held task, keeping it   POST /agent/resume/{key}
     GET  /agents                      agent identities seen at work on what you can see, and your agent tokens
@@ -1018,7 +1019,7 @@ steers or clears one in effect.
     past lag_alert_m minutes); env.updated is live-only. Webhooks can subscribe to env.*.
 ## Review gate, CI and merging (WP-D21)
 
-    POST /projects/{key}/pulls {repo, head, base, title, body, body_inputs, draft, ready, issue, for, urgent, review, reason, force, head_time, message, summary, stacked_on}
+    POST /projects/{key}/pulls {repo, head, base, title, body, body_inputs, draft, ready, issue, for, also, urgent, review, reason, force, head_time, message, summary, stacked_on}
                                      open a pull request from a pushed branch (wp pr open, wp ship). Without
                                      base, the first of stacked_on (the branches head was built on, nearest
                                      first) with a pull request open is the base, else the default branch; the
@@ -1035,6 +1036,7 @@ steers or clears one in effect.
                                      needs acting on. When held_needs_agent and notice_needs_agent are false
                                      there is nothing for the agent to run: it ends its turn and Waypoint
                                      opens the pull request itself. Without review, held is a 400 error.
+    POST /projects/{key}/pulls/tasks {keys}   refuse, as the open would, tasks that can't share one pull request (wp ship A B asks before it commits): {"ok":true} or the error
     GET /projects/{key}/pulls/{number}?repo=owner/name   a pull request by number: the detail above plus
                                      "shipping": {ci, checks[{name,state,url,description,has_log}],
                                      gate{enabled,severity,state,note,open,below}, findings[{id,path,line,
@@ -1044,6 +1046,14 @@ steers or clears one in effect.
                                      label,setting,note} (setting: armed by the repo's Merge automatically),
                                      can_merge}. States: findings open|fixed|withdrawn|dismissed|resolved;
                                      checks pending|success|failed; ci pending|passed|failed|none
+    GET /projects/{key}/pulls/{number}/timeline?repo=owner/name   where its time from open to merge went
+                                     (wp pr timeline): {state, opened_at, merged_at, closed_at, as_of (the
+                                     server's now), pushes[{at,head}], armed[{at,what (arm|disarm|merge|merged),by}],
+                                     runs[{number,workflow,event,tier,stack,head,status,queued_at,started_at,
+                                     stopped_at,wait_s,run_s}], holds[{what,head,from,until,after_green_s}],
+                                     totals{open_to_merged_s,ci_wait_s,ci_run_s,held_s}}. Finished runs only;
+                                     wait and run totals add every run, overlapping ones too; held_s is the
+                                     union of the holds' armed time after their head first passed CI
     POST /pulls/{id}/check           read its threads and checks from the forge now, re-evaluate the gate;
                                      returns the detail (editors; what "@waypoint check" does)
     GET /pulls/{id}/readiness        {ready, reasons[], only_waiting, checking}: open, not a draft, mergeable, every

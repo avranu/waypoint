@@ -61,6 +61,7 @@ automation>search
 automation>session
 automation>wakeups
 autopilot>cache
+autopilot>deferred
 autopilot>quota
 autopilot>review
 autopilot>search
@@ -108,6 +109,7 @@ findings>late
 findings>outside
 findings>review
 findings>round
+followups>deferred
 followups>ship
 followups>wakeups
 forge>ai
@@ -312,6 +314,7 @@ runner>babysit
 runner>cache
 runner>ci
 runner>code
+runner>deferred
 runner>merge
 runner>objective
 runner>prep

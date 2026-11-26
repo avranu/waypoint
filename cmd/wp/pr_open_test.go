@@ -550,11 +550,13 @@ func TestCLIPROpenAndShip(t *testing.T) {
 	if !strings.Contains(out, "cut the line") {
 		t.Errorf("another task's pull request marked urgent, no note:\n%s", out)
 	}
-	if out := e.wp("show", review.Key); !strings.Contains(out, "Done") || !strings.Contains(out, "Looks right") {
-		t.Errorf("the review task didn't finish:\n%s", out)
+	// A task shipped onto another task's open pull request is linked to it
+	// and waits In Review for its merge, as the first one does (WP-1426).
+	if out := e.wp("show", review.Key); !strings.Contains(out, "[In Review]") || !strings.Contains(out, "Looks right") {
+		t.Errorf("the review task isn't In Review:\n%s", out)
 	}
-	if out := e.wp("pr", "show", prNum(e.wp("pr", "show"))); strings.Contains(out, review.Key) {
-		t.Errorf("the review task was linked:\n%s", out)
+	if out := e.wp("pr", "show", prNum(e.wp("pr", "show"))); !strings.Contains(out, review.Key) {
+		t.Errorf("the review task wasn't linked:\n%s", out)
 	}
 
 	if out = e.wp("pr", "link", n, task.Key); !strings.Contains(out, "Linked") {

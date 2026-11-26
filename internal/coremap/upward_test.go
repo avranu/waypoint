@@ -14,8 +14,8 @@ func TestUpwardPairsOnFixture(t *testing.T) {
 	if keys := sortedKeys(pairs); !slices.Equal(keys, []string{"pr>issues"}) {
 		t.Fatalf("pairs %v, want [pr>issues] (references to kernel and within a group never count)", keys)
 	}
-	if n := len(pairs["pr>issues"]); n != 2 {
-		t.Errorf("pr>issues has %d refs, want 2", n)
+	if n := len(pairs["pr>issues"]); n != 3 {
+		t.Errorf("pr>issues has %d refs, want 3", n)
 	}
 	if n := a.AllPairs(); n < 2 {
 		t.Errorf("AllPairs %d", n)
@@ -56,7 +56,7 @@ func TestCheckUpwardOnFixture(t *testing.T) {
 		t.Errorf("gone %q", gone)
 	}
 	for _, want := range []string{
-		"1 new upward group pair(s)", "pr>issues: 2 reference(s)",
+		"1 new upward group pair(s)", "pr>issues: 3 reference(s)",
 		"internal/core/pr_open.go:15 Service.CloseIssue", "internal/core/pr_open.go:16 notify",
 		"kernel", "emit an event", "groups.txt",
 		`make coremap CORE_ARGS="-edge 'pr>issues'"`,

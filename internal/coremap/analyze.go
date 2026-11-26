@@ -3,8 +3,10 @@ package coremap
 import (
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -32,10 +34,13 @@ type Summary struct {
 	SCCs          int       `json:"sccs"`
 	LargestSCC    int       `json:"largestScc"`
 	LargestSCCOf  []string  `json:"largestSccGroups"`
-	CrossRefs     int       `json:"crossRefs"`
-	Down          int       `json:"down"`
-	Up            int       `json:"up"`
-	UpCalls       int       `json:"upCalls"`
+	// Cycles lists every strongly connected component of two or more groups,
+	// largest first.
+	Cycles    [][]string `json:"cycles"`
+	CrossRefs int        `json:"crossRefs"`
+	Down      int        `json:"down"`
+	Up        int        `json:"up"`
+	UpCalls   int        `json:"upCalls"`
 	// The same three counts for references between groups other than the kernel.
 	NonKernelDown    int `json:"nonKernelDown"`
 	NonKernelUp      int `json:"nonKernelUp"`
@@ -73,9 +78,13 @@ type GroupRow struct {
 	UpOut    int    `json:"upOut"`
 	// DownOut is Outbound - UpOut. UpSyms counts the distinct symbols those
 	// upward references name: what has to be cut.
-	DownOut int  `json:"downOut"`
-	UpSyms  int  `json:"upSymbols"`
-	Ready   bool `json:"ready"`
+	DownOut int `json:"downOut"`
+	UpSyms  int `json:"upSymbols"`
+	// ToKernel counts the references to the kernel group. They never point up,
+	// but what they name is declared in package core (Service among it), which
+	// a package below it cannot import.
+	ToKernel int  `json:"toKernel"`
+	Ready    bool `json:"ready"`
 }
 
 // Report is the default report.
@@ -96,27 +105,42 @@ type Analysis struct {
 	files    map[string]int // group -> files
 	lines    map[string]int // group -> lines
 	unplaced []string
+	// kernel holds the groups made of the kernel line's files: "kernel", or
+	// with PerFile each of those files.
+	kernel map[string]bool
 }
 
-// Analyze prepares ld for reporting.
+// Analyze prepares ld for reporting. Groups are judged by the grouping file's
+// order. With PerFile that file orders no group (files are not domains), so the
+// order is the suggested one.
 func Analyze(ld *Loaded, groups *Groups) *Analysis {
-	a := &Analysis{ld: ld, groups: groups, pos: map[string]int{}, files: map[string]int{}, lines: map[string]int{}}
+	a := &Analysis{ld: ld, groups: groups, pos: map[string]int{}, files: map[string]int{}, lines: map[string]int{}, kernel: map[string]bool{}}
 	for _, f := range ld.Files {
 		g := groups.Of(f)
 		a.files[g]++
 		a.lines[g] += ld.Lines[f]
-	}
-	a.order = append(a.order, groups.Order...)
-	for g := range a.files {
-		if !groups.Placed(g) {
-			a.unplaced = append(a.unplaced, g)
+		if groups.Domain(f) == kernelGroup {
+			a.kernel[g] = true
 		}
 	}
-	sort.Strings(a.unplaced)
-	a.order = append(a.order, a.unplaced...)
+	if !groups.PerFile {
+		a.order = append(a.order, groups.Order...)
+	}
+	var rest []string
+	for g := range a.files {
+		if groups.PerFile || !groups.Placed(g) {
+			rest = append(rest, g)
+		}
+	}
+	sort.Strings(rest)
+	a.order = append(a.order, rest...)
 	for i, g := range a.order {
 		a.pos[g] = i
 	}
+	if groups.PerFile {
+		return a.SuggestOrder()
+	}
+	a.unplaced = rest
 	return a
 }
 
@@ -135,7 +159,7 @@ func (a *Analysis) Report(top int) Report {
 	rows := map[string]*GroupRow{}
 	for _, g := range a.order {
 		if a.files[g] > 0 {
-			rows[g] = &GroupRow{Name: g, Placed: a.groups.Placed(g), Files: a.files[g], Lines: a.lines[g]}
+			rows[g] = &GroupRow{Name: g, Placed: a.groups.PerFile || a.groups.Placed(g), Files: a.files[g], Lines: a.lines[g]}
 		}
 	}
 	adj := map[string][]string{}
@@ -144,7 +168,10 @@ func (a *Analysis) Report(top int) Report {
 	for _, r := range a.ld.Refs {
 		s.CrossRefs++
 		up := a.up(r)
-		kernel := r.FromGroup == "kernel" || r.ToGroup == "kernel"
+		kernel := a.kernel[r.FromGroup] || a.kernel[r.ToGroup]
+		if a.kernel[r.ToGroup] && !a.kernel[r.FromGroup] {
+			rows[r.FromGroup].ToKernel++
+		}
 		switch {
 		case up:
 			s.Up++
@@ -188,17 +215,26 @@ func (a *Analysis) Report(top int) Report {
 	sccs := tarjan(nodes, adj)
 	s.SCCs = len(sccs)
 	for _, c := range sccs {
-		if len(c) > s.LargestSCC {
-			s.LargestSCC = len(c)
-			s.LargestSCCOf = c
+		sort.Strings(c)
+		if len(c) > 1 {
+			s.Cycles = append(s.Cycles, c)
 		}
 	}
-	sort.Strings(s.LargestSCCOf)
+	sort.SliceStable(sccs, func(i, j int) bool { return len(sccs[i]) > len(sccs[j]) })
+	if len(sccs) > 0 {
+		s.LargestSCC, s.LargestSCCOf = len(sccs[0]), sccs[0]
+	}
+	sort.Slice(s.Cycles, func(i, j int) bool {
+		if len(s.Cycles[i]) != len(s.Cycles[j]) {
+			return len(s.Cycles[i]) > len(s.Cycles[j])
+		}
+		return s.Cycles[i][0] < s.Cycles[j][0]
+	})
 
 	var gr []GroupRow
 	for _, g := range a.order {
 		if r := rows[g]; r != nil {
-			r.Ready = r.UpOut == 0
+			r.Ready = r.UpOut == 0 && r.ToKernel == 0
 			r.DownOut = r.Outbound - r.UpOut
 			r.UpSyms = len(upSyms[g])
 			if r.Ready {
@@ -207,32 +243,40 @@ func (a *Analysis) Report(top int) Report {
 			gr = append(gr, *r)
 		}
 	}
-	s.Top, s.Subpackages = a.sizes()
+	s.Top, s.Subpackages = a.ld.Top, a.ld.Subpackages
+	s.Top.TypedFiles = len(a.ld.Files)
 	return Report{Summary: s, UpwardEdges: a.upwardEdges(top), Groups: gr}
 }
 
-// sizes counts the package directory's files and lines, and each
-// subpackage's below it, by file name (build tags are not applied).
-func (a *Analysis) sizes() (PkgSize, []PkgSize) {
+// sizes counts the files and lines of dir, and of each directory below it, by
+// file name (build constraints are not applied). It fails rather than leave out
+// what it cannot read.
+func sizes(dir string) (PkgSize, []PkgSize, error) {
 	by := map[string]*PkgSize{}
-	_ = filepath.WalkDir(a.ld.Dir, func(p string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return err
 		}
+		n := d.Name()
+		hidden := strings.HasPrefix(n, ".") || strings.HasPrefix(n, "_")
 		if d.IsDir() {
-			if n := d.Name(); p != a.ld.Dir && (n == "testdata" || n == "vendor" || strings.HasPrefix(n, ".") || strings.HasPrefix(n, "_")) {
+			if p != dir && (hidden || n == "testdata" || n == "vendor") {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if !strings.HasSuffix(p, ".go") {
+		// The go command ignores files named like this too.
+		if hidden || !strings.HasSuffix(p, ".go") {
 			return nil
 		}
 		b, err := os.ReadFile(p) // #nosec G304,G122 -- a Go file under the directory being mapped
 		if err != nil {
-			return nil
+			return err
 		}
-		rel, _ := filepath.Rel(a.ld.Dir, filepath.Dir(p))
+		rel, err := filepath.Rel(dir, filepath.Dir(p))
+		if err != nil {
+			return err
+		}
 		sz := by[rel]
 		if sz == nil {
 			sz = &PkgSize{Dir: filepath.ToSlash(rel)}
@@ -247,11 +291,13 @@ func (a *Analysis) sizes() (PkgSize, []PkgSize) {
 		}
 		return nil
 	})
+	if err != nil {
+		return PkgSize{}, nil, err
+	}
 	top := PkgSize{Dir: "."}
 	if t := by["."]; t != nil {
 		top = *t
 	}
-	top.TypedFiles = len(a.ld.Files)
 	var subs []PkgSize
 	for k, v := range by {
 		if k != "." {
@@ -259,7 +305,7 @@ func (a *Analysis) sizes() (PkgSize, []PkgSize) {
 		}
 	}
 	sort.Slice(subs, func(i, j int) bool { return subs[i].Dir < subs[j].Dir })
-	return top, subs
+	return top, subs, nil
 }
 
 // symbolCounts counts references per symbol (key tells symbols apart), most first.
@@ -278,10 +324,10 @@ func symbolCounts(refs []Ref, key func(Ref) string) []SymCount {
 		}
 	}
 	out := make([]SymCount, 0, len(m))
-	for _, c := range m {
-		out = append(out, *c)
+	for _, k := range slices.Sorted(maps.Keys(m)) { // ties keep the declaration's order
+		out = append(out, *m[k])
 	}
-	sort.Slice(out, func(i, j int) bool {
+	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Count != out[j].Count {
 			return out[i].Count > out[j].Count
 		}
@@ -427,10 +473,10 @@ func sortedUse(m map[string]*UseLine) []UseLine {
 		rank[c] = i
 	}
 	out := make([]UseLine, 0, len(m))
-	for _, l := range m {
-		out = append(out, *l)
+	for _, k := range slices.Sorted(maps.Keys(m)) { // ties keep the declaration's order
+		out = append(out, *m[k])
 	}
-	sort.Slice(out, func(i, j int) bool {
+	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		if a.Class != b.Class {
 			return rank[a.Class] < rank[b.Class]
@@ -492,7 +538,10 @@ func (a *Analysis) KernelCandidates(minGroups int) []Candidate {
 		if out[i].Symbol != out[j].Symbol {
 			return out[i].Symbol < out[j].Symbol
 		}
-		return out[i].DeclFile < out[j].DeclFile
+		if out[i].DeclFile != out[j].DeclFile {
+			return out[i].DeclFile < out[j].DeclFile
+		}
+		return out[i].DeclLine < out[j].DeclLine
 	})
 	return out
 }

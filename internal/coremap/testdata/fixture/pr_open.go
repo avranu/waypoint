@@ -14,4 +14,5 @@ func (s *Service) OpenPR() *PR {
 func afterOpen(s *Service) {
 	s.CloseIssue()
 	notify(1)
+	_ = notify // upward, but not a call
 }

@@ -8,10 +8,6 @@ import (
 	"strings"
 )
 
-// KernelGroup is the group every other group may refer to; references to it
-// are never counted as upward.
-const KernelGroup = "kernel"
-
 // UpwardPairs groups the upward references (to a group later in the order) by
 // the ordered pair "from>to". References within a group and references to the
 // kernel group never count. Groups in a cycle have no order of their own: they
@@ -21,7 +17,7 @@ const KernelGroup = "kernel"
 func (a *Analysis) UpwardPairs() map[string][]Ref {
 	out := map[string][]Ref{}
 	for _, r := range a.ld.Refs {
-		if r.FromGroup == r.ToGroup || r.ToGroup == KernelGroup || !a.up(r) {
+		if r.FromGroup == r.ToGroup || a.kernel[r.ToGroup] || !a.up(r) {
 			continue
 		}
 		k := r.FromGroup + ">" + r.ToGroup
