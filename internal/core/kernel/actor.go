@@ -13,8 +13,8 @@ func (a *Actor) Restricted() bool { return a != nil && a.Permissions != nil }
 // browser and unrestricted tokens may do everything their role allows.
 func (a *Actor) Allows(p Permission) bool { return a == nil || a.Permissions.Has(p) }
 
-// need refuses an actor whose token lacks p, and records the refusal so
-// the token's owner sees it on the settings page.
+// Need refuses an actor whose token lacks p with a *PermissionError. It
+// records nothing: that is the caller's to do.
 func (a *Actor) Need(p Permission) error {
 	if a.Allows(p) {
 		return nil
@@ -35,7 +35,7 @@ func (a *Actor) CanManageTokens() error {
 	return nil
 }
 
-// person is a signed-in person in a browser: not a token, an automation or
+// Person reports whether the actor is a signed-in person in a browser: not a token, an automation or
 // an MCP client.
 func (a *Actor) Person() bool {
 	return a != nil && a.User != nil && a.User.ID != 0 && a.TokenID == 0 && a.Automation == nil && !a.MCP && a.Agent == ""
@@ -106,7 +106,9 @@ type Actor struct {
 	// RunnerJob is the runner job whose own token (WP-418) is behind the
 	// request, if any.
 	RunnerJob int64
-	Scope     map[int64]int
+	// Scope limits a runner job's token (WP-418) to these projects, each with
+	// the most it may do there (a Role* value); nil for everyone else.
+	Scope map[int64]int
 	// Agent is the acting LLM's identity ("anthropic/claude-opus-5-5"), from
 	// an agent token or the X-Waypoint-Agent header; empty for people.
 	Agent string
@@ -123,18 +125,27 @@ type Actor struct {
 	Prestart bool
 	// Automation is set when an automation performs the change on behalf of
 	// User (the person whose action triggered it).
-	Automation  *AutomationRef
-	Depth       int
-	SessionHash string
+	Automation *AutomationRef
+	// Depth is how many automations led to this change, which bounds
+	// automations that trigger each other.
+	Depth int
+	// SessionHash is the hash of the browser session's token; "" for requests
+	// that didn't come with one. Not the agent session, which is Session.
+	SessionHash string `json:"-"`
 	// Session is the agent session (WP-D16) the request came from, set from
 	// the X-Waypoint-Session header: what the actor does is recorded on it.
 	Session int64
 	// ClientVersion is the wp that made the request, from its User-Agent
 	// (WP-256); "" for anything else.
 	ClientVersion string
-	Budget        *int
-	ForgeSync     bool
-	TextAgent     string
+	// Budget is how many more automation actions one change may set off,
+	// through every rule it triggers; the actors of that chain share it.
+	Budget *int
+	// ForgeSync marks a change copied in from a forge.
+	ForgeSync bool
+	// TextAgent, when set, is the agent that provenance names as the author of
+	// the text written, in place of the actor's own.
+	TextAgent string
 }
 
 func (a *Actor) ID() int64 {

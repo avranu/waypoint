@@ -450,7 +450,6 @@ func ptrTime(n sql.NullInt64) *time.Time {
 	return &t
 }
 
-// placeholders returns "?,?,?" for n values.
 // Opt is a JSON field that distinguishes "absent" from "null": Set is true
 // when the field was present, and Value is nil when it was null.
 type Opt[T any] struct {

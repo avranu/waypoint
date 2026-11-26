@@ -57,6 +57,9 @@ func TestSHAAndCountHelpers(t *testing.T) {
 		{"TruncateBytes short enough", TruncateBytes("hi", 2), "hi"},
 		{"ClipRunes fits", ClipRunes("abc", 3), "abc"},
 		{"ClipRunes cuts", ClipRunes("abcdef", 4), "abc…"},
+		{"ClipRunes zero", ClipRunes("abc", 0), ""},
+		{"ClipRunes negative", ClipRunes("abc", -1), ""},
+		{"ClipRunes empty, negative", ClipRunes("", -1), ""},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s: got %v, want %v", tc.name, tc.got, tc.want)
