@@ -753,7 +753,9 @@ const (
 // still counts as going. A new sweep gives way to one that finished a step
 // this recently and takes over from one that has not. The sweep taken over
 // from stops when the step it stands in returns, and the new one passes
-// over that pull request because its lock is held.
+// over that pull request because its lock is held. A new sweep arrives
+// beside a running one once the scheduler no longer skips the lane for it
+// (goLane).
 const babysitSweepAlive = 5 * time.Minute
 
 // sweepMark is the running sweep and when it last finished a step.
@@ -846,8 +848,10 @@ func (s *Service) CheckBabysits(ctx context.Context) {
 			continue
 		}
 		at := s.now()
-		s.babysitStepHeld(ctx, x.pr, s.nowMS()-x.synced >= babysitResyncEvery.Milliseconds())
-		unlock()
+		func() {
+			defer unlock()
+			s.babysitStepHeld(ctx, x.pr, s.nowMS()-x.synced >= babysitResyncEvery.Milliseconds())
+		}()
 		d := s.now().Sub(at)
 		mine := s.babysitSweep.stepDone(sweep, s.now())
 		pr := fmt.Sprintf("%s#%d", x.repo, x.number)

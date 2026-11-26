@@ -183,12 +183,14 @@ func TestPRLinksUseIndexes(t *testing.T) {
 }
 
 // A review run's findings are read by run_id (a pull request's page, the
-// review step): both reads use the index on it, not a scan of the table.
+// review step, agent activity's count by model): each read uses the index on
+// it, not a scan of the table.
 func TestFindingsByRunUseTheRunIndex(t *testing.T) {
 	e := newEnv(t)
 	for name, q := range map[string]string{
 		"runFindings": `SELECT ` + findingCols + ` FROM bot_findings f WHERE f.run_id = ? ORDER BY f.id`,
 		"review step": `SELECT severity, placement FROM bot_findings WHERE run_id = ? AND state != 'dropped'`,
+		"by model":    `SELECT f.model, count(*) AS n FROM bot_findings f WHERE f.run_id = ? AND f.state != 'dropped' GROUP BY f.model`,
 	} {
 		plan := e.explainPlan(q, 1)
 		if !slices.ContainsFunc(plan, func(d string) bool {

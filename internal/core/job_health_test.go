@@ -1074,6 +1074,8 @@ func TestSchedulerDetachOverrun(t *testing.T) {
 func TestSchedulerLoopJobNeverOverlapsItself(t *testing.T) {
 	e := newEnv(t)
 	started, release := make(chan struct{}, 4), make(chan struct{})
+	letGo := sync.OnceFunc(func() { close(release) })
+	defer letGo()
 	r := &scheduler{s: e.s, busy: map[string]*laneRun{}, jobs: []scheduled{
 		{name: "slow", every: time.Minute, run: func(context.Context) {
 			started <- struct{}{}
@@ -1083,7 +1085,11 @@ func TestSchedulerLoopJobNeverOverlapsItself(t *testing.T) {
 	e.s.jobs.declare("slow", time.Minute, "")
 	tick := func() { r.fire(e.ctx, func(scheduled) bool { return true }, 5*time.Millisecond) }
 	tick()
-	<-started
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the loop job did not start")
+	}
 	const ticks = 20
 	if time.Duration(ticks)*time.Minute <= jobOverdue(time.Minute) {
 		t.Fatal("the ticks do not outlast jobOverdue")
@@ -1100,7 +1106,7 @@ func TestSchedulerLoopJobNeverOverlapsItself(t *testing.T) {
 	if j := e.jobOf("slow"); !j.Running || j.Skips != ticks {
 		t.Errorf("slow: running %v, skips %d", j.Running, j.Skips)
 	}
-	close(release)
+	letGo()
 	e.s.Wait()
 	e.pass(time.Minute)
 	tick()
@@ -1120,6 +1126,8 @@ func TestSchedulerLoopJobNeverOverlapsItself(t *testing.T) {
 func TestSchedulerLoopWaitEndsWithContext(t *testing.T) {
 	e := newEnv(t)
 	started, release := make(chan struct{}), make(chan struct{})
+	letGo := sync.OnceFunc(func() { close(release) })
+	defer letGo()
 	r := &scheduler{s: e.s, busy: map[string]*laneRun{}, jobs: []scheduled{
 		{name: "slow", every: time.Minute, run: func(context.Context) {
 			close(started)
@@ -1133,7 +1141,11 @@ func TestSchedulerLoopWaitEndsWithContext(t *testing.T) {
 		defer close(fired)
 		r.fire(ctx, func(scheduled) bool { return true }, time.Minute)
 	}()
-	<-started
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the loop job did not start")
+	}
 	select {
 	case <-fired:
 		t.Fatal("fire returned before the context ended")
@@ -1155,7 +1167,7 @@ func TestSchedulerLoopWaitEndsWithContext(t *testing.T) {
 		t.Fatal("Wait returned with the job still running")
 	case <-time.After(50 * time.Millisecond):
 	}
-	close(release)
+	letGo()
 	select {
 	case <-waited:
 	case <-time.After(5 * time.Second):

@@ -87,6 +87,16 @@ func within(t *testing.T, what string, f func()) {
 	}
 }
 
+// ended fails the test unless done is closed soon.
+func ended(t *testing.T, done <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s did not end", what)
+	}
+}
+
 // inOrder makes the sweep step the first pull request first.
 func inOrder(t *testing.T, be *bsEnv, prs [2]*PullRequest) {
 	t.Helper()
@@ -224,6 +234,90 @@ func TestBabysitSweepPassesOverALockedPullRequest(t *testing.T) {
 	}
 }
 
+// A sweep taken over from leaves the mark to the sweep that took over when
+// it ends: the next sweep gives way to that one, not to nobody.
+func TestBabysitSweepTakenOverFromLeavesTheMark(t *testing.T) {
+	be, prs, _ := twoBabysits(t)
+	inOrder(t, be, prs)
+	be.pass(babysitResyncEvery + time.Minute)
+	entered := map[int]chan struct{}{prs[0].Number: make(chan struct{}, 4), prs[1].Number: make(chan struct{}, 4)}
+	release := map[int]chan struct{}{prs[0].Number: make(chan struct{}), prs[1].Number: make(chan struct{})}
+	be.sg.notesHold = func(n int) {
+		entered[n] <- struct{}{}
+		<-release[n]
+	}
+	open := [2]func(){
+		sync.OnceFunc(func() { close(release[prs[0].Number]) }),
+		sync.OnceFunc(func() { close(release[prs[1].Number]) }),
+	}
+	defer open[0]()
+	defer open[1]()
+	reached := func(i int, what string) {
+		t.Helper()
+		select {
+		case <-entered[prs[i].Number]:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s: the held step was never reached", what)
+		}
+	}
+	sweep := func() chan struct{} {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			be.s.CheckBabysits(be.ctx)
+		}()
+		return done
+	}
+	first := sweep()
+	reached(0, "the first sweep")
+	be.pass(babysitSweepAlive + time.Second)
+	second := sweep()
+	reached(1, "the sweep that takes over")
+	open[0]()
+	ended(t, first, "the sweep taken over from")
+	if be.sweepHeld() != 2 {
+		t.Fatalf("the mark after the sweep taken over from ended: %d, want the second sweep's", be.sweepHeld())
+	}
+	within(t, "a sweep beside the one that took over", func() { be.s.CheckBabysits(be.ctx) })
+	if be.sweepRuns() != 2 {
+		t.Errorf("a sweep started beside the one that took over: %d sweeps", be.sweepRuns())
+	}
+	open[1]()
+	ended(t, second, "the sweep that took over")
+	if be.sweepHeld() != 0 {
+		t.Errorf("the mark is still held after the sweeps ended: %d", be.sweepHeld())
+	}
+}
+
+// A step that panics does not keep its pull request's lock: the next step
+// for it, a sweep's or an event's, still runs.
+func TestBabysitSweepFreesTheLockWhenAStepPanics(t *testing.T) {
+	be, prs, _ := twoBabysits(t)
+	inOrder(t, be, prs)
+	be.pass(babysitResyncEvery + time.Minute)
+	be.sg.notesHold = func(n int) {
+		if n == prs[0].Number {
+			panic("the forge's client broke")
+		}
+	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("the sweep did not panic: the test holds nothing")
+			}
+		}()
+		be.s.CheckBabysits(be.ctx)
+	}()
+	unlock, free := be.s.babysitLocks.tryLock(prs[0].ID)
+	if !free {
+		t.Fatal("the pull request's lock is still held after its step panicked")
+	}
+	unlock()
+	if be.sweepHeld() != 0 {
+		t.Errorf("the mark is still held after the sweep panicked: %d", be.sweepHeld())
+	}
+}
+
 // A sweep that gives way to one still moving did none of its work: the job
 // counts it as skipped, not as a clean run.
 func TestBabysitSweepThatGivesWayIsABusySkip(t *testing.T) {
@@ -250,7 +344,7 @@ func TestBabysitSweepThatGivesWayIsABusySkip(t *testing.T) {
 		t.Errorf("babysits is not busy: %v", be.s.jobs.busySinces())
 	}
 	g.open()
-	<-first
+	ended(t, first, "the held sweep")
 }
 
 // Batched news that is due goes out by its own job while a babysit sweep is
@@ -271,10 +365,19 @@ func TestBatchedNewsIsReleasedWhileASweepIsHeld(t *testing.T) {
 		be.s.CheckBabysits(be.ctx)
 	}()
 	g.await(t, "the sweep")
-	within(t, "the release of batched news", func() { be.s.releaseDueBatches(be.ctx) })
+	var news scheduled
+	for _, j := range be.s.schedule() {
+		if j.name == "batched news" {
+			news = j
+		}
+	}
+	if news.run == nil || news.lane != "" {
+		t.Fatalf("the batched news job: %+v", news)
+	}
+	within(t, "the batched news job", func() { news.run(be.ctx) })
 	if jobs := be.messageJobs(); len(jobs) != 1 || !strings.Contains(jobs[0], "o/r#7") {
 		t.Errorf("a due batch while the sweep is held: %v", jobs)
 	}
 	g.open()
-	<-first
+	ended(t, first, "the held sweep")
 }
