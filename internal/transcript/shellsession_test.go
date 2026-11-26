@@ -65,6 +65,9 @@ func TestShellEditNeedsAWorkingDirectoryTheSessionWorkedIn(t *testing.T) {
 		{"gofmt rewrite rule is no file", "gofmt -w -r 'a -> b' /tmp/x.go", "/r", nil, false}, // audit 1933.7
 		{"prettier config is no file", "prettier --config .prettierrc.json --write /tmp/x.md", "/r", nil, false},
 		{"prettier writes its file", "prettier --config .prettierrc.json --write web/x.md", "/r", nil, true},
+		{"prettier option values are no files", "prettier --trailing-comma all --arrow-parens avoid --quote-props consistent --prose-wrap always --write /tmp/x.ts", "/r", nil, false}, // audit 1954.4
+		{"prettier switch takes no value", "prettier --editorconfig --write web/x.md", "/r", nil, true},
+		{"goimports profile is no file", "goimports -memprofile mem.out -w /tmp/x.go", "/r", nil, false},
 		{"find through a filter to xargs in tmp", "find /tmp/s -name '*.go' | grep -v test | xargs sed -i s/a/b/", "/r", nil, false}, // audit 1931.3
 		{"find through a filter to xargs in the tree", "find internal -name '*.go' | grep -v test | sort | xargs sed -i s/a/b/", "/r", nil, true},
 		{"a find earlier on the line feeds nothing", "find /tmp/s -name x; ls | xargs sed -i s/a/b/", "/r", nil, true},

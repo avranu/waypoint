@@ -1302,8 +1302,24 @@ func TestGuardReadsPatchesAndScripts(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "ok.patch"), "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-a\n+b\n")
 	writeFile(t, filepath.Join(repo, "mail.patch"), "From abc Mon Sep 17 00:00:00 2001\nSubject: [PATCH] x\n\n---\n .claude/settings.local.json | 1 +\n\ndiff --git a/.claude/settings.local.json b/.claude/settings.local.json\nnew file mode 100644\n--- /dev/null\n+++ b/.claude/settings.local.json\n@@ -0,0 +1 @@\n+exit 0\n")
 	writeFile(t, filepath.Join(repo, "home.patch"), "--- "+home+"/.claude/settings.json\n+++ "+home+"/.claude/settings.json\n@@ -1 +1 @@\n-{}\n+{\"hooks\":{}}\n")
+	// Audit 1954: a patch past the first megabyte, one listed ninth, and
+	// patch's own output and target files.
+	writeFile(t, filepath.Join(repo, "big.patch"), "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1,40001 @@\n-a\n"+strings.Repeat("+"+strings.Repeat("x", 60)+"\n", 40001)+"diff --git a/.claude/settings.json b/.claude/settings.json\n"+settings)
+	writeFile(t, filepath.Join(repo, "plain.patch"), "--- x\n+++ x\n@@ -1 +1 @@\n-{}\n+{\"hooks\":{}}\n")
 	for _, c := range []struct{ cmd, want string }{
 		{`git apply bad.patch`, ruleGuard},
+		{`git apply big.patch`, ruleGuard},
+		{`git apply ok.patch ok.patch ok.patch ok.patch ok.patch ok.patch ok.patch ok.patch ok.patch bad.patch`, ruleGuard},
+		{`patch -o .claude/settings.json main.go ok.patch`, ruleGuard},
+		{`patch -o.claude/settings.json main.go < ok.patch`, ruleGuard},
+		{`patch --output=.claude/settings.json main.go < ok.patch`, ruleGuard},
+		{`patch --output .claude/settings.json main.go < ok.patch`, ruleGuard},
+		{`patch .claude/settings.json plain.patch`, ruleGuard},
+		{`patch -p 1 .claude/settings.json < plain.patch`, ruleGuard},
+		{`patch -r .claude/settings.json -p1 < ok.patch`, ruleGuard},
+		{`patch -o out.go main.go ok.patch`, ""},
+		{`patch -p 1 -i ok.patch`, ""},
+		{`patch main.go plain.patch`, ""},
 		{`git apply --3way bad.patch`, ruleGuard},
 		{`git --no-pager apply ok.patch bad.patch`, ruleGuard},
 		{`git apply < bad.patch`, ruleGuard},

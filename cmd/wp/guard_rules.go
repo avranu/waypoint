@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"io"
 	"os"
 	"path"
@@ -1492,19 +1493,20 @@ func (g *guard) writeHit(p string) *guardHit {
 	return nil
 }
 
-// guardMaxPatch bounds the patch text read from one file, and
-// guardMaxPatches the files read for one command.
-const (
-	guardMaxPatch   = 1 << 20
-	guardMaxPatches = 8
-)
+// patchValueFlags are patch's options that take a value in the next word, so
+// that word is neither the file patched nor the patch.
+var patchValueFlags = map[string]bool{"-p": true, "--strip": true, "-F": true, "--fuzz": true, "-D": true, "--ifdef": true,
+	"-B": true, "--prefix": true, "-Y": true, "--basename-prefix": true, "-z": true, "--suffix": true, "-V": true,
+	"--version-control": true, "-g": true, "--get": true, "--reject-format": true, "--quoting-style": true, "--read-only": true}
 
-// patchTargets are the files a patch applied by `git apply`, `git am` or
-// `patch` changes. The command line does not name them, the patch does: it is
-// read from the files the command names, from one fed with <, or from a
-// heredoc. A patch that arrives through a pipe (git diff | git apply) or from
-// a file that is not there yet cannot be read, and is let through. A run
-// that only checks or lists (--check, --stat, --dry-run) writes nothing.
+// patchTargets are the files `git apply`, `git am` or `patch` writes. The
+// patch names most of them, not the command line: it is read, whole, from
+// every file the command names, from one fed with <, or from a heredoc.
+// patch also writes the file it is told to patch (its first file argument),
+// its output (-o) and its reject file (-r). A patch that arrives through a
+// pipe (git diff | git apply), from something that is not a regular file, or
+// from a file that is not there yet cannot be read, and is let through. A
+// run that only checks or lists (--check, --stat, --dry-run) writes nothing.
 func (g *guard) patchTargets(c *guardCmd, name string, args []string) []string {
 	dir := g.dir
 	switch name {
@@ -1532,98 +1534,145 @@ func (g *guard) patchTargets(c *guardCmd, name string, args []string) []string {
 	default:
 		return nil
 	}
-	var files []string
+	var files, wrote []string // patches to read; files the command line itself names as written
+	cd := func(to string) {
+		if p := g.site.resolve(dir, to); p != "" {
+			dir = p
+		}
+	}
+	first := true
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		isPatch := name == "patch"
+		next := func() (string, bool) {
+			if i+1 < len(args) {
+				i++
+				return args[i], true
+			}
+			return "", false
+		}
 		switch {
 		case a == "--check" || a == "--stat" || a == "--numstat" || a == "--summary" || a == "--dry-run":
 			return nil
-		case name == "patch" && (a == "-i" || a == "--input" || a == "-d" || a == "--directory") && i+1 < len(args):
-			i++
-			if a[len(a)-1] == 'i' || a == "--input" {
-				files = append(files, args[i])
-			} else if p := g.site.resolve(dir, args[i]); p != "" {
-				dir = p
+		case isPatch && (a == "-i" || a == "--input"):
+			if v, ok := next(); ok {
+				files = append(files, v)
 			}
+		case isPatch && (a == "-d" || a == "--directory"):
+			if v, ok := next(); ok {
+				cd(v)
+			}
+		case isPatch && (a == "-o" || a == "--output" || a == "-r" || a == "--reject-file"):
+			if v, ok := next(); ok {
+				wrote = append(wrote, v)
+			}
+		case isPatch && patchValueFlags[a]:
+			i++
 		case strings.HasPrefix(a, "--input="):
 			files = append(files, a[len("--input="):])
 		case strings.HasPrefix(a, "--directory="):
-			if p := g.site.resolve(dir, a[len("--directory="):]); p != "" {
-				dir = p
-			}
-		case name == "patch" && strings.HasPrefix(a, "-d") && len(a) > 2:
-			if p := g.site.resolve(dir, a[2:]); p != "" {
-				dir = p
-			}
-		case name == "patch" && strings.HasPrefix(a, "-i") && len(a) > 2:
+			cd(a[len("--directory="):])
+		case isPatch && strings.HasPrefix(a, "--output="):
+			wrote = append(wrote, a[len("--output="):])
+		case isPatch && strings.HasPrefix(a, "--reject-file="):
+			wrote = append(wrote, a[len("--reject-file="):])
+		case isPatch && strings.HasPrefix(a, "-d") && len(a) > 2:
+			cd(a[2:])
+		case isPatch && strings.HasPrefix(a, "-i") && len(a) > 2:
 			files = append(files, a[2:])
+		case isPatch && (strings.HasPrefix(a, "-o") || strings.HasPrefix(a, "-r")) && len(a) > 2:
+			wrote = append(wrote, a[2:])
 		case strings.HasPrefix(a, "-"):
 		default:
-			files = append(files, a) // git: a patch; patch: the file patched or the patch
+			if isPatch && first {
+				wrote = append(wrote, a) // patch FILE [PATCH]: the file patched
+			}
+			first = false
+			files = append(files, a) // git: a patch; patch: read too, in case it is the patch
 		}
 	}
 	files = append(files, c.Ins...)
-	texts := []string{c.Heredoc}
-	for _, f := range files[:min(len(files), guardMaxPatches)] {
+	var out []string
+	add := func(f string) {
+		if !filepath.IsAbs(f) {
+			f = filepath.Join(dir, f)
+		}
+		out = append(out, f)
+	}
+	for _, f := range wrote {
+		add(f)
+	}
+	patchFilesIn(strings.NewReader(c.Heredoc), add)
+	read := map[string]bool{}
+	for _, f := range files {
 		for _, from := range slices.Compact([]string{dir, g.dir}) { // after -C or -d, or as the shell opens a < file
 			p := g.site.resolve(from, f)
-			if p == "" {
+			if p == "" || read[p] {
+				continue
+			}
+			read[p] = true
+			if st, err := os.Stat(p); err != nil || !st.Mode().IsRegular() {
 				continue
 			}
 			if fh, err := os.Open(p); err == nil { // #nosec G304 G703 -- the patch the command is about to apply, read to see what it changes
-				b, _ := io.ReadAll(io.LimitReader(fh, guardMaxPatch))
+				patchFilesIn(fh, add)
 				_ = fh.Close()
-				texts = append(texts, string(b))
 			}
-		}
-	}
-	var out []string
-	for _, text := range texts {
-		for _, f := range patchFiles(text) {
-			if !filepath.IsAbs(f) {
-				f = filepath.Join(dir, f)
-			}
-			out = append(out, f)
 		}
 	}
 	return out
 }
 
-// patchFiles are the files a patch's headers name (---, +++, diff --git,
-// rename and copy lines), each as written and with its first directory
-// dropped: git writes a/ and b/ before a path and -p1 strips it, and the
-// guard does not know which -p the command uses.
+// patchFiles are the files a patch's headers name: see patchFilesIn.
 func patchFiles(text string) []string {
 	var out []string
+	patchFilesIn(strings.NewReader(text), func(f string) { out = append(out, f) })
+	return out
+}
+
+// patchFilesIn reads a patch to its end and gives add each file its headers
+// name (---, +++, diff --git, rename and copy lines), as written and with
+// its first directory dropped: git writes a/ and b/ before a path and -p1
+// strips it, and the guard does not know which -p the command uses. It holds
+// one line at a time, so the patch's size is no limit; a line longer than
+// the buffer is read by its start, which is where a header is.
+func patchFilesIn(r io.Reader, add func(string)) {
 	seen := map[string]bool{}
-	add := func(f string) {
+	name := func(f string) {
 		f, _, _ = strings.Cut(f, "\t")
 		f = strings.Trim(strings.TrimSpace(f), `"`)
 		if f == "" || f == "/dev/null" {
 			return
 		}
 		for _, v := range []string{f, f[strings.IndexByte(f, '/')+1:]} {
-			if v != "" && !seen[v] && len(out) < 4096 {
+			if v != "" && !seen[v] {
 				seen[v] = true
-				out = append(out, v)
+				add(v)
 			}
 		}
 	}
-	for line := range strings.Lines(text) {
-		line = strings.TrimRight(line, "\r\n")
+	br := bufio.NewReaderSize(r, 64<<10)
+	for {
+		b, more, err := br.ReadLine()
+		if err != nil {
+			return
+		}
+		line := strings.TrimRight(string(b), "\r")
+		for more && err == nil {
+			_, more, err = br.ReadLine()
+		}
 		for _, pre := range []string{"+++ ", "--- ", "rename to ", "rename from ", "copy to "} {
 			if f, ok := strings.CutPrefix(line, pre); ok {
-				add(f)
+				name(f)
 			}
 		}
 		if f, ok := strings.CutPrefix(line, "diff --git "); ok {
 			if i := strings.LastIndex(f, " b/"); i >= 0 {
-				add(f[:i])
-				add(f[i+1:])
+				name(f[:i])
+				name(f[i+1:])
 			}
 		}
 	}
-	return out
 }
 
 // scriptTargets are the files a script given to an interpreter (python3 -c,

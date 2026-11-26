@@ -740,10 +740,17 @@ func perlSwitch(a string) (inPlace, next bool) {
 
 // formatterValueFlags are the flags of gofmt, goimports and prettier whose
 // next argument is a value, not a file.
-var formatterValueFlags = map[string]bool{"-r": true, "-local": true, "-srcdir": true, "-cpuprofile": true,
-	"--config": true, "--ignore-path": true, "--parser": true, "--plugin": true, "--cache-location": true,
-	"--cache-strategy": true, "--log-level": true, "--stdin-filepath": true, "--tab-width": true, "--print-width": true,
-	"--end-of-line": true, "--config-precedence": true, "--editorconfig": true}
+var formatterValueFlags = func() map[string]bool {
+	m := map[string]bool{}
+	for _, f := range strings.Fields(`-r -cpuprofile -local -srcdir -memprofile -memrate -trace
+		--config --config-precedence --ignore-path --plugin --cache-location --cache-strategy --log-level
+		--stdin-filepath --parser --print-width --tab-width --end-of-line --trailing-comma --arrow-parens
+		--quote-props --prose-wrap --object-wrap --html-whitespace-sensitivity --embedded-language-formatting
+		--experimental-operator-position --cursor-offset --range-start --range-end`) {
+		m[f] = true
+	}
+	return m
+}()
 
 // FormatterFiles are the files gofmt, goimports or prettier rewrite: its file
 // arguments, when -w or --write is given (without it they only print or
