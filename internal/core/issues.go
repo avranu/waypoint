@@ -1995,11 +1995,7 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 	if _, err := t.ExecContext(ctx, `UPDATE issues SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...); err != nil {
 		return err
 	}
-	pending := t.pending
-	t.pending = nil
-	for _, f := range pending {
-		f()
-	}
+	t.runPending()
 	if p.After != "" || p.Before != "" {
 		if err := s.renumberRanksIfCrowded(ctx, t, i.ProjectID); err != nil {
 			return err
@@ -2152,9 +2148,22 @@ func (s *Service) workAgent(ctx context.Context, t *tx, issueID int64) (string, 
 	return agent, nil
 }
 
-// afterUpdate defers work until the current applyPatch's UPDATE is written.
+// afterUpdate defers work until the issue's UPDATE is written. applyPatch
+// runs the queue right after its UPDATE; write runs whatever is still queued
+// when the callback returns, before it commits, so a caller that writes its
+// own UPDATE (removing a pull link) can't lose it. The work returns no error:
+// it logs its failures and the transaction carries on.
 func (t *tx) afterUpdate(f func()) {
 	t.pending = append(t.pending, f)
+}
+
+// runPending runs queued afterUpdate work, including work that queues more.
+func (t *tx) runPending() {
+	for len(t.pending) > 0 {
+		f := t.pending[0]
+		t.pending = t.pending[1:]
+		f()
+	}
 }
 
 // checkChildrenDone emits children_done on a parent when its last open
