@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Gate states, the words forges use for a commit status.
@@ -103,15 +104,19 @@ func (s *Service) computeGate(ctx context.Context, pr *PullRequest, sev string) 
 		}
 	}
 	open = len(blocking)
-	var running, queued int
+	var running, queued, down int
 	if err = s.db.R.QueryRowContext(ctx, `SELECT
 		COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END), 0)
-		FROM bot_runs WHERE pr_id = ? AND kind = 'review' AND head_sha = ? AND status IN ('queued','running')`, pr.ID, pr.HeadSHA).Scan(&running, &queued); err != nil {
+		COALESCE(SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status = 'queued' AND instr(error, ?) = 1 THEN 1 ELSE 0 END), 0)
+		FROM bot_runs WHERE pr_id = ? AND kind = 'review' AND head_sha = ? AND status IN ('queued','running')`, providersDownText, pr.ID, pr.HeadSHA).Scan(&running, &queued, &down); err != nil {
 		return
 	}
+	// The review wait lets go of a review nobody has started, not of one
+	// that ran, found every model unavailable and waits to run again: the
+	// gate must not pass a head whose review just failed (WP-1916).
 	if queued > 0 && s.reviewWaitOver(ctx, pr) {
-		queued = 0
+		queued = down
 	}
 	running += queued
 	var last, lastErr, lastSummary string
@@ -122,11 +127,12 @@ func (s *Service) computeGate(ctx context.Context, pr *PullRequest, sev string) 
 	case running > 0:
 		return GatePending, "Review in progress", open, below, nil
 	case last == "failed":
-		note = "The review didn't run (every model failed); comment @waypoint review to try again"
+		const tail = "; comment @waypoint review to try again"
+		reason := "The review didn't run (every model failed)"
 		if lastErr != "" {
-			note = "The review didn't run: " + lastErr + "; comment @waypoint review to try again"
+			reason = clipRunes("The review didn't run: "+lastErr, gateNoteLimit-utf8.RuneCountInString(tail))
 		}
-		return GateFailure, clipRunes(note, gateNoteLimit), open, below, nil
+		return GateFailure, reason + tail, open, below, nil
 	case open > 0:
 		items := make([]string, 0, open)
 		for _, f := range blocking {

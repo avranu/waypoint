@@ -49,14 +49,28 @@ type testRun struct {
 }
 
 type testRunRecorder struct {
-	argv  []string
-	tree  string
-	start time.Time
-	snap  func() string
+	argv []string
+	// label is the command as the record says it, where that isn't argv:
+	// wp test says "wp test (scoped check)", not the script it ran.
+	label string
+	// compileOnly: the run only compiled packages, or selected no test, and
+	// ran none. A pass is then not kept, as it would read as the tests
+	// passing; a failure is.
+	compileOnly bool
+	tree        string
+	start       time.Time
+	snap        func() string
 }
 
 func newTestRunRecorder(argv []string) *testRunRecorder {
 	return &testRunRecorder{argv: argv, snap: workingTree}
+}
+
+func (r *testRunRecorder) command() string {
+	if r.label != "" {
+		return r.label
+	}
+	return runCommand(r.argv)
 }
 
 // started notes the tree when the command starts, once it has its slot.
@@ -72,13 +86,16 @@ func (r *testRunRecorder) finish(res *testResult, exit int) {
 	if r == nil || r.tree == "" {
 		return
 	}
+	if r.compileOnly && exit == 0 && res.outcome() != runFail {
+		return
+	}
 	end := r.snap()
 	if end == "" {
 		return
 	}
 	run := testRun{
 		At: time.Now().UnixMilli(), Tree: r.tree, Moved: end != r.tree,
-		Command: runCommand(r.argv), Outcome: res.outcome(),
+		Command: r.command(), Outcome: res.outcome(),
 		Passed: res.Passed, Failed: res.Failed, Skipped: res.Skipped, Units: res.Units, UnitName: res.UnitName,
 		Seconds: res.Seconds, Duration: time.Since(r.start).Seconds(), Exit: exit,
 	}
@@ -358,7 +375,8 @@ func rerunnable(cmd string) string {
 	if strings.Contains(cmd, "•••") || utf8.RuneCountInString(cmd) >= testRunCmdMax {
 		return ""
 	}
-	return cmd
+	// The mark wp test adds to what it records isn't part of the command.
+	return strings.TrimSuffix(cmd, scopedMark)
 }
 
 // sendTestEvidence reports the runs on HEAD's tree. It never stops a ship:

@@ -30,6 +30,7 @@ type DB struct {
 	W    *sql.DB // single connection, all writes
 	R    *sql.DB // concurrent reads
 	path string
+	mon  *monitor
 }
 
 func dsn(path string, readOnly bool) string {
@@ -58,10 +59,8 @@ func dsn(path string, readOnly bool) string {
 // path ":memory:" is not supported because the two pools would see different
 // databases; tests use a temp file.
 func Open(ctx context.Context, path string) (*DB, error) {
-	w, err := sql.Open("sqlite", dsn(path, false))
-	if err != nil {
-		return nil, err
-	}
+	mon := &monitor{threshold: slowThreshold(), floor: totalsFloor, callers: map[string]*CallerTotal{}}
+	w := openPool(dsn(path, false), "write", mon)
 	w.SetMaxOpenConns(1)
 	w.SetMaxIdleConns(1)
 	w.SetConnMaxLifetime(0)
@@ -73,18 +72,14 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		_ = w.Close()
 		return nil, err
 	}
-	r, err := sql.Open("sqlite", dsn(path, true))
-	if err != nil {
-		_ = w.Close()
-		return nil, err
-	}
+	r := openPool(dsn(path, true), "read", mon)
 	n := max(4, runtime.NumCPU())
 	r.SetMaxOpenConns(n)
 	r.SetMaxIdleConns(n)
 	for _, f := range []string{path, path + "-wal", path + "-shm"} {
 		_ = os.Chmod(f, 0o600)
 	}
-	return &DB{W: w, R: r, path: path}, nil
+	return &DB{W: w, R: r, path: path, mon: mon}, nil
 }
 
 // Path is the database file.

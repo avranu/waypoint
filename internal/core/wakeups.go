@@ -160,7 +160,8 @@ func (s *Service) releaseBatchWaiting(ctx context.Context, sessionID int64, wait
 }
 
 // releaseDueBatches tells sessions their batched news once it is due, or
-// once blocking news has no babysit left to wait for (from CheckBabysits).
+// once blocking news has no babysit left to wait for. It is the "batched
+// news" job, each minute, whatever the babysit sweep takes.
 func (s *Service) releaseDueBatches(ctx context.Context) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT session_id, min(until) FROM (
 		SELECT session_id, batch_until AS until FROM session_messages WHERE state = 'queued' AND batch_until IS NOT NULL

@@ -359,6 +359,7 @@ type cli struct {
 	hookTimeout   time.Duration
 	hookLimit     time.Duration
 	longPoll      time.Duration
+	wholeBody     int64 // when set, send's size limit, and a longer answer fails
 	contextTokens int64
 	claims        string
 	noOwnWorktree bool
