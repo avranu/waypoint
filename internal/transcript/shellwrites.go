@@ -440,9 +440,14 @@ func traceScriptWrites(script string, whole bool) (paths []string, sure bool) {
 			paths = append(paths, traceScriptExpr(script, m[1], 0, &budget)...)
 		}
 	}
-	if len(paths) > 0 {
+	// A whole reading that ran out of names to follow cannot say which paths
+	// the names left over stand for: it lists every path the script spells
+	// and does not read as well, so none is passed over (audit 2008.1).
+	spent := whole && budget <= 0
+	if len(paths) > 0 && !spent {
 		return paths, true
 	}
+	sure = len(paths) > 0
 	// Each string is judged where it stands (no second search of the text),
 	// and one the script reads anywhere is left out.
 	var names []string
@@ -464,12 +469,17 @@ func traceScriptWrites(script string, whole bool) (paths []string, sure bool) {
 		}
 		names = append(names, str)
 	}
+	have := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		have[p] = true
+	}
 	for _, n := range names {
-		if !reads[n] {
+		if !reads[n] && !have[n] {
+			have[n] = true
 			paths = append(paths, n)
 		}
 	}
-	return paths, false
+	return paths, sure
 }
 
 var (

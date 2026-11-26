@@ -117,6 +117,9 @@ type traceState struct {
 	Seq     int          `json:"n"`
 	Cur     *traceSeg    `json:"c,omitempty"`
 	Scripts traceScripts `json:"sc,omitempty"`
+	// Roots are the directories the transcript's records were in so far: what
+	// a shell write is judged against, as the server judges it.
+	Roots []string `json:"r,omitempty"`
 }
 
 func (t *traceState) clone() *traceState {
@@ -125,6 +128,7 @@ func (t *traceState) clone() *traceState {
 	}
 	c := *t
 	c.Scripts = append(traceScripts(nil), t.Scripts...)
+	c.Roots = append([]string(nil), t.Roots...)
 	if t.Cur != nil {
 		s := *t.Cur
 		s.Files = append([]usageTraceFile(nil), t.Cur.Files...)

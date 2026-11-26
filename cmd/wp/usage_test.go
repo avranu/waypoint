@@ -781,7 +781,7 @@ func TestUsageParseSyntheticIsToolRowsNotCalls(t *testing.T) {
 
 func TestUsageParseBashShellEditRows(t *testing.T) {
 	dir := t.TempDir()
-	tr := `{"type":"assistant","timestamp":"2026-10-05T10:00:01.000Z","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":2},"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"echo x > /work/app/out.txt"}},{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"ls"}}]}}
+	tr := `{"type":"assistant","timestamp":"2026-10-05T10:00:01.000Z","cwd":"/work/app","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":2},"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"echo x > /work/app/out.txt"}},{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"ls"}}]}}
 `
 	p := filepath.Join(dir, "projects", "-work-app", "sess1.jsonl")
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
@@ -815,7 +815,7 @@ func TestUsageParseShellEditRowsKeepScripts(t *testing.T) {
 		return `{"type":"tool_use","id":"` + id + `","name":"` + name + `","input":` + in + `}`
 	}
 	line := func(id string, tools ...string) string {
-		return `{"type":"assistant","timestamp":"2026-10-05T10:00:01.000Z","message":{"id":"` + id + `","model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":2},"content":[` + strings.Join(tools, ",") + `]}}` + "\n"
+		return `{"type":"assistant","timestamp":"2026-10-05T10:00:01.000Z","cwd":"/work/app","message":{"id":"` + id + `","model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":2},"content":[` + strings.Join(tools, ",") + `]}}` + "\n"
 	}
 	tr := line("m1",
 		tool("t1", "Bash", `{"command":"cat > /tmp/e.py <<'EOF'\nopen('/work/app/a.go','w').write('x')\nEOF"}`),

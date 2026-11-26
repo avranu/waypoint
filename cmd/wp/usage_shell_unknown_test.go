@@ -41,9 +41,9 @@ func TestUsageParseUnreadableBashIsUnknown(t *testing.T) {
 	}
 }
 
-func TestBashWritesWorkKnown(t *testing.T) {
+func TestShellEditKnown(t *testing.T) {
 	in := func(c string) json.RawMessage { b, _ := json.Marshal(map[string]string{"command": c}); return b }
-	var mem traceScripts
+	var st traceState
 	for _, c := range []struct {
 		cmd          string
 		wrote, known bool
@@ -52,7 +52,7 @@ func TestBashWritesWorkKnown(t *testing.T) {
 		{"echo x > /work/app/a.go", true, true},
 		{"echo " + strings.Repeat("x", 300<<10) + " > /work/app/a.go", false, false},
 	} {
-		wrote, known := bashWritesWork(in(c.cmd), "/work/app", &mem)
+		wrote, known := st.shellEdit(in(c.cmd), "/work/app")
 		if wrote != c.wrote || known != c.known {
 			t.Errorf("%.40q: wrote %v known %v, want %v %v", c.cmd, wrote, known, c.wrote, c.known)
 		}
@@ -61,15 +61,75 @@ func TestBashWritesWorkKnown(t *testing.T) {
 
 // HOME is the session's home, inferred from its cwd as the server does, not
 // the home of the machine that uploads (audit 1985.13).
-func TestBashWritesWorkUsesTheSessionsHome(t *testing.T) {
+func TestShellEditUsesTheSessionsHome(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	in, _ := json.Marshal(map[string]string{"command": "echo x > ~/proj/a.go"})
-	var mem traceScripts
-	if wrote, known := bashWritesWork(in, "/home/other/proj", &mem); !wrote || !known {
+	var st traceState
+	if wrote, known := st.shellEdit(in, "/home/other/proj"); !wrote || !known {
 		t.Errorf("a write to ~/proj/a.go in /home/other/proj: wrote %v known %v, want true true", wrote, known)
 	}
 	// Under this machine's own home it would be somewhere else.
 	if got := traceVars("/home/other/proj")["HOME"]; got != "/home/other" {
 		t.Errorf("HOME = %q, want /home/other", got)
+	}
+}
+
+// The client's shell_edit count and the server's reading of the same
+// transcript use one rule, the session's own directories, whatever is on the
+// disk of the machine that uploads (audit 2008.2).
+func TestUsageParseShellEditsAgreeWithTheServer(t *testing.T) {
+	dir := t.TempDir()
+	// A checkout on this disk the session never worked in.
+	other := filepath.Join(dir, "other")
+	if err := os.MkdirAll(filepath.Join(other, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, ".git", "config"), []byte("[remote \"origin\"]\n\turl = https://example.test/owner/other.git\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	line := func(id, sec, cwd, cmd string) string {
+		c, _ := json.Marshal(cmd)
+		w, _ := json.Marshal(cwd)
+		return `{"type":"assistant","timestamp":"2026-10-05T10:00:` + sec + `.000Z","cwd":` + string(w) + `,"message":{"id":"m` + id + `","model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":2},"content":[{"type":"tool_use","id":"t` + id + `","name":"Bash","input":{"command":` + string(c) + `}}]}}` + "\n"
+	}
+	for _, c := range []struct {
+		name, tr string
+		want     int64
+	}{
+		{"a checkout on disk the session never worked in", line("1", "01", "/work/app", "echo x > "+other+"/a.go"), 0},
+		{"a directory worked in earlier that is not on this disk",
+			line("1", "01", "/gone/first", "ls") + line("2", "02", "/work/app", "echo x > /gone/first/b.go"), 1},
+		{"a directory that is gone and was never worked in", line("1", "01", "/work/app", "echo x > /gone/elsewhere/b.go"), 0},
+		{"a working directory on this disk that is no checkout", line("1", "01", "/usr", "echo x > c.go"), 1},
+		{"a relative write and a scratch one",
+			line("1", "01", "/work/app", "echo x > c.go") + line("2", "02", "/work/app", "echo x > /tmp/d.txt"), 1},
+	} {
+		sub := filepath.Join(dir, c.name)
+		p := filepath.Join(sub, "projects", "-work-app", "sess1.jsonl")
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(c.tr), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var client int64
+		for _, r := range parseMain(t, sub, usageFileState{}).Chunk.Tools {
+			if r.Kind == trscript.ShellEditKind {
+				client += r.Calls
+			}
+		}
+		res, err := trscript.Parse(strings.NewReader(c.tr), "main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var server int64
+		for _, tc := range res.ToolCalls {
+			if tc.ShellWrite != nil && *tc.ShellWrite {
+				server++
+			}
+		}
+		if client != server || server != c.want {
+			t.Errorf("%s: shell edits client %d, server %d, want %d", c.name, client, server, c.want)
+		}
 	}
 }

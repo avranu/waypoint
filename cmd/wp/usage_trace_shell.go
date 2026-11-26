@@ -27,10 +27,6 @@ func traceCommands(cmd, cwd string, vars map[string]string, mem *traceScripts, o
 	return dir
 }
 
-// traceMaxCommand is the longest command the reader reads at all; a longer
-// one gives no commands, which must not read as "wrote nothing".
-const traceMaxCommand = trscript.ShellMaxCommand
-
 // traceVars is the variables a line starts with: HOME as the session's own
 // machine had it, inferred from its cwd as the server does, else this
 // machine's (a transcript uploaded from another machine than it ran on).
@@ -42,37 +38,45 @@ func traceVars(cwd string) map[string]string {
 	return map[string]string{"HOME": home}
 }
 
-// bashWritesWork says a Bash call wrote a file of the work, by the trace's
-// reading of the command (a write to a scratch directory or one that is only
-// a report does not). known is false when the command could not be read whole
-// (over the reader's limit, or it runs a script too long to read in which
-// the part read writes nothing): "no write" is then not the answer.
-// mem is the scripts the transcript kept in files so far
+// shell is the session's memory in the form the shared recogniser takes; put
+// keeps what a call added to it.
+func (t *traceState) shell() trscript.ShellSession {
+	return trscript.ShellSession{Roots: t.Roots, Scripts: t.Scripts}
+}
+
+func (t *traceState) put(s trscript.ShellSession) { t.Roots, t.Scripts = s.Roots, s.Scripts }
+
+// note records a directory a record of the transcript was in.
+func (t *traceState) note(cwd string) {
+	if n := len(t.Roots); n > 0 && t.Roots[n-1] == cwd {
+		return
+	}
+	s := t.shell()
+	s.Note(cwd)
+	t.put(s)
+}
+
+// shellEdit says a Bash call wrote a file of the work. It is the server's
+// own reading (trscript.ShellSession.Edit: the session's directories decide,
+// not the disk of the machine that uploads), so the shell_edit rows and
+// session facts count the same calls. known is false when the command could
+// not be read whole (over the reader's limit, or it runs a script too long to
+// read in which the part read writes nothing): "no write" is then not the
+// answer. cwd is the record's own directory, as on the server.
 // (trscript.ShellEditKind is what the count is uploaded as: a row for every
 // hour a session ran Bash, calls = those that did; rows uploaded before that
 // kind have none, which is "unknown").
-func bashWritesWork(input json.RawMessage, cwd string, mem *traceScripts) (wrote, known bool) {
+func (t *traceState) shellEdit(input json.RawMessage, cwd string) (wrote, known bool) {
 	var in struct {
 		Command string `json:"command"`
 	}
-	if json.Unmarshal(input, &in) != nil || in.Command == "" {
+	if json.Unmarshal(input, &in) != nil {
 		return false, true
 	}
-	if len(in.Command) > traceMaxCommand {
-		return false, false
-	}
-	var cmds []traceCommand
-	traceCommands(in.Command, cwd, traceVars(cwd), mem, &cmds)
-	class, _, _ := classifyTraceBash(cmds, cwd)
-	if class == trEdit {
-		return true, true
-	}
-	for _, c := range cmds {
-		if c.Unread {
-			return false, false
-		}
-	}
-	return false, true
+	s := t.shell()
+	wrote, known = s.Edit(in.Command, cwd)
+	t.put(s)
+	return wrote, known
 }
 
 const traceMaxScripts = trscript.ShellMaxScripts

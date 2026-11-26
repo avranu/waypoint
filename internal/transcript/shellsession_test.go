@@ -2,6 +2,8 @@ package transcript
 
 import (
 	"encoding/json"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -186,6 +188,21 @@ func TestScriptWritesReadsTheWholeScript(t *testing.T) {
 	many := strings.Repeat("open('a.txt','w').write('x')\n", 80) + "open('.claude/settings.json','w').write('{}')\n"
 	if got := ScriptWrites(many); len(got) == 0 || got[len(got)-1] != ".claude/settings.json" {
 		t.Errorf("the 81st write site: %v", got)
+	}
+	// More names than the reader follows: a path the script spells is still
+	// listed once it stops following (audit 2008.1).
+	var b strings.Builder
+	for i := 0; i < traceScriptBudget+20; i++ {
+		fmt.Fprintf(&b, "n%d = '/tmp/s%d.txt'\nopen(n%d, 'w').write('x')\n", i, i, i)
+	}
+	b.WriteString("t = '.claude/settings.json'\nopen(t, 'w').write('{}')\n")
+	if got := ScriptWrites(b.String()); !slices.Contains(got, ".claude/settings.json") {
+		t.Errorf("a write named past the names followed is missing (%d paths)", len(got))
+	}
+	padded := strings.Repeat("# pad\n", 60<<10) + "a = '/tmp/a.txt'\nb = '/tmp/b.txt'\nc = '/tmp/c.txt'\nt = '.claude/settings.json'\n" +
+		"open(a,'w')\nopen(b,'w')\nopen(c,'w')\nopen(t,'w')\n"
+	if got := ScriptWrites(padded); !slices.Contains(got, ".claude/settings.json") {
+		t.Errorf("a long script's fourth named write is missing: %v", got)
 	}
 }
 

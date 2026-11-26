@@ -582,6 +582,12 @@ func (p *usageParser) meta(l *rawLine) {
 	if l.Cwd != "" && p.st.Cwd == "" {
 		p.st.Cwd = l.Cwd
 	}
+	if l.Cwd != "" {
+		if p.st.Trace == nil {
+			p.st.Trace = &traceState{}
+		}
+		p.st.Trace.note(l.Cwd)
+	}
 	if l.GitBranch != "" {
 		p.st.Branch = l.GitBranch
 	}
@@ -675,7 +681,7 @@ func (p *usageParser) assistant(b []byte, l *rawLine) {
 			}
 		}
 		if bl.Name == "Bash" {
-			wrote, known := bashWritesWork(bl.Input, usageOr(l.Cwd, p.st.Cwd), &p.st.Trace.Scripts)
+			wrote, known := p.st.Trace.shellEdit(bl.Input, l.Cwd)
 			switch {
 			case !known:
 				// Not read whole: counted apart, and no shell_edit row for
