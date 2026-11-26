@@ -60,7 +60,8 @@ func TestBabysitAssessorQuestionParks(t *testing.T) {
 		t.Fatalf("no assessor round: %+v", b)
 	}
 	in := be.jobInput(b.JobID)
-	for _, want := range []string{"Task " + task.Key + ": Export rows", "Exports must skip archived rows.", "Archived rows stay out of every export.",
+	for _, want := range []string{"Task " + task.Key + ":\n<untrusted>\nExport rows\n\nExports must skip archived rows.\n</untrusted>",
+		"Decision ", ":\n<untrusted>\nExports skip archives\n\nArchived rows stay out of every export.\n</untrusted>",
 		"The pull request's description when it shipped:\n<untrusted>\nAdds export."} {
 		if !strings.Contains(in.Prompt, want) {
 			t.Errorf("the assessor's prompt lacks %q:\n%s", want, in.Prompt)
@@ -892,6 +893,28 @@ func TestParkNamedSettledOnlyWhenAllNamedAreClosed(t *testing.T) {
 	r.Question, r.Because, r.RestUntil, r.RestedAt = "Ship it?", "A product call.", time.Time{}, time.Time{}
 	if got := be.s.parkNamedSettled(be.ctx, be.pr(7), r); got != "" {
 		t.Errorf("a person's park ended by its named comments: %q", got)
+	}
+}
+
+// A reason naming only what the round just closed records nothing to wait
+// for: the rest isn't ended by it at the next sweep.
+func TestParkNamedIgnoresWhatIsAlreadyClosed(t *testing.T) {
+	be := newBabysitEnv(t)
+	be.sg.threads = humanThread()
+	be.runnerOnline()
+	pr := be.open()
+	be.start(pr)
+	ref := be.comment("501").Ref
+	if _, err := be.s.AckReviewComments(be.ctx, be.agent, AckInput{IDs: []string{ref}, Verdict: "rejected", Note: "It builds; the claim doesn't hold."}); err != nil {
+		t.Fatal(err)
+	}
+	be.s.Wait()
+	b := be.babysit()
+	b.Rounds = append(b.Rounds, BabysitRound{N: 1, SHA: pr.HeadSHA, Comments: []string{ref}, Outcome: "not fixed"})
+	be.s.parkBabysit(be.ctx, b, pr, ref+" was rejected; waiting on the nightly job", "", nil, false, []string{ref}, nil)
+	r := lastRound(be.babysit())
+	if !resting(r) || len(r.ParkNamed) != 0 {
+		t.Fatalf("park = %+v", r)
 	}
 }
 

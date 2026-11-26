@@ -412,8 +412,8 @@ func TestBabysitFailedCheckRounds(t *testing.T) {
 	if jobs = be.jobs(); b.State != BabysitWorking || b.Round != 3 || len(jobs) != 3 || !b.Rounds[2].Assessor || b.Rounds[2].Effort != assessorEffort {
 		t.Fatalf("after the stronger round changed nothing: %+v", b)
 	}
-	if in := be.jobInput(jobs[2]); in.Model != escalateModel || in.Effort != assessorEffort || !strings.Contains(in.Prompt, "haven't settled it: round 2 (done, nothing pushed) left failing ci / test") ||
-		!strings.Contains(in.Prompt, "Adds export.") || !strings.Contains(in.Prompt, "Round 1 on 7777777 (sonnet), given failing ci / test; done, nothing pushed.") ||
+	if in := be.jobInput(jobs[2]); in.Model != escalateModel || in.Effort != assessorEffort || !strings.Contains(in.Prompt, "haven't settled it:\n<untrusted>\nround 2 (done, nothing pushed) left failing ci / test") ||
+		!strings.Contains(in.Prompt, "Adds export.") || !strings.Contains(in.Prompt, "Round 1 on 7777777 (sonnet):\n<untrusted>\nGiven failing ci / test; done, nothing pushed.\n") ||
 		!strings.Contains(in.Prompt, "--- FAIL: TestExport") {
 		t.Fatalf("assessor job = %+v", in)
 	}
@@ -507,7 +507,7 @@ func TestBabysitEscalatesAfterAFixThatFailed(t *testing.T) {
 		t.Fatalf("after the stronger round's fix failed: %+v", b)
 	}
 	if in := be.jobInput(b.JobID); in.Effort != assessorEffort || !strings.Contains(in.Prompt, "forge-checks/codeql failed 3 rounds in a row") ||
-		!strings.Contains(in.Prompt, "Round 2 on 8888888 (opus), given failing forge-checks/codeql; pushed 1 commit.") {
+		!strings.Contains(in.Prompt, "Round 2 on 8888888 (opus):\n<untrusted>\nGiven failing forge-checks/codeql; pushed 1 commit.\n") {
 		t.Fatalf("assessor job = %+v", in)
 	}
 	be.finish(b.JobID, true)

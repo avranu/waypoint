@@ -1299,7 +1299,9 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	if err != nil {
 		return res, err
 	}
-	fp.Body = s.approvedBody(ctx, f, pr, fp)
+	// Only a title and description a Waypoint person wrote, or ones
+	// approved, are read (WP-281).
+	fp.Title, fp.Body = s.approvedTitle(ctx, f, pr, fp), s.approvedBody(ctx, f, pr, fp)
 	if fp.State == "closed" || fp.State == "merged" {
 		return res, &errSkip{"the pull request was " + fp.State}
 	}
