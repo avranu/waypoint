@@ -329,10 +329,13 @@ func (s *Service) reviewHolds(ctx context.Context, pr *PullRequest, settle bool,
 	if note != "" {
 		r.Notes = append(r.Notes, note)
 	}
-	if why, err := s.footprintDue(ctx, pr); err != nil {
-		unread("read a pull request's babysit for its footprint check", "its babysit couldn't be read for a footprint check", err)
+	if why, fpWake, err := s.footprintDue(ctx, pr); err != nil {
+		unread("read whether a pull request owes a footprint check", "whether a footprint check is due couldn't be read", err)
 	} else if why != "" {
 		no("%s", why)
+		if fpWake != nil && (r.wake == nil || fpWake.Before(*r.wake)) {
+			r.wake = fpWake
+		}
 	}
 	driftWhy, driftAt := s.driftHold(ctx, pr, settle)
 	if driftWhy != "" {

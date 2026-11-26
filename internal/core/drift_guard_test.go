@@ -278,7 +278,271 @@ func TestDriftGuardFootprintNotForSmallRounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	be.changes("8888888bbbb", "app/new.go")
-	if why, _ := be.s.footprintDue(be.ctx, be.pr(7)); why != "" {
+	if why, _, _ := be.s.footprintDue(be.ctx, be.pr(7)); why != "" {
 		t.Errorf("due with no ship footprint: %q", why)
+	}
+}
+
+// botRun records a review run of the pull request in a state ("done" ends
+// now).
+func (be *bsEnv) botRun(status string) {
+	be.t.Helper()
+	if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT INTO bot_runs(project_id, pr_id, kind, head_sha, status, created_at, finished_at)
+		VALUES ((SELECT min(id) FROM projects), ?, 'review', ?, ?, ?, ?)`, be.pr(7).ID, be.pr(7).HeadSHA, status, be.s.nowMS(),
+		map[bool]any{true: be.s.nowMS(), false: nil}[status == "done"]); err != nil {
+		be.t.Fatal(err)
+	}
+}
+
+// footprintChecks are the footprint checks kept for the pull request.
+func (be *bsEnv) footprintChecks() []footprintCheck {
+	be.t.Helper()
+	return be.s.footprintOf(be.ctx, be.pr(7).ID).Checks
+}
+
+// A review still going is no reason to ask for the footprint check: it
+// usually ends in a round, and the round's push makes the audit stale. Once the
+// run is over the check is asked (WP-1853).
+func TestDriftGuardNoFootprintWhileAReviewRuns(t *testing.T) {
+	be, _, _ := footprintEnv(t)
+	be.botRun("running")
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step()
+	if n := len(be.audits()); n != 0 {
+		t.Fatalf("audits = %v, want none while a review runs", be.audits())
+	}
+	if b := be.babysit(); !strings.Contains(b.Wait, "review") {
+		t.Errorf("the wait is not the review's: %q", b.Wait)
+	}
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE bot_runs SET status = 'done', finished_at = ?`, be.s.nowMS()); err != nil {
+		t.Fatal(err)
+	}
+	be.step()
+	if n := len(be.audits()); n != 1 {
+		t.Fatalf("audits = %v, want the check once the review is over", be.audits())
+	}
+	if c := be.footprintChecks(); len(c) != 1 || !c[0].Ahead {
+		t.Errorf("checks = %+v, want one asked ahead", c)
+	}
+}
+
+// The quiet period holds the merge, not the check: it starts beside it.
+func TestDriftGuardFootprintInTheQuietPeriod(t *testing.T) {
+	be, _, _ := footprintEnv(t)
+	be.policy(MergePolicyInput{ReviewWaitMinutes: ptr(0), QuietMinutes: ptr(10)})
+	be.botRun("done")
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step()
+	if n := len(be.audits()); n != 1 {
+		t.Fatalf("audits = %v, want the check asked in the quiet period; %+v", be.audits(), be.babysit())
+	}
+	if w := be.babysit().Wait; !strings.Contains(w, "quiet") {
+		t.Errorf("the wait is not the quiet period's: %q", w)
+	}
+	be.step()
+	if n := len(be.audits()); n != 1 {
+		t.Errorf("asked again: %v", be.audits())
+	}
+}
+
+// With a comment open that waits for a person, the check starts too.
+func TestDriftGuardFootprintWithACommentOpen(t *testing.T) {
+	be, _, _ := footprintEnv(t)
+	be.sg.threads = humanThread()
+	if _, err := be.s.syncReviewComments(be.ctx, be.pr(7)); err != nil {
+		t.Fatal(err)
+	}
+	ref := be.comment("501").Ref
+	if _, err := be.s.AckReviewComments(be.ctx, be.agent, AckInput{IDs: []string{ref}, Verdict: "needs-person", Note: "A product call."}); err != nil {
+		t.Fatal(err)
+	}
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step()
+	if n := len(be.audits()); n != 1 {
+		t.Fatalf("audits = %v, want the footprint check asked with a comment open", be.audits())
+	}
+}
+
+// Not where the head is about to move: a head whose checks failed gets its
+// round, and the check waits for the head that round makes.
+func TestDriftGuardFootprintNotBesideARound(t *testing.T) {
+	be, _, _ := footprintEnv(t)
+	be.ci("8888888bbbb", CheckFailed)
+	be.step()
+	b := be.babysit()
+	if b.Round != 2 || len(be.audits()) != 0 {
+		t.Fatalf("round %d audits %v, want a round and no check", b.Round, be.audits())
+	}
+}
+
+// A footprint audit that is going holds the merge, not the babysit: a comment
+// that makes work gets its round while it runs, and with nothing else to do
+// the babysit still says it waits for the check (WP-1853).
+func TestDriftGuardFootprintAuditDoesNotHoldARound(t *testing.T) {
+	be, _, pr := footprintEnv(t)
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step()
+	id := be.auditID()
+	if g, going := be.s.auditGoing(be.ctx, pr.ID); !going || g != id {
+		t.Fatalf("audit %d is not going: %d %v", id, g, going)
+	}
+	be.step()
+	if b := be.babysit(); b.State != BabysitWatching || !strings.Contains(b.Wait, "footprint check") {
+		t.Errorf("with nothing else to do: %s %q, want it waiting on the footprint check", b.State, b.Wait)
+	}
+	if r := be.reasons(7); !strings.Contains(r, "waiting for audit") {
+		t.Errorf("the merge isn't held by the audit: %q", r)
+	}
+	be.sg.threads = humanThread()
+	if _, err := be.s.syncReviewComments(be.ctx, be.pr(7)); err != nil {
+		t.Fatal(err)
+	}
+	be.step()
+	if b := be.babysit(); b.Round != 2 || len(be.jobs()) != 2 {
+		t.Fatalf("no round for the comment while the footprint audit runs: round %d jobs %v %s %q", b.Round, be.jobs(), b.State, b.Wait)
+	}
+}
+
+// A footprint audit asked for a head the pull request has left is stopped.
+func TestDriftGuardStaleFootprintAuditIsCancelled(t *testing.T) {
+	be, _, _ := footprintEnv(t)
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step()
+	be.pushMine("9999999cccc")
+	be.changes("9999999cccc", "app/xlsx.go", "app/xlsx_test.go", "app/pdf.go", "app/pdf_test.go")
+	be.ci("9999999cccc", CheckSuccess)
+	be.step()
+	got := be.audits()
+	if len(got) != 2 || !strings.HasSuffix(got[0], ":cancelled") || strings.HasSuffix(got[1], ":cancelled") {
+		t.Fatalf("audits = %v, want the first cancelled and a second asked for the new head", got)
+	}
+}
+
+// A stopped check is nothing to measure growth from: a push that changes
+// only what it was asked about still gets one.
+func TestDriftGuardCancelledCheckIsNoReference(t *testing.T) {
+	be, _, _ := footprintEnv(t)
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step()
+	c := be.footprintChecks()
+	if len(c) != 1 {
+		t.Fatalf("checks = %+v", c)
+	}
+	be.pushMine("9999999cccc")
+	be.changes("9999999cccc", c[0].Paths...) // the same files, no bigger
+	be.ci("9999999cccc", CheckSuccess)
+	be.step()
+	got := be.audits()
+	if len(got) != 2 || !strings.HasSuffix(got[0], ":cancelled") || strings.HasSuffix(got[1], ":cancelled") {
+		t.Fatalf("audits = %v, want the first cancelled and one for the new head", got)
+	}
+}
+
+// A check asked ahead for a head that has since moved doesn't count toward
+// the pull request's two: the late path still asks for the head it ends on,
+// and ahead asks are capped.
+func TestDriftGuardAheadChecksOfOldHeadsDontCount(t *testing.T) {
+	be, _, _ := footprintEnv(t)
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step()
+	more := []string{"app/xlsx.go", "app/xlsx_test.go"}
+	for _, sha := range []string{"9999999cccc", "aaaaaaadddd"} {
+		more = append(more, "app/"+sha+".go")
+		be.pushMine(sha)
+		be.changes(sha, more...)
+		be.ci(sha, CheckSuccess)
+		be.step()
+	}
+	c := be.footprintChecks()
+	var ahead []bool
+	for _, x := range c {
+		ahead = append(ahead, x.Ahead)
+	}
+	if len(c) != 3 || !slices.Equal(ahead, []bool{true, true, false}) || !sameSHA(c[2].SHA, "aaaaaaadddd") {
+		t.Fatalf("checks = %+v, want two asked ahead (the old heads) and the late one for the head", c)
+	}
+	if n := len(be.audits()); n != 3 {
+		t.Errorf("audits = %v", be.audits())
+	}
+}
+
+// A check asked ahead whose audit is still queued once the pull request is
+// otherwise ready holds the merge for the queue wait from then, not from the
+// ask: the babysit stamps the first time it sees it then.
+func TestDriftGuardQueuedAheadCheckWaitsFromReady(t *testing.T) {
+	be, _, pr := footprintEnv(t)
+	be.policy(MergePolicyInput{ReviewWaitMinutes: ptr(0), QuietMinutes: ptr(10)})
+	be.botRun("done")
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step() // the quiet period: the check is asked ahead
+	if c := be.footprintChecks(); len(c) != 1 || !c[0].Ahead {
+		t.Fatalf("checks = %+v", c)
+	}
+	// No runner takes it, and the queue wait passes before the babysit is ready.
+	be.setClock(be.clockNow().Add(auditQueueWait + 5*time.Minute))
+	if _, going := be.s.auditGoing(be.ctx, pr.ID); going {
+		t.Fatal("the queued audit still counts as going")
+	}
+	be.step() // the babysit sees it queued: the wait starts here
+	if fp := be.s.footprintOf(be.ctx, pr.ID); len(fp.Checks) != 1 || fp.Checks[0].Queued.IsZero() {
+		t.Fatalf("not stamped: %+v", fp.Checks)
+	}
+	if r := be.reasons(7); !strings.Contains(r, "footprint check queued") {
+		t.Fatalf("the merge isn't held by the queued check: %q", r)
+	}
+	// wp pr wait goes on waiting for it: reviewGoing no longer counts it.
+	w, err := be.s.WaitPullRequest(be.ctx, be.agent, pr.ID, PRWaitInput{})
+	if err != nil || w.Verdict != PRWaitWaiting || !strings.Contains(w.Why, "footprint check queued") {
+		t.Errorf("wait = %+v %v", w, err)
+	}
+	be.setClock(be.clockNow().Add(auditQueueWait - time.Minute))
+	if r := be.reasons(7); !strings.Contains(r, "footprint check queued") {
+		t.Errorf("released early: %q", r)
+	}
+	be.setClock(be.clockNow().Add(2 * time.Minute))
+	if r := be.reasons(7); strings.Contains(r, "footprint") {
+		t.Errorf("held past the queue wait: %q", r)
+	}
+}
+
+// An ahead check the babysit never stamped (it rests, or was set off) stops
+// holding the merge once it is older than an audit may take.
+func TestDriftGuardUnstampedAheadCheckStopsHolding(t *testing.T) {
+	be, _, _ := footprintEnv(t)
+	be.policy(MergePolicyInput{ReviewWaitMinutes: ptr(0), QuietMinutes: ptr(10)})
+	be.botRun("done")
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step() // asked ahead
+	be.setClock(be.clockNow().Add(auditWaitMax - time.Minute))
+	if r := be.reasons(7); !strings.Contains(r, "footprint check queued") {
+		t.Fatalf("not held while unstamped: %q", r)
+	}
+	be.setClock(be.clockNow().Add(2 * time.Minute))
+	if r := be.reasons(7); strings.Contains(r, "footprint") {
+		t.Errorf("held for good by an unstamped check: %q", r)
+	}
+}
+
+// An ahead ask that can't be made (nobody's runner) records nothing: the head
+// stays unseen and the late path decides, as it always did.
+func TestDriftGuardAheadSkipIsNotRecorded(t *testing.T) {
+	be, _, pr := footprintEnv(t)
+	be.policy(MergePolicyInput{ReviewWaitMinutes: ptr(0), QuietMinutes: ptr(10)})
+	be.botRun("done")
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE pull_requests SET author = '' WHERE id = ?`, pr.ID); err != nil {
+		t.Fatal(err)
+	}
+	be.ci("8888888bbbb", CheckSuccess)
+	be.step()
+	if c := be.footprintChecks(); len(c) != 0 {
+		t.Fatalf("the ahead ask recorded %+v", c)
+	}
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE pull_requests SET author = ? WHERE id = ?`, be.admin.User.Username, pr.ID); err != nil {
+		t.Fatal(err)
+	}
+	be.setClock(be.clockNow().Add(11 * time.Minute))
+	be.step()
+	if c := be.footprintChecks(); len(c) != 1 || c[0].Outcome != footprintAudited {
+		t.Errorf("checks = %+v, want the audit asked now", c)
 	}
 }
