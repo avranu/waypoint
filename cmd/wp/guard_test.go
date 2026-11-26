@@ -1501,6 +1501,20 @@ func TestGuardAudit2062(t *testing.T) {
 		{`bash tools/setup.sh`, ""}, // a script of the project is judged for what it writes of the guard's, not as typed commands
 		{`bash tools/loop.sh`, ""},
 		{`bash -x tools/bad.sh arg`, ruleGuard},
+		// A script or patch the line wrote in a way the guard cannot read
+		// (audit 2068.1) is not run or applied by the same line.
+		{`python3 -c "open('/tmp/s.sh','w').write('echo x > .claude/settings.json')" && sh /tmp/s.sh`, ruleGuard},
+		{`cp tools/bad.sh /tmp/s.sh && sh /tmp/s.sh`, ruleGuard},
+		{`cp tools/bad.sh /tmp && /tmp/bad.sh`, ruleGuard},
+		{`base64 -d blob > /tmp/s.py; python3 /tmp/s.py`, ruleGuard},
+		{`sed -i s/a/b/ tools/ok.sh && bash tools/ok.sh`, ruleGuard},
+		{`python3 gen.py > fix3.patch && git apply fix3.patch`, ruleGuard},
+		{"python3 gen.py > /tmp/s.sh; cat >> /tmp/s.sh <<'EOF'\necho ok\nEOF\nsh /tmp/s.sh", ruleGuard},
+		{"cat > /tmp/s.sh <<'EOF'\necho ok > docs/a.md\nEOF\nsed -i s/docs/.claude/ /tmp/s.sh; sh /tmp/s.sh", ruleGuard},
+		{`chmod +x tools/ok.sh && ./tools/ok.sh`, ""},
+		{`touch tools/ok.sh; bash tools/ok.sh`, ""},
+		{`python3 gen.py > /tmp/out.txt && cat /tmp/out.txt`, ""},
+		{`cp tools/ok.sh /tmp/s.sh`, ""},
 		// .3: a command on a continuation line.
 		{"true && \\\n  sed -i 's/x/y/' .claude/settings.json", ruleGuard},
 		{"true |\\\n tee .claude/settings.json", ruleGuard},

@@ -25,7 +25,7 @@ import (
 var traceExts = map[string]bool{}
 
 func init() {
-	for _, e := range strings.Fields("go ts tsx js jsx mjs cjs py sql md sh yml yaml json css scss html rs kt kts java toml mk tf proto vue svelte rb php c h cpp txt xml gradle ini cfg conf service tmpl graphql gql swift cs dart lua nix hcl tfvars scala ex exs erl hs ml zig m mm r pl pm clj groovy prisma rst adoc tex less sass cc hpp") {
+	for _, e := range strings.Fields("go ts tsx js jsx mjs cjs py sql md sh yml yaml json css scss html rs kt kts java toml mk tf proto vue svelte rb php c h cpp txt xml gradle ini cfg conf service tmpl graphql gql swift cs dart lua nix hcl tfvars scala ex exs erl hs ml zig m mm r pl pm clj groovy prisma rst adoc tex less sass cc hpp csv tsv") {
 		traceExts[e] = true
 	}
 }

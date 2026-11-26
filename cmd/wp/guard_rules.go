@@ -64,6 +64,12 @@ type guard struct {
 	kept map[string]string
 	disk bool
 	read map[string]bool
+
+	// wrote are the files the line wrote in a way the guard cannot read (a
+	// program's output, a copy, an edit in place); blind is set when a command
+	// runs or applies one of them.
+	wrote map[string]bool
+	blind string
 }
 
 // walled are the rules a Contained sandbox enforces itself (PL7 §3): it has
@@ -183,7 +189,7 @@ func (g *guard) script(cmds []*guardCmd, depth int) *guardHit {
 		if h != nil {
 			return h
 		}
-		g.keepText(c, name, args)
+		g.noteWrites(c, name, args)
 		switch {
 		case isFetcher(name):
 			fetch = true
@@ -571,11 +577,16 @@ var reShebang = lazyre.New(`^#![ \t]*(?:\S*/)?(?:env[ \t]+(?:-\S+[ \t]+)*)?([A-Z
 
 // fileText is the text of a file a command runs or applies: what the line
 // itself wrote there (g.kept), else what is on disk, up to guardMaxScript.
-// kept says which; ok is false for a file that is not there to read (one a
-// program writes at run time, a directory, a device).
+// kept says which; ok is false for a file that is not there to read (a
+// directory, a device, one that does not exist), and for one the line wrote
+// in a way the guard cannot read, which also sets g.blind (see blindHit).
 func (g *guard) fileText(raw string) (text string, kept, ok bool) {
 	p := g.site.resolve(g.dir, raw)
 	if p == "" {
+		return "", false, false
+	}
+	if g.wrote[p] {
+		g.blind = raw
 		return "", false, false
 	}
 	if t, has := g.kept[p]; has {
@@ -605,6 +616,9 @@ func (g *guard) fileText(raw string) (text string, kept, ok bool) {
 // files it writes, as python3 F is (scriptTargets).
 func (g *guard) ranFile(raw string, depth int, shell bool) *guardHit {
 	text, kept, ok := g.fileText(raw)
+	if h := g.blindHit(); h != nil {
+		return h
+	}
 	if !ok || strings.IndexByte(text, 0) >= 0 { // not there, or a binary
 		return nil
 	}
@@ -642,11 +656,62 @@ func (g *guard) ranFile(raw string, depth int, shell bool) *guardHit {
 	return g.child(parseShell(text), depth+1)
 }
 
+// blindHit refuses a command that runs or applies a file the same line wrote
+// in a way the guard cannot read (python3 -c "open('s.sh','w')…" && sh
+// s.sh; cp x.sh /tmp/s.sh && sh /tmp/s.sh; sed -i … run.sh && bash run.sh):
+// what the file holds when it runs is not what the guard could read before
+// the line starts. Run in a command of its own, the file is read from disk.
+// A writer whose files the guard cannot name (make, tar x, a program that
+// picks the name at run time) is not seen here.
+func (g *guard) blindHit() *guardHit {
+	if g.blind == "" {
+		return nil
+	}
+	f := g.blind
+	g.blind = ""
+	return hit(ruleGuard, "running a file the same command wrote, which the guard cannot read first (write it in one command and run it in the next)", "run", f)
+}
+
+// metaWriters change a file's mode, time or existence, not its text.
+var metaWriters = map[string]bool{"chmod": true, "chown": true, "chgrp": true, "touch": true, "mkdir": true, "rm": true, "rmdir": true, "unlink": true}
+
+// noteWrites records what a command of the line wrote, for the commands
+// after it: the text where the line spells it (keepText), else that the
+// file was written unread (g.wrote), which also forgets text kept for it.
+func (g *guard) noteWrites(c *guardCmd, name string, args []string) {
+	spelled := g.keepText(c, name, args)
+	n, a := runnerCommand(name, args)
+	targets := append([]string(nil), c.Redirs...)
+	if !metaWriters[n] {
+		targets = append(targets, writeTargets(n, a)...)
+	}
+	targets = append(targets, scriptTargets(c, n, a)...)
+	switch n {
+	case "cp", "mv", "install", "ln", "rsync": // into a directory: the files keep their names
+		if sc := scanArgs(a, "tSt", "--target-directory", "--suffix"); len(sc.pos) >= 2 {
+			for _, src := range sc.pos[:len(sc.pos)-1] {
+				targets = append(targets, filepath.Join(sc.pos[len(sc.pos)-1], filepath.Base(src)))
+			}
+		}
+	}
+	for _, t := range targets {
+		p := g.site.resolve(g.dir, t)
+		if p == "" || spelled[p] || strings.HasPrefix(p, "/dev/") {
+			continue
+		}
+		if g.wrote == nil {
+			g.wrote = map[string]bool{}
+		}
+		g.wrote[p] = true
+		delete(g.kept, p)
+	}
+}
+
 // keepText remembers the text a command of the line writes to a file: a
 // heredoc through cat or tee, or what echo or printf prints. Text added to a
 // file the line already wrote is added to what is kept, so a later reading
-// sees all of it.
-func (g *guard) keepText(c *guardCmd, name string, args []string) {
+// sees all of it. It returns the files whose text it kept.
+func (g *guard) keepText(c *guardCmd, name string, args []string) map[string]bool {
 	var text string
 	files := c.Redirs
 	switch name {
@@ -670,7 +735,7 @@ func (g *guard) keepText(c *guardCmd, name string, args []string) {
 			args = args[1:]
 		}
 		if len(args) == 0 {
-			return
+			return nil
 		}
 		text = printfText(args[0])
 		for _, a := range args[1:] {
@@ -679,20 +744,24 @@ func (g *guard) keepText(c *guardCmd, name string, args []string) {
 		text = strings.ReplaceAll(text, "%%", "%")
 	}
 	if text == "" || len(files) == 0 {
-		return
+		return nil
 	}
+	spelled := map[string]bool{}
 	for _, f := range files {
 		p := g.site.resolve(g.dir, f)
 		if p == "" || strings.HasPrefix(p, "/dev/") {
 			continue
 		}
+		if g.wrote[p] || len(g.kept[p])+len(text) > guardMaxScript {
+			continue // already written unread, or too long to keep: stays unread
+		}
 		if g.kept == nil {
 			g.kept = map[string]string{}
 		}
-		if len(g.kept[p])+len(text) <= guardMaxScript {
-			g.kept[p] += text
-		}
+		g.kept[p] += text
+		spelled[p] = true
 	}
+	return spelled
 }
 
 // printfText is a printf format with its \n, \t and \\ escapes read.
@@ -1652,6 +1721,9 @@ func (g *guard) writes(c *guardCmd, name string, args []string) *guardHit {
 			targets = append(targets, trscript.ScriptWrites(text)...) // python3 edit.py: what the file writes
 		}
 	}
+	if h := g.blindHit(); h != nil {
+		return h
+	}
 	for _, t := range targets {
 		p := g.site.resolve(g.dir, t)
 		if p == "" || strings.HasPrefix(p, "/dev/") {
@@ -1851,6 +1923,10 @@ func (g *guard) patchTargets(c *guardCmd, name string, args []string) []string {
 				continue
 			}
 			read[p] = true
+			if g.wrote[p] {
+				g.blind = f // a patch the line wrote unread
+				continue
+			}
 			if text, ok := g.kept[p]; ok { // a patch the line itself wrote
 				patchFilesIn(strings.NewReader(text), add)
 				continue

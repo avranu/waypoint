@@ -299,4 +299,10 @@ func TestQuotaResetsInOneReadingAfterDrop(t *testing.T) {
 	if len(rs) != 0 {
 		t.Errorf("a drop and one reading back up: resets %+v, want none", rs)
 	}
+	// The answer from one reading is provisional: the week is read again
+	// at every check, so readings that come back up later undo it.
+	_, rs, _ = quotaResetsIn([]quotaSample{at(1, 80), at(2, 10), at(3, 12), at(4, 79), at(5, 80)})
+	if len(rs) != 0 {
+		t.Errorf("one low reading after a drop, then back up: resets %+v, want none", rs)
+	}
 }

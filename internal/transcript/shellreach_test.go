@@ -142,6 +142,10 @@ func TestShellEditAudit2062(t *testing.T) {
 		{"mktemp -d is scratch", "d=$(mktemp -d) && echo x > $d/a.go", "/home/u/proj", false, true},
 		{"TMPDIR is scratch", "echo x > $TMPDIR/a.go", "/home/u/proj", false, true},
 		{"a report to a variable stays a report", "go test ./... > $OUT/test.log", "/home/u/proj", false, true},
+		// .10: a data file any program writes, as its .json is.
+		{"a script's csv", "python3 scripts/export.py > data/rates.csv", "/home/u/proj", true, true},
+		{"a binary's tsv", "./bin/gen > out.tsv", "/home/u/proj", true, true},
+		{"a reporter's csv stays a report", "go test -json ./... > out.csv", "/home/u/proj", false, true},
 		// .7: formatters through a runner, and curl's -o among other letters.
 		{"pnpm exec prettier", "pnpm exec prettier --write src", "/home/u/proj", true, true},
 		{"pnpm prettier", "pnpm prettier --write .", "/home/u/proj", true, true},
@@ -199,6 +203,11 @@ func TestShellScriptCutsAreUnknown(t *testing.T) {
 	}
 	if wrote, known := s.Edit("python3 /tmp/first.py", "/r"); wrote || known {
 		t.Errorf("a forgotten script: wrote %v known %v, want false false", wrote, known)
+	}
+	// The second-oldest went with the oldest when the mark took a place: it
+	// is not remembered either, and the one mark covers every such script.
+	if wrote, known := s.Edit("python3 /tmp/x.py", "/r"); wrote || known {
+		t.Errorf("the second script forgotten: wrote %v known %v, want false false", wrote, known)
 	}
 	if wrote, known := s.Edit("go test ./...", "/r"); wrote || !known {
 		t.Errorf("a command that runs no script stays known: wrote %v known %v", wrote, known)

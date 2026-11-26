@@ -11,6 +11,15 @@ import (
 // It counts only when the readings after it stay low, so one low reading
 // among high ones, and one high reading among low ones after a reset, are
 // outliers: left out, and never fed to the week's running maximum.
+//
+// The values were set from the real readings in TestQuotaResetsInRealSeries
+// (WP-1881): both resets there fell from 99 or 100 to 0, and single stray
+// readings stood 12 and 53 points under their neighbours and one 99 above a
+// reset. No replay over all stored readings has counted misses (WP-1902).
+// A reset is confirmed by the one reading after it when that is all there
+// is, so the pace is right from the second reading on; the answer is
+// provisional, because the week is read again at every check and later
+// readings that come back up undo it.
 const (
 	quotaResetDrop     = 30.0 // a fall of at least this many points
 	quotaResetConfirm  = 3    // the readings after it looked at
