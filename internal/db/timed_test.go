@@ -252,3 +252,28 @@ func benchmarkQuery(b *testing.B, threshold string) {
 
 func BenchmarkStatementWrapped(b *testing.B)   { benchmarkQuery(b, "1s") }
 func BenchmarkStatementUnwrapped(b *testing.B) { benchmarkQuery(b, "0") }
+
+func TestSkipFrameKeepsTheCallerOfWrite(t *testing.T) {
+	for fn, want := range map[string]bool{
+		"git.jmann.me/claude/waypoint/internal/core.(*Service).write":       true,
+		"git.jmann.me/claude/waypoint/internal/core.(*Service).writeRows":   false,
+		"git.jmann.me/claude/waypoint/internal/core.(*Service).CreateIssue": false,
+		"database/sql.(*DB).BeginTx":                                        true,
+		"runtime.goexit":                                                    true,
+		"git.jmann.me/claude/waypoint/internal/db.(*timedConn).BeginTx":     true,
+	} {
+		if got := skipFrame(fn); got != want {
+			t.Errorf("skipFrame(%q) = %v", fn, got)
+		}
+	}
+}
+
+func TestOneLineCollapsesAndCuts(t *testing.T) {
+	got := oneLine("SELECT\n\t a,\n b FROM t WHERE x = '" + strings.Repeat("y", 400) + "'")
+	if strings.ContainsAny(got, "\n\t") || strings.HasPrefix(got, "SELECT  ") || !strings.HasPrefix(got, "SELECT a, b FROM t") {
+		t.Errorf("not collapsed: %q", got)
+	}
+	if n := len([]rune(got)); n != queryCut+1 || !strings.HasSuffix(got, "…") {
+		t.Errorf("cut to %d runes: %q", n, got)
+	}
+}
