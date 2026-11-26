@@ -728,7 +728,7 @@ func (s *Service) RunnerJobByID(ctx context.Context, actor *Actor, id int64) (*R
 	if err != nil {
 		return nil, err
 	}
-	out := &RunnerJob{ID: j.ID, Kind: j.Kind, State: j.State, RunnerID: j.RunnerID, ExitCode: j.ExitCode, Result: j.Result, Error: j.Error, Source: j.Source, SourceID: j.SourceID, StartedAt: j.StartedAt, Input: j.Input}
+	out := &RunnerJob{ID: j.ID, Kind: j.Kind, State: j.State, RunnerID: j.RunnerID, ExitCode: j.ExitCode, Result: j.Result, Error: j.Error, Source: j.Source, SourceID: j.SourceID, StartedAt: j.StartedAt, FinishedAt: j.FinishedAt, Input: j.Input}
 	if j.Log != nil {
 		out.Output = *j.Log
 	}

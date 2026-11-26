@@ -18,6 +18,7 @@ func (s *Server) shippingRoutes(mux *http.ServeMux) {
 	a := s.authed
 	mux.HandleFunc("GET /api/v1/projects/{key}/pulls/{number}", a(s.findPull))
 	mux.HandleFunc("GET /api/v1/projects/{key}/pulls/{number}/timeline", a(s.pullTimeline))
+	mux.HandleFunc("GET /api/v1/projects/{key}/pulls/flow", a(s.pullFlow))
 	mux.HandleFunc("POST /api/v1/projects/{key}/pulls", a(s.openPull))
 	mux.HandleFunc("POST /api/v1/projects/{key}/pulls/tasks", a(s.checkShipTasks))
 	mux.HandleFunc("POST /api/v1/pulls/{id}/check", a(s.checkPull))
@@ -59,6 +60,12 @@ func (s *Server) pullTimeline(w http.ResponseWriter, r *http.Request) (any, erro
 		return nil, fmt.Errorf("%w: number must be a number", errBadRequest)
 	}
 	return s.svc.PRTimeline(r.Context(), actorFrom(r), r.PathValue("key"), r.URL.Query().Get("repo"), n)
+}
+
+// pullFlow is wp pr flow: where merged pull requests' open time went,
+// ?repo=OWNER/NAME, ?days=N (WP-1910).
+func (s *Server) pullFlow(w http.ResponseWriter, r *http.Request) (any, error) {
+	return s.svc.PRFlow(r.Context(), actorFrom(r), r.PathValue("key"), core.PRFlowInput{Repo: r.URL.Query().Get("repo"), Days: queryInt(r, "days", 0)})
 }
 
 // openPullBody is the request of wp pr open and wp ship.

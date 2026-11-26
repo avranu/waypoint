@@ -87,6 +87,12 @@ func (s *Service) PRTimeline(ctx context.Context, actor *Actor, projectKey, repo
 	if err != nil {
 		return nil, err
 	}
+	return s.prTimelineByID(ctx, id, number)
+}
+
+// prTimelineByID is the timeline of a pull request the caller may see, so
+// that the flow report reads each as PRTimeline does.
+func (s *Service) prTimelineByID(ctx context.Context, id int64, number int) (*PRTimeline, error) {
 	var forge int64
 	var prRepo string
 	var opened, merged, closed, armed sql.NullInt64

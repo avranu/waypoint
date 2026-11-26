@@ -38,7 +38,10 @@ here; -p, -A or --repo change that): one line each, soonest first.
 		{name: "history", args: "[--repo OWNER/NAME] [--days N] [--week]", summary: "how CI fared per day or week, last 7 days against the 7 before",
 			about: `Finished runs and jobs by UTC day (--week: by week): failures, runner time,
 runner wait, full-run times, merges. First the last 7 days against the 7
-before. --days N looks back N days (default 30, at most 730).`,
+before. "in the line" is a merge's time from its babysit's start (or opening)
+or the merge before it, to its merge; "opened to merged" is the whole wait,
+which wp pr flow divides by stage. --days N looks back N days (default 30, at
+most 730).`,
 			examples: []string{"wp ci history --days 90 --week"},
 			run:      cmdCIHistory},
 		{name: "line", args: "[--repo OWNER/NAME] [--days N]", summary: "each merge line: its armed pull requests, and what became of its stacks and batches per day",
