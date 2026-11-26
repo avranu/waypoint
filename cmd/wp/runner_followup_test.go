@@ -220,3 +220,28 @@ func gitTry(dir string, args ...string) (string, error) {
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
+
+// An audit of a time range has no diff start to follow up from, so the
+// follow-up fields are ignored there.
+func TestFollowUpFieldsIgnoredWithoutADiffStart(t *testing.T) {
+	rec := fakeCLI(t, "claude", fakeHelperClaude)
+	r := newFollowUpRepo(t)
+	r.commit("f1.txt", "one\n")
+	a := r.commit("f2.txt", "two\n")
+	r.commit("f3.txt", "three\n")
+	p := newTestProc(t)
+	run := newRun(time.Hour)
+	o := p.execAgent(context.Background(), run, "audit", agentJob{CLI: "claude", Model: "sonnet", Prompt: "Audit it.", Repo: r.dir, Base: "feature", DiffSince: 1,
+		DiffOver: a, OverPrompt: "FOLLOW-UP INSTRUCTIONS", JSONSchema: `{"type":"object"}`})
+	if o.State != "done" {
+		t.Fatalf("outcome = %+v\nlog:\n%s", o, run.out.text())
+	}
+	prompt, _ := os.ReadFile(filepath.Join(rec, "reviewer-prompt"))
+	if strings.Contains(string(prompt), "FOLLOW-UP") || strings.Contains(string(prompt), "What changed since the audit") {
+		t.Errorf("a time-range audit's prompt has the follow-up:\n%s", prompt)
+	}
+	res := o.Result.(map[string]any)
+	if _, ok := res["diff_over"]; ok || res["over_fallback"] != nil || strings.Contains(run.out.text(), "auditing the whole change") {
+		t.Errorf("a follow-up was tried: %v\nlog:\n%s", res, run.out.text())
+	}
+}

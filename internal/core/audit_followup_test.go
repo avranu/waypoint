@@ -207,3 +207,33 @@ func TestFootprintRidesInTheFollowUpAudit(t *testing.T) {
 		}
 	}
 }
+
+// The follow-up fields are checked on their way into a job: a commit that
+// could be read as an option is refused, one without a diff start is refused,
+// the instructions are dropped without a commit to follow up, and a job that
+// isn't an audit carries neither.
+func TestAuditFollowUpFieldsAreChecked(t *testing.T) {
+	job := func(kind string, in AgentJob) (AgentJob, error) {
+		in.Prompt, in.Repo, in.Base = "Audit it.", "https://git.example.com/me/app.git", "main"
+		raw, _ := json.Marshal(in)
+		_, _, out, err := checkRunnerInput(kind, raw)
+		var got AgentJob
+		_ = json.Unmarshal(out, &got)
+		return got, err
+	}
+	if got, err := job(JobAudit, AgentJob{CLI: "claude", DiffFrom: "main", DiffOver: "abc123def456", OverPrompt: "FOLLOW"}); err != nil || got.DiffOver != "abc123def456" || got.OverPrompt != "FOLLOW" {
+		t.Errorf("a follow-up audit = %+v %v", got, err)
+	}
+	if _, err := job(JobAudit, AgentJob{CLI: "claude", DiffFrom: "main", DiffOver: "--upload-pack=x", OverPrompt: "FOLLOW"}); !IsInvalid(err) {
+		t.Errorf("an option as the earlier commit: %v", err)
+	}
+	if _, err := job(JobAudit, AgentJob{CLI: "claude", DiffOver: "abc123def456", OverPrompt: "FOLLOW"}); !IsInvalid(err) {
+		t.Errorf("an earlier commit without diff_from: %v", err)
+	}
+	if got, err := job(JobAudit, AgentJob{CLI: "claude", DiffFrom: "main", OverPrompt: "FOLLOW"}); err != nil || got.OverPrompt != "" {
+		t.Errorf("instructions without a commit = %+v %v", got, err)
+	}
+	if got, err := job(JobReview, AgentJob{CLI: "claude", DiffOver: "abc123def456", OverPrompt: "FOLLOW"}); err != nil || got.DiffOver != "" || got.OverPrompt != "" {
+		t.Errorf("a review = %+v %v", got, err)
+	}
+}
