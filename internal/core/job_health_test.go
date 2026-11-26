@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -469,21 +470,21 @@ func TestStuckAndSilentJobs(t *testing.T) {
 	e := newEnv(t)
 	e.s.started = e.clockNow()
 	l := e.s.jobs
-	l.declare("loop a", time.Minute, "")
-	l.declare("loop b", time.Minute, "")
+	l.declare("lane a", time.Minute, "pair")
+	l.declare("lane b", time.Minute, "pair")
 	l.declare("slow", 10*time.Minute, "slow")
 	l.declare("alone", time.Minute, "alone")
 	l.declare("once", 0, "once")
 	e.s.CheckJobHealth(e.ctx)
-	hung := l.start("loop a", time.Minute, e.clockNow())
+	hung := l.start("lane a", time.Minute, e.clockNow())
 	e.pass(16 * time.Minute)
 	e.runJob("alone", time.Minute, nil)
 	e.s.CheckJobHealth(e.ctx)
 	got := e.serverNotices(e.admin)
-	if len(got) != 1 || !strings.Contains(got[0], "Going wrong: loop a has been running for 16m; 1 job waiting behind loop a has not started since.") {
+	if len(got) != 1 || !strings.Contains(got[0], "Going wrong: lane a has been running for 16m; 1 job waiting behind lane a has not started since.") {
 		t.Fatalf("stuck: %v", got)
 	}
-	if a, b, s := e.jobOf("loop a"), e.jobOf("loop b"), e.jobOf("slow"); a.State != jobStuck || !a.Running || b.State != jobSilent || s.State != "" || e.jobOf("once").State != "" {
+	if a, b, s := e.jobOf("lane a"), e.jobOf("lane b"), e.jobOf("slow"); a.State != jobStuck || !a.Running || b.State != jobSilent || s.State != "" || e.jobOf("once").State != "" {
 		t.Errorf("states: %+v %+v %+v", a, b, s)
 	}
 	e.s.CheckJobHealth(e.ctx)
@@ -494,19 +495,47 @@ func TestStuckAndSilentJobs(t *testing.T) {
 		t.Fatalf("silent: %v", got)
 	}
 	l.end(hung, e.clockNow())
-	e.runJob("loop b", time.Minute, nil)
+	e.runJob("lane b", time.Minute, nil)
 	e.runJob("slow", 10*time.Minute, nil)
 	e.runJob("alone", time.Minute, nil)
 	e.s.CheckJobHealth(e.ctx)
-	if got = e.serverNotices(e.admin); len(got) != 3 || !strings.HasPrefix(got[2], "3 server problems are over | Over: loop a runs again (it was stuck); loop b runs again (it was silent); slow runs again (it was silent).") {
+	if got = e.serverNotices(e.admin); len(got) != 3 || !strings.HasPrefix(got[2], "3 server problems are over | Over: lane a runs again (it was stuck); lane b runs again (it was silent); slow runs again (it was silent).") {
 		t.Fatalf("back: %v", got)
 	}
-	if a := e.jobOf("loop a"); a.State != "" || a.Running || a.LastMS != (31*time.Minute).Milliseconds() {
-		t.Errorf("loop a after: %+v", a)
+	if a := e.jobOf("lane a"); a.State != "" || a.Running || a.LastMS != (31*time.Minute).Milliseconds() {
+		t.Errorf("lane a after: %+v", a)
 	}
 	e.s.CheckJobHealth(e.ctx)
 	if got = e.serverNotices(e.admin); len(got) != 3 {
 		t.Fatalf("back told twice: %v", got)
+	}
+}
+
+// A stuck job of the loop holds nobody, as the loop does not wait for it: the
+// loop's other job that has not started is told of on its own.
+func TestStuckLoopJobHoldsNobody(t *testing.T) {
+	e := newEnv(t)
+	e.s.started = e.clockNow()
+	l := e.s.jobs
+	l.declare("loop a", time.Minute, "")
+	l.declare("loop b", time.Minute, "")
+	l.declare("alone", time.Minute, "alone")
+	e.s.CheckJobHealth(e.ctx)
+	l.start("loop a", time.Minute, e.clockNow())
+	e.pass(16 * time.Minute)
+	e.runJob("alone", time.Minute, nil)
+	e.s.CheckJobHealth(e.ctx)
+	got := e.serverNotices(e.admin)
+	if len(got) != 1 {
+		t.Fatalf("notices: %v", got)
+	}
+	for _, want := range []string{"loop a has been running for 16m", "loop b has not started for 16m (it runs every 1m)"} {
+		if !strings.Contains(got[0], want) {
+			t.Errorf("no %q in: %s", want, got[0])
+		}
+	}
+	if strings.Contains(got[0], "waiting behind") {
+		t.Errorf("a job waits behind a stuck job of the loop: %s", got[0])
 	}
 }
 
@@ -846,13 +875,13 @@ func TestScheduleIsSound(t *testing.T) {
 		"forge rechecks", "pull requests", "resume babysits", "forge sync", "armed heads", "CI history", "CI health", "review gates",
 		"pending checks", "system resources", "armed merges", "babysits", "audits", "objectives", "request conditions", "hold conditions", "safety screens",
 		"quota guard watch", "autopilot", "warm caches", "work logs", "PR descriptions", "fan-outs", "log secrets",
-		"session facts", "front rounds", "deferred offers",
+		"session facts", "front rounds", "deferred offers", "stale babysits", "merge lines", "batched news",
 	} {
 		if _, ok := at[name]; !ok {
 			t.Errorf("no job %q", name)
 		}
 	}
-	if len(at) != 67 {
+	if len(at) != 70 {
 		t.Errorf("%d jobs: one was added or removed; name it above", len(at))
 	}
 	if _, ok := at[healthWatchdogName]; ok {
@@ -885,6 +914,7 @@ func TestScheduleIsSound(t *testing.T) {
 		"a negative period":            {{name: "a", every: -time.Minute, run: run}},
 		"once and at the start":        {{name: "a", run: run, atStart: true}},
 		"a lane with two periods":      {{name: "a", every: time.Minute, run: run, lane: "l"}, {name: "b", every: time.Hour, run: run, lane: "l"}},
+		"a loop job named like a lane": {{name: "a", every: time.Minute, run: run, lane: "l"}, {name: "l", every: time.Minute, run: run}},
 		"a lane half run at the start": {{name: "a", every: time.Minute, run: run, lane: "l", atStart: true}, {name: "b", every: time.Minute, run: run, lane: "l"}},
 	} {
 		if checkSchedule(bad) == nil {
@@ -914,14 +944,14 @@ func TestSchedulerFireOrder(t *testing.T) {
 		{name: "l2", every: time.Minute, run: note(&lane, "l2"), lane: "l"},
 		{name: "three", every: time.Minute, run: note(&loop, "three")},
 	}}
-	r.fire(e.ctx, func(j scheduled) bool { return j.every == time.Minute })
+	r.fire(e.ctx, func(j scheduled) bool { return j.every == time.Minute }, time.Minute, false)
 	e.s.Wait()
 	if !slices.Equal(loop, []string{"one", "two", "three"}) || !slices.Equal(lane, []string{"l1", "l2"}) {
 		t.Errorf("loop %v lane %v", loop, lane)
 	}
 	ctx, cancel := context.WithCancel(e.ctx)
 	cancel()
-	r.fire(ctx, func(scheduled) bool { return true })
+	r.fire(ctx, func(scheduled) bool { return true }, time.Minute, false)
 	e.s.Wait()
 	if len(loop) != 3 || len(lane) != 2 {
 		t.Errorf("ran after the server stopped: loop %v lane %v", loop, lane)
@@ -933,6 +963,8 @@ func TestSchedulerFireOrder(t *testing.T) {
 func TestSchedulerLaneSkipsWhileBusy(t *testing.T) {
 	e := newEnv(t)
 	started, release := make(chan struct{}, 4), make(chan struct{})
+	letGo := sync.OnceFunc(func() { close(release) })
+	defer letGo()
 	r := &scheduler{s: e.s, busy: map[string]*laneRun{}}
 	lane := []scheduled{{name: "slow", every: time.Minute, lane: "slow", run: func(context.Context) {
 		started <- struct{}{}
@@ -956,7 +988,7 @@ func TestSchedulerLaneSkipsWhileBusy(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no new run though the first has gone on too long")
 	}
-	close(release)
+	letGo()
 	e.s.Wait()
 	if j := e.jobOf("slow"); j.Runs != 2 || j.Skips != 2 || j.Running {
 		t.Errorf("after: %+v", j)
@@ -967,6 +999,363 @@ func TestSchedulerLaneSkipsWhileBusy(t *testing.T) {
 	if busy != 0 {
 		t.Errorf("%d lanes still busy", busy)
 	}
+}
+
+// A loop job that outlasts the patience is left running: the jobs after it
+// and the next tick's go on, its own turns are skipped and counted, and it
+// runs again once it has ended.
+func TestSchedulerDetachOverrun(t *testing.T) {
+	e := newEnv(t)
+	started, release := make(chan struct{}, 4), make(chan struct{})
+	letGo := sync.OnceFunc(func() { close(release) })
+	defer letGo()
+	var mu sync.Mutex
+	ran := map[string]int{}
+	note := func(name string) func(context.Context) {
+		return func(context.Context) {
+			mu.Lock()
+			ran[name]++
+			mu.Unlock()
+		}
+	}
+	r := &scheduler{s: e.s, busy: map[string]*laneRun{}, jobs: []scheduled{
+		{name: "slow", every: time.Minute, run: func(context.Context) {
+			started <- struct{}{}
+			<-release
+		}},
+		{name: "after", every: time.Minute, run: note("after")},
+		{name: "last", every: time.Minute, run: note("last")},
+	}}
+	for _, j := range r.jobs {
+		e.s.jobs.declare(j.name, j.every, "")
+	}
+	tick := func() { r.fire(e.ctx, func(scheduled) bool { return true }, 500*time.Millisecond, false) }
+	tick()
+	<-started
+	e.pass(time.Minute)
+	tick()
+	e.pass(time.Minute)
+	tick()
+	select {
+	case <-started:
+		t.Fatal("the slow job started again while it was running")
+	default:
+	}
+	mu.Lock()
+	after, last := ran["after"], ran["last"]
+	mu.Unlock()
+	if after != 3 || last != 3 {
+		t.Errorf("the jobs after the slow one ran %d and %d times in 3 ticks", after, last)
+	}
+	slow := e.jobOf("slow")
+	if !slow.Running || slow.RunningSince == nil || slow.Skips != 2 || slow.State != "" {
+		t.Errorf("slow: %+v", slow)
+	}
+	if j := e.jobOf("after"); j.State != "" || j.Runs != 3 {
+		t.Errorf("after: %+v", j)
+	}
+	letGo()
+	e.s.Wait()
+	e.pass(time.Minute)
+	tick()
+	<-started
+	e.s.Wait()
+	if j := e.jobOf("slow"); j.Runs != 2 || j.Running {
+		t.Errorf("slow after release: %+v", j)
+	}
+	r.mu.Lock()
+	busy := len(r.busy)
+	r.mu.Unlock()
+	if busy != 0 {
+		t.Errorf("%d lanes still busy", busy)
+	}
+}
+
+// A loop job is never started again beside itself, however long its run has
+// gone on: it was written to run one at a time. Its turns are skipped and
+// counted until it ends, and it runs again after.
+func TestSchedulerLoopJobNeverOverlapsItself(t *testing.T) {
+	e := newEnv(t)
+	started, release := make(chan struct{}, 4), make(chan struct{})
+	letGo := sync.OnceFunc(func() { close(release) })
+	defer letGo()
+	r := &scheduler{s: e.s, busy: map[string]*laneRun{}, jobs: []scheduled{
+		{name: "slow", every: time.Minute, run: func(context.Context) {
+			started <- struct{}{}
+			<-release
+		}},
+	}}
+	e.s.jobs.declare("slow", time.Minute, "")
+	tick := func() { r.fire(e.ctx, func(scheduled) bool { return true }, 5*time.Millisecond, false) }
+	tick()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the loop job did not start")
+	}
+	const ticks = 20
+	if time.Duration(ticks)*time.Minute <= jobOverdue(time.Minute) {
+		t.Fatal("the ticks do not outlast jobOverdue")
+	}
+	for range ticks {
+		e.pass(time.Minute)
+		tick()
+	}
+	select {
+	case <-started:
+		t.Fatal("the loop job started again while it was running")
+	default:
+	}
+	if j := e.jobOf("slow"); !j.Running || j.Skips != ticks {
+		t.Errorf("slow: running %v, skips %d", j.Running, j.Skips)
+	}
+	letGo()
+	e.s.Wait()
+	e.pass(time.Minute)
+	tick()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the loop job did not run again after it ended")
+	}
+	e.s.Wait()
+	if j := e.jobOf("slow"); j.Runs != 2 || j.Running {
+		t.Errorf("slow after: %+v", j)
+	}
+}
+
+// The wait for a loop job ends with the server, in the start pass as in the
+// later ones, and the job itself is waited for at stop.
+func TestSchedulerLoopWaitEndsWithContext(t *testing.T) {
+	for _, start := range []bool{false, true} {
+		t.Run(fmt.Sprintf("start=%v", start), func(t *testing.T) {
+			e := newEnv(t)
+			started, release := make(chan struct{}), make(chan struct{})
+			letGo := sync.OnceFunc(func() { close(release) })
+			defer letGo()
+			r := &scheduler{s: e.s, busy: map[string]*laneRun{}, jobs: []scheduled{
+				{name: "slow", every: time.Minute, run: func(context.Context) {
+					close(started)
+					<-release
+				}},
+			}}
+			ctx, cancel := context.WithCancel(e.ctx)
+			defer cancel()
+			fired := make(chan struct{})
+			go func() {
+				defer close(fired)
+				r.fire(ctx, func(scheduled) bool { return true }, time.Minute, start)
+			}()
+			ended(t, started, "the wait for the loop job to start")
+			select {
+			case <-fired:
+				t.Fatal("fire returned before the context ended")
+			case <-time.After(50 * time.Millisecond):
+			}
+			cancel()
+			ended(t, fired, "fire, with its context ended,")
+			waited := make(chan struct{})
+			go func() {
+				defer close(waited)
+				e.s.Wait()
+			}()
+			select {
+			case <-waited:
+				t.Fatal("Wait returned with the job still running")
+			case <-time.After(50 * time.Millisecond):
+			}
+			letGo()
+			ended(t, waited, "Wait, with the job released,")
+		})
+	}
+}
+
+// The server's start waits for its jobs up to a time for all of them
+// together: once that has passed, the ones left are started and not waited
+// for, so a start job that hangs does not keep the loop from beginning.
+func TestSchedulerStartPassLeavesWhatOutlastsIt(t *testing.T) {
+	e := newEnv(t)
+	started, release := make(chan struct{}), make(chan struct{})
+	letGo := sync.OnceFunc(func() { close(release) })
+	defer letGo()
+	last := make(chan struct{})
+	r := &scheduler{s: e.s, busy: map[string]*laneRun{}, jobs: []scheduled{
+		{name: "long", every: time.Hour, atStart: true, run: func(context.Context) { e.pass(time.Minute) }},
+		{name: "hung", every: time.Hour, atStart: true, run: func(context.Context) {
+			close(started)
+			<-release
+		}},
+		{name: "last", every: time.Hour, atStart: true, run: func(context.Context) { close(last) }},
+	}}
+	for _, j := range r.jobs {
+		e.s.jobs.declare(j.name, j.every, "")
+	}
+	within(t, "the start pass, with its time used up by the first job,", func() {
+		r.fire(e.ctx, func(j scheduled) bool { return j.atStart }, time.Minute, true)
+	})
+	ended(t, started, "the wait for the job after the long one to start")
+	ended(t, last, "the wait for the job after the hung one to start")
+	if j := e.jobOf("hung"); !j.Running {
+		t.Errorf("hung: %+v", j)
+	}
+	letGo()
+	e.s.Wait()
+	if startPatience >= jobOverdueMin {
+		t.Errorf("the start waits %s, and a job counts as silent after %s", startPatience, jobOverdueMin)
+	}
+}
+
+// The loop does not wait for a job whose last run outlasted the patience:
+// the jobs after it start at once. After a run within the patience it is
+// waited for again.
+func TestSchedulerLoopDoesNotWaitForAJobSlowLastTime(t *testing.T) {
+	e := newEnv(t)
+	var mu sync.Mutex
+	var order []string
+	note := func(s string) {
+		mu.Lock()
+		order = append(order, s)
+		mu.Unlock()
+	}
+	started, release := make(chan struct{}, 1), make(chan struct{})
+	letGo := sync.OnceFunc(func() { close(release) })
+	defer letGo()
+	var hold atomic.Bool
+	hold.Store(true)
+	r := &scheduler{s: e.s, busy: map[string]*laneRun{}, jobs: []scheduled{
+		{name: "slow", every: time.Minute, run: func(context.Context) {
+			if hold.Load() {
+				started <- struct{}{}
+				<-release
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+			note("slow")
+		}},
+		{name: "after", every: time.Minute, run: func(context.Context) { note("after") }},
+	}}
+	for _, j := range r.jobs {
+		e.s.jobs.declare(j.name, j.every, "")
+	}
+	tick := func() { r.fire(e.ctx, func(scheduled) bool { return true }, 30*time.Second, false) }
+	before := e.s.jobs.start("slow", time.Minute, e.clockNow())
+	e.pass(time.Minute)
+	e.s.jobs.end(before, e.clockNow())
+	within(t, "the loop, at a job whose last run took a minute,", tick)
+	ended(t, started, "the wait for the slow job to start")
+	mu.Lock()
+	got := slices.Clone(order)
+	mu.Unlock()
+	if !slices.Equal(got, []string{"after"}) || !e.jobOf("slow").Running {
+		t.Errorf("while the slow job runs: %v, slow %+v", got, e.jobOf("slow"))
+	}
+	hold.Store(false)
+	letGo()
+	e.s.Wait()
+	e.pass(time.Minute)
+	tick()
+	e.s.Wait()
+	if !slices.Equal(order, []string{"after", "slow", "after"}) {
+		t.Errorf("after a quick run the loop did not wait for the job: %v", order)
+	}
+}
+
+// A loop job that ends within the patience is waited for: the next starts
+// after it, as before.
+func TestSchedulerDetachKeepsOrderWithinPatience(t *testing.T) {
+	e := newEnv(t)
+	var mu sync.Mutex
+	var order []string
+	note := func(s string) {
+		mu.Lock()
+		order = append(order, s)
+		mu.Unlock()
+	}
+	r := &scheduler{s: e.s, busy: map[string]*laneRun{}, jobs: []scheduled{
+		{name: "one", every: time.Minute, run: func(context.Context) {
+			note("one start")
+			time.Sleep(50 * time.Millisecond)
+			note("one end")
+		}},
+		{name: "two", every: time.Minute, run: func(context.Context) { note("two") }},
+	}}
+	r.fire(e.ctx, func(scheduled) bool { return true }, 5*time.Second, false)
+	if !slices.Equal(order, []string{"one start", "one end", "two"}) {
+		t.Errorf("order: %v", order)
+	}
+	r.mu.Lock()
+	busy := len(r.busy)
+	r.mu.Unlock()
+	if busy != 0 {
+		t.Errorf("%d lanes still busy", busy)
+	}
+}
+
+// At the server's start the order matters: a job is waited for though its
+// last run outlasted the time the pass has.
+func TestSchedulerDetachStartPassWaits(t *testing.T) {
+	e := newEnv(t)
+	var mu sync.Mutex
+	var order []string
+	note := func(s string) {
+		mu.Lock()
+		order = append(order, s)
+		mu.Unlock()
+	}
+	r := &scheduler{s: e.s, busy: map[string]*laneRun{}, jobs: []scheduled{
+		{name: "one", every: time.Hour, atStart: true, run: func(context.Context) {
+			time.Sleep(100 * time.Millisecond)
+			note("one")
+		}},
+		{name: "two", every: time.Hour, atStart: true, run: func(context.Context) { note("two") }},
+	}}
+	before := e.s.jobs.start("one", time.Hour, e.clockNow())
+	e.pass(2 * time.Minute)
+	e.s.jobs.end(before, e.clockNow())
+	r.fire(e.ctx, func(j scheduled) bool { return j.atStart }, time.Minute, true)
+	e.s.Wait()
+	if !slices.Equal(order, []string{"one", "two"}) {
+		t.Errorf("order: %v", order)
+	}
+}
+
+// A sweep of the babysits has a lane of its own, and the merge lines and the
+// stale babysits are jobs of the loop: they run while the sweep is held.
+func TestSchedulerDetachBabysitLane(t *testing.T) {
+	e := newEnv(t)
+	by := map[string]scheduled{}
+	for _, j := range e.s.schedule() {
+		by[j.name] = j
+	}
+	if by["babysits"].lane != "babysits" {
+		t.Fatalf("babysits has lane %q", by["babysits"].lane)
+	}
+	for _, name := range []string{"merge lines", "stale babysits", "batched news"} {
+		if j, ok := by[name]; !ok || j.lane != "" || j.every != time.Minute {
+			t.Fatalf("%s: %+v", name, j)
+		}
+	}
+	started, release := make(chan struct{}), make(chan struct{})
+	letGo := sync.OnceFunc(func() { close(release) })
+	defer letGo()
+	sweep := by["babysits"]
+	sweep.run = func(context.Context) {
+		close(started)
+		<-release
+	}
+	r := &scheduler{s: e.s, busy: map[string]*laneRun{}, jobs: []scheduled{sweep, by["stale babysits"], by["merge lines"]}}
+	for _, j := range r.jobs {
+		e.s.jobs.declare(j.name, j.every, j.lane)
+	}
+	r.fire(e.ctx, func(scheduled) bool { return true }, loopJobPatience, false)
+	<-started
+	for _, name := range []string{"merge lines", "stale babysits"} {
+		if j := e.jobOf(name); j.Runs != 1 {
+			t.Errorf("%s ran %d times while the sweep was held", name, j.Runs)
+		}
+	}
+	letGo()
+	e.s.Wait()
 }
 
 // Logging, running and saving at once (for -race), and nothing counted is
