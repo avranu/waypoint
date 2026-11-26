@@ -203,7 +203,7 @@ func (g *governor) observe(s loadSample, now time.Time, heavy int) string {
 	case level == was && (level != levelCalm || g.limit == wasLimit):
 		return ""
 	case level == levelOverloaded:
-		return fmt.Sprintf("Machine overloaded (%s): one job at a time until it calms down (a request's commands still run)", why)
+		return fmt.Sprintf("Machine overloaded (%s): one heavy job at a time until it calms down (audits, reviews and a request's commands still run)", why)
 	case level == levelBusy:
 		return fmt.Sprintf("Machine busy (%s): up to %d heavy job%s at once for now", why, g.limit, pluralS(g.limit))
 	}
@@ -239,19 +239,18 @@ func (g *governor) heavyLimit() int {
 
 // lanes are the kinds of job it takes now, with heavy, light and request
 // jobs running; none when it is full. The request lane never waits for the
-// governor.
+// governor, and the light lane (an LLM CLI reading a checkout) only for its
+// own slots and for memory, so an audit neither takes a heavy job's place nor
+// waits for the machine's load (WP-1943); overloaded, one heavy job runs.
 func (g *governor) lanes(heavy, light, req int) []string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	out := []string{}
-	if heavy+light < g.max && (g.level != levelOverloaded || heavy+light == 0) {
-		l := g.heavyLimit()
-		if heavy < l {
-			out = append(out, laneHeavy)
-		}
-		if light < max(l, min(lightSlots, g.max-1)) {
-			out = append(out, laneLight)
-		}
+	if heavy < g.max && heavy < g.heavyLimit() && (g.level != levelOverloaded || heavy == 0) {
+		out = append(out, laneHeavy)
+	}
+	if light < lightSlots && g.memShort == "" {
+		out = append(out, laneLight)
 	}
 	return withRequestLane(out, req)
 }
@@ -476,6 +475,21 @@ func (p *runnerProc) agentsStopped() string {
 	return p.gov.agentsStopped()
 }
 
+// lightStopped is why it takes no more audits or reviews now ("" when it
+// takes them): the machine is short of memory.
+func (p *runnerProc) lightStopped() string {
+	return p.agentsStopped()
+}
+
+// addLightReport puts the light lane's ceiling, and what stops it, in the
+// capacity report.
+func (p *runnerProc) addLightReport(r map[string]any, light int) {
+	r["max_light"] = lightSlots
+	if why := p.lightStopped(); why != "" && light < lightSlots {
+		r["light_stopped"] = why
+	}
+}
+
 // addAgentReport puts the agent jobs in the capacity report.
 func (p *runnerProc) addAgentReport(r map[string]any) {
 	n, held := p.agents()
@@ -486,10 +500,10 @@ func (p *runnerProc) addAgentReport(r map[string]any) {
 }
 
 // slotsNow are the lanes the next poll asks for (none when full) and how
-// many more jobs it can take. Without a governor heavy and light jobs share
-// --max-jobs; the request, message, gateway and agent lanes have their own
-// slots either way, which the governor never holds (the agent lane waits only
-// for --max-agents and for memory).
+// many more jobs it can take. Heavy jobs have --max-jobs; the light, request,
+// message, gateway and agent lanes have their own slots either way, which the
+// governor never holds (the light and agent lanes wait only for their
+// ceilings and for memory).
 func (p *runnerProc) slotsNow() ([]string, int) {
 	heavy, light, req, msg, gw := p.running()
 	var lanes []string
@@ -497,8 +511,11 @@ func (p *runnerProc) slotsNow() ([]string, int) {
 		lanes = p.gov.lanes(heavy, light, req)
 	} else {
 		lanes = []string{}
-		if heavy+light < p.opts.MaxJobs {
-			lanes = append(lanes, laneHeavy, laneLight)
+		if heavy < p.opts.MaxJobs {
+			lanes = append(lanes, laneHeavy)
+		}
+		if light < lightSlots {
+			lanes = append(lanes, laneLight)
 		}
 		lanes = withRequestLane(lanes, req)
 	}
@@ -519,8 +536,11 @@ func (p *runnerProc) slotsNow() ([]string, int) {
 		return lanes, 0
 	}
 	free := 0
-	if slices.Contains(lanes, laneHeavy) || slices.Contains(lanes, laneLight) {
-		free += max(p.opts.MaxJobs-heavy-light, 0)
+	if slices.Contains(lanes, laneHeavy) {
+		free += max(p.opts.MaxJobs-heavy, 0)
+	}
+	if slices.Contains(lanes, laneLight) {
+		free += max(lightSlots-light, 0)
 	}
 	free += agentRoom
 	if slices.Contains(lanes, laneRequest) {

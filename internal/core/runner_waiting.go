@@ -20,6 +20,10 @@ const (
 	GatewayLaneSlots = GatewayTasksInFlight
 )
 
+// LightLaneSlots is how many reviews and audits a runner with FeatureLightLane
+// runs at once, beside its heavy jobs (the runner's lightSlots).
+const LightLaneSlots = 3
+
 // sideLane: a lane with slots of its own, whose jobs wait only for each other.
 // The agent lane's places are the runner's own --max-agents (see agentPlaces).
 func sideLane(l string) bool {
@@ -35,6 +39,12 @@ func agentPlaces(c *RunnerCapacity) int {
 	return DefaultMaxAgents
 }
 
+// sideLaneOn is sideLane on runner r: the light lane is one when r's wp has
+// FeatureLightLane.
+func sideLaneOn(r *Runner, l string) bool {
+	return sideLane(l) || l == LaneLight && slices.Contains(r.Features, FeatureLightLane)
+}
+
 // sideLaneSlots is how many jobs side lane l runs at once.
 func sideLaneSlots(l string) int {
 	switch l {
@@ -44,6 +54,8 @@ func sideLaneSlots(l string) int {
 		return MessageLaneSlots
 	case LaneGateway:
 		return GatewayLaneSlots
+	case LaneLight:
+		return LightLaneSlots
 	}
 	return 0
 }
@@ -156,10 +168,10 @@ func (s *Service) runnerBusyWith(ctx context.Context, r *Runner, j *RunnerJobInf
 		if l == lane {
 			inLane++
 		}
-		if !sideLane(l) {
+		if !sideLaneOn(r, l) {
 			all++
 		}
-		if l == lane || !sideLane(lane) && !sideLane(l) {
+		if l == lane || !sideLaneOn(r, lane) && !sideLaneOn(r, l) {
 			doing = append(doing, jobNoun(kind, source))
 		}
 	}
@@ -171,8 +183,18 @@ func (s *Service) runnerBusyWith(ctx context.Context, r *Runner, j *RunnerJobInf
 	if lane == LaneAgent {
 		places = agentPlaces(c)
 	}
-	stopped := lane == LaneAgent && c != nil && c.AgentsStopped != ""
-	if len(doing) == 0 || (sideLane(lane) && inLane < places && !stopped) {
+	stopped := lane == LaneAgent && c != nil && c.AgentsStopped != "" || lane == LaneLight && c != nil && c.LightStopped != ""
+	why := ""
+	if c != nil {
+		why = c.AgentsStopped
+		if lane == LaneLight {
+			why = c.LightStopped
+		}
+	}
+	if lane == LaneLight && stopped && len(doing) == 0 {
+		return fmt.Sprintf("%s takes no more reviews or audits while memory is short (%s).", r.Name, why), nil
+	}
+	if len(doing) == 0 || (sideLaneOn(r, lane) && inLane < places && !stopped) {
 		return r.Name + " is online and should take it within seconds.", nil
 	}
 	running := "it is running " + listJobs(doing) + "."
@@ -181,8 +203,12 @@ func (s *Service) runnerBusyWith(ctx context.Context, r *Runner, j *RunnerJobInf
 		running += fmt.Sprintf(" %d agent job%s hold%s a test slot, which counts as a heavy job while it does.", n, plural(n), map[bool]string{true: "", false: "s"}[n != 1])
 	}
 	switch {
+	case stopped && inLane < places && lane == LaneLight:
+		return fmt.Sprintf("%s takes no more reviews or audits while memory is short (%s); %s", r.Name, why, running), nil
 	case stopped && inLane < places:
-		return fmt.Sprintf("%s takes no more agent jobs while memory is short (%s); %s", r.Name, c.AgentsStopped, running), nil
+		return fmt.Sprintf("%s takes no more agent jobs while memory is short (%s); %s", r.Name, why, running), nil
+	case lane == LaneLight && sideLaneOn(r, lane):
+		return fmt.Sprintf("%s runs %d reviews or audits at once beside its heavy jobs; %s", r.Name, LightLaneSlots, running), nil
 	case lane == LaneAgent:
 		return fmt.Sprintf("%s runs up to %d agent job%s at once (--max-agents); %s", r.Name, places, plural(places), running), nil
 	case lane == LaneRequest:
@@ -192,7 +218,11 @@ func (s *Service) runnerBusyWith(ctx context.Context, r *Runner, j *RunnerJobInf
 	case lane == LaneGateway:
 		return fmt.Sprintf("%s runs %d audits through the gateway at once beside its other jobs; %s", r.Name, GatewayLaneSlots, running), nil
 	case c != nil && c.Level == "overloaded":
-		return fmt.Sprintf("%s is overloaded (%s), so it runs one job at a time; %s", r.Name, c.Reason, running), nil
+		one := "one job"
+		if sideLaneOn(r, LaneLight) {
+			one = "one heavy job"
+		}
+		return fmt.Sprintf("%s is overloaded (%s), so it runs %s at a time; %s", r.Name, c.Reason, one, running), nil
 	case c != nil && c.Level != "" && inLane >= c.Limit && c.Limit < c.Max:
 		why := ""
 		if c.Reason != "" {

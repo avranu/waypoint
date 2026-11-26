@@ -84,28 +84,28 @@ func TestGovernorGrowsSlowlyHoldsWhenBusyAndDropsToOne(t *testing.T) {
 	}
 	over := calmSample()
 	over.MemFree = 0.05
-	if line := step(15*time.Second, over, 2); g.limit != 1 || !strings.Contains(line, "one job at a time") {
+	if line := step(15*time.Second, over, 2); g.limit != 1 || !strings.Contains(line, "one heavy job at a time") {
 		t.Fatalf("overloaded: limit %d (%q)", g.limit, line)
 	}
 	if l := g.lanes(1, 0, 0); !slices.Equal(l, []string{laneRequest}) {
-		t.Fatalf("overloaded with a job running: lanes %v", l)
+		t.Fatalf("overloaded on memory with a job running: lanes %v", l)
 	}
 	if l := g.lanes(1, 0, requestSlots); len(l) != 0 {
 		t.Fatalf("overloaded, request slots full: lanes %v", l)
 	}
-	if l := g.lanes(0, 0, 1); !slices.Equal(l, []string{laneHeavy, laneLight, laneRequest}) {
-		t.Fatalf("overloaded with only a request's job running: lanes %v", l)
+	if l := g.lanes(0, 0, 1); !slices.Equal(l, []string{laneHeavy, laneRequest}) {
+		t.Fatalf("overloaded (memory short) with only a request's job running: lanes %v", l)
 	}
 	step(15*time.Second, calmSample(), 1)
 	step(growAfter, calmSample(), 1)
 	if g.limit != 2 {
 		t.Fatalf("after overload, limit %d", g.limit)
 	}
-	if l := g.lanes(2, 2, 0); !slices.Equal(l, []string{laneRequest}) {
-		t.Fatalf("at --max-jobs: lanes %v", l)
+	if l := g.lanes(2, 2, 0); !slices.Equal(l, []string{laneLight, laneRequest}) {
+		t.Fatalf("at the heavy limit: lanes %v", l)
 	}
-	if l := g.lanes(2, 2, requestSlots); len(l) != 0 {
-		t.Fatalf("at --max-jobs, request slots full: lanes %v", l)
+	if l := g.lanes(2, lightSlots, requestSlots); len(l) != 0 {
+		t.Fatalf("at the heavy limit, light and request slots full: lanes %v", l)
 	}
 }
 
@@ -164,26 +164,32 @@ func TestLoadProfileLearnsBusyHours(t *testing.T) {
 
 func TestSlotsWithoutAGovernor(t *testing.T) {
 	p := &runnerProc{opts: runnerOpts{MaxJobs: 1}, jobs: map[int64]*activeJob{}}
-	if l, free := p.slotsNow(); !slices.Equal(l, []string{laneHeavy, laneLight, laneRequest, laneMessage, laneGateway}) || free != 1+requestSlots+messageSlots+gatewaySlots {
+	if l, free := p.slotsNow(); !slices.Equal(l, []string{laneHeavy, laneLight, laneRequest, laneAgent, laneMessage, laneGateway}) || free != 1+lightSlots+requestSlots+core.DefaultMaxAgents+messageSlots+gatewaySlots {
 		t.Fatalf("idle: lanes %v, free %d", l, free)
 	}
 	p.jobs[1] = &activeJob{id: 1, lane: laneHeavy}
-	if l, free := p.slotsNow(); !slices.Equal(l, []string{laneRequest, laneMessage, laneGateway}) || free != requestSlots+messageSlots+gatewaySlots {
+	if l, free := p.slotsNow(); !slices.Equal(l, []string{laneLight, laneRequest, laneAgent, laneMessage, laneGateway}) || free != lightSlots+requestSlots+core.DefaultMaxAgents+messageSlots+gatewaySlots {
 		t.Fatalf("busy with a heavy job: lanes %v, free %d", l, free)
 	}
 	p.jobs[2] = &activeJob{id: 2, lane: laneRequest}
 	p.jobs[3] = &activeJob{id: 3, lane: laneRequest}
-	if l, free := p.slotsNow(); !slices.Equal(l, []string{laneMessage, laneGateway}) || free != messageSlots+gatewaySlots {
+	if l, free := p.slotsNow(); !slices.Equal(l, []string{laneLight, laneAgent, laneMessage, laneGateway}) || free != lightSlots+core.DefaultMaxAgents+messageSlots+gatewaySlots {
 		t.Fatalf("request lane full: lanes %v, free %d", l, free)
+	}
+	for i := range int64(lightSlots) {
+		p.jobs[20+i] = &activeJob{id: 20 + i, lane: laneLight}
 	}
 	for i := range int64(messageSlots) {
 		p.jobs[10+i] = &activeJob{id: 10 + i, lane: laneMessage}
 	}
-	if l, free := p.slotsNow(); !slices.Equal(l, []string{laneGateway}) || free != gatewaySlots {
+	if l, free := p.slotsNow(); !slices.Equal(l, []string{laneAgent, laneGateway}) || free != core.DefaultMaxAgents+gatewaySlots {
 		t.Fatalf("message lane full: lanes %v, free %d", l, free)
 	}
 	for i := range int64(gatewaySlots) {
 		p.jobs[30+i] = &activeJob{id: 30 + i, lane: laneGateway}
+	}
+	for i := range int64(core.DefaultMaxAgents) {
+		p.jobs[50+i] = &activeJob{id: 50 + i, lane: laneAgent}
 	}
 	if l, free := p.slotsNow(); len(l) != 0 || free != 0 {
 		t.Fatalf("full: lanes %v, free %d", l, free)
@@ -201,7 +207,11 @@ func TestMessagesNeverWaitForTheGovernor(t *testing.T) {
 	p.jobs[3] = &activeJob{id: 3, lane: laneRequest}
 	p.jobs[4] = &activeJob{id: 4, lane: laneRequest}
 	p.jobs[5] = &activeJob{id: 5, lane: laneMessage}
-	if l, free := p.slotsNow(); !slices.Equal(l, []string{laneMessage, laneGateway}) || free != messageSlots-1+gatewaySlots {
+	p.jobs[1].lane, p.jobs[2].lane = laneHeavy, laneHeavy
+	p.jobs[6] = &activeJob{id: 6, lane: laneLight}
+	p.jobs[7] = &activeJob{id: 7, lane: laneLight}
+	p.jobs[8] = &activeJob{id: 8, lane: laneLight}
+	if l, free := p.slotsNow(); !slices.Equal(l, []string{laneAgent, laneMessage, laneGateway}) || free != core.DefaultMaxAgents+messageSlots-1+gatewaySlots {
 		t.Fatalf("overloaded, every other lane full: lanes %v, free %d", l, free)
 	}
 }
@@ -217,21 +227,22 @@ func TestGatewayAuditsNeverWaitForTheGovernor(t *testing.T) {
 	p.jobs[2] = &activeJob{id: 2, lane: laneLight}
 	p.jobs[3] = &activeJob{id: 3, lane: laneGateway}
 	p.jobs[4] = &activeJob{id: 4, lane: laneGateway}
+	p.jobs[5] = &activeJob{id: 5, lane: laneLight}
 	l, free := p.slotsNow()
 	if !slices.Contains(l, laneGateway) || slices.Contains(l, laneLight) {
 		t.Fatalf("overloaded, light lane full: lanes %v", l)
 	}
-	if free != requestSlots+messageSlots+gatewaySlots-2 {
+	if free != 3+core.DefaultMaxAgents+requestSlots+messageSlots+gatewaySlots-2 {
 		t.Fatalf("free %d", free)
 	}
-	if h, li, _, _, gw := p.running(); h != 0 || li != 2 || gw != 2 {
+	if h, li, _, _, gw := p.running(); h != 0 || li != 3 || gw != 2 {
 		t.Fatalf("running heavy %d, light %d, gateway %d", h, li, gw)
 	}
 }
 
 func TestLanesMatchTheServer(t *testing.T) {
-	if !slices.Contains(runnerFeatureList(), core.FeatureAgentLane) {
-		t.Error("the runner doesn't say it has the agent lane")
+	if !slices.Contains(runnerFeatureList(), core.FeatureAgentLane) || !slices.Contains(runnerFeatureList(), core.FeatureLightLane) {
+		t.Error("the runner doesn't say it has the agent lane and the light lane")
 	}
 	if jobLane("agent") != core.LaneHeavy {
 		t.Errorf("an agent job's lane without the agent lane is %s", jobLane("agent"))
@@ -242,14 +253,14 @@ func TestLanesMatchTheServer(t *testing.T) {
 		}
 	}
 	if maxRunnerJobs != core.MaxRunnerJobs || laneHeavy != core.LaneHeavy || laneLight != core.LaneLight || laneRequest != core.LaneRequest || requestSlots != core.RequestLaneSlots ||
-		laneMessage != core.LaneMessage || messageSlots != core.MessageLaneSlots || laneGateway != core.LaneGateway || gatewaySlots != core.GatewayLaneSlots || laneAgent != core.LaneAgent {
+		laneMessage != core.LaneMessage || messageSlots != core.MessageLaneSlots || laneGateway != core.LaneGateway || gatewaySlots != core.GatewayLaneSlots || laneAgent != core.LaneAgent || lightSlots != core.LightLaneSlots {
 		t.Error("runner constants differ from core")
 	}
 }
 
-// Audits wait on a model: a machine holding builds to one still runs a few
-// (WP-761), inside --max-jobs and with room left for a build.
-func TestLightLaneOutgrowsHeavyLimit(t *testing.T) {
+// Audits wait on a model: they have their own slots beside the builds
+// (WP-761, WP-1943), whatever the load level or --max-jobs.
+func TestLightLaneIsIndependentOfHeavyJobs(t *testing.T) {
 	g := newGovernor(6, nil)
 	g.observe(calmSample(), time.Now(), 0)
 	if g.heavyLimit() != 1 {
@@ -258,21 +269,74 @@ func TestLightLaneOutgrowsHeavyLimit(t *testing.T) {
 	if l := g.lanes(1, 2, 0); !slices.Equal(l, []string{laneLight, laneRequest}) {
 		t.Fatalf("two audits and a build: lanes %v", l)
 	}
-	if l := g.lanes(0, 3, 0); !slices.Equal(l, []string{laneHeavy, laneRequest}) {
-		t.Fatalf("three audits: lanes %v", l)
-	}
-	small := newGovernor(3, nil)
-	small.observe(calmSample(), time.Now(), 0)
-	if l := small.lanes(0, 2, 0); !slices.Equal(l, []string{laneHeavy, laneRequest}) {
-		t.Fatalf("--max-jobs 3 keeps room for a build: lanes %v", l)
+	if l := g.lanes(0, lightSlots, 0); !slices.Equal(l, []string{laneHeavy, laneRequest}) {
+		t.Fatalf("a full light lane: lanes %v", l)
 	}
 	one := newGovernor(1, nil)
 	one.observe(calmSample(), time.Now(), 0)
-	if l := one.lanes(0, 1, 0); !slices.Equal(l, []string{laneRequest}) {
-		t.Fatalf("--max-jobs 1: lanes %v", l)
+	if l := one.lanes(1, 0, 0); !slices.Equal(l, []string{laneLight, laneRequest}) {
+		t.Fatalf("--max-jobs 1, a heavy job: lanes %v", l)
 	}
-	if l := one.lanes(0, 0, 0); !slices.Equal(l, []string{laneHeavy, laneLight, laneRequest}) {
-		t.Fatalf("--max-jobs 1, idle: lanes %v", l)
+	if l := one.lanes(0, 1, 0); !slices.Equal(l, []string{laneHeavy, laneLight, laneRequest}) {
+		t.Fatalf("--max-jobs 1, an audit: lanes %v", l)
+	}
+}
+
+// An overloaded machine running one build still takes audits up to the light
+// lane's ceiling, and one running an audit still takes its one build.
+func TestOverloadedMachineStillTakesAudits(t *testing.T) {
+	g := newGovernor(3, nil)
+	over := calmSample()
+	over.Load1, over.CPUSome = 40, 80
+	g.observe(over, time.Now(), 1)
+	if g.level != levelOverloaded {
+		t.Fatalf("level %q", g.level)
+	}
+	for light := range lightSlots {
+		if l := g.lanes(1, light, 0); !slices.Equal(l, []string{laneLight, laneRequest}) {
+			t.Fatalf("overloaded, a build and %d audits: lanes %v", light, l)
+		}
+	}
+	if l := g.lanes(1, lightSlots, 0); slices.Contains(l, laneLight) {
+		t.Fatalf("a fourth audit is offered: lanes %v", l)
+	}
+	if l := g.lanes(0, 2, 0); !slices.Equal(l, []string{laneHeavy, laneLight, laneRequest}) {
+		t.Fatalf("overloaded, audits and no build: lanes %v", l)
+	}
+	if l := g.lanes(1, 0, 0); slices.Contains(l, laneHeavy) {
+		t.Fatalf("overloaded, a second build is offered: lanes %v", l)
+	}
+}
+
+func TestMemoryShortStopsLightJobsAndSaysWhy(t *testing.T) {
+	p := agentProc(3, 3)
+	mem := calmSample()
+	mem.MemSome = 3
+	p.gov.observe(mem, time.Now(), 0)
+	l, _ := p.slotsNow()
+	if slices.Contains(l, laneLight) || !slices.Contains(l, laneHeavy) {
+		t.Fatalf("memory short: lanes %v", l)
+	}
+	r := map[string]any{}
+	p.addLightReport(r, 0)
+	if why, _ := r["light_stopped"].(string); !strings.Contains(why, "memory") || r["max_light"] != lightSlots {
+		t.Errorf("report %v", r)
+	}
+	p.gov.observe(calmSample(), time.Now(), 0)
+	r = map[string]any{}
+	p.addLightReport(r, 0)
+	if l, _ := p.slotsNow(); !slices.Contains(l, laneLight) || r["light_stopped"] != nil {
+		t.Errorf("memory back: lanes %v, report %v", l, r)
+	}
+}
+
+func TestNoGovernorHeavyAtMaxLeavesLight(t *testing.T) {
+	p := &runnerProc{opts: runnerOpts{MaxJobs: 2}, jobs: map[int64]*activeJob{}}
+	p.jobs[1] = &activeJob{id: 1, lane: laneHeavy}
+	p.jobs[2] = &activeJob{id: 2, lane: laneHeavy}
+	l, _ := p.slotsNow()
+	if slices.Contains(l, laneHeavy) || !slices.Contains(l, laneLight) {
+		t.Fatalf("heavy at --max-jobs: lanes %v", l)
 	}
 }
 

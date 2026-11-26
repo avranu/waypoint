@@ -361,3 +361,43 @@ func TestAgentJobsHaveTheirOwnLane(t *testing.T) {
 		t.Errorf("clean: %+v", c)
 	}
 }
+
+// A runner with the light lane (WP-1943) takes audits beside a heavy job even
+// overloaded, so the server does not say it takes nothing; a runner without it
+// does share one job at a time between them, and says so.
+func TestLightJobTextsFollowTheRunnersRule(t *testing.T) {
+	audit, _ := json.Marshal(AgentJob{CLI: "cursor", Prompt: "audit", Repo: "https://x.test/a/b.git"})
+	over := &RunnerCapacity{Limit: 1, Max: 3, Level: "overloaded", Reason: "tasks waited for a CPU 58% of the time", Heavy: 1, MaxLight: LightLaneSlots}
+	for _, c := range []struct {
+		name     string
+		features []string
+		capacity *RunnerCapacity
+		want     string
+	}{
+		{"light lane", []string{FeatureAudit, FeatureLightLane}, over, "devhost is online and should take it within seconds."},
+		{"light lane, memory short", []string{FeatureAudit, FeatureLightLane}, &RunnerCapacity{Limit: 1, Max: 3, Level: "calm", Heavy: 1, MaxLight: LightLaneSlots, LightStopped: "10% of memory free"},
+			"devhost takes no more reviews or audits while memory is short (10% of memory free). This job is next."},
+		{"older runner", []string{FeatureAudit}, &RunnerCapacity{Limit: 1, Max: 3, Level: "overloaded", Reason: "tasks waited for a CPU 58% of the time", Heavy: 1},
+			"devhost is overloaded (tasks waited for a CPU 58% of the time), so it runs one job at a time; it is running a babysit round."},
+	} {
+		e := newEnv(t)
+		r := e.runner(e.admin, "devhost", func(r *RunnerRegistration) {
+			r.CLIs = []RunnerCLI{{Name: "cursor"}}
+			r.Features = c.features
+			r.MaxJobs = 3
+		})
+		e.enqueue(e.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("make check", "/work"), Source: "babysit"})
+		if w := e.poll(e.admin, r, RunnerPoll{Lanes: []string{LaneHeavy}}); w.Job == nil {
+			t.Fatalf("%s: the babysit round was not taken", c.name)
+		}
+		e.poll(e.admin, r, RunnerPoll{Lanes: []string{}, Capacity: c.capacity})
+		au := e.enqueue(e.admin, RunnerJobInput{Kind: JobAudit, Input: audit})
+		j, err := e.s.GetRunnerJob(e.ctx, e.admin, au.ID, -1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(j.Waiting, c.want) {
+			t.Errorf("%s: audit waits %q, want %q", c.name, j.Waiting, c.want)
+		}
+	}
+}

@@ -116,7 +116,7 @@ func (p *runnerProc) reapInterruptedStarts(ctx context.Context) {
 // runnerFeatureList is what this wp can do. "autopilot_start" needs tmux on
 // the machine, so autopilot picks a runner that can start a session.
 func runnerFeatureList() []string {
-	out := []string{core.FeatureWorkClock, "confine", "autopilot", "audit", "audit-scope", "autopilot_review", "request_lane", "message_lane", "gateway_agent", "gateway_lane", "task_kickoff", core.FeatureAgentLane}
+	out := []string{core.FeatureWorkClock, "confine", "autopilot", "audit", "audit-scope", "autopilot_review", "request_lane", "message_lane", "gateway_agent", "gateway_lane", "task_kickoff", core.FeatureAgentLane, core.FeatureLightLane}
 	if _, err := exec.LookPath("tmux"); err == nil {
 		out = append(out, "autopilot_start")
 	}

@@ -410,6 +410,7 @@ func (p *runnerProc) poll(ctx context.Context, free int, lanes []string) (*pollA
 		heavy, light, _, _, gw := p.running()
 		cp := p.gov.report(time.Now(), heavy, light, gw)
 		p.addAgentReport(cp)
+		p.addLightReport(cp, light)
 		body["capacity"] = cp
 	}
 	switch {

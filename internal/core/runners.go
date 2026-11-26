@@ -116,6 +116,12 @@ const FeatureMessageLane = "message_lane"
 // only while a command of it holds a test slot (LaneAgent, WP-1915).
 const FeatureAgentLane = "agent_lane"
 
+// FeatureLightLane: the runner's wp runs reviews and audits in a lane of
+// their own, ceilinged at LightLaneSlots and stopped only by short memory,
+// beside its heavy jobs rather than sharing --max-jobs and the load governor
+// with them (LaneLight, WP-1943).
+const FeatureLightLane = "light_lane"
+
 // FeatureGatewayAudit: the runner's wp runs an audit whose model is the
 // LLM gateway's (GatewayCLI): it sends its checkout through Waypoint to an
 // agent task there, and needs no CLI of its own for it (WP-617). A wp from
@@ -139,7 +145,7 @@ const FeatureTaskKickoff = "task_kickoff"
 // as before WP-1618.
 const FeatureWorkClock = "work_clock"
 
-var runnerFeatures = []string{FeatureWorkClock, FeatureConfine, FeatureAutopilot, FeatureAutopilotStart, FeatureAudit, FeatureAutopilotReview, FeatureRequestLane, FeatureMessageLane, FeatureGatewayAudit, FeatureGatewayLane, FeatureSandboxDrill, FeatureTaskKickoff, FeatureObjective, FeatureAgentLane}
+var runnerFeatures = []string{FeatureWorkClock, FeatureConfine, FeatureAutopilot, FeatureAutopilotStart, FeatureAudit, FeatureAutopilotReview, FeatureRequestLane, FeatureMessageLane, FeatureGatewayAudit, FeatureGatewayLane, FeatureSandboxDrill, FeatureTaskKickoff, FeatureObjective, FeatureAgentLane, FeatureLightLane}
 
 // runnerState is the Service's in-memory part of runners: a broadcast that
 // wakes held polls, and when each job's last live update went out.

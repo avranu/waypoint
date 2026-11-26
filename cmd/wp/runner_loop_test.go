@@ -333,7 +333,7 @@ func TestRunnerRunsARequestsCommandWhileOverloaded(t *testing.T) {
 		t.Fatalf("overloaded machine started another agent job (%s)", s)
 	}
 	j, _ := e.svc.GetRunnerJob(ctx, me, agent.ID, 0)
-	if !strings.Contains(j.Waiting, "box is overloaded (tasks waited for a CPU 58% of the time), so it runs one job at a time; it is running a babysit round.") || !strings.Contains(j.Waiting, "This job is next.") {
+	if !strings.Contains(j.Waiting, "box is overloaded (tasks waited for a CPU 58% of the time), so it runs one heavy job at a time; it is running a babysit round.") || !strings.Contains(j.Waiting, "This job is next.") {
 		t.Errorf("waiting = %q", j.Waiting)
 	}
 	stop()

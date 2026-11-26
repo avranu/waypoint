@@ -680,6 +680,9 @@ type runnerInfo struct {
 		Heavy  int         `json:"heavy"`
 		Light  int         `json:"light"`
 
+		MaxLight     int    `json:"max_light"`
+		LightStopped string `json:"light_stopped"`
+
 		MaxAgents     int    `json:"max_agents"`
 		Agents        int    `json:"agents"`
 		AgentSlots    int    `json:"agent_slots"`
@@ -780,7 +783,10 @@ func cmdRunnerStatus(c *cli, args []string) error {
 				fmt.Fprintf(&b, "  running: %d job%s\n", r.Running, pluralS(r.Running))
 			}
 			if cp := r.Capacity; cp != nil && cp.Level != "" {
-				fmt.Fprintf(&b, "  jobs:    %s\n", capacityLine(cp.Level, cp.Reason, cp.Limit, cp.Max))
+				fmt.Fprintf(&b, "  jobs:    %s\n", capacityLine(cp.Level, cp.Reason, cp.Limit, cp.Max, cp.MaxLight > 0))
+				if cp.MaxLight > 0 {
+					fmt.Fprintf(&b, "  light:   %s\n", lightLine(cp.Light, cp.MaxLight, cp.LightStopped))
+				}
 				if cp.MaxAgents > 0 {
 					fmt.Fprintf(&b, "  agents:  %s\n", agentsLine(cp.Agents, cp.MaxAgents, cp.AgentSlots, cp.AgentsStopped))
 				}
@@ -809,12 +815,25 @@ func humanSince(t time.Time) string {
 }
 
 // capacityLine says how many jobs a runner takes now and why (WP-366).
-func capacityLine(level, reason string, limit, maxJobs int) string {
+func capacityLine(level, reason string, limit, maxJobs int, lightLane bool) string {
 	what := fmt.Sprintf("up to %d heavy job%s at once now, of --max-jobs %d", limit, pluralS(limit), maxJobs)
 	if level == "overloaded" {
 		what = "one job at a time now"
+		if lightLane {
+			what = "one heavy job at a time now"
+		}
 	}
 	return fmt.Sprintf("%s (%s: %s)", what, level, reason)
+}
+
+// lightLine says how many reviews and audits a runner runs, of the light
+// lane's slots, and why it takes no more while it has room (WP-1943).
+func lightLine(running, ceiling int, stopped string) string {
+	s := fmt.Sprintf("%d of %d audit and review slots running", running, ceiling)
+	if stopped != "" {
+		s += fmt.Sprintf("; no more while memory is short (%s)", stopped)
+	}
+	return s
 }
 
 // agentsLine says how many agent jobs a runner runs, of --max-agents, and how
