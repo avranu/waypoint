@@ -45,10 +45,17 @@ func TestArchiveRedactionCoversWhatRedactDoes(t *testing.T) {
 		{"postgres://admin:pw1234@db/app", "pw1234"},
 		{`Authorization: Digest username="u", response="deadbeefcafe"`, "deadbeefcafe"},
 		{"-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA1234\n-----END RSA PRIVATE KEY-----", "MIIEpAIBAAKCAQEA1234"},
+		{"-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQdGBF9abcd1234\n-----END PGP PRIVATE KEY BLOCK-----", "lQdGBF9abcd1234"},
 		{long("sk-", 12, "a1"), long("", 12, "a1")}, {long("ghp_", 9, "a1B2"), long("", 9, "a1B2")}, {long("gho_", 9, "a1B2"), long("", 9, "a1B2")},
+		{long("github_pat_", 8, "aB3_"), long("", 8, "aB3_")},
 		{long("ghu_", 9, "a1B2"), long("", 9, "a1B2")}, {long("ghs_", 9, "a1B2"), long("", 9, "a1B2")}, {long("ghr_", 9, "a1B2"), long("", 9, "a1B2")},
 		{long("glpat-", 12, "a1"), long("", 12, "a1")}, {"xoxb-" + strings.Repeat("1", 12), strings.Repeat("1", 12)},
 		{"AKIA" + strings.Repeat("A1", 8), strings.Repeat("A1", 8)},
+		{long("sk_live_", 8, "a1"), long("", 8, "a1")}, {long("sk_test_", 8, "a1"), long("", 8, "a1")},
+		{long("rk_live_", 8, "a1"), long("", 8, "a1")}, {long("rk_test_", 8, "a1"), long("", 8, "a1")},
+		{long("AIza", 12, "a_-"), long("", 12, "a_-")}, {long("npm_", 12, "aB3"), long("", 12, "aB3")},
+		{long("pypi-", 6, "aB_-"), long("", 6, "aB_-")}, {"xapp-1-A0123-4567", "A0123-4567"},
+		{"https://" + strings.Repeat("u", 24) + "@host/x", strings.Repeat("u", 24)},
 		{"eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0NTY3.SflKxwRJSMeKKF2QT4", "SflKxwRJSMeKKF2QT4"},
 	}
 	for _, r := range rows {
