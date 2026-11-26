@@ -780,7 +780,7 @@ func TestRestEndsWhenItsNamedCommentIsCoveredByAFix(t *testing.T) {
 	pr := be.open()
 	be.start(pr)
 	old, dup := be.comment("501").Ref, be.comment("502").Ref
-	if _, err := be.s.AckReviewComments(be.ctx, be.agent, AckInput{IDs: []string{old}, Verdict: VerdictRejected, Note: "It builds; the claim doesn't hold."}); err != nil {
+	if _, err := be.s.FixedReviewComments(be.ctx, be.agent, FixedInput{IDs: []string{old}}); err != nil {
 		t.Fatal(err)
 	}
 	be.s.Wait()
