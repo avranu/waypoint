@@ -125,3 +125,60 @@ func TestFindingThatNamesAnEarlierIdIsItsRepeat(t *testing.T) {
 		t.Fatal("a finding sharing no words and naming nothing was taken for a repeat")
 	}
 }
+
+func TestNamedPointNoRoundIsKnownToHaveFixedNamesNoRound(t *testing.T) {
+	t0 := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	rejected := ledgerItem{ID: "5.1", Kind: "finding", Path: "a.go", Line: 10, SHA: "aaa", Body: "Export leaks rows. Strangers read them", Dealt: true, At: t0}
+	now := ledgerItem{ID: "6.1", Kind: "finding", Path: "b.go", Line: 90, SHA: "bbb", Body: "Quota unchecked. Anyone exceeds it", At: t0.Add(2 * time.Hour), RefersTo: "5.1"}
+	rounds := []BabysitRound{{N: 1, SHA: "aaa", PushSHA: "bbb", Pushed: true, At: t0.Add(time.Hour), Findings: []string{"5.1"},
+		Ledger: []LedgerEntry{{ID: "5.1", Kind: "finding"}}}}
+	for name, earlier := range map[string][]ledgerItem{
+		"rejected by a round that pushed": {rejected, now},
+		"known only from a round":         {now},
+	} {
+		entries, _ := classifyRound(ledgerInput{Head: "bbb", Items: []ledgerItem{now}, Earlier: earlier, Rounds: rounds, File: ledgerFiles})
+		if e := entries[0]; e.Class != RoundRepeat || e.Of != "5.1" || e.Round != 0 || strings.Contains(e.Why, "fixed") {
+			t.Errorf("%s: entry %+v: a repeat of 5.1 that names no round as its fix", name, e)
+		}
+	}
+	fixed := rejected
+	fixed.Fixed = true
+	same := now
+	same.Path = "a.go"
+	early := same
+	early.SHA, early.At = "aaa", t0.Add(time.Minute)
+	for name, c := range map[string]struct {
+		now   ledgerItem
+		round int
+	}{
+		"on the point's file, after the fix": {same, 1},
+		"on another file":                    {now, 0},
+		"made before the fix":                {early, 0},
+	} {
+		entries, _ := classifyRound(ledgerInput{Head: "bbb", Items: []ledgerItem{c.now}, Earlier: []ledgerItem{fixed, c.now}, Rounds: rounds, File: ledgerFiles})
+		if e := entries[0]; e.Class != RoundRepeat || e.Of != "5.1" || e.Round != c.round {
+			t.Errorf("%s: entry %+v: want a repeat of 5.1 naming round %d", name, e, c.round)
+		}
+	}
+}
+
+func TestNamedPointWithNothingToMakeAgainIsNoRepeat(t *testing.T) {
+	t0 := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	open := ledgerItem{ID: "c5", Kind: "comment", Path: "a.go", Line: 10, SHA: "aaa", Body: "Export leaks rows. Strangers read them", At: t0}
+	now := ledgerItem{ID: "6.1", Kind: "finding", Path: "b.go", Line: 90, SHA: "bbb", Body: "Quota unchecked. Anyone exceeds it", At: t0.Add(time.Hour), RefersTo: "c5"}
+	later := open
+	later.Dealt, later.At = true, t0.Add(2*time.Hour)
+	dealt := open
+	dealt.Dealt = true
+	for name, c := range map[string]struct{ items, earlier []ledgerItem }{
+		"still open, no round given it":     {[]ledgerItem{now}, []ledgerItem{open, now}},
+		"given to this round with the rest": {[]ledgerItem{open, now}, []ledgerItem{open, now}},
+		"made after the finding":            {[]ledgerItem{now}, []ledgerItem{later, now}},
+		"in this packet, though dealt with": {[]ledgerItem{dealt, now}, []ledgerItem{dealt, now}},
+	} {
+		entries, _ := classifyRound(ledgerInput{Head: "bbb", Items: c.items, Earlier: c.earlier, File: ledgerFiles})
+		if e := entries[len(entries)-1]; e.Class != RoundNew || e.Of != "" {
+			t.Errorf("%s: entry %+v: nothing is made again", name, e)
+		}
+	}
+}

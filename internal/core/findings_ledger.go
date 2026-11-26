@@ -233,17 +233,8 @@ func (l *ledger) pushedWith(id string) int {
 // symbol, saying much the same, after it was fixed. It returns the round
 // that fixed it (0 when none did).
 func (l *ledger) repeatOf(it ledgerItem, e LedgerEntry) (ledgerItem, int, bool) {
-	if it.RefersTo != "" && it.RefersTo != it.ID {
-		for _, p := range l.in.Earlier {
-			if p.ID == it.RefersTo {
-				return p, l.fixedIn(p), true
-			}
-		}
-		for _, r := range l.in.Rounds {
-			if r.Pushed && slices.ContainsFunc(r.Ledger, func(pe LedgerEntry) bool { return pe.ID == it.RefersTo }) {
-				return ledgerItem{ID: it.RefersTo, Kind: "finding"}, r.N, true
-			}
-		}
+	if p, n, ok := l.namedPoint(it, e.Path); ok {
+		return p, n, true
 	}
 	words := strings.Fields(e.Gist)
 	if len(words) == 0 {
@@ -284,6 +275,74 @@ func (l *ledger) repeatOf(it ledgerItem, e LedgerEntry) (ledgerItem, int, bool) 
 		}
 	}
 	return ledgerItem{}, 0, false
+}
+
+// namedPoint is the earlier point an audit finding names in refers_to, when
+// there is something to make again: it was fixed or decided, or given to a
+// round that pushed, and it is not among what this round is given. The name is
+// the audit model's claim, and the round that fixed the point can park the
+// pull request, so that round is given (else 0) only when the finding is on
+// the point's file and was not made before the fix.
+func (l *ledger) namedPoint(it ledgerItem, file string) (ledgerItem, int, bool) {
+	id := it.RefersTo
+	if id == "" || id == it.ID || l.inPacket(id) {
+		return ledgerItem{}, 0, false
+	}
+	for _, p := range l.in.Earlier {
+		if p.ID != id {
+			continue
+		}
+		if (!p.At.IsZero() && !it.At.IsZero() && p.At.After(it.At)) || (!p.Dealt && !p.Fixed && l.pushedWith(id) == 0) {
+			return ledgerItem{}, 0, false
+		}
+		if p.Dealt && !p.Fixed {
+			// Rejected, dismissed or deferred: a round that was given it and
+			// pushed didn't fix it.
+			return p, 0, true
+		}
+		n := l.fixedIn(p)
+		if place, _ := itemPlace(p); file == "" || place != file || l.madeBeforeFix(it, n) {
+			n = 0
+		}
+		return p, n, true
+	}
+	for _, r := range l.in.Rounds {
+		if !r.Pushed {
+			continue
+		}
+		for _, pe := range r.Ledger {
+			if pe.ID == id {
+				// A round's ledger doesn't say how the point ended.
+				return ledgerItem{ID: id, Kind: pe.Kind}, 0, true
+			}
+		}
+	}
+	return ledgerItem{}, 0, false
+}
+
+// madeBeforeFix: the item was made before round n's fix, so it can't say that
+// the fix didn't hold.
+func (l *ledger) madeBeforeFix(it ledgerItem, n int) bool {
+	for i, r := range l.in.Rounds {
+		if r.N == n && r.Pushed {
+			return !sameSHA(it.SHA, pushedHead(l.in.Rounds, i, l.in.Head)) && l.aboutBefore(it, i)
+		}
+	}
+	return false
+}
+
+// aboutBefore: the item is about a head up to the start of the work of the
+// round at i, or, where its commit isn't one of those, was written before that
+// round began.
+func (l *ledger) aboutBefore(it ledgerItem, i int) bool {
+	if it.SHA != "" {
+		for k := 0; k <= i; k++ {
+			if sameSHA(it.SHA, l.in.Rounds[k].SHA) || (k < i && sameSHA(it.SHA, pushedHead(l.in.Rounds, k, ""))) {
+				return true
+			}
+		}
+	}
+	return !it.At.IsZero() && it.At.Before(l.in.Rounds[i].At)
 }
 
 func (l *ledger) inPacket(id string) bool {
@@ -334,14 +393,7 @@ func (l *ledger) coveredByFix(it ledgerItem, n int) (string, bool) {
 				return "", false
 			}
 		}
-		if it.SHA != "" {
-			for k := 0; k <= i; k++ {
-				if sameSHA(it.SHA, l.in.Rounds[k].SHA) || (k < i && sameSHA(it.SHA, pushedHead(l.in.Rounds, k, ""))) {
-					return fix, true
-				}
-			}
-		}
-		if !it.At.IsZero() && it.At.Before(r.At) {
+		if l.aboutBefore(it, i) {
 			return fix, true
 		}
 		return "", false
