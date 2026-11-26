@@ -423,6 +423,69 @@ func TestShipRunsTheScopedCheckOncePerTree(t *testing.T) {
 	}
 }
 
+// A failed run on the tree doesn't count as one that already passed: wp ship
+// runs the check again on the same tree, for the default scoped check and for
+// --check alike, and skips it only once a run on that tree has passed
+// (audit 1896.51).
+func TestShipCheckRunsAgainAfterAFailureOnTheSameTree(t *testing.T) {
+	root := scopedRepo(t)
+	flag := filepath.Join(t.TempDir(), "ok") // outside the tree, so the tree stays the same
+	putExec(t, root, ".waypoint/test", "#!/bin/sh\ntest -e "+flag+"\n")
+	putFiles(t, root, map[string]string{"a.txt": "a\n"})
+	runs := 0
+	old := shipScopedCheck
+	t.Cleanup(func() { shipScopedCheck = old })
+	shipScopedCheck = func(c *cli) (int, error) {
+		runs++
+		err := c.dispatch(testCmd, nil)
+		var ec exitCode
+		if errors.As(err, &ec) {
+			return int(ec), nil
+		}
+		return 0, err
+	}
+	var out bytes.Buffer
+	c := &cli{out: &out, err: &bytes.Buffer{}}
+	tree := workingTree()
+
+	if err := c.runDefaultShipCheck(); err == nil || runs != 1 {
+		t.Fatalf("a failing wp test: err %v, runs %d", err, runs)
+	}
+	if err := c.runDefaultShipCheck(); err == nil || runs != 2 || strings.Contains(out.String(), "already passed") {
+		t.Fatalf("a failure on the tree skipped the next run: err %v, runs %d\n%s", err, runs, out.String())
+	}
+	check := "test -e " + flag
+	if err := c.runShipCheck(check); err == nil {
+		t.Fatal("a failing --check passed")
+	}
+	out.Reset()
+	if err := c.runShipCheck(check); err == nil || strings.Contains(out.String(), "already passed") || !strings.Contains(out.String(), "Check failed: "+check) {
+		t.Fatalf("a failed --check on the tree skipped the next run: err %v\n%s", err, out.String())
+	}
+
+	if err := os.WriteFile(flag, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if workingTree() != tree {
+		t.Fatal("the tree changed; the test can't tell a skip from a run")
+	}
+	if err := c.runDefaultShipCheck(); err != nil || runs != 3 {
+		t.Fatalf("a passing wp test after failures: err %v, runs %d", err, runs)
+	}
+	out.Reset()
+	if err := c.runShipCheck(check); err != nil || !strings.Contains(out.String(), "Check passed: "+check) {
+		t.Fatalf("a passing --check after failures: err %v\n%s", err, out.String())
+	}
+	out.Reset()
+	if err := c.runDefaultShipCheck(); err != nil || runs != 3 || !strings.Contains(out.String(), "Check: wp test already passed on this tree; not run again.") {
+		t.Errorf("wp test after its pass: err %v, runs %d\n%s", err, runs, out.String())
+	}
+	out.Reset()
+	if err := c.runShipCheck(check); err != nil || !strings.Contains(out.String(), "Check: "+check+" already passed on this tree; not run again.") {
+		t.Errorf("--check after its pass: err %v\n%s", err, out.String())
+	}
+}
+
 // A pass over a base the caller chose is not the default scoped pass: wp ship
 // runs its own check after it.
 func TestShipCheckIsNotSkippedByAWpTestPassOverAChosenBase(t *testing.T) {
