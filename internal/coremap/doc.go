@@ -40,6 +40,7 @@
 //	                     references with, both directions, with their share of its total
 //	-suggest-order       order the groups to minimise upward references (kernel pinned
 //	                     first; Eades-Lin-Smyth, then single-node moves), and report under it
+//	-write-upward        write the group pairs that refer upward to upward.txt (make coremap-upward)
 //	-per-file            every file is its own group, for file-level -affinity or -group
 //
 // -suggest-order depends only on the groups, so rerun it after changing

@@ -24,6 +24,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 	suggest := fs.Bool("suggest-order", false, "order the groups to minimise upward references (kernel first) and report under that order")
 	affinity := fs.Bool("affinity", false, "list each group with the groups it exchanges the most references with")
 	perFile := fs.Bool("per-file", false, "make every file its own group (file-level affinity and order)")
+	writeUpward := fs.Bool("write-upward", false, "write the group pairs that refer upward to -upward and print nothing else")
+	upward := fs.String("upward", "internal/coremap/upward.txt", "the baseline `file` -write-upward writes")
 	minGroups := fs.Int("min-groups", 10, "the group count -kernel-candidates needs")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -56,6 +58,23 @@ func Run(args []string, stdout, stderr io.Writer) error {
 	a := Analyze(ld, groups)
 	if *suggest {
 		a = a.SuggestOrder()
+	}
+
+	if *writeUpward {
+		pairs := a.UpwardPairs()
+		out, err := os.Create(*upward) // #nosec G304 -- the baseline file named by this tool's flag
+		if err != nil {
+			return err
+		}
+		if err := WriteUpward(out, pairs); err != nil {
+			_ = out.Close()
+			return err
+		}
+		if err := out.Close(); err != nil {
+			return err
+		}
+		fmt.Fprintf(stderr, "wrote %s: %d upward pairs of %d group pairs with references\n", *upward, len(pairs), a.AllPairs())
+		return nil
 	}
 
 	enc := json.NewEncoder(stdout)
