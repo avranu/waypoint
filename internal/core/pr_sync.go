@@ -72,7 +72,7 @@ func (s *Service) runPRSync(prID int64, st *prSyncState) {
 		st.want, st.pending, st.active = 0, false, true
 		s.prSyncMu.Unlock()
 
-		ctx := withoutLineLocks(withThreadMemo(context.Background()))
+		ctx := withoutLineLocks(withThreadMemo(withForgeSource(context.Background(), "review sync")))
 		if want&syncCheck != 0 {
 			s.checkPR(ctx, prID, "review or comment")
 		}

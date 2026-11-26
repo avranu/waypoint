@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -81,7 +83,7 @@ func TestForgeRequestsCounted(t *testing.T) {
 	f := &Forge{Kind: "metricstest", BaseURL: srv.URL}
 	ctx := context.Background()
 	count := func(method, route, code string) float64 {
-		return gatheredForgeCount(t, "metricstest", method, route, code)
+		return gatheredForgeCount(t, "metricstest", method, route, code, "other")
 	}
 	var out map[string]any
 	if err := c.do(ctx, f, http.MethodGet, "/repos/m/r/pulls/1", nil, &out); err != nil {
@@ -107,13 +109,13 @@ func TestForgeRequestsCounted(t *testing.T) {
 
 // gatheredForgeCount reads waypoint_forge_requests_total's series from the
 // default registry.
-func gatheredForgeCount(t *testing.T, kind, method, route, code string) float64 {
+func gatheredForgeCount(t *testing.T, kind, method, route, code, source string) float64 {
 	t.Helper()
 	fams, err := prometheus.DefaultGatherer.Gather()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{"kind": kind, "method": method, "route": route, "code": code}
+	want := map[string]string{"kind": kind, "method": method, "route": route, "code": code, "source": source}
 	for _, fam := range fams {
 		if fam.GetName() != "waypoint_forge_requests_total" {
 			continue
@@ -131,4 +133,66 @@ func gatheredForgeCount(t *testing.T, kind, method, route, code string) float64 
 		}
 	}
 	return 0
+}
+
+// A forge request carries the scheduled job it ran under; with no source in
+// the context it is "other"; the innermost name wins.
+func TestForgeRequestSource(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{}`)) }))
+	defer srv.Close()
+	e := newEnv(t)
+	c := &httpForgeClient{http: srv.Client()}
+	f := &Forge{Kind: "sourcetest", BaseURL: srv.URL}
+	var out map[string]any
+	get := func(ctx context.Context) {
+		t.Helper()
+		if err := c.do(ctx, f, http.MethodGet, "/repos/m/r/pulls/1", nil, &out); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := func(source string) float64 {
+		return gatheredForgeCount(t, "sourcetest", "GET", "/repos/{repo}/pulls/{n}", "2xx", source)
+	}
+	e.s.job(e.ctx, "pending checks", time.Hour, func(ctx context.Context) {
+		get(ctx)
+		get(withForgeSource(ctx, "babysit step"))
+	})
+	get(context.Background())
+	for src, want := range map[string]float64{"pending checks": 1, "babysit step": 1, "other": 1} {
+		if got := count(src); got != want {
+			t.Errorf("source %q count = %v, want %v", src, got, want)
+		}
+	}
+	if got := forgeSource(WithAPIForgeSource(context.Background(), "GET /api/v1/pulls/{id}/wait")); got != "api GET /api/v1/pulls/{id}/wait" {
+		t.Errorf("api source = %q", got)
+	}
+}
+
+var twoDigitsRe = regexp.MustCompile(`[0-9]{2,}`)
+
+// Sources are code-defined names: every scheduled job's, and the fixed ones.
+// None may hold a number or a repo-looking owner/name, or the label's
+// cardinality would follow the data.
+func TestForgeSourcesBounded(t *testing.T) {
+	e := newEnv(t)
+	e.s.cfg.BackupDir = t.TempDir()
+	var names []string
+	for _, j := range e.s.schedule() {
+		names = append(names, j.name)
+	}
+	names = append(names, "other", "webhook", "review sync", "babysit step", "merge line", "pr wait",
+		"api GET /api/v1/pulls/{id}/wait", "api MCP", "api")
+	for _, n := range names {
+		src := forgeSource(withForgeSource(context.Background(), n))
+		if twoDigitsRe.MatchString(src) {
+			t.Errorf("source %q has a number in it", src)
+		}
+		// API route patterns are the one place a slash is allowed.
+		if !strings.HasPrefix(src, "api ") && strings.Contains(src, "/") {
+			t.Errorf("source %q looks like a repo", src)
+		}
+		if strings.HasPrefix(src, "api ") && strings.Count(strings.SplitN(src, "{", 2)[0], "/") > 0 && !strings.Contains(src, "/api/") {
+			t.Errorf("source %q is not a route pattern", src)
+		}
+	}
 }

@@ -1042,6 +1042,7 @@ func (s *Service) applyLinkState(ctx context.Context, linkURL string, item *Forg
 
 // HandleForgeWebhook verifies and processes a webhook from a forge.
 func (s *Service) HandleForgeWebhook(ctx context.Context, forgeID int64, h http.Header, body []byte) error {
+	ctx = withForgeSource(ctx, "webhook")
 	f, err := s.forgeByID(ctx, forgeID)
 	if err != nil {
 		return err

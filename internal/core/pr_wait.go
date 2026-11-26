@@ -192,6 +192,7 @@ func sameSHA(a, b string) bool {
 // prWaitRefresh reads the pull request from the forge for a wait, at most
 // every prWaitReadEvery.
 func (s *Service) prWaitRefresh(ctx context.Context, pr *PullRequest) {
+	ctx = withForgeSource(ctx, "pr wait")
 	s.prWaitRead(ctx, pr, false)
 }
 

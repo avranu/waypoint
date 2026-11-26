@@ -544,7 +544,7 @@ func (s *Service) onBabysitEvent(ctx context.Context, e *Event) {
 
 // nudgeBabysit runs a babysit step for a pull request in the background.
 func (s *Service) nudgeBabysit(prID int64, sync bool) {
-	s.goBG(func() { s.babysitStep(context.Background(), prID, sync) })
+	s.goBG(func() { s.babysitStep(withForgeSource(context.Background(), "babysit step"), prID, sync) })
 }
 
 func (s *Service) nudgeBabysits(prs map[int64]*PullRequest) {
@@ -573,7 +573,7 @@ func (s *Service) babysitJobFinished(ctx context.Context, e *Event) {
 		return
 	}
 	s.goBG(func() {
-		bg := context.Background()
+		bg := withForgeSource(context.Background(), "babysit step")
 		unlock := s.babysitLocks.lock(prID)
 		s.recordRoundOutcome(bg, bid, jobID)
 		unlock()

@@ -52,7 +52,7 @@ func (s *Server) mcp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actor.MCP = true
-	ctx := context.WithValue(r.Context(), actorKey, actor)
+	ctx := core.WithAPIForgeSource(context.WithValue(r.Context(), actorKey, actor), "MCP")
 	trimmed := strings.TrimSpace(string(body))
 	if strings.HasPrefix(trimmed, "[") {
 		var reqs []rpcRequest

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -14,14 +15,42 @@ import (
 var (
 	forgeRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "waypoint_forge_requests_total",
-		Help: "Requests Waypoint sent to forges, by forge kind, method, route template and status class (404 and 429 apart; error when no response came back).",
-	}, []string{"kind", "method", "route", "code"})
+		Help: "Requests Waypoint sent to forges, by forge kind, method, route template, status class (404 and 429 apart; error when no response came back) and source (the job, webhook or API route that led to it).",
+	}, []string{"kind", "method", "route", "code", "source"})
 	forgeRequestSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "waypoint_forge_request_duration_seconds",
 		Help:    "Time to the forge's response headers (or the failure), by forge kind and route template.",
 		Buckets: []float64{.025, .05, .1, .25, .5, 1, 2.5, 5, 10},
 	}, []string{"kind", "route"})
 )
+
+type forgeSourceKey struct{}
+
+// withForgeSource names the unit of work whose forge requests ctx carries:
+// a scheduled job, the webhook handler, a background step, an API route.
+// The innermost name wins, so a job that runs a named step is counted under
+// the step. Names are code-defined, never an id, repo or user input, so the
+// source label stays bounded.
+func withForgeSource(ctx context.Context, name string) context.Context {
+	return context.WithValue(ctx, forgeSourceKey{}, name)
+}
+
+// forgeSource is the name withForgeSource set, "other" when none was.
+func forgeSource(ctx context.Context) string {
+	if n, _ := ctx.Value(forgeSourceKey{}).(string); n != "" {
+		return n
+	}
+	return "other"
+}
+
+// WithAPIForgeSource names an API request by its route pattern
+// ("GET /api/v1/pulls/{id}/wait"); a request with none is just "api".
+func WithAPIForgeSource(ctx context.Context, pattern string) context.Context {
+	if pattern == "" {
+		return withForgeSource(ctx, "api")
+	}
+	return withForgeSource(ctx, "api "+pattern)
+}
 
 // send is the one place a forge request leaves Waypoint: it sends req on the
 // client for its context and counts it, whatever the call (JSON, raw, log
@@ -35,7 +64,7 @@ func (c *httpForgeClient) send(f *Forge, req *http.Request) (*http.Response, err
 	if err == nil {
 		code = forgeCodeLabel(resp.StatusCode)
 	}
-	forgeRequests.WithLabelValues(f.Kind, req.Method, route, code).Inc()
+	forgeRequests.WithLabelValues(f.Kind, req.Method, route, code, forgeSource(req.Context())).Inc()
 	return resp, err
 }
 

@@ -542,6 +542,7 @@ func (s *Service) job(ctx context.Context, name string, period time.Duration, f 
 // few seconds: their traces would bury the rest.
 func (s *Service) untracedJob(ctx context.Context, name string, period time.Duration, f func(context.Context)) {
 	run := s.jobs.start(name, period, s.now())
+	ctx = withForgeSource(ctx, name)
 	ctx = context.WithValue(ctx, logSourceKey{}, &logSource{name: name, run: run})
 	defer func() {
 		p := recover()

@@ -1403,7 +1403,7 @@ func (s *Service) lineRunKey(ref lineRef) string {
 
 // lineChangedAsync is lineChanged in the background.
 func (s *Service) lineChangedAsync(ref lineRef) {
-	s.goBG(func() { s.lineChanged(context.Background(), ref) })
+	s.goBG(func() { s.lineChanged(withForgeSource(context.Background(), "merge line"), ref) })
 }
 
 // sweepLines has every line with a member or a live candidate look again,

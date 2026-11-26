@@ -446,6 +446,7 @@ func (s *Server) public(f apiFunc) http.HandlerFunc {
 }
 
 func (s *Server) serve(w http.ResponseWriter, r *http.Request, f apiFunc) {
+	r = r.WithContext(core.WithAPIForgeSource(r.Context(), r.Pattern))
 	v, err := f(w, r)
 	if err != nil {
 		if a, ok := r.Context().Value(actorKey).(*core.Actor); ok {
