@@ -17,7 +17,7 @@ import (
 // answers, and lets every other error through.
 var BlankErr = &analysis.Analyzer{
 	Name: "blankerr",
-	Doc:  "in internal/core and internal/api, don't drop or assign to _ an error result of a method on Service or tx, don't leave an `if err != nil` empty, and don't have a function that returns only a bool decide it by testing err (WP-1406)",
+	Doc:  "in internal/core and internal/api, don't drop or assign to _ an error result of a method on Service, tx or the kernel's Tx or Kernel, don't leave an `if err != nil` empty, and don't have a function that returns only a bool decide it by testing err (WP-1406)",
 	Run:  runBlankErr,
 }
 
@@ -69,7 +69,7 @@ func blankedError(pass *analysis.Pass, r *reporter, as *ast.AssignStmt) {
 		if fn == nil {
 			return
 		}
-		if rn := recvName(fn); rn != "Service" && rn != "tx" {
+		if !coreRecv(fn) {
 			return
 		}
 		for i, l := range lhs {
@@ -118,7 +118,7 @@ func droppedCall(pass *analysis.Pass, r *reporter, call *ast.CallExpr, pos token
 	if fn == nil {
 		return
 	}
-	if rn := recvName(fn); rn != "Service" && rn != "tx" {
+	if !coreRecv(fn) {
 		return
 	}
 	sig, ok := fn.Type().(*types.Signature)

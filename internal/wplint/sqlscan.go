@@ -516,7 +516,7 @@ var SchemaChain = &analysis.Analyzer{
 }
 
 func runSchemaChain(pass *analysis.Pass) (any, error) {
-	if !inPkg(pass.Pkg.Path(), "internal/core") {
+	if !underPkg(pass.Pkg.Path(), "internal/core") {
 		return nil, nil
 	}
 	decls := funcDecls(pass)
