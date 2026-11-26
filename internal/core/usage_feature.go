@@ -667,6 +667,14 @@ func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskA
 			}
 			continue
 		}
+		if byScript && (kind == "builtin" || kind == "mcp") {
+			// A script's calls are in none of the task's tool figures (see
+			// TaskUsage), as in session facts: out of ToolCalls (taken from
+			// trendBuckets, which counts them) and out of the used list.
+			o.ToolCalls -= calls
+			o.ToolErrors -= errs
+			continue
+		}
 		name := strings.TrimSpace(tool + " " + detail)
 		t := seen[toolKey{kind, name}]
 		if t == nil {

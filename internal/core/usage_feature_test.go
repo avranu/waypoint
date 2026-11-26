@@ -641,6 +641,28 @@ func TestUsageForTaskScriptEditsAreApart(t *testing.T) {
 	}
 }
 
+// A REPL script's calls (model <synthetic>) are in none of the task's tool
+// figures: not its tool_calls, tool_errors or used list.
+func TestUsageForTaskScriptCallsAreNotToolCalls(t *testing.T) {
+	f := newFeatureEnv(t)
+	i := f.task(-10, "v0.80.0", "v0.79.0", 500)
+	f.ingest(f.me, "tools", "m1", UsageChunk{Tools: []UsageToolRow{
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Model: "claude-opus-5-5", Kind: "builtin", Tool: "Read", Calls: 4, Errors: 1},
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Model: "<synthetic>", Kind: "builtin", Tool: "Edit", Calls: 3, Errors: 1},
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Model: "<synthetic>", Kind: "builtin", Tool: "Read", Calls: 5},
+	}})
+	o, err := f.s.UsageForTask(f.ctx, f.me, UsageQuery{}, i.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Edits != 0 || o.ScriptEdits != 2 || o.ToolCalls != 4 || o.ToolErrors != 1 {
+		t.Errorf("edits %d script edits %d tool calls %d errors %d; want 0, 2, 4, 1", o.Edits, o.ScriptEdits, o.ToolCalls, o.ToolErrors)
+	}
+	if len(o.Used) != 1 || o.Used[0].Name != "Read" || o.Used[0].Calls != 4 {
+		t.Errorf("used = %+v, want only Read x4", o.Used)
+	}
+}
+
 // Bash calls of counted hours are reported apart (so a zero is "0+", not
 // unknown), and a call the client could not read (shell_unknown) is uncounted
 // without being counted twice with the hour's other Bash calls (audit

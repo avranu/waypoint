@@ -161,7 +161,10 @@ type ShellCommand struct {
 	Dir    string
 	Redirs []string
 	Script string
-	Wrote  []ShellWrite
+	// In is the script file an interpreter reads on its input (python3 <
+	// edit.py), "" when it reads none there.
+	In    string
+	Wrote []ShellWrite
 	// PipeIn: the command reads the one before it through a pipe.
 	PipeIn bool
 	// Sub: the command stands inside a substitution ($( ), backticks, <( ))
@@ -355,6 +358,9 @@ func shellParsed(parsed []*ShellCmd, cwd string, depth int, vars map[string]stri
 		c := ShellCommand{Words: words, Head: HeadOf(words), Dir: dir, Script: g.Heredoc, PipeIn: g.PipeIn}
 		for _, r := range g.Redirs {
 			c.Redirs = append(c.Redirs, fill(r))
+		}
+		if in := StdinScript(words, g.Ins); in != "" {
+			c.In = fill(in)
 		}
 		switch {
 		case c.Head == "cd" || c.Head == "pushd":
@@ -588,6 +594,9 @@ func (c *ShellCommand) ran() string {
 	if c.Script != "" {
 		return ""
 	}
+	if c.In != "" {
+		return c.In
+	}
 	return ScriptFile(c.Words)
 }
 
@@ -599,10 +608,13 @@ func ScriptFile(words []string) string {
 	if i < 0 {
 		return ""
 	}
-	for _, w := range words[i+1:] {
+	for j := i + 1; j < len(words); j++ {
+		w := words[j]
 		switch {
 		case w == "-c" || w == "-e" || w == "-m" || w == "-":
 			return ""
+		case interpreterValueFlags[w]:
+			j++ // python3 -X utf8 edit.py: the option's value, not the script
 		case strings.HasPrefix(w, "-") || w == "run":
 		default:
 			if traceScriptFileRE.MatchString(w) {
@@ -612,6 +624,32 @@ func ScriptFile(words []string) string {
 		}
 	}
 	return ""
+}
+
+// StdinScript is the file an interpreter reads its script from on its input
+// (python3 < edit.py, python3 - < edit.py): the last of ins, when the words
+// run an interpreter and hand it no script, module or file of their own. ""
+// otherwise.
+func StdinScript(words, ins []string) string {
+	i := interpreterAt(words)
+	if i < 0 || len(ins) == 0 {
+		return ""
+	}
+	for j := i + 1; j < len(words); j++ {
+		w := words[j]
+		switch {
+		case w == "-":
+			return ins[len(ins)-1]
+		case w == "-c" || w == "-e" || w == "-m":
+			return ""
+		case interpreterValueFlags[w]:
+			j++
+		case strings.HasPrefix(w, "-"):
+		default:
+			return "" // a file or a subcommand of its own: the input is its data
+		}
+	}
+	return ins[len(ins)-1]
 }
 
 const traceModeRE = `['"][rbtU]*[wax+][rbtUwax+]*['"]`

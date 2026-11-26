@@ -262,3 +262,87 @@ func TestParseShellContinuation(t *testing.T) {
 		t.Fatalf("a shallow line is marked cut")
 	}
 }
+
+// Audit 2075.3: a # inside ${ } or before a closing backtick does not hide
+// the commands after it; a word that begins with # is still a comment.
+func TestParseShellCommentsInsideExpansions(t *testing.T) {
+	for _, c := range []struct {
+		cmd    string
+		redirs []string
+	}{
+		{"echo ${x:- #}; echo y > a.go", []string{"a.go"}},
+		{"echo `true #`; echo y > a.go", []string{"a.go"}},
+		{"echo \"${x:-a b}\" ${y:-'c d'} > a.go", []string{"a.go"}},
+		{"echo a # > a.go", nil},
+		{"echo a#b > a.go", []string{"a.go"}},
+	} {
+		var got []string
+		for _, p := range ParseShell(c.cmd) {
+			got = append(got, p.Redirs...)
+		}
+		if strings.Join(got, " ") != strings.Join(c.redirs, " ") {
+			t.Errorf("%q: redirects %v, want %v", c.cmd, got, c.redirs)
+		}
+	}
+	if p := ParseShell("echo ${x:- #} z"); len(p) != 1 || len(p[0].Words) != 3 || p[0].Words[1] != "${x:- #}" {
+		t.Errorf("${x:- #} is one word: %+v", p)
+	}
+}
+
+// Audit 2075.4 and .10: the parser says which redirects add to a file and
+// which carry a descriptor other than the command's output.
+func TestParseShellRedirectKinds(t *testing.T) {
+	p := ParseShell("echo a > one >> two 2> three 2>> four &>> five 1>> six")
+	if len(p) != 1 {
+		t.Fatalf("%d commands", len(p))
+	}
+	if got := strings.Join(p[0].Redirs, " "); got != "one two three four five six" {
+		t.Errorf("redirects %q", got)
+	}
+	if got := strings.Join(p[0].Appends, " "); got != "two four five six" {
+		t.Errorf("appends %q", got)
+	}
+	if got := strings.Join(p[0].NotOut, " "); got != "three four" {
+		t.Errorf("not the output %q", got)
+	}
+}
+
+// Audit 2075.8 and .6: an interpreter option's value is not the script, and
+// a script handed over on the input is the one run.
+func TestScriptFileSkipsOptionValues(t *testing.T) {
+	for _, c := range []struct{ words, want string }{
+		{"python3 -X utf8 edit.py", "edit.py"},
+		{"python3 -W ignore tools/bad.py", "tools/bad.py"},
+		{"node --require ./hook.js edit.js", "edit.js"},
+		{"python3 edit.py -X utf8", "edit.py"},
+		{"python3 -m edit.py", ""},
+	} {
+		if got := ScriptFile(strings.Fields(c.words)); got != c.want {
+			t.Errorf("ScriptFile(%s) = %q, want %q", c.words, got, c.want)
+		}
+	}
+	for _, c := range []struct {
+		words string
+		ins   []string
+		want  string
+	}{
+		{"python3", []string{"/tmp/edit.py"}, "/tmp/edit.py"},
+		{"python3 - -u", []string{"/tmp/edit.py"}, "/tmp/edit.py"},
+		{"python3 run.py", []string{"data.txt"}, ""},
+		{"python3 -c x", []string{"data.txt"}, ""},
+		{"python3 -m tool", []string{"data.txt"}, ""},
+		{"cat", []string{"/tmp/edit.py"}, ""},
+		{"python3", nil, ""},
+	} {
+		if got := StdinScript(strings.Fields(c.words), c.ins); got != c.want {
+			t.Errorf("StdinScript(%s < %v) = %q, want %q", c.words, c.ins, got, c.want)
+		}
+	}
+	for _, run := range []string{"python3 -X utf8 /tmp/edit.py", "python3 < /tmp/edit.py", "python3 - < /tmp/edit.py"} {
+		var s ShellSession
+		s.KeepWrite("/tmp/edit.py", "/r", "open('main.go','w').write('x')\n")
+		if wrote, known := s.Edit(run, "/r"); !wrote || !known {
+			t.Errorf("%s: wrote %v known %v, want true true", run, wrote, known)
+		}
+	}
+}

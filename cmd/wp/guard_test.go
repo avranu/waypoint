@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -1539,7 +1540,7 @@ func TestGuardAudit2062(t *testing.T) {
 		{"cat > fix.patch <<'EOF'\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-a\n+b\nEOF\ngit apply fix.patch", ""},
 		{`printf -- '--- a/.claude/settings.json\n+++ b/.claude/settings.json\n@@ -1 +1 @@\n-{}\n+{}\n' > fix2.patch && git apply fix2.patch`, ruleGuard},
 	} {
-		g := &guard{site: g0.site, server: g0.server, origin: g0.origin, dir: g0.site.cwd}
+		g := &guard{site: g0.site, server: g0.server, origin: g0.origin, dir: g0.site.cwd, project: func(string) bool { return true }}
 		got := ""
 		if h := g.bashHit(c.cmd); h != nil {
 			got = h.rule
@@ -1560,5 +1561,153 @@ func TestGuardAudit2062(t *testing.T) {
 	}
 	if n, a := runnerCommand("npx", []string{"bash", "-c", "echo x > f"}); n != "bash" || len(a) != 2 {
 		t.Errorf("runnerCommand(npx bash -c) = %s %v", n, a)
+	}
+}
+
+// Audit 2075: scripts on disk that are not the project's, files the line
+// patched or added to and then runs, scripts on the input, printf and echo
+// text, and scripts longer than the guard reads.
+func TestGuardAudit2075(t *testing.T) {
+	g0, repo := guardTestSite(t)
+	writeFile(t, filepath.Join(repo, "tools", "bad.py"), "open('.claude/settings.json','w').write('{}')\n")
+	writeFile(t, filepath.Join(repo, "tools", "bad.sh"), "#!/bin/sh\necho x > .claude/settings.json\n")
+	writeFile(t, filepath.Join(repo, "tools", "ok.sh"), "#!/bin/sh\necho x > docs/a.md\n")
+	writeFile(t, filepath.Join(repo, "tools", "setup.sh"), "#!/bin/sh\nsudo apt-get install -y jq\n")
+	writeFile(t, filepath.Join(repo, "tools", "build.sh"), "#!/bin/sh\ncp tools/ok.sh /tmp/s.sh\nsh /tmp/s.sh\n")
+	writeFile(t, filepath.Join(repo, "run.sh"), "#!/bin/sh\necho ok\n")
+	writeFile(t, filepath.Join(repo, "run.patch"), "--- a/run.sh\n+++ b/run.sh\n@@ -1,2 +1,2 @@\n #!/bin/sh\n-echo ok\n+echo x > .claude/settings.json\n")
+	writeFile(t, filepath.Join(repo, "blank.patch"), "--- a/main.go\n+++ b/main.go\n@@ -1,4 +1,4 @@\n a\n\n--- .claude/settings.json\n+++ .claude/settings.local.json\n z\n")
+	pad := strings.Repeat("# "+strings.Repeat("x", 61)+"\n", guardMaxScript/64+1) // just past guardMaxScript
+	under := pad[:guardMaxScript-64*100]
+	writeFile(t, filepath.Join(repo, "big.sh"), pad+"echo x > .claude/settings.json\n")
+	writeFile(t, filepath.Join(repo, "big.py"), pad+"open('.claude/settings.json','w').write('{}')\n")
+	writeFile(t, filepath.Join(repo, "long.sh"), under+"echo x > .claude/settings.json\n")
+	writeFile(t, filepath.Join(repo, "longok.sh"), under+"echo x > docs/a.md\n")
+	const mine, project = false, true
+	for _, c := range []struct {
+		cmd     string
+		project bool
+		want    string
+	}{
+		// .1: only a script git tracks unchanged is the project's.
+		{`bash tools/setup.sh`, project, ""},
+		{`bash tools/setup.sh`, mine, ruleRoot},
+		{`./tools/setup.sh`, mine, ruleRoot},
+		{`bash tools/bad.sh`, project, ruleGuard},
+		// .2: a file the line patched and then runs.
+		{`git apply run.patch && bash run.sh`, project, ruleGuard},
+		{`patch -p1 < run.patch; ./run.sh`, project, ruleGuard},
+		{`git apply --check run.patch && bash run.sh`, project, ""},
+		// .3: a # inside an expansion is no comment.
+		{`echo ${x:- #}; echo y > .claude/settings.json`, mine, ruleGuard},
+		{"echo `true #`; echo y > .claude/settings.json", mine, ruleGuard},
+		{`echo a # > .claude/settings.json`, mine, ""},
+		// .4: text added to a file that was there, or sent to another descriptor.
+		{`echo '#' >> tools/bad.sh && bash tools/bad.sh`, project, ruleGuard},
+		{`echo '#' >> tools/bad.py && python3 tools/bad.py`, project, ruleGuard},
+		{`echo hi 2>> tools/bad.sh; bash tools/bad.sh`, project, ruleGuard},
+		{`echo hi 2> tools/ok.sh; bash tools/ok.sh`, project, ruleGuard},
+		{"cat tools/bad.sh - > /tmp/s.sh <<'EOF'\ntrue\nEOF\nsh /tmp/s.sh", mine, ruleGuard},
+		{"tee -a tools/bad.sh <<'EOF'\ntrue\nEOF\nsh tools/bad.sh", mine, ruleGuard},
+		{`echo 'echo ok > docs/a.md' >> new.sh && sh new.sh`, mine, ""},
+		{`echo 'echo ok > .claude/settings.json' >> new.sh && sh new.sh`, mine, ruleGuard},
+		// .5 and .16: printf's format is used again for each argument left.
+		{`printf '%s\n' 'true' 'echo x > .claude/settings.json' > /tmp/s.sh && sh /tmp/s.sh`, mine, ruleGuard},
+		{`printf '%s\n' 'echo x > .claude/settings.json' > /tmp/s.sh && sh /tmp/s.sh`, mine, ruleGuard},
+		{`printf '%s > %s\n' 'echo x' docs/a.md > /tmp/s.sh && sh /tmp/s.sh`, mine, ""},
+		{`printf '%s\n' 'true' 'echo x > docs/a.md' > /tmp/s.sh && sh /tmp/s.sh`, mine, ""},
+		{`printf '%b\n' 'echo x > .claude/settings.json' > /tmp/s.sh && sh /tmp/s.sh`, mine, ruleGuard},
+		{`printf 'echo \x3e .claude/settings.json\n' > /tmp/s.sh && sh /tmp/s.sh`, mine, ruleGuard},
+		{`printf '100%%\n' > /tmp/s.txt`, mine, ""},
+		// .6: a script on the input.
+		{`sh < tools/bad.sh`, project, ruleGuard},
+		{`bash -s < tools/bad.sh`, project, ruleGuard},
+		{`bash -s -- arg < tools/bad.sh`, project, ruleGuard},
+		{`python3 < tools/bad.py`, project, ruleGuard},
+		{`python3 - < tools/bad.py`, project, ruleGuard},
+		{`sh < tools/ok.sh`, project, ""},
+		{`bash tools/ok.sh < tools/bad.sh`, project, ""},
+		{"cat > /tmp/s.sh <<'EOF'\necho x > .claude/settings.json\nEOF\nsh < /tmp/s.sh", mine, ruleGuard},
+		// .7: -c after the script's name is the script's own argument.
+		{`bash tools/bad.sh -c 1`, project, ruleGuard},
+		{`bash tools/ok.sh -c 'echo x > .claude/settings.json'`, project, ""},
+		{`bash -o pipefail -c 'echo x > .claude/settings.json'`, mine, ruleGuard},
+		{`bash -ec 'echo x > .claude/settings.json'`, mine, ruleGuard},
+		// .8: an interpreter option's value is not the script.
+		{`python3 -W ignore tools/bad.py`, project, ruleGuard},
+		{`python3 -X utf8 tools/bad.py`, project, ruleGuard},
+		// .9: a script of the project that writes a file and runs it.
+		{`bash tools/build.sh`, project, ""},
+		{`bash tools/build.sh`, mine, ruleGuard},
+		{`bash tools/build.sh && sh /tmp/s.sh`, project, ruleGuard},
+		// .10: a second > replaces the text; >> adds to it; echo -n ends no line.
+		{`echo 'sudo rm -rf x' > /tmp/s.sh; echo 'echo ok' > /tmp/s.sh; sh /tmp/s.sh`, mine, ""},
+		{`echo 'echo ok' > /tmp/s.sh; echo 'sudo rm -rf x' >> /tmp/s.sh; sh /tmp/s.sh`, mine, ruleRoot},
+		{`echo -n 'echo ok #' > /tmp/s.sh; echo ' sudo ls' >> /tmp/s.sh; echo 'true' >> /tmp/s.sh; sh /tmp/s.sh`, mine, ""},
+		// .17: echo -e reads its escapes.
+		{`echo -e 'echo ok #\nsudo ls' > /tmp/s.sh && sh /tmp/s.sh`, mine, ruleRoot},
+		{`echo 'echo ok #\nsudo ls' > /tmp/s.sh && sh /tmp/s.sh`, mine, ""},
+		// .12 and .18: a script longer than the guard reads is not run unread.
+		{`bash big.sh`, project, ruleGuard},
+		{`python3 big.py`, project, ruleGuard},
+		{`bash long.sh`, project, ruleGuard},
+		{`bash longok.sh`, project, ""},
+		{"cat > /tmp/s.sh <<'EOF'\n" + pad + "echo ok\nEOF\nsh /tmp/s.sh", mine, ruleGuard},
+		{"cat > /tmp/s.sh <<'EOF'\n" + under + "echo ok > docs/a.md\nEOF\nsh /tmp/s.sh", mine, ""},
+		{"cat > /tmp/s.sh <<'EOF'\n" + under + "echo ok > .claude/settings.json\nEOF\nsh /tmp/s.sh", mine, ruleGuard},
+		// .19: an empty line inside a hunk is a line of the hunk.
+		{`git apply blank.patch`, mine, ""},
+		// .20: bun x runs the tool as bunx does.
+		{`bun x prettier --write .claude/settings.json`, mine, ruleGuard},
+	} {
+		g := &guard{site: g0.site, server: g0.server, origin: g0.origin, dir: g0.site.cwd, project: func(string) bool { return c.project }}
+		got := ""
+		if h := g.bashHit(c.cmd); h != nil {
+			got = h.rule
+		}
+		if got != c.want {
+			cmd := c.cmd
+			if len(cmd) > 200 {
+				cmd = cmd[:60] + " … " + cmd[len(cmd)-60:]
+			}
+			t.Errorf("%q (project %v): rule %q, want %q", cmd, c.project, got, c.want)
+		}
+	}
+}
+
+// trackedClean says a file is one git tracks and nothing has changed.
+func TestTrackedClean(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	dir := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.test"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	writeFile(t, filepath.Join(dir, "tools", "a.sh"), "echo a\n")
+	writeFile(t, filepath.Join(dir, "tools", "changed.sh"), "echo a\n")
+	writeFile(t, filepath.Join(dir, ".gitignore"), "ignored.sh\n")
+	git("add", ".")
+	git("commit", "-q", "-m", "x")
+	writeFile(t, filepath.Join(dir, "tools", "changed.sh"), "sudo ls\n")
+	writeFile(t, filepath.Join(dir, "tools", "new.sh"), "sudo ls\n")
+	writeFile(t, filepath.Join(dir, "ignored.sh"), "sudo ls\n")
+	outside := filepath.Join(t.TempDir(), "s.sh")
+	writeFile(t, outside, "sudo ls\n")
+	for f, want := range map[string]bool{
+		filepath.Join(dir, "tools", "a.sh"):       true,
+		filepath.Join(dir, "tools", "changed.sh"): false,
+		filepath.Join(dir, "tools", "new.sh"):     false,
+		filepath.Join(dir, "ignored.sh"):          false,
+		outside:                                   false,
+	} {
+		if got := trackedClean(f); got != want {
+			t.Errorf("trackedClean(%s) = %v, want %v", f, got, want)
+		}
 	}
 }

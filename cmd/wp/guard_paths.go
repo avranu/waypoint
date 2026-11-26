@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -265,4 +267,14 @@ func (s guardSite) confined(p string) bool {
 		}
 	}
 	return false
+}
+
+// trackedClean says a file is the project's own as git has it: tracked, not
+// ignored, and unchanged from the index and HEAD. A file the session wrote
+// or edited, or one outside any repository, is not.
+func trackedClean(p string) bool {
+	cmd := exec.Command("git", "-C", filepath.Dir(p), "status", "--porcelain", "--ignored", "--", filepath.Base(p)) // #nosec G204 -- git on the path of the script the command is about to run
+	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
+	out, err := cmd.Output()
+	return err == nil && len(bytes.TrimSpace(out)) == 0
 }

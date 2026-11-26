@@ -94,6 +94,25 @@ func stays(after []quotaSample, ok func(float64) bool) bool {
 	return agree >= min(quotaResetNeedLow, n)
 }
 
+// pointsUsed is the points of allowance a week's readings (one resets_at,
+// oldest first) used: the sum over the segments between confirmed resets of
+// each segment's peak, since a reset sets the reading back to about 0. With
+// no reset it is the week's peak.
+func pointsUsed(in []quotaSample) float64 {
+	kept, _, startAt := quotaResetsIn(in)
+	var total, peak float64
+	next := 0
+	for i, k := range kept {
+		if next < len(startAt) && startAt[next] == i {
+			total += peak
+			peak = 0
+			next++
+		}
+		peak = max(peak, k.pct)
+	}
+	return total + peak
+}
+
 // weekSamples reads the person's seven_day readings of the week resetting
 // near reset, oldest first.
 func (s *Service) weekSamples(ctx context.Context, uid, reset, since int64) ([]quotaSample, error) {

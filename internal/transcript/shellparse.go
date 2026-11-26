@@ -5,10 +5,15 @@ import "strings"
 // ShellCmd is one simple command of a parsed shell line. The guard, the
 // usage heads and the write recogniser all read lines with this parser.
 type ShellCmd struct {
-	Words   []string
-	Open    []bool
-	Subs    [][]*ShellCmd
-	Redirs  []string
+	Words  []string
+	Open   []bool
+	Subs   [][]*ShellCmd
+	Redirs []string
+	// Appends are the Redirs written with >> (the text is added to what the
+	// file holds); NotOut are those of a numbered descriptor other than 1
+	// (2> F: the file gets the errors, not what the command prints).
+	Appends []string
+	NotOut  []string
 	Ins     []string // files it reads with <
 	Heredoc string
 	PipeIn  bool
@@ -48,6 +53,7 @@ type shellParser struct {
 	pending []shellHeredoc
 	open    bool
 	cut     bool
+	fd      string // the descriptor number just read before a redirect (2 in 2> F)
 }
 
 const shellMaxNest = 12
@@ -143,7 +149,8 @@ func (p *shellParser) list(end byte) []*ShellCmd {
 		case c == '#':
 			// A word that begins with # begins a comment, wherever on the line
 			// (a # inside a word is read by word, and never comes here).
-			for p.i < len(p.s) && p.s[p.i] != '\n' {
+			// A comment inside backticks ends at the closing one.
+			for p.i < len(p.s) && p.s[p.i] != '\n' && (end != '`' || p.s[p.i] != '`') {
 				p.i++
 			}
 		case c == ';':
@@ -206,6 +213,7 @@ func (p *shellParser) list(end byte) []*ShellCmd {
 		default:
 			w, quoted := p.word(cur)
 			if !quoted && IsDigits(w) && (p.peek(0) == '<' || p.peek(0) == '>') {
+				p.fd = w
 				continue
 			}
 			if len(cur.Words) == 0 && !quoted && shellKeywords[w] {
@@ -223,10 +231,13 @@ func (p *shellParser) list(end byte) []*ShellCmd {
 func (p *shellParser) redirect(cur *ShellCmd) {
 	c := p.s[p.i]
 	p.i++
-	amp := false
+	fd := p.fd
+	p.fd = ""
+	amp, adds := false, false
 	switch {
 	case c == '>' && p.peek(0) == '>':
 		p.i++
+		adds = true
 	case c == '>' && p.peek(0) == '|':
 		p.i++
 	case c == '>' && p.peek(0) == '&':
@@ -263,6 +274,12 @@ func (p *shellParser) redirect(cur *ShellCmd) {
 		return
 	}
 	cur.Redirs = append(cur.Redirs, w)
+	if adds {
+		cur.Appends = append(cur.Appends, w)
+	}
+	if fd != "" && fd != "1" {
+		cur.NotOut = append(cur.NotOut, w)
+	}
 }
 
 func (p *shellParser) skipSpaces() {
@@ -313,11 +330,13 @@ const ShellSubPlaceholder = "$(…)"
 // The code a substitution in it runs is read into cur.Subs. p.open says the
 // shell may make other words of it, which the guard doesn't see: an
 // unquoted $ or substitution (split into words), or a glob or brace at its
-// start ({-d,x=1} is -d x=1; ?d can be a file named -d).
+// start ({-d,x=1} is -d x=1; ?d can be a file named -d). A ${ } expansion
+// is one word to its closing brace, spaces and # included (${x:- #}).
 func (p *shellParser) word(cur *ShellCmd) (string, bool) {
 	var b strings.Builder
 	quoted := false
 	open := false
+	braces := 0
 	for p.i < len(p.s) {
 		c := p.s[p.i]
 		switch {
@@ -353,6 +372,15 @@ func (p *shellParser) word(cur *ShellCmd) (string, bool) {
 			open = true
 		case c == '$' && p.peek(1) == '\'':
 			p.i++
+		case c == '$' && p.peek(1) == '{':
+			braces++
+			open = true
+			b.WriteString("${")
+			p.i += 2
+		case c == '}' && braces > 0:
+			braces--
+			b.WriteByte(c)
+			p.i++
 		case c == '`' && p.end != '`':
 			p.i++
 			cur.Subs = append(cur.Subs, p.list('`'))
@@ -362,7 +390,7 @@ func (p *shellParser) word(cur *ShellCmd) (string, bool) {
 			p.i += 2
 			cur.Subs = append(cur.Subs, p.list(')'))
 			b.WriteString(ShellSubPlaceholder)
-		case isShellMeta(c) || (c == '`' && p.end == '`'):
+		case braces == 0 && (isShellMeta(c) || (c == '`' && p.end == '`')):
 			p.open = open
 			return b.String(), quoted
 		default:
