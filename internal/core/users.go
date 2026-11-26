@@ -251,9 +251,15 @@ func validatePassword(p string) error {
 	return nil
 }
 
+// The cost is the OWASP minimum for argon2id. argonTime and argonMemory are
+// variables only so the core tests can hash cheaply (main_test.go): they are
+// unexported and nothing outside a _test.go file assigns them (WP-1874).
+var (
+	argonTime   uint32 = 2
+	argonMemory uint32 = 19 * 1024
+)
+
 const (
-	argonTime    = 2
-	argonMemory  = 19 * 1024
 	argonThreads = 1
 	argonKeyLen  = 32
 )

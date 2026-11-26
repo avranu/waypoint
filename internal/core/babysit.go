@@ -84,6 +84,7 @@ type Babysit struct {
 	limitedUntil int64
 	limitTries   int
 	prevStreaks  string
+	handoffs     string
 }
 
 // dependencyAgeRule is told to every round, the assessor's too: a version
@@ -189,7 +190,7 @@ type BabysitInput struct {
 
 const babysitCols = `b.id, b.pr_id, b.state, b.round, b.max_rounds, b.max_repeats, b.model, b.owner_id, coalesce(o.username, ''), coalesce(nullif(o.display_name, ''), o.username, ''),
 	coalesce(s.username, ''), b.started_agent, b.started_via, coalesce(b.session_id, 0), b.head_sha, b.round_sha, coalesce(b.job_id, 0), b.wait, b.streaks, b.rounds,
-	b.told, coalesce(b.synced_at, 0), b.end_reason, b.created_at, b.updated_at, b.ended_at, b.notify_end, b.blocking, b.fault_reruns, b.flake_rerun, coalesce(b.wait_at, b.updated_at), b.limited_until, b.limited_tries, coalesce(b.prev_streaks, '')`
+	b.told, coalesce(b.synced_at, 0), b.end_reason, b.created_at, b.updated_at, b.ended_at, b.notify_end, b.blocking, b.fault_reruns, b.flake_rerun, coalesce(b.wait_at, b.updated_at), b.limited_until, b.limited_tries, coalesce(b.prev_streaks, ''), b.author_handoffs`
 
 const babysitFrom = ` FROM babysits b LEFT JOIN users o ON o.id = b.owner_id LEFT JOIN users s ON s.id = b.started_by`
 
@@ -200,7 +201,7 @@ func scanBabysit(sc interface{ Scan(...any) error }) (*Babysit, error) {
 	var ended sql.NullInt64
 	if err := sc.Scan(&b.ID, &b.PRID, &b.State, &b.Round, &b.MaxRounds, &b.MaxRepeats, &b.Model, &b.ownerID, &b.Owner.Username, &b.Owner.DisplayName,
 		&b.StartedBy, &b.Agent, &b.Via, &b.sessionID, &b.HeadSHA, &b.RoundSHA, &b.JobID, &b.Wait, &streaks, &rounds,
-		&b.told, &b.syncedAt, &b.EndReason, &created, &updated, &ended, &b.Notify, &b.Blocking, &b.faultReruns, &b.flakeRerun, &waitAt, &b.limitedUntil, &b.limitTries, &b.prevStreaks); err != nil {
+		&b.told, &b.syncedAt, &b.EndReason, &created, &updated, &ended, &b.Notify, &b.Blocking, &b.faultReruns, &b.flakeRerun, &waitAt, &b.limitedUntil, &b.limitTries, &b.prevStreaks, &b.handoffs); err != nil {
 		return nil, err
 	}
 	b.Owner.ID = b.ownerID
@@ -320,6 +321,16 @@ func (s *Service) startBabysit(ctx context.Context, actor *Actor, pr *PullReques
 			return err
 		}
 		if b != nil {
+			// A babysit that arming a merge started has no session (the system
+			// started it), and one whose session ended has nobody to tell: the
+			// session that ships it now is the one its news goes to. A live
+			// other session keeps it.
+			if actor.Session != 0 && b.sessionID != actor.Session && (b.sessionID == 0 || !s.sessionLive(ctx, b.sessionID)) {
+				if _, err := t.ExecContext(ctx, `UPDATE babysits SET session_id = ?, updated_at = ? WHERE id = ?`, actor.Session, s.nowMS(), b.ID); err != nil {
+					return err
+				}
+				b.sessionID = actor.Session
+			}
 			if model != "" && model != b.Model {
 				if _, err := t.ExecContext(ctx, `UPDATE babysits SET model = ?, updated_at = ? WHERE id = ?`, model, s.nowMS(), b.ID); err != nil {
 					return err
@@ -414,6 +425,8 @@ func (s *Service) StopBabysit(ctx context.Context, actor *Actor, prID int64) (*B
 	if b.JobID != 0 {
 		s.cancelStepJob(context.WithoutCancel(ctx), b.JobID, "The babysit was stopped by "+who+".")
 	}
+	// Its news goes too: nothing more is waiting for the author's fix.
+	s.settleHandoffs(ctx, b, pr, handoffCleared)
 	if err := s.endBabysit(ctx, b, pr, BabysitStopped, "stopped by "+who); err != nil {
 		return nil, err
 	}
@@ -1051,6 +1064,7 @@ func (s *Service) babysitStepHeld(ctx context.Context, prID int64, sync bool) {
 	}
 	switch pr.State {
 	case "merged":
+		s.settleHandoffs(ctx, b, pr, handoffCleared)
 		s.flakeProven(ctx, b, pr)
 		at := cmp(short(s.mergedSHA(ctx, pr)), short(pr.HeadSHA))
 		if err := s.endBabysit(ctx, b, pr, BabysitMerged, "merged as "+at); err == nil {
@@ -1059,6 +1073,7 @@ func (s *Service) babysitStepHeld(ctx context.Context, prID int64, sync bool) {
 		}
 		return
 	case "closed":
+		s.settleHandoffs(ctx, b, pr, handoffCleared)
 		if err := s.endBabysit(ctx, b, pr, BabysitStopped, "closed without merging"); err == nil {
 			s.nudgeLine(ctx, pr)
 			s.babysitTell(ctx, b, pr, "closed", fmt.Sprintf("%s#%d was closed without merging; Waypoint stopped babysitting it.", pr.Repo, pr.Number))
@@ -1073,6 +1088,7 @@ func (s *Service) babysitStepHeld(ctx context.Context, prID int64, sync bool) {
 			}
 		}
 		b.HeadSHA = pr.HeadSHA
+		s.settleHandoffs(ctx, b, pr, "")
 		sync = true
 	}
 	if b.JobID != 0 && pr.HeadSHA != "" && !sameSHA(b.RoundSHA, pr.HeadSHA) {
@@ -1158,6 +1174,7 @@ func (s *Service) babysitStepHeld(ctx context.Context, prID int64, sync bool) {
 		return
 	}
 	if pr.CIState == CIPassed {
+		s.settleHandoffs(ctx, b, pr, handoffCleared)
 		s.flakeProven(ctx, b, pr)
 		s.faultSpellOver(ctx, b, pr)
 		s.sharedTimeoutOver(ctx, b)
@@ -1242,6 +1259,9 @@ func (s *Service) babysitStepHeld(ctx context.Context, prID int64, sync bool) {
 	} else if pr.ArmedAt == nil {
 		work = unoffered(b, late)
 	}
+	if len(failed) > 0 && s.authorHolds(ctx, b, pr) {
+		return
+	}
 	if len(failed) > 0 && !conflict && ownWork == 0 {
 		faults := s.headRunnerFaults(ctx, pr)
 		if faults != nil {
@@ -1259,7 +1279,11 @@ func (s *Service) babysitStepHeld(ctx context.Context, prID int64, sync bool) {
 			return
 		}
 	}
+	if len(failed) > 0 && !conflict && ownWork == 0 && len(findings) == 0 && s.handToAuthor(ctx, b, pr, failed) {
+		return
+	}
 	if len(failed) > 0 || conflict || len(work) > 0 || len(findings) > 0 {
+		s.settleHandoffs(ctx, b, pr, handoffFellBack)
 		s.babysitRound(ctx, b, pr, failed, conflict, work, findings)
 		return
 	}
@@ -1462,15 +1486,7 @@ func (s *Service) babysitRoundBy(ctx context.Context, b *Babysit, pr *PullReques
 		}
 	}
 	keepFront = keepFront && wait == "" && jobID != 0
-	if !keepFront && (wait != "" || len(failed) > 0 || len(comments) > 0 || len(findings) > 0) {
-		s.leaveQueue(ctx, pr)
-		s.nudgeLine(ctx, pr)
-	}
-	if !keepFront && pr.WipAuto && pr.State == "open" {
-		if err := s.markDraft(ctx, pr); err != nil {
-			s.log.WarnContext(ctx, "put a pull request back to draft", "pr", pr.ID, "err", err)
-		}
-	}
+	s.stepOutOfLine(ctx, pr, keepFront, wait != "" || len(failed) > 0 || len(comments) > 0 || len(findings) > 0)
 	if wait != "" {
 		s.setState(ctx, b, pr, BabysitWatching, wait)
 		return
@@ -2099,7 +2115,7 @@ func ledgerWhat(e LedgerEntry) string {
 }
 
 // babysitSetCols are the columns setBabysit writes.
-var babysitSetCols = []string{"head_sha", "synced_at", "round", "round_sha", "rounds", "streaks", "job_id", "told", "fault_reruns", "flake_rerun", "limited_until", "prev_streaks"}
+var babysitSetCols = []string{"head_sha", "synced_at", "round", "round_sha", "rounds", "streaks", "job_id", "told", "fault_reruns", "flake_rerun", "limited_until", "prev_streaks", "author_handoffs"}
 
 // setBabysit writes columns of a babysit.
 func (s *Service) setBabysit(ctx context.Context, b *Babysit, set map[string]any) error {
@@ -2321,5 +2337,27 @@ func queuedRoundWaitText(text string, ahead int, jobID int64) string {
 		return fmt.Sprintf("%s (1 job ahead; job #%d)", text, jobID)
 	default:
 		return fmt.Sprintf("%s (%d jobs ahead; job #%d)", text, ahead, jobID)
+	}
+}
+
+// stepOutOfLine is what a pull request with work to do first does to its place
+// in the merge line and to its ready state: unless it keeps the front, it
+// leaves the queue (when leave) and a pull request Waypoint marked ready goes
+// back to draft. A round for failed checks and a hand-off of them to the
+// author both do this (WP-1878), so a failed pull request doesn't hold the
+// line while someone fixes it; a new head that passes joins the line again
+// the usual way.
+func (s *Service) stepOutOfLine(ctx context.Context, pr *PullRequest, keepFront, leave bool) {
+	if keepFront {
+		return
+	}
+	if leave {
+		s.leaveQueue(ctx, pr)
+		s.nudgeLine(ctx, pr)
+	}
+	if pr.WipAuto && pr.State == "open" {
+		if err := s.markDraft(ctx, pr); err != nil {
+			s.log.WarnContext(ctx, "put a pull request back to draft", "pr", pr.ID, "err", err)
+		}
 	}
 }
