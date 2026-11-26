@@ -368,16 +368,8 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 		s.onObjectiveEvent(ctx, e)
 	}
 	s.afterDispatch(ctx, actor, events)
-	depth := 0
-	if actor != nil {
-		depth = actor.depth
-	}
-	if depth < maxAutomationDepth {
-		for _, e := range events {
-			s.runAutomations(ctx, actor, e)
-		}
-	} else {
-		s.log.WarnContext(ctx, "automation depth limit reached; not running further automations", "event", events[0].Kind)
+	for _, e := range events {
+		s.runAutomations(ctx, actor, e)
 	}
 }
 
