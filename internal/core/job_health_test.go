@@ -964,6 +964,8 @@ func TestSchedulerFireOrder(t *testing.T) {
 func TestSchedulerLaneSkipsWhileBusy(t *testing.T) {
 	e := newEnv(t)
 	started, release := make(chan struct{}, 4), make(chan struct{})
+	letGo := sync.OnceFunc(func() { close(release) })
+	defer letGo()
 	r := &scheduler{s: e.s, busy: map[string]*laneRun{}}
 	lane := []scheduled{{name: "slow", every: time.Minute, lane: "slow", run: func(context.Context) {
 		started <- struct{}{}
@@ -987,7 +989,7 @@ func TestSchedulerLaneSkipsWhileBusy(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no new run though the first has gone on too long")
 	}
-	close(release)
+	letGo()
 	e.s.Wait()
 	if j := e.jobOf("slow"); j.Runs != 2 || j.Skips != 2 || j.Running {
 		t.Errorf("after: %+v", j)
@@ -1006,6 +1008,8 @@ func TestSchedulerLaneSkipsWhileBusy(t *testing.T) {
 func TestSchedulerDetachOverrun(t *testing.T) {
 	e := newEnv(t)
 	started, release := make(chan struct{}, 4), make(chan struct{})
+	letGo := sync.OnceFunc(func() { close(release) })
+	defer letGo()
 	var mu sync.Mutex
 	ran := map[string]int{}
 	note := func(name string) func(context.Context) {
@@ -1051,7 +1055,7 @@ func TestSchedulerDetachOverrun(t *testing.T) {
 	if j := e.jobOf("after"); j.State != "" || j.Runs != 3 {
 		t.Errorf("after: %+v", j)
 	}
-	close(release)
+	letGo()
 	e.s.Wait()
 	e.pass(time.Minute)
 	tick()
@@ -1265,6 +1269,8 @@ func TestSchedulerDetachBabysitLane(t *testing.T) {
 		}
 	}
 	started, release := make(chan struct{}), make(chan struct{})
+	letGo := sync.OnceFunc(func() { close(release) })
+	defer letGo()
 	sweep := by["babysits"]
 	sweep.run = func(context.Context) {
 		close(started)
@@ -1281,7 +1287,7 @@ func TestSchedulerDetachBabysitLane(t *testing.T) {
 			t.Errorf("%s ran %d times while the sweep was held", name, j.Runs)
 		}
 	}
-	close(release)
+	letGo()
 	e.s.Wait()
 }
 

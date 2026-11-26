@@ -324,6 +324,12 @@ func (r *scheduler) runInLoop(ctx context.Context, j scheduled, patience time.Du
 	if run == nil {
 		return
 	}
+	if patience <= 0 {
+		// The loop waits for this job without limit: a stuck one holds
+		// everything after it (jobTrouble).
+		r.s.jobs.holdLoop(j.name)
+		defer r.s.jobs.holdLoop("")
+	}
 	done := make(chan struct{})
 	r.s.goBG(func() {
 		defer close(done)
@@ -331,11 +337,7 @@ func (r *scheduler) runInLoop(ctx context.Context, j scheduled, patience time.Du
 		r.s.job(ctx, j.name, j.every, j.run)
 	})
 	if patience <= 0 {
-		// The loop waits for this job without limit: a stuck one holds
-		// everything after it (jobTrouble).
-		r.s.jobs.holdLoop(j.name)
 		<-done
-		r.s.jobs.holdLoop("")
 		return
 	}
 	wait := time.NewTimer(patience)
