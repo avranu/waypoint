@@ -899,21 +899,72 @@ func (checksErrForge) CommitChecks(context.Context, *Forge, string, string) ([]C
 	return nil, errors.New("forge down")
 }
 
-// A candidate whose checks can't be read is still running, and lost at the
-// run limit: a forge that never answers doesn't hold the line for ever.
-func TestLineCandidateWithUnreadableChecksIsLostAtTheLimit(t *testing.T) {
+// quietEnv: a candidate whose run has passed all but one check, the last
+// pending; stamp(d) gives each check a status posted d before the clock.
+func quietEnv(t *testing.T) (*stackEnv, *queueStack, func(d time.Duration)) {
+	t.Helper()
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.step()
+	se.line()
+	st := se.stacks()[0]
+	stamp := func(d time.Duration) {
+		at := se.clockNow().Add(-d).UTC().Format(time.RFC3339)
+		var checks []CommitCheck
+		for j, name := range []string{"ci / lint (push)", "ci / e2e (push)", "ci / backend (push)"} {
+			c := CommitCheck{Name: name, State: CheckSuccess, ID: int64(700 + j), Created: at}
+			if j == 2 {
+				c.State = CheckPending
+			}
+			checks = append(checks, c)
+		}
+		se.sg.setChecks(se.shas[0], checks...)
+	}
+	return se, st, stamp
+}
+
+// WP-1990: a candidate older than the run limit whose checks changed within
+// it is still running (2026-11-26: only a runner-starved aggregate was left),
+// and is lost once nothing has changed for the limit.
+func TestLineCandidateWaitingForARunnerIsNotLost(t *testing.T) {
+	se, st, stamp := quietEnv(t)
+	se.setClock(se.clockNow().Add(stackRunMax + time.Minute))
+	stamp(10 * time.Minute)
+	if got := se.s.pollCand(se.ctx, se.f, st); got.state != candRunning {
+		t.Fatalf("recent status: %+v", got)
+	}
+	stamp(stackRunMax + time.Minute)
+	if got := se.s.pollCand(se.ctx, se.f, st); got.state != candLost || got.reason != endLost {
+		t.Errorf("quiet for the limit: %+v", got)
+	}
+}
+
+// A candidate past the ceiling is lost whatever its statuses say.
+func TestLineCandidateIsLostAtTheCeiling(t *testing.T) {
+	se, st, stamp := quietEnv(t)
+	se.setClock(se.clockNow().Add(stackRunCeiling + time.Minute))
+	stamp(time.Minute)
+	if got := se.s.pollCand(se.ctx, se.f, st); got.state != candLost || got.reason != endLost {
+		t.Errorf("past the ceiling: %+v", got)
+	}
+}
+
+// Checks that can't be read don't end a candidate at the run limit (it may be
+// moving), only at the ceiling.
+func TestLineCandidateWithUnreadableChecksIsLostAtTheCeiling(t *testing.T) {
 	se := newStackEnv(t)
 	se.draftGreen(head7s, 5)
 	se.step()
 	se.line()
 	st := se.stacks()[0]
 	se.s.Forges = checksErrForge{se.sg}
-	if got := se.s.pollCand(se.ctx, se.f, st); got.state != candRunning {
-		t.Fatalf("poll %+v", got)
-	}
 	se.setClock(se.clockNow().Add(stackRunMax + time.Minute))
+	if got := se.s.pollCand(se.ctx, se.f, st); got.state != candRunning {
+		t.Fatalf("past the run limit: %+v", got)
+	}
+	se.setClock(se.clockNow().Add(stackRunCeiling))
 	if got := se.s.pollCand(se.ctx, se.f, st); got.state != candLost || got.reason != endLost {
-		t.Errorf("after the run limit: %+v", got)
+		t.Errorf("past the ceiling: %+v", got)
 	}
 }
 

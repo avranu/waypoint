@@ -663,6 +663,26 @@ func (s *Service) candMerged(ctx context.Context, ls *lineState, st *queueStack)
 	return -1, nil
 }
 
+// newestStatus is the latest Created among all's statuses that parse, never
+// later than now; zero when none does. Any status row the forge posted is
+// movement of a candidate's run.
+func newestStatus(all []CommitCheck, now time.Time) time.Time {
+	var newest time.Time
+	for _, c := range all {
+		t, err := time.Parse(time.RFC3339, c.Created)
+		if err != nil {
+			continue
+		}
+		if t.After(now) {
+			t = now
+		}
+		if t.After(newest) {
+			newest = t
+		}
+	}
+	return newest
+}
+
 // pollCand follows a running candidate's run.
 func (s *Service) pollCand(ctx context.Context, f *Forge, st *queueStack) candPoll {
 	running := candPoll{state: candRunning}
@@ -671,9 +691,17 @@ func (s *Service) pollCand(ctx context.Context, f *Forge, st *queueStack) candPo
 		return running
 	}
 	age := s.now().Sub(st.CreatedAt)
+	moved := st.CreatedAt
+	if st.RerunAt != 0 && msTime(st.RerunAt).After(moved) {
+		moved = msTime(st.RerunAt)
+	}
+	read := false
 	overdue := func(what string) candPoll {
-		if age >= stackRunMax {
-			return candPoll{state: candLost, reason: endLost, note: what + " after " + fmtMinutes(stackRunMax)}
+		switch {
+		case age >= stackRunCeiling:
+			return candPoll{state: candLost, reason: endLost, note: what + " " + fmtMinutes(stackRunCeiling) + " after it was made"}
+		case read && s.now().Sub(moved) >= stackRunMax:
+			return candPoll{state: candLost, reason: endLost, note: what + " and nothing about its checks changed in " + fmtMinutes(stackRunMax)}
 		}
 		return running
 	}
@@ -681,6 +709,10 @@ func (s *Service) pollCand(ctx context.Context, f *Forge, st *queueStack) candPo
 	if err != nil {
 		s.log.WarnContext(ctx, "read a candidate's checks", "candidate", st.ID, "err", err)
 		return overdue("its checks couldn't be read")
+	}
+	read = true
+	if t := newestStatus(all, s.now()); t.After(moved) {
+		moved = t
 	}
 	var checks []CommitCheck
 	for _, c := range dropSuperseded(all) {
