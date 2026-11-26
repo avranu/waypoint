@@ -2,14 +2,19 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	"git.jmann.me/claude/waypoint/internal/db"
 )
@@ -18,18 +23,27 @@ import (
 // the same round (newLoopEnv, then one review) build it once. Building it
 // is most of such a test's time: each env creates a database, a project, a
 // runner, a forge and issues through the Service, and every statement is
-// parsed again. env starts a new, independent loopEnv from it: its own
-// database, a copy of the snapshot's, and its own Service, with the
-// in-memory state the build left rebuilt to what it was. Caches that the
-// Service fills from the database as it is used (goal traces, similar
-// issues, locks) start empty, as they do after a restart.
+// parsed again (WP-1942 has the figures). start makes a new loopEnv from
+// it: its own database, a copy of the snapshot's, its own Service, and its
+// own copies of what the test keeps in memory (actors, clock, caught jobs,
+// the fake forge, gateway and decision model).
+//
+// Of what the build left in the Service's memory, start carries the
+// gateway's cached task limits, so the env asks the gateway when a build
+// would. It does not carry what a restart loses and the Service makes
+// again when it is needed: the similarity index and the goal graph (read
+// from the database), the audit and branch locks (made on first use), and
+// the job ledger's counts of log records (read by job health, not by a
+// round). TestLoopSnapshotEnvMatchesABuild fails when a build leaves
+// anything else that a started env lacks.
 type loopSnapshot struct {
 	src *loopEnv
 	db  []byte
 }
 
-// snapshotLoopEnv takes src's database and in-memory state as they are.
-// Nothing may use src after.
+// snapshotLoopEnv takes src's database as it is, once its background work
+// has ended. start reads src's in-memory state each time, so src must not
+// run or change after the snapshot.
 func snapshotLoopEnv(t *testing.T, src *loopEnv) *loopSnapshot {
 	t.Helper()
 	src.s.Wait()
@@ -45,26 +59,27 @@ func snapshotLoopEnv(t *testing.T, src *loopEnv) *loopSnapshot {
 	return &loopSnapshot{src: src, db: data}
 }
 
-// env is a new loopEnv in the snapshot's state.
-func (sn *loopSnapshot) env(t *testing.T) *loopEnv {
+// start is a new loopEnv in the snapshot's state. Its job catcher is the
+// one in force from here on (catchJobs), as a newly built env's is.
+func (sn *loopSnapshot) start(t *testing.T) *loopEnv {
 	t.Helper()
-	src, ctx := sn.src, context.Background()
+	src := sn.src
 	path := filepath.Join(t.TempDir(), "test.db")
 	if err := os.WriteFile(path, sn.db, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d, err := db.Open(ctx, path)
+	d, err := db.Open(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { d.Close() })
 
 	// newEnv: a Service on the database, the test's clock where it stood.
-	s := New(d, Config{BaseURL: "https://wp.test"}, nil)
-	s.StartHub()
-	e := &env{t: t, s: s, ctx: ctx, clock: src.clockNow()}
-	s.SetClock(e.clockNow)
-	t.Cleanup(s.Wait)
+	e := envOn(t, d, src.clockNow())
+	s := e.s
+	src.s.gatewayLimits.Range(func(k, v any) bool {
+		s.gatewayLimits.Store(k, v)
+		return true
+	})
 	admin := *src.admin
 	admin.User = new(User)
 	*admin.User = *src.admin.User
@@ -91,8 +106,11 @@ func (sn *loopSnapshot) env(t *testing.T) *loopEnv {
 	tl := &taskLLM{LLM: s.LLM, tasks: map[string]*gatewayTask{}, limitsCalls: sl.limitsCalls}
 	j := &jevScript{choice: maps.Clone(src.j.choice), calls: src.j.calls, states: slices.Clone(src.j.states)}
 	s.LLM = &gatewayScoringLLM{taskLLM: tl, jevScript: j}
-	box := *src.box
-	return &loopEnv{apEnv: a, box: &box, g: g, j: j, task: src.task}
+	box, task, issue := *src.box, *src.task, *src.task.Issue
+	task.Issue = &issue
+	box.Labels, box.AllowedDirs = slices.Clone(box.Labels), slices.Clone(box.AllowedDirs)
+	box.CLIs, box.Features = slices.Clone(box.CLIs), slices.Clone(box.Features)
+	return &loopEnv{apEnv: a, box: &box, g: g, j: j, task: &task}
 }
 
 // doneRound makes the round e.review ran an ended one (the session's turn is
@@ -275,7 +293,7 @@ func TestSessionAndServerShipsReachTheSameOutcome(t *testing.T) {
 	r := src.review("Merge loses an update")
 	snap := snapshotLoopEnv(t, src)
 	build := func(t *testing.T, c cell) (*loopEnv, int64) {
-		e := snap.env(t)
+		e := snap.start(t)
 		_, au := e.roundAuditRow(r)
 		if c.own != "none" {
 			e.ownReport(r, c.own == "open")
@@ -626,65 +644,187 @@ func TestShipPastTheWaitIsNotHeldForUndecidedFindings(t *testing.T) {
 	}
 }
 
-// An env started from a snapshot is the env a build makes: the same rows in
-// every table, the same state in what the test keeps in memory, and the same
-// answer to what a cell does next.
+// An env started from a snapshot is the env a build makes: the snapshot's
+// rows in every table, as many as a build's, the same state in what the
+// test keeps in memory and in the fakes, nothing a build leaves in the
+// Service's memory missing but what loopSnapshot names, and the same
+// answer to what a cell does next. Envs started from one snapshot don't
+// share state with each other or with its source.
 func TestLoopSnapshotEnvMatchesABuild(t *testing.T) {
-	choice := map[string]string{"": "critical", "fixes": "complete"}
 	build := func(t *testing.T) *loopEnv {
-		e := newLoopEnv(t, choice)
+		e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
 		e.review("Merge loses an update")
+		e.s.Wait()
+		e.s.quiesceGoals(t)
 		return e
 	}
-	fresh, src := build(t), build(t)
-	cloned := snapshotLoopEnv(t, src).env(t)
-
-	counts := func(e *loopEnv) string {
-		var names []string
-		rows, err := e.s.db.R.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+	// rows is every table's rows, in an order of their own.
+	rows := func(e *loopEnv) map[string][]string {
+		out := map[string][]string{}
+		names, err := e.s.db.R.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for rows.Next() {
+		for names.Next() {
 			var n string
-			_ = rows.Scan(&n)
-			names = append(names, n)
-		}
-		_ = rows.Close()
-		var out []string
-		for _, n := range names {
-			var c int
-			if err := e.s.db.R.QueryRow(`SELECT count(*) FROM "` + n + `"`).Scan(&c); err != nil {
+			if err := names.Scan(&n); err != nil {
 				t.Fatal(err)
 			}
-			out = append(out, fmt.Sprintf("%s=%d", n, c))
+			out[n] = nil
+		}
+		if err := errors.Join(names.Err(), names.Close()); err != nil {
+			t.Fatal(err)
+		}
+		for n := range out {
+			rs, err := e.s.db.R.Query(`SELECT * FROM "` + n + `"`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cols, _ := rs.Columns()
+			for rs.Next() {
+				vals, ptrs := make([]any, len(cols)), make([]any, len(cols))
+				for i := range vals {
+					ptrs[i] = &vals[i]
+				}
+				if err := rs.Scan(ptrs...); err != nil {
+					t.Fatal(err)
+				}
+				out[n] = append(out[n], fmt.Sprint(vals...))
+			}
+			if err := errors.Join(rs.Err(), rs.Close()); err != nil {
+				t.Fatal(err)
+			}
+			slices.Sort(out[n])
+		}
+		return out
+	}
+	counts := func(rows map[string][]string) string {
+		var out []string
+		for _, n := range slices.Sorted(maps.Keys(rows)) {
+			out = append(out, fmt.Sprintf("%s=%d", n, len(rows[n])))
 		}
 		return strings.Join(out, " ")
 	}
 	memory := func(e *loopEnv) string {
 		sl := e.s.LLM.(*gatewayScoringLLM)
 		who := func(a *Actor) string {
-			return fmt.Sprintf("%d/%s/admin=%v agent=%q token=%d session=%d", a.User.ID, a.User.Username, a.User.IsAdmin, a.Agent, a.TokenID, a.Session)
+			return fmt.Sprintf("%d/%s/admin=%v agent=%q token=%d session=%d scope=%v", a.User.ID, a.User.Username, a.User.IsAdmin, a.Agent, a.TokenID, a.Session, a.scope)
 		}
-		return fmt.Sprintf("clock=%v session=%d cli=%s admin=%s ag=%s project=%+v jobs=%+v res=%+v heads=%v created=%d limitsCalls=%d tasks=%d jev=%v/%d/%v box=%d/%s task=%s",
-			e.clockNow(), e.session, e.cli, who(e.admin), who(e.ag), *e.p, e.jobs, e.res, e.g.heads, len(e.g.created), sl.limitsCalls, len(sl.tasks),
-			e.j.choice, e.j.calls, e.j.states, e.box.ID, e.box.Name, e.task.Key)
+		return fmt.Sprintf("clock=%v session=%d cli=%s admin=%s ag=%s project=%+v jobs=%+v res=%+v box=%+v task=%s\nforge %v\ngateway %v\ndecisions %v",
+			e.clockNow(), e.session, e.cli, who(e.admin), who(e.ag), *e.p, e.jobs, e.res, *e.box, e.task.Key,
+			setFields(e.g, true), setFields(sl.taskLLM, true), setFields(e.j, true))
 	}
-	if f, c := counts(fresh), counts(cloned); f != c {
-		t.Errorf("rows differ:\nbuilt  %s\ncloned %s", f, c)
-	}
-	if f, c := memory(fresh), memory(cloned); f != c {
-		t.Errorf("memory differs:\nbuilt  %s\ncloned %s", f, c)
-	}
+	// next is what a cell does: another ship, then the server's move.
 	next := func(e *loopEnv) string {
+		sl := e.s.LLM.(*gatewayScoringLLM)
 		round := e.round(1)
 		res, err := e.ship(e.task.Key, ShipAuto)
 		e.tick(2 * time.Minute)
 		out, aerr := e.s.advanceRound(e.ctx, round.id)
 		e.s.Wait()
-		return fmt.Sprintf("%+v %v | %+v %v | jobs=%d pulls=%d", res, err, out, aerr, len(e.jobs), len(e.g.created))
+		return fmt.Sprintf("%+v %v | %+v %v | jobs=%d pulls=%d limitsCalls=%d", res, err, out, aerr, len(e.jobs), len(e.g.created), sl.limitsCalls)
 	}
-	if f, c := next(fresh), next(cloned); f != c {
-		t.Errorf("the next step differs:\nbuilt  %s\ncloned %s", f, c)
+
+	// Each env is read and run while its job catcher is the one in force:
+	// a later env's catcher takes the jobs of every env before it.
+	fresh := build(t)
+	freshRows, freshMemory, freshService := counts(rows(fresh)), memory(fresh), setFields(fresh.s, false)
+	freshNext := next(fresh)
+
+	src := build(t)
+	snap := snapshotLoopEnv(t, src)
+	srcRows, srcMemory := rows(src), memory(src)
+	cloned := snap.start(t)
+	clonedRows := rows(cloned)
+	for _, n := range slices.Sorted(maps.Keys(srcRows)) {
+		if !slices.Equal(srcRows[n], clonedRows[n]) {
+			t.Errorf("%s's rows differ from the snapshot's source:\nsource %v\ncloned %v", n, srcRows[n], clonedRows[n])
+		}
 	}
+	if c := counts(clonedRows); c != freshRows {
+		t.Errorf("row counts differ:\nbuilt  %s\ncloned %s", freshRows, c)
+	}
+	clonedMemory := memory(cloned)
+	if clonedMemory != freshMemory {
+		t.Errorf("memory differs:\nbuilt  %s\ncloned %s", freshMemory, clonedMemory)
+	}
+	// What the Service keeps in memory: only what loopSnapshot says a
+	// started env makes again may be missing.
+	remade := []string{".similar.", ".graph.", ".auditLocks.", ".branchLocks.", ".jobs."}
+	clonedService := setFields(cloned.s, false)
+	for k, n := range freshService {
+		if clonedService[k] != n && !slices.ContainsFunc(remade, func(p string) bool { return strings.HasPrefix(k, p) }) {
+			t.Errorf("a build leaves the Service's %s holding %s, a started env %q: carry it in start, or name it in loopSnapshot and here", k, n, clonedService[k])
+		}
+	}
+	if _, ok := freshService[".gatewayLimits"]; !ok {
+		t.Errorf("the build no longer caches the gateway's limits, so this test doesn't show start carrying them: %v", freshService)
+	}
+	if c := next(cloned); c != freshNext {
+		t.Errorf("the next step differs:\nbuilt  %s\ncloned %s", freshNext, c)
+	}
+
+	// Running one started env, and writing through what it holds, leaves the
+	// source and the next env from the snapshot as they were.
+	cloned.task.Title, cloned.box.Features[0], cloned.p.Name = "changed", "changed", "changed"
+	if m := memory(src); m != srcMemory || src.task.Title == "changed" {
+		t.Errorf("a started env changed its source:\nbefore %s\nafter  %s (task %q)", srcMemory, m, src.task.Title)
+	}
+	again := snap.start(t)
+	if m := memory(again); m != clonedMemory || again.task.Title == "changed" {
+		t.Errorf("a second env from the snapshot isn't the first:\nfirst  %s\nsecond %s (task %q)", clonedMemory, m, again.task.Title)
+	}
+	if r := rows(again); !maps.EqualFunc(r, srcRows, slices.Equal[[]string]) {
+		t.Errorf("a second env from the snapshot doesn't have its rows: %s, want %s", counts(r), counts(srcRows))
+	}
+}
+
+// setFields is what x holds, by field path: how many entries each map,
+// slice and sync.Map has, and with values each number, string and bool
+// that isn't zero and whether each func, interface and error is set. It
+// follows this package's structs, by value or by pointer.
+func setFields(x any, values bool) map[string]string {
+	out := map[string]string{}
+	seen := map[uintptr]bool{}
+	var walk func(v reflect.Value, path string)
+	walk = func(v reflect.Value, path string) {
+		switch v.Kind() {
+		case reflect.Pointer:
+			if v.IsNil() || v.Elem().Kind() != reflect.Struct || seen[v.Pointer()] {
+				return
+			}
+			seen[v.Pointer()] = true
+			walk(v.Elem(), path)
+		case reflect.Struct:
+			if v.Type() == reflect.TypeFor[sync.Map]() {
+				n := 0
+				// #nosec G103 -- a test reads an unexported sync.Map in place
+				(*sync.Map)(unsafe.Pointer(v.UnsafeAddr())).Range(func(_, _ any) bool { n++; return true })
+				if n > 0 {
+					out[path] = strconv.Itoa(n)
+				}
+				return
+			}
+			if !strings.HasSuffix(v.Type().PkgPath(), "/internal/core") {
+				return
+			}
+			for i := range v.NumField() {
+				walk(v.Field(i), path+"."+v.Type().Field(i).Name)
+			}
+		case reflect.Map, reflect.Slice:
+			if v.Len() > 0 {
+				out[path] = strconv.Itoa(v.Len())
+			}
+		case reflect.Func, reflect.Interface:
+			if values && !v.IsNil() {
+				out[path] = "set"
+			}
+		case reflect.Bool, reflect.String, reflect.Int, reflect.Int64:
+			if values && !v.IsZero() {
+				out[path] = fmt.Sprint(v)
+			}
+		}
+	}
+	walk(reflect.ValueOf(x), "")
+	return out
 }
