@@ -278,11 +278,12 @@ func (s guardSite) confined(p string) bool {
 // repository is not, nor is any file where no such branch is known. The name
 // is given to git as a path, never as a pattern.
 //
-// This tells apart what a session wrote in the course of its work. It is no
-// proof against one that sets out to deceive the guard by rewriting the
-// repository's remote-tracking refs or its filters: such a session can as
-// well put its commands in a Makefile, which runs unread. Containment holds
-// that line (PL7), not this check.
+// This tells apart what a session wrote in the course of its work, and the
+// guard refuses the git commands that set a remote-tracking ref by hand
+// (forgesRemoteRef). It is no proof against a session that sets out to
+// deceive the guard another way (a clean filter, a write under .git, a new
+// URL for origin): such a session can as well put its commands in a
+// Makefile, which runs unread. Containment holds that line (PL7).
 func trackedClean(p string) bool {
 	dir, base := filepath.Dir(p), filepath.Base(p)
 	git := func(args ...string) string {

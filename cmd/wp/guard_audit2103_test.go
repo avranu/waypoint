@@ -38,6 +38,27 @@ func TestGuardAudit2103(t *testing.T) {
 		{`./deploy`, mine, ruleRoot},
 		{`./deploy`, project, ""},
 		{`./notes`, mine, ""}, // a #! line naming a program that is no shell
+		// Mark check 2108.1: a remote-tracking ref written by hand would pass
+		// the session's own commit off as origin's.
+		{`git update-ref refs/remotes/origin/main HEAD`, mine, ruleGuard},
+		{`git -C . update-ref -m x refs/remotes/origin/HEAD HEAD`, mine, ruleGuard},
+		{`git update-ref --stdin < refs.txt`, mine, ruleGuard},
+		{`git symbolic-ref refs/remotes/origin/HEAD refs/heads/mine`, mine, ruleGuard},
+		{`git remote set-head origin mine`, mine, ruleGuard},
+		{`git fetch . HEAD:refs/remotes/origin/main`, mine, ruleGuard},
+		{`git push . +HEAD:refs/remotes/origin/main`, mine, ruleGuard},
+		{`git fetch origin mine:refs/remotes/origin/main`, mine, ruleGuard},
+		{`git fetch origin main:refs/remotes/origin/main`, mine, ""},
+		{`git push origin HEAD:refs/remotes/origin/main`, mine, ""},
+		{`git symbolic-ref refs/remotes/origin/HEAD`, mine, ""},
+		{`git symbolic-ref --short refs/remotes/origin/HEAD`, mine, ""},
+		{`git remote set-head origin -a`, mine, ""},
+		{`git remote set-head origin --auto`, mine, ""},
+		{`git update-ref refs/heads/tmp HEAD`, mine, ""},
+		{`git update-ref -d refs/remotes/origin/gone`, mine, ""},
+		{`git fetch origin`, mine, ""},
+		{`git fetch origin +refs/heads/*:refs/remotes/origin/*`, mine, ""},
+		{`git push origin HEAD:refs/heads/mine`, mine, ""},
 		// .12: each shell option that takes a value.
 		{`bash --rcfile x tools/bad.sh`, project, ruleGuard},
 		{`bash --init-file x tools/bad.sh`, project, ruleGuard},

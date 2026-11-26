@@ -1807,6 +1807,7 @@ var gitWriteVerbs = map[string]bool{"commit": true, "push": true, "add": true, "
 func (g *guard) gitHit(args []string) *guardHit {
 	dir := g.dir
 	verb := ""
+	var rest []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -1831,11 +1832,14 @@ func (g *guard) gitHit(args []string) *guardHit {
 			}
 		case strings.HasPrefix(a, "-"):
 		default:
-			verb = a
+			verb, rest = a, args[i+1:]
 		}
 		if verb != "" {
 			break
 		}
+	}
+	if forgesRemoteRef(verb, rest) {
+		return hit(ruleGuard, "writing a remote-tracking ref by hand (the guard tells the project's scripts by what origin holds; git fetch updates these)", "git", verb)
 	}
 	if !gitWriteVerbs[verb] || !g.site.foreign(dir) {
 		return nil
@@ -1843,6 +1847,56 @@ func (g *guard) gitHit(args []string) *guardHit {
 	h := hit(ruleRepo, "changing a repository other than this session's", "git", dir, verb)
 	h.ask = true
 	return h
+}
+
+// forgesRemoteRef says a git command sets a remote-tracking ref to something
+// the remote did not send: update-ref or symbolic-ref on refs/remotes/ (or
+// update-ref --stdin, whose refs the guard does not read), remote set-head
+// with a branch it names itself, a fetch, pull or push between local
+// repositories (git fetch . HEAD:refs/remotes/origin/main), or a fetch of one
+// branch into another's ref (git fetch origin mine:refs/remotes/origin/main). trackedClean
+// takes origin's default branch for what the project holds, so a session
+// that moved it could pass its own script off as the project's. Deleting
+// one, reading one, and a fetch from the remote into its own refs are not it.
+func forgesRemoteRef(verb string, args []string) bool {
+	var plain []string
+	del := false
+	for _, a := range args {
+		switch {
+		case a == "-d" || a == "--delete":
+			del = true
+		case a == "--stdin" && verb == "update-ref":
+			return true
+		case !strings.HasPrefix(a, "-"):
+			plain = append(plain, a)
+		}
+	}
+	remote := func(ref string) bool { return strings.HasPrefix(ref, "refs/remotes/") }
+	switch verb {
+	case "update-ref":
+		return !del && slices.ContainsFunc(plain, remote)
+	case "symbolic-ref":
+		return !del && len(plain) >= 2 && slices.ContainsFunc(plain, remote)
+	case "remote":
+		return len(plain) >= 3 && plain[0] == "set-head" && !del
+	case "fetch", "pull", "push":
+		if len(plain) == 0 {
+			return false
+		}
+		local := strings.ContainsAny(plain[0][:1], "./~")
+		for _, a := range plain[1:] {
+			src, dst, ok := strings.Cut(strings.TrimPrefix(a, "+"), ":")
+			if !ok || !remote(dst) || strings.Contains(dst, "*") {
+				continue
+			}
+			// From the remote, a branch into the ref of its own name is a
+			// fetch; into another's, or from a local repository, it is not.
+			if local || verb != "push" && path.Base(src) != path.Base(dst) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // writes checks where a command writes: redirects and the files the usual
