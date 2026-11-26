@@ -227,7 +227,12 @@ func (s *Service) lineGather(ctx context.Context, ref lineRef) (*lineState, erro
 	var keep []*PullRequest
 	for _, p := range members {
 		ls.prs[p.ID] = p
-		if why := s.lineLeft(ctx, p); why != "" {
+		why, unread := s.lineStanding(ctx, p)
+		if unread {
+			s.log.WarnContext(ctx, "read whether a line member is settled; it keeps its place", "pr", p.ID, "why", why)
+			why = ""
+		}
+		if why != "" {
 			if queueHolder(p) && !s.frontGivesWay(ctx, p, why) {
 				// Still marked ready (the title edit failed): it stays a
 				// member, not half out, and the next step tries again. The
@@ -359,17 +364,33 @@ func (s *Service) frontFailed(ctx context.Context, p *PullRequest) (bool, error)
 	return b == nil, nil
 }
 
-// lineLeft says why p no longer holds a place in the line, "" when it does.
-// A pull request that isn't Waypoint's marked-ready front must be settled:
-// its checks passed at its head and nothing is left that could move the head.
-// The front keeps its place through a round (WP-455) for frontGrace; past
-// that it must not have failed its checks or be unsettled either (WP-1852). A
-// read that fails doesn't take the front out: the next look asks again.
-// Its full run still going, being behind the base and the forge still
-// reading mergeability are the line's own business and never count.
+// lineLeft says why p can't hold or take a place in the line, "" when it can.
+// A read that failed counts as a reason for a pull request that isn't the
+// front, so one outside the line doesn't join on a state nobody could read.
+// The line's members are judged with lineStanding, which keeps a place through
+// such a read.
 func (s *Service) lineLeft(ctx context.Context, p *PullRequest) string {
+	why, unread := s.lineStanding(ctx, p)
+	if unread && queueHolder(p) {
+		return ""
+	}
+	return why
+}
+
+// lineStanding says why p no longer holds a place in the line, "" when it
+// does. A pull request that isn't Waypoint's marked-ready front must be
+// settled: its checks passed at its head and nothing is left that could move
+// the head. The front keeps its place through a round (WP-455) for
+// frontGrace; past that it must not have failed its checks or be unsettled
+// either (WP-1852). unread: a read failed, so why only says what couldn't be
+// read. A member whose read failed keeps its place, front or not, and the
+// next look asks again; ending candidates and putting it out on a failed read
+// is what WP-ADR163 point 4 rules out. Its full run still going, being behind
+// the base and the forge still reading mergeability are the line's own
+// business and never count.
+func (s *Service) lineStanding(ctx context.Context, p *PullRequest) (why string, unread bool) {
 	if p.HeadSHA == "" {
-		return "its head isn't known"
+		return "its head isn't known", false
 	}
 	if queueHolder(p) {
 		if s.inFrontGrace(p) {
@@ -377,31 +398,27 @@ func (s *Service) lineLeft(ctx context.Context, p *PullRequest) string {
 			// moves under the front, and its merge holds only for an audit
 			// that exists.
 			s.askHeadAudit(ctx, p)
-			return ""
+			return "", false
 		}
 		failed, err := s.frontFailed(ctx, p)
 		if err != nil {
 			if readFault(err) {
 				s.log.WarnContext(ctx, "read whether the front's checks failed", "pr", p.ID, "err", err)
 			}
-			return ""
+			return "its checks couldn't be read", true
 		}
 		if failed {
-			return "its checks failed"
+			return "its checks failed", false
 		}
-		if why, unread := s.unsettled(ctx, p); !unread {
-			return why
-		}
-		return ""
+		return s.unsettled(ctx, p)
 	}
 	if failedOn(p, p.HeadSHA) {
-		return "its checks failed"
+		return "its checks failed", false
 	}
 	if p.ciSHA != p.HeadSHA || p.CIState != CIPassed {
-		return "its checks haven't passed on its head"
+		return "its checks haven't passed on its head", false
 	}
-	why, _ := s.unsettled(ctx, p)
-	return why
+	return s.unsettled(ctx, p)
 }
 
 // frontGivesWay takes a marked-ready front that lineLeft says has left back
