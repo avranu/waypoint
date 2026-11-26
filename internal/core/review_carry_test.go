@@ -182,13 +182,13 @@ func TestMergeOnlyPushCarriesReview(t *testing.T) {
 	pr.HeadSHA = "5555555eeee"
 	pe.diffs["5555555eeee"] = diffPlus("three.txt")
 	pe.pullHook("synchronize", pr)
-	if got = pe.drain(); len(got) != 1 || got[0].Status != "failed" {
+	if got = pe.drainDown(); len(got) != 1 || got[0].Status != "failed" {
 		t.Fatalf("failing push: %+v", got)
 	}
 	pr.HeadSHA = "6666666ffff"
 	pe.diffs["6666666ffff"] = diffPlus("three.txt")
 	pe.pullHook("synchronize", pr)
-	if got = pe.drain(); len(got) != 1 || got[0].Status != "failed" {
+	if got = pe.drainDown(); len(got) != 1 || got[0].Status != "failed" {
 		t.Fatalf("a failed review was carried: %+v", got)
 	}
 }

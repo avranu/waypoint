@@ -1225,6 +1225,14 @@ func (s *Service) carryOut(ctx context.Context, r *BotRun) {
 		lb, _ := json.Marshal(res.log)
 		_, err = s.db.W.ExecContext(done, `UPDATE bot_runs SET status = 'queued', error = ?, log = ?, not_before = ? WHERE id = ? AND status = 'running'`,
 			downWaitText(runErrorText(err, res.log), at, r.Attempts+1), string(lb), at.UnixMilli(), r.ID)
+		if err == nil {
+			// The gate may have passed while the run sat queued past the
+			// review wait; waiting to run again holds it (computeGate).
+			if gerr := s.evalGate(done, r.PR.ID); gerr != nil {
+				s.log.WarnContext(ctx, "review gate", "pull request", r.PR.ID, "err", gerr)
+				s.markGatePending(done, r.PR.ID)
+			}
+		}
 	case errors.As(err, &down):
 		s.log.WarnContext(ctx, "bot run failed; every model unavailable", "run", r.ID)
 		s.botFailedReaction(done, r)

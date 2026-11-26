@@ -104,15 +104,19 @@ func (s *Service) computeGate(ctx context.Context, pr *PullRequest, sev string) 
 		}
 	}
 	open = len(blocking)
-	var running, queued int
+	var running, queued, down int
 	if err = s.db.R.QueryRowContext(ctx, `SELECT
 		COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END), 0)
-		FROM bot_runs WHERE pr_id = ? AND kind = 'review' AND head_sha = ? AND status IN ('queued','running')`, pr.ID, pr.HeadSHA).Scan(&running, &queued); err != nil {
+		COALESCE(SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status = 'queued' AND instr(error, ?) = 1 THEN 1 ELSE 0 END), 0)
+		FROM bot_runs WHERE pr_id = ? AND kind = 'review' AND head_sha = ? AND status IN ('queued','running')`, providersDownText, pr.ID, pr.HeadSHA).Scan(&running, &queued, &down); err != nil {
 		return
 	}
+	// The review wait lets go of a review nobody has started, not of one
+	// that ran, found every model unavailable and waits to run again: the
+	// gate must not pass a head whose review just failed (WP-1916).
 	if queued > 0 && s.reviewWaitOver(ctx, pr) {
-		queued = 0
+		queued = down
 	}
 	running += queued
 	var last, lastErr, lastSummary string

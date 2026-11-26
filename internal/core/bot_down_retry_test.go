@@ -53,6 +53,75 @@ func TestReviewRunWithEveryModelDownIsQueuedAgain(t *testing.T) {
 	}
 }
 
+// drainDown drains until the runs whose models were all unavailable have had
+// every attempt, and returns what the last drain carried out.
+func (pe *prEnv) drainDown() []*BotRun {
+	pe.t.Helper()
+	done := pe.drain()
+	for i := 1; i < botMaxAttempts; i++ {
+		pe.setClock(pe.clockNow().Add(botRetryAfter*botMaxAttempts + 1))
+		done = pe.drain()
+	}
+	return done
+}
+
+// The review wait lets go of a review nobody started, not of one waiting to
+// run again after finding every model down: the gate stays pending past it,
+// and fails once the last attempt does.
+func TestGateWaitsForReviewQueuedAgain(t *testing.T) {
+	se := newShipEnv(t, "github")
+	se.policy(MergePolicyInput{ReviewWaitMinutes: ptr(30), QuietMinutes: ptr(0)})
+	se.pullHook("opened", testPR)
+	se.drain()
+	pr := se.pr(5)
+	if _, err := se.s.db.W.Exec(`DELETE FROM bot_runs`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := se.s.db.W.Exec(`INSERT INTO bot_runs(project_id, pr_id, kind, head_sha, status, error, created_at)
+		VALUES ((SELECT min(id) FROM projects), ?, 'review', ?, 'queued', ?, ?)`,
+		pr.ID, pr.HeadSHA, downWaitText(providersDownText+"was unavailable"+downGaveUp, se.clockNow(), 2), se.s.nowMS()); err != nil {
+		t.Fatal(err)
+	}
+	se.setClock(se.clockNow().Add(31 * time.Minute))
+	if state, note, _, _, err := se.s.computeGate(se.ctx, se.pr(5), "high"); err != nil || state != GatePending {
+		t.Fatalf("waiting to run again past the review wait: %q %q %v", state, note, err)
+	}
+	if _, err := se.s.db.W.Exec(`UPDATE bot_runs SET error = ''`); err != nil {
+		t.Fatal(err)
+	}
+	if state, note, _, _, err := se.s.computeGate(se.ctx, se.pr(5), "high"); err != nil || state != GateSuccess {
+		t.Fatalf("never started, past the review wait: %q %q %v", state, note, err)
+	}
+}
+
+// A gate that passed while the run sat queued past the review wait goes back
+// to pending when the run finds every model down.
+func TestPassedGateIsPendingAgainWhenQueuedAgain(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	se.gate("P2")
+	se.policy(MergePolicyInput{AutoMerge: ptr(false), ReviewWaitMinutes: ptr(30), QuietMinutes: ptr(0)})
+	for m := range se.llm.answers {
+		se.llm.answers[m] = "!timeout"
+	}
+	se.llm.answers["opencode/muse-spark-1.3-contributor-free"] = "!timeout"
+	se.pullHook("opened", testPR)
+	se.s.Wait()
+	se.setClock(se.clockNow().Add(31 * time.Minute))
+	pr := se.pr(5)
+	if err := se.s.evalGate(se.ctx, pr.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := se.pr(5).GateState; got != GateSuccess {
+		t.Fatalf("queued past the review wait: gate %q", got)
+	}
+	if done := se.drain(); len(done) != 1 || done[0].Status != "queued" {
+		t.Fatalf("first attempt: %+v", done)
+	}
+	if got := se.pr(5).GateState; got != GatePending {
+		t.Errorf("queued again: gate %q", got)
+	}
+}
+
 // A retry waiting for its turn is skipped once the pull request has moved to
 // another head (skipStaleRuns), not reviewed.
 func TestQueuedAgainReviewOfMovedHeadDoesNotReview(t *testing.T) {
