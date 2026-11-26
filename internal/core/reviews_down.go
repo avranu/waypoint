@@ -94,7 +94,7 @@ func (s *Service) notifyReviewsDown(ctx context.Context, e *Event) {
 	switch e.New {
 	case "down":
 		title = fmt.Sprintf("Reviews in %s keep failing: every model unavailable", key)
-		body = fmt.Sprintf("The last %d pull request reviews%s ended with every review model rate limited, down, timing out, or none at the review minimum (%s) able to take it. They are not retried: once a model answers, comment @waypoint review on each (or wp pr review retry), or change the review rule's models.", reviewsDownAfter, latest, reviewFloorBar)
+		body = fmt.Sprintf("The last %d pull request reviews%s ended with every review model rate limited, down, timing out, or none at the review minimum (%s) able to take it. Each was tried again 10 and 20 minutes later before it counted, except one where no model met the review minimum, which is not retried. Once a model answers, comment @waypoint review on each (or wp pr review retry), or change the review rule's models.", reviewsDownAfter, latest, reviewFloorBar)
 	case "up":
 		title = fmt.Sprintf("Reviews in %s answer again", key)
 		body = fmt.Sprintf("A review%s finished after %d or more in a row failed with every model unavailable. Pull requests whose review failed meanwhile still have none: comment @waypoint review on each (or wp pr review retry).", latest, reviewsDownAfter)
