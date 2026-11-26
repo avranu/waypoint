@@ -101,7 +101,7 @@ func sleepWaitText(cmd string, who caller) string {
 	const lead = "Sleeping before a check wastes turns"
 	text, giveUp := "", ""
 	if b := loopBoundSecs(stripHeredocs(cmd)); reLoop.MatchString(cmd) && b > 0 && b < sleepLoopMaxSecs {
-		giveUp = "That loop gives up after " + strconv.Itoa(int(b)) + "s and you then call it again, a turn each time"
+		giveUp = "That loop gives up after " + strconv.Itoa(int(b)) + "s; when the wait is longer you call it again, a turn each time"
 	}
 	if h := waitHint(cmd, who); h != "" {
 		text = lead + ". " + h
