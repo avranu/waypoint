@@ -288,7 +288,7 @@ for (const [width, scheme] of looks([
   await menu.waitFor();
   await field.press("Escape");
   ok(
-    !(await menu.isVisible()),
+    await menu.waitFor({ state: "hidden", timeout: 3000 }).then(() => true, () => false),
     `${tag} Escape closes the menu, not the editor`,
   );
   // The caret leaves the @rob and a click puts it back (a click that leaves it where it was moves nothing to react to).
@@ -343,10 +343,13 @@ for (const [width, scheme] of looks([
     await page
       .getByRole("alert")
       .filter({ hasText: "A link starts with" })
-      .isVisible(),
+      .waitFor({ timeout: 5000 })
+      .then(() => true, () => false),
     `${tag} a javascript: address is refused with a message`,
   );
-  ok((await desc(lk.key)) === "hello world", `${tag} and nothing is linked`);
+  // Past an autosave's pause (1.8 s), so a change the refusal made would show.
+  const lkr = await waitDesc(lk.key, (d) => d !== "hello world", 3000);
+  ok(lkr === "hello world", `${tag} and nothing is linked: ${JSON.stringify(lkr)}`);
   await urlBox.fill("https://example.com/docs");
   await urlBox.press("Enter");
   const lkd = await waitDesc(lk.key, (d) => d.includes("]("));
@@ -480,7 +483,11 @@ for (const [width, scheme] of looks([
     });
     await pastePng("bad.png");
     await field.press("Escape");
-    await waitDesc(uf.key, (d) => d.includes("Uploading bad.png"));
+    const ufp = await waitDesc(uf.key, (d) => d.includes("Uploading bad.png"));
+    ok(
+      ufp.includes("Uploading bad.png"),
+      `${tag} Escape during an upload saves its placeholder first: ${JSON.stringify(ufp)}`,
+    );
     const ufd = await waitDesc(uf.key, (d) => !d.includes("Uploading"));
     ok(
       !ufd.includes("Uploading") && !ufd.includes("bad.png"),

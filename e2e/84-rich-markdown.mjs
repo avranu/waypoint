@@ -127,7 +127,7 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
   await insertInto("Esc dash", "- d", "\\- d");
   await insertInto("Esc bullet star", "* d", "\\* d");
   await insertInto("Esc spaced star", "2 * 3 * 4", "2 * 3 * 4");
-  await insertInto("Esc line star", "a" + "\n".repeat(0) + " * b", "a * b");
+  await insertInto("Esc line star", "a\n* b", "a\n\n\\* b");
 
   const writes = async (title, html, want) => {
     const issue = await open(title);

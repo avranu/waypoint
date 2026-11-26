@@ -281,6 +281,7 @@ function serialize(node: Node, opts: Opts = {}): string {
       if (!href) return inner().trim()
       const own = escapeText(href, { label: true })
       const label = inner({ ...opts, label: true }).trim() || own
+      // An autolink, marked for autolinks(), which writes it bare or <angled>.
       if (label === own && AUTOLINK.test(href)) return `\0${href}\0`
       return `[${label}](${target(href)})`
     }

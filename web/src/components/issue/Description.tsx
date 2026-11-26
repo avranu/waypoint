@@ -386,7 +386,7 @@ export function MarkdownEditor({
     const a = t.closest('a')
     if (a) {
       const href = a.getAttribute('href') ?? ''
-      if (href.startsWith('/') && !href.startsWith('//') && !e.metaKey && !e.ctrlKey) {
+      if (/^\/(?![/\\])/.test(href) && !e.metaKey && !e.ctrlKey) {
         e.preventDefault()
         navigate({ to: href })
       }

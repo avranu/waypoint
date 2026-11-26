@@ -494,7 +494,10 @@ for (const [width, scheme] of looks(
       await aEnter();
       const h = await html();
       ok(/@robin/.test(h) && (h.match(/<p>/g) ?? []).length === 1, `${tag} ${name}: Enter by beforeinput picks the mention, no new paragraph (${h})`);
-      ok(!(await menu.isVisible()), `${tag} ${name}: the menu closed after the pick`);
+      ok(
+        await menu.waitFor({ state: "hidden", timeout: 3000 }).then(() => true, () => false),
+        `${tag} ${name}: the menu closed after the pick`,
+      );
       await done.click();
       await richBox.waitFor({ state: "detached" });
       const got = await waitDesc(issue.key, "hi @robin");

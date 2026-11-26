@@ -962,9 +962,19 @@ for (const [width, scheme] of looks(
     const b = await state();
     ok(b.fade === "left" && b.mask && b.mask !== "none", `${tag} at the end the fade is on the left only (${JSON.stringify(b)})`);
     await page.screenshot({ path: `${out}/rich-toolbar-cue-end-${tag}.png` });
-    await toolbarOf(richBox).getByRole("button", { name: "Edit as markdown" }).click();
+    const asMd = toolbarOf(richBox).getByRole("button", { name: "Edit as markdown" });
+    // The first box around the button that clips it must scroll, or a
+    // person could not reach what it hides.
+    const clip = await asMd.evaluate((b) => {
+      for (let n = b.parentElement; n; n = n.parentElement) {
+        const o = getComputedStyle(n).overflowX;
+        if (o !== "visible") return o;
+      }
+      return "visible";
+    });
+    ok(clip === "auto" || clip === "scroll", `${tag} "Edit as markdown" is reachable by scrolling the toolbar (overflow-x: ${clip})`);
+    await asMd.click();
     await page.locator('textarea[aria-label="Description"]').waitFor();
-    ok(true, `${tag} "Edit as markdown" is reachable by scrolling the toolbar`);
     await formattedSwitch(page.locator('textarea[aria-label="Description"]')).click();
     await richBox.waitFor();
     await press("Escape");

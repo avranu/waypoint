@@ -1,11 +1,4 @@
-import {
-  forwardRef,
-  useEffect,
-  useImperativeHandle,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
 import {
@@ -50,12 +43,6 @@ import type { UserRef } from '@/lib/types'
 import { MENTION_RE, MentionList, useMentionMatches } from '../issue/userMention'
 import { editorExtensions } from './schema'
 import { DESCRIPTION_BOX } from './styles'
-
-export type RichTextHandle = {
-  focus(): void
-  /** Inserts markdown at the caret, parsed the way a paste is. */
-  insertMarkdown(md: string): void
-}
 
 type Props = {
   value: string
@@ -139,28 +126,25 @@ function findText(editor: Editor, text: string): number {
   return at
 }
 
-export const RichTextInput = forwardRef<RichTextHandle, Props>(function RichTextInput(
-  {
-    value,
-    onValueChange,
-    issueKey,
-    attachTo,
-    placeholder,
-    autoFocus,
-    ariaLabel,
-    getValue,
-    onKeyDown,
-    onSource,
-    trailing,
-    caretAt,
-    look = 'inline',
-    minRows = 3,
-    disabled,
-    deferUploads,
-    className,
-  },
-  ref,
-) {
+export function RichTextInput({
+  value,
+  onValueChange,
+  issueKey,
+  attachTo,
+  placeholder,
+  autoFocus,
+  ariaLabel,
+  getValue,
+  onKeyDown,
+  onSource,
+  trailing,
+  caretAt,
+  look = 'inline',
+  minRows = 3,
+  disabled,
+  deferUploads,
+  className,
+}: Props) {
   const qc = useQueryClient()
   const target = attachTo ?? (issueKey ? issueTarget(issueKey) : undefined)
   const field = look === 'field'
@@ -520,24 +504,6 @@ export const RichTextInput = forwardRef<RichTextHandle, Props>(function RichText
     // eslint-disable-next-line react-hooks/exhaustive-deps -- starting state only
   }, [])
 
-  useImperativeHandle(
-    ref,
-    () => ({
-      focus: () => void editor.commands.focus(),
-      insertMarkdown: (md: string) => {
-        const { view } = editor
-        view.dispatch(
-          view.state.tr
-            .replaceSelection(markdownSlice(view.state.schema, md))
-            .scrollIntoView()
-            .setMeta('paste', true),
-        )
-        view.focus()
-      },
-    }),
-    [editor],
-  )
-
   // Where the menu opens: under the "@" it is for.
   useLayoutEffect(() => {
     if (!mention || !editor.isFocused) return
@@ -798,7 +764,7 @@ export const RichTextInput = forwardRef<RichTextHandle, Props>(function RichText
       )}
     </div>
   )
-})
+}
 
 function LinkForm({
   draft,
