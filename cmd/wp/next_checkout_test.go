@@ -38,7 +38,7 @@ func checkoutFixture(t *testing.T) (clone, origin string) {
 	git(t, root, "clone", "-q", origin, clone)
 	commit(seed, "c.txt", "Third commit, only on origin")
 	git(t, seed, "push", "-q", "origin", "main")
-	git(t, clone, "branch", "wp-3010-other") // a different task
+	git(t, clone, "branch", "wp-3010-other")
 	git(t, clone, "worktree", "add", "-q", "-b", "wp-301-next-context", filepath.Join(root, "app-wp301"))
 	return clone, origin
 }
@@ -69,7 +69,7 @@ func TestCheckoutReport(t *testing.T) {
 		"Checkout (just fetched):",
 		clone + " on main, 1 behind origin/main",
 		"Uncommitted (2 files):",
-		"     M a.txt", // porcelain's leading space kept
+		"     M a.txt",
 		"    ?? new.txt",
 		"Latest on origin/main:",
 		"Third commit, only on origin",
@@ -140,7 +140,6 @@ func TestNextPrintsCheckout(t *testing.T) {
 	origin := filepath.Join(t.TempDir(), "origin.git")
 	git(t, s.repo, "init", "-q", "--bare", "-b", "main", origin)
 	commitFiles(t, s.repo, map[string]string{"README.md": "# App\n"})
-	// A local origin: the scope is then named with -p.
 	git(t, s.repo, "remote", "set-url", "origin", origin)
 	git(t, s.repo, "push", "-q", "origin", "HEAD:main")
 	p := s.project.Key

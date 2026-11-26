@@ -12,17 +12,12 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Searching by code (WP-122): R-28, R28, API:R-28, ADR-0007, WP-PL3 and APP12
-// all name a thing, and a search for one finds, in this order, the thing
-// itself, the things whose text mentions it in any of its spellings, then
-// looser text matches.
-
 // searchCode is one code-shaped word of a search.
 type searchCode struct {
 	Word   string   // as typed
 	Tokens []string // what it could be, in the canonical spelling resolveRef reads
 	Phrase []string // the ways text writes it, as FTS phrases: "r 28", "r28"
-	strict bool     // written so only a code looks like it: R-28, API:R-28, ADR7, APP-12
+	strict bool
 }
 
 var phraseRE = lazyre.New(`"([^"]+)"`)
@@ -189,9 +184,9 @@ func (s *Service) hitOf(ctx context.Context, r Ref) SearchHit {
 
 // Where a hit stands in a search that has codes in it.
 const (
-	MatchExact   = "exact"   // the thing the code names
-	MatchMention = "mention" // text that writes the code
-	MatchText    = "text"    // the words, looser
+	MatchExact   = "exact"
+	MatchMention = "mention"
+	MatchText    = "text"
 )
 
 // bareRequestCode is the code a query consists of alone when it is a
@@ -247,14 +242,12 @@ func markHits(hs []SearchHit, how string) []SearchHit {
 	return hs
 }
 
-// ---- requests ----
-
 // searchRequestsFor finds requests whose title, body, answer, note or asked
 // questions have the words (or, for a ftsRaw text, write one of its
 // phrases), the ones with the words in their title first.
 func (s *Service) searchRequestsFor(ctx context.Context, actor *Actor, words string, projects []*Project, limit int) (SearchGroup, error) {
-	var needles []string             // LIKE needles, all required
-	var find func(string) (int, int) // where the code is written; nil: the words are
+	var needles []string
+	var find func(string) (int, int)
 	if strings.HasPrefix(words, ftsRaw) {
 		var res []*regexp.Regexp
 		for _, m := range phraseRE.FindAllStringSubmatch(words[len(ftsRaw):], -1) {
@@ -275,7 +268,6 @@ func (s *Service) searchRequestsFor(ctx context.Context, actor *Actor, words str
 			}
 			return -1, -1
 		}
-		// Every phrase ends in the number; the first one's last token names it.
 		if len(needles) > 0 {
 			needles = []string{regexp.MustCompile(`\d+`).FindString(needles[0])}
 			if needles[0] == "" {

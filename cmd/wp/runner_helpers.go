@@ -22,41 +22,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// The Haiku helpers around an audit's model (WP-1320, WP-ADR135, WP-ADR141):
-// the server asks for them in the job (agentJob.Helpers) and this runner
-// runs them itself, in the audit's own checkout, so they don't depend on
-// the model choosing to spawn them (told to fan out, a Sonnet reviewer did
-// in 2 of 6 runs of the live review).
-//
-// The panel runs beside the reviewer, not before it, and its problems reach
-// the audit as its own findings, not as leads the reviewer is handed: the
-// reason is that a reviewer told what to look at looks there and stops
-// looking, and audit #1135 showed it (its reviewer was handed 73 leads on a
-// 187 KB diff and read two files; reviewers took up 9% of leads, and the
-// panel ran in 34 of 61 audits for a reviewer that never answered).
-//
-//   - The panel (startPanel) is a goroutine that starts when the reviewer
-//     does and writes nothing of its own to the job: stage a is the checks,
-//     each one `claude -p` Haiku run, read only, asked one question about the
-//     change (leads are dropped only when they can't be leads, pruneLeads,
-//     never to a count); stage b gives each lead its own Haiku second read,
-//     worst first under a budget, and only a lead that read confirms goes
-//     on, with the severity the read set. Everything else is cut, with why.
-//   - The join (join) waits for the reviewer's answer and the panel, then:
-//     the check of findings reads the reviewer's findings, one Haiku run
-//     each (verify); a combine run merges the panel's confirmed problems
-//     (the same defect and the same fix, no more) and says which are the
-//     reviewer's too (combine), the runner making that lossless; the
-//     panel's findings are appended after the reviewer's, already checked.
-//   - A reviewer that fails or answers nothing readable doesn't stop the
-//     panel (finish): it runs on inside the job's time, and its runs, with
-//     every second read's outcome, go in the result for a retry to reuse and
-//     for the server to deliver (WP-1320).
-//
-// No text that reaches the reviewer says what a check found or didn't.
-// Each helper's run (its leads, cost, time, or why it failed or was
-// skipped) goes back in the result's "helpers" for the server to keep.
-
 // auditHelpers is the job's ask (core.AuditHelpers).
 type auditHelpers struct {
 	Panel   []panelCheck `json:"panel,omitempty"`
@@ -84,11 +49,9 @@ type helperRun struct {
 	// Cut are the leads that became no finding, each with why (pruned,
 	// refuted, unsupported, not read for time, the reviewer's too), so what
 	// each stage costs can be read later; Dropped counts them.
-	Cut     []panelLead `json:"cut,omitempty"`
-	Dropped int         `json:"dropped,omitempty"`
-	dropWhy string      // why pruning dropped them, for the job's log
-	// rereadLeads: of a reused run, how many leads this job read again
-	// (not part of the report).
+	Cut         []panelLead `json:"cut,omitempty"`
+	Dropped     int         `json:"dropped,omitempty"`
+	dropWhy     string
 	rereadLeads int
 	CostUSD     float64 `json:"cost_usd"`
 	MS          int64   `json:"ms"`
@@ -196,19 +159,16 @@ const combineSchema = `{"type":"object","required":["findings","same"],"properti
 
 // helperEnv runs one job's helpers.
 type helperEnv struct {
-	run  *jobRun
-	h    *auditHelpers
-	work string
-	bin  string // the claude CLI; "" when skip says why not
-	skip string
-	runs []helperRun
-	pj   *panelJob // the panel, running beside the reviewer; nil when none
-	// noJoin is set once the reviewer has failed: there is no verify or
-	// combine to leave time for after the panel (after).
+	run    *jobRun
+	h      *auditHelpers
+	work   string
+	bin    string
+	skip   string
+	runs   []helperRun
+	pj     *panelJob
 	noJoin atomic.Bool
-	// exec runs one helper (haikuRun; tests replace it).
-	exec func(ctx context.Context, prompt, schema string, limit time.Duration) (json.RawMessage, float64, error)
-	p    *runnerProc
+	exec   func(ctx context.Context, prompt, schema string, limit time.Duration) (json.RawMessage, float64, error)
+	p      *runnerProc
 }
 
 // newHelpers gets a job's helpers ready: they run only on Claude Code, and
@@ -241,7 +201,7 @@ func (e *helperEnv) attach(o outcome) outcome {
 	m, ok := o.Result.(map[string]any)
 	if !ok {
 		if o.Result != nil {
-			return o // not an agent's result: nothing to add to
+			return o
 		}
 		m = map[string]any{}
 	}
@@ -270,8 +230,8 @@ type panelJob struct {
 	done   chan struct{}
 	runs   []helperRun
 	logs   []string
-	leads  []panelLead // the second read confirmed, in the checks' order
-	taken  bool        // the join took its runs and logs
+	leads  []panelLead
+	taken  bool
 }
 
 // startPanel starts the panel's checks on the change, beside the reviewer.
@@ -382,10 +342,6 @@ func (e *helperEnv) panelWork(ctx context.Context, pj *panelJob, change string, 
 			r.Leads[n].ID = fmt.Sprintf("%s.%d", r.Check, n+1)
 		}
 	}
-	// A reused run's leads that a second read never reached (the budget ran
-	// out, the job was stopped, the read failed) are read in this job, worst
-	// first among the new ones, inside the same budget: the run was "done",
-	// but those leads are not settled (WP-1320).
 	var again []helperRun
 	var againOf []int
 	for i := range reused {
@@ -401,9 +357,6 @@ func (e *helperEnv) panelWork(ctx context.Context, pj *panelJob, change string, 
 	runs = all[:len(runs)]
 	for k, i := range againOf {
 		a := all[len(runs)+k]
-		// What this attempt did with the run goes back to its row (core's
-		// insertHelperRuns): its leads and cut as they now stand, and the cost
-		// of the reads made here, which is all it costs this attempt.
 		reused[i].Leads = append(reused[i].Leads, a.Leads...)
 		reused[i].Cut = append(reused[i].Cut, a.Cut...)
 		reused[i].Dropped += len(a.Cut)
@@ -415,7 +368,6 @@ func (e *helperEnv) panelWork(ctx context.Context, pj *panelJob, change string, 
 			runs[i].From, runs[i].To = r.from, r.to
 		}
 	}
-	// Back in the panel's order, the reused runs among the new.
 	ordered := make([]helperRun, 0, len(e.h.Panel))
 	for _, c := range e.h.Panel {
 		if i := slices.IndexFunc(runs, func(x helperRun) bool { return x.Check == c.Name }); i >= 0 {
@@ -515,7 +467,7 @@ func (e *helperEnv) secondReads(ctx context.Context, runs []helperRun) {
 	for k, rf := range refs {
 		byLead[rf] = reads[k]
 	}
-	timedOut := ctx.Err() == nil // the stage ended on its own, not with the job
+	timedOut := ctx.Err() == nil
 	for i := range runs {
 		r := &runs[i]
 		if r.State != "done" {
@@ -550,8 +502,6 @@ func (e *helperEnv) secondReads(ctx context.Context, runs []helperRun) {
 			if severityRank(l.ReadSeverity) == len(leadSeverities) {
 				l.ReadSeverity = l.Severity
 			}
-			// The finding has the read's own text; a read that gave none
-			// of a part leaves the check's.
 			l.ReadTitle, l.ReadProblem = excerpt(rd.title, helperLeadTitleMax), excerpt(rd.problem, helperLeadProblem)
 			if path, how := leadPath(e.work, rd.path); rd.path != "" && how != leadPathOutside && path != "" {
 				l.ReadPath, l.ReadLine = path, max(rd.line, 0)
@@ -677,7 +627,6 @@ func (e *helperEnv) changeHistory(ctx context.Context, r *auditRange) (log, hist
 	if r.from == emptyTree {
 		return log, ""
 	}
-	// -z before the pathspecs, where gitPaths can't put it.
 	list, err := e.p.gitRaw(ctx, e.work, nil, nil, append([]string{"diff", "--name-only", "--no-renames", "-z", rng, "--"}, r.pathspec()...)...)
 	names := strings.FieldsFunc(list, func(r rune) bool { return r == 0 })
 	if err != nil || len(names) == 0 {
@@ -824,11 +773,11 @@ func pruneLeads(work string, raw []rawLead) ([]panelLead, []panelLead, string) {
 
 // What leadPath made of a lead's path.
 const (
-	leadPathOK      = iota // a file in the checkout, or no path
-	leadPathCopy           // the change's copy of a file: read as the file
-	leadPathMissing        // in the checkout, but not a file there
-	leadPathChange         // the audit's copy of the change, not one of its files
-	leadPathOutside        // outside the checkout
+	leadPathOK = iota
+	leadPathCopy
+	leadPathMissing
+	leadPathChange
+	leadPathOutside
 )
 
 // leadPath is a lead's path relative to the checkout ("" for none, or for
@@ -950,12 +899,6 @@ func (e *helperEnv) verify(ctx context.Context, result map[string]any, after tim
 		fmt.Fprintf(e.run.out, "The check of findings was skipped: %s\n", e.skip)
 		return
 	}
-	// The server keeps the first helperVerifyMax (its guard) of the
-	// findings that have a title or a problem, worst first with the
-	// answer's order within a severity (core's parseAuditAnswer, with the
-	// same reading of a severity), so those are the ones checked: a
-	// different set could leave a kept finding with no verdict (the live
-	// check of round 6's marks).
 	order := make([]int, 0, len(findings))
 	for i, x := range findings {
 		f, _ := x.(map[string]any)
@@ -990,24 +933,12 @@ func (e *helperEnv) verify(ctx context.Context, result map[string]any, after tim
 		}
 		verdicts[k], notes[k], costs[k], errs[k] = e.verdict(stage, f)
 	})
-	// A refuted finding stops counting toward another round, on one Haiku
-	// answer: it is asked once more, and stands refuted only if both
-	// answers say so; two answers that differ leave the code not settling
-	// it (unsupported). One model answer is a sample: asked nine times,
-	// WP-1320's decision model's one-sample calls differed from its own
-	// mean in 2-14% of cases. The second asks come after every finding has
-	// its first, so they never take a first answer's time (the live run's
-	// seventh round). The note says it was asked twice, so the record
-	// counts how often a second answer differs.
 	var again []int
 	for k := range order {
 		if errs[k] == nil && verdicts[k] == "refuted" {
 			again = append(again, k)
 		}
 	}
-	// A second ask that fails leaves one answer, which can't refute: the
-	// finding is unsupported, and the failure counts in the run's state
-	// (WP-1320's live round 7); one stopped with the job is a stop.
 	var overturned atomic.Int32
 	errs2 := make([]error, len(order))
 	e.fan(len(again), func(i int) {
@@ -1027,9 +958,6 @@ func (e *helperEnv) verify(ctx context.Context, result map[string]any, after tim
 		}
 	})
 	r := helperRun{Check: helperVerifyName, State: "done", MS: time.Since(start).Milliseconds()}
-	// Only the check's verdicts go back: the reviewer's answer form holds
-	// the same fields, so whatever it wrote itself is cleared first (the
-	// server clears them all when no check ran, dropUncheckedVerdicts).
 	for _, x := range findings {
 		if f, ok := x.(map[string]any); ok {
 			delete(f, "verdict")
@@ -1098,7 +1026,7 @@ func (e *helperEnv) verify(ctx context.Context, result map[string]any, after tim
 
 // auditFindingKeys are the fields the server reads from each finding (core's
 // parseAuditAnswer).
-var auditFindingKeys = []string{"title", "path", "line", "severity", "problem", "confirm", "verdict", "verdict_note", "lead", "leads"}
+var auditFindingKeys = []string{"title", "path", "line", "severity", "problem", "confirm", "verdict", "verdict_note", "lead", "leads", "refers_to"}
 
 // foldKeys renames m's keys that match one of names the way the server's
 // decoder does (encoding/json matches a field's key in any case) to that
@@ -1207,7 +1135,6 @@ func (e *helperEnv) haikuRun(parent context.Context, prompt, schema string, limi
 	cmd.Env = jobEnv(os.Environ(), drv.env, drv.keepKeys)
 	cmd.Stdin = strings.NewReader(drv.stdin)
 	lw := &lineWriter{fn: func(l []byte) {
-		// Only the result matters; the run's own steps aren't logged.
 		if bytes.Contains(l, []byte(`"type":"result"`)) {
 			drv.line(l, sink)
 		}
@@ -1287,7 +1214,7 @@ type combined struct {
 	line        int
 	severity    string
 	problem     string
-	from        []string // lead ids
+	from        []string
 }
 
 // combineAnswer is the combine's answer.
@@ -1478,9 +1405,6 @@ func losslessCombine(work string, got combineAnswer, leads []panelLead, verdicts
 		if len(from) == 0 {
 			continue
 		}
-		// A place goes through leadPath as a second read's does: outside the
-		// checkout or not a file there is "no one file", a copy of the
-		// change's file is the file with no line.
 		path, line := "", max(f.Line, 0)
 		if p, how := leadPath(work, f.Path); how != leadPathOutside && p != "" {
 			path = p
@@ -1538,7 +1462,7 @@ func unmerged(leads []panelLead, findings []any) ([]combined, map[string]string)
 		path, _ := f["path"].(string)
 		n, _ := f["line"].(float64)
 		problem, _ := f["problem"].(string)
-		if v, _ := f["verdict"].(string); strings.TrimSpace(path) != "" && v != "refuted" { // a refuted finding holds no place
+		if v, _ := f["verdict"].(string); strings.TrimSpace(path) != "" && v != "refuted" {
 			at = append(at, held{strings.TrimSpace(path), int(n), problem, fmt.Sprintf("R%d", i+1)})
 		}
 	}

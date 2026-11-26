@@ -72,7 +72,6 @@ func TestSafetyDrill(t *testing.T) {
 		return st
 	}
 
-	// Without a screen model the rules alone decide: nothing to drill.
 	if _, err := e.s.RunSafetyDrill(e.ctx, e.admin); !IsInvalid(err) {
 		t.Fatalf("drill without a model: %v", err)
 	}
@@ -85,8 +84,6 @@ func TestSafetyDrill(t *testing.T) {
 		t.Fatalf("non-admin status: %v", err)
 	}
 
-	// A model that holds every bad text passes; the verdicts stay out of
-	// the real screen's table.
 	llm := &drillLLM{}
 	for _, c := range drillCases {
 		if c.want == SafetyHold {
@@ -116,7 +113,6 @@ func TestSafetyDrill(t *testing.T) {
 	if got := notices(); len(got) != 0 {
 		t.Errorf("passing drill notified: %v", got)
 	}
-	// Not due again within the week.
 	e.setClock(e.clockNow().Add(6 * 24 * time.Hour))
 	e.s.maybeSafetyDrill(e.ctx)
 	e.s.bg.Wait()
@@ -124,7 +120,6 @@ func TestSafetyDrill(t *testing.T) {
 		t.Fatalf("drills within the week: %d, %v", n, err)
 	}
 
-	// A week on, the model misses the subtle one: the admins hear of it.
 	e.setClock(e.clockNow().Add(24 * time.Hour))
 	llm.hold = slices.DeleteFunc(llm.hold, func(s string) bool { return s == "Fix the flaky e2e test for big boards" })
 	e.s.maybeSafetyDrill(e.ctx)
@@ -145,8 +140,6 @@ func TestSafetyDrill(t *testing.T) {
 		t.Fatalf("notices: %v", got)
 	}
 
-	// An admin runs one by hand; a model that fails throughout is no
-	// failure, and the drill is tried again the next day.
 	if _, err := e.s.RunSafetyDrill(e.ctx, sam); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("non-admin run: %v", err)
 	}

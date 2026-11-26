@@ -20,7 +20,6 @@ func TestDeliveryStages(t *testing.T) {
 		at := se.clockNow()
 		se.pullHook("closed", ForgePR{Number: n, Title: "Change", Author: "sam", BaseRef: "main", HeadRef: "b" + sha, HeadSHA: "head" + sha, State: "merged", MergeSHA: sha, MergedAt: &at})
 		se.s.Wait()
-		// What the merge became (the webhook here doesn't say).
 		if _, err := se.s.db.W.Exec(`UPDATE pull_requests SET merge_sha = ? WHERE number = ?`, sha, n); err != nil {
 			t.Fatal(err)
 		}
@@ -38,7 +37,6 @@ func TestDeliveryStages(t *testing.T) {
 	if _, err := se.s.db.W.Exec(`UPDATE pull_requests SET ci_state = 'failed' WHERE number = 4`); err != nil {
 		t.Fatal(err)
 	}
-	// Production runs #2's merge; #1's is in it.
 	if _, err := se.s.RecordDeploymentNamed(se.ctx, se.admin, se.p.Key, prod, DeployInput{Commit: "aaaaaaa2", Branch: "main", Status: DeploySucceeded}); err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +70,6 @@ func TestDeliveryStages(t *testing.T) {
 		t.Errorf("first = %s, want what's stuck first", d.Items[0].Stage)
 	}
 
-	// Deployed: all three are live.
 	if _, err := se.s.RecordDeploymentNamed(se.ctx, se.admin, se.p.Key, prod, DeployInput{Commit: "aaaaaaa3", Branch: "main", Status: DeploySucceeded}); err != nil {
 		t.Fatal(err)
 	}

@@ -1,7 +1,3 @@
-// Objectives (WP-927): every task worked in rounds that you can see, the ones
-// that need a person first (a proposal to read, a block to clear, a stall).
-// Narrowed by project and by where each stands; met and ended ones on request.
-
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
@@ -111,7 +107,6 @@ export function ObjectivesPage() {
   for (const o of rows) counts.set(o.health, (counts.get(o.health) ?? 0) + 1)
   const shown = rows
     .filter((o) => !health || o.health === health)
-    // The server puts those that need a person first; keep them there.
     .sort((a, b) => Number(needsPerson(b)) - Number(needsPerson(a)))
   const waiting = rows.filter(needsPerson).length
   return (

@@ -1,21 +1,5 @@
 package core
 
-// Runner faults on a base branch (WP-551). Waypoint re-runs a babysat pull
-// request's runner-fault jobs (waitForRunner), but a push run on a base
-// branch that failed the same way stayed red until a person noticed, and
-// until it passed its commit wasn't released or deployed: on 2026-11-04
-// one repo's main was red for 8h37m and another's
-// release branch for 10h22m, both because a runner's DNS failed at
-// checkout. Every time the scheduler reads the CI history (ten minutes),
-// the newest push runs of each attached repo's default branch and release
-// branches are looked at: when they failed and every job that failed did
-// so on its runner, Waypoint re-runs those jobs on a pull request head's
-// schedule (ci_fault_retry.go). One that keeps coming back is tracked in the
-// one runner-fault task a pull request would file (WP-589) and the re-runs go
-// on; only a forge that can't be asked ends them. The count is kept in
-// server_settings, so a restart doesn't start it over, and only a branch's
-// newest push is ever re-run, for baseFaultWindow.
-
 import (
 	"context"
 	"database/sql"
@@ -30,8 +14,8 @@ import (
 )
 
 const (
-	baseFaultKey    = "base_fault:"  // server_settings, + forge id|repo|branch: a baseFault
-	baseFaultWindow = 24 * time.Hour // push runs older than this are left alone
+	baseFaultKey    = "base_fault:"
+	baseFaultWindow = 24 * time.Hour
 )
 
 // baseFault is a base branch tip's runner-fault re-runs: faultRerun's
@@ -97,15 +81,14 @@ func (s *Service) checkBaseFaults(ctx context.Context, f *Forge, repo string, fr
 			branches = append(branches, b)
 		}
 	}
-	// Asked of the forge once a pass, and only when a branch needs it.
 	def := sync.OnceValue(func() string { return s.baseDefaultBranch(ctx, f, repo) })
-	s.checkBaseAdvisories(ctx, cl, f, repo, def, fresh) // WP-1660: whether or not the branch has red push runs
+	s.checkBaseAdvisories(ctx, cl, f, repo, def, fresh)
 	for _, branch := range branches {
 		key := baseFaultSettingKey(f.ID, repo, branch)
 		old, had := states[branch]
 		red, running := redTip(runs[branch])
 		if running {
-			continue // a push or a re-run under way: its result decides
+			continue
 		}
 		if len(red) == 0 {
 			if had {
@@ -186,7 +169,7 @@ func (s *Service) baseRuns(ctx context.Context, forgeID int64, repo string, fres
 	}
 	out := map[string][]ActionRun{}
 	for _, r := range byNum {
-		r.PrettyRef = strings.TrimPrefix(r.PrettyRef, "refs/heads/") // a forge that names a scheduled run's ref in full
+		r.PrettyRef = strings.TrimPrefix(r.PrettyRef, "refs/heads/")
 		if r.PrettyRef != "" && r.CommitSHA != "" {
 			out[r.PrettyRef] = append(out[r.PrettyRef], r)
 		}
@@ -228,14 +211,14 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 	var runs []ActionRun
 	faults := map[string]*RunnerFault{}
 	urls := map[string]string{}
-	hostFrom := st.first // the host's waits count from the earliest failure; st.first stays when the tip was first seen red
+	hostFrom := st.first
 	for _, r := range red {
 		cur, err := cl.ActionRunNumber(ctx, f, repo, r.Index)
 		if err != nil {
-			return // read again next time
+			return
 		}
 		if ciPending(cur.Status) || !sameSHA(cur.CommitSHA, st.sha) {
-			return // a re-run is under way
+			return
 		}
 		if cur.Status != "failure" && cur.Status != "cancelled" {
 			continue
@@ -249,10 +232,10 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 		}
 		stopped := cur.Stopped
 		if !validTime(stopped) {
-			stopped = msTime(st.first) // no stop time: count from when the tip was first seen red
+			stopped = msTime(st.first)
 		}
 		if len(jobs) == 0 && s.now().Sub(stopped) < 5*time.Minute {
-			return // the forge may not list the jobs of a run that just ended yet; read again next time
+			return
 		}
 		hasFault := false
 		for _, j := range jobs {
@@ -260,9 +243,6 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 				continue
 			}
 			if j.Name == advisoriesJob {
-				// A vulnerability is the dependency's to fix, never a runner
-				// fault, and it mustn't hide one in the same run; its task is
-				// checkBaseAdvisories's (WP-1660).
 				continue
 			}
 			log, err := cl.ActionJobLog(ctx, f, repo, j.ID)
@@ -270,7 +250,7 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 				return
 			}
 			if strings.TrimSpace(log) == "" && s.now().Sub(stopped) < 5*time.Minute {
-				return // the forge may not serve the log of a job that just ended yet; read again next time
+				return
 			}
 			if fault := logRunnerFault(log); fault != nil {
 				s.nameFaultHost(ctx, f.ID, fault)
@@ -280,17 +260,17 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 				continue
 			}
 			if derivedFailure(log) || (j.Status == "cancelled" && !stepFailedLog(log)) {
-				continue // a shard's failure, or stopped by another job's
+				continue
 			}
-			st.ended = baseFaultOther // the code's (or a step's own) failure
+			st.ended = baseFaultOther
 			return
 		}
 		if hasFault {
-			runs = append(runs, *cur) // a run without a runner fault (cancelled by a person) is left alone
+			runs = append(runs, *cur)
 		}
 	}
 	if len(faults) == 0 {
-		st.ended = baseFaultOther // only cancelled, by a person or a newer run
+		st.ended = baseFaultOther
 		return
 	}
 	nums := make([]string, len(runs))
@@ -308,7 +288,7 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 		s.log.WarnContext(ctx, "a base branch's push run failed on its runner; tracking it in a task", "repo", repo, "branch", branch, "sha", short(st.sha), "why", why)
 		if owner := s.baseFaultOwner(ctx, f.ID, repo, branch, st.sha); owner != 0 {
 			if _, ok := s.reportRunnerFault(ctx, owner, at, faults, why); ok {
-				st.ended = ended // else filed again next pass
+				st.ended = ended
 			}
 		}
 	}
@@ -329,10 +309,10 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 	}
 	now := s.now()
 	if st.last > 0 && now.Sub(msTime(st.last)) < faultRerunSettle {
-		return // the forge hasn't taken up the re-run yet
+		return
 	}
 	if timeLimitOnly(faults) && st.streak >= faultTimeLimitReruns {
-		st.ended = baseFaultOther // the job's to fix; the doctor's job_time_limit and main_red say so
+		st.ended = baseFaultOther
 		return
 	}
 	if st.n >= faultReportAfter {
@@ -346,18 +326,13 @@ func (s *Service) handleBaseFault(ctx context.Context, cl ForgeActionLogs, f *Fo
 	if wait {
 		return
 	}
-	// The attempt is recorded before the forge is asked: one whose back-off
-	// went unrecorded would be asked for again every pass, the load on a sick
-	// runner the back-off is for. A refused or partial one counts too: the
-	// runs that did restart are followed, the rest are tried again once those
-	// end, and a forge that keeps refusing backs off.
 	seen()
 	prev := *st
 	st.n++
 	st.streak++
 	st.last = now.UnixMilli()
 	if record() != nil {
-		*st = prev // logged; tried again next pass
+		*st = prev
 		return
 	}
 	n, ran := 0, 0
@@ -398,7 +373,7 @@ func (s *Service) baseFaultOwner(ctx context.Context, forgeID int64, repo, branc
 func (s *Service) repoProjectOwner(ctx context.Context, forgeID int64, repo string) int64 {
 	id, err := s.repoProjectOwnerRead(ctx, forgeID, repo)
 	if readFault(err) {
-		s.log.WarnContext(ctx, "read the owner of a repo's project", "repo", repo, "err", err) // 0: nobody this pass
+		s.log.WarnContext(ctx, "read the owner of a repo's project", "repo", repo, "err", err)
 	}
 	return id
 }
@@ -438,7 +413,7 @@ func (s *Service) baseFaults(ctx context.Context, forgeID int64, repo string) ma
 }
 
 func (s *Service) putSetting(ctx context.Context, key, value string) {
-	if err := s.keepSetting(ctx, key, value); err != nil { // logged
+	if err := s.keepSetting(ctx, key, value); err != nil {
 		if readFault(err) {
 			s.log.WarnContext(ctx, "keep setting failed", "err", err)
 		}
@@ -482,8 +457,6 @@ func baseAdvisoriesSeenKey(forgeID int64, repo, branch string) string {
 // it to the next pass. A branch other than the default one (def; "" when
 // the lookup failed) has no advisories job.
 func (s *Service) checkBaseAdvisories(ctx context.Context, cl ForgeActionLogs, f *Forge, repo string, def func() string, fresh map[int64]ActionRun) {
-	// Which branch is the default one is asked only when some branch's newest
-	// finished run failed and wasn't looked at yet: most passes ask nothing.
 	var newest *ActionRun
 	var key string
 	for b, runs := range s.baseRuns(ctx, f.ID, repo, fresh, "push", "schedule", "workflow_dispatch") {
@@ -508,7 +481,7 @@ func (s *Service) checkBaseAdvisories(ctx context.Context, cl ForgeActionLogs, f
 		return
 	}
 	branch := newest.PrettyRef
-	cur, err := cl.ActionRunNumber(ctx, f, repo, newest.Index) // the forge's run id, and whether a re-run is under way
+	cur, err := cl.ActionRunNumber(ctx, f, repo, newest.Index)
 	if err != nil || ciPending(cur.Status) || cur.Status != "failure" {
 		return
 	}
@@ -521,7 +494,7 @@ func (s *Service) checkBaseAdvisories(ctx context.Context, cl ForgeActionLogs, f
 		stopped = newest.Created
 	}
 	if len(jobs) == 0 && s.now().Sub(stopped) < 5*time.Minute {
-		return // the forge may not list the jobs of a run that just ended yet
+		return
 	}
 	if slices.ContainsFunc(jobs, func(j ActionJob) bool { return j.Name == advisoriesJob && j.Status == "failure" }) &&
 		!s.fileAdvisories(ctx, f, repo, branch, cur.CommitSHA, cur) {
@@ -555,7 +528,7 @@ func (s *Service) fileAdvisories(ctx context.Context, f *Forge, repo, branch, sh
 			s.log.WarnContext(ctx, "read the project of a repo with advisories", "repo", repo, "err", err)
 			return false
 		}
-		return true // no project is attached: nothing to file into
+		return true
 	}
 	ownerID := s.baseFaultOwner(ctx, f.ID, repo, branch, sha)
 	noOwner := func() bool {
@@ -563,7 +536,6 @@ func (s *Service) fileAdvisories(ctx context.Context, f *Forge, repo, branch, sh
 		return true
 	}
 	if ownerID == 0 {
-		// Nobody, or the read of who failed: only the first is settled.
 		if _, err := s.repoProjectOwnerRead(ctx, f.ID, repo); readFault(err) {
 			return false
 		}

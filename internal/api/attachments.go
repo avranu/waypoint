@@ -49,7 +49,6 @@ func (s *Server) addAttachment(w http.ResponseWriter, r *http.Request) (any, err
 func (s *Server) uploadAttachment(w http.ResponseWriter, r *http.Request, t core.AttachTarget) (any, error) {
 	r.Body = http.MaxBytesReader(w, r.Body, s.svc.MaxAttachmentBytes()+1<<20)
 	q := r.URL.Query()
-	// ?review=1: a screenshot taken for the person reviewing (wp shot, WP-245).
 	in := core.AttachmentInput{Name: q.Get("name"), Caption: q.Get("caption"), Review: q.Get("review") == "1"}
 	ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if ct == "multipart/form-data" {

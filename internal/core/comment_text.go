@@ -26,7 +26,7 @@ func CommentLine(c Comment, more string) string {
 		who = "@" + c.Author.Username
 	}
 	if c.Agent != "" {
-		who = "agent " + c.Agent // not the person whose token it used
+		who = "agent " + c.Agent
 		if c.Unreviewed {
 			who += ", unreviewed"
 		} else if c.ReviewedBy != nil {

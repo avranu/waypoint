@@ -26,9 +26,9 @@ type Verdict int
 
 // Verdicts.
 const (
-	OK      Verdict = iota // old enough
-	TooNew                 // published within the minimum age
-	Unknown                // its age couldn't be read
+	OK Verdict = iota
+	TooNew
+	Unknown
 )
 
 // Result is one new version's verdict.
@@ -114,8 +114,6 @@ func judge(ctx context.Context, src Sources, r *Result, cutoff time.Time, minAge
 			r.Verdict, r.Detail = TooNew, tooNew(t, minAge)
 			return
 		}
-		// The commit's time says it's old enough; the checksum database
-		// says when the world first saw it, which a backdated commit can't move.
 		limit, at, err := goCutoff()
 		if err != nil {
 			failed("reading Go's checksum database at the cutoff: %v", err)

@@ -1,6 +1,3 @@
-// /go?ref=…&project=…: where a [[wikilink]] leads. Looks the target up and
-// moves on to it; when nothing has that name yet, offers to create it.
-
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'

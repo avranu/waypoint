@@ -1,6 +1,3 @@
-// Usage → Tokens: what the sessions processed, by day and model; how much of
-// the input came from the cache; and what that would cost on the API.
-
 import { useMemo } from 'react'
 import { DataTable, Legend, StackedAreaChart, viz } from '@/components/charts'
 import { Section } from '@/components/ui/misc'

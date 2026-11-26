@@ -12,8 +12,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// wp usage transcript (WP-1466): read back what the transcript archive holds.
-
 var usageTranscriptCmd = &command{
 	name: "transcript", args: "SESSION [--file FILE] [--machine M] [--gen N] [--user NAME]",
 	summary: "list or read a session's archived transcript",
@@ -85,6 +83,7 @@ func (c *cli) streamGet(path string, w io.Writer) error {
 		return fmt.Errorf("can't reach %s: %w", c.server(), err)
 	}
 	defer resp.Body.Close()
+	c.seeServerVersion(resp.Header.Get(serverVersionHeader))
 	if resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		var e struct {

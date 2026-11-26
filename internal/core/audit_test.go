@@ -32,13 +32,10 @@ func TestAuditRecordsDecisions(t *testing.T) {
 	if err := e.s.SetMember(e.ctx, e.admin, p.Key, "sam", "editor"); err != nil {
 		t.Fatal(err)
 	}
-	// Setting the same role again isn't a decision.
 	if err := e.s.SetMember(e.ctx, e.admin, p.Key, "sam", "editor"); err != nil {
 		t.Fatal(err)
 	}
 
-	// Delegation by a person, on create and on edit; an agent's own
-	// bookkeeping isn't a person delegating.
 	i := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Parser", Agent: "claude"})
 	if _, err := e.s.UpdateIssue(e.ctx, sam, i.Key, IssuePatch{Agent: ptr("opus")}); err != nil {
 		t.Fatal(err)
@@ -53,16 +50,13 @@ func TestAuditRecordsDecisions(t *testing.T) {
 	opus, _ := e.s.TokenActor(e.ctx, tok)
 	own := e.issue(opus, IssueInput{Project: p.Key, Title: "Note to self"})
 
-	// Reviewing an agent's text says whose it was.
 	if _, err := e.s.Review(e.ctx, e.admin, ReviewIssue, own.Key, ""); err != nil {
 		t.Fatal(err)
 	}
-	// Reviewing again changes nothing, so records nothing.
 	if _, err := e.s.Review(e.ctx, e.admin, ReviewIssue, own.Key, ""); err != nil {
 		t.Fatal(err)
 	}
 
-	// Settings: an automation made, then turned off.
 	a, err := e.s.CreateAutomation(e.ctx, e.admin, p.Key, AutomationInput{Name: ptr("Close stale"),
 		Rule: &Rule{Trigger: Trigger{Event: "status_changed", To: "done"}, Actions: []Action{{Type: "comment", Value: "Thanks"}}}})
 	if err != nil {
@@ -102,14 +96,11 @@ func TestAuditRecordsDecisions(t *testing.T) {
 		t.Errorf("issue.delete = %+v", r)
 	}
 
-	// The token is the admin's own, outside any project.
 	all := e.audit(e.admin, AuditQuery{Category: AuditAccess})
 	if !slices.Equal(actions(all), []string{"token.create", "member.set"}) || all.Entries[0].AboutAgent != "anthropic/claude-opus-5-5" {
 		t.Errorf("access = %v %+v", actions(all), all.Entries[0])
 	}
 
-	// An agent filter reaches what's about matching agents: claude covers
-	// the opus identity and the claude delegation; haiku covers nothing.
 	claude := e.audit(e.admin, AuditQuery{Agent: "claude"})
 	if !slices.Equal(actions(claude), []string{"review", "token.create", "undelegate", "delegate", "delegate"}) {
 		t.Errorf("claude = %v", actions(claude))
@@ -144,7 +135,6 @@ func TestAuditVisibilityAndPaging(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Sam sees the shared project and their own token, nothing of Kim's.
 	got := e.audit(sam, AuditQuery{})
 	if !slices.Equal(actions(got), []string{"token.create", "delegate", "member.set"}) {
 		t.Errorf("sam sees %v", actions(got))
@@ -157,12 +147,10 @@ func TestAuditVisibilityAndPaging(t *testing.T) {
 	if _, err := e.s.ListAudit(e.ctx, sam, AuditQuery{Project: q.Key}); err == nil {
 		t.Error("sam read another project's log")
 	}
-	// The admin sees everything.
 	if n := len(e.audit(e.admin, AuditQuery{Limit: 200}).Entries); n != 9 {
 		t.Errorf("admin sees %d entries", n)
 	}
 
-	// Pages continue where they left off, with no repeats.
 	seen := map[int64]bool{}
 	page := e.audit(kim, AuditQuery{Limit: 2})
 	pages := 1
@@ -182,7 +170,6 @@ func TestAuditVisibilityAndPaging(t *testing.T) {
 	if len(seen) != 6 || pages != 3 {
 		t.Errorf("kim paged %d entries in %d pages", len(seen), pages)
 	}
-	// The same with an agent filter, which reads in batches.
 	seen = map[int64]bool{}
 	for before := int64(0); ; {
 		page := e.audit(e.admin, AuditQuery{Agent: "claude", Limit: 2, Before: before})
@@ -193,7 +180,7 @@ func TestAuditVisibilityAndPaging(t *testing.T) {
 			break
 		}
 	}
-	if len(seen) != 6 { // kim's five, and "any" covers claude
+	if len(seen) != 6 {
 		t.Errorf("claude entries = %d", len(seen))
 	}
 
@@ -215,7 +202,6 @@ func TestAuditKnowledgeAndAccess(t *testing.T) {
 	p := e.project(e.admin, "Know", "")
 	agent := agentActor(e.admin, "anthropic/claude-opus-5-5")
 
-	// An agent's proposed design note, approved; its later edit, rejected.
 	prop, err := e.s.CreateDesign(e.ctx, agent, DesignInput{Title: str("Dark mode"), Kind: str("feature"), Body: str("Follow the system."), Project: &p.Key})
 	if err != nil {
 		t.Fatal(err)
@@ -227,7 +213,6 @@ func TestAuditKnowledgeAndAccess(t *testing.T) {
 	if _, err := e.s.ReviewDesign(e.ctx, e.admin, prop.Proposals[0].ID, "reject", "keep the name"); err != nil {
 		t.Fatal(err)
 	}
-	// A glossary entry locked against agents, then deleted by a person.
 	g, err := e.s.CreateGlossary(e.ctx, e.admin, GlossaryInput{Term: str("Board"), Definition: str("Columns."), Project: &p.Key})
 	if err != nil {
 		t.Fatal(err)
@@ -238,7 +223,6 @@ func TestAuditKnowledgeAndAccess(t *testing.T) {
 	if err := e.s.DeleteGlossary(e.ctx, e.admin, g.ID); err != nil {
 		t.Fatal(err)
 	}
-	// The CLI signed in for an agent.
 	d, err := e.s.StartDeviceLogin(e.ctx, "box", "anthropic/claude-code", "198.51.100.1", "wp/test")
 	if err != nil {
 		t.Fatal(err)
@@ -246,7 +230,6 @@ func TestAuditKnowledgeAndAccess(t *testing.T) {
 	if err := e.s.ApproveDeviceLogin(e.ctx, e.admin, d.UserCode); err != nil {
 		t.Fatal(err)
 	}
-	// A token revoked; an invite made and revoked.
 	_, tok, _ := e.s.CreateToken(e.ctx, e.admin, TokenSpec{Name: "ci", ReadOnly: true})
 	if err := e.s.RevokeAPIToken(e.ctx, e.admin, tok.ID); err != nil {
 		t.Fatal(err)

@@ -6,10 +6,6 @@ import (
 	"testing"
 )
 
-// A read that fails is not an answer (WP-1406): each of these breaks the
-// table a check reads, and asks that the outcome be "not now": merge held,
-// gate not posted, nothing marked, so the next look decides.
-
 func (pe *prEnv) breakTable(name string) func() {
 	pe.t.Helper()
 	if _, err := pe.s.db.W.ExecContext(pe.ctx, `ALTER TABLE `+name+` RENAME TO `+name+`_x`); err != nil {
@@ -105,14 +101,11 @@ func TestArmedMergeHoldsOnUnreadableMergePolicy(t *testing.T) {
 	const head = "1111111aaaa"
 	se.pullHook("opened", testPR)
 	se.drain()
-	// What the runs started is done before the checks pass: a late pass
-	// would read them and merge while the table is still there.
 	se.s.Wait()
 	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
 	id := se.pr(5).ID
 	defer se.breakTable("project_repos")()
 	se.poll()
-	// What the poll left doesn't count: maybeAutoMerge must hold it itself.
 	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET armed_note = '', merge_wake_at = NULL WHERE id = ?`, id); err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +160,6 @@ func TestScreenPullErrorMarksNothing(t *testing.T) {
 	if got := se.pr(5); got.Outside {
 		t.Error("a failed read marked the pull request outside")
 	}
-	// Showing text still treats doubt as outside.
 	if !v.outside(se.ctx, se.s.db.R, "stranger") {
 		t.Error("an unreadable login was shown as a person's")
 	}

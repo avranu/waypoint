@@ -10,14 +10,6 @@ import (
 	"time"
 )
 
-// Pushed by itself (WP-843). Commits left only on one machine are how work
-// gets lost track of, so when a session lets go of a task (wp release, a
-// /clear, an exit, or its checkout going quiet for strandedIdle) the
-// machine's wp pushes the committed work of a branch that is the task's own
-// to the forge, and says so here: one line on the task, and the task's
-// stranded_work row names the branch, so wp next sends whoever takes it there.
-// Uncommitted files stay where they are and keep being reported.
-
 // AutoPushInput is what a machine's wp pushed (or failed to push).
 type AutoPushInput struct {
 	// Keys are the tasks the work is for; none: those the branch names.
@@ -121,13 +113,13 @@ func (s *Service) RecordAutoPush(ctx context.Context, actor *Actor, in AutoPushI
 		err := s.write(ctx, actor, func(t *tx) error {
 			i, _, err := s.getIssueFor(ctx, t, actor, key, RoleEditor, false)
 			if errors.Is(err, ErrNotFound) || errors.Is(err, ErrForbidden) {
-				return nil // not a task of theirs: nobody to tell
+				return nil
 			}
 			if err != nil {
 				return err
 			}
 			if seen[i.ID] || i.Closed() {
-				return nil // already told, or finished: nobody to tell
+				return nil
 			}
 			seen[i.ID] = true
 			told, err := s.recordPush(ctx, t, actor, i, in)
@@ -153,9 +145,6 @@ func (s *Service) recordPush(ctx context.Context, t *tx, actor *Actor, i *Issue,
 		ORDER BY at DESC LIMIT 1`, i.ID, in.Machine, in.Top, now-strandedShowDays*24*time.Hour.Milliseconds()).Scan(&id, &head, &pushErr)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		// Released, or quiet without a session ending: the row wp next reads.
-		// It names no session, so a session starting in the same terminal
-		// isn't handed a task its agent gave back (strandedHere).
 		why := cmp(in.Why, "other")
 		if _, err := t.ExecContext(ctx, `INSERT INTO stranded_work(issue_id, agent, machine, top, branch, unpushed, why, at, pushed, pushed_head, push_error)
 			VALUES (?,?,?,?,?,?,?,?,?,?,?)`, i.ID, actor.Agent, in.Machine, in.Top, in.Branch, in.Commits, why, now,
@@ -166,10 +155,8 @@ func (s *Service) recordPush(ctx context.Context, t *tx, actor *Actor, i *Issue,
 		return false, err
 	default:
 		if in.Head != "" && head == in.Head && (pushErr == "") == (in.Error == "") {
-			return false, nil // told already
+			return false, nil
 		}
-		// pushed keeps the branch an earlier push went to; push_error says
-		// the latest commits didn't follow (ResumeText reads it first).
 		if _, err := t.ExecContext(ctx, `UPDATE stranded_work SET pushed = coalesce(nullif(?, ''), pushed), pushed_head = ?, push_error = ?,
 			unpushed = coalesce(nullif(?, 0), unpushed) WHERE id = ?`,
 			pushedBranch(in), in.Head, in.Error, in.Commits, id); err != nil {

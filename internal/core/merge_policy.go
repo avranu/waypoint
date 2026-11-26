@@ -1,24 +1,5 @@
 package core
 
-// Merge automatically (WP-133, ADR2 §3). Each attached repo has a merge
-// policy. With Merge automatically on, Waypoint arms every open pull request
-// it sees for merge when ready, except drafts (armed when they leave draft),
-// forks, release PRs and ones labelled do-not-merge or wip; a person taking
-// it off sticks. Pull requests open before the setting existed are armed at
-// their next push, or when a person turns the setting on, not on the deploy.
-// The setting can be narrowed to some base branches (WP-1041): the default
-// branch, every branch but the default, or branches matching globs (a repo
-// whose release branches merge by themselves while production stays by
-// hand). An agent's arm (wp ship) follows the same scope. Every armed merge
-// (however it was armed) also waits for
-// the repo's required checks, and for reviews to settle: each expected
-// reviewer posted on the head (or the review wait passed since the push),
-// and then nothing new was posted for the quiet period.
-//
-// A repo attached to several projects takes the strictest of their
-// policies: on only if every project has it on, every project's required
-// checks and reviewers, the longest waits.
-
 import (
 	"context"
 	"database/sql"
@@ -41,9 +22,9 @@ const mergeSettingName = "Merge automatically (repo setting)"
 
 // Merge policy limits and defaults.
 const (
-	defaultReviewWait = 30      // minutes
-	defaultQuiet      = 10      // minutes
-	maxPolicyMinutes  = 24 * 60 // a day
+	defaultReviewWait = 30
+	defaultQuiet      = 10
+	maxPolicyMinutes  = 24 * 60
 	maxPolicyEntries  = 20
 )
 
@@ -69,17 +50,15 @@ type MergePolicy struct {
 	// ExternalReviewers are bots outside Waypoint whose review is expected
 	// on each head: forge logins, or status contexts (with a "/").
 	ExternalReviewers []string `json:"external_reviewers"`
-	// into is the base scope of every project attaching the repo, when
-	// several do: a base must suit them all.
-	into []baseScope
+	into              []baseScope
 }
 
 // Which base branches Merge automatically arms pull requests into.
 const (
 	IntoAny     = "any"
-	IntoDefault = "default" // the repo's default branch
-	IntoOthers  = "others"  // every branch but the default
-	IntoMatch   = "match"   // branches matching AutoMergeBases
+	IntoDefault = "default"
+	IntoOthers  = "others"
+	IntoMatch   = "match"
 )
 
 // baseScope is one project's base branch scope.
@@ -372,7 +351,6 @@ func (s *Service) SetRepoMergePolicy(ctx context.Context, actor *Actor, projectR
 		}
 	}
 	if scopeAt >= 0 {
-		// Name the globs being set; with none given here the stored ones apply.
 		var bases []string
 		if in.AutoMergeBases != nil {
 			bases, _ = cleanPolicyList(*in.AutoMergeBases, "branch patterns", true)
@@ -404,8 +382,6 @@ func (s *Service) SetRepoMergePolicy(ctx context.Context, actor *Actor, projectR
 			nowOn = *in.AutoMerge
 		}
 		if nowOn && (!wasOn || in.AutoMergeInto != nil || in.AutoMergeBases != nil) {
-			// A person turning it on, or choosing its branches, means the
-			// pull requests open since before it too.
 			if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET arm_declined = 0 WHERE arm_declined = 2 AND forge_id = ? AND repo = ? COLLATE NOCASE`, forgeID, repo); err != nil {
 				return err
 			}
@@ -443,8 +419,6 @@ func (s *Service) applyMergePolicy(ctx context.Context, forgeID int64, repo stri
 	}
 }
 
-// ---- arming by the setting ----
-
 // autoArmSkip says why Merge automatically leaves pr alone, or "", its
 // base branch aside (autoMergeBaseSkip).
 func autoArmSkip(pr *PullRequest, pol MergePolicy) string {
@@ -454,7 +428,6 @@ func autoArmSkip(pr *PullRequest, pol MergePolicy) string {
 	case pr.State != "open":
 		return "a " + pr.State + " pull request"
 	case pr.headRepo == "":
-		// As the runner does: a head the forge didn't place may be a fork's.
 		return "its source repository isn't known (it may be a fork)"
 	case !strings.EqualFold(pr.headRepo, pr.Repo):
 		return "from a fork (" + pr.headRepo + ")"
@@ -495,15 +468,12 @@ func (s *Service) autoArm(ctx context.Context, prID int64) bool {
 	mine := pr.ArmedAt != nil && pr.ArmedAgent == mergeSettingAgent
 	switch {
 	case mine && why != "" && pr.State == "open":
-		// A draft stays armed: readiness waits for it to leave draft.
 		s.disarmOutOfScope(ctx, pr, why)
 		return false
 	case scopedArm(pr) && baseWhy != "":
 		s.disarmOutOfScope(ctx, pr, baseWhy)
 		return false
 	case !known:
-		// Can't tell whether its base is in scope: arm nothing new; an
-		// armed merge asks the forge again before it merges.
 		return pr.ArmedAt != nil
 	case pr.ArmedAt == nil && why == "" && baseWhy == "" && pr.armDeclined == 0:
 		return s.armBySetting(ctx, pr)
@@ -516,7 +486,7 @@ func (s *Service) armBySetting(ctx context.Context, pr *PullRequest) bool {
 	err := s.write(ctx, SystemActor(), func(t *tx) error {
 		projectID, err := s.attachedProject(ctx, t, pr.ForgeID, pr.Repo)
 		if err != nil {
-			return err // nothing is armed on a project that couldn't be read
+			return err
 		}
 		res, err := t.ExecContext(ctx, `UPDATE pull_requests SET armed_at = ?, armed_by = NULL, armed_agent = ?, armed_style = '', armed_note = ''
 			WHERE id = ? AND armed_at IS NULL AND arm_declined = 0 AND state = 'open'`, s.nowMS(), mergeSettingAgent, pr.ID)
@@ -524,7 +494,7 @@ func (s *Service) armBySetting(ctx context.Context, pr *PullRequest) bool {
 			return err
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			return nil // armed or disarmed meanwhile
+			return nil
 		}
 		armed = true
 		t.audit(AuditEntry{Action: "pr.arm", Category: AuditApproval, ProjectID: projectID, TargetType: "pr", TargetID: pr.ID,
@@ -578,8 +548,6 @@ func (s *Service) disarmOutOfScope(ctx context.Context, pr *PullRequest, why str
 	}
 }
 
-// ---- what an armed merge waits for ----
-
 // requiredChecksReasons says which of the policy's required checks haven't
 // passed on the head.
 func requiredChecksReasons(pol MergePolicy, checks []PRCheck, sha string) []string {
@@ -610,8 +578,8 @@ func (s *Service) settleWaits(ctx context.Context, pr *PullRequest, pol MergePol
 	}
 	if pol.ReviewWaitMinutes > 0 {
 		since := pr.UpdatedAt
-		if pr.headAt != nil {
-			since = *pr.headAt
+		if t := pr.contentSince(); t != nil {
+			since = *t
 		}
 		deadline := since.Add(time.Duration(pol.ReviewWaitMinutes) * time.Minute)
 		if now.Before(deadline) {
@@ -677,10 +645,16 @@ func (s *Service) reviewersMissing(ctx context.Context, pr *PullRequest, pol Mer
 			}
 			continue
 		}
+		// On a head that carried an earlier review (WP-1808), a post on the
+		// head whose diff it has, or on any head that carried from that one,
+		// counts; a post on another head (a late review of an older diff)
+		// does not, however recent.
 		var n int
 		if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM pr_events WHERE pr_id = ? AND actor = ? COLLATE NOCASE
-			AND kind IN ('commented','reviewed','approved','changes_requested') AND (sha = ? OR (sha = '' AND created_at >= ?))`,
-			pr.ID, who, pr.HeadSHA, since.UnixMilli()).Scan(&n); err != nil {
+			AND kind IN ('commented','reviewed','approved','changes_requested') AND (sha IN (?, ?) OR (sha = '' AND created_at >= ?)
+				OR (? AND sha IN (SELECT head_sha FROM reviewed_heads WHERE pr_id = ? AND carried = 1 AND content_sha = ?)))`,
+			pr.ID, who, pr.HeadSHA, pr.contentHeadSHA(), since.UnixMilli(),
+			pr.contentHeadSHA() != pr.HeadSHA, pr.ID, pr.contentHeadSHA()).Scan(&n); err != nil {
 			return nil, err
 		}
 		if n == 0 {
@@ -749,7 +723,7 @@ func (s *Service) lastPosted(ctx context.Context, pr *PullRequest) (time.Time, s
 		switch {
 		case kind != "commented":
 			what = "review by " + who
-		case strings.HasPrefix(ext, "rc"): // GitHub's comments on the diff
+		case strings.HasPrefix(ext, "rc"):
 			what = "review comment by " + who
 		default:
 			what = "comment by " + who

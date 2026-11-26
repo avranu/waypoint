@@ -167,7 +167,6 @@ func Plan(h Host, plant, hostShm string) Targets {
 			t.Dial = append(t.Dial, joinHostPort(a, p))
 		}
 	}
-	// Past the broker, straight to the internet.
 	t.Dial = append(t.Dial, "1.1.1.1:443", "8.8.8.8:53", "[2606:4700:4700::1111]:443")
 	return t
 }
@@ -432,8 +431,6 @@ func exists(p string) bool {
 	}
 	if fi.IsDir() {
 		ents, err := os.ReadDir(p)
-		// A directory the runner can't list still holds something worth
-		// hiding (/root).
 		return err != nil || len(ents) > 0
 	}
 	return true

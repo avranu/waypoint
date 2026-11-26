@@ -50,7 +50,6 @@ const srv = http.createServer((req, res) => {
       );
     };
     const url = req.url;
-    // A fake Ollama, its own API: the models pulled.
     if (url === "/api/tags")
       return send(200, {
         models: [
@@ -69,7 +68,6 @@ const srv = http.createServer((req, res) => {
     if (url === "/v1/chat/completions") {
       const body = JSON.parse(raw);
       seen.llm.push(body.model);
-      // The verifier (WP-D14) checks the finding against the code: keeps it.
       if (
         JSON.stringify(body.messages).includes(
           "You check findings a code reviewer is about to post",
@@ -145,7 +143,6 @@ const srv = http.createServer((req, res) => {
       seen.reactions.push(`${req.method} ${raw}`);
       return req.method === "POST" ? send(201, { id: 9 }) : send(204);
     }
-    // The file at the head, for the verifier; review rules and the rest 404.
     if (rest.startsWith("contents/app/login.go"))
       return send(
         200,
@@ -188,7 +185,6 @@ async function run(width) {
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(base + "/");
 
-  // Admin → AI: the review task gets a model and two fallbacks.
   const providers = await api("GET", "/ai/providers");
   let provider = providers.find((p) => p.name === "Fake models");
   if (!provider)
@@ -203,10 +199,8 @@ async function run(width) {
     fallbacks: [],
   });
   await page.goto(`${base}/admin?tab=ai`);
-  // Coding agents on the viewer's runners: none connected here, so every CLI
-  // says so, and Connect a computer shows the command.
   await page.getByText("Coding agents on your runners").waitFor();
-  await page.getByTestId("coding-agents").waitFor(); // after the runners load
+  await page.getByTestId("coding-agents").waitFor();
   const agents = page.getByTestId("coding-agents");
   const nLi = await agents.locator("li").count();
   const states = await agents
@@ -220,7 +214,6 @@ async function run(width) {
   await page.getByText("Connect a runner").waitFor();
   await shot("admin-ai-agents");
   await overflow("admin ai");
-  // A task chain can't use a runner: it has no owner.
   const refused = await page.request.fetch(`${base}/api/v1/ai/tasks/review`, {
     method: "PUT",
     headers: { "X-Waypoint-Client": "web" },
@@ -261,8 +254,6 @@ async function run(width) {
   );
   await row.getByRole("button", { name: "Try earlier" }).last().click();
   await page.waitForTimeout(300);
-  // An Ollama provider: a pasted /v1 is its OpenAI API, so the server root
-  // is kept; Test connection lists its models.
   await page.getByRole("button", { name: "Add provider" }).click();
   const pdlg = page.getByRole("dialog");
   await pdlg.getByRole("combobox", { name: "Kind" }).click();
@@ -285,9 +276,6 @@ async function run(width) {
     (p) => p.name === `Ollama ${tag}`,
   );
   await api("DELETE", `/ai/providers/${ollama.id}`);
-  // A verifier checks findings before they are posted. Review arms without
-  // it are drawn, and some of its drops are posted anyway, to measure it
-  // (WP-363, WP-365): not here.
   {
     const { DatabaseSync } = await import("node:sqlite");
     const db = new DatabaseSync(`${process.env.DIR}/wp.db`);
@@ -295,7 +283,6 @@ async function run(width) {
     db.prepare(
       "INSERT INTO server_settings(key, value) VALUES ('review_drop_post', '0') ON CONFLICT(key) DO UPDATE SET value = '0'",
     ).run();
-    // Every review verifies: both verified review arms pinned on (WP-365).
     db.prepare(
       "INSERT INTO server_settings(key, value) VALUES ('review_arm_pins', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
     ).run(JSON.stringify({ "diff/verify": "on", "diff+files/verify": "on" }));
@@ -316,7 +303,6 @@ async function run(width) {
   await shot("admin-ai");
   await overflow("admin ai");
 
-  // A project, a forge and a repo: the PR rules come with the project.
   const key = `B${width}`;
   await api("POST", "/projects", { name: `Bots ${tag}`, key });
   const forge = await api("POST", "/forges", {
@@ -331,12 +317,10 @@ async function run(width) {
     repo: `me/app${tag}`,
     sync_issues: false,
   });
-  // Their forge login is a Waypoint person here: text from anyone else waits for a person (WP-281).
   await api("PUT", `/forges/${forge.id}/people`, {
     people: [{ login: "sam", user: "robin" }],
   });
 
-  // A bot account's token shows as set, never its value.
   await api("PATCH", `/forges/${forge.id}`, { bot_token: "bot-tok" });
   await page.goto(`${base}/admin?tab=forges`);
   ok(
@@ -385,7 +369,6 @@ async function run(width) {
     !(await page.getByRole("button", { name: "Only if…" }).isVisible()),
     `${tag} no issue condition on a pull request rule`,
   );
-  // More conditions come as chips (WP-D14 phase 5).
   {
     const ed = page.getByRole("dialog");
     await ed.getByRole("button", { name: "More conditions…" }).click();
@@ -404,14 +387,11 @@ async function run(width) {
   await overflow("editor");
   await page.getByRole("button", { name: "Cancel" }).click();
 
-  // Copy and edit a ready-made rule: the editor opens prefilled.
   await page
     .locator("div.rounded-xl", { hasText: "Security review of pull requests" })
     .getByRole("button", { name: "Copy and edit" })
     .click();
   const dlg = page.getByRole("dialog");
-  // The editor fills its fields just after it opens; give a slow CI runner
-  // a moment before reading them.
   const filled = async (label, test) => {
     const field = dlg.getByLabel(label);
     for (let i = 0; i < 50; i++) {
@@ -434,16 +414,12 @@ async function run(width) {
   );
   await dlg.getByRole("button", { name: /Use other models/ }).click();
   await page.getByRole("option", { name: "fake/nemotron-3-ultra" }).click();
-  // A coding agent on the owner's runner joins the chain (WP-6); with no
-  // runner connected the editor says so.
   await dlg
     .getByRole("button", { name: "Add a coding agent on my runner" })
     .first()
     .click();
   await page.getByRole("menuitem", { name: "Claude Code" }).click();
   await dlg.getByLabel("Model of Claude Code").fill("sonnet");
-  // Earlier suites may have connected a runner; the note shows only when
-  // none of the viewer's online runners has Claude Code signed in.
   const claudeReady = (await api("GET", "/runners")).some(
     (r) =>
       r.online &&
@@ -475,10 +451,8 @@ async function run(width) {
     `${tag} the copy saved the coding agent on a runner`,
   );
 
-  // Only one review rule here, so the fake sees one review.
   await api("DELETE", `/automations/${copy.id}`);
 
-  // Integrations: the Bots switch.
   await page.goto(`${base}/p/${key}/settings?tab=integrations`);
   const sw = page.getByRole("switch", { name: /Bots on this repo/ });
   await sw.waitFor();
@@ -489,8 +463,6 @@ async function run(width) {
   await shot("integrations");
   await overflow("integrations");
 
-  // Review arms without the verifier are drawn to measure it; this suite
-  // needs every run verified, so the verified arms are pinned on.
   {
     const db = new DatabaseSync(`${process.env.DIR}/wp.db`);
     db.exec("PRAGMA busy_timeout = 5000");
@@ -499,7 +471,6 @@ async function run(width) {
     ).run(JSON.stringify({ "diff/verify": "on", "diff+files/verify": "on" }));
     db.close();
   }
-  // A pull request opens: reviewed by the fallback, posted to the fake.
   const before = seen.reviews.length;
   const payload = JSON.stringify({
     action: "opened",
@@ -574,13 +545,11 @@ async function run(width) {
   ok(true, `${tag} the model log shows the rate-limited first model`);
   await shot("bots");
   await overflow("bots");
-  // Filters: no run failed, so Failed shows the one-line empty state; All brings the run back.
   await page.getByRole("radio", { name: "Failed" }).click();
   await page.getByText("No runs match.").waitFor();
   await page.getByRole("radio", { name: "All" }).click();
   await page.getByText("The nil check is inverted").waitFor();
   ok(true, `${tag} the status filter narrows the runs`);
-  // The rule's name opens its editor.
   await page
     .getByRole("link", { name: "Review pull requests" })
     .first()

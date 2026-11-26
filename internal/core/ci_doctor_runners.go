@@ -1,12 +1,5 @@
 package core
 
-// The runners' health from what they did (WP-838). `wp ci doctor` read a
-// board of what is happening now, so a host that took jobs and finished none
-// or ran them twice as slowly went unnoticed: one project's backend timed out
-// on one runner for three days and only pull requests failing showed it.
-// SweepCIHealth runs the same findings on a clock and tells the admins,
-// so nobody has to go looking.
-
 import (
 	"context"
 	"fmt"
@@ -18,12 +11,12 @@ import (
 )
 
 const (
-	doctorHostHistory = 72 * time.Hour   // how far back a host's runs are compared
-	doctorNoProgress  = 45 * time.Minute // running this long, with nothing ended on the host, is a clog
-	doctorSlowRuns    = 5                // runs per host before hosts are compared
-	doctorSlowFactor  = 1.6              // a host's median this far above the others' is slow
-	doctorSlowMargin  = 60.0             // and by at least this many seconds
-	doctorTimeLimits  = 24 * time.Hour   // how far back a job's time-limit failures count
+	doctorHostHistory = 72 * time.Hour
+	doctorNoProgress  = 45 * time.Minute
+	doctorSlowRuns    = 5
+	doctorSlowFactor  = 1.6
+	doctorSlowMargin  = 60.0
+	doctorTimeLimits  = 24 * time.Hour
 )
 
 // ciHostRun is a job a host ran, as it reported; ended is 0 while it runs,
@@ -35,11 +28,8 @@ type ciHostRun struct {
 	forgeID                  int64
 	host, job                string
 	repo, workflow, name     string
-	started, ended, reported int64 // ms
+	started, ended, reported int64
 }
-
-// ciHostRuns is the jobs started since then, and those still running
-// whenever they started, so a job hung for days is still seen.
 
 func (s *Service) ciHostRuns(ctx context.Context, since time.Time) ([]ciHostRun, error) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT forge_id, host, job, repo, workflow, name, started_at, coalesce(ended_at, 0), reported_at
@@ -267,9 +257,6 @@ func (s *Service) timeLimitFindings(ctx context.Context, now time.Time, show fun
 		}
 	}
 	rows.Close()
-	// show and nameFaultHost query too, so only once the rows are closed: a
-	// query while they are open holds a second reader, and with every reader
-	// held so, none is left for it.
 	var order []string
 	groups := map[string]*seen{}
 	var faults []*RunnerFault
@@ -311,15 +298,13 @@ func (s *Service) timeLimitFindings(ctx context.Context, now time.Time, show fun
 	return out
 }
 
-// ---- telling the admins ----
-
 // NotifyCI is the notification kind of a CI health finding.
 const NotifyCI = "ci"
 
 const (
-	ciNotifiedKey = "ci_notified:"   // server_settings, + a finding's key: when the admins were last told
-	ciNotifyEvery = 6 * time.Hour    // the same trouble is told again this often at most
-	ciHostSilent  = 30 * time.Minute // a host that hasn't reported this long is told about
+	ciNotifiedKey = "ci_notified:"
+	ciNotifyEvery = 6 * time.Hour
+	ciHostSilent  = 30 * time.Minute
 )
 
 // ciNotifyKinds are the findings worth a notification: a CI job or line

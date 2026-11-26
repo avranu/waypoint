@@ -1,5 +1,3 @@
-// Admin → Forges: which attached repo is the agent kit (WP-ADR2 §4).
-
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { q } from '@/lib/queries'

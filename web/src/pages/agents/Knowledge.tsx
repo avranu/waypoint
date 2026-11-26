@@ -1,8 +1,3 @@
-// Agents page, Knowledge tab (WP-D15): how the glossary, pages and design
-// notes are used, and by whom. Words to avoid that crept into text come
-// first, since they're the ones to fix; then what's used most, what agents
-// read lately, and what nobody used in the period.
-
 import { useNavigate } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { BookOpenCheck, TriangleAlert } from 'lucide-react'

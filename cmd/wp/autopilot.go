@@ -10,9 +10,6 @@ import (
 	"time"
 )
 
-// wp autopilot (WP-194, WP-ADR9): turn autopilot on or off per project, set
-// its limits, see what it is doing, and read what agents left in summaries.
-
 var autopilotCmd = &command{
 	name: "autopilot", group: "Tasks", args: "[on|off|set|summaries|reviewed|stop|now …]",
 	summary: "restart finished sessions on the next task (agents read it, people change it)",
@@ -34,6 +31,12 @@ It takes them in wp next's order. Pace limits how often it starts one, in
 each project: --per-hour, --per-day, --spacing, --at-once (tasks under way
 at a time across your sessions, 1 by default), and --hours and --days to
 start them in. Start and now skip the hours, the spacing and --at-once.
+
+With --deferred on (the default), a wp ship from an Opus or Fable agent session
+stops once, before anything is committed or pushed, to list the tasks that
+session filed meanwhile that are open, unblocked and not waiting on a person;
+it does the well-defined ones that belong with the change, or ships as it is
+by running the same wp ship again. A task is offered to a session once.
 
 With --review on, a session is first asked for an adversarial review of its
 change (wp worklog KEY), a minute after it stops; on and off only decide
@@ -90,6 +93,7 @@ type apLimits struct {
 	FiveHourMax  *float64 `json:"five_hour_max,omitempty"`
 	Merge        *string  `json:"merge,omitempty"`
 	GraceSeconds *int     `json:"grace_seconds,omitempty"`
+	Deferred     *bool    `json:"deferred,omitempty"`
 	Review       *bool    `json:"review,omitempty"`
 	ReviewPrompt *string  `json:"review_prompt,omitempty"`
 	ReviewSkip   *string  `json:"review_skip,omitempty"`
@@ -136,7 +140,7 @@ type apStep struct {
 	Reason  string    `json:"reason"`
 	Detail  string    `json:"detail"`
 	DueAt   time.Time `json:"due_at"`
-	Session *struct { // nil: a session of autopilot's own, still starting
+	Session *struct {
 		Title   string `json:"title"`
 		Machine string `json:"machine"`
 	} `json:"session"`
@@ -209,6 +213,9 @@ func (l apLimits) String() string {
 	}
 	if l.ReviewText != nil && strings.TrimSpace(*l.ReviewText) != "" {
 		review += ", own reviewer brief"
+	}
+	if l.Deferred != nil && !*l.Deferred {
+		review += " · deferred off"
 	}
 	return fmt.Sprintf("hourly $%s · week +%s ahead, max %s, 100%% for the last %s · five hours %s · merge %s · grace %ds · review %s",
 		strings.TrimSuffix(f(l.MaxHourlyUSD, ""), ""), f(l.WeekAhead, " pts"), f(l.WeekMax, "%"), f(l.WeekEndHours, " h"), f(l.FiveHourMax, "%"), merge, grace, review)
@@ -403,6 +410,7 @@ func cmdAutopilotSet(c *cli, args []string) error {
 	five := fs.Float64("five-hour", 0, "pause once the five-hour window reaches `PERCENT` (0: off)")
 	merge := fs.String("merge", "", "wait for unmerged PRs: `auto` (only a task building on one), always, never")
 	grace := fs.Int("grace", 0, "`SECONDS` between a finished session and its restart")
+	deferred := fs.String("deferred", "", "`on` or off: wp ship from an Opus or Fable session first lists the ready tasks it filed meanwhile")
 	review := fs.String("review", "", "`on` or off: review a session's task before moving on")
 	reviewPrompt := fs.String("review-prompt", "", "the review's `PROMPT` (\"\" for the default)")
 	reviewSkip := fs.String("review-skip", "", "low-risk changes: `on` skips their review, shadow only records, off reviews all")
@@ -446,6 +454,8 @@ func cmdAutopilotSet(c *cli, args []string) error {
 			lim["merge"] = *merge
 		case "grace":
 			lim["grace_seconds"] = *grace
+		case "deferred":
+			lim["deferred"] = *deferred == "on"
 		case "review":
 			lim["review"] = *review == "on"
 		case "review-prompt":
@@ -486,7 +496,7 @@ func cmdAutopilotSet(c *cli, args []string) error {
 			lim["spend_at_once"] = *spendAtOnce
 		}
 	})
-	for name, v := range map[string]string{"approved": *approved, "planned": *planned, "spend-left": *spendLeft} {
+	for name, v := range map[string]string{"approved": *approved, "planned": *planned, "spend-left": *spendLeft, "deferred": *deferred} {
 		if v != "" && v != "on" && v != "off" {
 			return c.usage("--%s is on or off", name)
 		}
@@ -505,7 +515,7 @@ func cmdAutopilotSet(c *cli, args []string) error {
 		lim["review_text"] = text
 	}
 	if len(lim) == 0 && !*reset {
-		return c.usage("set what? limits (--max-hourly, --week-ahead, --week-max, --week-end, --five-hour, --merge, --merge-wait, --grace, --review, --review-prompt, --review-skip, --review-text-file, --review-model), " +
+		return c.usage("set what? limits (--max-hourly, --week-ahead, --week-max, --week-end, --five-hour, --merge, --merge-wait, --grace, --deferred, --review, --review-prompt, --review-skip, --review-text-file, --review-model), " +
 			"which tasks (--priority, --due-within, --approved, --planned, --query), pace (--per-hour, --per-day, --spacing, --at-once, --hours, --days), " +
 			"the week's end (--defaults --spend-left, --spend-at-once) or --reset")
 	}

@@ -1,8 +1,3 @@
-// The assistant's Usage tab (WP-ADR1): what it costs. Hermes's own
-// analytics over 7, 30 or 90 days: conversations, model calls, tokens and
-// estimated cost, by day and by model; the tools and skills it used; and
-// the side tasks (titles, compression, vision) that call a model too.
-
 import { useMemo, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -34,9 +29,7 @@ function savedPeriod(): Period {
   try {
     const v = localStorage.getItem(PERIOD_KEY)
     if (v === '7' || v === '30' || v === '90') return v
-  } catch {
-    /* storage blocked: use the default */
-  }
+  } catch {}
   return '30'
 }
 
@@ -46,9 +39,7 @@ export function UsageTab({ assistant }: { assistant: Assistant }) {
     setPeriodState(p)
     try {
       localStorage.setItem(PERIOD_KEY, p)
-    } catch {
-      /* not remembered; fine */
-    }
+    } catch {}
   }
   const days = Number(period)
   const up = assistant.state.reachable && !assistant.state.frozen
@@ -221,7 +212,6 @@ function DailySection({ u, days }: { u: UsageReport; days: number }) {
   const labels = data.dates.map((d) => shortDate(d))
   const hasCache = data.cache.some((v) => v > 0)
   const hasCost = data.cost.some((v) => v > 0)
-  // Under a dollar a day, the axis reads in cents (its ticks round to one decimal).
   const cents = Math.max(0, ...data.cost) < 1
   const series: BarSeries[] = [
     { name: 'Input', color: viz.blue, values: data.input },
@@ -282,8 +272,6 @@ function DailySection({ u, days }: { u: UsageReport; days: number }) {
 }
 
 function ModelsSection({ u, models }: { u: UsageReport; models?: ModelsReport }) {
-  // The models report has more (provider, cache, last use); the usage
-  // report's list stands in when it failed.
   const rows: ModelRow[] =
     models?.models ??
     (u.by_model ?? []).map((m) => ({

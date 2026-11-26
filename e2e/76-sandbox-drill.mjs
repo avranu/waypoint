@@ -165,9 +165,7 @@ for (const [width, scheme] of looks([
     has: page.getByRole("heading", { name: "Sandbox", exact: true }),
   });
   await sb.waitFor();
-  // 64-sandbox's machines may share the list: look in drillbox's row.
   const row = sb.locator("li", { hasText: "drillbox" });
-  // Once there's a drill, its button sits in the folded details.
   const unfold = async () => {
     const d = row
       .locator("details", {
@@ -193,7 +191,6 @@ for (const [width, scheme] of looks([
     `${tag} no second drill while one waits`,
   );
 
-  // The runner takes it, with a start spec for each of its sessions.
   const take = await page.request.post(`${base}/api/v1/runner/poll`, {
     headers: T,
     data: { runner: runnerId, wait: 0, free: 1, running: [] },

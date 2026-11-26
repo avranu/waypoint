@@ -43,7 +43,7 @@ func resolveRepo(cwd string) string {
 					return repo
 				}
 			}
-			return filepath.Base(d) // a checkout without a usable remote
+			return filepath.Base(d)
 		}
 		if p := filepath.Dir(d); p == d {
 			break

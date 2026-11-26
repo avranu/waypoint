@@ -13,21 +13,15 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// The escape ledger (WP-705, WP-ADR68): every bug task's fix, the change that
-// introduced the bug, how it was found and how long it lived. Runners trace
-// the fixes (the server has no git); the server classifies what found them.
-// Only links from bug tasks count: a fix-worded commit subject is the
-// heuristic this replaces.
-
 const (
 	escapesDueMax    = 60
 	escapesDuePerRep = 15
-	escapesDueSlow   = 5 * time.Second // EscapesDue logs where the time went past this
+	escapesDueSlow   = 5 * time.Second
 	escapeLateMax    = 200
 	escapeRowsMax    = 5000
 	escapeDaysMax    = 3650
-	escapeConfident  = 0.5 // what the medians trust
-	contextWeight    = 0.4 // what a neighbour's blame is worth against the line's own
+	escapeConfident  = 0.5
+	contextWeight    = 0.4
 )
 
 // Where a bug was found.
@@ -38,7 +32,7 @@ const (
 	foundProdLog = "production_log"
 	foundPerson  = "person"
 	foundAudit   = "audit"
-	foundUse     = "use" // an agent ran into it, nothing says how
+	foundUse     = "use"
 )
 
 const issueIsBugSQL = `(i.type = 'bug' OR i.category = 'bugfix')`
@@ -126,14 +120,10 @@ func (s *Service) EscapesDue(ctx context.Context, a *Actor, machine, repo string
 	if limit <= 0 || limit > escapesDueMax {
 		limit = escapesDueMax
 	}
-	// Runs here because the runner's visit is the only regular trigger, and
-	// a link can be added long after its pull request was traced.
 	began := time.Now()
 	var tLate, tPlaces, tDue, tTrace time.Duration
 	var nPlaces, nDue int
 	defer func() {
-		// A slow call once ran past the 60s request limit for days (WP-999)
-		// with nothing saying where the time went.
 		if total := time.Since(began); total > escapesDueSlow {
 			s.log.WarnContext(ctx, "escapes due slow", "total", total.Round(time.Millisecond), "late", tLate.Round(time.Millisecond),
 				"places", tPlaces.Round(time.Millisecond), "due_queries", tDue.Round(time.Millisecond), "may_trace", tTrace.Round(time.Millisecond),
@@ -226,8 +216,6 @@ const escapeRepoSQL = ` AND +p.repo = ? COLLATE NOCASE`
 // pull requests it scanned them all, once per project (WP-999). The CROSS
 // JOINs pin that order. repoSQL is fixed text.
 func escapesDueSQL(repoSQL string) string {
-	// The ranking sits outside the grouping: with the window over the join
-	// itself the planner walked pull_requests in updated order instead.
 	return `SELECT id, repo, number, merge_sha, head_sha, base_ref, commits, filed FROM (
 		SELECT id, repo, number, merge_sha, head_sha, base_ref, commits, filed,
 			ROW_NUMBER() OVER (PARTITION BY lower(repo) ORDER BY at DESC, id DESC) AS rn FROM (
@@ -352,8 +340,6 @@ func (s *Service) RecordFixTrace(ctx context.Context, a *Actor, in FixTraceInput
 		if _, err := t.ExecContext(ctx, `DELETE FROM escapes WHERE pr_id = ?`, in.PR); err != nil {
 			return err
 		}
-		// A proof of another commit is stale (WP-709); one of this commit
-		// still stands and is applied again below.
 		if _, err := t.ExecContext(ctx, `DELETE FROM fix_proofs WHERE pr_id = ? AND fix_sha != ?`, in.PR, in.Commit); err != nil {
 			return err
 		}
@@ -457,8 +443,6 @@ func (s *Service) fillLateEscapes(ctx context.Context, a *Actor) error {
 	if err != nil || len(late) == 0 {
 		return err
 	}
-	// Only the fixes a may trace: the rows land in every project with a bug
-	// task on the fix.
 	var prs []int64
 	seen := map[int64]bool{}
 	for _, m := range late {
@@ -505,8 +489,6 @@ func fillEscapes(ctx context.Context, t *tx, now, pr int64) error {
 		var days any
 		var at int64
 		var intro sql.NullInt64
-		// A fix can close bugs filed at different times; one trace serves them
-		// all, and a change that landed after this bug was filed didn't cause it.
 		err = t.QueryRowContext(ctx, `SELECT merge_sha, intro_pr_id, confidence, at FROM fix_trace_introducers
 			WHERE pr_id = ? AND at <= ? ORDER BY confidence DESC, at DESC, merge_sha LIMIT 1`, m.pr, m.filedAt).Scan(&merge, &intro, &conf, &at)
 		switch {
@@ -917,7 +899,7 @@ func escapeChains(rows []*Escape) (int, [][]string) {
 	var chains [][]string
 	for pr := range next {
 		if blamed[pr] {
-			continue // not the newest end of its chain
+			continue
 		}
 		seen := map[int64]bool{}
 		var keys []string
@@ -937,7 +919,7 @@ func escapeChains(rows []*Escape) (int, [][]string) {
 	if len(chains) > 10 {
 		chains = chains[:10]
 	}
-	return len(next), chains // a fix closing several bugs is still one fix
+	return len(next), chains
 }
 
 // EscapeSummary is the ledger's numbers over the last q.Days days.
@@ -1088,8 +1070,6 @@ func (s *Service) EscapeFilesFor(ctx context.Context, a *Actor, repo string) (*E
 	base := `FROM escapes e JOIN issues i ON i.id = e.issue_id JOIN pull_requests p ON p.id = e.pr_id
 		WHERE e.project_id IN (` + placeholders(len(ids)) + `) AND ` + issueIsBugSQL + ` AND p.repo = ? COLLATE NOCASE`
 	args := append(int64Args(ids), repo)
-	// Total decides when the ledger replaces the keyword count, so a fix only
-	// counts if it says which files it changed.
 	if err := s.db.R.QueryRowContext(ctx, `SELECT COUNT(DISTINCT e.pr_id) `+base+`
 		AND EXISTS (SELECT 1 FROM fix_trace_files tf WHERE tf.pr_id = e.pr_id)`, args...).Scan(&out.Total); err != nil {
 		return nil, err

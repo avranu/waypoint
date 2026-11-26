@@ -6,16 +6,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
-
-// A simulation of the prep policy's allocation (WP-250, WP-ADR104), run on
-// the real arithmetic (fitPrepArms, pBest, prepShares): tasks arrive at
-// simPerDay a day, each with covariates that move the outcome, an arm is
-// drawn from the shares of the estimate as it stood that morning, and the
-// outcome is seen a day later. It answers what the constants cost: how
-// many tasks get an arm that is worse, and how fast the shares follow a
-// change, against a fixed split and a test-then-commit schedule.
 
 // simPerDay is exposed tasks a day: 29 a day were measured over the prep
 // experiment's 16 days (page WP-X19). WP_PREP_SIM_PER_DAY sets another, for
@@ -66,13 +59,18 @@ type simPolicy interface {
 
 type simTask struct {
 	day  int
-	arm  int // 0 none, 1 chat, 2 agent
+	arm  int
 	x    []float64
 	y    float64
 	seen bool
 }
 
 var simArms = []string{prepArmChat, prepArmAgent}
+
+// simLoads is each arm (none, chat, agent) as prepObs.Arm has it: the
+// policies read a task's arm through it, so the arm they fit on is the one
+// played. The rows are shared and only read.
+var simLoads = [][]float64{{0, 0}, {1, 0}, {0, 1}}
 
 // simThompson is the policy as built, with a half-life (0: nothing ages).
 type simThompson struct{ halfLife float64 }
@@ -84,18 +82,14 @@ func (p simThompson) shares(day int, tasks []simTask) []float64 {
 		if !t.seen {
 			continue
 		}
-		load := make([]float64, 2)
-		if t.arm > 0 {
-			load[t.arm-1] = 1
-		}
 		w := 1.0
 		if p.halfLife > 0 {
 			w = prepRecency(float64(day-t.day), p.halfLife)
 		}
-		obs = append(obs, prepObs{Y: t.y, X: t.x, Arm: load, Age: float64(day - t.day), W: w})
+		obs = append(obs, prepObs{Y: t.y, X: t.x, Arm: simLoads[t.arm], Age: float64(day - t.day), W: w})
 	}
 	f := fitPrepArms(simArms, obs, simSpread)
-	return prepShares(f.pBest([][]float64{{0, 0}, {1, 0}, {0, 1}}), nil)
+	return prepShares(f.pBest(simLoads), nil)
 }
 
 // simMix is the policy as built: fits at every half-life, mixed by how well
@@ -103,10 +97,10 @@ func (p simThompson) shares(day int, tasks []simTask) []float64 {
 // day to day here (each morning's fits score that day's tasks once they are
 // seen), which is the same sum prepForecastScore works out afresh.
 type simMix struct {
-	halfLives []float64    // nil: prepHalfLives
-	window    int          // 0: prepForecastDays
-	fits      [][]*prepFit // by day, by half-life
-	score     [][]float64  // by day, by half-life: that day's tasks under that morning's fits
+	halfLives []float64
+	window    int
+	fits      [][]*prepFit
+	score     [][]float64
 }
 
 func (p *simMix) shares(day int, tasks []simTask) []float64 {
@@ -124,11 +118,7 @@ func (p *simMix) shares(day int, tasks []simTask) []float64 {
 		if !t.seen {
 			continue
 		}
-		load := make([]float64, 2)
-		if t.arm > 0 {
-			load[t.arm-1] = 1
-		}
-		obs = append(obs, prepObs{Y: t.y, X: t.x, Arm: load, Age: float64(day - t.day)})
+		obs = append(obs, prepObs{Y: t.y, X: t.x, Arm: simLoads[t.arm], Age: float64(day - t.day)})
 		if t.day == day-1 {
 			yesterday = append(yesterday, &obs[len(obs)-1])
 		}
@@ -164,7 +154,7 @@ func (simFixed) shares(int, []simTask) []float64 { return []float64{1.0 / 3, 1.0
 // everyone, and the test again 30 days after.
 type simCommit struct {
 	testing  bool
-	from     int // the day the test or the choice began
+	from     int
 	choice   int
 	nextTest int
 }
@@ -197,10 +187,10 @@ func (p *simCommit) shares(day int, tasks []simTask) []float64 {
 }
 
 type simResult struct {
-	regret   float64 // mean excess of the outcome over the best arm's, per task
-	worse    float64 // share of tasks given an arm more than 0.05 worse than the best
+	regret   float64
+	worse    float64
 	last     []float64
-	afterAt  int // days after day 60 until the best arm then holds half the tasks (-1: never)
+	afterAt  int
 	shareSum []float64
 }
 
@@ -233,8 +223,6 @@ func simRun(sc simScenario, pol simPolicy, days int, seed uint64) simResult {
 		}
 		for range simPerDay {
 			arm := prepPick(sh, r.float())
-			// Covariates that move the outcome: a project (three, of
-			// different sizes and levels), the text's length, and the day.
 			u := r.float()
 			pb, pc := 0.0, 0.0
 			level := 0.0
@@ -259,11 +247,17 @@ func simRun(sc simScenario, pol simPolicy, days int, seed uint64) simResult {
 	return res
 }
 
+// simMean is the mean of reps runs, each with its own seed, side by side.
 func simMean(sc simScenario, mk func() simPolicy, days, reps int) simResult {
+	runs := make([]simResult, reps)
+	var wg sync.WaitGroup
+	for rep := range reps {
+		wg.Go(func() { runs[rep] = simRun(sc, mk(), days, uint64(1000+rep)) })
+	}
+	wg.Wait()
 	out := simResult{shareSum: make([]float64, 3), last: make([]float64, 3)}
 	after, afterN := 0.0, 0
-	for rep := range reps {
-		r := simRun(sc, mk(), days, uint64(1000+rep))
+	for _, r := range runs {
 		out.regret += r.regret / float64(reps)
 		out.worse += r.worse / float64(reps)
 		for i := range 3 {
@@ -284,40 +278,41 @@ func simMean(sc simScenario, mk func() simPolicy, days, reps int) simResult {
 
 // TestPrepPolicySimulation holds the allocation to what it is for, on a
 // short run of each case: an arm that is worse loses its tasks, one that
-// is better gets them, and a change is followed.
+// is better gets them, and a change is followed. Under the race detector it
+// is one run of each case, not the mean of four: the arithmetic is some
+// hundred times slower there, and four were nearly six minutes of a CI shard
+// (WP-1011). The cases run side by side.
 func TestPrepPolicySimulation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("simulation")
 	}
 	mk := func() simPolicy { return &simMix{} }
-	const reps = 4
-	// Chat worse: it ends with few tasks, and gets far fewer than a fixed
-	// split gives it.
-	worse := simMean(simScenarios[1], mk, 60, reps)
+	reps := 4
+	if raceEnabled {
+		reps = 1
+	}
+	var worse, better, null, drift, fixed simResult
+	var wg sync.WaitGroup
+	wg.Go(func() { worse = simMean(simScenarios[1], mk, 60, reps) })
+	wg.Go(func() { better = simMean(simScenarios[2], mk, 60, reps) })
+	wg.Go(func() { null = simMean(simScenarios[0], mk, 60, reps) })
+	wg.Go(func() { drift = simMean(simScenarios[4], mk, 120, reps) })
+	wg.Go(func() { fixed = simMean(simScenarios[1], func() simPolicy { return simFixed{} }, 60, reps) })
+	wg.Wait()
 	if worse.last[1] > 0.05 || worse.shareSum[1] > 0.12 {
 		t.Errorf("chat 35%% worse: it still has %.2f of new tasks after 60 days and had %.2f of all (a fixed split gives 0.33)", worse.last[1], worse.shareSum[1])
 	}
-	// Agent better: it ends with most tasks.
-	better := simMean(simScenarios[2], mk, 60, reps)
 	if better.last[2] < 0.8 {
 		t.Errorf("agent 26%% better: it has %.2f of new tasks after 60 days", better.last[2])
 	}
-	// Nothing does anything: no arm is starved for good, and none takes all.
-	null := simMean(simScenarios[0], mk, 60, reps)
 	for i, s := range null.shareSum {
 		if s < 0.1 || s > 0.6 {
 			t.Errorf("no arm does anything: arm %d had %.2f of the tasks", i, s)
 		}
 	}
-	// A change is followed: chat, better until day 60 and worse after, is
-	// under a fifth of new tasks 60 days on.
-	drift := simMean(simScenarios[4], mk, 120, reps)
 	if drift.last[1] > 0.2 {
 		t.Errorf("chat worse from day 60: it has %.2f of new tasks at day 120", drift.last[1])
 	}
-	// And the policy costs less than a fixed split or test-then-commit when
-	// an arm is worse.
-	fixed := simMean(simScenarios[1], func() simPolicy { return simFixed{} }, 60, reps)
 	if worse.regret > fixed.regret/2 {
 		t.Errorf("chat 35%% worse: regret %.3f against a fixed split's %.3f", worse.regret, fixed.regret)
 	}
@@ -347,7 +342,6 @@ func TestPrepPolicySimulationTable(t *testing.T) {
 			{"mix 7-240, 28 days", func() simPolicy { return &simMix{halfLives: []float64{7, 14, 30, 60, 120, 240}, window: 28} }},
 		}
 	case "few":
-		// As built against the two designs it replaces, for another rate.
 		pols = append(pols, []named{
 			{"thompson, half-life 60d", func() simPolicy { return simThompson{60} }},
 			{"fixed thirds", func() simPolicy { return simFixed{} }},

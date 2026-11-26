@@ -13,21 +13,12 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Test evidence and statement checks (WP-715). wp testsum keeps each run
-// against the exact tree it tested; wp ship reports the runs on the tree it ships,
-// one row per commit, so a task and its pull request say what was tested
-// without anyone's word for it. The tree comes from the CLI: this is a fact
-// check for readers, never an authority a gate may rely on (WP-477). What an
-// agent says about state ("deployed", "PR #N merged", "applied R-N", "tests
-// pass") is compared with Waypoint's records the same way: a mismatch is a
-// notice in the task's work log, and counted.
-
 // Test evidence outcomes.
 const (
-	EvidencePass  = "pass"  // the runs on this tree passed
-	EvidenceFail  = "fail"  // the newest run of a command on this tree failed
-	EvidenceEmpty = "empty" // runs on this tree ran no test
-	EvidenceNone  = "none"  // no run on this tree
+	EvidencePass  = "pass"
+	EvidenceFail  = "fail"
+	EvidenceEmpty = "empty"
+	EvidenceNone  = "none"
 )
 
 const (
@@ -40,9 +31,9 @@ const (
 	maxEvidenceRuns     = 10
 	maxEvidencePackages = 500
 	maxEvidenceFailures = 20
-	maxEvidenceCommand  = 4000 // the whole command, bar a runaway one (WP-860)
-	maxEvidenceShown    = 80   // of a command, in the one line
-	maxEvidenceHash     = 64   // a sha or tree
+	maxEvidenceCommand  = 4000
+	maxEvidenceShown    = 80
+	maxEvidenceHash     = 64
 	maxStatementText    = 300
 	// testStatementFresh: how long after a ship an agent's "tests pass" is still
 	// about that shipped tree; later it may be about newer work.
@@ -174,7 +165,7 @@ func summarizeEvidence(runs []TestRun, near *TestRunNear, now int64) (string, st
 		return EvidenceNone, noRunLine(near, now)
 	}
 	picked := make([]TestRun, 0, len(latest))
-	var rerun *TestRun // a failure a later run passed over
+	var rerun *TestRun
 	for _, r := range latest {
 		if r.Outcome == EvidenceFail && passedLater(r, latest) {
 			if rerun == nil || r.At > rerun.At {
@@ -246,7 +237,7 @@ func passedLater(f TestRun, latest map[string]TestRun) bool {
 		}
 	}
 	if len(f.Packages) == 0 {
-		return false // nothing to say a later run covers it
+		return false
 	}
 	for _, r := range latest {
 		if r.Outcome != EvidencePass || r.At <= f.At || r.Passed+r.Skipped < f.Passed+f.Failed+f.Skipped || r.Units < f.Units {
@@ -305,7 +296,7 @@ func evidenceLine(outcome string, r TestRun) string {
 		return s
 	}
 	if counts == "" {
-		return "Tests on this tree: " + cmp(units+" passed", "passed") + how // go test's plain output doesn't count tests
+		return "Tests on this tree: " + cmp(units+" passed", "passed") + how
 	}
 	if units != "" {
 		counts += " in " + units
@@ -317,8 +308,6 @@ func noRunLine(near *TestRunNear, now int64) string {
 	if near == nil {
 		return "No test run recorded on this tree"
 	}
-	// FilesAway counts the files that differ between the run's tree and
-	// this one: what changed since it ran.
 	away := "the last ran on another tree"
 	switch {
 	case near.Moved:
@@ -358,7 +347,7 @@ func (s *Service) RecordTestEvidence(ctx context.Context, actor *Actor, projectR
 	if in.Repo == "" || in.SHA == "" || in.Tree == "" || len(in.SHA) > maxEvidenceHash || len(in.Tree) > maxEvidenceHash || len(in.Repo) > 300 {
 		return nil, invalid("repo, sha and tree are required")
 	}
-	capped := int64(0) // runs and bench rows past the caps, counted (WP-1470)
+	capped := int64(0)
 	if len(in.Runs) > maxEvidenceRuns {
 		capped += int64(len(in.Runs) - maxEvidenceRuns)
 		in.Runs = in.Runs[:maxEvidenceRuns]
@@ -398,8 +387,6 @@ func (s *Service) RecordTestEvidence(ctx context.Context, actor *Actor, projectR
 		outcome, line := summarizeEvidence(in.Runs, in.Nearest, now)
 		var issue *Issue
 		if key := strings.TrimSpace(in.Issue); key != "" {
-			// A task this actor can't edit just isn't linked: the role checked
-			// above is for this project, and the task can be in another.
 			if i, _, err := s.getIssueFor(ctx, t, actor, key, RoleEditor, false); err == nil {
 				issue = i
 			}
@@ -480,8 +467,6 @@ func testWords(col string) string {
 // history for doesn't.
 func (s *Service) repoCIRunsTests(ctx context.Context, evidenceID int64, repo string) bool {
 	since := s.now().Add(-ciTestsLookback).UnixMilli()
-	// Only the forges that host the repo for the evidence's project: another
-	// project may have the same owner/name on another forge.
 	const forges = `(SELECT pr.forge_id FROM project_repos pr WHERE pr.repo = ? COLLATE NOCASE
 		AND pr.project_id = (SELECT project_id FROM test_evidence WHERE id = ?))`
 	var one int
@@ -492,7 +477,7 @@ func (s *Service) repoCIRunsTests(ctx context.Context, evidenceID int64, repo st
 		OR EXISTS (SELECT 1 FROM ci_tests t JOIN ci_test_runs r ON r.test_id = t.id WHERE t.repo = ? COLLATE NOCASE AND t.forge_id IN `+forges+` AND r.at >= ?)`,
 		since, repo, repo, evidenceID, repo, repo, evidenceID, since, repo, repo, evidenceID, since).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false // no run of tests there
+		return false
 	}
 	if err != nil {
 		if readFault(err) {
@@ -583,17 +568,13 @@ func (s *Service) testedWorkLog(ctx context.Context, wl *WorkLog, issueID int64)
 	return rows.Err()
 }
 
-// ---- statements ----
-
 type statementScope struct {
 	issue, project int64
 	key            string
 	session        int64
 	agent          string
-	source         string // ship, stop
-	// testsFresh: the newest evidence is about the shipped tree this text
-	// describes (see testStatementFresh).
-	testsFresh bool
+	source         string
+	testsFresh     bool
 }
 
 // StatementMismatch is something said that the records contradict.
@@ -753,7 +734,6 @@ func (s *Service) checkStatements(ctx context.Context, t *tx, sc statementScope,
 			_ = json.Unmarshal([]byte(result), &res)
 			switch {
 			case state == RequestApplied && res.NoChange:
-				// Approved but it altered nothing (WP-948): "applied" isn't true of it.
 				if !c.negative {
 					add(c, fmt.Sprintf("R-%s was approved but changed nothing", c.ref))
 				}
@@ -767,13 +747,11 @@ func (s *Service) checkStatements(ctx context.Context, t *tx, sc statementScope,
 			if err != nil {
 				return nil, err
 			}
-			// No run on this tree says nothing about a run nobody recorded.
 			if e == nil || e.Outcome == EvidencePass || e.Outcome == EvidenceNone || (!sc.testsFresh && now-e.At.UnixMilli() > testStatementFresh.Milliseconds()) {
 				continue
 			}
 			add(c, "Waypoint's record at "+short(e.SHA)+": "+e.Line)
 		case "faster":
-			// Only a timing against a base speaks to "faster"; none says nothing.
 			e, err := s.issueEvidence(ctx, t, sc.issue)
 			if err != nil {
 				return nil, err

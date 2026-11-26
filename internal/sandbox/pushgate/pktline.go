@@ -8,9 +8,6 @@ import (
 	"strconv"
 )
 
-// Git's pkt-line framing: four hex digits give the length of the line,
-// those four included; "0000" is a flush.
-
 const maxPkt = 65520
 
 var errFlush = errors.New("flush")

@@ -54,7 +54,6 @@ async function run(width, scheme) {
   });
   const AG = { ...H, Authorization: `Bearer ${token}` };
 
-  // Robin files three; an agent closes two, Robin closes the third herself.
   const keys = [];
   for (const t of [
     "Agent closes this",
@@ -92,7 +91,6 @@ async function run(width, scheme) {
     `${tag} the agent's close still took effect`,
   );
 
-  // ---- Waiting on you ----
   const waiting = await api("GET", "/waiting");
   ok(waiting.closes >= 2, `${tag} API: ${waiting.closes} closes wait on robin`);
   await page.goto(base + "/inbox");
@@ -107,7 +105,6 @@ async function run(width, scheme) {
   );
   ok(!(await overflow()), `${tag} inbox has no sideways scroll`);
   await shot("inbox");
-  // The row opens Catch up (WP-245); this project's closes are there.
   await page.goto(`${base}/catch-up?project=${key}`);
   await page.getByText(`Agent closes this ${tag}`).waitFor();
   ok(
@@ -116,7 +113,6 @@ async function run(width, scheme) {
   );
   await shot("catch-up");
 
-  // ---- the board: closed cards stay in Done, the agent's carry the chip ----
   await page.goto(`${base}/p/${key}/board`);
   await page.getByText(`Agent closes this ${tag}`).first().waitFor();
   await settle();
@@ -131,7 +127,6 @@ async function run(width, scheme) {
   ok(!(await overflow()), `${tag} board has no sideways scroll`);
   await shot("board");
 
-  // ---- the issue page: who closed it, and Mark reviewed ----
   await page.goto(`${base}/issue/${a1}`);
   const line = page.getByText(/Moved to Done by/);
   await line.waitFor();
@@ -149,8 +144,6 @@ async function run(width, scheme) {
   ok(!(await overflow()), `${tag} issue page has no sideways scroll`);
   await shot("issue-reviewed");
 
-  // ---- the list: review the rest in bulk ----
-  // closed issues show in the list once "done" is on
   await page.goto(`${base}/p/${key}/list?group=none&done=true`);
   const target = page
     .locator("div.group\\/sel")
@@ -180,7 +173,6 @@ async function run(width, scheme) {
   ok(!(await overflow()), `${tag} list has no sideways scroll`);
   await shot("list-reviewed");
 
-  // ---- reopening and an agent's second close ask again ----
   await api("POST", `/issues/${a1}/transition`, { status: "To Do" });
   await call("POST", `/issues/${a1}/transition`, { status: "Done" }, AG);
   ok(

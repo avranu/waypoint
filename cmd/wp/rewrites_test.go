@@ -21,7 +21,6 @@ func TestRewritesText(t *testing.T) {
 	if got != want {
 		t.Errorf("text:\n%s\nwant:\n%s", got, want)
 	}
-	// Information, not a chore: nothing in it asks for the old choice.
 	for _, bad := range []string{"Notice", "tension", "Leave out", "nothing relates"} {
 		if strings.Contains(got, bad) {
 			t.Errorf("text still says %q", bad)
@@ -49,8 +48,6 @@ func TestNoteRewritesPrintsOncePerPair(t *testing.T) {
 	rewriteStub(t, [][]rewrittenTask{{a}, {a}, {a, b}, {a, b}, nil, {a, b}})
 	var out, errb bytes.Buffer
 	c := &cli{out: &out, err: &errb}
-	// A new pair prints it; the same pair again doesn't; a ship that named
-	// nobody makes the pair news again.
 	for i, want := range []int{1, 0, 2, 0, 0, 2} {
 		errb.Reset()
 		c.noteRewrites("WP-1", "")

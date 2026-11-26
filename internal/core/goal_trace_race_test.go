@@ -18,7 +18,6 @@ func TestGoalTracesStalePassLosesNoLink(t *testing.T) {
 	e := newGoalCtxEnv(t)
 	i := e.issue(e.admin, IssueInput{Project: e.p.Key, Title: "Restyle the save button"})
 	e.s.quiesceGoals(t)
-	// The task isn't traced yet, as it is just after it was made.
 	e.exec(`DELETE FROM goal_traces WHERE item_type = 'issue' AND item_id = ?`, i.ID)
 
 	held, release := make(chan struct{}), make(chan struct{})
@@ -29,7 +28,7 @@ func TestGoalTracesStalePassLosesNoLink(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() {
-		e.s.quiesceGoals(t) // no pass reads the hook as it goes
+		e.s.quiesceGoals(t)
 		e.s.goals.beforeStore = nil
 	})
 	stale := make(chan error, 1)
@@ -37,7 +36,7 @@ func TestGoalTracesStalePassLosesNoLink(t *testing.T) {
 		_, err := e.s.storeGoalTraces(context.WithValue(e.ctx, staleGoalPass{}, true))
 		stale <- err
 	}()
-	<-held // it has read the graph with no link, and holds its rows
+	<-held
 
 	e.serve(e.admin, i.Key, e.leaf.ID)
 	direct := make(chan error, 1)
@@ -45,8 +44,6 @@ func TestGoalTracesStalePassLosesNoLink(t *testing.T) {
 		_, err := e.s.RecomputeGoalTraces(e.ctx)
 		direct <- err
 	}()
-	// Unserialized, the direct pass ends here and the stale one writes over
-	// it; serialized, it waits for the stale one, and reads after it.
 	select {
 	case err := <-direct:
 		direct <- err

@@ -13,7 +13,7 @@ func humanThread() []ReviewThread {
 
 func TestResolveAPersonsCommentAfterReplying(t *testing.T) {
 	be := newBabysitEnv(t)
-	be.sg.noResolv = true // Forgejo: Waypoint keeps the resolution
+	be.sg.noResolv = true
 	be.sg.threads = humanThread()
 	pr := be.open()
 	list, err := be.s.ListReviewComments(be.ctx, be.agent, pr.ID)
@@ -21,7 +21,6 @@ func TestResolveAPersonsCommentAfterReplying(t *testing.T) {
 		t.Fatalf("list = %+v, %v", list, err)
 	}
 	ref := list[0].Ref
-	// An agent says what it did first: no note and no reply is refused.
 	if _, err := be.s.ResolveReviewComments(be.ctx, be.agent, ResolveInput{IDs: []string{ref}}); !IsInvalid(err) || !strings.Contains(err.Error(), "say what you did") {
 		t.Fatalf("resolve without a reply: %v", err)
 	}
@@ -42,14 +41,12 @@ func TestResolveAPersonsCommentAfterReplying(t *testing.T) {
 	if !strings.Contains(list[0].ResolvedBy, "(agent)") || !list[0].Dealt {
 		t.Errorf("resolved by %q, dealt %v", list[0].ResolvedBy, list[0].Dealt)
 	}
-	// The forge still shows it open; a later read keeps Waypoint's record.
 	if _, err := be.s.syncReviewComments(be.ctx, pr); err != nil {
 		t.Fatal(err)
 	}
 	if c := be.comment("501"); c.Verdict != VerdictResolved || !c.Dealt {
 		t.Errorf("after a read: %+v", c)
 	}
-	// And it can be taken back.
 	if _, err := be.s.UnresolveReviewComments(be.ctx, be.agent, []string{ref}); err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +124,6 @@ func TestResolvedFindingStopsBlockingTheGateOnForgejo(t *testing.T) {
 	if fs := se.findings(5); fs[0].State != FindingResolved {
 		t.Fatalf("finding = %+v", fs[0])
 	}
-	// The gate reads the forge's thread again: it must not reopen the finding.
 	se.s.checkPR(se.ctx, pr.ID, "test")
 	if fs := se.findings(5); fs[0].State != FindingResolved {
 		t.Fatalf("finding reopened by a read: %+v", fs[0])

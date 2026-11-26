@@ -11,7 +11,7 @@ import (
 // or has no status called In Review.
 func TestPRStatusRulesMigration(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -19,7 +19,6 @@ func TestPRStatusRulesMigration(t *testing.T) {
 	for _, q := range []string{
 		`INSERT INTO projects(id, key, name, created_at, updated_at) VALUES (1, 'AA', 'plain', 0, 0), (2, 'BB', 'own rule', 0, 0), (3, 'CC', 'no review status', 0, 0)`,
 		`INSERT INTO statuses(project_id, name, category) VALUES (1, 'In Review', 'in_progress'), (2, 'in review', 'in_progress'), (3, 'Doing', 'in_progress')`,
-		// A notification on merge doesn't move issues; a switched-off move does.
 		`INSERT INTO automations(project_id, name, enabled, rule, created_at, updated_at) VALUES
 			(1, 'Tell me', 1, '{"trigger":{"event":"pr_merged"},"actions":[{"type":"notify"}]}', 0, 0),
 			(2, 'Mine', 0, '{"trigger":{"event":"pr_merged"},"actions":[{"type":"notify"},{"type":"set_status","status":"Done"}]}', 0, 0)`,

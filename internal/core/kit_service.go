@@ -13,15 +13,10 @@ import (
 	"unicode"
 )
 
-// The agent kit as a service (WP-ADR2 §4): which attached repo is the kit
-// (admins pick it), reading it from the forge at its default branch's head
-// (on a push to it and hourly), what one repo gets, what checkouts report
-// after `wp kit sync`, and rolling a sync out to a person's runners.
-
 const (
-	EvKitUpdated   = "kit.updated"    // the kit was read (or failed to be)
-	EvKitSourceSet = "kit.source_set" // an admin picked the kit repo: read it
-	EvKitReported  = "kit.reported"   // a checkout reported its state
+	EvKitUpdated   = "kit.updated"
+	EvKitSourceSet = "kit.source_set"
+	EvKitReported  = "kit.reported"
 )
 
 // kitRefreshMu keeps two reads of the kit from racing each other.
@@ -66,8 +61,6 @@ func (s *Service) theKit(ctx context.Context, q queryer) (*kitRow, error) {
 	}
 	return k, err
 }
-
-// ---- reading the kit ----
 
 // RefreshKit reads the kit if its default branch moved since the last read
 // (scheduled hourly, and after a push to it).
@@ -193,8 +186,6 @@ func (s *Service) onKitPush(ctx context.Context, e *Event) {
 	}
 	s.goBG(func() { s.RefreshKit(ctx) })
 }
-
-// ---- the kit as people see it ----
 
 // KitInfo is the kit with where it comes from and how its last read went.
 type KitInfo struct {
@@ -325,8 +316,6 @@ func (s *Service) ResolveKit(ctx context.Context, actor *Actor, repo string) (*K
 	out.Commit = k.commit
 	return out, nil
 }
-
-// ---- checkouts ----
 
 // KitReport is what a checkout reports after `wp kit sync`.
 type KitReport struct {
@@ -467,8 +456,6 @@ func (s *Service) ListKitCheckouts(ctx context.Context, actor *Actor) ([]KitChec
 	return out, nil
 }
 
-// ---- rolling out ----
-
 // KitRollout is one runner's part of a roll-out.
 type KitRollout struct {
 	RunnerID int64  `json:"runner_id"`
@@ -532,8 +519,6 @@ func (s *Service) RolloutKit(ctx context.Context, actor *Actor) ([]KitRollout, e
 	}
 	return out, nil
 }
-
-// ---- which repo is the kit ----
 
 // KitSource is the admin's view of the kit's repo, with the repos it could be.
 type KitSource struct {

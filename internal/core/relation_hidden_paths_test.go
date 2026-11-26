@@ -21,7 +21,6 @@ func TestRelateReplacePathNeverTouchesAHiddenTask(t *testing.T) {
 	}
 	x := e.issue(e.admin, IssueInput{Project: a.Key, Title: "in alpha"})
 	y := e.issue(e.admin, IssueInput{Project: b.Key, Title: "secret in beta"})
-	// Waypoint's inferred relation between them, and its evidence.
 	if _, err := e.s.db.W.ExecContext(e.ctx, `INSERT INTO issue_relations(source_id, target_id, kind, created_at, found, basis) VALUES (?, ?, 'relates', 1, ?, 'inferred')`, x.ID, y.ID, rewriteFound); err != nil {
 		t.Fatal(err)
 	}
@@ -76,15 +75,11 @@ func TestNamedRelationPathNeverMakesOrNamesAHiddenTask(t *testing.T) {
 	if rows() != 0 || naming() != 0 {
 		t.Fatalf("an editor's text made %d relations, %d events naming %s, to a task they can't see", rows(), naming(), y.Key)
 	}
-	// Someone who sees both names it (anew: a link is made for a key the
-	// save newly names); the link and its event are made.
 	save(ed, "nothing named yet")
 	save(e.admin, "see "+y.Key)
 	if rows() != 1 || naming() != 1 {
 		t.Fatalf("setup: %d relations, %d events naming %s", rows(), naming(), y.Key)
 	}
-	// The editor stops naming it: the link goes with the text, and the
-	// history gains the removal, naming what the making already named.
 	save(ed, "nothing named")
 	if rows() != 0 {
 		t.Errorf("the link outlived the text: %d relations", rows())

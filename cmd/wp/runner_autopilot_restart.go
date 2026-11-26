@@ -13,36 +13,18 @@ import (
 	"time"
 )
 
-// Restarting instead of clearing (WP-ADR9): /exit the session and start
-// Claude Code again in its pane, with its flags and the prompt as its
-// flags. The new process picks up a new Claude Code version, settings,
-// plugins and MCP servers, and starts with nothing held in memory. It is
-// started without a prompt and given one the way a cleared session is, once
-// it is ready for it: a prompt on the command line would be one plain line,
-// sit in the shell's history and the process list, and have to dodge
-// --remote-control's optional name. It works when Claude Code
-// runs straight under the pane's shell (the shell takes the command line) or
-// is the pane's own process (tmux respawns the pane). Anything else, such as
-// a wrapper script or Claude Code started through node, is left alone and
-// the person is told. The new session runs in its own worktree (WP-ADR57,
-// runner_autopilot_worktree.go).
-
 // relaunch is how a session's process is started again.
 type relaunch struct {
-	respawn bool     // Claude Code is the pane's own process: respawn the pane
-	shell   string   // else the shell it runs under, which takes the command
-	dir     string   // its working directory
-	bin     string   // the claude to run
-	args    []string // its flags, as it is started again
-	env     []string // variables it is started with (env VAR=…, WP-1265)
-	// Where the shell is, and where it must go first (a worktree starts from
-	// the repo's root).
+	respawn        bool
+	shell          string
+	dir            string
+	bin            string
+	args           []string
+	env            []string
 	shellDir, cdTo string
-	// The repo's main checkout ("" when there is none to sweep), whether the
-	// new session gets a worktree, and the worktree the old one leaves.
-	root     string
-	worktree bool
-	ended    string
+	root           string
+	worktree       bool
+	ended          string
 }
 
 // procInfo is what the restart reads about a process.
@@ -62,7 +44,6 @@ var (
 		if err != nil {
 			return p, err
 		}
-		// "pid (comm) state ppid …": comm may hold spaces and parentheses.
 		at := bytes.LastIndexByte(stat, ')')
 		if at < 0 {
 			return p, fmt.Errorf("can't read /proc/%d/stat", pid)
@@ -206,9 +187,7 @@ func (p *runnerProc) restartSession(ctx context.Context, run *jobRun, in autopil
 	if base.Warning != "" {
 		say("%s", base.Warning)
 	}
-	// After /exit, a failure leaves the pane without a session: say so
-	// plainly, so the person starts one.
-	var unshipped chan []string // set once the scan has started
+	var unshipped chan []string
 	ended := func(format string, a ...any) outcome {
 		d := fmt.Sprintf(format, a...)
 		say("ended, but %s", d)
@@ -221,7 +200,6 @@ func (p *runnerProc) restartSession(ctx context.Context, run *jobRun, in autopil
 	}
 	keepPane := false
 	if rl.respawn {
-		// The pane would close with its process: keep it open to respawn.
 		out, _ := runTmux(ctx, socket, nil, "show-options", "-p", "-v", "-t", pane, "remain-on-exit")
 		if keepPane = strings.TrimSpace(out) != "on"; keepPane {
 			if _, err := runTmux(ctx, socket, nil, "set-option", "-p", "-t", pane, "remain-on-exit", "on"); err != nil {
@@ -239,8 +217,6 @@ func (p *runnerProc) restartSession(ctx context.Context, run *jobRun, in autopil
 	if _, err := runTmux(ctx, socket, nil, "send-keys", "-t", pane, "Enter"); err != nil {
 		return failed("%v", err)
 	}
-	// A worktree with commits asks what to do with it. Keep it: the sweep
-	// below is what decides, and it never loses work.
 	var pressed time.Time
 	gone := func() bool {
 		if !pidAlive(s.PID) {
@@ -262,7 +238,6 @@ func (p *runnerProc) restartSession(ctx context.Context, run *jobRun, in autopil
 	if rl.worktree {
 		name := worktreeName(ctx, rl.root, in.Key)
 		if name == "" {
-			// Never start in the person's checkout: stop with the pane free.
 			return ended("no worktree for this session: every name for %s is taken", in.Key)
 		} else {
 			worktree = filepath.Join(rl.root, autopilotWorktrees, name)
@@ -273,11 +248,9 @@ func (p *runnerProc) restartSession(ctx context.Context, run *jobRun, in autopil
 	if rl.root != "" {
 		spare := worktree
 		if !rl.worktree {
-			spare = rl.dir // the new session starts where the old one was
+			spare = rl.dir
 		}
 		base.Kept = p.sweepWorktrees(ctx, run, in, rl, spare)
-		// It can take minutes on a large repository, and the pane is empty
-		// now: the new session starts while it runs.
 		unshipped = make(chan []string, 1)
 		go func() { unshipped <- p.noteUnshipped(ctx, run, in, rl) }()
 	}
@@ -301,7 +274,6 @@ func (p *runnerProc) restartSession(ctx context.Context, run *jobRun, in autopil
 		if !waitUntil(ctx, 10*time.Second, atShell) {
 			return ended("its pane didn't come back to %s to start Claude Code again", rl.shell)
 		}
-		// A leading space keeps the line out of the shell's history.
 		if _, err := runTmux(ctx, socket, nil, "send-keys", "-t", pane, "-l", " "+line); err != nil {
 			return ended("Claude Code couldn't be started again: %v", err)
 		}

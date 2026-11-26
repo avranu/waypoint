@@ -11,21 +11,14 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// A session's own review (WP-1089): when an adversarial-review subagent
-// finishes, the SubagentStop hook reads its report and what it was asked
-// from the subagent's transcript and sends them with the event, and the
-// server keeps them in the work log of the task the session is on. The agent
-// spends nothing on it and needs no command; wp ship then takes the review
-// as the task's.
-
 // ownReviewDescribed: a subagent of another type started to review
 // adversarially says so in its description ("Adversarial review of
 // WP-9"); adversarial alone ("Adversarial test cases") is other work.
 var ownReviewDescribed = lazyre.New(`(?i)\badversarial\b.*\b(review|audit)|\b(review|audit)\b.*\badversarial\b`)
 
 const (
-	ownReviewReportBytes = 48 << 10 // the server keeps 12000 characters of it
-	ownReviewPromptBytes = 16 << 10 // and 4000 of this
+	ownReviewReportBytes = 48 << 10
+	ownReviewPromptBytes = 16 << 10
 )
 
 // subagentMeta is the .meta.json Claude Code writes beside a subagent's
@@ -53,9 +46,6 @@ func ownReview(in hookEventInput, ev *sessionEvent, noPrompts bool) {
 	if transcript != "" {
 		t = readSubagent(transcript)
 	}
-	// The message handed back, else the last one Claude Code gives with the
-	// event; the transcript's last text only without either, since it may
-	// still be flushing or end on a tool call.
 	report := firstNonEmpty(t.handback, in.LastMessage, t.lastText)
 	if report == "" {
 		return
@@ -63,7 +53,7 @@ func ownReview(in hookEventInput, ev *sessionEvent, noPrompts bool) {
 	ev.AgentType = kind
 	ev.AgentModel = t.model
 	ev.AgentReport = truncateUTF8(report, ownReviewReportBytes)
-	if !noPrompts { // the description is prompt text too, written by the agent
+	if !noPrompts {
 		ev.AgentDescription = meta.Description
 		ev.AgentPrompt = truncateUTF8(t.prompt, ownReviewPromptBytes)
 	}
@@ -109,7 +99,7 @@ func readSubagent(path string) subagentRead {
 		raw, rerr := rd.ReadBytes('\n')
 		if len(bytes.TrimSpace(raw)) > 0 && json.Unmarshal(raw, &line) == nil {
 			out = readSubagentLine(out, line.Type, line.Message.Model, line.Message.Content)
-		} // else a corrupt, partial or other-shaped line: skipped
+		}
 		if rerr != nil {
 			return out
 		}

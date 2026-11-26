@@ -42,7 +42,6 @@ func TestUsageCLIAPI(t *testing.T) {
 	if code := adminC.json("GET", "/api/v1/usage/cli?days=30", nil, &r); code != 200 || r.Total.WP != 2 || len(r.Commands) != 1 {
 		t.Fatalf("report: %d %+v", code, r)
 	}
-	// an agent reads its own person's, and no one else's
 	r = core.UsageCLIReport{}
 	if code := agent.json("GET", "/api/v1/usage/cli?days=30", nil, &r); code != 200 || r.Total.WP != 2 {
 		t.Errorf("agent: %d %+v", code, r.Total)

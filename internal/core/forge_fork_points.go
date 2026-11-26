@@ -1,8 +1,5 @@
 package core
 
-// Updates behind the front of a merge queue: a pull request whose head forks
-// from its base at more than one commit (WP-467). See mergeBaseBehindFront.
-
 import (
 	"context"
 	"errors"
@@ -46,7 +43,7 @@ func (c *httpForgeClient) ForkedTwice(ctx context.Context, f *Forge, repo, tip, 
 		}
 		own += len(list)
 	}
-	return own > 0 && own < shown, nil // none listed: the forge didn't answer the question
+	return own > 0 && own < shown, nil
 }
 
 // mergeBaseBehindFront brings an armed pull request behind the front of its
@@ -67,6 +64,8 @@ func (c *httpForgeClient) ForkedTwice(ctx context.Context, f *Forge, repo, tip, 
 // request on the base and the front's queue step needs the queue's lock. So
 // the pull request is judged again under them, on the row as it is then: a
 // round starts under the babysit's lock and ready is marked under the queue's.
+// A pull request whose babysit lock is held has a step running and is passed
+// over; the next pass looks again.
 func (s *Service) mergeBaseBehindFront(ctx context.Context, f *Forge, id int64) {
 	pr := s.mergeBaseCandidate(ctx, id)
 	if pr == nil {
@@ -84,7 +83,11 @@ func (s *Service) mergeBaseBehindFront(ctx context.Context, f *Forge, id int64) 
 	default:
 		return
 	}
-	defer s.babysitLocks.lock(id)()
+	unlockBabysit, free := s.babysitLocks.tryLock(id)
+	if !free {
+		return
+	}
+	defer unlockBabysit()
 	ctx, unlock := s.queueLockCtx(ctx, pr)
 	defer unlock()
 	now := s.mergeBaseCandidate(ctx, id)
@@ -104,7 +107,6 @@ func (s *Service) forkedTwice(ctx context.Context, f *Forge, pr *PullRequest, ti
 	}
 	twice, err := cl.ForkedTwice(ctx, f, pr.Repo, tip, pr.HeadSHA)
 	if err != nil {
-		// A forge that can't say (GitHub, GitLab) or no longer has it is "not forked twice".
 		if readFault(err) && !errors.Is(err, ErrUnsupported) && !isStatus(err, http.StatusNotFound) {
 			s.log.WarnContext(ctx, "tell whether a head forks from its base twice", "repo", pr.Repo, "number", pr.Number, "err", err)
 		}
@@ -133,7 +135,7 @@ func (s *Service) mergeBaseCandidate(ctx context.Context, id int64) *PullRequest
 		}
 	}
 	if s.inCandidate(ctx, pr.ID) {
-		return nil // an update would change the head a candidate tests
+		return nil
 	}
 	return pr
 }

@@ -87,12 +87,10 @@ let api, forge, repoID, prID;
   api = (m, p, d) => call(m, p, d).then((r) => (r.status() === 204 ? null : r.json()));
   await api("POST", "/projects", { name: "Auto", key: KEY });
   forge = await api("POST", "/forges", { kind: "github", name: "Fake GitHub auto", base_url: fake, token: "tok", webhook_secret: SECRET });
-  // Their forge logins are Waypoint people here: text from anyone else waits for a person (WP-281).
   await api("PUT", `/forges/${forge.id}/people`, { people: [{ login: "robin", user: "robin" }] });
   repoID = (await api("POST", `/projects/${KEY}/repos`, { forge_id: forge.id, repo: REPO, sync_issues: false })).id;
   const repos = await api("GET", `/projects/${KEY}/repos`);
   ok(repos[0].auto_merge === true && repos[0].review_wait_minutes === 30 && repos[0].quiet_minutes === 10, `on by default: ${JSON.stringify(repos[0])}`);
-  // The context stays open: api uses its session.
 }
 
 // ---- the switch and the rules, at each width and theme ----
@@ -146,7 +144,6 @@ async function look(width, scheme, edit) {
     await page.getByLabel("Quiet").fill("5");
     await page.getByLabel("Quiet").blur();
 
-    // Which branches: all but the default names it; matching starts from release/**.
     const into = page.getByRole("combobox", { name: "Branches Merge automatically covers" });
     const choose = async (name) => {
       await into.click();
@@ -182,7 +179,6 @@ async function look(width, scheme, edit) {
   await shot("integrations");
   await overflow("integrations");
 
-  // The pull request the setting armed: its sheet says who armed it and what it waits for.
   if (!prID) return ctx.close();
   await page.goto(`${base}/agents?tab=pulls&pr=${prID}`);
   const sheet = page.getByRole("dialog", { name: "Pull request" });
@@ -196,7 +192,6 @@ async function look(width, scheme, edit) {
 
 try {
   await look(1280, "light", true);
-  // A pull request arrives: the setting arms it.
   const body = JSON.stringify({ action: "opened", pull_request: pr, sender: { login: "robin" }, repository: { full_name: REPO, owner: { type: "User" } } });
   const sig = "sha256=" + crypto.createHmac("sha256", SECRET).update(body).digest("hex");
   const r = await fetch(`${base}/api/v1/hooks/forge/${forge.id}`, {
@@ -213,7 +208,6 @@ try {
   ok(!!prID, "the setting armed the new pull request");
   for (const [w, s] of looks([[1280, "light"], [1280, "dark"], [390, "light"], [390, "dark"]])) await look(w, s, false);
 
-  // Off: the setting's own arming comes off.
   await api("PATCH", `/projects/${KEY}/repos/${repoID}`, { auto_merge: false });
   let armed = true;
   for (let i = 0; i < 40 && armed; i++) {
@@ -222,7 +216,6 @@ try {
   }
   ok(!armed, "turning it off disarms what it armed");
 
-  // Matching branches at phone width: the patterns sit under the row.
   await api("PATCH", `/projects/${KEY}/repos/${repoID}`, { auto_merge: true, auto_merge_into: "match", auto_merge_bases: ["release/**"] });
   for (const [w, s] of looks([[390, "light"], [390, "dark"], [1280, "dark"]])) {
     const tag = `${w}/${s} matching`;

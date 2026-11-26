@@ -57,7 +57,6 @@ func TestCodeRiskAndWhy(t *testing.T) {
 	t.Chdir(dir)
 	t.Setenv("WP_CODE_UPLOAD", "off")
 
-	// on main, clean: the default branch, so uploads are eligible
 	if !onDefaultBranch(dir) {
 		t.Error("main with a clean tree should count as the default branch")
 	}
@@ -96,7 +95,6 @@ func TestCodeRiskAndWhy(t *testing.T) {
 		t.Errorf("a missing file should be a usage error: %s", errw)
 	}
 
-	// why: git only without a server
 	out, _, code = runCode(t, "why", "core/merge.go")
 	if code != 0 || !strings.Contains(out, "core/merge.go: 1 recent commit") || !strings.Contains(out, "Add merge") || !strings.Contains(out, "isn't connected") {
 		t.Fatalf("why: code %d\n%s", code, out)

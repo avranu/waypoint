@@ -13,8 +13,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// wp fanout (WP-148).
-
 // fakeClaudeLaunches records each launch: where, WP_TASK, WP_FANOUT,
 // WP_BUDGET_USD, --name and --model (after --bg --settings JSON).
 const fakeClaudeLaunches = `#!/bin/sh
@@ -68,7 +66,7 @@ func TestFanoutRunsPackagesAsTaskSessions(t *testing.T) {
 	var detached [][]string
 	old := backgroundStart
 	t.Cleanup(func() { backgroundStart = old })
-	backgroundStart = func(exe string, args ...string) { detached = append(detached, args) }
+	backgroundStart = func(exe string, args ...string) bool { detached = append(detached, args); return true }
 
 	plan := filepath.Join(t.TempDir(), "plan.toml")
 	if err := os.WriteFile(plan, []byte(`parallel = 2
@@ -113,11 +111,9 @@ title = "Document it"
 	if len(lines) != 2 || lines[0] != wantA || !strings.HasSuffix(lines[1], "|2.00|"+b.Key+" Rename the flags|haiku") {
 		t.Fatalf("launches:\n%s\nwant first %s", launches, wantA)
 	}
-	// Each package session's first prompt is its task, taken for it (WP-1037).
 	if len(*nexts) != 2 || !strings.Contains((*nexts)[0], "started this session for "+a.Key) {
 		t.Errorf("wp next answers: %q", *nexts)
 	}
-	// The text each session is started with is noted as Waypoint's (WP-1370).
 	if got := bodies(); !strings.Contains(got, "started this session for "+a.Key) {
 		t.Errorf("the package's kickoff was not noted as typed by Waypoint:\n%s", got)
 	}
@@ -128,8 +124,6 @@ title = "Document it"
 		t.Errorf("status:\n%s", st)
 	}
 
-	// Package A's session finishes: wp done starts the next package, not
-	// the general queue's next task.
 	t.Setenv("WP_TASK", a.Key)
 	t.Setenv("WP_FANOUT", id)
 	t.Setenv("WP_BUDGET_USD", "6.00")
@@ -142,8 +136,6 @@ title = "Document it"
 		t.Errorf("launches:\n%s", launches)
 	}
 
-	// Package B reached its budget and was told to hand off: its next stop
-	// ends it and reports it, detached.
 	t.Setenv("WP_TASK", b.Key)
 	t.Setenv("WP_BUDGET_USD", "2.00")
 	sid := "bbbbbbbb-1111-2222-3333-444455556666"
@@ -163,7 +155,6 @@ title = "Document it"
 	if len(detached) != 1 || strings.Join(detached[0], " ") != "fanout next "+id+" --ended "+b.Key+" --outcome ended" {
 		t.Fatalf("detached at the end: %v", detached)
 	}
-	// What the detached commands do.
 	s.wp("fanout", "next", id, "--ended", b.Key, "--outcome", "budget", "--spent", "2.4")
 	s.wp("fanout", "next", id, "--ended", b.Key, "--outcome", "ended", "--spent", "2.5")
 	got, err := s.svc.GetFanout(context.Background(), s.me, f.ID)
@@ -174,7 +165,6 @@ title = "Document it"
 		t.Errorf("after: %+v %+v %+v", got.Items[0], got.Items[1], got.Items[2])
 	}
 
-	// Stop: nothing more starts; the running one goes on.
 	t.Setenv("WP_TASK", "")
 	t.Setenv("WP_FANOUT", "")
 	if out := s.wp("fanout", "stop", id); !strings.Contains(out, "nothing more starts") {
@@ -212,7 +202,6 @@ func TestSessionEnvCarriesTheFanout(t *testing.T) {
 	if env != "PATH=/bin WP_TASK=WP-3 WP_FANOUT=4 WP_BUDGET_USD=7.50" {
 		t.Errorf("env = %q", env)
 	}
-	// A session a package's session starts some other way isn't the package.
 	if env := strings.Join(taskLaunch{tasks: []string{"WP-3"}}.sessionEnv([]string{"WP_FANOUT=1", "WP_BUDGET_USD=99"}), " "); env != "WP_TASK=WP-3" {
 		t.Errorf("env = %q", env)
 	}

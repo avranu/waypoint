@@ -7,11 +7,6 @@ import (
 	"time"
 )
 
-// The review step (WP-D14). It queues a bot run; when later steps follow it
-// the run is durable (Rule.isDurable) and the step waits for the bot run to
-// end, so their "only if" can read what the review found:
-// {{.Steps.review.Findings}}, {{.Steps.review.Worst}} …
-
 // reviewWait bounds how long a step waits for its review: three attempts of
 // up to 40 minutes, ten minutes apart, plus time in the queue.
 const reviewWait = 4 * time.Hour
@@ -59,8 +54,6 @@ func reviewStep(c *StepCtx) error {
 		_, err := enqueue()
 		return err
 	}
-	// The bot run this step queued is named by its wait, so a step called
-	// again when the wait ends doesn't queue another.
 	const slot = 0
 	var id int64
 	if w, err := c.S.stepWait(c.Ctx, c.Run.ID, c.ID, c.Iteration, c.slotSeq(slot)); err != nil {
@@ -108,7 +101,7 @@ func (c *StepCtx) setReviewOutputs(id int64) error {
 	case "cancelled":
 		return fmt.Errorf("the review was cancelled")
 	}
-	rows, err := c.S.db.R.QueryContext(c.Ctx, `SELECT severity, placement FROM bot_findings WHERE run_id = ? AND state != 'dropped'`, id)
+	rows, err := c.S.db.R.QueryContext(c.Ctx, runFindingKindsSQL, id)
 	if err != nil {
 		return err
 	}

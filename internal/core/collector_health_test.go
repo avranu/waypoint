@@ -78,7 +78,6 @@ func TestCollectorStalledNotifiesOnce(t *testing.T) {
 	if len(a) != 1 || !strings.Contains(a[0], traces) || !strings.Contains(a[0], "Stalled repos (waiting, oldest): o/r 1 (72h00m).") {
 		t.Fatalf("alerts = %v", a)
 	}
-	// Within the day: nothing more, and stalled_since is kept.
 	since := *h.StalledSince
 	c.setClock(c.clockNow().Add(23 * time.Hour))
 	c.s.CheckCollectorHealth(c.ctx)
@@ -88,7 +87,6 @@ func TestCollectorStalledNotifiesOnce(t *testing.T) {
 	if h := c.health(t, traces); h.StalledSince == nil || !h.StalledSince.Equal(since) {
 		t.Errorf("stalled_since moved: %+v", h)
 	}
-	// A day after the first: again.
 	c.setClock(c.clockNow().Add(2 * time.Hour))
 	c.s.CheckCollectorHealth(c.ctx)
 	if got := c.alerts(t); len(got) != 2 {
@@ -126,8 +124,8 @@ func (c *collectorEnv) traceSha(t *testing.T, pr int64, sha string, ago time.Dur
 // A runner tracing one repo's fixes says nothing about a repo it can't reach.
 func TestCollectorStallIsPerRepo(t *testing.T) {
 	c := newCollectorEnv(t)
-	c.fixIn(t, "o/r", 1, 72*time.Hour)  // waits, in a repo nobody traces
-	c.fixIn(t, "o/r", 2, 100*time.Hour) // the oldest, same repo
+	c.fixIn(t, "o/r", 1, 72*time.Hour)
+	c.fixIn(t, "o/r", 2, 100*time.Hour)
 	c.traceSha(t, c.fixIn(t, "x/y", 3, 72*time.Hour), "fix", time.Hour)
 	c.s.CheckCollectorHealth(c.ctx)
 	h := c.health(t, traces)
@@ -138,7 +136,6 @@ func TestCollectorStallIsPerRepo(t *testing.T) {
 	if len(a) != 1 || !strings.Contains(a[0], "stalled in 1 repo: 2 waiting") || !strings.Contains(a[0], "o/r 2 (100h00m)") || strings.Contains(a[0], "x/y") {
 		t.Fatalf("alerts = %v", a)
 	}
-	// The reading keeps the repos (the event and the log carry them).
 	r, err := c.s.readCollector(c.ctx, collectors[0], c.clockNow())
 	if err != nil {
 		t.Fatal(err)
@@ -170,12 +167,12 @@ func TestCollectorNoFindTraceIsOutput(t *testing.T) {
 func TestCollectorRepoOutputByAgeAndCase(t *testing.T) {
 	c := newCollectorEnv(t)
 	c.fixIn(t, "o/r", 1, 100*time.Hour)
-	c.traceSha(t, c.fixIn(t, "o/r", 2, 100*time.Hour), "fix", 60*time.Hour) // old output: still stalled
+	c.traceSha(t, c.fixIn(t, "o/r", 2, 100*time.Hour), "fix", 60*time.Hour)
 	c.s.CheckCollectorHealth(c.ctx)
 	if h := c.health(t, traces); !h.Stalled {
 		t.Fatalf("old output cleared it: %+v", h)
 	}
-	c.traceSha(t, c.fixIn(t, "O/R", 3, 100*time.Hour), "fix", time.Hour) // fresh, repo named in other case
+	c.traceSha(t, c.fixIn(t, "O/R", 3, 100*time.Hour), "fix", time.Hour)
 	c.s.CheckCollectorHealth(c.ctx)
 	if h := c.health(t, traces); h.Stalled {
 		t.Errorf("fresh output in the repo (other case) didn't clear it: %+v", h)
@@ -233,7 +230,7 @@ func TestCollectorWithRecentOutputIsNotStalled(t *testing.T) {
 	c := newCollectorEnv(t)
 	c.waitingFix(t, 1, 72*time.Hour)
 	other := c.mergedPR(t, 2, c.clockNow().Add(-time.Hour), "x")
-	c.traceAt(t, other, time.Hour) // the collector works, just not on this one
+	c.traceAt(t, other, time.Hour)
 	c.s.CheckCollectorHealth(c.ctx)
 	if h := c.health(t, traces); h.Stalled || h.Waiting != 1 || h.LastOutputAt == nil {
 		t.Errorf("health = %+v", h)
@@ -256,11 +253,10 @@ func TestCollectorWithOldOutputIsStalled(t *testing.T) {
 
 func TestCollectorWithNothingWaitingIsNotStalled(t *testing.T) {
 	c := newCollectorEnv(t)
-	c.s.CheckCollectorHealth(c.ctx) // no output ever, nothing waiting
+	c.s.CheckCollectorHealth(c.ctx)
 	if h := c.health(t, traces); h.Stalled || h.Waiting != 0 {
 		t.Errorf("health = %+v", h)
 	}
-	// Waiting, but only since an hour ago: not yet.
 	c.waitingFix(t, 1, time.Hour)
 	c.s.CheckCollectorHealth(c.ctx)
 	if h := c.health(t, traces); h.Stalled || h.Waiting != 1 {
@@ -278,7 +274,7 @@ func TestCollectorRecoveryClearsAndSaysNothing(t *testing.T) {
 	if len(c.alerts(t)) != 1 {
 		t.Fatal("not told")
 	}
-	c.traceAt(t, pr, 0) // traced: nothing waits, and there is output
+	c.traceAt(t, pr, 0)
 	c.setClock(c.clockNow().Add(time.Hour))
 	c.s.CheckCollectorHealth(c.ctx)
 	if h := c.health(t, traces); h.Stalled || h.StalledSince != nil || h.Waiting != 0 {
@@ -287,7 +283,6 @@ func TestCollectorRecoveryClearsAndSaysNothing(t *testing.T) {
 	if got := c.alerts(t); len(got) != 1 {
 		t.Errorf("recovery sent something: %v", got)
 	}
-	// A new stall is told at once, not after the old day.
 	c.waitingFix(t, 3, 200*time.Hour)
 	c.setClock(c.clockNow().Add(49 * time.Hour))
 	c.s.CheckCollectorHealth(c.ctx)
@@ -457,7 +452,6 @@ func TestCollectorWaitStartsAtLink(t *testing.T) {
 	if a := c.alerts(t); len(a) != 0 {
 		t.Fatalf("alerts = %v", a)
 	}
-	// The link is old too: it has waited since the link was made.
 	c.linkedAt(t, 60*time.Hour)
 	c.s.CheckCollectorHealth(c.ctx)
 	h := c.health(t, traces)

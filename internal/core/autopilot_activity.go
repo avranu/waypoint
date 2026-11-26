@@ -38,7 +38,7 @@ func (s *Service) AutopilotActivity(ctx context.Context, a *Actor, days, offsetM
 	off := int64(offsetMin) * 60_000
 	const dayMS = int64(24 * time.Hour / time.Millisecond)
 	now := s.nowMS()
-	today := (now + off) / dayMS * dayMS // local midnight, as a shifted ms
+	today := (now + off) / dayMS * dayMS
 	first := today - int64(days-1)*dayMS
 	out := &AutopilotActivity{Days: make([]AutopilotDay, 0, 60)}
 	out.Days = out.Days[:min(max(days, 1), 60)]

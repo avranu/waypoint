@@ -338,7 +338,6 @@ func TestLateMinorClosingRoundWhenUnarmed(t *testing.T) {
 	be.setClock(be.clockNow().Add(10 * time.Minute))
 	be.sg.setNotes(carol, PRNote{ID: "602", Kind: "comment", Author: "mirror", At: be.clockNow(),
 		Body: "**coderabbitai[bot]** commented on GitHub:\n\n_⚠️ Potential issue_ | _🟡 Minor_\n\nTrim the name before comparing.\n\n<!-- mirror:comment github 9 -->"})
-	// A runner has the round: a push doesn't withdraw it (WP-1618).
 	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE runner_jobs SET state = 'running' WHERE id = ?`, jobs[0]); err != nil {
 		t.Fatal(err)
 	}
@@ -439,5 +438,28 @@ func TestRoundMarksItsOwnAuditFindings(t *testing.T) {
 	}
 	if todo := be.s.auditTodo(be.ctx, pr.ID); len(todo) != 0 {
 		t.Errorf("still to do: %+v", todo)
+	}
+}
+
+// A babysit whose step is running (its lock is held) is passed over: the
+// stale-babysit job goes on to the next one instead of waiting for the lock.
+func TestWatchdogPassesOverALockedBabysit(t *testing.T) {
+	be, prs, _ := twoBabysits(t)
+	wait := checksWait + " on 7777777"
+	// The first has waited longest, so the job reaches it first.
+	for i, d := range []time.Duration{3 * time.Hour, 2 * time.Hour} {
+		if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE babysits SET state = ?, wait = ?, job_id = NULL, wait_at = ? WHERE pr_id = ? AND ended_at IS NULL`,
+			BabysitWatching, wait, be.s.now().Add(-d).UnixMilli(), prs[i].ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unlock := be.s.babysitLocks.lock(prs[0].ID)
+	defer unlock()
+	within(t, "reviveStaleBabysits", func() { be.s.reviveStaleBabysits(be.ctx) })
+	if _, ok := be.s.staleChecksRead.Load(prs[0].ID); ok {
+		t.Error("the babysit whose step was running was handled")
+	}
+	if _, ok := be.s.staleChecksRead.Load(prs[1].ID); !ok {
+		t.Error("the babysit after the locked one was not handled")
 	}
 }

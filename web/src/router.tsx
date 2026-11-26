@@ -163,7 +163,6 @@ const searchRoute = createRoute({
     mode: s.mode === 'all' || s.mode === 'issues' ? s.mode : undefined,
   }),
   loaderDeps: ({ search }) => ({ q: search.q ?? '', mode: search.mode }),
-  // Issues load before the page shows; everything else fills in after.
   loader: ({ context, deps }) => {
     const text = deps.q.trim()
     if (!text) return
@@ -408,7 +407,6 @@ const timelineRoute = createRoute({
 const reportsRoute = createRoute({
   getParentRoute: () => projectRoute,
   path: '/reports',
-  // Charts load in parallel; start them all on hover without blocking the page.
   loader: ({ context, params }) => {
     const { qc } = context
     const k = params.key
@@ -434,7 +432,6 @@ const projectSettingsRoute = createRoute({
   path: '/settings',
   validateSearch: (s: Record<string, unknown>): { tab?: string; automation?: number } => ({
     tab: typeof s.tab === 'string' ? s.tab : undefined,
-    // An automation to open in its editor (from a bot run).
     automation:
       Number.isInteger(Number(s.automation)) && Number(s.automation) > 0
         ? Number(s.automation)
@@ -508,8 +505,6 @@ const projectPagesRoute = createRoute({
   loader: ({ context, params }) => context.qc.ensureQueryData(pagesQuery({ project: params.key })),
   component: lazyRouteComponent(() => import('@/pages/Pages'), 'ProjectPagesPage'),
 })
-
-// ---- knowledge: glossary, design notes, wikilinks (WP-D10) ----
 
 const projectFilter = (s: Record<string, unknown>): { project?: string } => ({
   project: typeof s.project === 'string' && s.project ? s.project : undefined,
@@ -682,10 +677,8 @@ export function makeRouter(qc: QueryClient) {
   return createRouter({
     routeTree,
     context: { qc },
-    // Hovering or touching a link loads the next page's data.
     defaultPreload: 'intent',
     defaultPreloadDelay: 40,
-    // Freshness is the query cache's job.
     defaultPreloadStaleTime: 0,
     defaultPendingMs: 400,
     defaultErrorComponent: ErrorPage,

@@ -48,7 +48,6 @@ func (be *bsEnv) rerunSettles() {
 func TestRestRerunsItsChecksThenTheAssessor(t *testing.T) {
 	be := newBabysitEnv(t)
 	b := toAssessorOnFailingCheck(t, be)
-	// A question with no reason a person has to settle it reaches nobody.
 	be.finishWith(b.JobID, false, "The test asserts the old order.\n\nQuestion: Should I change the test or the code?")
 	b = be.babysit()
 	r := lastRound(b)
@@ -67,8 +66,6 @@ func TestRestRerunsItsChecksThenTheAssessor(t *testing.T) {
 	if why, _ := be.s.babysitParked(be.ctx, be.pr(7)); !strings.Contains(why, "it tries again at") {
 		t.Errorf("babysitParked = %q", why)
 	}
-	// The rest ends: its checks are re-run, and it waits for their results,
-	// not for a time.
 	retried := len(be.retries())
 	be.pastRest()
 	b = be.babysit()
@@ -80,7 +77,6 @@ func TestRestRerunsItsChecksThenTheAssessor(t *testing.T) {
 	if len(be.retries()) != retried+1 || len(be.jobs()) != 3 {
 		t.Fatalf("before the results: retries %v, jobs %v", be.retries(), be.jobs())
 	}
-	// They fail again: the assessor, at once.
 	be.rerunSettles()
 	b = be.babysit()
 	if len(be.retries()) != retried+1 || len(be.jobs()) != 4 || !lastRound(b).Assessor || b.Rounds[2].Reply == "" {
@@ -93,14 +89,11 @@ func TestRestRerunsItsChecksThenTheAssessor(t *testing.T) {
 			t.Errorf("assessor prompt lacks %q:\n%s", want, in.Prompt)
 		}
 	}
-	// Nothing tells it to decide whatever it finds.
 	for _, bad := range []string{"Make the call yourself", "safest default"} {
 		if strings.Contains(in.Prompt, bad) {
 			t.Errorf("assessor prompt says %q:\n%s", bad, in.Prompt)
 		}
 	}
-	// Its round leaves the same check failing: nothing has changed, so the
-	// rest is twice as long, and the next round is told how long that is.
 	be.finish(b.JobID, false)
 	r = lastRound(be.babysit())
 	if !resting(r) {
@@ -115,7 +108,6 @@ func TestRestRerunsItsChecksThenTheAssessor(t *testing.T) {
 	if len(be.jobs()) != 5 || !strings.Contains(be.jobInput(b.JobID).Prompt, "rested 2 times in a row over the same things") {
 		t.Fatalf("after the second rest: jobs %v\n%s", be.jobs(), be.jobInput(b.JobID).Prompt)
 	}
-	// Now it says a person has to settle it, and why: they are asked.
 	be.finishWith(b.JobID, false, "Question: May the old order go?\nBecause: the task says to keep it and the test can't pass with it.")
 	if b = be.babysit(); b.State != BabysitNeedsPerson || be.parkQuestions() != 1 {
 		t.Fatalf("its question wasn't asked: %s %q, %d questions", b.State, b.Wait, be.parkQuestions())
@@ -130,7 +122,7 @@ func TestRestLength(t *testing.T) {
 	reordered.Checks = []string{"lint", "ci / test"}
 	other := BabysitRound{Parked: "why", RestUntil: time.Now(), Checks: []string{"lint"}}
 	person := BabysitRound{Parked: "why", Checks: same.Checks}
-	worked := BabysitRound{Checks: []string{"lint"}} // a round that didn't park
+	worked := BabysitRound{Checks: []string{"lint"}}
 	cases := []struct {
 		name   string
 		before []BabysitRound
@@ -218,7 +210,7 @@ func TestOldParkRests(t *testing.T) {
 	pr := assessorAsks(t, be, "Should the test change?")
 	q := be.parkRequest(3)
 	b := be.babysit()
-	b.Rounds[2].Because = "" // as written before WP-930
+	b.Rounds[2].Because = ""
 	raw, _ := json.Marshal(b.Rounds)
 	if err := be.s.setBabysit(be.ctx, b, map[string]any{"rounds": string(raw)}); err != nil {
 		t.Fatal(err)
@@ -318,7 +310,7 @@ func TestOldParkKeepsItsAnswer(t *testing.T) {
 	assessorAsks(t, be, "Should the test change?")
 	q := be.parkRequest(3)
 	b := be.babysit()
-	b.Rounds[2].Because = "" // as written before WP-930
+	b.Rounds[2].Because = ""
 	raw, _ := json.Marshal(b.Rounds)
 	if err := be.s.setBabysit(be.ctx, b, map[string]any{"rounds": string(raw)}); err != nil {
 		t.Fatal(err)

@@ -8,9 +8,6 @@ import (
 	"strings"
 )
 
-// Specs (WP-D10): everything an agent needs to know about what people
-// want for a feature, screen or decision, in one answer.
-
 // Spec is a design note with what surrounds it.
 type Spec struct {
 	Topic string      `json:"topic"`
@@ -62,7 +59,6 @@ func (s *Service) GetSpec(ctx context.Context, actor *Actor, topic, project stri
 	}
 	var note *DesignNote
 	var others []DesignRef
-	// A number, or a code (ADR7, APP-ADR7) that names a note.
 	id := int64(0)
 	if n, err := strconv.ParseInt(strings.TrimPrefix(strings.TrimPrefix(topic, "design:"), "#"), 10, 64); err == nil {
 		id = n
@@ -82,7 +78,6 @@ func (s *Service) GetSpec(ctx context.Context, actor *Actor, topic, project stri
 		if err != nil {
 			return nil, err
 		}
-		// Prefer active notes; exact titles already sort first.
 		best := -1
 		for i, m := range matches {
 			if strings.EqualFold(m.Title, topic) && !m.Archived() {
@@ -118,7 +113,6 @@ func (s *Service) GetSpec(ctx context.Context, actor *Actor, topic, project stri
 	if sp.Others == nil {
 		sp.Others = []DesignRef{}
 	}
-	// Sub-notes, two levels down, with their bodies and additions.
 	var walk func(refs []DesignRef, depth int) error
 	walk = func(refs []DesignRef, depth int) error {
 		for _, c := range refs {
@@ -191,7 +185,6 @@ func (s *Service) GetSpec(ctx context.Context, actor *Actor, topic, project stri
 			}
 		}
 	}
-	// PRs and commits on the linked issues.
 	for _, it := range sp.Issues {
 		if len(sp.Changes) >= 10 {
 			break
@@ -279,8 +272,6 @@ func (s *Service) GetSpecOverview(ctx context.Context, actor *Actor, project str
 // DesignNotesFor lists the design notes linked to an issue (either way)
 // that the actor can read, for task briefs.
 func (s *Service) DesignNotesFor(ctx context.Context, actor *Actor, issueID int64) []DesignRef {
-	// A note linked only as in tension with the task is marked so: a
-	// task can't be for a goal it works against.
 	rows, err := s.db.R.QueryContext(ctx, `SELECT CASE WHEN src_type = 'design' THEN src_id ELSE dst_id END AS note, min(rel = 'tension') FROM knowledge_links
 		WHERE (src_type = 'design' AND dst_type = 'issue' AND dst_id = ?) OR (src_type = 'issue' AND src_id = ? AND dst_type = 'design')
 		GROUP BY note ORDER BY min(id)`, issueID, issueID)

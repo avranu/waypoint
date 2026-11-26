@@ -6,9 +6,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// wp usage goal-context: how much of a task's goal chain agents are shown,
-// and what came of each way (WP-1035).
-
 var usageGoalContextCmd = &command{
 	name: "goal-context", args: "",
 	summary: "how much of a task's parent goals agents are shown, and what came of it",

@@ -15,12 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/codeindex"
 )
 
-// After taking a task, wp next fetches and prints the checkout's git state
-// (WP-301): of 306 sessions that took a task in the two weeks to
-// 2026-11-03, 73% ran git fetch, 64% git status and 59% git log of the
-// default branch within their next eight commands, and 28% git worktree
-// list. Printing it saves those turns and the sessions that forgot them.
-
 // fetchTimeout bounds the fetch wp next starts: a hung remote shows as a
 // note, not a stuck command.
 const fetchTimeout = 20 * time.Second
@@ -42,12 +36,11 @@ func startFetch(dir string) func() error {
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "git", "-C", top, "fetch", "--quiet", remote) // #nosec G204 -- fixed subcommand; the remote name comes from git itself
 		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-		cmd.WaitDelay = 2 * time.Second // ssh or credential helpers may hold stderr open past the kill
+		cmd.WaitDelay = 2 * time.Second
 		var errb bytes.Buffer
 		cmd.Stderr = &errb
 		err := cmd.Run()
 		if err == nil {
-			// refresh the cached <remote>/HEAD in case the default branch moved
 			head := exec.CommandContext(ctx, "git", "-C", top, "remote", "set-head", "--auto", remote) // #nosec G204 -- fixed subcommand; the remote name comes from git itself
 			head.Env = cmd.Env
 			head.WaitDelay = cmd.WaitDelay
@@ -85,9 +78,7 @@ func fetchRemote(top string) string {
 	if err != nil {
 		return ""
 	}
-	names := strings.Split(out, "\n") // a name may hold a space
-	// A remote named like an option (a config's [remote "--upload-pack=CMD"])
-	// is no remote git is told about: fetch would read it as one.
+	names := strings.Split(out, "\n")
 	usable := names[:0]
 	for _, n := range names {
 		if n != "" && codeindex.CheckRef(n) == nil {
@@ -112,14 +103,14 @@ func (c *cli) printCheckout(key string, wait func() error) {
 		return
 	}
 	if key == "" {
-		return // no task taken: nothing to report, so don't wait on the fetch
+		return
 	}
 	fetchErr := wait()
 	dir, err := os.Getwd()
 	if err != nil {
 		return
 	}
-	at := c.ownWorktree(dir, key) // WP-200
+	at := c.ownWorktree(dir, key)
 	if text := checkoutReport(at, key, fetchErr); text != "" {
 		c.println()
 		c.print(text)
@@ -127,8 +118,8 @@ func (c *cli) printCheckout(key string, wait func() error) {
 }
 
 const (
-	statusLines = 8 // uncommitted files listed before "+N more"
-	baseCommits = 3 // the default branch's latest commits shown
+	statusLines = 8
+	baseCommits = 3
 )
 
 // checkoutReport is the git state of the work tree at dir for someone about
@@ -180,7 +171,7 @@ func checkoutReport(dir, key string, fetchErr error) string {
 		b.WriteString("  Default branch not found on " + remote + "; comparison with it skipped\n")
 	}
 
-	status, statusErr := gitOutput(top, "status", "--porcelain") // untrimmed: the first line's leading space is its status
+	status, statusErr := gitOutput(top, "status", "--porcelain")
 	if statusErr != nil {
 		b.WriteString("  Uncommitted files unknown: git status failed: " + statusErr.Error() + "\n")
 	} else if strings.TrimSpace(status) != "" {
@@ -213,7 +204,7 @@ func checkoutReport(dir, key string, fetchErr error) string {
 	wts, nwt := worktrees(top)
 	for _, ref := range branchesFor(top, key) {
 		if ref == branch {
-			continue // the first line says so
+			continue
 		}
 		line := "  Already named for " + key + ": " + ref
 		if p := wts[ref]; p != "" {

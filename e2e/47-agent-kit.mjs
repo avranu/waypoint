@@ -107,7 +107,6 @@ let everyRepo = "";
   await api("POST", `/projects/KIT/repos`, { forge_id: forge.id, repo: "kitco/app", sync_issues: false });
   await api("POST", `/projects/KIT/repos`, { forge_id: forge.id, repo: "kitco/secret", sync_issues: false });
 
-  // Admin → Forges: pick the kit repo.
   await page.goto(`${base}/admin?tab=forges`);
   const picker = page.getByLabel("Kit repository");
   await picker.waitFor();
@@ -127,7 +126,6 @@ let everyRepo = "";
   const res = await api("GET", "/kit/resolve?repo=kitco/app");
   ok(res.plugins.map((p) => p.name).join() === "waypoint,demo" && res.notes.length === 1, "kitco/app gets both plugins and the note");
 
-  // Two checkouts report: one current, one behind with drift.
   await api("POST", "/kit/reports", {
     machine: "devhost", path: "/home/robin/projects/app", repo: "kitco/app", kit_commit: HEAD,
     plugins: ["waypoint@agent-kit", "demo@agent-kit"], drift: [], wp_version: "0.12.0",
@@ -168,7 +166,6 @@ for (const [width, scheme] of looks([
   await page.screenshot({ path: `${out}/kit-${width}.png`, fullPage: true });
 
   if (width === 1280) {
-    // Roll out: confirmed first; with no runners the server says so.
     await page.getByRole("button", { name: "Roll out now" }).click();
     await page.getByRole("dialog").getByRole("button", { name: "Roll out" }).click();
     await page.getByText(/you have no runners/).waitFor();

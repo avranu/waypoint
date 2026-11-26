@@ -87,7 +87,7 @@ func FileSuppressions(path string, src []byte) []Suppression {
 		text      string
 	}
 	var comments []comment
-	code := map[int]bool{} // lines with a token that isn't a comment
+	code := map[int]bool{}
 	for {
 		pos, tok, lit := s.Scan()
 		if tok == token.EOF {
@@ -100,7 +100,7 @@ func FileSuppressions(path string, src []byte) []Suppression {
 			continue
 		}
 		if tok == token.SEMICOLON && lit == "\n" {
-			continue // inserted at a line's end, not code
+			continue
 		}
 		code[p.Line] = true
 	}
@@ -115,7 +115,7 @@ func FileSuppressions(path string, src []byte) []Suppression {
 			return ""
 		}
 		l := lines[n-1]
-		if n == c.line { // the comment shares the line: leave it out
+		if n == c.line {
 			first, _, _ := strings.Cut(c.text, "\n")
 			if i := strings.Index(l, first); i >= 0 {
 				l = l[:i] + l[i+len(first):]

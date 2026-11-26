@@ -1,7 +1,3 @@
-// Workflows: the ordered steps an issue moves through (plan → implement →
-// review…), each optionally for a particular agent. Shared ones are
-// available in every project; admins edit those, owners edit their own.
-
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -312,7 +308,6 @@ function StepAgent({
   value: string
   onChange: (v: string) => void
 }) {
-  // Emptying the spec field shouldn't snap it shut mid-edit.
   const [typing, setTyping] = useState(false)
   const v = value.trim().toLowerCase()
   const specific = typing || !RELATIVE.includes(v)

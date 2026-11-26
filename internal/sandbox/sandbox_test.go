@@ -27,16 +27,13 @@ func TestNames(t *testing.T) {
 			t.Errorf("%s doesn't end in its hash", c.got)
 		}
 	}
-	// Slugs that clean the same still differ, by the forge id.
 	if RepoUser("foo-bar/baz", "1/1", 0) == RepoUser("foo/bar-baz", "1/2", 0) {
 		t.Error("two repos share a name")
 	}
-	// A salt changes only the hash.
 	a, b := RepoUser("o/r", "1/1", 0), RepoUser("o/r", "1/1", 1)
 	if a == b || a[:len(a)-6] != b[:len(b)-6] {
 		t.Errorf("salted %s vs %s", a, b)
 	}
-	// Nothing but the prefix and the hash is left of a slug of symbols.
 	if got := RepoUser("__/..", "1/3", 0); !strings.HasPrefix(got, "wpr-") || strings.Contains(got, "--") {
 		t.Errorf("symbol slug: %s", got)
 	}
@@ -60,7 +57,6 @@ func TestSpec(t *testing.T) {
 	if err != nil || len(got.Repos) != 1 || got.Repos[0].Slug != "Robin/waypoint" || got.V != SpecVersion {
 		t.Fatalf("verify: %+v %v", got, err)
 	}
-	// Another key, a changed payload, an expired or future or overlong spec.
 	other, _, _ := ed25519.GenerateKey(nil)
 	if _, err := Verify(other, sd, now); !errors.Is(err, ErrBadSignature) {
 		t.Errorf("other key: %v", err)
@@ -85,7 +81,6 @@ func TestSpec(t *testing.T) {
 	if _, err := Verify(pub, nil, now); err == nil {
 		t.Error("no spec passed")
 	}
-	// Keys round-trip as text.
 	k, err := ParseKey(FormatKey(pub) + "\n")
 	if err != nil || !k.Equal(pub) {
 		t.Errorf("key text: %v", err)
