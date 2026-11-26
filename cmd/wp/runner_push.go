@@ -63,6 +63,10 @@ func (p *runnerProc) pushMoved(ctx context.Context, run *jobRun, work string, en
 		return err
 	}
 	result["commits"], result["files"], result["commit"], result["rebased"] = commits, names, commits[len(commits)-1], true
+	// The check ran before the rebase: its verdict is not on what was pushed.
+	if v, ok := result["pre_push"].(string); ok {
+		result["pre_push"] = "not run on the pushed commits: they were rebased onto the moved branch after it (it had " + v + ")"
+	}
 	if diff, err := p.git(ctx, work, "diff", tip+"..HEAD"); err == nil {
 		result["diff"] = capDiff(diff, maxResultDiff)
 	}

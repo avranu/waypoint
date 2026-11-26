@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +60,28 @@ func TestRoundPushRebasesOntoAMovedBranch(t *testing.T) {
 		if gitOut(t, remote, "cat-file", "-t", "feat:"+f) != "blob" {
 			t.Errorf("%s isn't on the branch", f)
 		}
+	}
+}
+
+// The pre-push check ran before the rebase, so its verdict isn't reported as
+// one on the pushed commits.
+func TestRoundPushRebaseDropsThePrePushVerdict(t *testing.T) {
+	p, remote, job := movedBranchJob(t, "other.txt", "theirs")
+	if err := os.MkdirAll(filepath.Join(remote, ".waypoint"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, prePushFile), []byte("true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitOut(t, remote, "add", "-A")
+	gitOut(t, remote, "commit", "-q", "-m", "Add the check")
+	gitOut(t, remote, "branch", "-f", "feat")
+	job.Permission = "edit_run"
+	run := newRun(time.Minute)
+	o := p.execAgent(context.Background(), run, "agent", job)
+	res, _ := o.Result.(map[string]any)
+	if v, _ := res["pre_push"].(string); o.State != "done" || !strings.HasPrefix(v, "not run on the pushed commits:") || !strings.Contains(v, "(it had passed)") {
+		t.Fatalf("outcome = %+v\n%s", o, run.out.text())
 	}
 }
 
