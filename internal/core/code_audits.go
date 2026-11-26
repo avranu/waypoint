@@ -829,14 +829,14 @@ func oldAuditRunnerWhy(runners []*Runner, cli string) string {
 // auditSchema is the answer every model is asked for.
 const auditSchema = `{"type":"object","additionalProperties":false,"required":["summary","findings"],"properties":{` +
 	`"summary":{"type":"string","description":"Two or three sentences: what you read and what you found."},` +
-	`"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["title","path","line","severity","problem","confirm"],"properties":{` +
+	`"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["title","path","line","severity","problem","confirm","refers_to"],"properties":{` +
 	`"title":{"type":"string","description":"One line: the defect."},` +
 	`"path":{"type":"string","description":"The file, relative to the repository's root."},` +
 	`"line":{"type":"integer","description":"The line the defect is on (0 if it has none)."},` +
 	`"severity":{"type":"string","enum":["critical","high","medium","low"]},` +
 	`"problem":{"type":"string","description":"What goes wrong, and when: the input or sequence of events that sets it off."},` +
 	`"confirm":{"type":"string","description":"How someone could confirm it: a test to write, an input to try, or the lines to read."},` +
-	`"refers_to":{"type":"string","description":"Only when the prompt lists known points: the id of the listed point this finding is about (a fix that did not hold, a wrong rejection). Leave it out for a finding about anything else."}}}}}}`
+	`"refers_to":{"type":"string","description":"The id of the listed point this finding is about (a fix that did not hold, a wrong rejection); an empty string for a finding about anything else, and when the prompt lists no points."}}}}}}`
 
 // codeAuditPrompt is what the model is asked: the rules every audit keeps, then
 // what the requester asked for. The runner adds the change's diff.
