@@ -331,6 +331,7 @@ func (s *Service) write(ctx context.Context, actor *Actor, f func(t *tx) error) 
 		}
 		return err
 	}
+	t.runPending()
 	if err := sqlTx.Commit(); err != nil {
 		if span != nil {
 			tracing.Fail(span, "commit")
