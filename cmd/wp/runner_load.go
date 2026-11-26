@@ -141,10 +141,11 @@ type governor struct {
 	calmOver  string
 	profile   *loadProfile
 	memShort  string
+	lightMax  int // the light lane's ceiling (runnerProc.lightCeiling)
 }
 
 func newGovernor(maxJobs int, profile *loadProfile) *governor {
-	return &governor{max: maxJobs, limit: 1, profile: profile}
+	return &governor{max: maxJobs, limit: 1, profile: profile, lightMax: lightSlots}
 }
 
 // observe takes a new look at the machine; heavy is the heavy jobs running.
@@ -203,7 +204,11 @@ func (g *governor) observe(s loadSample, now time.Time, heavy int) string {
 	case level == was && (level != levelCalm || g.limit == wasLimit):
 		return ""
 	case level == levelOverloaded:
-		return fmt.Sprintf("Machine overloaded (%s): one heavy job at a time until it calms down (audits, reviews and a request's commands still run)", why)
+		still := "audits, reviews and a request's commands still run"
+		if g.memShort != "" {
+			still = "a request's commands still run; no more audits or reviews while memory is short"
+		}
+		return fmt.Sprintf("Machine overloaded (%s): one heavy job at a time until it calms down (%s)", why, still)
 	case level == levelBusy:
 		return fmt.Sprintf("Machine busy (%s): up to %d heavy job%s at once for now", why, g.limit, pluralS(g.limit))
 	}
@@ -249,7 +254,7 @@ func (g *governor) lanes(heavy, light, req int) []string {
 	if heavy < g.max && heavy < g.heavyLimit() && (g.level != levelOverloaded || heavy == 0) {
 		out = append(out, laneHeavy)
 	}
-	if light < lightSlots && g.memShort == "" {
+	if light < g.lightMax && g.memShort == "" {
 		out = append(out, laneLight)
 	}
 	return withRequestLane(out, req)
@@ -414,7 +419,7 @@ func (s loadSample) watchesMemory() bool {
 }
 
 // loadMeter looks at the machine; a sample that isn't measured means it
-// can't. A runner that never measured takes up to --max-jobs; after a
+// can't. A runner that never measured takes up to --max-jobs heavy jobs; after a
 // measurement, an unmeasured sample leaves the last verdict.
 type loadMeter interface{ sample() loadSample }
 
@@ -434,6 +439,16 @@ func (p *runnerProc) agentCeiling() int {
 		return min(max(p.opts.MaxJobs, 1), core.DefaultMaxAgents)
 	}
 	return core.DefaultMaxAgents
+}
+
+// lightCeiling is the most reviews and audits it runs at once: lightSlots,
+// and where it can't measure memory, which is all that stops the light lane,
+// no more than --max-jobs.
+func (p *runnerProc) lightCeiling() int {
+	if p.memUnwatched {
+		return min(max(p.opts.MaxJobs, 1), lightSlots)
+	}
+	return lightSlots
 }
 
 // running counts the jobs running now by lane. An agent job counts as heavy
@@ -496,8 +511,8 @@ func (p *runnerProc) lightStopped() string {
 // addLightReport puts the light lane's ceiling, and what stops it, in the
 // capacity report.
 func (p *runnerProc) addLightReport(r map[string]any, light int) {
-	r["max_light"] = lightSlots
-	if why := p.lightStopped(); why != "" && light < lightSlots {
+	r["max_light"] = p.lightCeiling()
+	if why := p.lightStopped(); why != "" && light < p.lightCeiling() {
 		r["light_stopped"] = why
 	}
 }
@@ -526,7 +541,7 @@ func (p *runnerProc) slotsNow() ([]string, int) {
 		if heavy < p.opts.MaxJobs {
 			lanes = append(lanes, laneHeavy)
 		}
-		if light < lightSlots {
+		if light < p.lightCeiling() {
 			lanes = append(lanes, laneLight)
 		}
 		lanes = withRequestLane(lanes, req)
@@ -552,7 +567,7 @@ func (p *runnerProc) slotsNow() ([]string, int) {
 		free += max(p.opts.MaxJobs-heavy, 0)
 	}
 	if slices.Contains(lanes, laneLight) {
-		free += max(lightSlots-light, 0)
+		free += max(p.lightCeiling()-light, 0)
 	}
 	free += agentRoom
 	if slices.Contains(lanes, laneRequest) {
@@ -585,6 +600,10 @@ func (p *runnerProc) watchLoad(ctx context.Context) {
 	}
 	first := m.sample()
 	p.memUnwatched = !first.watchesMemory()
+	p.gov.lightMax = p.lightCeiling()
+	if p.memUnwatched {
+		p.logf("Can't measure this machine's memory: up to %d audit%s or review%s at once", p.gov.lightMax, pluralS(p.gov.lightMax), pluralS(p.gov.lightMax))
+	}
 	if p.memUnwatched && p.opts.MaxAgents < 1 {
 		p.logf("Can't measure this machine's memory: up to %d agent job%s at once (--max-agents sets it)", p.agentCeiling(), pluralS(p.agentCeiling()))
 	}

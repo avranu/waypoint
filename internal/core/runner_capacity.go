@@ -39,7 +39,8 @@ import (
 // wp has no gateway lane takes them in the light lane.
 //
 // A runner with FeatureLightLane (WP-1943) runs light jobs in LightLaneSlots
-// of their own: they take no heavy job's place, wait for no load level, and
+// of their own (where it can't measure memory, no more than --max-jobs): they
+// take no heavy job's place, wait for no load level, and
 // stop only while memory is short. Older runners share --max-jobs and the load
 // governor between heavy and light jobs.
 //
@@ -141,7 +142,7 @@ type RunnerCapacity struct {
 	Heavy   int `json:"heavy"`
 	Light   int `json:"light"`
 	Gateway int `json:"gateway,omitempty"`
-	// MaxLight is the light lane's ceiling (LightLaneSlots); LightStopped
+	// MaxLight is the light lane's ceiling (at most LightLaneSlots); LightStopped
 	// says why it takes no more reviews or audits while it has room
 	// (memory), "" otherwise. Zero MaxLight: a runner whose light lane
 	// shares --max-jobs and the load level with heavy jobs.
@@ -170,7 +171,7 @@ func (c *RunnerCapacity) clean() bool {
 	c.Limit = min(max(c.Limit, 0), c.Max)
 	c.Heavy, c.Light = min(max(c.Heavy, 0), MaxRunnerJobs), min(max(c.Light, 0), MaxRunnerJobs)
 	c.Gateway = min(max(c.Gateway, 0), GatewayLaneSlots)
-	c.MaxLight = min(max(c.MaxLight, 0), MaxRunnerJobs)
+	c.MaxLight = min(max(c.MaxLight, 0), LightLaneSlots)
 	c.LightStopped = cleanReport(c.LightStopped)
 	c.MaxAgents = min(max(c.MaxAgents, 0), MaxRunnerJobs)
 	c.Agents = min(max(c.Agents, 0), MaxRunnerJobs)

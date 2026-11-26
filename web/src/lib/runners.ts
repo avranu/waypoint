@@ -34,9 +34,9 @@ export interface Runner {
 
 /** How many jobs a runner takes now, from how busy its machine is. */
 export interface RunnerCapacity {
-  /** heavy jobs (agents, commands, sessions) at once now; light ones have a lane as big */
+  /** heavy jobs (agents, commands, sessions) at once now */
   limit: number
-  /** --max-jobs, all kinds together */
+  /** --max-jobs: heavy jobs (all kinds on a runner that sends no max_light) */
   max: number
   /** '' when the runner can't measure (not Linux) */
   level: '' | 'calm' | 'busy' | 'overloaded'
@@ -50,6 +50,8 @@ export interface RunnerCapacity {
   busy_at?: string[]
   heavy: number
   light: number
+  /** reviews and audits at once, in a lane beside the heavy jobs; absent: they share max */
+  max_light?: number
   at: string
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -412,5 +413,60 @@ func TestProfileCapNeedsLastingCalm(t *testing.T) {
 	}
 	if g.capped != 0 || g.calmOver == "" {
 		t.Errorf("after lasting calm: capped %d, calmOver %q", g.capped, g.calmOver)
+	}
+}
+
+// Short memory is all that stops the light lane, so where it can't be
+// measured the lane takes no more than --max-jobs (audit #2019.1).
+func TestLightCeilingWhereMemoryCannotBeMeasured(t *testing.T) {
+	old := newLoadMeterFn
+	t.Cleanup(func() { newLoadMeterFn = old })
+	for _, tc := range []struct {
+		name          string
+		sample        loadSample
+		maxJobs, want int
+	}{
+		{"unmeasured, one job", loadSample{}, 1, 1},
+		{"unmeasured, two jobs", loadSample{}, 2, 2},
+		{"unmeasured, many jobs", loadSample{}, 8, lightSlots},
+		{"load but no memory", loadSample{CPUs: 8, MemSome: -1, MemFree: -1, measured: true}, 1, 1},
+		{"measured", calmSample(), 1, lightSlots},
+	} {
+		newLoadMeterFn = func() loadMeter { return fixedMeter(tc.sample) }
+		t.Setenv("XDG_CACHE_HOME", t.TempDir())
+		t.Setenv("WAYPOINT_RUNNER_CACHE", t.TempDir())
+		p := &runnerProc{c: &cli{out: &strings.Builder{}, err: &strings.Builder{}}, opts: runnerOpts{Name: "n", MaxJobs: tc.maxJobs}, jobs: map[int64]*activeJob{}, freed: make(chan struct{}, 1)}
+		ctx, cancel := context.WithCancel(t.Context())
+		p.watchLoad(ctx)
+		cancel()
+		for i := range int64(tc.want) {
+			if l, _ := p.slotsNow(); !slices.Contains(l, laneLight) {
+				t.Errorf("%s: %d audits running: lanes %v, want the light lane", tc.name, i, l)
+			}
+			p.mu.Lock()
+			p.jobs[i+1] = &activeJob{id: i + 1, lane: laneLight}
+			p.mu.Unlock()
+		}
+		if l, _ := p.slotsNow(); slices.Contains(l, laneLight) {
+			t.Errorf("%s: more than %d audits offered: lanes %v", tc.name, tc.want, l)
+		}
+		r := map[string]any{}
+		p.addLightReport(r, tc.want)
+		if r["max_light"] != tc.want {
+			t.Errorf("%s: report %v, want max_light %d", tc.name, r, tc.want)
+		}
+	}
+}
+
+func TestOverloadLineSaysWhenMemoryStopsAudits(t *testing.T) {
+	cpu := calmSample()
+	cpu.CPUSome = 80
+	if line := newGovernor(3, nil).observe(cpu, time.Now(), 1); !strings.Contains(line, "audits, reviews and a request's commands still run") {
+		t.Errorf("overloaded on CPU: %q", line)
+	}
+	mem := calmSample()
+	mem.MemFree = 0.05
+	if line := newGovernor(3, nil).observe(mem, time.Now(), 1); !strings.Contains(line, "no more audits or reviews while memory is short") || strings.Contains(line, "audits, reviews and") {
+		t.Errorf("overloaded on memory: %q", line)
 	}
 }

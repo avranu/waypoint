@@ -429,3 +429,39 @@ func (e *env) finishRunningBut(r *Runner, keep int64) {
 		e.t.Fatal(err)
 	}
 }
+
+// On a runner with the light lane a running audit is no part of why a command
+// waits, and the agent job in a test slot is (audit #2019.2); a runner that
+// runs fewer audits at once than LightLaneSlots is full at its own number.
+func TestWaitingTextsBesideTheLightLane(t *testing.T) {
+	e := newEnv(t)
+	r := e.runner(e.admin, "devhost", func(r *RunnerRegistration) {
+		r.CLIs = []RunnerCLI{{Name: "cursor"}}
+		r.Features = []string{FeatureAudit, FeatureAgentLane, FeatureLightLane}
+		r.MaxJobs = 3
+	})
+	job, _ := json.Marshal(AgentJob{CLI: "cursor", Prompt: "do it", Repo: "https://x.test/a/b.git"})
+	e.enqueue(e.admin, RunnerJobInput{Kind: JobAgent, Input: job})
+	e.enqueue(e.admin, RunnerJobInput{Kind: JobAudit, Input: job})
+	for _, l := range []string{LaneAgent, LaneLight} {
+		if w := e.poll(e.admin, r, RunnerPoll{Lanes: []string{l}}); w.Job == nil {
+			t.Fatalf("nothing taken in the %s lane", l)
+		}
+	}
+	e.poll(e.admin, r, RunnerPoll{Lanes: []string{}, Capacity: &RunnerCapacity{Limit: 1, Max: 3, Level: "overloaded", Reason: "load 3.0 per CPU", Heavy: 1, Light: 1, MaxLight: 1, MaxAgents: 3, Agents: 1, AgentSlots: 1}})
+	why := func(kind string, in json.RawMessage) string {
+		t.Helper()
+		q := e.enqueue(e.admin, RunnerJobInput{Kind: kind, Input: in})
+		j, err := e.s.GetRunnerJob(e.ctx, e.admin, q.ID, -1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return j.Waiting
+	}
+	if got := why(JobCommand, cmdInput("true", "/work")); !strings.HasPrefix(got, "devhost is overloaded (load 3.0 per CPU), so it runs one heavy job at a time; 1 agent job holds a test slot") {
+		t.Errorf("command: %q", got)
+	}
+	if got := why(JobAudit, job); !strings.HasPrefix(got, "devhost runs up to 1 review or audit at once beside its heavy jobs; it is running an audit.") {
+		t.Errorf("audit: %q", got)
+	}
+}

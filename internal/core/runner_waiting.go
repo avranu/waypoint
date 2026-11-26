@@ -20,8 +20,9 @@ const (
 	GatewayLaneSlots = GatewayTasksInFlight
 )
 
-// LightLaneSlots is how many reviews and audits a runner with FeatureLightLane
-// runs at once, beside its heavy jobs (the runner's lightSlots).
+// LightLaneSlots is the most reviews and audits a runner with FeatureLightLane
+// runs at once, beside its heavy jobs (the runner's lightSlots; see
+// lightPlaces).
 const LightLaneSlots = 3
 
 // sideLane: a lane with slots of its own, whose jobs wait only for each other.
@@ -37,6 +38,16 @@ func agentPlaces(c *RunnerCapacity) int {
 		return c.MaxAgents
 	}
 	return DefaultMaxAgents
+}
+
+// lightPlaces is how many reviews and audits a runner with FeatureLightLane
+// runs at once: its last report (fewer than LightLaneSlots where it can't
+// measure memory), else LightLaneSlots.
+func lightPlaces(c *RunnerCapacity) int {
+	if c != nil && c.MaxLight > 0 {
+		return c.MaxLight
+	}
+	return LightLaneSlots
 }
 
 // sideLaneOn is sideLane on runner r: the light lane is one when r's wp has
@@ -183,8 +194,11 @@ func (s *Service) runnerBusyWith(ctx context.Context, r *Runner, j *RunnerJobInf
 	}
 	c := s.capacityOf(r.ID)
 	places := sideLaneSlots(lane)
-	if lane == LaneAgent {
+	switch lane {
+	case LaneAgent:
 		places = agentPlaces(c)
+	case LaneLight:
+		places = lightPlaces(c)
 	}
 	stopped := lane == LaneAgent && c != nil && c.AgentsStopped != "" || lane == LaneLight && c != nil && c.LightStopped != ""
 	why := ""
@@ -235,7 +249,7 @@ func (s *Service) runnerBusyWith(ctx context.Context, r *Runner, j *RunnerJobInf
 	case stopped && inLane < places:
 		return fmt.Sprintf("%s takes no more agent jobs while memory is short (%s); %s", r.Name, why, running), nil
 	case lane == LaneLight && sideLaneOn(r, lane):
-		return fmt.Sprintf("%s runs %d reviews or audits at once beside its heavy jobs; %s", r.Name, LightLaneSlots, running), nil
+		return fmt.Sprintf("%s runs up to %d review%s or audit%s at once beside its heavy jobs; %s", r.Name, places, plural(places), plural(places), running), nil
 	case lane == LaneAgent:
 		return fmt.Sprintf("%s runs up to %d agent job%s at once (--max-agents); %s", r.Name, places, plural(places), running), nil
 	case lane == LaneRequest:

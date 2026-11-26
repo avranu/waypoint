@@ -338,7 +338,9 @@ function Capacity({ c }: { c: RunnerCapacity }) {
   if (c.level === '') return null
   const now =
     c.level === 'overloaded'
-      ? 'One job at a time'
+      ? c.max_light
+        ? 'One heavy job at a time'
+        : 'One job at a time'
       : `Up to ${c.limit} heavy ${c.limit === 1 ? 'job' : 'jobs'} of ${c.max}`
   const busy = hourRanges(c.busy_at ?? [])
   return (

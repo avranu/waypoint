@@ -44,7 +44,9 @@ On Linux --max-jobs is a ceiling: it takes fewer while the machine is busy
 only while a command of it holds a test slot; --max-agents (default 3) is how
 many agent jobs run at once, and the runner takes no more while the machine
 is short of memory. Where it can't measure memory (macOS, Windows) the default
-is --max-jobs, at most 3.
+is --max-jobs, at most 3. Audits and reviews don't count toward --max-jobs: up
+to 3 run beside it while memory isn't short (where it can't be measured, no
+more than --max-jobs).
 
 Needs wp auth login first, as you. wp runner install starts it at login
 (systemd user unit, launchd agent); wp setup does that and the hooks.`,
@@ -548,7 +550,9 @@ func (p *runnerProc) run(ctx context.Context, reportStop context.CancelFunc) err
 			p.start(ctx, ans.Job)
 			continue
 		}
-		if p.opts.Once && free > 0 && slices.Contains(lanes, laneHeavy) && slices.Contains(lanes, laneLight) && len(p.activeIDs()) == 0 {
+		// An idle runner's light lane is closed only while memory is short,
+		// which --once doesn't wait out.
+		if p.opts.Once && free > 0 && slices.Contains(lanes, laneHeavy) && len(p.activeIDs()) == 0 {
 			break
 		}
 		if len(ans.Cancel) > 0 {

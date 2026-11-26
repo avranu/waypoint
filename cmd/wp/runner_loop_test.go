@@ -339,3 +339,37 @@ func TestRunnerRunsARequestsCommandWhileOverloaded(t *testing.T) {
 	stop()
 	<-done
 }
+
+// Short memory closes the light lane for as long as it lasts: --once takes
+// what it can and exits rather than waiting for it (audit #2019.3).
+func TestRunnerOnceExitsWhileMemoryIsShort(t *testing.T) {
+	e := newEnv(t)
+	me := e.runnerUser("robin")
+	old := newLoadMeterFn
+	newLoadMeterFn = func() loadMeter {
+		s := calmSample()
+		s.MemFree = 0.15
+		return fakeMeter{s}
+	}
+	t.Cleanup(func() { newLoadMeterFn = old })
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := e.svc.RegisterRunner(ctx, me, core.RunnerRegistration{Name: "box", AllowedDirs: []string{dir}}); err != nil {
+		t.Fatal(err)
+	}
+	j, err := e.svc.EnqueueRunnerJob(ctx, me, core.RunnerJobInput{Kind: core.JobCommand, Input: cmdJobInput("true", dir)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out syncBuffer
+	if err := runRunner(ctx, &cli{dir: e.dir, out: &out, err: &out}, runnerOpts{Name: "box", Allow: []string{dir}, MaxJobs: 1, Once: true, PollWait: 0, CacheDir: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("--once was still polling after 30s: %s", out.String())
+	}
+	if got, _ := e.svc.GetRunnerJob(ctx, me, j.ID, 0); got.State != "done" {
+		t.Errorf("the waiting job is %s", got.State)
+	}
+}
