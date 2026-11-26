@@ -110,4 +110,7 @@ func TestCLIUsageTaskNone(t *testing.T) {
 	if out, code := e.run("usage", "task", "--days", "7"); code == 0 || !strings.Contains(out, "wp usage task --none --days 7") {
 		t.Errorf("--days alone: %d %s", code, out)
 	}
+	if out, code := e.run("usage", "task", "--none", "--days", "-7"); code == 0 || !strings.Contains(out, "wp usage task --none --days 7") {
+		t.Errorf("a negative --days: %d %s", code, out)
+	}
 }

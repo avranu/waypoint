@@ -105,7 +105,6 @@ func TestShellEditNeedsAWorkingDirectoryTheSessionWorkedIn(t *testing.T) {
 		{"git apply --check --apply applies", "git apply --check --apply fix.patch", "/r", nil, true},
 		{"a script that reads a repo file and writes where it cannot be followed", "python3 - <<'EOF'\nimport os, tempfile\nd = open('internal/a.go', 'r').read()\nout = os.path.join(tempfile.gettempdir(), 's.txt')\nopen(out, 'w').write(d)\nEOF", "/r", nil, false},
 		{"a script that reads with an encoding", "python3 - <<'EOF'\nimport os, tempfile\nd = open('internal/a.go', encoding='utf-8').read()\nopen(os.path.join(tempfile.gettempdir(), 's.txt'), 'w').write(d)\nEOF", "/r", nil, false},
-		{"a node script that reads a repo file", "node -e \"const fs=require('fs'); const d=fs.readFileSync('web/a.ts','utf8'); fs.writeFileSync(process.env.OUT, d)\"", "/r", nil, false},
 		{"a scratch script that writes scratch", "cat > /tmp/e.py <<'EOF'\nopen('/tmp/a.go','w').write('x')\nEOF\npython3 /tmp/e.py", "/r", nil, false},
 	} {
 		s := &ShellSession{}

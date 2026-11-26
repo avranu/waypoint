@@ -210,3 +210,43 @@ func TestQuotaGuardWindowBeforeLaterReset(t *testing.T) {
 		}
 	}
 }
+
+// Use between the last reading before a reset and the first one after it is
+// counted: the line falls to 0 at the reset and rises to the first reading
+// over that gap, and the points are placed by what was spent in it.
+func TestQuotaGuardUseBeforeFirstReadingAfterReset(t *testing.T) {
+	g := newGuardEnv(t)
+	g.reading(-time.Hour, 80)
+	g.reading(4*time.Hour, 80)
+	g.reading(8*time.Hour, 40)
+	g.reading(9*time.Hour, 41)
+	g.reading(10*time.Hour, 42)
+	g.session("mine", 5*time.Hour, "fix the login page")
+	g.used("mine", 5*time.Hour)
+	c := g.check()
+	if len(c.Resets) != 1 {
+		t.Fatalf("resets %+v", c.Resets)
+	}
+	if c.Points != 42 {
+		t.Errorf("points %v, want 42 (0 to 40 over the gap, then 1 and 1)", c.Points)
+	}
+	if c.Person != 40 || c.Unexplained != 2 {
+		t.Errorf("person %v unexplained %v, want 40 and 2", c.Person, c.Unexplained)
+	}
+	if c.WeekPercent == nil || *c.WeekPercent != 42 {
+		t.Errorf("week percent %v, want 42", c.WeekPercent)
+	}
+}
+
+// With one reading after a drop, stays() takes it alone: it must agree.
+func TestQuotaResetsInOneReadingAfterDrop(t *testing.T) {
+	at := func(i int, p float64) quotaSample { return quotaSample{at: int64(i) * 3600_000, pct: p} }
+	_, rs, _ := quotaResetsIn([]quotaSample{at(1, 80), at(2, 10), at(3, 12)})
+	if len(rs) != 1 {
+		t.Errorf("a drop and one reading that stays low: resets %+v, want 1", rs)
+	}
+	_, rs, _ = quotaResetsIn([]quotaSample{at(1, 80), at(2, 10), at(3, 79)})
+	if len(rs) != 0 {
+		t.Errorf("a drop and one reading back up: resets %+v, want none", rs)
+	}
+}

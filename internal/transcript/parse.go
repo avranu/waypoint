@@ -110,25 +110,37 @@ type block struct {
 }
 
 type toolInput struct {
-	FilePath     string `json:"file_path"`
-	NotebookPath string `json:"notebook_path"`
-	Path         string `json:"path"`
-	Pattern      string `json:"pattern"`
-	Command      string `json:"command"`
-	URL          string `json:"url"`
-	Query        string `json:"query"`
-	Skill        string `json:"skill"`
-	To           string `json:"to"`
-	RecipientKnd string `json:"recipient_kind"`
-	SubagentType string `json:"subagent_type"`
-	Description  string `json:"description"`
-	Model        string `json:"model"`
-	Plan         string `json:"plan"`
-	Offset       *int64 `json:"offset"`
-	Limit        *int64 `json:"limit"`
-	Background   *bool  `json:"run_in_background"`
-	Todos        []any  `json:"todos"`
-	Content      string `json:"content"`
+	FilePath     string      `json:"file_path"`
+	NotebookPath string      `json:"notebook_path"`
+	Path         string      `json:"path"`
+	Pattern      string      `json:"pattern"`
+	Command      string      `json:"command"`
+	URL          string      `json:"url"`
+	Query        string      `json:"query"`
+	Skill        string      `json:"skill"`
+	To           string      `json:"to"`
+	RecipientKnd string      `json:"recipient_kind"`
+	SubagentType string      `json:"subagent_type"`
+	Description  string      `json:"description"`
+	Model        string      `json:"model"`
+	Plan         string      `json:"plan"`
+	Offset       *int64      `json:"offset"`
+	Limit        *int64      `json:"limit"`
+	Background   *bool       `json:"run_in_background"`
+	Todos        []any       `json:"todos"`
+	Content      lenientText `json:"content"`
+}
+
+// lenientText is a string field that is empty, not an error, when the tool's
+// input has something else under that name (an MCP tool's content list).
+type lenientText string
+
+func (l *lenientText) UnmarshalJSON(b []byte) error {
+	var s string
+	if json.Unmarshal(b, &s) == nil {
+		*l = lenientText(s)
+	}
+	return nil
 }
 
 type toolResult struct {
@@ -550,7 +562,7 @@ func (p *parser) toolUse(bl *block, r *rec, ts *int64, thread, msgID string, byS
 	}
 	switch bl.Name {
 	case "Write":
-		p.shell.KeepWrite(in.FilePath, r.Cwd, in.Content)
+		p.shell.KeepWrite(in.FilePath, r.Cwd, string(in.Content))
 	case "Read":
 		set("file", clip(in.FilePath, targetRunes))
 		t.ReadOffset, t.ReadLimit = in.Offset, in.Limit
@@ -558,8 +570,15 @@ func (p *parser) toolUse(bl *block, r *rec, ts *int64, thread, msgID string, byS
 		set("command", commandHead(in.Command))
 		t.Background = in.Background
 		if bl.Name == "Bash" {
-			if wrote, known := p.shell.Edit(in.Command, r.Cwd); known {
-				t.ShellWrite = ptr(wrote)
+			// Read as the client reads it (only the command): input that does
+			// not decode is a command never read, so its fact stays unknown.
+			var cmd struct {
+				Command string `json:"command"`
+			}
+			if json.Unmarshal(bl.Input, &cmd) == nil {
+				if wrote, known := p.shell.Edit(cmd.Command, r.Cwd); known {
+					t.ShellWrite = ptr(wrote)
+				}
 			}
 		}
 	case "Grep", "Glob":

@@ -282,6 +282,9 @@ func (s *Service) notifyQuotaGuard(ctx context.Context, e *Event) {
 type quotaKnot struct {
 	at  int64
 	pct float64
+	// drop marks the line falling to 0 at a reset. It is not a reading, so
+	// seen skips it.
+	drop bool
 }
 
 // QuotaGuardReset is the allowance restarting mid-week: the percent it stood
@@ -321,7 +324,7 @@ func (w *quotaWeekLine) at(t int64) float64 {
 // seen is the latest reading taken by t, as the gates had it then.
 func (w *quotaWeekLine) seen(t int64) (quotaKnot, bool) {
 	for i := len(w.knots) - 1; i >= 1; i-- {
-		if w.knots[i].at <= t {
+		if w.knots[i].at <= t && !w.knots[i].drop {
 			return w.knots[i], true
 		}
 	}
@@ -370,21 +373,26 @@ func (s *Service) quotaWeekLines(ctx context.Context, uid, since, before int64) 
 }
 
 // build turns the week's readings into its line. A reset (quotaResetsIn)
-// starts a new segment: the line holds to the reset's time, then restarts
-// from the first reading after it, and the high-water mark restarts too.
+// starts a new segment: the line holds to the last reading before the reset, falls to 0, then rises
+// to the first reading after it, and the high-water mark restarts too.
 func (w *quotaWeekLine) build() {
 	kept, resets, startAt := quotaResetsIn(w.raw)
 	w.resets = resets
-	w.knots = []quotaKnot{{w.start, 0}}
+	w.knots = []quotaKnot{{w.start, 0, false}}
 	next := 0
 	for i, x := range kept {
 		last := w.knots[len(w.knots)-1]
 		if next < len(startAt) && startAt[next] == i {
 			next++
-			w.knots = append(w.knots, quotaKnot{x.at, last.pct}, quotaKnot{x.at, x.pct})
+			// The reset's time is not stored: only that it came between the
+			// last reading before it and x. The line falls to 0 just after
+			// that reading and rises to x over the gap, so what was used in
+			// the gap counts. How much of it went on the old allowance and how
+			// much on the new cannot be known; it is all taken as new use.
+			w.knots = append(w.knots, quotaKnot{last.at, 0, true}, quotaKnot{x.at, x.pct, false})
 			continue
 		}
-		w.knots = append(w.knots, quotaKnot{x.at, max(last.pct, x.pct)})
+		w.knots = append(w.knots, quotaKnot{x.at, max(last.pct, x.pct), false})
 	}
 }
 

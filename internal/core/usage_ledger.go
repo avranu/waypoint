@@ -693,7 +693,7 @@ func (s *Service) ledgerPrep(ctx context.Context, sc *usageScope, closed map[int
 	}
 	where, args := sc.where("hour")
 	// #nosec G202 -- where is built from fixed conditions; values are bound
-	trows, err := s.db.R.QueryContext(ctx, `SELECT machine, session, sum(calls) FROM tool_hours WHERE kind NOT IN (?, ?) AND `+where+` GROUP BY machine, session`, append([]any{transcript.ShellEditKind, transcript.ShellUnknownKind}, args...)...)
+	trows, err := s.db.R.QueryContext(ctx, `SELECT machine, session, sum(calls) FROM tool_hours WHERE kind NOT IN (?, ?, ?) AND `+where+` GROUP BY machine, session`, append([]any{transcript.ShellEditKind, transcript.ShellNoneKind, transcript.ShellUnknownKind}, args...)...)
 	if err != nil {
 		return nil, err
 	}

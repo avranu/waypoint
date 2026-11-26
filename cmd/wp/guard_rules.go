@@ -1524,7 +1524,16 @@ func (g *guard) patchTargets(c *guardCmd, name string, args []string) []string {
 				if p := g.site.resolve(dir, args[i]); p != "" {
 					dir = p
 				}
-			case trscript.GitValueFlags(a): // -c, --git-dir, --work-tree …: the next word is a value, not the verb
+			case a == "--work-tree" && i+1 < len(args): // git writes under it, as gitHit reads it
+				i++
+				if p := g.site.resolve(dir, args[i]); p != "" {
+					dir = p
+				}
+			case strings.HasPrefix(a, "--work-tree="):
+				if p := g.site.resolve(dir, a[len("--work-tree="):]); p != "" {
+					dir = p
+				}
+			case trscript.GitValueFlags(a): // -c, --git-dir …: the next word is a value, not the verb
 				i++
 			case strings.HasPrefix(a, "-"):
 			default:

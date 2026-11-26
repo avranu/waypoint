@@ -15,7 +15,20 @@ type ShellCmd struct {
 	AndIn   bool
 
 	Detached bool
+
+	// Group is the innermost ( ) group the command stands in (nil at the top
+	// level of the line): a subshell, whose cd and variables end with it.
+	Group *ShellGroup
 }
+
+// ShellGroup is a ( ) group; Parent is the group around it. Groups nested
+// deeper than shellMaxGroups share the one outside them.
+type ShellGroup struct {
+	Parent *ShellGroup
+	depth  int
+}
+
+const shellMaxGroups = 64
 
 type shellHeredoc struct {
 	cmd   *ShellCmd
@@ -84,10 +97,12 @@ func (p *shellParser) list(end byte) []*ShellCmd {
 	and := false
 	listStart := 0
 	var groups []int
+	var grp *ShellGroup
+	var outer []*ShellGroup
 	flush := func(nextPipe bool) bool {
 		added := false
 		if len(cur.Words) > 0 || len(cur.Redirs) > 0 || len(cur.Subs) > 0 {
-			cur.PipeIn, cur.AndIn = pipe, and
+			cur.PipeIn, cur.AndIn, cur.Group = pipe, and, grp
 			out = append(out, cur)
 			pipe, and, added = nextPipe, false, true
 		} else if !nextPipe {
@@ -147,12 +162,21 @@ func (p *shellParser) list(end byte) []*ShellCmd {
 			p.i++
 			flush(false)
 			groups = append(groups, listStart)
+			outer = append(outer, grp)
+			if grp == nil || grp.depth < shellMaxGroups {
+				d := 0
+				if grp != nil {
+					d = grp.depth
+				}
+				grp = &ShellGroup{Parent: grp, depth: d + 1}
+			}
 			listStart = len(out)
 		case c == ')':
 			p.i++
 			flush(false)
 			if n := len(groups); n > 0 {
 				listStart, groups = groups[n-1], groups[:n-1]
+				grp, outer = outer[n-1], outer[:n-1]
 			} else if end == ')' {
 				return out
 			}

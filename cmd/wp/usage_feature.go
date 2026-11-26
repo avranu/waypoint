@@ -187,15 +187,19 @@ type taskUsageReport struct {
 	ShellEdits     *int64            `json:"shell_edits"`
 	ShellUncounted *int64            `json:"shell_edits_uncounted"`
 	ShellCounted   int64             `json:"shell_edits_counted"` // absent from an older server: 0
-	PRs            int64             `json:"prs"`
-	Files          int64             `json:"files"`
-	Lines          int64             `json:"lines"`
-	Input          int64             `json:"input"`
-	Output         int64             `json:"output"`
-	CacheWrite     int64             `json:"cache_write"`
-	CacheRead      int64             `json:"cache_read"`
-	CostUSD        float64           `json:"cost_usd"`
-	Used           []struct {
+	// Edit-tool calls and writing Bash calls REPL scripts ran: in neither
+	// figure above.
+	ScriptEdits      int64   `json:"script_edits"`
+	ScriptShellEdits int64   `json:"script_shell_edits"`
+	PRs              int64   `json:"prs"`
+	Files            int64   `json:"files"`
+	Lines            int64   `json:"lines"`
+	Input            int64   `json:"input"`
+	Output           int64   `json:"output"`
+	CacheWrite       int64   `json:"cache_write"`
+	CacheRead        int64   `json:"cache_read"`
+	CostUSD          float64 `json:"cost_usd"`
+	Used             []struct {
 		Kind  string `json:"kind"`
 		Name  string `json:"name"`
 		Calls int64  `json:"calls"`
@@ -232,6 +236,9 @@ func cmdUsageTask(c *cli, args []string) error {
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
+	}
+	if *days < 0 {
+		return c.usage("--days is a number of days back, 1 or more: wp usage task --none --days 7")
 	}
 	if *none {
 		if len(pos) != 0 {
@@ -317,7 +324,16 @@ func taskEditsText(r *taskUsageReport) string {
 	if r.ShellUncounted != nil {
 		unc = *r.ShellUncounted
 	}
-	return editsText(r.Edits, shell, unc, r.ShellCounted)
+	return editsText(r.Edits, shell, unc, r.ShellCounted) + scriptEditsText(r.ScriptEdits, r.ScriptShellEdits)
+}
+
+// scriptEditsText says the edits REPL scripts ran, which the figures before
+// it leave out (as wp usage facts does); "" without any.
+func scriptEditsText(edits, shell int64) string {
+	if edits == 0 && shell == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (REPL scripts ran %s more edits and %s more shell edits)", commas(edits), commas(shell))
 }
 
 // editsText says the edits of the editing tools beside the Bash calls that

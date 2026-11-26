@@ -393,18 +393,24 @@ type TaskUsage struct {
 	ToolErrors  int64             `json:"tool_errors"`
 	Edits       int64             `json:"edits"` // calls of the editing tools that did not fail
 	// ShellEdits counts Bash calls that wrote the work (redirects, sed -i,
-	// formatters, scripts that write). It is only known for hours whose
-	// client uploaded the shell_edit marker; ShellEditsUncounted is the
-	// Bash calls of the other hours, so ShellEdits is then a floor.
+	// formatters, scripts that write). It is only known for the calls the
+	// client read (uploaded as shell_edit or shell_none);
+	// ShellEditsUncounted is the other Bash calls (not read whole, or
+	// synced by a client too old to read them), so ShellEdits is then a floor.
 	ShellEdits          int64 `json:"shell_edits"`
 	ShellEditsUncounted int64 `json:"shell_edits_uncounted"`
-	// ShellEditsCounted is the Bash calls of the hours the client counted
-	// that it read whole; with it above 0 a zero ShellEdits is "0+".
-	ShellEditsCounted int64           `json:"shell_edits_counted"`
-	PRs               int64           `json:"prs"`   // merged
-	Files             int64           `json:"files"` // changed in them
-	Lines             int64           `json:"lines"` // added + deleted in them
-	Used              []TaskUsageTool `json:"used"`
+	// ShellEditsCounted is the Bash calls the client read; with it above 0
+	// a zero ShellEdits is "0+".
+	ShellEditsCounted int64 `json:"shell_edits_counted"`
+	// ScriptEdits and ScriptShellEdits are the edit-tool calls and writing
+	// Bash calls a REPL script ran (model <synthetic>), not the model: they
+	// are in none of the figures above, as in session facts.
+	ScriptEdits      int64           `json:"script_edits"`
+	ScriptShellEdits int64           `json:"script_shell_edits"`
+	PRs              int64           `json:"prs"`   // merged
+	Files            int64           `json:"files"` // changed in them
+	Lines            int64           `json:"lines"` // added + deleted in them
+	Used             []TaskUsageTool `json:"used"`
 	// AfterRun is spend in the task's sessions after its runs ended that no
 	// other task claimed (WP-1884); nil without any. Never part of CostUSD.
 	AfterRun *TaskCarryOver `json:"after_run,omitempty"`
@@ -580,8 +586,8 @@ func (s *Service) taskArms(ctx context.Context, issueID int64, o *TaskUsage) err
 func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskAttribution, issueID int64, o *TaskUsage) error {
 	where, args := sc.where("hour")
 	// #nosec G202 -- where is built from fixed conditions; values are bound
-	rows, err := s.db.R.QueryContext(ctx, `SELECT machine, session, hour, kind, tool, detail, via, sum(calls), sum(errors), sum(refusals) FROM tool_hours WHERE `+where+`
-		GROUP BY machine, session, hour, kind, tool, detail, via`, args...)
+	rows, err := s.db.R.QueryContext(ctx, `SELECT machine, session, hour, kind, tool, detail, via, model LIKE '<%', sum(calls), sum(errors), sum(refusals) FROM tool_hours WHERE `+where+`
+		GROUP BY machine, session, hour, kind, tool, detail, via, model LIKE '<%'`, args...)
 	if err != nil {
 		return err
 	}
@@ -589,13 +595,13 @@ func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskA
 	type toolKey struct{ kind, name string }
 	seen := map[toolKey]*TaskUsageTool{}
 	bash := map[trendKey]int64{}
-	marked := map[trendKey]bool{}
-	unread := map[trendKey]int64{} // Bash calls the client could not read
+	read := map[trendKey]int64{} // Bash calls the client read whole
 	for rows.Next() {
 		var k trendKey
 		var kind, tool, detail, via string
 		var calls, errs, refused int64
-		if err := rows.Scan(&k.machine, &k.session, &k.hour, &kind, &tool, &detail, &via, &calls, &errs, &refused); err != nil {
+		var byScript bool // a REPL script ran these calls (model <synthetic>)
+		if err := rows.Scan(&k.machine, &k.session, &k.hour, &kind, &tool, &detail, &via, &byScript, &calls, &errs, &refused); err != nil {
 			return err
 		}
 		// A transcript row's refusal is one of its calls (usage_parse.go); an
@@ -612,22 +618,34 @@ func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskA
 			// A call is an error or a refusal, never both (usage_parse.go), and
 			// neither wrote anything. That a refusal is inside calls holds for
 			// transcript rows; OTLP rows keep refusals out of calls (inCalls).
-			o.Edits += max(calls-errs-inCalls, 0)
+			if byScript {
+				o.ScriptEdits += max(calls-errs-inCalls, 0)
+			} else {
+				o.Edits += max(calls-errs-inCalls, 0)
+			}
 		}
-		if kind == "builtin" && tool == "Bash" {
+		if kind == "builtin" && tool == "Bash" && !byScript {
 			bash[k] += calls
 		}
-		if kind == transcript.ShellUnknownKind {
-			// One of the hour's Bash calls (builtin Bash has it too): it is
-			// uncounted, and settled with the hour below, not added here.
-			unread[k] += calls
+		switch kind {
+		case transcript.ShellUnknownKind:
+			// One of the hour's Bash calls (builtin Bash has it too) that the
+			// client could not read: uncounted, by not being among the read.
 			continue
-		}
-		if kind == transcript.ShellEditKind {
-			marked[k] = true
+		case transcript.ShellNoneKind:
+			if !byScript {
+				read[k] += calls
+			}
+			continue
+		case transcript.ShellEditKind:
 			// A non-zero exit still counts (sed -i ... && go test writes before
 			// the test fails); a refused call wrote nothing.
-			o.ShellEdits += max(calls-inCalls, 0)
+			if byScript {
+				o.ScriptShellEdits += max(calls-inCalls, 0)
+			} else {
+				read[k] += calls
+				o.ShellEdits += max(calls-inCalls, 0)
+			}
 			continue
 		}
 		name := strings.TrimSpace(tool + " " + detail)
@@ -643,13 +661,12 @@ func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskA
 		return err
 	}
 	for k, n := range bash {
-		u := min(unread[k], n)
-		if !marked[k] {
-			o.ShellEditsUncounted += n
-			continue
-		}
-		o.ShellEditsUncounted += u
-		o.ShellEditsCounted += n - u
+		// Every call the client read has a shell_edit or shell_none row; the
+		// rest of the hour's Bash calls were not read (shell_unknown) or came
+		// from a client that did not read them, and are uncounted.
+		r := min(read[k], n)
+		o.ShellEditsCounted += r
+		o.ShellEditsUncounted += n - r
 	}
 	for _, t := range seen {
 		o.Used = append(o.Used, *t)

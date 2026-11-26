@@ -684,13 +684,12 @@ func (p *usageParser) assistant(b []byte, l *rawLine) {
 			wrote, known := p.st.Trace.shellEdit(bl.Input, l.Cwd)
 			switch {
 			case !known:
-				// Not read whole: counted apart, and no shell_edit row for
-				// it, so the hour does not read as counted with no write.
+				// Not read whole: counted apart, not as read with no write.
 				call.Keys = append(call.Keys, usageToolKey{Kind: trscript.ShellUnknownKind, Tool: bl.Name})
 			case wrote:
 				call.Keys = append(call.Keys, usageToolKey{Kind: trscript.ShellEditKind, Tool: bl.Name})
 			default:
-				p.tool(call.Hour, call.Model, usageToolKey{Kind: trscript.ShellEditKind, Tool: bl.Name})
+				call.Keys = append(call.Keys, usageToolKey{Kind: trscript.ShellNoneKind, Tool: bl.Name})
 			}
 		}
 		if p.f.Main && !l.Sidechain {

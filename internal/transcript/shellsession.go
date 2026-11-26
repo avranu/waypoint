@@ -7,10 +7,15 @@ import (
 )
 
 // ShellEditKind is the kind of the per-hour shell-edit count the client
-// uploads in tool_hours: one row (tool "Bash") for every hour a session ran
-// Bash, with calls = the Bash calls that wrote a file of the work. The server
-// reads the same kind back.
+// uploads in tool_hours (tool "Bash"): calls = the Bash calls that wrote a
+// file of the work. The server reads the same kind back.
 const ShellEditKind = "shell_edit"
+
+// ShellNoneKind is the kind of the per-hour count of Bash calls the client
+// read whole and found no write of the work in. With ShellEditKind and
+// ShellUnknownKind it accounts for every Bash call the client classified, so
+// calls with none of the three (synced by an older client) stay uncounted.
+const ShellNoneKind = "shell_none"
 
 // ShellUnknownKind is the kind of the per-hour count of Bash calls the client
 // could not read (a command or script too long): calls = those calls. They
@@ -102,13 +107,19 @@ func shellInClaudeDir(p string) bool {
 	return false
 }
 
+// shellScratchDirs are the directories scratch files live in, on Linux and
+// macOS: nothing under them is a file of the work.
+var shellScratchDirs = []string{"/tmp", "/var/tmp", "/dev", "/private/tmp", "/private/var/tmp", "/var/folders", "/private/var/folders"}
+
 // workPath says a cleaned absolute path is a file of the work as far as the
 // session can tell: in a directory it has worked in, or one of cd (the
 // directory the command cd's to and the one the call runs in), and not
 // scratch, not Claude Code's own directory.
 func (s *ShellSession) workPath(p string, cd ...string) bool {
-	if under(p, "/tmp") || under(p, "/var/tmp") || under(p, "/dev") {
-		return false
+	for _, d := range shellScratchDirs {
+		if under(p, d) {
+			return false
+		}
 	}
 	// A directory the session itself worked in is the work even under a cache
 	// directory (the runner checks repositories out in ~/.cache); only Claude

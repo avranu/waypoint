@@ -133,3 +133,38 @@ func TestUsageParseShellEditsAgreeWithTheServer(t *testing.T) {
 		}
 	}
 }
+
+// A Bash input whose command is not text was never read: the client uploads
+// it as unknown, and the server leaves its shell fact unknown too.
+func TestUsageParseUndecodableBashIsUnknownOnBothSides(t *testing.T) {
+	tr := `{"type":"assistant","timestamp":"2026-10-05T10:00:01.000Z","cwd":"/work/app","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":2},"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":42}}]}}` + "\n"
+	sub := t.TempDir()
+	p := filepath.Join(sub, "projects", "-work-app", "sess1.jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(tr), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var none, unknown int64
+	for _, r := range parseMain(t, sub, usageFileState{}).Chunk.Tools {
+		switch r.Kind {
+		case trscript.ShellNoneKind:
+			none += r.Calls
+		case trscript.ShellUnknownKind:
+			unknown += r.Calls
+		}
+	}
+	if none != 0 || unknown != 1 {
+		t.Errorf("client: no-write %d unknown %d, want 0 and 1", none, unknown)
+	}
+	res, err := trscript.Parse(strings.NewReader(tr), "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range res.ToolCalls {
+		if tc.ShellWrite != nil {
+			t.Errorf("server: shell fact %v for an unreadable command, want unknown", *tc.ShellWrite)
+		}
+	}
+}

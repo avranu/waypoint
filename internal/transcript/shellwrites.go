@@ -40,6 +40,9 @@ type ShellScript struct {
 	At     string   `json:"a"`
 	Writes []string `json:"w"`
 	Unsure bool     `json:"u,omitempty"` // no written path could be followed: every file it names
+	// Unfollowed: it writes, but to paths it builds and nothing names: what it
+	// writes is unknown.
+	Unfollowed bool `json:"n,omitempty"`
 }
 
 const (
@@ -80,9 +83,9 @@ func (m *ShellScripts) Keep(at, body string) {
 			break
 		}
 	}
-	ps, sure := traceScriptWrites(body, false)
+	ps, sure, unf := traceScriptWrites(body, false)
 	ps = slices.DeleteFunc(ps, func(p string) bool { return len(p) > shellMaxValue })
-	if len(ps) == 0 {
+	if len(ps) == 0 && !unf {
 		return
 	}
 	if len(ps) > traceMaxScriptPaths {
@@ -91,7 +94,7 @@ func (m *ShellScripts) Keep(at, body string) {
 	if len(*m) >= ShellMaxScripts {
 		*m = append((*m)[:0:0], (*m)[1:]...)
 	}
-	*m = append(*m, ShellScript{At: at, Writes: ps, Unsure: !sure})
+	*m = append(*m, ShellScript{At: at, Writes: ps, Unsure: !sure, Unfollowed: unf})
 }
 
 func (m *ShellScripts) at(at string) *ShellScript {
@@ -220,9 +223,33 @@ func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *Shel
 			}
 		}
 	}
+	// A cd inside ( ) ends with the group: scopes are the groups the command
+	// stands in, each with the directory it began in. { } groups run in the
+	// current shell and are not scopes.
+	type scope struct {
+		g     *ShellGroup
+		began string
+	}
+	var scopes []scope
 	for _, g := range ParseShell(cmd) {
 		if len(*out) >= shellMaxCommands {
 			break
+		}
+		var chain []*ShellGroup
+		for x := g.Group; x != nil; x = x.Parent {
+			chain = append(chain, x)
+		}
+		slices.Reverse(chain)
+		k := 0
+		for k < len(scopes) && k < len(chain) && scopes[k].g == chain[k] {
+			k++
+		}
+		if k < len(scopes) {
+			dir = scopes[k].began
+			scopes = scopes[:k]
+		}
+		for _, x := range chain[k:] {
+			scopes = append(scopes, scope{x, dir})
 		}
 		all := make([]string, len(g.Words))
 		assigns := len(g.Words) > 0
@@ -302,6 +329,7 @@ func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *Shel
 			for _, w := range k.Writes {
 				c.Wrote = append(c.Wrote, ShellWrite{Kind: kind, Path: w})
 			}
+			c.Unread = c.Unread || k.Unfollowed
 		}
 		if last := words[len(words)-1]; len(last) <= shellMaxValue {
 			vars["_"] = last
@@ -309,6 +337,9 @@ func shellCommands(cmd, cwd string, depth int, vars map[string]string, mem *Shel
 			delete(vars, "_")
 		}
 		*out = append(*out, c)
+	}
+	if len(scopes) > 0 {
+		dir = scopes[0].began // the line ended inside a group: its cd ends with it
 	}
 	return dir
 }
@@ -358,13 +389,38 @@ func InlineScript(words []string, heredoc string) string {
 		}
 		return heredoc
 	}
-	for j := i + 1; j+1 < len(words); j++ {
-		if words[j] == "-c" || words[j] == "-e" {
-			return words[j+1]
+	// Options come first and end at the first word that is not one (a script
+	// file, a module): what follows is that program's own (python3 build.py
+	// -e X), as ran() reads it.
+	for j := i + 1; j < len(words); j++ {
+		w := words[j]
+		switch {
+		case w == "-c" || w == "-e":
+			if j+1 < len(words) {
+				return words[j+1]
+			}
+			return ""
+		case w == "-m" || w == "-" || w == "--":
+			return ""
+		case interpreterValueFlags[w]:
+			j++
+		case strings.HasPrefix(w, "-") || w == "run":
+		default:
+			if traceScriptFileRE.MatchString(w) {
+				return ""
+			}
+			// Not a script file: taken as the value of an option this
+			// reading does not know (node --max-old-space-size 100 -e X), so
+			// a -e after it is not passed over.
 		}
 	}
 	return ""
 }
+
+// interpreterValueFlags are interpreter options whose next word is a value,
+// not the script: python -W/-X, node -r/--require/--import (not -I, python's isolated mode).
+var interpreterValueFlags = map[string]bool{"-W": true, "-X": true, "-r": true, "--require": true, "--import": true,
+	"--loader": true, "--experimental-loader": true, "--conditions": true, "-C": true}
 
 // ran is the script file a command hands its interpreter (python3 edit.py),
 // "" when it runs none.
@@ -388,12 +444,19 @@ func (c *ShellCommand) ran() string {
 	return ""
 }
 
+const traceModeRE = `['"][rbtU]*[wax+][rbtUwax+]*['"]`
+
 // The write calls of a script given to an interpreter, and the path each
 // writes: open(P, 'w'), P.write_text(, Path(P).write_text(, writeFileSync(P,.
 var (
-	traceScriptWriteRE = lazyre.New(`\bopen\([^\n]*?,\s*(?:mode\s*=\s*)?['"][wax]|\.write_(?:text|bytes)\(|\b(?:write|append)File(?:Sync)?\(|\bFile\.write\(`)
+	// A write mode holds w, a, x or +, with r, b, t, U around them: 'w', 'ab',
+	// 'r+', 'rb+'. The mode is a closed string, so 'x' in webbrowser.open('x')
+	// is read as a mode only where it is open()'s only argument, a method's
+	// (Path(...).open(MODE), p.open(MODE)).
+	traceScriptWriteRE = lazyre.New(`\bopen\([^\n]*?,\s*(?:mode\s*=\s*)?` + traceModeRE + `|\.open\(\s*(?:mode\s*=\s*)?` + traceModeRE + `|\.write_(?:text|bytes)\(|\b(?:write|append)File(?:Sync)?\(|\bFile\.write\(`)
 	traceScriptSiteREs = []*lazyre.Regexp{
-		lazyre.New(`\bopen\(\s*([^,()\n]+?|(?:pathlib\.)?Path\(\s*[^()\n]+?\s*\))\s*,\s*(?:mode\s*=\s*)?['"][wax]`),
+		lazyre.New(`\bopen\(\s*([^,()\n]+?|(?:pathlib\.)?Path\(\s*[^()\n]+?\s*\))\s*,\s*(?:mode\s*=\s*)?` + traceModeRE),
+		lazyre.New(`((?:pathlib\.)?Path\(\s*[^()\n]+?\s*\)|[A-Za-z_][A-Za-z0-9_]*)\.open\(\s*(?:mode\s*=\s*)?` + traceModeRE),
 		lazyre.New(`((?:pathlib\.)?Path\(\s*[^()\n]+?\s*\)|[A-Za-z_][A-Za-z0-9_]*)\.write_(?:text|bytes)\(`),
 		lazyre.New(`\b(?:write|append)File(?:Sync)?\(\s*([^,()\n]+?)\s*,`),
 		lazyre.New(`\bFile\.write\(\s*([^,()\n]+?)\s*,`),
@@ -422,7 +485,12 @@ const (
 // written from the read. whole reads the script to its end and every write
 // in it (the guard, which must not miss one); otherwise the first
 // traceMaxScript bytes and a bounded number of writes are read.
-func traceScriptWrites(script string, whole bool) (paths []string, sure bool) {
+//
+// unfollowed is true when the script writes, no path came of it, and nothing
+// shows its writes go to scratch (a temporary directory): a path it builds
+// (glob, os.walk, a join) that this reading cannot name, so the answer is
+// unknown, not "writes nothing".
+func traceScriptWrites(script string, whole bool) (paths []string, sure, unfollowed bool) {
 	sites, strs := 64, traceMaxStrings
 	if whole {
 		sites, strs = -1, -1
@@ -430,27 +498,37 @@ func traceScriptWrites(script string, whole bool) (paths []string, sure bool) {
 		script = script[:traceMaxScript]
 	}
 	if !traceScriptWriteRE.MatchString(script) {
-		return nil, true
+		return nil, true, false
 	}
 	// Each name followed searches the text again: spend a fixed amount of
 	// scanning, so a long script is followed fewer times than a short one.
 	budget := min(traceScriptBudget, max(3, traceScriptScan/(3*len(script)+1)))
+	followed := 0
 	for _, re := range traceScriptSiteREs {
 		for _, m := range re.FindAllStringSubmatch(script, sites) {
-			paths = append(paths, traceScriptExpr(script, m[1], 0, &budget)...)
+			ps := traceScriptExpr(script, m[1], 0, &budget)
+			if len(ps) > 0 {
+				followed++
+			}
+			paths = append(paths, ps...)
 		}
 	}
+	// A write among others that were followed, itself not followed and with
+	// no temporary directory in the script to explain it, is as unknown as a
+	// script with none followed: the paths found are not all it writes.
+	missed := !whole && len(traceScriptWriteRE.FindAllStringIndex(script, sites)) > followed && !scriptScratchRE.MatchString(script)
 	// A whole reading that ran out of names to follow cannot say which paths
 	// the names left over stand for: it lists every path the script spells
 	// and does not read as well, so none is passed over (audit 2008.1).
 	spent := whole && budget <= 0
 	if len(paths) > 0 && !spent {
-		return paths, true
+		return paths, true, missed
 	}
 	sure = len(paths) > 0
 	// Each string is judged where it stands (no second search of the text),
 	// and one the script reads anywhere is left out.
 	var names []string
+	scratchNames := map[string]bool{}
 	reads := map[string]bool{}
 	for _, m := range traceScriptStrRE.FindAllStringSubmatchIndex(script, strs) {
 		at := m[2]
@@ -461,7 +539,7 @@ func traceScriptWrites(script string, whole bool) (paths []string, sure bool) {
 		if !ShellFileShape(str) {
 			continue
 		}
-		if scriptScratchBeforeRE.MatchString(script[max(0, m[0]-64):m[0]]) {
+		if scriptScratchAt(script, m[0], scratchNames) {
 			continue // a name under the temporary directory, not a path of its own
 		}
 		if scriptReadsAt(script, m[0], m[1]) {
@@ -479,14 +557,51 @@ func traceScriptWrites(script string, whole bool) (paths []string, sure bool) {
 			paths = append(paths, n)
 		}
 	}
-	return paths, sure
+	return paths, sure, len(paths) == 0 && !scriptScratchRE.MatchString(script)
+}
+
+// scriptScratchRE: the script uses a temporary directory somewhere. A script
+// that writes, with no path to name, and uses one is taken to write there.
+var scriptScratchRE = lazyre.New(`\btempfile\.|\bmkdtemp|\bos\.tmpdir\(|['"]/tmp\b`)
+
+// scriptScratchAt says the string at script[at:] stands in a join whose
+// first argument is the temporary directory: a call to tempfile.*, os.tmpdir,
+// a '/tmp…' literal, or a name the script sets to one of those (d =
+// tempfile.mkdtemp(); with TemporaryDirectory() as d). seen caches the names
+// judged.
+func scriptScratchAt(script string, at int, seen map[string]bool) bool {
+	before := script[max(0, at-64):at]
+	if scriptScratchBeforeRE.MatchString(before) {
+		return true
+	}
+	m := scriptJoinNameBeforeRE.FindStringSubmatch(before)
+	if m == nil {
+		return false
+	}
+	name := m[1]
+	if v, ok := seen[name]; ok {
+		return v
+	}
+	re := regexp.MustCompile(`\b` + name + `\s*=\s*(?:[\w.]*\b(?:tempfile\.|mkdtemp|mkstemp)|os\.tmpdir\(|['"]/tmp\b)`)
+	v := re.MatchString(script)
+	if !v {
+		// with tempfile.TemporaryDirectory() as d: the call is before the name.
+		as := regexp.MustCompile(`\bas\s+` + name + `\b`)
+		for _, w := range as.FindAllStringIndex(script, 8) {
+			line := script[strings.LastIndexByte(script[:w[0]], '\n')+1 : w[0]]
+			v = v || scriptScratchRE.MatchString(line)
+		}
+	}
+	seen[name] = v
+	return v
 }
 
 var (
-	scriptOpenBeforeRE    = lazyre.New(`\bopen\(\s*$`)
-	scriptReadBeforeRE    = lazyre.New(`(?:\breadFile(?:Sync)?|\bFile\.(?:read|readlines|foreach)|\b(?:exists|isfile|existsSync))\(\s*$`)
-	scriptScratchBeforeRE = lazyre.New(`\bjoin\(\s*(?:tempfile\.\w+\(\)|os\.tmpdir\(\)|['"]/tmp[^'"\n]*['"])\s*,\s*$`)
-	scriptReadAfterRE     = lazyre.New(`^\s*\)\.read_(?:text|bytes)\(`)
+	scriptOpenBeforeRE     = lazyre.New(`\bopen\(\s*$`)
+	scriptReadBeforeRE     = lazyre.New(`(?:\breadFile(?:Sync)?|\bFile\.(?:read|readlines|foreach)|\b(?:exists|isfile|existsSync))\(\s*$`)
+	scriptScratchBeforeRE  = lazyre.New(`\bjoin\(\s*(?:tempfile\.\w+\(\)|os\.tmpdir\(\)|['"]/tmp[^'"\n]*['"])\s*,\s*$`)
+	scriptJoinNameBeforeRE = lazyre.New(`\bjoin\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*$`)
+	scriptReadAfterRE      = lazyre.New(`^\s*\)\.read_(?:text|bytes)\(`)
 )
 
 // scriptReadsAt says the string at script[from:to] is one the script reads:
@@ -783,12 +898,12 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 	if i := c.interpreter(); i >= 0 {
 		script := InlineScript(c.Words, c.Script)
 		kind := "script"
-		ps, sure := traceScriptWrites(script, false)
+		ps, sure, unfollowed := traceScriptWrites(script, false)
 		if !sure {
 			kind = "script?"
 		}
 		each(kind, ps)
-		c.Unread = len(script) > traceMaxScript && !traceScriptWriteRE.MatchString(script[:traceMaxScript])
+		c.Unread = unfollowed || len(script) > traceMaxScript && !traceScriptWriteRE.MatchString(script[:traceMaxScript])
 	}
 	return out
 }
@@ -849,7 +964,7 @@ func perlInPlace(args []string) bool {
 // the rest of the cluster as its value ends the reading: -i (a backup
 // suffix), -M and -m (a module), -I (a directory), -x, -F, -C, -D, -V and
 // -e's own code, so the i of -Mstrict or -Ilib is no -i and the e of -pie no
-// -e.
+// -e. A bare -I takes its directory from the next word (next).
 func perlSwitch(a string) (inPlace, code, next bool) {
 	for j := 1; j < len(a); j++ {
 		switch a[j] {
@@ -857,7 +972,10 @@ func perlSwitch(a string) (inPlace, code, next bool) {
 			return true, false, false
 		case 'e', 'E':
 			return false, true, j == len(a)-1
-		case 'M', 'm', 'I', 'x', 'F', 'C', 'D', 'V':
+		case 'I':
+			// -I DIR may be two words: a bare -I takes the next one.
+			return false, false, j == len(a)-1
+		case 'M', 'm', 'x', 'F', 'C', 'D', 'V':
 			return false, false, false
 		}
 	}
@@ -910,7 +1028,7 @@ func FormatterFiles(args []string) []string {
 // reads the script whole, however long: this is the guard's reading, and a
 // write past a cut would be one it let through.
 func ScriptWrites(script string) []string {
-	ps, _ := traceScriptWrites(script, true)
+	ps, _, _ := traceScriptWrites(script, true)
 	return ps
 }
 

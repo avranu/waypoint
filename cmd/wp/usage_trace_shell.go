@@ -71,7 +71,7 @@ func (t *traceState) shellEdit(input json.RawMessage, cwd string) (wrote, known 
 		Command string `json:"command"`
 	}
 	if json.Unmarshal(input, &in) != nil {
-		return false, true
+		return false, false // the command was never read
 	}
 	s := t.shell()
 	wrote, known = s.Edit(in.Command, cwd)

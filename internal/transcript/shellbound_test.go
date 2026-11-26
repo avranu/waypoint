@@ -86,10 +86,10 @@ func TestShellLongCommandIsUnknownAndFast(t *testing.T) {
 			t.Errorf("%s: %v", name, d)
 		}
 		// None writes a file it names: the kept script is never run, and the
-		// python names no path that can be followed. The inline script of
-		// "many strings" is longer than the part that is read and that part
-		// writes nothing, so what it does is unknown.
-		if wantKnown := name != "many strings"; wrote || known != wantKnown {
+		// python names no path that can be followed, so what it writes is
+		// unknown. The inline script of "many strings" is longer than the part
+		// that is read and that part writes nothing, so that is unknown too.
+		if wantKnown := name != "many strings" && name != "python script"; wrote || known != wantKnown {
 			t.Errorf("%s: wrote %v known %v, want false %v", name, wrote, known, wantKnown)
 		}
 	}

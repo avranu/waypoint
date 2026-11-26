@@ -555,6 +555,7 @@ func TestUsageForTaskShellEdits(t *testing.T) {
 	f.ingest(f.me, "tools", "m1", UsageChunk{Tools: []UsageToolRow{
 		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "builtin", Tool: "Bash", Calls: 20, Errors: 2},
 		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "shell_edit", Tool: "Bash", Calls: 7, Errors: 1},
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "shell_none", Tool: "Bash", Calls: 13, Errors: 1},
 		{Hour: f.hour(-9), Session: "s1", Repo: "acme/web", Kind: "builtin", Tool: "Bash", Calls: 5},
 	}})
 	o, err := f.s.UsageForTask(f.ctx, f.me, UsageQuery{}, i.Key)
@@ -565,28 +566,72 @@ func TestUsageForTaskShellEdits(t *testing.T) {
 		t.Errorf("shell edits %d, uncounted Bash calls %d; want 7 (a failed one still wrote) and 5 (the unmarked hour)", o.ShellEdits, o.ShellEditsUncounted)
 	}
 	for _, u := range o.Used {
-		if u.Kind == "shell_edit" {
-			t.Errorf("the marker row is listed as a tool: %+v", u)
+		if u.Kind == "shell_edit" || u.Kind == "shell_none" {
+			t.Errorf("a shell-edit count row is listed as a tool: %+v", u)
 		}
 	}
 }
 
-// An hour the client counted and found no shell edit in carries a zero-call
-// marker: its Bash calls are counted (none wrote), not left as uncounted
-// (audit 1931.22).
-func TestUsageForTaskZeroShellEditMarkerCountsTheHour(t *testing.T) {
+// Bash calls the client read and found no write in are uploaded as
+// shell_none: they are counted (none wrote), not left as uncounted (audit
+// 1931.22).
+func TestUsageForTaskReadCallsWithNoWriteAreCounted(t *testing.T) {
 	f := newFeatureEnv(t)
 	i := f.task(-10, "v0.80.0", "v0.79.0", 500)
 	f.ingest(f.me, "tools", "m1", UsageChunk{Tools: []UsageToolRow{
 		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "builtin", Tool: "Bash", Calls: 20},
-		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "shell_edit", Tool: "Bash", Calls: 0},
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "shell_none", Tool: "Bash", Calls: 20},
 	}})
 	o, err := f.s.UsageForTask(f.ctx, f.me, UsageQuery{}, i.Key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if o.ShellEdits != 0 || o.ShellEditsUncounted != 0 || o.ShellEditsCounted != 20 {
-		t.Errorf("shell edits %d, uncounted Bash calls %d, counted %d; want 0, 0, 20 (the hour was counted)", o.ShellEdits, o.ShellEditsUncounted, o.ShellEditsCounted)
+		t.Errorf("shell edits %d, uncounted Bash calls %d, counted %d; want 0, 0, 20", o.ShellEdits, o.ShellEditsUncounted, o.ShellEditsCounted)
+	}
+}
+
+// In the hour wp is upgraded, the older client's Bash calls (no shell rows)
+// share the hour with the newer one's: only the calls the client read are
+// counted, the rest stay uncounted (audit 2027.11).
+func TestUsageForTaskUpgradeHourLeavesOlderCallsUncounted(t *testing.T) {
+	f := newFeatureEnv(t)
+	i := f.task(-10, "v0.80.0", "v0.79.0", 500)
+	f.ingest(f.me, "tools", "m1", UsageChunk{Tools: []UsageToolRow{
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "builtin", Tool: "Bash", Calls: 50},
+	}})
+	f.ingest(f.me, "tools2", "m1", UsageChunk{Tools: []UsageToolRow{
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "builtin", Tool: "Bash", Calls: 1},
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "shell_none", Tool: "Bash", Calls: 1},
+	}})
+	o, err := f.s.UsageForTask(f.ctx, f.me, UsageQuery{}, i.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.ShellEdits != 0 || o.ShellEditsUncounted != 50 || o.ShellEditsCounted != 1 {
+		t.Errorf("shell edits %d, uncounted %d, counted %d; want 0, 50, 1", o.ShellEdits, o.ShellEditsUncounted, o.ShellEditsCounted)
+	}
+}
+
+// Edit and Bash calls a REPL script ran (model <synthetic>) are reported
+// apart, as session facts do, not as the model's edits (audit 2027.12).
+func TestUsageForTaskScriptEditsAreApart(t *testing.T) {
+	f := newFeatureEnv(t)
+	i := f.task(-10, "v0.80.0", "v0.79.0", 500)
+	f.ingest(f.me, "tools", "m1", UsageChunk{Tools: []UsageToolRow{
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Model: "claude-opus-5-5", Kind: "builtin", Tool: "Edit", Calls: 2},
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Model: "<synthetic>", Kind: "builtin", Tool: "Edit", Calls: 3},
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Model: "<synthetic>", Kind: "builtin", Tool: "Bash", Calls: 4},
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Model: "<synthetic>", Kind: "shell_edit", Tool: "Bash", Calls: 1},
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Model: "<synthetic>", Kind: "shell_none", Tool: "Bash", Calls: 3},
+	}})
+	o, err := f.s.UsageForTask(f.ctx, f.me, UsageQuery{}, i.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Edits != 2 || o.ScriptEdits != 3 || o.ShellEdits != 0 || o.ScriptShellEdits != 1 || o.ShellEditsUncounted != 0 || o.ShellEditsCounted != 0 {
+		t.Errorf("edits %d (+%d by scripts), shell edits %d (+%d by scripts), uncounted %d, counted %d; want 2 (+3), 0 (+1), 0, 0",
+			o.Edits, o.ScriptEdits, o.ShellEdits, o.ScriptShellEdits, o.ShellEditsUncounted, o.ShellEditsCounted)
 	}
 }
 
@@ -601,6 +646,7 @@ func TestUsageForTaskShellUnknownAndCountedCalls(t *testing.T) {
 		// A counted hour: 3 Bash calls, one wrote, one could not be read.
 		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "builtin", Tool: "Bash", Calls: 3},
 		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "shell_edit", Tool: "Bash", Calls: 1},
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "shell_none", Tool: "Bash", Calls: 1},
 		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "shell_unknown", Tool: "Bash", Calls: 1},
 		// An hour whose only record is an unreadable call, beside another.
 		{Hour: f.hour(-9), Session: "s1", Repo: "acme/web", Kind: "builtin", Tool: "Bash", Calls: 2},

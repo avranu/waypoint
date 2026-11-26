@@ -1324,6 +1324,8 @@ func TestGuardReadsPatchesAndScripts(t *testing.T) {
 	// patch's own output and target files.
 	writeFile(t, filepath.Join(repo, "big.patch"), "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1,40001 @@\n-a\n"+strings.Repeat("+"+strings.Repeat("x", 60)+"\n", 40001)+"diff --git a/.claude/settings.json b/.claude/settings.json\n"+settings)
 	writeFile(t, filepath.Join(repo, "sub.patch"), "diff --git a/settings.json b/settings.json\n--- a/settings.json\n+++ b/settings.json\n@@ -1 +1 @@\n-{}\n+{\"hooks\":{}}\n")
+	writeFile(t, filepath.Join(repo, "rename.patch"), "similarity index 100%\nrename from old.txt\nrename to .claude/settings.json\n")
+	writeFile(t, filepath.Join(repo, "copy.patch"), "similarity index 100%\ncopy from old.txt\ncopy to .claude/settings.json\n")
 	writeFile(t, filepath.Join(repo, "plain.patch"), "--- x\n+++ x\n@@ -1 +1 @@\n-{}\n+{\"hooks\":{}}\n")
 	for _, c := range []struct{ cmd, want string }{
 		{`git apply bad.patch`, ruleGuard},
@@ -1363,6 +1365,24 @@ func TestGuardReadsPatchesAndScripts(t *testing.T) {
 		{`git --work-tree . apply bad.patch`, ruleGuard},
 		{`git --git-dir .git apply bad.patch`, ruleGuard},
 		{`git apply --directory web sub.patch`, ""},
+		// Audit 2027.2: --work-tree moves where git writes, in both forms.
+		{`git --work-tree .claude apply sub.patch`, ruleGuard},
+		{`git --work-tree=.claude apply sub.patch`, ruleGuard},
+		{`git --work-tree ` + home + `/.claude apply sub.patch`, ruleGuard},
+		{`git -C .claude --work-tree=. apply sub.patch`, ruleGuard},
+		{`git --work-tree web apply sub.patch`, ""},
+		{`git --work-tree=web apply sub.patch`, ""},
+		{`git --git-dir .claude apply ok.patch`, ""},
+		// Audit 2027.15: patch -d, --input=, --reject-file, rename/copy headers.
+		{`patch -d .claude -p1 < sub.patch`, ruleGuard},
+		{`patch -d web -p1 < sub.patch`, ""},
+		{`patch --input=bad.patch -p1`, ruleGuard},
+		{`patch --input=ok.patch -p1`, ""},
+		{`patch --reject-file .claude/settings.json -p1 < ok.patch`, ruleGuard},
+		{`patch --reject-file=.claude/settings.json -p1 < ok.patch`, ruleGuard},
+		{`patch --reject-file=out.rej -p1 < ok.patch`, ""},
+		{`git apply rename.patch`, ruleGuard},
+		{`git apply copy.patch`, ruleGuard},
 		// 1985.14: the patch a command only reads is not written.
 		{`patch -p1 main.go /etc/fix.patch`, ""},
 		// 1985.2 and 1985.4: a long script is read whole; a script that only

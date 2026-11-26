@@ -174,7 +174,7 @@ var traceGit = struct {
 
 // traceScratch are the directories agents keep scratch files in: nothing
 // under them is a file of the work, whatever checkout it is in.
-var traceScratch = []string{"/tmp/", "/var/tmp/"}
+var traceScratch = []string{"/tmp/", "/var/tmp/", "/private/tmp/", "/private/var/tmp/", "/var/folders/", "/private/var/folders/"}
 
 // traceWorktreeRE reads the path of a worktree kept inside its checkout, by
 // Claude Code (.claude/worktrees, WP-ADR57) or by hand (.worktrees): the

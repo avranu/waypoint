@@ -791,19 +791,20 @@ func TestUsageParseBashShellEditRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := parseMain(t, dir, usageFileState{})
-	var bash, shell int64
-	var marked bool
+	var bash, shell, none int64
 	for _, r := range got.Chunk.Tools {
 		switch {
 		case r.Kind == "builtin" && r.Tool == "Bash":
 			bash += r.Calls
 		case r.Kind == trscript.ShellEditKind:
-			marked = true
 			shell += r.Calls
+		case r.Kind == trscript.ShellNoneKind:
+			none += r.Calls
 		}
 	}
-	if bash != 2 || !marked || shell != 1 {
-		t.Fatalf("Bash calls %d, shell_edit row present %v with %d calls; tools %+v", bash, marked, shell, got.Chunk.Tools)
+	// Every call read is in one of the two rows (audit 2027.11).
+	if bash != 2 || shell != 1 || none != 1 {
+		t.Fatalf("Bash calls %d, shell_edit %d, shell_none %d; want 2, 1, 1; tools %+v", bash, shell, none, got.Chunk.Tools)
 	}
 }
 
@@ -875,5 +876,20 @@ func TestTaskUsageTextOlderServer(t *testing.T) {
 	}
 	if got := taskUsageText(&current); !strings.Contains(got, "edits 4, shell edits 0") {
 		t.Errorf("a server that counted none: %q", got)
+	}
+}
+
+// The edits REPL scripts ran are said apart from the model's (audit 2027.12).
+func TestTaskEditsTextSaysScriptEditsApart(t *testing.T) {
+	var r taskUsageReport
+	if err := json.Unmarshal([]byte(`{"key":"WP-1","edits":4,"shell_edits":1,"shell_edits_uncounted":0,"script_edits":13,"script_shell_edits":2}`), &r); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := taskEditsText(&r), "edits 4, shell edits 1 (REPL scripts ran 13 more edits and 2 more shell edits)"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	r.ScriptEdits, r.ScriptShellEdits = 0, 0
+	if got, want := taskEditsText(&r), "edits 4, shell edits 1"; got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
