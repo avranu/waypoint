@@ -230,13 +230,19 @@ func TestGatewayAuditsNeverWaitForTheGovernor(t *testing.T) {
 }
 
 func TestLanesMatchTheServer(t *testing.T) {
+	if !slices.Contains(runnerFeatureList(), core.FeatureAgentLane) {
+		t.Error("the runner doesn't say it has the agent lane")
+	}
+	if jobLane("agent") != core.LaneHeavy {
+		t.Errorf("an agent job's lane without the agent lane is %s", jobLane("agent"))
+	}
 	for _, k := range []string{"command", "apply", "agent", "review", "session", "autopilot", "message", "audit", "sandbox_drill"} {
 		if jobLane(k) != core.JobLane(k) {
 			t.Errorf("lane of %s: runner %s, server %s", k, jobLane(k), core.JobLane(k))
 		}
 	}
 	if maxRunnerJobs != core.MaxRunnerJobs || laneHeavy != core.LaneHeavy || laneLight != core.LaneLight || laneRequest != core.LaneRequest || requestSlots != core.RequestLaneSlots ||
-		laneMessage != core.LaneMessage || messageSlots != core.MessageLaneSlots || laneGateway != core.LaneGateway || gatewaySlots != core.GatewayLaneSlots {
+		laneMessage != core.LaneMessage || messageSlots != core.MessageLaneSlots || laneGateway != core.LaneGateway || gatewaySlots != core.GatewayLaneSlots || laneAgent != core.LaneAgent {
 		t.Error("runner constants differ from core")
 	}
 }
@@ -306,38 +312,6 @@ func TestProfileCapGivesWayToACalmMachine(t *testing.T) {
 	b.observe(busy, now, 3)
 	if b.limit != 3 || b.heavyLimit() != 1 || !strings.Contains(b.capWhy, "usually uses") {
 		t.Fatalf("busy in a usually busy hour: limit %d, heavy limit %d, why %q", b.limit, b.heavyLimit(), b.capWhy)
-	}
-}
-
-func heavyJob(id int64, waiting time.Duration) *activeJob {
-	j := &activeJob{id: id, lane: laneHeavy}
-	if waiting > 0 {
-		j.slotWaitSince = time.Now().Add(-waiting)
-	}
-	return j
-}
-
-func TestWaitingJobGivesUpItsHeavyPlace(t *testing.T) {
-	p := &runnerProc{opts: runnerOpts{MaxJobs: 1}, jobs: map[int64]*activeJob{}}
-	p.gov = newGovernor(1, nil)
-	p.gov.observe(calmSample(), time.Now(), 0)
-	p.jobs[1] = heavyJob(1, 30*time.Second)
-	if l, _ := p.slotsNow(); slices.Contains(l, laneHeavy) {
-		t.Fatalf("waiting 30s: lanes %v", l)
-	}
-	p.jobs[1].slotWaitSince = time.Now().Add(-2 * time.Minute)
-	if l, _ := p.slotsNow(); !slices.Contains(l, laneHeavy) {
-		t.Fatalf("waiting 2m: lanes %v", l)
-	}
-	if h, _, _, _, _ := p.running(); h != 0 {
-		t.Fatalf("running counts %d heavy", h)
-	}
-	p.jobs[2] = heavyJob(2, 3*time.Minute)
-	if h, _, _, _, _ := p.running(); h != 1 {
-		t.Fatalf("two waiting: %d counted heavy, want 1", h)
-	}
-	if l, _ := p.slotsNow(); slices.Contains(l, laneHeavy) {
-		t.Fatalf("two waiting: lanes %v", l)
 	}
 }
 

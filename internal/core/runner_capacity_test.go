@@ -285,3 +285,79 @@ func TestGatewayAuditsHaveTheirOwnLane(t *testing.T) {
 		t.Error("an audit through the gateway was taken outside its lane")
 	}
 }
+
+// An agent job has a lane of its own (WP-1915): it counts toward a runner's
+// heavy limit only while a command of it holds a test slot, so the server
+// offers it only to a poll that asks for the agent lane, and says what holds
+// it up in the runner's own terms.
+func TestAgentJobsHaveTheirOwnLane(t *testing.T) {
+	e := newEnv(t)
+	r := e.runner(e.admin, "devhost", func(r *RunnerRegistration) {
+		r.CLIs = []RunnerCLI{{Name: "cursor"}}
+		r.Features = []string{FeatureAudit, FeatureAgentLane}
+		r.MaxJobs = 2
+	})
+	in, _ := json.Marshal(AgentJob{CLI: "cursor", Prompt: "fix it", Repo: "https://x.test/a/b.git"})
+	cmd := e.enqueue(e.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("make check", "/work")})
+	first := e.enqueue(e.admin, RunnerJobInput{Kind: JobAgent, Input: in})
+	second := e.enqueue(e.admin, RunnerJobInput{Kind: JobAgent, Input: in})
+
+	if w := e.poll(e.admin, r, RunnerPoll{Lanes: []string{LaneHeavy, LaneLight}}); w.Job == nil || w.Job.ID != cmd.ID {
+		t.Fatalf("heavy and light lanes took %+v, want the command %d and no agent job", w.Job, cmd.ID)
+	}
+	if w := e.poll(e.admin, r, RunnerPoll{Lanes: []string{LaneHeavy, LaneLight}}); w.Job != nil {
+		t.Fatalf("heavy and light lanes took the agent job %d", w.Job.ID)
+	}
+	if w := e.poll(e.admin, r, RunnerPoll{Lanes: []string{LaneAgent}}); w.Job == nil || w.Job.ID != first.ID || w.Job.Lane != LaneAgent {
+		t.Fatalf("agent lane took %+v, want %d in the agent lane", w.Job, first.ID)
+	}
+
+	why := func(id int64) string {
+		t.Helper()
+		j, err := e.s.GetRunnerJob(e.ctx, e.admin, id, -1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return j.Waiting
+	}
+	full := &RunnerCapacity{Limit: 1, Max: 2, Level: "calm", MaxAgents: 1, Agents: 1, AgentSlots: 0}
+	e.poll(e.admin, r, RunnerPoll{Lanes: []string{}, Capacity: full})
+	if got := why(second.ID); got != "devhost runs up to 1 agent job at once (--max-agents); it is running an agent job. This job is next." {
+		t.Errorf("agent ceiling reached: %q", got)
+	}
+	short := &RunnerCapacity{Limit: 1, Max: 2, Level: "calm", MaxAgents: 3, Agents: 1, AgentsStopped: "10% of memory free"}
+	e.poll(e.admin, r, RunnerPoll{Lanes: []string{}, Capacity: short})
+	if got := why(second.ID); got != "devhost takes no more agent jobs while memory is short (10% of memory free); it is running an agent job. This job is next." {
+		t.Errorf("memory short: %q", got)
+	}
+	room := &RunnerCapacity{Limit: 1, Max: 2, Level: "calm", MaxAgents: 3, Agents: 1}
+	e.poll(e.admin, r, RunnerPoll{Lanes: []string{}, Capacity: room})
+	if got := why(second.ID); !strings.HasPrefix(got, "devhost is online and should take it within seconds.") {
+		t.Errorf("room for another agent job: %q", got)
+	}
+
+	holding := &RunnerCapacity{Limit: 1, Max: 2, Level: "calm", MaxAgents: 3, Agents: 1, AgentSlots: 1, Heavy: 2}
+	e.poll(e.admin, r, RunnerPoll{Lanes: []string{}, Capacity: holding})
+	later := e.enqueue(e.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("true", "/work")})
+	if got := why(later.ID); !strings.Contains(got, "1 agent job holds a test slot, which counts as a heavy job while it does.") {
+		t.Errorf("heavy job behind an agent job holding a slot: %q", got)
+	}
+
+	old := e.runner(e.admin, "oldhost", func(r *RunnerRegistration) {
+		r.CLIs = []RunnerCLI{{Name: "cursor"}}
+		r.Features = []string{FeatureAudit}
+	})
+	if w := e.poll(e.admin, old, RunnerPoll{Lanes: []string{LaneHeavy}}); w.Job == nil || w.Job.Kind != JobAgent || w.Job.Lane != LaneHeavy {
+		t.Fatalf("a runner without the agent lane took %+v, want an agent job in the heavy lane", w.Job)
+	}
+	if l := laneOn(&Runner{Features: []string{FeatureAgentLane}}, jobNeeds{kind: JobAgent}); l != LaneAgent {
+		t.Errorf("lane %q", l)
+	}
+	if l := laneOn(&Runner{Features: []string{FeatureAgentLane}}, jobNeeds{kind: JobSession}); l != LaneHeavy {
+		t.Errorf("a session's lane is %q: only agent jobs have slot waits to go by", l)
+	}
+	c := &RunnerCapacity{Level: "calm", Max: 4, MaxAgents: 99, Agents: 99, AgentSlots: 50, AgentsStopped: "x\ny"}
+	if !c.clean() || c.MaxAgents != MaxRunnerJobs || c.AgentSlots != c.Agents || strings.Contains(c.AgentsStopped, "\n") {
+		t.Errorf("clean: %+v", c)
+	}
+}

@@ -18,13 +18,16 @@ const slotWaitsEnv = "WAYPOINT_SLOT_WAITS"
 var slotWaitWarn io.Writer = os.Stderr
 
 // noteSlotWait appends "wait <unix-ms> <pid> <name>" to the waits file, if
-// there is one, and returns what appends the matching "got" line. A line
-// that can't be written is dropped, and said once: the wait itself goes on
-// regardless, and counts as the job's work.
-func noteSlotWait(name string) (done func()) {
+// there is one, and returns what appends the matching "got" line, and what
+// appends "free" when the holder lets the slot go (WP-1915: the runner counts
+// an agent job as heavy only while one of its processes holds a slot). A
+// holder that dies writes no "free" line; the reader sees its process gone.
+// A line that can't be written is dropped, and said once: the wait itself
+// goes on regardless, and counts as the job's work.
+func noteSlotWait(name string) (got, free func()) {
 	path := os.Getenv(slotWaitsEnv)
 	if path == "" {
-		return func() {}
+		return func() {}, func() {}
 	}
 	warned := false
 	note := func(what string) {
@@ -41,10 +44,11 @@ func noteSlotWait(name string) (done func()) {
 		}
 	}
 	note("wait")
-	return func() { note("got") }
+	var once sync.Once
+	return func() { note("got") }, func() { once.Do(func() { note("free") }) }
 }
 
-// slotWaitReader reads a waits file. It keeps when it first saw a waiting
+// slotWaitReader reads a waits file: "wait", "got" and "free" lines. It keeps when it first saw a waiting
 // process gone, which is when that wait is taken to have ended: kept per
 // wait, not per pid, since a later process may get the same pid. For the
 // same reason it keeps when each waiter's process started, as first seen: a
@@ -100,17 +104,26 @@ type waitSpan struct {
 // once: time they overlap counts once) and, when a live wait is open, when
 // the unbroken stretch of waiting it belongs to began; zero otherwise.
 func (r *slotWaitReader) read(now time.Time) (total time.Duration, waitingSince time.Time) {
+	total, waitingSince, _ = r.scan(now)
+	return total, waitingSince
+}
+
+// scan is read and also says whether a live process of the job holds a slot
+// now: it has a "got" line with no "free" after it, and is still the process
+// that wrote it (a holder that died or was killed writes no "free").
+func (r *slotWaitReader) scan(now time.Time) (total time.Duration, waitingSince time.Time, holding bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	b, err := os.ReadFile(r.path)
 	if err != nil {
-		return 0, time.Time{}
+		return 0, time.Time{}, false
 	}
 	type key struct {
 		pid  int
 		name string
 	}
 	open := map[key]time.Time{}
+	held := map[key]time.Time{}
 	var spans []waitSpan
 	add := func(from, to time.Time, live bool) {
 		if from.Before(r.start) {
@@ -125,7 +138,7 @@ func (r *slotWaitReader) read(now time.Time) (total time.Duration, waitingSince 
 	}
 	for _, line := range strings.Split(string(b), "\n") {
 		f := strings.Fields(line)
-		if len(f) != 4 || (f[0] != "wait" && f[0] != "got") {
+		if len(f) != 4 || (f[0] != "wait" && f[0] != "got" && f[0] != "free") {
 			continue
 		}
 		ms, err1 := strconv.ParseInt(f[1], 10, 64)
@@ -134,26 +147,29 @@ func (r *slotWaitReader) read(now time.Time) (total time.Duration, waitingSince 
 			continue
 		}
 		at, k := time.UnixMilli(ms), key{pid, f[3]}
-		if f[0] == "wait" {
+		switch f[0] {
+		case "wait":
 			open[k] = at
-		} else if from, ok := open[k]; ok {
-			delete(open, k)
-			add(from, at, false)
+			delete(held, k)
+		case "got":
+			held[k] = at
+			if from, ok := open[k]; ok {
+				delete(open, k)
+				add(from, at, false)
+			}
+		case "free":
+			delete(held, k)
+		}
+	}
+	for k, from := range held {
+		if !r.gone(k.pid, k.name, from) {
+			holding = true
 		}
 	}
 	for k, from := range open {
 		end, live := now, true
 		d := deadWait{k.pid, k.name, from.UnixMilli()}
-		gone := !r.alive(k.pid)
-		if !gone {
-			at := r.started(k.pid)
-			if was, ok := r.seen[d]; !ok {
-				r.seen[d] = at
-			} else if was != "" && at != was {
-				gone = true
-			}
-		}
-		if gone {
+		if r.gone(k.pid, k.name, from) {
 			live = false
 			if _, ok := r.dead[d]; !ok {
 				r.dead[d] = now
@@ -186,5 +202,22 @@ func (r *slotWaitReader) read(now time.Time) (total time.Duration, waitingSince 
 		cur = &s
 	}
 	flush()
-	return total, waitingSince
+	return total, waitingSince, holding
+}
+
+// gone says whether the process that wrote the line at from is gone: its pid
+// is dead, or is another process's now (a live pid whose start time differs
+// from the one first seen). Called with mu held.
+func (r *slotWaitReader) gone(pid int, name string, from time.Time) bool {
+	if !r.alive(pid) {
+		return true
+	}
+	d := deadWait{pid, name, from.UnixMilli()}
+	at := r.started(pid)
+	if was, ok := r.seen[d]; !ok {
+		r.seen[d] = at
+	} else if was != "" && at != was {
+		return true
+	}
+	return false
 }

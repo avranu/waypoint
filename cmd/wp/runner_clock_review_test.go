@@ -161,32 +161,40 @@ func TestJobClockCancelStopsTheWatcherFirst(t *testing.T) {
 	}
 }
 
-// Audit 1391.31: the job's log says when it has waited long enough for the
-// runner to take another heavy job.
-func TestJobClockLogsWhenItGivesUpItsPlace(t *testing.T) {
+// WP-1915: the runner is told when a command of the job takes a slot and when
+// it lets go, and woken each time, so a place it frees is used at once.
+func TestJobClockTellsTheRunnerWhenASlotIsHeldAndReleased(t *testing.T) {
 	p := clockProc(t)
-	run := &jobRun{id: 11, timeout: time.Minute, out: newLogSink(), job: &activeJob{lane: laneHeavy}}
+	aj := &activeJob{id: 11, lane: laneAgent}
+	p.jobs[11] = aj
+	run := &jobRun{id: 11, timeout: time.Minute, out: newLogSink(), job: aj}
 	_, cancel, c := p.jobClock(context.Background(), run, 30)
 	defer cancel()
-	c.r.mu.Lock()
-	c.r.start = time.Now().Add(-10 * time.Minute)
-	c.r.mu.Unlock()
-	line := fmt.Sprintf("wait %d %d tests\n", time.Now().Add(-2*time.Minute).UnixMilli(), os.Getpid())
-	if err := os.WriteFile(c.path, []byte(line), 0o600); err != nil {
-		t.Fatal(err)
+	holding := func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return aj.slotHolding
 	}
-	deadline := time.Now().Add(3 * time.Second)
-	for !strings.Contains(run.out.Tail(), "the runner may take another heavy job") {
-		if time.Now().After(deadline) {
-			t.Fatalf("no line about the place it gave up: %q", run.out.Tail())
+	await := func(want bool) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for holding() != want {
+			if time.Now().After(deadline) {
+				t.Fatalf("slotHolding never became %v", want)
+			}
+			time.Sleep(5 * time.Millisecond)
 		}
-		time.Sleep(5 * time.Millisecond)
+		select {
+		case <-p.freed:
+		case <-time.After(time.Second):
+			t.Error("the runner wasn't woken")
+		}
 	}
-	select {
-	case <-p.freed:
-	case <-time.After(time.Second):
-		t.Error("the runner wasn't woken")
-	}
+	appendWait(t, c, "wait")
+	appendWait(t, c, "got")
+	await(true)
+	appendWait(t, c, "free")
+	await(false)
 }
 
 // Audit 1391.6: every wait for a slot is noted, not only wp slot run's.
@@ -202,9 +210,10 @@ func TestAcquireSlotNotesItsWait(t *testing.T) {
 		t.Fatal(err)
 	}
 	hold.release()
+	hold.release()
 	b, _ := os.ReadFile(waits)
 	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-	if len(lines) != 2 || !strings.HasPrefix(lines[0], "wait ") || !strings.HasSuffix(lines[0], " autopush") || !strings.HasPrefix(lines[1], "got ") {
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], "wait ") || !strings.HasSuffix(lines[0], " autopush") || !strings.HasPrefix(lines[1], "got ") || !strings.HasPrefix(lines[2], "free ") {
 		t.Fatalf("waits file: %q", b)
 	}
 }
@@ -217,7 +226,7 @@ func TestNoteSlotWaitSaysWhenItCannotWrite(t *testing.T) {
 	slotWaitWarn = &warn
 	t.Cleanup(func() { slotWaitWarn = old })
 	t.Setenv(slotWaitsEnv, filepath.Join(t.TempDir(), "gone", "waits"))
-	done := noteSlotWait("tests")
+	done, _ := noteSlotWait("tests")
 	done()
 	if n := strings.Count(warn.String(), "counts against the job's time"); n != 1 {
 		t.Errorf("warned %d times: %q", n, warn.String())
@@ -235,7 +244,8 @@ func TestNoteSlotWaitSaysWhenTheWriteFails(t *testing.T) {
 	slotWaitWarn = &warn
 	t.Cleanup(func() { slotWaitWarn = old })
 	t.Setenv(slotWaitsEnv, "/dev/full")
-	noteSlotWait("tests")()
+	got, _ := noteSlotWait("tests")
+	got()
 	if n := strings.Count(warn.String(), "counts against the job's time"); n != 1 {
 		t.Errorf("warned %d times: %q", n, warn.String())
 	}

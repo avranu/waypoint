@@ -21,7 +21,19 @@ const (
 )
 
 // sideLane: a lane with slots of its own, whose jobs wait only for each other.
-func sideLane(l string) bool { return l == LaneRequest || l == LaneMessage || l == LaneGateway }
+// The agent lane's places are the runner's own --max-agents (see agentPlaces).
+func sideLane(l string) bool {
+	return l == LaneRequest || l == LaneMessage || l == LaneGateway || l == LaneAgent
+}
+
+// agentPlaces is how many agent jobs runner r runs at once: its last report,
+// else the default.
+func agentPlaces(c *RunnerCapacity) int {
+	if c != nil && c.MaxAgents > 0 {
+		return c.MaxAgents
+	}
+	return DefaultMaxAgents
+}
 
 // sideLaneSlots is how many jobs side lane l runs at once.
 func sideLaneSlots(l string) int {
@@ -154,12 +166,25 @@ func (s *Service) runnerBusyWith(ctx context.Context, r *Runner, j *RunnerJobInf
 	if err := rows.Err(); err != nil {
 		return "", err
 	}
-	if len(doing) == 0 || (sideLane(lane) && inLane < sideLaneSlots(lane)) {
+	c := s.capacityOf(r.ID)
+	places := sideLaneSlots(lane)
+	if lane == LaneAgent {
+		places = agentPlaces(c)
+	}
+	stopped := lane == LaneAgent && c != nil && c.AgentsStopped != ""
+	if len(doing) == 0 || (sideLane(lane) && inLane < places && !stopped) {
 		return r.Name + " is online and should take it within seconds.", nil
 	}
 	running := "it is running " + listJobs(doing) + "."
-	c := s.capacityOf(r.ID)
+	if lane == LaneHeavy && c != nil && c.Heavy > inLane {
+		n := c.Heavy - inLane
+		running += fmt.Sprintf(" %d agent job%s hold%s a test slot, which counts as a heavy job while it does.", n, plural(n), map[bool]string{true: "", false: "s"}[n != 1])
+	}
 	switch {
+	case stopped && inLane < places:
+		return fmt.Sprintf("%s takes no more agent jobs while memory is short (%s); %s", r.Name, c.AgentsStopped, running), nil
+	case lane == LaneAgent:
+		return fmt.Sprintf("%s runs up to %d agent job%s at once (--max-agents); %s", r.Name, places, plural(places), running), nil
 	case lane == LaneRequest:
 		return fmt.Sprintf("%s runs %d approved commands, changes or session messages at once beside its other jobs; %s", r.Name, RequestLaneSlots, running), nil
 	case lane == LaneMessage:

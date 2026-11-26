@@ -84,7 +84,7 @@ func (p *runnerProc) jobClock(ctx context.Context, run *jobRun, workTimeout int)
 				}
 				_ = os.Remove(c.path)
 			}
-			p.setSlotWait(aj, time.Time{})
+			p.setSlotState(aj, time.Time{}, false)
 		})
 	}
 	if c.r != nil || c.work > 0 {
@@ -107,14 +107,15 @@ func (c *jobClock) env() []string {
 }
 
 // watch looks at the waits file every clockEvery: it tells the runner since
-// when the job has been waiting for a slot, and ends the context once the
+// when the job has been waiting for a slot and whether it holds one (an agent
+// job counts as heavy only then, WP-1915), and ends the context once the
 // agent has worked its limit. With no waits file nothing is left out of the
 // work.
 func (c *jobClock) watch(p *runnerProc, run *jobRun, end <-chan struct{}) {
 	aj := run.job
 	t := time.NewTicker(clockEvery)
 	defer t.Stop()
-	yielded := false
+	holding := false
 	for {
 		select {
 		case <-end:
@@ -126,15 +127,13 @@ func (c *jobClock) watch(p *runnerProc, run *jobRun, end <-chan struct{}) {
 		now := c.now()
 		var waited time.Duration
 		var since time.Time
+		var held bool
 		if c.r != nil {
-			waited, since = c.r.read(now)
+			waited, since, held = c.r.scan(now)
 		}
-		p.setSlotWait(aj, since)
-		if y := !since.IsZero() && now.Sub(since) >= slotWaitYield; y != yielded {
-			yielded = y
-			if y {
-				fmt.Fprintf(run.out, "Waiting for a test slot since %s UTC: the runner may take another heavy job meanwhile.\n", since.UTC().Format("15:04:05"))
-			}
+		p.setSlotState(aj, since, held)
+		if held != holding {
+			holding = held
 			p.wake()
 		}
 		if c.work > 0 && now.Sub(c.start)-waited >= c.work {
@@ -165,13 +164,15 @@ func (c *jobClock) timedOutAfter() string {
 	return s
 }
 
-// setSlotWait records since when the job has been waiting for a slot (zero:
-// it isn't); a job that has no activeJob (a test) has nowhere to.
-func (p *runnerProc) setSlotWait(aj *activeJob, since time.Time) {
+// setSlotState records since when the job has been waiting for a slot (zero:
+// it isn't) and whether it holds one; a job that has no activeJob (a test)
+// has nowhere to.
+func (p *runnerProc) setSlotState(aj *activeJob, since time.Time, holding bool) {
 	if aj == nil {
 		return
 	}
 	p.mu.Lock()
+	aj.slotHolding = holding
 	aj.slotWaitSince = since
 	p.mu.Unlock()
 }

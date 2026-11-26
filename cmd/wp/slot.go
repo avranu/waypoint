@@ -76,11 +76,17 @@ func defaultSlots() int { return max(1, runtime.NumCPU()/2) }
 
 // slotHold is a held slot.
 type slotHold struct {
-	f   *os.File
-	idx int
+	f     *os.File
+	idx   int
+	freed func() // notes the release for the runner (noteSlotWait)
 }
 
-func (h *slotHold) release() { _ = h.f.Close() }
+func (h *slotHold) release() {
+	_ = h.f.Close()
+	if h.freed != nil {
+		h.freed()
+	}
+}
 
 // acquireSlot waits for one of n slots called name. notify gets called once
 // if the wait passes slotWaitNotice. Inside an agent job the wait is noted
@@ -96,7 +102,8 @@ func acquireSlot(ctx context.Context, name string, n int, notify func()) (*slotH
 // acquireSlotIn is acquireSlot trying only the slots in order, in that order.
 // firstMiss, when not nil, is called once when the first pass finds none free.
 func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstMiss func()) (*slotHold, error) {
-	defer noteSlotWait(name)()
+	got, free := noteSlotWait(name)
+	defer got()
 	dir, err := slotDir()
 	if err != nil {
 		return nil, err
@@ -127,7 +134,7 @@ func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstM
 				wd, _ := os.Getwd()
 				_ = f.Truncate(0)
 				_, _ = f.WriteAt([]byte(fmt.Sprintf("%d\t%d\t%s\t%s\t%s\t%s\n", os.Getpid(), time.Now().Unix(), slotField(wd), slotField(strings.Join(os.Args[1:], " ")), slotField(slotSession()), slotField(slotCtxKey(ctx)))), 0)
-				return &slotHold{f: f, idx: i}, nil
+				return &slotHold{f: f, idx: i, freed: free}, nil
 			}
 			_ = f.Close()
 		}
