@@ -549,8 +549,8 @@ func (s *Store) TokenActor(ctx context.Context, tok string) (*kernel.Actor, erro
 // ActorFor is the one way an API token becomes an actor, for a request
 // carrying it (touch: it was just used) and for the server finishing what a
 // session shipped with it (WP-1370): the same expiry and disabled-user
-// checks, the same read-only, permissions and runner-job scope. col is the
-// hash it is found by, else its id.
+// checks, the same read-only, permissions and runner-job scope. The token is
+// found by hash, or by tokenID when hash is empty.
 func (s *Store) ActorFor(ctx context.Context, hash string, tokenID int64, touch bool) (*kernel.Actor, error) {
 	var id, uid int64
 	var ro bool
@@ -613,12 +613,13 @@ type UserLink struct {
 	URL       string    `json:"url,omitempty"`
 }
 
+// linkURL is the address of an "invite" or "reset" link.
 func (s *Store) linkURL(kind, tok string) string {
 	base := ""
 	if s.opt.BaseURL != nil {
 		base = s.opt.BaseURL()
 	}
-	return fmt.Sprintf("%s/%s/%s", strings.TrimRight(base, "/"), map[string]string{"invite": "invite", "reset": "reset"}[kind], tok)
+	return fmt.Sprintf("%s/%s/%s", strings.TrimRight(base, "/"), kind, tok)
 }
 
 // CreateInvite makes a single-use signup link. Only admins can invite:

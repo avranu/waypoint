@@ -3,21 +3,30 @@ package core
 import (
 	"strings"
 	"testing"
+
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 )
 
 // TestSubscriptionOrder pins the order reactions run in after a commit (WP-ADR151
 // section 1): stages in order, each stage's subscribers in order, then the batch
-// subscribers. Moving or adding one is a visible change to this list.
+// subscribers. A stage is written with the events it sees, and a subscriber for
+// some kinds only with those. Moving, adding or refiltering one is a visible
+// change to this list.
 func TestSubscriptionOrder(t *testing.T) {
 	s := &Service{}
 	plan := s.subscriptionPlan()
+	sees := map[kernel.Sees]string{kernel.SeesPrivate: "private", kernel.SeesEvery: "every", kernel.SeesVisible: "visible"}
 	var got []string
 	for _, st := range plan.stages {
 		var names []string
 		for _, sub := range st.subs {
-			names = append(names, sub.name)
+			name := sub.name
+			if sub.kinds != nil {
+				name += "[" + strings.Join(sub.kinds, ",") + "]"
+			}
+			names = append(names, name)
 		}
-		got = append(got, st.name+": "+strings.Join(names, " "))
+		got = append(got, st.name+"("+sees[st.sees]+"): "+strings.Join(names, " "))
 	}
 	var batch []string
 	for _, b := range plan.after {
@@ -25,10 +34,10 @@ func TestSubscriptionOrder(t *testing.T) {
 	}
 	got = append(got, "after: "+strings.Join(batch, " "))
 	want := []string{
-		"notices: deliverNotification",
-		"live: hub prWait stackParentMerged",
-		"notify: notifyFor",
-		"react: repoPushed kitPush resumeSessions dropUserTranscripts refreshKit checkReviewHealth urgentFromLink addPermissionRule backfillEstimates autoEstimateAndTitle autoRelate followUpsByFiles autoScreen deliverWebhooks pushIssueState pushComment pushCommentChange runRepoHook prAudit babysitEvent parkAnswered heldAnswered crossFiled leftover workLog checkSettled reviewAudit fanout goalDrift mergeOrder objective",
+		"notices(private): deliverNotification",
+		"live(every): hub prWait stackParentMerged",
+		"notify(visible): notifyFor",
+		"react(visible): repoPushed[repo.pushed] kitPush[repo.pushed] resumeSessions[agents.resumed] dropUserTranscripts[user.deleted] refreshKit[kit.source_set] checkReviewHealth[review.loop_recorded] urgentFromLink addPermissionRule backfillEstimates[project.updated] autoEstimateAndTitle[issue.created] autoRelate[issue.created] followUpsByFiles[external.pr_merged] autoScreen deliverWebhooks pushIssueState[issue.status_changed] pushComment[issue.commented] pushCommentChange runRepoHook prAudit babysitEvent parkAnswered heldAnswered crossFiled leftover workLog checkSettled reviewAudit fanout goalDrift mergeOrder objective",
 		"after: afterDispatch automations",
 	}
 	if len(got) != len(want) {

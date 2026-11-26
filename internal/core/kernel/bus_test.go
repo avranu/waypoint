@@ -58,6 +58,16 @@ func TestBusSeesFilters(t *testing.T) {
 	}
 }
 
+func TestBusOnKindWithNoKindsPanics(t *testing.T) {
+	st := New(nil, nil).Stage("s", SeesEvery)
+	defer func() {
+		if recover() == nil {
+			t.Fatal("no panic")
+		}
+	}()
+	st.OnKind(func(context.Context, *Actor, *Event) {})
+}
+
 func TestBusOnKind(t *testing.T) {
 	k := New(nil, nil)
 	var log []string

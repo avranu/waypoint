@@ -454,3 +454,42 @@ func TestJobTokenWithNilScopeFromTheHookReachesNoProject(t *testing.T) {
 		t.Errorf("scope = %#v, want non-nil and empty", a.Scope)
 	}
 }
+
+// The system actor is no account, so there is nobody to hand projects to:
+// BeforeDelete is not run for it.
+func TestDeleteUserBySystemActorSkipsBeforeDelete(t *testing.T) {
+	called := false
+	r := newRig(t, Hooks{BeforeDelete: func(context.Context, *kernel.Tx, int64, int64) error {
+		called = true
+		return nil
+	}})
+	u, _ := r.person(t, "robin")
+	if err := r.svc.DeleteUser(r.Ctx, kernel.SystemActor(), u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Error("BeforeDelete ran for the system actor")
+	}
+	if _, err := r.st.UserByID(r.Ctx, u.ID); !errors.Is(err, kernel.ErrNotFound) {
+		t.Errorf("the user is still there: %v", err)
+	}
+}
+
+func TestAccountChangesAreAudited(t *testing.T) {
+	r := newRig(t, Hooks{})
+	u, _ := r.person(t, "robin")
+	off := true
+	if _, err := r.svc.UpdateUser(r.Ctx, r.admin, u.ID, UserPatch{Disabled: &off}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.svc.CreateResetLink(r.Ctx, r.admin, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"user.create", "user.update", "user.reset_link"} {
+		n := count(t, r, `SELECT COUNT(*) FROM audit_log WHERE action = ? AND category = ? AND user_id = ? AND target_type = 'user' AND target_id = ?`,
+			action, kernel.AuditAccess, r.admin.User.ID, u.ID)
+		if n != 1 {
+			t.Errorf("%s audit rows = %d, want 1", action, n)
+		}
+	}
+}
