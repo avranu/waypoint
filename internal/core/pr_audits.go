@@ -146,7 +146,12 @@ func (s *Service) requestHeadAudit(ctx context.Context, pr *PullRequest) (bool, 
 	if err != nil || owner == 0 {
 		return false, err
 	}
-	a, err := s.RequestAudit(ctx, SystemActor(), AuditInput{PRID: pr.ID, Via: "system", owner: owner, head: pr.HeadSHA,
+	ledger, err := s.auditLedger(ctx, pr)
+	if err != nil {
+		s.log.WarnContext(ctx, "read what a pull request was told before its audit", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+		return false, err
+	}
+	a, err := s.RequestAudit(ctx, SystemActor(), AuditInput{PRID: pr.ID, Via: "system", owner: owner, head: pr.HeadSHA, ledger: ledger,
 		requestKey: fmt.Sprintf(prAuditKey, pr.ID, strings.ToLower(pr.HeadSHA))})
 	if err != nil {
 		s.log.Info("audit a pull request skipped", "repo", pr.Repo, "number", pr.Number, "err", err)

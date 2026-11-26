@@ -65,6 +65,7 @@ type ledgerItem struct {
 	Line           int
 	SHA            string // the head it was made on ("": the pull request's head)
 	Body           string
+	RefersTo       string // an audit finding: the earlier point its reviewer named (WP-1912)
 	At             time.Time
 	// Earlier ones: how they ended.
 	Fixed  bool   // fixed, verified or being fixed
@@ -232,6 +233,18 @@ func (l *ledger) pushedWith(id string) int {
 // symbol, saying much the same, after it was fixed. It returns the round
 // that fixed it (0 when none did).
 func (l *ledger) repeatOf(it ledgerItem, e LedgerEntry) (ledgerItem, int, bool) {
+	if it.RefersTo != "" && it.RefersTo != it.ID {
+		for _, p := range l.in.Earlier {
+			if p.ID == it.RefersTo {
+				return p, l.fixedIn(p), true
+			}
+		}
+		for _, r := range l.in.Rounds {
+			if r.Pushed && slices.ContainsFunc(r.Ledger, func(pe LedgerEntry) bool { return pe.ID == it.RefersTo }) {
+				return ledgerItem{ID: it.RefersTo, Kind: "finding"}, r.N, true
+			}
+		}
+	}
 	words := strings.Fields(e.Gist)
 	if len(words) == 0 {
 		return ledgerItem{}, 0, false
@@ -785,7 +798,7 @@ func (s *Service) findingItem(ctx context.Context, audit int64, f CodeAuditFindi
 	var sha string
 	var at int64
 	_ = s.db.R.QueryRowContext(ctx, `SELECT to_sha, created_at FROM code_audits WHERE id = ?`, audit).Scan(&sha, &at)
-	it := ledgerItem{ID: f.ID, Kind: "finding", Path: f.Path, Line: f.Line, SHA: sha, Body: f.Title + ". " + f.Problem,
+	it := ledgerItem{ID: f.ID, Kind: "finding", Path: f.Path, Line: f.Line, SHA: sha, Body: f.Title + ". " + f.Problem, RefersTo: f.RefersTo,
 		Fixed: f.State == "fixed", Dealt: !findingToDo(f)}
 	if at > 0 {
 		it.At = time.UnixMilli(at)

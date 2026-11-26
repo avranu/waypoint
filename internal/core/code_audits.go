@@ -256,6 +256,9 @@ type CodeAuditFinding struct {
 	Verdict     string `json:"verdict,omitempty"`
 	VerdictNote string `json:"verdict_note,omitempty"`
 	Lead        string `json:"lead,omitempty"`
+	// RefersTo is the id (c12 or 12.3) of the earlier point of the change's
+	// ledger this finding is about, as its reviewer named it (WP-1912).
+	RefersTo string `json:"refers_to,omitempty"`
 }
 
 // AuditAttempt is one model's go at an audit.
@@ -316,6 +319,7 @@ type AuditInput struct {
 	owner                    int64
 	purpose                  string
 	prContext                string
+	ledger                   string
 	authorModel              string
 	weakest                  string
 	reviewText, roundContext string
@@ -581,6 +585,9 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 		if in.prContext != "" {
 			prContext = in.prContext
 		}
+		if in.ledger != "" {
+			prContext += "\n\n" + in.ledger
+		}
 	case "branch":
 		a.Ref, a.Base = strings.TrimSpace(in.Ref), strings.TrimSpace(in.Base)
 		if a.Base == "" || a.Ref == "" {
@@ -828,7 +835,8 @@ const auditSchema = `{"type":"object","additionalProperties":false,"required":["
 	`"line":{"type":"integer","description":"The line the defect is on (0 if it has none)."},` +
 	`"severity":{"type":"string","enum":["critical","high","medium","low"]},` +
 	`"problem":{"type":"string","description":"What goes wrong, and when: the input or sequence of events that sets it off."},` +
-	`"confirm":{"type":"string","description":"How someone could confirm it: a test to write, an input to try, or the lines to read."}}}}}}`
+	`"confirm":{"type":"string","description":"How someone could confirm it: a test to write, an input to try, or the lines to read."},` +
+	`"refers_to":{"type":"string","description":"Only when the prompt lists known points: the id of the listed point this finding is about (a fix that did not hold, a wrong rejection). Leave it out for a finding about anything else."}}}}}}`
 
 // codeAuditPrompt is what the model is asked: the rules every audit keeps, then
 // what the requester asked for. The runner adds the change's diff.
@@ -1010,8 +1018,8 @@ func (s *Service) endAudit(ctx context.Context, a *CodeAudit, status, why string
 		}
 		if found != nil {
 			for i, f := range found.Findings {
-				if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO code_audit_findings(audit_id, ordinal, title, path, line, severity, problem, confirm, verdict, verdict_note, lead)
-					VALUES (?,?,?,?,?,?,?,?,?,?,?)`, a.ID, i+1, f.Title, f.Path, f.Line, f.Severity, f.Problem, f.Confirm, f.Verdict, f.VerdictNote, f.Lead); err != nil {
+				if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO code_audit_findings(audit_id, ordinal, title, path, line, severity, problem, confirm, verdict, verdict_note, lead, refers_to)
+					VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, a.ID, i+1, f.Title, f.Path, f.Line, f.Severity, f.Problem, f.Confirm, f.Verdict, f.VerdictNote, f.Lead, f.RefersTo); err != nil {
 					return err
 				}
 			}
@@ -1379,6 +1387,7 @@ func parseAuditAnswer(result map[string]any) (*auditAnswer, error) {
 			Severity string  `json:"severity"`
 			Problem  string  `json:"problem"`
 			Confirm  string  `json:"confirm"`
+			RefersTo string  `json:"refers_to"`
 			// What the runner's helpers add (WP-1320): the check's verdict
 			// and evidence, and the panel leads the runner names.
 			Verdict  string `json:"verdict"`
@@ -1412,7 +1421,7 @@ func parseAuditAnswer(result map[string]any) (*auditAnswer, error) {
 		sev := AuditSeverity(f.Severity)
 		p, line := cleanAuditPath(f.Path, int(f.Line))
 		a.Findings = append(a.Findings, CodeAuditFinding{Title: excerpt(title, 200), Path: p, Line: line, Severity: sev,
-			Problem: excerpt(problem, 4000), Confirm: excerpt(strings.TrimSpace(f.Confirm), 2000), Verdict: cleanVerdict(f.Verdict),
+			Problem: excerpt(problem, 4000), Confirm: excerpt(strings.TrimSpace(f.Confirm), 2000), Verdict: cleanVerdict(f.Verdict), RefersTo: cleanLedgerRef(f.RefersTo),
 			VerdictNote: excerpt(strings.TrimSpace(f.Evidence), 2000), Lead: strings.Join(leadIDs(strings.Join(append([]string{f.Lead}, f.Leads...), ",")), ",")})
 	}
 	slices.SortStableFunc(a.Findings, func(x, y CodeAuditFinding) int {
@@ -2136,7 +2145,7 @@ func (s *Service) auditCounts(ctx context.Context, id int64) AuditCounts {
 
 func (s *Service) loadFindings(ctx context.Context, a *CodeAudit) error {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT f.ordinal, f.title, f.path, f.line, f.severity, f.problem, f.confirm, f.state, f.note,
-		coalesce(ip.key || '-' || i.number, ''), i.id IS NOT NULL AND `+filingVoidOfIssue+`, coalesce(nullif(u.display_name, ''), u.username, f.decided_agent, ''), f.decided_at, f.verdict, f.verdict_note, f.lead
+		coalesce(ip.key || '-' || i.number, ''), i.id IS NOT NULL AND `+filingVoidOfIssue+`, coalesce(nullif(u.display_name, ''), u.username, f.decided_agent, ''), f.decided_at, f.verdict, f.verdict_note, f.lead, f.refers_to
 		FROM code_audit_findings f LEFT JOIN issues i ON i.id = f.issue_id LEFT JOIN projects ip ON ip.id = i.project_id
 		LEFT JOIN users u ON u.id = f.decided_by WHERE f.audit_id = ? ORDER BY f.ordinal`, a.ID)
 	if err != nil {
@@ -2147,7 +2156,7 @@ func (s *Service) loadFindings(ctx context.Context, a *CodeAudit) error {
 	for rows.Next() {
 		var f CodeAuditFinding
 		var at sql.NullInt64
-		if err := rows.Scan(&f.Ordinal, &f.Title, &f.Path, &f.Line, &f.Severity, &f.Problem, &f.Confirm, &f.State, &f.Note, &f.Issue, &f.FilingVoid, &f.By, &at, &f.Verdict, &f.VerdictNote, &f.Lead); err != nil {
+		if err := rows.Scan(&f.Ordinal, &f.Title, &f.Path, &f.Line, &f.Severity, &f.Problem, &f.Confirm, &f.State, &f.Note, &f.Issue, &f.FilingVoid, &f.By, &at, &f.Verdict, &f.VerdictNote, &f.Lead, &f.RefersTo); err != nil {
 			return err
 		}
 		f.ID = fmt.Sprintf("%d.%d", a.ID, f.Ordinal)
