@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/tracing"
 )
 
@@ -70,37 +71,26 @@ type pullRef struct {
 	number  int
 }
 
-// Event is something that happened.
-type Event struct {
-	ID        int64          `json:"id,omitempty"`
-	Kind      string         `json:"kind"`
-	ProjectID int64          `json:"project_id,omitempty"`
-	IssueID   int64          `json:"issue_id,omitempty"`
-	IssueKey  string         `json:"issue_key,omitempty"`
-	SprintID  int64          `json:"sprint_id,omitempty"`
-	Actor     *UserRef       `json:"actor,omitempty"`
-	Field     string         `json:"field,omitempty"`
-	Old       string         `json:"old,omitempty"`
-	New       string         `json:"new,omitempty"`
-	Data      map[string]any `json:"data,omitempty"`
-	At        time.Time      `json:"at"`
-	// ViaAutomation names the automation that made this change.
-	ViaAutomation string `json:"via_automation,omitempty"`
-	// UserID scopes an event to one user (timers, notifications).
-	UserID int64 `json:"-"`
-	// AdminOnly keeps an event of an admin automation from other people.
-	AdminOnly    bool `json:"-"`
-	forgeComment *forgeCommentChange
-	repoHook     *repoHookJob
-	pullLinked   *pullRef
-	stackParent  int64
-	permRule     *permRuleJob
-	retitle      bool
-	draft        bool
-	coalesce     bool
-	merged       bool
-	stored       *storedNotice
-	quiet        bool
+// The private messages a domain sends to its own reaction ride on the Event
+// as kernel attachments (kernel.Attach); each has a type of its own here.
+type (
+	// stackParentHint is the id of the stacked pull request a merge frees.
+	stackParentHint int64
+	// retitleHint marks an issue whose long title text a model should shorten.
+	retitleHint struct{}
+)
+
+// withHint attaches v to e and returns e, for building an Event in a call.
+func withHint[T any](e *Event, v T) *Event {
+	kernel.Attach(e, v)
+	return e
+}
+
+// hint is the attachment of type T on e, the zero value (nil for a pointer)
+// when it has none.
+func hint[T any](e *Event) T {
+	v, _ := kernel.Attached[T](e)
+	return v
 }
 
 // coalesceWindow is how long autosaves of one text field by one actor stay
@@ -192,14 +182,14 @@ func (t *tx) emit(e *Event) {
 		}
 	}
 	if e.IssueID != 0 && e.Kind != EvIssueDeleted {
-		if err := t.QueryRowContext(context.Background(), `SELECT draft FROM issues WHERE id = ?`, e.IssueID).Scan(&e.draft); err != nil {
-			e.draft = true
+		if err := t.QueryRowContext(context.Background(), `SELECT draft FROM issues WHERE id = ?`, e.IssueID).Scan(&e.Draft); err != nil {
+			e.Draft = true
 		}
 	}
-	if e.coalesce {
-		e.merged = t.mergesIntoLast(e)
+	if e.Coalesce {
+		e.Merged = t.mergesIntoLast(e)
 	}
-	if persisted[e.Kind] && !e.merged {
+	if persisted[e.Kind] && !e.Merged {
 		data := "{}"
 		if len(e.Data) > 0 {
 			b, _ := json.Marshal(e.Data)
@@ -278,11 +268,11 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 		defer span.End()
 	}
 	for _, e := range events {
-		if e.stored != nil {
-			s.deliverNotification(ctx, e.stored)
+		if hint[*storedNotice](e) != nil {
+			s.deliverNotification(ctx, hint[*storedNotice](e))
 		}
 	}
-	events = slices.DeleteFunc(slices.Clone(events), func(e *Event) bool { return e.stored != nil })
+	events = slices.DeleteFunc(slices.Clone(events), func(e *Event) bool { return hint[*storedNotice](e) != nil })
 	if len(events) == 0 {
 		return
 	}
@@ -291,8 +281,8 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 		s.prWait.wake(e)
 		s.onStackParentMerged(ctx, e)
 	}
-	events = slices.DeleteFunc(slices.Clone(events), func(e *Event) bool { return e.merged || e.quiet })
-	events = slices.DeleteFunc(slices.Clone(events), func(e *Event) bool { return e.draft })
+	events = slices.DeleteFunc(slices.Clone(events), func(e *Event) bool { return e.Merged || e.Quiet })
+	events = slices.DeleteFunc(slices.Clone(events), func(e *Event) bool { return e.Draft })
 	if len(events) == 0 {
 		return
 	}
@@ -318,10 +308,10 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 		if e.Kind == EvReviewLoopRecorded {
 			s.goBG(func() { s.checkReviewHealth(withoutLineLocks(ctx), e.ProjectID) })
 		}
-		if e.pullLinked != nil {
+		if hint[*pullRef](e) != nil {
 			s.goBG(func() { s.urgentFromLink(withoutLineLocks(ctx), e) })
 		}
-		if j := e.permRule; j != nil {
+		if j := hint[*permRuleJob](e); j != nil {
 			s.addPermissionRule(ctx, actor, j)
 		}
 		if e.Kind == EvProjectUpdated && e.Field == "auto_estimate" && e.New == "on" {
@@ -347,10 +337,10 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 		if e.Kind == EvIssueCommented {
 			s.pushComment(ctx, e)
 		}
-		if e.forgeComment != nil && (actor == nil || !actor.ForgeSync) {
+		if hint[*forgeCommentChange](e) != nil && (actor == nil || !actor.ForgeSync) {
 			s.pushCommentChange(ctx, e)
 		}
-		if j := e.repoHook; j != nil {
+		if j := hint[*repoHookJob](e); j != nil {
 			s.goBG(func() { s.runRepoHook(withoutLineLocks(ctx), j) })
 		}
 		s.onPRAudit(ctx, e)
@@ -439,7 +429,7 @@ func (h *Hub) Publish(e *Event) {
 	h.mu.Unlock()
 	cache := map[int64]bool{}
 	for _, sub := range subs {
-		if e.draft && sub.HidesDrafts {
+		if e.Draft && sub.HidesDrafts {
 			continue
 		}
 		if e.AdminOnly {

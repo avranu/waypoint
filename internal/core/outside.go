@@ -237,7 +237,7 @@ func (s *Service) addForgeComment(ctx context.Context, t *tx, f *Forge, i *Issue
 	}
 	if quiet {
 		for _, e := range t.events[n:] {
-			e.quiet = true
+			e.Quiet = true
 		}
 	}
 	if _, err := t.ExecContext(ctx, `UPDATE comments SET external_author = ?, external_via = ?, created_at = min(created_at, ?) WHERE id = ?`,
@@ -467,7 +467,7 @@ func (s *Service) releaseOutsideIssue(ctx context.Context, t *tx, issueID int64,
 		if err != nil {
 			return err
 		}
-		t.emit(&Event{Kind: EvIssueUpdated, ProjectID: i.ProjectID, IssueID: id, IssueKey: i.Key, Field: "draft", Old: "draft", New: "published", quiet: true})
+		t.emit(&Event{Kind: EvIssueUpdated, ProjectID: i.ProjectID, IssueID: id, IssueKey: i.Key, Field: "draft", Old: "draft", New: "published", Quiet: true})
 	}
 	return nil
 }

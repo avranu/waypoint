@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"slices"
 	"strings"
 	"time"
@@ -538,7 +539,7 @@ func (s *Service) AllowRefusedCall(ctx context.Context, actor *Actor, id int64, 
 		} else {
 			e.UserID = f.userID
 		}
-		e.permRule = &permRuleJob{refusal: f.ID, at: now, repo: repo, rule: rule}
+		kernel.Attach(e, &permRuleJob{refusal: f.ID, at: now, repo: repo, rule: rule})
 		t.emit(e)
 		t.audit(AuditEntry{Action: "refusal.allow", Category: AuditApproval, ProjectID: derefInt(ptrInt(f.projectID)), TargetType: "refusal", TargetID: f.ID,
 			Target: rule, Detail: excerpt(f.Command, 200), About: f.Agent})

@@ -337,7 +337,7 @@ func (s *Service) RetryRepoHook(ctx context.Context, actor *Actor, projectRef st
 		if n, _ := res.RowsAffected(); n == 0 {
 			return notFound("project repo")
 		}
-		t.emit(&Event{Kind: EvRepoHook, ProjectID: p.ID, repoHook: &repoHookJob{install: id}})
+		t.emit(withHint(&Event{Kind: EvRepoHook, ProjectID: p.ID}, &repoHookJob{install: id}))
 		return nil
 	})
 }
@@ -357,7 +357,7 @@ func (s *Service) refreshRepoHooks(ctx context.Context, t *tx, forgeID int64) er
 			rows.Close()
 			return err
 		}
-		evs = append(evs, &Event{Kind: EvRepoHook, repoHook: &repoHookJob{installOrg: id}})
+		evs = append(evs, withHint(&Event{Kind: EvRepoHook}, &repoHookJob{installOrg: id}))
 	}
 	rows.Close()
 	rows, err = t.QueryContext(ctx, `SELECT min(id), min(project_id) FROM project_repos
@@ -371,7 +371,7 @@ func (s *Service) refreshRepoHooks(ctx context.Context, t *tx, forgeID int64) er
 		if err := rows.Scan(&id, &projectID); err != nil {
 			return err
 		}
-		evs = append(evs, &Event{Kind: EvRepoHook, ProjectID: projectID, repoHook: &repoHookJob{install: id}})
+		evs = append(evs, withHint(&Event{Kind: EvRepoHook, ProjectID: projectID}, &repoHookJob{install: id}))
 	}
 	if err := rows.Err(); err != nil {
 		return err

@@ -115,3 +115,6 @@ func KnownPermission(p Permission) bool { return kernel.KnownPermission(p) }
 
 // PermissionLabel is p's label in the catalog, or p itself.
 func PermissionLabel(p Permission) string { return kernel.PermissionLabel(p) }
+
+// Event is something that happened; see kernel.Event.
+type Event = kernel.Event

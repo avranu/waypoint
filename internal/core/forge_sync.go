@@ -385,7 +385,7 @@ func (s *Service) forgeCommentChanged(ctx context.Context, t *tx, issueID, comme
 // pushCommentChange edits or deletes the copies Waypoint posted of a
 // comment, on the forge issues the Waypoint issue mirrors.
 func (s *Service) pushCommentChange(ctx context.Context, e *Event) {
-	ch := e.forgeComment
+	ch := hint[*forgeCommentChange](e)
 	cm, ok := s.Forges.(ForgeCommenter)
 	if !ok || ch == nil || len(ch.copies) == 0 {
 		return

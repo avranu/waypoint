@@ -224,7 +224,7 @@ func (s *Service) RecordSlotHolds(ctx context.Context, actor *Actor, in SlotHold
 
 // slotHoldsEvent is the quiet event for one machine's report.
 func slotHoldsEvent(uid int64, machine string, pending int64, res *SlotHoldsResult, refused bool) *Event {
-	return &Event{Kind: EvSlotHoldsRecorded, UserID: uid, quiet: true, Data: map[string]any{
+	return &Event{Kind: EvSlotHoldsRecorded, UserID: uid, Quiet: true, Data: map[string]any{
 		"machine": machine, "pending": pending, "stored": res.Stored, "duplicate": res.Duplicate,
 		"rejected": res.Rejected, "refused": refused,
 	}}

@@ -407,7 +407,7 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 			return err
 		}
 		if ended && fp.State == "merged" && attached != 0 {
-			t.emit(&Event{Kind: EvPRActivity, ProjectID: attached, New: "merged", quiet: true, stackParent: pr.ID, Data: map[string]any{"pr_id": pr.ID}})
+			t.emit(withHint(&Event{Kind: EvPRActivity, ProjectID: attached, New: "merged", Quiet: true, Data: map[string]any{"pr_id": pr.ID}}, stackParentHint(pr.ID)))
 		}
 		if pr.Outside {
 			return nil

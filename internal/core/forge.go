@@ -443,7 +443,7 @@ func (s *Service) DeleteForge(ctx context.Context, actor *Actor, id int64) error
 		t.audit(AuditEntry{Action: "forge.delete", Category: AuditSettings, TargetType: "forge", TargetID: id,
 			Target: f.Name, Detail: "disconnected " + kindLabel(f.Kind) + " at " + f.BaseURL})
 		for _, j := range jobs {
-			t.emit(&Event{Kind: EvRepoHook, repoHook: j})
+			t.emit(withHint(&Event{Kind: EvRepoHook}, j))
 		}
 		return nil
 	})
@@ -593,7 +593,7 @@ func (s *Service) AddProjectRepo(ctx context.Context, actor *Actor, projectRef s
 		if err := t.QueryRowContext(ctx, `SELECT id FROM project_repos WHERE project_id = ? AND forge_id = ? AND repo = ?`, p.ID, f.ID, repo).Scan(&id); err != nil {
 			return err
 		}
-		t.emit(&Event{Kind: EvRepoHook, ProjectID: p.ID, repoHook: &repoHookJob{install: id}})
+		t.emit(withHint(&Event{Kind: EvRepoHook, ProjectID: p.ID}, &repoHookJob{install: id}))
 		t.emit(&Event{Kind: EvRepoAttached, ProjectID: p.ID, New: repo, Data: map[string]any{"repo": repo, "forge": f.Name}})
 		detail := "attached from " + f.Name
 		if syncIssues {
@@ -682,7 +682,7 @@ func (s *Service) RemoveProjectRepo(ctx context.Context, actor *Actor, projectRe
 			return notFound("project repo")
 		}
 		if f, err := s.forgeByID(ctx, forgeID); err == nil && hookID != "" {
-			t.emit(&Event{Kind: EvRepoHook, ProjectID: p.ID, repoHook: &repoHookJob{remove: f, repo: repo, hookID: hookID}})
+			t.emit(withHint(&Event{Kind: EvRepoHook, ProjectID: p.ID}, &repoHookJob{remove: f, repo: repo, hookID: hookID}))
 		}
 		if _, err := t.ExecContext(ctx, `DELETE FROM project_repos WHERE id = ?`, id); err != nil {
 			return err

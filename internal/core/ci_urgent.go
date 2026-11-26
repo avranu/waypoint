@@ -43,7 +43,7 @@ func taggedUrgentNotice(task string, n int) string {
 // (WP-697). wp ship's pull requests open with the label; one from outside
 // stays where it is, so naming a tagged task doesn't jump the line.
 func (s *Service) urgentFromLink(ctx context.Context, e *Event) {
-	l := e.pullLinked
+	l := hint[*pullRef](e)
 	if !s.taskUrgent(ctx, SystemActor(), e.IssueKey) {
 		return
 	}

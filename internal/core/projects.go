@@ -1139,7 +1139,7 @@ func (s *Service) DeleteProject(ctx context.Context, actor *Actor, ref string) e
 		}
 		rows.Close()
 		for _, j := range hooks {
-			t.emit(&Event{Kind: EvRepoHook, repoHook: j})
+			t.emit(withHint(&Event{Kind: EvRepoHook}, j))
 		}
 		if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO forge_repo_ignores(forge_id, repo, created_at)
 			SELECT pr.forge_id, pr.repo, ? FROM project_repos pr WHERE pr.project_id = ? AND NOT EXISTS (

@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -1106,9 +1107,12 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 		}
 		s.recordMentions(ctx, t, mentionSource{typ: KIssue, id: id, project: &p.ID, text: in.Title + "\n" + in.Description,
 			user: actor.ID(), agent: actor.AgentName()})
-		t.emit(&Event{Kind: EvIssueCreated, ProjectID: p.ID, IssueID: id, IssueKey: key, New: in.Title,
-			Data:    map[string]any{"status_id": st.ID, "category": st.Category, "type": in.Type},
-			retitle: in.TitleIsText || longForTitle(in.Title)})
+		ev := &Event{Kind: EvIssueCreated, ProjectID: p.ID, IssueID: id, IssueKey: key, New: in.Title,
+			Data: map[string]any{"status_id": st.ID, "category": st.Category, "type": in.Type}}
+		if in.TitleIsText || longForTitle(in.Title) {
+			kernel.Attach(ev, retitleHint{})
+		}
+		t.emit(ev)
 		if delegated && !actor.IsAgent() {
 			auditDelegation(t, p.ID, id, key, "", in.Agent)
 		}
@@ -1586,7 +1590,7 @@ func (s *Service) applyPatch(ctx context.Context, t *tx, actor *Actor, i *Issue,
 	wrote := false
 	ev := func(field, old, new string) {
 		t.emit(&Event{Kind: EvIssueUpdated, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key, Field: field, Old: old, New: new,
-			coalesce: field == "description" || field == "intent"})
+			Coalesce: field == "description" || field == "intent"})
 	}
 	if p.Title != nil {
 		title := strings.TrimSpace(*p.Title)
@@ -2361,7 +2365,7 @@ func (s *Service) DeleteIssue(ctx context.Context, actor *Actor, ref string, cas
 				return err
 			}
 		}
-		t.emit(&Event{Kind: EvIssueDeleted, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key, Old: i.Title, draft: i.Draft})
+		t.emit(&Event{Kind: EvIssueDeleted, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key, Old: i.Title, Draft: i.Draft})
 		detail := "deleted “" + excerpt(i.Title, 120) + "”"
 		if i.Draft {
 			detail = "deleted a draft"
@@ -3098,7 +3102,7 @@ func (s *Service) UpdateComment(ctx context.Context, actor *Actor, commentID int
 		project := i.ProjectID
 		s.recordMentions(ctx, t, mentionSource{typ: "comment", id: commentID, project: &project, text: body,
 			user: actor.ID(), agent: actor.AgentName()})
-		t.emit(&Event{Kind: EvProjectUpdated, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key, forgeComment: fc})
+		t.emit(withHint(&Event{Kind: EvProjectUpdated, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key}, fc))
 		s.noteIssueMentions(ctx, t, actor, issueID)
 		return s.reindex(ctx, t, issueID)
 	})
@@ -3135,7 +3139,7 @@ func (s *Service) DeleteComment(ctx context.Context, actor *Actor, commentID int
 		if _, err := t.ExecContext(ctx, `DELETE FROM comments WHERE id = ?`, commentID); err != nil {
 			return err
 		}
-		t.emit(&Event{Kind: EvProjectUpdated, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key, forgeComment: fc})
+		t.emit(withHint(&Event{Kind: EvProjectUpdated, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key}, fc))
 		s.noteIssueMentions(ctx, t, actor, issueID)
 		return s.reindex(ctx, t, issueID)
 	})

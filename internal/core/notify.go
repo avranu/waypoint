@@ -261,7 +261,7 @@ func (t *tx) storeNotice(ctx context.Context, userID int64, kind, title, body, l
 		return false, fmt.Errorf("store notification: %w", err)
 	}
 	id, _ := res.LastInsertId()
-	t.emit(&Event{Kind: evNotificationStored, stored: &storedNotice{id: id, user: u, kind: kind, title: title, body: body, link: link}})
+	t.emit(withHint(&Event{Kind: evNotificationStored}, &storedNotice{id: id, user: u, kind: kind, title: title, body: body, link: link}))
 	return true, nil
 }
 

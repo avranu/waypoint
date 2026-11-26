@@ -523,7 +523,7 @@ func (s *Service) onMergeOrderEvent(ctx context.Context, e *Event) {
 	case e.IssueID == 0:
 		return
 	case e.Kind == EvIssueStatus, e.Kind == EvIssueUpdated && e.Field == "relation", e.Kind == EvIssueLinked && e.Field == "pull":
-	case e.Kind == EvProjectUpdated && e.forgeComment == nil:
+	case e.Kind == EvProjectUpdated && hint[*forgeCommentChange](e) == nil:
 	default:
 		return
 	}

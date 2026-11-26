@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/core/udiff"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
@@ -1880,7 +1881,7 @@ func (s *Service) DecideRequest(ctx context.Context, actor *Actor, ref string, i
 		e := requestEvent(EvRequestUpdated, r.ID, r.Ref, r.Number, r.Kind, state, r.userID, r.projectID, r.sessionID, r.Title, r.Agent)
 		e.Data["decision"] = decisionWord(in.Decision, state)
 		if ruleRepo != nil {
-			e.permRule = &permRuleJob{request: r.ID, repo: ruleRepo, rule: in.Rule}
+			kernel.Attach(e, &permRuleJob{request: r.ID, repo: ruleRepo, rule: in.Rule})
 		}
 		t.emit(e)
 		t.audit(AuditEntry{Action: "request." + in.Decision, Category: AuditApproval, ProjectID: derefInt(ptrInt(r.projectID)), TargetType: "request", TargetID: r.ID,

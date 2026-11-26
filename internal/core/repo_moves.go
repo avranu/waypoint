@@ -368,7 +368,7 @@ func (s *Service) moveRepo(ctx context.Context, actor *Actor, f *Forge, old, rep
 		}
 		for _, a := range from {
 			moved = append(moved, a.project)
-			t.emit(&Event{Kind: EvRepoHook, ProjectID: a.project, repoHook: &repoHookJob{install: a.id}})
+			t.emit(withHint(&Event{Kind: EvRepoHook, ProjectID: a.project}, &repoHookJob{install: a.id}))
 			t.emit(&Event{Kind: EvProjectUpdated, ProjectID: a.project})
 			detail, action := fmt.Sprintf("%s was renamed or transferred on %s", old, f.Name), "repo.move"
 			if relink {
