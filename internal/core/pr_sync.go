@@ -12,8 +12,8 @@ import (
 // once for the gate check, once for a babysit step (WP-1980). Webhook-driven
 // re-reads are coalesced per pull request on the trailing edge instead: the
 // first request waits prSyncDelay, requests that arrive before it starts
-// join it, and one that arrives while it runs makes exactly one more run
-// after it. A run therefore always starts after the last request, so a
+// join it, and one that arrives while it runs makes exactly one more run,
+// prSyncDelay after it. A run therefore always starts after the last request, so a
 // reply is never missed for a stale read, and a burst costs one or two.
 //
 // Nothing survives a restart: the gate's periodic recheck and the babysit
@@ -52,19 +52,21 @@ func (s *Service) requestPRSync(prID int64, want int) {
 }
 
 func (s *Service) runPRSync(prID int64, st *prSyncState) {
-	if d := s.prSyncDelay; d > 0 {
-		after := s.prSyncAfter
-		if after == nil {
-			after = time.After
-		}
-		select {
-		case <-after(d):
-		case <-s.bgCtx.Done():
-			s.dropPRSync(prID)
-			return
-		}
-	}
 	for {
+		// every run waits, the one after a request that came mid-run too:
+		// the rest of that burst joins it rather than each starting its own
+		if d := s.prSyncDelay; d > 0 {
+			after := s.prSyncAfter
+			if after == nil {
+				after = time.After
+			}
+			select {
+			case <-after(d):
+			case <-s.bgCtx.Done():
+				s.dropPRSync(prID)
+				return
+			}
+		}
 		s.prSyncMu.Lock()
 		want := st.want
 		st.want, st.pending, st.active = 0, false, true
@@ -85,6 +87,7 @@ func (s *Service) runPRSync(prID int64, st *prSyncState) {
 			s.prSyncMu.Unlock()
 			return
 		}
+		st.pending = true
 		s.prSyncMu.Unlock()
 	}
 }
