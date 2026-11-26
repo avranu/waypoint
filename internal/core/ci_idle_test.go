@@ -117,6 +117,7 @@ func TestCIGateIdle(t *testing.T) {
 		{"read, active recently", &ciGate{readAt: t0, activeAt: t0, data: &ciRepoData{}}, time.Minute, true, false},
 		{"read long ago", &ciGate{readAt: t0, data: &ciRepoData{}}, ciIdleReread + ciActiveFor, true, false},
 		{"read failed", &ciGate{readAt: t0, data: &ciRepoData{err: errors.New("boom")}}, ciActiveFor, true, false},
+		{"read found work, no sweep since", &ciGate{readAt: t0, activeAt: t0, data: &ciRepoData{active: []ActionRun{{}}}}, time.Minute + ciActiveFor, true, false},
 		{"history read, quiet", &ciGate{histAt: t0}, ciActiveFor, false, true},
 		{"history never read", &ciGate{readAt: t0, data: &ciRepoData{}}, ciActiveFor, false, false},
 	} {

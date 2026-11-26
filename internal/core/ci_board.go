@@ -288,6 +288,11 @@ func (c *ciBoardCache) idle(key string, now time.Time, board bool) bool {
 		if g.data == nil || g.data.err != nil {
 			return false
 		}
+		// a read that found work is never reused, however long ago the
+		// last sweep was: its runs have moved on since
+		if len(g.data.active) > 0 || len(g.data.running) > 0 {
+			return false
+		}
 	}
 	if at.IsZero() || now.Sub(g.activeAt) < ciActiveFor {
 		return false
