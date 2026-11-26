@@ -419,8 +419,12 @@ func (c *cli) changeState(wait time.Duration, mustRead bool, change func(*State)
 	}
 	defer unlock()
 	var s State
-	if err := readJSON(filepath.Join(c.dir, "state.json"), &s); err != nil {
+	path := filepath.Join(c.dir, "state.json")
+	if err := readJSON(path, &s); err != nil {
 		if mustRead {
+			return err
+		}
+		if err := setBadStateAside(path, err); err != nil {
 			return err
 		}
 		s = State{}
@@ -428,7 +432,24 @@ func (c *cli) changeState(wait time.Duration, mustRead bool, change func(*State)
 	change(&s)
 	s.pruneGoneClaims()
 	c.state = s
-	return writeJSON(filepath.Join(c.dir, "state.json"), s)
+	return writeJSON(path, s)
+}
+
+// setBadStateAside makes way for a new state file where the one at path
+// couldn't be read for readErr. A file that isn't a valid state is copied to
+// path+".bad" first, so what it held (unsent events among it) isn't lost. Any
+// other failure is returned: the file may be sound, and is left as it is.
+func setBadStateAside(path string, readErr error) error {
+	var syntax *json.SyntaxError
+	var mistyped *json.UnmarshalTypeError
+	if !errors.As(readErr, &syntax) && !errors.As(readErr, &mistyped) {
+		return readErr
+	}
+	b, err := os.ReadFile(path) // #nosec G304 -- our own state file
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path+".bad", b, 0o600)
 }
 
 // lockFile takes an exclusive lock by creating path (works on every OS).
