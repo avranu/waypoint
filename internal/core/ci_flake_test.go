@@ -347,6 +347,37 @@ func TestFlakeRerunWhileRestingForgeCannot(t *testing.T) {
 	}
 }
 
+// The "can't" a rest remembered is the rest's: once the babysit no longer
+// rests on the head, the re-run before a round is asked for once more.
+func TestFlakeRerunCannotEndsWithTheRest(t *testing.T) {
+	be, pr, _ := parkedOnNamedComment(t)
+	be.sg.retryNone = true
+	be.checks(pr.HeadSHA, restFailing)
+	be.step()
+	if fr := parseFlakeRerun(be.babysit().flakeRerun); !fr.Cannot {
+		t.Fatalf("not remembered for the head: %+v", fr)
+	}
+	be.sg.retryNone = false
+	b := be.babysit()
+	failed := []string{restFailing.Name}
+	if be.s.rerunForFlake(be.ctx, b, pr, failed) || len(be.retries()) != 1 {
+		t.Fatalf("asked again while resting: %v", be.retries())
+	}
+	lastRound(b).Reply = "go on"
+	if restingOn(b, pr) {
+		t.Fatal("still resting")
+	}
+	if !be.s.rerunForFlake(be.ctx, b, pr, failed) {
+		t.Fatalf("no re-run before the round: %+v", parseFlakeRerun(b.flakeRerun))
+	}
+	if n := len(be.retries()); n != 2 {
+		t.Errorf("the forge was asked %v, want a second time", be.retries())
+	}
+	if fr := parseFlakeRerun(be.babysit().flakeRerun); fr.Cannot || !sameSHA(fr.SHA, pr.HeadSHA) {
+		t.Errorf("marker = %+v", fr)
+	}
+}
+
 // A first-time failed check with an open audit finding is re-run before the
 // round for the finding: a flake costs no round, and the finding waits for
 // the head's checks (WP-1853).

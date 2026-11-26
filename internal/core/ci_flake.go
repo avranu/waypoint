@@ -69,6 +69,11 @@ func (s *Service) rerunForFlake(ctx context.Context, b *Babysit, pr *PullRequest
 	}
 	fr := parseFlakeRerun(b.flakeRerun)
 	now := s.now()
+	if fr.Cannot && sameSHA(fr.SHA, pr.HeadSHA) && !restingOn(b, pr) {
+		// The rest's "can't" spared its sweeps: before a round the forge is
+		// asked once more, since what it couldn't re-run then it may now.
+		fr = flakeRerun{}
+	}
 	if sameSHA(fr.SHA, pr.HeadSHA) {
 		if fr.Cannot {
 			return false
