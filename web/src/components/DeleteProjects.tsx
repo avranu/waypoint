@@ -65,7 +65,7 @@ export function DeleteProjectsDialog({
   const run = async () => {
     setDone(0)
     const queue = [...doomed]
-    const failed: string[] = []
+    const failed = new Set<number>()
     let err: unknown
     let count = 0
     await Promise.all(
@@ -75,7 +75,7 @@ export function DeleteProjectsDialog({
             await api.del(`/projects/${enc(p.key)}`)
             qc.removeQueries({ queryKey: ['project', p.key] })
           } catch (e) {
-            failed.push(p.name)
+            failed.add(p.id)
             err = e
           }
           setDone(++count)
@@ -83,13 +83,13 @@ export function DeleteProjectsDialog({
       }),
     )
     qc.invalidateQueries()
-    const gone = doomed.filter((p) => !failed.includes(p.name))
+    const gone = doomed.filter((p) => !failed.has(p.id))
     if (gone.some((p) => pathname === `/p/${p.key}` || pathname.startsWith(`/p/${p.key}/`)))
       navigate({ to: '/' })
-    if (failed.length) {
+    if (failed.size) {
       toastError(err)
       setDone(null)
-      setPicked(new Set(doomed.filter((p) => failed.includes(p.name)).map((p) => p.id)))
+      setPicked(new Set(doomed.filter((p) => failed.has(p.id)).map((p) => p.id)))
       setConfirming(false)
       return
     }
@@ -142,8 +142,8 @@ export function DeleteProjectsDialog({
             </ul>
           )}
           <p className="text-xs text-subtle">
-            Repositories {single ? 'it' : 'they'} synced won't come back through automatic projects;
-            attach one again from a project's settings.
+            Repositories attached to {single ? 'it' : 'them'} won't be offered again by automatic
+            projects or Discover repositories; attach one again from a project's settings.
           </p>
         </div>
       </Dialog>
