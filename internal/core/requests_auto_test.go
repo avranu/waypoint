@@ -314,6 +314,7 @@ func TestDecisionWaitsToShareAWakeUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.s.CheckBabysits(r.ctx)
+	r.s.releaseDueBatches(r.ctx)
 	if len(run.jobs) != 0 {
 		t.Fatalf("woke the agent at once: %+v", run.jobs)
 	}
@@ -332,6 +333,7 @@ func TestDecisionWaitsToShareAWakeUp(t *testing.T) {
 	}
 	r.setClock(r.clockNow().Add(cacheWarm - cacheMargin))
 	r.s.CheckBabysits(r.ctx)
+	r.s.releaseDueBatches(r.ctx)
 	if len(run.jobs) != 2 || !strings.Contains(string(run.jobs[1].In.Input), "nats") {
 		t.Fatalf("want it before the cache cools: %+v", run.jobs)
 	}

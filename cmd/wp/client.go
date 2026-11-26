@@ -138,9 +138,20 @@ func (c *cli) send(ctx context.Context, method, path, contentType string, rd io.
 	}
 	defer resp.Body.Close()
 	c.seeServerVersion(resp.Header.Get(serverVersionHeader))
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	limit := int64(32 << 20)
+	if c.wholeBody > 0 {
+		limit = c.wholeBody
+	}
+	// One byte past the limit tells a body that fits from one cut off.
+	b, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, err
+	}
+	if int64(len(b)) > limit {
+		if c.wholeBody > 0 && resp.StatusCode < 300 {
+			return nil, fmt.Errorf("%s %s answered more than %d bytes, the most wp takes: nothing was written", method, strings.SplitN(path, "?", 2)[0], limit)
+		}
+		b = b[:limit]
 	}
 	if resp.StatusCode >= 300 {
 		var e struct {
