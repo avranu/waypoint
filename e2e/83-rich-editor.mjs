@@ -772,8 +772,10 @@ for (const [width, scheme] of looks([
   ).json();
   await ppage.goto(`${base}/issue/${pm.key}`);
   await ppage.locator(".prose-wp strong").click();
-  await ppage.locator('[contenteditable="true"][aria-label="Description"]').waitFor();
-  await ppage.getByRole("button", { name: "Edit as markdown" }).click();
+  const prich = ppage.locator('[contenteditable="true"][aria-label="Description"]');
+  await prich.waitFor();
+  // The new-comment box is a formatted editor too, with its own button.
+  await toolbarOf(prich).getByRole("button", { name: "Edit as markdown" }).click();
   await ppage.locator("textarea[aria-label=Description]").waitFor();
   await ppage.getByRole("textbox", { name: "Description" }).press("Escape");
   await ppage.waitForFunction(() => !document.querySelector('[aria-label="Description"]'));
