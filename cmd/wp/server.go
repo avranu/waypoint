@@ -327,6 +327,10 @@ func cmdServerMetrics(c *cli, args []string) error {
 	return nil
 }
 
+// maxProfileBytes is the largest profile wp takes: twice the 64 MiB at which
+// the Go runtime stops a goroutine dump.
+const maxProfileBytes = 128 << 20
+
 func cmdServerProfile(c *cli, args []string) error {
 	fs := c.flags()
 	kind := fs.String("kind", "goroutine", "`KIND`: goroutine (text), cpu or heap (files for go tool pprof)")
@@ -349,6 +353,8 @@ func cmdServerProfile(c *cli, args []string) error {
 		q.Set("seconds", strconv.Itoa(*seconds))
 		c.longPoll = time.Duration(min(max(*seconds, 1), 60)+30) * time.Second
 	}
+	// A cut-off profile is corrupt, so take it whole or fail.
+	c.wholeBody = maxProfileBytes
 	raw, err := c.call("GET", "/api/v1/server/profile?"+q.Encode(), nil)
 	if err != nil {
 		return err
