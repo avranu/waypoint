@@ -104,13 +104,9 @@ const (
 	PermAdmin             = kernel.PermAdmin
 )
 
-const gotifyMask = kernel.GotifyMask
-
 var (
 	SessionEfforts         = kernel.SessionEfforts
 	SessionPermissionModes = kernel.SessionPermissionModes
-
-	permissionGroups = kernel.PermissionGroups
 )
 
 // SystemActor acts with full access, for CLI bootstrap and background jobs.
