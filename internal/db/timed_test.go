@@ -188,7 +188,7 @@ func TestTimedDriverForwardsInterfaces(t *testing.T) {
 			"SessionResetter":                assert[driver.SessionResetter](inner, wrapped),
 			"Validator":                      assert[driver.Validator](inner, wrapped),
 			"NamedValueChecker":              assert[driver.NamedValueChecker](inner, wrapped),
-			"ColumnConverter":                assert[driver.ColumnConverter](inner, wrapped),
+			"ColumnConverter":                assert[driver.ColumnConverter](inner, wrapped), //nolint:staticcheck // deprecated, but database/sql still uses it
 			"StmtExecContext":                assert[driver.StmtExecContext](inner, wrapped),
 			"StmtQueryContext":               assert[driver.StmtQueryContext](inner, wrapped),
 			"RowsNextResultSet":              assert[driver.RowsNextResultSet](inner, wrapped),

@@ -444,7 +444,8 @@ func (d *DB) SetSlowHandler(f func(SlowStatement)) {
 }
 
 // SlowCallers is the n callers whose statements over 50 ms took the most time
-// in total since the server started, and how many callers did not fit.
+// in total since the server started, and how many such statements and write
+// transactions were not counted because their caller did not fit.
 func (d *DB) SlowCallers(n int) (top []CallerTotal, dropped int) {
 	d.mon.mu.Lock()
 	for _, t := range d.mon.callers {
