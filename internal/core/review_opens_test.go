@@ -19,26 +19,27 @@ import (
 	"git.jmann.me/claude/waypoint/internal/db"
 )
 
-// loopSnapshot is a loopEnv at rest, kept so that many tests that start from
-// the same round (newLoopEnv, then one review) build it once. Building it
-// is most of such a test's time: each env creates a database, a project, a
+// loopSnapshot is a loopEnv at rest, kept so that a test whose cells all
+// start from the same round (newLoopEnv, then one review) builds it once.
+// Building it is most of such a test's time: each env creates a database, a project, a
 // runner, a forge and issues through the Service, and every statement is
 // parsed again (WP-1942 has the figures). start makes a new loopEnv from
 // it: its own database, a copy of the snapshot's, its own Service, and its
-// own copies of what the test keeps in memory (actors, clock, caught jobs,
-// the fake forge, gateway and decision model).
+// own copies of what the test keeps in memory: the actors, project, runner
+// and task (deepCopy), the clock and the caught jobs, and a new fake forge,
+// gateway and decision model holding what the build left in them.
 //
 // Of what the build left in the Service's memory, start carries the
 // gateway's cached task limits, so the env asks the gateway when a build
 // would. It does not carry what a restart loses and the Service makes
 // again when it is needed: the similarity and glossary indexes and the
-// goals' graph and whether there are goals (read from the database), the
-// count of goal judgements started (compared only with itself), the audit
-// and branch locks (made on first use), and the job ledger's counts of log
-// records (read by job health, not by a round).
-// TestLoopSnapshotEnvMatchesABuild fails when a build leaves any other
-// field of the Service set that a started env lacks, as far as setFields
-// sees.
+// relation graph (read from the database), that the goals were counted
+// (they are counted again), the goal judge timer's generation (compared
+// only with itself), the audit and branch locks (made on first use), and
+// the job ledger's counts of log records (read by job health, not by a
+// round). TestLoopSnapshotEnvMatchesABuild names each of those fields and
+// fails when a build and a started env differ in any other field of the
+// Service, either way, as far as setFields sees.
 type loopSnapshot struct {
 	src *loopEnv
 	db  []byte
@@ -83,14 +84,13 @@ func (sn *loopSnapshot) start(t *testing.T) *loopEnv {
 		s.gatewayLimits.Store(k, v)
 		return true
 	})
-	e.admin = copyActor(src.admin)
+	e.admin = deepCopy(src.admin)
 
 	// newTaskEnv: the agent's actor, in the session the hook opened.
-	te := &taskEnv{env: e, ag: copyActor(src.ag), cli: src.cli, session: src.session}
+	te := &taskEnv{env: e, ag: deepCopy(src.ag), cli: src.cli, session: src.session}
 
 	// newAPEnv: the project, and the jobs caught so far with their results.
-	p := *src.p
-	a := &apEnv{taskEnv: te, p: &p, jobs: slices.Clone(src.jobs), res: maps.Clone(src.res)}
+	a := &apEnv{taskEnv: te, p: deepCopy(src.p), jobs: deepCopy(src.jobs), res: deepCopy(src.res)}
 	a.catchJobs()
 
 	// taskGateway, firstEnv, newLoopEnv: the fake gateway, the fake forge
@@ -102,27 +102,163 @@ func (sn *loopSnapshot) start(t *testing.T) *loopEnv {
 	tl := &taskLLM{LLM: s.LLM, tasks: map[string]*gatewayTask{}, limitsCalls: sl.limitsCalls}
 	j := &jevScript{choice: maps.Clone(src.j.choice), calls: src.j.calls, states: slices.Clone(src.j.states)}
 	s.LLM = &gatewayScoringLLM{taskLLM: tl, jevScript: j}
-	box, task, issue := *src.box, *src.task, *src.task.Issue
-	task.Issue = &issue
-	box.Labels, box.AllowedDirs = slices.Clone(box.Labels), slices.Clone(box.AllowedDirs)
-	box.CLIs, box.Features = slices.Clone(box.CLIs), slices.Clone(box.Features)
-	return &loopEnv{apEnv: a, box: &box, g: g, j: j, task: &task}
+	return &loopEnv{apEnv: a, box: deepCopy(src.box), g: g, j: j, task: deepCopy(src.task)}
 }
 
-// copyActor is a with its own user, scope, automation and budget.
-func copyActor(a *Actor) *Actor {
-	c := *a
-	c.User, c.Automation, c.budget = ptrCopy(a.User), ptrCopy(a.Automation), ptrCopy(a.budget)
-	c.scope = maps.Clone(a.scope)
-	return &c
-}
-
-func ptrCopy[T any](p *T) *T {
-	if p == nil {
-		return nil
+// deepCopy is x with nothing shared: every pointer, slice, map and
+// interface value reached through x and this package's structs is new,
+// unexported fields included. A pointer met twice is copied once. Other
+// packages' structs (a time, a mutex), funcs and channels are assigned.
+func deepCopy[T any](x T) T {
+	var out T
+	seen := map[unsafe.Pointer]reflect.Value{}
+	var cp func(dst, src reflect.Value)
+	// held is a value of v's type holding v, addressable so cp can fill a copy of it.
+	held := func(v reflect.Value) reflect.Value {
+		h := reflect.New(v.Type()).Elem()
+		h.Set(v)
+		return h
 	}
-	v := *p
-	return &v
+	cp = func(dst, src reflect.Value) {
+		switch src.Kind() {
+		case reflect.Pointer:
+			if src.IsNil() {
+				return
+			}
+			if n, ok := seen[src.UnsafePointer()]; ok {
+				dst.Set(n)
+				return
+			}
+			n := reflect.New(src.Type().Elem())
+			seen[src.UnsafePointer()] = n
+			cp(n.Elem(), src.Elem())
+			dst.Set(n)
+		case reflect.Struct:
+			if !strings.HasSuffix(src.Type().PkgPath(), "/internal/core") {
+				dst.Set(src)
+				return
+			}
+			for i := range src.NumField() {
+				// #nosec G103 -- a test copies unexported fields in place
+				cp(reflect.NewAt(dst.Field(i).Type(), unsafe.Pointer(dst.Field(i).UnsafeAddr())).Elem(),
+					reflect.NewAt(src.Field(i).Type(), unsafe.Pointer(src.Field(i).UnsafeAddr())).Elem())
+			}
+		case reflect.Array:
+			for i := range src.Len() {
+				cp(dst.Index(i), src.Index(i))
+			}
+		case reflect.Slice:
+			if src.IsNil() {
+				return
+			}
+			n := reflect.MakeSlice(src.Type(), src.Len(), src.Len())
+			for i := range src.Len() {
+				cp(n.Index(i), src.Index(i))
+			}
+			dst.Set(n)
+		case reflect.Map:
+			if src.IsNil() {
+				return
+			}
+			n := reflect.MakeMapWithSize(src.Type(), src.Len())
+			for it := src.MapRange(); it.Next(); {
+				k, v := reflect.New(src.Type().Key()).Elem(), reflect.New(src.Type().Elem()).Elem()
+				cp(k, held(it.Key()))
+				cp(v, held(it.Value()))
+				n.SetMapIndex(k, v)
+			}
+			dst.Set(n)
+		case reflect.Interface:
+			if src.IsNil() {
+				return
+			}
+			n := reflect.New(src.Elem().Type()).Elem()
+			cp(n, held(src.Elem()))
+			dst.Set(n)
+		default:
+			dst.Set(src)
+		}
+	}
+	cp(reflect.ValueOf(&out).Elem(), reflect.ValueOf(&x).Elem())
+	return out
+}
+
+// refs is where each pointer, map and slice reached through x and this
+// package's structs points, with the path of the field that holds it:
+// what two values must not have in common to share nothing.
+func refs(x any) map[unsafe.Pointer]string {
+	out := map[unsafe.Pointer]string{}
+	var walk func(v reflect.Value, path string)
+	walk = func(v reflect.Value, path string) {
+		switch v.Kind() {
+		case reflect.Pointer, reflect.Interface:
+			if v.IsNil() {
+				return
+			}
+			if v.Kind() == reflect.Pointer {
+				if _, ok := out[v.UnsafePointer()]; ok {
+					return
+				}
+				out[v.UnsafePointer()] = path
+			}
+			walk(v.Elem(), path)
+		case reflect.Struct:
+			if !strings.HasSuffix(v.Type().PkgPath(), "/internal/core") {
+				return
+			}
+			for i := range v.NumField() {
+				walk(v.Field(i), path+"."+v.Type().Field(i).Name)
+			}
+		case reflect.Map:
+			if v.IsNil() {
+				return
+			}
+			out[v.UnsafePointer()] = path
+			for it := v.MapRange(); it.Next(); {
+				walk(it.Value(), path+"[]")
+			}
+		case reflect.Slice, reflect.Array:
+			if v.Kind() == reflect.Slice {
+				if v.Cap() == 0 {
+					return
+				}
+				out[v.UnsafePointer()] = path
+			}
+			for i := range v.Len() {
+				walk(v.Index(i), path+"[]")
+			}
+		}
+	}
+	walk(reflect.ValueOf(x), "")
+	return out
+}
+
+// sharedRefs is the fields of a that point where something in b does.
+func sharedRefs(a, b any) []string {
+	var out []string
+	rb := refs(b)
+	for p, path := range refs(a) {
+		if _, ok := rb[p]; ok {
+			out = append(out, path)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// fieldDiffs is the fields two setFields readings differ in, either way,
+// leaving out the ones named in but, where a name ending in a dot is every
+// field under it.
+func fieldDiffs(built, started map[string]string, but []string) []string {
+	var out []string
+	keys := maps.Clone(built)
+	maps.Copy(keys, started)
+	for _, k := range slices.Sorted(maps.Keys(keys)) {
+		if built[k] != started[k] && !slices.ContainsFunc(but, func(b string) bool { return b == k || strings.HasSuffix(b, ".") && strings.HasPrefix(k, b) }) {
+			out = append(out, fmt.Sprintf("%s: a build holds %q, a started env %q", k, built[k], started[k]))
+		}
+	}
+	return out
 }
 
 // doneRound makes the round e.review ran an ended one (the session's turn is
@@ -692,7 +828,10 @@ func TestLoopSnapshotEnvMatchesABuild(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cols, _ := rs.Columns()
+			cols, err := rs.Columns()
+			if err != nil {
+				t.Fatal(err)
+			}
 			for rs.Next() {
 				vals, ptrs := make([]any, len(cols)), make([]any, len(cols))
 				for i := range vals {
@@ -701,7 +840,7 @@ func TestLoopSnapshotEnvMatchesABuild(t *testing.T) {
 				if err := rs.Scan(ptrs...); err != nil {
 					t.Fatal(err)
 				}
-				out[n] = append(out[n], fmt.Sprint(vals...))
+				out[n] = append(out[n], fmt.Sprintf("%#v", vals))
 			}
 			if err := errors.Join(rs.Err(), rs.Close()); err != nil {
 				t.Fatal(err)
@@ -722,9 +861,9 @@ func TestLoopSnapshotEnvMatchesABuild(t *testing.T) {
 		who := func(a *Actor) string {
 			return fmt.Sprintf("%d/%s/admin=%v agent=%q token=%d session=%d scope=%v", a.User.ID, a.User.Username, a.User.IsAdmin, a.Agent, a.TokenID, a.Session, a.scope)
 		}
-		return fmt.Sprintf("clock=%v session=%d cli=%s admin=%s ag=%s project=%+v jobs=%+v res=%+v box=%+v task=%s\nforge %v\ngateway %v\ndecisions %v",
-			e.clockNow(), e.session, e.cli, who(e.admin), who(e.ag), *e.p, e.jobs, e.res, *e.box, e.task.Key,
-			setFields(e.g, true), setFields(sl.taskLLM, true), setFields(e.j, true))
+		return fmt.Sprintf("clock=%v session=%d cli=%s admin=%s ag=%s project=%+v jobs=%+v res=%+v box=%+v task=%s %q %+v\nforge %v heads=%v\ngateway %v\ndecisions %v choice=%v states=%v",
+			e.clockNow(), e.session, e.cli, who(e.admin), who(e.ag), *e.p, e.jobs, e.res, *e.box, e.task.Key, e.task.Title, e.task.Status,
+			setFields(e.g), e.g.heads, setFields(sl.taskLLM), setFields(e.j), e.j.choice, e.j.states)
 	}
 	// next is what a cell does: another ship, then the server's move.
 	next := func(e *loopEnv) string {
@@ -738,9 +877,10 @@ func TestLoopSnapshotEnvMatchesABuild(t *testing.T) {
 	}
 
 	// Each env is read and run while its job catcher is the one in force:
-	// a later env's catcher takes the jobs of every env before it.
+	// once a later env exists, a job an earlier env's Service enqueues lands
+	// in the later env's list.
 	fresh := build(t)
-	freshRows, freshMemory, freshService := counts(rows(fresh)), memory(fresh), setFields(fresh.s, true)
+	freshRows, freshMemory, freshService := counts(rows(fresh)), memory(fresh), setFields(fresh.s)
 	freshNext := next(fresh)
 
 	src := build(t)
@@ -760,15 +900,23 @@ func TestLoopSnapshotEnvMatchesABuild(t *testing.T) {
 	if clonedMemory != freshMemory {
 		t.Errorf("memory differs:\nbuilt  %s\ncloned %s", freshMemory, clonedMemory)
 	}
-	// What the Service keeps in memory (every number, string, bool, time
-	// and container in it and in this package's structs it holds): only
-	// what loopSnapshot says a started env makes again may be missing.
-	remade := []string{".similar.", ".terms.", ".graph.", ".goals.checked", ".goals.judgeGen", ".auditLocks.", ".branchLocks.", ".jobs."}
-	clonedService := setFields(cloned.s, true)
-	for k, n := range freshService {
-		if clonedService[k] != n && !slices.ContainsFunc(remade, func(p string) bool { return strings.HasPrefix(k, p) }) {
-			t.Errorf("a build leaves the Service's %s holding %s, a started env %q: carry it in start, or name it in loopSnapshot and here", k, n, clonedService[k])
-		}
+	if !reflect.DeepEqual(cloned.task, src.task) || !reflect.DeepEqual(cloned.p, src.p) || !reflect.DeepEqual(cloned.box, src.box) ||
+		!reflect.DeepEqual(cloned.admin, src.admin) || !reflect.DeepEqual(cloned.ag, src.ag) {
+		t.Errorf("a started env's task, project, runner or actors aren't the source's:\nsource %+v %+v %+v %+v %+v\ncloned %+v %+v %+v %+v %+v",
+			src.task, src.p, src.box, src.admin, src.ag, cloned.task, cloned.p, cloned.box, cloned.admin, cloned.ag)
+	}
+	held := func(e *loopEnv) []any { return []any{e.admin, e.ag, e.p, e.box, e.task, e.jobs, e.res, e.g.heads, e.j} }
+	if shared := sharedRefs(held(cloned), held(src)); len(shared) > 0 {
+		t.Errorf("a started env shares %v with its source", shared)
+	}
+	// What the Service keeps in memory, as setFields reads it: a build and
+	// a started env differ only in what loopSnapshot says a started env
+	// makes again. The three caches are named whole: each checks itself
+	// against the database before it is used.
+	remade := []string{".similar.", ".terms.", ".graph.", ".goals.checked", ".goals.judgeGen", ".auditLocks.m", ".branchLocks.m",
+		".jobs.jobs", ".jobs.problems", ".jobs.perSrc", ".jobs.hours"}
+	for _, d := range fieldDiffs(freshService, setFields(cloned.s), remade) {
+		t.Errorf("the Service's %s: carry it in start, or name it in loopSnapshot and here", d)
 	}
 	if _, ok := freshService[".gatewayLimits"]; !ok {
 		t.Errorf("the build no longer caches the gateway's limits, so this test doesn't show start carrying them: %v", freshService)
@@ -780,6 +928,7 @@ func TestLoopSnapshotEnvMatchesABuild(t *testing.T) {
 	// Running one started env, and writing through what it holds, leaves the
 	// source and the next env from the snapshot as they were.
 	cloned.task.Title, cloned.box.Features[0], cloned.p.Name, cloned.ag.User.Username = "changed", "changed", "changed", "changed"
+	cloned.g.heads["changed"], cloned.j.choice["changed"] = "changed", "changed"
 	if m := memory(src); m != srcMemory || src.task.Title == "changed" {
 		t.Errorf("a started env changed its source:\nbefore %s\nafter  %s (task %q)", srcMemory, m, src.task.Title)
 	}
@@ -792,20 +941,21 @@ func TestLoopSnapshotEnvMatchesABuild(t *testing.T) {
 	}
 }
 
-// setFields is what x holds, by field path: how many entries each map,
-// slice and sync.Map has, and with values each number, string and bool
-// that isn't zero and whether each time, func, interface and error is
-// set. It follows this package's structs, by value or by pointer, and
-// atomic values. It doesn't see into channels, interfaces, atomic
-// pointers or other packages' types.
-func setFields(x any, values bool) map[string]string {
+// setFields is what x holds, by field path: each number, string and bool
+// that isn't zero, how many entries each map, slice and sync.Map has (not
+// what they are), whether each time and func is set, and the type each
+// interface holds. It follows this package's structs and arrays, by value
+// or by pointer, pointers to anything else it records, and atomic values.
+// It doesn't see into channels, interfaces' values, atomic pointers or
+// other packages' types.
+func setFields(x any) map[string]string {
 	out := map[string]string{}
 	seen := map[uintptr]bool{}
 	var walk func(v reflect.Value, path string)
 	walk = func(v reflect.Value, path string) {
 		switch v.Kind() {
 		case reflect.Pointer:
-			if v.IsNil() || v.Elem().Kind() != reflect.Struct || seen[v.Pointer()] {
+			if v.IsNil() || seen[v.Pointer()] {
 				return
 			}
 			seen[v.Pointer()] = true
@@ -821,7 +971,7 @@ func setFields(x any, values bool) map[string]string {
 				return
 			}
 			if v.Type() == reflect.TypeFor[time.Time]() {
-				if values && !v.IsZero() {
+				if !v.IsZero() {
 					out[path] = "set"
 				}
 				return
@@ -832,20 +982,97 @@ func setFields(x any, values bool) map[string]string {
 			for i := range v.NumField() {
 				walk(v.Field(i), path+"."+v.Type().Field(i).Name)
 			}
+		case reflect.Array:
+			for i := range v.Len() {
+				walk(v.Index(i), path+"["+strconv.Itoa(i)+"]")
+			}
 		case reflect.Map, reflect.Slice:
 			if v.Len() > 0 {
 				out[path] = strconv.Itoa(v.Len())
 			}
-		case reflect.Func, reflect.Interface:
-			if values && !v.IsNil() {
+		case reflect.Func:
+			if !v.IsNil() {
 				out[path] = "set"
 			}
-		case reflect.Bool, reflect.String, reflect.Int, reflect.Int32, reflect.Int64, reflect.Uint32, reflect.Uint64, reflect.Float64:
-			if values && !v.IsZero() {
+		case reflect.Interface:
+			if !v.IsNil() {
+				out[path] = v.Elem().Type().String()
+			}
+		case reflect.Chan, reflect.UnsafePointer, reflect.Invalid:
+		default: // a bool, a string or a number of any kind
+			if !v.IsZero() {
 				out[path] = fmt.Sprint(v)
 			}
 		}
 	}
 	walk(reflect.ValueOf(x), "")
 	return out
+}
+
+// setFields reads every kind of number, arrays and pointers to values, and
+// fieldDiffs reports a field only one side holds, whichever side it is.
+func TestSetFieldsAndFieldDiffs(t *testing.T) {
+	n := 7
+	type held struct {
+		i8   int8
+		u16  uint16
+		f32  float32
+		c    complex64
+		p    *int
+		arr  [2]uint8
+		err  error
+		l    LLM
+		when time.Time
+		m    map[string]int
+		zero int
+	}
+	got := setFields(&held{i8: -1, u16: 2, f32: 1.5, c: 1, p: &n, arr: [2]uint8{0, 3}, err: errors.New("x"), l: &taskLLM{}, when: time.Unix(1, 0), m: map[string]int{"a": 1}})
+	want := map[string]string{".i8": "-1", ".u16": "2", ".f32": "1.5", ".c": "(1+0i)", ".p": "7", ".arr[1]": "3", ".err": "*errors.errorString", ".l": "*core.taskLLM", ".when": "set", ".m": "1"}
+	if !maps.Equal(got, want) {
+		t.Errorf("setFields = %v, want %v", got, want)
+	}
+	built := map[string]string{".a": "1", ".b": "2", ".same": "x", ".remade": "3", ".cache.x": "6", ".cached": "8"}
+	started := map[string]string{".b": "3", ".cached": "9", ".same": "x", ".alsoRemade": "5", ".cache.y": "7", ".z": "1"}
+	diffs := fieldDiffs(built, started, []string{".remade", ".alsoRemade", ".cache."})
+	if len(diffs) != 4 || !strings.HasPrefix(diffs[0], ".a:") || !strings.HasPrefix(diffs[1], ".b:") || !strings.HasPrefix(diffs[2], ".cached:") || !strings.HasPrefix(diffs[3], ".z:") {
+		t.Errorf("fieldDiffs = %q, want .a (only the build's), .b (differs), .cached (not under .cache.) and .z (only the started env's)", diffs)
+	}
+}
+
+// A deep copy equals what it copies and shares none of it: not a
+// permission set, an automation, a budget, a scope, nor anything inside an
+// issue or a project.
+func TestDeepCopySharesNothing(t *testing.T) {
+	budget, parent := 3, int64(9)
+	a := &Actor{User: &User{ID: 1, Username: "ann"}, Permissions: PermissionSet{PermIssuesRead: true}, Automation: &Automation{ID: 4},
+		scope: map[int64]int{1: 2}, budget: &budget}
+	iss := &Issue{Key: "T-1", ParentID: &parent, Labels: []Label{{Name: "bug"}}, Blocks: []string{"T-2"}}
+	task := &IssueDetail{Issue: iss, Children: []*Issue{iss, {Key: "T-3"}}}
+	p := &Project{Key: "T", Statuses: []Status{{Name: "To Do"}}, Sprints: []*Sprint{{ID: 5}}}
+	src := []any{a, task, p}
+	c := deepCopy(src)
+	if !reflect.DeepEqual(c, src) {
+		t.Fatalf("the copy differs:\ncopy   %+v\nsource %+v", c, src)
+	}
+	if shared := sharedRefs(c, src); len(shared) > 0 {
+		t.Errorf("the copy shares %v with its source", shared)
+	}
+	if len(refs(src)) < 14 {
+		t.Errorf("refs sees %d places in the source, want the 14 or more it holds: %v", len(refs(src)), refs(src))
+	}
+	ca, ct, cp := c[0].(*Actor), c[1].(*IssueDetail), c[2].(*Project)
+	if ct.Children[0] != ct.Issue {
+		t.Error("the task's own issue, held twice, was copied to two issues")
+	}
+	ca.Permissions[PermIssuesRead], ca.Automation.ID, ca.scope[1], *ca.budget, ca.User.Username = false, 0, 0, 0, "changed"
+	*ct.ParentID, ct.Labels[0].Name, ct.Blocks[0], ct.Children[1].Key = 0, "changed", "changed", "changed"
+	cp.Statuses[0].Name, cp.Sprints[0].ID = "changed", 0
+	if !a.Permissions[PermIssuesRead] || a.Automation.ID != 4 || a.scope[1] != 2 || budget != 3 || a.User.Username != "ann" ||
+		parent != 9 || iss.Labels[0].Name != "bug" || iss.Blocks[0] != "T-2" || task.Children[1].Key != "T-3" ||
+		p.Statuses[0].Name != "To Do" || p.Sprints[0].ID != 5 {
+		t.Errorf("writing through the copy changed the source: %+v %+v %+v %+v", a, iss, task.Children[1], p)
+	}
+	if shared := sharedRefs([]any{a, a.Permissions}, a); len(shared) == 0 {
+		t.Error("sharedRefs doesn't report a value's own pointers as shared")
+	}
 }
