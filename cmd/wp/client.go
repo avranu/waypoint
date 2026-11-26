@@ -23,11 +23,9 @@ var httpClient = &http.Client{Timeout: 60 * time.Second}
 type apiError struct {
 	status       int
 	msg          string
-	code         string // the server's machine-readable reason, when it gives one
+	code         string
 	method, path string
-	// body and ctype are the answer as it came (body cut at 4 KiB), for a
-	// caller that knows an older server's wording when it isn't {"error":...}.
-	body, ctype string
+	body, ctype  string
 }
 
 func (e *apiError) Error() string {
@@ -41,8 +39,6 @@ func (e *apiError) Error() string {
 		return "not allowed"
 	}
 	if e.status >= 500 && (e.msg == "" || e.msg == "internal error") {
-		// The server keeps a bug's details to its log: say where to look
-		// there (WP-265).
 		return fmt.Sprintf("the server failed with HTTP %d on %s %s; its log has the cause", e.status, e.method, e.path)
 	}
 	if e.msg != "" {
@@ -105,8 +101,6 @@ func (c *cli) newRequest(ctx context.Context, method, path, contentType string, 
 	if rd != nil {
 		req.Header.Set("Content-Type", contentType)
 	}
-	// Logging in needs no credentials, and the old token may belong to
-	// another server, so none are sent.
 	if !strings.HasPrefix(path, "/api/v1/cli/login") {
 		if t := c.token(); t != "" {
 			req.Header.Set("Authorization", "Bearer "+t)
@@ -114,10 +108,6 @@ func (c *cli) newRequest(ctx context.Context, method, path, contentType string, 
 		if a := c.agentHeader(); a != "" {
 			req.Header.Set("X-Waypoint-Agent", a)
 		}
-		// In a coding agent's shell, say so even when told we're a person
-		// (WAYPOINT_AGENT=none, or a config set for your own terminal):
-		// what we print lands in the agent's context, so the server keeps
-		// drafts out of it (WP-42).
 		if env := detectAgent(os.Getenv); env != "" {
 			req.Header.Set("X-Waypoint-Agent-Env", env)
 		}
@@ -147,6 +137,7 @@ func (c *cli) send(ctx context.Context, method, path, contentType string, rd io.
 		return nil, fmt.Errorf("can't reach %s: %w", server, err)
 	}
 	defer resp.Body.Close()
+	c.seeServerVersion(resp.Header.Get(serverVersionHeader))
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
 		return nil, err
@@ -199,8 +190,6 @@ func (c *cli) emit(raw []byte, text func() string) error {
 }
 
 func esc(s string) string { return url.PathEscape(s) }
-
-// ---- flags ----
 
 // flags returns a FlagSet with the options every command takes.
 func (c *cli) flags() *flag.FlagSet {

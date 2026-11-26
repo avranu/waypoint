@@ -41,7 +41,6 @@ func TestPersonUIRoutes(t *testing.T) {
 	web.json("POST", "/api/v1/me/tokens", map[string]any{"name": "cli"}, &created)
 	tok := &client{t: t, base: ts.URL, http: http.DefaultClient, token: created["token"].(string)}
 
-	// A full-power token reads the policy but can't change it.
 	if code, b := tok.do("GET", "/api/v1/projects/HOUSE/sandbox", nil); code != 200 {
 		t.Errorf("token read: %d %s", code, b)
 	}
@@ -56,8 +55,6 @@ func TestPersonUIRoutes(t *testing.T) {
 		}
 	}
 
-	// In the browser: tightening is fine; loosening asks for the password
-	// once it is more than ten minutes old, which it isn't yet here.
 	if code, b := web.do("PATCH", "/api/v1/projects/HOUSE/sandbox", map[string]any{"level": "vm"}); code != 200 {
 		t.Fatalf("tighten: %d %s", code, b)
 	}

@@ -14,12 +14,6 @@ import (
 	"time"
 )
 
-// An ETA for a command that waits for a slot and then runs (WP-1571): the
-// wait comes from how long the holders have run against how long their
-// commands usually take and from who is queued ahead; the run from the
-// median of this command's recent runs here. Both come from a record of
-// finished runs kept next to the slot state (runs.jsonl).
-
 // slotRunRec is one finished run, a line of runs.jsonl.
 type slotRunRec struct {
 	Name string  `json:"name"` // the slot
@@ -39,9 +33,9 @@ type slotHolder struct {
 
 const (
 	slotRunsFile   = "runs.jsonl"
-	slotRunsLock   = "runs.jsonl.flock" // held while the record is appended to or trimmed (not *.lock: wp slot ls lists those)
-	slotRunsRecent = 10                 // runs the median is taken over
-	slotRunsKeep   = 200                // lines kept when the file is trimmed
+	slotRunsLock   = "runs.jsonl.flock"
+	slotRunsRecent = 10
+	slotRunsKeep   = 200
 	slotETAPad     = 1.2
 )
 
@@ -204,11 +198,6 @@ func slotRecordRun(dir string, r slotRunRec) {
 	if err != nil {
 		return
 	}
-	// Appends and the trim (read, then rename over) take one lock, so a trim
-	// can't drop a line another process appends meanwhile. Without the lock a
-	// run is still appended (one write to an O_APPEND file), but the record
-	// isn't trimmed (audit #1372.10); a run appended without the lock while another
-	// process trims can still be lost, which a best-effort estimate record accepts.
 	locked := false
 	if lf, err := os.OpenFile(filepath.Join(dir, slotRunsLock), os.O_CREATE|os.O_RDWR, 0o600); err == nil { // #nosec G304 -- our own directory
 		defer func() { _ = lf.Close() }()
@@ -232,7 +221,6 @@ func slotRecordRun(dir string, r slotRunRec) {
 				sb.Write(line)
 				sb.WriteByte('\n')
 			}
-			// Replace the file whole, so a reader never sees it half written.
 			if tmp, err := os.CreateTemp(dir, slotRunsFile+".*.tmp"); err == nil {
 				_, werr := tmp.WriteString(sb.String())
 				cerr := tmp.Close()
@@ -269,8 +257,6 @@ func slotHolders(dir, name string) []slotHolder {
 		if len(parts) >= 5 {
 			session = parts[4]
 		}
-		// The run key the holder recorded; a lock file without one (an older wp)
-		// is read from its arguments.
 		cmd := slotCmdKey(parts[3])
 		if len(parts) == 6 && parts[5] != "" {
 			cmd = parts[5]
@@ -284,11 +270,6 @@ func slotHolders(dir, name string) []slotHolder {
 	}
 	return out
 }
-
-// A waiter leaves NAME.PID.wait holding the time it began to wait and its
-// session, so those who come later can count who is ahead of them, and holds
-// the file's lock while it waits: a file whose lock can be taken is one a
-// killed waiter left, whoever has its pid now (audit #1382.2).
 
 func slotWaiterPath(dir, name string) string {
 	return filepath.Join(dir, fmt.Sprintf("%s.%d.wait", name, os.Getpid()))
@@ -387,8 +368,6 @@ func slotQueuedAheadOf(dir, name, session string) int {
 			continue
 		}
 		if ok, err := slotTryLock(f); err == nil && ok {
-			// No waiter holds it: one killed before it could remove it left
-			// it, and its pid may be another process's now.
 			_ = os.Remove(p)
 			_ = f.Close()
 			continue

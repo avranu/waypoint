@@ -8,10 +8,6 @@ import (
 	"strings"
 )
 
-// Agent instructions (WP-1559, ADR146): text Waypoint hands a session or a
-// sub-agent when it starts, chosen by what it is. `wp instruction` is how a
-// person or an agent reads and changes them; the hooks deliver them.
-
 var instructionCmd = &command{
 	name: "instruction", group: "Knowledge", args: "SUBCOMMAND",
 	aliases: []string{"instructions", "instr"},
@@ -110,7 +106,6 @@ func (i *instrInfo) line() string {
 	title, state := i.Title, ""
 	switch {
 	case i.Rev == 0 && i.Pending != nil:
-		// Nothing approved yet: show what is proposed.
 		title, state = i.Pending.Title, " [waits for a person: nothing sent yet]"
 		return fmt.Sprintf("#%d %s (%s)%s  %s", i.ID, title, where, state,
 			instrAudience(i.Pending.Scope, i.Pending.Models, i.Pending.AgentTypes, i.Pending.Moment))

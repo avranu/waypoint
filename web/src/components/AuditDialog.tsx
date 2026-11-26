@@ -1,11 +1,3 @@
-// Asking for an audit (WP-348, WP-548): what to read (what landed on a
-// branch over a period by default), what to look for (one sentence by
-// default, editable) and the criteria (areas to look hardest at, paths to
-// read or leave out, the lowest severity worth reporting, how many findings
-// shown at a time), which models to try in order, and whether to post on the pull
-// request and have Claude check and fix the findings. Opened from anywhere
-// with openAuditDialog, or in place with <AuditDialog>.
-
 import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -193,7 +185,6 @@ function AuditForm({
   const [ref, setRef] = useState(p.ref ?? '')
   const [base, setBase] = useState(p.base ?? '')
   const [from, setFrom] = useState(p.from ?? '')
-  // null: the default period (a week).
   const [since, setSince] = useState<string | null>(p.since ?? null)
   const period = since ?? defaults?.since ?? '7d'
 
@@ -526,7 +517,6 @@ function RecentFields({
 }) {
   const named = periods.some((x) => x.value === since)
   const [custom, setCustom] = useState(periods.length > 0 && !named)
-  // The defaults load after a prefill's period: one not offered is custom.
   useEffect(() => {
     if (periods.length && !named) setCustom(true)
   }, [periods.length, named])
@@ -906,7 +896,6 @@ function ResetLink({ onClick }: { onClick: () => void }) {
     <button
       type="button"
       onClick={(e) => {
-        // Inside a <summary>: don't fold the section too.
         e.preventDefault()
         onClick()
       }}

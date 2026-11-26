@@ -14,11 +14,6 @@ import (
 	"time"
 )
 
-// wp usage suggest (WP-193) reads this repository's sessions from Claude
-// Code's transcripts on this machine. Unlike wp usage sync it keeps the
-// arguments (paths read, patterns searched, commands that failed), because
-// nothing here leaves the machine: the report is printed and forgotten.
-
 // sugCall is one tool call as the checks need it.
 type sugCall struct {
 	Tool    string   // Read, Bash, Grep, mcp__server__tool…
@@ -67,8 +62,8 @@ const (
 // a sibling directory named after the main checkout (waypoint-wp193 next
 // to waypoint).
 type sugRepo struct {
-	key      string // owner/name
-	mainRoot string // the main checkout
+	key      string
+	mainRoot string
 	resolver *repoResolver
 }
 
@@ -108,7 +103,6 @@ func scanSuggestSessions(root string, since time.Duration, repo *sugRepo) ([]*su
 			subs = append(subs, f)
 		}
 	}
-	// mains first, so a subagent can follow its session's verdict
 	out := readSuggestFiles(mains, cut, func(_ usageFile, cwd string) bool { return repo.has(cwd) })
 	mainIn := map[string]bool{}
 	for _, s := range out {
@@ -178,7 +172,7 @@ func readSuggestFile(f usageFile, cut int64, inRepo func(cwd string) bool) (*sug
 	}
 	msgs := map[string]*msg{}
 	var order []string
-	open := map[string]int{} // tool_use id → index in Calls
+	open := map[string]int{}
 	nudged := map[string]bool{}
 	decided, recent := false, false
 	br := bufio.NewReaderSize(fh, 1<<20)

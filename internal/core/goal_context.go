@@ -17,31 +17,6 @@ import (
 	"unicode/utf8"
 )
 
-// The goal context policy (WP-1035, WP-ADR133): how much of a task's goal chain an
-// agent is shown. A task traces to one goal; goals sit under parent goals
-// ("buttons have a consistent style" under "The UI is intuitive"), and the
-// parents say what the task is for. Its arms:
-//
-//   - goal: only the goal the task traces to (today's way; the control).
-//   - chain: every parent goal, nearest first, titles as written.
-//   - pruned: the same, leaving out a parent the goals model judged the task
-//     and its goal already convey, clipping a long title and stopping when
-//     the titles shown get long.
-//
-// Whether one text already conveys another is a judgement of meaning, not of
-// shared words (two sentences can mean the same with no word in common, and
-// share many words with no common meaning), so a language model makes it in
-// the background (goal_judge.go), cached by the text's hash. With no current
-// judgement nothing is left out as covered. The set judged covered is kept on
-// the task's assignment when it is drawn, so what an agent is shown doesn't
-// change after. A person's goal is never reworded: a title is shown as
-// written or clipped at a word ("…"), and a parent is shown whole or left
-// out. Which arm is
-// best isn't assumed. Each task an agent takes is given an arm once and
-// keeps it; shares are Thompson draws over how earlier tasks' pull
-// requests fared on the drift check (prep_policy_stats.go's fit, as the
-// delegation policy uses it, delegation_policy.go).
-
 const (
 	goalArmGoal   = "goal"
 	goalArmChain  = "chain"
@@ -143,8 +118,6 @@ func goalClip(title string) (string, bool) {
 		return title, false
 	}
 	r := []rune(title)
-	// Any space, tab or newline ends a word; with none in the first
-	// goalCtxClip runes the title stays whole rather than cut mid-word.
 	end := -1
 	if unicode.IsSpace(r[goalCtxClip]) {
 		end = goalCtxClip
@@ -239,7 +212,6 @@ func (s *Service) goalContextShow(ctx context.Context, q queryer, actor *Actor, 
 	}
 	parents := s.goalParents(ctx, q, actor, g.Goal.ID)
 	g.Chain, g.Above = goalChain(arm, parents, s.goalCoveredShown(ctx, q, d))
-	// Parents all left out still leave their count to show.
 	if len(g.Chain) > 0 || g.Above > 0 {
 		g.Arm = arm
 	} else {
@@ -260,9 +232,6 @@ func (s *Service) goalContextRead(ctx context.Context, q queryer, actor *Actor, 
 	case err == nil:
 		arm = got
 	case errors.Is(err, sql.ErrNoRows):
-		// Before the task's own draw only a person sees the favoured arm;
-		// an agent reading it (wp show, wp next --peek) must not learn
-		// the arm it may later be drawn.
 		if pol := s.goalPol.peek(); pol != nil && actor.actsAsPerson() {
 			arm = pol.best()
 		}
@@ -294,14 +263,9 @@ func (s *Service) goalContextDraw(ctx context.Context, actor *Actor, d *IssueDet
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
-	// Only the call that makes a new claim draws (via says how; a peek or a
-	// resume passes none), and only a fresh one: work done before any arm
-	// stays out.
 	if via == "" || i.ClaimedAt == nil || s.now().Sub(*i.ClaimedAt) > goalCtxClaimFresh {
 		return "", nil
 	}
-	// A claim renewed after a lapsed lease starts its timer again, so a run
-	// or a log line from before it means the task had work already.
 	var earlier bool
 	if err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM agent_runs WHERE issue_id = ?1 AND started_at < ?2)
 		OR EXISTS (SELECT 1 FROM work_log WHERE issue_id = ?1 AND created_at < ?2)`, i.ID, i.ClaimedAt.UnixMilli()).Scan(&earlier); err != nil {
@@ -314,20 +278,15 @@ func (s *Service) goalContextDraw(ctx context.Context, actor *Actor, d *IssueDet
 	covered, judged := s.goalCoveredCurrent(ctx, s.db.R, d)
 	full, _ := goalChain(goalArmChain, parents, nil)
 	if len(full) == 0 {
-		return "", nil // every arm reads the same
+		return "", nil
 	}
 	names := []string{goalArmGoal, goalArmChain}
-	// Pruned is a candidate only when its text differs from chain's: it left
-	// out or clipped something. With every parent left out it still differs
-	// from goal's, by the count of those left out.
 	if cut, above := goalChain(goalArmPruned, parents, covered); above > 0 || !samePlain(cut, full) {
 		names = append(names, goalArmPruned)
 	}
 	policy := "thompson"
 	pol, err := s.goalPolNow(ctx)
 	if err != nil {
-		// No estimate and none to be had: draw from the no-data prior, equal
-		// chances, and record it as such. It isn't kept as the estimate.
 		s.log.WarnContext(ctx, "goal context policy: drawing from the prior", "issue", i.ID, "err", err)
 		pol, policy = goalPolicyFrom(nil, s.now()), "prior"
 	}
@@ -338,8 +297,6 @@ func (s *Service) goalContextDraw(ctx context.Context, actor *Actor, d *IssueDet
 	}
 	at := prepPick(sh, goalDraw(i.ID))
 	raw, _ := json.Marshal(shares)
-	// The parents judged covered now are kept with the draw: a later
-	// judgement doesn't change what this task shows. NULL: none yet.
 	var recorded sql.NullString
 	if judged {
 		recorded = sql.NullString{String: coveredJSON(covered), Valid: true}
@@ -349,7 +306,6 @@ func (s *Service) goalContextDraw(ctx context.Context, actor *Actor, d *IssueDet
 		i.ID, names[at], policy, sh[at], string(raw), strings.Join(names, ","), len(full), prepTextLen(i), via, recorded, s.nowMS()); err != nil {
 		return "", err
 	}
-	// Whichever request drew first is the task's arm.
 	err = s.db.W.QueryRowContext(ctx, `SELECT arm FROM goal_context_assignments WHERE issue_id = ?`, i.ID).Scan(&arm)
 	return arm, err
 }
@@ -382,8 +338,6 @@ func (s *Service) goalContextFor(ctx context.Context, actor *Actor, d *IssueDeta
 	}
 }
 
-// ---- the estimate ----
-
 // The primary outcome is the count of drift flags on the task's pull
 // requests that no person answered "this is fine", on the log scale. Its
 // spread is a prior, not measured: 0.4 is a guess for flags counted per
@@ -411,10 +365,10 @@ type goalRow struct {
 	resolved int64
 	done     bool
 	prs      int
-	judged   bool    // it was drawn with a coverage judgement
-	checked  int     // its pull requests whose check is clear or flag
-	errored  int     // its pull requests whose check ended in error
-	drift    float64 // flags no person answered "intent" to
+	judged   bool
+	checked  int
+	errored  int
+	drift    float64
 	findings float64
 	fixes    float64
 }
@@ -427,7 +381,7 @@ type goalFit struct {
 
 type goalPolicy struct {
 	at       time.Time
-	arms     []string // every arm but goal, the drawn ones first
+	arms     []string
 	primary  *prepMix
 	guards   []goalFit
 	blocked  map[string]string
@@ -488,7 +442,6 @@ func (s *Service) goalPolNow(ctx context.Context) (*goalPolicy, error) {
 	if pol, ok, err := s.goalPolCached(true); ok {
 		return pol, err
 	}
-	// Whatever happens in the compute, even a panic, it stops being busy.
 	defer func() {
 		c.mu.Lock()
 		c.busy = false
@@ -544,8 +497,6 @@ func (s *Service) goalRows(ctx context.Context) ([]*goalRow, error) {
 	if err := rows.Err(); err != nil || len(out) == 0 {
 		return out, err
 	}
-	// Each pull request's drift check: a flag counts unless a person
-	// answered "this is fine" (intent).
 	rows, err = s.db.R.QueryContext(ctx, `SELECT x.issue_id, coalesce(c.verdict, ''), coalesce(f.answer, '')
 		FROM (`+goalPRs+`) x LEFT JOIN pr_goal_checks c ON c.pr_id = x.pid LEFT JOIN goal_drift_flags f ON f.id = c.flag_id`)
 	if err != nil {
@@ -600,8 +551,6 @@ func goalValue(o *prepOutcome, r *goalRow, now time.Time) (float64, bool) {
 	since := now.UnixMilli() - r.resolved
 	switch o.Key {
 	case "drift":
-		// Known once it is done and every pull request has been checked; a
-		// task with none, or checks pending, has no value yet.
 		return math.Log1p(r.drift), r.done && r.prs > 0 && r.checked == r.prs
 	case "undone":
 		if r.done && r.resolved > 0 && r.resolved-r.assigned <= goalCtxWithin.Milliseconds() {
@@ -710,8 +659,6 @@ func goalPolicyFrom(rows []*goalRow, now time.Time) *goalPolicy {
 			}
 		}
 	}
-	// The draws are made now: the policy is shared by concurrent takes and
-	// reports, and sample fills them in lazily.
 	fits := slices.Clone(pol.primary.Fits)
 	for _, g := range pol.guards {
 		fits = append(fits, g.fit.Fits...)
@@ -762,8 +709,6 @@ func (p *goalPolicy) best() string {
 	}
 	return names[at]
 }
-
-// ---- the report ----
 
 // GoalContextArmReport is one arm's figures.
 type GoalContextArmReport struct {

@@ -8,7 +8,6 @@ func TestListBotRunsFiltered(t *testing.T) {
 	pe.llm.answers["opencode/muse-spark-1.3-contributor-free"] = oneFinding
 	pe.pullHook("opened", ForgePR{Number: 5, Title: "Fix login", Author: "sam", HeadRef: "fix-login", HeadSHA: "1111111aaaa", State: "open"})
 	pe.pullHook("opened", ForgePR{Number: 6, Title: "Docs", Author: "sam", HeadRef: "docs", HeadSHA: "2222222bbbb", State: "open"})
-	// Both runs are queued: live.
 	list := func(f BotRunFilter) []*BotRun {
 		rs, err := pe.s.ListBotRunsFiltered(pe.ctx, pe.admin, pe.p.Key, f)
 		if err != nil {

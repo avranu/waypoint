@@ -8,9 +8,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Compact text for the glossary, design notes, specs and search: what
-// agents and `wp` print.
-
 func scopeName(sc core.KScope) string {
 	if sc.ProjectKey == "" {
 		return "global"
@@ -85,15 +82,13 @@ func linkLine(l *core.Link) string {
 	}
 	rel := strings.ReplaceAll(l.Rel, "_", " ")
 	if l.Rel == "tension" {
-		rel = "in tension with" // either way round
+		rel = "in tension with"
 	} else if l.Direction == "in" {
 		rel = map[string]string{"relates": "related to", "implements": "implemented by", "depends on": "needed by",
 			"supersedes": "superseded by", "mentions": "mentioned in", "serves": "served by"}[rel]
 	}
 	return rel + ": " + name
 }
-
-// ---- glossary ----
 
 func glossaryEntryText(g *core.GlossaryEntry, full bool) string {
 	var b strings.Builder
@@ -102,8 +97,6 @@ func glossaryEntryText(g *core.GlossaryEntry, full bool) string {
 		b.WriteString(d + "\n")
 	}
 	var meta []string
-	// Aliases and words to avoid route lookups to the term; only the full
-	// view (wp glossary show, for managing them) lists them.
 	if full && len(g.Aliases) > 0 {
 		meta = append(meta, "aliases: "+strings.Join(g.Aliases, ", "))
 	}
@@ -140,7 +133,6 @@ func glossaryEntryText(g *core.GlossaryEntry, full bool) string {
 
 func glossaryLookupText(res *core.GlossaryLookup, project string) string {
 	if len(res.Matches) == 0 && len(res.Instead) > 0 {
-		// A word this project avoids: say which to use, and what it means.
 		g := res.Instead[0]
 		return fmt.Sprintf("%q isn't the word used here: say %q.\n", res.Term, g.Term) + glossaryEntryText(g, false)
 	}
@@ -161,7 +153,6 @@ func glossaryLookupText(res *core.GlossaryLookup, project string) string {
 	}
 	var b strings.Builder
 	if g := res.Matches[0]; !strings.EqualFold(strings.Join(strings.Fields(res.Term), " "), g.Term) {
-		// Found by an alias: the entry is the term to use.
 		fmt.Fprintf(&b, "%q is another name for %q, the term used here.\n", res.Term, g.Term)
 	}
 	b.WriteString(glossaryEntryText(res.Matches[0], false))
@@ -225,8 +216,6 @@ func glossaryListText(list []*core.GlossaryEntry) string {
 	return b.String()
 }
 
-// ---- design notes ----
-
 // approvalLine is a note's provenance in one place: who wrote it, whether
 // a person approved it (who, when) or it's only an agent's proposal, and
 // who last changed it. Agents read this to tell what people intend from
@@ -242,7 +231,6 @@ func approvalLine(n *core.DesignNote) string {
 	}
 	s := written + " Approved by " + by + " on " + day(*n.ApprovedAt) + "."
 	if n.Requested != nil {
-		// Provenance, not a verdict: nobody approved it (WP-409).
 		s = "Written by " + who(n.CreatedBy, n.CreatedAgent) + " on " + day(n.CreatedAt) + " for " + n.Requested.Issue + ", which " +
 			who(n.Requested.By, "") + " filed: it counts on that request; no person approved it."
 	}
@@ -432,8 +420,6 @@ func designListText(list []*core.DesignNote) string {
 	return b.String()
 }
 
-// ---- specs ----
-
 func specText(sp *core.Spec) string {
 	n := sp.Note
 	var b strings.Builder
@@ -563,8 +549,6 @@ func specOverviewText(ov *core.SpecOverview) string {
 	}
 	return b.String()
 }
-
-// ---- search ----
 
 // snippetText turns a snippet's ⟦marks⟧ into [brackets] for terminals,
 // dropping wikilink brackets first so they don't read as marks.

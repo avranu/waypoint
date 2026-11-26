@@ -1,7 +1,3 @@
-// What an automation did: its runs and each run's steps, running one by
-// hand (with the inputs it asks for), and a test that walks the steps
-// without changing anything.
-
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -39,8 +35,6 @@ import { Field, Input, Select, Switch, Textarea } from '@/components/ui/input'
 import { Badge, Empty, Skeleton } from '@/components/ui/misc'
 import { toast, toastError } from '@/components/ui/toast'
 import { DescribeRule } from './rules'
-
-// ---- small pieces ----
 
 const STATUS: Record<string, { label: string; color?: string }> = {
   queued: { label: 'Queued', color: 'var(--wp-accent)' },
@@ -162,8 +156,6 @@ function KV({ title, data }: { title: string; data?: Record<string, unknown> }) 
     </div>
   )
 }
-
-// ---- steps ----
 
 /** The steps inside repeats, by name, so their rounds can be told apart. */
 function nestedIDs(rule?: Rule): Set<string> {
@@ -298,8 +290,6 @@ function StepCard({ step: s, test }: { step: RunStep; test?: boolean }) {
   )
 }
 
-// ---- inputs form ----
-
 type InputValues = Record<string, string | boolean>
 
 function initialInputs(inputs: RuleInput[]): InputValues {
@@ -380,8 +370,6 @@ export function InputsForm({
   )
 }
 
-// ---- running by hand ----
-
 /** Run now: with inputs it asks first; the run it starts opens in the Runs window. */
 export function RunNowDialog({
   automation,
@@ -459,8 +447,6 @@ export function RunNowDialog({
     </Dialog>
   )
 }
-
-// ---- a test ----
 
 /** Walks the saved steps against a recent event (or sample data) and says what each would do. */
 export function TestDialog({
@@ -584,8 +570,6 @@ export function TestDialog({
     </Dialog>
   )
 }
-
-// ---- runs ----
 
 function RunRow({ run, onOpen }: { run: AutomationRun; onOpen: () => void }) {
   const by = run.agent ? run.agent : run.actor?.display_name || run.actor?.username

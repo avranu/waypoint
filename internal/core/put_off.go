@@ -1,13 +1,5 @@
 package core
 
-// Put-off steps (WP-479): at wp ship, the task's description, comments and
-// linked plan pages are skimmed for steps that are conditional or left for
-// later ("only if", "step 2", "follow-up", …), and wp ship quotes them
-// before the reply template. It is a prompt for the agent, not a verdict:
-// a skim misses things and flags others wrongly, so it never says whether
-// the session can be cleared. The agent judges, and files a task for each
-// step it didn't do before it says so.
-
 import (
 	"context"
 	"fmt"
@@ -34,7 +26,7 @@ type PutOffSteps struct {
 
 const (
 	maxPutOffNotes = 8
-	putOffQuote    = 180 // runes per quoted sentence
+	putOffQuote    = 180
 )
 
 // putOffWords are the phrases that mark a step as conditional or put off.
@@ -67,7 +59,7 @@ func (s *Service) PutOffSteps(ctx context.Context, actor *Actor, ref string) (*P
 		}
 		pg, err := s.GetPage(ctx, actor, p.ID)
 		if err != nil {
-			continue // unreadable now; the rest still helps
+			continue
 		}
 		add(cmp(pg.Code, pg.Title), pg.Body)
 	}

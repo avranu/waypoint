@@ -95,7 +95,6 @@ export function MembersTab({ project }: { project: Project }) {
                   value={m.role}
                   onChange={(e) => {
                     const role = e.target.value as EditRole
-                    // Giving up your own ownership can't be undone by you: ask first.
                     if (self && m.role === 'owner' && role !== 'owner') setDemoting(role)
                     else setRole.mutate({ username: m.user.username, role })
                   }}

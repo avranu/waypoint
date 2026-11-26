@@ -67,7 +67,6 @@ func TestRunnerAPI(t *testing.T) {
 		t.Errorf("unknown field: %d %s", code, b)
 	}
 
-	// Stalled background jobs (WP-605): the runner's owner reports them.
 	stalled := map[string]any{"runner": runner.ID, "jobs": []map[string]any{{"session": "no-such-session", "task": "b1", "pid": 7, "command": "sleep 9999", "quiet_minutes": 30}}}
 	var told struct {
 		Jobs []struct{ Task, Outcome string }
@@ -82,7 +81,6 @@ func TestRunnerAPI(t *testing.T) {
 		t.Errorf("an agent reported stalled jobs: %d %s", code, b)
 	}
 
-	// People queue a command; agents and strangers can't.
 	job := map[string]any{"kind": "command", "input": map[string]any{"command": "echo hi", "dir": "/work/app"}}
 	if code, b := agent.do("POST", "/api/v1/runner-jobs", job); code != 403 {
 		t.Errorf("an agent queued a command: %d %s", code, b)
@@ -103,7 +101,6 @@ func TestRunnerAPI(t *testing.T) {
 		t.Fatalf("enqueue: %d %+v", code, queued)
 	}
 
-	// The runner polls, gets it, streams output and finishes.
 	var work struct {
 		Job *struct {
 			ID    int64
@@ -157,7 +154,6 @@ func TestRunnerAPI(t *testing.T) {
 		t.Errorf("finished job: %+v", done)
 	}
 
-	// Lists: filters, and people see only their own.
 	var jobs []struct{ ID int64 }
 	jc.json("GET", "/api/v1/runner-jobs?runner="+rid(runner.ID)+"&state=done,failed&source=manual", nil, &jobs)
 	if len(jobs) != 1 || jobs[0].ID != queued.ID {
@@ -183,7 +179,6 @@ func TestRunnerAPI(t *testing.T) {
 		t.Errorf("admin sees %d runners", len(runners))
 	}
 
-	// Cancel through the API reaches the runner's poll.
 	var j2 struct{ ID int64 }
 	jc.json("POST", "/api/v1/runner-jobs", job, &j2)
 	jc.json("POST", "/api/v1/runner/poll", map[string]any{"runner": runner.ID, "wait": 0}, &work)
@@ -194,9 +189,6 @@ func TestRunnerAPI(t *testing.T) {
 	if len(work.Cancel) != 1 || work.Cancel[0] != j2.ID {
 		t.Errorf("cancel list = %v", work.Cancel)
 	}
-	// A result is up to core.RunnerResultMax (an audit's holds its helpers'
-	// runs): over it the answer says it is too large, and the job stays
-	// running for the runner to send less; below it, 1.5 MB is kept whole.
 	huge := map[string]any{"state": "done", "result": map[string]any{"pad": strings.Repeat("x", core.RunnerResultMax+10)}}
 	if code, b := jc.do("POST", "/api/v1/runner/jobs/"+rid(j2.ID)+"/finish", huge); code != 400 || !strings.Contains(string(b), core.RunnerResultTooLarge) {
 		t.Errorf("a result over the most: %d %s", code, b)
@@ -214,7 +206,6 @@ func TestRunnerAPI(t *testing.T) {
 		t.Errorf("the stored result is %d bytes (%s), want %d", len(pad), stored.State, len(big))
 	}
 
-	// A held poll is woken by a new job over HTTP.
 	got := make(chan int64, 1)
 	go func() {
 		var w struct{ Job *struct{ ID int64 } }
@@ -354,10 +345,6 @@ func TestRunnerGatewayRoutes(t *testing.T) {
 	if code, b := jc.do("POST", path, map[string]any{"prompt": "Audit it."}); code != 400 || !strings.Contains(string(b), "multipart/form-data") {
 		t.Errorf("a JSON body: %d %s", code, b)
 	}
-	if code, b := upload(jc, path, map[string]string{"prompt": "Audit it."}); code != 400 || !strings.Contains(b, "repo") {
-		t.Errorf("no repo: %d %s", code, b)
-	}
-	// The job is a CLI's: nothing of it goes to the gateway.
 	if code, b := upload(jc, path, whole); code != 400 || !strings.Contains(b, "isn't an audit through the gateway") {
 		t.Errorf("an agent job: %d %s", code, b)
 	}
@@ -367,12 +354,17 @@ func TestRunnerGatewayRoutes(t *testing.T) {
 	if code, b := jc.do("POST", path+"/cancel", nil); code != 400 {
 		t.Errorf("stopping it: %d %s", code, b)
 	}
-	// Another person's runner, a job that isn't, and a token that can't write.
 	if code, b := upload(sam, path, whole); code != 404 {
 		t.Errorf("another person's job: %d %s", code, b)
 	}
 	if code, b := sam.do("GET", path, nil); code != 404 {
 		t.Errorf("another person's job: %d %s", code, b)
+	}
+	// A job that isn't a gateway audit is turned away before its body is
+	// read, however large.
+	limit := int(svc.GatewayTaskLimits(ctx).ArchiveBytes)
+	if code, b := upload(jc, path, map[string]string{"prompt": "Audit it.", "repo": strings.Repeat("x", limit+core.GatewayPromptMax+2<<20)}); code != 400 || !strings.Contains(b, "isn't an audit through the gateway") {
+		t.Errorf("a body past the limit: %d %.200s", code, b)
 	}
 	if code, b := upload(jc, "/api/v1/runner/jobs/99999/gateway", whole); code != 404 {
 		t.Errorf("no such job: %d %s", code, b)
@@ -382,5 +374,75 @@ func TestRunnerGatewayRoutes(t *testing.T) {
 	}
 	if code, b := upload(&client{t: t, base: ts.URL, http: http.DefaultClient}, path, whole); code != 401 {
 		t.Errorf("no token: %d %s", code, b)
+	}
+}
+
+// The body cap of the gateway route is the archive limit the job was packed
+// against (its input says it), not the default: a body between the default
+// 20 MiB and a raised 64 MiB is read, not cut off.
+func TestRunnerGatewayBodyCapIsTheJobs(t *testing.T) {
+	ts, svc, d := setupServerDB(t, nil)
+	ctx := context.Background()
+	u, err := svc.CreateUser(ctx, core.SystemActor(), core.CreateUserInput{Username: "robin", Email: "robin@example.com", Password: "correct horse battery", IsAdmin: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	robin := &core.Actor{User: u}
+	tok, _, err := svc.CreateToken(ctx, robin, core.TokenSpec{Name: "box"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jc := &client{t: t, base: ts.URL, http: http.DefaultClient, token: tok}
+	r, err := svc.RegisterRunner(ctx, robin, core.RunnerRegistration{Name: "box", Hostname: "box", OS: "linux", Arch: "amd64", Version: "test",
+		AllowedDirs: []string{"/work"}, CLIs: []core.RunnerCLI{{Name: "claude"}}, Features: []string{core.FeatureAudit, core.FeatureGatewayAudit}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := svc.EnqueueRunnerJob(ctx, robin, core.RunnerJobInput{Kind: core.JobAudit, Source: "audit", SourceID: 1,
+		Input: []byte(`{"cli":"gateway","model":"audit","prompt":"hi","repo":"https://x.test/a/b.git"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The limits Waypoint writes into the job as it queues it are the
+	// gateway's (a caller can't set them): as if it had said 64 MiB then.
+	if _, err := d.W.ExecContext(ctx, `UPDATE runner_jobs SET input = json_set(input, '$.gateway_archive_max', 67108864, '$.gateway_file_max', 8388608) WHERE id = ?`, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	zero := 0.0
+	w, err := svc.RunnerPoll(ctx, robin, core.RunnerPoll{Runner: r.ID, Wait: &zero})
+	if err != nil || w.Job == nil {
+		t.Fatalf("poll: %v %+v", err, w)
+	}
+	upload := func(repo int) (int, string) {
+		t.Helper()
+		var body bytes.Buffer
+		mw := multipart.NewWriter(&body)
+		_ = mw.WriteField("prompt", "Audit it.")
+		if repo >= 0 {
+			f, _ := mw.CreateFormFile("repo", "repo.tar.gz")
+			_, _ = f.Write(bytes.Repeat([]byte("x"), repo))
+		}
+		_ = mw.Close()
+		req, _ := http.NewRequest("POST", ts.URL+"/api/v1/runner/jobs/"+rid(w.Job.ID)+"/gateway", &body)
+		req.Header.Set("Authorization", "Bearer "+jc.token)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		resp, err := jc.http.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	if code, b := upload(-1); code != 400 || !strings.Contains(b, "repo") {
+		t.Errorf("no repo: %d %s", code, b)
+	}
+	// No gateway is set up here, so the task is refused: after the body was read.
+	if code, b := upload(25 << 20); code != 200 || !strings.Contains(b, "no_gateway") {
+		t.Errorf("a 25 MiB archive for a 64 MiB job: %d %.200s", code, b)
+	}
+	// Past the job's limit and the prompt's room: cut off before it is read.
+	if code, b := upload(64<<20 + core.GatewayPromptMax + 2<<20); code != 400 || !strings.Contains(b, "too large") {
+		t.Errorf("a body past the job's limit: %d %.200s", code, b)
 	}
 }

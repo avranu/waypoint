@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// ---- 1234.5: redaction can lengthen a line ----
-
 // A line under the raw limit that redaction makes longer than it is handled
 // like an oversize raw line: counted as line_too_large and replaced by a stub
 // (WP-1466, audit 1234.5).
@@ -59,8 +57,6 @@ func TestArchiveLineOverLimitAfterRedactionIsAStub(t *testing.T) {
 	}
 }
 
-// ---- 1234.3: a note written after the holder's last look ----
-
 // A busy pass that writes its note while the holder posts its status (after
 // the first look, before the unlock) is read by the holder's last look.
 func TestArchiveNoteWrittenDuringReportIsRead(t *testing.T) {
@@ -104,7 +100,7 @@ func TestArchiveNotePastDeadlineIsTakenByTheNextPass(t *testing.T) {
 			if _, err := usageArchive(hookCLI(t), usageSyncOptions{Hook: true, Dir: dir}, dir, time.Now()); err != nil {
 				t.Error(err)
 			}
-			time.Sleep(300 * time.Millisecond) // past the holder's deadline
+			time.Sleep(300 * time.Millisecond)
 		}
 		return false
 	}
@@ -130,15 +126,13 @@ func TestArchiveNotePastDeadlineIsTakenByTheNextPass(t *testing.T) {
 	}
 }
 
-// ---- 1234.4: the archive-off status post has a deadline ----
-
 func TestArchiveOffReportHasADeadline(t *testing.T) {
 	e, tap := tappedEnv(t)
 	e.login()
 	t.Setenv("WP_USAGE_ARCHIVE", "off")
 	lowerVar(t, &archiveReportHookTimeout, 300*time.Millisecond)
 	tap.onStatus = func(_ int, _ http.ResponseWriter, r *http.Request) bool {
-		_, _ = io.Copy(io.Discard, r.Body) // so a hang-up is seen
+		_, _ = io.Copy(io.Discard, r.Body)
 		select {
 		case <-r.Context().Done():
 		case <-time.After(20 * time.Second):
@@ -155,8 +149,6 @@ func TestArchiveOffReportHasADeadline(t *testing.T) {
 	}
 }
 
-// ---- 1234.2: the hour counts' upload on a hook pass is bounded ----
-
 // A hook pass whose hour-count upload stalls returns inside the bound, and the
 // hours are offered again by the next pass, as for any failed upload.
 func TestHookPassBoundsTheHourCountUpload(t *testing.T) {
@@ -170,7 +162,7 @@ func TestHookPassBoundsTheHourCountUpload(t *testing.T) {
 		if !stall {
 			return false
 		}
-		_, _ = io.Copy(io.Discard, r.Body) // so a hang-up is seen
+		_, _ = io.Copy(io.Discard, r.Body)
 		select {
 		case <-r.Context().Done():
 		case <-time.After(20 * time.Second):

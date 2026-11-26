@@ -1,6 +1,3 @@
-// How Hermes and its machine are doing: version, gateway, conversations,
-// memory and disk; restarting the gateway; the skill curator.
-
 import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { RotateCw } from 'lucide-react'

@@ -17,7 +17,6 @@ function useFileText(f: Attachment | null) {
     enabled: !!f,
     staleTime: Infinity,
     queryFn: async () => {
-      // The server answers ranges, so a big log costs only what's shown.
       const res = await fetch(f!.url, { headers: { Range: `bytes=0-${PREVIEW_BYTES - 1}` } })
       if (!res.ok) throw new Error('Could not load the file')
       return res.text()

@@ -1,0 +1,52 @@
+#!/bin/sh
+# What a runner runs on an agent's commits before it pushes them, and what a
+# babysitting round is told to run before it ends (cmd/wp/runner_prepush.go):
+# CI's lint job on the parts this branch changes, as the pre-push hook of
+# .pre-commit-config.yaml picks them. A round's push that fails lint costs a
+# whole CI run and another round (WP-1808).
+set -u
+cd "$(dirname "$0")/.." || exit 1
+
+# A runner's checkout may not have main as origin/main yet; the checks
+# compare with it.
+git rev-parse -q --verify origin/main >/dev/null ||
+  git fetch -q origin main:refs/remotes/origin/main || true
+# Without it nothing can be told changed: say so and fail, rather than pass
+# with nothing checked (audit #1748.3).
+if ! base=$(git merge-base HEAD origin/main); then
+  echo "pre-push: can't find origin/main to compare with, so nothing was checked" >&2
+  exit 1
+fi
+if ! committed=$(git diff --name-only "$base" HEAD); then
+  echo "pre-push: can't list what changed since origin/main, so nothing was checked" >&2
+  exit 1
+fi
+# Nor may a failed read of the work tree pass as nothing left in it.
+if ! uncommitted=$(git status --porcelain); then
+  echo "pre-push: can't list what is changed in the work tree, so nothing was checked" >&2
+  exit 1
+fi
+changed=$(
+  echo "$committed"
+  echo "$uncommitted" | cut -c4-
+)
+[ -n "$changed" ] || exit 0
+
+if ! gopath=$(go env GOPATH); then
+  echo "pre-push: can't find Go, so nothing was checked" >&2
+  exit 1
+fi
+PATH="$gopath/bin:$PATH"
+status=0
+if echo "$changed" | grep -q -E '(\.go$|^go\.(mod|sum)$|^\.golangci\.yml$)'; then
+  command -v golangci-lint >/dev/null || make tools || status=1
+  make prepush-go || status=1
+fi
+if echo "$changed" | grep -q -E '^(\.forgejo/|\.github/|deploy/k8s/)'; then
+  command -v actionlint >/dev/null || make tools || status=1
+  make prepush-ops || status=1
+fi
+if echo "$changed" | grep -v '^web/dist/' | grep -q '^web/'; then
+  make prepush-web || status=1
+fi
+exit $status

@@ -26,7 +26,7 @@ func TestShipRetriedPastTheWindowAndToldOnce(t *testing.T) {
 	r1 := e.review("Merge loses an update")
 	e.g.createErr = errors.New("forge unavailable")
 	e.shipAndCheck(r1, []string{"rejected"})
-	for range 8 { // four hours in ten-minute steps
+	for range 8 {
 		e.tickAll(30 * time.Minute)
 		e.s.Wait()
 		if r := e.round(r1); r.state == RoundFailed || r.state == RoundInterrupted || r.state == RoundSkipped {

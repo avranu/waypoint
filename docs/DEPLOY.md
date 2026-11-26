@@ -171,8 +171,14 @@ deploy key in a CI job is readable by whatever runs beside it.
    cancel the run still testing the one before, so a busy afternoon of merges
    released nothing, WP-62). A queued run whose commit is no longer main's tip
    when it starts skips everything (its `current` job says so in a notice):
-   the newer push's own run releases both changes. On a pull request
-   `current` is skipped and the three checks queue at once (WP-156).
+   the newer push's own run releases both changes. On a ready pull request
+   `current` is skipped and the three checks queue at once (WP-156). On a push to a
+   draft ("WIP: ") it runs once, light, and skips the checks when the push only merged
+   the base in over a head whose checks passed (its notice says why not otherwise, WP-1808);
+   it reads the head's parents from the API first (a push that is not a two-parent merge
+   costs one request), counts only real, non-skipped results, walks back over at most 10
+   merge-only commits to the first with real passed ones, and bounds itself with timeouts;
+   that is a skipped draft run, never a full one: dropping "WIP: " still runs the full suite.
    `backend` and `e2e` are the statuses branch protection and Waypoint read,
    but each is a small job that waits for parallel shard jobs (`backend shard
    1`..`4`, `e2e shard 1`..`4`, WP-313, WP-314) and fails unless every shard
@@ -583,6 +589,37 @@ binary starts against a newer schema without complaint but may misbehave, so
 (`waypoint backup`, or rely on the daily one), then swap the binary or image
 (`make deploy`; production deploys itself, see Continuous delivery). `waypoint version` prints the running build.
 
+A server built with a version names it on every answer (`X-Waypoint-Version`;
+one built without sends no header, and nothing follows it), and `wp` and
+runners built from a release follow it:
+
+- **`wp`**: any command that sees the server on another release starts
+  `wp upgrade --auto` in the background when it ends, once per server
+  version, and tries again after 6 hours if it didn't take. The SessionStart
+  hook also looks once a day. One download runs at a time: the others wait
+  for its claim (15 minutes at most).
+- **Runner**: the download starts as soon as the server's version differs,
+  even with jobs running, and once it succeeds the binary is replaced, so
+  `wp` calls on that machine use it at once; until then (or for 6 hours
+  after a failed download) jobs run the old one. The runner process restarts
+  on the new binary when no job is running, whichever `wp` put it there, as
+  long as the file is still the one it checked. If it has waited 15 minutes
+  (counted from the first release it was to restart on, even when a newer
+  one has replaced it since), it takes no new jobs until the running ones
+  finish, then restarts. A server back on the runner's own release has the
+  binary put back, with no restart; a put-back that fails is tried again
+  after 15 minutes, not 6 hours.
+
+This applies only to release builds (`vX.Y.Z`) on both sides; a runner started
+with `--once` never updates. A runner started on a `wp` from before this
+change keeps the old rule (it updates only when no job is running), so run
+`wp upgrade` and restart the runner once on each machine.
+
+`WAYPOINT_NO_AUTO_UPDATE=1` stops all of this, and `wp runner --no-auto-update`
+stops it for one runner. A runner that doesn't update (those two, or `--once`)
+passes `WAYPOINT_NO_AUTO_UPDATE=1` on to everything it starts (jobs, sessions,
+autopilot), so the `wp` they run stays as it is too.
+
 ## Observability
 
 - `GET /healthz`, `/readyz` — database reachability (both; there is no
@@ -712,8 +749,10 @@ Any proxy works. Requirements:
   more saves the retries.
 - Allow request bodies up to 5 MB (forge webhooks; avatars are 3 MB, JSON
   2 MB). If runners reach Waypoint through the proxy and audits may run
-  through an LLM gateway (`gateway/audit`, WP design note 342), allow 22 MB: the runner uploads its packed checkout, 20 MiB at
-  most, and it must arrive within Waypoint's two-minute read timeout. A
+  through an LLM gateway (`gateway/audit`, WP-ADR84), allow the gateway's archive limit plus about 2 MB: the runner uploads
+  its packed checkout, up to what the gateway takes (20 MiB today, 64 MiB
+  once the gateway raises it; Waypoint reads the figure from the gateway),
+  and it must arrive within Waypoint's two-minute read timeout. A
   proxy that refuses the upload only fails that try (the audit goes on to
   its next model).
 - The transcript archive (`POST /api/v1/usage/transcript`, WP-1466) sends

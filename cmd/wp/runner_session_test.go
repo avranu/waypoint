@@ -15,8 +15,6 @@ import (
 	"time"
 )
 
-// Follow-up jobs (WP-D22).
-
 const fakeClaudeBG = `#!/bin/sh
 printf '%s\n' "$@" > "$FAKE_OUT/args"
 env > "$FAKE_OUT/env"
@@ -60,7 +58,6 @@ func TestSessionJobStartsABackgroundSession(t *testing.T) {
 	if pwd, _ := os.ReadFile(filepath.Join(rec, "pwd")); strings.TrimSpace(string(pwd)) != real {
 		t.Errorf("ran in %s", pwd)
 	}
-	// Only in an allowed directory.
 	if o := p.execSession(context.Background(), newRun(time.Minute), sessionJob{Dir: t.TempDir(), Prompt: "x"}); o.State != "failed" {
 		t.Errorf("outside the allowed directories: %+v", o)
 	}
@@ -92,7 +89,6 @@ func TestMessageJobPostsToTheSessionsInbox(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// A dead process's file is skipped; the live one is used.
 	write("1.json", map[string]any{"pid": 999999, "sessionId": "abc-123", "messagingSocketPath": "/nope.sock"})
 	write(strconv.Itoa(os.Getpid())+".json", map[string]any{"pid": os.Getpid(), "sessionId": "abc-123", "messagingSocketPath": sock, "status": "idle"})
 	p := newTestProc(t)

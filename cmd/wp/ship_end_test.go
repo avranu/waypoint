@@ -5,7 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -84,7 +87,6 @@ func TestShipSummaryText(t *testing.T) {
 func TestShipEndState(t *testing.T) {
 	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
 	c, _ := newCLI(new(bytes.Buffer), new(bytes.Buffer))
-	// Kept summaries are per task and survive a new CLI.
 	c.keepSummary("wp-9", "Kept.")
 	c, _ = newCLI(new(bytes.Buffer), new(bytes.Buffer))
 	if got, kept := c.shipSummary("WP-9", "", false); got != "Kept." || !kept {
@@ -101,7 +103,6 @@ func TestShipEndState(t *testing.T) {
 		t.Errorf("--summary \"\" left %q kept", got)
 	}
 
-	// A marker is taken once, and only while fresh.
 	c.shipSession("s1", func(e *shipEnd) { e.Ready, e.Text = time.Now(), "Done." })
 	if e := c.takeShipEnd("s1", ""); e == nil || e.Text != "Done." {
 		t.Errorf("fresh marker: %+v", e)
@@ -114,8 +115,6 @@ func TestShipEndState(t *testing.T) {
 		t.Errorf("stale marker taken: %+v", e)
 	}
 
-	// A background wp ship: its report takes the marker it wrote since it
-	// started, even after the 2 minutes, and nothing else does.
 	c.noteShipBackground("s1", "b1")
 	c.shipSession("s1", func(e *shipEnd) {
 		e.Bg["b1"] = time.Now().Add(-10 * time.Minute)
@@ -132,8 +131,6 @@ func TestShipEndState(t *testing.T) {
 		t.Errorf("a background ship that wrote no marker ended the turn: %+v", e)
 	}
 
-	// The Stop a hook sent: the Stop hook skips it once; a new prompt
-	// forgets it.
 	c.shipSession("s1", func(e *shipEnd) { e.Stopped = time.Now() })
 	c, _ = newCLI(new(bytes.Buffer), new(bytes.Buffer))
 	if !c.stopAlreadySent("s1") {
@@ -182,7 +179,6 @@ func TestShipEndsTheTurnThroughTheHooks(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &o); err != nil || o.Continue == nil || *o.Continue || o.StopReason != "WP-1 shipped in PR #4." {
 		t.Fatalf("PostToolUse after wp ship: %q (%v)", out, err)
 	}
-	// The summary was kept until the hook's Stop went: it is shown now.
 	if c, _ := newCLI(new(bytes.Buffer), new(bytes.Buffer)); c.keptSummaryOf("WP-1") != "" {
 		t.Error("the summary the turn ended with is still kept")
 	}
@@ -190,13 +186,9 @@ func TestShipEndsTheTurnThroughTheHooks(t *testing.T) {
 	if len(list) != 1 || list[0].LastUpdate != "WP-1 shipped in PR #4." {
 		t.Fatalf("sessions after the stop: %+v", list)
 	}
-	// Nothing said to run in the background: the session is finished, as
-	// after a Stop with nothing pending.
 	if x := list[0]; x.State == "working" || x.FinishedAt == nil || x.Pending != "" {
 		t.Errorf("after the hook's stop: state %q pending %q finished %v", x.State, x.Pending, x.FinishedAt)
 	}
-	// The Stop hook after it says only what still runs: the summary stays
-	// the last update.
 	running := []map[string]any{{"id": "b1", "type": "shell", "status": "running", "description": "dev server"}}
 	if out := s.hook(in("sess-s", "Stop", s.repo, map[string]any{"last_assistant_message": "Another reply", "background_tasks": running, "session_crons": []any{}})); strings.Contains(out, "Another reply") {
 		t.Errorf("the Stop hook after the hook's stop printed %q", out)
@@ -204,12 +196,9 @@ func TestShipEndsTheTurnThroughTheHooks(t *testing.T) {
 	if x := s.sessions()[0]; x.LastUpdate != "WP-1 shipped in PR #4." || x.FinishedAt != nil || x.Pending == "" {
 		t.Errorf("after the Stop hook: update %q pending %q finished %v", x.LastUpdate, x.Pending, x.FinishedAt)
 	}
-	// A second ship call has no marker: the turn goes on.
 	if out := burn("wp ship", `{"stdout":""}`); strings.Contains(out, `"continue":false`) {
 		t.Errorf("a ship without a marker ended the turn: %s", out)
 	}
-	// A marker the ship's own call didn't take (its output piped on) is
-	// dropped by the next call, so a later ship can't end the turn with it.
 	c, _ = newCLI(new(bytes.Buffer), new(bytes.Buffer))
 	c.endTurnAfterShip("WP-1", "Stale.")
 	burn("wp ship --summary x | tail -3", `{"stdout":""}`)
@@ -217,8 +206,6 @@ func TestShipEndsTheTurnThroughTheHooks(t *testing.T) {
 	if out := burn("wp ship --help", `{"stdout":""}`); strings.Contains(out, `"continue":false`) {
 		t.Errorf("a later call took the ship's marker: %s", out)
 	}
-	// The server can't be reached: the turn goes on, and the summary stays
-	// kept for the next wp ship (audit 1010.3).
 	server := os.Getenv("WAYPOINT_SERVER")
 	t.Setenv("WAYPOINT_SERVER", "http://127.0.0.1:1")
 	c, _ = newCLI(new(bytes.Buffer), new(bytes.Buffer))
@@ -230,8 +217,6 @@ func TestShipEndsTheTurnThroughTheHooks(t *testing.T) {
 	if c, _ := newCLI(new(bytes.Buffer), new(bytes.Buffer)); c.keptSummaryOf("WP-1") != "Kept." {
 		t.Error("the summary went with a Stop that wasn't sent")
 	}
-	// The next prompt starts another turn: the summary written for this one
-	// goes (audit 1010.1).
 	t.Setenv("WAYPOINT_SERVER", server)
 	s.hook(in("sess-s", "UserPromptSubmit", s.repo, map[string]any{"prompt": "Now the review's findings"}))
 	if c, _ := newCLI(new(bytes.Buffer), new(bytes.Buffer)); c.keptSummaryOf("WP-1") != "" {
@@ -247,8 +232,6 @@ func shipEndsTurn(t *testing.T, e *env, me *core.Actor, key string) {
 	t.Helper()
 	ctx := context.Background()
 	t.Setenv("WAYPOINT_SESSION", "sess-ship")
-	// The test's untracked pr-checks.md would put the check's tree off the
-	// commit's.
 	if err := os.WriteFile(filepath.Join(".git", "info", "exclude"), []byte(".waypoint/\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -259,24 +242,47 @@ func shipEndsTurn(t *testing.T, e *env, me *core.Actor, key string) {
 		}
 		return c.state
 	}
-	// A failed check: nothing ships, the summary waits.
 	out, code := e.run("ship", "--check", "false", "--summary", "{task} is in PR #{pr}.")
-	if code == 0 || !strings.Contains(out, "Check failed: false exited 1") || !strings.Contains(out, "nothing was committed or shipped") {
+	if code == 0 || !strings.Contains(out, "Check failed: false exited 1") || !strings.Contains(out, "nothing was committed or shipped") || strings.Contains(out, "lines of its output") {
 		t.Errorf("failed check: %d\n%s", code, out)
 	}
 	if k := state().Summaries[key]; k == nil || k.Text != "{task} is in PR #{pr}." {
 		t.Errorf("summary not kept after a failed check: %+v", k)
 	}
-	// A step put off needs the agent: the kept summary is used and kept
-	// again, and the usual reply follows. A marker this ship didn't write
-	// (a subagent's wp ship in this session) goes when it starts, so the
-	// call can't end the turn with it (audit 1010.7).
+	// A failure whose error is above the lines shown: the whole output is
+	// kept in a file the message names (WP-1812).
+	out, code = e.run("ship", "--check", "printf 'a lint %s\\n' finding; seq 40; exit 3", "--summary", "{task} is in PR #{pr}.")
+	m := regexp.MustCompile(`All 41 lines of its output \(kept until the next long failure here, or until this checkout is removed\): (.+)`).FindStringSubmatch(out)
+	if code == 0 || strings.Contains(out, "a lint finding") || m == nil {
+		t.Fatalf("long failed check: %d\n%s", code, out)
+	}
+	want := "a lint finding\n"
+	for i := 1; i <= 40; i++ {
+		want += strconv.Itoa(i) + "\n"
+	}
+	if kept, err := os.ReadFile(m[1]); err != nil || string(kept) != want {
+		t.Errorf("kept output: %v\n%s", err, kept)
+	}
+	// The file is the checkout's git directory's, not a temp file.
+	gp, gerr := exec.Command("git", "rev-parse", "--git-path", "wp-failed-output.log").Output()
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	wantPath, _ := filepath.Abs(strings.TrimSpace(string(gp)))
+	if gotPath, _ := filepath.EvalSymlinks(filepath.Dir(m[1])); gotPath != "" {
+		gotPath = filepath.Join(gotPath, filepath.Base(m[1]))
+		wantDir, _ := filepath.EvalSymlinks(filepath.Dir(wantPath))
+		if gotPath != filepath.Join(wantDir, filepath.Base(wantPath)) {
+			t.Errorf("kept at %s, want %s", m[1], wantPath)
+		}
+	} else {
+		t.Errorf("kept at %s, want %s", m[1], wantPath)
+	}
 	c, _ := newCLI(new(bytes.Buffer), new(bytes.Buffer))
 	c.shipSession("sess-ship", func(e *shipEnd) { e.Ready, e.Text = time.Now(), "A subagent's." })
 	out = e.wp("ship", "--check", "true")
 	if !strings.Contains(out, "Check passed: true") || !strings.Contains(out, "Using the --summary you gave this task's last wp ship") ||
 		strings.Contains(out, "kept, not shown") || !strings.Contains(out, "Done: "+key) {
-		// (WP-1370: the line saying the summary was kept is gone.)
 		t.Errorf("ship with a reason to go on:\n%s", out)
 	}
 	if s := state(); s.Summaries[key] == nil || s.ShipEnds["sess-ship"] != nil {
@@ -293,9 +299,6 @@ func shipEndsTurn(t *testing.T, e *env, me *core.Actor, key string) {
 			}
 		}
 	}
-	// Nothing needs the agent: the turn ends with the summary, filled in,
-	// even when Waypoint tells it which tasks' recent work the change
-	// replaces (WP-1370: information, not a reason to go on).
 	oldFn := rewrittenTasksFn
 	rewrittenTasksFn = func(*cli, string, string) []rewrittenTask {
 		return []rewrittenTask{{Key: "WP-2", Title: "Earlier", PR: 3, Lines: 20, Share: 0.5}}
@@ -317,8 +320,6 @@ func shipEndsTurn(t *testing.T, e *env, me *core.Actor, key string) {
 	if k := s.Summaries[key]; k == nil || k.Text != "{task} is in PR #{pr}. Tests: true." {
 		t.Errorf("the summary isn't kept until the hook ends the turn with it: %+v", k)
 	}
-	// An agent with no session the hooks know: the turn can't end, so the
-	// usual reply follows and the summary waits.
 	t.Setenv("WAYPOINT_SESSION", "")
 	out = e.wp("ship", "--summary", "Later.")
 	if !strings.Contains(out, "--summary can't end the turn here") || strings.Contains(out, "Waypoint ends the turn") || !strings.Contains(out, "Done: "+key) {
@@ -327,7 +328,6 @@ func shipEndsTurn(t *testing.T, e *env, me *core.Actor, key string) {
 	if k := state().Summaries[key]; k == nil || k.Text != "Later." {
 		t.Errorf("summary not kept when the turn can't end: %+v", k)
 	}
-	// A person's ship: the summary has no turn to end.
 	t.Setenv("WAYPOINT_AGENT", "none")
 	if out = e.wp("ship", "--summary", "x"); strings.Contains(out, "Waypoint ends the turn") {
 		t.Errorf("a person's ship ended a turn:\n%s", out)
@@ -409,5 +409,163 @@ func TestShipEndMarkerAfterALongBackgroundWait(t *testing.T) {
 	}
 	if e := c.takeShipEnd("sess-long", "b1"); e == nil || e.Text != "Shipped." {
 		t.Fatalf("the marker written at the end of an hour's wait was refused: %+v", e)
+	}
+}
+
+func TestSlotWaitNote(t *testing.T) {
+	for w, want := range map[time.Duration]string{
+		0:                                     "",
+		59 * time.Second:                      "",
+		59*time.Second + 400*time.Millisecond: "",
+		59*time.Second + 500*time.Millisecond: ", and 1m0s waiting for a slot",
+		60 * time.Second:                      ", and 1m0s waiting for a slot",
+		44 * time.Minute:                      ", and 44m0s waiting for a slot",
+	} {
+		if got := slotWaitNote(w); got != want {
+			t.Errorf("slotWaitNote(%v) = %q, want %q", w, got, want)
+		}
+	}
+}
+
+func TestCheckLines(t *testing.T) {
+	wait := 43*time.Minute + 46*time.Second
+	for got, want := range map[string]string{
+		checkPassedLine("make check", 25*time.Minute+time.Second, 0):       "Check passed: make check (25m1s)",
+		checkPassedLine("make check", 25*time.Minute+time.Second, wait):    "Check passed: make check (25m1s, and 43m46s waiting for a slot)",
+		checkFailedHead("make check", 3, 25*time.Minute+time.Second, 0):    "Check failed: make check exited 3 after 25m1s; last lines:\n",
+		checkFailedHead("make check", 3, 25*time.Minute+time.Second, wait): "Check failed: make check exited 3 after 25m1s, and 43m46s waiting for a slot; last lines:\n",
+	} {
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	}
+}
+
+// A check that queued behind another reports its own time, not the wait
+// (WP-1812): the slots are held for about 2s, the check itself takes none.
+func TestShipCheckTimeLeavesOutTheSlotWait(t *testing.T) {
+	slotEnv(t)
+	t.Chdir(t.TempDir())
+	var holds []*slotHold
+	for range defaultSlots() {
+		h, err := acquireSlot(t.Context(), "tests", defaultSlots(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		holds = append(holds, h)
+	}
+	go func() {
+		time.Sleep(2 * time.Second)
+		for _, h := range holds {
+			h.release()
+		}
+	}()
+	var out bytes.Buffer
+	c, err := newCLI(&out, new(bytes.Buffer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t0 := time.Now()
+	if err := c.runShipCheck("true"); err != nil {
+		t.Fatal(err)
+	}
+	if waited := time.Since(t0); waited < 1500*time.Millisecond {
+		t.Fatalf("the check didn't wait for the slots: %v", waited)
+	}
+	// 1s allows for a loaded machine; the wait alone would make it 2s.
+	if !strings.Contains(out.String(), "Check passed: true (0s)") && !strings.Contains(out.String(), "Check passed: true (1s)") {
+		t.Errorf("the wait was counted as the check's time:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "waiting for a slot") {
+		t.Errorf("a wait below the note threshold was named:\n%s", out.String())
+	}
+}
+
+// The wait is named when it passes the threshold, for a passing check and a
+// failing one; the threshold is lowered so the test stays short.
+func TestShipCheckNamesTheSlotWait(t *testing.T) {
+	slotEnv(t)
+	t.Chdir(t.TempDir())
+	old := slotWaitNoteMin
+	slotWaitNoteMin = time.Second
+	t.Cleanup(func() { slotWaitNoteMin = old })
+	var holds []*slotHold
+	for range defaultSlots() {
+		h, err := acquireSlot(t.Context(), "tests", defaultSlots(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		holds = append(holds, h)
+	}
+	go func() {
+		time.Sleep(2 * time.Second)
+		for _, h := range holds {
+			h.release()
+		}
+	}()
+	var out bytes.Buffer
+	c, err := newCLI(&out, new(bytes.Buffer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.runShipCheck("true"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Check passed: true") || !strings.Contains(out.String(), "waiting for a slot") {
+		t.Errorf("passing check:\n%s", out.String())
+	}
+}
+
+func TestShipCheckFailureNamesTheSlotWait(t *testing.T) {
+	slotEnv(t)
+	t.Chdir(t.TempDir())
+	old := slotWaitNoteMin
+	slotWaitNoteMin = time.Second
+	t.Cleanup(func() { slotWaitNoteMin = old })
+	var holds []*slotHold
+	for range defaultSlots() {
+		h, err := acquireSlot(t.Context(), "tests", defaultSlots(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		holds = append(holds, h)
+	}
+	go func() {
+		time.Sleep(2 * time.Second)
+		for _, h := range holds {
+			h.release()
+		}
+	}()
+	var out bytes.Buffer
+	c, err := newCLI(&out, new(bytes.Buffer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.runShipCheck("false"); err == nil {
+		t.Fatal("a failing check passed")
+	}
+	if !strings.Contains(out.String(), "Check failed: false exited 1") || !strings.Contains(out.String(), "waiting for a slot") {
+		t.Errorf("failing check:\n%s", out.String())
+	}
+}
+
+// A failed check shows 30 lines of output; a pointer to the file comes only
+// with more.
+func TestShipCheckPointerPastThirtyLines(t *testing.T) {
+	slotEnv(t)
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Chdir(t.TempDir())
+	for n, want := range map[int]bool{30: false, 31: true} {
+		var out bytes.Buffer
+		c, err := newCLI(&out, new(bytes.Buffer))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.runShipCheck("seq " + strconv.Itoa(n) + "; exit 3"); err == nil {
+			t.Fatalf("%d lines: the check passed", n)
+		}
+		if got := strings.Contains(out.String(), "lines of its output"); got != want {
+			t.Errorf("%d lines: pointer %v, want %v:\n%s", n, got, want, out.String())
+		}
 	}
 }

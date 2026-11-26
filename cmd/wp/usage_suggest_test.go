@@ -56,7 +56,7 @@ func TestInstructionDocs(t *testing.T) {
 	}
 	write(filepath.Join(claude, "CLAUDE.md"), "user rules\n")
 	write(filepath.Join(root, "CLAUDE.md"), "repo rules @docs/more.md\n")
-	write(filepath.Join(root, "docs", "more.md"), "more\n@../CLAUDE.md\n") // a cycle
+	write(filepath.Join(root, "docs", "more.md"), "more\n@../CLAUDE.md\n")
 	write(filepath.Join(root, "AGENTS.md"), "agents\n")
 	var mem strings.Builder
 	for i := range 250 {
@@ -139,7 +139,7 @@ func TestSugPaths(t *testing.T) {
 	for _, tc := range []struct{ p, cwd, want string }{
 		{"/src/app/cmd/main.go", "", "cmd/main.go"},
 		{"/src/app-wt/cmd/main.go:42", "", "cmd/main.go"},
-		{"/src/app-gone/docs/CLI.md", "", "docs/CLI.md"}, // a worktree removed since
+		{"/src/app-gone/docs/CLI.md", "", "docs/CLI.md"},
 		{"docs/CLI.md", "/src/app", "docs/CLI.md"},
 		{"/src/app/untracked.txt", "", ""},
 		{"/elsewhere/cmd/main.go", "", ""},
@@ -160,10 +160,10 @@ func TestSugRepoHas(t *testing.T) {
 	main := filepath.Join(parent, "app")
 	r := &sugRepo{key: "o/app", mainRoot: main, resolver: newRepoResolver()}
 	for cwd, want := range map[string]bool{
-		filepath.Join(parent, "app-wp1", "cmd"): true, // gone, named after the main checkout
+		filepath.Join(parent, "app-wp1", "cmd"): true,
 		filepath.Join(parent, "app"):            true,
 		filepath.Join(parent, "apple"):          false,
-		parent:                                  false, // exists, and isn't the repository
+		parent:                                  false,
 		"":                                      false,
 	} {
 		if got := r.has(cwd); got != want {
@@ -194,7 +194,7 @@ func TestReadSuggestFile(t *testing.T) {
 	now := time.Now()
 	transcript(t, p, "/src/app", now,
 		assistantLine("m1", 50_000, `[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"wp ship --bogus"}}]`),
-		assistantLine("m1", 50_000, `[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"wp ship --bogus"}}]`), // the same message again
+		assistantLine("m1", 50_000, `[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"wp ship --bogus"}}]`),
 		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"flag provided but not defined: -bogus"}]}}`,
 		`{"type":"system","subtype":"compact_boundary"}`,
 		assistantLine("m2", 250_000, `[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/src/app/docs/CLI.md"}}]`),
@@ -277,7 +277,6 @@ func TestScanSuggestSessionsSubagentsFollowTheirSession(t *testing.T) {
 	proj := filepath.Join(claude, "projects", "x")
 	now := time.Now()
 	transcript(t, filepath.Join(proj, "s1.jsonl"), filepath.Join(parent, "app-wt"), now, assistantLine("m1", 1000, `[]`))
-	// its subagent ran in /tmp, and belongs to the session all the same
 	transcript(t, filepath.Join(proj, "s1", "subagents", "agent-a.jsonl"), "/tmp", now, assistantLine("m2", 1000, `[]`))
 	transcript(t, filepath.Join(proj, "s2.jsonl"), "/tmp", now, assistantLine("m3", 1000, `[]`))
 	got, err := scanSuggestSessions(claude, 24*time.Hour, &sugRepo{key: "o/app", mainRoot: main, resolver: newRepoResolver()})
@@ -409,7 +408,7 @@ func TestChainPoint(t *testing.T) {
 	}
 	chain := []sugCall{
 		call("grep -rn MergeReady internal/", "m1"), call("grep -rn markReady internal/", "m2"), call("sed -n 1,9p a.go", "m3"),
-		call("sed -n 1,9p b.go", "m4"), call("sed -n 1,9p c.go", "m5"), call("sed -n 9,20p c.go", "m5"), // the point, and a call beside it
+		call("sed -n 1,9p b.go", "m4"), call("sed -n 1,9p c.go", "m5"), call("sed -n 9,20p c.go", "m5"),
 		call("go test ./...", "m6"), call("go vet ./...", "m6"), call("wp code find mergeGate", "m7"), {Tool: "Edit", msg: "m8"},
 	}
 	if p := chainPoint(chain, 9); p != 4 {
@@ -419,16 +418,14 @@ func TestChainPoint(t *testing.T) {
 		t.Fatalf("after wp brief, point %d", p)
 	}
 	late := append([]sugCall(nil), chain...)
-	late[6].Nudge = chainKind // another note took the would-be point
+	late[6].Nudge = chainKind
 	if p := chainPoint(late, 9); p != 6 {
 		t.Fatalf("told later, point %d", p)
 	}
-	// Grep-tool calls never reach the hook.
 	grep := func(m string) sugCall { return sugCall{Tool: "Grep", Pattern: "x", msg: m} }
 	if p := chainPoint([]sugCall{grep("g1"), grep("g2"), grep("g3"), grep("g4"), grep("g5"), {Tool: "Edit"}}, 5); p != -1 {
 		t.Fatalf("grep tool calls, point %d", p)
 	}
-	// Told after the first edit: neither arm.
 	post := append([]sugCall(nil), chain...)
 	post[9].Nudge = chainKind
 	if p := chainPoint(post, 3); p != -1 {
@@ -439,7 +436,7 @@ func TestChainPoint(t *testing.T) {
 	if o.Untold != want {
 		t.Errorf("not told %+v, want %+v", o.Untold, want)
 	}
-	want = sugAfterPoint{Transcripts: 1, Calls: 1, Ctx: 100, CodeTools: 1} // the sibling in m6 saw nothing; no edit
+	want = sugAfterPoint{Transcripts: 1, Calls: 1, Ctx: 100, CodeTools: 1}
 	if o.Told != want {
 		t.Errorf("told %+v, want %+v", o.Told, want)
 	}
@@ -488,7 +485,6 @@ func TestOrientation(t *testing.T) {
 	if a := adviceOrientation(&sugInput{Sessions: many}); a == nil || a.ID != "orientation" {
 		t.Errorf("no advice on four chains: %+v", a)
 	}
-	// --until: sessions that started before the cut, and their subagents
 	ss = []*sugSession{{ID: "a", Kind: "main", FirstAt: 100}, {ID: "a", Kind: "Explore", FirstAt: 300}, {ID: "b", Kind: "main", FirstAt: 300}, {ID: "b", Kind: "Explore", FirstAt: 400}}
 	if got := startedBefore(ss, 200); len(got) != 2 || got[0].ID != "a" || got[1].ID != "a" {
 		t.Errorf("startedBefore %+v", got)

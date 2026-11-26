@@ -99,14 +99,11 @@ func TestSessionInResolvesSymlinks(t *testing.T) {
 	pid, start := exitedPid(t)
 	ancestor := &cwdSession{Session: "ancestor", Pid: os.Getpid(), PidStart: self, At: time.Now(), Cwd: root}
 
-	// The nearest session ended; the ancestor is live. Through the link the
-	// nearest must still be the one in real, so the answer is "".
 	nearest := &cwdSession{Session: "nearest-dead", Pid: pid, PidStart: start, At: time.Now(), Cwd: real}
 	s := &State{Cwds: map[string]*cwdSession{"a": ancestor, "n": nearest}}
 	if got := s.sessionIn(filepath.Join(link, "deep")); got != "" {
 		t.Errorf("command through a symlink: %q, want none (the nearest session is gone)", got)
 	}
-	// A live nearest recorded by the link path is found from the real path.
 	nearest = &cwdSession{Session: "nearest", Pid: os.Getpid(), PidStart: self, At: time.Now(), Cwd: link}
 	s = &State{Cwds: map[string]*cwdSession{"a": ancestor, "n": nearest}}
 	if got := s.sessionIn(filepath.Join(real, "deep")); got != "nearest" {

@@ -89,8 +89,6 @@ func TestCompactAndExitAreDecidedByTheServersRecord(t *testing.T) {
 					t.Fatalf("calls = %v", ds.calls)
 				}
 				ev := ds.calls[0][0]
-				// The event still carries the digest and the text, so the server
-				// uses up its own record.
 				if ev.PromptSum != core.PromptSum(text) || ev.Prompt != text || ev.TypedID != 0 {
 					t.Errorf("event = %+v", ev)
 				}

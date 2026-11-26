@@ -16,10 +16,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Doing what a decision says (WP-D16): applying an approved change, on the
-// person's runner or through the forge, and running command cells on a
-// runner. The runner side is WP-D17; these seams are what it plugs into.
-
 // runnerOnline says whether the person has a runner online on a machine
 // (tests replace it).
 var runnerOnline = func(ctx context.Context, s *Service, ownerID int64, machine string) bool {
@@ -67,7 +63,6 @@ func enqueueOnMachine(ctx context.Context, s *Service, a *Actor, in RunnerJobInp
 // lookupRunnerJob reads a finished job (its output, exit code and result):
 // the finish event carries only its id and state (tests replace it).
 var lookupRunnerJob = func(ctx context.Context, s *Service, id int64) (*RunnerJob, error) {
-	// Read as its owner: anyone else (admins too) sees a redacted job.
 	var owner int64
 	if err := s.db.R.QueryRowContext(ctx, `SELECT owner_id FROM runner_jobs WHERE id = ?`, id).Scan(&owner); err != nil {
 		return nil, err
@@ -93,8 +88,6 @@ func slug(s string, n int) string {
 	return cmp(s, "change")
 }
 
-// ---- changes ----
-
 // applyChange does an approved change: on the person's runner in the
 // session's worktree, or as a branch and pull request through the forge.
 // Without a choice it takes the runner if one is online, else a pull
@@ -115,17 +108,11 @@ func (s *Service) applyChange(ctx context.Context, actor *Actor, id int64, choic
 		machine, cwd = r.Session.Machine, r.Session.Cwd
 	}
 	if changesNothing(r.files) {
-		// Before any path: a runner job would write nothing (or call an
-		// edited worktree a conflict) and a PR would be empty (WP-948).
 		s.finishApply(ctx, actor, r, RequestApplied, "", noChangeResult(), "")
 		return
 	}
 	outside := len(r.files) > 0 && r.files[0].Outside
 	if outside {
-		// Files outside any repo (WP-115): written by the runner on the asking
-		// machine, in the one directory they share, and nowhere else. The
-		// runner still applies its own allowed-directories rule to that
-		// directory. There is no repository, so no commit and no PR.
 		s.applyOutside(ctx, actor, r, files, machine, choice)
 		return
 	}
@@ -164,8 +151,6 @@ func (s *Service) applyChange(ctx context.Context, actor *Actor, id int64, choic
 			job, err := enqueueRunnerJob(ctx, s, actor, RunnerJobInput{Kind: JobApply, OwnerID: actor.id(), Label: machine, Input: b, Source: "request_apply", SourceID: r.ID})
 			switch {
 			case err == nil:
-				// Only while still applying: a job that finished at once has
-				// already recorded its end, and this must not overwrite it.
 				upd, _ := s.db.W.ExecContext(ctx, `UPDATE requests SET apply_path = 'runner', result = ?, updated_at = ? WHERE id = ? AND state = 'applying'`,
 					mustJSON(RequestResult{Reason: fmt.Sprintf("job %d queued on %s", job.ID, machine)}), s.nowMS(), r.ID)
 				if n, _ := upd.RowsAffected(); n > 0 {
@@ -194,7 +179,6 @@ func (s *Service) applyChange(ctx context.Context, actor *Actor, id int64, choic
 	case err == nil:
 		s.finishApply(ctx, actor, r, RequestApplied, "pr", *res, "")
 	case errors.As(err, &np):
-		// The branch is pushed but there is no PR: not applied, whatever the forge now holds.
 		s.log.WarnContext(ctx, "open the pull request for a change", "request", r.ID, "err", np.err)
 		s.finishApply(ctx, actor, r, RequestFailed, "pr", *res, res.Reason)
 	case errors.As(err, &cc):
@@ -335,8 +319,6 @@ func (s *Service) applyViaForge(ctx context.Context, r *Request, files []FileCha
 	}
 	p, err := cl.CreatePR(ctx, f, pick.repo, NewPR{Title: r.Title, Body: body, Head: branch, Base: base})
 	if err != nil {
-		// The branch is there; say so rather than losing the work, but this is
-		// not applied: there is no pull request.
 		return &RequestResult{Commit: commit.SHA, Branch: branch, Reason: "pushed the branch " + branch + " but could not open the PR: " + excerpt(err.Error(), 200)}, &prNotOpened{err}
 	}
 	return &RequestResult{Commit: commit.SHA, Branch: branch, PRURL: p.URL, PRTitle: p.Title, PRNumber: p.Number}, nil
@@ -369,7 +351,7 @@ func (s *Service) finishApply(ctx context.Context, actor *Actor, r *Request, sta
 			return err
 		}
 		if c, _ := n.RowsAffected(); c == 0 {
-			return nil // decided otherwise meanwhile
+			return nil
 		}
 		e := requestEvent(EvRequestUpdated, r.ID, r.Ref, r.Number, r.Kind, state, r.userID, r.projectID, r.sessionID, r.Title, r.Agent)
 		e.Data["decision"] = state
@@ -393,13 +375,11 @@ func (s *Service) finishApply(ctx context.Context, actor *Actor, r *Request, sta
 	}
 }
 
-// ---- command cells ----
-
 // RunCell runs a command cell on a runner the person owns (WP-D17): the one
 // named like the session's machine. The person may edit the command first;
 // each run is kept.
 func (s *Service) RunCell(ctx context.Context, actor *Actor, ref string, n int, command string) (*Request, error) {
-	if err := actor.need(PermRequestsRun); err != nil { // WP-111
+	if err := actor.need(PermRequestsRun); err != nil {
 		return nil, err
 	}
 	if err := actor.requirePersonDirect("running a request's command"); err != nil {
@@ -426,8 +406,6 @@ func (s *Service) RunCell(ctx context.Context, actor *Actor, ref string, n int, 
 		if !s.canDecide(ctx, actor, r, map[int64]int{}) {
 			return ErrForbidden
 		}
-		// A command sent back by a failed run (WP-170) can be run again, which
-		// reopens it: its outcome is the agent's to hear once more.
 		rerun := r.State == RequestFailed && r.Kind == RequestCommand
 		if r.State != RequestOpen && !rerun {
 			return invalid("%s is already %s; commands can be run while it is open", r.Code, r.State)
@@ -556,7 +534,7 @@ func (s *Service) finishCellRun(ctx context.Context, runID int64, job *RunnerJob
 	state, errText := job.State, job.Error
 	switch state {
 	case "done", "failed", "cancelled", "expired":
-	default: // the runner never said how it ended: that is not success
+	default:
 		state, errText = "failed", cmp(errText, "The runner didn't report how the command ended.")
 	}
 	res, err := s.db.W.ExecContext(ctx, `UPDATE request_cell_runs SET state = ?, exit_code = ?, output = ?, truncated = ?, error = ?, finished_at = ? WHERE id = ? AND finished_at IS NULL`,
@@ -573,9 +551,6 @@ func (s *Service) finishCellRun(ctx context.Context, runID int64, job *RunnerJob
 	if err := s.db.R.QueryRowContext(ctx, `SELECT c.request_id, r.run_by FROM request_cell_runs r JOIN request_cells c ON c.id = r.cell_id WHERE r.id = ?`, runID).Scan(&reqID, &runBy); err != nil {
 		return
 	}
-	// The command ran and exited non-zero: it goes back to the agent. A runner
-	// that never ran it (no exit code), or a cancelled or expired run, isn't
-	// the agent's to fix.
 	if job.ExitCode != nil && *job.ExitCode != 0 && (state == "done" || state == "failed") && s.returnFailedRun(ctx, reqID, runBy, *job.ExitCode) {
 		return
 	}
@@ -625,8 +600,6 @@ func (s *Service) finishApplyJob(ctx context.Context, reqID int64, job *RunnerJo
 		return
 	}
 	r := list[0]
-	// The runner's own words (WP-D17): commit, branch and, when a file is no
-	// longer as the change expects, conflicts as {path, reason}.
 	var raw struct {
 		Commit    string `json:"commit"`
 		Branch    string `json:"branch"`
@@ -645,12 +618,11 @@ func (s *Service) finishApplyJob(ctx context.Context, reqID int64, job *RunnerJo
 	}
 	switch {
 	case job.State == "done" && raw.Commit == "" && changesNothing(r.files):
-		// A commit in the runner's result means something landed: keep that.
 		res.NoChange, res.Reason = true, noChangeResult().Reason
 		s.finishApply(ctx, SystemActor(), r, RequestApplied, "runner", res, "")
 	case job.State == "done":
 		s.finishApply(ctx, SystemActor(), r, RequestApplied, "runner", res, "")
-	case raw.Conflict || len(raw.Conflicts) > 0: // the runner says so in its result; its error text is not parsed
+	case raw.Conflict || len(raw.Conflicts) > 0:
 		res.Reason = cmp(job.Error, "the files changed since the agent made the change")
 		if len(why) > 0 {
 			res.Reason = "Nothing was written: " + strings.Join(why, ", ") + " no longer match what the agent changed."
@@ -660,8 +632,6 @@ func (s *Service) finishApplyJob(ctx context.Context, reqID int64, job *RunnerJo
 		s.finishApply(ctx, SystemActor(), r, RequestFailed, "runner", res, cmp(job.Error, "the runner's job "+cmp(job.State, "failed")))
 	}
 }
-
-// ---- telling people ----
 
 // publishRequest sends a request event to the people who can decide it.
 func (s *Service) publishRequest(ctx context.Context, r *Request, decision string) {
@@ -703,7 +673,6 @@ func (s *Service) notifyRequestEvent(ctx context.Context, e *Event) {
 	proj := sql.NullInt64{Int64: e.ProjectID, Valid: e.ProjectID != 0}
 	s.fanOutToEditors(ctx, e, proj)
 	if e.Kind == EvRequestUpdated {
-		// Once decided (or withdrawn), the notification that asked has served.
 		if state, _ := e.Data["state"].(string); state != RequestOpen {
 			if ref, _ := e.Data["ref"].(string); ref != "" {
 				res, err := s.db.W.ExecContext(ctx, `UPDATE notifications SET read_at = ? WHERE kind = ? AND url = ? AND read_at IS NULL`,

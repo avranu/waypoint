@@ -10,9 +10,6 @@ import (
 	"time"
 )
 
-// Posting to a session's inbox (WP-D22): finding the session and the token
-// it takes from peers, and the lines it reads.
-
 func writeRegistry(t *testing.T, dir, name string, v any) string {
 	t.Helper()
 	_ = os.MkdirAll(filepath.Join(dir, "sessions"), 0o700)
@@ -32,12 +29,10 @@ func TestFindPeerToken(t *testing.T) {
 	if tok := findPeerToken(dir, s); tok != "" {
 		t.Fatalf("no key file, token %q", tok)
 	}
-	// A key left by an earlier process with the same pid doesn't count.
 	writeRegistry(t, dir, "4242."+hex64+".key", map[string]string{"peerToken": "stale", "procStart": "999"})
 	if tok := findPeerToken(dir, s); tok != "" {
 		t.Fatalf("took an earlier process's key: %q", tok)
 	}
-	// Names that aren't <pid>.<64 hex>.key, or another pid's, are ignored.
 	writeRegistry(t, dir, "4242.short.key", map[string]string{"peerToken": "wrong-name"})
 	writeRegistry(t, dir, "42420."+hex64+".key", map[string]string{"peerToken": "other-pid"})
 	writeRegistry(t, dir, "4242."+strings.Repeat("cd34", 16)+".key", map[string]string{"peerToken": "", "procStart": "1000"})
@@ -48,7 +43,6 @@ func TestFindPeerToken(t *testing.T) {
 	if tok := findPeerToken(dir, s); tok != "the-token" {
 		t.Fatalf("token %q", tok)
 	}
-	// Of two that fit, the newest; a session file without procStart takes any.
 	newer := writeRegistry(t, dir, "4242."+strings.Repeat("0a0b", 16)+".key", map[string]string{"peerToken": "newer"})
 	old := time.Now().Add(-time.Hour)
 	_ = os.Chtimes(good, old, old)
@@ -86,7 +80,6 @@ func TestInboxLines(t *testing.T) {
 			t.Fatalf("not one line: %q", l)
 		}
 	}
-	// No token: the message alone.
 	if lines := inboxLines("", "x"); len(lines) != 1 || !strings.Contains(string(lines[0]), `"type":"user"`) {
 		t.Fatalf("without a token: %q", lines)
 	}

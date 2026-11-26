@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-// Reviewing what agents wrote, and pausing an agent's clock (WP-D11).
-
 var reviewCmd = &command{
 	name: "review", group: "Knowledge", args: "[THING...]",
 	summary: "list unreviewed agent work, or mark things reviewed",
@@ -77,7 +75,6 @@ func cmdReview(c *cli, args []string) error {
 			Reviewed int `json:"reviewed"`
 		}
 		var err error
-		// APP12 or PL13 could be an issue or a page: the first that exists.
 		for _, t := range targets {
 			path := "/api/v1/review/" + t[0] + "/" + esc(t[1])
 			if home != "" {
@@ -125,9 +122,8 @@ func reviewTargets(ref string) [][2]string {
 	}
 	var out [][2]string
 	if keyDashRE.MatchString(up) {
-		return [][2]string{{"issue", up}} // APP-12: only an issue
+		return [][2]string{{"issue", up}}
 	}
-	// A bare code (PL13) is most likely a page; APP12 most likely an issue.
 	bare := pageCodeRE.MatchString(up) && len(strings.TrimRight(up, "0123456789")) <= 2
 	if bare && pageCodeRE.MatchString(up) {
 		out = append(out, [2]string{"page", up})

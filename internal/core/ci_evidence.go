@@ -1,20 +1,5 @@
 package core
 
-// CI evidence (WP-704). The backend test jobs print, at the end of their
-// log, each test's result, the shards' merged cover profiles and (one shard)
-// the tree's #nosec, //nolint and //wplint:ignore comments, as "wp-evidence" lines
-// (internal/testevidence, .forgejo/scripts/gotest-shard.sh). Before, CI
-// computed all of it and threw it away: nothing said which tests were
-// flaky or slow, what internal/core's coverage was (each of four shards
-// printed a partial number), or how many findings had been waved through.
-//
-// The CI history pass (every ten minutes) reads the logs of finished jobs
-// it has kept (ci_jobs) and keeps what they carry. Which jobs carry
-// evidence is learned per job name, so a repo whose CI prints none costs a
-// few reads a week. A re-run replaces a job's log, so the babysitter's
-// flake re-run first reads the failed jobs' evidence: those failures are
-// what a flake score is made of. Decision: WP-ADR62.
-
 import (
 	"bytes"
 	"compress/gzip"
@@ -81,9 +66,9 @@ type evidenceJob struct {
 	sha, ref  string
 	event     string
 	tier      string
-	at        int64 // ms, the job's end
-	pushed    int64 // ms, its run's creation (0 if unknown): orders scans of the default branch
-	onDefault bool  // a push to the repo's default branch
+	at        int64
+	pushed    int64
+	onDefault bool
 }
 
 type evidenceKindState struct {
@@ -290,7 +275,6 @@ func (s *Service) keepJobEvidence(ctx context.Context, cl ForgeActionLogs, f *Fo
 	}
 	lines := cleanLog(log)
 	p, err := testevidence.Decode(lines)
-	// How long each Go package took, whatever the evidence (WP-922).
 	var known []string
 	if err == nil {
 		for _, t := range p.Tests {
@@ -299,7 +283,6 @@ func (s *Service) keepJobEvidence(ctx context.Context, cl ForgeActionLogs, f *Fo
 			}
 		}
 	}
-	// Best effort: a failed write here doesn't cost the job its evidence.
 	if err := s.keepJobPackages(ctx, f.ID, repo, j, goPackages(lines, known)); err != nil {
 		s.log.WarnContext(ctx, "CI evidence: keep package times", "repo", repo, "job", jobID, "err", err)
 	}
@@ -365,7 +348,6 @@ func (s *Service) keepFailedEvidence(ctx context.Context, f *Forge, repo, sha st
 				continue
 			}
 			if verdict == evidenceKept {
-				// The history pass would read the re-run's log under this task.
 				if err := s.setJobEvidence(ctx, f.ID, repo, j.TaskID, evidenceKept); err != nil {
 					s.log.Debug("CI evidence before a re-run: mark", "err", err)
 				}
@@ -429,7 +411,7 @@ func mergeCoverage(ctx context.Context, tx *sql.Tx, forgeID int64, repo string, 
 		return err
 	}
 	if err == nil && len(blob) == 0 {
-		return nil // the per-file detail was pruned; a late shard can't be merged into it
+		return nil
 	}
 	byPath := map[string]testevidence.File{}
 	if len(blob) > 0 {
@@ -605,7 +587,6 @@ func (s *Service) pruneCIEvidence(ctx context.Context) {
 			s.log.WarnContext(ctx, "best-effort write failed", "err", err)
 		}
 	}
-	// Shared-timeout states of babysits that have ended (WP-923).
 	if _, err := s.db.W.ExecContext(ctx, `DELETE FROM server_settings WHERE key LIKE ? AND NOT EXISTS
 		(SELECT 1 FROM babysits b WHERE b.ended_at IS NULL AND ? || b.id = server_settings.key)`, sharedTimeoutPrefix+"%", sharedTimeoutPrefix); err != nil {
 		s.log.WarnContext(ctx, "best-effort write failed", "err", err)

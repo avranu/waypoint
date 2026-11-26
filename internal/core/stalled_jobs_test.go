@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// Stalled background jobs (WP-605).
-
 var stalledJobFixture = StalledJob{Session: "cli-1", Task: "b1x9", PID: 4242, Group: true,
 	Command: `while pgrep -f "golangci-lint run" >/dev/null; do sleep 5; done; git push`, Quiet: 30,
 	Evidence: []string{"Running 30 min; no output at all.", "`pgrep -f 'golangci-lint run'` matches the job's own `bash -c` command line, so it always finds a process."},
@@ -71,7 +69,6 @@ func TestStalledJobWakesAWarmSession(t *testing.T) {
 	if tl := be.timeline("stalled"); len(tl) != 1 || !strings.HasPrefix(tl[0], "No progress for 30 min; woke its session (its prompt cache is warm). `while pgrep") || !strings.HasSuffix(tl[0], "Running 30 min; no output at all.") {
 		t.Errorf("timeline %q", tl)
 	}
-	// The runner reports it again (it restarted): told once.
 	if out := be.reportStalled(r.ID, stalledJobFixture); out[0].Outcome != "its session was told already" {
 		t.Errorf("again: %+v", out)
 	}
@@ -95,7 +92,6 @@ func TestStalledJobWaitsForAColdSession(t *testing.T) {
 	if tl := be.timeline("stalled"); len(tl) != 1 || !strings.Contains(tl[0], "wasn't woken") {
 		t.Errorf("timeline %q", tl)
 	}
-	// Its next prompt brings it.
 	res := be.hookEv(HookEvent{Event: "UserPromptSubmit", Prompt: "go on"})
 	if res == nil || !strings.Contains(res.Text, "b1x9") {
 		t.Errorf("next prompt: %+v", res)
@@ -147,16 +143,13 @@ func TestCacheWarmNow(t *testing.T) {
 func TestReportStalledJobsChecks(t *testing.T) {
 	be := warmEnv(t)
 	r := be.runner(be.admin, "m1", nil)
-	// An agent's token isn't a runner's.
 	if _, err := be.s.ReportStalledJobs(be.ctx, be.agent, StalledJobsReport{Runner: r.ID, Jobs: []StalledJob{stalledJobFixture}}); err == nil {
 		t.Error("an agent reported")
 	}
-	// Another person's runner.
 	other := be.user("other", false)
 	if _, err := be.s.ReportStalledJobs(be.ctx, other, StalledJobsReport{Runner: r.ID, Jobs: []StalledJob{stalledJobFixture}}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("another person's runner: %v", err)
 	}
-	// Bad ids are skipped; an unknown session is said.
 	bad, unknown := stalledJobFixture, stalledJobFixture
 	bad.Session = "../x"
 	unknown.Session = "no-such-session"

@@ -7,12 +7,6 @@ import (
 	"time"
 )
 
-// A round's pull request opens, by the server or by the session's ship, only
-// on a review that read something (or one handed over to the pull request);
-// otherwise the round needs the session to report, to a deadline, and then
-// ends and tells the person once (WP-1370). These are the scenarios that
-// showed reviewAgain and decideRound answering differently for one round.
-
 // doneRound makes the round e.review ran an ended one (the session's turn is
 // over, its report read): the shape the scenarios start from.
 func (e *loopEnv) doneRound(round int64) {
@@ -60,13 +54,10 @@ func TestRoundWithNoReviewIsNotShippedBySilence(t *testing.T) {
 	if n := len(e.g.created); n != 0 {
 		t.Fatalf("opened %d pull requests with no review", n)
 	}
-	// The session's own ship is held with the report's text.
 	res, err := e.ship(e.task.Key, ShipAuto)
 	if err != nil || !strings.Contains(res.Held, "No pull request yet") {
 		t.Fatalf("session ship: %+v, %v", res, err)
 	}
-	// Past the deadline, and at 30 hours, and at 3 days: the round ends once,
-	// the person is told once, nothing was opened, and wp ship works again.
 	for _, h := range []time.Duration{3 * time.Hour, 30 * time.Hour, 72 * time.Hour} {
 		e.setClock(e.clockNow().Add(h))
 		_, _ = e.s.advanceRound(e.ctx, r1)
@@ -149,8 +140,8 @@ func TestSessionAndServerShipsReachTheSameOutcome(t *testing.T) {
 		ended   = "ended and told"
 	)
 	type cell struct {
-		audit   string // none, queued, running, read, found, nothing, failed, cancelled, limited
-		own     string // none, clean, open
+		audit   string
+		own     string
 		handed  bool
 		live    bool
 		decided bool
@@ -158,7 +149,6 @@ func TestSessionAndServerShipsReachTheSameOutcome(t *testing.T) {
 	reviewed := func(c cell) bool {
 		return c.own != "none" || c.handed || c.decided || c.audit == "read" || c.audit == "found"
 	}
-	// what the rule says, from the cell alone (R1, R2)
 	expect := func(c cell, serverOnly bool) string {
 		switch {
 		case reviewed(c):
@@ -227,7 +217,7 @@ func TestSessionAndServerShipsReachTheSameOutcome(t *testing.T) {
 		e, r := build(t, c)
 		e.tick(2 * time.Minute)
 		if !c.live && c.audit != "queued" && c.audit != "running" {
-			e.tick(3 * time.Hour) // past the marks' deadline, with no session to take them
+			e.tick(3 * time.Hour)
 		}
 		_, err := e.s.advanceRound(e.ctx, r)
 		if err != nil {
@@ -341,14 +331,12 @@ func TestHeldShipThatWaitsOnNothingIsAFailedTry(t *testing.T) {
 	if err != nil || decideRound(in).Do != doShip {
 		t.Fatalf("facts = %+v, %v: want a round that ships", in, err)
 	}
-	// reviewed and the round waits on nothing: the hold is the error
 	if err := e.s.heldOutcome(e.ctx, r1, true, "held for a reason that waits on nothing"); err == nil || !strings.Contains(err.Error(), "waits on nothing") {
 		t.Fatalf("a reviewed hold that waits on nothing = %v", err)
 	}
 	if err := e.s.heldOutcome(e.ctx, r1, false, "held, unreviewed"); err == nil {
 		t.Fatal("an unreviewed hold was a success")
 	}
-	// the same round waiting on a scheduled round: a success
 	e.exec(`INSERT INTO review_again_decisions(round_id, issue_id, audit_id, arm, next_round_id, created_at, round_index)
 		SELECT id, issue_id, audit_id, 'again', id, ?, 1 FROM work_log WHERE id = ?`, e.s.nowMS(), r1)
 	if err := e.s.heldOutcome(e.ctx, r1, true, "waits on the scheduled round"); err != nil {
@@ -362,8 +350,8 @@ func TestEveryHoldThatPromisesActionIsADeadline(t *testing.T) {
 	type hold struct {
 		name    string
 		make    func(e *loopEnv, r int64)
-		text    string // in the session's held text
-		answers int    // doWait or doTell
+		text    string
+		answers int
 	}
 	for _, h := range []hold{
 		{"the reviewer's audit is still going", func(e *loopEnv, r int64) {
@@ -504,7 +492,7 @@ func TestShipInsideTheWaitAsksEvenWithTheRoundsSessionGone(t *testing.T) {
 	if out := decideRound(in); out.Do != doRelease {
 		t.Fatalf("the sweep's answer = %+v: want a release", out)
 	}
-	in.ShipOpens, in.Session = true, true // as reviewAgain asks
+	in.ShipOpens, in.Session = true, true
 	if out := decideRound(in); out.Do != doTell || out.Need != needMarks {
 		t.Fatalf("the ship's answer = %+v: want the findings shown", out)
 	}

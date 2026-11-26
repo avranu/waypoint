@@ -45,7 +45,7 @@ func unchangedNote(runs []testRun, command, tree string, now time.Time) string {
 		at := time.UnixMilli(r.At)
 		age := now.Sub(at)
 		if r.Tree != tree || r.Moved || age > unchangedWithin || age < -time.Minute {
-			return "" // only the latest run of the command is the one to compare
+			return ""
 		}
 		return fmt.Sprintf("Nothing in this checkout changed since this command last ran (%s: %s). If an edit was meant to land in between, it did not.",
 			agoShort(age), earlierOutcome(r))

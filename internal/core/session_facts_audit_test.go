@@ -9,9 +9,6 @@ import (
 	"unicode/utf8"
 )
 
-// Tests for what the audit of WP-1467 (1283) found: windows, file states,
-// failures, the figures the read path prints and the guards around the tables.
-
 func (e *env) trace(a *Actor, issueID int64, seq int, startMin, lastMin int, ended string) {
 	e.t.Helper()
 	e.exec(`INSERT INTO task_traces(user_id, machine, session, seq, issue_id, started_at, last_at, ended, updated_at) VALUES (?, 'box', 's1', ?, ?, ?, ?, ?, 1)`,
@@ -26,7 +23,6 @@ func TestFactsWindowsAreBoundedByEveryTasksTraces(t *testing.T) {
 	p := e.project(jo, "Acme", "")
 	a := e.issue(jo, IssueInput{Project: p.Key, Title: "a"})
 	b := e.issue(jo, IssueInput{Project: p.Key, Title: "b"})
-	// fixture: calls m1 (min 2), sm1 (3, sub-agent), m2 (21), m3 (22)
 	e.trace(jo, a.ID, 1, 0, 19, "next")
 	e.trace(jo, b.ID, 2, 20, 21, "next")
 	e.trace(jo, a.ID, 3, 22, 23, "")
@@ -52,7 +48,7 @@ func TestFactsOpenTraceEndsWhereAnotherTaskBegins(t *testing.T) {
 	p := e.project(jo, "Acme", "")
 	a := e.issue(jo, IssueInput{Project: p.Key, Title: "a"})
 	b := e.issue(jo, IssueInput{Project: p.Key, Title: "b"})
-	e.trace(jo, a.ID, 1, 0, 19, "") // never ended
+	e.trace(jo, a.ID, 1, 0, 19, "")
 	e.trace(jo, b.ID, 2, 20, 23, "")
 	fa, err := e.s.SessionFacts(e.ctx, jo, FactsQuery{Task: a.Key})
 	if err != nil {
@@ -107,11 +103,11 @@ func TestFactsStatusStatesAddUp(t *testing.T) {
 	e.putFile(jo, "s1", "main", 0, fAssistant("m1", 1, 1))
 	e.putFile(jo, "s1", "subagents/agent-a.jsonl", 0, fAssistant("sa", 2, 1))
 	e.quiet()
-	damagePiece(t, e, "s1") // either of the two; the other is derived
+	damagePiece(t, e, "s1")
 	if run := e.derive(); run.Derived != 1 || run.Failed != 1 {
 		t.Fatalf("run: %+v", run)
 	}
-	e.putFile(jo, "s1", "subagents/agent-b.jsonl", 0, fAssistant("sb", 3, 1)) // not derived yet
+	e.putFile(jo, "s1", "subagents/agent-b.jsonl", 0, fAssistant("sb", 3, 1))
 	f, err := e.s.SessionFacts(e.ctx, jo, FactsQuery{Session: "s1"})
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +131,6 @@ func TestFactsStatusEarlierRowsAndFailedReDerive(t *testing.T) {
 	end := e.putFile(jo, "s1", "main", 0, fAssistant("m1", 1, 1)+fj(fm{"type": "brand-new"}))
 	e.quiet()
 	e.derive()
-	// grown since: waiting, its earlier rows and counts are still read
 	e.putFile(jo, "s1", "main", end, fAssistant("m2", 2, 1))
 	f, err := e.s.SessionFacts(e.ctx, jo, FactsQuery{Session: "s1"})
 	if err != nil {
@@ -146,7 +141,6 @@ func TestFactsStatusEarlierRowsAndFailedReDerive(t *testing.T) {
 	}
 	e.quiet()
 	e.derive()
-	// an older parser's row (written directly), then a failed re-derive
 	e.exec(`UPDATE session_fact_files SET parser_version = 0, unknown = '{"old-type": 9}', ignored = '{"undecoded/old": 4}'`)
 	e.exec(`UPDATE fact_model_calls SET parser_version = 0`)
 	damagePiece(t, e, "s1")
@@ -210,8 +204,6 @@ func TestFactsReadErrorIsNotRecordedAgainstTheFile(t *testing.T) {
 	e.putFile(jo, "s1", "main", 0, fAssistant("m1", 1, 1))
 	e.quiet()
 	full := damagePiece(t, e, "s1")
-	// replace the piece by a directory: reading it is an I/O error, not a
-	// statement about the archived file
 	if err := os.Remove(full); err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +232,6 @@ func TestFactsFileFailuresAreRecorded(t *testing.T) {
 	if !errors.As(err, &fault) || !strings.Contains(err.Error(), "no pieces") {
 		t.Errorf("no pieces: %v", err)
 	}
-	// three pieces with the middle one gone: the others do not join
 	first, second, third := fAssistant("m1", 1, 1), fAssistant("m2", 2, 1), fAssistant("m3", 3, 1)
 	e.put(jo, piece("s1", "main", 0, first), first)
 	e.put(jo, piece("s1", "main", int64(len(first)), second), second)
@@ -253,7 +244,6 @@ func TestFactsFileFailuresAreRecorded(t *testing.T) {
 	if got := e.one(`SELECT error FROM session_fact_files WHERE session = 's1'`); !strings.Contains(got, "hole") {
 		t.Errorf("error recorded: %q", got)
 	}
-	// a piece removed from disk
 	e.putFile(jo, "s2", "main", 0, fAssistant("m3", 1, 1))
 	e.quiet()
 	var path string
@@ -275,7 +265,6 @@ func TestFactsFailureTextCutOnARuneBoundary(t *testing.T) {
 	e := transcriptEnv(t)
 	jo := e.user("jo", false)
 	f := factFile{userID: jo.User.ID, machine: "box", session: "s1", file: "main", end: 5}
-	// one ASCII byte then 3-byte runes: a byte cut at 300 lands inside a rune
 	if err := e.s.recordFactFailure(e.ctx, f, errors.New("a"+strings.Repeat("€", 400))); err != nil {
 		t.Fatal(err)
 	}
@@ -366,11 +355,11 @@ func TestFactsCacheExpiryCounts(t *testing.T) {
 	e := transcriptEnv(t)
 	jo := e.user("jo", false)
 	e.putFile(jo, "s1", "main", 0,
-		fCall("c1", 0, 100, "5m")+ // first: nothing to compare
-			fCall("c2", 10, 50, "1h")+ // 10 minutes after a 5 minute write: cold
-			fCall("c3", 40, 20, "")+ // 30 minutes after a 1 hour write: alive
-			fCall("c4", 41, 0, "")+ // wrote nothing
-			fCall("c5", 60, 10, "")) // 19 minutes after a call with no split: unknown
+		fCall("c1", 0, 100, "5m")+
+			fCall("c2", 10, 50, "1h")+
+			fCall("c3", 40, 20, "")+
+			fCall("c4", 41, 0, "")+
+			fCall("c5", 60, 10, ""))
 	e.quiet()
 	e.derive()
 	f, err := e.s.SessionFacts(e.ctx, jo, FactsQuery{Session: "s1"})

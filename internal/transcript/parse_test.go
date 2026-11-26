@@ -8,9 +8,6 @@ import (
 	"time"
 )
 
-// Fixtures are synthetic lines in the shape Claude Code writes; none is copied
-// from a real transcript.
-
 func j(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -82,7 +79,6 @@ func TestMissingFieldsAreNil(t *testing.T) {
 	if tc.ResultAt != nil || tc.IsError != nil || tc.ExitCode != nil || tc.LinesAdded != nil || tc.ReadOffset != nil || tc.IsTest != nil {
 		t.Errorf("a call with no result has nil result fields: %+v", tc)
 	}
-	// no timestamp on the record: no time, not zero
 	r = parse(t, "main", j(m{"type": "assistant", "message": m{"id": "x", "model": "model-a"}}))
 	if r.ModelCalls[0].At != nil {
 		t.Errorf("a record with no time has a nil At")
@@ -121,7 +117,6 @@ func TestSubAgentAttribution(t *testing.T) {
 	if c.Thread != "ab12" || !c.Sidechain || r.ToolCalls[0].Thread != "ab12" {
 		t.Errorf("sub-agent rows must carry its thread: %+v", c)
 	}
-	// the file name names the thread when the record does not
 	r = parse(t, "subagents/agent-cd34.jsonl", assistant("sm2", 6, m{"output_tokens": 1}))
 	if r.ModelCalls[0].Thread != "cd34" || !r.ModelCalls[0].Sidechain {
 		t.Errorf("thread from file name: %+v", r.ModelCalls[0])

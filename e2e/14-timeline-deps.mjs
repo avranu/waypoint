@@ -50,8 +50,6 @@ async function run(width, scheme) {
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(base + "/");
 
-  // A blocks B (in time) and C (late: C starts before A ends); B blocks
-  // the milestone M.
   const dates = {
     "DEPS-1": { start_date: iso(0), due_date: iso(4) },
     "DEPS-2": { start_date: iso(6), due_date: iso(9) },
@@ -80,7 +78,6 @@ async function run(width, scheme) {
     await api("PATCH", "/issues/" + k, d);
 
   await page.goto(base + "/p/DEPS/timeline");
-  // Phones show fewer days, so they use the month zoom.
   const zoom = width < 640 ? "month" : "week";
   const px = zoom === "week" ? 44 : 18;
   await page.getByRole("button", { name: zoom, exact: true }).click();
@@ -94,8 +91,6 @@ async function run(width, scheme) {
     `${tag} only the too-early link is late`,
   );
 
-  // Each line starts at its blocker's right edge and ends at the blocked
-  // bar's left edge, on the rows' centres.
   const bar = (k) =>
     page.locator(`[title^="${k}:"], [title^="${k} due"]`).first();
   const ends = (key) =>
@@ -111,8 +106,6 @@ async function run(width, scheme) {
     const b = await bar(to).boundingBox();
     near(e.x1, a.x + a.width, `${tag} ${what} starts at ${from}'s end`);
     near(e.y1, a.y + a.height / 2, `${tag} ${what} starts on ${from}'s row`);
-    // The arrow tip stops a pixel short of the bar (a diamond is rotated, so
-    // its box is wider than the shape).
     near(
       e.x2,
       b.x,
@@ -121,7 +114,6 @@ async function run(width, scheme) {
     );
     near(e.y2, b.y + b.height / 2, `${tag} ${what} ends on ${to}'s row`);
   };
-  // Scroll the timeline so A starts just right of the sticky labels.
   const reveal = () =>
     page.evaluate(() => {
       const a = document.querySelector('[title^="DEPS-1:"]');
@@ -138,7 +130,6 @@ async function run(width, scheme) {
   await check("DEPS-1", "DEPS-2", "A→B");
   await check("DEPS-2", "DEPS-4", "B→milestone");
 
-  // Hover highlights the hovered issue's lines only.
   await bar("DEPS-2").hover();
   const hot = await svg
     .locator("path[data-hot]")
@@ -154,7 +145,6 @@ async function run(width, scheme) {
     `${tag} highlight clears`,
   );
 
-  // The open issue's lines stay highlighted without hovering.
   await page.goto(base + "/p/DEPS/timeline?issue=DEPS-3");
   await svg.waitFor();
   await page.mouse.move(5, 5);
@@ -168,8 +158,6 @@ async function run(width, scheme) {
   await page.goto(base + "/p/DEPS/timeline");
   await svg.waitFor();
 
-  // Dragging C four days later follows the bar and clears the warning
-  // before the drop.
   await reveal();
   const c = await bar("DEPS-3").boundingBox();
   const before = await ends("DEPS-1>DEPS-3");
@@ -195,7 +183,6 @@ async function run(width, scheme) {
     `${tag} line stays after the drop`,
   );
 
-  // The toggle hides the lines and is remembered.
   await page
     .getByRole("button", { name: "Dependencies", pressed: true })
     .click();

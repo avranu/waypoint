@@ -63,8 +63,6 @@ func issueWritten(ctx context.Context, q queryer, issueID int64) (*Written, erro
 		return &w, nil
 	}
 	w.Environment, w.LiveVersion, w.LiveCommit = name.String, liveVersion.String, liveCommit.String
-	// A release is a version (or, without versions, a commit) other than the
-	// one it was written against, deployed after it was written.
 	err = q.QueryRowContext(ctx, `SELECT count(DISTINCT CASE WHEN version != '' THEN version ELSE commit_sha END) FROM deployments
 		WHERE environment_id = ? AND status IN ('succeeded', 'detected') AND coalesce(finished_at, started_at) > ?
 		  AND (version != '' OR commit_sha != '') AND CASE WHEN version != '' THEN version != ? ELSE commit_sha != ? END`,

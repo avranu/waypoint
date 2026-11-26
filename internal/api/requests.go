@@ -212,8 +212,6 @@ func requestText(r *core.Request) string {
 	return b.String()
 }
 
-// ---- MCP ----
-
 var requestTools = []mcpTool{
 	{Name: "create_request", Title: "Ask a person",
 		Description: "File a request for the person you work for, and keep working on something else. Use it when a hook, rule or the classifier blocks you, or you need a decision only they can make (instead of stopping to ask in the chat, where the question is lost). Kinds: question (free text or choices), change (file edits you were stopped making: pass files), command (commands they should run), action (a step only a person can do). The answer reaches you when you next stop, or read it with get_request. A decision that wakes you re-reads your whole context: set followup to never when you do not need to act on the answer, or on (with followup_on) to be woken only for some.",

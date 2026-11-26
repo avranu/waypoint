@@ -1,8 +1,3 @@
-// How a conversation reads (WP-ADR1): your messages, the assistant's
-// answers as markdown (its text is untrusted: no remote images, no HTML),
-// its reasoning folded away, and each tool call as a quiet card that opens
-// to show what went in and what came back.
-
 import { memo, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import {

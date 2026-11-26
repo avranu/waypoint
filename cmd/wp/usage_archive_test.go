@@ -80,7 +80,6 @@ func TestArchiveUploadsIncrementally(t *testing.T) {
 		t.Errorf("sub-agent: %q", got)
 	}
 
-	// finish the half line and add one: only the new bytes go
 	more := `,"x":1}` + "\n" + `{"type":"user","message":{"content":"later"}}` + "\n"
 	appendTo(t, main, more)
 	res = archiveSync(t, e, dir)
@@ -95,7 +94,6 @@ func TestArchiveUploadsIncrementally(t *testing.T) {
 		t.Errorf("nothing new: %+v", res.Archive)
 	}
 
-	// a reinstall: wp forgets, the server says where it ends, nothing doubles
 	if err := os.Remove(filepath.Join(e.dir, archiveStateFile)); err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +175,7 @@ func TestArchiveCountsFailedUploads(t *testing.T) {
 	t.Setenv("WAYPOINT_MACHINE", "testbox")
 	dir := fixtureDir(t)
 
-	t.Setenv("WAYPOINT_SERVER", "http://127.0.0.1:1") // nothing listens
+	t.Setenv("WAYPOINT_SERVER", "http://127.0.0.1:1")
 	res := archiveSync2(t, dir)
 	if res.Archive == nil || res.Archive.Pieces != 0 || res.Archive.Dropped["upload_failed"] == 0 || res.Archive.PendingBytes == 0 {
 		t.Fatalf("failed pass: %+v err %q", res.Archive, res.ArchiveError)
@@ -195,7 +193,6 @@ func TestArchiveCountsFailedUploads(t *testing.T) {
 	if got := archived(t, e, me, "sess1", "main"); got == "" {
 		t.Error("retry stored nothing")
 	}
-	// the server now shows the machine's counts, and what was dropped stays counted
 	ov, err := e.svc.UsageOverview(context.Background(), me, core.UsageQuery{Days: 3650})
 	if err != nil || len(ov.Reported) != 1 || ov.Reported[0].Transcripts == nil || ov.Reported[0].Transcripts.Dropped["upload_failed"] == 0 {
 		t.Errorf("machines: %+v %v", ov.Reported, err)
@@ -340,7 +337,7 @@ func TestArchiveBackfillsThirtyDays(t *testing.T) {
 	if files, _ := e.svc.TranscriptFiles(context.Background(), me, core.TranscriptQuery{Session: "sixty"}); len(files) != 0 {
 		t.Errorf("60-day-old transcript archived without --all: %+v", files)
 	}
-	archiveSync(t, e, dir) // --all
+	archiveSync(t, e, dir)
 	if got := archived(t, e, me, "sixty", "main"); !strings.Contains(got, `"sixty"`) {
 		t.Errorf("--all left the old transcript out: %q", got)
 	}

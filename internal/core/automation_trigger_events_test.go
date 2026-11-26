@@ -7,10 +7,6 @@ import (
 	"time"
 )
 
-// Each trigger of WP-D18 that rests on something happening elsewhere in
-// Waypoint fires from the real thing: a request, a hook, a health check, a
-// webhook, not an event made up in the test.
-
 func (e *env) notifyRule(trig Trigger) Rule {
 	return Rule{Trigger: trig, Actions: []Action{{Type: "notify", User: "admins", Title: "fired", Message: "{{.Trigger.Kind}}"}}}
 }
@@ -31,8 +27,6 @@ func TestRequestTriggersFireFromRealRequests(t *testing.T) {
 	if got := counts(); !slices.Equal(got, []int{1, 0, 1, 0}) {
 		t.Fatalf("after a question: %v", got)
 	}
-	// The classifier refuses a tool call: it is logged, not asked, so no
-	// request trigger fires (WP-232).
 	ag := agentActor(r.ana, "anthropic/claude-code")
 	if _, err := r.s.SessionHook(r.ctx, ag, []HookEvent{hook("box", "cli-1", "PermissionDenied", func(h *HookEvent) {
 		h.Tool, h.ToolInput, h.ToolUseID, h.Reason = "Bash", json.RawMessage(`{"command":"rm -rf build"}`), "tu-1", "auto mode denied it"
@@ -43,7 +37,6 @@ func TestRequestTriggersFireFromRealRequests(t *testing.T) {
 	if got := counts(); !slices.Equal(got, []int{1, 0, 1, 0}) {
 		t.Fatalf("after a refused tool call: %v", got)
 	}
-	// The agent asks for the call itself.
 	r.ask(RequestInput{Kind: RequestPermission, Title: "Allow Bash?", Tool: "Bash", ToolInput: json.RawMessage(`{"command":"rm -rf build"}`)})
 	if got := counts(); !slices.Equal(got, []int{1, 1, 2, 0}) {
 		t.Fatalf("after a permission request: %v", got)
@@ -52,7 +45,6 @@ func TestRequestTriggersFireFromRealRequests(t *testing.T) {
 	if run.Event == nil || run.Event.Data["kind"] != RequestPermission {
 		t.Errorf("the permission run's event = %+v", run.Event)
 	}
-	// Answering the question ends its watch; the permission request keeps waiting.
 	if _, err := r.s.DecideRequest(r.ctx, r.ana, q.Ref, RequestDecision{Decision: "answer", Text: "sqlite"}); err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +68,6 @@ func TestSessionTriggersAndTheWaitingCard(t *testing.T) {
 	ag := agentActor(r.ana, "anthropic/claude-code")
 	waiting := r.addAuto(r.p, "waiting", r.notifyRule(Trigger{Event: "session_waiting"}))
 	card := r.addAuto(r.p, "Tell me when an agent waits more than 15 minutes", templateRule(t, "Tell me when an agent waits more than 15 minutes"))
-	// A second session, in the same project.
 	if _, err := r.s.SessionHook(r.ctx, ag, []HookEvent{hook("box", "cli-2", "SessionStart", nil)}); err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +91,6 @@ func TestSessionTriggersAndTheWaitingCard(t *testing.T) {
 	if ev := r.run(r.runs(waiting)[0].ID).Event; ev == nil || ev.Data["reason"] != "idle_prompt" || ev.Data["repo"] != "acme/app" {
 		t.Errorf("event = %+v", ev)
 	}
-	// The first agent gets going again (its turn ends: the session updates); the second stays put.
 	if _, err := r.s.SessionHook(r.ctx, ag, []HookEvent{hook("box", "cli-1", "UserPromptSubmit", func(h *HookEvent) { h.Prompt = "go on" })}); err != nil {
 		t.Fatal(err)
 	}
@@ -135,12 +125,12 @@ func TestEnvironmentTriggersFireFromChecksAndDeploys(t *testing.T) {
 	card := x.addAuto(x.p, "Tell me when an environment goes down", templateRule(t, "Tell me when an environment goes down"))
 
 	d := x.create("staging", srv.URL)
-	x.check(d.ID) // up
+	x.check(d.ID)
 	f.code.Store(503)
 	x.setClock(x.clockNow().Add(time.Minute))
 	x.check(d.ID)
 	x.setClock(x.clockNow().Add(time.Minute))
-	x.check(d.ID) // down
+	x.check(d.ID)
 	if len(x.runs(down)) != 1 || len(x.runs(downProd)) != 0 || len(x.runs(up)) != 0 || len(x.runs(card)) != 1 {
 		t.Fatalf("after it went down: down %d, prod %d, up %d, card %d", len(x.runs(down)), len(x.runs(downProd)), len(x.runs(up)), len(x.runs(card)))
 	}
@@ -192,7 +182,6 @@ func TestPullRequestAndCodeTriggersFireFromWebhooks(t *testing.T) {
 	created := n("branch created", Trigger{Event: "branch_created"})
 	release := n("release", Trigger{Event: "release_published"})
 
-	// CI fails, then passes on a new head.
 	se.llm.answers["opencode/muse-spark-1.3-contributor-free"] = noFindings
 	se.pullHook("opened", testPR)
 	se.s.Wait()
@@ -216,7 +205,6 @@ func TestPullRequestAndCodeTriggersFireFromWebhooks(t *testing.T) {
 	if len(se.env.runs(ciPassed)) != 1 {
 		t.Errorf("CI passed: %d runs", len(se.env.runs(ciPassed)))
 	}
-	// The pull request is the run's .PR: its title reaches the template.
 	ns, _, _ := se.s.ListNotifications(se.ctx, se.admin, false, 30)
 	var withPR bool
 	for _, x := range ns {
@@ -225,11 +213,9 @@ func TestPullRequestAndCodeTriggersFireFromWebhooks(t *testing.T) {
 	if !withPR {
 		t.Errorf("the pull request wasn't available to a pr.ci run: %+v", ns)
 	}
-	// The gate went green on the new head.
 	if len(se.env.runs(gateGreen)) == 0 {
 		t.Errorf("the review gate trigger didn't fire")
 	}
-	// A person approves.
 	if err := se.hook(se.f, "pull_request_review", map[string]any{"action": "submitted", "review": map[string]any{"id": 7, "state": "approved", "user": map[string]string{"login": "ann"}, "commit_id": next.HeadSHA, "body": "LGTM"},
 		"pull_request": map[string]any{"number": 5}, "repository": map[string]any{"full_name": "me/app"}, "sender": map[string]string{"login": "ann"}}); err != nil {
 		t.Fatal(err)
@@ -239,7 +225,6 @@ func TestPullRequestAndCodeTriggersFireFromWebhooks(t *testing.T) {
 		t.Errorf("review submitted: %d runs", len(se.env.runs(approved)))
 	}
 
-	// Pushes: the branch, the files, the first push of a branch.
 	push := func(branch string, isNew bool, files ...string) {
 		t.Helper()
 		before := "1111111111111111111111111111111111111111"
@@ -262,7 +247,6 @@ func TestPullRequestAndCodeTriggersFireFromWebhooks(t *testing.T) {
 	if ev := se.run(se.env.runs(docs)[0].ID).Event; ev == nil || !slices.Contains(anyStrings(ev.Data["paths"]), "docs/guide.md") || ev.Data["pusher"] != "sam" {
 		t.Errorf("files-changed event = %+v", ev)
 	}
-	// A release.
 	if err := se.hook(se.f, "release", map[string]any{"action": "published", "release": map[string]any{"tag_name": "v1.2.0", "name": "One two", "html_url": "https://x/r", "draft": false},
 		"repository": map[string]any{"full_name": "me/app"}}); err != nil {
 		t.Fatal(err)

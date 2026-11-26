@@ -96,7 +96,7 @@ func TestJobTokenScope(t *testing.T) {
 	if _, err := e.s.UpdateProject(e.ctx, e.admin, sub.Key, ProjectInput{Parent: Some(a.Key)}); err != nil {
 		t.Fatal(err)
 	}
-	other := e.project(bob, "Bobs", "") // robin is only an admin there
+	other := e.project(bob, "Bobs", "")
 	for _, p := range []*Project{a, b, sub, other} {
 		e.issue(e.admin, IssueInput{Project: p.Key, Title: "work in " + p.Name})
 	}
@@ -173,11 +173,9 @@ func TestJobTokenScope(t *testing.T) {
 		t.Error("the job's token opened its person's personal page")
 	}
 
-	// An admin's job reaches a project the admin isn't a member of.
 	if got := keys(actor(other.ID)); !slices.Equal(got, []string{other.Key}) {
 		t.Errorf("a job in %s finds issues in %v", other.Key, got)
 	}
-	// A job for no project reaches none.
 	if got := keys(actor(0)); len(got) != 0 {
 		t.Errorf("a job for no project finds issues in %v", got)
 	}

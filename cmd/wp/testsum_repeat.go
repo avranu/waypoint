@@ -13,10 +13,6 @@ import (
 	"time"
 )
 
-// wp testsum --repeat: is a test flaky, and did the fix for a flake hold?
-// One run can't say; N runs give a failure count per test and the range the
-// true rate likely lies in (WP-935).
-
 const testsumMaxRepeat = 1000
 
 // repeatTally is one failing test across the runs.
@@ -29,8 +25,8 @@ type repeatTally struct {
 func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool, keep []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	rec := newTestRunRecorder(argv)                // as typed
-	key := slotRunFor("wp testsum --repeat", argv) // the hold is N runs, so not the command's own history
+	rec := newTestRunRecorder(argv)
+	key := slotRunFor("wp testsum --repeat", argv)
 	argv = goTestCount1(goTestJSON(argv))
 	env, release, err := c.takeSlotFor(ctx, "tests", defaultSlots(), key)
 	if err != nil {
@@ -60,8 +56,6 @@ func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool,
 			return err
 		}
 		if ctx.Err() != nil {
-			// The run the stop cut short says nothing; the finished ones
-			// are still reported and kept.
 			stopped = true
 			break
 		}
@@ -84,7 +78,6 @@ func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool,
 			}
 		}
 		if !failed && res != nil && res.outcome() == runEmpty {
-			// No test ran (a -run that matches nothing): not a pass.
 			empty++
 			lastEmpty = res
 			continue
@@ -105,8 +98,6 @@ func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool,
 		}
 	}
 
-	// Keep one run for wp ship: a failure if there was one, so twenty
-	// passes can't hide the run that failed.
 	switch {
 	case firstFailRun > 0 && firstFail != nil:
 		rec.finish(firstFail, firstFailCode)
@@ -132,11 +123,15 @@ func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool,
 	}
 	if firstFailRun > 0 && firstFail != nil {
 		_, _ = fmt.Fprintf(c.out, "run %d, the first that failed:\n%s", firstFailRun, firstFail.render())
+		if firstFailCode != 0 && firstFail.outcome() == runFail {
+			// None of the output is shown, so all of it is kept.
+			_, _ = fmt.Fprint(c.out, keptOutput(firstFailData, 0))
+		}
 		if firstFailCode != 0 && firstFail.outcome() != runFail {
-			_, _ = fmt.Fprintf(c.out, "but the command exited %d; last lines:\n%s\n", firstFailCode, lastLines(firstFailData, 20))
+			_, _ = fmt.Fprintf(c.out, "but the command exited %d; last lines:\n%s", firstFailCode, failedTail(firstFailData, 20))
 		}
 	} else if firstFailRun > 0 {
-		_, _ = fmt.Fprintf(c.out, "run %d exited %d and no test results were recognized; last lines:\n%s\n", firstFailRun, firstFailCode, lastLines(firstFailData, 20))
+		_, _ = fmt.Fprintf(c.out, "run %d exited %d and no test results were recognized; last lines:\n%s", firstFailRun, firstFailCode, failedTail(firstFailData, 20))
 	}
 	if firstFailRun > 0 {
 		c.withheld(dropped)
@@ -145,7 +140,6 @@ func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool,
 	case stopped:
 		return exitCode(130)
 	case firstFailRun > 0, empty == runs:
-		// Every run having run no test is no evidence a flake is gone.
 		return exitCode(1)
 	}
 	return nil

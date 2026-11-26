@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// Keep-warm evidence (WP-1000).
-
 func TestWarmBreakEven(t *testing.T) {
 	w := defaultWarmWeights
 	if got := w.pingNeeds(); math.Abs(got-0.1/1.9) > 1e-9 {
@@ -18,7 +16,6 @@ func TestWarmBreakEven(t *testing.T) {
 	if !math.IsInf(w.compactNeeds(warmCompactKeeps), 1) {
 		t.Error("a compaction that keeps everything pays at some rate")
 	}
-	// Bigger contexts need fewer uses again.
 	if a, b := w.compactNeeds(100_000), w.compactNeeds(200_000); a <= b || b <= 0 {
 		t.Errorf("needs at 100k %v, at 200k %v", a, b)
 	}
@@ -28,7 +25,7 @@ func TestWarmBreakEven(t *testing.T) {
 			t.Errorf("rate %v: from %d needs %v", p, from, w.compactNeeds(from))
 		}
 	}
-	if w.compactFrom(0.04) != 0 { // under read/write: no size pays
+	if w.compactFrom(0.04) != 0 {
 		t.Errorf("4%% compacts from %d", w.compactFrom(0.04))
 	}
 	opus := weightsOf(ModelPrice{Input: 4, Output: 20, CacheWrite1h: 8, CacheRead: 0.2}, true)
@@ -91,19 +88,16 @@ func TestWarmDecisionsRecordWhatCameAfter(t *testing.T) {
 	if got := be.warmDecisions(); len(got) != 1 || got[0] != (warmRow{Action: "ping", Class: warmClassWork, Context: 50_000}) {
 		t.Fatalf("after the ping: %+v", got)
 	}
-	// The ping's own turn is no use.
 	be.typed(TypedKeepWarm, keepWarmBody)
 	be.stop(&HookPending{Tasks: []PendingTask{{Type: "shell", Status: "running"}}}, "1h", "ok")
 	if got := be.warmDecisions(); got[0].Next || got[0].Ended {
 		t.Fatalf("the ping's turn counted: %+v", got)
 	}
-	// A real one is.
 	be.hookEv(HookEvent{Event: "UserPromptSubmit", Prompt: "How did the build go?"})
 	be.hookEv(HookEvent{Event: "Stop", CacheTTL: "1h", LastMessage: "Done. The session can be cleared without losing work.", ContextTokens: 50_000})
 	if got := be.warmDecisions(); !got[0].Next || got[0].Ended {
 		t.Fatalf("after a real prompt: %+v", got)
 	}
-	// Left alone, then cleared.
 	be.warmSweep(55 * time.Minute)
 	be.hookEv(HookEvent{Event: "SessionEnd", EndReason: "clear"})
 	got := be.warmDecisions()
@@ -114,7 +108,7 @@ func TestWarmDecisionsRecordWhatCameAfter(t *testing.T) {
 
 func TestWarmEvidenceLetsAPingCool(t *testing.T) {
 	be := warmEnv(t)
-	be.warmRows(12, warmClassWork, 0) // all cleared, none used again
+	be.warmRows(12, warmClassWork, 0)
 	be.warmSweep(55 * time.Minute)
 	if jobs := be.warmJobs(); len(jobs) != 0 {
 		t.Fatalf("acted: %+v", jobs)
@@ -133,7 +127,7 @@ func TestWarmEvidenceCompactsInsteadOfAPing(t *testing.T) {
 	be := newBabysitEnv(t)
 	be.runner(be.admin, "m1", nil)
 	be.hookEv(HookEvent{Event: "Stop", Pending: &HookPending{Tasks: []PendingTask{{Type: "shell", Status: "running"}}}, CacheTTL: "1h", LastMessage: "Started.", ContextTokens: 90_000})
-	be.warmRows(12, warmClassWork, 3*time.Hour) // all used, none within the hour
+	be.warmRows(12, warmClassWork, 3*time.Hour)
 	be.warmSweep(55 * time.Minute)
 	if jobs := be.warmJobs(); len(jobs) != 1 || !jobs[0].Compact {
 		t.Fatalf("want a compaction: %+v", jobs)
@@ -171,7 +165,7 @@ func TestWarmDecisionsReport(t *testing.T) {
 	be.warmRows(12, warmClassChat, 0)
 	be.warmRows(3, warmClassChat, 20*time.Minute)
 	be.warmRows(4, warmClassWork, 2*time.Hour)
-	be.warmSweep(55 * time.Minute) // work: too few, the rule pings
+	be.warmSweep(55 * time.Minute)
 	rep, err := be.s.WarmDecisions(be.ctx, be.admin, UsageQuery{})
 	if err != nil {
 		t.Fatal(err)
@@ -184,7 +178,6 @@ func TestWarmDecisionsReport(t *testing.T) {
 		chat.Cleared != 12 || chat.PingPays == nil || !*chat.PingPays || chat.CompactFrom != defaultWarmWeights.compactFrom(0.2) {
 		t.Errorf("chat %+v", chat)
 	}
-	// The ping just now is open, and too recent to count within the hour.
 	if work.Class != warmClassWork || work.Decisions != 5 || work.Open != 1 || work.SoonOf != 4 || work.Later != 4 || work.LaterOf != 4 || work.PingPays != nil || work.CompactFrom != 0 {
 		t.Errorf("work %+v", work)
 	}

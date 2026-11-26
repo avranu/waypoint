@@ -35,7 +35,6 @@ func (p *runnerProc) execApply(ctx context.Context, run *jobRun, in applyJob) ou
 		return failed("%s is not a git repository, so it can't commit or push", in.Dir)
 	}
 	if in.Commit != "" {
-		// The commit takes what is staged, so other staged work would ride along.
 		if staged, err := p.git(ctx, dir, "diff", "--cached", "--name-only"); err != nil {
 			return failed("%v", err)
 		} else if staged != "" {
@@ -49,7 +48,7 @@ func (p *runnerProc) execApply(ctx context.Context, run *jobRun, in applyJob) ou
 		exists  bool
 		mode    os.FileMode
 		current []byte
-		skip    bool // already as wanted
+		skip    bool
 	}
 	var steps []*step
 	var conflicts []applyConflict
@@ -82,7 +81,7 @@ func (p *runnerProc) execApply(ctx context.Context, run *jobRun, in applyJob) ou
 		case f.Delete && f.BaseSHA == "":
 			conflicts = append(conflicts, applyConflict{f.Path, "no base to check the deletion against"})
 		case !f.Delete && s.exists && bytes.Equal(s.current, []byte(f.Content)):
-			s.skip = true // applied already (a retry)
+			s.skip = true
 		case f.BaseSHA == "" && s.exists:
 			conflicts = append(conflicts, applyConflict{f.Path, "exists already"})
 		case f.BaseSHA != "" && !s.exists:
@@ -115,7 +114,7 @@ func (p *runnerProc) execApply(ctx context.Context, run *jobRun, in applyJob) ou
 			if s.Delete || !s.exists {
 				continue
 			}
-			written = append(written, s.Path) // already in place; still staged and committed
+			written = append(written, s.Path)
 			continue
 		}
 		if s.Delete {
@@ -141,7 +140,6 @@ func (p *runnerProc) execApply(ctx context.Context, run *jobRun, in applyJob) ou
 		}
 	}
 	if in.Commit != "" && len(written) > 0 && p.nothingStaged(ctx, dir) {
-		// Already applied and committed (a retry): git commit would fail on nothing.
 		fmt.Fprintf(run.out, "nothing to commit: the files are already as wanted\n")
 	} else if in.Commit != "" && len(written) > 0 {
 		sha, err := p.commit(ctx, dir, in.Commit, false)
@@ -182,7 +180,7 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.Remove(tmp.Name()) }() // gone already after a successful rename
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		return err

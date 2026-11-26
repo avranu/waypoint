@@ -40,7 +40,6 @@ for (const [width, scheme] of looks([
   await api("POST", "/projects", { name: `Stalled ${tag}`, key: KEY });
   const noSideways = async (what) =>
     ok(!(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)), `${tag} ${what}: no sideways scroll`);
-  // Polls the server until what is saved there passes, for up to 15 s.
   const until = async (what, pass) => {
     for (let i = 0; i < 60; i++) {
       if (pass(await api("GET", what.path))) return;
@@ -51,7 +50,6 @@ for (const [width, scheme] of looks([
   const uncustom = (path) => until({ path, say: `${path} back to what it inherits` }, (r) => !r.custom);
   const quietIs = (n) => until({ path: "/stalled-jobs/policy", say: `stall time ${n}` }, (r) => r.policy.quiet === n);
 
-  // Every project's times.
   await page.goto(`${base}/admin?tab=ai`);
   let section = page.locator("section", { has: page.getByRole("heading", { name: TITLE }) });
   const quiet = section.getByLabel("Stall after");
@@ -62,7 +60,7 @@ for (const [width, scheme] of looks([
 
   await section.getByLabel("Early, at a keep-warm ping").fill("40");
   ok(await section.getByRole("alert").isVisible(), `${tag} telling early after the stall time is refused`);
-  await page.waitForTimeout(2800); // well past the 900 ms autosave pause
+  await page.waitForTimeout(2800);
   ok(!(await api("GET", "/stalled-jobs/policy")).custom, `${tag} and isn't saved`);
   await section.getByLabel("Early, at a keep-warm ping").fill("8");
   await quiet.fill("20");
@@ -72,18 +70,15 @@ for (const [width, scheme] of looks([
   await noSideways("Admin → AI");
   await section.scrollIntoViewIfNeeded();
   await section.screenshot({ path: `${out}/admin-${width}-${scheme}.png` });
-  // Opening saved times saves nothing.
   let writes = 0;
   const count = (r) => r.method() !== "GET" && /stalled-jobs|\/projects\/[^/]+$/.test(r.url()) && writes++;
   page.on("request", count);
-  await page.waitForLoadState("networkidle"); // nothing still loading for the reload to cut off
+  await page.waitForLoadState("networkidle");
   await page.reload();
   await section.getByLabel("Stall after").waitFor();
-  await page.waitForTimeout(2000); // past the 900 ms autosave pause
+  await page.waitForTimeout(2000);
   ok(writes === 0, `${tag} opening saved times sends no save (${writes})`);
   page.off("request", count);
-  // Back to the default by hand, then a change, then "Use the default":
-  // the reset holds (the hand-made default isn't taken for it).
   await section.getByLabel("Stall after").fill("15");
   await section.getByLabel("Early, at a keep-warm ping").fill("10");
   await uncustom("/stalled-jobs/policy");
@@ -91,20 +86,18 @@ for (const [width, scheme] of looks([
   await quietIs(25);
   await section.getByRole("button", { name: "Use the default" }).click();
   await uncustom("/stalled-jobs/policy");
-  await page.waitForTimeout(2000); // past the 900 ms autosave pause
+  await page.waitForTimeout(2000);
   pol = await api("GET", "/stalled-jobs/policy");
   ok(!pol.custom && (await section.getByLabel("Stall after").inputValue()) === "15", `${tag} "Use the default" holds: ${JSON.stringify(pol)}`);
   await section.getByLabel("Early, at a keep-warm ping").fill("8");
   await section.getByLabel("Stall after").fill("20");
   await quietIs(20);
 
-  // A project's own, over every project's.
   await page.goto(`${base}/p/${KEY}/settings?tab=general`);
   section = page.locator("section", { has: page.getByRole("heading", { name: TITLE }) });
   await section.getByLabel("Stall after").waitFor();
   ok((await section.getByLabel("Stall after").inputValue()) === "20", `${tag} the project shows every project's times`);
   ok(!(await section.getByRole("button", { name: "Use every project’s" }).isVisible()), `${tag} nothing of its own yet`);
-  // A time that can't be saved doesn't hold Off back unseen.
   await section.getByLabel("Stall after").fill("");
   ok(await section.getByRole("alert").isVisible(), `${tag} an empty stall time is refused`);
   await section.getByRole("switch", { name: "Tell sessions about stalled jobs" }).click();
@@ -121,7 +114,6 @@ for (const [width, scheme] of looks([
   own = await api("GET", `/projects/${KEY}/stalled-jobs`);
   ok(!own.policy.off && own.policy.quiet === 20, `${tag} cleared, the project falls back to every project's times: ${JSON.stringify(own)}`);
 
-  // Back to the default for the next look.
   await page.goto(`${base}/admin?tab=ai`);
   section = page.locator("section", { has: page.getByRole("heading", { name: TITLE }) });
   await section.getByRole("button", { name: "Use the default" }).click();

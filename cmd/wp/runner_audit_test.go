@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -49,12 +50,10 @@ func TestAuditDiffWritesTheWholeChange(t *testing.T) {
 	write("internal/core/big.go", "package core\n\n"+big.String())
 	write("web/src/zebra.ts", "export const zebraQuokka = 4177;\n")
 	write("go.sum", "noise\n")
-	// What a pull request review leaves out, an audit does too (WP-936).
 	noise := []string{"web/dist/app.js", "api/zz_generated.deepcopy.go", "deploy/prod.sops.env", "web/src/__snapshots__/a.snap", "web/public/icon.svg", "vendor/x/y.go"}
 	for _, n := range noise {
 		write(n, "noise\n")
 	}
-	// The repository's own .waypoint-audit is replaced, a link included.
 	if err := os.Symlink("/etc", filepath.Join(work, ".waypoint-audit")); err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +195,6 @@ func TestAuditPeriodAndPaths(t *testing.T) {
 		}
 	}
 
-	// Since 1500: two commits; only web/ has quokka.
 	r := &auditRange{from: first, to: head, paths: []string{"web"}}
 	got, err := p.auditDiff(ctx, work, r, 1<<20)
 	if err != nil || r.empty || r.commits != 1 {
@@ -205,17 +203,17 @@ func TestAuditPeriodAndPaths(t *testing.T) {
 	if !strings.Contains(got, "+export const quokka = 1;") || strings.Contains(got, "var X") || !strings.Contains(got, "only in web") {
 		t.Errorf("web only:\n%s", got)
 	}
-	// Commit three touches only what is left out, so it doesn't count.
+	if !slices.Equal(r.files, []string{"web/b.ts"}) {
+		t.Errorf("files %q", r.files)
+	}
 	r = &auditRange{from: first, to: head, exclude: []string{"web", "*_test.go"}}
 	if got, err = p.auditDiff(ctx, work, r, 1<<20); err != nil || r.commits != 1 || !strings.Contains(got, "var X = 1") || strings.Contains(got, "quokka") || strings.Contains(got, "a_test.go") {
 		t.Errorf("exclude web: %v commits %d\n%s", err, r.commits, got)
 	}
-	// From the empty tree: the whole history, three commits.
 	r = &auditRange{from: emptyTree, to: head}
 	if got, err = p.auditDiff(ctx, work, r, 1<<20); err != nil || r.commits != 3 || !strings.Contains(got, "from the branch's first commit") {
 		t.Errorf("empty tree: %v commits %d\n%s", err, r.commits, got)
 	}
-	// Nothing in the paths asked for.
 	r = &auditRange{from: second, to: head, paths: []string{"docs"}}
 	if got, err = p.auditDiff(ctx, work, r, 1<<20); err != nil || !r.empty || got != "" {
 		t.Fatalf("docs: %v empty %v %q", err, r.empty, got)
@@ -223,7 +221,6 @@ func TestAuditPeriodAndPaths(t *testing.T) {
 	if why := r.nothing(true); !strings.Contains(why, "paths asked for") {
 		t.Errorf("why: %s", why)
 	}
-	// A commit in noise only did land: it is not "nothing landed".
 	write("vendor/x.go", "package x\n")
 	git(nil, "add", "vendor")
 	git(at(4000), "commit", "-q", "-m", "four")

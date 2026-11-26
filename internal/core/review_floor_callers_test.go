@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// WP-1440: the review-chain callers themselves, not runChain alone.
-
 // gatewayWithout is a gateway env that lacks the extensions named: without
 // GatewayFallbacks every chain entry is its own request.
 func gatewayWithout(t *testing.T, g *fakeGateway, without ...string) (*env, int64) {
@@ -87,7 +85,6 @@ func TestNoModelAtBarSkipsOnlyTheGatewayEntries(t *testing.T) {
 func TestFixCheckAndReplyCallersCarryTheirRouting(t *testing.T) {
 	g := &fakeGateway{answer: `{"verdict":"present","reason":"still there"}`}
 	se := newShipEnv(t, "github")
-	// The scripted reviewer's finding, before the gateway takes over.
 	se.gate("P2")
 	se.pullHook("opened", testPR)
 	se.drain()
@@ -124,7 +121,6 @@ func TestFixCheckAndReplyCallersCarryTheirRouting(t *testing.T) {
 	}
 	g.mu.Unlock()
 
-	// No model at the bar: the finding is left as it was.
 	reset()
 	g.mu.Lock()
 	g.noBar = 50
@@ -140,7 +136,6 @@ func TestFixCheckAndReplyCallersCarryTheirRouting(t *testing.T) {
 	g.noBar = 0
 	g.mu.Unlock()
 
-	// The thread reply, through replyRun itself.
 	g.mu.Lock()
 	g.answer = `{"action":"stand_by","reply":"The caller does not check it."}`
 	g.mu.Unlock()

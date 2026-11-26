@@ -1,8 +1,3 @@
-// Agents page, Activity tab (WP-D15): what agents did over the period:
-// tasks finished, time, tokens and cost, the pull requests that came of it,
-// each agent (grouped by family), what the review bots' models did, and the
-// latest runs.
-
 import { useMemo, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
@@ -414,7 +409,6 @@ function AgentName({
         {family ? (
           <span className="truncate font-medium">{a.family}</span>
         ) : (
-          // The provider is the least telling part, so it stays quiet.
           <span className="truncate">
             {a.identity.includes('/') && (
               <span className="text-subtle">
@@ -493,7 +487,6 @@ const OUTCOME: Record<
     className: 'text-accent',
   },
   done: { label: 'done', icon: <CircleCheck />, className: 'text-ok' },
-  // A diagnose round's run: it recorded why rounds stall and shipped no code.
   diagnosed: { label: 'diagnosed', icon: <CircleCheck />, className: 'text-muted' },
   released: { label: 'released', icon: <Undo2 />, className: 'text-muted' },
   expired: { label: 'expired', icon: <Clock3 />, className: 'text-warn' },

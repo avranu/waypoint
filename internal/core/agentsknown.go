@@ -9,10 +9,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Which agents exist (WP-D15): every identity that has worked on, held or
-// may sign in for work the actor can see, so pickers and filters offer real
-// names and show what a spec like "claude" covers.
-
 // KnownAgent is an agent identity seen at work.
 type KnownAgent struct {
 	Identity string `json:"identity"` // provider/model, as agents say it

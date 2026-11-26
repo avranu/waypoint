@@ -9,11 +9,6 @@ import (
 	"time"
 )
 
-// AI request records (WP-375 item 4, WP-374): every request Waypoint sends
-// an AI provider is kept for aiCallsKeep, so `wp ai usage` answers what the
-// AI key's day went on (WP-373) without a copy of the database or the
-// gateway's.
-
 // aiCallsKeep is how long AI request records are kept.
 const aiCallsKeep = 30 * 24 * time.Hour
 
@@ -25,14 +20,14 @@ type aiCall struct {
 	fallbacks int
 	paid      bool
 	outcome   string
-	priority  string // "" or prioritySurplus (WP-906)
-	err       error  // for the HTTP status
+	priority  string
+	err       error
 	tokensIn  int64
 	tokensOut int64
 	ms        int64
-	bar       string // the gateway's X-OpenLLMs-Bar header on the answer (WP-1440)
-	sent      int64  // HTTP requests it took, the client's retries included
-	status    int    // the last response's HTTP status, when known
+	bar       string
+	sent      int64
+	status    int
 }
 
 // recordAICall keeps one request. Best effort: a failed write is logged, and
@@ -108,8 +103,7 @@ var aiUsageGroups = map[string]string{
 	"day":      `strftime('%Y-%m-%d', at / 1000, 'unixepoch')`,
 	"provider": `coalesce((SELECT name FROM ai_providers p WHERE p.id = provider_id), CAST(provider_id AS TEXT))`,
 	"priority": `CASE priority WHEN '' THEN 'normal' ELSE priority END`,
-	// The bar is the header's weakest=… part: the model it was held to.
-	"bar": `CASE WHEN bar = '' THEN 'none' WHEN bar LIKE 'weakest=%' THEN substr(bar, 9, CASE instr(bar, ';') WHEN 0 THEN length(bar) ELSE instr(bar, ';') - 9 END) ELSE bar END`,
+	"bar":      `CASE WHEN bar = '' THEN 'none' WHEN bar LIKE 'weakest=%' THEN substr(bar, 9, CASE instr(bar, ';') WHEN 0 THEN length(bar) ELSE instr(bar, ';') - 9 END) ELSE bar END`,
 }
 
 // AIUsageGroups are the --by choices, for usage messages.

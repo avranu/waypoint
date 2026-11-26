@@ -28,46 +28,23 @@ import (
 // TestMain keeps the agent detection out of the tests: they may run
 // inside a coding agent's shell.
 func TestMain(m *testing.M) {
-	// WP_TEST_MAIN=1 makes the test binary act as wp, for tests that need a
-	// real wp process (a nested wp slot run).
 	if os.Getenv("WP_TEST_MAIN") == "1" {
 		os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 	}
-	// A test binary lives long: with its real age every hook run would count
-	// as late and keep its once-only notes (hookLate, WP-1398).
 	processAge = func() time.Duration { return 0 }
-	// No snapshot test may depend on the real process tree (a claude may sit
-	// above the test binary); those that need one build a fake (WP-1468).
 	snapshotProc = func() (string, int) { return "", 0 }
-	// A snapshot test checks what was read, not how fast: on a loaded CI
-	// runner under -race the real budget ran out before a 4 MB file was
-	// read, and the test saw "skipped" instead of "too large". The tests
-	// about the budget set it themselves.
 	snapshotBudget = time.Minute
 	for _, k := range []string{"CLAUDECODE", "CLAUDE_PID", "GEMINI_CLI", "OPENCODE", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "WAYPOINT_AGENT", noWorktreeEnv} {
 		_ = os.Unsetenv(k)
 	}
-	// A runner job's environment names the real server and a token: tests
-	// that expect no server mustn't post to it (WP-537: a guard test's hook
-	// events showed up as idle sessions on the autopilot tab).
 	for _, k := range []string{"WAYPOINT_SERVER", "WAYPOINT_TOKEN"} {
 		_ = os.Unsetenv(k)
 	}
-	// Test repos name remotes that don't exist: wp next fetches none of them
-	// (next_checkout_test.go turns it back on against a local one).
 	_ = os.Setenv("WP_NO_GIT", "1")
-	// wp code's daily upload starts os.Executable() detached: in a test
-	// that is this test binary, which ran every test again in the
-	// background, outliving the run (WP-1065).
 	_ = os.Setenv("WP_CODE_UPLOAD", "off")
-	// A test that takes a slot outside slotEnv must not spool its hold for
-	// the real server (WP-1646); the send tests turn it back on.
 	_ = os.Setenv(slotSendEnv, "off")
-	// The host's sandbox helper is root's; a test asks its own socket.
 	sandboxHelperSocket = "/nonexistent/waypoint-sandboxd.sock"
 	testnet.Guard()
-	// The launchers' wp next would run this test binary, which runs every
-	// test again: a test that wants an answer stubs it (stubStartNext).
 	runWpNext = func(context.Context, string, []string, string, string) (string, error) {
 		return "", errors.New("wp next isn't run in tests")
 	}
@@ -138,7 +115,6 @@ func TestClaimedKey(t *testing.T) {
 	if k := claimedKey([]byte("Nothing to do: no open task"), false); k != "" {
 		t.Errorf("nothing: %q", k)
 	}
-	// A batch's others are held too (WP-242).
 	batch := "WAY-12 \"Fix it\" by opus 5.5\nSub-tasks:\n  WAY-9 [Done] x\n\nAlso claimed for you:\n  WAY-13 [To Do] \"More\"\n  WAY-14 [To Do] \"Again\"\n\nWhen finished: `wp done WAY-12 -m \"summary\"`.\n"
 	if k := strings.Join(claimedKeys([]byte(batch), false), ","); k != "WAY-12,WAY-13,WAY-14" {
 		t.Errorf("batch text: %q", k)
@@ -146,8 +122,6 @@ func TestClaimedKey(t *testing.T) {
 	if k := strings.Join(claimedKeys([]byte(`{"task":{"key":"AB-3"},"related":[{"key":"AB-4"}]}`), true), ","); k != "AB-3,AB-4" {
 		t.Errorf("batch json: %q", k)
 	}
-	// An assigned take names the task it handed out, an epic's sub-task
-	// perhaps (WP-730).
 	if k := assignedKey([]byte("(Passed over WAY-3 (another session).)\nAutopilot assigned WAY-14 to you: \"Fix\" by opus\n"), false); k != "WAY-14" {
 		t.Errorf("assigned text: %q", k)
 	}
@@ -157,15 +131,12 @@ func TestClaimedKey(t *testing.T) {
 	if k := assignedKey([]byte("Nothing to do"), false); k != "" {
 		t.Errorf("assigned nothing: %q", k)
 	}
-	// A take for a session a person started (WP-1037), and an older
-	// server's plain answer to it.
 	if k := assignedKey([]byte("Robin started this session for WAY-15: \"Fix\" by opus\n"), false); k != "WAY-15" {
 		t.Errorf("started text: %q", k)
 	}
 	if k := assignedKey([]byte("WAY-16 \"Fix\" by opus\n"), false); k != "WAY-16" {
 		t.Errorf("started, older server: %q", k)
 	}
-	// A blank or other line before the sentence doesn't end the search.
 	if k := assignedKey([]byte("\nnote\nAutopilot assigned WAY-17 to you: \"Sub\"\n"), false); k != "WAY-17" {
 		t.Errorf("line before the sentence: %q", k)
 	}
@@ -188,12 +159,10 @@ func TestTranscriptUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// m0 predates the claim; cache reads (1000) don't count as input.
 	if u.input != 10+100+3 || u.output != 5+7 || u.model != "claude-opus-5-5" || u.offset != int64(len(tr)) {
 		t.Errorf("usage = %+v", u)
 	}
-	// Later: only new messages count.
-	tr2 := tr + line("m2", 3, 7, 0, 0) + line("m3", 1, 1, 0, 0) + `{"type":"assistant","message":{"id":"m4"` // partial line
+	tr2 := tr + line("m2", 3, 7, 0, 0) + line("m3", 1, 1, 0, 0) + `{"type":"assistant","message":{"id":"m4"`
 	u2, _ := readTranscriptUsage(strings.NewReader(tr2), u.offset, u.seen, claimed)
 	if u2.input != 1 || u2.output != 1 {
 		t.Errorf("second read = %+v", u2)
@@ -222,7 +191,6 @@ func TestStopHookMerge(t *testing.T) {
 		t.Errorf("after remove: %v", s)
 	}
 
-	// Groups it doesn't understand are kept; a malformed Stop is refused.
 	odd := map[string]any{"hooks": map[string]any{"Stop": []any{"weird", map[string]any{"matcher": "x"},
 		map[string]any{"hooks": []any{map[string]any{"command": "wp hook claude-report"}}}}}}
 	if !removeHook(odd, "Stop", hookCommand) || fmt.Sprint(odd["hooks"].(map[string]any)["Stop"]) != "[weird map[matcher:x]]" {
@@ -235,7 +203,7 @@ func TestStopHookMerge(t *testing.T) {
 
 func TestUpdateStateConcurrent(t *testing.T) {
 	dir := t.TempDir()
-	dirs := t.TempDir() // claims for directories that are gone are dropped
+	dirs := t.TempDir()
 	var wg sync.WaitGroup
 	for i := range 20 {
 		if err := os.Mkdir(filepath.Join(dirs, fmt.Sprint("d", i)), 0o755); err != nil {
@@ -259,7 +227,6 @@ func TestUpdateStateConcurrent(t *testing.T) {
 	if n := len((&cli{dir: dir}).loadState().Claims); n != 20 {
 		t.Errorf("%d of 20 claims survived", n)
 	}
-	// A lock left by a crashed process is taken over once stale.
 	lock := filepath.Join(dir, "state.lock")
 	_ = os.WriteFile(lock, nil, 0o600)
 	old := time.Now().Add(-time.Minute)
@@ -311,8 +278,6 @@ func TestLoginSendsNoCredentials(t *testing.T) {
 	}
 }
 
-// ---- against a real server ----
-
 type env struct {
 	t   *testing.T
 	svc *core.Service
@@ -341,7 +306,7 @@ func newEnvServing(t *testing.T, configure func(cfg *api.Config, url string), wr
 	t.Cleanup(func() { _ = d.Close() })
 	svc := core.New(d, core.Config{BaseURL: "http://wp.test", TranscriptDir: t.TempDir()}, nil)
 	svc.StartHub()
-	ts := httptest.NewUnstartedServer(nil) // listening already, so its URL is known
+	ts := httptest.NewUnstartedServer(nil)
 	cfg := api.Config{BaseURL: "http://wp.test", Version: "test"}
 	if configure != nil {
 		configure(&cfg, "http://"+ts.Listener.Addr().String())
@@ -380,7 +345,7 @@ func (e *env) run(args ...string) (string, int) {
 
 func TestCLIAgainstServer(t *testing.T) {
 	e := newEnv(t)
-	t.Chdir(t.TempDir()) // outside any git repo
+	t.Chdir(t.TempDir())
 	t.Setenv("WAYPOINT_PROJECT", "WAYF")
 	ctx := context.Background()
 	robin, err := e.svc.CreateUser(ctx, core.SystemActor(), core.CreateUserInput{Username: "robin", Email: "j@example.com", Password: "correct horse battery", IsAdmin: true})
@@ -393,12 +358,10 @@ func TestCLIAgainstServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Not logged in yet: a friendly hint.
 	if out, code := e.run("ls"); code == 0 || !strings.Contains(out, "wp auth login") {
 		t.Errorf("unauthenticated ls: %d %s", code, out)
 	}
 
-	// Device login: approve the code as soon as the CLI shows it.
 	var buf *bytes.Buffer
 	codeRE := regexp.MustCompile(`code: ([A-Z]{4}-[A-Z]{4})`)
 	pollWait = func(int) {
@@ -423,7 +386,6 @@ func TestCLIAgainstServer(t *testing.T) {
 		t.Errorf("config mode %v", fi.Mode().Perm())
 	}
 
-	// Issues.
 	out := e.wp("new", "Write the parser", "-p", "WAYF", "--for", "claude", "--tag", "backend", "--category", "feature", "--workflow", "Agent pipeline")
 	if !strings.Contains(out, "Created WAYF-1") || !strings.Contains(out, "step:plan") {
 		t.Errorf("new: %s", out)
@@ -436,7 +398,6 @@ func TestCLIAgainstServer(t *testing.T) {
 		t.Errorf("show: %s", out)
 	}
 
-	// Agent work: next claims, done (no key) finishes the remembered one.
 	out = e.wp("next")
 	if !strings.Contains(out, "WAYF-1") || !strings.Contains(out, "Step 1/5") || strings.Contains(out, "Human chore") {
 		t.Fatalf("next: %s", out)
@@ -455,7 +416,6 @@ func TestCLIAgainstServer(t *testing.T) {
 		t.Errorf("next --json: %s", out)
 	}
 
-	// Comment, move, edit.
 	e.wp("comment", "WAYF-2", "Booked for Monday")
 	if out = e.wp("mv", "WAYF-2", "done", "-m", "All done"); !strings.Contains(out, "Moved WAYF-2") {
 		t.Errorf("mv: %s", out)
@@ -463,7 +423,6 @@ func TestCLIAgainstServer(t *testing.T) {
 	if out = e.wp("edit", "WAYF-2", "--priority", "high", "--points", "3"); !strings.Contains(out, "Updated WAYF-2") {
 		t.Errorf("edit: %s", out)
 	}
-	// The intent is its own field (WP-1196): set, then cleared with none.
 	e.wp("edit", "WAYF-2", "--intent", "Book the venue before prices rise")
 	if out = e.wp("show", "WAYF-2", "--json"); !strings.Contains(out, `"intent": "Book the venue before prices rise"`) {
 		t.Errorf("edit --intent: %s", out)
@@ -476,7 +435,6 @@ func TestCLIAgainstServer(t *testing.T) {
 		t.Errorf("edit --intent on two keys: %d %s", code, out)
 	}
 
-	// Pages.
 	out = e.wp("page", "new", "Parser plan", "--category", "plan", "-p", "WAYF", "--body", "Use a Pratt parser.", "--issue", "WAYF-1")
 	m := regexp.MustCompile(`#(\d+)`).FindStringSubmatch(out)
 	if m == nil {
@@ -490,8 +448,6 @@ func TestCLIAgainstServer(t *testing.T) {
 	}
 	e.wp("page", "edit", m[1], "--title", "Parser plan v2")
 
-	// Usage from a Claude Code transcript, through the hook.
-	// It counts only sessions in (or below) the directory the task was taken in.
 	cwd, _ := os.Getwd()
 	tr := filepath.Join(t.TempDir(), "t.jsonl")
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -514,7 +470,6 @@ func TestCLIAgainstServer(t *testing.T) {
 	if total != 1050 || hookOut.Len() != 0 {
 		t.Errorf("hook usage: total %d, output %q", total, hookOut.String())
 	}
-	// Running it again with nothing new reports nothing more.
 	c, _ = newCLI(&hookOut, &hookOut)
 	hookClaudeReport(c, hookInput("s1", cwd))
 	d, _ = e.svc.GetIssue(ctx, me, "WAYF-1")
@@ -526,7 +481,6 @@ func TestCLIAgainstServer(t *testing.T) {
 		t.Errorf("hook double-counted: %d", total)
 	}
 
-	// Config and help.
 	e.wp("config", "set", "project", "wayf")
 	if out = e.wp("config", "get", "project"); strings.TrimSpace(out) != "WAYF" {
 		t.Errorf("config get: %q", out)
@@ -547,7 +501,6 @@ func TestHookInstall(t *testing.T) {
 	path := filepath.Join(dir, "settings.json")
 	t.Setenv("WP_CLAUDE_SETTINGS", path)
 	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
-	// settings.json is a dotfile manager's symlink: it must stay one.
 	target := filepath.Join(dir, "dotfiles", "settings.json")
 	_ = os.MkdirAll(filepath.Dir(target), 0o700)
 	_ = os.WriteFile(target, []byte(`{"model":"opus","hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"x"}]}]}}`), 0o600)
@@ -652,11 +605,11 @@ func TestHookResendsALostReport(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		if r.URL.Path == "/api/v1/agent/pause/AB-1" {
-			pauses++ // the session is idle after each Stop
+			pauses++
 			return
 		}
 		ids = append(ids, fmt.Sprint(body["report_id"]))
-		if fail { // the server took it, but the answer never arrives
+		if fail {
 			fail = false
 			w.WriteHeader(http.StatusBadGateway)
 			return
@@ -687,10 +640,10 @@ func TestHookResendsALostReport(t *testing.T) {
 		hookClaudeReport(c, bytes.NewReader(in))
 	}
 	add("m1")
-	stop() // lost
+	stop()
 	add("m2")
-	stop() // resends m1's report as it was, then m2's
-	stop() // nothing new
+	stop()
+	stop()
 	if len(ids) != 3 || ids[0] != ids[1] || ids[1] == ids[2] {
 		t.Errorf("report ids sent: %q (the lost one must be resent unchanged)", ids)
 	}
@@ -705,7 +658,7 @@ func TestUnlockLeavesSomeoneElsesLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = os.WriteFile(path, []byte("another process"), 0o600) // taken over as stale meanwhile
+	_ = os.WriteFile(path, []byte("another process"), 0o600)
 	unlock()
 	if _, err := os.Stat(path); err != nil {
 		t.Error("unlock removed a lock it no longer held")
@@ -770,7 +723,7 @@ func TestCLIScope(t *testing.T) {
 	ul := mk("Harbor", "")
 	web := mk("Web", ul.Key)
 	other := mk("Tools", "")
-	f, err := e.svc.CreateForge(ctx, me, core.ForgeInput{Kind: ptr("github")}) // no token: no network
+	f, err := e.svc.CreateForge(ctx, me, core.ForgeInput{Kind: ptr("github")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -805,14 +758,12 @@ func TestCLIScope(t *testing.T) {
 	if out = e.wp("ls", "map"); !strings.Contains(out, "Fix the map") || strings.Contains(out, "header") {
 		t.Errorf("ls with a word that names no project searches:\n%s", out)
 	}
-	// A project's name followed by search words is searched for, here.
 	if out = e.wp("ls", "tools", "map"); strings.Contains(out, "Sharpen") || !strings.Contains(out, "robin/harbor") {
 		t.Errorf("ls tools map took tools as the scope:\n%s", out)
 	}
 	if out = e.wp("ls", "tools", "is:open"); !strings.Contains(out, "Sharpen") {
 		t.Errorf("ls tools is:open:\n%s", out)
 	}
-	// A task outside the scope isn't taken by key without -A.
 	if out, code := e.run("next", "--peek", other.Key+"-1"); code == 0 || !strings.Contains(out, "outside the scope") {
 		t.Errorf("next KEY outside the scope: %d %s", code, out)
 	}
@@ -864,7 +815,6 @@ func TestCLIScope(t *testing.T) {
 		t.Errorf("edit -p moves it: %s", out)
 	}
 
-	// A repo no project has: no guessing.
 	gitRepo(t, "https://github.com/robin/dotfiles")
 	for _, args := range [][]string{{"ls"}, {"next"}, {"new", "Anything"}} {
 		if out, code := e.run(args...); code == 0 || !strings.Contains(out, "isn't attached") {
@@ -874,12 +824,10 @@ func TestCLIScope(t *testing.T) {
 	if out = e.wp("ls", "-p", "tools"); !strings.Contains(out, "Sharpen") {
 		t.Errorf("ls -p there: %s", out)
 	}
-	// A project named like the checkout doesn't make it attached.
 	gitRepo(t, "https://github.com/to/ols")
 	if out, code := e.run("ls"); code == 0 || !strings.Contains(out, "isn't attached") {
 		t.Errorf("a name match scoped an unattached repo: %d %s", code, out)
 	}
-	// A repo with no remote can't be matched: no guessing either.
 	t.Chdir(t.TempDir())
 	if out, err := exec.Command("git", "init", "-q").CombinedOutput(); err != nil {
 		t.Fatal(err, string(out))
@@ -890,7 +838,6 @@ func TestCLIScope(t *testing.T) {
 		}
 	}
 
-	// Issue commands default to the task taken here.
 	gitRepo(t, "git@github.com:robin/harbor.git")
 	key := claimedKey([]byte(e.wp("next")), false)
 	if key == "" {
@@ -932,8 +879,6 @@ func TestHelpReference(t *testing.T) {
 	if code := run([]string{"help", "--all"}, &out, &out); code != 0 {
 		t.Fatal(out.String())
 	}
-	// Every command has a summary; a top-level one that takes arguments, an
-	// example too. A subcommand's syntax line is often example enough (WP-271).
 	var check func(list []*command, top bool)
 	check = func(list []*command, top bool) {
 		for _, c := range list {
@@ -968,7 +913,6 @@ func TestCommonSyntax(t *testing.T) {
 				t.Errorf("%q: no such command", use)
 				continue
 			}
-			// The path: one subcommand, or several to choose from (show|log).
 			paths := [][]string{{words[1]}}
 			rest := words[2:]
 			if len(cmd.subs) > 0 && len(rest) > 0 {
@@ -1058,7 +1002,7 @@ func TestCategoriesMatchServer(t *testing.T) {
 // agent and as a person, in a repo's project.
 func TestCLIKnowledge(t *testing.T) {
 	e := newEnv(t)
-	me := e.login() // an agent token (opus)
+	me := e.login()
 	agentTok := os.Getenv("WAYPOINT_TOKEN")
 	ctx := context.Background()
 	humanTok, _, err := e.svc.CreateAPIToken(ctx, me, "robin", false, 0)
@@ -1077,7 +1021,6 @@ func TestCLIKnowledge(t *testing.T) {
 	task, _ := e.svc.CreateIssue(ctx, me, core.IssueInput{Project: ul.Key, Title: "Fix the map legend"})
 	gitRepo(t, "git@github.com:robin/harbor.git")
 
-	// Glossary: a person adds and locks; the org's terms show in the repo.
 	asHuman()
 	e.wp("glossary", "add", "Claim", "An insurance claim.", "-p", org.Key)
 	out := e.wp("glossary", "add", "Legend", "The map's key to colours.", "--alias", "key", "--link", task.Key, "--lock")
@@ -1093,7 +1036,6 @@ func TestCLIKnowledge(t *testing.T) {
 	if out = e.wp("glossary", "ls"); !strings.Contains(out, "Claim ("+org.Key+")") || !strings.Contains(out, "Legend ("+ul.Key+") [locked]") {
 		t.Errorf("full glossary:\n%s", out)
 	}
-	// -p global means the global glossary, not "wherever it's found first".
 	e.wp("glossary", "add", "Claim", "Global meaning.", "-p", "global")
 	if out = e.wp("define", "claim", "-p", "global"); !strings.Contains(out, "global glossary") || strings.Contains(out, "insurance") {
 		t.Errorf("define -p global:\n%s", out)
@@ -1108,7 +1050,6 @@ func TestCLIKnowledge(t *testing.T) {
 	}
 	e.wp("glossary", "edit", "claim", "-d", "An agent's 2-hour lease on a task.")
 
-	// Design: a person's note; the agent adds to it; a person approves.
 	asHuman()
 	out = e.wp("design", "new", "screen", "Map page", "-d", "Shows the [[Legend]] bottom-left.", "--link", task.Key)
 	if !strings.Contains(out, "Created design #1 Map page [screen]") {
@@ -1144,7 +1085,6 @@ func TestCLIKnowledge(t *testing.T) {
 		t.Errorf("overview:\n%s", out)
 	}
 
-	// Search everything in the repo's project.
 	out = e.wp("search", "legend")
 	for _, want := range []string{"Issues (1)", "Design notes (1)", "Glossary (1)", "[legend]"} {
 		if !strings.Contains(strings.ToLower(out), strings.ToLower(want)) {
@@ -1155,8 +1095,6 @@ func TestCLIKnowledge(t *testing.T) {
 		t.Errorf("search --kind:\n%s", out)
 	}
 
-	// Decisions: ADR codes work wherever a note is named; a decision page
-	// still works but says where decisions go.
 	asHuman()
 	out = e.wp("design", "new", "decision", "ADR-0007: Use SQLite", "-d", "One file.")
 	if !strings.Contains(out, "Created design "+ul.Key+"-ADR7") && !strings.Contains(out, "Created design ADR7") {
@@ -1188,7 +1126,6 @@ func TestCLIKnowledge(t *testing.T) {
 		t.Errorf("plan page got the decision notice:\n%s", out)
 	}
 
-	// Taking a named task that wasn't delegated assigns it and starts the timer.
 	asAgent()
 	out = e.wp("take", task.Key)
 	if !strings.Contains(out, "Assess and complete") || !strings.Contains(out, "Design: #1 Map page") {

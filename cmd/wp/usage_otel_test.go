@@ -39,7 +39,6 @@ func TestUsageOtelSettingsEdit(t *testing.T) {
 	if msg, _ := editClaudeOtelEnv(path, env, false, false); !strings.HasPrefix(msg, "Already") {
 		t.Errorf("again: %q", msg)
 	}
-	// something else already exports OpenTelemetry
 	e["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://collector:4318"
 	b, _ := json.Marshal(m)
 	_ = os.WriteFile(path, b, 0o600)
@@ -58,7 +57,6 @@ func TestUsageOtelSettingsEdit(t *testing.T) {
 	if e := read()["env"].(map[string]any); len(e) != 1 || e["FOO"] != "1" {
 		t.Errorf("after uninstall: %v", e)
 	}
-	// invalid JSON is left alone
 	_ = os.WriteFile(path, []byte("{nope"), 0o600)
 	if _, err := editClaudeOtelEnv(path, env, false, false); err == nil {
 		t.Error("edited invalid JSON")

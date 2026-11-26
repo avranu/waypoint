@@ -17,8 +17,6 @@ func TestShipSweepKeepsAFailingShipPastTheStrandedWindow(t *testing.T) {
 	e.shipAndCheck(r1, []string{"rejected"})
 	now := e.clockNow().UnixMilli()
 	day := (24 * time.Hour).Milliseconds()
-	// The run ended 30 hours ago, the round was last touched then, and the
-	// first try was an hour ago; the next is due now.
 	e.exec(`UPDATE agent_runs SET ended_at = ?, outcome = 'released' WHERE id = (SELECT run_id FROM work_log WHERE id = ?)`, now-day-6*time.Hour.Milliseconds(), r1)
 	e.exec(`UPDATE agent_sessions SET ended_at = ? WHERE id = (SELECT session_id FROM work_log WHERE id = ?)`, now-day-6*time.Hour.Milliseconds(), r1)
 	e.exec(`UPDATE work_log SET state = 'done', updated_at = ?, before_pr = json_set(before_pr, '$.ship_first', ?, '$.ship_next', ?, '$.ship_tries', 1) WHERE id = ?`,

@@ -10,9 +10,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// wp usage facts (WP-1467): what a session, or a task's share of its sessions,
-// did, counted from the facts the server derives from the transcript archive.
-
 var usageFactsCmd = &command{
 	name: "facts", args: "SESSION|TASK-KEY | --session ID | --task KEY [--machine M] [--user NAME]",
 	summary: "what a session or task did, counted from its archived transcript",

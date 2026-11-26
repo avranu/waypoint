@@ -1,8 +1,3 @@
-// Agents → Audit → Risky commands (WP-647): shell commands agents ran that
-// delete, discard or overwrite what can't be had back, or reach
-// production, another machine, a cluster or a disk, as `wp usage sync`
-// found them in Claude Code's transcripts.
-
 import { useMemo, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'

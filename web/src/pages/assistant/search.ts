@@ -1,6 +1,3 @@
-// The assistant page's URL state (WP-ADR1), apart from the page so the
-// router can validate it without loading it.
-
 export type AssistantTab =
   'chat' | 'activity' | 'schedules' | 'skills' | 'memory' | 'tools' | 'files' | 'usage' | 'settings'
 

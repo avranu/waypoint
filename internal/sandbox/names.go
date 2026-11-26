@@ -7,13 +7,6 @@ import (
 	"strings"
 )
 
-// Machine user names (PL7 §5.1): wpr-<org>-<repo>-<h6> for a repo,
-// wpo-<org>-<h6> for a forge owner. h6 hashes the forge identity, so two
-// repos whose slugs read the same (foo-bar/baz, foo/bar-baz) never share a
-// name, and the hash is never cut to fit Linux's 32 characters: the slug
-// parts are. A collision of hashes gets a salt (1, 2, …), which the
-// helper's ledger records.
-
 // MaxUserName is Linux's limit on a user name.
 const MaxUserName = 32
 
@@ -21,9 +14,8 @@ const MaxUserName = 32
 func RepoUser(slug, id string, salt int) string {
 	org, repo, _ := strings.Cut(slug, "/")
 	o, r := clean(org), clean(repo)
-	room := MaxUserName - len("wpr-") - len("-") - 6 - len("-") // org, repo and the dash between
+	room := MaxUserName - len("wpr-") - len("-") - 6 - len("-")
 	if len(o)+len(r) > room {
-		// The org gives way first, down to 6, then the repo takes the rest.
 		o = cut(o, max(6, room-len(r)))
 		r = cut(r, room-len(o))
 	}

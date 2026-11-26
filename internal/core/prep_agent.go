@@ -145,28 +145,18 @@ func (s *Service) queuePrepAgent(ctx context.Context) {
 		s.log.WarnContext(ctx, "prep agent: find a prep", "err", err)
 		return
 	}
-	// Newest first; one whose runner can't take it now (or that fails for a
-	// reason that may pass) leaves the next in line its turn.
 	for _, c := range open {
 		err := s.startPrepAgent(ctx, c.issue, c.project, c.hash, c.repo, c.commit, c.machine, c.bundle)
 		switch {
 		case err == nil:
 			return
 		case errors.Is(err, errPrepAgentNever):
-			// Recorded as this prep's try: it never gets another (a prep
-			// made again does).
 			s.log.Info("prep agent: not queued", "issue", c.issue, "err", err)
 			s.keepPrepAgentTrial(ctx, c.issue, c.hash, 0, "", "", "", "not queued: "+err.Error())
 		default:
-			// No runner now, or a cause that may pass: asked again later.
 			s.log.Info("prep agent: not queued yet", "issue", c.issue, "err", err)
 		}
 	}
-	// A backtest, while the score beside the chat prep's would still tell
-	// something: a done task whose chat prep was scored against its merged
-	// work (so the prep was made before the work landed). Tasks an agent
-	// did with no pointers and left a trace of come first: their picks can
-	// also be held against what that agent went looking for.
 	_, agent, err := s.prepOfflineScores(ctx)
 	if err != nil || !agent.wants() {
 		return
@@ -190,8 +180,6 @@ func (s *Service) queuePrepAgent(ctx context.Context) {
 		case err == nil:
 			return
 		case errors.Is(err, errPrepAgentNever), errors.Is(err, errPrepTextChanged):
-			// A done task's text won't change back: what was said since may
-			// give the answer away, so it is never a backtest.
 			s.keepPrepAgentTrial(ctx, c.issue, c.hash, 0, "", "", "", "not queued: "+err.Error())
 		default:
 			s.log.Info("prep agent: backtest not queued yet", "issue", c.issue, "err", err)
@@ -287,8 +275,6 @@ func (s *Service) startPrepAgent(ctx context.Context, issueID, projectID int64, 
 	if repo == nil {
 		return fmt.Errorf("%w: no repository of the project is %q", errPrepAgentNever, repoName)
 	}
-	// The task and repo go only to the runner that made the prep: a name
-	// that more than one person's runners hold doesn't say whose it was.
 	var owner int64
 	var owners int
 	if err := s.db.R.QueryRowContext(ctx, `SELECT coalesce(MIN(owner_id), 0), COUNT(DISTINCT owner_id) FROM runners WHERE name = ? COLLATE NOCASE`, machine).Scan(&owner, &owners); err != nil {
@@ -340,7 +326,7 @@ func (s *Service) settlePrepAgent(ctx context.Context, issueID, jobID int64) {
 		return
 	}
 	if j == nil || !j.finished() {
-		return // a job that is gone shuts nothing out: its prep is asked again
+		return
 	}
 	var hash string
 	if err := s.db.R.QueryRowContext(ctx, `SELECT coalesce((SELECT tp.text_hash FROM task_preps tp
@@ -356,10 +342,6 @@ func (s *Service) settlePrepAgent(ctx context.Context, issueID, jobID int64) {
 	var answer prepAnswer
 	switch {
 	case j.State != "done":
-		// A job that ended with no answer (the gateway had no surplus, the
-		// runner went away) says nothing of the prep. Its first is kept as
-		// a try of no text, so the prep is asked once more
-		// (prepAgentMayTry); its last is the prep's trial.
 		var tries int
 		if err := s.db.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM runner_jobs j JOIN task_preps tp ON tp.issue_id = j.source_id
 			WHERE j.source = ? AND j.source_id = ? AND j.created_at >= tp.updated_at`, prepAgentSource, issueID).Scan(&tries); err == nil && tries < prepAgentTries {
@@ -385,8 +367,6 @@ func (s *Service) settlePrepAgent(ctx context.Context, issueID, jobID int64) {
 	if !s.keepPrepAgentTrial(ctx, issueID, hash, jobID, model, string(out), task, "") {
 		return
 	}
-	// A backtest's task is done already: scored now, not at the next sweep,
-	// and the policy sees it the next time it is asked.
 	s.scorePrepNow(ctx, issueID)
 }
 

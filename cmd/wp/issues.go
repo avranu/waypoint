@@ -275,7 +275,6 @@ func (c *cli) confirmIssue(raw []byte, verb string) error {
 			s += ": no one can take it until then"
 		}
 		if f := i.FiledFrom; f != nil && f.Here && verb == "Created" {
-			// WP-378: the filer learns the other side may turn it down.
 			s += "\nFiled for another repo: its agents may decline it."
 		}
 		return s + "\n" + c.server() + "/issue/" + i.Key
@@ -331,7 +330,6 @@ func (f fieldFlags) register(fs *flag.FlagSet, editing bool) {
 // body is the fields set, as the API names them.
 func (f fieldFlags) body(editing bool) (map[string]any, error) {
 	b := map[string]any{}
-	// agent and category take "none" as it is.
 	clearable := map[string]bool{"parent": true, "workflow": true, "due_date": true, "start_date": true}
 	for field, v := range map[string]*string{"description": f.desc, "type": f.typ, "agent": f.agents, "category": f.category,
 		"priority": f.priority, "parent": f.parent, "workflow": f.workflow, "due_date": f.due, "start_date": f.start, "status": f.status} {
@@ -439,7 +437,7 @@ func cmdHold(c *cli, args []string) error {
 	if err != nil {
 		return err
 	}
-	c.forgetClaim(key) // a claim on it ended with the hold
+	c.forgetClaim(key)
 	return c.confirmIssue(raw, "Put on hold:")
 }
 
@@ -537,7 +535,6 @@ func cmdNew(c *cli, args []string) error {
 	if len(*f.assign) > 0 {
 		body["assignees"] = []string(*f.assign)
 	}
-	// A sub-task's project comes from its parent unless one is named.
 	if *project != "" || *f.parent == "" {
 		sc, err := c.scopeFor(scopeFlags{project: project})
 		if err != nil {
@@ -726,7 +723,7 @@ func cmdEdit(c *cli, args []string) error {
 			}
 			var moved issueSummary
 			if jsonInto(raw, &moved) == nil && moved.Key != "" {
-				key = moved.Key // a move gives it a new key
+				key = moved.Key
 			}
 		}
 		if len(patch) > 0 {
@@ -985,7 +982,6 @@ func cmdRelate(c *cli, args []string) error {
 			}
 			out := fmt.Sprintf("%s %s %s", key, said, other)
 			if made.Found == "after" {
-				// WP-1003: say why it became a follow-up.
 				earlier, later := other, key
 				if made.Kind == "followed_by" {
 					earlier, later = key, other
@@ -1085,7 +1081,6 @@ func (c *cli) confirm(yes bool, question string) error {
 	fmt.Fprintf(c.err, "%s [y/N] ", question)
 	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil && strings.TrimSpace(line) == "" {
-		// No answer (stdin is /dev/null, say): treat it as no terminal.
 		_, _ = fmt.Fprintln(c.err)
 		return c.usage("this can't be undone: add --yes to go ahead")
 	}

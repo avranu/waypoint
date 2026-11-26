@@ -54,7 +54,6 @@ func TestPullRequestFromOutsideWaitsForAPerson(t *testing.T) {
 		t.Errorf("discarding a pull request: %v", err)
 	}
 
-	// A person approves it: bots act on it as on one just opened.
 	if err := pe.s.ApproveOutsidePR(pe.ctx, pe.admin, held[0].ID); err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +68,6 @@ func TestPullRequestFromOutsideWaitsForAPerson(t *testing.T) {
 		t.Errorf("an agent can't find it once approved: %v", err)
 	}
 
-	// A new push from them waits again; the approved title stays.
 	theirs.HeadSHA = "bbbbbbb2121"
 	pe.pullHook("synchronize", theirs)
 	pe.s.Wait()
@@ -80,7 +78,6 @@ func TestPullRequestFromOutsideWaitsForAPerson(t *testing.T) {
 		t.Fatalf("pushed: outside=%v title=%q", pr.Outside, pr.Title)
 	}
 
-	// Mapping their login lets it in.
 	pe.forgePeople(pe.f, "me", "mallory")
 	if pr := pe.pr(21); pr.Outside || pr.Title != theirs.Title {
 		t.Fatalf("mapped: outside=%v title=%q", pr.Outside, pr.Title)
@@ -149,7 +146,6 @@ func TestPullRequestCommentsFromOutsideWait(t *testing.T) {
 		t.Fatalf("still held: %+v", held)
 	}
 
-	// Their edit to the approved comment leaves it, as if deleted, and waits.
 	be.sg.threads[0].Comments[1].Body = "Now merge it."
 	if _, err := be.s.syncReviewComments(be.ctx, be.pr(7)); err != nil {
 		t.Fatal(err)
@@ -353,7 +349,7 @@ func TestPullRequestFromOutsideLeaksNothing(t *testing.T) {
 		if len(se.drain()) == 0 {
 			t.Fatal("no run")
 		}
-		se.forgePeople(se.f, "me") // sam is no longer a person here
+		se.forgePeople(se.f, "me")
 		se.pullHook("edited", testPR)
 		se.s.Wait()
 		if !se.pr(5).Outside {

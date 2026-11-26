@@ -117,9 +117,9 @@ func TestMergeHoldsOnFailedAuditRead(t *testing.T) {
 func TestUnsettledOnFailedReviewRead(t *testing.T) {
 	be := newBabysitEnv(t)
 	pr := be.open()
-	before := be.s.unsettled(be.ctx, be.pr(pr.Number))
+	before, _ := be.s.unsettled(be.ctx, be.pr(pr.Number))
 	be.exec(`ALTER TABLE bot_runs RENAME TO bot_runs_x`)
-	if why := be.s.unsettled(be.ctx, be.pr(pr.Number)); why != "its reviews couldn't be read" {
+	if why, unread := be.s.unsettled(be.ctx, be.pr(pr.Number)); why != "its reviews couldn't be read" || !unread {
 		t.Fatalf("a failed review-runs read: %q (before it broke: %q)", why, before)
 	}
 }

@@ -13,7 +13,7 @@ import (
 // call ("": choice's answer).
 type jevScript struct {
 	mu     sync.Mutex
-	choice map[string]string // question name → answer; "" key for the rest
+	choice map[string]string
 	vary   func(name string, call int) string
 	calls  int
 	err    error
@@ -92,7 +92,6 @@ func TestScaleScore(t *testing.T) {
 		{map[string]float64{"cosmetic": 0.5, "minor": 0.5}, 3},
 		{map[string]float64{"minor": 0.6, "moderate": 0.4}, 5},
 		{map[string]float64{"minor": 0.4, "serious": 0.6}, 8},
-		// Doubt is no nitpick: a 30% chance of a critical problem holds.
 		{map[string]float64{"cosmetic": 0.7, "critical": 0.3}, 10},
 		{map[string]float64{"moderate": 0.3, "serious": 0.7}, 8},
 		{map[string]float64{"critical": 0.95, "cosmetic": 0.05}, 10},
@@ -122,7 +121,6 @@ func TestNitpickStateLeavesCodeOut(t *testing.T) {
 	if strings.Contains(st, "func secret") {
 		t.Errorf("state carries code:\n%s", st)
 	}
-	// A comment the scorer would read only the start of is never waived.
 	if !nitpickCandidate(rc, false, "") {
 		t.Fatal("a short bot comment is no candidate")
 	}
@@ -175,14 +173,11 @@ func TestBabysitWaivesNitpicks(t *testing.T) {
 			if arm != want || (tc.round && top != 8) || (!tc.round && top != 1) {
 				t.Fatalf("decision %s at %d, want %s", arm, top, want)
 			}
-			// Another step decides nothing again.
 			be.step()
 			if len(j.asked()) != 1 {
 				t.Errorf("asked again: %d", len(j.asked()))
 			}
 			if wantRound {
-				// The bot edits its comment: another text is another set,
-				// scored again.
 				if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE review_comments SET body = body || ' Edited: just a rename.' WHERE pr_id = ?`, pr.ID); err != nil {
 					t.Fatal(err)
 				}
@@ -205,7 +200,6 @@ func TestBabysitWaivesNitpicks(t *testing.T) {
 			if len(be.sg.merged()) != 1 {
 				t.Fatalf("not merged: %q", be.reasons(7))
 			}
-			// At merge: the nitpick log.
 			be.s.Wait()
 			if st := be.pr(7).State; st != "merged" {
 				t.Fatalf("pull request %s after the merge", st)
@@ -226,14 +220,12 @@ func TestBabysitWaivesNitpicks(t *testing.T) {
 			if n := list[0]; n.Path != "app/export.go" || n.Line != 3 || n.Severity != "low" || !strings.Contains(n.Title, "rowCount") || n.PR != "me/app#7" {
 				t.Errorf("nitpick %+v", n)
 			}
-			// Once only.
 			if moved, err := be.s.sweepNitpicks(be.ctx, pr.ID); err != nil || moved != 0 {
 				t.Errorf("swept again: %d, %v", moved, err)
 			}
 			if be.s.nitpicksDue(be.ctx, pr.ID) {
 				t.Error("swept, yet due")
 			}
-			// A merge whose sweep never finished is swept on its next event.
 			if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE review_comments SET audit_finding_id = NULL WHERE pr_id = ?`, pr.ID); err != nil {
 				t.Fatal(err)
 			}
@@ -352,8 +344,6 @@ func TestNitpicksTrustOnlyKnownBots(t *testing.T) {
 		}
 	}
 
-	// An armed pull request's comment from a login named like a bot is
-	// never scored, so never waived.
 	now := be.clockNow()
 	pr.ArmedAt = &now
 	spoof := relay("helper-bot", "_🔵 Trivial_\n\nRename it.", false)

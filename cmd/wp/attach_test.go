@@ -39,7 +39,6 @@ func TestCLIAttach(t *testing.T) {
 	logf := write("run.log", "started\nfinished\n")
 	zip := write("out.zip", "PK\x03\x04data")
 
-	// Plain: prints the Markdown for each file, in order.
 	out := e.wp("attach", issue.Key, shot, zip)
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) != 2 || !strings.HasPrefix(lines[0], "![shot.png](/api/v1/attachments/") || !strings.HasPrefix(lines[1], "[out.zip](/api/v1/attachments/") {
@@ -48,7 +47,6 @@ func TestCLIAttach(t *testing.T) {
 	if d, _ := e.svc.GetIssue(ctx, me, issue.Key); strings.Contains(d.Description, "attachments") || len(d.Files) != 2 {
 		t.Errorf("without --embed the description changed or files are missing: %q %d", d.Description, len(d.Files))
 	}
-	// --embed on an issue appends to the description, caption as the label; agent-written.
 	out = e.wp("attach", issue.Key, shot, "--caption", "Before the fix", "--embed")
 	if !strings.Contains(out, "![Before the fix](/api/v1/attachments/") {
 		t.Errorf("caption: %s", out)
@@ -57,7 +55,6 @@ func TestCLIAttach(t *testing.T) {
 	if !strings.HasPrefix(d.Description, "It overflows.\n\n![Before the fix](/api/v1/attachments/") {
 		t.Errorf("description = %q", d.Description)
 	}
-	// --embed --comment posts a comment instead and leaves the description.
 	e.wp("attach", issue.Key, logf, "--embed", "--comment")
 	cs, _ := e.svc.ListComments(ctx, me, issue.Key)
 	if len(cs) != 1 || !strings.HasPrefix(cs[0].Body, "[run.log](/api/v1/attachments/") {
@@ -66,7 +63,6 @@ func TestCLIAttach(t *testing.T) {
 	if d2, _ := e.svc.GetIssue(ctx, me, issue.Key); d2.Description != d.Description {
 		t.Error("--comment changed the description")
 	}
-	// A page by code or title; the body grows.
 	e.wp("attach", "page:"+pg.Code, shot, "--embed")
 	e.wp("attach", "page:Layout plan", logf)
 	got, _ := e.svc.GetPage(ctx, me, pg.ID)
@@ -76,7 +72,6 @@ func TestCLIAttach(t *testing.T) {
 	if files, _ := e.svc.ListAttachments(ctx, me, core.AttachTarget{Type: core.TargetPage, ID: pg.ID}); len(files) != 2 {
 		t.Errorf("page files = %d", len(files))
 	}
-	// A design note: an agent's embed is an addition waiting for a person.
 	out = e.wp("attach", "design:"+strconv.FormatInt(note.ID, 10), shot, "--embed")
 	if !strings.Contains(out, "![shot.png]") {
 		t.Errorf("design: %s", out)
@@ -85,12 +80,10 @@ func TestCLIAttach(t *testing.T) {
 	if n.Body != "The board." || len(n.Additions) == 0 {
 		t.Errorf("design note body %q additions %d", n.Body, len(n.Additions))
 	}
-	// design:#12 works for the embed as it does for the upload.
 	out = e.wp("attach", "design:#"+strconv.FormatInt(note.ID, 10), shot, "--embed")
 	if !strings.Contains(out, "Added to design #"+strconv.FormatInt(note.ID, 10)) {
 		t.Errorf("design:#N: %s", out)
 	}
-	// stdin needs a name; JSON carries the markdown.
 	if out, code := e.run("attach", issue.Key, "-"); code == 0 || !strings.Contains(out, "--name") {
 		t.Errorf("stdin without a name: %d %s", code, out)
 	}
@@ -102,7 +95,6 @@ func TestCLIAttach(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &js); err != nil || js.Target != "issue:"+issue.Key || len(js.Attachments) != 1 || js.Attachments[0].Kind != "image" {
 		t.Errorf("--json: %v\n%s", err, out)
 	}
-	// Mistakes fail before anything is uploaded.
 	before, _ := e.svc.ListAttachments(ctx, me, core.AttachTarget{Type: core.TargetIssue, ID: issue.ID})
 	for _, args := range [][]string{
 		{"attach", issue.Key, shot, filepath.Join(dir, "missing.png")},
@@ -120,8 +112,6 @@ func TestCLIAttach(t *testing.T) {
 	if after, _ := e.svc.ListAttachments(ctx, me, core.AttachTarget{Type: core.TargetIssue, ID: issue.ID}); len(after) != len(before) {
 		t.Errorf("a failed attach uploaded %d files", len(after)-len(before))
 	}
-	// session reads WAYPOINT_SESSION, the CLI's own session id. Until a hook
-	// has registered it the server doesn't know the session.
 	t.Setenv("WAYPOINT_SESSION", "abc")
 	t.Setenv("WAYPOINT_MACHINE", "box")
 	if out, code := e.run("attach", "session", shot); code == 0 || !strings.Contains(out, "session") {
@@ -139,13 +129,11 @@ func TestCLIAttach(t *testing.T) {
 	if got, _ := e.svc.ListAttachments(ctx, me, core.AttachTarget{Type: core.TargetSession, ID: res.Session}); len(got) != 1 || got[0].Caption != "What it looks like" || got[0].Agent == "" {
 		t.Errorf("session files: %+v", got)
 	}
-	// The session by its number works from anywhere, too.
 	t.Setenv("WAYPOINT_SESSION", "")
 	e.wp("attach", "session:"+strconv.FormatInt(res.Session, 10), logf)
 	if got, _ := e.svc.ListAttachments(ctx, me, core.AttachTarget{Type: core.TargetSession, ID: res.Session}); len(got) != 2 {
 		t.Errorf("session files by number: %+v", got)
 	}
-	// A request, by its code.
 	sess := *agent
 	sess.Session = res.Session
 	req, _, err := e.svc.CreateRequest(ctx, &sess, core.RequestInput{Kind: core.RequestQuestion, Title: "Which?", Questions: []core.Question{{Question: "A or B?"}}})

@@ -55,7 +55,7 @@ func TestFailureAfterCreateLeavesOnePullRequest(t *testing.T) {
 // opened, the round ends with the reason and the person is told once.
 func TestShipOfADeletedBranchEndsWithAReason(t *testing.T) {
 	e, round := tipRound(t)
-	e.g.tips = map[string]string{} // deleted
+	e.g.tips = map[string]string{}
 	e.tick(time.Second)
 	e.s.Wait()
 	if len(e.g.created) != 0 {
@@ -97,7 +97,6 @@ func TestEarlierClosedPullRequestDoesNotBlockTheShip(t *testing.T) {
 	if len(e.g.created) != 1 {
 		t.Fatalf("an earlier closed pull request left %d opened, want 1", len(e.g.created))
 	}
-	// One closed after the round began is a person's decision: nothing opens.
 	e2, round2 := tipRound(t)
 	e2.g.tips = map[string]string{"wp-1-first": tipAudited}
 	if err := e2.s.db.R.QueryRow(`SELECT created_at FROM work_log WHERE id = ?`, round2).Scan(&made); err != nil {
@@ -159,7 +158,7 @@ func TestShipAdoptsAPullRequestTheForgeAlreadyHasOpen(t *testing.T) {
 func TestShipAdoptsWhatACreateThatFailedOpened(t *testing.T) {
 	e, open := openedElsewhere(t)
 	e.g.listed = []*ForgePR{open}
-	e.g.listHides = 1 // the look before the create doesn't show it yet
+	e.g.listHides = 1
 	e.g.createErr = errors.New("502 from the forge")
 	e.tick(time.Second)
 	e.s.Wait()

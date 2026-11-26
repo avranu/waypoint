@@ -11,13 +11,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/hermes"
 )
 
-// Automations can hand work to an assistant (WP-ADR1): "when an issue gets
-// the label errand, ask the assistant to …". The step starts a conversation as
-// the person who last saved the automation, who must own the assistant;
-// it waits for the reply (or not), ties the conversation to the trigger's
-// issue, and leaves the reply for later steps. What the agent then does
-// is limited by its gate, like everything else it does.
-
 const assistantMaxWait = 2 * time.Hour
 
 func init() {
@@ -112,8 +105,6 @@ func askAssistant(c *StepCtx) error {
 	gw := client.Gateway()
 	sub := gw.Listen()
 	defer gw.Unsubscribe(sub)
-	// The same step, run again after a restart, finds its conversation
-	// rather than starting (and sending) a second one.
 	key := fmt.Sprintf("waypoint-run-%d-%s-%d", c.Run.ID, c.ID, c.Iteration)
 	res, err := gw.Call(c.Ctx, "session.create", map[string]any{"source": "waypoint", "title": excerpt(firstLine(prompt), 80), "idempotency_key": key})
 	if err != nil {
@@ -142,7 +133,7 @@ func askAssistant(c *StepCtx) error {
 		}
 		c.Logf("asked %s", r.Name)
 	}
-	if c.Param("wait") != nil && !c.Bool("wait") { // waiting is the default
+	if c.Param("wait") != nil && !c.Bool("wait") {
 		c.Set("Status", "sent")
 		return nil
 	}
@@ -151,7 +142,6 @@ func askAssistant(c *StepCtx) error {
 		return err
 	}
 	if created.MessageCount > 0 {
-		// Sent before a restart: it may have answered meanwhile.
 		if text, ok := c.S.lastAssistantReply(c.Ctx, client, created.Stored); ok {
 			c.Set("Text", text)
 			c.Set("Status", "complete")
@@ -240,7 +230,7 @@ func (s *Service) lastAssistantReply(ctx context.Context, c *hermes.Client, stor
 	for i := len(page.Messages) - 1; i >= 0; i-- {
 		m := page.Messages[i]
 		if m.Role == "user" {
-			return "", false // the last turn hasn't been answered
+			return "", false
 		}
 		if text, ok := m.Content.(string); ok && m.Role == "assistant" && m.FinishReason == "stop" {
 			return text, true

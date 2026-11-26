@@ -18,14 +18,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Claude Code's transcripts (WP-D20). Each session is a JSON-lines file;
-// the format is internal to Claude Code and changes between versions, so
-// the parser takes what it recognises, skips the rest, and counts what it
-// skipped. It streams (transcripts are large) and resumes: the state names
-// the byte offset reached, so each run reads only what was appended.
-
-// ---- what is uploaded (the server's core.Usage* types, same JSON) ----
-
 type usageMsgRow struct {
 	Hour    int64  `json:"h"`
 	Session string `json:"s"`
@@ -135,8 +127,6 @@ func (c *usageChunk) rows() int {
 	return len(c.Messages) + len(c.Tools) + len(c.Sessions) + len(c.Refusals) + len(c.Ledger) + len(c.Risky) + len(c.CLI) + len(c.Traces)
 }
 
-// ---- per-file state ----
-
 // usageFileState is where a transcript has been read to, and what the next
 // read needs to know about what came before.
 type usageFileState struct {
@@ -210,8 +200,7 @@ type usageOpenCall struct {
 	Risky   *riskyHit      `json:"r,omitempty"`
 	// WP: the wp commands the call ran, other than help; its result is read
 	// for their usage errors (WP-618).
-	WP []string `json:"wp,omitempty"`
-	// shell: what the counters need from the command line, for this read only.
+	WP    []string `json:"wp,omitempty"`
 	shell *cliShellCall
 	// T: what the navigation trace keeps of the call until its result is read.
 	T *traceCall `json:"tc,omitempty"`
@@ -285,10 +274,8 @@ type usageParsed struct {
 	CLIOnly    bool
 	TraceOnly  bool
 
-	messageIDs []string // with wantIDs: every message read
+	messageIDs []string
 }
-
-// ---- line shapes ----
 
 type rawUsage struct {
 	Input         int64 `json:"input_tokens"`
@@ -386,15 +373,13 @@ func readUsageFile(f usageFile, st usageFileState, repoOf func(cwd string) strin
 	size := fi.Size()
 	fp := fingerprint(fh, size)
 	if st.FP != "" && (st.FP != fp || size < st.Off) {
-		st = usageFileState{} // rewritten: start over
+		st = usageFileState{}
 	}
 	ledgerOnly := st.Off > 0 && st.LV < usageLedgerVersion
 	riskyOnly := st.Off > 0 && st.RV < usageRiskyVersion
 	cliOnly := st.Off > 0 && st.CV < usageCLIVersion
-	traceOnly := f.Main && st.Off > 0 && st.TV < usageTraceVersion // subagents have no takes
+	traceOnly := f.Main && st.Off > 0 && st.TV < usageTraceVersion
 	if ledgerOnly || riskyOnly || cliOnly || traceOnly {
-		// counted before these rows existed: read again for them alone, up to
-		// where it was read, so what was added since is read in full next time
 		size = st.Off
 		st = usageFileState{}
 	}
@@ -422,7 +407,7 @@ func readUsageFile(f usageFile, st usageFileState, repoOf func(cwd string) strin
 			line, long = append(long, line...), nil
 		}
 		if err != nil {
-			break // EOF: a half-written last line is read next time
+			break
 		}
 		consumed += int64(len(line))
 		p.line(line)
@@ -464,16 +449,14 @@ type usageParser struct {
 	st    *usageFileState
 	stats usageStats
 
-	msgs  map[string]*usageMsg
-	order []string
-	calls map[string]*usageOpenCall // tool calls seen in this run
-	done  map[string]bool           // tool results read in this run
-	tools map[toolAccKey]*usageToolRow
-	refs  []usageRefusalRow
-	risky []usageRiskyRow
-	cli   map[usageCLIKey]int64
-	// the navigation trace: rows of segments closed in this run, and whether
-	// the open one changed
+	msgs         map[string]*usageMsg
+	order        []string
+	calls        map[string]*usageOpenCall
+	done         map[string]bool
+	tools        map[toolAccKey]*usageToolRow
+	refs         []usageRefusalRow
+	risky        []usageRiskyRow
+	cli          map[usageCLIKey]int64
 	traceRows    map[int]usageTraceRow
 	traceTouched bool
 	comp         int64
@@ -514,7 +497,7 @@ func (p *usageParser) line(b []byte) {
 	case bytes.Contains(b, markAssistant), bytes.Contains(b, markUser), bytes.Contains(b, markSystem), bytes.Contains(b, markTitle):
 	default:
 		if bytes.HasPrefix(b, markForkRef) {
-			p.st.Fork = true // a subagent that began from its parent's context
+			p.st.Fork = true
 		}
 		for _, m := range ignorable {
 			if bytes.Contains(b, m) {
@@ -637,7 +620,7 @@ func (p *usageParser) assistant(b []byte, l *rawLine) {
 			p.msgs[m.ID] = cur
 			p.order = append(p.order, m.ID)
 		}
-		cur.u = u // the last line of a message has its final usage
+		cur.u = u
 	}
 	if !p.st.CLICounted && ts > 0 && model != "" && !strings.HasPrefix(model, "<") {
 		p.st.CLICounted = true
@@ -720,11 +703,9 @@ func classifyCall(name string, input json.RawMessage) *usageOpenCall {
 		call.shell = readCLIShell(in.Command)
 		call.Risky = riskyCommand(in.Command)
 		if call.Risky != nil {
-			// A risky command is kept whole (WP-860), not as the excerpt.
-			// Redacted before it's cut, so a cut never leaves a token's start.
 			full := truncRunes(in.Command, riskyCommandRunes)
 			if strings.Contains(full, call.Risky.Segment) {
-				call.Risky.Segment = "" // the command shows it
+				call.Risky.Segment = ""
 			} else {
 				call.Risky.Segment = truncRunes(redact(call.Risky.Segment), riskyCommandRunes)
 			}
@@ -739,8 +720,6 @@ func classifyCall(name string, input json.RawMessage) *usageOpenCall {
 			call.Excerpt = compactJSON(input)
 		}
 	}
-	// Redacted past the cut, so the cut leaves no token's start, without
-	// running the patterns over a whole file's content.
 	call.Excerpt = truncRunes(redact(truncRunes(call.Excerpt, 4*excerptRunes)), excerptRunes)
 	return call
 }
@@ -786,7 +765,7 @@ func (p *usageParser) user(b []byte, l *rawLine) {
 		ts = p.last
 	}
 	content := l.Message.Content
-	if content[0] == '"' { // a typed prompt
+	if content[0] == '"' {
 		var text string
 		if bytes.Contains(b, markCommand) && json.Unmarshal(content, &text) == nil {
 			p.command(text, ts)
@@ -886,7 +865,7 @@ func (p *usageParser) result(bl *rawBlock, pd *rawDecision, ts int64) {
 		case refused:
 			outcome = "refused"
 		case bl.IsError:
-			outcome = "error" // it ran, and failed: what it did may be partly done
+			outcome = "error"
 		default:
 			source = ""
 		}
@@ -985,8 +964,6 @@ func (p *usageParser) finish(out *usageParsed, repoOf func(string) string) {
 	for _, id := range p.order {
 		m := p.msgs[id]
 		prev, seen := counted[id]
-		// A message's totals only grow. A rewritten one with smaller totals adds
-		// nothing, and the larger totals already counted stay the baseline.
 		d := usageSeenMsg{In: max(m.u.In-prev.In, 0), Out: max(m.u.Out-prev.Out, 0), CW5: max(m.u.CW5-prev.CW5, 0), CW1: max(m.u.CW1-prev.CW1, 0), CR: max(m.u.CR-prev.CR, 0)}
 		if seen {
 			m.u.In, m.u.Out, m.u.CW5, m.u.CW1, m.u.CR = max(m.u.In, prev.In), max(m.u.Out, prev.Out), max(m.u.CW5, prev.CW5), max(m.u.CW1, prev.CW1), max(m.u.CR, prev.CR)
@@ -1025,7 +1002,6 @@ func (p *usageParser) finish(out *usageParsed, repoOf func(string) string) {
 		a, b := out.Chunk.Messages[i], out.Chunk.Messages[j]
 		return a.Hour < b.Hour || a.Hour == b.Hour && a.Model < b.Model
 	})
-	// what the next run needs to know is already counted: the last few messages
 	var merged []usageSeenMsg
 	for _, m := range st.Last {
 		if _, inRun := p.msgs[m.ID]; !inRun {
@@ -1036,7 +1012,6 @@ func (p *usageParser) finish(out *usageParsed, repoOf func(string) string) {
 		merged = append(merged, p.msgs[id].u)
 	}
 	st.Last = merged[max(0, len(merged)-usageKeepLast):]
-	// calls still waiting for a result
 	open := map[string]*usageOpenCall{}
 	for id, c := range st.Open {
 		if !p.done[id] {
@@ -1095,7 +1070,7 @@ func (p *usageParser) finish(out *usageParsed, repoOf func(string) string) {
 	}
 	out.Chunk.CLI = p.cliRows(repo)
 	out.Chunk.Traces = p.traceFinish()
-	if out.LedgerOnly || out.RiskyOnly || out.CLIOnly || out.TraceOnly { // the rest was counted when the file was first read
+	if out.LedgerOnly || out.RiskyOnly || out.CLIOnly || out.TraceOnly {
 		out.Chunk.Messages, out.Chunk.Tools, out.Chunk.Refusals, out.Chunk.Sessions = nil, nil, nil, nil
 		if !out.CLIOnly {
 			out.Chunk.CLI = nil
