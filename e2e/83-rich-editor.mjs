@@ -738,7 +738,7 @@ for (const [width, scheme] of looks([
   const prompt = await richBox.evaluate(
     (el) => getComputedStyle(el.firstElementChild, "::before").content,
   );
-  ok(prompt.length > 2, `${tag} an empty editor shows its prompt: ${prompt}`);
+  ok(prompt !== "none" && prompt.length > 2, `${tag} an empty editor shows its prompt: ${prompt}`);
   ok(
     !prompt.replace(/^["']/, "").startsWith("Add a description"),
     `${tag} the in-field hint does not depend on the empty-state label: ${prompt}`,
