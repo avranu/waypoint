@@ -38,12 +38,27 @@ func (c *httpForgeClient) BehindBase(ctx context.Context, f *Forge, repo, baseRe
 			SHA string `json:"sha"` // GitHub
 		} `json:"commit"`
 	}
-	if err := c.do(ctx, f, http.MethodGet, fmt.Sprintf("/repos/%s/branches/%s", repo, escapePath(baseRef)), nil, &b); err != nil {
-		return "", false, err
+	memo := tipMemoOf(ctx)
+	key := fmt.Sprintf("%d/%s/%s", f.ID, strings.ToLower(repo), baseRef)
+	tip, known := "", false
+	if memo != nil {
+		tip, known = memo.get(key)
 	}
-	tip := cmp(b.Commit.ID, b.Commit.SHA)
-	if tip == "" {
-		return "", false, fmt.Errorf("the forge didn't say where %s is", baseRef)
+	if !known {
+		gen := uint64(0)
+		if memo != nil {
+			gen = memo.gen.Load() // before the read: a merge during it drops the answer
+		}
+		if err := c.do(ctx, f, http.MethodGet, fmt.Sprintf("/repos/%s/branches/%s", repo, escapePath(baseRef)), nil, &b); err != nil {
+			return "", false, err
+		}
+		tip = cmp(b.Commit.ID, b.Commit.SHA)
+		if tip == "" {
+			return "", false, fmt.Errorf("the forge didn't say where %s is", baseRef)
+		}
+		if memo != nil {
+			memo.put(key, tip, gen)
+		}
 	}
 	n, err := c.Ahead(ctx, f, repo, headSHA, tip)
 	if err != nil {
@@ -147,17 +162,20 @@ func baseKey(pr *PullRequest) string {
 // asks the forge: from then until the merge shows in the base, nothing is
 // updated against the base (WP-316).
 func (s *Service) noteMerging(pr *PullRequest) {
+	s.baseGen.Add(1)
 	s.baseMerged.Store(baseKey(pr), baseMerge{at: s.now()})
 }
 
 // noteMerged records the commit Waypoint's merge made on pr's base ("" when
 // it isn't known: the base is then trusted after staleReadWait).
 func (s *Service) noteMerged(pr *PullRequest, sha string) {
+	s.baseGen.Add(1)
 	s.baseMerged.Store(baseKey(pr), baseMerge{sha: sha, at: s.now()})
 }
 
 // noteNotMerged forgets a merge that was refused.
 func (s *Service) noteNotMerged(pr *PullRequest) {
+	s.baseGen.Add(1)
 	s.baseMerged.Delete(baseKey(pr))
 }
 

@@ -781,6 +781,7 @@ func (s *Service) CheckArmedMerges(ctx context.Context) {
 		}
 	}
 	rows.Close()
+	ctx = withTipMemo(ctx, &s.baseGen) // a base shared by several is read once this sweep
 	for _, id := range ids {
 		if ctx.Err() != nil {
 			return

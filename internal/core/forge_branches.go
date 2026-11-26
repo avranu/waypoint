@@ -72,6 +72,20 @@ func (c *httpForgeClient) Branches(ctx context.Context, f *Forge, repo string) (
 }
 
 func (c *httpForgeClient) Ahead(ctx context.Context, f *Forge, repo, base, head string) (int, error) {
+	key, immutable := aheadKey(f, repo, base, head)
+	if immutable {
+		if n, ok := c.ahead.get(key); ok {
+			return n, nil
+		}
+	}
+	n, err := c.aheadRead(ctx, f, repo, base, head)
+	if err == nil && immutable {
+		c.ahead.put(key, n)
+	}
+	return n, err
+}
+
+func (c *httpForgeClient) aheadRead(ctx context.Context, f *Forge, repo, base, head string) (int, error) {
 	if f.Kind == "gitlab" {
 		var r struct {
 			Commits []struct{ ID string } `json:"commits"`

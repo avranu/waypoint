@@ -1711,6 +1711,7 @@ func (s *Service) pushIssueState(ctx context.Context, e *Event) {
 type httpForgeClient struct {
 	http, patient *http.Client
 	glJobs        glJobCache
+	ahead         aheadCache
 }
 
 func apiBase(f *Forge) string {

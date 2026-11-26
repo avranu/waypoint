@@ -107,6 +107,7 @@ type Service struct {
 	staleChecksRead sync.Map
 
 	baseMerged     sync.Map
+	baseGen        atomic.Uint64 // bumped by each merge Waypoint makes into a base: tips read before it are dropped
 	baseRed        sync.Map
 	rerunRefusedAt sync.Map
 	stackOpt       sync.Map
