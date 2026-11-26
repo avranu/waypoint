@@ -259,7 +259,7 @@ function Report({ h }: { h: CIHistory }) {
           />
         </ChartSection>
         <ChartSection
-          title="Time per merge"
+          title="In the merge line (p50)"
           help="The median time from a pull request’s turn (it was opened or babysat, or the one before it on the same base merged) to its merge."
           table={{
             columns: [h.bucket === 'week' ? 'Week of' : 'Day', 'Merges', 'p50'],
@@ -387,12 +387,24 @@ function Compare({ h }: { h: CIHistory }) {
           sub={<Change now={n.run_p50} before={nul(b.run_p50)} fmt={duration} better="lower" />}
         />
         <Tile
-          label="Time per merge"
+          label="In the merge line (p50)"
           value={dur(n.merge_p50)}
           sub={
             <Change
               now={n.merge_p50}
               before={b.merges ? b.merge_p50 : null}
+              fmt={duration}
+              better="lower"
+            />
+          }
+        />
+        <Tile
+          label="Opened to merged (p50)"
+          value={dur(n.open_merge_p50)}
+          sub={
+            <Change
+              now={n.open_merge_p50}
+              before={b.merges ? b.open_merge_p50 : null}
               fmt={duration}
               better="lower"
             />

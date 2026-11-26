@@ -1,8 +1,10 @@
 package core
 
 import (
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPRFlowReport(t *testing.T) {
@@ -105,5 +107,60 @@ func TestBabysitSaysWhyAHandedRoundWaits(t *testing.T) {
 	be.step()
 	if b := be.babysit(); !strings.Contains(b.Wait, "went to a session") || b.State != BabysitNeedsPerson {
 		t.Errorf("after a sweep with nothing new: %s %q", b.State, b.Wait)
+	}
+}
+
+// A pull request that joined the line, left and joined again has two stays
+// recorded by the line's own code, and the classifier gives the time between
+// them to converging.
+func TestLineSpansRecordJoinLeaveRejoin(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	se.llm.answers["opencode/muse-spark-1.3-contributor-free"] = noFindings
+	se.noWaits()
+	const head = "1111111aaaa"
+	se.sg.behind = map[string]bool{head: true} // so the line updates it instead of merging
+	se.pullHook("opened", testPR)
+	se.drain()
+	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
+	se.poll()
+	id := se.pr(5).ID
+
+	se.inLine(id)
+	first := se.clockNow()
+	se.setClock(first.Add(10 * time.Minute))
+	pr := se.pr(5)
+	se.s.lineDrop(se.ctx, lineOf(pr), pr, "its checks need another run")
+	se.setClock(first.Add(30 * time.Minute))
+	se.inLine(id)
+
+	type span struct {
+		from, to int64
+		why      string
+	}
+	var got []span
+	rows, err := se.s.db.R.QueryContext(se.ctx, `SELECT joined_at, coalesce(left_at, 0), why FROM merge_line_spans WHERE pr_id = ? ORDER BY id`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sp span
+		if err := rows.Scan(&sp.from, &sp.to, &sp.why); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, sp)
+	}
+	if len(got) != 2 || got[0].to == 0 || got[0].why != "its checks need another run" || got[1].to != 0 {
+		t.Fatalf("spans = %+v, want one left (with the drop's reason) and one open", got)
+	}
+	lines := []flowLineSpan{{got[0].from, got[0].to}, {got[1].from, got[1].to}}
+	out := classifyFlow(flowHistory{Opened: got[0].from, End: got[1].from + 60000, Lines: lines})
+	var stages []string
+	for _, sp := range out {
+		stages = append(stages, sp.Stage)
+	}
+	want := []string{flowLine, flowWork, flowLine}
+	if !slices.Equal(stages, want) || flowGroup(out[1].Stage) != FlowConverging {
+		t.Fatalf("stages = %v, want %v with the gap converging", stages, want)
 	}
 }

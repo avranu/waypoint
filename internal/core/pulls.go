@@ -365,6 +365,15 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 		if err != nil || pr == nil {
 			return cmpErr(err, notFound("pull request"))
 		}
+		switch {
+		case fp.State == "merged":
+			err = closeLineSpan(ctx, t, pr.ID, s.now(), "merged")
+		case old != nil && fp.BaseRef != "" && old.BaseRef != "" && fp.BaseRef != old.BaseRef:
+			err = closeLineSpan(ctx, t, pr.ID, s.now(), "base changed")
+		}
+		if err != nil {
+			return err
+		}
 		if carry != nil && old != nil && old.HeadSHA == carry.from && pr.HeadSHA == fp.HeadSHA {
 			if err := s.applyCarry(ctx, t, pr.ID, pr.HeadSHA, carry); err != nil {
 				return err

@@ -308,7 +308,22 @@ func (s *Service) flowHistory(ctx context.Context, pr flowPull, now int64) (*PRT
 		}
 		h.Waits = append(h.Waits, w)
 	}
-	return tl, h, len(rounds), ws.Err()
+	if err := ws.Err(); err != nil {
+		return nil, h, 0, err
+	}
+	ls, err := s.db.R.QueryContext(ctx, `SELECT joined_at, coalesce(left_at, 0) FROM merge_line_spans WHERE pr_id = ? ORDER BY joined_at, id`, pr.id)
+	if err != nil {
+		return nil, h, 0, err
+	}
+	defer ls.Close()
+	for ls.Next() {
+		var l flowLineSpan
+		if err := ls.Scan(&l.From, &l.To); err != nil {
+			return nil, h, 0, err
+		}
+		h.Lines = append(h.Lines, l)
+	}
+	return tl, h, len(rounds), ls.Err()
 }
 
 // noteBabysitWait records a change of what a babysit waits for.

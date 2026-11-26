@@ -30,7 +30,7 @@ const (
 	flowStacked     = "stacked behind another pull request"
 	flowWork        = "work to do, no gate holding it, no round sent"
 	flowParked      = "parked for a person"
-	flowLine        = "draft with nothing else holding it (in the merge line)"
+	flowLine        = "in the merge line"
 	flowUnattribute = "nothing recorded"
 )
 
@@ -74,6 +74,8 @@ const (
 	kindWork
 	kindParked
 	kindDraft
+	kindUnknown // a hold text no rule reads
+	kindGap     // out of the line between two stays in it
 )
 
 // holdStage reads a merge hold's text (the strings merge.go gives) as WP-X28
@@ -139,7 +141,11 @@ type flowHistory struct {
 	Holds       []flowHold
 	Rounds      []flowRound
 	Waits       []flowWait
+	Lines       []flowLineSpan // stays in the merge line, in order
 }
+
+// flowLineSpan is one stay in the merge line; To 0 is one not left by the end.
+type flowLineSpan struct{ From, To int64 }
 
 // flowSpan is a stretch of a pull request's life in one stage. Why is what
 // the babysit said it waited for, kept for the stages that have no gate.
@@ -165,7 +171,9 @@ type flowInterval struct {
 //     the moment equally, so each gets an equal part of it;
 //  3. work left, with no gate and no round: the work stage;
 //  4. parked for a person;
-//  5. a draft with nothing else holding it: in the merge line;
+//  5. in the merge line: from the recorded stays in it, or, for a pull
+//     request with none, the "still a draft" hold. Out of the line between
+//     two stays, with nothing else known, it has work to do: the work stage;
 //  6. nothing recorded.
 //
 // Holds are read as they were stored, uncapped and however short. A pull
@@ -194,9 +202,32 @@ func classifyFlow(h flowHistory) []flowSpan {
 			add(flowRoundJob, kindRound, r.Sent, r.Ended)
 		}
 	}
+	for i, l := range h.Lines {
+		to := l.To
+		if to == 0 {
+			to = h.End
+		}
+		add(flowLine, kindDraft, l.From, to)
+		if i > 0 && h.Lines[i-1].To != 0 {
+			add(flowWork, kindGap, h.Lines[i-1].To, l.From)
+		}
+	}
+	if n := len(h.Lines); n > 0 && h.Lines[n-1].To != 0 {
+		add(flowWork, kindGap, h.Lines[n-1].To, h.End)
+	}
 	for _, x := range h.Holds {
 		kind, stage := holdStage(x.What)
 		if kind == kindNone {
+			// Counts for nothing, but the text is kept to say what the
+			// time was, if nothing else claims it.
+			until := x.Until
+			if until == 0 {
+				until = h.End
+			}
+			add(flowVolatile.ReplaceAllString(x.What, "N"), kindUnknown, x.From, until)
+			continue
+		}
+		if kind == kindDraft && len(h.Lines) > 0 {
 			continue
 		}
 		until := x.Until
@@ -224,6 +255,8 @@ func classifyFlow(h flowHistory) []flowSpan {
 	for i := 0; i+1 < len(points); i++ {
 		from, to := points[i], points[i+1]
 		var round, gates, other []string
+		var unknown []string
+		gap := false
 		for _, iv := range ivs {
 			if iv.from > from || iv.to < to {
 				continue
@@ -233,6 +266,10 @@ func classifyFlow(h flowHistory) []flowSpan {
 				round = append(round, iv.stage)
 			case kindGate:
 				gates = append(gates, iv.stage)
+			case kindGap:
+				gap = true
+			case kindUnknown:
+				unknown = append(unknown, iv.stage)
 			default:
 				other = append(other, iv.stage)
 			}
@@ -251,6 +288,11 @@ func classifyFlow(h flowHistory) []flowSpan {
 			emit(flowParked, from, to, "")
 		case slices.Contains(other, flowLine):
 			emit(flowLine, from, to, "")
+		case gap:
+			emit(flowWork, from, to, waitWhy(h.Waits, from))
+		case len(unknown) > 0:
+			slices.Sort(unknown)
+			emit(flowUnattribute, from, to, unknown[0])
 		default:
 			emit(flowUnattribute, from, to, waitWhy(h.Waits, from))
 		}

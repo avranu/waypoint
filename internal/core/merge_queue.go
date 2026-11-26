@@ -92,10 +92,20 @@ func ordinal(n int) string {
 // that holds the lock already (the step's own drop, a babysit round under
 // readyCatchUp) carries it in ctx and passes straight through.
 func (s *Service) leaveQueue(ctx context.Context, pr *PullRequest) {
+	s.leaveQueueWhy(ctx, pr, "")
+}
+
+// leaveQueueWhy is leaveQueue with the reason the pull request leaves, kept
+// with the time it was in the line (WP-1910).
+func (s *Service) leaveQueueWhy(ctx context.Context, pr *PullRequest, why string) {
 	ctx, unlock := s.queueLockCtx(ctx, pr)
 	defer unlock()
 	if _, err := s.db.W.ExecContext(ctx, `UPDATE pull_requests SET queued_at = NULL WHERE id = ? AND queued_at IS NOT NULL`, pr.ID); err != nil {
 		s.log.WarnContext(ctx, "leave the merge queue", "pr", pr.ID, "err", err)
+		return
+	}
+	if err := closeLineSpan(ctx, s.db.W, pr.ID, s.now(), why); err != nil {
+		s.log.WarnContext(ctx, "record leaving the merge line", "pr", pr.ID, "err", err)
 	}
 }
 
@@ -121,7 +131,7 @@ func (s *Service) yieldToRunnerFault(ctx context.Context, b *Babysit, pr *PullRe
 	if st.sha != pr.HeadSHA || st.first == 0 || s.now().Sub(msTime(st.first)) < faultFrontHold {
 		return
 	}
-	s.leaveQueue(ctx, pr)
+	s.leaveQueueWhy(ctx, pr, "its checks failed on the CI runner and it kept the front past faultFrontHold")
 	pr.QueuedAt = nil
 	s.log.Info("a pull request failing on the CI runner gave up its turn in the merge queue", "pr", pr.ID, "head", pr.HeadSHA)
 	s.nudgeLine(ctx, pr)

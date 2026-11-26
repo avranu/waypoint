@@ -422,7 +422,7 @@ func (s *Service) frontGivesWay(ctx context.Context, p *PullRequest, why string)
 // lineDrop takes p out of the line: it has work or waiting to do first, and
 // joins again when it is settled.
 func (s *Service) lineDrop(ctx context.Context, ref lineRef, p *PullRequest, why string) {
-	s.leaveQueue(ctx, p)
+	s.leaveQueueWhy(ctx, p, why)
 	p.QueuedAt = nil
 	s.log.InfoContext(ctx, "pull request left the line", "repo", ref.repo, "base", ref.base, "pr", p.Number, "head", short(p.HeadSHA), "why", excerpt(why, 120))
 	s.nudgeBabysit(p.ID, false)
@@ -1460,6 +1460,9 @@ func (s *Service) joinLine(ctx context.Context, pr *PullRequest) {
 	if _, err := s.db.W.ExecContext(ctx, `UPDATE pull_requests SET queued_at = coalesce(queued_at, ?) WHERE id = ?`, at.UnixMilli(), pr.ID); err != nil {
 		s.log.WarnContext(ctx, "join the merge line", "pr", pr.ID, "err", err)
 		return
+	}
+	if err := openLineSpan(ctx, s.db.W, pr.ID, at); err != nil {
+		s.log.WarnContext(ctx, "record joining the merge line", "pr", pr.ID, "err", err)
 	}
 	pr.QueuedAt = &at
 	s.log.InfoContext(ctx, "pull request joined the line", "repo", pr.Repo, "base", pr.BaseRef, "pr", pr.Number, "head", short(pr.HeadSHA))

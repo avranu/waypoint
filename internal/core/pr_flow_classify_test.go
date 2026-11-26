@@ -58,6 +58,20 @@ func TestClassifyFlow(t *testing.T) {
 			End:   m(100),
 			Holds: []flowHold{hold("still a draft", 0, 30), hold("still a draft", 50, 100)},
 		}, want{flowLine + " 0-30", flowUnattribute + " 30-50", flowLine + " 50-100"}},
+		{"recorded stays beat the draft hold, and the time between is converging", flowHistory{
+			End:   m(100),
+			Holds: []flowHold{hold("still a draft", 0, 100)},
+			Lines: []flowLineSpan{{From: m(10), To: m(30)}, {From: m(50), To: m(80)}},
+		}, want{flowUnattribute + " 0-10", flowLine + " 10-30", flowWork + " 30-50", flowLine + " 50-80", flowWork + " 80-100"}},
+		{"a stay still open runs to the end; a gate still beats it", flowHistory{
+			End:   m(60),
+			Holds: []flowHold{hold("quiet period", 20, 40)},
+			Lines: []flowLineSpan{{From: m(10)}},
+		}, want{flowUnattribute + " 0-10", flowLine + " 10-20", flowQuiet + " 20-40", flowLine + " 40-60"}},
+		{"an unrecognised hold names the time nothing else claims", flowHistory{
+			End:   m(60),
+			Holds: []flowHold{hold("held by thing 42", 0, 30), hold("quiet period", 40, 50)},
+		}, want{flowUnattribute + " 0-30", flowUnattribute + " 30-40", flowQuiet + " 40-50", flowUnattribute + " 50-60"}},
 		{"holds outside its life are cut", flowHistory{
 			Opened: m(10), End: m(20),
 			Holds: []flowHold{hold("still a draft", 0, 50)},
@@ -163,4 +177,16 @@ func TestClassifyFlowRealPulls(t *testing.T) {
 			h("waiting for Waypoint's “Review pull requests”", "11-23 14:28:00", "11-23 14:38:00"),
 		},
 	}), map[string]int64{flowReview: 1020, flowCIRunning: 1140, flowWork: 240, flowRoundJob: 1080, flowUnattribute: 6427})
+}
+
+// A hold text no rule reads shows up by name (digits blanked) under "nothing
+// recorded".
+func TestClassifyFlowUnknownHoldIsNamed(t *testing.T) {
+	spans := classifyFlow(flowHistory{
+		End:   60000 * 60,
+		Holds: []flowHold{{What: "held by thing 42", From: 0, Until: 60000 * 60}},
+	})
+	if len(spans) != 1 || spans[0].Stage != flowUnattribute || spans[0].Why != "held by thing N" {
+		t.Fatalf("spans = %+v, want nothing recorded, why \"held by thing N\"", spans)
+	}
 }

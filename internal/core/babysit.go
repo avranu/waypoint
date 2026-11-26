@@ -975,7 +975,7 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 			s.setState(ctx, b, pr, BabysitNeedsPerson, parkWait+excerpt(cmp(r.Question, "what should happen to it?"), 200))
 		}
 		if pr.QueuedAt != nil {
-			s.leaveQueue(ctx, pr)
+			s.leaveQueueWhy(ctx, pr, b.Wait)
 			s.nudgeLine(ctx, pr)
 		}
 		return
@@ -1156,7 +1156,7 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 		s.babysitTell(ctx, b, pr, "blocked@"+pr.HeadSHA+":"+why, fmt.Sprintf("%s#%d: every review comment is dealt with and checks passed, but it can't merge: %s (%s).", pr.Repo, pr.Number, why, pr.URL))
 	case pr.ArmedAt != nil && mergeWaitIn(rd.Reasons) != "":
 		if pr.QueuedAt != nil {
-			s.leaveQueue(ctx, pr)
+			s.leaveQueueWhy(ctx, pr, mergeWaitIn(rd.Reasons))
 			pr.QueuedAt = nil
 			s.nudgeLine(ctx, pr)
 		}
@@ -1251,7 +1251,7 @@ func (s *Service) babysitRoundBy(ctx context.Context, b *Babysit, pr *PullReques
 			if files, ok := protectedRefusal(b.Rounds[n-1]); ok {
 				s.protectedHandoff(ctx, b, pr, &b.Rounds[n-1], files, what)
 				if pr.QueuedAt != nil {
-					s.leaveQueue(ctx, pr)
+					s.leaveQueueWhy(ctx, pr, b.Wait)
 					s.nudgeLine(ctx, pr)
 				}
 				return
@@ -1307,7 +1307,7 @@ func (s *Service) babysitRoundBy(ctx context.Context, b *Babysit, pr *PullReques
 	}
 	keepFront = keepFront && wait == "" && jobID != 0
 	if !keepFront && (wait != "" || len(failed) > 0 || len(comments) > 0 || len(findings) > 0) {
-		s.leaveQueue(ctx, pr)
+		s.leaveQueueWhy(ctx, pr, cmp(wait, fmt.Sprintf("round %d has work to do", b.Round)))
 		s.nudgeLine(ctx, pr)
 	}
 	if !keepFront && pr.WipAuto && pr.State == "open" {
@@ -1997,6 +1997,9 @@ func (s *Service) endBabysit(ctx context.Context, b *Babysit, pr *PullRequest, s
 			return err
 		}
 		if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET queued_at = NULL WHERE id = ?`, pr.ID); err != nil {
+			return err
+		}
+		if err := closeLineSpan(ctx, t, pr.ID, s.now(), reason); err != nil {
 			return err
 		}
 		projectID, err := s.attachedProject(ctx, t, pr.ForgeID, pr.Repo)

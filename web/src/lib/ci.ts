@@ -222,6 +222,8 @@ export interface CIHistoryStats {
   merges: number
   /** seconds from a pull request's turn to its merge */
   merge_p50: number | null
+  /** seconds from a pull request's opening to its merge */
+  open_merge_p50: number | null
 }
 
 export interface CIHistoryPoint extends CIHistoryStats {
