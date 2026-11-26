@@ -10,9 +10,10 @@ import (
 // Where a pull request's open time went (WP-1910, WP-ADR163). Every moment
 // from opening to merge (or to now, if it is open) is counted against one
 // stage, by the priority classifyFlow states. The stages are those WP-X28
-// section 1 measured, grouped under the two stages of WP-ADR163 that exist:
-// converging, everything before the pull request holds a place in the merge
-// line, and integrating, in the line.
+// section 1 measured. Apart from its stage, each moment falls in one of the
+// two stages of WP-ADR163 that exist: integrating while the pull request holds
+// a place in the merge line, whatever it waits for there, and converging while
+// it doesn't.
 const (
 	FlowConverging  = "converging"
 	FlowIntegrating = "integrating"
@@ -34,33 +35,23 @@ const (
 	flowUnattribute = "nothing recorded"
 )
 
-// flowStages lists the stages in the order the report prints ties, with
-// their group.
-var flowStages = []struct{ Name, Group string }{
-	{flowLine, FlowIntegrating},
-	{flowCIRunning, FlowConverging},
-	{flowRoundWait, FlowConverging},
-	{flowRoundRun, FlowConverging},
-	{flowRoundJob, FlowConverging},
-	{flowWork, FlowConverging},
-	{flowCIFailed, FlowConverging},
-	{flowFootprint, FlowConverging},
-	{flowReview, FlowConverging},
-	{flowQuiet, FlowConverging},
-	{flowAudit, FlowConverging},
-	{flowMergeable, FlowConverging},
-	{flowStacked, FlowIntegrating},
-	{flowParked, FlowConverging},
-	{flowUnattribute, FlowConverging},
-}
-
-func flowGroup(stage string) string {
-	for _, s := range flowStages {
-		if s.Name == stage {
-			return s.Group
-		}
-	}
-	return FlowConverging
+// flowStages lists the stages in the order the report prints ties.
+var flowStages = []string{
+	flowLine,
+	flowCIRunning,
+	flowRoundWait,
+	flowRoundRun,
+	flowRoundJob,
+	flowWork,
+	flowCIFailed,
+	flowFootprint,
+	flowReview,
+	flowQuiet,
+	flowAudit,
+	flowMergeable,
+	flowStacked,
+	flowParked,
+	flowUnattribute,
 }
 
 // flowKind says what a merge hold's text is: a gate (a thing waited for,
@@ -78,8 +69,9 @@ const (
 	kindGap     // out of the line between two stays in it
 )
 
-// holdStage reads a merge hold's text (the strings merge.go gives) as WP-X28
-// did: the first that matches decides. Texts it doesn't know count for nothing.
+// holdStage reads a merge hold's text (the readiness reasons, as holdKind
+// keeps them) as WP-X28 did: the first that matches decides. Texts it doesn't
+// know, and those that only say something couldn't be read, count for nothing.
 func holdStage(what string) (flowKind, string) {
 	w := what
 	has := func(subs ...string) bool {
@@ -90,16 +82,19 @@ func holdStage(what string) (flowKind, string) {
 		}
 		return false
 	}
+	required := strings.HasPrefix(w, "required check ")
 	switch {
+	case has("couldn't be read", "couldn't read"):
+		// Not evidence of what the text names: nothing is known.
 	case has("round is still working"):
 		return kindRound, flowRoundJob
-	case has("checks failed"):
+	case has("checks failed"), required && has(" is "+CheckFailed):
 		return kindGate, flowCIFailed
-	case has("still running", "haven't reported", "haven't been read", "full run", "behind main"):
+	case required, strings.HasPrefix(w, "behind "), has("still running", "haven't reported", "haven't been read", "full run"):
 		return kindGate, flowCIRunning
 	case has("codeql", "waiting for Waypoint"):
 		return kindGate, flowReview
-	case has("footprint check due", "a footprint check) to finish"):
+	case has("footprint check due", "footprint check queued", "a footprint check) to finish"):
 		return kindGate, flowFootprint
 	case has("waiting for audit", "adversarial review of"):
 		return kindGate, flowAudit
@@ -107,7 +102,7 @@ func holdStage(what string) (flowKind, string) {
 		return kindGate, flowQuiet
 	case has("still checking whether it merges", "conflicts"):
 		return kindGate, flowMergeable
-	case has("merges after"):
+	case has("merges after"), strings.HasPrefix(w, stackMergedPrefix), strings.HasPrefix(w, stackClosedPrefix):
 		return kindGate, flowStacked
 	case has("not dealt with", "still to do", "beyond the task", "carried from the review"):
 		return kindWork, flowWork
@@ -142,17 +137,29 @@ type flowHistory struct {
 	Rounds      []flowRound
 	Waits       []flowWait
 	Lines       []flowLineSpan // stays in the merge line, in order
+	// LinesFrom is when stays began to be recorded, 0 if not known: before
+	// it, only the "still a draft" hold says the pull request was in line.
+	LinesFrom int64
 }
 
 // flowLineSpan is one stay in the merge line; To 0 is one not left by the end.
 type flowLineSpan struct{ From, To int64 }
 
-// flowSpan is a stretch of a pull request's life in one stage. Why is what
-// the babysit said it waited for, kept for the stages that have no gate.
+// flowSpan is a stretch of a pull request's life in one stage. InLine: it
+// held a place in the merge line. Why is what the babysit said it waited for,
+// kept for the stages that have no gate.
 type flowSpan struct {
 	Stage    string
 	From, To int64
+	InLine   bool
 	Why      string
+}
+
+func (s flowSpan) group() string {
+	if s.InLine {
+		return FlowIntegrating
+	}
+	return FlowConverging
 }
 
 type flowInterval struct {
@@ -171,14 +178,19 @@ type flowInterval struct {
 //     the moment equally, so each gets an equal part of it;
 //  3. work left, with no gate and no round: the work stage;
 //  4. parked for a person;
-//  5. in the merge line: from the recorded stays in it, or, for a pull
-//     request with none, the "still a draft" hold. Out of the line between
-//     two stays, with nothing else known, it has work to do: the work stage;
-//  6. nothing recorded.
+//  5. in the merge line: from the recorded stays in it, and before stays were
+//     recorded (LinesFrom) from the "still a draft" hold. When LinesFrom isn't
+//     known, that hold counts only for a pull request with no stay;
+//  6. nothing recorded, named by a hold no rule reads if there is one;
+//  7. out of the line after a stay in it, with nothing else known, it has
+//     work to do: the work stage;
+//  8. nothing recorded.
 //
-// Holds are read as they were stored, uncapped and however short. A pull
-// request that left the line and came back has its time in between counted
-// as the holds then say; a hold left open runs to End.
+// A moment is in the line (integrating) when a recorded stay covers it,
+// whatever its stage, or when its stage is the line's. Holds are read as they
+// were stored, uncapped and however short. A pull request that left the line
+// and came back has its time in between counted as the holds then say; a hold
+// left open runs to End.
 func classifyFlow(h flowHistory) []flowSpan {
 	if h.End <= h.Opened {
 		return nil
@@ -227,17 +239,26 @@ func classifyFlow(h flowHistory) []flowSpan {
 			add(flowVolatile.ReplaceAllString(x.What, "N"), kindUnknown, x.From, until)
 			continue
 		}
-		if kind == kindDraft && len(h.Lines) > 0 {
-			continue
-		}
 		until := x.Until
 		if until == 0 {
 			until = h.End
+		}
+		if kind == kindDraft {
+			switch {
+			case h.LinesFrom != 0:
+				until = min(until, h.LinesFrom)
+			case len(h.Lines) > 0:
+				continue
+			}
 		}
 		add(stage, kind, x.From, until)
 	}
 
 	points := []int64{h.Opened, h.End}
+	// Cut at each UTC midnight, so gates at once share each day's own time.
+	for d := (h.Opened/dayMS + 1) * dayMS; d < h.End; d += dayMS {
+		points = append(points, d)
+	}
 	for _, iv := range ivs {
 		points = append(points, iv.from, iv.to)
 	}
@@ -245,15 +266,28 @@ func classifyFlow(h flowHistory) []flowSpan {
 	points = slices.Compact(points)
 
 	var out []flowSpan
+	stayed := false // the moment at hand is in a recorded stay
 	emit := func(stage string, from, to int64, why string) {
-		if n := len(out); n > 0 && out[n-1].Stage == stage && out[n-1].To == from && out[n-1].Why == why {
+		inLine := stayed || stage == flowLine
+		if n := len(out); n > 0 && out[n-1].Stage == stage && out[n-1].To == from && out[n-1].InLine == inLine && out[n-1].Why == why {
 			out[n-1].To = to
 			return
 		}
-		out = append(out, flowSpan{stage, from, to, why})
+		out = append(out, flowSpan{stage, from, to, inLine, why})
+	}
+	// emitWaits cuts a stretch where what the babysit waited for changed.
+	emitWaits := func(stage string, from, to int64) {
+		for _, w := range h.Waits {
+			if w.At > from && w.At < to {
+				emit(stage, from, w.At, waitWhy(h.Waits, from))
+				from = w.At
+			}
+		}
+		emit(stage, from, to, waitWhy(h.Waits, from))
 	}
 	for i := 0; i+1 < len(points); i++ {
 		from, to := points[i], points[i+1]
+		stayed = slices.ContainsFunc(h.Lines, func(l flowLineSpan) bool { return l.From <= from && (l.To == 0 || l.To >= to) })
 		var round, gates, other []string
 		var unknown []string
 		gap := false
@@ -283,18 +317,18 @@ func classifyFlow(h flowHistory) []flowSpan {
 				emit(g, from+(to-from)*int64(j)/int64(len(gates)), from+(to-from)*int64(j+1)/int64(len(gates)), "")
 			}
 		case slices.Contains(other, flowWork):
-			emit(flowWork, from, to, waitWhy(h.Waits, from))
+			emitWaits(flowWork, from, to)
 		case slices.Contains(other, flowParked):
 			emit(flowParked, from, to, "")
 		case slices.Contains(other, flowLine):
 			emit(flowLine, from, to, "")
-		case gap:
-			emit(flowWork, from, to, waitWhy(h.Waits, from))
 		case len(unknown) > 0:
 			slices.Sort(unknown)
 			emit(flowUnattribute, from, to, unknown[0])
+		case gap:
+			emitWaits(flowWork, from, to)
 		default:
-			emit(flowUnattribute, from, to, waitWhy(h.Waits, from))
+			emitWaits(flowUnattribute, from, to)
 		}
 	}
 	return out
@@ -314,12 +348,14 @@ func pickStage(stages []string, order ...string) string {
 func uniqueStages(stages []string) []string {
 	var out []string
 	for _, s := range flowStages {
-		if slices.Contains(stages, s.Name) {
-			out = append(out, s.Name)
+		if slices.Contains(stages, s) {
+			out = append(out, s)
 		}
 	}
 	return out
 }
+
+const dayMS = int64(24 * time.Hour / time.Millisecond)
 
 var flowVolatile = regexp.MustCompile(`[0-9a-f]{7,40}|\d+`)
 

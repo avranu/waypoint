@@ -100,12 +100,13 @@ func (s *Service) leaveQueue(ctx context.Context, pr *PullRequest) {
 func (s *Service) leaveQueueWhy(ctx context.Context, pr *PullRequest, why string) {
 	ctx, unlock := s.queueLockCtx(ctx, pr)
 	defer unlock()
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE pull_requests SET queued_at = NULL WHERE id = ? AND queued_at IS NOT NULL`, pr.ID); err != nil {
+	if err := s.write(ctx, SystemActor(), func(t *tx) error {
+		if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET queued_at = NULL WHERE id = ? AND queued_at IS NOT NULL`, pr.ID); err != nil {
+			return err
+		}
+		return closeLineSpan(ctx, t, pr.ID, s.now(), why)
+	}); err != nil {
 		s.log.WarnContext(ctx, "leave the merge queue", "pr", pr.ID, "err", err)
-		return
-	}
-	if err := closeLineSpan(ctx, s.db.W, pr.ID, s.now(), why); err != nil {
-		s.log.WarnContext(ctx, "record leaving the merge line", "pr", pr.ID, "err", err)
 	}
 }
 

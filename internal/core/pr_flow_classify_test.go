@@ -110,17 +110,6 @@ func TestClassifyFlowWhy(t *testing.T) {
 	}
 }
 
-func TestFlowGroups(t *testing.T) {
-	for stage, want := range map[string]string{
-		flowLine: FlowIntegrating, flowStacked: FlowIntegrating,
-		flowCIRunning: FlowConverging, flowRoundRun: FlowConverging, flowWork: FlowConverging, flowUnattribute: FlowConverging,
-	} {
-		if got := flowGroup(stage); got != want {
-			t.Errorf("%s is %s, want %s", stage, got, want)
-		}
-	}
-}
-
 // The holds `wp pr show` printed for two merged pull requests of this repo
 // (WP-1910: it shows the newest 8, so the time before them is "nothing
 // recorded" here, though merge_holds has all of it), against stages worked

@@ -32,9 +32,10 @@ type PRFlowPcts struct {
 	P90 int64 `json:"p90_s"`
 }
 
-// PRFlowStage is one stage's share of the open time. Per pull request
-// percentiles run over every pull request counted, those with no time in
-// the stage as zero.
+// PRFlowStage is one stage's share of the open time, in one group: a stage
+// with time both in the merge line and out of it has a row for each. Per pull
+// request percentiles run over every pull request counted, those with no time
+// in the row as zero.
 type PRFlowStage struct {
 	Stage string  `json:"stage"`
 	Group string  `json:"group"` // converging or integrating
@@ -89,6 +90,8 @@ type PRFlowOpen struct {
 	Hours  float64       `json:"hours"`
 	Groups []PRFlowGroup `json:"groups"`
 	Stages []PRFlowStage `json:"stages"`
+	// Truncated: more are open than are read; the newest were left out.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // PRFlow is where the open time of the pull requests merged in a span went.
@@ -106,7 +109,8 @@ type PRFlow struct {
 	Daily          []PRFlowDay   `json:"daily"`
 	Watch          PRFlowWatch   `json:"watch"`
 	StillOpen      PRFlowOpen    `json:"still_open"`
-	// Truncated: more pull requests merged, or are open, than are read.
+	// Truncated: more pull requests merged than are read; the oldest merges
+	// were left out.
 	Truncated bool `json:"truncated,omitempty"`
 }
 
@@ -137,18 +141,23 @@ func (s *Service) PRFlow(ctx context.Context, actor *Actor, projectKey string, i
 	if err != nil {
 		return nil, err
 	}
-	open, trunc2, err := s.flowPulls(ctx, actor, p.ID, in.Repo, `p.state IN ('open', 'draft')`, nil, prFlowMaxOpen, `p.number DESC`)
+	// The longest open first: they are the ones a cut must not lose.
+	open, trunc2, err := s.flowPulls(ctx, actor, p.ID, in.Repo, `p.state IN ('open', 'draft')`, nil, prFlowMaxOpen, `coalesce(p.opened_at, p.created_at), p.number`)
 	if err != nil {
 		return nil, err
 	}
-	out.Truncated = trunc || trunc2
+	out.Truncated, out.StillOpen.Truncated = trunc, trunc2
+	linesFrom, err := s.flowLinesFrom(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	agg := newFlowAgg()
 	var watch struct{ heads, runs, rounds int }
 	var lives []float64
 	byDay := map[string][]float64{}
 	for _, pr := range merged {
-		tl, h, rounds, err := s.flowHistory(ctx, pr, now.UnixMilli())
+		tl, h, rounds, err := s.flowHistory(ctx, pr, now.UnixMilli(), linesFrom)
 		if err != nil {
 			return nil, err
 		}
@@ -165,7 +174,7 @@ func (s *Service) PRFlow(ctx context.Context, actor *Actor, projectKey string, i
 		}
 	}
 	for _, pr := range open {
-		_, h, _, err := s.flowHistory(ctx, pr, now.UnixMilli())
+		_, h, _, err := s.flowHistory(ctx, pr, now.UnixMilli(), linesFrom)
 		if err != nil {
 			return nil, err
 		}
@@ -180,6 +189,11 @@ func (s *Service) PRFlow(ctx context.Context, actor *Actor, projectKey string, i
 	out.Hours, out.Groups, out.Stages = agg.report(true)
 	out.StillOpen.Count = len(open)
 	out.StillOpen.Hours, out.StillOpen.Groups, out.StillOpen.Stages = agg.report(false)
+	for day := range byDay {
+		if agg.day[day] == nil {
+			agg.day[day] = map[flowKey]float64{}
+		}
+	}
 	for _, day := range slices.Sorted(maps.Keys(agg.day)) {
 		d := PRFlowDay{Day: day, Merged: len(byDay[day]), Groups: []PRFlowGroup{}}
 		if v := byDay[day]; len(v) > 0 {
@@ -234,14 +248,22 @@ func (s *Service) flowPulls(ctx context.Context, actor *Actor, projectID int64, 
 	return out, false, nil
 }
 
+// flowLinesFrom is when stays in the merge line began to be recorded: when
+// the migration that made their table ran.
+func (s *Service) flowLinesFrom(ctx context.Context) (int64, error) {
+	var at int64
+	err := s.db.R.QueryRowContext(ctx, `SELECT applied_at FROM schema_migrations WHERE name = '0193_pr_flow_history.sql'`).Scan(&at)
+	return at * 1000, err
+}
+
 // flowHistory assembles one pull request's history: PRTimeline's reads, and
 // its babysits' rounds (with their jobs' times) and waits.
-func (s *Service) flowHistory(ctx context.Context, pr flowPull, now int64) (*PRTimeline, flowHistory, int, error) {
+func (s *Service) flowHistory(ctx context.Context, pr flowPull, now, linesFrom int64) (*PRTimeline, flowHistory, int, error) {
 	tl, err := s.prTimelineByID(ctx, pr.id, pr.number)
 	if err != nil {
 		return nil, flowHistory{}, 0, err
 	}
-	h := flowHistory{Opened: tl.OpenedAt.UnixMilli(), End: now}
+	h := flowHistory{Opened: tl.OpenedAt.UnixMilli(), End: now, LinesFrom: linesFrom}
 	switch {
 	case tl.MergedAt != nil:
 		h.End = tl.MergedAt.UnixMilli()
@@ -268,9 +290,11 @@ func (s *Service) flowHistory(ctx context.Context, pr flowPull, now int64) (*PRT
 			return nil, h, 0, err
 		}
 		var rs []BabysitRound
-		if json.Unmarshal([]byte(raw), &rs) == nil {
-			rounds = append(rounds, rs...)
+		if err := json.Unmarshal([]byte(raw), &rs); err != nil {
+			s.log.WarnContext(ctx, "read a babysit's rounds for the flow report; they are left out", "pr", pr.id, "err", err)
+			continue
 		}
+		rounds = append(rounds, rs...)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, h, 0, err
@@ -332,48 +356,57 @@ func noteBabysitWait(ctx context.Context, t *tx, prID, babysitID int64, state, w
 	return err
 }
 
-// flowAgg adds spans up: per stage over all pull requests, per pull request,
-// per UTC day (a span's time counts on the day it falls in, by its middle).
+// flowKey is a stage's time in one group.
+type flowKey struct{ stage, group string }
+
+// flowAgg adds spans up: per stage and group over all pull requests, per pull
+// request, and per UTC day (a span across midnight counts on each day for the
+// time it spent there).
 type flowAgg struct {
-	merged, open map[string]float64            // stage -> seconds
-	per          map[int64]map[string]float64  // merged pull request -> stage -> seconds
-	why          map[string]map[string]float64 // merged and open: stage -> text -> seconds
-	day          map[string]map[string]float64
+	merged, open map[flowKey]float64            // seconds
+	per          map[int64]map[flowKey]float64  // merged pull request -> seconds
+	why          map[flowKey]map[string]float64 // merged: text -> seconds
+	day          map[string]map[flowKey]float64 // merged
 }
 
 func newFlowAgg() *flowAgg {
-	return &flowAgg{merged: map[string]float64{}, open: map[string]float64{}, per: map[int64]map[string]float64{},
-		why: map[string]map[string]float64{}, day: map[string]map[string]float64{}}
+	return &flowAgg{merged: map[flowKey]float64{}, open: map[flowKey]float64{}, per: map[int64]map[flowKey]float64{},
+		why: map[flowKey]map[string]float64{}, day: map[string]map[flowKey]float64{}}
 }
 
 func (a *flowAgg) add(id int64, spans []flowSpan, isMerged bool) {
 	tot := a.open
 	if isMerged {
 		tot = a.merged
-		a.per[id] = map[string]float64{}
+		a.per[id] = map[flowKey]float64{}
 	}
 	for _, sp := range spans {
+		k := flowKey{sp.Stage, sp.group()}
 		sec := float64(sp.To-sp.From) / 1000
-		tot[sp.Stage] += sec
+		tot[k] += sec
 		if !isMerged {
 			continue
 		}
-		a.per[id][sp.Stage] += sec
+		a.per[id][k] += sec
 		if sp.Why != "" {
-			if a.why[sp.Stage] == nil {
-				a.why[sp.Stage] = map[string]float64{}
+			if a.why[k] == nil {
+				a.why[k] = map[string]float64{}
 			}
-			a.why[sp.Stage][sp.Why] += sec
+			a.why[k][sp.Why] += sec
 		}
-		d := msTime((sp.From + sp.To) / 2).Format("2006-01-02")
-		if a.day[d] == nil {
-			a.day[d] = map[string]float64{}
+		for from := sp.From; from < sp.To; {
+			to := min(sp.To, (from/dayMS+1)*dayMS)
+			d := msTime(from).Format("2006-01-02")
+			if a.day[d] == nil {
+				a.day[d] = map[flowKey]float64{}
+			}
+			a.day[d][k] += float64(to-from) / 1000
+			from = to
 		}
-		a.day[d][sp.Stage] += sec
 	}
 }
 
-func sumValues(m map[string]float64) (t float64) {
+func sumValues(m map[flowKey]float64) (t float64) {
 	for _, v := range m {
 		t += v
 	}
@@ -389,21 +422,24 @@ func (a *flowAgg) report(isMerged bool) (float64, []PRFlowGroup, []PRFlowStage) 
 	}
 	all := sumValues(tot)
 	var stages []PRFlowStage
-	for _, def := range flowStages {
-		sec, ok := tot[def.Name]
-		if !ok || sec <= 0 {
-			continue
-		}
-		st := PRFlowStage{Stage: def.Name, Group: def.Group, Hours: sec / 3600, Share: sec / all}
-		if isMerged {
-			var per []float64
-			for _, m := range a.per {
-				per = append(per, m[def.Name])
+	for _, name := range flowStages {
+		for _, group := range []string{FlowConverging, FlowIntegrating} {
+			k := flowKey{name, group}
+			sec, ok := tot[k]
+			if !ok || sec <= 0 {
+				continue
 			}
-			st.PerPR = flowPcts(per)
-			st.Why = flowTopWhy(a.why[def.Name])
+			st := PRFlowStage{Stage: name, Group: group, Hours: sec / 3600, Share: sec / all}
+			if isMerged {
+				var per []float64
+				for _, m := range a.per {
+					per = append(per, m[k])
+				}
+				st.PerPR = flowPcts(per)
+				st.Why = flowTopWhy(a.why[k])
+			}
+			stages = append(stages, st)
 		}
-		stages = append(stages, st)
 	}
 	slices.SortStableFunc(stages, func(x, y PRFlowStage) int { return -compareFloat(x.Hours, y.Hours) })
 	return all / 3600, flowGroups(tot, all), stages
@@ -413,9 +449,9 @@ func (a *flowAgg) dayReport(day string) (float64, []PRFlowGroup, []PRFlowTop) {
 	tot := a.day[day]
 	all := sumValues(tot)
 	var top []PRFlowTop
-	for _, def := range flowStages {
-		if sec := tot[def.Name]; sec > 0 {
-			top = append(top, PRFlowTop{def.Name, sec / all})
+	for _, name := range flowStages {
+		if sec := tot[flowKey{name, FlowConverging}] + tot[flowKey{name, FlowIntegrating}]; sec > 0 {
+			top = append(top, PRFlowTop{name, sec / all})
 		}
 	}
 	slices.SortStableFunc(top, func(x, y PRFlowTop) int { return -compareFloat(x.Share, y.Share) })
@@ -425,10 +461,10 @@ func (a *flowAgg) dayReport(day string) (float64, []PRFlowGroup, []PRFlowTop) {
 	return all / 3600, flowGroups(tot, all), top
 }
 
-func flowGroups(tot map[string]float64, all float64) []PRFlowGroup {
+func flowGroups(tot map[flowKey]float64, all float64) []PRFlowGroup {
 	var conv, integ float64
-	for stage, sec := range tot {
-		if flowGroup(stage) == FlowIntegrating {
+	for k, sec := range tot {
+		if k.group == FlowIntegrating {
 			integ += sec
 		} else {
 			conv += sec

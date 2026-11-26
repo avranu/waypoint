@@ -1457,12 +1457,15 @@ func (s *Service) joinLine(ctx context.Context, pr *PullRequest) {
 		return
 	}
 	at := s.now()
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE pull_requests SET queued_at = coalesce(queued_at, ?) WHERE id = ?`, at.UnixMilli(), pr.ID); err != nil {
+	// One transaction: a leave can't come between the place and its span.
+	if err := s.write(ctx, SystemActor(), func(t *tx) error {
+		if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET queued_at = coalesce(queued_at, ?) WHERE id = ?`, at.UnixMilli(), pr.ID); err != nil {
+			return err
+		}
+		return openLineSpan(ctx, t, pr.ID, at)
+	}); err != nil {
 		s.log.WarnContext(ctx, "join the merge line", "pr", pr.ID, "err", err)
 		return
-	}
-	if err := openLineSpan(ctx, s.db.W, pr.ID, at); err != nil {
-		s.log.WarnContext(ctx, "record joining the merge line", "pr", pr.ID, "err", err)
 	}
 	pr.QueuedAt = &at
 	s.log.InfoContext(ctx, "pull request joined the line", "repo", pr.Repo, "base", pr.BaseRef, "pr", pr.Number, "head", short(pr.HeadSHA))

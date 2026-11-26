@@ -519,7 +519,12 @@ func (a *ciStatsAcc) done() CIHistoryStats {
 	st := a.st
 	st.WaitP50, st.WaitP90 = pctPtr(a.waits, 50), pctPtr(a.waits, 90)
 	st.RunP50, st.RunP90 = pctPtr(a.runs, 50), pctPtr(a.runs, 90)
-	st.MergeP50, st.OpenMergeP50 = pctPtr(a.merge, 50), pctPtr(a.open, 50)
+	st.MergeP50 = pctPtr(a.merge, 50)
+	if len(a.open) > 0 {
+		// The quantile wp pr flow prints, so the two agree.
+		v := flowQuantile(a.open, .5)
+		st.OpenMergeP50 = &v
+	}
 	return st
 }
 

@@ -22,3 +22,8 @@ CREATE TABLE merge_line_spans (
     why       TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX merge_line_spans_pr ON merge_line_spans(pr_id, joined_at);
+
+-- Those in the line now get their present stay: joining again records nothing
+-- while queued_at is set.
+INSERT INTO merge_line_spans(pr_id, joined_at)
+    SELECT id, queued_at FROM pull_requests WHERE queued_at IS NOT NULL AND state IN ('open', 'draft');

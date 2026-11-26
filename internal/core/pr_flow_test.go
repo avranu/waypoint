@@ -160,7 +160,7 @@ func TestLineSpansRecordJoinLeaveRejoin(t *testing.T) {
 		stages = append(stages, sp.Stage)
 	}
 	want := []string{flowLine, flowWork, flowLine}
-	if !slices.Equal(stages, want) || flowGroup(out[1].Stage) != FlowConverging {
+	if !slices.Equal(stages, want) || out[1].group() != FlowConverging {
 		t.Fatalf("stages = %v, want %v with the gap converging", stages, want)
 	}
 }

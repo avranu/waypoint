@@ -15,8 +15,9 @@ the median per day, and the share of their open time per stage: each minute
 counts against one stage, the first that applies of a round's job (waiting for a
 runner, running), the gates holding the merge (those at once share the
 minute), work left with no round sent, parked for a person, a draft in the merge
-line, and nothing recorded. Stages group into converging (before the pull
-request holds a place in the merge line) and integrating (in it). Pull
+line, and nothing recorded. Time also divides into converging (the pull
+request holds no place in the merge line) and integrating (it holds one,
+whatever it waits for there), so a stage can have a row in each. Pull
 requests still open are counted apart, by their open time so far. It ends with
 the three numbers WP-ADR163 watches: heads, full CI runs and rounds per merged
 pull request. Default 7 days, at most 31; the repo here, or every repo of the
@@ -82,6 +83,8 @@ type prFlow struct {
 		Hours  float64       `json:"hours"`
 		Groups []prFlowGroup `json:"groups"`
 		Stages []prFlowStage `json:"stages"`
+		// Truncated: more are open than are read.
+		Truncated bool `json:"truncated"`
 	} `json:"still_open"`
 	Truncated bool `json:"truncated"`
 }
@@ -173,7 +176,10 @@ func (f *prFlow) text() string {
 		}
 	}
 	if f.Truncated {
-		b.WriteString("\nMore pull requests than are read here (400 merged, 150 open): the oldest were left out. Use fewer --days.\n")
+		b.WriteString("\nMore pull requests merged than are read here (400): the oldest merges were left out. Use fewer --days.\n")
+	}
+	if f.StillOpen.Truncated {
+		b.WriteString("\nMore pull requests are open than are read here (150): the newest were left out.\n")
 	}
 	return b.String()
 }
