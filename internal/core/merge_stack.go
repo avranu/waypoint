@@ -38,11 +38,16 @@ const (
 	// request on its own branch (the workflow doesn't run on its pushes after
 	// all).
 	stackStartWait = 10 * time.Minute
-	// stackRunMax: a stack still running (a job stuck pending, logs that
-	// can't be read) this long after it was made fails, so a front waiting
-	// on it takes the usual update and full run instead.
+	// stackRunMax: a candidate fails when nothing about its checks has
+	// changed this long (a job stuck pending, a run that can't be read),
+	// counted from the newest status its checks carry, not from when it was
+	// made: waiting for a runner is not a stuck run (WP-1990: on 2026-11-26
+	// four candidates with every check but a 3-second aggregate passed were
+	// ended at two hours while that job waited for a runner).
 	stackRunMax = 2 * time.Hour
-	stackOptTTL = 10 * time.Minute
+	// stackRunCeiling: a candidate this old fails whatever its run is doing.
+	stackRunCeiling = 6 * time.Hour
+	stackOptTTL     = 10 * time.Minute
 	// stackTreeMark starts the log line where the run says what tree it built.
 	stackTreeMark = "waypoint-stack-tree "
 )
