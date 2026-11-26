@@ -151,13 +151,44 @@ func (s *Service) requestHeadAudit(ctx context.Context, pr *PullRequest) (bool, 
 		s.log.WarnContext(ctx, "read what a pull request was told before its audit", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
 		return false, err
 	}
-	a, err := s.RequestAudit(ctx, SystemActor(), AuditInput{PRID: pr.ID, Via: "system", owner: owner, head: pr.HeadSHA, ledger: ledger,
+	over, err := s.auditedBefore(ctx, pr)
+	if err != nil {
+		s.log.WarnContext(ctx, "read what a pull request's earlier audit read", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+		return false, err
+	}
+	a, err := s.RequestAudit(ctx, SystemActor(), AuditInput{PRID: pr.ID, Via: "system", owner: owner, head: pr.HeadSHA, ledger: ledger, over: over,
 		requestKey: fmt.Sprintf(prAuditKey, pr.ID, strings.ToLower(pr.HeadSHA))})
 	if err != nil {
 		s.log.Info("audit a pull request skipped", "repo", pr.Repo, "number", pr.Number, "err", err)
 		return false, nil
 	}
 	return sameSHA(a.Ref, pr.HeadSHA), nil
+}
+
+// auditedBefore is the earlier head a later head's audit follows up (WP-1938):
+// the ref of the pull request's newest finished audit of the pull request's
+// own change that read another change than the head's. "" when there is none,
+// and the head's audit reads the whole change.
+func (s *Service) auditedBefore(ctx context.Context, pr *PullRequest) (string, error) {
+	heads, err := s.sameChangeHeads(ctx, pr)
+	if err != nil {
+		return "", err
+	}
+	rows, err := s.db.R.QueryContext(ctx, `SELECT ref FROM code_audits WHERE pr_id = ? AND purpose = '' AND status = ? AND target = 'pr' ORDER BY id DESC`, pr.ID, AuditDone)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ref string
+		if err := rows.Scan(&ref); err != nil {
+			return "", err
+		}
+		if shaRE.MatchString(ref) && !slices.ContainsFunc(heads, func(h string) bool { return sameSHA(ref, h) }) {
+			return ref, nil
+		}
+	}
+	return "", rows.Err()
 }
 
 // askHeadAudit is requestHeadAudit for a caller that doesn't wait on the
