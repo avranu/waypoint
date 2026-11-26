@@ -456,6 +456,30 @@ func checkArgv(cmd string) []string {
 	return strings.Fields(cmd)
 }
 
+// slotWaitNoteMin is the wait slotWaitNote leaves out below; a var so a test
+// can lower it.
+var slotWaitNoteMin = time.Minute
+
+// slotWaitNote says how long a check waited for a slot, as text to follow
+// its own time, when that is a minute or more. Under a minute is left out:
+// it is noise next to the check's time, and waits.jsonl has the recent waits.
+func slotWaitNote(w time.Duration) string {
+	if w = w.Round(time.Second); w < slotWaitNoteMin {
+		return ""
+	}
+	return fmt.Sprintf(", and %s waiting for a slot", w)
+}
+
+// checkPassedLine is the line for a check that passed, before the tests.
+func checkPassedLine(cmd string, took, waited time.Duration) string {
+	return fmt.Sprintf("Check passed: %s (%s%s)", cmd, took, slotWaitNote(waited))
+}
+
+// checkFailedHead is the line that comes before a failed check's last lines.
+func checkFailedHead(cmd string, code int, took, waited time.Duration) string {
+	return fmt.Sprintf("Check failed: %s exited %d after %s%s; last lines:\n", cmd, code, took, slotWaitNote(waited))
+}
+
 // runShipCheck runs --check CMD in the tests slot, as wp testsum does, and
 // records it against the working tree; a pass already recorded on this
 // tree for the same command isn't run again. An error: the check failed or
@@ -477,8 +501,11 @@ func (c *cli) runShipCheck(cmd string) error {
 	}
 	var buf bytes.Buffer
 	rec := newTestRunRecorder(argv)
-	start := time.Now()
-	code, err := c.runInSlotThen("tests", defaultSlots(), goTestJSON(argv), &buf, &buf, rec.started, func(env []string) []string {
+	// The wait for a slot isn't the check's time: a 25 minute make check
+	// that queued 44 minutes was reported as one of 69 (WP-1812).
+	queued := time.Now()
+	start := queued
+	code, err := c.runInSlotThen("tests", defaultSlots(), goTestJSON(argv), &buf, &buf, func() { rec.started(); start = time.Now() }, func(env []string) []string {
 		env, _ = testEnv(env, nil)
 		return env
 	})
@@ -496,8 +523,9 @@ func (c *cli) runShipCheck(cmd string) error {
 		rec.finish(res, code)
 	}
 	took := time.Since(start).Round(time.Second)
+	waited := start.Sub(queued)
 	if !failed {
-		line := fmt.Sprintf("Check passed: %s (%s)", cmd, took)
+		line := checkPassedLine(cmd, took, waited)
 		if res.Passed+res.Failed+res.Skipped > 0 {
 			line += "; " + strings.TrimSpace(res.render())
 		}
@@ -507,6 +535,6 @@ func (c *cli) runShipCheck(cmd string) error {
 	if res.Passed+res.Failed+res.Skipped > 0 {
 		_, _ = fmt.Fprint(c.out, res.render())
 	}
-	_, _ = fmt.Fprintf(c.out, "Check failed: %s exited %d after %s; last lines:\n%s\n", cmd, code, took, lastLines(buf.Bytes(), 30))
+	_, _ = fmt.Fprint(c.out, checkFailedHead(cmd, code, took, waited)+failedTail(buf.Bytes(), 30))
 	return fmt.Errorf("the check failed, so nothing was committed or shipped: fix it and run wp ship again")
 }

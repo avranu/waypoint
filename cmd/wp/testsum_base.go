@@ -175,7 +175,7 @@ func baseText(ref, sha string, failures []testFailure, base *testResult, code in
 	}
 	fmt.Fprintf(&b, "\nAt %s (%s), %s:", ref, shortSHA(sha), what)
 	if base == nil {
-		fmt.Fprintf(&b, "\n  no test results there (exit %d), so nothing to compare; last lines:\n%s", code, lastLines(data, 10))
+		fmt.Fprintf(&b, "\n  no test results there (exit %d), so nothing to compare; last lines:\n%s", code, lastLines(plainOutput(data), 10))
 		return b.String()
 	}
 	byVerdict := map[string][]testFailure{}
