@@ -1185,7 +1185,8 @@ var secretKeyRE = lazyre.New(`(?i)token|secret|passw(?:or)?d|api[_-]?key|access[
 // TestArchiveRedactionCoversWhatRedactDoes holds a row for each.
 var secretHints = []string{"token", "secret", "passw", "apikey", "api_key", "api-key", "access_key", "access-key",
 	"accesskey", "private_key", "private-key", "privatekey", "authorization", "credential", "bearer", "://", "--auth",
-	"sk-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "glpat-", "xox", "akia", "eyj", "private key"}
+	"sk-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "glpat-", "xox", "akia", "eyj", "private key",
+	"sk_live_", "sk_test_", "rk_live_", "rk_test_", "aiza", "npm_", "pypi-", "xapp-"}
 
 // mayHoldSecret says whether a string's text, still JSON-escaped, might hold a
 // secret. A literal with a backslash is decoded first: a hint written with
