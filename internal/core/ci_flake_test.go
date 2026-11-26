@@ -1,9 +1,11 @@
 package core
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // flakyLog is a Go test's failure the pull request didn't cause.
@@ -197,5 +199,269 @@ func TestShellWordQuotes(t *testing.T) {
 		if got := ShellWord(in); got != want {
 			t.Errorf("ShellWord(%q) = %s, want %s", in, got, want)
 		}
+	}
+}
+
+// A resting babysit's head that failed for the first time is re-run once to
+// rule out a flake, though no round can run on it meanwhile (WP-1853). The
+// rest is the park's: same round, same end, still resting, whatever the
+// re-run says.
+func TestFlakeRerunWhileResting(t *testing.T) {
+	be, pr, _ := parkedOnNamedComment(t)
+	before := lastRound(be.babysit())
+	until := before.RestUntil
+	failing := CommitCheck{Name: "ci / test", State: CheckFailed, Description: "Failing after 9m", URL: "https://ci.example.com/run/1"}
+	restStill := func(when string) {
+		t.Helper()
+		b := be.babysit()
+		r := lastRound(b)
+		if b.State != BabysitResting || !parkedOn(b, pr.HeadSHA) || !resting(r) || !r.RestUntil.Equal(until) || r.N != before.N || b.Round != 0 || len(be.jobs()) != 0 {
+			t.Fatalf("%s: the rest didn't survive: %s %q round %d jobs %v %+v", when, b.State, b.Wait, b.Round, be.jobs(), r)
+		}
+	}
+	be.checks(pr.HeadSHA, failing)
+	be.step()
+	if n := len(be.retries()); n != 1 {
+		t.Fatalf("retries = %v, want the one re-run; %+v", be.retries(), be.babysit())
+	}
+	if fr := parseFlakeRerun(be.babysit().flakeRerun); !sameSHA(fr.SHA, pr.HeadSHA) {
+		t.Errorf("no marker for the head: %+v", fr)
+	}
+	restStill("re-run asked")
+	if w := be.babysit().Wait; !strings.Contains(w, "re-ran") || !strings.HasPrefix(w, restWait) || strings.Contains(w, "before a round") {
+		t.Errorf("wait = %q", w)
+	}
+	// Pending, then failing again: once only, and the rest goes on.
+	be.step()
+	restStill("re-run pending")
+	be.setClock(be.clockNow().Add(faultRerunSettle))
+	be.step()
+	be.step()
+	if n := len(be.retries()); n != 1 {
+		t.Errorf("retries %v", be.retries())
+	}
+	restStill("re-run failed again")
+}
+
+// A re-run that passes while the babysit rests files the flake; the rest goes
+// on by its own rules, not by that.
+func TestFlakeRerunWhileRestingPasses(t *testing.T) {
+	be, pr, _ := parkedOnNamedComment(t)
+	be.sg.sm.Lock()
+	be.sg.logs["ci / test"] = flakyLog
+	be.sg.sm.Unlock()
+	be.checks(pr.HeadSHA, CommitCheck{Name: "ci / test", State: CheckFailed, Description: "Failing after 9m", URL: "https://ci.example.com/run/1"})
+	be.step()
+	if n := len(be.retries()); n != 1 || be.babysit().State != BabysitResting {
+		t.Fatalf("retries %v: %+v", be.retries(), be.babysit())
+	}
+	be.setClock(be.clockNow().Add(faultRerunSettle))
+	be.runnerOnline()
+	be.sg.setChecks(pr.HeadSHA, CommitCheck{Name: "ci / test", State: CheckSuccess, Description: "Successful in 9m"})
+	be.step() // reads the re-run's result once it settled
+	be.step() // sees it passed
+	if bugs := be.flakeBugs(); len(bugs) != 1 {
+		t.Fatalf("flake not filed: %v; %+v", bugs, be.babysit())
+	}
+	// Its rules, not the re-run, end the rest: this one rested over a comment
+	// as well as the check, so the passing check leaves it resting.
+	if b := be.babysit(); b.State != BabysitResting || lastRound(b).Reply != "" {
+		t.Errorf("a passed re-run ended the rest: %s %+v", b.State, lastRound(b))
+	}
+}
+
+// A check that failed in an earlier round is the code's: a resting head is
+// not re-run for it.
+func TestFlakeRerunWhileRestingNotForAStreak(t *testing.T) {
+	be, pr, _ := parkedOnNamedComment(t)
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE babysits SET streaks = '{"ci / test":1}' WHERE id = ?`, be.babysit().ID); err != nil {
+		t.Fatal(err)
+	}
+	be.checks(pr.HeadSHA, restFailing)
+	be.step()
+	if n := len(be.retries()); n != 0 {
+		t.Errorf("re-ran a check that failed in a round before: %v", be.retries())
+	}
+}
+
+// restFlakeRerun refuses a head that isn't failing, one whose only failures
+// were cancelled, and one with a runner fault.
+func TestRestFlakeRerunRefusals(t *testing.T) {
+	be, pr, _ := parkedOnNamedComment(t)
+	b := be.babysit()
+	// A head whose checks haven't failed.
+	be.checks(pr.HeadSHA, CommitCheck{Name: "ci / test", State: CheckSuccess, Description: "Successful in 9m", URL: "https://ci.example.com/run/1"})
+	if be.s.restFlakeRerun(be.ctx, b, be.pr(7)) {
+		t.Error("re-ran a head that isn't failed")
+	}
+	// A head whose checks failed for another head (stale).
+	stale := *be.pr(7)
+	stale.ciSHA = "0000000zzzz"
+	be.checks(pr.HeadSHA, restFailing)
+	if be.s.restFlakeRerun(be.ctx, b, &stale) {
+		t.Error("re-ran a head whose checks are another's")
+	}
+	// Cancelled only.
+	be.checks(pr.HeadSHA, CommitCheck{Name: "ci / test", State: CheckFailed, Description: "Has been cancelled", URL: "https://ci.example.com/run/1"})
+	if be.s.restFlakeRerun(be.ctx, b, be.pr(7)) {
+		t.Error("re-ran a cancelled check as a flake")
+	}
+	// A runner fault: the log says the host failed, not the test.
+	be.sg.sm.Lock()
+	be.sg.logs["ci / test"] = "Error: The runner has received a shutdown signal\n"
+	be.sg.sm.Unlock()
+	be.checks(pr.HeadSHA, restFailing)
+	if be.s.restFlakeRerun(be.ctx, b, be.pr(7)) {
+		t.Error("re-ran a runner fault as a flake")
+	}
+	if n := len(be.retries()); n != 0 {
+		t.Errorf("retries %v", be.retries())
+	}
+}
+
+// A forge that can't re-run is asked once per head while resting, not every
+// sweep.
+func TestFlakeRerunWhileRestingForgeCannot(t *testing.T) {
+	be, pr, _ := parkedOnNamedComment(t)
+	be.sg.retryNone = true
+	be.checks(pr.HeadSHA, restFailing)
+	be.step()
+	fr := parseFlakeRerun(be.babysit().flakeRerun)
+	if !sameSHA(fr.SHA, pr.HeadSHA) || !fr.Cannot {
+		t.Fatalf("not remembered for the head: %+v", fr)
+	}
+	if n := len(be.retries()); n != 1 {
+		t.Fatalf("the forge was asked %v, want once", be.retries())
+	}
+	be.sg.retryNone = false
+	be.step()
+	be.step()
+	if n := len(be.retries()); n != 1 {
+		t.Errorf("asked again on the same head: %v", be.retries())
+	}
+	// A failure that can't be re-run proves nothing when the head passes.
+	be.sg.setChecks(pr.HeadSHA, CommitCheck{Name: "ci / test", State: CheckSuccess, Description: "Successful in 9m"})
+	be.step()
+	if bugs := be.flakeBugs(); len(bugs) != 0 {
+		t.Errorf("a flake filed from a re-run nobody made: %v", bugs)
+	}
+}
+
+// The "can't" a rest remembered is the rest's: once the babysit no longer
+// rests on the head, the re-run before a round is asked for once more.
+func TestFlakeRerunCannotEndsWithTheRest(t *testing.T) {
+	be, pr, _ := parkedOnNamedComment(t)
+	be.sg.retryNone = true
+	be.checks(pr.HeadSHA, restFailing)
+	be.step()
+	if fr := parseFlakeRerun(be.babysit().flakeRerun); !fr.Cannot {
+		t.Fatalf("not remembered for the head: %+v", fr)
+	}
+	be.sg.retryNone = false
+	b := be.babysit()
+	failed := []string{restFailing.Name}
+	if be.s.rerunForFlake(be.ctx, b, pr, failed) || len(be.retries()) != 1 {
+		t.Fatalf("asked again while resting: %v", be.retries())
+	}
+	lastRound(b).Reply = "go on"
+	if restingOn(b, pr) {
+		t.Fatal("still resting")
+	}
+	if !be.s.rerunForFlake(be.ctx, b, pr, failed) {
+		t.Fatalf("no re-run before the round: %+v", parseFlakeRerun(b.flakeRerun))
+	}
+	if n := len(be.retries()); n != 2 {
+		t.Errorf("the forge was asked %v, want a second time", be.retries())
+	}
+	if fr := parseFlakeRerun(be.babysit().flakeRerun); fr.Cannot || !sameSHA(fr.SHA, pr.HeadSHA) {
+		t.Errorf("marker = %+v", fr)
+	}
+}
+
+// A first-time failed check with an open audit finding is re-run before the
+// round for the finding: a flake costs no round, and the finding waits for
+// the head's checks (WP-1853).
+func TestFlakeRerunBeforeARoundForAFinding(t *testing.T) {
+	be := newBabysitEnv(t)
+	be.runnerOnline()
+	box := be.auditBox()
+	be.auditOn()
+	pr := be.openMine()
+	be.start(pr)
+	be.endAudit(box, "done", [2]string{"medium", "No limit on rows"})
+	be.sg.sm.Lock()
+	be.sg.logs["ci / test"] = flakyLog
+	be.sg.sm.Unlock()
+	be.checks("7777777aaaa", CommitCheck{Name: "ci / test", State: CheckFailed, Description: "Failing after 9m", URL: "https://ci.example.com/run/1"})
+	b := be.babysit()
+	if todo, err := be.s.auditTodoErr(be.ctx, pr.ID); err != nil || len(todo) != 1 {
+		t.Fatalf("no open finding: %+v %v", todo, err)
+	}
+	if b.Round != 0 || len(be.jobs()) != 0 || len(be.retries()) != 1 || !strings.Contains(b.Wait, "re-ran 1 job once") {
+		t.Fatalf("no re-run before the round: %+v retries %v jobs %v", b, be.retries(), be.jobs())
+	}
+}
+
+// Late minor comments don't make a failed head a flake candidate's only
+// work: a runner fault on it still takes the runner-fault wait, with no
+// round and no flake re-run (WP-1853).
+func TestRunnerFaultWithLateMinorsTakesTheFaultWait(t *testing.T) {
+	be := newBabysitEnv(t)
+	be.runnerOnline()
+	if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT OR IGNORE INTO forge_people(forge_id, login, user_id) VALUES (?, 'mirror', NULL)`, be.f.ID); err != nil {
+		t.Fatal(err)
+	}
+	carol := PRNote{ID: "601", Kind: "comment", Author: "carol", Body: "Should exports include archived rows?", At: be.clockNow()}
+	be.sg.setNotes(carol)
+	pr := be.open()
+	be.start(pr)
+	be.disarm(7)
+	be.ci("7777777aaaa", CheckSuccess)
+	jobs := be.jobs()
+	if len(jobs) != 1 {
+		t.Fatalf("no round for carol's comment: %+v", be.babysit())
+	}
+	if _, err := be.s.AckReviewComments(be.ctx, be.agent, AckInput{IDs: []string{be.comment("601").Ref}, Verdict: VerdictRejected, Note: "Archived rows stay out, as the spec says."}); err != nil {
+		t.Fatal(err)
+	}
+	be.setClock(be.clockNow().Add(10 * time.Minute))
+	be.sg.setNotes(carol, PRNote{ID: "602", Kind: "comment", Author: "mirror", At: be.clockNow(),
+		Body: "**coderabbitai[bot]** commented on GitHub:\n\n_⚠️ Potential issue_ | _🟡 Minor_\n\nTrim the name before comparing.\n\n<!-- mirror:comment github 9 -->"})
+	be.sg.sm.Lock()
+	be.sg.logs["ci / test"] = enospcLog
+	be.sg.sm.Unlock()
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE runner_jobs SET state = 'running' WHERE id = ?`, jobs[0]); err != nil {
+		t.Fatal(err)
+	}
+	be.push("8888888bbbb")
+	be.finish(jobs[0], true)
+	be.checks("8888888bbbb", CommitCheck{Name: "ci / test", State: CheckFailed, Description: "Failing after 1m", URL: "https://ci.example.com/run/1"})
+	be.step()
+	b := be.babysit()
+	if len(be.jobs()) != 1 || !strings.Contains(b.Wait, "failed on the CI runner, not the code") || strings.Contains(b.Wait, "to rule out a flaky test") {
+		t.Fatalf("late minors with a runner fault: %+v jobs %v", b, be.jobs())
+	}
+	if fr := parseFlakeRerun(b.flakeRerun); len(fr.Checks) != 0 {
+		t.Fatalf("a flake marker for a runner fault: %+v", fr)
+	}
+}
+
+// A forge that fails after taking some of the jobs has re-run them: the
+// marker stays and their results are waited for.
+func TestFlakeRerunTakenInPart(t *testing.T) {
+	be, pr, _ := parkedOnNamedComment(t)
+	be.sg.sm.Lock()
+	be.sg.retryErr, be.sg.retryPartial = errors.New("502 from the forge"), 1
+	be.sg.sm.Unlock()
+	be.checks(pr.HeadSHA, restFailing)
+	be.step()
+	if fr := parseFlakeRerun(be.babysit().flakeRerun); !sameSHA(fr.SHA, pr.HeadSHA) || fr.Cannot || len(fr.Checks) == 0 {
+		t.Fatalf("the re-run taken in part isn't remembered: %+v", fr)
+	}
+	if w := be.babysit().Wait; !strings.Contains(w, "re-ran ci / test") {
+		t.Errorf("wait = %q", w)
+	}
+	if n := len(be.retries()); n != 1 {
+		t.Errorf("retries %v", be.retries())
 	}
 }
