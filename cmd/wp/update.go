@@ -25,7 +25,7 @@ var updateCmd = &command{
 	name: "upgrade", aliases: []string{"self-update"}, group: "Setup", args: "[--check] [--force]",
 	summary: "replace this wp with the version your Waypoint serves",
 	about: `Downloads the wp your Waypoint serves, verifies it and replaces this
-binary. Runners and hooks do this themselves for release builds; set
+binary. wp commands, hooks and runners do this themselves for release builds; set
 WAYPOINT_NO_AUTO_UPDATE=1 to stop that.`,
 	examples: []string{"wp upgrade", "wp upgrade --check"},
 	run:      cmdUpdate,
@@ -97,6 +97,7 @@ func (c *cli) fetchPublic(ctx context.Context, path string, w io.Writer, limit i
 		return fmt.Errorf("can't reach %s: %w", server, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	c.seeServerVersion(resp.Header.Get(serverVersionHeader))
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%s%s: HTTP %d", server, path, resp.StatusCode)
 	}
@@ -128,23 +129,35 @@ func (c *cli) serverVersion(ctx context.Context) (string, error) {
 // selfUpdate puts the server's wp for this computer in place of this one,
 // once it has checked the download against SHA256SUMS and run it, and it
 // said it is version want (when want isn't empty). It returns the new
-// version and the path it replaced.
+// version and the path it replaced. When the binary at that path already is
+// the server's (another process replaced it): its SHA-256 is the one
+// SHA256SUMS names, and then it runs and says it is want, it returns
+// without downloading. A file at that path that only says want is replaced
+// and never run (1788.2).
 func (c *cli) selfUpdate(ctx context.Context, want string) (got, exe string, err error) {
+	got, exe, _, err = c.installRelease(ctx, want)
+	return got, exe, err
+}
+
+// installRelease is selfUpdate also returning the SHA-256 it checked the
+// installed file against, the one it put at exe (c7016).
+func (c *cli) installRelease(ctx context.Context, want string) (got, exe, sum string, err error) {
 	exe, err = selfExe()
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if throwawayBuild(exe) {
-		return "", exe, errors.New("this wp is a temporary build (go run, go test); install one with curl -fsSL " + orDash(c.server()) + "/cli | sh")
+		return "", exe, "", errors.New("this wp is a temporary build (go run, go test); install one with curl -fsSL " + orDash(c.server()) + "/cli | sh")
 	}
 	name := cliAsset()
-	var sums bytes.Buffer
-	if err := c.fetchPublic(ctx, "/cli/SHA256SUMS", &sums, 64<<10); err != nil {
-		return "", exe, err
+	wantSum, err := c.cliSum(ctx)
+	if err != nil {
+		return "", exe, "", err
 	}
-	wantSum := checksumFor(sums.String(), name)
-	if wantSum == "" {
-		return "", exe, fmt.Errorf("the server's SHA256SUMS has no %s", name)
+	// Another process may have replaced it since this one started: a binary
+	// that already is the server's release needs no download.
+	if want != "" && want != version && isServersRelease(ctx, exe, wantSum, want) {
+		return want, exe, wantSum, nil
 	}
 	ext := ""
 	if runtime.GOOS == "windows" {
@@ -152,7 +165,7 @@ func (c *cli) selfUpdate(ctx context.Context, want string) (got, exe string, err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(exe), ".wp-update-*"+ext)
 	if err != nil {
-		return "", exe, fmt.Errorf("can't write next to %s (%w); reinstall with curl -fsSL %s/cli | sh", exe, err, orDash(c.server()))
+		return "", exe, "", fmt.Errorf("can't write next to %s (%w); reinstall with curl -fsSL %s/cli | sh", exe, err, orDash(c.server()))
 	}
 	defer func() { _ = os.Remove(tmp.Name()) }()
 	h := sha256.New()
@@ -161,24 +174,56 @@ func (c *cli) selfUpdate(ctx context.Context, want string) (got, exe string, err
 		err = cerr
 	}
 	if err != nil {
-		return "", exe, err
+		return "", exe, "", err
 	}
 	if hex.EncodeToString(h.Sum(nil)) != wantSum {
-		return "", exe, fmt.Errorf("the downloaded %s doesn't match the server's SHA256SUMS; not installing it", name)
+		return "", exe, "", fmt.Errorf("the downloaded %s doesn't match the server's SHA256SUMS; not installing it", name)
 	}
 	if err := os.Chmod(tmp.Name(), 0o755); err != nil { // #nosec G302 -- an executable
-		return "", exe, err
+		return "", exe, "", err
 	}
 	if got, err = binaryVersion(ctx, tmp.Name()); err != nil {
-		return "", exe, err
+		return "", exe, "", err
 	}
 	if want != "" && got != want {
-		return "", exe, fmt.Errorf("the server's wp says it is %s, not %s; not installing it", got, want)
+		return "", exe, "", fmt.Errorf("the server's wp says it is %s, not %s; not installing it", got, want)
 	}
 	if err := replaceExe(exe, tmp.Name()); err != nil {
-		return "", exe, fmt.Errorf("can't replace %s: %w", exe, err)
+		return "", exe, "", fmt.Errorf("can't replace %s: %w", exe, err)
 	}
-	return got, exe, nil
+	return got, exe, wantSum, nil
+}
+
+// cliSum is the SHA-256 the server's SHA256SUMS names for this computer's wp.
+func (c *cli) cliSum(ctx context.Context) (string, error) {
+	var sums bytes.Buffer
+	if err := c.fetchPublic(ctx, "/cli/SHA256SUMS", &sums, 64<<10); err != nil {
+		return "", err
+	}
+	name := cliAsset()
+	sum := checksumFor(sums.String(), name)
+	if sum == "" {
+		return "", fmt.Errorf("the server's SHA256SUMS has no %s", name)
+	}
+	return sum, nil
+}
+
+// isServersRelease says whether the wp at path is the server's release want:
+// its SHA-256 is wantSum (checked before it runs, so nothing else at the
+// path is run) and, run, it says it is want.
+func isServersRelease(ctx context.Context, path, wantSum, want string) bool {
+	f, err := os.Open(path) // #nosec G304 -- this wp's own install path
+	if err != nil {
+		return false
+	}
+	h := sha256.New()
+	_, err = io.Copy(h, io.LimitReader(f, 512<<20))
+	_ = f.Close()
+	if err != nil || hex.EncodeToString(h.Sum(nil)) != wantSum {
+		return false
+	}
+	on, err := binaryVersion(ctx, path)
+	return err == nil && on == want
 }
 
 // checksumFor finds name's SHA-256 in sha256sum output.
@@ -206,8 +251,15 @@ func binaryVersion(ctx context.Context, path string) (string, error) {
 }
 
 // replaceExe puts next in place of exe. On Windows a running .exe can't be
-// overwritten but can be renamed, so the old one moves aside first.
+// overwritten but can be renamed, so the old one moves aside first. A lock
+// beside exe lets one wp at a time do it: two that overlap on Windows could
+// remove the other's moved-aside binary and leave none at exe.
 func replaceExe(exe, next string) error {
+	unlock, err := lockFileWithin(filepath.Join(filepath.Dir(exe), ".wp-update.lock"), 20*time.Second)
+	if err != nil {
+		return fmt.Errorf("another wp is replacing it: %w", err)
+	}
+	defer unlock()
 	if runtime.GOOS != "windows" {
 		return os.Rename(next, exe)
 	}
@@ -295,20 +347,101 @@ func (c *cli) autoUpdate(ctx context.Context, sv string, err error) {
 			result = "updated from " + version + " to " + got
 		}
 	}
+	c.recordUpdate(sv, result, false)
+}
+
+// recordUpdate writes the state file's record of an update: now, for server
+// version sv, with result. A check that couldn't ask the server (sv empty)
+// keeps the version a claim named, so its 6-hour backoff stands. A claim
+// (the try begins) replaces the record whatever it said. A result for one
+// release doesn't overwrite another wp's fresh claim on another: that
+// download still runs, and its claim keeps others from starting a third.
+func (c *cli) recordUpdate(sv, result string, claim bool) {
 	_ = c.updateState(func(s *State) {
+		if u := s.Update; !claim && sv != "" && claimLive(u) && u.Server != "" && u.Server != sv {
+			return
+		}
+		if sv == "" && !claim && s.Update != nil {
+			sv = s.Update.Server
+		}
 		s.Update = &updateCheck{Checked: time.Now(), Server: sv, Result: result}
 	})
 }
 
 // autoUpdateInBackground starts `wp upgrade --auto` in a detached process
 // at most once a day (the SessionStart hook calls it), so the hook never
-// waits for the download.
+// waits for the download. It covers servers that don't send their version
+// with every answer.
 func (c *cli) autoUpdateInBackground() {
 	defer func() { _ = recover() }()
 	if autoUpdateOff() || !isRelease(version) {
 		return
 	}
-	due := func(u *updateCheck) bool { return u == nil || time.Since(u.Checked) >= autoUpdateEvery }
+	c.claimAutoUpdate("", func(u *updateCheck) bool {
+		return u == nil || (time.Since(u.Checked) >= autoUpdateEvery && !claimLive(u))
+	})
+}
+
+// updateClaimFresh is how long a try's claim (Result "started") holds off
+// every other wp's: longer than a download may take (wp upgrade's 10
+// minutes), short enough that a claim whose process died doesn't stop
+// updates for long.
+const updateClaimFresh = 15 * time.Minute
+
+// claimLive: u is a try's claim that is still fresh.
+func claimLive(u *updateCheck) bool {
+	return u != nil && u.Result == "started" && time.Since(u.Checked) < updateClaimFresh
+}
+
+// updateRetryEvery is how long after a try (a wp command's, or a runner's)
+// wp waits before trying for the same server version again.
+const updateRetryEvery = 6 * time.Hour
+
+// serverVersionHeader is the header the server names its version in on every
+// answer.
+const serverVersionHeader = "X-Waypoint-Version"
+
+// seeServerVersion remembers the version a server answer named.
+func (c *cli) seeServerVersion(v string) {
+	if v = strings.TrimSpace(v); v != "" {
+		c.sawVersion.Store(v)
+	}
+}
+
+// autoUpdateIfBehind runs when a command has finished (run calls it, hooks
+// included): if any answer it got showed the server on another release than
+// this wp, it starts `wp upgrade --auto` detached, once per server version
+// and again after 6 hours. It prints nothing and never fails the command.
+// The foreground runner updates itself (runnerProc.updateStep, idle or busy)
+// and wp upgrade is the update.
+//
+// Any other release than this wp's counts, an older one too: wp follows the
+// server, so a rollback of the server rolls wp back with it.
+func (c *cli) autoUpdateIfBehind() {
+	defer func() { _ = recover() }()
+	seen, _ := c.sawVersion.Load().(string)
+	if seen == "" || seen == version || autoUpdateOff() || !isRelease(seen) || !isRelease(version) {
+		return
+	}
+	if c.cur == runnerCmd || c.cur == updateCmd {
+		return
+	}
+	c.claimAutoUpdate(seen, func(u *updateCheck) bool {
+		// A "started" claim no longer live is a dead upgrader's: it holds
+		// nothing off past updateClaimFresh (1847.3).
+		return u == nil || ((u.Server != seen || u.Result == "started" || time.Since(u.Checked) >= updateRetryEvery) && !claimLive(u))
+	})
+}
+
+// claimWait is how long a claim waits for the state lock.
+const claimWait = 500 * time.Millisecond
+
+// claimAutoUpdate starts the background upgrade when due says so of the
+// state file's record, which is claimed (checked now, Result "started", for
+// server version seen, empty when it isn't known) so wp processes that run
+// during the download, and the runner, don't start another; due says no to
+// a fresh claim. A process that couldn't be started gives the claim back.
+func (c *cli) claimAutoUpdate(seen string, due func(*updateCheck) bool) {
 	if !due(c.state.Update) {
 		return
 	}
@@ -317,26 +450,43 @@ func (c *cli) autoUpdateInBackground() {
 		return
 	}
 	claimed := false
-	_ = c.updateState(func(s *State) {
+	// A hook may be cut short (SessionEnd gets 2 s): a missed claim is
+	// harmless, the next command tries again. A claim that wasn't saved
+	// starts nothing: no other wp would see it (c6983).
+	err = c.claimStateWithin(claimWait, func(s *State) {
 		if !due(s.Update) {
 			return
 		}
 		if s.Update == nil {
 			s.Update = &updateCheck{}
 		}
-		s.Update.Checked, claimed = time.Now(), true
+		s.Update.Checked, s.Update.Server, s.Update.Result, claimed = time.Now(), seen, "started", true
 	})
-	if claimed {
-		backgroundStart(exe, "upgrade", "--auto")
+	if err == nil && claimed && !backgroundStart(exe, "upgrade", "--auto") {
+		c.releaseUpdateClaim(seen)
 	}
 }
 
 // backgroundStart runs a command detached, with no stdio of ours, so the
-// hook's pipes close when the hook ends (tests swap it).
-var backgroundStart = func(exe string, args ...string) {
+// hook's pipes close when the hook ends, and says whether it started (tests
+// swap it).
+var backgroundStart = func(exe string, args ...string) bool {
 	cmd := exec.Command(exe, args...) // #nosec G204 -- our own binary
 	cmd.SysProcAttr = detachedProc()
-	if cmd.Start() == nil {
-		_ = cmd.Process.Release()
+	if cmd.Start() != nil {
+		return false
 	}
+	_ = cmd.Process.Release()
+	return true
+}
+
+// releaseUpdateClaim removes the claim of a try for server version sv that
+// was cut short (the runner stopped), so a wp command may start it again at
+// once. A record of any other version, or with a result, stays.
+func (c *cli) releaseUpdateClaim(sv string) {
+	_ = c.updateState(func(s *State) {
+		if u := s.Update; u != nil && u.Server == sv && u.Result == "started" {
+			s.Update = nil
+		}
+	})
 }
