@@ -392,6 +392,9 @@ func (s *Service) parkBabysit(ctx context.Context, b *Babysit, pr *PullRequest, 
 	r.ParkNamed = nil
 	if !conflict && !namesAny(why, roundFailed) {
 		r.ParkNamed = namedIn(why, append(slices.Clone(comments), findings...))
+		if open, ok := s.openAmong(ctx, pr, r.ParkNamed); ok {
+			r.ParkNamed = open
+		}
 	}
 	r.ParkedChecks = slices.Clone(failed)
 	r.WaitsOn = s.namedRequests(ctx, pr, question+"\n"+r.Answer)
@@ -912,9 +915,21 @@ func (s *Service) parkNamedSettled(ctx context.Context, pr *PullRequest, r *Baby
 	if len(r.ParkNamed) == 0 || !resting(r) {
 		return ""
 	}
+	if open, ok := s.openAmong(ctx, pr, r.ParkNamed); !ok || len(open) > 0 {
+		return ""
+	}
+	s.log.InfoContext(ctx, "babysit rest ends: what it named is no longer open", "repo", pr.Repo, "number", pr.Number, "named", joinAnd(r.ParkNamed))
+	return "What the rest was over (" + joinAnd(r.ParkNamed) + ") is no longer open: the rest ended."
+}
+
+// openAmong are those of ids, review comments or audit findings, that are
+// still open, and whether they could be read: a park records only the ones a
+// later closing can answer (a reason naming what the round just closed would
+// end its rest at once).
+func (s *Service) openAmong(ctx context.Context, pr *PullRequest, ids []string) ([]string, bool) {
 	comments, err := s.reviewComments(ctx, s.db.R, pr.ID)
 	if err != nil {
-		return ""
+		return nil, false
 	}
 	open := map[string]bool{}
 	for _, rc := range comments {
@@ -924,16 +939,12 @@ func (s *Service) parkNamedSettled(ctx context.Context, pr *PullRequest, r *Baby
 	}
 	todo, err := s.auditTodoErr(ctx, pr.ID)
 	if err != nil {
-		return ""
+		return nil, false
 	}
 	for _, f := range todo {
 		open[f.ID] = true
 	}
-	if slices.ContainsFunc(r.ParkNamed, func(id string) bool { return open[id] }) {
-		return ""
-	}
-	s.log.InfoContext(ctx, "babysit rest ends: what it named is no longer open", "repo", pr.Repo, "number", pr.Number, "named", joinAnd(r.ParkNamed))
-	return "What the rest was over (" + joinAnd(r.ParkNamed) + ") is no longer open: the rest ended."
+	return slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return !open[id] }), true
 }
 
 // parkReread is how often a head parked over failing checks is read from the
