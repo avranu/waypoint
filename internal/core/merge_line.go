@@ -507,9 +507,11 @@ func (s *Service) lineFallback(ctx context.Context, ref lineRef) bool {
 	return on
 }
 
-// lineBatchDepth is how many places a batch covers: one more than the last
-// batch on the line that merged (up to batchMaxDepth), two after one that
-// failed, two when there is none.
+// lineBatchDepth is how many places a batch covers (WP-1992): twice the last
+// batch's size after one that merged whole, the same after one that ended on
+// a conflict (it removes one pull request and says nothing about the others'
+// tests), two after one that failed or when there is none; never above
+// batchMaxDepth.
 func (s *Service) lineBatchDepth(ctx context.Context, ref lineRef) int {
 	var state, raw string
 	if err := s.db.R.QueryRowContext(ctx, `SELECT state, heads FROM queue_stacks WHERE forge_id = ? AND repo = ? COLLATE NOCASE AND base_ref = ?
@@ -519,8 +521,11 @@ func (s *Service) lineBatchDepth(ctx context.Context, ref lineRef) int {
 	}
 	var heads []stackHead
 	_ = json.Unmarshal([]byte(raw), &heads)
-	if state == stackMerged {
-		return min(len(heads)+1, batchMaxDepth)
+	switch state {
+	case stackMerged:
+		return min(2*len(heads), batchMaxDepth)
+	case stackConflict:
+		return min(max(len(heads), 2), batchMaxDepth)
 	}
 	return 2
 }

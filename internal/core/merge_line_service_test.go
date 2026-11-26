@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -1562,4 +1563,46 @@ func TestLineEjectConflictWriteFailureLeavesTheCandidateLive(t *testing.T) {
 	}
 	se.step()
 	se.conflictEnded(i, 8, false)
+}
+
+func TestLineBatchDepthFromTheLastEndedBatch(t *testing.T) {
+	type end struct {
+		state string
+		k     int
+	}
+	cases := []struct {
+		name string
+		rows []end
+		want int
+	}{
+		{"none", nil, 2},
+		{"merged 2", []end{{stackMerged, 2}}, 4},
+		{"merged 4", []end{{stackMerged, 4}}, 8},
+		{"merged 8", []end{{stackMerged, 8}}, 8},
+		{"conflict of 5", []end{{stackConflict, 5}}, 5},
+		{"conflict of 2", []end{{stackConflict, 2}}, 2},
+		{"failed", []end{{stackFailed, 6}}, 2},
+		{"the newest decides", []end{{stackMerged, 4}, {stackFailed, 4}}, 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			se := newStackEnv(t)
+			se.draftGreen(head7s, 5)
+			pr := se.pr(7)
+			for i, r := range c.rows {
+				hs := make([]stackHead, r.k)
+				for j := range hs {
+					hs[j] = stackHead{PRID: int64(j + 1), Number: j + 1, SHA: fmt.Sprintf("%040d", j+1)}
+				}
+				hj, _ := json.Marshal(hs)
+				if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO queue_stacks(forge_id, repo, base_ref, pr_id, base_sha, heads, branch, commit_sha, state, created_at, ended_at)
+					VALUES (?, ?, ?, ?, 'x', ?, ?, ?, ?, 1, ?)`, pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID, string(hj), fmt.Sprintf("wp-queue/main/d%d", i), fmt.Sprintf("d%06d", i), r.state, 100+i); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := se.s.lineBatchDepth(se.ctx, lineOf(pr)); got != c.want {
+				t.Errorf("lineBatchDepth = %d, want %d", got, c.want)
+			}
+		})
+	}
 }

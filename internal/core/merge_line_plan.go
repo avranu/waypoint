@@ -227,7 +227,11 @@ func planLine(s lineSnap) []lineAction {
 		return acts
 	}
 
-	places := min(len(s.Entries), lineDepth)
+	limit := lineDepth
+	if s.Saturated {
+		limit = batchMaxDepth
+	}
+	places := min(len(s.Entries), limit)
 	for i, e := range s.Entries[:places] {
 		if e.Branch {
 			places = i
