@@ -23,6 +23,14 @@ if [ -z "${WP_TEST_CHANGED:-}" ] || [ ! -r "$WP_TEST_CHANGED" ]; then
 fi
 changed=$(cat "$WP_TEST_CHANGED")
 
+# The changed Go files and their folders go into make variables below, which
+# make and its recipe shell expand unquoted: a file name with $(...), ; or a
+# space would run as a command. Such a path is refused before anything runs.
+if printf '%s\n' "$changed" | grep '\.go$' | LC_ALL=C grep -q -v -E '^[A-Za-z0-9_.+@][A-Za-z0-9_./+@-]*$'; then
+  echo ".waypoint/test: a changed Go file's path has characters other than letters, digits and _ . / + @ -, or starts with - or /, so nothing was checked: rename it" >&2
+  exit 1
+fi
+
 if ! gopath=$(go env GOPATH); then
   echo ".waypoint/test: can't find Go, so nothing was checked" >&2
   exit 1
