@@ -62,7 +62,15 @@ func TestInviteLinkReadsTheBaseURLLive(t *testing.T) {
 
 func TestPrivateEventWithoutHintIsDispatchedQuietly(t *testing.T) {
 	e := newEnv(t)
-	e.s.dispatch(e.ctx, e.admin, []*Event{{Kind: "test.private", Private: true}})
+	sub := e.s.Hub.Subscribe(e.admin.User.ID)
+	defer e.s.Hub.Unsubscribe(sub)
+	// Addressed to the subscriber, so the hub would send it if it got it.
+	e.s.dispatch(e.ctx, e.admin, []*Event{{Kind: "test.private", Private: true, UserID: e.admin.User.ID}})
+	select {
+	case ev := <-sub.C:
+		t.Errorf("a hub subscriber got the private %s event", ev.Kind)
+	default:
+	}
 }
 
 func TestStoredNoticeIsDeliveredAndItsEventIsNotPublished(t *testing.T) {
