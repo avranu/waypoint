@@ -318,6 +318,10 @@ type ciHistory struct {
 	waits     map[int64]int64
 	whole     time.Time
 	draftRuns map[int64]bool
+	// reach: tasks holds every task the forge lists that was created since
+	// reach (zero: all it lists), as far as the next pass may rely on
+	// (WP-1980).
+	reach time.Time
 }
 
 // tierOf is the tier of a task's run: a task doesn't say, and its title is
@@ -650,9 +654,24 @@ func (s *Service) ciRepoHistory(ctx context.Context, cl ForgeActions, f *Forge, 
 	if h != nil && h.err == nil && s.now().Sub(h.at) < ciHistoryFresh {
 		return h
 	}
+	prev := h
 	h = &ciHistory{at: s.now(), runs: map[int64]ActionRun{}}
 	since := s.now().Add(-ciHistoryWindow)
 	var oldest time.Time
+	// A finished task doesn't change, so a pass that meets the finished
+	// tasks the last one read stops there and carries the older ones on
+	// (WP-1980).
+	known, pending := map[int64]bool{}, []int64(nil)
+	if prev != nil && prev.err == nil {
+		for _, t := range prev.tasks {
+			if ciPending(t.Status) {
+				pending = append(pending, t.ID)
+			} else {
+				known[t.ID] = true
+			}
+		}
+	}
+	carried := false
 	for page := 1; page <= ciTaskPages; page++ {
 		var list []ActionTask
 		if h.err = call(func() (err error) { list, err = cl.ActionTasks(ctx, f, repo, nil, page, 50); return err }); h.err != nil {
@@ -667,7 +686,15 @@ func (s *Service) ciRepoHistory(ctx context.Context, cl ForgeActions, f *Forge, 
 		if oldest.Before(since) {
 			break
 		}
+		if ciMetKnown(list, known, pending) {
+			carried, oldest = true, prev.reach
+			break
+		}
 	}
+	if carried {
+		h.tasks = ciCarryTasks(h.tasks, prev.tasks, since.Add(-ciTaskLongest))
+	}
+	h.reach = oldest
 	var runs []ActionRun
 	if h.err == nil {
 		h.err = call(func() (err error) { runs, err = cl.ActionRuns(ctx, f, repo, nil, 1, 50); return err })
@@ -698,6 +725,31 @@ func (s *Service) ciRepoHistory(ctx context.Context, cl ForgeActions, f *Forge, 
 	c.history[key] = h
 	c.mu.Unlock()
 	return h
+}
+
+// ciMetKnown: a page of tasks, newest first, has reached a finished task the
+// last read had, so every task older than it is in that read too; unless one
+// the last read saw unfinished is older than the page's end, which may have
+// finished since and is read again by going on.
+func ciMetKnown(list []ActionTask, known map[int64]bool, pending []int64) bool {
+	if !slices.ContainsFunc(list, func(t ActionTask) bool { return known[t.ID] }) {
+		return false
+	}
+	end := list[len(list)-1].ID
+	return !slices.ContainsFunc(pending, func(id int64) bool { return id < end })
+}
+
+// ciCarryTasks adds the finished tasks of the last read that are older than
+// every one just read, as far back as keep.
+func ciCarryTasks(read, prev []ActionTask, keep time.Time) []ActionTask {
+	end := read[len(read)-1].ID
+	out := slices.Clone(read)
+	for _, t := range prev {
+		if t.ID < end && !ciPending(t.Status) && !t.Created.Before(keep) {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // ciPullRequests finds the pull requests the runs are for, by head.
