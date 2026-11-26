@@ -217,6 +217,7 @@ func New(d *db.DB, cfg Config, log *slog.Logger) *Service {
 	s.log = slog.New(&sourceHandler{ledger: s.jobs, next: log.Handler()})
 	forgeEgress := cfg.Egress
 	forgeEgress.AllowLoopback = true
+	d.SetSlowHandler(func(ss db.SlowStatement) { s.log.Info(ss.String()) })
 	s.Forges = &httpForgeClient{http: forgeEgress.client(forgeTimeout), patient: forgeEgress.client(forgePatientTimeout)}
 	s.LLM = &httpLLM{http: forgeEgress.streamClient(llmHeaderTimeout)}
 	if strings.TrimSpace(cfg.MeaningURL) != "" {

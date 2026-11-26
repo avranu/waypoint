@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var serverCmd = &command{
-	name: "server", group: "Agent work", args: "[status|problems|job|log|metrics …]",
+	name: "server", group: "Agent work", args: "[status|problems|job|log|metrics|profile …]",
 	summary:  "the Waypoint server's health, what keeps going wrong on it, recent log and metrics, read through the API (admins)",
 	examples: []string{"wp server status", "wp server problems", "wp server job 'forge sync'", "wp server log --since 3h --level warn", "wp server metrics --grep waypoint_ai"},
 	about: `Diagnose production with wp, not ssh. wp server status is the server's
@@ -101,6 +103,16 @@ the samples whose line matches the regular expression, with their HELP and
 TYPE lines.`,
 			examples: []string{"wp server metrics", "wp server metrics --grep 'waypoint_ai|go_goroutines'"},
 			run:      cmdServerMetrics},
+		{name: "profile", args: "[--kind goroutine|cpu|heap] [--seconds 10] [-o FILE]", summary: "what the server is doing now: a goroutine dump, or a CPU or heap profile for go tool pprof",
+			about: `goroutine (the default) prints every goroutine's stack as text: find the
+frame a slow job or request sits in. cpu samples the server for --seconds
+(default 10, at most 60) and heap writes the live heap; both are files for
+go tool pprof, written to -o or to waypoint-KIND-YYYYMMDD-HHMMSS.pprof in
+this directory. One CPU profile runs at a time (a second asker is told to
+wait). The goroutine dump shows function names and argument addresses:
+admins only, like the log.`,
+			examples: []string{"wp server profile", "wp server profile --kind cpu --seconds 30 -o cpu.pprof", "wp server profile --kind heap"},
+			run:      cmdServerProfile},
 	},
 }
 
@@ -312,6 +324,50 @@ func cmdServerMetrics(c *cli, args []string) error {
 		return err
 	}
 	c.println(strings.TrimRight(string(raw), "\n"))
+	return nil
+}
+
+func cmdServerProfile(c *cli, args []string) error {
+	fs := c.flags()
+	kind := fs.String("kind", "goroutine", "`KIND`: goroutine (text), cpu or heap (files for go tool pprof)")
+	seconds := fs.Int("seconds", 10, "`N`: how long a CPU profile samples (at most 60)")
+	out := fs.String("o", "", "`FILE`: write the profile here (cpu and heap default to waypoint-KIND-DATE.pprof)")
+	pos, err := c.parse(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) > 0 {
+		return c.usage("unexpected %q", joinArgs(pos))
+	}
+	switch *kind {
+	case "goroutine", "cpu", "heap":
+	default:
+		return c.usage("--kind %q: say goroutine, cpu or heap", *kind)
+	}
+	q := url.Values{"kind": {*kind}}
+	if *kind == "cpu" {
+		q.Set("seconds", strconv.Itoa(*seconds))
+		c.longPoll = time.Duration(min(max(*seconds, 1), 60)+30) * time.Second
+	}
+	raw, err := c.call("GET", "/api/v1/server/profile?"+q.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	if *kind == "goroutine" && *out == "" {
+		c.println(strings.TrimRight(string(raw), "\n"))
+		return nil
+	}
+	file := *out
+	if file == "" {
+		file = "waypoint-" + *kind + "-" + time.Now().Format("20060102-150405") + ".pprof"
+	}
+	if err := os.WriteFile(file, raw, 0o600); err != nil {
+		return err
+	}
+	c.printf("wrote %s (%d bytes)\n", file, len(raw))
+	if *kind != "goroutine" {
+		c.printf("read it with: go tool pprof -top %s\n", file)
+	}
 	return nil
 }
 

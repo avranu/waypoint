@@ -715,7 +715,16 @@ tokens never qualify):
   was called off: a server stopping, a caller hanging up), average and longest time (hours
   are kept 90 days), with its problems.
 - `wp server metrics [--grep RE]`: the `/metrics` text, without the metrics
-  token.
+  token, then how many callers waited for a database connection (the writer
+  is one connection, so its waits are the queue for writes) and the 15
+  callers whose statements took the most time in total. A statement or write
+  transaction over `WAYPOINT_SLOW_STATEMENT` (a Go duration, default `1s`,
+  `0` turns the timing off; read at start) is logged as `slow statement:` or
+  `slow write transaction:` with its caller and the statement without its
+  arguments (`wp server log --grep 'slow (statement|write)'`).
+- `wp server profile [--kind goroutine|cpu|heap] [--seconds 10] [-o FILE]`:
+  what the server is doing now. A goroutine dump prints as text; a CPU
+  (at most 60 s, one at a time) or heap profile is a file for `go tool pprof`.
 - `wp ai usage [--since 24h] [--by task|model|outcome|status|hour|day|provider]
   [--task NAME]`: every request Waypoint sent an AI provider (table
   `ai_calls`, kept 30 days): requests, failures, rate limits, tokens and
