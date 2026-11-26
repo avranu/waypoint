@@ -34,13 +34,17 @@ func TestBabysitRoundWaitsOnFailedReads(t *testing.T) {
 			be.sg.threads = []ReviewThread{{ID: "T1", Path: "app/export.go", Line: 4, Comments: []ThreadComment{
 				{ID: "501", Author: "alice", Body: "This loop never ends when rows is empty.", SHA: bsPR.HeadSHA, At: be.clockNow().Add(-time.Minute)}}}}
 			pr := be.open()
-			be.start(pr)
+			// A reviewer still expected holds the round until the review wait
+			// passes, so the comment is read before the read breaks.
+			be.policy(MergePolicyInput{ExternalReviewers: &[]string{"llm-review"}, ReviewWaitMinutes: ptr(30), QuietMinutes: ptr(0)})
 			be.sg.setChecks(bsPR.HeadSHA, CommitCheck{Name: "ci / test", State: CheckPending})
 			be.poll()
-			if n := len(be.jobs()); n != 0 {
-				t.Fatalf("%d rounds while the checks run", n)
-			}
+			be.start(pr)
 			be.exec(tc.breakSQL)
+			be.step()
+			if n := len(be.jobs()); n != 0 {
+				t.Fatalf("%d rounds started on a read that failed while the checks run", n)
+			}
 			be.ci(bsPR.HeadSHA, CheckSuccess)
 			be.step()
 			if n := len(be.jobs()); n != 0 {
@@ -50,6 +54,7 @@ func TestBabysitRoundWaitsOnFailedReads(t *testing.T) {
 				t.Errorf("no %q in the log:\n%s", tc.logs, logs.String())
 			}
 			be.exec(tc.mendSQL)
+			be.setClock(be.clockNow().Add(31 * time.Minute))
 			be.runnerOnline()
 			be.step()
 			if n := len(be.jobs()); n != 1 {
@@ -77,7 +82,7 @@ func TestUrgentRoundLogsFailedReads(t *testing.T) {
 			be.sg.setChecks(bsPR.HeadSHA, CommitCheck{Name: "ci / test", State: CheckPending})
 			be.poll()
 			be.exec(tc.breakSQL)
-			if be.s.urgentRound(be.ctx, b, be.pr(7)) {
+			if be.urgentRound(b) {
 				t.Fatal("a round started on a read that failed")
 			}
 			if !strings.Contains(logs.String(), tc.logs) {

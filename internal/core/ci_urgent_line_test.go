@@ -1,7 +1,6 @@
 package core
 
 import (
-	"strings"
 	"testing"
 	"time"
 )
@@ -13,9 +12,9 @@ func (be *bsEnv) labelUrgent(n int) {
 	}
 }
 
-// An urgent pull request's review comments get their round while its
-// checks still run, and a runner takes that round before older jobs; one
-// that isn't urgent waits for its checks (WP-686).
+// A pull request's review comments get their round while its checks still
+// run (WP-686, WP-ADR163), and a runner takes an urgent one's round before
+// older jobs.
 func TestUrgentRoundDoesntWaitForChecks(t *testing.T) {
 	for _, urgent := range []bool{false, true} {
 		t.Run(map[bool]string{false: "not urgent", true: "urgent"}[urgent], func(t *testing.T) {
@@ -36,17 +35,14 @@ func TestUrgentRoundDoesntWaitForChecks(t *testing.T) {
 			be.step()
 			b := be.babysit()
 			jobs := be.jobs()
-			if !urgent {
-				if len(jobs) != 0 || !strings.Contains(b.Wait, "checks running") {
-					t.Fatalf("a round before the checks finished: %d jobs, %s %q", len(jobs), b.State, b.Wait)
-				}
-				return
-			}
 			if len(jobs) != 1 || b.State != BabysitWorking {
 				t.Fatalf("no round while the checks run: %d jobs, %s %q", len(jobs), b.State, b.Wait)
 			}
 			if c := be.comment("501"); c.Verdict != VerdictSeen {
 				t.Errorf("the comment is %s, want seen", c.Verdict)
+			}
+			if !urgent {
+				return
 			}
 			runners, err := be.s.ownerRunners(be.ctx, be.admin.User.ID)
 			if err != nil || len(runners) != 1 {
@@ -61,6 +57,12 @@ func TestUrgentRoundDoesntWaitForChecks(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (be *bsEnv) urgentRound(b *Babysit) bool {
+	be.t.Helper()
+	sent, _ := be.s.earlyRound(be.ctx, b, be.pr(7))
+	return sent == roundSent
 }
 
 // An urgent pull request's round waits when the reads that show its reviews
@@ -85,13 +87,13 @@ func TestUrgentRoundWaitsOnFailedReads(t *testing.T) {
 			if _, err := be.s.db.W.ExecContext(be.ctx, tc.breakSQL); err != nil {
 				t.Fatal(err)
 			}
-			if be.s.urgentRound(be.ctx, b, be.pr(7)) {
+			if be.urgentRound(b) {
 				t.Fatal("a round started on a read that failed")
 			}
 			if _, err := be.s.db.W.ExecContext(be.ctx, tc.mendSQL); err != nil {
 				t.Fatal(err)
 			}
-			if !be.s.urgentRound(be.ctx, b, be.pr(7)) {
+			if !be.urgentRound(b) {
 				t.Fatal("no round once the read works")
 			}
 		})

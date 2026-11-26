@@ -570,6 +570,18 @@ func requiredChecksReasons(pol MergePolicy, checks []PRCheck, sha string) []stri
 // posted for the quiet period). wake is the earliest time one of the waits
 // ends, nil when it waits for none.
 func (s *Service) settleWaits(ctx context.Context, pr *PullRequest, pol MergePolicy, checks []PRCheck) (reasons []string, wake *time.Time, err error) {
+	return s.settleWaitsFor(ctx, pr, pol, checks, false)
+}
+
+// burstQuietMinutes is the quiet period before a round once every expected
+// reviewer has reported: reviewers post in bursts, and this is for the burst
+// (WP-ADR163). The merge keeps the policy's own quiet period.
+const burstQuietMinutes = 2
+
+// settleWaitsFor is settleWaits; forRound shortens the quiet period to
+// burstQuietMinutes when the policy names expected reviewers and every one
+// has reported on this head's content.
+func (s *Service) settleWaitsFor(ctx context.Context, pr *PullRequest, pol MergePolicy, checks []PRCheck, forRound bool) (reasons []string, wake *time.Time, err error) {
 	now := s.now()
 	until := func(t time.Time) {
 		if wake == nil || t.Before(*wake) {
@@ -599,7 +611,21 @@ func (s *Service) settleWaits(ctx context.Context, pr *PullRequest, pol MergePol
 			return nil, nil, err
 		}
 		if !last.IsZero() {
-			end := last.Add(time.Duration(pol.QuietMinutes) * time.Minute)
+			quiet := time.Duration(pol.QuietMinutes) * time.Minute
+			if burst := burstQuietMinutes * time.Minute; forRound && burst < quiet {
+				since := pr.UpdatedAt
+				if t := pr.contentSince(); t != nil {
+					since = *t
+				}
+				expected, missing, err := s.reviewerReports(ctx, pr, pol, checks, since)
+				if err != nil {
+					return nil, nil, err
+				}
+				if expected > 0 && len(missing) == 0 {
+					quiet = burst
+				}
+			}
+			end := last.Add(quiet)
 			if now.Before(end) {
 				reasons = append(reasons, fmt.Sprintf("quiet until %s (last: %s)", s.clock(end), what))
 				until(end)
@@ -623,16 +649,23 @@ func joinAnd(names []string) string {
 // reviewers (a review or comment on this head, or one since the head was
 // first seen; for a status context, any status on the head).
 func (s *Service) reviewersMissing(ctx context.Context, pr *PullRequest, pol MergePolicy, checks []PRCheck, since time.Time) ([]string, error) {
-	var missing []string
+	_, missing, err := s.reviewerReports(ctx, pr, pol, checks, since)
+	return missing, err
+}
+
+// reviewerReports is reviewersMissing that also counts the reviewers
+// expected, so a caller can tell none expected from every one reported.
+func (s *Service) reviewerReports(ctx context.Context, pr *PullRequest, pol MergePolicy, checks []PRCheck, since time.Time) (expected int, missing []string, err error) {
 	rules, err := s.reviewRulesFor(ctx, pr)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
+	expected = len(rules) + len(pol.ExternalReviewers)
 	for _, a := range rules {
 		var n int
 		if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM bot_runs WHERE pr_id = ? AND automation_id = ? AND kind = 'review' AND head_sha = ? AND status NOT IN ('queued','running')`,
 			pr.ID, a.ID, pr.HeadSHA).Scan(&n); err != nil {
-			return nil, err
+			return 0, nil, err
 		}
 		if n == 0 {
 			missing = append(missing, "Waypoint's “"+a.Name+"”")
@@ -655,13 +688,13 @@ func (s *Service) reviewersMissing(ctx context.Context, pr *PullRequest, pol Mer
 				OR (? AND sha IN (SELECT head_sha FROM reviewed_heads WHERE pr_id = ? AND carried = 1 AND content_sha = ?)))`,
 			pr.ID, who, pr.HeadSHA, pr.contentHeadSHA(), since.UnixMilli(),
 			pr.contentHeadSHA() != pr.HeadSHA, pr.ID, pr.contentHeadSHA()).Scan(&n); err != nil {
-			return nil, err
+			return 0, nil, err
 		}
 		if n == 0 {
 			missing = append(missing, who)
 		}
 	}
-	return missing, nil
+	return expected, missing, nil
 }
 
 // reviewRulesFor are the enabled automations that review pr when it is

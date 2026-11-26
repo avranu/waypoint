@@ -1172,6 +1172,7 @@ func (s *Service) assessorPrompt(ctx context.Context, b *Babysit, pr *PullReques
 		"- A person has to settle it (it needs access or authority you don't have, it can't be undone, it would change what the task asks for, or anything else you judge isn't an agent's to decide): "+
 		"end with two lines, `Question: …` and `Because: …` (why no agent can settle it), in plain words they can answer without reading the pull request, naming any review comment it is about by its ID. "+
 		"Waypoint asks its owner and it waits for their answer. A question with no `Because:` line reaches nobody.\n\n", cmp(pr.BaseRef, "its base"))
+	writeEarlyCI(&p, round)
 	s.writeIntent(ctx, &p, b, pr)
 	if r := lastRound(b); r != nil && r.Reply != "" && !r.RestUntil.IsZero() {
 		fmt.Fprintf(&p, "It rested out of the merge line and its rest is over. %s\n\n", r.Reply)

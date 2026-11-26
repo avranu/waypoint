@@ -69,57 +69,94 @@ const urgentPR = `p.labels LIKE '%"` + CIUrgentLabel + `"%'`
 const urgentRoundJob = `(source = '` + babysitSource + `' AND source_id IN (SELECT b.id FROM babysits b JOIN pull_requests p ON p.id = b.pr_id
 	WHERE b.ended_at IS NULL AND ` + urgentPR + `))`
 
-// urgentRound starts the round for what the reviews left on an urgent pull
-// request's head while its checks still run, and reports whether it did
-// (WP-686). The round's push starts the full run again anyway, so waiting
-// for this run only delays it; and at the front of a busy line each update
-// cancels the run the comments wait for, so they might never get a round.
-// It still waits for the reviews to settle, so their findings go in one
-// round, and a failed check still waits for the run to end.
-func (s *Service) urgentRound(ctx context.Context, b *Babysit, pr *PullRequest) bool {
-	if !pr.urgent() || pr.Outside || sameSHA(b.RoundSHA, pr.HeadSHA) {
-		return false
+// earlyCI is what a round sent before CI finished is told about it.
+type earlyCI struct{ running []string }
+
+// earlyOutcome is what earlyRound did: sent a round, held one back for
+// something it names, or had no round to send.
+type earlyOutcome int
+
+const (
+	roundNone earlyOutcome = iota
+	roundHeld
+	roundSent
+)
+
+// earlyRound starts the round for what the reviews left on a head while its
+// checks still run, and says what it did (WP-686, WP-ADR163). The round's push
+// replaces the head and starts the full run again, so waiting for this run
+// only delays the round. It still waits for the reviews to settle, so their
+// findings go in one round; failed checks alone, or no work, wait for the run
+// to end; and nothing merges before its checks have passed. When it holds a
+// round back, why names what for.
+func (s *Service) earlyRound(ctx context.Context, b *Babysit, pr *PullRequest) (earlyOutcome, string) {
+	if pr.Outside || sameSHA(b.RoundSHA, pr.HeadSHA) {
+		return roundNone, ""
 	}
 	comments, err := s.reviewComments(ctx, s.db.R, pr.ID)
 	if err != nil {
-		return false
+		return roundNone, ""
 	}
 	findings := s.auditRoundWork(ctx, b, pr.ID)
 	if len(findings) == 0 && !slices.ContainsFunc(comments, func(rc *PRReviewComment) bool { return !rc.Dealt }) {
-		return false
+		return roundNone, ""
 	}
-	going, _, err := s.reviewGoingErr(ctx, pr)
+	going, why, err := s.babysitReviewGoing(ctx, pr)
 	if err != nil {
 		s.log.WarnContext(ctx, "read whether its reviews settled", "pr", pr.ID, "err", err)
-		return false
+		return roundNone, ""
 	}
 	if going {
-		return false
+		return roundHeld, why
 	}
 	checks, err := s.prChecks(ctx, pr)
 	if err != nil {
-		return false
+		return roundNone, ""
 	}
 	pol, attached, err := s.repoMergePolicy(ctx, pr.ForgeID, pr.Repo)
 	if err != nil {
 		s.log.WarnContext(ctx, "read its merge policy", "pr", pr.ID, "err", err)
-		return false
+		return roundNone, ""
 	}
 	if attached {
-		if waits, _, err := s.settleWaits(ctx, pr, pol, checks); err != nil || len(waits) > 0 {
-			return false
+		waits, _, err := s.settleWaitsFor(ctx, pr, pol, checks, true)
+		if err != nil {
+			return roundNone, ""
+		}
+		if len(waits) > 0 {
+			return roundHeld, waits[0]
 		}
 	}
+	var failed, running []string
+	for _, c := range checks {
+		switch c.State {
+		case CheckFailed:
+			if !cancelledCheck(c.Description) {
+				failed = append(failed, c.Name)
+			}
+		case CheckPending:
+			running = append(running, c.Name)
+		}
+	}
+	if len(failed) == 0 && slices.ContainsFunc(comments, func(rc *PRReviewComment) bool { return !rc.Dealt && !rc.Gone && rc.compileClaim() }) {
+		return roundHeld, "the build to report on a bot's claim that it doesn't compile"
+	}
+	s.markSeen(ctx, b, pr, comments)
+	s.closeCovered(ctx, b, pr, comments)
 	work, late, _ := s.commentWork(ctx, pr, b, comments)
+	if len(findings) == 0 && s.waiveNitpicks(ctx, b, pr, comments, work) {
+		work = nil
+	}
 	if len(work) == 0 && len(findings) == 0 {
-		return false
+		return roundNone, ""
 	}
 	if len(work) > 0 {
 		work = append(work, late...)
 	}
-	s.markSeen(ctx, b, pr, comments)
-	s.babysitRound(ctx, b, pr, nil, false, work, findings)
-	return true
+	b.early = &earlyCI{running: running}
+	defer func() { b.early = nil }()
+	s.babysitRound(ctx, b, pr, failed, false, work, findings)
+	return roundSent, ""
 }
 
 // SetPRUrgent puts the ci-urgent label on a pull request (on) or takes it
