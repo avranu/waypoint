@@ -457,7 +457,8 @@ type queryer interface {
 	ExecContext(ctx context.Context, q string, args ...any) (sql.Result, error)
 }
 
-// write runs f in a write transaction and dispatches its events afterwards.
+// write runs f in a write transaction, then any afterUpdate work still queued,
+// commits, and dispatches the events. When f fails, the queued work is dropped.
 func (s *Service) write(ctx context.Context, actor *Actor, f func(t *tx) error) error {
 	if actor != nil && actor.ReadOnly {
 		return fmt.Errorf("read-only token: %w", ErrForbidden)

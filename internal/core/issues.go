@@ -1157,8 +1157,10 @@ func (s *Service) CreateIssue(ctx context.Context, actor *Actor, in IssueInput) 
 func (s *Service) statusByID(ctx context.Context, q queryer, id int64) (*Status, error) {
 	var st Status
 	err := q.QueryRowContext(ctx, `SELECT id, name, category, color, position FROM statuses WHERE id = ?`, id).Scan(&st.ID, &st.Name, &st.Category, &st.Color, &st.Position)
-	if err != nil {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, notFound("status")
+	} else if err != nil {
+		return nil, fmt.Errorf("status: %w", err)
 	}
 	return &st, nil
 }
@@ -2082,9 +2084,9 @@ func (s *Service) setStatus(ctx context.Context, t *tx, i *Issue, st *Status, se
 	if wasClosed && !nowClosed {
 		t.emit(&Event{Kind: EvIssueReopened, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key})
 	}
-	if nowClosed && !wasClosed && i.ParentID != nil {
-		parentID := *i.ParentID
-		t.afterUpdate(func() { s.checkChildrenDone(ctx, t, parentID) })
+	if nowClosed && !wasClosed {
+		childID := i.ID
+		t.afterUpdate(func() { s.checkParentChildrenDone(ctx, t, childID) })
 	}
 	return nil
 }
@@ -2166,6 +2168,20 @@ func (t *tx) runPending() {
 	}
 }
 
+// checkParentChildrenDone runs checkChildrenDone for a closed issue's
+// parent, read after the UPDATE: the same update may have moved the issue to
+// another parent. applyPatch checks the one it left.
+func (s *Service) checkParentChildrenDone(ctx context.Context, t *tx, childID int64) {
+	var parentID sql.NullInt64
+	if err := t.QueryRowContext(ctx, `SELECT parent_id FROM issues WHERE id = ?`, childID).Scan(&parentID); err != nil {
+		s.log.WarnContext(ctx, "check children done", "issue", childID, "err", err)
+		return
+	}
+	if parentID.Valid {
+		s.checkChildrenDone(ctx, t, parentID.Int64)
+	}
+}
+
 // checkChildrenDone emits children_done on a parent when its last open
 // child closes.
 func (s *Service) checkChildrenDone(ctx context.Context, t *tx, parentID int64) {
@@ -2179,7 +2195,11 @@ func (s *Service) checkChildrenDone(ctx context.Context, t *tx, parentID int64) 
 		return
 	}
 	par, err := s.issueByID(ctx, t, parentID, false)
-	if err != nil || par.Closed() {
+	if err != nil {
+		s.log.WarnContext(ctx, "check children done", "parent", parentID, "err", err)
+		return
+	}
+	if par.Closed() {
 		return
 	}
 	t.emit(&Event{Kind: EvIssueChildrenDone, ProjectID: par.ProjectID, IssueID: par.ID, IssueKey: par.Key})
