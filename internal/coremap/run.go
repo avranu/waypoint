@@ -79,20 +79,7 @@ func Run(args []string, stdout, stderr io.Writer) error {
 	}
 
 	if *writeUpward {
-		pairs := a.UpwardPairs()
-		out, err := os.Create(*upward) // #nosec G304 -- the baseline file named by this tool's flag
-		if err != nil {
-			return err
-		}
-		if err := WriteUpward(out, pairs); err != nil {
-			_ = out.Close()
-			return err
-		}
-		if err := out.Close(); err != nil {
-			return err
-		}
-		fmt.Fprintf(stderr, "wrote %s: %d upward pairs of %d group pairs with references\n", *upward, len(pairs), a.AllPairs())
-		return nil
+		return writeBaseline(*upward, a, *suggest || *perFile, stderr)
 	}
 
 	enc := json.NewEncoder(stdout)

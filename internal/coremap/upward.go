@@ -2,8 +2,12 @@ package coremap
 
 import (
 	"bufio"
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
 	"sort"
 	"strings"
 )
@@ -66,12 +70,55 @@ func ParseUpward(r io.Reader) (map[string]bool, error) {
 			continue
 		}
 		from, to, ok := strings.Cut(line, ">")
-		if !ok || from == "" || to == "" || strings.ContainsAny(line, " \t") {
+		if !ok || from == "" || to == "" || strings.Contains(to, ">") || strings.ContainsAny(line, " \t") {
 			return nil, fmt.Errorf("line %d: want `from>to`, got %q", n, line)
 		}
 		out[line] = true
 	}
 	return out, sc.Err()
+}
+
+// writeBaseline replaces the upward.txt at path with the pairs a finds, and
+// names on log each pair the file didn't list before: writing it approves
+// them. It refuses an analysis whose list wouldn't be the one the test
+// computes (another order, or an incomplete map).
+func writeBaseline(path string, a *Analysis, reordered bool, log io.Writer) error {
+	if reordered {
+		return errors.New("-write-upward judges pairs by the order of groups.txt: it takes neither -suggest-order nor -per-file")
+	}
+	if n := a.ld.TypeErrors; n > 0 {
+		return fmt.Errorf("%d type errors: the map is incomplete, so %s is left as it is", n, path)
+	}
+	var listed map[string]bool
+	old, err := os.Open(path) // #nosec G304 -- the baseline file named by this tool's flag
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		return err
+	default:
+		listed, err = ParseUpward(old)
+		_ = old.Close()
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+	}
+	pairs := a.UpwardPairs()
+	var b bytes.Buffer
+	if err := WriteUpward(&b, pairs); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, b.Bytes(), 0o644); err != nil { // #nosec G306 -- a checked-in source file
+		return err
+	}
+	if listed != nil {
+		for _, k := range sortedKeys(pairs) {
+			if !listed[k] {
+				fmt.Fprintf(log, "coremap: added %s, which was not listed: keep it only if the order of groups.txt changed, else fix the reference\n", k)
+			}
+		}
+	}
+	fmt.Fprintf(log, "wrote %s: %d upward pairs of %d group pairs with references\n", path, len(pairs), a.AllPairs())
+	return nil
 }
 
 // maxListed caps the references named per offending pair.

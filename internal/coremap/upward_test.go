@@ -1,8 +1,8 @@
 package coremap
 
 import (
-	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -36,7 +36,7 @@ func TestUpwardFileRoundTrip(t *testing.T) {
 	if err != nil || !got["b>a"] || !got["a>b"] || len(got) != 2 {
 		t.Errorf("parse: %v %v", err, got)
 	}
-	for _, bad := range []string{"ab", ">b", "a>", "a > b"} {
+	for _, bad := range []string{"ab", ">b", "a>", "a > b", "a>b>c"} {
 		if _, err := ParseUpward(strings.NewReader(bad)); err == nil {
 			t.Errorf("ParseUpward(%q) succeeded", bad)
 		}
@@ -83,11 +83,40 @@ func TestCheckUpwardCapsTheList(t *testing.T) {
 	}
 }
 
+func TestWriteBaseline(t *testing.T) {
+	a, _ := fixture(t)
+	path := filepath.Join(t.TempDir(), "upward.txt")
+	var log strings.Builder
+	if err := os.WriteFile(path, []byte("old>gone\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeBaseline(path, a, true, &log); err == nil {
+		t.Error("wrote the baseline under another order")
+	}
+	a.ld.TypeErrors = 1
+	if err := writeBaseline(path, a, false, &log); err == nil {
+		t.Error("wrote the baseline from an incomplete map")
+	}
+	if b, err := os.ReadFile(path); err != nil || string(b) != "old>gone\n" {
+		t.Errorf("a refused write changed the file: %q %v", b, err)
+	}
+	a.ld.TypeErrors = 0
+	if err := writeBaseline(path, a, false, &log); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(log.String(), "added pr>issues, which was not listed") {
+		t.Errorf("the new pair isn't named:\n%s", log.String())
+	}
+	log.Reset()
+	if err := writeBaseline(path, a, false, &log); err != nil || strings.Contains(log.String(), "added") {
+		t.Errorf("a rewrite with nothing new: %v\n%s", err, log.String())
+	}
+}
+
 // TestNoNewUpwardReferences loads the real internal/core (about as long as
 // `make coremap`) and holds its upward group pairs to upward.txt (WP-1925,
 // WP-ADR151 section 6): a pair not listed fails with its references; a
-// listed pair that is gone is only logged. It checks pairs,
-// not the count of references on a pair, so an existing edge can grow without
+// listed pair that is gone is only logged. It checks pairs, not the count of references on a pair, so an existing edge can grow without
 // touching the list. Up is decided by the line order of groups.txt; groups in
 // one cycle are not special: whichever of the two directions the order makes
 // upward is listed, the other is down. References to the kernel group and
@@ -111,9 +140,15 @@ func TestNoNewUpwardReferences(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upward.txt: %v", err)
 	}
-	ld, err := Load("../core", groups, io.Discard)
+	var log strings.Builder
+	ld, err := Load("../core", groups, &log)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// A file with type errors loses references, so the check would pass on
+	// what it didn't see.
+	if ld.TypeErrors > 0 {
+		t.Fatalf("%d type errors: the map is incomplete\n%s", ld.TypeErrors, log.String())
 	}
 	added, gone := CheckUpward(Analyze(ld, groups).UpwardPairs(), allowed)
 	if added != "" {

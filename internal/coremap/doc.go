@@ -45,7 +45,9 @@
 //	-kernel-candidates   symbols used from at least -min-groups (10) other groups
 //	-affinity            each group's size and the three groups it exchanges the most
 //	                     references with, both directions, with their share of its total
-//	-write-upward        write the group pairs that refer upward to upward.txt (make coremap-upward)
+//	-write-upward        write the group pairs that refer upward to upward.txt (make
+//	                     coremap-upward), naming those not listed before; not with
+//	                     -suggest-order or -per-file, nor with type errors
 //
 // Quote -edge's value, a bare > being a shell redirect: through make that is
 // CORE_ARGS="-edge 'pr>issues'".
