@@ -1391,8 +1391,6 @@ func parseGitHubHook(event string, body []byte) (*forgeEvent, error) {
 	return ev, nil
 }
 
-func ptr[T any](v T) *T { return &v }
-
 // importForgeIssue creates or updates the Waypoint issue mirroring a forge
 // issue in every project syncing that repo. Imports of one forge issue (and
 // of its twins on mirror forges, which share owner/name and number) run one

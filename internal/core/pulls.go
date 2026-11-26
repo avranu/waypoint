@@ -1666,13 +1666,6 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 // gate reads it (WP-234).
 const signedOffSummary = "No issues found"
 
-func short(sha string) string {
-	if len(sha) > 7 {
-		return sha[:7]
-	}
-	return sha
-}
-
 // privatePaths are the paths a mirror keeps off the forge it copies a repo
 // to: the forge's own list (Admin → Forges) and, on Forgejo, the `private`
 // list in the repo's .forgejo/sync.toml at the head. None without a mirror.
