@@ -26,7 +26,7 @@ type rig struct {
 func newRig(t *testing.T, hooks Hooks) *rig {
 	t.Helper()
 	e := kerneltest.New(t)
-	st := NewStore(e.K, Options{BaseURL: "https://wp.test/", ArchivesTranscripts: func() bool { return true }}, hooks)
+	st := NewStore(e.K, Options{BaseURL: func() string { return "https://wp.test/" }, ArchivesTranscripts: func() bool { return true }}, hooks)
 	return &rig{Env: e, st: st, svc: New(st), admin: e.User("admin", true)}
 }
 
@@ -343,5 +343,101 @@ func TestRefusalRecordedAndCleared(t *testing.T) {
 	}
 	if list, _ := r.svc.ListAPITokens(r.Ctx, person); len(list[0].Refusals) != 0 {
 		t.Errorf("refusals after clearing: %+v", list[0].Refusals)
+	}
+}
+
+// jobToken inserts a runner job and a token for it, and returns the token's hash.
+func jobToken(t *testing.T, r *rig, u *kernel.User, hash string, withJob bool) {
+	t.Helper()
+	now := r.K.NowMS()
+	var job any
+	if withJob {
+		if _, err := r.K.DB.W.Exec(`INSERT INTO runner_jobs(id, owner_id, kind, timeout, created_at) VALUES (9, ?, 'command', 60, ?)`, u.ID, now); err != nil {
+			t.Fatal(err)
+		}
+		job = 9
+	}
+	if _, err := r.K.DB.W.Exec(`INSERT INTO api_tokens(user_id, name, token_hash, prefix, read_only, agent, created_at, runner_job_id) VALUES (?, 'job', ?, 'wpt_', 0, '', ?, ?)`, u.ID, hash, now, job); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestJobTokenWithoutJobScopeHookReachesNoProject(t *testing.T) {
+	r := newRig(t, Hooks{})
+	u, _ := r.person(t, "robin")
+	jobToken(t, r, u, "h", true)
+	a, err := r.st.ActorFor(r.Ctx, "h", 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Scope == nil || len(a.Scope) != 0 {
+		t.Errorf("scope = %#v, want non-nil and empty", a.Scope)
+	}
+}
+
+func TestJobTokenScopeErrorFailsTheActor(t *testing.T) {
+	fail := errors.New("no scope")
+	r := newRig(t, Hooks{JobScope: func(context.Context, int64, *kernel.User) (map[int64]int, error) { return nil, fail }})
+	u, _ := r.person(t, "robin")
+	jobToken(t, r, u, "h", true)
+	if a, err := r.st.ActorFor(r.Ctx, "h", 0, false); !errors.Is(err, fail) || a != nil {
+		t.Errorf("actor %+v, err %v; want the hook's error", a, err)
+	}
+}
+
+func TestTokenWithoutJobSkipsJobScope(t *testing.T) {
+	called := false
+	r := newRig(t, Hooks{JobScope: func(context.Context, int64, *kernel.User) (map[int64]int, error) {
+		called = true
+		return map[int64]int{}, nil
+	}})
+	u, _ := r.person(t, "robin")
+	jobToken(t, r, u, "h", false)
+	a, err := r.st.ActorFor(r.Ctx, "h", 0, false)
+	if err != nil || called || a.Scope != nil {
+		t.Errorf("hook called %t, scope %#v, err %v", called, a.Scope, err)
+	}
+}
+
+func TestNilHooksAreSkipped(t *testing.T) {
+	r := newRig(t, Hooks{})
+	u, _ := r.person(t, "robin")
+	link, err := r.svc.CreateResetLink(r.Ctx, r.admin, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.st.ResetPassword(r.Ctx, strings.TrimPrefix(link.URL, "https://wp.test/reset/"), "a different password"); err != nil {
+		t.Errorf("reset with no hook: %v", err)
+	}
+	_, tok := r.person(t, "sam")
+	sam, _ := r.st.SessionActor(r.Ctx, tok)
+	if err := r.svc.ChangePassword(r.Ctx, sam, goodPassword, "a different password"); err != nil {
+		t.Errorf("change with no hook: %v", err)
+	}
+	if err := r.svc.DeleteUser(r.Ctx, r.admin, u.ID); err != nil {
+		t.Errorf("delete with no hook: %v", err)
+	}
+}
+
+func TestFailedCredentialsChangedRollsBackChangePassword(t *testing.T) {
+	fail := errors.New("subscriptions would not go")
+	r := newRig(t, Hooks{CredentialsChanged: func(context.Context, *kernel.Tx, int64) error { return fail }})
+	u, tok := r.person(t, "robin")
+	if _, _, err := r.st.Login(r.Ctx, "robin", goodPassword, "other", "127.0.0.2"); err != nil {
+		t.Fatal(err)
+	}
+	a, err := r.st.SessionActor(r.Ctx, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	was := u.PasswordHash
+	if err := r.svc.ChangePassword(r.Ctx, a, goodPassword, "a different password"); !errors.Is(err, fail) {
+		t.Fatalf("change: %v", err)
+	}
+	if got, _ := r.st.UserByID(r.Ctx, u.ID); got.PasswordHash != was {
+		t.Error("the password changed though the hook failed")
+	}
+	if n := count(t, r, `SELECT COUNT(*) FROM sessions WHERE user_id = ?`, u.ID); n != 2 {
+		t.Errorf("%d sessions, want both kept", n)
 	}
 }

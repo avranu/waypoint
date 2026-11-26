@@ -1,6 +1,7 @@
 // Package users is accounts, sessions, API tokens, invite and reset links,
-// token refusals and the permission catalogue. It imports the kernel only;
-// what it needs of other domains arrives as hooks.
+// token refusals and the permission catalogue. It imports the kernel and leaf
+// utility packages (lazyre), no other domain; what it needs of other domains
+// arrives as hooks.
 package users
 
 import (
@@ -38,8 +39,9 @@ const EvUserDeleted = "user.deleted"
 
 // Options is what the operations read of the server's configuration.
 type Options struct {
-	// BaseURL is the server's public address, for invite and reset links.
-	BaseURL string
+	// BaseURL is the server's public address, for invite and reset links. It
+	// is read at each use; nil is "".
+	BaseURL func() string
 	// ArchivesTranscripts says whether transcripts are kept on disk; deleting
 	// an account says their removal follows. Nil is no.
 	ArchivesTranscripts func() bool
@@ -48,21 +50,27 @@ type Options struct {
 // Hooks are what the users domain needs of the domains above it. A nil hook
 // is skipped. None is an event: each must run inside the operation that asks.
 type Hooks struct {
-	// CredentialsChanged runs in the transaction that changes a password. It
-	// is not an event because the push subscriptions must go in the same
-	// transaction as the password: a failure rolls the change back.
+	// CredentialsChanged runs in the transaction that changes a password or
+	// signs out a user's other sessions. It is not an event because the push
+	// subscriptions must go in the same transaction as the password: a
+	// failure rolls the change back.
 	CredentialsChanged func(ctx context.Context, t *kernel.Tx, userID int64) error
 	// JobScope is the projects a runner job's token reaches, by role. It is
-	// not an event because the actor being built needs the answer.
+	// not an event because the actor being built needs the answer. When it is
+	// nil a job token's Scope is empty and non-nil: the token reaches no
+	// project.
 	JobScope func(ctx context.Context, jobID int64, u *kernel.User) (map[int64]int, error)
 	// BeforeDelete runs in the transaction that deletes an account, before the
-	// row goes: by is who deletes it (0 for no one). It is not an event
-	// because it must run before the account's memberships go with the row.
+	// row goes: by is who deletes it. It is not called when no one (actor id
+	// 0) deletes. It is not an event because it must run before the account's
+	// memberships go with the row.
 	BeforeDelete func(ctx context.Context, t *kernel.Tx, userID, by int64) error
 }
 
-// Store is users, sessions, tokens, invite links and token refusals without
-// access checks: sign-in (which has no actor yet) and what other domains need.
+// Store is users, sessions, tokens, invite links and token refusals: sign-in
+// (which has no actor yet) and what other domains need. It does not check who
+// may see or change a user; token methods that take an actor still check that
+// actor's token permissions.
 type Store struct {
 	k     *kernel.Kernel
 	opt   Options
@@ -80,14 +88,14 @@ type Service struct{ st *Store }
 // New returns the checked operations over st.
 func New(st *Store) *Service { return &Service{st: st} }
 
-// maxDismissedWarnings bounds DismissedWarnings; the oldest go first.
+// MaxDismissedWarnings bounds DismissedWarnings; the oldest go first.
 const MaxDismissedWarnings = 500
 
 // CacheWarmCompact: compact a session whose cache is to be kept warm,
 // instead of pinging it.
 const CacheWarmCompact = "compact"
 
-// maxProjectOrder bounds ProjectOrder; no one keeps more projects than this.
+// MaxProjectOrder bounds ProjectOrder; no one keeps more projects than this.
 const MaxProjectOrder = 2000
 
 // storedPrefs is UserPrefs as written to the database, token included.
@@ -310,7 +318,6 @@ func (s *Store) createSession(ctx context.Context, userID int64, userAgent, ip s
 	return tok, err
 }
 
-// SessionUser returns the user for a session token, sliding its expiry.
 // SessionActor is SessionUser as an actor that knows its own session, so
 // "sign out other sessions" can keep it.
 func (s *Store) SessionActor(ctx context.Context, tok string) (*kernel.Actor, error) {
@@ -321,6 +328,7 @@ func (s *Store) SessionActor(ctx context.Context, tok string) (*kernel.Actor, er
 	return &kernel.Actor{User: u, SessionHash: HashToken(tok)}, nil
 }
 
+// SessionUser returns the user for a session token, sliding its expiry.
 func (s *Store) SessionUser(ctx context.Context, tok string) (*kernel.User, error) {
 	h := HashToken(tok)
 	var uid, lastSeen, expires int64
@@ -580,6 +588,7 @@ func (s *Store) ActorFor(ctx context.Context, hash string, tokenID int64, touch 
 	}
 	a := &kernel.Actor{User: u, ReadOnly: ro, Agent: agent, Permissions: ps, TokenID: id, RunnerJob: job.Int64}
 	if job.Valid {
+		a.Scope = map[int64]int{}
 		if s.hooks.JobScope != nil {
 			if a.Scope, err = s.hooks.JobScope(ctx, job.Int64, u); err != nil {
 				return nil, err
@@ -603,7 +612,11 @@ type UserLink struct {
 }
 
 func (s *Store) linkURL(kind, tok string) string {
-	return fmt.Sprintf("%s/%s/%s", strings.TrimRight(s.opt.BaseURL, "/"), map[string]string{"invite": "invite", "reset": "reset"}[kind], tok)
+	base := ""
+	if s.opt.BaseURL != nil {
+		base = s.opt.BaseURL()
+	}
+	return fmt.Sprintf("%s/%s/%s", strings.TrimRight(base, "/"), map[string]string{"invite": "invite", "reset": "reset"}[kind], tok)
 }
 
 // CreateInvite makes a single-use signup link. Only admins can invite:

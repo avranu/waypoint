@@ -143,11 +143,16 @@ func callerName(skip int) string {
 // operationName shortens a function's full name to the operation's name:
 // "git.jmann.me/…/core.(*Service).CreateIssue.func1" and
 // "git.jmann.me/…/email.(*Service).SetEmailSettings" give "CreateIssue" and
-// "SetEmailSettings". Any package's Service is the same.
+// "SetEmailSettings". Any package's type and any pointer receiver is the same:
+// "…/users.(*Store).ResetPassword" gives "ResetPassword".
 func operationName(full string) string {
 	name := full[strings.LastIndex(full, "/")+1:]
 	_, name, _ = strings.Cut(name, ".") // the package: core, email, …
-	name = strings.TrimPrefix(name, "(*Service).")
+	if strings.HasPrefix(name, "(*") {
+		if _, rest, ok := strings.Cut(name, ")."); ok {
+			name = rest
+		}
+	}
 	name, _, _ = strings.Cut(name, ".")
 	return name
 }

@@ -6,10 +6,14 @@ import (
 	"context"
 	"net/http"
 
+	"writeclosure/internal/core/email"
 	"writeclosure/internal/core/kernel"
 )
 
-type Service struct{ k *kernel.Kernel }
+type Service struct {
+	k      *kernel.Kernel
+	mailer *email.Mailer
+}
 
 func (s *Service) write(ctx context.Context, a *kernel.Actor, f func(t *kernel.Tx) error) error {
 	return s.k.Write(ctx, a, f)
@@ -59,4 +63,11 @@ func (s *Service) Good(ctx context.Context, a *kernel.Actor) error {
 	}
 	s.notify("after the commit")
 	return nil
+}
+
+// BadMail sends an email before the commit.
+func (s *Service) BadMail(ctx context.Context, a *kernel.Actor) error {
+	return s.write(ctx, a, func(t *kernel.Tx) error {
+		return s.mailer.Send(ctx, "a@example.invalid", "s", "b") // want `an email \(Send\) inside Service.write`
+	})
 }

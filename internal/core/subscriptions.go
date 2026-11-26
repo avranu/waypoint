@@ -60,7 +60,9 @@ func (s *Service) subscriptionPlan() subscriptionPlan {
 		stages: []stageSpec{
 			{"notices", kernel.SeesPrivate, []subscription{
 				{"deliverNotification", nil, func(ctx context.Context, _ *Actor, e *Event) {
-					s.deliverNotification(ctx, hint[*storedNotice](e))
+					if n := hint[*storedNotice](e); n != nil {
+						s.deliverNotification(ctx, n)
+					}
 				}},
 			}},
 			{"live", kernel.SeesEvery, []subscription{

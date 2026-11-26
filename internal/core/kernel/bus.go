@@ -69,6 +69,10 @@ func (k *Kernel) Stage(name string, sees Sees) *Stage {
 // any write: the bus is not locked.
 func (k *Kernel) AfterStages(h BatchHandler) { k.batch = append(k.batch, h) }
 
+// isVisible is whether e goes to the visible stages and the batch
+// subscribers: it is not Private, Merged, Quiet or a Draft.
+func isVisible(e *Event) bool { return !e.Private && !e.Merged && !e.Quiet && !e.Draft }
+
 // Publish runs events through the bus: each stage in order, events outer and
 // subscribers inner, then the batch subscribers. The visible events are
 // chosen when the first stage that sees them begins, so what the stages
@@ -85,7 +89,7 @@ func (k *Kernel) Publish(ctx context.Context, actor *Actor, events []*Event) {
 			seen = filterEvents(events, func(e *Event) bool { return !e.Private })
 		case SeesVisible:
 			if !chosen {
-				visible = filterEvents(events, func(e *Event) bool { return !e.Private && !e.Merged && !e.Quiet && !e.Draft })
+				visible = filterEvents(events, isVisible)
 				chosen = true
 			}
 			seen = visible
@@ -99,7 +103,7 @@ func (k *Kernel) Publish(ctx context.Context, actor *Actor, events []*Event) {
 		}
 	}
 	if !chosen {
-		visible = filterEvents(events, func(e *Event) bool { return !e.Private && !e.Merged && !e.Quiet && !e.Draft })
+		visible = filterEvents(events, isVisible)
 	}
 	if len(visible) == 0 {
 		return

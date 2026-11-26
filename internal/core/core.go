@@ -60,7 +60,6 @@ type Config struct {
 	MeaningURL, MeaningToken string
 }
 
-// Service is the domain API.
 // emailService is the email domain's operations; Service embeds it, so their
 // methods are the facade's.
 type emailService = email.Service
@@ -68,6 +67,7 @@ type emailService = email.Service
 // usersService is the users domain's operations, embedded the same way.
 type usersService = users.Service
 
+// Service is the domain API.
 type Service struct {
 	*emailService
 	*usersService
@@ -215,14 +215,15 @@ func New(d *db.DB, cfg Config, log *slog.Logger) *Service {
 	s := &Service{
 		db:   d,
 		cfg:  cfg,
-		log:  log,
 		http: cfg.Egress.client(15 * time.Second),
 		Hub:  NewHub(),
-		k:    kernel.New(d, log),
 	}
+	s.jobs = newJobLedger(cfg.Logs, func() time.Time { return s.now() })
+	s.log = slog.New(&sourceHandler{ledger: s.jobs, next: log.Handler()})
+	s.k = kernel.New(d, s.log)
 	s.mailer = email.NewMailer(s.k)
 	s.emailService = email.New(s.mailer)
-	s.users = users.NewStore(s.k, users.Options{BaseURL: cfg.BaseURL, ArchivesTranscripts: func() bool { return s.cfg.TranscriptDir != "" }}, users.Hooks{
+	s.users = users.NewStore(s.k, users.Options{BaseURL: s.BaseURL, ArchivesTranscripts: func() bool { return s.cfg.TranscriptDir != "" }}, users.Hooks{
 		CredentialsChanged: func(ctx context.Context, t *kernel.Tx, userID int64) error {
 			return dropPushSubscriptions(ctx, t, userID)
 		},
@@ -236,9 +237,6 @@ func New(d *db.DB, cfg Config, log *slog.Logger) *Service {
 	s.k.AfterCommit = s.dispatch
 	s.subscribe()
 	s.started = s.now()
-	s.jobs = newJobLedger(cfg.Logs, func() time.Time { return s.now() })
-	s.log = slog.New(&sourceHandler{ledger: s.jobs, next: log.Handler()})
-	s.k.Log = s.log
 	forgeEgress := cfg.Egress
 	forgeEgress.AllowLoopback = true
 	s.Forges = &httpForgeClient{http: forgeEgress.client(forgeTimeout), patient: forgeEgress.client(forgePatientTimeout)}

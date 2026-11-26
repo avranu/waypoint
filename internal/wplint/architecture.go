@@ -76,7 +76,6 @@ var serviceSideEffects = map[string]string{
 	"deliverWebhooks": "a webhook",
 	"sendLogged":      "a webhook",
 	"sendPush":        "a push notification",
-	"sendEmail":       "an email",
 	"runChain":        "a model call",
 	"runChainAt":      "a model call",
 	"runAI":           "a model call",
@@ -111,6 +110,9 @@ func directEffect(fn *types.Func) string {
 		}
 		return ""
 	case underPkg(p, "internal/core"):
+		if inPkg(p, "internal/core/email") && recvName(fn) == "Mailer" && fn.Name() == "Send" {
+			return "an email"
+		}
 		if recv := recvName(fn); strings.HasPrefix(recv, "Forge") && isInterfaceMethod(fn) || recv == "httpForgeClient" {
 			return "a forge call"
 		}
