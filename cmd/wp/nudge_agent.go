@@ -43,8 +43,28 @@ var (
 	reWaitTestRun = lazyre.New(`(?:\bwp|\[w\]p)\s+(testsum|slot\s+(?:run|ls))\b`)
 	reWaitRequest = lazyre.New(`\bwp\s+(request|req)\b`)
 	reWaitAgents  = lazyre.New(`\bwp\s+agents\b`)
-	reTestsumCmd  = lazyre.New(`\bwp\s+testsum\s+--\s+[^;&|>)\n]+`)
+	reTestsumCmd  = lazyre.New(`\bwp\s+testsum\s+--[ \t]+`)
 )
+
+// testsumRun is the command's first `wp testsum -- ...` as it can be run
+// again, "" when there is none or it can't be cut out whole.
+func testsumRun(cmd string) string {
+	cmd = stripHeredocs(cmd)
+	m := reTestsumCmd.FindStringIndex(cmd)
+	if m == nil {
+		return ""
+	}
+	n, ok := shellSpan(cmd[m[0]:], openQuote(cmd[:m[0]]))
+	if !ok {
+		return ""
+	}
+	run := strings.TrimSpace(strings.ReplaceAll(cmd[m[0]:m[0]+n], "\\\n", ""))
+	// A backtick or a line break would end the code span the note quotes it in.
+	if strings.ContainsAny(run, "`\n") || strings.HasSuffix(run, "--") {
+		return ""
+	}
+	return run
+}
 
 // waitHint names the wp command that waits for what the command polls, ""
 // when it shows nothing we know.
@@ -52,11 +72,7 @@ func waitHint(cmd string, who caller) string {
 	switch {
 	case reWaitTestRun.MatchString(cmd):
 		hint := "`wp testsum` and `wp slot run` queue for the slot themselves, so there is nothing to wait for before running them."
-		if run := reTestsumCmd.FindString(cmd); run != "" {
-			run = strings.TrimSpace(run)
-			if n := len(run); n > 2 && run[n-2] == ' ' && run[n-1] >= '0' && run[n-1] <= '9' { // the 2 of 2>&1
-				run = strings.TrimSpace(run[:n-2])
-			}
+		if run := testsumRun(cmd); run != "" {
 			hint += " Run it as `" + run + "` and read its summary."
 		}
 		if who == callerFg {

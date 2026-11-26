@@ -64,7 +64,8 @@ func stripHeredocs(cmd string) string {
 }
 
 // loopBoundSecs is how long the loops in cmd run at most: the shorter of an
-// outer `timeout N` and the iteration count times the sleeps; +Inf for a
+// outer `timeout N` (one whose own command holds the loop and its sleep, not
+// one that limits a single check) and the iteration count times the sleeps; +Inf for a
 // while or until that nothing bounds; 0 for a loop that isn't a wait (over a
 // list of things, or reading lines).
 func loopBoundSecs(cmd string) float64 {
@@ -72,9 +73,13 @@ func loopBoundSecs(cmd string) float64 {
 		return 0
 	}
 	bound := math.Inf(1)
-	if m := reTimeoutN.FindStringSubmatch(cmd); m != nil {
-		n, _ := strconv.ParseFloat(m[1], 64)
-		bound = n * map[string]float64{"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m[2]]
+	for _, m := range reTimeoutN.FindAllStringSubmatchIndex(cmd, -1) {
+		end, _ := shellSpan(cmd[m[1]:], 0)
+		if run := cmd[m[1] : m[1]+end]; !reLoop.MatchString(run) || !reSleep.MatchString(run) {
+			continue
+		}
+		n, _ := strconv.ParseFloat(cmd[m[2]:m[3]], 64)
+		bound = math.Min(bound, n*map[string]float64{"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[cmd[m[4]:m[5]]])
 	}
 	if m := reLoopCount.FindStringSubmatch(cmd); m != nil {
 		for _, g := range m[1:] {
