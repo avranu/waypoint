@@ -39,6 +39,8 @@ func TestForgeRoute(t *testing.T) {
 		{"/api/v1/repos/acme/web/branch_protections", "/repos/{repo}/branch_protections"},
 		{"/api/v1/repos/acme/web/pulls/3/update", "/repos/{repo}/pulls/{n}/update"},
 		{"/api/v1/version", "/version"},
+		{"/api/v1/users/acme/repos", "/users/{user}/repos"},
+		{"/api/v1/orgs/acme/repos", "/orgs/{org}/repos"},
 		{"/api/v3/repos/acme/web/pulls/1", "/repos/{repo}/pulls/{n}"},
 		{"/repos/acme/web/pulls/1", "/repos/{repo}/pulls/{n}"},
 		{"/api/v4/projects/acme%2Fweb/merge_requests/7/notes", "/projects/{id}/merge_requests/{n}/notes"},

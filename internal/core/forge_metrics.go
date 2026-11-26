@@ -65,6 +65,7 @@ var forgeRestPlaceholder = map[string]string{
 // forgeOneSegPlaceholder names the single segment after a segment.
 var forgeOneSegPlaceholder = map[string]string{
 	"trees": "{ref}", "commits": "{sha}", "statuses": "{sha}", "labels": "{label}",
+	"users": "{user}", "orgs": "{org}", "groups": "{group}",
 }
 
 // forgeRoute is a low-cardinality template of an API path (escaped, query
