@@ -14,8 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 const (
@@ -62,7 +60,7 @@ func runnerArgs(o runnerOpts) []string {
 	if o.MaxJobs > 1 {
 		args = append(args, "--max-jobs", fmt.Sprint(o.MaxJobs))
 	}
-	if o.MaxAgents > 0 && o.MaxAgents != core.DefaultMaxAgents {
+	if o.MaxAgents > 0 {
 		args = append(args, "--max-agents", fmt.Sprint(o.MaxAgents))
 	}
 	if o.NoUsageSync {
@@ -198,7 +196,7 @@ func keepInstalled(c *cli, o *runnerOpts) {
 		keep("allow", len(prev.Allow) > 0)
 		keep("env", len(prev.Env) > 0)
 		keep("max-jobs", prev.MaxJobs > 1)
-		keep("max-agents", prev.MaxAgents > 0 && prev.MaxAgents != core.DefaultMaxAgents)
+		keep("max-agents", prev.MaxAgents > 0)
 		if !o.given["name"] {
 			o.Name = prev.Name
 		}
@@ -300,7 +298,7 @@ func parseRunnerArgs(words []string) *runnerInstalled {
 	if len(words) < 2 || words[1] != "runner" {
 		return nil
 	}
-	r := &runnerInstalled{MaxJobs: 1, MaxAgents: core.DefaultMaxAgents}
+	r := &runnerInstalled{MaxJobs: 1}
 	for i := 2; i < len(words); i++ {
 		name, val, hasVal := strings.Cut(strings.TrimLeft(words[i], "-"), "=")
 		next := func() string {

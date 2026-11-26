@@ -158,7 +158,7 @@ func (s *Service) runnerBusyWith(ctx context.Context, r *Runner, j *RunnerJobInf
 	defer rows.Close()
 	lane := laneOn(r, j.needs)
 	var doing []string
-	all, inLane := 0, 0
+	all, inLane, agents := 0, 0, 0
 	for rows.Next() {
 		var kind, source, cli string
 		if err := rows.Scan(&kind, &source, &cli); err != nil {
@@ -170,6 +170,9 @@ func (s *Service) runnerBusyWith(ctx context.Context, r *Runner, j *RunnerJobInf
 		}
 		if !sideLaneOn(r, l) {
 			all++
+		}
+		if l == LaneAgent {
+			agents++
 		}
 		if l == lane || !sideLaneOn(r, lane) && !sideLaneOn(r, l) {
 			doing = append(doing, jobNoun(kind, source))
@@ -194,13 +197,37 @@ func (s *Service) runnerBusyWith(ctx context.Context, r *Runner, j *RunnerJobInf
 	if lane == LaneLight && stopped && len(doing) == 0 {
 		return fmt.Sprintf("%s takes no more reviews or audits while memory is short (%s).", r.Name, why), nil
 	}
-	if len(doing) == 0 || (sideLaneOn(r, lane) && inLane < places && !stopped) {
+	// holding are the agent jobs in a test slot, which count against the heavy
+	// and light jobs' limits: the last report's, and no more than still run.
+	holding := 0
+	if c != nil && !sideLaneOn(r, lane) {
+		holding = min(c.AgentSlots, agents)
+	}
+	// filled is what the lane's own limit counts.
+	filled := inLane
+	if lane == LaneHeavy {
+		filled += holding
+	}
+	all += holding
+	blocked := holding > 0 && (c.Level == "overloaded" || all >= c.Max || lane == LaneHeavy && filled >= c.Limit)
+	if !stopped && !blocked && (len(doing) == 0 || sideLaneOn(r, lane) && inLane < places) {
 		return r.Name + " is online and should take it within seconds.", nil
 	}
-	running := "it is running " + listJobs(doing) + "."
-	if lane == LaneHeavy && c != nil && c.Heavy > inLane {
-		n := c.Heavy - inLane
-		running += fmt.Sprintf(" %d agent job%s hold%s a test slot, which counts as a heavy job while it does.", n, plural(n), map[bool]string{true: "", false: "s"}[n != 1])
+	running := "it is running no other job."
+	if len(doing) > 0 {
+		running = "it is running " + listJobs(doing) + "."
+	}
+	if holding > 0 {
+		verb := "s"
+		if holding != 1 {
+			verb = ""
+		}
+		note := fmt.Sprintf("%d agent job%s hold%s a test slot, which counts as a heavy job while it does.", holding, plural(holding), verb)
+		if len(doing) > 0 {
+			running += " " + note
+		} else {
+			running = note
+		}
 	}
 	switch {
 	case stopped && inLane < places && lane == LaneLight:
@@ -223,7 +250,7 @@ func (s *Service) runnerBusyWith(ctx context.Context, r *Runner, j *RunnerJobInf
 			one = "one heavy job"
 		}
 		return fmt.Sprintf("%s is overloaded (%s), so it runs %s at a time; %s", r.Name, c.Reason, one, running), nil
-	case c != nil && c.Level != "" && inLane >= c.Limit && c.Limit < c.Max:
+	case c != nil && c.Level != "" && filled >= c.Limit && c.Limit < c.Max:
 		why := ""
 		if c.Reason != "" {
 			why = " (" + c.Reason + ")"

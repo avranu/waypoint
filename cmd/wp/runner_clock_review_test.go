@@ -101,6 +101,31 @@ func TestJobClockKeepsTheWorkLimitWithoutAWaitsFile(t *testing.T) {
 	}
 }
 
+// With no waits file the runner can't tell when the job holds a test slot, so
+// an agent job counts as heavy until it ends.
+func TestJobClockCountsAnAgentJobHeavyWithoutAWaitsFile(t *testing.T) {
+	for _, work := range []int{0, 30} {
+		p := clockProc(t)
+		notADir := filepath.Join(t.TempDir(), "file")
+		if err := os.WriteFile(notADir, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("WAYPOINT_RUNNER_CACHE", filepath.Join(notADir, "cache"))
+		aj := &activeJob{id: 12, lane: laneAgent}
+		p.jobs[12] = aj
+		run := &jobRun{id: 12, timeout: time.Minute, out: newLogSink(), job: aj}
+		_, cancel, _ := p.jobClock(context.Background(), run, work)
+		time.Sleep(5 * clockEvery)
+		if h, _, _, _, _ := p.running(); h != 1 {
+			t.Errorf("work %d: %d heavy while it runs, want 1", work, h)
+		}
+		cancel()
+		if h, _, _, _, _ := p.running(); h != 0 {
+			t.Errorf("work %d: %d heavy after it ended", work, h)
+		}
+	}
+}
+
 // Audit 1391.11: the line about a job's waits says they didn't count against
 // its work only when it had a work limit.
 func TestJobClockWaitedLine(t *testing.T) {
@@ -162,7 +187,8 @@ func TestJobClockCancelStopsTheWatcherFirst(t *testing.T) {
 }
 
 // WP-1915: the runner is told when a command of the job takes a slot and when
-// it lets go, and woken each time, so a place it frees is used at once.
+// it lets go, and woken each time, so a place it frees is seen within
+// clockEvery.
 func TestJobClockTellsTheRunnerWhenASlotIsHeldAndReleased(t *testing.T) {
 	p := clockProc(t)
 	aj := &activeJob{id: 11, lane: laneAgent}
@@ -215,6 +241,35 @@ func TestAcquireSlotNotesItsWait(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
 	if len(lines) != 3 || !strings.HasPrefix(lines[0], "wait ") || !strings.HasSuffix(lines[0], " autopush") || !strings.HasPrefix(lines[1], "got ") || !strings.HasPrefix(lines[2], "free ") {
 		t.Fatalf("waits file: %q", b)
+	}
+}
+
+// A failed acquire holds nothing, so it must not read as a hold: the process
+// may live on (a push that goes ahead without its slot).
+func TestFailedAcquireNotesNoHold(t *testing.T) {
+	slotEnv(t)
+	waits := filepath.Join(t.TempDir(), "waits")
+	if err := os.WriteFile(waits, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(slotWaitsEnv, waits)
+	busy, err := acquireSlot(t.Context(), "autopush", 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.release()
+	if err := os.WriteFile(waits, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if h, err := acquireSlot(ctx, "autopush", 1, nil); err == nil {
+		h.release()
+		t.Fatal("took a slot that was held")
+	}
+	if _, since, holding := newSlotWaitReader(waits).scan(time.Now()); holding || !since.IsZero() {
+		b, _ := os.ReadFile(waits)
+		t.Errorf("after a failed acquire: holding %v, waiting since %v: %q", holding, since, b)
 	}
 }
 

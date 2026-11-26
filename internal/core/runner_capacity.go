@@ -67,7 +67,9 @@ var requestJobSources = []string{"request_cell", "request_apply"}
 // most agent jobs at once (--max-agents).
 const MaxRunnerJobs = 16
 
-// DefaultMaxAgents is --max-agents when it isn't given.
+// DefaultMaxAgents is --max-agents when it isn't given (a runner that can't
+// measure memory takes no more than --max-jobs then). Neither it nor the
+// memory marks that stop agent jobs are measured (WP-1915).
 const DefaultMaxAgents = 3
 
 // JobLane is the lane a job of this kind runs in.
