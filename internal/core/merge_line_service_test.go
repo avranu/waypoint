@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -899,21 +900,72 @@ func (checksErrForge) CommitChecks(context.Context, *Forge, string, string) ([]C
 	return nil, errors.New("forge down")
 }
 
-// A candidate whose checks can't be read is still running, and lost at the
-// run limit: a forge that never answers doesn't hold the line for ever.
-func TestLineCandidateWithUnreadableChecksIsLostAtTheLimit(t *testing.T) {
+// quietEnv: a candidate whose run has passed all but one check, the last
+// pending; stamp(d) gives each check a status posted d before the clock.
+func quietEnv(t *testing.T) (*stackEnv, *queueStack, func(d time.Duration)) {
+	t.Helper()
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.step()
+	se.line()
+	st := se.stacks()[0]
+	stamp := func(d time.Duration) {
+		at := se.clockNow().Add(-d).UTC().Format(time.RFC3339)
+		var checks []CommitCheck
+		for j, name := range []string{"ci / lint (push)", "ci / e2e (push)", "ci / backend (push)"} {
+			c := CommitCheck{Name: name, State: CheckSuccess, ID: int64(700 + j), Created: at}
+			if j == 2 {
+				c.State = CheckPending
+			}
+			checks = append(checks, c)
+		}
+		se.sg.setChecks(se.shas[0], checks...)
+	}
+	return se, st, stamp
+}
+
+// WP-1990: a candidate older than the run limit whose checks changed within
+// it is still running (2026-11-26: only a runner-starved aggregate was left),
+// and is lost once nothing has changed for the limit.
+func TestLineCandidateWaitingForARunnerIsNotLost(t *testing.T) {
+	se, st, stamp := quietEnv(t)
+	se.setClock(se.clockNow().Add(stackRunMax + time.Minute))
+	stamp(10 * time.Minute)
+	if got := se.s.pollCand(se.ctx, se.f, st); got.state != candRunning {
+		t.Fatalf("recent status: %+v", got)
+	}
+	stamp(stackRunMax + time.Minute)
+	if got := se.s.pollCand(se.ctx, se.f, st); got.state != candLost || got.reason != endLost {
+		t.Errorf("quiet for the limit: %+v", got)
+	}
+}
+
+// A candidate past the ceiling is lost whatever its statuses say.
+func TestLineCandidateIsLostAtTheCeiling(t *testing.T) {
+	se, st, stamp := quietEnv(t)
+	se.setClock(se.clockNow().Add(stackRunCeiling + time.Minute))
+	stamp(time.Minute)
+	if got := se.s.pollCand(se.ctx, se.f, st); got.state != candLost || got.reason != endLost {
+		t.Errorf("past the ceiling: %+v", got)
+	}
+}
+
+// Checks that can't be read don't end a candidate at the run limit (it may be
+// moving), only at the ceiling.
+func TestLineCandidateWithUnreadableChecksIsLostAtTheCeiling(t *testing.T) {
 	se := newStackEnv(t)
 	se.draftGreen(head7s, 5)
 	se.step()
 	se.line()
 	st := se.stacks()[0]
 	se.s.Forges = checksErrForge{se.sg}
-	if got := se.s.pollCand(se.ctx, se.f, st); got.state != candRunning {
-		t.Fatalf("poll %+v", got)
-	}
 	se.setClock(se.clockNow().Add(stackRunMax + time.Minute))
+	if got := se.s.pollCand(se.ctx, se.f, st); got.state != candRunning {
+		t.Fatalf("past the run limit: %+v", got)
+	}
+	se.setClock(se.clockNow().Add(stackRunCeiling))
 	if got := se.s.pollCand(se.ctx, se.f, st); got.state != candLost || got.reason != endLost {
-		t.Errorf("after the run limit: %+v", got)
+		t.Errorf("past the ceiling: %+v", got)
 	}
 }
 
@@ -1511,4 +1563,135 @@ func TestLineEjectConflictWriteFailureLeavesTheCandidateLive(t *testing.T) {
 	}
 	se.step()
 	se.conflictEnded(i, 8, false)
+}
+
+func TestLineBatchDepthFromTheLastEndedBatch(t *testing.T) {
+	type end struct {
+		state string
+		k     int
+	}
+	cases := []struct {
+		name string
+		rows []end
+		want int
+	}{
+		{"none", nil, 2},
+		{"merged 2", []end{{stackMerged, 2}}, 4},
+		{"merged 4", []end{{stackMerged, 4}}, 8},
+		{"merged 8", []end{{stackMerged, 8}}, 8},
+		{"conflict of 5", []end{{stackConflict, 5}}, 5},
+		{"conflict of 2", []end{{stackConflict, 2}}, 2},
+		{"failed", []end{{stackFailed, 6}}, 2},
+		{"the newest decides", []end{{stackMerged, 4}, {stackFailed, 4}}, 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			se := newStackEnv(t)
+			se.draftGreen(head7s, 5)
+			pr := se.pr(7)
+			for i, r := range c.rows {
+				hs := make([]stackHead, r.k)
+				for j := range hs {
+					hs[j] = stackHead{PRID: int64(j + 1), Number: j + 1, SHA: fmt.Sprintf("%040d", j+1)}
+				}
+				hj, _ := json.Marshal(hs)
+				if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO queue_stacks(forge_id, repo, base_ref, pr_id, base_sha, heads, branch, commit_sha, state, created_at, ended_at)
+					VALUES (?, ?, ?, ?, 'x', ?, ?, ?, ?, 1, ?)`, pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID, string(hj), fmt.Sprintf("wp-queue/main/d%d", i), fmt.Sprintf("d%06d", i), r.state, 100+i); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := se.s.lineBatchDepth(se.ctx, lineOf(pr)); got != c.want {
+				t.Errorf("lineBatchDepth = %d, want %d", got, c.want)
+			}
+		})
+	}
+}
+
+// A candidate of two heads passes before the front's own: the front merges on
+// it, which leaves it ready with a head to go. That head, still a draft, is
+// marked ready on it too and merges with no run between (WP-1994).
+func TestLineMarksEachDraftOfACandidateReadyAsItsTurnComes(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.draftGreen(head8s, 7)
+	se.step()
+	se.line()
+	if got := se.madeHeads(); len(got) != 2 || got[1] != "7,8" {
+		t.Fatalf("candidates made: %v", got)
+	}
+	se.stackRun(1, CheckSuccess, treeB, "7 "+head7s, "8 "+head8s)
+	se.sg.trees = map[string]string{"3e7000000": treeA, "3e8000000": treeB}
+	se.line()
+	if pr := se.pr(7); pr.State != "open" || pr.ReadyAt == nil {
+		t.Fatalf("#7 not marked ready on the candidate: %+v (%q)", pr, se.babysitOf(7).Wait)
+	}
+	if pr := se.pr(8); pr.ReadyAt != nil {
+		t.Fatalf("#8 marked ready before its turn: %+v", pr)
+	}
+	se.editSkipped(head7s, 30)
+	se.step()
+	if m := se.sg.merged(); len(m) != 1 || m[0].HeadSHA != head7s {
+		t.Fatalf("merges %+v (%q)", m, se.babysitOf(7).Wait)
+	}
+	se.line()
+	if pr := se.pr(8); pr.State != "open" || pr.ReadyAt == nil {
+		t.Fatalf("#8 not marked ready on the candidate after #7 merged: %+v (%q)", pr, se.babysitOf(8).Wait)
+	}
+	se.editSkipped(head8s, 40)
+	se.step()
+	if m := se.sg.merged(); len(m) != 2 || m[1].HeadSHA != head8s {
+		t.Fatalf("merges %+v (%q)", m, se.babysitOf(8).Wait)
+	}
+	if len(se.made) != 2 {
+		t.Errorf("candidates made: %v", se.madeHeads())
+	}
+}
+
+// failStackStatusOnce fails the first post of the stack status.
+type failStackStatusOnce struct {
+	*shipForge
+	failed bool
+}
+
+func (f *failStackStatusOnce) SetCommitStatus(ctx context.Context, fg *Forge, repo, sha string, st CommitStatusPost) error {
+	if st.Context == stackContext && !f.failed {
+		f.failed = true
+		return fmt.Errorf("the forge answered 502")
+	}
+	return f.shipForge.SetCommitStatus(ctx, fg, repo, sha, st)
+}
+
+// A later head that couldn't be marked ready is asked again on the next step:
+// the candidate, whose run already merged the head before it, is kept.
+func TestLineKeepsACandidateWhoseLaterHeadCouldNotBeMarkedReady(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.draftGreen(head8s, 7)
+	se.step()
+	se.line()
+	se.stackRun(1, CheckSuccess, treeB, "7 "+head7s, "8 "+head8s)
+	se.sg.trees = map[string]string{"3e7000000": treeA, "3e8000000": treeB}
+	se.line()
+	f := &failStackStatusOnce{shipForge: se.sg}
+	se.s.Forges = f
+	se.editSkipped(head7s, 30)
+	se.step()
+	if m := se.sg.merged(); len(m) != 1 || m[0].HeadSHA != head7s {
+		t.Fatalf("merges %+v (%q)", m, se.babysitOf(7).Wait)
+	}
+	if !f.failed {
+		t.Fatal("the step never posted the stack status for #8")
+	}
+	se.line()
+	if pr := se.pr(8); pr.State != "open" || pr.ReadyAt == nil {
+		t.Fatalf("#8 not marked ready on the next step: %+v (%q)", pr, se.babysitOf(8).Wait)
+	}
+	se.editSkipped(head8s, 40)
+	se.step()
+	if m := se.sg.merged(); len(m) != 2 || m[1].HeadSHA != head8s {
+		t.Fatalf("merges %+v (%q)", m, se.babysitOf(8).Wait)
+	}
+	if len(se.made) != 2 {
+		t.Errorf("candidates made: %v", se.madeHeads())
+	}
 }
