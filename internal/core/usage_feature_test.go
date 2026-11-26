@@ -585,7 +585,55 @@ func TestUsageForTaskZeroShellEditMarkerCountsTheHour(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o.ShellEdits != 0 || o.ShellEditsUncounted != 0 {
-		t.Errorf("shell edits %d, uncounted Bash calls %d; want 0 and 0 (the hour was counted)", o.ShellEdits, o.ShellEditsUncounted)
+	if o.ShellEdits != 0 || o.ShellEditsUncounted != 0 || o.ShellEditsCounted != 20 {
+		t.Errorf("shell edits %d, uncounted Bash calls %d, counted %d; want 0, 0, 20 (the hour was counted)", o.ShellEdits, o.ShellEditsUncounted, o.ShellEditsCounted)
+	}
+}
+
+// Bash calls of counted hours are reported apart (so a zero is "0+", not
+// unknown), and a call the client could not read (shell_unknown) is uncounted
+// without being counted twice with the hour's other Bash calls (audit
+// 1985.9, 1985.16).
+func TestUsageForTaskShellUnknownAndCountedCalls(t *testing.T) {
+	f := newFeatureEnv(t)
+	i := f.task(-10, "v0.80.0", "v0.79.0", 500)
+	f.ingest(f.me, "tools", "m1", UsageChunk{Tools: []UsageToolRow{
+		// A counted hour: 3 Bash calls, one wrote, one could not be read.
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "builtin", Tool: "Bash", Calls: 3},
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "shell_edit", Tool: "Bash", Calls: 1},
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "shell_unknown", Tool: "Bash", Calls: 1},
+		// An hour whose only record is an unreadable call, beside another.
+		{Hour: f.hour(-9), Session: "s1", Repo: "acme/web", Kind: "builtin", Tool: "Bash", Calls: 2},
+		{Hour: f.hour(-9), Session: "s1", Repo: "acme/web", Kind: "shell_unknown", Tool: "Bash", Calls: 1},
+	}})
+	o, err := f.s.UsageForTask(f.ctx, f.me, UsageQuery{}, i.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Uncounted: the 1 unknown of the counted hour and all 2 of the other.
+	if o.ShellEdits != 1 || o.ShellEditsUncounted != 3 || o.ShellEditsCounted != 2 {
+		t.Errorf("shell edits %d, uncounted %d, counted %d; want 1, 3, 2", o.ShellEdits, o.ShellEditsUncounted, o.ShellEditsCounted)
+	}
+	for _, u := range o.Used {
+		if u.Kind == "shell_unknown" || u.Kind == "shell_edit" {
+			t.Errorf("tools list has %+v", u)
+		}
+	}
+}
+
+// An hour with only a shell_unknown row is uncounted whole.
+func TestUsageForTaskOnlyUnknownRowIsUncounted(t *testing.T) {
+	f := newFeatureEnv(t)
+	i := f.task(-10, "v0.80.0", "v0.79.0", 500)
+	f.ingest(f.me, "tools", "m1", UsageChunk{Tools: []UsageToolRow{
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "builtin", Tool: "Bash", Calls: 2},
+		{Hour: f.hour(-10), Session: "s1", Repo: "acme/web", Kind: "shell_unknown", Tool: "Bash", Calls: 2},
+	}})
+	o, err := f.s.UsageForTask(f.ctx, f.me, UsageQuery{}, i.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.ShellEdits != 0 || o.ShellEditsUncounted != 2 || o.ShellEditsCounted != 0 {
+		t.Errorf("shell edits %d, uncounted %d, counted %d; want 0, 2, 0", o.ShellEdits, o.ShellEditsUncounted, o.ShellEditsCounted)
 	}
 }

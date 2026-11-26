@@ -735,17 +735,34 @@ func (s *Service) guardSpending(ctx context.Context, uid, first, before, from, t
 			bySess[j.session] = j.id
 		}
 	}
-	// A job whose own session has usage hours anywhere is counted by those
-	// hours, not by its cost_usd: asked of all the session's hours, not of the
-	// range this call reads, so the check and the split decide it alike.
-	jobSeen := map[int64]bool{}
+	// A job counts as the larger of its cost_usd and its session's priced
+	// hours: the hours carry what they can, and what they do not cover (a model
+	// with no price, hours not uploaded yet) is added from cost_usd below. They
+	// are the session's hours anywhere, not the range this call reads, so the
+	// check and the split decide it alike.
+	sessCost := map[int64]float64{}
 	for sess, id := range bySess {
-		var n int64
-		if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM usage_hours WHERE user_id = ? AND session = ?`, uid, sess).Scan(&n); err != nil {
+		mrows, err := s.db.R.QueryContext(ctx, `SELECT model, sum(input), sum(output), sum(cache_write_5m), sum(cache_write_1h), sum(cache_read)
+			FROM usage_hours WHERE user_id = ? AND session = ? GROUP BY model`, uid, sess)
+		if err != nil {
 			return nil, err
 		}
-		if n > 0 {
-			jobSeen[id] = true
+		for mrows.Next() {
+			var model string
+			var in, outT, cw5, cw1, cr int64
+			if err := mrows.Scan(&model, &in, &outT, &cw5, &cw1, &cr); err != nil {
+				_ = mrows.Close()
+				return nil, err
+			}
+			if p, ok := book.find(model); ok {
+				sessCost[id] += p.Cost(in, outT, cw5, cw1, cr)
+			}
+		}
+		if err := mrows.Close(); err != nil {
+			return nil, err
+		}
+		if err := mrows.Err(); err != nil {
+			return nil, err
 		}
 	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT hour, machine, session, model, sum(input), sum(output), sum(cache_write_5m), sum(cache_write_1h), sum(cache_read)
@@ -830,8 +847,9 @@ func (s *Service) guardSpending(ctx context.Context, uid, first, before, from, t
 		}
 	}
 	for _, j := range jobs {
-		cost, start, end := j.cost, j.start, j.end
-		if cost <= 0 || jobSeen[j.id] {
+		start, end := j.start, j.end
+		cost := j.cost - sessCost[j.id]
+		if cost <= 0 {
 			continue
 		}
 		end = max(end, start+1)

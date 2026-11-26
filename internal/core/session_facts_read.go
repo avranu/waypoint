@@ -179,7 +179,10 @@ type SessionFacts struct {
 		Failed       int `json:"failed"`
 		ShellEdits   int `json:"shell_edits"`
 		ShellUnknown int `json:"shell_unknown"`
-		ScriptEdits  int `json:"script_edits"` // edit tools a REPL script ran; not in Edits
+		// ShellNone is the Bash calls classified as writing no file of the
+		// work; with it above 0 a zero ShellEdits beside ShellUnknown is "0+".
+		ShellNone   int `json:"shell_none"`
+		ScriptEdits int `json:"script_edits"` // edit tools a REPL script ran; not in Edits
 		// ScriptShellEdits: Bash calls a REPL script ran that wrote a file; not in ShellEdits.
 		ScriptShellEdits int `json:"script_shell_edits"`
 		// FilesChanged and the line counts are the edit tools' only: a Bash
@@ -660,6 +663,8 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *Session
 				o.Changes.ShellUnknown++
 			case shell.Int64 == 1:
 				o.Changes.ShellEdits++
+			default:
+				o.Changes.ShellNone++
 			}
 		}
 		if transcript.IsEditTool(tool) {

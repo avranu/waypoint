@@ -89,6 +89,21 @@ func TestShellEditNeedsAWorkingDirectoryTheSessionWorkedIn(t *testing.T) {
 		{"for loop over names", "for f in a.go b.go; do sed -i s/a/b/ $f; done", "/r", nil, true},
 		{"a variable set by an earlier call is unknown", "sed -i s/a/b/ $REPO/a.go", "/r", nil, false},
 		{"a script kept in the same call", "cat > /tmp/e.py <<'EOF'\nopen('a.go','w').write('x')\nEOF\npython3 /tmp/e.py", "/r", nil, true},
+		// Audit 1985: perl's own switch rules, patch -o, and scripts that only read.
+		{"perl -pie: e is the backup suffix, the next word the program", "perl -pie 's/a/b/' /tmp/x.go", "/r", nil, false},
+		{"perl -pi with no -e", "perl -pi -n 's/a/b/' /tmp/x.go", "/r", nil, false},
+		{"perl script with its own long options", "perl tools/check.pl --config .claude/settings.json", "/r", nil, false},
+		{"perl script with --input", "perl convert.pl --input data.csv", "/r", nil, false},
+		{"perl -i with a program file", "perl -i fix.pl a.go", "/r", nil, true},
+		{"perl -i after --", "perl -pi -e s/a/b/ -- a.go", "/r", nil, true},
+		{"patch -o into tmp", "patch -o /tmp/out.go main.go < fix.diff", "/r", nil, false},
+		{"patch --output= into tmp", "patch --output=/tmp/out.go main.go fix.diff", "/r", nil, false},
+		{"patch -o into the tree", "patch -o out.go main.go < fix.diff", "/r", nil, true},
+		{"patch -r into tmp still patches in place", "patch -r /tmp/x.rej -p1 < fix.diff", "/r", nil, true},
+		{"git apply --check --apply applies", "git apply --check --apply fix.patch", "/r", nil, true},
+		{"a script that reads a repo file and writes where it cannot be followed", "python3 - <<'EOF'\nimport os, tempfile\nd = open('internal/a.go', 'r').read()\nout = os.path.join(tempfile.gettempdir(), 's.txt')\nopen(out, 'w').write(d)\nEOF", "/r", nil, false},
+		{"a script that reads with an encoding", "python3 - <<'EOF'\nimport os, tempfile\nd = open('internal/a.go', encoding='utf-8').read()\nopen(os.path.join(tempfile.gettempdir(), 's.txt'), 'w').write(d)\nEOF", "/r", nil, false},
+		{"a node script that reads a repo file", "node -e \"const fs=require('fs'); const d=fs.readFileSync('web/a.ts','utf8'); fs.writeFileSync(process.env.OUT, d)\"", "/r", nil, false},
 		{"a scratch script that writes scratch", "cat > /tmp/e.py <<'EOF'\nopen('/tmp/a.go','w').write('x')\nEOF\npython3 /tmp/e.py", "/r", nil, false},
 	} {
 		s := &ShellSession{}
@@ -98,6 +113,79 @@ func TestShellEditNeedsAWorkingDirectoryTheSessionWorkedIn(t *testing.T) {
 		if got, known := s.Edit(c.cmd, c.cwd); !known || got != c.want {
 			t.Errorf("%s: Edit(%q) = %v, %v; want %v", c.name, c.cmd, got, known, c.want)
 		}
+	}
+}
+
+// A session that has worked in more directories than it remembers still
+// counts a write in the directory the call itself runs in (audit 1985.17).
+func TestShellEditCountsTheCwdWhenTheRootsAreFull(t *testing.T) {
+	s := &ShellSession{}
+	for i := 0; len(s.Roots) < shellMaxRoots; i++ {
+		s.Note("/srv/d" + strings.Repeat("x", i))
+	}
+	if got, known := s.Edit("echo x > a.go", "/r/new"); !got || !known {
+		t.Errorf("a relative write in a cwd past the cap: %v, %v", got, known)
+	}
+	if len(s.Roots) != shellMaxRoots {
+		t.Errorf("roots grew to %d", len(s.Roots))
+	}
+	if got, _ := s.Edit("echo x > /r/new/b.go", "/srv/elsewhere"); got {
+		t.Errorf("a directory that could not be remembered is not one the session worked in later")
+	}
+}
+
+func TestPerlInPlaceFiles(t *testing.T) {
+	for _, c := range []struct {
+		args string
+		want string
+	}{
+		{"-pi -e s/a/b/ a.go b.go", "a.go b.go"},
+		{"-pie s/a/b/ notes.md", "notes.md"},
+		{"-i.bak -pe s/a/b/ a.go", "a.go"},
+		{"tools/check.pl --config .claude/settings.json", ""},
+		{"-i fix.pl a.go", "a.go"},
+		{"-pe s/a/b/ a.go -i", ""},
+		{"-Mstrict -ne print a.go", ""},
+		{"-pi -e s/a/b/ -- -a.go", "-a.go"},
+	} {
+		if got := strings.Join(PerlInPlaceFiles(strings.Fields(c.args)), " "); got != c.want {
+			t.Errorf("perl %s: %q, want %q", c.args, got, c.want)
+		}
+	}
+}
+
+// The guard and the recogniser find the script a command hands an
+// interpreter by one rule (audit 1985.20).
+func TestInlineScript(t *testing.T) {
+	for _, c := range []struct {
+		words   []string
+		heredoc string
+		want    string
+	}{
+		{[]string{"python3", "-c", "print(1)"}, "", "print(1)"},
+		{[]string{"python3.12", "-"}, "x = 1", "x = 1"},
+		{[]string{"uv", "run", "python", "-c", "y"}, "", "y"},
+		{[]string{"node", "-e", "z"}, "", "z"},
+		{[]string{"/usr/bin/ruby", "-e", "r"}, "", "r"},
+		{[]string{"cat"}, "not a script", ""},
+		{[]string{"python3", "edit.py"}, "", ""},
+	} {
+		if got := InlineScript(c.words, c.heredoc); got != c.want {
+			t.Errorf("%v: %q, want %q", c.words, got, c.want)
+		}
+	}
+}
+
+// The guard reads a script whole: a write past the part the usage report
+// reads is still found (audit 1985.2).
+func TestScriptWritesReadsTheWholeScript(t *testing.T) {
+	long := strings.Repeat("x = 1\n", traceMaxScript/6+10) + "open('.claude/settings.json','w').write('{}')\n"
+	if got := ScriptWrites(long); len(got) != 1 || got[0] != ".claude/settings.json" {
+		t.Errorf("a write past %d bytes: %v", traceMaxScript, got)
+	}
+	many := strings.Repeat("open('a.txt','w').write('x')\n", 80) + "open('.claude/settings.json','w').write('{}')\n"
+	if got := ScriptWrites(many); len(got) == 0 || got[len(got)-1] != ".claude/settings.json" {
+		t.Errorf("the 81st write site: %v", got)
 	}
 }
 

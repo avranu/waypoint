@@ -1431,11 +1431,15 @@ func (g *guard) gitHit(args []string) *guardHit {
 			}
 		case a == "-c" || a == "--namespace" || a == "--exec-path":
 			i++
-		case strings.HasPrefix(a, "--git-dir=") || strings.HasPrefix(a, "--work-tree="):
-			_, v, _ := strings.Cut(a, "=")
+		case strings.HasPrefix(a, "--git-dir=") || strings.HasPrefix(a, "--work-tree=") || (a == "--git-dir" || a == "--work-tree") && i+1 < len(args):
+			_, v, eq := strings.Cut(a, "=")
+			if !eq { // --git-dir DIR: the value is the next word, not the verb
+				i++
+				v = args[i]
+			}
 			if p := g.site.resolve(dir, v); p != "" {
 				dir = p
-				if strings.HasPrefix(a, "--git-dir=") {
+				if strings.HasPrefix(a, "--git-dir") {
 					dir = filepath.Dir(p)
 				}
 			}
@@ -1506,7 +1510,8 @@ var patchValueFlags = map[string]bool{"-p": true, "--strip": true, "-F": true, "
 // its output (-o) and its reject file (-r). A patch that arrives through a
 // pipe (git diff | git apply), from something that is not a regular file, or
 // from a file that is not there yet cannot be read, and is let through. A
-// run that only checks or lists (--check, --stat, --dry-run) writes nothing.
+// run that only checks or lists (--check, --stat, --dry-run) writes nothing,
+// unless git is told to apply as well (--check --apply).
 func (g *guard) patchTargets(c *guardCmd, name string, args []string) []string {
 	dir := g.dir
 	switch name {
@@ -1519,7 +1524,7 @@ func (g *guard) patchTargets(c *guardCmd, name string, args []string) []string {
 				if p := g.site.resolve(dir, args[i]); p != "" {
 					dir = p
 				}
-			case a == "-c" || a == "--namespace" || a == "--exec-path":
+			case trscript.GitValueFlags(a): // -c, --git-dir, --work-tree …: the next word is a value, not the verb
 				i++
 			case strings.HasPrefix(a, "-"):
 			default:
@@ -1540,7 +1545,7 @@ func (g *guard) patchTargets(c *guardCmd, name string, args []string) []string {
 			dir = p
 		}
 	}
-	first := true
+	first, lists, applies := true, false, false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		isPatch := name == "patch"
@@ -1553,12 +1558,14 @@ func (g *guard) patchTargets(c *guardCmd, name string, args []string) []string {
 		}
 		switch {
 		case a == "--check" || a == "--stat" || a == "--numstat" || a == "--summary" || a == "--dry-run":
-			return nil
+			lists = true
+		case !isPatch && a == "--apply":
+			applies = true // git apply --check --apply: lists and applies
 		case isPatch && (a == "-i" || a == "--input"):
 			if v, ok := next(); ok {
 				files = append(files, v)
 			}
-		case isPatch && (a == "-d" || a == "--directory"):
+		case a == "--directory" || isPatch && a == "-d":
 			if v, ok := next(); ok {
 				cd(v)
 			}
@@ -1590,6 +1597,9 @@ func (g *guard) patchTargets(c *guardCmd, name string, args []string) []string {
 			first = false
 			files = append(files, a) // git: a patch; patch: read too, in case it is the patch
 		}
+	}
+	if lists && !applies {
+		return nil
 	}
 	files = append(files, c.Ins...)
 	var out []string
@@ -1680,15 +1690,8 @@ func patchFilesIn(r io.Reader, add func(string)) {
 // spells them: the same reading the usage report's write recogniser makes
 // (internal/transcript). A path the script builds at run time is not seen.
 func scriptTargets(c *guardCmd, name string, args []string) []string {
-	if !rePython.MatchString(name) && name != "node" && name != "ruby" && name != "bun" && name != "deno" {
-		return nil
-	}
-	script := c.Heredoc
-	for i := 0; i+1 < len(args) && script == ""; i++ {
-		if args[i] == "-c" || args[i] == "-e" {
-			script = args[i+1]
-		}
-	}
+	// One rule with the recogniser for what runs a script and where it is.
+	script := trscript.InlineScript(append([]string{name}, args...), c.Heredoc)
 	if script == "" {
 		return nil
 	}
@@ -1744,7 +1747,7 @@ func writeTargets(name string, args []string) []string {
 		if len(sc.pos) > 1 {
 			return sc.pos[1:]
 		}
-	case "touch", "mkdir", "rm", "rmdir", "unlink", "shred", "truncate", "patch":
+	case "touch", "mkdir", "rm", "rmdir", "unlink", "shred", "truncate": // patch: see patchTargets, which tells the file patched from the patch read
 		return scanArgs(args, "sr").pos
 	case "curl":
 		return scanArgs(args, curlValShort, curlValLong...).values("-o", "--output", "-D", "--dump-header", "-c", "--cookie-jar", "--stderr", "--trace",

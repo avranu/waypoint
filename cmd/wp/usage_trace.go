@@ -408,8 +408,7 @@ func classifyTraceCall(name string, input json.RawMessage, cwd string, at, ctx i
 	case "Bash":
 		tc.Scan = true
 		var cmds []traceCommand
-		home, _ := os.UserHomeDir()
-		traceCommands(in.Command, cwd, map[string]string{"HOME": home}, mem, &cmds)
+		traceCommands(in.Command, cwd, traceVars(cwd), mem, &cmds)
 		for _, c := range cmds {
 			switch c.Head {
 			case "wp next", "wp take":

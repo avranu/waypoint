@@ -80,7 +80,7 @@ func (m *ShellScripts) Keep(at, body string) {
 			break
 		}
 	}
-	ps, sure := traceScriptWrites(body)
+	ps, sure := traceScriptWrites(body, false)
 	ps = slices.DeleteFunc(ps, func(p string) bool { return len(p) > shellMaxValue })
 	if len(ps) == 0 {
 		return
@@ -335,13 +335,35 @@ func traceCd(dir string, args []string) string {
 
 // interpreter finds the interpreter a command runs (python3, uv run python,
 // node), as its place among the words, or -1.
-func (c *ShellCommand) interpreter() int {
-	for i := 0; i < len(c.Words) && i < 4; i++ {
-		if b := path.Base(c.Words[i]); traceInterpreters[b] || strings.HasPrefix(b, "python3.") {
+func (c *ShellCommand) interpreter() int { return interpreterAt(c.Words) }
+
+func interpreterAt(words []string) int {
+	for i := 0; i < len(words) && i < 4; i++ {
+		if b := path.Base(words[i]); traceInterpreters[b] || strings.HasPrefix(b, "python3.") || strings.HasPrefix(b, "python2") {
 			return i
 		}
 	}
 	return -1
+}
+
+// InlineScript is the script a command hands an interpreter on the line
+// itself: the heredoc on its input, else the argument of -c or -e. "" when
+// the command runs no interpreter or gives it a file. The guard and the
+// write recogniser both find it here, so they agree on what runs a script.
+func InlineScript(words []string, heredoc string) string {
+	i := interpreterAt(words)
+	if i < 0 || heredoc != "" {
+		if i < 0 {
+			return ""
+		}
+		return heredoc
+	}
+	for j := i + 1; j+1 < len(words); j++ {
+		if words[j] == "-c" || words[j] == "-e" {
+			return words[j+1]
+		}
+	}
+	return ""
 }
 
 // ran is the script file a command hands its interpreter (python3 edit.py),
@@ -396,9 +418,15 @@ const (
 // them. A path given as a name is followed to what the script sets the name
 // to (p = 'a.go'; for p in ['a.go', 'b.go']). sure is false when the script
 // writes but no path could be followed: then every file the script names is
-// listed, and the caller can't tell the written from the read.
-func traceScriptWrites(script string) (paths []string, sure bool) {
-	if len(script) > traceMaxScript {
+// listed, other than one it is seen to read, and the caller can't tell the
+// written from the read. whole reads the script to its end and every write
+// in it (the guard, which must not miss one); otherwise the first
+// traceMaxScript bytes and a bounded number of writes are read.
+func traceScriptWrites(script string, whole bool) (paths []string, sure bool) {
+	sites, strs := 64, traceMaxStrings
+	if whole {
+		sites, strs = -1, -1
+	} else if len(script) > traceMaxScript {
 		script = script[:traceMaxScript]
 	}
 	if !traceScriptWriteRE.MatchString(script) {
@@ -408,29 +436,97 @@ func traceScriptWrites(script string) (paths []string, sure bool) {
 	// scanning, so a long script is followed fewer times than a short one.
 	budget := min(traceScriptBudget, max(3, traceScriptScan/(3*len(script)+1)))
 	for _, re := range traceScriptSiteREs {
-		for _, m := range re.FindAllStringSubmatch(script, 64) {
+		for _, m := range re.FindAllStringSubmatch(script, sites) {
 			paths = append(paths, traceScriptExpr(script, m[1], 0, &budget)...)
 		}
 	}
 	if len(paths) > 0 {
 		return paths, true
 	}
-	for _, m := range traceScriptStrRE.FindAllStringSubmatch(script, traceMaxStrings) {
-		if budget <= 0 {
-			break
+	// Each string is judged where it stands (no second search of the text),
+	// and one the script reads anywhere is left out.
+	var names []string
+	reads := map[string]bool{}
+	for _, m := range traceScriptStrRE.FindAllStringSubmatchIndex(script, strs) {
+		at := m[2]
+		if at < 0 {
+			at = m[4]
 		}
-		budget--
-		s := m[1] + m[2]
-		if !ShellFileShape(s) {
+		str := script[at : m[1]-1]
+		if !ShellFileShape(str) {
 			continue
 		}
-		q := `['"]` + regexp.QuoteMeta(s) + `['"]\s*\)`
-		if read := regexp.MustCompile(`\bopen\(\s*` + q + `|` + q + `\.read_(?:text|bytes)\(`); read.MatchString(script) {
-			continue
+		if scriptScratchBeforeRE.MatchString(script[max(0, m[0]-64):m[0]]) {
+			continue // a name under the temporary directory, not a path of its own
 		}
-		paths = append(paths, s)
+		if scriptReadsAt(script, m[0], m[1]) {
+			reads[str] = true
+		}
+		names = append(names, str)
+	}
+	for _, n := range names {
+		if !reads[n] {
+			paths = append(paths, n)
+		}
 	}
 	return paths, false
+}
+
+var (
+	scriptOpenBeforeRE    = lazyre.New(`\bopen\(\s*$`)
+	scriptReadBeforeRE    = lazyre.New(`(?:\breadFile(?:Sync)?|\bFile\.(?:read|readlines|foreach)|\b(?:exists|isfile|existsSync))\(\s*$`)
+	scriptScratchBeforeRE = lazyre.New(`\bjoin\(\s*(?:tempfile\.\w+\(\)|os\.tmpdir\(\)|['"]/tmp[^'"\n]*['"])\s*,\s*$`)
+	scriptReadAfterRE     = lazyre.New(`^\s*\)\.read_(?:text|bytes)\(`)
+)
+
+// scriptReadsAt says the string at script[from:to] is one the script reads:
+// open(S) with no mode or a read mode, S).read_text(, readFileSync(S,
+// File.read(S, exists(S).
+func scriptReadsAt(script string, from, to int) bool {
+	before := script[max(0, from-64):from]
+	after := script[to:min(len(script), to+200)]
+	if i := strings.IndexByte(after, '\n'); i >= 0 {
+		after = after[:i]
+	}
+	switch {
+	case scriptReadAfterRE.MatchString(after), scriptReadBeforeRE.MatchString(before):
+		return true
+	case scriptOpenBeforeRE.MatchString(before):
+		end := strings.IndexByte(after, ')')
+		if end < 0 {
+			return false
+		}
+		return scriptOpenReads(after[:end])
+	}
+	return false
+}
+
+// scriptOpenReads reads the arguments after open's path: it only reads when
+// its mode (the second argument, or mode=) is absent or has none of w, a, x
+// and +.
+func scriptOpenReads(rest string) bool {
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return true
+	}
+	if rest[0] != ',' {
+		return false // the path is an expression that goes on (S + x, S % y)
+	}
+	for i, part := range strings.Split(rest[1:], ",") {
+		part = strings.TrimSpace(part)
+		if v, ok := strings.CutPrefix(part, "mode"); ok && strings.HasPrefix(strings.TrimSpace(v), "=") {
+			part = strings.TrimSpace(strings.TrimSpace(v)[1:])
+		} else if i > 0 || strings.Contains(part, "=") {
+			continue
+		}
+		if len(part) < 2 || part[0] != '\'' && part[0] != '"' {
+			return false // a mode the script computes
+		}
+		if strings.ContainsAny(part, "wax+") {
+			return false
+		}
+	}
+	return true
 }
 
 // traceScriptExpr follows a path expression of a script to the strings it
@@ -639,33 +735,45 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 			}
 		}
 	case "patch", "git apply", "git am":
-		if !has("--check", "--stat", "--numstat", "--summary", "--dry-run", "-R", "--reverse") {
-			root := ""
-			if prog == "patch" { // patch -d DIR: the files are under DIR
-				for i, a := range args {
-					if v, ok := strings.CutPrefix(a, "--directory="); ok {
-						root = v
-					} else if v, ok := strings.CutPrefix(a, "-d"); ok && !strings.HasPrefix(a, "--") {
-						if root = v; v == "" && i+1 < len(args) {
-							root = args[i+1]
-						}
-					} else if a == "--directory" && i+1 < len(args) {
-						root = args[i+1]
-					}
+		// A run that only checks or lists writes nothing, unless git is also
+		// told to apply.
+		if !has("--check", "--stat", "--numstat", "--summary", "--dry-run", "-R", "--reverse") || prog != "patch" && has("--apply") {
+			root, to := "", "" // patch -d DIR: the files are under DIR; patch -o FILE: the one file written
+			for i, a := range args {
+				next := ""
+				if i+1 < len(args) {
+					next = args[i+1]
+				}
+				switch {
+				case strings.HasPrefix(a, "--directory="):
+					root = a[len("--directory="):]
+				case a == "--directory":
+					root = next
+				case prog != "patch":
+				case strings.HasPrefix(a, "--output="):
+					to = a[len("--output="):]
+				case a == "--output" || a == "-o":
+					to = next
+				case a == "-d":
+					root = next
+				case strings.HasPrefix(a, "--"):
+				case strings.HasPrefix(a, "-d"):
+					root = a[2:]
+				case strings.HasPrefix(a, "-o"):
+					to = a[2:]
 				}
 			}
-			out = append(out, ShellWrite{Kind: "patch", Path: "*", Root: root})
+			if to != "" {
+				out = append(out, ShellWrite{Kind: "patch", Path: to})
+			} else {
+				out = append(out, ShellWrite{Kind: "patch", Path: "*", Root: root})
+			}
 		}
 	}
 	if i := c.interpreter(); i >= 0 {
-		script := c.Script
-		for j := i + 1; j+1 < len(c.Words) && script == ""; j++ {
-			if c.Words[j] == "-c" || c.Words[j] == "-e" {
-				script = c.Words[j+1]
-			}
-		}
+		script := InlineScript(c.Words, c.Script)
 		kind := "script"
-		ps, sure := traceScriptWrites(script)
+		ps, sure := traceScriptWrites(script, false)
 		if !sure {
 			kind = "script?"
 		}
@@ -675,40 +783,46 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 	return out
 }
 
-// PerlInPlaceFiles are the files `perl -i`, `-pi -e CODE` or `-i.bak` edits:
-// the arguments that are not switches, when a switch asks for in-place
-// editing. Without -i perl writes nothing the call shows. The guard reads the
+// PerlInPlaceFiles are the files `perl -i`, `-pi -e CODE` or `-i.bak` edits,
+// read as perl reads its command line: switches come first and end at the
+// first word that is not one (or at --); with no -e the next word is the
+// program, not a file; the words after are the files, and they are edited
+// only when a switch asked for in-place editing. So the options of a script
+// (perl check.pl --config x) are no switches of perl's, and in -pie the e is
+// -i's backup suffix and the word after is the program. The guard reads the
 // same rule, so the two cannot drift apart.
 func PerlInPlaceFiles(args []string) []string {
-	inPlace := false
-	var files []string
-	for i := 0; i < len(args); i++ {
+	inPlace, code := false, false
+	i := 0
+	for ; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {
-			files = append(files, args[i+1:]...)
+			i++
 			break
 		}
 		if len(a) < 2 || a[0] != '-' {
-			files = append(files, a)
-			continue
+			break
 		}
-		in, next := perlSwitch(a)
-		inPlace = inPlace || in
+		in, has, next := perlSwitch(a)
+		inPlace, code = inPlace || in, code || has
 		if next {
 			i++
 		}
 	}
-	if !inPlace {
+	if !code {
+		i++ // the program file
+	}
+	if !inPlace || i >= len(args) {
 		return nil
 	}
-	return files
+	return args[i:]
 }
 
 // perlInPlace says the switches that begin args (perl's own, before its
 // script or files) ask for in-place editing.
 func perlInPlace(args []string) bool {
 	for i := 0; i < len(args) && len(args[i]) >= 2 && args[i][0] == '-' && args[i] != "--"; i++ {
-		in, next := perlSwitch(args[i])
+		in, _, next := perlSwitch(args[i])
 		if in {
 			return true
 		}
@@ -720,22 +834,24 @@ func perlInPlace(args []string) bool {
 }
 
 // perlSwitch reads one cluster of perl switches (-pi, -i.bak, -Mstrict,
-// -0777pe). inPlace: it holds -i. next: it ends in -e or -E, whose code is
-// the next argument. A switch that takes the rest of the cluster as its
-// value ends the reading: -M and -m (a module), -I (a directory), -x, -F, -C,
-// -D, -V and -e's own code, so the i of -Mstrict or -Ilib is no -i.
-func perlSwitch(a string) (inPlace, next bool) {
+// -0777pe). inPlace: it holds -i. code: it holds -e or -E. next: that -e
+// ends the cluster, so its code is the next argument. A switch that takes
+// the rest of the cluster as its value ends the reading: -i (a backup
+// suffix), -M and -m (a module), -I (a directory), -x, -F, -C, -D, -V and
+// -e's own code, so the i of -Mstrict or -Ilib is no -i and the e of -pie no
+// -e.
+func perlSwitch(a string) (inPlace, code, next bool) {
 	for j := 1; j < len(a); j++ {
 		switch a[j] {
 		case 'i':
-			return true, false // the rest is the backup suffix
+			return true, false, false
 		case 'e', 'E':
-			return false, j == len(a)-1
+			return false, true, j == len(a)-1
 		case 'M', 'm', 'I', 'x', 'F', 'C', 'D', 'V':
-			return false, false
+			return false, false, false
 		}
 	}
-	return false, false
+	return false, false, false
 }
 
 // formatterValueFlags are the flags of gofmt, goimports and prettier whose
@@ -780,11 +896,17 @@ func FormatterFiles(args []string) []string {
 }
 
 // ScriptWrites lists the paths a script given to an interpreter (python,
-// node, ruby) writes, as the script spells them: see traceScriptWrites.
+// node, ruby) writes, as the script spells them: see traceScriptWrites. It
+// reads the script whole, however long: this is the guard's reading, and a
+// write past a cut would be one it let through.
 func ScriptWrites(script string) []string {
-	ps, _ := traceScriptWrites(script)
+	ps, _ := traceScriptWrites(script, true)
 	return ps
 }
+
+// GitValueFlags are git's own flags (before its subcommand) that take the
+// next word.
+func GitValueFlags(flag string) bool { return traceGitValueFlags[flag] }
 
 // sedInPlaceRE: -i alone, with a suffix, or after sed's other one-letter
 // flags (-ri, -Ei, -ni).

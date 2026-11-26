@@ -319,9 +319,13 @@ func (s *Service) taskAttribution(ctx context.Context, actor *Actor, sc *usageSc
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	// A session that took a task with no run recorded is the task's whole.
+	// One with a run is read by its runs: that its run is older than the
+	// window does not make today's hours the task's (they are carry-over).
 	// #nosec G202 -- as above
 	rows, err = s.db.R.QueryContext(ctx, `SELECT s.machine, s.cli_id, s.issue_id FROM agent_sessions s
-		WHERE `+where+` AND s.issue_id IS NOT NULL AND s.last_seen_at >= ?`, append(args, sc.from)...)
+		WHERE `+where+` AND s.issue_id IS NOT NULL AND s.last_seen_at >= ?
+		AND NOT EXISTS (SELECT 1 FROM agent_runs r WHERE r.session_id = s.id)`, append(args, sc.from)...)
 	if err != nil {
 		return nil, err
 	}

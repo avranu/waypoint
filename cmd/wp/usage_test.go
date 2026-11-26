@@ -845,15 +845,17 @@ func TestUsageParseShellEditRowsKeepScripts(t *testing.T) {
 
 func TestEditsText(t *testing.T) {
 	for _, c := range []struct {
-		edits, shell, unc int64
-		want              string
+		edits, shell, unc, counted int64
+		want                       string
 	}{
-		{11, 193, 0, "edits 11, shell edits 193"},
-		{11, 0, 40, "edits 11, shell edits unknown (40 Bash calls not counted)"},
-		{11, 5, 40, "edits 11, shell edits 5+ (40 Bash calls not counted)"},
+		{11, 193, 0, 0, "edits 11, shell edits 193"},
+		{11, 0, 40, 0, "edits 11, shell edits unknown (40 Bash calls not counted)"},
+		{11, 5, 40, 9, "edits 11, shell edits 5+ (40 Bash calls not counted)"},
+		// Some hours were counted and none of their Bash calls wrote.
+		{11, 0, 40, 9, "edits 11, shell edits 0+ (40 Bash calls not counted)"},
 	} {
-		if got := editsText(c.edits, c.shell, c.unc); got != c.want {
-			t.Errorf("editsText(%d,%d,%d) = %q, want %q", c.edits, c.shell, c.unc, got, c.want)
+		if got := editsText(c.edits, c.shell, c.unc, c.counted); got != c.want {
+			t.Errorf("editsText(%d,%d,%d,%d) = %q, want %q", c.edits, c.shell, c.unc, c.counted, got, c.want)
 		}
 	}
 }

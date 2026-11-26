@@ -396,12 +396,15 @@ type TaskUsage struct {
 	// formatters, scripts that write). It is only known for hours whose
 	// client uploaded the shell_edit marker; ShellEditsUncounted is the
 	// Bash calls of the other hours, so ShellEdits is then a floor.
-	ShellEdits          int64           `json:"shell_edits"`
-	ShellEditsUncounted int64           `json:"shell_edits_uncounted"`
-	PRs                 int64           `json:"prs"`   // merged
-	Files               int64           `json:"files"` // changed in them
-	Lines               int64           `json:"lines"` // added + deleted in them
-	Used                []TaskUsageTool `json:"used"`
+	ShellEdits          int64 `json:"shell_edits"`
+	ShellEditsUncounted int64 `json:"shell_edits_uncounted"`
+	// ShellEditsCounted is the Bash calls of the hours the client counted
+	// that it read whole; with it above 0 a zero ShellEdits is "0+".
+	ShellEditsCounted int64           `json:"shell_edits_counted"`
+	PRs               int64           `json:"prs"`   // merged
+	Files             int64           `json:"files"` // changed in them
+	Lines             int64           `json:"lines"` // added + deleted in them
+	Used              []TaskUsageTool `json:"used"`
 	// AfterRun is spend in the task's sessions after its runs ended that no
 	// other task claimed (WP-1884); nil without any. Never part of CostUSD.
 	AfterRun *TaskCarryOver `json:"after_run,omitempty"`
@@ -587,6 +590,7 @@ func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskA
 	seen := map[toolKey]*TaskUsageTool{}
 	bash := map[trendKey]int64{}
 	marked := map[trendKey]bool{}
+	unread := map[trendKey]int64{} // Bash calls the client could not read
 	for rows.Next() {
 		var k trendKey
 		var kind, tool, detail, via string
@@ -613,6 +617,12 @@ func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskA
 		if kind == "builtin" && tool == "Bash" {
 			bash[k] += calls
 		}
+		if kind == transcript.ShellUnknownKind {
+			// One of the hour's Bash calls (builtin Bash has it too): it is
+			// uncounted, and settled with the hour below, not added here.
+			unread[k] += calls
+			continue
+		}
 		if kind == transcript.ShellEditKind {
 			marked[k] = true
 			// A non-zero exit still counts (sed -i ... && go test writes before
@@ -633,9 +643,13 @@ func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskA
 		return err
 	}
 	for k, n := range bash {
+		u := min(unread[k], n)
 		if !marked[k] {
 			o.ShellEditsUncounted += n
+			continue
 		}
+		o.ShellEditsUncounted += u
+		o.ShellEditsCounted += n - u
 	}
 	for _, t := range seen {
 		o.Used = append(o.Used, *t)

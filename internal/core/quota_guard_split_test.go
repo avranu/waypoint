@@ -137,3 +137,40 @@ func TestQuotaGuardSplitJobSessionBeforeWindow(t *testing.T) {
 		t.Errorf("split %+v, cost %v: remainder must be 0", c.Split, c.CostUSD)
 	}
 }
+
+// A job counts as the larger of its cost_usd and its session's priced hours:
+// hours of a model with no price cover nothing, and part-uploaded hours cover
+// only what they price (audit 1985.5).
+func TestQuotaGuardJobCostBeyondItsHours(t *testing.T) {
+	run := func(t *testing.T, hours func(g *guardEnv)) *QuotaGuardCheck {
+		g := newGuardEnv(t)
+		g.lay(50)
+		g.exec(`INSERT INTO runner_jobs(owner_id, kind, title, cli, input, state, timeout, source, result, created_at, started_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+			g.me.User.ID, JobAgent, "agent job", "claude", "{}", "done", 600, "babysit",
+			`{"session_id":"jx","tokens":{"cost_usd":5}}`, g.h(14*time.Hour), g.h(14*time.Hour), g.h(14*time.Hour+30*time.Minute))
+		hours(g)
+		return g.check()
+	}
+	base, auto := 7.5, 5.5 // what lay alone costs, and the part of it that is automation
+	t.Run("unpriced model", func(t *testing.T) {
+		c := run(t, func(g *guardEnv) {
+			g.exec(`INSERT INTO usage_hours(user_id, hour, machine, session, repo, model, output) VALUES (?,?,?,?,?,?,?)`,
+				g.me.User.ID, g.h(14*time.Hour), "legba", "jx", "acme/app", "no-such-model", 100_000)
+		})
+		if c.CostUSD != base+5 || c.AutomationUSD != auto+5 {
+			t.Errorf("cost %v automation %v, want %v and %v", c.CostUSD, c.AutomationUSD, base+5, auto+5)
+		}
+	})
+	t.Run("hours cover part", func(t *testing.T) {
+		c := run(t, func(g *guardEnv) { g.usedOn("legba", "jx", 14*time.Hour, 100_000) }) // $2
+		if c.CostUSD != base+5 || c.AutomationUSD != auto+5 {
+			t.Errorf("cost %v automation %v, want %v and %v", c.CostUSD, c.AutomationUSD, base+5, auto+5)
+		}
+	})
+	t.Run("hours cover all", func(t *testing.T) {
+		c := run(t, func(g *guardEnv) { g.usedOn("legba", "jx", 14*time.Hour, 250_000) }) // $5
+		if c.CostUSD != base+5 || c.AutomationUSD != auto+5 {
+			t.Errorf("cost %v automation %v, want %v and %v", c.CostUSD, c.AutomationUSD, base+5, auto+5)
+		}
+	})
+}

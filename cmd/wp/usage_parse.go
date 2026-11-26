@@ -675,11 +675,16 @@ func (p *usageParser) assistant(b []byte, l *rawLine) {
 			}
 		}
 		if bl.Name == "Bash" {
-			key := usageToolKey{Kind: trscript.ShellEditKind, Tool: bl.Name}
-			if bashWritesWork(bl.Input, usageOr(l.Cwd, p.st.Cwd), &p.st.Trace.Scripts) {
-				call.Keys = append(call.Keys, key)
-			} else {
-				p.tool(call.Hour, call.Model, key)
+			wrote, known := bashWritesWork(bl.Input, usageOr(l.Cwd, p.st.Cwd), &p.st.Trace.Scripts)
+			switch {
+			case !known:
+				// Not read whole: counted apart, and no shell_edit row for
+				// it, so the hour does not read as counted with no write.
+				call.Keys = append(call.Keys, usageToolKey{Kind: trscript.ShellUnknownKind, Tool: bl.Name})
+			case wrote:
+				call.Keys = append(call.Keys, usageToolKey{Kind: trscript.ShellEditKind, Tool: bl.Name})
+			default:
+				p.tool(call.Hour, call.Model, usageToolKey{Kind: trscript.ShellEditKind, Tool: bl.Name})
 			}
 		}
 		if p.f.Main && !l.Sidechain {

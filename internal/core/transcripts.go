@@ -670,6 +670,12 @@ type transcriptPiece struct {
 // alone is not enough). What still guards it (audit 1907.4): that permission,
 // no reads by an automation, and another person's transcripts staying with a
 // person acting directly.
+//
+// A transcript is read as stored: it holds the text of the commands the
+// session ran, and HidesCommandText (which keeps that text out of derived
+// reads for an agent) does not apply here. That is the same decision, not an
+// oversight (audit 1985.1): a transcript with its commands cut out is not the
+// transcript, and an agent on the machine reads the same files from disk.
 func (s *Service) transcriptPieces(ctx context.Context, actor *Actor, q TranscriptQuery) ([]transcriptPiece, error) {
 	if !transcriptSessionRE.MatchString(q.Session) {
 		return nil, invalid("a session id is required")

@@ -260,3 +260,23 @@ func TestTaskUsageReviewRoundsAuditsAndPRs(t *testing.T) {
 		t.Errorf("a task with none: %+v, %v", o, err)
 	}
 }
+
+// A long-lived session keeps issue_id after its run ended; today's spend is
+// carry-over whatever the window, not on-task because a short window did not
+// load the old run (audit 1985.6).
+func TestUsageNoTaskOldRunIsCarryOverInAnyWindow(t *testing.T) {
+	f := newFeatureEnv(t)
+	a := f.issue(f.me, IssueInput{Project: f.p.Key, Title: "Old"})
+	sid := f.session(f.me, "m1", "s-old", a.ID)
+	f.run(sid, a.ID, f.hour(-250), f.hour(-240))
+	f.hours("s-old", -3, -1)
+	for _, days := range []int{1, 30} {
+		o, err := f.s.UsageNoTask(f.ctx, f.me, UsageQuery{Days: days})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if o.TaskUSD != 0 || o.CarryUSD == 0 || o.CarryUSD != o.NoTaskUSD {
+			t.Errorf("days %d: task %.4f carry %.4f no-task %.4f", days, o.TaskUSD, o.CarryUSD, o.NoTaskUSD)
+		}
+	}
+}

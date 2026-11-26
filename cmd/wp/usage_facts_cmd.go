@@ -89,7 +89,7 @@ func cmdUsageFacts(c *cli, args []string) error {
 	return c.emit(raw, func() string {
 		text := factsText(&f)
 		if !factsHaveShellEdits(raw) {
-			text = strings.Replace(text, shellEditsText(f.Changes.ShellEdits, f.Changes.ShellUnknown, f.Changes.ScriptShellEdits), "shell edits unknown (server too old to say)", 1)
+			text = strings.Replace(text, shellEditsText(f.Changes.ShellEdits, f.Changes.ShellUnknown, f.Changes.ShellNone, f.Changes.ScriptShellEdits), "shell edits unknown (server too old to say)", 1)
 		}
 		return text
 	})
@@ -206,7 +206,7 @@ func factsText(f *core.SessionFacts) string {
 		p("  %s x%d", d.URL, d.Times)
 	}
 	c := f.Changes
-	p("changes: %d edits (%d failed; %d more run by REPL scripts), %s; the edits changed %d files, lines added %s, removed %s (what shell edits changed is not counted)", c.Edits, c.Failed, c.ScriptEdits, shellEditsText(c.ShellEdits, c.ShellUnknown, c.ScriptShellEdits), c.FilesChanged,
+	p("changes: %d edits (%d failed; %d more run by REPL scripts), %s; the edits changed %d files, lines added %s, removed %s (what shell edits changed is not counted)", c.Edits, c.Failed, c.ScriptEdits, shellEditsText(c.ShellEdits, c.ShellUnknown, c.ShellNone, c.ScriptShellEdits), c.FilesChanged,
 		tallyText(c.LinesAdded, nil), tallyText(c.LinesRemoved, nil))
 	p("  test files edited: %d edits of %d test files, lines added %s", c.TestEdits, c.TestFiles, tallyText(c.TestLinesAdd, nil))
 	r := f.Repeated
@@ -228,12 +228,15 @@ func factsText(f *core.SessionFacts) string {
 // the editing tools; unknown for Bash calls with no answer (stored before it
 // was recorded, or too long to read). viaScript is the Bash calls a REPL
 // script ran that wrote files, told apart from the rest as the edits of
-// scripts are.
-func shellEditsText(n, unknown, viaScript int) string {
+// scripts are. none is the Bash calls classified as not writing: with some,
+// a zero beside unknown calls is "0+", not unknown.
+func shellEditsText(n, unknown, none, viaScript int) string {
 	var s string
 	switch {
 	case unknown == 0:
 		s = fmt.Sprintf("%d shell edits", n)
+	case n == 0 && none > 0:
+		s = fmt.Sprintf("0+ shell edits (%d Bash calls not classified)", unknown)
 	case n == 0:
 		s = fmt.Sprintf("shell edits unknown (%d Bash calls not classified)", unknown)
 	default:

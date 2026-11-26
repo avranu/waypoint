@@ -410,8 +410,7 @@ func (sc *whScan) whBlockClasses(name string, input json.RawMessage, cwd string)
 		return one(whDelegate)
 	case "Bash":
 		var tcs []traceCommand
-		home, _ := os.UserHomeDir()
-		traceCommands(in.Command, cwd, map[string]string{"HOME": home}, &sc.mem, &tcs)
+		traceCommands(in.Command, cwd, traceVars(cwd), &sc.mem, &tcs)
 		seen := map[string]bool{}
 		for _, cm := range tcs {
 			if cm.Head == "wp ship" && !traceHasFlag(cm.Words, "-h", "--help", "--review") {

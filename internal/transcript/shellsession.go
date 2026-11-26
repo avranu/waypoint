@@ -12,6 +12,16 @@ import (
 // reads the same kind back.
 const ShellEditKind = "shell_edit"
 
+// ShellUnknownKind is the kind of the per-hour count of Bash calls the client
+// could not read (a command or script too long): calls = those calls. They
+// are neither edits nor known to be none, so readers add them to the calls
+// not counted.
+const ShellUnknownKind = "shell_unknown"
+
+// ShellMaxCommand is the longest command the reader reads; a longer one is
+// unknown, to the client's count as to the server's.
+const ShellMaxCommand = shellMaxCommand
+
 // shellMaxRoots bounds the directories a session remembers working in.
 const shellMaxRoots = 256
 
@@ -93,9 +103,10 @@ func shellInClaudeDir(p string) bool {
 }
 
 // workPath says a cleaned absolute path is a file of the work as far as the
-// session can tell: in a directory it has worked in or the command cd's to, and not scratch, not
-// Claude Code's own directory.
-func (s *ShellSession) workPath(p, cd string) bool {
+// session can tell: in a directory it has worked in, or one of cd (the
+// directory the command cd's to and the one the call runs in), and not
+// scratch, not Claude Code's own directory.
+func (s *ShellSession) workPath(p string, cd ...string) bool {
 	if under(p, "/tmp") || under(p, "/var/tmp") || under(p, "/dev") {
 		return false
 	}
@@ -103,7 +114,7 @@ func (s *ShellSession) workPath(p, cd string) bool {
 	// directory (the runner checks repositories out in ~/.cache); only Claude
 	// Code's own directory stays out.
 	claude := shellInClaudeDir(p)
-	for _, r := range append([]string{cd}, s.Roots...) {
+	for _, r := range append(cd, s.Roots...) {
 		if r != "" && under(p, r) && (!claude || strings.Contains(r, "/.cache/") && !strings.Contains(p[len(r):], "/.cache/")) {
 			return true
 		}
@@ -159,7 +170,13 @@ func (s *ShellSession) Edit(cmd, cwd string) (wrote, known bool) {
 				}
 				p = path.Join(dir, p)
 			}
-			if s.workPath(path.Clean(p), cd) {
+			// The call's own directory counts though the session remembers no
+			// more directories (shellMaxRoots).
+			here := ""
+			if strings.HasPrefix(cwd, "/") {
+				here = path.Clean(cwd)
+			}
+			if s.workPath(path.Clean(p), cd, here) {
 				return true, true
 			}
 		}

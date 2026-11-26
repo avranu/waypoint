@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1289,6 +1290,23 @@ func TestDecodeGuardInputAtTheLimit(t *testing.T) {
 	}
 }
 
+// A line longer than the patch reader's buffer is read by its start, and the
+// headers after it are still found (audit 1985.18).
+func TestPatchFilesReadsPastAnOverLongLine(t *testing.T) {
+	long := strings.Repeat("y", 200<<10)
+	got := patchFiles("+" + long + "\n--- a/one.go\n+++ b/one.go\n+++ b/two.go\t" + long + "\ndiff --git a/three.go b/three.go\n")
+	for _, want := range []string{"a/one.go", "one.go", "b/two.go", "two.go", "three.go"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("%s not among %v", want, got)
+		}
+	}
+	for _, f := range got {
+		if len(f) > 100 {
+			t.Errorf("a name of %d bytes", len(f))
+		}
+	}
+}
+
 // A patch names the files it changes in its own text, not on the command
 // line: the guard reads the patch (a file named to git apply, git am or
 // patch, one fed with <, or a heredoc) and checks each file it changes
@@ -1305,6 +1323,7 @@ func TestGuardReadsPatchesAndScripts(t *testing.T) {
 	// Audit 1954: a patch past the first megabyte, one listed ninth, and
 	// patch's own output and target files.
 	writeFile(t, filepath.Join(repo, "big.patch"), "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1,40001 @@\n-a\n"+strings.Repeat("+"+strings.Repeat("x", 60)+"\n", 40001)+"diff --git a/.claude/settings.json b/.claude/settings.json\n"+settings)
+	writeFile(t, filepath.Join(repo, "sub.patch"), "diff --git a/settings.json b/settings.json\n--- a/settings.json\n+++ b/settings.json\n@@ -1 +1 @@\n-{}\n+{\"hooks\":{}}\n")
 	writeFile(t, filepath.Join(repo, "plain.patch"), "--- x\n+++ x\n@@ -1 +1 @@\n-{}\n+{\"hooks\":{}}\n")
 	for _, c := range []struct{ cmd, want string }{
 		{`git apply bad.patch`, ruleGuard},
@@ -1335,6 +1354,25 @@ func TestGuardReadsPatchesAndScripts(t *testing.T) {
 		{`git apply --check bad.patch`, ""},
 		{`git apply --stat bad.patch`, ""},
 		{`patch --dry-run -p1 < bad.patch`, ""},
+		// Audit 1985.3: --apply after a listing flag applies; --directory with a
+		// space; git's own flags with a value before the verb.
+		{`git apply --check --apply bad.patch`, ruleGuard},
+		{`git apply --stat --apply bad.patch`, ruleGuard},
+		{`git apply --directory .claude sub.patch`, ruleGuard},
+		{`git apply --directory=.claude sub.patch`, ruleGuard},
+		{`git --work-tree . apply bad.patch`, ruleGuard},
+		{`git --git-dir .git apply bad.patch`, ruleGuard},
+		{`git apply --directory web sub.patch`, ""},
+		// 1985.14: the patch a command only reads is not written.
+		{`patch -p1 main.go /etc/fix.patch`, ""},
+		// 1985.2 and 1985.4: a long script is read whole; a script that only
+		// reads a protected file is not refused.
+		{"python3 - <<'EOF'\n" + strings.Repeat("x = 1\n", 12000) + "open('.claude/settings.json','w').write('{}')\nEOF", ruleGuard},
+		{"python3 - <<'EOF'\nimport os, tempfile\nd = open('.claude/settings.json', 'r').read()\nout = os.path.join(tempfile.gettempdir(), 's.txt')\nopen(out, 'w').write(d)\nEOF", ""},
+		{"python3 - <<'EOF'\nimport os, tempfile\nd = open('.claude/settings.json', encoding='utf-8').read()\nopen(os.path.join(tempfile.gettempdir(), 's.txt'), 'w').write(d)\nEOF", ""},
+		{"python3 - <<'EOF'\nimport os\nopen(os.path.join('.claude', 'x'), 'w').write(open('.claude/settings.json', 'r+').read())\nEOF", ruleGuard},
+		{`perl tools/check.pl --config .claude/settings.json`, ""},
+		{`perl -pi -e 's/a/b/' .claude/settings.json`, ruleGuard},
 		{`git apply missing.patch`, ""},
 		{`git diff | git apply`, ""},
 		{"python3 - <<'EOF'\nopen('" + home + "/.claude/settings.json','w').write('{}')\nEOF", ruleGuard},

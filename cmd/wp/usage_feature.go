@@ -186,6 +186,7 @@ type taskUsageReport struct {
 	Edits          int64             `json:"edits"`
 	ShellEdits     *int64            `json:"shell_edits"`
 	ShellUncounted *int64            `json:"shell_edits_uncounted"`
+	ShellCounted   int64             `json:"shell_edits_counted"` // absent from an older server: 0
 	PRs            int64             `json:"prs"`
 	Files          int64             `json:"files"`
 	Lines          int64             `json:"lines"`
@@ -316,17 +317,18 @@ func taskEditsText(r *taskUsageReport) string {
 	if r.ShellUncounted != nil {
 		unc = *r.ShellUncounted
 	}
-	return editsText(r.Edits, shell, unc)
+	return editsText(r.Edits, shell, unc, r.ShellCounted)
 }
 
 // editsText says the edits of the editing tools beside the Bash calls that
 // wrote files. An hour whose client did not count Bash writes leaves the
-// second figure a floor, or unknown when no hour was counted.
-func editsText(edits, shell, uncounted int64) string {
+// second figure a floor, or unknown when no hour was counted. counted is the
+// Bash calls of counted hours: with some, a zero is "0+", not unknown.
+func editsText(edits, shell, uncounted, counted int64) string {
 	switch {
 	case uncounted == 0:
 		return fmt.Sprintf("edits %s, shell edits %s", commas(edits), commas(shell))
-	case shell == 0:
+	case shell == 0 && counted == 0:
 		return fmt.Sprintf("edits %s, shell edits unknown (%s Bash calls not counted)", commas(edits), commas(uncounted))
 	}
 	return fmt.Sprintf("edits %s, shell edits %s+ (%s Bash calls not counted)", commas(edits), commas(shell), commas(uncounted))

@@ -564,8 +564,8 @@ func TestFactsShellEditsAndFailedEdits(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := f.Changes
-	if c.Edits != 1 || c.Failed != 1 || c.ShellEdits != 1 || c.ShellUnknown != 0 {
-		t.Errorf("changes %+v: want 1 edit, 1 failed, 1 shell edit (not the /tmp one), 0 unknown", c)
+	if c.Edits != 1 || c.Failed != 1 || c.ShellEdits != 1 || c.ShellUnknown != 0 || c.ShellNone != 2 {
+		t.Errorf("changes %+v: want 1 edit, 1 failed, 1 shell edit (not the /tmp one), 0 unknown, 2 classified as no write (the /tmp one and ls)", c)
 	}
 	if _, err := e.s.db.W.Exec(`UPDATE fact_tool_calls SET shell_write = NULL`); err != nil {
 		t.Fatal(err)
@@ -574,7 +574,7 @@ func TestFactsShellEditsAndFailedEdits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c := f.Changes; c.ShellEdits != 0 || c.ShellUnknown != 3 {
-		t.Errorf("old rows: %+v, want 0 shell edits and 3 unknown Bash calls", c)
+	if c := f.Changes; c.ShellEdits != 0 || c.ShellUnknown != 3 || c.ShellNone != 0 {
+		t.Errorf("old rows: %+v, want 0 shell edits, 3 unknown Bash calls and none classified", c)
 	}
 }
