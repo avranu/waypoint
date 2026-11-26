@@ -220,8 +220,12 @@ func (c *cli) shipChecksOnce(task string, pull int64, head string, hold, limit t
 
 // canWaitChecks: wp ship waits on the checks of the pull request it opened
 // when it is the agent's ship in a session with Waypoint's hooks, the wait
-// wasn't switched off, Waypoint babysits the pull request (a failure falls
-// to a round otherwise) and nothing else asks the agent's turn (why).
+// wasn't switched off, this ship babysits the pull request and nothing else
+// asks the agent's turn (why). Babysitting is what hands a failure to the
+// author, and only the ship's own babysit call gives it this session: an
+// armed ship with --no-babysit has at most the babysit arming starts, with no
+// session, whose failures go to a round, so waiting would hold the turn for
+// nothing.
 func (c *cli) canWaitChecks(so shipOpts, o *openedPR, babysat bool, why string) bool {
 	// shipWork has already returned for --json by the time it asks; the term
 	// is kept so the predicate states the whole rule on its own.
