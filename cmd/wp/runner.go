@@ -43,7 +43,8 @@ On Linux --max-jobs is a ceiling: it takes fewer while the machine is busy
 (wp runner status shows how many and why). An agent job counts toward it
 only while a command of it holds a test slot; --max-agents (default 3) is how
 many agent jobs run at once, and the runner takes no more while the machine
-is short of memory.
+is short of memory. Where it can't measure memory (macOS, Windows) the default
+is --max-jobs, at most 3.
 
 Needs wp auth login first, as you. wp runner install starts it at login
 (systemd user unit, launchd agent); wp setup does that and the hooks.`,
@@ -105,7 +106,7 @@ func runnerFlags(c *cli, o *runnerOpts, install bool) func([]string) ([]string, 
 	fs.Var(&allow, "allow", "`DIR`: directory (and below) command/apply jobs may use (repeatable)")
 	fs.Var(&env, "env", "`NAME`: extra environment variable to pass to jobs (repeatable)")
 	fs.IntVar(&o.MaxJobs, "max-jobs", 1, "`N`: most jobs at once")
-	fs.IntVar(&o.MaxAgents, "max-agents", core.DefaultMaxAgents, "`N`: most agent jobs at once (one counts toward --max-jobs only while it holds a test slot)")
+	fs.IntVar(&o.MaxAgents, "max-agents", 0, fmt.Sprintf("`N`: most agent jobs at once, each counting toward --max-jobs only while it holds a test slot (default %d; where memory can't be measured, as on macOS and Windows, --max-jobs if lower)", core.DefaultMaxAgents))
 	fs.BoolVar(&o.NoUsageSync, "no-usage-sync", false, "don't upload Claude Code usage")
 	fs.BoolVar(&o.NoPrep, "no-prep", false, "don't prepare queued tasks")
 	fs.BoolVar(&o.NoAutoUpdate, "no-auto-update", false, "keep this wp version: no update or restart to the server's")
@@ -227,11 +228,13 @@ type runnerProc struct {
 	stopCtx    context.Context
 	stopCancel context.CancelFunc
 
-	mu            sync.Mutex
-	jobs          map[int64]*activeJob
-	wg            sync.WaitGroup
-	freed         chan struct{}
-	gov           *governor
+	mu    sync.Mutex
+	jobs  map[int64]*activeJob
+	wg    sync.WaitGroup
+	freed chan struct{}
+	gov   *governor
+	// memUnwatched: the first look couldn't measure memory (agentCeiling).
+	memUnwatched  bool
 	clis          []runnerCLI
 	clisDirty     bool
 	repoLocks     map[string]*sync.Mutex
@@ -479,9 +482,9 @@ func (p *runnerProc) run(ctx context.Context, reportStop context.CancelFunc) err
 	if !p.opts.Once {
 		p.reapInterruptedStarts(ctx)
 	}
-	if p.opts.MaxJobs > 1 || p.opts.agentCeiling() > 1 {
-		p.watchLoad(ctx)
-	}
+	// A one-job runner watches too: memory stops its agent jobs, and its
+	// report says how many it runs at once.
+	p.watchLoad(ctx)
 
 	defer p.stopUpdate()
 	delay := time.Second

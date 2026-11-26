@@ -103,7 +103,13 @@ func acquireSlot(ctx context.Context, name string, n int, notify func()) (*slotH
 // firstMiss, when not nil, is called once when the first pass finds none free.
 func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstMiss func()) (*slotHold, error) {
 	got, free := noteSlotWait(name)
-	defer got()
+	held := false
+	defer func() {
+		got()
+		if !held { // a failed acquire holds nothing
+			free()
+		}
+	}()
 	dir, err := slotDir()
 	if err != nil {
 		return nil, err
@@ -134,6 +140,7 @@ func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstM
 				wd, _ := os.Getwd()
 				_ = f.Truncate(0)
 				_, _ = f.WriteAt([]byte(fmt.Sprintf("%d\t%d\t%s\t%s\t%s\t%s\n", os.Getpid(), time.Now().Unix(), slotField(wd), slotField(strings.Join(os.Args[1:], " ")), slotField(slotSession()), slotField(slotCtxKey(ctx)))), 0)
+				held = true
 				return &slotHold{f: f, idx: i, freed: free}, nil
 			}
 			_ = f.Close()

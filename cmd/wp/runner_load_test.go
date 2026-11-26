@@ -164,26 +164,29 @@ func TestLoadProfileLearnsBusyHours(t *testing.T) {
 
 func TestSlotsWithoutAGovernor(t *testing.T) {
 	p := &runnerProc{opts: runnerOpts{MaxJobs: 1}, jobs: map[int64]*activeJob{}}
-	if l, free := p.slotsNow(); !slices.Equal(l, []string{laneHeavy, laneLight, laneRequest, laneMessage, laneGateway}) || free != 1+requestSlots+messageSlots+gatewaySlots {
+	if l, free := p.slotsNow(); !slices.Equal(l, []string{laneHeavy, laneLight, laneRequest, laneAgent, laneMessage, laneGateway}) || free != 1+requestSlots+core.DefaultMaxAgents+messageSlots+gatewaySlots {
 		t.Fatalf("idle: lanes %v, free %d", l, free)
 	}
 	p.jobs[1] = &activeJob{id: 1, lane: laneHeavy}
-	if l, free := p.slotsNow(); !slices.Equal(l, []string{laneRequest, laneMessage, laneGateway}) || free != requestSlots+messageSlots+gatewaySlots {
+	if l, free := p.slotsNow(); !slices.Equal(l, []string{laneRequest, laneAgent, laneMessage, laneGateway}) || free != requestSlots+core.DefaultMaxAgents+messageSlots+gatewaySlots {
 		t.Fatalf("busy with a heavy job: lanes %v, free %d", l, free)
 	}
 	p.jobs[2] = &activeJob{id: 2, lane: laneRequest}
 	p.jobs[3] = &activeJob{id: 3, lane: laneRequest}
-	if l, free := p.slotsNow(); !slices.Equal(l, []string{laneMessage, laneGateway}) || free != messageSlots+gatewaySlots {
+	if l, free := p.slotsNow(); !slices.Equal(l, []string{laneAgent, laneMessage, laneGateway}) || free != core.DefaultMaxAgents+messageSlots+gatewaySlots {
 		t.Fatalf("request lane full: lanes %v, free %d", l, free)
 	}
 	for i := range int64(messageSlots) {
 		p.jobs[10+i] = &activeJob{id: 10 + i, lane: laneMessage}
 	}
-	if l, free := p.slotsNow(); !slices.Equal(l, []string{laneGateway}) || free != gatewaySlots {
+	if l, free := p.slotsNow(); !slices.Equal(l, []string{laneAgent, laneGateway}) || free != core.DefaultMaxAgents+gatewaySlots {
 		t.Fatalf("message lane full: lanes %v, free %d", l, free)
 	}
 	for i := range int64(gatewaySlots) {
 		p.jobs[30+i] = &activeJob{id: 30 + i, lane: laneGateway}
+	}
+	for i := range int64(core.DefaultMaxAgents) {
+		p.jobs[50+i] = &activeJob{id: 50 + i, lane: laneAgent}
 	}
 	if l, free := p.slotsNow(); len(l) != 0 || free != 0 {
 		t.Fatalf("full: lanes %v, free %d", l, free)
@@ -201,7 +204,7 @@ func TestMessagesNeverWaitForTheGovernor(t *testing.T) {
 	p.jobs[3] = &activeJob{id: 3, lane: laneRequest}
 	p.jobs[4] = &activeJob{id: 4, lane: laneRequest}
 	p.jobs[5] = &activeJob{id: 5, lane: laneMessage}
-	if l, free := p.slotsNow(); !slices.Equal(l, []string{laneMessage, laneGateway}) || free != messageSlots-1+gatewaySlots {
+	if l, free := p.slotsNow(); !slices.Equal(l, []string{laneAgent, laneMessage, laneGateway}) || free != core.DefaultMaxAgents+messageSlots-1+gatewaySlots {
 		t.Fatalf("overloaded, every other lane full: lanes %v, free %d", l, free)
 	}
 }
@@ -221,7 +224,7 @@ func TestGatewayAuditsNeverWaitForTheGovernor(t *testing.T) {
 	if !slices.Contains(l, laneGateway) || slices.Contains(l, laneLight) {
 		t.Fatalf("overloaded, light lane full: lanes %v", l)
 	}
-	if free != requestSlots+messageSlots+gatewaySlots-2 {
+	if free != requestSlots+core.DefaultMaxAgents+messageSlots+gatewaySlots-2 {
 		t.Fatalf("free %d", free)
 	}
 	if h, li, _, _, gw := p.running(); h != 0 || li != 2 || gw != 2 {

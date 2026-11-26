@@ -343,6 +343,26 @@ func TestAgentJobsHaveTheirOwnLane(t *testing.T) {
 		t.Errorf("heavy job behind an agent job holding a slot: %q", got)
 	}
 
+	// Only the agent job in a slot fills the limit: the command behind it
+	// doesn't start within seconds.
+	e.finishRunningBut(r, first.ID)
+	alone := &RunnerCapacity{Limit: 1, Max: 2, Level: "calm", MaxAgents: 3, Agents: 1, AgentSlots: 1, Heavy: 1}
+	e.poll(e.admin, r, RunnerPoll{Lanes: []string{}, Capacity: alone})
+	if got := why(later.ID); !strings.HasPrefix(got, "devhost takes 1 heavy job at once for now; 1 agent job holds a test slot, which counts as a heavy job while it does.") {
+		t.Errorf("only an agent job holding a slot: %q", got)
+	}
+	// A report that outlived its agent job counts no holder.
+	e.finishRunningBut(r, 0)
+	if got := why(later.ID); !strings.HasPrefix(got, "devhost is online and should take it within seconds.") {
+		t.Errorf("the slot holder ended since the report: %q", got)
+	}
+	// Memory short with no agent job running: it takes none, and says so.
+	idle := &RunnerCapacity{Limit: 1, Max: 2, Level: "calm", MaxAgents: 3, AgentsStopped: "10% of memory free"}
+	e.poll(e.admin, r, RunnerPoll{Lanes: []string{}, Capacity: idle})
+	if got := why(second.ID); !strings.HasPrefix(got, "devhost takes no more agent jobs while memory is short (10% of memory free); it is running no other job.") {
+		t.Errorf("memory short, nothing running: %q", got)
+	}
+
 	old := e.runner(e.admin, "oldhost", func(r *RunnerRegistration) {
 		r.CLIs = []RunnerCLI{{Name: "cursor"}}
 		r.Features = []string{FeatureAudit}
@@ -359,5 +379,13 @@ func TestAgentJobsHaveTheirOwnLane(t *testing.T) {
 	c := &RunnerCapacity{Level: "calm", Max: 4, MaxAgents: 99, Agents: 99, AgentSlots: 50, AgentsStopped: "x\ny"}
 	if !c.clean() || c.MaxAgents != MaxRunnerJobs || c.AgentSlots != c.Agents || strings.Contains(c.AgentsStopped, "\n") {
 		t.Errorf("clean: %+v", c)
+	}
+}
+
+// finishRunningBut marks r's running jobs done, all but job keep.
+func (e *env) finishRunningBut(r *Runner, keep int64) {
+	e.t.Helper()
+	if _, err := e.s.db.W.ExecContext(e.ctx, `UPDATE runner_jobs SET state = 'done' WHERE runner_id = ? AND state = 'running' AND id != ?`, r.ID, keep); err != nil {
+		e.t.Fatal(err)
 	}
 }

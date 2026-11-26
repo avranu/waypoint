@@ -408,8 +408,15 @@ func (p *loadProfile) busyHours(now time.Time, cpus int) []time.Time {
 	return out
 }
 
+// watchesMemory says the sample measured memory, which is all that stops a
+// runner taking agent jobs.
+func (s loadSample) watchesMemory() bool {
+	return s.measured && (s.MemSome >= 0 || s.MemFree >= 0)
+}
+
 // loadMeter looks at the machine; a sample that isn't measured means it
-// can't (the runner then takes up to --max-jobs).
+// can't. A runner that never measured takes up to --max-jobs; after a
+// measurement, an unmeasured sample leaves the last verdict.
 type loadMeter interface{ sample() loadSample }
 
 var newLoadMeterFn = newLoadMeter
@@ -417,12 +424,17 @@ var newLoadMeterFn = newLoadMeter
 // maxRunnerJobs is core.MaxRunnerJobs: the most --max-jobs allows.
 const maxRunnerJobs = 16
 
-// agentCeiling is --max-agents: the most agent jobs it runs at once.
-func (o runnerOpts) agentCeiling() int {
-	if o.MaxAgents < 1 {
-		return core.DefaultMaxAgents
+// agentCeiling is the most agent jobs it runs at once: --max-agents, else
+// core.DefaultMaxAgents. Where it can't measure memory (not Linux) nothing
+// would stop it taking more, so the default is no more than --max-jobs.
+func (p *runnerProc) agentCeiling() int {
+	switch {
+	case p.opts.MaxAgents > 0:
+		return min(p.opts.MaxAgents, maxRunnerJobs)
+	case p.memUnwatched:
+		return min(max(p.opts.MaxJobs, 1), core.DefaultMaxAgents)
 	}
-	return min(o.MaxAgents, maxRunnerJobs)
+	return core.DefaultMaxAgents
 }
 
 // running counts the jobs running now by lane. An agent job counts as heavy
@@ -479,8 +491,8 @@ func (p *runnerProc) agentsStopped() string {
 // addAgentReport puts the agent jobs in the capacity report.
 func (p *runnerProc) addAgentReport(r map[string]any) {
 	n, held := p.agents()
-	r["max_agents"], r["agents"], r["agent_slots"] = p.opts.agentCeiling(), n, held
-	if why := p.agentsStopped(); why != "" && n < p.opts.agentCeiling() {
+	r["max_agents"], r["agents"], r["agent_slots"] = p.agentCeiling(), n, held
+	if why := p.agentsStopped(); why != "" && n < p.agentCeiling() {
 		r["agents_stopped"] = why
 	}
 }
@@ -503,7 +515,7 @@ func (p *runnerProc) slotsNow() ([]string, int) {
 		lanes = withRequestLane(lanes, req)
 	}
 	agents, _ := p.agents()
-	agentRoom := max(p.opts.agentCeiling()-agents, 0)
+	agentRoom := max(p.agentCeiling()-agents, 0)
 	if agentRoom > 0 && p.agentsStopped() == "" {
 		lanes = append(lanes, laneAgent)
 	} else {
@@ -541,17 +553,22 @@ func (p *runnerProc) slotsNow() ([]string, int) {
 func (p *runnerProc) watchLoad(ctx context.Context) {
 	m := newLoadMeterFn()
 	p.gov = newGovernor(p.opts.MaxJobs, loadLoadProfile(filepath.Join(p.cacheDir(), "load-profile.json")))
-	look := func() {
+	look := func(s loadSample) {
 		heavy, _, _, _, _ := p.running()
 		before, _ := p.slotsNow()
-		if line := p.gov.observe(m.sample(), time.Now(), heavy); line != "" {
+		if line := p.gov.observe(s, time.Now(), heavy); line != "" {
 			p.logf("%s", line)
 		}
 		if after, _ := p.slotsNow(); len(after) > len(before) {
 			p.wake()
 		}
 	}
-	look()
+	first := m.sample()
+	p.memUnwatched = !first.watchesMemory()
+	if p.memUnwatched && p.opts.MaxAgents < 1 {
+		p.logf("Can't measure this machine's memory: up to %d agent job%s at once (--max-agents sets it)", p.agentCeiling(), pluralS(p.agentCeiling()))
+	}
+	look(first)
 	go func() {
 		t := time.NewTicker(loadEvery)
 		defer t.Stop()
@@ -560,7 +577,7 @@ func (p *runnerProc) watchLoad(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				look()
+				look(m.sample())
 			}
 		}
 	}()

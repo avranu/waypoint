@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -168,7 +169,7 @@ func TestAgentJobTakenInTheHeavyLaneByAnOlderServerCountsHeavy(t *testing.T) {
 	p.jobs[1] = &activeJob{id: 1, lane: laneHeavy}
 	p.mu.Unlock()
 	if h, _, _, _, _ := p.running(); h != 1 {
-		t.Errorf("%d heavy, want 1: with no agent lane the old rule holds", h)
+		t.Errorf("%d heavy, want 1: an agent job in the heavy lane counts all along", h)
 	}
 }
 
@@ -177,16 +178,20 @@ func TestServiceInstallCarriesMaxAgents(t *testing.T) {
 	if !strings.Contains(args, "--max-agents 5") {
 		t.Errorf("args %q lack --max-agents 5", args)
 	}
-	for _, o := range []runnerOpts{{Name: "n", MaxJobs: 1}, {Name: "n", MaxJobs: 1, MaxAgents: core.DefaultMaxAgents}} {
-		if a := strings.Join(runnerArgs(o), " "); strings.Contains(a, "max-agents") {
-			t.Errorf("the default is written out: %q", a)
-		}
+	if a := strings.Join(runnerArgs(runnerOpts{Name: "n", MaxJobs: 1}), " "); strings.Contains(a, "max-agents") {
+		t.Errorf("the default is written out: %q", a)
+	}
+	// Where memory can't be measured the default is --max-jobs, so a 3 that
+	// was asked for must stay asked for.
+	asked := runnerOpts{Name: "n", MaxJobs: 1, MaxAgents: core.DefaultMaxAgents}
+	if a := strings.Join(runnerArgs(asked), " "); !strings.Contains(a, "--max-agents 3") {
+		t.Errorf("an asked-for --max-agents 3 is dropped: %q", a)
 	}
 	words := append([]string{"/usr/bin/wp"}, runnerArgs(runnerOpts{Name: "n", MaxJobs: 1, MaxAgents: 5})...)
 	if r := parseRunnerArgs(words); r == nil || r.MaxAgents != 5 {
 		t.Errorf("parsed back %+v", r)
 	}
-	if r := parseRunnerArgs([]string{"/usr/bin/wp", "runner", "--name", "n"}); r.MaxAgents != core.DefaultMaxAgents {
+	if r := parseRunnerArgs([]string{"/usr/bin/wp", "runner", "--name", "n"}); r.MaxAgents != 0 {
 		t.Errorf("unit without the flag parsed as %d", r.MaxAgents)
 	}
 
@@ -215,5 +220,59 @@ func TestAgentsLineSaysHowManyHoldASlot(t *testing.T) {
 	}
 	if got := agentsLine(1, 3, 0, "10% of memory free"); !strings.Contains(got, "no more while memory is short (10% of memory free)") {
 		t.Errorf("got %q", got)
+	}
+}
+
+type fixedMeter loadSample
+
+func (m fixedMeter) sample() loadSample { return loadSample(m) }
+
+// Where memory can't be measured nothing stops more agent jobs, so the
+// default is no more than --max-jobs; --max-agents still says otherwise.
+func TestAgentCeilingWhereMemoryCannotBeMeasured(t *testing.T) {
+	old := newLoadMeterFn
+	t.Cleanup(func() { newLoadMeterFn = old })
+	for _, tc := range []struct {
+		name                     string
+		sample                   loadSample
+		maxJobs, maxAgents, want int
+	}{
+		{"unmeasured, one job", loadSample{}, 1, 0, 1},
+		{"unmeasured, many jobs", loadSample{}, 8, 0, core.DefaultMaxAgents},
+		{"unmeasured, asked", loadSample{}, 1, 3, 3},
+		{"load but no memory", loadSample{CPUs: 8, MemSome: -1, MemFree: -1, measured: true}, 1, 0, 1},
+		{"measured", calmSample(), 1, 0, core.DefaultMaxAgents},
+		{"measured, one agent", calmSample(), 1, 1, 1},
+	} {
+		newLoadMeterFn = func() loadMeter { return fixedMeter(tc.sample) }
+		t.Setenv("XDG_CACHE_HOME", t.TempDir())
+		t.Setenv("WAYPOINT_RUNNER_CACHE", t.TempDir())
+		p := &runnerProc{c: &cli{out: &strings.Builder{}, err: &strings.Builder{}}, opts: runnerOpts{Name: "n", MaxJobs: tc.maxJobs, MaxAgents: tc.maxAgents}, jobs: map[int64]*activeJob{}, freed: make(chan struct{}, 1)}
+		ctx, cancel := context.WithCancel(t.Context())
+		p.watchLoad(ctx)
+		cancel()
+		if got := p.agentCeiling(); got != tc.want {
+			t.Errorf("%s: ceiling %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The growth rule waits after an agent job takes a slot, as after a heavy job
+// starts: its load shows late.
+func TestAgentJobTakingASlotRestartsTheGrowthClock(t *testing.T) {
+	p := agentProc(4, 3)
+	a := p.addAgent(1, false)
+	p.setSlotState(a, time.Time{}, false)
+	if !p.gov.started.IsZero() {
+		t.Fatal("a job holding no slot restarted the growth clock")
+	}
+	p.setSlotState(a, time.Time{}, true)
+	first := p.gov.started
+	if first.IsZero() {
+		t.Fatal("taking a slot didn't restart the growth clock")
+	}
+	p.setSlotState(a, time.Time{}, true)
+	if !p.gov.started.Equal(first) {
+		t.Error("holding on restarted the growth clock again")
 	}
 }
