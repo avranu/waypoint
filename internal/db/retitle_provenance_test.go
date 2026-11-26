@@ -12,7 +12,7 @@ import (
 // written from them, are set back so the sweep screens them again.
 func TestRetitleProvenanceRepair(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

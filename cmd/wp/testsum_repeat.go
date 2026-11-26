@@ -28,7 +28,7 @@ func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool,
 	rec := newTestRunRecorder(argv)
 	key := slotRunFor("wp testsum --repeat", argv)
 	argv = goTestCount1(goTestJSON(argv))
-	env, release, err := c.takeSlotFor(ctx, "tests", defaultSlots(), key)
+	held, env, release, err := c.takeSlotBound(ctx, "tests", defaultSlots(), key)
 	if err != nil {
 		if ctx.Err() != nil {
 			_, _ = fmt.Fprintln(c.err, "wp testsum: stopped while waiting for the slot")
@@ -51,7 +51,7 @@ func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool,
 	for i := 0; i < n; i++ {
 		var buf bytes.Buffer
 		start := time.Now()
-		code, err := runSlotCmd(ctx, env, argv, nil, &buf, &buf)
+		code, err := runSlotCmd(held, env, argv, nil, &buf, &buf)
 		if err != nil {
 			return err
 		}

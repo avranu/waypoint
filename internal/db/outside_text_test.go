@@ -13,7 +13,7 @@ import (
 // read their authors. Issues and comments written in Waypoint stay.
 func TestOutsideTextBackfill(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

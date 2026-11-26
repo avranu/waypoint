@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -1690,6 +1691,18 @@ func (s *Service) issueGoal(ctx context.Context, q queryer, actor *Actor, issueI
 	return nil
 }
 
+// outsideTitleInPrompt stands for the title of a linked issue whose text
+// came from outside and no person has released: a model's prompt never
+// carries it (WP-281, WP-1788).
+const outsideTitleInPrompt = "(title not shown: written from outside, not yet approved)"
+
+// quoteTitle puts a title in double quotes it can't end early: its own
+// double quotes become single ones. Go's %q would escape them as \", and a
+// reader that doesn't take a backslash as an escape sees the quote end there.
+func quoteTitle(s string) string {
+	return `"` + strings.ReplaceAll(s, `"`, `'`) + `"`
+}
+
 // reviewIntent is what the pull request's tasks are for (WP-382): each
 // task, the goal it traces to and how firmly, and the factors of its
 // provenance risk, so a reviewer can tell work no one asked for. "" with no
@@ -1707,15 +1720,23 @@ func (s *Service) reviewIntent(ctx context.Context, prID int64) string {
 			continue
 		}
 		seen[l.issue.ID] = true
-		fmt.Fprintf(&b, "- %s %s", l.issue.Key, excerpt(l.issue.Title, 160))
 		var project int64
-		_ = s.db.R.QueryRowContext(ctx, `SELECT project_id FROM issues WHERE id = ?`, l.issue.ID).Scan(&project)
+		var outside bool
+		if err := s.db.R.QueryRowContext(ctx, `SELECT project_id, outside FROM issues WHERE id = ?`, l.issue.ID).Scan(&project, &outside); err != nil {
+			outside = true
+		}
+		// Quoted, so a title can't pass for the goal or risk clause after it.
+		title := quoteTitle(kernel.Excerpt(oneLine(l.issue.Title), 160))
+		if outside {
+			title = outsideTitleInPrompt
+		}
+		fmt.Fprintf(&b, "- %s %s", l.issue.Key, title)
 		switch g := s.issueGoal(ctx, s.db.R, sys, l.issue.ID, project); {
 		case g == nil:
 		case g.Pending:
 			b.WriteString("; not traced to a goal yet")
 		case g.Goal != nil:
-			fmt.Fprintf(&b, "; serves goal %q, %s", excerpt(g.Goal.Title, 160), GroundingWords(g.Grounding))
+			fmt.Fprintf(&b, "; serves goal %s, %s", quoteTitle(kernel.Excerpt(oneLine(g.Goal.Title), 160)), GroundingWords(g.Grounding))
 		default:
 			b.WriteString("; " + GroundingWords(g.Grounding))
 		}

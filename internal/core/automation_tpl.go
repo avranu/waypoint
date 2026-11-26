@@ -134,7 +134,7 @@ var templateFuncDocs = []OutputDef{
 
 // untrustedText marks text as data for a model to read, never instructions.
 func untrustedText(s string) string {
-	return "<untrusted>\n" + strings.ReplaceAll(s, "</untrusted>", "") + "\n</untrusted>"
+	return "<untrusted>\n" + untrusted(s) + "\n</untrusted>"
 }
 
 // noValue is what text/template prints for a missing map entry.
