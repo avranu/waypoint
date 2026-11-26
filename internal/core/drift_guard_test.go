@@ -651,7 +651,7 @@ func TestFootprintDueForALotOfLinesInRounds(t *testing.T) {
 		be.finishPushing(job, true, []string{"app/login.go"}, c.lines)
 		be.pushMine("8888888bbbb")
 		why := be.footprintWhy()
-		if (why != "") != c.due || c.due && !strings.Contains(why, "its fix-up rounds changed 200 lines (it shipped with 100)") {
+		if (why != "") != c.due || c.due && !strings.Contains(why, "its fix-up rounds changed 200 lines (it was 100 before them)") {
 			t.Errorf("%d lines: why = %q", c.lines, why)
 		}
 	}

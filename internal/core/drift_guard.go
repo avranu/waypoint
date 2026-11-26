@@ -514,7 +514,7 @@ func (m footprintRounds) grew(ref footprintAt) bool {
 
 // footprintNow says whether the head needs a footprint check: rounds pushed
 // since it shipped, and since the last check they touched new files or
-// changed more than half again of what it shipped with. A round that
+// changed more than half of what it was before them. A round that
 // reported nothing of what it pushed fails open, as does anything else not
 // known; an earlier check's audit that can't be read is an error.
 func (s *Service) footprintNow(ctx context.Context, b *Babysit, pr *PullRequest) (prFootprint, string, bool, error) {
@@ -567,7 +567,7 @@ func (s *Service) footprintNow(ctx context.Context, b *Babysit, pr *PullRequest)
 		why = append(why, fmt.Sprintf("touched %d new file%s", len(m.added), plural(len(m.added))))
 	}
 	if grew {
-		why = append(why, fmt.Sprintf("changed %d lines (it shipped with %d)", m.lines, ref.Lines))
+		why = append(why, fmt.Sprintf("changed %d lines (it was %d before them)", m.lines, ref.Lines))
 	}
 	if len(why) == 0 {
 		return fp, "", false, nil
