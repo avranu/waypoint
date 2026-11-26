@@ -105,6 +105,9 @@ type BabysitRound struct {
 	Answer   string    `json:"answer,omitempty"`   // how its agent ended, shortened
 	Diff     string    `json:"diff,omitempty"`     // what it pushed, as the runner reported it (capped)
 	PushSHA  string    `json:"push_sha,omitempty"` // the head its push made
+	// PushFailed: the runner's push of its commits was refused; the head
+	// is as the round found it, so what is left says nothing of its work.
+	PushFailed bool `json:"push_failed,omitempty"`
 	// Held is the change to protected files its agent made that the runner
 	// held back, and what became of it (WP-ADR138).
 	Held *HeldEdit `json:"held,omitempty"`
@@ -611,6 +614,9 @@ func (s *Service) recordRoundOutcome(ctx context.Context, bid, jobID int64) {
 	if roundLimited(job) && s.uncountLimitedRound(ctx, b, jobID, job.Error) {
 		return
 	}
+	if roundFault(job) != "" && s.uncountFaultedRound(ctx, b, jobID, job.Error) {
+		return
+	}
 	_ = json.Unmarshal(job.Result, &res)
 	salvaged := job.State == "failed" && res.TimedOut
 	delivered := job.State == "done" || salvaged
@@ -633,6 +639,7 @@ func (s *Service) recordRoundOutcome(ctx context.Context, bid, jobID int64) {
 	for i := range b.Rounds {
 		if b.Rounds[i].Job == jobID {
 			b.Rounds[i].Outcome, b.Rounds[i].Pushed = outcome, delivered && res.Pushed
+			b.Rounds[i].PushFailed = job.State == "failed" && pushRefused.MatchString(job.Error)
 			b.Rounds[i].Answer = excerpt(res.Answer, 1500)
 			if b.Rounds[i].Assessor {
 				b.Rounds[i].Question, b.Rounds[i].Because, b.Rounds[i].Waiting = closingLines(res.Answer)
@@ -651,7 +658,7 @@ func (s *Service) recordRoundOutcome(ctx context.Context, bid, jobID int64) {
 		}
 	}
 	rounds, _ := json.Marshal(b.Rounds)
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE babysits SET job_id = NULL, rounds = ?, limited_tries = 0, updated_at = ? WHERE id = ?`, string(rounds), s.nowMS(), bid); err != nil {
+	if _, err := s.db.W.ExecContext(ctx, `UPDATE babysits SET job_id = NULL, rounds = ?, limited_tries = 0, fault_tries = 0, fault_text = '', updated_at = ? WHERE id = ?`, string(rounds), s.nowMS(), bid); err != nil {
 		s.log.WarnContext(ctx, "record a babysit round", "babysit", bid, "err", err)
 	}
 	if delivered && res.Pushed {
@@ -1272,7 +1279,7 @@ func (s *Service) babysitRoundBy(ctx context.Context, b *Babysit, pr *PullReques
 			worst, worstN = c, streaks[c]
 		}
 	}
-	plan := planRound(b, pr.HeadSHA, stuck, worst, worstN, what)
+	plan := planRound(b, pr.HeadSHA, stuck && !lastPushFailed(b), worst, worstN, what)
 	if forced != nil {
 		plan = *forced
 	}
@@ -1681,7 +1688,7 @@ func claudeReady(r *Runner) bool {
 // over at once: that won't change by itself, and neither will a pull request
 // the dispatch gate refuses.
 func (s *Service) roundRunnerWait(ctx context.Context, b *Babysit, pr *PullRequest) string {
-	if wait := s.limitWait(b); wait != "" {
+	if wait := cmp(s.faultWait(ctx, b), s.limitWait(b)); wait != "" {
 		return wait
 	}
 	if why, transient := s.babysitGateRead(ctx, pr); why != "" && !transient {
