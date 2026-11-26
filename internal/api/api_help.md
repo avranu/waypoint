@@ -1046,6 +1046,14 @@ steers or clears one in effect.
                                      label,setting,note} (setting: armed by the repo's Merge automatically),
                                      can_merge}. States: findings open|fixed|withdrawn|dismissed|resolved;
                                      checks pending|success|failed; ci pending|passed|failed|none
+    GET /projects/{key}/pulls/{number}/timeline?repo=owner/name   where its time from open to merge went
+                                     (wp pr timeline): {state, opened_at, merged_at, closed_at, as_of (the
+                                     server's now), pushes[{at,head}], armed[{at,what (arm|disarm|merge|merged),by}],
+                                     runs[{number,workflow,event,tier,stack,head,status,queued_at,started_at,
+                                     stopped_at,wait_s,run_s}], holds[{what,head,from,until,after_green_s}],
+                                     totals{open_to_merged_s,ci_wait_s,ci_run_s,held_s}}. Finished runs only;
+                                     wait and run totals add every run, overlapping ones too; held_s is the
+                                     union of the holds' armed time after their head first passed CI
     POST /pulls/{id}/check           read its threads and checks from the forge now, re-evaluate the gate;
                                      returns the detail (editors; what "@waypoint check" does)
     GET /pulls/{id}/readiness        {ready, reasons[], only_waiting, checking}: open, not a draft, mergeable, every
