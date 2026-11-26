@@ -31,11 +31,14 @@ import (
 // Of what the build left in the Service's memory, start carries the
 // gateway's cached task limits, so the env asks the gateway when a build
 // would. It does not carry what a restart loses and the Service makes
-// again when it is needed: the similarity index and the goal graph (read
-// from the database), the audit and branch locks (made on first use), and
-// the job ledger's counts of log records (read by job health, not by a
-// round). TestLoopSnapshotEnvMatchesABuild fails when a build leaves
-// anything else that a started env lacks.
+// again when it is needed: the similarity and glossary indexes and the
+// goals' graph and whether there are goals (read from the database), the
+// count of goal judgements started (compared only with itself), the audit
+// and branch locks (made on first use), and the job ledger's counts of log
+// records (read by job health, not by a round).
+// TestLoopSnapshotEnvMatchesABuild fails when a build leaves any other
+// field of the Service set that a started env lacks, as far as setFields
+// sees.
 type loopSnapshot struct {
 	src *loopEnv
 	db  []byte
@@ -80,17 +83,10 @@ func (sn *loopSnapshot) start(t *testing.T) *loopEnv {
 		s.gatewayLimits.Store(k, v)
 		return true
 	})
-	admin := *src.admin
-	admin.User = new(User)
-	*admin.User = *src.admin.User
-	e.admin = &admin
+	e.admin = copyActor(src.admin)
 
 	// newTaskEnv: the agent's actor, in the session the hook opened.
-	ag := *src.ag
-	ag.User = new(User)
-	*ag.User = *src.ag.User
-	ag.scope = maps.Clone(src.ag.scope)
-	te := &taskEnv{env: e, ag: &ag, cli: src.cli, session: src.session}
+	te := &taskEnv{env: e, ag: copyActor(src.ag), cli: src.cli, session: src.session}
 
 	// newAPEnv: the project, and the jobs caught so far with their results.
 	p := *src.p
@@ -111,6 +107,22 @@ func (sn *loopSnapshot) start(t *testing.T) *loopEnv {
 	box.Labels, box.AllowedDirs = slices.Clone(box.Labels), slices.Clone(box.AllowedDirs)
 	box.CLIs, box.Features = slices.Clone(box.CLIs), slices.Clone(box.Features)
 	return &loopEnv{apEnv: a, box: &box, g: g, j: j, task: &task}
+}
+
+// copyActor is a with its own user, scope, automation and budget.
+func copyActor(a *Actor) *Actor {
+	c := *a
+	c.User, c.Automation, c.budget = ptrCopy(a.User), ptrCopy(a.Automation), ptrCopy(a.budget)
+	c.scope = maps.Clone(a.scope)
+	return &c
+}
+
+func ptrCopy[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }
 
 // doneRound makes the round e.review ran an ended one (the session's turn is
@@ -728,7 +740,7 @@ func TestLoopSnapshotEnvMatchesABuild(t *testing.T) {
 	// Each env is read and run while its job catcher is the one in force:
 	// a later env's catcher takes the jobs of every env before it.
 	fresh := build(t)
-	freshRows, freshMemory, freshService := counts(rows(fresh)), memory(fresh), setFields(fresh.s, false)
+	freshRows, freshMemory, freshService := counts(rows(fresh)), memory(fresh), setFields(fresh.s, true)
 	freshNext := next(fresh)
 
 	src := build(t)
@@ -748,10 +760,11 @@ func TestLoopSnapshotEnvMatchesABuild(t *testing.T) {
 	if clonedMemory != freshMemory {
 		t.Errorf("memory differs:\nbuilt  %s\ncloned %s", freshMemory, clonedMemory)
 	}
-	// What the Service keeps in memory: only what loopSnapshot says a
-	// started env makes again may be missing.
-	remade := []string{".similar.", ".graph.", ".auditLocks.", ".branchLocks.", ".jobs."}
-	clonedService := setFields(cloned.s, false)
+	// What the Service keeps in memory (every number, string, bool, time
+	// and container in it and in this package's structs it holds): only
+	// what loopSnapshot says a started env makes again may be missing.
+	remade := []string{".similar.", ".terms.", ".graph.", ".goals.checked", ".goals.judgeGen", ".auditLocks.", ".branchLocks.", ".jobs."}
+	clonedService := setFields(cloned.s, true)
 	for k, n := range freshService {
 		if clonedService[k] != n && !slices.ContainsFunc(remade, func(p string) bool { return strings.HasPrefix(k, p) }) {
 			t.Errorf("a build leaves the Service's %s holding %s, a started env %q: carry it in start, or name it in loopSnapshot and here", k, n, clonedService[k])
@@ -766,7 +779,7 @@ func TestLoopSnapshotEnvMatchesABuild(t *testing.T) {
 
 	// Running one started env, and writing through what it holds, leaves the
 	// source and the next env from the snapshot as they were.
-	cloned.task.Title, cloned.box.Features[0], cloned.p.Name = "changed", "changed", "changed"
+	cloned.task.Title, cloned.box.Features[0], cloned.p.Name, cloned.ag.User.Username = "changed", "changed", "changed", "changed"
 	if m := memory(src); m != srcMemory || src.task.Title == "changed" {
 		t.Errorf("a started env changed its source:\nbefore %s\nafter  %s (task %q)", srcMemory, m, src.task.Title)
 	}
@@ -781,8 +794,10 @@ func TestLoopSnapshotEnvMatchesABuild(t *testing.T) {
 
 // setFields is what x holds, by field path: how many entries each map,
 // slice and sync.Map has, and with values each number, string and bool
-// that isn't zero and whether each func, interface and error is set. It
-// follows this package's structs, by value or by pointer.
+// that isn't zero and whether each time, func, interface and error is
+// set. It follows this package's structs, by value or by pointer, and
+// atomic values. It doesn't see into channels, interfaces, atomic
+// pointers or other packages' types.
 func setFields(x any, values bool) map[string]string {
 	out := map[string]string{}
 	seen := map[uintptr]bool{}
@@ -805,7 +820,13 @@ func setFields(x any, values bool) map[string]string {
 				}
 				return
 			}
-			if !strings.HasSuffix(v.Type().PkgPath(), "/internal/core") {
+			if v.Type() == reflect.TypeFor[time.Time]() {
+				if values && !v.IsZero() {
+					out[path] = "set"
+				}
+				return
+			}
+			if pkg := v.Type().PkgPath(); !strings.HasSuffix(pkg, "/internal/core") && pkg != "sync/atomic" {
 				return
 			}
 			for i := range v.NumField() {
@@ -819,7 +840,7 @@ func setFields(x any, values bool) map[string]string {
 			if values && !v.IsNil() {
 				out[path] = "set"
 			}
-		case reflect.Bool, reflect.String, reflect.Int, reflect.Int64:
+		case reflect.Bool, reflect.String, reflect.Int, reflect.Int32, reflect.Int64, reflect.Uint32, reflect.Uint64, reflect.Float64:
 			if values && !v.IsZero() {
 				out[path] = fmt.Sprint(v)
 			}
