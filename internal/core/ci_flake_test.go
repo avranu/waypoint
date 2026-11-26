@@ -465,3 +465,24 @@ func TestFlakeRerunTakenInPart(t *testing.T) {
 		t.Errorf("retries %v", be.retries())
 	}
 }
+
+// A forge that errors before taking any job hasn't said it can't: a resting
+// babysit asks again on a later sweep.
+func TestFlakeRerunForgeErrorIsNotCannot(t *testing.T) {
+	be, pr, _ := parkedOnNamedComment(t)
+	be.sg.sm.Lock()
+	be.sg.retryErr = errors.New("502 from the forge")
+	be.sg.sm.Unlock()
+	be.checks(pr.HeadSHA, restFailing)
+	be.step()
+	if fr := parseFlakeRerun(be.babysit().flakeRerun); fr.Cannot {
+		t.Fatalf("a transient error remembered as can't: %+v", fr)
+	}
+	be.sg.sm.Lock()
+	be.sg.retryErr = nil
+	be.sg.sm.Unlock()
+	be.step()
+	if n := len(be.retries()); n < 2 {
+		t.Errorf("not asked again after the error: %v", be.retries())
+	}
+}

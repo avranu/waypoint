@@ -34,7 +34,7 @@ func sqArgs(t *testing.T) {
 const sqCmd = "go test ./x"
 
 // sqRun is a run of the space-separated words of s, keyed by s itself.
-func sqRun(s string) slotRun { return slotRun{s, slotShown(strings.Fields(s))} }
+func sqRun(s string) slotRun { return slotRun{key: s, shown: slotShown(strings.Fields(s))} }
 
 func sqCLI() (*cli, *bytes.Buffer, *bytes.Buffer) {
 	var out, errb bytes.Buffer

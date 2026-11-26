@@ -325,8 +325,8 @@ func TestTranscriptQueryAndNumbers(t *testing.T) {
 
 // The facts route end to end: a stored transcript is derived, its owner reads
 // the counts, another person's session id holds nothing for someone else,
-// naming another person is refused to a non-admin, and an agent's shell gets
-// nothing (the route's permission and core.Service's own check together).
+// naming another person is refused to a non-admin, an agent's shell reads its
+// own person's but not another's (core.Service's own check).
 func TestSessionFactsRoute(t *testing.T) {
 	a := newTranscriptAPI(t)
 	line := `{"type":"assistant","uuid":"u1","timestamp":"2026-03-01T10:00:02.000Z","requestId":"q1","message":{"id":"m1","model":"model-a","content":[],"usage":{"input_tokens":1,"output_tokens":7}}}` + "\n"
@@ -350,8 +350,8 @@ func TestSessionFactsRoute(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != 403 || strings.Contains(string(body), "model_calls") {
-		t.Errorf("from an agent's shell: %d %q", resp.StatusCode, body)
+	if resp.StatusCode != 200 || !strings.Contains(string(body), "model_calls") {
+		t.Errorf("own person's facts from an agent's shell: %d %q", resp.StatusCode, body)
 	}
 	other, err := a.svc.CreateUser(context.Background(), core.SystemActor(), core.CreateUserInput{Username: "sam", Email: "sam@example.com", Password: "correct-horse-battery"})
 	if err != nil {
@@ -364,5 +364,16 @@ func TestSessionFactsRoute(t *testing.T) {
 	}
 	if code, _ := sam.do("GET", "/api/v1/usage/facts?session=s1&user=robin", nil); code != 403 {
 		t.Errorf("a non-admin naming another person: %d, want 403", code)
+	}
+	for _, who := range []string{"sam", "all"} {
+		resp, err := a.req("GET", "/api/v1/usage/facts?session=s1&user="+who, nil, map[string]string{"X-Waypoint-Agent-Env": "claude"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 403 || strings.Contains(string(body), "model_calls") || !strings.Contains(string(body), "leaving out --user") {
+			t.Errorf("an agent's shell with user=%s: %d %q", who, resp.StatusCode, body)
+		}
 	}
 }
