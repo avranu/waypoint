@@ -605,6 +605,36 @@ const laterRunEnd = `coalesce((SELECT max(o.ended_at) FROM agent_runs o WHERE o.
 // takenWhy is decideEnded's reason for a Taken round.
 const takenWhy = "another session holds the task"
 
+// noteTaken records on round id that Waypoint left it because another holder
+// has its task (takenRun): the holder's run and when, in its before_pr, and a
+// log line. It writes once per holder, so the sweep reading the round again
+// doesn't repeat it. Every place that leaves a round Taken calls it
+// (advanceRound, shipSettledRounds, shipNewsNow), so none leaves it unrecorded.
+func (s *Service) noteTaken(ctx context.Context, id int64) {
+	ctx = context.WithoutCancel(ctx)
+	var run int64
+	var sess sql.NullInt64
+	var agent, key string
+	err := s.db.R.QueryRowContext(ctx, `SELECT o.id, o.session_id, o.agent, p.key || '-' || i.number
+		FROM work_log w JOIN issues i ON i.id = w.issue_id JOIN projects p ON p.id = i.project_id
+		JOIN agent_runs o ON `+takenRun+` WHERE w.id = ? ORDER BY o.id DESC LIMIT 1`, id).Scan(&run, &sess, &agent, &key)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) { // no row: the holder left since the decision
+			s.log.WarnContext(ctx, "review round: read who holds its task", "round", id, "err", err)
+		}
+		return
+	}
+	n, err := s.writeRows(ctx, `UPDATE work_log SET before_pr = json_set(before_pr, '$.taken_by', ?, '$.taken_at', ?)
+		WHERE id = ? AND before_pr != '' AND coalesce(json_extract(before_pr, '$.taken_by'), 0) != ?`, run, s.nowMS(), id, run)
+	if err != nil {
+		s.log.WarnContext(ctx, "review round: record that another session holds its task", "round", id, "task", key, "run", run, "err", err)
+		return
+	}
+	if n > 0 {
+		s.log.InfoContext(ctx, "review round left: "+takenWhy, "round", id, "task", key, "run", run, "session", sess.Int64, "agent", agent)
+	}
+}
+
 // takenText is what a ship is told of a Taken round: who holds the task, and
 // what the caller can do about it.
 func (s *Service) takenText(ctx context.Context, r *roundRow) string {
@@ -694,6 +724,9 @@ func (s *Service) advanceRound(ctx context.Context, id int64) (roundOut, error) 
 		return roundOut{}, err
 	}
 	out := decideRound(in)
+	if out.Do == doNothing && out.Settled == takenWhy {
+		s.noteTaken(ctx, id)
+	}
 	r, _ := roundByID(ctx, s.db.R, id)
 	if !in.Unshipped && out.Do != doEnd {
 		return roundOut{Do: doNothing}, nil

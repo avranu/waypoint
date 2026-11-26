@@ -232,6 +232,9 @@ func (s *Service) shipSettledRounds(ctx context.Context) {
 			continue
 		}
 		out := decideRound(in)
+		if out.Do == doNothing && out.Settled == takenWhy {
+			s.noteTaken(ctx, id)
+		}
 		if out.Do != doShip && out.Do != doShipCarried && out.Do != doRelease && out.Do != doFinish && out.Do != doReleaseAfterRunEnded && out.Do != doSettle && (out.Do != doEnd || (!in.ShipSpent && out.Told == "")) {
 			continue
 		}

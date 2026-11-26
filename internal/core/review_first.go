@@ -65,6 +65,11 @@ type beforePR struct {
 	// ShipStop: why Waypoint stopped shipping this round for good (its
 	// authority went, or the forge refused). The round is left as it ends.
 	ShipStop string `json:"ship_stop,omitempty"`
+	// TakenBy is the run that held the round's task when Waypoint last left
+	// the round for it (noteTaken), and TakenAt when: the stored record of a
+	// round left because another session holds the task.
+	TakenBy int64 `json:"taken_by,omitempty"`
+	TakenAt int64 `json:"taken_at,omitempty"`
 	// CheckErr is why the check of the session's marks couldn't be asked
 	// (RequestAudit failed): the check didn't run (checkDidntRun).
 	CheckErr string `json:"check_err,omitempty"`

@@ -283,3 +283,43 @@ func TestRoundHeldPastTheWindowShipsWhenTheHolderLeaves(t *testing.T) {
 		t.Fatalf("before_pr = %+v: want the sweep to have shipped the round", bp)
 	}
 }
+
+// A round left because another session holds the task is recorded on the
+// round (before_pr's taken_by and taken_at), once per holder: the ship's
+// answer, the sweep and advanceRound all write it, and reading it again
+// doesn't rewrite it.
+func TestRoundLeftForAnotherHolderIsRecorded(t *testing.T) {
+	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
+	r1 := e.fixedRound()
+	e.expireRun(r1)
+	other := e.otherSession()
+	e.openRun(e.task.ID, other)
+	var holder int64
+	if err := e.s.db.R.QueryRowContext(e.ctx, `SELECT max(id) FROM agent_runs WHERE issue_id = ? AND ended_at IS NULL`, e.task.ID).Scan(&holder); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.s.shipNewsNow(e.ctx, e.session, e.task.ID); err != nil {
+		t.Fatal(err)
+	}
+	bp := e.bpOf(r1)
+	if bp == nil || bp.TakenBy != holder || bp.TakenAt == 0 {
+		t.Fatalf("before_pr = %+v: want taken_by %d and a taken_at", bp, holder)
+	}
+	at := bp.TakenAt
+	e.setClock(e.clockNow().Add(time.Minute))
+	e.s.shipSettledRounds(e.ctx)
+	if _, err := e.s.advanceRound(e.ctx, r1); err != nil {
+		t.Fatal(err)
+	}
+	if bp := e.bpOf(r1); bp.TakenBy != holder || bp.TakenAt != at {
+		t.Fatalf("before_pr = %+v: want the record of the same holder left as it was (taken_at %d)", bp, at)
+	}
+	e.exec(`UPDATE agent_runs SET ended_at = ? WHERE id = ?`, e.clockNow().UnixMilli(), holder)
+	e.openRun(e.task.ID, other)
+	if _, err := e.s.advanceRound(e.ctx, r1); err != nil {
+		t.Fatal(err)
+	}
+	if bp := e.bpOf(r1); bp.TakenBy == holder || bp.TakenAt == at {
+		t.Fatalf("before_pr = %+v: want the holder's new run recorded", bp)
+	}
+}
