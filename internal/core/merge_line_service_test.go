@@ -1606,3 +1606,43 @@ func TestLineBatchDepthFromTheLastEndedBatch(t *testing.T) {
 		})
 	}
 }
+
+// A candidate of two heads passes before the front's own: the front merges on
+// it, which leaves it ready with a head to go. That head, still a draft, is
+// marked ready on it too and merges with no run between (WP-1994).
+func TestLineMarksEachDraftOfACandidateReadyAsItsTurnComes(t *testing.T) {
+	se := newStackEnv(t)
+	se.draftGreen(head7s, 5)
+	se.draftGreen(head8s, 7)
+	se.step()
+	se.line()
+	if got := se.madeHeads(); len(got) != 2 || got[1] != "7,8" {
+		t.Fatalf("candidates made: %v", got)
+	}
+	se.stackRun(1, CheckSuccess, treeB, "7 "+head7s, "8 "+head8s)
+	se.sg.trees = map[string]string{"3e7000000": treeA, "3e8000000": treeB}
+	se.line()
+	if pr := se.pr(7); pr.State != "open" || pr.ReadyAt == nil {
+		t.Fatalf("#7 not marked ready on the candidate: %+v (%q)", pr, se.babysitOf(7).Wait)
+	}
+	if pr := se.pr(8); pr.ReadyAt != nil {
+		t.Fatalf("#8 marked ready before its turn: %+v", pr)
+	}
+	se.editSkipped(head7s, 30)
+	se.step()
+	if m := se.sg.merged(); len(m) != 1 || m[0].HeadSHA != head7s {
+		t.Fatalf("merges %+v (%q)", m, se.babysitOf(7).Wait)
+	}
+	se.line()
+	if pr := se.pr(8); pr.State != "open" || pr.ReadyAt == nil {
+		t.Fatalf("#8 not marked ready on the candidate after #7 merged: %+v (%q)", pr, se.babysitOf(8).Wait)
+	}
+	se.editSkipped(head8s, 40)
+	se.step()
+	if m := se.sg.merged(); len(m) != 2 || m[1].HeadSHA != head8s {
+		t.Fatalf("merges %+v (%q)", m, se.babysitOf(8).Wait)
+	}
+	if len(se.made) != 2 {
+		t.Errorf("candidates made: %v", se.madeHeads())
+	}
+}

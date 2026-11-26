@@ -1209,7 +1209,10 @@ func (s *Service) lineMergeAct(ctx context.Context, ls *lineState, a lineAction)
 		if st == nil {
 			return
 		}
-		if st.State != stackReady {
+		// The candidate is ready from its first merge on; each head after it
+		// is still a draft until its own turn (WP-1994).
+		marked := pr.ReadyAt != nil && sameSHA(pr.readySHA, pr.HeadSHA)
+		if st.State != stackReady || !marked {
 			if pr.WipAuto {
 				if err := s.candMarkReady(ctx, ls.f, pr, st); err != nil {
 					s.log.WarnContext(ctx, "mark a pull request ready on its candidate", "repo", pr.Repo, "number", pr.Number, "err", err)
