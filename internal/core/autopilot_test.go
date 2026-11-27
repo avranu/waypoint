@@ -27,6 +27,19 @@ func newAPEnv(t *testing.T) *apEnv {
 		r.Features = []string{FeatureAutopilot}
 		r.CLIs = []RunnerCLI{{Name: "claude"}}
 	})
+	a.catchJobs()
+	if _, err := te.s.SetAutopilot(te.ctx, te.admin, a.p.Key, AutopilotSettingInput{Enabled: ptrOf(true)}); err != nil {
+		t.Fatal(err)
+	}
+	a.autopilotStarted(a.session)
+	return a
+}
+
+// catchJobs has runner jobs recorded in a.jobs instead of enqueued, and
+// the results the test sets in a.res looked up for them, until the test
+// ends.
+func (a *apEnv) catchJobs() {
+	t := a.t
 	oldEnq, oldLook := enqueueRunnerJob, lookupRunnerJob
 	enqueueRunnerJob = func(ctx context.Context, s *Service, ac *Actor, in RunnerJobInput) (*RunnerJob, error) {
 		if in.Source == reviewCompactSource {
@@ -49,11 +62,6 @@ func newAPEnv(t *testing.T) *apEnv {
 		return &j, nil
 	}
 	t.Cleanup(func() { enqueueRunnerJob, lookupRunnerJob = oldEnq, oldLook })
-	if _, err := te.s.SetAutopilot(te.ctx, te.admin, a.p.Key, AutopilotSettingInput{Enabled: ptrOf(true)}); err != nil {
-		t.Fatal(err)
-	}
-	a.autopilotStarted(a.session)
-	return a
 }
 
 // autopilotStarted records that an earlier step of autopilot's started the

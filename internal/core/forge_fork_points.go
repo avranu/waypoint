@@ -64,6 +64,8 @@ func (c *httpForgeClient) ForkedTwice(ctx context.Context, f *Forge, repo, tip, 
 // request on the base and the front's queue step needs the queue's lock. So
 // the pull request is judged again under them, on the row as it is then: a
 // round starts under the babysit's lock and ready is marked under the queue's.
+// A pull request whose babysit lock is held has a step running and is passed
+// over; the next pass looks again.
 func (s *Service) mergeBaseBehindFront(ctx context.Context, f *Forge, id int64) {
 	pr := s.mergeBaseCandidate(ctx, id)
 	if pr == nil {
@@ -81,7 +83,11 @@ func (s *Service) mergeBaseBehindFront(ctx context.Context, f *Forge, id int64) 
 	default:
 		return
 	}
-	defer s.babysitLocks.lock(id)()
+	unlockBabysit, free := s.babysitLocks.tryLock(id)
+	if !free {
+		return
+	}
+	defer unlockBabysit()
 	ctx, unlock := s.queueLockCtx(ctx, pr)
 	defer unlock()
 	now := s.mergeBaseCandidate(ctx, id)

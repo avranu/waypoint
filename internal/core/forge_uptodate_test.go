@@ -64,6 +64,7 @@ func TestArmedMergeWaitsForUpToDateHead(t *testing.T) {
 	se.sg.behind = map[string]bool{head: true}
 	se.pullHook("opened", testPR)
 	se.drain()
+	se.s.Wait()
 	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
 	se.poll()
 	id := se.pr(5).ID
@@ -105,6 +106,7 @@ func TestUpdateBranchConflict(t *testing.T) {
 	se.sg.updateErr = &forgeAPIError{method: "POST", path: "/repos/me/app/pulls/5/update", status: 409, body: "merge conflict"}
 	se.pullHook("opened", testPR)
 	se.drain()
+	se.s.Wait()
 	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
 	se.poll()
 	id := se.pr(5).ID
@@ -132,6 +134,7 @@ func TestUpdateBranchFailureIsSaid(t *testing.T) {
 	se.sg.updateErr = errors.New("HTTP 502")
 	se.pullHook("opened", testPR)
 	se.drain()
+	se.s.Wait()
 	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
 	se.poll()
 	id := se.pr(5).ID
