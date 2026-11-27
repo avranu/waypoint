@@ -677,7 +677,7 @@ func (p *usageParser) assistant(b []byte, l *rawLine) {
 		if bl.Name == "Write" {
 			var in traceInput
 			if json.Unmarshal(bl.Input, &in) == nil {
-				p.st.Trace.Scripts.Keep(trscript.ShellAt(in.FilePath, usageOr(l.Cwd, p.st.Cwd)), in.Content)
+				p.st.Trace.Scripts.Keep(trscript.ShellAt(in.FilePath, l.Cwd), in.Content) // the record's own cwd, as the server keeps it
 			}
 		}
 		if bl.Name == "Bash" {

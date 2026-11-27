@@ -310,7 +310,12 @@ func (p *parser) line(b []byte) {
 	if ts != nil {
 		p.lastTS = *ts
 	}
-	p.shell.Note(r.Cwd)
+	if r.Type == "assistant" || r.Type == "user" || r.Type == "system" {
+		// The directories a session worked in are those of its messages, as the
+		// client notes them (cmd/wp usageParser.meta): an attachment's or a
+		// hook's cwd alone does not make a directory the work.
+		p.shell.Note(r.Cwd)
+	}
 	thread := p.fileThread
 	if r.AgentID != "" {
 		thread = r.AgentID

@@ -101,6 +101,10 @@ func TestUsageParseShellEditsAgreeWithTheServer(t *testing.T) {
 			line("1", "01", "/gone/first", "ls") + line("2", "02", "/work/app", "echo x > /gone/first/b.go"), 1},
 		{"a directory that is gone and was never worked in", line("1", "01", "/work/app", "echo x > /gone/elsewhere/b.go"), 0},
 		{"a working directory on this disk that is no checkout", line("1", "01", "/usr", "echo x > c.go"), 1},
+		// Audit 2117.8: only a message's cwd makes a directory one the session worked in.
+		{"a directory seen only on an attachment line",
+			`{"type":"attachment","timestamp":"2026-10-05T10:00:00.000Z","cwd":"/work/other","attachment":{"type":"x"}}` + "\n" +
+				line("1", "01", "/work/app", "echo x > /work/other/a.go"), 0},
 		{"a relative write and a scratch one",
 			line("1", "01", "/work/app", "echo x > c.go") + line("2", "02", "/work/app", "echo x > /tmp/d.txt"), 1},
 	} {
