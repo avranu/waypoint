@@ -1,5 +1,5 @@
 name: go-cache
-description: Restore Go's module cache (immutable per go.sum) and build cache (saved on main only so PRs and ephemeral queue branches don't re-upload multi-GB caches).
+description: Restore and save Go's module cache (shared across jobs, keyed on Go version and go.sum) and per-kind daily build cache (saved by the first passing job of each kind per day).
 inputs:
   kind:
     description: what the job builds, e.g. backend-race, backend, lint, e2e
@@ -34,18 +34,7 @@ runs:
         key: ${{ steps.key.outputs.modkey }}
         restore-keys: |
           ${{ steps.key.outputs.modprefix }}
-    - if: github.ref == 'refs/heads/main'
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: |
-          ${{ steps.key.outputs.gocache }}
-          ${{ inputs.path }}
-        key: ${{ steps.key.outputs.sum }}-${{ steps.key.outputs.day }}
-        restore-keys: |
-          ${{ steps.key.outputs.sum }}-
-          ${{ steps.key.outputs.base }}-
-    - if: github.ref != 'refs/heads/main'
-      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
           ${{ steps.key.outputs.gocache }}

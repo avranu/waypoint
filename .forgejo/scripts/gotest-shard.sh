@@ -184,26 +184,11 @@ if [ "$has_timeout" -eq 0 ]; then
   run_flags+=(-test.timeout=10m)
 fi
 
-# Compile internal/core once BEFORE launching cmd/wp and rest packages: both
-# cmd/wp and internal/api import internal/core, so launching all three at once
-# causes Go to miss GOCACHE and compile 204k-LOC internal/core up to 3x
-# concurrently. Warming GOCACHE here lets cmd/wp and internal/api reuse the
-# compiled internal/core package immediately.
-status=0
-core_pids=()
-core_t0=0
-core_lanes=${CORE_LANES:-2}
-core_compiled=0
-if [ -n "${run[internal/core]:-}" ] && [ "$core_lanes" -gt 1 ] && [ "${#core_weighted[@]}" -gt 1 ]; then
-  if go test -c ${build_flags[@]+"${build_flags[@]}"} -o "$tmp/core.test" ./internal/core >"$tmp/core-build.out" 2>&1; then
-    core_compiled=1
-  else
-    cat "$tmp/core-build.out" >&2
-    printf 'FAIL\t%s/internal/core [build failed]\n' "$mod" >"$tmp/internal-core-pkg.out"
-    status=1
-  fi
-fi
-
+# Run cmd/wp and rest packages while compiling internal/core once, then fan
+# internal/core across CORE_LANES isolated sub-processes so multi-core runners
+# don't sit idle on a single sequential core process. (go test -c builds the
+# test-augmented internal/core package, which cmd/wp and internal/api cannot
+# reuse anyway, so launching them immediately overlaps their work.)
 if [ -n "${run[cmd/wp]:-}" ]; then
   # shellcheck disable=SC2046 # flags prints separate words
   go test "$@" $(flags cmd-wp) -run "^(${run[cmd/wp]})\$" ./cmd/wp >"$tmp/cmd-wp.out" 2>&1 &
@@ -215,26 +200,36 @@ if [ ${#mine[@]} -gt 0 ]; then
   pids+=($!)
 fi
 
+status=0
+core_pids=()
+core_t0=0
+core_lanes=${CORE_LANES:-2}
 if [ -n "${run[internal/core]:-}" ]; then
-  if [ "$core_compiled" -eq 1 ]; then
-    declare -a sub_run=()
-    while read -r lane tname; do
-      sub_run[lane]+="${sub_run[lane]:+|}$tname"
-    done < <(
-      printf '%s\n' "${core_weighted[@]}" | awk -v n="$core_lanes" '
-        { best = 0; for (i = 1; i < n; i++) if (load[i] < load[best]) best = i
-          load[best] += $1; print best, $2 }'
-    )
-    core_t0=$(date +%s%3N)
-    for lane in "${!sub_run[@]}"; do
-      if [ -n "${EVIDENCE:-}" ]; then
-        (cd internal/core && go tool test2json -p "$mod/internal/core" -t "$tmp/core.test" -test.paniconexit0 -test.v=test2json "-test.coverprofile=$tmp/internal-core-$lane.cov" ${run_flags[@]+"${run_flags[@]}"} -test.run="^(${sub_run[$lane]})\$") >"$tmp/internal-core-$lane.out" 2>&1 &
-      else
-        (cd internal/core && "$tmp/core.test" -test.paniconexit0 ${run_flags[@]+"${run_flags[@]}"} -test.run="^(${sub_run[$lane]})\$") >"$tmp/internal-core-$lane.out" 2>&1 &
-      fi
-      core_pids+=($!)
-    done
-  elif [ "$core_lanes" -le 1 ] || [ "${#core_weighted[@]}" -le 1 ]; then
+  if [ "$core_lanes" -gt 1 ] && [ "${#core_weighted[@]}" -gt 1 ]; then
+    if go test -c ${build_flags[@]+"${build_flags[@]}"} -o "$tmp/core.test" ./internal/core >"$tmp/core-build.out" 2>&1; then
+      declare -a sub_run=()
+      while read -r lane tname; do
+        sub_run[lane]+="${sub_run[lane]:+|}$tname"
+      done < <(
+        printf '%s\n' "${core_weighted[@]}" | awk -v n="$core_lanes" '
+          { best = 0; for (i = 1; i < n; i++) if (load[i] < load[best]) best = i
+            load[best] += $1; print best, $2 }'
+      )
+      core_t0=$(date +%s%3N)
+      for lane in "${!sub_run[@]}"; do
+        if [ -n "${EVIDENCE:-}" ]; then
+          (cd internal/core && go tool test2json -p "$mod/internal/core" -t "$tmp/core.test" -test.paniconexit0 -test.v=test2json "-test.coverprofile=$tmp/internal-core-$lane.cov" ${run_flags[@]+"${run_flags[@]}"} -test.run="^(${sub_run[$lane]})\$") >"$tmp/internal-core-$lane.out" 2>&1 &
+        else
+          (cd internal/core && "$tmp/core.test" -test.paniconexit0 ${run_flags[@]+"${run_flags[@]}"} -test.run="^(${sub_run[$lane]})\$") >"$tmp/internal-core-$lane.out" 2>&1 &
+        fi
+        core_pids+=($!)
+      done
+    else
+      cat "$tmp/core-build.out" >&2
+      printf 'FAIL\t%s/internal/core [build failed]\n' "$mod" >"$tmp/internal-core-pkg.out"
+      status=1
+    fi
+  else
     # shellcheck disable=SC2046
     go test "$@" $(flags internal-core) -run "^(${run[internal/core]})\$" ./internal/core >"$tmp/internal-core.out" 2>&1 &
     pids+=($!)
