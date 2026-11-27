@@ -39,13 +39,17 @@ type shipNews struct {
 	IDs     []int64 `json:"ids"` // the messages of findings: waitHeldShip acks them once printed
 	// Checks: the answer is to a wait for a pull request's checks. A server
 	// without that wait never sets it (WP-1878).
-	Checks bool `json:"checks"`
-	Pull   *struct {
-		Repo   string `json:"repo"`
-		Number int    `json:"number"`
-		URL    string `json:"url"`
-		State  string `json:"state"`
-	} `json:"pull"`
+	Checks bool      `json:"checks"`
+	Pull   *shipPull `json:"pull"`
+}
+
+// shipPull is a pull request of the task's branch; with an ended round, the
+// server sends one only when the turn may end on it.
+type shipPull struct {
+	Repo   string `json:"repo"`
+	Number int    `json:"number"`
+	URL    string `json:"url"`
+	State  string `json:"state"`
 }
 
 // canWaitShip: the same conditions under which endTurnAfterShip may write a
@@ -161,10 +165,12 @@ func (n *shipNews) pullLine() string {
 var reopenPR = func(c *cli, f prOpenFlags) (*openedPR, []byte, error) { return c.openPR(f) }
 
 // waitHeldShip is wp ship's wait for a held round's next step. done: what
-// the round had for the agent was printed and the ship is over (no marker, so
-// the turn goes on to read it; the summary stays kept for the task's next
-// ship). Otherwise the ship goes on with o: the pull request Waypoint opened,
-// or the held answer as it was when nothing came.
+// the round had for the agent was printed and the ship is over. Findings
+// leave the turn going to read them (the summary stays kept for the task's
+// next ship); a round that ended with nothing for the agent ends the turn
+// with the summary, when there is one and nothing else asks the agent.
+// Otherwise the ship goes on with o: the pull request Waypoint opened, or the
+// held answer as it was when nothing came.
 func (c *cli) waitHeldShip(f prOpenFlags, so shipOpts, o *openedPR, raw []byte, task, summary string) (*openedPR, []byte, bool, error) {
 	if summary != "" {
 		c.keepSummary(task, summary)
@@ -198,6 +204,15 @@ func (c *cli) waitHeldShip(f prOpenFlags, so shipOpts, o *openedPR, raw []byte, 
 		return nil, nil, true, fmt.Errorf("printing the review's findings: %w", err)
 	}
 	c.ackShipNews(task, n.IDs)
+	if n.Outcome == "ended" && summary != "" && n.Pull != nil {
+		t := readShipTurn(o)
+		if t.putOff != "" {
+			c.println(t.putOff)
+		}
+		if shipNeedsAgent(o, so.before, nil, t) == "" && c.endTurnAfterShip(task, endedSummary(summary, task, n.Pull, n.Text)) {
+			c.println(shipEndsLine)
+		}
+	}
 	return o, raw, true, nil
 }
 

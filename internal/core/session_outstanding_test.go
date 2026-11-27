@@ -11,11 +11,12 @@ import (
 
 // A Stop that leaves a background run going names the outstanding work, once;
 // a Stop with nothing running, or with nothing outstanding, says nothing. The
-// wait hook naming it first doesn't stop the Stop naming it (audit #1344.1).
+// wait hook merely answering doesn't stop the Stop naming it (audit #1344.1).
 func TestStopNamesOutstandingWorkWhileARunGoes(t *testing.T) {
 	a, box := auditAPEnv(t)
 	round, audit, _ := handoffStart(t, a)
-	run := PendingTask{Type: "local_agent", Status: "running", Description: "wp testsum -- make check"}
+	holdRoundOpen(t, a, round)
+	run := PendingTask{Type: "local_bash", Status: "running", Description: "wp testsum -- make check"}
 	if _, err := a.s.db.W.Exec(`UPDATE agent_sessions SET warm_state = ''`); err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +37,7 @@ func TestStopNamesOutstandingWorkWhileARunGoes(t *testing.T) {
 	}
 	more := []PendingTask{run, {Type: "local_bash", Status: "running", Description: "run b"}, {Type: "local_bash", Status: "running", Description: "run c"}, {Type: "local_bash", Status: "running", Description: "run d"}}
 	res := a.stopWith("Waiting.", more...)
-	for _, want := range []string{"still running", "run c", "audit #" + itoa64(audit), f(1), f(2), "wp audit mark"} {
+	for _, want := range []string{"Still running in the background:\n- wp testsum -- make check\n- run b\n- run c\n- and 1 more\nWork of yours is waiting; do what doesn't need those results now", "run c", "audit #" + itoa64(audit), f(1), f(2), "wp audit mark"} {
 		if !strings.Contains(res.Text, want) {
 			t.Errorf("the stop's text lacks %q:\n%s", want, res.Text)
 		}
@@ -150,8 +151,8 @@ func TestSessionOutstanding(t *testing.T) {
 	if again, err := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); err != nil || !again.Empty() || again.Lines != "" {
 		t.Fatalf("asked twice: %+v %v", again, err)
 	}
-	if atStop, _ := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtStop); !slices.Equal(atStop.Findings, want) {
-		t.Fatalf("at the stop after the wait: %v", atStop.Findings)
+	if atStop, _ := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtStop); !atStop.Empty() {
+		t.Fatalf("at the stop after the wait printed them: %v", atStop.Findings)
 	}
 	if _, err := a.s.db.W.Exec(`INSERT INTO code_audit_findings(audit_id, ordinal, title) VALUES (?, 4, 'New one')`, audit); err != nil {
 		t.Fatal(err)
@@ -293,7 +294,7 @@ func TestSessionOutstandingPassesOverARoundStillAuditing(t *testing.T) {
 // A Stop the person paused, or in a session they left alone, names nothing,
 // with a run going and findings to do (audit #1372.19).
 func TestPausedOrLeftAloneStopNamesNoOutstandingWork(t *testing.T) {
-	run := PendingTask{Type: "local_agent", Status: "running", Description: "wp testsum -- make check"}
+	run := PendingTask{Type: "local_bash", Status: "running", Description: "wp testsum -- make check"}
 	for _, how := range []string{"paused", "left alone"} {
 		t.Run(how, func(t *testing.T) {
 			a, box := auditAPEnv(t)
@@ -418,5 +419,167 @@ func TestSessionOutstandingNamesConfirmedButNotFiled(t *testing.T) {
 	}
 	if want := []string{itoa64(audit) + ".1", itoa64(audit) + ".3"}; !slices.Equal(got.Findings, want) {
 		t.Fatalf("findings = %v, want %v", got.Findings, want)
+	}
+}
+
+// holdRoundOpen runs the check of the round's marks, so a Stop with only a shell
+// going isn't the round's report and the round stays running.
+func holdRoundOpen(t *testing.T, a *apEnv, round int64) {
+	t.Helper()
+	if _, err := a.s.db.W.Exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at, status, request_key) VALUES (?, (SELECT id FROM forges LIMIT 1), 'acme/app', 'branch', ?, ?, 'running', ?)`,
+		a.p.ID, a.admin.User.ID, a.clockNow().UnixMilli(), fmt.Sprintf(checkAuditKey, round)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func stopOutstandingEnv(t *testing.T) (*apEnv, string, int64) {
+	t.Helper()
+	a, box := auditAPEnv(t)
+	round, audit, _ := handoffStart(t, a)
+	if _, err := a.s.db.W.Exec(`UPDATE agent_sessions SET warm_state = ''`); err != nil {
+		t.Fatal(err)
+	}
+	a.endAudit(box, "done", "Merge reads a nil map", "Unchecked error")
+	promptIn(t, a, round)
+	holdRoundOpen(t, a, round)
+	return a, itoa64(audit), audit
+}
+
+func outstandingRows(t *testing.T, a *apEnv) int {
+	t.Helper()
+	var n int
+	if err := a.s.db.W.QueryRow(`SELECT COUNT(*) FROM session_events WHERE kind = ?`, outstandingKind).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// A running subagent of the session wakes it when it reports, and the
+// findings wait on its work: a Stop then names nothing and records nothing.
+func TestStopWithASubagentRunningNamesNothing(t *testing.T) {
+	a, _, _ := stopOutstandingEnv(t)
+	agent := PendingTask{Type: "local_agent", Status: "running", Description: "Fix audit findings"}
+	shell := PendingTask{Type: "local_bash", Status: "running", Description: "wp ship"}
+	if res := a.stopWith("Waiting.", agent, shell); res.Text != "" {
+		t.Fatalf("a subagent runs, yet the stop said %q", res.Text)
+	}
+	if n := outstandingRows(t, a); n != 0 {
+		t.Fatalf("%d outstanding rows written", n)
+	}
+	done := PendingTask{Type: "local_agent", Status: "completed", Description: "Fix audit findings"}
+	if res := a.stopWith("Waiting.", done, shell); !strings.Contains(res.Text, "wp audit mark") {
+		t.Fatalf("a finished subagent hid the findings from a stop with a shell running: %q", res.Text)
+	}
+}
+
+func TestStopTextShape(t *testing.T) {
+	a, _, audit := stopOutstandingEnv(t)
+	long := "L=/tmp/x/ship9.log wp ship --summary \"Audit 1809 (check of marks on 1798): all 17 objections had one cause. " + strings.Repeat("word ", 30) + "\""
+	var tasks []PendingTask
+	names := []string{long, "Fix audit 1811 findings", "run c"}
+	for i := range 12 {
+		names = append(names, fmt.Sprintf("run %d", i))
+	}
+	for _, d := range names {
+		tasks = append(tasks, PendingTask{Type: "local_bash", Status: "running", Description: d})
+	}
+	res := a.stopWith("Waiting.", tasks...)
+	lines := strings.Split(res.Text, "\n")
+	if lines[0] != "Still running in the background:" {
+		t.Fatalf("header %q", lines[0])
+	}
+	if want := "- " + excerpt(long, 100); lines[1] != want || !strings.HasSuffix(lines[1], "…") || len([]rune(lines[1])) != 102 {
+		t.Errorf("first entry %q", lines[1])
+	}
+	if lines[2] != "- Fix audit 1811 findings" || lines[3] != "- run c" || lines[4] != "- and 12 more" {
+		t.Errorf("entries: %q", lines[2:5])
+	}
+	if lines[5] != "Work of yours is waiting; do what doesn't need those results now instead of ending the turn idle:" {
+		t.Errorf("work line %q", lines[5])
+	}
+	if !strings.Contains(res.Text, "audit #"+itoa64(audit)) {
+		t.Errorf("findings missing:\n%s", res.Text)
+	}
+}
+
+func TestRunningTasksDedupesAgainstTheCut(t *testing.T) {
+	long := strings.Repeat("x", 300)
+	p := &HookPending{Tasks: []PendingTask{{Type: "local_bash", Description: long}, {Type: "local_bash", Description: long}}}
+	if got := runningTasks(p); len(got) != 1 {
+		t.Errorf("one long command listed %d times", len(got))
+	}
+	// Two commands that differ only past the cut read the same once cut.
+	p.Tasks[1].Description = long + " --other"
+	if got := runningTasks(p); len(got) != 1 {
+		t.Errorf("two commands alike up to the cut listed as %d", len(got))
+	}
+	p.Tasks[1].Description = "y" + long
+	if got := runningTasks(p); len(got) != 2 {
+		t.Errorf("two commands that differ before the cut listed as %d", len(got))
+	}
+}
+
+// A subagent counts while it runs, whatever the case of its type; a finished
+// one, a shell and no pending at all don't.
+func TestPendingSubagent(t *testing.T) {
+	for _, tc := range []struct {
+		p    *HookPending
+		want bool
+	}{
+		{nil, false},
+		{&HookPending{}, false},
+		{&HookPending{Tasks: []PendingTask{{Type: "local_agent", Status: "running"}}}, true},
+		{&HookPending{Tasks: []PendingTask{{Type: "Local_Agent", Status: "running"}}}, true},
+		{&HookPending{Tasks: []PendingTask{{Type: "local_agent", Status: "completed"}}}, false},
+		{&HookPending{Tasks: []PendingTask{{Type: "local_bash", Status: "running"}}}, false},
+		{&HookPending{Tasks: []PendingTask{{Type: "local_bash", Status: "running"}, {Type: "local_agent", Status: "pending"}}}, true},
+	} {
+		if got := pendingSubagent(tc.p); got != tc.want {
+			t.Errorf("pendingSubagent(%+v) = %v", tc.p, got)
+		}
+	}
+}
+
+// An answer to the wait the hook never says it printed leaves the findings
+// for the Stop to name.
+func TestStopNamesFindingsTheWaitAnsweredButDidntPrint(t *testing.T) {
+	a, _, _ := stopOutstandingEnv(t)
+	ag := *a.ag
+	ag.Session = a.session
+	run := PendingTask{Type: "local_bash", Status: "running", Description: "wp ship"}
+	o, err := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait)
+	if err != nil || len(o.Findings) != 2 {
+		t.Fatalf("at the wait: %+v %v", o, err)
+	}
+	if res := a.stopWith("Waiting.", run); !strings.Contains(res.Text, "wp audit mark") {
+		t.Fatalf("answered but not printed, the stop must still name them: %q", res.Text)
+	}
+}
+
+// Findings the wait hook printed (and said so) are not fresh at a Stop; a
+// new one makes the Stop name them all, and the next wait still names what
+// only a Stop did.
+func TestStopDoesntRepeatFindingsTheWaitPrinted(t *testing.T) {
+	a, _, audit := stopOutstandingEnv(t)
+	ag := *a.ag
+	ag.Session = a.session
+	run := PendingTask{Type: "local_bash", Status: "running", Description: "wp ship"}
+	if err := a.s.SessionFindingsNamed(a.ctx, &ag, []string{itoa64(audit) + ".1", itoa64(audit) + ".2"}); err != nil {
+		t.Fatal(err)
+	}
+	if res := a.stopWith("Waiting.", run); res.Text != "" {
+		t.Fatalf("named at the wait, yet the stop said %q", res.Text)
+	}
+	if _, err := a.s.db.W.Exec(`INSERT INTO code_audit_findings(audit_id, ordinal, title) VALUES (?, 3, 'Late finding')`, audit); err != nil {
+		t.Fatal(err)
+	}
+	res := a.stopWith("Waiting.", run)
+	for _, want := range []string{"3 findings still to do", itoa64(audit) + ".1", itoa64(audit) + ".3"} {
+		if !strings.Contains(res.Text, want) {
+			t.Errorf("after a new finding the stop lacks %q:\n%s", want, res.Text)
+		}
+	}
+	if o, err := a.s.SessionOutstanding(a.ctx, &ag, OutstandingAtWait); err != nil || len(o.Findings) != 3 {
+		t.Errorf("the wait after a stop named the late finding: %+v %v", o, err)
 	}
 }

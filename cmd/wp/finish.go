@@ -35,7 +35,9 @@ When held for review or waiting on first CI checks, wp ship waits up to
 --wait-timeout (default 90m) and prints findings or failures (--no-wait returns
 immediately). Run in background and end your turn to be woken when done.
 
---summary sets your final reply so Waypoint can end your turn on a clean ship.`,
+--summary sets your final reply so Waypoint can end your turn on a clean ship,
+or when a review round it waited on ends with the server sending the round's
+pull request and nothing else needing you.`,
 	examples: []string{
 		`wp ship -m "Fix the redirect"`,
 		`wp ship WP-12 --skip-review "docs only" -m "Update deploy docs"`,

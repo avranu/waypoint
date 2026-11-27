@@ -220,8 +220,7 @@ func fillSummary(text, key string, d *prDetail) string {
 	if d == nil {
 		return strings.TrimSpace(text)
 	}
-	what := cmpStr(key, d.Title)
-	s := strings.NewReplacer("{task}", what, "{pr}", strconv.Itoa(d.Number), "{url}", d.URL).Replace(strings.TrimSpace(text))
+	s := fillPlaceholders(text, cmpStr(key, d.Title), d.Number, d.URL)
 	if d.URL != "" && !strings.Contains(s, d.URL) {
 		s += fmt.Sprintf("\n\nPR #%d: %s", d.Number, d.URL)
 	}
@@ -233,6 +232,21 @@ func fillSummary(text, key string, d *prDetail) string {
 func heldSummary(text string) string {
 	s := strings.NewReplacer("{pr}", "(after the review)", "{url}", "(after the review)", "{task}", "this task").Replace(strings.TrimSpace(text))
 	return s + "\n\n(The pull request opens after the adversarial review, by Waypoint when the review leaves nothing for the session to do; findings that need the session come back to it.)"
+}
+
+// endedSummary is what the person sees when a held ship's wait ends with the
+// round over and the server sent its pull request: the summary, then
+// Waypoint's news.
+func endedSummary(text, key string, pull *shipPull, news string) string {
+	// news names the pull request and its URL, so no PR line is added; the
+	// server sends no title, so {task} without a key is "this task".
+	return fillPlaceholders(text, cmpStr(key, "this task"), pull.Number, pull.URL) + "\n\n" + news
+}
+
+// fillPlaceholders puts the task, the pull request's number and its URL into
+// a --summary's {task}, {pr} and {url}.
+func fillPlaceholders(text, task string, number int, url string) string {
+	return strings.NewReplacer("{task}", task, "{pr}", strconv.Itoa(number), "{url}", url).Replace(strings.TrimSpace(text))
 }
 
 // endTurnAfterShip marks this session's turn as one the hooks may end, with
