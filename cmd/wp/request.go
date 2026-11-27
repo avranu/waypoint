@@ -258,6 +258,9 @@ func (r *reqView) text(diffs bool) string {
 		b.WriteString("\n")
 		if len(c.Runs) > 0 {
 			run := c.Runs[0]
+			if run.Command != "" && run.Command != c.Command {
+				fmt.Fprintf(&b, "  edited to: %s\n", run.Command)
+			}
 			if run.State == "queued" {
 				fmt.Fprintf(&b, "  waiting: %s\n", cmpStr(run.Waiting, "for a runner to take it"))
 				continue

@@ -273,18 +273,26 @@ func readCompactFile(path string) ([]cmpEvent, error) {
 			if json.Unmarshal(line, &l) == nil && !l.IsSidechain {
 				switch {
 				case l.Type == "assistant" && l.Message != nil:
-					i, ok := calls[l.Message.ID]
-					if !ok || l.Message.ID == "" {
-						ev = append(ev, cmpEvent{kind: 'c', ts: parseTS(l.Timestamp), model: cleanModel(l.Message.Model)})
-						i = len(ev) - 1
-						calls[l.Message.ID] = i
-						pendingSummary = 0
-					}
-					if u := l.Message.Usage; u != nil {
-						c := &ev[i]
-						c.in, c.out, c.cw, c.cr = max(c.in, u.Input), max(c.out, u.Output), max(c.cw, u.CacheCreation), max(c.cr, u.CacheRead)
-						if u.CC != nil {
-							c.cw1h, c.split = max(c.cw1h, u.CC.E1h), true
+					// A "<synthetic>" record is a REPL script's inner tool call replayed
+					// into the transcript: a real tool run, not a model request. Its
+					// tools are events at its own time; it is no call and has no usage.
+					virtual := strings.HasPrefix(l.Message.Model, "<")
+					i := -1
+					if !virtual {
+						var ok bool
+						i, ok = calls[l.Message.ID]
+						if !ok || l.Message.ID == "" {
+							ev = append(ev, cmpEvent{kind: 'c', ts: parseTS(l.Timestamp), model: cleanModel(l.Message.Model)})
+							i = len(ev) - 1
+							calls[l.Message.ID] = i
+							pendingSummary = 0
+						}
+						if u := l.Message.Usage; u != nil {
+							c := &ev[i]
+							c.in, c.out, c.cw, c.cr = max(c.in, u.Input), max(c.out, u.Output), max(c.cw, u.CacheCreation), max(c.cr, u.CacheRead)
+							if u.CC != nil {
+								c.cw1h, c.split = max(c.cw1h, u.CC.E1h), true
+							}
 						}
 					}
 					var blocks []rawBlock
@@ -292,6 +300,9 @@ func readCompactFile(path string) ([]cmpEvent, error) {
 					for _, b := range blocks {
 						switch b.Type {
 						case "text":
+							if virtual {
+								continue
+							}
 							if k := l.Message.ID + "\x00" + b.Text; l.Message.ID != "" {
 								if texts[k] {
 									continue
@@ -304,7 +315,11 @@ func readCompactFile(path string) ([]cmpEvent, error) {
 								continue
 							}
 							t := cmpTool(b.Name, b.Input)
-							t.ts = ev[i].ts
+							if virtual {
+								t.ts = parseTS(l.Timestamp)
+							} else {
+								t.ts = ev[i].ts
+							}
 							ev = append(ev, t)
 							tools[b.ID] = len(ev) - 1
 							if l.UUID != "" {

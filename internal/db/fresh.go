@@ -28,7 +28,7 @@ func OpenFresh(ctx context.Context, path string) (*DB, error) {
 	if err := os.WriteFile(path, template.data, 0o600); err != nil {
 		return nil, err
 	}
-	return Open(ctx, path)
+	return open(ctx, path, false, true)
 }
 
 func migratedTemplate(ctx context.Context) ([]byte, error) {

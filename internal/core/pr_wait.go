@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -373,6 +375,13 @@ func (s *Service) prWaitState(ctx context.Context, prID int64, head string) (*PR
 		w.Why = why
 		return w, nil
 	}
+	// A footprint check asked ahead holds the merge from when the pull request
+	// was otherwise ready, past when reviewGoing counts its queued audit. While
+	// that is all that holds it, it is waited for (WP-1853).
+	if why, wake, err := s.footprintDue(ctx, pr); err == nil && wake != nil && slices.Equal(rd.Reasons, []string{why}) {
+		w.Why = why
+		return w, nil
+	}
 	return settle(PRWaitBlocked, strings.Join(rd.Reasons, "; "))
 }
 
@@ -397,6 +406,17 @@ func (s *Service) reviewGoing(ctx context.Context, pr *PullRequest) (bool, strin
 // setting, the review runs or the audits, for a caller that must not start
 // a round on a read it couldn't make (WP-748).
 func (s *Service) reviewGoingErr(ctx context.Context, pr *PullRequest) (bool, string, error) {
+	return s.reviewGoingBy(ctx, pr, false)
+}
+
+// babysitReviewGoing is reviewGoingErr for the babysit's own step: a
+// footprint check runs beside its comments, rounds and re-runs and holds only
+// the merge (WP-1853), so it doesn't count as a review going.
+func (s *Service) babysitReviewGoing(ctx context.Context, pr *PullRequest) (bool, string, error) {
+	return s.reviewGoingBy(ctx, pr, true)
+}
+
+func (s *Service) reviewGoingBy(ctx context.Context, pr *PullRequest, notFootprint bool) (bool, string, error) {
 	on, _, err := s.gateConfigErr(ctx, pr.ForgeID, pr.Repo)
 	if err != nil {
 		return false, "", err
@@ -415,6 +435,9 @@ func (s *Service) reviewGoingErr(ctx context.Context, pr *PullRequest) (bool, st
 		return true, "a review is running", nil
 	}
 	id, going, err := s.auditGoingErr(ctx, pr.ID)
+	if err == nil && going && notFootprint {
+		id, going, err = s.auditGoingExceptFootprint(ctx, pr.ID)
+	}
 	if err != nil {
 		return false, "", err
 	}
@@ -496,4 +519,19 @@ var logMarks = []*lazyre.Regexp{stepFailedRE, goTimeoutRE}
 // a real failure and the agent gets a round to fix it (WP-424).
 func stepFailedLog(log string) bool {
 	return stepFailedRE.MatchString(log)
+}
+
+// auditGoingExceptFootprint is auditGoingErr leaving out the drift guard's
+// footprint checks.
+func (s *Service) auditGoingExceptFootprint(ctx context.Context, prID int64) (int64, bool, error) {
+	now := s.nowMS()
+	var id int64
+	err := s.db.R.QueryRowContext(ctx, `SELECT a.id FROM code_audits a LEFT JOIN runner_jobs j ON j.id = a.job_id
+		WHERE a.pr_id = ? AND a.purpose != ? AND a.status IN ('queued','running') AND `+auditHoldingSQL+`
+		ORDER BY a.id DESC LIMIT 1`,
+		append([]any{prID, AuditFootprint}, auditHoldingArgs(now)...)...).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	return id, err == nil, err
 }

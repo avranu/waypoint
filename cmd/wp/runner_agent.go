@@ -206,7 +206,7 @@ func (p *runnerProc) resolveBase(ctx context.Context, bare, base string, env []s
 // starting with "-" such as --upload-pack=...) or that isn't a ref name at
 // all. The server checks too; the runner doesn't rely on that.
 func (p *runnerProc) checkJobRefs(ctx context.Context, in agentJob) error {
-	for _, r := range []struct{ what, v string }{{"base", in.Base}, {"branch", in.Branch}, {"diff start", in.DiffFrom}, {"target", in.Target}} {
+	for _, r := range []struct{ what, v string }{{"base", in.Base}, {"branch", in.Branch}, {"diff start", in.DiffFrom}, {"earlier audited commit", in.DiffOver}, {"target", in.Target}} {
 		if r.v == "" {
 			continue
 		}
@@ -248,6 +248,9 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 	if kind != "audit" {
 		in.DiffFrom, in.DiffSince, in.DiffPaths, in.DiffExclude = "", 0, nil, nil
 	}
+	if kind != "audit" || in.DiffFrom == "" {
+		in.DiffOver, in.OverPrompt = "", ""
+	}
 	in.ReadOnly = in.perm() == "read"
 	if err := p.cloneAllowed(in.Repo); err != nil {
 		return failed("%v", err)
@@ -267,10 +270,10 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 		}
 		var err error
 		if path, err = exec.LookPath(bin); err != nil {
-			return failed("%s isn't installed on this machine.", bin)
+			return outcome{State: "failed", Error: fmt.Sprintf("%s isn't installed on this machine.", bin), Result: faultResult("cli")}
 		}
 		if c := p.cliInfo(in.CLI); c != nil && c.SignedIn != nil && !*c.SignedIn {
-			return failed("%s isn't signed in on this machine: run %s", bin, signInHint(in.CLI))
+			return outcome{State: "failed", Error: fmt.Sprintf("%s isn't signed in on this machine: run %s", bin, signInHint(in.CLI)), Result: faultResult("cli")}
 		}
 	}
 	ctx, cancel, clock := p.jobClock(ctx, run, in.WorkTimeout)
@@ -323,7 +326,7 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 			fmt.Fprintf(run.out, "Removed %d symbolic link%s that left the checkout: %s\n", len(gone), map[bool]string{true: "", false: "s"}[len(gone) == 1], excerpt(strings.Join(gone, ", "), 200))
 		}
 	}
-	var diffFrom, change string
+	var diffFrom, change, overMade, overWhy string
 	var changeRange *auditRange
 	changeCommits := -1
 	if in.DiffFrom != "" || in.DiffSince > 0 {
@@ -350,7 +353,17 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 			return outcome{State: "done", Result: map[string]any{"nothing": why, "answer": "", "cli": in.CLI, "base": baseSHA, "diff_from": diffFrom,
 				"change_commits": changeCommits, "commits": []string{}}}
 		}
-		in.Prompt += change
+		section := change
+		if in.DiffOver != "" && in.OverPrompt != "" {
+			since, why := p.followUp(ctx, run, work, bare, env, in, from, baseSHA)
+			if since != "" {
+				section, overMade = since+"\n\n"+in.OverPrompt, in.DiffOver
+			} else {
+				overWhy = why
+				fmt.Fprintf(run.out, "%s\n", why)
+			}
+		}
+		in.Prompt += section
 		fmt.Fprintf(run.out, "Put the change from %s to %s (%d commit%s) in the prompt (%d bytes)\n", from[:min(len(from), 12)], baseSHA[:min(len(baseSHA), 12)],
 			ch.commits, map[bool]string{true: "", false: "s"}[ch.commits == 1], len(change))
 	}
@@ -367,6 +380,7 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 		if changeCommits >= 0 {
 			result["change_commits"] = changeCommits
 		}
+		followUpResult(result, overMade, overWhy)
 		var changed []string
 		if changeRange != nil {
 			changed = changeRange.files
@@ -462,6 +476,7 @@ func (p *runnerProc) execAgent(ctx context.Context, run *jobRun, kind string, in
 	if changeCommits >= 0 {
 		result["change_commits"] = changeCommits
 	}
+	followUpResult(result, overMade, overWhy)
 	if len(structured) > 0 {
 		result["structured"] = structured
 	}
@@ -580,6 +595,18 @@ func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare
 				}
 			}
 		}
+		// Measured before holdProtected, which squashes a merge's parents
+		// away. What it holds is counted when that is pushed, unless it is
+		// the whole change.
+		var heldOut []string
+		if len(mc.conflicted) == 0 {
+			heldOut = bad
+		}
+		if own, lines, ok := p.ownChanges(ctx, bare, work, env, in.Target, baseSHA, heldOut); ok {
+			result["own_files"], result["lines"] = own, lines
+		} else {
+			fmt.Fprintf(run.out, "Couldn't measure the agent's own change\n")
+		}
 		if len(bad) > 0 {
 			h, ok := p.holdProtected(ctx, work, in, baseSHA, bad, mc, result)
 			if !ok {
@@ -607,7 +634,15 @@ func (p *runnerProc) deliver(ctx context.Context, run *jobRun, in agentJob, bare
 			fmt.Fprintf(run.out, "Pushing %s\n", in.Branch)
 			ref := "refs/heads/" + in.Branch
 			if _, err := p.gitIn(ctx, work, nil, env, "push", "origin", ref+":"+ref); err != nil {
-				return p.partial(result, "pushing %s failed: %v", in.Branch, err)
+				err = p.pushMoved(ctx, run, work, env, in, baseSHA, files, result, err)
+				if errors.Is(err, errOnBranch) {
+					fmt.Fprintf(run.out, "%s already has the round's changes; nothing to push\n", in.Branch)
+					*pushed = true
+					return outcome{State: "done", Result: result}
+				}
+				if err != nil {
+					return p.partial(result, "pushing %s failed: %v", in.Branch, err)
+				}
 			}
 			*pushed = true
 			result["pushed"] = true
@@ -669,9 +704,12 @@ func (p *runnerProc) periodStart(ctx context.Context, work, base string, since i
 type auditRange struct {
 	from, to       string
 	paths, exclude []string
-	commits        int
-	landed         int
-	empty          bool
+	// direct reads the range as from to to, whatever their history (a
+	// follow-up audit's start may be a commit the head doesn't descend from).
+	direct  bool
+	commits int
+	landed  int
+	empty   bool
 	// files are the files the diff touches as git lists them, a rename by
 	// its new name: the names themselves, not read back out of the diff,
 	// whose headers can't tell where a path with " b/" in it ends and
@@ -682,7 +720,7 @@ type auditRange struct {
 // spec is the range for git: three dots (what to added since it left from)
 // unless it starts at the empty tree, which shares no history with it.
 func (r *auditRange) spec() string {
-	if r.from == emptyTree {
+	if r.from == emptyTree || r.direct {
 		return r.from + ".." + r.to
 	}
 	return r.from + "..." + r.to
@@ -725,9 +763,23 @@ func (r *auditRange) nothing(period bool) string {
 // read and search, not only the files as they are now. It sets r.commits
 // and r.empty; an empty change has no section.
 func (p *runnerProc) auditDiff(ctx context.Context, work string, r *auditRange, limit int) (string, error) {
+	stat, diff, names, err := p.diffOf(ctx, work, r)
+	if err != nil || r.empty {
+		return "", err
+	}
+	perFile, err := writeAuditChange(work, diff, stat, names)
+	if err != nil {
+		return "", fmt.Errorf("can't put the change in the checkout: %v", err)
+	}
+	return r.section(stat, diff, limit, perFile), nil
+}
+
+// diffOf reads what a range holds: the stat, the diff and the files it
+// touches, limited as the range says. It sets r.commits, r.files and r.empty.
+func (p *runnerProc) diffOf(ctx context.Context, work string, r *auditRange) (stat, diff string, names []string, err error) {
 	rng, spec := r.spec(), r.pathspec()
-	fail := func(err error) (string, error) {
-		return "", fmt.Errorf("can't compare %s with %s: %v", r.from, r.to, err)
+	fail := func(err error) (string, string, []string, error) {
+		return "", "", nil, fmt.Errorf("can't compare %s with %s: %v", r.from, r.to, err)
 	}
 	countRng := r.to
 	if r.from != emptyTree {
@@ -738,11 +790,11 @@ func (p *runnerProc) auditDiff(ctx context.Context, work string, r *auditRange, 
 		return fail(err)
 	}
 	r.commits, _ = strconv.Atoi(strings.TrimSpace(count))
-	stat, err := p.git(ctx, work, append([]string{"diff", "--no-color", "--stat=240,200", rng, "--"}, spec...)...)
+	stat, err = p.git(ctx, work, append([]string{"diff", "--no-color", "--stat=240,200", rng, "--"}, spec...)...)
 	if err != nil {
 		return fail(err)
 	}
-	diff, err := p.git(ctx, work, append([]string{"diff", "--no-color", "--no-ext-diff", "--no-textconv", rng, "--"}, spec...)...)
+	diff, err = p.git(ctx, work, append([]string{"diff", "--no-color", "--no-ext-diff", "--no-textconv", rng, "--"}, spec...)...)
 	if err != nil {
 		return fail(err)
 	}
@@ -753,18 +805,19 @@ func (p *runnerProc) auditDiff(ctx context.Context, work string, r *auditRange, 
 			return fail(err)
 		}
 		r.landed, _ = strconv.Atoi(strings.TrimSpace(all))
-		return "", nil
+		return "", "", nil, nil
 	}
 	list, err := p.gitRaw(ctx, work, nil, nil, append([]string{"diff", "--name-only", "-z", rng, "--"}, spec...)...)
 	if err != nil {
 		return fail(err)
 	}
-	names := strings.FieldsFunc(list, func(r rune) bool { return r == 0 })
+	names = strings.FieldsFunc(list, func(r rune) bool { return r == 0 })
 	r.files = names
-	perFile, err := writeAuditChange(work, diff, stat, names)
-	if err != nil {
-		return "", fmt.Errorf("can't put the change in the checkout: %v", err)
-	}
+	return stat, diff, names, nil
+}
+
+// section is the range's change as a section of an audit's prompt.
+func (r *auditRange) section(stat, diff string, limit int, perFile bool) string {
 	short := func(s string) string { return s[:min(len(s), 12)] }
 	var b strings.Builder
 	b.WriteString("\n\n## The change under audit\n\n")
@@ -785,8 +838,17 @@ func (p *runnerProc) auditDiff(ctx context.Context, work string, r *auditRange, 
 		fmt.Fprintf(&b, ", and each file's part at %s/diff/<path>.diff", auditChangeDir)
 	}
 	b.WriteString(". Those are copies for reading: report findings at the repository's own files and lines. Lockfiles, generated, vendored, dist, minified, source map, SVG, snapshot and encrypted secret files are left out of the diff and the list; read them in the checkout if the change needs it.\n\n")
+	b.WriteString(diffBlocks(stat, diff, limit, "files.txt"))
+	return b.String()
+}
+
+// diffBlocks are a section's list of changed files and its diff, cut to
+// limit bytes; the rest of either is in the checkout, in the list's file
+// and in the diff's own (auditChangeDir).
+func diffBlocks(stat, diff string, limit int, list string) string {
+	var b strings.Builder
 	if len(stat) > auditStatMax {
-		stat = stat[:strings.LastIndexByte(stat[:auditStatMax], '\n')+1] + fmt.Sprintf("… (the rest of the list is in %s/files.txt)\n", auditChangeDir)
+		stat = stat[:strings.LastIndexByte(stat[:auditStatMax], '\n')+1] + fmt.Sprintf("… (the rest of the list is in %s/%s)\n", auditChangeDir, list)
 	}
 	b.WriteString("```\n" + strings.TrimRight(stat, "\n") + "\n```\n\n")
 	cut := capDiff(diff, limit)
@@ -794,7 +856,7 @@ func (p *runnerProc) auditDiff(ctx context.Context, work string, r *auditRange, 
 		fmt.Fprintf(&b, "The diff is cut short here; the rest is in %s.\n\n", auditChangeDir)
 	}
 	b.WriteString("```diff\n" + strings.TrimRight(cut, "\n") + "\n```\n")
-	return b.String(), nil
+	return b.String()
 }
 
 // writeAuditChange writes the change into the checkout's auditChangeDir,
@@ -1115,6 +1177,75 @@ func (p *runnerProc) holdProtected(ctx context.Context, work string, in agentJob
 	return h, true
 }
 
+// ownChanges is what the agent itself changed from from, where its job
+// started, to HEAD: the files, and the lines added and removed, which the
+// footprint check measures a round by (WP-1939). What a merge of target (the
+// default branch when "") brought in isn't the round's: HEAD is then compared
+// with the merge git makes of from and the target's commit it has, so only
+// how a conflict was settled and the agent's edits count. Files in skip
+// aren't counted. ok is false when git can't say.
+func (p *runnerProc) ownChanges(ctx context.Context, bare, work string, env []string, target, from string, skip []string) (files []string, lines int, ok bool) {
+	since, ok := p.withMerged(ctx, bare, work, env, target, from)
+	if !ok {
+		return nil, 0, false
+	}
+	out, err := p.gitRaw(ctx, work, nil, nil, "diff", "--numstat", "--no-renames", "-z", since, "HEAD")
+	if err != nil {
+		return nil, 0, false
+	}
+	files, lines = numstat(out, skip)
+	return files, lines, true
+}
+
+// withMerged is from with what HEAD took of target since: from itself when it
+// took nothing, else the tree of their merge (with conflict markers where they
+// conflict).
+func (p *runnerProc) withMerged(ctx context.Context, bare, work string, env []string, target, from string) (string, bool) {
+	revs, err := p.git(ctx, work, "rev-list", "--merges", from+"..HEAD")
+	if err != nil {
+		return "", false
+	}
+	main, err := p.resolveBase(ctx, bare, target, env)
+	if err != nil {
+		// Without a merge there is nothing of the target's to take out.
+		return from, revs == ""
+	}
+	taken, err := p.git(ctx, work, "merge-base", "HEAD", main)
+	if err != nil {
+		return from, revs == ""
+	}
+	if _, err := p.git(ctx, work, "merge-base", "--is-ancestor", taken, from); err == nil {
+		return from, true
+	}
+	out, err := p.gitRaw(ctx, work, nil, nil, "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", from, taken)
+	tree, rest, _ := strings.Cut(out, "\x00")
+	tree = strings.TrimSpace(tree)
+	// A merge with conflicts exits with an error and names them after the tree.
+	if !hexObjectID.MatchString(tree) || err != nil && strings.Trim(rest, "\x00") == "" {
+		return "", false
+	}
+	return tree, true
+}
+
+// numstat reads `git diff --numstat --no-renames -z`: the files, less those in
+// skip, and their lines added and removed. A binary file's "-" counts as none.
+func numstat(out string, skip []string) ([]string, int) {
+	files, lines := []string{}, 0
+	for _, rec := range strings.Split(out, "\x00") {
+		f := strings.SplitN(rec, "\t", 3)
+		if len(f) < 3 || slices.Contains(skip, f[2]) {
+			continue
+		}
+		files = append(files, f[2])
+		add, err1 := strconv.Atoi(f[0])
+		del, err2 := strconv.Atoi(f[1])
+		if err1 == nil && err2 == nil {
+			lines += add + del
+		}
+	}
+	return files, lines
+}
+
 // hexObjectID is a git object id (SHA-1 or SHA-256).
 var hexObjectID = lazyre.New(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
 
@@ -1133,12 +1264,16 @@ func (p *runnerProc) jobTokenEnv(run *jobRun, in agentJob) []string {
 func (p *runnerProc) agentError(ctx context.Context, run *jobRun, format string, a ...any) outcome {
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return outcome{State: "failed", Error: fmt.Sprintf("Timed out after %s while preparing the checkout.", run.timeout.Round(time.Second))}
+		return outcome{State: "failed", Error: fmt.Sprintf("Timed out after %s while preparing the checkout.", run.timeout.Round(time.Second)), Result: faultResult("checkout")}
 	case ctx.Err() != nil:
 		return outcome{State: "cancelled", Error: "Stopped."}
 	}
-	return failed(format, a...)
+	return outcome{State: "failed", Error: fmt.Sprintf(format, a...), Result: faultResult("checkout")}
 }
+
+// faultResult marks a job that ended before its agent started, which a
+// babysit round doesn't count and tries again (WP-1914).
+func faultResult(kind string) map[string]any { return map[string]any{"fault": kind} }
 
 // partial is a failure after the agent's work: what it did is still reported.
 func (p *runnerProc) partial(result map[string]any, format string, a ...any) outcome {
@@ -1249,4 +1384,111 @@ func (w *teeWriter) Write(p []byte) (int, error) {
 	_, _ = w.a.Write(p)
 	_, _ = w.b.Write(p)
 	return len(p), nil
+}
+
+// followUpResult says in an audit's result whether its follow-up range was
+// made (over is the earlier audited head), or why the whole change was read.
+func followUpResult(result map[string]any, over, why string) {
+	if over != "" {
+		result["diff_over"] = over
+	} else if why != "" {
+		result["over_fallback"] = why
+	}
+}
+
+// followUpRange makes the range of an audit that follows an earlier one
+// (WP-1938): what changed from the earlier audited commit over to head, in
+// the files the whole change covers. It starts at that commit when head
+// descends from it and the base hasn't been merged in since; when it has,
+// at a merge of that commit with the base as head merged it (conflicts left
+// in as markers), so the base's own commits are not in it and a conflict the
+// round resolved shows how. why is set when the range can't be made.
+func (p *runnerProc) followUpRange(ctx context.Context, bare string, env []string, over, from, head string) (start, why string) {
+	short := func(s string) string { return s[:min(len(s), 12)] }
+	a, err := p.resolveBase(ctx, bare, over, env)
+	if err != nil {
+		return "", fmt.Sprintf("The earlier audited commit %s isn't in this repository: auditing the whole change.", short(over))
+	}
+	if _, err := p.git(ctx, bare, "merge-base", "--is-ancestor", a, head); err != nil {
+		return "", fmt.Sprintf("The earlier audited commit %s isn't in this branch's history (rebased?): auditing the whole change.", short(a))
+	}
+	b1, err1 := p.git(ctx, bare, "merge-base", a, from)
+	b2, err2 := p.git(ctx, bare, "merge-base", head, from)
+	if err1 != nil || err2 != nil {
+		return "", fmt.Sprintf("Can't tell where the branch left the base at %s: auditing the whole change.", short(a))
+	}
+	if b1 == b2 {
+		return a, ""
+	}
+	// Exit status 1 is a merge with conflicts, whose tree holds the markers.
+	out, err := p.gitRaw(ctx, bare, nil, nil, "merge-tree", "--write-tree", a, b2)
+	tree, _, _ := strings.Cut(out, "\n")
+	tree = strings.TrimSpace(tree)
+	if !gitOIDRE.MatchString(tree) {
+		return "", fmt.Sprintf("Can't merge the earlier audited commit %s with the base it was merged with since (%v): auditing the whole change.", short(a), err)
+	}
+	ident := []string{"GIT_AUTHOR_NAME=Waypoint runner", "GIT_AUTHOR_EMAIL=runner@waypoint.invalid", "GIT_COMMITTER_NAME=Waypoint runner", "GIT_COMMITTER_EMAIL=runner@waypoint.invalid",
+		"GIT_AUTHOR_DATE=2000-01-01T00:00:00Z", "GIT_COMMITTER_DATE=2000-01-01T00:00:00Z"}
+	merged, err := p.gitIn(ctx, bare, nil, ident, "-c", "commit.gpgsign=false", "commit-tree", tree, "-p", a, "-p", b2, "-m", "The earlier audited commit merged with the base")
+	if err != nil || !gitOIDRE.MatchString(merged) {
+		return "", fmt.Sprintf("Can't merge the earlier audited commit %s with the base it was merged with since (%v): auditing the whole change.", short(a), err)
+	}
+	return merged, ""
+}
+
+var gitOIDRE = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
+
+// followUp is the section of an audit's prompt that replaces the whole
+// change's when the range since the earlier audited commit can be made: its
+// stat and diff, with where the whole change and this one are in the checkout.
+// "" and why when it can't, or when nothing in the files audited changed
+// since.
+func (p *runnerProc) followUp(ctx context.Context, run *jobRun, work, bare string, env []string, in agentJob, from, head string) (section, why string) {
+	short := func(s string) string { return s[:min(len(s), 12)] }
+	start, why := p.followUpRange(ctx, bare, env, in.DiffOver, from, head)
+	if start == "" {
+		return "", why
+	}
+	r := &auditRange{from: start, to: head, paths: in.DiffPaths, exclude: in.DiffExclude, direct: true}
+	stat, diff, _, err := p.diffOf(ctx, work, r)
+	if err != nil {
+		return "", fmt.Sprintf("Can't read what changed since the earlier audited commit %s (%v): auditing the whole change.", short(in.DiffOver), err)
+	}
+	if r.empty {
+		return "", fmt.Sprintf("Nothing in the files audited changed since the earlier audited commit %s: auditing the whole change.", short(in.DiffOver))
+	}
+	if err := writeSinceDiff(work, diff); err != nil {
+		return "", fmt.Sprintf("Can't put what changed since the earlier audited commit %s in the checkout (%v): auditing the whole change.", short(in.DiffOver), err)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n\n## What changed since the audit at %s\n\n", short(in.DiffOver))
+	fmt.Fprintf(&b, "The diff from %s to %s (%d commit%s; the checkout is at %s)", short(start), short(head), r.commits, map[bool]string{true: "", false: "s"}[r.commits == 1], short(head))
+	if start != in.DiffOver {
+		b.WriteString(", where the first is the earlier audited commit with the base merged into it as the branch merged it, so the base's own changes are not in it")
+	}
+	if len(in.DiffPaths) > 0 {
+		b.WriteString(", only in " + strings.Join(in.DiffPaths, ", "))
+	}
+	if len(in.DiffExclude) > 0 {
+		b.WriteString(", leaving out " + strings.Join(in.DiffExclude, ", "))
+	}
+	b.WriteString(". The whole repository is in the checkout: read and search any of it.\n\n")
+	fmt.Fprintf(&b, "The whole change from the base is at %s/change.diff and this diff at %s/since.diff in the checkout. Those are copies for reading: report findings at the repository's own files and lines. Lockfiles, generated, vendored, dist, minified, source map, SVG, snapshot and encrypted secret files are left out of the diffs; read them in the checkout if the change needs it.\n\n", auditChangeDir, auditChangeDir)
+	b.WriteString(diffBlocks(stat, diff, auditDiffMax, "since.diff"))
+	fmt.Fprintf(run.out, "Put the change since the audit at %s (%d commit%s) in the prompt in place of the whole change\n", short(in.DiffOver), r.commits, map[bool]string{true: "", false: "s"}[r.commits == 1])
+	return b.String(), ""
+}
+
+// writeSinceDiff writes the diff since the earlier audit beside the whole
+// change's, in the checkout.
+func writeSinceDiff(work, diff string) error {
+	root, err := os.OpenRoot(work)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	if err := root.MkdirAll(auditChangeDir, 0o750); err != nil {
+		return err
+	}
+	return root.WriteFile(filepath.Join(auditChangeDir, "since.diff"), []byte(strings.TrimRight(diff, "\n")+"\n"), 0o600)
 }

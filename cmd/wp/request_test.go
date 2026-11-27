@@ -625,6 +625,23 @@ func TestHookInstallSet(t *testing.T) {
 
 func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
 
+// A run of an edited command shows the command that ran under the agent's, not only the agent's.
+func TestRequestTextEditedRun(t *testing.T) {
+	var r reqView
+	if err := json.Unmarshal([]byte(`{"ref":"P:R-3","title":"Migrate","kind":"command","state":"done","cells":[
+		{"n":1,"command":"make migrate","dir":"db","runs":[{"command":"make migrate ARGS=--dry-run","state":"done","exit_code":0,"output":"would migrate 3"}]},
+		{"n":2,"command":"make seed","runs":[{"command":"make seed","state":"done","exit_code":0,"output":"seeded"}]}]}`), &r); err != nil {
+		t.Fatal(err)
+	}
+	out := r.text(false)
+	if !strings.Contains(out, "$ make migrate   (in db)\n  edited to: make migrate ARGS=--dry-run\n  ran: done, exit 0\nwould migrate 3\n") {
+		t.Errorf("edited run:\n%s", out)
+	}
+	if strings.Count(out, "edited to:") != 1 {
+		t.Errorf("an unedited run says it was edited:\n%s", out)
+	}
+}
+
 func TestRequestCommands(t *testing.T) {
 	s := newSessionEnv(t)
 	s.asAgent()

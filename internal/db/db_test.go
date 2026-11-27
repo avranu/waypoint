@@ -49,9 +49,42 @@ func TestOpenOddPathAndBackup(t *testing.T) {
 	}
 }
 
+func TestOpenTwiceSkipsAppliedMigrations(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "reopen.db")
+	d, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var count1 int
+	if err := d.R.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&count1); err != nil || count1 == 0 {
+		t.Fatalf("initial migrations: %d %v", count1, err)
+	}
+	if _, err := d.W.ExecContext(ctx, `INSERT INTO projects(id, key, name, created_at, updated_at) VALUES (1, 'REOP', 'Reopen', 0, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d2, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("re-open failed: %v", err)
+	}
+	defer d2.Close()
+	var count2 int
+	if err := d2.R.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&count2); err != nil || count2 != count1 {
+		t.Fatalf("migrations after reopen = %d, want %d (err=%v)", count2, count1, err)
+	}
+	var key string
+	if err := d2.R.QueryRowContext(ctx, `SELECT key FROM projects WHERE id = 1`).Scan(&key); err != nil || key != "REOP" {
+		t.Fatalf("row after reopen = %q %v", key, err)
+	}
+}
+
 func TestRebuildMigrationKeepsDependants(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "rebuild.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "rebuild.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +126,7 @@ ALTER TABLE p_new RENAME TO p;`
 // and leaves repos attached since alone.
 func TestPostCommentsOffForOldRepos(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +169,7 @@ func TestPostCommentsOffForOldRepos(t *testing.T) {
 
 func TestDefaultTagsBackfill(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +344,7 @@ func TestIssueAnyoneMigration(t *testing.T) {
 // the queue reads as it did.
 func TestQueuePinSlotsMigration(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,7 +380,7 @@ func TestQueuePinSlotsMigration(t *testing.T) {
 // migration names, whatever its case, and for repos attached later.
 func TestMergeAutomaticallyDefaults(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +428,7 @@ func TestMergeAutomaticallyDefaults(t *testing.T) {
 
 func TestRetireLLMReviewMigration(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,7 +476,7 @@ func TestRetireLLMReviewMigration(t *testing.T) {
 // repo that named some, or one on another forge kind, keeps what it had.
 func TestExternalReviewersNoneMigration(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -486,7 +519,7 @@ func TestExternalReviewersNoneMigration(t *testing.T) {
 // has no mirror account.
 func TestMirrorAccountMigration(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -527,7 +560,7 @@ func TestMirrorAccountMigration(t *testing.T) {
 // ready has no arm, and the experiment's live run stops.
 func TestPrepPolicyImportMigration(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -596,7 +629,7 @@ func TestPrepPolicyImportMigration(t *testing.T) {
 // final schema, unless a later migration drops it or its table by name.
 func TestMigrationsKeepAddedColumns(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

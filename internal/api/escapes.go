@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strings"
 
 	"git.jmann.me/claude/waypoint/internal/core"
@@ -181,15 +180,9 @@ func shortCommit(sha string) string {
 	return sha
 }
 
-// untrustedTag is the marker in any case or spacing ("</ UNTRUSTED >").
-var untrustedTag = regexp.MustCompile(`(?i)<\s*/?\s*untrusted\s*>`)
-
 // oneLine keeps outside text on one line and unable to open or close its
-// own marker, however it spells or nests it ("</untru</untrusted>sted>").
+// own marker, however it spells, pads or nests it ("</untru</untrusted>sted>",
+// "</untrusted\u00a0>"): core's untrusted() is the one rule for that.
 func oneLine(s string) string {
-	s = strings.NewReplacer("\r", " ", "\n", " ").Replace(s)
-	for t := untrustedTag.ReplaceAllString(s, ""); t != s; t = untrustedTag.ReplaceAllString(s, "") {
-		s = t
-	}
-	return strings.TrimSpace(s)
+	return strings.TrimSpace(core.Untrusted(strings.NewReplacer("\r", " ", "\n", " ").Replace(s)))
 }
