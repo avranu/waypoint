@@ -39,6 +39,9 @@ const (
 	// DefaultAutopilotMerge: wait for an unmerged pull request only when the
 	// next task builds on it.
 	DefaultAutopilotMerge = MergeWaitAuto
+	// DefaultAutopilotDeferred: wp ship from an Opus or Fable session first
+	// offers the tasks it filed meanwhile (WP-1858).
+	DefaultAutopilotDeferred = true
 	// DefaultAutopilotReview: no adversarial review round before moving a
 	// session on, unless the person turns it on (WP-285).
 	DefaultAutopilotReview = false
@@ -98,6 +101,10 @@ type AutopilotLimits struct {
 	FiveHourMax  *float64 `json:"five_hour_max,omitempty"`
 	Merge        *string  `json:"merge,omitempty"`
 	GraceSeconds *int     `json:"grace_seconds,omitempty"`
+	// Deferred: a ship by an Opus or Fable session stops once to list the
+	// tasks it filed meanwhile that are ready, for it to do with the change
+	// (WP-1858, deferred.go).
+	Deferred *bool `json:"deferred,omitempty"`
 	// Review: before moving a session on, compact it and ask it for an
 	// adversarial review of its finished task (WP-285); ReviewPrompt is
 	// what it is asked ("" or unset: DefaultReviewPrompt).
@@ -146,6 +153,7 @@ func (l AutopilotLimits) over(o AutopilotLimits) AutopilotLimits {
 	lay(&l.FiveHourMax, o.FiveHourMax)
 	lay(&l.Merge, o.Merge)
 	lay(&l.GraceSeconds, o.GraceSeconds)
+	lay(&l.Deferred, o.Deferred)
 	lay(&l.Review, o.Review)
 	lay(&l.ReviewPrompt, o.ReviewPrompt)
 	lay(&l.ReviewSkip, o.ReviewSkip)
@@ -180,7 +188,7 @@ func ptrOf[T any](v T) *T { return &v }
 func waypointAutopilotDefaults() AutopilotLimits {
 	return AutopilotLimits{MaxHourlyUSD: ptrOf(DefaultAutopilotHourlyUSD), WeekAhead: ptrOf(DefaultAutopilotWeekAhead), WeekMax: ptrOf(DefaultAutopilotWeekMax),
 		WeekEndHours: ptrOf(DefaultAutopilotWeekEnd), FiveHourMax: ptrOf(DefaultAutopilotFiveHourMax), Merge: ptrOf(DefaultAutopilotMerge), GraceSeconds: ptrOf(DefaultAutopilotGrace),
-		Review: ptrOf(DefaultAutopilotReview), ReviewPrompt: ptrOf(DefaultReviewPrompt), ReviewSkip: ptrOf(DefaultReviewSkip),
+		Deferred: ptrOf(DefaultAutopilotDeferred), Review: ptrOf(DefaultAutopilotReview), ReviewPrompt: ptrOf(DefaultReviewPrompt), ReviewSkip: ptrOf(DefaultReviewSkip),
 		ReviewText: ptrOf(""), ReviewModel: ptrOf(ReviewModelAuto),
 		MinPriority: ptrOf(""), DueWithinDays: ptrOf(0), Approved: ptrOf(false), Planned: ptrOf(false), Query: ptrOf(""),
 		PerHour: ptrOf(DefaultAutopilotPerHour), PerDay: ptrOf(0), SpacingMinutes: ptrOf(0), AtOnce: ptrOf(DefaultAutopilotAtOnce), MergeWaitHours: ptrOf(DefaultAutopilotMergeWaitHours),

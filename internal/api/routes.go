@@ -109,6 +109,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/fanouts/{id}/items/{key}/failed", a(s.fanoutItemFailed))
 	mux.HandleFunc("POST /api/v1/fanouts/{id}/items/{key}/end", a(s.endFanoutItem))
 	mux.HandleFunc("POST /api/v1/agent/release/{key}", a(s.agentRelease))
+	mux.HandleFunc("POST /api/v1/agent/deferred", a(s.agentDeferred))
 	mux.HandleFunc("POST /api/v1/agent/pushed", a(s.agentPushed))
 	mux.HandleFunc("POST /api/v1/agent/decline/{key}", a(s.agentDecline))
 	mux.HandleFunc("POST /api/v1/agent/usage/{key}", a(s.agentUsage))

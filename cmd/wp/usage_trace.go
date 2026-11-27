@@ -424,6 +424,7 @@ type traceCommand struct {
 	redirs []string
 	script string
 	wrote  []traceWrite
+	pipeIn bool // reads the output of the command before it
 }
 
 // traceNowhere is the directory after a cd the line doesn't spell out
@@ -490,7 +491,7 @@ func traceCommands(cmd, cwd string, depth int, vars map[string]string, mem *trac
 				continue
 			}
 		}
-		c := traceCommand{words: words, head: headOf(words), dir: dir, script: g.heredoc}
+		c := traceCommand{words: words, head: headOf(words), dir: dir, script: g.heredoc, pipeIn: g.pipeIn}
 		for _, r := range g.redirs {
 			c.redirs = append(c.redirs, fill(r))
 		}
@@ -710,17 +711,18 @@ type traceWrite struct {
 }
 
 // writes lists the files a command writes. What counts: output sent to a
-// file, tee, sed -i and perl -i, mv and cp, git mv and git rm, a patch
-// applied, and a script given to an interpreter that writes files. What
-// doesn't: what a program writes of its own accord (a formatter, go mod
-// tidy, git merge or checkout), which the call doesn't show; and a plain rm,
-// which is as often clearing up. A script the session kept in a file and
+// file, tee, sed -i and perl -i, gofmt, goimports and prettier given -w or
+// --write, curl -o, mv and cp, git mv and git rm, a patch applied, and a
+// script given to an interpreter that writes files. What doesn't: what a
+// program writes of its own accord (go mod tidy, git merge or checkout),
+// which the call doesn't show; and a plain rm, which is as often clearing
+// up. A script the session kept in a file and
 // runs later is added by traceCommands, which remembers them.
 //
 // Output sent to a file is a write of what the agent typed (cat, echo,
-// printf) wherever it goes; of another program's output only when the file
-// is named like a source, document or configuration file (docs/CLI.md, not
-// server.log).
+// printf) wherever it goes; of another program's output, curl -o's included,
+// only when the file is named like a source, document or configuration file
+// (docs/CLI.md, not server.log).
 func (c *traceCommand) writes() []traceWrite {
 	var out []traceWrite
 	prog, args := path.Base(c.words[0]), c.words[1:]
@@ -768,6 +770,16 @@ func (c *traceCommand) writes() []traceWrite {
 			}
 		}
 		return false
+	}
+	if prog == "npx" || prog == "bunx" {
+		if ws := plain(0); len(ws) > 0 && (path.Base(ws[0]) == "prettier" || strings.HasPrefix(path.Base(ws[0]), "prettier@")) {
+			for i, a := range args {
+				if a == ws[0] {
+					prog, args = "prettier", args[i+1:]
+					break
+				}
+			}
+		}
 	}
 	switch prog {
 	case "tee":
@@ -833,6 +845,31 @@ func (c *traceCommand) writes() []traceWrite {
 		}
 	case "git rm":
 		each("rm", plain(0))
+	case "gofmt", "goimports", "prettier":
+		if has("-w", "--write") {
+			each("format", plain(0))
+		}
+	case "curl":
+		to := func(f string) {
+			// - is standard output; a download not named like a file of the
+			// work is output kept for reading, as when redirected
+			if f == "-" || strings.HasPrefix(f, "/dev/") {
+				return
+			}
+			kind := "curl"
+			if !traceFileShape(path.Base(f)) {
+				kind = "output"
+			}
+			out = append(out, traceWrite{kind: kind, w: f, whole: true})
+		}
+		for i := 0; i < len(args); i++ {
+			if (args[i] == "--output" || traceCurlOutRE.MatchString(args[i])) && i+1 < len(args) {
+				to(args[i+1])
+				i++
+			} else if f, ok := strings.CutPrefix(args[i], "--output="); ok {
+				to(f)
+			}
+		}
 	case "xargs", "find":
 		for i, a := range args {
 			if b := path.Base(a); b == "sed" && sedInPlace(args[i:]) || b == "perl" && i+1 < len(args) && perlInPlaceRE.MatchString(args[i+1]) {
@@ -861,6 +898,10 @@ func (c *traceCommand) writes() []traceWrite {
 	}
 	return out
 }
+
+// traceCurlOutRE: curl's -o, alone or last in a bundle of its flags that
+// take no value (-sLo).
+var traceCurlOutRE = lazyre.New(`^-[sSLfkvIiNgq46]*o$`)
 
 // traceWordPaths: the files a command line names, in order.
 func traceWordPaths(cmds []traceCommand, cwd string) (out []tracePath) {

@@ -482,3 +482,36 @@ func TestCompactReadErrorIsNotTheEnd(t *testing.T) {
 		t.Errorf("a failed read: %d events, error %v", len(ev), err)
 	}
 }
+
+func TestCompactSyntheticRecordsAreToolsNotCalls(t *testing.T) {
+	root := t.TempDir()
+	s := &cmpTranscript{at: time.Now().Add(-time.Hour)}
+	s.prompt("go")
+	s.call(1000, 0, "Read", map[string]any{"file_path": "/r/a.go"}, "x", false)
+	s.add(time.Second, map[string]any{"type": "assistant", "isVirtual": true, "message": map[string]any{"id": "", "model": "<synthetic>",
+		"usage":   map[string]any{"input_tokens": 0, "output_tokens": 0},
+		"content": []any{map[string]any{"type": "tool_use", "id": "repl_1", "name": "Bash", "input": map[string]any{"command": "sed -i s/a/b/ x.go"}}}}})
+	s.write(t, root, "virt")
+	ev, err := readCompactFile(filepath.Join(root, "projects", "-r", "virt.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls, tools, edits := 0, 0, 0
+	for _, e := range ev {
+		switch e.kind {
+		case 'c':
+			calls++
+		case 't':
+			tools++
+			if e.edit {
+				edits++
+				if e.ts == 0 {
+					t.Error("the virtual tool event has no time")
+				}
+			}
+		}
+	}
+	if calls != 1 || tools != 2 || edits != 1 {
+		t.Errorf("calls %d tools %d edits %d, want 1, 2, 1", calls, tools, edits)
+	}
+}

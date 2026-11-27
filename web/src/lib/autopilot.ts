@@ -14,6 +14,8 @@ export interface AutopilotLimits {
   five_hour_max?: number
   merge?: MergePolicy
   grace_seconds?: number
+  /** wp ship from an Opus or Fable session first lists the ready tasks it filed meanwhile (WP-1858); default on */
+  deferred?: boolean
   /** an adversarial review of each finished task before the session moves on (WP-285) */
   review?: boolean
   /** what the review asks; empty or unset: the default */

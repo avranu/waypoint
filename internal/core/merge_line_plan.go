@@ -187,6 +187,10 @@ func planLine(s lineSnap) []lineAction {
 
 	ejected := false
 	redEnded := map[string]bool{}
+	// split: the batches ended here because they failed. While saturated the
+	// same heads aren't started again in this step (the snapshot's Tried and
+	// BatchDepth were read before the end): the next batch is two places.
+	split := map[string]bool{}
 	for n := 1; n <= len(s.Entries) && !ejected; n++ {
 		c, ok := by[n]
 		if !ok || c.State == candRunning {
@@ -213,6 +217,7 @@ func planLine(s lineSnap) []lineAction {
 			default:
 				acts = append(acts, lineAction{Kind: lineEnd, Cand: c.ID, Why: "the batch failed; its places are tested one by one", End: endBatchSplit})
 				delete(by, n)
+				split[candKey(c.Heads[c.Merged:])] = true
 			}
 		}
 	}
@@ -227,7 +232,11 @@ func planLine(s lineSnap) []lineAction {
 		return acts
 	}
 
-	places := min(len(s.Entries), lineDepth)
+	limit := lineDepth
+	if s.Saturated {
+		limit = batchMaxDepth
+	}
+	places := min(len(s.Entries), limit)
 	for i, e := range s.Entries[:places] {
 		if e.Branch {
 			places = i
@@ -247,8 +256,12 @@ func planLine(s lineSnap) []lineAction {
 	}
 	if s.Saturated {
 		if len(by) == 0 {
-			n := min(places, max(s.BatchDepth, 1))
-			if n < 1 || !start(n) {
+			depth := max(s.BatchDepth, 1)
+			if len(split) > 0 {
+				depth = 2
+			}
+			n := min(places, depth)
+			if n < 1 || split[candKey(entryHeads(s.Entries, n))] || !start(n) {
 				start(1)
 			}
 		}

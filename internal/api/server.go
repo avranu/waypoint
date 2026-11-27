@@ -78,7 +78,7 @@ var (
 	}, []string{"route", "code"})
 	httpDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "waypoint_http_request_duration_seconds", Help: "HTTP request latency by route.",
-		Buckets: []float64{.001, .0025, .005, .01, .025, .05, .1, .25, .5, 1, 2.5},
+		Buckets: []float64{.001, .0025, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120},
 	}, []string{"route"})
 	sseClients = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "waypoint_live_clients", Help: "Connected live-update streams.",
@@ -176,6 +176,9 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "same-origin")
 		h.Set("X-Frame-Options", "DENY")
+		if s.cfg.Version != "" {
+			h.Set("X-Waypoint-Version", s.cfg.Version) // a wp that differs upgrades itself
+		}
 		defer func() {
 			p := recover()
 			var stack string

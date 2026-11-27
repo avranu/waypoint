@@ -63,7 +63,7 @@ func (s *Service) uncountLimitedRound(ctx context.Context, b *Babysit, jobID int
 	b.limitedUntil, b.limitedAt, b.limitTries, b.JobID = until.UnixMilli(), s.nowMS(), tries, 0
 	rounds, _ := json.Marshal(b.Rounds)
 	st, _ := json.Marshal(b.streaks)
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE babysits SET job_id = NULL, round = ?, round_sha = ?, rounds = ?, streaks = ?, limited_until = ?, limited_at = ?, limited_tries = ?, updated_at = ? WHERE id = ?`,
+	if _, err := s.db.W.ExecContext(ctx, `UPDATE babysits SET job_id = NULL, round = ?, round_sha = ?, rounds = ?, streaks = ?, limited_until = ?, limited_at = ?, limited_tries = ?, fault_tries = 0, updated_at = ? WHERE id = ?`,
 		b.Round, b.RoundSHA, string(rounds), string(st), b.limitedUntil, b.limitedAt, b.limitTries, s.nowMS(), b.ID); err != nil {
 		s.log.WarnContext(ctx, "record a babysit round", "babysit", b.ID, "err", err)
 		return true

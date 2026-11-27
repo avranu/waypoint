@@ -14,7 +14,8 @@ var usageOtelCmd = &command{
 	name: "otel", args: "[--install | --uninstall] [--metrics]",
 	summary: "set up Claude Code's OpenTelemetry export to Waypoint",
 	about: `Prints the environment variables that make Claude Code send usage events
-to Waypoint over OTLP/HTTP with your token: for machines where wp usage sync
+to Waypoint over OTLP/HTTP (the token shown as a placeholder, so it doesn't end
+up in a transcript; --install writes the real one): for machines where wp usage sync
 can't read transcripts (cloud or remote sessions). --install writes them
 into ~/.claude/settings.json (backed up first), --uninstall removes them;
 unrelated settings are kept; the OpenTelemetry keys it prints
@@ -28,6 +29,9 @@ tokens, then wp token) so it can be revoked on its own.`,
 }
 
 func init() { usageCmd.subs = append(usageCmd.subs, usageOtelCmd) }
+
+// otelTokenPlaceholder stands for the token where the settings are shown.
+const otelTokenPlaceholder = "YOUR_WP_TOKEN" // #nosec G101 -- documentation placeholder, not a credential
 
 // otelEnv is what Claude Code's settings.json env needs.
 func otelEnv(server, token string, metrics bool) map[string]string {
@@ -62,14 +66,16 @@ func cmdUsageOtel(c *cli, args []string) error {
 	if c.server() == "" || c.token() == "" {
 		return errors.New("not signed in: run wp login first")
 	}
-	env := otelEnv(c.server(), c.token(), *metrics)
 	if !*install && !*uninstall {
-		c.println(`Put this in the "env" of ~/.claude/settings.json (or run wp usage otel --install):`)
+		// What is printed lands in the transcript of whoever ran it (WP-1337):
+		// the token is only ever written by --install.
+		c.println(`Put this in the "env" of ~/.claude/settings.json, with your token where it says ` + otelTokenPlaceholder + ` (or run wp usage otel --install, which writes the real one):`)
 		c.println()
-		b, _ := json.MarshalIndent(map[string]any{"env": env}, "", "  ")
+		b, _ := json.MarshalIndent(map[string]any{"env": otelEnv(c.server(), otelTokenPlaceholder, *metrics)}, "", "  ")
 		c.println(string(b))
 		return nil
 	}
+	env := otelEnv(c.server(), c.token(), *metrics)
 	path, err := claudeSettingsPath()
 	if err != nil {
 		return err

@@ -335,7 +335,7 @@ func (s *Service) shipOpen(ctx context.Context, sh *shipRun) (done bool, err err
 	in2 := OpenPRInput{
 		Project: bp.Project, Repo: bp.Repo, Head: bp.Branch, Base: base, StackedOn: stackedOn,
 		Title: title, Draft: bp.Draft, Ready: bp.Ready, Urgent: bp.Urgent,
-		Issue: r.key, For: r.key, noSweep: true, byWaypoint: true, BodyInputs: bp.BodyInputs,
+		Issue: r.key, For: r.key, Also: bp.Also, noSweep: true, byWaypoint: true, BodyInputs: bp.BodyInputs,
 	}
 	if reviewed {
 		in2.Review, in2.Body = ShipAuto, body
@@ -441,6 +441,16 @@ func (s *Service) shipArm(ctx context.Context, sh *shipRun) {
 			}
 			if _, err := s.UpdateIssue(ctx, actor, r.key, IssuePatch{Status: &next, ViaLink: pr.URL, Comment: comment}); err != nil {
 				notes = append(notes, "left the task's status alone: "+err.Error())
+			}
+		}
+		for _, k := range res.AlsoLinked {
+			i, _, err := s.getIssueFor(ctx, s.db.R, actor, k, RoleEditor, false)
+			if err != nil || i.Closed() || i.Status.Name == "In Review" {
+				continue
+			}
+			next := "In Review"
+			if _, err := s.UpdateIssue(ctx, actor, k, IssuePatch{Status: &next, ViaLink: pr.URL, Comment: "Shipped with " + r.key + " in " + pr.URL + "; CI and the review gate still apply."}); err != nil {
+				notes = append(notes, "left "+k+"'s status alone: "+err.Error())
 			}
 		}
 	}

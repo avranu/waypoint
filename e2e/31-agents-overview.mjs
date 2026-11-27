@@ -291,9 +291,9 @@ async function run(width, scheme) {
   await page.getByRole("dialog", { name: /Request/ }).waitFor();
   await page.keyboard.press("Escape");
 
-  await page.goto(base + "/agents?tab=usage");
+  await page.goto(base + "/agents?tab=usage&machine=ov-box");
   await page.getByRole("radio", { name: "Session" }).click();
-  const link = page.getByRole("link", { name: "Session", exact: true }).first();
+  const link = page.getByRole("row", { name: /Overview tab/ }).getByRole("link", { name: "Session", exact: true });
   await link.waitFor();
   await link.click();
   await page.waitForURL(/\/agents\/sessions\/\d+/);
