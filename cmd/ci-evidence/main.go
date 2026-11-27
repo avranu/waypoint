@@ -156,8 +156,10 @@ func modulePath(gomod string) (string, error) {
 	return "", fmt.Errorf("%s names no module", gomod)
 }
 
-// listTests prints the sorted top-level Test* functions of the Go package in
-// dir without compiling it, respecting build constraints via go/build.
+// listTests prints the sorted top-level Test*(*testing.T) functions of the Go
+// package in dir without compiling it, respecting build constraints via
+// go/build. TestMain(*testing.M) is excluded as the setup entrypoint while an
+// ordinary TestMain(*testing.T) is kept.
 func listTests(dir string) error {
 	pkg, err := build.Default.ImportDir(dir, 0)
 	if err != nil {
@@ -171,19 +173,23 @@ func listTests(dir string) error {
 		if err != nil {
 			return err
 		}
+		testingNames, dotTesting := testingImports(af)
 		for _, d := range af.Decls {
 			fn, ok := d.(*ast.FuncDecl)
 			if !ok || fn.Recv != nil {
 				continue
 			}
 			name := fn.Name.Name
-			if name == "TestMain" || !isTestFuncName(name) {
+			if !isTestFuncName(name) {
 				continue
 			}
 			if fn.Type.Results != nil && len(fn.Type.Results.List) > 0 {
 				continue
 			}
 			if fn.Type.Params == nil || countFields(fn.Type.Params.List) != 1 {
+				continue
+			}
+			if !isTestingT(fn.Type.Params.List[0].Type, testingNames, dotTesting) {
 				continue
 			}
 			names = append(names, name)
@@ -194,6 +200,43 @@ func listTests(dir string) error {
 		fmt.Println(n)
 	}
 	return nil
+}
+
+func testingImports(af *ast.File) (names map[string]bool, dot bool) {
+	names = map[string]bool{}
+	for _, imp := range af.Imports {
+		if imp.Path == nil || imp.Path.Value != `"testing"` {
+			continue
+		}
+		if imp.Name == nil {
+			names["testing"] = true
+			continue
+		}
+		switch imp.Name.Name {
+		case "_":
+		case ".":
+			dot = true
+		default:
+			names[imp.Name.Name] = true
+		}
+	}
+	return names, dot
+}
+
+func isTestingT(expr ast.Expr, testingNames map[string]bool, dotTesting bool) bool {
+	star, ok := expr.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	switch x := star.X.(type) {
+	case *ast.SelectorExpr:
+		id, ok := x.X.(*ast.Ident)
+		return ok && testingNames[id.Name] && x.Sel.Name == "T"
+	case *ast.Ident:
+		return dotTesting && x.Name == "T"
+	default:
+		return false
+	}
 }
 
 func isTestFuncName(name string) bool {
