@@ -458,6 +458,11 @@ func (s *Service) forecast(all []flowIssue, inScope func(flowIssue) bool, settin
 	weeks := settings.VelocityWeeks
 	now := s.now().In(loc)
 	first := weekStart(now).AddDate(0, 0, -7*weeks)
+	// Weeks before the project had any work aren't weeks nothing got done,
+	// but a few are kept: from one week every run would give the same date.
+	for born := earliestWork(all); weeks > forecastMinWeeks && born > 0 && first.AddDate(0, 0, 7).UnixMilli() <= born; weeks-- {
+		first = first.AddDate(0, 0, 7)
+	}
 	fc.WeeklyThroughput = make([]float64, weeks)
 	for _, f := range all {
 		if f.resolved == 0 || f.canceled {
@@ -504,6 +509,23 @@ func (s *Service) forecast(all []flowIssue, inScope func(flowIssue) bool, settin
 	}
 	fc.P50, fc.P85, fc.P95 = at(0.5), at(0.85), at(0.95)
 	return fc
+}
+
+// forecastMinWeeks is the fewest weeks a young project's forecast draws from.
+const forecastMinWeeks = 4
+
+// earliestWork is when the first of the issues was filed or finished (0:
+// none).
+func earliestWork(all []flowIssue) int64 {
+	var first int64
+	for _, f := range all {
+		for _, at := range []int64{f.created, f.resolved} {
+			if at > 0 && (first == 0 || at < first) {
+				first = at
+			}
+		}
+	}
+	return first
 }
 
 // EpicProgress is an epic's completion and projected finish.

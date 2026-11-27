@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core/quota"
 )
 
 // EvQuotaGuard: a daily check found automation used quota its limits should
@@ -30,7 +32,7 @@ const (
 	quotaGuardSpendSlack = 15 * time.Minute
 	quotaGuardKeep       = 90 * 24 * time.Hour
 	quotaGuardMaxDays    = 7
-	quotaWeek            = 7 * 24 * time.Hour
+	quotaWeek            = quota.Week
 )
 
 // The phases of the week an hour falls in, as autopilot's gates saw it at
@@ -251,79 +253,10 @@ func (s *Service) notifyQuotaGuard(ctx context.Context, e *Event) {
 	s.notifyURL(ctx, e.UserID, e, NotifyQuota, "Automation used quota its limits should have saved", strings.TrimSpace(e.New), "/agents?tab=autopilot")
 }
 
-// quotaKnot is the week's high-water mark at a time.
-type quotaKnot struct {
-	at  int64
-	pct float64
-}
-
-// quotaWeekLine is one week's readings, as a rising line from 0 at its start.
-type quotaWeekLine struct {
-	start, reset int64
-	knots        []quotaKnot
-}
-
-// at is the week's mark at t: the line between the readings around t, the
-// last reading after them.
-func (w *quotaWeekLine) at(t int64) float64 {
-	k := w.knots
-	for i := 1; i < len(k); i++ {
-		if t <= k[i].at {
-			span := float64(k[i].at - k[i-1].at)
-			if span <= 0 {
-				return k[i].pct
-			}
-			return k[i-1].pct + (k[i].pct-k[i-1].pct)*float64(t-k[i-1].at)/span
-		}
-	}
-	return k[len(k)-1].pct
-}
-
-// seen is the latest reading taken by t, as the gates had it then.
-func (w *quotaWeekLine) seen(t int64) (quotaKnot, bool) {
-	for i := len(w.knots) - 1; i >= 1; i-- {
-		if w.knots[i].at <= t {
-			return w.knots[i], true
-		}
-	}
-	return quotaKnot{}, false
-}
-
 // quotaWeekLines reads the person's seven_day readings from since to before
-// as weeks. Readings of one week can name resets a little apart; one more
-// than an hour from the week's is the next week, and a stale one naming an
-// earlier week is left out.
-func (s *Service) quotaWeekLines(ctx context.Context, uid, since, before int64) ([]*quotaWeekLine, error) {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT at, percent, resets_at FROM quota_samples WHERE user_id = ? AND span = 'seven_day' AND at >= ? AND at < ? ORDER BY at, id`,
-		uid, since, before)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var weeks []*quotaWeekLine
-	var cur *quotaWeekLine
-	hour := time.Hour.Milliseconds()
-	for rows.Next() {
-		var at, reset int64
-		var pct float64
-		if err := rows.Scan(&at, &pct, &reset); err != nil {
-			return nil, err
-		}
-		switch {
-		case cur != nil && reset < cur.reset-hour:
-			continue
-		case cur == nil || reset > cur.reset+hour:
-			cur = &quotaWeekLine{start: reset - quotaWeek.Milliseconds(), reset: reset}
-			cur.knots = []quotaKnot{{cur.start, 0}}
-			weeks = append(weeks, cur)
-		}
-		if at < cur.start {
-			continue
-		}
-		last := cur.knots[len(cur.knots)-1]
-		cur.knots = append(cur.knots, quotaKnot{at, max(last.pct, pct)})
-	}
-	return weeks, rows.Err()
+// as weeks.
+func (s *Service) quotaWeekLines(ctx context.Context, uid, since, before int64) ([]*quota.Line, error) {
+	return quotaLines(ctx, s.db.R, uid, "seven_day", since, before)
 }
 
 // guardHour is an hour's spending, by who.
@@ -367,18 +300,18 @@ func (s *Service) quotaGuardCheck(ctx context.Context, uid int64, from, to time.
 	}
 	kept := weeks[:0]
 	for _, w := range weeks {
-		if w.reset > fromMS {
+		if w.Reset > fromMS {
 			kept = append(kept, w)
 		}
 	}
 	weeks = kept
-	five, err := s.fiveReadings(ctx, uid, fromMS-quotaFresh.Milliseconds(), toMS)
+	five, err := quotaLines(ctx, s.db.R, uid, "five_hour", fromMS-quota.Fresh.Milliseconds(), toMS)
 	if err != nil {
 		return nil, err
 	}
 	first := fromMS
 	for _, w := range weeks {
-		first = min(first, w.start)
+		first = min(first, w.Start)
 	}
 	first -= first % hourMS
 	hours, err := s.guardSpending(ctx, uid, first, until, fromMS, toMS)
@@ -389,24 +322,24 @@ func (s *Service) quotaGuardCheck(ctx context.Context, uid int64, from, to time.
 	pts := make([]float64, n)
 	unexp := make([]float64, n)
 	for _, w := range weeks {
-		for i := 1; i < len(w.knots); i++ {
-			a, b := w.knots[i-1], w.knots[i]
-			rise := b.pct - a.pct
-			if rise <= 0 || b.at <= fromMS || a.at >= toMS {
+		for i := 1; i < len(w.Knots); i++ {
+			a, b := w.Knots[i-1], w.Knots[i]
+			rise := w.Rise(i)
+			if rise <= 0 || b.At <= fromMS || a.At >= toMS {
 				continue
 			}
 			total := 0.0
-			for h := a.at - a.at%hourMS; h < b.at; h += hourMS {
+			for h := a.At - a.At%hourMS; h < b.At; h += hourMS {
 				if g := hours[h]; g != nil {
-					total += g.cost * spanOverlap(h, h+hourMS, a.at, b.at) / float64(hourMS)
+					total += g.cost * spanOverlap(h, h+hourMS, a.At, b.At) / float64(hourMS)
 				}
 			}
-			for h := max(fromMS, a.at-a.at%hourMS); h < min(toMS, b.at); h += hourMS {
+			for h := max(fromMS, a.At-a.At%hourMS); h < min(toMS, b.At); h += hourMS {
 				idx := int((h - fromMS) / hourMS)
-				ov := spanOverlap(h, h+hourMS, a.at, b.at)
+				ov := spanOverlap(h, h+hourMS, a.At, b.At)
 				if total <= 0 {
-					if b.at > a.at {
-						unexp[idx] += rise * ov / float64(b.at-a.at)
+					if b.At > a.At {
+						unexp[idx] += rise * ov / float64(b.At-a.At)
 					}
 					continue
 				}
@@ -454,10 +387,10 @@ func (s *Service) quotaGuardCheck(ctx context.Context, uid int64, from, to time.
 	c.Person = c.Points - c.Unexplained - c.Automation
 	if len(weeks) > 0 {
 		w := weeks[len(weeks)-1]
-		if w.reset > toMS-hourMS && len(w.knots) > 1 {
-			c.ResetsAt = ptrOf(msTime(w.reset).UTC())
-			c.WeekPercent = ptrOf(round1(w.at(toMS)))
-			c.WeekEven = ptrOf(round1(weekEvenAt(w, toMS)))
+		if w.Reset > toMS-hourMS && len(w.Knots) > 1 {
+			c.ResetsAt = ptrOf(msTime(w.Reset).UTC())
+			c.WeekPercent = ptrOf(round1(w.At(toMS)))
+			c.WeekEven = ptrOf(round1(w.Even(w.FromAt(toMS), toMS)))
 		}
 	}
 	if err := s.guardEarlySpend(ctx, uid, c, weeks, spendEnd); err != nil {
@@ -532,70 +465,44 @@ func (s *Service) quotaGuardLimits(ctx context.Context, uid int64) (lim Autopilo
 	return lim, spendEnd, rows[0].quotaOffUntil, nil
 }
 
-// fiveReadings are the person's five_hour readings in [since, before).
-func (s *Service) fiveReadings(ctx context.Context, uid, since, before int64) ([]fiveReading, error) {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT at, percent, resets_at FROM quota_samples WHERE user_id = ? AND span = 'five_hour' AND at >= ? AND at < ? ORDER BY at, id`, uid, since, before)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []fiveReading
-	for rows.Next() {
-		var f fiveReading
-		if err := rows.Scan(&f.at, &f.pct, &f.reset); err != nil {
-			return nil, err
-		}
-		out = append(out, f)
-	}
-	return out, rows.Err()
-}
-
 // guardOff is when the person had the quota limits off: [from, until), from
 // 0 when it isn't known (turned off before it was recorded).
 type guardOff struct{ from, until int64 }
 
-// fiveReading is one five_hour reading.
-type fiveReading struct {
-	at, reset int64
-	pct       float64
-}
-
 // guardPhase is the phase of the week at h, as autopilot's gates read it
 // then (quotaPaused): from the latest readings taken by h, with the week's
 // even pace when its reading was taken, and nothing from a reading older
-// than quotaFresh. It returns the week's percent and even pace it went by.
-func guardPhase(lim AutopilotLimits, off guardOff, weeks []*quotaWeekLine, five []fiveReading, h int64) (string, *float64, *float64) {
+// than quota.Fresh. It returns the week's percent and even pace it went by.
+func guardPhase(lim AutopilotLimits, off guardOff, weeks, five []*quota.Line, h int64) (string, *float64, *float64) {
 	if h < off.until && h >= off.from {
 		return GuardPhaseOff, nil, nil
 	}
-	var w *quotaWeekLine
+	var w *quota.Line
 	for _, x := range weeks {
-		if h >= x.start && h < x.reset {
+		if h >= x.Start && h < x.Reset {
 			w = x
 		}
 	}
 	if w == nil {
 		return GuardPhaseUnknown, nil, nil
 	}
-	k, ok := w.seen(h)
-	if !ok || h-k.at >= quotaFresh.Milliseconds() {
+	k, ok := w.Seen(h)
+	if !ok || h-k.At >= quota.Fresh.Milliseconds() {
 		return GuardPhaseUnknown, nil, nil
 	}
-	pct, even := k.pct, weekEvenAt(w, k.at)
+	pct, even := k.Pct, w.Even(k.From, k.At)
 	now := msTime(h)
-	m := &AutopilotMeter{WeekResetsAt: ptrOf(msTime(w.reset))}
+	m := &AutopilotMeter{WeekResetsAt: ptrOf(msTime(w.Reset))}
 	p, e := ptrOf(round1(pct)), ptrOf(round1(even))
-	for i := len(five) - 1; i >= 0; i-- {
-		f := five[i]
-		if f.at > h {
+	for _, f := range five {
+		if h < f.Start || h >= f.Reset {
 			continue
 		}
-		if f.reset > h && h-f.at < quotaFresh.Milliseconds() {
-			if c := weekEndRamp(valueOf(lim.FiveHourMax), m, lim, now); c > 0 && f.pct >= c {
+		if k, ok := f.Seen(h); ok && h-k.At < quota.Fresh.Milliseconds() {
+			if c := weekEndRamp(valueOf(lim.FiveHourMax), m, lim, now); c > 0 && k.Pct >= c {
 				return GuardPhaseOver, p, e
 			}
 		}
-		break
 	}
 	if c := weekCap(m, lim, now); c > 0 && pct >= c {
 		return GuardPhaseOver, p, e
@@ -603,18 +510,13 @@ func guardPhase(lim AutopilotLimits, off guardOff, weeks []*quotaWeekLine, five 
 	if ahead := valueOf(lim.WeekAhead); ahead > 0 && pct-even > ahead {
 		return GuardPhaseOver, p, e
 	}
-	if end := valueOf(lim.WeekEndHours); end > 0 && float64(w.reset-h) < 2*end*float64(time.Hour.Milliseconds()) {
+	if end := valueOf(lim.WeekEndHours); end > 0 && float64(w.Reset-h) < 2*end*float64(time.Hour.Milliseconds()) {
 		return GuardPhaseEnd, p, e
 	}
 	if pct >= even {
 		return GuardPhaseAhead, p, e
 	}
 	return GuardPhaseUnder, p, e
-}
-
-// weekEvenAt is an even pace's share of the week at t.
-func weekEvenAt(w *quotaWeekLine, t int64) float64 {
-	return max(0, min(100, 100*float64(t-w.start)/float64(quotaWeek.Milliseconds())))
 }
 
 // spanOverlap is how many ms [a, b) and [c, d) share.
@@ -865,7 +767,7 @@ func nonEmpty(parts ...string) []string {
 // guardEarlySpend lists use-what's-left starts in the window made before
 // the week's last spendEnd hours (with a little slack for the reading the
 // sweep went by).
-func (s *Service) guardEarlySpend(ctx context.Context, uid int64, c *QuotaGuardCheck, weeks []*quotaWeekLine, spendEnd float64) error {
+func (s *Service) guardEarlySpend(ctx context.Context, uid int64, c *QuotaGuardCheck, weeks []*quota.Line, spendEnd float64) error {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT st.created_at, coalesce(p.key || '-' || i.number, '') FROM autopilot_steps st
 		LEFT JOIN issues i ON i.id = st.next_issue LEFT JOIN projects p ON p.id = i.project_id WHERE st.user_id = ? AND st.spend = 1 AND st.created_at >= ? AND st.created_at < ? ORDER BY st.created_at`, uid, c.From.UnixMilli(), c.To.UnixMilli())
 	if err != nil {
@@ -878,16 +780,16 @@ func (s *Service) guardEarlySpend(ctx context.Context, uid int64, c *QuotaGuardC
 		if err := rows.Scan(&at, &key); err != nil {
 			return err
 		}
-		var w *quotaWeekLine
+		var w *quota.Line
 		for _, x := range weeks {
-			if at >= x.start && at < x.reset {
+			if at >= x.Start && at < x.Reset {
 				w = x
 			}
 		}
 		if w == nil {
 			continue
 		}
-		left := time.Duration(w.reset-at) * time.Millisecond
+		left := time.Duration(w.Reset-at) * time.Millisecond
 		if left > time.Duration(spendEnd*float64(time.Hour))+quotaGuardSpendSlack {
 			c.EarlySpend = append(c.EarlySpend, QuotaGuardStart{At: msTime(at).UTC(), Issue: key, HoursLeft: round1(left.Hours())})
 		}

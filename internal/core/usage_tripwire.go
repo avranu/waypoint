@@ -28,12 +28,11 @@ func (p UserPrefs) quotaJumpThreshold() int {
 	return *p.QuotaJump
 }
 
-// checkQuotaJump runs after a seven_day reading was stored. It compares it
-// with the lowest reading of the same week in the last hour and, when the
-// rise reaches the person's threshold and none was reported in the last
-// hour, emits EvQuotaJump. A drop (the week rolled over, resets_at changed)
-// never fires.
-func (s *Service) checkQuotaJump(ctx context.Context, t *tx, uid, at int64, pct float64, resetsAt int64) error {
+// checkQuotaJump runs after a seven_day reading was stored. It adds up what
+// the week rose over the last hour and, when that reaches the person's
+// threshold and none was reported in the last hour, emits EvQuotaJump. A
+// reset gives nothing back and a reading from before one is no rise.
+func (s *Service) checkQuotaJump(ctx context.Context, t *tx, uid, at int64, resetsAt int64) error {
 	u, err := s.userByID(ctx, s.db.R, uid)
 	if err != nil {
 		return nil
@@ -42,17 +41,28 @@ func (s *Service) checkQuotaJump(ctx context.Context, t *tx, uid, at int64, pct 
 	if thr <= 0 {
 		return nil
 	}
-	var low float64
-	var lowAt int64
-	err = t.QueryRowContext(ctx, `SELECT percent, at FROM quota_samples
-		WHERE user_id = ? AND span = 'seven_day' AND resets_at = ? AND at >= ? AND at <= ?
-		ORDER BY percent ASC, at DESC LIMIT 1`, uid, resetsAt, at-quotaJumpWindow.Milliseconds(), at).Scan(&low, &lowAt)
-	if err != nil {
-		return nil
-	}
-	rise := pct - low
-	if rise <= 0 || rise < float64(thr) {
-		return nil
+	// A day back finds a rise cheaply, inside the writer; the whole window
+	// then says whether it is one, or a reading from before an older reset.
+	rise, lowAt := 0.0, at
+	for _, back := range []time.Duration{24 * time.Hour, quotaWeek} {
+		lines, err := quotaLines(ctx, t, uid, "seven_day", at-back.Milliseconds(), at+1)
+		if err != nil || len(lines) == 0 {
+			return err
+		}
+		l := lines[len(lines)-1]
+		if max(l.Reset-resetsAt, resetsAt-l.Reset) > time.Hour.Milliseconds() {
+			return nil
+		}
+		rise, lowAt = 0.0, at
+		// Knot 0 is the window's start, not a reading to rise from.
+		for i := len(l.Knots) - 1; i > 1 && l.Knots[i-1].At >= at-quotaJumpWindow.Milliseconds(); i-- {
+			if r := l.Rise(i); r > 0 {
+				rise, lowAt = rise+r, l.Knots[i-1].At
+			}
+		}
+		if rise <= 0 || rise < float64(thr) {
+			return nil
+		}
 	}
 	var last int64
 	_ = t.QueryRowContext(ctx, `SELECT at FROM quota_alerts WHERE user_id = ?`, uid).Scan(&last)

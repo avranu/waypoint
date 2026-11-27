@@ -120,7 +120,7 @@ export function Readings({ meter, limits }: { meter: AutopilotMeter; limits: Aut
   const hourly = limits.max_hourly_usd ?? 0
   const quotaOff = !!meter.quota_off_until
   const weekCap = quotaOff ? 0 : (meter.week_cap ?? limits.week_max ?? 0)
-  const fiveCap = quotaOff ? 0 : (limits.five_hour_max ?? 0)
+  const fiveCap = quotaOff ? 0 : (meter.five_cap ?? limits.five_hour_max ?? 0)
   const weekPct = meter.week_percent
   const even = meter.week_even
   const aheadLimit = quotaOff ? 0 : (limits.week_ahead ?? 0)
@@ -129,11 +129,16 @@ export function Readings({ meter, limits }: { meter: AutopilotMeter; limits: Aut
   const bites = [paceLine, weekCap].filter((n) => n > 0 && n < 100)
   const pauseAt = bites.length ? Math.min(...bites) : 0
   const warn = 'var(--wp-warn)'
-  const over = weekPct !== undefined && pauseAt > 0 && weekPct >= pauseAt
+  // The ceiling holds from its value on, the pace line only past it.
+  const over =
+    weekPct !== undefined &&
+    ((weekCap > 0 && weekPct >= weekCap) || (paceLine > 0 && weekPct > paceLine))
   const spendOver = hourly > 0 && meter.hourly_usd >= hourly
 
   const weekPause = [
-    paceLine > 0 && `${aheadLimit} points ahead of an even pace (${pct(paceLine)} now)`,
+    paceLine > 0 &&
+      paceLine < 100 &&
+      `${aheadLimit} points ahead of an even pace (${pct(paceLine)} now)`,
     weekCap > 0 && `${pct(weekCap)} outright`,
   ].filter(Boolean)
 

@@ -150,8 +150,8 @@ func adviceQuota(o *UsageOverview) *UsageAdvice {
 			continue
 		}
 		ev := []string{
-			fmt.Sprintf("%.0f%% of the 7-day quota used, with %.0f%% of the window gone.", w.Percent, w.Even),
-			fmt.Sprintf("At this rate it ends at about %.0f%% and runs out around %s (it resets %s).", w.Projected, w.RunsOutAt.UTC().Format("Mon 15:04 UTC"), w.ResetsAt.UTC().Format("Mon 15:04 UTC")),
+			fmt.Sprintf("%.0f%% of the 7-day quota used, where an even pace would be at %.0f%%.", w.Percent, w.Even),
+			fmt.Sprintf("At the recent rate it ends at about %.0f%% and runs out around %s (it resets %s).", w.Projected, w.RunsOutAt.UTC().Format("Mon 15:04 UTC"), w.ResetsAt.UTC().Format("Mon 15:04 UTC")),
 		}
 		if len(o.Models) > 0 && o.Totals.Output+o.Totals.Input+o.Totals.CacheWrite > 0 {
 			var total int64

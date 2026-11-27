@@ -97,6 +97,38 @@ func TestBabysitRoundAtUsageLimit(t *testing.T) {
 	}
 }
 
+// A quota reset before the time the round waits for ends the wait.
+func TestBabysitLimitEndsAtQuotaReset(t *testing.T) {
+	be := newBabysitEnv(t)
+	be.runnerOnline()
+	be.start(be.open())
+	b := be.toAssessor()
+	msg := "claude reported an error: You've hit your weekly limit · resets 5pm (UTC)"
+	until, ok := limitResetIn(msg, be.clockNow())
+	if !ok {
+		t.Fatal("no reset read")
+	}
+	be.failWith(b.JobID, msg)
+	read := func(pct float64) {
+		t.Helper()
+		be.setClock(be.clockNow().Add(time.Minute))
+		if _, err := be.s.db.W.Exec(`INSERT INTO quota_samples(user_id, at, span, percent, resets_at, session) VALUES (?, ?, 'seven_day', ?, ?, 's')`,
+			be.admin.User.ID, be.clockNow().UnixMilli(), pct, until.UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+		be.runnerOnline()
+		be.step()
+	}
+	read(100)
+	if n := len(be.jobs()); n != 3 {
+		t.Fatalf("%d jobs at the limit", n)
+	}
+	read(3)
+	if b = be.babysit(); len(be.jobs()) != 4 || b.JobID == 0 {
+		t.Fatalf("after the quota reset: %d jobs, %+v", len(be.jobs()), b)
+	}
+}
+
 // A limit with no reset in its message waits for the quota window the
 // owner's status line last read as full, else limitRetry.
 func TestLimitLifts(t *testing.T) {

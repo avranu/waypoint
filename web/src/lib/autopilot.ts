@@ -159,6 +159,8 @@ export interface AutopilotMeter {
   week_even?: number
   week_resets_at?: string
   week_cap?: number
+  /** the five-hour ceiling now, raised near the week's end as the week's is */
+  five_cap?: number
   five_hour_percent?: number
   five_hour_resets_at?: string
   quota_sampled_at?: string
@@ -196,7 +198,7 @@ export interface SpendPlan {
   opens_at?: string
   resets_at?: string
   percent?: number
-  /** points an hour, over the last hour */
+  /** points an hour, over the last hour; over the recent days when it has too few readings */
   per_hour?: number
   /** where the week lands at the reset at that pace */
   projected?: number

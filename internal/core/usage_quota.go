@@ -3,9 +3,12 @@ package core
 import (
 	"context"
 	"database/sql"
+	"math"
 	"sort"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core/quota"
 )
 
 // UsageQuotaPoint is one status line sample.
@@ -18,17 +21,22 @@ type UsageQuotaPoint struct {
 // UsageQuotaWindow is one window (five hours, seven days) as last seen,
 // with where it is heading.
 type UsageQuotaWindow struct {
-	Span      string            `json:"span"` // five_hour, seven_day
-	Label     string            `json:"label"`
-	Seconds   int64             `json:"seconds"` // the window's length
-	Percent   float64           `json:"percent"`
-	ResetsAt  time.Time         `json:"resets_at"`
-	SampledAt time.Time         `json:"sampled_at"`
-	Machine   string            `json:"machine"`
-	Status    string            `json:"status"`    // on_track, will_run_out, at_limit, too_early, reset
-	Projected float64           `json:"projected"` // percent used when the window ends, at this rate
-	RunsOutAt *time.Time        `json:"runs_out_at"`
-	Even      float64           `json:"even"` // percent used right now if spread evenly
+	Span      string     `json:"span"` // five_hour, seven_day
+	Label     string     `json:"label"`
+	Seconds   int64      `json:"seconds"` // the window's length
+	Percent   float64    `json:"percent"`
+	ResetsAt  time.Time  `json:"resets_at"`
+	SampledAt time.Time  `json:"sampled_at"`
+	Machine   string     `json:"machine"`
+	Status    string     `json:"status"`    // on_track, will_run_out, at_limit, too_early, reset
+	Projected float64    `json:"projected"` // percent used when the window ends, at the recent rate
+	RunsOutAt *time.Time `json:"runs_out_at"`
+	Even      float64    `json:"even"` // percent used right now if spread evenly since paced_from
+	// PacedFrom is when the pace began: the window's start, or the first
+	// reading after the last reset inside it. Resets are those readings'
+	// times, one for each reset, oldest first.
+	PacedFrom time.Time         `json:"paced_from"`
+	Resets    []time.Time       `json:"resets"`
 	History   []UsageQuotaPoint `json:"history"`
 }
 
@@ -40,32 +48,37 @@ type UsageQuota struct {
 var quotaSpans = []struct {
 	span, label string
 	length      time.Duration
+	// halfLife is how fast use stops counting in the rate; lookback how far
+	// before the current window the rate reads.
+	halfLife, lookback time.Duration
 }{
-	{"seven_day", "7 days", 7 * 24 * time.Hour},
-	{"five_hour", "5 hours", 5 * time.Hour},
+	// A day's half-life takes in a whole day and night; the week before
+	// says how fast the person works when the window has only just begun.
+	{"seven_day", "7 days", quotaWeek, 24 * time.Hour, quotaWeek},
+	// A five-hour window starts when use does: what came before it was idle.
+	{"five_hour", "5 hours", 5 * time.Hour, time.Hour, 0},
 }
 
-// quotaPace says where a window is heading: its average rate so far,
-// carried to the window's end.
-func quotaPace(now, sampledAt, resetsAt time.Time, length time.Duration, pct float64) (status string, projected float64, runsOut *time.Time, even float64) {
+// quotaPace says where a window is heading: the use now, carried to the
+// window's end at the recent rate. lines end with the window; earlier ones
+// only inform the rate.
+func quotaPace(now, sampledAt time.Time, lines []*quota.Line, halfLife time.Duration) (status string, projected float64, runsOut *time.Time, even float64) {
+	l := lines[len(lines)-1]
+	pct, resetsAt := l.Last().Pct, msTime(l.Reset)
 	if !resetsAt.After(now) {
 		return "reset", pct, nil, 0
 	}
-	start := resetsAt.Add(-length)
-	if e := now.Sub(start); e > 0 {
-		even = min(100, 100*float64(e)/float64(length))
-	}
+	even = l.Even(l.Last().From, now.UnixMilli())
 	if pct >= 100 {
 		return "at_limit", pct, &sampledAt, even
 	}
-	elapsed := sampledAt.Sub(start)
-	if elapsed < length/20 {
+	rate, span := quota.Rate(lines, sampledAt.UnixMilli(), halfLife)
+	if span < time.Duration(l.Reset-l.Start)*time.Millisecond/20 {
 		return "too_early", pct, nil, even
 	}
-	rate := pct / float64(elapsed)
-	projected = rate * float64(length)
+	projected = pct + rate*float64(l.Reset-sampledAt.UnixMilli())
 	if projected > 100 && rate > 0 {
-		t := sampledAt.Add(time.Duration((100 - pct) / rate))
+		t := sampledAt.Add(time.Duration((100-pct)/rate) * time.Millisecond)
 		if t.Before(resetsAt) {
 			return "will_run_out", projected, &t, even
 		}
@@ -83,26 +96,42 @@ func (s *Service) usageQuota(ctx context.Context, sc *usageScope, days int) (*Us
 	q := &UsageQuota{Windows: []UsageQuotaWindow{}}
 	for _, sp := range quotaSpans {
 		var w UsageQuotaWindow
-		var at, reset int64
-		err := s.db.R.QueryRowContext(ctx, `SELECT at, percent, resets_at, machine FROM quota_samples WHERE user_id = ? AND span = ? ORDER BY at DESC LIMIT 1`, uid, sp.span).
-			Scan(&at, &w.Percent, &reset, &w.Machine)
+		var latest int64
+		err := s.db.R.QueryRowContext(ctx, `SELECT machine, at FROM quota_samples WHERE user_id = ? AND span = ? ORDER BY at DESC, id DESC LIMIT 1`, uid, sp.span).Scan(&w.Machine, &latest)
 		if err == sql.ErrNoRows {
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		w.Span, w.Label, w.Seconds = sp.span, sp.label, int64(sp.length/time.Second)
-		w.SampledAt, w.ResetsAt = msTime(at), msTime(reset)
-		w.Status, w.Projected, w.RunsOutAt, w.Even = quotaPace(now, w.SampledAt, w.ResetsAt, sp.length, w.Percent)
 		since := now.Add(-time.Duration(days) * 24 * time.Hour)
 		if sp.span == "five_hour" {
 			since = now.Add(-48 * time.Hour)
 		}
 		since = since.Add(-sp.length / 4)
-		if w.History, err = s.quotaHistory(ctx, uid, sp.span, since.UnixMilli()); err != nil {
+		// Whole windows: the history's first, the ones the rate reads, and
+		// the latest however long ago it was.
+		load := minTime(minTime(since, now.Add(-sp.length-sp.lookback)), msTime(latest)).Add(-sp.length)
+		lines, err := quotaLines(ctx, s.db.R, uid, sp.span, load.UnixMilli(), math.MaxInt64)
+		if err != nil {
 			return nil, err
 		}
+		if len(lines) == 0 {
+			continue
+		}
+		cur := lines[len(lines)-1]
+		first := len(lines) - 1
+		for first > 0 && lines[first-1].Reset > cur.Start-sp.lookback.Milliseconds() {
+			first--
+		}
+		w.Span, w.Label, w.Seconds = sp.span, sp.label, int64(sp.length/time.Second)
+		w.Percent, w.SampledAt, w.ResetsAt = cur.Last().Pct, msTime(cur.SeenAt), msTime(cur.Reset)
+		w.Status, w.Projected, w.RunsOutAt, w.Even = quotaPace(now, w.SampledAt, lines[first:], sp.halfLife)
+		w.PacedFrom, w.Resets = msTime(cur.Last().From), []time.Time{}
+		for _, at := range cur.Resets() {
+			w.Resets = append(w.Resets, msTime(at))
+		}
+		w.History = quotaHistory(lines, since.UnixMilli())
 		q.Windows = append(q.Windows, w)
 	}
 	if len(q.Windows) == 0 {
@@ -113,34 +142,36 @@ func (s *Service) usageQuota(ctx context.Context, sc *usageScope, days int) (*Us
 
 const quotaPoints = 400
 
-func (s *Service) quotaHistory(ctx context.Context, uid int64, span string, since int64) ([]UsageQuotaPoint, error) {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT at, percent, resets_at FROM quota_samples WHERE user_id = ? AND span = ? AND at >= ? ORDER BY at`, uid, span, since)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []UsageQuotaPoint{}
-	for rows.Next() {
-		var at, reset int64
-		var p UsageQuotaPoint
-		if err := rows.Scan(&at, &p.Percent, &reset); err != nil {
-			return nil, err
+// quotaHistory is the points of the windows that end after since, each window
+// whole, thinned to about quotaPoints. The last point before each fall stays,
+// so a window's use can be added up from what is left.
+func quotaHistory(lines []*quota.Line, since int64) []UsageQuotaPoint {
+	all := []UsageQuotaPoint{}
+	keep := []bool{}
+	for _, l := range lines {
+		if l.Reset <= since {
+			continue
 		}
-		p.At, p.ResetsAt = msTime(at), msTime(reset)
-		out = append(out, p)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if len(out) > quotaPoints {
-		step := float64(len(out)-1) / float64(quotaPoints-1)
-		thin := make([]UsageQuotaPoint, 0, quotaPoints)
-		for i := 0; i < quotaPoints; i++ {
-			thin = append(thin, out[int(float64(i)*step)])
+		for i := 1; i < len(l.Knots); i++ {
+			k := l.Knots[i]
+			all = append(all, UsageQuotaPoint{At: msTime(k.At), Percent: k.Pct, ResetsAt: msTime(l.Reset)})
+			keep = append(keep, k.Zeroed || i == len(l.Knots)-1 || l.Knots[i+1].Zeroed)
 		}
-		out = thin
 	}
-	return out, nil
+	if len(all) <= quotaPoints {
+		return all
+	}
+	step := float64(len(all)-1) / float64(quotaPoints-1)
+	for i := 0; i < quotaPoints; i++ {
+		keep[int(float64(i)*step)] = true
+	}
+	thin := make([]UsageQuotaPoint, 0, quotaPoints)
+	for i, p := range all {
+		if keep[i] {
+			thin = append(thin, p)
+		}
+	}
+	return thin
 }
 
 // allowRule is the permission rule that would let a refused call through.

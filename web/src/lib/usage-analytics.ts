@@ -86,6 +86,10 @@ export interface QuotaWindow {
   projected: number
   runs_out_at: string | null
   even: number
+  /** When the even pace began: the window's start, or the first reading after the last reset. */
+  paced_from: string
+  /** Resets inside the window, oldest first. */
+  resets: string[]
   history: { at: string; percent: number; resets_at: string }[]
 }
 
@@ -620,7 +624,7 @@ export function paceText(w: QuotaWindow): { text: string; tone: 'ok' | 'warn' | 
       return { text: `At the limit; resets ${weekdayTime(w.resets_at)}`, tone: 'bad' }
     case 'will_run_out':
       return {
-        text: `Will run out ${weekdayTime(w.runs_out_at ?? w.resets_at)} at this rate (${Math.round(w.projected)}% by the reset)`,
+        text: `Will run out ${weekdayTime(w.runs_out_at ?? w.resets_at)} at the recent rate (${Math.round(w.projected)}% by the reset)`,
         tone: 'bad',
       }
     case 'on_track':

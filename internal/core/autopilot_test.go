@@ -420,7 +420,7 @@ func TestAutopilotLimits(t *testing.T) {
 	}
 	five, at := 92.0, a.clockNow().Add(time.Hour)
 	m = &AutopilotMeter{FiveHour: &five, FiveResetsAt: &at}
-	if why, recheck := autopilotPaused(m, waypointAutopilotDefaults(), a.clockNow()); pauseReason(why) != PauseFiveHour || !recheck.After(at) {
+	if why, recheck := autopilotPaused(m, waypointAutopilotDefaults(), a.clockNow()); pauseReason(why) != PauseFiveHour || !recheck.Equal(a.clockNow().Add(15*time.Minute)) {
 		t.Errorf("92%% of five hours = %q, recheck %v", why, recheck)
 	}
 }

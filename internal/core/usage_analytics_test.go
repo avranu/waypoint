@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core/quota"
 )
 
 type uaEnv struct {
@@ -403,7 +405,7 @@ func TestQuotaPace(t *testing.T) {
 		{"at the limit", at(100), 100, "at_limit", 100, at(100)},
 		{"reset since", reset.Add(time.Hour), 40, "reset", 40, time.Time{}},
 	} {
-		status, projected, runsOut, _ := quotaPace(tc.now, tc.now, reset, week, tc.pct)
+		status, projected, runsOut, _ := quotaPace(tc.now, tc.now, quota.LinesFrom([]quota.Reading{{At: min(tc.now.UnixMilli(), reset.UnixMilli()), Reset: reset.UnixMilli(), Pct: tc.pct}}, week), 24*time.Hour)
 		if status != tc.status || (tc.projected != 0 && !approx(projected, tc.projected)) {
 			t.Errorf("%s: %s %.1f", tc.name, status, projected)
 		}
@@ -471,6 +473,12 @@ func TestUsageQuotaSamples(t *testing.T) {
 	s, err := e.s.UsageSummary(e.ctx, e.me)
 	if err != nil || s.Quota == nil || s.Quota.Windows[0].History != nil {
 		t.Errorf("summary: %+v %v", s, err)
+	}
+	// Another session saying the same is kept: its readings are judged by what
+	// it has said before.
+	other := UsageQuotaInput{Machine: "m", Session: "t", SevenDay: &QuotaWindow{Percent: 31, ResetsAt: reset7}}
+	if err := e.s.RecordQuota(e.ctx, e.me, other); err != nil || count() != 6 {
+		t.Errorf("another session: %v %d", err, count())
 	}
 }
 

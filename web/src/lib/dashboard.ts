@@ -24,6 +24,9 @@ export interface DashPace {
   /** the last twelve weeks, oldest first; the last is this week so far */
   weeks: DashWeek[]
   done_4w: number
+  /** weeks of the last four, and of the four before, the project had work in it */
+  weeks_4w: number
+  weeks_prev_4w: number
   done_prev_4w: number
   added_4w: number
   /** median days from filed to done over the last four weeks */
@@ -100,8 +103,12 @@ export const dashboardApi = {
     }),
 }
 
-/** Finished per week over the last four weeks. */
-export const perWeek = (p: DashPace) => p.done_4w / 4
+/** Finished per week over the last four weeks, or the weeks a younger project has had. */
+export const perWeek = (p: DashPace) => p.done_4w / Math.max(1, p.weeks_4w)
+
+/** The same for the four weeks before those; 0 when the project wasn't there yet. */
+export const perWeekBefore = (p: DashPace) =>
+  p.weeks_prev_4w > 0 ? p.done_prev_4w / Math.max(1, p.weeks_prev_4w) : 0
 
 /** Share of traced open work that serves an approved goal, or null. */
 export const onGoalShare = (d: Pick<Dashboard, 'on_goal' | 'traced'>) =>

@@ -148,7 +148,11 @@ func TestSpendLeftLeavesRoom(t *testing.T) {
 	if !p.PersonActive || p.Target != 90 || p.Start || p.Wants || !strings.Contains(p.Why, "leaves you 10 points") {
 		t.Fatalf("active, 8 h left: %+v", p)
 	}
-	a.setClock(a.clockNow().Add(time.Minute))
+	// The same week, 50 minutes before its reset.
+	a.setClock(a.clockNow().Add(8*time.Hour - 50*time.Minute))
+	if _, err := a.s.db.W.Exec(`UPDATE agent_sessions SET typed_at = ? WHERE id = ?`, a.clockNow().UnixMilli(), a.session); err != nil {
+		t.Fatal(err)
+	}
 	a.weekAt(95, 1, 50*time.Minute)
 	p = a.plan()
 	if p.Target != 100 || !p.Start {

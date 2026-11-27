@@ -460,8 +460,9 @@ type UsageQuotaInput struct {
 const quotaKeepEvery = 15 * time.Minute
 
 // RecordQuota stores the subscription's quota windows. A sample that says
-// what the last one did is dropped unless it is a quarter hour newer, so
-// months of history stay small.
+// what the session's last one did is dropped unless it is a quarter hour
+// newer, so months of history stay small. Each session's is kept: what it was
+// heard to say tells its old readings from new ones.
 func (s *Service) RecordQuota(ctx context.Context, actor *Actor, in UsageQuotaInput) error {
 	uid, err := usageUser(actor)
 	if err != nil {
@@ -484,22 +485,23 @@ func (s *Service) RecordQuota(ctx context.Context, actor *Actor, in UsageQuotaIn
 			if w == nil || w.Percent < 0 || w.Percent > 1000 || w.ResetsAt <= 0 {
 				continue
 			}
-			var lastAt, lastReset int64
+			session := clip(in.Session, 80)
+			var lastReset int64
 			var lastPct float64
-			err := t.QueryRowContext(ctx, `SELECT at, resets_at, percent FROM quota_samples WHERE user_id = ? AND span = ? ORDER BY at DESC LIMIT 1`, uid, name).
-				Scan(&lastAt, &lastReset, &lastPct)
+			err := t.QueryRowContext(ctx, `SELECT resets_at, percent FROM quota_samples WHERE user_id = ? AND span = ? AND at > ? AND session = ?
+				ORDER BY at DESC, id DESC LIMIT 1`, uid, name, at-quotaKeepEvery.Milliseconds(), session).Scan(&lastReset, &lastPct)
 			if err != nil && err != sql.ErrNoRows {
 				return err
 			}
-			if err == nil && lastReset == w.ResetsAt && lastPct == w.Percent && at-lastAt < quotaKeepEvery.Milliseconds() {
+			if err == nil && lastReset == w.ResetsAt && lastPct == w.Percent {
 				continue
 			}
 			if _, err := t.ExecContext(ctx, `INSERT INTO quota_samples(user_id, at, span, percent, resets_at, machine, session, model) VALUES (?,?,?,?,?,?,?,?)`,
-				uid, at, name, w.Percent, w.ResetsAt, in.Machine, clip(in.Session, 80), clip(in.Model, 100)); err != nil {
+				uid, at, name, w.Percent, w.ResetsAt, in.Machine, session, clip(in.Model, 100)); err != nil {
 				return err
 			}
 			if name == "seven_day" {
-				if err := s.checkQuotaJump(ctx, t, uid, at, w.Percent, w.ResetsAt); err != nil {
+				if err := s.checkQuotaJump(ctx, t, uid, at, w.ResetsAt); err != nil {
 					return err
 				}
 			}
