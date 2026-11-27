@@ -384,6 +384,9 @@ func (s *Service) linkOwnWork(ctx context.Context, t *tx, src forgeText, owned m
 	}
 	for issueID, m := range owned {
 		if src.kind == "pull" && src.fromOutside {
+			// outside, not draft: a person's own draft links. Every path
+			// that publishes (PublishIssue, releaseOutsideIssue) clears
+			// outside with draft, then runs linkHeldOwnWork.
 			var outside bool
 			if err := t.QueryRowContext(ctx, `SELECT outside FROM issues WHERE id = ?`, issueID).Scan(&outside); err != nil {
 				return n, err

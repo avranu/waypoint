@@ -517,8 +517,16 @@ func (s *Service) refreshPR(ctx context.Context, f *Forge, repo string, fp *Forg
 		return err
 	}
 	if title := excerpt(stripWIP(fp.Title), 300); title != old.Title {
-		if err := s.retitleListedPR(ctx, f, old.ID, title, fp); err != nil {
+		// A held one stores no title, or only an approved one: compare with
+		// the title it waits at, or every listing rewrites it unchanged.
+		same, err := s.heldAtTitle(ctx, old, title)
+		if err != nil {
 			return err
+		}
+		if !same {
+			if err := s.retitleListedPR(ctx, f, old.ID, title, fp); err != nil {
+				return err
+			}
 		}
 	}
 	_, err = s.db.W.ExecContext(ctx, `UPDATE pull_requests SET opened_at = coalesce(?, opened_at), merged_at = coalesce(?, merged_at),
@@ -556,6 +564,19 @@ func (s *Service) refreshPR(ctx context.Context, f *Forge, repo string, fp *Forg
 		s.scheduleMergeRecheck(ctx, old.ID)
 	}
 	return nil
+}
+
+// heldAtTitle says whether pr waits for a person at title already (WP-1802).
+func (s *Service) heldAtTitle(ctx context.Context, pr *PullRequest, title string) (bool, error) {
+	if !pr.Outside {
+		return false, nil
+	}
+	var held string
+	err := s.db.R.QueryRowContext(ctx, `SELECT title FROM outside_pr_text WHERE pr_id = ? AND external_id = ''`, pr.ID).Scan(&held)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil && held == title, err
 }
 
 // retitleListedPR records a title a listing changed, screened as a

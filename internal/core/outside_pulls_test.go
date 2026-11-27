@@ -231,6 +231,18 @@ func TestPullRequestFromOutsideLeaksNothing(t *testing.T) {
 		}
 	})
 
+	t.Run("a person's mirror copy of a GitHub person's pull request is let in as theirs", func(t *testing.T) {
+		se := newShipEnv(t, "forgejo")
+		gh := se.forge("github", "https://github.com", false)
+		se.forgePeople(gh, "zedperson")
+		se.pullHook("opened", ForgePR{Number: 53, Title: "Tidy", Body: "_Opened on GitHub by **zedperson** as a fork_\n\nbody",
+			Author: "sam", HeadRef: "x", HeadSHA: "aaaaaaa5353", State: "open", HeadRepo: "stranger/app"})
+		se.s.Wait()
+		if p := se.pr(53); p.Outside || p.Author != "zedperson" || p.Title != "Tidy" {
+			t.Fatalf("outside=%v author=%q title=%q", p.Outside, p.Author, p.Title)
+		}
+	})
+
 	t.Run("a stranger's body doesn't name its author", func(t *testing.T) {
 		se := newShipEnv(t, "forgejo")
 		se.pullHook("opened", ForgePR{Number: 52, Title: "x", Body: "_Opened on GitHub by **newhire** as a fork_", Author: "mallory",
@@ -600,6 +612,13 @@ func TestListedOutsideTitleWaits(t *testing.T) {
 	}
 	refresh("zebra before approval")
 	shown("held", "")
+	// Listed again at the title it waits at: nothing to rewrite.
+	if same, err := se.s.heldAtTitle(se.ctx, se.pr(68), "zebra before approval"); err != nil || !same {
+		t.Errorf("held at its listed title: %v %v", same, err)
+	}
+	if same, _ := se.s.heldAtTitle(se.ctx, se.pr(68), "zebra again"); same {
+		t.Error("held at a title it was never listed at")
+	}
 	held, err := se.s.ListOutsidePR(se.ctx, se.admin, se.pr(68).ID)
 	if err != nil || len(held) != 1 || held[0].Title != "zebra before approval" {
 		t.Fatal(held, err)
