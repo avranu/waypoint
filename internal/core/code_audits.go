@@ -2689,8 +2689,8 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 		return nil, invalid("mark at most 100 findings at once")
 	}
 	note := strings.TrimSpace(in.Note)
-	if utf8.RuneCountInString(note) > 2000 {
-		return nil, invalid("a note is at most 2000 characters")
+	if utf8.RuneCountInString(note) > MaxFindingNote {
+		return nil, invalid("a note is at most %d characters", MaxFindingNote)
 	}
 	if state == "rejected" && note == "" && actor.IsAgent() {
 		return nil, invalid("say why the finding is wrong or not worth fixing (a note)")

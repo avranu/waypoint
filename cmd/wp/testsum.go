@@ -22,24 +22,13 @@ import (
 var testsumCmd = &command{
 	name: "testsum", group: "Code and CI", args: "[--all] [--repeat N | --base REF] [--keep-env NAME] CMD… | [--format F] [FILE|-]",
 	summary: "run tests and summarize them: one line on pass, failures with file:line",
-	about: `Runs CMD in the "tests" host slot and prints a summary: one line on pass;
-on failure each failing test with file:line and its first lines, exit 1.
-A summary that is cut ends with the file holding the command's whole output.
-The run is kept against the tree it tested, for wp ship. Run again with the
-same command (as typed; GOFLAGS and the like aren't compared) on a
-content-identical tree, it still runs, and the first line says nothing
-changed since the last run and how that came out; it is also printed at
-once, before waiting for the slot. --repeat and --base don't say it. Flags go before
-CMD; everything from CMD on is CMD's. CMD runs without secret-looking
-variables (*_TOKEN, *_KEY, …). FILE (an existing, non-executable file) or
-- summarizes saved output instead.
+	about: `Runs CMD in the "tests" host slot, records the result for wp ship, and prints a
+short summary (one line on pass; file:line + first lines on failure, plus full
+log path if truncated). Flags go before CMD; secret-looking env vars are stripped
+(--keep-env NAME keeps one). Pass a FILE or - to summarize saved output.
 
-A go test of a whole heavy package or ./... with no -run, in a repository that
-lists heavy packages (.waypoint/heavy-tests), runs the tests beside what you
-changed since the base instead, and says so first with the command that runs
-everything. --all, or WP_TEST_ALL=1, runs it whole; so does a runner job (CI),
-and so does a command with a flag that names a file (-coverprofile, -o,
--cpuprofile, -trace, …), with the reason said (WP-1877).`,
+In repos with .waypoint/heavy-tests, a whole-package go test without -run scopes
+to tests beside changed files unless --all or WP_TEST_ALL=1 is set.`,
 	examples: []string{"wp testsum -- go test -run '^TestSlot' ./cmd/wp", "wp testsum pytest -q", "wp testsum --repeat 30 go test -run TestFlaky ./internal/core", "wp testsum --base origin/main go test ./cmd/wp", "go test -json -run '^TestSlot' ./cmd/wp | wp testsum"},
 	run:      cmdTestsum,
 }

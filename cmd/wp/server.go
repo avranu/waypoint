@@ -11,57 +11,22 @@ import (
 )
 
 var serverCmd = &command{
-	name: "server", group: "Agent work", args: "[status|problems|job|log|metrics|profile …]",
-	summary:  "the Waypoint server's health, what keeps going wrong on it, recent log and metrics, read through the API (admins)",
+	name: "server", group: "Setup", args: "[status|problems|job|log|metrics|profile …]",
+	summary:  "the Waypoint server's health, persistent problems, recent log and metrics (admins)",
 	examples: []string{"wp server status", "wp server problems", "wp server job 'forge sync'", "wp server log --since 3h --level warn", "wp server metrics --grep waypoint_ai"},
-	about: `Diagnose production with wp, not ssh. wp server status is the server's
-version, uptime, schema, every scheduled job's last run and whether it works,
-the problems that persist, queue depths, the AI key's day and the last hour's
-warnings. wp server problems lists what goes wrong: each warning and error
-by where it was logged, kept across restarts. wp server job NAME is one job
-over time. wp server log reads the server's log (30 days, kept across
-restarts; secrets blanked). wp server metrics is the Prometheus text. All
-read-only but ack, which is a person's; an admin's token, or a permission
-token with server.read.`,
+	about: `Diagnose production with wp, not ssh. Read-only (except ack/unack); requires an
+admin token or server.read permission.`,
 	subs: []*command{
-		{name: "status", summary: "version, uptime, schema, scheduled jobs, persistent problems, queues, the AI key's day and recent warnings",
-			about: `Each scheduled job shows how often it runs, its runs, its last run and how
-that ended: clean, warned (it logged a warning), failed (an error), skipped
-(it said it could do nothing), stopped (the server was stopping: neither
-clean nor unclean), crashed or interrupted (it was running when the server
-died, found out at the next start). STUCK is a run that has gone on too
-long, or a job that has only found its last run still going for longer
-than a run may take (its worker has hung); SILENT a job that should have
-started and hasn't. The counts are
-kept in the database, so they go back past the last restart.
-
-Two lines say how the server is. "Before this start" says how the run
-before ended: stopped cleanly, or DID NOT SHUT DOWN (it was killed or died),
-and how long the server was away. "Job health checked 20s ago" is the check
-that tells the admins; NOT CHECKED means the check itself is stuck.`,
+		{name: "status", aliases: []string{"version"}, summary: "version, uptime, schema, scheduled jobs, persistent problems, queues and warnings",
+			about: `Shows server version, uptime, schema, queues, collectors, persistent problems,
+and every scheduled job's last run (clean, warned, failed, skipped, stopped,
+crashed, STUCK, or SILENT).`,
 			examples: []string{"wp server status", "wp server status --json"},
 			run:      cmdServerStatus},
-		{name: "problems", args: "[--all] [--source NAME] [--limit N]", summary: "what goes wrong on the server: warnings and errors by where they were logged, the persistent ones first",
-			about: `A problem is a warning or an error told apart by its source (a scheduled
-job, or requests, events, background, automation runs, bot runs), its
-message and what it was about (a repo, a forge, a collector). Each has a
-count, the streak it is in, and the last record's attributes, secrets
-blanked.
-
-A problem is persistent once a warning or error has kept happening for a
-day with three records in it (two runs for a job that runs daily or less
-often), or as soon as a job that runs once when the server starts has one,
-wherever it was logged. The admins get one
-notification for the problems that became persistent, the jobs that are
-stuck or silent and what recovered, and a reminder each week for a problem
-nobody acknowledged. A problem is over after a day and an hour of quiet, not counting the time
-the server was down; nor does the downtime count as time the problem lasted
-(3 warnings, a 25-hour outage and 1 more are not a day of failing). With
-no admin to tell, problems still clear; what the admins were not told
-waits for one.
-
---all includes the ones that are over (kept 90 days). --source keeps one
-source's.`,
+		{name: "problems", aliases: []string{"problem"}, args: "[--all] [--source NAME] [-n N]", summary: "warnings and errors grouped by source, persistent ones first",
+			about: `Groups warnings and errors by source, message and target with count and streak.
+A problem is persistent once it keeps firing for a day (3+ records), and clears
+after 25h of quiet (excluding downtime). --all includes cleared problems (90d).`,
 			examples: []string{"wp server problems", "wp server problems --source 'forge sync'", "wp server problems --all --json"},
 			run:      cmdServerProblems},
 		{name: "ack", args: "N -m WHY", summary: "say a server problem is expected and why: it stays listed and is not told again (a person's to say)",
@@ -117,7 +82,7 @@ admins only, like the log.`,
 }
 
 var aiCmd = &command{
-	name: "ai", group: "Agent work", args: "[usage|surplus …]",
+	name: "ai", group: "Setup", args: "[usage|surplus …]",
 	summary:  "what the server's AI requests went on, by task, model, outcome or hour (admins)",
 	examples: []string{"wp ai usage", "wp ai usage --since 7d --by day"},
 	subs: []*command{
@@ -174,6 +139,7 @@ func cmdServerProblems(c *cli, args []string) error {
 	all := fs.Bool("all", false, "the ones that are over too")
 	source := fs.String("source", "", "`NAME`: only this job's or source's")
 	limit := fs.Int("limit", 0, "`N`: at most N (default 500)")
+	short(fs, "n", "limit")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
@@ -219,7 +185,8 @@ func (p serverProblem) label() string {
 
 func cmdServerAck(c *cli, args []string) error {
 	fs := c.flags()
-	why := fs.String("m", "", "`WHY` it is expected, for whoever reads the list next")
+	why := fs.String("message", "", "`WHY` it is expected, for whoever reads the list next")
+	short(fs, "m", "message")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
@@ -292,6 +259,7 @@ func cmdServerLog(c *cli, args []string) error {
 	grep := fs.String("grep", "", "`RE`: only records that match")
 	level := fs.String("level", "", "`LEVEL`: only records at or above debug, info, warn or error")
 	limit := fs.Int("limit", 0, "`N`: the newest N that match (default 500)")
+	short(fs, "n", "limit")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
