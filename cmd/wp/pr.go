@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// Pull requests: where they stand for merging, and merging them (WP-D21).
-
 var prCmd = &command{
 	name: "pr", aliases: []string{"prs", "pull"}, group: "Code and CI", args: "[SUBCOMMAND]",
 	summary: "pull requests: checks, logs, review comments, merging",
@@ -62,6 +60,7 @@ func init() {
 		prReviewCmd,
 		prReviewStatsCmd,
 		prBodiesCmd,
+		prTimelineCmd,
 	}
 }
 
@@ -556,7 +555,6 @@ func cmdPRDismiss(c *cli, args []string) error {
 	}
 	return c.each(listArgs(pos), false, func(arg string) error {
 		if strings.HasPrefix(strings.ToLower(arg), "c") {
-			// A review comment (c12), not a finding's number.
 			raw, err := c.call("POST", "/api/v1/review-comments/"+arg+"/dismiss", map[string]string{"note": *note})
 			if err != nil {
 				return err

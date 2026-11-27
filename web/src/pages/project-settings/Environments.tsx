@@ -1,6 +1,3 @@
-// Project settings → Environments (WP-D19): where this project's dev
-// environments live, so `wp env up NAME` needs no address.
-
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'

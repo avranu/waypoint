@@ -130,8 +130,6 @@ func TestTaskOutputScannedOnce(t *testing.T) {
 		if held != strings.Contains(got, "is still running") {
 			t.Errorf("held=%v: nudge output %q", held, got)
 		}
-		// The guard refuses only a sleep before the read, so it scans for no
-		// other command: such a call is one scan across both hooks.
 		scans = 0
 		if got := runHook(hookClaudeGuard, &cli{dir: t.TempDir()}, dir, input); scans != 0 || got != "" {
 			t.Errorf("held=%v: guard scanned %d times, want 0; output %q", held, scans, got)
@@ -141,8 +139,6 @@ func TestTaskOutputScannedOnce(t *testing.T) {
 		if scans != 1 || held != strings.Contains(got, `"permissionDecision":"deny"`) {
 			t.Errorf("held=%v: guard on a sleep scanned %d times, want 1; output %q", held, scans, got)
 		}
-		// The nudge asks twice on a sleep call (is it refused, then the note)
-		// and scans once; a refused call gets no note from it.
 		scans = 0
 		got = runHook(hookClaudeNudge, &cli{dir: t.TempDir()}, dir, map[string]any{"command": "sleep 30; tail -5 " + out})
 		if scans != 1 || (held && got != "") {

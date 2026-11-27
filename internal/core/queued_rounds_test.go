@@ -98,7 +98,6 @@ func TestClaimFrontRoundsAlternateBetweenLines(t *testing.T) {
 	f := e.forge("forgejo", "https://git.example.com", false)
 	a := e.armedPR(f.ID, "acme/a", 1, 1, "[]")
 	b := e.armedPR(f.ID, "acme/b", 1, 1, "[]")
-	// Line A's round was claimed last time.
 	prior := e.roundJob(a)
 	if got := e.claimed(r); got != prior.ID {
 		t.Fatalf("setup claimed %d, want %d", got, prior.ID)
@@ -146,7 +145,6 @@ func TestJobsAheadCountsFrontRoundsFirst(t *testing.T) {
 			t.Errorf("%s: %d ahead, %v; want %d", c.name, got, err, c.want)
 		}
 	}
-	// The wait text says the same.
 	if why := e.s.queuedWhy(e.ctx, e.jobInfo(front.ID)); !strings.Contains(why, "next") {
 		t.Errorf("the front's round: %q", why)
 	}
@@ -174,7 +172,7 @@ func (be *bsEnv) failRound() int64 {
 func TestBabysitWaitSaysQueuedRound(t *testing.T) {
 	be := newBabysitEnv(t)
 	job := be.failRound()
-	be.enqueue(be.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("make", "/work")}) // newer: not ahead
+	be.enqueue(be.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("make", "/work")})
 	be.step()
 	b := be.babysit()
 	at := be.clockNow().UTC().Format("15:04")
@@ -182,8 +180,6 @@ func TestBabysitWaitSaysQueuedRound(t *testing.T) {
 		t.Fatalf("wait %q, want it to contain %q", b.Wait, want)
 	}
 	be.enqueue(be.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("a", "/work")})
-	// An older job of the owner is ahead of a round that isn't at a line's front
-	// only by id; here the round is the babysit's own, at the front of its line.
 	runners, _ := be.s.ownerRunners(be.ctx, be.admin.User.ID)
 	be.env.poll(be.admin, runners[0], RunnerPoll{})
 	be.step()
@@ -250,11 +246,11 @@ func TestCheckFrontRounds(t *testing.T) {
 	e.claudeRunner()
 	f := e.forge("forgejo", "https://git.example.com", false)
 	check := func() { e.runJob("front rounds", time.Minute, e.s.CheckFrontRounds) }
-	e.armedPR(f.ID, "acme/app", 1, 1, "[]")             // the front of acme/app, with no round
-	e.roundJob(e.armedPR(f.ID, "acme/app", 2, 2, "[]")) // behind it
+	e.armedPR(f.ID, "acme/app", 1, 1, "[]")
+	e.roundJob(e.armedPR(f.ID, "acme/app", 2, 2, "[]"))
 	e.setClock(e.clockNow().Add(15 * time.Minute))
-	e.roundJob(e.armedPR(f.ID, "acme/young", 1, 1, "[]")) // a front, queued now
-	e.setClock(e.clockNow().Add(10 * time.Minute))        // 25 minutes for the first, 10 for the second
+	e.roundJob(e.armedPR(f.ID, "acme/young", 1, 1, "[]"))
+	e.setClock(e.clockNow().Add(10 * time.Minute))
 	check()
 	if p := e.problemOf("front rounds", "front round queued", "acme/app"); p != nil {
 		t.Errorf("a round further back, queued 25 minutes, is a problem: %+v", p)
@@ -262,7 +258,7 @@ func TestCheckFrontRounds(t *testing.T) {
 	if p := e.problemOf("front rounds", "front round queued", "acme/young"); p != nil {
 		t.Errorf("a front round queued 10 minutes is a problem: %+v", p)
 	}
-	e.setClock(e.clockNow().Add(15 * time.Minute)) // 25 minutes for the second
+	e.setClock(e.clockNow().Add(15 * time.Minute))
 	check()
 	p := e.problemOf("front rounds", "front round queued", "acme/young")
 	if p == nil || !strings.Contains(p.Detail, "queued_minutes=25") || !strings.Contains(p.Detail, "number=1") {
@@ -291,7 +287,6 @@ func TestDoctorBottleneckRunner(t *testing.T) {
 	if d.Bottleneck.Kind != "stalled" {
 		t.Errorf("a round queued 2 minutes: %+v", d.Bottleneck)
 	}
-	// Two lines: the one queued longest.
 	other := line(900)
 	other.Repo = "acme/other"
 	d = &CIDoctor{Lines: []CILine{line(600), other}}

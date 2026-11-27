@@ -30,7 +30,7 @@ func TestReviewsDownNotifies(t *testing.T) {
 	pe := newPREnv(t, "forgejo")
 	pe.llm.answers["opencode/muse-spark-1.3-contributor-free"] = oneFinding
 	pe.pullHook("opened", ForgePR{Number: 7, Title: "Fix", Author: "sam", HeadRef: "fix", HeadSHA: "aaaaaaa1111", State: "open"})
-	pe.drain() // the hook's own review answers: not part of a streak
+	pe.drain()
 	var prID int64
 	if err := pe.s.db.R.QueryRow(`SELECT id FROM pull_requests WHERE number = 7`).Scan(&prID); err != nil {
 		t.Fatal(err)
@@ -69,14 +69,14 @@ func TestReviewsDownNotifies(t *testing.T) {
 		t.Fatalf("three failures in a row: told %d, want 1", n)
 	}
 	end("failed", down)
-	end("failed", errAllModelsFailed) // another kind of failure doesn't split the outage in two
+	end("failed", errAllModelsFailed)
 	end("failed", down)
 	end("failed", down)
 	end("failed", down)
 	if n := told("Reviews in " + pe.p.Key + " keep failing"); n != 1 {
 		t.Fatalf("more failures told again: %d", n)
 	}
-	end("failed", errAllModelsFailed) // nor hide that it ended
+	end("failed", errAllModelsFailed)
 	end("done", nil)
 	if n := told("Reviews in " + pe.p.Key + " answer again"); n != 1 {
 		t.Fatalf("recovery: told %d, want 1", n)

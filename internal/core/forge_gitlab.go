@@ -12,9 +12,6 @@ import (
 	"time"
 )
 
-// GitLab speaks API v4 and addresses projects by their full path
-// (group/subgroup/name), URL-encoded into one path segment.
-
 // glProject is the API path for a GitLab project.
 func glProject(repo string) string { return "/projects/" + url.PathEscape(repo) }
 
@@ -119,8 +116,6 @@ func parseGitLabHook(body []byte) (*forgeEvent, error) {
 			ev.item = &ForgeItem{Number: a.IID, State: glState(a.State), URL: a.URL, Confidential: true}
 			break
 		}
-		// The hook names who acted rather than the author: the one whose
-		// text a new or edited issue is (WP-279).
 		ev.item = &ForgeItem{Number: a.IID, Title: a.Title, Body: a.Description, State: glState(a.State), URL: a.URL, Author: p.User.Username}
 		for _, l := range p.Labels {
 			ev.item.Labels = append(ev.item.Labels, l.Title)
@@ -132,7 +127,6 @@ func parseGitLabHook(body []byte) (*forgeEvent, error) {
 		}
 		ev.kind, ev.branch = "pull", a.SourceBranch
 		ev.item = &ForgeItem{Number: a.IID, Title: a.Title, Body: a.Description, State: state, URL: a.URL, IsPR: true}
-		// The hook names who acted, not the author: onForgePull asks the API.
 		ev.pr = &ForgePR{Number: a.IID, Title: a.Title, Body: a.Description, URL: a.URL, State: state,
 			BaseRef: a.TargetBranch, HeadRef: a.SourceBranch, HeadSHA: a.LastCommit.ID, OpenedAt: a.CreatedAt.ptr(), actor: p.User.Username}
 		for _, l := range p.Labels {
@@ -151,12 +145,12 @@ func parseGitLabHook(body []byte) (*forgeEvent, error) {
 		}
 		ev.sender = p.User.Username
 		if state == "merged" {
-			ev.pr.MergeSHA = a.MergeCommitSHA // none for a squash without a merge commit: the next sync reads squash_commit_sha
+			ev.pr.MergeSHA = a.MergeCommitSHA
 		}
 		switch a.Action {
 		case "merge":
 			ev.pr.MergedBy = p.User.Username
-		case "approved", "approval": // approval: one person approved; approved: the last approval needed
+		case "approved", "approval":
 			ev.review = &forgeReviewEvent{number: a.IID, kind: "approved", sha: a.LastCommit.ID,
 				ForgeComment: ForgeComment{ID: "gl-approved:" + p.User.Username + ":" + a.LastCommit.ID, Author: p.User.Username, URL: a.URL}}
 		}
@@ -217,7 +211,7 @@ func (g *glTime) UnmarshalJSON(b []byte) error {
 			return nil
 		}
 	}
-	return nil // a date it can't read is no reason to drop the event
+	return nil
 }
 
 func (g glTime) ptr() *time.Time {
@@ -283,7 +277,7 @@ func (c *httpForgeClient) glListIssues(ctx context.Context, f *Forge, repo strin
 			return nil, err
 		}
 		for _, g := range list {
-			out = append(out, *g.item(false)) // confidential ones arrive blank
+			out = append(out, *g.item(false))
 		}
 		if len(list) < 100 {
 			break

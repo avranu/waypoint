@@ -29,7 +29,6 @@ func TestRefreshKeepsKnownSignIn(t *testing.T) {
 		t.Errorf("logged %q", out)
 	}
 
-	// A real answer of signed out goes through, and is logged.
 	next = []runnerCLI{{Name: "claude", Version: "2.1.316", SignedIn: boolp(false), Detail: "Not logged in"}, {Name: "cursor", Version: "1", SignedIn: boolp(true)}}
 	p.refreshCLIsOnce(context.Background())
 	if c := p.clis[0]; c.SignedIn == nil || *c.SignedIn || !p.clisDirty {

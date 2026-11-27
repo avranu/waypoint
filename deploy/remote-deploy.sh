@@ -1,30 +1,4 @@
 #!/usr/bin/env bash
-# Deploys Waypoint on its production host. One code path for CD
-# (WP-D21) and `make deploy-remote`.
-#
-#   remote-deploy.sh deploy VERSION     a `git archive` tarball on stdin becomes
-#                                       the live tree; rolls back by itself if
-#                                       the new version never gets healthy
-#   remote-deploy.sh deploy VERSION --staged
-#                                       the tree is already in ~/waypoint.new
-#                                       (make deploy-remote); argv only
-#   remote-deploy.sh rollback           swap back to ~/waypoint.prev
-#   remote-deploy.sh status             running version, previous version, containers
-#   remote-deploy.sh restart SERVICE    restart one helper service (meaning, opencode)
-#
-# The deploy key in ~/.ssh/authorized_keys is pinned to this file:
-#   command="$HOME/bin/waypoint-deploy",no-pty,no-agent-forwarding,...
-# so under SSH the request arrives in SSH_ORIGINAL_COMMAND and is validated
-# strictly; nothing from it reaches a shell. Layout under $HOME:
-#   waypoint/        live tree (deploy/.env stays here across deploys)
-#   waypoint.prev/   the tree before it (one kept)
-#   waypoint.failed/ the last tree that never became healthy (one kept)
-# Only the compose project `waypoint` is ever touched: the host may run
-# other compose projects too.
-#
-# Exit status: 0 done, 1 refused or failed before changing anything,
-# 2 the new version failed and the previous one is running again,
-# 3 failed and the previous one could not be restored.
 set -euo pipefail
 
 ROOT=${WAYPOINT_DEPLOY_ROOT:-$HOME}
@@ -43,8 +17,6 @@ die() {
   exit 1
 }
 
-# A tag (v1.2.3, v1.2.3-4-gabc1234) or a commit sha: nothing else gets near
-# a compose build arg or a path.
 valid_version() {
   [[ $1 =~ ^(v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)*|[0-9a-f]{7,40})$ ]] && ((${#1} <= 64))
 }
@@ -55,7 +27,6 @@ compose() {
   (cd "$dir" && "$DOCKER" compose -p "$PROJECT" -f deploy/compose.yaml "$@")
 }
 
-# env_get DIR KEY DEFAULT: a value from DIR/deploy/.env, read without sourcing.
 env_get() {
   local v
   v=$(grep -E "^$2=" "$1/deploy/.env" 2>/dev/null | tail -n 1 | cut -d= -f2- || true)
@@ -73,7 +44,6 @@ health_url() {
   printf 'http://%s:%s/healthz' "$bind" "$port"
 }
 
-# running_version prints the version /healthz reports, or nothing.
 running_version() {
   curl -fsS --max-time 3 "$(health_url)" 2>/dev/null |
     sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p' || true
@@ -81,9 +51,6 @@ running_version() {
 
 tree_version() { cat "$1/.deployed-version" 2>/dev/null || true; }
 
-# wait_healthy WANT: up to HEALTH_WAIT seconds for /healthz to report WANT
-# (any version when WANT is empty), twice in a row so a crash loop that
-# answers once doesn't pass.
 wait_healthy() {
   local want=$1 deadline got streak=0
   deadline=$((SECONDS + HEALTH_WAIT))
@@ -105,7 +72,6 @@ wait_healthy() {
   return 1
 }
 
-# Migrations only move forward: warn when going back past one.
 warn_schema() {
   local newer=$1 older=$2 extra
   extra=$(comm -23 <(find "$newer/internal/db/migrations" -name "*.sql" -printf "%f\n" 2>/dev/null | sort) \
@@ -129,7 +95,6 @@ pre_deploy_backup() {
 
 show_logs() { compose "$1" logs --no-color --tail 40 waypoint 2>&1 || true; }
 
-# up DIR VERSION: build and start the compose project from DIR.
 up() {
   WAYPOINT_VERSION=$2 compose "$1" up -d --build
 }
@@ -220,8 +185,6 @@ do_status() {
   [[ -n $got ]]
 }
 
-# The services restart may touch: the helpers beside Waypoint, which keep
-# no state a restart loses. Waypoint itself restarts by a deploy.
 RESTARTABLE=(meaning opencode)
 
 do_restart() {
@@ -248,7 +211,6 @@ main() {
   local -a words
   local staged=0
   if [[ -n ${SSH_ORIGINAL_COMMAND:-} ]]; then
-    # Forced command: strictly words from a safe alphabet, no flags.
     [[ $SSH_ORIGINAL_COMMAND =~ ^[A-Za-z0-9._\ -]{1,100}$ ]] || die "refused: unexpected characters in the command"
     read -r -a words <<<"$SSH_ORIGINAL_COMMAND"
   else
@@ -258,7 +220,6 @@ main() {
       words=("${words[@]:0:2}")
     fi
   fi
-  # One deploy at a time (a second would swap directories under the first).
   mkdir -p "$ROOT"
   exec 9>"$ROOT/.waypoint-deploy.lock"
   flock -n 9 || die "another deploy is running"

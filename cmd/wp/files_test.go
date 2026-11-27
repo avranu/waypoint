@@ -46,10 +46,9 @@ func TestCLIFiles(t *testing.T) {
 		t.Errorf("a hint with nothing attached: %s", out)
 	}
 
-	e.wp("attach", issue.Key, shot, "--caption", "Before the fix", "--embed") // in the description
-	e.wp("attach", issue.Key, zip)                                            // attached, not embedded
-	e.wp("attach", issue.Key, shot, "--embed", "--comment")                   // a comment's file
-	// A link to a file that belongs to another issue is fetched too.
+	e.wp("attach", issue.Key, shot, "--caption", "Before the fix", "--embed")
+	e.wp("attach", issue.Key, zip)
+	e.wp("attach", issue.Key, shot, "--embed", "--comment")
 	e.wp("attach", other.Key, logf)
 	of, _ := e.svc.ListAttachments(ctx, me, core.AttachTarget{Type: core.TargetIssue, ID: other.ID})
 	if _, err := e.svc.AddComment(ctx, me, issue.Key, "See ["+of[0].Name+"]("+of[0].URL+")"); err != nil {
@@ -86,7 +85,6 @@ func TestCLIFiles(t *testing.T) {
 		t.Error("the token was printed")
 	}
 
-	// The default folder is per issue under the temp dir.
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
 	out = e.wp("files", strings.ToLower(issue.Key))
@@ -94,7 +92,6 @@ func TestCLIFiles(t *testing.T) {
 		t.Errorf("default dir: %s", out)
 	}
 
-	// --json: absolute URLs and paths.
 	var js []fileInfo
 	if err := json.Unmarshal([]byte(e.wp("files", issue.Key, "--dir", dir, "--json")), &js); err != nil || len(js) != 4 {
 		t.Fatalf("--json: %v %v", err, js)
@@ -105,7 +102,6 @@ func TestCLIFiles(t *testing.T) {
 		}
 	}
 
-	// wp show: the hint and clickable links.
 	show := e.wp("show", issue.Key)
 	if !strings.Contains(show, "Attachments: 3 — wp files "+issue.Key+" saves them to view") {
 		t.Errorf("show hint:\n%s", show)
@@ -114,13 +110,11 @@ func TestCLIFiles(t *testing.T) {
 		t.Errorf("show links:\n%s", show)
 	}
 
-	// A page, by code.
 	e.wp("attach", "page:"+pg.Code, logf)
 	if out := e.wp("files", "page:"+pg.Code, "--dir", dir); !strings.Contains(out, "run.log") {
 		t.Errorf("page files: %s", out)
 	}
 
-	// Mistakes.
 	for _, args := range [][]string{
 		{"files", "NOPE-1"},
 		{"files", issue.Key, "extra"},

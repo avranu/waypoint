@@ -59,7 +59,7 @@ func TestSummarizeEvidence(t *testing.T) {
 func TestFindStatements(t *testing.T) {
 	for _, tc := range []struct {
 		text string
-		want string // kind:ref of each claim
+		want string
 	}{
 		{"All tests pass.", "tests:"},
 		{"Tests are green.", "tests:"},
@@ -135,7 +135,6 @@ func TestRecordTestEvidence(t *testing.T) {
 	if e := a.evidence(i.Key, "abc1234", "Done.", pass); e.Outcome != EvidencePass || !strings.HasPrefix(e.Line, "Tests on this tree: 9 passed") {
 		t.Fatalf("recorded: %+v", e)
 	}
-	// Shipping the same commit again replaces the row.
 	fail := TestRun{At: 2, Command: "go test ./...", Outcome: EvidenceFail, Failed: 1, Units: 1, Failures: []string{"TestX"}}
 	if e := a.evidence(i.Key, "abc1234", "All tests pass.", fail); e.Outcome != EvidenceFail || len(e.Notices) != 1 || !strings.Contains(e.Notices[0], "TestX") {
 		t.Fatalf("replaced: %+v", e)
@@ -149,8 +148,6 @@ func TestRecordTestEvidence(t *testing.T) {
 		t.Fatalf("issue: %+v %v", d.Tested, err)
 	}
 
-	// The same statement isn't noted twice; it shows in the work log, beside the
-	// evidence; and the week counts it.
 	if e := a.evidence(i.Key, "abc1234", "All tests pass.", fail); len(e.Notices) != 0 {
 		t.Errorf("noted again: %v", e.Notices)
 	}
@@ -179,7 +176,6 @@ func TestRecordTestEvidence(t *testing.T) {
 		t.Errorf("weeks: %+v", st.Evidence)
 	}
 
-	// No run on the tree is a ship without evidence, in the same count.
 	if e := a.evidence(i.Key, "def5678", "Done."); e.Outcome != EvidenceNone {
 		t.Errorf("none: %+v", e)
 	}
@@ -188,7 +184,6 @@ func TestRecordTestEvidence(t *testing.T) {
 		t.Errorf("weeks: %+v", st.Evidence)
 	}
 
-	// A task that doesn't resolve still leaves the commit's record.
 	if e := a.evidence("APP-9999", "fff0000", "All tests pass.", fail); e.Outcome != EvidenceFail || len(e.Notices) != 0 {
 		t.Errorf("no task: %+v", e)
 	}
@@ -217,7 +212,6 @@ func TestCheckStatements(t *testing.T) {
 		return got
 	}
 
-	// Nothing to compare with: nothing to say.
 	if got := check("PR #7 merged. The fix is deployed. All tests pass."); len(got) != 0 {
 		t.Errorf("no records: %+v", got)
 	}
@@ -265,7 +259,7 @@ func TestCheckStatements(t *testing.T) {
 	if got := check("I applied " + ref + "."); len(got) != 1 || got[0].Fact != ref+" is applying" {
 		t.Errorf("applied while applying: %+v", got)
 	}
-	setRequest(RequestApproved) // not a change: the agent carries it out
+	setRequest(RequestApproved)
 	if got := check("I applied " + ref + "."); len(got) != 0 {
 		t.Errorf("applied once approved: %+v", got)
 	}
@@ -278,7 +272,6 @@ func TestCheckStatements(t *testing.T) {
 	if got := check("Second, " + ref + " was applied."); len(got) != 0 {
 		t.Errorf("true statement: %+v", got)
 	}
-	// Applied but it changed nothing (WP-948): "applied" isn't true; "not applied" is.
 	if _, err := a.s.db.W.Exec(`UPDATE requests SET result = '{"no_change":true}' WHERE number = ?`, n); err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +285,6 @@ func TestCheckStatements(t *testing.T) {
 		t.Errorf("unknown request: %+v", got)
 	}
 
-	// At Stop, a "tests pass" is only compared with a record from about now.
 	a.evidence(i.Key, "abc1234", "", TestRun{At: 1, Command: "c", Outcome: EvidenceFail, Failed: 1, Units: 1})
 	if got := check("All tests pass."); len(got) != 1 {
 		t.Errorf("fresh failure: %+v", got)
@@ -409,7 +401,6 @@ func TestBenchEvidence(t *testing.T) {
 		return e
 	}
 
-	// A "faster" the base comparison doesn't bear out is a mismatch.
 	e := rec("b1", "Search is 30% faster now.", noise)
 	if len(e.BenchLines) != 1 || !strings.Contains(e.BenchLines[0], "no clear change from origin/main (wall +2%, within noise)") || !strings.Contains(e.BenchLines[0], "(in web)") {
 		t.Fatalf("lines: %q", e.BenchLines)
@@ -421,7 +412,6 @@ func TestBenchEvidence(t *testing.T) {
 		t.Fatalf("mismatches: %+v", cs)
 	}
 
-	// A measured speed-up supports it; no timing at all says nothing.
 	fast := noise
 	fast.Wall, fast.WallP = 0.7, pf(0.008)
 	if e := rec("b2", "Now 30% faster.", fast); len(e.Notices) != 0 || !strings.Contains(e.BenchLines[0], "30% faster than origin/main by wall (p=0.008)") {
@@ -430,15 +420,12 @@ func TestBenchEvidence(t *testing.T) {
 	if e := rec("b3", "It is quicker."); len(e.Notices) != 0 || len(e.BenchLines) != 0 {
 		t.Errorf("unmeasured: %+v", e)
 	}
-	// Three runs a side can't get p under 0.05 however large the change, so
-	// they neither support nor contradict a "faster".
 	few := noise
 	few.Runs, few.Wall, few.WallP, few.CPUP = 3, 0.1, pf(0.0809), pf(0.0809)
 	if e := rec("b5", "Search is 10x faster.", few); len(e.Notices) != 0 || !strings.Contains(e.BenchLines[0], "wall -90% against origin/main, too few runs to tell a change from noise (needs 4 a side)") {
 		t.Errorf("few runs: %q %q", e.Notices, e.BenchLines)
 	}
 
-	// The timings show beside the tests in the task's work log and wp show.
 	rec("b4", "Done.", fast)
 	wl, err := a.s.GetWorkLog(a.ctx, a.admin, i.Key)
 	if err != nil {
@@ -494,13 +481,13 @@ func TestEvidenceSaysWhetherCIRunsTests(t *testing.T) {
 		exec(`INSERT INTO ci_jobs(forge_id, repo, task_id, workflow, name, status, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, forge, repo, task, workflow, name, status, at, at+1)
 	}
 	old := now - int64(2*ciTestsLookback/time.Millisecond)
-	job(1, "acme/app", "ci.yml", "lint", "success", now)       // not tests
-	job(2, "acme/app", "ci.yml", "pytest", "cancelled", now)   // never finished
-	job(3, "acme/app", "ci.yml", "unit tests", "success", old) // too long ago
-	job(4, "acme/other", "test.yml", "build", "success", now)  // another repo
-	job(6, "acme/app", "ci.yml", "latest", "success", now)     // "test" inside a word
+	job(1, "acme/app", "ci.yml", "lint", "success", now)
+	job(2, "acme/app", "ci.yml", "pytest", "cancelled", now)
+	job(3, "acme/app", "ci.yml", "unit tests", "success", old)
+	job(4, "acme/other", "test.yml", "build", "success", now)
+	job(6, "acme/app", "ci.yml", "latest", "success", now)
 	job(7, "acme/app", "ci.yml", "build-attestation", "success", now)
-	job(10, "acme/app", "majestic.yml", "build", "success", now) // a runner's name inside a word (audit 1000.4)
+	job(10, "acme/app", "majestic.yml", "build", "success", now)
 	job(11, "acme/app", "ci.yml", "subjest", "success", now)
 	if rec("c2").CITests {
 		t.Error("CI runs tests on what no job shows")
@@ -514,17 +501,17 @@ func TestEvidenceSaysWhetherCIRunsTests(t *testing.T) {
 	if rec("c2b").CITests {
 		t.Error("a test job on a forge the project doesn't use counted")
 	}
-	job(8, "acme/app", "ci.yml", "unit tests", "success", now) // the name is the tests
+	job(8, "acme/app", "ci.yml", "unit tests", "success", now)
 	if !rec("c2c").CITests {
 		t.Error("a test job named for tests didn't count")
 	}
 	exec(`DELETE FROM ci_jobs WHERE task_id = 8`)
-	job(12, "acme/app", "ci.yml", "jest", "success", now) // a runner by name
+	job(12, "acme/app", "ci.yml", "jest", "success", now)
 	if !rec("c2d").CITests {
 		t.Error("a jest job didn't count")
 	}
 	exec(`DELETE FROM ci_jobs WHERE task_id = 12`)
-	job(5, "Acme/App", "test.yml", "build", "failure", now) // the workflow is the tests
+	job(5, "Acme/App", "test.yml", "build", "failure", now)
 	if !rec("c3").CITests {
 		t.Error("a test workflow's job didn't count")
 	}

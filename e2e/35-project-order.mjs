@@ -48,9 +48,8 @@ async function run(width, scheme) {
       data: { name, key },
     });
     if (!r.ok()) fail(`${tag} create ${key}: ${r.status()}`);
-    await sleep(1100); // active_at has a resolution of a second
+    await sleep(1100);
   };
-  // The Zeta projects in the order the sidebar shows them.
   const shown = async () =>
     (
       await page
@@ -76,7 +75,6 @@ async function run(width, scheme) {
   await page.waitForURL(base + "/");
 
   if (!desktop) {
-    // The drawer menu has no drag, but it follows the order saved on desktop.
     const prefs = (await me()).prefs;
     const projects = await (
       await page.request.get(base + "/api/v1/projects", { headers: H })
@@ -105,7 +103,6 @@ async function run(width, scheme) {
     return;
   }
 
-  // ---- a clean slate: three projects, newest active first ----
   const cur = (await me()).prefs;
   await page.request.patch(base + "/api/v1/me", {
     headers: H,
@@ -125,16 +122,12 @@ async function run(width, scheme) {
   );
   await shot("recent");
 
-  // ---- drag Alpha to the top ----
   const drop = await drag("ZTA", "ZTC");
   ok(
     (await page.locator("aside [data-drop]").count()) === 1,
     `${tag} a line shows where it will land`,
   );
   await shot("dragging");
-  // The sidebar reorders at once and saves to the profile behind it; on a
-  // slow runner the save can take longer than the sleep, so wait for it
-  // before reading the profile or reloading (a reload would cancel it).
   await Promise.all([
     page.waitForResponse(
       (r) =>
@@ -160,7 +153,6 @@ async function run(width, scheme) {
   await page.locator("aside [data-project=ZTC]").waitFor();
   ok((await shown()) === "ZTA ZTC ZTB", `${tag} order survives a reload`);
 
-  // ---- a new project goes to the top ----
   await makeProject("ZTD", "Zeta Delta");
   await page.reload();
   await page.locator("aside [data-project=ZTD]").waitFor();
@@ -169,7 +161,6 @@ async function run(width, scheme) {
     `${tag} a new project is first (${await shown()})`,
   );
 
-  // ---- the menu switches between the two orders ----
   const actions = page.getByRole("button", { name: "Project actions" });
   await actions.click();
   const custom = page.getByRole("menuitemradio", { name: "Custom order" });
@@ -201,7 +192,6 @@ async function run(width, scheme) {
     `${tag} back to Custom order (${await shown()})`,
   );
 
-  // ---- the keyboard: Move down / Move up from a project's menu ----
   const row = page.locator("aside [data-project=ZTD]");
   await row.hover();
   await page.getByRole("button", { name: "Actions for Zeta Delta" }).focus();
@@ -221,7 +211,6 @@ async function run(width, scheme) {
     `${tag} Move up (${await shown()})`,
   );
 
-  // ---- clicking a project still opens it ----
   await page.locator("aside [data-project=ZTB] a").click();
   await page.waitForURL(base + "/p/ZTB/overview");
   ok(true, `${tag} a click opens the project`);
@@ -232,7 +221,7 @@ async function run(width, scheme) {
 for (const [w, s] of looks([
   [1440, "light"],
   [390, "dark"],
-], [0, 1])) // the phone's menu follows the desktop order: both run
+], [0, 1]))
   try {
     await run(w, s);
   } catch (e) {

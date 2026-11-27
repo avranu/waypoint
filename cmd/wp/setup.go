@@ -12,13 +12,6 @@ import (
 	"strings"
 )
 
-// `wp setup` sets a computer up in one go, and is safe to run again: the
-// server and a sign-in (the device code, approved in the browser), the
-// Claude Code hooks when Claude Code is here, and the runner service, with
-// allowed directories taken from where Claude Code has worked. It says
-// what it will do and asks once. `curl -fsSL <server>/setup | sh` installs
-// wp and runs it.
-
 var setupCmd = &command{
 	name: "setup", group: "Setup", args: "[SERVER] [FLAGS]",
 	summary: "sign in, install Claude Code hooks and the runner",
@@ -73,18 +66,18 @@ var openAnswers = func() io.ReadCloser {
 
 // setupPlan is what wp setup will do.
 type setupPlan struct {
-	me string // who is signed in ("" if nobody)
+	me string
 
-	hooks      bool   // install or update the hooks
-	hooksPath  string // the settings file
-	hooksState string // "install", "update", "current"
-	hooksSkip  string // why not
+	hooks      bool
+	hooksPath  string
+	hooksState string
+	hooksSkip  string
 	noPrompts  bool
 
 	runner     bool
 	runnerOpts runnerOpts
 	runnerExe  string
-	allowFrom  string // where the allowed directories came from
+	allowFrom  string
 	runnerSkip string
 }
 
@@ -110,7 +103,7 @@ func cmdSetup(c *cli, args []string) error {
 	} else if len(pos) > 0 {
 		return c.usage("unexpected %q", joinArgs(pos))
 	}
-	c.agent = "none" // the runner and the sign-in are the person's, never an agent's
+	c.agent = "none"
 
 	ask := func(question string) (string, bool) {
 		r := openAnswers()
@@ -121,7 +114,7 @@ func cmdSetup(c *cli, args []string) error {
 		c.print(question)
 		line, err := bufio.NewReader(r).ReadString('\n')
 		if err != nil && strings.TrimSpace(line) == "" {
-			c.println() // no answer (EOF): as good as no terminal
+			c.println()
 			return "", false
 		}
 		return strings.TrimSpace(line), true
@@ -190,7 +183,6 @@ func (c *cli) planSetup(f setupFlags) (*setupPlan, error) {
 		}
 	}
 
-	// The hooks.
 	switch {
 	case f.noHooks:
 		p.hooksSkip = "--no-hooks"
@@ -216,7 +208,6 @@ func (c *cli) planSetup(f setupFlags) (*setupPlan, error) {
 		}
 	}
 
-	// The runner: as installed before, then the flags.
 	if f.noRunner {
 		p.runnerSkip = "--no-runner"
 		return p, nil

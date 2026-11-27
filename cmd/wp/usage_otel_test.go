@@ -39,7 +39,6 @@ func TestUsageOtelSettingsEdit(t *testing.T) {
 	if msg, _ := editClaudeOtelEnv(path, env, false, false); !strings.HasPrefix(msg, "Already") {
 		t.Errorf("again: %q", msg)
 	}
-	// something else already exports OpenTelemetry
 	e["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://collector:4318"
 	b, _ := json.Marshal(m)
 	_ = os.WriteFile(path, b, 0o600)
@@ -58,9 +57,44 @@ func TestUsageOtelSettingsEdit(t *testing.T) {
 	if e := read()["env"].(map[string]any); len(e) != 1 || e["FOO"] != "1" {
 		t.Errorf("after uninstall: %v", e)
 	}
-	// invalid JSON is left alone
 	_ = os.WriteFile(path, []byte("{nope"), 0o600)
 	if _, err := editClaudeOtelEnv(path, env, false, false); err == nil {
 		t.Error("edited invalid JSON")
+	}
+}
+
+// Without --install the settings are only shown, with a placeholder for the
+// token: what is printed lands in transcripts (WP-1337). --install still
+// writes the real one.
+func TestUsageOtelShowRedactsToken(t *testing.T) {
+	const token = "wpt_0123456789abcdefSECRET"
+	dir := t.TempDir()
+	settings := filepath.Join(dir, "settings.json")
+	t.Setenv("WP_CLAUDE_SETTINGS", settings)
+	t.Setenv("WAYPOINT_TOKEN", "")
+	t.Setenv("WAYPOINT_SERVER", "")
+	var out, errb strings.Builder
+	c := &cli{out: &out, err: &errb, cfg: Config{Server: "https://wp.example", Token: token}}
+	if err := cmdUsageOtel(c, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String() + errb.String(); strings.Contains(got, token) || strings.Contains(got, "SECRET") || strings.Contains(got, "wpt_0123") {
+		t.Errorf("token printed:\n%s", got)
+	} else if !strings.Contains(got, "Authorization=Bearer "+otelTokenPlaceholder) || !strings.Contains(got, "https://wp.example/api/v1/otlp") || !strings.Contains(got, "--install") {
+		t.Errorf("output lacks the placeholder, endpoint or the way to install:\n%s", got)
+	}
+	out.Reset()
+	if err := cmdUsageOtel(c, []string{"--install"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), token) {
+		t.Errorf("--install printed the token:\n%s", out.String())
+	}
+	b, err := os.ReadFile(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "Authorization=Bearer "+token) {
+		t.Errorf("--install did not write the token: %s", b)
 	}
 }

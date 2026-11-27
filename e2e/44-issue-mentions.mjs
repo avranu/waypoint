@@ -46,7 +46,6 @@ async function run(width, scheme) {
   ok(((await api("GET", `/issues/${c.key}`)).relations ?? []).length === 2, `${tag} named tasks are relations`);
   ok((await page.getByText(/^Mentions \d+$/).count()) === 0, `${tag} a relation isn't repeated as a mention`);
 
-  // A comment's keys are mentions only.
   const d = await api("POST", "/issues", { project: key, title: "Changelog" });
   await api("POST", `/issues/${c.key}/comments`, { body: `Compare ${d.key}.` });
   await page.goto(`${base}/issue/${c.key}`);
@@ -65,13 +64,11 @@ async function run(width, scheme) {
   await page.getByText("Nothing here").first().waitFor();
   ok((await page.getByRole("region", { name: "Mentions" }).count()) === 0, `${tag} no section when there are none`);
 
-  // Saving a description that names a task shows the relation at once.
   await page.getByRole("button", { name: "Add a description…" }).click();
   await page.getByRole("textbox", { name: "Description" }).fill(`See ${d.key}.`);
   await relation(d).waitFor();
   ok(true, `${tag} the saved description's relation shows without a reload`);
 
-  // So does a new task naming the one this page has open.
   const e = await api("POST", "/issues", { project: key, title: "Follow-up", description: `After ${lone.key}.` });
   await relation(e).waitFor();
   ok(true, `${tag} a task naming the open one shows up without a reload`);

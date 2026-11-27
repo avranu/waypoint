@@ -19,7 +19,6 @@ func TestCommentSeverity(t *testing.T) {
 		{author: "mirror", body: "**coderabbitai[bot]** reviewed on GitHub: _⚠️ Potential issue_ | _🟡 Minor_\n\nTrim it.", want: "medium"},
 		{author: "mirror", body: "**coderabbitai[bot]** commented on GitHub: <picture><img></picture> Minor <picture><img></picture> Major", want: "high"},
 		{author: "mirror", body: "**coderabbitai[bot]** reviewed on GitHub: <details><summary>🧹 Nitpick comments (2)</summary>", want: "low"},
-		// CodeRabbit's current markers, as stored once tidyBotText dropped the pictures (WP-433).
 		{author: "mirror", body: "**coderabbitai[bot]** reviewed on `a.go` line 3: ** Minor** · **Functional Correctness** · **Quick win** **Close the file.**", want: "medium"},
 		{author: "mirror", body: "**coderabbitai[bot]** reviewed on `a.go` line 3: **Major** · Guard the nil map.", want: "high"},
 		{author: "mirror", body: "**coderabbitai[bot]** reviewed on GitHub: **Actionable comments posted: 2** ** Trivial** · a. ** Minor** · b.", want: "medium"},
@@ -28,7 +27,6 @@ func TestCommentSeverity(t *testing.T) {
 		{author: "mirror", body: "**coderabbitai[bot]** reviewed on `a.go` line 3: Fix it.\n```\n** Minor** · x\n```\n", want: ""},
 		{author: "mirror", body: "**alice** commented on GitHub: 🟡 Minor nit", want: ""},
 		{author: "alice", body: "**coderabbitai[bot]** commented on GitHub: 🟡 Minor nit", want: ""},
-		// A whole relay: the forge's mirror account posted it, whatever its marker says.
 		{author: "mirror", body: "**coderabbitai[bot]** commented on GitHub:\n\n🟡 Minor nit\n\n<!-- mirror:comment github 7 -->", want: "medium"},
 		{author: "alice", body: "**coderabbitai[bot]** commented on GitHub:\n\n🟡 Minor nit\n\n<!-- mirror:comment github 7 -->", want: ""},
 		{author: "coderabbitai[bot]", body: "Looks fine.", want: ""},
@@ -36,7 +34,7 @@ func TestCommentSeverity(t *testing.T) {
 	} {
 		rc := &PRReviewComment{Author: tc.author, Body: tc.body, Bot: tc.bot, FindingID: tc.finding, findingSeverity: tc.findingSev, mirror: "mirror"}
 		if m := relayedAuthorRE.FindStringSubmatch(tc.body); m != nil && tc.author == "mirror" && !strings.Contains(tc.body, "<!--") {
-			rc.relayAuthor = m[1] // read out of the mirror's relay
+			rc.relayAuthor = m[1]
 		}
 		if got := rc.severity(); got != tc.want {
 			t.Errorf("severity(%q by %s) = %q, want %q", tc.body, tc.author, got, tc.want)
@@ -104,7 +102,6 @@ func TestBabysitLateMinorFindings(t *testing.T) {
 			be.setClock(be.clockNow().Add(10 * time.Minute))
 			be.sg.setNotes(carol, PRNote{ID: "602", Kind: "comment", Author: "mirror", At: be.clockNow(),
 				Body: "**coderabbitai[bot]** commented on GitHub:\n\n" + tc.marker + "\n\nTrim the name before comparing.\n\n<!-- mirror:comment github 9 -->"})
-			// A runner has the round: a push doesn't withdraw it (WP-1618).
 			if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE runner_jobs SET state = 'running' WHERE id = ?`, jobs[0]); err != nil {
 				t.Fatal(err)
 			}
@@ -112,7 +109,7 @@ func TestBabysitLateMinorFindings(t *testing.T) {
 			be.finish(jobs[0], true)
 			be.ci("8888888bbbb", CheckSuccess)
 			be.step()
-			be.comment("602") // recorded, not held as a stranger's
+			be.comment("602")
 			if got := len(be.jobs()) == 2; got != tc.round {
 				t.Fatalf("a second round = %v, want %v: %+v", got, tc.round, be.babysit())
 			}

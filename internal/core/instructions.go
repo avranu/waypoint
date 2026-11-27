@@ -10,20 +10,13 @@ import (
 	"time"
 )
 
-// Agent instructions (WP-1559, ADR146): text Waypoint adds to a session's
-// context by what the session is (main thread or sub-agent, its model, its
-// agent type) at its start, at a sub-agent's start and after a compaction.
-// Each change is a revision; an agent's waits for a person, and only the
-// approved revision is delivered. What each hook was answered with is
-// recorded, sent or not.
-
 const (
 	InstrScopeAny      = "any"
 	InstrScopeMain     = "main"
 	InstrScopeSubagent = "subagent"
 
-	InstrMomentStart   = "start"   // a start, and again after each compaction
-	InstrMomentCompact = "compact" // only after a compaction
+	InstrMomentStart   = "start"
+	InstrMomentCompact = "compact"
 
 	InstrApproved = "approved"
 	InstrPending  = "pending"
@@ -479,10 +472,6 @@ func (s *Service) UpdateInstruction(ctx context.Context, actor *Actor, id int64,
 	err = s.write(ctx, actor, func(t *tx) error {
 		state := ""
 		if content {
-			// An agent builds on the newest revision that is not rejected, so a
-			// second proposal builds on the first. A person's edit is approved
-			// as written, so it builds on the delivered revision only: an
-			// agent's pending text must not ride in unreviewed.
 			var b instrContent
 			var models, types string
 			q, args := `SELECT title, body, scope, models, agent_types, moment FROM agent_instruction_revisions
@@ -561,7 +550,6 @@ func (s *Service) ReviewInstruction(ctx context.Context, actor *Actor, id int64,
 			return err
 		}
 		if approve {
-			// Older proposals are answered by this one.
 			if _, err := t.ExecContext(ctx, `UPDATE agent_instruction_revisions SET state = ?, reviewed_by = ?, reviewed_at = ? WHERE instruction_id = ? AND state = ? AND rev < ?`,
 				InstrRejected, actor.id(), s.nowMS(), id, InstrPending, rev); err != nil {
 				return err
@@ -600,8 +588,6 @@ func (s *Service) DeleteInstruction(ctx context.Context, actor *Actor, id int64)
 		return nil
 	})
 }
-
-// ---- who an instruction is for ----
 
 // instrFor says whether x is for the audience: no (not for it), yes, or
 // unknownModel (it would be, but it names models and the model isn't known).
@@ -717,7 +703,7 @@ func (s *Service) deliverInstructions(ctx context.Context, t *tx, x *AgentSessio
 				return "", err
 			}
 			if had > 0 {
-				continue // still in its context: neither sent nor recorded again
+				continue
 			}
 		}
 		agentID := ""

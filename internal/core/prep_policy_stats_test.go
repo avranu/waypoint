@@ -2,6 +2,7 @@ package core
 
 import (
 	"math"
+	"slices"
 	"testing"
 )
 
@@ -16,8 +17,6 @@ func TestFitPrepArmsAdjustsForCovariates(t *testing.T) {
 	var count [3]float64
 	for range 900 {
 		inHard := r.float() < 0.5
-		// The chat arm gets most of the hard project's tasks, no pointers
-		// most of the easy one's.
 		u, arm := r.float(), 2
 		switch {
 		case inHard && u < 0.7, !inHard && u < 0.1:
@@ -60,7 +59,6 @@ func TestFitPrepArmsAdjustsForCovariates(t *testing.T) {
 	if got := f.ArmN[0] + f.ArmN[1] + f.ArmN[2]; math.Abs(got-900) > 1e-6 || f.N != 900 {
 		t.Errorf("tasks counted: %v (%v)", f.ArmN, f.N)
 	}
-	// The chat arm is the best one, and the shares say so.
 	p := f.pBest([][]float64{{0, 0}, {1, 0}, {0, 1}})
 	if p[1] < 0.9 || p[2] > 0.01 {
 		t.Errorf("probability of being best: %v", p)
@@ -77,8 +75,6 @@ func TestFitPrepArmsNoData(t *testing.T) {
 	if f.Mean[0] != 0 || math.Abs(math.Sqrt(f.Cov[0][0])-prepEffectSD) > 1e-6 || f.N != 0 {
 		t.Fatalf("the prior: %+v", f)
 	}
-	// No pointers is best when both arms' effects are above zero: a quarter
-	// of the time, with nothing known of either.
 	p := f.pBest([][]float64{{0, 0}, {1, 0}, {0, 1}})
 	if math.Abs(p[0]-0.25) > 0.02 || math.Abs(p[1]-0.375) > 0.02 || math.Abs(p[2]-0.375) > 0.02 {
 		t.Errorf("probability of being best with no data: %v", p)
@@ -86,7 +82,6 @@ func TestFitPrepArmsNoData(t *testing.T) {
 	if p := f.pBest([][]float64{{0, 0}, {1, 0}}); math.Abs(p[0]-0.5) > 0.02 {
 		t.Errorf("with one arm's picks and no data: %v", p)
 	}
-	// A handful of tasks can't claim a tight estimate.
 	obs := []prepObs{{Y: 5, X: []float64{1}, Arm: []float64{1, 0}, W: 1}, {Y: 1, X: []float64{1}, Arm: []float64{0, 0}, W: 1}}
 	f = fitPrepArms([]string{prepArmChat, prepArmAgent}, obs, 0.9)
 	if f.pWorse(0, 0.1) > prepGuardP {
@@ -137,7 +132,6 @@ func TestPrepSharesAndDraw(t *testing.T) {
 			t.Errorf("pick at %v = %d, want %d", u, got, want)
 		}
 	}
-	// A task's place is fixed, and the places are even.
 	var low int
 	for id := int64(1); id <= 4000; id++ {
 		u := prepDraw(id)
@@ -215,7 +209,6 @@ func TestPrepMixFollowsAChange(t *testing.T) {
 	if lo > -0.3 || hi < -0.3 || hi-lo > 0.45 {
 		t.Errorf("steady effect: [%.2f, %.2f], want -0.3 inside", lo, hi)
 	}
-	// A guard's outcome is aged as the primary's forecasts say.
 	g := fitPrepMix(arms, steady, 0.9, m.W)
 	if &g.W[0] != &m.W[0] {
 		t.Error("a guard worked out its own weights")
@@ -243,7 +236,6 @@ func TestPrepGuardFalseBlocks(t *testing.T) {
 	if rate := float64(blocked) / sets; rate > 0.03 {
 		t.Errorf("an arm with no effect was taken out in %.1f%% of sets", rate*100)
 	}
-	// And one that is worse by a half is.
 	obs := prepSeries(r, 30, 12, func(int) float64 { return 0.7 })
 	m := fitPrepMix(arms, obs, 1.0, even)
 	if m.pWorse(0, 0.10) <= prepGuardP {
@@ -269,7 +261,6 @@ func TestInvertSPD(t *testing.T) {
 			}
 		}
 	}
-	// Two columns that say the same thing don't stop it.
 	inv = invertSPD([][]float64{{1, 1}, {1, 1}})
 	if math.IsNaN(inv[0][0]) || math.IsInf(inv[0][0], 0) {
 		t.Errorf("a singular matrix: %v", inv)
@@ -288,5 +279,98 @@ func TestPrepDummies(t *testing.T) {
 	}
 	if s := prepStandard([]float64{2, 2}); s[0] != 0 {
 		t.Errorf("a constant column: %v", s)
+	}
+}
+
+// The draws are the ones a generator started at the fixed seed gives each
+// fit, whatever was drawn before: the normals are kept between fits, and a
+// fit's draws (so its shares) must not depend on which fits came first.
+func TestPrepSampleDrawsAreTheSeedsOwn(t *testing.T) {
+	fits := func() []*prepFit {
+		return []*prepFit{
+			{Arms: []string{"a", "b"}, Mean: []float64{0.2, -0.1}, Cov: [][]float64{{0.04, 0.01}, {0.01, 0.09}}},
+			{Arms: []string{"a", "b"}, Mean: []float64{-0.3, 0}, Cov: [][]float64{{0.01, 0}, {0, 0.25}}},
+			{Arms: []string{"a"}, Mean: []float64{0.1}, Cov: [][]float64{{0.04}}},
+			{Arms: []string{"a", "b", "c"}, Mean: []float64{0, 0.1, -0.2}, Cov: [][]float64{{0.04, 0.01, 0}, {0.01, 0.09, 0.02}, {0, 0.02, 0.16}}},
+			{Arms: []string{"a", "b"}, Mean: []float64{0, 0}, Cov: [][]float64{{0, 0}, {0, 0}}},
+			{},
+		}
+	}
+	// The generator's first normals from the seed, pinned so a change to the
+	// seed or to the generator shows here and not only as moved shares.
+	r := &prepRand{s: prepSeed}
+	for i, want := range []float64{-1.2669898075097235, 2.2115371059329378, -1.3229606993117367} {
+		if z := r.norm(); math.Abs(z-want) > 1e-12 {
+			t.Fatalf("normal %d from the seed: %v, want %v", i, z, want)
+		}
+	}
+
+	prepNormalsByArms.Lock()
+	prepNormalsByArms.k = map[int][]float64{}
+	prepNormalsByArms.Unlock()
+	first := map[int][][]float64{}
+	for n, f := range fits() {
+		k := len(f.Arms)
+		// The lower Cholesky factor of Cov, with sample's floor on the
+		// diagonal (the all-zero fit reaches it).
+		l := make([][]float64, k)
+		for i := range k {
+			l[i] = make([]float64, k)
+			for j := 0; j <= i; j++ {
+				sum := f.Cov[i][j]
+				for m := range j {
+					sum -= l[i][m] * l[j][m]
+				}
+				if i == j {
+					l[i][i] = math.Sqrt(max(sum, 1e-12))
+				} else {
+					l[i][j] = sum / l[j][j]
+				}
+			}
+		}
+		r := &prepRand{s: prepSeed}
+		draws := f.sample()
+		if len(draws) != prepDraws {
+			t.Fatalf("%d draws, want %d", len(draws), prepDraws)
+		}
+		for d, got := range draws {
+			z := make([]float64, k)
+			for i := range z {
+				z[i] = r.norm()
+			}
+			if len(got) != k {
+				t.Fatalf("%d arms, draw %d: %v", k, d, got)
+			}
+			for i := range k {
+				want := f.Mean[i]
+				for j := 0; j <= i; j++ {
+					want += l[i][j] * z[j]
+				}
+				if math.Abs(got[i]-want) > 1e-12 {
+					t.Fatalf("%d arms, draw %d: %v, want arm %d %v", k, d, got, i, want)
+				}
+			}
+		}
+		first[n] = draws
+	}
+
+	// The same fits again, last first, with the kept normals dropped: each
+	// gets exactly what it got before, and its kept normals are reused.
+	prepNormalsByArms.Lock()
+	prepNormalsByArms.k = map[int][]float64{}
+	prepNormalsByArms.Unlock()
+	again := fits()
+	for n := len(again) - 1; n >= 0; n-- {
+		f := again[n]
+		draws := f.sample()
+		for d := range draws {
+			if !slices.Equal(draws[d], first[n][d]) {
+				t.Fatalf("fit %d (%d arms), drawn after the others: draw %d is %v, was %v", n, len(f.Arms), d, draws[d], first[n][d])
+			}
+		}
+		k := len(f.Arms)
+		if z := prepNormals(k); k > 0 && &z[0] != &prepNormals(k)[0] {
+			t.Errorf("%d arms: the normals are worked out again, not kept", k)
+		}
 	}
 }

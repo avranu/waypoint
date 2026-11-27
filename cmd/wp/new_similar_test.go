@@ -39,24 +39,20 @@ func TestCLINewSimilarIssues(t *testing.T) {
 		t.Fatalf("new: %s", theirs)
 	}
 
-	// Filing the same work again is stopped, with the way to take the open one.
 	out, code := e.run("new", "Rank models by published benchmarks for each purpose", "-p", p.Key,
 		"-d", "The gateway should rank models by benchmark scores per purpose.")
 	if code == 0 || strings.Contains(out, "Created") || !strings.Contains(out, "not filed: "+key+" [To Do]") ||
 		!strings.Contains(out, "Take it with wp next "+key+", or file this anyway with --new") {
 		t.Errorf("same work (%d):\n%s", code, out)
 	}
-	// --new files it anyway and lists the open one to link.
 	out = e.wp("new", "Rank models by published benchmarks for each purpose", "-p", p.Key, "--new")
 	if !strings.Contains(out, "Created "+p.Key+"-7") || !strings.Contains(out, "Open issues like it:\n  "+key+" [To Do]") ||
 		!strings.Contains(out, "wp relate "+p.Key+"-7 relates "+key) {
 		t.Errorf("--new:\n%s", out)
 	}
-	// Something new is filed, quietly.
 	if out = e.wp("new", "Retry the forge webhook on a timeout", "-p", p.Key); strings.Contains(out, "Open issues like it") {
 		t.Errorf("unrelated:\n%s", out)
 	}
-	// --json prints the issue alone.
 	if out = e.wp("new", "Rank models by published benchmarks", "-p", p.Key, "--new", "--json"); strings.Contains(out, "Open issues") || !strings.HasPrefix(strings.TrimSpace(out), "{") {
 		t.Errorf("--json:\n%s", out)
 	}

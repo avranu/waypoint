@@ -29,7 +29,6 @@ func TestFailedScreensBackOffToADay(t *testing.T) {
 	if n := attempts(); n != 1 {
 		t.Fatalf("attempts after the first screen = %d", n)
 	}
-	// The sweep runs every minute; coarser steps keep the test quick.
 	sweepFor := func(d, step time.Duration) {
 		for end := e.clockNow().Add(d); e.clockNow().Before(end); {
 			e.setClock(e.clockNow().Add(step))
@@ -39,7 +38,6 @@ func TestFailedScreensBackOffToADay(t *testing.T) {
 	}
 	sweepFor(24*time.Hour, 5*time.Minute)
 	first := attempts()
-	// 5, 10, 20, … 640 minutes apart: nine tries the first day.
 	if first < 8 || first > 10 {
 		t.Errorf("tries the first day = %d", first)
 	}

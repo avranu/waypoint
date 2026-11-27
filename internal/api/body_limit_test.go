@@ -27,7 +27,6 @@ func TestOversizedBodyAnswers413(t *testing.T) {
 	if !strings.Contains(string(b), "request body too large (limit 2097152)") || strings.Contains(string(b), "EOF") {
 		t.Errorf("message = %.200s", b)
 	}
-	// Just under the limit still reads.
 	if code, b := c.do("POST", "/api/v1/projects", map[string]any{"name": "Fine", "key": "FIN"}); code != 200 {
 		t.Errorf("a small body: %d %s", code, b)
 	}

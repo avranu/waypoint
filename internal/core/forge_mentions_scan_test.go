@@ -11,7 +11,7 @@ import (
 func TestScanKeyRefs(t *testing.T) {
 	cases := []struct {
 		kind, place, text string
-		want              string // KEY:verb:own, space separated
+		want              string
 	}{
 		{"pull", "title", "Queue pins keep their place (WP-311)", "WP-311::own"},
 		{"pull", "title", "WP-12: crash on login", "WP-12::own"},

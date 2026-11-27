@@ -11,26 +11,14 @@ import (
 	"time"
 )
 
-// The trace from every item to the goals it serves (WP-382, WP-ADR50).
-//
-// Items (issues, pages, design notes) point at what they are for: a
-// sub-task at its parent, an item at what it serves or implements, a note
-// at the note it sits under, a decision written for a person's task at
-// that task, a page at the tasks it documents. Each edge has a basis: a
-// person made it (or confirmed it), an agent made it, or Waypoint's
-// matcher guessed it. An item's grounding is its best route to an active
-// goal: an approved goal first, then the weakest edge on the way (person
-// over agent over guess), then the fewest hops. Code computes it the same
-// way every time; nothing here asks a model.
-
 // Groundings, best first.
 const (
-	GroundPersonGoal    = "person_goal"    // an approved goal, every link a person's
-	GroundAgentGoal     = "agent_goal"     // an approved goal, an agent made a link on the way
-	GroundInferredGoal  = "inferred_goal"  // an approved goal only through a guess of Waypoint's
-	GroundProposedGoal  = "proposed_goal"  // only a goal no person has approved
-	GroundPersonRequest = "person_request" // no goal, but a person wrote it or something above it
-	GroundNone          = "none"           // no goal and no person anywhere above it
+	GroundPersonGoal    = "person_goal"
+	GroundAgentGoal     = "agent_goal"
+	GroundInferredGoal  = "inferred_goal"
+	GroundProposedGoal  = "proposed_goal"
+	GroundPersonRequest = "person_request"
+	GroundNone          = "none"
 )
 
 // Groundings lists them best first.
@@ -62,10 +50,10 @@ var basisNames = []string{"inferred", "agent", "person"}
 // made: empty for a person acting directly, or one of these. A value this code
 // doesn't know counts as an agent's.
 const (
-	linkBasisAgent      = "agent"      // an agent, or a person's account in an agent's shell
-	linkBasisInferred   = "inferred"   // Waypoint's guess from words
-	linkBasisAutomation = "automation" // an automation step
-	linkBasisSuggested  = "suggested"  // a task to the goal a model suggested from it
+	linkBasisAgent      = "agent"
+	linkBasisInferred   = "inferred"
+	linkBasisAutomation = "automation"
+	linkBasisSuggested  = "suggested"
 )
 
 // isGuess: the link is Waypoint's guess (from words, or from the goal a
@@ -89,13 +77,13 @@ func storedBasis(basis, agent string, by int64, confirmed bool) int8 {
 
 // Edge kinds, as a trace shows them.
 const (
-	edgeParent     = "subtask of" // an issue under its parent
+	edgeParent     = "subtask of"
 	edgeServes     = "serves"
 	edgeImplements = "implements"
-	edgeMentions   = "mentions" // a [[wikilink]] to a goal in its text
-	edgeUnder      = "under"    // a design note under its parent note
+	edgeMentions   = "mentions"
+	edgeUnder      = "under"
 	edgeRequested  = "written for"
-	edgeDocuments  = "documents" // a page linked to a task
+	edgeDocuments  = "documents"
 )
 
 type gnode struct {
@@ -104,18 +92,18 @@ type gnode struct {
 }
 
 type gitem struct {
-	project  int64 // 0: global (design notes) or none
-	person   bool  // a person wrote it or approved it
-	goal     bool  // an active goal
-	approved bool  // a person approved it, or asked for it
+	project  int64
+	person   bool
+	goal     bool
+	approved bool
 }
 
 type gedge struct {
 	to    gnode
 	basis int8
 	kind  string
-	link  int64 // knowledge_links id, when the edge is a link
-	by    int64 // the person who made or confirmed it
+	link  int64
+	by    int64
 	agent string
 	score float64
 }
@@ -131,7 +119,6 @@ type goalGraph struct {
 	out        map[gnode][]gedge
 	in         map[gnode][]rgedge
 	projParent map[int64]int64
-	// goalScopes: projects (0 for global) that hold an approved goal.
 	goalScopes map[int64]bool
 }
 
@@ -150,7 +137,7 @@ func loadGoalGraph(ctx context.Context, q queryer) (*goalGraph, error) {
 		projParent: map[int64]int64{}, goalScopes: map[int64]bool{}}
 	type parentRow struct {
 		child, parent gnode
-		person        bool // a person put it there (issues: parent_by)
+		person        bool
 	}
 	var parents []parentRow
 	rows, err := q.QueryContext(ctx, `SELECT id, project_id, coalesce(parent_id, 0), outside = 0 AND (text_agent = '' OR reviewed_at IS NOT NULL),
@@ -172,8 +159,6 @@ func loadGoalGraph(ctx context.Context, q queryer) (*goalGraph, error) {
 		}
 	}
 	rows.Close()
-	// A person who answered a drift flag "this is fine, record it as intent"
-	// stands behind its tasks (WP-559).
 	rows, err = q.QueryContext(ctx, `SELECT fi.issue_id FROM goal_drift_flag_issues fi JOIN goal_drift_flags f ON f.id = fi.flag_id WHERE f.answer = 'intent'`)
 	if err != nil {
 		return nil, err
@@ -211,15 +196,16 @@ func loadGoalGraph(ctx context.Context, q queryer) (*goalGraph, error) {
 	}
 	var requests []requestRow
 	rows, err = q.QueryContext(ctx, `SELECT id, coalesce(project_id, 0), coalesce(parent_id, 0), kind = 'goal' AND status = 'active',
-		approved_at IS NOT NULL OR requested_by IS NOT NULL, CASE WHEN requested_by IS NOT NULL THEN coalesce(requested_issue_id, 0) ELSE 0 END
+		approved_at IS NOT NULL OR requested_by IS NOT NULL, CASE WHEN requested_by IS NOT NULL THEN coalesce(requested_issue_id, 0) ELSE 0 END,
+		CASE WHEN parent_at IS NULL THEN approved_at IS NOT NULL OR requested_by IS NOT NULL ELSE parent_by IS NOT NULL END
 		FROM design_notes WHERE status != 'retired'`)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var id, pid, parent, reqIssue int64
-		var goal, approved bool
-		if err := rows.Scan(&id, &pid, &parent, &goal, &approved, &reqIssue); err != nil {
+		var goal, approved, parentByPerson bool
+		if err := rows.Scan(&id, &pid, &parent, &goal, &approved, &reqIssue, &parentByPerson); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -228,8 +214,7 @@ func loadGoalGraph(ctx context.Context, q queryer) (*goalGraph, error) {
 			g.goalScopes[pid] = true
 		}
 		if parent != 0 {
-			// A note's place is part of the text a person approved.
-			parents = append(parents, parentRow{gnode{KDesign, id}, gnode{KDesign, parent}, approved})
+			parents = append(parents, parentRow{gnode{KDesign, id}, gnode{KDesign, parent}, parentByPerson})
 		}
 		if reqIssue != 0 {
 			requests = append(requests, requestRow{id, reqIssue})
@@ -252,8 +237,6 @@ func loadGoalGraph(ctx context.Context, q queryer) (*goalGraph, error) {
 	}
 	rows.Close()
 
-	// Parents: who put the child there, as stored when it was put there,
-	// not who wrote the child.
 	for _, p := range parents {
 		kind := edgeParent
 		if p.child.typ == KDesign {
@@ -265,8 +248,6 @@ func loadGoalGraph(ctx context.Context, q queryer) (*goalGraph, error) {
 		}
 		g.add(p.child, gedge{to: p.parent, basis: b, kind: kind})
 	}
-	// A note written for a person's task traces to that task: the request is
-	// the person's (WP-189), though nobody approved the note (WP-409).
 	for _, r := range requests {
 		g.add(gnode{KDesign, r.note}, gedge{to: gnode{KIssue, r.issue}, basis: basisPerson, kind: edgeRequested})
 	}
@@ -341,7 +322,6 @@ func loadGoalGraph(ctx context.Context, q queryer) (*goalGraph, error) {
 		dst := g.items[r.dst]
 		kind := r.rel
 		if r.auto {
-			// A [[wikilink]] serves only a goal it names.
 			if dst == nil || !dst.goal {
 				continue
 			}
@@ -355,8 +335,6 @@ func loadGoalGraph(ctx context.Context, q queryer) (*goalGraph, error) {
 		case e.basis == basisPerson:
 			e.by = r.by
 		}
-		// A person said no to this pair: only a person's own link brings
-		// it back, never an agent's or a [[wikilink]] an agent wrote.
 		if e.basis != basisPerson && dismissed[[2]gnode{r.src, r.dst}] {
 			continue
 		}
@@ -391,7 +369,7 @@ type gtrace struct {
 	grounding  string
 	goal       int64
 	hops       int
-	personHops int // -1: no person anywhere above it
+	personHops int
 	touches    int
 	scoped     bool
 }
@@ -470,7 +448,6 @@ func (g *goalGraph) groundings() map[gnode]*gtrace {
 	g.reach(approved, basisInferred, GroundInferredGoal, out)
 	g.reach(g.goalSources(false), basisInferred, GroundProposedGoal, out)
 
-	// The nearest person above each item, and the people on the way.
 	type st struct{ dist, touches int }
 	seen := map[gnode]*st{}
 	var frontier []gnode
@@ -534,46 +511,27 @@ func (g *goalGraph) scoped(project int64) bool {
 	return false
 }
 
-// ---- keeping goal_traces current ----
-
 // goalState coalesces recomputes: one runs at a time, and a change while
 // it runs starts one more after it.
 type goalState struct {
-	mu sync.Mutex
-	// store serializes storeGoalTraces. A recompute called directly (a goals
-	// view, a test) runs beside the background one; without it, a pass that
-	// read the graph before a link was made could write its rows over those
-	// of a pass that read it after.
-	store    sync.Mutex
-	running  bool
-	dirty    bool
-	hasGoals bool // the instance has a goal note; nothing to keep otherwise
-	checked  bool
-	idle     chan struct{} // closed when the running recompute (and any it queued) ends
-	// judging: the goals model's judgements run on their own, so a slow
-	// model never holds up a recompute or goalsSettle (WP-1035).
-	judging, judgeDirty bool
-	judgeIdle           chan struct{}
-	judgeTimer          *time.Timer // the next pass for a back-off or wait (meaningRetryLater)
-	// judgeGen moves on whenever judgeTimer is cancelled or fires, so a
-	// callback that fired as it was cancelled starts nothing.
-	judgeGen uint64
-	// meaningEmbed, meaningNLI: the meaning service's models when it last
-	// answered, so stored scores still count while it is down.
+	mu                       sync.Mutex
+	store                    sync.Mutex
+	running                  bool
+	dirty                    bool
+	hasGoals                 bool
+	checked                  bool
+	idle                     chan struct{}
+	judging, judgeDirty      bool
+	judgeIdle                chan struct{}
+	judgeTimer               *time.Timer
+	judgeGen                 uint64
 	meaningEmbed, meaningNLI string
-	// suggesting holds the projects a goal-suggestion run is reading.
-	suggesting map[int64]bool
-	// asking holds the tasks a person asked the model for a goal for.
-	asking map[int64]bool
-	// drifting: a weekly drift run is going; the next tick skips.
-	drifting  bool
-	driftIdle chan struct{} // closed when that run ends
-	// settleWait caps goalsSettle for this Service (0: goalsSettleWait), so a
-	// test can shorten it without touching other Services (WP-1372).
-	settleWait time.Duration
-	// beforeStore, when set, runs as a trace pass has worked out its rows and
-	// is about to write them, so a test can hold one pass there.
-	beforeStore func(context.Context)
+	suggesting               map[int64]bool
+	asking                   map[int64]bool
+	drifting                 bool
+	driftIdle                chan struct{}
+	settleWait               time.Duration
+	beforeStore              func(context.Context)
 }
 
 // goalsSettleWait caps goalsSettle: a view waits this long for a recompute,
@@ -629,8 +587,6 @@ func (s *Service) onGoalEvent(e *Event) {
 	s.goals.mu.Lock()
 	has := s.goals.hasGoals || !s.goals.checked
 	s.goals.mu.Unlock()
-	// Until a goal exists there is nothing to trace to; a design note
-	// change may be the first goal.
 	if !has && (e.Kind != EvKnowledge || e.Data["type"] != KDesign) {
 		return
 	}
@@ -650,8 +606,6 @@ func (s *Service) goalsChanged() {
 	s.goals.idle = idle
 	s.goals.mu.Unlock()
 	s.goBG(func() {
-		// idle closes with the flag cleared, so a wait never sees one
-		// without the other (WP-1372).
 		for {
 			if s.bgCtx.Err() != nil {
 				s.goals.mu.Lock()
@@ -664,13 +618,9 @@ func (s *Service) goalsChanged() {
 				if n, err := s.RecomputeGoalTraces(ctx); err != nil && ctx.Err() == nil {
 					s.log.WarnContext(ctx, "goal traces", "err", err)
 				} else if n > 0 {
-					// Open goal views and trace lines read the new rows.
 					s.Hub.Publish(&Event{Kind: EvGoalsTraced})
 				}
 			})
-			// The goals model's judgements of meaning (WP-1035, WP-ADR133):
-			// asked here, in the background and outside any write
-			// transaction, only for text whose judgement is missing or stale.
 			s.judgementsChanged()
 			s.goals.mu.Lock()
 			if !s.goals.dirty {
@@ -705,8 +655,6 @@ func (s *Service) RecomputeGoalTraces(ctx context.Context) (int, error) {
 }
 
 func (s *Service) storeGoalTraces(ctx context.Context) (int, error) {
-	// Read, compare and write as one pass: a pass that waits starts from
-	// what the one before it wrote.
 	s.goals.store.Lock()
 	defer s.goals.store.Unlock()
 	var goals int
@@ -772,9 +720,6 @@ func (s *Service) storeGoalTraces(ctx context.Context) (int, error) {
 			drop = append(drop, n)
 		}
 	}
-	// Finished tasks keep how they traced when they were finished, for the
-	// week's drift: a task finished (or finished again) since the last
-	// snapshot takes its grounding as it is now.
 	var unsnapped int
 	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM issues i JOIN statuses st ON st.id = i.status_id
 		WHERE st.category = 'done' AND i.resolved_at IS NOT NULL

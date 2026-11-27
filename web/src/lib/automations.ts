@@ -1,12 +1,6 @@
-// Automations that run in steps (WP-D18): the catalog the editor draws its
-// fields from, runs and their steps, tests, and the admin side (system
-// limits). Rules and automations themselves are typed in types.ts.
-
 import { infiniteQueryOptions, queryOptions } from '@tanstack/react-query'
 import { api, qs } from './api'
 import type { Automation, Rule, UserRef, WEvent } from './types'
-
-// ---- the catalog ----
 
 export type ParamType =
   | 'text'
@@ -175,8 +169,6 @@ export const BLOCK_TYPES: ParamType[] = [
   'secret',
 ]
 
-// ---- runs ----
-
 export type RunStatus =
   'queued' | 'running' | 'waiting' | 'succeeded' | 'failed' | 'cancelled' | 'skipped'
 
@@ -272,8 +264,6 @@ export const cronQuery = (expr: string, tz: string) =>
     retry: false,
     staleTime: 60_000,
   })
-
-// ---- admin ----
 
 export const adminAutomationsQuery = () =>
   queryOptions({

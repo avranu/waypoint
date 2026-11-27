@@ -56,7 +56,6 @@ func (s *Server) transcriptPiece(w http.ResponseWriter, r *http.Request) (any, e
 		Machine: q.Get("machine"), Session: q.Get("session"), File: q.Get("file"), Kind: q.Get("kind"), FP: q.Get("fp"),
 		From: from, To: to, Redacted: q.Get("redacted") == "1", Version: q.Get("version"), Gzip: body,
 	}
-	// what the client's redaction blanked: absent is unknown, never 0
 	if v := q.Get("redactions"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
@@ -125,7 +124,7 @@ func (s *Server) transcriptRead(w http.ResponseWriter, r *http.Request) (any, er
 	if n := noteFrom(r); n != nil {
 		n.err = err
 	}
-	panic(http.ErrAbortHandler) // some bytes are out: end the transfer as broken, not as whole
+	panic(http.ErrAbortHandler)
 }
 
 type countWriter struct {

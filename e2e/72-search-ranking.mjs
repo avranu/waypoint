@@ -49,7 +49,6 @@ async function run(width, scheme) {
   await api("POST", "/issues", { project: here, title: "Tidy the release notes" });
   const src = await api("POST", "/issues", { project: here, title: "Release checklist" });
 
-  // The palette, from the board of the project in view.
   await page.goto(`${base}/p/${here}/board`);
   await page.waitForLoadState("networkidle");
   await page.keyboard.press("Control+k");
@@ -57,7 +56,6 @@ async function run(width, scheme) {
   await box.fill("PR");
   const row = page.locator("button", { hasText: want.title });
   await row.waitFor();
-  // Until the search answers, the list still shows recent issues.
   await page.waitForFunction(() => ![...document.querySelectorAll("button[data-idx]")].some((b) => b.textContent.includes("Release checklist")));
   const rows = await page.locator("button[data-idx]").allInnerTexts();
   const first = rows.findIndex((t) => /Consider improvements|Review every PR/.test(t));
@@ -79,17 +77,14 @@ async function run(width, scheme) {
   ok(!(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)), `${tag} palette: no sideways scroll`);
   await page.keyboard.press("Escape");
 
-  // The relation picker on an issue in the same project.
   await page.goto(`${base}/issue/${src.key}`);
   await page.getByRole("button", { name: "Add relation" }).click();
-  // The add box opens focused, with its matches listed inline (WP-1196).
   const search = page.getByRole("combobox", { name: "Task to relate" });
   await search.waitFor();
   await search.fill("PR");
   const list = page.getByRole("listbox", { name: "Matching tasks" });
   const pick = list.getByRole("option", { name: new RegExp(want.title) }).first();
   await pick.waitFor();
-  // Until the search answers, the list still shows recent issues.
   await page.waitForFunction(() => ![...document.querySelectorAll('[role=listbox] [role=option]')].some((b) => b.textContent.includes("Tidy the release notes")));
   const picks = await list.getByRole("option").allInnerTexts();
   ok(picks[0]?.includes(want.title), `${tag} picker: the project in view's PR issue comes first (${picks.slice(0, 3).join(" | ")})`);
@@ -105,16 +100,12 @@ async function run(width, scheme) {
   const rels = (await api("GET", `/issues/${src.key}`)).relations ?? [];
   ok(rels.some((r) => r.issue.key === want.key), `${tag} picking relates it`);
   ok(await search.isVisible(), `${tag} the add box stays open for the next one`);
-  // Enter straight after typing waits for the answer instead of picking a
-  // row the list still shows for the earlier text.
   await search.fill("review every merge");
   await page.keyboard.press("Enter");
   await page.waitForResponse((r) => r.url().includes("/relations") && r.request().method() === "POST");
   const rels2 = (await api("GET", `/issues/${src.key}`)).relations ?? [];
   ok(rels2.some((r) => r.issue.key === elsewhere.key) && rels2.length === 2, `${tag} Enter before the results arrive picks the match (${rels2.map((r) => r.issue.key).join(" ")})`);
 
-  // With a parent set, "Remove parent" heads the list until words are typed:
-  // typing and pressing Enter picks the top hit, never removes the parent.
   const epic = await api("POST", "/issues", { project: here, title: "Release epic", type: "epic" });
   const kid = await api("POST", "/issues", { project: here, title: "Write the upgrade guide", parent: epic.key });
   await page.goto(`${base}/issue/${kid.key}`);

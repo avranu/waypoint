@@ -1,6 +1,3 @@
-// Usage → Breakdowns: the same tokens by repository, machine, session, agent
-// kind (main, Explore, each custom subagent) and model.
-
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { SquareArrowOutUpRight } from 'lucide-react'

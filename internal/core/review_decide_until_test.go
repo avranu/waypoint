@@ -60,8 +60,6 @@ func TestDecideRoundEveryWaitHasTimeLeft(t *testing.T) {
 			}
 		}
 	}
-	// A round that ended: the stranded window's two edges, with and without a
-	// ship that has failed all along, never wait.
 	for _, since := range ages {
 		for _, spent := range []bool{false, true} {
 			in := roundIn{State: RoundDone, Unshipped: true, SinceEnd: since, ShipSpent: spent, Release: "x"}

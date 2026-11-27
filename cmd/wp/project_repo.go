@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// wp project repo: a project's attached repos and their merge policy (WP-133).
-
 var projectRepoCmd = &command{name: "repo", args: "[ls|set|move|relink …]", aliases: []string{"repos"},
 	summary: "a project's repos and their merge policy",
 	about: `Lists attached repos with their merge policy. Merge automatically arms
@@ -119,7 +117,7 @@ func parseMinutes(s string) (int, error) {
 func (c *cli) projectRepos(sf scopeFlags, ref string) (string, []repoPolicy, error) {
 	sc, err := c.scopeFor(sf)
 	if ref != "" && (sf.project == nil || *sf.project == "") {
-		sc, err = c.findScope(ref, ref) // a repo names its project
+		sc, err = c.findScope(ref, ref)
 	}
 	if err != nil {
 		return "", nil, err

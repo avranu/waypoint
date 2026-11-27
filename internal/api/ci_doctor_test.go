@@ -45,7 +45,6 @@ func TestCIDoctorText(t *testing.T) {
 		t.Errorf("an urgent lane line with none to say:\n%s", out)
 	}
 
-	// Stuck: one line on the urgent lane, for the repo asked about (WP-544).
 	d.UrgentLane = []core.CIUrgentLane{{Repo: "Robin/juno", Text: "Robin/juno is stuck (its merge line is stalled). … `wp pr urgent 120 --repo Robin/juno` …"},
 		{Repo: "Robin/waypoint", Text: "Robin/waypoint is stuck (main is red)."}}
 	d.CIWork[0].Urgent = true

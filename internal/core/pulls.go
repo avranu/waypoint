@@ -1,11 +1,5 @@
 package core
 
-// Bots on pull requests (WP-D14). Pull requests of attached repos are kept
-// as records; a new head, readiness or a command fires a PR event in each
-// project the repo belongs to (with bots on), automations turn those into
-// bot runs, and a small pool of workers carries the runs out in the
-// background, surviving restarts.
-
 import (
 	"context"
 	"database/sql"
@@ -18,14 +12,15 @@ import (
 	"sync"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core/udiff"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
 // PR events; they reach automations, live updates and webhooks.
 const (
-	EvPRUpdated = "pr.updated" // opened, new commits, ready for review, reopened
-	EvPRCommand = "pr.command" // "@waypoint review" in a comment
-	EvBotRun    = "bot.run"    // a bot run changed state
+	EvPRUpdated = "pr.updated"
+	EvPRCommand = "pr.command"
+	EvBotRun    = "bot.run"
 	// EvPRActivity: a review or comment joined a pull request's history.
 	EvPRActivity = "pr.activity"
 )
@@ -67,9 +62,9 @@ type PullRequest struct {
 	ArmedLabel bool       `json:"armed_label,omitempty"`
 	// Outside: from someone who isn't a Waypoint person, waiting for a
 	// person to approve it (WP-281); agents and bots leave it alone.
-	Outside        bool   `json:"outside,omitempty"`
-	forgeAuthor    string // who the forge says opened it (Author may name a mirror's copy's original author)
-	labelOff       bool   // the automerge label is on, but a person disarmed it
+	Outside        bool `json:"outside,omitempty"`
+	forgeAuthor    string
+	labelOff       bool
 	armedNote      string
 	armedBy        *int64
 	gateNote       string
@@ -77,25 +72,19 @@ type PullRequest struct {
 	gateOpen       int
 	ciSHA          string
 	ciAnnouncedSHA string
-	// The files it touches at the head, read when a rule's filter needs them
-	// (loadPRFiles); tooLarge when the diff was too big to read.
-	files      []string
-	filesKnown bool
-	tooLarge   bool
-	// Merge automatically (WP-133): the head's repo ('' unknown), when the
-	// head was first seen, and whether the setting leaves it alone (1: a
-	// person took merge when ready off; 2: open before the setting existed,
-	// until its next push).
-	headRepo    string
-	headAt      *time.Time
-	armDeclined int
-	// Whether it merges (WP-138): when the forge's answer was last read, since
-	// when it has said no, and an armed merge the forge refused as "try again
-	// later" (how often, for which head).
-	mergeReadAt   *time.Time
-	mergeSince    *time.Time
-	mergeRetryN   int
-	mergeRetrySHA string
+	files          []string
+	filesKnown     bool
+	tooLarge       bool
+	headRepo       string
+	headAt         *time.Time
+	armDeclined    int
+	carriedSHA     string
+	carriedFromSHA string
+	carriedAt      *time.Time
+	mergeReadAt    *time.Time
+	mergeSince     *time.Time
+	mergeRetryN    int
+	mergeRetrySHA  string
 	// Draft-first (WP-158): Waypoint holds it as a draft and marks it ready;
 	// when, at which head, and the status id and checks that head had then.
 	WipAuto       bool       `json:"wip_auto,omitempty"`
@@ -103,9 +92,7 @@ type PullRequest struct {
 	readySHA      string
 	readyStatusID int64
 	readyChecks   []string
-	// readySkipped: checks the full run skipped that the draft tier ran
-	// (WP-552), done although no status newer than the ready mark comes.
-	readySkipped []string
+	readySkipped  []string
 	// The merge queue (WP-222): when it joined its base's queue.
 	QueuedAt *time.Time `json:"queued_at,omitempty"`
 	// MergeSHA is the commit it became when merged: a squash or merge commit
@@ -117,13 +104,13 @@ const prCols = `id, forge_id, repo, number, title, author, url, base_ref, head_r
 	opened_at, merged_at, closed_at, merged_by, agent, additions, deletions, changed_files, commits,
 	mergeable, gate_state, gate_note, gate_sha, gate_open, ci_state, ci_sha, ci_announced_sha, armed_at, armed_by, armed_agent, armed_style, armed_label, armed_note,
 	head_repo, head_at, arm_declined, mergeable_read_at, mergeable_since, merge_retry_n, merge_retry_sha,
-	wip_auto, ready_at, ready_sha, ready_status_id, ready_checks, queued_at, outside, forge_author, merge_sha, ready_skipped`
+	wip_auto, ready_at, ready_sha, ready_status_id, ready_checks, queued_at, outside, forge_author, merge_sha, ready_skipped, carried_sha, carried_from_sha, carried_at`
 
 func scanPR(sc interface{ Scan(...any) error }) (*PullRequest, error) {
 	var p PullRequest
 	var labels string
 	var up int64
-	var opened, merged, closed, adds, dels, files, commits, mergeable, armedAt, armedBy, headAt, readAt, since sql.NullInt64
+	var opened, merged, closed, adds, dels, files, commits, mergeable, armedAt, armedBy, headAt, readAt, since, carriedAt sql.NullInt64
 	var armedLabel, wipAuto int
 	var readyAt, queuedAt sql.NullInt64
 	var readyChecks, readySkipped string
@@ -133,7 +120,7 @@ func scanPR(sc interface{ Scan(...any) error }) (*PullRequest, error) {
 		&mergeable, &p.GateState, &p.gateNote, &p.gateSHA, &p.gateOpen, &p.CIState, &p.ciSHA, &p.ciAnnouncedSHA,
 		&armedAt, &armedBy, &p.ArmedAgent, &p.ArmedStyle, &armedLabel, &p.armedNote,
 		&p.headRepo, &headAt, &p.armDeclined, &readAt, &since, &p.mergeRetryN, &p.mergeRetrySHA,
-		&wipAuto, &readyAt, &p.readySHA, &p.readyStatusID, &readyChecks, &queuedAt, &p.Outside, &p.forgeAuthor, &p.MergeSHA, &readySkipped); err != nil {
+		&wipAuto, &readyAt, &p.readySHA, &p.readyStatusID, &readyChecks, &queuedAt, &p.Outside, &p.forgeAuthor, &p.MergeSHA, &readySkipped, &p.carriedSHA, &p.carriedFromSHA, &carriedAt); err != nil {
 		return nil, err
 	}
 	p.ArmedLabel, p.labelOff = armedLabel == 1, armedLabel == 2
@@ -144,7 +131,7 @@ func scanPR(sc interface{ Scan(...any) error }) (*PullRequest, error) {
 		p.Mergeable = ptr(mergeable.Int64 != 0)
 	}
 	p.ArmedAt, p.armedBy, p.headAt = ptrTime(armedAt), ptrInt(armedBy), ptrTime(headAt)
-	p.mergeReadAt, p.mergeSince = ptrTime(readAt), ptrTime(since)
+	p.mergeReadAt, p.mergeSince, p.carriedAt = ptrTime(readAt), ptrTime(since), ptrTime(carriedAt)
 	_ = json.Unmarshal([]byte(labels), &p.Labels)
 	if p.Labels == nil {
 		p.Labels = []string{}
@@ -242,7 +229,6 @@ func (s *Service) onForgePull(ctx context.Context, f *Forge, repo string, fp *Fo
 	if fp.HeadSHA == "" || fp.Author == "" {
 		if c, ok := s.Forges.(ForgePRs); ok {
 			if full, err := c.GetPR(ctx, f, repo, fp.Number); err == nil {
-				// The hook still knows best who acted.
 				full.actor, full.MergedBy, full.requested = fp.actor, cmp(full.MergedBy, fp.MergedBy), fp.requested
 				if full.OpenedAt == nil {
 					full.OpenedAt = fp.OpenedAt
@@ -267,13 +253,11 @@ func (s *Service) onForgePull(ctx context.Context, f *Forge, repo string, fp *Fo
 // the bots hear of a push once, whoever reads it first (WP-129).
 func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *ForgePR, fire bool) (*PullRequest, error) {
 	if fp == nil || fp.Number <= 0 {
-		// A forge's 200 with no number isn't a pull request: it would be
-		// recorded as #0 and armed.
 		return nil, fmt.Errorf("the forge answered with no pull request number for %s", repo)
 	}
 	var out *PullRequest
-	var later []*Event // a push a non-firing read saw first (WP-129)
-	var ended bool     // it merged or closed just now
+	var later []*Event
+	var ended bool
 	projects, err := s.botProjects(ctx, f.ID, repo)
 	if err != nil {
 		return nil, err
@@ -287,13 +271,33 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 		botLogin = s.forgeBotLogin(ctx, f)
 	}
 	voice := s.prVoice(ctx, f)
+	// A push that only merged the base in carries the earlier review (WP-1808).
+	// Decided here, from the diff, and applied in the transaction that records
+	// the head, so no read sees the new head with its waits restarted and then
+	// not.
+	var carry *headCarry
+	// A draft someone made ready by editing its title (not markReady): does
+	// the edit start a run of the checks? Asked before the transaction.
+	var readyEditRuns bool
+	if fp.HeadSHA != "" && (fp.State == "open" || fp.State == "draft") {
+		if prev, perr := s.prByNumber(ctx, s.db.R, f.ID, repo, fp.Number); perr == nil {
+			if prev != nil && prev.State == "draft" && fp.State == "open" && prev.HeadSHA == fp.HeadSHA && !sameSHA(prev.readySHA, fp.HeadSHA) {
+				var rerr error
+				if readyEditRuns, rerr = s.ciRunsOnEdit(ctx, f, repo, fp.HeadSHA); rerr != nil {
+					// A failed read is not "no run": hold it as if the edit runs
+					// the checks (fullRunStalled lifts the hold where it does not).
+					s.log.WarnContext(ctx, "read the workflows for a draft made ready by an edit", "repo", repo, "pr", fp.Number, "err", rerr)
+					readyEditRuns = true
+				}
+			}
+			carry = s.carryDecision(ctx, f, repo, prev, fp)
+		}
+	}
 	err = s.write(ctx, SystemActor(), func(t *tx) error {
 		old, err := s.prByNumber(ctx, t, f.ID, repo, fp.Number)
 		if err != nil {
 			return err
 		}
-		// A re-read that is older than the webhook it lost the race to
-		// brings back a head the pull request already had: no push (WP-129).
 		var headBefore bool
 		if !fire && old != nil && old.HeadSHA != "" && fp.HeadSHA != "" && fp.HeadSHA != old.HeadSHA {
 			var n int
@@ -309,13 +313,11 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 		lb, _ := json.Marshal(labels)
 		author := effectiveAuthor(fp.Author, fp.Body)
 		if fp.Author == "" || voice.outside(ctx, t, fp.Author) {
-			author = fp.Author // only a Waypoint person's copy names another author (WP-281)
+			author = fp.Author
 		}
 		now := s.nowMS()
 		live := fp.State == "open" || fp.State == "draft"
 		ended = !live && old != nil && (old.State == "open" || old.State == "draft")
-		// Dates the forge didn't send: merging and closing happened now, and
-		// reopening clears them.
 		merged, closed := nullTime(fp.MergedAt), nullTime(fp.ClosedAt)
 		if fp.State == "merged" && merged == nil && (old == nil || old.MergedAt == nil) {
 			merged = now
@@ -324,7 +326,7 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 			closed = now
 		}
 		agent := codingAgent(fp.Body, author)
-		var headAt any // when this head was first seen (WP-133)
+		var headAt any
 		if fp.HeadSHA != "" {
 			headAt = now
 		}
@@ -338,6 +340,9 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 				head_sha = CASE WHEN excluded.head_sha = '' THEN head_sha ELSE excluded.head_sha END,
 				head_repo = CASE WHEN excluded.head_repo = '' THEN head_repo ELSE excluded.head_repo END,
 				head_at = CASE WHEN excluded.head_sha != '' AND (excluded.head_sha != head_sha OR head_at IS NULL) THEN excluded.head_at ELSE head_at END,
+				carried_sha = CASE WHEN excluded.head_sha != '' AND excluded.head_sha != head_sha THEN '' ELSE carried_sha END,
+				carried_from_sha = CASE WHEN excluded.head_sha != '' AND excluded.head_sha != head_sha THEN '' ELSE carried_from_sha END,
+				carried_at = CASE WHEN excluded.head_sha != '' AND excluded.head_sha != head_sha THEN NULL ELSE carried_at END,
 				arm_declined = CASE WHEN arm_declined = 2 AND excluded.state = 'open' AND ((head_sha != '' AND excluded.head_sha NOT IN ('', head_sha)) OR state != 'open')
 					THEN 0 ELSE arm_declined END,
 				state = excluded.state, labels = excluded.labels, updated_at = excluded.updated_at,
@@ -360,8 +365,12 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 		if err != nil || pr == nil {
 			return cmpErr(err, notFound("pull request"))
 		}
-		// From outside, it waits for a person; nothing else hears of it
-		// meanwhile (WP-281).
+		if carry != nil && old != nil && old.HeadSHA == carry.from && pr.HeadSHA == fp.HeadSHA {
+			if err := s.applyCarry(ctx, t, pr.ID, pr.HeadSHA, carry); err != nil {
+				return err
+			}
+			pr.carriedSHA, pr.carriedFromSHA, pr.carriedAt = pr.HeadSHA, carry.contentSHA, ptrTime(sql.NullInt64{Int64: carry.contentAt, Valid: true})
+		}
 		if err := s.screenPull(ctx, t, voice, pr, fp); err != nil {
 			return err
 		}
@@ -371,7 +380,11 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 			}
 			pr.WipAuto = true
 		}
-		// What the forge says about merging, and when (WP-138).
+		if readyEditRuns && old != nil && old.State == "draft" && pr.State == "open" && old.HeadSHA == pr.HeadSHA && !sameSHA(pr.readySHA, pr.HeadSHA) {
+			if err := s.markReadyByEdit(ctx, t, pr, now); err != nil {
+				return err
+			}
+		}
 		headChanged := fp.HeadSHA != "" && (old == nil || old.HeadSHA != fp.HeadSHA)
 		if fp.mergeMute {
 			if err := forgetMergeable(ctx, t, pr.ID); err != nil {
@@ -389,15 +402,11 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 		}
 		out = pr
 		s.recordPRMentions(ctx, t, f.ID, repo, pr.ID, stripWIP(fp.Title)+"\n"+fp.Body)
-		// History; a first sighting (a refresh, or a webhook for a pull
-		// request recorded before) isn't anyone's decision now.
 		history := prHistory(old, pr, fp.actor, now)
 		if err := s.savePREvents(ctx, t, pr, history, attached, old != nil); err != nil {
 			return err
 		}
 		if ended && fp.State == "merged" && attached != 0 {
-			// Those stacked on it move to its base (WP-760); quiet: this is
-			// no news to anyone, only the carrier of that.
 			t.emit(&Event{Kind: EvPRActivity, ProjectID: attached, New: "merged", quiet: true, stackParent: pr.ID, Data: map[string]any{"pr_id": pr.ID}})
 		}
 		if pr.Outside {
@@ -407,7 +416,6 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 			t.emit(&Event{Kind: EvPRActivity, ProjectID: attached, New: history[len(history)-1].kind, Data: map[string]any{"pr_id": pr.ID}})
 		}
 		if fire && live {
-			// Labels added and reviewers asked for (WP-D14 phase 5).
 			for _, l := range addedLabels(old, pr) {
 				for _, pid := range projects {
 					t.emit(&Event{Kind: EvPRLabeled, ProjectID: pid, New: l, Data: prEventData(pr, map[string]any{"label": l})})
@@ -422,14 +430,9 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 		}
 		reason := prChange(old, pr)
 		if reason == "" && old != nil && old.Outside && live && pr.HeadSHA != "" {
-			reason = "opened" // its author is a person after all: what waited happens now
+			reason = "opened"
 		}
 		if !fire {
-			// A new head is news whoever reads it first: a merge check or a
-			// wait that re-reads the pull request before the push webhook
-			// arrives stores the head, and the webhook then sees nothing new
-			// (WP-129). First sightings stay quiet, and so does a stale read
-			// bringing back a head it had before.
 			if reason == "pushed" && !headBefore {
 				for _, pid := range projects {
 					later = append(later, &Event{Kind: EvPRUpdated, ProjectID: pid, New: reason, Data: prEventData(pr, map[string]any{"reason": reason})})
@@ -446,19 +449,15 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 		return nil
 	})
 	if err == nil && len(later) > 0 {
-		// Not under the caller's locks: a rule the push sets off may merge
-		// the pull request, and the merge path re-reads it holding its
-		// merge lock.
 		at := s.now().UTC()
 		for _, e := range later {
 			e.At = at
 		}
-		bg := context.WithoutCancel(ctx)
+		bg := withoutLineLocks(context.WithoutCancel(ctx))
 		s.goBG(func() { s.dispatch(bg, SystemActor(), later) })
 	}
 	if err == nil && ended && out != nil {
-		// What merges after it may merge now (WP-912).
-		bg, merged := context.WithoutCancel(ctx), out
+		bg, merged := withoutLineLocks(context.WithoutCancel(ctx)), out
 		s.goBG(func() { s.nudgeMergeWaiters(bg, merged) })
 	}
 	return out, err
@@ -479,7 +478,7 @@ func prChange(old, cur *PullRequest) string {
 	switch {
 	case !live || cur.HeadSHA == "":
 		return ""
-	case old == nil, old.HeadSHA == "": // a refresh saw it first, without its head
+	case old == nil, old.HeadSHA == "":
 		return "opened"
 	case old.State == "closed" || old.State == "merged":
 		return "reopened"
@@ -498,8 +497,6 @@ func prEventData(pr *PullRequest, extra map[string]any) map[string]any {
 	}
 	return d
 }
-
-// ---- commands ----
 
 // botCommandRE finds "@waypoint review" and friends at the start of a line.
 var botCommandRE = lazyre.New(`(?im)^\s*@waypoint\s+(full review|review|check|pause|resume|help)\b`)
@@ -521,7 +518,7 @@ func (s *Service) onPRComment(ctx context.Context, f *Forge, repo string, number
 		return
 	}
 	if s.prVoice(ctx, f).outside(ctx, s.db.R, c.Author) {
-		return // only Waypoint people command its bots (WP-281)
+		return
 	}
 	projects, err := s.botProjects(ctx, f.ID, repo)
 	if err != nil || len(projects) == 0 {
@@ -533,7 +530,6 @@ func (s *Service) onPRComment(ctx context.Context, f *Forge, repo string, number
 	}
 	pr, err := s.prByNumber(ctx, s.db.R, f.ID, repo, number)
 	if err == nil && (pr == nil || pr.HeadSHA == "") {
-		// Unknown, or only seen by a refresh: its head is needed to review it.
 		var fp *ForgePR
 		if fp, err = cl.GetPR(ctx, f, repo, number); err == nil {
 			pr, err = s.recordPR(ctx, f, repo, fp, false)
@@ -602,12 +598,10 @@ func (s *Service) eventPR(ctx context.Context, e *Event) (*PullRequest, error) {
 	}
 	pr, err := s.prByID(ctx, s.db.R, id)
 	if err == nil && pr.Outside {
-		return nil, errPROutside(pr) // no automation reads it before a person approves it (WP-281)
+		return nil, errPROutside(pr)
 	}
 	return pr, err
 }
-
-// ---- bot runs ----
 
 // BotRun is one job a bot did or will do on a pull request.
 type BotRun struct {
@@ -758,7 +752,6 @@ func (s *Service) ListBotRunsFiltered(ctx context.Context, actor *Actor, project
 	if status == "all" {
 		status = ""
 	}
-	// Runs on a pull request from outside are for people (WP-281).
 	rows, err := s.db.R.QueryContext(ctx, `SELECT `+runCols+` FROM bot_runs r LEFT JOIN automations a ON a.id = r.automation_id
 		WHERE r.project_id = ?
 		AND (? = '' OR (? = 'live' AND r.status IN ('queued','running')) OR r.status = ?)
@@ -793,7 +786,7 @@ func (s *Service) ListBotRunsFiltered(ctx context.Context, actor *Actor, project
 }
 
 func (s *Service) runFindings(ctx context.Context, runID int64) ([]BotFinding, error) {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT `+findingCols+` FROM bot_findings f WHERE f.run_id = ? ORDER BY f.id`, runID)
+	rows, err := s.db.R.QueryContext(ctx, runFindingsSQL, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -846,7 +839,6 @@ func (s *Service) cancelRun(ctx context.Context, actor *Actor, r *BotRun) (*BotR
 	if actor.writesAsAgent() && r.Kind == "review" && sameSHA(r.HeadSHA, r.PR.HeadSHA) && (r.PR.State == "open" || r.PR.State == "draft") {
 		return nil, forbidden("agents can't cancel the review of a pull request's head: a cancelled review counts as done, so it would merge unreviewed; a person can cancel it")
 	}
-	// The row first: a run that finished meanwhile stays as it ended.
 	ended, err := s.endBotRun(ctx, r.ID, "cancelled", "Cancelled by "+actor.User.DisplayName+".", "", nil, "")
 	if err != nil {
 		return nil, err
@@ -890,7 +882,6 @@ func (s *Service) enqueueBotRun(ctx context.Context, projectID int64, automation
 	ob, _ := json.Marshal(opts)
 	var id int64
 	err := s.write(ctx, SystemActor(), func(t *tx) error {
-		// A reply answers one comment: another comment is another run.
 		err := t.QueryRowContext(ctx, `SELECT id FROM bot_runs WHERE project_id = ? AND automation_id IS ? AND pr_id = ? AND kind = ? AND head_sha = ? AND status IN ('queued','running')
 			AND (kind != 'reply' OR comment_id = ?)`,
 			projectID, automationID, pr.ID, kind, pr.HeadSHA, commentID).Scan(&id)
@@ -910,7 +901,7 @@ func (s *Service) enqueueBotRun(ctx context.Context, projectID int64, automation
 	})
 	if err == nil {
 		if kind == "review" {
-			s.skipStaleRuns(ctx) // reviews of older heads still queued
+			s.skipStaleRuns(ctx)
 		}
 		s.kickBots()
 		if kind == "review" {
@@ -920,7 +911,7 @@ func (s *Service) enqueueBotRun(ctx context.Context, projectID int64, automation
 						s.log.WarnContext(ctx, "eval gate failed", "pr", pr.ID, "err", err)
 					}
 				}
-			}) // pending while it waits
+			})
 		}
 	}
 	return id, err
@@ -950,34 +941,25 @@ func (s *Service) endBotRun(ctx context.Context, id int64, status, summary, errT
 	var kind string
 	err := s.write(ctx, SystemActor(), func(t *tx) error {
 		var projectID int64
-		// Stamped under the write lock, so finished_at follows commit order
-		// for the review streak (reviewsDownCheck).
 		args[3] = s.nowMS()
 		// #nosec G202 -- fixed column names only; values are bound
 		err := t.QueryRowContext(ctx, `UPDATE bot_runs SET `+sets+` WHERE id = ? AND status IN ('queued','running') RETURNING project_id, pr_id, kind`, append(args, id)...).Scan(&projectID, &prID, &kind)
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil // finished already (cancelled meanwhile)
+			return nil
 		} else if err != nil {
 			return err
 		}
 		t.emit(&Event{Kind: EvBotRun, ProjectID: projectID, New: status, Data: map[string]any{"run_id": id, "bot_run": id}})
-		// Only a run the streak counts (answered, or every model unavailable): any
-		// other failure leaves the history as it was and must not repeat a notice.
 		if kind == "review" && (status == "done" || (status == "failed" && strings.HasPrefix(errText, providersDownText))) {
-			s.reviewsDownCheck(ctx, t, projectID, prID, id) // reviews keep failing with every model unavailable (WP-214)
+			s.reviewsDownCheck(ctx, t, projectID, prID, id)
 		}
 		return nil
 	})
 	if err == nil && (kind == "review" || kind == "reply") {
-		// The gate follows the review: findings now count, or nothing is pending.
 		if gerr := s.evalGate(context.WithoutCancel(ctx), prID); gerr != nil {
 			s.log.WarnContext(ctx, "review gate", "pull request", prID, "err", gerr)
-			// No merge on a stale gate, but not stuck either: CheckGates
-			// picks a pending gate up again.
 			s.markGatePending(context.WithoutCancel(ctx), prID)
 		} else {
-			// An armed merge waiting for this review waits for quiet now (WP-133).
-			// Not when the gate couldn't be read: the stored state may be stale.
 			s.maybeAutoMerge(context.WithoutCancel(ctx), prID)
 		}
 	}
@@ -986,7 +968,7 @@ func (s *Service) endBotRun(ctx context.Context, id int64, status, summary, errT
 
 // Bot run limits.
 const (
-	botWorkers     = 4 // the gateway key allows 6 at once; the screen and other AI work use the rest
+	botWorkers     = 4
 	botMaxAttempts = 3
 	botRetryAfter  = 10 * time.Minute
 	botRunTimeout  = 40 * time.Minute
@@ -1040,7 +1022,7 @@ func (s *Service) RunBots(ctx context.Context) {
 
 // claimRun takes the oldest queued run that may start now.
 func (s *Service) claimRun(ctx context.Context) (*BotRun, error) {
-	s.skipStaleRuns(ctx) // a push or a merge since queuing: don't spend a slot on it
+	s.skipStaleRuns(ctx)
 	now := s.nowMS()
 	var id int64
 	err := s.db.W.QueryRowContext(ctx, `UPDATE bot_runs SET status = 'running', started_at = ?, attempts = attempts + 1
@@ -1097,17 +1079,24 @@ func (e *errSkip) Error() string { return e.why }
 // errProvidersDown: every model of a pass failed with a provider error, so
 // the run ends instead of walking the chain again, later.
 type errProvidersDown struct {
-	// noBar: the gateway said no model at the review minimum could take it
-	// (no_model_at_bar), which retrying cannot change.
 	noBar bool
 }
 
 func (e *errProvidersDown) Error() string {
 	if e.noBar {
-		return providersDownText + noBarText() + "; not retrying, ask for a review again later"
+		return providersDownText + noBarText() + downGaveUp
 	}
 	return providersDownText + "is unavailable (rate limited, down or timing out); not retrying, ask for a review again later"
 }
+
+// downWaitText turns the text of a run whose models were all unavailable
+// into the one it shows while it waits for its next attempt (WP-1916).
+func downWaitText(text string, at time.Time, next int) string {
+	text = strings.TrimSuffix(text, downGaveUp)
+	return fmt.Sprintf("%s; trying again at %s UTC (attempt %d of %d)", text, at.UTC().Format("15:04"), next, botMaxAttempts)
+}
+
+const downGaveUp = "; not retrying, ask for a review again later"
 
 // noBarText: what a run's error says when no model at the minimum answered.
 func noBarText() string {
@@ -1125,11 +1114,11 @@ func runErrorText(err error, log []ModelAttempt) string {
 	sum := attemptSummary(log)
 	switch {
 	case sum != "" && errors.As(err, &down) && down.noBar:
-		return providersDownText + noBarText() + ": " + sum + "; not retrying, ask for a review again later"
+		return providersDownText + noBarText() + ": " + sum + downGaveUp
 	case sum != "" && errors.As(err, &down):
-		return providersDownText + "was unavailable: " + sum + "; not retrying, ask for a review again later"
+		return providersDownText + "was unavailable: " + sum + downGaveUp
 	case errors.As(err, &down):
-		return down.Error() // its own text, which the streak looks for (reviewsDownCheck)
+		return down.Error()
 	case sum != "" && (errors.Is(err, errAllModelsFailed) || strings.HasPrefix(err.Error(), "every model failed")):
 		return "every model failed: " + sum
 	}
@@ -1216,10 +1205,6 @@ func (s *Service) carryOut(ctx context.Context, r *BotRun) {
 	case err == nil:
 		err = s.finishRun(done, r.ID, "done", res.summary, "", res.log, res.reviewURL)
 	case errors.As(err, &wait) && wait.why == "quota":
-		// The AI key has no requests left today: every try until the reset
-		// fails and spends a request, so it waits for the reset (spread, so
-		// the day's reviews don't all start in one minute), and the wait is
-		// not an attempt.
 		s.log.WarnContext(ctx, "bot run waits for the AI key's daily limit to reset", "run", r.ID, "until", wait.until)
 		lb, _ := json.Marshal(res.log)
 		not := wait.until.Add(time.Duration(r.ID%20) * 30 * time.Second)
@@ -1227,16 +1212,28 @@ func (s *Service) carryOut(ctx context.Context, r *BotRun) {
 			wait.Error(), string(lb), not.UnixMilli(), r.ID)
 	case errors.As(err, &skip):
 		if r.commentID != "" {
-			s.replySkipped(done, r, skip.why) // someone asked: say why nothing came
+			s.replySkipped(done, r, skip.why)
 		}
 		err = s.finishRun(done, r.ID, "skipped", skip.why, "", res.log, "")
 	case errors.Is(ctx.Err(), context.Canceled) && s.bgCtx.Err() == nil:
-		return // cancelled by a person; CancelBotRun recorded it
+		return
 	case s.bgCtx.Err() != nil:
-		return // shutting down: RunBots queues it again on start
+		return
+	case errors.As(err, &down) && !down.noBar && r.Attempts < botMaxAttempts:
+		at := s.now().Add(botRetryAfter * time.Duration(r.Attempts))
+		s.log.WarnContext(ctx, "bot run failed; every model unavailable, will retry", "run", r.ID, "attempt", r.Attempts)
+		lb, _ := json.Marshal(res.log)
+		_, err = s.db.W.ExecContext(done, `UPDATE bot_runs SET status = 'queued', error = ?, log = ?, not_before = ? WHERE id = ? AND status = 'running'`,
+			downWaitText(runErrorText(err, res.log), at, r.Attempts+1), string(lb), at.UnixMilli(), r.ID)
+		if err == nil {
+			// The gate may have passed while the run sat queued past the
+			// review wait; waiting to run again holds it (computeGate).
+			if gerr := s.evalGate(done, r.PR.ID); gerr != nil {
+				s.log.WarnContext(ctx, "review gate", "pull request", r.PR.ID, "err", gerr)
+				s.markGatePending(done, r.PR.ID)
+			}
+		}
 	case errors.As(err, &down):
-		// Every model said it couldn't (rate limits, outages, timeouts): a
-		// later try meets the same, so end it here.
 		s.log.WarnContext(ctx, "bot run failed; every model unavailable", "run", r.ID)
 		s.botFailedReaction(done, r)
 		err = s.finishRun(done, r.ID, "failed", "", runErrorText(err, res.log), res.log, "")
@@ -1256,11 +1253,11 @@ func (s *Service) carryOut(ctx context.Context, r *BotRun) {
 }
 
 // signedOff: an earlier run of this rule (any rule) finished reviewing
-// this head. A review with nothing to say leaves no review on the forge to
+// this head, or carried an earlier review to it (WP-1808). A review with nothing to say leaves no review on the forge to
 // find (signOff), so the runs are asked too.
 func (s *Service) signedOff(ctx context.Context, r *BotRun, sha string, anyRule bool) bool {
-	q := `SELECT count(*) FROM bot_runs WHERE pr_id = ? AND kind = 'review' AND head_sha = ? AND status = 'done' AND id != ?`
-	args := []any{r.PR.ID, sha, r.ID}
+	q := `SELECT count(*) FROM bot_runs WHERE pr_id = ? AND kind = 'review' AND head_sha = ? AND (status = 'done' OR (status = 'skipped' AND summary LIKE ? || '%')) AND id != ?`
+	args := []any{r.PR.ID, sha, carriedPrefix, r.ID}
 	if !anyRule {
 		q += ` AND automation_id IS ?`
 		args = append(args, r.AutomationID)
@@ -1295,8 +1292,6 @@ func (s *Service) botFailedReaction(ctx context.Context, r *BotRun) {
 	_, _ = cl.React(ctx, botForge(f), r.PR.Repo, r.PR.Number, "", "confused")
 }
 
-// ---- the review action ----
-
 // reviewPR reviews the pull request at the run's head and posts one review.
 func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	var res botResult
@@ -1327,23 +1322,31 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	if err != nil {
 		return res, err
 	}
-	// Only a description a Waypoint person wrote, or one approved, is read (WP-281).
-	fp.Body = s.approvedBody(ctx, f, pr, fp)
+	// Only a title and description a Waypoint person wrote, or ones
+	// approved, are read (WP-281).
+	fp.Title, fp.Body = s.approvedTitle(ctx, f, pr, fp), s.approvedBody(ctx, f, pr, fp)
 	if fp.State == "closed" || fp.State == "merged" {
 		return res, &errSkip{"the pull request was " + fp.State}
 	}
 	if fp.HeadSHA != r.HeadSHA {
 		return res, &errSkip{"a newer push (" + short(fp.HeadSHA) + ") replaced " + short(r.HeadSHA)}
 	}
-	ctx = s.botRunnerScope(ctx, r, f, fp) // for chain entries that name a coding agent on a runner (WP-6)
+	ctx = s.botRunnerScope(ctx, r, f, fp)
 	chain := opts.Models
 	if len(chain) == 0 {
 		if chain, err = s.taskChain(ctx, "review"); err != nil {
 			return res, err
 		}
 	}
-	// What the forge's threads say about earlier findings (resolved,
-	// answered, 👎), then whether a push fixed the open ones (WP-D21).
+	if !opts.Force && r.Reason == "pushed" {
+		from, earlier, ok, err := s.carriedHead(ctx, pr.ID, ruleID(r.AutomationID), fp.HeadSHA)
+		if err != nil {
+			return res, err
+		}
+		if ok {
+			return res, &errSkip{carriedSummary(from, earlier)}
+		}
+	}
 	sr, err := s.syncFindings(ctx, f, pr, true)
 	if err != nil {
 		s.log.WarnContext(ctx, "read the review threads", "repo", pr.Repo, "number", pr.Number, "err", err)
@@ -1358,10 +1361,8 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	if !opts.Force {
 		posts, err := cl.ReviewBodies(ctx, f, pr.Repo, pr.Number)
 		if err != nil {
-			return res, fmt.Errorf("check earlier reviews: %w", err) // fail closed: never post twice
+			return res, fmt.Errorf("check earlier reviews: %w", err)
 		}
-		// A rule skips heads it reviewed; someone asking for a review skips
-		// heads any rule reviewed ("full review" forces one).
 		rule := ruleTag(r.AutomationID)
 		if r.Reason == "review" {
 			rule = "*"
@@ -1374,7 +1375,6 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 		return res, &errSkip{"no model is set up to review: choose one under Admin → AI → Review pull requests"}
 	}
 
-	// 👀 while it works, on the pull request and on the comment that asked.
 	eyes, _ := cl.React(ctx, bf, pr.Repo, pr.Number, "", "eyes")
 	var eyesOnComment string
 	if r.commentID != "" {
@@ -1407,7 +1407,7 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	}
 	noise, err := newGlobSet(append(slices.Clone(noisePaths), opts.SkipFiles...))
 	if err != nil {
-		noise, _ = newGlobSet(noisePaths) // saved before it was checked
+		noise, _ = newGlobSet(noisePaths)
 	}
 	var files []fileDiff
 	o := reviewOutcome{private: private}
@@ -1423,7 +1423,7 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 		return res, &errSkip{"nothing reviewable in the diff"}
 	}
 	rules := s.repoReviewRules(ctx, cl, f, pr.Repo, fp.HeadSHA)
-	earlier, rerr := s.prFindings(ctx, s.db.R, pr.ID) // with the verdicts just reached
+	earlier, rerr := s.prFindings(ctx, s.db.R, pr.ID)
 	if rerr != nil {
 		if readFault(rerr) {
 			s.log.WarnContext(ctx, "pr findings failed", "pr", pr.ID, "err", rerr)
@@ -1434,12 +1434,10 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	for i, fd := range files {
 		paths[i] = fd.path
 	}
-	history := s.codeRiskNotes(ctx, f.ID, pr.Repo, paths) // from the repo's code summary (WP-182)
-	intent := s.reviewIntent(ctx, pr.ID)                  // what its tasks are for (WP-382)
+	history := s.codeRiskNotes(ctx, f.ID, pr.Repo, paths)
+	intent := s.reviewIntent(ctx, pr.ID)
 	chunks, dropped := chunkDiff(files)
 	o.dropped = dropped
-	// What this run is made of: each reviewer's arm (context strategy ×
-	// verifier), drawn by measured precision (WP-365).
 	vchain := opts.Verifier
 	if len(vchain) == 0 && !opts.NoVerify {
 		if vchain, err = s.taskChain(ctx, "verify_review"); err != nil {
@@ -1453,17 +1451,12 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	hf := newHeadFiles(ctx, cl, f, pr.Repo, fp.HeadSHA)
 	budget := s.reviewFileBudget(ctx).Chars
 	var noEvidence []droppedFinding
-	// opts.MaxFindings is how many findings are posted (WP-1421): the rest
-	// are kept, counted in the review and read in Waypoint. Only the guard
-	// limits what is kept.
 	show := opts.MaxFindings
 	if show <= 0 || show > findingsGuard {
 		show = reviewDefaultShown
 	}
-	// Every reviewer reviews each part; a part no reviewer could review is
-	// listed as not reviewed.
 	byReviewer := make([][]Finding, len(chains))
-	slotModels := make([]string, len(chains)) // the model that first answered each reviewer
+	slotModels := make([]string, len(chains))
 	defer func() {
 		for _, m := range slotModels {
 			if m != "" {
@@ -1493,14 +1486,12 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 				slotModels[i] = a.model
 			}
 			if len(a.findings) == 0 && a.requestID != "" {
-				o.emptyRequests = append(o.emptyRequests, a.requestID) // reported as no_findings (WP-1230)
+				o.emptyRequests = append(o.emptyRequests, a.requestID)
 			}
 			if a.salvaged > 0 {
 				o.salvagedAnswers++
 				o.salvagedFindings += a.salvaged
 			}
-			// One reviewer's answer past the guard is cut here, so it is
-			// counted here too (WP-1421).
 			raised := normalizeFindings(a.findings, 0)
 			o.guardCut += max(0, len(raised)-findingsGuard)
 			for _, fnd := range raised[:min(len(raised), findingsGuard)] {
@@ -1509,8 +1500,6 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 				if a.requestID != "" {
 					fnd.Requests = []string{a.requestID}
 				}
-				// A quote that isn't in the file is a finding about code that
-				// isn't there: dropped before the verifier spends tokens on it.
 				if fnd.Evidence != "" {
 					path := fnd.File
 					if fd, ok := resolvePath(fnd.File, files); ok {
@@ -1530,7 +1519,7 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 		}
 		if !reviewed {
 			if w := quotaWait(answers); w != nil {
-				return res, w // the key's day is spent: queue it for the reset, not for a retry
+				return res, w
 			}
 			if providersDown(answers) {
 				return res, &errProvidersDown{noBar: anyNoBar(answers)}
@@ -1556,13 +1545,9 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	if err != nil {
 		return res, err
 	}
-	// A trusted reviewer's findings go without a verifier on every arm
-	// (WP-696), so one quota pays for its review.
 	found = s.markTrusted(ctx, found)
 	switch {
 	case len(found) > 0 && !arms[0].verify:
-		// The run's arm has no verifier: what it adds is measured by runs
-		// without it.
 		found = markVerify(found, VerifySkipped)
 	case len(found) > 0 && arms[0].verify:
 		v := s.verifyNewIn(withGatewayRouting(aiContext(ctx, "verify_review"), verifyRouting(r.ID)), vchain, hf, pr.Repo, fp.HeadSHA, found, files)
@@ -1573,7 +1558,6 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 		}
 		found, o.verifiers = v.kept, v.models
 		o.unverified = v.unchecked
-		// Some of what it dropped is posted anyway, so its drops can be judged.
 		dropPost := s.serverNumber(ctx, settingDropPost, defaultDropPost)
 		for _, d := range v.dropped {
 			if s.draw() < dropPost {
@@ -1587,7 +1571,6 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 		found = markVerify(found, VerifyUnchecked)
 	}
 	o.noEvidence = len(noEvidence)
-	// The verifier may have lowered a severity.
 	var lowered int
 	found, lowered = atLeast(found, o.minSev)
 	o.belowMin = below + lowered
@@ -1612,15 +1595,9 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 		}
 	}
 	o.rule = ruleTag(r.AutomationID)
-	// A review with nothing to act on isn't posted: the 👍 below and this
-	// run's record say the head was reviewed, rather than a review whose
-	// only text is "No issues found" for people and agents to open (WP-234).
 	if !signOff(o) {
 		posted, err := cl.PostReview(ctx, bf, pr.Repo, fp, reviewBody(fp.HeadSHA, o), comments)
 		if err != nil && len(comments) > 0 && ctx.Err() == nil {
-			// The forge refused the line comments (a line it doesn't count as
-			// part of the diff): post them in the body instead, except on
-			// private files, whose text must stay off GitHub.
 			s.log.WarnContext(ctx, "forge refused line comments; folding them into the review", "repo", pr.Repo, "number", pr.Number, "err", err)
 			for n, p := range o.placed {
 				if p.placement == "inline" {
@@ -1640,8 +1617,13 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	}
 	if err := s.saveFindings(ctx, r, fp.HeadSHA, o.placed, append(slices.Clone(o.verifyDropped), noEvidence...), o.emptyRequests, private); err != nil {
 		s.log.ErrorContext(ctx, "save findings", "run", r.ID, "err", err)
+		o.unsaved = true
+		// An earlier review of this head (or one carried to it) no longer
+		// stands either: this one's findings, which the gate hasn't seen,
+		// are on the same head, so a later merge-only push must not carry it.
+		s.forgetReviewedHead(context.WithoutCancel(ctx), pr.ID, ruleID(r.AutomationID), fp.HeadSHA)
 	} else if _, err := s.syncFindings(ctx, f, pr, false); err != nil {
-		s.log.WarnContext(ctx, "link findings to their threads", "run", r.ID, "err", err) // the next sync does
+		s.log.WarnContext(ctx, "link findings to their threads", "run", r.ID, "err", err)
 	}
 	shown := 0
 	for _, p := range o.placed {
@@ -1651,12 +1633,12 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 	}
 	tidy()
 	if signOff(o) {
-		if _, err := cl.React(ctx, bf, pr.Repo, pr.Number, "", "+1"); err != nil { // no issues found
+		if _, err := cl.React(ctx, bf, pr.Repo, pr.Number, "", "+1"); err != nil {
 			return res, fmt.Errorf("react to sign off: %w", err)
 		}
 		res.summary = signedOffSummary
 	} else if len(o.placed) == 0 {
-		res.summary = "Nothing found in what was reviewed" // posted, since part was left out
+		res.summary = "Nothing found in what was reviewed"
 	} else {
 		res.summary = fmt.Sprintf("%d finding%s", shown, plural(shown))
 		if o.later > 0 {
@@ -1689,6 +1671,19 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 		res.summary += fmt.Sprintf("; %d below %s not posted", o.belowMin, priority(o.minSev))
 	}
 	res.summary += verified.summary()
+	// A review that left part of the diff unreviewed isn't one a later head
+	// carries (WP-1808): see reviewedWhole.
+	// The diff read at the start must still be the head's: the forge is asked
+	// again, as the diff isn't pinned to a head.
+	if cur, err := s.prByID(ctx, s.db.R, pr.ID); err == nil && reviewedWhole(o) && cur.HeadSHA == fp.HeadSHA {
+		if again, err := cl.GetPR(ctx, f, pr.Repo, pr.Number); err == nil && again != nil && sameSHA(again.HeadSHA, fp.HeadSHA) {
+			since := cur.UpdatedAt
+			if t := cur.contentSince(); t != nil {
+				since = *t
+			}
+			s.noteReviewedHead(context.WithoutCancel(ctx), pr.ID, ruleID(r.AutomationID), fp.HeadSHA, udiff.ChangeHash(diff), res.summary, cur.contentHeadSHA(), since)
+		}
+	}
 	return res, nil
 }
 

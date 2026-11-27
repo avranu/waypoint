@@ -7,35 +7,29 @@ import (
 	"sync"
 )
 
-// A scanner for brace languages (TypeScript, JavaScript, TSX, Rust, Java,
-// Kotlin). It lexes the file once to blank out strings and comments and to
-// match braces, then applies per-language declaration patterns to lines at
-// the right nesting depth. Approximate by design: it finds the declarations
-// people search for, with line ranges, and never fails on odd code.
-
 type bLine struct {
-	code        string // strings/comments blanked
-	comment     string // comment text on this line
+	code        string
+	comment     string
 	onlyComment bool
-	depth       int   // brace depth at line start
-	pdepth      int   // paren/bracket depth at line start
-	opens       []int // indices into the opener list for braces opened here
-	semis       []int // paren depths of the ';' on this line
+	depth       int
+	pdepth      int
+	opens       []int
+	semis       []int
 }
 
 type bOpener struct {
 	line   int
-	close  int // line of the matching '}', or the last line when unmatched
-	pdepth int // paren depth at the brace
+	close  int
+	pdepth int
 }
 
 func lexBrace(lang string, lines []string) ([]bLine, []bOpener) {
 	out := make([]bLine, len(lines))
 	var openers []bOpener
-	var stack []int // opener indices
+	var stack []int
 	pdepth := 0
-	var block bool  // inside /* */
-	var tmpl string // inside a multi-line string: "`", `"""` or a raw-string terminator
+	var block bool
+	var tmpl string
 	jsLike := lang == "typescript" || lang == "tsx" || lang == "javascript"
 	for i, l := range lines {
 		bl := bLine{depth: len(stack), pdepth: pdepth}
@@ -118,7 +112,7 @@ func lexBrace(lang string, lines []string) ([]bLine, []bOpener) {
 					}
 					k++
 				}
-				if k >= len(l) { // not a regex after all
+				if k >= len(l) {
 					code.WriteByte(ch)
 					j++
 					break
@@ -203,7 +197,6 @@ func rustRawStart(s string) int {
 // or 0 when the quote starts a lifetime.
 func rustCharLen(s string) int {
 	if len(s) >= 3 && s[1] != '\\' && s[1] != '\'' {
-		// 'x' with x possibly multi-byte
 		for k := 2; k < len(s) && k <= 5; k++ {
 			if s[k] == '\'' {
 				return k + 1
@@ -241,12 +234,12 @@ type braceRule struct {
 	re        *regexp.Regexp
 	kind      string
 	nameGroup int
-	scope     int // scopeAny, scopeTop or scopeMember
+	scope     int
 	container bool
-	transpar  bool // a container whose members count as top-level (namespace, mod)
-	callWrap  bool // the body is a callback inside the call's parentheses: describe('x', () => {
-	anon      bool // a wrapper with no symbol of its own (an IIFE)
-	raw       bool // match the line as written, strings included (the name is in a string)
+	transpar  bool
+	callWrap  bool
+	anon      bool
+	raw       bool
 	resolve   func(m []string) (name string)
 }
 
@@ -324,7 +317,7 @@ func rustImplName(m []string) string {
 	for _, p := range []string{"&", "'a ", "mut ", "dyn "} {
 		rest = strings.TrimPrefix(rest, p)
 	}
-	if strings.HasPrefix(rest, "<") { // impl<T> Foo<T>: skip the generics
+	if strings.HasPrefix(rest, "<") {
 		depth := 0
 		for k, r := range rest {
 			if r == '<' {
@@ -367,9 +360,9 @@ func scanBrace(lang string, src []byte) Parsed {
 	type cont struct {
 		name        string
 		bodyDepth   int
-		end         int // line index of the closing brace
+		end         int
 		transparent bool
-		pdepth      int // paren depth inside the body (1 for a callback)
+		pdepth      int
 	}
 	var cs []cont
 	for i := range lines {
@@ -385,7 +378,6 @@ func scanBrace(lang string, src []byte) Parsed {
 		if t == "" || b.onlyComment || b.pdepth != base {
 			continue
 		}
-		// imports
 		switch lang {
 		case "typescript", "tsx", "javascript":
 			if b.depth == 0 {
@@ -451,7 +443,6 @@ func scanBrace(lang string, src []byte) Parsed {
 				kind = "method"
 			}
 			sym := Symbol{Name: name, Kind: kind, Parent: parent, Start: i + 1, Decl: i + 1, End: end + 1, Sig: collapse(declHeader(lines, bl, i, end), 200), Exported: braceExported(lang, t, name)}
-			// decorators, annotations and doc comments above
 			for j := i - 1; j >= 0; j-- {
 				tj := strings.TrimSpace(bl[j].code)
 				if bl[j].onlyComment || strings.HasPrefix(tj, "@") || strings.HasPrefix(tj, "#[") {
@@ -525,7 +516,7 @@ func declEnd(bl []bLine, openers []bOpener, i, extra int) int {
 		last = j
 		for _, oi := range bl[j].opens {
 			if o := openers[oi]; o.pdepth == bl[i].pdepth+extra {
-				return o.close // a multi-line body, or one closed on this same line
+				return o.close
 			}
 		}
 		if slices.Contains(bl[j].semis, bl[i].pdepth) {

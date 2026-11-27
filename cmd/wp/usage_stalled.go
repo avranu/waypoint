@@ -9,9 +9,6 @@ import (
 	"text/tabwriter"
 )
 
-// wp usage stalled: agents' quiet background jobs, how their sessions were
-// told and how the spells ended (WP-1045, WP-ADR118).
-
 var usageStalledCmd = &command{
 	name: "stalled", args: "[--days 28] [--user NAME]",
 	summary: "quiet background jobs: how their sessions were told and how the spells ended",

@@ -48,7 +48,6 @@ func TestRewriteLeadsKeepTitlesToOneUntrustedLine(t *testing.T) {
 		if ok, _ := noControl(leads[0], 0); !ok {
 			t.Errorf("%q: a control character or newline survives in the lead %q", title, leads[0])
 		}
-		// The lead itself carries no tag, whatever wraps it after.
 		if untrustedTagRE.MatchString(leads[0]) {
 			t.Errorf("%q: the lead carries a wrapper tag: %q", title, leads[0])
 		}
@@ -61,7 +60,6 @@ func TestRewriteLeadsKeepTitlesToOneUntrustedLine(t *testing.T) {
 		if strings.Count(low, "<untrusted>") != 1 || strings.Count(low, "</untrusted>") != 1 {
 			t.Errorf("%q: the wrapper opens %d and closes %d times in\n%s", title, strings.Count(low, "<untrusted>"), strings.Count(low, "</untrusted>"), ask)
 		}
-		// The lead is one "- " line inside it.
 		in := ask[strings.Index(low, "<untrusted>"):strings.Index(low, "</untrusted>")]
 		bullets := 0
 		for _, l := range strings.Split(in, "\n") {
@@ -93,7 +91,6 @@ func TestPutOffLeadsAreOneUntrustedLine(t *testing.T) {
 		if ok, _ := noControl(l, 0); !ok {
 			t.Errorf("a control character survives in %q", l)
 		}
-		// The lead itself carries no tag, whatever wraps it after.
 		if untrustedTagRE.MatchString(l) {
 			t.Errorf("the lead carries a wrapper tag: %q", l)
 		}
@@ -117,7 +114,6 @@ func TestRewriteLeadsFollowTheActorsAccessToTheTaskNow(t *testing.T) {
 	if got := f.s.rewriteLeads(f.ctx, lee, f.b.ID); len(got) != 1 {
 		t.Fatalf("lee sees both tasks: %q", got)
 	}
-	// The other task moves to a project lee isn't in.
 	if _, err := f.s.db.W.ExecContext(f.ctx, `UPDATE issues SET project_id = ? WHERE id = ?`, sp.ID, f.a.ID); err != nil {
 		t.Fatal(err)
 	}

@@ -1,7 +1,3 @@
-// Small pieces the assistant's Settings sections share: what the deploy
-// pins, reading and writing dot-paths, label/value rows, and restarting
-// Hermes's gateway (System has the button; Channels needs it after a change).
-
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -126,7 +122,6 @@ export function useGatewayRestart(id: number) {
     setLines([])
     try {
       await hermes(id, 'POST', 'gateway/restart')
-      // The child takes a moment to show up as running; give up after 3 min.
       for (let i = 0; i < 180 && alive.current; i++) {
         await new Promise((r) => setTimeout(r, 1000))
         const st = await hermes<ActionStatus>(

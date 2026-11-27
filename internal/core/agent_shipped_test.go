@@ -28,7 +28,6 @@ func TestShippedTaskLeavesTheAgentsQueue(t *testing.T) {
 	}
 	inReview := "In Review"
 
-	// wp ship: the agent that holds it moves it to In Review by its link.
 	if task, err := e.s.AgentNext(e.ctx, opus, AgentQuery{}); err != nil || task == nil || task.Issue.Key != shipped.Key {
 		t.Fatalf("next = %v, %v", task, err)
 	}
@@ -41,7 +40,6 @@ func TestShippedTaskLeavesTheAgentsQueue(t *testing.T) {
 	if d.ClaimedBy != "" || len(d.AgentRuns) != 1 || d.AgentRuns[0].Outcome != "done" {
 		t.Errorf("after ship: claimed by %q, runs %+v", d.ClaimedBy, d.AgentRuns)
 	}
-	// Asking again hands out other work, not the shipped task.
 	task, err := e.s.AgentNext(e.ctx, opus, AgentQuery{})
 	if err != nil || task == nil || task.Issue.Key != other.Key {
 		t.Fatalf("next after ship = %v, %v", task, err)
@@ -58,19 +56,15 @@ func TestShippedTaskLeavesTheAgentsQueue(t *testing.T) {
 		t.Errorf("waiting = %q", waits)
 	}
 
-	// wp done before the merge: the agent's part ends, the task stays.
 	res, err := e.s.AgentDone(e.ctx, opus, shipped.Key, AgentDoneInput{Comment: "PR #7"})
 	if err != nil || res.Finished || res.Waiting != "me/web#7" || res.Status != "In Review" {
 		t.Fatalf("done before merge = %+v, %v", res, err)
 	}
-	// After it merges, wp done finishes it as before.
 	e.setLinkState(l, "merged")
 	if res, err := e.s.AgentDone(e.ctx, opus, shipped.Key, AgentDoneInput{}); err != nil || !res.Finished {
 		t.Fatalf("done after merge = %+v, %v", res, err)
 	}
 
-	// Moved to In Review by its link while the agent held it (not by the
-	// agent: an automation): asking again lets the claim go.
 	held := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Held work", Agent: "claude", Priority: "urgent"})
 	if _, err := e.s.AgentDone(e.ctx, opus, other.Key, AgentDoneInput{}); err != nil {
 		t.Fatal(err)
@@ -90,7 +84,6 @@ func TestShippedTaskLeavesTheAgentsQueue(t *testing.T) {
 	if d := e.get(e.admin, held.Key); d.ClaimedBy != "" {
 		t.Errorf("shipped claim kept by %q", d.ClaimedBy)
 	}
-	// A person moving it back to To Do hands it out again.
 	todo := "todo"
 	if _, err := e.s.UpdateIssue(e.ctx, e.admin, held.Key, IssuePatch{Status: &todo}); err != nil {
 		t.Fatal(err)
@@ -127,7 +120,6 @@ func TestShipFinishesTheRunWhateverMovedItFirst(t *testing.T) {
 		return e.get(e.admin, key)
 	}
 
-	// The rule moved it first: ship's own move finds it there.
 	ruled := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Moved by the rule", Agent: "claude", Priority: "urgent"})
 	const pr1 = "https://github.com/me/web/pull/7"
 	d := ship(ruled.Key, pr1, func() {
@@ -139,8 +131,6 @@ func TestShipFinishesTheRunWhateverMovedItFirst(t *testing.T) {
 		t.Errorf("after the rule and ship: %s, claimed by %q, runs %+v", d.Status.Name, d.ClaimedBy, d.AgentRuns)
 	}
 
-	// The claim lapsed during a long turn: the run expired, ship still
-	// records the finish.
 	long := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Long turn", Agent: "claude", Priority: "urgent"})
 	d = ship(long.Key, "https://github.com/me/web/pull/8", func() {
 		if _, err := e.s.db.W.ExecContext(e.ctx, `UPDATE agent_runs SET ended_at = started_at + 1, outcome = 'expired' WHERE issue_id = ?`, long.ID); err != nil {
@@ -154,7 +144,6 @@ func TestShipFinishesTheRunWhateverMovedItFirst(t *testing.T) {
 		t.Errorf("after a lapsed claim and ship: claimed by %q, runs %+v", d.ClaimedBy, d.AgentRuns)
 	}
 
-	// Another agent's claim stays theirs.
 	other := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Taken by another", Agent: "claude", Priority: "urgent"})
 	d = ship(other.Key, "https://github.com/me/web/pull/9", func() {
 		if _, err := e.s.db.W.ExecContext(e.ctx, `UPDATE issues SET claimed_by = 'openai/codex' WHERE id = ?`, other.ID); err != nil {
@@ -200,7 +189,6 @@ func TestHandedOnTaskLeavesTheAgentsQueue(t *testing.T) {
 		}
 	}
 
-	// The agent takes the held task, then it moves on to In Review.
 	if task, err := e.s.AgentNext(e.ctx, opus, AgentQuery{}); err != nil || task == nil || task.Issue.Key != held.Key {
 		t.Fatalf("next = %v, %v", task, err)
 	}
@@ -226,7 +214,6 @@ func TestHandedOnTaskLeavesTheAgentsQueue(t *testing.T) {
 			t.Errorf("%s waits %q", key, waits[key])
 		}
 	}
-	// A person moving one back to To Do hands it out again.
 	if _, err := e.s.AgentDone(e.ctx, opus, other.Key, AgentDoneInput{}); err != nil {
 		t.Fatal(err)
 	}

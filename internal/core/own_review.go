@@ -9,20 +9,6 @@ import (
 	"time"
 )
 
-// A session's own review (WP-1089, WP-ADR127): an adversarial review the session ran
-// itself, most often an adversarial-review subagent, kept in the task's work
-// log (kind own_review) with the reviewer's whole report and what it was
-// asked. The hook sends it at the subagent's SubagentStop, so the agent
-// spends no turn recording it; wp worklog --review attaches one that ran
-// some other way. Its report is counted like a round's (found, and the
-// items the free model reads out of it), and wp ship takes it as the task's
-// review round: a plain wp ship or --pr records a round as run by it
-// instead of scheduling one (ownReviewRound), and holds the pull request
-// until the session reports what the review found (wp audit report,
-// review_report.go), which is then checked and scored like any round's.
-// Before WP-1320's audit it stood for the round on the session's word: the
-// round was recorded skipped and the pull request opened unscored.
-
 // WorkOwnReview is a session's own adversarial review (stored).
 const WorkOwnReview = "own_review"
 
@@ -50,11 +36,9 @@ func (s *Service) recordOwnReview(ctx context.Context, t *tx, actor *Actor, x *A
 		return nil
 	}
 	if c == nil {
-		return nil // no one task it can be: wp worklog KEY --review attaches it
+		return nil
 	}
 	run, issueID, pid, key := c.run, c.issueID, c.pid, c.key
-	// The hook's outbox replays an event whose POST failed, with its own
-	// time: the same report at the same time is the same review.
 	var seen int
 	if err := t.QueryRowContext(ctx, `SELECT count(*) FROM work_log WHERE kind = ? AND session_id = ? AND issue_id = ? AND created_at = ? AND body = ?`,
 		WorkOwnReview, x.ID, issueID, at, clipText(report, reviewReportMax)).Scan(&seen); err != nil {
@@ -179,7 +163,7 @@ func namedRun(runs []ownReviewRun, text string) *ownReviewRun {
 			continue
 		}
 		if named != nil && named.issueID != runs[i].issueID {
-			return nil // names two of them
+			return nil
 		}
 		if named == nil {
 			named = &runs[i]
@@ -250,8 +234,8 @@ func ownReviewBy(ev *HookEvent) string {
 // ownReview is a session's own review of the gate's task.
 type ownReview struct {
 	id, ended int64
-	found     sql.NullInt64 // as counted from its report; null: not yet
-	attached  bool          // by hand, with wp worklog --review
+	found     sql.NullInt64
+	attached  bool
 }
 
 // ownReviewFor is the newest own review of the gate's task in its session

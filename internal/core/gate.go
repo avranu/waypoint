@@ -1,11 +1,5 @@
 package core
 
-// The review gate (WP-D21). On repos where it is on, Waypoint posts a
-// `waypoint/review` commit status on each pull request's head: pending
-// while a review is queued or running, failure while findings at or above
-// the gate severity are open, success when none are. The forge's branch
-// protection then requires it like any other status.
-
 import (
 	"context"
 	"database/sql"
@@ -14,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Gate states, the words forges use for a commit status.
@@ -24,8 +19,8 @@ const (
 )
 
 const (
-	gateRecheck   = 2 * time.Minute // how often a failing gate is looked at again
-	gateNoteLimit = 140             // GitHub's limit for a status description
+	gateRecheck   = 2 * time.Minute
+	gateNoteLimit = 140
 )
 
 // PRGate is a pull request's review gate as last posted.
@@ -109,22 +104,22 @@ func (s *Service) computeGate(ctx context.Context, pr *PullRequest, sev string) 
 		}
 	}
 	open = len(blocking)
-	var running, queued int
+	var running, queued, down int
 	if err = s.db.R.QueryRowContext(ctx, `SELECT
 		COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END), 0)
-		FROM bot_runs WHERE pr_id = ? AND kind = 'review' AND head_sha = ? AND status IN ('queued','running')`, pr.ID, pr.HeadSHA).Scan(&running, &queued); err != nil {
+		COALESCE(SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN status = 'queued' AND instr(error, ?) = 1 THEN 1 ELSE 0 END), 0)
+		FROM bot_runs WHERE pr_id = ? AND kind = 'review' AND head_sha = ? AND status IN ('queued','running')`, providersDownText, pr.ID, pr.HeadSHA).Scan(&running, &queued, &down); err != nil {
 		return
 	}
-	// A queued review holds the gate only within the repository's review wait,
-	// the same deadline reviewGoing uses; a running one always holds.
+	// The review wait lets go of a review nobody has started, not of one
+	// that ran, found every model unavailable and waits to run again: the
+	// gate must not pass a head whose review just failed (WP-1916).
 	if queued > 0 && s.reviewWaitOver(ctx, pr) {
-		queued = 0
+		queued = down
 	}
 	running += queued
 	var last, lastErr, lastSummary string
-	// No review run for the head is an answer (last stays ""); a failed read
-	// must not read as one: a failed review could pass the gate.
 	if rerr := s.db.R.QueryRowContext(ctx, `SELECT status, error, summary FROM bot_runs WHERE pr_id = ? AND kind = 'review' AND head_sha = ? ORDER BY id DESC LIMIT 1`, pr.ID, pr.HeadSHA).Scan(&last, &lastErr, &lastSummary); rerr != nil && !errors.Is(rerr, sql.ErrNoRows) {
 		return state, note, open, below, rerr
 	}
@@ -132,16 +127,17 @@ func (s *Service) computeGate(ctx context.Context, pr *PullRequest, sev string) 
 	case running > 0:
 		return GatePending, "Review in progress", open, below, nil
 	case last == "failed":
-		note = "The review didn't run (every model failed); comment @waypoint review to try again"
+		const tail = "; comment @waypoint review to try again"
+		reason := "The review didn't run (every model failed)"
 		if lastErr != "" {
-			note = "The review didn't run: " + lastErr + "; comment @waypoint review to try again"
+			reason = clipRunes("The review didn't run: "+lastErr, gateNoteLimit-utf8.RuneCountInString(tail))
 		}
-		return GateFailure, clipRunes(note, gateNoteLimit), open, below, nil
+		return GateFailure, reason + tail, open, below, nil
 	case open > 0:
 		items := make([]string, 0, open)
 		for _, f := range blocking {
 			if f.private {
-				items = append(items, priority(f.Severity)+" (a private file)") // statuses can reach GitHub: no text
+				items = append(items, priority(f.Severity)+" (a private file)")
 			} else {
 				items = append(items, priority(f.Severity)+" "+shortClaim(f.Claim, 32))
 			}
@@ -152,8 +148,7 @@ func (s *Service) computeGate(ctx context.Context, pr *PullRequest, sev string) 
 		return GateSuccess, fmt.Sprintf("No blocking findings (%d below %s)", below, priority(sev)), open, below, nil
 	case total > 0:
 		return GateSuccess, fmt.Sprintf("All %d finding%s resolved", total, plural(total)), open, below, nil
-	case last == "done" && strings.HasPrefix(lastSummary, signedOffSummary):
-		// The head's sign-off: a review with nothing to say isn't posted (WP-234).
+	case last == "done" && strings.HasPrefix(lastSummary, signedOffSummary), last == "skipped" && carriedSignedOff(lastSummary):
 		return GateSuccess, "Reviewed: no issues found", open, below, nil
 	}
 	return GateSuccess, "No open findings", open, below, nil
@@ -162,10 +157,10 @@ func (s *Service) computeGate(ctx context.Context, pr *PullRequest, sev string) 
 // evalGate works out a pull request's gate and posts the status when it
 // changed (or the head did).
 func (s *Service) evalGate(ctx context.Context, prID int64) error {
-	defer forgeLocks.lock(fmt.Sprintf("gate:%d", prID))() // one evaluation at a time: no status or event twice
+	defer forgeLocks.lock(fmt.Sprintf("gate:%d", prID))()
 	pr, err := s.prByID(ctx, s.db.R, prID)
 	if errors.Is(err, ErrNotFound) {
-		return nil // gone: nothing to evaluate
+		return nil
 	}
 	if err != nil {
 		return err
@@ -175,7 +170,7 @@ func (s *Service) evalGate(ctx context.Context, prID int64) error {
 	}
 	enabled, sev, err := s.gateConfigErr(ctx, pr.ForgeID, pr.Repo)
 	if err != nil {
-		return err // an unreadable setting must not read as "gate off" and post success
+		return err
 	}
 	if !enabled {
 		return s.gateOff(ctx, pr)
@@ -189,8 +184,6 @@ func (s *Service) evalGate(ctx context.Context, prID int64) error {
 		_, err = s.db.W.ExecContext(ctx, `UPDATE pull_requests SET gate_checked_at = ? WHERE id = ?`, now, pr.ID)
 		return err
 	}
-	// Read before the status is posted: a failed read after it would record
-	// the change without the event that tells the projects.
 	projects, err := s.projectsOfRepo(ctx, pr.ForgeID, pr.Repo)
 	if err != nil {
 		return fmt.Errorf("read the projects of %s: %w", pr.Repo, err)
@@ -214,7 +207,7 @@ func (s *Service) evalGate(ctx context.Context, prID int64) error {
 		return nil
 	})
 	if err == nil && state == GateSuccess {
-		s.goBG(func() { s.maybeAutoMerge(context.WithoutCancel(ctx), pr.ID) })
+		s.goBG(func() { s.maybeAutoMerge(withoutLineLocks(context.WithoutCancel(ctx)), pr.ID) })
 	}
 	return err
 }
@@ -241,13 +234,13 @@ func (s *Service) postGateStatus(ctx context.Context, pr *PullRequest, state, no
 	}
 	f, err := s.forgeByID(ctx, pr.ForgeID)
 	if errors.Is(err, ErrNotFound) {
-		return nil // no forge to post to; Waypoint still knows the gate
+		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("read the forge to post the %s status: %w", gateContext, err) // not recorded as posted: tried again
+		return fmt.Errorf("read the forge to post the %s status: %w", gateContext, err)
 	}
 	if f.token == "" {
-		return nil // no way to post; Waypoint still knows the gate
+		return nil
 	}
 	target := ""
 	if base := s.BaseURL(); base != "" {
@@ -264,7 +257,7 @@ func (s *Service) postGateStatus(ctx context.Context, pr *PullRequest, state, no
 // after review and comment webhooks, a person's action in Waypoint, an
 // "@waypoint check", and every few minutes while the gate fails.
 func (s *Service) checkPR(ctx context.Context, prID int64, why string) {
-	if err := s.checkPRErr(ctx, prID, why); readFault(err) && !errors.Is(err, ErrNotFound) && !isStatus(err, http.StatusNotFound) { // gone: nothing to check
+	if err := s.checkPRErr(ctx, prID, why); readFault(err) && !errors.Is(err, ErrNotFound) && !isStatus(err, http.StatusNotFound) {
 		s.log.WarnContext(ctx, "check a pull request", "pr", prID, "why", why, "err", err)
 	}
 }
@@ -289,8 +282,6 @@ func (s *Service) checkPRErr(ctx context.Context, prID int64, why string) error 
 			_, err = s.syncFindings(ctx, f, pr, true)
 		}
 		if err != nil {
-			// Stale threads could pass a gate they would fail: the gate is
-			// still evaluated (and posted), but the caller hears of it.
 			s.log.WarnContext(ctx, "sync review threads", "repo", pr.Repo, "number", pr.Number, "why", why, "err", err)
 			if gerr := s.evalGate(ctx, pr.ID); gerr != nil {
 				return gerr
@@ -382,7 +373,7 @@ func (s *Service) SetRepoGate(ctx context.Context, actor *Actor, projectRef stri
 	if err != nil {
 		return err
 	}
-	s.goBG(func() { s.regate(context.WithoutCancel(ctx), forgeID, repo) })
+	s.goBG(func() { s.regate(withoutLineLocks(context.WithoutCancel(ctx)), forgeID, repo) })
 	return nil
 }
 
@@ -402,7 +393,7 @@ func (s *Service) regate(ctx context.Context, forgeID int64, repo string) {
 	}
 	rows.Close()
 	for _, id := range ids {
-		if err := s.evalGate(ctx, id); readFault(err) && !errors.Is(err, ErrNotFound) && !isStatus(err, http.StatusNotFound) { // gone, or the forge no longer has the commit
+		if err := s.evalGate(ctx, id); readFault(err) && !errors.Is(err, ErrNotFound) && !isStatus(err, http.StatusNotFound) {
 			s.log.WarnContext(ctx, "evaluate a pull request's review gate", "pr", id, "repo", repo, "err", err)
 		}
 	}

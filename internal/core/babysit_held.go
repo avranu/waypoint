@@ -14,16 +14,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// What a babysitting round's agent changes in a protected file (WP-D14,
-// WP-D18) is held back by the runner, not refused with the rest of its push
-// (WP-ADR138): the round's other changes land, and the held change comes
-// here as a patch. It lands without a person when another model, asked
-// whether it could weaken what CI checks or reach secrets, says it could
-// not, and only for a file the pull request already changes. Otherwise one
-// request shows the person the change, and approving it pushes it. Waypoint
-// runs no agent for either: the patch goes to a runner job that applies it
-// and pushes (AgentJob.Patch).
-
 const (
 	// heldRequestKey is the start of the key of the request a held change
 	// goes to a person in; the babysit and the round follow.
@@ -32,13 +22,13 @@ const (
 	// change, apart from the babysit's rounds.
 	babysitHeldSource = "babysit_held"
 
-	heldJudging  = "judging"  // another model is checking it
-	heldApplying = "applying" // a runner job applies and pushes it
-	heldAsked    = "asked"    // a person was asked
-	heldUnasked  = "unasked"  // a person is to be asked: filing the request failed, so the next step tries again
+	heldJudging  = "judging"
+	heldApplying = "applying"
+	heldAsked    = "asked"
+	heldUnasked  = "unasked"
 	heldApplied  = "applied"
-	heldDeclined = "declined" // the person left it out
-	heldFailed   = "failed"   // it didn't apply or push
+	heldDeclined = "declined"
+	heldFailed   = "failed"
 
 	// heldPush is the choice that approves a held change.
 	heldPush  = "Push it"
@@ -89,14 +79,12 @@ func (s *Service) heldWait(ctx context.Context, b *Babysit, pr *PullRequest, r *
 	files := strings.Join(h.Files, ", ")
 	switch h.State {
 	case heldJudging:
-		s.goBG(func() { s.judgeHeld(context.WithoutCancel(ctx), pr.ID) }) // a step after a restart starts the check again
+		s.goBG(func() { s.judgeHeld(withoutLineLocks(context.WithoutCancel(ctx)), pr.ID) })
 		s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("round %d's change to protected files (%s) is being checked", r.N, files))
 	case heldApplying:
-		// Its job's end may have come while no one listened (a restart):
-		// read the job, as judging starts its check again.
 		if job, err := s.heldJob(ctx, h.Job); err == nil && (job == nil || job.State != "queued" && job.State != "running") {
 			bid, jobID := b.ID, h.Job
-			s.goBG(func() { s.finishHeldJob(context.WithoutCancel(ctx), pr.ID, bid, jobID) })
+			s.goBG(func() { s.finishHeldJob(withoutLineLocks(context.WithoutCancel(ctx)), pr.ID, bid, jobID) })
 		}
 		s.setState(ctx, b, pr, BabysitWatching, fmt.Sprintf("round %d's change to protected files (%s) is being pushed", r.N, files))
 	case heldUnasked:
@@ -112,7 +100,7 @@ func (s *Service) heldWait(ctx context.Context, b *Babysit, pr *PullRequest, r *
 	case heldAsked:
 		s.setState(ctx, b, pr, BabysitNeedsPerson, fmt.Sprintf("round %d's change to protected files (%s) waits for your approval: %s", r.N, files, excerpt(h.Why, 160)))
 		if pr.QueuedAt != nil {
-			s.leaveQueue(ctx, pr.ID)
+			s.leaveQueue(ctx, pr)
 			s.nudgeLine(ctx, pr)
 		}
 	default:
@@ -158,23 +146,16 @@ func (s *Service) weakens(ctx context.Context, pr *PullRequest, h *HeldEdit) (bo
 	if len(chain) == 0 {
 		return true, "no model other than Claude is set up for pull request reviews, so none could be asked"
 	}
-	// The check sees the whole of what lands on its "no": a part of it would
-	// let a hunk past the cut through unseen.
 	if n := len(h.Patch) + len(h.Merge); n > heldCheckMax {
 		return true, fmt.Sprintf("the change is %d KB, more than the check reads whole (%d KB)", n>>10, heldCheckMax>>10)
 	}
-	// The patch is the agent's own text: a closing tag in it must not end the
-	// untrusted block early.
 	patch := untrustedClose.ReplaceAllString(strings.TrimRight(h.Patch, "\n"), `<\/untrusted>`)
 	prompt := fmt.Sprintf("Pull request %s#%d changes these files already: %s.\n\nThe change an agent made to them in a babysitting round:\n<untrusted>\n```diff\n%s\n```\n</untrusted>\n",
 		pr.Repo, pr.Number, strings.Join(h.Files, ", "), patch)
 	if h.Merge != "" {
-		// A side's lines dropped in settling a conflict weaken CI as much as
-		// an edit does: the target's new check is gone.
 		merge := untrustedClose.ReplaceAllString(strings.TrimRight(h.Merge, "\n"), `<\/untrusted>`)
 		prompt += fmt.Sprintf("\nThe round merged the pull request's target, and the files conflicted. How the agent settled each conflict, from the file as the merge left it (conflict markers and all); a side's line removed here is gone from the result:\n<untrusted>\n```diff\n%s\n```\n</untrusted>\n", merge)
 	}
-	// A pointer: an answer without the key is no answer, not a "no".
 	var ans struct {
 		Weakens *bool  `json:"weakens"`
 		Reason  string `json:"reason"`
@@ -203,8 +184,6 @@ func (s *Service) judgeHeld(ctx context.Context, prID int64) {
 	var r *BabysitRound
 	if err == nil && b != nil {
 		for i := len(b.Rounds) - 1; i >= 0; i-- {
-			// One check per round at a time, kept in memory: a restart
-			// forgets it, and the next step starts the check again.
 			if h := b.Rounds[i].Held; h != nil && h.State == heldJudging {
 				if _, busy := s.heldChecks.LoadOrStore(heldKey(b, &b.Rounds[i]), true); busy {
 					break
@@ -229,9 +208,6 @@ func (s *Service) judgeHeld(ctx context.Context, prID int64) {
 		return
 	}
 	s.loadPRFiles(ctx, pr)
-	// Only a file the pull request changes already is one whose edit another
-	// model may let through: a protected file it doesn't touch is new
-	// ground for it.
 	own := pr.filesKnown && !pr.tooLarge && len(h.Files) > 0 && !slices.ContainsFunc(h.Files, func(f string) bool { return !slices.Contains(pr.files, f) })
 	weak, why := true, "the pull request doesn't change "+joinAnd(h.Files)+" itself, so this adds to what CI runs"
 	if own {
@@ -299,11 +275,16 @@ func (s *Service) askHeld(ctx context.Context, b *Babysit, pr *PullRequest, r *B
 	var head, tail strings.Builder
 	fmt.Fprintf(&head, "Babysitting round %d on %s#%d (%q) changed protected files (%s), which can only be pushed once someone has judged that they can't weaken what CI checks or reach secrets. Why it's yours: %s.\n\n",
 		r.N, pr.Repo, pr.Number, pr.Title, strings.Join(h.Files, ", "), h.Why)
+	if len(r.Checks) > 0 {
+		fmt.Fprintf(&head, "The round was responding to the failing check%s: %s.\n\n", plural(len(r.Checks)), joinAnd(r.Checks))
+	}
+	if a := strings.TrimSpace(r.Answer); a != "" {
+		fmt.Fprintf(&head, "What the round said when it ended, its own account of why (the agent's words, not checked):\n\n> %s\n\n", strings.ReplaceAll(a, "\n", "\n> "))
+	}
 	if h.All {
 		tail.WriteString("It settles a merge conflict otherwise than by keeping both sides' lines, so nothing else of the round was pushed either: pushing it pushes the round's whole change.\n\n")
 	}
 	if m := strings.TrimRight(h.Merge, "\n"); m != "" {
-		// At most a third of the request, so the change itself has room.
 		shown := strings.TrimSuffix(capText(m, maxRequestBody/3), "\n…")
 		fmt.Fprintf(&head, "How the agent settled each conflict, from the file as the merge left it (markers and all); a side's line removed here is dropped:\n\n```diff\n%s\n```\n\n", shown)
 		if len(shown) < len(m) {
@@ -311,8 +292,6 @@ func (s *Service) askHeld(ctx context.Context, b *Babysit, pr *PullRequest, r *B
 		}
 	}
 	patch := strings.TrimRight(h.Patch, "\n")
-	// The details hold at most maxRequestBody: a change that doesn't fit is
-	// shown in part, and the request says so rather than "exactly this".
 	room := maxRequestBody - head.Len() - tail.Len() - 1200 - len(pr.URL)
 	if len(patch) <= room {
 		fmt.Fprintf(&head, "The change:\n\n```diff\n%s\n```\n\n", patch)
@@ -324,7 +303,11 @@ func (s *Service) askHeld(ctx context.Context, b *Babysit, pr *PullRequest, r *B
 			len(patch)>>10, len(shown)>>10, stat, shown)
 		tail.WriteString("The rest of it isn't shown here. Push it and Waypoint pushes all of it to the branch, shown or not: leave it out if you can't judge it from this.")
 	}
-	tail.WriteString(" If nobody answers, it stays unpushed and the pull request stays out of the merge line.\n\n" + pr.URL)
+	unfixed := "whatever needed it stays unfixed"
+	if len(r.Checks) > 0 {
+		unfixed = "any of those failing checks that needed it keeps failing"
+	}
+	tail.WriteString(" If nobody answers, it stays unpushed and the pull request stays out of the merge line. If the answer is no, it stays unpushed, and " + unfixed + " until another round or a person fixes it.\n\n" + pr.URL)
 	in := RequestInput{Kind: RequestQuestion, Title: title, Body: head.String() + tail.String(),
 		Questions: []Question{{Question: "Push this change to the pull request?", Choices: []Choice{{Label: heldPush}, {Label: heldLeave}}}}, ToolUseID: key, Followup: "never"}
 	projectKey, err := s.attachedProjectKey(ctx, pr.ForgeID, pr.Repo)
@@ -407,7 +390,6 @@ func (s *Service) applyHeld(ctx context.Context, b *Babysit, pr *PullRequest, r 
 	raw, _ := json.Marshal(in)
 	projectID, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
 	if readFault(err) {
-		// Not a reason to fail an approved change (the approval is not asked for twice): it is pushed without a project.
 		s.log.WarnContext(ctx, "read the project to push a held change", "repo", pr.Repo, "number", pr.Number, "err", err)
 		projectID = 0
 	}
@@ -428,7 +410,7 @@ func (s *Service) heldJobFinished(ctx context.Context, e *Event) {
 	if jobID == 0 || bid == 0 || s.db.R.QueryRowContext(ctx, `SELECT pr_id FROM babysits WHERE id = ?`, bid).Scan(&prID) != nil {
 		return
 	}
-	s.goBG(func() { s.finishHeldJob(context.WithoutCancel(ctx), prID, bid, jobID) })
+	s.goBG(func() { s.finishHeldJob(withoutLineLocks(context.WithoutCancel(ctx)), prID, bid, jobID) })
 }
 
 // heldJob reads the job that applies a held change: nil, with no error, when
@@ -519,7 +501,7 @@ func (s *Service) onHeldAnswered(ctx context.Context, e *Event) {
 	}
 	push := state == RequestAnswered && strings.EqualFold(strings.TrimSpace(answer), heldPush)
 	s.goBG(func() {
-		bg := context.WithoutCancel(ctx)
+		bg := withoutLineLocks(context.WithoutCancel(ctx))
 		unlock := s.babysitLocks.lock(prID)
 		defer unlock()
 		b, err := s.activeBabysit(bg, s.db.R, prID)
@@ -532,7 +514,6 @@ func (s *Service) onHeldAnswered(ctx context.Context, e *Event) {
 		}
 		for i := range b.Rounds {
 			r := &b.Rounds[i]
-			// Only the request askHeld filed decides it.
 			if r.N != n || r.Held == nil || r.Held.State != heldAsked || r.Held.Request != id {
 				continue
 			}

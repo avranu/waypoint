@@ -13,12 +13,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/hermes"
 )
 
-// The assistant's chat and API, for its owner (WP-ADR1). Waypoint's server
-// holds the one gateway connection (hermes.Gateway) and the owner's
-// browser calls through it; what the browser may ask Hermes for is listed
-// here, so nothing in Hermes that would hand out credentials or reach past
-// the agent is a click away.
-
 // assistantMethods are the gateway methods the owner's browser may call:
 // chatting, its sessions and attachments, models, slash commands,
 // questions, background work. Prefixes end with a dot.
@@ -57,8 +51,6 @@ var assistantPathsRefused = []string{
 }
 
 func assistantPathAllowed(p string) bool {
-	// No dot or empty segments: the prefix rules below must see the path
-	// Hermes will serve (%2e arrives here decoded).
 	for _, seg := range strings.Split(p, "/") {
 		if seg == "" || seg == "." || seg == ".." {
 			return false
@@ -72,8 +64,6 @@ func assistantPathAllowed(p string) bool {
 	if strings.HasSuffix(p, "/open-terminal") {
 		return false
 	}
-	// An entry ending in a slash covers what's under it; any other is a
-	// whole segment and what's under it.
 	return slices.ContainsFunc(assistantPaths, func(a string) bool {
 		if strings.HasSuffix(a, "/") {
 			return strings.HasPrefix(p, a)
@@ -144,7 +134,7 @@ func (s *Service) AssistantAPI(ctx context.Context, actor *Actor, id int64, meth
 	do := c.Do
 	if strings.HasPrefix(path, "files") || strings.HasPrefix(path, "fs/") || strings.HasSuffix(path, "/export") ||
 		strings.HasSuffix(path, "/trigger") || strings.HasPrefix(path, "ops/backup/download") {
-		do = c.DoLong // big files, and cron's run-now, which runs the job inside the request
+		do = c.DoLong
 	}
 	resp, err := do(ctx, method, "/api/"+path, q, body, ctype, extra)
 	return resp, AssistantError(err)
@@ -221,8 +211,6 @@ func gateError(err error) error {
 // GateError is gateError for the API's gate reads.
 func GateError(err error) error { return gateError(err) }
 
-// ---- notifications from the chat ----
-
 // assistantHooks tells the owner, when no tab is watching, that the agent
 // asked them something or finished a reply.
 func (s *Service) assistantHooks(r *assistantRow, gw *hermes.Gateway) {
@@ -270,8 +258,6 @@ func (s *Service) assistantHooks(r *assistantRow, gw *hermes.Gateway) {
 		s.notifyURL(context.Background(), owner, nil, NotifyAssistant, title, excerpt(p.Text, 300), link)
 	}
 }
-
-// ---- links between conversations and issues ----
 
 // AssistantLink ties one of the assistant's sessions to an issue.
 type AssistantLink struct {
@@ -380,7 +366,6 @@ func (s *Service) assistantLinks(ctx context.Context, actor *Actor, where string
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// Only issues the actor can still see.
 	visible := out[:0]
 	for _, l := range out {
 		if l.Issue == nil {

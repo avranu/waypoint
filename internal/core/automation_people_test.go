@@ -18,7 +18,6 @@ func TestAskPersonWaitsForTheirDecision(t *testing.T) {
 	if got := r.run(run.ID); got.Status != RunWaiting {
 		t.Fatalf("status = %s (%s)", got.Status, got.Error)
 	}
-	// The request is ana's, made by the automation; running the step again doesn't make another.
 	r.s.resumeRuns(r.ctx)
 	r.s.DrainAutomationRuns(r.ctx)
 	page, err := r.s.ListRequests(r.ctx, r.ana, RequestQuery{})
@@ -39,7 +38,6 @@ func TestAskPersonWaitsForTheirDecision(t *testing.T) {
 		t.Fatalf("run = %s %q, step %+v", got.Status, got.Error, st)
 	}
 
-	// Dismissing is an answer too: the rule carries on and can read it.
 	run2 := r.manual(a, nil)
 	r.s.DrainAutomationRuns(r.ctx)
 	page, _ = r.s.ListRequests(r.ctx, r.ana, RequestQuery{})
@@ -61,7 +59,6 @@ func TestAskPersonWaitsForTheirDecision(t *testing.T) {
 		t.Errorf("dismissed step = %+v", st)
 	}
 
-	// Nobody answers: the request is taken back, and the step carries on (or fails).
 	run3 := r.manual(a, nil)
 	r.s.DrainAutomationRuns(r.ctx)
 	r.setClock(r.clockNow().Add(2 * time.Hour))
@@ -96,7 +93,6 @@ func TestAskPersonForAnActionAndCreateRequest(t *testing.T) {
 	}})
 	run := r.manual(a, nil)
 	r.s.DrainAutomationRuns(r.ctx)
-	// create_request didn't wait; bob (a viewer) has his request.
 	bobs, _ := r.s.ListRequests(r.ctx, r.bob, RequestQuery{})
 	if len(bobs.Requests) != 1 || bobs.Requests[0].Kind != RequestAction || bobs.Requests[0].Title != "Rotate the key" {
 		t.Fatalf("bob's requests = %+v", bobs.Requests)
@@ -122,7 +118,6 @@ func TestAskPersonForAnActionAndCreateRequest(t *testing.T) {
 		t.Errorf("action step = %+v", got)
 	}
 
-	// Someone who isn't on the project can't be asked into it.
 	stranger := r.user("stranger", false)
 	b := r.addAuto(r.p, "Bad", Rule{Trigger: Trigger{Event: "manual"}, Actions: []Action{
 		{Type: "create_request", Extra: map[string]any{"user": stranger.User.Username, "title": "Hi"}}}})
@@ -131,7 +126,6 @@ func TestAskPersonForAnActionAndCreateRequest(t *testing.T) {
 	if got := r.run(run2.ID); got.Status != RunFailed {
 		t.Errorf("asked a stranger: %s", got.Status)
 	}
-	// Nobody to ask.
 	c := r.addAuto(r.p, "Nobody", Rule{Trigger: Trigger{Event: "manual"}, Actions: []Action{
 		{Type: "create_request", Extra: map[string]any{"user": "nosuchperson", "title": "Hi"}}}})
 	run3 := r.manual(c, nil)

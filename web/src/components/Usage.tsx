@@ -1,7 +1,3 @@
-// How a glossary entry, page or design note was used (WP-D15): looked up
-// by a tool, named in text, or passed over for a word to avoid. Shown on
-// the item's own page.
-
 import { useState, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'

@@ -30,7 +30,6 @@ func newStartFixture(t *testing.T, show bool) *startFixture {
 	t.Helper()
 	x := &startFixture{f: &fakePane{}}
 	x.repo, x.p = restartFixture(t, x.f)
-	// The fixture's old session would look like the new one.
 	_ = os.Remove(filepath.Join(x.f.cfg, "sessions", strconv.Itoa(os.Getpid())+".json"))
 	bin := t.TempDir()
 	_ = os.WriteFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\n"), 0o700) // #nosec G306 -- it has to be executable
@@ -57,7 +56,7 @@ func newStartFixture(t *testing.T, show bool) *startFixture {
 			b, _ := json.Marshal(map[string]any{"pid": fakeNewPID, "sessionId": "new-789", "status": "idle", "tmux": "w:@1.%7"})
 			_ = os.WriteFile(filepath.Join(x.f.cfg, "sessions", strconv.Itoa(fakeNewPID)+".json"), b, 0o600)
 			x.f.started = strings.Join(args, " ")
-			x.f.typed = []string{"(launched)"} // the fake sets a session to work at an Enter after something
+			x.f.typed = []string{"(launched)"}
 		}
 		return "%7\n", nil
 	}
@@ -89,7 +88,7 @@ func TestAutopilotStartLaunchesInTmux(t *testing.T) {
 	if !strings.HasPrefix(x.renamed, "wp-app-2-") {
 		t.Errorf("renamed to %q: a runner restart would end this session", x.renamed)
 	}
-	if x.f.pasted != "APP-2  Second" { // the default prompt is wp next's answer (WP-770)
+	if x.f.pasted != "APP-2  Second" {
 		t.Errorf("pasted %q", x.f.pasted)
 	}
 	if len(x.killed) != 0 {

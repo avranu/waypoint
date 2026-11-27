@@ -41,7 +41,6 @@ func (c *Coverage) Add(r io.Reader) error {
 		if line == "" || strings.HasPrefix(line, "mode:") {
 			continue
 		}
-		// path/to/file.go:12.34,15.2 3 1
 		fields := strings.Fields(line)
 		if len(fields) < 3 {
 			return fmt.Errorf("cover profile line %d: %q", n, line)

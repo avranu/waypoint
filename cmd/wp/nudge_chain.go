@@ -11,21 +11,9 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Search-chain nudges (WP-183, WP-ADR3 §6). Page X7 measured how agents
-// orient: grep -rn NAME, then sed -n A,Bp of the file it hit, then grep -n
-// again, a call each, and every call re-reads the whole context. `wp code
-// find` answers the search with the best lines per file and `wp code show
-// FILE:SYMBOL` the slice, so once a transcript (a session's main thread, or
-// one subagent) has searched chainFinds times in chainCalls searching or
-// slicing calls inside a git checkout, the note names them, once. A
-// transcript that has run wp code or wp brief already knows them and is
-// never told. The counts live in a small file per transcript under
-// <config>/nudge/, read and written only on those calls, and files older
-// than chainKeep are removed when a new one is made.
-
 const (
-	chainFinds = 2 // searches for where something lives
-	chainCalls = 5 // searches and slices together
+	chainFinds = 2
+	chainCalls = 5
 	chainKeep  = 3 * 24 * time.Hour
 	chainKind  = "search-chain"
 )
@@ -43,9 +31,9 @@ type chainState struct {
 
 // The steps of a chain.
 const (
-	stepFind = "find" // a search across files: grep -r, rg, git grep
-	stepLook = "look" // a slice of a known file: sed -n, head, tail, cat, nl, grep over named files, Read
-	stepWP   = "wp"   // wp code or wp brief
+	stepFind = "find"
+	stepLook = "look"
+	stepWP   = "wp"
 )
 
 var reSedPrint = lazyre.New(`^['"]?(\$|\d+)(,(\$|\d+))?p['"]?$`)
@@ -62,7 +50,7 @@ func chainStep(tool, cmd, path string) string {
 	default:
 		return ""
 	}
-	if len(cmd) > 2000 { // a script, not a lookup
+	if len(cmd) > 2000 {
 		return ""
 	}
 	step := ""
@@ -152,16 +140,13 @@ func (c *cli) chainNudge(in *hookEventInput, cwd, step string, canTell bool) boo
 	if path == "" {
 		return false
 	}
-	// The wait is bounded by the time left before the late point (at least
-	// hookLockFloor, so a lock held for a moment does not drop the count), so a
-	// held lock cannot carry the run far past it: no lock, no count, no note.
 	unlock, err := lockFileWithin(path+".lock", hookLockWait(hookLateAfter(hookNudgeTimeout)))
 	if err != nil {
 		return false
 	}
 	defer unlock()
 	if _, err := os.Stat(path); err != nil {
-		pruneChains(filepath.Dir(path), time.Now()) // a new transcript: drop old ones
+		pruneChains(filepath.Dir(path), time.Now())
 	}
 	st := &chainState{}
 	if readJSON(path, st) != nil {
@@ -179,10 +164,6 @@ func (c *cli) chainNudge(in *hookEventInput, cwd, step string, canTell bool) boo
 	case stepLook:
 		st.Looks++
 	}
-	// A run Claude Code has probably cancelled would lose the note it marks
-	// as told. A late run tells anyway (a cancelled run's output is discarded;
-	// an uncancelled one delivers it) but marks it only on its lateTellsMax-th
-	// try (WP-1398). What remains is a cancel landing between the mark and exit.
 	if !st.Done && canTell && st.Finds >= chainFinds && st.Finds+st.Looks >= chainCalls {
 		tell = true
 		if hookLate(hookLateAfter(hookNudgeTimeout)) {
@@ -193,7 +174,7 @@ func (c *cli) chainNudge(in *hookEventInput, cwd, step string, canTell bool) boo
 		}
 	}
 	if writeJSON(path, st) != nil {
-		return false // not saved: telling now could tell again on every call
+		return false
 	}
 	return tell
 }

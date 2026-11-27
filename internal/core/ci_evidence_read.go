@@ -1,9 +1,5 @@
 package core
 
-// Reading the CI evidence (WP-704): wp ci tests (flaky, slow, failing),
-// wp ci coverage and wp ci suppressions. Who may read: anyone who can see a
-// project the repo is attached to, as for CI history.
-
 import (
 	stdcmp "cmp"
 	"context"
@@ -287,7 +283,7 @@ func (s *Service) ciFailingOf(ctx context.Context, r ciRepoRef, since int64, bas
 		a := byTest[id]
 		if a == nil {
 			if outcome != "fail" {
-				byTest[id] = &acc{done: true} // newest is a pass
+				byTest[id] = &acc{done: true}
 				continue
 			}
 			a = &acc{x: CIFailingTest{Repo: r.repo, Package: pkgName, Name: name, LastSHA: sha}}
@@ -376,7 +372,6 @@ func (s *Service) CICoverage(ctx context.Context, actor *Actor, in CICoverageInp
 	if sha != "" && (len(sha) < 4 || strings.Trim(sha, "0123456789abcdef") != "") {
 		return nil, invalid("sha: a commit id or its first 4 or more characters")
 	}
-	// The repo: the one asked for, else the only visible one with coverage.
 	var r *ciRepoRef
 	for i := range repos {
 		var n int
@@ -477,8 +472,6 @@ func (s *Service) coverageRows(ctx context.Context, r *ciRepoRef, c *CICoverage,
 		c.Rows = pkgs
 		return nil
 	}
-	// A package: its own files. A directory: the packages under it. A file:
-	// the file.
 	c.Stmts, c.Covered = 0, 0
 	isPkg := false
 	for _, p := range pkgs {
@@ -495,8 +488,6 @@ func (s *Service) coverageRows(ctx context.Context, r *ciRepoRef, c *CICoverage,
 		return nil
 	}
 	if blob == nil {
-		// The per-file detail is gone: the package's own line, or for a
-		// file nothing.
 		c.FilesGone = true
 		c.Rows = slices.DeleteFunc(c.Rows, func(x CICoverageRow) bool { return x.Path != c.Path })
 		c.Stmts, c.Covered = 0, 0
@@ -555,8 +546,6 @@ func (s *Service) coverageTrend(ctx context.Context, r *ciRepoRef, c *CICoverage
 	c.Trend = []CICoveragePoint{}
 	for _, p := range pts {
 		if c.Path != "" {
-			// As coverageRows counts it: a package alone (not the ones
-			// below it), or a directory's packages.
 			p.Stmts, p.Covered = 0, 0
 			var own *CICoveragePoint
 			prows, err := s.db.R.QueryContext(ctx, `SELECT package, stmts, covered FROM ci_coverage_pkgs WHERE forge_id = ? AND repo = ? AND sha = ?`,
@@ -587,7 +576,7 @@ func (s *Service) coverageTrend(ctx context.Context, r *ciRepoRef, c *CICoverage
 				p.Stmts, p.Covered = own.Stmts, own.Covered
 			}
 			if p.Stmts == 0 {
-				continue // a file, or a path this commit didn't have
+				continue
 			}
 		}
 		c.Trend = append(c.Trend, p)
@@ -736,7 +725,6 @@ func (s *Service) CISuppressions(ctx context.Context, actor *Actor, in CISuppres
 		for _, rule := range c.Rules {
 			counts[[2]string{c.Kind, rule}]++
 		}
-		// The first scan found what was already there: not added.
 		if first >= since && first > firstScan {
 			out.Added = append(out.Added, c)
 		}

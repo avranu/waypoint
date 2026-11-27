@@ -16,19 +16,11 @@ import (
 	"git.jmann.me/claude/waypoint/internal/tracing"
 )
 
-// Whether each scheduled job works is read from what it logs (WP-999,
-// WP-ADR139). A job's context carries its run; a warning or an error logged
-// with that context is counted on the run and kept as a problem: the source
-// (the job), the message and what it was about. Records logged outside a job
-// are counted too, under the request, the event dispatch or "background", so
-// nothing that warns is uncounted. job_health.go writes it all down and
-// tells the admins.
-
 // Sources of log records outside scheduled jobs.
 const (
-	SourceRequests   = "requests"   // an API request
-	sourceEvents     = "events"     // what a write's events set off: notifications, automations
-	sourceBackground = "background" // anything else
+	SourceRequests   = "requests"
+	sourceEvents     = "events"
+	sourceBackground = "background"
 	// The queue workers, which run beside the scheduler.
 	sourceAutomationRuns = "automation runs"
 	sourceBotRuns        = "bot runs"
@@ -37,11 +29,11 @@ const (
 // A run's result. Unclean is warned, failed, crashed or interrupted.
 const (
 	jobClean   = "clean"
-	jobWarned  = "warned"  // logged a warning
-	jobFailed  = "failed"  // logged an error
-	jobSkipped = "skipped" // said it had nothing it could do (jobSkip)
-	jobStopped = "stopped" // cut short: the server was stopping
-	jobCrashed = "crashed" // panicked
+	jobWarned  = "warned"
+	jobFailed  = "failed"
+	jobSkipped = "skipped"
+	jobStopped = "stopped"
+	jobCrashed = "crashed"
 	// jobInterrupted is a run that was going when the server died (killed,
 	// out of memory, a panic elsewhere): found out at the next start.
 	// Unclean.
@@ -53,7 +45,7 @@ type logSourceKey struct{}
 // logSource is where a context's log records are counted.
 type logSource struct {
 	name string
-	run  *jobRun // nil outside a scheduled job
+	run  *jobRun
 }
 
 // WithLogSource marks ctx as name's, so the warnings and errors logged with
@@ -79,9 +71,9 @@ type jobRun struct {
 	warnings int
 	errors   int
 	noted    int
-	note     string // the first error's message, else the first warning's
+	note     string
 	skipped  string
-	busy     bool // the skip was jobBusy
+	busy     bool
 	stopped  bool
 	crashed  string
 }
@@ -154,25 +146,20 @@ type hourCount struct {
 
 // jobState is a scheduled job as the process knows it.
 type jobState struct {
-	name   string
-	period time.Duration
-	// lane is what it waits its turn in: "" the scheduler's loop, else the
-	// name of the background lane, which is its own name when it runs alone.
+	name    string
+	period  time.Duration
 	lane    string
-	running []time.Time // starts of the runs going now
+	running []time.Time
 
-	// since the last save
 	dirty       bool
 	runs, skips int64
-	ended       bool // a run ended
-	cleanRun    bool // a run ended clean
+	ended       bool
+	cleanRun    bool
 
 	lastStart, lastEnd, lastClean time.Time
-	// busySince is when the job began to skip every run for an earlier run
-	// still going (jobBusy); zero when its last run ended any other way.
-	busySince            time.Time
-	lastMS, maxMS        int64
-	lastResult, lastNote string
+	busySince                     time.Time
+	lastMS, maxMS                 int64
+	lastResult, lastNote          string
 }
 
 // maxProblemsPerSource bounds what one source can hold between saves: a
@@ -184,45 +171,25 @@ const otherProblems = "(more problems than are listed one by one)"
 
 // jobLedger counts log records by source and tracks scheduled jobs' runs.
 type jobLedger struct {
-	mu       sync.Mutex
-	now      func() time.Time
-	ring     *LogRing // formats and redacts a record's attributes
-	jobs     map[string]*jobState
-	problems map[problemKey]*problemSeen
-	perSrc   map[string]int
-	hours    map[hourKey]*hourCount
-	// stopping: the server is going down, and what fails from here on fails
-	// because of that.
-	stopping atomic.Bool
-	// saving serializes saves, so two can't write the same counts in the
-	// wrong order.
-	saving sync.Mutex
-	pruned time.Time
-	// noAdminWarned is when the check last said there was no admin to tell.
-	noAdminWarned time.Time
-	// runID is this process's row in server_runs, 0 until beginServerRun.
-	runID int64
-	// startTried is whether beginServerRun has been attempted: a retry must
-	// leave alone what this process's own saves wrote.
-	startTried bool
-	// checkedAt is when the health check last finished; prev is how the
-	// process before this one ended. watchdogTold is when the admins last
-	// heard the check had stopped.
+	mu                      sync.Mutex
+	now                     func() time.Time
+	ring                    *LogRing
+	jobs                    map[string]*jobState
+	problems                map[problemKey]*problemSeen
+	perSrc                  map[string]int
+	hours                   map[hourKey]*hourCount
+	stopping                atomic.Bool
+	saving                  sync.Mutex
+	pruned                  time.Time
+	noAdminWarned           time.Time
+	runID                   int64
+	startTried              bool
 	checkedAt, watchdogTold time.Time
 	prev                    *PreviousRun
-	// savedRunning and savedBusy are what job_health.running_since and
-	// busy_since hold, by job, in ms (0 for none), so a save writes only
-	// what changed.
 	savedRunning, savedBusy map[string]int64
-	// active is the runs going now, whose notes are text to blank.
-	active map[*jobRun]struct{}
-	// blankNew and blankAgain are the secrets learned since the stored text
-	// was last blanked, and the ones before that: a save in flight when a
-	// secret was learned is blanked by the pass after.
-	blankNew, blankAgain []string
-	// learned is every secret blank was told of, in order: a snapshot that
-	// could not be saved is scrubbed of those learned since it was taken.
-	learned []string
+	active                  map[*jobRun]struct{}
+	blankNew, blankAgain    []string
+	learned                 []string
 }
 
 func newJobLedger(ring *LogRing, now func() time.Time) *jobLedger {
@@ -328,7 +295,6 @@ func (l *jobLedger) skip(name string, period time.Duration, at time.Time) {
 	st := l.state(name, period)
 	st.dirty = true
 	st.skips++
-	// The lane's earlier run is still going: a busy skip like jobBusy's.
 	if st.busySince.IsZero() {
 		st.busySince = at
 	}
@@ -349,7 +315,7 @@ func (l *jobLedger) start(name string, period time.Duration, at time.Time) *jobR
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	st := l.state(name, period)
-	st.dirty = true // its row must exist before running_since is written to it
+	st.dirty = true
 	st.running = append(st.running, at)
 	run := &jobRun{name: name, started: at}
 	l.active[run] = struct{}{}
@@ -360,8 +326,6 @@ func (l *jobLedger) end(run *jobRun, at time.Time) {
 	ms := at.Sub(run.started).Milliseconds()
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	// Read under the ledger's lock: a secret blanked meanwhile is not copied
-	// as it was.
 	result, note := run.result()
 	delete(l.active, run)
 	st := l.jobs[run.name]
@@ -375,7 +339,6 @@ func (l *jobLedger) end(run *jobRun, at time.Time) {
 	st.lastStart, st.lastEnd, st.lastMS = run.started, at, ms
 	st.maxMS = max(st.maxMS, ms)
 	st.lastResult, st.lastNote = result, note
-	// A streak of busy skips runs from the first; any other end breaks it.
 	switch {
 	case result != jobSkipped || !run.isBusy():
 		st.busySince = time.Time{}
@@ -394,7 +357,6 @@ func (l *jobLedger) end(run *jobRun, at time.Time) {
 	case jobClean:
 		st.lastClean, st.cleanRun = at, true
 	case jobStopped:
-		// Neither: it didn't finish, and nothing went wrong.
 	default:
 		h.unclean++
 	}
@@ -412,11 +374,8 @@ func (l *jobLedger) record(ctx context.Context, rec slog.Record, with, withTarge
 	if src != nil {
 		source = src.name
 	}
-	at := l.now() // the service's clock, as the runs' times are
+	at := l.now()
 	if rec.Level < slog.LevelWarn || l.calledOff(ctx) {
-		// A failure logged below a warning, or by work that was called off,
-		// still happened: counted, shown, and it is no problem and leaves
-		// the run clean.
 		if rec.Level < slog.LevelWarn && !recordHasErr(rec) {
 			return
 		}
@@ -431,8 +390,6 @@ func (l *jobLedger) record(ctx context.Context, rec slog.Record, with, withTarge
 		return
 	}
 	isErr := rec.Level >= slog.LevelError
-	// The message is kept on disk and shown to admins: a secret that was put
-	// into it is blanked like one in an attribute.
 	msg := excerpt(l.ring.redact(rec.Message), 200)
 	if src != nil && src.run != nil {
 		r := src.run
@@ -491,7 +448,7 @@ func (l *jobLedger) describe(rec slog.Record, with, withTarget, group string) (t
 	rank := len(problemTargets)
 	rec.Attrs(func(a slog.Attr) bool {
 		if a.Key == "stack" {
-			return true // a panic's stack is in the log; a problem's detail is one line
+			return true
 		}
 		if k := slices.Index(problemTargets, a.Key); group == "" && k >= 0 && k < rank {
 			if v := strings.TrimSpace(attrText(a.Value.Resolve())); v != "" {
@@ -529,8 +486,8 @@ func recordHasErr(rec slog.Record) bool {
 type sourceHandler struct {
 	ledger *jobLedger
 	next   slog.Handler
-	attrs  string // from WithAttrs, formatted and redacted
-	target string // from WithAttrs
+	attrs  string
+	target string
 	group  string
 }
 
@@ -589,11 +546,6 @@ func (s *Service) untracedJob(ctx context.Context, name string, period time.Dura
 	defer func() {
 		p := recover()
 		if p != nil {
-			// Recorded, saved, and then it goes on as a panic did before:
-			// the process stops and its supervisor starts a clean one. Going
-			// on with this one would keep whatever the job left half done.
-			// Logged with a context that still counts: a job that panics
-			// as the server stops has still panicked.
 			run.mu.Lock()
 			run.crashed = excerpt(fmt.Sprint(p), 200)
 			run.mu.Unlock()
@@ -635,6 +587,16 @@ func (l *jobLedger) jobsRunning() []JobStatus {
 	}
 	sort.Slice(out, func(a, b int) bool { return out[a].RunningSince.Before(*out[b].RunningSince) })
 	return out
+}
+
+// lastTook is how long the job's last run that ended took (0: none has).
+func (l *jobLedger) lastTook(name string) time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if st := l.jobs[name]; st != nil && st.ended {
+		return time.Duration(st.lastMS) * time.Millisecond
+	}
+	return 0
 }
 
 // busySinces is when each job that is skipping its runs for an earlier one

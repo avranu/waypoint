@@ -20,7 +20,6 @@ func TestPollTakesOnlyTheLanesItAsksFor(t *testing.T) {
 	if w := e.poll(e.admin, r, RunnerPoll{Lanes: []string{}}); w.Job != nil {
 		t.Fatalf("no lanes took job %d", w.Job.ID)
 	}
-	// Busy: light jobs only, so the audit goes ahead of the older command.
 	if w := e.poll(e.admin, r, RunnerPoll{Lanes: []string{LaneLight}}); w.Job == nil || w.Job.ID != au.ID {
 		t.Fatalf("light lane took %+v, want the audit %d", w.Job, au.ID)
 	}
@@ -48,7 +47,6 @@ func TestRunnerShowsItsLastCapacityReport(t *testing.T) {
 	if strings.Contains(c.Reason, "\n") || len(c.Reason) > 200 {
 		t.Errorf("reason not cleaned: %q", c.Reason)
 	}
-	// A report of a level it doesn't know is dropped; the last one stays.
 	e.poll(e.admin, r, RunnerPoll{Capacity: &RunnerCapacity{Level: "melting"}})
 	if got, _ = e.s.GetRunner(e.ctx, e.admin, r.ID); got.Capacity == nil || got.Capacity.Level != "busy" {
 		t.Errorf("capacity after a bad report = %+v", got.Capacity)
@@ -67,12 +65,9 @@ func TestRequestJobsHaveTheirOwnLane(t *testing.T) {
 		return b
 	}(), Source: "request_apply"})
 
-	// Overloaded with a job running: only the request lane.
 	if w := e.poll(e.admin, r, RunnerPoll{Lanes: []string{LaneRequest}}); w.Job == nil || w.Job.ID != run.ID || w.Job.Lane != LaneRequest {
 		t.Fatalf("request lane took %+v, want the command %d in the request lane", w.Job, run.ID)
 	}
-	// The heavy lane (an older runner, or the request lane full) takes a
-	// request's job too, counted as heavy; the older agent job goes first.
 	if w := e.poll(e.admin, r, RunnerPoll{Lanes: []string{LaneHeavy}}); w.Job == nil || w.Job.ID != agent.ID || w.Job.Lane != LaneHeavy {
 		t.Fatalf("heavy lane took %+v, want the agent job %d", w.Job, agent.ID)
 	}
@@ -96,7 +91,6 @@ func TestInboxMessagesHaveTheirOwnLane(t *testing.T) {
 	compact, _ := json.Marshal(MessageJob{CLIID: "abc", Compact: true})
 	msg := e.enqueue(e.admin, RunnerJobInput{Kind: JobMessage, Input: compact, Source: reviewCompactSource, SourceID: 7})
 
-	// Every other lane open: none of them takes the message.
 	if w := e.poll(e.admin, r, RunnerPoll{Lanes: []string{LaneRequest}}); w.Job == nil || w.Job.ID != run.ID {
 		t.Fatalf("request lane took %+v, want the command %d", w.Job, run.ID)
 	}
@@ -109,20 +103,16 @@ func TestInboxMessagesHaveTheirOwnLane(t *testing.T) {
 	if got := e.s.jobWaiting(e.ctx, msg.ID); got != "devhost is online and should take it within seconds. This job is next." {
 		t.Errorf("message waits: %q", got)
 	}
-	// Overloaded, the request lane full: the message lane is still open.
 	if w := e.poll(e.admin, r, RunnerPoll{Lanes: []string{LaneMessage}}); w.Job == nil || w.Job.ID != msg.ID || w.Job.Lane != LaneMessage {
 		t.Fatalf("message lane took %+v, want the compaction %d in the message lane", w.Job, msg.ID)
 	}
 
-	// A runner whose wp has only the request lane (WP-503) takes it there;
-	// one older still, as a light job.
 	if l, ok := claimLane(&Runner{Features: []string{FeatureRequestLane}}, jobNeeds{kind: JobMessage, source: cacheWarmSource}, []string{LaneRequest}); !ok || l != LaneRequest {
 		t.Errorf("request-lane runner: lane %q, %v", l, ok)
 	}
 	if l, ok := claimLane(&Runner{}, jobNeeds{kind: JobMessage, source: cacheWarmSource}, nil); !ok || l != LaneLight {
 		t.Errorf("older runner: lane %q, %v", l, ok)
 	}
-	// A full message lane doesn't spill into another: it frees in seconds.
 	if _, ok := claimLane(&Runner{Features: []string{FeatureRequestLane, FeatureMessageLane}}, jobNeeds{kind: JobMessage, source: reviewCompactSource}, []string{LaneHeavy, LaneLight, LaneRequest}); ok {
 		t.Error("a message was taken outside its lane")
 	}
@@ -144,7 +134,6 @@ func TestReviewPromptJobsUseTheMessageLane(t *testing.T) {
 	review, _ := json.Marshal(AutopilotJob{CLIID: "abc", Dir: "/work", ReviewOf: "WP-1", Review: "review it"})
 	rev := e.enqueue(e.admin, RunnerJobInput{Kind: JobAutopilot, Input: review, Source: autopilotReviewSource, SourceID: 2})
 
-	// Heavy lane full: the review prompt still goes out.
 	if w := e.poll(e.admin, r, RunnerPoll{Lanes: []string{LaneMessage}}); w.Job == nil || w.Job.ID != rev.ID || w.Job.Lane != LaneMessage {
 		t.Fatalf("message lane took %+v, want the review prompt %d", w.Job, rev.ID)
 	}
@@ -154,7 +143,6 @@ func TestReviewPromptJobsUseTheMessageLane(t *testing.T) {
 	if w := e.poll(e.admin, r, RunnerPoll{Lanes: []string{LaneHeavy}}); w.Job == nil || w.Job.ID != next.ID || w.Job.Lane != LaneHeavy {
 		t.Fatalf("heavy lane took %+v, want the restart %d", w.Job, next.ID)
 	}
-	// A runner whose wp has no message lane takes it as before.
 	if l, ok := claimLane(&Runner{Features: []string{FeatureAutopilot}}, jobNeeds{kind: JobAutopilot, source: autopilotReviewSource}, nil); !ok || l != LaneHeavy {
 		t.Errorf("older runner: lane %q, %v", l, ok)
 	}
@@ -206,7 +194,6 @@ func TestQueuedJobSaysWhatItWaitsFor(t *testing.T) {
 	if got := why(later.ID); got != want+" One job is ahead of this one." {
 		t.Errorf("overloaded, second in line: %q", got)
 	}
-	// A request's job waits only for the other ones.
 	a := e.enqueue(e.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("true", "/work"), Source: "request_cell"})
 	b := e.enqueue(e.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("true", "/work"), Source: "request_cell"})
 	for range 2 {
@@ -227,7 +214,6 @@ func TestQueuedJobSaysWhatItWaitsFor(t *testing.T) {
 	if got := why(c.ID); got != "devhost runs 2 approved commands, changes or session messages at once beside its other jobs; it is running 2 approved commands. This job is next." {
 		t.Errorf("request lane full: %q", got)
 	}
-	// Busy, at the heavy limit.
 	e.poll(e.admin, r, RunnerPoll{Lanes: []string{LaneLight}, Capacity: &RunnerCapacity{Limit: 1, Max: 3, Level: "busy", Reason: "load 1.8 per CPU", Heavy: 1}})
 	if got := why(step.ID); got != "devhost takes 1 heavy job at once while it is busy (load 1.8 per CPU); it is running a babysit round. This job is next." {
 		t.Errorf("busy: %q", got)
@@ -235,7 +221,6 @@ func TestQueuedJobSaysWhatItWaitsFor(t *testing.T) {
 }
 
 func TestClaimLaneOfAnOlderRunner(t *testing.T) {
-	// No lanes in the poll: a request's job is counted in its kind's lane.
 	if l, ok := claimLane(&Runner{}, jobNeeds{kind: JobCommand, source: "request_cell"}, nil); !ok || l != LaneHeavy {
 		t.Errorf("older runner: lane %q, %v", l, ok)
 	}
@@ -262,16 +247,12 @@ func TestGatewayAuditsHaveTheirOwnLane(t *testing.T) {
 	}
 	local := e.enqueue(e.admin, RunnerJobInput{Kind: JobAudit, Input: cur})
 
-	// The light lane takes the audit a CLI on the machine runs, not the
-	// gateway's.
 	if w := e.poll(e.admin, r, RunnerPoll{Lanes: []string{LaneHeavy, LaneLight}}); w.Job == nil || w.Job.ID != local.ID {
 		t.Fatalf("heavy and light lanes took %+v, want the cursor audit %d", w.Job, local.ID)
 	}
 	if w := e.poll(e.admin, r, RunnerPoll{Lanes: []string{LaneHeavy, LaneLight}}); w.Job != nil {
 		t.Fatalf("heavy and light lanes took job %d", w.Job.ID)
 	}
-	// The gateway lane, with the machine overloaded (no other lane asked
-	// for), takes as many as the gateway runs and then holds the rest.
 	for i := range GatewayTasksInFlight {
 		if w := e.poll(e.admin, r, RunnerPoll{Lanes: []string{LaneGateway}}); w.Job == nil || w.Job.ID != gws[i].ID || w.Job.Lane != LaneGateway {
 			t.Fatalf("gateway lane, poll %d: took %+v, want %d in the gateway lane", i, w.Job, gws[i].ID)
@@ -284,14 +265,12 @@ func TestGatewayAuditsHaveTheirOwnLane(t *testing.T) {
 	if got := e.s.jobWaiting(e.ctx, last); !strings.Contains(got, "The gateway runs 6 of Waypoint's audits at once and 6 are running") {
 		t.Errorf("waits: %q", got)
 	}
-	// Another runner (an older wp, light lane only) doesn't get past it either.
 	old := e.runner(e.admin, "oldhost", func(r *RunnerRegistration) {
 		r.Features = []string{FeatureAudit, FeatureGatewayAudit}
 	})
 	if w := e.poll(e.admin, old, RunnerPoll{Lanes: []string{LaneHeavy, LaneLight}}); w.Job != nil {
 		t.Fatalf("older runner took job %d past the gateway's limit", w.Job.ID)
 	}
-	// One ends: the next goes.
 	if _, err := e.s.FinishRunnerJob(e.ctx, e.admin, gws[0].ID, RunnerFinish{State: "failed", Error: "stopped"}); err != nil {
 		t.Fatal(err)
 	}

@@ -12,9 +12,6 @@ import (
 	"time"
 )
 
-// wp claims: the tasks this machine thinks it holds, which stale ones to
-// drop, and wp pr link / unlink (WP-162).
-
 const claimMaxAge = 7 * 24 * time.Hour
 
 var claimsCmd = &command{
@@ -151,7 +148,7 @@ func cmdClaims(c *cli, args []string) error {
 		if (sf.project != nil && *sf.project != "") || (sf.all != nil && *sf.all) || os.Getenv("WAYPOINT_PROJECT") != "" {
 			return err
 		}
-		sc = &scope{} // no repo to scope by: the whole machine
+		sc = &scope{}
 	}
 	var rows, dead []claimRow
 	for _, r := range c.claimRows() {
@@ -162,13 +159,11 @@ func cmdClaims(c *cli, args []string) error {
 			rows = append(rows, r)
 		}
 	}
-	if len(dead) > 0 { // local bookkeeping only; the directories stay
+	if len(dead) > 0 {
 		dropped := 0
 		if err := c.updateState(func(s *State) {
 			dropped = 0
 			for _, r := range dead {
-				// Only the claim that was read: another command may have
-				// replaced it since.
 				if cl := s.Claims[r.Dir]; cl != nil && cl.Key == r.Key && cl.ClaimedAt.Equal(r.Since) {
 					delete(s.Claims, r.Dir)
 					dropped++
@@ -228,7 +223,7 @@ func cmdClaimsPrune(c *cli, args []string) error {
 	if *release {
 		for _, r := range drop {
 			if r.Closed || r.Missing {
-				continue // nothing to give back
+				continue
 			}
 			body := map[string]any{"comment": "Released by wp claims prune: the claim in " + r.Dir + " was stale (" + r.Stale + ")."}
 			if a := c.agentFor(r.Key); a != "" {
@@ -256,8 +251,6 @@ func cmdClaimsPrune(c *cli, args []string) error {
 	}
 	return nil
 }
-
-// ---- pull request links ----
 
 var prLinkCmd = &command{
 	name: "link", args: "N KEY",
@@ -322,9 +315,6 @@ func cmdPRUnlink(c *cli, args []string) error {
 		}
 		want[strings.ToUpper(k)] = true
 	}
-	// missing tracks the named keys not found yet; want stays whole, so
-	// unlinking the first named key doesn't open the filter to the rest
-	// (WP-487).
 	missing := maps.Clone(want)
 	removed := 0
 	for _, is := range d.Issues {

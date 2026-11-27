@@ -121,7 +121,6 @@ func (ix *Index) Importers(p string) ([]string, error) {
 		}
 		out = append(out, s)
 	}
-	// source before tests
 	sort.SliceStable(out, func(i, j int) bool { return !isTestPath(out[i]) && isTestPath(out[j]) })
 	return out, rows.Err()
 }

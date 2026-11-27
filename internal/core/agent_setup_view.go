@@ -1,9 +1,5 @@
 package core
 
-// Agent setup as people see it (WP-ADR44 §2, §7): every repo's and
-// machine's agent files, what they add up to, how each compares with the
-// others, Waypoint's own checks, and machines' reports.
-
 import (
 	"context"
 	"database/sql"
@@ -232,7 +228,7 @@ func (s *Service) GetAgentSetup(ctx context.Context, actor *Actor) (*AgentSetup,
 	out.RepoCommon = compareComponents(comps, func(i int, missing []AgentComponent, only map[string]bool) {
 		r := &out.Repos[i]
 		if r.ScannedAt == nil || r.Head == "" {
-			return // unread: nothing to compare
+			return
 		}
 		r.Missing = missing
 		for j := range r.Components {
@@ -526,8 +522,6 @@ func statusRank(s string) int {
 	return 3
 }
 
-// ---- one file ----
-
 // AgentFileContent is one agent file with its text.
 type AgentFileContent struct {
 	AgentFile
@@ -577,8 +571,6 @@ func (s *Service) GetAgentFile(ctx context.Context, actor *Actor, forgeID int64,
 	}
 	return out, nil
 }
-
-// ---- machines ----
 
 // MachineReport is what `wp` reports about the machine it runs on.
 type MachineReport struct {
@@ -707,7 +699,6 @@ func (s *Service) machineReports(ctx context.Context, actor *Actor) ([]AgentMach
 		m.Files = []AgentFile{}
 		for _, f := range fs {
 			m.Files = append(m.Files, AgentFile{Path: f.Path, Kind: f.Kind, Size: f.Size, Lines: lineCount(f.Content), Truncated: f.Truncated})
-			// ~/.claude/ is the home folder's own .claude: read it as a repo's.
 			contents[f.Path], kinds[f.Path] = f.Content, f.Kind
 		}
 		sortAgentFiles(m.Files)

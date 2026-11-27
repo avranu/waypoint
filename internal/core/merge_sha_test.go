@@ -22,13 +22,11 @@ func TestPullRequestKeepsItsMergeCommit(t *testing.T) {
 	if got := se.pr(5).MergeSHA; got != "9999999cccc" {
 		t.Fatalf("merged: merge sha %q", got)
 	}
-	// A later read that doesn't say keeps it.
 	merged.MergeSHA = ""
 	record(merged)
 	if got := se.pr(5).MergeSHA; got != "9999999cccc" {
 		t.Fatalf("kept: merge sha %q", got)
 	}
-	// Merged before the column existed: a sync's listing fills it in.
 	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET merge_sha = '' WHERE id = ?`, se.pr(5).ID); err != nil {
 		t.Fatal(err)
 	}

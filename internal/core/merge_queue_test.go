@@ -67,7 +67,6 @@ func TestMergeQueueFailureLeaves(t *testing.T) {
 	if be.pr(8).ReadyAt != nil {
 		t.Fatal("#8 jumped the queue")
 	}
-	// #7's full run fails: a round, and it stays the front.
 	be.draftChecks(head7, CommitCheck{State: CheckSuccess, ID: 9, Description: "Successful in 16m"}, CommitCheck{State: CheckFailed, ID: 10, Description: "Failing after 20m"})
 	be.rerunFails()
 	if pr := be.pr(7); pr.State != "open" || pr.ReadyAt == nil || pr.QueuedAt == nil || be.babysitOf(7).Round != 1 {
@@ -78,8 +77,6 @@ func TestMergeQueueFailureLeaves(t *testing.T) {
 	if pr := be.pr(8); pr.State != "draft" || pr.ReadyAt != nil {
 		t.Fatalf("#8 marked ready while #7's round works at the front: %+v", pr)
 	}
-	// The round pushes on the ready title, and that head's full run fails
-	// too: back to draft, out of the queue.
 	be.finish(be.babysitOf(7).JobID, true)
 	p7.Title = "Change add-export"
 	be.pushTo(p7, "7777777bbbb")
@@ -118,8 +115,6 @@ func TestMergeQueueStuckFrontStepsAside(t *testing.T) {
 	if pr8.State != "open" || pr8.ReadyAt == nil {
 		t.Fatalf("#8 held behind a front that can't merge: %+v (babysit %q)", pr8, be.babysitOf(8).Wait)
 	}
-	// #7 comes back (the person approved): two are ready, and #7, ready
-	// first, is ahead of #8 but not the other way round.
 	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE babysits SET state = 'watching' WHERE pr_id = ?`, be.pr(7).ID); err != nil {
 		t.Fatal(err)
 	}

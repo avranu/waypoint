@@ -76,7 +76,6 @@ func TestCLIBabysit(t *testing.T) {
 	if out := e.wp("pr", "ack", "c2", "--accept"); out != "c2 accepted (👍)\n" {
 		t.Errorf("accept:\n%q", out)
 	}
-	// A fix not committed yet isn't one.
 	if err := os.WriteFile(filepath.Join(dir, "retry.go"), []byte("package x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +84,6 @@ func TestCLIBabysit(t *testing.T) {
 		t.Errorf("fixed with uncommitted changes: %d %s", code, out)
 	}
 	sh(t, dir, "commit", "-q", "-m", "Limit the retries")
-	// Not pushed yet (the branch here isn't the pull request's head): being fixed.
 	if out := e.wp("pr", "fixed", "c2"); out != "c2 fixing (🚀)\n" {
 		t.Errorf("fixed:\n%q", out)
 	}
@@ -103,7 +101,6 @@ func TestCLIBabysit(t *testing.T) {
 			t.Errorf("status lacks %q:\n%s", want, out)
 		}
 	}
-	// An agent can't lift the hold of a comment still being fixed; a person can.
 	if out, code := e.run("pr", "babysit", "3", "--stop"); code != 1 || !strings.Contains(out, "a person stops this babysit") {
 		t.Errorf("an agent stops it: %d %s", code, out)
 	}
@@ -164,6 +161,14 @@ func TestRoundStatsText(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("stats lack %q:\n%s", want, got)
 		}
+	}
+	got = (&roundStats{Days: 7, Rounds: 2, PRs: 1, AuthorHandoffs: 12, AuthorFixed: 8, AuthorFellBack: 3, AuthorCleared: 1}).text()
+	if want := "Failed first checks handed to the author: 12 (answered with a new head, its checks not counted here, 8; fell back to a round 3; cleared on the same head: passed, closed or stopped, 1; still pending 0)"; !strings.Contains(got, want) {
+		t.Errorf("stats lack %q:\n%s", want, got)
+	}
+	got = (&roundStats{Days: 7, Rounds: 2, PRs: 1, AuthorHandoffs: 1, AuthorFixed: 1, AuthorFixedMedianMinutes: 11.6}).text()
+	if want := "still pending 0); a new head came after 12 minutes at the median\n"; !strings.Contains(got, want) {
+		t.Errorf("stats lack %q:\n%s", want, got)
 	}
 	if got := (&roundStats{Days: 7, Rounds: 2, PRs: 1}).text(); !strings.Contains(got, "--replay classifies them") {
 		t.Errorf("unclassified: %s", got)

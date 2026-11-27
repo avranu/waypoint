@@ -54,11 +54,8 @@ func TestCIHistory(t *testing.T) {
 		return map[string]any{"id": 100 + n, "index_in_repo": n, "workflow_id": "ci.yml", "status": status, "title": title,
 			"created": at(day, created), "started": at(day, created), "stopped": at(day, stopped)}
 	}
-	// Run 4 tests a draft pull request. The forge titles it by the commit's
-	// subject; only the payload says it is a draft (WP-849).
 	draftRun := run(4, "success", "Add", "28", "07:58", "08:01")
 	draftRun["event_payload"] = `{"action":"opened","pull_request":{"title":"WIP: Add"}}`
-	// Run 6's commit subject looks like a draft's, and its pull request isn't.
 	fixRun := run(6, "failure", "WIP: Fix", "28", "10:00", "10:33")
 	fixRun["event_payload"] = `{"action":"synchronized","pull_request":{"title":"Fix"}}`
 	recent := []map[string]any{
@@ -105,7 +102,6 @@ func TestCIHistory(t *testing.T) {
 		t.Errorf("the draft run's tier: %q %v", tier, err)
 	}
 
-	// Read again later: nothing is kept twice; a run re-run since is updated.
 	e.setClock(e.clockNow().Add(5 * time.Minute))
 	a.reply["GET /repos/acme/app/actions/runs?page=1&limit=50"] = map[string]any{"workflow_runs": []map[string]any{
 		run(6, "success", "Fix", "28", "10:00", "11:00"),
@@ -122,7 +118,6 @@ func TestCIHistory(t *testing.T) {
 		t.Errorf("after a second read: %d jobs, want 6", n)
 	}
 
-	// The backfill reads what the forge still lists, once.
 	old := []map[string]any{task(700, 2, "backend", "success", "Old", "22", "09:05", "09:25"), task(701, 2, "lint", "failure", "Old", "22", "09:06", "09:07")}
 	a.reply["GET /repos/acme/app/actions/tasks?page=1&limit=50"] = map[string]any{"workflow_runs": append(recent, old...)}
 	a.reply["GET /repos/acme/app/actions/runs?page=1&limit=50"] = map[string]any{"workflow_runs": []map[string]any{run(2, "failure", "Old", "22", "09:00", "09:25")}}
@@ -139,8 +134,6 @@ func TestCIHistory(t *testing.T) {
 		t.Errorf("a second backfill read the repo again: %d jobs", n)
 	}
 
-	// Merges on main: #1 opened 09:00 merged 10:00; #2 babysat from 09:30,
-	// merged 10:20, after #1, so it took 20 minutes in line.
 	ms := func(day int, hm string) int64 {
 		tm, _ := time.Parse(time.RFC3339, at(map[int]string{27: "27", 28: "28"}[day], hm))
 		return tm.UnixMilli()
@@ -164,13 +157,9 @@ func TestCIHistory(t *testing.T) {
 	if old22.Jobs != 2 || old22.Failed != 1 || old22.Runs != 1 || old22.RunP50 != nil {
 		t.Errorf("the 22nd: %+v", old22)
 	}
-	// Today: 6 jobs (1 failed), 14+10+2+2+10+1 = 39 runner minutes; full
-	// runs 5 and 6 (the draft run 4 isn't one), green in 47m and 60m;
-	// merges 60m and 20m.
 	if today.Jobs != 6 || today.Failed != 1 || today.Busy != 39*60 || today.Runs != 2 || *today.RunP50 != int64(53.5*60) || today.Merges != 2 || *today.MergeP50 != 40*60 {
 		t.Errorf("today: %+v run p50 %v merge p50 %v", today.CIHistoryStats, today.RunP50, today.MergeP50)
 	}
-	// The last 7 days have it all; the 7 before nothing.
 	if h.Now.Jobs != 8 || h.Before.Jobs != 0 || h.Now.WaitP50 == nil {
 		t.Errorf("now %+v before %+v", h.Now, h.Before)
 	}
@@ -178,7 +167,6 @@ func TestCIHistory(t *testing.T) {
 		t.Errorf("jobs: %+v", h.Jobs)
 	}
 
-	// By week; one other repo; someone who can't see the project.
 	if h, err := e.s.CIHistory(e.ctx, e.admin, CIHistoryInput{Days: 14, Bucket: "week"}); err != nil || len(h.Points) != 3 || h.Points[0].At.Weekday() != time.Monday {
 		t.Errorf("weeks: %v %+v", err, h)
 	}
@@ -205,7 +193,6 @@ func TestRunDraft(t *testing.T) {
 	}{
 		{"a draft", `{"pull_request":{"title":"WIP: Add"}}`, true},
 		{"a ready pull request", `{"pull_request":{"title":"Add"}}`, false},
-		// Drafts on the forge, but CI's tier step only stops at "WIP:".
 		{"another draft prefix", `{"pull_request":{"title":"Draft: Add"}}`, false},
 		{"lower case", `{"pull_request":{"title":"wip: Add"}}`, false},
 		{"a push", `{"ref":"refs/heads/main","head_commit":{"message":"WIP: notes"}}`, false},
@@ -247,7 +234,6 @@ func TestRetierCIHistory(t *testing.T) {
 		}
 	}
 	exec(`INSERT INTO project_repos(project_id, forge_id, repo, created_at) VALUES (?, ?, 'acme/app', 0)`, p.ID, f.ID)
-	// Run 4 was a draft's and run 5 not; a run of another repo is also number 4.
 	keep := func(repo string, run, task, test int64) {
 		exec(`INSERT INTO ci_runs(forge_id, repo, number, status, created_at) VALUES (?, ?, ?, 'success', 1)`, f.ID, repo, run)
 		exec(`INSERT INTO ci_jobs(forge_id, repo, task_id, run_number, name, status, started_at, ended_at) VALUES (?, ?, ?, ?, 'backend', 'success', 1, 2)`, f.ID, repo, task, run)
@@ -285,12 +271,10 @@ func TestRetierCIHistory(t *testing.T) {
 		}
 		return strings.Join(got, " ")
 	}
-	// A run with more tests than one write takes.
 	for i := int64(0); i <= ciRetierBatch; i++ {
 		exec(`INSERT INTO ci_tests(id, forge_id, repo, package, name) VALUES (?, ?, 'acme/app', 'many', ?)`, 1000+i, f.ID, strconv.FormatInt(i, 10))
 		exec(`INSERT INTO ci_test_runs(test_id, task_id, sha, outcome, ms, at) VALUES (?, 40, 'abc', 'pass', 1, 1)`, 1000+i)
 	}
-	// The forge not answering isn't an answer: the pass comes back to the repo.
 	e.s.RetierCIHistory(e.ctx)
 	var marked int
 	if err := e.s.db.R.QueryRowContext(e.ctx, `SELECT count(*) FROM server_settings WHERE key LIKE ?`, ciRetierKey+"%").Scan(&marked); err != nil || marked != 0 {
@@ -309,14 +293,12 @@ func TestRetierCIHistory(t *testing.T) {
 		t.Errorf("after the re-tier:\n got %s\nwant %s", got, want)
 	}
 
-	// Once per repo: a later run that the forge now calls a draft stays put.
 	a.reply[list] = map[string]any{"workflow_runs": []map[string]any{{"index_in_repo": 5, "status": "success", "event_payload": `{"pull_request":{"title":"WIP: Add"}}`}}}
 	e.s.RetierCIHistory(e.ctx)
 	if got := tiers(); got != want {
 		t.Errorf("a second pass changed rows:\n got %s\nwant %s", got, want)
 	}
 
-	// A job whose run the forge's short list has dropped keeps its run's tier.
 	drafts, err := e.s.keptDraftRuns(e.ctx, f.ID, "acme/app", []ActionTask{{RunNumber: 4}, {RunNumber: 5}}, nil)
 	if err != nil {
 		t.Fatal(err)

@@ -13,12 +13,12 @@ import "strings"
 // read as theirs; a template's ${…} is read as template text.
 func StripComments(line string, open byte) (string, string, byte) {
 	var b strings.Builder
-	quote := byte(0) // the string or literal the scan is inside: " ' ` or /
+	quote := byte(0)
 	if open == '`' {
 		quote = '`'
 	}
 	inBlock := open == '*'
-	inClass := false // inside a regex's [...]
+	inClass := false
 	for i := 0; i < len(line); i++ {
 		c := line[i]
 		switch {

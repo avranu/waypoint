@@ -58,7 +58,6 @@ func ciDoctorText(d *core.CIDoctor, repo string, verbose bool) string {
 			}
 		}
 	}
-	// Only where CI is stuck (WP-544): one line, the first that applies.
 	for _, u := range d.UrgentLane {
 		if match(u.Repo) {
 			fmt.Fprintf(&o, "\nUrgent lane: %s\n", u.Text)

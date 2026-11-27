@@ -17,9 +17,9 @@ type goModule struct{ path, dir string }
 // resolver maps import specs to files in the checkout.
 type resolver struct {
 	root     string
-	paths    map[string]bool     // every indexed path
-	goDirs   map[string]bool     // directories holding Go files
-	suffixes map[string][]string // path suffix (a/b.py) -> paths ending in it, built on demand
+	paths    map[string]bool
+	goDirs   map[string]bool
+	suffixes map[string][]string
 	mods     []goModule
 	modsDone bool
 }
@@ -217,7 +217,7 @@ func (ix *Index) resolveImports(tx *sql.Tx) error {
 	for _, p := range todo {
 		key := [3]string{p.path, p.lang, p.sp}
 		if p.lang == "go" || p.lang == "python" && !strings.HasPrefix(p.sp, ".") {
-			key[0] = "" // the answer doesn't depend on the importing file
+			key[0] = ""
 		}
 		t, ok := cache[key]
 		if !ok {

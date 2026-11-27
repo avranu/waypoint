@@ -5,8 +5,6 @@ import (
 	"testing"
 )
 
-// Fixes from the adversarial review of the Agents page (WP-D15).
-
 // batch claims related work only where agents may take new work.
 func TestBatchSkipsPausedProjects(t *testing.T) {
 	e := newEnv(t)
@@ -64,7 +62,6 @@ func TestKnowledgeUseVisibility(t *testing.T) {
 	}
 	alice, bob := e.user("alice", false), e.user("bob", false)
 
-	// Alice's personal page names the global term and its word to avoid.
 	if _, err := e.s.CreatePage(e.ctx, alice, PageInput{Title: str("Notes"), Body: str("a zebra, not a horse")}); err != nil {
 		t.Fatal(err)
 	}
@@ -72,8 +69,6 @@ func TestKnowledgeUseVisibility(t *testing.T) {
 		t.Errorf("bob sees uses from alice's private page: %+v", got.Counts)
 	}
 
-	// Bob, in another project only, names the pilot project's decision by
-	// code: nothing about it shows in his counts.
 	other := e.project(bob, "Other", "")
 	code := u.page.Code
 	if code == "" {
@@ -87,7 +82,6 @@ func TestKnowledgeUseVisibility(t *testing.T) {
 	if ov.Totals.Mentions != 0 || ov.Totals.ItemsUsed != 0 {
 		t.Errorf("bob's totals reveal a page he can't read: %+v", ov.Totals)
 	}
-	// Robin, who can read both, sees it.
 	if got := u.usage(u.person, KPage, u.page.ID); got.Counts.Mentions != 1 {
 		t.Errorf("robin sees %d mentions of the page, want 1", got.Counts.Mentions)
 	}

@@ -122,16 +122,16 @@ func TestKitTargeting(t *testing.T) {
 	}{
 		{nil, "a/b", []string{"X"}, true},
 		{[]string{"*"}, "a/b", nil, true},
-		{[]string{"Harbor/*"}, "harbor/Quarry", nil, true}, // case-insensitive
+		{[]string{"Harbor/*"}, "harbor/Quarry", nil, true},
 		{[]string{"Harbor/*"}, "Robin/Quarry", nil, false},
 		{[]string{"Harbor/*", "!Harbor/Harbor-docs"}, "Harbor/Harbor-docs", nil, false},
 		{[]string{"Harbor/*", "!Harbor/Harbor-docs"}, "Harbor/Harbor", nil, true},
-		{[]string{"!Harbor/Harbor"}, "Robin/agent-kit", nil, true}, // only exclusions: everything else
+		{[]string{"!Harbor/Harbor"}, "Robin/agent-kit", nil, true},
 		{[]string{"!Harbor/Harbor"}, "Harbor/Harbor", nil, false},
-		{[]string{"WP"}, "claude/waypoint", []string{"WP"}, true}, // a project key
+		{[]string{"WP"}, "claude/waypoint", []string{"WP"}, true},
 		{[]string{"wp"}, "claude/waypoint", []string{"WP"}, true},
 		{[]string{"WP"}, "claude/other", []string{"APP"}, false},
-		{[]string{"*", "!APP"}, "Harbor/Harbor", []string{"APP", "WP"}, false}, // excluded through one of its projects
+		{[]string{"*", "!APP"}, "Harbor/Harbor", []string{"APP", "WP"}, false},
 		{[]string{"Robin/*-kit"}, "Robin/agent-kit", nil, true},
 	}
 	for _, c := range cases {
@@ -165,8 +165,6 @@ func TestKitTargeting(t *testing.T) {
 	if got := names(k.resolve("acme/secret", []string{"AC"})); !slices.Equal(got, []string{"waypoint"}) {
 		t.Fatalf("acme/secret: %v", got)
 	}
-	// A repo attached to no project gets nothing, but still learns what the
-	// kit manages.
 	r = k.resolve("someone/else", nil)
 	if r.Attached || len(r.Plugins) != 0 || len(r.Notes) != 0 || len(r.All) != 5 || r.CompactWindow != 0 {
 		t.Fatalf("unattached: %+v", r)
@@ -299,14 +297,13 @@ func (k *kitEnv) setSource() {
 	if _, err := k.s.SetKitSource(k.ctx, k.admin, k.repoID); err != nil {
 		k.t.Fatal(err)
 	}
-	k.s.Wait() // the read EvKitSourceSet sets off
+	k.s.Wait()
 }
 
 func TestKitReadFromTheForge(t *testing.T) {
 	k := newKitEnv(t)
 	sam := k.user("sam", false)
 
-	// No kit yet: an empty answer, not an error.
 	info, err := k.s.GetKit(k.ctx, sam)
 	if err != nil || info.Configured || info.CanManage {
 		t.Fatalf("no kit: %+v %v", info, err)
@@ -314,7 +311,6 @@ func TestKitReadFromTheForge(t *testing.T) {
 	if r, err := k.s.ResolveKit(k.ctx, sam, "claude/waypoint"); err != nil || len(r.Plugins) != 0 {
 		t.Fatalf("resolve without a kit: %+v %v", r, err)
 	}
-	// Only admins pick the kit, and not through an agent.
 	if _, err := k.s.SetKitSource(k.ctx, sam, k.repoID); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("a member picked the kit: %v", err)
 	}
@@ -346,14 +342,12 @@ func TestKitReadFromTheForge(t *testing.T) {
 		t.Fatalf("reach: %+v", info.Reach)
 	}
 
-	// The same head again: nothing is read.
 	reads := k.fake.reads
 	k.s.RefreshKit(k.ctx)
 	if k.fake.reads != reads {
 		t.Fatalf("read again at the same commit: %d → %d", reads, k.fake.reads)
 	}
 
-	// A push breaks kit.toml: the last good kit stays, with the errors.
 	k.fake.mu.Lock()
 	k.fake.head = "2222222222222222222222222222222222222222"
 	k.fake.files["kit.toml"] = "[plugins.nope]\n"
@@ -367,7 +361,6 @@ func TestKitReadFromTheForge(t *testing.T) {
 	if r, _ := k.s.ResolveKit(k.ctx, sam, "claude/waypoint"); r.Commit != "1111111111111111111111111111111111111111" || len(r.Plugins) == 0 {
 		t.Fatalf("resolve after a broken push: %+v", r)
 	}
-	// Fixed: the new commit is the kit.
 	k.fake.mu.Lock()
 	k.fake.head = "3333333333333333333333333333333333333333"
 	k.fake.files["kit.toml"] = fixtureKitTOML
@@ -403,7 +396,6 @@ func TestKitCheckoutsAndRollout(t *testing.T) {
 	report(sam, KitReport{Machine: "laptop", Path: "/src/old", Repo: "claude/waypoint", KitCommit: "0000000"})
 	report(k.admin, KitReport{Machine: "devhost", Path: "/p/ul", Repo: "Harbor/Harbor", KitCommit: head,
 		Drift: []KitDrift{{Plugin: "harbor", What: "disabled here by hand"}, {What: " "}}})
-	// The same checkout again replaces its report.
 	report(sam, KitReport{Machine: "laptop", Path: "/src/waypoint", Repo: "claude/waypoint", KitCommit: head, Plugins: []string{"waypoint", "gpu"}})
 	if err := k.s.ReportKitCheckout(k.ctx, sam, KitReport{Path: "/x"}); !IsInvalid(err) {
 		t.Fatalf("a report without a machine: %v", err)
@@ -425,7 +417,6 @@ func TestKitCheckoutsAndRollout(t *testing.T) {
 		t.Fatalf("drift: %+v", drifted)
 	}
 
-	// Rolling out: admins only, onto their own online runners.
 	if _, err := k.s.RolloutKit(k.ctx, sam); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("a member rolled out: %v", err)
 	}
@@ -495,8 +486,6 @@ func TestKitAddOpensAPullRequest(t *testing.T) {
 		t.Fatalf("pr: %+v", pr)
 	}
 
-	// A hook into a new plugin: hooks.json is new, and the marketplace
-	// gains the plugin.
 	res, err = k.s.AddToKit(k.ctx, sam, KitAddInput{Kind: "hook", Plugin: "python", Name: "format_python", Description: "Python formatting",
 		Files: []KitAddFile{{Path: "format_python.sh", Content: "ruff format\n"}},
 		Hooks: `{"hooks":{"PostToolUse":[{"matcher":"Edit","hooks":[{"type":"command","command":"bash ${CLAUDE_PLUGIN_ROOT}/hooks/format_python.sh"}]}]}}`})

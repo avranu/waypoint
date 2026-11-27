@@ -1,18 +1,5 @@
 package core
 
-// A forge still checking (WP-138). Forgejo and Gitea answer mergeable=false
-// while they work out whether a pull request merges: after a push, after its
-// base moved, or while their patch-checker queue is backed up. That "no" is
-// not a conflict, and a merge tried meanwhile is refused with "Please try
-// again later". So a "no" is only believed once a read some time after the
-// head or base changed repeats it (or a long time has passed); until then
-// it is "still checking": readiness says so, `wp pr wait` keeps waiting,
-// babysitting sends nobody to fix it. Pull requests someone depends on
-// (armed, babysat, waited on) are read again soon instead of at the next
-// sync, and an armed merge the forge refused as "try again later" is tried
-// again with backoff. A pull request titled work in progress gets "no"
-// whatever its state, so its answer is not recorded at all (WP-171).
-
 import (
 	"context"
 	"errors"
@@ -53,7 +40,7 @@ func (p *PullRequest) mergeState(now time.Time) (conflict, checking bool) {
 		}
 	}
 	switch {
-	case since.IsZero(): // recorded before Waypoint kept track
+	case since.IsZero():
 		return true, false
 	case now.Sub(since) >= mergeCheckingLimit:
 		return true, false
@@ -73,7 +60,6 @@ func (s *Service) noteMergeable(ctx context.Context, x queryer, prev *PullReques
 		_, err := x.ExecContext(ctx, `UPDATE pull_requests SET mergeable = 1, mergeable_read_at = ?, mergeable_since = NULL, recheck_at = NULL, recheck_n = 0 WHERE id = ?`, now, prev.ID)
 		return err
 	case read != nil:
-		// A new "no": the first read, or after a yes, or for a new head.
 		fresh := headChanged || prev.Mergeable == nil || *prev.Mergeable
 		var since any
 		if prev.mergeSince != nil {
@@ -86,7 +72,6 @@ func (s *Service) noteMergeable(ctx context.Context, x queryer, prev *PullReques
 			recheck_at = CASE WHEN ? THEN NULL ELSE recheck_at END, recheck_n = CASE WHEN ? THEN 0 ELSE recheck_n END WHERE id = ?`, now, since, fresh, fresh, prev.ID)
 		return err
 	case headChanged:
-		// Nothing read for the new head: the old answer is no longer news.
 		_, err := x.ExecContext(ctx, `UPDATE pull_requests SET mergeable_since = ?, recheck_at = NULL, recheck_n = 0 WHERE id = ?`, now, prev.ID)
 		return err
 	}

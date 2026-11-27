@@ -16,7 +16,6 @@ import (
 func TestOpenOddPathAndBackup(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	// Characters that mean something in a URI must stay part of the name.
 	path := filepath.Join(dir, "my #1 db?.sqlite")
 	d, err := Open(ctx, path)
 	if err != nil {
@@ -32,7 +31,6 @@ func TestOpenOddPathAndBackup(t *testing.T) {
 	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
 		t.Errorf("database mode %v", fi.Mode().Perm())
 	}
-	// Backups run on the read pool while a write transaction is open.
 	tx, err := d.W.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -51,9 +49,42 @@ func TestOpenOddPathAndBackup(t *testing.T) {
 	}
 }
 
+func TestOpenTwiceSkipsAppliedMigrations(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "reopen.db")
+	d, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var count1 int
+	if err := d.R.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&count1); err != nil || count1 == 0 {
+		t.Fatalf("initial migrations: %d %v", count1, err)
+	}
+	if _, err := d.W.ExecContext(ctx, `INSERT INTO projects(id, key, name, created_at, updated_at) VALUES (1, 'REOP', 'Reopen', 0, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d2, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("re-open failed: %v", err)
+	}
+	defer d2.Close()
+	var count2 int
+	if err := d2.R.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&count2); err != nil || count2 != count1 {
+		t.Fatalf("migrations after reopen = %d, want %d (err=%v)", count2, count1, err)
+	}
+	var key string
+	if err := d2.R.QueryRowContext(ctx, `SELECT key FROM projects WHERE id = 1`).Scan(&key); err != nil || key != "REOP" {
+		t.Fatalf("row after reopen = %q %v", key, err)
+	}
+}
+
 func TestRebuildMigrationKeepsDependants(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "rebuild.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "rebuild.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +116,6 @@ ALTER TABLE p_new RENAME TO p;`
 	if _, err := d.W.ExecContext(ctx, `INSERT INTO p VALUES (2, 'b')`); err != nil {
 		t.Fatal(err)
 	}
-	// Broken references abort the migration.
 	bad := noForeignKeys + "\nINSERT INTO c VALUES (2, 99);"
 	if err := apply(ctx, d.W, "test_bad", bad); err == nil {
 		t.Error("migration leaving a dangling reference was applied")
@@ -96,7 +126,7 @@ ALTER TABLE p_new RENAME TO p;`
 // and leaves repos attached since alone.
 func TestPostCommentsOffForOldRepos(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +169,7 @@ func TestPostCommentsOffForOldRepos(t *testing.T) {
 
 func TestDefaultTagsBackfill(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,13 +233,13 @@ func TestAttachmentsAnywhereMigration(t *testing.T) {
 	}
 	exec(`INSERT INTO users(id, username, email, password_hash, created_at, updated_at) VALUES (1, 'robin', 'j@example.com', '', 0, 0)`)
 	exec(`INSERT INTO projects(id, key, name, created_at, updated_at) VALUES (1, 'WEB', 'Web', 0, 0)`)
-	exec(`PRAGMA foreign_keys = OFF`) // statuses and the rest aren't the point
+	exec(`PRAGMA foreign_keys = OFF`)
 	exec(`INSERT INTO issues(id, project_id, number, title, status_id, created_at, updated_at) VALUES (7, 1, 1, 'Has files', 1, 0, 0)`)
 	exec(`PRAGMA foreign_keys = ON`)
 	for _, id := range []int{1, 2, 5} {
 		exec(`INSERT INTO attachments(id, issue_id, uploader_id, name, content_type, size, sha256, data, created_at) VALUES (?, 7, 1, 'a.png', 'image/png', 3, 'abc', x'010203', 99)`, id)
 	}
-	exec(`DELETE FROM attachments WHERE id = 5`) // the counter stays at 5
+	exec(`DELETE FROM attachments WHERE id = 5`)
 
 	body, _ := migrations.ReadFile("migrations/" + target)
 	if err := apply(ctx, w, target, string(body)); err != nil {
@@ -227,7 +257,6 @@ func TestAttachmentsAnywhereMigration(t *testing.T) {
 	if w.QueryRowContext(ctx, `SELECT count(*) FROM attachments`).Scan(&n); n != 2 {
 		t.Errorf("%d rows after the rebuild, want 2", n)
 	}
-	// A new file gets a fresh id, not a deleted one's.
 	res, err := w.ExecContext(ctx, `INSERT INTO attachments(target_type, target_id, name, content_type, size, sha256, data, created_at) VALUES ('page', 1, 'p', 'text/plain', 1, 'x', x'41', 1)`)
 	if err != nil {
 		t.Fatal(err)
@@ -235,7 +264,6 @@ func TestAttachmentsAnywhereMigration(t *testing.T) {
 	if id, _ := res.LastInsertId(); id != 6 {
 		t.Errorf("next id %d, want 6 (the counter survived)", id)
 	}
-	// Triggers: files go with their page (sub-pages by cascade), design note and comment.
 	for _, q := range []string{
 		`INSERT INTO pages(id, parent_id, project_id, title, created_at, updated_at) VALUES (1, NULL, 1, 'p', 0, 0)`,
 		`INSERT INTO pages(id, parent_id, project_id, title, created_at, updated_at) VALUES (2, 1, 1, 'c', 0, 0)`,
@@ -251,7 +279,6 @@ func TestAttachmentsAnywhereMigration(t *testing.T) {
 	if w.QueryRowContext(ctx, `SELECT count(*) FROM attachments WHERE target_type != 'issue'`).Scan(&n); n != 0 {
 		t.Errorf("%d files outlived their page, note or comment", n)
 	}
-	// Deleting the issue takes its files (and its comments').
 	exec(`DELETE FROM issues WHERE id = 7`)
 	if w.QueryRowContext(ctx, `SELECT count(*) FROM attachments`).Scan(&n); n != 0 {
 		t.Errorf("%d files outlived their issue", n)
@@ -291,7 +318,7 @@ func TestIssueAnyoneMigration(t *testing.T) {
 		}
 	}
 	exec(`INSERT INTO projects(id, key, name, created_at, updated_at) VALUES (1, 'WEB', 'Web', 0, 0)`)
-	exec(`PRAGMA foreign_keys = OFF`) // statuses aren't the point
+	exec(`PRAGMA foreign_keys = OFF`)
 	for n, agent := range []string{"", "any", "claude haiku", ""} {
 		exec(`INSERT INTO issues(project_id, number, title, status_id, agent, created_at, updated_at) VALUES (1, ?, 't', 1, ?, 0, 0)`, n+1, agent)
 	}
@@ -317,13 +344,13 @@ func TestIssueAnyoneMigration(t *testing.T) {
 // the queue reads as it did.
 func TestQueuePinSlotsMigration(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer d.Close()
 	for _, q := range []string{
-		`PRAGMA foreign_keys = OFF`, // statuses and the rest aren't the point
+		`PRAGMA foreign_keys = OFF`,
 		`INSERT INTO projects(id, key, name, created_at, updated_at) VALUES (1, 'Q', 'Queue', 0, 0)`,
 		`INSERT INTO issues(id, project_id, number, title, status_id, created_at, updated_at, agent_order) VALUES
 			(1, 1, 1, 'a', 1, 0, 0, 3072.0), (2, 1, 2, 'b', 1, 0, 0, NULL), (3, 1, 3, 'c', 1, 0, 0, -1024.0),
@@ -353,7 +380,7 @@ func TestQueuePinSlotsMigration(t *testing.T) {
 // migration names, whatever its case, and for repos attached later.
 func TestMergeAutomaticallyDefaults(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +399,6 @@ func TestMergeAutomaticallyDefaults(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Every repo merges automatically unless a person turns it off.
 	for _, repo := range []string{"Harbor/Quarry", "Harbor/Harbor-docs"} {
 		var got, wait, quiet int
 		var required string
@@ -385,7 +411,6 @@ func TestMergeAutomaticallyDefaults(t *testing.T) {
 			t.Errorf("%s: auto_merge %d (want 1), wait %d, quiet %d, required %s, reviewers %v", repo, got, wait, quiet, required, reviewers)
 		}
 	}
-	// Pull requests open before it are left for their next push; merged ones don't matter.
 	for n, state := range map[int]string{1: "open", 2: "draft", 3: "merged"} {
 		if _, err := d.W.ExecContext(ctx, `INSERT INTO pull_requests(forge_id, repo, number, state, created_at, updated_at) VALUES (1, 'Harbor/Quarry', ?, ?, 0, 0)`, n, state); err != nil {
 			t.Fatal(err)
@@ -403,7 +428,7 @@ func TestMergeAutomaticallyDefaults(t *testing.T) {
 
 func TestRetireLLMReviewMigration(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,7 +456,6 @@ func TestRetireLLMReviewMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The rows above stand for repos configured before the migration.
 	if _, err := d.W.ExecContext(ctx, string(body)[strings.Index(string(body), "UPDATE"):]); err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +476,7 @@ func TestRetireLLMReviewMigration(t *testing.T) {
 // repo that named some, or one on another forge kind, keeps what it had.
 func TestExternalReviewersNoneMigration(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,7 +519,7 @@ func TestExternalReviewersNoneMigration(t *testing.T) {
 // has no mirror account.
 func TestMirrorAccountMigration(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,7 +560,7 @@ func TestMirrorAccountMigration(t *testing.T) {
 // ready has no arm, and the experiment's live run stops.
 func TestPrepPolicyImportMigration(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -563,9 +587,9 @@ func TestPrepPolicyImportMigration(t *testing.T) {
 		qs = append(qs, fmt.Sprintf(`INSERT INTO issues(id, project_id, number, title, description, status_id, reporter_id, created_at, updated_at) VALUES (%d, 1, %d, 'Twelve chars', 'and eight', 1, 1, 0, 0)`, n, n))
 	}
 	qs = append(qs,
-		prep(1, "ready", picks, 0, "2000"), // shown, in the run
-		prep(2, "ready", picks, 1, "3000"), // hidden, in the run
-		prep(3, "ready", picks, 0, "NULL"), // made before any run kept units: the old 4:1 split
+		prep(1, "ready", picks, 0, "2000"),
+		prep(2, "ready", picks, 1, "3000"),
+		prep(3, "ready", picks, 0, "NULL"),
 		prep(4, "ready", `{"files":[]}`, 0, "2000"),
 		prep(5, "failed", "{}", 0, "NULL"),
 		prep(6, "ready", picks, 1, "NULL"),
@@ -605,7 +629,7 @@ func TestPrepPolicyImportMigration(t *testing.T) {
 // final schema, unless a later migration drops it or its table by name.
 func TestMigrationsKeepAddedColumns(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -615,9 +639,6 @@ func TestMigrationsKeepAddedColumns(t *testing.T) {
 		t.Fatal(err)
 	}
 	sort.Strings(names)
-	// One statement that changes which columns a table is owed, in the
-	// order the file has them: 1-2 add, 3-4 drop, 5-7 rename a column,
-	// 8-9 rename a table, 10 drop a table.
 	stmt := regexp.MustCompile(`(?i)\bALTER\s+TABLE\s+(\w+)\s+ADD\s+(?:COLUMN\s+)?(\w+)` +
 		`|\bALTER\s+TABLE\s+(\w+)\s+DROP\s+(?:COLUMN\s+)?(\w+)` +
 		`|\bALTER\s+TABLE\s+(\w+)\s+RENAME\s+(?:COLUMN\s+)?(\w+)\s+TO\s+(\w+)` +
@@ -625,7 +646,7 @@ func TestMigrationsKeepAddedColumns(t *testing.T) {
 		`|\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(\w+)`)
 	comment := regexp.MustCompile(`--[^\n]*`)
 	type col struct{ table, name string }
-	added := map[col]string{} // the migration that added it
+	added := map[col]string{}
 	seen := 0
 	for _, name := range names {
 		body, err := migrations.ReadFile(name)
@@ -647,9 +668,6 @@ func TestMigrationsKeepAddedColumns(t *testing.T) {
 					added[col{m[5], m[7]}] = by
 				}
 			case m[8] != "" && regexp.MustCompile(`\bcreate\s+table\s+(?:if\s+not\s+exists\s+)?`+m[8]+`\b`).MatchString(lower):
-				// The other way to rebuild: the table is moved aside and
-				// its name given to a new one. The columns added to it
-				// are still owed by that name.
 			case m[8] != "":
 				for c, by := range added {
 					if c.table == m[8] {
@@ -658,9 +676,6 @@ func TestMigrationsKeepAddedColumns(t *testing.T) {
 					}
 				}
 			case m[10] != "":
-				// A rebuild drops the table and gives its name to the new
-				// one: the columns added to it are still owed. Any other
-				// drop ends them.
 				rebuilt := false
 				for _, later := range ms[i+1:] {
 					rebuilt = rebuilt || later[9] == m[10]

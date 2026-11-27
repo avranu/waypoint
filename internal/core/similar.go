@@ -7,12 +7,6 @@ import (
 	"strings"
 )
 
-// Similar open issues for text not yet filed (WP-104): wp new and the
-// new-issue form show the open issues a proposed one reads like, so work
-// that is already on the board gets taken rather than filed again (an
-// agent filing its own task for a person's leaves theirs in To Do). It
-// uses the related-issues scorer (WP-296, related.go).
-
 // maxSimilarIssues is the most similar issues listed for proposed text.
 const maxSimilarIssues = 5
 
@@ -109,9 +103,6 @@ func (s *Service) SimilarIssues(ctx context.Context, actor *Actor, q SimilarQuer
 		} else {
 			m.Reason = "Shares " + idx.shared(vec, d.vec)
 		}
-		// On prod issues (November 2026) the high band also held a
-		// review of an issue, a step of it or the next of a series; nearly
-		// the same words is where the same work filed twice was.
 		m.Same = m.SameProject && !m.Sibling && !named[i.Key] && (sameTitle || score >= simDuplicate)
 		out = append(out, m)
 	}

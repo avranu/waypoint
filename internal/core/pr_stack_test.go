@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// Stacked pull requests, review findings of audit #1488 (WP-1670).
-
 // auditCount is how many audit entries of action have detail containing text.
 func (se *shipEnv) auditCount(action, text string) int {
 	se.t.Helper()
@@ -44,7 +42,6 @@ func TestPersonMergeKeepsStackWait(t *testing.T) {
 	if m := se.sg.merged(); len(m) != 0 {
 		t.Fatalf("the forge was asked to merge: %+v", m)
 	}
-	// Only a set wait: theirs to merge past.
 	other := ForgePR{Number: 7, Title: "Other", Author: "sam", HeadRef: "other", HeadSHA: "3333333ccc", BaseRef: "main", State: "open"}
 	se.prHook("opened", other)
 	se.sg.setChecks(other.HeadSHA, CommitCheck{Name: "ci / web", State: CheckSuccess})
@@ -129,7 +126,6 @@ func TestStackParentClosedBeforeTheChildOpenedIsNoWait(t *testing.T) {
 	if r := se.reasonsOf(6, true); mergeWaitIn(r) != "" || personal(se.pr(6), r) != "" {
 		t.Errorf("reasons %q", r)
 	}
-	// Closed after it opened: a person's call.
 	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET closed_at = ? WHERE number = 5`, now); err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +154,7 @@ func TestMergedParentHoldsThenMoves(t *testing.T) {
 	}
 	se.s.maybeAutoMerge(se.ctx, se.pr(6).ID)
 	se.s.Wait()
-	if c := se.pr(6); c.BaseRef != "main" { // and, ready, it merged into main
+	if c := se.pr(6); c.BaseRef != "main" {
 		t.Fatalf("base %q", c.BaseRef)
 	}
 	if !slices.Equal(se.sg.baseEdits, []string{"6:main"}) {
@@ -208,13 +204,12 @@ func TestMergeOfKeptBranchLeavesPullRequestsWhereTheyAre(t *testing.T) {
 				t.Fatal(err)
 			}
 			se.s.Wait()
-			if m := se.sg.merged(); len(m) == 0 || m[0].DeleteBranch { // a kept branch with pull requests open into it isn't deleted
+			if m := se.sg.merged(); len(m) == 0 || m[0].DeleteBranch {
 				t.Fatalf("merge options %+v", m)
 			}
 			if c := se.pr(6); c.BaseRef != "fix-login" || len(se.sg.baseEdits) != 0 {
 				t.Errorf("moved: base %q edits %v", c.BaseRef, se.sg.baseEdits)
 			}
-			// And it is not a wait: the forge's word was remembered.
 			if r := se.reasonsOf(6, true); slices.ContainsFunc(r, func(x string) bool { return strings.HasPrefix(x, stackMergedPrefix) || isStackWait(x) }) {
 				t.Errorf("reasons %q", r)
 			}
@@ -269,7 +264,7 @@ func TestForkBranchIsNotAParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	se.s.Wait()
-	if m := se.sg.merged(); len(m) != 1 || !m[0].DeleteBranch || len(se.sg.baseEdits) != 0 { // nothing is stacked on a fork's branch: it is deleted, nothing moves
+	if m := se.sg.merged(); len(m) != 1 || !m[0].DeleteBranch || len(se.sg.baseEdits) != 0 {
 		t.Errorf("merges %+v edits %v", m, se.sg.baseEdits)
 	}
 }
@@ -331,8 +326,6 @@ func TestMoveWhoseRecordWriteFailsIsNotAFailedMove(t *testing.T) {
 		t.Fatal(err)
 	}
 	se.s.Wait()
-	// The move is asked of the forge again wherever the record is read (it
-	// is idempotent there); what matters is that it was made and no disarm.
 	if len(se.sg.baseEdits) == 0 || se.sg.baseEdits[0] != "6:main" {
 		t.Errorf("edits %v", se.sg.baseEdits)
 	}
@@ -479,7 +472,6 @@ func TestKeptBranchSettingFollowsTheForge(t *testing.T) {
 	if r := se.reasonsOf(6, true); slices.ContainsFunc(r, isStackWait) {
 		t.Fatalf("a stack wait on a protected branch: %q", r)
 	}
-	// The forge can't say now: the last answer holds.
 	se.sg.brErr = errors.New("forge down")
 	if k, known := se.s.longLivedBranch(se.ctx, se.f, p); !k || !known {
 		t.Errorf("unreadable: kept %v known %v", k, known)
@@ -509,7 +501,6 @@ func TestCappedBranchListIsUnknown(t *testing.T) {
 	if k, known := se.s.longLivedBranch(se.ctx, se.f, p); !k || !known {
 		t.Errorf("remembered: kept %v known %v", k, known)
 	}
-	// Found in a full list, protected: kept. A short list without it: not.
 	se.sg.brs[0] = ForgeBranch{Name: parent.HeadRef, Protected: true}
 	if k, known := se.s.longLivedBranch(se.ctx, se.f, p); !k || !known {
 		t.Errorf("found: kept %v known %v", k, known)
@@ -537,7 +528,7 @@ func TestAgentArmOfMergedParentsChildReadsTheMovedBase(t *testing.T) {
 	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET agent = 'anthropic/claude-opus-5-5' WHERE number = 6`); err != nil {
 		t.Fatal(err)
 	}
-	se.sg.baseErr = errors.New("forge down") // the sweep the policy starts can't move it
+	se.sg.baseErr = errors.New("forge down")
 	se.policy(MergePolicyInput{AutoMerge: ptr(true), AutoMergeInto: ptr(IntoDefault)})
 	se.sg.baseErr = nil
 	if c := se.pr(6); c.BaseRef != "fix-login" {
@@ -545,7 +536,7 @@ func TestAgentArmOfMergedParentsChildReadsTheMovedBase(t *testing.T) {
 	}
 	claude := agentActorFor(se.admin, "anthropic/claude-opus-5-5")
 	res, err := se.s.MergePR(se.ctx, claude, se.pr(6).ID, MergeInput{WhenReady: true})
-	if err != nil || res.ByHand || (!res.Armed && !res.Merged) { // armed, or merged at once as it is ready
+	if err != nil || res.ByHand || (!res.Armed && !res.Merged) {
 		t.Fatalf("arm: %+v %v", res, err)
 	}
 	if c := se.pr(6); c.BaseRef != "main" {

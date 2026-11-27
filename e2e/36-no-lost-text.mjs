@@ -54,15 +54,20 @@ async function run(width) {
     colorScheme: "light",
   });
   const page = await login(ctx);
-  // Failures the test forces itself are expected; anything else is a bug.
   let forced = 0;
+  let forcedTotal = 0;
+  let excused = 0;
   page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
   page.on(
     "console",
-    (m) =>
-      m.type() === "error" &&
-      !/status of (400|500)/.test(m.text()) &&
-      fail(`${tag} console: ${m.text().slice(0, 300)}`),
+    (m) => {
+      if (m.type() !== "error") return;
+      if (/status of (400|500)/.test(m.text()) && excused < forcedTotal) {
+        excused++;
+        return;
+      }
+      fail(`${tag} console: ${m.text().slice(0, 300)}`);
+    },
   );
   const shot = (name) =>
     page.screenshot({ path: `${out}/${name}-${width}.png` });
@@ -77,6 +82,7 @@ async function run(width) {
     page.route(pattern, (route) =>
       route.request().method() === method && forced < 1
         ? (forced++,
+          forcedTotal++,
           route.fulfill({
             status,
             contentType: "application/json",
@@ -85,7 +91,6 @@ async function run(width) {
         : route.continue(),
     );
 
-  // ---- 1. Board quick add: a failed create keeps the text and says why ----
   await page.goto(`${base}/p/LOST/board`);
   const addBtn = page.getByRole("button", {
     name: "Add to To Do",
@@ -129,7 +134,6 @@ async function run(width) {
     `${tag} the error clears on success`,
   );
 
-  // ---- 2. Board quick add: text too long for a title ----
   const lt = long(`board ${tag}`);
   await box.fill(lt);
   await page
@@ -174,7 +178,6 @@ async function run(width) {
     );
   }
 
-  // ---- 3. Board quick add: unsent text survives a refresh ----
   const t3 = `Half typed on the board ${tag}`;
   await box.fill(t3);
   await page.reload();
@@ -185,7 +188,6 @@ async function run(width) {
     `${tag} quick-add text is still there after a refresh`,
   );
   await shot("quickadd-restored");
-  // Esc discards it on purpose.
   await box3.press("Escape").catch(() => {});
   await page.reload();
   await addBtn.waitFor();
@@ -194,7 +196,6 @@ async function run(width) {
     `${tag} Esc discards the quick-add draft`,
   );
 
-  // ---- 4. Backlog add: refresh keeps it ----
   await page.goto(`${base}/p/LOST/backlog`);
   const bl = page.getByRole("textbox", { name: "Add to backlog" });
   const t4 = `Half typed in the backlog ${tag}`;
@@ -212,7 +213,6 @@ async function run(width) {
   await bl.waitFor();
   ok((await bl.inputValue()) === "", `${tag} and forgets it once created`);
 
-  // ---- 5. Title editor: a failed save keeps the edit ----
   const base5 = `Edit my title ${tag}`;
   const created = await (
     await page.request.post(base + "/api/v1/issues", {
@@ -236,7 +236,7 @@ async function run(width) {
     .first()
     .waitFor({ timeout: 5000 })
     .catch(() => {});
-  await page.waitForTimeout(800); // the refetch after the failure used to wipe the edit
+  await page.waitForTimeout(800);
   ok(
     (await title.inputValue()) === base5 + " and more",
     `${tag} a failed title save keeps the edit (${await title.inputValue()})`,
@@ -252,7 +252,6 @@ async function run(width) {
     `${tag} Enter saves the title once the server is back`,
   );
 
-  // Too long for a title: says so, keeps it, sends nothing.
   await title.click();
   await title.press("End");
   const extra = " x".repeat(260);
@@ -272,14 +271,12 @@ async function run(width) {
     `${tag} and the limit is shown`,
   );
   await shot("title-too-long");
-  // Esc goes back to the saved title.
   await title.press("Escape");
   ok(
     (await title.inputValue()) === base5 + " and more",
     `${tag} Esc cancels the edit`,
   );
 
-  // ---- 6. Title editor: an unsaved edit survives a refresh ----
   await title.click();
   await title.press("End");
   await title.type(" pending");
@@ -298,7 +295,6 @@ async function run(width) {
     `${tag} and Enter saves it`,
   );
 
-  // Description: an open edit survives a refresh too.
   await page.getByRole("button", { name: "Add a description…" }).click();
   const desc = page.getByRole("textbox", { name: "Description" });
   await desc.fill(`Notes I haven't saved ${tag}`);
@@ -326,7 +322,6 @@ async function run(width) {
     `${tag} a saved description leaves no draft behind`,
   );
 
-  // ---- 7. New issue dialog: closing keeps the text; long titles split ----
   await page.goto(`${base}/p/LOST/list`);
   await page.getByRole("button", { name: "Filter (F)" }).waitFor();
   await page.locator("body").press("c");
@@ -380,7 +375,6 @@ async function run(width) {
   );
   await page.keyboard.press("Escape");
 
-  // ---- 8. Nowhere to keep it: leaving asks first ----
   const nctx = await browser.newContext({ viewport: { width, height: 900 } });
   await nctx.addInitScript(() => {
     Storage.prototype.setItem = function (k) {
@@ -427,7 +421,6 @@ async function run(width) {
     .catch(() => {});
   await np.waitForURL(/\/board/).catch(() => {});
   ok(/\/board/.test(np.url()), `${tag} Leave goes`);
-  // A refresh or a closed tab gets the browser's own prompt.
   await np.goto(`${base}/p/LOST/backlog`);
   await nb.fill(`Unsaveable ${tag}`);
   const unload = new Promise((res) => {

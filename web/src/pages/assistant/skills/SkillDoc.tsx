@@ -1,6 +1,3 @@
-// A SKILL.md as it reads: its frontmatter as a line of facts and tags,
-// links to the skills it names as related, then the instructions.
-
 import { Link } from '@tanstack/react-router'
 import { Badge } from '@/components/ui/misc'
 import { Markdown } from '@/components/Markdown'

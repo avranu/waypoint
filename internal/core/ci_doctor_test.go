@@ -19,12 +19,10 @@ func TestMergeSteps(t *testing.T) {
 	if st != want {
 		t.Errorf("steps = %+v, want %+v", st, want)
 	}
-	// A head tested before its turn: its run costs the turn nothing.
 	early := ciFullRun{ok: true, trigger: m(-60), start: m(-55), end: m(-30)}
 	if st := mergeSteps(m(0), m(-70), early, m(20)); st.AfterGreen != 1200 || st.Update+st.BeforeFull+st.RunnerWait+st.FullRun != 0 {
 		t.Errorf("an early run: %+v", st)
 	}
-	// No run known: the total only.
 	if st := mergeSteps(m(0), m(5), ciFullRun{}, m(30)); st.Total != 1800 || st.FullRun != 0 {
 		t.Errorf("no run: %+v", st)
 	}
@@ -45,7 +43,6 @@ func TestFullRunOf(t *testing.T) {
 	at := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
 	m := func(n int) time.Time { return at.Add(time.Duration(n) * time.Minute) }
 	h := &ciHistory{runs: map[int64]ActionRun{11: {Index: 11, Created: m(-22), Draft: true}, 12: {Index: 12, Created: m(-2)}}, tasks: []ActionTask{
-		// The draft tier and a push run of the same head don't count.
 		{Name: "lint", RunNumber: 11, WorkflowID: "ci.yml", Event: "pull_request", SHA: "abc", Title: "Fix", Status: "success", Started: m(-20), Updated: m(-15)},
 		{Name: "lint", RunNumber: 13, WorkflowID: "ci.yml", Event: "push", SHA: "abc", Title: "Fix", Status: "success", Started: m(30), Updated: m(40)},
 		{Name: "lint", RunNumber: 12, WorkflowID: "ci.yml", Event: "pull_request", SHA: "abc", Title: "Fix", Status: "success", Started: m(0), Updated: m(5)},
@@ -114,7 +111,6 @@ func TestCIDoctorStalledLine(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Two merges this morning, an hour and half an hour each.
 	for _, n := range []int{8, 9, 10} {
 		p := bsPR
 		p.Number, p.HeadRef, p.HeadSHA = n, "b"+string(rune('0'+n)), strings.Repeat(string(rune('a'+n)), 11)
@@ -126,10 +122,8 @@ func TestCIDoctorStalledLine(t *testing.T) {
 	}
 	exec(`UPDATE pull_requests SET state = 'merged', opened_at = ?, merged_at = ? WHERE number = 8`, ms(-6*time.Hour), ms(-5*time.Hour))
 	exec(`UPDATE pull_requests SET state = 'merged', opened_at = ?, merged_at = ? WHERE number = 9`, ms(-6*time.Hour), ms(-270*time.Minute))
-	// #7 has been at the front four hours, waiting three on one thing.
 	exec(`UPDATE pull_requests SET queued_at = ?, armed_at = ? WHERE id = ?`, ms(-4*time.Hour), ms(-4*time.Hour), pr.ID)
 	exec(`UPDATE babysits SET state = 'watching', wait = 'waiting for the forge''s new results', created_at = ?, wait_at = ? WHERE pr_id = ?`, ms(-4*time.Hour), ms(-3*time.Hour), pr.ID)
-	// #10, armed, waits for a person.
 	p10 := be.pr(10)
 	exec(`UPDATE pull_requests SET armed_at = ?, armed_by = ?, armed_style = 'merge' WHERE id = ?`, ms(-2*time.Hour), be.admin.User.ID, p10.ID)
 	be.start(p10)
@@ -162,18 +156,15 @@ func TestCIDoctorStalledLine(t *testing.T) {
 	if len(d.CIWork) != 1 || d.CIWork[0].Number != 10 || d.CIWork[0].Position != 0 {
 		t.Errorf("CI work: %+v", d.CIWork)
 	}
-	// Stuck: the doctor says how #10, about CI, could cut the line (WP-544).
 	if u := d.UrgentLane; len(u) != 1 || u[0].Command != "wp pr urgent 10 --repo "+p10.Repo || !strings.Contains(u[0].Text, "delays non-urgent CI") {
 		t.Errorf("urgent lane: %+v", u)
 	}
-	// Once it is urgent, nothing more is suggested.
 	exec(`UPDATE pull_requests SET labels = '["ci-urgent"]' WHERE id = ?`, p10.ID)
 	if d, err := be.s.CIDoctor(be.ctx, be.admin); err != nil || len(d.CIWork) != 1 || !d.CIWork[0].Urgent || len(d.UrgentLane) != 0 {
 		t.Errorf("urgent #10: err %v, CI work %+v, urgent lane %+v", err, d.CIWork, d.UrgentLane)
 	}
 	exec(`UPDATE pull_requests SET labels = '[]' WHERE id = ?`, p10.ID)
 
-	// A task in a project the viewer can't open says nothing about #10.
 	other := be.project(be.admin, "Secret", "")
 	hidden := be.issue(be.admin, IssueInput{Project: other.Key, Title: "Speed up the merge queue"})
 	exec(`INSERT INTO external_links(issue_id, provider, kind, url, repo, number, state, created_at) VALUES (?, 'github', 'pull', ?, ?, 11, 'open', 0)`, hidden.ID, "https://x.test/pull/11", p10.Repo)
@@ -205,8 +196,6 @@ func TestCIDoctorStalledLine(t *testing.T) {
 	}
 	exec(`UPDATE pull_requests SET armed_at = NULL WHERE number = 11`)
 
-	// Armed ten minutes ago, after a babysit four hours old: ten minutes at
-	// the front, not stalled.
 	exec(`UPDATE pull_requests SET armed_at = ? WHERE id = ?`, ms(-10*time.Minute), pr.ID)
 	if d, err = be.s.CIDoctor(be.ctx, be.admin); err != nil {
 		t.Fatal(err)
@@ -218,7 +207,6 @@ func TestCIDoctorStalledLine(t *testing.T) {
 		t.Errorf("not stuck, yet the urgent lane is suggested: %+v", d.UrgentLane)
 	}
 
-	// The front merges: the line is empty, nothing stalls.
 	exec(`UPDATE pull_requests SET state = 'merged', merged_at = ?, armed_at = NULL, queued_at = NULL WHERE id = ?`, ms(0), pr.ID)
 	exec(`UPDATE babysits SET state = 'merged', ended_at = ? WHERE pr_id = ?`, ms(0), pr.ID)
 	d, err = be.s.CIDoctor(be.ctx, be.admin)
@@ -336,7 +324,7 @@ func TestCIDoctorStacksFailing(t *testing.T) {
 	add("failed", 3*time.Hour, true)
 	add("cancelled", 4*time.Hour, true)
 	add("running", 10*time.Minute, false)
-	add("passed", 8*time.Hour, true) // before the window
+	add("passed", 8*time.Hour, true)
 	d, err := be.s.CIDoctor(be.ctx, be.admin)
 	if err != nil {
 		t.Fatal(err)
@@ -366,7 +354,7 @@ func TestDoctorUrgentLane(t *testing.T) {
 		Lines: []CILine{{Repo: "o/a", Stalled: true}, {Repo: "o/b"}},
 		Mains: []CIMain{{Repo: "o/a", Branch: "main", Status: "failure"}, {Repo: "o/c", Branch: "main", Status: "failure"}, {Repo: "o/d", Branch: "main", Status: "success"}},
 		CIWork: []CIWorkPR{
-			{Repo: "o/a", Number: 1, Position: 1}, // the front: urgent wouldn't move it
+			{Repo: "o/a", Number: 1, Position: 1},
 			{Repo: "o/a", Number: 2, Position: 4},
 			{Repo: "o/b", Number: 3, Urgent: true},
 		},
@@ -384,7 +372,6 @@ func TestDoctorUrgentLane(t *testing.T) {
 		t.Errorf("o/a: %+v", u)
 	}
 
-	// Runners: any repo's pull request about CI; none when one is urgent.
 	d = &CIDoctor{Pool: CIDoctorPool{Saturated: true}, CIWork: []CIWorkPR{{Repo: "o/b", Number: 3}}}
 	if doctorUrgentLane(d); len(d.UrgentLane) != 1 || d.UrgentLane[0].Repo != "" || d.UrgentLane[0].Command != "wp pr urgent 3 --repo o/b" {
 		t.Errorf("runners: %+v", d.UrgentLane)
@@ -393,7 +380,6 @@ func TestDoctorUrgentLane(t *testing.T) {
 	if doctorUrgentLane(d); len(d.UrgentLane) != 0 {
 		t.Errorf("runners with an urgent fix: %+v", d.UrgentLane)
 	}
-	// Nothing stuck: nothing said.
 	d = &CIDoctor{Lines: []CILine{{Repo: "o/a", Moving: 5}}, CIWork: []CIWorkPR{{Repo: "o/a", Number: 2, Position: 3}}}
 	if doctorUrgentLane(d); len(d.UrgentLane) != 0 {
 		t.Errorf("not stuck: %+v", d.UrgentLane)
@@ -445,7 +431,6 @@ func TestDoctorMainAdvisories(t *testing.T) {
 		for _, n := range names {
 			ts = append(ts, ActionTask{Name: n, RunNumber: run, Status: "failure"})
 		}
-		// Another run's failed shard says nothing about this one.
 		return append(ts, ActionTask{Name: "lint", RunNumber: run, Status: "success"}, ActionTask{Name: "backend shard 1", RunNumber: run + 1, Status: "failure"})
 	}
 	if !onlyAdvisoriesFailed(fail(7, "advisories"), 7) {
@@ -461,8 +446,6 @@ func TestDoctorMainAdvisories(t *testing.T) {
 		t.Error("advisories cancelled: it found nothing, want false")
 	}
 
-	// doctorMains reads it from the run's jobs, the kept ones too: a failed
-	// shard the forge's capped read left out still makes main red.
 	main := func(status string, h *ciHistory) CIMain {
 		h.runs = map[int64]ActionRun{7: {Index: 7, Event: "push", PrettyRef: "main", Status: status, Created: now}}
 		d := &CIDoctor{}
@@ -581,7 +564,6 @@ func TestDoctorScheduledAdvisories(t *testing.T) {
 		!strings.Contains(d.Findings[0].Detail, "Run #9 (schedule) found it.") || d.Findings[0].URL != "https://x/9" {
 		t.Fatalf("findings = %+v", d.Findings)
 	}
-	// A red push beside it is still main_red.
 	d = &CIDoctor{Mains: []CIMain{{Repo: "o/a", Branch: "main", Run: 7, Status: "failure", SchedAdvRun: 9}}}
 	doctorFindings(d, &CIBoard{}, now)
 	if len(d.Findings) != 2 {

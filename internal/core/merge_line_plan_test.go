@@ -74,6 +74,12 @@ func TestPlanLine(t *testing.T) {
 		{name: "failed batch ends and places start one by one", snap: lineSnap{
 			Entries: []lineEntry{e(1), e(2)}, BatchDepth: 2,
 			Cands: []lineCand{rerun(cand(6, candFailed, 1, 2))}}, want: []lineAction{ends(6, endBatchSplit), start(1), start(1, 2)}},
+		{name: "saturated: a failed batch of eight is followed by two places, not the same eight", snap: lineSnap{
+			Entries: []lineEntry{e(1), e(2), e(3), e(4), e(5), e(6), e(7), e(8), e(9)}, Saturated: true, BatchDepth: 8,
+			Cands: []lineCand{rerun(cand(6, candFailed, 1, 2, 3, 4, 5, 6, 7, 8))}}, want: []lineAction{ends(6, endBatchSplit), start(1, 2)}},
+		{name: "saturated: a failed batch of two is followed by the front alone", snap: lineSnap{
+			Entries: []lineEntry{e(1), e(2), e(3)}, Saturated: true, BatchDepth: 2,
+			Cands: []lineCand{rerun(cand(6, candFailed, 1, 2))}}, want: []lineAction{ends(6, endBatchSplit), start(1)}},
 		{name: "a tried batch isn't started again", snap: lineSnap{
 			Entries: []lineEntry{e(1), e(2)}, Saturated: true, BatchDepth: 2, Tried: tried([]int{1, 2})}, want: []lineAction{start(1)}},
 		{name: "conflict ejects the pull request that didn't merge", snap: lineSnap{
@@ -96,6 +102,14 @@ func TestPlanLine(t *testing.T) {
 			Entries: []lineEntry{e(1)}, Cands: []lineCand{cand(5, candRunning, 1), cand(6, candRunning, 1)}}, want: []lineAction{ends(6, endDuplicate)}},
 		{name: "saturated starts one batch of BatchDepth", snap: lineSnap{
 			Entries: []lineEntry{e(1), e(2), e(3)}, Saturated: true, BatchDepth: 2}, want: []lineAction{start(1, 2)}},
+		{name: "saturated covers up to BatchDepth of ten places", snap: lineSnap{
+			Entries: []lineEntry{e(1), e(2), e(3), e(4), e(5), e(6), e(7), e(8), e(9), e(10)}, Saturated: true, BatchDepth: 8}, want: []lineAction{start(1, 2, 3, 4, 5, 6, 7, 8)}},
+		{name: "saturated with fewer entries than BatchDepth covers them all", snap: lineSnap{
+			Entries: []lineEntry{e(1), e(2), e(3)}, Saturated: true, BatchDepth: 8}, want: []lineAction{start(1, 2, 3)}},
+		{name: "saturated stops before a branch entry", snap: lineSnap{
+			Entries: []lineEntry{e(1), e(2), e(3), e(4), e(5), branch(e(6)), e(7), e(8)}, Saturated: true, BatchDepth: 8}, want: []lineAction{start(1, 2, 3, 4, 5)}},
+		{name: "not saturated with ten entries starts places 1 to 3 only", snap: lineSnap{
+			Entries: []lineEntry{e(1), e(2), e(3), e(4), e(5), e(6), e(7), e(8), e(9), e(10)}, BatchDepth: 8}, want: []lineAction{start(1), start(1, 2), start(1, 2, 3)}},
 		{name: "saturated with one live starts none", snap: lineSnap{
 			Entries: []lineEntry{e(1), e(2), e(3)}, Saturated: true, BatchDepth: 2, Cands: []lineCand{cand(5, candRunning, 1, 2)}}},
 		{name: "branch front not on the tip is updated", snap: lineSnap{Entries: []lineEntry{branch(e(1)), e(2)}}, want: []lineAction{{Kind: lineUpdate, PR: 10}}},
@@ -107,14 +121,10 @@ func TestPlanLine(t *testing.T) {
 		{name: "depth 3 cap", snap: lineSnap{Entries: []lineEntry{e(1), e(2), e(3), e(4)}}, want: []lineAction{start(1), start(1, 2), start(1, 2, 3)}},
 		{name: "front on the tip with its full run going gets no place-1 candidate", snap: lineSnap{
 			Entries: []lineEntry{onTip(e(1), false, true), e(2), e(3)}}, want: []lineAction{start(1, 2), start(1, 2, 3)}},
-		// A red base (WP-1659): one place at a time; the candidate's own run says
-		// whether the base's failure matters.
 		{name: "red base: the front alone is started", snap: lineSnap{BaseRed: true, Entries: []lineEntry{e(1), e(2), e(3)}}, want: []lineAction{start(1)}},
 		{name: "red base saturated: the front alone", snap: lineSnap{BaseRed: true, Saturated: true, BatchDepth: 3, Entries: []lineEntry{e(1), e(2), e(3)}}, want: []lineAction{start(1)}},
 		{name: "red base, a candidate failed only what the base fails: it ends base_red and nothing else", snap: lineSnap{BaseRed: true,
 			Entries: []lineEntry{e(1), e(2)}, Cands: []lineCand{baseOnly(cand(5, candFailed, 1))}}, want: []lineAction{ends(5, endBaseRed)}},
-		// [1,2] was built before #1 merged; on the tip that holds #1 it tests #2,
-		// and #2 alone isn't started again in the plan that ends it (c6389 of #569).
 		{name: "red base, a candidate whose first head merged failed only what the base fails: the head left isn't started again", snap: lineSnap{BaseRed: true,
 			Entries: []lineEntry{e(2), e(3)}, Cands: []lineCand{withMerged(baseOnly(cand(5, candFailed, 1, 2)), 1)}}, want: []lineAction{ends(5, endBaseRed)}},
 		{name: "red base, a candidate failed its own: rerun once", snap: lineSnap{BaseRed: true,
@@ -138,7 +148,7 @@ func TestPlanLine(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := planLine(tt.snap)
 			for i := range got {
-				got[i].Why = "" // the wording is not a rule; the end reason is
+				got[i].Why = ""
 			}
 			if len(got) == 0 && len(tt.want) == 0 {
 				return
@@ -175,7 +185,7 @@ func TestLineSortOrder(t *testing.T) {
 	fixer := mk(7, 30)
 	early := mk(6, 5)
 	late := mk(5, 10)
-	tie := mk(4, 10) // armed with #5: the number decides
+	tie := mk(4, 10)
 	prs := []*PullRequest{late, tie, fixer, urgent, holder, early}
 	lineSort(prs, fixer.ID)
 	var got []int
@@ -185,7 +195,6 @@ func TestLineSortOrder(t *testing.T) {
 	if want := []int{9, 7, 8, 6, 4, 5}; !reflect.DeepEqual(got, want) {
 		t.Errorf("order %v, want %v", got, want)
 	}
-	// With no fixer the armed time decides among the rest.
 	lineSort(prs, 0)
 	got = got[:0]
 	for _, p := range prs {

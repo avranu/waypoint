@@ -4,14 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strings"
 
 	"git.jmann.me/claude/waypoint/internal/core"
 )
-
-// The escape ledger (WP-705, WP-ADR68): runners ask which fixes to trace and
-// upload what they find; everyone else reads the ledger.
 
 const maxFixTraceBody = 1 << 20
 
@@ -156,7 +152,6 @@ func escapeListText(list []*core.Escape) string {
 			fmt.Fprintf(&o, "  [%s]", strings.Join(e.Tags, " "))
 		}
 		o.WriteString("\n")
-		// Both come from forge or reporter wording: held apart as outside text.
 		fmt.Fprintf(&o, "  <untrusted>%s</untrusted>\n", oneLine(e.Title))
 		if e.Note != "" {
 			fmt.Fprintf(&o, "  note: <untrusted>%s</untrusted>\n", oneLine(e.Note))
@@ -164,7 +159,6 @@ func escapeListText(list []*core.Escape) string {
 		if e.Proof != "" {
 			fmt.Fprintf(&o, "  %s\n", core.ProofText(e.Proof, e.ProofFailed, e.ProofIntro, e.IntroCheck, e.ProofNote))
 			if e.ProofNote != "" && e.Proof != "none" {
-				// Test output: the repo's code wrote it.
 				fmt.Fprintf(&o, "  proof note: <untrusted>%s</untrusted>\n", oneLine(e.ProofNote))
 			}
 		}
@@ -186,15 +180,9 @@ func shortCommit(sha string) string {
 	return sha
 }
 
-// untrustedTag is the marker in any case or spacing ("</ UNTRUSTED >").
-var untrustedTag = regexp.MustCompile(`(?i)<\s*/?\s*untrusted\s*>`)
-
 // oneLine keeps outside text on one line and unable to open or close its
-// own marker, however it spells or nests it ("</untru</untrusted>sted>").
+// own marker, however it spells, pads or nests it ("</untru</untrusted>sted>",
+// "</untrusted\u00a0>"): core's untrusted() is the one rule for that.
 func oneLine(s string) string {
-	s = strings.NewReplacer("\r", " ", "\n", " ").Replace(s)
-	for t := untrustedTag.ReplaceAllString(s, ""); t != s; t = untrustedTag.ReplaceAllString(s, "") {
-		s = t
-	}
-	return strings.TrimSpace(s)
+	return strings.TrimSpace(core.Untrusted(strings.NewReplacer("\r", " ", "\n", " ").Replace(s)))
 }

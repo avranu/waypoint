@@ -17,7 +17,7 @@ type apEnv struct {
 	*taskEnv
 	p    *Project
 	jobs []RunnerJobInput
-	res  map[int64]RunnerJob // what lookupRunnerJob answers per job
+	res  map[int64]RunnerJob
 }
 
 func newAPEnv(t *testing.T) *apEnv {
@@ -27,14 +27,25 @@ func newAPEnv(t *testing.T) *apEnv {
 		r.Features = []string{FeatureAutopilot}
 		r.CLIs = []RunnerCLI{{Name: "claude"}}
 	})
+	a.catchJobs()
+	if _, err := te.s.SetAutopilot(te.ctx, te.admin, a.p.Key, AutopilotSettingInput{Enabled: ptrOf(true)}); err != nil {
+		t.Fatal(err)
+	}
+	a.autopilotStarted(a.session)
+	return a
+}
+
+// catchJobs has runner jobs recorded in a.jobs instead of enqueued, and
+// the results the test sets in a.res looked up for them, until the test
+// ends.
+func (a *apEnv) catchJobs() {
+	t := a.t
 	oldEnq, oldLook := enqueueRunnerJob, lookupRunnerJob
 	enqueueRunnerJob = func(ctx context.Context, s *Service, ac *Actor, in RunnerJobInput) (*RunnerJob, error) {
 		if in.Source == reviewCompactSource {
-			return oldEnq(ctx, s, ac, in) // the real thing: its rows are what the tests read (WP-794)
+			return oldEnq(ctx, s, ac, in)
 		}
 		a.jobs = append(a.jobs, in)
-		// The runner that claims it at once, as claimRunnerJob does: what it
-		// will type is on record (WP-1370).
 		if err := s.write(ctx, ac, func(t *tx) error {
 			return s.recordHandedOver(ctx, t, in.Kind, in.Input, in.Source, in.Timeout, in.OwnerID)
 		}); err != nil {
@@ -51,11 +62,6 @@ func newAPEnv(t *testing.T) *apEnv {
 		return &j, nil
 	}
 	t.Cleanup(func() { enqueueRunnerJob, lookupRunnerJob = oldEnq, oldLook })
-	if _, err := te.s.SetAutopilot(te.ctx, te.admin, a.p.Key, AutopilotSettingInput{Enabled: ptrOf(true)}); err != nil {
-		t.Fatal(err)
-	}
-	a.autopilotStarted(a.session)
-	return a
 }
 
 // autopilotStarted records that an earlier step of autopilot's started the
@@ -64,8 +70,6 @@ func newAPEnv(t *testing.T) *apEnv {
 func (a *apEnv) autopilotStarted(session int64) {
 	a.t.Helper()
 	now := a.clockNow().UnixMilli()
-	// The session it moved on, ended, so the step reads as a restart and not
-	// as a start of its own (session_id NULL).
 	res, err := a.s.db.W.Exec(`INSERT INTO agent_sessions(user_id, machine, cli_id, state, started_at, last_seen_at, ended_at)
 		VALUES (?, 'box', ?, 'ended', ?, ?, ?)`, a.admin.User.ID, fmt.Sprintf("before-%d-%d", session, a.bornN()), now-1, now, now)
 	if err != nil {
@@ -125,17 +129,15 @@ func (a *apEnv) step() *stepRow {
 }
 
 func (a *apEnv) tick(d time.Duration) {
-	a.s.Wait() // background work reads the clock; let it finish before moving it
+	a.s.Wait()
 	a.setClock(a.clockNow().Add(d))
-	_, _ = a.s.db.W.Exec(`UPDATE runners SET last_seen_at = ?`, a.clockNow().UnixMilli()) // it keeps polling
+	_, _ = a.s.db.W.Exec(`UPDATE runners SET last_seen_at = ?`, a.clockNow().UnixMilli())
 	a.s.RunAutopilot(a.ctx)
 }
 
 func (a *apEnv) jobDone(n int, res AutopilotJobResult) {
 	raw, _ := json.Marshal(res)
 	a.res[int64(n)] = RunnerJob{State: "done", Result: raw}
-	// The source the job was queued with, as the runner's finish event
-	// carries it: a review job's own (WP-1134) has to be accepted too.
 	src := autopilotSource
 	if n >= 1 && n <= len(a.jobs) {
 		src = a.jobs[n-1].Source
@@ -177,12 +179,10 @@ func TestAutopilotMovesAFinishedSessionOn(t *testing.T) {
 	if st := a.step(); st.state != StepStarting {
 		t.Fatalf("step = %s", st.state)
 	}
-	a.tick(time.Minute) // starting: nothing more until the job answers
+	a.tick(time.Minute)
 	if len(a.jobs) != 1 {
 		t.Fatal("queued a second job while the first ran")
 	}
-	// The old session's end (autopilot's /exit), the restarted session's
-	// start, then the job's answer.
 	if _, err := a.s.SessionHook(a.ctx, a.admin, []HookEvent{hook("box", a.cli, "SessionEnd", func(h *HookEvent) { h.EndReason = "prompt_input_exit" })}); err != nil {
 		t.Fatal(err)
 	}
@@ -209,8 +209,6 @@ func TestAutopilotMovesAFinishedSessionOn(t *testing.T) {
 	var steps []*AutopilotStep
 	for _, p := range o.Projects {
 		if p.ProjectKey == a.p.Key {
-			// This runner can't start one of its own; the step that started
-			// the session (newAPEnv) has no task.
 			steps = slices.DeleteFunc(p.Steps, func(s *AutopilotStep) bool { return s.Session == nil || s.Next == nil })
 		}
 	}
@@ -227,7 +225,6 @@ func TestAutopilotLeavesAPersonTheirSession(t *testing.T) {
 	a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Second", Agent: "claude"})
 	a.finish(first.Key)
 	a.stopWith("Done.")
-	// Autopilot's own prompt is never a person's.
 	a.record(TypedKickoff, AutopilotPromptMark+" started this session for APP-9.")
 	if _, err := a.s.SessionHook(a.ctx, a.ag, []HookEvent{hook("box", a.cli, "UserPromptSubmit", func(h *HookEvent) { h.Prompt = AutopilotPromptMark + " started this session for APP-9." })}); err != nil {
 		t.Fatal(err)
@@ -245,8 +242,6 @@ func TestAutopilotLeavesAPersonTheirSession(t *testing.T) {
 	if len(a.jobs) != 0 {
 		t.Fatal("moved a session its person was using")
 	}
-	// The session is theirs now (WP-1319): its answer to them moves nothing,
-	// however long it then sits idle.
 	if res := a.stopWith("Fixed the typo."); strings.Contains(res.Note, "Autopilot") {
 		t.Errorf("note = %q", res.Note)
 	}
@@ -298,7 +293,6 @@ func TestAutopilotKeep(t *testing.T) {
 	if res := prompt("keep"); res.Block != "" {
 		t.Errorf("keep with nothing about to happen was dropped: %+v", res)
 	}
-	// /keep is never a turn: with nothing about to happen it says so.
 	if res := prompt(" /KEEP "); res.Block != AutopilotNothingToKeepLine {
 		t.Errorf("/keep with nothing about to happen = %+v", res)
 	}
@@ -336,7 +330,7 @@ func TestAutopilotStaleBackgroundWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	waiter := PendingTask{Type: "shell", Status: "running", Description: "wp pr wait 12"}
-	a.stopWith("Working; CI is running.", waiter) // seen before the task was done
+	a.stopWith("Working; CI is running.", waiter)
 	a.setClock(a.clockNow().Add(time.Minute))
 	if _, err := a.s.AgentDone(a.ctx, a.ag, first.Key, AgentDoneInput{}); err != nil {
 		t.Fatal(err)
@@ -354,11 +348,10 @@ func TestAutopilotStaleBackgroundWork(t *testing.T) {
 	if st.dueAt != a.clockNow().UnixMilli()+autopilotStaleAfter.Milliseconds() {
 		t.Errorf("looks again at %d, want when it goes stale", st.dueAt)
 	}
-	a.tick(autopilotStaleAfter + time.Second) // stale now: moves on (to the limits and the pick)
+	a.tick(autopilotStaleAfter + time.Second)
 	if len(a.jobs) != 1 {
 		t.Fatalf("still held by stale work: %+v", a.step())
 	}
-	// A Stop that can't say what runs holds it.
 	if got, _, _ := a.s.autopilotHold(a.ctx, a.s.db.R, a.session, false, nil, 0, a.clockNow().UnixMilli()); got != WaitUnknown {
 		t.Errorf("unknown pending = %q", got)
 	}
@@ -372,7 +365,6 @@ func TestAutopilotLimits(t *testing.T) {
 	a.finish(first.Key)
 	a.stopWith("Done.")
 	hour := a.clockNow().UnixMilli() - a.clockNow().UnixMilli()%3_600_000
-	// $100 this hour on Opus output.
 	if _, err := a.s.db.W.Exec(`INSERT INTO usage_hours(user_id, hour, machine, session, repo, model, output) VALUES (?,?,?,?,?,?,?)`,
 		a.admin.User.ID, hour, "box", "s", "", "claude-opus-5-5", 5_000_000); err != nil {
 		t.Fatal(err)
@@ -388,11 +380,9 @@ func TestAutopilotLimits(t *testing.T) {
 	if n != 1 {
 		t.Errorf("notified %d times, want once", n)
 	}
-	// A higher limit for this project lets it go.
 	if _, err := a.s.SetAutopilot(a.ctx, a.admin, a.p.Key, AutopilotSettingInput{Merge: true, Limits: AutopilotLimits{MaxHourlyUSD: ptrOf(500.0)}}); err != nil {
 		t.Fatal(err)
 	}
-	// The week: 80% used with a day and a half of seven gone is far ahead.
 	reset := a.clockNow().Add(5*24*time.Hour + 12*time.Hour)
 	if _, err := a.s.db.W.Exec(`INSERT INTO quota_samples(user_id, at, span, percent, resets_at, machine) VALUES (?,?,?,?,?,?)`,
 		a.admin.User.ID, a.clockNow().UnixMilli(), "seven_day", 80.0, reset.UnixMilli(), "box"); err != nil {
@@ -414,8 +404,6 @@ func TestAutopilotLimits(t *testing.T) {
 	if why, _ := autopilotPaused(m, waypointAutopilotDefaults(), a.clockNow()); pauseReason(why) != PauseWeekMax {
 		t.Errorf("92%% of the week, a day before it resets = %q", why)
 	}
-	// From 24 hours before the reset the ceiling rises, to 100% 12 hours
-	// before it: at 18 hours, 95%.
 	m.WeekEven, m.WeekResetsAt = ptrOf(93.0), ptrOf(a.clockNow().Add(18*time.Hour))
 	if why, _ := autopilotPaused(m, waypointAutopilotDefaults(), a.clockNow()); why != "" {
 		t.Errorf("92%% of the week, 18 hours before it resets = %q", why)
@@ -470,7 +458,6 @@ func TestAutopilotQuotaLimitsOff(t *testing.T) {
 	if o.Meter.PausedBecause != "" || pauseReason(o.Meter.QuotaHeld) != PauseWeekMax || o.Meter.QuotaOffUntil == nil {
 		t.Errorf("with the quota limits off the meter says %+v", o.Meter)
 	}
-	// When they went off is kept for the quota guard; an extension keeps it.
 	offAt := func() (at int64) {
 		_ = a.s.db.R.QueryRow(`SELECT quota_off_at FROM autopilot_settings WHERE user_id = ? AND project_id IS NULL`, a.admin.User.ID).Scan(&at)
 		return at
@@ -495,7 +482,6 @@ func TestAutopilotQuotaLimitsOff(t *testing.T) {
 	if why, _ := autopilotPaused(m, waypointAutopilotDefaults(), a.clockNow().Add(2*time.Hour)); pauseReason(why) != PauseWeekMax {
 		t.Errorf("once the quota limits are back on = %q", why)
 	}
-	// Back on: a time not in the future.
 	o, err = a.s.SetAutopilot(a.ctx, a.admin, "", AutopilotSettingInput{Merge: true, QuotaOffUntil: ptrOf(time.Time{})})
 	if err != nil {
 		t.Fatal(err)
@@ -510,7 +496,7 @@ func TestAutopilotQuotaLimitsOff(t *testing.T) {
 func TestAutopilotMergeWait(t *testing.T) {
 	a := newAPEnv(t)
 	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude"})
-	a.finish(first.Key) // before its sub-task, which wp next FIRST would hand out instead (WP-730)
+	a.finish(first.Key)
 	child := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Builds on it", Agent: "claude", Priority: "urgent", Parent: first.Key})
 	if _, err := a.s.db.W.Exec(`INSERT INTO external_links(issue_id, provider, kind, url, repo, number, state, created_at) VALUES (?,?,?,?,?,?,?,?)`,
 		first.ID, "forgejo", "pull", "https://git.example/acme/app/pulls/7", "acme/app", 7, "open", 1); err != nil {
@@ -527,7 +513,6 @@ func TestAutopilotMergeWait(t *testing.T) {
 	if len(a.jobs) != 1 || json.Unmarshal(a.jobs[0].Input, &in) != nil || in.Key != other.Key {
 		t.Fatalf("the unrelated task should go first: %+v", a.jobs)
 	}
-	// Policy never: the related one would have gone at once.
 	if _, err := a.s.SetAutopilot(a.ctx, a.admin, a.p.Key, AutopilotSettingInput{Merge: true, Limits: AutopilotLimits{Merge: ptrOf(MergeWaitNever)}}); err != nil {
 		t.Fatal(err)
 	}
@@ -597,7 +582,6 @@ func TestAutopilotSessionNote(t *testing.T) {
 	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude"})
 	a.finish(first.Key)
 	a.stopWith("Done.")
-	// The same session, resumed: its project is known from the task now.
 	if _, err := a.s.db.W.Exec(`UPDATE agent_sessions SET project_id = ? WHERE id = ?`, a.p.ID, a.session); err != nil {
 		t.Fatal(err)
 	}
@@ -623,7 +607,6 @@ func TestAutopilotUnsticksAJobNobodyTook(t *testing.T) {
 		if len(a.jobs) != try || a.step().state != StepStarting {
 			t.Fatalf("try %d: jobs %d, step %+v", try, len(a.jobs), a.step())
 		}
-		// The runner never answers; the cancel's finish event is what reaches the step.
 		a.res[int64(try)] = RunnerJob{State: "running"}
 		a.setClock(a.clockNow().Add(autopilotJobStuck + time.Minute))
 		a.res[int64(try)] = RunnerJob{State: "cancelled", Error: "Cancelled"}
@@ -691,10 +674,9 @@ func TestAutopilotStopsWhileStarting(t *testing.T) {
 	if st := a.step(); st.state != StepStopped {
 		t.Fatalf("after the unwanted answer: %+v", st)
 	}
-	// An old snapshot of the step advanced now changes nothing.
 	old := *st
 	old.state = StepDue
-	_, _ = a.s.db.W.Exec(`UPDATE runners SET last_seen_at = 0`) // offline: advanceStep would say "waiting"
+	_, _ = a.s.db.W.Exec(`UPDATE runners SET last_seen_at = 0`)
 	if err := a.s.advanceStep(a.ctx, &old); err != nil {
 		t.Fatal(err)
 	}
@@ -702,12 +684,10 @@ func TestAutopilotStopsWhileStarting(t *testing.T) {
 		t.Fatalf("a stale advance revived the step: %+v", st)
 	}
 
-	// Held answers aren't failures. (The person's prompt made the session
-	// theirs (WP-1319); here autopilot has started it again since.)
 	a.setClock(a.clockNow().Add(time.Second))
 	a.autopilotStarted(a.session)
 	a.stopWith("Done again.")
-	a.tick(autopilotIdleHold + time.Minute) // past the hold the earlier prompt set
+	a.tick(autopilotIdleHold + time.Minute)
 	for i := 0; i < autopilotJobTries+1; i++ {
 		if i > 0 {
 			a.tick(3 * time.Minute)
@@ -772,8 +752,6 @@ func (a *apEnv) moveOnStarted() string {
 	var in AutopilotJob
 	_ = json.Unmarshal(a.jobs[len(a.jobs)-1].Input, &in)
 	cli := fmt.Sprintf("cli-%d", len(a.jobs)+1)
-	// The runner reports once the new session's SessionStart is in
-	// (waitRegistered), so the step knows the session it started.
 	res, err := a.s.SessionHook(a.ctx, a.ag, []HookEvent{hook("box", cli, "SessionStart", func(h *HookEvent) { h.Source = "startup" })})
 	if err != nil {
 		a.t.Fatal(err)
@@ -789,7 +767,6 @@ func TestAutopilotNeverRepeatsAFinishedTask(t *testing.T) {
 	a := newAPEnv(t)
 	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude"})
 	a.finish(first.Key)
-	// A queue bug: it is offered again, as if nothing had finished it.
 	if _, err := a.s.db.W.Exec(`UPDATE issues SET status_id = (SELECT id FROM statuses WHERE project_id = ? AND category = 'todo' LIMIT 1), resolved_at = NULL WHERE id = ?`, a.p.ID, first.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -803,7 +780,6 @@ func TestAutopilotNeverRepeatsAFinishedTask(t *testing.T) {
 	if !strings.Contains(body, first.Key) || !strings.Contains(body, "already finished") {
 		t.Errorf("notification = %q", body)
 	}
-	// Sent back by a person: it goes.
 	if _, err := a.s.UpdateIssue(a.ctx, a.admin, first.Key, IssuePatch{Status: ptrOf(CatBacklog)}); err != nil {
 		t.Fatal(err)
 	}
@@ -827,7 +803,6 @@ func TestAutopilotTurnsItselfOffOnChurn(t *testing.T) {
 		a.issue(a.admin, IssueInput{Project: a.p.Key, Title: fmt.Sprintf("Task %d", n), Agent: "claude"})
 	}
 	a.finish(a.p.Key + "-1")
-	// Quick, but each opened a pull request: work.
 	for n := range 3 {
 		key := a.moveOn()
 		i := a.get(a.admin, key)
@@ -837,7 +812,6 @@ func TestAutopilotTurnsItselfOffOnChurn(t *testing.T) {
 		}
 		a.finishIn(key, time.Minute, "Nothing to do here, already fixed.")
 	}
-	// Quick, no pull request, but nothing suspicious said: a quick task.
 	a.finishIn(a.moveOn(), time.Minute, "Answered on the task.")
 	for range 2 {
 		a.finishIn(a.moveOn(), time.Minute, "This was already done in #40; closing.")
@@ -863,7 +837,6 @@ func TestAutopilotTurnsItselfOffOnChurn(t *testing.T) {
 	if title != "Autopilot turned itself off in "+a.p.Key {
 		t.Errorf("notification = %q", title)
 	}
-	// Back on: it counts afresh.
 	if _, err := a.s.SetAutopilot(a.ctx, a.admin, a.p.Key, AutopilotSettingInput{Enabled: ptrOf(true)}); err != nil {
 		t.Fatal(err)
 	}
@@ -907,7 +880,7 @@ func TestAutopilotStartsAtMostSoManyAnHour(t *testing.T) {
 func TestAutopilotSaysWhyNothingIsReady(t *testing.T) {
 	a := newAPEnv(t)
 	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude"})
-	a.s.LLM = &fakeLLM{answer: `{"nonsense": true}`} // every screen fails: pending
+	a.s.LLM = &fakeLLM{answer: `{"nonsense": true}`}
 	if err := a.s.EnsureDefaultAI(a.ctx, "http://opencode:4096", "", "opencode/big-pickle"); err != nil {
 		t.Fatal(err)
 	}
@@ -1158,7 +1131,6 @@ func TestAutopilotHarnessPromptIsNoPersons(t *testing.T) {
 	t.Run("a person's prompt still counts", func(t *testing.T) {
 		a, _ := setup(t)
 		a.prompt("and fix the docs")
-		// It made the session theirs (WP-1319): nothing moves it on.
 		if res := a.stopWith("All done."); strings.Contains(res.Note, "Autopilot") {
 			t.Fatalf("note = %q", res.Note)
 		}
@@ -1170,7 +1142,7 @@ func TestAutopilotHarnessPromptIsNoPersons(t *testing.T) {
 
 // One call turns autopilot off in every project it was on for.
 func TestTurnOffAutopilotEverywhere(t *testing.T) {
-	a := newAPEnv(t) // App is on
+	a := newAPEnv(t)
 	other := a.project(a.admin, "Other", "")
 	if _, err := a.s.SetAutopilot(a.ctx, a.admin, other.Key, AutopilotSettingInput{Enabled: ptrOf(true), Merge: true}); err != nil {
 		t.Fatal(err)

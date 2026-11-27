@@ -59,8 +59,6 @@ func TestTraceFixBlamesTheMergeThatCarriedIt(t *testing.T) {
 		t.Fatalf("trace = %+v", got)
 	}
 	in := got.Introducers[0]
-	// The review round's own commit never counts, and the mid-PR commit maps
-	// to the merge that landed it.
 	if in.PR != 5 || in.Share != 1 || in.Merge == in.Commit {
 		t.Fatalf("introducer = %+v", in)
 	}
@@ -175,7 +173,6 @@ func TestTraceFixFromHeadOnlyCountsThatPullRequest(t *testing.T) {
 	r.write("core/a.go", "package core\n\nfunc A() int {\n\treturn 3\n}\n")
 	r.commit("fix A", 3)
 	head := r.head()
-	// Landed in a batch: the carrying commit also has someone else's change.
 	r.git("checkout", "-q", "main")
 	r.write("core/b.go", "package core\n\nvar B = 9\n")
 	r.commit("unrelated", 2)
@@ -238,7 +235,6 @@ func TestTraceFixFastForwardCoversEveryCommit(t *testing.T) {
 	if got.Lines != 2 || len(got.Files) != 2 {
 		t.Fatalf("trace = %+v", got)
 	}
-	// A squash is one new commit however many the branch had.
 	squash, err := TraceFix(r.dir, FixInput{Merge: tip, Head: strings.Repeat("b", 40), Commits: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -351,7 +347,6 @@ func TestParseFixDiffReadsHunkBodiesByCount(t *testing.T) {
 	if len(files) != 1 || files[0].old != "q.sql" {
 		t.Fatalf("files = %+v", files)
 	}
-	// Line 2 reads "-- not a header", a SQL comment; only line 3 is blamed.
 	if got := files[0].removed; len(got) != 1 || got[0] != 3 {
 		t.Fatalf("removed = %v", got)
 	}

@@ -74,7 +74,7 @@ func TestNextPrintsCompactBriefAndBriefIsFull(t *testing.T) {
 		t.Errorf("the short brief carries no bodies:\n%s", out)
 	}
 
-	full := s.wp("brief") // the task taken here
+	full := s.wp("brief")
 	for _, want := range []string{"Task " + i.Key, "MergeReady returns true too early", "Symbols the text names:", "5  \treturn id > 0"} {
 		if !strings.Contains(full, want) {
 			t.Errorf("brief lacks %q:\n%s", want, full)
