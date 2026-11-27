@@ -67,7 +67,8 @@ type beforePR struct {
 	ShipStop string `json:"ship_stop,omitempty"`
 	// TakenBy is the run that held the round's task when Waypoint last left
 	// the round for it (noteTaken), and TakenAt when: the stored record of a
-	// round left because another session holds the task.
+	// round left because another session holds the task. They are typed so
+	// that the writes that rewrite before_pr from this struct keep them.
 	TakenBy int64 `json:"taken_by,omitempty"`
 	TakenAt int64 `json:"taken_at,omitempty"`
 	// CheckErr is why the check of the session's marks couldn't be asked

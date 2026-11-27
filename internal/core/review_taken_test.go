@@ -261,26 +261,84 @@ func TestOpenRunOnAnotherTaskDoesNotTakeThisOne(t *testing.T) {
 	}
 }
 
-// Another session held the task for longer than Waypoint keeps trying, then
-// its run ended with no ship: the round's time counts from that end, so the
-// sweep still opens its pull request instead of dropping it unseen.
-func TestRoundHeldPastTheWindowShipsWhenTheHolderLeaves(t *testing.T) {
+// The session took the task again and let that claim lapse too: the
+// round's window counts from the end of the session's later run, so the
+// sweep opens its pull request though the round's own run ended longer ago
+// than Waypoint keeps trying. Another holder's run ending doesn't move it.
+func TestRoundWindowCountsFromTheSessionsLaterRun(t *testing.T) {
 	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
 	r1 := e.fixedRound()
 	e.expireRun(r1)
-	e.openRun(e.task.ID, e.otherSession())
-	e.setClock(e.clockNow().Add(strandedShipWindow + time.Hour))
-	if out := decideRound(e.factsOf(r1)); out.Do != doNothing || out.Settled != takenWant {
-		t.Fatalf("decideRound = %+v: want the round left while the other session holds the task", out)
-	}
+	e.setClock(e.clockNow().Add(strandedShipWindow))
+	e.openRun(e.task.ID, e.session)
+	e.setClock(e.clockNow().Add(time.Hour))
 	e.exec(`UPDATE agent_runs SET ended_at = ?, outcome = 'expired' WHERE issue_id = ? AND ended_at IS NULL`, e.clockNow().UnixMilli(), e.task.ID)
 	if out := decideRound(e.factsOf(r1)); out.Do != doReleaseAfterRunEnded {
-		t.Fatalf("decideRound = %+v: want the round opened once its holder left", out)
+		t.Fatalf("decideRound = %+v: want the round opened, its window counted from the session's later run", out)
 	}
 	e.s.shipSettledRounds(e.ctx)
 	e.s.Wait()
 	if bp := e.bpOf(r1); bp == nil || !bp.ShipDone {
 		t.Fatalf("before_pr = %+v: want the sweep to have shipped the round", bp)
+	}
+}
+
+// Another session's run ending is not the round's: a round its own run left
+// longer ago than the window is not opened when that holder leaves.
+func TestOtherHoldersRunEndDoesNotReopenTheWindow(t *testing.T) {
+	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
+	r1 := e.fixedRound()
+	e.expireRun(r1)
+	e.openRun(e.task.ID, e.otherSession())
+	e.setClock(e.clockNow().Add(strandedShipWindow + time.Hour))
+	e.exec(`UPDATE agent_runs SET ended_at = ?, outcome = 'expired' WHERE issue_id = ? AND ended_at IS NULL`, e.clockNow().UnixMilli(), e.task.ID)
+	if out := decideRound(e.factsOf(r1)); out.Do != doNothing {
+		t.Fatalf("decideRound = %+v: want the round left, its own run ended longer ago than the window", out)
+	}
+}
+
+// Another session took the task after the round's session took it again:
+// whoever took it last holds it, so the round is Taken and not shipped
+// behind that session, though the round's session's run is still open.
+func TestOtherSessionAfterTheRenewedClaimTakesTheTask(t *testing.T) {
+	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
+	r1 := e.fixedRound()
+	e.expireRun(r1)
+	e.openRun(e.task.ID, e.session)
+	e.openRun(e.task.ID, e.otherSession())
+	in := e.factsOf(r1)
+	if !in.Taken || in.RunOpen {
+		t.Fatalf("Taken = %v, RunOpen = %v: want the later session's run to hold the task", in.Taken, in.RunOpen)
+	}
+	if out := decideRound(in); out.Do != doNothing || out.Settled != takenWant {
+		t.Fatalf("decideRound = %+v: want the round left for the later holder", out)
+	}
+	if open, err := roundRunOpen(e.ctx, e.s.db.R, r1); err != nil || open {
+		t.Fatalf("roundRunOpen = %v, %v: a ship's gate must not pass behind the later holder", open, err)
+	}
+	// The round's session taking it back after that carries the round again.
+	e.openRun(e.task.ID, e.session)
+	if in := e.factsOf(r1); in.Taken || !in.RunOpen {
+		t.Fatalf("Taken = %v, RunOpen = %v: want the session's newest run to carry the round", in.Taken, in.RunOpen)
+	}
+}
+
+// A run with no session under the round's agent's name, opened by another
+// person's token, is another holder: a sessionless caller names its agent
+// unchecked, so the name alone doesn't make it the round's holder.
+func TestSessionlessRunOfAnotherUserUnderTheAgentsNameTakesTheTask(t *testing.T) {
+	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
+	r1 := e.fixedRound()
+	e.expireRun(r1)
+	u := e.user("mallory", false)
+	e.exec(`INSERT INTO agent_runs(issue_id, agent, user_id, started_at) VALUES (?, ?, ?, ?)`, e.task.ID, e.taskAgent(), u.User.ID, e.clockNow().UnixMilli())
+	in := e.factsOf(r1)
+	if !in.Taken || in.RunOpen {
+		t.Fatalf("Taken = %v, RunOpen = %v: want another user's run under the agent's name to be another holder", in.Taken, in.RunOpen)
+	}
+	got, err := e.s.shipNewsNow(e.ctx, e.session, e.task.ID)
+	if err != nil || got == nil || !strings.Contains(got.Text, "That run's own `wp ship") || strings.Contains(got.Text, "That session's") {
+		t.Fatalf("shipNewsNow = %+v, %v: want the sessionless holder's own ship named, not a session's", got, err)
 	}
 }
 

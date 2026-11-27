@@ -209,7 +209,7 @@ func (s *Service) shipSettledRounds(ctx context.Context) {
 					OR `+movedOnAt+` > 0)
 				AND w.id = (SELECT max(m.id) FROM work_log m WHERE m.kind = 'review' AND m.issue_id = w.issue_id)
 				AND NOT EXISTS (SELECT 1 FROM external_links l WHERE l.issue_id = w.issue_id AND l.kind = 'pull')
-				AND (max(w.updated_at, coalesce(r.ended_at, 0), coalesce(x.ended_at, 0), `+laterRunEnd+`,
+				AND (max(w.updated_at, coalesce(r.ended_at, 0), coalesce(x.ended_at, 0), `+heldRunEnd+`,
 					`+movedOnAt+`) > ?
 					OR coalesce(json_extract(w.before_pr, '$.ship_first'), 0) > 0)))
 		ORDER BY w.id DESC LIMIT 50`, now-strandedShipWindow.Milliseconds())
