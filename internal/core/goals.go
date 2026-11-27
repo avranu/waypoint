@@ -349,7 +349,15 @@ func linkBasis(basis, agent string, by int64, confirmed bool) string {
 }
 
 // goalTech are technologies a goal names when it says how rather than what.
-var goalTech = map[string]string{}
+// goalTechCase are entries in goalTech that are also common English words or
+// acronyms (e.g. "express", "rest", "react", "spring", "swift"): they only
+// trigger when written with their exact casing (and for title-cased English
+// words, not as the sentence's first word) unless paired with an explicit
+// "use X" phrase (goalUseRE).
+var (
+	goalTech     = map[string]string{}
+	goalTechCase = map[string]bool{}
+)
 
 func init() {
 	for _, w := range strings.Fields(`Django Flask Rails Laravel Spring Express Next.js Nuxt React Vue Svelte Angular jQuery Tailwind Bootstrap
@@ -361,6 +369,15 @@ func init() {
 		Forgejo Gitea GitHub GitLab Jenkins CircleCI Grafana Prometheus Loki Sentry Datadog
 		OpenAI Anthropic Claude GPT Gemini Llama Ollama LangChain htmx Electron Flutter`) {
 		goalTech[strings.ToLower(w)] = w
+	}
+	for _, w := range strings.Fields(`Flask Rails Spring Express React Angular Tailwind Bootstrap
+		Helm Nomad Consul Vault Caddy Lambda
+		Rust Swift Node Bun Ruby Elixir
+		REST
+		Cypress Jest Poetry
+		Sentry
+		Llama Electron Flutter`) {
+		goalTechCase[strings.ToLower(w)] = true
 	}
 }
 
@@ -393,10 +410,23 @@ func goalWording(title string) []string {
 			add(fmt.Sprintf("says how (%q): say what it is for; using %s is a decision under this goal", strings.TrimSpace(m[0]), what))
 		}
 	}
-	for _, w := range goalTechRE.FindAllString(title, -1) {
-		tech, ok := goalTech[strings.ToLower(w)]
+	for _, loc := range goalTechRE.FindAllStringIndex(title, -1) {
+		w := title[loc[0]:loc[1]]
+		low := strings.ToLower(w)
+		tech, ok := goalTech[low]
 		if !ok || seen[tech] || strings.EqualFold(w, "go") {
 			continue
+		}
+		if goalTechCase[low] {
+			if w != tech {
+				continue
+			}
+			// Title-cased English words at index 0 (e.g. "React quickly",
+			// "Swift feedback", "Express intent") are sentence capitalization,
+			// not technology names; all-caps acronyms like "REST" still flag.
+			if loc[0] == 0 && tech != strings.ToUpper(tech) {
+				continue
+			}
 		}
 		seen[tech] = true
 		add(fmt.Sprintf("names %s: say what you need from it; the choice of %s is a decision under this goal", tech, tech))

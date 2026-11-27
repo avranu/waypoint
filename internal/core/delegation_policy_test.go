@@ -234,3 +234,41 @@ func TestDelegationValues(t *testing.T) {
 		t.Errorf("observations: %d, want only the drawn task", len(obs))
 	}
 }
+
+func TestDelegationInconclusiveAndSeverityWeighted(t *testing.T) {
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	var rows []*delegRow
+	rows = append(rows, delegRowsOf(delegArmNone, 10, 4, now, true)...)
+	rows = append(rows, delegRowsOf(delegArmManager, 10, 4.2, now, true)...)
+	for _, r := range rows {
+		r.prs = 1
+		if r.arm == delegArmManager {
+			r.findings = 6
+			r.severity = map[string]int{"low": 5, "high": 1}
+		} else {
+			r.findings = 3
+			r.severity = map[string]int{"low": 2, "high": 1}
+		}
+	}
+	pol := delegPolicyFrom(rows, now)
+	rep := pol.report(now)
+	var sawWeighted, sawInconclusive bool
+	for _, g := range rep.Guards {
+		if g.Guard == "findings_weighted" {
+			sawWeighted = true
+		}
+		if g.Guard == "findings" && g.Inconclusive {
+			sawInconclusive = true
+		}
+	}
+	if !sawWeighted {
+		t.Fatalf("missing severity-weighted guard in %+v", rep.Guards)
+	}
+	if !sawInconclusive {
+		t.Fatalf("expected small-sample guard to be marked inconclusive: %+v", rep.Guards)
+	}
+	text := rep.String()
+	if !strings.Contains(text, "inconclusive (") || !strings.Contains(text, "severity-weighted review findings") {
+		t.Errorf("report text missing inconclusive guard or severity-weighted line:\n%s", text)
+	}
+}

@@ -120,10 +120,13 @@ func TestCompactReport(t *testing.T) {
 		t.Errorf("windows that should be empty: %+v", rep.Follows)
 	}
 	text := compactText(rep)
-	for _, want := range []string{"2 compactions in 1 of 1 sessions", "manual     1  100k", "after a manual compaction", "1 (50.0%)"} {
+	for _, want := range []string{"2 compactions in 1 of 1 sessions", "manual     1  100k", "after a manual compaction", "1 (50.0%)", "by context before compaction", "context before 80-160k"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("text lacks %q:\n%s", want, text)
 		}
+	}
+	if len(rep.Bands) != 1 || rep.Bands[0].Point != "80k_160k" || rep.Bands[0].N != 1 {
+		t.Errorf("bands = %+v, want 1 compaction in 80k_160k", rep.Bands)
 	}
 }
 

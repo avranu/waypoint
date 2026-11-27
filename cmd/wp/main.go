@@ -78,7 +78,7 @@ func init() {
 		projectCmd, envCmd, timerCmd, logCmd, automationCmd,
 		pageCmd,
 		requestCmd, askCmd,
-		setupCmd, authCmd, configCmd, doctorCmd, hookCmd, kitCmd, sandboxCmd, statuslineCmd, updateCmd, versionCmd, helpCmd,
+		setupCmd, authCmd, configCmd, doctorCmd, guardLogCmd, hookCmd, kitCmd, sandboxCmd, statuslineCmd, updateCmd, versionCmd, helpCmd,
 	}
 }
 

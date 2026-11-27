@@ -130,6 +130,13 @@ func proofsText(o *strings.Builder, st *core.EscapeStats) {
 		parts = append(parts, fmt.Sprintf("%s %d of %d", name, p.Refixed, p.Fixes))
 	}
 	fmt.Fprintf(o, "\nFixed again later, by proof: %s.\n", strings.Join(parts, ", "))
+	if len(st.NoBuildCauses) > 0 {
+		causes := make([]string, 0, len(st.NoBuildCauses))
+		for _, c := range st.NoBuildCauses {
+			causes = append(causes, fmt.Sprintf("%s %d (%d refixed)", c.Outcome, c.Fixes, c.Refixed))
+		}
+		fmt.Fprintf(o, "no_build causes: %s.\n", strings.Join(causes, ", "))
+	}
 }
 
 func escapeListText(list []*core.Escape) string {

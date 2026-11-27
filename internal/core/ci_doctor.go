@@ -369,9 +369,19 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 	d.Pool = doctorPool(b, now)
 
 	seen := map[int64]bool{}
+	type repoVisEntry struct {
+		key string
+		ok  bool
+	}
+	repoVis := map[string]repoVisEntry{}
 	visible := func(forgeID int64, repo string) (string, bool) {
+		rk := ciRepoKey(forgeID, repo)
+		if v, known := repoVis[rk]; known {
+			return v.key, v.ok
+		}
 		ids, err := s.projectsOfRepo(ctx, forgeID, repo)
 		if err != nil {
+			repoVis[rk] = repoVisEntry{}
 			return "", false
 		}
 		for _, id := range ids {
@@ -382,10 +392,12 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 			}
 			if ok {
 				if p, err := s.projectByID(ctx, s.db.R, id); err == nil {
+					repoVis[rk] = repoVisEntry{key: p.Key, ok: true}
 					return p.Key, true
 				}
 			}
 		}
+		repoVis[rk] = repoVisEntry{}
 		return "", false
 	}
 	hist := map[string]*ciRepoData{}
@@ -1154,12 +1166,15 @@ func (s *Service) doctorTests(ctx context.Context, d *CIDoctor, hist map[string]
 }
 
 func (s *Service) readDoctorTests(ctx context.Context, cl jobLogReader, d *CIDoctor, hist map[string]*ciRepoData) {
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	c := &s.ciBoard
 	reads := 0
 	readers := map[string]*runJobs{}
 	for i := range d.Jobs {
+		if ctx.Err() != nil {
+			return
+		}
 		j := &d.Jobs[i]
 		lf := j.lastFail
 		if lf.task == 0 || (!j.Unreliable && j.OnePR == 0) {

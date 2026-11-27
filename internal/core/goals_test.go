@@ -219,13 +219,20 @@ func TestGoalMatcher(t *testing.T) {
 
 func TestGoalWording(t *testing.T) {
 	for title, want := range map[string]string{
-		"A performant task tracker":                   "",
-		"Use Django, Postgres and Redis":              "Postgres",
-		"Switch to Kubernetes for deploys":            "says how",
-		"Move internal/core/goals.go into a package":  "names a file",
-		"Speed up ListGoals":                          "names code",
-		"Ship v2.1 before the launch":                 "names a version",
-		"People can go anywhere in the app in a step": "",
+		"A performant task tracker":                           "",
+		"Use Django, Postgres and Redis":                      "Postgres",
+		"Switch to Kubernetes for deploys":                    "says how",
+		"Move internal/core/goals.go into a package":          "names a file",
+		"Speed up ListGoals":                                  "names code",
+		"Ship v2.1 before the launch":                         "names a version",
+		"People can go anywhere in the app in a step":         "",
+		"Users can express their wishes simply and minimally": "",
+		"The rest of the team sees progress immediately":      "",
+		"React quickly to incidents without guesswork":        "",
+		"Swift feedback on every pull request":                "",
+		"Expose a REST API for external callers":              "names REST",
+		"Build the dashboard in React":                        "names React",
+		"Use Express for the webhook server":                  "says how",
 	} {
 		got := strings.Join(goalWording(title), " | ")
 		if (want == "") != (got == "") || !strings.Contains(got, want) {

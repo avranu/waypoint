@@ -116,6 +116,8 @@ func (c *cli) setupChecks() []doctorCheck {
 
 	c.checkRepo(signedIn, add)
 	c.checkHooks(add)
+	c.checkGuardLog(add)
+	c.checkMemoryHealth(add)
 	c.checkRunner(signedIn, add)
 	checkAgentCLIs(add)
 	return checks
@@ -274,6 +276,101 @@ func (c *cli) checkHooks(add addCheck) {
 	default:
 		add(checkWarn, "hooks", "not installed in %s: wp hook claude", res.path)
 	}
+}
+
+// checkGuardLog surfaces high recent claude-guard denial volume so false
+// positives or misconfigured repos don't go unnoticed (N25).
+func (c *cli) checkGuardLog(add addCheck) {
+	if c.dir == "" {
+		return
+	}
+	rep, err := readGuardStats(c.dir, 7, 3, time.Now().UTC())
+	if err != nil || rep.Total == 0 {
+		return
+	}
+	top := ""
+	if len(rep.ByRule) > 0 {
+		top = fmt.Sprintf(" (top: %s %d)", rep.ByRule[0].Key, rep.ByRule[0].Count)
+	}
+	if rep.Total >= 25 {
+		add(checkWarn, "guard log", "%d entries in last 7d%s: wp guard stats", rep.Total, top)
+		return
+	}
+	add(checkInfo, "guard log", "%d entries in last 7d%s: wp guard stats", rep.Total, top)
+}
+
+// checkMemoryHealth flags bloated or duplicate Claude Code MEMORY.md files for
+// the current repository (N25). Silent when Claude Code is absent or no
+// MEMORY.md exists.
+func (c *cli) checkMemoryHealth(add addCheck) {
+	if !claudeInstalled() {
+		return
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	top := gitTop(cwd)
+	if top == "" {
+		return
+	}
+	memPath := claudeMemoryPath(top)
+	if memPath == "" {
+		return
+	}
+	raw, err := os.ReadFile(memPath) // #nosec G304 -- local Claude memory file for current repo
+	if err != nil {
+		return
+	}
+	lines, dupes := analyzeMemoryMD(string(raw))
+	switch {
+	case lines >= 180 && dupes > 0:
+		add(checkWarn, "claude memory", "%s has %d lines (truncates at 200) and %d duplicate entries", memPath, lines, dupes)
+	case lines >= 180:
+		add(checkWarn, "claude memory", "%s has %d lines (Claude Code truncates MEMORY.md at 200 lines)", memPath, lines)
+	case dupes >= 3:
+		add(checkWarn, "claude memory", "%s has %d duplicate entries: trim stale duplicates", memPath, dupes)
+	}
+}
+
+func claudeMemoryPath(repoTop string) string {
+	root := claudeDir("")
+	if root == "" || repoTop == "" {
+		return ""
+	}
+	// Claude Code encodes project directories by replacing '/' and '.' with '-'.
+	slug := strings.NewReplacer("/", "-", ".", "-").Replace(filepath.Clean(repoTop))
+	return filepath.Join(root, "projects", slug, "memory", "MEMORY.md")
+}
+
+// analyzeMemoryMD counts non-empty lines and duplicate substantive bullet/prose
+// lines (ignoring headings, horizontal rules, and blank lines).
+func analyzeMemoryMD(text string) (totalLines, duplicates int) {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if text == "" {
+		return 0, 0
+	}
+	seen := map[string]int{}
+	inFence := false
+	for _, raw := range lines {
+		s := strings.TrimSpace(raw)
+		if strings.HasPrefix(s, "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence || s == "" || strings.HasPrefix(s, "#") || s == "---" || s == "***" {
+			continue
+		}
+		norm := strings.ToLower(strings.Join(strings.Fields(s), " "))
+		if len(norm) < 20 {
+			continue
+		}
+		seen[norm]++
+		if seen[norm] > 1 {
+			duplicates++
+		}
+	}
+	return len(lines), duplicates
 }
 
 func (c *cli) checkRunner(signedIn bool, add addCheck) {

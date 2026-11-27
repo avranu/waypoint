@@ -194,6 +194,43 @@ func TestSweepFilesOnceAndMeasuresRecurrence(t *testing.T) {
 	}
 }
 
+// High-churn open mistake classes sort ahead of smaller/closed classes and
+// escalate priority from low -> medium (>=10) -> high (>=20) without ever
+// downgrading a human-set higher priority.
+func TestMistakeOrderingAndPriorityEscalation(t *testing.T) {
+	pe := newPREnv(t, "forgejo")
+	const fileA, fileB = "internal/core/hot.go", "internal/core/warm.go"
+	for i := 1; i <= 3; i++ {
+		pe.mistakeBug(i, fmt.Sprintf("merge queue front loses place %d", i), fileA)
+		pe.mistakeBug(100+i, fmt.Sprintf("draft run loses branch %d", i), fileB)
+	}
+	pe.s.SweepMistakes(pe.ctx)
+	got := pe.recurring()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 recurring tasks, got %d", len(got))
+	}
+	// Add 7 more instances to fileA (total 10) -> escalates to medium and sorts first.
+	for i := 4; i <= 10; i++ {
+		pe.mistakeBug(i, fmt.Sprintf("merge queue front loses place %d", i), fileA)
+	}
+	pe.s.SweepMistakes(pe.ctx)
+	list := pe.mistakeClasses()
+	if len(list) != 2 || list[0].Key != fileA || list[0].Instances != 10 {
+		t.Fatalf("expected %s (10 instances) sorted first, got %+v", fileA, list)
+	}
+	if prio := PriorityName(pe.get(pe.admin, list[0].Issue).Priority); prio != "medium" {
+		t.Fatalf("at 10 instances priority = %q, want medium", prio)
+	}
+	// Add 10 more instances to fileA (total 20) -> escalates to high.
+	for i := 11; i <= 20; i++ {
+		pe.mistakeBug(i, fmt.Sprintf("merge queue front loses place %d", i), fileA)
+	}
+	pe.s.SweepMistakes(pe.ctx)
+	if prio := PriorityName(pe.get(pe.admin, list[0].Issue).Priority); prio != "high" {
+		t.Fatalf("at 20 instances priority = %q, want high", prio)
+	}
+}
+
 // Won't Do declines a class for good, and the setting stops filing.
 func TestSweepDeclinedAndTurnedOff(t *testing.T) {
 	pe := newPREnv(t, "forgejo")

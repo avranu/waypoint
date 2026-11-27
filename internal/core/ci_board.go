@@ -301,8 +301,14 @@ func (s *Service) CIBoard(ctx context.Context, actor *Actor) (*CIBoard, error) {
 	return s.layoutCIBoard(ctx, actor, snap), nil
 }
 
+// ciReadTimeout bounds one readCI rebuild so CIDoctor and CIBoard stay well
+// inside the CLI's 60s HTTP timeout even when Forgejo is slow (N25).
+var ciReadTimeout = 25 * time.Second
+
 // ciSnapshot returns a snapshot no older than ciBoardFresh; one reader
-// builds it while the others wait.
+// builds it while the others wait. If a rebuild fails or times out and a prior
+// snapshot is available, the prior snapshot is returned so diagnostics degrade
+// gracefully instead of timing out the caller.
 func (s *Service) ciSnapshot(ctx context.Context) (*ciSnapshot, error) {
 	c := &s.ciBoard
 	for {
@@ -313,28 +319,44 @@ func (s *Service) ciSnapshot(ctx context.Context) (*ciSnapshot, error) {
 			return snap, nil
 		}
 		if c.building == nil {
-			c.building = make(chan struct{})
+			prev := c.snap
+			done := make(chan struct{})
+			c.building = done
 			c.mu.Unlock()
-			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
-			snap, err := s.readCI(rctx)
-			cancel()
-			if err == nil {
-				s.notePoolSaturation(snap)
-			}
-			c.mu.Lock()
-			if err == nil {
-				c.snap, c.at = snap, s.now()
-			}
-			close(c.building)
-			c.building = nil
-			c.mu.Unlock()
+			var snap *ciSnapshot
+			var err error
+			func() {
+				defer func() {
+					c.mu.Lock()
+					if err == nil && snap != nil {
+						c.snap, c.at = snap, s.now()
+					} else if prev != nil {
+						snap, err = prev, nil
+					}
+					close(done)
+					if c.building == done {
+						c.building = nil
+					}
+					c.mu.Unlock()
+				}()
+				rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ciReadTimeout)
+				defer cancel()
+				snap, err = s.readCI(rctx)
+				if err == nil {
+					s.notePoolSaturation(snap)
+				}
+			}()
 			return snap, err
 		}
 		wait := c.building
+		prev := c.snap
 		c.mu.Unlock()
 		select {
 		case <-wait:
 		case <-ctx.Done():
+			if prev != nil {
+				return prev, nil
+			}
 			return nil, ctx.Err()
 		}
 	}
@@ -472,7 +494,11 @@ func (s *Service) ciForgeRunners(ctx context.Context, cl ForgeActions, f *Forge)
 func (s *Service) readCIRepo(ctx context.Context, cl ForgeActions, d *ciRepoData, sem chan struct{}) {
 	f, repo := d.ref.forge, d.ref.repo
 	call := func(fn func() error) error {
-		sem <- struct{}{}
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 		defer func() { <-sem }()
 		return fn()
 	}

@@ -117,6 +117,7 @@ type cmpReport struct {
 	Idle           []cmpIdle      `json:"by_idle"`
 	Start          cmpFirstCall   `json:"session_start"`
 	Follows        []cmpFollowRow `json:"what_followed"`
+	Bands          []cmpFollowRow `json:"by_context_before,omitempty"`
 	Reviews        []cmpReviewRow `json:"review_rounds"`
 	Signals        []cmpReviewRow `json:"adversarial_reviews"`
 }
@@ -342,6 +343,23 @@ var cmpIdleBuckets = []struct {
 	upTo int64
 }{{"under 5m", 300}, {"5-45m", 2700}, {"45-60m", 3600}, {"over 60m", 1 << 62}}
 
+var cmpContextBandNames = [3][2]string{
+	{"under_80k", "context before <80k"},
+	{"80k_160k", "context before 80-160k"},
+	{"over_160k", "context before >=160k"},
+}
+
+func cmpContextBand(tokens int64) int {
+	switch {
+	case tokens < 80_000:
+		return 0
+	case tokens < 160_000:
+		return 1
+	default:
+		return 2
+	}
+}
+
 // cmpTriggerAcc gathers one trigger's compactions.
 type cmpTriggerAcc struct {
 	t                                      cmpTrigger
@@ -356,6 +374,7 @@ type cmpAcc struct {
 	rep                     cmpReport
 	trig                    map[string]*cmpTriggerAcc
 	rows                    [cmpRows]cmpFollowRow
+	bands                   [3]cmpFollowRow
 	reviews                 [3]cmpReviewRow
 	signals                 [3]cmpReviewRow
 	startWritten, startRead []int64
@@ -373,6 +392,9 @@ func newCmpAcc(prices []burnPrice) *cmpAcc {
 	}
 	for i, n := range cmpRowNames {
 		a.rows[i].Point, a.rows[i].text = n[0], n[1]
+	}
+	for i, n := range cmpContextBandNames {
+		a.bands[i].Point, a.bands[i].text = n[0], n[1]
 	}
 	for i, n := range cmpReviewNames {
 		a.reviews[i].Point, a.reviews[i].text = n[0], n[1]
@@ -704,6 +726,9 @@ func (a *cmpAcc) compaction(ev []cmpEvent, from, at, to int, before, after []int
 	if w.Calls == cmpWindowCalls {
 		a.rows[full].add(w)
 	}
+	if held > 0 {
+		a.bands[cmpContextBand(held)].add(w)
+	}
 
 	carry := cmpReplay(ev, at, to)
 	ct := &t.Carry
@@ -755,6 +780,12 @@ func (a *cmpAcc) report() *cmpReport {
 	for i := range a.rows {
 		a.rows[i].finish()
 		rep.Follows = append(rep.Follows, a.rows[i])
+	}
+	for i := range a.bands {
+		a.bands[i].finish()
+		if a.bands[i].N > 0 {
+			rep.Bands = append(rep.Bands, a.bands[i])
+		}
 	}
 	for i := range a.reviews {
 		r := &a.reviews[i]
@@ -917,6 +948,17 @@ func compactText(r *cmpReport) string {
 		_, _ = fmt.Fprintf(tw, "%s\t%d\t%s\t%d (%s)\t%.2f\t$%.2f\t$%.2f\t$%.2f\t$%.2f\t$%.3f\n", f.text, f.N, asked, f.OwnTranscript, cmpShare(f.OwnTranscript, f.N), f.Subagents, f.USD, f.USDWrite, f.USDRead, f.USDOut, f.USDPerCall)
 	}
 	_ = tw.Flush()
+
+	if len(r.Bands) > 0 {
+		tw = tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+		_, _ = fmt.Fprintf(tw, "\nby context before compaction, %d calls\tn\tcalls\tfile lookups\tseen before\ttokens again\ttool errors\treached an edit\tdollars\n", r.WindowCalls)
+		for _, f := range r.Bands {
+			seen := fmt.Sprintf("%d (%s)", f.SeenBefore, cmpShare(f.SeenBefore, f.FileLookups))
+			_, _ = fmt.Fprintf(tw, "%s\t%d\t%.1f\t%d\t%s\t%d\t%s\t%s\t$%.2f\n",
+				f.text, f.N, f.Calls, f.FileLookups, seen, f.TokensAgain, cmpShare(f.Failed, f.Tools), cmpShare(f.ReachedEdit, f.N), f.USD)
+		}
+		_ = tw.Flush()
+	}
 
 	if cmpAny(r.Reviews) {
 		tw = tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)

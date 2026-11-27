@@ -839,6 +839,7 @@ type EscapeStats struct {
 	// (WP-709); ProofsPending of them have no proof yet.
 	Proofs        []EscapeProof `json:"proofs"`
 	ProofsPending int           `json:"proofs_pending"`
+	NoBuildCauses []EscapeProof `json:"no_build_causes,omitempty"`
 }
 
 func medianDays(v []float64) *float64 {
@@ -972,6 +973,7 @@ func (s *Service) EscapeSummary(ctx context.Context, a *Actor, q EscapeQuery) (*
 		st.Chains = [][]string{}
 	}
 	st.Proofs, st.ProofsPending = escapeProofs(rows)
+	st.NoBuildCauses = escapeNoBuildCauses(rows)
 	if st.Reopens, err = s.escapeReopens(ctx, rows); err != nil {
 		return nil, err
 	}
