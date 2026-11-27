@@ -2,8 +2,6 @@ package db
 
 import (
 	"context"
-	"database/sql"
-	"path/filepath"
 	"testing"
 )
 
@@ -12,13 +10,7 @@ import (
 // is autopilot's, and anything else, wrapped or not, is a person's.
 func TestTypedPromptsBackfillReadsWrappedRows(t *testing.T) {
 	ctx := context.Background()
-	w, err := sql.Open("sqlite", dsn(filepath.Join(t.TempDir(), "w.db"), false))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = w.Close() }()
-	w.SetMaxOpenConns(1)
-	body := migrateBefore(ctx, t, w, "0187_typed_prompts.sql")
+	w, body := migrateBefore(ctx, t, "0187_typed_prompts.sql")
 	for _, q := range []string{
 		`INSERT INTO users(id, username, email, created_at, updated_at) VALUES (1, 'robin', 'j@example.com', 0, 0)`,
 		`INSERT INTO agent_sessions(id, user_id, machine, cli_id, started_at, last_seen_at) VALUES (1, 1, 'box', 's1', 0, 0)`,
