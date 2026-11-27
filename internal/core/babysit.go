@@ -1424,11 +1424,12 @@ func (s *Service) liveSessionOnPR(ctx context.Context, b *Babysit, pr *PullReque
 				OR EXISTS (
 					SELECT 1 FROM pr_claims c
 					WHERE c.pull_id = ? AND c.session_id = x.id AND c.expires_at > ?
+						AND c.session_id != ?
 						AND (x.branch = '' OR x.branch = ?)
 				)
 			)
 		ORDER BY x.last_seen_at DESC LIMIT 5`,
-		cutoff, pr.HeadRef, pr.Repo, pr.Repo, pr.Number, pr.URL, pr.ID, now.UnixMilli(), pr.HeadRef)
+		cutoff, pr.HeadRef, pr.Repo, pr.Repo, pr.Number, pr.URL, pr.ID, now.UnixMilli(), b.sessionID, pr.HeadRef)
 	if err != nil {
 		return "", false
 	}

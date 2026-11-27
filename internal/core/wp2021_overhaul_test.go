@@ -76,6 +76,33 @@ func TestBabysitDefersToLiveSessionAndResumesAfterBound(t *testing.T) {
 	}
 }
 
+// Pillar A regression: a session that arms and starts babysitting (MergePR
+// records a pr_claims row for b.sessionID) must NOT defer its own babysitter
+// when it isn't actively checked out on the PR's branch, whereas a DIFFERENT
+// live session holding a pr_claims row still defers it.
+func TestBabysitDoesNotDeferToOwnShippingClaim(t *testing.T) {
+	be := newBabysitEnv(t)
+	be.runnerOnline()
+	pr := be.open()
+	if _, err := be.s.MergePR(be.ctx, be.agent, pr.ID, MergeInput{WhenReady: true, Style: "merge"}); err != nil {
+		t.Fatal(err)
+	}
+	b := be.start(pr)
+	be.sg.noRetry = true
+	be.sg.setChecks(pr.HeadSHA, CommitCheck{Name: "test", State: CheckFailed})
+	if err := be.s.refreshHead(be.ctx, be.f, "me/app", pr.HeadSHA); err != nil {
+		t.Fatal(err)
+	}
+	be.s.babysitStep(be.ctx, pr.ID, false)
+	cur, err := be.s.activeBabysit(be.ctx, be.s.db.R, pr.ID)
+	if err != nil || cur == nil {
+		t.Fatalf("activeBabysit: %v, %v", cur, err)
+	}
+	if cur.ID != b.ID || cur.Round == 0 {
+		t.Fatalf("own shipping claim blocked babysit round: state=%q wait=%q round=%d", cur.State, cur.Wait, cur.Round)
+	}
+}
+
 // Pillar A (WP-1982, WP-2021): when a babysitter round is actively queued or
 // running on a PR, claimPR / prClaimWarning warns live sessions so they don't
 // push over an in-flight round.
