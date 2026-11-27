@@ -129,3 +129,24 @@ func TestShipNeedsAgentFollowsTheServersFacts(t *testing.T) {
 		}
 	}
 }
+
+// The tree decides alike wherever a ship may end the turn: only a git status
+// that said the tracked files are clean lets it end.
+func TestShipNeedsAgentWantsACleanTree(t *testing.T) {
+	no := false
+	o := openedPR{HeldNeedsAgent: &no, NoticeNeedsAgent: &no}
+	for _, tc := range []struct {
+		name string
+		t    shipTurn
+		want bool
+	}{
+		{"clean", shipTurn{clean: true}, false},
+		{"uncommitted", shipTurn{dirty: true}, true},
+		{"git status failed", shipTurn{}, true},
+		{"notes put off", shipTurn{clean: true, putOff: "p"}, true},
+	} {
+		if got := shipNeedsAgent(&o, "", nil, tc.t) != ""; got != tc.want {
+			t.Errorf("%s: needs the agent = %v", tc.name, got)
+		}
+	}
+}

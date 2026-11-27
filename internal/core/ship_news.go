@@ -419,11 +419,14 @@ func (s *Service) shipNewsNow(ctx context.Context, session, task int64) (*ShipNe
 	// The client ends the agent's turn on a Pull, so only a round whose branch
 	// has a live pull request carries one: a merged or closed one may be an
 	// earlier round's on a reused branch, and a ship Waypoint stopped
-	// (bp.ShipStop) is the agent's to read. The text names it either way.
+	// (bp.ShipStop) is the agent's to read. The text names it either way. A
+	// pull request that can't be read leaves the news without one, so the
+	// turn doesn't end on it, rather than failing the wait.
 	ended := func(why string) (*ShipNews, error) {
 		p, err := s.branchPull(ctx, bp)
 		if err != nil {
-			return nil, err
+			s.log.WarnContext(ctx, "ship news: reading the round's pull request", "round", r.id, "err", err)
+			p = nil
 		}
 		line := ""
 		if p != nil {

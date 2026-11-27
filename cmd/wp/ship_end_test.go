@@ -69,6 +69,13 @@ func TestShipSummaryText(t *testing.T) {
 	if got := fillSummary("See {url}.", "", d); got != "See https://git.example.com/a/b/pulls/41." {
 		t.Errorf("fillSummary with the URL: %q", got)
 	}
+	pull := &shipPull{Number: 7, URL: "https://git.example.com/a/b/pulls/7"}
+	if got := endedSummary("{task} is in PR #{pr}: {url}", "", pull, "News."); got != "this task is in PR #7: https://git.example.com/a/b/pulls/7\n\nNews." {
+		t.Errorf("endedSummary without a key: %q", got)
+	}
+	if got := endedSummary("{task} done.", "WP-9", pull, "News."); got != "WP-9 done.\n\nNews." {
+		t.Errorf("endedSummary: %q", got)
+	}
 	if got := heldSummary("{task} goes to PR #{pr}."); !strings.HasPrefix(got, "this task goes to PR #(after the review).") || !strings.Contains(got, "opens after the adversarial review") {
 		t.Errorf("heldSummary: %q", got)
 	}

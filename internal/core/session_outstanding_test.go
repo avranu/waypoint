@@ -508,6 +508,36 @@ func TestRunningTasksDedupesAgainstTheCut(t *testing.T) {
 	if got := runningTasks(p); len(got) != 1 {
 		t.Errorf("one long command listed %d times", len(got))
 	}
+	// Two commands that differ only past the cut read the same once cut.
+	p.Tasks[1].Description = long + " --other"
+	if got := runningTasks(p); len(got) != 1 {
+		t.Errorf("two commands alike up to the cut listed as %d", len(got))
+	}
+	p.Tasks[1].Description = "y" + long
+	if got := runningTasks(p); len(got) != 2 {
+		t.Errorf("two commands that differ before the cut listed as %d", len(got))
+	}
+}
+
+// A subagent counts while it runs, whatever the case of its type; a finished
+// one, a shell and no pending at all don't.
+func TestPendingSubagent(t *testing.T) {
+	for _, tc := range []struct {
+		p    *HookPending
+		want bool
+	}{
+		{nil, false},
+		{&HookPending{}, false},
+		{&HookPending{Tasks: []PendingTask{{Type: "local_agent", Status: "running"}}}, true},
+		{&HookPending{Tasks: []PendingTask{{Type: "Local_Agent", Status: "running"}}}, true},
+		{&HookPending{Tasks: []PendingTask{{Type: "local_agent", Status: "completed"}}}, false},
+		{&HookPending{Tasks: []PendingTask{{Type: "local_bash", Status: "running"}}}, false},
+		{&HookPending{Tasks: []PendingTask{{Type: "local_bash", Status: "running"}, {Type: "local_agent", Status: "pending"}}}, true},
+	} {
+		if got := pendingSubagent(tc.p); got != tc.want {
+			t.Errorf("pendingSubagent(%+v) = %v", tc.p, got)
+		}
+	}
 }
 
 // An answer to the wait the hook never says it printed leaves the findings
