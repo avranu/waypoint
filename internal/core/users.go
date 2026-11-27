@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/mail"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strconv"
@@ -317,17 +318,76 @@ func hashToken(tok string) string {
 const sessionTTL = 60 * 24 * time.Hour
 
 // Login checks credentials and creates a session, returning its token.
+// ErrUnauthorized means the login or password was wrong; any other error is
+// the server's, and a sign-in lockout must not count it.
 func (s *Service) Login(ctx context.Context, login, password, userAgent, ip string) (string, *User, error) {
 	u, err := s.userByLogin(ctx, s.db.R, strings.TrimSpace(login))
-	if err != nil {
+	if errors.Is(err, ErrNotFound) {
 		CheckPassword(dummyHash(), password)
 		return "", nil, ErrUnauthorized
+	}
+	if err != nil {
+		return "", nil, fmt.Errorf("looking up the account: %w", err)
 	}
 	if !CheckPassword(u.passwordHash, password) || u.Disabled {
 		return "", nil, ErrUnauthorized
 	}
 	tok, err := s.createSession(ctx, u.ID, userAgent, ip)
-	return tok, u, err
+	if err != nil {
+		return "", nil, fmt.Errorf("starting a session: %w", err)
+	}
+	return tok, u, nil
+}
+
+// LoginAccountID is the id of the account a sign-in login (username or
+// email, as Login matches them) names, or 0 when none does, so a sign-in
+// lockout counts one account once however it is written.
+func (s *Service) LoginAccountID(ctx context.Context, login string) (int64, error) {
+	u, err := s.userByLogin(ctx, s.db.R, strings.TrimSpace(login))
+	if errors.Is(err, ErrNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return u.ID, nil
+}
+
+// SignedInFrom reports whether the account has a live session started from
+// ip, so a sign-in lockout can spare the owner's own address. Addresses are
+// compared as CanonicalIP writes them: sessions started before addresses
+// were stored that way may hold an IPv4-mapped or uppercase spelling.
+func (s *Service) SignedInFrom(ctx context.Context, userID int64, ip string) (bool, error) {
+	ip = CanonicalIP(ip)
+	if ip == "" || userID == 0 {
+		return false, nil
+	}
+	rows, err := s.db.R.QueryContext(ctx, `SELECT DISTINCT ip FROM sessions WHERE user_id = ? AND expires_at > ?`, userID, s.nowMS())
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var got string
+		if err := rows.Scan(&got); err != nil {
+			return false, err
+		}
+		if CanonicalIP(got) == ip {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+// CanonicalIP writes an address one way (lowercase, IPv4-mapped unmapped),
+// so one address is one lockout bucket and matches its sessions' address.
+// Anything that isn't an address is returned trimmed but otherwise as is.
+func CanonicalIP(ip string) string {
+	ip = strings.TrimSpace(ip)
+	if a, err := netip.ParseAddr(ip); err == nil {
+		return a.Unmap().String()
+	}
+	return ip
 }
 
 func (s *Service) createSession(ctx context.Context, userID int64, userAgent, ip string) (string, error) {

@@ -48,16 +48,17 @@ type Config struct {
 
 // Server is the HTTP front end.
 type Server struct {
-	done           chan struct{}
-	doneOnce       sync.Once
-	svc            *core.Service
-	cfg            Config
-	log            *slog.Logger
-	limiter        *rateLimiter
-	userLimiter    *rateLimiter
-	jobLimiter     *rateLimiter
-	static         *staticFiles
-	abandonedAfter time.Duration
+	done            chan struct{}
+	doneOnce        sync.Once
+	svc             *core.Service
+	cfg             Config
+	log             *slog.Logger
+	limiter         *rateLimiter // per client address
+	userLimiter     *rateLimiter // failed logins per account, from any address
+	userAddrLimiter *rateLimiter // failed logins per account and address
+	jobLimiter      *rateLimiter
+	static          *staticFiles
+	abandonedAfter  time.Duration
 }
 
 // defaultAbandonedAfter is Server.abandonedAfter unless a test shortens it.
@@ -68,7 +69,7 @@ const statusClientClosed = 499
 
 // New builds a Server.
 func New(svc *core.Service, cfg Config, log *slog.Logger) *Server {
-	return &Server{done: make(chan struct{}), svc: svc, cfg: cfg, log: log, limiter: newRateLimiter(10, time.Minute), userLimiter: newRateLimiter(30, 10*time.Minute),
+	return &Server{done: make(chan struct{}), svc: svc, cfg: cfg, log: log, limiter: newRateLimiter(10, time.Minute), userLimiter: newRateLimiter(300, 10*time.Minute), userAddrLimiter: newRateLimiter(30, 10*time.Minute),
 		jobLimiter: newRateLimiter(core.JobTokenRateLimit, time.Minute), static: newStaticFiles(), abandonedAfter: defaultAbandonedAfter}
 }
 
@@ -326,7 +327,9 @@ func peerIP(r *http.Request) string {
 // isn't itself a trusted proxy is the client. Anything to its left was
 // supplied by the client and can be forged.
 func (s *Server) clientIP(r *http.Request) string {
-	peer := peerIP(r)
+	// Every return is canonical, so one address is one lockout bucket
+	// whichever path names it.
+	peer := canonicalIP(peerIP(r))
 	if !s.trusted(peer) {
 		return peer
 	}
@@ -343,11 +346,14 @@ func (s *Server) clientIP(r *http.Request) string {
 			return peer
 		}
 		if !s.trusted(hops[i]) || i == 0 {
-			return hops[i]
+			return canonicalIP(hops[i])
 		}
 	}
 	return peer
 }
+
+// canonicalIP is core.CanonicalIP, the spelling sessions are matched in.
+func canonicalIP(ip string) string { return core.CanonicalIP(ip) }
 
 const sessionCookie = "wp_session"
 
@@ -535,7 +541,7 @@ var (
 	errBadRequest = errors.New("bad request")
 	// errBodyTooLarge: a request body over what its route reads (413).
 	errBodyTooLarge = errors.New("request body too large")
-	errTooMany      = errors.New("too many attempts, try again in a minute")
+	errTooMany      = errors.New("too many attempts, try again later")
 	errJobTooMany   = fmt.Errorf("this runner job's token made too many requests; try again in a minute: %w", errTooMany)
 )
 
@@ -671,6 +677,64 @@ func queryInt(r *http.Request, name string, def int) int {
 func queryBool(r *http.Request, name string) bool {
 	v := strings.ToLower(r.URL.Query().Get(name))
 	return v == "1" || v == "true" || v == "yes"
+}
+
+// ---- rate limiting ----
+
+// loginAcct is the account a password attempt counts against: its id when
+// the login names one, so username, email and any capitalisation share one
+// count, or else the lowercased login itself.
+type loginAcct struct {
+	key string
+	id  int64
+}
+
+func userAcct(id int64) loginAcct { return loginAcct{key: "id:" + strconv.FormatInt(id, 10), id: id} }
+
+// loginAccount resolves a sign-in login to the account it counts against.
+func (s *Server) loginAccount(ctx context.Context, login string) (loginAcct, error) {
+	id, err := s.svc.LoginAccountID(ctx, login)
+	if err != nil {
+		return loginAcct{}, fmt.Errorf("looking up the account: %w", err)
+	}
+	if id != 0 {
+		return userAcct(id), nil
+	}
+	return loginAcct{key: "name:" + strings.ToLower(strings.TrimSpace(login))}, nil
+}
+
+// loginBlocked reports whether a password attempt for acct from ip is
+// refused. The account-wide limit guards against a guesser rotating
+// addresses; it spares an address the account already signed in from.
+// An error looking for that session is returned, not taken as a yes or no.
+// The caller checks loginAddrBlocked first, before looking acct up.
+//
+// A refusal here counts against ip's own limit, so an address that keeps
+// sending attempts its account count refuses soon hits that limit, which
+// refuses before any database lookup.
+func (s *Server) loginBlocked(ctx context.Context, acct loginAcct, ip string) (bool, error) {
+	blocked := s.userAddrLimiter.blocked("login-user:" + acct.key + "|" + ip)
+	if !blocked && s.userLimiter.blocked("login-user:"+acct.key) {
+		spared, err := s.svc.SignedInFrom(ctx, acct.id, ip)
+		if err != nil {
+			return false, fmt.Errorf("checking for a session from this address: %w", err)
+		}
+		blocked = !spared
+	}
+	if blocked {
+		s.limiter.hit("login:" + ip)
+	}
+	return blocked, nil
+}
+
+// loginAddrBlocked reports whether ip has used up its password attempts,
+// from memory alone, so a locked-out address costs no database lookup.
+func (s *Server) loginAddrBlocked(ip string) bool { return s.limiter.blocked("login:" + ip) }
+
+func (s *Server) loginFailed(acct loginAcct, ip string) {
+	s.limiter.hit("login:" + ip)
+	s.userLimiter.hit("login-user:" + acct.key)
+	s.userAddrLimiter.hit("login-user:" + acct.key + "|" + ip)
 }
 
 type rateLimiter struct {

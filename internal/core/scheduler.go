@@ -171,6 +171,7 @@ func (s *Service) schedule() []scheduled {
 			s.sweepLines(ctx)
 			s.watchLines(ctx)
 		}},
+		bg(scheduled{name: "renumber", every: minute, run: s.sweepRenumber}),
 		scheduled{name: "batched news", every: minute, run: s.releaseDueBatches},
 		scheduled{name: "audits", every: minute, run: s.CheckAudits},
 		scheduled{name: "objectives", every: minute, run: s.CheckObjectives},

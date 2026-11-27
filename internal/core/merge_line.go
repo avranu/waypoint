@@ -1010,6 +1010,11 @@ func (s *Service) lineStep(ctx context.Context, ref lineRef) {
 		}
 		return
 	}
+	// A member's branch moves, so nothing is started on a head that is about
+	// to change: the push's event steps the line again (WP-1815).
+	if !ls.snap.TipStale && s.renumberPass(ctx, ls.ref, ls.tip, ls.order) {
+		return
+	}
 	acts := planLine(ls.snap)
 	for _, a := range acts {
 		if ctx.Err() != nil {
