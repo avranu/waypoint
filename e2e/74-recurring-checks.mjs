@@ -54,7 +54,6 @@ for (const width of [1280, 390]) {
   await toggle.scrollIntoViewIfNeeded();
   await page.screenshot({ path: `${out}/settings-${tag}.png` });
 
-  // Back on, for the next width.
   await toggle.click();
   await page.getByRole("button", { name: "Save changes" }).click();
   await page.waitForFunction(

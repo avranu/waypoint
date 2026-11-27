@@ -1,10 +1,4 @@
 #!/usr/bin/env bash
-# probes.sh: escape probes for the WP-287 Phase 0 spike (WP-417), a first cut of
-# the escape suite in PL7 §13. Runs as the unprivileged sandbox user, inside a
-# Contained unit or a VM guest. Every probe should print REFUSED.
-#
-# Output: "PROBE name REFUSED|ALLOWED detail" lines.
-#   SPIKE_HOST_IP  an address of the host on its LAN (optional)
 set -u
 
 if [ "$(id -u)" = 0 ]; then
@@ -12,16 +6,15 @@ if [ "$(id -u)" = 0 ]; then
 	exit 2
 fi
 
-probe() { # name, then a command that succeeds only if the access worked
+probe() {
 	local name=$1
 	shift
 	local out
-	# Through bash so the helper functions below work under timeout.
 	local rc=0 verdict
 	out=$(timeout 5 bash -c '"$@"' probe "$@" 2>&1) || rc=$?
 	case "$rc" in
 	0) verdict=ALLOWED ;;
-	124 | 125 | 126 | 127) verdict=INCONCLUSIVE ;; # timeout, timeout itself failed, not executable, not found
+	124 | 125 | 126 | 127) verdict=INCONCLUSIVE ;;
 	*) verdict=REFUSED ;;
 	esac
 	echo "PROBE $name $verdict $(printf '%s' "$out" | head -c 120 | tr '\n' ' ')"
@@ -29,7 +22,7 @@ probe() { # name, then a command that succeeds only if the access worked
 
 unix_connect() { python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1])' "$1"; }
 tcp_connect() { python3 -c 'import socket,sys; socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=3)' "$1" "$2"; }
-other_uid_procs() { # succeeds when processes of other users are visible
+other_uid_procs() {
 	local me n=0 d
 	me=$(id -u)
 	for d in /proc/[0-9]*; do

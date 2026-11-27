@@ -41,8 +41,6 @@ func Start(ctx context.Context, socket string, sd *Signed, stdin, stdout, stderr
 	}
 	b = append(b, '\n')
 	_ = c.SetWriteDeadline(time.Now().Add(30 * time.Second))
-	// The descriptors travel with the first byte; the rest follows as
-	// plain data, which a stream socket may split as it likes.
 	rights := syscall.UnixRights(int(stdin.Fd()), int(stdout.Fd()), int(stderr.Fd())) // #nosec G115 -- fds
 	_, _, werr := uc.WriteMsgUnix(b[:1], rights, nil)
 	if werr == nil {

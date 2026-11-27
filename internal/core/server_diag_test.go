@@ -17,7 +17,7 @@ import (
 func TestLogRingRedacts(t *testing.T) {
 	ring := NewLogRing(100, time.Hour)
 	ring.AddSecret("hunter2-very-secret")
-	ring.AddSecret("short") // too short to blank: it would eat words
+	ring.AddSecret("short")
 	ring.AddEnvSecrets([]string{"LLM_GATEWAY_API_KEY=zq81-gateway-key-77", "WAYPOINT_METRICS_TOKEN=metrics-tok-123456", "HOME=/home/waypoint-user"})
 	log := slog.New(ring.Handler(slog.NewTextHandler(io.Discard, nil)))
 
@@ -59,13 +59,13 @@ func TestLogRingQuery(t *testing.T) {
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	ring.now = func() time.Time { return now }
 	at := func(m int) time.Time { return now.Add(time.Duration(-m) * time.Minute) }
-	ring.add(at(90), slog.LevelError, "too old", "") // past maxAge
+	ring.add(at(90), slog.LevelError, "too old", "")
 	ring.add(at(50), slog.LevelInfo, "one", "")
 	ring.add(at(40), slog.LevelWarn, "two", "job=hourly")
 	ring.add(at(30), slog.LevelInfo, "three", "")
 	ring.add(at(20), slog.LevelError, "four", "job=sweep")
 	ring.add(at(10), slog.LevelInfo, "five", "")
-	ring.add(at(5), slog.LevelWarn, "six", "") // wraps: "too old" and "one" go
+	ring.add(at(5), slog.LevelWarn, "six", "")
 
 	msgs := func(rs []LogRecord) string {
 		var out []string
@@ -125,7 +125,6 @@ func TestServerDiagnosticsNeedAdmin(t *testing.T) {
 			t.Errorf("%s by an admin: %v", name, err)
 		}
 	}
-	// A runner job's token is never admin, even its admin owner's.
 	job := &Actor{User: e.admin.User, scope: map[int64]int{1: 1}}
 	if err := calls["log"](job); !errors.Is(err, ErrForbidden) {
 		t.Errorf("a job token read the server log: %v", err)
@@ -205,7 +204,6 @@ func TestAICallsRecordedAndCounted(t *testing.T) {
 	if _, err := e.s.AIUsage(e.ctx, e.admin, AIUsageQuery{By: "colour"}); !IsInvalid(err) {
 		t.Errorf("bad by: %v", err)
 	}
-	// Out of the window and pruned after 30 days.
 	e.setClock(e.clockNow().Add(31 * 24 * time.Hour))
 	e.s.pruneAICalls(e.ctx)
 	var n int
@@ -337,8 +335,6 @@ func TestAICallsCountRetries(t *testing.T) {
 	if err := e.s.EnsureLLMGateway(e.ctx, GatewaySetup{BaseURL: gw.URL, APIKey: "olm_test", Extensions: GatewayExtensions}); err != nil {
 		t.Fatal(err)
 	}
-	// A chain of named models: the one that answers badly leaves the rest
-	// to a request of their own.
 	tasks, _ := e.s.AITasks(e.ctx, e.admin)
 	var gwID int64
 	for _, tk := range tasks {
@@ -376,5 +372,29 @@ func TestAICallsCountRetries(t *testing.T) {
 	}
 	if u, err := e.s.AIUsage(e.ctx, e.admin, AIUsageQuery{}); err != nil || u.Total.Requests != 2 || u.Total.Sent != 3 || !strings.Contains(u.String(), "sent") {
 		t.Errorf("usage: %+v %v", u, err)
+	}
+}
+
+func TestProfileSecondsIsCapped(t *testing.T) {
+	for in, want := range map[int]int{-3: ProfileDefaultSeconds, 0: ProfileDefaultSeconds, 1: 1, 60: 60, 61: 60, 100000: 60} {
+		if got := ProfileSeconds(in); got != want {
+			t.Errorf("ProfileSeconds(%d) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+func TestServerMetricsShowsDatabase(t *testing.T) {
+	e := newEnv(t)
+	text, err := e.s.ServerMetrics(e.ctx, e.admin, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"database connections", "writer", "readers", "callers that waited", "total wait", "max open", "slowest database callers"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("metrics lack %q", want)
+		}
+	}
+	if text, _ := e.s.ServerMetrics(e.ctx, e.admin, "^writer"); !strings.HasPrefix(text, "writer ") || strings.Contains(text, "readers") {
+		t.Errorf("grep: %q", text)
 	}
 }

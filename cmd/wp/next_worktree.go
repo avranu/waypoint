@@ -12,17 +12,6 @@ import (
 	"time"
 )
 
-// A task in a worktree of its own (WP-200). Agents taking a task in a
-// person's session worked wherever the session was: the main checkout, left
-// detached with another task's unpushed commits, or a worktree on another
-// task's branch, which the next session had to tiptoe around. So when an
-// agent takes a task with wp next in the main checkout, or in a checkout
-// that holds other work, wp makes the task its worktree under
-// .claude/worktrees/ (wp worktree, WP-563) and says to cd there; and since
-// the pile has to stay bounded, it then removes the repo's finished ones
-// there, as autopilot does before each start (WP-ADR57). Autopilot's own
-// sessions start in a fresh worktree named for the task, so they stay put.
-
 // sessionFolder is the folder the agent's session runs in: Claude Code
 // reads and writes there without asking, and keeps a cd only inside it. On
 // Linux it is the folder the Claude Code process ($CLAUDE_PID) started in;
@@ -78,7 +67,6 @@ func heldWork(top, base string) []string {
 		n := len(strings.Split(strings.TrimRight(st, "\n"), "\n"))
 		held = append(held, fmt.Sprintf("%d uncommitted file%s", n, plural(n)))
 	}
-	// With no default branch to compare to, commits on no remote branch count.
 	revArgs, onWhat := []string{"rev-list", "--count", "HEAD", "--not", "--remotes"}, "a remote"
 	if base != "" {
 		revArgs, onWhat = []string{"rev-list", "--count", base + "..HEAD"}, base
@@ -116,9 +104,6 @@ func (c *cli) ownWorktree(dir, key string) (at string) {
 	}
 	slug := worktreeSlug(key)
 	target := filepath.Join(repo.home(), slug)
-	// A worktree of the task left locked by an agent that is gone is taken
-	// over; one whose owner is alive (or can't be shown gone) is not, and the
-	// task goes on a branch cut from its work (WP-1370).
 	repo, held := reclaimTask(ctx, repo, key, top)
 	existing := ""
 	for _, w := range repo.wts {
@@ -148,9 +133,8 @@ func (c *cli) ownWorktree(dir, key string) (at string) {
 	}
 	var made madeWorktree
 	if existing == "" {
-		// wp next fetched a moment ago (or the remote didn't answer): no second fetch.
 		switch {
-		case held.revive != "": // its folder was gone: the task's own branch again
+		case held.revive != "":
 			made, err = makeWorktree(ctx, repo, slug, held.revive, "", false, c.note)
 		case cont.branch != "":
 			made, err = makeWorktree(ctx, repo, cont.slug, cont.branch, cont.from, false, c.note)
@@ -158,11 +142,10 @@ func (c *cli) ownWorktree(dir, key string) (at string) {
 			made, err = makeWorktree(ctx, repo, slug, "", "", false, c.note)
 		}
 		if err != nil {
-			// Another agent starting the same task a moment ago may have made it.
 			if again, e2 := worktreeRepoAt(ctx, top); e2 == nil {
 				for _, w := range again.wts {
 					if !w.main && !w.prunable && !w.locked && w.branch != "" && branchCarries(w.branch, []string{key}) &&
-						inside(tidyReal(w.path), tidyReal(folder)) { // the folder check above ran on the planned path only
+						inside(tidyReal(w.path), tidyReal(folder)) {
 						existing, target, err = w.path, w.path, nil
 						break
 					}
@@ -181,7 +164,6 @@ func (c *cli) ownWorktree(dir, key string) (at string) {
 		}
 	}
 	if existing == "" && made.made == "" && !made.branchOut {
-		// A worktree already at the path: ours only if it carries the task or holds nothing.
 		if w := repo.find(made.path); w != nil && (w.locked || checkoutHolds(made.path, key, checkoutBase(made.path, fetchRemote(made.path)), false) != "") {
 			c.println(fmt.Sprintf("Worktree: %s, but %s is another's (locked, or holds other work); working here.", why, made.path))
 			c.println(fmt.Sprintf("  Make the task's own on a branch named for it: wp worktree %s-2 --branch %s-2 (any branch name holding %s maps to the task)", slug, strings.ToLower(key), key))
@@ -224,7 +206,7 @@ func (c *cli) ownWorktree(dir, key string) (at string) {
 		}
 	}
 	if runtime.GOOS != "linux" {
-		return target // no /proc: the sweep can't see who is in a worktree, so it never runs
+		return target
 	}
 	if gone, err := c.sweepFinishedWorktrees(ctx, repo, target); err != nil {
 		c.println("  Finished worktrees left as they are: " + err.Error())
@@ -291,7 +273,7 @@ func (c *cli) sweepFinishedWorktrees(ctx context.Context, repo *worktreeRepo, sp
 		return nil, fmt.Errorf("live sessions unavailable (%v)", err)
 	}
 	slug, _, _ := gitInfo(repo.root)
-	merged, _ := c.tidyMergedPRs(slug) // without them only plain merges count: fewer go
+	merged, _ := c.tidyMergedPRs(slug)
 	o := tidyOpts{worktrees: true, worktreeBranches: true, sessionEnded: c.tidySessionEnded(), now: worktreeNow()}
 	rep, err := tidyScan(ctx, repo.root, merged, o)
 	if err != nil {
@@ -299,8 +281,6 @@ func (c *cli) sweepFinishedWorktrees(ctx context.Context, repo *worktreeRepo, sp
 	}
 	home, spare := tidyReal(repo.home()), tidyReal(spare)
 	busy := append(slices.Clone(cwds), live...)
-	// Who is where may have changed during the scan: look again just before
-	// removing, and spare what has been entered.
 	if again, err := procCwds(); err == nil {
 		busy = append(busy, again...)
 	}
@@ -310,13 +290,13 @@ func (c *cli) sweepFinishedWorktrees(ctx context.Context, repo *worktreeRepo, sp
 	for _, r := range rep.Rows {
 		if r.Kind != "worktree" {
 			if r.Verdict == tidyRemovable {
-				r.Verdict = tidyKeep // only worktrees (and their merged branches) go here
+				r.Verdict = tidyKeep
 			}
 			continue
 		}
 		p := tidyReal(r.Path)
 		if r.prunable {
-			p = filepath.Clean(r.Path) // gone: nothing to resolve
+			p = filepath.Clean(r.Path)
 		}
 		keep := p == home || !inside(p, home) || inside(spare, p) ||
 			slices.ContainsFunc(busy, func(d string) bool { return inside(tidyReal(d), p) })
@@ -324,7 +304,7 @@ func (c *cli) sweepFinishedWorktrees(ctx context.Context, repo *worktreeRepo, sp
 			r.Verdict = tidyKeep
 		}
 		if r.prunable && r.Verdict != tidyRemovable {
-			o.noPrune = true // git worktree prune would drop its record too
+			o.noPrune = true
 		}
 	}
 	tidyApply(ctx, repo.root, rep, o)

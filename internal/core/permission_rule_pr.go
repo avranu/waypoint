@@ -1,16 +1,5 @@
 package core
 
-// Allow rules for refused calls (WP-233, WP-ADR114). Approving a call
-// Claude Code's auto-mode classifier refused changes nothing auto mode sees,
-// so Waypoint suggests narrow allow rules (permission_rules.go) and the
-// person may pick one, much as /fewer-permission-prompts would: Waypoint
-// adds it to the repo's .claude/settings.json by pull request, so later
-// sessions skip the classifier for that command. A person picks a rule
-// from a refused call in the log (refusals.go, WP-232: the hook logs
-// refusals rather than filing requests), or when approving a permission
-// request an agent filed. Nothing is remembered unless a person picks the
-// rule; no approval is replayed later.
-
 import (
 	"context"
 	"encoding/json"
@@ -48,7 +37,7 @@ func (s *Service) checkRuleTarget(ctx context.Context, actor *Actor, r *Request,
 type permRuleJob struct {
 	request int64
 	refusal int64
-	at      int64 // the refusal pick's rule_at
+	at      int64
 	repo    *setupRepo
 	rule    string
 }
@@ -86,8 +75,6 @@ func (s *Service) addPermissionRule(ctx context.Context, actor *Actor, j *permRu
 	}
 	b, _ := json.Marshal(res)
 	if _, err := s.db.W.ExecContext(ctx, `UPDATE requests SET result = ?, updated_at = ? WHERE id = ?`, string(b), s.nowMS(), r.ID); err != nil {
-		// The pull request, if one opened, is still recorded as an agent PR
-		// (openAgentFilePR); the log names it so it can be found.
 		s.log.ErrorContext(ctx, "record a permission rule", "request", r.ID, "rule", j.rule, "pr", res.PRURL, "err", err)
 	}
 }
@@ -129,10 +116,6 @@ func (s *Service) openRulePR(ctx context.Context, actor *Actor, tool *ToolCall, 
 	body := fmt.Sprintf("Adds `%s` to `permissions.allow` in %s, so agents' sessions in this repo run it without asking Claude Code's auto-mode classifier.\n\n"+
 		"%s picked it in Waypoint %s (WP-233):\n\n%s\n%s\n%s",
 		rule, settingsPath, actor.User.DisplayName, from, fence, text, fence)
-	// Labelled automerge although it is under .claude/ (EditAgentFile leaves
-	// those for a person to merge): a person approved this exact line, and
-	// it passed checkPermissionRule, the same checks a suggestion does
-	// (WP-ADR114).
 	return s.openAgentFilePR(ctx, actor, repo, af, agentFilePR{base: base, path: settingsPath, baseSHA: cur, content: content,
 		branch: "allow-" + slug(rule, 30), message: title + "\n\n" + body, title: title, body: body, labels: []string{automergeLabel}})
 }

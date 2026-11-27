@@ -50,7 +50,6 @@ const detailsFirst = (browser) => {
         if (localStorage.getItem("wp:issue-tab") === null)
           localStorage.setItem("wp:issue-tab", '"details"');
       } catch {
-        /* no storage on this page */
       }
     });
     return ctx;

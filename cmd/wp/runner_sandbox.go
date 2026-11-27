@@ -11,14 +11,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox"
 )
 
-// The runner and the machine's sandbox helper (WP-418, WP-ADR28, PL7
-// §5.3). The runner tells Waypoint what the helper says, so the server
-// knows whether to sign job specs for this machine, and hands the helper
-// each job's spec before the job starts. Phase 1 makes the job's machine
-// users and nothing more: a refusal is logged and the job runs as before.
-// It also passes on the actions a person asks for in Settings → Runners →
-// Sandbox (WP-448): remove a machine user, finish interrupted work.
-
 // sandboxHelperSocket is where the host's helper listens; tests point it
 // elsewhere so they never ask the real one (WP-1065).
 var sandboxHelperSocket = sandbox.Socket
@@ -28,13 +20,11 @@ const sandboxCheckEvery = 10 * time.Minute
 
 // sandboxState is what the runner last heard from the helper.
 type sandboxState struct {
-	socket string // sandboxHelperSocket; tests use their own
-	last   []byte // the last report, as sent
-	report *sandbox.Report
-	dirty  bool
-	// done says how helper actions went, for the next poll (WP-448).
-	done []sandboxDone
-	// running are the actions being run, so a resent one isn't run twice.
+	socket  string
+	last    []byte
+	report  *sandbox.Report
+	dirty   bool
+	done    []sandboxDone
 	running map[int64]bool
 }
 
@@ -157,7 +147,7 @@ func (p *runnerProc) ensureSandboxUsers(ctx context.Context, job *claimedJob) {
 		}
 		p.logf("Job %d: sandbox users %s ready", job.ID, strings.Join(names, ", "))
 	}
-	p.checkSandbox(ctx) // its users changed
+	p.checkSandbox(ctx)
 }
 
 // runSandboxOps hands the helper the actions a person asked for, one at a
@@ -192,7 +182,7 @@ func (p *runnerProc) runSandboxOps(ctx context.Context, ops []sandboxOp) {
 		delete(p.sb.running, op.ID)
 		p.mu.Unlock()
 	}
-	p.checkSandbox(ctx) // its users changed
+	p.checkSandbox(ctx)
 }
 
 // takeSandboxDone is what a poll says of finished actions; failed puts

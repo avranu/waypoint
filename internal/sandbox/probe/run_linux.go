@@ -29,7 +29,6 @@ func Run(ctx context.Context, t Targets, out io.Writer) {
 	enc := json.NewEncoder(out)
 	emit := func(c Case) { _ = enc.Encode(c) }
 
-	// Controls: a session's own places are writable.
 	for _, dir := range []string{"/work", "/tmp", "/dev/shm"} {
 		c := Case{Name: "control: write " + dir, Group: GroupFiles, Want: Allowed, Got: Allowed}
 		if t.Plant == "" {

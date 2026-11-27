@@ -30,12 +30,12 @@ func TestStepFailedVerdicts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	job(1, 786, "juno-browser", "0005bf7", "cancelled", -30)  // failed, then cancelled its run
-	job(2, 786, "deploy", "0005bf7", "cancelled", -30)        // stopped by it
-	job(3, 783, "juno-browser", "aaa", "cancelled", -40)      // stopped from outside
-	job(4, 790, "juno-browser", "bbb", "cancelled", -50)      // re-run since: the log is the new attempt's
-	job(5, 791, "juno-browser", "ccc", "cancelled", -1)       // ended a minute ago: may still be uploading
-	job(6, 700, "juno-browser", "ddd", "cancelled", -3*24*60) // older than the doctor looks
+	job(1, 786, "juno-browser", "0005bf7", "cancelled", -30)
+	job(2, 786, "deploy", "0005bf7", "cancelled", -30)
+	job(3, 783, "juno-browser", "aaa", "cancelled", -40)
+	job(4, 790, "juno-browser", "bbb", "cancelled", -50)
+	job(5, 791, "juno-browser", "ccc", "cancelled", -1)
+	job(6, 700, "juno-browser", "ddd", "cancelled", -3*24*60)
 	job(7, 786, "juno-e2e", "0005bf7", "success", -35)
 
 	a.reply["GET /repos/Robin/Juno/actions/runs?run_number=786&limit=1"] = map[string]any{"workflow_runs": []map[string]any{{"id": 5786, "index_in_repo": 786}}}
@@ -85,7 +85,6 @@ func TestStepFailedVerdicts(t *testing.T) {
 		t.Errorf("run 786's jobs read %d times, want once for its two jobs", n)
 	}
 
-	// The doctor counts the failed one as failed, the others not.
 	self := e.s.selfStoppedJobs(e.ctx, e.clockNow().Add(-2*ciHistoryWindow))
 	if !self[selfStoppedKey(f.ID, "Robin/Juno", "0005bf7", "juno-browser")] {
 		t.Errorf("run 786's juno-browser isn't self-stopped: %v", self)
@@ -94,7 +93,6 @@ func TestStepFailedVerdicts(t *testing.T) {
 		t.Errorf("self-stopped = %v, want only run 786's juno-browser", self)
 	}
 
-	// Read once: a second pass reads no logs again.
 	before := calls("")
 	if err := e.s.readStepFailed(e.ctx, f, "Robin/Juno"); err != nil {
 		t.Fatal(err)

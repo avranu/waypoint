@@ -1,12 +1,5 @@
 package core
 
-// What happens to a bot's findings after they are posted (WP-D21): each
-// keeps its forge comment and thread, its state (open, fixed, withdrawn,
-// dismissed, or resolved by a person on the forge) and a history of who or
-// what changed it. A review reads the forge's threads first, so Waypoint
-// knows what was resolved or answered; a later push has the open findings
-// in changed files checked against the new head.
-
 import (
 	"context"
 	"database/sql"
@@ -23,10 +16,10 @@ import (
 // Finding states.
 const (
 	FindingOpen      = "open"
-	FindingFixed     = "fixed"     // checked against a later head: gone
-	FindingWithdrawn = "withdrawn" // the bot agreed it was wrong
-	FindingDismissed = "dismissed" // a person or an agent said so in Waypoint, or a person with 👎 on the forge
-	FindingResolved  = "resolved"  // the thread was resolved: by a person on the forge, or in Waypoint (wp pr resolve)
+	FindingFixed     = "fixed"
+	FindingWithdrawn = "withdrawn"
+	FindingDismissed = "dismissed"
+	FindingResolved  = "resolved"
 	// FindingDropped: the verifier (or the evidence check) dropped it before
 	// posting. Kept as a row to judge the verifier; never open, never posted.
 	FindingDropped = "dropped"
@@ -101,6 +94,14 @@ type findingRow struct {
 	repliesSeen int
 	private     bool
 }
+
+// The reads of one review run's findings: each is by run_id, which has an
+// index. runFindingsByModelSQL is a column of a select over bot_runs r.
+const (
+	runFindingsSQL        = `SELECT ` + findingCols + ` FROM bot_findings f WHERE f.run_id = ? ORDER BY f.id`
+	runFindingKindsSQL    = `SELECT severity, placement FROM bot_findings WHERE run_id = ? AND state != 'dropped'`
+	runFindingsByModelSQL = `(SELECT json_group_object(model, n) FROM (SELECT f.model, count(*) AS n FROM bot_findings f WHERE f.run_id = r.id AND f.state != 'dropped' GROUP BY f.model))`
+)
 
 const findingCols = `f.id, f.run_id, f.pr_id, f.path, f.line, f.severity, f.claim, f.model, f.placement, f.state, f.ordinal, f.thread_id, f.comment_id,
 	f.head_sha, f.checked_sha, f.replies_seen, f.private, f.created_at, f.updated_at, f.agreed, f.verified_by,
@@ -196,8 +197,6 @@ func (s *Service) setFindingState(ctx context.Context, t *tx, id int64, to strin
 	return true, err
 }
 
-// ---- syncing with the forge's threads ----
-
 // threadReply is a person's new comment in a bot's thread.
 type threadReply struct {
 	finding *findingRow
@@ -285,7 +284,7 @@ func (s *Service) syncFindings(ctx context.Context, f *Forge, pr *PullRequest, w
 	if err != nil {
 		return nil, err
 	}
-	threads = s.screenThreads(ctx, f, pr, threads) // what strangers wrote waits (WP-281)
+	threads = s.screenThreads(ctx, f, pr, threads)
 	res.threads = threads
 	findings, err := s.prFindings(ctx, s.db.R, pr.ID)
 	if err != nil {
@@ -306,7 +305,6 @@ func (s *Service) syncFindings(ctx context.Context, f *Forge, pr *PullRequest, w
 			links = append(links, link{f: fnd, th: th})
 		}
 	}
-	// 👎 from people, on findings still open.
 	downvoted := map[int64]string{}
 	if withReactions {
 		for _, l := range links {
@@ -316,7 +314,7 @@ func (s *Service) syncFindings(ctx context.Context, f *Forge, pr *PullRequest, w
 			rs, err := cl.CommentReactions(ctx, f, pr.Repo, pr.Number, l.th.root().ID)
 			if err != nil {
 				s.log.Debug("read reactions", "repo", pr.Repo, "number", pr.Number, "err", err)
-				continue // one comment's failure (a deleted one) mustn't skip the rest
+				continue
 			}
 			for _, r := range rs {
 				if (r.Emoji == "-1" || r.Emoji == "thumbsdown" || r.Emoji == "👎") && !isBotLogin(r.User) {
@@ -348,11 +346,9 @@ func (s *Service) syncFindings(ctx context.Context, f *Forge, pr *PullRequest, w
 				}
 				fnd.State, res.changed = FindingResolved, res.changed || ch
 			case !th.Resolved && fnd.State == FindingResolved:
-				// Not when Waypoint holds the resolution itself (wp pr resolve):
-				// a forge that can't resolve threads never shows it.
 				byForgeClick, err := s.resolvedOnForge(ctx, t, fnd.ID)
 				if err != nil {
-					return err // unread is not "a person's click": nothing is reopened
+					return err
 				}
 				if !byForgeClick {
 					break
@@ -370,7 +366,6 @@ func (s *Service) syncFindings(ctx context.Context, f *Forge, pr *PullRequest, w
 				}
 				fnd.State, res.changed = FindingDismissed, res.changed || ch
 			}
-			// A person's comment after the last one seen waits for an answer.
 			last := th.Comments[len(th.Comments)-1]
 			if len(th.Comments) > fnd.repliesSeen {
 				if fnd.State == FindingOpen && !th.Resolved && len(th.Comments) > 1 && isPersonComment(last) {
@@ -424,13 +419,11 @@ func (s *Service) projectsOfRepo(ctx context.Context, forgeID int64, repo string
 	return out, rows.Err()
 }
 
-// ---- what people do to findings in Waypoint ----
-
 // prAuthority finds a project the actor holds at least min in that has the
 // pull request's repo attached; ErrNotFound when none shows it to them.
 func (s *Service) prAuthority(ctx context.Context, actor *Actor, pr *PullRequest, min int) (int64, error) {
 	if pr.Outside && actor.HidesDrafts() {
-		return 0, notFound("pull request") // from outside, for people only (WP-281)
+		return 0, notFound("pull request")
 	}
 	projects, err := s.projectsOfRepo(ctx, pr.ForgeID, pr.Repo)
 	if err != nil {
@@ -567,7 +560,6 @@ func (s *Service) closeFindingThread(ctx context.Context, pr *PullRequest, fnd *
 	if fnd.Line != nil {
 		th.Line = *fnd.Line
 	}
-	// The thread as the forge has it, for the line and commit to answer on.
 	if ts, err := cl.ReviewThreads(ctx, f, pr.Repo, pr.Number); err == nil {
 		for _, x := range ts {
 			if x.ID == fnd.threadID {
@@ -589,14 +581,10 @@ func (s *Service) closeFindingThread(ctx context.Context, pr *PullRequest, fnd *
 			s.log.Debug("resolve finding thread", "repo", pr.Repo, "number", pr.Number, "err", err)
 		}
 	}
-	// What was just said is read, not a new reply. A reply that wasn't
-	// posted adds no comment, so it mustn't hide the next person's.
 	if posted {
 		_, _ = s.db.W.ExecContext(ctx, `UPDATE bot_findings SET replies_seen = replies_seen + 1 WHERE id = ?`, fnd.ID)
 	}
 }
-
-// ---- the repeat filter ----
 
 // dropRepeated leaves out findings that restate one already raised on the
 // pull request, in the form the forge shows: open ones, ones a person
@@ -634,8 +622,6 @@ func (s *Service) dropRepeated(ctx context.Context, prID int64, found []Finding,
 	return out, repeated, nil
 }
 
-// ---- the conversation, for the review prompt ----
-
 const conversationMax = 6000
 
 // reviewConversation describes the pull request's earlier findings and
@@ -664,7 +650,7 @@ func reviewConversation(findings []*findingRow, threads []ReviewThread) string {
 	first := true
 	for _, f := range findings {
 		if f.Placement == "withheld" && f.private {
-			continue // never shown, even to a model: it may be copied
+			continue
 		}
 		if first {
 			line("Waypoint's earlier findings on this pull request:")

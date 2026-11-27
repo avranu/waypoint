@@ -70,7 +70,6 @@ func TestCLIShotPreviewPath(t *testing.T) {
 		t.Errorf("%d of %d captions say they show the branch's build", n, len(list))
 	}
 
-	// A preview that can't start says why, and nothing is taken.
 	startPreview = func(*cli) (*previewState, error) { return nil, errors.New("not a Waypoint checkout") }
 	got = shotJob{}
 	if out, code := e.run("shot", issue.Key, "/admin"); code == 0 || !strings.Contains(out, "not a Waypoint checkout") || got.Targets != nil {

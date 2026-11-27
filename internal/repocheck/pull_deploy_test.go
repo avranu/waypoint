@@ -24,7 +24,7 @@ func TestPullDeployForgeFromOrigin(t *testing.T) {
 		t.Fatal(err)
 	}
 	for origin, want := range map[string]string{
-		"https://git.example.net/robin/waypoint.git": "no " + "CONF/forge-token", // got past the forge: on to its token
+		"https://git.example.net/robin/waypoint.git": "no " + "CONF/forge-token",
 		"git@git.example.net:robin/waypoint.git":     "no forge: set FORGE_URL and REPO",
 	} {
 		dir := t.TempDir()

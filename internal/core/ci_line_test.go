@@ -53,7 +53,6 @@ func TestCILine(t *testing.T) {
 	}
 	exec(`UPDATE pull_requests SET queued_at = ? WHERE id = ?`, now.Add(-time.Hour).UnixMilli(), se.pr(7).ID)
 	exec(`UPDATE pull_requests SET queued_at = ? WHERE id = ?`, now.Add(-30*time.Minute).UnixMilli(), se.pr(8).ID)
-	// two merged pull requests, yesterday; the first on a stack
 	se.queuedDraft(10, "m-one", "aaaaaaa1")
 	se.queuedDraft(11, "m-two", "bbbbbbb2")
 	for n, h := range map[int]int{10: 9, 11: 10} {
@@ -80,12 +79,10 @@ func TestCILine(t *testing.T) {
 	add(11, -1, heads(10, 11), "wp-queue/main/11", stackCancelled, "#10's head moved", day(1, 8), true)
 	add(11, -1, heads(11), "wp-queue/main/11b", stackFailed, "#11's checks failed", day(1, 11), true)
 	add(11, -1, heads(11), "wp-queue/main/11c", stackFailed, "#12's checks failed", day(1, 12), true)
-	// a batch of #7 and #8: two rows, one branch, live today
 	add(7, 0, heads(7, 8), "wp-queue/main/batch", stackRunning, "", day(0, 0), false)
 	add(8, 1, heads(7, 8), "wp-queue/main/batch", stackRunning, "", day(0, 0), false)
 	add(9, -1, heads(7, 9), "wp-queue/main/9", stackConflict, "#9 (abcdef1) doesn't merge cleanly onto the base", day(0, 0), true)
 	add(9, -1, heads(9), "wp-queue/main/old", stackCancelled, "before the window", day(9, 8), true)
-	// full-tier runs of the repo: three yesterday, one a stack's own
 	for i, ref := range []string{"a", "b", "c", "wp-queue/main/9"} {
 		exec(`INSERT INTO ci_runs(forge_id, repo, number, workflow, event, ref, sha, title, tier, status, created_at)
 			VALUES (?, ?, ?, 'ci.yml', 'push', ?, 's', 't', '', 'success', ?)`, se.pr(7).ForgeID, se.pr(7).Repo, 900+i, ref, day(1, 9))
@@ -129,7 +126,6 @@ func TestCILine(t *testing.T) {
 	if t0 := l.Totals; t0.Rows != 7 || t0.Runs != 6 || t0.RunsUsed != 1 || t0.UsedShare == nil || *t0.UsedShare != 1.0/6 || t0.Merges != 2 {
 		t.Errorf("totals: %+v", t0)
 	}
-	// the two failures differ only by a number: one group, two raw notes
 	var failed *CILineReason
 	for i := range l.Reasons {
 		if l.Reasons[i].Reason == "checks failed" {
@@ -140,7 +136,6 @@ func TestCILine(t *testing.T) {
 		t.Errorf("reasons: %+v", l.Reasons)
 	}
 
-	// one repo, a longer window, and who may look
 	if r, err := se.s.CILine(se.ctx, se.admin, CILineInput{Repo: "nobody/else"}); err != nil || len(r.Lines) != 0 {
 		t.Errorf("other repo: %+v %v", r, err)
 	}

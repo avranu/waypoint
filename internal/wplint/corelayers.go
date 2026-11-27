@@ -34,7 +34,6 @@ func coreDomain(path string) string {
 		return ""
 	}
 	d, _, _ := strings.Cut(path[i+len(mark):], "/")
-	// A package's tests ("pr_test", and the generated "pr.test") are its domain.
 	return strings.TrimSuffix(strings.TrimSuffix(d, ".test"), "_test")
 }
 

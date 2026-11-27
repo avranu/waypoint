@@ -7,11 +7,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Command heads (WP-D20): what a Bash call ran, without its arguments. A
-// chain "cd x && git commit -m msg | tee log" is three heads: cd, git commit,
-// tee. Arguments never leave the machine this way; only the program and, for
-// tools whose first word picks what they do, that subcommand.
-
 // shellWords splits a command line into segments (at && || ; | & and
 // newlines) of words with quotes removed. It follows the shell closely
 // enough for heads, not for running anything: quoted strings and $(…) stay
@@ -45,7 +40,7 @@ func shellWords(cmd string) [][]string {
 			flushWord()
 		case c == '\n':
 			endSeg()
-			for len(heredocs) > 0 { // skip the body of each here-document
+			for len(heredocs) > 0 {
 				delim := heredocs[0]
 				heredocs = heredocs[1:]
 				for i+1 < len(r) {
@@ -72,7 +67,7 @@ func shellWords(cmd string) [][]string {
 				endSeg()
 				i++
 			} else if i+1 < len(r) && r[i+1] == '>' || inWord && strings.HasSuffix(word.String(), ">") || i > 0 && r[i-1] == '>' {
-				word.WriteRune(c) // 2>&1, &>file
+				word.WriteRune(c)
 				inWord = true
 			} else {
 				endSeg()
@@ -83,9 +78,8 @@ func shellWords(cmd string) [][]string {
 			}
 			i--
 		case c == ')' || (c == '}' && !inWord):
-			endSeg() // a subshell or group closing
+			endSeg()
 		case (c == '(' || c == '{') && !inWord:
-			// opening one: not a word of its own
 		case c == '\\':
 			if i+1 < len(r) {
 				i++
@@ -127,7 +121,6 @@ func shellWords(cmd string) [][]string {
 				}
 			}
 		case c == '<' && i+1 < len(r) && r[i+1] == '<' && (i+2 >= len(r) || r[i+2] != '<'):
-			// here-document: remember the delimiter, drop the operator
 			j := i + 2
 			if j < len(r) && r[j] == '-' {
 				j++
@@ -248,7 +241,6 @@ func stripWords(seg []string) []string {
 	for i := 0; i < len(seg); i++ {
 		w := seg[i]
 		if redirectRE.MatchString(w) && w != "" {
-			// "2>file" is one word; a bare ">" takes the next word as its target
 			if m := redirectRE.FindStringSubmatch(w); m[3] == "" && i+1 < len(seg) {
 				i++
 			}
@@ -277,7 +269,7 @@ func stripWords(seg []string) []string {
 					words = words[1:]
 				}
 			}
-			for ; n > 0 && len(words) > 0; n-- { // timeout 30 cmd
+			for ; n > 0 && len(words) > 0; n-- {
 				words = words[1:]
 			}
 		}
@@ -304,7 +296,6 @@ func headOf(words []string) string {
 	flags, ok := subcommandTools[strings.TrimSuffix(name, ".exe")]
 	if !ok {
 		if strings.HasPrefix(name, "python") {
-			// python -m pytest: the module is what ran
 			for i := 1; i+1 < len(words); i++ {
 				if words[i] == "-m" && subcmdRE.MatchString(words[i+1]) {
 					return "python -m " + words[i+1]
@@ -324,13 +315,12 @@ func headOf(words []string) string {
 		case a == "--":
 			return name
 		case strings.HasPrefix(a, "-"):
-			if flags[a] { // a flag taking a value: git -C dir status
+			if flags[a] {
 				i++
 			}
 		case subcmdRE.MatchString(a):
 			sub := a
 			if name == "docker" && sub == "compose" || name == "kubectl" && sub == "rollout" {
-				// one level more says what ran: docker compose up
 				for _, b := range rest[i+1:] {
 					if !strings.HasPrefix(b, "-") && subcmdRE.MatchString(b) {
 						sub += " " + b
@@ -340,7 +330,7 @@ func headOf(words []string) string {
 			}
 			return name + " " + sub
 		default:
-			return name // a path or value, not a subcommand
+			return name
 		}
 	}
 	return name

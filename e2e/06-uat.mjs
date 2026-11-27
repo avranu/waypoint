@@ -38,7 +38,6 @@ for (const [scheme, vp] of looks([
   await api("PATCH", "/projects/WAYP", { background: "" });
   await api("POST", "/timer/stop");
 
-  // 2. Filter is a button until wanted; F opens it; it stays open while filtering.
   await page.goto(base + "/p/WAYP/board");
   await page.waitForTimeout(500);
   ok(
@@ -74,7 +73,6 @@ for (const [scheme, vp] of looks([
   );
   await page.screenshot({ path: `${out}/${tag}-board.png` });
 
-  // 4. Timeline month labels never overlap, at every zoom.
   const iss = await api("POST", "/issues", {
     project: "WAYP",
     title: "Span probe",
@@ -107,7 +105,6 @@ for (const [scheme, vp] of looks([
   await page.screenshot({ path: `${out}/${tag}-timeline.png` });
   await api("DELETE", `/issues/${iss.key}`);
 
-  // 5. Background previews live, before saving.
   await page.goto(base + "/p/WAYP/settings");
   await page.waitForTimeout(500);
   await page.getByRole("button", { name: "Dusk" }).click();
@@ -130,7 +127,6 @@ for (const [scheme, vp] of looks([
     `${tag} unsaved preview is dropped on leaving`,
   );
 
-  // 6. Empty week: no chart, just the empty state.
   const from = new Date();
   await page.goto(base + "/time");
   await page.waitForTimeout(600);
@@ -145,7 +141,6 @@ for (const [scheme, vp] of looks([
   await page.getByRole("button", { name: "This week" }).click();
   await page.waitForTimeout(300);
 
-  // 7. Running timer: name it, backdate it, set elapsed, all in place.
   await page.getByRole("button", { name: "Start" }).click();
   await page.waitForTimeout(500);
   await page.getByRole("button", { name: "Name this work" }).click();
@@ -181,7 +176,6 @@ for (const [scheme, vp] of looks([
   await page.screenshot({ path: `${out}/${tag}-timer.png` });
   await api("POST", "/timer/stop");
   await page.waitForTimeout(600);
-  // With data: day labels read "Mon 12" style, and tooltips are humane.
   await page.reload();
   await page.waitForTimeout(700);
   const labels = await page
@@ -203,7 +197,6 @@ for (const [scheme, vp] of looks([
   );
   await page.screenshot({ path: `${out}/${tag}-time.png` });
 
-  // 8. Add time: toggle on one line, slider drives the duration.
   await page.getByRole("button", { name: "Add time" }).click();
   await page.waitForTimeout(300);
   const endBtn = page.getByRole("button", { name: "End time" });

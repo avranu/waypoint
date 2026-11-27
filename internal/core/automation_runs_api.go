@@ -11,9 +11,6 @@ import (
 	"time"
 )
 
-// What people and agents do with automations and their runs: see them, run
-// them by hand, cancel, run again, test, and the incoming webhook.
-
 // automationFor loads an automation the actor may act on at the role:
 // project automations by project role, admin automations by being an admin,
 // follow-ups by being the session's person.
@@ -22,7 +19,7 @@ func (s *Service) automationFor(ctx context.Context, actor *Actor, id int64, min
 	if err != nil {
 		return nil, err
 	}
-	if a.SessionID != 0 { // a follow-up: its person's alone (WP-D22)
+	if a.SessionID != 0 {
 		if !a.ownedBy(actor) {
 			return nil, notFound("automation")
 		}
@@ -68,7 +65,7 @@ func (s *Service) ListAutomationRuns(ctx context.Context, actor *Actor, automati
 		if err != nil {
 			return nil, err
 		}
-		r.Event = nil // lists stay small; the run has it
+		r.Event = nil
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -127,7 +124,7 @@ func redactAction(act *Action) {
 // RunAutomationNow runs a manual automation, with the inputs it asks for.
 // Agents may only run automations that allow it.
 func (s *Service) RunAutomationNow(ctx context.Context, actor *Actor, id int64, inputs map[string]any, via string) (*AutomationRun, error) {
-	if err := actor.need(PermAutomationsManage); err != nil { // WP-111
+	if err := actor.need(PermAutomationsManage); err != nil {
 		return nil, err
 	}
 	return s.runManual(ctx, actor, id, inputs, via, 0)
@@ -184,13 +181,11 @@ func (s *Service) RerunAutomation(ctx context.Context, actor *Actor, runID int64
 		return nil, notFound("run")
 	}
 	if a.SessionID != 0 {
-		// It runs once per arming (WP-D22): Run now on the session runs it again.
 		return nil, invalid("a follow-up runs again with Run now on its session")
 	}
 	if a.Rule.Trigger.Event == "manual" {
 		return s.runManual(ctx, actor, a.ID, old.Inputs, "rerun", old.ID)
 	}
-	// Repeating an event's effects is for the people who manage the rule.
 	if a.ProjectID != 0 {
 		if err := s.requireProjectRole(ctx, s.db.R, actor, a.ProjectID, RoleOwner); err != nil {
 			return nil, err
@@ -250,7 +245,6 @@ func (s *Service) CancelAutomationRun(ctx context.Context, actor *Actor, runID i
 		}
 		return run, err
 	}
-	// Something else finished it first: nothing more to announce.
 	return s.runByID(ctx, runID)
 }
 
@@ -281,7 +275,7 @@ func (s *Service) TestAutomation(ctx context.Context, actor *Actor, id int64, in
 	e, sample, note := s.sampleEvent(ctx, actor, a, in)
 	vals, err := a.Rule.inputValues(in.Inputs)
 	if err != nil && len(in.Inputs) > 0 {
-		return nil, err // inputs that were given must be right; none given tests with the defaults
+		return nil, err
 	}
 	if err != nil {
 		vals, _ = (&Rule{Inputs: a.Rule.Inputs}).inputValues(nil)
@@ -392,8 +386,6 @@ func (s *Service) sampleEvent(ctx context.Context, actor *Actor, a *Automation, 
 	return e, true, "Nothing like this has happened yet, so sample data stands in."
 }
 
-// ---- incoming webhooks ----
-
 // HookURL is the address an incoming-webhook automation listens on.
 func (s *Service) hookURL(token string) string {
 	return s.BaseURL() + "/hooks/automations/" + token
@@ -466,8 +458,6 @@ func (s *Service) RunAutomationWebhook(ctx context.Context, token string, body [
 	e := &Event{Kind: EvWebhookIn, ProjectID: a.ProjectID, At: s.now().UTC(), Data: data}
 	return s.startRun(ctx, actor, a, e, fireOpts{Via: "webhook", By: "system", Summary: "Incoming webhook"})
 }
-
-// ---- cron ----
 
 // NextCronRuns lists the next n times a cron expression fires in a time zone.
 func (s *Service) NextCronRuns(expr, tz string, n int) ([]time.Time, error) {

@@ -14,41 +14,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// The agent kit (WP-ADR2 §4): a git repo laid out as a Claude Code plugin
-// marketplace (.claude-plugin/marketplace.json, plugins/<name>/ with
-// skills, agents, commands, hooks, MCP servers and bin/), and kit.toml at
-// its root saying which plugins and notes go to which repos. This file is
-// the model: parsing and checking what the kit repo holds, and resolving
-// what one repo gets. Reading it from the forge and serving it is kit_service.go;
-// making a checkout match is `wp kit sync`.
-//
-// kit.toml:
-//
-//	[kit]
-//	marketplace = "agent-kit"   # the marketplace's name (marketplace.json's, if left out)
-//	git_url = "https://git.example.com/acme/agent-kit.git"  # default: the kit repo's clone URL
-//	compact_window = 200000     # Claude Code's autoCompactWindow at most this, per checkout (WP-147)
-//
-//	[plugins.waypoint]
-//	repos = ["*"]                                   # every attached repo (the default)
-//	[plugins.harbor]
-//	repos = ["Harbor/*", "acme/Quarry", "!Harbor/Harbor-docs"]
-//	[plugins.indexed]
-//	when = ["exists:.indexed"]             # checkouts with a .indexed directory
-//	[plugins.gpu]
-//	machines = ["gpu"]                              # runners with this label, or this machine
-//
-//	[[notes]]
-//	repos = ["WP"]                                  # a project key: its repos
-//	text = "Wait on CI with `wp pr wait`; never sleep-poll."
-//
-// A repos entry is a glob of OWNER/NAME (case-insensitive; "*" alone is
-// every repo), a project key (the repos attached to it), or either with "!"
-// in front to leave those out. Only "!" entries: everything but those.
-// when conditions are checked in the checkout: "exists:PATH" (PATH relative
-// to the checkout). A plugin of the marketplace that kit.toml
-// doesn't name goes nowhere.
-
 const (
 	kitTOML        = "kit.toml"
 	kitMarketplace = ".claude-plugin/marketplace.json"
@@ -347,8 +312,6 @@ func (k *Kit) resolve(repo string, projects []string) *KitResolved {
 	return out
 }
 
-// ---- plugin contents ----
-
 // kitTree is the kit repo's file paths at a commit, and a reader for them.
 type kitTree struct {
 	paths map[string]bool
@@ -406,7 +369,6 @@ func readKitComponents(k *Kit, t *kitTree) {
 				p.Version = cmp(p.Version, pj.Version)
 			}
 		}
-		// skills/<name>/SKILL.md
 		for _, f := range t.under(join("skills")) {
 			rel := strings.TrimPrefix(f, join("skills")+"/")
 			dir, file, ok := strings.Cut(rel, "/")
@@ -416,7 +378,6 @@ func readKitComponents(k *Kit, t *kitTree) {
 			fm := frontMatter(t.file(f))
 			p.Skills = append(p.Skills, KitComponent{Name: cmp(fm["name"], dir), Description: fm["description"]})
 		}
-		// agents/<name>.md and commands/<name>.md (commands may nest: a/b.md is a:b)
 		for _, kind := range []string{"agents", "commands"} {
 			for _, f := range t.under(join(kind)) {
 				rel := strings.TrimPrefix(f, join(kind)+"/")

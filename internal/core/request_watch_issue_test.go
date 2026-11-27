@@ -17,7 +17,7 @@ func TestRequestClosesWhenIssueDone(t *testing.T) {
 	if _, err := be.s.UpdateIssue(be.ctx, be.admin, is.Key, IssuePatch{Status: &done}); err != nil {
 		t.Fatal(err)
 	}
-	be.s.Wait() // the status change nudges the check
+	be.s.Wait()
 	if got := be.request(r.ID); got.State != RequestDone || !strings.Contains(got.Note, "Done") {
 		t.Fatalf("after: %s %q", got.State, got.Note)
 	}

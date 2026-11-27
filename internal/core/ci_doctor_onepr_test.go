@@ -26,19 +26,18 @@ func TestDoctorJobFailsWithOnePR(t *testing.T) {
 			Event: "push", Status: status, Started: m(end - 20), Updated: m(end)})
 		recent = append(recent, CIJob{CIRef: CIRef{Repo: repo, Workflow: "ci.yml", RunNumber: run}, Name: job, Status: status})
 	}
-	// Passes, of other pull requests' heads and stacks.
 	for i := range 7 {
 		task(int64(1670+i), fmt.Sprintf("other%d", i), "feature", "success", -600+10*i)
 	}
-	task(1680, "pr272a", "worktree-wp-503", "failure", -300)       // #272's own run
-	task(1681, "stack272", "wp-queue/main/272-a", "failure", -280) // #272's stack: [#271, #272]
-	task(1686, "stack273", "wp-queue/main/273-b", "failure", -200) // #273's: [#272, #273]
-	task(1695, "batch274", "wp-queue/main/274-c", "failure", -60)  // a batch: [#272, #273, #274]
-	for i := range 5 {                                             // cancels: newer pushes
+	task(1680, "pr272a", "worktree-wp-503", "failure", -300)
+	task(1681, "stack272", "wp-queue/main/272-a", "failure", -280)
+	task(1686, "stack273", "wp-queue/main/273-b", "failure", -200)
+	task(1695, "batch274", "wp-queue/main/274-c", "failure", -60)
+	for i := range 5 {
 		task(int64(1690+i), fmt.Sprintf("gone%d", i), "feature", "cancelled", -150+i)
 	}
-	task(1696, "batch274b", "wp-queue/main/274-d", "cancelled", -10) // the newest bad run: only cancelled
-	slices.Reverse(recent)                                           // newest first
+	task(1696, "batch274b", "wp-queue/main/274-d", "cancelled", -10)
+	slices.Reverse(recent)
 	contains := map[string][]int{
 		stackConflictKey(3, repo, "pr272a"):    {272},
 		stackConflictKey(3, repo, "stack272"):  {271, 272},
@@ -60,8 +59,6 @@ func TestDoctorJobFailsWithOnePR(t *testing.T) {
 		return d
 	}
 
-	// Without knowing what the runs held: unreliable, but next: points at
-	// the latest failure, not the cancel after it.
 	d := run(nil)
 	if j := d.Jobs[0]; !j.Unreliable || j.OnePR != 0 || j.LastBad != 1695 {
 		t.Errorf("unknown heads: %+v", j)
@@ -73,7 +70,6 @@ func TestDoctorJobFailsWithOnePR(t *testing.T) {
 		t.Fatalf("job = %+v", j)
 	}
 
-	// The doctor reads that failure's log for the test it names.
 	logs := &doctorLogForge{jobs: map[int64][]ActionJob{1695: {{ID: 77, Name: job, TaskID: 16950}}},
 		logs: map[int64]string{77: "== 61-rules.mjs\nok   rules\n== 62-audits.mjs\nok   the audit dialog opens\n" +
 			"FAIL the runner gets an audit job (command)\nFAILED: 62-audits.mjs\n-- 62-audits.mjs took 40s\n"}}
@@ -83,7 +79,6 @@ func TestDoctorJobFailsWithOnePR(t *testing.T) {
 	if want := []string{"62-audits.mjs: the runner gets an audit job (command)"}; !slices.Equal(d.Jobs[0].Tests, want) {
 		t.Fatalf("tests = %q, want %q", d.Jobs[0].Tests, want)
 	}
-	// Kept: a second call reads nothing.
 	d.Jobs[0].Tests = nil
 	logs.reads = 0
 	s.readDoctorTests(context.Background(), logs, d, hist)
@@ -107,7 +102,6 @@ func TestDoctorJobFailsWithOnePR(t *testing.T) {
 		t.Errorf("finding = %+v", got)
 	}
 
-	// A failure without #272 in it: the job is unreliable again.
 	tasks = append(tasks, ActionTask{ID: 16970, RunNumber: 1697, WorkflowID: "ci.yml", Name: job, SHA: "other9", Event: "push", Status: "failure", Started: m(-9), Updated: m(-5)})
 	r.hist.tasks = tasks
 	b.Stats[0].Runs, b.Stats[0].Failure = 18, 5
@@ -129,7 +123,7 @@ func TestDoctorJobFlakyBehindTheFront(t *testing.T) {
 	contains := map[string][]int{}
 	for i := range 10 {
 		run, sha, status := int64(1700+i), fmt.Sprintf("stack%d", i), "success"
-		if i%3 == 0 { // 4 failures, 6 passes, all with #1 at the front
+		if i%3 == 0 {
 			status = "failure"
 		}
 		contains[stackConflictKey(3, repo, sha)] = []int{1, 10 + i}
@@ -168,7 +162,7 @@ func TestDoctorJobOnePRNeedsOneSuspect(t *testing.T) {
 		for i, x := range runs {
 			n, sha, branch := int64(1800+i), fmt.Sprintf("sha%d", i), "wp-queue/main/"+fmt.Sprint(i)
 			if x.status == "cancelled" {
-				branch = "feature" // a newer push's, not the queue's
+				branch = "feature"
 			}
 			contains[stackConflictKey(3, repo, sha)] = x.heads
 			tasks = append(tasks, ActionTask{ID: n * 10, RunNumber: n, WorkflowID: "ci.yml", Name: job, SHA: sha, Branch: branch,
@@ -201,18 +195,14 @@ func TestDoctorJobOnePRNeedsOneSuspect(t *testing.T) {
 		return rs
 	}
 
-	// Two failures, both in the stack [#5, #3] and nothing else: either may
-	// be the culprit.
 	j := doctor(append(pass(6), run{"failure", []int{5, 3}}, run{"failure", []int{5, 3}}))
 	if !j.Unreliable || j.OnePR != 0 {
 		t.Errorf("two suspects: %+v", j)
 	}
-	// #3's own run fails too: only #3 is in every failure.
 	j = doctor(append(pass(6), run{"failure", []int{5, 3}}, run{"failure", []int{5, 3}}, run{"failure", []int{3}}))
 	if j.Unreliable || j.OnePR != 3 {
 		t.Errorf("#3 alone: %+v", j)
 	}
-	// One failure, among cancels that make the job unreliable anyway.
 	rs := append(pass(4), run{"failure", []int{3}})
 	for range 4 {
 		rs = append(rs, run{"cancelled", []int{200}})
@@ -223,8 +213,8 @@ func TestDoctorJobOnePRNeedsOneSuspect(t *testing.T) {
 }
 
 type doctorLogForge struct {
-	jobs  map[int64][]ActionJob // by run number
-	logs  map[int64]string      // by job id
+	jobs  map[int64][]ActionJob
+	logs  map[int64]string
 	reads int
 }
 
@@ -253,7 +243,7 @@ func TestCommitHeads(t *testing.T) {
 		t.Fatal(err)
 	}
 	heads := fmt.Sprintf(`[{"pr_id":1,"number":271,"sha":"x"},{"pr_id":%d,"number":%d,"sha":"y"}]`, pr.ID, pr.Number)
-	for _, pos := range []int{0, 1} { // a batch: a row for each pull request, one commit
+	for _, pos := range []int{0, 1} {
 		if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT INTO queue_stacks(forge_id, repo, base_ref, pr_id, base_sha, heads, pos, branch, commit_sha, state, created_at)
 			VALUES (?,?,?,?,'b',?,?,'wp-queue/main/1','Stack1','failed',?)`, pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID, heads, pos, now.Add(-time.Hour).UnixMilli()); err != nil {
 			t.Fatal(err)

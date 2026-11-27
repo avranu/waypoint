@@ -21,18 +21,18 @@ import (
 type fakeGateway struct {
 	mu       sync.Mutex
 	answer   string
-	served   string // the model that answers; space-bunny if unset
-	bad      int    // answer this many estimates short of fields
-	limited  int    // answer this many requests 429
-	retry    string // their Retry-After
-	status   int    // answer every request with this status instead
-	midError bool   // fail after the stream has started
-	bar      string // the X-OpenLLMs-Bar header on every answer (WP-1440)
-	noBar    int    // answer this many requests 503 no_model_at_bar, with Retry-After retry
+	served   string
+	bad      int
+	limited  int
+	retry    string
+	status   int
+	midError bool
+	bar      string
+	noBar    int
 	bodies   []map[string]any
 	at       []time.Time
-	ids      []string         // each chat request's X-Request-ID
-	feedback []map[string]any // POST /v1/feedback bodies
+	ids      []string
+	feedback []map[string]any
 }
 
 func (g *fakeGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -103,7 +103,6 @@ func (g *fakeGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `data: {"error":{"message":"upstream went away","type":"server_error"}}`+"\n\n")
 		return
 	}
-	// The answer in two pieces, as a stream delivers it.
 	half := len(answer) / 2
 	for _, part := range []string{answer[:half], answer[half:]} {
 		c, _ := json.Marshal(map[string]any{"model": served, "choices": []any{map[string]any{"delta": map[string]string{"content": part}}}})
@@ -148,7 +147,6 @@ func TestGatewayClient(t *testing.T) {
 	p := &AIProvider{Kind: "openai", BaseURL: srv.URL + "/v1", apiKey: "olm_test"}
 	ctx := context.Background()
 
-	// A streamed answer, and the model behind the route.
 	raw, served, err := c.Complete(ctx, p, "free", "sys", "prompt", estimateSchema)
 	if err != nil || served != "opencode/space-bunny-free" || !strings.Contains(string(raw), `"points": 3`) {
 		t.Fatalf("answer %s by %q: %v", raw, served, err)
@@ -157,7 +155,6 @@ func TestGatewayClient(t *testing.T) {
 		t.Errorf("request = %v", g.bodies[0])
 	}
 
-	// A 429 waits as long as Retry-After says, then tries again.
 	g.limited, g.retry = 1, "1"
 	if _, _, err := c.Complete(ctx, p, "free", "sys", "prompt", estimateSchema); err != nil {
 		t.Fatal(err)
@@ -167,7 +164,6 @@ func TestGatewayClient(t *testing.T) {
 		t.Errorf("retried after %v, Retry-After said 1s", wait)
 	}
 
-	// Not when the wait outlasts the call: the chain's next model gets it.
 	g.limited, g.retry = 1, "30"
 	short, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -178,7 +174,6 @@ func TestGatewayClient(t *testing.T) {
 	}
 	g.limited = 0
 
-	// 502: every model behind the gateway failed. No retry, a server error.
 	g.status = 502
 	before := len(g.bodies)
 	_, _, err = c.Complete(ctx, p, "free", "sys", "prompt", estimateSchema)
@@ -187,14 +182,12 @@ func TestGatewayClient(t *testing.T) {
 	}
 	g.status = 0
 
-	// An error after the stream started is the model's.
 	g.midError = true
 	_, served, err = c.Complete(ctx, p, "free", "sys", "prompt", estimateSchema)
 	var me *modelError
 	if !errors.As(err, &me) || !strings.Contains(me.msg, "went away") {
 		t.Errorf("mid-stream error: %v", err)
 	}
-	// The failure is the model's that was serving, not the route's (WP-1709).
 	if served != "opencode/space-bunny-free" {
 		t.Errorf("mid-stream error served by %q, want the model in the header", served)
 	}
@@ -221,7 +214,7 @@ func TestRetryAfter(t *testing.T) {
 func TestCheckAnswer(t *testing.T) {
 	for raw, want := range map[string]string{
 		`{"points": 3, "confidence": "high", "reason": "ok"}`: "",
-		`{"points": 4, "confidence": "huge", "reason": "ok"}`: "", // enums are the caller's to map
+		`{"points": 4, "confidence": "huge", "reason": "ok"}`: "",
 		`{"points": 3, "confidence": "high"}`:                 `lacks "reason"`,
 		`{"points": "3", "confidence": "high", "reason": ""}`: `"points" should be a number`,
 		`[]`: "should be an object",
@@ -241,13 +234,11 @@ func TestEnsureLLMGateway(t *testing.T) {
 	g := &fakeGateway{answer: `{"points": 5, "confidence": "medium", "reason": "fine"}`}
 	gw := httptest.NewServer(g)
 	defer gw.Close()
-	// What was set up before: another OpenAI-compatible provider.
 	old := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"model":"old-model","choices":[{"message":{"content":"{\"points\": 2, \"confidence\": \"low\", \"reason\": \"old\"}"}}]}`))
 	}))
 	defer old.Close()
 	e.s.LLM = gatewayClient()
-	// The first setup needs a URL: with only a key there is nothing to keep.
 	if err := e.s.EnsureLLMGateway(e.ctx, GatewaySetup{BaseURL: "", APIKey: "olm_test", Extensions: GatewayExtensions}); err == nil || e.s.gatewayID(e.ctx) != 0 {
 		t.Fatalf("a key-only first setup = %v, provider %d; want an error and none", err, e.s.gatewayID(e.ctx))
 	}
@@ -259,7 +250,6 @@ func TestEnsureLLMGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The gateway's root is given, as for Anthropic clients; its OpenAI API is /v1.
 	if err := e.s.EnsureLLMGateway(e.ctx, GatewaySetup{BaseURL: gw.URL, APIKey: "olm_test", Extensions: GatewayExtensions}); err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +257,7 @@ func TestEnsureLLMGateway(t *testing.T) {
 	var gwID int64
 	for _, tk := range tasks {
 		want := gatewayModels(tk.Task)
-		if tk.Task == "estimate" { // what it had after
+		if tk.Task == "estimate" {
 			want = append(want, "old-model")
 			gwID = *tk.ProviderID
 		}
@@ -276,9 +266,8 @@ func TestEnsureLLMGateway(t *testing.T) {
 		}
 	}
 	if m := gatewayModels("verify_review"); m[0] == gatewayModels("review")[0] {
-		t.Errorf("the verifier starts with the reviewer's model: %v", m) // WP-D14
+		t.Errorf("the verifier starts with the reviewer's model: %v", m)
 	}
-	// Reviews ask for the gateway's review routes, the free route last.
 	if r, v := gatewayModels("review"), gatewayModels("verify_review"); !slices.Equal(r, []string{"review", "free"}) || !slices.Equal(v, []string{"review-verify", "free"}) {
 		t.Errorf("review = %v, verify_review = %v", r, v)
 	}
@@ -286,7 +275,6 @@ func TestEnsureLLMGateway(t *testing.T) {
 	if err != nil || gp.Name != "LLM gateway" || gp.BaseURL != gw.URL+"/v1" || gp.apiKey != "olm_test" {
 		t.Fatalf("provider = %+v %v", gp, err)
 	}
-	// A start with only the key keeps the saved URL and takes the new key.
 	if err := e.s.EnsureLLMGateway(e.ctx, GatewaySetup{BaseURL: "", APIKey: "olm_rotated", Extensions: GatewayExtensions}); err != nil {
 		t.Fatal(err)
 	}
@@ -297,8 +285,6 @@ func TestEnsureLLMGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Estimates ask the gateway for its free route, and name the model
-	// that answered.
 	p := e.project(e.admin, "OL", "")
 	i := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Add dark mode"})
 	est, err := e.s.EstimateIssue(e.ctx, e.admin, i.Key)
@@ -310,8 +296,6 @@ func TestEnsureLLMGateway(t *testing.T) {
 		t.Errorf("asked for %v then %v", body["model"], body["fallbacks"])
 	}
 
-	// A chain that names models on the gateway asks for them in one
-	// request, the newest of each family.
 	var named []ChainModel
 	for _, m := range append(namedGatewayModels[1:], "old-model") {
 		named = append(named, ChainModel{ProviderID: gwID, Model: m})
@@ -328,8 +312,6 @@ func TestEnsureLLMGateway(t *testing.T) {
 		fmt.Sprint(body["fallbacks"]) != "[opencode/nemotron-3-ultra-free opencode/space-bunny-free opencode/mimo-v2.6-flash-free free]" {
 		t.Errorf("asked for %v then %v", body["model"], body["fallbacks"])
 	}
-	// A 502 (every model behind it failed) falls back to what was there
-	// before, without asking the gateway again.
 	g.mu.Lock()
 	g.status = 502
 	g.mu.Unlock()
@@ -343,8 +325,6 @@ func TestEnsureLLMGateway(t *testing.T) {
 			t.Errorf("asked the gateway again, for %v", b["model"])
 		}
 	}
-	// Muse Spark answers badly: the models after it get their turn, in a
-	// request of their own.
 	g.mu.Lock()
 	g.status, g.served, g.bad = 0, "opencode/muse-spark-1.3-contributor-free", 1
 	g.mu.Unlock()
@@ -357,7 +337,6 @@ func TestEnsureLLMGateway(t *testing.T) {
 		t.Errorf("after the bad answer asked for %v then %v", body["model"], body["fallbacks"])
 	}
 
-	// Later starts bring the key up to date and leave the tasks alone.
 	if err := e.s.SetAITask(e.ctx, e.admin, "breakdown", prev.ID, "old-model", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +352,6 @@ func TestEnsureLLMGateway(t *testing.T) {
 			t.Errorf("breakdown reassigned: %+v", tk)
 		}
 	}
-	// Removed by an admin, it stays removed.
 	if err := e.s.DeleteAIProvider(e.ctx, e.admin, gwID); err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +381,6 @@ func TestStockGateway(t *testing.T) {
 	gw := httptest.NewServer(g)
 	defer gw.Close()
 	e.s.LLM = gatewayClient()
-	// Without routes it needs the model to ask for.
 	if err := e.s.EnsureLLMGateway(e.ctx, GatewaySetup{BaseURL: gw.URL, APIKey: "olm_test"}); err == nil || e.s.gatewayID(e.ctx) != 0 {
 		t.Fatalf("no model = %v, provider %d; want an error and none", err, e.s.gatewayID(e.ctx))
 	}
@@ -439,7 +416,6 @@ func TestStockGateway(t *testing.T) {
 		t.Errorf("decide = %v, want errNoDecider", err)
 	}
 
-	// Two models on it: one request each, no fallbacks, routing or exclude.
 	chain := []ChainModel{{ProviderID: pid, Model: "my-model"}, {ProviderID: pid, Model: "other-model"}}
 	ctx := withGatewayExclude(withGatewayRouting(e.ctx, &gatewayRouting{prefix: "wp-test-", paid: "fallback"}), []string{"anthropic/claude-sonnet-4"})
 	var out map[string]any
@@ -455,8 +431,6 @@ func TestStockGateway(t *testing.T) {
 		t.Errorf("X-Request-ID %q", id)
 	}
 
-	// An admin's own chain for one task, after a fallback of theirs on
-	// another.
 	other, err := e.s.CreateAIProvider(e.ctx, e.admin, AIProviderInput{Name: str("Other"), Kind: str("openai"), BaseURL: str(gw.URL)})
 	if err != nil {
 		t.Fatal(err)
@@ -484,8 +458,6 @@ func TestStockGateway(t *testing.T) {
 		}
 	}
 
-	// A later start declares them all: the extensions apply, and the tasks
-	// setup gave the one model ask for the routes instead.
 	if err := e.s.EnsureLLMGateway(e.ctx, GatewaySetup{APIKey: "olm_test", Extensions: GatewayExtensions}); err != nil {
 		t.Fatal(err)
 	}
@@ -493,9 +465,6 @@ func TestStockGateway(t *testing.T) {
 		t.Error("extensions not taken up")
 	}
 	leads("routes declared", gatewayModels)
-	// A start that doesn't say keeps them; one that says none drops them,
-	// and the tasks go back to the model, which a start that doesn't name
-	// one keeps (WP-1187: a gateway without routes doesn't answer them).
 	if err := e.s.EnsureLLMGateway(e.ctx, GatewaySetup{APIKey: "olm_test"}); err != nil || e.s.gatewayWith(e.ctx, GatewayExtensions...) != pid {
 		t.Errorf("unset extensions = %v, provider %d", err, e.s.gatewayWith(e.ctx, GatewayExtensions...))
 	}
@@ -504,7 +473,6 @@ func TestStockGateway(t *testing.T) {
 		t.Errorf("none = %v", err)
 	}
 	leads("routes dropped", func(string) []string { return []string{"my-model"} })
-	// Another model: the tasks still asking for the old one ask for it.
 	if err := e.s.EnsureLLMGateway(e.ctx, GatewaySetup{APIKey: "olm_test", Model: "new-model"}); err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +513,6 @@ func TestParseGatewayExtensions(t *testing.T) {
 	if _, err := ParseGatewayExtensions("routes,warp"); err == nil || !strings.Contains(err.Error(), `"warp"`) {
 		t.Errorf("unknown = %v", err)
 	}
-	// all and none stand alone: anything beside them is a mistake.
 	for _, in := range []string{"all,warp", "warp,all", "none,routes", "all,none", "routes all"} {
 		if got, err := ParseGatewayExtensions(in); err == nil {
 			t.Errorf("%q = %v, want an error", in, got)
@@ -591,7 +558,6 @@ func TestGatewaySetupResumes(t *testing.T) {
 			t.Errorf("%s = %v", tk.Task, got)
 		}
 	}
-	// Once finished, a start leaves the chains as an admin set them.
 	if err := e.s.SetAITask(e.ctx, e.admin, "review", pid, "my-pick", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -619,7 +585,6 @@ func TestGatewaySetupLegacy(t *testing.T) {
 	if pid == 0 {
 		t.Fatal("legacy first setup without all extensions")
 	}
-	// Later starts on the old names keep what was declared since.
 	if err := e.s.EnsureLLMGateway(e.ctx, GatewaySetup{APIKey: "olm_test", Model: "my-model", Extensions: []string{GatewayKey}}); err != nil {
 		t.Fatal(err)
 	}
@@ -654,7 +619,7 @@ func TestOpenLLMsSiteCarriesOver(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := declareGateway(e.s, p.ID); err != nil { // what 0164 leaves
+	if err := declareGateway(e.s, p.ID); err != nil {
 		t.Fatal(err)
 	}
 	before, _ := e.s.AITasks(e.ctx, e.admin)
@@ -674,9 +639,6 @@ func TestOpenLLMsSiteCarriesOver(t *testing.T) {
 		}
 	}
 	same("legacy start")
-	// Dropping routes there needs the model the tasks ask for instead: a
-	// start without one changes nothing, rather than leave chains of routes
-	// the gateway is said not to answer.
 	if err := e.s.EnsureLLMGateway(e.ctx, GatewaySetup{APIKey: "olm_test", Extensions: []string{GatewayKey}}); err == nil {
 		t.Error("routes dropped without a model")
 	}
@@ -689,8 +651,6 @@ func TestOpenLLMsSiteCarriesOver(t *testing.T) {
 	}
 	after, _ := e.s.AITasks(e.ctx, e.admin)
 	for _, tk := range after {
-		// Each asked for its first route then "free": only the first was
-		// setup's lead for most; review and prep had both.
 		if got := chainModels(tk); got[0] != "my-model" || slices.Contains(got[:len(got)-1], gatewayModels(tk.Task)[0]) {
 			t.Errorf("routes dropped: %s = %v", tk.Task, got)
 		}
@@ -739,7 +699,7 @@ func TestGatewayLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := checkAnswer(estimateSchema, raw); err != nil {
-		t.Fatalf("the answer doesn't fit: %v", err) // runChain would try the next model
+		t.Fatalf("the answer doesn't fit: %v", err)
 	}
 }
 

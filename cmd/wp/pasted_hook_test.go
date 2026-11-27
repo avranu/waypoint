@@ -34,7 +34,7 @@ func TestAutopilotMarksMatchCore(t *testing.T) {
 // session the guard stopped is refused and the stop stands; a person's
 // paste takes the session back (WP-1562).
 func TestGuardReadsAPastesText(t *testing.T) {
-	t.Setenv("WAYPOINT_SESSION", "s1") // a runner's tmux session: a person can type
+	t.Setenv("WAYPOINT_SESSION", "s1")
 	t.Setenv("WAYPOINT_SERVER", "")
 	t.Setenv("WAYPOINT_TOKEN", "")
 	c := &cli{dir: t.TempDir()}

@@ -94,13 +94,11 @@ func TestUsageLedgerMeasuresTasksAndPullRequests(t *testing.T) {
 		t.Errorf("unmeasured %d", l.Unmeasured)
 	}
 
-	// Another person sees none of it; usage is private.
 	other := e.user("quinn", false)
 	if l2 := e.ledger(other, UsageQuery{}); l2.Overall.Calls != 0 || len(l2.Tasks) != 0 || l2.Closed.Done != 0 {
 		t.Errorf("quinn: %+v", l2)
 	}
 
-	// Sending the same chunk id again changes nothing.
 	e.ingest(e.me, "c1", "m1", UsageChunk{Ledger: []UsageLedgerRow{{Hour: h, Session: "s1", Model: opus, Calls: 99}}})
 	if l3 := e.ledger(e.me, UsageQuery{}); l3.Overall.Calls != 6 {
 		t.Errorf("repeat: %+v", l3.Overall)

@@ -10,9 +10,6 @@ import (
 	"time"
 )
 
-// A job's process and everything it starts form one process group, so
-// cancelling kills the lot.
-
 func shellCommand(ctx context.Context, command string) *exec.Cmd {
 	return exec.CommandContext(ctx, "sh", "-c", command) // #nosec G204 -- running the command is the point; the job came from the runner's owner
 }
@@ -23,7 +20,7 @@ func setProcGroup(cmd *exec.Cmd) {
 
 // killTimers holds the pending SIGKILL of each cancelled command, until it
 // is waited for.
-var killTimers sync.Map // *exec.Cmd -> *time.Timer
+var killTimers sync.Map
 
 // killOnCancel makes a cancelled context stop the group: politely, then for
 // good. Once the command has been waited for, procExited settles the pending

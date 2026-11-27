@@ -1,7 +1,5 @@
 package core
 
-// wp pr edit: change a pull request's title, description or base on the forge.
-
 import (
 	"context"
 	"fmt"
@@ -23,7 +21,7 @@ type EditPRInput struct {
 // the forge. A draft keeps its "WIP: " prefix; Waypoint's record keeps the
 // clean title. Whoever may merge it may edit it.
 func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64, in EditPRInput) error {
-	defer forgeLocks.lock(fmt.Sprintf("stackmove:%d", prID))() // one at a time with a stacked-child move
+	defer forgeLocks.lock(fmt.Sprintf("stackmove:%d", prID))()
 	pr, err := s.prByID(ctx, s.db.R, prID)
 	if err != nil {
 		return err
@@ -54,10 +52,10 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 		}
 	}
 	if in.Title == nil && in.Body == nil && rb == nil {
-		return nil // already into that base
+		return nil
 	}
 	var ed ForgePREditor
-	if in.Title != nil || in.Body != nil { // a base alone needs only ForgePRRetargeter
+	if in.Title != nil || in.Body != nil {
 		var ok bool
 		if ed, ok = s.Forges.(ForgePREditor); !ok {
 			return invalid("this forge client can't edit pull requests")
@@ -70,9 +68,6 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 	if f.token == "" {
 		return invalid("the forge has no API token; add one in Admin → Forges")
 	}
-	// The edits are made one by one on the forge. One that fails after an
-	// earlier one succeeded still leaves the record and the audit what was
-	// applied, then the error comes back (WP-1670).
 	title, applied := "", []string{}
 	var ferr error
 	if in.Title != nil {
@@ -107,7 +102,7 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 		}
 	}
 	werr := s.write(ctx, actor, func(t *tx) error {
-		var parts []string // "retitled", "edited the description", "moved the base from X to Y"
+		var parts []string
 		for _, a := range applied {
 			switch a {
 			case "title":
@@ -124,9 +119,6 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 				parts = append(parts, "moved the base from "+pr.BaseRef+" to "+base)
 			}
 		}
-		// One edit reads "retitled “T”" (the description and the base add
-		// "of": "moved the base from X to Y of “T”"); several, "edited “T”:
-		// retitled, edited the description and moved the base from X to Y".
 		name := " “" + excerpt(pr.Title, 120) + "”"
 		detail := ""
 		switch len(parts) {
@@ -145,7 +137,7 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 		return nil
 	})
 	if ferr != nil {
-		if werr != nil { // the refusal is what comes back; the record's failure isn't lost
+		if werr != nil {
 			s.log.WarnContext(ctx, "record the edits of a pull request made before the forge refused one", "pr", prID, "err", werr)
 		}
 		return ferr

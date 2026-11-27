@@ -80,7 +80,6 @@ func cmdAttach(c *cli, args []string) error {
 			return c.usage("--comment is for issues")
 		}
 	}
-	// Read everything first, so a typo in the last file name uploads nothing.
 	type file struct {
 		name string
 		data []byte
@@ -108,7 +107,6 @@ func cmdAttach(c *cli, args []string) error {
 		}
 		upload = append(upload, file{n, data})
 	}
-	// A page's title or code is resolved here, as wp page show does.
 	if typ == "page" {
 		id, err := c.pageRef(ref)
 		if err != nil {
@@ -181,18 +179,16 @@ func (c *cli) attachTarget(pos []string) (string, []string, error) {
 				ref = strings.ToUpper(ref)
 			}
 			if typ == "design" || typ == "note" || typ == "comment" {
-				ref = strings.TrimPrefix(ref, "#") // the server accepts #12; the embed path needs 12
+				ref = strings.TrimPrefix(ref, "#")
 			}
 			return typ + ":" + ref, pos[1:], nil
 		}
 		if codeShapes[0].re.MatchString(first) {
-			// API:R-30 is a request, not a file called that.
 			if _, err := os.Stat(first); errors.Is(err, fs.ErrNotExist) {
 				return "request:" + first, pos[1:], nil
 			}
 		}
 		if keyRE.MatchString(strings.ToUpper(first)) {
-			// A file called WP-12 is a file (and so is one we can't stat).
 			if _, err := os.Stat(first); errors.Is(err, fs.ErrNotExist) {
 				return "issue:" + strings.ToUpper(first), pos[1:], nil
 			}
@@ -226,7 +222,6 @@ func (c *cli) embedMarkdown(typ, spec, md string, asComment bool) (string, error
 			}
 			return "Commented on " + ref + ".", nil
 		}
-		// The server appends in one transaction: no edit made meanwhile is lost.
 		if _, err := c.call("PATCH", "/api/v1/issues/"+esc(ref), map[string]string{"append_description": md}); err != nil {
 			return "", err
 		}

@@ -6,10 +6,6 @@ import (
 	"time"
 )
 
-// A review round's audit outlives the round (WP-1059): a round that ends
-// without it hands it to the task's pull request, rather than cancelling it
-// or leaving it with nobody.
-
 // handoffStart gives the task a pull request (#7, head wp-1), has the session
 // ship it and asks for the round's audit. It returns the round and its audit.
 func handoffStart(t *testing.T, a *apEnv) (round, audit, prID int64) {
@@ -52,9 +48,6 @@ func handoffAudit(t *testing.T, a *apEnv, id int64) auditState {
 }
 
 func TestRoundAuditOutlivesTheRound(t *testing.T) {
-	// The agent skipped the review while the audit ran: the audit goes on as
-	// the pull request's, holds the merge while it runs, and its findings
-	// hold the merge and are a babysitting round's work after.
 	t.Run("skipped while it runs", func(t *testing.T) {
 		a, box := auditAPEnv(t)
 		round, audit, prID := handoffStart(t, a)
@@ -83,8 +76,6 @@ func TestRoundAuditOutlivesTheRound(t *testing.T) {
 			t.Errorf("babysitting work = %v", got)
 		}
 	})
-	// The round audited the branch before its pull request opened: the
-	// audit waits for one on that branch.
 	t.Run("a branch's audit waits for its pull request", func(t *testing.T) {
 		a, _ := auditAPEnv(t)
 		round, audit, prID := handoffStart(t, a)
@@ -107,8 +98,6 @@ func TestRoundAuditOutlivesTheRound(t *testing.T) {
 			t.Fatalf("with its pull request open: %+v", st)
 		}
 	})
-	// The audit finished, the round failed before the session read it, and
-	// the pull request merged: a task to check its findings.
 	t.Run("merged with findings to do", func(t *testing.T) {
 		a, box := auditAPEnv(t)
 		round, audit, prID := handoffStart(t, a)
@@ -134,7 +123,6 @@ func TestRoundAuditOutlivesTheRound(t *testing.T) {
 			t.Errorf("%d fix tasks", n)
 		}
 	})
-	// A round that read its audit keeps it.
 	t.Run("a done round keeps it", func(t *testing.T) {
 		a, box := auditAPEnv(t)
 		round, audit, _ := handoffStart(t, a)
@@ -145,7 +133,6 @@ func TestRoundAuditOutlivesTheRound(t *testing.T) {
 			t.Fatalf("after the round: %+v", st)
 		}
 	})
-	// A person called the review off: the audit is cancelled, as before.
 	t.Run("a person cancels it", func(t *testing.T) {
 		a, _ := auditAPEnv(t)
 		round, audit, _ := handoffStart(t, a)
@@ -155,8 +142,6 @@ func TestRoundAuditOutlivesTheRound(t *testing.T) {
 			t.Fatalf("after the cancel: %+v", st)
 		}
 	})
-	// An audit older than the hand-over looks back is nobody's: the cancel
-	// sweep still cancels it rather than leave it running.
 	t.Run("older than the hand-over window", func(t *testing.T) {
 		a, _ := auditAPEnv(t)
 		round, audit, _ := handoffStart(t, a)
@@ -170,7 +155,6 @@ func TestRoundAuditOutlivesTheRound(t *testing.T) {
 			t.Fatalf("an old audit: %+v", st)
 		}
 	})
-	// A later round reviews the task: the earlier one's audit is moot.
 	t.Run("a later round", func(t *testing.T) {
 		a, _ := auditAPEnv(t)
 		round, audit, _ := handoffStart(t, a)
@@ -207,7 +191,6 @@ func TestRoundOutwaitsItsAudit(t *testing.T) {
 		t.Errorf("the wait doesn't say when the Sonnet review starts: %q", st.detail)
 	}
 	a.tick(reviewAuditPatience)
-	// The Sonnet reviewer ends first: its findings are the round's.
 	a.endReviewer(box, "done", "The retry loops")
 	a.tick(time.Second)
 	if len(a.jobs) != 1 {
@@ -220,8 +203,6 @@ func TestRoundOutwaitsItsAudit(t *testing.T) {
 	if st := handoffAudit(t, a, audit); st.status == AuditCancelled {
 		t.Fatalf("the slow audit was cancelled: %+v", st)
 	}
-	// Pending, the round still has it; once its prompt is typed, the pull
-	// request does.
 	a.s.sweepRounds(a.ctx)
 	if st := handoffAudit(t, a, audit); st.purpose != AuditReview {
 		t.Fatalf("handed over before the round started: %+v", st)

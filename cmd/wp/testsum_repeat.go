@@ -13,10 +13,6 @@ import (
 	"time"
 )
 
-// wp testsum --repeat: is a test flaky, and did the fix for a flake hold?
-// One run can't say; N runs give a failure count per test and the range the
-// true rate likely lies in (WP-935).
-
 const testsumMaxRepeat = 1000
 
 // repeatTally is one failing test across the runs.
@@ -29,10 +25,10 @@ type repeatTally struct {
 func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool, keep []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	rec := newTestRunRecorder(argv)                // as typed
-	key := slotRunFor("wp testsum --repeat", argv) // the hold is N runs, so not the command's own history
+	rec := newTestRunRecorder(argv)
+	key := slotRunFor("wp testsum --repeat", argv)
 	argv = goTestCount1(goTestJSON(argv))
-	env, release, err := c.takeSlotFor(ctx, "tests", defaultSlots(), key)
+	held, env, release, err := c.takeSlotBound(ctx, "tests", defaultSlots(), key)
 	if err != nil {
 		if ctx.Err() != nil {
 			_, _ = fmt.Fprintln(c.err, "wp testsum: stopped while waiting for the slot")
@@ -55,13 +51,11 @@ func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool,
 	for i := 0; i < n; i++ {
 		var buf bytes.Buffer
 		start := time.Now()
-		code, err := runSlotCmd(ctx, env, argv, nil, &buf, &buf)
+		code, err := runSlotCmd(held, env, argv, nil, &buf, &buf)
 		if err != nil {
 			return err
 		}
 		if ctx.Err() != nil {
-			// The run the stop cut short says nothing; the finished ones
-			// are still reported and kept.
 			stopped = true
 			break
 		}
@@ -84,7 +78,6 @@ func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool,
 			}
 		}
 		if !failed && res != nil && res.outcome() == runEmpty {
-			// No test ran (a -run that matches nothing): not a pass.
 			empty++
 			lastEmpty = res
 			continue
@@ -105,8 +98,6 @@ func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool,
 		}
 	}
 
-	// Keep one run for wp ship: a failure if there was one, so twenty
-	// passes can't hide the run that failed.
 	switch {
 	case firstFailRun > 0 && firstFail != nil:
 		rec.finish(firstFail, firstFailCode)
@@ -149,7 +140,6 @@ func (c *cli) testsumRepeat(argv []string, format string, n int, untilFail bool,
 	case stopped:
 		return exitCode(130)
 	case firstFailRun > 0, empty == runs:
-		// Every run having run no test is no evidence a flake is gone.
 		return exitCode(1)
 	}
 	return nil

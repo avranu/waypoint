@@ -10,7 +10,6 @@ func TestHandoffSkipsLeasesAndReservesAtomically(t *testing.T) {
 	p := te.project(te.admin, "App", "")
 	held := te.issue(te.admin, IssueInput{Project: p.Key, Title: "Held by another session", Agent: "claude", Priority: "urgent"})
 	next := te.issue(te.admin, IssueInput{Project: p.Key, Title: "Next", Agent: "claude"})
-	// Another session of the same agent identity holds the first task.
 	if _, err := te.s.AgentTake(te.ctx, te.ag, held.Key, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -21,11 +20,9 @@ func TestHandoffSkipsLeasesAndReservesAtomically(t *testing.T) {
 	if res.Status != HandoffReserved || res.Task.Key != next.Key {
 		t.Fatalf("hand-off picked %+v, want %s (the held %s is someone else's)", res, next.Key, held.Key)
 	}
-	// Reserved: a lease with no run, and a second hand-off sees it pending.
 	if res, err = te.s.Handoff(te.ctx, te.ag, AgentQuery{}, false); err != nil || res.Status != HandoffLimit || res.Live != 1 {
 		t.Fatalf("second hand-off: %+v %v", res, err)
 	}
-	// The new session takes it (wp next KEY): no longer pending, but live.
 	if err := te.s.ReleaseHandoff(te.ctx, te.ag, []string{next.Key}); err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +47,6 @@ func TestHandoffCountsOnlyRecentSessions(t *testing.T) {
 	if res, err := te.s.Handoff(te.ctx, &actor, AgentQuery{}, false); err != nil || res.Status != HandoffLimit {
 		t.Fatalf("a live task session should block: %+v %v", res, err)
 	}
-	// Silent for 31 minutes: idle, so it no longer blocks.
 	te.setClock(te.clockNow().Add(31 * time.Minute))
 	if res, err := te.s.Handoff(te.ctx, &actor, AgentQuery{}, false); err != nil || res.Status != HandoffReserved {
 		t.Fatalf("a stale session should not block: %+v %v", res, err)
@@ -69,14 +65,12 @@ func TestHandoffSkipsFinishedTasks(t *testing.T) {
 	if _, err := te.s.AgentDone(te.ctx, te.ag, done.Key, AgentDoneInput{}); err != nil {
 		t.Fatal(err)
 	}
-	// The bug: it is back in To Do with nothing recorded.
 	if _, err := te.s.db.W.Exec(`UPDATE issues SET status_id = (SELECT id FROM statuses WHERE project_id = ? AND category = 'todo' LIMIT 1), resolved_at = NULL WHERE id = ?`, p.ID, done.ID); err != nil {
 		t.Fatal(err)
 	}
 	if res, err := te.s.Handoff(te.ctx, te.ag, AgentQuery{}, false); err != nil || res.Status != HandoffNone {
 		t.Fatalf("hand-off of a finished task: %+v %v", res, err)
 	}
-	// A person sends it back: it may go again.
 	te.setClock(te.clockNow().Add(time.Minute))
 	if _, err := te.s.UpdateIssue(te.ctx, te.admin, done.Key, IssuePatch{Status: ptrOf(CatBacklog)}); err != nil {
 		t.Fatal(err)

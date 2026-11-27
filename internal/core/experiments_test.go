@@ -20,7 +20,6 @@ func TestExperimentPrepRetired(t *testing.T) {
 		t.Fatalf("starting a retired experiment: %v", err)
 	}
 	run := &ExperimentRun{ID: 1, Weights: map[string]int{"shown": 4, "hidden": 1}}
-	// About one in five held out, deterministically.
 	d, _ := experimentDef(ExpPrep)
 	hidden := 0
 	for id := int64(1); id <= 2000; id++ {
@@ -35,7 +34,6 @@ func TestExperimentPrepRetired(t *testing.T) {
 	if hidden < 340 || hidden > 460 {
 		t.Errorf("hidden %d of 2000; want about 400", hidden)
 	}
-	// Another run re-randomises.
 	same := 0
 	for id := int64(1); id <= 200; id++ {
 		if pickArm(d, run.ID, id, run.Weights) == pickArm(d, run.ID+1, id, run.Weights) {
@@ -66,7 +64,7 @@ func TestExperimentRunsAndArms(t *testing.T) {
 		{Weights: map[string]int{"brief": -1, "none": 1}},
 		{Days: 400},
 		{Projects: []string{"NOPE"}},
-		{Params: map[string]string{"text": "x"}}, // next_brief takes none
+		{Params: map[string]string{"text": "x"}},
 	} {
 		if _, err := e.s.StartExperiment(e.ctx, e.admin, ExpNextBrief, in); !IsInvalid(err) {
 			t.Errorf("start %+v: %v", in, err)
@@ -76,7 +74,6 @@ func TestExperimentRunsAndArms(t *testing.T) {
 		t.Errorf("an unknown experiment: %v", err)
 	}
 
-	// No run: nothing is assigned, and wp does the control.
 	i := e.issue(e.admin, IssueInput{Project: p.Key, Title: "One"})
 	got, err := e.s.IssueArms(e.ctx, ag, i.Key, IssueArmsInput{Experiments: []string{ExpNextBrief, ExpSearchNudge}, Via: "next"})
 	if err != nil || len(got.Arms) != 0 {
@@ -95,7 +92,6 @@ func TestExperimentRunsAndArms(t *testing.T) {
 		t.Errorf("a second live run: %v", err)
 	}
 
-	// An agent's wp gets an arm, kept; a person's and a read-only token's don't.
 	got, err = e.s.IssueArms(e.ctx, ag, i.Key, IssueArmsInput{Experiments: []string{ExpNextBrief, ExpPrep, "unknown"}, Via: "take"})
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +112,6 @@ func TestExperimentRunsAndArms(t *testing.T) {
 			t.Errorf("%+v: %+v %v", who, got, err)
 		}
 	}
-	// A task in a project the run leaves out isn't a unit.
 	k := e.issue(e.admin, IssueInput{Project: other.Key, Title: "Elsewhere"})
 	if got, _ := e.s.IssueArms(e.ctx, ag, k.Key, IssueArmsInput{Experiments: []string{ExpNextBrief}}); len(got.Arms) != 0 {
 		t.Errorf("another project: %+v", got.Arms)
@@ -131,7 +126,6 @@ func TestExperimentRunsAndArms(t *testing.T) {
 		}
 	}
 
-	// Stopped: back to the control, and the run is in the past.
 	x, err = e.s.StopExperiment(e.ctx, e.admin, ExpNextBrief, "")
 	if err != nil || x.Live != nil || len(x.Past) != 1 || x.Past[0].StopReason != "stopped by "+e.admin.User.Username {
 		t.Fatalf("stopped: %+v %v", x, err)
@@ -151,14 +145,12 @@ func TestExperimentAutopilotPhrase(t *testing.T) {
 	if got := e.s.autopilotPhrase(e.ctx, i.ID, "Do {key}."); got != "Do {key}." {
 		t.Fatalf("no run: %q", got)
 	}
-	// Everything in the phrase arm.
 	if _, err := e.s.StartExperiment(e.ctx, e.admin, ExpAutopilotPhrase, ExperimentStart{Weights: map[string]int{"plain": 0, "phrase": 1, "x": 0}}); !IsInvalid(err) {
 		t.Fatalf("an unknown arm: %v", err)
 	}
 	if _, err := e.s.StartExperiment(e.ctx, e.admin, ExpAutopilotPhrase, ExperimentStart{Weights: map[string]int{"plain": 0, "phrase": 1}}); !IsInvalid(err) {
 		t.Fatalf("one arm only: %v", err)
 	}
-	// Two arms; find a task in each.
 	if _, err := e.s.StartExperiment(e.ctx, e.admin, ExpAutopilotPhrase, ExperimentStart{Params: map[string]string{"text": "  Own it.  "}}); err != nil {
 		t.Fatal(err)
 	}
@@ -232,12 +224,10 @@ func TestExperimentCompare(t *testing.T) {
 		return func(i int) float64 { return base * (0.6 + 0.8*float64((i*37)%41)/40) }
 	}
 
-	// Too few.
 	r := experimentCompare(d, run(5, 5), map[string][]*expTask{"brief": synthTasks(5, true, spread(1)), "none": synthTasks(5, true, spread(1))}, "done", now)
 	if r.Kind != "few" || !strings.Contains(r.Verdict, "Too few") {
 		t.Errorf("few: %s %s", r.Kind, r.Verdict)
 	}
-	// The same: no difference, with a detectable size.
 	r = experimentCompare(d, run(60, 60), map[string][]*expTask{"brief": synthTasks(60, true, spread(1)), "none": synthTasks(60, true, spread(1))}, "done", now)
 	if r.Kind != "none" || r.MDE == nil || r.PerArm == 0 || !strings.Contains(r.Verdict, "not the same as no difference") {
 		t.Errorf("same: %s %s %v", r.Kind, r.Verdict, r.MDE)
@@ -246,22 +236,18 @@ func TestExperimentCompare(t *testing.T) {
 	if st.Ratio == nil || math.Abs(*st.Ratio-1) > 1e-9 || st.Low == nil || *st.Low > 1 || *st.High < 1 || st.PAdj == nil || *st.PAdj < 0.5 {
 		t.Errorf("same cost stat: %+v", st)
 	}
-	// Half the cost: a difference, lower.
 	r = experimentCompare(d, run(60, 60), map[string][]*expTask{"brief": synthTasks(60, true, spread(2)), "none": synthTasks(60, true, spread(1))}, "done", now)
 	if r.Kind != "difference" || !strings.Contains(r.Verdict, "50% lower") {
 		t.Errorf("half: %s %s", r.Kind, r.Verdict)
 	}
-	// The same numbers again (seeded bootstrap).
 	r2 := experimentCompare(d, run(60, 60), map[string][]*expTask{"brief": synthTasks(60, true, spread(2)), "none": synthTasks(60, true, spread(1))}, "done", now)
 	if *r2.Arms[1].Stats[0].Low != *r.Arms[1].Stats[0].Low {
 		t.Error("the interval moves between reads")
 	}
-	// Assignment far from the weights: nothing else counts.
 	r = experimentCompare(d, run(100, 40), map[string][]*expTask{"brief": synthTasks(60, true, spread(1)), "none": synthTasks(60, true, spread(1))}, "done", now)
 	if r.Kind != "srm" {
 		t.Errorf("srm: %s %v", r.Kind, r.SRM)
 	}
-	// Done rates differ: a note; and the done scope leaves unfinished tasks out.
 	none := append(synthTasks(30, true, spread(1)), synthTasks(30, false, spread(1))...)
 	r = experimentCompare(d, run(60, 60), map[string][]*expTask{"brief": synthTasks(60, true, spread(1)), "none": none}, "done", now)
 	if r.Arms[1].InScope != 30 || r.Arms[1].DoneP == nil || *r.Arms[1].DoneP > 0.01 || len(r.Notes) == 0 || !strings.Contains(r.Notes[0], "Done rates differ") {
@@ -270,7 +256,6 @@ func TestExperimentCompare(t *testing.T) {
 	if reason := experimentStopReason(d, run(60, 60), r); !strings.Contains(reason, "guardrail") {
 		t.Errorf("a done-rate drop trips the guardrail: %q", reason)
 	}
-	// Costing 1.6 times as much trips it too; the control costing more doesn't.
 	r = experimentCompare(d, run(60, 60), map[string][]*expTask{"brief": synthTasks(60, true, spread(1)), "none": synthTasks(60, true, spread(1.6))}, "done", now)
 	if reason := experimentStopReason(d, run(60, 60), r); !strings.Contains(reason, "60% higher") {
 		t.Errorf("cost guardrail: %q", reason)
@@ -279,7 +264,6 @@ func TestExperimentCompare(t *testing.T) {
 	if reason := experimentStopReason(d, run(60, 60), r); reason != "" {
 		t.Errorf("a cheaper arm stops the run: %q", reason)
 	}
-	// The target reached.
 	tr := run(60, 60)
 	tr.Target = 50
 	if reason := experimentStopReason(d, tr, r); !strings.Contains(reason, "target of 50") {
@@ -288,7 +272,6 @@ func TestExperimentCompare(t *testing.T) {
 }
 
 func TestExperimentStats(t *testing.T) {
-	// Chi-square upper tail: 3.841 at 1 df and 5.991 at 2 df are p = 0.05.
 	if q := gammaQ(0.5, 3.841/2); math.Abs(q-0.05) > 1e-3 {
 		t.Errorf("Q(1 df) = %v", q)
 	}

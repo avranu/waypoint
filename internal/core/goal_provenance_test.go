@@ -26,7 +26,6 @@ func TestGoalProvenance(t *testing.T) {
 		t.Fatalf("person's task before links = %s", got)
 	}
 
-	// An agent's [[link]] in a comment on a person's task is the agent's.
 	if _, err := e.s.AddComment(e.ctx, &agent, typo.Key, "This serves [["+goal.Title+"]]."); err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +33,6 @@ func TestGoalProvenance(t *testing.T) {
 	if got := e.grounding(typo.Key); got != GroundAgentGoal {
 		t.Errorf("after an agent's comment link = %s, want %s", got, GroundAgentGoal)
 	}
-	// The same words from a person make it the person's.
 	if _, err := e.s.AddComment(e.ctx, e.admin, typo.Key, "Yes: [["+goal.Title+"]]."); err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +41,6 @@ func TestGoalProvenance(t *testing.T) {
 		t.Errorf("after a person's comment link = %s, want %s", got, GroundPersonGoal)
 	}
 
-	// A parent an agent set is the agent's step, a person's the person's.
 	child := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Tidy the footer spacing"})
 	parent := typo.Key
 	if _, err := e.s.UpdateIssue(e.ctx, &agent, child.Key, IssuePatch{Parent: Opt[string]{Set: true, Value: &parent}}); err != nil {
@@ -65,7 +62,6 @@ func TestGoalProvenance(t *testing.T) {
 		t.Errorf("under a parent a person set = %s, want %s", got, GroundPersonGoal)
 	}
 
-	// A goal an agent writes for a person's task is still a suggestion.
 	title := "Owners see the week at a glance"
 	g, err := e.s.CreateDesign(e.ctx, &agent, DesignInput{Title: &title, Kind: str("goal"), Project: &p.Key, For: typo.Key})
 	if err != nil {
@@ -75,8 +71,6 @@ func TestGoalProvenance(t *testing.T) {
 		t.Errorf("an agent's goal --for a person's task = approved %v, requested %+v", g.Approved, g.Requested)
 	}
 
-	// An agent's link waits; an agent in a person's shell can't confirm,
-	// dismiss or stop asking about it.
 	stray := e.issue(&agent, IssueInput{Project: p.Key, Title: "Rename the sidebar colours"})
 	l := e.serve(&agent, stray.Key, goal.ID)
 	o := e.goals(e.admin, p.Key)
@@ -96,7 +90,6 @@ func TestGoalProvenance(t *testing.T) {
 		t.Error("an agent's shell approved a goal")
 	}
 
-	// Stop asking: it leaves the list and keeps counting as the agent's.
 	n, err := e.s.AcknowledgeGoalLinks(e.ctx, e.admin, []int64{l.ID})
 	if err != nil || n != 1 {
 		t.Fatalf("acknowledge = %d, %v", n, err)
@@ -109,7 +102,6 @@ func TestGoalProvenance(t *testing.T) {
 		t.Errorf("after stop asking = %s, want %s (not a confirm)", got, GroundAgentGoal)
 	}
 
-	// wp show's goal line and the risk read the stored trace.
 	d := e.get(e.admin, stray.Key)
 	if d.Goal == nil || d.Goal.Grounding != GroundAgentGoal || d.Goal.Goal == nil || d.Goal.Goal.ID != goal.ID {
 		t.Errorf("issue goal = %+v", d.Goal)
@@ -121,8 +113,6 @@ func TestGoalProvenance(t *testing.T) {
 		t.Errorf("a pull request with no tasks has intent %q", intent)
 	}
 
-	// A person's no binds agents: the link goes and an agent can't make
-	// it again; a person can, which lifts the no.
 	if err := e.s.DismissGoalLink(e.ctx, e.admin, l.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +125,6 @@ func TestGoalProvenance(t *testing.T) {
 		t.Errorf("a person's own link after their no = %s, want %s", got, GroundPersonGoal)
 	}
 
-	// A task Waypoint hasn't traced yet says so, on the line and in risk.
 	fresh := e.issue(&agent, IssueInput{Project: p.Key, Title: "Add a footer badge"})
 	e.s.goalsSettle(e.ctx)
 	if _, err := e.s.db.W.Exec(`DELETE FROM goal_traces WHERE item_type = 'issue' AND item_id = ?`, fresh.ID); err != nil {
@@ -174,8 +163,6 @@ func TestGoalDriftSnapshot(t *testing.T) {
 		}
 	}
 	e.goals(e.admin, p.Key)
-	// The link goes after the task is finished: the week still counts it
-	// as it was.
 	if err := e.s.RemoveItemLink(e.ctx, e.admin, l.ID); err != nil {
 		t.Fatal(err)
 	}

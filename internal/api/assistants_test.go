@@ -27,7 +27,7 @@ type apiHermes struct {
 	mu      sync.Mutex
 	logins  int
 	valid   map[string]bool
-	expired bool // /api/sessions has found the session gone once
+	expired bool
 	paths   []string
 	tickets map[string]bool
 	conn    *websocket.Conn
@@ -60,7 +60,6 @@ func (h *apiHermes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, `{"error":"session_expired"}`)
 		return
 	}
-	// Hermes's own cookies must never reach the browser.
 	http.SetCookie(w, &http.Cookie{Name: "hermes_refresh", Value: "leak", Path: "/"})
 	switch r.URL.Path {
 	case "/api/auth/me":
@@ -90,7 +89,7 @@ func (h *apiHermes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/pdf")
 		io.WriteString(w, "%PDF-1.4")
 	case "/api/media/untyped":
-		w.Header()["Content-Type"] = nil // no sniffing either
+		w.Header()["Content-Type"] = nil
 		io.WriteString(w, "<html>")
 	case "/api/auth/ws-ticket":
 		h.mu.Lock()
@@ -222,7 +221,7 @@ type asstAPIEnv struct {
 	door            *hermestest.Door
 	hermes          *apiHermes
 	doorURL, ca     string
-	robin, ann, bob *asstClient // robin is an admin; ann owns the assistant
+	robin, ann, bob *asstClient
 	annActor        *core.Actor
 	id              int64
 }
@@ -332,7 +331,7 @@ func TestAssistantRouteAccess(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		cl   *asstClient
-		want int // for every route
+		want int
 	}{
 		{"another person", e.bob, 404},
 		{"owner's full token", full, 404},
@@ -347,14 +346,13 @@ func TestAssistantRouteAccess(t *testing.T) {
 				}
 				want := c.want
 				if (r.method == "PATCH" || r.method == "DELETE") && r.path == e.path("") {
-					want = 403 // configuring is for admins: refused before the lookup
+					want = 403
 				}
 				if code, b, _ := c.cl.do(r.method, r.path, body(r.method, r.path)); code != want {
 					t.Errorf("%s %s = %d %s, want %d", r.method, r.path, code, b, want)
 				}
 			}
 			if c.want == 404 {
-				// The list is empty rather than refused.
 				code, b, _ := c.cl.do("GET", "/api/v1/assistants", nil)
 				if code != 200 || strings.TrimSpace(string(b)) != "[]" {
 					t.Errorf("list = %d %s", code, b)
@@ -362,7 +360,6 @@ func TestAssistantRouteAccess(t *testing.T) {
 			}
 		})
 	}
-	// An admin who doesn't own it can see and change its settings, not use it.
 	if code, _, _ := e.robin.do("GET", e.path(""), nil); code != 200 {
 		t.Errorf("admin get = %d", code)
 	}
@@ -371,7 +368,6 @@ func TestAssistantRouteAccess(t *testing.T) {
 			t.Errorf("admin %s %s = %d", r.method, r.path, code)
 		}
 	}
-	// Only admins configure.
 	if code, b, _ := e.ann.do("POST", "/api/v1/assistants", map[string]any{"name": "Mine", "url": e.doorURL, "ca_pem": e.ca, "key": "k", "password": "p"}); code != 403 {
 		t.Errorf("owner create = %d %s", code, b)
 	}
@@ -387,7 +383,6 @@ func TestAssistantRouteAccess(t *testing.T) {
 	if len(e.hermes.saw("/api/sessions")) != 0 {
 		t.Error("a refused request reached Hermes")
 	}
-	// The owner, in a browser, is let through.
 	if code, b, _ := e.ann.do("GET", e.path(""), nil); code != 200 || !strings.Contains(string(b), `"mine":true`) {
 		t.Errorf("owner get = %d %s", code, b)
 	}
@@ -395,7 +390,6 @@ func TestAssistantRouteAccess(t *testing.T) {
 
 func TestAssistantProxy(t *testing.T) {
 	e := newAsstAPIEnv(t)
-	// The first call signs in, finds the session gone, signs in again.
 	code, b, h := e.ann.do("GET", e.path("/api/sessions"), nil)
 	if code != 200 || !strings.Contains(string(b), `"s1"`) || h.Get("Content-Type") != "application/json" {
 		t.Fatalf("sessions = %d %s %v", code, b, h)
@@ -436,9 +430,6 @@ func TestAssistantProxy(t *testing.T) {
 		}
 	}
 
-	// Refused paths never reach Hermes, however they're spelled. (The mux
-	// redirects a literal "./", but routes "%2e" with {path...} unescaped
-	// to "env/./reveal".)
 	for _, p := range []string{"env/reveal", "env/reveal/OPENAI_API_KEY", "hermes/update", "auth/password-login", "auth/ws-ticket",
 		"sessions/%2e%2e/auth/me", "env/%2e/reveal", "env%2Freveal", "sessions/../auth/me", "env/./reveal", "cron/%2e/fire", "skills/%2E/hub/install"} {
 		code, b, _ := e.ann.do("GET", e.path("/api/"+p), nil)
@@ -451,7 +442,6 @@ func TestAssistantProxy(t *testing.T) {
 			t.Errorf("Hermes saw %v", got)
 		}
 	}
-	// Allowed elsewhere in the tree.
 	if code, b, _ := e.ann.do("GET", e.path("/api/cron/jobs"), nil); code != 404 || !strings.Contains(string(b), "Not Found") {
 		t.Errorf("cron/jobs should reach Hermes (which has no such route here): %d %s", code, b)
 	}
@@ -486,8 +476,6 @@ func TestAssistantGateRoutes(t *testing.T) {
 	if code != 200 || strings.Count(string(b), `"ok":true`) != 2 {
 		t.Errorf("test = %d %s", code, b)
 	}
-	// Freezing stops the agent at the gate; Waypoint then refuses to pass
-	// anything on.
 	var a core.Assistant
 	code, b, _ = e.ann.do("POST", e.path("/freeze"), nil)
 	_ = json.Unmarshal(b, &a)
@@ -504,7 +492,6 @@ func TestAssistantGateRoutes(t *testing.T) {
 
 func TestAssistantChatRoutes(t *testing.T) {
 	e := newAsstAPIEnv(t)
-	// The live stream says hello first.
 	resp := e.ann.req("GET", e.path("/live"), nil)
 	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "text/event-stream" {
 		t.Fatalf("live = %d %v", resp.StatusCode, resp.Header)
@@ -541,7 +528,6 @@ func TestAssistantChatRoutes(t *testing.T) {
 	}
 	waitLine("event: hello")
 
-	// Allowed methods go through; others don't leave Waypoint.
 	code, b, _ := e.ann.do("POST", e.path("/rpc"), map[string]any{"method": "session.list", "params": map[string]any{"limit": 5}})
 	if code != 200 || !strings.Contains(string(b), `"method":"session.list"`) || !strings.Contains(string(b), `"limit":5`) {
 		t.Fatalf("rpc = %d %s", code, b)
@@ -553,7 +539,6 @@ func TestAssistantChatRoutes(t *testing.T) {
 		t.Errorf("hermes error = %d %s", code, b)
 	}
 
-	// The agent's question reaches the stream; the owner answers it once.
 	e.hermes.push(t, map[string]any{"jsonrpc": "2.0", "id": "q1", "method": "approval", "params": map[string]any{"command": "ls"}})
 	waitLine(`"method":"approval"`)
 	if code, b, _ := e.ann.do("POST", e.path("/answer"), map[string]any{"id": "q1", "result": map[string]any{"choice": "once"}}); code/100 != 2 {
@@ -571,7 +556,6 @@ func TestAssistantChatRoutes(t *testing.T) {
 	if code, _, _ := e.ann.do("POST", e.path("/answer"), map[string]any{"id": "q1", "result": map[string]any{}}); code != 400 {
 		t.Errorf("second answer = %d", code)
 	}
-	// A secret request is declined by Waypoint and shown as such.
 	e.hermes.push(t, map[string]any{"jsonrpc": "2.0", "id": "q2", "method": "secret", "params": map[string]any{"name": "OPENAI_API_KEY"}})
 	waitLine("bridge.declined")
 	select {

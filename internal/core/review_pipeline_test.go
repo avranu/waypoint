@@ -33,7 +33,6 @@ func TestMergeReviewers(t *testing.T) {
 	if got[1].Agreed != 1 || got[2].Agreed != 1 || got[2].Model != "m2" {
 		t.Errorf("different problems on near lines stay apart: %+v", got[1:])
 	}
-	// One reviewer saying a thing twice is not two reviewers agreeing.
 	same := mergeReviewers([][]Finding{{a[0], a[0]}})
 	if len(same) != 2 || same[0].Agreed != 1 {
 		t.Errorf("one reviewer twice = %+v", same)
@@ -41,7 +40,6 @@ func TestMergeReviewers(t *testing.T) {
 	if got := reviewerChains([]ChainModel{{ProviderID: 1, Model: "x"}}, [][]ChainModel{nil, {{ProviderID: 1, Model: "x"}}, {{ProviderID: 1, Model: "y"}}, {{ProviderID: 1, Model: "z"}}}, 0); len(got) != 3 || got[1][0].Model != "y" {
 		t.Errorf("chains = %+v", got)
 	}
-	// Asking the gateway again is another reviewer: it excludes the first's model.
 	gw := []ChainModel{{ProviderID: 9, Model: "review"}}
 	if got := reviewerChains(gw, [][]ChainModel{gw, {{ProviderID: 1, Model: "x"}}, {{ProviderID: 1, Model: "x"}}}, 9); len(got) != 3 || got[1][0].ProviderID != 9 || got[2][0].Model != "x" {
 		t.Errorf("gateway chains = %+v", got)
@@ -59,7 +57,6 @@ func TestReviewPipeline(t *testing.T) {
 		t.Fatal(chain, err)
 	}
 	pid := chain[0].ProviderID
-	// Two reviewers in parallel and a verifier, set on the project's review rule.
 	list, err := pe.s.ListAutomations(pe.ctx, pe.admin, pe.p.Key)
 	if err != nil {
 		t.Fatal(err)
@@ -87,8 +84,6 @@ func TestReviewPipeline(t *testing.T) {
 	pe.llm.answers[nemo] = `{"findings":[
 		{"file":"app/login.go","line":11,"severity":"high","claim":"Inverted nil check: every login fails.","suggestion":""},
 		{"file":"app/login.go","line":13,"severity":"low","claim":"Login should log the failed attempt.","suggestion":""}]}`
-	// The verifier keeps the agreed one, drops the leak claim with a
-	// reason, and corrects the severity of the logging one.
 	pe.llm.answers[mimo] = `{"verdicts":[
 		{"n":1,"verdict":"keep","reason":"Line 11 tests user != nil.","line":0,"severity":"","claim":""},
 		{"n":2,"verdict":"drop","reason":"errNoUser is the same for every failure; nothing leaks.","line":0,"severity":"","claim":""},
@@ -104,7 +99,6 @@ func TestReviewPipeline(t *testing.T) {
 		t.Fatalf("runs = %+v", done)
 	}
 	run := done[0]
-	// Both reviewers ran on the diff; the verifier saw the code at the head.
 	var verifyPrompt string
 	for n, m := range pe.llm.calls {
 		if m == mimo {
@@ -139,7 +133,6 @@ func TestReviewPipeline(t *testing.T) {
 		!strings.Contains(lc[0].Body, "checked by `"+mimo+"`") || !strings.Contains(lc[1].Body, "Failed logins aren't logged.") || !strings.Contains(lc[1].Body, "**P3**") {
 		t.Errorf("line comments = %+v", lc)
 	}
-	// The run record keeps the dropped finding, as state dropped and verify dropped.
 	if len(run.Findings) != 3 || run.Findings[0].Agreed != 2 || run.Findings[0].VerifiedBy != mimo || run.Findings[1].Agreed != 1 ||
 		run.Findings[2].State != FindingDropped || run.Findings[2].Verify != VerifyDropped || run.Findings[0].Verify != VerifyKept ||
 		run.Findings[1].Verify != VerifyCorrected || run.Findings[0].Strategy == "" || run.Findings[0].PromptVersion == "" {
@@ -149,7 +142,6 @@ func TestReviewPipeline(t *testing.T) {
 		t.Errorf("summary = %q", run.Summary)
 	}
 
-	// Every verifier model failing posts the findings unchecked, and says so.
 	pe.llm.answers[mimo] = "!429"
 	pr.HeadSHA = "2222222bbbb"
 	pe.llm.answers[muse] = `{"findings":[{"file":"app/login.go","line":12,"severity":"medium","claim":"A new problem on the second head.","suggestion":""}]}`
@@ -180,7 +172,6 @@ func TestVerifyNewUncheckable(t *testing.T) {
 		{File: "app/gone.go", Line: 1, Severity: "high", Claim: "On a file the forge can't serve."},
 		{File: "app/login.go", Line: 3, Severity: "low", Claim: "Third, never judged."},
 	}
-	// The verifier judges only finding 1; finding 2 isn't sent at all.
 	pe.llm.answers[mimo] = `{"verdicts":[{"n":1,"verdict":"keep","reason":"ok","line":0,"severity":"","claim":""}]}`
 	cl := pe.s.Forges.(ForgePRs)
 	v := pe.s.verifyNew(pe.ctx, vchain, pe.f, cl, "me/app", "abc", found, splitDiff(sampleDiff))
@@ -192,7 +183,6 @@ func TestVerifyNewUncheckable(t *testing.T) {
 			t.Errorf("an unreadable file went to the verifier:\n%s", p)
 		}
 	}
-	// No chain: all kept, all unchecked.
 	if v := pe.s.verifyNew(pe.ctx, nil, pe.f, cl, "me/app", "abc", found, nil); len(v.kept) != 3 || v.unchecked != 3 {
 		t.Errorf("no verifier = %+v", v)
 	}
@@ -232,13 +222,10 @@ func TestVerifyNewContinuesPastTheGateway(t *testing.T) {
 		defer g.mu.Unlock()
 		return g.bodies
 	}
-	// Space Bunny, the third, answers: only the fourth is left to ask.
 	b := asked("opencode/muse-spark-1.3-contributor-free", "opencode/nemotron-3-ultra-free", "opencode/space-bunny-free", "free")
 	if len(b) != 2 || b[1]["model"] != "free" || b[1]["fallbacks"] != nil {
 		t.Errorf("asked %d times, last %v then %v", len(b), b[len(b)-1]["model"], b[len(b)-1]["fallbacks"])
 	}
-	// A route answers as one of its own models: which of the request's
-	// models that was is unknown, so all of them count as asked.
 	g.mu.Lock()
 	g.served = "groq/openai/gpt-oss-120b"
 	g.mu.Unlock()
@@ -288,11 +275,14 @@ func TestReviewAsksAgainWithoutTheModelThatTimedOut(t *testing.T) {
 	if len(a.log) != 2 || a.log[0].Model != grok || a.log[0].Outcome != "timeout" || a.log[1].Outcome != "ok" {
 		t.Errorf("attempts = %+v", a.log)
 	}
-	// Not for a model the chain named, nor for a rate limit.
-	if got := failedMidStream(chain[:1], []ModelAttempt{{Model: chain[0].Model, Outcome: "timeout"}}); got != "" {
+	gw := chain[0].ProviderID
+	if got := failedMidStream(gw, chain[:1], []ModelAttempt{{Model: chain[0].Model, Outcome: "timeout", providerID: gw}}); got != "" {
 		t.Errorf("the chain's own model = %q", got)
 	}
-	if got := failedMidStream(chain[:1], []ModelAttempt{{Model: grok, Outcome: "rate_limit"}}); got != "" {
+	if got := failedMidStream(gw, chain[:1], []ModelAttempt{{Model: grok, Outcome: "rate_limit", providerID: gw}}); got != "" {
 		t.Errorf("a rate limit = %q", got)
+	}
+	if got := failedMidStream(gw, chain[:1], []ModelAttempt{{Model: grok, Outcome: "timeout", providerID: gw + 1}}); got != "" {
+		t.Errorf("another provider's model = %q", got)
 	}
 }

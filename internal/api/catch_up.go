@@ -2,8 +2,6 @@ package api
 
 import "net/http"
 
-// Catch up (WP-245): finished work waiting for a person's look.
-
 // catchUp lists it: GET /catch-up?project=KEY.
 func (s *Server) catchUp(w http.ResponseWriter, r *http.Request) (any, error) {
 	return s.svc.CatchUp(r.Context(), actorFrom(r), r.URL.Query().Get("project"))

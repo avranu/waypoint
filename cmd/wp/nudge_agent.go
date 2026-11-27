@@ -1,25 +1,15 @@
 package main
 
 import (
+	"strconv"
+	"strings"
+
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Notes at the moment they matter (WP-1443): how a subagent waits, which is
-// not how the main thread does, and not the same for every subagent.
-//
-// A subagent started in the background that has a background Bash of its own
-// running is kept open by Claude Code and woken when that exits, so it waits
-// by running the wait in the background and ending its turn. A subagent
-// started in the foreground (or one we don't know the start of) has its shells
-// reaped when it gives its final answer: for it, ending the turn ends the run
-// and stops what it started, so it waits in ONE foreground call, whose Bash
-// timeout is set to the longest there is (600000 ms). A Monitor keeps neither
-// kind open. These are notes, never refusals; the once-per-run ones are told
-// once per agent run (tellOnce).
-
 const (
-	noteAgentWait = "agent-wait" // a subagent's first background Agent start
-	noteMonitor   = "monitor"    // a subagent's first Monitor call
+	noteAgentWait = "agent-wait"
+	noteMonitor   = "monitor"
 
 	sleepWaitMainText = "Sleeping before a check wastes turns: run the work in the background (you're told when it exits), or wait in one call (`wp pr wait N`, Monitor with an until-loop)."
 	sleepWaitBgText   = "Sleeping before a check wastes turns: run the work with run_in_background: true and end your turn (you are woken when it exits), or run the wait itself as a background Bash (`timeout N bash -c 'until CHECK; do sleep 5; done'`) and end your turn."
@@ -50,10 +40,31 @@ func noteMonitorText(who caller) string {
 }
 
 var (
-	reWaitTestRun = lazyre.New(`\bwp\s+(testsum|slot\s+run)\b`)
+	reWaitTestRun = lazyre.New(`(?:\bwp|\[w\]p)\s+(testsum|slot\s+(?:run|ls))\b`)
 	reWaitRequest = lazyre.New(`\bwp\s+(request|req)\b`)
 	reWaitAgents  = lazyre.New(`\bwp\s+agents\b`)
+	reTestsumCmd  = lazyre.New(`\bwp\s+testsum\s+--[ \t]+`)
 )
+
+// testsumRun is the command's first `wp testsum -- ...` as it can be run
+// again, "" when there is none or it can't be cut out whole.
+func testsumRun(cmd string) string {
+	cmd = stripHeredocs(cmd)
+	m := reTestsumCmd.FindStringIndex(cmd)
+	if m == nil {
+		return ""
+	}
+	n, ok := shellSpan(cmd[m[0]:], openQuote(cmd[:m[0]]))
+	if !ok {
+		return ""
+	}
+	run := strings.TrimSpace(strings.ReplaceAll(cmd[m[0]:m[0]+n], "\\\n", ""))
+	// A backtick or a line break would end the code span the note quotes it in.
+	if strings.ContainsAny(run, "`\n") || strings.HasSuffix(run, "--") {
+		return ""
+	}
+	return run
+}
 
 // waitHint names the wp command that waits for what the command polls, ""
 // when it shows nothing we know.
@@ -61,6 +72,9 @@ func waitHint(cmd string, who caller) string {
 	switch {
 	case reWaitTestRun.MatchString(cmd):
 		hint := "`wp testsum` and `wp slot run` queue for the slot themselves, so there is nothing to wait for before running them."
+		if run := testsumRun(cmd); run != "" {
+			hint += " Run it as `" + run + "` and read its summary."
+		}
 		if who == callerFg {
 			return hint + " To wait for your own run, wait on that run's exit, never on `pgrep -f 'wp testsum'`, which waits for every run on the machine, other repos' included, and matches itself."
 		}
@@ -72,7 +86,16 @@ func waitHint(cmd string, who caller) string {
 			return "`wp agents wait` blocks until your agents have stopped; run it with run_in_background: true and end your turn."
 		}
 		return "`wp agents wait` blocks until your agents have stopped; " + agentWaitFgHint(who)
-	case rePolled.MatchString(cmd):
+	case reLoop.MatchString(cmd) && pidWait(cmd) != "":
+		call := "`timeout 590 " + pidWait(cmd) + "`"
+		switch who {
+		case callerBg:
+			return "Waiting on a process by polling it re-reads your context each time. Start what it waits on with run_in_background: true and end your turn (you are woken when it exits), or run " + call + " with run_in_background: true."
+		case callerFg:
+			return "Waiting on a process by polling it re-reads your context each time. Block until it exits in ONE foreground call with the Bash timeout set to 600000: " + call + "."
+		}
+		return "Waiting on a process by polling it re-reads your context each time. Run what it waits on with run_in_background: true and you are told when it exits; to block on one already running: " + call + "."
+	case polledForge(cmd):
 		return "`wp pr wait N` blocks on the server and prints failing logs; `wp ship` hands the wait to Waypoint."
 	}
 	return ""
@@ -91,14 +114,30 @@ func agentWaitFgHint(who caller) string {
 // fits what the command polls when it shows it, else the general advice for
 // the kind of caller, which for a subagent never names Monitor.
 func sleepWaitText(cmd string, who caller) string {
+	const lead = "Sleeping before a check wastes turns"
+	text, giveUp := "", ""
+	if b := loopBoundSecs(stripHeredocs(cmd)); reLoop.MatchString(cmd) && b > 0 && b < sleepLoopMaxSecs {
+		giveUp = "That loop gives up after " + strconv.Itoa(int(b)) + "s; when the wait is longer you call it again, a turn each time"
+	}
 	if h := waitHint(cmd, who); h != "" {
-		return "Sleeping before a check wastes turns. " + h
+		text = lead + ". " + h
+	} else {
+		text = sleepWaitMainText
+		switch who {
+		case callerBg:
+			text = sleepWaitBgText
+		case callerFg:
+			text = sleepWaitFgText
+		}
+		if check := loopCheck(cmd); check != "" {
+			text = strings.ReplaceAll(strings.ReplaceAll(text, "timeout N", "timeout 590"), "CHECK", check)
+			if who == callerMain {
+				text += " Monitor command: `until " + check + "; do sleep 5; done`."
+			}
+		}
 	}
-	switch who {
-	case callerBg:
-		return sleepWaitBgText
-	case callerFg:
-		return sleepWaitFgText
+	if giveUp != "" {
+		text = giveUp + strings.TrimPrefix(text, lead)
 	}
-	return sleepWaitMainText
+	return text
 }

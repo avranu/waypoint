@@ -24,7 +24,7 @@ const (
 
 // Default sizes of a find answer.
 const (
-	DefaultBudget  = 2500 // tokens
+	DefaultBudget  = 2500
 	defaultPerFile = 3
 	defaultFiles   = 12
 	maxLineWidth   = 150
@@ -101,7 +101,6 @@ func isCommonDotted(q string) bool {
 	if len(ext) < 2 || len(ext) > 6 {
 		return true
 	}
-	// Foo.Bar: capitalised "extension" is a member, not a file type
 	return ext[1] >= 'A' && ext[1] <= 'Z'
 }
 
@@ -150,8 +149,6 @@ func (ix *Index) Find(ctx context.Context, q string, o FindOptions) (*FindResult
 	fit(res, o.Budget)
 	return res, nil
 }
-
-// ---- terms and FTS queries ----
 
 // queryTerms are the lower-case words to look for.
 func queryTerms(q string) []string {
@@ -249,7 +246,7 @@ func (ix *Index) ftsFiles(ctx context.Context, terms []string, raw string, limit
 		}
 		for _, c := range more {
 			if !have[c.id] {
-				c.score *= 0.5 // matched only some of the words
+				c.score *= 0.5
 				out = append(out, c)
 			}
 		}
@@ -274,12 +271,9 @@ func adjust(p string, score float64, q string) float64 {
 
 func isTestPath(p string) bool {
 	b := strings.ToLower(path.Base(p))
-	// test_*.py is pytest's; a Go file named test_evidence.go is code (WP-709).
 	return strings.HasSuffix(b, "_test.go") || (strings.HasPrefix(b, "test_") && !strings.HasSuffix(b, ".go")) || strings.HasSuffix(b, "_test.py") ||
 		strings.Contains(b, ".test.") || strings.Contains(b, ".spec.") || strings.Contains(p, "/tests/") || strings.Contains(p, "/__tests__/") || strings.HasPrefix(p, "tests/") || strings.HasPrefix(p, "e2e/")
 }
-
-// ---- text mode ----
 
 func (ix *Index) findText(ctx context.Context, q string, o FindOptions) (*FindResult, error) {
 	terms := queryTerms(q)
@@ -303,8 +297,6 @@ func (ix *Index) findText(ctx context.Context, q string, o FindOptions) (*FindRe
 			return nil, err
 		}
 		if len(fh.Hits) == 0 {
-			// matched only in the path or symbol column: show the file with
-			// its best-fitting symbols
 			fh.Symbols = ix.mainSymbols(c.id, 5)
 		}
 		res.Files = append(res.Files, fh)
@@ -323,7 +315,7 @@ func (ix *Index) fileHit(c cand, terms []string, ident string, skip map[int]bool
 	}
 	src, err := os.ReadFile(filepath.Join(ix.Root, filepath.FromSlash(c.path))) // #nosec G304 -- an indexed file of this checkout
 	if err != nil {
-		return fh, nil // gone since the index was updated: show it without lines
+		return fh, nil
 	}
 	lines := splitLines(src)
 	syms, err := ix.fileSymbols(c.id)
@@ -358,7 +350,6 @@ func pickLines(lines, terms []string, ident string, skip map[int]bool, perFile i
 	if out := pickLinesNeed(lines, terms, ident, skip, perFile, need); len(out) > 0 || need == 1 {
 		return out
 	}
-	// no line holds half the words: settle for any of them
 	return pickLinesNeed(lines, terms, ident, skip, perFile, 1)
 }
 
@@ -402,7 +393,6 @@ func pickLinesNeed(lines, terms []string, ident string, skip map[int]bool, perFi
 		if matched < need {
 			continue
 		}
-		// a definition-looking line beats the same words in a call or a comment
 		t := strings.TrimSpace(l)
 		if defLikeRE.MatchString(t) {
 			score += 1
@@ -540,8 +530,6 @@ func shortKind(k string) string {
 	return k
 }
 
-// ---- path mode ----
-
 func (ix *Index) findPath(q string, o FindOptions) (*FindResult, error) {
 	res := &FindResult{Mode: ModePath}
 	needle := strings.ToLower(strings.TrimPrefix(filepath.ToSlash(q), "./"))
@@ -589,7 +577,7 @@ func (ix *Index) findPath(q string, o FindOptions) (*FindResult, error) {
 		default:
 			continue
 		}
-		c.score += 5 / float64(1+strings.Count(c.path, "/")) // shallow paths first
+		c.score += 5 / float64(1+strings.Count(c.path, "/"))
 		c.score = adjust(c.path, c.score, q)
 		cands = append(cands, c)
 	}
@@ -614,8 +602,6 @@ func (ix *Index) findPath(q string, o FindOptions) (*FindResult, error) {
 	}
 	return res, nil
 }
-
-// ---- symbol mode ----
 
 // SymbolHit is a symbol found by name.
 type SymbolHit struct {
@@ -756,7 +742,6 @@ func (ix *Index) findSymbol(ctx context.Context, q string, o FindOptions) (*Find
 	if err != nil {
 		return nil, err
 	}
-	// definitions grouped by file; a file's score is its best symbol plus a little for the others
 	type group struct {
 		cand
 		syms []SymbolHit
@@ -778,7 +763,6 @@ func (ix *Index) findSymbol(ctx context.Context, q string, o FindOptions) (*Find
 		}
 	}
 	sort.SliceStable(order, func(i, j int) bool { return order[i].score > order[j].score })
-	// usages: files that mention the identifier but don't define it
 	terms := queryTerms(name)
 	var uses []cand
 	if len(order) < o.Files*2 {
@@ -844,8 +828,6 @@ func (ix *Index) findSymbol(ctx context.Context, q string, o FindOptions) (*Find
 	}
 	return res, nil
 }
-
-// ---- budget ----
 
 // Tokens is the rough token count of a rendered answer (4 bytes a token).
 func Tokens(s string) int { return (len(s) + 3) / 4 }

@@ -36,12 +36,10 @@ func TestWorktreeName(t *testing.T) {
 	if got := worktreeName(ctx, f.repo, "APP-2"); got != "app-2" {
 		t.Errorf("free: %s", got)
 	}
-	// A branch with no worktree may hold work: the name goes to the next.
 	tgit(t, f.repo, "branch", autopilotWorktreeBranch("app-2"))
 	if got := worktreeName(ctx, f.repo, "APP-2"); got != "app-2-2" {
 		t.Errorf("leftover branch: %s", got)
 	}
-	// An existing worktree is carried on in.
 	if err := os.MkdirAll(filepath.Join(f.repo, autopilotWorktrees, "app-2"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -61,24 +59,20 @@ func TestPlanWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// From a subfolder, typed: the shell has to go to the root first.
 	rl := &relaunch{dir: sub, shell: "bash", shellDir: sub}
 	if w := p.planWorktree(ctx, rl); w != "" || !rl.worktree || rl.root != f.repo || rl.dir != f.repo || rl.cdTo != f.repo || rl.ended != "" {
 		t.Errorf("subfolder: %q %+v", w, rl)
 	}
-	// Respawned: tmux starts it there.
 	rl = &relaunch{dir: sub, respawn: true}
 	if w := p.planWorktree(ctx, rl); w != "" || !rl.worktree || rl.cdTo != "" {
 		t.Errorf("respawn: %q %+v", w, rl)
 	}
-	// From one of autopilot's worktrees: that one is finished with.
 	wt := filepath.Join(f.repo, autopilotWorktrees, "app-1")
 	tgit(t, f.repo, "worktree", "add", "-q", "-b", autopilotWorktreeBranch("app-1"), wt, "origin/main")
 	rl = &relaunch{dir: wt, shell: "bash", shellDir: f.repo}
 	if w := p.planWorktree(ctx, rl); w != "" || rl.ended != wt || rl.root != f.repo || rl.cdTo != "" {
 		t.Errorf("from a worktree: %q %+v", w, rl)
 	}
-	// A person's worktree elsewhere isn't.
 	tgit(t, f.repo, "branch", "mine", "origin/main")
 	mine := f.worktree(t, "mine", "mine")
 	rl = &relaunch{dir: mine, shell: "bash", shellDir: mine}
@@ -86,7 +80,6 @@ func TestPlanWorktree(t *testing.T) {
 		t.Errorf("a person's worktree: %q %+v", w, rl)
 	}
 
-	// Not trusted: --worktree would fail at once.
 	if err := os.WriteFile(filepath.Join(cfg, ".claude.json"), []byte(`{"projects":{"/elsewhere":{"hasTrustDialogAccepted":true}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +87,6 @@ func TestPlanWorktree(t *testing.T) {
 	if w := p.planWorktree(ctx, rl); !strings.Contains(w, "trusted") || rl.worktree || rl.root != f.repo || rl.dir != sub {
 		t.Errorf("untrusted: %q %+v", w, rl)
 	}
-	// Trust on a folder above counts.
 	b := `{"projects":{"` + filepath.Dir(f.repo) + `":{"hasTrustDialogAccepted":true}}}`
 	if err := os.WriteFile(filepath.Join(cfg, ".claude.json"), []byte(b), 0o600); err != nil {
 		t.Fatal(err)
@@ -104,7 +96,6 @@ func TestPlanWorktree(t *testing.T) {
 		t.Errorf("trusted above: %q %+v", w, rl)
 	}
 
-	// Not a repository.
 	plain := t.TempDir()
 	rl = &relaunch{dir: plain, shell: "bash"}
 	if w := newTestProc(t, plain).planWorktree(ctx, rl); !strings.Contains(w, "git repository") || rl.worktree || rl.root != "" {
@@ -242,7 +233,7 @@ func TestWorktreeSweep(t *testing.T) {
 	})
 	t.Run("another worktree just merged stays, quietly", func(t *testing.T) {
 		w := setup(t)
-		w.rl.ended = "" // the rule wp tidy has: it moved in the last two hours
+		w.rl.ended = ""
 		if kept := sweep(w, nil, ""); len(kept) != 0 || !dirExists(w.wt) {
 			t.Errorf("kept %q, there %v", kept, dirExists(w.wt))
 		}
@@ -265,7 +256,7 @@ func TestCwdsUnder(t *testing.T) {
 	if err := os.Symlink("/work/here", filepath.Join(root, "7", "cwd")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, "8"), 0o700); err != nil { // exited, or not ours
+	if err := os.MkdirAll(filepath.Join(root, "8"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := cwdsUnder(root); err != nil || len(got) != 1 || got[0] != "/work/here" {

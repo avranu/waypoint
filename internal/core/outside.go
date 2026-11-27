@@ -8,39 +8,15 @@ import (
 	"time"
 )
 
-// Text from outside (WP-279, WP-ADR11). Anyone who can open an issue on a
-// forge can write the issues and comments Waypoint imports from it. What
-// someone who isn't a Waypoint person wrote reaches no agent, automation or
-// model until a person has read and approved it, and that holds by
-// construction rather than by every reader remembering to check:
-//
-//   - an issue imported from outside is a draft (WP-42), which only people
-//     can see and which sets nothing off, marked outside (who wrote it, on
-//     which forge); approving it is publishing it;
-//   - a comment from outside, or a new text for an approved comment or
-//     issue, waits in outside_text, apart from issues and comments, and only
-//     the person-facing calls in this file read it. Approving it writes it
-//     where everything else reads.
-//
-// A forge login is a Waypoint person's when an admin maps it to them on the
-// forge (forge_people); the login of the forge's own token is mapped to
-// whoever connected the forge. Their text syncs as before, and mapping a
-// login releases what was waiting from it. Agents can hold a person's forge
-// credentials and write as them, though, so a person's login writes
-// unreviewed agent text (WP-282, WP-ADR13), screened before agents take it
-// (WP-ADR10), unless an admin says only that person writes as it. An
-// agent's own account is listed with no person (WP-283): its text is
-// agent text too, and can't be anyone's own.
-
 // errOutsideByPerson refuses anything that can't see drafts: reading and
 // approving outside text is a person's act.
 var errOutsideByPerson = forbidden("text from outside is for a person to read and approve: in the web app or your own terminal, not as or inside an agent")
 
 // Kinds of outside text waiting for a person.
 const (
-	OutsideComment     = "comment"      // a new comment
-	OutsideCommentEdit = "comment_edit" // a new text for an approved comment
-	OutsideIssueEdit   = "issue_edit"   // a new title and description for an approved issue
+	OutsideComment     = "comment"
+	OutsideCommentEdit = "comment_edit"
+	OutsideIssueEdit   = "issue_edit"
 )
 
 // OutsideText is text from outside waiting for a person (WP-279).
@@ -167,8 +143,8 @@ func forgeSyncActor(f *Forge, author, agent string) *Actor {
 // heldText is outside text to keep for a person.
 type heldText struct {
 	issue      *Issue
-	commentID  int64  // an approved comment it would replace (0: none)
-	externalID string // the forge comment's id; "" for the issue's own text
+	commentID  int64
+	externalID string
 	url        string
 	author     string
 	title      string
@@ -195,7 +171,6 @@ func (s *Service) holdOutside(ctx context.Context, t *tx, f *Forge, h heldText) 
 		return err
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
-		// People looking at the issue see it arrive; what arrived isn't said.
 		t.emit(&Event{Kind: EvProjectUpdated, ProjectID: h.issue.ProjectID, IssueID: h.issue.ID, IssueKey: h.issue.Key})
 	}
 	return nil
@@ -434,7 +409,6 @@ func (s *Service) letInOutside(ctx context.Context, by *Actor, o *outsideRow, qu
 		}
 	}
 	return s.write(ctx, by, func(t *tx) error {
-		// Only the text that was read: a newer one that came meanwhile waits.
 		res, err := t.ExecContext(ctx, `DELETE FROM outside_text WHERE id = ? AND updated_at = ?`, o.id, o.updated)
 		if err != nil {
 			return err
@@ -706,7 +680,7 @@ func (s *Service) seedForgePeople(ctx context.Context) {
 		login, err := w.Whoami(ctx, f)
 		if err != nil {
 			s.log.Info("forge token login", "forge", f.Name, "err", err)
-			continue // tried again next sync
+			continue
 		}
 		if _, err := s.db.W.ExecContext(ctx, `UPDATE forges SET people_seeded = 1 WHERE id = ?`, f.ID); err != nil {
 			continue

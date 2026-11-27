@@ -24,7 +24,6 @@ func TestTidyRelockWhenRemovalFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantVerdict(t, rep.row(t, "worktree", "done"), tidyRemovable, "merged")
-	// Someone starts work there between the scan and the removal.
 	if err := os.WriteFile(filepath.Join(p, "late.txt"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}

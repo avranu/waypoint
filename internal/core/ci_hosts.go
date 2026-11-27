@@ -1,13 +1,5 @@
 package core
 
-// CI hosts (WP-231): a reporter on each runner host (the infrastructure repo
-// bin/ci-usage-reporter.py) posts what the host has (labels, slots, CPUs,
-// memory, the docker disk) and, per job and service container, the CPU
-// time and peak memory its cgroup counted. The CI board's pool is the
-// hosts that report (no hand-set pool to keep in step), a host's health
-// gates the re-run of jobs that failed on it, and a job's history says how
-// much it needs, so runners can size their slots to it.
-
 import (
 	"context"
 	"database/sql"
@@ -21,12 +13,12 @@ import (
 )
 
 const (
-	ciReportEvery   = 15 * time.Second // what reporters are told
-	ciHostFresh     = 3 * time.Minute  // a host that reported this recently is in the pool
+	ciReportEvery   = 15 * time.Second
+	ciHostFresh     = 3 * time.Minute
 	ciHostKnown     = 7 * 24 * time.Hour
 	ciUsageKeep     = 60 * 24 * time.Hour
-	ciUsageWindow   = 14 * 24 * time.Hour // the board's and the usage API's history
-	ciDiskLowBytes  = 10 << 30            // below this, or below ciDiskLowShare, a host can't take jobs
+	ciUsageWindow   = 14 * 24 * time.Hour
+	ciDiskLowBytes  = 10 << 30
 	ciDiskLowShare  = 0.05
 	ciDiskWarnShare = 0.15
 	ciMaxContainers = 1000
@@ -163,7 +155,6 @@ func (s *Service) ReportCIHost(ctx context.Context, actor *Actor, rep CIHostRepo
 			if c.Ended != nil && validTime(*c.Ended) {
 				ended = c.Ended.UnixMilli()
 			}
-			// Counters only grow: a re-sent or late sample never lowers them.
 			if _, err := t.ExecContext(ctx, `INSERT INTO ci_job_usage(forge_id, host, container, task_id, job, role, started_at, ended_at,
 				cpu_seconds, mem_peak, mem_limit, cpu_limit, io_read, io_write, reported_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 				ON CONFLICT(forge_id, host, container) DO UPDATE SET ended_at = coalesce(excluded.ended_at, ci_job_usage.ended_at),
@@ -338,8 +329,6 @@ func (s *Service) runnerHealth(ctx context.Context, forgeID int64, runner string
 	return "unknown", ""
 }
 
-// ---- usage of jobs ----
-
 // CIUsageStats is what one job (repo, workflow, job name) used over its
 // recent runs: its container and services together, per run.
 type CIUsageStats struct {
@@ -403,7 +392,7 @@ func (s *Service) ciUsage(ctx context.Context, since time.Time) (map[string]*CIU
 			order = append(order, k)
 		}
 		t.cpu += cpu
-		t.mem += mem // services' peaks added: what the job needed of its host, at most
+		t.mem += mem
 		if role == "job" {
 			t.host, t.repo, t.workflow, t.name = host, repo, wf, name
 			t.started, t.ended = started, ended.Int64

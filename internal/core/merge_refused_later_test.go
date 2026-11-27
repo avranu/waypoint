@@ -38,7 +38,6 @@ func TestMergeRefusedLaterTellsThePerson(t *testing.T) {
 			if !be.notified("merge of it was refused") {
 				t.Error("the owner wasn't told")
 			}
-			// The owner's notice carries the same text as the session's message.
 			var msg string
 			if err := be.s.db.R.QueryRowContext(be.ctx, `SELECT body FROM notifications WHERE body LIKE '%was refused%' LIMIT 1`).Scan(&msg); err != nil {
 				t.Fatal(err)

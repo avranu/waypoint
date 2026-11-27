@@ -7,17 +7,6 @@ import (
 	"time"
 )
 
-// Compacting a session for its review as soon as the review is triggered
-// (WP-761). The round's job compacts the session right before typing the
-// prompt, but when another model audits first that is after the audit: the wait is
-// spent at full context and the cache cools under it. So the first look that
-// finds the round waiting for its audit compacts the session then, and the
-// round's job skips it.
-//
-// It's a light inbox job, like the cache warmer's compaction, so it doesn't
-// wait for a build to finish. Nothing depends on it: if it is held or fails,
-// the round's job compacts as it always has.
-
 // reviewCompactSource is the source of that job; its source id is the round.
 const reviewCompactSource = "review_compact"
 
@@ -49,7 +38,7 @@ func (s *Service) compactForReview(ctx context.Context, st *stepRow, x *AgentSes
 	raw, _ := json.Marshal(MessageJob{CLIID: x.CLIID, Compact: true})
 	if _, err := enqueueRunnerJob(ctx, s, &Actor{User: user}, RunnerJobInput{Kind: JobMessage, OwnerID: st.userID, Label: x.Machine, Input: raw,
 		Source: reviewCompactSource, SourceID: review.id}); err != nil {
-		s.unwarmReview(ctx, x.ID) // the round's job compacts it
+		s.unwarmReview(ctx, x.ID)
 		s.log.Info("review compaction: queue it", "session", x.ID, "err", err)
 	}
 }

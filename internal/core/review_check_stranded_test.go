@@ -48,7 +48,7 @@ func TestCheckNewsPostedAgain(t *testing.T) {
 		t.Fatalf("the news wasn't left queued for the offline runner")
 	}
 	e.tickAll(3 * time.Minute)
-	if _, err := e.s.db.W.Exec(`UPDATE runners SET last_seen_at = ? WHERE name = 'box'`, e.clockNow().UnixMilli()); err != nil { // the runner polls again
+	if _, err := e.s.db.W.Exec(`UPDATE runners SET last_seen_at = ? WHERE name = 'box'`, e.clockNow().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 	e.tickAll(time.Minute)

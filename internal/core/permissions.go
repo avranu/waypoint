@@ -11,13 +11,6 @@ import (
 	"time"
 )
 
-// Token permissions (WP-111): an API token can carry a list of permissions,
-// and then does only what they allow. A token without one is unrestricted
-// (or read-only), as tokens always were. The API maps every route and MCP
-// tool to one permission (internal/api/permissions.go) and refuses the ones
-// a token lacks; core re-checks the dangerous ones with Actor.need, so a
-// route mapped too loosely still can't start a session or run a command.
-
 // Permission names one thing a permission token may do, e.g. "issues.edit".
 type Permission string
 
@@ -26,9 +19,9 @@ type Permission string
 type Risk string
 
 const (
-	RiskSafe      Risk = "safe"      // reads, and ordinary edits a person can review and undo
-	RiskCareful   Risk = "careful"   // acts for you or reaches other people, but runs nothing
-	RiskDangerous Risk = "dangerous" // runs code or agents, deletes, ships, or changes who can do what
+	RiskSafe      Risk = "safe"
+	RiskCareful   Risk = "careful"
+	RiskDangerous Risk = "dangerous"
 )
 
 const (
@@ -197,7 +190,7 @@ var permissionGroups = []PermissionGroup{
 	{Key: "admin", Label: "Administration", Permissions: []PermissionInfo{
 		{PermUsageRead, "See usage", "Token usage, costs and prices.", RiskSafe},
 		{PermAuditRead, "Read the audit log", "Who changed access, settings and secrets.", RiskCareful},
-		{PermServerRead, "Read server diagnostics", "The server's status, recent log (secrets blanked), metrics and AI request counts, as wp server and wp ai usage show them (admins' tokens).", RiskCareful},
+		{PermServerRead, "Read server diagnostics", "The server's status, recent log (secrets blanked), metrics, profiles (goroutine dumps, CPU and heap; a CPU profile samples the running server) and AI request counts, as wp server and wp ai usage show them (admins' tokens).", RiskCareful},
 		{PermForgesManage, "Manage forges", "Forge connections and their secrets.", RiskDangerous},
 		{PermAdmin, "Administer Waypoint", "Users, invites, global webhooks, system limits (admins only).", RiskDangerous},
 	}},
@@ -298,7 +291,7 @@ func parsePermissions(v sql.NullString) []Permission {
 	}
 	out := []Permission{}
 	if err := json.Unmarshal([]byte(v.String), &out); err != nil {
-		return []Permission{} // unreadable: grant nothing rather than everything
+		return []Permission{}
 	}
 	return out
 }
@@ -477,7 +470,7 @@ func (s *Service) UpdateAPIToken(ctx context.Context, actor *Actor, id int64, p 
 		t.ReadOnly = *p.ReadOnly
 	}
 	if t.Permissions != nil {
-		t.ReadOnly = false // the permissions say what it may do
+		t.ReadOnly = false
 	}
 	if _, err := s.db.W.ExecContext(ctx, `UPDATE api_tokens SET name = ?, read_only = ?, permissions = ? WHERE id = ? AND user_id = ?`,
 		t.Name, boolInt(t.ReadOnly), permissionsJSON(t.Permissions), id, actor.id()); err != nil {

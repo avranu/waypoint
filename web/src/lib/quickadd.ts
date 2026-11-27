@@ -1,10 +1,3 @@
-// Quick-add syntax for typing an issue in one line:
-//
-//   Fix login crash !high @sam #frontend ~3 due:fri /bug
-//
-// !priority, @assignee, #tag, ~points, due:date (or ^date), /type,
-// +agent (+any, +claude, +haiku), +humans, +anyone, cat:category.
-
 import type { IssueInput } from './queries'
 import { ISSUE_CATEGORIES } from './types'
 
@@ -48,7 +41,6 @@ export function parseQuickAdd(text: string, usernames: string[] = []): Parsed {
       tokens.push({ kind: 'priority', text: input.priority })
     } else if ((m = w.match(/^@([\w.-]+)$/))) {
       const name = m[1].toLowerCase()
-      // An exact name, or a prefix that matches exactly one person (never a guess between two).
       const prefixed = usernames.filter((u) => u.toLowerCase().startsWith(name))
       const found =
         name === 'me'
@@ -72,7 +64,6 @@ export function parseQuickAdd(text: string, usernames: string[] = []): Parsed {
       input.type = m[1].toLowerCase()
       tokens.push({ kind: 'type', text: input.type })
     } else if ((m = w.match(/^\+([\w.-]+)$/))) {
-      // +agent: any agent; +humans: humans only; +anyone: the default; +claude…: a spec.
       const w2 = m[1].toLowerCase()
       input.agent =
         w2 === 'agent'

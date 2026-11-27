@@ -20,17 +20,10 @@ func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
 // (WP-ADR139). Each is counted and watched by name (job_runs.go), so a step
 // that matters is its own job, not a line in a bigger one.
 type scheduled struct {
-	name string
-	// every is how often it runs; 0 runs it once, when the server starts.
-	every time.Duration
-	run   func(context.Context)
-	// lane says where it runs. "" is the scheduler's loop: jobs due
-	// together run in the table's order, each waiting for the one before,
-	// so a slow one holds the rest. Anything else runs in the background,
-	// one after another with the jobs of the same lane, for work a slow
-	// forge or gateway must not let hold the loop.
-	lane string
-	// atStart also runs a periodic job when the server starts.
+	name    string
+	every   time.Duration
+	run     func(context.Context)
+	lane    string
 	atStart bool
 }
 
@@ -48,7 +41,7 @@ const (
 	jobEnvChecks    = "environment checks"
 	jobAssistants   = "assistants"
 	jobGoalTraces   = "goal traces"
-	goalTracesEvery = time.Hour // the hourly recheck starts them if no change did
+	goalTracesEvery = time.Hour
 )
 
 func selfTimedJobs() []scheduled {
@@ -73,7 +66,6 @@ func (s *Service) schedule() []scheduled {
 		minute    = time.Minute
 		sinceLong = 30 * 24 * time.Hour
 	)
-	// hourly is a job that runs each hour and when the server starts.
 	hourly := func(name string, run func(context.Context)) scheduled {
 		return scheduled{name: name, every: hour, run: run, atStart: true}
 	}
@@ -81,17 +73,16 @@ func (s *Service) schedule() []scheduled {
 		return bg(scheduled{name: name, run: run})
 	}
 	jobs := []scheduled{
-		// Once, when the server starts, beside everything else.
-		once("knowledge use backfill", s.BackfillKnowledgeUses),   // text written before use was recorded (WP-D15)
-		once("mention backfill", s.RunMentionBackfill),            // issue text names issues, pages and terms without [[ ]] (WP-101)
-		once("forge mention backfill", s.RunForgeMentionBackfill), // forge text linked every key it named before WP-379
-		once("review leftovers backfill", s.RunLeftoverBackfill),  // findings open when their pull request merged (WP-367)
+		once("knowledge use backfill", s.BackfillKnowledgeUses),
+		once("mention backfill", s.RunMentionBackfill),
+		once("forge mention backfill", s.RunForgeMentionBackfill),
+		once("review leftovers backfill", s.RunLeftoverBackfill),
 
 		hourly("due reminders", s.errJob("due reminders", s.NotifyDueSoon)),
 		hourly("agent run expiry", s.errJob("expire agent runs", s.expireRuns)),
-		hourly("stranded tasks", s.errJob("stranded tasks", s.sweepStranded)),     // WP-567
-		hourly("unpushed commits", s.errJob("unpushed commits", s.sweepUnpushed)), // WP-599
-		hourly("experiments", s.errJob("experiments", s.sweepExperiments)),        // WP-254
+		hourly("stranded tasks", s.errJob("stranded tasks", s.sweepStranded)),
+		hourly("unpushed commits", s.errJob("unpushed commits", s.sweepUnpushed)),
+		hourly("experiments", s.errJob("experiments", s.sweepExperiments)),
 		hourly("request expiry", func(ctx context.Context) {
 			if n, err := s.ExpireRequests(ctx); err != nil {
 				s.log.WarnContext(ctx, "expire requests", "err", err)
@@ -108,7 +99,7 @@ func (s *Service) schedule() []scheduled {
 				{"device_logins", "expires_at < ?", now},
 				{"sessions", "expires_at < ?", now},
 				{"user_links", "expires_at < ?", now - sinceLong.Milliseconds()},
-				{"notifications", "read_at IS NOT NULL AND created_at < ?", now - 365*24*hour.Milliseconds()}, // a year of read ones is kept
+				{"notifications", "read_at IS NOT NULL AND created_at < ?", now - 365*24*hour.Milliseconds()},
 			} {
 				// #nosec G202 -- the table and condition are the fixed text above
 				if _, err := s.db.W.ExecContext(ctx, `DELETE FROM `+p.table+` WHERE `+p.where, p.before); err != nil && ctx.Err() == nil {
@@ -116,80 +107,84 @@ func (s *Service) schedule() []scheduled {
 				}
 			}
 		}),
-		hourly("AI call pruning", s.pruneAICalls), // WP-375
+		hourly("AI call pruning", s.pruneAICalls),
 		hourly("automation run pruning", s.errJob("prune automation runs", s.PruneAutomationRuns)),
 		hourly("webhook delivery pruning", s.errJob("prune webhook deliveries", s.pruneDeliveries)),
 		hourly("estimates", s.sweepEstimates),
-		hourly("stories", s.sweepStories), // WP-190
+		hourly("stories", s.sweepStories),
 		hourly("looks", s.sweepLooks),
-		hourly("prep ahead", s.sweepPrepAhead),                 // WP-906
-		bg(hourly("prep scores", s.ScorePreps)),                // WP-906
-		bg(hourly("collector health", s.CheckCollectorHealth)), // WP-999
-		hourly("safety drill", s.maybeSafetyDrill),             // weekly (WP-278)
-		hourly("sandbox drills", s.maybeSandboxDrills),         // weekly and after a helper update (WP-473)
-		// goal traces, in case an event that changes them was missed (WP-382)
+		hourly("prep ahead", s.sweepPrepAhead),
+		bg(hourly("prep scores", s.ScorePreps)),
+		bg(hourly("collector health", s.CheckCollectorHealth)),
+		hourly("safety drill", s.maybeSafetyDrill),
+		hourly("sandbox drills", s.maybeSandboxDrills),
 		hourly("goal recheck", func(context.Context) { s.goalsChanged() }),
-		hourly("goal drift", s.startGoalDrift),            // weekly, in the background (WP-382)
-		bg(hourly("agent kit", s.RefreshKit)),             // in case a push to the kit was missed
-		bg(hourly("agent setup", s.RefreshAgentSetup)),    // WP-ADR44
-		bg(hourly("recurring mistakes", s.SweepMistakes)), // WP-710
-		// daily per person (WP-932); the baselines after it, then it prunes
+		hourly("goal drift", s.startGoalDrift),
+		bg(hourly("agent kit", s.RefreshKit)),
+		bg(hourly("agent setup", s.RefreshAgentSetup)),
+		bg(hourly("recurring mistakes", s.SweepMistakes)),
 		{name: "quota guard", every: hour, run: s.RunQuotaGuard, lane: "quota guard", atStart: true},
 		{name: "quota guard baselines", every: hour, run: s.refreshGuardBaselines, lane: "quota guard", atStart: true},
 		hourly("CI pruning", s.pruneCI),
-		bg(hourly("merged branches", s.SweepBranches)),         // on the forges, daily per repo (WP-140)
-		bg(hourly("CI history backfill", s.BackfillCIHistory)), // each repo's older CI runs, once (WP-490)
-		bg(hourly("CI history re-tier", s.RetierCIHistory)),    // WP-849
+		bg(hourly("merged branches", s.SweepBranches)),
+		bg(hourly("CI history backfill", s.BackfillCIHistory)),
+		bg(hourly("CI history re-tier", s.RetierCIHistory)),
 		bg(hourly("instruction history backfill", s.BackfillUsageMarks)),
 	}
 	if s.cfg.BackupDir != "" {
-		jobs = append(jobs, hourly("backup", func(ctx context.Context) { // one file a day
+		// A background lane: VACUUM INTO took two minutes on a 2.5 GB database,
+		// and nothing in the loop depends on a backup having finished.
+		jobs = append(jobs, bg(hourly("backup", func(ctx context.Context) {
 			if err := s.dailyBackup(ctx); err != nil {
 				s.log.ErrorContext(ctx, "backup failed", "err", err)
 				s.backupFailed(ctx, err)
 			}
-		}))
+		})))
 	}
 	return append(jobs,
 		scheduled{name: "timed automations", every: fiveMin, run: s.RunTimedAutomations, atStart: true},
-		// how review findings fared, to the gateway (WP-514)
 		bg(scheduled{name: "review feedback", every: fiveMin, run: s.ReportReviewFeedback}),
-		bg(scheduled{name: "prep trials", every: fiveMin, run: s.RunPrepTrials}),     // surplus only (WP-906)
-		bg(scheduled{name: "session facts", every: fiveMin, run: s.RunSessionFacts}), // facts from the transcript archive (WP-1467)
+		bg(scheduled{name: "prep trials", every: fiveMin, run: s.RunPrepTrials}),
+		bg(scheduled{name: "session facts", every: fiveMin, run: s.RunSessionFacts}),
 
 		scheduled{name: "runners", every: halfMin, run: s.CheckRunners, atStart: true},
-		scheduled{name: "auto question notices", every: halfMin, run: s.NotifyAutoQuestions, atStart: true}, // at start: after a restart (WP-96)
-		scheduled{name: "front rounds", every: fiveMin, run: s.CheckFrontRounds},                            // a round at the front of a line no runner took (WP-1618)
-		scheduled{name: "forge rechecks", every: halfMin, run: s.CheckMergeRechecks},                        // a forge still checking (WP-138)
+		scheduled{name: "auto question notices", every: halfMin, run: s.NotifyAutoQuestions, atStart: true},
+		scheduled{name: "front rounds", every: fiveMin, run: s.CheckFrontRounds},
+		scheduled{name: "forge rechecks", every: halfMin, run: s.CheckMergeRechecks},
 
-		// Pull requests merged or closed while Waypoint was down or before
-		// it listened: forges can be slow.
 		once("pull requests", s.RefreshPullRequests),
-		once("resume babysits", s.ResumeBabysits), // a fixed Waypoint may settle what it gave up on (WP-431)
+		once("resume babysits", s.ResumeBabysits),
 
 		scheduled{name: "forge sync", every: tenMin, run: s.SyncAllRepos},
-		scheduled{name: "armed heads", every: tenMin, run: s.CheckArmedHeads},    // missed push webhooks (WP-163)
-		bg(scheduled{name: "CI history", every: tenMin, run: s.RecordCIHistory}), // finished CI runs and jobs (WP-490)
+		scheduled{name: "armed heads", every: tenMin, run: s.CheckArmedHeads},
+		bg(scheduled{name: "CI history", every: tenMin, run: s.RecordCIHistory}),
 		bg(scheduled{name: "CI health", every: tenMin, run: s.SweepCIHealth}),
 
-		scheduled{name: "review gates", every: gateRecheck, run: s.CheckGates}, // failing review gates (WP-D21)
+		scheduled{name: "review gates", every: gateRecheck, run: s.CheckGates},
 		scheduled{name: "pending checks", every: ciPollEvery, run: s.PollCI},
 
 		scheduled{name: "system resources", every: minute, run: s.SampleResources},
-		scheduled{name: "armed merges", every: minute, run: s.CheckArmedMerges},          // reviews settled, quiet over (WP-133)
-		scheduled{name: "babysits", every: minute, run: s.CheckBabysits},                 // WP-134
-		scheduled{name: "audits", every: minute, run: s.CheckAudits},                     // WP-348
-		scheduled{name: "objectives", every: minute, run: s.CheckObjectives},             // after the audits that judge them (WP-ADR111, WP-ADR142)
-		scheduled{name: "request conditions", every: minute, run: s.CheckRequestWatches}, // WP-126
-		scheduled{name: "hold conditions", every: minute, run: s.CheckHoldConditions},    // WP-ADR75
-		scheduled{name: "safety screens", every: minute, run: s.sweepScreens},            // WP-ADR10
-		scheduled{name: "quota guard watch", every: minute, run: s.RunGuardWatch},        // holds before autopilot starts (WP-932)
-		scheduled{name: "autopilot", every: minute, run: s.RunAutopilot},                 // WP-194
-		scheduled{name: "warm caches", every: minute, run: s.KeepCachesWarm},             // WP-192
-		scheduled{name: "work logs", every: minute, run: s.RunWorkLog},                   // WP-285
-		scheduled{name: "PR descriptions", every: minute, run: s.RunPRBodies},            // WP-55
-		scheduled{name: "fan-outs", every: minute, run: s.CheckFanouts},                  // WP-148
-		scheduled{name: "log secrets", every: minute, run: s.LoadLogSecrets},             // secrets added since, blanked in the log (WP-375)
+		scheduled{name: "armed merges", every: minute, run: s.CheckArmedMerges},
+		bg(scheduled{name: "babysits", every: minute, run: s.CheckBabysits}),
+		scheduled{name: "stale babysits", every: minute, run: s.reviveStaleBabysits},
+		scheduled{name: "merge lines", every: minute, run: func(ctx context.Context) {
+			s.sweepLines(ctx)
+			s.watchLines(ctx)
+		}},
+		scheduled{name: "batched news", every: minute, run: s.releaseDueBatches},
+		scheduled{name: "audits", every: minute, run: s.CheckAudits},
+		scheduled{name: "objectives", every: minute, run: s.CheckObjectives},
+		scheduled{name: "request conditions", every: minute, run: s.CheckRequestWatches},
+		scheduled{name: "hold conditions", every: minute, run: s.CheckHoldConditions},
+		scheduled{name: "safety screens", every: minute, run: s.sweepScreens},
+		scheduled{name: "quota guard watch", every: minute, run: s.RunGuardWatch},
+		scheduled{name: "autopilot", every: minute, run: s.RunAutopilot},
+		scheduled{name: "deferred offers", every: minute, run: s.deferredSweep},
+		scheduled{name: "warm caches", every: minute, run: s.KeepCachesWarm},
+		scheduled{name: "work logs", every: minute, run: s.RunWorkLog},
+		scheduled{name: "PR descriptions", every: minute, run: s.RunPRBodies},
+		scheduled{name: "fan-outs", every: minute, run: s.CheckFanouts},
+		scheduled{name: "log secrets", every: minute, run: s.LoadLogSecrets},
 	)
 }
 
@@ -213,12 +208,16 @@ func checkSchedule(jobs []scheduled) error {
 		if j.lane == "" {
 			continue
 		}
-		// A lane runs as one: its jobs are due together or not at all.
 		if first, ok := lanes[j.lane]; ok && (first.every != j.every || first.atStart != j.atStart) {
 			return fmt.Errorf("scheduled jobs %q and %q share a lane and not a time", first.name, j.name)
 		}
 		if _, ok := lanes[j.lane]; !ok {
 			lanes[j.lane] = j
+		}
+	}
+	for _, j := range jobs {
+		if _, ok := lanes[j.name]; ok && j.lane == "" {
+			return fmt.Errorf("scheduled job %q is in the loop and has the name of a lane", j.name)
 		}
 	}
 	return nil
@@ -229,8 +228,7 @@ type scheduler struct {
 	s    *Service
 	jobs []scheduled
 
-	mu sync.Mutex
-	// busy is the lanes with a run going: the lane's name to that run.
+	mu   sync.Mutex
 	busy map[string]*laneRun
 }
 
@@ -242,7 +240,7 @@ type laneRun struct{ since time.Time }
 func (s *Service) RunScheduler(ctx context.Context) {
 	r := &scheduler{s: s, jobs: s.schedule(), busy: map[string]*laneRun{}}
 	if err := checkSchedule(r.jobs); err != nil {
-		panic(err) // a programming error, caught by the schedule's test
+		panic(err)
 	}
 	for _, j := range r.jobs {
 		s.jobs.declare(j.name, j.every, j.lane)
@@ -251,19 +249,13 @@ func (s *Service) RunScheduler(ctx context.Context) {
 		s.jobs.declare(j.name, j.every, j.name)
 	}
 	s.beginServerRun(ctx)
-	// What fails once the server is told to stop fails because of that.
 	context.AfterFunc(ctx, s.jobs.stop)
-	// Each on a timer and a goroutine of its own, started here and not by
-	// the loop below: they are what say the loop is stuck, and the watchdog
-	// says the check is.
 	s.goBG(func() { s.watchJobHealth(ctx) })
 	s.goBG(func() { s.runHealthWatchdog(ctx) })
-	r.fire(ctx, func(j scheduled) bool { return j.every == 0 || j.atStart })
+	r.fire(ctx, func(j scheduled) bool { return j.every == 0 || j.atStart }, startPatience, true)
 	s.goBG(func() { s.RunEnvChecks(ctx) })
 	s.goBG(func() { s.WatchAssistants(ctx) })
 
-	// One ticker for each period, as there was before the table: a tick is
-	// dropped, not queued, while the loop is busy.
 	var periods []time.Duration
 	for _, j := range r.jobs {
 		if j.every > 0 && !slices.Contains(periods, j.every) {
@@ -282,14 +274,30 @@ func (s *Service) RunScheduler(ctx context.Context) {
 			return
 		}
 		period := periods[k-1]
-		r.fire(ctx, func(j scheduled) bool { return j.every == period })
+		r.fire(ctx, func(j scheduled) bool { return j.every == period }, loopJobPatience, false)
 	}
 }
 
+// loopJobPatience is how long the loop waits for one of its own jobs before
+// it goes on to the next and leaves that one running. A job whose last run
+// took longer is not waited for at all: waiting for it again would hold the
+// jobs after it for nothing.
+const loopJobPatience = 20 * time.Second
+
+// startPatience is how long the server's start waits for its jobs, all of
+// them together, before the scheduler's loop begins without the ones still
+// running. It is less than jobOverdueMin, so no job counts as silent because
+// the start waited.
+const startPatience = 10 * time.Minute
+
 // fire runs the jobs that are due, in the table's order: the loop's own one
 // after another, a background lane started the first time one of its jobs
-// comes up.
-func (r *scheduler) fire(ctx context.Context, due func(scheduled) bool) {
+// comes up. The loop waits for each of its own jobs up to patience, and not
+// at all for one whose last run outlasted it. At the server's start the order
+// matters more than the time: the jobs are waited for whatever their last
+// runs took, up to patience for all of them together.
+func (r *scheduler) fire(ctx context.Context, due func(scheduled) bool, patience time.Duration, start bool) {
+	began := r.s.now()
 	started := map[string]bool{}
 	for _, j := range r.jobs {
 		if !due(j) {
@@ -299,7 +307,14 @@ func (r *scheduler) fire(ctx context.Context, due func(scheduled) bool) {
 			return
 		}
 		if j.lane == "" {
-			r.s.job(ctx, j.name, j.every, j.run)
+			wait := patience
+			switch {
+			case start:
+				wait = patience - r.s.now().Sub(began)
+			case r.s.jobs.lastTook(j.name) > patience:
+				wait = 0
+			}
+			r.runInLoop(ctx, j, wait)
 			continue
 		}
 		if started[j.lane] {
@@ -316,38 +331,83 @@ func (r *scheduler) fire(ctx context.Context, due func(scheduled) bool) {
 	}
 }
 
+// runInLoop starts one of the loop's jobs and waits for it up to wait, or
+// until ctx ends. One still going then keeps its place in r.busy, as a
+// background lane named after it does: its next due times are skipped and
+// counted for as long as it goes on, and it counts as stuck as a lane does
+// (jobTrouble). Unlike a lane's job (goLane), it is never started again
+// beside itself, however long its run goes on: the loop's jobs were written
+// to run one at a time. The job itself is waited for at stop with the other
+// background work (Wait).
+func (r *scheduler) runInLoop(ctx context.Context, j scheduled, wait time.Duration) {
+	run := r.claim([]scheduled{{name: j.name, every: j.every, lane: j.name}}, false)
+	if run == nil {
+		return
+	}
+	done := make(chan struct{})
+	r.s.goBG(func() {
+		defer close(done)
+		defer r.release(j.name, run)
+		r.s.job(ctx, j.name, j.every, j.run)
+	})
+	if wait <= 0 {
+		return
+	}
+	left := time.NewTimer(wait)
+	defer left.Stop()
+	select {
+	case <-done:
+	case <-left.C:
+	case <-ctx.Done():
+	}
+}
+
+// claim takes a lane for a run, or returns nil and counts the lane's jobs as
+// skipped when its last run is still going. With again, a run that has gone
+// on past jobOverdue does not keep the lane: a new one starts beside it.
+// Without, the lane is skipped for as long as the run goes on.
+func (r *scheduler) claim(lane []scheduled, again bool) *laneRun {
+	s := r.s
+	name, now := lane[0].lane, s.now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if cur := r.busy[name]; cur != nil && (!again || now.Sub(cur.since) <= jobOverdue(lane[0].every)) {
+		for _, j := range lane {
+			s.jobs.skip(j.name, j.every, now)
+		}
+		return nil
+	}
+	run := &laneRun{since: now}
+	r.busy[name] = run
+	return run
+}
+
+func (r *scheduler) release(name string, run *laneRun) {
+	r.mu.Lock()
+	if r.busy[name] == run {
+		delete(r.busy, name)
+	}
+	r.mu.Unlock()
+}
+
 // goLane runs a lane's jobs in the background, one after another. While its
 // last run is still going the jobs are skipped, and counted as skipped: two
 // runs of one job at once do the work twice. Once that run has gone on so
 // long that it counts as stuck, a new one starts beside it: a run that
 // hangs must not end the job until the next restart.
 func (r *scheduler) goLane(ctx context.Context, lane []scheduled) {
-	s := r.s
-	name, now := lane[0].lane, s.now()
-	r.mu.Lock()
-	if cur := r.busy[name]; cur != nil && now.Sub(cur.since) <= jobOverdue(lane[0].every) {
-		r.mu.Unlock()
-		for _, j := range lane {
-			s.jobs.skip(j.name, j.every, now)
-		}
+	run := r.claim(lane, true)
+	if run == nil {
 		return
 	}
-	run := &laneRun{since: now}
-	r.busy[name] = run
-	r.mu.Unlock()
-	s.goBG(func() {
-		defer func() {
-			r.mu.Lock()
-			if r.busy[name] == run {
-				delete(r.busy, name)
-			}
-			r.mu.Unlock()
-		}()
+	name := lane[0].lane
+	r.s.goBG(func() {
+		defer r.release(name, run)
 		for _, j := range lane {
 			if ctx.Err() != nil {
 				return
 			}
-			s.job(ctx, j.name, j.every, j.run)
+			r.s.job(ctx, j.name, j.every, j.run)
 		}
 	})
 }
@@ -363,7 +423,6 @@ func (s *Service) watchJobHealth(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			// The server is stopping: what the last minute counted is kept.
 			save, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			s.saveJobHealth(save)
 			s.stopServerRun(save)

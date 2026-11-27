@@ -1,9 +1,3 @@
-// The gate's connections: services the agent reaches through the gate,
-// which holds their credentials (see the gate's docs, "Connections").
-// Each one is two steps: the gate stores it (a new one, or a wider one,
-// only once the owner approves it out of band), then Hermes is told about it as an
-// MCP server at the gate's /conn/<name>/mcp.
-
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -52,8 +46,6 @@ export function ConnectionsSection({ assistant }: { assistant: Assistant }) {
   const qc = useQueryClient()
   const conns = useQuery(connectionsQuery(id))
   const servers = useQuery(mcpServersQuery(id))
-  // While the gate waits for the owner, look again every few seconds: their
-  // answer is the only thing that moves it.
   const approvals = useQuery({
     ...approvalsQuery(id),
     refetchInterval: (q) => (hasPending(q.state.data) ? 5000 : false),
@@ -75,8 +67,6 @@ export function ConnectionsSection({ assistant }: { assistant: Assistant }) {
 
   const latest = latestApprovals(approvals.data)
 
-  // When an approval the owner was asked for is answered, the gate's list changes:
-  // fetch it again and say what happened.
   const seen = useRef<Set<string> | null>(null)
   useEffect(() => {
     if (!approvals.data) return
@@ -108,8 +98,6 @@ export function ConnectionsSection({ assistant }: { assistant: Assistant }) {
     if (c) linked.set(c.name, s)
   }
 
-  // An outcome worth showing on a row: a request still waiting, or one that
-  // was turned down after the connection last changed.
   const outcome = (name: string): GateApproval | undefined => {
     const a = latest.get(name)
     if (!a) return undefined
@@ -118,7 +106,6 @@ export function ConnectionsSection({ assistant }: { assistant: Assistant }) {
       return undefined
     const c = byName.get(name)
     const at = a.decided ?? a.created
-    // With no connection left, only a recent refusal still says something.
     if (!c) return Date.now() / 1000 - at < 7 * 86400 ? a : undefined
     return at > (c.updated ?? 0) ? a : undefined
   }
@@ -213,7 +200,6 @@ export function ConnectionsSection({ assistant }: { assistant: Assistant }) {
         server={remove ? linked.get(remove.name) : undefined}
         onClose={() => setRemove(null)}
         onRemoved={(name) => {
-          // Its old approvals are about a connection that's gone.
           const code = latest.get(name)?.code
           if (code) setDismissed([...dismissed.slice(-50), code])
         }}
@@ -433,7 +419,6 @@ function RemoveConnection({
   const remove = useMutation({
     mutationFn: async ({ name, server }: { name: string; server?: string }) => {
       await api.del(`/assistants/${id}/gate/connections/${enc(name)}`)
-      // Hermes's server would only point at nothing now.
       if (server) await hermes(id, 'DELETE', `mcp/servers/${enc(server)}`)
     },
     onSuccess: (_, { name }) => {

@@ -65,6 +65,12 @@ type agentJob struct {
 	// DiffFrom, for an audit: the commit the change starts from. The diff
 	// from it to Base goes into the prompt (WP-348).
 	DiffFrom string `json:"diff_from"`
+	// DiffOver and OverPrompt, for an audit that follows an earlier one
+	// (WP-1938): the head that was audited, and what to tell the model
+	// about the change since it. Without a range made from DiffOver the
+	// audit reads the whole change.
+	DiffOver   string `json:"diff_over,omitempty"`
+	OverPrompt string `json:"over_prompt,omitempty"`
 	// DiffSince (unix seconds): the change starts at Base's last
 	// first-parent commit before then; DiffPaths and DiffExclude limit it
 	// (WP-548).
@@ -139,7 +145,7 @@ func (p *runnerProc) execCommand(ctx context.Context, run *jobRun, in commandJob
 	cmd := shellCommand(ctx, in.Command)
 	cmd.Dir = dir
 	cmd.Env = append(jobEnv(os.Environ(), in.Env, in.KeepKeys), runnerSelfEnv(p.allowed)...)
-	cmd.Stdout, cmd.Stderr = run.out, run.out // one writer: output stays in order
+	cmd.Stdout, cmd.Stderr = run.out, run.out
 	cmd.Stdin = nil
 	setProcGroup(cmd)
 	killOnCancel(cmd)

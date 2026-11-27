@@ -55,9 +55,9 @@ func TestGuardSetBody(t *testing.T) {
 		off   bool
 		on    bool
 	}{
-		{},                    // nothing to change
-		{off: true, on: true}, // both
-		{pace: "maybe"},       // not on or off
+		{},
+		{off: true, on: true},
+		{pace: "maybe"},
 		{given: map[string]bool{"hours": true}, nums: map[string]float64{"hours": -1}},
 	}
 	for i, c := range bad {

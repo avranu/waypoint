@@ -29,14 +29,22 @@ const [index, count] = [+m[1] - 1, +m[2]];
 
 const weight = new Map();
 const groups = [];
+const seenGroups = new Set();
 for (const line of fs.readFileSync(path.join(here, "weights.txt"), "utf8").split("\n")) {
   const t = line.replace(/#.*/, "").trim();
   if (!t) continue;
   const g = /^together\s+(\S+)$/.exec(t);
-  if (g) groups.push(g[1].split("+"));
-  else {
+  if (g) {
+    const names = g[1].split("+");
+    const key = [...names].sort().join("+");
+    if (!seenGroups.has(key)) {
+      seenGroups.add(key);
+      groups.push(names);
+    }
+  } else {
     const [sec, name] = t.split(/\s+/);
-    weight.set(name, Number(sec));
+    const n = Number(sec);
+    weight.set(name, Math.max(weight.get(name) ?? 0, n));
   }
 }
 

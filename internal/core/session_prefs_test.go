@@ -37,7 +37,7 @@ func TestSessionPrefsAreSavedCheckedAndTidied(t *testing.T) {
 		All: SessionSettings{CodeMode: boolp(true), Model: " claude-opus-5-5[1m] ", PermissionMode: "auto"},
 		Repos: map[string]SessionSettings{
 			"Robin/Waypoint": {RemoteControl: boolp(true)},
-			"robin/empty":    {}, // nothing set: dropped
+			"robin/empty":    {},
 		},
 	})
 	if err != nil {
@@ -47,7 +47,6 @@ func TestSessionPrefsAreSavedCheckedAndTidied(t *testing.T) {
 	if got == nil || got.All.Model != "claude-opus-5-5[1m]" || len(got.Repos) != 1 || got.Repos["robin/waypoint"].RemoteControl == nil {
 		t.Fatalf("saved %+v", got)
 	}
-	// Nothing set at all is no settings.
 	if u, err := save(&SessionPrefs{Repos: map[string]SessionSettings{"a/b": {}}}); err != nil {
 		t.Fatalf("empty: %v", err)
 	} else if u.Prefs.Sessions != nil {

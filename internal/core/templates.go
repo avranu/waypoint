@@ -89,7 +89,7 @@ func (s *Service) ListTemplates(ctx context.Context, actor *Actor, projectRef st
 func (s *Service) templateByRef(ctx context.Context, q queryer, projectID int64, ref string) (*IssueTemplate, error) {
 	where := `name = ? COLLATE NOCASE`
 	if _, err := strconv.ParseInt(ref, 10, 64); err == nil {
-		where = `(id = ? OR name = ? COLLATE NOCASE)` // an id first, then a name like "2024"
+		where = `(id = ? OR name = ? COLLATE NOCASE)`
 		ref2 := ref
 		t, err := scanTemplate(q.QueryRowContext(ctx, `SELECT `+templateCols+` FROM issue_templates
 			WHERE project_id = ? AND `+where+` ORDER BY CAST(id AS TEXT) = ? DESC LIMIT 1`, projectID, ref, ref2, ref))
@@ -239,7 +239,6 @@ func (s *Service) fillFromTemplate(ctx context.Context, actor *Actor, in *IssueI
 	if err != nil {
 		return nil, err
 	}
-	// Don't say whether a project or template exists to someone outside it.
 	if err := s.requireProjectRole(ctx, s.db.R, actor, p.ID, RoleViewer); err != nil {
 		return nil, notFound("project " + in.Project)
 	}

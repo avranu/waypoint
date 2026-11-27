@@ -164,7 +164,7 @@ func boolOnly(pass *analysis.Pass, r *reporter, ft *ast.FuncType, body *ast.Bloc
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch n := n.(type) {
 		case *ast.FuncLit:
-			return false // its own results are its own
+			return false
 		case *ast.ReturnStmt:
 			if len(n.Results) == 1 && testsError(pass, n.Results[0], ft, from) {
 				r.report(n.Pos(), "this returns only a bool, decided by testing an error: return (bool, error) and let the caller hold on the error (WP-1406)")
@@ -224,7 +224,7 @@ func testsError(pass *analysis.Pass, e ast.Expr, ft *ast.FuncType, from map[type
 			obj := pass.TypesInfo.ObjectOf(id)
 			if obj != nil && obj.Pos() >= ft.Pos() && obj.Pos() < ft.End() && ft.Params != nil &&
 				obj.Pos() >= ft.Params.Pos() && obj.Pos() < ft.Params.End() {
-				continue // a parameter: this classifies an error it was given
+				continue
 			}
 			if call := from[obj]; call != nil {
 				if fn := callee(pass, call); fn != nil && fn.Pkg() != nil && answerPkgs[fn.Pkg().Path()] {

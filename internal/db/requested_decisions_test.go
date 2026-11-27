@@ -12,7 +12,7 @@ import (
 // and a note whose task an agent filed, alone.
 func TestRequestedDecisionsBackfill(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,6 @@ func TestRequestedDecisionsBackfill(t *testing.T) {
 		}
 		got = append(got, map[bool]string{true: "accepted", false: "proposed"}[by != nil && req == 1])
 	}
-	// WP 2 and WP 4 (task filed by an agent) stay proposals; APP's 3 is another project's.
 	if want := "proposed accepted proposed accepted proposed"; strings.Join(got, " ") != want {
 		t.Errorf("notes = %v, want %s", got, want)
 	}

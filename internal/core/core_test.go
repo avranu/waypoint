@@ -21,13 +21,10 @@ import (
 )
 
 type env struct {
-	t     *testing.T
-	s     *Service
-	ctx   context.Context
-	admin *Actor
-	// clock is the Service's time. Background work (goBG: screens, merges,
-	// babysit steps) reads it while a test moves it on, so it is only read
-	// and set under clockMu, through clockNow and setClock.
+	t       *testing.T
+	s       *Service
+	ctx     context.Context
+	admin   *Actor
 	clockMu sync.Mutex
 	clock   time.Time
 }
@@ -48,17 +45,24 @@ func (e *env) setClock(t time.Time) {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	ctx := context.Background()
-	d, err := db.OpenFresh(ctx, filepath.Join(t.TempDir(), "test.db"))
+	d, err := db.OpenFresh(context.Background(), filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	e := envOn(t, d, time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC))
+	e.admin = e.user("robin", true)
+	return e
+}
+
+// envOn is a Service on d with the test's clock at clock, and no admin
+// yet: what newEnv and an env started from a snapshot have in common.
+func envOn(t *testing.T, d *db.DB, clock time.Time) *env {
+	t.Helper()
 	t.Cleanup(func() { d.Close() })
 	s := New(d, Config{BaseURL: "https://wp.test"}, nil)
 	s.StartHub()
-	e := &env{t: t, s: s, ctx: ctx, clock: time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)}
+	e := &env{t: t, s: s, ctx: context.Background(), clock: clock}
 	s.SetClock(e.clockNow)
-	e.admin = e.user("robin", true)
 	t.Cleanup(s.Wait)
 	return e
 }
@@ -123,12 +127,10 @@ func TestProjectDefaults(t *testing.T) {
 	if len(p.Statuses) != 6 || p.Settings.Mode != "kanban" {
 		t.Errorf("statuses = %d, mode = %s", len(p.Statuses), p.Settings.Mode)
 	}
-	// Default status for kanban is To Do.
 	i := e.issue(e.admin, IssueInput{Project: p.Key, Title: "first"})
 	if i.Status.Name != "To Do" || i.Key != "WAYP-1" {
 		t.Errorf("issue = %s %s", i.Key, i.Status.Name)
 	}
-	// Same name gets a distinct key.
 	p2 := e.project(e.admin, "Waypoint", "sprints")
 	if p2.Key != "WAYP2" {
 		t.Errorf("second key = %s", p2.Key)
@@ -138,8 +140,6 @@ func TestProjectDefaults(t *testing.T) {
 		t.Errorf("sprint-mode default status = %s", i2.Status.Name)
 	}
 	autos, _ := e.s.ListAutomations(e.ctx, e.admin, p.Key)
-	// Two for sub-tasks, two moving issues with their pull requests (WP-496),
-	// two for pull request reviews (WP-D14), one answering replies (WP-D21).
 	if len(autos) != 7 {
 		t.Errorf("default automations = %d", len(autos))
 	}
@@ -176,12 +176,10 @@ func TestStatusResolvedAndParentAutoClose(t *testing.T) {
 	if got.ChildCount != 2 || got.ChildDone != 2 {
 		t.Errorf("child counts %d/%d", got.ChildDone, got.ChildCount)
 	}
-	// History shows the automation.
 	h, _ := e.s.History(e.ctx, e.admin, epic.Key, 10)
 	if len(h) == 0 || h[0].ViaAutomation == "" {
 		t.Errorf("expected automation in history: %+v", h)
 	}
-	// Reopening a child reopens the parent.
 	if _, err := e.s.Transition(e.ctx, e.admin, a.Key, "To Do", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -196,15 +194,12 @@ func TestHierarchyRules(t *testing.T) {
 	root := e.issue(e.admin, IssueInput{Project: p.Key, Title: "root"})
 	child := e.issue(e.admin, IssueInput{Parent: root.Key, Title: "child"})
 	grand := e.issue(e.admin, IssueInput{Parent: child.Key, Title: "grand"})
-	// No cycles.
 	if _, err := e.s.UpdateIssue(e.ctx, e.admin, root.Key, IssuePatch{Parent: Some(grand.Key)}); !IsInvalid(err) {
 		t.Errorf("cycle allowed: %v", err)
 	}
-	// under: finds all descendants.
 	if got := e.search(e.admin, "under:"+root.Key+" order:key"); strings.Join(got, ",") != child.Key+","+grand.Key {
 		t.Errorf("under = %v", got)
 	}
-	// Bulk move with descendants into a sprint keeps the tree.
 	sp, err := e.s.CreateSprint(e.ctx, e.admin, p.Key, SprintInput{})
 	if err != nil {
 		t.Fatal(err)
@@ -216,14 +211,12 @@ func TestHierarchyRules(t *testing.T) {
 	if g := e.get(e.admin, grand.Key); g.SprintID == nil || g.Parent.Key != child.Key {
 		t.Errorf("grandchild sprint/parent wrong: %+v", g.Issue)
 	}
-	// Deleting the middle lifts its children.
 	if err := e.s.DeleteIssue(e.ctx, e.admin, child.Key, false); err != nil {
 		t.Fatal(err)
 	}
 	if g := e.get(e.admin, grand.Key); g.Parent == nil || g.Parent.Key != root.Key {
 		t.Errorf("grandchild should move up: %+v", g.Parent)
 	}
-	// Moving to another project moves the subtree and keeps old keys working.
 	p2 := e.project(e.admin, "Other", "")
 	moved, err := e.s.MoveToProject(e.ctx, e.admin, root.Key, p2.Key)
 	if err != nil {
@@ -258,8 +251,6 @@ func TestSharingAndVisibility(t *testing.T) {
 	if _, err := e.s.GetIssue(e.ctx, partner, secret.Key); err == nil {
 		t.Error("share leaked a sibling")
 	}
-	// The partner can edit and add subtasks under what was shared, but not
-	// elsewhere in the project.
 	if _, err := e.s.Transition(e.ctx, partner, flights.Key, "In Progress", ""); err != nil {
 		t.Errorf("partner edit: %v", err)
 	}
@@ -269,7 +260,6 @@ func TestSharingAndVisibility(t *testing.T) {
 	if _, err := e.s.CreateIssue(e.ctx, partner, IssueInput{Project: p.Key, Title: "nope"}); err == nil {
 		t.Error("partner created a top-level issue")
 	}
-	// A guest sees the project as "guest" and cannot re-share.
 	projects, _ := e.s.ListProjects(e.ctx, partner, false)
 	if len(projects) != 1 || projects[0].Role != "guest" {
 		t.Errorf("guest projects = %+v", projects)
@@ -277,7 +267,6 @@ func TestSharingAndVisibility(t *testing.T) {
 	if err := e.s.ShareIssue(e.ctx, partner, trip.Key, "alex", "viewer"); err == nil {
 		t.Error("guest re-shared")
 	}
-	// Viewers can comment but not edit.
 	if err := e.s.ShareIssue(e.ctx, e.admin, flights.Key, "alex", "viewer"); err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +343,6 @@ func TestSprintsAndBoard(t *testing.T) {
 		t.Errorf("sprint dates %s..%s", *sp.StartDate, *sp.EndDate)
 	}
 	e.s.BulkUpdate(e.ctx, e.admin, []string{a.Key, b.Key}, IssuePatch{Sprint: Some("next")}, false)
-	// Pulling into a sprint moves backlog items to To Do.
 	if got := e.get(e.admin, a.Key); got.Status.Name != "To Do" {
 		t.Errorf("status after sprint add = %s", got.Status.Name)
 	}
@@ -390,7 +378,6 @@ func TestSprintsAndBoard(t *testing.T) {
 	if err != nil || *closed.CompletedPoints != 3 {
 		t.Fatalf("close: %v %+v", err, closed)
 	}
-	// b carried over into a new planned sprint.
 	if got := e.get(e.admin, b.Key); got.SprintID == nil || *got.SprintID == sp.ID {
 		t.Errorf("b not carried over: %v", got.SprintID)
 	}
@@ -428,7 +415,6 @@ func TestKanbanBoardHidesOldDone(t *testing.T) {
 func TestRanking(t *testing.T) {
 	e := newEnv(t)
 	p := e.project(e.admin, "Rank", "")
-	// What a person adds goes to the top; an agent's goes last.
 	b := e.issue(e.admin, IssueInput{Project: p.Key, Title: "b"})
 	a := e.issue(e.admin, IssueInput{Project: p.Key, Title: "a"})
 	agent := &Actor{User: e.admin.User, Agent: "claude"}
@@ -440,7 +426,6 @@ func TestRanking(t *testing.T) {
 	if got := e.search(e.admin, "order:rank"); strings.Join(got, ",") != strings.Join([]string{c.Key, a.Key, b.Key}, ",") {
 		t.Errorf("after before = %v", got)
 	}
-	// Many inserts between two neighbours eventually renumber.
 	for n := 0; n < 60; n++ {
 		if _, err := e.s.UpdateIssue(e.ctx, e.admin, b.Key, IssuePatch{After: c.Key}); err != nil {
 			t.Fatal(err)
@@ -452,10 +437,6 @@ func TestRanking(t *testing.T) {
 	if got := e.search(e.admin, "order:rank"); strings.Join(got, ",") != strings.Join([]string{c.Key, a.Key, b.Key}, ",") {
 		t.Errorf("after many moves = %v", got)
 	}
-	// Adding many issues just above the same one halves the room between
-	// two ranks each time until there is none; the ranks are spread out
-	// again rather than ending up equal, so each still lands where it was
-	// put (WP-494).
 	top := c.Key
 	var added []string
 	for n := 0; n < 70; n++ {
@@ -528,7 +509,7 @@ func TestTimerAutomation(t *testing.T) {
 	if run == nil || run.Issue.Key != a.Key {
 		t.Fatalf("timer not started: %+v", run)
 	}
-	e.s.Transition(e.ctx, e.admin, a.Key, "In Review", "") // still in progress: keep running
+	e.s.Transition(e.ctx, e.admin, a.Key, "In Review", "")
 	if run, _ := e.s.RunningTimer(e.ctx, e.admin); run == nil {
 		t.Fatal("timer stopped on in-progress to in-progress")
 	}
@@ -569,8 +550,6 @@ func TestAutomationConditionsAndActions(t *testing.T) {
 	if got := e.get(e.admin, task.Key); len(got.Labels) != 0 {
 		t.Error("condition ignored")
 	}
-	// Sam was notified of the assignment, then (as a watcher now) of the
-	// automation's comment.
 	ns, unread, _ := e.s.ListNotifications(e.ctx, sam, false, 10)
 	if unread != 2 || ns[1].Kind != NotifyAssigned || ns[0].Kind != NotifyCommented {
 		t.Errorf("sam notifications = %+v", ns)
@@ -620,7 +599,6 @@ func TestMentionsNotify(t *testing.T) {
 	if ns, _, _ := e.s.ListNotifications(e.ctx, outsider, false, 10); len(ns) != 0 {
 		t.Errorf("outsider notified about an issue they can't see: %+v", ns)
 	}
-	// Watchers (the reporter) get comment notifications from others.
 	e.s.AddComment(e.ctx, sam, i.Key, "seen")
 	ns, unread, _ := e.s.ListNotifications(e.ctx, e.admin, true, 10)
 	if unread != 1 || ns[0].Kind != NotifyCommented {
@@ -676,13 +654,11 @@ func TestInviteLoginReset(t *testing.T) {
 	if _, _, err := e.s.Login(e.ctx, "riley@example.com", "a brand new password", "", ""); err != nil {
 		t.Errorf("login with email after reset: %v", err)
 	}
-	// Disabled users can't log in.
 	tr := true
 	e.s.UpdateUser(e.ctx, e.admin, u.ID, UserPatch{Disabled: &tr})
 	if _, _, err := e.s.Login(e.ctx, "riley", "a brand new password", "", ""); err == nil {
 		t.Error("disabled user logged in")
 	}
-	// API tokens.
 	tok2, _, err := e.s.CreateAPIToken(e.ctx, sam, "agent", true, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -714,7 +690,6 @@ func TestForgeWebhookAndSync(t *testing.T) {
 	fake := &fakeForge{closed: map[int]bool{}}
 	e.s.Forges = fake
 	p := e.project(e.admin, "App", "")
-	// New projects move an issue to Done when its pull request merges (WP-496).
 	f, err := e.s.CreateForge(e.ctx, e.admin, ForgeInput{Kind: str("forgejo"), BaseURL: str("https://git.example.com"), Token: str("t")})
 	if err != nil {
 		t.Fatal(err)
@@ -726,7 +701,6 @@ func TestForgeWebhookAndSync(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A project without the repo attached never gets links from it.
 	other := e.project(e.admin, "Vault", "")
 	secretIssue := e.issue(e.admin, IssueInput{Project: other.Key, Title: "Private"})
 	send := func(event, body string) error {
@@ -756,14 +730,12 @@ func TestForgeWebhookAndSync(t *testing.T) {
 	if got := e.get(e.admin, i.Key); got.Status.Category != CatDone {
 		t.Errorf("PR merge should finish issue, status %s", got.Status.Name)
 	}
-	// Bad signature is rejected.
 	h := http.Header{}
 	h.Set("X-Forgejo-Event", "ping")
 	h.Set("X-Forgejo-Signature", "deadbeef")
 	if err := e.s.HandleForgeWebhook(e.ctx, f.ID, h, []byte(`{}`)); err == nil {
 		t.Error("bad signature accepted")
 	}
-	// Issue sync imports and pushes state back.
 	e.s.db.W.Exec(`UPDATE project_repos SET sync_issues = 1 WHERE id = ?`, repo.ID)
 	if err := e.s.SyncRepo(e.ctx, repo.ID); err != nil {
 		t.Fatal(err)
@@ -772,7 +744,6 @@ func TestForgeWebhookAndSync(t *testing.T) {
 	if len(imported) != 1 {
 		t.Fatalf("imported = %v", imported)
 	}
-	// Syncing again doesn't duplicate.
 	e.s.SyncRepo(e.ctx, repo.ID)
 	if again := e.search(e.admin, "type:bug"); len(again) != 1 {
 		t.Errorf("duplicate import: %v", again)
@@ -787,7 +758,6 @@ func TestForgeWebhookAndSync(t *testing.T) {
 func TestForecast(t *testing.T) {
 	e := newEnv(t)
 	p := e.project(e.admin, "Fore", "")
-	// Two points a week for six weeks.
 	start := e.clockNow()
 	e.setClock(start.AddDate(0, 0, -42))
 	for w := 0; w < 6; w++ {
@@ -806,7 +776,6 @@ func TestForecast(t *testing.T) {
 	if fc.Basis != "points" || fc.Remaining != 10 || fc.P50 == "" {
 		t.Fatalf("forecast = %+v", fc)
 	}
-	// 10 points at ~2/week is about five weeks.
 	p50, _ := time.Parse(dateLayout, fc.P50)
 	if weeks := p50.Sub(start).Hours() / 24 / 7; weeks < 4 || weeks > 7 {
 		t.Errorf("p50 %s is %.1f weeks out", fc.P50, weeks)
@@ -846,7 +815,7 @@ func TestCalendarFeed(t *testing.T) {
 }
 
 func TestParseDate(t *testing.T) {
-	now := time.Date(2026, 10, 7, 15, 0, 0, 0, time.UTC) // Wednesday
+	now := time.Date(2026, 10, 7, 15, 0, 0, 0, time.UTC)
 	cases := map[string]string{
 		"today": "2026-10-07", "tomorrow": "2026-10-08", "+3d": "2026-10-10", "2w": "2026-10-21",
 		"-1d": "2026-10-06", "friday": "2026-10-09", "wed": "2026-10-14", "2026-12-25": "2026-12-25", "eom": "2026-10-31",
@@ -862,7 +831,6 @@ func TestParseDate(t *testing.T) {
 func TestAutomationBudget(t *testing.T) {
 	e := newEnv(t)
 	p := e.project(e.admin, "Loop", "")
-	// Two rules that each answer "created" with more creations.
 	for _, name := range []string{"a", "b"} {
 		n := name
 		rule := Rule{Trigger: Trigger{Event: "created"}, Actions: []Action{{Type: "create_subtasks", Titles: []string{n + "1", n + "2", n + "3"}}}}
@@ -872,7 +840,6 @@ func TestAutomationBudget(t *testing.T) {
 	}
 	e.issue(e.admin, IssueInput{Project: p.Key, Title: "root"})
 	total := len(e.search(e.admin, "project:"+p.Key))
-	// Each created sub-task spends one unit of the budget.
 	if total > 1+automationBudget {
 		t.Fatalf("automations created %d issues", total)
 	}
@@ -913,13 +880,10 @@ func TestSessionsAndPasswordChange(t *testing.T) {
 	if _, err := e.s.SessionUser(e.ctx, tok2); err == nil {
 		t.Error("revoked session still works")
 	}
-	// Other users can't revoke your sessions.
 	sam := e.user("sam", false)
 	if err := e.s.RevokeSession(e.ctx, sam, list[0].ID); err == nil {
 		t.Error("revoked someone else's session")
 	}
-	// Changing the password keeps this session and ends the others, along
-	// with any outstanding reset link.
 	reset, _ := e.s.CreateResetLink(e.ctx, e.admin, me.User.ID)
 	if err := e.s.ChangePassword(e.ctx, me, "correct-horse-battery", "an even better passphrase"); err != nil {
 		t.Fatal(err)
@@ -1000,7 +964,6 @@ func TestNoLeaksToOutsiders(t *testing.T) {
 		return n
 	}
 
-	// Assigning someone outside the project shares just that issue with them.
 	if _, err := e.s.UpdateIssue(e.ctx, e.admin, task.Key, IssuePatch{AddAssign: []string{"sam"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -1024,12 +987,10 @@ func TestNoLeaksToOutsiders(t *testing.T) {
 		}
 	}
 
-	// A guest can't hand the issue to someone else who can't see it.
 	if _, err := e.s.UpdateIssue(e.ctx, sam, task.Key, IssuePatch{AddAssign: []string{"kim"}}); err == nil {
 		t.Error("guest shared the issue by assigning it")
 	}
 
-	// Removed members stop hearing about issues and lose their comments.
 	e.s.SetMember(e.ctx, e.admin, p.Key, "kim", "editor")
 	c, err := e.s.AddComment(e.ctx, kim, epic.Key, "my idea")
 	if err != nil {
@@ -1093,7 +1054,6 @@ func TestGotifyTokenIsWriteOnly(t *testing.T) {
 	if strings.Contains(string(b), "Asecret") {
 		t.Fatalf("token returned: %s", b)
 	}
-	// Saving what the API returned keeps the token.
 	var back User
 	if err := json.Unmarshal(b, &back); err != nil {
 		t.Fatal(err)
@@ -1130,12 +1090,11 @@ func TestTimedAutomations(t *testing.T) {
 	add("weekly", Rule{Trigger: Trigger{Event: "schedule", Every: "week", Weekday: int(time.Monday), At: "09:00"},
 		Actions: []Action{{Type: "create_issue", Title: "Plan the week of {{.Date}}", Due: "+2d", Labels: []string{"planning"}}}})
 
-	// Monday 2026-10-05, 12:00 UTC (the env clock).
 	soon := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Due tomorrow", DueDate: "2026-10-06"})
 	later := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Due next week", DueDate: "2026-10-12"})
 	old := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Old"})
 	e.s.RunTimedAutomations(e.ctx)
-	e.s.RunTimedAutomations(e.ctx) // second run: nothing new
+	e.s.RunTimedAutomations(e.ctx)
 	e.s.Wait()
 	labels := func(key string) string {
 		var names []string
@@ -1157,8 +1116,6 @@ func TestTimedAutomations(t *testing.T) {
 	if plan.Title != "Plan the week of 2026-10-05" || plan.DueDate == nil || *plan.DueDate != "2026-10-07" {
 		t.Errorf("weekly issue = %q due %v", plan.Title, plan.DueDate)
 	}
-	// Eleven days on: the untouched issue is stale; Monday's rule doesn't
-	// run on a Friday.
 	e.setClock(e.clockNow().AddDate(0, 0, 11))
 	e.s.RunTimedAutomations(e.ctx)
 	e.s.Wait()
@@ -1168,7 +1125,6 @@ func TestTimedAutomations(t *testing.T) {
 	if got := e.search(e.admin, "label:planning"); len(got) != 1 {
 		t.Errorf("weekly issue on a Friday: %d", len(got))
 	}
-	// The next Monday after 9:00 makes a new one.
 	e.setClock(time.Date(2026, 10, 19, 9, 30, 0, 0, time.UTC))
 	e.s.RunTimedAutomations(e.ctx)
 	if got := e.search(e.admin, "label:planning"); len(got) != 2 {
@@ -1202,7 +1158,6 @@ func TestIssueTemplates(t *testing.T) {
 	if len(d.Children) != 3 || d.Children[0].Title != "Reproduce" {
 		t.Errorf("sub-tasks: %d", len(d.Children))
 	}
-	// Recurring work: a schedule creates an issue from the template.
 	rule := Rule{Trigger: Trigger{Event: "schedule", Every: "day", At: "00:00"}, Actions: []Action{{Type: "create_issue", Template: "Bug report", Title: "Bug triage {{.Date}}"}}}
 	if _, err := e.s.CreateAutomation(e.ctx, e.admin, p.Key, AutomationInput{Name: str("daily"), Rule: &rule}); err != nil {
 		t.Fatal(err)
@@ -1241,8 +1196,6 @@ func TestWebPush(t *testing.T) {
 		t.Error("VAPID key changed")
 	}
 	sam := e.user("sam", false)
-	// A real browser key pair isn't needed for the server to encrypt; any
-	// valid P-256 point and 16-byte secret will do.
 	sub := PushSubscription{Endpoint: srv.URL + "/push/ok"}
 	sub.Keys.P256dh = "BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg7A8u-Ts1XbjhazAkj7I99e8QcYP7DkM"
 	sub.Keys.Auth = "tBHItJI5svbpez7KI4CCXg"
@@ -1274,12 +1227,10 @@ func TestWebPush(t *testing.T) {
 func TestReviewFixesMisc(t *testing.T) {
 	e := newEnv(t)
 	p := e.project(e.admin, "Misc", "")
-	// Template sub-task titles are validated up front.
 	long := strings.Repeat("x", 600)
 	if _, err := e.s.CreateTemplate(e.ctx, e.admin, p.Key, TemplateInput{Name: str("t"), Subtasks: &[]string{long}}); err == nil {
 		t.Error("over-long sub-task title accepted")
 	}
-	// Attachment ids are never reused (their URLs are cached for a year).
 	i := e.issue(e.admin, IssueInput{Project: p.Key, Title: "files"})
 	a1, err := e.s.AddAttachment(e.ctx, e.admin, AttachTarget{TargetIssue, i.ID}, AttachmentInput{Name: "image.png", Data: []byte("one")})
 	if err != nil {
@@ -1292,7 +1243,6 @@ func TestReviewFixesMisc(t *testing.T) {
 	if a2.URL == a1.URL {
 		t.Errorf("attachment URL reused: %s", a2.URL)
 	}
-	// A password change drops push subscriptions along with other sessions.
 	tok, _, _ := e.s.Login(e.ctx, "robin", "correct-horse-battery", "", "")
 	me, _ := e.s.SessionActor(e.ctx, tok)
 	sub := PushSubscription{Endpoint: "https://push.example.com/abc"}
@@ -1316,7 +1266,7 @@ func TestBlocksInLists(t *testing.T) {
 	b := e.issue(e.admin, IssueInput{Project: p.Key, Title: "API"})
 	hidden := e.issue(e.admin, IssueInput{Project: vault.Key, Title: "Secret"})
 	e.s.AddRelation(e.ctx, e.admin, a.Key, "blocks", b.Key)
-	e.s.AddRelation(e.ctx, e.admin, b.Key, "blocked_by", a.Key) // same edge, either way round
+	e.s.AddRelation(e.ctx, e.admin, b.Key, "blocked_by", a.Key)
 	e.s.AddRelation(e.ctx, e.admin, a.Key, "blocks", hidden.Key)
 	sam := e.user("sam", false)
 	e.s.SetMember(e.ctx, e.admin, p.Key, "sam", "viewer")
@@ -1346,7 +1296,6 @@ func TestHiddenHelpPrefs(t *testing.T) {
 	if u, err := e.s.UpdateUser(e.ctx, e.admin, e.admin.User.ID, UserPatch{Prefs: &open}); err != nil || len(u.Prefs.OpenHelp) != 1 {
 		t.Fatalf("open save: %+v %v", u, err)
 	}
-	// Goal wording warnings a person waved off follow them (WP-1196).
 	dw := UserPrefs{DismissedWarnings: []string{"12:names a file (main.go)"}}
 	if u, err := e.s.UpdateUser(e.ctx, e.admin, e.admin.User.ID, UserPatch{Prefs: &dw}); err != nil || len(u.Prefs.DismissedWarnings) != 1 {
 		t.Fatalf("dismissed warnings: %+v %v", u, err)
@@ -1456,7 +1405,7 @@ func TestFindProjects(t *testing.T) {
 		strings.ToLower(org.Key): "City Maps:key,Web:sub-project",
 		"city maps":              "City Maps:name,Web:sub-project",
 		"robin/harbor":           "Tools:repo",
-		"web":                    "Web:key", // its key beats acme/web's repo name
+		"web":                    "Web:key",
 		"harbor":                 "Tools:repo_name",
 		"CITY-MAPS":              "City Maps:name,Web:sub-project",
 		"nothing":                "",
@@ -1465,7 +1414,6 @@ func TestFindProjects(t *testing.T) {
 			t.Errorf("%q → %q, want %q", ref, got, want)
 		}
 	}
-	// A checkout's remote matches attached repos only, never names.
 	if ps, _ := e.s.FindProjects(e.ctx, e.admin, "city/maps", true); len(ps) != 0 {
 		t.Errorf("repo-only matched a name: %v", ps[0].Name)
 	}

@@ -29,17 +29,17 @@ func TestFailedSaveKeepsRunningSinceChange(t *testing.T) {
 	e.quietLog()
 	e.s.jobs.declare("slow job", time.Hour, "")
 	e.runJob("slow job", time.Hour, nil)
-	e.s.saveJobHealth(e.ctx) // its row exists
+	e.s.saveJobHealth(e.ctx)
 	end := e.hold("slow job", time.Hour)
-	e.s.saveJobHealth(e.ctx) // 1: running
+	e.s.saveJobHealth(e.ctx)
 	if n := e.one(`SELECT running_since IS NOT NULL FROM job_health WHERE name = 'slow job'`); n != "1" {
 		t.Fatalf("running_since not saved: %s", n)
 	}
 	end()
 	e.exec(`CREATE TRIGGER no_hours BEFORE INSERT ON job_hours BEGIN SELECT RAISE(ABORT, 'disk full'); END`)
-	e.s.saveJobHealth(e.ctx) // 2: fails
+	e.s.saveJobHealth(e.ctx)
 	e.exec(`DROP TRIGGER no_hours`)
-	e.s.saveJobHealth(e.ctx) // 3
+	e.s.saveJobHealth(e.ctx)
 	if n := e.one(`SELECT running_since IS NULL FROM job_health WHERE name = 'slow job'`); n != "1" {
 		t.Errorf("running_since is stale after the retry")
 	}
@@ -59,7 +59,6 @@ func TestHealthCheckIsNotInterrupted(t *testing.T) {
 	if n := e.one(`SELECT count(*) FROM job_health WHERE name = ? AND running_since IS NOT NULL`, jobHealthName); n != "0" {
 		t.Errorf("the health check is written as running")
 	}
-	// Even while it is going: the save inside its own run.
 	e.s.untracedJob(e.ctx, jobHealthName, jobHealthEvery, func(ctx context.Context) {
 		e.s.saveJobHealth(ctx)
 		if n := e.one(`SELECT count(*) FROM job_health WHERE name = ? AND running_since IS NOT NULL`, jobHealthName); n != "0" {
@@ -86,10 +85,10 @@ func TestDowntimeCountsFromLastAlive(t *testing.T) {
 	e.s.beginServerRun(e.ctx)
 	e.s.CheckJobHealth(e.ctx)
 	t0 := e.clockNow()
-	e.pass(3 * time.Hour) // the check is stalled; the watchdog ticks on
+	e.pass(3 * time.Hour)
 	e.s.markServerAlive(e.ctx)
 	alive := e.clockNow()
-	e.pass(10 * time.Minute) // then the process dies
+	e.pass(10 * time.Minute)
 	s2 := e.restart()
 	s2.beginServerRun(e.ctx)
 	p := s2.jobs.prev
@@ -168,9 +167,9 @@ func TestGiveBackScrubsSecretLearnedMeanwhile(t *testing.T) {
 	e.runJob("sync", time.Hour, func(ctx context.Context) {
 		e.s.log.WarnContext(ctx, "repo sync failed", "repo", redacted)
 	})
-	sn := e.s.jobs.take() // the save in flight
+	sn := e.s.jobs.take()
 	e.s.cfg.Logs.AddSecret(secret)
-	e.s.jobs.giveBack(sn) // it failed
+	e.s.jobs.giveBack(sn)
 	e.s.jobs.mu.Lock()
 	var mem strings.Builder
 	for k, p := range e.s.jobs.problems {
@@ -256,7 +255,7 @@ func TestLogSecretsReadFailureWarnsTheJob(t *testing.T) {
 	e.s.cfg.Logs = e.s.jobs.ring
 	e.s.jobs.declare("log secrets", time.Minute, "")
 	e.runJob("log secrets", time.Minute, func(ctx context.Context) {
-		rows, err := e.s.db.R.QueryContext(ctx, `SELECT NULL`) // does not scan into a string
+		rows, err := e.s.db.R.QueryContext(ctx, `SELECT NULL`)
 		if err != nil {
 			t.Error(err)
 			return

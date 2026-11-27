@@ -26,7 +26,6 @@ func TestOpenPRStepNeedsPullsWrite(t *testing.T) {
 		ae.work()
 		return ae.runStatus(r)
 	}
-	// Without pulls.write: refused, nothing opened.
 	r := run([]Permission{PermAutomationsManage, PermAutomationsRead, PermIssuesRead, PermPullsRead}, "review/no-write")
 	created, _, _, _ := ae.sg.snapshot()
 	if len(created) != 0 {
@@ -35,13 +34,11 @@ func TestOpenPRStepNeedsPullsWrite(t *testing.T) {
 	if r.Status != RunFailed || !strings.Contains(r.Error, "pulls.write") {
 		t.Errorf("run without pulls.write: %s %q, want a failure that names pulls.write", r.Status, r.Error)
 	}
-	// With it (accept control): opened.
 	r = run([]Permission{PermAutomationsManage, PermAutomationsRead, PermIssuesRead, PermPullsRead, PermPullsWrite}, "review/with-write")
 	created, _, _, _ = ae.sg.snapshot()
 	if r.Status != RunSucceeded || len(created) != 1 || created[0].Head != "review/with-write" {
 		t.Errorf("run with pulls.write: %s %q, opened %+v", r.Status, r.Error, created)
 	}
-	// A person's run (no token permissions) is as before.
 	p := ae.manual(ae.addAuto(ae.p, "OpenPerson", Rule{Trigger: Trigger{Event: "manual"}, Inputs: []RuleInput{{Name: "branch", Type: "text"}}, Actions: []Action{
 		{Type: "open_pr", ID: "pr", Extra: map[string]any{"head": "{{.Inputs.branch}}", "title": "By a person"}},
 	}}), map[string]any{"branch": "review/person"})

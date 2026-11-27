@@ -16,7 +16,7 @@ import (
 
 // Defaults for Show.
 const (
-	DefaultShowBudget    = 4000 // tokens for a symbol or range
+	DefaultShowBudget    = 4000
 	DefaultOutlineBudget = 2500
 	smallFileLines       = 80
 	smallFileBytes       = 6000
@@ -130,7 +130,6 @@ func (ix *Index) Show(ctx context.Context, ref string, o ShowOptions) (*ShowResu
 	if ref == "" {
 		return nil, fmt.Errorf("nothing to show")
 	}
-	// grep -n style "path:123:text" and "path:123"
 	var file, spec string
 	if rel, amb := ix.resolveFile(ref); rel != "" {
 		file = rel
@@ -264,7 +263,6 @@ func (ix *Index) showRange(file string, a, b int, single bool, o ShowOptions) (*
 		budget = DefaultShowBudget
 	}
 	if single {
-		// FILE:LINE: the declaration around that line, else a few lines around it
 		syms := Scan(Language(file), src).Symbols
 		if s, ok := Innermost(syms, a); ok && s.End-s.Start < 400 {
 			blk := ix.block(file, s.Qualified(), s.Kind, s.Sig, s.Start, s.End, lines, budget)
@@ -453,7 +451,6 @@ func (ix *Index) showSymbol(ctx context.Context, name string, o ShowOptions) (*S
 	top := best[0]
 	res, err := ix.showFileSymbol(ctx, top.Path, top.Symbol.Qualified(), o)
 	if err != nil {
-		// the index is a moment behind the file: fall back to the plain name
 		if res, err = ix.showFileSymbol(ctx, top.Path, top.Symbol.Name, o); err != nil {
 			return nil, err
 		}
@@ -506,7 +503,7 @@ func (ix *Index) callers(ctx context.Context, file string, s Symbol, perFile int
 		if err != nil || len(fh.Hits) == 0 {
 			continue
 		}
-		if s.Parent != "" && narrow { // a method is called as x.Name(
+		if s.Parent != "" && narrow {
 			kept := fh.Hits[:0]
 			for _, h := range fh.Hits {
 				if strings.Contains(h.Text, "."+name) {
@@ -524,8 +521,6 @@ func (ix *Index) callers(ctx context.Context, file string, s Symbol, perFile int
 	}
 	return out
 }
-
-// ---- rendering ----
 
 func ago(t time.Time) string {
 	if t.IsZero() {
@@ -645,7 +640,6 @@ func (o *Outline) Render(budget int) string {
 			syms = append(syms, s)
 		}
 	}
-	// indent by nesting: a heading's depth, a member under its parent
 	for _, s := range syms {
 		line := symbolLine(s)
 		if used+Tokens(line) > budget {

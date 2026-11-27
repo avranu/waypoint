@@ -34,21 +34,18 @@ func (se *shipEnv) checks(sha string, checks ...CommitCheck) {
 
 func TestWaitPullRequest(t *testing.T) {
 	se := newShipEnv(t, "forgejo")
-	// Merge automatically (WP-133) would arm it; this test arms it itself.
 	se.policy(MergePolicyInput{AutoMerge: ptr(false)})
 	head := testPR.HeadSHA
 	se.sg.setChecks(head, CommitCheck{Name: ciBackendPR, State: CheckPending})
 	se.pullHook("opened", testPR)
 	pr := se.pr(5)
 
-	// The time runs out first.
 	start := time.Now()
 	w, err := se.s.WaitPullRequest(se.ctx, se.admin, pr.ID, PRWaitInput{Timeout: 150 * time.Millisecond})
 	if err != nil || w.Verdict != PRWaitWaiting || w.Why != "1 check still running" || w.CI != CIPending || time.Since(start) < 150*time.Millisecond {
 		t.Fatalf("timed out: %+v %v", w, err)
 	}
 
-	// A check fails while it waits: it ends then, not at its timeout.
 	type result struct {
 		w   *PRWait
 		err error
@@ -73,22 +70,18 @@ func TestWaitPullRequest(t *testing.T) {
 		t.Fatal("the failed check didn't end the wait")
 	}
 
-	// Waiting for a newer head: the old head's checks don't count.
 	if w, _ := se.s.WaitPullRequest(se.ctx, se.admin, pr.ID, PRWaitInput{Head: "2222222bbbb"}); w.Verdict != PRWaitWaiting || w.Why != "Waypoint hasn't seen 2222222 on it yet" {
 		t.Errorf("another head: %+v", w)
 	}
-	// Passed: ready (no gate on this repo).
 	se.checks(head, CommitCheck{Name: ciBackendPR, State: CheckSuccess}, CommitCheck{Name: "ci / web (pull_request)", State: CheckSuccess})
 	if w, _ := se.s.WaitPullRequest(se.ctx, se.admin, pr.ID, PRWaitInput{Head: head[:7]}); w.Verdict != PRWaitReady || !w.Readiness.Ready || w.CI != CIPassed {
 		t.Fatalf("ready: %+v", w)
 	}
-	// Conflicts.
 	conflicted := testPR
 	conflicted.Mergeable, conflicted.BaseRef = ptr(false), "main"
 	if _, err := se.s.recordPR(se.ctx, se.f, "me/app", &conflicted, false); err != nil {
 		t.Fatal(err)
 	}
-	// Right after the push the forge's "no" is it still checking (WP-138): no conflict yet.
 	if w, _ := se.s.WaitPullRequest(se.ctx, se.admin, pr.ID, PRWaitInput{}); w.Verdict != PRWaitWaiting || !w.Readiness.Checking {
 		t.Errorf("checking: %+v", w)
 	}
@@ -105,7 +98,6 @@ func TestWaitPullRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// --merge merges only the head it waited on.
 	_, err = se.s.MergePR(se.ctx, se.admin, pr.ID, MergeInput{Head: "2222222bbbb"})
 	if err == nil || !strings.Contains(err.Error(), "its head moved to 1111111 since 2222222") || len(se.sg.merged()) != 0 {
 		t.Fatalf("merged a head it didn't wait on: %v", err)
@@ -118,7 +110,6 @@ func TestWaitPullRequest(t *testing.T) {
 		t.Errorf("merged: %+v", w)
 	}
 
-	// A draft whose checks passed is blocked; a closed one is closed.
 	draft := ForgePR{Number: 6, Title: "WIP: docs", Author: "sam", HeadRef: "docs", HeadSHA: "2222222bbbb", State: "draft"}
 	se.sg.setChecks(draft.HeadSHA, CommitCheck{Name: ciBackendPR, State: CheckSuccess})
 	se.pullHook("opened", draft)
@@ -130,7 +121,6 @@ func TestWaitPullRequest(t *testing.T) {
 	if w, _ := se.s.WaitPullRequest(se.ctx, se.admin, se.pr(6).ID, PRWaitInput{}); w.Verdict != PRWaitClosed {
 		t.Errorf("closed: %+v", w)
 	}
-	// Only who may see the pull request may wait on it.
 	if _, err := se.s.WaitPullRequest(se.ctx, se.user("zed", false), pr.ID, PRWaitInput{}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("a stranger waited: %v", err)
 	}
@@ -156,7 +146,7 @@ func TestWaitSupersededHead(t *testing.T) {
 	se := newShipEnv(t, "forgejo")
 	se.policy(MergePolicyInput{AutoMerge: ptr(false)})
 	head := testPR.HeadSHA
-	se.sg.setChecks(head, CommitCheck{Name: ciBackendPR, State: CheckFailed}) // the forge cancelled it
+	se.sg.setChecks(head, CommitCheck{Name: ciBackendPR, State: CheckFailed})
 	se.pullHook("opened", testPR)
 	pr := se.pr(5)
 	const newHead = "3333333cccc"
@@ -195,7 +185,6 @@ func TestPRCheckLogs(t *testing.T) {
 	se.pullHook("opened", testPR)
 	pr := se.pr(5)
 
-	// Every failed check's failing part, read from the forge now.
 	logs, err := se.s.PRCheckLogs(se.ctx, se.admin, pr.ID, "", false)
 	if err != nil || logs.HeadSHA != head || len(logs.Checks) != 1 {
 		t.Fatalf("logs: %+v %v", logs, err)
@@ -205,12 +194,10 @@ func TestPRCheckLogs(t *testing.T) {
 		c.Text != "--- FAIL: TestLogin (0.01s)\n    login_test.go:41: status = 200, want 401\nFAIL\texample.com/app/auth\t0.4s\n" {
 		t.Errorf("excerpt: %+v", c)
 	}
-	// All of it, without timestamps.
 	logs, _ = se.s.PRCheckLogs(se.ctx, se.admin, pr.ID, "backend", true)
 	if c := logs.Checks[0]; !strings.HasPrefix(c.Log, "the start of the log\nok  \texample.com/app/db") || c.Text != "" || strings.Contains(c.Log, "2026-10-17T") {
 		t.Errorf("full: %+v", c)
 	}
-	// A check by part of its name, passed ones too; this one has no log.
 	logs, _ = se.s.PRCheckLogs(se.ctx, se.admin, pr.ID, "WEB", false)
 	if len(logs.Checks) != 1 || logs.Checks[0].State != CheckSuccess || logs.Checks[0].Error != "the forge keeps no job log for this check" {
 		t.Errorf("web: %+v", logs.Checks)
@@ -218,7 +205,6 @@ func TestPRCheckLogs(t *testing.T) {
 	if _, err := se.s.PRCheckLogs(se.ctx, se.admin, pr.ID, "e2e", false); !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "its checks: "+ciBackendPR) {
 		t.Errorf("unknown check: %v", err)
 	}
-	// The forge can't be read now: the end Waypoint kept when it failed.
 	delete(se.sg.logs, ciBackendPR)
 	logs, _ = se.s.PRCheckLogs(se.ctx, se.admin, pr.ID, "", false)
 	if c := logs.Checks[0]; c.From != "kept" || !strings.Contains(c.Text, "--- FAIL: TestLogin") || !strings.Contains(c.Error, "Waypoint kept") {
@@ -247,13 +233,11 @@ func TestWaitCancelledRun(t *testing.T) {
 	if err != nil || w.Verdict != PRWaitWaiting || w.Why != "1 check still running" {
 		t.Fatalf("cancelled while the new run goes: %+v %v", w, err)
 	}
-	// A real failure in the new run still ends it at once.
 	se.checks(head, cancelled("ci / e2e (pull_request)", 762), CommitCheck{Name: "ci / lint (pull_request)", State: CheckFailed, Description: "Failing after 1m"},
 		CommitCheck{Name: ciBackendPR, State: CheckPending})
 	if w, _ := se.s.prWaitState(se.ctx, pr.ID, ""); w.Verdict != PRWaitFailed || !strings.HasPrefix(w.Why, "checks failed: ") {
 		t.Errorf("a real failure: %+v", w)
 	}
-	// Cancelled with nothing left running: that is its end.
 	se.checks(head, cancelled("ci / e2e (pull_request)", 762), CommitCheck{Name: ciBackendPR, State: CheckSuccess})
 	if w, _ := se.s.prWaitState(se.ctx, pr.ID, ""); w.Verdict != PRWaitFailed {
 		t.Errorf("cancelled, nothing running: %+v", w)
@@ -292,7 +276,6 @@ func TestReviewGoingQueuedWithinReviewWait(t *testing.T) {
 	if going, why := se.s.reviewGoing(se.ctx, se.pr(5)); !going || why != "a review is running" {
 		t.Fatalf("running: %v %q", going, why)
 	}
-	// No review wait: a queued review holds as before.
 	se.policy(MergePolicyInput{ReviewWaitMinutes: ptr(0)})
 	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE bot_runs SET status = 'queued'`); err != nil {
 		t.Fatal(err)

@@ -56,7 +56,7 @@ func TestLedgerReplay(t *testing.T) {
 		}
 		rounds := v.Babysit.Rounds
 		for i := range rounds {
-			rounds[i].Class = "" // classify them again
+			rounds[i].Class = ""
 		}
 		replayRounds(rounds, v.Comments, read)
 		for i := range rounds {

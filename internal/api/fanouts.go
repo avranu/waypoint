@@ -6,8 +6,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Fan-outs (WP-148): a plan's packages as budgeted task sessions.
-
 func (s *Server) createFanout(w http.ResponseWriter, r *http.Request) (any, error) {
 	var in core.FanoutInput
 	if err := decode(r, &in); err != nil {

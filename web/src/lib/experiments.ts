@@ -1,6 +1,3 @@
-// Experiments (WP-254): A/B tests of how agents work. The shapes the
-// server's /experiments routes answer with; the factories are in queries.ts.
-
 export interface ExperimentArm {
   key: string
   label: string
