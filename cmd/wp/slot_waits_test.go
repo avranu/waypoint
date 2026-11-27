@@ -150,4 +150,21 @@ func TestSlotWaitReaderSaysWhetherAProcessHoldsASlot(t *testing.T) {
 	if _, h := scan("got "+ms(5)+" 10 tests", "got "+ms(6)+" 11 autopush", "free "+ms(7)+" 10 tests"); !h {
 		t.Errorf("two holders, one freed: holding %v", h)
 	}
+
+	// A holder whose pid is another process's by a later look holds nothing.
+	path := filepath.Join(t.TempDir(), "waits")
+	if err := os.WriteFile(path, []byte("got "+ms(5)+" 10 tests\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := newSlotWaitReader(path)
+	started := "100"
+	r.alive = func(int) bool { return true }
+	r.started = func(int) string { return started }
+	if _, _, h := r.scan(at(100)); !h {
+		t.Errorf("a live holder doesn't hold")
+	}
+	started = "200"
+	if _, _, h := r.scan(at(101)); h {
+		t.Errorf("a process that reused the holder's pid still holds")
+	}
 }

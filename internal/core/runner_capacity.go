@@ -46,9 +46,9 @@ import (
 //
 // LaneAgent is a sixth (WP-1915, WP-ADR149 point 3 as changed by WP-ADR163
 // point 5): an agent job (JobAgent: a fix-up round, an automation's agent)
-// spends nearly all its life waiting for a model or for a test slot, and the
-// slots already bound what its builds and tests use. So it counts toward the
-// runner's heavy limit only while a command of it holds a slot, and toward
+// can wait long for a model or for a test slot, and the slots already bound
+// what its builds and tests use. So it counts toward the runner's heavy
+// limit only while a command of it holds a slot (under any name), and toward
 // its own ceiling (--max-agents, DefaultMaxAgents) all the time. The runner
 // stops taking one while memory is short, which the slots don't bound. A
 // runner whose wp has no agent lane takes it in the heavy lane.
@@ -138,7 +138,7 @@ type RunnerCapacity struct {
 	// heavy jobs then, unless it measures the machine calm; WP-1618).
 	BusyAt []time.Time `json:"busy_at,omitempty"`
 	// Running: jobs it runs now by lane.
-	// Heavy counts an agent job only while a command of it holds a test slot.
+	// Heavy counts an agent job only while a command of it holds a slot.
 	Heavy   int `json:"heavy"`
 	Light   int `json:"light"`
 	Gateway int `json:"gateway,omitempty"`

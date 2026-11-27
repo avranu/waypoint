@@ -69,7 +69,7 @@ func (p *runnerProc) jobClock(ctx context.Context, run *jobRun, workTimeout int)
 		fmt.Fprintf(run.out, "Couldn't make the file its commands note their waits for a test slot in, so those waits count as work in this job, and the runner counts it as holding a slot all along: %v\n", err)
 	}
 	aj := run.job
-	p.setSlotState(aj, time.Time{}, c.r == nil)
+	p.setSlotState(aj, c.r == nil)
 	var once sync.Once
 	end, watched := make(chan struct{}), make(chan struct{})
 	cancel := func() {
@@ -88,7 +88,7 @@ func (p *runnerProc) jobClock(ctx context.Context, run *jobRun, workTimeout int)
 				}
 				_ = os.Remove(c.path)
 			}
-			p.setSlotState(aj, time.Time{}, false)
+			p.setSlotState(aj, false)
 		})
 	}
 	if c.r != nil || c.work > 0 {
@@ -110,11 +110,10 @@ func (c *jobClock) env() []string {
 	return []string{slotWaitsEnv + "=" + c.path}
 }
 
-// watch looks at the waits file every clockEvery: it tells the runner since
-// when the job has been waiting for a slot and whether it holds one (an agent
-// job counts as heavy only then, WP-1915), and ends the context once the
-// agent has worked its limit. With no waits file nothing is left out of the
-// work.
+// watch looks at the waits file every clockEvery: it tells the runner whether
+// the job holds a slot (an agent job counts as heavy only then, WP-1915), and
+// ends the context once the agent has worked its limit. With no waits file
+// nothing is left out of the work.
 func (c *jobClock) watch(p *runnerProc, run *jobRun, end <-chan struct{}) {
 	aj := run.job
 	t := time.NewTicker(clockEvery)
@@ -130,12 +129,11 @@ func (c *jobClock) watch(p *runnerProc, run *jobRun, end <-chan struct{}) {
 		}
 		now := c.now()
 		var waited time.Duration
-		var since time.Time
 		held := c.r == nil
 		if c.r != nil {
-			waited, since, held = c.r.scan(now)
+			waited, _, held = c.r.scan(now)
 		}
-		p.setSlotState(aj, since, held)
+		p.setSlotState(aj, held)
 		if held != holding {
 			holding = held
 			p.wake()
@@ -168,17 +166,15 @@ func (c *jobClock) timedOutAfter() string {
 	return s
 }
 
-// setSlotState records since when the job has been waiting for a slot (zero:
-// it isn't) and whether it holds one; a job that has no activeJob (a test)
-// has nowhere to.
-func (p *runnerProc) setSlotState(aj *activeJob, since time.Time, holding bool) {
+// setSlotState records whether the job holds a slot; a job that has no
+// activeJob (a test) has nowhere to.
+func (p *runnerProc) setSlotState(aj *activeJob, holding bool) {
 	if aj == nil {
 		return
 	}
 	p.mu.Lock()
 	took := holding && !aj.slotHolding && aj.lane == laneAgent
 	aj.slotHolding = holding
-	aj.slotWaitSince = since
 	p.mu.Unlock()
 	// It is a heavy job from now, and its load comes later.
 	if took && p.gov != nil {

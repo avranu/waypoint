@@ -452,7 +452,8 @@ func (p *runnerProc) lightCeiling() int {
 }
 
 // running counts the jobs running now by lane. An agent job counts as heavy
-// only while a command of it holds a test slot (agents counts all of them):
+// only while a command of it holds a slot, under any name, since builds and
+// lint take slots of their own too (agents counts all of them):
 // waiting for a slot, or a model, takes nothing the slots don't bound
 // (WP-1915, WP-ADR149 point 3 as changed by WP-ADR163 point 5).
 func (p *runnerProc) running() (heavy, light, req, msg, gw int) {
@@ -479,7 +480,7 @@ func (p *runnerProc) running() (heavy, light, req, msg, gw int) {
 	return heavy, light, req, msg, gw
 }
 
-// agents counts the agent jobs running, and of them those holding a test slot.
+// agents counts the agent jobs running, and of them those holding a slot.
 func (p *runnerProc) agents() (total, holding int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -613,9 +614,8 @@ func (p *runnerProc) watchLoad(ctx context.Context) {
 }
 
 // look has the governor observe one sample. When that opens a lane it ends a
-// heartbeat poll: a lane it didn't ask for before, even as another closes
-// (memory back as the heavy limit comes down), is work the held poll can't
-// bring.
+// heartbeat poll: a lane it didn't ask for before, even if another closed
+// meanwhile (jobs change as it looks), is work the held poll can't bring.
 func (p *runnerProc) look(s loadSample) {
 	heavy, _, _, _, _ := p.running()
 	before, _ := p.slotsNow()

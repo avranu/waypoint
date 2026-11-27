@@ -157,7 +157,7 @@ func TestJobClockWaitedLine(t *testing.T) {
 }
 
 // Audit 1391.1 (second part): once cancel returns the watcher has stopped,
-// so it can't mark the job as waiting again after cancel cleared that.
+// so it can't mark the job as holding a slot again after cancel cleared that.
 func TestJobClockCancelStopsTheWatcherFirst(t *testing.T) {
 	p := clockProc(t)
 	clockEvery = time.Millisecond
@@ -165,10 +165,10 @@ func TestJobClockCancelStopsTheWatcherFirst(t *testing.T) {
 		aj := &activeJob{lane: laneHeavy}
 		run := &jobRun{id: int64(100 + i), timeout: time.Minute, out: newLogSink(), job: aj}
 		_, cancel, c := p.jobClock(context.Background(), run, 30)
-		appendWait(t, c, "wait")
+		appendWait(t, c, "got")
 		for range 200 {
 			p.mu.Lock()
-			set := !aj.slotWaitSince.IsZero()
+			set := aj.slotHolding
 			p.mu.Unlock()
 			if set {
 				break
@@ -178,10 +178,10 @@ func TestJobClockCancelStopsTheWatcherFirst(t *testing.T) {
 		cancel()
 		time.Sleep(3 * time.Millisecond)
 		p.mu.Lock()
-		since := aj.slotWaitSince
+		held := aj.slotHolding
 		p.mu.Unlock()
-		if !since.IsZero() {
-			t.Fatalf("run %d: still marked waiting after cancel", i)
+		if held {
+			t.Fatalf("run %d: still marked holding after cancel", i)
 		}
 	}
 }

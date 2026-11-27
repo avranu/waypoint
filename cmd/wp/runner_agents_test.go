@@ -262,24 +262,24 @@ func TestAgentCeilingWhereMemoryCannotBeMeasured(t *testing.T) {
 func TestAgentJobTakingASlotRestartsTheGrowthClock(t *testing.T) {
 	p := agentProc(4, 3)
 	a := p.addAgent(1, false)
-	p.setSlotState(a, time.Time{}, false)
+	p.setSlotState(a, false)
 	if !p.gov.started.IsZero() {
 		t.Fatal("a job holding no slot restarted the growth clock")
 	}
-	p.setSlotState(a, time.Time{}, true)
+	p.setSlotState(a, true)
 	first := p.gov.started
 	if first.IsZero() {
 		t.Fatal("taking a slot didn't restart the growth clock")
 	}
-	p.setSlotState(a, time.Time{}, true)
+	p.setSlotState(a, true)
 	if !p.gov.started.Equal(first) {
 		t.Error("holding on restarted the growth clock again")
 	}
 }
 
-// Audit 1998.4: a look that opens the agent lane as it closes the light one
-// asks for as many lanes as before, and still ends the held poll.
-func TestLookWakesTheRunnerWhenALaneOpensAsAnotherCloses(t *testing.T) {
+// Audit 1998.4: a look that opens a lane ends the held poll, here the agent
+// and light lanes as memory comes back while the load goes overloaded.
+func TestLookWakesTheRunnerWhenMemoryComesBackUnderLoad(t *testing.T) {
 	p := agentProc(2, 3)
 	p.c = &cli{out: &strings.Builder{}, err: &strings.Builder{}}
 	p.freed = make(chan struct{}, 1)
@@ -298,12 +298,14 @@ func TestLookWakesTheRunnerWhenALaneOpensAsAnotherCloses(t *testing.T) {
 	over.Load1 = 40 // overloaded, memory fine
 	p.look(over)
 	after, _ := p.slotsNow()
-	if slices.Contains(before, laneAgent) || !slices.Contains(before, laneLight) || !slices.Contains(after, laneAgent) || slices.Contains(after, laneLight) || len(after) != len(before) {
-		t.Fatalf("not a swap: %v, then %v", before, after)
+	for _, l := range []string{laneAgent, laneLight} {
+		if slices.Contains(before, l) || !slices.Contains(after, l) {
+			t.Fatalf("the %s lane didn't open: %v, then %v", l, before, after)
+		}
 	}
 	select {
 	case <-p.freed:
 	default:
-		t.Error("the agent lane opened and the held poll went on")
+		t.Error("lanes opened and the held poll went on")
 	}
 }
