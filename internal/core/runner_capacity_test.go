@@ -285,3 +285,183 @@ func TestGatewayAuditsHaveTheirOwnLane(t *testing.T) {
 		t.Error("an audit through the gateway was taken outside its lane")
 	}
 }
+
+// An agent job has a lane of its own (WP-1915): it counts toward a runner's
+// heavy limit only while a command of it holds a test slot, so the server
+// offers it only to a poll that asks for the agent lane, and says what holds
+// it up in the runner's own terms.
+func TestAgentJobsHaveTheirOwnLane(t *testing.T) {
+	e := newEnv(t)
+	r := e.runner(e.admin, "devhost", func(r *RunnerRegistration) {
+		r.CLIs = []RunnerCLI{{Name: "cursor"}}
+		r.Features = []string{FeatureAudit, FeatureAgentLane}
+		r.MaxJobs = 2
+	})
+	in, _ := json.Marshal(AgentJob{CLI: "cursor", Prompt: "fix it", Repo: "https://x.test/a/b.git"})
+	cmd := e.enqueue(e.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("make check", "/work")})
+	first := e.enqueue(e.admin, RunnerJobInput{Kind: JobAgent, Input: in})
+	second := e.enqueue(e.admin, RunnerJobInput{Kind: JobAgent, Input: in})
+
+	if w := e.poll(e.admin, r, RunnerPoll{Lanes: []string{LaneHeavy, LaneLight}}); w.Job == nil || w.Job.ID != cmd.ID {
+		t.Fatalf("heavy and light lanes took %+v, want the command %d and no agent job", w.Job, cmd.ID)
+	}
+	if w := e.poll(e.admin, r, RunnerPoll{Lanes: []string{LaneHeavy, LaneLight}}); w.Job != nil {
+		t.Fatalf("heavy and light lanes took the agent job %d", w.Job.ID)
+	}
+	if w := e.poll(e.admin, r, RunnerPoll{Lanes: []string{LaneAgent}}); w.Job == nil || w.Job.ID != first.ID || w.Job.Lane != LaneAgent {
+		t.Fatalf("agent lane took %+v, want %d in the agent lane", w.Job, first.ID)
+	}
+
+	why := func(id int64) string {
+		t.Helper()
+		j, err := e.s.GetRunnerJob(e.ctx, e.admin, id, -1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return j.Waiting
+	}
+	full := &RunnerCapacity{Limit: 1, Max: 2, Level: "calm", MaxAgents: 1, Agents: 1, AgentSlots: 0}
+	e.poll(e.admin, r, RunnerPoll{Lanes: []string{}, Capacity: full})
+	if got := why(second.ID); got != "devhost runs up to 1 agent job at once (--max-agents); it is running an agent job. This job is next." {
+		t.Errorf("agent ceiling reached: %q", got)
+	}
+	short := &RunnerCapacity{Limit: 1, Max: 2, Level: "calm", MaxAgents: 3, Agents: 1, AgentsStopped: "10% of memory free"}
+	e.poll(e.admin, r, RunnerPoll{Lanes: []string{}, Capacity: short})
+	if got := why(second.ID); got != "devhost takes no more agent jobs while memory is short (10% of memory free); it is running an agent job. This job is next." {
+		t.Errorf("memory short: %q", got)
+	}
+	room := &RunnerCapacity{Limit: 1, Max: 2, Level: "calm", MaxAgents: 3, Agents: 1}
+	e.poll(e.admin, r, RunnerPoll{Lanes: []string{}, Capacity: room})
+	if got := why(second.ID); !strings.HasPrefix(got, "devhost is online and should take it within seconds.") {
+		t.Errorf("room for another agent job: %q", got)
+	}
+
+	holding := &RunnerCapacity{Limit: 1, Max: 2, Level: "calm", MaxAgents: 3, Agents: 1, AgentSlots: 1, Heavy: 2}
+	e.poll(e.admin, r, RunnerPoll{Lanes: []string{}, Capacity: holding})
+	later := e.enqueue(e.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("true", "/work")})
+	if got := why(later.ID); !strings.Contains(got, "1 agent job holds a test slot, which counts as a heavy job while it does.") {
+		t.Errorf("heavy job behind an agent job holding a slot: %q", got)
+	}
+
+	// Only the agent job in a slot fills the limit: the command behind it
+	// doesn't start within seconds.
+	e.finishRunningBut(r, first.ID)
+	alone := &RunnerCapacity{Limit: 1, Max: 2, Level: "calm", MaxAgents: 3, Agents: 1, AgentSlots: 1, Heavy: 1}
+	e.poll(e.admin, r, RunnerPoll{Lanes: []string{}, Capacity: alone})
+	if got := why(later.ID); !strings.HasPrefix(got, "devhost takes 1 heavy job at once for now; 1 agent job holds a test slot, which counts as a heavy job while it does.") {
+		t.Errorf("only an agent job holding a slot: %q", got)
+	}
+	// A report that outlived its agent job counts no holder.
+	e.finishRunningBut(r, 0)
+	if got := why(later.ID); !strings.HasPrefix(got, "devhost is online and should take it within seconds.") {
+		t.Errorf("the slot holder ended since the report: %q", got)
+	}
+	// Memory short with no agent job running: it takes none, and says so.
+	idle := &RunnerCapacity{Limit: 1, Max: 2, Level: "calm", MaxAgents: 3, AgentsStopped: "10% of memory free"}
+	e.poll(e.admin, r, RunnerPoll{Lanes: []string{}, Capacity: idle})
+	if got := why(second.ID); !strings.HasPrefix(got, "devhost takes no more agent jobs while memory is short (10% of memory free); it is running no other job.") {
+		t.Errorf("memory short, nothing running: %q", got)
+	}
+
+	old := e.runner(e.admin, "oldhost", func(r *RunnerRegistration) {
+		r.CLIs = []RunnerCLI{{Name: "cursor"}}
+		r.Features = []string{FeatureAudit}
+	})
+	if w := e.poll(e.admin, old, RunnerPoll{Lanes: []string{LaneHeavy}}); w.Job == nil || w.Job.Kind != JobAgent || w.Job.Lane != LaneHeavy {
+		t.Fatalf("a runner without the agent lane took %+v, want an agent job in the heavy lane", w.Job)
+	}
+	if l := laneOn(&Runner{Features: []string{FeatureAgentLane}}, jobNeeds{kind: JobAgent}); l != LaneAgent {
+		t.Errorf("lane %q", l)
+	}
+	if l := laneOn(&Runner{Features: []string{FeatureAgentLane}}, jobNeeds{kind: JobSession}); l != LaneHeavy {
+		t.Errorf("a session's lane is %q: only agent jobs have slot waits to go by", l)
+	}
+	c := &RunnerCapacity{Level: "calm", Max: 4, MaxAgents: 99, Agents: 99, AgentSlots: 50, AgentsStopped: "x\ny"}
+	if !c.clean() || c.MaxAgents != MaxRunnerJobs || c.AgentSlots != c.Agents || strings.Contains(c.AgentsStopped, "\n") {
+		t.Errorf("clean: %+v", c)
+	}
+}
+
+// A runner with the light lane (WP-1943) takes audits beside a heavy job even
+// overloaded, so the server does not say it takes nothing; a runner without it
+// does share one job at a time between them, and says so.
+func TestLightJobTextsFollowTheRunnersRule(t *testing.T) {
+	audit, _ := json.Marshal(AgentJob{CLI: "cursor", Prompt: "audit", Repo: "https://x.test/a/b.git"})
+	over := &RunnerCapacity{Limit: 1, Max: 3, Level: "overloaded", Reason: "tasks waited for a CPU 58% of the time", Heavy: 1, MaxLight: LightLaneSlots}
+	for _, c := range []struct {
+		name     string
+		features []string
+		capacity *RunnerCapacity
+		want     string
+	}{
+		{"light lane", []string{FeatureAudit, FeatureLightLane}, over, "devhost is online and should take it within seconds."},
+		{"light lane, memory short", []string{FeatureAudit, FeatureLightLane}, &RunnerCapacity{Limit: 1, Max: 3, Level: "calm", Heavy: 1, MaxLight: LightLaneSlots, LightStopped: "10% of memory free"},
+			"devhost takes no more reviews or audits while memory is short (10% of memory free). This job is next."},
+		{"older runner", []string{FeatureAudit}, &RunnerCapacity{Limit: 1, Max: 3, Level: "overloaded", Reason: "tasks waited for a CPU 58% of the time", Heavy: 1},
+			"devhost is overloaded (tasks waited for a CPU 58% of the time), so it runs one job at a time; it is running a babysit round."},
+	} {
+		e := newEnv(t)
+		r := e.runner(e.admin, "devhost", func(r *RunnerRegistration) {
+			r.CLIs = []RunnerCLI{{Name: "cursor"}}
+			r.Features = c.features
+			r.MaxJobs = 3
+		})
+		e.enqueue(e.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("make check", "/work"), Source: "babysit"})
+		if w := e.poll(e.admin, r, RunnerPoll{Lanes: []string{LaneHeavy}}); w.Job == nil {
+			t.Fatalf("%s: the babysit round was not taken", c.name)
+		}
+		e.poll(e.admin, r, RunnerPoll{Lanes: []string{}, Capacity: c.capacity})
+		au := e.enqueue(e.admin, RunnerJobInput{Kind: JobAudit, Input: audit})
+		j, err := e.s.GetRunnerJob(e.ctx, e.admin, au.ID, -1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(j.Waiting, c.want) {
+			t.Errorf("%s: audit waits %q, want %q", c.name, j.Waiting, c.want)
+		}
+	}
+}
+
+// finishRunningBut marks r's running jobs done, all but job keep.
+func (e *env) finishRunningBut(r *Runner, keep int64) {
+	e.t.Helper()
+	if _, err := e.s.db.W.ExecContext(e.ctx, `UPDATE runner_jobs SET state = 'done' WHERE runner_id = ? AND state = 'running' AND id != ?`, r.ID, keep); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+// On a runner with the light lane a running audit is no part of why a command
+// waits, and the agent job in a test slot is (audit #2019.2); a runner that
+// runs fewer audits at once than LightLaneSlots is full at its own number.
+func TestWaitingTextsBesideTheLightLane(t *testing.T) {
+	e := newEnv(t)
+	r := e.runner(e.admin, "devhost", func(r *RunnerRegistration) {
+		r.CLIs = []RunnerCLI{{Name: "cursor"}}
+		r.Features = []string{FeatureAudit, FeatureAgentLane, FeatureLightLane}
+		r.MaxJobs = 3
+	})
+	job, _ := json.Marshal(AgentJob{CLI: "cursor", Prompt: "do it", Repo: "https://x.test/a/b.git"})
+	e.enqueue(e.admin, RunnerJobInput{Kind: JobAgent, Input: job})
+	e.enqueue(e.admin, RunnerJobInput{Kind: JobAudit, Input: job})
+	for _, l := range []string{LaneAgent, LaneLight} {
+		if w := e.poll(e.admin, r, RunnerPoll{Lanes: []string{l}}); w.Job == nil {
+			t.Fatalf("nothing taken in the %s lane", l)
+		}
+	}
+	e.poll(e.admin, r, RunnerPoll{Lanes: []string{}, Capacity: &RunnerCapacity{Limit: 1, Max: 3, Level: "overloaded", Reason: "load 3.0 per CPU", Heavy: 1, Light: 1, MaxLight: 1, MaxAgents: 3, Agents: 1, AgentSlots: 1}})
+	why := func(kind string, in json.RawMessage) string {
+		t.Helper()
+		q := e.enqueue(e.admin, RunnerJobInput{Kind: kind, Input: in})
+		j, err := e.s.GetRunnerJob(e.ctx, e.admin, q.ID, -1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return j.Waiting
+	}
+	if got := why(JobCommand, cmdInput("true", "/work")); !strings.HasPrefix(got, "devhost is overloaded (load 3.0 per CPU), so it runs one heavy job at a time; 1 agent job holds a test slot") {
+		t.Errorf("command: %q", got)
+	}
+	if got := why(JobAudit, job); !strings.HasPrefix(got, "devhost runs up to 1 review or audit at once beside its heavy jobs; it is running an audit.") {
+		t.Errorf("audit: %q", got)
+	}
+}
