@@ -9,10 +9,6 @@ import (
 	"time"
 )
 
-// A task given back (WP-776, WP-ADR75). What it waits for, if the agent said,
-// is a hold (hold_when.go). With nothing said it waits a little anyway, and
-// longer each time it comes back, so one task can't eat every session.
-
 const (
 	releaseBaseWait = 30 * time.Minute
 	releaseMaxWait  = 24 * time.Hour
@@ -129,7 +125,6 @@ func waitWords(d time.Duration) string {
 // nextReleaseWait is how long a release made now keeps the task from being
 // handed out, and how many in a row it makes.
 func (s *Service) nextReleaseWait(ctx context.Context, q queryer, issueID int64) (time.Duration, int, error) {
-	// Releases since the last time a person stepped in or a run finished it.
 	var n int
 	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM task_releases r WHERE r.issue_id = ? AND r.until_at IS NOT NULL AND NOT (`+releasePersonSince+`)
 		AND NOT EXISTS(SELECT 1 FROM agent_runs d WHERE d.issue_id = r.issue_id AND d.outcome = 'done' AND d.ended_at > r.released_at)`, issueID).Scan(&n); err != nil {

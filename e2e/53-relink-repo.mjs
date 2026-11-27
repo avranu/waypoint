@@ -82,7 +82,6 @@ async function look(width, target) {
 
 try {
   for (const [w, target] of looks([[1280, "me/new"], [390, "me/newer"]])) await look(w, target);
-  // The forge doesn't have it: the error is shown and nothing changes.
   const bad = await api("POST", `/projects/${KEY}/repos/${(await api("GET", `/projects/${KEY}/repos`))[0].id}/move`, { repo: "me/missing", relink: true });
   ok(/couldn't find/.test(JSON.stringify(bad)), `a missing repo is refused: ${JSON.stringify(bad)}`);
 } catch (e) {

@@ -1,10 +1,3 @@
-// One conversation's state (WP-ADR1): the stored transcript from Hermes's
-// REST API, plus the turn streaming now from the gateway's events. A
-// conversation is attached to the gateway (given a runtime id) only when it
-// is ours to drive: when you send, or when it is a Waypoint chat that is
-// still running. Someone else's running session (a schedule, Signal) is
-// followed by refetching its transcript instead, so it isn't taken over.
-
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { messagesQuery, type HermesSession, type StoredMessage } from '@/lib/assistant'
@@ -79,19 +72,15 @@ export function useConversation(assistantId: number, stored: string | null, row?
   const [runtime, setRuntime] = useState<string | null>(() =>
     stored ? (runtimes.get(rkey(assistantId, stored)) ?? null) : null,
   )
-  // A brand-new conversation has no stored rows until its first prompt.
   const [fresh, setFresh] = useState(false)
   const messages = useQuery({
     ...messagesQuery(assistantId, stored ?? ''),
     enabled: !!stored && !fresh,
-    // Follow a session running elsewhere (a schedule, Signal).
     refetchInterval: (q) =>
       row?.is_active && !runtime && turnOpen(q.state.data?.messages) ? 3000 : false,
   })
-  // Recently active and its last turn unanswered: it is running somewhere.
   const open = !!row?.is_active && turnOpen(messages.data?.messages)
 
-  // Token deltas arrive every ~33 ms; apply them once per frame.
   const pending = useRef<((t: LiveTurn) => LiveTurn)[]>([])
   const frame = useRef<number | undefined>(undefined)
   const update = useCallback((f: (t: LiveTurn) => LiveTurn) => {
@@ -105,8 +94,6 @@ export function useConversation(assistantId: number, stored: string | null, row?
     })
   }, [])
 
-  // Reset when the conversation changes, but not when the one started here
-  // gets its id.
   const created = useRef<string | null>(null)
   useEffect(() => {
     if (stored && stored === created.current) return
@@ -117,7 +104,6 @@ export function useConversation(assistantId: number, stored: string | null, row?
     setRuntime(stored ? (runtimes.get(rkey(assistantId, stored)) ?? null) : null)
   }, [assistantId, stored])
 
-  // The bridge reconnected to Hermes: runtime ids from before are gone.
   useEffect(() => {
     if (live.epoch === 0) return
     for (const k of [...runtimes.keys()]) if (k.startsWith(assistantId + ':')) runtimes.delete(k)
@@ -165,7 +151,6 @@ export function useConversation(assistantId: number, stored: string | null, row?
     [assistantId],
   )
 
-  // A Waypoint chat that is still running: attach to see it stream.
   useEffect(() => {
     if (!stored || runtime || !open || row?.source !== 'waypoint') return
     if (live.state !== 'open') return
@@ -480,8 +465,6 @@ function readDataURL(f: File): Promise<string> {
   })
 }
 
-// ---- the stored transcript as display rows ----
-
 export type Row =
   | { kind: 'user'; id: number; text: string; images: number; at: number }
   | {
@@ -521,7 +504,6 @@ export function toRows(ms: StoredMessage[]): Row[] {
       })
       const reasoning = m.reasoning || m.reasoning_content || undefined
       if (!text.trim() && !tools.length && !reasoning) continue
-      // Text after tools in the same reply goes to the previous row's tools.
       rows.push({ kind: 'assistant', id: m.id, text, reasoning, tools, at: m.timestamp })
     } else if (m.role === 'tool' && m.tool_call_id && !used.has(m.tool_call_id)) {
       rows.push({

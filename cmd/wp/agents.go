@@ -8,9 +8,6 @@ import (
 	"time"
 )
 
-// The agent queue and its controls (WP-D15): what wp next will hand out
-// and why, the agents seen at work, and pausing them.
-
 var queueCmd = &command{
 	name: "queue", group: "Tasks", args: "[FLAGS]",
 	summary: "show what wp next will hand out, in order, and why",

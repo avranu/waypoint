@@ -28,7 +28,6 @@ func TestProcMeterReadsTheMachine(t *testing.T) {
 	if !s.measured || s.Load1 != 14.18 || s.CPUSome != 24.19 || s.MemSome != 1.5 || s.IOFull != 2.81 || s.MemFree != 0.75 || s.Busy != -1 {
 		t.Fatalf("first look %+v", s)
 	}
-	// 300 more jiffies busy of 400: three quarters of the CPUs.
 	write("proc/stat", "cpu  250 0 250 750 150 0 0 0 0 0\n")
 	if s = m.sample(); s.Busy != 0.75*float64(s.CPUs) {
 		t.Fatalf("busy %v of %d CPUs, want three quarters", s.Busy, s.CPUs)

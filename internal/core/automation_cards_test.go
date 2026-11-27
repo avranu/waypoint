@@ -41,7 +41,6 @@ func TestAgentCardsAreValid(t *testing.T) {
 	if seen != len(want) {
 		t.Errorf("%d of %d cards are in the gallery", seen, len(want))
 	}
-	// The weekly example is Tuesday at 12:00 on Muse Spark, an agent that may edit but not run commands.
 	weekly := templateRule(t, "Weekly code review into a PR")
 	if weekly.Trigger.Weekday != 2 || weekly.Trigger.At != "12:00" || weekly.Trigger.Every != "week" {
 		t.Errorf("schedule = %+v", weekly.Trigger)
@@ -62,13 +61,11 @@ func TestAgentActivityAndTheDigestCard(t *testing.T) {
 	p := e.project(e.admin, "Digest", "")
 	digest := e.addAuto(p, "Digest", templateRule(t, "Daily digest of agent work"))
 
-	// A quiet day: no model call, no notification.
 	e.s.RunTimedAutomations(e.ctx)
 	e.s.DrainAutomationRuns(e.ctx)
 	if runs := e.runs(digest); len(runs) != 1 || runs[0].Status != RunSucceeded || len(llm.prompts) != 0 {
 		t.Fatalf("quiet day: %+v, %d prompts", runs, len(llm.prompts))
 	}
-	// An agent finishes a task: the next morning's digest has it.
 	it := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Urgent parser bug", Agent: "claude"})
 	tok, _, err := e.s.CreateToken(e.ctx, e.admin, TokenSpec{Name: "code", Agent: "anthropic/claude-code"})
 	if err != nil {
@@ -81,7 +78,6 @@ func TestAgentActivityAndTheDigestCard(t *testing.T) {
 	if _, err := e.s.AgentDone(e.ctx, code, it.Key, AgentDoneInput{Comment: "done"}); err != nil {
 		t.Fatal(err)
 	}
-	// The step on its own reads the overview into text and counts.
 	one := e.addAuto(p, "Activity", Rule{Trigger: Trigger{Event: "manual"}, Actions: []Action{
 		{Type: "agent_activity", ID: "a", Extra: map[string]any{"days": 1}},
 		{Type: "notify", User: "admins", Title: "Activity", Message: "{{.Steps.a.Done}} done: {{.Steps.a.Text}}"},
@@ -92,7 +88,6 @@ func TestAgentActivityAndTheDigestCard(t *testing.T) {
 	if got.Status != RunSucceeded || stepByID(got, "a").Outputs["Done"] != 1.0 || !strings.Contains(stepByID(got, "a").Outputs["Text"].(string), it.Key) {
 		t.Fatalf("activity: %s %q %+v", got.Status, got.Error, stepByID(got, "a").Outputs)
 	}
-	// The digest card now asks the model, with the activity inside untrusted markers, and tells the owners.
 	e.setClock(e.clockNow().Add(24 * time.Hour))
 	e.s.RunTimedAutomations(e.ctx)
 	e.s.DrainAutomationRuns(e.ctx)

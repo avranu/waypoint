@@ -51,17 +51,12 @@ func TestReviewAgainConflictReturns(t *testing.T) {
 				return ""
 			}
 			res, err := e.shipChecked(e.box, e.task.Key)
-			// The loser isn't told to run the same command again (WP-1370):
-			// Waypoint carries the round on from where it stands, and the
-			// ship that reads afterwards either finds the pull request
-			// opened or is told Waypoint moved on, with nothing to run.
 			if err != nil || res == nil || res.HeldNeedsAgent || (res.Pull == nil && !strings.Contains(res.Held, "Waypoint moved")) {
 				t.Fatalf("ship = %+v, %v, want what Waypoint did, nothing to run", res, err)
 			}
 			if !once {
 				t.Fatal("the decision model was never asked")
 			}
-			// The loser scheduled nothing.
 			var rounds int
 			_ = e.s.db.R.QueryRow(`SELECT count(*) FROM work_log WHERE kind = 'review' AND id > ?`, r1).Scan(&rounds)
 			if tc.name == "another ship recorded a newer round" {

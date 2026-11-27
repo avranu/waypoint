@@ -37,11 +37,9 @@ func TestDecideRoundNeverStrands(t *testing.T) {
 														}
 														out := decideRound(in)
 														n++
-														// Formatted only on a failure: built for each of the
-														// million combinations, it was most of the test's time.
 														name := func() string { return fmt.Sprintf("%+v -> %+v", in, out) }
 														over := state == RoundFailed || state == RoundSkipped || state == RoundInterrupted
-														waypoints := runOpen && !prOpen // an open run with no pull request: Waypoint's to carry on
+														waypoints := runOpen && !prOpen
 														if out.Do == doEnd && (out.To == "" || out.Why == "" || (state != RoundPending && state != RoundRunning && out.Told == "")) {
 															t.Fatalf("an end says nothing or ends a round that isn't going: %s", name())
 														}
@@ -106,8 +104,6 @@ func TestDecideRoundNeverStrands(t *testing.T) {
 			}
 		}
 	}
-	// Past every limit, with nobody to tell, a round that could still wait
-	// or tell has to end.
 	for _, state := range []string{RoundPending, RoundRunning, RoundDone} {
 		for _, check := range []string{checkAbsent, checkQueued, checkRunning, checkAgreed, checkDisagreed, checkDidnt} {
 			in := roundIn{State: state, Read: readDone, Audit: AuditDone, Undecided: 1, Check: check, RunOpen: true,
@@ -117,8 +113,6 @@ func TestDecideRoundNeverStrands(t *testing.T) {
 			}
 		}
 	}
-	// The session's ship of an audited round (shipAudited) reports only a
-	// pending round whose finished audit read something and left nothing.
 	for _, state := range []string{RoundPending, RoundRunning, RoundDone, RoundSkipped, RoundInterrupted, RoundFailed} {
 		for _, audit := range []string{"", AuditQueued, AuditRunning, AuditDone, AuditFailed} {
 			for _, undecided := range []int{0, 2} {
@@ -254,15 +248,12 @@ func TestDecideEndedRoundNeverStrands(t *testing.T) {
 									Newer: flag(7), Taken: flag(8), Unshipped: flag(9), SessionEnded: flag(10)}
 								if state == RoundSkipped || state == RoundFailed || state == RoundInterrupted {
 									in.Release = "the review " + state
-									if flag(0) && flag(1) { // (a person's decision stands: no release)
+									if flag(0) && flag(1) {
 										in.Release = ""
 									}
 								}
 								out := decideRound(in)
 								n++
-								// Formatted only on a failure: built for each of the
-								// seven million combinations, it was nearly all of the
-								// test's time (10 to 15 minutes under -race in CI).
 								name := func() string { return fmt.Sprintf("%+v -> %+v", in, out) }
 								switch out.Do {
 								case doNothing:
@@ -282,12 +273,9 @@ func TestDecideEndedRoundNeverStrands(t *testing.T) {
 										t.Fatalf("released a round that is left alone: %s", name())
 									}
 								}
-								// Nothing the exclusions leave a round for may be released, and
-								// a round none leaves alone is: opened (done, failed, skipped,
-								// interrupted with a reason to release) or ended in its own state.
 								free := in.Unshipped && !in.PROpen && !in.PRGone && !in.Linked && !in.Resolved && !in.Superseded && !in.Newer && !in.Taken && in.SinceEnd <= strandedShipWindow
 								over := state == RoundSkipped || state == RoundFailed || state == RoundInterrupted
-								unreviewed := state == RoundDone && !in.reviewed() // asked for its report, or ended and told (WP-1370), never opened
+								unreviewed := state == RoundDone && !in.reviewed()
 								if free && out.Do != doEnd && (!unreviewed || (out.Do != doTell && out.Do != doWait)) && (state == RoundDone || (over && in.Release != "")) && out.Do != doReleaseAfterRunEnded {
 									t.Fatalf("an unshipped round of an ended run isn't released: %s", name())
 								}

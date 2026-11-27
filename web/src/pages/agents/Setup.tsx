@@ -1,9 +1,3 @@
-// Agents page, Setup tab (WP-208, WP-ADR44): is every repo and machine set up
-// the same way? The shared instructions Waypoint publishes into each repo's
-// root CLAUDE.md or AGENTS.md; every attached repo's agent files, the
-// components it has that others lack and the ones it lacks, and Waypoint's
-// checks on it; the same for the machines people's wp reports from.
-
 import { useMemo, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -95,8 +89,6 @@ export function SetupTab(_: HubTabProps) {
     </div>
   )
 }
-
-// ---- at a glance ----
 
 function Glance({ s }: { s: AgentSetup }) {
   const repos = tally(s.repos)
@@ -190,8 +182,6 @@ function Dot({ status }: { status: SetupStatus }) {
     />
   )
 }
-
-// ---- shared instructions ----
 
 function SharedCard({ s }: { s: AgentSetup }) {
   const cur = s.shared.current
@@ -364,8 +354,6 @@ function SharedCard({ s }: { s: AgentSetup }) {
   )
 }
 
-// ---- repos ----
-
 type Show = 'attention' | 'all'
 
 /** The repo's agent kit isn't current on any checkout: a roll-out is what fixes it. */
@@ -506,15 +494,12 @@ function RepoRow({
   canRollOut: boolean
 }) {
   const [expanded, setExpanded] = useState(false)
-  // The shared block's badge and pull request say where it stands; its
-  // check line only when publishing failed.
   const problems = r.checks.filter(
     (c) => c.state !== 'ok' && (c.key !== 'shared' || !!r.shared_error),
   )
   const only = r.components.filter((c) => c.only_here)
   const url = safeUrl(r.url)
   const sharedInfo = SHARED[r.shared]
-  // The row says what is wrong; opening it adds only what it doesn't.
   const passing = r.checks.filter((c) => !problems.includes(c))
   const shownError = problems.some((c) => c.key === 'shared' && c.note === r.shared_error)
   const detail =
@@ -824,8 +809,6 @@ function Components({ components }: { components: SetupComponent[] }) {
   )
 }
 
-// ---- machines ----
-
 function MachinesSection({ s, onOpen }: { s: AgentSetup; onOpen: (o: Opened) => void }) {
   return (
     <Section
@@ -953,8 +936,6 @@ function MachineRow({
   )
 }
 
-// ---- one file ----
-
 function FileDialog({
   opened,
   onMove,
@@ -973,8 +954,6 @@ function FileDialog({
   const f = useQuery(query)
   const [draft, setDraft] = useState<string | null>(null)
   const [message, setMessage] = useState('')
-  // The file's blob id when the edit began: a refetch while editing mustn't
-  // move it, or the server's check against a changed file would pass.
   const [baseSha, setBaseSha] = useState('')
   const edit = useEditAgentFile()
   const move = (step: number) => {

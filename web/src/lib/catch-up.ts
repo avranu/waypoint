@@ -1,6 +1,3 @@
-// Catch up (WP-245): finished work an agent closed that no person has
-// looked at yet, one task at a time. See internal/core/catch_up.go.
-
 import type { Attachment, IssueRef } from './types'
 import type { DeliveryStage } from './delivery'
 

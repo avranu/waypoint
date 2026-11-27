@@ -332,7 +332,6 @@ func TestFindingAndAuditMistakes(t *testing.T) {
 		t.Fatalf("audits: %+v", audits)
 	}
 
-	// An audit of the pull request, or of the branch it came from, is its unit.
 	unitOf := func(audit int64) string {
 		t.Helper()
 		pe.mexec(`INSERT INTO code_audit_findings(audit_id, ordinal, title, path, state) VALUES (?, 1, 'stale cursor', 'z.go', 'fixed')`, audit)
@@ -471,12 +470,12 @@ func TestJoinOpenFlakes(t *testing.T) {
 	}
 	list := []*mistake{
 		flake("1", 1, 10, "oom"),
-		flake("2", 5, 20, "oom"),  // while 1 was open: its closing extends the episode
-		flake("3", 15, 25, "oom"), // while 2 was: still one
-		flake("4", 30, 0, "oom"),  // closed by then: a new episode, still open
-		flake("5", 40, 50, "oom"), // while 4 is open
-		flake("6", 2, 3, "other"), // another cause
-		flake("7", 2, 3, ""),      // no cause on record
+		flake("2", 5, 20, "oom"),
+		flake("3", 15, 25, "oom"),
+		flake("4", 30, 0, "oom"),
+		flake("5", 40, 50, "oom"),
+		flake("6", 2, 3, "other"),
+		flake("7", 2, 3, ""),
 	}
 	joinOpenFlakes(list)
 	var units []string

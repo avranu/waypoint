@@ -13,14 +13,6 @@ import (
 	"unicode/utf8"
 )
 
-// Autopilot (WP-194, WP-ADR9): a person turns it on per project, and when an
-// agent session of theirs there has finished its task, their runner ends the
-// session in its tmux pane and starts a new one for the next task, in its own
-// worktree (WP-ADR57), with that task's wp next answer as the prompt. Limits
-// pause it: the last hour's spend, and the week's and five hours' quota.
-// This file holds the settings and the limits; autopilot_step.go judges
-// sessions and moves them on; task_summaries.go keeps what agents said.
-
 // Waypoint's defaults (WP-ADR9 has the numbers behind them).
 const (
 	// DefaultAutopilotHourlyUSD: person-wide spend in the last hour, at list
@@ -45,6 +37,9 @@ const (
 	// DefaultAutopilotMerge: wait for an unmerged pull request only when the
 	// next task builds on it.
 	DefaultAutopilotMerge = MergeWaitAuto
+	// DefaultAutopilotDeferred: wp ship from an Opus or Fable session first
+	// offers the tasks it filed meanwhile (WP-1858).
+	DefaultAutopilotDeferred = true
 	// DefaultAutopilotReview: no adversarial review round before moving a
 	// session on, unless the person turns it on (WP-285).
 	DefaultAutopilotReview = false
@@ -88,8 +83,8 @@ const (
 
 // Merge policies: when the next task waits for the last one's pull request.
 const (
-	MergeWaitAuto   = "auto"   // only a task related to the unmerged one waits (and unrelated ones go first)
-	MergeWaitAlways = "always" // the next task waits for the session's open pull requests
+	MergeWaitAuto   = "auto"
+	MergeWaitAlways = "always"
 	MergeWaitNever  = "never"
 )
 
@@ -104,6 +99,10 @@ type AutopilotLimits struct {
 	FiveHourMax  *float64 `json:"five_hour_max,omitempty"`
 	Merge        *string  `json:"merge,omitempty"`
 	GraceSeconds *int     `json:"grace_seconds,omitempty"`
+	// Deferred: a ship by an Opus or Fable session stops once to list the
+	// tasks it filed meanwhile that are ready, for it to do with the change
+	// (WP-1858, deferred.go).
+	Deferred *bool `json:"deferred,omitempty"`
 	// Review: before moving a session on, compact it and ask it for an
 	// adversarial review of its finished task (WP-285); ReviewPrompt is
 	// what it is asked ("" or unset: DefaultReviewPrompt).
@@ -152,6 +151,7 @@ func (l AutopilotLimits) over(o AutopilotLimits) AutopilotLimits {
 	lay(&l.FiveHourMax, o.FiveHourMax)
 	lay(&l.Merge, o.Merge)
 	lay(&l.GraceSeconds, o.GraceSeconds)
+	lay(&l.Deferred, o.Deferred)
 	lay(&l.Review, o.Review)
 	lay(&l.ReviewPrompt, o.ReviewPrompt)
 	lay(&l.ReviewSkip, o.ReviewSkip)
@@ -186,7 +186,7 @@ func ptrOf[T any](v T) *T { return &v }
 func waypointAutopilotDefaults() AutopilotLimits {
 	return AutopilotLimits{MaxHourlyUSD: ptrOf(DefaultAutopilotHourlyUSD), WeekAhead: ptrOf(DefaultAutopilotWeekAhead), WeekMax: ptrOf(DefaultAutopilotWeekMax),
 		WeekEndHours: ptrOf(DefaultAutopilotWeekEnd), FiveHourMax: ptrOf(DefaultAutopilotFiveHourMax), Merge: ptrOf(DefaultAutopilotMerge), GraceSeconds: ptrOf(DefaultAutopilotGrace),
-		Review: ptrOf(DefaultAutopilotReview), ReviewPrompt: ptrOf(DefaultReviewPrompt), ReviewSkip: ptrOf(DefaultReviewSkip),
+		Deferred: ptrOf(DefaultAutopilotDeferred), Review: ptrOf(DefaultAutopilotReview), ReviewPrompt: ptrOf(DefaultReviewPrompt), ReviewSkip: ptrOf(DefaultReviewSkip),
 		ReviewText: ptrOf(""), ReviewModel: ptrOf(ReviewModelAuto),
 		MinPriority: ptrOf(""), DueWithinDays: ptrOf(0), Approved: ptrOf(false), Planned: ptrOf(false), Query: ptrOf(""),
 		PerHour: ptrOf(DefaultAutopilotPerHour), PerDay: ptrOf(0), SpacingMinutes: ptrOf(0), AtOnce: ptrOf(DefaultAutopilotAtOnce), MergeWaitHours: ptrOf(DefaultAutopilotMergeWaitHours),
@@ -322,7 +322,7 @@ const autopilotQuotaOffMax = 7 * 24 * time.Hour
 type autopilotRow struct {
 	enabled       bool
 	limits        AutopilotLimits
-	quotaOffUntil int64 // ms; the defaults row's
+	quotaOffUntil int64
 }
 
 // autopilotRows reads a person's settings: the defaults row (project 0) and
@@ -343,7 +343,7 @@ func (s *Service) autopilotRows(ctx context.Context, q queryer, userID int64) (m
 			return nil, err
 		}
 		r.enabled = en != 0
-		_ = json.Unmarshal([]byte(raw), &r.limits) // a bad row inherits everything
+		_ = json.Unmarshal([]byte(raw), &r.limits)
 		out[pid] = r
 	}
 	return out, rows.Err()
@@ -454,8 +454,6 @@ func (s *Service) SetAutopilot(ctx context.Context, a *Actor, project string, in
 	if err := a.need(PermSessionsStart); err != nil {
 		return nil, err
 	}
-	// Turning it off an agent may do; turning it on or changing a limit only
-	// a person, directly.
 	if offOnly := in.Enabled != nil && !*in.Enabled && in.Merge && !in.Reset && in.Limits == (AutopilotLimits{}) && in.QuotaOffUntil == nil; offOnly {
 		if err := a.requireHuman("changing autopilot"); err != nil {
 			return nil, err
@@ -490,7 +488,7 @@ func (s *Service) SetAutopilot(ctx context.Context, a *Actor, project string, in
 	if project != "" && (in.Limits.SpendLeft != nil || in.Limits.SpendAtOnce != nil) {
 		return nil, invalid("using what's left at the week's end is set for all your projects at once: give no project")
 	}
-	var quotaOff int64 = -1 // -1 leaves it
+	var quotaOff int64 = -1
 	if in.QuotaOffUntil != nil {
 		if project != "" {
 			return nil, invalid("the quota limits are turned off for all your projects at once: give no project")
@@ -505,7 +503,6 @@ func (s *Service) SetAutopilot(ctx context.Context, a *Actor, project string, in
 	}
 	uid := a.id()
 	turnedOff := false
-	// Held reviews the switch leaves to finish, and the steps carrying them.
 	var heldKeys []string
 	var heldSteps []int64
 	var heldBefore []bool
@@ -522,9 +519,6 @@ func (s *Service) SetAutopilot(ctx context.Context, a *Actor, project string, in
 		case in.Merge:
 			r.limits = r.limits.over(in.Limits)
 		default:
-			// A form replacing the limits leaves the week's-end settings
-			// it doesn't give: their own switch sets them, and a form
-			// saved just after it would otherwise put back what it read.
 			keep := r.limits
 			r.limits = in.Limits
 			if pid == 0 && r.limits.SpendLeft == nil {
@@ -557,8 +551,6 @@ func (s *Service) SetAutopilot(ctx context.Context, a *Actor, project string, in
 			uid, proj, boolInt(r.enabled), string(raw), r.quotaOffUntil, now); err != nil {
 			return err
 		}
-		// When the limits went off, for the quota guard's daily check
-		// (WP-ADR112): an extension keeps the first time.
 		if quotaOff > 0 && !wasOff {
 			if _, err := t.ExecContext(ctx, `UPDATE autopilot_settings SET quota_off_at = ? WHERE user_id = ? AND coalesce(project_id, 0) = ?`, now, uid, pid); err != nil {
 				return err
@@ -579,15 +571,12 @@ func (s *Service) SetAutopilot(ctx context.Context, a *Actor, project string, in
 		what += reviewProfileChange(before, r.limits)
 		t.audit(AuditEntry{Action: action, Category: AuditControl, ProjectID: pid, TargetType: "project", TargetID: pid, Target: what})
 		if quotaOff > 0 {
-			// What waits on a quota limit goes on at the next tick.
 			if _, err := t.ExecContext(ctx, `UPDATE autopilot_steps SET due_at = ?, updated_at = ? WHERE user_id = ? AND state = ? AND reason IN (?, ?, ?)`,
 				now, now, uid, StepWaiting, PauseWeek, PauseWeekMax, PauseFiveHour); err != nil {
 				return err
 			}
 		}
 		if !turnedOff {
-			// What waits on the pace or the criteria looks again at the next
-			// tick, under the new settings.
 			scope, args := "project_id = ?", []any{pid}
 			if pid == 0 {
 				scope, args = "1", nil
@@ -598,10 +587,6 @@ func (s *Service) SetAutopilot(ctx context.Context, a *Actor, project string, in
 			}
 		}
 		if turnedOff {
-			// What it was about to do stops, a job on its way included; a
-			// session it already started carries on. So does a review already asked
-			// for, before or after its pull request: that task is shipped, and the
-			// switch is about the next one (roundOwed).
 			if err := s.stopOwnStarts(ctx, t, uid, pid, "off", "autopilot was turned off"); err != nil {
 				return err
 			}
@@ -634,8 +619,6 @@ func (s *Service) SetAutopilot(ctx context.Context, a *Actor, project string, in
 						return err
 					}
 					heldKeys, heldSteps, heldBefore = append(heldKeys, key), append(heldSteps, l.step), append(heldBefore, before != "")
-					// A kept step that waits on a pause or a schedule is looked at
-					// again now: the review it owes doesn't wait for Monday.
 					if _, err := t.ExecContext(ctx, `UPDATE autopilot_steps SET due_at = ?, updated_at = ? WHERE id = ? AND state = ? AND due_at > ?`,
 						now, now, l.step, StepWaiting, now); err != nil {
 						return err
@@ -669,7 +652,6 @@ func (s *Service) TurnOffAutopilot(ctx context.Context, a *Actor) (*AutopilotOve
 	if err != nil {
 		return nil, err
 	}
-	// One project failing must not leave the rest on: try each, then report.
 	var errs []error
 	for _, p := range o.Projects {
 		if !p.Enabled {
@@ -684,8 +666,6 @@ func (s *Service) TurnOffAutopilot(ctx context.Context, a *Actor) (*AutopilotOve
 	}
 	return s.AutopilotOverview(ctx, a)
 }
-
-// ---- the limits ----
 
 // autopilotMeter reads what the limits look at for the person.
 func (s *Service) autopilotMeter(ctx context.Context, uid int64) (*AutopilotMeter, error) {
@@ -716,9 +696,6 @@ func (s *Service) autopilotMeter(ctx context.Context, uid int64) (*AutopilotMete
 	if err != nil {
 		return nil, err
 	}
-	// A reading from before the window reset, or older than six hours, says
-	// nothing about now (the status line posts one every few minutes while
-	// any session runs). Its pace is judged when it was taken.
 	if ok && reset.After(now) && now.Sub(at) < quotaFresh {
 		even := 100 * (1 - float64(reset.Sub(at))/float64(7*24*time.Hour))
 		m.WeekPercent, m.WeekEven, m.WeekResetsAt, m.QuotaSampled = ptrOf(pct), ptrOf(math.Round(max(0, even)*10)/10), ptrOf(reset), ptrOf(at)
@@ -796,8 +773,6 @@ func autopilotPaused(m *AutopilotMeter, l AutopilotLimits, now time.Time) (why s
 	if max := valueOf(l.MaxHourlyUSD); max > 0 && m.HourlyUSD >= max {
 		return fmt.Sprintf("the last hour cost $%.0f, over the $%.0f limit", m.HourlyUSD, max), now.Add(5 * time.Minute)
 	}
-	// The live quota guard's hold (WP-932): a runaway, not a share of the
-	// quota, so turning the quota limits off doesn't lift it.
 	if h := m.GuardHold; h != nil && h.Until.After(now) {
 		return guardPausePrefix + h.Reason, minTime(h.Until, now.Add(5*time.Minute))
 	}

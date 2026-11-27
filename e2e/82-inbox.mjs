@@ -43,7 +43,6 @@ for (const [width, scheme] of looks(
   const me = `inbox${id}`;
   const password = "inbox check long password";
   try {
-    // robin sets the scene: a new admin, a project, and what happens to it.
     const robinCtx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     const robin = await login(robinCtx, "robin", "correct horse battery");
     const rcall = (m, p, d) => robin.request.fetch(base + "/api/v1" + p, { method: m, headers: H, data: d });
@@ -60,14 +59,12 @@ for (const [width, scheme] of looks(
     const overflow = () => page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
     const api = (p) => page.request.fetch(base + "/api/v1" + p, { headers: H }).then((r) => r.json());
 
-    // ---- empty ----
     await page.goto(base + "/inbox");
     await page.getByText("Nothing needs you").waitFor();
     ok(await page.getByText("All caught up").first().isVisible(), `${tag} a new inbox says it is caught up`);
     ok(!(await overflow()), `${tag} empty: no sideways scroll`);
     await shot("empty");
 
-    // ---- seed: 6 open issues with 4 notifications each, 3 closed ones, many old alerts ----
     const open = [];
     const closed = [];
     for (let i = 0; i < 9; i++) {
@@ -93,7 +90,6 @@ for (const [width, scheme] of looks(
     ok(inbox.summary.stale_unread >= 400 && inbox.stale.some((g) => g.reason === "Issue closed") && inbox.stale.some((g) => g.reason === "Over 3 days old"), `${tag} API: ${inbox.summary.stale_unread} stale, with reasons`);
     ok(inbox.live[0].tier === "you" && inbox.live.at(-1).kind === "quota", `${tag} API: asked-of-you first, alerts after`);
 
-    // ---- many items, grouped ----
     await page.goto(base + "/inbox");
     const live = page.locator("[data-inbox-tier] > ul > li");
     await live.first().waitFor();
@@ -104,25 +100,21 @@ for (const [width, scheme] of looks(
     ok((await summary.innerText()).includes(String(liveCount)) && /Oldest waiting/.test(await summary.innerText()), `${tag} the summary counts ${liveCount} and says what waited longest`);
     ok(/comments/.test(await summary.getByRole("list", { name: "By kind" }).innerText()), `${tag} the summary counts by kind`);
     const badge = await page.locator("aside a[href='/inbox'], nav a[href='/inbox']").filter({ visible: true }).first().innerText();
-    // The badge adds the requests waiting on you (other suites leave some open).
     const waitingTotal = (await api("/waiting")).total ?? 0;
     ok(badge.match(/\d+/)?.[0] === String(liveCount + waitingTotal), `${tag} the badge counts what matters (${JSON.stringify(badge)}: ${liveCount} live + ${waitingTotal} waiting), not the ${inbox.summary.unread} unread`);
     ok(await page.getByRole("heading", { name: "Asked of you" }).isVisible(), `${tag} sorted into tiers`);
     await shot("many");
     ok(!(await overflow()), `${tag} many: no sideways scroll`);
 
-    // one row expands into its notifications
     await row.getByRole("button", { name: /Show all 4 notifications/ }).click();
     await row.getByText("Pushed a fix, waiting on CI.").first().waitFor();
     ok(true, `${tag} a row opens into its notifications`);
     await shot("grouped");
 
-    // ---- filter by kind ----
     await summary.getByRole("button", { name: /assignments?/ }).click();
     ok((await live.count()) === 6, `${tag} the assignments chip keeps ${await live.count()} things`);
     await summary.getByRole("button", { name: /assignments?/ }).click();
 
-    // ---- stale folds away ----
     const stale = page.locator("[data-inbox-section=stale]");
     ok((await stale.locator("li").count()) === 0, `${tag} stale items start folded`);
     await shot("stale-collapsed");
@@ -132,7 +124,6 @@ for (const [width, scheme] of looks(
     await shot("stale-open");
     ok(!(await overflow()), `${tag} stale open: no sideways scroll`);
 
-    // ---- bulk: one group, then all the stale ----
     await row.getByRole("button", { name: /Mark .* read/ }).click();
     await page.waitForFunction(() => document.querySelectorAll('[data-inbox-tier] > ul > li').length === 6);
     ok((await live.count()) === 6, `${tag} marking a group read takes its row away`);
@@ -145,7 +136,6 @@ for (const [width, scheme] of looks(
     await shot("bulk");
     await stale.getByRole("button", { name: /stale read/ }).click();
     await page.waitForFunction(() => !document.querySelector("[data-inbox-section=stale]"));
-    // the list updates at once; the server follows
     let after = await api("/inbox");
     for (let i = 0; i < 20 && after.summary.stale_unread; i++) {
       await page.waitForTimeout(250);
@@ -156,7 +146,6 @@ for (const [width, scheme] of looks(
     ok((await page.locator("[data-inbox-section=earlier] li").count()) > 0, `${tag} what was read is under Earlier`);
     await shot("earlier");
 
-    // ---- what was not on screen is not marked ----
     const quota = live.filter({ hasText: "Quota alert" });
     await quota.getByRole("button").first().click();
     await page.waitForTimeout(400);
@@ -178,8 +167,6 @@ for (const [width, scheme] of looks(
     ok(lateGroup()?.unread === 1, `${tag} a notification that arrived after the view stays unread (${lateGroup()?.unread})`);
     ok((await api("/inbox/counts")).live_unread === late.summary.live_unread, `${tag} the badge's counts match the page's`);
 
-    // Mark all read is bounded the same way. The row lands while the request is
-    // in flight, after the view it was clicked from was drawn.
     await page.reload();
     await page.getByRole("button", { name: "Mark all read" }).waitFor();
     await page.route("**/api/v1/notifications/read", async (r) => {
@@ -206,7 +193,6 @@ for (const [width, scheme] of looks(
     ok(st.others === 0 && st.row && st.row.read_at === null, `${tag} Mark all read marks what the view showed and leaves one that arrived after (others unread ${st.others}, late read_at ${st.row?.read_at})`);
     await page.unroute("**/api/v1/notifications/read");
 
-    // ---- loading and error ----
     let release;
     const gate = new Promise((res) => (release = res));
     await page.route("**/api/v1/inbox", async (r) => {

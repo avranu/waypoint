@@ -8,11 +8,6 @@ import (
 	"strings"
 )
 
-// What review triage decided and how it turned out (WP-692). The labels are
-// read from where they live when asked for, so they keep arriving after the
-// row is written: what the round found, the findings on the task's pull
-// requests that were accepted or fixed, and escapes traced back to them.
-
 // TriageRuleStats is one floor or rule's record.
 type TriageRuleStats struct {
 	Rule   string `json:"rule"`
@@ -131,7 +126,7 @@ func (s *Service) GetReviewTriageStats(ctx context.Context, actor *Actor, projec
 	var ids []int64
 	for _, p := range projects {
 		if p.Role == "guest" {
-			continue // a guest sees shared issues, not the project's numbers
+			continue
 		}
 		ids = append(ids, p.ID)
 		if err := s.triageProject(ctx, p, since, withRows, rules, out); err != nil {
@@ -197,8 +192,6 @@ func (s *Service) triageProject(ctx context.Context, p *Project, since int64, wi
 		return err
 	}
 	_ = rows.Close()
-	// A branch shipped twice has two rows: its later evidence counts once,
-	// on the newest (the rows are newest first).
 	type branch struct {
 		issue      int64
 		repo, head string

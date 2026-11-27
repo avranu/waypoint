@@ -1,8 +1,3 @@
-// The steps of an automation in the editor: each reads as a sentence ("then
-// [move it to] [Done]"), has a name other steps can read its outputs by, an
-// "only if", and what to do when it fails; a repeat holds steps of its own.
-// Steps reorder by dragging their handle or with the arrow buttons.
-
 import { createContext, useContext, useState } from 'react'
 import {
   DndContext,
@@ -101,8 +96,6 @@ function StepList({ list, parent }: { list: DStep[]; parent: DStep | null }) {
     </SortableContext>
   )
 }
-
-// ---- one step ----
 
 /** The values a template in this step can use. */
 function varsFor(api: StepsApi, step: DStep): VarGroup[] {
@@ -317,8 +310,6 @@ function actionOptions(
   )
 }
 
-// ---- a step's name, condition and what to do when it fails ----
-
 type Panel = 'id' | 'only' | 'error' | null
 
 function StepOptions({ step }: { step: DStep }) {
@@ -516,8 +507,6 @@ function OnlyIfEditor({ step, onChange }: { step: DStep; onChange: (v: string) =
     </div>
   )
 }
-
-// ---- adding a step ----
 
 export function AddStep({
   first,

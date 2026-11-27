@@ -7,13 +7,6 @@ import (
 	"time"
 )
 
-// Risky commands (WP-647, under WP-100): shell commands an agent ran that
-// delete, discard or overwrite what can't be had back, or reach
-// production. `wp usage sync` finds them in the transcripts by plain
-// patterns and sends each with what came of it; they are kept with the
-// rest of the person's usage, listed under Agents → Audit, and a high one
-// that ran tells the person.
-
 // EvRiskyCommand: an upload brought high-level risky commands that ran. It
 // reaches only its user.
 const EvRiskyCommand = "usage.risky_command"

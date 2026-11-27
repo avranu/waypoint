@@ -47,7 +47,6 @@ let plain;
       }),
     );
   plain = await api("POST", "/issues", { project: KEY, title: "Tidy the queue code", agent: "claude" });
-  // As if an agent wrote them (agents act through a person's token).
   const db = new DatabaseSync(`${process.env.DIR}/wp.db`);
   db.exec("PRAGMA busy_timeout = 5000");
   const ids = [...held, plain].map((i) => i.id);
@@ -91,7 +90,6 @@ for (const [n, [width, scheme]] of runs.entries()) {
   await shot("queue");
   await row.getByRole("button", { name: "Mark reviewed" }).click();
   await page.getByText(`${task.key} is reviewed: agents can take it`).waitFor();
-  // Released: out of the waiting group, into what agents take next.
   await page.locator("li.cursor-grab", { hasText: task.title }).waitFor();
   ok(true, `${tag} reviewing releases it`);
   await ctx.close();

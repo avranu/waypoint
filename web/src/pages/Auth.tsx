@@ -48,7 +48,6 @@ export function LoginPage() {
     mutationFn: () => api.post<User>('/auth/login', { login, password }),
     onSuccess: (u) => {
       qc.setQueryData(['me'], u)
-      // Only same-site paths: '//host' or '/\\host' would leave the app.
       navigate({ to: next && /^\/(?![/\\])/.test(next) ? next : '/' })
     },
   })

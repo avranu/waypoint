@@ -107,7 +107,6 @@ func TestHeldChangeLandsWhenCheckedClean(t *testing.T) {
 	if !strings.Contains(be.babysit().Wait, "is being pushed") {
 		t.Errorf("wait %q", be.babysit().Wait)
 	}
-	// The job ends: applied, and the babysit goes on.
 	res, _ := json.Marshal(map[string]any{"pushed": true})
 	if err := be.s.write(be.ctx, SystemActor(), func(t *tx) error { return t.finishRunnerJob(be.ctx, jobs[0], "done", nil, res, "") }); err != nil {
 		t.Fatal(err)
@@ -129,6 +128,17 @@ func TestHeldChangeWeakeningAsksOnePerson(t *testing.T) {
 		h := be.heldOf()
 		if h == nil || h.State != heldAsked || !strings.Contains(h.Why, "skips the tests") {
 			t.Fatalf("held %+v", h)
+		}
+		if push {
+			var body string
+			if err := be.s.db.R.QueryRow(`SELECT body FROM requests WHERE tool_use_id LIKE ?`, heldRequestKey+"%").Scan(&body); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"responding to the failing check", "What the round said when it ended", "> Done.", "any of those failing checks that needed it keeps failing"} {
+				if !strings.Contains(body, want) {
+					t.Errorf("request body lacks %q:\n%s", want, body)
+				}
+			}
 		}
 		if be.heldRequests() != 1 || len(be.heldJobs()) != 0 || len(be.protectedTasks()) != 0 {
 			t.Fatalf("requests %d jobs %v tasks %v", be.heldRequests(), be.heldJobs(), be.protectedTasks())
@@ -266,8 +276,6 @@ func TestHeldChangeCheckSeesTheWholePatch(t *testing.T) {
 	if !seen {
 		t.Error("the check didn't see the hunk after the first 60 KB")
 	}
-	// The person's request can't carry 70 KB: it says what it leaves out
-	// rather than claiming to show what is pushed.
 	if h := be.heldOf(); h == nil || h.State != heldAsked {
 		t.Fatalf("held %+v", h)
 	}
@@ -334,7 +342,6 @@ func TestHeldChangeApplyingRecoversAfterALostEvent(t *testing.T) {
 	if len(jobs) != 1 || be.heldOf().State != heldApplying {
 		t.Fatalf("held %+v jobs %v", be.heldOf(), jobs)
 	}
-	// Finished behind the service's back: no event.
 	if _, err := be.s.db.W.Exec(`UPDATE runner_jobs SET state = 'done' WHERE id = ?`, jobs[0]); err != nil {
 		t.Fatal(err)
 	}

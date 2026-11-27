@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// ---- helpers ----
-
 func (e *uaEnv) trends(a *Actor, q UsageQuery) *UsageTrends {
 	e.t.Helper()
 	if q.Days == 0 {
@@ -69,23 +67,19 @@ func taskRow(o *UsageTrends, key string) *UsageTrendTask {
 	return nil
 }
 
-// ---- trends ----
-
 func TestUsageTrendsByDayRepoAndTask(t *testing.T) {
 	e := newAnalyticsEnv(t)
 	alpha := e.project(e.me, "Alpha", "kanban")
 	a1 := e.issue(e.me, IssueInput{Project: alpha.Key, Title: "Search"})
 	a2 := e.issue(e.me, IssueInput{Project: alpha.Key, Title: "Export"})
-	secret := e.project(e.admin, "Secret", "kanban") // pat isn't a member
+	secret := e.project(e.admin, "Secret", "kanban")
 	s1 := e.issue(e.admin, IssueInput{Project: secret.Key, Title: "Hidden"})
 	f := e.forge("github", "", false)
 	e.attachRepo(alpha, f.ID, "acme/web")
 
-	// Session one: a run on A1 from -10h to -8h, then a run on A2 from -5h.
 	one := e.session(e.me, "m1", "s1", 0)
 	e.run(one, a1.ID, e.hour(-10), e.hour(-8))
 	e.run(one, a2.ID, e.hour(-5), 0)
-	// Session two holds A2 and has no runs; session three is on a task pat can't see.
 	e.session(e.me, "m1", "s2", a2.ID)
 	three := e.session(e.me, "m1", "s3", 0)
 	e.run(three, s1.ID, e.hour(-3), 0)
@@ -112,7 +106,6 @@ func TestUsageTrendsByDayRepoAndTask(t *testing.T) {
 			{Session: "s2", Repo: "acme/api", Branch: "main", Version: "2.1.316", First: e.hour(-4), Last: e.hour(-4)},
 		},
 	})
-	// A merged pull request from session one's branch.
 	if _, err := e.s.db.W.ExecContext(e.ctx, `INSERT INTO pull_requests(forge_id, repo, number, url, head_ref, state, title, additions, deletions, changed_files, commits, created_at, updated_at, closed_at, merged_at)
 		VALUES (?, 'acme/web', 7, 'https://x/7', 'wp-1-search', 'merged', 'Search', 30, 12, 3, 2, ?, ?, ?, ?)`, f.ID, e.hour(-6), e.hour(-2), e.hour(-2), e.hour(-2)); err != nil {
 		t.Fatal(err)
@@ -122,11 +115,10 @@ func TestUsageTrendsByDayRepoAndTask(t *testing.T) {
 	if !o.HasData || len(o.Dates) == 0 || o.Dates[len(o.Dates)-1] != "2026-10-05" {
 		t.Fatalf("dates: %v has=%v", o.Dates, o.HasData)
 	}
-	last := len(o.Dates) - 1 // 13 hours before noon is the day before
+	last := len(o.Dates) - 1
 	if o.Sums["messages"][last-1] != 1 || o.Sums["messages"][last] != 13 || o.Sums["sessions"][last] != 3 || o.Sums["tasks"][last] != 2 {
 		t.Errorf("day sums: messages %v sessions %v tasks %v", o.Sums["messages"][last], o.Sums["sessions"][last], o.Sums["tasks"][last])
 	}
-	// Tools are built-in and MCP calls; a subagent counts once.
 	if o.Sums["tool_calls"][last] != 7 || o.Sums["tool_errors"][last] != 1 || o.Sums["subagents"][last] != 2 {
 		t.Errorf("tools: %v %v %v", o.Sums["tool_calls"][last], o.Sums["tool_errors"][last], o.Sums["subagents"][last])
 	}
@@ -140,8 +132,6 @@ func TestUsageTrendsByDayRepoAndTask(t *testing.T) {
 		t.Error("no cost")
 	}
 
-	// A1: an hour before its run (lead), its run, and an hour after it ended
-	// (grace); not the hour after that, nor three hours before.
 	t1 := taskRow(o, a1.Key)
 	if t1 == nil || t1.Messages != 4 || t1.ActiveHours != 4 || t1.ToolCalls != 7 || t1.Subagents != 2 || t1.AvgContext == nil {
 		t.Fatalf("A1: %+v", t1)
@@ -149,12 +139,10 @@ func TestUsageTrendsByDayRepoAndTask(t *testing.T) {
 	if t1.PRs != 1 || t1.Lines != 42 || t1.Files != 3 || t1.Commits != 2 || t1.Compactions != 2 {
 		t.Errorf("A1 work: prs %d lines %d files %d commits %d compactions %d", t1.PRs, t1.Lines, t1.Files, t1.Commits, t1.Compactions)
 	}
-	// A2: session one's last two hours, and session two (held, no runs).
 	t2 := taskRow(o, a2.Key)
 	if t2 == nil || t2.Messages != 4 || t2.Sessions != 2 || t2.PRs != 0 {
 		t.Fatalf("A2: %+v", t2)
 	}
-	// The hidden task, and the hours no task covers, are no task.
 	if taskRow(o, s1.Key) != nil || len(o.Tasks) != 2 || o.TaskRows != 2 {
 		t.Errorf("tasks: %+v", o.Tasks)
 	}
@@ -162,7 +150,6 @@ func TestUsageTrendsByDayRepoAndTask(t *testing.T) {
 		t.Errorf("no task: %d messages", o.NoTask.Messages)
 	}
 
-	// Repos: each with its own series, the attached one with its project.
 	byRepo := map[string]UsageTrendRepo{}
 	for _, r := range o.Repos {
 		byRepo[r.Repo] = r
@@ -176,7 +163,6 @@ func TestUsageTrendsByDayRepoAndTask(t *testing.T) {
 	if len(o.PRs) != 1 || o.PRs[0].Number != 7 {
 		t.Errorf("prs: %+v", o.PRs)
 	}
-	// A Claude Code version's first day is a mark.
 	var cli []string
 	for _, m := range o.Marks {
 		if m.Kind == "cli" {
@@ -190,7 +176,6 @@ func TestUsageTrendsByDayRepoAndTask(t *testing.T) {
 		t.Errorf("two tasks are too few: %+v", o.Factors)
 	}
 
-	// Somebody else sees none of it.
 	sam := e.user("sam", false)
 	if o := e.trends(sam, UsageQuery{}); o.HasData || len(o.Tasks) != 0 || len(o.Repos) != 0 || len(o.PRs) != 0 || len(o.Marks) != 0 {
 		t.Errorf("sam sees pat's trends: %+v", o)
@@ -255,7 +240,7 @@ func TestUsageFactorsRankWhatGoesWithCost(t *testing.T) {
 		tk.CostUSD = float64(i + 1)
 		tasks = append(tasks, tk)
 	}
-	tasks = append(tasks, UsageTrendTask{ToolCalls: 99}) // no cost: left out
+	tasks = append(tasks, UsageTrendTask{ToolCalls: 99})
 	fs := usageFactors(tasks)
 	by := map[string]UsageFactor{}
 	for _, f := range fs {
@@ -288,7 +273,6 @@ func TestUsageStatistics(t *testing.T) {
 	if got := ranks([]float64{5, 1, 5, 3}); !slices.Equal(got, []float64{3.5, 1, 3.5, 2}) {
 		t.Errorf("ranks: %v", got)
 	}
-	// Fully separated groups of six: U = 0, z ≈ 2.80, p ≈ 0.0051.
 	p := mannWhitney([]float64{1, 2, 3, 4, 5, 6}, []float64{7, 8, 9, 10, 11, 12})
 	if p == nil || math.Abs(*p-0.0051) > 0.0005 {
 		t.Errorf("separated: %v", p)
@@ -303,8 +287,6 @@ func TestUsageStatistics(t *testing.T) {
 		t.Error("median or mean")
 	}
 }
-
-// ---- instruction marks ----
 
 func TestInstructionMarksFromPushes(t *testing.T) {
 	e := newAnalyticsEnv(t)
@@ -329,7 +311,7 @@ func TestInstructionMarksFromPushes(t *testing.T) {
 		c("t1", "Shorter instructions\n\nlong body", "CLAUDE.md", "internal/x.go"),
 		c("t2", "Code only", "internal/y.go"),
 		c("t3", "New skill", ".claude/skills/a/SKILL.md", "web/CLAUDE.md"))
-	push("refs/heads/trunk", c("t1", "Shorter instructions", "CLAUDE.md")) // the same commit again
+	push("refs/heads/trunk", c("t1", "Shorter instructions", "CLAUDE.md"))
 	var n int
 	if err := e.s.db.R.QueryRow(`SELECT count(*) FROM usage_marks`).Scan(&n); err != nil || n != 2 {
 		t.Fatalf("marks stored: %d %v", n, err)
@@ -341,12 +323,10 @@ func TestInstructionMarksFromPushes(t *testing.T) {
 			got = append(got, m)
 		}
 	}
-	// Two commits the same day in one repo: one mark.
 	if len(got) != 1 || got[0].Count != 2 || got[0].Title != "Shorter instructions" || got[0].Author != "robin" || got[0].Repo != "acme/web" ||
 		!slices.Equal(got[0].Paths, []string{"CLAUDE.md", ".claude/skills/a/SKILL.md", "web/CLAUDE.md"}) {
 		t.Errorf("marks: %+v", got)
 	}
-	// A repo filter that leaves it out, and somebody who can't see the repo.
 	if o := e.trends(e.me, UsageQuery{Project: e.project(e.me, "Beta", "kanban").Key}); len(o.Marks) != 0 {
 		t.Errorf("other project's marks: %+v", o.Marks)
 	}
@@ -399,7 +379,7 @@ func TestBackfillUsageMarks(t *testing.T) {
 	f := e.forge("forgejo", "https://forge.example", false)
 	alpha, beta := e.project(e.me, "Alpha", "kanban"), e.project(e.me, "Beta", "kanban")
 	e.attachRepo(alpha, f.ID, "acme/web")
-	e.attachRepo(beta, f.ID, "Acme/Web") // the same repo twice: read once
+	e.attachRepo(beta, f.ID, "Acme/Web")
 	count := func() int {
 		var n int
 		if err := e.s.db.R.QueryRow(`SELECT count(*) FROM usage_marks`).Scan(&n); err != nil {
@@ -412,7 +392,7 @@ func TestBackfillUsageMarks(t *testing.T) {
 		t.Fatalf("a failed read stores nothing and stops: %d marks, %d calls", count(), h.calls)
 	}
 	h.fail, h.calls = false, 0
-	e.s.BackfillUsageMarks(e.ctx) // tried again
+	e.s.BackfillUsageMarks(e.ctx)
 	if count() != 2 || h.calls != len(instructionHistoryPaths) {
 		t.Fatalf("backfill: %d marks, %d calls", count(), h.calls)
 	}
@@ -421,22 +401,19 @@ func TestBackfillUsageMarks(t *testing.T) {
 		t.Errorf("aaa: %q %q %v", title, author, err)
 	}
 	h.calls = 0
-	e.s.BackfillUsageMarks(e.ctx) // once per repo
+	e.s.BackfillUsageMarks(e.ctx)
 	if h.calls != 0 {
 		t.Errorf("read again: %d calls", h.calls)
 	}
-	// The one from ten days ago shows in a 30-day period.
 	o := e.trends(e.me, UsageQuery{})
 	if len(o.Marks) != 1 || o.Marks[0].Title != "Add a hook" || o.Marks[0].Kind != "instructions" {
 		t.Errorf("marks: %+v", o.Marks)
 	}
 }
 
-// ---- before/after ----
-
 func TestUsageCompareBeforeAndAfter(t *testing.T) {
 	e := newAnalyticsEnv(t)
-	at := time.UnixMilli(e.hour(-72)) // three days ago, noon
+	at := time.UnixMilli(e.hour(-72))
 	var rows []UsageMessageRow
 	for i, h := range []int{-80, -90, -100, -110, -120, -130} {
 		rows = append(rows, msg(e.hour(h), "b"+itoa64(int64(i)), "acme/web", "claude-opus-5-5", "main", 1, 100, 0, 0, 0, 0))
@@ -466,8 +443,6 @@ func TestUsageCompareBeforeAndAfter(t *testing.T) {
 	if tok.Change == nil || !approx(*tok.Change, 9) || tok.P == nil || *tok.P > 0.01 {
 		t.Errorf("change or p: %v %v", tok.Change, tok.P)
 	}
-	// Whole days only: seven before the pivot's day, the two between it and
-	// today; days without usage count as zero.
 	for _, st := range c.Daily {
 		if st.Key == "messages" && (st.Before.N != 7 || st.Before.Total != 5 || st.After.N != 2 || st.After.Total != 5) {
 			t.Errorf("daily: %+v", st)
@@ -476,7 +451,6 @@ func TestUsageCompareBeforeAndAfter(t *testing.T) {
 	if len(c.Tasks) == 0 || c.Tasks[0].P != nil {
 		t.Errorf("no tasks, no p: %+v", c.Tasks)
 	}
-	// Without the repo, the other repo's session counts too.
 	all, err := e.s.UsageCompare(e.ctx, e.me, UsageQuery{}, CompareQuery{At: at, Window: 30})
 	if err != nil {
 		t.Fatal(err)

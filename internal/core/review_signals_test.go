@@ -6,17 +6,13 @@ import (
 	"testing"
 )
 
-// The label-only signals of the review-again decision (WP-1320): which
-// findings call for another round on their own, and how a check's finding
-// about one of them counts.
-
 func TestAgainFloorAndLabel(t *testing.T) {
 	for _, tc := range []struct {
 		tier string
 		want float64
 	}{
 		{StakesHigh, 5}, {StakesElevated, 5}, {StakesUnknown, 5}, {StakesNormal, 8},
-		{"", 5}, {"made-up", 5}, // a tier not known is held as unknown
+		{"", 5}, {"made-up", 5},
 	} {
 		if got := againFloor(tc.tier); got != tc.want {
 			t.Errorf("againFloor(%q) = %v, want %v", tc.tier, got, tc.want)
@@ -27,7 +23,7 @@ func TestAgainFloorAndLabel(t *testing.T) {
 		want float64
 	}{
 		{"critical", 10}, {"high", 8}, {"medium", 5}, {"low", 3},
-		{"", 5}, {"major", 5}, {"HIGH", 5}, // not a label it gave: medium
+		{"", 5}, {"major", 5}, {"HIGH", 5},
 	} {
 		if got := findingLabel(tc.sev); got != tc.want {
 			t.Errorf("findingLabel(%q) = %v, want %v", tc.sev, got, tc.want)
@@ -70,7 +66,6 @@ func TestAgainFindingSignal(t *testing.T) {
 
 func TestCountSignals(t *testing.T) {
 	const round, check = 10, 20
-	// f builds a finding of audit a, ordinal n, standing (hold 1) at medium.
 	f := func(a int64, n int, mod func(*againFinding)) againFinding {
 		x := againFinding{audit: a, ordinal: n, title: fmt.Sprintf("finding %d.%d", a, n), severity: "medium", hold: 1}
 		if mod != nil {
@@ -109,8 +104,6 @@ func TestCountSignals(t *testing.T) {
 		{"a refuted repeat is neither", 5, []againFinding{f(round, 1, func(x *againFinding) { repeat(x); refuted(x) })}, 0, 0},
 		{"a signal and a repeat", 5, []againFinding{f(round, 1, nil), f(round, 2, repeat)}, 1, 1},
 		{"unsupported counts", 5, []againFinding{f(round, 1, func(x *againFinding) { x.verdict = VerdictUnsupported })}, 1, 0},
-		// A check's finding that names a round finding which is a signal
-		// is the same problem: counted once.
 		{"check finding naming a standing finding counts once", 5,
 			[]againFinding{f(round, 1, nil), f(check, 1, refs("[10.1]"))}, 1, 0},
 		{"check first in the list, same", 5,
@@ -174,9 +167,6 @@ func TestCountUnchecked(t *testing.T) {
 		{"unsupported still counts", 5, []againFinding{f(round, "rejected", "high", func(x *againFinding) { x.verdict = VerdictUnsupported })}, 1},
 		{"a repeat of an earlier round's", 5, []againFinding{f(round, "rejected", "high", repeat)}, 0},
 		{"fixed and open are not rejections", 5, []againFinding{f(round, "fixed", "high", nil), f(round, "open", "high", nil)}, 0},
-		// The check found a mark wrong and the session rejected that too:
-		// two readers against the author's word, whether or not the check
-		// of the rest was passed over.
 		{"the check's finding, rejected in turn", 5, []againFinding{f(check, "rejected", "high", nil)}, 1},
 		{"the check's finding under the floor", 8, []againFinding{f(check, "rejected", "medium", nil)}, 0},
 		{"the check's finding, a repeat", 5, []againFinding{f(check, "rejected", "high", repeat)}, 0},
@@ -189,8 +179,6 @@ func TestCountUnchecked(t *testing.T) {
 			t.Errorf("%s: unchecked %d, want %d", tc.name, d.unchecked, tc.want)
 		}
 	}
-	// With the check answered, the round's own rejections were checked;
-	// only what the check found and the session rejected again counts.
 	d := &againDecision{audit: round}
 	d.countUnchecked([]againFinding{f(round, "rejected", "critical", nil), f(check, "rejected", "high", nil), f(check, "fixed", "high", nil)}, 5, false)
 	if d.unchecked != 1 {
@@ -201,14 +189,13 @@ func TestCountUnchecked(t *testing.T) {
 func TestLabelOnly(t *testing.T) {
 	findings := []againFinding{
 		{severity: "high", state: "fixed", modelScore: 9, repeatOf: 4, probs: map[string]float64{"x": 1}},
-		{severity: "critical", state: "rejected"}, // held 0: out of the worst and novel
-		{severity: "medium", state: "open"},       // half held
-		{severity: "low", state: "confirmed"},     // held, but low
-		{severity: "weird", state: "fixed"},       // medium
+		{severity: "critical", state: "rejected"},
+		{severity: "medium", state: "open"},
+		{severity: "low", state: "confirmed"},
+		{severity: "weird", state: "fixed"},
 	}
 	d := &againDecision{worst: 99, novel: 99, reworked: 99, repeats: 99, fixesMean: 99, fixes: 99, probs: "x"}
 	d.labelOnly(findings)
-	// worst: high (8*1); the rejected critical stands for 0.
 	if d.worst != 8 || d.worstAll != 8 || d.issues != 8 {
 		t.Errorf("worst %v, worstAll %v, issues %d; want 8", d.worst, d.worstAll, d.issues)
 	}
@@ -230,13 +217,11 @@ func TestLabelOnly(t *testing.T) {
 		t.Errorf("standing: rejected %v, open %v, unknown-label sev %v", findings[1].standing(), findings[2].standing(), findings[4].sev)
 	}
 
-	// Only a rejected finding: nothing stands, nothing novel.
 	d = &againDecision{}
 	d.labelOnly([]againFinding{{severity: "critical", state: "rejected"}})
 	if d.worst != 0 || d.novel != 0 {
 		t.Errorf("all rejected: worst %v, novel %d", d.worst, d.novel)
 	}
-	// No findings at all.
 	d = &againDecision{worst: 3}
 	d.labelOnly(nil)
 	if d.worst != 0 || d.issues != 0 {
@@ -279,10 +264,8 @@ func TestCheckClaims(t *testing.T) {
 		t.Helper()
 		fx.finding(audit, n, sev, state, "")
 	}
-	// Excluded: open and confirmed.
 	insert(1, "critical", "open")
 	insert(2, "critical", "confirmed")
-	// Included, of every severity.
 	insert(3, "low", "fixed")
 	insert(4, "low", "rejected")
 	insert(5, "medium", "fixed")
@@ -294,7 +277,6 @@ func TestCheckClaims(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := fmt.Sprint(audit)
-	// By severity, rejected before fixed within one, then by ordinal.
 	want := []string{a + ".7", a + ".8", a + ".6", a + ".5", a + ".4", a + ".3"}
 	if !slices.Equal(ids, want) {
 		t.Errorf("ids = %v, want %v", ids, want)
@@ -306,14 +288,12 @@ func TestCheckClaims(t *testing.T) {
 		t.Errorf("an open or confirmed finding is in the claims:\n%s", text)
 	}
 
-	// An audit with nothing marked has no claims.
 	empty := fx.audit("review-round:2")
 	fx.finding(empty, 1, "high", "open", "")
 	if text, ids, err := fx.s.checkClaims(fx.ctx, empty); err != nil || text != "" || len(ids) != 0 {
 		t.Errorf("nothing marked: %q, %v, %v", text, ids, err)
 	}
 
-	// Past the cap: the worst checkClaimsMax, all rejected lows go last.
 	big := fx.audit("review-round:3")
 	total := checkClaimsMax + 10
 	for n := 1; n <= total; n++ {
@@ -352,8 +332,8 @@ func TestAgainUsefulSQL(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
 		sev, state, ver string
-		scored          bool // a score row exists
-		repeat          bool // ...that says it repeats an earlier finding
+		scored          bool
+		repeat          bool
 		want            bool
 	}{
 		{"fixed medium, scored new", "medium", "fixed", "", true, false, true},

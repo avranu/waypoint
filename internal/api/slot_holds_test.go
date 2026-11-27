@@ -52,7 +52,6 @@ func TestSlotHoldsOversizeBatchRefusedButMachineRowWritten(t *testing.T) {
 	if code := a.human.json("GET", "/api/v1/slot-holds", nil, &got); code != 200 || len(got) != 0 {
 		t.Errorf("stored %d (%d)", len(got), code)
 	}
-	// The machine's state was still recorded: the collector health counts it.
 	ctx := context.Background()
 	a.svc.CheckCollectorHealth(ctx)
 	hs, err := a.svc.CollectorHealthList(ctx)

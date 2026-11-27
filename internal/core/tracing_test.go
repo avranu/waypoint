@@ -72,7 +72,6 @@ func TestEgressClientSpans(t *testing.T) {
 	defer srv.Close()
 	exp := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
-	// Off when the client is made: no wrapper at all.
 	if _, wrapped := (EgressPolicy{AllowLoopback: true}).client(time.Second).Transport.(*http.Transport); !wrapped {
 		t.Error("the transport is wrapped while tracing is off")
 	}

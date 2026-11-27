@@ -31,8 +31,6 @@ func (s *Service) judgementsChangedLocked() {
 				s.goals.judgeDirty = true
 			}
 			if !s.goals.judgeDirty || s.bgCtx.Err() != nil {
-				// Closed with the flag cleared, so a wait never sees one
-				// without the other (WP-1372).
 				s.goals.judging, s.goals.judgeDirty = false, false
 				close(idle)
 				s.goals.mu.Unlock()

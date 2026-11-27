@@ -1,8 +1,3 @@
-// The gate's audit entries in words (WP-ADR1). Each kind the gatekeeper
-// records (the gate's audit.record) gets an icon, a tone, a
-// group for the filter chips, and a sentence. Every field is the agent's or
-// the gate's text: it is rendered as text, never as HTML.
-
 import type { ReactNode } from 'react'
 import {
   Ban,

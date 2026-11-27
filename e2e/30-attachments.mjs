@@ -35,7 +35,6 @@ async function run(width, scheme) {
   const ctx = await browser.newContext({
     viewport: { width, height: 900 },
     colorScheme: scheme,
-    // A touch device has no hover: Copy must always be showing.
     hasTouch: phone,
     isMobile: phone,
   });
@@ -73,7 +72,6 @@ async function run(width, scheme) {
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(base + "/");
 
-  // ---- seed (once): a project, an issue and a page with code, a design note ----
   const projects = await api("GET", "/projects");
   if (!projects.some((p) => p.key === KEY)) {
     await api("POST", "/projects", { name: "Files", key: KEY });
@@ -95,11 +93,9 @@ async function run(width, scheme) {
   const notes = await api("GET", `/design?project=${KEY}`);
   const note = notes.find((n) => n.title === "Board screen");
 
-  // ---- Copy buttons ----
   await page.goto(`${base}/issue/${KEY}-1`);
   const desc = page.locator(".prose-wp").first();
   await desc.getByText("Then inline").waitFor();
-  // The editor shows a Save button (the comment box below is always a textarea).
   const editing = () => page.getByRole("button", { name: /^(Save|Done)$/ }).count();
   const copy = desc.getByRole("button", { name: "Copy code" });
   ok((await copy.count()) === 1, `${tag} one fenced block, one Copy button (inline code has none)`);
@@ -109,9 +105,6 @@ async function run(width, scheme) {
   } else {
     ok((await opacity()) === "0", `${tag} Copy is hidden until you point at the block`);
     await desc.locator("pre").hover();
-    // Wait for the fade-in rather than reading once after a fixed pause: on a
-    // loaded CI runner the 0.12s transition (or the hover itself) can land
-    // after 250ms (WP-570).
     const copyHandle = await copy.elementHandle();
     const shown = await page
       .waitForFunction((b) => getComputedStyle(b).opacity === "1", copyHandle, { timeout: 3000 })
@@ -137,7 +130,6 @@ async function run(width, scheme) {
     `${tag} clicking Copy didn't open the editor`,
   );
   await shot("copied");
-  // Keyboard: Enter and Space on the focused button copy and don't edit.
   for (const key of ["Enter", "Space"]) {
     await page.evaluate(() => navigator.clipboard.writeText("something else"));
     await copy.focus();
@@ -159,14 +151,12 @@ async function run(width, scheme) {
       `${tag} the Copied message goes away by itself`,
     );
   }
-  // The rest of the text still edits on click.
   await desc.getByText("Click this text to edit.").click();
   await page.getByRole("button", { name: "Done", exact: true }).waitFor();
   ok(true, `${tag} clicking the text still opens the editor`);
   await page.keyboard.press("Escape");
   await overflow("code block");
 
-  // ---- Attachments on a page ----
   const target = `page:${planPage.id}`;
   const existing = await api("GET", `/attachments?target=${encodeURIComponent(target)}`);
   if (existing.length === 0) {
@@ -188,7 +178,6 @@ async function run(width, scheme) {
       "video/webm",
       "A recording",
     );
-    // SVG never renders from our origin.
     await upload(
       target,
       "logo.svg",
@@ -215,7 +204,6 @@ async function run(width, scheme) {
   await shot("page-attachments");
   await overflow("attachments");
 
-  // Lightbox: open, step with the arrow keys, close with Escape.
   await panel.getByRole("button", { name: /View Before the change/ }).click();
   const lb = page.getByRole("dialog", { name: "Before the change" });
   await lb.waitFor();
@@ -227,7 +215,6 @@ async function run(width, scheme) {
   await page.getByRole("dialog").waitFor({ state: "detached" });
   ok(true, `${tag} Escape closes the lightbox`);
 
-  // Text previews: a log in monospace, Markdown rendered, JSON pretty.
   await panel.getByRole("button", { name: "run.log", exact: true }).click();
   const dlg = page.getByRole("dialog", { name: "run.log" });
   await dlg.getByText("row 1 ok").waitFor();
@@ -252,7 +239,6 @@ async function run(width, scheme) {
   await js.locator("pre").waitFor();
   ok((await js.locator("pre").innerText()).includes('"rows": [\n'), `${tag} JSON is pretty-printed`);
   await page.keyboard.press("Escape");
-  // Downloads: a zip and the SVG are links with ?download, never opened in place.
   for (const name of ["report.zip", "logo.svg"]) {
     const href = await panel.getByRole("link", { name, exact: true }).getAttribute("href");
     ok(href.endsWith("?download=1"), `${tag} ${name} is a download link`);
@@ -265,7 +251,6 @@ async function run(width, scheme) {
     `${tag} the SVG is served as a download, not as an image`,
   );
 
-  // Add a file with the button, caption it, remove it.
   const before = (await api("GET", `/attachments?target=${encodeURIComponent(target)}`)).length;
   await page.getByLabel("Choose files to attach").setInputFiles({
     name: `extra-${tag.replace("/", "-")}.txt`,
@@ -275,7 +260,7 @@ async function run(width, scheme) {
   await page.getByText(new RegExp(`^Attachments · ${before + 1}$`)).waitFor();
   ok(true, `${tag} Add file uploads to the page`);
   const row = panel.locator("li", { hasText: `extra-${tag.replace("/", "-")}.txt` });
-  await row.getByRole("button", { name: /Edit caption/ }).dispatchEvent("click"); // not .click(): on a phone a floating button can sit over the row
+  await row.getByRole("button", { name: /Edit caption/ }).dispatchEvent("click");
   await page.getByRole("dialog", { name: "Caption" }).getByLabel("Caption").fill("Extra notes");
   await page.keyboard.press("Enter");
   await panel.getByText("Extra notes").waitFor();
@@ -285,7 +270,6 @@ async function run(width, scheme) {
   await page.getByText(new RegExp(`^Attachments · ${before}$`)).waitFor();
   ok(true, `${tag} a file can be removed`);
 
-  // Paste into the editor: the file uploads and its Markdown lands in the text.
   await page.getByText("The plan.").click();
   const ta = page.locator("textarea:visible").first();
   await ta.waitFor();
@@ -306,7 +290,6 @@ async function run(width, scheme) {
   ok(true, `${tag} the saved page shows the pasted image`);
   await shot("page-pasted");
 
-  // ---- a design note has the same panel ----
   const dTarget = `design:${note.id}`;
   await page.goto(`${base}/design/${note.id}`);
   const dPanel = page.locator(`[data-attachments="${dTarget}"]`);
@@ -328,7 +311,6 @@ async function run(width, scheme) {
   await shot("design-attachments");
   await overflow("design note");
 
-  // ---- video in Markdown plays in place ----
   const demo = files.find((f) => f.name === "demo.webm");
   await api("PATCH", `/pages/${planPage.id}`, { body: `Watch:\n\n${demo.markdown}\n` });
   await page.goto(`${base}/pages/${planPage.id}`);
@@ -342,7 +324,7 @@ for (const [w, s] of looks([
   [1280, "dark"],
   [390, "light"],
   [390, "dark"],
-], [0, 2])) { // a touch screen shows Copy always
+], [0, 2])) {
   try {
     await run(w, s);
   } catch (e) {

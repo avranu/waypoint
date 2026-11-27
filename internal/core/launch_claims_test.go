@@ -56,8 +56,6 @@ func TestTaskSessionAdoptsItsLaunchersTake(t *testing.T) {
 		}
 	})
 
-	// Starting a fresh session on a task an older session still holds: the
-	// new one takes the run over, as its own wp next KEY would (WP-89).
 	t.Run("held by an older session", func(t *testing.T) {
 		is := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Held", Agent: "anthropic/claude-code"})
 		old, err := e.s.SessionHook(e.ctx, taker, []HookEvent{hook("box", "old", "SessionStart", nil)})
@@ -78,8 +76,6 @@ func TestTaskSessionAdoptsItsLaunchersTake(t *testing.T) {
 		}
 	})
 
-	// Taking an epic hands out a sub-task: the session bound to the epic
-	// holds the sub-task's run.
 	t.Run("epic", func(t *testing.T) {
 		epic := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Epic", Agent: "anthropic/claude-code"})
 		sub := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Sub", Agent: "anthropic/claude-code", Parent: epic.Key})

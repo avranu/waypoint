@@ -99,7 +99,7 @@ func (x *envT) check(id int64) *Environment {
 type flaky struct {
 	code  atomic.Int32
 	body  atomic.Value
-	delay atomic.Int64 // ms
+	delay atomic.Int64
 	hits  atomic.Int32
 }
 
@@ -123,7 +123,6 @@ func TestEnvironmentAccess(t *testing.T) {
 	if d.Kind != EnvStaging || d.IntervalS != 60 || d.Status != EnvUnknown || d.Project != x.p.Key {
 		t.Errorf("created %+v", d.Environment)
 	}
-	// Viewers read; only editors change.
 	if _, err := x.s.GetEnvironment(x.ctx, x.viewer, d.ID); err != nil {
 		t.Errorf("viewer get: %v", err)
 	}
@@ -141,7 +140,6 @@ func TestEnvironmentAccess(t *testing.T) {
 	if _, err := x.s.StopEnvironment(x.ctx, x.viewer, d.ID); !errors.Is(err, ErrForbidden) {
 		t.Errorf("viewer stop: %v", err)
 	}
-	// Outsiders can't tell it exists.
 	if _, err := x.s.GetEnvironment(x.ctx, x.nobody, d.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("outsider get: %v", err)
 	}
@@ -151,12 +149,10 @@ func TestEnvironmentAccess(t *testing.T) {
 	if l, _ := x.s.ListEnvironments(x.ctx, x.nobody, "", false); len(l) != 0 {
 		t.Errorf("outsider sees %d", len(l))
 	}
-	// A read-only token can't change anything.
 	ro := &Actor{User: x.editor.User, ReadOnly: true}
 	if _, err := x.s.UpdateEnvironment(x.ctx, ro, d.ID, EnvironmentInput{URL: &u}); err == nil {
 		t.Error("read-only token updated")
 	}
-	// Agents may stop but not delete.
 	agent := &Actor{User: x.editor.User, Agent: "anthropic/claude-code"}
 	if err := x.s.DeleteEnvironment(x.ctx, agent, d.ID); !errors.Is(err, ErrForbidden) {
 		t.Errorf("agent delete: %v", err)
@@ -200,7 +196,6 @@ func TestEnvironmentValidation(t *testing.T) {
 			t.Errorf("InferEnvKind(%s) = %s", name, got)
 		}
 	}
-	// The project's dev address needs {name}.
 	if _, err := x.s.UpdateProject(x.ctx, x.admin, x.p.Key, ProjectInput{Settings: &ProjectSettings{DevEnvURL: "https://dev.example.com"}}); !IsInvalid(err) {
 		t.Errorf("pattern without {name}: %v", err)
 	}
@@ -212,7 +207,6 @@ func TestEnvironmentValidation(t *testing.T) {
 func TestDeploymentLifecycle(t *testing.T) {
 	x := newEnvT(t)
 	x.events()
-	// CI deploys to an environment nobody made: it is created, kind from its name.
 	d, err := x.s.RecordDeploymentNamed(x.ctx, x.editor, x.p.Key, "prod", DeployInput{Commit: "ABCDEF1234", Branch: "main", Status: "started", URL: "https://ci.example.com/run/9"})
 	if err != nil {
 		t.Fatal(err)
@@ -228,12 +222,10 @@ func TestDeploymentLifecycle(t *testing.T) {
 	if len(list) != 1 || list[0].Name != "prod" || list[0].Kind != EnvProduction || list[0].Commit != "" {
 		t.Fatalf("created %+v", list)
 	}
-	// Starting again is the same deployment.
 	if again, _ := x.s.RecordDeploymentNamed(x.ctx, x.editor, x.p.Key, "prod", DeployInput{Commit: "abcdef1234", Status: "started"}); again.ID != d.ID {
 		t.Errorf("a second start made deployment %d, not %d", again.ID, d.ID)
 	}
 	x.setClock(x.clockNow().Add(90 * time.Second))
-	// Short and long ids name the same commit; success finishes it.
 	done, err := x.s.RecordDeploymentNamed(x.ctx, x.editor, x.p.Key, "prod", DeployInput{Commit: "abcdef1", Status: "succeeded", Version: "1.4.0"})
 	if err != nil {
 		t.Fatal(err)
@@ -249,7 +241,6 @@ func TestDeploymentLifecycle(t *testing.T) {
 	if got.Commit != "abcdef1234" || got.Branch != "main" || got.Version != "1.4.0" || got.DeployedAt == nil || len(got.Deployments) != 1 {
 		t.Errorf("environment after deploy: %+v", got.Environment)
 	}
-	// A failure is recorded without changing what runs.
 	x.setClock(x.clockNow().Add(time.Hour))
 	f, err := x.s.RecordDeploymentNamed(x.ctx, x.editor, x.p.Key, "prod", DeployInput{Commit: "1111111", Status: "failed", Notes: "migration failed"})
 	if err != nil || f.Status != DeployFailed {
@@ -262,7 +253,6 @@ func TestDeploymentLifecycle(t *testing.T) {
 	if got.Commit != "abcdef1234" || got.LastDeploy == nil || got.LastDeploy.Status != DeployFailed || len(got.Deployments) != 2 {
 		t.Errorf("after a failure: %+v / %+v", got.Environment, got.LastDeploy)
 	}
-	// By id too, and a new commit replaces the old with its own branch.
 	if _, err := x.s.RecordDeployment(x.ctx, x.editor, got.ID, DeployInput{Commit: "2222222", Branch: "release"}); err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +260,6 @@ func TestDeploymentLifecycle(t *testing.T) {
 	if got.Commit != "2222222" || got.Branch != "release" || got.Version != "" {
 		t.Errorf("redeploy: %s %s %q", got.Commit, got.Branch, got.Version)
 	}
-	// Who: a person, an agent.
 	if d := got.LastDeploy; d.ByKind != DeployByPerson || d.By == nil || d.By.Username != "eddie" {
 		t.Errorf("by: %+v", d)
 	}
@@ -278,11 +267,9 @@ func TestDeploymentLifecycle(t *testing.T) {
 	if d, _ := x.s.RecordDeployment(x.ctx, agent, got.ID, DeployInput{Commit: "3333333"}); d.ByKind != DeployByAgent || d.Agent != "anthropic/claude-code" {
 		t.Errorf("agent deploy: %+v", d)
 	}
-	// An explicit source of ci beats the agent identity.
 	if d, _ := x.s.RecordDeployment(x.ctx, agent, got.ID, DeployInput{Commit: "3333334", Source: "ci"}); d == nil || d.ByKind != DeployByCI {
 		t.Errorf("source ci from an agent: %+v", d)
 	}
-	// Viewers can't deploy, and need a commit or version.
 	if _, err := x.s.RecordDeploymentNamed(x.ctx, x.viewer, x.p.Key, "prod", DeployInput{Commit: "abcdef1"}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("viewer deploy: %v", err)
 	}
@@ -318,13 +305,11 @@ func TestStatusTransitionsAndDebounce(t *testing.T) {
 	if e.Status != EnvUp || e.StatusSince == nil || e.HTTPCode == nil || *e.HTTPCode != 200 || e.LatencyMS == nil {
 		t.Fatalf("first check: %+v", e)
 	}
-	// Unknown to up is not news.
 	if hasEvent(x.events(), EvEnvStatus) != nil {
 		t.Error("unknown -> up emitted env.status")
 	}
 	since := *e.StatusSince
 
-	// One failure is a blip: still up (the error is recorded), no event.
 	x.setClock(x.clockNow().Add(time.Minute))
 	f.code.Store(503)
 	e = x.check(d.ID)
@@ -334,7 +319,6 @@ func TestStatusTransitionsAndDebounce(t *testing.T) {
 	if hasEvent(x.events(), EvEnvStatus) != nil {
 		t.Error("a single failure emitted env.status")
 	}
-	// The second makes it down, once.
 	x.setClock(x.clockNow().Add(time.Minute))
 	e = x.check(d.ID)
 	if e.Status != EnvDown || !e.StatusSince.After(since) || e.HTTPCode == nil || *e.HTTPCode != 503 {
@@ -344,14 +328,12 @@ func TestStatusTransitionsAndDebounce(t *testing.T) {
 	if ev == nil || ev.Data["status"] != EnvDown || ev.Data["previous"] != EnvUp || ev.Data["name"] != "staging" || ev.Data["error"] != "HTTP 503" {
 		t.Fatalf("env.status: %+v", ev)
 	}
-	// Staying down is silent.
 	x.setClock(x.clockNow().Add(time.Minute))
 	down := *e.StatusSince
 	e = x.check(d.ID)
 	if hasEvent(x.events(), EvEnvStatus) != nil || !e.StatusSince.Equal(down) {
 		t.Error("still down, but the status changed or was announced again")
 	}
-	// Recovery.
 	x.setClock(x.clockNow().Add(time.Minute))
 	f.code.Store(200)
 	e = x.check(d.ID)
@@ -361,7 +343,6 @@ func TestStatusTransitionsAndDebounce(t *testing.T) {
 	if ev := hasEvent(x.events(), EvEnvStatus); ev == nil || ev.Data["status"] != EnvUp || ev.Data["previous"] != EnvDown {
 		t.Errorf("recovery event: %+v", ev)
 	}
-	// Slow is degraded.
 	old := envSlow
 	envSlow = 30 * time.Millisecond
 	t.Cleanup(func() { envSlow = old })
@@ -374,7 +355,6 @@ func TestStatusTransitionsAndDebounce(t *testing.T) {
 	if ev := hasEvent(x.events(), EvEnvStatus); ev == nil || ev.Data["status"] != EnvDegraded {
 		t.Errorf("degraded event: %+v", ev)
 	}
-	// Expected status: a 302 counts when that is what is expected.
 	f.delay.Store(0)
 	f.code.Store(302)
 	x.s.UpdateEnvironment(x.ctx, x.editor, d.ID, EnvironmentInput{ExpectedStatus: ptr(302)})
@@ -402,7 +382,7 @@ func TestEgressBlocksLoopbackByDefault(t *testing.T) {
 
 func TestTLSExpiryWarning(t *testing.T) {
 	x := newEnvT(t)
-	x.setClock(time.Now()) // certificates are checked against the real time
+	x.setClock(time.Now())
 	cert, pool := selfSigned(t, x.clockNow().Add(5*24*time.Hour))
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok")) }))
 	srv.TLS = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
@@ -410,7 +390,6 @@ func TestTLSExpiryWarning(t *testing.T) {
 	t.Cleanup(srv.Close)
 	d := x.create("staging", srv.URL)
 
-	// Without the CA the certificate is rejected, and the page says so.
 	if e := x.check(d.ID); e.Error != "certificate not trusted" || e.TLSExpiresAt != nil {
 		t.Errorf("untrusted: %q %v", e.Error, e.TLSExpiresAt)
 	}
@@ -422,12 +401,10 @@ func TestTLSExpiryWarning(t *testing.T) {
 	if days := e.TLSExpiresAt.Sub(x.clockNow()).Hours() / 24; days < 4.9 || days > 5.1 {
 		t.Errorf("expires in %.1f days", days)
 	}
-	// A failure later doesn't forget the certificate we saw.
 	x.s.envs.http = EgressPolicy{}.client(time.Second)
 	if e = x.check(d.ID); e.TLSExpiresAt == nil {
 		t.Error("a failed check cleared the certificate expiry")
 	}
-	// A certificate with months left doesn't warn.
 	cert2, pool2 := selfSigned(t, x.clockNow().Add(90*24*time.Hour))
 	srv2 := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	srv2.TLS = &tls.Config{Certificates: []tls.Certificate{cert2}, MinVersion: tls.VersionTLS12}
@@ -473,7 +450,6 @@ func TestVersionDetection(t *testing.T) {
 	})
 	x.events()
 
-	// Nobody deployed it by hand: the endpoint's release is recorded as detected.
 	e := x.check(d.ID)
 	if e.Commit != "aaaaaaa1111" || e.Branch != "main" || e.Version != "2.1.0" || e.Status != EnvUp {
 		t.Fatalf("detected: %+v", e)
@@ -485,13 +461,11 @@ func TestVersionDetection(t *testing.T) {
 	if ev := hasEvent(x.events(), EvEnvDeployed); ev == nil || ev.Data["status"] != DeployDetected || ev.Data["commit"] != "aaaaaaa1111" {
 		t.Errorf("env.deployed: %+v", ev)
 	}
-	// Seeing it again records nothing.
 	x.setClock(x.clockNow().Add(time.Minute))
 	x.check(d.ID)
 	if det, _ = x.s.GetEnvironment(x.ctx, x.admin, d.ID); len(det.Deployments) != 1 {
 		t.Errorf("repeat check made %d deployments", len(det.Deployments))
 	}
-	// CI deploys a new commit; the old release still answers during the rollout: degraded.
 	x.setClock(x.clockNow().Add(time.Minute))
 	if _, err := x.s.RecordDeploymentNamed(x.ctx, x.editor, x.p.Key, "staging", DeployInput{Commit: "bbbbbbb2222", Status: "succeeded"}); err != nil {
 		t.Fatal(err)
@@ -501,28 +475,24 @@ func TestVersionDetection(t *testing.T) {
 	if e.Status != EnvDegraded || !e.Mismatch || e.Commit != "bbbbbbb2222" {
 		t.Errorf("rollout: %s mismatch=%v commit=%s", e.Status, e.Mismatch, e.Commit)
 	}
-	// A failed request says nothing about what runs: the mismatch stays.
 	f.code.Store(500)
 	x.setClock(x.clockNow().Add(time.Minute))
 	if e = x.check(d.ID); !e.Mismatch {
 		t.Errorf("a failed check cleared the mismatch: %+v", e)
 	}
 	f.code.Store(200)
-	// A failed request says nothing about what runs: the mismatch stays.
 	f.code.Store(500)
 	x.setClock(x.clockNow().Add(time.Minute))
 	if e = x.check(d.ID); !e.Mismatch {
 		t.Errorf("a failed check cleared the mismatch: %+v", e)
 	}
 	f.code.Store(200)
-	// The new release arrives: up again, nothing detected.
 	f.body.Store(`{"version":"2.2.0","git":{"commit":"bbbbbbb2222","branch":"main"}}`)
 	x.setClock(x.clockNow().Add(time.Minute))
 	e = x.check(d.ID)
 	if e.Status != EnvUp || e.Mismatch || e.Version != "2.2.0" {
 		t.Errorf("rolled out: %s mismatch=%v version=%s", e.Status, e.Mismatch, e.Version)
 	}
-	// Later, a different release shows up that CI never mentioned: detected.
 	f.body.Store(`{"version":"2.3.0","git":{"commit":"ccccccc3333","branch":"hotfix"}}`)
 	x.setClock(x.clockNow().Add(time.Hour))
 	e = x.check(d.ID)
@@ -533,7 +503,6 @@ func TestVersionDetection(t *testing.T) {
 	if det.Deployments[0].Status != DeployDetected || det.Deployments[0].Commit != "ccccccc3333" {
 		t.Errorf("latest deployment: %+v", det.Deployments[0])
 	}
-	// A version URL apart from the health URL, and a version-only report.
 	_, hsrv := newFlaky(t)
 	g, vs := newFlaky(t)
 	g.body.Store(`{"build":{"id":"r-77"}}`)
@@ -543,7 +512,6 @@ func TestVersionDetection(t *testing.T) {
 	if e := x.check(d2.ID); e.Version != "r-77" || e.Commit != "" {
 		t.Errorf("version only: %+v", e)
 	}
-	// A version endpoint that fails doesn't take the environment down.
 	g.code.Store(500)
 	if e := x.check(d2.ID); e.Status != EnvUp {
 		t.Errorf("version endpoint down: %s", e.Status)
@@ -588,13 +556,11 @@ func TestUpDownAndLeases(t *testing.T) {
 	if hasEvent(x.events(), EvEnvCreated) == nil {
 		t.Error("no env.created")
 	}
-	// Up again renews the lease and doesn't repeat the deployment.
 	x.setClock(x.clockNow().Add(2 * time.Hour))
 	d2, err := x.s.UpEnvironment(x.ctx, x.editor, x.p.Key, EnvUpInput{Name: "a23x42s", Commit: "abc1234"})
 	if err != nil || d2.ID != d.ID || len(d2.Deployments) != 1 || !d2.ExpiresAt.After(*d.ExpiresAt) {
 		t.Errorf("up again: %+v %v", d2, err)
 	}
-	// An explicit address wins over the pattern; viewers can't.
 	if _, err := x.s.UpEnvironment(x.ctx, x.viewer, x.p.Key, EnvUpInput{Name: "z"}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("viewer up: %v", err)
 	}
@@ -604,7 +570,6 @@ func TestUpDownAndLeases(t *testing.T) {
 	if _, err := x.s.UpEnvironment(x.ctx, x.editor, x.p.Key, EnvUpInput{Name: "prodlike", Kind: "production", URL: "https://x.example.com"}); !IsInvalid(err) {
 		t.Errorf("up as production: %v", err)
 	}
-	// Down stops it, and says so.
 	x.events()
 	down, err := x.s.DownEnvironment(x.ctx, x.editor, x.p.Key, "a23x42s")
 	if err != nil || !down.Stopped || down.ExpiresAt != nil {
@@ -619,13 +584,11 @@ func TestUpDownAndLeases(t *testing.T) {
 	if l, _ := x.s.ListEnvironments(x.ctx, x.editor, x.p.Key, true); len(l) != 2 {
 		t.Errorf("with stopped: %d", len(l))
 	}
-	// Up brings it back; a stopped environment isn't checked.
 	x.events()
 	back, err := x.s.UpEnvironment(x.ctx, x.editor, x.p.Key, EnvUpInput{Name: "a23x42s", TTLS: 3600, Commit: "fff1234"})
 	if err != nil || back.Stopped || back.Status != EnvUnknown {
 		t.Errorf("revived: %+v %v", back, err)
 	}
-	// Reviving with a new commit announces the restart once, not again for the deployment.
 	restarts := 0
 	for _, ev := range x.events() {
 		if ev.Kind == EvEnvCreated && ev.Data["restarted"] == true {
@@ -635,7 +598,6 @@ func TestUpDownAndLeases(t *testing.T) {
 	if restarts != 1 {
 		t.Errorf("%d restarted events", restarts)
 	}
-	// A lease that runs out stops it.
 	x.events()
 	x.setClock(x.clockNow().Add(2 * time.Hour))
 	x.s.envUpkeep(x.ctx)
@@ -646,7 +608,6 @@ func TestUpDownAndLeases(t *testing.T) {
 	if ev := hasEvent(x.events(), EvEnvStopped); ev == nil || ev.Data["reason"] != "ttl" {
 		t.Errorf("env.stopped: %+v", ev)
 	}
-	// A deploy to a stopped environment revives it and renews the lease.
 	if _, err := x.s.RecordDeploymentNamed(x.ctx, x.editor, x.p.Key, "a23x42s", DeployInput{Commit: "def5678"}); err != nil {
 		t.Fatal(err)
 	}
@@ -654,7 +615,6 @@ func TestUpDownAndLeases(t *testing.T) {
 	if got.Stopped || got.ExpiresAt == nil || got.Commit != "def5678" {
 		t.Errorf("deploy revived: %+v", got.Environment)
 	}
-	// Stopped ephemeral environments are forgotten after a week.
 	x.s.StopEnvironment(x.ctx, x.editor, back.ID)
 	x.setClock(x.clockNow().Add(6 * 24 * time.Hour))
 	x.s.envUpkeep(x.ctx)
@@ -688,7 +648,6 @@ func TestUnreachableDevEnvironmentsStop(t *testing.T) {
 		x.check(id)
 		x.check(id)
 	}
-	// Down for an hour: the one with a one-hour TTL goes; the default is three days.
 	x.setClock(x.clockNow().Add(61 * time.Minute))
 	x.s.envUpkeep(x.ctx)
 	state := func(id int64) bool { e, _ := x.s.GetEnvironment(x.ctx, x.admin, id); return e.Stopped }
@@ -703,14 +662,12 @@ func TestUnreachableDevEnvironmentsStop(t *testing.T) {
 	if state(prod.ID) {
 		t.Error("production was stopped for being down")
 	}
-	// One that came back isn't stopped.
 	f.code.Store(200)
 	back := up("back", 3600)
 	x.check(back.ID)
 	x.setClock(x.clockNow().Add(5 * time.Hour))
 	x.s.envUpkeep(x.ctx)
 	if e, _ := x.s.GetEnvironment(x.ctx, x.admin, back.ID); e.Stopped {
-		// Its lease was never set (ttl_s only), so only unreachability counts.
 		t.Error("a reachable environment was stopped")
 	}
 }
@@ -720,7 +677,6 @@ func TestUptimeAggregatesAndRetention(t *testing.T) {
 	f, srv := newFlaky(t)
 	d := x.create("prod", srv.URL)
 	start := x.clockNow()
-	// Three days of hourly checks; the second day is down for 6 of its 24 hours.
 	for h := 0; h < 72; h++ {
 		x.setClock(start.Add(time.Duration(h) * time.Hour))
 		if h >= 24 && h < 30 {
@@ -757,7 +713,6 @@ func TestUptimeAggregatesAndRetention(t *testing.T) {
 	if len(det.History) == 0 {
 		t.Error("no history")
 	}
-	// Two checks in a minute make one sample, and a failure wins.
 	x.setClock(x.clockNow().Add(time.Hour))
 	f.code.Store(200)
 	x.check(d.ID)
@@ -770,7 +725,6 @@ func TestUptimeAggregatesAndRetention(t *testing.T) {
 	if n != 1 || bad != 1 {
 		t.Errorf("samples in the minute: %d, failed %d", n, bad)
 	}
-	// Minute samples go after 48 hours, hourly counts after 90 days.
 	var minutes, hours int
 	x.s.envUpkeep(x.ctx)
 	x.s.db.R.QueryRow(`SELECT count(*) FROM environment_checks`).Scan(&minutes)
@@ -810,7 +764,6 @@ func TestDueChecksAreBoundedAndSpread(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		x.create(fmt.Sprintf("env%02d", i), srv.URL)
 	}
-	// One that is off, one stopped, one without an address.
 	x.create("off", srv.URL, func(in *EnvironmentInput) { in.IntervalS = ptr(0) })
 	stopped := x.create("stopped", srv.URL)
 	x.s.StopEnvironment(x.ctx, x.editor, stopped.ID)
@@ -822,7 +775,6 @@ func TestDueChecksAreBoundedAndSpread(t *testing.T) {
 	if peak.Load() > envMaxParallel || peak.Load() < 2 {
 		t.Errorf("peak concurrency %d (limit %d)", peak.Load(), envMaxParallel)
 	}
-	// Not due again until about an interval later, give or take a tenth.
 	if n := x.s.runDueEnvChecks(x.ctx); n != 0 {
 		t.Errorf("checked %d again at once", n)
 	}
@@ -834,13 +786,11 @@ func TestDueChecksAreBoundedAndSpread(t *testing.T) {
 	if n := x.s.runDueEnvChecks(x.ctx); n != 20 {
 		t.Errorf("checked %d after 70s", n)
 	}
-	// Changing the address makes it due now.
 	list, _ := x.s.ListEnvironments(x.ctx, x.admin, x.p.Key, false)
 	x.s.UpdateEnvironment(x.ctx, x.editor, list[0].ID, EnvironmentInput{HealthURL: ptr(srv.URL + "/health")})
 	if n := x.s.runDueEnvChecks(x.ctx); n != 1 {
 		t.Errorf("after changing an address: %d", n)
 	}
-	// The worker stops with its context, and "check now" refuses stopped ones.
 	ctx, cancel := context.WithCancel(x.ctx)
 	done := make(chan struct{})
 	go func() { x.s.RunEnvChecks(ctx); close(done) }()
@@ -888,12 +838,10 @@ func TestBehindBranchHeadAndCommitLinks(t *testing.T) {
 		}
 	}
 	x.events()
-	// The branch's head is the commit that runs: not behind.
 	push("acme/app", "main", "AAAAAAA1111222233334444")
 	if got, _ = x.s.GetEnvironmentNamed(x.ctx, x.viewer, x.p.Key, "staging"); got.Behind {
 		t.Error("behind at its own head")
 	}
-	// A push elsewhere changes nothing; a push to its branch puts it behind.
 	push("acme/app", "other", "bbbbbbb2222")
 	if got, _ = x.s.GetEnvironmentNamed(x.ctx, x.viewer, x.p.Key, "staging"); got.Behind {
 		t.Error("behind because of another branch")
@@ -906,7 +854,6 @@ func TestBehindBranchHeadAndCommitLinks(t *testing.T) {
 	if ev := hasEvent(x.events(), EvEnvUpdated); ev == nil || ev.ProjectID != x.p.ID {
 		t.Errorf("no live update for the push: %v", ev)
 	}
-	// Deploying the head catches up; deleting the branch changes nothing.
 	x.s.RecordDeploymentNamed(x.ctx, x.editor, x.p.Key, "staging", DeployInput{Commit: "bbbbbbb2222", Branch: "main"})
 	if got, _ = x.s.GetEnvironmentNamed(x.ctx, x.viewer, x.p.Key, "staging"); got.Behind {
 		t.Error("still behind after deploying the head")
@@ -916,7 +863,6 @@ func TestBehindBranchHeadAndCommitLinks(t *testing.T) {
 		t.Error("a deleted branch put it behind")
 	}
 
-	// Where does a commit run? Staging has run bbbbbbb since the last deploy.
 	at, err := x.s.EnvironmentsForCommits(x.ctx, x.viewer, "acme/app", []string{"bbbbbbb2222333444555", "aaaaaaa1111222233334444", "ffffffffff"})
 	if err != nil {
 		t.Fatal(err)
@@ -937,7 +883,6 @@ func TestBehindBranchHeadAndCommitLinks(t *testing.T) {
 		t.Errorf("an outsider sees %+v", hidden)
 	}
 
-	// A huge ?sha= list is capped rather than overflowing SQLite's variable limit.
 	many := []string{"bbbbbbb2222333444555"}
 	for i := 0; i < 2000; i++ {
 		many = append(many, fmt.Sprintf("%x", sha256.Sum256([]byte{byte(i), byte(i >> 8)})))

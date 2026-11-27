@@ -40,7 +40,6 @@ func TestAutopilotTextLayers(t *testing.T) {
 		t.Fatalf("job prompt = %q (%d jobs)", in.Prompt, len(a.jobs))
 	}
 
-	// The project's own wins; clearing it falls back to the admins'.
 	var pin ProjectInput
 	if err := json.Unmarshal([]byte(`{"settings":{"autopilot_done":"{key} finished; {status}"}}`), &pin); err != nil {
 		t.Fatal(err)
@@ -62,7 +61,6 @@ func TestAutopilotTextLayers(t *testing.T) {
 		t.Errorf("a project prompt without the task: %v", err)
 	}
 
-	// Empty goes back to the default.
 	if g, err = a.s.SetAutopilotText(a.ctx, a.admin, AutopilotTextInput{Prompt: ptrOf(""), Done: ptrOf(DefaultAutopilotDone)}); err != nil || g.CustomPrompt || g.CustomDone {
 		t.Fatalf("reset: %+v %v", g, err)
 	}

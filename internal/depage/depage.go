@@ -184,11 +184,11 @@ func ParseLock(b []byte) ([]Dep, error) {
 		p := lock.Packages[k]
 		i := strings.LastIndex(k, "node_modules/")
 		if i < 0 || p.Link || p.InBundle || p.Version == "" {
-			continue // the root, a workspace's own folder, or a link to one
+			continue
 		}
 		name := k[i+len("node_modules/"):]
 		if p.Name != "" {
-			name = p.Name // an alias: node_modules/x installed from package y
+			name = p.Name
 		}
 		v := p.Version
 		if p.Resolved != "" && p.Resolved != registryTarball(name, p.Version) {
@@ -279,7 +279,7 @@ func ParseRenovate(b []byte) ([]Rule, error) {
 			continue
 		}
 		if len(m.ManagerFilePatterns) == 0 {
-			continue // Renovate reads no files for it; an empty regexp would match every one
+			continue
 		}
 		var files []string
 		for _, p := range m.ManagerFilePatterns {

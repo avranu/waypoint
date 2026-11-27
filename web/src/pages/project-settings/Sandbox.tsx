@@ -1,7 +1,3 @@
-// Project settings → Sandbox (WP-418, WP-ADR28): how strongly the project's
-// agent work is walled off. Owners change it here, and only here: no token,
-// agent or automation can. Loosening asks for the password and a reason.
-
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ShieldAlert } from 'lucide-react'

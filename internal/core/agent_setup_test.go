@@ -81,19 +81,15 @@ func TestSharedBlock(t *testing.T) {
 	if withSharedBlock(with, "Run tests with make check.") != with {
 		t.Fatal("the same text again changed the file")
 	}
-	// Replaced in place, the text around it kept, even after the block.
 	after := with + "\nA line someone added below.\n"
 	repl := withSharedBlock(after, "New text.")
 	if !strings.HasPrefix(repl, own) || !strings.HasSuffix(repl, "\nA line someone added below.\n") || !strings.Contains(repl, "\nNew text.\n") || strings.Contains(repl, "make check") {
 		t.Fatalf("replaced:\n%s", repl)
 	}
-	// A hand-written opening marker without Waypoint's note is still found.
 	hand := "x\n<!-- waypoint:shared -->\nold\n<!-- /waypoint:shared -->\n"
 	if b, ok := sharedBlock(hand); !ok || b != "old" {
 		t.Fatalf("hand block %q %v", b, ok)
 	}
-	// A stray opening marker (its close deleted by hand) stays outside the
-	// block, and the person's text after it survives the next publish.
 	stray := "x\n<!-- waypoint:shared -->\nMine, keep it.\n"
 	once := withSharedBlock(stray, "First.")
 	if !strings.HasPrefix(once, stray) {
@@ -106,11 +102,9 @@ func TestSharedBlock(t *testing.T) {
 	if b, ok := sharedBlock(twice); !ok || b != "Second." {
 		t.Fatalf("stray block %q %v", b, ok)
 	}
-	// A stray close before the block doesn't hide it.
 	if b, ok := sharedBlock("<!-- /waypoint:shared -->\n" + with); !ok || b != "Run tests with make check." {
 		t.Fatalf("after a stray close %q %v", b, ok)
 	}
-	// Empty text takes it out, and the file ends as it began.
 	if got := withSharedBlock(with, ""); got != own {
 		t.Fatalf("removed: %q", got)
 	}
@@ -134,9 +128,9 @@ func TestSharedBlock(t *testing.T) {
 		{"", false, "rules", "y", "AGENTS.md"},
 		{"rules", true, "", "", "CLAUDE.md"},
 		{"@AGENTS.md\n", true, "rules", "y", "AGENTS.md"},
-		{"AGENTS.md", true, "rules", "y", "AGENTS.md"},        // a symlink, read as its target's path
-		{"See @AGENTS.md\n", true, "", "", "CLAUDE.md"},       // no AGENTS.md to put it in
-		{"rules\n@AGENTS.md", true, "more", "y", "AGENTS.md"}, // imports it: one block, where both are read
+		{"AGENTS.md", true, "rules", "y", "AGENTS.md"},
+		{"See @AGENTS.md\n", true, "", "", "CLAUDE.md"},
+		{"rules\n@AGENTS.md", true, "more", "y", "AGENTS.md"},
 	} {
 		if got := rootInstructionFile(c.claude, c.hasC, c.agents, c.hasA == "y"); got != c.want {
 			t.Errorf("root file for %q/%v %q/%v = %s, want %s", c.claude, c.hasC, c.agents, c.hasA, got, c.want)
@@ -225,7 +219,7 @@ func TestCompareComponents(t *testing.T) {
 		for k := range o {
 			only[i] = append(only[i], strings.SplitN(k, "\x00", 2)[1])
 		}
-	}, func(i int) bool { return i != 4 }) // the last wasn't read
+	}, func(i int) bool { return i != 4 })
 	if !slices.Equal(missing[3], []string{"reviewer"}) || len(missing[0]) != 0 || len(missing[4]) != 0 {
 		t.Fatalf("missing: %v", missing)
 	}
@@ -235,7 +229,6 @@ func TestCompareComponents(t *testing.T) {
 	if len(common) != 3 || common[0].Name != "reviewer" || common[0].Count != 3 || !common[0].Common || common[1].Common {
 		t.Fatalf("common: %+v", common)
 	}
-	// Two repos: nothing is common enough to be missing.
 	compareComponents([][]AgentComponent{c("a"), c()}, func(i int, m []AgentComponent, _ map[string]bool) {
 		if len(m) != 0 {
 			t.Fatalf("missing among two: %v", m)
@@ -259,11 +252,11 @@ func TestVersionLess(t *testing.T) {
 type fakeSetupForge struct {
 	t       *testing.T
 	mu      sync.Mutex
-	repos   map[string]*fakeSetupRepo // owner/name
+	repos   map[string]*fakeSetupRepo
 	commits []fakeSetupCommit
 	prs     []fakeSetupPR
-	closed  []string // repo#number
-	deleted []string // repo:branch
+	closed  []string
+	deleted []string
 	nextPR  int
 	failPR  bool
 }
@@ -275,8 +268,8 @@ type fakeSetupRepo struct {
 
 type fakeSetupCommit struct {
 	repo, base, branch, message string
-	files                       map[string]string // path → content
-	ops                         map[string]string // path → operation
+	files                       map[string]string
+	ops                         map[string]string
 }
 
 type fakeSetupPR struct {
@@ -294,7 +287,7 @@ func (f *fakeSetupForge) set(repo, p, content string) {
 		f.repos[repo] = r
 	}
 	r.files[p] = content
-	r.head = udiff.GitBlobSHA(fmt.Sprint(len(r.files), r.head, p, content)) // a new commit
+	r.head = udiff.GitBlobSHA(fmt.Sprint(len(r.files), r.head, p, content))
 }
 
 func (f *fakeSetupForge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -415,8 +408,8 @@ type setupEnv struct {
 	*env
 	fake    *fakeSetupForge
 	forgeID int64
-	acme    *Project // acme/one, acme/two, acme/three
-	other   *Project // acme/four, opted out
+	acme    *Project
+	other   *Project
 }
 
 const reviewerAgent = "---\nname: reviewer\ndescription: Reviews diffs\n---\nReview.\n"
@@ -492,7 +485,6 @@ func TestAgentSetupReadsRepos(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Before any read: every repo is unread.
 	out := se.setup(se.admin)
 	if len(out.Repos) != 4 || out.Repos[0].Status != "unread" || out.Repos[0].Shared != sharedUnread {
 		t.Fatalf("unread: %+v", out.Repos)
@@ -534,7 +526,6 @@ func TestAgentSetupReadsRepos(t *testing.T) {
 		t.Fatalf("common: %+v", out.RepoCommon)
 	}
 
-	// A member sees their projects' repos and can't edit as a viewer.
 	mine := se.setup(sam)
 	if len(mine.Repos) != 3 || mine.CanManage || !mine.CanEdit || mine.Repos[0].CanEdit {
 		t.Fatalf("sam's: %+v", mine)
@@ -547,10 +538,8 @@ func TestAgentSetupReadsRepos(t *testing.T) {
 		t.Fatalf("sam's read: %+v %v", fc, err)
 	}
 
-	// The same heads again: nothing is read; a push changing an agent file
-	// reads that repo again.
 	se.fake.set("acme/one", "CLAUDE.md", "# One\n\nNew rules.\n")
-	se.refresh() // the head moved: read again
+	se.refresh()
 	if fc, _ := se.s.GetAgentFile(se.ctx, se.admin, se.forgeID, "acme/one", "CLAUDE.md"); fc.Content != "# One\n\nNew rules.\n" {
 		t.Fatalf("not read again: %q", fc.Content)
 	}
@@ -567,7 +556,6 @@ func TestAgentSetupReadsRepos(t *testing.T) {
 		t.Fatalf("the push wasn't read: %q", fc.Content)
 	}
 
-	// A repo the forge can't read says so on its row and keeps its files.
 	se.fake.mu.Lock()
 	delete(se.fake.repos, "acme/one")
 	se.fake.mu.Unlock()
@@ -585,7 +573,6 @@ func TestAgentSetupSharedInstructions(t *testing.T) {
 	sam := se.user("sam", false)
 	se.refresh()
 
-	// Only admins, as themselves, edit the shared text.
 	if _, err := se.s.SaveSharedInstructions(se.ctx, sam, "x"); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("a member saved: %v", err)
 	}
@@ -610,8 +597,6 @@ func TestAgentSetupSharedInstructions(t *testing.T) {
 		t.Fatalf("after saving: %+v", out.Shared)
 	}
 
-	// Hourly: the repos missing it get a pull request, the opted-out one
-	// doesn't.
 	se.refresh()
 	for repo, file := range map[string]string{"acme/one": "CLAUDE.md", "acme/two": "AGENTS.md", "acme/three": "AGENTS.md"} {
 		prs := se.fake.prsTo(repo)
@@ -641,13 +626,11 @@ func TestAgentSetupSharedInstructions(t *testing.T) {
 	if four := se.repo(out, "acme/four"); !strings.Contains(four.Checks[len(four.Checks)-1].Note, "turned automatic changes off") {
 		t.Fatalf("four's note: %+v", four.Checks)
 	}
-	// Once per version: the next hour opens nothing.
 	se.refresh()
 	if n := len(se.fake.prsTo("acme/one")); n != 1 {
 		t.Fatalf("a second pull request for the same version: %d", n)
 	}
 
-	// One merges: the block is current there.
 	se.fake.set("acme/one", "CLAUDE.md", se.fake.lastCommit("acme/one").files["CLAUDE.md"])
 	if _, err := se.s.db.W.Exec(`INSERT INTO pull_requests(forge_id, repo, number, url, state, created_at, updated_at) VALUES (?, 'acme/one', 1, 'u', 'merged', 0, 0)`, se.forgeID); err != nil {
 		t.Fatal(err)
@@ -657,8 +640,6 @@ func TestAgentSetupSharedInstructions(t *testing.T) {
 		t.Fatalf("merged: %+v", one)
 	}
 
-	// Version 2, published by hand: every repo whose block differs, the
-	// older open pull requests closed; the opted-out repo skipped.
 	if _, err := se.s.PublishShared(se.ctx, sam); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("a member published: %v", err)
 	}
@@ -678,27 +659,23 @@ func TestAgentSetupSharedInstructions(t *testing.T) {
 		t.Fatalf("publish: %+v", res)
 	}
 	se.fake.mu.Lock()
-	// Opened in the repos' order (one #1, three #2, two #3).
 	closed, deleted := slices.Clone(se.fake.closed), se.fake.deleted
 	se.fake.mu.Unlock()
 	sort.Strings(closed)
 	if !slices.Equal(closed, []string{"acme/three#2", "acme/two#3"}) || len(deleted) != 2 {
 		t.Fatalf("older pull requests closed: %v, branches %v", closed, deleted)
 	}
-	// Publishing again while they are open sends nothing new.
 	if res, _ := se.s.PublishShared(se.ctx, se.admin); len(res.Repos) != 0 {
 		t.Fatalf("published twice: %+v", res)
 	}
 	se.s.Wait()
 
-	// A hand edit inside the block shows as edited, and Publish replaces it.
 	se.fake.set("acme/one", "CLAUDE.md", withSharedBlock("# One\n", "My own version."))
 	se.refresh()
 	if one := se.repo(se.setup(se.admin), "acme/one"); one.Shared != sharedEdited {
 		t.Fatalf("edited: %+v", one)
 	}
 
-	// A pull request the forge refuses is recorded on the repo.
 	se.fake.mu.Lock()
 	se.fake.failPR = true
 	se.fake.mu.Unlock()
@@ -756,12 +733,10 @@ func TestAgentSetupEditFile(t *testing.T) {
 	if c := se.fake.lastCommit("acme/one"); c.files["CLAUDE.md"] != edit.Content || !strings.HasPrefix(c.message, "Say more\n\nUpdate CLAUDE.md.\n\nThe rules were thin.") {
 		t.Fatalf("the edit's commit: %+v", c)
 	}
-	// The file moved since it was read: a conflict, nothing pushed.
 	se.fake.set("acme/one", "CLAUDE.md", "someone else's\n")
 	if _, err := se.s.EditAgentFile(se.ctx, sam, edit); !errors.Is(err, ErrConflict) {
 		t.Fatalf("edited a moved file: %v", err)
 	}
-	// A new file.
 	nf := AgentFileEdit{ForgeID: se.forgeID, Repo: "acme/three", Path: "AGENTS.md", Content: "# Three\n"}
 	if res, err := se.s.EditAgentFile(se.ctx, se.admin, nf); err != nil || res.Number == 0 {
 		t.Fatalf("a new file: %+v %v", res, err)
@@ -799,8 +774,6 @@ func TestAgentSetupMachines(t *testing.T) {
 		t.Fatalf("a report without a name: %v", err)
 	}
 	mine := se.setup(sam).Machines
-	// Only sam's machine is in sam's view: no newer wp to compare with, and
-	// the bogus check is dropped.
 	if len(mine) != 1 || mine[0].Machine != "laptop" || len(mine[0].Files) != 4 || len(mine[0].Checks) != 1 {
 		t.Fatalf("sam's machine: %+v", mine)
 	}
@@ -832,7 +805,6 @@ func TestAgentSetupMachines(t *testing.T) {
 			t.Fatalf("%s kept a secret: %+v %v", p, fc, err)
 		}
 	}
-	// A new report replaces the old.
 	report.Files = report.Files[:1]
 	report.Machine = "laptop"
 	if err := se.s.ReportMachine(se.ctx, sam, report); err != nil {

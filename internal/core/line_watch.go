@@ -1,26 +1,5 @@
 package core
 
-// The line watch (WP-431). On 2026-11-02 a repo's merge line stood
-// empty from about 04:00 to 11:23 UTC with twelve pull requests armed:
-// eight babysits had given up at the round limit and four waited on a
-// person, all over faults in Waypoint itself (WP-428, WP-430), while CI sat
-// a third busy. The fixes shipped and nothing picked the pull requests up
-// again, and the only word of it was one notification per pull request, in
-// the babysitter's terms. So:
-//   - when Waypoint starts (a deploy, usually of a fix), a babysit that gave
-//     up in the last day, or waits on a person for a reason Waypoint came to
-//     itself, on an armed open pull request starts again, at most once in
-//     resumeEvery for each pull request; review comments a person must
-//     decide still wait for the person, at no round's cost;
-//   - a line with armed pull requests and none of them moving tries to free
-//     itself after lineSelfHealAfter: a pull request nobody babysits gets a
-//     babysit, one given up on starts again (WP-784);
-//   - only a line still stuck after lineStalledAfter files one request, in
-//     plain words, for the person who armed them, saying what each waits
-//     for. It expires when the line moves again. How long a line has been
-//     quiet is read from what the database records, so a deploy doesn't
-//     start the count again.
-
 import (
 	"context"
 	"fmt"
@@ -81,14 +60,17 @@ func (s *Service) ResumeBabysits(ctx context.Context) {
 }
 
 // resumeBabysit starts the pull request's babysit again when it gave up or
-// waits on a person for no person's reason, and wasn't resumed lately.
+// waits on a person for no person's reason, and wasn't resumed lately. One
+// whose lock is held has a step running, so it is passed over (false) and the
+// next pass looks again.
 func (s *Service) resumeBabysit(ctx context.Context, prID int64) bool {
-	unlock := s.babysitLocks.lock(prID)
+	unlock, free := s.babysitLocks.tryLock(prID)
+	if !free {
+		return false
+	}
 	b, pr, ok := s.resumable(ctx, prID)
 	var owner int64
 	if ok {
-		// Everything a start can refuse is checked before the waiting
-		// babysit ends, so a refusal leaves it waiting as it was.
 		if owner = b.ownerID; owner == 0 {
 			owner = s.babysitOwnerFor(ctx, pr)
 		}
@@ -102,7 +84,7 @@ func (s *Service) resumeBabysit(ctx context.Context, prID int64) bool {
 		return false
 	}
 	model := b.Model
-	if planningModel(model) { // stored before startBabysit refused these: resume on the default
+	if planningModel(model) {
 		model = ""
 	}
 	if _, err := s.startBabysit(ctx, SystemActor(), pr, owner, model, viaResume, b.Notify, false); err != nil {
@@ -125,23 +107,22 @@ func (s *Service) resumable(ctx context.Context, prID int64) (*Babysit, *PullReq
 	case BabysitGaveUp:
 	case BabysitStopped:
 		if b.EndReason != resumeEnded {
-			return nil, nil, false // stopped by a person, or by Waypoint for its reason
+			return nil, nil, false
 		}
-		// ended for a resume whose start then failed: try again
 	case BabysitNeedsPerson:
 		if n := len(b.Rounds); n > 0 && b.Rounds[n-1].To == "session" {
-			return nil, nil, false // handed to a session: its push carries it on
+			return nil, nil, false
 		}
 		if parkedOn(b, pr.HeadSHA) {
-			return nil, nil, false // parked for a person's answer: that, or a push, carries it on (WP-439)
+			return nil, nil, false
 		}
 		if n := len(b.Rounds); n > 0 && sameSHA(b.Rounds[n-1].SHA, pr.HeadSHA) {
 			if _, refused := protectedRefusal(b.Rounds[n-1]); refused {
-				return nil, nil, false // a fresh round is refused the same way; a session's push carries it on
+				return nil, nil, false
 			}
 		}
 		if person, err := s.personComments(ctx, prID); err != nil || person > 0 {
-			return nil, nil, false // a person's call: starting again changes nothing
+			return nil, nil, false
 		}
 	default:
 		return nil, nil, false
@@ -163,8 +144,6 @@ func (s *Service) personComments(ctx context.Context, prID int64) (int, error) {
 	return n, err
 }
 
-// ---- a stalled line ----
-
 // lineRef is one merge line: a base of a repo on a forge.
 type lineRef struct {
 	forge      int64
@@ -177,11 +156,9 @@ func (l lineRef) key() string {
 
 // watchLines frees the merge lines that have armed pull requests and none of
 // them moving, files a request for each still stuck after lineStalledAfter,
-// and expires the requests of lines that move again (from CheckBabysits).
+// and expires the requests of lines that move again (the merge lines job).
 func (s *Service) watchLines(ctx context.Context) {
 	now := s.now()
-	// A line went quiet at the latest of its last merge, an arming, and a
-	// babysit changing what it does or ending.
 	rows, err := s.db.R.QueryContext(ctx, `SELECT p.forge_id, p.repo, p.base_ref,
 		  max(EXISTS (SELECT 1 FROM babysits b WHERE b.pr_id = p.id AND b.ended_at IS NULL AND b.state != ?)),
 		  max(
@@ -209,7 +186,7 @@ func (s *Service) watchLines(ctx context.Context) {
 	rows.Close()
 	if err != nil {
 		s.log.WarnContext(ctx, "watch merge lines", "err", err)
-		return // a partial view could expire a stalled line's request
+		return
 	}
 	stalled := map[string]bool{}
 	for _, l := range lines {
@@ -218,7 +195,7 @@ func (s *Service) watchLines(ctx context.Context) {
 			continue
 		}
 		if s.unstickLine(ctx, l.ref) || now.Sub(since) < lineStalledAfter {
-			continue // what it started moves the line; only then ask a person
+			continue
 		}
 		stalled[l.ref.key()] = true
 		s.askAboutLine(ctx, l.ref, since)
@@ -307,7 +284,6 @@ func (s *Service) askAboutLine(ctx context.Context, l lineRef, since time.Time) 
 	if err != nil || len(prs) == 0 {
 		return
 	}
-	// Asking spends no runner, so it needs only someone to ask.
 	owner := s.babysitOwnerFor(ctx, prs[0])
 	if owner == 0 {
 		owner = s.repoProjectOwner(ctx, l.forge, prs[0].Repo)
@@ -387,7 +363,7 @@ func (s *Service) lineStuckOn(ctx context.Context, pr *PullRequest) (string, boo
 		return "Waypoint couldn't read its babysitting", false
 	case b == nil:
 		if why := s.babysitGate(ctx, pr); why != "" {
-			return "no agent may work on it: " + why, false // starting a babysit changes nothing
+			return "no agent may work on it: " + why, false
 		}
 		return "no agent is working on it, because Waypoint found no runner it may send one to", true
 	case b.State == BabysitGaveUp:
@@ -395,8 +371,6 @@ func (s *Service) lineStuckOn(ctx context.Context, pr *PullRequest) (string, boo
 	case b.State == BabysitStopped:
 		return "its babysitting was stopped (" + cmp(b.EndReason, "by hand") + ")", true
 	case b.State == BabysitNeedsPerson && isFullRunReason(b.Wait):
-		// Its checks decide this, not a fix-up round: a babysit started
-		// again waits for the same run (WP-552).
 		return "its CI hasn't finished the full run Waypoint waits for: " + b.Wait +
 			". Starting its babysit again won't change that; the run's page on the forge says whether it is still going, and a re-run of it there starts it again", false
 	case b.State == BabysitNeedsPerson && waitsForSession(b):

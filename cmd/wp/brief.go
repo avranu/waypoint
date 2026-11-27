@@ -13,12 +13,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// wp brief (ADR3 point 3, WP-181): one budgeted answer that orients an
-// agent on a task or a question: the task and its links, what governs it
-// (design notes, glossary, pages), then the code the text points at from
-// the local index. The code half is internal/codeindex; this file gathers
-// the Waypoint half and fits both to the budget.
-
 const defaultBriefTokens = 5000
 
 var briefCmd = &command{
@@ -300,7 +294,6 @@ func (c *cli) taskSection(iss issueForBrief, comments []commentForBrief, budget 
 		for n, cm := range cms {
 			s := fmt.Sprintf("  [%s %s] %s\n", strings.SplitN(cm.CreatedAt, "T", 2)[0], commenter(cm), clipTokens(strings.ReplaceAll(strings.TrimSpace(cm.Body), "\n", " "), min(left, 120)))
 			if left -= codeindex.Tokens(s); left < 0 || n == briefComments {
-				// WP-449: say what is left out, so none is missed unseen
 				fmt.Fprintf(&b, "  … %d earlier: wp show %s has every comment\n", len(cms)-n, iss.Key)
 				break
 			}
@@ -352,8 +345,6 @@ func clipTokens(s string, n int) string {
 	return strings.TrimRight(cut, " \n") + " …"
 }
 
-// ---- what governs it ----
-
 var (
 	bracketRE = lazyre.New(`\[\[([^\]\n]{1,60})\]\]`)
 	codeRefRE = lazyre.New(`\b((?:[A-Z][A-Z0-9]{1,9}-)?(?:ADR|PL|X|R|D)-?\d{1,4})\b`)
@@ -384,7 +375,6 @@ func (c *cli) governingSection(key, project, title, body, extra, question string
 	}
 	text := title + "\n" + body + "\n" + extra
 	var lines []string
-	// shownRef is what each line lists, to tell the server what was shown.
 	shownRef := map[string]shownItem{}
 	list := func(line, typ, ref string) {
 		lines = append(lines, line)
@@ -393,8 +383,6 @@ func (c *cli) governingSection(key, project, title, body, extra, question string
 	seen := map[string]bool{}
 	addNote := func(ref string) {
 		var n govNote
-		// listed=1: the brief reads it to list it unasked; that is a showing
-		// (recorded below), not a lookup by the agent.
 		path := "/api/v1/design/" + esc(ref) + "?listed=1"
 		if project != "" {
 			path += "&project=" + url.QueryEscape(project)
@@ -402,8 +390,6 @@ func (c *cli) governingSection(key, project, title, body, extra, question string
 		if seen["d"+strings.ToUpper(ref)] || c.do("GET", path, nil, &n) != nil {
 			return
 		}
-		// one note reached by two spellings (ADR8 from the task's links,
-		// WP-ADR8 or ADR-0008 in its text) is listed once (WP-244)
 		id := fmt.Sprintf("d#%d", n.ID)
 		dup := seen[id]
 		seen["d"+strings.ToUpper(ref)] = true
@@ -428,7 +414,7 @@ func (c *cli) governingSection(key, project, title, body, extra, question string
 			Title    string `json:"title"`
 			Body     string `json:"body"`
 		}
-		path := "/api/v1/pages/" + esc(strings.ToUpper(ref)) + "?listed=1" // as for notes above
+		path := "/api/v1/pages/" + esc(strings.ToUpper(ref)) + "?listed=1"
 		if project != "" {
 			path += "&project=" + url.QueryEscape(project)
 		}
@@ -449,7 +435,6 @@ func (c *cli) governingSection(key, project, title, body, extra, question string
 	}
 
 	if key != "" {
-		// the design notes linked to the task come with a peek at it
 		var peek struct {
 			Design []struct {
 				Code string `json:"code"`
@@ -506,7 +491,6 @@ func (c *cli) governingSection(key, project, title, body, extra, question string
 		}
 		if raw, err := c.call("GET", "/api/v1/search/all?"+q.Encode(), nil); err == nil {
 			for _, l := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
-				// the hit lines ("design #93 Title [decision] WP"), not the snippets under them
 				if t := strings.TrimSpace(l); (strings.HasPrefix(t, "design #") || strings.HasPrefix(t, "page #")) && len(lines) < 12 {
 					if f := strings.Fields(t); len(f) >= 2 {
 						list("  "+truncRunes(t, 150), strings.TrimSuffix(f[0], " "), strings.TrimPrefix(f[1], "#"))
@@ -574,15 +558,15 @@ func (c *cli) glossaryFor(text, project string, linked []string) []glossHit {
 				n += 3
 			}
 		}
-		need := 2 // once is often just the word
+		need := 2
 		if !strings.Contains(g.Term, " ") && !isLinked[strings.ToLower(g.Term)] {
-			need = 3 // one word (Take, Key, Claim) is often everyday English
+			need = 3
 		}
 		if n >= need {
 			hits = append(hits, hit{glossHit{fmt.Sprintf("%s (glossary): %s  [wp define %q]", g.Term, noteSummary(g.Definition, 160), g.Term), g.Term}, n})
 		}
 	}
-	for i := range hits { // few, most-used first
+	for i := range hits {
 		for j := i + 1; j < len(hits); j++ {
 			if hits[j].n > hits[i].n {
 				hits[i], hits[j] = hits[j], hits[i]

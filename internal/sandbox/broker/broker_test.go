@@ -63,8 +63,8 @@ func newUpstream(t *testing.T, host string, ca *CA) *upstream {
 type harness struct {
 	b        *Broker
 	proxy    *url.URL
-	sandbox  *CA // what the session trusts
-	upstream *CA // what the upstreams' certificates chain to
+	sandbox  *CA
+	upstream *CA
 	mu       sync.Mutex
 	log      []Entry
 	limits   []string
@@ -223,13 +223,11 @@ func TestDomainFrontingRefused(t *testing.T) {
 	h := start(t, Policy{Rules: []Rule{{Host: up.host, Port: up.port}}}, nil, "127.0.0.1", true)
 	c := h.client(h.sandbox)
 
-	// The Host header names another host than the one connected to.
 	code, _, hdr := get(t, c, "GET", urlFor(up, "https", "/"), map[string]string{"Host": "evil.example.org"})
 	if code != http.StatusForbidden || hdr.Get("X-Waypoint-Sandbox") != "denied: host" {
 		t.Errorf("fronted Host header: %d %v", code, hdr)
 	}
 
-	// The TLS server name names another host than CONNECT did.
 	conn, err := net.Dial("tcp", h.proxy.Host)
 	if err != nil {
 		t.Fatal(err)
@@ -280,7 +278,6 @@ func TestUnknownHostAndMethod(t *testing.T) {
 func TestTunnelPassesThroughUntouched(t *testing.T) {
 	up := newUpstream(t, "api.anthropic.test", testUpstreamCA)
 	h := start(t, Policy{Rules: []Rule{{Host: up.host, Port: up.port, Mode: Tunnel, Template: "anthropic"}}}, nil, "127.0.0.1", true)
-	// The session trusts the real upstream: nothing in between.
 	c := h.client(testUpstreamCA)
 	code, body, _ := get(t, c, "POST", urlFor(up, "https", "/v1/messages"), map[string]string{"Authorization": "Bearer setup-token"})
 	if code != 200 {
@@ -289,7 +286,6 @@ func TestTunnelPassesThroughUntouched(t *testing.T) {
 	if a := up.seen()[0].Header.Get("Authorization"); a != "Bearer setup-token" {
 		t.Errorf("tunnelled auth = %q, want the session's own", a)
 	}
-	// A tunnel is logged when it ends.
 	c.CloseIdleConnections()
 	waitFor(t, func() bool {
 		for _, e := range h.entries() {
@@ -305,7 +301,6 @@ func TestAddressChecks(t *testing.T) {
 	up := newUpstream(t, "git.example.org", testUpstreamCA)
 	rule := Rule{Host: up.host, Port: up.port}
 
-	// No pin, and loopback isn't public: refused after DNS.
 	h := start(t, Policy{Rules: []Rule{rule}}, nil, "127.0.0.1", false)
 	code, _, _ := get(t, h.client(h.sandbox), "GET", urlFor(up, "https", "/"), nil)
 	if code != http.StatusBadGateway {
@@ -322,7 +317,6 @@ func TestAddressChecks(t *testing.T) {
 		t.Errorf("no address failure logged: %+v", h.entries())
 	}
 
-	// Pinned: the same address is allowed for this host.
 	rule.Pin = []string{"127.0.0.1"}
 	h = start(t, Policy{Rules: []Rule{rule}}, nil, "127.0.0.1", false)
 	if code, _, _ := get(t, h.client(h.sandbox), "GET", urlFor(up, "https", "/"), nil); code != 200 {
@@ -362,7 +356,6 @@ func TestPlainHTTP(t *testing.T) {
 	if code, _, _ := get(t, c, "PUT", urlFor(up, "http", "/ubuntu/x"), nil); code != http.StatusForbidden {
 		t.Errorf("plain PUT: %d", code)
 	}
-	// A plain-HTTP rule isn't reachable by CONNECT.
 	if code, _, _ := get(t, c, "GET", urlFor(up, "https", "/"), nil); code == 200 {
 		t.Error("CONNECT to a plain-HTTP rule was allowed")
 	}

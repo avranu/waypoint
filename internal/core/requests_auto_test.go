@@ -59,7 +59,6 @@ func TestStopFilesTrailingQuestionOnce(t *testing.T) {
 		len(q.Questions) != 1 || len(q.Questions[0].Choices) != 0 || q.Session == nil || !strings.Contains(q.Body, "1.7 m outside") || !strings.Contains(q.Body, "automatically") {
 		t.Fatalf("request: %+v", q)
 	}
-	// Another Stop of the same turn (a continuation) files nothing more.
 	tick(time.Second)
 	r.stopWith(autoMsg)
 	if n := len(r.requests("all")); n != 1 {
@@ -76,7 +75,6 @@ func TestStopSkipsWhenAgentAlreadyAsked(t *testing.T) {
 	if n := len(r.requests("all")); n != 1 {
 		t.Fatalf("filed on top of the agent's own request: %d", n)
 	}
-	// A new turn: the earlier request doesn't count.
 	tick(time.Minute)
 	r.prompt()
 	tick(time.Minute)
@@ -84,7 +82,6 @@ func TestStopSkipsWhenAgentAlreadyAsked(t *testing.T) {
 	if n := len(r.requests("all")); n != 2 {
 		t.Fatalf("a later turn's question wasn't filed: %d", n)
 	}
-	// A refused tool call isn't the agent asking.
 	tick(time.Minute)
 	r.prompt()
 	tick(time.Second)
@@ -110,7 +107,7 @@ func TestRestatedQuestionIsNotFiledAgain(t *testing.T) {
 		"**Your call:** releasing Quarry 0.3.17 so that news caching reaches production.",
 	} {
 		tick(time.Minute)
-		r.prompt() // expires it
+		r.prompt()
 		tick(time.Second)
 		r.stopWith(msg)
 		if n := len(r.requests("all")); n != 1 {
@@ -124,7 +121,6 @@ func TestRestatedQuestionIsNotFiledAgain(t *testing.T) {
 	if n := len(r.requests("all")); n != 2 {
 		t.Fatalf("another question wasn't filed: %d", n)
 	}
-	// A dismissed one stays dismissed for a day.
 	q := r.requests("open")[0]
 	if _, err := r.s.DecideRequest(r.ctx, r.ana, q.Ref, RequestDecision{Decision: "dismiss", NotAQuestion: true}); err != nil {
 		t.Fatal(err)
@@ -171,7 +167,6 @@ func TestAutoFilingWithoutPrompts(t *testing.T) {
 	if n := len(r.requests("all")); n != 2 {
 		t.Fatalf("the second turn's question wasn't filed: %d", n)
 	}
-	// An agent's own request between two Stops counts for that turn.
 	tick(time.Minute)
 	r.ask(RequestInput{Kind: RequestQuestion, Title: "Which cache backend?", Questions: choiceQ()})
 	tick(time.Minute)
@@ -185,7 +180,7 @@ func TestAutoQuestionExpiresOnPromptAndNotifiesLate(t *testing.T) {
 	r := newReqEnv(t)
 	tick := func(d time.Duration) { r.setClock(r.clockNow().Add(d)) }
 	sub := r.s.Hub.Subscribe(r.ana.User.ID)
-	created := func() int { // request.created events seen so far
+	created := func() int {
 		n := 0
 		for {
 			select {
@@ -199,7 +194,6 @@ func TestAutoQuestionExpiresOnPromptAndNotifiesLate(t *testing.T) {
 		}
 	}
 
-	// Answered in the terminal within the delay: expires, never notifies.
 	r.stopWith(autoMsg)
 	if got := r.notices(); got != 0 {
 		t.Fatalf("notified at once: %d", got)
@@ -219,7 +213,6 @@ func TestAutoQuestionExpiresOnPromptAndNotifiesLate(t *testing.T) {
 		t.Fatalf("expired: %d", n)
 	}
 
-	// Still open after the delay: notified once.
 	tick(time.Minute)
 	r.stopWith("Want me to file these as tasks?")
 	tick(autoQuestionDelay - time.Second)
@@ -240,7 +233,6 @@ func TestAutoQuestionExpiresOnPromptAndNotifiesLate(t *testing.T) {
 		t.Fatalf("request.created after the delay: %d, want 1 (automations run on it)", n)
 	}
 
-	// An agent's own request tells at once.
 	r.ask(RequestInput{Kind: RequestQuestion, Title: "Which database?", Questions: choiceQ()})
 	if got := r.notices(); got != 2 {
 		t.Fatalf("agent-filed request notices: %d, want 2", got)
@@ -265,7 +257,7 @@ func TestNotAQuestionDismissal(t *testing.T) {
 func TestDecisionReachesIdleAgent(t *testing.T) {
 	r := newReqEnv(t)
 	run := r.runner()
-	run.noRunner = true // not yet
+	run.noRunner = true
 	tick := func(d time.Duration) { r.setClock(r.clockNow().Add(d)) }
 	q := r.ask(RequestInput{Kind: RequestQuestion, Title: "Which database?", Questions: choiceQ()})
 	r.stopWith("Waiting on that.")
@@ -276,7 +268,6 @@ func TestDecisionReachesIdleAgent(t *testing.T) {
 	if len(run.jobs) != 0 {
 		t.Fatalf("a job with no runner: %+v", run.jobs)
 	}
-	// The next prompt carries it, once.
 	res, err := r.s.SessionHook(r.ctx, agentActor(r.ana, "anthropic/claude-code"), []HookEvent{hook("box", "cli-1", "UserPromptSubmit", func(h *HookEvent) { h.Prompt = "go on" })})
 	if err != nil {
 		t.Fatal(err)
@@ -289,8 +280,6 @@ func TestDecisionReachesIdleAgent(t *testing.T) {
 		t.Fatalf("delivered twice: %q %v", res.Text, err)
 	}
 
-	// With a runner on the machine, an idle session is told through its
-	// socket: at once when the agent's other work waits on the answer.
 	run.noRunner = false
 	r.stopWith("Waiting on that.")
 	q2 := r.ask(RequestInput{Kind: RequestQuestion, Title: "Which cache?", Blocking: true, Questions: []Question{{Question: "Which cache?", Choices: []Choice{{Label: "redis"}, {Label: "memory"}}}}})
@@ -301,12 +290,10 @@ func TestDecisionReachesIdleAgent(t *testing.T) {
 	if len(run.jobs) != 1 || run.jobs[0].In.Kind != JobMessage || run.jobs[0].In.Source != sessionBatchSource || !strings.Contains(string(run.jobs[0].In.Input), "redis") {
 		t.Fatalf("socket job: %+v", run.jobs)
 	}
-	// It counts as delivered: the next prompt doesn't repeat it ...
 	res, err = r.s.SessionHook(r.ctx, agentActor(r.ana, "anthropic/claude-code"), []HookEvent{hook("box", "cli-1", "UserPromptSubmit", func(h *HookEvent) { h.Prompt = "ok" })})
 	if err != nil || res.Text != "" {
 		t.Fatalf("repeated what the socket carried: %q %v", res.Text, err)
 	}
-	// ... unless the job failed.
 	run.finish(r, 1, RunnerJob{State: "failed", Error: "no socket"})
 	res, err = r.s.SessionHook(r.ctx, agentActor(r.ana, "anthropic/claude-code"), []HookEvent{hook("box", "cli-1", "UserPromptSubmit", func(h *HookEvent) { h.Prompt = "ok?" })})
 	if err != nil || !strings.Contains(res.Text, "redis") {
@@ -327,10 +314,10 @@ func TestDecisionWaitsToShareAWakeUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.s.CheckBabysits(r.ctx)
+	r.s.releaseDueBatches(r.ctx)
 	if len(run.jobs) != 0 {
 		t.Fatalf("woke the agent at once: %+v", run.jobs)
 	}
-	// A blocking answer goes, and takes this one along.
 	if _, err := r.s.DecideRequest(r.ctx, r.ana, q2.Ref, RequestDecision{Decision: "answer", Answers: []Answer{{Choices: []string{"redis"}}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +325,6 @@ func TestDecisionWaitsToShareAWakeUp(t *testing.T) {
 		t.Fatalf("want one post with both: %+v", run.jobs)
 	}
 
-	// Alone, it goes just before the cache cools.
 	r.prompt()
 	q3 := r.ask(RequestInput{Kind: RequestQuestion, Title: "Which queue?", Questions: []Question{{Question: "Which queue?", Choices: []Choice{{Label: "nats"}, {Label: "sqlite"}}}}})
 	r.stopWith("Waiting on that.")
@@ -347,6 +333,7 @@ func TestDecisionWaitsToShareAWakeUp(t *testing.T) {
 	}
 	r.setClock(r.clockNow().Add(cacheWarm - cacheMargin))
 	r.s.CheckBabysits(r.ctx)
+	r.s.releaseDueBatches(r.ctx)
 	if len(run.jobs) != 2 || !strings.Contains(string(run.jobs[1].In.Input), "nats") {
 		t.Fatalf("want it before the cache cools: %+v", run.jobs)
 	}

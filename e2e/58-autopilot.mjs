@@ -63,8 +63,6 @@ async function run(width, scheme, n) {
   const { token } = await api("POST", "/me/tokens", { name: `autopilot ${n}`, agent: "anthropic/claude-code" });
   const agent = { ...H, Authorization: `Bearer ${token}` };
 
-  // ---- the tab, before anything is on ----
-  // 29-agents-usage leaves fresh quota samples behind; this tab starts with none.
   const db = new DatabaseSync(`${process.env.DIR}/wp.db`);
   db.exec("PRAGMA busy_timeout = 5000");
   db.exec("DELETE FROM quota_samples");
@@ -79,7 +77,6 @@ async function run(width, scheme, n) {
   await shot("off");
   await overflow("off");
 
-  // ---- turn it on, give the project its own grace and merge policy ----
   await page.getByRole("switch", { name: `Autopilot in ${KEY}` }).click();
   await row.getByText("No sessions of yours open here").waitFor();
   ok(true, `${tag} turning a project on says no session of yours is open there`);
@@ -88,7 +85,6 @@ async function run(width, scheme, n) {
   await dlg.waitFor();
   const grace = page.locator(`#p-${KEY}-grace_seconds`);
   ok((await grace.getAttribute("placeholder")) === "60", `${tag} the grace field shows the inherited 60`);
-  // The review setting holds with autopilot off too (WP-1007): its (?) says so.
   await dlg
     .locator("div.relative")
     .filter({ has: page.getByRole("combobox", { name: "Adversarial review", exact: true }) })
@@ -100,12 +96,10 @@ async function run(width, scheme, n) {
   await shot("review-hint");
   await overflow("review hint open");
   await page.keyboard.press("Escape");
-  // Escape closes the hint, and on a phone (where the hint is a sheet) the dialog under it too.
   if (!(await dlg.isVisible())) await row.getByRole("button", { name: `Limits for ${KEY}` }).click();
   await grace.fill("3600");
   await grace.press("Enter");
   await pick(dlg, "Merge wait", "Never wait");
-  // No Save button: a typed limit saves on Enter or blur, a select at once.
   await page.waitForFunction(async ([b, k]) => {
     const o = await (await fetch(b + "/api/v1/autopilot")).json();
     const p = o.projects.find((x) => x.project_key === k);
@@ -115,7 +109,6 @@ async function run(width, scheme, n) {
   await shot("project-limits");
   await overflow("project limits open");
 
-  // ---- criteria and pace (WP-284): kept in one spelling, said in words ----
   await pick(dlg, "Priority", "High or above");
   await pick(dlg, "Approved only", "On");
   await page.locator(`#p-${KEY}-per_day`).fill("10");
@@ -128,14 +121,12 @@ async function run(width, scheme, n) {
   ok(/not their order/.test(await dlg.innerText()), `${tag} a query with order: is refused before saving`);
   await page.locator(`#p-${KEY}-query`).fill("-label:risky");
   await page.locator(`#p-${KEY}-query`).press("Enter");
-  // No Save button: a typed limit saves on Enter or blur, a select at once.
   await page.waitForFunction(async ([b, k]) => {
     const o = await (await fetch(b + "/api/v1/autopilot")).json();
     const p = o.projects.find((x) => x.project_key === k);
     return p && p.limits.hours === "09:00-18:00" && p.limits.days === "mon-fri" && p.limits.min_priority === "high" && p.limits.at_once === 2;
   }, [base, KEY]);
   ok(true, `${tag} the criteria and pace are saved in one spelling`);
-  // The row reads the refetched settings, a moment after the save.
   await row.getByTestId("autopilot-criteria").filter({ hasText: "mon-fri" }).waitFor({ timeout: 5000 }).catch(() => {});
   const words = await row.getByTestId("autopilot-criteria").innerText();
   ok(
@@ -145,13 +136,11 @@ async function run(width, scheme, n) {
   ok((await page.locator(`#p-${KEY}-hours`).inputValue()) === "09:00-18:00", `${tag} the hours field shows the kept spelling`);
   await shot("criteria");
   await overflow("criteria");
-  // Back to what the rest of this suite expects.
   await api("PUT", `/autopilot/projects/${KEY}`, { limits: { grace_seconds: 3600, merge: "never" } });
   await page.reload();
   await row.waitFor();
   ok((await row.getByTestId("autopilot-criteria").count()) === 0, `${tag} with no criteria or pace the row says nothing of them`);
 
-  // ---- a default limit (the dialog's Defaults tab) ----
   await row.getByRole("button", { name: `Limits for ${KEY}` }).click();
   await dlg.getByRole("tab", { name: "Defaults" }).click();
   const hourly = page.locator("#defaults-max_hourly_usd");
@@ -172,7 +161,6 @@ async function run(width, scheme, n) {
   await page.locator('section[aria-label="Readings"]').getByText(`$${40 + n}.00`, { exact: true }).waitFor();
   ok(true, `${tag} the readings use the new limit`);
 
-  // ---- a quota limit pauses it; turn the quota limits off for a while ----
   {
     const qdb = new DatabaseSync(`${process.env.DIR}/wp.db`);
     qdb.exec("PRAGMA busy_timeout = 5000");
@@ -205,13 +193,6 @@ async function run(width, scheme, n) {
     qdb2.close();
   }
 
-  // ---- sessions finish tasks ----
-  // Autopilot moves on only sessions it started (WP-1319), so each of these
-  // has the step that started it (next_session). The prompt that started a
-  // task doesn't count as a person's (WP-307); one a person typed would make
-  // the session theirs, and its step would stop. Waypoint knows the prompt
-  // it typed by its recorded digest, not its words (WP-1370, ADR147), so
-  // the kickoff is recorded as autopilot records it when it starts one.
   const finish = async (suffix, machine, last, prompt) => {
     const where = { session_id: `cli-ap-${n}-${suffix}`, machine, cwd: `/work/ap${n}`, branch: `feat/ap${n}${suffix}` };
     const hook = (event, extra = {}) => api("POST", "/sessions/hook", { events: [{ event, ...where, ...extra }] }, agent);
@@ -223,10 +204,9 @@ async function run(width, scheme, n) {
       const uid = born.prepare("SELECT id FROM users WHERE username = 'robin'").get().id;
       const pid = born.prepare("SELECT id FROM projects WHERE key = ?").get(KEY).id;
       const sid = born.prepare("SELECT id FROM agent_sessions WHERE cli_id = ? AND machine = ?").get(where.session_id, machine).id;
-      const at = Date.now() - 2 * 24 * 3600 * 1000; // days ago: not among today's steps
+      const at = Date.now() - 2 * 24 * 3600 * 1000;
       born.prepare(`INSERT INTO autopilot_steps (user_id, project_id, session_id, stop_at, state, due_at, next_session, next_session_at, created_at, updated_at)
         VALUES (?, ?, NULL, ?, 'started', ?, ?, ?, ?, ?)`).run(uid, pid, at, at, sid, at, at, at);
-      // The prompt is one line of single spaces, so its normalised text is itself (core.PromptSum).
       const sum = crypto.createHash("sha256").update(prompt).digest("hex");
       born.prepare(`INSERT INTO typed_prompts (session_id, user_id, hash, kind, created_at, expires_at) VALUES (?, ?, ?, 'kickoff', ?, ?)`).run(
         sid, uid, sum, Date.now(), Date.now() + 3600 * 1000);
@@ -273,8 +253,6 @@ async function run(width, scheme, n) {
   await shot("with-data");
   await overflow("with data");
   if (width < 768) {
-    // The floating + steps aside while the person scrolls down, so it never
-    // sits on the charts, and comes back when they scroll up (WP-1196).
     const fab = page.locator('button[aria-label="New issue"]');
     const shown = async () => (await fab.evaluate((el) => getComputedStyle(el).opacity)) === "1";
     await page.mouse.move(195, 450);
@@ -290,7 +268,6 @@ async function run(width, scheme, n) {
     await page.screenshot({ path: `${out}/fab-back-${width}-${scheme}.png` });
   }
 
-  // ---- stop one step, start the other at once ----
   const steps = row.getByTestId("autopilot-step");
   await steps.filter({ hasText: `ap-box-${n}` }).getByRole("button", { name: "Stop" }).click();
   await row.getByText("1 earlier today").waitFor();
@@ -303,7 +280,6 @@ async function run(width, scheme, n) {
   await shot("stopped");
   await overflow("after stop / start now");
 
-  // ---- the stopped session is listed idle; Start has autopilot go on in it ----
   const idle = row.getByTestId("autopilot-session").filter({ hasText: `ap-box-${n}` });
   await idle.waitFor();
   ok(/Idle/.test(await idle.innerText()), `${tag} the stopped session is listed idle (${(await idle.innerText()).replace(/\s+/g, " ")})`);
@@ -317,10 +293,8 @@ async function run(width, scheme, n) {
   }, [base, KEY, `ap-box-${n}`]);
   ok(true, `${tag} Start next task makes a step of the idle session`);
 
-  // ---- read, unread ----
   await card1.getByRole("button", { name: "Mark read" }).click();
   await page.waitForFunction(() => document.querySelectorAll('[data-testid="task-summary"]').length === 1);
-  // The tab's count comes from the overview, refetched after the list.
   await page.waitForFunction(() => /\b1\b/.test([...document.querySelectorAll('[role="tab"]')].find((e) => e.textContent.startsWith("Autopilot"))?.textContent ?? ""), null, { timeout: 5000 }).catch(() => {});
   ok(/\b1\b/.test(await unread.innerText()), `${tag} the tab counts 1 after marking one read`);
   await page.getByRole("radio", { name: "All" }).click();
@@ -337,9 +311,6 @@ async function run(width, scheme, n) {
   await shot("read");
   await overflow("all read");
 
-  // ---- autopilot's own start: a step with no session (WP-799) ----
-  // Written straight to the database: a real one needs a runner and a sweep
-  // a minute away. The waiting one goes first: a sweep only drops the newest.
   {
     const ready = await api("POST", "/issues", { project: KEY, title: `Own start of ${KEY}`, agent: "claude" });
     const own = new DatabaseSync(`${process.env.DIR}/wp.db`);
@@ -370,7 +341,6 @@ async function run(width, scheme, n) {
     ok(true, `${tag} Stop ends autopilot's own start`);
   }
 
-  // ---- the project's filter narrows the tab; off ends the work ----
   await page.goto(`${base}/agents?tab=autopilot&project=${KEY}`);
   await row.waitFor();
   ok((await page.locator('[data-testid^="autopilot-A"]').count()) === 1, `${tag} the project filter narrows the project list`);

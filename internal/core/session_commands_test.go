@@ -23,7 +23,7 @@ func TestSessionCommandWords(t *testing.T) {
 func (a *apEnv) command(p string) *HookResult {
 	a.t.Helper()
 	a.setClock(a.clockNow().Add(5 * time.Second))
-	_, _ = a.s.db.W.Exec(`UPDATE runners SET last_seen_at = ?`, a.clockNow().UnixMilli()) // it keeps polling
+	_, _ = a.s.db.W.Exec(`UPDATE runners SET last_seen_at = ?`, a.clockNow().UnixMilli())
 	res, err := a.s.SessionHook(a.ctx, a.ag, []HookEvent{hook("box", a.cli, "UserPromptSubmit", func(h *HookEvent) { h.Prompt = p })})
 	if err != nil {
 		a.t.Fatal(err)
@@ -42,7 +42,6 @@ func TestWpNextSkipsTheIdleHold(t *testing.T) {
 	a.finish(first.Key)
 	a.stopWith("Done.")
 	a.prompt("Also fix the typo")
-	// Typed in, the session is its person's (WP-1319): no note.
 	if res := a.stopWith("Fixed the typo."); strings.Contains(res.Note, "Autopilot") {
 		t.Fatalf("note = %q", res.Note)
 	}
@@ -82,7 +81,6 @@ func TestWpNextWithNoStep(t *testing.T) {
 	if _, err := a.s.AgentDone(a.ctx, a.ag, second.Key, AgentDoneInput{Comment: "done"}); err != nil {
 		t.Fatal(err)
 	}
-	// Kept, the session is its person's (WP-1319): its Stop makes no step.
 	if res := a.stopWith("Done."); strings.Contains(res.Note, "Autopilot") {
 		t.Fatalf("note = %q", res.Note)
 	}

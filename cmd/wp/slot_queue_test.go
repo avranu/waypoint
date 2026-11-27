@@ -34,7 +34,7 @@ func sqArgs(t *testing.T) {
 const sqCmd = "go test ./x"
 
 // sqRun is a run of the space-separated words of s, keyed by s itself.
-func sqRun(s string) slotRun { return slotRun{s, slotShown(strings.Fields(s))} }
+func sqRun(s string) slotRun { return slotRun{key: s, shown: slotShown(strings.Fields(s))} }
 
 func sqCLI() (*cli, *bytes.Buffer, *bytes.Buffer) {
 	var out, errb bytes.Buffer
@@ -240,7 +240,6 @@ func TestSlotClassify(t *testing.T) {
 	if got := classifyRun(nil, "tests", "/a/.git", "c"); got != slotClassShort {
 		t.Errorf("unknown: %s", got)
 	}
-	// The latest five are long, long, 1, long, long: the median is long, though older ones were short.
 	recs := []waitRec{r(1), r(1), r(1), r(long), r(long), r(1), r(long), r(long)}
 	if got := classifyRun(recs, "tests", "/a/.git", "c"); got != slotClassLong {
 		t.Errorf("median of the latest 5 = %s", got)
@@ -321,7 +320,6 @@ func TestSlotWaitsLogIsTrimmed(t *testing.T) {
 	if len(recs) != slotWaitsKeep || recs[len(recs)-1].At != 9999 || recs[0].At != 3500-int64(slotWaitsKeep)+2 {
 		t.Errorf("kept %d records, first at %d, last at %d", len(recs), recs[0].At, recs[len(recs)-1].At)
 	}
-	// wp slot ls reads every *.lock here as a slot: the log's lock isn't one.
 	if m, _ := filepath.Glob(filepath.Join(dir, "*.lock")); len(m) != 0 {
 		t.Errorf("appending left %v, which wp slot ls would list as slots", m)
 	}
@@ -345,7 +343,6 @@ func TestSlotLsShowsWaitersAndWaits(t *testing.T) {
 	appendWaitRec(dir, waitRec{Name: "tests", Repo: "/p/JobHunt/.git", Class: "short", At: now.Unix(), Wait: 4})
 	appendWaitRec(dir, waitRec{Name: "tests", Repo: "/p/JobHunt/.git", Class: "short", At: now.Unix(), Wait: 70})
 	appendWaitRec(dir, waitRec{Name: "tests", Repo: "/p/old/.git", Class: "long", At: now.Add(-48 * time.Hour).Unix(), Wait: 9})
-	// a tree lock is not a slot lock line
 	_ = os.WriteFile(filepath.Join(dir, "tree-abc.tests.treelock"), nil, 0o600)
 
 	var out, errb bytes.Buffer
@@ -463,13 +460,11 @@ func TestSlotGaveUpWaitIsRecorded(t *testing.T) {
 	if len(recs) != 2 || !recs[0].GaveUp || recs[0].Secs != 0 || recs[1].GaveUp {
 		t.Fatalf("records %+v", recs)
 	}
-	// Giving up says nothing about how long the command takes.
 	long := waitRec{Name: "tests", Repo: recs[0].Repo, Cmd: sqCmd, Secs: 1800}
 	gave := waitRec{Name: "tests", Repo: recs[0].Repo, Cmd: sqCmd, GaveUp: true}
 	if got := classifyRun([]waitRec{long, long, gave, gave, gave}, "tests", recs[0].Repo, sqCmd); got != slotClassLong {
 		t.Errorf("gave-up records counted: %s", got)
 	}
-	// They show in the 24h waits.
 	var out bytes.Buffer
 	(&cli{out: &out}).slotQueueLs(dir)
 	if !strings.Contains(out.String(), "(2)") {

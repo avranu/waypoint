@@ -1,5 +1,3 @@
-// Pieces shared by the audit lists and the audit page (WP-348).
-
 import { Link } from '@tanstack/react-router'
 import clsx from 'clsx'
 import { Loader2, ShieldAlert, ShieldCheck, ShieldOff, ShieldQuestion } from 'lucide-react'

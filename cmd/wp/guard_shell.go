@@ -2,40 +2,32 @@ package main
 
 import "strings"
 
-// A small shell reader for the guard (WP-270, WP-ADR10): it splits a Bash
-// command into simple commands with their words unquoted, so a rule looks at
-// what is run and not at text that only mentions it (`echo "apt-get install"`
-// is an echo). It follows quotes, heredocs and the substitutions that run
-// code ($( ), backticks, <( )), and reads redirects. It is not a shell: what
-// it can't read it skips, and a command it can't make sense of matches
-// nothing.
-
 // guardCmd is one simple command.
 type guardCmd struct {
-	words   []string      // unquoted words, assignments and wrappers included
-	open    []bool        // per word: the shell may make other words of it (word.open)
-	subs    [][]*guardCmd // the commands of $( ), backticks and <( ) in its words
-	redirs  []string      // targets of > and >> (and &>)
-	heredoc string        // the body of a << heredoc given to it
-	pipeIn  bool          // the command before it is piped into it
-	andIn   bool          // it runs only if the command just before it succeeded (a && b)
+	words   []string
+	open    []bool
+	subs    [][]*guardCmd
+	redirs  []string
+	heredoc string
+	pipeIn  bool
+	andIn   bool
 
-	detached bool // it runs under a bare &, so the shell goes on without it
+	detached bool
 }
 
 type guardHeredoc struct {
 	cmd   *guardCmd
 	delim string
-	strip bool // <<-: leading tabs are not part of a line
+	strip bool
 }
 
 type guardParser struct {
 	s       string
 	i       int
-	end     byte // the byte that ends the list being read: ')' or '`' (0: the end of the text)
+	end     byte
 	nest    int
 	pending []guardHeredoc
-	open    bool // the last word read is open (word)
+	open    bool
 }
 
 const guardMaxNest = 12
@@ -86,8 +78,8 @@ func (p *guardParser) list(end byte) []*guardCmd {
 	var out []*guardCmd
 	cur := &guardCmd{}
 	pipe := false
-	and := false   // the next command follows a && after a command
-	listStart := 0 // where the list a bare & would apply to begins in out
+	and := false
+	listStart := 0
 	var groups []int
 	flush := func(nextPipe bool) bool {
 		added := false
@@ -102,7 +94,7 @@ func (p *guardParser) list(end byte) []*guardCmd {
 		return added
 	}
 	if p.nest > guardMaxNest {
-		p.i = len(p.s) // too deep to read: skip the rest
+		p.i = len(p.s)
 		return nil
 	}
 	for p.i < len(p.s) {
@@ -125,7 +117,7 @@ func (p *guardParser) list(end byte) []*guardCmd {
 			listStart = len(out)
 		case c == '&' && p.peek(1) == '&':
 			p.i += 2
-			and = flush(false) // not after a ( group ): what ran in it is gone
+			and = flush(false)
 		case c == '&' && p.peek(1) == '>':
 			p.i++
 			p.redirect(cur)
@@ -157,7 +149,7 @@ func (p *guardParser) list(end byte) []*guardCmd {
 			p.i++
 			flush(false)
 			if n := len(groups); n > 0 {
-				listStart, groups = groups[n-1], groups[:n-1] // a & after it covers the whole group
+				listStart, groups = groups[n-1], groups[:n-1]
 			} else if end == ')' {
 				return out
 			}
@@ -170,7 +162,7 @@ func (p *guardParser) list(end byte) []*guardCmd {
 		default:
 			w, quoted := p.word(cur)
 			if !quoted && isDigits(w) && (p.peek(0) == '<' || p.peek(0) == '>') {
-				continue // a file descriptor: 2>file
+				continue
 			}
 			if len(cur.words) == 0 && !quoted && shellKeywords[w] {
 				continue
@@ -198,7 +190,7 @@ func (p *guardParser) redirect(cur *guardCmd) {
 		amp = true
 	case c == '<' && p.peek(0) == '<':
 		p.i++
-		if p.peek(0) == '<' { // <<< word
+		if p.peek(0) == '<' {
 			p.i++
 			p.skipSpaces()
 			p.word(cur)
@@ -305,7 +297,7 @@ func (p *guardParser) word(cur *guardCmd) (string, bool) {
 			b.WriteString(subPlaceholder)
 			open = true
 		case c == '$' && p.peek(1) == '\'':
-			p.i++ // $'...': read as '...'
+			p.i++
 		case c == '`' && p.end != '`':
 			p.i++
 			cur.subs = append(cur.subs, p.list('`'))

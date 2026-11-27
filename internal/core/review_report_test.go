@@ -29,11 +29,9 @@ func (a *apEnv) reportNone(key, summary string) (*ReviewReportResult, error) {
 		a.t.Fatal(err)
 	}
 	if round != 0 {
-		// The server's own rule for a review on record (ownReviewRaised).
 		if n, _, err := a.s.ownReviewRaised(a.ctx, a.session, issue, round); err == nil && n == 0 {
 			a.t.Logf("reportNone: added a review row for %s", key)
 			a.ownReviewDone("The adversarial-review agent read the diff; nothing stood.")
-			// The work log's own read of it is done and counted nothing raised.
 			if _, err := a.s.db.W.Exec(`UPDATE work_log SET read_state = 'done', found = 0, fixed = 0, rejected = 0 WHERE kind = ? AND id = (SELECT max(id) FROM work_log WHERE kind = ?)`, WorkOwnReview, WorkOwnReview); err != nil {
 				a.t.Fatal(err)
 			}
@@ -189,9 +187,6 @@ func TestParseReviewReport(t *testing.T) {
 		})
 	}
 
-	// What it keeps: the severity by its alias, the path from "file", the
-	// state from "state", an outcome left out as open, a title made from
-	// the problem; worst first, and no more than an audit keeps.
 	sum, got, dropped, err := parseReviewReport(`{"summary": " S ", "findings": [
 		{"problem": "First line.\nSecond.", "severity": "minor", "file": "./a/b.go", "line": "12"},
 		{"title": "Worst", "severity": "CRITICAL", "path": "c.go", "state": "Fixed", "note": "done"}]}`)
@@ -216,8 +211,6 @@ func TestParseReviewReport(t *testing.T) {
 	if err != nil || len(got) != 30+3 || dropped != 0 || got[0].Severity != "critical" || got[2].Severity != "critical" || got[3].Severity != "low" {
 		t.Fatalf("%d kept, %d dropped, %v", len(got), dropped, err)
 	}
-	// A report keeps up to the guard (findingsGuard), the worst first; the
-	// rest are counted as dropped.
 	many = many[:0]
 	for i := range findingsGuard + 3 {
 		sev := "low"
@@ -266,7 +259,6 @@ func TestSessionReviewReported(t *testing.T) {
 	if f := au.Findings[1]; f.State != "rejected" || f.Severity != "low" {
 		t.Fatalf("finding 2 = %+v", f)
 	}
-	// Nobody can ask the session's report again as an audit.
 	if _, err := e.s.RerunAudit(e.ctx, e.admin, au.ID, "web"); !IsInvalid(err) {
 		t.Fatalf("rerun of a report: %v", err)
 	}
@@ -281,13 +273,10 @@ func TestSessionReviewReported(t *testing.T) {
 	if err := e.s.db.R.QueryRow(`SELECT audit_id FROM review_again_decisions WHERE round_id = ?`, r1).Scan(&audit); err != nil || audit != au.ID {
 		t.Fatalf("the decision's audit = %d, %v (want %d)", audit, err, au.ID)
 	}
-	// Decided: the report is closed.
 	if _, err := e.report(key, twoFindings); !IsInvalid(err) {
 		t.Fatalf("report after the decision: %v", err)
 	}
 
-	// Round 2 raises nothing: the pull request opens, and both rounds
-	// carry their counts.
 	e.setClock(e.clockNow().Add(time.Minute))
 	r2, _ := e.sessionRound()
 	if r2 == r1 {
@@ -322,7 +311,6 @@ func TestSessionReviewReported(t *testing.T) {
 func TestSessionReviewReportReplaced(t *testing.T) {
 	e := sessionLoopEnv(t, map[string]string{"": "minor", "fixes": "complete"})
 	key := e.task.Key
-	// No round yet: nothing to report on.
 	if _, err := e.reportNone(key, "Read it."); !IsInvalid(err) || !strings.Contains(err.Error(), "no adversarial review round") {
 		t.Fatalf("report with no round: %v", err)
 	}
@@ -332,7 +320,6 @@ func TestSessionReviewReportReplaced(t *testing.T) {
 	if _, err := e.reportNone(key, "Read it."); !IsInvalid(err) || !strings.Contains(err.Error(), "hasn't started") {
 		t.Fatalf("report on a pending round: %v", err)
 	}
-	// Only the session whose round it is reports.
 	if _, err := e.s.ReportReview(e.ctx, e.admin, key, ReviewReportInput{None: true, Summary: "Read it."}); !IsInvalid(err) {
 		t.Fatalf("a person's report: %v", err)
 	}
@@ -375,7 +362,6 @@ func TestSessionReviewReportReplaced(t *testing.T) {
 	if err != nil || res.Pull != nil || !strings.Contains(res.Held, "checking your marks") {
 		t.Fatalf("marked = %+v, %v", res, err)
 	}
-	// Being checked: the marks change by wp audit mark, not a new report.
 	if _, err := e.report(key, `[]`); !IsInvalid(err) || !strings.Contains(err.Error(), "marks are being checked") {
 		t.Fatalf("report while checked: %v", err)
 	}
@@ -412,8 +398,6 @@ func TestOwnReviewReported(t *testing.T) {
 	if err != nil || rep.Round != round || len(rep.Audit.Findings) != 1 {
 		t.Fatalf("report = %+v, %v", rep, err)
 	}
-	// Its mark is checked; a low finding, fixed, calls for no other round
-	// (no decision model here: the labels say so).
 	res, err = a.shipChecked(box, key)
 	if err != nil || res.Held != "" || res.Pull == nil || len(g.created) != 1 {
 		t.Fatalf("ship after the report = %+v, %v", res, err)
@@ -451,8 +435,6 @@ func TestOwnReportCheckedAgainstReviewer(t *testing.T) {
 		}
 		return a, box, g, first.Key
 	}
-	// checkOf is the round's check: its id, the most findings it may
-	// report, and what it was asked.
 	checkOf := func(a *apEnv, round int64) (id int64, most int, prompt string) {
 		a.t.Helper()
 		if err := a.s.db.R.QueryRow(`SELECT id, max_findings, prompt FROM code_audits WHERE request_key = ?`, fmt.Sprintf(checkAuditKey, round)).Scan(&id, &most, &prompt); err != nil {
@@ -488,7 +470,6 @@ func TestOwnReportCheckedAgainstReviewer(t *testing.T) {
 		if err != nil || res.Pull != nil || !strings.Contains(res.Held, "left out or made milder") || !strings.Contains(res.Held, fmt.Sprintf("%d.1", check)) {
 			t.Fatalf("ship before the left-out finding is marked = %+v, %v", res, err)
 		}
-		// Reported again now, the report would lose the check's finding.
 		if _, err := a.report(key, `[]`); !IsInvalid(err) {
 			t.Fatalf("report after the check: %v", err)
 		}
@@ -554,8 +535,6 @@ func TestOwnReportCheckedAgainstReviewer(t *testing.T) {
 		if err != nil || res.Pull != nil || len(g.created) != 0 || !strings.Contains(res.Held, fmt.Sprintf("%d.1", check)) {
 			t.Fatalf("ship before the left-out finding is marked = %+v, %v", res, err)
 		}
-		// The session stands by leaving it out: its word against the
-		// check's, so another reviewer reads the change.
 		if _, err := a.s.MarkAuditFindings(a.ctx, a.ag, MarkFindings{IDs: []string{fmt.Sprintf("%d.1", check)}, State: "rejected", Note: "New never returns a nil map."}); err != nil {
 			t.Fatal(err)
 		}
@@ -570,10 +549,6 @@ func TestOwnReportCheckedAgainstReviewer(t *testing.T) {
 		}
 	})
 
-	// A report of nothing that the check couldn't read against the
-	// reviewer's words (it failed) is not read by anyone: it calls another
-	// round, as a rejection nothing upheld does, and the decision says one
-	// thing went unchecked. Before, the pull request opened with no decision.
 	t.Run("nothing reported, the check fails", func(t *testing.T) {
 		a, box, g, key := start(t)
 		round := a.newestRoundID()
@@ -597,9 +572,6 @@ func TestOwnReportCheckedAgainstReviewer(t *testing.T) {
 		}
 	})
 
-	// The marks a check read are what it checked: before it is asked an
-	// agent marks freely; after, it may only mark fixed, and what the
-	// check disputes is the check's own finding. A person may mark anything.
 	t.Run("marks after the check", func(t *testing.T) {
 		a, _, _, key := start(t)
 		rep, err := a.report(key, `[{"title": "Save writes to a nil map", "path": "internal/x.go", "line": 12, "severity": "low", "problem": "The map is nil on a new store.", "outcome": "fixed", "note": "Made in New."}]`)
@@ -639,7 +611,6 @@ func TestOwnReportCheckedAgainstReviewer(t *testing.T) {
 		if err := mark(SystemActor(), "fixed"); err != nil {
 			t.Errorf("the system: %v", err)
 		}
-		// The check's own finding isn't held to it.
 		var check int64
 		if err := a.s.db.R.QueryRow(`SELECT id FROM code_audits WHERE request_key LIKE 'review-round:%:check'`).Scan(&check); err != nil {
 			t.Fatal(err)
@@ -654,9 +625,6 @@ func TestOwnReportCheckedAgainstReviewer(t *testing.T) {
 		}
 	})
 
-	// The session can't end the check of its own marks: a cancelled check
-	// passes the round (WP-1390). A person may, and Waypoint does when the
-	// check is past its patience.
 	t.Run("the check is cancelled by a person", func(t *testing.T) {
 		for who, c := range map[string]struct {
 			actor func(a *apEnv) *Actor
@@ -689,10 +657,6 @@ func TestOwnReportCheckedAgainstReviewer(t *testing.T) {
 		}
 	})
 
-	// A free read of the reviewer's words that lands after the report and
-	// found something is the work log disagreeing with a report of nothing:
-	// that is what the check is for, so it is asked, not skipped as if two
-	// readers agreed.
 	t.Run("nothing reported, a read that found something", func(t *testing.T) {
 		a, _, _, key := start(t)
 		if _, err := a.reportNone(key, "The subagent read the diff; nothing stood."); err != nil {
@@ -707,8 +671,6 @@ func TestOwnReportCheckedAgainstReviewer(t *testing.T) {
 		}
 	})
 
-	// A read that found nothing, for every review, is two readers agreeing:
-	// the check is skipped.
 	t.Run("nothing reported, a read that found nothing", func(t *testing.T) {
 		a, _, g, key := start(t)
 		if _, err := a.reportNone(key, "The subagent read the diff; nothing stood."); err != nil {
@@ -722,15 +684,10 @@ func TestOwnReportCheckedAgainstReviewer(t *testing.T) {
 		}
 	})
 
-	// With none of the reviewer's words kept there is nothing to read a
-	// report against: its marks are checked as any round's, and a report
-	// of nothing asks no check.
 	t.Run("no words kept", func(t *testing.T) {
 		e := sessionLoopEnv(t, map[string]string{"": "minor", "fixes": "complete"})
 		key := e.task.Key
 		round, _ := e.sessionRound()
-		// A report of nothing needs a review on record (WP-1320), so it is
-		// refused here, and asks no check.
 		if _, err := e.reportNoneBare(key, "Read the diff by hand; nothing stood."); !IsInvalid(err) {
 			t.Fatalf("--none with no words kept: %v", err)
 		}
@@ -762,9 +719,6 @@ func TestFailedRoundDecidedAtShip(t *testing.T) {
 		t.Fatalf("round 1 = %+v, reason %q, counts %s", r, e.reason(r1), e.roundCounts(r1))
 	}
 
-	// A second decision of a round (the loser of two ships that decided it
-	// at once) is reported as not inserted, and insertOnce rolls its write
-	// back, so the stored decision stands and nothing of the loser's stays.
 	t.Run("a round decided twice", func(t *testing.T) {
 		var issue, audit int64
 		var arm string
@@ -788,9 +742,6 @@ func TestFailedRoundDecidedAtShip(t *testing.T) {
 		}
 	})
 
-	// A round that failed after it started was decided all the same, so it
-	// is part of the loop the next round sees (the cap and the repeat
-	// guard count it).
 	t.Run("a decided round that failed is in the loop", func(t *testing.T) {
 		var run int64
 		if err := e.s.db.R.QueryRow(`SELECT run_id FROM work_log WHERE id = ?`, r1).Scan(&run); err != nil {
@@ -804,7 +755,6 @@ func TestFailedRoundDecidedAtShip(t *testing.T) {
 		if err != nil || loop == nil || !slices.Contains(loop.earlier, r1) {
 			t.Fatalf("loop = %+v, %v", loop, err)
 		}
-		// Undecided, it is not.
 		if _, err := e.s.db.W.Exec(`DELETE FROM review_again_decisions WHERE round_id = ?`, r1); err != nil {
 			t.Fatal(err)
 		}
@@ -813,7 +763,6 @@ func TestFailedRoundDecidedAtShip(t *testing.T) {
 		}
 	})
 
-	// One that never started reviewed nothing: no decision is its to make.
 	t.Run("never started", func(t *testing.T) {
 		e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
 		if res, err := e.ship(e.task.Key, ShipAuto); err != nil || res.Held == "" {
@@ -870,7 +819,7 @@ func TestSkipReviewRecorded(t *testing.T) {
 			t.Fatalf("ship = %+v, %v", res, err)
 		}
 		id := a.newestRoundID()
-		for range 2 { // (asked again after the forge failed: one note)
+		for range 2 {
 			if res, err := a.ship(key, ShipSkip, func(in *OpenPRInput) { in.Reason = "the reviewer found nothing and I have no time" }); err != nil || res.Pull == nil {
 				t.Fatalf("skip = %+v, %v", res, err)
 			}
@@ -886,7 +835,6 @@ func TestSkipReviewRecorded(t *testing.T) {
 			t.Fatalf("opened %d", len(g.created))
 		}
 	})
-	// Waypoint's own open (shipHeld) says so, not that the agent did it.
 	t.Run("a finished round, undecided, opened by Waypoint", func(t *testing.T) {
 		a, g, key := introEnv(t)
 		a.ownReviewDone("No issues found.")
@@ -967,8 +915,6 @@ func TestOwnReviewSaidChoosesWhatTheCheckReads(t *testing.T) {
 	if err := a.s.db.R.QueryRow(`SELECT id, issue_id, session_id FROM work_log WHERE kind = ?`, WorkOwnReview).Scan(&orig, &issueID, &session); err != nil {
 		t.Fatal(err)
 	}
-	// add copies the hook's row with another body; by hand: no prompt and
-	// the attached reason.
 	add := func(body string, byHand bool) {
 		t.Helper()
 		prompt, reason := "Attack the diff.", "adversarial-review"
@@ -989,8 +935,6 @@ func TestOwnReviewSaidChoosesWhatTheCheckReads(t *testing.T) {
 		return got
 	}
 
-	// Four captured reviews, the newest very long, then three by hand
-	// (newer than all): the hand ones fill what the captured ones leave.
 	add("captured-one", false)
 	add("captured-two", false)
 	add("captured-three", false)
@@ -1009,12 +953,10 @@ func TestOwnReviewSaidChoosesWhatTheCheckReads(t *testing.T) {
 			t.Errorf("what the check reads has %q, an older review by hand", w)
 		}
 	}
-	// The captured ones in their order: newest first, hand ones after.
 	at := func(w string) int { return strings.Index(got, w) }
 	if order := []int{at("captured-long"), at("captured-three"), at("captured-two"), at("captured-one"), at("by-hand-three")}; order[0] < 0 || !slices.IsSorted(order) {
 		t.Errorf("order of the reviews:\n%.600s", got)
 	}
-	// The long one took an even share (a fifth of the room), not all of it.
 	if n := strings.Count(got, "x"); n > checkSaidMax/checkSaidReviews {
 		t.Errorf("the long review kept %d characters, more than its share %d", n, checkSaidMax/checkSaidReviews)
 	}
@@ -1022,7 +964,6 @@ func TestOwnReviewSaidChoosesWhatTheCheckReads(t *testing.T) {
 		t.Errorf("%d characters shown", n)
 	}
 
-	// No more than the five kept: no "more" line.
 	if _, err := a.s.db.W.Exec(`DELETE FROM work_log WHERE kind = ? AND (body LIKE 'by-hand-%' OR body = 'captured-one')`, WorkOwnReview); err != nil {
 		t.Fatal(err)
 	}
@@ -1044,11 +985,9 @@ func TestReportNoneNeedsAReviewOnRecord(t *testing.T) {
 		!strings.Contains(err.Error(), "wp worklog "+first.Key+" --review -f FILE") {
 		t.Fatalf("--none with no review on record: %v", err)
 	}
-	// Findings are accepted with none on record.
 	if rep, err := a.report(first.Key, twoFindings); err != nil || len(rep.Audit.Findings) != 2 {
 		t.Fatalf("a report with findings = %+v, %v", rep, err)
 	}
-	// A review attached by hand puts one on record.
 	if _, err := a.s.AddWorkNote(a.ctx, a.ag, first.Key, WorkNoteInput{Body: "The reviewer read the diff and raised nothing.", Review: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -1129,13 +1068,11 @@ func TestReportRoundOfTwoBranches(t *testing.T) {
 	if id := got(session); id != r2 {
 		t.Fatalf("the run's newest round: %d, want %d (the other branch's, made last)", id, r2)
 	}
-	// A run that took over from an earlier one: both rounds belong to a run
-	// before it.
 	e.exec(`UPDATE work_log SET run_id = ? WHERE id IN (?, ?)`, run-1, r1, r2)
 	if id := got(session); id != r2 {
 		t.Fatalf("after a resume, the newest round's branch: %d, want %d", id, r2)
 	}
-	r3 := copyRound("") // the first branch again
+	r3 := copyRound("")
 	e.exec(`UPDATE work_log SET run_id = ? WHERE id = ?`, run-1, r3)
 	if id := got(session); id != r3 || id == r2 || id == r1 {
 		t.Fatalf("after a resume, with the first branch's round newest: %d, want %d (not %d or %d)", id, r3, r2, r1)

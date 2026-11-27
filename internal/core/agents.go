@@ -11,11 +11,6 @@ import (
 	"time"
 )
 
-// Who work is for (people or agents), what kind of work it is, and the
-// workflows agents move it through. See WP-D7.
-
-// ---- issue categories ----
-
 // IssueCategories are the kinds of work an issue can be. Optional, and
 // separate from type (epic/story/task…), which is about size and hierarchy.
 var IssueCategories = []string{"feature", "bugfix", "improvement", "refactor", "docs", "test", "research", "design", "ops", "security", "chore"}
@@ -56,8 +51,6 @@ func lowerAll(vs []string) []string {
 	return out
 }
 
-// ---- agent specs ----
-
 // normalizeAgent lowercases and drops separators, so "Haiku 5.5",
 // "haiku-5-5" and "haiku55" compare equal.
 func normalizeAgent(s string) string {
@@ -92,9 +85,9 @@ func agentWords(spec string) []string {
 // only delegated work is taken without a person asking (runners draining
 // the queue).
 const (
-	AgentAnyone = ""     // issue.agent: anyone may take it
-	AgentHumans = "none" // issue.agent: humans only
-	AgentAny    = "any"  // issue.agent: any agent
+	AgentAnyone = ""
+	AgentHumans = "none"
+	AgentAny    = "any"
 )
 
 // agentHumansOnly: the issue is for people, whatever anyone else says.
@@ -197,8 +190,6 @@ func checkAgentSpec(v string) (string, error) {
 	return v, nil
 }
 
-// ---- workflows ----
-
 // WorkflowStep is one stage of a workflow.
 type WorkflowStep struct {
 	Name string `json:"name"`
@@ -267,7 +258,7 @@ func (s *Service) ensureDefaultWorkflow(ctx context.Context, q queryer) error {
 			return err
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			return nil // someone else just did it
+			return nil
 		}
 		_, err = t.ExecContext(ctx, `INSERT INTO workflows(project_id, name, steps, created_at) VALUES (NULL, ?, ?, ?)`,
 			DefaultWorkflow.Name, string(steps), s.nowMS())

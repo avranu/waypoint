@@ -1,24 +1,5 @@
 package core
 
-// Pull request descriptions without the agent writing them (WP-55,
-// WP-ADR103). wp ship renders every description from the repo's template:
-// the agent's -m leads the Summary, the commits follow, then the issue and
-// the recorded test evidence. That costs no tokens and is always there.
-//
-// A free model may word the Summary better: it gets the same inputs (the
-// task's title and description for the why, -m and the commit messages
-// for what was done, the test evidence) and never the diff, so it can only
-// reword what the author said. It rewrites the Summary alone; the issue
-// line and Checks stay as rendered. A deterministic check lists the names,
-// numbers, paths and links in its answer that the inputs don't hold; any
-// at all and the answer is never published.
-//
-// The mode decides what happens with the answer: shadow (the default) only
-// keeps it beside the published description, for comparing the two (wp pr
-// bodies); model publishes an answer that passed the check, while the
-// description on the forge is still the one opened; template asks no
-// model. An admin switches it after reading the pairs.
-
 import (
 	"context"
 	"database/sql"
@@ -79,7 +60,7 @@ func (s *Service) prBodyMode(ctx context.Context) string {
 // for its model's version. Best effort: opening never fails on it.
 func (s *Service) queuePRBody(ctx context.Context, prID int64, issue, body string, in *PRBodyInputs) {
 	if in == nil || strings.TrimSpace(in.Summary) == "" || !strings.Contains(body, in.Summary) {
-		return // a template without a Summary leaves nothing to reword
+		return
 	}
 	if s.prBodyMode(ctx) == PRBodyTemplate {
 		return
@@ -210,7 +191,7 @@ func (s *Service) writePRBody(ctx context.Context, id int64) error {
 	if err != nil {
 		var wait *aiWaitError
 		if errors.As(err, &wait) {
-			return nil // asked to wait: next minute, no try spent
+			return nil
 		}
 		tries++
 		if tries >= prBodyTries {
@@ -226,8 +207,6 @@ func (s *Service) writePRBody(ctx context.Context, id int64) error {
 		_, err := s.db.W.ExecContext(ctx, `UPDATE pr_bodies SET state = 'failed', model = ?, ms = ?, note = 'an empty or overlong answer', written_at = ? WHERE id = ?`, model, ms, s.nowMS(), id)
 		return err
 	}
-	// What the author and commits say counts as support; the task's own text
-	// doesn't, as it may plan work that was not done.
 	missing := unsupportedClaims(got, prBodyPrompt(title, "", in))
 	mj, _ := json.Marshal(missing)
 	if _, err := s.db.W.ExecContext(ctx, `UPDATE pr_bodies SET state = 'written', model = ?, model_summary = ?, unsupported = ?, ms = ?, tries = ?, note = '', written_at = ? WHERE id = ?`,
@@ -357,7 +336,7 @@ func unsupportedClaims(summary, inputs string) []string {
 				continue
 			}
 			if numeric(tok) && slices.ContainsFunc(out, func(o string) bool { return containsToken(o, tok) }) {
-				continue // the number of a key or path already listed
+				continue
 			}
 			if !containsToken(inputs, tok) && !slices.Contains(out, tok) {
 				out = append(out, tok)
@@ -428,8 +407,6 @@ func (s *Service) notifyPRBodiesReady(ctx context.Context) {
 		s.notifyURL(ctx, id, nil, NotifyPR, "PR descriptions: compare the model's with the template's", body, "")
 	}
 }
-
-// ---- the comparison (wp pr bodies) ----
 
 // PRBodyPair is one description both ways.
 type PRBodyPair struct {

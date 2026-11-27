@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// Stalled background jobs (WP-605).
-
 const stallSess = "931f6a40-c5ae-4963-b39e-deb3754a9411"
 
 var stallOut = "/tmp/claude-1000/-projects-x/" + stallSess + "/tasks/b1.output"
@@ -39,9 +37,8 @@ type stallMachine struct {
 	boot, start time.Time
 	cmd         string
 	out         fakeFI
-	// minute is called at each look to say what runs under the job then.
-	minute func(i int, now time.Time, root *procEntry) []*procEntry
-	others []*procEntry
+	minute      func(i int, now time.Time, root *procEntry) []*procEntry
+	others      []*procEntry
 }
 
 func ticksAt(boot, at time.Time) uint64 { return uint64(at.Sub(boot) / (time.Second / clockTicks)) }
@@ -137,7 +134,6 @@ func TestStalledNamesWhatMatchesOutside(t *testing.T) {
 	m.minute = pollingChildren(m)
 	m.others = []*procEntry{
 		{pid: 555, ppid: 1, pgrp: 555, comm: "golangci-lint", args: []string{"golangci-lint", "run", "./..."}, mine: true},
-		// Another user's isn't named: its command line isn't this user's to pass on.
 		{pid: 556, ppid: 1, pgrp: 556, comm: "golangci-lint", args: []string{"golangci-lint", "run", "--secret"}},
 	}
 	j := m.run(30)[30]
@@ -199,12 +195,12 @@ func TestStalledNotReported(t *testing.T) {
 		}},
 		"short-lived work": {cmd: "for f in *.png; do convert $f $f.webp; done", minute: func(m *stallMachine) func(int, time.Time, *procEntry) []*procEntry {
 			return func(i int, now time.Time, root *procEntry) []*procEntry {
-				root.cpu = uint64(i) * 1500 // 15 s a minute of reaped converts
+				root.cpu = uint64(i) * 1500
 				return []*procEntry{{pid: 1000 + i, ppid: 100, comm: "convert", start: ticksAt(m.boot, now.Add(-time.Second))}}
 			}
 		}},
 		"writing output": {cmd: pgrepLoop, minute: pollingChildren, out: func(m *stallMachine) {
-			m.out.size = 1 // grows below
+			m.out.size = 1
 		}},
 		"waiting on a pull request": {cmd: "wp pr wait 412", minute: func(m *stallMachine) func(int, time.Time, *procEntry) []*procEntry {
 			return func(int, time.Time, *procEntry) []*procEntry {
@@ -304,7 +300,7 @@ func TestTimeoutBound(t *testing.T) {
 		"timeout abc make":                                0,
 		"> /tmp/out":                                      0,
 		"cd /x && > f":                                    0,
-		"timeout -s":                                      0, // a flag's value missing: no panic
+		"timeout -s":                                      0,
 		"timeout -k":                                      0,
 		"timeout --signal":                                0,
 	} {
@@ -328,7 +324,6 @@ func TestJobCommand(t *testing.T) {
 }
 
 func TestParseProcStat(t *testing.T) {
-	// A command name with spaces and parentheses.
 	p := parseProcStat("4242 (a) b (c)) S 100 4242 4242 0 -1 4194304 1 0 0 0 7 3 11 13 20 0 1 0 98765 1000 100 18446744073709551615")
 	if p == nil || p.pid != 4242 || p.comm != "a) b (c)" || p.ppid != 100 || p.pgrp != 4242 || p.own != 10 || p.cpu != 34 || p.start != 98765 {
 		t.Fatalf("%+v", p)
@@ -408,24 +403,22 @@ func TestPgrepSelfNudge(t *testing.T) {
 		`pgrep -u u -fl node`:                                    "`pgrep -f 'node'`",
 		`pgrep --full -- "make check" && echo running`:           "`pgrep -f 'make check'`",
 		`while pgrep -f "[g]olangci-lint run"; do sleep 5; done`: "",
-		`pgrep golangci-lint`:                                    "", // the name alone: no command line
-		`pgrep -f "^node server"`:                                "", // anchored: the shell's line starts with bash
+		`pgrep golangci-lint`:                                    "",
+		`pgrep -f "^node server"`:                                "",
 		`pgrep -f 'it'"'"'s here'`:                               "",
-		`pgrep -xf 'node server.js'`:                             "", // exact: can't match the shell's line
+		`pgrep -xf 'node server.js'`:                             "",
 		`pgrep -P 1 -f`:                                          "",
 		`echo pgrep -f x`:                                        "",
-		// Flag clusters: a flag that takes a value ends one.
-		`pgrep -fu nobody "node server" | head`: "`pgrep -f 'node server'`",
-		`pgrep -funobody "node server"`:         "`pgrep -f 'node server'`",
-		`pgrep -f -O 60 "node server"`:          "`pgrep -f 'node server'`",
-		`pkill -9 -f "node server"`:             "`pkill -f 'node server'`",
-		`pkill -TERM -f "node server"`:          "`pkill -f 'node server'`",
-		// Each alternative is bracketed.
-		`pkill -f "vite|webpack"`:      "e.g. `pkill -f '[v]ite|[w]ebpack'`",
-		`pkill -f "[v]ite|webpack"`:    "e.g. `pkill -f '[v]ite|[w]ebpack'`",
-		`pgrep -f "go (test|vet) ./x"`: "", // its own text has "go (test", not "go test"
-		`pgrep -f "[v]ite|[w]ebpack"`:  "",
-		`pgrep -f -- "-+|webpack"`:     "put one letter of each alternative in brackets",
+		`pgrep -fu nobody "node server" | head`:                  "`pgrep -f 'node server'`",
+		`pgrep -funobody "node server"`:                          "`pgrep -f 'node server'`",
+		`pgrep -f -O 60 "node server"`:                           "`pgrep -f 'node server'`",
+		`pkill -9 -f "node server"`:                              "`pkill -f 'node server'`",
+		`pkill -TERM -f "node server"`:                           "`pkill -f 'node server'`",
+		`pkill -f "vite|webpack"`:                                "e.g. `pkill -f '[v]ite|[w]ebpack'`",
+		`pkill -f "[v]ite|webpack"`:                              "e.g. `pkill -f '[v]ite|[w]ebpack'`",
+		`pgrep -f "go (test|vet) ./x"`:                           "",
+		`pgrep -f "[v]ite|[w]ebpack"`:                            "",
+		`pgrep -f -- "-+|webpack"`:                               "put one letter of each alternative in brackets",
 	} {
 		got := pgrepSelfNudge(cmd)
 		if (want == "") != (got == "") || !strings.Contains(got, want) {
@@ -449,8 +442,6 @@ func TestPgrepSelfHook(t *testing.T) {
 // 5 minutes, short timeouts included, again when Waypoint asks, and how its
 // spells end.
 func TestStalledPolicy2(t *testing.T) {
-	// failed: the report before the job moved again failed (to be
-	// retried); Waypoint heard of the spell earlier, so hears it end.
 	for _, failed := range []bool{false, true} {
 		stalledPolicy2(t, failed)
 	}
@@ -473,7 +464,7 @@ func stalledPolicy2(t *testing.T, failed bool) {
 		now := m.start.Add(time.Duration(i) * time.Minute)
 		tab := m.table(i, now)
 		if i == 40 {
-			tab = &procTable{at: now, boot: m.boot, procs: map[int]*procEntry{}, kids: map[int][]int{}} // it ended
+			tab = &procTable{at: now, boot: m.boot, procs: map[int]*procEntry{}, kids: map[int][]int{}}
 		}
 		if failed && i == 20 {
 			for _, sw := range w.jobs {
@@ -501,7 +492,6 @@ func stalledPolicy2(t *testing.T, failed bool) {
 	if fmt.Sprint(settled) != "[20:progress 40:ended]" {
 		t.Errorf("failed %v: settled %v", failed, settled)
 	}
-	// An older Waypoint's answer turns the runner back to its old floors.
 	w.answered(stalledAnswer{}, m.start, func(string, ...any) {})
 	if w.policy != 0 {
 		t.Errorf("policy %d", w.policy)

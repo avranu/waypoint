@@ -202,10 +202,8 @@ const setupCtx = await browser.newContext({ viewport: { width: 1280, height: 900
   await api("PUT", "/ai/tasks/review", { provider_id: provider.id, model: "fake/muse-spark-1.3", fallbacks: [] });
   await api("POST", "/projects", { name: "Babysat", key: KEY });
   forge = await api("POST", "/forges", { kind: "github", name: "Fake GitHub babysit", base_url: fake, token: "tok", webhook_secret: SECRET });
-  // Their forge logins are Waypoint people here: text from anyone else waits for a person (WP-281).
   await api("PUT", `/forges/${forge.id}/people`, { people: [{ login: "robin", user: "robin" }, { login: "alice", user: "robin" }, { login: "carol", user: "robin" }, { login: "llm-review", user: "robin" }] });
   const added = await api("POST", `/projects/${KEY}/repos`, { forge_id: forge.id, repo: REPO, sync_issues: false });
-  // A person merges here (like Harbor/Harbor); no waits for reviews.
   await api("PATCH", `/projects/${KEY}/repos/${added.id}`, { auto_merge: false, review_wait_minutes: 0, quiet_minutes: 0 });
   await hook("pull_request", { action: "opened", pull_request: pr, sender: { login: "robin" } });
   await wait(async () => {
@@ -237,7 +235,6 @@ const setupCtx = await browser.newContext({ viewport: { width: 1280, height: 900
   ok(fakeState.reactions.includes("501:eyes") && fakeState.reactions.includes("701:eyes"), `👀 on the forge: ${fakeState.reactions.join(", ")}`);
   ok(!(await panel.getByRole("button", { name: "Start" }).isVisible()), "Start is gone once it runs");
 
-  // Verdicts, as an agent gives them with wp pr ack and wp pr fixed.
   const view = await api("GET", `/pulls/${prID}/babysit`);
   const id = (author) => view.comments.find((c) => c.author === author).id;
   await api("POST", "/review-comments/ack", { ids: [id("llm-review")], verdict: "rejected", note: "It runs once a day; a cache buys nothing." });
@@ -260,8 +257,6 @@ async function look(width, scheme) {
   page.on("console", (m) => {
     if (m.type() === "error") fail(`${tag} console: ${m.text().slice(0, 300)}`);
   });
-  // Rests (WP-930): parks nobody was asked about, as the API gives them; the
-  // ladder that leads to one takes a runner this suite doesn't have.
   await page.route("**/api/v1/pulls/*/babysit", async (route) => {
     const res = await route.fetch();
     const json = await res.json();
@@ -287,7 +282,6 @@ async function look(width, scheme) {
   ok(!(await panel.getByText("waiting for a person").isVisible()) && !(await panel.getByText("Answered:").isVisible()), `${tag} a rest claims no person`);
   for (const t of ["👎 Rejected", "🎉 Fixed", "👀 Seen", "1 to deal with of 3", "This loop never ends", "Should exports include archived rows?"])
     ok(await panel.getByText(t).first().isVisible(), `${tag} the panel shows “${t}”`);
-  // The findings ledger (WP-438): the handed-over round is on new comments.
   const round = panel.locator('li[data-class="new"]').first();
   ok(await round.getByText("Round 1").isVisible(), `${tag} the round is listed`);
   ok(await round.getByText("New", { exact: true }).isVisible(), `${tag} with its class`);

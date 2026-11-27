@@ -62,7 +62,6 @@ function Comments({ issue, comments }: { issue: IssueDetail; comments: Comment[]
   const add = useMutation({
     mutationFn: (b: string) => api.post<Comment>(`/issues/${enc(issue.key)}/comments`, { body: b }),
     onSuccess: (c) => {
-      // A live refetch may already have brought it in.
       qc.setQueryData<Comment[]>(['comments', issue.key], (l) =>
         l?.some((x) => x.id === c.id) ? l : [...(l ?? []), c],
       )
@@ -72,7 +71,6 @@ function Comments({ issue, comments }: { issue: IssueDetail; comments: Comment[]
     onError: toastError,
   })
   const submit = () => body.trim() && !add.isPending && add.mutate(body.trim())
-  // One /refs call for every comment on the page, not one per comment (WP-184).
   const all = useMemo(() => comments.map((c) => c.body).join('\n\n'), [comments])
   const refs = useQuery({
     ...refsQuery(all, issue.key.replace(/-\d+$/, '')),
@@ -146,7 +144,6 @@ function CommentItem({
   const [editing, setEditing] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const refresh = () => qc.invalidateQueries({ queryKey: ['comments', issueKey] })
-  // Show the edit at once; on failure refetch, and rethrow so the editor reopens with the text.
   const save = (body: string) => {
     qc.setQueryData<Comment[]>(['comments', issueKey], (l) =>
       l?.map((x) => (x.id === c.id ? { ...x, body } : x)),
@@ -366,7 +363,6 @@ function describe(e: WEvent): React.ReactNode {
       }
       if (e.field === 'attachment') return e.new ? <>added {v(e.new)}</> : <>removed {v(e.old)}</>
       if (e.field === 'relation') {
-        // Older removals have the word "removed" in old, newer ones what was removed.
         if (e.new) return <>added relation {v(e.new)}</>
         return e.old && e.old !== 'removed' ? (
           <>removed relation {v(e.old)}</>
@@ -470,7 +466,6 @@ function HistoryRowView({ row }: { row: HistoryRow }) {
       </li>
     )
   }
-  // Newest first: the last event is the earliest.
   const from = row.events[row.events.length - 1].at
   const to = first.at
   const a = relativeTime(from)

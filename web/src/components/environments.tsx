@@ -1,7 +1,3 @@
-// Pieces shared by the environment screens (WP-D19): status dots, cards for
-// the project tab, compact rows for the all-projects page, and the dialog
-// that adds one.
-
 import { useMemo, useState, type ReactNode } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import clsx from 'clsx'

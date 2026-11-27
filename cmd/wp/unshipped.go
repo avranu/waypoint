@@ -12,11 +12,6 @@ import (
 	"time"
 )
 
-// wp unshipped (WP-ADR74, WP-258): work that exists only on this machine or
-// only on a branch nobody will look at again. git and Waypoint's pull request
-// records answer it, never a model. The rules lean on content rather than
-// ancestry, so a squash or rebase merge isn't reported as work left behind.
-
 // The kinds of unshipped work.
 const (
 	unshippedUncommitted = "uncommitted"
@@ -38,7 +33,7 @@ const (
 	// of its lines, one job may fill: what is stored is cut at 1000, and an
 	// item cut off there would count as told. The rest wait for the next sweep.
 	unshippedNoticeRoom = 750
-	unshippedNoticeLine = 300 // what the notice keeps of one item
+	unshippedNoticeLine = 300
 )
 
 var unshippedCmd = &command{
@@ -120,22 +115,17 @@ type unshippedOpts struct {
 
 // unshippedScan is one repository's scan in progress.
 type unshippedScan struct {
-	ctx  context.Context
-	dir  string
-	def  string
-	base string
-	// baseCommits: the default branch's commits by identity, read when a
-	// branch has a commit whose patch isn't there.
+	ctx         context.Context
+	dir         string
+	def         string
+	base        string
 	baseCommits map[string]string
-	worktreeOf  map[string]string // branch to the folder it is checked out in
-	// mergeEnv sends what git merge-tree writes to a folder deleted after the
-	// scan: a merge per try would otherwise leave thousands of loose objects
-	// in the repository, enough to stop git's automatic gc.
-	mergeEnv []string
-	noRemote bool // nothing tells pushed from not, so commits aren't judged
-	prs      unshippedPRs
-	o        unshippedOpts
-	rep      *unshippedReport
+	worktreeOf  map[string]string
+	mergeEnv    []string
+	noRemote    bool
+	prs         unshippedPRs
+	o           unshippedOpts
+	rep         *unshippedReport
 }
 
 // scanUnshipped finds the unshipped work of the repository containing dir.
@@ -186,7 +176,6 @@ func scanUnshipped(ctx context.Context, dir string, prs unshippedPRs, o unshippe
 		s.judgeRow(r)
 	}
 	s.judgeStashes()
-	// Every git call failing past the deadline would read as "not landed".
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("ran out of time judging %s: %w", dir, err)
 	}
@@ -247,7 +236,7 @@ func (s *unshippedScan) judgeUncommitted(r *tidyRow) {
 		case files > 0:
 			what = plural1(files, "uncommitted file")
 		case !strings.HasSuffix(r.dirty, "in progress"):
-			return // only the agent's own files
+			return
 		}
 	}
 	s.add(unshippedItem{Kind: unshippedUncommitted, Path: r.Path, Branch: r.Branch, What: what, InUse: s.inUse(r.Path)})
@@ -259,7 +248,7 @@ func (s *unshippedScan) judgeCommits(r *tidyRow, kind, what string) {
 	from := ""
 	for _, pr := range s.prs.merged {
 		if pr.Base == s.def && pr.HeadRef == r.Branch && pr.HeadSHA != "" && pr.HeadSHA != r.Tip && s.isAncestor(pr.HeadSHA, r.Tip) {
-			from = pr.HeadSHA // only what came after the merged pull request counts
+			from = pr.HeadSHA
 			what += fmt.Sprintf(" (after merged PR #%d)", pr.Number)
 			break
 		}
@@ -282,13 +271,9 @@ func (s *unshippedScan) lacksPR(r *tidyRow) bool {
 	if carried(r.Branch) {
 		return false
 	}
-	// Merged into a branch that has its own open pull request: that one
-	// carries it on.
 	if pr := s.mergedElsewhere(r); pr != nil && carried(pr.Base) {
 		return false
 	}
-	// Closed at this commit or past it: someone decided. Commits made since
-	// aren't covered by that.
 	return !slices.ContainsFunc(s.prs.closed, func(pr tidyPR) bool {
 		return pr.HeadRef == r.Branch && pr.HeadSHA != "" && (pr.HeadSHA == r.Tip || s.isAncestor(r.Tip, pr.HeadSHA))
 	})
@@ -476,7 +461,7 @@ func (s *unshippedScan) changesNothing(at, from, tip string) bool {
 	}
 	out, err := tidyGitEnv(s.ctx, s.dir, s.mergeEnv, append(args, at, tip)...)
 	if err != nil {
-		return false // a conflict, or a git too old to say
+		return false
 	}
 	first, _, _ := strings.Cut(out, "\n")
 	return first == tree
@@ -547,21 +532,17 @@ func (s *unshippedScan) stashLanded(sha string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	// What was staged is the stash's too, when the worktree doesn't hold it.
 	if !s.changesNothing(sha, sha+"^1", sha+"^2") {
 		if _, _, ok := s.landedFrom(sha+"^2", sha+"^1"); !ok {
 			return "", false
 		}
 	}
-	// A stash commit's parents are the base, the index, and, only when it
-	// saved untracked files, a third. Read them so a failure to read isn't
-	// taken for "no untracked files".
 	parents, err := s.git("rev-list", "--parents", "-n", "1", sha)
 	if err != nil {
 		return "", false
 	}
-	if len(strings.Fields(parents)) < 4 { // sha + 2 parents
-		return how, true // saved no untracked files
+	if len(strings.Fields(parents)) < 4 {
+		return how, true
 	}
 	listing, err := s.git("ls-tree", "-r", sha+"^3")
 	if err != nil {
@@ -631,7 +612,7 @@ func findRepos(ctx context.Context, dirs []string) []string {
 				return nil
 			}
 			if d.Type()&fs.ModeSymlink != 0 && !strings.HasPrefix(d.Name(), ".") && dirExists(filepath.Join(path, ".git")) {
-				addRepo(path) // not walked: a link can lead back up
+				addRepo(path)
 				return nil
 			}
 			if !d.IsDir() {
@@ -829,8 +810,6 @@ func (p *runnerProc) noteUnshipped(ctx context.Context, run *jobRun, in autopilo
 		say("unshipped work: %v", err)
 		return nil
 	}
-	// Task branches quiet for autoPushIdle go to the forge (WP-843): told
-	// on the task, not here.
 	items := p.pushIdle(ctx, run, rl.root, sweepUnshipped(rep.Items, in.Held), prs, time.Now())
 	return p.c.unshippedOnce(rl.root, items)
 }

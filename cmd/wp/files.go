@@ -209,7 +209,6 @@ func (c *cli) issueFiles(key string) ([]fileInfo, error) {
 			}
 		}
 	}
-	// Linked from the text first, so "description" wins over "attached".
 	linked := func(text string) []fileInfo {
 		var l []fileInfo
 		for _, m := range attachLinkRE.FindAllStringSubmatch(text, -1) {
@@ -231,7 +230,6 @@ func (c *cli) issueFiles(key string) ([]fileInfo, error) {
 			byID[f.ID] = f
 		}
 	}
-	// A link carries only the id and name: take the rest from the listing.
 	richer := func(l []fileInfo) []fileInfo {
 		for i, f := range l {
 			if g, ok := byID[f.ID]; ok {

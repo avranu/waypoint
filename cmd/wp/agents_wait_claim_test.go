@@ -91,7 +91,6 @@ func TestPickWaitClaim(t *testing.T) {
 			t.Errorf("%s: got %d, want %d", tc.name, got, tc.want)
 		}
 	}
-	// a claim without a command (state written before it was kept) is still the oldest
 	if got := pickWaitClaim([]waitClaim{{Session: "s", Agent: "old"}}, "s", []string{"anything"}); got != 0 {
 		t.Errorf("no command text: %d", got)
 	}
