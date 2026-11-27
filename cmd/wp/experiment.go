@@ -8,14 +8,9 @@ import (
 	"strings"
 )
 
-// Experiments (WP-254, WP-ADR53): A/B tests of how agents work. The server
-// gives each task an arm; wp asks for the arms of the experiments it acts
-// on right after taking a task, keeps them on the claim, and does the arm.
-// No answer (an older server, no run, a person's token) is the control.
-
 const (
-	expNextBrief   = "next_brief"   // "none": wp next prints no "Where to start" brief
-	expSearchNudge = "search_nudge" // "off": the search-chain note is counted, never told
+	expNextBrief   = "next_brief"
+	expSearchNudge = "search_nudge"
 )
 
 // clientExperiments are the experiments wp itself carries out.
@@ -27,8 +22,6 @@ func (c *cli) fetchArms(key, via string) {
 	if key == "" {
 		return
 	}
-	// A task that draws no arm (or whose ask fails) must not print the text
-	// of the one taken before it.
 	c.delegation = ""
 	var got struct {
 		Arms map[string]struct {
@@ -39,9 +32,6 @@ func (c *cli) fetchArms(key, via string) {
 			Text string `json:"text"`
 		} `json:"delegation"`
 	}
-	// The delegation arm is asked for only where its text is printed: a
-	// JSON answer carries no prose, and a task given an arm it never saw
-	// would count as having had it.
 	body := map[string]any{"experiments": clientExperiments, "via": via, "delegation": !c.asJSON}
 	if err := c.do("POST", "/api/v1/issues/"+esc(key)+"/arms", body, &got); err != nil {
 		return

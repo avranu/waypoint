@@ -50,7 +50,6 @@ func TestTranscriptWritesRefuseJobTokens(t *testing.T) {
 	if err := e.s.ReportTranscriptStatus(e.ctx, job, TranscriptStatus{Machine: "box", PendingBytes: 1}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("a job's status: %v", err)
 	}
-	// the owner's own agent token still may (the hooks run inside agents)
 	if _, err := e.s.IngestTranscript(e.ctx, agentActor(e.admin, "anthropic/claude-code"), in); err != nil {
 		t.Errorf("an agent token's piece: %v", err)
 	}
@@ -65,11 +64,10 @@ func TestTranscriptLostStateDoesNotStoreAThirdCopy(t *testing.T) {
 	first.FP = "H#0"
 	e.put(e.admin, first, old)
 	second := piece("s1", "main", 0, rewritten)
-	second.FP = "H#1" // rewritten, the first line kept
+	second.FP = "H#1"
 	if r := e.put(e.admin, second, rewritten); r.Status != "stored" || r.Gen != 1 {
 		t.Fatalf("the rewrite: %+v", r)
 	}
-	// the client's state file is gone: it starts again at generation 0
 	lost := piece("s1", "main", 0, rewritten)
 	lost.FP = "H#0"
 	r := e.put(e.admin, lost, rewritten)
@@ -84,7 +82,6 @@ func TestTranscriptLostStateDoesNotStoreAThirdCopy(t *testing.T) {
 	if err := e.s.db.R.QueryRow(`SELECT COUNT(*) FROM transcript_pieces`).Scan(&n); err != nil || n != 2 {
 		t.Errorf("pieces held: %d %v (the old and the rewrite, nothing more)", n, err)
 	}
-	// a true rewrite that keeps the first line again (generation 2) is still stored
 	third := piece("s1", "main", 0, old)
 	third.FP = "H#2"
 	if r := e.put(e.admin, third, old); r.Status != "stored" || r.Gen != 2 {
@@ -107,7 +104,6 @@ func TestTranscriptFileIsWrittenOutsideTheTransaction(t *testing.T) {
 		if err := e.s.write(ctx, e.admin, func(t *tx) error { return nil }); err != nil {
 			t.Errorf("the writer was held while the file was written: %v", err)
 		}
-		// a competing piece for the same place lands meanwhile
 		e.s.afterTranscriptFile = nil
 		e.put(e.admin, piece("s1", "main", 0, l1), l1)
 	}
@@ -123,7 +119,6 @@ func TestTranscriptFileIsWrittenOutsideTheTransaction(t *testing.T) {
 	if got := e.readAll(e.admin, TranscriptQuery{Session: "s1", File: "main"}); got != l1 {
 		t.Errorf("read back: %q", got)
 	}
-	// only the winner's file is left
 	var files []string
 	_ = filepath.WalkDir(e.s.cfg.TranscriptDir, func(p string, d os.DirEntry, err error) error {
 		if err == nil && !d.IsDir() {

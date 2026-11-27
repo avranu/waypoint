@@ -26,14 +26,12 @@ func TestSlotWaitReaderIsSafeFromSeveralGoroutines(t *testing.T) {
 	}
 	for range 20 {
 		r := newSlotWaitReader(path)
-		r.alive = func(int) bool { return false } // every read records dead pids
+		r.alive = func(int) bool { return false }
 		var wg sync.WaitGroup
 		for g := range 8 {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				// Every wait ended when its pid was first seen gone,
-				// which is some reader's now: 1s to 8s after base.
 				if total, since := r.read(base.Add(time.Duration(g+1) * time.Second)); total < time.Second || total > 8*time.Second || !since.IsZero() {
 					t.Errorf("read: %v since %v", total, since)
 				}
@@ -59,19 +57,19 @@ func TestSlotWaitReaderKeepsWaitsInsideTheJob(t *testing.T) {
 	r.alive = func(int) bool { return true }
 	r.start = at(50)
 
-	write("wait 0 10 tests") // 1970, still open
+	write("wait 0 10 tests")
 	if total, since := r.read(at(100)); total != 50*time.Second || !since.Equal(at(50)) {
 		t.Errorf("a wait from before the job: %v since %v, want 50s since the job's start", total, since)
 	}
-	write("wait "+ms(60)+" 10 tests", "got "+ms(9000)+" 10 tests") // ends after now
+	write("wait "+ms(60)+" 10 tests", "got "+ms(9000)+" 10 tests")
 	if total, _ := r.read(at(100)); total != 40*time.Second {
 		t.Errorf("a wait ending after now: %v, want 40s", total)
 	}
-	write("wait " + ms(9000) + " 10 tests") // starts after now
+	write("wait " + ms(9000) + " 10 tests")
 	if total, since := r.read(at(100)); total != 0 || !since.IsZero() {
 		t.Errorf("a wait starting after now: %v %v", total, since)
 	}
-	write("wait "+ms(10)+" 10 tests", "got "+ms(40)+" 10 tests") // all before the job
+	write("wait "+ms(10)+" 10 tests", "got "+ms(40)+" 10 tests")
 	if total, _ := r.read(at(100)); total != 0 {
 		t.Errorf("a wait over before the job: %v", total)
 	}
@@ -114,7 +112,7 @@ func TestJobClockWaitedLine(t *testing.T) {
 		{0, "Waited 2m0s for a test slot, inside its 2h0m0s limit.", "didn't count"},
 	} {
 		p := clockProc(t)
-		clockEvery = time.Hour // the watcher stays out of it
+		clockEvery = time.Hour
 		run := &jobRun{id: 10, timeout: 2 * time.Hour, out: newLogSink()}
 		_, cancel, c := p.jobClock(context.Background(), run, tc.work)
 		began := time.Now().Add(-10 * time.Minute)
@@ -262,14 +260,11 @@ func TestSlotWaitReaderDeadPidReused(t *testing.T) {
 	if total, _ := r.read(at(10)); total != 10*time.Second {
 		t.Fatalf("the dead wait: %v, want 10s", total)
 	}
-	// The same pid waits again, later, and is alive.
 	alive = true
 	write("wait "+ms(0)+" 10 tests", "wait "+ms(30)+" 10 tests")
 	if total, since := r.read(at(50)); total != 20*time.Second || !since.Equal(at(30)) {
 		t.Errorf("a live wait by a reused pid: %v since %v, want 20s since +30s", total, since)
 	}
-	// And one that died too: it ended when it was first seen gone, not when
-	// the earlier holder of the pid was.
 	alive = false
 	write("wait "+ms(0)+" 10 tests", "wait "+ms(60)+" 10 tests")
 	if total, _ := r.read(at(70)); total != 10*time.Second {
@@ -294,13 +289,12 @@ func TestSlotWaitReaderLivePidIsAnotherProcess(t *testing.T) {
 	if total, since := r.read(at(10)); total != 10*time.Second || !since.Equal(at(0)) {
 		t.Fatalf("the waiter itself: %v since %v", total, since)
 	}
-	started = "999" // the pid is a process that started at another time
+	started = "999"
 	for _, now := range []int{20, 60} {
 		if total, since := r.read(at(now)); total != 20*time.Second || !since.IsZero() {
 			t.Errorf("at +%ds, another process with the pid: %v since %v, want 20s and not waiting", now, total, since)
 		}
 	}
-	// Where a process's start can't be read, a live pid is believed.
 	u := newSlotWaitReader(path)
 	u.alive = func(int) bool { return true }
 	u.started = func(int) string { return "" }

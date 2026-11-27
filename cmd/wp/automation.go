@@ -8,9 +8,6 @@ import (
 	"time"
 )
 
-// Automations from the command line (WP-D18): list them, run the manual
-// ones, read their runs.
-
 var automationCmd = &command{
 	name: "automation", group: "Projects and time", args: "SUBCOMMAND",
 	aliases: []string{"automations"},

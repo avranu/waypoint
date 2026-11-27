@@ -53,12 +53,10 @@ async function seed(api, call) {
   if (projects.some((p) => p.key === KEY)) return;
   await api("POST", "/projects", { name: "Env checks", key: KEY });
   await api("PATCH", `/projects/${KEY}`, { settings: { dev_env_url: "https://{name}.dev.example.com" } });
-  // CI's token: a project member's (here robin's) with no agent identity.
   const { token } = await api("POST", "/me/tokens", { name: "ci" });
   const ci = { ...H, Authorization: `Bearer ${token}` };
   const asCI = (m, p, d) => call(m, p, d, ci);
 
-  // Production and staging, made by a person; CI reports a deploy to each.
   const prod = await api("POST", `/projects/${KEY}/environments`, {
     name: "production",
     url: `${host}/ok`,
@@ -83,7 +81,6 @@ async function seed(api, call) {
   await asCI("POST", `/projects/${KEY}/environments/staging/deployments`, { commit: "9d8c7b6a5f4e", branch: "main", status: "started", url: "https://ci.example.com/runs/413" });
   await asCI("POST", `/projects/${KEY}/environments/staging/deployments`, { commit: "9d8c7b6a5f4e", status: "failed", notes: "migration 0021 failed" });
 
-  // The cluster: one dev environment up, one that came and went.
   await asCI("POST", `/projects/${KEY}/environments/a23x42s/up`, {
     url: `${host}/ok`,
     branch: "fix/login",
@@ -96,13 +93,12 @@ async function seed(api, call) {
   if (live) {
     await api("POST", `/environments/${prod.id}/check`);
     await api("POST", `/environments/${staging.id}/check`);
-    await new Promise((r) => setTimeout(r, 3300)); // a check in the last 3 s is reused
-    await api("POST", `/environments/${staging.id}/check`); // the second failure is "down"
+    await new Promise((r) => setTimeout(r, 3300));
+    await api("POST", `/environments/${staging.id}/check`);
     const dev = (await api("GET", `/projects/${KEY}/environments/a23x42s`)).id;
     await api("POST", `/environments/${dev}/check`);
   }
 
-  // A pull request whose head is what the dev environment runs.
   const db = new DatabaseSync(`${process.env.DIR}/wp.db`);
   db.exec("PRAGMA busy_timeout = 5000");
   const now = Date.now();
@@ -117,22 +113,18 @@ async function seed(api, call) {
        VALUES (?, ?, 41, 'Fix the login redirect', 'robin', 'https://git.example.com/acme/waypoint/pulls/41', 'fix/login', ?, 'open', ?, ?, ?) RETURNING id`,
     )
     .get(forge, REPO, PR_SHA, now - 3600_000, now - 3600_000, now).id;
-  // A squash-merged one: production runs the commit it became, not its head (WP-23).
   squashedID = db
     .prepare(
       `INSERT INTO pull_requests(forge_id, repo, number, title, author, url, head_ref, head_sha, merge_sha, state, opened_at, merged_at, created_at, updated_at)
        VALUES (?, ?, 40, 'Speed up search', 'robin', 'https://git.example.com/acme/waypoint/pulls/40', 'search', '7777777aaaa', ?, 'merged', ?, ?, ?, ?) RETURNING id`,
     )
     .get(forge, REPO, PROD_SHA, now - 7200_000, now - 5400_000, now - 7200_000, now).id;
-  // Merged after the one production runs: not live yet (WP-389). Production
-  // runs #40's merge exactly, so no forge has to be asked.
   db.prepare(
     `INSERT INTO pull_requests(forge_id, repo, number, title, author, url, base_ref, head_ref, head_sha, merge_sha, state, opened_at, merged_at, created_at, updated_at)
      VALUES (?, ?, 42, 'Dark mode toggle', 'robin', 'https://git.example.com/acme/waypoint/pulls/42', 'main', 'dark', '8888888bbbb', '9999999cccc', 'merged', ?, ?, ?, ?)`,
   ).run(forge, REPO, now - 3000_000, now - 1800_000, now - 3000_000, now);
   db.prepare("UPDATE pull_requests SET base_ref = 'main' WHERE id = ?").run(squashedID);
   db.close();
-  // A task shipped on #40.
   const task = await api("POST", "/issues", { project: KEY, title: "Faster search" });
   await api("POST", `/issues/${task.key}/links`, { url: "https://git.example.com/acme/waypoint/pulls/40" });
   taskKey = task.key;
@@ -175,7 +167,6 @@ async function run(width, scheme) {
   await page.waitForURL(base + "/");
   await seed(api, call);
 
-  // ---- the project's tab ----
   await page.goto(`${base}/p/${KEY}/environments`);
   await page.getByRole("heading", { name: "Dev environments" }).waitFor();
   const card = (name) => page.locator("div.rounded-xl", { has: page.getByRole("link", { name, exact: true }) }).first();
@@ -206,7 +197,6 @@ async function run(width, scheme) {
   await shot("project-tab");
   await overflow("project tab");
 
-  // ---- add one ----
   await page.getByRole("button", { name: "Add environment" }).first().click();
   const dialog = page.getByRole("dialog", { name: "Add environment" });
   await dialog.getByLabel("Name").fill("preview-7");
@@ -217,7 +207,6 @@ async function run(width, scheme) {
   await page.getByRole("heading", { name: "preview-7" }).waitFor();
   ok(true, `${tag} adding one opens its page`);
 
-  // ---- an environment's page ----
   await page.goto(`${base}/p/${KEY}/environments/production`);
   await page.getByRole("heading", { name: "production" }).waitFor();
   for (const section of ["What it runs", "Uptime", "Deployments", "Settings"])
@@ -227,7 +216,6 @@ async function run(width, scheme) {
   ok(await page.getByText("release build").isVisible(), `${tag} deployment notes show`);
   if (live) {
     ok(await page.getByRole("img", { name: /^Status over the last 48 hours/ }).isVisible(), `${tag} the 48 hour strip`);
-    // One ten-minute step of checks is too little for a line: it says so instead.
     ok(
       (await page.getByText(/^Response time|Response times show here/).count()) > 0,
       `${tag} the response time chart (or its note)`,
@@ -236,10 +224,8 @@ async function run(width, scheme) {
   ok(await page.getByRole("img", { name: /^Uptime by day/ }).isVisible(), `${tag} uptime by day`);
   await shot("environment");
   await overflow("environment page");
-  // A setting changes and saves.
   const save = page.getByRole("button", { name: "Save settings" });
   ok(await save.isDisabled(), `${tag} nothing to save yet`);
-  // Production starts with the not-deployed alert at 45 minutes (WP-199).
   const lag = page.getByRole("combobox", { name: "Not deployed alert" });
   ok((await lag.innerText()).includes("After 45 minutes"), `${tag} production's not-deployed alert starts at 45 minutes`);
   await page.getByLabel("Branch field").fill("git.branch");
@@ -253,7 +239,6 @@ async function run(width, scheme) {
   ok(saved.lag_alert_m === 120, `${tag} the not-deployed alert saved`);
   await api("PATCH", `/environments/${saved.id}`, { expected_status: 0, lag_alert_m: 45 });
 
-  // Delete the one we added.
   await page.goto(`${base}/p/${KEY}/environments/preview-7`);
   await page.getByRole("button", { name: "Delete environment" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
@@ -261,7 +246,6 @@ async function run(width, scheme) {
   await page.getByRole("heading", { name: "Dev environments" }).waitFor();
   ok(!(await page.getByRole("link", { name: "preview-7", exact: true }).isVisible()), `${tag} deleted`);
 
-  // ---- every project's ----
   await page.goto(`${base}/environments`);
   await page.getByRole("heading", { name: "Environments", level: 1 }).waitFor();
   await page.getByRole("link", { name: "production", exact: true }).first().waitFor();
@@ -283,7 +267,6 @@ async function run(width, scheme) {
       ok((await badge.innerText()).includes("1"), `${tag} the sidebar counts one down`);
     } else {
       await page.getByRole("button", { name: "Projects" }).click();
-      // The count loads once the drawer opens.
       const down = page.getByRole("link", { name: /Environments\s*1 down/ });
       await down.waitFor().catch(() => {});
       ok(await down.isVisible(), `${tag} the phone's drawer counts one down`);
@@ -291,7 +274,6 @@ async function run(width, scheme) {
     }
   }
 
-  // ---- a pull request says where it runs ----
   await page.goto(`${base}/agents?tab=pulls&pr=${prID}`);
   await page.getByRole("heading", { name: "Where it runs" }).waitFor();
   ok(await page.getByText("In a23x42s").isVisible(), `${tag} the pull request is in the dev environment`);
@@ -303,7 +285,6 @@ async function run(width, scheme) {
   ok(await page.getByText("In production").isVisible(), `${tag} the squash-merged pull request is in production`);
   await shot("pull-request-squashed");
 
-  // ---- what's live (WP-389) ----
   await page.goto(`${base}/live`);
   await page.getByRole("heading", { name: "What’s live", level: 1 }).waitFor();
   await page.getByRole("heading", { name: /^Live/ }).waitFor();
@@ -319,8 +300,6 @@ async function run(width, scheme) {
   await page.goto(`${base}/issue/${taskKey}`);
   await page.getByRole("note").filter({ hasText: /Live in production since/ }).waitFor();
   ok(true, `${tag} the task says it is live`);
-  // WP-460: when it was written, and what production ran then.
-  // Shown on the Summary's lifecycle: "Created 3m ago by … · 2.4.0", the full note in its tooltip.
   await page.getByRole("tab", { name: "Summary", exact: true }).click();
   const life = page.getByRole("group", { name: "Lifecycle" }).filter({ visible: true });
   ok((await life.getByText(/^Created .+/).count()) >= 1, `${tag} the task shows its creation date`);
@@ -329,7 +308,6 @@ async function run(width, scheme) {
   ok(/ran .*2\.4\.0.* when this was written; still live/.test(writtenTip), `${tag} …with what was live then in its tooltip: ${writtenTip}`);
   await shot("task-live");
 
-  // ---- settings: the dev environment address ----
   await page.goto(`${base}/p/${KEY}/settings?tab=environments`);
   await page.getByLabel("Address pattern").waitFor();
   ok((await page.getByLabel("Address pattern").inputValue()) === "https://{name}.dev.example.com", `${tag} the dev address shows`);
@@ -344,7 +322,7 @@ for (const [w, s] of looks([
   [1440, "dark"],
   [390, "light"],
   [390, "dark"],
-], [0, 2])) { // the phone has a drawer
+], [0, 2])) {
   try {
     await run(w, s);
   } catch (e) {

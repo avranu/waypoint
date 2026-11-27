@@ -54,7 +54,6 @@ func TestGoalTraces(t *testing.T) {
 	agent := *e.admin
 	agent.Agent = "anthropic/claude-opus-5-5"
 
-	// No goals yet: everything reads as it is, and the view asks for one.
 	o := e.goals(e.admin, p.Key)
 	if o.Scoped || len(o.Goals) != 0 || len(o.Ask) == 0 || !strings.Contains(o.Ask[0], "What should Alpha do") {
 		t.Fatalf("empty view = %+v", o)
@@ -70,7 +69,6 @@ func TestGoalTraces(t *testing.T) {
 	stray := e.issue(&agent, IssueInput{Project: p.Key, Title: "Rename the sidebar colours"})
 	own := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Fix the login page typo"})
 
-	// Waypoint guesses the search work serves the search goal; the rest it leaves.
 	e.goals(e.admin, p.Key)
 	for key, want := range map[string]string{mine.Key: GroundInferredGoal, sub.Key: GroundInferredGoal, stray.Key: GroundNone, own.Key: GroundPersonRequest} {
 		if got := e.grounding(key); got != want {
@@ -78,7 +76,6 @@ func TestGoalTraces(t *testing.T) {
 		}
 	}
 
-	// A person's link (here, the same as the guess) grounds the task and, through the parent, the agent's subtask.
 	e.serve(e.admin, mine.Key, search.ID)
 	o = e.goals(e.admin, p.Key)
 	if got := e.grounding(mine.Key); got != GroundPersonGoal {
@@ -107,7 +104,6 @@ func TestGoalTraces(t *testing.T) {
 		t.Errorf("coverage = %+v", cov)
 	}
 
-	// The agent's untraced task is a medium risk; the person's own isn't.
 	r, err := e.s.RiskOf(e.ctx, e.admin, "issue", stray.Key, "")
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +137,6 @@ func TestGoalTraces(t *testing.T) {
 		t.Errorf("untraced = %d %+v", o.UntracedAll, o.Untraced)
 	}
 
-	// An agent's link counts as an agent's until a person confirms it.
 	l := e.serve(&agent, own.Key, export.ID)
 	e.goals(e.admin, p.Key)
 	if got := e.grounding(own.Key); got != GroundAgentGoal {
@@ -161,7 +156,6 @@ func TestGoalTraces(t *testing.T) {
 	if slices.ContainsFunc(o.Links, func(x GoalLink) bool { return x.LinkID == l.ID }) {
 		t.Error("a confirmed link still waits for a person")
 	}
-	// An agent can't take back a link a person confirmed.
 	if err := e.s.RemoveItemLink(e.ctx, &agent, l.ID); err == nil {
 		t.Error("an agent removed a confirmed link")
 	}
@@ -198,14 +192,12 @@ func TestGoalMatcher(t *testing.T) {
 	if gl == nil || gl.Basis != "inferred" || gl.Goal.ID != invoices.ID || gl.Score == nil || !strings.Contains(gl.Note, "invoice") {
 		t.Fatalf("guess = %+v (links %+v)", gl, o.Links)
 	}
-	// An agent can't drop Waypoint's guess; a person dismisses it.
 	if err := e.s.RemoveItemLink(e.ctx, &agent, gl.LinkID); err == nil {
 		t.Error("an agent removed a guess")
 	}
 	if err := e.s.DismissGoalLink(e.ctx, e.admin, gl.LinkID); err != nil {
 		t.Fatal(err)
 	}
-	// The no keeps the guess as it was: its score, basis and age.
 	var score sql.NullFloat64
 	var basis string
 	var madeAt sql.NullInt64
@@ -276,5 +268,91 @@ func TestGoalDrift(t *testing.T) {
 	e.s.maybeGoalDrift(e.ctx)
 	if count() != 2 {
 		t.Error("the check didn't run a week later")
+	}
+}
+
+// WP-1790: a request-written note stays editable by agents, so who put it
+// under its parent is whoever last did, not the person who filed the request.
+func TestGoalTraceNoteParentBasis(t *testing.T) {
+	e := newEnv(t)
+	p := e.project(e.admin, "Alpha", "")
+	agent := *e.admin
+	agent.Agent = "anthropic/claude-opus-5-5"
+	a := e.goal(e.admin, p.Key, "People find any task in a second")
+	b := e.goal(e.admin, p.Key, "People take their data with them")
+	task := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Pick the export format"})
+
+	note, err := e.s.CreateDesign(e.ctx, &agent, DesignInput{Title: str("Export as CSV"), Kind: str("decision"), Body: str("CSV."),
+		Project: &p.Key, Parent: Opt[int64]{Set: true, Value: &a.ID}, For: task.Key})
+	if err != nil || note.Requested == nil {
+		t.Fatalf("create = %+v, %v", note, err)
+	}
+	underBasis := func(parent int64) string {
+		t.Helper()
+		e.goals(e.admin, p.Key)
+		tr, err := e.s.Trace(e.ctx, e.admin, TraceQuery{Ref: itoa64(note.ID)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The relation graph's under edge says the same as the trace: the
+		// graph page shows its basis too, "under (by a person)". Read afresh:
+		// the test clock stands still, so the cached graph's signature
+		// wouldn't see the move.
+		g, err := loadRelGraph(e.ctx, e.s.db.R)
+		if err != nil {
+			t.Fatal(err)
+		}
+		graphBasis := ""
+		from, _ := g.node(KDesign, note.ID)
+		to, _ := g.node(KDesign, parent)
+		for _, ed := range g.edges {
+			if ed.kind == "under" && ed.a == from && ed.b == to {
+				graphBasis = basisNames[ed.basis]
+			}
+		}
+		for _, r := range tr.Routes {
+			for _, h := range r.Hops {
+				if h.Kind == "under" && h.To.ID == parent {
+					if graphBasis != h.Basis {
+						t.Errorf("under %d: trace basis %s, relation graph %q", parent, h.Basis, graphBasis)
+					}
+					return h.Basis
+				}
+			}
+		}
+		t.Fatalf("no route under %d: %+v", parent, tr.Routes)
+		return ""
+	}
+	if got := underBasis(a.ID); got != "agent" {
+		t.Errorf("placed by an agent at creation: basis = %s, want agent", got)
+	}
+	if _, err := e.s.UpdateDesign(e.ctx, &agent, note.ID, DesignInput{Parent: Opt[int64]{Set: true, Value: &b.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := underBasis(b.ID); got != "agent" {
+		t.Errorf("moved by an agent: basis = %s, want agent", got)
+	}
+	if _, err := e.s.UpdateDesign(e.ctx, e.admin, note.ID, DesignInput{Parent: Opt[int64]{Set: true, Value: &a.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := underBasis(a.ID); got != "person" {
+		t.Errorf("moved by a person: basis = %s, want person", got)
+	}
+
+	// A proposal's place counts as a person's once they approve the text.
+	prop, err := e.s.CreateDesign(e.ctx, &agent, DesignInput{Title: str("Export as XLSX"), Kind: str("decision"), Body: str("XLSX."),
+		Project: &p.Key, Parent: Opt[int64]{Set: true, Value: &b.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	note = prop
+	if got := underBasis(b.ID); got != "agent" {
+		t.Errorf("proposal before approval: basis = %s, want agent", got)
+	}
+	if _, err := e.s.ApproveDesign(e.ctx, e.admin, prop.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := underBasis(b.ID); got != "person" {
+		t.Errorf("proposal after approval: basis = %s, want person", got)
 	}
 }

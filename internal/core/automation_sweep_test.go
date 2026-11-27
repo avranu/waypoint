@@ -6,9 +6,6 @@ import (
 	"testing"
 )
 
-// Findings of the free-model sweep over the phase 1 automations code, each
-// checked by hand and fixed where it was real.
-
 func TestSkipPolicyHoldsUnderConcurrentStarts(t *testing.T) {
 	registerTestActions()
 	e := newEnv(t)
@@ -85,7 +82,6 @@ func TestCancelAnnouncesOnceAndRerunNeedsAnEnabledAutomation(t *testing.T) {
 		t.Errorf("a cancelled run was announced %d times", n)
 	}
 
-	// A rule that fires on an event can't be rerun while it is off.
 	reacts := e.addAuto(p, "Reacts", Rule{Trigger: Trigger{Event: "created"}, Actions: []Action{{Type: "add_label", Value: "x"}}})
 	e.issue(e.admin, IssueInput{Project: p.Key, Title: "one"})
 	runs := e.runs(reacts)

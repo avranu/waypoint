@@ -30,8 +30,8 @@ func TestFailingExcerpt(t *testing.T) {
 	cases := []struct {
 		name string
 		log  string
-		want []string // lines the excerpt has, in order
-		not  []string // lines it must not have
+		want []string
+		not  []string
 	}{
 		{name: "go test failure and data race (CI run 120)", log: stamp("Run make test\n" + noise(40, "before") + `==================
 WARNING: DATA RACE
@@ -213,7 +213,6 @@ func TestFailingExcerptCap(t *testing.T) {
 	if ex := failingExcerpt(long, 0); !strings.Contains(ex.Text, "more characters)") || !strings.HasPrefix(ex.Text, "Error: é") {
 		t.Errorf("long line: %q", ex.Text[:40])
 	}
-	// Progress bars keep their last state; GitLab's section markers go.
 	lines := cleanLog("section_start:1700000000:step_script\r\x1b[0KExecuting step\r\ndownloading 10%\rdownloading 100%\n")
 	if strings.Join(lines, "|") != "Executing step|downloading 100%" {
 		t.Errorf("clean: %q", lines)

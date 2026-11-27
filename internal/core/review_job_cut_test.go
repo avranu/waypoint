@@ -54,7 +54,6 @@ func TestReviewJobRunningTooLongIsRetried(t *testing.T) {
 	if st.state != StepDue || st.jobID.Valid || st.attempts != 1 || a.round(round).state != RoundPending {
 		t.Fatalf("step = %+v, round = %+v", st, a.round(round))
 	}
-	// Its late finish is the old job's: it changes nothing.
 	a.res[1] = RunnerJob{State: "cancelled", Error: "No runner finished it within 12 minutes."}
 	a.s.autopilotJobFinished(a.ctx, &Event{Kind: EvRunnerJobFinished, Data: map[string]any{"job": int64(1), "source": autopilotReviewSource, "source_id": st.id}})
 	if a.round(round).state != RoundPending {
@@ -103,7 +102,6 @@ func TestReviewJobCutForGoodFailsTheRound(t *testing.T) {
 			a.tick(time.Minute)
 			continue
 		}
-		// The last cut: its finish event is what fails the round.
 		a.res[int64(try)] = RunnerJob{State: "cancelled", Error: "No runner finished it within 12 minutes."}
 		a.s.unstickSteps(a.ctx)
 	}

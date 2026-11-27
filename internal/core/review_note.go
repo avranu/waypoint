@@ -7,11 +7,6 @@ import (
 	"strings"
 )
 
-// The review note (WP-D15): the line every bot review starts with, which
-// also signs each of its line comments, saying who wrote it and how far to
-// trust it. Admins word it under Admin → AI; {models} names the models that
-// answered.
-
 // DefaultReviewNote is the note until an admin words their own.
 const DefaultReviewNote = "**Automated review** by {models} · not checked by a person; verify before acting on it."
 

@@ -30,8 +30,6 @@ func TestShowAnyCode(t *testing.T) {
 		}
 	}
 
-	// Looking R1 up as a request to see whether it exists doesn't count as
-	// the agent being told its answer: only showing it does (934.1).
 	ctx := context.Background()
 	if _, err := s.svc.DecideRequest(ctx, s.me, "R-1", core.RequestDecision{Decision: "answer", Answers: []core.Answer{{Text: "yes"}}}); err != nil {
 		t.Fatal(err)
@@ -58,19 +56,15 @@ func TestShowAnyCode(t *testing.T) {
 		t.Errorf("page:R1:\n%s", out)
 	}
 
-	// A prefixed argument goes whole to its kind's command: its list keeps
-	// the kind, and a title may have commas (934.2).
 	if out := s.wp("show", "page:PL1,PL2"); !strings.Contains(out, "Use a Pratt parser.") || !strings.Contains(out, "A comma title.") {
 		t.Errorf("page:PL1,PL2:\n%s", out)
 	}
 	if out := s.wp("show", "page:hello, world"); !strings.Contains(out, "A comma title.") {
 		t.Errorf("page:hello, world:\n%s", out)
 	}
-	// A bare number after a code is another of the same kind (934.3).
 	if out := s.wp("show", "PL1,2"); !strings.Contains(out, "Use a Pratt parser.") || !strings.Contains(out, "A comma title.") {
 		t.Errorf("PL1,2:\n%s", out)
 	}
-	// A prefix with nothing after it is a usage error, whatever the kind (934.5).
 	for _, w := range []string{"issue:", "page:", "pr:"} {
 		if out, code := s.run("show", w); code != 2 {
 			t.Errorf("%s: %d %s", w, code, out)

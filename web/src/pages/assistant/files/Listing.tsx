@@ -1,8 +1,3 @@
-// One folder of the assistant's files: where it is (breadcrumbs from the
-// root), what's in it (folders first, sortable, filterable, dotfiles on
-// request), and what can be added to it (uploads, by button or by dropping
-// files on the list, and new folders).
-
 import { useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQueryClient, type UseQueryResult } from '@tanstack/react-query'
@@ -132,7 +127,6 @@ export function FolderPane({
   const actions = useFileActions(id, onDeleted)
   const uploads = useUploads(id)
 
-  // A new folder starts unfiltered, at the top.
   useEffect(() => {
     setFilter('')
     listRef.current?.parentElement?.scrollTo({ top: 0 })
@@ -170,7 +164,6 @@ export function FolderPane({
   const canDrop = !!dir && !listing.isError
   const isFiles = (e: DragEvent) => e.dataTransfer.types.includes('Files')
 
-  // Arrow keys walk the rows; Backspace goes up; Delete asks to delete.
   const onKeyDown = (e: React.KeyboardEvent) => {
     const t = e.target as HTMLElement
     if (t.closest('input, textarea')) return
@@ -359,8 +352,6 @@ function summary(rows: FileEntry[]): string {
   return parts.join(' · ')
 }
 
-// ---- where we are ----
-
 function Breadcrumbs({
   listing,
   failed,
@@ -386,7 +377,6 @@ function Breadcrumbs({
     }
     return out
   }, [path, root, listing?.locked_root])
-  // Long paths keep the folder you're in visible.
   useEffect(() => {
     const el = ref.current
     if (el) el.scrollLeft = el.scrollWidth
@@ -491,8 +481,6 @@ function GoToPath({
     </form>
   )
 }
-
-// ---- the rows ----
 
 function ColumnHeads({ sort, onSort }: { sort: Sort; onSort: (s: Sort) => void }) {
   const head = (key: SortKey, label: string, className: string) => {
@@ -738,8 +726,6 @@ function EmptyFolder({
     </Empty>
   )
 }
-
-// ---- adding ----
 
 function NewFolderDialog({
   open,

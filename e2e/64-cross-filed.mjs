@@ -36,7 +36,6 @@ async function run(width, scheme, n) {
 
   const { token } = await (await call("POST", "/me/tokens", { name: `cross ${n}`, agent: "anthropic/claude-opus-5-5" })).json();
   const agent = { ...H, Authorization: `Bearer ${token}` };
-  // A session at work in a repo no project here has.
   const where = { session_id: `cli-cross-${n}`, machine: `box-${n}`, cwd: "/work/elsewhere", repo: "me/elsewhere" };
   const started = await call("POST", "/sessions/hook", { events: [{ event: "SessionStart", ...where, model: "claude-opus-5-5" }] }, agent);
   ok(started.ok(), `${tag} session started: ${started.status()}`);
@@ -45,12 +44,10 @@ async function run(width, scheme, n) {
   const issue = await created.json();
   ok(issue.filed_from?.repo === "me/elsewhere" && issue.filed_from.here, `${tag} recorded where it came from: ${JSON.stringify(issue.filed_from)}`);
 
-  // This repo's agents are told to check it belongs.
   const text = await (await call("GET", `/issues/${issue.key}?format=text`, undefined, agent)).text();
   ok(text.includes("Filed from me/elsewhere") && text.includes(`wp decline ${issue.key}`), `${tag} agent text disclaims it: ${text.slice(0, 400)}`);
 
   await page.goto(`${base}/issue/${issue.key}`);
-  // Properties sit beside the text on a wide page, under the title on a phone.
   const filed = page.locator("[data-testid=filed-from] >> visible=true");
   await filed.waitFor();
   ok((await filed.textContent()).includes("me/elsewhere"), `${tag} the issue page says where it came from`);

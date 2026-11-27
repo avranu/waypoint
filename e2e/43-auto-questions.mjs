@@ -38,7 +38,6 @@ async function run(width) {
     call("POST", "/sessions/hook", { events: [{ event, session_id: sid, machine: "box", cwd: "/work/app", repo: "acme/app", branch: "main", ...extra }] }, agent);
   await hook("SessionStart");
   await hook("UserPromptSubmit", { prompt: "Fix the matcher", title: "Matcher" });
-  // A refused call, then the next prompt: it expires and leaves the lists.
   const denied = `Allow Bash: rm -rf build ${width}?`;
   await call("POST", "/requests", { kind: "permission", title: denied, tool: "Bash", tool_input: { command: `rm -rf build ${width}` } }, { ...agent, "X-Waypoint-Session": sid });
   await hook("UserPromptSubmit", { prompt: "Never mind, go on" });
@@ -64,7 +63,6 @@ async function run(width) {
   await row.click();
   const sheet = page.getByRole("dialog", { name: /Request/ });
   await sheet.waitFor();
-  // The sheet opens before the request's body has loaded: wait on the content.
   await sheet.getByText(/Filed automatically from the end of the agent/).waitFor();
   await sheet.getByText("auto", { exact: true }).first().waitFor();
   ok(await sheet.getByText("auto", { exact: true }).first().isVisible(), `${tag} the sheet marks it auto`);

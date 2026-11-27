@@ -23,7 +23,6 @@ func (s *Server) sessionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/sessions/outstanding", a(s.sessionOutstanding))
 	mux.HandleFunc("POST /api/v1/sessions/outstanding/told", a(s.sessionOutstandingTold))
 	mux.HandleFunc("GET /api/v1/sessions/{id}", a(s.getAgentSession))
-	// Follow-ups (WP-D22): steps that run when the agent truly finishes.
 	mux.HandleFunc("GET /api/v1/sessions/{id}/follow-up", a(s.getFollowUp))
 	mux.HandleFunc("PUT /api/v1/sessions/{id}/follow-up", a(s.saveFollowUp))
 	mux.HandleFunc("DELETE /api/v1/sessions/{id}/follow-up", a(s.clearFollowUp))
@@ -147,6 +146,11 @@ func (s *Server) sessionShipNews(w http.ResponseWriter, r *http.Request) (any, e
 		Machine   string `json:"machine"`
 		Task      string `json:"task"`
 		Wait      int    `json:"wait"` // seconds
+		// PullID, with Head, makes it a wait for the checks of a pull request
+		// the ship opened (WP-1878): a server without it answers as a wait for
+		// the round, which is how wp ship tells.
+		PullID int64  `json:"pull_id"`
+		Head   string `json:"head"`
 		// Ack: the messages of findings the client has; delivers them.
 		Ack []int64 `json:"ack"`
 	}
@@ -158,6 +162,9 @@ func (s *Server) sessionShipNews(w http.ResponseWriter, r *http.Request) (any, e
 			return nil, err
 		}
 		return map[string]string{"outcome": "acked"}, nil
+	}
+	if in.PullID != 0 {
+		return s.svc.AwaitShipChecks(r.Context(), actorFrom(r), in.SessionID, in.Machine, in.Task, in.PullID, in.Head, time.Duration(in.Wait)*time.Second)
 	}
 	return s.svc.AwaitShipNews(r.Context(), actorFrom(r), in.SessionID, in.Machine, in.Task, time.Duration(in.Wait)*time.Second)
 }

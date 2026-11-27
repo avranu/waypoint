@@ -1,8 +1,3 @@
-// Activity → Logs: Hermes's own logs (agent, errors, gateway, …; filtered
-// by level, component and text on Hermes's side) and the gate's services'
-// logs (gatekeeper, bridge, squid, caddy, scraper; searched here). Refreshes
-// every 5 seconds until paused, and follows the tail while scrolled to it.
-
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -100,7 +95,6 @@ export function LogsView({ assistant }: { assistant: Assistant }) {
     return raw.filter((l) => l.toLowerCase().includes(t))
   }, [q.data, isHermes, term])
 
-  // Follow the tail: stay at the bottom as lines arrive, while there.
   const box = useRef<HTMLDivElement>(null)
   useLayoutEffect(() => {
     if (follow && box.current) box.current.scrollTop = box.current.scrollHeight

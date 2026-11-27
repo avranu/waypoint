@@ -22,15 +22,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox/probe"
 )
 
-// The sandbox escape drill on the runner (WP-473, PL7 §13; the server's
-// side is internal/core/sandbox_drill.go). The claim carries start specs
-// for three Contained sessions, signed by Waypoint: the probe, which gets
-// the targets planned from this machine on stdin and reports each try as
-// a JSON line; a session that starts processes past its limit; and one
-// that outlives its time. The runner judges what only the outside can see
-// and reports every case. It never decides pass or fail itself: Waypoint
-// does, from the cases.
-
 // drillOutputMax bounds what a session's stdout can make the runner hold.
 const drillOutputMax = 1 << 20
 
@@ -91,7 +82,6 @@ func (p *runnerProc) execSandboxDrill(ctx context.Context, run *jobRun, job *cla
 	}
 
 	say("Fork session: %d processes, TasksMax=%d", probe.ForkTries, probe.ForkResources.Tasks)
-	// The Go runtime says it couldn't start a thread on stderr.
 	out, errOut, err := p.drillSession(ctx, run, job.Sessions[1], nil)
 	cases = append(cases, probe.JudgeFork(string(out)+"\n"+string(errOut), err))
 	say("Time session: sleeps %ds, RuntimeMaxSec=%d", probe.TimeSleep, probe.TimeResources.RuntimeSec)
@@ -154,8 +144,6 @@ func (p *runnerProc) drillSession(ctx context.Context, run *jobRun, sd *sandbox.
 	go func() { defer wg.Done(); _, _ = io.Copy(&errOut, errR) }()
 
 	_, err = sandbox.Start(ctx, p.sandboxSocket(), sd, inR, outW, errW)
-	// The helper holds its own copies until the session is gone; ours go
-	// now, so the readers end once it lets go, or soon after in any case.
 	_ = outW.Close()
 	_ = errW.Close()
 	_ = inR.Close()
@@ -177,7 +165,7 @@ type capBuffer struct {
 	buf bytes.Buffer
 	max int
 	n   int
-	cut bool // bytes were dropped
+	cut bool
 }
 
 func (c *capBuffer) Write(b []byte) (int, error) {

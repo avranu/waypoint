@@ -32,12 +32,12 @@ func TestLineFrontPRAgreesWithLineAhead(t *testing.T) {
 	minute := func(m int) int64 { return e.clockNow().Add(time.Duration(m) * time.Minute).UnixMilli() }
 	queued := func(f roundFixture, m int) roundFixture { e.setPR(f.pr, `queued_at = ?`, minute(m)); return f }
 
-	front := queued(e.armedPR(f.ID, "acme/l1", 2, 3, "[]"), 3) // the earliest of the line
-	tie := queued(e.armedPR(f.ID, "acme/l1", 3, 3, "[]"), 3)   // the same time, a higher number
-	late := queued(e.armedPR(f.ID, "acme/l1", 1, 5, "[]"), 5)  // lower number, later
-	draft := queued(e.armedPR(f.ID, "acme/l1", 4, 4, "[]"), 4) // a draft in line
+	front := queued(e.armedPR(f.ID, "acme/l1", 2, 3, "[]"), 3)
+	tie := queued(e.armedPR(f.ID, "acme/l1", 3, 3, "[]"), 3)
+	late := queued(e.armedPR(f.ID, "acme/l1", 1, 5, "[]"), 5)
+	draft := queued(e.armedPR(f.ID, "acme/l1", 4, 4, "[]"), 4)
 	e.setPR(draft.pr, `state = 'draft'`)
-	unarmed := queued(e.armedPR(f.ID, "acme/l1", 5, 0, "[]"), 0) // earlier than all, but not armed
+	unarmed := queued(e.armedPR(f.ID, "acme/l1", 5, 0, "[]"), 0)
 	e.setPR(unarmed.pr, `armed_at = NULL`)
 	outside := queued(e.armedPR(f.ID, "acme/l1", 6, 0, "[]"), 0)
 	e.setPR(outside.pr, `outside = 1`)
@@ -49,27 +49,21 @@ func TestLineFrontPRAgreesWithLineAhead(t *testing.T) {
 	if _, err := e.s.db.W.ExecContext(e.ctx, `UPDATE babysits SET state = ? WHERE id = ?`, BabysitNeedsPerson, parked.bs); err != nil {
 		t.Fatal(err)
 	}
-	// Another base branch of the same repo is its own line.
 	release := queued(e.armedPR(f.ID, "acme/l1", 9, 9, "[]"), 9)
 	e.setPR(release.pr, `base_ref = 'release'`)
-	// A second line, where a pull request Waypoint marked ready holds the front.
 	other := queued(e.armedPR(f.ID, "acme/l2", 1, 1, "[]"), 1)
 	holder := queued(e.armedPR(f.ID, "acme/l2", 2, 9, "[]"), 9)
 	e.setPR(holder.pr, `wip_auto = 1, ready_at = ?`, minute(9))
-	// Marked ready, but a draft again: no holder.
 	notHolder := queued(e.armedPR(f.ID, "acme/l3", 1, 1, "[]"), 1)
 	e.setPR(notHolder.pr, `wip_auto = 1, ready_at = ?, state = 'draft'`, minute(1))
 	behindDraft := queued(e.armedPR(f.ID, "acme/l3", 2, 2, "[]"), 2)
 
-	// The literal answers.
 	want := map[string]bool{
 		"front": true, "tie": false, "late": false, "draft": false, "unarmed": false, "outside": false,
 		"release": true, "other": false, "holder": true,
 	}
 	got := map[string]roundFixture{"front": front, "tie": tie, "late": late, "draft": draft, "unarmed": unarmed, "outside": outside,
 		"ended": ended, "parked": parked, "release": release, "other": other, "holder": holder}
-	// The ended and parked ones hold no place in the line and are not ahead
-	// of anyone: only the agreement below is asked of them.
 	for name, fx := range got {
 		if name == "ended" || name == "parked" {
 			continue
@@ -78,12 +72,9 @@ func TestLineFrontPRAgreesWithLineAhead(t *testing.T) {
 			t.Errorf("%s: lineFrontPR = %v, want %v", name, is, want[name])
 		}
 	}
-	// notHolder is a draft marked ready: no holder, so it goes by the line
-	// order alone, and it is the earliest of acme/l3.
 	if !e.isLineFront(notHolder.pr) || e.isLineFront(behindDraft.pr) {
 		t.Errorf("acme/l3: front %v, behind %v; want true, false", e.isLineFront(notHolder.pr), e.isLineFront(behindDraft.pr))
 	}
-	// And in every case the SQL agrees with the Go.
 	for name, fx := range got {
 		pr := e.prByID(fx.pr)
 		n, err := e.s.lineAhead(e.ctx, pr)
@@ -160,7 +151,7 @@ func TestRoundWaitCountsJobsAhead(t *testing.T) {
 	e := newEnv(t)
 	e.claudeRunner()
 	f := e.forge("forgejo", "https://git.example.com", false)
-	e.armedPR(f.ID, "acme/app", 1, 1, "[]") // the front, with no round
+	e.armedPR(f.ID, "acme/app", 1, 1, "[]")
 	e.enqueue(e.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("make", "/work")})
 	one := e.roundJob(e.armedPR(f.ID, "acme/app", 2, 2, "[]"))
 	e.enqueue(e.admin, RunnerJobInput{Kind: JobCommand, Input: cmdInput("make", "/work")})
@@ -214,7 +205,7 @@ func TestJobsAheadAcrossTwoLines(t *testing.T) {
 	if got := e.claimed(r); got != prior.ID {
 		t.Fatalf("setup claimed %d, want %d", got, prior.ID)
 	}
-	a1 := e.roundJob(a) // the older id, but A was served last
+	a1 := e.roundJob(a)
 	b1 := e.roundJob(b)
 	if a1.ID >= b1.ID {
 		t.Fatalf("setup: job ids %d, %d", a1.ID, b1.ID)
@@ -245,7 +236,7 @@ func TestQueuedRound(t *testing.T) {
 	at := e.clockNow()
 	back := e.roundJob(e.armedPR(f.ID, "acme/app", 2, 2, "[]"))
 	e.setClock(at.Add(90 * time.Second))
-	e.claudeRunner() // seen again, so still online
+	e.claudeRunner()
 	q := e.s.queuedRound(e.ctx, back.ID, e.clockNow())
 	if q == nil || q.Job != back.ID || !q.Since.Equal(at) || q.For != 90 || q.Ahead != 1 {
 		t.Fatalf("queuedRound = %+v; want job %d since %s for 90s, 1 ahead", q, back.ID, at)
@@ -256,7 +247,6 @@ func TestQueuedRound(t *testing.T) {
 	if e.s.queuedRound(e.ctx, 0, e.clockNow()) != nil {
 		t.Error("job 0 is a queued round")
 	}
-	// A running job is not queued.
 	e.setClock(e.clockNow().Add(time.Minute))
 	var took int64
 	for range 2 {

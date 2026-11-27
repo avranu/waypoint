@@ -11,22 +11,6 @@ import (
 	"strings"
 )
 
-// The kit's context ceiling (WP-147): kit.toml's compact_window is the most
-// Claude Code's autoCompactWindow may be in a checkout the kit syncs. Sessions
-// that never compact grow to 600k-900k tokens, and the calls over 300k make
-// most of the cache-read spend (X6). Claude Code reads autoCompactWindow
-// from the user, project and local settings files (higher wins), and
-// modelSettings.<model>.autoCompactWindow replaces it for that model; "auto"
-// or no value at all is the model's own window, close to 1M on 1M models.
-// That is how a top-level 200000 never applied to Opus 5.5 on a dev host
-// (2026-10-26): the same file had modelSettings.claude-opus-5-5 "auto".
-//
-// Sync caps what is above the ceiling in the checkout's settings.local.json,
-// the one file it owns: the top-level window, and the window of each model
-// that has its own value above it somewhere. Lower values are left alone.
-// CLAUDE_CODE_AUTO_COMPACT_WINDOW beats every file, so one above the ceiling
-// is reported, not fought.
-
 // compactAuto is a window of "auto".
 const compactAuto = -1
 

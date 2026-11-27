@@ -9,9 +9,6 @@ import (
 	"time"
 )
 
-// wp worklog (WP-285): a task's work log, a note on it, and what
-// adversarial reviews found across a project.
-
 var worklogCmd = &command{
 	name: "worklog", group: "Issues", args: `[KEY] [-m "TEXT" [--tag found|fixed|rejected]] | [KEY] --review -f FILE|-m "REPORT" | stats [-p PROJECT] [--days N] | triage [-p PROJECT] [--days N] [--rows] | stakes [-p PROJECT] [--days N] [--rows]`,
 	summary: "a task's work log: review rounds, findings; add a note",
@@ -67,7 +64,7 @@ func cmdWorklog(c *cli, args []string) error {
 		}
 	}
 	if *msg == "" && len(rest) > 0 && (*tag != "" || *review) {
-		*msg = joinArgs(rest) // wp worklog KEY --tag found "text"
+		*msg = joinArgs(rest)
 		rest = nil
 	}
 	if len(rest) > 0 {
@@ -181,7 +178,7 @@ func (l *workLog) text() string {
 			p += fmt.Sprintf(", %d pushed fixes", s.Pushed)
 		}
 		parts = append(parts, p)
-	} else if s.NoteFound > 0 { // only tagged notes
+	} else if s.NoteFound > 0 {
 		parts = append(parts, fmt.Sprintf("%d found, %d fixed, %d rejected in notes", s.NoteFound, s.NoteFixed, s.NoteRejected))
 	}
 	if s.OwnReviews > 0 {

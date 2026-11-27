@@ -209,12 +209,10 @@ let api, call, hook;
   await api("PUT", "/ai/tasks/review", { provider_id: provider.id, model: "fake/muse-spark-1.3", fallbacks: [] });
   await api("POST", "/projects", { name: "Gate", key: KEY });
   forge = await api("POST", "/forges", { kind: "github", name: "Fake GitHub gate", base_url: fake, token: "tok", webhook_secret: SECRET });
-  // Their forge logins are Waypoint people here: text from anyone else waits for a person (WP-281).
   await api("PUT", `/forges/${forge.id}/people`, { people: [{ login: "robin", user: "robin" }, { login: "alex", user: "robin" }] });
   const added = await api("POST", `/projects/${KEY}/repos`, { forge_id: forge.id, repo: REPO, sync_issues: false });
   repoID = added.id;
 
-  // The Review gate switch in Project settings → Integrations.
   await page.goto(`${base}/p/${KEY}/settings?tab=integrations`);
   await page.getByText(REPO).first().waitFor();
   const sw = page.getByRole("switch", { name: "Review gate on this repo's pull requests" });
@@ -225,10 +223,8 @@ let api, call, hook;
   const repos = await api("GET", `/projects/${KEY}/repos`);
   ok(repos[0].review_gate === true && repos[0].gate_severity === "medium", `saved with P2 and above: ${JSON.stringify(repos[0].gate_severity)}`);
   await page.screenshot({ path: `${out}/settings-gate.png` });
-  // This suite arms by hand: Merge automatically (WP-133, 48-merge-automatically) off, no waits.
   await api("PATCH", `/projects/${KEY}/repos/${repoID}`, { auto_merge: false, review_wait_minutes: 0, quiet_minutes: 0 });
 
-  // A pull request is opened: the review finds a P1, and the gate fails.
   await hook("pull_request", { action: "opened", pull_request: pr, sender: { login: "robin" } });
   await wait(async () => (await api("GET", `/projects/${KEY}/bot-runs`)).every((r) => r.status === "done") && fakeState.posted.length >= 2, "the review and the gate status");
   const states = fakeState.posted.filter((p) => p.context === "waypoint/review").map((p) => p.state);
@@ -255,7 +251,6 @@ async function look(width, scheme) {
   const overflow = async (where) =>
     ok(!(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)), `${tag} no sideways scroll (${where})`);
 
-  // What the API and the page show, when it isn't what the checks expect.
   const says = async (where) => {
     const p = (await page.request.fetch(`${base}/api/v1/pulls?project=${KEY}`, { headers: H }).then((r) => r.json())).pulls.find((x) => x.id === prID);
     const text = (await where.innerText().catch((e) => `(${e.message.split("\n")[0]})`)).replace(/\s+/g, " ").slice(0, 600);
@@ -322,7 +317,6 @@ for (const [w, s] of looks([
   ok(fakeState.posted.at(-1).description === "All 1 finding resolved", `gate status: ${fakeState.posted.at(-1).description}`);
   await sheet.getByText("Passing").waitFor();
   ok(true, "the sheet shows the gate passing");
-  // CI is still running: arm it.
   fakeState.ci = [{ context: "ci / backend (pull_request)", state: "pending", target_url: `${fake}/ci/1` }];
   await sheet.getByRole("button", { name: "Check now" }).click();
   await sheet.getByText(/1 check still running/).waitFor();
@@ -333,7 +327,6 @@ for (const [w, s] of looks([
   await page.waitForTimeout(300);
   await page.screenshot({ path: `${out}/armed.png` });
   ok(fakeState.merges.length === 0, "nothing is merged while CI runs");
-  // CI passes: the forge's status webhook makes Waypoint read it and merge.
   fakeState.ci = [{ context: "ci / backend (pull_request)", state: "success", target_url: `${fake}/ci/1` }];
   await hook("status", { sha: HEAD, state: "success", context: "ci / backend (pull_request)" });
   await wait(() => fakeState.merges.length === 1, "the merge");

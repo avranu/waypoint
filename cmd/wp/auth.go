@@ -67,7 +67,6 @@ func authLogin(c *cli, args []string) error {
 		Interval   int    `json:"interval"`
 		ExpiresIn  int    `json:"expires_in"`
 	}
-	// Inside a coding agent's shell, the token becomes an agent token.
 	agent := c.agentHeader()
 	if err := c.do("POST", "/api/v1/cli/login", map[string]string{"name": *name, "agent": agent}, &start); err != nil {
 		return err

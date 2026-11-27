@@ -1,6 +1,3 @@
-// A unified diff of two texts, line by line, for <Diff> to show before a
-// whole-file save (the assistant's config.yaml).
-
 /** `a` → `b` as unified diff hunks with `context` lines around each change. */
 export function unifiedDiff(a: string, b: string, context = 3): string {
   const A = a.split('\n')
@@ -10,11 +7,9 @@ export function unifiedDiff(a: string, b: string, context = 3): string {
   type Op = { k: ' ' | '-' | '+'; t: string; a: number; b: number }
   const ops: Op[] = []
   if (n * m > 4_000_000) {
-    // Too big to line up: everything out, everything in.
     A.forEach((t, i) => ops.push({ k: '-', t, a: i, b: 0 }))
     B.forEach((t, j) => ops.push({ k: '+', t, a: n, b: j }))
   } else {
-    // Longest common subsequence, from the end, then walked from the start.
     const w = m + 1
     const dp = new Int32Array((n + 1) * w)
     for (let i = n - 1; i >= 0; i--)
@@ -32,7 +27,6 @@ export function unifiedDiff(a: string, b: string, context = 3): string {
       else ops.push({ k: '+', t: B[j++], a: i, b: j - 1 })
     }
   }
-  // Ranges of ops around the changes, merged where they touch.
   const ranges: [number, number][] = []
   ops.forEach((o, x) => {
     if (o.k === ' ') return

@@ -12,14 +12,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Task sessions (WP-34): who started an agent session decides what Waypoint
-// does with it. A launcher (wp start, a runner) sets WP_TASK=KEY[,KEY…] in
-// the session's environment; its hooks report it, so the session is a task
-// session bound to those tasks from birth. Any other session is the
-// person's own ("yours"), which Waypoint only observes. Nothing here blocks,
-// ends or steers a session: wp next warns, and the Stop hook shows one line
-// to the person, never to the model (PL3 decisions 1 and 2).
-
 // Session kinds.
 const (
 	SessionTask  = "task"
@@ -224,7 +216,7 @@ func (s *Service) boundCovers(ctx context.Context, bound []string, i *Issue) boo
 	for _, k := range bound {
 		if id, err := s.resolveIssueID(ctx, s.db.R, k); err == nil {
 			if id == i.ID {
-				return true // an old key of the same issue
+				return true
 			}
 			ids = append(ids, id)
 		}

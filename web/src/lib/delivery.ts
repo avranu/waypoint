@@ -1,7 +1,3 @@
-// Delivery (WP-389): where recent work stands on its way to production.
-// The server places each pull request (and each task an agent holds without
-// one) at a stage and says what it waits on; see internal/core/delivery.go.
-
 export type DeliveryStage =
   'working' | 'blocked' | 'review' | 'stuck' | 'merged' | 'live' | 'untracked'
 

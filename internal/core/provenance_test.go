@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// WP-D11: agents' own timers, pausing, provenance, review, page codes.
-
 func asAgent(a *Actor, id string) *Actor { return &Actor{User: a.User, Agent: id} }
 
 func TestAgentTimersAreTheirOwnAndStopAfterADay(t *testing.T) {
@@ -68,7 +66,6 @@ func TestAgentPauseAndResume(t *testing.T) {
 	if got, _ := e.s.RunningTimer(e.ctx, agent); got != nil {
 		t.Error("the agent's timer should pause with it")
 	}
-	// Idle for three hours: the claim lapses and the sweep clears it.
 	e.setClock(e.clockNow().Add(3 * time.Hour))
 	if err := e.s.expireRuns(e.ctx); err != nil {
 		t.Fatal(err)
@@ -100,7 +97,6 @@ func TestAgentPauseAndResume(t *testing.T) {
 	if _, err := e.s.AgentResume(e.ctx, agent, i.Key, ""); err == nil {
 		t.Error("resuming a finished task should fail")
 	}
-	// Someone else's claim isn't paused or taken over.
 	other := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Theirs", Agent: "any"})
 	haiku := asAgent(e.admin, "anthropic/claude-haiku-5-5")
 	if _, err := e.s.AgentTake(e.ctx, haiku, other.Key, ""); err != nil {
@@ -122,7 +118,6 @@ func TestAgentRunStopsAfterADay(t *testing.T) {
 	if _, err := e.s.AgentNext(e.ctx, agent, AgentQuery{}); err != nil {
 		t.Fatal(err)
 	}
-	// The agent keeps renewing its claim, but never stops the clock.
 	for range 26 {
 		e.setClock(e.clockNow().Add(time.Hour))
 		if err := e.s.AgentReportUsage(e.ctx, agent, i.Key, "", AgentUsage{InputTokens: 1}); err != nil {
@@ -146,7 +141,6 @@ func TestProvenanceOfIssuesAndComments(t *testing.T) {
 	if !i.Unreviewed || i.TextAgent != "anthropic/claude-opus-5-5" || i.ReporterAgent == "" {
 		t.Fatalf("agent-made issue: %+v", i.Issue)
 	}
-	// A person's issue is theirs; an agent's edit makes it agent text.
 	h := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Mine"})
 	if h.Unreviewed || h.TextAgent != "" {
 		t.Errorf("person's issue marked: %+v", h.Issue)
@@ -157,11 +151,9 @@ func TestProvenanceOfIssuesAndComments(t *testing.T) {
 	if d := e.get(e.admin, h.Key); !d.Unreviewed || d.TextAgent == "" || d.TextBy == nil {
 		t.Errorf("after an agent's edit: %+v", d.Issue)
 	}
-	// Changing other fields isn't writing the text.
 	if _, err := e.s.UpdateIssue(e.ctx, agent, i.Key, IssuePatch{Priority: "high"}); err != nil {
 		t.Fatal(err)
 	}
-	// Closing records who closed it; reopening clears it.
 	done := CatDone
 	if _, err := e.s.UpdateIssue(e.ctx, agent, i.Key, IssuePatch{Status: &done}); err != nil {
 		t.Fatal(err)
@@ -178,7 +170,6 @@ func TestProvenanceOfIssuesAndComments(t *testing.T) {
 	if d := e.get(e.admin, i.Key); d.ResolvedAgent != "" || d.ResolvedBy == nil {
 		t.Errorf("closed by a person: %q %+v", d.ResolvedAgent, d.ResolvedBy)
 	}
-	// Comments say which agent wrote them; agents can't touch people's.
 	ca, err := e.s.AddComment(e.ctx, agent, i.Key, "Agent note")
 	if err != nil || ca.Agent == "" || !ca.Unreviewed {
 		t.Fatalf("agent comment: %+v %v", ca, err)
@@ -190,13 +181,11 @@ func TestProvenanceOfIssuesAndComments(t *testing.T) {
 	if err := e.s.DeleteComment(e.ctx, agent, cp.ID); !errors.Is(err, ErrForbidden) {
 		t.Errorf("agent deleted a person's comment: %v", err)
 	}
-	// MCP clients without a name still count as agents.
 	mcp := &Actor{User: e.admin.User, MCP: true}
 	if c, _ := e.s.AddComment(e.ctx, mcp, i.Key, "From MCP"); c == nil || c.Agent != "mcp" {
 		t.Errorf("MCP comment: %+v", c)
 	}
 
-	// The review queue, and reviewing (people only).
 	items, err := e.s.ListUnreviewed(e.ctx, e.admin, p.Key, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -224,7 +213,6 @@ func TestProvenanceOfIssuesAndComments(t *testing.T) {
 			t.Errorf("comment still unreviewed: %+v", c)
 		}
 	}
-	// A later agent edit needs review again; a person's edit makes it theirs.
 	if _, err := e.s.UpdateIssue(e.ctx, agent, i.Key, IssuePatch{Title: str("Agent idea, revised")}); err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +225,6 @@ func TestProvenanceOfIssuesAndComments(t *testing.T) {
 	if d := e.get(e.admin, i.Key); d.Unreviewed || d.TextAgent != "" || d.ReporterAgent == "" {
 		t.Errorf("after a person's rewrite: %+v", d.Issue)
 	}
-	// History names the agent.
 	ev, _ := e.s.History(e.ctx, e.admin, h.Key, 100)
 	found := false
 	for _, x := range ev {
@@ -268,7 +255,6 @@ func TestPageCodes(t *testing.T) {
 	if a.Code != "PL1" || b.Code != "PL2" || c.Code != "I1" {
 		t.Errorf("codes: %s %s %s", a.Code, b.Code, c.Code)
 	}
-	// Numbered per project; an imported title brings its code.
 	r := mk(e.admin, rd.Key, "PL13: A provider could refuse", "plan")
 	if r.Code != "PL13" || r.Title != "A provider could refuse" {
 		t.Errorf("imported: %q %q", r.Code, r.Title)
@@ -276,7 +262,6 @@ func TestPageCodes(t *testing.T) {
 	if n := mk(e.admin, rd.Key, "Next plan", "plan"); n.Code != "PL14" {
 		t.Errorf("after PL13 comes %s", n.Code)
 	}
-	// A code from a retired prefix stays as an alias.
 	tk := mk(e.admin, rd.Key, "T7: basemap syncs suspended", "reference")
 	if tk.Code != "R1" || !strings.HasPrefix(tk.Title, "T7:") {
 		t.Errorf("T7 page: %q %q", tk.Code, tk.Title)
@@ -284,7 +269,6 @@ func TestPageCodes(t *testing.T) {
 	if id, err := e.s.ResolvePage(e.ctx, e.admin, "t7", rd.Key); err != nil || id != tk.ID {
 		t.Errorf("T7 -> %d, %v", id, err)
 	}
-	// Resolving: in a project, qualified, and ambiguous without one.
 	for ref, want := range map[string]int64{"PL1": a.ID, strings.ToLower(ul.Key) + "-pl2": b.ID, rd.Key + "-PL13": r.ID, "I1": c.ID} {
 		if id, err := e.s.ResolvePage(e.ctx, e.admin, ref, ul.Key); err != nil || id != want {
 			t.Errorf("%s -> %d, %v; want %d", ref, id, err, want)
@@ -293,7 +277,6 @@ func TestPageCodes(t *testing.T) {
 	if id, err := e.s.ResolvePage(e.ctx, e.admin, "PL13", ""); err != nil || id != r.ID {
 		t.Errorf("PL13 is only in Quarry: %d %v", id, err)
 	}
-	// A new category gives a new code; the old one still leads there.
 	if pg, err := e.s.UpdatePage(e.ctx, e.admin, b.ID, PageInput{Category: str("decision")}); err != nil || pg.Code != "D1" || !slices.Contains(pg.OtherCodes, "PL2") {
 		t.Errorf("recategorised: %+v %v", pg, err)
 	}
@@ -303,18 +286,15 @@ func TestPageCodes(t *testing.T) {
 	if n := mk(e.admin, ul.Key, "Third plan", "plan"); n.Code != "PL3" {
 		t.Errorf("codes are never reused: got %s", n.Code)
 	}
-	// Explicit codes: free ones only, and they set the category.
 	if pg, err := e.s.CreatePage(e.ctx, e.admin, PageInput{Title: str("Imported X"), Code: str("X31"), Project: Some(ul.Key)}); err != nil || pg.Code != "X31" || pg.Category != "experiment" {
 		t.Errorf("explicit code: %+v %v", pg, err)
 	}
 	if _, err := e.s.CreatePage(e.ctx, e.admin, PageInput{Title: str("Clash"), Code: str("PL1"), Project: Some(ul.Key)}); err == nil {
 		t.Error("took a code another page has")
 	}
-	// Moving to another project gives a code there.
 	if pg, err := e.s.UpdatePage(e.ctx, e.admin, a.ID, PageInput{Project: Some(rd.Key)}); err != nil || pg.Code != "PL15" || !slices.Contains(pg.OtherCodes, ul.Key+"-PL1") {
 		t.Errorf("moved: %+v %v", pg, err)
 	}
-	// Deleted pages keep their codes from being reused.
 	if err := e.s.DeletePage(e.ctx, e.admin, c.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +304,6 @@ func TestPageCodes(t *testing.T) {
 	if _, err := e.s.ResolvePage(e.ctx, e.admin, "I1", ul.Key); !errors.Is(err, ErrNotFound) {
 		t.Errorf("deleted page's code: %v", err)
 	}
-	// Reserving codes used elsewhere before.
 	next, err := e.s.ReservePageCodes(e.ctx, e.admin, ul.Key, PageCodeNext{"PL": 12, "N": 50})
 	if err != nil || next["PL"] != 12 || next["N"] != 50 || next["I"] != 3 {
 		t.Errorf("reserve: %v %v", next, err)
@@ -335,7 +314,6 @@ func TestPageCodes(t *testing.T) {
 	if _, err := e.s.ReservePageCodes(e.ctx, asAgent(e.admin, "x"), ul.Key, PageCodeNext{"PL": 99}); err == nil {
 		t.Error("an agent reserved codes")
 	}
-	// Search finds a page by its code; wikilinks reach pages by code.
 	if id, err := e.s.ResolvePage(e.ctx, e.admin, "PL1", ""); err != nil || id != a.ID {
 		t.Errorf("PL1 (the moved page's old code) -> %d, %v", id, err)
 	}
@@ -378,7 +356,6 @@ func TestPageProvenanceAndBackfill(t *testing.T) {
 	if got, _ := e.s.GetPage(e.ctx, e.admin, pg.ID); got.Unreviewed || got.ReviewedBy == nil {
 		t.Errorf("after review: %+v", got)
 	}
-	// Moving or recategorising isn't writing.
 	if got, _ := e.s.UpdatePage(e.ctx, agent, pg.ID, PageInput{Category: str("idea")}); got.Unreviewed {
 		t.Error("a new category made the text unreviewed")
 	}
@@ -386,7 +363,6 @@ func TestPageProvenanceAndBackfill(t *testing.T) {
 		t.Error("an agent's new text should wait for review")
 	}
 
-	// Pages from before codes get them at start, adopting their titles' codes.
 	p = e.project(e.admin, "Imported", "")
 	for _, title := range []string{"Untitled plan", "PL2: Second", "PL1: First"} {
 		if _, err := e.s.db.W.ExecContext(e.ctx, `INSERT INTO pages(project_id, owner_id, title, category, created_at, updated_at) VALUES (?,?,?,?,0,0)`,
@@ -452,23 +428,18 @@ func TestReviewFindings(t *testing.T) {
 	bobAgent := asAgent(bob, "anthropic/claude-opus-5-5")
 	e.issue(bobAgent, IssueInput{Project: mine.Key, Title: "Bob's agent work"})
 	for range 3 {
-		// Agent-written issues start a safety screen in the background, which
-		// reads the clock: let it finish before moving the clock on.
 		e.s.Wait()
 		e.setClock(e.clockNow().Add(time.Minute))
 		e.issue(agent, IssueInput{Project: hidden.Key, Title: "Newer, hidden"})
 	}
-	// Hidden items don't crowd a person's queue out.
 	if items, err := e.s.ListUnreviewed(e.ctx, bob, "", 2); err != nil || len(items) != 1 {
 		t.Errorf("bob's queue: %+v %v", items, err)
 	}
-	// An agent learns nothing about comments it can't see.
 	h := e.issue(e.admin, IssueInput{Project: hidden.Key, Title: "Secret"})
 	c, _ := e.s.AddComment(e.ctx, e.admin, h.Key, "person's words")
 	if err := e.s.UpdateComment(e.ctx, bobAgent, c.ID, "x"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("hidden comment: %v", err)
 	}
-	// A page moved to a project numbered alike resolves to itself.
 	a := e.project(e.admin, "Alpha", "")
 	b := e.project(e.admin, "Bravo", "")
 	pg, _ := e.s.CreatePage(e.ctx, e.admin, PageInput{Title: str("Moving plan"), Category: str("plan"), Project: Some(a.Key)})
@@ -478,7 +449,6 @@ func TestReviewFindings(t *testing.T) {
 	if id, err := e.s.ResolvePage(e.ctx, e.admin, "PL1", ""); err != nil || id != pg.ID {
 		t.Errorf("PL1 -> %d, %v", id, err)
 	}
-	// Code-shaped words still search the text.
 	if _, err := e.s.CreatePage(e.ctx, e.admin, PageInput{Title: str("Racing notes"), Body: str("The F1 calendar"), Project: Some(a.Key)}); err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +472,6 @@ func TestLooseReferences(t *testing.T) {
 	if _, err := e.s.UpdateProject(e.ctx, e.admin, "APP", ProjectInput{Parent: Some("APPORG")}); err != nil {
 		t.Fatal(err)
 	}
-	// Project references: key, path of keys and names, any case.
 	for _, ref := range []string{"APP", "app", "Harbor/Harbor", "APPORG/Harbor", "apporg/app", "Harbor/APP", "harbor / app"} {
 		got, err := e.s.projectByRef(e.ctx, e.s.db.R, ref)
 		if err != nil || got.ID != p.ID {
@@ -513,14 +482,12 @@ func TestLooseReferences(t *testing.T) {
 			t.Errorf("find %q: %v %v", ref, found, err)
 		}
 	}
-	// "Harbor" alone is two projects' name.
 	if _, err := e.s.projectByRef(e.ctx, e.s.db.R, "Harbor"); err == nil || !strings.Contains(err.Error(), "could be") {
 		t.Errorf("ambiguous name: %v", err)
 	}
 	if got, err := e.s.projectByRef(e.ctx, e.s.db.R, "apporg"); err != nil || got.ID != o.ID {
 		t.Errorf("org by key: %v %v", got, err)
 	}
-	// Issue keys with or without the dash, any case.
 	i := e.issue(e.admin, IssueInput{Project: "APP", Title: "Twelve"})
 	for _, ref := range []string{i.Key, strings.ToLower(i.Key), "APP1", "app1"} {
 		if got, err := e.s.GetIssue(e.ctx, e.admin, ref); err != nil || got.ID != i.ID {
@@ -530,7 +497,6 @@ func TestLooseReferences(t *testing.T) {
 	if keys := e.search(e.admin, "app1"); len(keys) != 1 || keys[0] != i.Key {
 		t.Errorf("search app1: %v", keys)
 	}
-	// A key that ends in a digit, run into the number, is ambiguous.
 	ab, ab2 := "AB", "AB2"
 	for _, k := range []*string{&ab, &ab2} {
 		if _, err := e.s.CreateProject(e.ctx, e.admin, ProjectInput{Name: k, Key: k}); err != nil {
@@ -544,7 +510,6 @@ func TestLooseReferences(t *testing.T) {
 	if _, err := e.s.GetIssue(e.ctx, e.admin, "AB21"); err == nil || !strings.Contains(err.Error(), "add the dash") {
 		t.Errorf("AB21 should be ambiguous: %v", err)
 	}
-	// Page codes without the dash.
 	pg, err := e.s.CreatePage(e.ctx, e.admin, PageInput{Title: str("Plan"), Category: str("plan"), Project: Some("APP")})
 	if err != nil {
 		t.Fatal(err)
@@ -598,7 +563,6 @@ func TestAgentCloseWaitsForReview(t *testing.T) {
 		t.Errorf("waiting: closes %d review %d total %d", w.Closes, w.Review, w.Total)
 	}
 
-	// Only people review; reviewing the issue covers its close.
 	if _, err := e.s.Review(e.ctx, agent, ReviewClose, i.Key, ""); !errors.Is(err, ErrForbidden) {
 		t.Errorf("an agent reviewed a close: %v", err)
 	}
@@ -619,7 +583,6 @@ func TestAgentCloseWaitsForReview(t *testing.T) {
 		t.Errorf("still waiting: %v", got)
 	}
 
-	// Reopened, the review goes with the close; a person's close is theirs.
 	if _, err := e.s.UpdateIssue(e.ctx, agent, i.Key, IssuePatch{Status: str("todo")}); err != nil {
 		t.Fatal(err)
 	}
@@ -636,7 +599,6 @@ func TestAgentCloseWaitsForReview(t *testing.T) {
 		t.Errorf("review close = %d, %v", n, err)
 	}
 
-	// An agent filing an issue already closed is a close too.
 	k := e.issue(agent, IssueInput{Project: p.Key, Title: "Filed done", Status: "Done"})
 	if !k.CloseUnreviewed {
 		t.Errorf("filed closed by an agent: %+v", k.Issue)
@@ -647,7 +609,7 @@ func TestAgentCloseWaitsForReview(t *testing.T) {
 // close and waits for review; closing a person's work needs none (WP-500).
 func TestAutomationCloseOfAgentWorkWaitsForReview(t *testing.T) {
 	e := newEnv(t)
-	e.s.Forges = newMemForge() // its GitHub link is refreshed, not from the real API (WP-1065)
+	e.s.Forges = newMemForge()
 	p := e.project(e.admin, "Merges", "")
 	agent := asAgent(e.admin, "anthropic/claude-opus-5-5")
 	worked := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Agent's work"})
@@ -674,7 +636,6 @@ func TestAutomationCloseOfAgentWorkWaitsForReview(t *testing.T) {
 	if d := e.get(e.admin, own.Key); d.CloseUnreviewed {
 		t.Errorf("a person's work closed by a rule: %+v", d.Issue)
 	}
-	// A person closing an agent's work decides it themselves.
 	again := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Closed by hand"})
 	if _, err := e.s.AgentTake(e.ctx, agent, again.Key, ""); err != nil {
 		t.Fatal(err)

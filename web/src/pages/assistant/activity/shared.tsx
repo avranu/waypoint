@@ -1,6 +1,3 @@
-// Pieces the Activity views share: day headings, an expandable event row,
-// a JSON details box (as text), filter chips and source icons.
-
 import { useState, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import clsx from 'clsx'

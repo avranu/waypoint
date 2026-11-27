@@ -37,7 +37,6 @@ func startSessionWithTask(t *testing.T, a *apEnv, issueID int64) []*SessionMessa
 	if _, err := a.s.db.W.Exec(`INSERT INTO agent_runs(issue_id, agent, user_id, started_at, session_id) VALUES (?, 'claude', ?, ?, ?)`, issueID, a.admin.User.ID, now, sid); err != nil {
 		t.Fatal(err)
 	}
-	// Its start: the hook takes what is queued for it.
 	out, err := a.s.SessionHook(a.ctx, a.ag, []HookEvent{hook("box", "new-cli", "SessionStart", func(h *HookEvent) { h.Source = "startup" })})
 	if err != nil {
 		t.Fatal(err)

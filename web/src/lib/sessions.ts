@@ -1,6 +1,3 @@
-// Agent sessions (WP-D16): one run of a coding agent on one machine, kept by
-// the CLI's hooks. The Agents page's Overview and Sessions tabs read these.
-
 import { queryOptions } from '@tanstack/react-query'
 import { api, qs } from './api'
 import type { Action, IssueRef, UserRef } from './types'
@@ -167,7 +164,7 @@ export interface TimelineEntry {
   kind: string
   label?: string
   detail?: string
-  text?: string // a prompt longer than its detail, whole (WP-860)
+  text?: string
   url?: string
   at: string
 }

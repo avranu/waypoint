@@ -46,8 +46,6 @@ func waitHookTold(t *testing.T, status int, body string, input map[string]any) (
 				t.Errorf("told: %v", err)
 			}
 			told = in.Requests
-			// The order is the point (c6152): an answer is told only once
-			// the hook has printed it.
 			if stdout.String() == "" {
 				t.Errorf("told %v before the hook printed anything", in.Requests)
 			}
@@ -227,7 +225,6 @@ func TestWaitHookWithNoServerIsSilent(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Errorf("printed %q", stdout.String())
 	}
-	// With history of the run, the ETA is still said, with no server to ask.
 	seedRuns(t, "tests", "make check", "/tmp", 30, 30, 30)
 	b, _ = json.Marshal(bashCall("wp testsum -- make check", true))
 	stdout.Reset()
@@ -299,7 +296,6 @@ func TestWaitETACommand(t *testing.T) {
 		{"wp testsum -- make check &>/tmp/log", "tests", "make check", 0, true},
 		{"wp testsum -- make check <in", "tests", "make check", 0, true},
 		{"timeout 900 wp testsum -- make check", "tests", "make check", 0, true},
-		// An option's value as the next word (audit #1372.9).
 		{"timeout -s KILL 900 wp testsum -- make check", "tests", "make check", 0, true},
 		{"timeout --signal TERM -k 10 900 wp testsum -- make check", "tests", "make check", 0, true},
 		{"env -u NAME wp testsum -- make check", "tests", "make check", 0, true},
@@ -317,7 +313,6 @@ func TestWaitETACommand(t *testing.T) {
 		{"wp slot run 'a b' -- x", "", "", 0, false},
 		{"wp testsum --", "", "", 0, false},
 		{"wp slot run tests --", "", "", 0, false},
-		// The command without -- (testsum's own examples), keyed as the run is.
 		{"wp testsum go test ./...", "tests", "go test ./...", 0, true},
 		{"wp testsum go test -json ./...", "tests", "go test ./...", 0, true},
 		{"wp testsum --keep-env GH_TOKEN --format=go make check", "tests", "make check", 0, true},
@@ -328,7 +323,6 @@ func TestWaitETACommand(t *testing.T) {
 		{"wp testsum -", "", "", 0, false},
 		{"wp testsum", "", "", 0, false},
 		{"wp >/tmp/log", "", "", 0, false},
-		// A quoted target is still a redirection's.
 		{`wp testsum -- make check >"/tmp/o.log"`, "tests", "make check", 0, true},
 		{`wp testsum -- make check 2>"$LOG" >'f'`, "tests", "make check", 0, true},
 		{`wp testsum -- grep \> f`, "tests", "grep > f", 0, true},
@@ -418,7 +412,6 @@ func TestWaitHookSaysTheETAOfABackgroundedRun(t *testing.T) {
 		seedRuns(t, "tests", "go test ./...", "/tmp", 30, 30, 30)
 		holdSlot(t, "tests", 10*time.Minute, "slot run tests -n 1 -- go test ./...")
 		out, _ := waitHook(t, 200, `{}`, bashCall("wp slot run tests -n 1 -- go test ./...", true))
-		// (20 left + 30 run) * 1.2
 		if ctx := waitContext(t, out); !strings.Contains(ctx, "The test is queued, and is expected to complete in 60 minutes.") {
 			t.Errorf("context:\n%s", ctx)
 		}
@@ -430,7 +423,6 @@ func TestWaitHookSaysTheETAOfABackgroundedRun(t *testing.T) {
 		dir, _ := slotDir()
 		writeWaiter(t, dir, os.Getppid(), time.Now().Add(-time.Minute).UnixNano())
 		out, _ := waitHook(t, 200, `{}`, bashCall("wp slot run tests -n 1 -- go test ./...", true))
-		// (20 + 30 for the one ahead + 30) * 1.2
 		if ctx := waitContext(t, out); !strings.Contains(ctx, "is expected to complete in 96 minutes.") {
 			t.Errorf("context:\n%s", ctx)
 		}
@@ -463,7 +455,6 @@ func TestWaitHookSaysTheETAOfABackgroundedRun(t *testing.T) {
 		dir, _ := slotDir()
 		writeWaiter(t, dir, os.Getppid(), time.Now().Add(-time.Minute).UnixNano())
 		out, _ := waitHook(t, 200, `{}`, bashCall("wp slot run tests -n 1 -- go test ./...", true))
-		// (20 left + 30 run) * 1.2
 		if ctx := waitContext(t, out); !strings.Contains(ctx, "is expected to complete in 60 minutes.") {
 			t.Errorf("context:\n%s", ctx)
 		}
@@ -476,10 +467,9 @@ func TestWaitHookSaysTheETAOfABackgroundedRun(t *testing.T) {
 		dir, _ := slotDir()
 		now := time.Now()
 		writeWaiter(t, dir, os.Getppid(), now.Add(-time.Minute).UnixNano())
-		writeWaiter(t, dir, 1, now.Add(-5*time.Minute).UnixNano())            // older: ahead
-		writeWaiter(t, dir, os.Getpid(), now.Add(-10*time.Second).UnixNano()) // newer: behind
+		writeWaiter(t, dir, 1, now.Add(-5*time.Minute).UnixNano())
+		writeWaiter(t, dir, os.Getpid(), now.Add(-10*time.Second).UnixNano())
 		out, _ := waitHook(t, 200, `{}`, bashCall("wp slot run tests -n 1 -- go test ./...", true))
-		// (20 + 30 for the one ahead + 30) * 1.2
 		if ctx := waitContext(t, out); !strings.Contains(ctx, "is expected to complete in 96 minutes.") {
 			t.Errorf("context:\n%s", ctx)
 		}
@@ -489,7 +479,7 @@ func TestWaitHookSaysTheETAOfABackgroundedRun(t *testing.T) {
 		seedRuns(t, "tests", "go test ./...", "/tmp", 30, 30, 30)
 		holdSlot(t, "tests", time.Second, "slot run tests -n 1 -- make lint")
 		out, _ := waitHook(t, 200, `{}`, bashCall("wp slot run tests -n 1 -- go test ./...", true))
-		if ctx := waitContext(t, out); !strings.Contains(ctx, "The test is queued") { // audit #1372.20
+		if ctx := waitContext(t, out); !strings.Contains(ctx, "The test is queued") {
 			t.Errorf("context:\n%s", ctx)
 		}
 	})
@@ -498,7 +488,7 @@ func TestWaitHookSaysTheETAOfABackgroundedRun(t *testing.T) {
 		seedRuns(t, "tests", "go test ./...", "/tmp", 30, 30, 30)
 		holdSlot(t, "tests", 10*time.Minute, "slot run tests -n 1 -- go test ./...")
 		out, _ := waitHook(t, 200, `{}`, bashCall("wp slot run tests -n 2 -- go test ./...", true))
-		if ctx := waitContext(t, out); !strings.Contains(ctx, "The test is running") { // audit #1372.24
+		if ctx := waitContext(t, out); !strings.Contains(ctx, "The test is running") {
 			t.Errorf("context:\n%s", ctx)
 		}
 	})
@@ -510,13 +500,10 @@ func TestWaitHookSaysTheETAOfABackgroundedRun(t *testing.T) {
 		dir, _ := slotDir()
 		writeWaiter(t, dir, os.Getppid(), time.Now().Add(-2*time.Second).UnixNano())
 		out, _ := waitHook(t, 200, `{}`, bashCall("wp slot run tests -n 1 -- go test ./...", true))
-		// (20 left + 30 run) * 1.2 (audit #1372.6)
 		if ctx := waitContext(t, out); !strings.Contains(ctx, "is expected to complete in 60 minutes.") {
 			t.Errorf("context:\n%s", ctx)
 		}
 	})
-	// Where no process's session can be read (darwin), the session each
-	// recorded says whose it is (audit #1382.1).
 	t.Run("no session to read: another session's identical run 1s old holds it: queued", func(t *testing.T) {
 		t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
 		stubPidSessions(t, map[int]string{})
@@ -535,13 +522,10 @@ func TestWaitHookSaysTheETAOfABackgroundedRun(t *testing.T) {
 		dir, _ := slotDir()
 		writeWaiterAs(t, dir, os.Getppid(), time.Now().Add(-2*time.Minute).UnixNano(), "sess-1")
 		out, _ := waitHook(t, 200, `{}`, bashCall("wp slot run tests -n 1 -- go test ./...", true))
-		// (20 left + 30 run) * 1.2
 		if ctx := waitContext(t, out); !strings.Contains(ctx, "is expected to complete in 60 minutes.") {
 			t.Errorf("context:\n%s", ctx)
 		}
 	})
-	// A quoted '>' is an argument, not a redirection: the key is the one the
-	// run records (audit #1382.3).
 	t.Run("a quoted > is an argument", func(t *testing.T) {
 		t.Setenv("WAYPOINT_SLOT_DIR", t.TempDir())
 		seedRuns(t, "tests", "grep > file", "/tmp", 30, 30, 30)

@@ -1,8 +1,3 @@
-// Autopilot (WP-194): when a session autopilot started finishes its task,
-// Waypoint clears it and starts the next one in it; a person's own sessions
-// are left alone (WP-1319). These are the shapes the API
-// returns and the sentences the Autopilot tab says about them.
-
 import { queryOptions } from '@tanstack/react-query'
 import { api, qs } from './api'
 import type { IssueRef } from './types'
@@ -19,6 +14,8 @@ export interface AutopilotLimits {
   five_hour_max?: number
   merge?: MergePolicy
   grace_seconds?: number
+  /** wp ship from an Opus or Fable session first lists the ready tasks it filed meanwhile (WP-1858); default on */
+  deferred?: boolean
   /** an adversarial review of each finished task before the session moves on (WP-285) */
   review?: boolean
   /** what the review asks; empty or unset: the default */
@@ -29,7 +26,6 @@ export interface AutopilotLimits {
   review_text?: string
   /** who reviews a round: auto, session, or a model as cli/model (gateway/MODEL, claude/sonnet) */
   review_model?: string
-  // Which tasks it takes (WP-284): every criterion set must hold.
   /** low, medium, high or urgent; '' any */
   min_priority?: Priority | ''
   /** due within so many days, or overdue; 0 off */
@@ -40,7 +36,6 @@ export interface AutopilotLimits {
   planned?: boolean
   /** a query the tasks must also match */
   query?: string
-  // Pace (WP-284), per project.
   /** starts in an hour (1-60, the loop guard) */
   per_hour?: number
   /** starts in a calendar day; 0 off */
@@ -55,7 +50,6 @@ export interface AutopilotLimits {
   hours?: string
   /** "mon-fri"; '' every day */
   days?: string
-  // Use what's left at the week's end (WP-262): your defaults only.
   /** start sessions past at_once over the week's last week_end_hours, paced to use the quota by the reset */
   spend_left?: boolean
   /** while it does, autopilot sessions at once across your projects */
@@ -320,7 +314,6 @@ export function stepLine(s: AutopilotStep, now: number): string {
         ? `Paused: ${detail.replace(/^paused: /, '') || s.reason}`
         : `Waiting: ${detail || s.reason || 'for something to finish'}`
     case 'starting':
-      // A review round compacts the session and runs before any next task.
       if (!s.next && detail.includes('adversarial review'))
         return detail[0].toUpperCase() + detail.slice(1)
       return `Starting ${s.next ? s.next.key : 'the next task'}${detail ? ': ' + detail : ''}`

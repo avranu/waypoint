@@ -73,9 +73,8 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via stri
 	}
 	out := &SessionOutstanding{}
 	if actor.Session == 0 {
-		return out, nil // not a session: nothing is its own
+		return out, nil
 	}
-	// The newest round whose prompt went in with findings still to do.
 	rows, err := s.db.R.QueryContext(ctx, `SELECT id FROM work_log WHERE kind = 'review' AND session_id = ? AND state = ? ORDER BY id DESC`,
 		actor.Session, RoundRunning)
 	if err != nil {
@@ -117,10 +116,6 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via stri
 			break
 		}
 	}
-	// Each finding is named to a session once at each of via, so an agent
-	// that holds findings while a worker fixes them isn't re-prompted with
-	// them at every stop (session_events, kind outstandingKind, ref_type via,
-	// label the finding's code).
 	fresh := 0
 	err = s.write(ctx, actor, func(t *tx) error {
 		for _, it := range out.Findings {
@@ -131,8 +126,6 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via stri
 			if told {
 				continue
 			}
-			// At the wait the hook records them (SessionFindingsNamed) once it
-			// has printed them, so a print that fails names nothing.
 			if via != OutstandingAtWait {
 				if err := s.sessionTimeline(ctx, t, actor.Session, s.nowMS(), outstandingKind, via, 0, it, "", "named while a run was going", sql.NullInt64{}, nil); err != nil {
 					return err
@@ -162,8 +155,6 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via stri
 		if err != nil {
 			return nil, err
 		}
-		// A quiet dismissal is marked told unsaid, as takeDecisions does, so
-		// fifty of them don't hide an answer behind them.
 		var quiet []int64
 		list = slices.DeleteFunc(list, func(r *Request) bool {
 			if r.quiet() {

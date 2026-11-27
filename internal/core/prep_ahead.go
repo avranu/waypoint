@@ -30,7 +30,7 @@ const (
 
 // prepAheadMark is where PrepDue last handed out a task.
 type prepAheadMark struct {
-	pos int // 1 = the first behind the front; 0 = at the front
+	pos int
 	at  time.Time
 }
 
@@ -46,7 +46,7 @@ func (s *Service) markPrepAhead(issueID int64, pos int, ahead bool) {
 		s.prepAhead = map[int64]prepAheadMark{}
 	}
 	now := s.now()
-	for id, m := range s.prepAhead { // bounded: marks a runner never used
+	for id, m := range s.prepAhead {
 		if now.Sub(m.at) > prepAheadMarkTTL {
 			delete(s.prepAhead, id)
 		}

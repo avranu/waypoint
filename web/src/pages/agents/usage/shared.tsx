@@ -1,6 +1,3 @@
-// Pieces the Usage tab's sections share: stat tiles, sortable tables with
-// inline bars, a copy button and segmented tabs.
-
 import { useMemo, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { ArrowDown, ArrowUp, Check, Copy } from 'lucide-react'

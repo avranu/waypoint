@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// Requests that close themselves (WP-126).
-
 func (be *bsEnv) ask(in RequestInput) *Request {
 	be.t.Helper()
 	r, _, err := be.s.CreateRequest(be.ctx, be.agent, in)
@@ -59,7 +57,6 @@ func TestRequestClosesWhenItsPullRequestMerges(t *testing.T) {
 	if got.State != RequestDone || got.Decision != closedByWatch || !strings.Contains(got.Note, "merged") || got.Watches[0].State != "satisfied" {
 		t.Fatalf("after the merge: %s %q %q %+v", got.State, got.Decision, got.Note, got.Watches)
 	}
-	// Nothing wakes the agent at a stop; its next prompt carries the closing.
 	if res := be.hookAs("Stop"); res.Text != "" {
 		t.Fatalf("the agent was woken: %q", res.Text)
 	}
@@ -84,7 +81,6 @@ func TestStaleRequestClosesWhenItsBranchMerges(t *testing.T) {
 	if got := be.request(r.ID); got.State != RequestDismissed || !strings.Contains(got.Note, "merged") {
 		t.Fatalf("stale question: %s %q", got.State, got.Note)
 	}
-	// A person's to-do isn't done because code merged.
 	if got := be.request(todo.ID); got.State != RequestOpen {
 		t.Fatalf("an action closed with the merge: %s %q", got.State, got.Note)
 	}
@@ -108,7 +104,6 @@ func TestRequestClosesWhenIssueDoneAndURLAnswers(t *testing.T) {
 		t.Fatalf("up: %s %+v", got.State, got.Watches)
 	}
 
-	// An agent can't set a command poll: it runs on a person's machine.
 	if _, _, err := be.s.CreateRequest(be.ctx, be.agent, RequestInput{Kind: RequestAction, Title: "x", ClosesWhen: []WatchInput{{Kind: WatchCmdOK, Target: "true"}}}); !IsInvalid(err) {
 		t.Errorf("an agent's command poll: %v", err)
 	}

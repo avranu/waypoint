@@ -272,7 +272,6 @@ func TestSweepIgnoresQuietAndOtherSessions(t *testing.T) {
 	if got := a.atOnce(); len(got) != 1 {
 		t.Fatalf("at work: %v", got)
 	}
-	// wp ship --review: the run stays open for its review, but it shipped.
 	held, err := a.s.db.W.Exec(`INSERT INTO work_log(kind, session_id, run_id, issue_id, state, prompt, before_pr, created_at, updated_at)
 		SELECT 'review', session_id, id, issue_id, 'pending', '', 'pr', ?, ? FROM agent_runs WHERE ended_at IS NULL`, a.clockNow().UnixMilli(), a.clockNow().UnixMilli())
 	if err != nil {
@@ -295,7 +294,6 @@ func TestSweepIgnoresQuietAndOtherSessions(t *testing.T) {
 	if got := a.atOnce(); len(got) != 1 {
 		t.Fatalf("heard from again: %v", got)
 	}
-	// Another session of theirs at a task in another project.
 	res, err := a.s.SessionHook(a.ctx, a.ag, []HookEvent{hook("box", "cli-far", "SessionStart", func(h *HookEvent) { h.Source = "startup"; h.Cwd = "/work/far" })})
 	if err != nil {
 		t.Fatal(err)
@@ -343,7 +341,6 @@ func TestAtOnceCountsAStartingSessionOnce(t *testing.T) {
 	if got := a.atOnce(); len(got) != 1 {
 		t.Fatalf("starting, task taken: %v", got)
 	}
-	// The job answers without naming the session: started, bound to none.
 	a.ownDone(1, st, AutopilotJobResult{Outcome: "started", Via: "start"})
 	if got := a.atOnce(); len(got) != 1 {
 		t.Fatalf("started, unbound: %v", got)
@@ -383,7 +380,6 @@ func TestSweepOffStartsNothing(t *testing.T) {
 	if st, err := a.s.claimOwnStart(a.ctx, a.admin.User.ID, a.p.ID, nil, a.clockNow().UnixMilli(), nil); err != nil || st != nil {
 		t.Fatalf("claim with autopilot off: %+v, %v", st, err)
 	}
-	// An agent can't turn it on, so it can't cause a session here.
 	if _, err := a.s.SetAutopilot(a.ctx, a.ag, a.p.Key, AutopilotSettingInput{Enabled: ptrOf(true)}); err == nil {
 		t.Fatal("an agent turned autopilot on")
 	}
@@ -554,7 +550,7 @@ func TestSweepNeedsARunner(t *testing.T) {
 // and the sweep starts the next task in a session of its own.
 func TestNoTmuxEndsAndTheSweepStarts(t *testing.T) {
 	a := newSweepEnv(t)
-	a.autopilotStarted(a.session) // only autopilot's sessions move on (WP-1319)
+	a.autopilotStarted(a.session)
 	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
 	a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Second", Agent: "claude"})
 	a.finish(first.Key)

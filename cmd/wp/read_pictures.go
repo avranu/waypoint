@@ -7,18 +7,9 @@ import (
 	"strings"
 )
 
-// Pictures an agent may look at without being asked about (WP-1137). Claude
-// Code asks before a Read outside the session's directory, and agents look
-// at screenshots elsewhere all the time: their own (wp shot; Playwright into
-// the scratchpad Claude Code gives each session), their task's and related
-// tasks' attachments (wp files), and pictures in the project's other
-// checkouts. The nudge hook answers "allow" for an image file in one of
-// these places; anything else is left to Claude Code's own rules. Reads
-// files, runs nothing.
-
 const (
-	shotsDirName = "wp-shots" // wp shot's pictures: under the temp directory, or under --out
-	filesDirName = "wp-files" // wp files' downloads: under the temp directory, a folder per task
+	shotsDirName = "wp-shots"
+	filesDirName = "wp-files"
 	// runnerJobEnv marks a runner's Claude Code job (claudeDriver): its
 	// grants are the job's, and other jobs' checkouts and downloads share
 	// its machine, so no picture is let through for it.
@@ -46,11 +37,8 @@ func pictureReadAllowed(cwd, path string) bool {
 	if !filepath.IsAbs(path) || !isPicture(path) {
 		return false
 	}
-	// The file the Read will open, through links no one else can re-point
-	// before it does (fixedPath): the temp directory and the user's projects
-	// are often reached through one (macOS's /var is /private/var).
 	p, ok := fixedPath(path)
-	if !ok || !isPicture(p) { // a link to something else
+	if !ok || !isPicture(p) {
 		return false
 	}
 	fi, err := os.Lstat(p)
@@ -98,7 +86,7 @@ func fixedPath(p string) (string, bool) {
 		case "", ".":
 			continue
 		case "..":
-			cur = filepath.Dir(cur) // cur has no links in it
+			cur = filepath.Dir(cur)
 			continue
 		}
 		next := filepath.Join(cur, c)
@@ -162,7 +150,7 @@ func (s guardSite) checkouts() []string {
 		if err != nil {
 			continue
 		}
-		g := strings.TrimSpace(string(b)) // the worktree's .git file
+		g := strings.TrimSpace(string(b))
 		if !filepath.IsAbs(g) {
 			g = filepath.Join(wts, e.Name(), g)
 		}

@@ -1,8 +1,3 @@
-// Usage → Token ledger (WP-35): the numbers every optimization is judged by.
-// Context per call (and how often it passes 200k and 300k), forks against
-// fresh subagents, cold cache starts, and what a closed task or a merged pull
-// request cost, by model, beside the X4 baseline measured by hand.
-
 import { useMemo, useState } from 'react'
 import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
@@ -393,7 +388,7 @@ function PrepCompare({ groups }: { groups: LedgerPrepGroup[] }) {
       id: 'group',
       label: 'Tasks',
       asc: true,
-      value: (g) => ['none', 'held_out', 'shown'].indexOf(g.group), // shown first
+      value: (g) => ['none', 'held_out', 'shown'].indexOf(g.group),
       cell: (g) => <span className="font-medium">{PREP_LABELS[g.group]}</span>,
     },
     { id: 'done', label: 'Closed', value: (g) => g.done },

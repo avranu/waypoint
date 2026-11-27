@@ -19,7 +19,6 @@ func TestInboxGroupsAndStale(t *testing.T) {
 	if _, err := e.s.Transition(e.ctx, e.admin, closed.Key, "Done", ""); err != nil {
 		t.Fatal(err)
 	}
-	// An alert from last week and one from just now.
 	old := e.s.nowMS() - 5*24*3600*1000
 	if _, err := e.s.db.W.Exec(`INSERT INTO notifications(user_id, kind, title, body, url, created_at) VALUES (?, 'quota', 'old alert', '', '', ?)`, sam.id(), old); err != nil {
 		t.Fatal(err)
@@ -30,7 +29,6 @@ func TestInboxGroupsAndStale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The open issue is one row with its assignment and two comments.
 	var og *InboxGroup
 	for i := range v.Live {
 		if v.Live[i].IssueKey == open.Key {
@@ -55,12 +53,10 @@ func TestInboxGroupsAndStale(t *testing.T) {
 	if v.Summary.StaleUnread < 2 || v.Summary.LiveUnread != v.Summary.Unread-v.Summary.StaleUnread || v.Summary.OldestLive == nil {
 		t.Errorf("summary = %+v", v.Summary)
 	}
-	// Live groups: things asked of you before alerts.
 	if v.Live[0].Tier != TierYou || v.Live[len(v.Live)-1].Tier != TierAlert {
 		t.Errorf("order: %s ... %s", v.Live[0].Tier, v.Live[len(v.Live)-1].Tier)
 	}
 
-	// Marking one group read leaves the rest; stale clears only the stale.
 	if n, err := e.s.MarkInboxRead(e.ctx, sam, InboxScope{Section: InboxLive, Group: "i:" + open.Key, Upto: v.Summary.AsOf}); err != nil || n != 3 {
 		t.Fatalf("mark group: %d %v", n, err)
 	}

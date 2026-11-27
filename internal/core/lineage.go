@@ -9,22 +9,6 @@ import (
 	"time"
 )
 
-// Lineage (WP-275, a follow-up of WP-ADR10). A misaligned agent can launder
-// instructions through tasks: agent A writes task 1, agent B working on
-// task 1 writes task 2 that repeats them, and so on, each text looking like
-// fresh work. So an agent's issue text records the task its session was
-// working on when it wrote it (origin_issue_id), and its depth follows:
-// text a person wrote or reviewed is depth 0; an agent's unreviewed text is
-// one more than the task it was written while working on (1 when there was
-// none). At depth lineageHold or more the safety screen holds the task for
-// a person, whatever its model says: a rule, so no model clears it. Below
-// it the model reads the text like any other agent's (WP-837, WP-ADR83: from depth 2
-// it held about one task in three, each a plain follow-up an agent filed
-// while working on another agent's task, unread by any model). The
-// depth is read live, so a person reviewing a task up the chain shortens
-// every chain below it; origin_depth, the origin's depth when the text was
-// written, stands in once the origin is deleted.
-
 // lineageHold is the depth from which the screen holds a task: a chain of
 // three agents' tasks with no person's review anywhere in it.
 const lineageHold = 3
@@ -101,7 +85,7 @@ func lineageWalk(ctx context.Context, q queryer, issueID int64) (rows []lineageR
 			break
 		}
 		if !r.origin.Valid {
-			extra = r.originDepth // the origin was deleted (0 when there was none)
+			extra = r.originDepth
 			break
 		}
 		cur = r.origin.Int64
@@ -155,10 +139,10 @@ func (s *Service) sessionTasks(ctx context.Context, q queryer, actor *Actor) ([]
 		id, err := s.resolveIssueID(ctx, q, k)
 		var inv *InvalidError
 		if errors.Is(err, ErrNotFound) || errors.As(err, &inv) {
-			continue // a key that names no task (or several) is no task
+			continue
 		}
 		if err != nil {
-			return nil, err // a database failure must not read as "no task"
+			return nil, err
 		}
 		ids = append(ids, id)
 	}
@@ -189,7 +173,6 @@ func (s *Service) originSets(ctx context.Context, q queryer, actor *Actor, issue
 			continue
 		}
 		if issueID != 0 {
-			// a task whose own chain runs back through this issue would close a cycle
 			rows, _, err := lineageWalk(ctx, q, id)
 			if err != nil {
 				return nil, nil, err
@@ -210,7 +193,7 @@ func (s *Service) originSets(ctx context.Context, q queryer, actor *Actor, issue
 		return clear, []any{origin, max(depth, 0)}, nil
 	}
 	if origin == nil {
-		return nil, nil, nil // written outside any other task: what it was written from before stands
+		return nil, nil, nil
 	}
 	old, err := issueDepth(ctx, q, issueID)
 	if err != nil {
@@ -240,14 +223,14 @@ func (s *Service) lineageOf(ctx context.Context, q queryer, actor *Actor, issueI
 		return nil, err
 	}
 	if !rows[0].agentText() || (!rows[0].origin.Valid && rows[0].originDepth == 0) {
-		return nil, nil // a person wrote or reviewed it, or no task was behind it
+		return nil, nil
 	}
 	l := &Lineage{Depth: lineageDepth(rows, extra), Chain: []LineageLink{}}
 	l.Held = l.Depth >= lineageHold
 	for n, r := range rows[1:] {
 		link := LineageLink{Depth: lineageDepth(rows[n+1:], extra)}
 		if !s.canSee(ctx, q, actor, r.id, r.projectID) {
-			link.Hidden = true // its depth only: not even who wrote it
+			link.Hidden = true
 			l.Chain = append(l.Chain, link)
 			continue
 		}

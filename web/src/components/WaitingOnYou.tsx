@@ -1,8 +1,3 @@
-// What waits on a person (WP-D16), in one place: open requests from agents,
-// then the counts of other things that need a decision, and webhooks that
-// aren't getting through (WP-31). On the Inbox and at the top of the Agents
-// overview.
-
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'

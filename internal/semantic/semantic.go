@@ -48,11 +48,11 @@ func (o Options) withDefaults() Options {
 // Model places terms, and through them any text, in a space where things
 // written about together are near.
 type Model struct {
-	n    int                  // documents trained on
-	df   map[string]int       // documents each known term is in
-	rows map[string][]float64 // a term's fold-in row: V·S^(Scale-1)
-	sing []float64            // singular values
-	back []float64            // S^(2-Scale): a row times this is the term's place, V·S
+	n    int
+	df   map[string]int
+	rows map[string][]float64
+	sing []float64
+	back []float64
 }
 
 // Docs is how many documents the model learned from.
@@ -97,8 +97,6 @@ func Train(ctx context.Context, docs []map[string]int, o Options) (*Model, error
 	for _, t := range vocab {
 		m.df[t] = df[t]
 	}
-	// The doc-term matrix A, as sparse rows of unit tf-idf vectors. The
-	// norm counts every term, the rows keep the known ones.
 	type ent struct {
 		j int
 		w float64
@@ -113,11 +111,8 @@ func Train(ctx context.Context, docs []map[string]int, o Options) (*Model, error
 		}
 		sort.Slice(rows[i], func(a, b int) bool { return rows[i][a].j < rows[i][b].j })
 	}
-	// At most a quarter of the matrix's smaller side: a model that keeps
-	// every dimension of a small corpus learns no word's neighbours.
 	k := min(o.K, max(1, min(nd, nt)/4))
 	p := min(k+10, nd, nt)
-	// mulAt: Aᵀ·X (nd×p → nt×p); mulA: A·Y (nt×p → nd×p).
 	mulAt := func(X [][]float64) [][]float64 {
 		Y := matrix(nt, p)
 		for i, r := range rows {
@@ -151,8 +146,6 @@ func Train(ctx context.Context, docs []map[string]int, o Options) (*Model, error
 			r[c] = rng.NormFloat64()
 		}
 	}
-	// Randomized range finder (Halko et al.): an orthonormal basis Y of
-	// A's row space, sharpened by power iterations.
 	Y := mulAt(omega)
 	orthonormalize(Y)
 	for it := 0; it < o.Iters; it++ {
@@ -167,7 +160,6 @@ func Train(ctx context.Context, docs []map[string]int, o Options) (*Model, error
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// The right singular vectors in Y's basis: eigenvectors of (AY)ᵀ(AY).
 	C := mulA(Y)
 	G := matrix(p, p)
 	for _, r := range C {
@@ -219,7 +211,7 @@ func weigh(c map[string]int, df map[string]int, n int) map[string]float64 {
 	for t := range c {
 		terms = append(terms, t)
 	}
-	sort.Strings(terms) // a fixed order keeps the norm bit-identical
+	sort.Strings(terms)
 	for _, t := range terms {
 		k := c[t]
 		if k <= 0 {
@@ -252,7 +244,7 @@ func (m *Model) Project(counts map[string]int) []float64 {
 	for t := range counts {
 		terms = append(terms, t)
 	}
-	sort.Strings(terms) // a fixed order of sums: the same text, the same vector
+	sort.Strings(terms)
 	for _, t := range terms {
 		row, ok := m.rows[t]
 		if !ok || counts[t] <= 0 {
@@ -284,8 +276,6 @@ func (m *Model) TermCos(a, b string) float64 {
 	if !ok || !ok2 {
 		return 0
 	}
-	// Rows hold V·S^(Scale-1), weighted for folding text in; a term's own
-	// place is V·S.
 	x := make([]float64, len(ra))
 	y := make([]float64, len(rb))
 	for c := range ra {

@@ -65,8 +65,6 @@ func TestAutopilotStartsAnIdleSession(t *testing.T) {
 	if _, err := a.s.AgentDone(a.ctx, a.ag, first.Key, AgentDoneInput{Comment: "done"}); err != nil {
 		t.Fatal(err)
 	}
-	// Typed in, the session is its person's (WP-1319): its stop makes no
-	// step, so it stays listed, idle, for Start.
 	if res := a.stopWith("Done."); strings.Contains(res.Note, "Autopilot") {
 		t.Fatalf("note = %q", res.Note)
 	}
@@ -90,8 +88,6 @@ func TestAutopilotStartsAnIdleSession(t *testing.T) {
 		t.Errorf("job = %+v", in)
 	}
 
-	// A fresh session in the project's repo, nothing typed in it yet: it
-	// reads as working, but sits at an empty prompt.
 	f, err := a.s.CreateForge(a.ctx, a.admin, ForgeInput{Kind: ptr("forgejo"), BaseURL: ptr("https://git.example.com"), Token: ptr("t")})
 	if err != nil {
 		t.Fatal(err)
@@ -123,7 +119,6 @@ func TestAutopilotStartsAnIdleSession(t *testing.T) {
 	if in.Key != third.Key || in.Done != "" || in.CLIID != "cli-fresh" || in.Agent != "anthropic/claude-code" {
 		t.Errorf("fresh job = %+v", in)
 	}
-	// Its stop releases the task reserved for it.
 	var stepID int64
 	_ = a.s.db.R.QueryRow(`SELECT id FROM autopilot_steps WHERE session_id = ?`, res.Session).Scan(&stepID)
 	if err := a.s.AutopilotStepAction(a.ctx, a.admin, stepID, "stop"); err != nil {
@@ -132,7 +127,6 @@ func TestAutopilotStartsAnIdleSession(t *testing.T) {
 	if d := a.get(a.admin, third.Key); d.ClaimedBy != "" {
 		t.Errorf("stopping kept %s reserved for %q", third.Key, d.ClaimedBy)
 	}
-	// Once something is typed there, it is working.
 	if _, err := a.s.SessionHook(a.ctx, a.admin, []HookEvent{hook("box", "cli-fresh", "UserPromptSubmit", func(h *HookEvent) { h.Prompt = "Look at the logs" })}); err != nil {
 		t.Fatal(err)
 	}

@@ -14,7 +14,7 @@ import (
 // reads and commits on the head branch, in order.
 type unionFake struct {
 	blobs             bool
-	conflictUntilDrop bool // the update 409s until the branch took the base's files
+	conflictUntilDrop bool
 	dropped           bool
 	mergeBase         string
 	changed           []string
@@ -113,7 +113,6 @@ func TestUnionUpdateThroughQueue(t *testing.T) {
 	if n := se.pr(5).armedNote; !strings.Contains(n, "updated the branch") || !strings.Contains(n, "e2e/weights.txt") {
 		t.Errorf("note = %q", n)
 	}
-	// Once per tip: looking again changes nothing.
 	se.inLine(id)
 	if len(se.sg.union.log) != len(want) {
 		t.Errorf("looped: %q", se.sg.union.log)
@@ -138,7 +137,7 @@ func TestUnionUpdateSkipsForks(t *testing.T) {
 	if got, err := se.s.unionUpdate(se.ctx, se.f, pr, "tip-1"); got != "" || err != nil || len(se.sg.union.log) != 0 {
 		t.Fatalf("got %q, %v, calls %q", got, err, se.sg.union.log)
 	}
-	pr.headRepo = "me/app" // the same call on a branch of the repo itself does the work
+	pr.headRepo = "me/app"
 	if got, err := se.s.unionUpdate(se.ctx, se.f, pr, "tip-1"); got != "e2e/weights.txt" || err != nil {
 		t.Fatalf("got %q, %v", got, err)
 	}
@@ -163,9 +162,9 @@ func TestUnionUpdateRestoresWhenStillConflicting(t *testing.T) {
 func TestUnionContent(t *testing.T) {
 	cases := []struct{ mb, tip, head, want string }{
 		{"a\nb\n", "a\nb\nt\n", "a\nb\nh\n", "a\nb\nt\nh\n"},
-		{"a\nb\n", "a\nb\nt\nh\n", "a\nb\nh\n", "a\nb\nt\nh\n"},  // the same line on both sides is kept once
-		{"a\nb", "a\nb\nt", "a\nb\nh1\nh2", "a\nb\nt\nh1\nh2\n"}, // no trailing newlines
-		{"a\nb\n", "a\nb\nt\n", "a\nb\n", "a\nb\nt\n"},           // the head added nothing
+		{"a\nb\n", "a\nb\nt\nh\n", "a\nb\nh\n", "a\nb\nt\nh\n"},
+		{"a\nb", "a\nb\nt", "a\nb\nh1\nh2", "a\nb\nt\nh1\nh2\n"},
+		{"a\nb\n", "a\nb\nt\n", "a\nb\n", "a\nb\nt\n"},
 		{"a\n", "a\nb\n", "a\nx\n", "a\nb\nx\n"},
 	}
 	for _, c := range cases {

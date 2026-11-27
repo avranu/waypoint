@@ -25,10 +25,6 @@ const providersDownText = "every review model "
 // answer after such a streak, it emits EvReviewsDown. Once per streak: the
 // notice goes out on the run that reaches the count, not the ones after.
 func (s *Service) reviewsDownCheck(ctx context.Context, t *tx, projectID, prID, runID int64) {
-	// Other failures (an auth error, bad answers) neither end a streak nor
-	// add to one: an outage that ends in a mixed failure is still the same
-	// outage, and its "answer again" still comes with the next review done.
-	// This run ended last (write lock), so it leads a same-millisecond tie.
 	rows, err := t.QueryContext(ctx, `SELECT status = 'failed' FROM bot_runs
 		WHERE project_id = ? AND kind = 'review' AND finished_at IS NOT NULL
 		AND (status = 'done' OR (status = 'failed' AND substr(error, 1, ?) = ?))
@@ -37,7 +33,7 @@ func (s *Service) reviewsDownCheck(ctx context.Context, t *tx, projectID, prID, 
 		s.log.WarnContext(ctx, "read the review streak", "project", projectID, "err", err)
 		return
 	}
-	var down []bool // newest first
+	var down []bool
 	for rows.Next() {
 		var d bool
 		if rows.Scan(&d) == nil {
@@ -82,8 +78,9 @@ func reviewsDownState(down []bool) string {
 
 // notifyReviewsDown tells the site admins and the project's owners that
 // reviews keep failing with every model unavailable, and again when one
-// answers. Nothing retries those runs (WP-215), so without this nobody hears
-// of the outage but from a 😕 on each pull request.
+// answers. Each run was tried again twice before it counted (WP-1916), so
+// by then the outage has lasted, and without this nobody hears of it but
+// from a 😕 on each pull request.
 func (s *Service) notifyReviewsDown(ctx context.Context, e *Event) {
 	var key string
 	_ = s.db.R.QueryRowContext(ctx, `SELECT key FROM projects WHERE id = ?`, e.ProjectID).Scan(&key)
@@ -98,7 +95,7 @@ func (s *Service) notifyReviewsDown(ctx context.Context, e *Event) {
 	switch e.New {
 	case "down":
 		title = fmt.Sprintf("Reviews in %s keep failing: every model unavailable", key)
-		body = fmt.Sprintf("The last %d pull request reviews%s ended with every review model rate limited, down, timing out, or none at the review minimum (%s) able to take it. They are not retried: once a model answers, comment @waypoint review on each (or wp pr review retry), or change the review rule's models.", reviewsDownAfter, latest, reviewFloorBar)
+		body = fmt.Sprintf("The last %d pull request reviews%s ended with every review model rate limited, down, timing out, or none at the review minimum (%s) able to take it. Each was tried again 10 and 20 minutes later before it counted, except one where no model met the review minimum, which is not retried. Once a model answers, comment @waypoint review on each (or wp pr review retry), or change the review rule's models.", reviewsDownAfter, latest, reviewFloorBar)
 	case "up":
 		title = fmt.Sprintf("Reviews in %s answer again", key)
 		body = fmt.Sprintf("A review%s finished after %d or more in a row failed with every model unavailable. Pull requests whose review failed meanwhile still have none: comment @waypoint review on each (or wp pr review retry).", latest, reviewsDownAfter)

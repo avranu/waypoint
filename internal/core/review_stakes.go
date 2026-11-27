@@ -1,48 +1,5 @@
 package core
 
-// Stakes tiers (WP-1231, WP-1248, WP-ADR121, narrowing WP-ADR102): how
-// hard a review round's audit is held to a quality bar, and which rounds
-// may spend Claude quota on their review. A round's audit is free: the
-// LLM gateway runs it on a model outside the author's family, or at the
-// high-stakes bar on any model it rates that well (WP-1752). A
-// review on Claude (the reviewer of WP-ADR117 in a new session, or the
-// working session's own) spends the quota other work needs, so the tier
-// decides which Claude model reviews when the free audit can't be had in
-// time (roundStakes.reviewer).
-//
-//   - high: the task's risk is high, a file outside tests touches security,
-//     credentials, data migrations, deploys or CI (stakesPathRE), the
-//     change is very large (over stakesHugeLines), or a large one (over
-//     triageMaxLines) touches risky files. Its audit is held to
-//     trustedAuditBar (Grok 4.7 or better), and a slow or failed audit
-//     starts the Sonnet reviewer (WP-ADR117).
-//   - elevated: a large change (over triageMaxLines), ADR102's other signs
-//     (risky files in a smaller change, the looser sensitive names: token,
-//     hooks, guard, go.mod ...), or a task whose risk couldn't be read. Its
-//     audit is held to elevatedAuditBar (Claude Haiku or better); an audit
-//     that fails is asked again at no bar, and a slow one starts the Haiku
-//     reviewer beside it (WP-1306), the first to end being the round's.
-//   - normal: no bar, so the gateway chooses, and the same handling.
-//   - The lowest-risk changes (docs, comments) skip the round altogether:
-//     that is triage's (review_triage.go, WP-ADR79), before any tier.
-//
-// Size counts (stakes-v2): over 10-17..11-16, every one of the 26 useful
-// findings a pull request's review raised after its round had missed them
-// was on a change over 400 lines, and rounds on changes over 1000 lines
-// fixed 6.1 findings each against 1.3-1.9 below 400 (WP-1248).
-//
-// When no free audit can be had (the asks failed, the audit read nothing,
-// a person cancelled it, or no runner could take it), the tier's reviewer
-// reviews: every round gets a review. A normal round's
-// failed audit goes there at once, since asking again would make the same
-// request. A round triage never saw takes the tier its task's last round
-// was given; with none, or on a Waypoint without the gateway, it keeps the
-// high tier's handling with no bar (unknown).
-//
-// A round's tier is decided once and stored (review_stakes), so the stakes
-// report (wp worklog stakes) shows what each round was given; rounds from
-// before that are recomputed by the current rule, StakesRule.
-
 import (
 	"context"
 	"database/sql"
@@ -210,8 +167,6 @@ func (s *Service) roundStakes(ctx context.Context, roundID int64) (roundStakes, 
 		r.tier = ""
 	}
 	if r.bar == "" {
-		// Stored before WP-1440, when a normal round had no bar: it asks
-		// at the floor now, as a new round does.
 		r.bar = reviewFloorBar
 	}
 	return r, nil
@@ -271,13 +226,11 @@ func (s *Service) decideStakes(ctx context.Context, roundID int64) (roundStakes,
 		}
 	}
 	r.bar = tierBar(r.tier)
-	// No event: the stakes are read when the round plans its review.
 	err = s.write(ctx, SystemActor(), func(t *tx) error {
 		if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO review_stakes(round_id, issue_id, rule, tier, why, bar, source, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, roundID, issueID, StakesRule, r.tier, r.why, r.bar, source, s.nowMS()); err != nil {
 			return err
 		}
-		// Two callers at once: the first's stands.
 		return t.QueryRowContext(ctx, `SELECT tier, why, bar FROM review_stakes WHERE round_id = ?`, roundID).Scan(&r.tier, &r.why, &r.bar)
 	})
 	return r, err
@@ -329,8 +282,6 @@ func handOverPrompt(auditID int64) string {
 	return promptText(fmt.Sprintf("Audit #%d (adversarial review by another model) hasn't ended, and this change's stakes don't call for a Claude review in its place. "+
 		"Run `wp ship`, then tell the user so: the audit goes on as the pull request's and holds its merge until it ends.", auditID))
 }
-
-// ---- the stakes report (wp worklog stakes) ----
 
 // StakesTierStats is what the review rounds of one tier did and cost.
 type StakesTierStats struct {
@@ -581,8 +532,6 @@ func (s *Service) stakesProject(ctx context.Context, p *Project, since int64, wi
 		return err
 	}
 	_ = rows.Close()
-	// A branch shipped twice has a round for each: its pull request's
-	// evidence counts once, on the newest (the rows are newest first).
 	type branch struct {
 		issue      int64
 		repo, head string
@@ -602,8 +551,6 @@ func (s *Service) stakesProject(ctx context.Context, p *Project, since int64, wi
 			t = &StakesTierStats{Tier: x.r.Tier, States: map[string]int{}}
 			tiers[x.r.Tier] = t
 		}
-		// A round triage skipped never gets a stored tier: it isn't one
-		// from before tiers were stored.
 		if recomputed && x.action != triageSkip {
 			t.Recomputed++
 		}
@@ -615,8 +562,6 @@ func (s *Service) stakesProject(ctx context.Context, p *Project, since int64, wi
 		t.Found += x.r.Found
 		t.Fixed += x.r.Fixed
 		t.Rejected += x.r.Rejected
-		// The round's first audit (its own, or the pull request's it took),
-		// the one asked after it, and its Sonnet reviewer.
 		first, err := s.stakesAuditOf(ctx, `a.request_key = ?`, fmt.Sprintf(reviewAuditKey, x.r.Round))
 		if err != nil {
 			return err
@@ -643,8 +588,6 @@ func (s *Service) stakesProject(ctx context.Context, p *Project, since int64, wi
 				t.BarFailed++
 			}
 		}
-		// Asked again at the floor (before WP-1440: at no bar) after a tier
-		// bar's audit.
 		if other != nil && (other.weakest == "" || other.weakest == reviewFloorBar) && first != nil && first.weakest != "" && first.weakest != reviewFloorBar {
 			t.FreeReasks++
 		}
@@ -668,8 +611,6 @@ func (s *Service) stakesProject(ctx context.Context, p *Project, since int64, wi
 		if x.r.Note != "" && !reviewerUsed && !strings.Contains(x.r.Note, stakesNoClaude) && x.r.State == RoundDone {
 			t.OwnReviews++
 		}
-		// The free audit's answer: the one the round used, unless it went
-		// to the pull request (then whichever of its asks answered).
 		ans := used
 		if ans == nil || ans.status != AuditDone {
 			ans = other
@@ -794,8 +735,6 @@ func (s *Service) stakesOutcomes(ctx context.Context, actor *Actor, days int, ta
 			return err
 		}
 	}
-	// Usage from a week before the window, so a task whose round is early
-	// in it is measured whole.
 	tr, err := s.UsageTrends(ctx, actor, UsageQuery{Days: min(days+7, 365), User: "all", allTasks: true})
 	if err != nil {
 		return err

@@ -7,14 +7,9 @@ import (
 	"time"
 )
 
-// What the hooks record about the agents a session runs, beyond the live
-// table of gate.go (WP-1443): who started each one, the Agent calls the gate
-// has let through that SubagentStart has not answered yet, the claim a call
-// to `wp agents wait` leaves, and which once-per-run notes were told.
-
 const (
-	reserveTTL   = 30 * time.Second // an admitted Agent call whose SubagentStart never came (refused by Claude Code, or by another hook)
-	waitClaimTTL = 2 * time.Minute  // a `wp agents wait` call whose command never ran
+	reserveTTL   = 30 * time.Second
+	waitClaimTTL = 2 * time.Minute
 )
 
 // agentParent says who started a background agent: the agent id of the
@@ -115,8 +110,6 @@ func (s *State) agentRunning(session string, a liveAgent, now time.Time, depth i
 	if !a.Waiting || s.tasksRunning(session, a, now, depth) {
 		return true
 	}
-	// Nothing it waits for runs: the wake is on its way. The grace counts
-	// from the stop, or from the last time a waiter saw the work running.
 	last := a.WaitAt
 	if a.Seen.After(last) {
 		last = a.Seen
@@ -213,13 +206,13 @@ type waitClaim struct {
 
 // pruneAgents forgets what has outlived what could still be true.
 func (s *State) pruneAgents(now time.Time) {
-	for sid, m := range s.Agents { // forget what never stopped
+	for sid, m := range s.Agents {
 		for id, a := range m {
 			if now.Sub(a.Since) > gateLiveTTL || (a.Provisional && now.Sub(a.Since) > provisionalTTL) {
 				delete(m, id)
 			}
 		}
-		for id, a := range m { // what it waited for is gone: it will not be woken
+		for id, a := range m {
 			if !s.agentRunning(sid, a, now, 0) {
 				delete(m, id)
 			}
@@ -306,8 +299,6 @@ func (c *cli) trackAgentParent(in hookEventInput) {
 		if s.AgentParents[in.SessionID] == nil {
 			s.AgentParents[in.SessionID] = map[string]agentParent{}
 		}
-		// The call is over for its reservation, which is dropped by its id;
-		// the agent's start then takes none (Taken).
 		ap := agentParent{Parent: in.AgentID, Mode: mode, At: time.Now(), Taken: s.AgentParents[in.SessionID][r.AgentID].Taken}
 		if in.ToolUseID != "" {
 			if res, ok := s.takeReservation(in.SessionID, in.ToolUseID, "", false, ""); ok {
@@ -319,15 +310,12 @@ func (c *cli) trackAgentParent(in hookEventInput) {
 		}
 		s.AgentParents[in.SessionID][r.AgentID] = ap
 		if a, ok := s.Agents[in.SessionID][r.AgentID]; ok {
-			a.Mode = mode // the call is a better witness than the order of starts
+			a.Mode = mode
 			if a.Model == "" {
 				a.Model = ap.Model
 			}
 			s.Agents[in.SessionID][r.AgentID] = a
 		} else if r.Status == "async_launched" {
-			// Launched, and its SubagentStart not here yet: it exists now
-			// (a foreground call returns only when its agent is over, so
-			// only an async launch makes one).
 			if s.Agents == nil {
 				s.Agents = map[string]map[string]liveAgent{}
 			}
@@ -346,7 +334,7 @@ func (c *cli) forgetSessionAgents(sid string) {
 	if sid == "" {
 		return
 	}
-	_ = c.updateStateWithin(time.Second, func(s *State) { // SessionEnd has 2 s
+	_ = c.updateStateWithin(time.Second, func(s *State) {
 		delete(s.Agents, sid)
 		delete(s.AgentParents, sid)
 		delete(s.Reserved, sid)
@@ -358,7 +346,7 @@ func (c *cli) forgetSessionAgents(sid string) {
 func (c *cli) trackAgentsLocally(in hookEventInput) {
 	switch in.HookEventName {
 	case "SessionStart":
-		if in.Source != "compact" { // a new process: nothing of the session's still runs
+		if in.Source != "compact" {
 			c.forgetSessionAgents(in.SessionID)
 		}
 	case "SessionEnd":
@@ -432,9 +420,9 @@ func startMode(background bool) string {
 type caller int
 
 const (
-	callerMain caller = iota // the main thread
-	callerFg                 // a subagent started in the foreground, or one whose start isn't known
-	callerBg                 // a subagent started in the background
+	callerMain caller = iota
+	callerFg
+	callerBg
 )
 
 // callerOf is the kind of the agent (empty: the main thread) of session. Not

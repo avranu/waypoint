@@ -24,11 +24,9 @@ func TestBoilerplateStrip(t *testing.T) {
 	if got := strip(bp, "Check audit #120: free review found points in the sanborn harvest"); got != "in the sanborn harvest" {
 		t.Errorf("stripped = %q", got)
 	}
-	// Under boilerMinDocs, a run is the issue's own words.
 	if got := strip(bp, "words here and there"); got != "words here and there" {
 		t.Errorf("rare run stripped: %q", got)
 	}
-	// A document taken back no longer counts.
 	bc.remove(odd.sh[0], odd.sh[1])
 	if len(bc.boilerplate()) != len(bp) {
 		t.Error("removing a document under the line changed the boilerplate")
@@ -92,7 +90,6 @@ func TestSimilarityIndexKeepsCounts(t *testing.T) {
 	if len(idx.boiler) == 0 {
 		t.Fatal("the template isn't boilerplate")
 	}
-	// Two issues leave the template: one is retitled, one becomes a draft.
 	title := "Sanborn harvest stops early"
 	if _, err := e.s.UpdateIssue(e.ctx, e.admin, keys[0], IssuePatch{Title: &title}); err != nil {
 		t.Fatal(err)
@@ -130,13 +127,12 @@ func conceptCorpus(e *env, project string) {
 		words = append(words, ops[n%len(ops)], ops[(n+2)%len(ops)])
 		tail := "."
 		if n%3 == 0 {
-			tail = " (canary)." // a word both topics use
+			tail = " (canary)."
 		}
 		for _, in := range []IssueInput{
 			{Project: project, Title: strings.Join(words, " "), Description: "Ops work: " + strings.Join(words, ", ") + tail},
 			{Project: project, Title: billing[n%6] + " " + billing[(n+1)%6] + " " + billing[(n+3)%6], Description: "Billing work on the " + billing[(n+2)%6] + " and " + billing[(n+4)%6] + tail},
 		} {
-			// Done: the model learns from them, suggestions leave them out.
 			done := CatDone
 			if _, err := e.s.UpdateIssue(e.ctx, e.admin, e.issue(e.admin, in).Key, IssuePatch{Status: &done}); err != nil {
 				e.t.Fatal(err)

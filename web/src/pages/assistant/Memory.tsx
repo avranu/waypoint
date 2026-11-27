@@ -1,10 +1,3 @@
-// What the assistant remembers and who it is (WP-ADR1). Hermes keeps two
-// small files it reads at the start of every conversation: its notes
-// (MEMORY.md) and what it knows about you (USER.md), each a list of entries
-// under a size limit. Each entry can be edited or deleted on its own, the
-// whole file edited as text, or the file cleared. Its persona is the
-// profile's SOUL.md.
-
 import { useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'

@@ -113,8 +113,6 @@ export function Badge({
   icon?: boolean
   className?: string
 }) {
-  // A bare count says nothing read aloud; its tooltip does. A plain span's
-  // aria-label isn't read, so the badge is named as an image.
   const named =
     !!title &&
     (icon || typeof children === 'number' || /^[\d×+\-\u2212.,%\s]+$/.test(String(children)))

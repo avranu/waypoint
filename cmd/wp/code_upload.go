@@ -11,15 +11,9 @@ import (
 	"git.jmann.me/claude/waypoint/internal/codeindex"
 )
 
-// Summaries to the server (WP-182, ADR3 point 5). A checkout of the repo's
-// default branch uploads its summary: by hand with `wp code index --upload`,
-// and by itself from any wp code command once the last upload is a day old.
-// The automatic one runs in a detached child so the command is never slowed;
-// its failures go to <git-dir>/waypoint/upload.log and nowhere else.
-
 const (
 	uploadEvery    = 24 * time.Hour
-	uploadRetry    = time.Hour // after a failure
+	uploadRetry    = time.Hour
 	uploadChildEnv = "WP_CODE_UPLOAD_CHILD"
 )
 
@@ -97,7 +91,7 @@ func (c *cli) maybeUpload(ix *codeindex.Index) {
 	if err != nil {
 		return
 	}
-	writeUploadStamp(stamp, uploadStamp{At: time.Now(), OK: true})                                                             // the child corrects it; this stops a stampede
+	writeUploadStamp(stamp, uploadStamp{At: time.Now(), OK: true})
 	logf, err := os.OpenFile(filepath.Join(filepath.Dir(ix.DBPath), "upload.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) // #nosec G304 -- git dir
 	if err != nil {
 		return

@@ -1,9 +1,5 @@
 package core
 
-// Pull requests on the Agents page (WP-D15): where each went, how many
-// pushes it took, who reviewed and approved it, what bots found, and what
-// agents spent on the issues it's linked to.
-
 import (
 	"context"
 	"database/sql"
@@ -126,7 +122,7 @@ func prVisible(actor *Actor, projectID int64) (string, []any) {
 	vis, args := visibleSQL("r.project_id", actor)
 	cond := `EXISTS (SELECT 1 FROM project_repos r WHERE r.forge_id = p.forge_id AND r.repo = p.repo COLLATE NOCASE AND ` + vis
 	if actor.HidesDrafts() {
-		cond = `p.outside = 0 AND ` + cond // from outside: people only (WP-281)
+		cond = `p.outside = 0 AND ` + cond
 	}
 	if projectID != 0 {
 		cond += ` AND r.project_id = ?`
@@ -368,7 +364,6 @@ func (s *Service) fillPRs(ctx context.Context, actor *Actor, prs []*PRSummary) e
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	// Waypoint's own reviews are its bot runs, posted or signed off with 👍.
 	// #nosec G202 -- in is placeholders only; values are bound
 	rows, err = s.db.R.QueryContext(ctx, `SELECT pr_id, count(*) FROM bot_runs WHERE pr_id IN (`+in+`) AND kind = 'review' AND status = 'done' GROUP BY pr_id`, ids...)
 	if err != nil {
@@ -401,7 +396,6 @@ func (s *Service) fillPRs(ctx context.Context, actor *Actor, prs []*PRSummary) e
 	}
 	rows.Close()
 
-	// Linked issues the actor can see, and which agents linked them.
 	links, err := s.prLinks(ctx, actor, ids)
 	if err != nil {
 		return err
@@ -480,7 +474,7 @@ func (s *Service) finishPRs(prs []*PRSummary) {
 type prLink struct {
 	prID  int64
 	issue PRIssue
-	agent string // the agent that linked it, if one did
+	agent string
 }
 
 // prLinks are the issues linked to the pull requests that the actor can
@@ -528,35 +522,64 @@ func prLinksSQL(actor *Actor, ids []any) (string, []any) {
 }
 
 // prMentions adds the issues the pull requests' text names but which aren't
-// linked to them (WP-379), as the actor can see them.
+// linked to them (WP-379), as the actor can see them. Each shows the verb of
+// the row the issue page's mention takes it from (mentionRank), but only a
+// trusted text's: the page doesn't say who wrote it, so an outside comment's
+// "fixes" would read as the pull request's own claim.
 func (s *Service) prMentions(ctx context.Context, actor *Actor, ids []any, byID map[int64]*PRSummary) error {
 	vis, vargs := visibleSQL("i.project_id", actor)
 	// #nosec G202 -- vis is a fixed condition and the rest placeholders; values are bound
-	rows, err := s.db.R.QueryContext(ctx, `SELECT p.id, i.id, pj.key || '-' || i.number, i.title, st.name, st.category, max(fm.verb)
+	rows, err := s.db.R.QueryContext(ctx, `SELECT p.id, i.id, pj.key || '-' || i.number, i.title, st.name, st.category, fm.verb, fm.excerpt
 		FROM pull_requests p
 		JOIN forge_mentions fm ON fm.item_url = p.url AND fm.gone_at IS NULL
 		JOIN issues i ON i.id = fm.issue_id JOIN projects pj ON pj.id = i.project_id JOIN statuses st ON st.id = i.status_id
 		WHERE p.id IN (`+idList(len(ids))+`) AND `+vis+` AND `+draftsHidden(actor, "i")+`
 		AND NOT EXISTS (SELECT 1 FROM external_links el WHERE el.issue_id = i.id AND el.kind = 'pull' AND (el.url = p.url OR (el.repo = p.repo COLLATE NOCASE AND el.number = p.number)))
-		GROUP BY p.id, i.id ORDER BY i.id`, append(slices.Clone(ids), vargs...)...)
+		ORDER BY i.id, fm.created_at DESC, fm.id DESC`, append(slices.Clone(ids), vargs...)...)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
+	type pi struct{ pr, issue int64 }
+	type pick struct {
+		pr      *PRSummary
+		at      int // index in pr.Mentions
+		rank    int
+		trusted bool
+	}
+	picked := map[pi]*pick{}
 	for rows.Next() {
 		var prID int64
 		var m PRIssue
-		if err := rows.Scan(&prID, &m.ID, &m.Key, &m.Title, &m.Status, &m.Category, &m.Verb); err != nil {
+		var excerpt string
+		if err := rows.Scan(&prID, &m.ID, &m.Key, &m.Title, &m.Status, &m.Category, &m.Verb, &excerpt); err != nil {
 			return err
 		}
-		if p := byID[prID]; p != nil {
-			p.Mentions = append(p.Mentions, m)
+		p := byID[prID]
+		if p == nil {
+			continue
+		}
+		k := pi{prID, m.ID}
+		r := mentionRank(ForgeMention{Verb: m.Verb, Excerpt: excerpt})
+		if c := picked[k]; c != nil {
+			if r > c.rank { // a tie keeps the newer, as forgeMentions does
+				c.pr.Mentions[c.at].Verb, c.rank, c.trusted = m.Verb, r, excerpt != ""
+			}
+			continue
+		}
+		picked[k] = &pick{pr: p, at: len(p.Mentions), rank: r, trusted: excerpt != ""}
+		p.Mentions = append(p.Mentions, m)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, c := range picked {
+		if !c.trusted {
+			c.pr.Mentions[c.at].Verb = ""
 		}
 	}
-	return rows.Err()
+	return nil
 }
-
-// ---- one pull request ----
 
 // PRTimelineItem is one thing in a pull request's story.
 type PRTimelineItem struct {
@@ -642,8 +665,6 @@ func (s *Service) GetPullRequest(ctx context.Context, actor *Actor, id int64) (*
 	if err != nil {
 		return nil, err
 	}
-	// What strangers wrote before WP-281 kept their words out of history
-	// stays out of an agent's sight.
 	var voice *prVoice
 	if actor.HidesDrafts() {
 		if pr, err := s.prByID(ctx, s.db.R, id); err == nil {

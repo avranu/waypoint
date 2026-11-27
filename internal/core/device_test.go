@@ -10,7 +10,6 @@ import (
 func TestDeviceLoginRaces(t *testing.T) {
 	e := newEnv(t)
 
-	// The per-address cap holds under a burst.
 	var ok atomic.Int32
 	var wg sync.WaitGroup
 	for range 40 {
@@ -27,7 +26,6 @@ func TestDeviceLoginRaces(t *testing.T) {
 		t.Errorf("%d logins started from one address, cap 5", ok.Load())
 	}
 
-	// Approved logins hand out one token, however many polls race.
 	d, err := e.s.StartDeviceLogin(e.ctx, "box", "anthropic/claude-opus-5-5", "198.51.100.1", "wp/test")
 	if err != nil {
 		t.Fatal(err)
@@ -35,7 +33,6 @@ func TestDeviceLoginRaces(t *testing.T) {
 	if tok, err := e.s.PollDeviceLogin(e.ctx, d.DeviceCode); tok != "" || err != nil {
 		t.Fatalf("pending poll = %q %v", tok, err)
 	}
-	// Approved near the end of the code's life, collected just after it.
 	e.setClock(e.clockNow().Add(DeviceLoginTTL - 30*time.Second))
 	if err := e.s.ApproveDeviceLogin(e.ctx, e.admin, d.UserCode); err != nil {
 		t.Fatal(err)
@@ -71,7 +68,6 @@ func TestDeviceLoginRaces(t *testing.T) {
 	if err != nil || a.Agent != "anthropic/claude-opus-5-5" || a.User.ID != e.admin.User.ID {
 		t.Fatalf("token actor = %+v %v", a, err)
 	}
-	// The person hears about it, even though they approved it.
 	list, _, err := e.s.ListNotifications(e.ctx, e.admin, false, 10)
 	if err != nil || len(list) == 0 || list[0].Kind != NotifyToken {
 		t.Errorf("notifications = %+v %v", list, err)
@@ -87,13 +83,13 @@ func TestUsageReportOnce(t *testing.T) {
 	if _, err := e.s.AgentNext(e.ctx, bot, AgentQuery{}); err != nil {
 		t.Fatal(err)
 	}
-	for range 3 { // a retry after a lost response, twice
+	for range 3 {
 		if err := e.s.AgentReportUsage(e.ctx, bot, i.Key, "", AgentUsage{InputTokens: 100, ReportID: "r1"}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	e.s.AgentReportUsage(e.ctx, bot, i.Key, "", AgentUsage{InputTokens: 5, ReportID: "r2"})
-	e.s.AgentReportUsage(e.ctx, bot, i.Key, "", AgentUsage{InputTokens: 1}) // no id: always counts
+	e.s.AgentReportUsage(e.ctx, bot, i.Key, "", AgentUsage{InputTokens: 1})
 	if runs := e.get(e.admin, i.Key).AgentRuns; len(runs) != 1 || runs[0].InputTokens != 106 {
 		t.Errorf("runs = %+v", runs)
 	}

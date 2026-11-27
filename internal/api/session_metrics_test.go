@@ -44,16 +44,12 @@ func TestUnregisteredSessionWriteIsCountedByTheAPI(t *testing.T) {
 	if code, b := c.do("GET", "/api/v1/projects", nil); code != 200 {
 		t.Fatalf("list: %d %s", code, b)
 	}
-	// a write that is refused stored nothing, so dropped nothing
 	if code, _ := c.do("POST", "/api/v1/projects", map[string]any{"name": "Widgets", "key": "WID"}); code < 400 {
 		t.Fatalf("a duplicate project was taken: %d", code)
 	}
-	// the wait hook's ask for outstanding work writes nothing without a
-	// session (WP-1571, audit #1344.15)
 	if code, b := c.do("POST", "/api/v1/sessions/outstanding", map[string]any{}); code != 200 {
 		t.Fatalf("outstanding: %d %s", code, b)
 	}
-	// nor does its word that it gave answers
 	if code, b := c.do("POST", "/api/v1/sessions/outstanding/told", map[string]any{"requests": []int64{1}}); code != 204 {
 		t.Fatalf("told: %d %s", code, b)
 	}

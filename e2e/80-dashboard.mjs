@@ -70,7 +70,6 @@ for (const [width, scheme] of looks([
     description: "Ask about winter berths before December.",
   });
 
-  // ---- a project's Overview ----
   await page.goto(`${base}/p/${KEY}`);
   await page.waitForURL(`${base}/p/${KEY}/overview`);
   const says = page.getByTestId("understanding");
@@ -88,7 +87,6 @@ for (const [width, scheme] of looks([
   await shot("overview");
   await overflow("the project Overview");
 
-  // One click files a task for an agent, once.
   await overdue.getByRole("button", { name: "Ask an agent", exact: true }).click();
   await page.getByText(/Filed DSH[A-D]-\d+ for an agent/).waitFor();
   const filed = overdue.getByRole("link", { name: /DSH[A-D]-\d+/ });
@@ -99,7 +97,6 @@ for (const [width, scheme] of looks([
   const again = await api("POST", `/projects/${KEY}/dashboard/fix`, { signal: "overdue" });
   ok(again.created === false && again.issue.key === fkey, `${tag} a second click finds the first task`);
 
-  // Details shows the query; a card hides and stays hidden.
   await page.getByRole("button", { name: "Details", exact: true }).click();
   ok(await overdue.getByText("is:overdue").isVisible(), `${tag} Details shows the query`);
   await page.getByRole("button", { name: "Hide details", exact: true }).click();
@@ -113,7 +110,6 @@ for (const [width, scheme] of looks([
   await page.getByRole("checkbox", { name: "Pace", exact: true }).check();
   await page.getByRole("button", { name: "Customize", exact: true }).click();
 
-  // ---- every project ----
   await page.goto(`${base}/overview`);
   const card = page.locator(`[data-project-card=${KEY}]`);
   await card.waitFor();
@@ -122,7 +118,6 @@ for (const [width, scheme] of looks([
   await shot("all-projects");
   await overflow("the all-projects Overview");
 
-  // ---- a task's Summary ----
   await page.evaluate(() => localStorage.setItem("wp:issue-tab", '"summary"'));
   await page.goto(`${base}/issue/${written.key}`);
   const summary = page.getByRole("region", { name: "Summary", exact: true });

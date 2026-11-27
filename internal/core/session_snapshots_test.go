@@ -277,7 +277,6 @@ func TestObservedLateEventsKeepTheTimelineStraight(t *testing.T) {
 	if got, want := line("late-1"), fmt.Sprintf("default<-<nil>@0 plan<-default@%d", t2-t1); got != want {
 		t.Errorf("late predecessor: %q, want %q", got, want)
 	}
-	// a late duplicate of the successor's value collapses to one row
 	send("late-2", t3, "plan")
 	send("late-2", t1, "default")
 	send("late-2", t2, "plan")
@@ -305,7 +304,6 @@ func TestPostModelSwitchStoresFromAndRequestedModel(t *testing.T) {
 	if d["from_model"] != "sonnet" || d["requested_model"] == "" || len([]rune(d["requested_model"])) > 1001 {
 		t.Errorf("detail = %v", d)
 	}
-	// only keys that are there
 	if _, err := e.s.SessionHook(e.ctx, e.admin, []HookEvent{hook("box", "sw-1", "PostModelSwitch", func(ev *HookEvent) {
 		ev.Model = "haiku"
 	})}); err != nil {

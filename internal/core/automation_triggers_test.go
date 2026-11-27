@@ -24,7 +24,7 @@ func TestCronParsingAndNextRuns(t *testing.T) {
 		}
 	}
 	london, _ := time.LoadLocation("Europe/London")
-	from := time.Date(2026, 10, 9, 10, 0, 0, 0, london) // a Friday
+	from := time.Date(2026, 10, 9, 10, 0, 0, 0, london)
 	weekday, _ := ParseCron("0 9 * * 1-5")
 	var got []string
 	at := from
@@ -38,8 +38,6 @@ func TestCronParsingAndNextRuns(t *testing.T) {
 	if n, _ := ParseCron("*/20 * * * *"); n.Next(time.Date(2026, 10, 9, 10, 20, 0, 0, time.UTC)).Format("15:04") != "10:40" {
 		t.Error("Next returned the time given, not the one after it")
 	}
-	// Day of month and day of week together mean either (Friday the 13th is
-	// every Friday and every 13th).
 	either, _ := ParseCron("0 0 13 * 5")
 	if n := either.Next(time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)); n.Day() != 13 || n.Weekday() == time.Friday && n.Day() != 16 && n.Day() != 13 {
 		t.Errorf("either = %v", n)
@@ -52,7 +50,6 @@ func TestCronParsingAndNextRuns(t *testing.T) {
 	if n := sunday.Next(from); n.Weekday() != time.Sunday {
 		t.Errorf("7 isn't Sunday: %v", n.Weekday())
 	}
-	// The endpoint's helper: five runs in a zone.
 	e := newEnv(t)
 	runs, err := e.s.NextCronRuns("0 9 * * 1-5", "America/New_York", 5)
 	if err != nil || len(runs) != 5 {
@@ -77,7 +74,6 @@ func TestCronSchedulesFire(t *testing.T) {
 	a := e.addAuto(p, "Standup", Rule{Trigger: Trigger{Event: "schedule", Every: "cron", Extra: map[string]any{"cron": "30 14 * * 1-5"}}, TimeZone: "America/New_York",
 		Actions: []Action{{Type: "create_issue", Title: "Standup {{.Date}}"}}})
 	count := func() int { return len(e.search(e.admin, "title:Standup")) }
-	// 14:30 in New York (EDT) is 18:30 UTC.
 	e.setClock(time.Date(2026, 10, 5, 18, 29, 0, 0, time.UTC))
 	e.s.RunTimedAutomations(e.ctx)
 	if count() != 0 {
@@ -94,9 +90,9 @@ func TestCronSchedulesFire(t *testing.T) {
 	if count() != 1 {
 		t.Error("fired twice for one occurrence")
 	}
-	e.setClock(time.Date(2026, 10, 5, 19, 5, 0, 0, time.UTC)) // a late scheduler doesn't catch up hours later
+	e.setClock(time.Date(2026, 10, 5, 19, 5, 0, 0, time.UTC))
 	e.s.RunTimedAutomations(e.ctx)
-	e.setClock(time.Date(2026, 10, 10, 18, 32, 0, 0, time.UTC)) // Saturday
+	e.setClock(time.Date(2026, 10, 10, 18, 32, 0, 0, time.UTC))
 	e.s.RunTimedAutomations(e.ctx)
 	if count() != 1 {
 		t.Error("fired on a weekend")
@@ -110,7 +106,6 @@ func TestCronSchedulesFire(t *testing.T) {
 	if len(runs) != 2 || runs[0].Via != "schedule" {
 		t.Errorf("runs = %+v", runs)
 	}
-	// An hourly cron fires once an hour, and with an issue query once per issue.
 	e.setClock(time.Date(2026, 10, 7, 9, 0, 0, 0, time.UTC))
 	i := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Hourly", Labels: []string{"watch"}})
 	e.addAuto(p, "Hourly", Rule{Trigger: Trigger{Event: "schedule", Every: "cron", Extra: map[string]any{"cron": "0 * * * *"}}, If: "label:watch",
@@ -131,7 +126,7 @@ func TestCountThresholdFiresOnCrossing(t *testing.T) {
 		Actions: []Action{{Type: "notify", User: "admins", Message: "{{.Trigger.Data.count}} open bugs (limit {{.Trigger.Data.n}})"}}})
 	bug := func() *IssueDetail { return e.issue(e.admin, IssueInput{Project: p.Key, Type: "bug", Title: "b"}) }
 	check := func() { e.setClock(e.clockNow().Add(5 * time.Minute)); e.s.RunTimedAutomations(e.ctx) }
-	check() // the first look only records where things stand
+	check()
 	bug()
 	bug()
 	check()
@@ -157,7 +152,6 @@ func TestCountThresholdFiresOnCrossing(t *testing.T) {
 	if len(ns) == 0 || ns[0].Body != "3 open bugs (limit 3)" {
 		t.Errorf("notification = %+v", ns)
 	}
-	// Fixing bugs brings it under; crossing again fires again.
 	for _, k := range e.search(e.admin, "type:bug") {
 		if _, err := e.s.Transition(e.ctx, e.admin, k, "done", ""); err != nil {
 			t.Fatal(err)
@@ -173,7 +167,6 @@ func TestCountThresholdFiresOnCrossing(t *testing.T) {
 		t.Errorf("%d runs after the second crossing", len(e.runs(a)))
 	}
 
-	// "At most": fires when the count falls to the limit.
 	b := e.addAuto(p, "Queue empty", Rule{Trigger: Trigger{Event: "count_crossed", Extra: map[string]any{"query": "is:open", "op": "<=", "n": 0}},
 		Actions: []Action{{Type: "notify", User: "admins", Message: "empty"}}})
 	check()
@@ -195,7 +188,7 @@ func TestCountThresholdChecksAfterIssueChanges(t *testing.T) {
 	p := e.project(e.admin, "Debounce", "")
 	a := e.addAuto(p, "Two issues", Rule{Trigger: Trigger{Event: "count_crossed", Extra: map[string]any{"query": "is:open", "op": ">=", "n": 2}},
 		Actions: []Action{{Type: "notify", User: "admins", Message: "two"}}})
-	e.s.RunTimedAutomations(e.ctx) // baseline
+	e.s.RunTimedAutomations(e.ctx)
 	e.issue(e.admin, IssueInput{Project: p.Key, Title: "1"})
 	e.issue(e.admin, IssueInput{Project: p.Key, Title: "2"})
 	deadline := time.Now().Add(5 * time.Second)
@@ -244,7 +237,6 @@ func TestWebhookTrigger(t *testing.T) {
 		t.Errorf("via = %s", run.Via)
 	}
 	got := e.run(run.ID)
-	// The second step has no issue to comment on, so it fails; the first did its work.
 	if got.Status != RunFailed || stepByID(got, "mk").Status != "succeeded" {
 		t.Errorf("run = %s %q steps %+v", got.Status, got.Error, got.Steps)
 	}
@@ -256,7 +248,6 @@ func TestWebhookTrigger(t *testing.T) {
 	if got.Event == nil || got.Event.Data["title"] != "Disk alert" {
 		t.Errorf("event = %+v", got.Event)
 	}
-	// Non-JSON bodies arrive as text; JSON arrays under "body".
 	b := e.addAuto(p, "Plain", Rule{Trigger: Trigger{Event: "webhook"}, Actions: []Action{{Type: "create_issue", Title: "{{.Trigger.Data.body}}"}}})
 	tb := b.HookURL[strings.LastIndex(b.HookURL, "/")+1:]
 	if _, err := e.s.RunAutomationWebhook(e.ctx, tb, []byte("hello there"), ""); err != nil {
@@ -265,7 +256,6 @@ func TestWebhookTrigger(t *testing.T) {
 	if len(e.search(e.admin, "title:hello")) != 1 {
 		t.Error("a text body wasn't available as .Trigger.Data.body")
 	}
-	// Off, or edited to another trigger: the address stops working.
 	off := false
 	if _, err := e.s.UpdateAutomation(e.ctx, e.admin, b.ID, AutomationInput{Enabled: &off}); err != nil {
 		t.Fatal(err)
@@ -281,7 +271,6 @@ func TestWebhookTrigger(t *testing.T) {
 	if _, err := e.s.RunAutomationWebhook(e.ctx, tb, []byte("x"), ""); !errors.Is(err, ErrNoHook) {
 		t.Errorf("no longer a webhook: %v", err)
 	}
-	// A new address replaces the old one.
 	fresh, err := e.s.RegenerateAutomationHook(e.ctx, e.admin, a.ID)
 	if err != nil || fresh.HookURL == a.HookURL {
 		t.Fatalf("regenerate: %v %v", fresh, err)
@@ -289,7 +278,6 @@ func TestWebhookTrigger(t *testing.T) {
 	if _, err := e.s.RunAutomationWebhook(e.ctx, token, body, sign(body, "s3cret")); !errors.Is(err, ErrNoHook) {
 		t.Errorf("the old address still works: %v", err)
 	}
-	// Only owners see the address and the secret.
 	vic := e.user("vic", false)
 	e.s.SetMember(e.ctx, e.admin, p.Key, "vic", "viewer")
 	list, _ := e.s.ListAutomations(e.ctx, vic, p.Key)
@@ -340,7 +328,6 @@ func TestAdminAutomationsSeeEveryProject(t *testing.T) {
 	if !strings.Contains(detail.Summary, "created") {
 		t.Errorf("summary = %q", detail.Summary)
 	}
-	// Admins only: listing, reading, editing, deleting, running.
 	if _, err := e.s.ListAdminAutomations(e.ctx, sam); err == nil {
 		t.Error("a non-admin listed admin automations")
 	}
@@ -365,7 +352,6 @@ func TestAdminAutomationsSeeEveryProject(t *testing.T) {
 	if _, err := e.s.GetAutomationRun(e.ctx, sam, gr[0].ID); err == nil {
 		t.Error("a non-admin read an admin automation's run")
 	}
-	// A project automation can't use system triggers; an admin one can.
 	sys := Rule{Trigger: Trigger{Event: "system_resources", Extra: map[string]any{"resource": "disk"}}, Actions: []Action{{Type: "notify", User: "admins", Message: "{{.Trigger.Data.text}}"}}}
 	if _, err := e.s.CreateAutomation(e.ctx, e.admin, one.Key, AutomationInput{Rule: &sys}); err == nil {
 		t.Error("a project automation took a system trigger")
@@ -374,18 +360,16 @@ func TestAdminAutomationsSeeEveryProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Deleting works for admins.
 	if err := e.s.DeleteAutomation(e.ctx, e.admin, global.ID); err != nil {
 		t.Errorf("admin delete: %v", err)
 	}
 
-	// Low resources fire once on crossing, and not again within the hour.
 	disk := ResourceStatus{Resource: "disk", Label: "Free disk space", Bytes: 200 << 20, LimitMB: 1024, Low: true}
 	ok := disk
 	ok.Low = false
 	e.s.noteResource(e.ctx, ok)
 	e.s.noteResource(e.ctx, disk)
-	e.s.noteResource(e.ctx, disk) // still low: not again
+	e.s.noteResource(e.ctx, disk)
 	if n := len(runsOf(t, e, low)); n != 1 {
 		t.Fatalf("%d runs on crossing", n)
 	}
@@ -395,7 +379,7 @@ func TestAdminAutomationsSeeEveryProject(t *testing.T) {
 	}
 	e.s.noteResource(e.ctx, ok)
 	e.setClock(e.clockNow().Add(30 * time.Minute))
-	e.s.noteResource(e.ctx, disk) // flapped back within the hour
+	e.s.noteResource(e.ctx, disk)
 	if len(runsOf(t, e, low)) != 1 {
 		t.Error("fired twice within the hour")
 	}
@@ -405,12 +389,10 @@ func TestAdminAutomationsSeeEveryProject(t *testing.T) {
 	if len(runsOf(t, e, low)) != 2 {
 		t.Errorf("%d runs after the hour", len(runsOf(t, e, low)))
 	}
-	// Other resources are filtered out by the trigger.
 	e.s.noteResource(e.ctx, ResourceStatus{Resource: "memory", Label: "Free memory", Bytes: 1 << 20, LimitMB: 256, Low: true})
 	if len(runsOf(t, e, low)) != 2 {
 		t.Error("a memory warning ran the disk automation")
 	}
-	// Readings and limits.
 	if st, err := e.s.ResourceStatuses(e.ctx, e.admin); err != nil || len(st) < 2 {
 		t.Errorf("statuses = %v %v", st, err)
 	}
@@ -489,7 +471,6 @@ func TestManualRunsAndWhoMayStartThem(t *testing.T) {
 	if _, err := run(&Actor{User: sam.User, ReadOnly: true}, map[string]any{"topic": "x"}); err == nil {
 		t.Error("a read-only token ran it")
 	}
-	// Inputs are checked.
 	for name, in := range map[string]map[string]any{
 		"missing":  {},
 		"unknown":  {"topic": "x", "nope": 1},
@@ -515,7 +496,6 @@ func TestManualRunsAndWhoMayStartThem(t *testing.T) {
 		t.Errorf("recorded inputs = %+v", got.Inputs)
 	}
 
-	// Agents may only run automations that allow it.
 	agent := &Actor{User: sam.User, Agent: "anthropic/claude-opus-5-5"}
 	if _, err := run(agent, map[string]any{"topic": "agent"}); err == nil || !errors.Is(err, ErrForbidden) && !strings.Contains(err.Error(), "agent") {
 		t.Errorf("an agent ran an automation that didn't allow it: %v", err)
@@ -538,12 +518,10 @@ func TestManualRunsAndWhoMayStartThem(t *testing.T) {
 	if keys := e.search(e.admin, "title:Agent"); len(keys) != 1 || !strings.HasSuffix(e.get(e.admin, keys[0]).Title, "/ agent") {
 		t.Errorf("agent run's trigger.by = %v", keys)
 	}
-	// Agents can't start it the other ways either, nor repeat its events.
 	if _, err := e.s.UpdateAutomation(e.ctx, agent, a.ID, AutomationInput{Enabled: ptr(false)}); err != nil {
-		t.Logf("agent (as owner's token) edit: %v", err) // project settings rules are unchanged by this slice
+		t.Logf("agent (as owner's token) edit: %v", err)
 	}
 
-	// Off, or without a manual trigger: it can't be run.
 	off := false
 	e.s.UpdateAutomation(e.ctx, e.admin, a.ID, AutomationInput{Enabled: &off})
 	if _, err := run(sam, map[string]any{"topic": "x"}); !IsInvalid(err) {
@@ -553,26 +531,22 @@ func TestManualRunsAndWhoMayStartThem(t *testing.T) {
 	if _, err := e.s.RunAutomationNow(e.ctx, sam, created.ID, nil, "api"); !IsInvalid(err) {
 		t.Errorf("no manual trigger: %v", err)
 	}
-	// Run again repeats a manual run's inputs.
 	e.s.UpdateAutomation(e.ctx, e.admin, a.ID, AutomationInput{Enabled: ptr(true)})
 	again, err := e.s.RerunAutomation(e.ctx, sam, r.ID)
 	if err != nil || again.Inputs["topic"] != "Launch" {
 		t.Errorf("rerun: %+v %v", again, err)
 	}
-	// Runs are for editors and up.
 	if _, err := e.s.ListAutomationRuns(e.ctx, vic, a.ID, 10, 0); err == nil {
 		t.Error("a viewer listed runs")
 	}
 	if list, err := e.s.ListAutomationRuns(e.ctx, sam, a.ID, 10, 0); err != nil || len(list) < 3 {
 		t.Errorf("an editor's runs = %d %v", len(list), err)
 	}
-	// Paging.
 	all := e.runs(a)
 	page, _ := e.s.ListAutomationRuns(e.ctx, e.admin, a.ID, 2, all[1].ID)
 	if len(page) == 0 || page[0].ID >= all[1].ID {
 		t.Errorf("page = %+v", page)
 	}
-	// An editor sees runs without credentials in the rule.
 	hook := e.addAuto(p, "Secrets", Rule{Trigger: Trigger{Event: "manual"}, Actions: []Action{{Type: "gotify", URL: "https://gotify.example.com/path", Token: "tok123", Message: "hi"}}})
 	hr := e.manual(hook, nil)
 	if got, _ := e.s.GetAutomationRun(e.ctx, sam, hr.ID); got.Rule.Actions[0].Token != "" || strings.Contains(got.Rule.Actions[0].URL, "path") {
@@ -598,7 +572,6 @@ func TestDryRunTest(t *testing.T) {
 		{Type: "add_label", ID: "l", Value: "shipped", OnlyIf: "{{.Steps.c.OK}}"},
 		{Type: "add_label", ID: "n", Value: "never", OnlyIf: "{{.Steps.c.Failed}}"},
 	}})
-	// No matching event yet: sample data stands in, and says so.
 	res, err := e.s.TestAutomation(e.ctx, e.admin, a.ID, TestInput{})
 	if err != nil {
 		t.Fatal(err)
@@ -633,7 +606,6 @@ func TestDryRunTest(t *testing.T) {
 	if m := res.Steps[2]; !strings.Contains(m.Log, "Would ask a model: Summarise Crash on save") || !strings.Contains(m.Log, "not run in a test") {
 		t.Errorf("model step log = %q", m.Log)
 	}
-	// Nothing happened: no comment, no label, no run recorded.
 	if after := e.commentBodies(bug.Key); len(after) != len(before) {
 		t.Errorf("the test commented: %q", after)
 	}
@@ -645,7 +617,6 @@ func TestDryRunTest(t *testing.T) {
 			t.Error("a test was recorded as a run")
 		}
 	}
-	// A step that can't work says so.
 	bad := e.addAuto(p, "Bad template", Rule{Trigger: Trigger{Event: "manual"}, Actions: []Action{{Type: "comment", Message: "{{.Nope.Deeper}}"}, {Type: "comment", Message: "x"}}})
 	br, err := e.s.TestAutomation(e.ctx, e.admin, bad.ID, TestInput{})
 	if err != nil {
@@ -654,13 +625,11 @@ func TestDryRunTest(t *testing.T) {
 	if br.Error == "" {
 		t.Logf("steps: %+v", br.Steps)
 	}
-	// Webhook tests take sample data.
 	hook := e.addAuto(p, "Hook", Rule{Trigger: Trigger{Event: "webhook"}, Actions: []Action{{Type: "notify", User: "admins", Message: "got {{.Trigger.Data.name}}"}}})
 	hr, err := e.s.TestAutomation(e.ctx, e.admin, hook.ID, TestInput{Data: map[string]any{"name": "Ada"}})
 	if err != nil || len(hr.Steps) != 1 || hr.Steps[0].Inputs["message"] != "got Ada" {
 		t.Errorf("webhook test = %+v %v", hr, err)
 	}
-	// Owners only.
 	sam := e.user("sam", false)
 	e.s.SetMember(e.ctx, e.admin, p.Key, "sam", "editor")
 	if _, err := e.s.TestAutomation(e.ctx, sam, a.ID, TestInput{}); err == nil {
@@ -669,7 +638,6 @@ func TestDryRunTest(t *testing.T) {
 }
 
 func TestDispatchOnlyTouchesInterestedAutomations(t *testing.T) {
-	// A disabled automation doesn't run; a deleted one takes its runs along.
 	e := newEnv(t)
 	p := e.project(e.admin, "Quiet", "")
 	a := e.addAuto(p, "Off", Rule{Trigger: Trigger{Event: "created"}, Actions: []Action{{Type: "add_label", Value: "x"}}})
