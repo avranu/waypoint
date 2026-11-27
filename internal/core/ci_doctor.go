@@ -183,21 +183,23 @@ type CILine struct {
 type CIStackStats struct {
 	Tried     int    `json:"tried"`
 	Running   int    `json:"running"`
-	Passed    int    `json:"passed"` // passed, marked ready on it, or merged on it
+	Passed    int    `json:"passed"` // passed, marked ready on it, or merged (on it, or its heads on their own)
 	Failed    int    `json:"failed"`
 	Conflicts int    `json:"conflicts"` // its head didn't merge onto the ones before it (WP-535)
 	Cancelled int    `json:"cancelled"` // ended with no verdict on its heads: the base or the line moved, the base is red, its run never came
 	LastFail  string `json:"last_fail,omitempty"`
 	LastRun   string `json:"last_run,omitempty"` // the run of the latest that failed
 	// Reasons counts the ended ones by end_reason; rows from before
-	// migration 0187 have none and are left out (WP-1707).
+	// 0187_merge_line_candidates.sql have none and are left out (WP-1707).
 	Reasons map[string]int `json:"reasons,omitempty"`
 	// FailedBy and CancelledBy are Reasons of the failed and of the
 	// cancelled ones alone: what StackFates prints.
 	FailedBy    map[string]int `json:"failed_by,omitempty"`
 	CancelledBy map[string]int `json:"cancelled_by,omitempty"`
 	// Reran: those whose failed jobs were run again; RerunPassed: those of
-	// them that then passed, so the re-run saved the candidate.
+	// them whose own run then passed (passed, ready, or merged on it), so
+	// the re-run saved the candidate. One ended merged because its heads
+	// merged on their own is not one: its run never went green.
 	Reran       int `json:"reran,omitempty"`
 	RerunPassed int `json:"rerun_passed,omitempty"`
 	// PausedUntil: the line builds no candidates until then (lineFallbackUntil).
@@ -788,7 +790,7 @@ func (s *Service) lineStacks(ctx context.Context, ref lineRef, since time.Time) 
 		switch {
 		case state == stackPassed || state == stackReady || state == stackMerged:
 			st.Passed++
-			if reran {
+			if reran && (state != stackMerged || strings.HasPrefix(note, ciLineMergedPrefix)) {
 				st.RerunPassed++
 			}
 		case !ended:
@@ -824,7 +826,24 @@ func stacksPausedNote(until, now time.Time) string {
 // stacksFailing: enough of a line's stacks ended on a failure or conflict
 // and none passed, so stacking buys it nothing.
 func stacksFailing(st CIStackStats) bool {
-	return st.Passed == 0 && st.Failed+st.Conflicts >= doctorStacksFailing
+	return st.Passed == 0 && stacksBad(st) >= doctorStacksFailing
+}
+
+// baseRedSays counts a line's candidates that ended base_red.
+func baseRedSays(n int, base string) string {
+	return fmt.Sprintf("%d candidate%s started in the last %s ended because %s was red, a full run each",
+		n, plural(n), ShortDuration(doctorTrend), base)
+}
+
+// stacksBad is what stacksFailing counts: the candidates that failed or
+// conflicted. The cancelled ones had no verdict on their heads.
+func stacksBad(st CIStackStats) int { return st.Failed + st.Conflicts }
+
+// stacksFailingSays is the stacks_failing title's and the bottleneck
+// evidence's count, in one place so both say what the trigger counts.
+func stacksFailingSays(st CIStackStats) string {
+	return fmt.Sprintf("%d candidates failed or conflicted and none passed in the last %s: %s",
+		stacksBad(st), ShortDuration(doctorTrend), StackFates(st))
 }
 
 // mergeHolds is what held a merge between green and its merge: each hold
@@ -1862,8 +1881,7 @@ func doctorFindings(d *CIDoctor, b *CIBoard, now time.Time, extra ...CIFinding) 
 		}
 		if st := l.Stacks; stacksFailing(st) {
 			f := CIFinding{Level: "warn", Kind: "stacks_failing", Repo: l.Repo,
-				Title: fmt.Sprintf("%s: %d candidates failed or conflicted and none passed in the last %s (%s); the line merges one full run at a time",
-					where, st.Failed+st.Conflicts, ShortDuration(doctorTrend), StackFates(st)),
+				Title:  fmt.Sprintf("%s: %s; the line merges one full run at a time", where, stacksFailingSays(st)),
 				Detail: "A candidate is built from the base and the first places of the merge line and gets a full run, so the front can merge on it; when they all fail, each costs a full run of runners and saves no time.",
 				URL:    st.LastRun}
 			if st.LastFail != "" {
@@ -1885,6 +1903,7 @@ func doctorFindings(d *CIDoctor, b *CIBoard, now time.Time, extra ...CIFinding) 
 				Detail: stacksPausedNote(*st.PausedUntil, now), URL: st.LastRun})
 		}
 	}
+	told := map[int]bool{} // the lines whose base_red count a main_red carries
 	for _, m := range d.Mains {
 		if m.OnlyAdvisories || m.SchedAdvRun != 0 {
 			run, url, found := m.Run, m.URL, ""
@@ -1904,10 +1923,10 @@ func doctorFindings(d *CIDoctor, b *CIBoard, now time.Time, extra ...CIFinding) 
 			// What it cost the merge line: candidates that failed only
 			// what the base fails (WP-1707). Not a finding of its own:
 			// the cause and what to do are this one's.
-			for _, l := range d.Lines {
+			for i, l := range d.Lines {
 				if n := l.Stacks.Reasons[endBaseRed]; n > 0 && l.ForgeID == m.ForgeID && strings.EqualFold(l.Repo, m.Repo) && l.Base == m.Branch {
-					detail += fmt.Sprintf("\nMerge line: %d candidate%s started in the last %s ended because %s was red, a full run each.",
-						n, plural(n), ShortDuration(doctorTrend), m.Branch)
+					detail += "\nMerge line: " + baseRedSays(n, m.Branch) + "."
+					told[i] = true
 					break
 				}
 			}
@@ -1915,6 +1934,18 @@ func doctorFindings(d *CIDoctor, b *CIBoard, now time.Time, extra ...CIFinding) 
 				Title:  fmt.Sprintf("%s %s's latest push run #%d (%s) ended %s %s ago", m.Repo, m.Branch, m.Run, short(m.SHA), m.Status, ShortDuration(now.Sub(m.At))),
 				Detail: detail,
 				Next:   fmt.Sprintf("wp ci log --repo %s --run %d", m.Repo, m.Run), URL: m.URL})
+		}
+	}
+	// Ends on a red base that no red main above carries: its latest push run
+	// is green again, or another run's job on the tip failed. The cost is
+	// still the line's, so it stays in the findings for the window (audit
+	// 1670.5, 1670.22).
+	for i, l := range d.Lines {
+		if n := l.Stacks.Reasons[endBaseRed]; n >= doctorStacksFailing && !told[i] {
+			add(CIFinding{Level: "info", Kind: "stacks_base_red", Repo: l.Repo,
+				Title:  fmt.Sprintf("%s %s: %s", l.Repo, l.Base, baseRedSays(n, l.Base)),
+				Detail: fmt.Sprintf("Each failed only what %s's tip failed: a full run of runners that said nothing about its heads.", l.Base),
+			})
 		}
 	}
 	for _, j := range d.Jobs {
@@ -2080,8 +2111,7 @@ func doctorBottleneck(d *CIDoctor) {
 		}
 	}
 	if st := worst.Stacks; stacksFailing(st) {
-		bn.Evidence = append(bn.Evidence, fmt.Sprintf("its stacks don't help: %d candidates failed or conflicted and none passed in the last %s (%s)",
-			st.Failed+st.Conflicts, ShortDuration(doctorTrend), StackFates(st)))
+		bn.Evidence = append(bn.Evidence, "its stacks don't help: "+stacksFailingSays(st))
 	}
 	bn.Evidence = append(bn.Evidence, fmt.Sprintf("the runners are not it: %.0f%% busy over the last 3h, typical wait %s", p.Busy3h*100, dur(p.WaitP50_3h)))
 	bn.Summary = head
