@@ -116,7 +116,7 @@ func (s *Service) weekReading(ctx context.Context, uid int64, now time.Time) (*w
 		}
 	}
 	// Too few readings for a slope: the week's recent rate.
-	if rate, watched := quota.Rate([]*quota.Line{l}, l.SeenAt, quotaSpans[0].halfLife); watched >= spendSlopeMin {
+	if rate, span := quota.Rate([]*quota.Line{l}, l.SeenAt, quotaSpans[0].halfLife); span >= spendSlopeMin {
 		r.perHour = ptrOf(rate * float64(time.Hour.Milliseconds()))
 	}
 	return r, nil

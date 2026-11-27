@@ -296,7 +296,9 @@ func LinesFrom(readings []Reading, length time.Duration) []*Line {
 // and the time after the last reading counts as unused. Time at the limit
 // counts for neither: between two readings there, from a window's last such
 // reading to its end, and from one before a reset to the first reading after
-// it. span is how long the lines had watched.
+// it. span is the time from the first line's start to to, unweighted and with
+// the time at the limit in it: how far back the rate can see, so an earlier
+// window gives one that has only just begun something to go by.
 func Rate(lines []*Line, to int64, halfLife time.Duration) (rate float64, span time.Duration) {
 	if len(lines) == 0 || to <= lines[0].Start {
 		return 0, 0

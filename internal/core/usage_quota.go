@@ -72,8 +72,8 @@ func quotaPace(now, sampledAt time.Time, lines []*quota.Line, halfLife time.Dura
 	if pct >= 100 {
 		return "at_limit", pct, &sampledAt, even
 	}
-	rate, watched := quota.Rate(lines, sampledAt.UnixMilli(), halfLife)
-	if watched < time.Duration(l.Reset-l.Start)*time.Millisecond/20 {
+	rate, span := quota.Rate(lines, sampledAt.UnixMilli(), halfLife)
+	if span < time.Duration(l.Reset-l.Start)*time.Millisecond/20 {
 		return "too_early", pct, nil, even
 	}
 	projected = pct + rate*float64(l.Reset-sampledAt.UnixMilli())
