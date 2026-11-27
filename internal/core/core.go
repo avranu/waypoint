@@ -59,11 +59,11 @@ type Config struct {
 	MeaningURL, MeaningToken string
 }
 
-// Service is the domain API.
 // emailService is the email domain's operations; Service embeds it, so their
 // methods are the facade's.
 type emailService = email.Service
 
+// Service is the domain API.
 type Service struct {
 	*emailService
 
