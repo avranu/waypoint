@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -158,6 +159,43 @@ func TestEveryCoreFileIsPlaced(t *testing.T) {
 	}
 	if len(missing) > 0 {
 		t.Errorf("files matching no line of internal/coremap/groups.txt (place them; see its header): %s", strings.Join(missing, " "))
+	}
+}
+
+// A file no line matches that the stem rule puts in a listed group, the kernel
+// among them, is named in the summary; Unplaced cannot show it.
+func TestStemPlacedFilesAreNamed(t *testing.T) {
+	dir := module(t, map[string]string{
+		"core.go":         "package m\n",
+		"kernel_extra.go": "package m\n",
+		"pr.go":           "package m\n",
+		"pr_open.go":      "package m\n",
+		"other.go":        "package m\n",
+	})
+	g, err := ParseGroups(strings.NewReader("kernel: core.go\npr: pr_*.go\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for perFile, want := range map[bool][]string{
+		false: {"kernel_extra.go", "pr.go"},
+		true:  {"kernel_extra.go"},
+	} {
+		g.PerFile = perFile
+		ld, err := Load(dir, g, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := Analyze(ld, g)
+		for _, r := range []Report{a.Report(0), a.SuggestOrder().Report(0)} {
+			if got := r.Summary.StemPlaced; !slices.Equal(got, want) {
+				t.Errorf("per file %v: stem placed %v, want %v", perFile, got, want)
+			}
+		}
+		var out strings.Builder
+		WriteReport(&out, a.Report(0))
+		if line := "by their stem (" + strconv.Itoa(len(want)) + "): " + strings.Join(want, " "); !strings.Contains(out.String(), line) {
+			t.Errorf("report lacks %q:\n%s", line, out.String())
+		}
 	}
 }
 
