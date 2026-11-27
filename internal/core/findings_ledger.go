@@ -660,30 +660,12 @@ type coverMemo struct {
 	refs  map[string]bool
 }
 
-// coverCloses says whether closeCovered may close the comment it that the
-// ledger entry e finds covered. What it repeats (one of originals) has to be
-// fixed: a rejected point has no fix to cover it. A comment not written before
-// the covering round began, which that round never saw, also has to say the
-// very same thing: a likeness of a few words may be another point. What isn't
-// closed stays for a round to judge.
-func coverCloses(it ledgerItem, e LedgerEntry, originals []ledgerItem, rounds []BabysitRound) bool {
-	i := slices.IndexFunc(originals, func(p ledgerItem) bool { return p.ID == e.Of })
-	if i < 0 || !originals[i].Fixed {
-		return false
-	}
-	if slices.ContainsFunc(rounds, func(r BabysitRound) bool { return r.N == e.Round && !it.At.IsZero() && it.At.Before(r.At) }) {
-		return true
-	}
-	return e.Gist != "" && gistOf(originals[i].Body) == e.Gist
-}
-
 // closeCovered closes the open bot comments a round's fix already covers:
 // ones written about a head from before that fix, which the ledger would not
-// take for the fix not holding (coveredByFix, WP-1853), where coverCloses
-// agrees. They are marked fixed by the fix's commit, as the duplicate that
-// round was given is, so no round is spent on them and none parks on "came
-// back". A person's comment is never closed this way. It changes nothing
-// before a round has pushed.
+// take for the fix not holding (coveredByFix, WP-1853). They are marked fixed
+// by the fix's commit, as the duplicate that round was given is, so no round
+// is spent on them and none parks on "came back". A person's comment is never
+// closed this way. It changes nothing before a round has pushed.
 func (s *Service) closeCovered(ctx context.Context, b *Babysit, pr *PullRequest, comments []*PRReviewComment) {
 	if !slices.ContainsFunc(b.Rounds, func(r BabysitRound) bool { return r.Pushed }) {
 		return
@@ -740,16 +722,12 @@ func (s *Service) closeCovered(ctx context.Context, b *Babysit, pr *PullRequest,
 	for _, rc := range open {
 		memo.refs[rc.Ref] = true
 	}
-	var originals []ledgerItem
 	for _, e := range entries {
 		if e.Covered == "" {
 			continue
 		}
-		if originals == nil {
-			originals = append(s.earlierFindings(ctx, pr.ID, nil), in.Earlier...)
-		}
 		for _, rc := range open {
-			if rc.Ref != e.ID || !coverCloses(commentItem(rc), e, originals, b.Rounds) {
+			if rc.Ref != e.ID {
 				continue
 			}
 			note := fmt.Sprintf("Written about %s, before round %d's fix (%s), which covers it as it does %s. (Closed by Waypoint; reopen it if the fix leaves this standing.)",

@@ -320,7 +320,7 @@ func coverEnv(t *testing.T, author2, body2 string) (*bsEnv, *PullRequest, *Babys
 	pr := be.open()
 	be.start(pr)
 	old := be.comment("501")
-	if _, err := be.s.FixedReviewComments(be.ctx, be.agent, FixedInput{IDs: []string{old.Ref}}); err != nil {
+	if _, err := be.s.AckReviewComments(be.ctx, be.agent, AckInput{IDs: []string{old.Ref}, Verdict: VerdictRejected, Note: "It builds; the claim doesn't hold."}); err != nil {
 		t.Fatal(err)
 	}
 	be.s.Wait()
@@ -395,48 +395,6 @@ func TestCloseCoveredLooksOncePerHead(t *testing.T) {
 	be.s.closeCovered(be.ctx, b, pr, be.comments())
 	if failed == 0 || fc.n == failed {
 		t.Errorf("a failed read was remembered: %d then %d", failed, fc.n)
-	}
-}
-
-// A rejected point has no fix to cover its duplicate, and a comment the
-// covering round never saw is closed only when it says the very same thing.
-func TestCoverCloses(t *testing.T) {
-	rounds := []BabysitRound{{N: 1, At: t0, Pushed: true}}
-	body := "Authenticate the relay before parsing the header of each request"
-	original := ledgerItem{ID: "c1", Kind: "comment", Body: body, Dealt: true, Fixed: true}
-	e := func(said string) LedgerEntry { return LedgerEntry{Of: "c1", Round: 1, Gist: gistOf(said)} }
-	before := ledgerItem{ID: "c2", At: t0.Add(-time.Minute)}
-	after := ledgerItem{ID: "c2", At: t0.Add(time.Minute)}
-	alike := "Bound the relay header size before parsing it"
-	for _, c := range []struct {
-		name     string
-		it       ledgerItem
-		said     string
-		original ledgerItem
-		want     bool
-	}{
-		{"alike, written before the round", before, alike, original, true},
-		{"the same words, written after it began", after, body, original, true},
-		{"alike, written after it began", after, alike, original, false},
-		{"alike, no time known", ledgerItem{ID: "c2"}, alike, original, false},
-		{"a duplicate of a rejected comment", before, body, ledgerItem{ID: "c1", Body: body, Dealt: true}, false},
-		{"what it repeats isn't there", before, body, ledgerItem{ID: "c9", Body: body, Fixed: true}, false},
-	} {
-		if got := coverCloses(c.it, e(c.said), []ledgerItem{c.original}, rounds); got != c.want {
-			t.Errorf("%s: %v, want %v", c.name, got, c.want)
-		}
-	}
-}
-
-// The duplicate of a rejected comment stays open for a round to judge.
-func TestCloseCoveredLeavesADuplicateOfARejectedComment(t *testing.T) {
-	be, pr, b, _ := coverEnv(t, "coderabbitai[bot]", coverBody)
-	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE review_comments SET verdict = ? WHERE id = ?`, VerdictRejected, be.comment("501").id); err != nil {
-		t.Fatal(err)
-	}
-	be.s.closeCovered(be.ctx, b, pr, be.comments())
-	if v, dealt := be.commentVerdict("502"); dealt {
-		t.Fatalf("closed as %s on the cover of a rejected comment", v)
 	}
 }
 
