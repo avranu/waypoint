@@ -2,8 +2,8 @@
 # and reads this file from main. Findings that are test fixtures, not secrets:
 # the assistants test's fake door password (WP-302).
 internal/api/assistants_test.go:generic-api-key:259
-# Halted forge-sync's mirror from 2026-11-12 (WP-1422): a fake AWS key in a
-# redaction test fixture, and the identifier reviewerKeyLike. No commit prefix:
+# Halted forge-sync's mirror from 2026-11-12 (WP-1422): the identifier
+# reviewerKeyLike. (The fake key in cmd/wp/usage_heads_test.go is now allowed by path
+# in .gitleaks.toml.) No commit prefix:
 # forge-sync scans the rewritten commits it sends to GitHub, whose hashes differ (WP-1425).
-cmd/wp/usage_heads_test.go:generic-api-key:64
 internal/core/review_audit.go:generic-api-key:1142

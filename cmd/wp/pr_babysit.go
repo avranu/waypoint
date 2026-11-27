@@ -463,7 +463,16 @@ type roundStats struct {
 	Rested       int            `json:"rested"`
 	Merged       int            `json:"merged"`
 	MergedRounds int            `json:"merged_rounds"`
-	Nitpicks     *struct {
+	// Failed checks a waiting author took instead of a round (WP-1878).
+	AuthorHandoffs int `json:"author_handoffs"`
+	AuthorFixed    int `json:"author_fixed"`
+	AuthorFellBack int `json:"author_fell_back"`
+	AuthorCleared  int `json:"author_cleared"`
+	AuthorPending  int `json:"author_pending"`
+	// The median minutes from a hand-off to its new head; 0 when none
+	// recorded when it closed.
+	AuthorFixedMedianMinutes float64 `json:"author_fixed_median_minutes"`
+	Nitpicks                 *struct {
 		Decisions map[string]int `json:"decisions"`
 		Comments  map[string]int `json:"comments"`
 		Arms      map[string]*struct {
@@ -617,6 +626,13 @@ func (st *roundStats) classText() string {
 	b.WriteString("\n")
 	if st.Merged > 0 {
 		fmt.Fprintf(&b, "Merged: %d, after %.1f rounds each.\n", st.Merged, float64(st.MergedRounds)/float64(st.Merged))
+	}
+	if st.AuthorHandoffs > 0 {
+		fmt.Fprintf(&b, "Failed first checks handed to the author: %d (answered with a new head, its checks not counted here, %d; fell back to a round %d; cleared on the same head: passed, closed or stopped, %d; still pending %d)", st.AuthorHandoffs, st.AuthorFixed, st.AuthorFellBack, st.AuthorCleared, st.AuthorPending)
+		if st.AuthorFixedMedianMinutes > 0 {
+			fmt.Fprintf(&b, "; a new head came after %.0f minutes at the median", st.AuthorFixedMedianMinutes)
+		}
+		b.WriteString("\n")
 	}
 	if st.Rounds > 0 {
 		fmt.Fprintf(&b, "Stronger model: %d rounds (%.0f%%); assessor: %d (%.0f%%); parked for a person after %d; rested, nobody asked, after %d.\n",
