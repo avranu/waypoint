@@ -21,20 +21,28 @@ func Excerpt(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
-// TruncateBytes cuts s to at most n bytes without splitting a character.
+// TruncateBytes cuts s to at most n bytes without splitting a character,
+// ending in an ellipsis when it was longer. It gives "" when s is longer
+// than n and n can't hold the ellipsis.
 func TruncateBytes(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
 	cut := n - len("…")
+	if cut < 0 {
+		return ""
+	}
 	for cut > 0 && !utf8.RuneStart(s[cut]) {
 		cut--
 	}
 	return s[:cut] + "…"
 }
 
-// ClipRunes cuts s to n runes, with an ellipsis.
+// ClipRunes cuts s to n runes, with an ellipsis. An n of 0 or less gives "".
 func ClipRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
 	r := []rune(s)
 	if len(r) <= n {
 		return s
