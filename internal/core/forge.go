@@ -608,7 +608,7 @@ func (s *Service) AddProjectRepo(ctx context.Context, actor *Actor, projectRef s
 	}
 	if syncIssues {
 		s.goBG(func() {
-			if err := s.SyncRepo(context.Background(), id); err != nil {
+			if err := s.SyncRepo(withForgeSource(context.Background(), "initial repo sync"), id); err != nil {
 				s.log.WarnContext(ctx, "initial repo sync failed", "repo", repo, "err", err)
 			}
 		})

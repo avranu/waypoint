@@ -142,7 +142,7 @@ func (s *Service) passOrHold(ctx context.Context, q queryer, prID int64, h heldP
 // reader of the forge's threads goes through it.
 func (s *Service) screenThreads(ctx context.Context, f *Forge, pr *PullRequest, threads []ReviewThread) []ReviewThread {
 	v := s.prVoice(ctx, f)
-	out := threads[:0]
+	out := make([]ReviewThread, 0, len(threads)) // the caller's read may be kept for another
 	for _, t := range threads {
 		var kept []ThreadComment
 		for _, c := range t.Comments {

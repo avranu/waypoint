@@ -301,8 +301,10 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 	}
 	ours := s.waypointPosters(ctx, f)
 	var in []rcIn
+	var seq uint64 // which read of the forge this is
 	if th, ok := s.Forges.(ForgeThreads); ok {
-		threads, err := s.reviewThreads(ctx, th, f, pr, false)
+		var threads []ReviewThread
+		threads, seq, err = s.reviewThreads(ctx, th, f, pr, false)
 		if err != nil {
 			return 0, fmt.Errorf("read review threads: %w", err)
 		}
@@ -316,6 +318,9 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 					bot: isBotLogin(c.Author) || ours.botText(c.Author, c.Body), at: c.At.UnixMilli(), updated: c.At.UnixMilli()})
 			}
 		}
+	}
+	if seq == 0 {
+		seq = s.prSeq.Add(1)
 	}
 	if nt, ok := s.Forges.(ForgeReviewNotes); ok {
 		notes, err := nt.PRNotes(ctx, f, pr.Repo, pr.Number)
@@ -428,7 +433,11 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 		fix, author string
 	}
 	var held []heldFix
+	overtaken := false
 	err = s.write(ctx, SystemActor(), func(t *tx) error {
+		if overtaken = s.reviewsOvertaken(pr.ID, seq); overtaken {
+			return nil
+		}
 		have := map[string]int64{}
 		rows, err := t.QueryContext(ctx, `SELECT id, kind, ext_id, verdict, body, fix_sha FROM review_comments WHERE pr_id = ? AND gone_at IS NULL`, pr.ID)
 		if err != nil {
@@ -537,11 +546,13 @@ func (s *Service) syncReviewComments(ctx context.Context, pr *PullRequest) (int,
 			}
 			t.emit(&Event{Kind: EvBabysit, ProjectID: projectID, New: "comments", Data: map[string]any{"pr_id": pr.ID}})
 		}
+		s.noteReviewsApplied(pr.ID, seq)
 		return nil
 	})
-	if err != nil {
+	if err != nil || overtaken {
 		return 0, err
 	}
+	s.noteReviewsRead(pr.ID, seq)
 	for _, h := range held {
 		if s.fixOnHead(ctx, f, pr, h.fix) {
 			continue

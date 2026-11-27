@@ -82,8 +82,16 @@ func TestForgeRequestsCounted(t *testing.T) {
 	c := &httpForgeClient{http: srv.Client()}
 	f := &Forge{Kind: "metricstest", BaseURL: srv.URL}
 	ctx := context.Background()
-	count := func(method, route, code string) float64 {
+	// the counter is the process's: count what this run adds
+	total := func(method, route, code string) float64 {
 		return gatheredForgeCount(t, "metricstest", method, route, code, "other")
+	}
+	before := map[string]float64{}
+	for _, code := range []string{"2xx", "404", "error"} {
+		before[code] = total("GET", "/repos/{repo}/pulls/{n}", code)
+	}
+	count := func(method, route, code string) float64 {
+		return total(method, route, code) - before[code]
 	}
 	var out map[string]any
 	if err := c.do(ctx, f, http.MethodGet, "/repos/m/r/pulls/1", nil, &out); err != nil {

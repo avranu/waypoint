@@ -27,7 +27,7 @@ const (
 )
 
 type prSyncState struct {
-	want            int
+	want, running   int // asked for and not begun; what the run going now does
 	pending, active bool
 }
 
@@ -44,6 +44,12 @@ func (s *Service) requestPRSync(prID int64, want int) {
 		s.prSyncs[prID] = st
 	}
 	st.want |= want
+	if want&syncBabysit != 0 {
+		if s.prNews == nil {
+			s.prNews = map[int64]uint64{}
+		}
+		s.prNews[prID] = s.prSeq.Add(1)
+	}
 	if st.pending || st.active {
 		return
 	}
@@ -69,19 +75,22 @@ func (s *Service) runPRSync(prID int64, st *prSyncState) {
 		}
 		s.prSyncMu.Lock()
 		want := st.want
-		st.want, st.pending, st.active = 0, false, true
+		st.want, st.running, st.pending, st.active = 0, want, false, true
 		s.prSyncMu.Unlock()
 
-		ctx := withoutLineLocks(withThreadMemo(withForgeSource(context.Background(), "review sync")))
+		ctx, memo := withThreadMemo(withoutLineLocks(withForgeSource(context.Background(), "review sync")))
 		if want&syncCheck != 0 {
 			s.checkPR(ctx, prID, "review or comment")
 		}
 		if want&syncBabysit != 0 {
 			s.babysitStep(ctx, prID, true)
 		}
+		// what the run started in the background outlives it and keeps its
+		// context: it reads for itself
+		memo.close()
 
 		s.prSyncMu.Lock()
-		st.active = false
+		st.running, st.active = 0, false
 		if st.want == 0 || s.bgCtx.Err() != nil {
 			delete(s.prSyncs, prID)
 			s.prSyncMu.Unlock()
@@ -113,38 +122,108 @@ func isReviewNews(e *Event) bool {
 	return false
 }
 
+// reviewNews says what is known of reviews and comments that arrived for a
+// pull request and whose text no sync has recorded yet: unread, and coming
+// when a coalesced run is about to read them (or is doing so).
+func (s *Service) reviewNews(prID int64) (unread, coming bool) {
+	s.prSyncMu.Lock()
+	defer s.prSyncMu.Unlock()
+	if _, unread = s.prNews[prID]; !unread {
+		return false, false
+	}
+	st := s.prSyncs[prID]
+	return true, st != nil && (st.want|st.running)&syncBabysit != 0
+}
+
+// Syncs of one pull request's review comments run side by side, and a slow
+// one must not record what it read over what a later read already recorded:
+// a comment it doesn't know of would be marked deleted. Each read is numbered
+// (prSeq) before the forge is asked.
+
+// reviewsOvertaken says a read later than seq has been recorded.
+func (s *Service) reviewsOvertaken(prID int64, seq uint64) bool {
+	s.prSyncMu.Lock()
+	defer s.prSyncMu.Unlock()
+	return s.prApplied[prID] > seq
+}
+
+// noteReviewsApplied is called inside the write that records read seq, so no
+// older one can be recorded after it.
+func (s *Service) noteReviewsApplied(prID int64, seq uint64) {
+	s.prSyncMu.Lock()
+	defer s.prSyncMu.Unlock()
+	if s.prApplied == nil {
+		s.prApplied = map[int64]uint64{}
+	}
+	s.prApplied[prID] = seq
+}
+
+// noteReviewsRead forgets the news that read seq, now recorded, began after.
+func (s *Service) noteReviewsRead(prID int64, seq uint64) {
+	s.prSyncMu.Lock()
+	defer s.prSyncMu.Unlock()
+	if n, ok := s.prNews[prID]; ok && n < seq {
+		delete(s.prNews, prID)
+	}
+}
+
 // threadMemo carries the threads one run just read to the next reader in the
 // same run, so a gate check and a babysit step don't read them twice.
 type threadMemo struct {
-	mu sync.Mutex
-	m  map[int64][]ReviewThread
+	mu     sync.Mutex
+	m      map[int64]threadRead
+	closed bool
+}
+
+type threadRead struct {
+	threads []ReviewThread
+	seq     uint64
 }
 
 type threadMemoKey struct{}
 
-func withThreadMemo(ctx context.Context) context.Context {
-	return context.WithValue(ctx, threadMemoKey{}, &threadMemo{m: map[int64][]ReviewThread{}})
+func withThreadMemo(ctx context.Context) (context.Context, *threadMemo) {
+	m := &threadMemo{m: map[int64]threadRead{}}
+	return context.WithValue(ctx, threadMemoKey{}, m), m
 }
 
-// reviewThreads reads a pull request's threads. Inside a coalesced run, a
-// reader that keeps its read leaves it for the next reader of the run, which
-// takes it once; nothing older than the run is ever served.
-func (s *Service) reviewThreads(ctx context.Context, cl ForgeThreads, f *Forge, pr *PullRequest, keep bool) ([]ReviewThread, error) {
+func (m *threadMemo) close() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.m, m.closed = nil, true
+}
+
+// withoutReadMemos drops what a sweep or a coalesced run remembered of the
+// forge: a merge decides on what it reads itself.
+func withoutReadMemos(ctx context.Context) context.Context {
+	ctx = context.WithValue(ctx, tipMemoKey{}, (*tipMemo)(nil))
+	return context.WithValue(ctx, threadMemoKey{}, (*threadMemo)(nil))
+}
+
+// reviewThreads reads a pull request's threads, and says which read they are
+// (see reviewsOvertaken). Inside a coalesced run, a reader that keeps its read
+// leaves it for the next reader of the run, which takes it once, unless a
+// later read was recorded meanwhile; nothing older than the run is ever
+// served.
+func (s *Service) reviewThreads(ctx context.Context, cl ForgeThreads, f *Forge, pr *PullRequest, keep bool) ([]ReviewThread, uint64, error) {
 	memo, _ := ctx.Value(threadMemoKey{}).(*threadMemo)
 	if memo != nil && !keep {
 		memo.mu.Lock()
-		ts, ok := memo.m[pr.ID]
+		r, ok := memo.m[pr.ID]
 		delete(memo.m, pr.ID)
 		memo.mu.Unlock()
-		if ok {
-			return ts, nil
+		if ok && !s.reviewsOvertaken(pr.ID, r.seq) {
+			return r.threads, r.seq, nil
 		}
 	}
+	seq := s.prSeq.Add(1)
 	ts, err := cl.ReviewThreads(ctx, f, pr.Repo, pr.Number)
 	if err == nil && memo != nil && keep {
 		memo.mu.Lock()
-		memo.m[pr.ID] = ts
+		if !memo.closed {
+			memo.m[pr.ID] = threadRead{threads: ts, seq: seq}
+		}
 		memo.mu.Unlock()
 	}
-	return ts, err
+	return ts, seq, err
 }

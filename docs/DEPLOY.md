@@ -717,10 +717,11 @@ tokens never qualify):
 - `wp server metrics [--grep RE]`: the `/metrics` text, without the metrics
   token. What Waypoint asks the forges is counted in
   `waypoint_forge_requests_total{kind,method,route,code,source}` (route a template
-  like `/repos/{repo}/pulls/{n}`; code `2xx`, `404`, `429`, `5xx`, or `error`
-  when no answer came; source the scheduled job, `webhook`, `review sync`,
-  a named background step, or `api METHOD /route` that led to the request,
-  `other` when none was named) and `waypoint_forge_request_duration_seconds`.
+  like `/repos/{repo}/pulls/{n}`; code the status class `1xx` to `5xx` with
+  `404` and `429` kept apart, or `error` when no answer came; source the
+  scheduled job, `webhook`, `review sync`, a named background step, or
+  `api METHOD /route` that led to the request (`api MCP` for the MCP
+  endpoint, `api` when no route matched), `other` when none was named) and `waypoint_forge_request_duration_seconds`.
   Who asks for one route: `wp server metrics --grep 'waypoint_forge_requests_total.*pulls/\{n\}"'`.
 - `wp ai usage [--since 24h] [--by task|model|outcome|status|hour|day|provider]
   [--task NAME]`: every request Waypoint sent an AI provider (table

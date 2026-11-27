@@ -141,6 +141,16 @@ func TestBaseTipIsReadOncePerSweep(t *testing.T) {
 type memoSpy struct {
 	*shipForge
 	saw atomic.Int32
+	// the merge's reads of the pull request, and those under a tip memo
+	merges, mergeSaw atomic.Int32
+}
+
+func (m *memoSpy) GetPR(ctx context.Context, f *Forge, repo string, n int) (*ForgePR, error) {
+	m.merges.Add(1)
+	if tipMemoOf(ctx) != nil {
+		m.mergeSaw.Add(1)
+	}
+	return m.shipForge.GetPR(ctx, f, repo, n)
 }
 
 func (m *memoSpy) BehindBase(ctx context.Context, f *Forge, repo, baseRef, headSHA string) (string, bool, error) {
@@ -169,6 +179,14 @@ func TestCheckArmedMergesSweepsWithTipMemo(t *testing.T) {
 	se.s.Wait()
 	if spy.saw.Load() == 0 {
 		t.Fatal("CheckArmedMerges read the base outside a tip memo")
+	}
+	// The merge itself reads the base afresh, whatever its caller remembers:
+	// a push from outside doesn't drop the sweep's tips.
+	pr := se.pr(5)
+	_, _ = se.s.mergeNow(withTipMemo(se.ctx, &se.s.baseGen), se.admin, pr, MergeInput{armed: true}, "armed") // refused or not
+	se.s.Wait()
+	if spy.merges.Load() == 0 || spy.mergeSaw.Load() != 0 {
+		t.Fatalf("the merge read the pull request %d times, %d under a tip memo", spy.merges.Load(), spy.mergeSaw.Load())
 	}
 	g := se.s.baseGen.Load()
 	se.s.noteMerging(se.pr(5))

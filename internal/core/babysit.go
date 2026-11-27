@@ -731,6 +731,7 @@ func (s *Service) refreshFromForge(ctx context.Context, prID int64) {
 // (the review wait, the quiet period), and forges without webhooks bring
 // no news.
 func (s *Service) CheckBabysits(ctx context.Context) {
+	ctx = withTipMemo(ctx, &s.baseGen) // a base shared by many is read once
 	s.enrollArmedTroubled(ctx)
 	defer s.releaseDueBatches(ctx)
 	rows, err := s.db.R.QueryContext(ctx, `SELECT pr_id, coalesce(synced_at, 0) FROM babysits WHERE ended_at IS NULL ORDER BY updated_at LIMIT 200`)
@@ -910,6 +911,15 @@ func (s *Service) babysitStep(ctx context.Context, prID int64, sync bool) {
 			s.babysitTell(ctx, b, pr, "closed", fmt.Sprintf("%s#%d was closed without merging; Waypoint stopped babysitting it.", pr.Repo, pr.Number))
 		}
 		return
+	}
+	// Don't act on the comments of before a review that just arrived: the
+	// run coalescing its burst does this step once it has read them.
+	if !sync {
+		unread, coming := s.reviewNews(prID)
+		if coming {
+			return
+		}
+		sync = unread
 	}
 	if pr.HeadSHA != "" && !sameSHA(pr.HeadSHA, b.HeadSHA) {
 		s.promoteFixing(ctx, pr)

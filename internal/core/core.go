@@ -199,6 +199,9 @@ type Service struct {
 	// Webhook-driven re-reads of a pull request, coalesced (pr_sync.go).
 	prSyncMu    sync.Mutex
 	prSyncs     map[int64]*prSyncState
+	prNews      map[int64]uint64 // review news no sync has recorded yet
+	prApplied   map[int64]uint64 // the read of the reviews recorded last
+	prSeq       atomic.Uint64    // numbers reads of the reviews and their news
 	prSyncDelay time.Duration
 	prSyncAfter func(time.Duration) <-chan time.Time // tests; time.After if nil
 

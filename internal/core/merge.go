@@ -924,6 +924,7 @@ func (s *Service) heldRead(ctx context.Context, pr *PullRequest, what, note stri
 // checks and its gate. The head it passes is the one it checked.
 func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, in MergeInput, how string) (string, error) {
 	defer forgeLocks.lock(fmt.Sprintf("merge:%d", pr.ID))()
+	ctx = withoutReadMemos(ctx)
 	f, err := s.forgeByID(ctx, pr.ForgeID)
 	if err != nil {
 		return "", err
@@ -968,6 +969,13 @@ func (s *Service) mergeNow(ctx context.Context, actor *Actor, pr *PullRequest, i
 	}
 	if cur, err = s.prByID(ctx, s.db.R, pr.ID); err != nil {
 		return "", err
+	}
+	// a review or comment whose sync is still waiting for the rest of its
+	// burst holds the merge like any other
+	if unread, _ := s.reviewNews(cur.ID); unread {
+		if _, err := s.syncReviewComments(ctx, cur); err != nil {
+			return "", s.heldRead(ctx, pr, "read new review comments before merging", "the new review comments couldn't be read", err)
+		}
 	}
 	rd, err := s.readinessFor(ctx, cur, in.armed)
 	if err != nil {
