@@ -120,8 +120,8 @@ func (s *Service) computeGate(ctx context.Context, pr *PullRequest, sev string) 
 	}
 	running += queued
 	var last, lastErr, lastSummary string
-	var lastDropped int
-	if rerr := s.db.R.QueryRowContext(ctx, `SELECT status, error, summary, dropped_files FROM bot_runs WHERE pr_id = ? AND kind = 'review' AND head_sha = ? ORDER BY id DESC LIMIT 1`, pr.ID, pr.HeadSHA).Scan(&last, &lastErr, &lastSummary, &lastDropped); rerr != nil && !errors.Is(rerr, sql.ErrNoRows) {
+	var lastDropped, lastCut int
+	if rerr := s.db.R.QueryRowContext(ctx, `SELECT status, error, summary, dropped_files, diff_cut FROM bot_runs WHERE pr_id = ? AND kind = 'review' AND head_sha = ? ORDER BY id DESC LIMIT 1`, pr.ID, pr.HeadSHA).Scan(&last, &lastErr, &lastSummary, &lastDropped, &lastCut); rerr != nil && !errors.Is(rerr, sql.ErrNoRows) {
 		return state, note, open, below, rerr
 	}
 	switch {
@@ -145,9 +145,17 @@ func (s *Service) computeGate(ctx context.Context, pr *PullRequest, sev string) 
 		}
 		head := fmt.Sprintf("%d open finding%s: ", open, plural(open))
 		return GateFailure, clipRunes(head+strings.Join(items, ", "), gateNoteLimit), open, below, nil
-	case last == "done" && lastDropped > 0:
+	case last == "done" && (lastDropped > 0 || lastCut != 0):
 		const tail = "; comment @waypoint review to retry or merge by hand"
-		reason := fmt.Sprintf("Incomplete review: %d file%s left unreviewed", lastDropped, plural(lastDropped))
+		var reason string
+		switch {
+		case lastDropped > 0 && lastCut != 0:
+			reason = fmt.Sprintf("Incomplete review: %d file%s left unreviewed and diff truncated", lastDropped, plural(lastDropped))
+		case lastDropped > 0:
+			reason = fmt.Sprintf("Incomplete review: %d file%s left unreviewed", lastDropped, plural(lastDropped))
+		default:
+			reason = "Incomplete review: a file diff was truncated to fit"
+		}
 		return GateFailure, clipRunes(reason, gateNoteLimit-utf8.RuneCountInString(tail)) + tail, open, below, nil
 	case below > 0:
 		return GateSuccess, fmt.Sprintf("No blocking findings (%d below %s)", below, priority(sev)), open, below, nil

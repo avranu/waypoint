@@ -633,8 +633,12 @@ func dedupPanelLeads(runs []AuditHelperRun) []panelProblem {
 					if len(problem) > len(p.problem) {
 						p.title, p.problem, p.gist = title, problem, gist
 					}
-					if p.evidence == "" && ev != "" {
-						p.evidence = ev
+					if ev != "" {
+						if p.evidence == "" {
+							p.evidence = ev
+						} else if !strings.Contains(p.evidence, ev) {
+							p.evidence += "\n" + ev
+						}
 					}
 					merged = true
 					break

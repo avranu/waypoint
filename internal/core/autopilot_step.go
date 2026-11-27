@@ -1850,6 +1850,7 @@ const autopilotReviewSource = "autopilot_review"
 // agent can fix/mark findings and re-run wp ship.
 func (s *Service) deliverCLIReview(ctx context.Context, st *stepRow, x *AgentSession, review *roundRow, prompt string, now int64) error {
 	text := reviewPromptText(review.key, prompt)
+	stepKey := fmt.Sprintf("review:%d", review.id)
 	started := false
 	err := s.write(ctx, SystemActor(), func(t *tx) error {
 		res, err := t.ExecContext(ctx, `UPDATE work_log SET state = ?, prompt = ?, started_at = coalesce(started_at, ?), updated_at = ?
@@ -1861,6 +1862,12 @@ func (s *Service) deliverCLIReview(ctx context.Context, st *stepRow, x *AgentSes
 		if n, _ := res.RowsAffected(); n == 0 {
 			return nil
 		}
+		// Queue the session message in the same transaction as the round
+		// transition so findings are never stranded if a write fails.
+		if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO session_messages(session_id, body, step_key, created_by, created_at, passive, agent, automation_id)
+			VALUES (?,?,?,NULL,?,0,'',NULL)`, x.ID, text, stepKey, now); err != nil {
+			return err
+		}
 		started = true
 		s.emitWorkLog(ctx, t, review.issueID, review.id, RoundRunning)
 		return nil
@@ -1869,9 +1876,8 @@ func (s *Service) deliverCLIReview(ctx context.Context, st *stepRow, x *AgentSes
 		return err
 	}
 	if started {
-		if _, err := s.queueMessage(ctx, x.ID, text, fmt.Sprintf("review:%d", review.id), messageFrom{}, false); err != nil {
-			s.log.WarnContext(ctx, "autopilot: queue CLI review findings", "round", review.id, "session", x.ID, "err", err)
-		}
+		s.stopWaits.wakeShip(x.ID)
+		s.stopWaits.wake(x.ID)
 	}
 	return s.stepUpdate(ctx, st.id, StepWaiting, WaitJob, "waiting for "+x.CLI+" session to address "+review.key+"'s adversarial review findings", now+reviewAuditRecheck.Milliseconds())
 }

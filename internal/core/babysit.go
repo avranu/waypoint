@@ -2245,7 +2245,9 @@ func (s *Service) setState(ctx context.Context, b *Babysit, pr *PullRequest, sta
 		return
 	}
 	since := s.now()
-	if b.State == state && (isFullRunReason(b.Wait) && isFullRunReason(wait) || IsQueuedRoundWait(b.Wait) && IsQueuedRoundWait(wait)) {
+	if b.State == state && (isFullRunReason(b.Wait) && isFullRunReason(wait) ||
+		IsQueuedRoundWait(b.Wait) && IsQueuedRoundWait(wait) ||
+		(strings.HasPrefix(b.Wait, liveSessionWaitPrefix) && strings.HasPrefix(wait, liveSessionWaitPrefix))) {
 		since = b.WaitSince
 	}
 	err := s.write(ctx, SystemActor(), func(t *tx) error {

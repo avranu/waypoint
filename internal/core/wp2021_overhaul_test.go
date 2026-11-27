@@ -39,10 +39,26 @@ func TestBabysitDefersToLiveSessionAndResumesAfterBound(t *testing.T) {
 		t.Fatalf("expected defer to live session, got state=%q wait=%q job=%d", cur.State, cur.Wait, cur.JobID)
 	}
 
+	// A repeat deferral mid-window where the session title changes must NOT
+	// reset WaitSince and extend the 20m defer cap.
+	mid := be.s.now().Add(12 * time.Minute)
+	be.s.now = func() time.Time { return mid }
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE agent_sessions SET title = 'Still fixing PR 7', last_seen_at = ? WHERE cli_id = 'live-1'`, mid.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	be.s.babysitStep(be.ctx, pr.ID, false)
+	curMid, err := be.s.activeBabysit(be.ctx, be.s.db.R, pr.ID)
+	if err != nil || curMid == nil || !strings.HasPrefix(curMid.Wait, liveSessionWaitPrefix) {
+		t.Fatalf("mid-window defer: %+v, %v", curMid, err)
+	}
+	if !curMid.WaitSince.Equal(cur.WaitSince) {
+		t.Fatalf("WaitSince reset on repeat deferral: got %v, want %v", curMid.WaitSince, cur.WaitSince)
+	}
+
 	// Keep session fresh past liveSessionDeferMax on the same head: babysit must
 	// eventually take over rather than wedging indefinitely.
 	be.sg.noRetry = true
-	later := be.s.now().Add(liveSessionDeferMax + time.Minute)
+	later := cur.WaitSince.Add(liveSessionDeferMax + time.Minute)
 	be.s.now = func() time.Time { return later }
 	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE agent_sessions SET last_seen_at = ? WHERE cli_id = 'live-1'`, later.UnixMilli()); err != nil {
 		t.Fatal(err)
@@ -124,6 +140,23 @@ func TestLargeDiffChunkingAndHonestReviewGate(t *testing.T) {
 	}
 	if state != GateFailure || open != 0 || !strings.Contains(note, "Incomplete review: 3 files left unreviewed") {
 		t.Fatalf("computeGate = (%q, %q, open=%d), want GateFailure naming 3 unreviewed files", state, note, open)
+	}
+
+	// A truncated file diff (diff_cut = 1, dropped_files = 0) must also fail the gate.
+	se.pullHook("opened", ForgePR{Number: 22, Title: "Truncated diff", Author: "dev", HeadRef: "cut", HeadRepo: "me/app", HeadSHA: "sha-cut", State: "open"})
+	se.s.Wait()
+	prCut := se.pr(22)
+	if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO bot_runs(project_id, pr_id, kind, head_sha, status, summary, dropped_files, diff_cut, created_at, finished_at)
+		VALUES (?, ?, 'review', ?, 'done', 'Nothing found in what was reviewed by m', 0, 1, 1, 2)`,
+		se.p.ID, prCut.ID, prCut.HeadSHA); err != nil {
+		t.Fatal(err)
+	}
+	state, note, open, _, err = se.s.computeGate(se.ctx, prCut, "high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != GateFailure || open != 0 || !strings.Contains(note, "Incomplete review: a file diff was truncated") {
+		t.Fatalf("computeGate(diff_cut) = (%q, %q, open=%d), want GateFailure for truncated diff", state, note, open)
 	}
 }
 
