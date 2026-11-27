@@ -267,6 +267,7 @@ type prForge struct {
 	mu        sync.Mutex
 	prs       map[string]*ForgePR
 	diffs     map[string]string
+	diffErr   map[string]error
 	files     map[string]string
 	reviews   map[string][]ForgeComment
 	lines     [][]LineComment
@@ -305,9 +306,12 @@ func (p *prForge) GetPR(ctx context.Context, f *Forge, repo string, n int) (*For
 
 func (p *prForge) PRDiff(ctx context.Context, f *Forge, repo string, pr *ForgePR) (string, error) {
 	p.mu.Lock()
-	d := p.diffs[pr.HeadSHA]
+	d, derr := p.diffs[pr.HeadSHA], p.diffErr[pr.HeadSHA]
 	hook := p.afterDiff
 	p.mu.Unlock()
+	if derr != nil {
+		return "", derr
+	}
 	if hook != nil {
 		hook()
 	}
