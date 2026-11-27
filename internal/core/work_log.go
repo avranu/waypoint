@@ -425,6 +425,12 @@ func (s *Service) roundAtStop(ctx context.Context, t *tx, x *AgentSession, issue
 	return true, nil
 }
 
+// subagentKind: a background task type that is a subagent (Claude Code's
+// local_agent), not a shell.
+func subagentKind(kind string) bool {
+	return strings.Contains(strings.ToLower(kind), "agent")
+}
+
 // subagentsSince: background subagents (Claude Code's local_agent tasks) in
 // seen, first seen at or after since and not yet stale. Background shells
 // don't count: a waiter on CI says nothing about the review.
@@ -432,7 +438,7 @@ func subagentsSince(seen map[string]int64, since, now int64) bool {
 	stale := autopilotStaleAfter.Milliseconds()
 	for sig, first := range seen {
 		kind, _, _ := strings.Cut(sig, ":")
-		if strings.Contains(strings.ToLower(kind), "agent") && first >= since && now-first < stale {
+		if subagentKind(kind) && first >= since && now-first < stale {
 			return true
 		}
 	}

@@ -49,7 +49,30 @@ func resolveRepo(cwd string) string {
 			break
 		}
 	}
+	if isRunnerJobDir(dir) {
+		return ""
+	}
 	return filepath.Base(dir)
+}
+
+// isRunnerJobDir reports whether dir is an ephemeral runner job worktree
+// (…/waypoint/runner/work/job1234-56789) whose checkout has been removed, so
+// we don't pollute repository reports with transient job directory names.
+func isRunnerJobDir(dir string) bool {
+	base := filepath.Base(dir)
+	if !strings.HasPrefix(base, "job") {
+		return false
+	}
+	rest, tail, ok := strings.Cut(base[3:], "-")
+	if !ok || rest == "" || tail == "" {
+		return false
+	}
+	for _, r := range rest + tail {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return strings.Contains(filepath.ToSlash(dir), "/runner/work/")
 }
 
 // gitConfigFor finds the config of the checkout rooted at dir ("" when

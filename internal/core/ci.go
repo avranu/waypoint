@@ -131,9 +131,10 @@ func (s *Service) refreshHead(ctx context.Context, f *Forge, repo, sha string) e
 	if err != nil {
 		return err
 	}
+	now := s.nowMS()
 	all, err := cl.CommitChecks(ctx, f, repo, sha)
 	if err != nil {
-		_, _ = s.db.W.ExecContext(ctx, `UPDATE ci_heads SET checked_at = ? WHERE id = ?`, s.nowMS(), headID)
+		_, _ = s.db.W.ExecContext(ctx, `UPDATE ci_heads SET checked_at = ? WHERE id = ? AND checked_at < ?`, now, headID, now)
 		return err
 	}
 	s.foreignOwnStatuses(ctx, f, repo, sha, all)
@@ -148,7 +149,6 @@ func (s *Service) refreshHead(ctx context.Context, f *Forge, repo, sha string) e
 	if err := s.db.R.QueryRowContext(ctx, `SELECT seen_at FROM ci_heads WHERE id = ?`, headID).Scan(&seen); err != nil {
 		return err
 	}
-	now := s.nowMS()
 
 	type keptLog struct {
 		url, log string
@@ -211,6 +211,13 @@ func (s *Service) refreshHead(ctx context.Context, f *Forge, repo, sha string) e
 	}
 	var prs []prState
 	err = s.write(ctx, SystemActor(), func(t *tx) error {
+		var prevChecked int64
+		if err := t.QueryRowContext(ctx, `SELECT checked_at FROM ci_heads WHERE id = ?`, headID).Scan(&prevChecked); err != nil {
+			return err
+		}
+		if prevChecked > now {
+			return nil
+		}
 		for _, c := range checks {
 			if _, err := t.ExecContext(ctx, `INSERT INTO ci_checks(head_id, name, state, url, description, source, job_id, log, updated_at, status_id) VALUES (?,?,?,?,?,?,?,?,?,?)
 				ON CONFLICT(head_id, name) DO UPDATE SET state = excluded.state, url = excluded.url, description = excluded.description,

@@ -197,6 +197,155 @@ func TestLoginRateLimit(t *testing.T) {
 	}
 }
 
+type fromAddr struct{ ip string }
+
+func (f *fromAddr) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("X-Forwarded-For", f.ip)
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+func loginServer(t *testing.T, tune func(*Server)) *httptest.Server {
+	t.Helper()
+	ts, _ := loginServerDB(t, tune)
+	return ts
+}
+
+func loginServerDB(t *testing.T, tune func(*Server)) (*httptest.Server, *db.DB) {
+	t.Helper()
+	d, err := db.OpenFresh(context.Background(), filepath.Join(t.TempDir(), "api.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	svc := core.New(d, core.Config{BaseURL: "http://wp.test"}, nil)
+	if _, err := svc.CreateUser(context.Background(), core.SystemActor(), core.CreateUserInput{Username: "robin", Email: "j@example.com", Password: "correct horse battery"}); err != nil {
+		t.Fatal(err)
+	}
+	trusted, _ := ParseTrustedProxies("1")
+	srv := New(svc, Config{BaseURL: "http://wp.test", Version: "test", TrustedProxies: trusted}, svc.Log())
+	if tune != nil {
+		tune(srv)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	return ts, d
+}
+
+func loginFrom(t *testing.T, ts *httptest.Server, ip, password string) int {
+	t.Helper()
+	c := &client{t: t, base: ts.URL, web: true, http: &http.Client{Transport: &fromAddr{ip}}}
+	code, _ := c.do("POST", "/api/v1/auth/login", map[string]any{"login": "robin", "password": password})
+	return code
+}
+
+func TestLoginLockoutIsPerAddress(t *testing.T) {
+	// Raise the per-minute address limit so the account-and-address count of
+	// 30 is what stops address A.
+	ts := loginServer(t, func(s *Server) { s.limiter = newRateLimiter(1000, time.Minute) })
+	for n := 0; n < 30; n++ {
+		if code := loginFrom(t, ts, "198.51.100.7", "wrong password"); code != 400 {
+			t.Fatalf("guess %d: %d", n, code)
+		}
+	}
+	if code := loginFrom(t, ts, "198.51.100.7", "wrong password"); code != 429 {
+		t.Fatalf("address A not locked out: %d", code)
+	}
+	if code := loginFrom(t, ts, "198.51.100.7", "correct horse battery"); code != 429 {
+		t.Errorf("right password from locked address A: %d", code)
+	}
+	if code := loginFrom(t, ts, "203.0.113.9", "correct horse battery"); code != 200 {
+		t.Errorf("right password from address B after A's failures: %d", code)
+	}
+}
+
+// Username, email and any capitalisation of them are one account, in both
+// the per-address count and the account-wide one.
+func TestLoginNamesShareOneCount(t *testing.T) {
+	names := []string{"robin", "j@example.com", "ROBIN", "J@Example.com"}
+	post := func(ts *httptest.Server, ip, login string) int {
+		c := &client{t: t, base: ts.URL, web: true, http: &http.Client{Transport: &fromAddr{ip}}}
+		code, _ := c.do("POST", "/api/v1/auth/login", map[string]any{"login": login, "password": "wrong password"})
+		return code
+	}
+	pair := loginServer(t, func(s *Server) { s.userAddrLimiter = newRateLimiter(4, 10*time.Minute) })
+	for _, l := range names {
+		if code := post(pair, "198.51.100.7", l); code != 400 {
+			t.Fatalf("%s: %d", l, code)
+		}
+	}
+	if code := post(pair, "198.51.100.7", "robin"); code != 429 {
+		t.Errorf("one address after four wrong tries by either name: %d", code)
+	}
+	wide := loginServer(t, func(s *Server) { s.userLimiter = newRateLimiter(4, 10*time.Minute) })
+	for n, l := range names {
+		if code := post(wide, fmt.Sprintf("192.0.2.%d", n+1), l); code != 400 {
+			t.Fatalf("%s: %d", l, code)
+		}
+	}
+	if code := post(wide, "192.0.2.99", "j@example.com"); code != 429 {
+		t.Errorf("a new address after four wrong tries by either name: %d", code)
+	}
+}
+
+func TestCanonicalIP(t *testing.T) {
+	for in, want := range map[string]string{"::ffff:192.0.2.1": "192.0.2.1", "2001:DB8::1": "2001:db8::1", "192.0.2.1": "192.0.2.1", "junk": "junk"} {
+		if got := canonicalIP(in); got != want {
+			t.Errorf("canonicalIP(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestLoginAccountLimitStopsRotatingGuesser(t *testing.T) {
+	ts := loginServer(t, func(s *Server) { s.userLimiter = newRateLimiter(5, 10*time.Minute) })
+	if code := loginFrom(t, ts, "203.0.113.9", "correct horse battery"); code != 200 {
+		t.Fatalf("owner's first sign-in: %d", code)
+	}
+	for n := 0; n < 5; n++ {
+		if code := loginFrom(t, ts, fmt.Sprintf("192.0.2.%d", n+1), "wrong password"); code != 400 {
+			t.Fatalf("guess %d: %d", n, code)
+		}
+	}
+	if code := loginFrom(t, ts, "192.0.2.99", "correct horse battery"); code != 429 {
+		t.Errorf("a new address after the account-wide limit: %d", code)
+	}
+	if code := loginFrom(t, ts, "203.0.113.9", "correct horse battery"); code != 200 {
+		t.Errorf("an address that signed in before, after the account-wide limit: %d", code)
+	}
+}
+
+// A locked-out address is refused from memory, and refusals by the
+// account counts count against the address, so hammering ends there too.
+func TestLoginRefusalsCountAgainstTheAddress(t *testing.T) {
+	var srv *Server
+	ts := loginServer(t, func(s *Server) { srv = s; s.userAddrLimiter = newRateLimiter(1, 10*time.Minute) })
+	if code := loginFrom(t, ts, "198.51.100.7", "wrong password"); code != 400 {
+		t.Fatalf("first guess: %d", code)
+	}
+	for n := 0; n < 9; n++ {
+		if code := loginFrom(t, ts, "198.51.100.7", "wrong password"); code != 429 {
+			t.Fatalf("refusal %d: %d", n, code)
+		}
+	}
+	if !srv.loginAddrBlocked("198.51.100.7") {
+		t.Error("ten refused attempts didn't use up the address's own limit")
+	}
+}
+
+// A server fault after the lookup isn't a wrong password: not a 400, and
+// no lockout counts it.
+func TestLoginServerFaultIsNotCounted(t *testing.T) {
+	var srv *Server
+	ts, d := loginServerDB(t, func(s *Server) { srv = s })
+	d.R.Close() // where the account is looked up
+	if code := loginFrom(t, ts, "198.51.100.7", "correct horse battery"); code == 400 || code == 429 || code < 400 {
+		t.Errorf("sign-in with the database closed: %d", code)
+	}
+	if n := len(srv.limiter.hits) + len(srv.userLimiter.hits) + len(srv.userAddrLimiter.hits); n != 0 {
+		t.Errorf("a server fault was counted: %d keys", n)
+	}
+}
+
 func TestMCP(t *testing.T) {
 	ts, svc := setup(t)
 	ctx := context.Background()
@@ -320,6 +469,12 @@ func TestClientIPBehindProxy(t *testing.T) {
 		{"127.0.0.1", []string{"198.51.100.7, 10.9.0.1"}, "198.51.100.7"},
 		{"10.9.0.1", []string{"10.9.0.9"}, "10.9.0.9"},
 		{"10.9.0.1", []string{"not-an-ip"}, "10.9.0.1"},
+		// One address is written one way on every path, peer or hop.
+		{"::ffff:10.9.0.1", nil, "10.9.0.1"},
+		{"::ffff:10.9.0.1", []string{"not-an-ip"}, "10.9.0.1"},
+		{"::ffff:203.0.113.5", nil, "203.0.113.5"},
+		{"10.9.0.1", []string{"::FFFF:198.51.100.7"}, "198.51.100.7"},
+		// Straight from the internet: its headers are its own, so ignored.
 		{"203.0.113.5", []string{"1.2.3.4"}, "203.0.113.5"},
 	} {
 		r := httptest.NewRequest("GET", "/", nil)

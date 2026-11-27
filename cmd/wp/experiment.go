@@ -80,7 +80,7 @@ func (c *cli) sessionArm(cwd, session, exp string) string {
 }
 
 var experimentCmd = &command{
-	name: "experiment", group: "Agent work", args: "[ls|show|start|stop …]",
+	name: "experiment", group: "Tasks", args: "[ls|show|start|stop …]",
 	summary:  "A/B tests of how agents work: switch one on or off, read its results (admins)",
 	examples: []string{"wp experiment ls", "wp experiment show next_brief", "wp experiment start search_nudge --days 10 --target 40", "wp experiment stop next_brief -m \"enough\""},
 	about: `An experiment gives each task an agent takes one of its arms, at random
@@ -154,7 +154,8 @@ func cmdExperimentStart(c *cli, args []string) error {
 	var projects, params multiFlag
 	fs.Var(&projects, "project", "`KEY`: only this project's tasks (repeatable)")
 	fs.Var(&params, "param", "`K=V`: an experiment's setting (repeatable)")
-	note := fs.String("m", "", "`NOTE`: why, for whoever reads the results")
+	note := fs.String("message", "", "`NOTE`: why, for whoever reads the results")
+	short(fs, "m", "message")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err

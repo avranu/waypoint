@@ -26,7 +26,7 @@ var (
 
 var (
 	cliErrorClasses = []string{"unknown_flag", "unknown_command", "ambiguous_code", "usage"}
-	cliSignals      = []string{"curl_forge", "sleep", "sleep_ci", "gh_tea"}
+	cliSignals      = []string{"curl_forge", "sleep", "sleep_ci", "gh_tea", "pipe_json", "multi_wp"}
 )
 
 // UsageCLIRow is one counter of one hour of one session.

@@ -16,7 +16,7 @@ import (
 // tool_use_id) and other kinds stay out; the requests themselves stay.
 func TestToolRefusalsFromPermissionRequests(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

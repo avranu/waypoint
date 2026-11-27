@@ -60,7 +60,9 @@ func (s *Service) subscriptionPlan() subscriptionPlan {
 		stages: []stageSpec{
 			{"notices", kernel.SeesPrivate, []subscription{
 				{"deliverNotification", nil, func(ctx context.Context, _ *Actor, e *Event) {
-					s.deliverNotification(ctx, hint[*storedNotice](e))
+					if n := hint[*storedNotice](e); n != nil {
+						s.deliverNotification(ctx, n)
+					}
 				}},
 			}},
 			{"live", kernel.SeesEvery, []subscription{
@@ -72,6 +74,7 @@ func (s *Service) subscriptionPlan() subscriptionPlan {
 				{"notifyFor", nil, func(ctx context.Context, actor *Actor, e *Event) { s.notifyFor(ctx, actor, e) }},
 			}},
 			{"react", kernel.SeesVisible, []subscription{
+				{"renumberOnPR", kinds(EvPRUpdated), func(ctx context.Context, _ *Actor, e *Event) { s.renumberOnPR(ctx, e) }},
 				{"repoPushed", kinds(EvRepoPushed), func(ctx context.Context, _ *Actor, e *Event) { s.onRepoPushed(ctx, e) }},
 				{"kitPush", kinds(EvRepoPushed), func(ctx context.Context, _ *Actor, e *Event) { s.onKitPush(ctx, e) }},
 				{"resumeSessions", kinds(EvAgentsResumed), func(ctx context.Context, _ *Actor, e *Event) {
@@ -153,18 +156,11 @@ func (s *Service) subscriptionPlan() subscriptionPlan {
 	}
 }
 
-// runAutomationsBatch runs the automations for each event, unless the actor
-// is as deep in automations as they may go.
+// runAutomationsBatch runs the automations for each event; runAutomations
+// enforces maxAutomationDepth so the limit is logged only when a matching
+// automation is skipped.
 func (s *Service) runAutomationsBatch(ctx context.Context, actor *Actor, events []*Event) {
-	depth := 0
-	if actor != nil {
-		depth = actor.Depth
-	}
-	if depth < maxAutomationDepth {
-		for _, e := range events {
-			s.runAutomations(ctx, actor, e)
-		}
-	} else {
-		s.log.WarnContext(ctx, "automation depth limit reached; not running further automations", "event", events[0].Kind)
+	for _, e := range events {
+		s.runAutomations(ctx, actor, e)
 	}
 }

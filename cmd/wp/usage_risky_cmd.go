@@ -63,6 +63,7 @@ func cmdUsageRisky(c *cli, args []string) error {
 	kind := fs.String("kind", "", "only this `KIND`")
 	refused := fs.Bool("refused", false, "only those refused before they ran")
 	limit := fs.Int("limit", 30, "at most `N`")
+	short(fs, "n", "limit")
 	user := fs.String("user", "", "admins: another person's (`NAME`, or all)")
 	pos, err := c.parse(fs, args)
 	if err != nil {

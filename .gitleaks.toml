@@ -5,12 +5,16 @@ title = "Waypoint gitleaks config"
 [extend]
 useDefault = true
 
-# The transcript archive's redaction tests feed redact() fake credentials on purpose:
-# PEM headers with no key body, "hunter2", "abcd1234wxyz", "Authorization: Basic ..."
-# of "user:password". Only these two rules, only these files. Agents keep adding
-# rounds (usage_archive_roundN_test.go), so the files are matched by pattern instead
-# of listing line numbers in .gitleaksignore, which shift with every edit.
+# Waypoint's redaction tests feed redact() fake credentials on purpose: PEM headers
+# with no key body, "hunter2", "abcd1234wxyz", "Authorization: Bearer abc123def456",
+# "xapp-1-A0123-4567-abcdef", "wpt_0123456789abcdefSECRET". These are the transcript
+# archive's tests (usage_archive*), the session heads and OTel export tests, and wp
+# testsum's output redaction tests (testsum*). Only these rules, only these files.
+# Agents keep adding test files and moving lines (a comment cleanup in #581 halted
+# main's mirror from 2026-11-25, WP-2009), so the files are matched by pattern instead
+# of listing line numbers in .gitleaksignore, which shift with every edit. Any other
+# rule (a GitHub, AWS or Stripe token, say) still fires in these files.
 [[allowlists]]
-description = "fake credentials in the transcript archive's redaction tests"
-targetRules = ["generic-api-key", "private-key"]
-paths = ['''^cmd/wp/usage_archive[a-z0-9_]*_test\.go$''']
+description = "fake credentials in wp's redaction tests"
+targetRules = ["generic-api-key", "private-key", "curl-auth-header", "slack-app-token"]
+paths = ['''^cmd/wp/(usage_archive[a-z0-9_]*|usage_heads|usage_otel|testsum[a-z0-9_]*)_test\.go$''']
