@@ -296,6 +296,15 @@ func TestBuildFlagsKeepWhatATestSees(t *testing.T) {
 	}
 }
 
+// The base run's output is shown redacted, as a failed command's tail is.
+func TestBaseTextWithNoResultsIsRedacted(t *testing.T) {
+	data := []byte("build failed\npassword=hunter2secret\nboom\n")
+	text := baseText("main", "abcdef1234", nil, nil, 1, data, false, nil)
+	if strings.Contains(text, "hunter2secret") || !strings.Contains(text, "boom") {
+		t.Errorf("%s", text)
+	}
+}
+
 func TestBaseTextWithNoResultsShowsPlainText(t *testing.T) {
 	data := []byte(`{"Action":"output","Package":"p","Output":"build failed: boom\n"}` + "\n")
 	text := baseText("main", "abcdef1234", nil, nil, 1, data, false, nil)
