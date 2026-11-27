@@ -816,12 +816,6 @@ type Board struct {
 	Columns     []BoardColumn `json:"columns"`
 }
 
-// manualOrder reports whether q lists issues in manual rank: no order: term,
-// or order:rank alone.
-func manualOrder(q wql.Query) bool {
-	return len(q.Order) == 0 || (len(q.Order) == 1 && q.Order[0].Field == "rank" && !q.Order[0].Desc)
-}
-
 // GetBoard returns the board: in sprint mode the active sprint's issues, in
 // kanban mode everything out of the backlog, with finished work fading off
 // after the project's done-visible window. filter is an optional query.
@@ -835,7 +829,7 @@ func (s *Service) GetBoard(ctx context.Context, actor *Actor, projectRef, filter
 	if err != nil {
 		return nil, invalid("%s", err.Error())
 	}
-	b.ManualOrder = manualOrder(q)
+	b.ManualOrder = q.ManualOrder()
 	c, err := s.compileQuery(ctx, actor, q, p.ID)
 	if err != nil {
 		return nil, err
@@ -930,7 +924,7 @@ func (s *Service) GetBacklog(ctx context.Context, actor *Actor, projectRef, filt
 	if err != nil {
 		return nil, invalid("%s", err.Error())
 	}
-	out := &Backlog{Mode: p.Settings.Mode, ManualOrder: manualOrder(q), Sprints: []SprintIssues{}}
+	out := &Backlog{Mode: p.Settings.Mode, ManualOrder: q.ManualOrder(), Sprints: []SprintIssues{}}
 	run := func(extra string, args ...any) ([]*Issue, error) {
 		c, err := s.compileQuery(ctx, actor, q, p.ID)
 		if err != nil {
