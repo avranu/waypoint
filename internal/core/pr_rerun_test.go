@@ -234,8 +234,36 @@ func TestRerunPullRequestRefusesClosedNoTokenAndStrangers(t *testing.T) {
 	if err := ask(&other); !errors.Is(err, ErrForbidden) {
 		t.Errorf("another agent: %v, want forbidden", err)
 	}
+	// A project viewer sees the pull request but may not merge it (1870.27).
+	viewer := be.user("vic", false)
+	if err := be.s.SetMember(be.ctx, be.admin, be.p.Key, viewer.User.Username, "viewer"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ask(viewer); !errors.Is(err, ErrForbidden) {
+		t.Errorf("viewer: %v, want forbidden", err)
+	}
+	// An open pull request whose head isn't known yet (1870.26).
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE pull_requests SET head_sha = '' WHERE id = ?`, pr.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := ask(be.agent); !IsInvalid(err) || !strings.Contains(err.Error(), "only an open pull request's head") {
+		t.Errorf("no head: %v", err)
+	}
 	if got := be.manualReruns(); got != 0 || len(g.calls) != 0 {
 		t.Errorf("manual_reruns %d, forge calls %v after refusals", got, g.calls)
+	}
+}
+
+// A draft's head is re-run like an open one's (1870.26).
+func TestRerunPullRequestDraft(t *testing.T) {
+	be := newBabysitEnv(t)
+	pr := be.open()
+	be.s.Forges = &rerunForge{shipForge: be.sg, failed: []string{"backend"}}
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE pull_requests SET state = 'draft' WHERE id = ?`, pr.ID); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := be.s.RerunPullRequest(be.ctx, be.agent, pr.ID, ""); err != nil || len(r.Jobs) != 1 || r.Count != 1 {
+		t.Fatalf("draft: %+v %v", r, err)
 	}
 }
 
