@@ -96,6 +96,12 @@ type Service struct {
 
 	feedbackBusy atomic.Bool
 
+	// syncMiss is the repos whose forge sync last answered 404, by repo id:
+	// the periodic sync waits longer after each one (repoMissBackoff). Kept in
+	// memory: a restart tries them again and says so again.
+	syncMissMu sync.Mutex
+	syncMiss   map[int64]repoMiss
+
 	rnd             func() float64
 	beta            func(a, b float64) float64
 	trustSeeds      []string
@@ -113,6 +119,8 @@ type Service struct {
 	gatewayRefused  sync.Map
 	gatewayLimits   sync.Map
 	staleChecksRead sync.Map
+
+	footprintUnknown sync.Map
 
 	baseMerged     sync.Map
 	baseRed        sync.Map
@@ -191,6 +199,7 @@ type Service struct {
 	stopWaits        stopWaits
 	shipWaits        shipWaits
 	babysitLocks     keyedLocks
+	babysitSweep     sweepMark // the babysit sweep that is running, if one is (CheckBabysits)
 	coverLooked      sync.Map
 	shipLocks        keyedLocks
 	branchLocks      namedLocks
@@ -239,6 +248,7 @@ func New(d *db.DB, cfg Config, log *slog.Logger) *Service {
 	s.started = s.now()
 	forgeEgress := cfg.Egress
 	forgeEgress.AllowLoopback = true
+	d.SetSlowHandler(func(ss db.SlowStatement) { s.log.Info(ss.String()) })
 	s.Forges = &httpForgeClient{http: forgeEgress.client(forgeTimeout), patient: forgeEgress.client(forgePatientTimeout)}
 	s.LLM = &httpLLM{http: forgeEgress.streamClient(llmHeaderTimeout)}
 	if strings.TrimSpace(cfg.MeaningURL) != "" {
@@ -314,7 +324,8 @@ type tx struct {
 
 type queryer = kernel.Queryer
 
-// write runs f in a write transaction and dispatches its events afterwards.
+// write runs f in a write transaction, then any afterUpdate work still queued,
+// commits, and dispatches the events. When f fails, the queued work is dropped.
 func (s *Service) write(ctx context.Context, actor *Actor, f func(t *tx) error) error {
 	return s.k.WriteSkip(ctx, actor, 1, func(kt *kernel.Tx) error { return f(&tx{Tx: kt, s: s}) })
 }
@@ -383,7 +394,6 @@ func ptrFloat(n sql.NullFloat64) *float64 {
 	return &v
 }
 
-// placeholders returns "?,?,?" for n values.
 // Opt is a JSON field that distinguishes "absent" from "null": Set is true
 // when the field was present, and Value is nil when it was null.
 type Opt[T any] struct {

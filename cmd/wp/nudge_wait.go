@@ -1,10 +1,12 @@
 package main
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"git.jmann.me/claude/waypoint/internal/lazyre"
@@ -12,10 +14,137 @@ import (
 
 const sleepWaitSecs = 30
 
+// sleepLoopMaxSecs is the bound of a waiting loop that is the one-call form
+// the notes recommend (`timeout 590 bash -c 'until CHECK; do sleep 5; done'`
+// with the Bash timeout at 600000). A loop that gives up sooner than this is
+// called again by the agent, a turn each time; one that never gives up is cut
+// off by the Bash timeout, then called again.
+const sleepLoopMaxSecs = 540
+
 var (
 	reSleepFor   = lazyre.New(`\bsleep\s+(\d+(?:\.\d+)?)([smhd]?)(?:[\s;&|)]|$)`)
 	reTaskOutput = lazyre.New(`(/[^\s'"]*/tasks/)([A-Za-z0-9]+)\.output\b`)
+
+	reTimeoutN  = lazyre.New(`(?:^|[\s;&|(])timeout\s+(?:-\S+\s+)*(\d+(?:\.\d+)?)([smhd]?)\b`)
+	reLoopCount = lazyre.New(`\bseq\s+(?:\d+\s+)?(\d+)\b|\{\d+\.\.(\d+)\}|for\s*\(\(\s*\w+\s*=\s*\d+\s*;\s*\w+\s*<=?\s*(\d+)`)
+	reForList   = lazyre.New(`\bfor\s+\w+\s+in\b`)
+	reWhileRead = lazyre.New(`\bwhile\s+(?:IFS=\S*\s+)?read\b`)
+	reUntilHead = lazyre.New(`\b(until|while)\s+([^;\n]+?)\s*;\s*do\b`)
+	rePgrepWait = lazyre.New(`\bpgrep\s+(?:-[a-zA-Z]+\s+)*('[^']+'|"[^"$]+"|[^\s;&|)'"]+)`)
+	reKill0     = lazyre.New(`\bkill\s+-0\s+(\d+)|/proc/(\d+)\b`)
+	reLocalHost = lazyre.New(`(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])`)
+	reTestsumWd = lazyre.New(`\bpgrep\b[^\n;|&]*(?:\bwp|\[w\]p)\s+(?:testsum|slot)\b|\bwp\s+slot\s+ls\b`)
 )
+
+// stripHeredocs drops the bodies of here-documents: a script being written
+// isn't run by the command, so a loop in it isn't one the command waits in.
+func stripHeredocs(cmd string) string {
+	if !strings.Contains(cmd, "<<") {
+		return cmd
+	}
+	var out []string
+	end := ""
+	for _, line := range strings.Split(cmd, "\n") {
+		if end != "" {
+			if strings.TrimSpace(line) == end {
+				end = ""
+			}
+			continue
+		}
+		out = append(out, line)
+		if i := strings.Index(line, "<<"); i >= 0 && !strings.HasPrefix(line[i:], "<<<") {
+			w := strings.TrimLeft(line[i+2:], "-~ ")
+			if j := strings.IndexAny(w, " ;|&)"); j >= 0 {
+				w = w[:j]
+			}
+			end = strings.Trim(w, `'"`)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// loopBoundSecs is how long the loops in cmd run at most: the shorter of an
+// outer `timeout N` (one whose own command holds the loop and its sleep, not
+// one that limits a single check) and the iteration count times the sleeps; +Inf for a
+// while or until that nothing bounds; 0 for a loop that isn't a wait (over a
+// list of things, or reading lines).
+func loopBoundSecs(cmd string) float64 {
+	if reWhileRead.MatchString(cmd) {
+		return 0
+	}
+	bound := math.Inf(1)
+	for _, m := range reTimeoutN.FindAllStringSubmatchIndex(cmd, -1) {
+		end, _ := shellSpan(cmd[m[1]:], 0)
+		if run := cmd[m[1] : m[1]+end]; !reLoop.MatchString(run) || !reSleep.MatchString(run) {
+			continue
+		}
+		n, _ := strconv.ParseFloat(cmd[m[2]:m[3]], 64)
+		bound = math.Min(bound, n*map[string]float64{"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[cmd[m[4]:m[5]]])
+	}
+	if m := reLoopCount.FindStringSubmatch(cmd); m != nil {
+		for _, g := range m[1:] {
+			if g != "" {
+				n, _ := strconv.ParseFloat(g, 64)
+				bound = math.Min(bound, n*sleepSeconds(cmd))
+			}
+		}
+	} else if reForList.MatchString(cmd) && !reUntilHead.MatchString(cmd) {
+		return 0
+	}
+	return bound
+}
+
+// sleepLoop: a loop that sleeps and checks again, and waits for something
+// for longer than a quick answer: it never gives up, or gives up before the
+// 590 seconds one call can wait, or waits on the test slots by their
+// processes. A loop that is the one-call form (`timeout 590 ...`), one that
+// ends within sleepWaitSecs (a local server a script starts), and one that
+// goes through a list (a pause between requests) are left alone.
+func sleepLoop(cmd string) bool {
+	cmd = stripHeredocs(cmd)
+	if !reLoop.MatchString(cmd) || sleepSeconds(cmd) <= 0 || reWPWait.MatchString(cmd) {
+		return false
+	}
+	if reTestsumWd.MatchString(cmd) {
+		return true
+	}
+	b := loopBoundSecs(cmd)
+	return b > sleepWaitSecs && (b < sleepLoopMaxSecs || math.IsInf(b, 1))
+}
+
+// loopCheck is the until-condition of the command's loop as one that can be
+// run by itself ("" when it reads a variable the command set or the loop
+// isn't a plain until or while).
+func loopCheck(cmd string) string {
+	m := reUntilHead.FindStringSubmatch(stripHeredocs(cmd))
+	if m == nil || strings.Contains(m[2], "$") || strings.Contains(m[2], "`") {
+		return ""
+	}
+	c := strings.TrimSpace(m[2])
+	switch {
+	case m[1] == "until":
+	case strings.HasPrefix(c, "! "):
+		c = strings.TrimPrefix(c, "! ")
+	case strings.HasPrefix(c, "[ ! ") && strings.HasSuffix(c, " ]"):
+		c = "[ " + strings.TrimPrefix(c, "[ ! ")
+	default:
+		c = "! " + c
+	}
+	return strings.ReplaceAll(c, "'", `'\''`)
+}
+
+// pidWait names the one call that blocks until a process the loop waits on
+// has exited, "" when the loop doesn't wait on one.
+func pidWait(cmd string) string {
+	cmd = stripHeredocs(cmd)
+	if m := reKill0.FindStringSubmatch(cmd); m != nil {
+		return "tail --pid=" + m[1] + m[2] + " -f /dev/null"
+	}
+	if m := rePgrepWait.FindStringSubmatch(cmd); m != nil {
+		return "tail --pid=$(pgrep -of " + m[1] + ") -f /dev/null"
+	}
+	return ""
+}
 
 // sleepSeconds is how long the command's sleeps last together.
 func sleepSeconds(cmd string) float64 {

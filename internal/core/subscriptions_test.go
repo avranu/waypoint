@@ -9,9 +9,8 @@ import (
 
 // TestSubscriptionOrder pins the order reactions run in after a commit (WP-ADR151
 // section 1): stages in order, each stage's subscribers in order, then the batch
-// subscribers. A stage is written with the events it sees, and a subscriber for
-// some kinds only with those. Moving, adding or refiltering one is a visible
-// change to this list.
+// subscribers; with what each stage sees and the kinds a subscriber is limited
+// to. Moving, adding or rerouting one is a visible change to this list.
 func TestSubscriptionOrder(t *testing.T) {
 	s := &Service{}
 	plan := s.subscriptionPlan()
@@ -26,7 +25,7 @@ func TestSubscriptionOrder(t *testing.T) {
 			}
 			names = append(names, name)
 		}
-		got = append(got, st.name+"("+sees[st.sees]+"): "+strings.Join(names, " "))
+		got = append(got, st.name+" ("+sees[st.sees]+"): "+strings.Join(names, " "))
 	}
 	var batch []string
 	for _, b := range plan.after {
@@ -34,10 +33,10 @@ func TestSubscriptionOrder(t *testing.T) {
 	}
 	got = append(got, "after: "+strings.Join(batch, " "))
 	want := []string{
-		"notices(private): deliverNotification",
-		"live(every): hub prWait stackParentMerged",
-		"notify(visible): notifyFor",
-		"react(visible): repoPushed[repo.pushed] kitPush[repo.pushed] resumeSessions[agents.resumed] dropUserTranscripts[user.deleted] refreshKit[kit.source_set] checkReviewHealth[review.loop_recorded] urgentFromLink addPermissionRule backfillEstimates[project.updated] autoEstimateAndTitle[issue.created] autoRelate[issue.created] followUpsByFiles[external.pr_merged] autoScreen deliverWebhooks pushIssueState[issue.status_changed] pushComment[issue.commented] pushCommentChange runRepoHook prAudit babysitEvent parkAnswered heldAnswered crossFiled leftover workLog checkSettled reviewAudit fanout goalDrift mergeOrder objective",
+		"notices (private): deliverNotification",
+		"live (every): hub prWait stackParentMerged",
+		"notify (visible): notifyFor",
+		"react (visible): renumberOnPR[" + EvPRUpdated + "] repoPushed[" + EvRepoPushed + "] kitPush[" + EvRepoPushed + "] resumeSessions[" + EvAgentsResumed + "] dropUserTranscripts[" + EvUserDeleted + "] refreshKit[" + EvKitSourceSet + "] checkReviewHealth[" + EvReviewLoopRecorded + "] urgentFromLink addPermissionRule backfillEstimates[" + EvProjectUpdated + "] autoEstimateAndTitle[" + EvIssueCreated + "] autoRelate[" + EvIssueCreated + "] followUpsByFiles[" + EvExternalPRMerged + "] autoScreen deliverWebhooks pushIssueState[" + EvIssueStatus + "] pushComment[" + EvIssueCommented + "] pushCommentChange runRepoHook prAudit babysitEvent parkAnswered heldAnswered crossFiled leftover workLog checkSettled reviewAudit fanout goalDrift mergeOrder objective",
 		"after: afterDispatch automations",
 	}
 	if len(got) != len(want) {

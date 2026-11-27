@@ -170,6 +170,7 @@ const CacheWarmCompact = users.CacheWarmCompact
 func HashPassword(pw string) string      { return users.HashPassword(pw) }
 func CheckPassword(hash, pw string) bool { return users.CheckPassword(hash, pw) }
 func WarmLogin()                         { users.WarmLogin() }
+func CanonicalIP(ip string) string       { return users.CanonicalIP(ip) }
 
 // The users domain's operations that take no actor: sign-in has none yet, and
 // public reads need none. The rest are on its Service, embedded in Service.
@@ -178,6 +179,12 @@ func (s *Service) UserByID(ctx context.Context, id int64) (*User, error) {
 }
 func (s *Service) Login(ctx context.Context, login, password, userAgent, ip string) (string, *User, error) {
 	return s.users.Login(ctx, login, password, userAgent, ip)
+}
+func (s *Service) LoginAccountID(ctx context.Context, login string) (int64, error) {
+	return s.users.LoginAccountID(ctx, login)
+}
+func (s *Service) SignedInFrom(ctx context.Context, userID int64, ip string) (bool, error) {
+	return s.users.SignedInFrom(ctx, userID, ip)
 }
 func (s *Service) SessionActor(ctx context.Context, tok string) (*Actor, error) {
 	return s.users.SessionActor(ctx, tok)

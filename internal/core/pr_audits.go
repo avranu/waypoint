@@ -146,13 +146,49 @@ func (s *Service) requestHeadAudit(ctx context.Context, pr *PullRequest) (bool, 
 	if err != nil || owner == 0 {
 		return false, err
 	}
-	a, err := s.RequestAudit(ctx, SystemActor(), AuditInput{PRID: pr.ID, Via: "system", owner: owner, head: pr.HeadSHA,
+	ledger, err := s.auditLedger(ctx, pr)
+	if err != nil {
+		s.log.WarnContext(ctx, "read what a pull request was told before its audit", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+		return false, err
+	}
+	over, err := s.auditedBefore(ctx, pr)
+	if err != nil {
+		s.log.WarnContext(ctx, "read what a pull request's earlier audit read", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
+		return false, err
+	}
+	a, err := s.RequestAudit(ctx, SystemActor(), AuditInput{PRID: pr.ID, Via: "system", owner: owner, head: pr.HeadSHA, ledger: ledger, over: over,
 		requestKey: fmt.Sprintf(prAuditKey, pr.ID, strings.ToLower(pr.HeadSHA))})
 	if err != nil {
 		s.log.Info("audit a pull request skipped", "repo", pr.Repo, "number", pr.Number, "err", err)
 		return false, nil
 	}
 	return sameSHA(a.Ref, pr.HeadSHA), nil
+}
+
+// auditedBefore is the earlier head a later head's audit follows up (WP-1938):
+// the ref of the pull request's newest finished audit of the pull request's
+// own change that read another change than the head's. "" when there is none,
+// and the head's audit reads the whole change.
+func (s *Service) auditedBefore(ctx context.Context, pr *PullRequest) (string, error) {
+	heads, err := s.sameChangeHeads(ctx, pr)
+	if err != nil {
+		return "", err
+	}
+	rows, err := s.db.R.QueryContext(ctx, `SELECT ref FROM code_audits WHERE pr_id = ? AND purpose = '' AND status = ? AND target = 'pr' ORDER BY id DESC`, pr.ID, AuditDone)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ref string
+		if err := rows.Scan(&ref); err != nil {
+			return "", err
+		}
+		if shaRE.MatchString(ref) && !slices.ContainsFunc(heads, func(h string) bool { return sameSHA(ref, h) }) {
+			return ref, nil
+		}
+	}
+	return "", rows.Err()
 }
 
 // askHeadAudit is requestHeadAudit for a caller that doesn't wait on the
@@ -237,10 +273,27 @@ func (s *Service) sameChangeHeads(ctx context.Context, pr *PullRequest) ([]strin
 	return heads, rows.Err()
 }
 
+// auditHoldingSQL is true of a queued or running audit a (its job j) that
+// holds its pull request: bound, in order, to the earliest start of a running
+// job, the earliest creation of an audit no runner has taken, and the earliest
+// failure whose rerun is still waited for (auditHoldingArgs).
+const auditHoldingSQL = `((j.state = 'running' AND j.started_at > ?) OR (coalesce(j.state, 'queued') = 'queued' AND a.created_at > ?)
+	OR EXISTS (SELECT 1 FROM json_each(a.attempts) x WHERE json_extract(x.value, '$.rerun') AND json_extract(x.value, '$.at') > ?))`
+
+// auditRerunWait is how long after the failure that queued it a rerun holds
+// the pull request without a runner having taken it: its delay, then as long
+// as a new audit waits for a runner.
+const auditRerunWait = auditRetryStep + auditQueueWait
+
+func auditHoldingArgs(now int64) []any {
+	return []any{now - auditWaitMax.Milliseconds(), now - auditQueueWait.Milliseconds(), now - auditRerunWait.Milliseconds()}
+}
+
 // auditGoing is the pull request's audit that holds the babysitter and the
 // merge back: one a runner is reading the pull request for (taken in the
-// last auditWaitMax), or one asked for in the last auditQueueWait that no
-// runner has taken yet (its job queued, or its models busy).
+// last auditWaitMax), one asked for in the last auditQueueWait that no
+// runner has taken yet (its job queued, or its models busy), or one that
+// failed in the last auditRerunWait and runs again (endAuditFailed).
 func (s *Service) auditGoing(ctx context.Context, prID int64) (int64, bool) {
 	id, going, rerr := s.auditGoingErr(ctx, prID)
 	if rerr != nil {
@@ -257,10 +310,9 @@ func (s *Service) auditGoingErr(ctx context.Context, prID int64) (int64, bool, e
 	now := s.nowMS()
 	var id int64
 	err := s.db.R.QueryRowContext(ctx, `SELECT a.id FROM code_audits a LEFT JOIN runner_jobs j ON j.id = a.job_id
-		WHERE a.pr_id = ? AND a.status IN ('queued','running')
-		AND ((j.state = 'running' AND j.started_at > ?) OR (coalesce(j.state, 'queued') = 'queued' AND a.created_at > ?))
+		WHERE a.pr_id = ? AND a.status IN ('queued','running') AND `+auditHoldingSQL+`
 		ORDER BY a.id DESC LIMIT 1`,
-		prID, now-auditWaitMax.Milliseconds(), now-auditQueueWait.Milliseconds()).Scan(&id)
+		append([]any{prID}, auditHoldingArgs(now)...)...).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, false, nil
 	}
@@ -327,9 +379,10 @@ func (s *Service) roundRunning(ctx context.Context, prID int64) (bool, error) {
 func (s *Service) auditDeadline(ctx context.Context, id int64) (*time.Time, error) {
 	var created int64
 	var state string
-	var started *int64
-	err := s.db.R.QueryRowContext(ctx, `SELECT a.created_at, coalesce(j.state, 'queued'), j.started_at FROM code_audits a
-		LEFT JOIN runner_jobs j ON j.id = a.job_id WHERE a.id = ?`, id).Scan(&created, &state, &started)
+	var started, rerun *int64
+	err := s.db.R.QueryRowContext(ctx, `SELECT a.created_at, coalesce(j.state, 'queued'), j.started_at,
+		(SELECT max(json_extract(x.value, '$.at')) FROM json_each(a.attempts) x WHERE json_extract(x.value, '$.rerun'))
+		FROM code_audits a LEFT JOIN runner_jobs j ON j.id = a.job_id WHERE a.id = ?`, id).Scan(&created, &state, &started, &rerun)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -339,6 +392,11 @@ func (s *Service) auditDeadline(ctx context.Context, id int64) (*time.Time, erro
 	at := time.UnixMilli(created).Add(auditQueueWait)
 	if state == "running" && started != nil {
 		at = time.UnixMilli(*started).Add(auditWaitMax)
+	}
+	if rerun != nil {
+		if until := time.UnixMilli(*rerun).Add(auditRerunWait); until.After(at) {
+			at = until
+		}
 	}
 	return &at, nil
 }
@@ -351,12 +409,16 @@ func (s *Service) newestAudit(ctx context.Context, prID int64) (int64, string, e
 
 // newestOf is newestAudit for audits of a purpose ("" or AuditFootprint):
 // a footprint check finishing doesn't make an audit's findings go away.
+// A rerun (endAuditFailed) read the head it was first asked for, so one
+// that ends after a later-asked audit is done doesn't take its place.
 // No finished audit is the answer (0, ""); a failed read is an error.
 func (s *Service) newestOf(ctx context.Context, prID int64, purpose string) (int64, string, error) {
 	var id int64
 	var status string
-	err := s.db.R.QueryRowContext(ctx, `SELECT id, status FROM code_audits WHERE pr_id = ? AND purpose = ? AND status IN ('done','failed','limited','cancelled')
-		ORDER BY coalesce(finished_at, created_at) DESC, id DESC LIMIT 1`, prID, purpose).Scan(&id, &status)
+	err := s.db.R.QueryRowContext(ctx, `SELECT a.id, a.status FROM code_audits a WHERE a.pr_id = ? AND a.purpose = ? AND a.status IN ('done','failed','limited','cancelled')
+		AND NOT (EXISTS (SELECT 1 FROM json_each(a.attempts) x WHERE json_extract(x.value, '$.rerun'))
+			AND EXISTS (SELECT 1 FROM code_audits n WHERE n.pr_id = a.pr_id AND n.purpose = a.purpose AND n.id > a.id AND n.status = 'done'))
+		ORDER BY coalesce(a.finished_at, a.created_at) DESC, a.id DESC LIMIT 1`, prID, purpose).Scan(&id, &status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, "", nil
 	}

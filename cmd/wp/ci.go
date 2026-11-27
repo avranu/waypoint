@@ -172,6 +172,7 @@ func cmdCITests(c *cli, args []string) error {
 	days := fs.Int("days", 0, "look back `N` days (default 14, at most 30)")
 	pkg := fs.String("package", "", "only package `P` and those under it")
 	limit := fs.Int("limit", 0, "at most `N` of each")
+	short(fs, "n", "limit")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err

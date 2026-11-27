@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/transcript"
 )
 
@@ -249,12 +251,31 @@ func (s *Service) SessionFacts(ctx context.Context, actor *Actor, q FactsQuery) 
 	if actor == nil {
 		return nil, ErrUnauthorized
 	}
-	if err := actor.RequirePersonDirect("reading session facts"); err != nil {
-		return nil, err
-	}
+	// usageWho needs usage.read, refuses a runner job's scoped token and an
+	// agent token reading another person's usage.
 	uids, everyone, _, err := s.usageWho(ctx, actor, q.User)
 	if err != nil {
+		// Advise leaving out --user only where that read would succeed: not
+		// for a token that may read no usage at all.
+		if actor.HidesCommandText() && errors.Is(err, kernel.ErrForbidden) && strings.TrimSpace(q.User) != "" {
+			if _, _, _, own := s.usageWho(ctx, actor, ""); own == nil {
+				return nil, kernel.Forbidden("%v; read your own person's sessions by leaving out --user", err)
+			}
+		}
 		return nil, err
+	}
+	if actor.Automation != nil {
+		if err := actor.RequirePersonDirect("reading session facts"); err != nil {
+			return nil, err
+		}
+	}
+	// An agent, even in its person's shell, reads its own person's facts but
+	// not anyone else's: decided on the resolved ids, so a differently-cased
+	// name or an alias cannot dodge it.
+	if everyone || len(uids) != 1 || uids[0] != actor.User.ID {
+		if err := actor.RequirePersonDirect("reading another person's session facts"); err != nil {
+			return nil, forbidden("%v; read your own person's sessions by leaving out --user", err)
+		}
 	}
 	q.Session, q.Task = strings.TrimSpace(q.Session), strings.TrimSpace(q.Task)
 	if (q.Session == "") == (q.Task == "") {
@@ -335,7 +356,7 @@ func (s *Service) SessionFacts(ctx context.Context, actor *Actor, q FactsQuery) 
 	if out.Status.FilesArchived == 0 {
 		return nil, notFound("archived transcript for " + out.Key)
 	}
-	if err := s.factsCount(ctx, scopes, out); err != nil {
+	if err := s.factsCount(ctx, scopes, actor.HidesCommandText(), out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -492,7 +513,7 @@ func topN[K comparable](m map[K]int, n int, less func(a, b K) bool) []K {
 }
 
 // factsCount reads the rows of the scopes and counts them.
-func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *SessionFacts) error {
+func (s *Service) factsCount(ctx context.Context, scopes []factScope, hideCommands bool, o *SessionFacts) error {
 	w, args := scopesWhere(scopes, "")
 	o.Turns.ByOrigin = map[string]int{}
 	o.Turns.BySlashCommand = map[string]int{}
@@ -637,6 +658,9 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, o *Session
 	}
 	for _, k := range topN(times, 10, func(a, b [2]string) bool { return a[0]+a[1] < b[0]+b[1] }) {
 		r := repeatShown[k]
+		if hideCommands && (r.tool == "Bash" || r.tool == "PowerShell") {
+			r.target = usageCommandRedacted
+		}
 		o.Repeated.Top = append(o.Repeated.Top, RepeatedCall{Tool: r.tool, Target: r.target, Times: times[k]})
 	}
 	o.DocsRead.Distinct = len(docs)

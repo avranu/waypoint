@@ -242,6 +242,13 @@ type AgentJob struct {
 	// starts from: the runner puts the diff from it to Base in the prompt,
 	// so the model reads the change and has the whole checkout around it.
 	DiffFrom string `json:"diff_from,omitempty"`
+	// DiffOver, for an audit that follows an earlier one (WP-1938), is the
+	// head that was audited; the runner puts the change since it in the
+	// prompt, then OverPrompt, when it can make that range, and the whole
+	// change as without it when it can't. Both are ignored by a runner that
+	// doesn't know them.
+	DiffOver   string `json:"diff_over,omitempty"`
+	OverPrompt string `json:"over_prompt,omitempty"`
 	// DiffSince, for an audit of recent changes (unix seconds): the change
 	// starts at Base's last first-parent commit before then (WP-548).
 	DiffSince int64 `json:"diff_since,omitempty"`

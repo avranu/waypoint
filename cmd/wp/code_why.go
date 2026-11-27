@@ -83,6 +83,7 @@ func prNumber(subject string) int {
 func cmdCodeWhy(c *cli, args []string) error {
 	fs, db := c.codeFlags()
 	limit := fs.Int("limit", 12, "at most `N` commits")
+	short(fs, "n", "limit")
 	sf := addScopeFlags(fs)
 	pos, err := c.parse(fs, args)
 	if err != nil {

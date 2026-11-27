@@ -320,7 +320,12 @@ func TestDoctorBottleneckQueue(t *testing.T) {
 	if !slices.ContainsFunc(d.Bottleneck.Evidence, func(e string) bool { return strings.Contains(e, "6 conflicts, 1 failed, 2 cancelled") }) {
 		t.Errorf("evidence = %q", d.Bottleneck.Evidence)
 	}
-	if !stacksFailing(d.Lines[1].Stacks) || stacksFailing(CIStackStats{Failed: 5, Passed: 1}) || stacksFailing(CIStackStats{Failed: 2}) {
+	// The count is the trigger's: failed and conflicts, not the cancelled.
+	if !slices.ContainsFunc(d.Bottleneck.Evidence, func(e string) bool { return strings.Contains(e, ": 7 candidates failed or conflicted and none passed") }) {
+		t.Errorf("evidence = %q", d.Bottleneck.Evidence)
+	}
+	if !stacksFailing(d.Lines[1].Stacks) || stacksFailing(CIStackStats{Failed: 5, Passed: 1}) || stacksFailing(CIStackStats{Failed: 2}) ||
+		stacksFailing(CIStackStats{Failed: 2, Cancelled: 9}) {
 		t.Error("stacksFailing")
 	}
 	if got := mainRedDetail(CIMain{Branch: "main"}); !strings.HasPrefix(got, "No main push run in the last day") {

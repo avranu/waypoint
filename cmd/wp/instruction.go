@@ -418,14 +418,16 @@ func instrSwitch(on bool) func(c *cli, args []string) error {
 
 var instrOnCmd = &command{
 	name: "on", args: "ID", aliases: []string{"enable"},
-	summary: "send an instruction again (people only)",
-	run:     instrSwitch(true),
+	summary:  "send an instruction again (people only)",
+	examples: []string{"wp instruction on 12"},
+	run:      instrSwitch(true),
 }
 
 var instrOffCmd = &command{
 	name: "off", args: "ID", aliases: []string{"disable"},
-	summary: "stop sending an instruction without deleting it (people only)",
-	run:     instrSwitch(false),
+	summary:  "stop sending an instruction without deleting it (people only)",
+	examples: []string{"wp instruction off 12"},
+	run:      instrSwitch(false),
 }
 
 func instrReview(approve bool) func(c *cli, args []string) error {
@@ -455,19 +457,22 @@ func instrReview(approve bool) func(c *cli, args []string) error {
 
 var instrApproveCmd = &command{
 	name: "approve", args: "ID [--rev N]",
-	summary: "approve an agent's change, so it is what is sent (people only)",
-	run:     instrReview(true),
+	summary:  "approve an agent's change, so it is what is sent (people only)",
+	examples: []string{"wp instruction approve 12"},
+	run:      instrReview(true),
 }
 
 var instrRejectCmd = &command{
 	name: "reject", args: "ID [--rev N]",
-	summary: "turn an agent's change down (people only)",
-	run:     instrReview(false),
+	summary:  "turn an agent's change down (people only)",
+	examples: []string{"wp instruction reject 12"},
+	run:      instrReview(false),
 }
 
 var instrRmCmd = &command{
 	name: "rm", args: "ID", aliases: []string{"delete", "remove"},
-	summary: "delete an instruction and its history (people only; off keeps it)",
+	summary:  "delete an instruction and its history (people only; off keeps it)",
+	examples: []string{"wp instruction rm 12 --yes"},
 	run: func(c *cli, args []string) error {
 		fs := c.flags()
 		yes := fs.Bool("yes", false, "don't ask")

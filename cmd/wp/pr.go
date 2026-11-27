@@ -53,10 +53,10 @@ func init() {
 			examples: []string{"wp pr merge 12 --when-ready", "wp pr merge 12 --style squash --keep-branch"}, run: cmdPRMerge},
 		prUrgentCmd,
 		prAfterCmd,
-		{name: "dismiss", args: "FINDING|ID... -m NOTE", summary: "say a finding is wrong or not worth fixing: it stops blocking (FINDING: a number like 281, or AUDIT.N like 12.1)",
-			examples: []string{`wp pr dismiss 281 282 c14 -m "the caller validates it"`, `wp pr dismiss 12.1 -m "the caller holds the lock"`}, run: cmdPRDismiss},
-		{name: "reopen", args: "FINDING...", summary: "undo a dismissal or resolution: the finding blocks again (FINDING: a number like 280, or AUDIT.N like 12.1)",
-			examples: []string{"wp pr reopen 280", "wp pr reopen 12.1"}, run: cmdPRReopen},
+		{name: "dismiss", args: "FINDING|ID... -m NOTE [--evidence TEXT]", summary: "dismiss a finding or comment so it stops blocking (281, AUDIT.N like 12.1, or c14)",
+			examples: []string{`wp pr dismiss 281 282 c14 -m "the caller validates it"`, `wp pr dismiss 12.1 -m "the caller holds the lock" --evidence "internal/x.go:40 takes the lock before the call"`}, run: cmdPRDismiss},
+		{name: "reopen", args: "FINDING|ID...", summary: "reopen a dismissed or resolved finding or comment (280, AUDIT.N like 12.1, or c12)",
+			examples: []string{"wp pr reopen 280", "wp pr reopen 12.1", "wp pr reopen c12"}, run: cmdPRReopen},
 		prReviewCmd,
 		prReviewStatsCmd,
 		prBodiesCmd,
@@ -296,7 +296,31 @@ func (d *prDetail) text() string {
 			}
 		}
 	}
+	if (d.State == "open" || d.State == "draft") && d.needsTodoHint() {
+		fmt.Fprintf(&b, "\ntodo: wp pr todo %d\n", d.Number)
+	}
 	return b.String()
+}
+
+func (d *prDetail) needsTodoHint() bool {
+	if d.Shipping == nil {
+		return false
+	}
+	if d.Shipping.Gate.State == "failed" {
+		return true
+	}
+	for _, f := range d.Shipping.Findings {
+		if f.State == "open" {
+			return true
+		}
+	}
+	for _, r := range d.Shipping.Readiness.Reasons {
+		rl := strings.ToLower(r)
+		if strings.Contains(rl, "comment") || strings.Contains(rl, "finding") || strings.Contains(rl, "review") || strings.Contains(rl, "conflict") {
+			return true
+		}
+	}
+	return false
 }
 
 // holdTook is how long a hold lasted: 4m, 3h44m, 2d5h.
@@ -530,8 +554,8 @@ func auditFindingRef(arg string) (string, bool) {
 
 // markAuditFinding sets a carried audit finding's verdict through the call
 // wp audit mark makes.
-func (c *cli) markAuditFinding(ref, state, note string) ([]byte, error) {
-	return c.call("POST", "/api/v1/audits/findings", map[string]any{"ids": []string{ref}, "state": state, "note": note, "issue": ""})
+func (c *cli) markAuditFinding(ref, state, note, evidence string) ([]byte, error) {
+	return c.call("POST", "/api/v1/audits/findings", map[string]any{"ids": []string{ref}, "state": state, "note": note, "issue": "", "evidence": evidence})
 }
 
 // findingArg reads a finding's number ("280" or "#280").
@@ -545,16 +569,21 @@ func (c *cli) findingArg(arg string) (int64, error) {
 
 func cmdPRDismiss(c *cli, args []string) error {
 	fs := c.flags()
-	note := fs.String("m", "", "why (`NOTE`); agents must give one")
+	note := fs.String("message", "", "why (`NOTE`); agents must give one")
+	short(fs, "m", "message")
+	evidence := fs.String("evidence", "", "what shows an audit finding (AUDIT.N) wrong (`TEXT`); an agent gives it for a pull request it isn't working on, and must run as strong a model as the one that found it")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) == 0 {
-		return c.usage("give the finding's number, as wp pr show lists it, a carried audit finding's name (AUDIT.N, like 12.1), or a review comment's id")
+		return c.usage("give a finding number (280), carried audit finding (12.1), or review comment id (c14)")
 	}
 	return c.each(listArgs(pos), false, func(arg string) error {
 		if strings.HasPrefix(strings.ToLower(arg), "c") {
+			if *evidence != "" {
+				return c.usage("--evidence is for an audit finding (AUDIT.N, like 12.1); a review comment (%s) takes only -m", arg)
+			}
 			raw, err := c.call("POST", "/api/v1/review-comments/"+arg+"/dismiss", map[string]string{"note": *note})
 			if err != nil {
 				return err
@@ -562,7 +591,7 @@ func cmdPRDismiss(c *cli, args []string) error {
 			return c.emit(raw, func() string { return fmt.Sprintf("Dismissed %s.", arg) })
 		}
 		if ref, ok := auditFindingRef(arg); ok {
-			raw, err := c.markAuditFinding(ref, "rejected", *note)
+			raw, err := c.markAuditFinding(ref, "rejected", *note, *evidence)
 			if err != nil {
 				return err
 			}
@@ -571,6 +600,9 @@ func cmdPRDismiss(c *cli, args []string) error {
 		id, err := c.findingArg(arg)
 		if err != nil {
 			return err
+		}
+		if *evidence != "" {
+			return c.usage("--evidence is for an audit finding (AUDIT.N, like 12.1); a bot's finding (%s) takes only -m", arg)
 		}
 		raw, err := c.call("POST", fmt.Sprintf("/api/v1/findings/%d/dismiss", id), map[string]string{"note": *note})
 		if err != nil {
@@ -587,11 +619,18 @@ func cmdPRReopen(c *cli, args []string) error {
 		return err
 	}
 	if len(pos) == 0 {
-		return c.usage("give the finding's number, as wp pr show lists it, or a carried audit finding's name (AUDIT.N, like 12.1)")
+		return c.usage("give a finding number (280), carried audit finding (12.1), or review comment id (c12)")
 	}
 	return c.each(listArgs(pos), false, func(arg string) error {
+		if strings.HasPrefix(strings.ToLower(arg), "c") {
+			raw, err := c.call("POST", "/api/v1/review-comments/unresolve", map[string]any{"ids": []string{arg}})
+			if err != nil {
+				return err
+			}
+			return c.emit(raw, func() string { return resolvedLines(raw) })
+		}
 		if ref, ok := auditFindingRef(arg); ok {
-			raw, err := c.markAuditFinding(ref, "open", "")
+			raw, err := c.markAuditFinding(ref, "open", "", "")
 			if err != nil {
 				return err
 			}

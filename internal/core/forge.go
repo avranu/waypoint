@@ -876,12 +876,22 @@ func (s *Service) RemoveLink(ctx context.Context, actor *Actor, issueRef string,
 		if others > 0 {
 			return nil
 		}
+		// A status deleted since, or one of a project the issue has left, can't
+		// be restored: the link still goes. A failed read keeps the link, so
+		// removing it again can still put the issue back.
 		back, err := s.statusByID(ctx, t, from.Int64)
-		if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			s.log.InfoContext(ctx, "unlink: earlier status is gone", "issue", i.ID, "status", from.Int64)
 			return nil
+		} else if err != nil {
+			return err
 		}
 		var pid int64
-		if err := t.QueryRowContext(ctx, `SELECT project_id FROM statuses WHERE id = ?`, back.ID).Scan(&pid); err != nil || pid != i.ProjectID {
+		if err := t.QueryRowContext(ctx, `SELECT project_id FROM statuses WHERE id = ?`, back.ID).Scan(&pid); err != nil {
+			return fmt.Errorf("earlier status project: %w", err)
+		}
+		if pid != i.ProjectID {
+			s.log.InfoContext(ctx, "unlink: earlier status is another project's", "issue", i.ID, "status", back.ID)
 			return nil
 		}
 		var sets []string
@@ -1551,6 +1561,64 @@ func (s *Service) hideConfidential(ctx context.Context, sys *Actor, f *Forge, is
 	})
 }
 
+// repoMiss is one repo's run of 404s from the periodic sync.
+type repoMiss struct {
+	streak int
+	next   time.Time
+}
+
+const (
+	repoMissBackoffBase = 30 * time.Minute
+	repoMissBackoffMax  = 6 * time.Hour
+)
+
+// repoMissBackoff is the wait after streak 404s in a row: 30 minutes, doubled
+// each time, up to six hours.
+func repoMissBackoff(streak int) time.Duration {
+	d := repoMissBackoffBase
+	for i := 1; i < streak && d < repoMissBackoffMax; i++ {
+		d *= 2
+	}
+	return min(d, repoMissBackoffMax)
+}
+
+// syncWaiting says whether the periodic sync leaves this repo for later,
+// because its last try answered 404.
+func (s *Service) syncWaiting(id int64) bool {
+	s.syncMissMu.Lock()
+	defer s.syncMissMu.Unlock()
+	m, ok := s.syncMiss[id]
+	return ok && s.now().Before(m.next)
+}
+
+func (s *Service) clearRepoMissing(id int64) {
+	s.syncMissMu.Lock()
+	delete(s.syncMiss, id)
+	s.syncMissMu.Unlock()
+}
+
+// noteRepoMissing counts a 404 for the repo and backs its next try off. The
+// first of a run is logged at Warn, the rest at Debug. The repo stays
+// attached: detaching it is a person's decision.
+func (s *Service) noteRepoMissing(ctx context.Context, id int64, repo string, err error) {
+	s.syncMissMu.Lock()
+	if s.syncMiss == nil {
+		s.syncMiss = map[int64]repoMiss{}
+	}
+	m := s.syncMiss[id]
+	m.streak++
+	wait := repoMissBackoff(m.streak)
+	m.next = s.now().Add(wait)
+	s.syncMiss[id] = m
+	s.syncMissMu.Unlock()
+	if m.streak == 1 {
+		s.log.WarnContext(ctx, "repo sync: the forge says the repo was not found; it may have moved or lost access, and is tried again less often until it answers",
+			"repo", repo, "id", id, "retry_in", wait.String(), "err", err)
+		return
+	}
+	s.log.DebugContext(ctx, "repo sync: repo still not found", "repo", repo, "id", id, "streak", m.streak, "retry_in", wait.String())
+}
+
 // SyncRepo pulls issues updated since the last sync for one project repo.
 func (s *Service) SyncRepo(ctx context.Context, repoID int64) error {
 	var forgeID int64
@@ -1590,6 +1658,9 @@ func (s *Service) SyncRepo(ctx context.Context, repoID int64) error {
 	if len(failed) > 0 {
 		return fmt.Errorf("%d of %d issues failed to sync: %w", len(failed), len(items), errors.Join(failed...))
 	}
+	// The forge answered for this repo, from any caller (a webhook or a person's
+	// sync as well as the periodic one), so the periodic sync stops waiting.
+	s.clearRepoMissing(repoID)
 	_, err = s.db.W.ExecContext(ctx, `UPDATE project_repos SET last_synced_at = ? WHERE id = ?`, started, repoID)
 	return err
 }
@@ -1632,8 +1703,19 @@ func (s *Service) SyncAllRepos(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if err := s.SyncRepo(ctx, r.id); err != nil && ctx.Err() == nil {
+		if s.syncWaiting(r.id) {
+			continue
+		}
+		err := s.SyncRepo(ctx, r.id)
+		if ctx.Err() != nil {
+			continue
+		}
+		if isStatus(err, http.StatusNotFound) {
+			s.noteRepoMissing(ctx, r.id, r.repo, err)
+		} else if err != nil {
 			s.log.WarnContext(ctx, "repo sync failed", "repo", r.repo, "id", r.id, "err", err)
+		} else {
+			s.clearRepoMissing(r.id)
 		}
 	}
 	var issues []int64

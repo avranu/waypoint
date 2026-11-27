@@ -60,7 +60,7 @@ func TestSessionPrefsAreSavedCheckedAndTidied(t *testing.T) {
 		{SessionPrefs{All: SessionSettings{Effort: "huge"}}, "effort"},
 		{SessionPrefs{All: SessionSettings{Model: "opus; rm -rf /"}}, "model"},
 		{SessionPrefs{Repos: map[string]SessionSettings{"waypoint": {Effort: "low"}}}, "owner/name"},
-		{SessionPrefs{Repos: map[string]SessionSettings{"a/b": {Effort: "x"}, "A/B": {Effort: "low"}}}, ""},
+		{SessionPrefs{Repos: map[string]SessionSettings{"a/b": {Effort: "high"}, "A/B": {Effort: "low"}}}, "two sets of session settings"},
 	} {
 		if _, err := save(&bad.p); err == nil || !strings.Contains(err.Error(), bad.want) {
 			t.Errorf("%+v: %v", bad.p, err)
