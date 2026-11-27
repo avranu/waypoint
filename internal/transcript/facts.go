@@ -13,7 +13,7 @@ package transcript
 // ParserVersion is stored on every row the parser produced; a bump re-derives
 // every archived file. Change it whenever the parser would produce different
 // rows from the same bytes.
-const ParserVersion = 4
+const ParserVersion = 5
 
 // Thread names who wrote a record: the main thread, or the sub-agent's id.
 const MainThread = "main"
@@ -132,6 +132,9 @@ type ToolCall struct {
 	// recogniser in ShellSession.Edit; false too for a call that was refused
 	// (it never ran); nil for other tools and for a command too long to read.
 	ShellWrite *bool
+	// ShellFiles (Bash only): the files of the work the command wrote, as
+	// ShellSession.EditFiles lists them; "dir/*" for a write naming none.
+	ShellFiles []string
 	// Target is a file path, URL, command head (first words, clipped), a search
 	// pattern or query (clipped), a skill name or the recipient of a message.
 	// TargetKind says which; nil when the call has none.

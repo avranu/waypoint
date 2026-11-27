@@ -351,7 +351,7 @@ func TestParserOutputIsPinnedToParserVersion(t *testing.T) {
 	)
 	sum := sha256.Sum256([]byte(j(r)))
 	got := hex.EncodeToString(sum[:])
-	const pinned = "5cfd30389a8b0ec1e4e8526ccdca5a5f136dd75100150b67658428b4e0aaf2fd"
+	const pinned = "eb5b05320797e7a12450485e75451f6d9fc8928e5cfeb91fd7bb6af326cb152c"
 	if got != pinned {
 		t.Fatalf("the parser's output for the fixture changed (version %d): bump ParserVersion and re-pin this to %s", ParserVersion, got)
 	}

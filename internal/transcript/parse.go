@@ -576,8 +576,8 @@ func (p *parser) toolUse(bl *block, r *rec, ts *int64, thread, msgID string, byS
 				Command string `json:"command"`
 			}
 			if json.Unmarshal(bl.Input, &cmd) == nil {
-				if wrote, known := p.shell.Edit(cmd.Command, r.Cwd); known {
-					t.ShellWrite = ptr(wrote)
+				if files, known := p.shell.EditFiles(cmd.Command, r.Cwd); known {
+					t.ShellWrite, t.ShellFiles = ptr(len(files) > 0), files
 				}
 			}
 		}
@@ -754,7 +754,7 @@ func (p *parser) results(blocks []block, r *rec, ts *int64, n int) {
 		}
 		rejected := r.PermissionDecision != nil && r.PermissionDecision.Decision == "reject"
 		if t.Tool == "Bash" && (rejected || bl.IsError && LooksRefused(text)) {
-			t.ShellWrite = ptr(false) // it never ran
+			t.ShellWrite, t.ShellFiles = ptr(false), nil // it never ran
 		}
 		if bl.IsError {
 			t.Error = strp(clip(text, errorRunes))

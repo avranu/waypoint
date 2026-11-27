@@ -188,14 +188,18 @@ type SessionFacts struct {
 		ScriptShellEdits int `json:"script_shell_edits"`
 		// ScriptShellUnknown: Bash calls a REPL script ran with no answer; not in ShellUnknown.
 		ScriptShellUnknown int `json:"script_shell_unknown"`
-		// FilesChanged and the line counts are the edit tools' only: a Bash
-		// call's record says neither which files it wrote nor how many lines.
-		FilesChanged int   `json:"files_changed"`
-		LinesAdded   Tally `json:"lines_added"`
-		LinesRemoved Tally `json:"lines_removed"`
-		TestEdits    int   `json:"test_edits"` // edits of test files (not failed)
-		TestFiles    int   `json:"test_files"`
-		TestLinesAdd Tally `json:"test_lines_added"`
+		// FilesChanged is the files the edits and the shell edits wrote;
+		// ShellFilesUnnamed is the shell edits whose files the record does not
+		// name (git apply, go fmt, a row stored before it named them), so above
+		// 0 FilesChanged is a floor. The line counts are the edit tools' only:
+		// a Bash call's record says no lines.
+		FilesChanged      int   `json:"files_changed"`
+		ShellFilesUnnamed int   `json:"shell_files_unnamed"`
+		LinesAdded        Tally `json:"lines_added"`
+		LinesRemoved      Tally `json:"lines_removed"`
+		TestEdits         int   `json:"test_edits"` // edits of test files (not failed)
+		TestFiles         int   `json:"test_files"`
+		TestLinesAdd      Tally `json:"test_lines_added"`
 	} `json:"changes"`
 
 	Repeated struct {
@@ -614,7 +618,7 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, hideComman
 	}
 
 	// #nosec G202 -- w is built from fixed conditions; values are bound
-	rows, err = s.db.R.QueryContext(ctx, `SELECT tool, target, read_offset, read_limit, is_error, is_test, lines_added, lines_removed, by_script, shell_write
+	rows, err = s.db.R.QueryContext(ctx, `SELECT tool, target, read_offset, read_limit, is_error, is_test, lines_added, lines_removed, by_script, shell_write, shell_files
 		FROM fact_tool_calls WHERE `+w, args...)
 	if err != nil {
 		return err
@@ -630,7 +634,8 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, hideComman
 		var off, lim, isErr, isTest, add, rem sql.NullInt64
 		var script int
 		var shell sql.NullInt64
-		if err := rows.Scan(&tool, &target, &off, &lim, &isErr, &isTest, &add, &rem, &script, &shell); err != nil {
+		var shellFiles sql.NullString
+		if err := rows.Scan(&tool, &target, &off, &lim, &isErr, &isTest, &add, &rem, &script, &shell, &shellFiles); err != nil {
 			_ = rows.Close()
 			return err
 		}
@@ -677,6 +682,17 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, hideComman
 				o.Changes.ShellUnknown++
 			case shell.Int64 == 1:
 				o.Changes.ShellEdits++
+				// The files it wrote are files changed; a write naming none
+				// (dir/*: git apply, go fmt) changed some the row cannot name.
+				named := false
+				for _, f := range strings.Split(shellFiles.String, "\n") {
+					if f != "" && !strings.HasSuffix(f, "/*") {
+						changed[f], named = true, true
+					}
+				}
+				if !named {
+					o.Changes.ShellFilesUnnamed++
+				}
 			default:
 				o.Changes.ShellNone++
 			}

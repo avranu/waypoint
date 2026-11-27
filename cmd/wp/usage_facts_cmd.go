@@ -210,7 +210,14 @@ func factsRender(f *core.SessionFacts, oldServer bool) string {
 	if oldServer {
 		shell = "shell edits unknown (server too old to say)"
 	}
-	p("changes: %d edits (%d failed; %d more run by REPL scripts), %s; the edits changed %d files, lines added %s, removed %s (what shell edits changed is not counted)", c.Edits, c.Failed, c.ScriptEdits, shell, c.FilesChanged,
+	files := fmt.Sprintf("%d files changed by edits and shell edits", c.FilesChanged)
+	switch {
+	case oldServer:
+		files = fmt.Sprintf("the edits changed %d files (what shell edits changed is not counted)", c.FilesChanged)
+	case c.ShellFilesUnnamed > 0:
+		files = fmt.Sprintf("%d+ files changed by edits and shell edits (%d shell edits name no files)", c.FilesChanged, c.ShellFilesUnnamed)
+	}
+	p("changes: %d edits (%d failed; %d more run by REPL scripts), %s; %s; the edits' lines added %s, removed %s (shell edits' lines are not counted)", c.Edits, c.Failed, c.ScriptEdits, shell, files,
 		tallyText(c.LinesAdded, nil), tallyText(c.LinesRemoved, nil))
 	p("  test files edited: %d edits of %d test files, lines added %s", c.TestEdits, c.TestFiles, tallyText(c.TestLinesAdd, nil))
 	r := f.Repeated

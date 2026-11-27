@@ -3,6 +3,7 @@ package transcript
 import (
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -161,8 +162,20 @@ func (s *ShellSession) workPath(p string, cd ...string) bool {
 // follow, or that the session no longer remembers. The answer is then
 // "unknown", not "no". A file named by $(mktemp) or under $TMPDIR is scratch.
 func (s *ShellSession) Edit(cmd, cwd string) (wrote, known bool) {
+	files, known := s.EditFiles(cmd, cwd)
+	return len(files) > 0, known
+}
+
+// shellMaxFiles bounds the files EditFiles lists for one command.
+const shellMaxFiles = 64
+
+// EditFiles is Edit with the files of the work the command wrote: each a
+// cleaned absolute path, or a directory followed by "/*" for a write that
+// names no files (git apply, patch, find … -exec sed -i, go fmt), at most
+// shellMaxFiles of them. No files and known true is "wrote none".
+func (s *ShellSession) EditFiles(cmd, cwd string) (files []string, known bool) {
 	if len(cmd) > shellMaxCommand {
-		return false, false
+		return nil, false
 	}
 	cwd = ShellPosixDir(cwd)
 	s.Note(cwd)
@@ -217,12 +230,19 @@ func (s *ShellSession) Edit(cmd, cwd string) (wrote, known bool) {
 			if strings.HasPrefix(cwd, "/") {
 				here = path.Clean(cwd)
 			}
-			if s.workPath(path.Clean(p), cd, here) {
-				return true, true
+			p = path.Clean(p)
+			if w.Path == "*" {
+				p = strings.TrimSuffix(p, "/") + "/*"
+			}
+			if s.workPath(strings.TrimSuffix(p, "/*"), cd, here) && !slices.Contains(files, p) && len(files) < shellMaxFiles {
+				files = append(files, p)
 			}
 		}
 	}
-	return false, known
+	if len(files) > 0 {
+		return files, true // a write of the work is known, whatever else is not
+	}
+	return nil, known
 }
 
 // WritePlace is where a write lands, as the line spells it: its path, or for
@@ -253,13 +273,7 @@ func pipedFindRoot(cmds []ShellCommand, i int) string {
 			i-- // a substitution's commands stand before the command they are in
 		}
 		if f := cmds[i-1]; len(f.Words) > 0 && path.Base(f.Words[0]) == "find" {
-			for _, a := range f.Words[1:] {
-				if strings.HasPrefix(a, "-") || strings.ContainsAny(a, "()!") {
-					break
-				}
-				return a
-			}
-			return "."
+			return FindRoot(f.Words[1:])
 		}
 	}
 	return ""

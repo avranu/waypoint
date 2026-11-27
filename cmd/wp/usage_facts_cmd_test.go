@@ -26,7 +26,7 @@ func TestShellEditsText(t *testing.T) {
 		{7, 0, 0, 0, 3, "7 shell edits and 0+ more run by REPL scripts (3 of their Bash calls not classified)"},
 	} {
 		if got := shellEditsText(c.n, c.unknown, c.none, c.viaScript, c.scriptUnknown); got != c.want {
-			t.Errorf("shellEditsText(%d, %d, %d, %d) = %q, want %q", c.n, c.unknown, c.none, c.viaScript, got, c.want)
+			t.Errorf("shellEditsText(%d, %d, %d, %d, %d) = %q, want %q", c.n, c.unknown, c.none, c.viaScript, c.scriptUnknown, got, c.want)
 		}
 	}
 }
@@ -92,16 +92,24 @@ func TestFactsTextChangesLine(t *testing.T) {
 	f.Changes.ShellUnknown = 15
 	f.Changes.ScriptShellEdits = 16
 	f.Changes.FilesChanged = 17
-	want := "changes: 11 edits (12 failed; 13 more run by REPL scripts), 14+ shell edits (15 Bash calls not classified) and 16 more run by REPL scripts; the edits changed 17 files, lines added 0, removed 0 (what shell edits changed is not counted)"
-	var got string
-	for _, l := range strings.Split(factsText(&f), "\n") {
-		if strings.HasPrefix(l, "changes:") {
-			got = l
-		}
-	}
-	if got != want {
+	f.Changes.ShellFilesUnnamed = 18
+	want := "changes: 11 edits (12 failed; 13 more run by REPL scripts), 14+ shell edits (15 Bash calls not classified) and 16 more run by REPL scripts; 17+ files changed by edits and shell edits (18 shell edits name no files); the edits' lines added 0, removed 0 (shell edits' lines are not counted)"
+	if got := changesLine(factsText(&f)); got != want {
 		t.Errorf("changes line:\n got %q\nwant %q", got, want)
 	}
+	f.Changes.ShellFilesUnnamed = 0
+	if got := changesLine(factsText(&f)); !strings.Contains(got, "; 17 files changed by edits and shell edits;") {
+		t.Errorf("with every shell edit's files named, the count is exact: %q", got)
+	}
+}
+
+func changesLine(text string) string {
+	for _, l := range strings.Split(text, "\n") {
+		if strings.HasPrefix(l, "changes:") {
+			return l
+		}
+	}
+	return ""
 }
 
 // An older server leaves shell_edits out of the facts: the text says it does
@@ -118,7 +126,8 @@ func TestFactsOldServerShellEditsUnknown(t *testing.T) {
 	if err := cmdUsageFacts(c, []string{"--session", "s1"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := out.String(); !strings.Contains(got, "shell edits unknown") || strings.Contains(got, "0 shell edits") {
+	if got := out.String(); !strings.Contains(got, "shell edits unknown") || strings.Contains(got, "0 shell edits") ||
+		!strings.Contains(got, "the edits changed 2 files (what shell edits changed is not counted)") {
 		t.Errorf("text:\n%s", got)
 	}
 	out.Reset()

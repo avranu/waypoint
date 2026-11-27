@@ -1117,6 +1117,10 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 		}
 		return false
 	}
+	runDir := "" // a directory the tool runs in, given by an option, not a cd
+	if prog == "go" && len(args) > 1 && args[0] == "-C" {
+		runDir, args = args[1], args[2:] // go -C DIR fmt
+	}
 	if shellRunners[prog] || strings.HasPrefix(prog, "python3.") {
 		// npx [--prefix DIR] prettier ..., pnpm exec prettier, yarn eslint,
 		// uv run ruff, python -m black: the tool is the first word named as
@@ -1128,6 +1132,14 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 				break
 			}
 			if b, _, _ := strings.Cut(path.Base(a), "@"); shellRunTools[b] { // prettier@3
+				// pnpm -C DIR, yarn --cwd DIR, uv run --directory DIR: the tool
+				// runs in DIR, so the files it names are under it.
+				_, vals := shellOperands(args[:i], shellRunnerDirFlags)
+				for f := range shellRunnerDirFlags {
+					if d := vals[f]; d != "" {
+						runDir = d
+					}
+				}
 				prog, args = b, args[i+1:]
 				if len(args) > 0 && args[0] == "--" {
 					args = args[1:] // npm exec prettier -- --write .
@@ -1136,6 +1148,7 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 			}
 		}
 	}
+	tool := len(out)
 	switch prog {
 	case "tee":
 		for _, w := range plain(0) {
@@ -1151,6 +1164,10 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 				case a == "--expression" || a == "--file":
 					skip = 0
 					i++
+				case a == "--line-length":
+					i++
+				case (a == "-i" || a == "-I") && i+1 < len(args) && sedSuffixRE.MatchString(args[i+1]):
+					i++ // BSD sed: -i '' or -i .bak, the suffix a word of its own
 				case strings.HasPrefix(a, "--expression=") || strings.HasPrefix(a, "--file="):
 					skip = 0
 				case strings.HasPrefix(a, "--"):
@@ -1185,7 +1202,12 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 	case "perl":
 		each("perl", PerlInPlaceFiles(args))
 	case "mv", "cp", "git mv":
-		if ws := plain(0); len(ws) >= 2 {
+		ws, vals := shellOperands(args, shellCopyValueFlags)
+		target := vals["-t"] + vals["--target-directory"] // -t DIR: every operand goes into DIR
+		if target != "" {
+			ws = append(ws, strings.TrimSuffix(target, "/")+"/")
+		}
+		if len(ws) >= 2 {
 			to, from := ws[len(ws)-1], ws[:len(ws)-1]
 			kind := strings.TrimPrefix(prog, "git ")
 			switch {
@@ -1205,18 +1227,23 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 			}
 		}
 	case "git rm":
-		each("rm", plain(0))
+		if !has("--cached") { // --cached takes the file out of the index only
+			ws, _ := shellOperands(args, shellGitRmValueFlags)
+			each("rm", ws)
+		}
 	case "gofmt", "goimports", "prettier":
 		each("format", FormatterFiles(args))
 	case "black", "rustfmt":
-		// These rewrite the files they are given unless told only to check.
-		if !has("--check", "--diff", "--version", "--help", "-h", "--emit=stdout") {
-			each("format", plain(0))
+		// These rewrite the files they are given unless told only to check
+		// (or, for black -c, given code, not files).
+		ws, vals := shellOperands(args, shellFormatterValueFlags[prog])
+		if !has("--check", "--diff", "--version", "--help", "-h", "--emit=stdout", "-c", "--code") && vals["--emit"] != "stdout" {
+			each("format", ws)
 		}
 	case "ruff":
 		if len(args) > 0 && (args[0] == "format" && !has("--check", "--diff") ||
 			args[0] == "check" && has("--fix", "--fix-only", "--unsafe-fixes") && !has("--diff")) {
-			if ws := plain(1); len(ws) > 0 {
+			if ws, _ := shellOperands(args[1:], shellFormatterValueFlags["ruff"]); len(ws) > 0 {
 				each("format", ws)
 			} else {
 				out = append(out, ShellWrite{Kind: "format", Path: "*"})
@@ -1224,7 +1251,7 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 		}
 	case "eslint":
 		if has("--fix") && !has("--fix-dry-run") {
-			if ws := plain(0); len(ws) > 0 {
+			if ws, _ := shellOperands(args, shellFormatterValueFlags["eslint"]); len(ws) > 0 {
 				each("format", ws)
 			} else {
 				out = append(out, ShellWrite{Kind: "format", Path: "*"})
@@ -1233,7 +1260,13 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 	case "go", "cargo":
 		// go fmt and cargo fmt rewrite the packages of the directory they run in.
 		if len(args) > 0 && args[0] == "fmt" && !has("-n", "--check") {
-			out = append(out, ShellWrite{Kind: "format", Path: "*"})
+			// cargo fmt --manifest-path DIR/Cargo.toml formats DIR's crate
+			_, vals := shellOperands(args, map[string]bool{"--manifest-path": true})
+			root := ""
+			if m := vals["--manifest-path"]; m != "" {
+				root = path.Dir(m)
+			}
+			out = append(out, ShellWrite{Kind: "format", Path: "*", Root: root})
 		}
 	case "tar":
 		if root, ok := tarExtracts(args); ok {
@@ -1252,6 +1285,7 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 			out = append(out, ShellWrite{Kind: "extract", Path: "*", Root: root})
 		}
 	case "curl":
+		_, vals := shellOperands(args, map[string]bool{"--output-dir": true})
 		for i := 0; i < len(args); i++ {
 			a := args[i]
 			f, ok := strings.CutPrefix(a, "--output=")
@@ -1272,6 +1306,9 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 				if !ShellFileShape(path.Base(f)) {
 					kind = "output"
 				}
+				if d := vals["--output-dir"]; d != "" && !strings.HasPrefix(f, "/") {
+					f = path.Join(d, f) // --output-dir DIR: the file is saved under DIR
+				}
 				out = append(out, ShellWrite{Kind: kind, Path: f, Whole: true})
 			}
 		}
@@ -1284,9 +1321,7 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 	case "xargs", "find":
 		root := ""
 		if prog == "find" {
-			if r := plain(0); len(r) > 0 && !strings.ContainsAny(r[0], "()!") {
-				root = r[0]
-			}
+			root = FindRoot(args)
 		}
 		for i, a := range args {
 			b := path.Base(a)
@@ -1325,10 +1360,25 @@ func (c *ShellCommand) writes(disk bool) []ShellWrite {
 					to = a[2:]
 				}
 			}
-			if to != "" {
+			if to == "-" {
+				// patch -o -: the patched text goes to standard output
+			} else if to != "" {
 				out = append(out, ShellWrite{Kind: "patch", Path: to})
 			} else {
 				out = append(out, ShellWrite{Kind: "patch", Path: "*", Root: root})
+			}
+		}
+	}
+	if runDir != "" {
+		for i := tool; i < len(out); i++ {
+			w := &out[i]
+			switch {
+			case w.Path == "*" && w.Root == "":
+				w.Root = runDir
+			case w.Path == "*" && !strings.HasPrefix(w.Root, "/"):
+				w.Root = path.Join(runDir, w.Root)
+			case w.Path != "*" && !strings.HasPrefix(w.Path, "/"):
+				w.Path = path.Join(runDir, w.Path)
 			}
 		}
 	}
@@ -1606,3 +1656,97 @@ func ReadShell(cmd, cwd string, vars map[string]string, mem *ShellScripts, disk 
 	dir := shellCommands(cmd, cwd, 0, vars, mem, &out, disk, &spent)
 	return out, dir
 }
+
+// shellOperands are the words of args that are neither options nor an
+// option's value, and the values of the options valued names: --opt VALUE,
+// --opt=VALUE, -o VALUE, -oVALUE, and -vo VALUE (a value-taking letter
+// ending a cluster of one-letter options). After -- every word is an operand.
+// So a value (black -l 100, cp -t DIR, eslint --ext .ts) is never taken for
+// a file the command writes.
+func shellOperands(args []string, valued map[string]bool) (ops []string, vals map[string]string) {
+	vals = map[string]string{}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			return append(ops, args[i+1:]...), vals
+		case strings.HasPrefix(a, "--"):
+			if k, v, ok := strings.Cut(a, "="); ok {
+				if valued[k] {
+					vals[k] = v
+				}
+			} else if valued[a] && i+1 < len(args) {
+				i++
+				vals[a] = args[i]
+			}
+		case strings.HasPrefix(a, "-") && len(a) > 1:
+			for j := 1; j < len(a); j++ {
+				f := "-" + a[j:j+1]
+				if !valued[f] {
+					continue
+				}
+				if j < len(a)-1 {
+					vals[f] = a[j+1:]
+				} else if i+1 < len(args) {
+					i++
+					vals[f] = args[i]
+				}
+				break
+			}
+		default:
+			ops = append(ops, a)
+		}
+	}
+	return ops, vals
+}
+
+// FindRoot is where find starts looking: its first argument after its own
+// options (-H, -L, -P, -D LIST, -O3) that is not an expression, or "." when
+// it names none (find -name x).
+func FindRoot(args []string) string {
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "-H" || a == "-L" || a == "-P" || strings.HasPrefix(a, "-O") && len(a) > 2:
+		case a == "-D":
+			i++
+		case strings.HasPrefix(a, "-") || strings.ContainsAny(a, "()!,"):
+			return "."
+		default:
+			return a
+		}
+	}
+	return "."
+}
+
+// sedSuffixRE is a backup suffix BSD sed takes as the word after -i: empty
+// (no backup) or one like .bak or .orig.
+var sedSuffixRE = lazyre.New(`^(\.[A-Za-z0-9_~-]*)?$`)
+
+func shellFlagSet(s string) map[string]bool {
+	m := map[string]bool{}
+	for _, f := range strings.Fields(s) {
+		m[f] = true
+	}
+	return m
+}
+
+// The options of the writers whose value is a word, not a file: so cp -t DIR
+// a.go writes DIR/a.go, and black -l 100 x.py rewrites x.py, not a file 100.
+var (
+	shellCopyValueFlags  = shellFlagSet("-t --target-directory -S --suffix")
+	shellGitRmValueFlags = shellFlagSet("--pathspec-from-file")
+	// shellRunnerDirFlags move the tool a runner runs into another directory.
+	shellRunnerDirFlags      = shellFlagSet("-C --dir --cwd --directory")
+	shellFormatterValueFlags = map[string]map[string]bool{
+		"black": shellFlagSet(`-l --line-length -t --target-version --config --include --exclude --extend-exclude
+			--force-exclude --stdin-filename -W --workers --required-version --python-cell-magics`),
+		"rustfmt": shellFlagSet("--edition --config-path --config --emit --color --print-config --file-lines --style-edition"),
+		"ruff": shellFlagSet(`--config --line-length --target-version --select --ignore --extend-select --extend-ignore
+			--exclude --extend-exclude --stdin-filename --cache-dir --output-format --fixable --unfixable
+			--extend-fixable --per-file-ignores --extend-per-file-ignores --range -o --output-file`),
+		"eslint": shellFlagSet(`-c --config --ext --rule --parser --parser-options --resolve-plugins-relative-to
+			--rulesdir --plugin --global --env -f --format -o --output-file --ignore-path --ignore-pattern
+			--cache-location --cache-strategy --max-warnings --stdin-filename --fix-type
+			--report-unused-disable-directives-severity --flag`),
+	}
+)

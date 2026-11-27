@@ -51,13 +51,38 @@ var wrapperValueFlags = map[string]map[string]bool{
 
 var Shells = map[string]bool{"bash": true, "sh": true, "zsh": true, "dash": true, "ash": true, "ksh": true}
 
-// ShellDashC finds the script of `bash -c SCRIPT` (also -lc, -ic…).
+// ShellDashC finds the script of `bash -c SCRIPT` (also -lc, -ic, -ce…): the
+// first word after the shell's options when one of them is -c. Options that
+// take a value (-o pipefail, -eo pipefail, +O extglob, --rcfile FILE) are read
+// past, so `bash -euo pipefail -c SCRIPT` is read as the guard reads it.
 func ShellDashC(args []string) (string, bool) {
-	for i, a := range args {
-		if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.Contains(a, "c") && i+1 < len(args) {
-			return args[i+1], true
-		}
-		if !strings.HasPrefix(a, "-") {
+	dashC := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			if dashC && i+1 < len(args) {
+				return args[i+1], true
+			}
+			return "", false
+		case a == "--rcfile" || a == "--init-file":
+			i++
+		case strings.HasPrefix(a, "--"):
+		case len(a) > 1 && (a[0] == '-' || a[0] == '+'):
+			for j := 1; j < len(a); j++ {
+				switch a[j] {
+				case 'c':
+					dashC = dashC || a[0] == '-'
+				case 'o', 'O':
+					if j == len(a)-1 {
+						i++ // its value is the next word
+					}
+				}
+			}
+		default:
+			if dashC {
+				return a, true
+			}
 			return "", false
 		}
 	}

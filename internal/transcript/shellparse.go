@@ -387,7 +387,9 @@ func (p *shellParser) word(cur *ShellCmd) (string, bool) {
 			b.WriteString(ShellSubPlaceholder)
 			open = true
 		case c == '$' && p.peek(1) == '\'':
-			p.i++
+			quoted = true
+			p.i += 2
+			p.ansiQuote(&b)
 		case c == '$' && p.peek(1) == '$':
 			// The shell's own number: the second $ opens no expansion ($${).
 			open = true
@@ -471,3 +473,29 @@ func (p *shellParser) dquote(b *strings.Builder, cur *ShellCmd) {
 // (${ cmd; } and ${| cmd; }), whose commands run in the shell itself, not a
 // parameter's expansion.
 func isFunsub(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '|' }
+
+// ansiQuote reads the rest of a $'…' word: a backslash escapes the next
+// character, \' included, so the quote ends only at an unescaped '.
+func (p *shellParser) ansiQuote(b *strings.Builder) {
+	for p.i < len(p.s) {
+		c := p.s[p.i]
+		switch {
+		case c == '\'':
+			p.i++
+			return
+		case c == '\\' && p.i+1 < len(p.s):
+			if r, ok := ansiEscapes[p.s[p.i+1]]; ok {
+				b.WriteByte(r)
+			} else {
+				b.WriteByte(c)
+				b.WriteByte(p.s[p.i+1])
+			}
+			p.i += 2
+		default:
+			b.WriteByte(c)
+			p.i++
+		}
+	}
+}
+
+var ansiEscapes = map[byte]byte{'n': '\n', 't': '\t', 'r': '\r', 'a': '\a', 'b': '\b', 'f': '\f', 'v': '\v', 'e': 0x1b, 'E': 0x1b, '\\': '\\', '\'': '\'', '"': '"', '?': '?'}

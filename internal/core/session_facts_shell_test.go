@@ -63,3 +63,30 @@ func TestFactsScriptFailuresAndRefusedShellWrites(t *testing.T) {
 		t.Errorf("script shell unknown %d, want 1", c.ScriptShellUnknown)
 	}
 }
+
+// The files a Bash call wrote are files changed, beside the edit tools' and
+// counted once with them; a write naming no files (git apply) makes the count
+// a floor (audit 2117.6).
+func TestFactsFilesChangedCountShellWrites(t *testing.T) {
+	e := transcriptEnv(t)
+	jo := e.user("jo", false)
+	e.putFile(jo, "s1", "main", 0, fPrompt("a", 1, "human")+
+		fCwd(fAssistant("m1", 2, 10,
+			fTool("b1", "Bash", fm{"command": "sed -i s/a/b/ a.go && echo x > /r/b.go"}),
+			fTool("b2", "Bash", fm{"command": "gofmt -w a.go /tmp/s/c.go"}),
+			fTool("b3", "Bash", fm{"command": "git apply fix.diff"}),
+			fTool("e1", "Edit", fm{"file_path": "/r/a.go"})), "/r")+
+		fResultText("b1", 2, false, "")+fResultText("b2", 2, false, "")+fResultText("b3", 2, false, "")+fResultText("e1", 2, false, ""))
+	e.quiet()
+	if run := e.derive(); run.Derived != 1 || run.Failed != 0 {
+		t.Fatalf("derive: %+v", run)
+	}
+	f, err := e.s.SessionFacts(e.ctx, jo, FactsQuery{Session: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := f.Changes; c.ShellEdits != 3 || c.Edits != 1 || c.FilesChanged != 2 || c.ShellFilesUnnamed != 1 {
+		t.Errorf("shell edits %d, edits %d, files changed %d, unnamed %d: want 3, 1, 2 (/r/a.go, /r/b.go; /tmp is scratch), 1 (git apply)",
+			c.ShellEdits, c.Edits, c.FilesChanged, c.ShellFilesUnnamed)
+	}
+}
