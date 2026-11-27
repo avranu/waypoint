@@ -262,6 +262,11 @@ func hookClaudeNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 	if !ti.Bg && c.chainNudge(&in, cwd, chainStep(in.ToolName, ti.Command, ti.FilePath), canTell) {
 		r = &nudgeRule{kind: chainKind, text: chainText}
 	}
+	if r != nil && (r.kind == "gh-on-forgejo" || r.kind == "forge-api" || r.kind == "branch-sweep") {
+		if !c.tellSessionOnce("nudge:"+r.kind, in.SessionID, in.AgentID, hookCountWait(hookNudgeTimeout)) {
+			r = nil
+		}
+	}
 	if r == nil {
 		if allow {
 			_, _ = stdout.Write(nudgeReply("", true))

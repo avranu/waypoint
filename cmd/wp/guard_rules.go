@@ -114,12 +114,21 @@ func (g *guard) script(cmds []*guardCmd, depth int) *guardHit {
 		return nil
 	}
 	fetch := false
+	pipeInstalled := false
 	for i, c := range cmds {
 		first := i == 0
 		if !c.pipeIn {
 			fetch = false
-		}
-		if !c.andIn && (!g.inherit || !first) {
+			if c.andIn && pipeInstalled {
+				g.installs = true
+			} else if !c.andIn && (!g.inherit || !first) {
+				g.installs = false
+			}
+			pipeInstalled = false
+		} else {
+			if g.installs {
+				pipeInstalled = true
+			}
 			g.installs = false
 		}
 		for _, sub := range c.subs {
@@ -275,14 +284,15 @@ func (g *guard) assignHit(w string) *guardHit {
 
 // fetchSettingsVar: a variable that makes curl, wget, httpie or xh read
 // settings from elsewhere (a body, a method, more addresses) or send
-// everything through a proxy (WP-749 review). no_proxy only narrows.
+// everything through a proxy (WP-749 review). App-specific *_PROXY variables
+// like WAYPOINT_TRUST_PROXY are not HTTP client proxy settings.
 func fetchSettingsVar(name string) bool {
-	l := strings.ToLower(name)
-	switch l {
-	case "curl_home", "wgetrc", "httpie_config_dir", "xh_config_dir":
+	switch strings.ToLower(name) {
+	case "curl_home", "wgetrc", "httpie_config_dir", "xh_config_dir",
+		"http_proxy", "https_proxy", "all_proxy", "ftp_proxy", "socks_proxy", "rsync_proxy", "grpc_proxy":
 		return true
 	}
-	return strings.HasSuffix(l, "_proxy") && l != "no_proxy"
+	return false
 }
 
 // fetchHomeHit: HOME or XDG_CONFIG_HOME set for a fetch, or exported, which
@@ -737,7 +747,15 @@ func (g *guard) installHit(name string, args []string) *guardHit {
 		}
 	case "docker", "podman":
 		sc := scanArgs(args, "")
-		if len(sc.pos) > 0 && sc.pos[0] == "pull" || len(sc.pos) > 1 && sc.pos[0] == "image" && sc.pos[1] == "pull" || len(sc.pos) > 1 && sc.pos[0] == "compose" && sc.pos[1] == "pull" {
+		if len(sc.pos) > 0 && sc.pos[0] == "pull" {
+			if !g.trustedImageRefs(sc.pos[1:]) {
+				return h()
+			}
+		} else if len(sc.pos) > 1 && sc.pos[0] == "image" && sc.pos[1] == "pull" {
+			if !g.trustedImageRefs(sc.pos[2:]) {
+				return h()
+			}
+		} else if len(sc.pos) > 1 && sc.pos[0] == "compose" && sc.pos[1] == "pull" {
 			return h()
 		}
 	default:
@@ -753,6 +771,38 @@ func (g *guard) installHit(name string, args []string) *guardHit {
 		}
 	}
 	return nil
+}
+
+func (g *guard) trustedImageRefs(refs []string) bool {
+	if len(refs) == 0 {
+		return false
+	}
+	for _, ref := range refs {
+		slash := strings.IndexByte(ref, '/')
+		if slash <= 0 {
+			return false
+		}
+		reg := ref[:slash]
+		if !strings.ContainsAny(reg, ".:") && !strings.EqualFold(reg, "localhost") {
+			return false
+		}
+		if !g.hostOK(g.urlHost("https://" + reg)) {
+			return false
+		}
+	}
+	return true
+}
+
+func agentCLIReadOnly(name string, args []string) bool {
+	if len(args) == 1 && (args[0] == "--version" || args[0] == "-v" || args[0] == "-h" || args[0] == "--help") {
+		return true
+	}
+	if name == "claude" && len(args) == 2 && !strings.HasPrefix(args[0], "-") {
+		if args[1] == "--help" || args[1] == "-h" || (args[0] == "auto-mode" && args[1] == "defaults") {
+			return true
+		}
+	}
+	return false
 }
 
 // pipAddsPackages: a pip install names packages, not only the repo's own
@@ -1233,11 +1283,14 @@ func (g *guard) looseHit(name string, args []string) *guardHit {
 			}
 		}
 	case "claude":
-		if len(args) == 1 && (args[0] == "--version" || args[0] == "-v" || args[0] == "-h" || args[0] == "--help") {
+		if agentCLIReadOnly(name, args) {
 			return nil
 		}
 		return hit(ruleGuard, "starting another agent, which the guard does not watch", name, firstWords(args, 3))
 	case "codex", "cursor-agent", "gemini", "aider", "goose", "opencode":
+		if agentCLIReadOnly(name, args) {
+			return nil
+		}
 		return hit(ruleGuard, "starting another agent, which the guard does not watch (llm-task is fine)", name, firstWords(args, 3))
 	case "git":
 		for i, a := range args {

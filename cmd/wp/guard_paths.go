@@ -217,9 +217,27 @@ func (s guardSite) resolve(dir, raw string) string {
 	return realPath(raw)
 }
 
+// isTempPath reports whether p is inside a scratch/temp directory that isn't
+// also the parent of the session's own repository (so tests whose fixtures
+// live under t.TempDir() keep sibling repos foreign).
+func (s guardSite) isTempPath(p string) bool {
+	for _, t := range guardTempDirs() {
+		rt := realPath(t)
+		if within(rt, p) && (!s.has || !within(rt, s.repo.root)) {
+			return true
+		}
+	}
+	if td := strings.TrimSpace(os.Getenv("CLAUDE_CODE_TMPDIR")); td != "" {
+		if within(realPath(td), p) {
+			return true
+		}
+	}
+	return false
+}
+
 // foreign: p is inside a repository other than the session's.
 func (s guardSite) foreign(p string) bool {
-	if within(s.repo.root, p) {
+	if within(s.repo.root, p) || s.isTempPath(p) {
 		return false
 	}
 	r, ok := findRepo(p)
@@ -256,10 +274,19 @@ func (s guardSite) confined(p string) bool {
 			return true
 		}
 	}
+	if td := strings.TrimSpace(os.Getenv("CLAUDE_CODE_TMPDIR")); td != "" && within(realPath(td), p) {
+		return true
+	}
 	if ch := claudeHome(); ch != "" {
 		if rel, ok := strings.CutPrefix(p, realPath(filepath.Join(ch, "projects"))+"/"); ok {
 			parts := strings.Split(rel, "/")
 			if len(parts) >= 3 && parts[1] == "memory" {
+				return true
+			}
+		}
+		if rel, ok := strings.CutPrefix(p, realPath(filepath.Join(ch, "jobs"))+"/"); ok {
+			parts := strings.Split(rel, "/")
+			if len(parts) >= 3 && parts[1] == "tmp" {
 				return true
 			}
 		}

@@ -169,6 +169,14 @@ func TestGuardBashRules(t *testing.T) {
 		{`cd ` + fresh + ` && npm exec tsc`, ruleInstall},
 		{`cd ` + fresh + ` && npx --prefix ` + repo + ` tsc`, ""},
 		{`cd ` + fresh + ` && npm ci && npx tsc --noEmit`, ""},
+		{`cd ` + fresh + ` && npm ci --no-audit --no-fund | tail -2 && npx tsc --noEmit`, ""},
+		{`cd ` + fresh + ` && npm ci | tail -2; npx tsc --noEmit`, ruleInstall},
+		{`WAYPOINT_TRUST_PROXY=127.0.0.1 ./waypoint serve`, ""},
+		{`OPENLLMS_VPN_PROXY=http://u:p@10.2.0.244:8890 ./server`, ""},
+		{`HTTP_PROXY=http://evil.example:8080 curl https://git.example.net/x`, ruleDownload},
+		{`docker pull git.example.net/claude/waypoint-ci:v1`, ""},
+		{`docker pull alpine`, ruleInstall},
+		{`docker pull evil.example.org/x:1`, ruleInstall},
 		{`cd ` + fresh + ` && ls node_modules && pnpm exec tsc`, ""},
 		{`cd ` + fresh + ` && npx --no tsc`, ""},
 		{`cd "$WEB" && npx tsc`, ""},
@@ -436,6 +444,11 @@ func TestGuardBashRules(t *testing.T) {
 		{`llm-task review "check this"`, ""},
 		{`claude --version`, ""},
 		{`claude -v`, ""},
+		{`claude auto-mode --help`, ""},
+		{`claude auto-mode defaults`, ""},
+		{`opencode --version`, ""},
+		{`cursor-agent --version`, ""},
+		{`claude auto-mode --dangerously-skip-permissions`, ruleGuard},
 		{`git config core.hooksPath`, ""},
 		{`git config user.name`, ""},
 		{`export FOO=bar`, ""},
@@ -961,6 +974,11 @@ func TestGuardPaths(t *testing.T) {
 	writeFile(t, filepath.Join(plain, "f"), "")
 	mem := filepath.Join(home, ".claude", "projects", "-p", "memory", "m.md")
 	writeFile(t, mem, "")
+	jobTmp := filepath.Join(home, ".claude", "jobs", "624af4ff", "tmp", "api.py")
+	scratchRepo := filepath.Join(scratch, "tmp-repo")
+	writeFile(t, filepath.Join(scratchRepo, ".git", "config"), "")
+	claudeTmp := filepath.Join(t.TempDir(), "claude-tmp")
+	t.Setenv("CLAUDE_CODE_TMPDIR", claudeTmp)
 
 	for _, c := range []struct {
 		path, want string
@@ -970,7 +988,9 @@ func TestGuardPaths(t *testing.T) {
 		{"a.go", ""},
 		{filepath.Join(wt, "a.go"), ""},
 		{filepath.Join(scratch, "x"), ""},
+		{filepath.Join(claudeTmp, "s.py"), ""},
 		{mem, ""},
+		{jobTmp, ""},
 		{filepath.Join(sib, "a.go"), ruleRepo},
 		{plain + "/f", ruleRepo},
 		{home + "/notes.md", ruleRepo},
@@ -1013,6 +1033,12 @@ func TestGuardPaths(t *testing.T) {
 	}
 	if h := g.pathHit(filepath.Join(root, "x.txt")); h == nil {
 		t.Error("the repository's parent directory")
+	}
+	if h := g.bashHit("git -C " + scratchRepo + " commit -m x"); h != nil {
+		t.Errorf("temp scratchpad git repo refused: %+v", h)
+	}
+	if h := g.bashHit("git -C " + sib + " commit -m x"); h == nil || h.rule != ruleRepo {
+		t.Errorf("sibling repo commit = %+v, want %q", h, ruleRepo)
 	}
 }
 
