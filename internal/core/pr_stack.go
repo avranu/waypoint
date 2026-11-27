@@ -355,7 +355,7 @@ func (s *Service) moveStackChild(ctx context.Context, f *Forge, parent, child *P
 		return err
 	}
 	err = s.write(ctx, SystemActor(), func(t *tx) error {
-		if err := setPRBase(ctx, t, cur.ID, parent.BaseRef); err != nil {
+		if err := setPRBase(ctx, t, cur.ID, parent.BaseRef, s.now()); err != nil {
 			return err
 		}
 		t.audit(AuditEntry{Action: "pr.edit", Category: AuditControl, ProjectID: projectID, TargetType: "pr", TargetID: cur.ID,

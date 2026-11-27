@@ -61,10 +61,11 @@ func ciHistoryText(h *core.CIHistory, verbose bool) string {
 	row("full runs", fmt.Sprint(n.Runs), fmt.Sprint(b.Runs))
 	row("full run p50/p90", dur(n.RunP50)+"/"+dur(n.RunP90), dur(b.RunP50)+"/"+dur(b.RunP90))
 	row("merges", fmt.Sprint(n.Merges), fmt.Sprint(b.Merges))
-	row("time per merge p50", dur(n.MergeP50), dur(b.MergeP50))
+	row("in the line p50", dur(n.MergeP50), dur(b.MergeP50))
+	row("opened to merged p50", dur(n.OpenMergeP50), dur(b.OpenMergeP50))
 
 	layout := "Jan 02"
-	fmt.Fprintf(&o, "\n%-8s %5s %10s %8s %11s %9s %13s %7s %9s\n", h.Bucket, "jobs", "failed", "runner", "wait p50", "full runs", "run p50/p90", "merges", "per merge")
+	fmt.Fprintf(&o, "\n%-8s %5s %10s %8s %11s %9s %13s %7s %9s\n", h.Bucket, "jobs", "failed", "runner", "wait p50", "full runs", "run p50/p90", "merges", "in line")
 	var pts []core.CIHistoryPoint
 	for _, p := range h.Points {
 		span := 24 * time.Hour

@@ -380,7 +380,7 @@ func (s *Service) parkBabysit(ctx context.Context, b *Babysit, pr *PullRequest, 
 	about := parkSubject(failed, conflict, comments, findings)
 	roundFailed := failed
 	failed = parkLifts(failed, conflict, comments, findings)
-	s.leaveQueue(ctx, pr)
+	s.leaveQueueWhy(ctx, pr, why)
 	s.nudgeLine(ctx, pr)
 	r := lastRound(b)
 	if r == nil {

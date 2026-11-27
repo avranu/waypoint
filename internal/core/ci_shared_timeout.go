@@ -258,7 +258,7 @@ func (s *Service) waitOnSharedTimeout(ctx context.Context, b *Babysit, pr *PullR
 		s.saveSharedTimeout(ctx, b, st)
 	}
 	if pr.QueuedAt != nil {
-		s.leaveQueue(ctx, pr)
+		s.leaveQueueWhy(ctx, pr, "its tests timed out like the others'")
 		pr.QueuedAt = nil
 		s.log.Info("a pull request whose tests timed out like the others' gave up its turn in the merge queue", "pr", pr.ID, "head", pr.HeadSHA)
 		s.nudgeLine(ctx, pr)

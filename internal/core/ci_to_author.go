@@ -109,7 +109,7 @@ func (s *Service) handToAuthor(ctx context.Context, b *Babysit, pr *PullRequest,
 	}
 	// The pull request has failed checks, so it leaves the merge line and goes
 	// back to draft as a round for them would have done.
-	s.stepOutOfLine(ctx, pr, false, true)
+	s.stepOutOfLine(ctx, pr, false, authorFixingWait)
 	s.setState(ctx, b, pr, BabysitWatching, authorFixingWait)
 	return true
 }

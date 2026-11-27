@@ -97,6 +97,7 @@ type BabysitRound struct {
 	N        int       `json:"n"`
 	SHA      string    `json:"sha"`
 	At       time.Time `json:"at"`
+	EndedAt  time.Time `json:"ended_at,omitzero"` // its job finished (WP-1910)
 	Checks   []string  `json:"checks,omitempty"`
 	Conflict bool      `json:"conflict,omitempty"`
 	Comments []string  `json:"comments,omitempty"`
@@ -687,7 +688,7 @@ func (s *Service) recordRoundOutcome(ctx context.Context, bid, jobID int64) {
 	}
 	for i := range b.Rounds {
 		if b.Rounds[i].Job == jobID {
-			b.Rounds[i].Outcome, b.Rounds[i].Pushed = outcome, delivered && res.Pushed
+			b.Rounds[i].Outcome, b.Rounds[i].Pushed, b.Rounds[i].EndedAt = outcome, delivered && res.Pushed, jobEnd(job, s.now())
 			b.Rounds[i].PushFailed = job.State == "failed" && pushRefused.MatchString(job.Error)
 			b.Rounds[i].Answer = excerpt(res.Answer, 1500)
 			if b.Rounds[i].Assessor {
@@ -1175,7 +1176,7 @@ func (s *Service) babysitStepHeld(ctx context.Context, prID int64, sync bool) {
 			s.setState(ctx, b, pr, BabysitNeedsPerson, parkWait+excerpt(cmp(r.Question, "what should happen to it?"), 200))
 		}
 		if pr.QueuedAt != nil {
-			s.leaveQueue(ctx, pr)
+			s.leaveQueueWhy(ctx, pr, b.Wait)
 			s.nudgeLine(ctx, pr)
 		}
 		return
@@ -1364,7 +1365,7 @@ func (s *Service) babysitStepHeld(ctx context.Context, prID int64, sync bool) {
 		s.babysitTell(ctx, b, pr, "blocked@"+pr.HeadSHA+":"+why, fmt.Sprintf("%s#%d: every review comment is dealt with and checks passed, but it can't merge: %s (%s).", pr.Repo, pr.Number, why, pr.URL))
 	case pr.ArmedAt != nil && mergeWaitIn(rd.Reasons) != "":
 		if pr.QueuedAt != nil {
-			s.leaveQueue(ctx, pr)
+			s.leaveQueueWhy(ctx, pr, mergeWaitIn(rd.Reasons))
 			pr.QueuedAt = nil
 			s.nudgeLine(ctx, pr)
 		}
@@ -1445,6 +1446,7 @@ func (s *Service) babysitRoundBy(ctx context.Context, b *Babysit, pr *PullReques
 	stuck := false
 	if forced == nil && sameSHA(b.RoundSHA, pr.HeadSHA) && !newWorkSince(b, pr.HeadSHA, failed, conflict, comments, findings) {
 		if n := len(b.Rounds); n > 0 && b.Rounds[n-1].To == "session" {
+			s.setState(ctx, b, pr, b.State, fmt.Sprintf("round %d went to a session (%s) and nothing new has come on %s: waiting for its push or new work", b.Rounds[n-1].N, b.Rounds[n-1].Why, short(pr.HeadSHA)))
 			return
 		}
 		if n := len(b.Rounds); n > 0 && s.heldWait(ctx, b, pr, &b.Rounds[n-1]) {
@@ -1458,7 +1460,7 @@ func (s *Service) babysitRoundBy(ctx context.Context, b *Babysit, pr *PullReques
 			if files, ok := protectedRefusal(b.Rounds[n-1]); ok {
 				s.protectedHandoff(ctx, b, pr, &b.Rounds[n-1], files, what)
 				if pr.QueuedAt != nil {
-					s.leaveQueue(ctx, pr)
+					s.leaveQueueWhy(ctx, pr, b.Wait)
 					s.nudgeLine(ctx, pr)
 				}
 				return
@@ -1513,7 +1515,11 @@ func (s *Service) babysitRoundBy(ctx context.Context, b *Babysit, pr *PullReques
 		}
 	}
 	keepFront = keepFront && wait == "" && jobID != 0
-	s.stepOutOfLine(ctx, pr, keepFront, wait != "" || len(failed) > 0 || len(comments) > 0 || len(findings) > 0)
+	leave := ""
+	if wait != "" || len(failed) > 0 || len(comments) > 0 || len(findings) > 0 {
+		leave = cmp(wait, fmt.Sprintf("round %d has work to do", b.Round))
+	}
+	s.stepOutOfLine(ctx, pr, keepFront, leave)
 	if wait != "" {
 		s.setState(ctx, b, pr, BabysitWatching, wait)
 		return
@@ -2182,6 +2188,9 @@ func (s *Service) setState(ctx context.Context, b *Babysit, pr *PullRequest, sta
 		if err != nil {
 			return err
 		}
+		if err := noteBabysitWait(ctx, t, pr.ID, b.ID, state, wait, s.nowMS()); err != nil {
+			return err
+		}
 		t.emit(&Event{Kind: EvBabysit, ProjectID: projectID, Old: b.State, New: state, Data: prEventData(pr, map[string]any{"babysit": b.ID, "wait": wait})})
 		return nil
 	})
@@ -2203,8 +2212,14 @@ func (s *Service) endBabysit(ctx context.Context, b *Babysit, pr *PullRequest, s
 		if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET queued_at = NULL WHERE id = ?`, pr.ID); err != nil {
 			return err
 		}
+		if err := closeLineSpan(ctx, t, pr.ID, s.now(), reason); err != nil {
+			return err
+		}
 		projectID, err := s.attachedProject(ctx, t, pr.ForgeID, pr.Repo)
 		if err != nil {
+			return err
+		}
+		if err := noteBabysitWait(ctx, t, pr.ID, b.ID, state, "", now); err != nil {
 			return err
 		}
 		t.emit(&Event{Kind: EvBabysit, ProjectID: projectID, Old: b.State, New: state, Data: prEventData(pr, map[string]any{"babysit": b.ID, "reason": reason})})
@@ -2369,17 +2384,17 @@ func queuedRoundWaitText(text string, ahead int, jobID int64) string {
 
 // stepOutOfLine is what a pull request with work to do first does to its place
 // in the merge line and to its ready state: unless it keeps the front, it
-// leaves the queue (when leave) and a pull request Waypoint marked ready goes
+// leaves the queue (when leave, the reason it leaves, is set) and a pull request Waypoint marked ready goes
 // back to draft. A round for failed checks and a hand-off of them to the
 // author both do this (WP-1878), so a failed pull request doesn't hold the
 // line while someone fixes it; a new head that passes joins the line again
 // the usual way.
-func (s *Service) stepOutOfLine(ctx context.Context, pr *PullRequest, keepFront, leave bool) {
+func (s *Service) stepOutOfLine(ctx context.Context, pr *PullRequest, keepFront bool, leave string) {
 	if keepFront {
 		return
 	}
-	if leave {
-		s.leaveQueue(ctx, pr)
+	if leave != "" {
+		s.leaveQueueWhy(ctx, pr, leave)
 		s.nudgeLine(ctx, pr)
 	}
 	if pr.WipAuto && pr.State == "open" {

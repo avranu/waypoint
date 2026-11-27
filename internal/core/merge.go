@@ -703,6 +703,9 @@ func (s *Service) DisarmMerge(ctx context.Context, actor *Actor, prID int64) err
 			armed_label = CASE WHEN armed_label = 1 THEN 2 ELSE armed_label END, arm_declined = 1, merge_wake_at = NULL, merge_retry_n = 0, queued_at = NULL WHERE id = ?`, pr.ID); err != nil {
 			return err
 		}
+		if err := closeLineSpan(ctx, t, pr.ID, s.now(), "disarmed"); err != nil {
+			return err
+		}
 		t.audit(AuditEntry{Action: "pr.disarm", Category: AuditControl, ProjectID: projectID, TargetType: "pr", TargetID: pr.ID,
 			Target: fmt.Sprintf("%s#%d", pr.Repo, pr.Number), URL: pr.URL, Detail: "took merge when ready off “" + pr.Title + "”"})
 		t.emit(&Event{Kind: EvPRActivity, ProjectID: projectID, New: "disarmed", Data: map[string]any{"pr_id": pr.ID}})
@@ -764,18 +767,28 @@ func (s *Service) armByLabel(ctx context.Context, t *tx, pr *PullRequest, live b
 	case !live && pr.ArmedAt != nil:
 		pr.ArmedAt = nil
 		_, err := t.ExecContext(ctx, `UPDATE pull_requests SET armed_at = NULL, armed_by = NULL, armed_agent = '', armed_style = '', armed_note = '', queued_at = NULL WHERE id = ?`, pr.ID)
-		return err
+		if err != nil {
+			return err
+		}
+		return closeLineSpan(ctx, t, pr.ID, s.now(), "disarmed")
 	case has && pr.ArmedAt == nil && !pr.labelOff:
 		now := s.now()
 		pr.ArmedAt, pr.ArmedLabel = &now, true
 		_, err := t.ExecContext(ctx, `UPDATE pull_requests SET armed_at = ?, armed_by = NULL, armed_agent = '', armed_style = '', armed_label = 1, armed_note = '' WHERE id = ?`, now.UnixMilli(), pr.ID)
 		return err
 	case !has && (pr.ArmedLabel || pr.labelOff):
+		wasLabel := pr.ArmedLabel
 		pr.ArmedAt, pr.ArmedLabel, pr.labelOff = nil, false, false
 		_, err := t.ExecContext(ctx, `UPDATE pull_requests SET armed_at = CASE WHEN armed_label = 1 THEN NULL ELSE armed_at END,
 			armed_by = CASE WHEN armed_label = 1 THEN NULL ELSE armed_by END, arm_declined = CASE WHEN armed_label = 1 THEN 1 ELSE arm_declined END,
 			armed_label = 0, queued_at = CASE WHEN armed_label = 1 THEN NULL ELSE queued_at END WHERE id = ?`, pr.ID)
-		return err
+		if err != nil {
+			return err
+		}
+		if wasLabel {
+			return closeLineSpan(ctx, t, pr.ID, s.now(), "disarmed")
+		}
+		return nil
 	}
 	return nil
 }

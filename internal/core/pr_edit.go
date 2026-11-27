@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 )
 
 // EditPRInput is what wp pr edit changes; nil leaves a field.
@@ -113,7 +114,7 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 			case "body":
 				parts = append(parts, "edited the description")
 			case "base":
-				if err := setPRBase(ctx, t, pr.ID, base); err != nil {
+				if err := setPRBase(ctx, t, pr.ID, base, s.now()); err != nil {
 					return err
 				}
 				parts = append(parts, "moved the base from "+pr.BaseRef+" to "+base)
@@ -151,9 +152,12 @@ func (s *Service) EditPullRequest(ctx context.Context, actor *Actor, prID int64,
 // setPRBase records a pull request's new base. Each base has its own merge
 // queue: its place in the old one means nothing in the new one, where it
 // joins again.
-func setPRBase(ctx context.Context, t *tx, prID int64, base string) error {
+func setPRBase(ctx context.Context, t *tx, prID int64, base string, at time.Time) error {
 	_, err := t.ExecContext(ctx, `UPDATE pull_requests SET base_ref = ?, queued_at = NULL WHERE id = ?`, base, prID)
-	return err
+	if err != nil {
+		return err
+	}
+	return closeLineSpan(ctx, t, prID, at, "base changed")
 }
 
 func (c *httpForgeClient) EditPRBody(ctx context.Context, f *Forge, repo string, number int, body string) error {

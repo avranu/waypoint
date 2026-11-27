@@ -484,6 +484,9 @@ type CIHistoryStats struct {
 	// before it when later, to its merge (as wp ci doctor reckons it).
 	Merges   int    `json:"merges"`
 	MergeP50 *int64 `json:"merge_p50"`
+	// OpenMergeP50 is opened to merged, whole: what a pull request waited
+	// from its opening, `wp pr flow` splits it by stage (WP-1910).
+	OpenMergeP50 *int64 `json:"open_merge_p50"`
 }
 
 // CIHistoryPoint is one bucket.
@@ -508,8 +511,8 @@ type CIHistoryJobDiff struct {
 
 // ciStatsAcc gathers one bucket's samples.
 type ciStatsAcc struct {
-	st                 CIHistoryStats
-	waits, runs, merge []float64
+	st                       CIHistoryStats
+	waits, runs, merge, open []float64
 }
 
 func (a *ciStatsAcc) done() CIHistoryStats {
@@ -517,6 +520,11 @@ func (a *ciStatsAcc) done() CIHistoryStats {
 	st.WaitP50, st.WaitP90 = pctPtr(a.waits, 50), pctPtr(a.waits, 90)
 	st.RunP50, st.RunP90 = pctPtr(a.runs, 50), pctPtr(a.runs, 90)
 	st.MergeP50 = pctPtr(a.merge, 50)
+	if len(a.open) > 0 {
+		// The quantile wp pr flow prints, so the two agree.
+		v := flowQuantile(a.open, .5)
+		st.OpenMergeP50 = &v
+	}
 	return st
 }
 
@@ -794,6 +802,7 @@ func (s *Service) ciHistoryMerges(ctx context.Context, from time.Time, want func
 			continue
 		}
 		line := strconv.FormatInt(fid, 10) + "|" + strings.ToLower(repo) + "|" + base
+		openedAt := opened
 		begin := stdcmp.Or(start, opened)
 		if prev, ok := last[line]; ok && prev > begin {
 			begin = prev
@@ -807,6 +816,9 @@ func (s *Service) ciHistoryMerges(ctx context.Context, from time.Time, want func
 			a.st.Merges++
 			if merged > begin {
 				a.merge = append(a.merge, float64(merged-begin)/1000)
+			}
+			if merged > openedAt {
+				a.open = append(a.open, float64(merged-openedAt)/1000)
 			}
 		}
 	}

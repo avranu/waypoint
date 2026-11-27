@@ -261,7 +261,7 @@ async function lookHistory(width, scheme) {
   await page.getByText("Last 7 days, against the 7 before").waitFor();
   const text = await page.locator("main, body").first().innerText();
   ok(/kept since/.test(text), `${tag} says since when history is kept`);
-  for (const s of ["Jobs per day", "Runner hours per day", "Full CI run", "Wait for a runner", "Merges per day", "Time per merge", "Jobs, last 7 days against the 7 before"])
+  for (const s of ["Jobs per day", "Runner hours per day", "Full CI run", "Wait for a runner", "Merges per day", "In the merge line (p50)", "Opened to merged (p50)", "Jobs, last 7 days against the 7 before"])
     ok(text.includes(s), `${tag} shows ${s}`);
   ok(text.includes("40m"), `${tag} a full run took 40m`);
   ok(text.includes("backend") && text.includes("unit"), `${tag} lists the jobs`);

@@ -61,6 +61,7 @@ func init() {
 		prReviewStatsCmd,
 		prBodiesCmd,
 		prTimelineCmd,
+		prFlowCmd,
 	}
 }
 
