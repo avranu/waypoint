@@ -517,6 +517,7 @@ func (s *Service) forgeMentions(ctx context.Context, q queryer, issueID int64, a
 	defer rows.Close()
 	out := []ForgeMention{}
 	at := map[string]int{}
+	best := map[string]int{} // URL → rank of the row its verb came from
 	for rows.Next() {
 		var m ForgeMention
 		var num sql.NullInt64
@@ -535,22 +536,45 @@ func (s *Service) forgeMentions(ctx context.Context, q queryer, issueID int64, a
 				o.Places = append(o.Places, place)
 			}
 			o.Own = o.Own || m.Own
-			o.Gone = o.Gone && m.Gone
-			if o.Verb == "" && m.Verb != "" {
+			// The verb, excerpt and link come from one text: the best row's. A
+			// live text beats one that no longer names the issue, then a trusted
+			// verb (it has its excerpt) beats an outside one; a tie keeps the
+			// newer.
+			if r := mentionRank(m); r > best[m.URL] {
 				o.Verb, o.Excerpt, o.SourceURL = m.Verb, m.Excerpt, m.SourceURL
-			} else if o.Excerpt == "" && m.Excerpt != "" {
-				o.Excerpt, o.SourceURL = m.Excerpt, m.SourceURL
+				best[m.URL] = r
 			}
+			o.Gone = o.Gone && m.Gone
 			if m.At.Before(o.At) {
 				o.At = m.At
 			}
 			continue
 		}
 		m.Places = []string{place}
+		best[m.URL] = mentionRank(m)
 		at[m.URL] = len(out)
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// mentionRank is how well a row's text states the mention (see
+// forgeMentions): live text first, then a trusted verb (with its line), an
+// outside verb (no line), a trusted line that names it without one.
+func mentionRank(m ForgeMention) int {
+	r := 0
+	switch {
+	case m.Verb != "" && m.Excerpt != "":
+		r = 3
+	case m.Verb != "":
+		r = 2
+	case m.Excerpt != "":
+		r = 1
+	}
+	if !m.Gone {
+		r += 4
+	}
+	return r
 }
 
 // ForgeMentions lists the forge items naming an issue (all: also linked
