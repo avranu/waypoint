@@ -11,10 +11,8 @@ const (
 	poolSatWait = 2 * time.Minute
 	// poolSatFresh: how long a reading of the pool is trusted.
 	poolSatFresh = 2 * time.Minute
-	// batchMaxDepth bounds how many pull requests ride a batch behind its
-	// first head (lineBatchDepth: it grows by one each time a batch merges
-	// whole and drops back when one fails).
-	batchMaxDepth = 4
+	// batchMaxDepth is the most places one batch covers.
+	batchMaxDepth = 8
 )
 
 // poolVerdict is a reading of whether a forge's runners are saturated.

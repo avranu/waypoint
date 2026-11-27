@@ -13,48 +13,15 @@ import (
 var autopilotCmd = &command{
 	name: "autopilot", group: "Tasks", args: "[on|off|set|summaries|reviewed|stop|now …]",
 	summary: "restart finished sessions on the next task (agents read it, people change it)",
-	about: `When a session in an autopilot project finishes its task, Waypoint waits a
-minute, then restarts it in tmux on the next task (as wp next would pick
-it). Type keep or /keep in that minute to keep the session. A session outside
-tmux can't be moved on, and you are told so.
+	about: `Restarts finished sessions in opted-in projects on the next ready task (in wp
+next order), subject to hourly/weekly/5-hour quota limits, criteria (--priority,
+--approved, --planned, --query), and pace (--per-hour, --per-day, --spacing,
+--at-once, --hours, --days). Changing settings is for people only.
 
-Limits pause it and it resumes by itself: the last hour's spend, the week's
-quota running ahead of an even pace or past 90%, and the five-hour window
-past 90% (wp autopilot set). Turning it on and changing limits is for you,
-in the web or your own terminal, never from an agent's shell.
-A task that builds on a pull request of the session that hasn't merged waits
-for it (--merge auto, at most 3 hours, --merge-wait).
-
-Criteria narrow which tasks it starts (all you set must hold): --priority,
---due-within DAYS, --approved on, --planned on, --query with any search.
-It takes them in wp next's order. Pace limits how often it starts one, in
-each project: --per-hour, --per-day, --spacing, --at-once (tasks under way
-at a time across your sessions, 1 by default), and --hours and --days to
-start them in. Start and now skip the hours, the spacing and --at-once.
-
-With --review on, a session is first asked for an adversarial review of its
-change (wp worklog KEY), a minute after it stops; on and off only decide
-whether the next task starts, so reviews run either way. In your own agent sessions
-the review comes before the pull request: wp ship pushes the branch and says
-to end the turn. Where the review leaves nothing for the session to do,
-Waypoint opens the pull request itself; where it leaves findings, the
-review's prompt asks for wp ship, which opens it (wp ship -h: --review,
---skip-review). A pull request already open waits for its review before
-merging. If the review can't run (no runner, a failed job), Waypoint opens the pull
-request without it and says so. A round's reviewer works from your brief
-(--review-text-file; wp autopilot reviewer --brief prints the default) and is
-who --review-model names: auto (the stakes-tiered chain), session (the
-session reviews itself), or a model such as gateway/MODEL or claude/sonnet
-(wp autopilot reviewer lists them). Each round's
-findings are scored. Another round follows a change whose stakes call for it
-when the round found a new, standing finding the session fixed or confirmed and
-that was not refuted: a high or critical one always calls another round; mediums
-must number 1 after round 1, 2 after round 2, then 4, 8 and so on (wp pr
-rounds). Every session keeps the agent's last message as its summary (wp
-autopilot summaries).
-
-Without a subcommand: what autopilot is doing in each project and the limit
-readings. -p picks the project for on, off and set.`,
+With --review on, wp ship runs a pre-PR adversarial review first; Waypoint opens
+the PR automatically when no findings remain. With --deferred on (default), Opus
+and Fable sessions are shown tasks they filed during the session once before
+shipping. Without a subcommand, prints status and quota meters.`,
 	examples: []string{"wp autopilot", "wp autopilot on", "wp autopilot set --max-hourly 50 --week-ahead 10", "wp autopilot summaries"},
 	run:      cmdAutopilot,
 }
@@ -87,6 +54,7 @@ type apLimits struct {
 	FiveHourMax  *float64 `json:"five_hour_max,omitempty"`
 	Merge        *string  `json:"merge,omitempty"`
 	GraceSeconds *int     `json:"grace_seconds,omitempty"`
+	Deferred     *bool    `json:"deferred,omitempty"`
 	Review       *bool    `json:"review,omitempty"`
 	ReviewPrompt *string  `json:"review_prompt,omitempty"`
 	ReviewSkip   *string  `json:"review_skip,omitempty"`
@@ -206,6 +174,9 @@ func (l apLimits) String() string {
 	}
 	if l.ReviewText != nil && strings.TrimSpace(*l.ReviewText) != "" {
 		review += ", own reviewer brief"
+	}
+	if l.Deferred != nil && !*l.Deferred {
+		review += " · deferred off"
 	}
 	return fmt.Sprintf("hourly $%s · week +%s ahead, max %s, 100%% for the last %s · five hours %s · merge %s · grace %ds · review %s",
 		strings.TrimSuffix(f(l.MaxHourlyUSD, ""), ""), f(l.WeekAhead, " pts"), f(l.WeekMax, "%"), f(l.WeekEndHours, " h"), f(l.FiveHourMax, "%"), merge, grace, review)
@@ -400,6 +371,7 @@ func cmdAutopilotSet(c *cli, args []string) error {
 	five := fs.Float64("five-hour", 0, "pause once the five-hour window reaches `PERCENT` (0: off)")
 	merge := fs.String("merge", "", "wait for unmerged PRs: `auto` (only a task building on one), always, never")
 	grace := fs.Int("grace", 0, "`SECONDS` between a finished session and its restart")
+	deferred := fs.String("deferred", "", "`on` or off: wp ship from an Opus or Fable session first lists the ready tasks it filed meanwhile")
 	review := fs.String("review", "", "`on` or off: review a session's task before moving on")
 	reviewPrompt := fs.String("review-prompt", "", "the review's `PROMPT` (\"\" for the default)")
 	reviewSkip := fs.String("review-skip", "", "low-risk changes: `on` skips their review, shadow only records, off reviews all")
@@ -443,6 +415,8 @@ func cmdAutopilotSet(c *cli, args []string) error {
 			lim["merge"] = *merge
 		case "grace":
 			lim["grace_seconds"] = *grace
+		case "deferred":
+			lim["deferred"] = *deferred == "on"
 		case "review":
 			lim["review"] = *review == "on"
 		case "review-prompt":
@@ -483,7 +457,7 @@ func cmdAutopilotSet(c *cli, args []string) error {
 			lim["spend_at_once"] = *spendAtOnce
 		}
 	})
-	for name, v := range map[string]string{"approved": *approved, "planned": *planned, "spend-left": *spendLeft} {
+	for name, v := range map[string]string{"approved": *approved, "planned": *planned, "spend-left": *spendLeft, "deferred": *deferred} {
 		if v != "" && v != "on" && v != "off" {
 			return c.usage("--%s is on or off", name)
 		}
@@ -502,7 +476,7 @@ func cmdAutopilotSet(c *cli, args []string) error {
 		lim["review_text"] = text
 	}
 	if len(lim) == 0 && !*reset {
-		return c.usage("set what? limits (--max-hourly, --week-ahead, --week-max, --week-end, --five-hour, --merge, --merge-wait, --grace, --review, --review-prompt, --review-skip, --review-text-file, --review-model), " +
+		return c.usage("set what? limits (--max-hourly, --week-ahead, --week-max, --week-end, --five-hour, --merge, --merge-wait, --grace, --deferred, --review, --review-prompt, --review-skip, --review-text-file, --review-model), " +
 			"which tasks (--priority, --due-within, --approved, --planned, --query), pace (--per-hour, --per-day, --spacing, --at-once, --hours, --days), " +
 			"the week's end (--defaults --spend-left, --spend-at-once) or --reset")
 	}
@@ -621,6 +595,7 @@ func cmdAutopilotSummaries(c *cli, args []string) error {
 	short(fs, "p", "project")
 	all := fs.Bool("all", false, "read ones too")
 	limit := fs.Int("limit", 20, "at most `N`")
+	short(fs, "n", "limit")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err

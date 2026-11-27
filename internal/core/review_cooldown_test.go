@@ -545,11 +545,12 @@ func TestCoolStallsEarlierAttemptsOnly(t *testing.T) {
 // A no-model answer anywhere in the attempts is seen, not only the last.
 func TestLeftNoModelAnyAttempt(t *testing.T) {
 	_, _, chain, _ := newStallEnv(t)
-	a := []ModelAttempt{{Outcome: "no_model_at_bar"}, {Model: "x/y", Outcome: "ok"}}
-	if !leftNoModel(chain, a) {
+	const gw = 7
+	a := []ModelAttempt{{Outcome: "no_model_at_bar", providerID: gw}, {Model: "x/y", Outcome: "ok", providerID: 8}}
+	if !leftNoModel(gw, chain, a) {
 		t.Fatal("not seen")
 	}
-	if leftNoModel(chain, []ModelAttempt{{Outcome: "server", Error: "HTTP 504"}}) {
+	if leftNoModel(gw, chain, []ModelAttempt{{Outcome: "server", Error: "HTTP 504", providerID: gw}}) {
 		t.Fatal("a 504 is not no model")
 	}
 }
@@ -575,5 +576,72 @@ func TestReviewCooldownReasksAfterLaterEntryAnswered(t *testing.T) {
 	r := h.requests()
 	if a.err != nil || len(a.findings) != 1 || len(r) < 3 || slices.Contains(r[len(r)-1], stallA) {
 		t.Fatalf("answer %+v requests %v", a, r)
+	}
+}
+
+// A 400 from a provider other than the gateway is that provider's own, not
+// the gateway's no-model answer: the route is not asked plain again.
+func TestReviewCooldownOtherProvider400NotReasked(t *testing.T) {
+	re, h, chain, _ := newHookEnv(t, func(_ []string, _ string, n int) (string, error) {
+		if n == 1 {
+			return "", &llmError{status: 502, body: "bad gateway"}
+		}
+		return "", &llmError{status: 400, body: "bad request"}
+	})
+	other, err := re.s.CreateAIProvider(re.ctx, re.admin, AIProviderInput{Name: str("Other"), Kind: str("openai"), BaseURL: str("http://other.invalid")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain = append(slices.Clone(chain), ChainModel{ProviderID: other.ID, Model: "other/model"})
+	coolA(re)
+	a := re.s.reviewOnce(re.ctx, chain, "the diff")
+	if r := h.requests(); a.err == nil || len(r) != 2 {
+		t.Fatalf("answer %+v requests %v", a, r)
+	}
+}
+
+// Another provider's family pattern is logged as the id it resolved to, a
+// name the chain did not write: its timeout or 400 is still not the route's,
+// so nothing is asked again (WP-1814).
+func TestReviewOtherProviderPatternFailureNotReasked(t *testing.T) {
+	for name, failure := range map[string]error{"timeout": context.DeadlineExceeded, "400": &llmError{status: 400, body: "bad request"}} {
+		re, h, chain, _ := newHookEnv(t, func(_ []string, _ string, n int) (string, error) {
+			if n == 1 {
+				return "", &llmError{status: 502, body: "bad gateway"}
+			}
+			return "", failure
+		})
+		other, err := re.s.CreateAIProvider(re.ctx, re.admin, AIProviderInput{Name: str("Other"), Kind: str("openai"), BaseURL: str("http://other.invalid")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		chain = append(slices.Clone(chain), ChainModel{ProviderID: other.ID, Model: "opencode/muse-spark-*"})
+		a := re.s.reviewOnce(re.ctx, chain, "the diff")
+		if r := h.requests(); a.err == nil || len(r) != 2 || len(a.log) != 2 || a.log[1].Model == chain[1].Model {
+			t.Errorf("%s: answer %+v requests %v", name, a, r)
+		}
+	}
+}
+
+func TestLeftNoModelProviders(t *testing.T) {
+	_, _, chain, _ := newStallEnv(t)
+	const gw, other = 7, 8
+	for _, c := range []struct {
+		name string
+		a    ModelAttempt
+		want bool
+	}{
+		{"400 from the gateway", ModelAttempt{Model: gatewayReviewRoute, Outcome: "error", status: 400, providerID: gw}, true},
+		{"400 from another provider", ModelAttempt{Model: gatewayReviewRoute, Outcome: "error", status: 400, providerID: other}, false},
+		{"no_model_at_bar from another provider", ModelAttempt{Outcome: "no_model_at_bar", providerID: other}, false},
+		{"no_model_at_bar from the gateway", ModelAttempt{Outcome: "no_model_at_bar", providerID: gw}, true},
+	} {
+		if got := leftNoModel(gw, chain, []ModelAttempt{c.a}); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+	mixed := []ModelAttempt{{Outcome: "no_model_at_bar", providerID: gw}, {Model: "x/y", Outcome: "ok", providerID: other}}
+	if !leftNoModel(gw, chain, mixed) {
+		t.Error("the gateway's no-model answer among other attempts is not seen")
 	}
 }

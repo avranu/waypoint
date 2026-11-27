@@ -374,3 +374,27 @@ func TestAICallsCountRetries(t *testing.T) {
 		t.Errorf("usage: %+v %v", u, err)
 	}
 }
+
+func TestProfileSecondsIsCapped(t *testing.T) {
+	for in, want := range map[int]int{-3: ProfileDefaultSeconds, 0: ProfileDefaultSeconds, 1: 1, 60: 60, 61: 60, 100000: 60} {
+		if got := ProfileSeconds(in); got != want {
+			t.Errorf("ProfileSeconds(%d) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+func TestServerMetricsShowsDatabase(t *testing.T) {
+	e := newEnv(t)
+	text, err := e.s.ServerMetrics(e.ctx, e.admin, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"database connections", "writer", "readers", "callers that waited", "total wait", "max open", "slowest database callers"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("metrics lack %q", want)
+		}
+	}
+	if text, _ := e.s.ServerMetrics(e.ctx, e.admin, "^writer"); !strings.HasPrefix(text, "writer ") || strings.Contains(text, "readers") {
+		t.Errorf("grep: %q", text)
+	}
+}

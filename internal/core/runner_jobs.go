@@ -27,7 +27,7 @@ const (
 	runnerInputMax        = 4 << 20
 )
 
-var runnerJobSources = []string{"request_apply", "request_cell", "request_decision", "automation_step", "bot_run", "babysit", "session_message", "session_batch", "manual", "kit_rollout", "autopilot", autopilotReviewSource, "audit", cacheWarmSource, reviewCompactSource, prepAgentSource, babysitHeldSource}
+var runnerJobSources = []string{"request_apply", "request_cell", "request_decision", "automation_step", "bot_run", "babysit", "session_message", "session_batch", "manual", "kit_rollout", "autopilot", autopilotReviewSource, "audit", cacheWarmSource, reviewCompactSource, deferredCompactSource, prepAgentSource, babysitHeldSource}
 
 // default timeouts, seconds
 var runnerTimeouts = map[string]int{JobCommand: 600, JobApply: 300, JobAgent: 1800, JobReview: 900, JobSession: 120, JobMessage: 60, JobAutopilot: 900, JobAutopilotStart: 900, JobAudit: 2700, JobObjective: objectiveJobTimeout}
@@ -230,6 +230,12 @@ func checkRunnerInput(kind string, raw json.RawMessage) (jobNeeds, string, json.
 			if in.DiffSince < 0 || (in.DiffSince > 0 && in.DiffFrom != "") {
 				return n, "", nil, invalid("diff_since is a time (unix seconds), instead of diff_from")
 			}
+			if in.DiffOver != "" && (!gitRefRE.MatchString(in.DiffOver) || in.DiffFrom == "" || len(in.OverPrompt) > 16<<10) {
+				return n, "", nil, invalid("diff_over %q isn't a branch, tag or commit, or comes without diff_from, or its over_prompt is over 16 KB", in.DiffOver)
+			}
+			if in.DiffOver == "" {
+				in.OverPrompt = ""
+			}
 			var err error
 			if in.DiffPaths, err = cleanAuditPaths(in.DiffPaths); err != nil {
 				return n, "", nil, err
@@ -239,6 +245,7 @@ func checkRunnerInput(kind string, raw json.RawMessage) (jobNeeds, string, json.
 			}
 		} else {
 			in.DiffFrom, in.DiffSince, in.DiffPaths, in.DiffExclude, in.GatewayExclude, in.GatewayWeakest = "", 0, nil, nil, nil, ""
+			in.DiffOver, in.OverPrompt = "", ""
 			in.GatewayPriority, in.GatewayPaid, in.GatewayArm = "", "", ""
 			in.GatewayArchiveMax, in.GatewayFileMax = 0, 0
 		}

@@ -15,11 +15,9 @@ import (
 var sandboxCmd = &command{
 	name: "sandbox", group: "Setup", args: "SUBCOMMAND",
 	summary: "sandbox settings per machine and project",
-	about: `Shows the sandbox levels Waypoint keeps, strongest first: vm, contained,
-tool, off. Nothing enforces them yet; the helper (wp sandbox install, then
-doctor) only makes each repository's machine user so far. Read-only:
-change settings in the Waypoint UI (Project settings → Sandbox, Admin →
-Sandbox); loosening needs your password within ten minutes.`,
+	about: `Shows sandbox levels per machine and project (strongest first: vm, contained,
+tool, off), helper readiness, and escape drill status. Read-only: change levels
+in the Waypoint UI (Project settings → Sandbox, Admin → Sandbox).`,
 	examples: []string{"wp sandbox status", "wp sandbox show", "wp sandbox show HOME --log", "wp sandbox doctor"},
 }
 

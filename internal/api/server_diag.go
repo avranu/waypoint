@@ -18,6 +18,7 @@ func (s *Server) serverDiagRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/server/status", a(s.serverStatus))
 	mux.HandleFunc("GET /api/v1/server/log", a(s.serverLog))
 	mux.HandleFunc("GET /api/v1/server/metrics", a(s.serverMetrics))
+	mux.HandleFunc("GET /api/v1/server/profile", a(s.serverProfile))
 	mux.HandleFunc("GET /api/v1/server/problems", a(s.serverProblems))
 	mux.HandleFunc("POST /api/v1/server/problems/{id}/ack", a(s.ackServerProblem))
 	mux.HandleFunc("DELETE /api/v1/server/problems/{id}/ack", a(s.unackServerProblem))
@@ -117,6 +118,15 @@ func (s *Server) serverMetrics(w http.ResponseWriter, r *http.Request) (any, err
 		return nil, err
 	}
 	return textResponse(text), nil
+}
+
+// serverProfile is `wp server profile` (WP-1946).
+func (s *Server) serverProfile(w http.ResponseWriter, r *http.Request) (any, error) {
+	p, err := s.svc.ServerProfile(r.Context(), actorFrom(r), r.URL.Query().Get("kind"), queryInt(r, "seconds", 0))
+	if err != nil {
+		return nil, err
+	}
+	return rawResponse{contentType: p.ContentType, body: p.Body}, nil
 }
 
 func (s *Server) aiUsage(w http.ResponseWriter, r *http.Request) (any, error) {

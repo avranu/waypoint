@@ -1026,7 +1026,7 @@ func (e *helperEnv) verify(ctx context.Context, result map[string]any, after tim
 
 // auditFindingKeys are the fields the server reads from each finding (core's
 // parseAuditAnswer).
-var auditFindingKeys = []string{"title", "path", "line", "severity", "problem", "confirm", "verdict", "verdict_note", "lead", "leads"}
+var auditFindingKeys = []string{"title", "path", "line", "severity", "problem", "confirm", "verdict", "verdict_note", "lead", "leads", "refers_to"}
 
 // foldKeys renames m's keys that match one of names the way the server's
 // decoder does (encoding/json matches a field's key in any case) to that

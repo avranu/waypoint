@@ -18,8 +18,8 @@ import (
 )
 
 var objectiveCmd = &command{
-	name: "objective", group: "Agent work", args: "[set|show|check|diagnose|ls|confirm|clear|retry|next|accept|end …]",
-	summary: "work a task in rounds until Waypoint's own reading says it is done: a check, an amount, a judge, or a loop",
+	name: "objective", group: "Tasks", args: "[set|show|check|diagnose|ls|confirm|clear|retry|next|accept|end …]",
+	summary: "work a task in rounds until Waypoint's own check or judge says it is done",
 	examples: []string{
 		"wp objective set WP-12 --check 'go test -count=1 ./internal/core' --until '< 1s'",
 		"wp objective set WP-12 --check ./bench-search --until 2x --pace spare",
@@ -27,92 +27,28 @@ var objectiveCmd = &command{
 		"wp objective check WP-12",
 		"wp objective ls",
 	},
-	about: `A task with an objective isn't finished by one pull request. Each round
-ships what it gained (wp ship, as usual); where the task would close,
-Waypoint reads the round itself: its commands run on the runner of the person
-who put the objective in effect, in fresh checkouts of the branch (and, for a
-time or a value, of the commit the round started from, in the same run). Met,
-the task closes; otherwise it goes back to To Do for the next round. What
-the worker reads with wp objective check never decides it, and a person
-closing or cancelling the task always ends it.
+	about: `Runs a task in rounds: each wp ship is measured on a fresh checkout by your
+runner. When the target is met, the task closes; otherwise it reopens for the
+next round. Agent-set objectives stay proposals until a person confirms them
+(wp objective confirm KEY).
 
-  until a fixed target   --until '< 1s'  '<= 250ms'  '>= 80%'  '< 10 warnings'  pass
-                         Met when Waypoint's reading meets it.
-  an amount every round  --until 2x  -10%  +5%
-                         Against the commit the round started from, so it is
-                         never met for good: it asks again every round.
-  judged                 --judge 'TEXT' [--bar high] [--judge-model M]
-                         Other models, not the worker, read the branch against
-                         your words. Met when they find nothing at --bar or
-                         above (critical, high, medium by default, low).
-  a loop                 no --check, --until or --judge: every round opens the
-                         task again, until a person ends it or --rounds run out.
+Target shapes:
+  fixed target   --until '< 1s' | '>= 80%' | pass
+  every round    --until 2x | -10% | +5%  (against the round's starting commit)
+  judged         --judge 'TEXT' [--bar high] [--judge-model M]
+  loop           no --check/--until/--judge (reopens until --rounds or end)
 
---keep-passing CMD (repeatable) names a command that must keep passing: a
-round that breaks it hasn't met the objective, whatever the check reads.
-
-The check and those commands are shell commands a runner runs, so an objective
-an agent sets is a proposal, shown but not run, until a person confirms it
-(wp objective confirm KEY in their own terminal, or on the task's page); only a
-person changes one in effect. Where the repository is read and which branch:
---repo owner/name, --branch.
-
-A round that moved nothing waits before the next: an hour, doubling to a week,
-and never less than --every (24h by default for a loop or an amount every
-round, so those wait a day). It stops and says so (wp objective show KEY) when
-a person is needed: no repository or runner to read it on, a check that gives no
-reading at the start, a round that changed the files its own check runs (its
-reading waits for you), a reading it couldn't take after retries, or no rounds
-left. A person steers it: wp objective retry KEY (read again), next (move on
-now), accept (count the reading that waits), end (an ordinary task again).
-Agents are refused.
-
-After --diagnose-after rounds in a row that came no nearer (2 by default; 0:
-never), the next round is a diagnose round: it ships no code. The worker finds
-out why (the code, the check or judge itself, noise in the reading, a target out
-of reach), says what the next round should try, and records it with wp
-objective diagnose KEY -f FILE. wp done, wp ship and an agent's merge (or
-merge --when-ready) of a pull request of the task are refused until it is
-recorded (a pull request armed earlier still merges on its own; one opened on the forge directly can't be, and if it merges
-it is read as any round). The same round then opens again as a work round, the
-one to ship in, and every round after it reads the diagnosis until one makes
-progress. A diagnose round doesn't use up one of the --rounds, and a person
-can skip it with wp objective next KEY. Where a person must act
-(the check is wrong, the target can't be reached), --ask leaves the objective
-waiting for them: wp objective accept (read it, go on), next (hand the round
-out now), set (change what is measured) or end.`,
+After --diagnose-after stalled rounds (default 2), the next round diagnoses why
+and records wp objective diagnose KEY -f FILE instead of shipping code. People
+steer stalled objectives with retry, next, accept, or end.`,
 	subs: []*command{
 		{name: "set", args: "KEY [--check 'CMD'] [--until TARGET] [--judge 'TEXT' [--bar LEVEL] [--judge-model M]] [--keep-passing 'CMD'] [--dir DIR] [--setup 'CMD'] [--measure time|value|pass] [--better lower|higher] [--repo owner/name] [--branch B] [--pace queue|spare] [--every DURATION] [--rounds N] [--diagnose-after N] [--rev REV]",
-			summary: "give a task an objective, or change it (a flag left out keeps its value)",
-			about: `The target decides what is measured: a time ("< 1s", 2x, -10%) is the
-command's median wall time over several runs, as wp bench measures it; any
-other number (">= 80%", "+5%") is a number the command prints (a line with
-several is read by the unit in the target: "81.3% of 1204 statements" under
-">= 80%" is 81.3; without one, the last number on the last line); pass is
-its exit status. --measure value reads a number where the target alone would
-mean a time (--until 2x --measure value --better higher).
-
---judge TEXT says what "done" means, in words, for models that didn't do
-the work; --bar is the lowest severity of finding that keeps the task open
-(critical, high, medium, low; medium by default); --judge-model M, repeated,
-picks the models to ask (none: the audit default). A judge can be combined
-with a check that has a fixed target or is a pass (not an amount
-every round).
---keep-passing CMD (repeatable; a lone '' clears them) are commands that must
-keep passing. --repo and --branch say where Waypoint reads the objective
-(the project's repository and its default branch if left out). --dir is the
-folder the commands run in, --setup runs once in each checkout before them.
-
---pace spare hands the task out only while your week's-end plan wants more
-work ("Use what's left" in autopilot's settings), so its rounds run on
-quota that would otherwise go unused; wp next KEY still takes it by name.
---every is the least time between rounds (default 24h for the shapes that
-never end, 0 for a fixed target); a round that moved nothing waits longer
-(an hour, doubling to a week).
-
-A person who changes an agent's proposal starts from nothing unless they
-name it: --rev REV (the "rev" of wp objective show KEY --json) builds the
-change on the proposal they read.`,
+			summary: "give a task an objective, or change it (omitted flags keep their value)",
+			about: `Target units decide what is measured: durations ('< 1s', -10%) measure median
+wall time; other numbers ('>= 80%', +5%) parse the matching number from output;
+'pass' checks exit status. Use --measure value when a ratio targets a number.
+--keep-passing CMD (repeatable; '' clears) must keep passing every round.
+--pace spare runs only on spare weekly quota; --every sets minimum spacing.`,
 			examples: []string{
 				"wp objective set WP-12 --check 'go test -count=1 ./internal/core' --until '< 1s'",
 				"wp objective set WP-12 --check ./scripts/coverage.sh --until '>= 80%' --keep-passing 'go vet ./...'",

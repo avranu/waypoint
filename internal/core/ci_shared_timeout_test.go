@@ -44,8 +44,8 @@ func timeoutAtFront(t *testing.T, others func(be *bsEnv)) (be *bsEnv, head7, hea
 		t.Fatalf("#7 isn't the front: %+v", pr)
 	}
 	others(be)
-	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE babysits SET session_id = ? WHERE pr_id = ? AND ended_at IS NULL`, be.agent.Session, be.pr(7).ID); err != nil {
-		t.Fatal(err)
+	if b := be.babysitOf(7); b.sessionID != be.agent.Session {
+		t.Fatalf("#7's babysit has session %d, not the shipper's", b.sessionID)
 	}
 	be.sg.sm.Lock()
 	be.sg.logs["ci / backend (pull_request)"] = timeoutLog

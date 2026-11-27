@@ -45,9 +45,9 @@ wp preview stop (which deletes its data).`,
 
 func init() {
 	previewCmd.subs = []*command{
-		{name: "start", summary: "build and run (or rebuild) this checkout's preview", run: cmdPreviewStart},
-		{name: "status", aliases: []string{"show"}, summary: "the preview running for this checkout, if any", run: cmdPreviewStatus},
-		{name: "stop", summary: "stop this checkout's preview and delete its data", run: cmdPreviewStop},
+		{name: "start", summary: "build and run (or rebuild) this checkout's preview", examples: []string{"wp preview start"}, run: cmdPreviewStart},
+		{name: "status", aliases: []string{"show"}, summary: "the preview running for this checkout, if any", examples: []string{"wp preview status"}, run: cmdPreviewStatus},
+		{name: "stop", summary: "stop this checkout's preview and delete its data", examples: []string{"wp preview stop"}, run: cmdPreviewStop},
 		{name: "serve", args: "DIR", summary: "(internal) keep a preview's server running until it lapses", hidden: true, run: cmdPreviewServe},
 	}
 }

@@ -175,7 +175,7 @@ func (s *Service) screenNotes(ctx context.Context, f *Forge, pr *PullRequest, no
 }
 
 // screenPull decides, as recordPR stores a pull request, whether it waits
-// for a person: from outside and not approved at this title and head. A
+// for a person: from outside and not approved at this title, head and description. A
 // waiting one keeps an approved title, or none.
 func (s *Service) screenPull(ctx context.Context, t *tx, v *prVoice, pr *PullRequest, fp *ForgePR) error {
 	title := excerpt(stripWIP(fp.Title), 300)
@@ -202,13 +202,15 @@ func (s *Service) screenPull(ctx context.Context, t *tx, v *prVoice, pr *PullReq
 		return err
 	}
 	approved := state == outsideApproved
-	if approved && okTitle == title && okHead == pr.HeadSHA {
+	if approved && okTitle == title && okHead == pr.HeadSHA && (fp.Body == "" || okHash == textHash(fp.Body)) {
 		pr.Outside = false
 		_, err := t.ExecContext(ctx, `UPDATE pull_requests SET outside = 0 WHERE id = ?`, pr.ID)
 		return err
 	}
 	shown := ""
-	if approved && okTitle == title {
+	if approved && okTitle == title && (fp.Body == "" || okHash == textHash(fp.Body)) {
+		// An edited description waits with the title: neither shows, so
+		// nothing of the new text is read as approved.
 		shown = title
 	}
 	body, hash := fp.Body, textHash(fp.Body)
@@ -242,6 +244,20 @@ func (s *Service) approvedBody(ctx context.Context, f *Forge, pr *PullRequest, f
 		return fp.Body
 	}
 	return ""
+}
+
+// approvedTitle is a pull request's title as a person approved it, when its
+// author is from outside: the forge's title may have changed since, and a
+// review that starts before the next sync holds it again would read the new
+// one (WP-1788). An author who isn't from outside keeps the forge's title.
+func (s *Service) approvedTitle(ctx context.Context, f *Forge, pr *PullRequest, fp *ForgePR) string {
+	v := s.prVoice(ctx, f)
+	if !v.authorOutside(ctx, s.db.R, fp.Author, pr.Author) {
+		return fp.Title
+	}
+	var title string
+	_ = s.db.R.QueryRowContext(ctx, `SELECT title FROM outside_pr_text WHERE pr_id = ? AND external_id = '' AND state = 'approved'`, pr.ID).Scan(&title)
+	return cmp(title, outsideTitleInPrompt)
 }
 
 // errPROutside refuses work on a pull request from outside no person

@@ -9,7 +9,7 @@ All configuration is environment variables.
 | `WAYPOINT_ADDR` | `:8080` | listen address |
 | `WAYPOINT_DB` | `data/waypoint.db` | SQLite file (directory is created) |
 | `WAYPOINT_BASE_URL` | `http://localhost:8080` | public URL, no trailing slash; used in links (invites, notifications, calendar, webhooks). `https://` also makes cookies Secure |
-| `WAYPOINT_TRUST_PROXY` | off | which reverse proxies to believe: `1` trusts loopback and private addresses (10/8, 172.16/12, 192.168/16, fc00::/7), or give a comma list of addresses and CIDRs (`10.0.0.1, 2001:db8::/64`). Only a request arriving *from* a trusted proxy has its `X-Forwarded-For` read, from the right, skipping trusted hops (anything further left is client-supplied), and its `X-Forwarded-Proto: https` marks cookies Secure. Anyone else's headers are ignored, so the port being reachable directly from the internet can't be used to forge an address and dodge the login rate limit |
+| `WAYPOINT_TRUST_PROXY` | off | which reverse proxies to believe: `1` trusts loopback and private addresses (10/8, 172.16/12, 192.168/16, fc00::/7), or give a comma list of addresses and CIDRs (`10.0.0.1, 2001:db8::/64`). Only a request arriving *from* a trusted proxy has its `X-Forwarded-For` read, from the right, skipping trusted hops (anything further left is client-supplied), and its `X-Forwarded-Proto: https` marks cookies Secure. Anyone else's headers are ignored, so the port being reachable directly from the internet can't be used to forge an address and dodge the login rate limit. A host *inside* a trusted range is believed like a proxy: with `1`, any machine on the private network that can reach the port directly can name any address and get a fresh sign-in count for each. Where other hosts share that network, give the proxy's own address instead of `1`, or bind the port where only the proxy reaches it |
 | `WAYPOINT_BACKUP_DIR` | `backups/` next to the database (Docker image: `/data/backups`) | a consistent copy of the DB is written there daily (mode 0600); `off` disables backups |
 | `WAYPOINT_BACKUP_KEEP` | `14` | how many daily backups to keep |
 | `WAYPOINT_MAX_ATTACHMENT_MB` | `25` | the size limit of one attached file (issues, pages, design notes, comments, requests, sessions); 1 to 1024. A reverse proxy needs a body limit at least this large (nginx: `client_max_body_size`) |
@@ -349,6 +349,23 @@ and the merge line's candidates, carry no labels and keep their usual runners.
 puts it ahead in its merge line and its babysit rounds ahead of the line
 (WP design note 357, "An urgent pull request cuts the line", WP-686).
 
+**The priority lane** (WP-1991, WP-ADR32): `current` and the `backend` and
+`e2e` aggregates, the jobs of seconds that every run waits on, ask for
+`forgejo-ci-priority`. Forgejo gives a free slot to the job that became ready
+first, so on a full pool each of them waited a whole turn, three turns a run.
+The runner pool's configuration keeps two slots that take only this label, so
+these jobs start in seconds; every other runner offers the label too, so
+while those two slots are down the jobs wait their turn as before and never
+wait forever. An urgent pull request's go to the urgent lane with its other
+jobs. Only jobs of seconds belong on it: `release` and `deploy` run for
+minutes and ask for `forgejo-ci`. The two slots are a runner of their own in
+the pool's configuration; until it is started the label reserves nothing
+(`wp ci status -A --json` gives each host's `labels` and `capacity`).
+
+A merge line candidate whose heads don't merge fails in `current`, which
+builds the merges first, and its other jobs skip: the line reads the conflict
+from that one light job instead of waiting for a heavy job to get a slot.
+
 **The CI job image** (WP-402): the heavy jobs (backend shards, lint, e2e
 shards) don't run in the pool's image but in Waypoint's own,
 the `waypoint-ci` package `.forgejo/ci-image/build.sh` pushes (its `REPO`), built from `.forgejo/ci-image/Dockerfile`.
@@ -453,14 +470,19 @@ Forgejo commit the trailer names, pull request runs (and so a rule for the
 mirror's twin pull requests), and Waypoint reading `wp-evidence` lines from
 GitHub's logs. WP-1629 holds the measurement and that decision.
 
-**Go's caches** are kept per kind of job (`.forgejo/actions/go-cache`, with
-setup-go's own cache off): `backend-race`, `backend` (the draft tier),
-`lint` (with golangci-lint's), `e2e` and `release`, each keyed by Go's
-version, go.sum and the day. The first passing job of a kind each day saves
-it; the rest restore it and save nothing. setup-go's cache had one key for
-every job, and restored it as `setup-go-linux-…` but saved it as
-`setup-go-Linux-…`, so every heavy job uploaded 350 to 480 MB again (45 to 90
-s) and none of them found a cache of its own kind.
+**Go's caches** are split in `.forgejo/actions/go-cache` (with setup-go's own
+cache off): `GOMODCACHE` is keyed only by Go's version and `go.sum` (shared
+across non-release jobs, with a separate `go-mod-release-…` cache for `release`
+so PR runs cannot write to the release module cache, and resetting on each Go
+version bump), while `GOCACHE` (plus golangci-lint's cache in `lint`) is kept
+per kind of job (`backend-race`, `backend` for the draft tier, `lint`, `e2e`,
+`advisories` and `release`) and keyed by Go's version, `go.sum` and the day.
+The first passing run of a kind each day restores the previous day's cache by
+prefix and saves today's key; later runs that day hit the exact key and skip
+saving. setup-go's cache had one key for every job, and restored it as
+`setup-go-linux-…` but saved it as `setup-go-Linux-…`, so every heavy job
+uploaded 350 to 480 MB again (45 to 90 s) and none of them found a cache of its
+own kind.
 
 **Rolling back**: `make rollback-remote` (or `ssh $DEPLOY_HOST 'bash
 waypoint/deploy/remote-deploy.sh rollback'`) swaps the previous tree back in
@@ -715,7 +737,16 @@ tokens never qualify):
   was called off: a server stopping, a caller hanging up), average and longest time (hours
   are kept 90 days), with its problems.
 - `wp server metrics [--grep RE]`: the `/metrics` text, without the metrics
-  token.
+  token, then how many callers waited for a database connection (the writer
+  is one connection, so its waits are the queue for writes) and the 15
+  callers whose statements took the most time in total. A statement or write
+  transaction over `WAYPOINT_SLOW_STATEMENT` (a Go duration, default `1s`,
+  `0` turns the timing off; read at start) is logged as `slow statement:` or
+  `slow write transaction:` with its caller and the statement without its
+  arguments (`wp server log --grep 'slow (statement|write)'`).
+- `wp server profile [--kind goroutine|cpu|heap] [--seconds 10] [-o FILE]`:
+  what the server is doing now. A goroutine dump prints as text; a CPU
+  (at most 60 s, one at a time) or heap profile is a file for `go tool pprof`.
 - `wp ai usage [--since 24h] [--by task|model|outcome|status|hour|day|provider]
   [--task NAME]`: every request Waypoint sent an AI provider (table
   `ai_calls`, kept 30 days): requests, failures, rate limits, tokens and
@@ -740,7 +771,8 @@ Any proxy works. Requirements:
 
 - Pass `Host`, append `X-Forwarded-For`, set `X-Forwarded-Proto`, and set
   `WAYPOINT_TRUST_PROXY=1` (or the proxy's own address, if it isn't on a
-  private network).
+  private network or other machines on that network can reach Waypoint's
+  port: everything a trusted address sends in `X-Forwarded-For` is believed).
 - Don't buffer `/api/v1/stream` (server-sent events). Waypoint sends
   `X-Accel-Buffering: no`, which nginx honours; keep read timeouts above the
   25-second keep-alive ping the stream sends. `wp pr wait` holds a request up

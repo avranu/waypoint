@@ -109,6 +109,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/fanouts/{id}/items/{key}/failed", a(s.fanoutItemFailed))
 	mux.HandleFunc("POST /api/v1/fanouts/{id}/items/{key}/end", a(s.endFanoutItem))
 	mux.HandleFunc("POST /api/v1/agent/release/{key}", a(s.agentRelease))
+	mux.HandleFunc("POST /api/v1/agent/deferred", a(s.agentDeferred))
 	mux.HandleFunc("POST /api/v1/agent/pushed", a(s.agentPushed))
 	mux.HandleFunc("POST /api/v1/agent/decline/{key}", a(s.agentDecline))
 	mux.HandleFunc("POST /api/v1/agent/usage/{key}", a(s.agentUsage))
@@ -398,16 +399,30 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) (any, error) {
 	if err := decode(r, &in); err != nil {
 		return nil, err
 	}
+	// Only wrong passwords count: per address, per account and address, and
+	// per account. Someone else's guessing can't lock the owner's address
+	// out. The address's own limit is checked first, from memory, so a
+	// locked-out address doesn't get to look the account up.
 	ip := s.clientIP(r)
-	userKey := "login-user:" + strings.ToLower(strings.TrimSpace(in.Login))
-	if s.limiter.blocked("login:"+ip) || s.userLimiter.blocked(userKey) {
+	if s.loginAddrBlocked(ip) {
+		return nil, errTooMany
+	}
+	acct, err := s.loginAccount(r.Context(), in.Login)
+	if err != nil {
+		return nil, err
+	}
+	if blocked, err := s.loginBlocked(r.Context(), acct, ip); err != nil {
+		return nil, err
+	} else if blocked {
 		return nil, errTooMany
 	}
 	tok, u, err := s.svc.Login(r.Context(), in.Login, in.Password, r.UserAgent(), ip)
-	if err != nil {
-		s.limiter.hit("login:" + ip)
-		s.userLimiter.hit(userKey)
+	if errors.Is(err, core.ErrUnauthorized) {
+		s.loginFailed(acct, ip)
 		return nil, fmt.Errorf("%w: wrong username or password", errBadRequest)
+	}
+	if err != nil {
+		return nil, err // the server's fault, not the person's: not counted
 	}
 	s.setSession(w, r, tok)
 	return u, nil

@@ -40,7 +40,7 @@ func TestNudgeRules(t *testing.T) {
 		{`sleep 20; sleep 15; cat out.log`, forgejo, slept},
 		{`sleep 0.5h`, forgejo, slept},
 		{`sleep 20; go test ./...`, forgejo, ""},
-		{`until [ -s out ]; do sleep 60; done`, forgejo, ""},
+		{`until [ -s out ]; do sleep 60; done`, forgejo, slept},
 		{`docker compose up -d; sleep 8; curl -s localhost:1/health`, forgejo, ""},
 		{`python3 -c "import time; time.sleep(60)"`, forgejo, ""},
 		{`sleep 5 && echo done`, forgejo, ""},
