@@ -589,6 +589,16 @@ func (l *jobLedger) jobsRunning() []JobStatus {
 	return out
 }
 
+// lastTook is how long the job's last run that ended took (0: none has).
+func (l *jobLedger) lastTook(name string) time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if st := l.jobs[name]; st != nil && st.ended {
+		return time.Duration(st.lastMS) * time.Millisecond
+	}
+	return 0
+}
+
 // busySinces is when each job that is skipping its runs for an earlier one
 // still going began to.
 func (l *jobLedger) busySinces() map[string]time.Time {

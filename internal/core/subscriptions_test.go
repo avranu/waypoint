@@ -36,7 +36,7 @@ func TestSubscriptionOrder(t *testing.T) {
 		"notices (private): deliverNotification",
 		"live (every): hub prWait stackParentMerged",
 		"notify (visible): notifyFor",
-		"react (visible): repoPushed[" + EvRepoPushed + "] kitPush[" + EvRepoPushed + "] resumeSessions[" + EvAgentsResumed + "] dropUserTranscripts[" + EvUserDeleted + "] refreshKit[" + EvKitSourceSet + "] checkReviewHealth[" + EvReviewLoopRecorded + "] urgentFromLink addPermissionRule backfillEstimates[" + EvProjectUpdated + "] autoEstimateAndTitle[" + EvIssueCreated + "] autoRelate[" + EvIssueCreated + "] followUpsByFiles[" + EvExternalPRMerged + "] autoScreen deliverWebhooks pushIssueState[" + EvIssueStatus + "] pushComment[" + EvIssueCommented + "] pushCommentChange runRepoHook prAudit babysitEvent parkAnswered heldAnswered crossFiled leftover workLog checkSettled reviewAudit fanout goalDrift mergeOrder objective",
+		"react (visible): renumberOnPR[" + EvPRUpdated + "] repoPushed[" + EvRepoPushed + "] kitPush[" + EvRepoPushed + "] resumeSessions[" + EvAgentsResumed + "] dropUserTranscripts[" + EvUserDeleted + "] refreshKit[" + EvKitSourceSet + "] checkReviewHealth[" + EvReviewLoopRecorded + "] urgentFromLink addPermissionRule backfillEstimates[" + EvProjectUpdated + "] autoEstimateAndTitle[" + EvIssueCreated + "] autoRelate[" + EvIssueCreated + "] followUpsByFiles[" + EvExternalPRMerged + "] autoScreen deliverWebhooks pushIssueState[" + EvIssueStatus + "] pushComment[" + EvIssueCommented + "] pushCommentChange runRepoHook prAudit babysitEvent parkAnswered heldAnswered crossFiled leftover workLog checkSettled reviewAudit fanout goalDrift mergeOrder objective",
 		"after: afterDispatch automations",
 	}
 	if len(got) != len(want) {

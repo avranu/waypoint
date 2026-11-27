@@ -27,10 +27,10 @@ and wp escapes prove run a round in this checkout.`,
 	examples: []string{"wp escapes", "wp escapes --days 30 -p WP", "wp escapes show WP-580"},
 	run:      cmdEscapes,
 	subs: []*command{
-		{name: "ls", args: "[-p KEY] [--repo R] [--days N] [--limit N]", summary: "the ledger's rows, newest first", run: cmdEscapesLs},
-		{name: "show", args: "KEY", summary: "one bug task's fix and every candidate cause", run: cmdEscapesShow},
-		{name: "trace", args: "[--limit N]", summary: "trace this checkout's untraced fixes now", run: cmdEscapesTrace},
-		{name: "prove", args: "[--limit N]", summary: "run traced fixes' tests without the fix: does one fail?", run: cmdEscapesProve},
+		{name: "ls", args: "[-p KEY] [--repo R] [--days N] [-n N]", summary: "the ledger's rows, newest first", examples: []string{"wp escapes ls --days 30"}, run: cmdEscapesLs},
+		{name: "show", args: "KEY", summary: "one bug task's fix and every candidate cause", examples: []string{"wp escapes show WP-580"}, run: cmdEscapesShow},
+		{name: "trace", args: "[-n N]", summary: "trace this checkout's untraced fixes now", examples: []string{"wp escapes trace -n 10"}, run: cmdEscapesTrace},
+		{name: "prove", args: "[-n N]", summary: "run traced fixes' tests without the fix: does one fail?", examples: []string{"wp escapes prove -n 5"}, run: cmdEscapesProve},
 	},
 }
 
@@ -41,6 +41,7 @@ func (c *cli) escapeFlags(args []string) (url.Values, []string, error) {
 	repo := fs.String("repo", "", "only repo `OWNER/NAME`")
 	days := fs.Int("days", 0, "look back `N` days (default 90)")
 	limit := fs.Int("limit", 0, "at most `N` rows")
+	short(fs, "n", "limit")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return nil, nil, err

@@ -38,8 +38,11 @@ func TruncateBytes(s string, n int) string {
 	return s[:cut] + "…"
 }
 
-// ClipRunes cuts s to n runes, with an ellipsis.
+// ClipRunes cuts s to n runes, with an ellipsis. An n of 0 or less gives "".
 func ClipRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
 	r := []rune(s)
 	if len(r) <= n {
 		return s

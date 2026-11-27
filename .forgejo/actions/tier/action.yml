@@ -1,0 +1,36 @@
+name: tier
+description: Decide the CI tier for this event.
+outputs:
+  full:
+    description: "true unless the pull request is a draft"
+    value: ${{ steps.tier.outputs.full }}
+  code:
+    description: "true unless the pull request changes only docs"
+    value: ${{ steps.tier.outputs.code }}
+runs:
+  using: composite
+  steps:
+    - id: tier
+      shell: bash
+      env:
+        TOKEN: ${{ github.token }}
+        API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+        TITLE: ${{ github.event.pull_request.title }}
+        NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        full=true code=true
+        case "$TITLE" in WIP:*) full=false ;; esac
+        if [ -n "$NUMBER" ]; then
+          files=
+          for page in 1 2 3 4 5; do
+            batch=$(curl -fsS --max-time 15 -H "Authorization: token $TOKEN" "$API/pulls/$NUMBER/files?limit=100&page=$page" | jq -r '.[] | .filename, (.previous_filename // empty)') || { files=; break; }
+            [ -z "$batch" ] && break
+            files="$files$batch"$'\n'
+          done
+          if [ -n "$files" ] && ! grep -v -E '^docs/|\.md$' <<<"$files" | grep -q .; then
+            code=false
+            echo "::notice title=Docs only::this pull request changes only docs; the tests are skipped."
+          fi
+        fi
+        echo "full=$full" >> "$GITHUB_OUTPUT"
+        echo "code=$code" >> "$GITHUB_OUTPUT"

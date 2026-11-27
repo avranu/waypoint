@@ -12,14 +12,8 @@ type AutomationRunners struct {
 
 // automationRunnerOwner is the person whose runners an automation may use:
 // whoever last saved it (0: nobody, so runner steps are refused).
-func automationRunnerOwner(a *Automation) int64 {
-	if a == nil {
-		return 0
-	}
-	return a.savedBy
-}
+func automationRunnerOwner(a *Automation) int64 { return a.ref().RunnerOwner() }
 
-// usesRunner: some step runs on a runner.
 // ref is the part of the automation an Actor carries.
 func (a *Automation) ref() *AutomationRef {
 	if a == nil {
@@ -28,6 +22,7 @@ func (a *Automation) ref() *AutomationRef {
 	return &AutomationRef{ID: a.ID, Name: a.Name, ProjectID: a.ProjectID, SavedBy: a.savedBy}
 }
 
+// usesRunner: some step runs on a runner.
 func (r *Rule) usesRunner() bool {
 	for _, a := range flatSteps(r.Actions) {
 		if d := actionDef(a.Type); d != nil && d.Runner {

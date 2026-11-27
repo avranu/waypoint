@@ -518,10 +518,9 @@ func (s *Service) auditGoingExceptFootprint(ctx context.Context, prID int64) (in
 	now := s.nowMS()
 	var id int64
 	err := s.db.R.QueryRowContext(ctx, `SELECT a.id FROM code_audits a LEFT JOIN runner_jobs j ON j.id = a.job_id
-		WHERE a.pr_id = ? AND a.purpose != ? AND a.status IN ('queued','running')
-		AND ((j.state = 'running' AND j.started_at > ?) OR (coalesce(j.state, 'queued') = 'queued' AND a.created_at > ?))
+		WHERE a.pr_id = ? AND a.purpose != ? AND a.status IN ('queued','running') AND `+auditHoldingSQL+`
 		ORDER BY a.id DESC LIMIT 1`,
-		prID, AuditFootprint, now-auditWaitMax.Milliseconds(), now-auditQueueWait.Milliseconds()).Scan(&id)
+		append([]any{prID, AuditFootprint}, auditHoldingArgs(now)...)...).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, false, nil
 	}

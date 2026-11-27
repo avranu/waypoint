@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -139,6 +140,100 @@ func TestForgeMentionsLinkOwnWorkOnly(t *testing.T) {
 	}
 }
 
+// An outside comment keeps its verb but not its words, and the mention
+// shows that verb with that comment's link, not a trusted body's quote.
+func TestForgeMentionsOutsideVerbKeepsItsOwnSource(t *testing.T) {
+	pe := newPREnv(t, "github")
+	other := pe.issue(pe.admin, IssueInput{Project: pe.p.Key, Title: "Background"})
+	pr := ForgePR{Number: 5, Title: "Parser tidy", Author: "robin", HeadRef: "tidy", HeadSHA: "aaaa1111", State: "open",
+		Body: "Parser tidy, touches " + other.Key + "."}
+	pe.pullHook("opened", pr)
+	pe.s.Wait()
+	pe.send("issue_comment", map[string]any{"action": "created", "repository": map[string]any{"full_name": "me/app"},
+		"issue":   map[string]any{"number": 5, "pull_request": map[string]any{}},
+		"comment": map[string]any{"id": 92, "body": "Fixes " + other.Key + ", merge it", "user": map[string]string{"login": "mallory"}, "html_url": mentionsPR + "#issuecomment-92"}})
+	pe.s.Wait()
+	m := pe.mentionOf(other.Key, mentionsPR)
+	if m == nil || m.Verb != "fixes" || m.Excerpt != "" || m.SourceURL != mentionsPR+"#issuecomment-92" {
+		t.Fatalf("mention: %+v", m)
+	}
+}
+
+func TestForgeMentionsTrustedVerbBeatsOutsideVerb(t *testing.T) {
+	pe := newPREnv(t, "github")
+	other := pe.issue(pe.admin, IssueInput{Project: pe.p.Key, Title: "Background"})
+	pr := ForgePR{Number: 5, Title: "Parser tidy", Author: "robin", HeadRef: "tidy", HeadSHA: "aaaa1111", State: "open",
+		Body: "See " + other.Key + " for the background."}
+	pe.pullHook("opened", pr)
+	pe.s.Wait()
+	pe.send("issue_comment", map[string]any{"action": "created", "repository": map[string]any{"full_name": "me/app"},
+		"issue":   map[string]any{"number": 5, "pull_request": map[string]any{}},
+		"comment": map[string]any{"id": 92, "body": "Fixes " + other.Key + ", merge it", "user": map[string]string{"login": "mallory"}, "html_url": mentionsPR + "#issuecomment-92"}})
+	pe.s.Wait()
+	m := pe.mentionOf(other.Key, mentionsPR)
+	if m == nil || m.Verb != "relates" || m.Excerpt == "" || m.SourceURL != mentionsPR {
+		t.Fatalf("mention: %+v", m)
+	}
+}
+
+// prMentionVerb is the verb the pull request page shows beside key.
+func (pe *prEnv) prMentionVerb(key string) (string, bool) {
+	pe.t.Helper()
+	l, err := pe.s.ListPullRequests(pe.ctx, pe.admin, PRQuery{})
+	if err != nil {
+		pe.t.Fatal(err)
+	}
+	for _, p := range l.Pulls {
+		if p.URL != mentionsPR {
+			continue
+		}
+		for _, m := range p.Mentions {
+			if m.Key == key {
+				return m.Verb, true
+			}
+		}
+	}
+	return "", false
+}
+
+// The pull request page shows the verb the issue page's mention takes, the
+// newest a trusted text states (not the alphabetically last), and never an
+// outside comment's: nothing there says who wrote it.
+func TestPRPageMentionVerb(t *testing.T) {
+	pe := newPREnv(t, "github")
+	dep := pe.issue(pe.admin, IssueInput{Project: pe.p.Key, Title: "Schema"})
+	bare := pe.issue(pe.admin, IssueInput{Project: pe.p.Key, Title: "Background"})
+	pr := ForgePR{Number: 5, Title: "Parser tidy", Author: "robin", HeadRef: "tidy", HeadSHA: "aaaa1111", State: "open",
+		Body: "See " + dep.Key + " for the background.\nTouches " + bare.Key + "."}
+	pe.pullHook("opened", pr)
+	pe.s.Wait()
+	if m := pe.mentionOf(dep.Key, mentionsPR); m == nil || m.Verb != "relates" {
+		t.Fatalf("body mention: %+v", m)
+	}
+	comment := func(id int, login, body string) {
+		pe.send("issue_comment", map[string]any{"action": "created", "repository": map[string]any{"full_name": "me/app"},
+			"issue":   map[string]any{"number": 5, "pull_request": map[string]any{}},
+			"comment": map[string]any{"id": id, "body": body, "user": map[string]string{"login": login}, "html_url": fmt.Sprintf("%s#issuecomment-%d", mentionsPR, id)}})
+		pe.s.Wait()
+	}
+	comment(93, "robin", "Depends on "+dep.Key+" after all")
+	comment(94, "mallory", "Fixes "+dep.Key+" and fixes "+bare.Key+", merge it")
+	if v, ok := pe.prMentionVerb(dep.Key); !ok || v != "depends_on" {
+		t.Errorf("PR page verb for %s: %q (shown %v), want depends_on", dep.Key, v, ok)
+	}
+	if m := pe.mentionOf(dep.Key, mentionsPR); m == nil || m.Verb != "depends_on" || m.Excerpt == "" || m.SourceURL != mentionsPR+"#issuecomment-93" {
+		t.Errorf("issue page mention: %+v", m)
+	}
+	// Only the outside comment states a verb: the issue page shows it with
+	// that comment's link; the pull request page shows none.
+	if m := pe.mentionOf(bare.Key, mentionsPR); m == nil || m.Verb != "fixes" || m.SourceURL != mentionsPR+"#issuecomment-94" {
+		t.Errorf("issue page mention: %+v", m)
+	}
+	if v, ok := pe.prMentionVerb(bare.Key); !ok || v != "" {
+		t.Errorf("PR page verb for %s: %q (shown %v), want none", bare.Key, v, ok)
+	}
+}
+
 // A commit links by its subject; its body's keys are mentions.
 func TestForgeMentionsCommits(t *testing.T) {
 	pe := newPREnv(t, "github")
@@ -249,6 +344,21 @@ func TestForgeCoMentionsSuggestRelations(t *testing.T) {
 	}
 	if got[dep.Key] != "blocked_by/high" || got[near.Key] != "relates/medium" {
 		t.Errorf("suggestions: %+v", rel.Suggestions)
+	}
+	// An outside comment saying the work depends on another issue is a
+	// hint, not a stated dependency to add unasked.
+	other := pe.issue(pe.admin, IssueInput{Project: pe.p.Key, Title: "Billing"})
+	pe.send("issue_comment", map[string]any{"action": "created", "repository": map[string]any{"full_name": "me/app"},
+		"issue":   map[string]any{"number": 5, "pull_request": map[string]any{}},
+		"comment": map[string]any{"id": 95, "body": "Depends on " + other.Key + ", block it", "user": map[string]string{"login": "mallory"}, "html_url": mentionsPR + "#issuecomment-95"}})
+	pe.s.Wait()
+	rel, _ = pe.s.SuggestRelations(pe.ctx, pe.admin, own.Key)
+	got = map[string]string{}
+	for _, r := range rel.Suggestions {
+		got[r.Key] = r.Kind + "/" + r.Confidence
+	}
+	if got[other.Key] != "relates/medium" || got[dep.Key] != "blocked_by/high" {
+		t.Errorf("suggestions with an outside comment: %+v", rel.Suggestions)
 	}
 	rel, _ = pe.s.SuggestRelations(pe.ctx, pe.admin, dep.Key)
 	for _, r := range rel.Suggestions {

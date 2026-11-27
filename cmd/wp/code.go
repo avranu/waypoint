@@ -29,17 +29,22 @@ first, with matching lines and their symbols. HOTSPOT marks files that
 change a lot; "N fixes" counts past bug-fix commits.`,
 			examples: []string{"wp code find MergeReady", "wp code find 'retry backoff'", "wp code find 'cmd/wp/pr_*.go'"},
 			run:      cmdCodeFind},
-		{name: "show", args: "FILE | FILE:SYMBOL | FILE:START-END | FILE:LINE | SYMBOL", summary: "read a file outline, symbol or line range",
-			about: `  FILE             outline with history, imports and co-changing files (a small
-                   file prints in full)
+		{name: "show", args: "REF...", summary: "read one or more file outlines, symbols or line ranges",
+			about: `Each REF is one of (pass several at once instead of chaining commands):
+  FILE             outline with history, imports and co-changing files (small files print whole)
   FILE:SYMBOL      the symbol's current lines, numbered (Name or Type.Name)
   FILE:START-END   those lines
   FILE:LINE        the symbol around that line
   SYMBOL           a symbol found anywhere
 
 FILE may be a unique path suffix (merge.go).`,
-			examples: []string{"wp code show internal/core/merge.go", "wp code show merge.go:MergeReady --callers", "wp code show cmd/wp/main.go:140-200"},
+			examples: []string{"wp code show internal/core/merge.go", "wp code show merge.go:MergeReady --callers", "wp code show merge.go:MergeReady main.go:run", "wp code show cmd/wp/main.go:140-200"},
 			run:      cmdCodeShow},
+		{name: "callers", args: "SYMBOL...", summary: "show a symbol and every place it is used (same as wp code show --callers)",
+			examples: []string{"wp code callers MergeReady", "wp code callers merge.go:MergeReady"},
+			run: func(c *cli, args []string) error {
+				return cmdCodeShow(c, append([]string{"--callers"}, args...))
+			}},
 		{name: "index", args: "[--status|--rebuild|--upload]", summary: "update, inspect or rebuild the code index",
 			about: `Stored in <git-dir>/waypoint/code.db, one per worktree. --upload sends the
 per-file hotspot, fix and co-change summary to Waypoint; a clean default-

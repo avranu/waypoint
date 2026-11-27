@@ -1,0 +1,6 @@
+# actionlint knows GitHub's hosted runner labels only; declare ours.
+self-hosted-runner:
+  labels:
+    - forgejo-ci
+    - forgejo-ci-heavy
+    - forgejo-ci-priority

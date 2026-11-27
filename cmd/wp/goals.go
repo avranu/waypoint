@@ -12,31 +12,27 @@ import (
 )
 
 var goalsCmd = &command{
-	name: "goals", group: "Knowledge", args: "[gaps] [FLAGS]",
-	aliases: []string{"intent"},
-	summary: "the project's goals, how much work traces to each, and what drifts",
-	about: `Lists the goals in scope: the project's own, its parents' and global ones,
-in the words people wrote them. Under each: how many tasks, pages and notes
-trace to it and how firmly (linked by people, through an agent's link, only
-by Waypoint's guess), and wording that names technology or code rather than
-what people get.
-
-A goal is a design note of kind goal (wp goal add). Work traces to a goal
-through serves links (wp goal link), parents, design notes it implements and
-[[links]] in its text. Waypoint guesses links for plainly matching work; a
-guess counts for little until a person confirms it.
-
-wp goals gaps lists what needs a person: open tasks that trace to no
-approved goal (with the goal each likely serves), links no person confirmed,
-suggested goals and notes no person approved, drift a person has yet to
-answer, and questions worth asking.
-Agents: read it before starting work no person asked for, and pivot freely on
-how (libraries, tools, design) as long as the work still serves an approved
-goal. wp trace shows one item's route.`,
-	examples: []string{"wp goals", "wp goals gaps", "wp goals -p APP", "wp goals --json"},
+	name: "goals", group: "Knowledge", args: "[ls|gaps|show|add|link|confirm|dismiss] [FLAGS]",
+	aliases: []string{"goal", "intent"},
+	summary: "project goals: list, check gaps, add, link work, confirm or dismiss",
+	about: `Without a subcommand, lists the goals in scope with how many tasks, pages and
+notes trace to each. Use wp goals gaps to see untraced open tasks, unconfirmed
+links, and unapproved goals. A goal says what people get in one plain sentence.
+An agent's goal or link waits for a person to approve or confirm it.`,
+	examples: []string{
+		"wp goals",
+		"wp goals gaps",
+		`wp goal add "People find any task in a second"`,
+		"wp goal link WP-12 4",
+		"wp goal confirm 311",
+		"wp goal dismiss WP-12 4",
+	},
 	run: func(c *cli, args []string) error {
-		if len(args) > 0 && args[0] == "gaps" {
-			return goalsGaps(c, args[1:])
+		if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+			if _, ok := numRef(args[0]); ok {
+				return designShow(c, args)
+			}
+			return c.usage("no goal command %q", args[0])
 		}
 		return goalsList(c, args, "/api/v1/goals")
 	},
@@ -64,40 +60,29 @@ func goalsList(c *cli, args []string, path string) error {
 	return c.textCall(path, url.Values{"project": {project}})
 }
 
-var goalCmd = &command{
-	name: "goal", group: "Knowledge", args: "SUBCOMMAND",
-	summary: "add a goal, link work to one, confirm or dismiss a link",
-	about: `A goal says what people get, in one plain sentence: "People find any task
-in a second", not "Add a search index". How to get there (technology,
-features, decisions) goes in design notes under it.
+var goalLsCmd = &command{
+	name: "ls", aliases: []string{"list"}, args: "[-p PROJECT]",
+	summary:  "list goals in scope with trace counts",
+	examples: []string{"wp goals ls", "wp goals ls -p APP"},
+	run:      func(c *cli, args []string) error { return goalsList(c, args, "/api/v1/goals") },
+}
 
-A person's goal is approved as it is saved. An agent's is a suggestion until
-a person approves it (wp design approve), even one written --for a task a
-person filed: a goal is what people want, so only a person makes one.
+var goalGapsCmd = &command{
+	name: "gaps", args: "[-p PROJECT]",
+	summary:  "list untraced open tasks, unconfirmed links, unapproved goals and drift",
+	examples: []string{"wp goals gaps", "wp goals gaps -p APP"},
+	run:      goalsGaps,
+}
 
-Links: wp goal link says a task (or page, or note) serves a goal. A person's
-link counts fully; an agent's counts as an agent's until a person confirms
-it (wp goal confirm LINK). Waypoint's own guesses wait the same way. A
-dismissed link is never made again by Waypoint or an agent; only a person
-linking the pair again brings it back.`,
-	examples: []string{
-		`wp goal add "People find any task in a second"`,
-		`wp goal add "Owners see the week at a glance" -d "Every Monday, without opening five pages."`,
-		"wp goal link WP-12 4",
-		"wp goal confirm 311",
-		"wp goal dismiss 311",
-		"wp goal dismiss WP-12 4",
-	},
+var goalShowCmd = &command{
+	name: "show", aliases: []string{"view", "get"}, args: "GOAL...",
+	summary:  "show a goal in full (same as wp design show)",
+	examples: []string{"wp goal show 4"},
+	run:      designShow,
 }
 
 func init() {
-	goalCmd.subs = []*command{goalAddCmd, goalLinkCmd, goalConfirmCmd, goalDismissCmd}
-	goalCmd.run = func(c *cli, args []string) error {
-		if len(args) == 0 {
-			return goalsList(c, args, "/api/v1/goals")
-		}
-		return c.usage("no goal command %q (wp goal add|link|confirm|dismiss; wp goals lists them)", args[0])
-	}
+	goalsCmd.subs = []*command{goalLsCmd, goalGapsCmd, goalShowCmd, goalAddCmd, goalLinkCmd, goalConfirmCmd, goalDismissCmd}
 }
 
 var goalAddCmd = &command{
