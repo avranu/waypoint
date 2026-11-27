@@ -348,36 +348,23 @@ func linkBasis(basis, agent string, by int64, confirmed bool) string {
 	return basisNames[storedBasis(basis, agent, by, confirmed)]
 }
 
-// goalTech are technologies a goal names when it says how rather than what.
-// goalTechCase are entries in goalTech that are also common English words or
-// acronyms (e.g. "express", "rest", "react", "spring", "swift"): they only
-// trigger when written with their exact casing (and for title-cased English
-// words, not as the sentence's first word) unless paired with an explicit
-// "use X" phrase (goalUseRE).
-var (
-	goalTech     = map[string]string{}
-	goalTechCase = map[string]bool{}
-)
+// goalTech are unambiguous technologies a goal names when it says how rather
+// than what. Common English words (e.g. "express", "rest", "react", "spring",
+// "swift", "rails", "node", "rust", "ruby", "vault", "helm") are intentionally
+// left out to avoid false positives; explicit "use X" phrases are still caught
+// by goalUseRE when X is capitalized.
+var goalTech = map[string]string{}
 
 func init() {
-	for _, w := range strings.Fields(`Django Flask Rails Laravel Spring Express Next.js Nuxt React Vue Svelte Angular jQuery Tailwind Bootstrap
+	for _, w := range strings.Fields(`Django Laravel Next.js Nuxt Vue Svelte jQuery
 		Postgres PostgreSQL MySQL MariaDB SQLite MongoDB Redis Memcached Kafka RabbitMQ NATS Elasticsearch OpenSearch ClickHouse DynamoDB Cassandra
-		Docker Kubernetes k8s k3s Helm Terraform Ansible Nomad Consul Vault Nginx Caddy Traefik Apache HAProxy Cloudflare AWS GCP Azure Lambda S3 EC2
-		Python Golang Rust Java Kotlin Swift TypeScript JavaScript Node Node.js Deno Bun Ruby PHP Elixir Haskell Scala C++ C#
-		GraphQL gRPC REST WebSocket WebSockets Protobuf JSON YAML TOML OAuth OIDC JWT SAML LDAP
-		Playwright Cypress Jest Vitest Pytest Webpack Vite esbuild npm pnpm yarn pip Poetry
-		Forgejo Gitea GitHub GitLab Jenkins CircleCI Grafana Prometheus Loki Sentry Datadog
-		OpenAI Anthropic Claude GPT Gemini Llama Ollama LangChain htmx Electron Flutter`) {
+		Docker Kubernetes k8s k3s Terraform Ansible Nginx Traefik Apache HAProxy Cloudflare AWS GCP Azure S3 EC2
+		Python Golang Java Kotlin TypeScript JavaScript Node.js Deno PHP Haskell Scala C++ C#
+		GraphQL gRPC WebSocket WebSockets Protobuf JSON YAML TOML OAuth OIDC JWT SAML LDAP
+		Playwright Vitest Pytest Webpack Vite esbuild npm pnpm yarn pip
+		Forgejo Gitea GitHub GitLab Jenkins CircleCI Grafana Prometheus Loki Datadog
+		OpenAI Anthropic Claude GPT Gemini Ollama LangChain htmx`) {
 		goalTech[strings.ToLower(w)] = w
-	}
-	for _, w := range strings.Fields(`Flask Rails Spring Express React Angular Tailwind Bootstrap
-		Helm Nomad Consul Vault Caddy Lambda
-		Rust Swift Node Bun Ruby Elixir
-		REST
-		Cypress Jest Poetry
-		Sentry
-		Llama Electron Flutter`) {
-		goalTechCase[strings.ToLower(w)] = true
 	}
 }
 
@@ -410,23 +397,10 @@ func goalWording(title string) []string {
 			add(fmt.Sprintf("says how (%q): say what it is for; using %s is a decision under this goal", strings.TrimSpace(m[0]), what))
 		}
 	}
-	for _, loc := range goalTechRE.FindAllStringIndex(title, -1) {
-		w := title[loc[0]:loc[1]]
-		low := strings.ToLower(w)
-		tech, ok := goalTech[low]
+	for _, w := range goalTechRE.FindAllString(title, -1) {
+		tech, ok := goalTech[strings.ToLower(w)]
 		if !ok || seen[tech] || strings.EqualFold(w, "go") {
 			continue
-		}
-		if goalTechCase[low] {
-			if w != tech {
-				continue
-			}
-			// Title-cased English words at index 0 (e.g. "React quickly",
-			// "Swift feedback", "Express intent") are sentence capitalization,
-			// not technology names; all-caps acronyms like "REST" still flag.
-			if loc[0] == 0 && tech != strings.ToUpper(tech) {
-				continue
-			}
 		}
 		seen[tech] = true
 		add(fmt.Sprintf("names %s: say what you need from it; the choice of %s is a decision under this goal", tech, tech))

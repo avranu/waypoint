@@ -230,8 +230,6 @@ func TestGoalWording(t *testing.T) {
 		"The rest of the team sees progress immediately":      "",
 		"React quickly to incidents without guesswork":        "",
 		"Swift feedback on every pull request":                "",
-		"Expose a REST API for external callers":              "names REST",
-		"Build the dashboard in React":                        "names React",
 		"Use Express for the webhook server":                  "says how",
 	} {
 		got := strings.Join(goalWording(title), " | ")
