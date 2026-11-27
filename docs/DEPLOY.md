@@ -470,14 +470,19 @@ Forgejo commit the trailer names, pull request runs (and so a rule for the
 mirror's twin pull requests), and Waypoint reading `wp-evidence` lines from
 GitHub's logs. WP-1629 holds the measurement and that decision.
 
-**Go's caches** are kept per kind of job (`.forgejo/actions/go-cache`, with
-setup-go's own cache off): `backend-race`, `backend` (the draft tier),
-`lint` (with golangci-lint's), `e2e` and `release`, each keyed by Go's
-version, go.sum and the day. The first passing job of a kind each day saves
-it; the rest restore it and save nothing. setup-go's cache had one key for
-every job, and restored it as `setup-go-linux-…` but saved it as
-`setup-go-Linux-…`, so every heavy job uploaded 350 to 480 MB again (45 to 90
-s) and none of them found a cache of its own kind.
+**Go's caches** are split in `.forgejo/actions/go-cache` (with setup-go's own
+cache off): `GOMODCACHE` is keyed only by Go's version and `go.sum` (shared
+across non-release jobs, with a separate `go-mod-release-…` cache for `release`
+so PR runs cannot write to the release module cache, and resetting on each Go
+version bump), while `GOCACHE` (plus golangci-lint's cache in `lint`) is kept
+per kind of job (`backend-race`, `backend` for the draft tier, `lint`, `e2e`,
+`advisories` and `release`) and keyed by Go's version, `go.sum` and the day.
+The first passing run of a kind each day restores the previous day's cache by
+prefix and saves today's key; later runs that day hit the exact key and skip
+saving. setup-go's cache had one key for every job, and restored it as
+`setup-go-linux-…` but saved it as `setup-go-Linux-…`, so every heavy job
+uploaded 350 to 480 MB again (45 to 90 s) and none of them found a cache of its
+own kind.
 
 **Rolling back**: `make rollback-remote` (or `ssh $DEPLOY_HOST 'bash
 waypoint/deploy/remote-deploy.sh rollback'`) swaps the previous tree back in

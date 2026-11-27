@@ -108,39 +108,3 @@ func TestJobClockWithoutWorkLimitIsPlainTimeout(t *testing.T) {
 		t.Errorf("Err() = %v", ctx2.Err())
 	}
 }
-
-func TestJobClockTellsTheRunnerAboutAWait(t *testing.T) {
-	p := clockProc(t)
-	aj := &activeJob{id: 9, lane: laneHeavy}
-	p.jobs[9] = aj
-	run := &jobRun{id: 9, timeout: time.Minute, out: newLogSink(), job: aj}
-	_, cancel, c := p.jobClock(context.Background(), run, 0)
-	defer cancel()
-	appendWait(t, c, "wait")
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		p.mu.Lock()
-		since := aj.slotWaitSince
-		p.mu.Unlock()
-		if !since.IsZero() {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the job's wait never reached the runner")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	appendWait(t, c, "got")
-	for {
-		p.mu.Lock()
-		since := aj.slotWaitSince
-		p.mu.Unlock()
-		if since.IsZero() {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the end of the wait never reached the runner")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}

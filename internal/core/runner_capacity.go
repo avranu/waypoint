@@ -37,7 +37,23 @@ import (
 // own that the governor never holds; how many run at once across every
 // runner is the gateway's to bound (GatewayTasksInFlight). A runner whose
 // wp has no gateway lane takes them in the light lane.
+//
+// A runner with FeatureLightLane (WP-1943) runs light jobs in LightLaneSlots
+// of their own (where it can't measure memory, no more than --max-jobs): they
+// take no heavy job's place, wait for no load level, and
+// stop only while memory is short. Older runners share --max-jobs and the load
+// governor between heavy and light jobs.
+//
+// LaneAgent is a sixth (WP-1915, WP-ADR149 point 3 as changed by WP-ADR163
+// point 5): an agent job (JobAgent: a fix-up round, an automation's agent)
+// can wait long for a model or for a test slot, and the slots already bound
+// what its builds and tests use. So it counts toward the runner's heavy
+// limit only while a command of it holds a slot (under any name), and toward
+// its own ceiling (--max-agents, DefaultMaxAgents) all the time. The runner
+// stops taking one while memory is short, which the slots don't bound. A
+// runner whose wp has no agent lane takes it in the heavy lane.
 const (
+	LaneAgent   = "agent"
 	LaneHeavy   = "heavy"
 	LaneLight   = "light"
 	LaneRequest = "request"
@@ -48,8 +64,14 @@ const (
 // requestJobSources are the sources of a request's jobs in LaneRequest.
 var requestJobSources = []string{"request_cell", "request_apply"}
 
-// MaxRunnerJobs is the most a runner may take at once (--max-jobs).
+// MaxRunnerJobs is the most a runner may take at once (--max-jobs), and the
+// most agent jobs at once (--max-agents).
 const MaxRunnerJobs = 16
+
+// DefaultMaxAgents is --max-agents when it isn't given (a runner that can't
+// measure memory takes no more than --max-jobs then). Neither it nor the
+// memory marks that stop agent jobs are measured (WP-1915).
+const DefaultMaxAgents = 3
 
 // JobLane is the lane a job of this kind runs in.
 func JobLane(kind string) string {
@@ -60,11 +82,14 @@ func JobLane(kind string) string {
 	return LaneHeavy
 }
 
-// laneOn is the lane job n runs in on r: its own lane for an inbox
+// laneOn is the lane job n runs in on r: the agent lane for an agent job
+// (JobAgent) when r's wp has it, its own lane for an inbox
 // message (and a review round's prompt), a request's job or an audit
 // through the gateway when r's wp has that lane, else its kind's.
 func laneOn(r *Runner, n jobNeeds) string {
 	switch {
+	case n.kind == JobAgent && slices.Contains(r.Features, FeatureAgentLane):
+		return LaneAgent
 	case (n.kind == JobMessage || n.kind == JobAutopilot && n.source == autopilotReviewSource) && slices.Contains(r.Features, FeatureMessageLane):
 		return LaneMessage
 	case (n.kind == JobMessage || slices.Contains(requestJobSources, n.source)) && slices.Contains(r.Features, FeatureRequestLane):
@@ -95,9 +120,8 @@ func claimLane(r *Runner, n jobNeeds, lanes []string) (string, bool) {
 // RunnerCapacity is what a runner last said about its machine and how many
 // jobs it takes because of it.
 type RunnerCapacity struct {
-	// Limit is how many heavy jobs it takes at once now (light ones have a
-	// lane beside them at least as wide, WP-761); Max is --max-jobs, all
-	// kinds.
+	// Limit is how many heavy jobs it takes at once now; Max is --max-jobs
+	// (all kinds, for a runner without FeatureLightLane).
 	Limit int `json:"limit"`
 	Max   int `json:"max"`
 	// Level is calm, busy (no more heavy jobs than are running) or
@@ -114,9 +138,24 @@ type RunnerCapacity struct {
 	// heavy jobs then, unless it measures the machine calm; WP-1618).
 	BusyAt []time.Time `json:"busy_at,omitempty"`
 	// Running: jobs it runs now by lane.
+	// Heavy counts an agent job only while a command of it holds a slot.
 	Heavy   int `json:"heavy"`
 	Light   int `json:"light"`
 	Gateway int `json:"gateway,omitempty"`
+	// MaxLight is the light lane's ceiling (at most LightLaneSlots); LightStopped
+	// says why it takes no more reviews or audits while it has room
+	// (memory), "" otherwise. Zero MaxLight: a runner whose light lane
+	// shares --max-jobs and the load level with heavy jobs.
+	MaxLight     int    `json:"max_light,omitempty"`
+	LightStopped string `json:"light_stopped,omitempty"`
+	// Agents are the agent jobs it runs, of those AgentSlots hold a test
+	// slot now, of MaxAgents (--max-agents). AgentsStopped says why it takes
+	// no more while it has room (memory), "" otherwise. Zero MaxAgents: an
+	// older runner.
+	MaxAgents     int    `json:"max_agents,omitempty"`
+	Agents        int    `json:"agents,omitempty"`
+	AgentSlots    int    `json:"agent_slots,omitempty"`
+	AgentsStopped string `json:"agents_stopped,omitempty"`
 	// At is when the server got it.
 	At time.Time `json:"at"`
 }
@@ -132,18 +171,16 @@ func (c *RunnerCapacity) clean() bool {
 	c.Limit = min(max(c.Limit, 0), c.Max)
 	c.Heavy, c.Light = min(max(c.Heavy, 0), MaxRunnerJobs), min(max(c.Light, 0), MaxRunnerJobs)
 	c.Gateway = min(max(c.Gateway, 0), GatewayLaneSlots)
+	c.MaxLight = min(max(c.MaxLight, 0), LightLaneSlots)
+	c.LightStopped = cleanReport(c.LightStopped)
+	c.MaxAgents = min(max(c.MaxAgents, 0), MaxRunnerJobs)
+	c.Agents = min(max(c.Agents, 0), MaxRunnerJobs)
+	c.AgentSlots = min(max(c.AgentSlots, 0), c.Agents)
+	c.AgentsStopped = cleanReport(c.AgentsStopped)
 	c.CPUs = min(max(c.CPUs, 0), 4096)
 	c.Load = min(max(c.Load, 0), 1000)
 	c.MemFree = min(max(c.MemFree, 0), 1)
-	c.Reason = strings.Map(func(r rune) rune {
-		if r < ' ' {
-			return -1
-		}
-		return r
-	}, c.Reason)
-	if len(c.Reason) > 200 {
-		c.Reason = strings.ToValidUTF8(c.Reason[:200], "")
-	}
+	c.Reason = cleanReport(c.Reason)
 	if len(c.BusyAt) > 24 {
 		c.BusyAt = c.BusyAt[:24]
 	}
@@ -173,4 +210,18 @@ func (s *Service) capacityOf(id int64) *RunnerCapacity {
 		return nil
 	}
 	return &c
+}
+
+// cleanReport drops control characters and keeps at most 200 bytes.
+func cleanReport(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r < ' ' {
+			return -1
+		}
+		return r
+	}, s)
+	if len(s) > 200 {
+		s = strings.ToValidUTF8(s[:200], "")
+	}
+	return s
 }

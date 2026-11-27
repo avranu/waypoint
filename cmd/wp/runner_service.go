@@ -60,6 +60,9 @@ func runnerArgs(o runnerOpts) []string {
 	if o.MaxJobs > 1 {
 		args = append(args, "--max-jobs", fmt.Sprint(o.MaxJobs))
 	}
+	if o.MaxAgents > 0 {
+		args = append(args, "--max-agents", fmt.Sprint(o.MaxAgents))
+	}
 	if o.NoUsageSync {
 		args = append(args, "--no-usage-sync")
 	}
@@ -193,6 +196,7 @@ func keepInstalled(c *cli, o *runnerOpts) {
 		keep("allow", len(prev.Allow) > 0)
 		keep("env", len(prev.Env) > 0)
 		keep("max-jobs", prev.MaxJobs > 1)
+		keep("max-agents", prev.MaxAgents > 0)
 		if !o.given["name"] {
 			o.Name = prev.Name
 		}
@@ -207,6 +211,9 @@ func keepInstalled(c *cli, o *runnerOpts) {
 		}
 		if !o.given["max-jobs"] && prev.MaxJobs > 0 {
 			o.MaxJobs = prev.MaxJobs
+		}
+		if !o.given["max-agents"] && prev.MaxAgents > 0 {
+			o.MaxAgents = prev.MaxAgents
 		}
 		if !o.given["no-usage-sync"] {
 			o.NoUsageSync = prev.NoUsageSync
@@ -317,6 +324,10 @@ func parseRunnerArgs(words []string) *runnerInstalled {
 			if n, err := strconv.Atoi(next()); err == nil {
 				r.MaxJobs = n
 			}
+		case "max-agents":
+			if n, err := strconv.Atoi(next()); err == nil {
+				r.MaxAgents = n
+			}
 		case "no-usage-sync":
 			r.NoUsageSync = true
 		case "no-prep":
@@ -353,6 +364,7 @@ type runnerInstalled struct {
 	Allow        []string `json:"allow,omitempty"`
 	Env          []string `json:"env,omitempty"`
 	MaxJobs      int      `json:"max_jobs,omitempty"`
+	MaxAgents    int      `json:"max_agents,omitempty"`
 	NoUsageSync  bool     `json:"no_usage_sync,omitempty"`
 	NoPrep       bool     `json:"no_prep,omitempty"`
 	NoAutoUpdate bool     `json:"no_auto_update,omitempty"`
@@ -364,6 +376,9 @@ type runnerInstalled struct {
 func prepareRunnerInstall(c *cli, o *runnerOpts) (string, error) {
 	if o.MaxJobs < 1 || o.MaxJobs > maxRunnerJobs {
 		return "", c.usage("--max-jobs is between 1 and %d", maxRunnerJobs)
+	}
+	if o.MaxAgents != 0 && (o.MaxAgents < 1 || o.MaxAgents > maxRunnerJobs) {
+		return "", c.usage("--max-agents is between 1 and %d", maxRunnerJobs)
 	}
 	if err := passJobEnv(o.Env); err != nil {
 		return "", c.usage("%v", err)
@@ -424,7 +439,7 @@ func installRunner(c *cli, exe string, o runnerOpts) error {
 	}
 	if err == nil {
 		_ = c.updateState(func(s *State) {
-			s.Runner = &runnerInstalled{Name: o.Name, Labels: o.Labels, Allow: o.Allow, Env: o.Env, MaxJobs: o.MaxJobs, NoUsageSync: o.NoUsageSync, NoPrep: o.NoPrep, NoAutoUpdate: o.NoAutoUpdate}
+			s.Runner = &runnerInstalled{Name: o.Name, Labels: o.Labels, Allow: o.Allow, Env: o.Env, MaxJobs: o.MaxJobs, MaxAgents: o.MaxAgents, NoUsageSync: o.NoUsageSync, NoPrep: o.NoPrep, NoAutoUpdate: o.NoAutoUpdate}
 		})
 	}
 	return err
@@ -662,6 +677,14 @@ type runnerInfo struct {
 		BusyAt []time.Time `json:"busy_at"`
 		Heavy  int         `json:"heavy"`
 		Light  int         `json:"light"`
+
+		MaxLight     int    `json:"max_light"`
+		LightStopped string `json:"light_stopped"`
+
+		MaxAgents     int    `json:"max_agents"`
+		Agents        int    `json:"agents"`
+		AgentSlots    int    `json:"agent_slots"`
+		AgentsStopped string `json:"agents_stopped"`
 	} `json:"capacity"`
 }
 
@@ -758,7 +781,13 @@ func cmdRunnerStatus(c *cli, args []string) error {
 				fmt.Fprintf(&b, "  running: %d job%s\n", r.Running, pluralS(r.Running))
 			}
 			if cp := r.Capacity; cp != nil && cp.Level != "" {
-				fmt.Fprintf(&b, "  jobs:    %s\n", capacityLine(cp.Level, cp.Reason, cp.Limit, cp.Max))
+				fmt.Fprintf(&b, "  jobs:    %s\n", capacityLine(cp.Level, cp.Reason, cp.Limit, cp.Max, cp.MaxLight > 0))
+				if cp.MaxLight > 0 {
+					fmt.Fprintf(&b, "  light:   %s\n", lightLine(cp.Light, cp.MaxLight, cp.LightStopped))
+				}
+				if cp.MaxAgents > 0 {
+					fmt.Fprintf(&b, "  agents:  %s\n", agentsLine(cp.Agents, cp.MaxAgents, cp.AgentSlots, cp.AgentsStopped))
+				}
 				if len(cp.BusyAt) > 0 {
 					fmt.Fprintf(&b, "  usually busy: %s\n", hourRanges(cp.BusyAt, time.Local))
 				}
@@ -784,12 +813,35 @@ func humanSince(t time.Time) string {
 }
 
 // capacityLine says how many jobs a runner takes now and why (WP-366).
-func capacityLine(level, reason string, limit, maxJobs int) string {
+func capacityLine(level, reason string, limit, maxJobs int, lightLane bool) string {
 	what := fmt.Sprintf("up to %d heavy job%s at once now, of --max-jobs %d", limit, pluralS(limit), maxJobs)
 	if level == "overloaded" {
 		what = "one job at a time now"
+		if lightLane {
+			what = "one heavy job at a time now"
+		}
 	}
 	return fmt.Sprintf("%s (%s: %s)", what, level, reason)
+}
+
+// lightLine says how many reviews and audits a runner runs, of the light
+// lane's slots, and why it takes no more while it has room (WP-1943).
+func lightLine(running, ceiling int, stopped string) string {
+	s := fmt.Sprintf("%d of %d audit and review slots running", running, ceiling)
+	if stopped != "" {
+		s += fmt.Sprintf("; no more while memory is short (%s)", stopped)
+	}
+	return s
+}
+
+// agentsLine says how many agent jobs a runner runs, of --max-agents, and how
+// many of them hold a test slot (only those count as heavy jobs).
+func agentsLine(running, ceiling, holding int, stopped string) string {
+	s := fmt.Sprintf("%d of --max-agents %d running, %d holding a test slot", running, ceiling, holding)
+	if stopped != "" {
+		s += fmt.Sprintf("; no more while memory is short (%s)", stopped)
+	}
+	return s
 }
 
 // hourRanges writes hour starts as ranges in loc: "03:00-05:00, 13:00-14:00".

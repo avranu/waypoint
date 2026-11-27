@@ -2,8 +2,6 @@ package db
 
 import (
 	"context"
-	"database/sql"
-	"path/filepath"
 	"testing"
 )
 
@@ -11,13 +9,7 @@ import (
 // to one row per unordered pair (WP-1370), and drops the flag.
 func TestRewriteDismissalsMigration(t *testing.T) {
 	ctx := context.Background()
-	w, err := sql.Open("sqlite", dsn(filepath.Join(t.TempDir(), "w.db"), false))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = w.Close() }()
-	w.SetMaxOpenConns(1)
-	body := migrateBefore(ctx, t, w, "0188_rewrite_dismissals.sql")
+	w, body := migrateBefore(ctx, t, "0188_rewrite_dismissals.sql")
 	for _, q := range []string{
 		`INSERT INTO projects(id, key, name, created_at, updated_at) VALUES (1, 'WP', 'Waypoint', 0, 0)`,
 		`INSERT INTO users(id, username, email, created_at, updated_at) VALUES (1, 'robin', 'j@example.com', 0, 0)`,
