@@ -875,12 +875,22 @@ func (s *Service) RemoveLink(ctx context.Context, actor *Actor, issueRef string,
 		if others > 0 {
 			return nil
 		}
+		// A status deleted since, or one of a project the issue has left, can't
+		// be restored: the link still goes. A failed read keeps the link, so
+		// removing it again can still put the issue back.
 		back, err := s.statusByID(ctx, t, from.Int64)
-		if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			s.log.InfoContext(ctx, "unlink: earlier status is gone", "issue", i.ID, "status", from.Int64)
 			return nil
+		} else if err != nil {
+			return err
 		}
 		var pid int64
-		if err := t.QueryRowContext(ctx, `SELECT project_id FROM statuses WHERE id = ?`, back.ID).Scan(&pid); err != nil || pid != i.ProjectID {
+		if err := t.QueryRowContext(ctx, `SELECT project_id FROM statuses WHERE id = ?`, back.ID).Scan(&pid); err != nil {
+			return fmt.Errorf("earlier status project: %w", err)
+		}
+		if pid != i.ProjectID {
+			s.log.InfoContext(ctx, "unlink: earlier status is another project's", "issue", i.ID, "status", back.ID)
 			return nil
 		}
 		var sets []string
