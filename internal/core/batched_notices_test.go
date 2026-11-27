@@ -50,6 +50,7 @@ func TestBatchedNewsGoesInOneWakeUp(t *testing.T) {
 		t.Fatalf("woke the agent while #8 still moves: %v", jobs)
 	}
 	be.s.CheckBabysits(be.ctx)
+	be.s.releaseDueBatches(be.ctx)
 	if jobs := be.messageJobs(); len(jobs) != 0 {
 		t.Fatalf("released early: %v", jobs)
 	}
@@ -68,6 +69,7 @@ func TestBatchGoesWhenDue(t *testing.T) {
 	be.setClock(be.clockNow().Add(batchBlockingWait + time.Second))
 	be.runner(be.admin, "m1", nil)
 	be.s.CheckBabysits(be.ctx)
+	be.s.releaseDueBatches(be.ctx)
 	if jobs := be.messageJobs(); len(jobs) != 1 || !strings.Contains(jobs[0], "o/r#7") {
 		t.Fatalf("a due batch: %v", jobs)
 	}
@@ -96,6 +98,7 @@ func TestNewsThatCanWaitWaitsADayOnAColdCache(t *testing.T) {
 	be.s.babysitTell(be.ctx, bs[1], prs[1], "merged", "o/r#8 merged.")
 	be.runner(be.admin, "m1", nil)
 	be.s.CheckBabysits(be.ctx)
+	be.s.releaseDueBatches(be.ctx)
 	be.s.Wait()
 	if jobs := be.messageJobs(); len(jobs) != 0 {
 		t.Fatalf("woke the agent for news it needn't see yet: %v", jobs)
@@ -103,6 +106,7 @@ func TestNewsThatCanWaitWaitsADayOnAColdCache(t *testing.T) {
 	be.setClock(be.clockNow().Add(batchColdWait + time.Second))
 	be.runner(be.admin, "m1", nil)
 	be.s.CheckBabysits(be.ctx)
+	be.s.releaseDueBatches(be.ctx)
 	if jobs := be.messageJobs(); len(jobs) != 1 || !strings.Contains(jobs[0], "o/r#7") || !strings.Contains(jobs[0], "o/r#8") {
 		t.Fatalf("want one post with both after a day: %v", jobs)
 	}
@@ -164,12 +168,14 @@ func TestNewsThatNeedsTheAgentCanWait(t *testing.T) {
 	be.setClock(be.clockNow().Add(batchBlockingWait + time.Second))
 	be.runner(be.admin, "m1", nil)
 	be.s.CheckBabysits(be.ctx)
+	be.s.releaseDueBatches(be.ctx)
 	if jobs := be.messageJobs(); len(jobs) != 0 {
 		t.Fatalf("woke the agent for news that can wait: %v", jobs)
 	}
 	be.setClock(be.clockNow().Add(cacheWarm))
 	be.runner(be.admin, "m1", nil)
 	be.s.CheckBabysits(be.ctx)
+	be.s.releaseDueBatches(be.ctx)
 	if jobs := be.messageJobs(); len(jobs) != 1 || !strings.Contains(jobs[0], "o/r#7") || !strings.Contains(jobs[0], "o/r#8") {
 		t.Fatalf("want one post with both before the cache cools: %v", jobs)
 	}

@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -353,10 +354,12 @@ type cli struct {
 	agent         string
 	cur           *command
 	fs            *flag.FlagSet
+	sawVersion    atomic.Value // string: the X-Waypoint-Version of the latest answer
 	session       string
 	hookTimeout   time.Duration
 	hookLimit     time.Duration
 	longPoll      time.Duration
+	wholeBody     int64 // when set, send's size limit, and a longer answer fails
 	contextTokens int64
 	claims        string
 	noOwnWorktree bool
@@ -397,6 +400,16 @@ func (c *cli) updateState(change func(*State)) error {
 // updateStateWithin is updateState waiting at most wait for the lock; wait <= 0
 // tries once.
 func (c *cli) updateStateWithin(wait time.Duration, change func(*State)) error {
+	return c.changeState(wait, false, change)
+}
+
+// claimStateWithin is updateStateWithin for a claim: a state file it can't
+// read is an error, and is left as it is, since a claim in it may be unseen.
+func (c *cli) claimStateWithin(wait time.Duration, change func(*State)) error {
+	return c.changeState(wait, true, change)
+}
+
+func (c *cli) changeState(wait time.Duration, mustRead bool, change func(*State)) error {
 	if c.dir == "" {
 		change(&c.state)
 		return nil
@@ -406,7 +419,13 @@ func (c *cli) updateStateWithin(wait time.Duration, change func(*State)) error {
 		return err
 	}
 	defer unlock()
-	s := c.loadState()
+	var s State
+	if err := readJSON(filepath.Join(c.dir, "state.json"), &s); err != nil {
+		if mustRead {
+			return err
+		}
+		s = State{}
+	}
 	change(&s)
 	s.pruneGoneClaims()
 	c.state = s

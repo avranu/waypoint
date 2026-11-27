@@ -124,7 +124,7 @@ func TestShipNeedsAgentFollowsTheServersFacts(t *testing.T) {
 		{"an old server says nothing about a notice", openedPR{Notice: "n"}, true},
 	} {
 		o := tc.o
-		if got := shipNeedsAgent(&o, "", nil, "", false) != ""; got != tc.want {
+		if got := shipNeedsAgent(&o, "", nil, shipTurn{clean: true}) != ""; got != tc.want {
 			t.Errorf("%s: needs the agent = %v", tc.name, got)
 		}
 	}

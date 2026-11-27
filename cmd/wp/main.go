@@ -73,7 +73,7 @@ func init() {
 		runnerCmd,
 		nextCmd, batchCmd, startCmd, shipCmd, shotCmd, previewCmd, releaseCmd, declineCmd, claimsCmd, pauseCmd, resumeCmd, usageCmd, queueCmd, agentsCmd, autopilotCmd, followupCmd, activityCmd,
 		specCmd, defineCmd, searchCmd, briefCmd, prepCmd, codeCmd, glossaryCmd, instructionCmd, designCmd, reviewCmd, riskCmd, goalsCmd, goalCmd, traceCmd, graphCmd, unlinkCmd,
-		prCmd, tidyCmd, worktreeCmd, unshippedCmd, slotCmd, testsumCmd, benchCmd, burnCmd, fanoutCmd, ciCmd, codeqlCmd, auditCmd, mistakesCmd, escapesCmd, serverCmd, aiCmd, experimentCmd, objectiveCmd,
+		prCmd, tidyCmd, worktreeCmd, unshippedCmd, slotCmd, testsumCmd, testCmd, benchCmd, burnCmd, fanoutCmd, ciCmd, codeqlCmd, auditCmd, mistakesCmd, escapesCmd, serverCmd, aiCmd, experimentCmd, objectiveCmd,
 		lsCmd, showCmd, newCmd, editCmd, publishCmd, draftCmd, holdCmd, mvCmd, assignCmd, unassignCmd, commentCmd, worklogCmd, attachCmd, filesCmd, linkCmd, relateCmd, rmCmd, openCmd,
 		projectCmd, envCmd, timerCmd, logCmd, automationCmd,
 		pageCmd,
@@ -126,7 +126,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "wp: unknown command %q; run wp help for the list\n", args[0])
 		return 2
 	}
-	if err := c.dispatch(cmd, args[1:]); err != nil {
+	err = c.dispatch(cmd, args[1:])
+	c.autoUpdateIfBehind() // after any outcome, whatever the exit code
+	if err != nil {
 		if errors.Is(err, errHelpShown) {
 			return 0
 		}

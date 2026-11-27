@@ -363,9 +363,9 @@ func (s *Service) ServerMetrics(ctx context.Context, actor *Actor, grep string) 
 		}
 	}
 	if re == nil {
-		return b.String(), nil
+		return b.String() + s.dbMetricsText(), nil
 	}
-	return grepMetrics(b.String(), re), nil
+	return grepMetrics(b.String(), re) + grepLines(s.dbMetricsText(), re), nil
 }
 
 // grepMetrics keeps the sample lines that match re, and the HELP and TYPE

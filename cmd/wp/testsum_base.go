@@ -35,7 +35,7 @@ func (c *cli) testsumBase(argv []string, format, ref string, keep []string) erro
 	rec := newTestRunRecorder(argv)
 	key := slotRunFor("wp testsum --base", argv)
 	argv = goTestJSON(argv)
-	env, release, err := c.takeSlotFor(ctx, "tests", defaultSlots(), key)
+	held, env, release, err := c.takeSlotBound(ctx, "tests", defaultSlots(), key)
 	if err != nil {
 		if ctx.Err() != nil {
 			_, _ = fmt.Fprintln(c.err, "wp testsum: stopped while waiting for the slot")
@@ -47,7 +47,7 @@ func (c *cli) testsumBase(argv []string, format, ref string, keep []string) erro
 	env, dropped := testEnv(env, keep)
 	rec.started()
 	var buf bytes.Buffer
-	code, err := runSlotCmd(ctx, env, argv, nil, &buf, &buf)
+	code, err := runSlotCmd(held, env, argv, nil, &buf, &buf)
 	if err != nil {
 		return err
 	}
@@ -75,7 +75,7 @@ func (c *cli) testsumBase(argv []string, format, ref string, keep []string) erro
 	}
 	again := baseArgv(argv, res.Failures)
 	var bbuf bytes.Buffer
-	bcode, err := runSlotCmdIn(ctx, dir, env, again, nil, &bbuf, &bbuf)
+	bcode, err := runSlotCmdIn(held, dir, env, again, nil, &bbuf, &bbuf)
 	if err != nil {
 		_, _ = fmt.Fprintf(c.err, "wp testsum: --base %s: %v\n", ref, err)
 		return exit
@@ -175,7 +175,7 @@ func baseText(ref, sha string, failures []testFailure, base *testResult, code in
 	}
 	fmt.Fprintf(&b, "\nAt %s (%s), %s:", ref, shortSHA(sha), what)
 	if base == nil {
-		fmt.Fprintf(&b, "\n  no test results there (exit %d), so nothing to compare; last lines:\n%s", code, lastLines(data, 10))
+		fmt.Fprintf(&b, "\n  no test results there (exit %d), so nothing to compare; last lines:\n%s", code, lastLines(plainOutput(data), 10))
 		return b.String()
 	}
 	byVerdict := map[string][]testFailure{}

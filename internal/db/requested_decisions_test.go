@@ -12,7 +12,7 @@ import (
 // and a note whose task an agent filed, alone.
 func TestRequestedDecisionsBackfill(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

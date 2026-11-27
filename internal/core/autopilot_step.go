@@ -1697,6 +1697,11 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 			return s.stepUpdate(ctx, st.id, StepStopped, StopYours, yoursDetail, 0)
 		}
 	}
+	if valueOf(lim.Deferred) && s.deferredIdle(ctx, st.sessionID) {
+		// Tasks it filed after its ship are offered once before it moves on
+		// (WP-1858): this lap makes the offer, the next one finds it made.
+		return s.stepUpdate(ctx, st.id, StepWaiting, WaitJob, "offering the session the tasks it filed after its ship, before the next task", now+autopilotRetry.Milliseconds())
+	}
 	if trip, wait, until, err := s.autopilotLoop(ctx, st, lim, now); err != nil {
 		return err
 	} else if trip != "" {

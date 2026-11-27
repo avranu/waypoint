@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,10 @@ const (
 	ShipNewsEnded    = "ended"
 	ShipNewsWaiting  = "waiting"
 	ShipNewsNone     = "none"
+	// What a wait for a pull request's checks returns (AwaitShipChecks).
+	ShipNewsChecksPassed = "checks_passed"
+	ShipNewsChecksFailed = "checks_failed"
+	ShipNewsChecksOver   = "checks_over"
 )
 
 const (
@@ -46,6 +51,10 @@ type ShipNews struct {
 	Pull    *ShipPull `json:"pull,omitempty"`
 	// IDs are the messages of Text: still queued until AckShipNews.
 	IDs []int64 `json:"ids,omitempty"`
+	// Checks marks the answer of a wait for checks (AwaitShipChecks): a
+	// server that predates it never sets it, which is how wp ship knows to
+	// stop at "opened" (WP-1878).
+	Checks bool `json:"checks,omitempty"`
 }
 
 // shipWaits is the registry of waits, by session and task.
@@ -57,6 +66,20 @@ type shipWaits struct {
 type shipWaitEntry struct {
 	open  int
 	until time.Time
+	// checks: a wait for the checks of the pull request pr is open or was
+	// (AwaitShipChecks), and its news goes to the wait; only such a wait lets
+	// the babysit hand a failed check to the session instead of a round.
+	checks bool
+	pr     int64
+	// checksOpen counts the checks calls open now, and checksUntil is how
+	// long the last one's hold lasts: the review wait of the same task
+	// neither is a checks wait nor keeps one alive.
+	checksOpen  int
+	checksUntil time.Time
+	// since is when the checks wait first opened: what the bound on a head
+	// whose checks Waypoint can't read counts from.
+	since time.Time
+	head  string // the head the wait asked about last
 }
 
 // holder says, for one session's messages, whether a wp ship waits for each
@@ -71,10 +94,14 @@ func (w *shipWaits) holder(ctx context.Context, q queryer, now time.Time, sessio
 	}
 	tasks := map[string]int64{}
 	return func(m *SessionMessage) bool {
-		if !strings.HasPrefix(m.stepKey, "audit:") && !strings.HasPrefix(m.stepKey, "check:") {
+		if !shipNewsKey(m.stepKey) {
 			return false
 		}
 		kind, id := stepKeySource(m.stepKey)
+		if kind == "ci" {
+			pr, _ := strconv.ParseInt(id, 10, 64)
+			return w.checksHeld(session, pr, now)
+		}
 		task, ok := tasks[kind+":"+id]
 		if !ok {
 			if t, bound := messageTask(ctx, q, m.stepKey); bound {
@@ -83,6 +110,44 @@ func (w *shipWaits) holder(ctx context.Context, q queryer, now time.Time, sessio
 			tasks[kind+":"+id] = task
 		}
 		return task != 0 && w.held(session, task, now)
+	}
+}
+
+// checksHeld says whether a wait for the checks of the pull request is open
+// for the session, or ended within ciWaitWindow.
+func (w *shipWaits) checksHeld(session, pr int64, now time.Time) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, e := range w.by[session] {
+		if e.checks && e.pr == pr && (e.checksOpen > 0 || now.Before(e.checksUntil)) {
+			return true
+		}
+	}
+	return false
+}
+
+// checksSince is when the session's wait for the pull request's checks began
+// (the zero time when none is registered).
+func (w *shipWaits) checksSince(session, pr int64) time.Time {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, e := range w.by[session] {
+		if e.checks && e.pr == pr {
+			return e.since
+		}
+	}
+	return time.Time{}
+}
+
+// noteHead restarts the bound for a wait that now asks about another head:
+// the new head's checks haven't had their time yet.
+func (w *shipWaits) noteHead(session, pr int64, head string, now time.Time) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, e := range w.by[session] {
+		if e.checks && e.pr == pr && e.head != head {
+			e.head, e.since = head, now
+		}
 	}
 }
 
@@ -96,6 +161,20 @@ func (w *shipWaits) held(session, task int64, now time.Time) bool {
 // openShipWait registers a wait of the session on the task's round; the
 // returned func ends the call's hold, which lasts shipWaitLinger more.
 func (s *Service) openShipWait(session, task int64) func() {
+	end := s.openWait(session, task, 0)
+	return func() { end(true) }
+}
+
+// ciWaitWindow is how long a wait for checks still counts as waiting after
+// its call returned: the client asks again at once, and its retries back off
+// by seconds (WP-1878).
+const ciWaitWindow = time.Minute
+
+// openWait registers a wait as openShipWait does; a pr other than 0 makes it
+// a wait for that pull request's checks. The returned func ends the call's
+// hold: it lingers (ciWaitWindow for checks) when the client is expected to
+// ask again, and ends at once when the wait is over.
+func (s *Service) openWait(session, task, pr int64) func(linger bool) {
 	w := &s.shipWaits
 	w.mu.Lock()
 	if w.by == nil {
@@ -110,15 +189,35 @@ func (s *Service) openShipWait(session, task int64) func() {
 		w.by[session][task] = e
 	}
 	e.open++
+	if pr != 0 {
+		if !e.checks || e.pr != pr {
+			e.since = s.now()
+		}
+		e.checks, e.pr = true, pr
+		e.checksOpen++
+	}
 	w.mu.Unlock()
 	var once sync.Once
-	return func() {
+	return func(linger bool) {
 		once.Do(func() {
+			hold := shipWaitLinger
+			if pr != 0 {
+				hold = ciWaitWindow
+			}
+			if !linger {
+				hold = 0
+			}
 			w.mu.Lock()
 			e.open--
-			e.until = s.now().Add(shipWaitLinger)
+			e.until = s.now().Add(hold)
+			if pr != 0 {
+				e.checksOpen--
+				e.checksUntil = e.until
+			} else if e.checksUntil.After(e.until) {
+				e.until = e.checksUntil
+			}
 			w.mu.Unlock()
-			time.AfterFunc(shipWaitLinger+time.Second, func() {
+			time.AfterFunc(hold+time.Second, func() {
 				s.goBG(func() { s.shipWaitLapsed(context.Background(), session) })
 			})
 		})
@@ -366,8 +465,8 @@ func (s *Service) branchPull(ctx context.Context, bp *beforePR) (*ShipPull, erro
 
 // AckShipNews says the client has printed the findings AwaitShipNews returned:
 // they are delivered (via 'ship') so nothing types them again. Only what a
-// wait on this task returns can be acked (the task's queued audit and check
-// news); any other id is left as it is.
+// ship's wait returns can be acked (the task's queued audit and check news,
+// and the session's failed-check news); any other id is left as it is.
 func (s *Service) AckShipNews(ctx context.Context, actor *Actor, cliID, machine, taskKey string, ids []int64) error {
 	session, task, err := s.shipWaitTarget(ctx, actor, cliID, machine, taskKey)
 	if err != nil {
@@ -386,11 +485,16 @@ func (s *Service) AckShipNews(ctx context.Context, actor *Actor, cliID, machine,
 			if t.QueryRowContext(ctx, `SELECT step_key FROM session_messages WHERE id = ? AND session_id = ? AND state = 'queued'`, id, session).Scan(&key) != nil {
 				continue
 			}
-			if !strings.HasPrefix(key, "audit:") && !strings.HasPrefix(key, "check:") {
+			if !shipNewsKey(key) {
 				continue
 			}
-			if of, bound := messageTask(ctx, t, key); !bound || of != task {
-				continue
+			if !strings.HasPrefix(key, "ci:") {
+				// A ci: key (AwaitShipChecks) is bound by this session and its
+				// exact step key, not by task: a pull request may link to
+				// several.
+				if of, bound := messageTask(ctx, t, key); !bound || of != task {
+					continue
+				}
 			}
 			res, err := t.ExecContext(ctx, `UPDATE session_messages SET state = 'delivered', via = 'ship', delivered_at = ?, batch_until = NULL WHERE id = ? AND session_id = ? AND state = 'queued'`, now, id, session)
 			if err != nil {
@@ -412,6 +516,13 @@ func (s *Service) AckShipNews(ctx context.Context, actor *Actor, cliID, machine,
 		s.publishSession(ctx, session)
 	}
 	return nil
+}
+
+// shipNewsKey: the step key is news a wp ship's wait delivers: an audit's or
+// the check of a session's marks (the review's wait), or the failed checks of
+// its pull request (the checks' wait).
+func shipNewsKey(key string) bool {
+	return strings.HasPrefix(key, "audit:") || strings.HasPrefix(key, "check:") || strings.HasPrefix(key, "ci:")
 }
 
 func colonIf(s string) string {

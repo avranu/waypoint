@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -108,6 +111,44 @@ func (c *cli) shipSession(session string, change func(*shipEnd)) {
 
 // keepSummary keeps text for key's next wp ship; "" drops what was kept.
 func (c *cli) keepSummary(key, text string) {
+	c.keepSummaryFor(key, text, c.thisSession())
+}
+
+// keepSummaries keeps text under every task a ship names (WP-1426), else
+// under fallback: whichever of them the next wp ship is run for finds it.
+func (c *cli) keepSummaries(keys []string, fallback, text string) {
+	if len(keys) == 0 {
+		c.keepSummary(fallback, text)
+		return
+	}
+	for _, k := range keys {
+		c.keepSummary(k, text)
+	}
+}
+
+// alsoKeys are the tasks after the first of wp ship A B, upper-cased and
+// without repeats.
+func alsoKeys(keys []string) []string {
+	if len(keys) < 2 {
+		return nil
+	}
+	first := strings.ToUpper(strings.TrimSpace(keys[0]))
+	seen := map[string]bool{first: true}
+	var out []string
+	for _, k := range upperKeys(keys[1:]) {
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// keepSummaryFor is keepSummary for a summary that waits through a turn
+// boundary: with session "" the next prompt doesn't drop it, only age does.
+// The ship Waypoint compacts a session before is one: the offer that comes
+// after the compaction is a prompt, and the summary is for the ship after it.
+func (c *cli) keepSummaryFor(key, text, session string) {
 	key = strings.ToUpper(strings.TrimSpace(key))
 	if key == "" {
 		return
@@ -121,7 +162,7 @@ func (c *cli) keepSummary(key, text string) {
 		if s.Summaries == nil {
 			s.Summaries = map[string]*keptSummary{}
 		}
-		s.Summaries[key] = &keptSummary{Text: text, At: time.Now(), Session: c.thisSession()}
+		s.Summaries[key] = &keptSummary{Text: text, At: time.Now(), Session: session}
 	})
 }
 
@@ -426,6 +467,30 @@ func checkArgv(cmd string) []string {
 	return strings.Fields(cmd)
 }
 
+// slotWaitNoteMin is the wait slotWaitNote leaves out below; a var so a test
+// can lower it.
+var slotWaitNoteMin = time.Minute
+
+// slotWaitNote says how long a check waited for a slot, as text to follow
+// its own time, when that is a minute or more. Under a minute is left out:
+// it is noise next to the check's time, and waits.jsonl has the recent waits.
+func slotWaitNote(w time.Duration) string {
+	if w = w.Round(time.Second); w < slotWaitNoteMin {
+		return ""
+	}
+	return fmt.Sprintf(", and %s waiting for a slot", w)
+}
+
+// checkPassedLine is the line for a check that passed, before the tests.
+func checkPassedLine(cmd string, took, waited time.Duration) string {
+	return fmt.Sprintf("Check passed: %s (%s%s)", cmd, took, slotWaitNote(waited))
+}
+
+// checkFailedHead is the line that comes before a failed check's last lines.
+func checkFailedHead(cmd string, code int, took, waited time.Duration) string {
+	return fmt.Sprintf("Check failed: %s exited %d after %s%s; last lines:\n", cmd, code, took, slotWaitNote(waited))
+}
+
 // runShipCheck runs --check CMD in the tests slot, as wp testsum does, and
 // records it against the working tree; a pass already recorded on this
 // tree for the same command isn't run again. An error: the check failed or
@@ -447,13 +512,21 @@ func (c *cli) runShipCheck(cmd string) error {
 	}
 	var buf bytes.Buffer
 	rec := newTestRunRecorder(argv)
-	start := time.Now()
-	code, err := c.runInSlotThen("tests", defaultSlots(), goTestJSON(argv), &buf, &buf, rec.started, func(env []string) []string {
+	// The wait for a slot isn't the check's time: a 25 minute make check
+	// that queued 44 minutes was reported as one of 69 (WP-1812).
+	queued := time.Now()
+	start := queued
+	var nothing bool
+	code, err := c.runInSlotWith("tests", defaultSlots(), goTestJSON(argv), &buf, &buf, func() { rec.started(); start = time.Now() }, func(env []string) []string {
 		env, _ = testEnv(env, nil)
 		return env
-	})
+	}, slotOpts{who: "wp ship", allCmd: "wp testsum --all --", rec: rec, nothing: &nothing})
 	if err != nil {
 		return fmt.Errorf("--check couldn't run %s: %w (nothing shipped)", cmd, err)
+	}
+	if nothing {
+		c.println("Check: " + cmd + " has nothing to run: no changed file is in the packages it asks for; not recorded as a pass.")
+		return nil
 	}
 	res, _, _ := parseTestOutput(buf.Bytes(), "auto")
 	if res == nil {
@@ -466,17 +539,70 @@ func (c *cli) runShipCheck(cmd string) error {
 		rec.finish(res, code)
 	}
 	took := time.Since(start).Round(time.Second)
+	waited := start.Sub(queued)
 	if !failed {
-		line := fmt.Sprintf("Check passed: %s (%s)", cmd, took)
+		line := checkPassedLine(cmd, took, waited)
 		if res.Passed+res.Failed+res.Skipped > 0 {
 			line += "; " + strings.TrimSpace(res.render())
+		}
+		if rec.compileOnly {
+			line += "; only compiled, no test ran, so it is not recorded as a pass"
 		}
 		c.println(line)
 		return nil
 	}
 	if res.Passed+res.Failed+res.Skipped > 0 {
-		_, _ = fmt.Fprint(c.out, res.render())
+		_, _ = fmt.Fprint(c.out, res.renderSaving(buf.Bytes()))
 	}
-	_, _ = fmt.Fprintf(c.out, "Check failed: %s exited %d after %s; last lines:\n%s\n", cmd, code, took, lastLines(buf.Bytes(), 30))
+	_, _ = fmt.Fprint(c.out, checkFailedHead(cmd, code, took, waited)+failedTail(buf.Bytes(), 30))
 	return fmt.Errorf("the check failed, so nothing was committed or shipped: fix it and run wp ship again")
+}
+
+// shipScopedCheck is how wp ship runs the repository's own scoped check when
+// --check wasn't given (WP-ADR161): wp test, run as this binary and not
+// whichever wp is on PATH. It takes the tests slot and records itself.
+var shipScopedCheck = func(c *cli) (int, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return 0, err
+	}
+	cmd := exec.Command(exe, "test") // #nosec G204 -- this binary, a fixed argument
+	cmd.Stdout, cmd.Stderr = c.err, c.err
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return ee.ExitCode(), nil
+		}
+		return 0, err
+	}
+	return 0, nil
+}
+
+// runDefaultShipCheck runs wp test before a ship in a repository with a
+// .waypoint/test, unless it already passed on this tree. CI still runs the
+// whole suite on the pull request, so this is the quick check.
+func (c *cli) runDefaultShipCheck() error {
+	root, err := localGit("rev-parse", "--show-toplevel")
+	if err != nil || !hasTestScript(root) {
+		return nil
+	}
+	recorded := "wp test" + scopedMark
+	if tree := workingTree(); tree != "" {
+		on, _ := runsOnTree(readTestRuns(testRunsPath()), tree)
+		for _, r := range on {
+			if r.Command == recorded && r.Outcome == runPass {
+				c.println("Check: wp test already passed on this tree; not run again.")
+				return nil
+			}
+		}
+	}
+	c.println("Check: wp test (this repository's " + testScriptFile + "; --check CMD runs another, --no-check skips; CI still runs the whole suite on the pull request).")
+	code, err := shipScopedCheck(c)
+	if err != nil {
+		return fmt.Errorf("wp test couldn't run: %w (nothing shipped; --no-check ships without it)", err)
+	}
+	if code != 0 {
+		return fmt.Errorf("wp test failed (exit %d), so nothing was committed or shipped: fix what it names and run wp ship again, or wp ship --no-check to ship without it", code)
+	}
+	return nil
 }

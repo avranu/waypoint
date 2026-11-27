@@ -397,6 +397,16 @@ func (s *Server) agentDone(w http.ResponseWriter, r *http.Request) (any, error) 
 	return textResponse(res.Message + "\n"), nil
 }
 
+// agentDeferred is what wp ship asks before it ships: the tasks the session
+// filed meanwhile that it could do with the change (WP-1858).
+func (s *Server) agentDeferred(w http.ResponseWriter, r *http.Request) (any, error) {
+	var in core.DeferredInput
+	if err := decode(r, &in); err != nil {
+		return nil, err
+	}
+	return s.svc.OfferDeferred(r.Context(), actorFrom(r), in)
+}
+
 func (s *Server) agentRelease(w http.ResponseWriter, r *http.Request) (any, error) {
 	var in core.ReleaseInput
 	if err := decodeOptional(r, &in); err != nil {

@@ -116,15 +116,14 @@ func (s *Service) coolStalls(ctx context.Context, pid int64, route string, chain
 // the route having served, as the gateway answers when the asked-for models are
 // left out: a 400 ("exclude removes every model", whatever its wording) when
 // the exclusions took every model of the route, or no_model_at_bar when they
-// left only models below the bar. Any 400 counts, as the attempt does not say
-// why; it returns at once, so the worst case is one extra quick request. A 404,
-// 502, 504 or a bare 503 (the gateway never answers exhaustion with one) is an
-// ordinary failure, not asked again. Any attempt counts: the chain goes on to
-// other providers after the gateway's answer.
-func leftNoModel(chain []ChainModel, attempts []ModelAttempt) bool {
+// left only models below the bar. Only the gateway gw's attempts count, any of
+// them: the chain goes on to other providers after its answer. A 404, 502, 504
+// or a bare 503 (the gateway never answers exhaustion with one) is an ordinary
+// failure, not asked again.
+func leftNoModel(gw int64, chain []ChainModel, attempts []ModelAttempt) bool {
 	return slices.ContainsFunc(attempts, func(a ModelAttempt) bool {
 		none := a.Outcome == "no_model_at_bar" || a.status == http.StatusBadRequest
-		return none && (a.Model == "" || slices.ContainsFunc(chain, func(c ChainModel) bool { return c.Model == a.Model }))
+		return a.providerID == gw && none && (a.Model == "" || slices.ContainsFunc(chain, func(c ChainModel) bool { return c.Model == a.Model }))
 	})
 }
 

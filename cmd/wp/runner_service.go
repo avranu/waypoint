@@ -726,6 +726,7 @@ func cmdRunnerStatus(c *cli, args []string) error {
 		if len(rs) == 0 {
 			b.WriteString("\nYou have no runners. Set this computer up with: wp setup\n")
 		}
+		serverV, _ := c.sawVersion.Load().(string)
 		for _, r := range rs {
 			state := "offline"
 			if r.Online {
@@ -735,7 +736,11 @@ func cmdRunnerStatus(c *cli, args []string) error {
 			if r.LastSeenAt != nil {
 				seen = ", last seen " + humanSince(*r.LastSeenAt)
 			}
-			fmt.Fprintf(&b, "\n%s  %s%s  (%s/%s, wp %s)\n", r.Name, state, seen, r.OS, r.Arch, r.Version)
+			differs := ""
+			if isRelease(r.Version) && isRelease(serverV) && r.Version != serverV {
+				differs = ", server is " + serverV
+			}
+			fmt.Fprintf(&b, "\n%s  %s%s  (%s/%s, wp %s%s)\n", r.Name, state, seen, r.OS, r.Arch, r.Version, differs)
 			if len(r.Labels) > 0 {
 				fmt.Fprintf(&b, "  labels:  %s\n", strings.Join(r.Labels, ", "))
 			}

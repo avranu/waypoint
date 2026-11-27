@@ -70,6 +70,7 @@ type prOpenFlags struct {
 	skipReview                                  *string
 	skipGiven                                   *bool
 	finishing                                   string
+	also                                        []string // the other tasks of wp ship A B (WP-1426)
 	summary                                     string
 	shipSummary                                 string
 	messageGiven, shipSummaryGiven              bool
@@ -105,12 +106,13 @@ func addPROpenFlags(fs *flag.FlagSet) prOpenFlags {
 
 // openedPR is what the server answers to opening a pull request.
 type openedPR struct {
-	Existing  bool      `json:"existing"`
-	Warning   string    `json:"warning"`
-	Pull      *prDetail `json:"pull"`
-	ShipReply string    `json:"ship_reply"`
-	PutOff    *putOff   `json:"put_off"`
-	Other     []string  `json:"other_tasks"`
+	Existing   bool      `json:"existing"`
+	Warning    string    `json:"warning"`
+	Pull       *prDetail `json:"pull"`
+	ShipReply  string    `json:"ship_reply"`
+	PutOff     *putOff   `json:"put_off"`
+	Other      []string  `json:"other_tasks"`
+	AlsoLinked []string  `json:"also_linked"`
 	// Held: pushed but not opened, the task's adversarial review comes
 	// first (WP-688); what to tell the agent. Notice goes first: what was
 	// done that wasn't asked for, and how to override it.
@@ -255,6 +257,22 @@ type shipOpts struct {
 	summary                                            *string
 	summaryGiven                                       bool
 	before                                             string
+	// deadline is when --wait-timeout runs out, taken once at the start of
+	// shipWork and shared by the review wait and the checks wait (zero:
+	// not taken, as in a test that calls a wait directly).
+	deadline time.Time
+}
+
+// shipNow is the clock of the ship's deadline (replaced in tests).
+var shipNow = time.Now
+
+// waitLeft is how long a wait may still run: what is left of --wait-timeout,
+// and no more than what is left of the process's own limit (shipLeft).
+func (so shipOpts) waitLeft() time.Duration {
+	if so.deadline.IsZero() {
+		return min(*so.waitTimeout, shipLeft())
+	}
+	return min(so.deadline.Sub(shipNow()), shipLeft())
 }
 
 func addShipFlags(fs *flag.FlagSet) shipOpts {
@@ -264,8 +282,8 @@ func addShipFlags(fs *flag.FlagSet) shipOpts {
 		noBabysit:   fs.Bool("no-babysit", false, "don't babysit it"),
 		notify:      fs.Bool("notify", false, "wake me when it merges (only if work must follow)"),
 		blocking:    fs.Bool("blocking", false, "wake me within minutes (only if other work waits on it)"),
-		noWait:      fs.Bool("no-wait", false, "when the pull request waits on a review round, don't wait for the round's findings: end as before"),
-		waitTimeout: fs.Duration("wait-timeout", shipWaitDefault, "how long to wait on a review round before ending as with --no-wait (at most "+waitMaxText()+"; `DURATION`)"),
+		noWait:      fs.Bool("no-wait", false, "don't wait for the review round's findings or the pull request's first checks: end as before"),
+		waitTimeout: fs.Duration("wait-timeout", shipWaitDefault, "how long to wait on a review round and the first checks before ending as with --no-wait (at most "+waitMaxText()+"; `DURATION`)"),
 		summary:     fs.String("summary", "", "your final reply to the person, shown as the turn ends if the ship goes as expected (no reply turn after it); {task}, {pr} and {url} are filled in (`TEXT`)"),
 	}
 }
@@ -276,7 +294,13 @@ func addShipFlags(fs *flag.FlagSet) shipOpts {
 // commits name it). A pull request already open from this branch for
 // other tasks is theirs: pushed to, never armed, babysat or linked, and
 // the task finishes as wp done would (other is true then).
-func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, key string, given bool) (other bool, err error) {
+func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, keys []string, given bool) (other bool, err error) {
+	so.deadline = shipNow().Add(*so.waitTimeout)
+	key := ""
+	if len(keys) > 0 {
+		key = strings.ToUpper(keys[0])
+	}
+	f.also = alsoKeys(keys)
 	switch {
 	case key == "" || *f.issue != "":
 	case given:
@@ -323,13 +347,16 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 	if o.Held != "" {
 		keptWhy, putOff := "", ""
 		if summary != "" {
-			c.keepSummary(cmpStr(key, o.key), summary)
-			_, clean := trackedState()
-			putOff = putOffPrompt(o.key, o.PutOff)
-			keptWhy = shipNeedsAgent(o, so.before, nil, putOff, !clean)
+			c.keepSummaries(keys, cmpStr(key, o.key), summary)
+			t := readShipTurn(o)
+			putOff = t.putOff
+			keptWhy = shipNeedsAgent(o, so.before, nil, t)
 		}
 		if err := c.emit(withTested(raw, o.tested), func() string { return o.heldText() + o.tested.text() }); err != nil {
 			return false, err
+		}
+		if len(f.also) > 0 && !c.asJSON {
+			c.println("Waypoint links " + strings.Join(f.also, ", ") + " to the pull request when it opens, and moves them In Review; if one isn't linked after, run wp link KEY URL.")
 		}
 		if putOff != "" && c.agentHeader() != "" && !c.asJSON {
 			c.println(putOff)
@@ -357,7 +384,8 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 	if o.Existing {
 		note("already open")
 	}
-	if len(o.Other) > 0 {
+	theirs := len(o.Other) > 0
+	if theirs && !given {
 		c.println(fmt.Sprintf("%s#%d %s (pushed; it is %s's work, so not armed or babysat)", d.Repo, d.Number, d.URL, strings.Join(o.Other, ", ")))
 		if noteUrgent {
 			c.println(urgentNote(d.Number))
@@ -367,7 +395,16 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 		}
 		return true, nil
 	}
+	if theirs {
+		// A task named on the command line is shipped onto the open pull
+		// request: linked, In Review, and Done with the others on the merge,
+		// not at once (WP-1426). The pull request is armed and babysat as it
+		// was by its own ship.
+		note(fmt.Sprintf("pushed to %s's pull request, so not armed or babysat again", strings.Join(o.Other, ", ")))
+	}
+	c.shipAlso(so, o, d, msg, f.also, note, problem)
 	switch {
+	case theirs:
 	case *so.noArm:
 	case (d.State == "draft" && !d.WipAuto) || *f.draft:
 		note("draft, not armed")
@@ -391,7 +428,7 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 		note("on the urgent CI lane")
 	}
 	notify := *so.notify || *so.blocking
-	if !*so.noBabysit && (d.State != "draft" || d.WipAuto) && !*f.draft {
+	if !theirs && !*so.noBabysit && (d.State != "draft" || d.WipAuto) && !*f.draft {
 		if _, err := c.call("POST", fmt.Sprintf("/api/v1/pulls/%d/babysit", d.ID), map[string]any{"via": "ship", "notify": notify, "blocking": *so.blocking}); err != nil {
 			problem("not babysat: " + err.Error())
 		} else {
@@ -407,17 +444,8 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 		}
 	}
 	if o.key != "" && !*so.noMove {
-		if _, err := c.call("POST", "/api/v1/issues/"+esc(o.key)+"/transition", map[string]string{"status": "In Review", "via_link": d.URL}); err != nil {
-			problem("left " + o.key + " where it was: " + err.Error())
-		} else {
+		if c.moveShipped(o.key, d.URL, msg, problem) {
 			bits, moved = append(bits, o.key+" In Review"), true
-			if strings.TrimSpace(msg) != "" {
-				if _, err := c.call("POST", "/api/v1/issues/"+esc(o.key)+"/comments", map[string]string{"body": msg}); err != nil {
-					problem("comment not saved: " + err.Error())
-				}
-			}
-			c.forgetClaim(o.key)
-			c.sessionDone(o.key)
 		}
 	}
 	if o.Warning != "" {
@@ -434,32 +462,61 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 	if noteUrgent {
 		c.println(urgentNote(d.Number))
 	}
+	// What the agent's turn is still wanted for, read once for the wait and
+	// for the end of the ship below.
+	var turn shipTurn
+	if armed || babysat {
+		turn = readShipTurn(o)
+	}
+	if task := cmpStr(key, o.key); task != "" && babysat {
+		why := shipNeedsAgent(o, so.before, wrong, turn)
+		if c.canWaitChecks(so, o, babysat, why) {
+			if summary != "" {
+				// The wait may end on failed checks: the next wp ship is the
+				// one that ends the turn with this summary.
+				c.keepSummaries(keys, cmpStr(key, o.key), summary)
+			}
+			head, _ := localGit("rev-parse", "HEAD")
+			if done, err := c.waitShipChecks(task, d.ID, d.Number, strings.TrimSpace(head), so.waitLeft()); err != nil || done {
+				return false, err
+			}
+		}
+	}
 	if (armed || babysat) && c.agentHeader() != "" {
-		dirty, clean := trackedState()
-		putOff := putOffPrompt(o.key, o.PutOff)
-		if putOff != "" {
-			c.println(putOff)
+		if turn.putOff != "" {
+			c.println(turn.putOff)
 		}
 		if summary != "" {
-			c.keepSummary(cmpStr(key, o.key), summary)
-			why := shipNeedsAgent(o, so.before, wrong, putOff, !clean)
+			c.keepSummaries(keys, cmpStr(key, o.key), summary)
+			why := shipNeedsAgent(o, so.before, wrong, turn)
 			if why == "" && c.endTurnAfterShip(cmpStr(key, o.key), fillSummary(summary, o.key, d)) {
 				c.println(shipEndsLine)
 				return false, nil
 			}
 		}
-		c.println(shipReply(o.ShipReply, o.key, d, dirty))
+		c.println(shipReply(o.ShipReply, o.key, d, turn.dirty))
 	} else if summary != "" {
-		c.keepSummary(cmpStr(key, o.key), summary)
+		c.keepSummaries(keys, cmpStr(key, o.key), summary)
 	}
 	return false, nil
 }
 
-// trackedState is what git says of the tracked files. Neither dirty nor
-// clean when the check failed (index.lock held): a turn ends only on clean.
-func trackedState() (dirty, clean bool) {
+// shipTurn is what a ship reads, once, of the work around it to decide
+// whether the agent's turn is still wanted: what git says of the tracked
+// files, and the task's notes put off. Every place that ends the turn, or
+// holds it for a wait, decides through shipNeedsAgent on one of these, so a
+// git status that failed keeps the turn at each of them alike.
+type shipTurn struct {
+	// dirty: tracked files have changes. clean: they have none. Neither when
+	// the check failed (index.lock held): a turn ends only on clean.
+	dirty, clean bool
+	putOff       string // putOffPrompt's line, printed by the caller
+}
+
+// readShipTurn reads the shipTurn for o's task.
+func readShipTurn(o *openedPR) shipTurn {
 	out, err := localGit("status", "--porcelain", "--untracked-files=no")
-	return err == nil && out != "", err == nil && out == ""
+	return shipTurn{dirty: err == nil && out != "", clean: err == nil && out == "", putOff: putOffPrompt(o.key, o.PutOff)}
 }
 
 // shipEndsLine is what wp ship says once it has marked the turn to end.
@@ -469,7 +526,7 @@ const shipEndsLine = "Waypoint ends the turn here and shows the person your --su
 // does): what wp ship said before the pull request (before), a notice or
 // warning, an urgent pull request to merge first, put-off notes to answer,
 // tracked changes left uncommitted, or a note about the tests.
-func shipNeedsAgent(o *openedPR, before string, wrong []string, putOff string, dirty bool) string {
+func shipNeedsAgent(o *openedPR, before string, wrong []string, t shipTurn) string {
 	switch {
 	case before != "":
 		return before
@@ -481,10 +538,12 @@ func shipNeedsAgent(o *openedPR, before string, wrong []string, putOff string, d
 		return "there is a warning"
 	case o.UrgentPR != 0:
 		return "an urgent pull request comes first"
-	case putOff != "":
+	case t.putOff != "":
 		return "the task has notes put off"
-	case dirty:
+	case t.dirty:
 		return "tracked files have uncommitted changes"
+	case !t.clean:
+		return "git couldn't say whether tracked files have changes"
 	case strings.TrimSpace(o.tested.text()) != "":
 		return "there is a note about the tests"
 	}
@@ -700,7 +759,7 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 	if *f.base == "" {
 		stacked = stackBranches(parents)
 	}
-	req := map[string]any{"stacked_on": stacked, "head": branch, "base": *f.base, "title": text, "body": body, "draft": *f.draft, "ready": *f.ready, "issue": key, "for": f.finishing, "repo": repo, "urgent": *f.urgent,
+	req := map[string]any{"stacked_on": stacked, "head": branch, "base": *f.base, "title": text, "body": body, "draft": *f.draft, "ready": *f.ready, "issue": key, "for": f.finishing, "also": f.also, "repo": repo, "urgent": *f.urgent,
 		"review": intent, "reason": strings.TrimSpace(*f.skipReview), "force": *f.force}
 	f.addShipWords(req)
 	if ct, err := localGit("log", "-1", "--format=%ct", "HEAD"); err == nil {
@@ -1330,3 +1389,43 @@ func jsonStrings(v any) []string {
 // factAsks reads a needs-the-agent fact from the server: unsaid (a server from
 // before the facts) is asking, the safe answer (WP-1370).
 func factAsks(b *bool) bool { return b == nil || *b }
+
+// moveShipped puts a task the pull request is linked to In Review with the
+// ship's message as a comment, and lets its claim and session hold go; the
+// merge then finishes it with the others linked to the pull request. false:
+// it stayed where it was (problem says why).
+func (c *cli) moveShipped(k, url, msg string, problem func(string)) bool {
+	if _, err := c.call("POST", "/api/v1/issues/"+esc(k)+"/transition", map[string]string{"status": "In Review", "via_link": url}); err != nil {
+		problem("left " + k + " where it was: " + err.Error() + " (run wp edit " + k + " --status \"In Review\")")
+		return false
+	}
+	if strings.TrimSpace(msg) != "" {
+		if _, err := c.call("POST", "/api/v1/issues/"+esc(k)+"/comments", map[string]string{"body": msg}); err != nil {
+			problem("comment on " + k + " not saved: " + err.Error())
+		}
+	}
+	c.forgetClaim(k)
+	c.sessionDone(k)
+	return true
+}
+
+// shipAlso settles the other tasks of wp ship A B once the pull request is
+// open: the server linked them as it opened it, and each goes In Review as
+// the first does. One that isn't linked is said to be, with the command that
+// fixes it, and never left out silently (WP-1426).
+func (c *cli) shipAlso(so shipOpts, o *openedPR, d *prDetail, msg string, also []string, note, problem func(string)) {
+	for _, k := range also {
+		if !slices.Contains(o.AlsoLinked, k) {
+			if !namesKey(o.Warning, k) {
+				problem(k + " isn't linked to the pull request: run wp link " + k + " " + d.URL)
+			}
+			continue
+		}
+		switch {
+		case *so.noMove:
+			note("also linked " + k)
+		case c.moveShipped(k, d.URL, msg, problem):
+			note("also " + k + " In Review")
+		}
+	}
+}

@@ -460,6 +460,13 @@ func (a *activityBuilder) pulls(ctx context.Context, where string, args []any) e
 	return nil
 }
 
+// reviewRunsSQL reads the review runs a condition on r selects, finished (or
+// made) since a bound time, with their finding counts by model.
+func reviewRunsSQL(where string) string {
+	return `SELECT r.id, r.status, r.log, ` + runFindingsByModelSQL + `
+		FROM bot_runs r WHERE ` + where + ` AND r.kind = 'review' AND coalesce(r.finished_at, r.created_at) >= ?`
+}
+
 // reviewBots sums what each model did for the review bots in the period.
 func (a *activityBuilder) reviewBots(ctx context.Context, actor *Actor, project string) error {
 	where, args := visibleSQL("r.project_id", actor)
@@ -467,9 +474,7 @@ func (a *activityBuilder) reviewBots(ctx context.Context, actor *Actor, project 
 		where, args = where+" AND r.project_id = (SELECT id FROM projects WHERE key = ?)", append(args, project)
 	}
 	// #nosec G202 -- where is built from fixed conditions; values are bound
-	rows, err := a.s.db.R.QueryContext(ctx, `SELECT r.id, r.status, r.log,
-			(SELECT json_group_object(model, n) FROM (SELECT f.model, count(*) AS n FROM bot_findings f WHERE f.run_id = r.id AND f.state != 'dropped' GROUP BY f.model))
-		FROM bot_runs r WHERE `+where+` AND r.kind = 'review' AND coalesce(r.finished_at, r.created_at) >= ?`, append(args, a.from)...)
+	rows, err := a.s.db.R.QueryContext(ctx, reviewRunsSQL(where), append(args, a.from)...)
 	if err != nil {
 		return err
 	}
