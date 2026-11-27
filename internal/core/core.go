@@ -575,13 +575,6 @@ func nullUser(id int64) any {
 	return id
 }
 
-func nullInt(v *int64) any {
-	if v == nil {
-		return nil
-	}
-	return *v
-}
-
 func nullStr(v *string) any {
 	if v == nil || *v == "" {
 		return nil
@@ -626,15 +619,6 @@ func ptrTime(n sql.NullInt64) *time.Time {
 	}
 	t := time.UnixMilli(n.Int64).UTC()
 	return &t
-}
-
-func msTime(ms int64) time.Time { return time.UnixMilli(ms).UTC() }
-
-func boolInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 // placeholders returns "?,?,?" for n values.

@@ -102,13 +102,6 @@ func money(v float64) string {
 	return fmt.Sprintf("$%.2f", v)
 }
 
-func plural1(n int, one string) string {
-	if n == 1 {
-		return fmt.Sprintf("1 %s", one)
-	}
-	return fmt.Sprintf("%d %ss", n, one)
-}
-
 func (s *Service) usageSuggest(ctx context.Context, sc *usageScope, book *priceBook, o *UsageOverview, b *usageTokenData) error {
 	var out []UsageAdvice
 	if a := adviceQuota(o); a != nil {
