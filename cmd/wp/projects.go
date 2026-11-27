@@ -21,7 +21,7 @@ func init() {
 	projectCmd.subs = []*command{
 		{name: "ls", args: "", aliases: []string{"list"}, summary: "list projects with open issue counts",
 			about:    `* marks the scope here.`,
-			examples: nil, run: projectLs},
+			examples: []string{"wp project ls"}, run: projectLs},
 		{name: "show", args: "[PROJECT]", aliases: []string{"view"}, summary: "show statuses, tags, members, repos, workflows",
 			about:    `PROJECT is a key, name or repo; default: this repo's.`,
 			examples: []string{"wp project show APP"}, run: projectShow},
@@ -371,7 +371,8 @@ var contextCmd = &command{
 	summary: "who you are, which server, the scope here, and the task you took",
 	about: `What other commands assume here: server, login, agent identity, scope
 (wp help scope) and the task taken in this directory.`,
-	run: cmdContext,
+	examples: []string{"wp context", "wp context --json"},
+	run:      cmdContext,
 }
 
 func cmdContext(c *cli, args []string) error {

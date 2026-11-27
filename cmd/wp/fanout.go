@@ -55,11 +55,14 @@ A plan:
 func init() {
 	fanoutCmd.subs = []*command{
 		{name: "status", aliases: []string{"ls", "show"}, args: "[N] [--all]", summary: "live fan-outs (or #N, or --all) and their packages",
-			run: cmdFanoutStatus},
+			examples: []string{"wp fanout status", "wp fanout status 4"},
+			run:      cmdFanoutStatus},
 		{name: "start", args: "N", summary: "start the packages of fan-out #N that can start now",
-			run: cmdFanoutStart},
+			examples: []string{"wp fanout start 4"},
+			run:      cmdFanoutStart},
 		{name: "stop", args: "N [--now]", summary: "start nothing more of fan-out #N; --now stops its sessions",
-			run: cmdFanoutStop},
+			examples: []string{"wp fanout stop 4", "wp fanout stop 4 --now"},
+			run:      cmdFanoutStop},
 		{name: "next", args: "N --ended KEY --outcome done|budget|ended", summary: "(hooks) record how a package's session ended and start the next", hidden: true, run: cmdFanoutNext},
 	}
 }

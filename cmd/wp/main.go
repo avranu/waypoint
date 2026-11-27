@@ -72,7 +72,7 @@ func init() {
 		contextCmd,
 		runnerCmd,
 		nextCmd, batchCmd, startCmd, shipCmd, shotCmd, previewCmd, releaseCmd, declineCmd, claimsCmd, pauseCmd, resumeCmd, usageCmd, queueCmd, agentsCmd, autopilotCmd, followupCmd, activityCmd,
-		specCmd, defineCmd, searchCmd, briefCmd, prepCmd, codeCmd, glossaryCmd, instructionCmd, designCmd, reviewCmd, riskCmd, goalsCmd, goalCmd, traceCmd, graphCmd, unlinkCmd,
+		specCmd, defineCmd, searchCmd, briefCmd, prepCmd, codeCmd, glossaryCmd, instructionCmd, designCmd, reviewCmd, riskCmd, goalsCmd, traceCmd, graphCmd, unlinkCmd,
 		prCmd, tidyCmd, worktreeCmd, unshippedCmd, slotCmd, testsumCmd, testCmd, benchCmd, burnCmd, fanoutCmd, ciCmd, codeqlCmd, auditCmd, mistakesCmd, escapesCmd, serverCmd, aiCmd, experimentCmd, objectiveCmd,
 		lsCmd, showCmd, newCmd, editCmd, publishCmd, draftCmd, holdCmd, mvCmd, assignCmd, unassignCmd, commentCmd, worklogCmd, attachCmd, filesCmd, linkCmd, relateCmd, rmCmd, openCmd,
 		projectCmd, envCmd, timerCmd, logCmd, automationCmd,
@@ -237,14 +237,16 @@ wp project show takes the project as an argument.
 // beside it, not knowing it is short and whole (WP-242). KEY... marks the
 // commands that take several at once, saving calls (WP-221).
 var commonSyntax = []string{
-	`wp next [KEY] (read it whole, no | head) · wp ship [KEY] -m "SUMMARY" (ships any code, else finishes; also wp done)`,
-	`wp new [bug|story|subtask] "TITLE" -d "MARKDOWN" [-f FILE] [--parent KEY] [--for claude|none] [--priority P]`,
-	`wp show CODE... (a KEY, R-N, ADRn, PLn or #N) · wp comment KEY "TEXT" · wp edit KEY... [--status S] [--title T] [-m COMMENT]`,
+	`wp next [KEY] (read whole, no | head) · wp ship [KEY] -m "SUMMARY" [--review|--skip-review WHY] [--check CMD] [--summary REPLY]`,
+	`wp ls [WORDS] [-s S] [--parent KEY] [--any-status] [-n N] [-A] · wp new [bug|story|subtask] "TITLE" -d "TEXT" [-f FILE] [--parent KEY] [--blocks KEY] [--follows KEY] [--for claude|none] [--priority P]`,
+	`wp show CODE... [-p PROJECT] (KEY, R-N, ADRn, PLn, #N, AUDIT.N) · wp comment KEY "TEXT" · wp edit KEY... [--status S] [--title T] [-m COMMENT]`,
 	`wp pr show|check|log|todo N... · wp pr wait N · wp pr merge N... --when-ready`,
-	`wp pr ack ID... --accept|--reject -m WHY · wp pr reply ID -m TEXT · wp pr fixed ID... · wp pr dismiss ID... -m NOTE`,
-	`wp ci status · wp ci log SHA|--run N [--job NAME] [--full]`,
+	`wp pr ack ID... --accept|--reject|--fixed -m WHY · wp pr fixed ID... · wp pr dismiss ID... -m NOTE · wp pr reply ID -m TEXT`,
+	`wp audit ls [-n N] · wp audit show ID... · wp audit mark ID.N... fixed|confirmed|rejected -m WHY [--issue KEY]`,
+	`wp code find QUERY · wp code show REF... [--callers] · wp ci status [-v] · wp ci log SHA|--run N [--job NAME] [--full]`,
+	`wp design ls [--kind K] [TEXT] · wp design show ID... [--raw] [-o FILE] · wp design edit ID -f FILE · wp design new decision "TITLE" -f FILE --for KEY`,
+	`wp page new plan "TITLE" -f FILE [--issue KEY] · wp page show CODE [--raw] [-o FILE] · wp server status|problems · wp server log [--since 1h] [--grep RE] [--level warn] [-n N]`,
 	`wp request ls [--answered] · wp request show|withdraw R-N... · wp request todo "WHAT" [-d DETAILS] · wp request run "COMMAND" -d WHY`,
-	`wp page new plan "TITLE" -f FILE [--issue KEY] · wp page show CODE · wp design new decision "TITLE" -f FILE --for KEY · wp design show ADRn...`,
 }
 
 func (c *cli) printHelp() {
@@ -379,12 +381,20 @@ func (c *cli) commandHelp(cmd *command, fs *flag.FlagSet) {
 		c.println(strings.TrimRight(cmd.about, "\n"))
 	}
 	if len(cmd.subs) > 0 {
-		c.println()
-		c.println("Subcommands:")
+		var visible []*command
 		for _, s := range cmd.subs {
-			fmt.Fprintf(c.out, "  %s\n      %s\n", strings.TrimSpace("wp "+s.path()+" "+s.args), s.summary)
+			if !s.hidden {
+				visible = append(visible, s)
+			}
 		}
-		fmt.Fprintf(c.out, "Run wp %s SUBCOMMAND -h for its flags.\n", cmd.path())
+		if len(visible) > 0 {
+			c.println()
+			c.println("Subcommands:")
+			for _, s := range visible {
+				fmt.Fprintf(c.out, "  %s\n      %s\n", strings.TrimSpace("wp "+s.path()+" "+s.args), s.summary)
+			}
+			fmt.Fprintf(c.out, "Run wp %s SUBCOMMAND -h for its flags.\n", cmd.path())
+		}
 	}
 	if fs != nil {
 		printFlags(c.out, fs)
@@ -405,6 +415,9 @@ func (c *cli) printUsageError(w io.Writer, ue usageError) {
 	fmt.Fprintf(w, "wp %s: %s\nusage: %s\n", ue.cmd.path(), ue.msg, strings.TrimSpace("wp "+ue.cmd.path()+" "+ue.cmd.args))
 	if len(ue.cmd.subs) > 0 {
 		for _, s := range ue.cmd.subs {
+			if s.hidden {
+				continue
+			}
 			fmt.Fprintf(w, "  %s\n", strings.TrimSpace("wp "+s.path()+" "+s.args))
 		}
 		fmt.Fprintf(w, "Run wp %s SUBCOMMAND -h for its flags.\n", ue.cmd.path())

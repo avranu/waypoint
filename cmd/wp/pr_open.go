@@ -20,40 +20,15 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-var prOpenAbout = `Pushes the branch and opens a pull request against the default branch.
-No model is called.
+var prOpenAbout = `Pushes the branch and opens a pull request against the default branch (or the
+parent PR's branch when stacked; --base overrides). Safe to run again.
 
-The issue it links: --issue, else a key in the branch name, else the task
-taken in this checkout, else a key in the commits; the output says which. A
-Done, closed or out-of-scope issue is skipped. Wrong one? wp pr unlink N,
-then wp pr link N KEY. The title comes from the issue or the commits.
-Waypoint writes the description, so don't: wp ship's -m leads its Summary,
-then the commits, the issue and the recorded tests (.waypoint/pr-body.md and
-pr-checks.md override the template). A free model may reword the Summary
-from the same text, never the diff (wp pr bodies; WP-55).
+Links the issue from --issue, branch name, held task, or commits (fix a wrong
+link with wp pr unlink N && wp pr link N KEY). Waypoint writes the PR body from
+commits, issue and recorded tests, so -f/--body is rarely needed.
 
---base BRANCH opens it into BRANCH (default: the repo's default branch).
-A branch built on another branch ignores that branch's commits. Built on
-the branch of an open pull request of the repo, and without --base, it
-opens into that branch, so its diff shows only its own change, and the
-output says so (--base main opens it into main instead). Built on a
-branch with no open pull request, it opens into the default branch. When
-Waypoint merges a pull request, the ones open into its branch move onto
-its base first.
-Running it again prints the open pull request; with --base, it moves it
-there first (the forge must allow that, else it fails).
-
-When your autopilot settings review before pull requests (whether
-autopilot is on or off), say what you want: --review pushes and schedules
-the task's adversarial review (the pull request opens after it; --review
-asks for one even with reviews off), --skip-review WHY opens it without
-one. With neither, it does whichever fits: the review if none ran yet, else
-the pull request (--pr says the same, and is kept for older prompts). Where
-that can't be done, it does the next step and a notice says how to
-override it: a review that can't be scheduled opens the pull request
-without it (WP-688, WP-1007). Run it once: Waypoint carries the rest of the
-review on, and opens the pull request itself when the review leaves nothing
-for you to do (WP-1370).`
+Pre-PR adversarial review: --review schedules it, --skip-review WHY opens the PR
+without it, or omit both to do whichever fits.`
 
 var prOpenCmd = &command{
 	name: "open", aliases: []string{"create", "new"}, args: "[--draft] [--urgent] [--base BRANCH] [--title T] [-f FILE]",

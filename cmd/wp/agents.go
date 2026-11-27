@@ -76,7 +76,7 @@ func init() {
 		{name: "pause", args: "[SPEC] [-m NOTE] [--sessions]", summary: "stop agents matching SPEC (default all) taking new work",
 			examples: []string{"wp agents pause haiku -m \"too many failed reviews\""}, run: cmdAgentsPause},
 		{name: "unpause", args: "[SPEC]", summary: "let agents matching SPEC take work again (default all)",
-			run: cmdAgentsUnpause},
+			examples: []string{"wp agents unpause", "wp agents unpause haiku"}, run: cmdAgentsUnpause},
 		{name: "wait", args: "[AGENT_ID...] [--timeout 9m]", summary: "wait until agents you started have stopped",
 			about: `Blocks until the named agents, or with no ids every agent you started that is
 still running, have stopped, then prints one line each (type, id, how long it
@@ -100,7 +100,7 @@ it needs the Waypoint hooks (wp hook claude); a stop the hooks never saw is
 waited out by --timeout.`,
 			examples: []string{"wp agents wait", "wp agents wait a1b2c3d4e5 --timeout 5m"}, run: cmdAgentsWait},
 		{name: "release", args: "KEY...", summary: "take a task back from its agent, into the queue",
-			run: cmdAgentsRelease},
+			examples: []string{"wp agents release APP-12"}, run: cmdAgentsRelease},
 	}
 }
 

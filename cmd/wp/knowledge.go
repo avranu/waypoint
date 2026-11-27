@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 
@@ -115,11 +116,17 @@ func cmdDefine(c *cli, args []string) error {
 	if len(pos) == 0 {
 		return c.usage("define what? Give a term")
 	}
-	project, err := c.knowledgeScope(sf)
-	if err != nil {
-		return err
-	}
+	project, scoped := "", false
 	return c.each(termList(pos), true, func(term string) error {
+		if id, ok := numRef(term); ok {
+			return c.textCall(fmt.Sprintf("/api/v1/glossary/%d", id), url.Values{})
+		}
+		if !scoped {
+			if project, err = c.knowledgeScope(sf); err != nil {
+				return err
+			}
+			scoped = true
+		}
 		return c.lookupTerm(term, project)
 	})
 }
@@ -204,8 +211,8 @@ func glossaryLs(c *cli, args []string) error {
 }
 
 var glossaryShowCmd = &command{
-	name: "show", args: "TERM[, TERM...]", aliases: []string{"view", "get"},
-	summary:  "an entry, with its links and author",
+	name: "show", args: "TERM[, TERM...]", aliases: []string{"view", "get"}, hidden: true,
+	summary:  "an entry, with its links and author (same as wp define)",
 	examples: []string{"wp glossary show claim", "wp glossary show '#4'", "wp glossary show claim, '#4'"},
 	run: func(c *cli, args []string) error {
 		fs := c.flags()
@@ -739,6 +746,10 @@ func designLs(c *cli, args []string) error {
 // noteID finds a design note by number or decision code (ADR7, ADR-0007,
 // APP-ADR7: a bare code is looked up in this repo's project first).
 func (c *cli) noteID(s string) (int64, error) {
+	return c.noteIDIn(s, "")
+}
+
+func (c *cli) noteIDIn(s, project string) (int64, error) {
 	s = strings.TrimPrefix(s, "design:")
 	if id, ok := numRef(s); ok {
 		return id, nil
@@ -747,8 +758,11 @@ func (c *cli) noteID(s string) (int64, error) {
 		return 0, fmt.Errorf("%q isn't a design note number or code like ADR7 (wp design ls lists them)", s)
 	}
 	path := "/api/v1/design/" + esc(strings.TrimSpace(s))
-	if home := c.homeProject(); home != "" {
-		path += "?project=" + url.QueryEscape(home)
+	if project == "" {
+		project = c.homeProject()
+	}
+	if project != "" {
+		path += "?project=" + url.QueryEscape(project)
 	}
 	var d designInfo
 	if err := c.do("GET", path, nil, &d); err != nil {
@@ -761,25 +775,58 @@ func (c *cli) noteID(s string) (int64, error) {
 var designCodeRE = lazyre.New(`(?i)^(?:[A-Z][A-Z0-9]{1,9}-?)?ADR-?0*[0-9]{1,9}$`)
 
 var designShowCmd = &command{
-	name: "show", args: "NOTE...", aliases: []string{"view", "get"},
-	summary:  "a note: body, additions, sub-notes, links, authors",
-	examples: []string{"wp design show 12", "wp design show ADR7 ADR9"},
+	name: "show", args: "NOTE... [--raw] [-o FILE]", aliases: []string{"view", "get"},
+	summary: "show a design note: body, additions, sub-notes, links, authors",
+	about: `--raw prints only the markdown body (for editing or piping). -o FILE saves
+the raw markdown body to FILE so you can edit it and pass it to wp design edit -f.`,
+	examples: []string{"wp design show 12", "wp design show ADR7 ADR9", "wp design show 330 --raw -o note.md"},
 	run:      designShow,
 }
 
 func designShow(c *cli, args []string) error {
 	fs := c.flags()
+	project := fs.String("project", "", "project `PROJECT` for bare codes like ADR7")
+	short(fs, "p", "project")
+	rawBody := fs.Bool("raw", false, "print only the raw markdown body")
+	alias(fs, "body", "raw")
+	outFile := fs.String("out", "", "write the raw markdown body to `FILE`")
+	short(fs, "o", "out")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) == 0 {
-		return c.usage("which note? Give its number")
+		return c.usage("which note? Give its number or code (e.g. 12, ADR7)")
 	}
-	return c.each(listArgs(pos), true, func(ref string) error {
-		id, err := c.noteID(ref)
+	refs := listArgs(pos)
+	if *outFile != "" && len(refs) > 1 {
+		return c.usage("-o writes one note's body; give one NOTE")
+	}
+	return c.each(refs, !*rawBody, func(ref string) error {
+		id, err := c.noteIDIn(ref, *project)
 		if err != nil {
 			return err
+		}
+		if *rawBody || *outFile != "" {
+			var d struct {
+				Body string `json:"body"`
+			}
+			if err := c.do("GET", fmt.Sprintf("/api/v1/design/%d", id), nil, &d); err != nil {
+				return err
+			}
+			body := d.Body
+			if body != "" && !strings.HasSuffix(body, "\n") {
+				body += "\n"
+			}
+			if *outFile != "" {
+				if err := os.WriteFile(*outFile, []byte(body), 0o600); err != nil {
+					return err
+				}
+				c.println(fmt.Sprintf("Wrote design #%d body to %s (%d bytes).", id, *outFile, len(body)))
+				return nil
+			}
+			c.print(body)
+			return nil
 		}
 		return c.textCall(fmt.Sprintf("/api/v1/design/%d", id), url.Values{})
 	})

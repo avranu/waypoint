@@ -28,7 +28,7 @@ func showPrefix(w string) (kind, rest string, ok bool) {
 		return "", "", false
 	}
 	kind = map[string]string{"issue": "issue", "request": "request", "design": "design", "decision": "design",
-		"note": "design", "spec": "design", "page": "page", "pr": "pull", "pull": "pull"}[strings.ToLower(t)]
+		"note": "design", "spec": "design", "page": "page", "pr": "pull", "pull": "pull", "audit": "audit"}[strings.ToLower(t)]
 	return kind, strings.TrimSpace(strings.TrimRight(rest, ".,;")), kind != ""
 }
 
@@ -82,6 +82,9 @@ func showTargets(w string) []showTarget {
 	if pullShapeRE.MatchString(w) {
 		out = append(out, showTarget{"pull", w})
 	}
+	if _, ok := auditFindingRef(w); ok {
+		out = append(out, showTarget{"audit", w})
+	}
 	if k := normalKey(w); keyRE.MatchString(k) {
 		out = append(out, showTarget{"issue", k})
 	}
@@ -90,6 +93,10 @@ func showTargets(w string) []showTarget {
 
 func cmdShow(c *cli, args []string) error {
 	fs := c.flags()
+	project := fs.String("project", "", "project `PROJECT` for bare codes (R-12, ADR7, PL13, #12)")
+	short(fs, "p", "project")
+	fs.Bool("comments", false, "(hidden) comments are always included")
+	fs.Bool("full", false, "(hidden) full output is already the default")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
@@ -107,19 +114,19 @@ func cmdShow(c *cli, args []string) error {
 			return c.usage("%q names no %s: give its code after the colon", r, kind)
 		}
 		if len(showTargets(r)) == 0 {
-			return c.usage("%q isn't a code: give an issue KEY (like APP-12), a request (R-12), a decision (ADR7), a page (PL13) or a pull request (#12)", r)
+			return c.usage("%q isn't a code: give an issue KEY (APP-12), request (R-12), decision (ADR7), page (PL13), pull request (#12) or audit finding (12.3)", r)
 		}
 	}
-	return c.each(refs, true, c.showCode)
+	return c.each(refs, true, func(ref string) error { return c.showCode(ref, *project) })
 }
 
 // showCode shows what a code names. One that could name several things
 // is looked up as each; it shows the one that exists, the first kind's
 // not-found when none does, and the commands to choose from when several do.
-func (c *cli) showCode(ref string) error {
+func (c *cli) showCode(ref, project string) error {
 	ts := showTargets(ref)
 	if len(ts) == 1 {
-		return c.showOne(ts[0])
+		return c.showOne(ts[0], project)
 	}
 	var found []string
 	var hit showTarget
@@ -131,9 +138,9 @@ func (c *cli) showCode(ref string) error {
 	}
 	switch len(found) {
 	case 0:
-		return c.showOne(ts[0])
+		return c.showOne(ts[0], project)
 	case 1:
-		return c.showOne(hit)
+		return c.showOne(hit, project)
 	}
 	return fmt.Errorf("%s names more than one thing; show the one you mean:\n  %s", ref, strings.Join(found, "\n  "))
 }
@@ -164,20 +171,38 @@ func (c *cli) showExists(t showTarget) string {
 		}
 	case "pull":
 		return "wp pr show " + t.ref
+	case "audit":
+		return "wp audit show " + t.ref
 	}
 	return ""
 }
 
 // showOne runs t's kind's own show command on it.
-func (c *cli) showOne(t showTarget) error {
+func (c *cli) showOne(t showTarget, project string) error {
 	var args []string
-	run := map[string]func(*cli, []string) error{"request": requestShow, "design": designShow, "page": pageShow, "pull": cmdPRShow}[t.kind]
+	run := map[string]func(*cli, []string) error{"request": requestShow, "design": designShow, "page": pageShow, "pull": cmdPRShow, "audit": auditShow}[t.kind]
 	switch t.kind {
 	case "issue":
 		return c.each(listArgs([]string{t.ref}), true, func(k string) error { return c.showIssue(normalKey(k)) })
 	case "pull":
 		if m := pullShapeRE.FindStringSubmatch(t.ref); m != nil && m[1] != "" {
 			args = []string{m[2], "--repo", m[1]}
+		} else {
+			args = []string{t.ref}
+			if project != "" {
+				args = append(args, "-p", project)
+			}
+		}
+	case "request":
+		ref := t.ref
+		if project != "" && !strings.Contains(ref, ":") {
+			ref = project + ":" + ref
+		}
+		args = []string{ref}
+	case "design", "page":
+		args = []string{t.ref}
+		if project != "" {
+			args = append(args, "-p", project)
 		}
 	}
 	if args == nil {
