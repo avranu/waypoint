@@ -117,16 +117,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if args[0] == "--version" {
 		args[0] = "version"
 	}
-	if (args[0] == "issue" || args[0] == "issues" || args[0] == "task" || args[0] == "tasks") && (len(args) == 1 || findCommand(args[1]) != nil) {
+	if (args[0] == "issue" || args[0] == "issues" || args[0] == "task" || args[0] == "tasks") && (len(args) == 1 || isCommandStart(args[1:])) {
 		args = args[1:]
 		if len(args) == 0 {
 			args = []string{"ls"}
 		}
 	}
 	if nargs, r := rewriteLegacy(args); r != nil {
-		if slices.ContainsFunc(args, isHelpFlag) {
-			c.println(legacyNote(r))
-		}
+		// Printed only if help is: a -h that is a flag's value asks for none.
+		c.legacy = legacyNote(r)
 		args = nargs
 	}
 	cmd := findCommand(args[0])
@@ -204,6 +203,13 @@ func findCommand(name string) *command {
 		}
 	}
 	return nil
+}
+
+// isCommandStart reports whether words begin a command, by its name now or
+// an old one.
+func isCommandStart(words []string) bool {
+	_, r := rewriteLegacy(words)
+	return r != nil || findCommand(words[0]) != nil
 }
 
 // findPath finds a command from words like ["page", "new"].
@@ -384,6 +390,10 @@ func (c *cli) fullReference() {
 
 // commandHelp prints a command's help; fs (when it has flags) lists them.
 func (c *cli) commandHelp(cmd *command, fs *flag.FlagSet) {
+	if c.legacy != "" {
+		c.println(c.legacy)
+		c.legacy = ""
+	}
 	c.println(strings.TrimSpace("wp " + cmd.path() + " " + cmd.args))
 	fmt.Fprintf(c.out, "  %s\n", cmd.summary)
 	if len(cmd.aliases) > 0 {

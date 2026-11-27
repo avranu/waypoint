@@ -354,6 +354,7 @@ type cli struct {
 	agent         string
 	cur           *command
 	fs            *flag.FlagSet
+	legacy        string       // an old name's note, led into the next help shown
 	sawVersion    atomic.Value // string: the X-Waypoint-Version of the latest answer
 	session       string
 	hookTimeout   time.Duration

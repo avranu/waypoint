@@ -149,6 +149,55 @@ func TestHelpListsNewNamesOnly(t *testing.T) {
 	}
 }
 
+// A task or issue prefix goes before an old name as it does before a new one.
+func TestTaskPrefixBeforeMovedCommands(t *testing.T) {
+	reportEnv(t)
+	for _, args := range []string{"task log -h", "issues time -h", "tasks activity -h", "issue worklog stats -h", "task usage -h"} {
+		var out, errb bytes.Buffer
+		if code := run(strings.Fields(args), &out, &errb); code != 0 || !strings.Contains(out.String(), " is now ") {
+			t.Errorf("wp %s: %d %q %s", args, code, out.String(), errb.String())
+		}
+	}
+}
+
+// The note naming the new command comes with help only: a -h given as a
+// flag's value leaves stdout to the command's answer.
+func TestLegacyNoteOnlyWithHelp(t *testing.T) {
+	reportEnv(t)
+	var out, errb bytes.Buffer
+	// No arguments but the note's value: refused before any request.
+	run([]string{"log", "-m", "-h", "--no-such-flag"}, &out, &errb)
+	if out.Len() != 0 {
+		t.Errorf("stdout carries %q", out.String())
+	}
+}
+
+// --from-transcripts is a switch: a word after it is refused, not dropped.
+func TestFromTranscriptsTakesNoValue(t *testing.T) {
+	reportEnv(t)
+	for _, args := range []string{"record usage --from-transcripts 7d --dry-run", "usage sync 7d --dry-run"} {
+		var out, errb bytes.Buffer
+		if code := run(strings.Fields(args), &out, &errb); code != 2 || !strings.Contains(errb.String(), `unexpected "7d"`) {
+			t.Errorf("wp %s: %d %s", args, code, errb.String())
+		}
+	}
+	for _, tc := range []struct {
+		args string
+		rest string
+		on   bool
+	}{
+		{"--from-transcripts --all", "--all", true},
+		{"--since 3d -from-transcripts=true", "--since 3d", true},
+		{"--from-transcripts=false KEY", "KEY", false},
+		{"KEY -- --from-transcripts", "KEY -- --from-transcripts", false},
+	} {
+		rest, on, err := takeBool(strings.Fields(tc.args), "from-transcripts")
+		if err != nil || on != tc.on || strings.Join(rest, " ") != tc.rest {
+			t.Errorf("takeBool(%q) = %q, %v, %v", tc.args, rest, on, err)
+		}
+	}
+}
+
 // An old name's help is the new command's, led by one line naming it.
 func TestLegacyHelpNamesTheNewCommand(t *testing.T) {
 	reportEnv(t)
@@ -358,6 +407,16 @@ func TestWindowAcceptsDaysAndSince(t *testing.T) {
 	if _, err := wc.parse(wfs, []string{"--since", "3d"}); err != nil || werr.Len() != 0 {
 		t.Errorf("--since 3d said %q", werr.String())
 	}
+	// no days is no window
+	for _, v := range []string{"0", "-1", "NaN"} {
+		c.cur, _ = resolveWords([]string{"report", "usage"})
+		fs = c.flags()
+		fs.String("since", "", "")
+		if _, err := c.parse(fs, []string{"--days", v}); err == nil {
+			t.Errorf("--days %s was taken", v)
+		}
+	}
+	c.cur, _ = resolveWords([]string{"report", "behavior", "stalled"})
 	// the default stays
 	fs = c.flags()
 	days := fs.Int("days", 28, "")

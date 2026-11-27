@@ -19,10 +19,11 @@ import (
 var reportCmd = &command{
 	name: "report", group: "Reports", args: "SUBJECT [TOPIC] [FLAGS]",
 	summary: "read-only reports: CI, activity, quality, AI spend and behavior, goals' meaning, a release's effect",
-	about: `A report reads and summarises over a window or a scope; it never changes
-anything. wp report with no subject lists them. A report that looks back takes
---since (a duration back from now, or a time) or --days N (--since Nd), and
-all take --json.`,
+	about: `A report reads and summarises over a window or a scope; it changes nothing
+in Waypoint (a flag such as --csv or --spans writes the local file you name).
+wp report with no subject lists them. A report that looks back takes --since (a
+duration back from now, or a time) or --days N (--since Nd), and all take
+--json.`,
 	examples: []string{"wp report ci history --days 14", "wp report quality mistakes", "wp report activity claude --days 7", "wp report usage --since 24h"},
 	run:      cmdSubjects,
 }
@@ -282,6 +283,27 @@ func takeFlag(args []string, name string, optional bool) (rest []string, val str
 	return args, "", false, nil
 }
 
+// takeBool removes the switch --name (or --name=BOOL) from args. It takes
+// no following word: that stays for the command to read, or to refuse.
+func takeBool(args []string, name string) (rest []string, on bool, err error) {
+	for i, a := range args {
+		if a == "--" {
+			return append(rest, args[i:]...), on, nil
+		}
+		if !flagIs(a, name) {
+			rest = append(rest, a)
+			continue
+		}
+		on = true
+		if _, v, ok := strings.Cut(a, "="); ok {
+			if on, err = strconv.ParseBool(v); err != nil {
+				return args, false, fmt.Errorf("--%s is true or false, not %q", name, v)
+			}
+		}
+	}
+	return rest, on, nil
+}
+
 // cmdReportUsage is wp report usage: the spend report, or with --task one
 // task's, or with --session one session's (what wp burn showed).
 func cmdReportUsage(c *cli, args []string) error {
@@ -327,7 +349,7 @@ var transcriptsHelp = &command{name: "usage --from-transcripts", args: usageSync
 	examples: []string{"wp record usage --from-transcripts --all --dry-run"}}
 
 func cmdRecordUsage(c *cli, args []string) error {
-	rest, _, from, err := takeFlag(args, "from-transcripts", true)
+	rest, from, err := takeBool(args, "from-transcripts")
 	if err != nil {
 		return c.usage("%v", err)
 	}
@@ -479,8 +501,8 @@ func acceptWindow(fs *flag.FlagSet, w io.Writer) {
 	switch {
 	case fs.Lookup("since") != nil && fs.Lookup("days") == nil:
 		fs.Func("days", "(hidden) N days back: --since Nd", func(v string) error {
-			if n, err := strconv.ParseFloat(v, 64); err != nil || n < 0 {
-				return fmt.Errorf("--days is a number of days, not %q", v)
+			if n, err := strconv.ParseFloat(v, 64); err != nil || !(n > 0) {
+				return fmt.Errorf("--days is a number of days above 0, not %q", v)
 			}
 			return fs.Set("since", v+"d")
 		})
