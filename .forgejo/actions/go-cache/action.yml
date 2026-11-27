@@ -1,0 +1,56 @@
+name: go-cache
+description: Restore Go's module cache (immutable per go.sum) and build cache (saved on main only so PRs and ephemeral queue branches don't re-upload multi-GB caches).
+inputs:
+  kind:
+    description: what the job builds, e.g. backend-race, backend, lint, e2e
+    required: true
+  path:
+    description: more directories to keep with Go's (lint's golangci-lint cache)
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - id: key
+      shell: bash
+      env:
+        KIND: ${{ inputs.kind }}
+      run: |
+        gov=$(go env GOVERSION)
+        sum=$(sha256sum go.sum | cut -c1-16)
+        base="go-build-$KIND-$gov-$(go env GOOS)-$(go env GOARCH)"
+        {
+          echo "gocache=$(go env GOCACHE)"
+          echo "gomodcache=$(go env GOMODCACHE)"
+          echo "modkey=go-mod-$gov-$sum"
+          echo "modprefix=go-mod-$gov-"
+          echo "base=$base"
+          echo "sum=$base-$sum"
+          echo "day=$(date -u +%Y%m%d)"
+        } >>"$GITHUB_OUTPUT"
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.key.outputs.gomodcache }}
+        key: ${{ steps.key.outputs.modkey }}
+        restore-keys: |
+          ${{ steps.key.outputs.modprefix }}
+    - if: github.ref == 'refs/heads/main'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ steps.key.outputs.gocache }}
+          ${{ inputs.path }}
+        key: ${{ steps.key.outputs.sum }}-${{ steps.key.outputs.day }}
+        restore-keys: |
+          ${{ steps.key.outputs.sum }}-
+          ${{ steps.key.outputs.base }}-
+    - if: github.ref != 'refs/heads/main'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ steps.key.outputs.gocache }}
+          ${{ inputs.path }}
+        key: ${{ steps.key.outputs.sum }}-${{ steps.key.outputs.day }}
+        restore-keys: |
+          ${{ steps.key.outputs.sum }}-
+          ${{ steps.key.outputs.base }}-

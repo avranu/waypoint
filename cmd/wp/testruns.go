@@ -46,30 +46,79 @@ type testRun struct {
 	Seconds  float64  `json:"seconds"`
 	Duration float64  `json:"duration"`
 	Exit     int      `json:"exit,omitempty"`
+	// Load is the one-minute load when the run got its slot and when it
+	// finished; absent unless the host gave both (WP-1850).
+	Load []float64 `json:"load,omitempty"`
 }
 
 type testRunRecorder struct {
-	argv  []string
-	tree  string
-	start time.Time
-	snap  func() string
+	argv []string
+	// label is the command as the record says it, where that isn't argv:
+	// wp test says "wp test (scoped check)", not the script it ran.
+	label string
+	// compileOnly: the run only compiled packages, or selected no test, and
+	// ran none. A pass is then not kept, as it would read as the tests
+	// passing; a failure is.
+	compileOnly bool
+	tree        string
+	start       time.Time
+	snap        func() string // workingTree
+	load        func() (float64, bool)
+
+	loadStart, loadEnd float64
+	okStart, okEnd     bool
 }
 
+// readHostLoad is a var so a test can fix the load.
+var readHostLoad = hostLoad
+
 func newTestRunRecorder(argv []string) *testRunRecorder {
-	return &testRunRecorder{argv: argv, snap: workingTree}
+	return &testRunRecorder{argv: argv, snap: workingTree, load: readHostLoad}
+}
+
+func (r *testRunRecorder) command() string {
+	if r.label != "" {
+		return r.label
+	}
+	return runCommand(r.argv)
 }
 
 // started notes the tree when the command starts, once it has its slot.
 func (r *testRunRecorder) started() {
 	if r != nil {
 		r.tree, r.start = r.snap(), time.Now()
+		r.loadStart, r.okStart = r.readLoad()
 	}
+}
+
+func (r *testRunRecorder) readLoad() (float64, bool) {
+	if r.load == nil {
+		return 0, false
+	}
+	return r.load()
+}
+
+// loads is the load at the start and the end, or nil unless both were read,
+// so position always means start and end.
+func (r *testRunRecorder) loads() []float64 {
+	if r == nil || !r.okStart || !r.okEnd {
+		return nil
+	}
+	return []float64{r.loadStart, r.loadEnd}
 }
 
 // finish keeps the run, unless it can't be tied to a tree: git failing at
 // the end leaves no telling whether the tree moved.
 func (r *testRunRecorder) finish(res *testResult, exit int) {
-	if r == nil || r.tree == "" {
+	if r == nil {
+		return
+	}
+	// Read before the early return: a check outside a work tree still says its load.
+	r.loadEnd, r.okEnd = r.readLoad()
+	if r.tree == "" {
+		return
+	}
+	if r.compileOnly && exit == 0 && res.outcome() != runFail {
 		return
 	}
 	end := r.snap()
@@ -78,9 +127,9 @@ func (r *testRunRecorder) finish(res *testResult, exit int) {
 	}
 	run := testRun{
 		At: time.Now().UnixMilli(), Tree: r.tree, Moved: end != r.tree,
-		Command: runCommand(r.argv), Outcome: res.outcome(),
+		Command: r.command(), Outcome: res.outcome(),
 		Passed: res.Passed, Failed: res.Failed, Skipped: res.Skipped, Units: res.Units, UnitName: res.UnitName,
-		Seconds: res.Seconds, Duration: time.Since(r.start).Seconds(), Exit: exit,
+		Seconds: res.Seconds, Duration: time.Since(r.start).Seconds(), Exit: exit, Load: r.loads(),
 	}
 	if exit != 0 && run.Outcome != runFail {
 		run.Outcome = runFail
@@ -237,6 +286,13 @@ func runsOnTree(runs []testRun, tree string) (on []testRun, near *testRun) {
 	return on, near
 }
 
+// toSend is the run as the server takes it: the load stays on this machine,
+// since the server refuses a field it doesn't know (WP-1850).
+func (r testRun) toSend() testRun {
+	r.Load = nil
+	return r
+}
+
 // runsToSend is at most testRunsSend of the runs, failures first so the
 // limit can't turn a failing tree into a passing one.
 func runsToSend(on []testRun) []testRun {
@@ -244,7 +300,7 @@ func runsToSend(on []testRun) []testRun {
 	for _, wantFail := range []bool{true, false} {
 		for _, r := range on {
 			if (r.Outcome == runFail) == wantFail {
-				out = append(out, r)
+				out = append(out, r.toSend())
 			}
 		}
 	}
@@ -358,7 +414,8 @@ func rerunnable(cmd string) string {
 	if strings.Contains(cmd, "•••") || utf8.RuneCountInString(cmd) >= testRunCmdMax {
 		return ""
 	}
-	return cmd
+	// The mark wp test adds to what it records isn't part of the command.
+	return strings.TrimSuffix(cmd, scopedMark)
 }
 
 // sendTestEvidence reports the runs on HEAD's tree. It never stops a ship:
@@ -376,7 +433,7 @@ func (c *cli) sendTestEvidence(project, repo, key, summary string) *shipEvidence
 	on = runsToSend(on)
 	body := map[string]any{"repo": repo, "sha": head, "tree": tree, "issue": key, "summary": summary, "runs": on}
 	if len(on) == 0 && near != nil {
-		n := testRunNear{testRun: *near, FilesAway: -1}
+		n := testRunNear{testRun: near.toSend(), FilesAway: -1}
 		if !near.Moved {
 			n.FilesAway = filesBetween(near.Tree, tree)
 		}

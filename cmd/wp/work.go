@@ -26,26 +26,13 @@ func jsonInto(raw []byte, v any) error { return json.Unmarshal(raw, v) }
 var nextCmd = &command{
 	name: "next", group: "Tasks", args: "[KEY] [FLAGS]",
 	summary: "take (claim) the next task for you here, or task KEY",
-	about: `Claims the most urgent task for you in the scope for 2 hours and moves it
-to In Progress: pins, then the automatic order, one score from priority, due
-date (more as it nears), what it unblocks, being delegated, bugs, plans, size
-and age (wp queue shows the order and why). Humans only tasks
-are taken only by KEY; an epic's KEY hands out its first open sub-task while
-it has any you can take. Prints the task in full, the checkout's git state and
-a short brief; read it whole.
+	about: `Claims the highest-priority ready task in scope for 2 hours, moves it to In
+Progress, and prints the task in full with git state and a brief (read it whole).
+wp queue shows the order and why; asking again returns your current task.
 
-An agent taking a task in the repo's main checkout, or in one holding other
-work (uncommitted files, commits not on the default branch) on a branch that
-doesn't name the task, gets the task its own worktree under
-<repo>/.claude/worktrees/ (as wp worktree KEY makes), its claim moved there,
-and is told to cd there, when that folder is inside the session's (else wp
-only names the command). wp then removes the finished worktrees there and
-their merged branches (wp tidy's rules; none a process or a live session is
-in). A task from another project or --repo gets none. --no-worktree or
-WP_NO_WORKTREE=1 keeps the task where it is taken.
-
-Asking again returns the task you hold. "Nothing to do." means the queue is
-empty.`,
+In a repo's main checkout (or a dirty checkout on another branch), creates an
+isolated worktree under <repo>/.claude/worktrees/ and cleans up merged ones
+(--no-worktree or WP_NO_WORKTREE=1 stays here).`,
 	examples: []string{
 		"wp next                      # the next task for this repo",
 		"wp next --step review        # only tasks waiting for review",

@@ -128,7 +128,8 @@ func (s *Service) rerunForFlake(ctx context.Context, b *Babysit, pr *PullRequest
 		// A resting babysit is swept every minute with no round to end it:
 		// remember for the head that the forge can't, so it isn't asked again.
 		cleared := flakeRerun{}
-		if resting {
+		// A forge that errored may only have failed this once.
+		if resting && err == nil {
 			cleared = flakeRerun{SHA: pr.HeadSHA, At: now.UnixMilli(), Cannot: true}
 		}
 		if err := s.saveFlakeRerun(ctx, b, cleared); err != nil {

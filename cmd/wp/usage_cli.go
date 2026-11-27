@@ -38,6 +38,8 @@ const (
 	cliSignalSleep     = "sleep"
 	cliSignalSleepCI   = "sleep_ci"
 	cliSignalGhTea     = "gh_tea"
+	cliSignalPipeJSON  = "pipe_json"
+	cliSignalMultiWP   = "multi_wp"
 )
 
 const (
@@ -224,7 +226,7 @@ func readCLIShell(cmd string) *cliShellCall {
 			call.Follow = append(call.Follow, l)
 		}
 	}
-	var ghTea, curlForge bool
+	var ghTea, curlForge, hasWPJSON, hasJSONConsumer bool
 	walkCommands(cmd, 0, func(words []string) {
 		prog := path.Base(words[0])
 		if prog == "wp" {
@@ -233,6 +235,9 @@ func readCLIShell(cmd string) *cliShellCall {
 			}
 			inv := parseWPInvocation(words)
 			call.WP = append(call.WP, inv)
+			if slices.Contains(inv.Flags, "--json") {
+				hasWPJSON = true
+			}
 			call.CI = call.CI || strings.HasPrefix(inv.Head+" ", "wp pr ") || strings.HasPrefix(inv.Head+" ", "wp ci ")
 			if inv.Help {
 				label(inv.Head + " -h")
@@ -244,6 +249,9 @@ func readCLIShell(cmd string) *cliShellCall {
 		call.Sleeps = call.Sleeps || prog == "sleep"
 		ghTea = ghTea || prog == "gh" || prog == "tea"
 		curlForge = curlForge || prog == "curl" && hitsForgeAPI(words[1:])
+		if prog == "jq" || prog == "python" || prog == "python3" {
+			hasJSONConsumer = true
+		}
 		head := headOf(words)
 		switch {
 		case head == "" || followDropped[head]:
@@ -262,6 +270,12 @@ func readCLIShell(cmd string) *cliShellCall {
 	if ghTea {
 		call.Signals = append(call.Signals, cliSignalGhTea)
 	}
+	if hasWPJSON && hasJSONConsumer {
+		call.Signals = append(call.Signals, cliSignalPipeJSON)
+	}
+	if len(call.WP) >= 2 {
+		call.Signals = append(call.Signals, cliSignalMultiWP)
+	}
 	return call
 }
 
@@ -270,11 +284,16 @@ func (p *usageParser) addCLI(hour int64, model, kind, head, detail string, n int
 }
 
 // noteCLI counts one new tool call: what it ran, and what it was for the wp
-// commands before it.
+// commands before it. Sessions are counted on their first Bash call so
+// non-shell single-shot helpers never dilute per-session rates.
 func (p *usageParser) noteCLI(call *usageOpenCall) {
 	sh := call.shell
 	if sh == nil {
 		return
+	}
+	if !p.st.CLICounted && call.Hour > 0 && call.Model != "" && !strings.HasPrefix(call.Model, "<") {
+		p.st.CLICounted = true
+		p.addCLI(call.Hour, call.Model, usageCLIFile, "", "", 1)
 	}
 	p.addCLI(call.Hour, call.Model, usageCLIBash, "", "", 1)
 	for _, s := range sh.Signals {

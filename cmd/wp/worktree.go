@@ -44,9 +44,11 @@ never removes uncommitted or unpushed work.`,
 func init() {
 	worktreeCmd.subs = []*command{
 		{name: "ls", aliases: []string{"list"}, summary: "this repo's worktrees; marks those beside the main checkout",
-			run: cmdWorktreeLs},
+			examples: []string{"wp worktree ls"},
+			run:      cmdWorktreeLs},
 		{name: "move", aliases: []string{"mv"}, args: "[PATH…] [--dry-run]", summary: "move worktrees from beside the main checkout under .claude/worktrees/ (default: all of them)",
-			run: cmdWorktreeMove},
+			examples: []string{"wp worktree move --dry-run", "wp worktree move"},
+			run:      cmdWorktreeMove},
 	}
 }
 

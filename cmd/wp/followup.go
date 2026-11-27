@@ -31,7 +31,8 @@ subcommand, shows the follow-up.`,
 func init() {
 	followupCmd.subs = []*command{
 		{name: "show", aliases: []string{"view", "get"}, args: "[SESSION]", summary: "show a session's follow-up and its last run",
-			run: cmdFollowupShow},
+			examples: []string{"wp followup show", "wp followup show 42"},
+			run:      cmdFollowupShow},
 		{name: "set", args: "[SESSION] (--fresh MODEL (--prompt TEXT | -f FILE) | --tell TEXT | --steps-json FILE)... [--append]", summary: "queue steps for when the agent finishes",
 			about: `Replaces what was queued (--append adds). A finished session runs them now.
 Steps run in flag order:
@@ -46,9 +47,11 @@ Steps run in flag order:
 				`wp followup set 42 --steps-json steps.json`,
 			}, run: cmdFollowupSet},
 		{name: "run", args: "[SESSION]", summary: "run the queued steps now",
-			run: cmdFollowupRun},
+			examples: []string{"wp followup run", "wp followup run 42"},
+			run:      cmdFollowupRun},
 		{name: "clear", aliases: []string{"rm", "delete"}, args: "[SESSION]", summary: "remove a session's follow-up",
-			run: cmdFollowupClear},
+			examples: []string{"wp followup clear", "wp followup clear 42"},
+			run:      cmdFollowupClear},
 	}
 }
 
