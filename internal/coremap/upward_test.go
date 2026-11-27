@@ -104,7 +104,7 @@ func TestWriteBaseline(t *testing.T) {
 	if err := writeBaseline(path, a, false, &log); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(log.String(), "added pr>issues, which was not listed") {
+	if !strings.Contains(log.String(), "added pr>issues, which was not listed") || !strings.Contains(log.String(), "1 upward pairs (3 references) of") {
 		t.Errorf("the new pair isn't named:\n%s", log.String())
 	}
 	log.Reset()
@@ -116,8 +116,9 @@ func TestWriteBaseline(t *testing.T) {
 // TestNoNewUpwardReferences loads the real internal/core (about as long as
 // `make coremap`) and holds its upward group pairs to upward.txt (WP-1925,
 // WP-ADR151 section 6): a pair not listed fails with its references; a
-// listed pair that is gone is only logged. It checks pairs, not the count of references on a pair, so an existing edge can grow without
-// touching the list. Up is decided by the line order of groups.txt; groups in
+// listed pair that is gone is only logged, as is the count of pairs and
+// references. It checks pairs, not the count of references on a pair, so an
+// existing edge can grow without touching the list. Up is decided by the line order of groups.txt; groups in
 // one cycle are not special: whichever of the two directions the order makes
 // upward is listed, the other is down. References to the kernel group and
 // within a group never count.
@@ -150,7 +151,10 @@ func TestNoNewUpwardReferences(t *testing.T) {
 	if ld.TypeErrors > 0 {
 		t.Fatalf("%d type errors: the map is incomplete\n%s", ld.TypeErrors, log.String())
 	}
-	added, gone := CheckUpward(Analyze(ld, groups).UpwardPairs(), allowed)
+	a := Analyze(ld, groups)
+	found := a.UpwardPairs()
+	t.Log(a.upwardCount(found))
+	added, gone := CheckUpward(found, allowed)
 	if added != "" {
 		t.Error(added)
 	}

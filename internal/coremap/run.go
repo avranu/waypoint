@@ -10,6 +10,13 @@ import (
 	"strings"
 )
 
+// The files TestNoNewUpwardReferences reads, as paths from the repository root.
+const (
+	defaultDir    = "internal/core"
+	defaultGroups = "internal/coremap/groups.txt"
+	defaultUpward = "internal/coremap/upward.txt"
+)
+
 // Run is the command: it parses args, type-checks the package once and writes
 // the report (or the queries asked for) to stdout; timings go to stderr. When
 // the package has type errors it writes the same and then returns an error,
@@ -17,8 +24,8 @@ import (
 func Run(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("coremap", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	dir := fs.String("dir", "internal/core", "the package `directory` to map")
-	groupsFile := fs.String("groups", "internal/coremap/groups.txt", "the grouping `file`")
+	dir := fs.String("dir", defaultDir, "the package `directory` to map")
+	groupsFile := fs.String("groups", defaultGroups, "the grouping `file`")
 	asJSON := fs.Bool("json", false, "write JSON instead of text")
 	top := fs.Int("top", 5, "how many of the heaviest upward edges the report lists")
 	edge := fs.String("edge", "", "list every reference on the edge `A>B` (groups)")
@@ -28,13 +35,16 @@ func Run(args []string, stdout, stderr io.Writer) error {
 	affinity := fs.Bool("affinity", false, "list each group with the groups it exchanges the most references with")
 	perFile := fs.Bool("per-file", false, "make every file its own group, in the suggested order (file-level affinity and order)")
 	writeUpward := fs.Bool("write-upward", false, "write the group pairs that refer upward to -upward and print nothing else")
-	upward := fs.String("upward", "internal/coremap/upward.txt", "the baseline `file` -write-upward writes")
+	upward := fs.String("upward", defaultUpward, "the baseline `file` -write-upward writes")
 	minGroups := fs.Int("min-groups", 10, "the group count -kernel-candidates needs")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
 		return err
+	}
+	if *writeUpward && *upward == defaultUpward && (*dir != defaultDir || *groupsFile != defaultGroups) {
+		return fmt.Errorf("-write-upward writes %s from %s and %s, the ones TestNoNewUpwardReferences reads: for another -dir or -groups, name another -upward", defaultUpward, defaultDir, defaultGroups)
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))

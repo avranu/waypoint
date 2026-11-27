@@ -214,9 +214,17 @@ func TestRun(t *testing.T) {
 	if err := json.Unmarshal([]byte(run("-json", "-edge", "pr>issues")), &one); err != nil || len(one) != 3 {
 		t.Errorf("-json -edge: %v %+v", err, one)
 	}
+	up := dir + "/upward.txt"
+	if out := run("-write-upward", "-upward", up); out != "" {
+		t.Errorf("-write-upward wrote to stdout:\n%s", out)
+	}
+	if b, err := os.ReadFile(up); err != nil || !strings.Contains(string(b), "\npr>issues\n") {
+		t.Errorf("-write-upward -upward: %v\n%s", err, b)
+	}
 	for _, bad := range [][]string{
 		{"-edge", "nope"}, {"-edge", "pr>"}, {"stray"}, {"-groups", dir + "/missing"},
 		{"-json", "-affinity", "-group", "pr"},
+		{"-write-upward"}, // another -dir and -groups than the test's, to the test's upward.txt
 	} {
 		if err := Run(append([]string{"-dir", fixtureDir, "-groups", groups}, bad...), io.Discard, io.Discard); err == nil {
 			t.Errorf("%v accepted", bad)

@@ -47,7 +47,8 @@
 //	                     references with, both directions, with their share of its total
 //	-write-upward        write the group pairs that refer upward to upward.txt (make
 //	                     coremap-upward), naming those not listed before; not with
-//	                     -suggest-order or -per-file, nor with type errors
+//	                     -suggest-order or -per-file, nor with type errors; with
+//	                     another -dir or -groups, only to another -upward
 //
 // Quote -edge's value, a bare > being a shell redirect: through make that is
 // CORE_ARGS="-edge 'pr>issues'".

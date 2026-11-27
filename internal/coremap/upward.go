@@ -117,8 +117,19 @@ func writeBaseline(path string, a *Analysis, reordered bool, log io.Writer) erro
 			}
 		}
 	}
-	fmt.Fprintf(log, "wrote %s: %d upward pairs of %d group pairs with references\n", path, len(pairs), a.AllPairs())
+	fmt.Fprintf(log, "wrote %s: %s\n", path, a.upwardCount(pairs))
 	return nil
+}
+
+// upwardCount says how many pairs refer upward, with how many references, of
+// the group pairs with references: the line make coremap-upward prints and
+// TestNoNewUpwardReferences logs, so the two report the same number.
+func (a *Analysis) upwardCount(pairs map[string][]Ref) string {
+	refs := 0
+	for _, rs := range pairs {
+		refs += len(rs)
+	}
+	return fmt.Sprintf("%d upward pairs (%d references) of %d group pairs with references", len(pairs), refs, a.AllPairs())
 }
 
 // maxListed caps the references named per offending pair.
