@@ -23,7 +23,7 @@ var CoreLayers = &analysis.Analyzer{
 
 // coreOrder lists the domains under internal/core from the bottom up: each
 // may import those before it. The order is the measured one kept on WP-1499.
-var coreOrder = []string{"udiff", "meaning"}
+var coreOrder = []string{"numbering", "udiff", "meaning"}
 
 // coreDomain is the domain of a package path under internal/core ("pr" for
 // …/internal/core/pr/sub), or "" for package core and anything elsewhere.
