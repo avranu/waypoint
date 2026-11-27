@@ -45,17 +45,24 @@ func (e *env) setClock(t time.Time) {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	ctx := context.Background()
-	d, err := db.OpenFresh(ctx, filepath.Join(t.TempDir(), "test.db"))
+	d, err := db.OpenFresh(context.Background(), filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	e := envOn(t, d, time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC))
+	e.admin = e.user("robin", true)
+	return e
+}
+
+// envOn is a Service on d with the test's clock at clock, and no admin
+// yet: what newEnv and an env started from a snapshot have in common.
+func envOn(t *testing.T, d *db.DB, clock time.Time) *env {
+	t.Helper()
 	t.Cleanup(func() { d.Close() })
 	s := New(d, Config{BaseURL: "https://wp.test"}, nil)
 	s.StartHub()
-	e := &env{t: t, s: s, ctx: ctx, clock: time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)}
+	e := &env{t: t, s: s, ctx: context.Background(), clock: clock}
 	s.SetClock(e.clockNow)
-	e.admin = e.user("robin", true)
 	t.Cleanup(s.Wait)
 	return e
 }
@@ -1412,5 +1419,26 @@ func TestFindProjects(t *testing.T) {
 	}
 	if ps, _ := e.s.FindProjects(e.ctx, e.admin, "ROBIN/harbor", true); len(ps) != 1 || ps[0].Name != "Tools" {
 		t.Errorf("repo-only: %v", ps)
+	}
+}
+
+func TestBoardManualOrder(t *testing.T) {
+	e := newEnv(t)
+	p, err := e.s.CreateProject(e.ctx, e.admin, ProjectInput{Name: str("Order"), Key: str("ORD")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for q, want := range map[string]bool{
+		"": true, "label:x": true, "order:rank": true,
+		"order:-rank": false, "order:-priority": false, "sort:priority": false, "order:rank,priority": false,
+	} {
+		b, err := e.s.GetBoard(e.ctx, e.admin, p.Key, q)
+		if err != nil || b.ManualOrder != want {
+			t.Errorf("board %q: manual order = %v, %v; want %v", q, b != nil && b.ManualOrder, err, want)
+		}
+		bl, err := e.s.GetBacklog(e.ctx, e.admin, p.Key, q)
+		if err != nil || bl.ManualOrder != want {
+			t.Errorf("backlog %q: manual order = %v, %v; want %v", q, bl != nil && bl.ManualOrder, err, want)
+		}
 	}
 }

@@ -2028,7 +2028,7 @@ var agentTools = map[string]bool{"anthropic/claude-code": true, "google/gemini-c
 // authorAgent is the agent an issue's provenance names (WP-242): for a
 // tool's identity, the model its session reported (anthropic/claude-code
 // in an Opus session writes as anthropic/claude-opus-5-5), so people read
-// which model wrote it. Claims and matching keep actor.agentName().
+// which model wrote it. Claims and matching keep actor.AgentName().
 func authorAgent(ctx context.Context, t *tx, actor *Actor) string {
 	if actor != nil && actor.TextAgent != "" {
 		return actor.TextAgent

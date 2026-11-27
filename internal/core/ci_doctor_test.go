@@ -1,7 +1,9 @@
 package core
 
 import (
+	"encoding/json"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -216,6 +218,91 @@ func TestCIDoctorStalledLine(t *testing.T) {
 	}
 }
 
+// WP-1707: the doctor counts candidates by end_reason and the re-runs, and
+// StackFates breaks the failed and the cancelled ones down by reason.
+func TestCIDoctorStackEndReasons(t *testing.T) {
+	be, pr := armedBabysit(t)
+	now := be.clockNow()
+	insert := func(state, reason, note string, reran any, ago time.Duration, ended bool) {
+		t.Helper()
+		var end any
+		if ended {
+			end = now.UnixMilli()
+		}
+		if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT INTO queue_stacks(forge_id, repo, base_ref, pr_id, base_sha, branch, commit_sha, state, note, run_url, created_at, ended_at, end_reason, reran)
+			VALUES (?,?,?,?,'b','wp-queue/main/1','c',?,?,'',?,?,?,?)`,
+			pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID, state, note, now.Add(-ago).UnixMilli(), end, reason, reran); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add := func(state, reason string, reran any, ago time.Duration) {
+		t.Helper()
+		insert(state, reason, "", reran, ago, state != stackRunning)
+	}
+	// reran is when the failed jobs were run again (0187_merge_line_candidates.sql).
+	at := func(ago time.Duration) int64 { return now.Add(-ago).UnixMilli() }
+	add("cancelled", endBaseMoved, 0, time.Hour)
+	add("cancelled", endBaseMoved, 0, 2*time.Hour)
+	add("cancelled", endBaseRed, at(170*time.Minute), 3*time.Hour)
+	add("cancelled", endNoRun, 0, 3*time.Hour)
+	add("failed", endFailed, at(230*time.Minute), 4*time.Hour)
+	add("failed", endFailed, 0, 5*time.Minute)
+	add(stackRefused, endRefused, 0, 6*time.Minute)
+	add("failed", endNoMerge, 0, 7*time.Minute)
+	add(stackConflict, endConflict, 0, 8*time.Minute)
+	insert(stackMerged, endMerged, "merged as abcdef1", at(8*time.Minute), 9*time.Minute, true) // a re-run saved it
+	// Its heads merged on their own: the re-run's run never went green (audit 1701.3).
+	insert(stackMerged, endMerged, "every head merged", at(12*time.Minute), 13*time.Minute, true)
+	add(stackRunning, "", at(time.Minute), 2*time.Minute) // re-run, not ended: no reason yet
+	// Not ended: a reason it carries isn't counted yet, its re-run is (audit 1697.10, 1670.10).
+	insert(stackRunning, endBaseMoved, "", at(time.Minute), 3*time.Minute, false)
+	// Before the window: neither its reason nor its re-run counts.
+	add("cancelled", endBaseRed, at(7*time.Hour), 7*time.Hour)
+	add("cancelled", "", 0, 10*time.Minute) // from before 0187_merge_line_candidates.sql
+	// A value no production path writes (audit 1671.1): the doctor still answers.
+	add("cancelled", endBaseMoved, "x", 11*time.Minute)
+	d, err := be.s.CIDoctor(be.ctx, be.admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := d.Lines[0].Stacks
+	want := map[string]int{endBaseMoved: 3, endBaseRed: 1, endNoRun: 1, endFailed: 2, endRefused: 1, endNoMerge: 1, endConflict: 1, endMerged: 2}
+	if !reflect.DeepEqual(st.Reasons, want) || st.Reran != 6 || st.RerunPassed != 1 || st.Passed != 2 || st.Cancelled != 6 || st.Failed != 4 || st.Running != 2 {
+		t.Errorf("stacks = %+v", st)
+	}
+	if !reflect.DeepEqual(st.FailedBy, map[string]int{endFailed: 2, endRefused: 1, endNoMerge: 1}) ||
+		!reflect.DeepEqual(st.CancelledBy, map[string]int{endBaseMoved: 3, endBaseRed: 1, endNoRun: 1}) {
+		t.Errorf("failed by %v, cancelled by %v", st.FailedBy, st.CancelledBy)
+	}
+	if got := StackFates(st); got != "1 conflict, 4 failed (1 no merge, 1 refused), 6 cancelled (3 base moved, 1 base red, 1 no run, 1 unrecorded)" {
+		t.Errorf("fates = %q", got)
+	}
+	// The JSON form carries the same breakdown the text prints (audit 1671.19).
+	js, err := json.Marshal(st)
+	if err != nil || !strings.Contains(string(js), `"cancelled_by":{"base_moved":3,"base_red":1,"no_run":1}`) || !strings.Contains(string(js), `"failed_by":`) {
+		t.Errorf("json = %s, %v", js, err)
+	}
+}
+
+func TestStackFatesReasons(t *testing.T) {
+	for _, c := range []struct {
+		st   CIStackStats
+		want string
+	}{
+		{CIStackStats{Conflicts: 1, Failed: 2, Cancelled: 5}, "1 conflict, 2 failed, 5 cancelled"},
+		{CIStackStats{Failed: 2, Cancelled: 5, FailedBy: map[string]int{endFailed: 2}}, "2 failed, 5 cancelled"},
+		{CIStackStats{Failed: 2, Cancelled: 5, FailedBy: map[string]int{endFailed: 2},
+			CancelledBy: map[string]int{endBaseRed: 2, endBaseMoved: 2, endNoRun: 1}}, "2 failed, 5 cancelled (2 base moved, 2 base red, 1 no run)"},
+		{CIStackStats{Failed: 2, FailedBy: map[string]int{endRefused: 2}}, "2 failed (2 refused)"},
+		{CIStackStats{Failed: 1}, "1 failed"},
+		{CIStackStats{}, "none failed"},
+	} {
+		if got := StackFates(c.st); got != c.want {
+			t.Errorf("StackFates(%+v) = %q, want %q", c.st, got, c.want)
+		}
+	}
+}
+
 // A line whose stacks all end on conflicts or failures says so.
 func TestCIDoctorStacksFailing(t *testing.T) {
 	be, pr := armedBabysit(t)
@@ -243,12 +330,20 @@ func TestCIDoctorStacksFailing(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := d.Lines[0].Stacks
-	if st != (CIStackStats{Tried: 5, Running: 1, Conflicts: 2, Failed: 1, Cancelled: 1, LastFail: st.LastFail, LastRun: "https://x.test/run/9"}) || !strings.Contains(st.LastFail, "doesn't merge") {
+	// These rows have no end_reason: none is counted (audit 1670.10).
+	if !reflect.DeepEqual(st, CIStackStats{Tried: 5, Running: 1, Conflicts: 2, Failed: 1, Cancelled: 1, LastFail: st.LastFail, LastRun: "https://x.test/run/9"}) || !strings.Contains(st.LastFail, "doesn't merge") {
 		t.Errorf("stacks = %+v", st)
 	}
 	i := slices.IndexFunc(d.Findings, func(f CIFinding) bool { return f.Kind == "stacks_failing" })
 	if i < 0 || !strings.Contains(d.Findings[i].Title, "2 conflicts, 1 failed, 1 cancelled") {
-		t.Errorf("findings = %+v", d.Findings)
+		t.Fatalf("findings = %+v", d.Findings)
+	}
+	// The Detail says what a candidate costs, the latest failure and what a conflict means (audit 1670.13).
+	f := d.Findings[i]
+	if !strings.HasPrefix(f.Detail, "A candidate is built from the base and the first places of the merge line and gets a full run") ||
+		!strings.Contains(f.Detail, "\nLatest: #7 (abcdef1) doesn't merge cleanly") || !strings.Contains(f.Detail, "\nConflicts: the pull requests touch the same lines") ||
+		f.Next != "open the latest failed stack run: https://x.test/run/9" {
+		t.Errorf("finding = %+v", f)
 	}
 }
 
@@ -393,6 +488,36 @@ func TestDoctorMainAdvisories(t *testing.T) {
 		t.Errorf("advisories and another job: findings = %+v", got)
 	}
 
+	// main_red says what the red base cost that base's merge line, and only it.
+	red := func(lines ...CILine) string {
+		d := &CIDoctor{Lines: lines, Mains: []CIMain{{Repo: "o/a", Branch: "main", Run: 7, Status: "failure"}}}
+		doctorFindings(d, &CIBoard{}, now)
+		i := slices.IndexFunc(d.Findings, func(f CIFinding) bool { return f.Kind == "main_red" })
+		if i < 0 {
+			t.Fatalf("no main_red: %+v", d.Findings)
+		}
+		return d.Findings[i].Detail
+	}
+	ended := CIStackStats{Reasons: map[string]int{endBaseRed: 2, endBaseMoved: 4}}
+	if got := red(CILine{Repo: "o/a", Base: "main", Stacks: ended}); !strings.Contains(got, "Merge line: 2 candidates started in the last "+ShortDuration(doctorTrend)+" ended because main was red") {
+		t.Errorf("detail = %q", got)
+	}
+	// One candidate is singular (audit 1670.11).
+	if got := red(CILine{Repo: "o/a", Base: "main", Stacks: CIStackStats{Reasons: map[string]int{endBaseRed: 1}}}); !strings.Contains(got, "Merge line: 1 candidate started in the last ") {
+		t.Errorf("one: detail = %q", got)
+	}
+	// Two forges can hold a repo of one name: each main counts its own line (audit 1671.4).
+	if got := red(CILine{ForgeID: 2, Repo: "o/a", Base: "main", Stacks: ended}); strings.Contains(got, "Merge line") {
+		t.Errorf("another forge's line: detail = %q", got)
+	}
+	for _, l := range []CILine{{Repo: "o/a", Base: "release", Stacks: ended}, {Repo: "o/b", Base: "main", Stacks: ended},
+		{Repo: "o/a", Base: "main", Stacks: CIStackStats{Reasons: map[string]int{endBaseMoved: 4}}}} {
+		if got := red(l); strings.Contains(got, "Merge line") {
+			t.Errorf("line %s %s: detail = %q", l.Repo, l.Base, got)
+		}
+	}
+
+	// Not stuck: an advisories-only red main doesn't suggest the urgent lane.
 	d := &CIDoctor{Mains: []CIMain{{Repo: "o/a", Branch: "main", Status: "failure", OnlyAdvisories: true}}}
 	if doctorUrgentLane(d); len(d.UrgentLane) != 0 {
 		t.Errorf("urgent lane for advisories: %+v", d.UrgentLane)
@@ -458,5 +583,111 @@ func TestAdvisoriesJobIsInWorkflow(t *testing.T) {
 	}
 	if !strings.Contains(string(src), "\n  "+advisoriesJob+":\n") {
 		t.Errorf("ci.yml has no job %q: advisoriesJob and the workflow disagree", advisoriesJob)
+	}
+}
+
+// WP-1707: the stacks_failing title counts what its trigger counts (failed and
+// conflicts), not the cancelled ones, which StackFates breaks down by reason.
+func TestCIDoctorStacksFailingTitleCount(t *testing.T) {
+	be, pr := armedBabysit(t)
+	now := be.clockNow()
+	n := 0
+	add := func(state, reason string) {
+		t.Helper()
+		n++
+		if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT INTO queue_stacks(forge_id, repo, base_ref, pr_id, base_sha, branch, commit_sha, state, note, run_url, created_at, ended_at, end_reason)
+			VALUES (?,?,?,?,'b','wp-queue/main/1','c',?,'','',?,?,?)`,
+			pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID, state, now.Add(-time.Duration(n)*10*time.Minute).UnixMilli(), now.UnixMilli(), reason); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("failed", endFailed)
+	add("failed", endFailed)
+	add(stackConflict, "")
+	for range 3 {
+		add("cancelled", endBaseRed)
+	}
+	for range 2 {
+		add("cancelled", endBaseMoved)
+	}
+	d, err := be.s.CIDoctor(be.ctx, be.admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(d.Findings, func(f CIFinding) bool { return f.Kind == "stacks_failing" })
+	if i < 0 {
+		t.Fatalf("no stacks_failing finding: %+v", d.Findings)
+	}
+	// Conflicts aren't called failed, and the breakdown's parentheses aren't
+	// nested in the title's own (audit 1670.9).
+	want := pr.Repo + ": 3 candidates failed or conflicted and none passed in the last " + ShortDuration(doctorTrend) +
+		": 1 conflict, 2 failed, 5 cancelled (3 base red, 2 base moved); the line merges one full run at a time"
+	if title := d.Findings[i].Title; title != want {
+		t.Errorf("title = %q\nwant    %q", title, want)
+	}
+	// No red main carries the 3 base_red ends: they are a finding of their own.
+	if !slices.ContainsFunc(d.Findings, func(f CIFinding) bool { return f.Kind == "stacks_base_red" }) {
+		t.Errorf("no stacks_base_red: %+v", d.Findings)
+	}
+}
+
+// Candidates that only ended cancelled, base_red among them, had no verdict
+// on their heads: no stacks_failing (audit 1670.14). The base_red ones are
+// stacks_base_red, or main_red's while that main is red, joined on the
+// line's own forge, repo and base (audit 1670.5, 1670.11, 1670.22).
+func TestCIDoctorStacksBaseRed(t *testing.T) {
+	be, pr := armedBabysit(t)
+	now := be.clockNow()
+	add := func(reason string, ago time.Duration) {
+		t.Helper()
+		if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT INTO queue_stacks(forge_id, repo, base_ref, pr_id, base_sha, branch, commit_sha, state, note, run_url, created_at, ended_at, end_reason)
+			VALUES (?,?,?,?,'b','wp-queue/main/1','c','cancelled','','',?,?,?)`,
+			pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID, now.Add(-ago).UnixMilli(), now.UnixMilli(), reason); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range 4 {
+		add(endBaseRed, time.Duration(i+1)*10*time.Minute)
+	}
+	add(endBaseMoved, time.Hour)
+	d, err := be.s.CIDoctor(be.ctx, be.admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := func(d *CIDoctor) map[string]CIFinding {
+		out := map[string]CIFinding{}
+		for _, f := range d.Findings {
+			out[f.Kind] = f
+		}
+		return out
+	}
+	got := kinds(d)
+	if _, ok := got["stacks_failing"]; ok {
+		t.Errorf("cancelled only: %+v", got["stacks_failing"])
+	}
+	says := "4 candidates started in the last " + ShortDuration(doctorTrend) + " ended because " + pr.BaseRef + " was red, a full run each"
+	if f, ok := got["stacks_base_red"]; !ok || f.Level != "info" || f.Title != pr.Repo+" "+pr.BaseRef+": "+says {
+		t.Errorf("stacks_base_red = %+v", got)
+	}
+	// The same rows with the line's main red: main_red carries the count instead.
+	l := d.Lines[0]
+	red := &CIDoctor{Lines: []CILine{l}, Mains: []CIMain{{ForgeID: l.ForgeID, Repo: strings.ToUpper(l.Repo), Branch: l.Base, Run: 7, Status: "failure"}}}
+	doctorFindings(red, &CIBoard{}, now)
+	got = kinds(red)
+	if _, ok := got["stacks_base_red"]; ok || !strings.Contains(got["main_red"].Detail, "\nMerge line: "+says+".") {
+		t.Errorf("red main: %+v", got)
+	}
+	// The branch must match exactly: another branch's red is not this line's.
+	other := &CIDoctor{Lines: []CILine{l}, Mains: []CIMain{{ForgeID: l.ForgeID, Repo: l.Repo, Branch: strings.ToUpper(l.Base), Run: 7, Status: "failure"}}}
+	doctorFindings(other, &CIBoard{}, now)
+	if got := kinds(other); strings.Contains(got["main_red"].Detail, "Merge line") || got["stacks_base_red"].Kind == "" {
+		t.Errorf("another branch: %+v", got)
+	}
+	// Fewer than doctorStacksFailing: no finding of its own.
+	l.Stacks.Reasons = map[string]int{endBaseRed: doctorStacksFailing - 1}
+	few := &CIDoctor{Lines: []CILine{l}}
+	doctorFindings(few, &CIBoard{}, now)
+	if _, ok := kinds(few)["stacks_base_red"]; ok {
+		t.Errorf("below the threshold: %+v", few.Findings)
 	}
 }

@@ -424,9 +424,6 @@ func TestFactsReadAccess(t *testing.T) {
 	if _, err := e.s.SessionFacts(e.ctx, kim, FactsQuery{Session: "s1", User: "jo"}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("reading another person's facts: %v", err)
 	}
-	if f, err := e.s.SessionFacts(e.ctx, agentActor(jo, "anthropic/claude-code"), FactsQuery{Session: "s1"}); !errors.Is(err, ErrForbidden) || f != nil {
-		t.Errorf("an agent's shell must be refused with forbidden and no facts: %v %v", err, f)
-	}
 	if f, err := e.s.SessionFacts(e.ctx, e.admin, FactsQuery{Session: "s1", User: "jo"}); err != nil || f.ModelCalls.Total != 4 {
 		t.Errorf("admin: %v %+v", err, f)
 	}
@@ -455,6 +452,87 @@ func TestFactsReadAccess(t *testing.T) {
 		jo.User.ID, pi.ID, fatMS(10, 0), fatMS(15, 0))
 	if f, err := e.s.SessionFacts(e.ctx, jo, FactsQuery{Task: pi.Key}); !errors.Is(err, ErrNotFound) || f != nil {
 		t.Errorf("a task in a project the person cannot view: %v %v", err, f)
+	}
+}
+
+// An agent reads its own person's facts, a session's and a task's, but not
+// another person's or everyone's, even when its person is an admin.
+func TestFactsReadByAgent(t *testing.T) {
+	e, jo := factsEnv(t)
+	shell := *jo
+	shell.AgentEnv = "claude"
+	for name, a := range map[string]*Actor{"agent token": agentActor(jo, "anthropic/claude-code"), "agent shell": &shell} {
+		f, err := e.s.SessionFacts(e.ctx, a, FactsQuery{Session: "s1"})
+		if err != nil || f.ModelCalls.Total != 4 {
+			t.Errorf("%s reading its person's session: %v %+v", name, err, f)
+		}
+		if _, err := e.s.SessionFacts(e.ctx, a, FactsQuery{Session: "s1", User: "JO"}); err != nil {
+			t.Errorf("%s naming its own person (any case): %v", name, err)
+		}
+	}
+	p := e.project(jo, "Acme", "")
+	i := e.issue(jo, IssueInput{Project: p.Key, Title: "t"})
+	e.exec(`INSERT INTO task_traces(user_id, machine, session, seq, issue_id, started_at, last_at, ended, updated_at) VALUES (?, 'box', 's1', 1, ?, ?, ?, '', 1)`,
+		jo.User.ID, i.ID, fatMS(0, 0), fatMS(23, 0))
+	if f, err := e.s.SessionFacts(e.ctx, &shell, FactsQuery{Task: i.Key}); err != nil || f.ModelCalls.Total == 0 {
+		t.Errorf("agent shell reading its person's task: %v", err)
+	}
+
+	adm := e.admin
+	admShell := *adm
+	admShell.AgentEnv = "claude"
+	for name, a := range map[string]*Actor{"agent token": agentActor(adm, "anthropic/claude-code"), "agent shell": &admShell} {
+		for _, who := range []string{"jo", "all"} {
+			f, err := e.s.SessionFacts(e.ctx, a, FactsQuery{Session: "s1", User: who})
+			if !errors.Is(err, ErrForbidden) || f != nil || !strings.Contains(err.Error(), "leaving out --user") {
+				t.Errorf("%s admin with --user %s: %v %v", name, who, err, f)
+			}
+		}
+	}
+	if f, err := e.s.SessionFacts(e.ctx, e.admin, FactsQuery{Session: "s1", User: "all"}); err != nil || f.ModelCalls.Total != 4 {
+		t.Errorf("a person admin with --user all: %v %+v", err, f)
+	}
+	// An automation acting for the person is not an agent reading.
+	auto := *jo
+	auto.Automation = &AutomationRef{}
+	if f, err := e.s.SessionFacts(e.ctx, &auto, FactsQuery{Session: "s1"}); !errors.Is(err, ErrForbidden) || f != nil {
+		t.Errorf("an automation: %v %v", err, f)
+	}
+	// A token without usage.read, or a runner job's scoped token, gets nothing.
+	noUsage := *jo
+	noUsage.Permissions = PermissionSet{PermIssuesRead: true}
+	// Leaving out --user would not help it, so it isn't advised.
+	if _, err := e.s.SessionFacts(e.ctx, &noUsage, FactsQuery{Session: "s1", User: "jo"}); !errors.Is(err, ErrForbidden) || strings.Contains(err.Error(), "leaving out --user") {
+		t.Errorf("a token without usage.read: %v", err)
+	}
+	job := *jo
+	job.Scope = map[int64]int{p.ID: RoleEditor}
+	if _, err := e.s.SessionFacts(e.ctx, &job, FactsQuery{Session: "s1"}); !errors.Is(err, ErrForbidden) {
+		t.Errorf("a runner job's scoped token: %v", err)
+	}
+}
+
+// An agent sees that a command was repeated, not its text; its person sees it.
+func TestFactsReadByAgentHidesCommands(t *testing.T) {
+	e := transcriptEnv(t)
+	jo := e.user("jo", false)
+	cmd := fm{"command": "export API_TOKEN=abc123 && ./deploy"}
+	e.putFile(jo, "s2", "main", 0, fAssistant("m1", 2, 5, fTool("t1", "Bash", cmd), fTool("t2", "Bash", cmd)))
+	e.quiet()
+	e.derive()
+	shell := *jo
+	shell.AgentEnv = "claude"
+	for _, c := range []struct {
+		a      *Actor
+		hidden bool
+	}{{jo, false}, {&shell, true}, {agentActor(jo, "anthropic/claude-code"), true}} {
+		f, err := e.s.SessionFacts(e.ctx, c.a, FactsQuery{Session: "s2"})
+		if err != nil || len(f.Repeated.Top) != 1 || f.Repeated.Top[0].Times != 2 {
+			t.Fatalf("hidden %v: %v %+v", c.hidden, err, f)
+		}
+		if got := f.Repeated.Top[0].Target; (got == usageCommandRedacted) != c.hidden || strings.Contains(got, "abc123") == c.hidden {
+			t.Errorf("hidden %v: target %q", c.hidden, got)
+		}
 	}
 }
 

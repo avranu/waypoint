@@ -20,40 +20,15 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-var prOpenAbout = `Pushes the branch and opens a pull request against the default branch.
-No model is called.
+var prOpenAbout = `Pushes the branch and opens a pull request against the default branch (or the
+parent PR's branch when stacked; --base overrides). Safe to run again.
 
-The issue it links: --issue, else a key in the branch name, else the task
-taken in this checkout, else a key in the commits; the output says which. A
-Done, closed or out-of-scope issue is skipped. Wrong one? wp pr unlink N,
-then wp pr link N KEY. The title comes from the issue or the commits.
-Waypoint writes the description, so don't: wp ship's -m leads its Summary,
-then the commits, the issue and the recorded tests (.waypoint/pr-body.md and
-pr-checks.md override the template). A free model may reword the Summary
-from the same text, never the diff (wp pr bodies; WP-55).
+Links the issue from --issue, branch name, held task, or commits (fix a wrong
+link with wp pr unlink N && wp pr link N KEY). Waypoint writes the PR body from
+commits, issue and recorded tests, so -f/--body is rarely needed.
 
---base BRANCH opens it into BRANCH (default: the repo's default branch).
-A branch built on another branch ignores that branch's commits. Built on
-the branch of an open pull request of the repo, and without --base, it
-opens into that branch, so its diff shows only its own change, and the
-output says so (--base main opens it into main instead). Built on a
-branch with no open pull request, it opens into the default branch. When
-Waypoint merges a pull request, the ones open into its branch move onto
-its base first.
-Running it again prints the open pull request; with --base, it moves it
-there first (the forge must allow that, else it fails).
-
-When your autopilot settings review before pull requests (whether
-autopilot is on or off), say what you want: --review pushes and schedules
-the task's adversarial review (the pull request opens after it; --review
-asks for one even with reviews off), --skip-review WHY opens it without
-one. With neither, it does whichever fits: the review if none ran yet, else
-the pull request (--pr says the same, and is kept for older prompts). Where
-that can't be done, it does the next step and a notice says how to
-override it: a review that can't be scheduled opens the pull request
-without it (WP-688, WP-1007). Run it once: Waypoint carries the rest of the
-review on, and opens the pull request itself when the review leaves nothing
-for you to do (WP-1370).`
+Pre-PR adversarial review: --review schedules it, --skip-review WHY opens the PR
+without it, or omit both to do whichever fits.`
 
 var prOpenCmd = &command{
 	name: "open", aliases: []string{"create", "new"}, args: "[--draft] [--urgent] [--base BRANCH] [--title T] [-f FILE]",
@@ -257,6 +232,22 @@ type shipOpts struct {
 	summary                                            *string
 	summaryGiven                                       bool
 	before                                             string
+	// deadline is when --wait-timeout runs out, taken once at the start of
+	// shipWork and shared by the review wait and the checks wait (zero:
+	// not taken, as in a test that calls a wait directly).
+	deadline time.Time
+}
+
+// shipNow is the clock of the ship's deadline (replaced in tests).
+var shipNow = time.Now
+
+// waitLeft is how long a wait may still run: what is left of --wait-timeout,
+// and no more than what is left of the process's own limit (shipLeft).
+func (so shipOpts) waitLeft() time.Duration {
+	if so.deadline.IsZero() {
+		return min(*so.waitTimeout, shipLeft())
+	}
+	return min(so.deadline.Sub(shipNow()), shipLeft())
 }
 
 func addShipFlags(fs *flag.FlagSet) shipOpts {
@@ -266,8 +257,8 @@ func addShipFlags(fs *flag.FlagSet) shipOpts {
 		noBabysit:   fs.Bool("no-babysit", false, "don't babysit it"),
 		notify:      fs.Bool("notify", false, "wake me when it merges (only if work must follow)"),
 		blocking:    fs.Bool("blocking", false, "wake me within minutes (only if other work waits on it)"),
-		noWait:      fs.Bool("no-wait", false, "when the pull request waits on a review round, don't wait for the round's findings: end as before"),
-		waitTimeout: fs.Duration("wait-timeout", shipWaitDefault, "how long to wait on a review round before ending as with --no-wait (at most "+waitMaxText()+"; `DURATION`)"),
+		noWait:      fs.Bool("no-wait", false, "don't wait for the review round's findings or the pull request's first checks: end as before"),
+		waitTimeout: fs.Duration("wait-timeout", shipWaitDefault, "how long to wait on a review round and the first checks before ending as with --no-wait (at most "+waitMaxText()+"; `DURATION`)"),
 		summary:     fs.String("summary", "", "your final reply to the person, shown as the turn ends if the ship goes as expected (no reply turn after it); {task}, {pr} and {url} are filled in (`TEXT`)"),
 	}
 }
@@ -279,6 +270,7 @@ func addShipFlags(fs *flag.FlagSet) shipOpts {
 // other tasks is theirs: pushed to, never armed, babysat or linked, and
 // the task finishes as wp done would (other is true then).
 func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, keys []string, given bool) (other bool, err error) {
+	so.deadline = shipNow().Add(*so.waitTimeout)
 	key := ""
 	if len(keys) > 0 {
 		key = strings.ToUpper(keys[0])
@@ -331,9 +323,9 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 		keptWhy, putOff := "", ""
 		if summary != "" {
 			c.keepSummaries(keys, cmpStr(key, o.key), summary)
-			dirty, _ := localGit("status", "--porcelain", "--untracked-files=no")
-			putOff = putOffPrompt(o.key, o.PutOff)
-			keptWhy = shipNeedsAgent(o, so.before, nil, putOff, dirty != "")
+			t := readShipTurn(o)
+			putOff = t.putOff
+			keptWhy = shipNeedsAgent(o, so.before, nil, t)
 		}
 		if err := c.emit(withTested(raw, o.tested), func() string { return o.heldText() + o.tested.text() }); err != nil {
 			return false, err
@@ -445,32 +437,71 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 	if noteUrgent {
 		c.println(urgentNote(d.Number))
 	}
+	// What the agent's turn is still wanted for, read once for the wait and
+	// for the end of the ship below.
+	var turn shipTurn
+	if armed || babysat {
+		turn = readShipTurn(o)
+	}
+	if task := cmpStr(key, o.key); task != "" && babysat {
+		why := shipNeedsAgent(o, so.before, wrong, turn)
+		if c.canWaitChecks(so, o, babysat, why) {
+			if summary != "" {
+				// The wait may end on failed checks: the next wp ship is the
+				// one that ends the turn with this summary.
+				c.keepSummaries(keys, cmpStr(key, o.key), summary)
+			}
+			head, _ := localGit("rev-parse", "HEAD")
+			if done, err := c.waitShipChecks(task, d.ID, d.Number, strings.TrimSpace(head), so.waitLeft()); err != nil || done {
+				return false, err
+			}
+		}
+	}
 	if (armed || babysat) && c.agentHeader() != "" {
-		dirty, _ := localGit("status", "--porcelain", "--untracked-files=no")
-		putOff := putOffPrompt(o.key, o.PutOff)
-		if putOff != "" {
-			c.println(putOff)
+		if turn.putOff != "" {
+			c.println(turn.putOff)
 		}
 		if summary != "" {
 			c.keepSummaries(keys, cmpStr(key, o.key), summary)
-			why := shipNeedsAgent(o, so.before, wrong, putOff, dirty != "")
+			why := shipNeedsAgent(o, so.before, wrong, turn)
 			if why == "" && c.endTurnAfterShip(cmpStr(key, o.key), fillSummary(summary, o.key, d)) {
-				c.println("Waypoint ends the turn here and shows the person your --summary as the reply (should the turn go on, end it with that summary).")
+				c.println(shipEndsLine)
 				return false, nil
 			}
 		}
-		c.println(shipReply(o.ShipReply, o.key, d, dirty != ""))
+		c.println(shipReply(o.ShipReply, o.key, d, turn.dirty))
 	} else if summary != "" {
 		c.keepSummaries(keys, cmpStr(key, o.key), summary)
 	}
 	return false, nil
 }
 
+// shipTurn is what a ship reads, once, of the work around it to decide
+// whether the agent's turn is still wanted: what git says of the tracked
+// files, and the task's notes put off. Every place that ends the turn, or
+// holds it for a wait, decides through shipNeedsAgent on one of these, so a
+// git status that failed keeps the turn at each of them alike.
+type shipTurn struct {
+	// dirty: tracked files have changes. clean: they have none. Neither when
+	// the check failed (index.lock held): a turn ends only on clean.
+	dirty, clean bool
+	putOff       string // putOffPrompt's line, printed by the caller
+}
+
+// readShipTurn reads the shipTurn for o's task.
+func readShipTurn(o *openedPR) shipTurn {
+	out, err := localGit("status", "--porcelain", "--untracked-files=no")
+	return shipTurn{dirty: err == nil && out != "", clean: err == nil && out == "", putOff: putOffPrompt(o.key, o.PutOff)}
+}
+
+// shipEndsLine is what wp ship says once it has marked the turn to end.
+const shipEndsLine = "Waypoint ends the turn here and shows the person your --summary as the reply (should the turn go on, end it with that summary)."
+
 // shipNeedsAgent is why a ship needs the agent's turn to go on ("": nothing
 // does): what wp ship said before the pull request (before), a notice or
 // warning, an urgent pull request to merge first, put-off notes to answer,
 // tracked changes left uncommitted, or a note about the tests.
-func shipNeedsAgent(o *openedPR, before string, wrong []string, putOff string, dirty bool) string {
+func shipNeedsAgent(o *openedPR, before string, wrong []string, t shipTurn) string {
 	switch {
 	case before != "":
 		return before
@@ -482,10 +513,12 @@ func shipNeedsAgent(o *openedPR, before string, wrong []string, putOff string, d
 		return "there is a warning"
 	case o.UrgentPR != 0:
 		return "an urgent pull request comes first"
-	case putOff != "":
+	case t.putOff != "":
 		return "the task has notes put off"
-	case dirty:
+	case t.dirty:
 		return "tracked files have uncommitted changes"
+	case !t.clean:
+		return "git couldn't say whether tracked files have changes"
 	case strings.TrimSpace(o.tested.text()) != "":
 		return "there is a note about the tests"
 	}

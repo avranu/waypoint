@@ -26,15 +26,16 @@ func TestAgentDismissesAuditFindingWithANote(t *testing.T) {
 	if len(f) != 3 {
 		t.Fatalf("findings = %d", len(f))
 	}
-	ag := *ae.admin
-	ag.Agent = "claude"
+	re := &rejectionEnv{agentEnv: ae, audit: a.ID}
+	ae.exec(`UPDATE code_audits SET model = 'claude/sonnet' WHERE id = ?`, a.ID)
+	ag := *re.session("claude-opus-5-5", "")
 	for _, note := range []string{"", "  \n"} {
-		_, err := ae.s.MarkAuditFindings(ae.ctx, &ag, MarkFindings{IDs: []string{f[0].ID}, State: "rejected", Note: note})
+		_, err := ae.s.MarkAuditFindings(ae.ctx, &ag, MarkFindings{IDs: []string{f[0].ID}, State: "rejected", Note: note, Evidence: "b.go:2"})
 		if err == nil || !strings.Contains(err.Error(), "say why") {
 			t.Errorf("agent dismissal with note %q: %v, want a refusal asking for one", note, err)
 		}
 	}
-	if _, err := ae.s.MarkAuditFindings(ae.ctx, &ag, MarkFindings{IDs: []string{f[0].ID}, State: "rejected", Note: "the caller holds the lock"}); err != nil {
+	if _, err := ae.s.MarkAuditFindings(ae.ctx, &ag, MarkFindings{IDs: []string{f[0].ID}, State: "rejected", Note: "the caller holds the lock", Evidence: "a.go:1"}); err != nil {
 		t.Errorf("agent dismissal with a note: %v", err)
 	}
 	if _, err := ae.s.MarkAuditFindings(ae.ctx, &ag, MarkFindings{IDs: []string{f[1].ID}, State: "confirmed"}); err != nil {

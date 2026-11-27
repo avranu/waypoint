@@ -74,6 +74,12 @@ func TestPlanLine(t *testing.T) {
 		{name: "failed batch ends and places start one by one", snap: lineSnap{
 			Entries: []lineEntry{e(1), e(2)}, BatchDepth: 2,
 			Cands: []lineCand{rerun(cand(6, candFailed, 1, 2))}}, want: []lineAction{ends(6, endBatchSplit), start(1), start(1, 2)}},
+		{name: "saturated: a failed batch of eight is followed by two places, not the same eight", snap: lineSnap{
+			Entries: []lineEntry{e(1), e(2), e(3), e(4), e(5), e(6), e(7), e(8), e(9)}, Saturated: true, BatchDepth: 8,
+			Cands: []lineCand{rerun(cand(6, candFailed, 1, 2, 3, 4, 5, 6, 7, 8))}}, want: []lineAction{ends(6, endBatchSplit), start(1, 2)}},
+		{name: "saturated: a failed batch of two is followed by the front alone", snap: lineSnap{
+			Entries: []lineEntry{e(1), e(2), e(3)}, Saturated: true, BatchDepth: 2,
+			Cands: []lineCand{rerun(cand(6, candFailed, 1, 2))}}, want: []lineAction{ends(6, endBatchSplit), start(1)}},
 		{name: "a tried batch isn't started again", snap: lineSnap{
 			Entries: []lineEntry{e(1), e(2)}, Saturated: true, BatchDepth: 2, Tried: tried([]int{1, 2})}, want: []lineAction{start(1)}},
 		{name: "conflict ejects the pull request that didn't merge", snap: lineSnap{
@@ -96,6 +102,14 @@ func TestPlanLine(t *testing.T) {
 			Entries: []lineEntry{e(1)}, Cands: []lineCand{cand(5, candRunning, 1), cand(6, candRunning, 1)}}, want: []lineAction{ends(6, endDuplicate)}},
 		{name: "saturated starts one batch of BatchDepth", snap: lineSnap{
 			Entries: []lineEntry{e(1), e(2), e(3)}, Saturated: true, BatchDepth: 2}, want: []lineAction{start(1, 2)}},
+		{name: "saturated covers up to BatchDepth of ten places", snap: lineSnap{
+			Entries: []lineEntry{e(1), e(2), e(3), e(4), e(5), e(6), e(7), e(8), e(9), e(10)}, Saturated: true, BatchDepth: 8}, want: []lineAction{start(1, 2, 3, 4, 5, 6, 7, 8)}},
+		{name: "saturated with fewer entries than BatchDepth covers them all", snap: lineSnap{
+			Entries: []lineEntry{e(1), e(2), e(3)}, Saturated: true, BatchDepth: 8}, want: []lineAction{start(1, 2, 3)}},
+		{name: "saturated stops before a branch entry", snap: lineSnap{
+			Entries: []lineEntry{e(1), e(2), e(3), e(4), e(5), branch(e(6)), e(7), e(8)}, Saturated: true, BatchDepth: 8}, want: []lineAction{start(1, 2, 3, 4, 5)}},
+		{name: "not saturated with ten entries starts places 1 to 3 only", snap: lineSnap{
+			Entries: []lineEntry{e(1), e(2), e(3), e(4), e(5), e(6), e(7), e(8), e(9), e(10)}, BatchDepth: 8}, want: []lineAction{start(1), start(1, 2), start(1, 2, 3)}},
 		{name: "saturated with one live starts none", snap: lineSnap{
 			Entries: []lineEntry{e(1), e(2), e(3)}, Saturated: true, BatchDepth: 2, Cands: []lineCand{cand(5, candRunning, 1, 2)}}},
 		{name: "branch front not on the tip is updated", snap: lineSnap{Entries: []lineEntry{branch(e(1)), e(2)}}, want: []lineAction{{Kind: lineUpdate, PR: 10}}},

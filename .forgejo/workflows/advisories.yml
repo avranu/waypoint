@@ -1,0 +1,36 @@
+name: advisories
+
+on:
+  schedule:
+    - cron: '43 4 * * *'
+  workflow_dispatch:
+
+jobs:
+  advisories:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: forgejo-ci-heavy
+    timeout-minutes: 30
+    container:
+      image: git.jmann.me/claude/waypoint-ci:01f88b8a84a7@sha256:09b09acc434ef9e1e20713fc4b0109715eaab94937b828634ef2b345433e458c
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.forgejo/actions/go-cache
+        with:
+          kind: advisories
+      - uses: ./.forgejo/actions/go-mod
+      - uses: ./.forgejo/actions/go-tools
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: npm audit (high and above)
+        working-directory: web
+        run: npm run audit
+      - name: vulnerabilities (govulncheck)
+        if: ${{ !cancelled() }}
+        run: deploy/advisories.sh check go main

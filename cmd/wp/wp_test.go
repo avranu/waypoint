@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -43,6 +44,7 @@ func TestMain(m *testing.M) {
 	_ = os.Setenv("WP_NO_GIT", "1")
 	_ = os.Setenv("WP_CODE_UPLOAD", "off")
 	_ = os.Setenv(slotSendEnv, "off")
+	_ = os.Setenv(slotCPUEnv, "off") // tests that want a bound set it
 	sandboxHelperSocket = "/nonexistent/waypoint-sandboxd.sock"
 	testnet.Guard()
 	runWpNext = func(context.Context, string, []string, string, string) (string, error) {
@@ -885,10 +887,13 @@ func TestHelpReference(t *testing.T) {
 			if c.hidden {
 				continue
 			}
+			if top && !slices.Contains(groups, c.group) {
+				t.Errorf("wp %s: group %q is not in groups (invisible in wp help)", c.path(), c.group)
+			}
 			if c.summary == "" {
 				t.Errorf("wp %s: needs a summary", c.path())
 			}
-			if top && c.args != "" && len(c.examples) == 0 {
+			if len(c.examples) == 0 {
 				t.Errorf("wp %s: needs examples", c.path())
 			}
 			check(c.subs, false)

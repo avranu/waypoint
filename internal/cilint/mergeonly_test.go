@@ -426,6 +426,7 @@ func TestMergeOnlyStep(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			r := newFakeRepo(t)
 			res := c.setup(t, r)
 			runs := res.runs

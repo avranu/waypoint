@@ -38,6 +38,9 @@ type shipForge struct {
 	reads         int
 	replyErr      error
 	reactErr      map[string]error
+	// notesHold, when set, runs at the start of PRNotes, outside the fake's
+	// lock, so a test can hold or count one pull request's notes read.
+	notesHold func(n int)
 
 	tips       map[string]string
 	tipErr     error

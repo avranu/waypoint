@@ -19,7 +19,7 @@ release PRs and do-not-merge or wip ones.`,
 func init() {
 	projectRepoCmd.subs = []*command{
 		{name: "ls", aliases: []string{"list"}, args: "[-p PROJECT]", summary: "list the project's repos with their merge policy",
-			examples: nil, run: projectRepoLs},
+			examples: []string{"wp project repo ls"}, run: projectRepoLs},
 		{name: "set", args: "[REPO] [--auto-merge on|off] [--into any|default|others|GLOB…] [--required-check C]… [--review-wait 30m] [--quiet 10m] [--reviewer LOGIN]… [--line-candidates on|off]",
 			summary: "change a repo's merge policy (project owners)",
 			about: `REPO is owner/name or its name; default: the git repo here, or the

@@ -973,6 +973,7 @@ func requestLs(c *cli, args []string) error {
 	open := fs.Bool("open", false, "open requests (the default)")
 	answered := fs.Bool("answered", false, "decided, and you haven't been told yet")
 	all := fs.Bool("all", false, "every state")
+	alias(fs, "any-status", "all")
 	mine := fs.Bool("mine", false, "only those for you")
 	state := fs.String("state", "", "one `STATE` (approved, applied, failed, withdrawn…)")
 	_ = open
