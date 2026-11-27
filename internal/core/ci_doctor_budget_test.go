@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -111,5 +112,36 @@ func TestCIDoctorTimeoutsStepOwnsItsMiss(t *testing.T) {
 	}
 	if len(d.Missing) != 1 || !strings.Contains(d.Missing[0], "the jobs that ran out of time") {
 		t.Fatalf("missing %q, want only the jobs that ran out of time", d.Missing)
+	}
+}
+
+// 2093.3: a role read that fails isn't kept as "not visible": the answer
+// says what it couldn't read rather than leaving the repo out unsaid.
+func TestCIDoctorRoleReadFailureIsMissing(t *testing.T) {
+	restoreDoctorBudgets(t)
+	be := newBabysitEnvOn(t, "forgejo")
+	pr := be.open()
+	if _, err := be.s.db.W.ExecContext(be.ctx, `INSERT OR IGNORE INTO project_repos(project_id, forge_id, repo, created_at) VALUES (?, ?, ?, 0)`, be.p.ID, be.f.ID, pr.Repo); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE pull_requests SET armed_at = ?, armed_by = ?, armed_style = 'merge' WHERE id = ?`, be.s.nowMS(), be.admin.User.ID, pr.ID); err != nil {
+		t.Fatal(err)
+	}
+	viewer := be.user("vic", false)
+	if err := be.s.SetMember(be.ctx, be.admin, be.p.Key, viewer.User.Username, "viewer"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := be.s.db.W.ExecContext(be.ctx, `ALTER TABLE project_members RENAME TO project_members_away`); err != nil {
+		t.Fatal(err)
+	}
+	d, err := be.s.CIDoctor(be.ctx, viewer)
+	if _, rerr := be.s.db.W.ExecContext(context.Background(), `ALTER TABLE project_members_away RENAME TO project_members`); rerr != nil {
+		t.Fatal(rerr)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(d.Missing, func(m string) bool { return strings.Contains(m, "what you may see of some repos (failed:") }) || d.Verdict == "ok" {
+		t.Fatalf("missing %q, verdict %q", d.Missing, d.Verdict)
 	}
 }

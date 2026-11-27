@@ -455,6 +455,7 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 	seen := map[int64]bool{}
 	// visibleIn is visible within a step's context: its reads end with the
 	// step's budget.
+	var roleErr error // a role read that failed, not cut short
 	visibleIn := func(c context.Context) func(int64, string) (string, bool) {
 		return func(forgeID int64, repo string) (string, bool) {
 			ids, err := s.projectsOfRepo(c, forgeID, repo)
@@ -466,10 +467,19 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 				ok, known := seen[id]
 				seenMu.Unlock()
 				if !known {
-					ok = s.requireProjectRole(c, s.db.R, actor, id, RoleViewer) == nil
-					if ok || c.Err() == nil { // a read cut short isn't a "no" for the other steps
+					err := s.requireProjectRole(c, s.db.R, actor, id, RoleViewer)
+					ok = err == nil
+					// A failed read isn't a "no" for the other steps: only
+					// an answer is kept, and a failure is said in Missing.
+					if ok || kernel.MissingOrDenied(err) {
 						seenMu.Lock()
 						seen[id] = ok
+						seenMu.Unlock()
+					} else if c.Err() == nil {
+						seenMu.Lock()
+						if roleErr == nil {
+							roleErr = err
+						}
 						seenMu.Unlock()
 					}
 				}
@@ -559,6 +569,10 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 	wg.Wait()
 	d.Findings = append(d.Findings, limits.Findings...)
 
+	if roleErr != nil {
+		s.log.WarnContext(ctx, "ci doctor: read a project role", "err", roleErr)
+		t.missing = append(t.missing, "what you may see of some repos ("+doctorWhy(roleErr)+")")
+	}
 	slices.Sort(t.missing)
 	d.Missing = t.missing
 	extra := append(timeoutFindings, runnerFindings...)
