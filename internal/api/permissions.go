@@ -535,6 +535,7 @@ var routePermissions = map[string]core.Permission{
 	"GET /api/v1/server/status":                                   core.PermServerRead,
 	"GET /api/v1/server/log":                                      core.PermServerRead,
 	"GET /api/v1/server/metrics":                                  core.PermServerRead,
+	"GET /api/v1/server/profile":                                  core.PermServerRead,
 	"GET /api/v1/server/problems":                                 core.PermServerRead,
 	"GET /api/v1/server/jobs/{name}":                              core.PermServerRead,
 	"POST /api/v1/server/problems/{id}/ack":                       core.PermAdmin,

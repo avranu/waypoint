@@ -1,0 +1,30 @@
+name: go-tools
+description: Install the Makefile's pinned Go QA tools, from the cache when the pins are unchanged.
+runs:
+  using: composite
+  steps:
+    - id: key
+      shell: bash
+      run: |
+        echo "bin=$(go env GOPATH)/bin" >> "$GITHUB_OUTPUT"
+        key="go-tools-$(go env GOVERSION)-$(grep -E '^[A-Z_]+_VERSION \?=' Makefile | sha256sum | cut -c1-16)"
+        echo "key=$key" >> "$GITHUB_OUTPUT"
+        if [ "$(cat /opt/waypoint-ci/go-tools 2>/dev/null)" = "$key" ] &&
+          (PATH="$(go env GOPATH)/bin:$PATH"; for t in gosec govulncheck golangci-lint actionlint kubeconform; do command -v "$t" >/dev/null || exit 1; done); then
+          echo "baked=true" >> "$GITHUB_OUTPUT"
+          echo "the job image has these tools"
+        fi
+    - id: cache
+      if: steps.key.outputs.baked != 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ steps.key.outputs.bin }}/gosec
+          ${{ steps.key.outputs.bin }}/govulncheck
+          ${{ steps.key.outputs.bin }}/golangci-lint
+          ${{ steps.key.outputs.bin }}/actionlint
+          ${{ steps.key.outputs.bin }}/kubeconform
+        key: ${{ steps.key.outputs.key }}
+    - if: steps.key.outputs.baked != 'true' && steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: make tools

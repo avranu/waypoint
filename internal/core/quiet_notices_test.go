@@ -54,6 +54,7 @@ func TestBabysitNotifyAndFailuresStillWake(t *testing.T) {
 	be.setClock(be.clockNow().Add(cacheWarm))
 	be.runner(be.admin, "m1", nil)
 	be.s.CheckBabysits(be.ctx)
+	be.s.releaseDueBatches(be.ctx)
 	if jobs := be.messageJobs(); len(jobs) != 1 || !strings.Contains(jobs[0], "o/r#7 merged") || strings.Contains(jobs[0], "for your information") {
 		t.Fatalf("a requested merge notice: %v", jobs)
 	}

@@ -44,6 +44,12 @@ type Query struct {
 // Empty reports whether the query has no filters and no text.
 func (q Query) Empty() bool { return len(q.Terms) == 0 && len(q.Text) == 0 }
 
+// ManualOrder reports whether the query lists issues in manual rank: no
+// order: term, or order:rank alone.
+func (q Query) ManualOrder() bool {
+	return len(q.Order) == 0 || (len(q.Order) == 1 && q.Order[0].Field == "rank" && !q.Order[0].Desc)
+}
+
 // Has reports whether the query contains a term with key.
 func (q Query) Has(key string) bool {
 	for _, t := range q.Terms {

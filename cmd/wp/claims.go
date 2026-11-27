@@ -24,7 +24,8 @@ dropped each time; those over 7 days on open issues are listed in one line.`,
 	run:      cmdClaims,
 	subs: []*command{
 		{name: "prune", args: "[--release]", summary: "drop stale claims; --release also gives them back",
-			run: cmdClaimsPrune},
+			examples: []string{"wp claims prune", "wp claims prune --release"},
+			run:      cmdClaimsPrune},
 	},
 }
 

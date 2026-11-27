@@ -22,10 +22,10 @@ Without a subcommand, lists them.`,
 func init() {
 	automationCmd.subs = []*command{
 		{name: "ls", args: "", aliases: []string{"list"}, summary: "list the project's automations",
-			examples: nil, run: cmdAutomationLs},
+			examples: []string{"wp automation ls"}, run: cmdAutomationLs},
 		{name: "show", args: "NAME", aliases: []string{"view"}, summary: "show an automation: trigger, inputs, steps, runs",
 			about:    `wp automation show NAME RUN prints one run's steps.`,
-			examples: nil, run: cmdAutomationShow},
+			examples: []string{`wp automation show "Weekly report"`, `wp automation show 12 45`}, run: cmdAutomationShow},
 		{name: "run", args: "NAME [--input K=V]... [--wait]", summary: "run a manual automation now",
 			about: `Defaults fill missing inputs. --wait waits (up to --timeout, 10m), prints
 each step and exits non-zero if the run failed.`,
@@ -34,7 +34,7 @@ each step and exits non-zero if the run failed.`,
 			about:    `Newest first.`,
 			examples: []string{"wp automation runs 12 -n 5"}, run: cmdAutomationRuns},
 		{name: "cancel", args: "RUN", summary: "cancel an unfinished run",
-			examples: nil, run: cmdAutomationCancel},
+			examples: []string{"wp automation cancel 45"}, run: cmdAutomationCancel},
 	}
 }
 

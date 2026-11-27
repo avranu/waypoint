@@ -26,7 +26,7 @@ person's comment only after replying or with a note.`,
 }
 
 var prReactCmd = &command{
-	name: "react", args: "ID EMOJI",
+	name: "react", args: "ID EMOJI", hidden: true,
 	summary: "put an emoji on a review comment (+1 -1 laugh hooray confused heart rocket eyes)",
 
 	examples: []string{"wp pr react c12 eyes", "wp pr react c12 👍"},
@@ -46,8 +46,8 @@ ids (c12); wp pr dismiss takes finding numbers.`,
 }
 
 var prUnresolveCmd = &command{
-	name: "unresolve", args: "ID…",
-	summary: "take a resolution or dismissal back: the comment is owed again",
+	name: "unresolve", args: "ID…", hidden: true,
+	summary: "take a resolution or dismissal back: the comment is owed again (same as wp pr reopen)",
 
 	examples: []string{"wp pr unresolve c12"},
 	run:      cmdPRUnresolve,
@@ -151,7 +151,8 @@ func stripHTMLComments(s string) string {
 
 func cmdPRReply(c *cli, args []string) error {
 	fs := c.flags()
-	text := fs.String("m", "", "the reply (`TEXT`)")
+	text := fs.String("message", "", "the reply (`TEXT`)")
+	short(fs, "m", "message")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
@@ -184,7 +185,8 @@ func cmdPRReact(c *cli, args []string) error {
 
 func cmdPRResolve(c *cli, args []string) error {
 	fs := c.flags()
-	note := fs.String("m", "", "what was done (`NOTE`), posted as a reply; agents need it unless they replied")
+	note := fs.String("message", "", "what was done (`NOTE`), posted as a reply; agents need it unless they replied")
+	short(fs, "m", "message")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err

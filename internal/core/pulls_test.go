@@ -267,6 +267,7 @@ type prForge struct {
 	mu        sync.Mutex
 	prs       map[string]*ForgePR
 	diffs     map[string]string
+	diffErr   map[string]error
 	files     map[string]string
 	reviews   map[string][]ForgeComment
 	lines     [][]LineComment
@@ -305,9 +306,12 @@ func (p *prForge) GetPR(ctx context.Context, f *Forge, repo string, n int) (*For
 
 func (p *prForge) PRDiff(ctx context.Context, f *Forge, repo string, pr *ForgePR) (string, error) {
 	p.mu.Lock()
-	d := p.diffs[pr.HeadSHA]
+	d, derr := p.diffs[pr.HeadSHA], p.diffErr[pr.HeadSHA]
 	hook := p.afterDiff
 	p.mu.Unlock()
+	if derr != nil {
+		return "", derr
+	}
 	if hook != nil {
 		hook()
 	}
@@ -759,16 +763,20 @@ func TestReviewCommandsAndRetries(t *testing.T) {
 	pr.HeadSHA = "ddddddd4444"
 	pe.diffs = map[string]string{"ddddddd4444": diffPlus("four.txt")}
 	pe.pullHook("synchronize", pr)
-	done = pe.drain()
-	if len(done) != 1 || done[0].Status != "failed" || !strings.Contains(done[0].Error, "unavailable") {
-		t.Fatalf("provider errors should end the run: %+v", *done[0])
+	for range botMaxAttempts {
+		if done = pe.drain(); len(done) != 1 {
+			t.Fatalf("provider errors: %+v", done)
+		}
+		pe.setClock(pe.clockNow().Add(botRetryAfter*botMaxAttempts + 1))
 	}
-	pe.setClock(pe.clockNow().Add(botRetryAfter + 1))
+	if done[0].Status != "failed" || !strings.Contains(done[0].Error, "unavailable") {
+		t.Fatalf("provider errors should end the run after %d attempts: %+v", botMaxAttempts, *done[0])
+	}
 	if len(pe.drain()) != 0 {
 		t.Error("a failed run was tried again")
 	}
 	runs := pe.runs()
-	if runs[0].Status != "failed" || runs[0].Attempts != 1 {
+	if runs[0].Status != "failed" || runs[0].Attempts != botMaxAttempts {
 		t.Errorf("gave up: %+v", runs[0])
 	}
 	if got := pe.fg.reactions[len(pe.fg.reactions)-1]; got != "+confused@pr" {

@@ -20,19 +20,16 @@ import (
 )
 
 var testsumCmd = &command{
-	name: "testsum", group: "Code and CI", args: "[--repeat N | --base REF] [--keep-env NAME] CMD… | [--format F] [FILE|-]",
+	name: "testsum", group: "Code and CI", args: "[--all] [--repeat N | --base REF] [--keep-env NAME] CMD… | [--format F] [FILE|-]",
 	summary: "run tests and summarize them: one line on pass, failures with file:line",
-	about: `Runs CMD in the "tests" host slot and prints a summary: one line on pass;
-on failure each failing test with file:line and its first lines, exit 1.
-The run is kept against the tree it tested, for wp ship. Run again with the
-same command (as typed; GOFLAGS and the like aren't compared) on a
-content-identical tree, it still runs, and the first line says nothing
-changed since the last run and how that came out; it is also printed at
-once, before waiting for the slot. --repeat and --base don't say it. Flags go before
-CMD; everything from CMD on is CMD's. CMD runs without secret-looking
-variables (*_TOKEN, *_KEY, …). FILE (an existing, non-executable file) or
-- summarizes saved output instead.`,
-	examples: []string{"wp testsum go test ./...", "wp testsum pytest -q", "wp testsum --repeat 30 go test -run TestFlaky ./internal/core", "wp testsum --base origin/main go test ./cmd/wp", "go test -json ./... | wp testsum"},
+	about: `Runs CMD in the "tests" host slot, records the result for wp ship, and prints a
+short summary (one line on pass; file:line + first lines on failure, plus full
+log path if truncated). Flags go before CMD; secret-looking env vars are stripped
+(--keep-env NAME keeps one). Pass a FILE or - to summarize saved output.
+
+In repos with .waypoint/heavy-tests, a whole-package go test without -run scopes
+to tests beside changed files unless --all or WP_TEST_ALL=1 is set.`,
+	examples: []string{"wp testsum -- go test -run '^TestSlot' ./cmd/wp", "wp testsum pytest -q", "wp testsum --repeat 30 go test -run TestFlaky ./internal/core", "wp testsum --base origin/main go test ./cmd/wp", "go test -json -run '^TestSlot' ./cmd/wp | wp testsum"},
 	run:      cmdTestsum,
 }
 
@@ -95,6 +92,7 @@ func cmdTestsum(c *cli, args []string) error {
 	repeat := fs.Int("repeat", 0, "run CMD `N` times: which tests fail how often (flaky or broken)")
 	untilFail := fs.Bool("until-fail", false, "with --repeat, stop at the first failing run")
 	base := fs.String("base", "", "if tests fail, rerun them at `REF` in a temporary checkout (your tree is left alone): failing there too?")
+	all := fs.Bool("all", false, "run a whole-suite go test whole: without it the tests slot runs the tests beside your changes (WP-1877)")
 	var keep keepEnvFlag
 	fs.Var(&keep, "keep-env", "pass the secret-looking variable `NAME` to CMD (repeatable)")
 	rest, dashed, err := c.parseBeforeCommand(fs, args)
@@ -147,12 +145,16 @@ func cmdTestsum(c *cli, args []string) error {
 		sayUnchanged(c.err, note)
 		argv := goTestJSON(rest)
 		var dropped []string
-		code, err := c.runInSlotThen("tests", defaultSlots(), argv, &buf, &buf, rec.started, func(env []string) []string {
+		var nothing bool
+		code, err := c.runInSlotWith("tests", defaultSlots(), argv, &buf, &buf, rec.started, func(env []string) []string {
 			env, dropped = testEnv(env, keep)
 			return env
-		})
+		}, slotOpts{all: *all, who: "wp testsum", allCmd: "wp testsum --all --", rec: rec, nothing: &nothing})
 		if err != nil {
 			return err
+		}
+		if nothing {
+			return nil
 		}
 		if note != "" {
 			c.println(note)
@@ -261,7 +263,7 @@ func (c *cli) testsumReport(data []byte, format string, cmdFailed int, rec *test
 		}
 		return nil, fmt.Errorf("no test results found in the %s output", f)
 	}
-	_, _ = fmt.Fprint(c.out, res.render())
+	_, _ = fmt.Fprint(c.out, res.renderSaving(data))
 	rec.finish(res, cmdFailed)
 	if res.Failed > 0 || len(res.Failures) > 0 {
 		if cmdFailed != 0 {
@@ -376,7 +378,7 @@ var (
 	pemEndRE    = lazyre.New(`-----END [A-Z ]*PRIVATE KEY-----`)
 	pgpEndRE    = lazyre.New(`-----END [A-Z ]*PRIVATE KEY BLOCK-----`)
 	pemBodyRE   = lazyre.New(`^[A-Za-z0-9+/=]+$`)
-	pemHeaderRE = lazyre.New(`(?:^|\s)[-+>]?(?:Proc-Type|DEK-Info|Comment|Version): `)
+	pemHeaderRE = lazyre.New(`(?:^|\s)[-+>]?(?:Proc-Type|DEK-Info|Comment|Version|Charset|Hash|MessageID): `)
 )
 
 // pemFullLine is the least length taken for a whole line of a key's body
@@ -411,6 +413,34 @@ func pemBodyField(line string) string {
 	return last
 }
 
+// pemUnmarked is a line without the blanks and the diff or quote marker
+// before its text.
+func pemUnmarked(line string) string {
+	t := strings.Trim(strings.TrimSuffix(line, "\r"), " \t")
+	if t != "" && strings.IndexByte("-+>", t[0]) >= 0 {
+		t = strings.TrimLeft(t[1:], " \t")
+	}
+	return t
+}
+
+// pemShortLine says a line that follows a key's full line holds its short
+// last one: the last field is base64 and not all letters, or any field is
+// key-like and a whole number of base64 groups, 8 characters or more, for one
+// with fields after it (audit 1860.1).
+func pemShortLine(t string) bool {
+	last := pemBodyField(t)
+	if pemBodyRE.MatchString(last) && strings.Trim(last, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz") != "" {
+		return true
+	}
+	for _, f := range strings.Fields(t) {
+		f = strings.Trim(f, `"',;`)
+		if len(f) >= 8 && len(f)%4 == 0 && pemBodyRE.MatchString(f) && pemKeyLike(f) {
+			return true
+		}
+	}
+	return false
+}
+
 // redactKept is redact for a kept output file, returning as many lines as it
 // got, each \r kept, so "All N lines" stays true. Every line between a
 // BEGIN and an END PRIVATE KEY line becomes ***, when the END is within 400
@@ -419,8 +449,11 @@ func pemBodyField(line string) string {
 // headers, base64 lines of 40 or more characters (the first one mixed case
 // with a digit, so a commit SHA is not one), then one shorter line that is
 // not all letters. A diff or quote marker, a log prefix, quotes and a comma
-// around a line are allowed, and fields after a full line's base64. Then redact's other patterns run over the whole
-// text, a match that spanned lines giving them back as *** lines.
+// around a line are allowed, and fields after a full line's base64. Where
+// some other line ends that run, the key may go on below it, so as far as an
+// END is looked for, each mixed-case full line with a digit, the full lines
+// right after it, and a short one after those, becomes *** too. Then redact's other patterns run over the
+// whole text, a match that spanned lines giving them back as *** lines.
 func redactKept(s string) string {
 	lines := strings.Split(s, "\n")
 	star := func(j int) {
@@ -481,10 +514,7 @@ func redactKept(s string) string {
 		j := i + 1
 	body:
 		for ; j < len(lines); j++ {
-			t := strings.Trim(strings.TrimSuffix(lines[j], "\r"), " \t")
-			if t != "" && strings.IndexByte("-+>", t[0]) >= 0 {
-				t = strings.TrimLeft(t[1:], " \t")
-			}
+			t := pemUnmarked(lines[j])
 			last := pemBodyField(t)
 			switch {
 			case inHeaders && pemHeaderRE.MatchString(t):
@@ -497,7 +527,7 @@ func redactKept(s string) string {
 				continue
 			case pemBodyRE.MatchString(last) && len(last) >= pemFullLine && (sawFull || pemKeyLike(last)):
 				inHeaders, sawFull = false, true
-			case sawFull && pemBodyRE.MatchString(last) && strings.Trim(last, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz") != "":
+			case sawFull && pemShortLine(t):
 				star(j)
 				j++
 				break body
@@ -505,6 +535,20 @@ func redactKept(s string) string {
 				break body
 			}
 			star(j)
+		}
+		// A header not listed, or another process's line, doesn't end the
+		// key (audit 1860.1). The first full line after it must look like a
+		// key, so a commit SHA stays; the full lines right after that one need
+		// not, as in the body above (audit 2091.1).
+		afterFull := false
+		for k := j; k < len(lines) && k <= i+pemMaxLines && !pemBeginRE.MatchString(lines[k]); k++ {
+			t := pemUnmarked(lines[k])
+			last := pemBodyField(t)
+			full := len(last) >= pemFullLine && pemBodyRE.MatchString(last) && (afterFull || pemKeyLike(last))
+			if full || afterFull && pemShortLine(t) {
+				star(k)
+			}
+			afterFull = full
 		}
 		i = j - 1
 	}
@@ -626,7 +670,11 @@ func parseTestOutput(data []byte, format string) (res *testResult, f string, err
 	return res, f, nil
 }
 
-func (r *testResult) render() string {
+func (r *testResult) render() string { return r.renderCut(nil) }
+
+// renderCut is render; when it cuts lines, the cut line is followed by what
+// full returns (a line saying where the whole output is), if that is not "".
+func (r *testResult) renderCut(full func() string) string {
 	var out []string
 	total := r.Passed + r.Failed + r.Skipped
 	units := ""
@@ -654,8 +702,18 @@ func (r *testResult) render() string {
 		}
 	}
 	if len(out) > testsumMaxLines {
-		more := len(out) - (testsumMaxLines - 1)
-		out = append(out[:testsumMaxLines-1], fmt.Sprintf("... %d more lines (run the tests directly for the rest)", more))
+		note := ""
+		if full != nil {
+			note = full()
+		}
+		keep := testsumMaxLines - 1
+		if note != "" {
+			keep--
+		}
+		out = append(out[:keep], fmt.Sprintf("... %d more lines", len(out)-keep))
+		if note != "" {
+			out = append(out, note)
+		}
 	}
 	return strings.Join(out, "\n") + "\n"
 }
@@ -922,7 +980,11 @@ func goTimeoutFailure(pkg string, lines []string) (testFailure, bool) {
 	if limit > 0 && longest >= limit/2 {
 		msg = append(msg, longName+" ran for "+longest.String()+" of it: it may hang")
 	} else {
-		msg = append(msg, "no test ran long, so the package as a whole was slow (a busy machine?): run it again with a longer -timeout, e.g. -timeout 30m")
+		hint := "no test ran long, so the package as a whole was slow (a busy machine?): run it again with a longer -timeout"
+		if limit > 0 {
+			hint += ", e.g. -timeout " + (2 * limit).String()
+		}
+		msg = append(msg, hint)
 	}
 	return testFailure{Name: pkg + " (timed out after " + m[1] + ")", Msg: msg, Pkg: pkg}, true
 }

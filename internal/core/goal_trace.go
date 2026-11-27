@@ -196,15 +196,16 @@ func loadGoalGraph(ctx context.Context, q queryer) (*goalGraph, error) {
 	}
 	var requests []requestRow
 	rows, err = q.QueryContext(ctx, `SELECT id, coalesce(project_id, 0), coalesce(parent_id, 0), kind = 'goal' AND status = 'active',
-		approved_at IS NOT NULL OR requested_by IS NOT NULL, CASE WHEN requested_by IS NOT NULL THEN coalesce(requested_issue_id, 0) ELSE 0 END
+		approved_at IS NOT NULL OR requested_by IS NOT NULL, CASE WHEN requested_by IS NOT NULL THEN coalesce(requested_issue_id, 0) ELSE 0 END,
+		CASE WHEN parent_at IS NULL THEN approved_at IS NOT NULL OR requested_by IS NOT NULL ELSE parent_by IS NOT NULL END
 		FROM design_notes WHERE status != 'retired'`)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var id, pid, parent, reqIssue int64
-		var goal, approved bool
-		if err := rows.Scan(&id, &pid, &parent, &goal, &approved, &reqIssue); err != nil {
+		var goal, approved, parentByPerson bool
+		if err := rows.Scan(&id, &pid, &parent, &goal, &approved, &reqIssue, &parentByPerson); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -213,7 +214,7 @@ func loadGoalGraph(ctx context.Context, q queryer) (*goalGraph, error) {
 			g.goalScopes[pid] = true
 		}
 		if parent != 0 {
-			parents = append(parents, parentRow{gnode{KDesign, id}, gnode{KDesign, parent}, approved})
+			parents = append(parents, parentRow{gnode{KDesign, id}, gnode{KDesign, parent}, parentByPerson})
 		}
 		if reqIssue != 0 {
 			requests = append(requests, requestRow{id, reqIssue})

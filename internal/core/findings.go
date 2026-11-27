@@ -95,6 +95,14 @@ type findingRow struct {
 	private     bool
 }
 
+// The reads of one review run's findings: each is by run_id, which has an
+// index. runFindingsByModelSQL is a column of a select over bot_runs r.
+const (
+	runFindingsSQL        = `SELECT ` + findingCols + ` FROM bot_findings f WHERE f.run_id = ? ORDER BY f.id`
+	runFindingKindsSQL    = `SELECT severity, placement FROM bot_findings WHERE run_id = ? AND state != 'dropped'`
+	runFindingsByModelSQL = `(SELECT json_group_object(model, n) FROM (SELECT f.model, count(*) AS n FROM bot_findings f WHERE f.run_id = r.id AND f.state != 'dropped' GROUP BY f.model))`
+)
+
 const findingCols = `f.id, f.run_id, f.pr_id, f.path, f.line, f.severity, f.claim, f.model, f.placement, f.state, f.ordinal, f.thread_id, f.comment_id,
 	f.head_sha, f.checked_sha, f.replies_seen, f.private, f.created_at, f.updated_at, f.agreed, f.verified_by,
 	f.prompt_version, f.strategy, f.verify, f.verify_reason`
