@@ -6,6 +6,7 @@ import { templatesQuery, type IssueTemplate } from '@/lib/templates'
 import { Button, IconButton } from '@/components/ui/button'
 import { Confirm, Dialog } from '@/components/ui/dialog'
 import { Field, Input, Textarea } from '@/components/ui/input'
+import { MarkdownField } from '@/components/editor/MarkdownField'
 import { Badge, Empty, LoadError } from '@/components/ui/misc'
 import { toastError } from '@/components/ui/toast'
 import { LabelPicker, PointsPicker, TypePicker } from '@/components/issue/pickers'
@@ -209,11 +210,11 @@ function TemplateDialog({
           <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Bug: " />
         </Field>
         <Field label="Description" hint="Markdown; checklists (- [ ] step) work well.">
-          <Textarea
+          <MarkdownField
             value={description}
-            onChange={(e) => setDescription(e.target.value)}
+            onValueChange={setDescription}
             rows={6}
-            className="font-mono text-xs"
+            ariaLabel="Description"
             placeholder={'## Steps to reproduce\n\n## Expected\n\n## Actual'}
           />
         </Field>

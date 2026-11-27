@@ -1,92 +1,57 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useBlocker } from '@tanstack/react-router'
 import clsx from 'clsx'
-import { Check, Eye, Pencil } from 'lucide-react'
+import { Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Confirm } from '@/components/ui/dialog'
-import { Textarea } from '@/components/ui/input'
-import { SegmentedControl } from '@/components/ui/segmented'
-import { Markdown } from '@/components/Markdown'
+import { MarkdownField } from '@/components/editor/MarkdownField'
 
-export type EditorMode = 'write' | 'preview'
+// Hermes splits a memory file at a line holding only §; the editor would fold
+// that line into the item or quote above it.
+const keepsEntries = (md: string) => !/^§$/m.test(md)
 
 /**
- * Markdown source with a Write/Preview switch. `preview` renders the text
- * another way than plain Markdown (memory entries, a skill's frontmatter).
- * Ctrl/Cmd+S saves.
+ * Formatted text (or its markdown source) for a memory file, persona or
+ * skill. Ctrl/Cmd+S saves. Text with front matter opens as markdown.
  */
 export function MarkdownEditor({
   value,
   onChange,
   onSave,
   label,
-  preview,
   hint,
   placeholder,
-  minHeight = 'min-h-[16rem]',
+  rows = 10,
   autoFocus,
 }: {
   value: string
   onChange: (v: string) => void
   onSave?: () => void
   label: string
-  preview?: (text: string) => ReactNode
   hint?: ReactNode
   placeholder?: string
-  minHeight?: string
+  /** The box's least height, in lines of text. */
+  rows?: number
   autoFocus?: boolean
 }) {
-  const [mode, setMode] = useState<EditorMode>('write')
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <SegmentedControl
-          label={`${label}: write or preview`}
-          value={mode}
-          onChange={setMode}
-          textFrom="always"
-          options={[
-            { value: 'write', label: 'Write', icon: <Pencil className="size-3" /> },
-            { value: 'preview', label: 'Preview', icon: <Eye className="size-3" /> },
-          ]}
-        />
-        {hint && <span className="text-xs text-subtle">{hint}</span>}
-      </div>
-      {mode === 'write' ? (
-        <Textarea
-          aria-label={label}
-          value={value}
-          autoGrow
-          autoFocus={autoFocus}
-          spellCheck
-          placeholder={placeholder}
-          onChange={(e) => onChange(e.target.value)}
-          onKeyDown={(e) => {
-            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
-              e.preventDefault()
-              onSave?.()
-            }
-          }}
-          className={clsx('resize-y font-mono !text-[13px]', minHeight)}
-        />
-      ) : (
-        <div
-          className={clsx(
-            'overflow-x-auto rounded-lg border border-line bg-panel px-3 py-2',
-            minHeight,
-          )}
-        >
-          {value.trim() ? (
-            preview ? (
-              preview(value)
-            ) : (
-              <Markdown text={value} />
-            )
-          ) : (
-            <p className="text-[13px] text-subtle">Nothing to preview.</p>
-          )}
-        </div>
-      )}
+      {hint && <p className="text-xs text-subtle">{hint}</p>}
+      <MarkdownField
+        ariaLabel={label}
+        value={value}
+        onValueChange={onChange}
+        autoFocus={autoFocus}
+        placeholder={placeholder}
+        rows={rows}
+        keeps={keepsEntries}
+        onKeyDown={(e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+            e.preventDefault()
+            onSave?.()
+          }
+        }}
+      />
     </div>
   )
 }

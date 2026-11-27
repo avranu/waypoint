@@ -2,6 +2,7 @@
 // the main flow: quick-add, sprints, drag to board, sub-issues, comments.
 import { chromium } from "playwright";
 import fs from "node:fs";
+import { fillMarkdown, mdBox } from "./editor.mjs";
 
 const base = process.argv[2];
 const invite = process.argv[3];
@@ -139,9 +140,10 @@ await page.getByRole("button", { name: "Add sub-issue" }).click({ timeout: 3000 
 await page.getByPlaceholder(/Add a subtask/).fill("Reproduce on Safari @robin");
 await page.getByPlaceholder(/Add a subtask/).press("Enter");
 await page.waitForTimeout(600);
-await page
-  .getByPlaceholder(/Leave a comment/)
-  .fill("Looks like the **next** param is dropped. See WAYP-1.");
+await fillMarkdown(
+  mdBox(page, { placeholder: /Leave a comment/ }),
+  "Looks like the **next** param is dropped. See WAYP-1.",
+);
 await page.keyboard.press("Control+Enter");
 await page.waitForTimeout(600);
 await shot("10-issue-sheet-filled");

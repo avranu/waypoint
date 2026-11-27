@@ -9,6 +9,7 @@
 import { chromium } from "playwright";
 import fs from "node:fs";
 import { looks } from "./looks.mjs";
+import { fillMarkdown, mdBox } from "./editor.mjs";
 const [base, out] = process.argv.slice(2);
 fs.mkdirSync(out, { recursive: true });
 const errors = [];
@@ -79,7 +80,7 @@ async function run(width, scheme) {
   await page.getByRole("button", { name: /New term/ }).click();
   await page.getByLabel("Term", { exact: true }).fill("Lease");
   await page.getByLabel("Aliases").fill("hold, reservation");
-  await page.getByLabel("Definition").fill(`How long a claim lasts. ${word}`);
+  await fillMarkdown(mdBox(page, { label: "Definition" }), `How long a claim lasts. ${word}`);
   await page.getByRole("button", { name: "Add term" }).click();
   await page.getByRole("link", { name: /Lease/ }).first().waitFor();
   await page.getByRole("button", { name: "Close" }).click();

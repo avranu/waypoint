@@ -70,6 +70,7 @@ export function useHotkey(
   useEffect(() => {
     if (opts.enabled === false) return
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return
       const t = e.target as HTMLElement
       const typing = t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)
       if (opts.meta) {

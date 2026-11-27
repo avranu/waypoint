@@ -7,36 +7,10 @@ import { renderMarkdown, toggleTask } from '@/lib/markdown'
 import { refsQuery } from '@/lib/knowledge'
 import type { TextRef } from '@/lib/types'
 import { MarkdownInput } from './MarkdownInput'
-import { DESCRIPTION_BOX, RichTextInput } from './RichTextInput'
-import { survivesRichEdit } from '@/lib/richtext'
+import { DESCRIPTION_BOX } from '@/components/editor/styles'
+import { readMode, writeMode } from '@/components/editor/mode'
+import { loadedEditor, preloadEditor, tryLoadEditor } from '@/components/editor/lazy'
 import { clearDraft, readDraft, tracked, useUnsaved, writeDraft } from '@/lib/drafts'
-
-// The editor a description opens in is remembered (WP-628).
-const MODE_KEY = 'wp.editor.mode'
-// A choice whose write failed, with what storage held then: it applies only
-// while storage still holds that, so another tab's later choice shows.
-let chosen: { mode: 'rich' | 'md'; stored: string | null } | null = null
-const stored = (): string | null => {
-  try {
-    return localStorage.getItem(MODE_KEY)
-  } catch {
-    return null
-  }
-}
-const readMode = (): 'rich' | 'md' => {
-  const now = stored()
-  if (chosen && chosen.stored === now) return chosen.mode
-  chosen = null
-  return now === 'md' ? 'md' : 'rich'
-}
-const writeMode = (m: 'rich' | 'md') => {
-  try {
-    localStorage.setItem(MODE_KEY, m)
-    chosen = null
-  } catch {
-    chosen = { mode: m, stored: stored() }
-  }
-}
 
 // How long typing pauses before an autosave goes out.
 const AUTOSAVE_MS = 1800
@@ -58,7 +32,7 @@ export function MarkdownEditor({
   draftKey,
   autosave = false,
   batchedRefs,
-  rich = false,
+  rich = true,
   ariaLabel,
 }: {
   value: string
@@ -73,7 +47,7 @@ export function MarkdownEditor({
   /** Same for a page or design note: page:12, design:3. */
   attachTo?: string
   /**
-   * Edits with formatting shown in place (WP-628), for a task description.
+   * Edits with formatting shown in place (WP-628); false opens the markdown.
    * The value is still markdown, so everything that reads it is unchanged.
    */
   rich?: boolean
@@ -195,7 +169,14 @@ export function MarkdownEditor({
     queue.current = p
     return p
   }
-  const settle = () => flush().then((ok) => ok && (setEditing(false), onCancel?.()))
+  // Closing waits for the text as it is when the save lands: an upload that
+  // finishes while the save is in flight changes the draft, and closing on the
+  // first save would drop that change.
+  const settle = async () => {
+    let ok = await flush()
+    for (let i = 0; ok && latest.current.draft !== base.current && i < 5; i++) ok = await flush()
+    if (ok) (setEditing(false), onCancel?.())
+  }
   const dirty = autosave && editing && draft !== base.current
   useEffect(() => {
     if (!dirty || conflict) return
@@ -213,27 +194,44 @@ export function MarkdownEditor({
     [],
   )
 
+  // The formatted editor is a chunk of its own: the app fetches it when an
+  // editable description mounts (idle), and opening an edit waits for it only
+  // if it hasn't arrived, the rendered text staying on screen meanwhile.
+  const [mod, setMod] = useState(loadedEditor)
+  const [failed, setFailed] = useState(false)
+  useEffect(() => {
+    if (rich && editable) preloadEditor()
+  }, [rich, editable])
+  useEffect(() => {
+    if (rich && editing && !mod && !failed) {
+      void tryLoadEditor().then((m) => (m ? setMod(m) : setFailed(true)))
+    }
+  }, [rich, editing, mod, failed])
   const opening = useMemo(
     () => {
       if (!rich || !editing) return null
       if (readMode() === 'md') return { mode: 'md' as const, note: false }
-      return survivesRichEdit(draft)
+      if (!mod) return failed ? { mode: 'md' as const, note: false } : null
+      return mod.survivesRichEdit(draft)
         ? { mode: 'rich' as const, note: false }
         : { mode: 'md' as const, note: true }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- decided once per edit
-    [rich, editing],
+    [rich, editing, mod, failed],
   )
   const [picked, setPicked] = useState<{ mode: 'rich' | 'md'; note: boolean } | null>(null)
   useEffect(() => {
-    if (!editing) setPicked(null)
+    if (!editing) (setPicked(null), setFailed(false))
   }, [editing])
   const editor = picked ?? opening
   // The click that opened the editor placed its caret once; a later switch of
   // mode must not reuse the point, the layout under it having changed.
-  const toRich = () => {
+  const toRich = async () => {
     setClicked(undefined)
-    if (survivesRichEdit(draft)) {
+    const m = mod ?? (await tryLoadEditor())
+    if (!m) return
+    setMod(m)
+    if (m.survivesRichEdit(latest.current.draft)) {
       writeMode('rich')
       setPicked({ mode: 'rich', note: false })
     } else setPicked({ mode: 'md', note: true })
@@ -288,11 +286,14 @@ export function MarkdownEditor({
       )}
     </>
   )
+  if (editing && rich && !editor) {
+    return <div className={DESCRIPTION_BOX} dangerouslySetInnerHTML={{ __html: html }} />
+  }
   if (editing) {
     return (
       <div className="space-y-2" onBlur={autosave && !conflict ? () => void flush() : undefined}>
-        {rich && editor?.mode === 'rich' ? (
-          <RichTextInput
+        {rich && editor?.mode === 'rich' && mod ? (
+          <mod.RichTextInput
             autoFocus
             value={draft}
             onValueChange={setDraft}
@@ -330,7 +331,7 @@ export function MarkdownEditor({
             )}
             <button
               type="button"
-              onClick={toRich}
+              onClick={() => void toRich()}
               className="ml-auto rounded-md px-1.5 py-0.5 text-subtle hover:bg-hover hover:text-fg"
             >
               Edit formatted
@@ -385,7 +386,7 @@ export function MarkdownEditor({
     const a = t.closest('a')
     if (a) {
       const href = a.getAttribute('href') ?? ''
-      if (href.startsWith('/') && !href.startsWith('//') && !e.metaKey && !e.ctrlKey) {
+      if (/^\/(?![/\\])/.test(href) && !e.metaKey && !e.ctrlKey) {
         e.preventDefault()
         navigate({ to: href })
       }

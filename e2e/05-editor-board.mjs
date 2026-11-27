@@ -19,6 +19,9 @@ const H = { "X-Waypoint-Client": "web" };
 const browser = await chromium.launch();
 async function session(viewport, scheme) {
   const ctx = await browser.newContext({ viewport, colorScheme: scheme });
+  // The mention and upload checks are written against the markdown box (the
+  // formatted editor's own are in 83 and 86), so this suite opens it as markdown.
+  await ctx.addInitScript(() => localStorage.setItem("wp.editor.mode", "md"));
   const page = await ctx.newPage();
   page.on("pageerror", (e) =>
     fail(`pageerror (${viewport.width} ${scheme}): ` + e.message),

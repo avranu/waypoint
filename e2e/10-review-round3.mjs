@@ -5,6 +5,7 @@
 import { chromium } from "playwright";
 import fs from "node:fs";
 import { looks } from "./looks.mjs";
+import { fillMarkdown } from "./editor.mjs";
 const [base, out] = process.argv.slice(2);
 fs.mkdirSync(out, { recursive: true });
 const errors = [];
@@ -50,12 +51,12 @@ async function run(width) {
     await page.getByText("Body of beta").waitFor();
     await tree.getByRole("link", { name: `Alpha ${tag}` }).click();
     await page.getByText("Body of alpha").click();
-    await page.locator("textarea").first().fill("DRAFT meant for alpha");
+    await fillMarkdown(page.locator(".rich-editor[contenteditable=true]"), "DRAFT meant for alpha");
     await tree.getByRole("link", { name: `Beta ${tag}` }).click();
     await page.waitForURL(`${base}/pages/${b.id}`);
     await page.getByText("Body of beta").waitFor();
     ok(
-      (await page.locator("textarea").count()) === 0,
+      (await page.locator(".rich-editor").count()) === 0,
       `${tag} editor closed when switching pages`,
     );
     ok(

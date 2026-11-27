@@ -5,7 +5,6 @@ import type { Assistant } from '@/lib/assistant'
 import { Field, Input } from '@/components/ui/input'
 import { toast } from '@/components/ui/toast'
 import { EditorActions, MarkdownEditor, releaseDirty, useDirty } from '../memory/editor'
-import { SkillDoc } from './SkillDoc'
 import {
   BODY_TEMPLATE,
   categoryLabel,
@@ -138,14 +137,7 @@ export function NewSkill({
         </Field>
         <div className="space-y-1.5">
           <div className="text-[13px] font-medium">Instructions</div>
-          <MarkdownEditor
-            label="Instructions"
-            value={body}
-            onChange={setBody}
-            onSave={create}
-            minHeight="min-h-[16rem]"
-            preview={() => <SkillDoc assistantId={id} content={content} />}
-          />
+          <MarkdownEditor label="Instructions" value={body} onChange={setBody} onSave={create} />
           {tried && bodyError && <p className="text-xs text-danger">{bodyError}</p>}
         </div>
         <EditorActions

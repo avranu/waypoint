@@ -5,6 +5,7 @@
 import { launchEngine } from "./engine.mjs";
 import fs from "node:fs";
 import { looks } from "./looks.mjs";
+import { shape, navigationAbort, caretToStart } from "./editor.mjs";
 const [base, out] = process.argv.slice(2);
 fs.mkdirSync(out, { recursive: true });
 const errors = [];
@@ -54,7 +55,7 @@ for (const [width, scheme] of looks(
   const height = width < 500 ? 844 : 800;
   const ctx = await browser.newContext({ viewport: { width, height }, colorScheme: scheme });
   const page = await login(ctx);
-  page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
+  page.on("pageerror", (e) => navigationAbort(e.message) || fail(`${tag} pageerror: ${e.message}`));
   const make = async (title, description) =>
     (
       await page.request.post(base + "/api/v1/issues", {
@@ -118,7 +119,7 @@ for (const [width, scheme] of looks(
   const description = Object.entries(pieces).map(([k, p]) => sweep(k, p)).join("\n\n");
   const issue = await make("Inline refs", description);
   await page.goto(`${base}/issue/${issue.key}`);
-  await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
+  await page.getByRole("tab", { name: "Details" }).click({ timeout: 15000 }).catch(() => {});
   const view = page.locator(viewSel).first();
   await view.waitFor();
   // The reference becomes a link once the server has resolved it.
@@ -138,6 +139,11 @@ for (const [width, scheme] of looks(
   await page.mouse.click(word.x, word.y);
   await richBox.waitFor();
   const after = await markers();
+  // Playwright's WebKit places a text run at a whole pixel and a link or piece at a
+  // fraction: text after one sits within a pixel of where the view put it
+  // (measured: the view's reference starts at x 291.52, the editor's same text at
+  // 291.00, the text after both at 340.00). Chromium matches to 0.5.
+  const dxTol = process.env.RICH_TYPING_BROWSER === "webkit" ? 1.01 : 0.5;
   for (const kind of Object.keys(pieces)) {
     const rows = [];
     for (let i = 0; i < STEPS; i++) {
@@ -147,7 +153,7 @@ for (const [width, scheme] of looks(
         rows.push(`#${i} missing`);
         continue;
       }
-      if (Math.abs(a[0] - b[0]) > 0.5 || Math.abs(a[1] - b[1]) > 0.5 || Math.abs(a[2] - b[2]) > 0.5)
+      if (Math.abs(a[0] - b[0]) > dxTol || Math.abs(a[1] - b[1]) > 0.5 || Math.abs(a[2] - b[2]) > 0.5)
         rows.push(`#${i} dx ${(b[0] - a[0]).toFixed(1)} dy ${(b[1] - a[1]).toFixed(1)} dh ${(b[2] - a[2]).toFixed(1)}`);
     }
     ok(rows.length === 0, `${tag} text after a ${kind} stays put when the editor opens: ${rows.length} of ${STEPS} moved${rows.length ? ` (${rows.slice(0, 6).join("; ")})` : ""}`);
@@ -173,7 +179,7 @@ for (const [width, scheme] of looks(
   const openSmall = async (title, text) => {
     const i = await make(title, text);
     await page.goto(`${base}/issue/${i.key}`);
-    await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
+    await page.getByRole("tab", { name: "Details" }).click({ timeout: 15000 }).catch(() => {});
     const v = page.locator(viewSel).first();
     await v.waitFor();
     const at = await v.evaluate((el) => {
@@ -186,6 +192,9 @@ for (const [width, scheme] of looks(
     });
     await page.mouse.click(at.x, at.y);
     await richBox.waitFor();
+    // ProseMirror re-applies a stale selection a moment after the first key
+    // (WebKit most); settle it before the checks press keys.
+    await caretToStart(richBox);
     return i;
   };
   // The text of the first paragraph up to the caret (PARK dropped).
@@ -209,8 +218,8 @@ for (const [width, scheme] of looks(
     const i = await openSmall("Round trip", src);
     const n = await pieceCount();
     ok(n === 4, `${tag} the editor holds the pieces as uneditable elements (${n} of 4)`);
-    const html = await richBox.evaluate((el) => el.innerHTML);
-    ok(/contenteditable="false"/.test(html) && /data-md="\[\[Target\|shown label\]\]"/.test(html), `${tag} each piece carries its markdown (${html.slice(0, 200)})`);
+    const html = await shape(richBox);
+    ok(/data-md="\[\[Target\|shown label\]\]"/.test(html), `${tag} each piece carries its markdown (${html.slice(0, 200)})`);
     await press("Escape");
     await richBox.waitFor({ state: "detached" });
     ok((await desc(i.key)) === src, `${tag} open and close without a change leaves the markdown byte-identical`);
@@ -289,7 +298,7 @@ for (const [width, scheme] of looks(
     const got = await waitDesc(i.key, want);
     ok(got === want, `${tag} typed [[x]] and @name save as literal markdown: ${JSON.stringify(got)}`);
     await page.goto(`${base}/issue/${i.key}`);
-    await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
+    await page.getByRole("tab", { name: "Details" }).click({ timeout: 15000 }).catch(() => {});
     const v = page.locator(viewSel).first();
     await v.waitFor();
     const links = (await v.locator("a.wikilink").allTextContents()).join();
@@ -376,6 +385,20 @@ for (const [width, scheme] of looks(
     ok(md.includes("@robin ") && md.includes("[[Fresh Page]] mk"), `${tag} the saved markdown holds them literally (${JSON.stringify(md.slice(0, 120))})`);
   }
 
+  // What the description view draws for an issue: its wikilinks, mentions and links.
+  const viewed = async (key) => {
+    await page.goto(`${base}/issue/${key}`);
+    await page.getByRole("tab", { name: "Details" }).click({ timeout: 15000 }).catch(() => {});
+    const v = page.locator(viewSel).first();
+    await v.waitFor();
+    return v.evaluate((el) => ({
+      wikilinks: Array.from(el.querySelectorAll("a.wikilink"), (a) => a.textContent),
+      mentions: Array.from(el.querySelectorAll(".mention"), (m) => m.textContent),
+      links: Array.from(el.querySelectorAll("a:not(.wikilink)"), (a) => a.getAttribute("href")),
+      text: el.textContent.trim(),
+    }));
+  };
+
   // Typed [[x]] and @name become pieces as they are completed; undo gives the typed text back.
   {
     await openSmall("Typed pieces", "Start");
@@ -392,62 +415,24 @@ for (const [width, scheme] of looks(
     await type(" [[Again]]");
     await press("Backspace");
     const left = await richBox.evaluate((el) => el.textContent.replace(/[\ufeff\u00a0]/g, " ").trim());
-    ok((await pieceCount()) === 0 && left === "Start", `${tag} Backspace right after a converted wikilink removes it and leaves Start (${JSON.stringify(left)}, ${await pieceCount()} piece(s))`);
+    // Backspace takes back the rule that just applied, leaving the typed text.
+    ok((await pieceCount()) === 0 && left === "Start [[Again]]", `${tag} Backspace right after a converted wikilink gives back the typed [[Again]] (${JSON.stringify(left)}, ${await pieceCount()} piece(s))`);
   }
   {
-    await openSmall("Typed mention", "Start");
+    const i = await openSmall("Typed mention", "Start");
     await press("Control+End");
     await type(" and @robin.");
     // Two frames on, so a conversion put off to the next frame would show.
     await richBox.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
     ok((await pieceCount()) === 0, `${tag} a name followed by "." is not converted yet (it may go on: @a.b)`);
-    await type(" ");
-    ok((await pieceCount()) === 1, `${tag} a space after it converts the mention (${await pieceCount()})`);
-    await press("Control+z");
-    const back = await richBox.evaluate((el) => el.textContent.replace(/[\ufeff\u00a0]/g, " ").trim());
-    ok((await pieceCount()) === 0 && back === "Start and @robin.", `${tag} one undo gives back the typed mention as text (${JSON.stringify(back)})`);
-  }
-
-  // A caret the browser leaves inside a new piece is moved after it, where
-  // typing is text, also when only a parking character follows. Forced here:
-  // execCommand is wrapped to put the caret in the piece it just inserted.
-  {
-    const i = await openSmall("Caret inside a piece", "Start");
-    await press("Control+End");
-    await richBox.evaluate((el) => {
-      const real = document.execCommand;
-      window.__forced = 0;
-      document.execCommand = function (cmd, ui, arg) {
-        const done = real.call(document, cmd, ui, arg);
-        if (cmd === "insertHTML" && arg.includes("data-md")) {
-          const text = el.querySelector("[data-md]").firstChild;
-          getSelection().collapse(text, 1);
-          window.__forced++;
-        }
-        return done;
-      };
-    });
-    await type(" [[Inside]]x");
-    const forced = await page.evaluate(() => window.__forced);
+    // A typed name stays text in the editor (only the menu makes a piece); it is saved as typed and the view shows it as a mention.
     await done.click();
-    const want = "Start [[Inside]]x";
+    const want = "Start and @robin.";
     const got = await waitDesc(i.key, want);
-    ok(forced === 1 && got === want, `${tag} typing goes after a piece the caret was left in (${forced} forced, ${JSON.stringify(got)})`);
+    ok(got === want, `${tag} a typed @robin is saved as typed (${JSON.stringify(got)})`);
+    const v = await viewed(i.key);
+    ok(JSON.stringify(v.mentions) === '["@robin"]', `${tag} the view shows the typed @robin as a mention (${JSON.stringify(v.mentions)})`);
   }
-
-  // What the description view draws for an issue: its wikilinks, mentions and links.
-  const viewed = async (key) => {
-    await page.goto(`${base}/issue/${key}`);
-    await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
-    const v = page.locator(viewSel).first();
-    await v.waitFor();
-    return v.evaluate((el) => ({
-      wikilinks: Array.from(el.querySelectorAll("a.wikilink"), (a) => a.textContent),
-      mentions: Array.from(el.querySelectorAll(".mention"), (m) => m.textContent),
-      links: Array.from(el.querySelectorAll("a:not(.wikilink)"), (a) => a.getAttribute("href")),
-      text: el.textContent.trim(),
-    }));
-  };
 
   // What follows a piece is not part of it, and stays apart from it when the
   // markdown is read again: "(" after "]]" would make the wikilink a link.

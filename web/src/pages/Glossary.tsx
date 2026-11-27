@@ -31,7 +31,8 @@ import type { GlossaryEntry, GlossaryRevision } from '@/lib/types'
 import { Usage } from '@/components/Usage'
 import { Button, IconButton } from '@/components/ui/button'
 import { Confirm } from '@/components/ui/dialog'
-import { Input, Select, Switch, Textarea } from '@/components/ui/input'
+import { Input, Select, Switch } from '@/components/ui/input'
+import { MarkdownField } from '@/components/editor/MarkdownField'
 import { Empty, PageHeader, Skeleton } from '@/components/ui/misc'
 import { MenuList, Popover, usePopover } from '@/components/ui/popover'
 import { toast, toastError } from '@/components/ui/toast'
@@ -356,13 +357,12 @@ function QuickAdd({
           className="flex-1"
         />
       </div>
-      <Textarea
+      <MarkdownField
         value={definition}
-        onChange={(e) => setDefinition(e.target.value)}
+        onValueChange={setDefinition}
         placeholder="What it means (markdown; [[links]] to other terms, notes and issues)"
-        aria-label="Definition"
+        ariaLabel="Definition"
         rows={3}
-        autoGrow
         onKeyDown={(e) => {
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && term.trim()) {
             e.preventDefault()

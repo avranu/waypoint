@@ -5,7 +5,12 @@ import { q } from '@/lib/queries'
 import { Textarea } from '@/components/ui/input'
 import { useEscapeLayer } from '@/components/ui/layers'
 import { toastError } from '@/components/ui/toast'
-import { issueTarget, refreshAttachments, uploadAttachment } from '@/lib/attachments'
+import {
+  issueTarget,
+  refreshAttachments,
+  uploadAttachment,
+  uploadPlaceholder,
+} from '@/lib/attachments'
 import type { UserRef } from '@/lib/types'
 import { MENTION_RE, MentionList, useMentionMatches } from './userMention'
 
@@ -74,7 +79,8 @@ export const MarkdownInput = forwardRef<HTMLTextAreaElement, Props>(function Mar
 
   const upload = (files: File[]) => {
     if (!target || !files.length) return
-    const placeholders = files.map((f) => `[Uploading ${f.name || 'pasted image'}…]()`)
+    const held = files.map((f) => uploadPlaceholder(f.name || 'pasted image'))
+    const placeholders = held.map((h) => h.text)
     const v = latest.current
     const caret = ref.current?.selectionStart ?? v.length
     const lead = caret > 0 && !v.slice(0, caret).endsWith('\n') ? '\n' : ''
@@ -83,10 +89,12 @@ export const MarkdownInput = forwardRef<HTMLTextAreaElement, Props>(function Mar
       uploadAttachment(target, f).then(
         (a) => {
           setValue(latest.current.replace(placeholders[i], a.markdown))
+          held[i].done()
           refreshAttachments(qc, target)
         },
         (err) => {
           setValue(latest.current.replace(placeholders[i] + '\n', '').replace(placeholders[i], ''))
+          held[i].done()
           toastError(err)
         },
       )

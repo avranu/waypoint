@@ -27,6 +27,7 @@ import { Lightbox } from '@/components/attachments/Lightbox'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/input'
+import { MarkdownField } from '@/components/editor/MarkdownField'
 import { Badge, Empty, Kbd, PageHeader, Skeleton } from '@/components/ui/misc'
 import { toast, toastError } from '@/components/ui/toast'
 
@@ -352,13 +353,14 @@ function NotFinishedDialog({
         <p className="mb-2 text-[13px] text-muted">
           It goes back to To do with your note as a comment, for whoever picks it up next.
         </p>
-        <Textarea
+        <MarkdownField
           autoFocus
           rows={4}
           value={note}
-          onChange={(e) => setNote(e.target.value)}
+          onValueChange={setNote}
+          issueKey={it.issue.key}
           placeholder="What’s missing (optional)"
-          aria-label="What’s missing"
+          ariaLabel="What’s missing"
           onKeyDown={(e) => {
             if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !send.isPending) submit()
           }}

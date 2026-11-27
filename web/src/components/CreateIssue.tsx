@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { FileStack } from 'lucide-react'
 import { templatesQuery, type IssueTemplate } from '@/lib/templates'
 import { q, useCreateIssue, type IssueInput } from '@/lib/queries'
@@ -11,10 +11,14 @@ import { isDelegated, workflowsQuery } from '@/lib/agents'
 import { CategoryPicker, HumansOnlyLock, WorkflowPicker } from '@/components/issue/agentPickers'
 import { Dialog } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { Switch, Textarea } from '@/components/ui/input'
+import { Switch } from '@/components/ui/input'
+import { MarkdownField } from '@/components/editor/MarkdownField'
+import { deferredFiles, stripBlobTokens } from '@/lib/deferredFiles'
+import { api } from '@/lib/api'
+import { tracked } from '@/lib/drafts'
 import { Picker, Popover, usePopover } from '@/components/ui/popover'
 import { Badge } from '@/components/ui/misc'
-import { toast } from '@/components/ui/toast'
+import { toast, toastError } from '@/components/ui/toast'
 import { ProjectIcon } from '@/components/issue/icons'
 import {
   AssigneePicker,
@@ -27,7 +31,14 @@ import {
   StatusPicker,
   TypePicker,
 } from '@/components/issue/pickers'
-import { PRIORITIES, type IssueType, type Label, type Status, type UserRef } from '@/lib/types'
+import {
+  PRIORITIES,
+  type IssueDetail,
+  type IssueType,
+  type Label,
+  type Status,
+  type UserRef,
+} from '@/lib/types'
 import { useLocal } from '@/lib/hooks'
 
 type Defaults = Partial<IssueInput>
@@ -91,12 +102,18 @@ function Form({ defaults, onClose }: { defaults: Defaults; onClose: () => void }
     stored ?? { title: defaults.title ?? '', description: defaults.description ?? '' },
   )
   const [kept, setKept] = useState(true)
+  // Files pasted into the description wait here until the issue exists.
+  const qc = useQueryClient()
+  const [files] = useState(deferredFiles)
+  const filesRef = useRef(files)
+  useEffect(() => () => filesRef.current.clear(), [])
   const [error, setError] = useState<string | null>(null)
   useUnsaved(!kept && !!(text.title.trim() || text.description.trim()))
   const edit = (patch: Partial<Draft>) => {
     const next = { ...text, ...patch }
     setText(next)
-    setKept(writeDraft(DRAFT, next))
+    // A file's address means nothing after this page, so the draft keeps none.
+    setKept(writeDraft(DRAFT, { ...next, description: stripBlobTokens(next.description) }))
     setError(null)
   }
   const { title, description } = text
@@ -164,13 +181,37 @@ function Form({ defaults, onClose }: { defaults: Defaults; onClose: () => void }
   )
   const parentQ = useQuery({ ...q.issue(parent ?? ''), enabled: !!parent })
 
+  // The issue exists (made without the files' temporary addresses): files the
+  // description still points at go to it, and their tokens become the
+  // attachments' markdown in one edit.
+  const attachFiles = async (made: IssueDetail, text: string) => {
+    const { key } = made
+    const filled = await files.attach(`issue:${key}`, text)
+    if (filled.text === stripBlobTokens(text)) return
+    const url = `/issues/${encodeURIComponent(key)}`
+    try {
+      // Edited while the files uploaded: they go after what is there now.
+      const now = await api.get<IssueDetail>(url)
+      const description =
+        !now || now.description === made.description
+          ? filled.text
+          : [now.description?.trimEnd(), ...filled.added].filter(Boolean).join('\n\n')
+      qc.setQueryData(['issue', key], await api.patch<IssueDetail>(url, { description }))
+    } catch (err) {
+      toastError(err)
+    }
+    void qc.invalidateQueries({ queryKey: ['issue', key] })
+    void qc.invalidateQueries({ queryKey: ['comments', key] })
+    void qc.invalidateQueries({ queryKey: ['attachments', `issue:${key}`] })
+  }
+
   const submit = () => {
     if (!parsed.title.trim() || !projectKey || create.isPending) return
     const p = parsed.input
     const input: IssueInput = {
       project: projectKey,
       title: parsed.title.trim(),
-      description,
+      description: stripBlobTokens(description),
       type: p.type ?? type,
       status: shownStatus ? String(shownStatus.id) : undefined,
       priority: p.priority ?? priority,
@@ -192,6 +233,8 @@ function Form({ defaults, onClose }: { defaults: Defaults; onClose: () => void }
       onSuccess: (d) => {
         clearDraft(DRAFT)
         setRestored(false)
+        // Tracked, so leaving the page while the files upload asks first.
+        void tracked(attachFiles(d, description))
         toast(`Created ${d.draft ? 'draft ' : ''}${d.key}`, {
           href: `/issue/${d.key}`,
           action: {
@@ -320,19 +363,19 @@ function Form({ defaults, onClose }: { defaults: Defaults; onClose: () => void }
             ))}
           </div>
         )}
-        <Textarea
-          autoGrow
+        <MarkdownField
           rows={3}
           value={description}
-          onChange={(e) => setDescription(e.target.value)}
+          onValueChange={setDescription}
+          deferUploads={files.add}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
               e.preventDefault()
               submit()
             }
           }}
-          placeholder="Add a description… (markdown)"
-          className="border-none bg-transparent px-0 focus:ring-0"
+          placeholder="Add a description… (markdown; paste or drop files)"
+          ariaLabel="Description"
         />
         {project && (
           <div className="flex flex-wrap items-center gap-1 border-t border-line pt-3">

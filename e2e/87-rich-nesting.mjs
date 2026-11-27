@@ -2,12 +2,12 @@
 // bullets, numbers and tasks, one level at a time; Enter on an empty nested item
 // and Backspace at its start un-nest it; undo reverses one Tab; and the saved
 // markdown (and a reopened one) shows the same nesting. RICH_TYPING_BROWSER=
-// firefox|webkit runs it under that engine (engine.mjs); the rules are on only
-// where richdom.ts SUPPORTED says (WP-1758).
+// firefox|webkit runs it under that engine (engine.mjs).
 // Run after 01-signup-flow (user robin).
 import { launchEngine } from "./engine.mjs";
 import fs from "node:fs";
 import { looks } from "./looks.mjs";
+import { shape, navigationAbort } from "./editor.mjs";
 const [base, out] = process.argv.slice(2);
 fs.mkdirSync(out, { recursive: true });
 const errors = [];
@@ -66,7 +66,7 @@ for (const [width, scheme] of looks(
   const height = width < 500 ? 844 : 800;
   const ctx = await browser.newContext({ viewport: { width, height }, colorScheme: scheme });
   const page = await login(ctx);
-  page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
+  page.on("pageerror", (e) => navigationAbort(e.message) || fail(`${tag} pageerror: ${e.message}`));
   const make = async (title, description) =>
     (
       await page.request.post(base + "/api/v1/issues", {
@@ -91,14 +91,14 @@ for (const [width, scheme] of looks(
   const done = page.getByRole("button", { name: "Done", exact: true });
   const type = (s) => page.keyboard.type(s, { delay: KEY_DELAY });
   const press = (k) => page.keyboard.press(k);
-  const html = () => richBox.evaluate((el) => el.innerHTML);
+  const html = () => shape(richBox);
   const focused = () => richBox.evaluate((el) => el === document.activeElement);
 
   const openNew = async (name) => {
     const issue = await make(name, "");
     await page.goto(`${base}/issue/${issue.key}`);
     // The description lives on the Details tab, which a fresh browser opens second.
-    await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
+    await page.getByRole("tab", { name: "Details" }).click({ timeout: 15000 }).catch(() => {});
     await page.getByRole("button", { name: "Add a description…" }).click();
     await richBox.waitFor();
     return issue;
@@ -490,6 +490,51 @@ for (const [width, scheme] of looks(
       `${tag} the twice-nested item is inside the editor box (${JSON.stringify(fit)})`,
     );
     await page.screenshot({ path: `${out}/nested-${tag}.png` });
+    await press("Escape");
+  }
+  // 9. A task list opens where the view had it: the box and the text of every
+  // item, nested ones too, to a pixel.
+  {
+    const issue = await make("task layout", "- [ ] a\n  - [x] b\n    - [ ] deep\n- [x] d\n\nafter");
+    await page.goto(`${base}/issue/${issue.key}`);
+    const view = page.locator('.prose-wp[title="Click or press Enter to edit"]').first();
+    await view.waitFor();
+    // Where each item's text starts, and each box, in page coordinates.
+    const grab = (el) => {
+      const out = [];
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+        acceptNode: (n) => (n.parentElement.closest("label") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+      });
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const t = n.data.trim();
+        if (!t) continue;
+        const r = document.createRange();
+        const at = n.data.indexOf(t);
+        r.setStart(n, at);
+        r.setEnd(n, at + 1);
+        const b = r.getBoundingClientRect();
+        out.push([t.slice(0, 6), b.left, b.top]);
+      }
+      for (const c of el.querySelectorAll("input[type=checkbox]")) {
+        const b = c.getBoundingClientRect();
+        out.push(["box", b.left, b.top]);
+      }
+      return out.sort((x, y) => x[2] - y[2] || x[1] - y[1]);
+    };
+    const before = await view.evaluate(grab);
+    const spot = await view.evaluate((el) => {
+      const p = Array.from(el.querySelectorAll("p")).find((q) => q.textContent === "after");
+      const b = p.getBoundingClientRect();
+      return { x: b.left + 8, y: b.top + b.height / 2 };
+    });
+    await page.mouse.click(spot.x, spot.y);
+    await richBox.waitFor();
+    const after = await richBox.evaluate(grab);
+    const off = before.map((b, i) => (after[i] && after[i][0] === b[0] ? Math.max(Math.abs(after[i][1] - b[1]), Math.abs(after[i][2] - b[2])) : 99));
+    ok(
+      before.length === 9 && after.length === before.length && off.every((d) => d <= 0.6),
+      `${tag} task items and boxes, nested too, open where the view had them (${JSON.stringify(before.map((b) => b.map((v) => (typeof v === "number" ? Math.round(v * 10) / 10 : v))))} -> ${JSON.stringify(after.map((b) => b.map((v) => (typeof v === "number" ? Math.round(v * 10) / 10 : v))))})`,
+    );
     await press("Escape");
   }
   await ctx.close();

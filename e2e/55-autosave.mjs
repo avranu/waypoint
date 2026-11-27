@@ -6,6 +6,7 @@
 import { chromium } from "playwright";
 import fs from "node:fs";
 import { looks } from "./looks.mjs";
+import { fillMarkdown, markdownOf, mdBox } from "./editor.mjs";
 const [base, out] = process.argv.slice(2);
 fs.mkdirSync(out, { recursive: true });
 const errors = [];
@@ -117,21 +118,24 @@ for (const [width, scheme] of looks([
   );
   ok((await desc()).endsWith("offline!"), `${tag} Ctrl+Enter saves now and closes`);
 
-  const box = page.getByLabel("Comment", { exact: true });
-  await box.fill(`Half a thought ${tag}`);
+  const box = mdBox(page, { label: "Comment", exact: true });
+  await fillMarkdown(box, `Half a thought ${tag}`);
   await page.reload();
   await box.waitFor();
   ok(
-    (await box.inputValue()) === `Half a thought ${tag}`,
+    (await markdownOf(box)) === `Half a thought ${tag}`,
     `${tag} a comment draft survives a refresh`,
   );
   await page.getByRole("button", { name: "Comment", exact: true }).click();
-  await page.waitForFunction(() => document.querySelector("textarea[aria-label=Comment]")?.value === "");
+  await page.waitForFunction(() => {
+    const boxes = [...document.querySelectorAll('[aria-label=Comment]')];
+    return boxes.length > 0 && boxes.every((n) => (n.value ?? n.innerText).trim() === "");
+  });
   await page.reload();
   await box.waitFor();
-  ok((await box.inputValue()) === "", `${tag} a posted comment leaves no draft: ${JSON.stringify(await box.inputValue())}`);
+  ok((await markdownOf(box)).trim() === "", `${tag} a posted comment leaves no draft: ${JSON.stringify(await markdownOf(box))}`);
 
-  const body = page.getByPlaceholder(/Markdown supported/);
+  const body = page.locator(".rich-editor[contenteditable=true]");
   const pg = await (
     await page.request.post(base + "/api/v1/pages", {
       headers: H,

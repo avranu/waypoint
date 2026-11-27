@@ -5,6 +5,7 @@
 import { chromium } from "playwright";
 import fs from "node:fs";
 import { looks } from "./looks.mjs";
+import { fillMarkdown } from "./editor.mjs";
 const [base, out] = process.argv.slice(2);
 fs.mkdirSync(out, { recursive: true });
 const errors = [];
@@ -162,7 +163,7 @@ async function run(width, scheme) {
   await page
     .getByRole("button", { name: "Write the page… (markdown)" })
     .click();
-  await page.locator("textarea").first().fill("## Goal\n\nShip the thing.");
+  await fillMarkdown(page.locator(".rich-editor[contenteditable=true]"), "## Goal\n\nShip the thing.");
   await page.getByRole("button", { name: "Done", exact: true }).click();
   await page.getByRole("heading", { name: "Goal" }).waitFor();
   await page.getByRole("button", { name: /^Category$/ }).click();

@@ -18,7 +18,7 @@ import { toastError } from '@/components/ui/toast'
 import { agentLabel, whoLabel } from '@/lib/agents'
 import { WrittenBy } from '@/components/Provenance'
 import { MarkdownEditor } from './Description'
-import { MarkdownInput } from './MarkdownInput'
+import { MarkdownField } from '@/components/editor/MarkdownField'
 import type { Comment, IssueDetail, TextRef, WEvent } from '@/lib/types'
 
 type Tab = 'comments' | 'history' | 'time'
@@ -93,9 +93,8 @@ function Comments({ issue, comments }: { issue: IssueDetail; comments: Comment[]
       ))}
       <div className="flex gap-2.5">
         <Avatar user={me} size={28} className="mt-0.5 hidden sm:inline-flex" />
-        <div className="flex-1 space-y-2">
-          <MarkdownInput
-            autoGrow
+        <div className="min-w-0 flex-1 space-y-2">
+          <MarkdownField
             rows={2}
             value={body}
             onValueChange={setBody}
