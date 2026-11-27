@@ -253,7 +253,7 @@ func (s *Service) flowPulls(ctx context.Context, actor *Actor, projectID int64, 
 // the migration that made their table ran.
 func (s *Service) flowLinesFrom(ctx context.Context) (int64, error) {
 	var at int64
-	err := s.db.R.QueryRowContext(ctx, `SELECT applied_at FROM schema_migrations WHERE name = '0201_pr_flow_history.sql'`).Scan(&at)
+	err := s.db.R.QueryRowContext(ctx, `SELECT applied_at FROM schema_migrations WHERE name = '0212_pr_flow_history.sql'`).Scan(&at)
 	return at * 1000, err
 }
 
