@@ -7,7 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"git.jmann.me/claude/waypoint/internal/testnet"
 )
+
+func TestMain(m *testing.M) { os.Exit(testnet.Run(m)) }
 
 func TestListTestsHandlesTestMainAndParamTypes(t *testing.T) {
 	dir := t.TempDir()
