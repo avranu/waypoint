@@ -216,7 +216,7 @@ func TestRenumberHeadMoved(t *testing.T) {
 		t.Fatalf("an unfinished pass was tried again at once: %q", se.sg.union.log)
 	}
 	later := se.s.now().Add(6 * time.Minute)
-	se.s.now = func() time.Time { return later }
+	se.s.SetClock(func() time.Time { return later })
 	se.renumber()
 	if len(se.sg.union.log) != 1 {
 		t.Fatalf("calls after the head came back = %q", se.sg.union.log)
@@ -370,7 +370,7 @@ func TestRenumberSeesAMovedBase(t *testing.T) {
 			se.s.renumberBaseMoved(rnRef(se))
 		} else {
 			later := se.s.now().Add(6 * time.Minute)
-			se.s.now = func() time.Time { return later }
+			se.s.SetClock(func() time.Time { return later })
 		}
 		se.s.sweepRenumber(se.ctx)
 		if got := se.sg.union.log; len(got) != 1 || !strings.Contains(got[0], "0003_new_thing.sql") {
@@ -390,7 +390,7 @@ func TestRenumberFailureOnArmedPullRequest(t *testing.T) {
 	}
 	se.sg.union.commitErr = nil
 	later := se.s.now().Add(6 * time.Minute)
-	se.s.now = func() time.Time { return later }
+	se.s.SetClock(func() time.Time { return later })
 	se.renumber()
 	if len(se.sg.union.log) != 1 {
 		t.Fatalf("not tried again: %q", se.sg.union.log)
