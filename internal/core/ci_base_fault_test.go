@@ -284,6 +284,7 @@ func TestBaseAdvisoriesFileOneTask(t *testing.T) {
 		af.jobs[100+n] = append([]ActionJob{{ID: 1000 + n, RunID: 100 + n, Name: advisoriesJob, Status: "failure"}}, also...)
 		af.logs[1000+n] = "GO-2026-0001 called\n🏁  Job failed\n"
 		af.mu.Unlock()
+		se.s.noteCIActive(se.f.ID, "me/app") // the push's webhook
 	}
 	tasks := func() []string {
 		t.Helper()
@@ -377,10 +378,11 @@ func TestBaseAdvisoriesScheduledRuns(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// a scheduled run sends no webhook: a quiet repo's next full read sees it
 	sweep := func() {
 		t.Helper()
 		se.s.Wait()
-		se.setClock(se.clockNow().Add(10 * time.Minute))
+		se.setClock(se.clockNow().Add(ciIdleReread))
 		se.s.RecordCIHistory(se.ctx)
 	}
 	total := func() int {
@@ -548,5 +550,55 @@ func TestBaseAdvisoriesOwnerReadFails(t *testing.T) {
 	sweep()
 	if tasks() != 1 {
 		t.Fatalf("after the read works again: %d tasks, want 1", tasks())
+	}
+}
+
+// What a base branch is still owed is done by the next pass, however quiet
+// its repo is: a filing that failed doesn't wait for the idle repo's next
+// full read (WP-1980).
+func TestBaseAdvisoriesRetriedInQuietRepo(t *testing.T) {
+	se := newShipEnv(t, "forgejo")
+	af := &baseFaultForge{shipForge: se.sg, jobs: map[int64][]ActionJob{}, logs: map[int64]string{}}
+	se.s.Forges = af
+	af.add(6, "main", "0000006", "failure", "", se.clockNow().Add(-time.Hour))
+	af.mu.Lock()
+	af.runs[0].Event = "schedule"
+	af.jobs[106] = []ActionJob{{ID: 1006, RunID: 106, Name: advisoriesJob, Status: "failure"}}
+	af.logs[1006] = "GO-2026-0001 called\n"
+	af.mu.Unlock()
+	tasks := func() (n int) {
+		t.Helper()
+		if err := se.s.db.R.QueryRowContext(se.ctx, `SELECT count(*) FROM issues WHERE title LIKE 'Fix the advisories on %'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	exec := func(q string) {
+		t.Helper()
+		if _, err := se.s.db.W.ExecContext(se.ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sweep := func() {
+		t.Helper()
+		se.s.Wait()
+		se.setClock(se.clockNow().Add(time.Minute))
+		se.s.RecordCIHistory(se.ctx)
+	}
+	idle := func() bool {
+		se.s.ciBoard.mu.Lock()
+		defer se.s.ciBoard.mu.Unlock()
+		return se.s.ciBoard.idle(ciGateKey(se.f.ID, "me/app"), se.clockNow(), false)
+	}
+	exec(`CREATE TRIGGER no_advisories_task BEFORE INSERT ON issues
+		WHEN NEW.title LIKE 'Fix the advisories on %' BEGIN SELECT RAISE(ABORT, 'disk full'); END`)
+	sweep()
+	if tasks() != 0 || idle() {
+		t.Fatalf("a failed filing: %d tasks, idle %v", tasks(), idle())
+	}
+	exec(`DROP TRIGGER no_advisories_task`)
+	sweep()
+	if tasks() != 1 || !idle() {
+		t.Fatalf("the next pass: %d tasks, idle %v", tasks(), idle())
 	}
 }

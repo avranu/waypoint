@@ -67,11 +67,13 @@ type branchDefaulter interface {
 // (checkBaseAdvisories), and re-runs the runner-fault jobs of the newest push runs of
 // repo's default and release branches, or files a task about them. fresh
 // are the runs the forge listed just now; the kept history (ci_runs) adds
-// a quiet branch's older ones.
-func (s *Service) checkBaseFaults(ctx context.Context, f *Forge, repo string, fresh map[int64]ActionRun) {
+// a quiet branch's older ones. It says whether work is left that a later
+// pass must do with no new run to prompt it: a re-run still to come or to
+// be followed, or something it couldn't read or file.
+func (s *Service) checkBaseFaults(ctx context.Context, f *Forge, repo string, fresh map[int64]ActionRun) (workLeft bool) {
 	cl, ok := s.Forges.(ForgeActionLogs)
 	if !ok {
-		return
+		return false
 	}
 	runs := s.basePushRuns(ctx, f.ID, repo, fresh)
 	states := s.baseFaults(ctx, f.ID, repo)
@@ -82,12 +84,13 @@ func (s *Service) checkBaseFaults(ctx context.Context, f *Forge, repo string, fr
 		}
 	}
 	def := sync.OnceValue(func() string { return s.baseDefaultBranch(ctx, f, repo) })
-	s.checkBaseAdvisories(ctx, cl, f, repo, def, fresh)
+	workLeft = !s.checkBaseAdvisories(ctx, cl, f, repo, def, fresh)
 	for _, branch := range branches {
 		key := baseFaultSettingKey(f.ID, repo, branch)
 		old, had := states[branch]
 		red, running := redTip(runs[branch])
 		if running {
+			workLeft = true
 			continue
 		}
 		if len(red) == 0 {
@@ -105,6 +108,7 @@ func (s *Service) checkBaseFaults(ctx context.Context, f *Forge, repo string, fr
 		}
 		if !strings.HasPrefix(branch, "release/") {
 			if d := def(); d == "" || branch != d {
+				workLeft = workLeft || d == ""
 				continue
 			}
 		}
@@ -112,7 +116,11 @@ func (s *Service) checkBaseFaults(ctx context.Context, f *Forge, repo string, fr
 		if !had || st != old {
 			s.putSetting(ctx, key, st.String())
 		}
+		if st.ended != baseFaultAsked && st.ended != baseFaultOther {
+			workLeft = true
+		}
 	}
+	return workLeft
 }
 
 // baseDefaultBranch is repo's default branch, "main" when the forge can't
@@ -457,7 +465,8 @@ func baseAdvisoriesSeenKey(forgeID int64, repo, branch string) string {
 // nothing to file or the matter is settled; a read or write failure leaves
 // it to the next pass. A branch other than the default one (def; "" when
 // the lookup failed) has no advisories job.
-func (s *Service) checkBaseAdvisories(ctx context.Context, cl ForgeActionLogs, f *Forge, repo string, def func() string, fresh map[int64]ActionRun) {
+func (s *Service) checkBaseAdvisories(ctx context.Context, cl ForgeActionLogs, f *Forge, repo string, def func() string, fresh map[int64]ActionRun) (settled bool) {
+	settled = true
 	var newest *ActionRun
 	var key string
 	for b, runs := range s.baseRuns(ctx, f.ID, repo, fresh, "push", "schedule", "workflow_dispatch") {
@@ -471,37 +480,43 @@ func (s *Service) checkBaseAdvisories(ctx context.Context, cl ForgeActionLogs, f
 			continue
 		}
 		k := baseAdvisoriesSeenKey(f.ID, repo, b)
-		if v, err := s.serverSetting(ctx, s.db.R, k); err != nil || v == strconv.FormatInt(n.Index, 10) {
+		v, err := s.serverSetting(ctx, s.db.R, k)
+		if err != nil || v == strconv.FormatInt(n.Index, 10) {
+			settled = settled && err == nil
 			continue
 		}
-		if b == def() {
+		switch d := def(); d {
+		case b:
 			newest, key = n, k
+		case "":
+			settled = false
 		}
 	}
 	if newest == nil {
-		return
+		return settled
 	}
 	branch := newest.PrettyRef
 	cur, err := cl.ActionRunNumber(ctx, f, repo, newest.Index)
 	if err != nil || ciPending(cur.Status) || cur.Status != "failure" {
-		return
+		return false
 	}
 	jobs, err := cl.ActionJobs(ctx, f, repo, cur.ID)
 	if err != nil {
-		return
+		return false
 	}
 	stopped := cur.Stopped
 	if !validTime(stopped) {
 		stopped = newest.Created
 	}
 	if len(jobs) == 0 && s.now().Sub(stopped) < 5*time.Minute {
-		return
+		return false
 	}
 	if slices.ContainsFunc(jobs, func(j ActionJob) bool { return j.Name == advisoriesJob && j.Status == "failure" }) &&
 		!s.fileAdvisories(ctx, f, repo, branch, cur.CommitSHA, cur) {
-		return
+		return false
 	}
 	s.putSetting(ctx, key, strconv.FormatInt(newest.Index, 10))
+	return settled
 }
 
 // fileAdvisories files the one urgent task about a base branch whose

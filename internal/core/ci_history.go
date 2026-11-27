@@ -221,25 +221,30 @@ func (s *Service) RecordCIHistory(ctx context.Context) {
 		s.ciBoard.mu.Lock()
 		idle := s.ciBoard.idle(key, s.now(), false)
 		s.ciBoard.mu.Unlock()
-		if idle {
-			continue // nothing has run there; read in full every ciIdleReread (WP-1980)
-		}
-		h := s.ciRepoHistory(ctx, cl, r.forge, r.repo, direct)
-		if h.err == nil || noActions(h.err) {
-			s.ciBoard.mu.Lock()
-			s.ciBoard.gateFor(key).histAt = s.now()
-			s.ciBoard.mu.Unlock()
-		}
-		if h.err != nil {
-			if !errors.Is(h.err, ErrNotFound) {
-				s.log.Debug("CI history: read", "repo", r.repo, "err", h.err)
+		// Where nothing has run, the forge isn't asked for runs and tasks
+		// until ciIdleReread (WP-1980). What the kept jobs still owe (their
+		// logs, the limits) goes on every pass; it asks nothing when
+		// nothing is owed.
+		var h *ciHistory
+		if !idle {
+			h = s.ciRepoHistory(ctx, cl, r.forge, r.repo, direct)
+			if h.err != nil {
+				if noActions(h.err) {
+					s.noteCIHistoryRead(key, h, false)
+				}
+				if !errors.Is(h.err, ErrNotFound) {
+					s.log.Debug("CI history: read", "repo", r.repo, "err", h.err)
+				}
+				continue
 			}
-			continue
 		}
 		if err := s.readStepFailed(ctx, r.forge, r.repo); err != nil && ctx.Err() == nil {
 			s.log.Debug("CI history: read cancelled jobs' logs", "repo", r.repo, "err", err)
 		}
-		s.checkBaseFaults(ctx, r.forge, r.repo, h.runs)
+		if h != nil {
+			// a base branch still owed a re-run or a task keeps its repo read
+			s.noteCIHistoryRead(key, h, s.checkBaseFaults(ctx, r.forge, r.repo, h.runs))
+		}
 		if err := s.readCIEvidence(ctx, r.forge, r.repo); err != nil && ctx.Err() == nil {
 			s.log.Debug("CI history: read jobs' evidence", "repo", r.repo, "err", err)
 		}

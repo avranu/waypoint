@@ -25,9 +25,9 @@ const (
 	ciReadParallel  = 6
 	ciPoolKey       = "ci_pool"
 
-	// A repo with no CI activity is not asked again (WP-1980): readCIRepo
-	// and RecordCIHistory reuse what they last read of it until something
-	// marks it active (a forge webhook, a read that found unfinished runs
+	// A repo with no CI activity is not asked for its runs and tasks again
+	// (WP-1980): readCIRepo and RecordCIHistory make do with what they last
+	// read of it until something marks it active (a forge webhook, a read that found unfinished runs
 	// or running tasks, Waypoint re-running a job), and for ciActiveFor
 	// after. An idle repo is still read in full about every ciIdleReread,
 	// which covers scheduled workflows and repos with no webhook; each
@@ -274,9 +274,10 @@ func (c *ciBoardCache) gateFor(key string) *ciGate {
 	return g
 }
 
-// idle: the repo showed no CI activity for ciActiveFor, its last read
-// (the board's when board is true, else the history's) didn't fail, and
-// that read is less than its share of ciIdleReread old. Needs c.mu held.
+// idle: the repo showed no CI activity for ciActiveFor nor since its last
+// read (the board's when board is true, else the history's) began, that
+// read didn't fail, and it is less than its share of ciIdleReread old.
+// Needs c.mu held.
 func (c *ciBoardCache) idle(key string, now time.Time, board bool) bool {
 	g := c.gate[key]
 	if g == nil {
@@ -294,7 +295,7 @@ func (c *ciBoardCache) idle(key string, now time.Time, board bool) bool {
 			return false
 		}
 	}
-	if at.IsZero() || now.Sub(g.activeAt) < ciActiveFor {
+	if at.IsZero() || g.activeAt.After(at) || now.Sub(g.activeAt) < ciActiveFor {
 		return false
 	}
 	h := fnv.New32a()
@@ -562,18 +563,21 @@ func (s *Service) readCIRepo(ctx context.Context, cl ForgeActions, d *ciRepoData
 	}
 	key := ciGateKey(f.ID, repo)
 	c := &s.ciBoard
+	start := s.now()
 	c.mu.Lock()
-	if c.idle(key, s.now(), true) {
+	// a history read that failed since is read again, so the board says so
+	// rather than showing the repo with jobs missing
+	if h := c.history[key]; c.idle(key, start, true) && (h == nil || h.err == nil || noActions(h.err)) {
 		*d = *c.gate[key].data
 		d.ref = ref
-		if h := c.history[key]; h != nil {
+		if h != nil && h.err == nil {
 			d.hist = h
 		}
 		c.mu.Unlock()
 		return
 	}
 	c.mu.Unlock()
-	defer func() { s.noteCIRead(key, d) }()
+	defer func() { s.noteCIRead(key, start, d) }()
 	err := call(func() (err error) {
 		d.active, err = cl.ActionRuns(ctx, f, repo, []string{"waiting", "running", "blocked"}, 1, 50)
 		return err
@@ -629,25 +633,53 @@ func (s *Service) readCIRepo(ctx context.Context, cl ForgeActions, d *ciRepoData
 	}
 }
 
-// noteCIRead keeps a read of a repo for the gate; one that found unfinished
-// runs or running tasks marks the repo active.
-func (s *Service) noteCIRead(key string, d *ciRepoData) {
-	now := s.now()
+// noteCIRead keeps a read of a repo, begun at start, for the gate; one that
+// found unfinished runs or running tasks marks the repo active.
+func (s *Service) noteCIRead(key string, start time.Time, d *ciRepoData) {
 	c := &s.ciBoard
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	g := c.gateFor(key)
-	g.readAt = now
+	g.readAt = start
 	cp := *d
 	g.data = &cp
 	if len(d.active) > 0 || len(d.running) > 0 {
-		g.activeAt = now
+		g.activeSince(start)
+	}
+}
+
+// activeSince records a sign of CI activity at at, keeping a later one.
+func (g *ciGate) activeSince(at time.Time) {
+	if at.After(g.activeAt) {
+		g.activeAt = at
+	}
+}
+
+// noteCIHistoryRead tells the gate of a history read RecordCIHistory is done
+// with. It is dated when the forge was asked, which a memoized read's was a
+// while ago; one that found an unfinished run or task marks the repo active.
+// With work left over, the read doesn't count: the next pass reads again.
+func (s *Service) noteCIHistoryRead(key string, h *ciHistory, workLeft bool) {
+	pending := slices.ContainsFunc(h.tasks, func(t ActionTask) bool { return ciPending(t.Status) })
+	for _, r := range h.runs {
+		pending = pending || ciPending(r.Status)
+	}
+	c := &s.ciBoard
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	g := c.gateFor(key)
+	g.histAt = h.at
+	if workLeft {
+		g.histAt = time.Time{}
+	}
+	if pending {
+		g.activeSince(h.at)
 	}
 }
 
 func (s *Service) ciRepoHistory(ctx context.Context, cl ForgeActions, f *Forge, repo string, call func(func() error) error) *ciHistory {
 	c := &s.ciBoard
-	key := strconv.FormatInt(f.ID, 10) + "|" + strings.ToLower(repo)
+	key := ciGateKey(f.ID, repo)
 	c.mu.Lock()
 	h := c.history[key]
 	c.mu.Unlock()
