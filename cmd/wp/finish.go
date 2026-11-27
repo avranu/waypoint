@@ -22,6 +22,10 @@ With code to ship (staged changes, unpushed commits, or a branch with commits
 for the task): runs wp test (or --check CMD; --no-check skips), commits staged
 changes with -m, pushes, opens the PR (with Waypoint's auto-generated body),
 arms auto-merge and babysitting, and moves the task to In Review.
+A person merges (not armed) where the repo's Merge automatically is off or
+covers only other base branches, and where the head is outside the repo. A pull
+request already open from the branch for another task is pushed to but not armed
+or babysat: your task is linked to it and stays In Review until it merges.
 With nothing to ship: moves the task to its next step or Done. Uncommitted files
 with nothing else to ship are refused unless you stage them or pass --no-ship.
 
