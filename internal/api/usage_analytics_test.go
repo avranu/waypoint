@@ -102,3 +102,45 @@ func TestUsageAnalyticsAPI(t *testing.T) {
 		t.Errorf("delete price: %d", code)
 	}
 }
+
+// GET /usage/no-task needs usage.read; days and user are accepted, and
+// another person's is for an admin only.
+func TestUsageNoTaskAPI(t *testing.T) {
+	ts, svc := setup(t)
+	ctx := context.Background()
+	mk := func(name string, admin bool) (*core.Actor, *client) {
+		u, err := svc.CreateUser(ctx, core.SystemActor(), core.CreateUserInput{Username: name, Email: name + "@example.com", Password: "correct-horse-battery", IsAdmin: admin})
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := &core.Actor{User: u}
+		tok, _, _ := svc.CreateAPIToken(ctx, a, name, false, 0)
+		return a, &client{t: t, base: ts.URL, http: http.DefaultClient, token: tok}
+	}
+	admin, adminC := mk("robin", true)
+	_, pat := mk("pat", false)
+	var got map[string]any
+	if code := pat.json("GET", "/api/v1/usage/no-task", nil, &got); code != 200 || got == nil {
+		t.Fatalf("no-task: %d %v", code, got)
+	}
+	if code, b := pat.do("GET", "/api/v1/usage/no-task?days=7&user=pat", nil); code != 200 {
+		t.Errorf("days and own user: %d %s", code, b)
+	}
+	if code := adminC.json("GET", "/api/v1/usage/no-task?days=30&user=pat", nil, &got); code != 200 {
+		t.Errorf("admin reads pat: %d", code)
+	}
+	if code, _ := pat.do("GET", "/api/v1/usage/no-task?user=robin", nil); code != 403 {
+		t.Errorf("pat reads robin: %d", code)
+	}
+	secret, _, err := svc.CreateToken(ctx, admin, core.TokenSpec{Name: "narrow", Agent: "anthropic/claude-code", Permissions: []core.Permission{core.PermIssuesRead}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	narrow := &client{t: t, base: ts.URL, http: http.DefaultClient, token: secret}
+	if code, _ := narrow.do("GET", "/api/v1/usage/no-task", nil); code != 403 {
+		t.Errorf("token without usage.read: %d", code)
+	}
+	if code, _ := (&client{t: t, base: ts.URL, http: http.DefaultClient}).do("GET", "/api/v1/usage/no-task", nil); code != 401 {
+		t.Errorf("anonymous: %d", code)
+	}
+}

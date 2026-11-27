@@ -12,27 +12,70 @@ import (
 	"time"
 )
 
-// Raw transcripts are for a person at their own terminal or in the web: not
-// for a coding agent's shell, an agent session or an agent token (audit
-// 1218.2). Reading them out is what the guard is for: they hold what the
-// agent was never shown.
-func TestTranscriptReadsRefuseAgentShells(t *testing.T) {
+// A transcript holds what the agent was never shown, so an agent reads its
+// own person's, whether by token or in the person's shell, but not another
+// person's or everyone's, even when its person is an admin (WP-1587).
+func TestTranscriptReadsByAgent(t *testing.T) {
 	e := transcriptEnv(t)
 	jo := e.user("jo", false)
 	l := `{"cmd":"x"}` + "\n"
 	e.put(jo, piece("s1", "main", 0, l), l)
+	read := func(a *Actor, user string) (string, error) {
+		var b bytes.Buffer
+		err := e.s.ReadTranscript(e.ctx, a, TranscriptQuery{Session: "s1", File: "main", User: user}, &b)
+		return b.String(), err
+	}
+	shell := *jo
+	shell.AgentEnv = "claude"
+	sess := *jo
+	sess.Session = 7
 	for name, a := range map[string]*Actor{
-		"agent env": {User: jo.User, AgentEnv: "claude"},
-		"session":   {User: jo.User, Session: 7},
+		"agent env": &shell,
+		"session":   &sess,
 		"agent":     agentActor(jo, "anthropic/claude-code"),
 	} {
-		var b bytes.Buffer
-		if err := e.s.ReadTranscript(e.ctx, a, TranscriptQuery{Session: "s1", File: "main"}, &b); !errors.Is(err, ErrForbidden) || b.Len() != 0 {
-			t.Errorf("%s read: err %v, %d bytes", name, err, b.Len())
+		if got, err := read(a, ""); err != nil || got != l {
+			t.Errorf("%s reading its person's: %q %v", name, got, err)
 		}
-		if _, err := e.s.TranscriptFiles(e.ctx, a, TranscriptQuery{Session: "s1"}); !errors.Is(err, ErrForbidden) {
-			t.Errorf("%s list: %v", name, err)
+		if got, err := read(a, "JO"); err != nil || got != l {
+			t.Errorf("%s naming its own person (any case): %q %v", name, got, err)
 		}
+		if fs, err := e.s.TranscriptFiles(e.ctx, a, TranscriptQuery{Session: "s1"}); err != nil || len(fs) != 1 {
+			t.Errorf("%s list: %v %v", name, fs, err)
+		}
+	}
+	adm := e.admin
+	admShell := *adm
+	admShell.AgentEnv = "claude"
+	for name, a := range map[string]*Actor{"agent token": agentActor(adm, "anthropic/claude-code"), "agent shell": &admShell} {
+		for _, who := range []string{"jo", "all"} {
+			got, err := read(a, who)
+			if !errors.Is(err, ErrForbidden) || got != "" || !strings.Contains(err.Error(), "leaving out --user") {
+				t.Errorf("%s admin reading --user %s: %q %v", name, who, got, err)
+			}
+			if _, err := e.s.TranscriptFiles(e.ctx, a, TranscriptQuery{Session: "s1", User: who}); !errors.Is(err, ErrForbidden) {
+				t.Errorf("%s admin listing --user %s: %v", name, who, err)
+			}
+		}
+	}
+	if got, err := read(adm, "jo"); err != nil || got != l {
+		t.Errorf("a person admin reading jo's: %q %v", got, err)
+	}
+	// Another person's agent finds nothing under jo's session id.
+	kim := e.user("kim", false)
+	if fs, err := e.s.TranscriptFiles(e.ctx, agentActor(kim, "anthropic/claude-code"), TranscriptQuery{Session: "s1"}); err != nil || len(fs) != 0 {
+		t.Errorf("another person's agent listing jo's session: %v %v", fs, err)
+	}
+	// A token without usage.read, or a runner job's scoped token, reads nothing.
+	noUsage := *jo
+	noUsage.Permissions = PermissionSet{PermIssuesRead: true}
+	if _, err := read(&noUsage, ""); !errors.Is(err, ErrForbidden) {
+		t.Errorf("a token without usage.read: %v", err)
+	}
+	job := *jo
+	job.scope = map[int64]int{1: RoleEditor}
+	if got, err := read(&job, ""); !errors.Is(err, ErrForbidden) || got != "" {
+		t.Errorf("a runner job's scoped token: %q %v", got, err)
 	}
 }
 

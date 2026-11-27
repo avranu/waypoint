@@ -56,6 +56,7 @@ type rec struct {
 	Effort         string `json:"effort"`
 	PerTurnEffort  string `json:"perTurnEffort"`
 	GitBranch      string `json:"gitBranch"`
+	Cwd            string `json:"cwd"`
 	Version        string `json:"version"`
 	IsMeta         bool   `json:"isMeta"`
 	IsCompact      bool   `json:"isCompactSummary"`
@@ -89,7 +90,12 @@ type rec struct {
 		Content    json.RawMessage `json:"content"`
 	} `json:"message"`
 	ToolUseResult json.RawMessage `json:"toolUseResult"`
-	Attachment    json.RawMessage `json:"attachment"`
+	// PermissionDecision is how a tool call's permission was settled, on the
+	// record that carries its result: "reject" is a refusal whatever the text.
+	PermissionDecision *struct {
+		Decision string `json:"decision"`
+	} `json:"permissionDecision"`
+	Attachment json.RawMessage `json:"attachment"`
 }
 
 type block struct {
@@ -104,24 +110,37 @@ type block struct {
 }
 
 type toolInput struct {
-	FilePath     string `json:"file_path"`
-	NotebookPath string `json:"notebook_path"`
-	Path         string `json:"path"`
-	Pattern      string `json:"pattern"`
-	Command      string `json:"command"`
-	URL          string `json:"url"`
-	Query        string `json:"query"`
-	Skill        string `json:"skill"`
-	To           string `json:"to"`
-	RecipientKnd string `json:"recipient_kind"`
-	SubagentType string `json:"subagent_type"`
-	Description  string `json:"description"`
-	Model        string `json:"model"`
-	Plan         string `json:"plan"`
-	Offset       *int64 `json:"offset"`
-	Limit        *int64 `json:"limit"`
-	Background   *bool  `json:"run_in_background"`
-	Todos        []any  `json:"todos"`
+	FilePath     string      `json:"file_path"`
+	NotebookPath string      `json:"notebook_path"`
+	Path         string      `json:"path"`
+	Pattern      string      `json:"pattern"`
+	Command      string      `json:"command"`
+	URL          string      `json:"url"`
+	Query        string      `json:"query"`
+	Skill        string      `json:"skill"`
+	To           string      `json:"to"`
+	RecipientKnd string      `json:"recipient_kind"`
+	SubagentType string      `json:"subagent_type"`
+	Description  string      `json:"description"`
+	Model        string      `json:"model"`
+	Plan         string      `json:"plan"`
+	Offset       *int64      `json:"offset"`
+	Limit        *int64      `json:"limit"`
+	Background   *bool       `json:"run_in_background"`
+	Todos        []any       `json:"todos"`
+	Content      lenientText `json:"content"`
+}
+
+// lenientText is a string field that is empty, not an error, when the tool's
+// input has something else under that name (an MCP tool's content list).
+type lenientText string
+
+func (l *lenientText) UnmarshalJSON(b []byte) error {
+	var s string
+	if json.Unmarshal(b, &s) == nil {
+		*l = lenientText(s)
+	}
+	return nil
 }
 
 type toolResult struct {
@@ -202,6 +221,7 @@ type parser struct {
 	reqRef     map[int]string
 	setting    map[string]string
 	settingUID map[string]int
+	shell      ShellSession // the working directories and kept scripts of this file
 }
 
 // Parse reads one transcript file. file is where it sits under the session
@@ -290,6 +310,7 @@ func (p *parser) line(b []byte) {
 	if ts != nil {
 		p.lastTS = *ts
 	}
+	p.shell.Note(r.Cwd)
 	thread := p.fileThread
 	if r.AgentID != "" {
 		thread = r.AgentID
@@ -379,6 +400,7 @@ func (p *parser) assistant(r *rec, ts *int64, thread string, main bool) {
 	}
 	if strings.HasPrefix(m.Model, "<") {
 		p.ignored("assistant/synthetic")
+		p.toolBlocks(m.Content, m.ID, r, ts, thread, true)
 		return
 	}
 	if main {
@@ -434,20 +456,32 @@ func (p *parser) assistant(r *rec, ts *int64, thread string, main bool) {
 			c.Context = ptr(*u.Input + *u.CacheCreation + *u.CacheRead)
 		}
 	}
-	if bytes.Contains(m.Content, []byte(`"tool_use"`)) {
-		var blocks []block
-		if err := json.Unmarshal(m.Content, &blocks); err != nil {
-			p.undecoded("assistant_content")
-		} else {
-			for i := range blocks {
-				switch {
-				case blocks[i].Type != "tool_use":
-				case blocks[i].ID == "":
-					p.ignored("tool_use/(no id)")
-				default:
-					p.toolUse(&blocks[i], r, ts, thread, m.ID)
-				}
-			}
+	p.toolBlocks(m.Content, m.ID, r, ts, thread, false)
+}
+
+// toolBlocks records the tool_use blocks of an assistant record. A record
+// whose model is <synthetic> is not a model call (no usage, no ModelCall row);
+// its blocks are tools a script ran, marked ByScript, with no message id.
+func (p *parser) toolBlocks(content json.RawMessage, id string, r *rec, ts *int64, thread string, byScript bool) {
+	if !bytes.Contains(content, []byte(`"tool_use"`)) {
+		return
+	}
+	var blocks []block
+	if err := json.Unmarshal(content, &blocks); err != nil {
+		p.undecoded("assistant_content")
+		return
+	}
+	msgID := id
+	if byScript {
+		msgID = ""
+	}
+	for i := range blocks {
+		switch {
+		case blocks[i].Type != "tool_use":
+		case blocks[i].ID == "":
+			p.ignored("tool_use/(no id)")
+		default:
+			p.toolUse(&blocks[i], r, ts, thread, msgID, byScript)
 		}
 	}
 }
@@ -504,7 +538,7 @@ func urlHead(raw string) string {
 	return clip(u.String(), targetRunes)
 }
 
-func (p *parser) toolUse(bl *block, r *rec, ts *int64, thread, msgID string) {
+func (p *parser) toolUse(bl *block, r *rec, ts *int64, thread, msgID string, byScript bool) {
 	if _, dup := p.tools[bl.ID]; dup {
 		return
 	}
@@ -512,7 +546,7 @@ func (p *parser) toolUse(bl *block, r *rec, ts *int64, thread, msgID string) {
 	if err := json.Unmarshal(bl.Input, &in); err != nil {
 		p.undecoded("tool_input")
 	}
-	t := ToolCall{Row: p.row(bl.ID, ts, thread), ToolUseID: bl.ID, MsgID: strp(msgID), PromptID: p.prompt, Tool: bl.Name}
+	t := ToolCall{Row: p.row(bl.ID, ts, thread), ToolUseID: bl.ID, MsgID: strp(msgID), PromptID: p.prompt, Tool: bl.Name, ByScript: byScript}
 	set := func(kind, target string) {
 		if target != "" {
 			t.Target, t.TargetKind = ptr(target), ptr(kind)
@@ -527,12 +561,26 @@ func (p *parser) toolUse(bl *block, r *rec, ts *int64, thread, msgID string) {
 		t.IsTest = ptr(isTestPath(f))
 	}
 	switch bl.Name {
+	case "Write":
+		p.shell.KeepWrite(in.FilePath, r.Cwd, string(in.Content))
 	case "Read":
 		set("file", clip(in.FilePath, targetRunes))
 		t.ReadOffset, t.ReadLimit = in.Offset, in.Limit
 	case "Bash", "PowerShell":
 		set("command", commandHead(in.Command))
 		t.Background = in.Background
+		if bl.Name == "Bash" {
+			// Read as the client reads it (only the command): input that does
+			// not decode is a command never read, so its fact stays unknown.
+			var cmd struct {
+				Command string `json:"command"`
+			}
+			if json.Unmarshal(bl.Input, &cmd) == nil {
+				if wrote, known := p.shell.Edit(cmd.Command, r.Cwd); known {
+					t.ShellWrite = ptr(wrote)
+				}
+			}
+		}
 	case "Grep", "Glob":
 		set("pattern", clip(in.Pattern, patternRunes))
 	case "WebFetch":
@@ -558,6 +606,15 @@ func (p *parser) toolUse(bl *block, r *rec, ts *int64, thread, msgID string) {
 	}
 	p.tools[bl.ID] = len(p.res.ToolCalls)
 	p.res.ToolCalls = append(p.res.ToolCalls, t)
+}
+
+// LooksRefused says a tool result's text is a refusal: the call never ran,
+// because a permission was denied, a hook or the auto-mode classifier blocked
+// it, or the user declined.
+func LooksRefused(text string) bool {
+	return strings.HasPrefix(text, "Permission for this") || strings.Contains(text, "denied by the Claude Code auto mode classifier") ||
+		strings.Contains(text, "hook error:") && strings.Contains(text, "Blocked") ||
+		strings.HasPrefix(text, "The user doesn't want to proceed") || strings.HasPrefix(text, "Permission to use ")
 }
 
 var exitCodeRE = regexp.MustCompile(`^Exit code (\d+)`)
@@ -694,6 +751,10 @@ func (p *parser) results(blocks []block, r *rec, ts *int64, n int) {
 		t.ResultAt, t.ResultBytes, t.IsError = ts, size, ptr(bl.IsError)
 		if ts != nil && t.At != nil && *ts >= *t.At {
 			t.DurationMS = ptr(*ts - *t.At)
+		}
+		rejected := r.PermissionDecision != nil && r.PermissionDecision.Decision == "reject"
+		if t.Tool == "Bash" && (rejected || bl.IsError && LooksRefused(text)) {
+			t.ShellWrite = ptr(false) // it never ran
 		}
 		if bl.IsError {
 			t.Error = strp(clip(text, errorRunes))

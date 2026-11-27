@@ -5,13 +5,13 @@ import (
 	"hash/fnv"
 	"os"
 	"path"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
 
 	"git.jmann.me/claude/waypoint/internal/lazyre"
+	trscript "git.jmann.me/claude/waypoint/internal/transcript"
 )
 
 // usageTraceVersion: a file read before traces (0) is read again, from the
@@ -117,75 +117,9 @@ type traceState struct {
 	Seq     int          `json:"n"`
 	Cur     *traceSeg    `json:"c,omitempty"`
 	Scripts traceScripts `json:"sc,omitempty"`
-}
-
-// traceScripts remembers the scripts a session kept in files, by where it
-// put them, with what each writes: an agent that writes edit.py to a scratch
-// directory and runs it has edited what edit.py writes, at the call that
-// runs it. Only the paths a script writes are kept, never its text.
-type traceScripts []traceScript
-
-type traceScript struct {
-	At     string   `json:"a"`
-	Writes []string `json:"w"`
-	Unsure bool     `json:"u,omitempty"` // no written path could be followed: every file it names
-}
-
-const (
-	traceMaxScripts     = 24
-	traceMaxScriptPaths = 24
-)
-
-var traceScriptFileRE = lazyre.New(`\.(?:py|js|mjs|cjs|ts|rb)$`)
-
-// keep notes the script now at a path, replacing what was there; a script
-// that writes nothing is only forgotten.
-func (m *traceScripts) keep(at, body string) {
-	if m == nil || !traceScriptFileRE.MatchString(at) {
-		return
-	}
-	for i := range *m {
-		if (*m)[i].At == at {
-			*m = append((*m)[:i:i], (*m)[i+1:]...)
-			break
-		}
-	}
-	ps, sure := traceScriptWrites(body)
-	if len(ps) == 0 {
-		return
-	}
-	if len(ps) > traceMaxScriptPaths {
-		ps = ps[:traceMaxScriptPaths]
-	}
-	if len(*m) >= traceMaxScripts {
-		*m = append((*m)[:0:0], (*m)[1:]...)
-	}
-	*m = append(*m, traceScript{At: at, Writes: ps, Unsure: !sure})
-}
-
-func (m *traceScripts) at(at string) *traceScript {
-	if m == nil {
-		return nil
-	}
-	for i := range *m {
-		if (*m)[i].At == at {
-			return &(*m)[i]
-		}
-	}
-	return nil
-}
-
-// traceAt names where a word of a command points, to match a script kept
-// there with the command that runs it: the path when the line says it, else
-// the word as written ($S/edit.py is the same file both times).
-func traceAt(w, dir string) string {
-	switch {
-	case strings.HasPrefix(w, "/"):
-		return path.Clean(w)
-	case w == "" || w[0] == '$' || dir == "" || dir == traceNowhere:
-		return w
-	}
-	return path.Join(dir, w)
+	// Roots are the directories the transcript's records were in so far: what
+	// a shell write is judged against, as the server judges it.
+	Roots []string `json:"r,omitempty"`
 }
 
 func (t *traceState) clone() *traceState {
@@ -194,6 +128,7 @@ func (t *traceState) clone() *traceState {
 	}
 	c := *t
 	c.Scripts = append(traceScripts(nil), t.Scripts...)
+	c.Roots = append([]string(nil), t.Roots...)
 	if t.Cur != nil {
 		s := *t.Cur
 		s.Files = append([]usageTraceFile(nil), t.Cur.Files...)
@@ -212,7 +147,6 @@ func (t *traceState) clone() *traceState {
 var (
 	traceKeyRE   = lazyre.New(`^([A-Z][A-Z0-9]{1,9}-\d+) "`)
 	traceGivenRE = lazyre.New(`^(?:Autopilot assigned|.{1,120} started this session for) ([A-Z][A-Z0-9]{1,9}-\d+)(?: to you)?: "`)
-	traceExts    = map[string]bool{}
 	traceSearchH = map[string]bool{"grep": true, "egrep": true, "fgrep": true, "rg": true, "ag": true, "ack": true, "find": true, "fd": true, "ls": true, "tree": true}
 	traceReadH   = map[string]bool{"sed": true, "awk": true, "cat": true, "less": true, "head": true, "tail": true, "wc": true, "nl": true, "bat": true}
 	traceIndexH  = map[string]bool{"wp code": true, "wp brief": true}
@@ -220,34 +154,6 @@ var (
 	traceLocateH = map[string]bool{"find": true, "fd": true, "ls": true, "tree": true, "git ls-files": true, "wp code": true, "wp brief": true}
 )
 
-func init() {
-	for _, e := range strings.Fields("go ts tsx js jsx mjs cjs py sql md sh yml yaml json css scss html rs kt kts java toml mk tf proto vue svelte rb php c h cpp txt xml gradle ini cfg conf service tmpl") {
-		traceExts[e] = true
-	}
-}
-
-// traceFileShape says a word names a file: a name with a known extension, or
-// Makefile or Dockerfile, made of path characters only.
-func traceFileShape(w string) bool {
-	if w == "" || len(w) > 400 {
-		return false
-	}
-	for i := 0; i < len(w); i++ {
-		c := w[i]
-		pathChar := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte("_.@+/-", c) >= 0
-		if !pathChar {
-			return false
-		}
-	}
-	base := path.Base(w)
-	if base == "Makefile" || base == "Dockerfile" {
-		return true
-	}
-	i := strings.LastIndexByte(base, '.')
-	return i > 0 && traceExts[base[i+1:]] && !strings.HasSuffix(w, "/")
-}
-
-// tracePath names a file of the work: its path from the root of its checkout
 // and, when the checkout's origin tells, its repository (owner/name).
 type tracePath struct {
 	P string `json:"p"`
@@ -268,7 +174,7 @@ var traceGit = struct {
 
 // traceScratch are the directories agents keep scratch files in: nothing
 // under them is a file of the work, whatever checkout it is in.
-var traceScratch = []string{"/tmp/", "/var/tmp/"}
+var traceScratch = []string{"/tmp/", "/var/tmp/", "/private/tmp/", "/private/var/tmp/", "/var/folders/", "/private/var/folders/"}
 
 // traceWorktreeRE reads the path of a worktree kept inside its checkout, by
 // Claude Code (.claude/worktrees, WP-ADR57) or by hand (.worktrees): the
@@ -377,6 +283,13 @@ func traceFile(p, cwd string) (f tracePath, work bool) {
 	traceGit.Lock()
 	defer traceGit.Unlock()
 	rel, repo := "", ""
+	// A checkout's own root (gofmt -w . run in it) is the work, though no
+	// file of it is named.
+	if self := traceCheckoutOf(p); self.root == p {
+		return f, true
+	} else if m := traceWorktreeRE.FindStringSubmatch(p); m != nil && m[4] == "" {
+		return f, true
+	}
 	if own := traceCheckoutOf(path.Dir(p)); traceUnder(p, own.root) {
 		rel, repo = p[len(own.root)+1:], own.repo
 	} else {
@@ -416,151 +329,6 @@ type traceInput struct {
 	Path         string `json:"path"`
 }
 
-// traceCommand is one command of a Bash call.
-type traceCommand struct {
-	words  []string
-	head   string
-	dir    string
-	redirs []string
-	script string
-	wrote  []traceWrite
-	pipeIn bool // reads the output of the command before it
-}
-
-// traceNowhere is the directory after a cd the line doesn't spell out
-// (cd "$d", cd -): a relative path under it can't be placed.
-const traceNowhere = "\x00"
-
-var traceVarRE = lazyre.New(`\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?`)
-
-// traceCommands lists the commands of a line in order, going into bash -c
-// and a heredoc given to a shell, on the guard's shell reader. It follows
-// what the line itself says about where each command runs and what its
-// variables hold: `cd web && cat src/x.ts` reads web/src/x.ts, and
-// `S=/tmp/s; cat > $S/x.py` writes a scratch file. It returns the directory
-// the line ends in.
-func traceCommands(cmd, cwd string, depth int, vars map[string]string, mem *traceScripts, out *[]traceCommand) string {
-	dir := cwd
-	fill := func(w string) string {
-		if w == "~" || strings.HasPrefix(w, "~/") {
-			w = "$HOME" + w[1:]
-		}
-		if !strings.Contains(w, "$") {
-			return w
-		}
-		return traceVarRE.ReplaceAllStringFunc(w, func(m string) string {
-			name := strings.Trim(m, "${}")
-			if name == "PWD" && dir != traceNowhere && dir != "" {
-				return dir
-			}
-			if v, ok := vars[name]; ok {
-				return v
-			}
-			return m
-		})
-	}
-	set := func(words []string) {
-		for _, w := range words {
-			if name, v, ok := strings.Cut(w, "="); ok && assignRE.MatchString(w) && !strings.HasSuffix(name, "+") {
-				vars[name] = v
-			}
-		}
-	}
-	for _, g := range parseShell(cmd) {
-		all := make([]string, len(g.words))
-		assigns := len(g.words) > 0
-		for i, w := range g.words {
-			all[i] = fill(w)
-			assigns = assigns && assignRE.MatchString(w)
-		}
-		if assigns {
-			set(all)
-			continue
-		}
-		words := stripWords(all)
-		if len(words) == 0 {
-			continue
-		}
-		if depth < 3 && shells[path.Base(words[0])] {
-			if inner, ok := shellDashC(words[1:]); ok {
-				traceCommands(inner, dir, depth+1, vars, mem, out)
-				continue
-			}
-			if g.heredoc != "" {
-				traceCommands(g.heredoc, dir, depth+1, vars, mem, out)
-				continue
-			}
-		}
-		c := traceCommand{words: words, head: headOf(words), dir: dir, script: g.heredoc, pipeIn: g.pipeIn}
-		for _, r := range g.redirs {
-			c.redirs = append(c.redirs, fill(r))
-		}
-		switch {
-		case c.head == "cd" || c.head == "pushd":
-			dir = traceCd(dir, words[1:])
-		case c.head == "popd":
-			dir = traceNowhere
-		case c.head == "export":
-			set(words[1:])
-		case words[0] == "git":
-			for i := 1; i+1 < len(words) && strings.HasPrefix(words[i], "-"); i++ {
-				if words[i] == "-C" {
-					c.dir = traceCd(dir, words[i+1:i+2])
-				}
-				if traceGitValueFlags[words[i]] {
-					i++
-				}
-			}
-		}
-		c.wrote = c.writes()
-		for i, w := range c.wrote {
-			if strings.HasPrefix(w.kind, "script") {
-				c.wrote[i].w = fill(w.w)
-			}
-		}
-		if prog := path.Base(words[0]); c.script != "" && (prog == "cat" || prog == "tee") {
-			for _, w := range c.wrote {
-				mem.keep(traceAt(w.w, c.dir), c.script)
-			}
-		} else if k := mem.at(traceAt(c.ran(), c.dir)); k != nil {
-			kind := "script"
-			if k.Unsure {
-				kind = "script?"
-			}
-			for _, w := range k.Writes {
-				c.wrote = append(c.wrote, traceWrite{kind: kind, w: w})
-			}
-		}
-		vars["_"] = words[len(words)-1]
-		*out = append(*out, c)
-	}
-	return dir
-}
-
-// traceCd is the directory after `cd ARGS` in dir.
-func traceCd(dir string, args []string) string {
-	to := ""
-	for _, a := range args {
-		if a == "-" || !strings.HasPrefix(a, "-") {
-			to = a
-			break
-		}
-	}
-	switch {
-	case to == "" || to == "-" || strings.ContainsAny(to, "$`*?"):
-		return traceNowhere
-	case strings.HasPrefix(to, "/"):
-		return path.Clean(to)
-	case dir == "" || dir == traceNowhere:
-		return traceNowhere
-	}
-	return path.Join(dir, to)
-}
-
-// traceWord places a word of a command as a file, like traceFile. A word the
-// line spells out only the start of (internal/*.go, clusters/$site/app.yaml)
-// is placed by that start and not named. One it doesn't spell out the start
-// of ($f, a substitution), or a relative one after a cd it doesn't spell
 // out, is no file the parser can speak of.
 func traceWord(w, dir, cwd string) (f tracePath, work bool) {
 	abs := strings.HasPrefix(w, "/")
@@ -577,336 +345,10 @@ func traceWord(w, dir, cwd string) (f tracePath, work bool) {
 	return traceFile(w, cwd)
 }
 
-// interpreter finds the interpreter a command runs (python3, uv run python,
-// node), as its place among the words, or -1.
-func (c *traceCommand) interpreter() int {
-	for i := 0; i < len(c.words) && i < 4; i++ {
-		if b := path.Base(c.words[i]); traceInterpreters[b] || strings.HasPrefix(b, "python3.") {
-			return i
-		}
-	}
-	return -1
-}
-
-// ran is the script file a command hands its interpreter (python3 edit.py),
-// "" when it runs none.
-func (c *traceCommand) ran() string {
-	i := c.interpreter()
-	if i < 0 || c.script != "" {
-		return ""
-	}
-	for _, w := range c.words[i+1:] {
-		switch {
-		case w == "-c" || w == "-e" || w == "-m" || w == "-":
-			return ""
-		case strings.HasPrefix(w, "-") || w == "run":
-		default:
-			if traceScriptFileRE.MatchString(w) {
-				return w
-			}
-			return ""
-		}
-	}
-	return ""
-}
-
-// The write calls of a script given to an interpreter, and the path each
-// writes: open(P, 'w'), P.write_text(, Path(P).write_text(, writeFileSync(P,.
-var (
-	traceScriptWriteRE = lazyre.New(`\bopen\([^\n]*?,\s*(?:mode\s*=\s*)?['"][wax]|\.write_(?:text|bytes)\(|\b(?:write|append)File(?:Sync)?\(|\bFile\.write\(`)
-	traceScriptSiteREs = []*lazyre.Regexp{
-		lazyre.New(`\bopen\(\s*([^,()\n]+?|(?:pathlib\.)?Path\(\s*[^()\n]+?\s*\))\s*,\s*(?:mode\s*=\s*)?['"][wax]`),
-		lazyre.New(`((?:pathlib\.)?Path\(\s*[^()\n]+?\s*\)|[A-Za-z_][A-Za-z0-9_]*)\.write_(?:text|bytes)\(`),
-		lazyre.New(`\b(?:write|append)File(?:Sync)?\(\s*([^,()\n]+?)\s*,`),
-		lazyre.New(`\bFile\.write\(\s*([^,()\n]+?)\s*,`),
-	}
-	traceScriptPathRE = lazyre.New(`^(?:pathlib\.)?Path\(\s*(.+?)\s*\)$`)
-	traceScriptStrRE  = lazyre.New(`'([^'\n]{1,400})'|"([^"\n]{1,400})"`)
-	traceIdentRE      = lazyre.New(`^[A-Za-z_][A-Za-z0-9_]*$`)
-	traceInterpreters = map[string]bool{"python": true, "python3": true, "node": true, "ruby": true, "bun": true, "deno": true}
-)
-
-const traceMaxScript = 256 << 10
-
-// traceScriptWrites lists the paths a script writes, as the script spells
-// them. A path given as a name is followed to what the script sets the name
-// to (p = 'a.go'; for p in ['a.go', 'b.go']). sure is false when the script
-// writes but no path could be followed: then every file the script names is
-// listed, and the caller can't tell the written from the read.
-func traceScriptWrites(script string) (paths []string, sure bool) {
-	if len(script) > traceMaxScript {
-		script = script[:traceMaxScript]
-	}
-	if !traceScriptWriteRE.MatchString(script) {
-		return nil, true
-	}
-	for _, re := range traceScriptSiteREs {
-		for _, m := range re.FindAllStringSubmatch(script, 64) {
-			paths = append(paths, traceScriptExpr(script, m[1], 0)...)
-		}
-	}
-	if len(paths) > 0 {
-		return paths, true
-	}
-	for _, m := range traceScriptStrRE.FindAllStringSubmatch(script, 2000) {
-		s := m[1] + m[2]
-		if !traceFileShape(s) {
-			continue
-		}
-		q := `['"]` + regexp.QuoteMeta(s) + `['"]\s*\)`
-		if read := regexp.MustCompile(`\bopen\(\s*` + q + `|` + q + `\.read_(?:text|bytes)\(`); read.MatchString(script) {
-			continue
-		}
-		paths = append(paths, s)
-	}
-	return paths, false
-}
-
-// traceScriptExpr follows a path expression of a script to the strings it
-// can be: a string itself, Path(of one), a name the script sets to one, or
-// the first parameter of a function the script defines, by what its calls
-// pass (def sub(p, old, new): …; sub('a.go', …)).
-func traceScriptExpr(script, expr string, depth int) []string {
-	expr = strings.TrimSpace(expr)
-	if m := traceScriptPathRE.FindStringSubmatch(expr); m != nil {
-		expr = m[1]
-	}
-	if n := len(expr); n >= 2 && (expr[0] == '\'' || expr[0] == '"') && expr[n-1] == expr[0] {
-		if s := expr[1 : n-1]; !strings.ContainsAny(s, `'"`) {
-			return []string{s}
-		}
-		return nil
-	}
-	if depth >= 3 || !traceIdentRE.MatchString(expr) {
-		return nil
-	}
-	var out []string
-	set := regexp.MustCompile(`(?m)(?:^|[;\s])(?:const |let |var )?` + expr + `\s*=\s*([^=\n;][^\n;]*)`)
-	for _, m := range set.FindAllStringSubmatch(script, 16) {
-		out = append(out, traceScriptExpr(script, m[1], depth+1)...)
-	}
-	loop := regexp.MustCompile(`\bfor\s+` + expr + `\s+in\s+[\[(]([^\n]*)[\])]\s*:`)
-	for _, m := range loop.FindAllStringSubmatch(script, 16) {
-		for _, s := range traceScriptStrRE.FindAllStringSubmatch(m[1], 64) {
-			out = append(out, s[1]+s[2])
-		}
-	}
-	def := regexp.MustCompile(`\bdef\s+([A-Za-z_][A-Za-z0-9_]*)\(\s*` + expr + `\s*[,):=]`)
-	for _, m := range def.FindAllStringSubmatch(script, 4) {
-		call := regexp.MustCompile(`(?:^|[^A-Za-z0-9_.])` + m[1] + `\(\s*([^,()\n]+?)\s*[,)]`)
-		for _, c := range call.FindAllStringSubmatch(script, 64) {
-			if c[1] != expr {
-				out = append(out, traceScriptExpr(script, c[1], depth+1)...)
-			}
-		}
-	}
-	return out
-}
-
-// traceWrite is one file a command writes, as the command spells it.
-type traceWrite struct {
-	kind  string
-	w     string
-	whole bool
-}
-
-// writes lists the files a command writes. What counts: output sent to a
-// file, tee, sed -i and perl -i, gofmt, goimports and prettier given -w or
-// --write, curl -o, mv and cp, git mv and git rm, a patch applied, and a
-// script given to an interpreter that writes files. What doesn't: what a
-// program writes of its own accord (go mod tidy, git merge or checkout),
-// which the call doesn't show; and a plain rm, which is as often clearing
-// up. A script the session kept in a file and
-// runs later is added by traceCommands, which remembers them.
-//
-// Output sent to a file is a write of what the agent typed (cat, echo,
-// printf) wherever it goes; of another program's output, curl -o's included,
-// only when the file is named like a source, document or configuration file
-// (docs/CLI.md, not server.log).
-func (c *traceCommand) writes() []traceWrite {
-	var out []traceWrite
-	prog, args := path.Base(c.words[0]), c.words[1:]
-	for _, r := range c.redirs {
-		switch {
-		case strings.HasPrefix(r, "/dev/"):
-		case (traceReporters[prog] || prog == "git" && !traceGitWritesText(args)) && traceReportRE.MatchString(path.Base(r)):
-			out = append(out, traceWrite{kind: "output", w: r})
-		case prog == "cat" || prog == "echo" || prog == "printf" || traceFileShape(path.Base(r)):
-			out = append(out, traceWrite{kind: "redirect", w: r, whole: prog == "cat" && c.script != ""})
-		default:
-			out = append(out, traceWrite{kind: "output", w: r})
-		}
-	}
-	if prog == "git" && len(args) > 0 {
-		args = traceGitArgs(args)
-		if len(args) > 0 {
-			prog, args = "git "+args[0], args[1:]
-		}
-	}
-	plain := func(skip int) (ws []string) {
-		for _, a := range args {
-			if strings.HasPrefix(a, "-") && a != "-" {
-				continue
-			}
-			if skip > 0 {
-				skip--
-				continue
-			}
-			ws = append(ws, a)
-		}
-		return ws
-	}
-	each := func(kind string, ws []string) {
-		for _, w := range ws {
-			out = append(out, traceWrite{kind: kind, w: w})
-		}
-	}
-	has := func(flags ...string) bool {
-		for _, a := range args {
-			for _, f := range flags {
-				if a == f {
-					return true
-				}
-			}
-		}
-		return false
-	}
-	if prog == "npx" || prog == "bunx" {
-		if ws := plain(0); len(ws) > 0 && (path.Base(ws[0]) == "prettier" || strings.HasPrefix(path.Base(ws[0]), "prettier@")) {
-			for i, a := range args {
-				if a == ws[0] {
-					prog, args = "prettier", args[i+1:]
-					break
-				}
-			}
-		}
-	}
-	switch prog {
-	case "tee":
-		for _, w := range plain(0) {
-			out = append(out, traceWrite{kind: "tee", w: w, whole: c.script != ""})
-		}
-	case "sed":
-		if sedInPlace(c.words) {
-			skip := 1
-			var files []string
-			for i := 0; i < len(args); i++ {
-				a := args[i]
-				switch {
-				case a == "-e" || a == "-f" || a == "--expression" || a == "--file":
-					skip = 0
-					i++
-				case strings.HasPrefix(a, "-"):
-				default:
-					files = append(files, a)
-				}
-			}
-			if skip < len(files) {
-				each("sed", files[skip:])
-			}
-		}
-	case "perl":
-		inPlace := false
-		var files []string
-		for i := 0; i < len(args); i++ {
-			a := args[i]
-			if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") {
-				f := a[1:]
-				if j := strings.IndexByte(f, 'i'); j >= 0 && !strings.ContainsAny(f[:j], "eEI") {
-					inPlace = true
-				}
-				if strings.HasSuffix(f, "e") || strings.HasSuffix(f, "E") {
-					i++
-				}
-				continue
-			}
-			files = append(files, a)
-		}
-		if inPlace {
-			each("perl", files)
-		}
-	case "mv", "cp", "git mv":
-		if ws := plain(0); len(ws) >= 2 {
-			to, from := ws[len(ws)-1], ws[:len(ws)-1]
-			kind := strings.TrimPrefix(prog, "git ")
-			switch {
-			case traceIntoDir(to, c.dir, len(from)):
-				for _, s := range from {
-					out = append(out, traceWrite{kind: kind, w: strings.TrimSuffix(to, "/") + "/" + path.Base(s), whole: true})
-				}
-			case prog == "cp" && traceBackupRE.MatchString(to):
-				out = append(out, traceWrite{kind: "output", w: to})
-			default:
-				out = append(out, traceWrite{kind: kind, w: to, whole: true})
-			}
-			if prog != "cp" {
-				each("mv", from)
-			}
-		}
-	case "git rm":
-		each("rm", plain(0))
-	case "gofmt", "goimports", "prettier":
-		if has("-w", "--write") {
-			each("format", plain(0))
-		}
-	case "curl":
-		to := func(f string) {
-			// - is standard output; a download not named like a file of the
-			// work is output kept for reading, as when redirected
-			if f == "-" || strings.HasPrefix(f, "/dev/") {
-				return
-			}
-			kind := "curl"
-			if !traceFileShape(path.Base(f)) {
-				kind = "output"
-			}
-			out = append(out, traceWrite{kind: kind, w: f, whole: true})
-		}
-		for i := 0; i < len(args); i++ {
-			if (args[i] == "--output" || traceCurlOutRE.MatchString(args[i])) && i+1 < len(args) {
-				to(args[i+1])
-				i++
-			} else if f, ok := strings.CutPrefix(args[i], "--output="); ok {
-				to(f)
-			}
-		}
-	case "xargs", "find":
-		for i, a := range args {
-			if b := path.Base(a); b == "sed" && sedInPlace(args[i:]) || b == "perl" && i+1 < len(args) && perlInPlaceRE.MatchString(args[i+1]) {
-				out = append(out, traceWrite{kind: "patch", w: "*"})
-				break
-			}
-		}
-	case "patch", "git apply", "git am":
-		if !has("--check", "--stat", "--numstat", "--summary", "--dry-run", "-R", "--reverse") {
-			out = append(out, traceWrite{kind: "patch", w: "*"})
-		}
-	}
-	if i := c.interpreter(); i >= 0 {
-		script := c.script
-		for j := i + 1; j+1 < len(c.words) && script == ""; j++ {
-			if c.words[j] == "-c" || c.words[j] == "-e" {
-				script = c.words[j+1]
-			}
-		}
-		kind := "script"
-		ps, sure := traceScriptWrites(script)
-		if !sure {
-			kind = "script?"
-		}
-		each(kind, ps)
-	}
-	return out
-}
-
-// traceCurlOutRE: curl's -o, alone or last in a bundle of its flags that
-// take no value (-sLo).
-var traceCurlOutRE = lazyre.New(`^-[sSLfkvIiNgq46]*o$`)
-
 // traceWordPaths: the files a command line names, in order.
 func traceWordPaths(cmds []traceCommand, cwd string) (out []tracePath) {
 	for _, c := range cmds {
-		for _, w := range c.words {
+		for _, w := range c.Words {
 			if strings.HasPrefix(w, "-") {
 				if _, v, ok := strings.Cut(w, "="); ok {
 					w = v
@@ -920,7 +362,7 @@ func traceWordPaths(cmds []traceCommand, cwd string) (out []tracePath) {
 			if !traceFileShape(w) {
 				continue
 			}
-			if f, _ := traceWord(w, c.dir, cwd); f.P != "" && traceFileShape(f.P) && !hasPath(out, f) {
+			if f, _ := traceWord(w, c.Dir, cwd); f.P != "" && traceFileShape(f.P) && !hasPath(out, f) {
 				if out = append(out, f); len(out) == traceMaxCmdPath {
 					return out
 				}
@@ -961,31 +403,42 @@ func classifyTraceCall(name string, input json.RawMessage, cwd string, at, ctx i
 			if f.P != "" {
 				tc.Paths = []tracePath{f}
 			}
-		} else if name == "Write" {
-			mem.keep(traceAt(in.FilePath, cwd), in.Content)
+		}
+		if name == "Write" {
+			mem.Keep(trscript.ShellAt(in.FilePath, cwd), in.Content)
 		}
 	case "Agent", "Task":
 		tc.Class, tc.Scan = trDelegated, true
 	case "Bash":
 		tc.Scan = true
 		var cmds []traceCommand
-		home, _ := os.UserHomeDir()
-		traceCommands(in.Command, cwd, 0, map[string]string{"HOME": home}, mem, &cmds)
+		traceCommands(in.Command, cwd, traceVars(cwd), mem, &cmds)
 		for _, c := range cmds {
-			switch c.head {
+			switch c.Head {
 			case "wp next", "wp take":
-				if !traceHasFlag(c.words, "-h", "--help", "--peek") {
+				if !traceHasFlag(c.Words, "-h", "--help", "--peek") {
 					tc.Start = true
 				}
 			case "wp ship", "wp done", "wp release":
-				if !traceHasFlag(c.words, "-h", "--help") {
-					tc.End, tc.Keys = strings.TrimPrefix(c.head, "wp "), traceKeys(c.words)
+				if !traceHasFlag(c.Words, "-h", "--help") {
+					tc.End, tc.Keys = strings.TrimPrefix(c.Head, "wp "), traceKeys(c.Words)
 				}
 			}
 		}
 		tc.Class, tc.Paths, tc.Write = classifyTraceBash(cmds, cwd)
 	}
 	return tc
+}
+
+// traceWritePlace is where write w of command i lands, and whether that is
+// the work. A write that names no file (find … -exec, xargs, patch -d, tar
+// -C) is placed where its files are, as session facts place it.
+func traceWritePlace(cmds []traceCommand, i int, w trscript.ShellWrite, cwd string) (tracePath, bool) {
+	at := w.Path
+	if place := trscript.WritePlace(cmds, i, w); at == "*" && place != "." {
+		at = strings.TrimSuffix(place, "/") + "/*"
+	}
+	return traceWord(at, cmds[i].Dir, cwd)
 }
 
 // classifyTraceBash sorts a Bash call. It is an edit when any of its
@@ -1000,14 +453,16 @@ func classifyTraceBash(cmds []traceCommand, cwd string) (class string, paths []t
 	whole = true
 	wrote := make([]bool, len(cmds))
 	for i := range cmds {
-		for _, w := range cmds[i].wrote {
-			wrote[i] = wrote[i] || w.kind == "redirect" || w.kind == "output" || w.kind == "sed"
-			if w.kind == "output" {
+		for _, w := range cmds[i].Wrote {
+			wrote[i] = wrote[i] || w.Kind == "redirect" || w.Kind == "output" || w.Kind == "sed"
+			if w.Kind == "output" {
 				continue
 			}
-			f, work := traceWord(w.w, cmds[i].dir, cwd)
+			// A write that names no file (find … -exec, xargs, patch -d) is
+			// placed where its files are, as session facts place it.
+			f, work := traceWritePlace(cmds, i, w, cwd)
 			edit = edit || work
-			whole = whole && (!work || w.whole)
+			whole = whole && (!work || w.Whole)
 			if work && f.P != "" && !hasPath(edits, f) && len(edits) < traceMaxCmdPath {
 				edits = append(edits, f)
 			}
@@ -1019,7 +474,10 @@ func classifyTraceBash(cmds []traceCommand, cwd string) (class string, paths []t
 	search, read := 0, 0
 	first := ""
 	for i, c := range cmds {
-		h := c.head
+		h := c.Head
+		if c.Sub {
+			continue // a substitution's command is not what the call did
+		}
 		if first == "" && h != "cd" {
 			first = h
 		}
@@ -1041,8 +499,8 @@ func classifyTraceBash(cmds []traceCommand, cwd string) (class string, paths []t
 		if i >= 6 {
 			break
 		}
-		grep = grep || traceGrepH[c.head]
-		locate = locate || traceLocateH[c.head]
+		grep = grep || traceGrepH[c.Head]
+		locate = locate || traceLocateH[c.Head]
 	}
 	switch {
 	case locate:
@@ -1055,38 +513,6 @@ func classifyTraceBash(cmds []traceCommand, cwd string) (class string, paths []t
 	return trRead, ps, false
 }
 
-// sedInPlaceRE: -i alone, with a suffix, or after sed's other one-letter
-// flags (-ri, -Ei, -ni).
-var sedInPlaceRE = lazyre.New(`^-[nrEsuz]*i`)
-
-// traceGitArgs is git's arguments from its subcommand on: after git's own
-// flags (-C dir, -c k=v, --no-pager).
-func traceGitArgs(args []string) []string {
-	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
-		if traceGitValueFlags[args[0]] && len(args) > 1 {
-			args = args[1:]
-		}
-		args = args[1:]
-	}
-	return args
-}
-
-// traceGitWritesText: git show and git cat-file print a file's text, which a
-// redirect puts back into the work; the rest of git prints reports.
-func traceGitWritesText(args []string) bool {
-	args = traceGitArgs(args)
-	return len(args) > 0 && (args[0] == "show" || args[0] == "cat-file")
-}
-
-func sedInPlace(words []string) bool {
-	for _, w := range words[1:] {
-		if w == "--in-place" || strings.HasPrefix(w, "--in-place=") || !strings.HasPrefix(w, "--") && sedInPlaceRE.MatchString(w) {
-			return true
-		}
-	}
-	return false
-}
-
 func traceHasFlag(words []string, flags ...string) bool {
 	for _, w := range words {
 		for _, f := range flags {
@@ -1097,8 +523,6 @@ func traceHasFlag(words []string, flags ...string) bool {
 	}
 	return false
 }
-
-var perlInPlaceRE = lazyre.New(`^-[a-zA-DF-HJ-Za-df-hj-z0-9]*i`)
 
 var traceKeyWordRE = lazyre.New(`^[A-Z][A-Z0-9]{1,9}-\d+$`)
 
@@ -1135,52 +559,6 @@ func traceTakeKey(text string) string {
 	}
 	return ""
 }
-
-// traceIntoDir says whether the last operand of mv or cp is a directory the
-// others go into. The command says so with a trailing slash or with several
-// sources; else the filesystem does, where the path is still there; else a
-// name with no dot is taken for a directory (mv a.go pkg is far commoner
-// than renaming a file to a name with no extension), unless it is a file
-// name known to have none.
-func traceIntoDir(to, dir string, sources int) bool {
-	if strings.HasSuffix(to, "/") || sources > 1 {
-		return true
-	}
-	p := to
-	if !strings.HasPrefix(p, "/") && strings.HasPrefix(dir, "/") {
-		p = dir + "/" + p
-	}
-	if strings.HasPrefix(p, "/") && !strings.Contains(p, "$") {
-		if fi, err := os.Stat(p); err == nil {
-			return fi.IsDir()
-		}
-	}
-	base := path.Base(to)
-	return !strings.ContainsAny(base, ".$") && !traceBareNames[base]
-}
-
-// traceBareNames are file names with no extension.
-var traceBareNames = map[string]bool{"Makefile": true, "Dockerfile": true, "LICENSE": true, "README": true, "CODEOWNERS": true, "Jenkinsfile": true, "Procfile": true, "Gemfile": true, "Caddyfile": true}
-
-// traceBackupRE is a copy kept beside a file before changing it: no edit of
-// the work.
-var traceBackupRE = lazyre.New(`(\.(bak|orig|old|backup|save|tmp)|~)$`)
-
-// traceReporters are programs whose output sent to a file is mostly a
-// report kept for reading (a test run, a search, a fetched page), not text
-// the agent wrote into the work; it is one when the file is named as a
-// report is (traceReportRE: out.txt, test.log, a name with no ending). A
-// generator's output into a file of the work (go run ./cmd/gen > docs/CLI.md)
-// stays an edit.
-var traceReportRE = lazyre.New(`(?i)^[^.]+$|\.(txt|log|out|err|json|jsonl|csv|tsv|diff|patch|tmp|html|xml)$`)
-
-var traceReporters = map[string]bool{"go": true, "wp": true, "gh": true, "npm": true, "npx": true, "pnpm": true, "yarn": true, "make": true,
-	"pytest": true, "cargo": true, "curl": true, "wget": true, "grep": true, "egrep": true, "fgrep": true, "rg": true, "ag": true, "find": true, "fd": true,
-	"ls": true, "tree": true, "diff": true, "docker": true, "kubectl": true, "tsc": true, "golangci-lint": true, "time": true, "wc": true, "du": true,
-	"sqlite3": true, "psql": true, "journalctl": true, "ps": true, "env": true, "llm-task": true}
-
-// traceGitValueFlags are git's own flags that take the next word.
-var traceGitValueFlags = map[string]bool{"-C": true, "-c": true, "--git-dir": true, "--work-tree": true, "--namespace": true, "--exec-path": true}
 
 // namedFiles hashes the base names of the files a tool result names.
 func namedFiles(text string) []uint32 {

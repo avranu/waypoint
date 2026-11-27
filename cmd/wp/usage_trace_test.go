@@ -392,6 +392,13 @@ func TestClassifyTraceCall(t *testing.T) {
 		{"git apply behind a global flag", "Bash", bash("git --no-pager apply /tmp/x/fix.patch"), trEdit, nil},
 		{"sed over what find names", "Bash", bash("find internal -name '*.go' | xargs sed -i s/a/b/"), trEdit, nil},
 		{"sed by find", "Bash", bash("find internal -name '*.go' -exec sed -i s/a/b/ {} +"), trEdit, nil},
+		{"sed over what find names in scratch", "Bash", bash("find /tmp/s -name '*.go' | xargs sed -i s/a/b/"), trLocate, nil},
+		{"sed by find in scratch", "Bash", bash("find /tmp/s -name '*.go' -exec sed -i s/a/b/ {} +"), trLocate, nil},
+		{"sed over what find names in scratch, through a filter", "Bash", bash("find /tmp/s -name '*.go' | grep -v test | xargs sed -i s/a/b/"), trLocate, nil},
+		{"a patch applied in scratch", "Bash", bash("patch -d /tmp/s -p1 < fix.diff"), trOther, nil},
+		{"a patch applied in the tree", "Bash", bash("patch -d internal -p1 < fix.diff"), trEdit, nil},
+		{"perl reading with a module", "Bash", bash("perl -MFile::Basename -ne 'print' internal/a.go > /dev/null"), trOther, nil},
+		{"a gofmt rule is no file", "Bash", bash("gofmt -w -r 'a -> b' /tmp/x.go"), trOther, nil},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -465,14 +472,15 @@ func TestTraceKeptScripts(t *testing.T) {
 	for i := 0; i < traceMaxScripts+3; i++ {
 		call(mem, "Write", map[string]any{"file_path": fmt.Sprintf("/tmp/s/e%d.py", i), "content": "open('a.go','w').write('x')\n"})
 	}
-	if len(*mem) != traceMaxScripts || (*mem)[0].At != "/tmp/s/e3.py" {
-		t.Fatalf("kept %d, first %q", len(*mem), (*mem)[0].At)
+	// The oldest are forgotten, and a mark that some were stands first.
+	if len(*mem) != traceMaxScripts || (*mem)[1].At != "/tmp/s/e4.py" {
+		t.Fatalf("kept %d, first %q", len(*mem), (*mem)[1].At)
 	}
 	st := &traceState{Scripts: *mem}
 	cl := st.clone()
-	cl.Scripts.keep("/tmp/s/e3.py", "print(1)")
-	if len(st.Scripts) != traceMaxScripts || st.Scripts[0].At != "/tmp/s/e3.py" {
-		t.Fatalf("a clone's change reached the original: %d %q", len(st.Scripts), st.Scripts[0].At)
+	cl.Scripts.Keep("/tmp/s/e4.py", "print(1)")
+	if len(st.Scripts) != traceMaxScripts || st.Scripts[1].At != "/tmp/s/e4.py" {
+		t.Fatalf("a clone's change reached the original: %d %q", len(st.Scripts), st.Scripts[1].At)
 	}
 }
 
@@ -540,7 +548,12 @@ func TestTraceFile(t *testing.T) {
 		{"main session, a worktree's file", wt + "/internal/x.go", main, tracePath{"internal/x.go", app}, true},
 		{"main session, a worktree beside it", side + "/internal/x.go", main, tracePath{"internal/x.go", app}, true},
 		{"main session, a settings file of the repository", main + "/.claude/settings.json", main, tracePath{".claude/settings.json", app}, true},
-		{"main session, the worktree directory itself", wt, main, tracePath{}, false},
+		// A checkout's or worktree's own root is the work, as `gofmt -w .` run in it writes it (see traceFile).
+		{"main session, the worktree directory itself", wt, main, tracePath{}, true},
+		{"a checkout's root itself (gofmt -w .)", main, main, tracePath{}, true},
+		{"a Claude Code worktree's root itself", wt, wt, tracePath{}, true},
+		{"a worktree root that is gone", gone, gone, tracePath{}, true},
+		{"a directory in no checkout, itself", plain, plain, tracePath{}, false},
 		{"another repository's file is that repository's", other + "/internal/x.go", main, tracePath{"internal/x.go", oth}, true},
 		{"a session in no checkout", other + "/internal/x.go", plain, tracePath{"internal/x.go", oth}, true},
 		{"a directory that is there, in no checkout", plain + "/notes.md", main, tracePath{}, false},
@@ -607,6 +620,7 @@ func TestTraceFile(t *testing.T) {
 		{"sed -i in a worktree that is gone and unplaced", "sed -i s/a/b/ " + j("elsewhere", "wt") + "/internal/x.go", trEdit, nil},
 		{"a redirect to a note outside any checkout", "cat > " + plain + "/notes.md <<'EOF'\nx\nEOF", trOther, nil},
 		{"reading another repository", "cat " + other + "/internal/x.go", trRead, []tracePath{{"internal/x.go", oth}}},
+		{"gofmt -w . at the checkout root", "gofmt -w .", trEdit, nil},
 	} {
 		if c := classifyTraceCall("Bash", bash(tc.cmd), main, 1, 1, "m", nil); c.Class != tc.class || !reflect.DeepEqual(c.Paths, tc.paths) {
 			t.Errorf("%s: class %q paths %+v", tc.name, c.Class, c.Paths)

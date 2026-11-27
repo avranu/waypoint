@@ -41,12 +41,12 @@ func worktreePlaceIn(cmds []*guardCmd, dir string, anywhere bool, depth int) str
 		return ""
 	}
 	for _, c := range cmds {
-		for _, sub := range c.subs {
+		for _, sub := range c.Subs {
 			if t := worktreePlaceIn(sub, dir, anywhere, depth+1); t != "" {
 				return t
 			}
 		}
-		words, here := worktreeUnwrap(c.words)
+		words, here := worktreeUnwrap(c.Words)
 		here = here || anywhere
 		if len(words) == 0 {
 			continue

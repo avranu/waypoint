@@ -142,6 +142,9 @@ type SessionFacts struct {
 		Total  int            `json:"total"`
 		Errors int            `json:"errors"`
 		ByTool map[string]int `json:"by_tool"`
+		// ByScript: tool calls a REPL script ran, not the model; they are in
+		// none of the figures above.
+		ByScript int `json:"by_script"`
 	} `json:"tool_calls"`
 
 	// Injected is what went into the context that the person did not type.
@@ -164,11 +167,29 @@ type SessionFacts struct {
 		Top      []DocFetch `json:"top"`
 	} `json:"docs_fetched"`
 
-	// Changes: Edits is every edit call. Failed is those whose result was an
-	// error; every other figure counts the edits that did not fail.
+	// Changes: Edits counts the edit calls that did not fail; Failed is those
+	// whose result was an error, including edits a REPL script ran. ShellEdits
+	// counts Bash calls that wrote a file of the work and ran (a failed run
+	// still counts, a refused one never ran); ShellUnknown is the Bash calls
+	// with no answer (stored before it was recorded, or too long to read), so
+	// ShellEdits is a floor when it is above 0. ScriptEdits and
+	// ScriptShellEdits are the edit-tool and Bash calls a REPL script ran
+	// that wrote; neither is in Edits or ShellEdits.
 	Changes struct {
-		Edits        int   `json:"edits"`
-		Failed       int   `json:"failed"`
+		Edits        int `json:"edits"`
+		Failed       int `json:"failed"`
+		ShellEdits   int `json:"shell_edits"`
+		ShellUnknown int `json:"shell_unknown"`
+		// ShellNone is the Bash calls classified as writing no file of the
+		// work; with it above 0 a zero ShellEdits beside ShellUnknown is "0+".
+		ShellNone   int `json:"shell_none"`
+		ScriptEdits int `json:"script_edits"` // edit tools a REPL script ran; not in Edits
+		// ScriptShellEdits: Bash calls a REPL script ran that wrote a file; not in ShellEdits.
+		ScriptShellEdits int `json:"script_shell_edits"`
+		// ScriptShellUnknown: Bash calls a REPL script ran with no answer; not in ShellUnknown.
+		ScriptShellUnknown int `json:"script_shell_unknown"`
+		// FilesChanged and the line counts are the edit tools' only: a Bash
+		// call's record says neither which files it wrote nor how many lines.
 		FilesChanged int   `json:"files_changed"`
 		LinesAdded   Tally `json:"lines_added"`
 		LinesRemoved Tally `json:"lines_removed"`
@@ -251,6 +272,9 @@ func (s *Service) SessionFacts(ctx context.Context, actor *Actor, q FactsQuery) 
 	if actor == nil {
 		return nil, ErrUnauthorized
 	}
+	if err := actor.refuseAutomationTranscripts("reading session facts"); err != nil {
+		return nil, err
+	}
 	// usageWho needs usage.read, refuses a runner job's scoped token and an
 	// agent token reading another person's usage.
 	uids, everyone, _, err := s.usageWho(ctx, actor, q.User)
@@ -276,6 +300,11 @@ func (s *Service) SessionFacts(ctx context.Context, actor *Actor, q FactsQuery) 
 		if err := actor.requirePersonDirect("reading another person's session facts"); err != nil {
 			return nil, forbidden("%v; read your own person's sessions by leaving out --user", err)
 		}
+	}
+	// The facts hold command heads (the repeated calls' targets) and search
+	// queries, so they need the permission raw transcripts do.
+	if err := actor.need(PermTranscriptsRead); err != nil {
+		return nil, err
 	}
 	q.Session, q.Task = strings.TrimSpace(q.Session), strings.TrimSpace(q.Task)
 	if (q.Session == "") == (q.Task == "") {
@@ -585,7 +614,7 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, hideComman
 	}
 
 	// #nosec G202 -- w is built from fixed conditions; values are bound
-	rows, err = s.db.R.QueryContext(ctx, `SELECT tool, target, read_offset, read_limit, is_error, is_test, lines_added, lines_removed
+	rows, err = s.db.R.QueryContext(ctx, `SELECT tool, target, read_offset, read_limit, is_error, is_test, lines_added, lines_removed, by_script, shell_write
 		FROM fact_tool_calls WHERE `+w, args...)
 	if err != nil {
 		return err
@@ -599,9 +628,26 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, hideComman
 		var tool string
 		var target sql.NullString
 		var off, lim, isErr, isTest, add, rem sql.NullInt64
-		if err := rows.Scan(&tool, &target, &off, &lim, &isErr, &isTest, &add, &rem); err != nil {
+		var script int
+		var shell sql.NullInt64
+		if err := rows.Scan(&tool, &target, &off, &lim, &isErr, &isTest, &add, &rem, &script, &shell); err != nil {
 			_ = rows.Close()
 			return err
+		}
+		if script == 1 {
+			o.ToolCalls.ByScript++
+			failed := isErr.Valid && isErr.Int64 == 1
+			switch {
+			case transcript.IsEditTool(tool) && failed:
+				o.Changes.Failed++
+			case transcript.IsEditTool(tool):
+				o.Changes.ScriptEdits++
+			case tool == "Bash" && shell.Valid && shell.Int64 == 1:
+				o.Changes.ScriptShellEdits++
+			case tool == "Bash" && !shell.Valid:
+				o.Changes.ScriptShellUnknown++
+			}
+			continue
 		}
 		o.ToolCalls.Total++
 		o.ToolCalls.ByTool[tool]++
@@ -623,13 +669,25 @@ func (s *Service) factsCount(ctx context.Context, scopes []factScope, hideComman
 			o.DocsFetched.Calls++
 			fetched[target.String]++
 		}
+		if tool == "Bash" {
+			// A refused call is recorded as no write (it never ran); one that
+			// failed after running still wrote (sed -i && go test).
+			switch {
+			case !shell.Valid:
+				o.Changes.ShellUnknown++
+			case shell.Int64 == 1:
+				o.Changes.ShellEdits++
+			default:
+				o.Changes.ShellNone++
+			}
+		}
 		if transcript.IsEditTool(tool) {
 			c := &o.Changes
-			c.Edits++
 			if failed {
 				c.Failed++
 				continue
 			}
+			c.Edits++
 			if target.Valid {
 				changed[target.String] = true
 			}

@@ -84,6 +84,11 @@ func newTranscriptAPIIn(t *testing.T, dir string, maxMB int) *transcriptAPI {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The host's free disk must not decide these tests: no disk floor unless a
+	// test sets one.
+	if _, err := svc.SetResourceLimits(ctx, &core.Actor{User: u}, core.ResourceLimits{MemoryFreeMB: 256}); err != nil {
+		t.Fatal(err)
+	}
 	tok, _, _ := svc.CreateAPIToken(ctx, &core.Actor{User: u}, "robin", false, 0)
 	return &transcriptAPI{t: t, ts: ts, svc: svc, dir: dir, db: d, human: &client{t: t, base: ts.URL, http: http.DefaultClient, token: tok}}
 }
@@ -119,7 +124,7 @@ func (a *transcriptAPI) put(session string, from int64, lines string) int {
 }
 
 // The four routes end to end: a piece goes in, the list and the file come
-// back, an agent's shell is refused, and a stored piece that was damaged
+// back, an agent's shell reads its own person's but not everyone's, and a stored piece that was damaged
 // breaks the transfer after the first bytes instead of ending it as whole
 // (audit 1218.40).
 func TestTranscriptRoutes(t *testing.T) {
@@ -155,14 +160,23 @@ func TestTranscriptRoutes(t *testing.T) {
 	if code, _ := a.human.do("GET", "/api/v1/usage/transcript?session=nope&file=main", nil); code != 404 {
 		t.Errorf("unknown session: %d", code)
 	}
-	for _, path := range []string{"/api/v1/usage/transcripts?session=s1", "/api/v1/usage/transcript?session=s1&file=main"} {
+	resp, err = a.req("GET", "/api/v1/usage/transcript?session=s1&file=main", nil, map[string]string{"X-Waypoint-Agent-Env": "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || string(b) != l1+l2 {
+		t.Errorf("own person's transcript from an agent's shell: %d %q", resp.StatusCode, b)
+	}
+	for _, path := range []string{"/api/v1/usage/transcripts?session=s1&user=all", "/api/v1/usage/transcript?session=s1&file=main&user=all"} {
 		resp, err := a.req("GET", path, nil, map[string]string{"X-Waypoint-Agent-Env": "claude"})
 		if err != nil {
 			t.Fatal(err)
 		}
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		if resp.StatusCode != 403 || strings.Contains(string(body), `"n":1`) {
+		if resp.StatusCode != 403 || strings.Contains(string(body), `"n":1`) || !strings.Contains(string(body), "leaving out --user") {
 			t.Errorf("%s from an agent's shell: %d %q", path, resp.StatusCode, body)
 		}
 	}
@@ -375,5 +389,40 @@ func TestSessionFactsRoute(t *testing.T) {
 		if resp.StatusCode != 403 || strings.Contains(string(body), "model_calls") || !strings.Contains(string(body), "leaving out --user") {
 			t.Errorf("an agent's shell with user=%s: %d %q", who, resp.StatusCode, body)
 		}
+	}
+}
+
+// A token that holds usage.read (as the Read only preset does) gets 403 from
+// the transcript and facts routes naming transcripts.read; with it, its own
+// person's transcript is 200 (audit 1907.4, WP-1587).
+func TestTranscriptRoutesNeedTheirPermission(t *testing.T) {
+	a := newTranscriptAPI(t)
+	if code := a.put("s1", 0, `{"n":1}`+"\n"); code != 200 {
+		t.Fatalf("piece: %d", code)
+	}
+	u, err := a.svc.UserByID(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenWith := func(ps ...core.Permission) *client {
+		secret, _, err := a.svc.CreateToken(context.Background(), &core.Actor{User: u}, core.TokenSpec{Name: "t" + string(rune('a'+len(ps))), Agent: "anthropic/claude-code", Permissions: ps})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &client{t: t, base: a.ts.URL, http: http.DefaultClient, token: secret}
+	}
+	paths := []string{"/api/v1/usage/transcripts?session=s1", "/api/v1/usage/transcript?session=s1&file=main", "/api/v1/usage/facts?session=s1"}
+	usage := tokenWith(core.PermUsageRead)
+	for _, p := range paths {
+		if code, body := usage.do("GET", p, nil); code != 403 || !strings.Contains(string(body), "transcripts.read") {
+			t.Errorf("usage.read only, %s: %d %s", p, code, body)
+		}
+	}
+	both := tokenWith(core.PermUsageRead, core.PermTranscriptsRead)
+	if code, body := both.do("GET", "/api/v1/usage/transcript?session=s1&file=main", nil); code != 200 || string(body) != `{"n":1}`+"\n" {
+		t.Errorf("with transcripts.read: %d %q", code, body)
+	}
+	if code, body := both.do("GET", "/api/v1/usage/transcripts?session=s1&user=all", nil); code != 403 {
+		t.Errorf("with transcripts.read, everyone's: %d %s", code, body)
 	}
 }

@@ -68,6 +68,8 @@ func TestGuardBashRules(t *testing.T) {
 		{`env A=b /usr/bin/sudo id`, ruleRoot},
 		{`ls | xargs -n1 sudo rm`, ruleRoot},
 		{`bash -c "sudo id"`, ruleRoot},
+		{`bash -euo pipefail -c 'sudo ls'`, ruleRoot},
+		{`bash -eo pipefail -c 'echo x > .claude/settings.json'`, ruleGuard},
 		{`echo $(sudo id)`, ruleRoot},
 		{"echo `sudo id`", ruleRoot},
 		{`"sudo" id`, ruleRoot},

@@ -399,3 +399,18 @@ func TestURLHeadDropsQueryFragmentAndUserinfo(t *testing.T) {
 		}
 	}
 }
+
+// A tool whose input has a non-string content (an MCP tool's content list) is
+// not an undecoded field: nothing is lost, as only the Write tool reads it.
+func TestNonStringContentInToolInputIsNotUndecoded(t *testing.T) {
+	rec := j(m{"type": "assistant", "uuid": "u-mcp", "timestamp": ts(1), "requestId": "req-mcp",
+		"message": m{"id": "mm", "model": "model-a", "usage": m{"output_tokens": 2},
+			"content": []m{toolUse("tm", "mcp__x__y", m{"content": []any{m{"type": "text"}}})}}})
+	r := parse(t, "main", rec)
+	if r.Ignored["undecoded/tool_input"] != 0 {
+		t.Errorf("ignored: %v", r.Ignored)
+	}
+	if len(r.ToolCalls) != 1 {
+		t.Errorf("tool calls %d, want 1", len(r.ToolCalls))
+	}
+}

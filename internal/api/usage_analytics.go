@@ -24,6 +24,7 @@ func (s *Server) usageAnalyticsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/usage/compare", a(s.usageCompare))
 	mux.HandleFunc("GET /api/v1/usage/feature", a(s.usageFeature))
 	mux.HandleFunc("GET /api/v1/usage/task/{key}", a(s.usageTask))
+	mux.HandleFunc("GET /api/v1/usage/no-task", a(s.usageNoTask))
 	mux.HandleFunc("GET /api/v1/usage/summary", a(s.usageSummary))
 	mux.HandleFunc("GET /api/v1/usage/breakdown", a(s.usageBreakdown))
 	mux.HandleFunc("GET /api/v1/usage/refusals", a(s.usageRefusals))
@@ -103,6 +104,10 @@ func (s *Server) usageFeature(w http.ResponseWriter, r *http.Request) (any, erro
 
 func (s *Server) usageTask(w http.ResponseWriter, r *http.Request) (any, error) {
 	return s.svc.UsageForTask(r.Context(), actorFrom(r), usageQueryFrom(r), r.PathValue("key"))
+}
+
+func (s *Server) usageNoTask(w http.ResponseWriter, r *http.Request) (any, error) {
+	return s.svc.UsageNoTask(r.Context(), actorFrom(r), usageQueryFrom(r))
 }
 
 func (s *Server) usageCompare(w http.ResponseWriter, r *http.Request) (any, error) {

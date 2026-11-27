@@ -21,7 +21,8 @@ their sizes, generation (a file Claude Code rewrote starts the next) and
 whether redaction ran and how many values it blanked (unknown for pieces
 stored before that was counted). With --file (main, or a path from the list) writes
 that file's JSONL to stdout, every line whole, in the order it was written.
-Your own sessions; an admin can read anyone's with --user. Redaction removes
+Your own person's sessions, also from an agent; an admin (a person, not an
+agent) can read anyone's with --user. Redaction removes
 credentials of known shapes, not everything private: treat the text as private.`,
 	examples: []string{"wp usage transcript 0b1c…", "wp usage transcript 0b1c… --file main > session.jsonl"},
 	run:      cmdUsageTranscript,

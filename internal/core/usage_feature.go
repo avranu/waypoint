@@ -391,11 +391,37 @@ type TaskUsage struct {
 	Subagents   int64             `json:"subagents"`
 	ToolCalls   int64             `json:"tool_calls"`
 	ToolErrors  int64             `json:"tool_errors"`
-	Edits       int64             `json:"edits"` // calls of the editing tools
-	PRs         int64             `json:"prs"`   // merged
-	Files       int64             `json:"files"` // changed in them
-	Lines       int64             `json:"lines"` // added + deleted in them
-	Used        []TaskUsageTool   `json:"used"`
+	Edits       int64             `json:"edits"` // calls of the editing tools that did not fail
+	// ShellEdits counts Bash calls that wrote the work (redirects, sed -i,
+	// formatters, scripts that write). It is only known for the calls the
+	// client read (uploaded as shell_edit or shell_none);
+	// ShellEditsUncounted is the other Bash calls (not read whole, or
+	// synced by a client too old to read them), so ShellEdits is then a floor.
+	ShellEdits          int64 `json:"shell_edits"`
+	ShellEditsUncounted int64 `json:"shell_edits_uncounted"`
+	// ShellEditsCounted is the Bash calls the client read; with it above 0
+	// a zero ShellEdits is "0+".
+	ShellEditsCounted int64 `json:"shell_edits_counted"`
+	// ScriptEdits and ScriptShellEdits are the edit-tool calls and writing
+	// Bash calls a REPL script ran (model <synthetic>), not the model: they
+	// are in none of the figures above, as in session facts.
+	ScriptEdits      int64 `json:"script_edits"`
+	ScriptShellEdits int64 `json:"script_shell_edits"`
+	// ScriptShellUncounted is the Bash calls REPL scripts ran that the client
+	// did not read (too long, or an older client); not in ShellEditsUncounted.
+	ScriptShellUncounted int64           `json:"script_shell_uncounted"`
+	PRs                  int64           `json:"prs"`   // merged
+	Files                int64           `json:"files"` // changed in them
+	Lines                int64           `json:"lines"` // added + deleted in them
+	Used                 []TaskUsageTool `json:"used"`
+	// AfterRun is spend in the task's sessions after its runs ended that no
+	// other task claimed (WP-1884); nil without any. Never part of CostUSD.
+	AfterRun *TaskCarryOver `json:"after_run,omitempty"`
+	// Review rounds, the reviewers' tokens and the pull requests (WP-1882);
+	// each absent when the task has none.
+	Rounds       []TaskUsageRound   `json:"rounds,omitempty"`
+	Reviewer     *TaskUsageReviewer `json:"reviewer,omitempty"`
+	PullRequests []TaskUsagePR      `json:"pull_requests,omitempty"`
 	UsageTotals
 }
 
@@ -497,11 +523,16 @@ func (s *Service) UsageForTask(ctx context.Context, actor *Actor, uq UsageQuery,
 		i.ID).Scan(&o.PRs, &o.Files, &o.Lines); err != nil {
 		return nil, err
 	}
+	if err := s.taskReviewInto(ctx, i.ID, o); err != nil {
+		return nil, err
+	}
 	if len(o.Runs) == 0 {
 		return o, nil
 	}
 	first := from - runLead
-	sc.from, sc.to = first-first%hourMillis, min(to+runGrace+hourMillis, sc.to)
+	// The window runs to now, not to the last run's end, to see the hours
+	// after it that carry over (carryOf).
+	sc.from = first - first%hourMillis
 	book, _, err := s.loadPrices(ctx)
 	if err != nil {
 		return nil, err
@@ -514,11 +545,30 @@ func (s *Service) UsageForTask(ctx context.Context, actor *Actor, uq UsageQuery,
 	if err != nil {
 		return nil, err
 	}
-	u := newCompareUnit()
-	for k, b := range buckets {
-		if sk := (sessKeyAt{k.machine, k.session}); attr.taskOf(sk, k.hour) == i.ID {
-			u.add(sk, k.hour, b)
+	// A session that holds the task with no run of its own (another session
+	// took the run) is the task's while the task's runs last, not for as long
+	// as it lives: what it spends after the last run ended is not this cost.
+	for k, spans := range attr.runs {
+		if spans[0].start == 0 && spans[0].issue == i.ID {
+			attr.runs[k] = []runSpan{{issue: i.ID, start: 1, end: to}}
 		}
+	}
+	if err := attr.loadCarry(ctx, s, actor, sc); err != nil {
+		return nil, err
+	}
+	u := newCompareUnit()
+	carry, carrySessions := 0.0, map[sessKeyAt]bool{}
+	for k, b := range buckets {
+		sk := sessKeyAt{k.machine, k.session}
+		if attr.taskOf(sk, k.hour) == i.ID {
+			u.add(sk, k.hour, b)
+		} else if b.acc.cost > 0 && attr.carryOf(sk, k.hour) == i.ID {
+			carry += b.acc.cost
+			carrySessions[sk] = true
+		}
+	}
+	if carry > 0 {
+		o.AfterRun = &TaskCarryOver{CostUSD: carry, Sessions: len(carrySessions)}
 	}
 	o.UsageTotals, o.ActiveHours, o.Sessions = u.acc.totals(), len(u.hours), len(u.sessions)
 	o.Subagents, o.ToolCalls, o.ToolErrors = u.subagents, u.tools, u.errors
@@ -547,26 +597,83 @@ func (s *Service) taskArms(ctx context.Context, issueID int64, o *TaskUsage) err
 func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskAttribution, issueID int64, o *TaskUsage) error {
 	where, args := sc.where("hour")
 	// #nosec G202 -- where is built from fixed conditions; values are bound
-	rows, err := s.db.R.QueryContext(ctx, `SELECT machine, session, hour, kind, tool, detail, sum(calls), sum(errors) FROM tool_hours WHERE `+where+`
-		GROUP BY machine, session, hour, kind, tool, detail`, args...)
+	rows, err := s.db.R.QueryContext(ctx, `SELECT machine, session, hour, kind, tool, detail, via, model LIKE '<%', sum(calls), sum(errors), sum(refusals) FROM tool_hours WHERE `+where+`
+		GROUP BY machine, session, hour, kind, tool, detail, via, model LIKE '<%'`, args...)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	type toolKey struct{ kind, name string }
 	seen := map[toolKey]*TaskUsageTool{}
+	bash := map[trendKey]int64{}
+	scriptBash, scriptRead := map[trendKey]int64{}, map[trendKey]int64{} // the same, of REPL scripts' calls
+	read := map[trendKey]int64{}                                         // Bash calls the client read whole
 	for rows.Next() {
 		var k trendKey
-		var kind, tool, detail string
-		var calls, errs int64
-		if err := rows.Scan(&k.machine, &k.session, &k.hour, &kind, &tool, &detail, &calls, &errs); err != nil {
+		var kind, tool, detail, via string
+		var calls, errs, refused int64
+		var byScript bool // a REPL script ran these calls (model <synthetic>)
+		if err := rows.Scan(&k.machine, &k.session, &k.hour, &kind, &tool, &detail, &via, &byScript, &calls, &errs, &refused); err != nil {
 			return err
+		}
+		// A transcript row's refusal is one of its calls (usage_parse.go); an
+		// OTLP row counts a rejected tool_decision apart from the tool_result
+		// events (usage_otlp.go), so there the calls hold no refusal.
+		inCalls := refused
+		if via == "otlp" {
+			inCalls = 0
 		}
 		if attr.taskOf(sessKeyAt{k.machine, k.session}, k.hour) != issueID {
 			continue
 		}
 		if kind == "builtin" && transcript.IsEditTool(tool) {
-			o.Edits += calls
+			// A call is an error or a refusal, never both (usage_parse.go), and
+			// neither wrote anything. That a refusal is inside calls holds for
+			// transcript rows; OTLP rows keep refusals out of calls (inCalls).
+			if byScript {
+				o.ScriptEdits += max(calls-errs-inCalls, 0)
+			} else {
+				o.Edits += max(calls-errs-inCalls, 0)
+			}
+		}
+		if kind == "builtin" && tool == "Bash" {
+			if byScript {
+				scriptBash[k] += calls
+			} else {
+				bash[k] += calls
+			}
+		}
+		switch kind {
+		case transcript.ShellUnknownKind:
+			// One of the hour's Bash calls (builtin Bash has it too) that the
+			// client could not read: uncounted, by not being among the read.
+			continue
+		case transcript.ShellNoneKind:
+			if byScript {
+				scriptRead[k] += calls
+			} else {
+				read[k] += calls
+			}
+			continue
+		case transcript.ShellEditKind:
+			// A non-zero exit still counts (sed -i ... && go test writes before
+			// the test fails); a refused call wrote nothing.
+			if byScript {
+				scriptRead[k] += calls
+				o.ScriptShellEdits += max(calls-inCalls, 0)
+			} else {
+				read[k] += calls
+				o.ShellEdits += max(calls-inCalls, 0)
+			}
+			continue
+		}
+		if byScript && (kind == "builtin" || kind == "mcp") {
+			// A script's calls are in none of the task's tool figures (see
+			// TaskUsage), as in session facts: out of ToolCalls (taken from
+			// trendBuckets, which counts them) and out of the used list.
+			o.ToolCalls -= calls
+			o.ToolErrors -= errs
+			continue
 		}
 		name := strings.TrimSpace(tool + " " + detail)
 		t := seen[toolKey{kind, name}]
@@ -579,6 +686,17 @@ func (s *Service) taskToolsInto(ctx context.Context, sc *usageScope, attr *taskA
 	}
 	if err := rows.Err(); err != nil {
 		return err
+	}
+	for k, n := range bash {
+		// Every call the client read has a shell_edit or shell_none row; the
+		// rest of the hour's Bash calls were not read (shell_unknown) or came
+		// from a client that did not read them, and are uncounted.
+		r := min(read[k], n)
+		o.ShellEditsCounted += r
+		o.ShellEditsUncounted += n - r
+	}
+	for k, n := range scriptBash {
+		o.ScriptShellUncounted += n - min(scriptRead[k], n)
 	}
 	for _, t := range seen {
 		o.Used = append(o.Used, *t)

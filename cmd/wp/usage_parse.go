@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"git.jmann.me/claude/waypoint/internal/lazyre"
+	trscript "git.jmann.me/claude/waypoint/internal/transcript"
 )
 
 type usageMsgRow struct {
@@ -303,13 +304,29 @@ type rawLine struct {
 	IsAPIError       bool   `json:"isApiErrorMessage"`
 	IsMeta           bool   `json:"isMeta"`
 	IsCompactSummary bool   `json:"isCompactSummary"`
-	Message          *struct {
+	// APIError names an API error record's kind (usage_limit_reached,
+	// connection_failed); a limit record also carries the account's
+	// rate_limit_info under apiErrorParams.
+	APIError       string `json:"apiError"`
+	APIErrorParams *struct {
+		RateLimitInfo *rawRateLimit `json:"rate_limit_info"`
+	} `json:"apiErrorParams"`
+	Message *struct {
 		ID      string          `json:"id"`
 		Model   string          `json:"model"`
 		Usage   *rawUsage       `json:"usage"`
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
 	PermissionDecision *rawDecision `json:"permissionDecision"`
+}
+
+type rawRateLimit struct {
+	Status                string `json:"status"`
+	ResetsAt              int64  `json:"resetsAt"`
+	RateLimitType         string `json:"rateLimitType"`
+	OverageStatus         string `json:"overageStatus"`
+	OverageDisabledReason string `json:"overageDisabledReason"`
+	IsUsingOverage        bool   `json:"isUsingOverage"`
 }
 
 type rawDecision struct {
@@ -565,6 +582,12 @@ func (p *usageParser) meta(l *rawLine) {
 	if l.Cwd != "" && p.st.Cwd == "" {
 		p.st.Cwd = l.Cwd
 	}
+	if l.Cwd != "" {
+		if p.st.Trace == nil {
+			p.st.Trace = &traceState{}
+		}
+		p.st.Trace.note(l.Cwd)
+	}
 	if l.GitBranch != "" {
 		p.st.Branch = l.GitBranch
 	}
@@ -646,6 +669,29 @@ func (p *usageParser) assistant(b []byte, l *rawLine) {
 		}
 		call := classifyCall(bl.Name, bl.Input)
 		call.Hour, call.Model = hourOf(ts), model
+		if bl.Name == "Bash" || bl.Name == "Write" {
+			if p.st.Trace == nil {
+				p.st.Trace = &traceState{}
+			}
+		}
+		if bl.Name == "Write" {
+			var in traceInput
+			if json.Unmarshal(bl.Input, &in) == nil {
+				p.st.Trace.Scripts.Keep(trscript.ShellAt(in.FilePath, usageOr(l.Cwd, p.st.Cwd)), in.Content)
+			}
+		}
+		if bl.Name == "Bash" {
+			wrote, known := p.st.Trace.shellEdit(bl.Input, l.Cwd)
+			switch {
+			case !known:
+				// Not read whole: counted apart, not as read with no write.
+				call.Keys = append(call.Keys, usageToolKey{Kind: trscript.ShellUnknownKind, Tool: bl.Name})
+			case wrote:
+				call.Keys = append(call.Keys, usageToolKey{Kind: trscript.ShellEditKind, Tool: bl.Name})
+			default:
+				call.Keys = append(call.Keys, usageToolKey{Kind: trscript.ShellNoneKind, Tool: bl.Name})
+			}
+		}
 		if p.f.Main && !l.Sidechain {
 			var ctx int64
 			if m.Usage != nil {
@@ -885,11 +931,7 @@ func (p *usageParser) addRisky(call *usageOpenCall, at int64, outcome, source st
 		Command: orStr(h.Command, call.Excerpt), Segment: h.Segment, Outcome: outcome, Source: source})
 }
 
-func looksRefused(text string) bool {
-	return strings.HasPrefix(text, "Permission for this") || strings.Contains(text, "denied by the Claude Code auto mode classifier") ||
-		strings.Contains(text, "hook error:") && strings.Contains(text, "Blocked") ||
-		strings.HasPrefix(text, "The user doesn't want to proceed") || strings.HasPrefix(text, "Permission to use ")
-}
+func looksRefused(text string) bool { return trscript.LooksRefused(text) }
 
 // resultText is the start of a tool result's text.
 func resultText(raw json.RawMessage, n int) string {

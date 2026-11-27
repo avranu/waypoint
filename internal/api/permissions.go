@@ -564,6 +564,7 @@ var routePermissions = map[string]core.Permission{
 	"GET /api/v1/usage/cli":                      core.PermUsageRead,
 	"GET /api/v1/usage/feature":                  core.PermUsageRead,
 	"GET /api/v1/usage/task/{key}":               core.PermUsageRead,
+	"GET /api/v1/usage/no-task":                  core.PermUsageRead,
 	"GET /api/v1/usage/summary":                  core.PermUsageRead,
 	"GET /api/v1/usage/breakdown":                core.PermUsageRead,
 	"GET /api/v1/usage/refusals":                 core.PermUsageRead,

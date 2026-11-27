@@ -339,11 +339,16 @@ func (s *Service) medianTaskCalls(ctx context.Context, userID, now int64) (int, 
 // weekly quota it used, once at least 5% is used.
 func (s *Service) usdPerWeekPct(ctx context.Context, book *priceBook, userID, now int64) (float64, bool) {
 	var resets int64
-	var pct float64
-	if err := s.db.R.QueryRowContext(ctx, `SELECT resets_at, max(percent) FROM quota_samples WHERE user_id = ? AND span = 'seven_day'
-		AND resets_at = (SELECT resets_at FROM quota_samples WHERE user_id = ? AND span = 'seven_day' ORDER BY at DESC LIMIT 1)`, userID, userID).Scan(&resets, &pct); err != nil {
+	if err := s.db.R.QueryRowContext(ctx, `SELECT resets_at FROM quota_samples WHERE user_id = ? AND span = 'seven_day' ORDER BY at DESC LIMIT 1`, userID).Scan(&resets); err != nil {
 		return 0, false
 	}
+	// The points used, not the peak: a mid-week allowance reset starts the
+	// reading over (quota_reset.go), so 99, a reset, then 80 is 179 points.
+	xs, err := s.weekSamples(ctx, userID, resets, resets-quotaWeek.Milliseconds())
+	if err != nil {
+		return 0, false
+	}
+	pct := pointsUsed(xs)
 	if resets < now || pct < 5 {
 		return 0, false
 	}

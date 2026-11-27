@@ -108,3 +108,14 @@ func TestOwnReviewWhich(t *testing.T) {
 		t.Fatalf("last message: %+v", ev)
 	}
 }
+
+func TestOwnReviewIgnoresSyntheticRecords(t *testing.T) {
+	tr := reviewTranscript + `{"type":"assistant","isVirtual":true,"message":{"model":"<synthetic>","content":[{"type":"text","text":"script output, not the report"},{"type":"tool_use","name":"SubagentHandback","input":{"message":"synthetic handback"}}]}}
+`
+	in, _ := writeSubagent(t, `{"agentType":"adversarial-review"}`, tr)
+	var ev sessionEvent
+	ownReview(in, &ev, false)
+	if ev.AgentReport != "1. x.go:12 Save writes to a nil map: panics on first call." || ev.AgentModel != "claude-sonnet-5-5" {
+		t.Fatalf("report %q model %q", ev.AgentReport, ev.AgentModel)
+	}
+}

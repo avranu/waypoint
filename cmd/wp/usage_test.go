@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"git.jmann.me/claude/waypoint/internal/core"
+	trscript "git.jmann.me/claude/waypoint/internal/transcript"
 )
 
 // fixtureDir copies cmd/wp/testdata/usage into a temp Claude config dir. The
@@ -744,5 +745,151 @@ func TestOutdatedTranscriptsOnlyUnderTheDirectory(t *testing.T) {
 	}
 	if again := outdatedTranscripts(root, &st, got); again != nil {
 		t.Errorf("a file already in this sync came back: %+v", again)
+	}
+}
+
+func TestUsageParseSyntheticIsToolRowsNotCalls(t *testing.T) {
+	dir := t.TempDir()
+	tr := `{"type":"assistant","timestamp":"2026-10-05T10:00:01.000Z","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":3,"cache_creation_input_tokens":0},"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"assistant","isVirtual":true,"timestamp":"2026-10-05T10:00:02.000Z","message":{"id":"repl_1","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"tool_use","id":"repl_t1","name":"Bash","input":{"command":"ls"}}]}}
+`
+	p := filepath.Join(dir, "projects", "-work-app", "sess1.jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(tr), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := parseMain(t, dir, usageFileState{})
+	if len(got.Chunk.Messages) != 1 || got.Chunk.Messages[0].N != 1 || got.Chunk.Messages[0].Model != "claude-opus-5-5" {
+		t.Fatalf("messages (a synthetic record is no model call, no cost row): %+v", got.Chunk.Messages)
+	}
+	var typed, script int64
+	for _, r := range got.Chunk.Tools {
+		if r.Kind == "builtin" && r.Tool == "Bash" {
+			if r.Model == "<synthetic>" {
+				script += r.Calls
+			} else {
+				typed += r.Calls
+			}
+		}
+	}
+	if typed != 1 || script != 1 {
+		t.Fatalf("Bash rows: model-typed %d, script-run (model <synthetic>) %d, tools %+v", typed, script, got.Chunk.Tools)
+	}
+}
+
+func TestUsageParseBashShellEditRows(t *testing.T) {
+	dir := t.TempDir()
+	tr := `{"type":"assistant","timestamp":"2026-10-05T10:00:01.000Z","cwd":"/work/app","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":2},"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"echo x > /work/app/out.txt"}},{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"ls"}}]}}
+`
+	p := filepath.Join(dir, "projects", "-work-app", "sess1.jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(tr), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := parseMain(t, dir, usageFileState{})
+	var bash, shell, none int64
+	for _, r := range got.Chunk.Tools {
+		switch {
+		case r.Kind == "builtin" && r.Tool == "Bash":
+			bash += r.Calls
+		case r.Kind == trscript.ShellEditKind:
+			shell += r.Calls
+		case r.Kind == trscript.ShellNoneKind:
+			none += r.Calls
+		}
+	}
+	// Every call read is in one of the two rows (audit 2027.11).
+	if bash != 2 || shell != 1 || none != 1 {
+		t.Fatalf("Bash calls %d, shell_edit %d, shell_none %d; want 2, 1, 1; tools %+v", bash, shell, none, got.Chunk.Tools)
+	}
+}
+
+// A script kept in a file counts as the edit it makes when a later call runs
+// it, in the same transcript: saved with a heredoc or with the Write tool.
+func TestUsageParseShellEditRowsKeepScripts(t *testing.T) {
+	dir := t.TempDir()
+	tool := func(id, name, in string) string {
+		return `{"type":"tool_use","id":"` + id + `","name":"` + name + `","input":` + in + `}`
+	}
+	line := func(id string, tools ...string) string {
+		return `{"type":"assistant","timestamp":"2026-10-05T10:00:01.000Z","cwd":"/work/app","message":{"id":"` + id + `","model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":2},"content":[` + strings.Join(tools, ",") + `]}}` + "\n"
+	}
+	tr := line("m1",
+		tool("t1", "Bash", `{"command":"cat > /tmp/e.py <<'EOF'\nopen('/work/app/a.go','w').write('x')\nEOF"}`),
+		tool("t2", "Write", `{"file_path":"/tmp/w.py","content":"open('/work/app/b.go','w').write('x')\n"}`)) +
+		line("m2",
+			tool("t3", "Bash", `{"command":"python3 /tmp/e.py"}`),
+			tool("t4", "Bash", `{"command":"python3 /tmp/w.py"}`),
+			tool("t5", "Bash", `{"command":"python3 /tmp/none.py"}`))
+	p := filepath.Join(dir, "projects", "-work-app", "sess1.jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(tr), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := parseMain(t, dir, usageFileState{})
+	var shell int64
+	for _, r := range got.Chunk.Tools {
+		if r.Kind == trscript.ShellEditKind {
+			shell += r.Calls
+		}
+	}
+	if shell != 2 {
+		t.Fatalf("shell edits %d, want 2 (both kept scripts, not the unknown one); tools %+v", shell, got.Chunk.Tools)
+	}
+}
+
+func TestEditsText(t *testing.T) {
+	for _, c := range []struct {
+		edits, shell, unc, counted int64
+		want                       string
+	}{
+		{11, 193, 0, 0, "edits 11, shell edits 193"},
+		{11, 0, 40, 0, "edits 11, shell edits unknown (40 Bash calls not counted)"},
+		{11, 5, 40, 9, "edits 11, shell edits 5+ (40 Bash calls not counted)"},
+		// Some hours were counted and none of their Bash calls wrote.
+		{11, 0, 40, 9, "edits 11, shell edits 0+ (40 Bash calls not counted)"},
+	} {
+		if got := editsText(c.edits, c.shell, c.unc, c.counted); got != c.want {
+			t.Errorf("editsText(%d,%d,%d,%d) = %q, want %q", c.edits, c.shell, c.unc, c.counted, got, c.want)
+		}
+	}
+}
+
+// A server older than the shell-edits figure sends only "edits": the report
+// must not print "shell edits 0" for it (audit 1907.18).
+func TestTaskUsageTextOlderServer(t *testing.T) {
+	var old, current taskUsageReport
+	if err := json.Unmarshal([]byte(`{"key":"WP-1","edits":4}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	if got := taskUsageText(&old); !strings.Contains(got, "edits 4, shell edits unknown (server too old to say)") || strings.Contains(got, "shell edits 0") {
+		t.Errorf("older server: %q", got)
+	}
+	if err := json.Unmarshal([]byte(`{"key":"WP-1","edits":4,"shell_edits":0,"shell_edits_uncounted":0}`), &current); err != nil {
+		t.Fatal(err)
+	}
+	if got := taskUsageText(&current); !strings.Contains(got, "edits 4, shell edits 0") {
+		t.Errorf("a server that counted none: %q", got)
+	}
+}
+
+// The edits REPL scripts ran are said apart from the model's (audit 2027.12).
+func TestTaskEditsTextSaysScriptEditsApart(t *testing.T) {
+	var r taskUsageReport
+	if err := json.Unmarshal([]byte(`{"key":"WP-1","edits":4,"shell_edits":1,"shell_edits_uncounted":0,"script_edits":13,"script_shell_edits":2}`), &r); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := taskEditsText(&r), "edits 4, shell edits 1 (REPL scripts ran 13 more edits and 2 more shell edits)"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	r.ScriptEdits, r.ScriptShellEdits = 0, 0
+	if got, want := taskEditsText(&r), "edits 4, shell edits 1"; got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

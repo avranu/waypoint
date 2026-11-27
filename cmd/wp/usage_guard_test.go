@@ -18,7 +18,7 @@ func TestGuardReportText(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &r); err != nil {
 		t.Fatal(err)
 	}
-	out := guardReportText(&r, true)
+	out := guardReportText(&r, true, "runner1")
 	for _, want := range []string{
 		"Quota guard (pat), last 14 days: 1 check, 1 breach.",
 		"Nov 9 11:00 to Nov 10 11:00 UTC: week at 61% (even 44%), resets Nov 14 00:36 UTC",
@@ -35,5 +35,19 @@ func TestGuardReportText(t *testing.T) {
 	}
 	if strings.Contains(out, "Nov 9 14:00") {
 		t.Errorf("an hour that spent nothing is listed:\n%s", out)
+	}
+}
+
+// The machine name goes into the JSON as a JSON string, whatever bytes it has.
+func TestGuardBothJSONMachineName(t *testing.T) {
+	out := guardBothJSON([]byte(`null`), []byte(`{}`), "box\x01\"é ")
+	var v struct {
+		This string `json:"this_machine"`
+	}
+	if err := json.Unmarshal(out, &v); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if v.This != "box\x01\"é " {
+		t.Errorf("machine %q", v.This)
 	}
 }

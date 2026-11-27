@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 )
 
 // transcriptCompaction is what a session's transcript says about its last
@@ -39,7 +40,8 @@ func readCompaction(path string) (transcriptCompaction, error) {
 			Subtype   string `json:"subtype"`
 			Sidechain bool   `json:"isSidechain"`
 			Message   struct {
-				ID string `json:"id"`
+				ID    string `json:"id"`
+				Model string `json:"model"`
 			} `json:"message"`
 		}
 		if json.Unmarshal(line, &e) != nil || e.Sidechain {
@@ -49,6 +51,7 @@ func readCompaction(path string) (transcriptCompaction, error) {
 		case e.Type == "system" && e.Subtype == "compact_boundary":
 			out.compacted, out.replies = true, 0
 			clear(seen)
+		case e.Type == "assistant" && strings.HasPrefix(e.Message.Model, "<"):
 		case e.Type == "assistant":
 			if e.Message.ID == "" || !seen[e.Message.ID] {
 				out.replies++

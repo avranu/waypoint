@@ -293,10 +293,14 @@ type AutopilotOverview struct {
 
 // AutopilotMeter is what the limits read now.
 type AutopilotMeter struct {
-	HourlyUSD     float64    `json:"hourly_usd"`
-	WeekPercent   *float64   `json:"week_percent,omitempty"`
-	WeekEven      *float64   `json:"week_even,omitempty"`
-	WeekResetsAt  *time.Time `json:"week_resets_at,omitempty"`
+	HourlyUSD    float64    `json:"hourly_usd"`
+	WeekPercent  *float64   `json:"week_percent,omitempty"`
+	WeekEven     *float64   `json:"week_even,omitempty"`
+	WeekResetsAt *time.Time `json:"week_resets_at,omitempty"`
+	// WeekReset: the allowance was reset part-way through the week, at this
+	// time, from WeekResetWas percent; WeekEven runs from then.
+	WeekReset     *time.Time `json:"week_reset_at,omitempty"`
+	WeekResetWas  *float64   `json:"week_reset_was,omitempty"`
 	WeekCap       *float64   `json:"week_cap,omitempty"` // the week ceiling now, by the default limits
 	FiveHour      *float64   `json:"five_hour_percent,omitempty"`
 	FiveResetsAt  *time.Time `json:"five_hour_resets_at,omitempty"`
@@ -697,8 +701,21 @@ func (s *Service) autopilotMeter(ctx context.Context, uid int64) (*AutopilotMete
 		return nil, err
 	}
 	if ok && reset.After(now) && now.Sub(at) < quotaFresh {
-		even := 100 * (1 - float64(reset.Sub(at))/float64(7*24*time.Hour))
-		m.WeekPercent, m.WeekEven, m.WeekResetsAt, m.QuotaSampled = ptrOf(pct), ptrOf(math.Round(max(0, even)*10)/10), ptrOf(reset), ptrOf(at)
+		// WeekPercent is the latest reading as it stands (not a running
+		// maximum), so it is right after an allowance reset. The even pace runs
+		// from the week's last reset when there was one (WP-1881), through the
+		// same rule as the quota guard's.
+		var evenFrom int64
+		rst, err := s.lastQuotaResetInfo(ctx, uid, reset.UnixMilli())
+		if err != nil {
+			return nil, err
+		}
+		if rst != nil {
+			evenFrom = rst.At
+			m.WeekReset, m.WeekResetWas = ptrOf(msTime(rst.At)), ptrOf(rst.Was)
+		}
+		even := quotaEven(evenFrom, reset.UnixMilli(), at.UnixMilli())
+		m.WeekPercent, m.WeekEven, m.WeekResetsAt, m.QuotaSampled = ptrOf(pct), ptrOf(math.Round(even*10)/10), ptrOf(reset), ptrOf(at)
 	} else {
 		m.QuotaUnknown = true
 	}
@@ -796,8 +813,12 @@ func quotaPaused(m *AutopilotMeter, l AutopilotLimits, now time.Time) (why strin
 			return fmt.Sprintf("the week's quota is at %.0f%% (the limit is %.0f%% now)", *m.WeekPercent, max), now.Add(15 * time.Minute)
 		}
 		if ahead := valueOf(l.WeekAhead); ahead > 0 && *m.WeekPercent-*m.WeekEven > ahead {
-			return fmt.Sprintf("the week's quota is at %.0f%%, %.0f points ahead of an even pace (%.0f%%; the limit is %.0f ahead)",
-				*m.WeekPercent, *m.WeekPercent-*m.WeekEven, *m.WeekEven, ahead), now.Add(15 * time.Minute)
+			since := ""
+			if m.WeekReset != nil {
+				since = " since the allowance reset at " + m.WeekReset.UTC().Format("Jan 2 15:04 UTC")
+			}
+			return fmt.Sprintf("the week's quota is at %.0f%%, %.0f points ahead of an even pace (%.0f%%%s; the limit is %.0f ahead)",
+				*m.WeekPercent, *m.WeekPercent-*m.WeekEven, *m.WeekEven, since, ahead), now.Add(15 * time.Minute)
 		}
 	}
 	return "", time.Time{}

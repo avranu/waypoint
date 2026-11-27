@@ -359,7 +359,7 @@ does (issues created or closed, comments, pages, requests, runs) is recorded on 
     GET  /sessions/{id}/usage        what that session used, joined from the usage tables by person, machine
                                      and CLI session id: {has_data, private, totals, models, kinds (the session
                                      and its subagents), tools, bash (command heads), refusals}. Usage is the
-                                     owner's (and admins'); others get {private:true}; agents are refused
+                                     owner's (and admins'); others get {private:true}; an agent reads its own person's sessions only
 
 ## Agents overview (WP-D16)
 
@@ -687,6 +687,7 @@ differences (a message written again with more tokens). Cost is API-equivalent, 
     GET  /usage/feature?ref=KEY|VERSION&window=30&repo=OWNER/NAME&…   tasks whose runs had a release against those
                                     whose runs didn't, from what each run recorded (WP-256): had, before, partial, unknown
     GET  /usage/task/KEY            one task's usage, each run's versions, the tools it used and (admins) its experiment arms
+    GET  /usage/no-task             spend no task was found for, split into carry-over to earlier runs and sessions that never had one (?days=N&user=)
     GET  /usage/summary             this week's tokens, cache hit rate and quota, for the overview page
     GET  /usage/breakdown?by=repo|machine|session|kind|model&limit=100   more rows than the overview shows
     GET  /usage/refusals?before=ID&limit=25     older refused calls, with their excerpts
@@ -721,7 +722,8 @@ differences (a message written again with more tokens). Cost is API-equivalent, 
                                     complete (no hole), sizes, whether every piece was redacted, and redactions (values blanked,
                                     with redaction_rules by rule; null when any piece predates the counts)
     GET  /usage/transcript?session=ID&file=main|PATH&machine=&user=&gen=   one file's JSONL, whole lines in order;
-                                    a person only (an agent's shell is refused). A stored piece that fails its
+                                    your own person's, also from an agent that holds the transcripts.read permission (a person's own login has it; the Read only
+                                    preset does not) but never an automation; `user=` another person or `all` is for admin people only. A stored piece that fails its
                                     check after bytes went out breaks the connection instead of ending the body
     POST /slot-holds?machine=&pending=&oldest=&dropped=   {"holds":[...]} up to 500 test slot holds a machine recorded
                                     (WP-1646); pending, oldest (queued_at ms) and dropped are the machine's outbox state, kept

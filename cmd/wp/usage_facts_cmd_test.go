@@ -1,11 +1,35 @@
 package main
 
 import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"git.jmann.me/claude/waypoint/internal/core"
 )
+
+func TestShellEditsText(t *testing.T) {
+	for _, c := range []struct {
+		n, unknown, none, viaScript, scriptUnknown int
+		want                                       string
+	}{
+		{7, 0, 0, 0, 0, "7 shell edits"},
+		{0, 0, 5, 0, 0, "0 shell edits"},
+		{0, 4, 0, 0, 0, "shell edits unknown (4 Bash calls not classified)"},
+		{0, 4, 6, 0, 0, "0+ shell edits (4 Bash calls not classified)"},
+		{3, 4, 0, 0, 0, "3+ shell edits (4 Bash calls not classified)"},
+		{7, 0, 0, 2, 0, "7 shell edits and 2 more run by REPL scripts"},
+		{3, 4, 0, 2, 0, "3+ shell edits (4 Bash calls not classified) and 2 more run by REPL scripts"},
+		{7, 0, 0, 2, 3, "7 shell edits and 2+ more run by REPL scripts (3 of their Bash calls not classified)"},
+		{7, 0, 0, 0, 3, "7 shell edits and 0+ more run by REPL scripts (3 of their Bash calls not classified)"},
+	} {
+		if got := shellEditsText(c.n, c.unknown, c.none, c.viaScript, c.scriptUnknown); got != c.want {
+			t.Errorf("shellEditsText(%d, %d, %d, %d) = %q, want %q", c.n, c.unknown, c.none, c.viaScript, got, c.want)
+		}
+	}
+}
 
 func TestFactsTargetRouting(t *testing.T) {
 	for _, tc := range []struct {
@@ -53,5 +77,86 @@ func TestFactsTextNamesWhatItCounts(t *testing.T) {
 	}
 	if strings.Contains(out, "tests written") {
 		t.Errorf("old label is still there")
+	}
+}
+
+// The changes line carries seven different counts: distinct values so that
+// swapping two arguments of the format fails (audit 1933.14).
+func TestFactsTextChangesLine(t *testing.T) {
+	var f core.SessionFacts
+	f.Scope, f.Key = "session", "s1"
+	f.Changes.Edits = 11
+	f.Changes.Failed = 12
+	f.Changes.ScriptEdits = 13
+	f.Changes.ShellEdits = 14
+	f.Changes.ShellUnknown = 15
+	f.Changes.ScriptShellEdits = 16
+	f.Changes.FilesChanged = 17
+	want := "changes: 11 edits (12 failed; 13 more run by REPL scripts), 14+ shell edits (15 Bash calls not classified) and 16 more run by REPL scripts; the edits changed 17 files, lines added 0, removed 0 (what shell edits changed is not counted)"
+	var got string
+	for _, l := range strings.Split(factsText(&f), "\n") {
+		if strings.HasPrefix(l, "changes:") {
+			got = l
+		}
+	}
+	if got != want {
+		t.Errorf("changes line:\n got %q\nwant %q", got, want)
+	}
+}
+
+// An older server leaves shell_edits out of the facts: the text says it does
+// not know, not "0 shell edits", and --json prints the body as sent.
+func TestFactsOldServerShellEditsUnknown(t *testing.T) {
+	const body = `{"scope":"session","key":"s1","changes":{"edits":3,"failed":1,"files_changed":2}}`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(body)) }))
+	defer ts.Close()
+	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
+	t.Setenv("WAYPOINT_SERVER", ts.URL)
+	t.Setenv("WAYPOINT_TOKEN", "wpt_x")
+	var out bytes.Buffer
+	c, _ := newCLI(&out, &bytes.Buffer{})
+	if err := cmdUsageFacts(c, []string{"--session", "s1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "shell edits unknown") || strings.Contains(got, "0 shell edits") {
+		t.Errorf("text:\n%s", got)
+	}
+	out.Reset()
+	if err := cmdUsageFacts(c, []string{"--session", "s1", "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "shell_edits") {
+		t.Errorf("--json invented shell_edits:\n%s", out.String())
+	}
+}
+
+// Only the changes line says the server is too old: an earlier line that
+// happens to hold the same words is left as it is.
+func TestFactsOldServerRewritesOnlyChangesLine(t *testing.T) {
+	const body = `{"scope":"session","key":"s1","sources":[{"user":"0 shell edits","machine":"m","session":"s1"}],"changes":{"edits":3}}`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(body)) }))
+	defer ts.Close()
+	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
+	t.Setenv("WAYPOINT_SERVER", ts.URL)
+	t.Setenv("WAYPOINT_TOKEN", "wpt_x")
+	var out bytes.Buffer
+	c, _ := newCLI(&out, &bytes.Buffer{})
+	if err := cmdUsageFacts(c, []string{"--session", "s1"}); err != nil {
+		t.Fatal(err)
+	}
+	var src, changes string
+	for _, l := range strings.Split(out.String(), "\n") {
+		switch {
+		case strings.HasPrefix(l, "  source:"):
+			src = l
+		case strings.HasPrefix(l, "changes:"):
+			changes = l
+		}
+	}
+	if !strings.Contains(src, "0 shell edits m s1") {
+		t.Errorf("source line was rewritten: %q", src)
+	}
+	if !strings.Contains(changes, "shell edits unknown (server too old to say)") || strings.Contains(changes, "0 shell edits") {
+		t.Errorf("changes line: %q", changes)
 	}
 }

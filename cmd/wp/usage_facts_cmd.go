@@ -76,12 +76,30 @@ func cmdUsageFacts(c *cli, args []string) error {
 	if *user != "" {
 		q.Set("user", *user)
 	}
-	var f core.SessionFacts
-	if err := c.do("GET", "/api/v1/usage/facts?"+q.Encode(), nil, &f); err != nil {
+	raw, err := c.call("GET", "/api/v1/usage/facts?"+q.Encode(), nil)
+	if err != nil {
 		return err
 	}
-	raw, _ := json.Marshal(f)
-	return c.emit(raw, func() string { return factsText(&f) })
+	var f core.SessionFacts
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return err
+	}
+	// With --json the body is printed as the server sent it: re-marshalling
+	// the struct would invent shell_edits: 0 for a server too old to count them.
+	return c.emit(raw, func() string {
+		return factsRender(&f, !factsHaveShellEdits(raw))
+	})
+}
+
+// factsHaveShellEdits is whether the reply's changes carry shell_edits at
+// all: an older server leaves it out, and the int field then reads 0.
+func factsHaveShellEdits(raw []byte) bool {
+	var r struct {
+		Changes struct {
+			ShellEdits *int `json:"shell_edits"`
+		} `json:"changes"`
+	}
+	return json.Unmarshal(raw, &r) == nil && r.Changes.ShellEdits != nil
 }
 
 // tallyText: the sum, or unknown when no row carried it, or the sum with how
@@ -122,7 +140,11 @@ func countsText[N int | int64](m map[string]N) string {
 	return strings.Join(parts, ", ")
 }
 
-func factsText(f *core.SessionFacts) string {
+func factsText(f *core.SessionFacts) string { return factsRender(f, false) }
+
+// factsRender writes the facts; oldServer says the reply left shell_edits
+// out, so the changes line says it does not know.
+func factsRender(f *core.SessionFacts, oldServer bool) string {
 	var b strings.Builder
 	p := func(format string, a ...any) { _, _ = fmt.Fprintf(&b, format+"\n", a...) }
 	p("%s %s", f.Scope, f.Key)
@@ -163,7 +185,7 @@ func factsText(f *core.SessionFacts) string {
 	p("model calls: %d (%d by sub-agents); models: %s", m.Total, m.Sidechain, countsText(m.ByModel))
 	p("  output tokens %s; thinking tokens %s (part of the output); cache read %s; cache write %s",
 		tallyText(m.Output, nil), tallyText(m.Thinking, nil), tallyText(m.CacheRead, nil), tallyText(m.CacheWrite, nil))
-	p("tool calls: %d (%d errors): %s", f.ToolCalls.Total, f.ToolCalls.Errors, countsText(f.ToolCalls.ByTool))
+	p("tool calls: %d (%d errors): %s; run by REPL scripts: %d", f.ToolCalls.Total, f.ToolCalls.Errors, countsText(f.ToolCalls.ByTool), f.ToolCalls.ByScript)
 	p("injected into the context: %d items, %s", f.Injected.Count, tallyText(f.Injected.Bytes, bytesText))
 	for _, i := range f.Injected.Top {
 		size := "unknown size"
@@ -184,7 +206,11 @@ func factsText(f *core.SessionFacts) string {
 		p("  %s x%d", d.URL, d.Times)
 	}
 	c := f.Changes
-	p("changes: %d edits (%d failed), %d files; lines added %s, removed %s", c.Edits, c.Failed, c.FilesChanged,
+	shell := shellEditsText(c.ShellEdits, c.ShellUnknown, c.ShellNone, c.ScriptShellEdits, c.ScriptShellUnknown)
+	if oldServer {
+		shell = "shell edits unknown (server too old to say)"
+	}
+	p("changes: %d edits (%d failed; %d more run by REPL scripts), %s; the edits changed %d files, lines added %s, removed %s (what shell edits changed is not counted)", c.Edits, c.Failed, c.ScriptEdits, shell, c.FilesChanged,
 		tallyText(c.LinesAdded, nil), tallyText(c.LinesRemoved, nil))
 	p("  test files edited: %d edits of %d test files, lines added %s", c.TestEdits, c.TestFiles, tallyText(c.TestLinesAdd, nil))
 	r := f.Repeated
@@ -200,4 +226,31 @@ func factsText(f *core.SessionFacts) string {
 	p("cache expiry (inferred from timing, not recorded): %d of %d calls wrote the cache after a gap longer than its life; cache written then %s; %d calls cannot be judged",
 		e.Cold, e.Determinable, tallyText(e.ColdWrite, nil), e.Undeterminable)
 	return b.String()
+}
+
+// shellEditsText says the Bash calls that wrote files, beside the edits of
+// the editing tools; unknown for Bash calls with no answer (stored before it
+// was recorded, or too long to read). viaScript is the Bash calls a REPL
+// script ran that wrote files, told apart from the rest as the edits of
+// scripts are. none is the Bash calls classified as not writing: with some,
+// a zero beside unknown calls is "0+", not unknown.
+func shellEditsText(n, unknown, none, viaScript, scriptUnknown int) string {
+	var s string
+	switch {
+	case unknown == 0:
+		s = fmt.Sprintf("%d shell edits", n)
+	case n == 0 && none > 0:
+		s = fmt.Sprintf("0+ shell edits (%d Bash calls not classified)", unknown)
+	case n == 0:
+		s = fmt.Sprintf("shell edits unknown (%d Bash calls not classified)", unknown)
+	default:
+		s = fmt.Sprintf("%d+ shell edits (%d Bash calls not classified)", n, unknown)
+	}
+	switch {
+	case scriptUnknown > 0:
+		s += fmt.Sprintf(" and %d+ more run by REPL scripts (%d of their Bash calls not classified)", viaScript, scriptUnknown)
+	case viaScript > 0:
+		s += fmt.Sprintf(" and %d more run by REPL scripts", viaScript)
+	}
+	return s
 }

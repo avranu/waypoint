@@ -347,3 +347,20 @@ func TestGuardBaseline(t *testing.T) {
 		t.Fatalf("stored %+v", w.Baseline)
 	}
 }
+
+// A runner job's session is automation's spending like any other: the model
+// it used and the session itself belong in the baseline (audit 1933.6).
+func TestGuardBaselineCountsRunnerJobSessions(t *testing.T) {
+	l := newLiveEnv(t)
+	l.exec(`INSERT INTO runner_jobs(owner_id, kind, title, cli, input, state, timeout, source, result, created_at, started_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		l.me.User.ID, JobAgent, "agent job", "claude", "{}", "done", 600, "babysit", `{"session_id":"jsess","tokens":{"cost_usd":2}}`,
+		l.h(2*time.Hour), l.h(2*time.Hour), l.h(2*time.Hour+30*time.Minute))
+	l.used("jsess", 2*time.Hour)
+	b, err := l.s.guardBaseline(l.ctx, l.me.User.ID, l.clockNow())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Sessions != 1 || b.Models["claude-opus-5-5"] != 1 {
+		t.Fatalf("baseline %+v: the job's session and model are missing", b)
+	}
+}

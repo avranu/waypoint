@@ -42,6 +42,12 @@ func (w *whLines) call(ts, id, req, model string, out int64, blocks ...map[strin
 			"cache_creation": map[string]any{"ephemeral_5m_input_tokens": 100, "ephemeral_1h_input_tokens": 100}}}})
 }
 
+// resultErr writes a tool_result that is an error (a failed command).
+func (w *whLines) resultErr(ts, toolID string) {
+	w.raw(map[string]any{"type": "user", "timestamp": ts, "cwd": "/work/proj", "message": map[string]any{"role": "user", "content": []any{
+		map[string]any{"type": "tool_result", "tool_use_id": toolID, "is_error": true, "content": "check failed"}}}})
+}
+
 func bash(id, cmd string) map[string]any {
 	return map[string]any{"type": "tool_use", "id": id, "name": "Bash", "input": map[string]any{"command": cmd}}
 }
@@ -168,9 +174,12 @@ func TestWherePhaseAroundShip(t *testing.T) {
 	w.user("2026-11-24T10:00:00Z", "Handle WP-1 and ship")
 	w.call("2026-11-24T10:00:01Z", "m1", "r1", "claude-fable-5", 5, bash("b1", "wp ship -h"))
 	w.call("2026-11-24T10:00:02Z", "m2", "r2", "claude-fable-5", 5, bash("b2", "wp ship --review"))
+	w.result("2026-11-24T10:00:02Z", "b2")
 	w.call("2026-11-24T10:00:03Z", "m3", "r3", "claude-fable-5", 5, bash("b3", "git add -A && wp ship"))
+	w.result("2026-11-24T10:00:03Z", "b3")
 	w.call("2026-11-24T10:00:04Z", "m4", "r4", "claude-fable-5", 5)
 	w.call("2026-11-24T10:00:05Z", "m5", "r5", "claude-fable-5", 5, bash("b5", "wp ship"))
+	w.result("2026-11-24T10:00:05Z", "b5")
 	whWrite(t, filepath.Join(dir, "projects", "p", "s1.jsonl"), w.b.String())
 	var w2 whLines
 	w2.user("2026-11-24T10:00:00Z", "never ships")
@@ -194,25 +203,209 @@ func TestWherePhaseAroundShip(t *testing.T) {
 	}
 }
 
-func TestWhereLimitEvent(t *testing.T) {
+// limitErr writes a limit error record. ri is its rate_limit_info (nil for none).
+func (w *whLines) limitErr(ts, id, text string, ri map[string]any) {
+	rec := map[string]any{"type": "assistant", "timestamp": ts, "isApiErrorMessage": true, "apiError": "usage_limit_reached", "message": map[string]any{"id": id, "model": "<synthetic>",
+		"content": []any{map[string]any{"type": "text", "text": text}}}}
+	if ri != nil {
+		rec["apiErrorParams"] = map[string]any{"rate_limit_info": ri}
+	}
+	w.raw(rec)
+}
+
+func weeklyOff(resets int64) map[string]any {
+	return map[string]any{"status": "rejected", "resetsAt": resets, "rateLimitType": "seven_day", "overageStatus": "rejected", "overageDisabledReason": "org_level_disabled", "isUsingOverage": false}
+}
+
+func whLimitRun(t *testing.T, w *whLines, args ...string) (*whReport, string) {
+	t.Helper()
 	dir := t.TempDir()
+	whWrite(t, filepath.Join(dir, "projects", "p", "s1.jsonl"), w.b.String())
+	r, _ := whRun(t, dir, append([]string{whWin}, args...)...)
+	var out bytes.Buffer
+	c := &cli{out: &out, dir: t.TempDir()}
+	if err := cmdUsageWhere(c, append([]string{"--dir", dir, whWin}, args...)); err != nil {
+		t.Fatal(err)
+	}
+	return r, out.String()
+}
+
+func resetAt(s string) int64 {
+	ts, _ := time.Parse(time.RFC3339, s)
+	return ts.Unix()
+}
+
+func TestWhereLimitEvent(t *testing.T) {
 	var w whLines
 	w.user("2026-11-24T10:00:00Z", "go")
 	w.call("2026-11-24T10:00:01Z", "m1", "r1", "claude-sonnet-5-5", 5)
-	w.raw(map[string]any{"type": "assistant", "timestamp": "2026-11-24T10:00:02Z", "isApiErrorMessage": true, "message": map[string]any{"id": "e1", "model": "<synthetic>",
-		"content": []any{map[string]any{"type": "text", "text": "You've hit your weekly limit"}}}})
+	w.limitErr("2026-11-24T10:00:02Z", "e1", "You've hit your weekly limit", weeklyOff(resetAt("2026-11-28T17:00:00Z")))
 	w.call("2026-11-24T10:00:03Z", "m2", "r2", "claude-sonnet-5-5", 5)
 	w.call("2026-11-24T10:00:04Z", "m3", "r3", "claude-sonnet-5-5", 5)
-	whWrite(t, filepath.Join(dir, "projects", "p", "s1.jsonl"), w.b.String())
-	r, _ := whRun(t, dir, whWin)
-	if len(r.Limits.Events) != 1 || r.Limits.Events[0].TS != "2026-11-24T10:00:02Z" || !strings.Contains(r.Limits.Events[0].Text, "weekly limit") {
+	r, text := whLimitRun(t, &w)
+	if len(r.Limits.Incidents) != 1 {
 		t.Fatalf("limits %+v", r.Limits)
 	}
-	if d := r.Limits.SpendAfter - r.Cost*2/3; d < -1e-9 || d > 1e-9 {
-		t.Fatalf("spend after %v of %v", r.Limits.SpendAfter, r.Cost)
+	in := r.Limits.Incidents[0]
+	if in.Time != "2026-11-24T10:00:02Z" || in.Type != "seven_day" || in.Records != 1 || in.ResetsAt != "2026-11-28T17:00:00Z" || !strings.Contains(in.Text, "weekly limit") {
+		t.Fatalf("incident %+v", in)
+	}
+	if in.ExtraUsage != "extra usage: off (org_level_disabled)" || in.UsingOverage || in.SpendMayBeExtra != nil {
+		t.Fatalf("overage %+v", in)
 	}
 	if r.NotKnown.Synthetic != 0 {
 		t.Fatalf("an error message is not a script record: %d", r.NotKnown.Synthetic)
+	}
+	for _, want := range []string{"seven_day limit, stated reset 2026-11-28T17:00:00Z, 1 records", "extra usage: off (org_level_disabled); calls resumed after 1.0s",
+		"calls resumed before the stated reset; the allowance was reset early or the limit was for another bucket"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "spend after") || strings.Contains(text, "spend from the first") {
+		t.Errorf("no dollar figure after the message when extra usage is off:\n%s", text)
+	}
+}
+
+func TestWhereLimitLockout(t *testing.T) {
+	var w whLines
+	w.user("2026-11-21T08:00:00Z", "go")
+	w.call("2026-11-21T08:50:00Z", "m1", "r1", "claude-sonnet-5-5", 5)
+	reset := resetAt("2026-11-21T17:15:00Z")
+	// Three records of one incident, then a second session's call after the reset.
+	w.limitErr("2026-11-21T08:56:00Z", "e1", "You've hit your weekly limit", weeklyOff(reset))
+	w.limitErr("2026-11-21T09:10:00Z", "e2", "You've hit your weekly limit", weeklyOff(reset))
+	w.limitErr("2026-11-21T09:30:00Z", "e3", "You've hit your weekly limit", weeklyOff(reset))
+	w.call("2026-11-21T17:16:00Z", "m2", "r2", "claude-sonnet-5-5", 5)
+	r, text := whLimitRun(t, &w, "--since=2026-11-21T00:00:00Z")
+	if len(r.Limits.Incidents) != 1 || r.Limits.Incidents[0].Records != 3 {
+		t.Fatalf("incidents %+v", r.Limits.Incidents)
+	}
+	in := r.Limits.Incidents[0]
+	if in.LockoutSeconds == nil || int(*in.LockoutSeconds) != 8*3600+20*60 || in.Lockout != "no successful call for 8h20m" || in.ResumedEarly {
+		t.Fatalf("lockout %+v", in)
+	}
+	if !strings.Contains(text, "no successful call for 8h20m") || strings.Contains(text, "resumed before the stated reset") {
+		t.Errorf("text:\n%s", text)
+	}
+}
+
+func TestWhereLimitNoResume(t *testing.T) {
+	var w whLines
+	w.user("2026-11-24T10:00:00Z", "go")
+	w.limitErr("2026-11-24T10:00:02Z", "e1", "You've hit your weekly limit", weeklyOff(resetAt("2026-11-28T17:00:00Z")))
+	r, text := whLimitRun(t, &w)
+	if in := r.Limits.Incidents[0]; in.LockoutSeconds != nil || in.Lockout != "no successful call before the window ended" {
+		t.Fatalf("incident %+v", in)
+	}
+	if !strings.Contains(text, "no successful call before the window ended") {
+		t.Errorf("text:\n%s", text)
+	}
+}
+
+func TestWhereLimitIncidentsSplit(t *testing.T) {
+	var w whLines
+	w.user("2026-11-24T10:00:00Z", "go")
+	reset := resetAt("2026-11-28T17:00:00Z")
+	w.limitErr("2026-11-24T10:00:02Z", "e1", "You've hit your weekly limit", weeklyOff(reset))
+	w.limitErr("2026-11-24T10:00:03Z", "e2", "You've hit your weekly limit", weeklyOff(reset))
+	w.call("2026-11-24T10:00:04Z", "m1", "r1", "claude-sonnet-5-5", 5)
+	// A success in between, so the same type and reset is a new incident.
+	w.limitErr("2026-11-24T10:00:05Z", "e3", "You've hit your weekly limit", weeklyOff(reset))
+	// A different bucket is its own incident.
+	opus := weeklyOff(reset)
+	opus["rateLimitType"] = "seven_day_opus"
+	w.limitErr("2026-11-24T10:00:06Z", "e4", "You've hit your Opus limit", opus)
+	r, _ := whLimitRun(t, &w)
+	var got []string
+	for _, in := range r.Limits.Incidents {
+		got = append(got, fmt.Sprintf("%s/%d", in.Type, in.Records))
+	}
+	if strings.Join(got, " ") != "seven_day/2 seven_day/1 seven_day_opus/1" {
+		t.Fatalf("incidents %v", got)
+	}
+}
+
+func TestWhereLimitUnclassifiedAndOtherErrors(t *testing.T) {
+	var w whLines
+	w.user("2026-11-24T10:00:00Z", "go")
+	w.limitErr("2026-11-24T10:00:02Z", "e1", "You've hit your weekly limit, try later", nil)
+	w.raw(map[string]any{"type": "assistant", "timestamp": "2026-11-24T10:00:03Z", "isApiErrorMessage": true, "apiError": "connection_failed", "message": map[string]any{"id": "e2", "model": "<synthetic>",
+		"content": []any{map[string]any{"type": "text", "text": "Connection lost, retrying"}}}})
+	w.call("2026-11-24T10:00:04Z", "m1", "r1", "claude-sonnet-5-5", 5)
+	r, text := whLimitRun(t, &w)
+	if len(r.Limits.Incidents) != 1 || r.Limits.Incidents[0].Type != "unclassified" || r.Limits.Incidents[0].ResetsAt != "" || r.Limits.Incidents[0].ExtraUsage != "extra usage: not stated by the record" {
+		t.Fatalf("incidents %+v", r.Limits.Incidents)
+	}
+	if r.Limits.Incidents[0].ResumedEarly {
+		t.Errorf("no stated reset to resume before")
+	}
+	if r.Limits.OtherErrs["connection_failed"] != 1 || len(r.Limits.OtherErrs) != 1 {
+		t.Fatalf("other errors %+v", r.Limits.OtherErrs)
+	}
+	if !strings.Contains(text, "other API errors, not limits: connection_failed 1") {
+		t.Errorf("text:\n%s", text)
+	}
+}
+
+func TestWhereLimitOverageInUse(t *testing.T) {
+	var w whLines
+	w.user("2026-11-24T10:00:00Z", "go")
+	w.call("2026-11-24T10:00:01Z", "m0", "r0", "claude-sonnet-5-5", 5)
+	ri := weeklyOff(resetAt("2026-11-24T10:00:04Z"))
+	ri["overageStatus"], ri["isUsingOverage"] = "allowed", true
+	delete(ri, "overageDisabledReason")
+	w.limitErr("2026-11-24T10:00:02Z", "e1", "You've hit your weekly limit", ri)
+	w.call("2026-11-24T10:00:03Z", "m1", "r1", "claude-sonnet-5-5", 5)
+	w.call("2026-11-24T10:00:04Z", "m2", "r2", "claude-sonnet-5-5", 5)
+	w.call("2026-11-24T10:00:05Z", "m3", "r3", "claude-sonnet-5-5", 5)
+	r, text := whLimitRun(t, &w)
+	in := r.Limits.Incidents[0]
+	if in.ExtraUsage != "extra usage in use" || !in.UsingOverage || in.ResumedEarly || in.SpendMayBeExtra == nil {
+		t.Fatalf("incident %+v", in)
+	}
+	// m1 and m2 are at or before the stated reset; m3 is after it.
+	if d := *in.SpendMayBeExtra - r.Cost/4*2; d < -1e-9 || d > 1e-9 {
+		t.Fatalf("spend %v of %v", *in.SpendMayBeExtra, r.Cost)
+	}
+	if !strings.Contains(text, "spend after the message, may be extra usage: $") {
+		t.Errorf("text:\n%s", text)
+	}
+}
+
+func TestWhereLimitJSONShape(t *testing.T) {
+	var w whLines
+	w.user("2026-11-24T10:00:00Z", "go")
+	w.limitErr("2026-11-24T10:00:02Z", "e1", "You've hit your weekly limit", weeklyOff(resetAt("2026-11-28T17:00:00Z")))
+	w.call("2026-11-24T10:00:03Z", "m1", "r1", "claude-sonnet-5-5", 5)
+	dir := t.TempDir()
+	whWrite(t, filepath.Join(dir, "projects", "p", "s1.jsonl"), w.b.String())
+	_, js := whRun(t, dir, whWin)
+	var raw struct {
+		Limits map[string]json.RawMessage `json:"limit_events"`
+	}
+	if err := json.Unmarshal([]byte(js), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw.Limits["spend_after_first"]; ok {
+		t.Error("the old spend_after_first field is gone")
+	}
+	for _, k := range []string{"incidents", "other_api_errors"} {
+		if _, ok := raw.Limits[k]; !ok {
+			t.Errorf("limit_events lacks %q: %v", k, raw.Limits)
+		}
+	}
+	var inc []map[string]any
+	if err := json.Unmarshal(raw.Limits["incidents"], &inc); err != nil || len(inc) != 1 {
+		t.Fatalf("incidents %s", raw.Limits["incidents"])
+	}
+	for _, k := range []string{"time", "session", "limit_type", "stated_reset", "records", "extra_usage", "is_using_overage", "lockout_seconds", "lockout", "resumed_before_stated_reset"} {
+		if _, ok := inc[0][k]; !ok {
+			t.Errorf("incident lacks %q: %v", k, inc[0])
+		}
+	}
+	if _, ok := inc[0]["spend_after_may_be_extra_usage"]; ok {
+		t.Error("no spend figure when extra usage is off")
 	}
 }
 
@@ -356,16 +549,44 @@ func TestWhereCostliestCommands(t *testing.T) {
 	}
 }
 
+// A ship whose result is an error (failed check, conflict, hook refusal) is
+// not a ship, and neither is one with no result yet; spend after it is still
+// before the first ship (audit 1907.17).
+func TestWherePhaseFailedShipIsNotAShip(t *testing.T) {
+	dir := t.TempDir()
+	var w whLines
+	w.user("2026-11-24T10:00:00Z", "go")
+	w.call("2026-11-24T10:00:01Z", "m1", "r1", "claude-fable-5", 5, bash("b1", "wp ship"))
+	w.resultErr("2026-11-24T10:00:02Z", "b1")
+	w.call("2026-11-24T10:00:03Z", "m2", "r2", "claude-fable-5", 5)
+	w.call("2026-11-24T10:00:04Z", "m3", "r3", "claude-fable-5", 5, bash("b3", "wp ship"))
+	w.result("2026-11-24T10:00:05Z", "b3")
+	w.call("2026-11-24T10:00:06Z", "m4", "r4", "claude-fable-5", 5)
+	w.call("2026-11-24T10:00:07Z", "m5", "r5", "claude-fable-5", 5, bash("b5", "wp ship"))
+	whWrite(t, filepath.Join(dir, "projects", "p", "s1.jsonl"), w.b.String())
+	r, _ := whRun(t, dir, whWin)
+	ph := r.Phase
+	if ph.Shipped != 1 || ph.Ships != 1 {
+		t.Fatalf("phase %+v: one ship (the second); the failed and the unanswered are not", ph)
+	}
+	one := r.Parts.total() / 5
+	if d := ph.Before - 3*one; d < -1e-9 || d > 1e-9 {
+		t.Errorf("before %v, want 3 calls of %v (the failed ship and the call after it count as before)", ph.Before, one)
+	}
+}
+
 func TestWherePhaseFirstShipBeforeWindow(t *testing.T) {
 	dir := t.TempDir()
 	var w whLines
 	w.user("2026-11-24T08:00:00Z", "go")
 	w.call("2026-11-24T09:00:00Z", "m1", "r1", "claude-fable-5", 5, bash("b1", "wp ship"))
+	w.result("2026-11-24T09:00:01Z", "b1")
 	w.call("2026-11-24T10:30:00Z", "m2", "r2", "claude-fable-5", 5)
 	whWrite(t, filepath.Join(dir, "projects", "p", "s1.jsonl"), w.b.String())
 	var w2 whLines
 	w2.user("2026-11-24T10:10:00Z", "go")
 	w2.call("2026-11-24T10:20:00Z", "n1", "q1", "claude-fable-5", 5, bash("b1", "wp ship"))
+	w2.result("2026-11-24T10:20:01Z", "b1")
 	w2.call("2026-11-24T10:40:00Z", "n2", "q2", "claude-fable-5", 5)
 	whWrite(t, filepath.Join(dir, "projects", "p", "s2.jsonl"), w2.b.String())
 	r, _ := whRun(t, dir, "--since", "2026-11-24T10:00:00Z", "--until", "2026-11-24T12:00:00Z")
@@ -411,6 +632,25 @@ func TestWhereMetaMessageKinds(t *testing.T) {
 		return
 	}
 	t.Fatalf("no meta trigger: %+v", r.Triggers)
+}
+
+// A limit record as Claude Code wrote it (2.1.x, November 2026; ids changed):
+// rate_limit_info sits under apiErrorParams and resetsAt is Unix seconds, the
+// 5pm UTC the record's own text names (audit 1931.30).
+func TestLimitRecordAsRecorded(t *testing.T) {
+	const line = `{"type":"assistant","timestamp":"2026-11-13T09:12:44.120Z","isApiErrorMessage":true,"message":{"id":"m1","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"You've hit your weekly limit · resets 5pm (UTC)"}],"context_management":null},"requestId":"req_x","apiError":"usage_limit_reached","apiErrorParams":{"rate_limit_info":{"status":"rejected","resetsAt":1794675600,"rateLimitType":"seven_day","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false}}}`
+	var l rawLine
+	if err := json.Unmarshal([]byte(line), &l); err != nil {
+		t.Fatal(err)
+	}
+	if l.APIError != "usage_limit_reached" || l.APIErrorParams == nil || l.APIErrorParams.RateLimitInfo == nil {
+		t.Fatalf("record not read: %+v", l)
+	}
+	ri := l.APIErrorParams.RateLimitInfo
+	at := time.Unix(ri.ResetsAt, 0).UTC()
+	if ri.RateLimitType != "seven_day" || ri.OverageDisabledReason != "org_level_disabled" || at.Hour() != 17 || at.Year() != 2026 {
+		t.Errorf("rate limit %+v, resets %v; want seven_day resetting at 17:00 UTC in 2026", ri, at)
+	}
 }
 
 // A command is classed by what it does, whichever tool or wrapper runs it.
@@ -505,7 +745,7 @@ func TestWhereOtherErrorsAreNotLimits(t *testing.T) {
 	whWrite(t, filepath.Join(dir, "projects", "x-waypoint-runner-work-job1-2", "s1.jsonl"), w.b.String())
 	whWrite(t, filepath.Join(dir, "projects", "x-waypoint-runner-work-job1-2", jobSidecarFile), `{"kind":"audit","sessions":["s1"]}`)
 	r, _ := whRun(t, dir, whWin)
-	if len(r.Limits.Events) != 0 || r.Limits.SpendAfter != 0 {
+	if len(r.Limits.Incidents) != 0 {
 		t.Fatalf("limits %+v", r.Limits)
 	}
 	if len(r.NotKnown.AssumedPrices) != 1 || !strings.Contains(whereText(r), "no price is known for acme-large") {
