@@ -108,6 +108,11 @@ func TestShipAfterTheClaimExpiredOpensThePullRequest(t *testing.T) {
 	if n := e.openRuns(); n != 1 {
 		t.Fatalf("%d runs open after the session took the task again: want 1", n)
 	}
+	// The take opened a new run; it carries the round, so the round goes on
+	// as the session's (RunOpen) and is not released as one whose run ended.
+	if in := e.factsOf(r1); !in.RunOpen || in.Taken {
+		t.Fatalf("RunOpen = %v, Taken = %v: want the session's new run to carry the round", in.RunOpen, in.Taken)
+	}
 	e.shipChecked1(r1)
 	e.finishShip()
 	if bp := e.bpOf(r1); bp == nil || !bp.ShipDone {
@@ -118,6 +123,15 @@ func TestShipAfterTheClaimExpiredOpensThePullRequest(t *testing.T) {
 	}
 	if n := e.openRuns(); n != 0 {
 		t.Fatalf("%d runs still open on the task after its ship", n)
+	}
+	// Shipped for the live session it is, not as one that ended: the pull
+	// request's babysit carries the session, so its news reaches it.
+	var babysits, mine int
+	if err := e.s.db.R.QueryRow(`SELECT count(*), count(*) FILTER (WHERE session_id = ?) FROM babysits`, e.session).Scan(&babysits, &mine); err != nil {
+		t.Fatal(err)
+	}
+	if babysits != 1 || mine != 1 {
+		t.Fatalf("%d babysits, %d of the session's: want the pull request babysat for the session", babysits, mine)
 	}
 }
 
