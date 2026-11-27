@@ -494,7 +494,7 @@ func TestBabysitEscalatesAfterAFixThatFailed(t *testing.T) {
 	if err != nil || st.Rounds != 2 || st.PRs != 1 || st.Classed != 2 || st.Class[RoundRepeat] != 1 || st.Class[RoundCIConflict] != 1 {
 		t.Errorf("round stats: %+v %v", st, err)
 	}
-	if in := be.jobInput(b.JobID); in.Model != escalateModel || !strings.Contains(in.Prompt, "Earlier rounds pushed fixes for forge-checks/codeql, and it still fails") ||
+	if in := be.jobInput(b.JobID); in.Model != escalateModel || !strings.Contains(in.Prompt, "Earlier rounds pushed fixes for <untrusted>forge-checks/codeql</untrusted>, and it still fails") ||
 		!strings.Contains(in.Prompt, "Round 1 on 7777777:\n<untrusted>\n```diff\n+bounded the table\n```\nRound over.") || strings.Contains(in.Prompt, "git log") {
 		t.Fatalf("escalated job = %+v", in)
 	}

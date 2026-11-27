@@ -340,7 +340,7 @@ func TestRoundPacketBeforeBackToDraft(t *testing.T) {
 	if len(jobs) != 2 {
 		t.Fatalf("round jobs %v", jobs)
 	}
-	if in := be.jobInput(jobs[len(jobs)-1]); !strings.Contains(in.Prompt, "### ci / e2e (pull_request)") || !strings.Contains(in.Prompt, "--- FAIL: TestExport") {
+	if in := be.jobInput(jobs[len(jobs)-1]); !strings.Contains(in.Prompt, "### <untrusted>ci / e2e (pull_request)</untrusted>") || !strings.Contains(in.Prompt, "--- FAIL: TestExport") {
 		t.Fatalf("the round's packet lost the failed check:\n%s", in.Prompt)
 	}
 }

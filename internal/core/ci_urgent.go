@@ -107,6 +107,7 @@ func (s *Service) earlyRound(ctx context.Context, b *Babysit, pr *PullRequest) (
 	}
 	comments, err := s.reviewComments(ctx, s.db.R, pr.ID)
 	if err != nil {
+		s.log.WarnContext(ctx, "read its review comments before an early round", "pr", pr.ID, "err", err)
 		return roundNone, ""
 	}
 	findings := s.auditRoundWork(ctx, b, pr.ID)

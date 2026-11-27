@@ -1269,13 +1269,18 @@ func (s *Service) assessorPacket(ctx context.Context, pr *PullRequest) (*PRTodo,
 func (s *Service) packetOf(ctx context.Context, actor *Actor, pr *PullRequest, all bool, listed func(*PRReviewComment) bool) (*PRTodo, error) {
 	t := &PRTodo{PRID: pr.ID, Repo: pr.Repo, Number: pr.Number, URL: pr.URL, HeadRef: pr.HeadRef, BaseRef: pr.BaseRef, HeadSHA: pr.HeadSHA,
 		Checks: []CheckLog{}, Comments: []TodoComment{}, Findings: []TodoFinding{}}
-	if pr.ciSHA == pr.HeadSHA && pr.CIState == CIFailed {
+	failedCI := pr.ciSHA == pr.HeadSHA && pr.CIState == CIFailed
+	// While the head's CI still runs, the checks failed so far are in it
+	// too: an early round carries them (WP-ADR163).
+	if failedCI || pr.ciSHA != pr.HeadSHA || pr.CIState == "" || pr.CIState == CIPending {
 		logs, err := s.PRCheckLogs(ctx, actor, pr.ID, "", false)
 		if err != nil {
 			s.log.WarnContext(ctx, "read failed checks' logs", "pr", pr.ID, "err", err)
 		} else {
 			t.Checks = logs.Checks
 		}
+	}
+	if failedCI {
 		t.Ejected = s.candEjectText(ctx, pr)
 	}
 	if s.packetConflict(pr) {
@@ -1402,7 +1407,7 @@ func (t *PRTodo) render() string {
 			b.WriteString(t.Ejected + "\n")
 		}
 		for _, c := range t.Checks {
-			fmt.Fprintf(&b, "\n### %s\n", c.Name)
+			fmt.Fprintf(&b, "\n### %s\n", untrustedNames([]string{c.Name}))
 			if c.URL != "" {
 				fmt.Fprintf(&b, "%s\n", c.URL)
 			}
@@ -1498,6 +1503,17 @@ func packetBody(s string) string {
 		}
 	}
 	return s
+}
+
+// untrustedNames lists names others chose, such as the checks a pull
+// request's workflows name, each in untrusted tags on one line, so a prompt
+// shows them as data.
+func untrustedNames(names []string) string {
+	wrapped := make([]string, len(names))
+	for i, n := range names {
+		wrapped[i] = "<untrusted>" + untrusted(strings.Join(strings.Fields(n), " ")) + "</untrusted>"
+	}
+	return joinAnd(wrapped)
 }
 
 var untrustedTagRE = lazyre.New(`(?i)<\s*/?\s*untrusted\s*>`)
