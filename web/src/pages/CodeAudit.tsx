@@ -388,6 +388,16 @@ function Findings({ audit: a }: { audit: CodeAudit }) {
   )
 }
 
+// strengthText spells out how a rejection compared with the finder, stored as
+// "verdict: reason": only the verdict (at_least, or an older not_compared) is
+// a name to spell out; the reason is shown as is (core.RejectedAs does the
+// same).
+function strengthText(s: string) {
+  const at = s.indexOf(': ')
+  const verdict = at < 0 ? s : s.slice(0, at)
+  return verdict.replaceAll('_', ' ') + (at < 0 ? '' : s.slice(at))
+}
+
 function FindingItem({ finding: f, audit: a }: { finding: AuditFinding; audit: CodeAudit }) {
   const qc = useQueryClient()
   const [rejecting, setRejecting] = useState(false)
@@ -456,11 +466,20 @@ function FindingItem({ finding: f, audit: a }: { finding: AuditFinding; audit: C
         </div>
       )}
       {(f.note || f.by || f.issue) && f.state !== 'open' && (
-        <p className="text-xs text-muted">
+        <p className="break-words text-xs text-muted">
           {FINDING_STATE[f.state].label}
           {f.by && ` by ${f.by}`}
           {f.at && ` ${relativeTime(f.at)}`}
           {f.note && <>: {f.note}</>}
+          {f.evidence && <> · evidence: {f.evidence}</>}
+          {f.decided_model && (
+            <>
+              {' '}
+              · as {f.decided_model}
+              {f.decided_effort && ` (${f.decided_effort})`}
+              {f.decided_strength && `, ${strengthText(f.decided_strength)}`}
+            </>
+          )}
           {f.filing_void && f.state === 'confirmed' && (
             <> · its issue was canceled, so it is to do again</>
           )}

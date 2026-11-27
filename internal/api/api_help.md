@@ -1167,12 +1167,12 @@ someone checks them. Not the audit log above.
                                      audits with no fix task: [{ref: "41.2", path, line, severity, title, pr}]
     GET /audits/{id}                 one with its attempts [{model, outcome, error}], summary, findings
                                      [{id: "12.3", title, path, line, url, severity, problem, confirm, state,
-                                     note, issue, by}], comment_url, fix_issue. limited: every model was out
+                                     note, issue, by, evidence, decided_model, decided_effort, decided_strength}], comment_url, fix_issue. limited: every model was out
                                      of quota
     POST /audits/{id}/rerun          the same audit again as a new one (a pull request's at its head now)
     POST /audits/{id}/cancel         stop one that hasn't ended
     POST /audits/{id}/fix            the task for Claude to check and fix a finished audit's open findings
-    POST /audits/findings {ids: ["12.3"], state: open|confirmed|fixed|rejected, note, issue}
+    POST /audits/findings {ids: ["12.3"], state: open|confirmed|fixed|rejected, note, issue, evidence (rejected only)}
                                      your verdict on findings
 
 ## Runners (WP-D17)
