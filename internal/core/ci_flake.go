@@ -118,6 +118,7 @@ func (s *Service) rerunForFlake(ctx context.Context, b *Babysit, pr *PullRequest
 		return false
 	}
 	s.keepFailedEvidence(ctx, f, pr.Repo, pr.HeadSHA)
+	s.noteCIActive(f.ID, pr.Repo)
 	n, err := cl.RetryChecks(ctx, f, pr.Repo, pr.HeadSHA)
 	if err != nil {
 		s.log.WarnContext(ctx, "re-run failed checks to rule out a flake", "pr", pr.ID, "asked", n, "err", err)

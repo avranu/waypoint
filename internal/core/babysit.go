@@ -1563,6 +1563,7 @@ func (s *Service) waitForCancelled(ctx context.Context, b *Babysit, pr *PullRequ
 		person(fmt.Sprintf("Waypoint re-ran them %d times and they were cancelled again.", st.n))
 		return
 	}
+	s.noteCIActive(f.ID, pr.Repo)
 	n, err := cl.RetryChecks(ctx, f, pr.Repo, pr.HeadSHA)
 	if err != nil {
 		person("Waypoint's re-run of them failed: " + err.Error() + ".")

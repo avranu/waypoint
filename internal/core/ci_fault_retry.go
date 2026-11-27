@@ -274,6 +274,7 @@ func (s *Service) rerunRunnerFaults(ctx context.Context, b *Babysit, pr *PullReq
 		wait("Waypoint couldn't record its re-runs; it tries again shortly")
 		return report, true
 	}
+	s.noteCIActive(f.ID, pr.Repo)
 	n, err := cl.RetryChecks(ctx, f, pr.Repo, pr.HeadSHA)
 	switch {
 	case err != nil:

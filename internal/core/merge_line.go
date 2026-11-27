@@ -1132,6 +1132,7 @@ func (s *Service) candRerun(ctx context.Context, ls *lineState, a lineAction) {
 		asked := err == nil
 		n := 0
 		if err == nil && can {
+			s.noteCIActive(ls.f.ID, st.Repo)
 			n, err = cl.RetryChecks(ctx, ls.f, st.Repo, st.CommitSHA)
 		}
 		if err != nil {

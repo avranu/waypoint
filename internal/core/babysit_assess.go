@@ -631,6 +631,7 @@ func (s *Service) rerunParkedChecks(ctx context.Context, b *Babysit, pr *PullReq
 		return false
 	}
 	s.keepFailedEvidence(ctx, f, pr.Repo, pr.HeadSHA)
+	s.noteCIActive(f.ID, pr.Repo)
 	n, err := cl.RetryChecks(ctx, f, pr.Repo, pr.HeadSHA)
 	if err != nil {
 		if readFault(err) {

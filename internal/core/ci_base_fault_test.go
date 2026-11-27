@@ -142,6 +142,12 @@ func TestBaseFaultsRerun(t *testing.T) {
 	if got := af.rerun(); !slices.Equal(got, []int64{110, 111}) {
 		t.Fatalf("first re-runs: %v", got)
 	}
+	se.s.ciBoard.mu.Lock()
+	marked := se.s.ciBoard.gateFor(ciGateKey(se.f.ID, "me/app")).activeAt
+	se.s.ciBoard.mu.Unlock()
+	if !marked.Equal(se.clockNow()) {
+		t.Errorf("a re-run marks its repo's CI active: %v", marked)
+	}
 	if st := state("main"); st.sha != "aaaaaaa" || st.n != 1 || st.ended != "" {
 		t.Fatalf("main state: %+v", st)
 	}

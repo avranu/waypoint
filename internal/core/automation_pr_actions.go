@@ -863,6 +863,7 @@ func init() {
 			if !ok || ferr != nil || f.token == "" {
 				return invalid("the forge has no API token, so Waypoint can't run checks again")
 			}
+			c.S.noteCIActive(f.ID, pr.Repo) // a re-run sends no webhook
 			n, err := cl.RetryChecks(c.Ctx, f, pr.Repo, pr.HeadSHA)
 			if err != nil {
 				return err

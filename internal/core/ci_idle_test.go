@@ -1,7 +1,11 @@
 package core
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -120,6 +124,8 @@ func TestCIGateIdle(t *testing.T) {
 		{"read found work, no sweep since", &ciGate{readAt: t0, activeAt: t0, data: &ciRepoData{active: []ActionRun{{}}}}, time.Minute + ciActiveFor, true, false},
 		{"history read, quiet", &ciGate{histAt: t0}, ciActiveFor, false, true},
 		{"history never read", &ciGate{readAt: t0, data: &ciRepoData{}}, ciActiveFor, false, false},
+		{"activity since the read", &ciGate{readAt: t0, activeAt: t0.Add(time.Second), data: &ciRepoData{}}, time.Minute + ciActiveFor, true, false},
+		{"activity since the history read", &ciGate{histAt: t0, activeAt: t0.Add(time.Second)}, time.Minute + ciActiveFor, false, false},
 	} {
 		c := &ciBoardCache{}
 		if tc.g != nil {
@@ -128,5 +134,80 @@ func TestCIGateIdle(t *testing.T) {
 		if got := c.idle("1|a/b", t0.Add(tc.now), tc.board); got != tc.idle {
 			t.Errorf("%s: idle = %v, want %v", tc.name, got, tc.idle)
 		}
+	}
+}
+
+// TestCIHistoryIdleRepos: the history pass leaves a quiet repo alone until a
+// webhook marks it, a failed read is tried again, and the board doesn't show
+// a quiet repo's failed history read as no jobs (WP-1980).
+func TestCIHistoryIdleRepos(t *testing.T) {
+	e := newEnv(t)
+	t0 := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	e.setClock(t0)
+	p := e.project(e.admin, "Alpha", "kanban")
+	a, _, cl := newAPIFake(t, "forgejo")
+	f, err := e.s.CreateForge(e.ctx, e.admin, ForgeInput{Kind: ptr("forgejo"), Name: ptr("Forge"), BaseURL: ptr(a.srv.URL), Token: ptr("tok")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.s.db.W.ExecContext(e.ctx, `INSERT INTO project_repos(project_id, forge_id, repo, created_at) VALUES (?, ?, 'acme/app', 0)`, p.ID, f.ID); err != nil {
+		t.Fatal(err)
+	}
+	e.s.Forges = cl
+	none := map[string]any{"workflow_runs": []map[string]any{}}
+	const tasks = "GET /repos/acme/app/actions/tasks?page=1&limit=50"
+	a.reply["GET /repos/acme/app/actions/runs?page=1&limit=50"] = none
+	a.reply["GET /repos/acme/app/actions/tasks?page=1&limit=50&status=running"] = none
+	a.reply["GET /repos/acme/app/actions/runs?page=1&limit=50&status=waiting&status=running&status=blocked"] = none
+	pass := func(minute int, asked bool) {
+		t.Helper()
+		e.setClock(t0.Add(time.Duration(minute) * time.Minute))
+		before := a.actionCalls("acme/app")
+		e.s.RecordCIHistory(e.ctx)
+		e.s.Wait()
+		if n := a.actionCalls("acme/app") - before; (n > 0) != asked {
+			t.Errorf("minute %d: %d requests, asked = %v wanted", minute, n, asked)
+		}
+	}
+
+	a.reply[tasks] = 500
+	pass(0, true)
+	pass(1, true) // the failed read isn't one to idle on
+	a.reply[tasks] = none
+	pass(2, true)
+	pass(5, false)
+
+	secret, err := e.s.ForgeSecret(e.ctx, e.admin, f.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"ref":"refs/heads/main","repository":{"full_name":"acme/app"}}`)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	h := http.Header{}
+	h.Set("X-Forgejo-Event", "push")
+	h.Set("X-Forgejo-Signature", hex.EncodeToString(mac.Sum(nil)))
+	e.setClock(t0.Add(6 * time.Minute))
+	if err := e.s.HandleForgeWebhook(e.ctx, f.ID, h, body); err != nil {
+		t.Fatal(err)
+	}
+	e.s.Wait()
+	pass(7, true)
+	pass(23, false)
+
+	// The history read fails while the repo is quiet for the board.
+	if _, err := e.s.readCI(e.ctx); err != nil {
+		t.Fatal(err)
+	}
+	e.s.ciBoard.mu.Lock()
+	e.s.ciBoard.history[ciGateKey(f.ID, "acme/app")] = &ciHistory{at: e.s.now(), err: errors.New("boom")}
+	e.s.ciBoard.mu.Unlock()
+	e.setClock(t0.Add(28 * time.Minute))
+	before := a.actionCalls("acme/app")
+	if _, err := e.s.readCI(e.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if a.actionCalls("acme/app") == before {
+		t.Error("the board didn't read a repo whose history read had failed")
 	}
 }
