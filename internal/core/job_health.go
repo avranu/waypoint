@@ -561,7 +561,8 @@ const (
 
 // jobTrouble finds the jobs whose run has gone on too long and the ones
 // that should have started and haven't. behind names, for a silent job, the
-// stuck job it waits its turn after.
+// stuck job in its lane that it waits its turn after. A stuck job of the
+// loop holds nobody: the loop leaves it running and goes on (runInLoop).
 func (s *Service) jobTrouble(now time.Time, running []JobStatus, declared []jobDecl, lastActive map[string]int64, busy map[string]time.Time) (state, line, behind map[string]string) {
 	state, line, behind = map[string]string{}, map[string]string{}, map[string]string{}
 	isRunning := map[string]bool{}
@@ -571,7 +572,7 @@ func (s *Service) jobTrouble(now time.Time, running []JobStatus, declared []jobD
 		if took := now.Sub(*j.RunningSince); took > jobOverdue(time.Duration(j.PeriodMS)*time.Millisecond) {
 			state[j.Name] = jobStuck
 			line[j.Name] = fmt.Sprintf("%s has been running for %s", j.Name, spanText(took))
-			if _, ok := stuckIn[j.Lane]; !ok {
+			if _, ok := stuckIn[j.Lane]; !ok && j.Lane != "" {
 				stuckIn[j.Lane] = j.Name
 			}
 		}
@@ -583,7 +584,7 @@ func (s *Service) jobTrouble(now time.Time, running []JobStatus, declared []jobD
 		}
 		state[d.name] = jobStuck
 		line[d.name] = fmt.Sprintf("%s has skipped every run since %s: the last run is still going", d.name, since.UTC().Format("15:04 MST"))
-		if _, ok := stuckIn[d.lane]; !ok {
+		if _, ok := stuckIn[d.lane]; !ok && d.lane != "" {
 			stuckIn[d.lane] = d.name
 		}
 	}

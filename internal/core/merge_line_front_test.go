@@ -256,3 +256,43 @@ func (f *failingTitleEdit) EditPRTitle(ctx context.Context, fg *Forge, repo stri
 	}
 	return f.shipForge.EditPRTitle(ctx, fg, repo, number, title)
 }
+
+// A member behind the front whose state can't be read keeps its place, so no
+// candidate covering it ends; one that reads as unsettled leaves; a pull
+// request outside the line doesn't join on a read that failed (WP-ADR163).
+func TestLineMemberStaysWhenItsStateCantBeRead(t *testing.T) {
+	se := newStackEnv(t)
+	for i, sha := range []string{head7s, head8s, head9s} {
+		se.draftGreen(sha, int64(5+2*i))
+	}
+	se.step()
+	ref := lineOf(se.pr(7))
+	if _, err := se.s.db.W.ExecContext(se.ctx, `ALTER TABLE bot_runs RENAME TO bot_runs_x`); err != nil {
+		t.Fatal(err)
+	}
+	p8 := se.pr(8)
+	if why, unread := se.s.lineStanding(se.ctx, p8); !unread || why == "" {
+		t.Fatalf("lineStanding = %q, %v, want an unread reason", why, unread)
+	}
+	ls, err := se.s.lineGather(se.ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ls.dropped) != 0 || ls.prs[se.pr(8).ID] == nil || ls.prs[se.pr(9).ID] == nil {
+		t.Fatalf("members left on a failed read: dropped %v", ls.dropped)
+	}
+	if why := se.s.lineLeft(se.ctx, p8); why == "" {
+		t.Error("a pull request outside the line joined on a read that failed")
+	}
+	if _, err := se.s.db.W.ExecContext(se.ctx, `ALTER TABLE bot_runs_x RENAME TO bot_runs`); err != nil {
+		t.Fatal(err)
+	}
+	se.review(8, "changes_requested")
+	ls, err = se.s.lineGather(se.ctx, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ls.dropped) != 1 || ls.dropped[0].Number != 8 {
+		t.Errorf("an unsettled member: dropped %v, want #8", ls.dropped)
+	}
+}

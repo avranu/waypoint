@@ -110,3 +110,18 @@ func TestUnknownOperators(t *testing.T) {
 		}
 	}
 }
+
+func TestManualOrder(t *testing.T) {
+	for q, want := range map[string]bool{
+		"": true, "label:x": true, "order:rank": true, "ORDER:Rank": true,
+		"order:-rank": false, "sort:priority": false, "order:rank,priority": false,
+	} {
+		p, err := Parse(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := p.ManualOrder(); got != want {
+			t.Errorf("%q: ManualOrder() = %v, want %v", q, got, want)
+		}
+	}
+}
