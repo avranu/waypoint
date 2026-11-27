@@ -67,7 +67,6 @@ async function run(width, scheme, n) {
   );
   round.run(issueID, "pending", id(queuedCli), "", now - 60_000, now - 60_000);
   round.run(issueID, "failed", id(failedCli), why, now - 60_000, now - 30_000);
-  // A review waiting for its audit, and one the session is working through.
   round.run(issueID, "pending", id(auditCli), "", now - 90_000, now - 90_000);
   round.run(issueID, "running", id(runningCli), "", now - 125_000, now - 125_000);
   const auditRound = db.prepare(`SELECT id FROM work_log WHERE session_id = ?`).get(id(auditCli)).id;
@@ -77,8 +76,6 @@ async function run(width, scheme, n) {
     `INSERT INTO autopilot_steps(user_id, project_id, session_id, stop_at, state, reason, detail, due_at, created_at, updated_at, review_id)
      VALUES (?, ?, ?, ?, 'waiting', 'audit', 'waiting', ?, ?, ?, ?)`,
   ).run(userID, projectID, id(auditCli), now, now + 120_000, now, now, auditRound);
-  // The minute sweep skips a queued round nothing carries ("autopilot moved
-  // on without it"), so the queued one has a step, due later than the run.
   const queuedRound = db.prepare(`SELECT id FROM work_log WHERE session_id = ?`).get(id(queuedCli)).id;
   db.prepare(
     `INSERT INTO autopilot_steps(user_id, project_id, session_id, stop_at, state, reason, detail, due_at, created_at, updated_at, review_id)
@@ -93,11 +90,7 @@ async function run(width, scheme, n) {
   await chips.filter({ hasText: "Review queued" }).first().waitFor();
   await chips.filter({ hasText: "Review failed" }).first().waitFor();
   ok(((await chips.filter({ hasText: "Review failed" }).first().getAttribute("title")) || "").includes(why), `${tag} the failed chip says why`);
-  // Blue while it is under way (solid once something is working on it), with
-  // a clock that really runs; amber and clockless when it failed.
   const rgb = (c) => c.evaluate((el) => getComputedStyle(el.firstElementChild).backgroundColor);
-  // The pale chip's colour comes back as oklab() with an alpha, so it's
-  // painted on white and read as the pixel it makes.
   const blue = (color) =>
     page.evaluate((color) => {
       const g = Object.assign(document.createElement("canvas"), { width: 1, height: 1 }).getContext("2d");

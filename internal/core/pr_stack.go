@@ -1,12 +1,5 @@
 package core
 
-// Stacked pull requests (WP-ADR153, WP-1670): a pull request whose base is
-// the head branch of another open pull request of the repo. Shipping picks
-// that base, and when the parent merges its children move to the parent's
-// base before the parent's branch is deleted, so the forge doesn't close
-// them with it. Until then a child never merges into the parent's branch:
-// it waits for the parent as a merge-after wait (merge_after.go).
-
 import (
 	"context"
 	"errors"
@@ -49,7 +42,7 @@ func (s *Service) moveToBase(ctx context.Context, actor *Actor, prID int64, base
 	if err != nil {
 		return "", err
 	}
-	if pr.BaseRef == want { // branch names are case-sensitive
+	if pr.BaseRef == want {
 		return "", nil
 	}
 	if others := s.otherTasks(ctx, actor, prID, task); others != nil {
@@ -78,7 +71,7 @@ func (s *Service) openFrom(ctx, fctx context.Context, repo *ProjectRepo, head st
 		if id == 0 || s.forgeStillOpen(ctx, fctx, id) {
 			return id
 		}
-		below = id // an older one may still be open
+		below = id
 	}
 }
 
@@ -283,11 +276,11 @@ func (s *Service) longLivedBranch(ctx context.Context, f *Forge, pr *PullRequest
 			return false, true
 		}
 	}
-	if len(list) >= maxForgeBranches { // cut short: it may be past the end
+	if len(list) >= maxForgeBranches {
 		s.log.WarnContext(ctx, "branch listing is at its cap; not saying the branch isn't kept", "repo", pr.Repo, "branch", pr.HeadRef)
 		return unknown()
 	}
-	s.dropSetting(ctx, key) // gone
+	s.dropSetting(ctx, key)
 	return false, true
 }
 
@@ -372,12 +365,9 @@ func (s *Service) moveStackChild(ctx context.Context, f *Forge, parent, child *P
 		return nil
 	})
 	if err != nil {
-		// The forge moved it, which is what the move is: the record catches
-		// up from the forge's next read, and a disarm would be for nothing.
 		s.log.WarnContext(ctx, "record the move of a stacked pull request", "repo", cur.Repo, "number", cur.Number, "err", err)
 		return nil
 	}
-	// Its stack wait ended with the move: it joins the new base's line.
 	s.nudgeBabysit(cur.ID, false)
 	return nil
 }
@@ -386,11 +376,11 @@ func (s *Service) moveStackChild(ctx context.Context, f *Forge, parent, child *P
 // base (WP-ADR153). One that can't be moved would land in a branch nothing
 // merges from any more, so it is disarmed. It reports whether all moved.
 func (s *Service) moveStackOff(ctx context.Context, f *Forge, pr *PullRequest, stacked []*PullRequest) bool {
-	ctx = context.WithoutCancel(ctx) // the merge is done: this has to finish
+	ctx = context.WithoutCancel(ctx)
 	projectID, err := s.attachedProject(ctx, s.db.R, pr.ForgeID, pr.Repo)
 	if err != nil {
 		s.log.WarnContext(ctx, "read the project of a merged pull request", "repo", pr.Repo, "number", pr.Number, "err", err)
-		return false // nothing moves under an audit that can't say whose it is
+		return false
 	}
 	all := true
 	for _, c := range stacked {

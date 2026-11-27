@@ -93,8 +93,6 @@ func (s *Service) ListAutomations(ctx context.Context, actor *Actor, projectRef 
 	if err != nil {
 		return nil, err
 	}
-	// Rules can carry credentials (Gotify tokens, webhook URLs with keys in
-	// them). Only owners, who manage automations, see them.
 	owner := s.requireProjectRole(ctx, s.db.R, actor, p.ID, RoleOwner) == nil
 	for _, a := range list {
 		s.fillOwner(ctx, a)
@@ -381,7 +379,6 @@ func (s *Service) DeleteAutomation(ctx context.Context, actor *Actor, id int64) 
 		return err
 	}
 	return s.write(ctx, actor, func(t *tx) error {
-		// Messages its runs queued for agents go with it (WP-D22).
 		if _, err := t.ExecContext(ctx, `UPDATE session_messages SET state = 'cancelled' WHERE state IN ('queued','sending')
 			AND step_key != '' AND CAST(substr(step_key, 1, instr(step_key, ':') - 1) AS INTEGER) IN (SELECT id FROM automation_runs WHERE automation_id = ?)`, id); err != nil {
 			return err

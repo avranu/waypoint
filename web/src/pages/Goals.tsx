@@ -1,13 +1,3 @@
-// A project's goals (WP-382, WP-ADR50): what people intend, in plain words,
-// and how the work traces back to it. People write goals in a line; Waypoint
-// does the upkeep: it flags a goal that says how instead of what, guesses
-// which goal untraced work serves (one click links it), and holds agents'
-// links and goals until a person stands behind them.
-//
-// Wide screens put the goal tree on the left and what waits for a person on
-// the right; narrow ones stack the queues first. Every suggestion is
-// answered the same way (components/goals/actions.tsx).
-
 import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -255,7 +245,6 @@ function AddGoal({
       toast(`Added the goal “${n.title}”`)
       refresh()
       onAdded?.()
-      // The box stays for the next goal; Esc or Cancel closes it.
       ref.current?.focus()
     },
     onError: toastError,
@@ -482,7 +471,6 @@ function GoalRow({
     const t = draft?.trim()
     if (save.isPending) return
     if (!t || t === n.title) return setDraft(null)
-    // The field stays until the save lands, so a failure keeps what was typed.
     save.mutate({ title: t }, { onSuccess: () => setDraft(null) })
   }
   const warnings = (g.wording ?? []).filter((w) => !dismissed.has(warningKey(n.id, w)))
@@ -750,7 +738,6 @@ function LinkWork({
   const [picked, setPicked] = useState<Record<string, KItem>>({})
   const n = Object.keys(picked).length
   const link = useMutation({
-    // Each task links on its own; the ones that fail stay ticked to retry.
     mutationFn: async (items: [string, KItem][]) => {
       const res = await Promise.allSettled(items.map(([, it]) => goalApi.link(itemEnd(it), goal)))
       const linked = items.filter((_, i) => res[i].status === 'fulfilled').map(([k]) => k)
@@ -1051,9 +1038,6 @@ function WaitingLinks({
     onSettled: refresh,
     onError: toastError,
   })
-  // Not a bulk confirm: a person can't have read them all, so each keeps
-  // counting as the agent's or Waypoint's; this only stops asking.
-  // The server lists at most this many; the rest wait behind them.
   const capped = links.length >= LIST_MAX
   const all = useMutation({
     mutationFn: () => goalApi.acknowledge(links.map((l) => l.link_id)),

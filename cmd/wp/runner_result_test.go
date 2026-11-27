@@ -40,25 +40,21 @@ func TestFitResultShrinksInSteps(t *testing.T) {
 	full := resultSize(o)
 	findings := fmt.Sprint(o.Result.(map[string]any)["findings"])
 
-	// Under the limit: untouched, nothing said.
 	var log bytes.Buffer
 	if got := fitResult(o, full+1, &log); resultSize(got) != full || log.Len() != 0 {
 		t.Fatalf("a result that fits was changed: %d -> %d, %q", full, resultSize(got), log.String())
 	}
 
-	// Just under the size after step 1: only step 1 runs.
 	step1 := fitResult(o, full-1, &log)
 	_, runs := helperRunsOf(step1)
 	if len(runs[0].Cut) != 40 || runs[0].Cut[0].Problem != "" || runs[0].Cut[0].Evidence != "" || runs[0].Cut[0].ID != "goals.0" || runs[0].Cut[0].Title != "cut" || runs[0].Cut[0].Why == "" ||
 		runs[0].Dropped != 0 || !strings.Contains(log.String(), "step 1") || strings.Contains(log.String(), "step 2") {
 		t.Fatalf("step 1: %+v\n%s", runs[0].Cut[0], log.String())
 	}
-	// The original is as it was: the steps work on a copy.
 	if _, orig := helperRunsOf(o); orig[0].Cut[0].Problem == "" || resultSize(o) != full {
 		t.Fatal("the steps changed the runs they were given")
 	}
 
-	// Under the size after step 1: the cut leads are dropped and counted.
 	log.Reset()
 	s1 := resultSize(step1)
 	step2 := fitResult(o, s1-1, &log)
@@ -68,7 +64,6 @@ func TestFitResultShrinksInSteps(t *testing.T) {
 		t.Fatalf("step 2: cut %d dropped %d error %q\n%s", len(runs[0].Cut), runs[0].Dropped, runs[0].Error, log.String())
 	}
 
-	// Under that: the kept leads' evidence is clipped; findings untouched throughout.
 	log.Reset()
 	step3 := fitResult(o, resultSize(step2)-1, &log)
 	_, runs = helperRunsOf(step3)
@@ -81,7 +76,6 @@ func TestFitResultShrinksInSteps(t *testing.T) {
 		}
 	}
 
-	// Still over after every step: it is returned, and says so.
 	log.Reset()
 	if got := fitResult(o, 10, &log); resultSize(got) != resultSize(step3) || !strings.Contains(log.String(), "still") {
 		t.Errorf("after every step: %d, %q", resultSize(got), log.String())
@@ -96,7 +90,6 @@ func TestFinishRetriesTooLargeOnce(t *testing.T) {
 	var bodies []map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/runner/jobs/7/finish" {
-			// Not this test's own call: say whose, instead of counting it.
 			t.Errorf("unexpected request %s %s (UA %q) from %s", r.Method, r.URL.Path, r.Header.Get("User-Agent"), r.RemoteAddr)
 			w.WriteHeader(http.StatusTeapot)
 			return
@@ -123,8 +116,6 @@ func TestFinishRetriesTooLargeOnce(t *testing.T) {
 	p.reportCtx = context.Background()
 	p.finish(7, bigResult())
 
-	// The first try is as it was; the second is reduced; a second 400 is
-	// fatal (it is not tried again), so only two were sent.
 	if len(bodies) != 2 {
 		t.Fatalf("%d finish calls, want 2 (one retry)", len(bodies))
 	}

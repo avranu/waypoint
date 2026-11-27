@@ -1,8 +1,3 @@
-// The glossary (WP-D10): what words mean, per repo, per organisation and
-// for everything. /glossary lists every term you can see; a project's tab
-// shows its full glossary (its own, its parents' and the global terms, the
-// nearer one winning); /glossary/$id is one entry with its history.
-
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -146,7 +141,6 @@ function GlossaryList({
   })
   const entries = list.data ?? []
   const scopes = useScopeOptions(project)
-  // Letter headings while browsing; search results keep the server's order.
   const letters = useMemo(() => {
     const m = new Map<string, GlossaryEntry[]>()
     for (const e of entries) {
@@ -430,7 +424,6 @@ function EntryView({ entry: e }: { entry: GlossaryEntry }) {
   const save = useMutation({
     mutationFn: (body: Record<string, unknown>) => glossaryApi.update(e.id, body),
     onMutate: (body) => {
-      // Lock and alias changes show at once.
       const prev = qc.getQueryData<GlossaryEntry>(key)
       if (prev && ('locked' in body || 'aliases' in body || 'avoid' in body))
         qc.setQueryData<GlossaryEntry>(key, { ...prev, ...body })
@@ -449,7 +442,6 @@ function EntryView({ entry: e }: { entry: GlossaryEntry }) {
     mutationFn: () => glossaryApi.remove(e.id),
     onSuccess: async () => {
       toast(`Deleted “${e.term}”`)
-      // Leave first, so nothing on this page asks for the entry again.
       await navigate(
         e.project_key
           ? { to: '/p/$key/glossary', params: { key: e.project_key } }

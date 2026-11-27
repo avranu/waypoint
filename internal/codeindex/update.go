@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	maxScanSize = 1 << 20   // bigger files are skipped entirely
-	maxBodySize = 120 << 10 // bigger files are scanned for symbols but not full-text indexed
+	maxScanSize = 1 << 20
+	maxBodySize = 120 << 10
 	racySlack   = 2 * time.Second
 )
 
@@ -116,8 +116,8 @@ type fresh struct {
 	lines   int
 	parsed  Parsed
 	body    string
-	skip    bool // binary, generated or unreadable: not indexed
-	same    bool // content hash unchanged: only the mtime moved
+	skip    bool
+	same    bool
 }
 
 // Update brings the index up to date with the working tree and HEAD:
@@ -145,8 +145,6 @@ func (ix *Index) Update(ctx context.Context) (UpdateStats, error) {
 		return st, err
 	}
 
-	// Which files need a look: new ones, and ones whose stat moved (or is
-	// too recent to trust, git's "racy" case).
 	var look []string
 	present := make(map[string]bool, len(files))
 	for _, f := range files {
@@ -415,7 +413,6 @@ func (ix *Index) writeFiles(tx *sql.Tx, old map[string]fileRow, changed []fresh,
 		}
 		imps = append(imps, pendingImports{id, f.parsed.Imports, f.path})
 	}
-	// Import edges: store the specs, then resolve them against the file set.
 	for _, im := range imps {
 		for _, spec := range dedupe(im.specs) {
 			if _, err := insImp.Exec(im.id, spec); err != nil {

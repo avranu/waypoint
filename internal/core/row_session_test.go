@@ -29,7 +29,6 @@ func TestRowsCarryTheSessionThatWroteThem(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent.Session = sess.Session
-	// The session holds its own task (a take does this in production).
 	if _, err := e.s.db.W.ExecContext(e.ctx, `UPDATE agent_sessions SET issue_id = ? WHERE id = ?`, own.ID, sess.Session); err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +39,6 @@ func TestRowsCarryTheSessionThatWroteThem(t *testing.T) {
 		}
 	}
 
-	// A comment on a task that is not its own: countable per session.
 	c, err := e.s.AddComment(e.ctx, agent, other.Key, "Seen on your task.")
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +76,6 @@ func TestRowsCarryTheSessionThatWroteThem(t *testing.T) {
 	s6, t6 := e.sessionOf("knowledge_links", "src_type = 'issue' AND src_id = ? AND rel = 'relates'", made.ID)
 	want("knowledge link", s6, t6)
 
-	// A person's writes record no session: unknown is NULL.
 	pc, err := e.s.AddComment(e.ctx, e.admin, other.Key, "A person's.")
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +108,7 @@ func TestLookupCountsRepeatsPerSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	b.Session = sb.Session
-	e.s.NoteLookup(e.ctx, b, KGlossary, g.ID, "") // the same person and agent, another session: its own read
+	e.s.NoteLookup(e.ctx, b, KGlossary, g.ID, "")
 
 	rows, err := e.s.db.R.QueryContext(e.ctx, `SELECT session_id, repeats FROM knowledge_uses WHERE kind = 'lookup' ORDER BY id`)
 	if err != nil {
@@ -240,7 +237,6 @@ func TestAgentWritableTablesCarryASession(t *testing.T) {
 			t.Errorf("sessionExempt lists %s (%s), which does not exist or has a session_id column: take it off the list", name, why)
 		}
 	}
-	// The tables sessionStamp fills carry both columns.
 	for _, name := range []string{"issue_relations", "knowledge_links", "knowledge_uses", "knowledge_shown", "comments", "design_revisions", "issues", "pages"} {
 		var n int
 		if err := e.s.db.R.QueryRowContext(e.ctx, `SELECT count(*) FROM pragma_table_info(?) WHERE name IN ('session_id', 'session_issue_id')`, name).Scan(&n); err != nil || n != 2 {

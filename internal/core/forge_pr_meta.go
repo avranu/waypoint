@@ -1,9 +1,5 @@
 package core
 
-// Labels and reviewers on a pull request, for automations (WP-D18): the
-// pr_label and request_reviewers actions. GitHub, Forgejo and GitLab differ
-// in what they take (names or ids), so each does what its API needs.
-
 import (
 	"context"
 	"fmt"
@@ -30,7 +26,6 @@ const defaultLabelColor = "ededed"
 // madeLabels are the labels Waypoint makes with a colour and description of
 // their own; any other gets defaultLabelColor and no description.
 var madeLabels = map[string]struct{ color, description string }{
-	// infrastructure's bin/ci-urgent.py makes it the same way.
 	CIUrgentLabel: {"#d93f0b", "CI runs on the urgent lane, ahead of the queue (infrastructure docs/runbooks/forgejo-runner.md)"},
 }
 
@@ -100,7 +95,6 @@ func (c *httpForgeClient) ChangePRLabels(ctx context.Context, f *Forge, repo str
 		}
 		return nil
 	}
-	// Forgejo and Gitea take label ids.
 	if len(add) > 0 {
 		ids, err := c.fjLabelIDs(ctx, f, repo, add)
 		if err != nil {
@@ -133,7 +127,6 @@ func (c *httpForgeClient) RequestReviewers(ctx context.Context, f *Forge, repo s
 	if f.Kind != "gitlab" {
 		return c.do(ctx, f, http.MethodPost, fmt.Sprintf("/repos/%s/pulls/%d/requested_reviewers", repo, number), map[string]any{"reviewers": users}, nil)
 	}
-	// GitLab sets the whole list, by user id.
 	var mr struct {
 		Reviewers []struct {
 			ID int64 `json:"id"`
@@ -163,8 +156,6 @@ func (c *httpForgeClient) RequestReviewers(ctx context.Context, f *Forge, repo s
 	}
 	return c.do(ctx, f, http.MethodPut, path, map[string]any{"reviewer_ids": ids}, nil)
 }
-
-// ---- re-running CI ----
 
 // ForgeCIRetry is the optional part of a ForgeClient that re-runs the
 // failed checks of a commit. Forgejo has an API for it from 17 on.

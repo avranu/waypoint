@@ -1,23 +1,5 @@
 package core
 
-// Verdicts that reach the reviewer's thread (WP-442).
-//
-// A finding split out of a review a mirror copied from GitHub (kind
-// "relayed") and a finding in Waypoint's own review body (kind "finding")
-// have no comment of their own to put an emoji on, so before this a verdict
-// on one left no trace on the pull request. Now every verdict on one posts
-// a short reply, and a comment a mirror copied from GitHub carries a
-// marker naming the GitHub line comment it answers:
-//
-//	<!-- review-verdict github <id> <answer> [<commit>] -->
-//
-// A mirror turns that into a reply in the GitHub thread, the answer's
-// reaction there (accepted 👍, fixed 🎉, rejected 👎, deferred 👀,
-// question 😕) and, for fixed, rejected and deferred, the thread resolved;
-// a fixed thread only once GitHub has the commit, so it never closes ahead
-// of its fix. Replies are addressed to who wrote the comment on GitHub, not
-// the mirror's account that copied it.
-
 import (
 	"strings"
 

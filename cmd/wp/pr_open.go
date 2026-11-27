@@ -20,8 +20,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Opening a pull request, and shipping a change, without a model (WP-44).
-
 var prOpenAbout = `Pushes the branch and opens a pull request against the default branch.
 No model is called.
 
@@ -70,11 +68,12 @@ type prOpenFlags struct {
 	draft, ready, noPush, urgent                *bool
 	review, pr, force                           *bool
 	skipReview                                  *string
-	skipGiven                                   *bool  // --skip-review was given, even empty
-	finishing                                   string // the task wp ship finishes, when held (not a flag)
-	summary                                     string // wp ship's -m, checked for claims (not a flag)
-	shipSummary                                 string // wp ship's --summary, kept by the server with a held ship (not a flag)
-	messageGiven, shipSummaryGiven              bool   // -m / --summary were on the command line, even empty (not flags)
+	skipGiven                                   *bool
+	finishing                                   string
+	also                                        []string // the other tasks of wp ship A B (WP-1426)
+	summary                                     string
+	shipSummary                                 string
+	messageGiven, shipSummaryGiven              bool
 }
 
 func addPROpenFlags(fs *flag.FlagSet) prOpenFlags {
@@ -107,12 +106,13 @@ func addPROpenFlags(fs *flag.FlagSet) prOpenFlags {
 
 // openedPR is what the server answers to opening a pull request.
 type openedPR struct {
-	Existing  bool      `json:"existing"`
-	Warning   string    `json:"warning"`
-	Pull      *prDetail `json:"pull"`
-	ShipReply string    `json:"ship_reply"`
-	PutOff    *putOff   `json:"put_off"`
-	Other     []string  `json:"other_tasks"`
+	Existing   bool      `json:"existing"`
+	Warning    string    `json:"warning"`
+	Pull       *prDetail `json:"pull"`
+	ShipReply  string    `json:"ship_reply"`
+	PutOff     *putOff   `json:"put_off"`
+	Other      []string  `json:"other_tasks"`
+	AlsoLinked []string  `json:"also_linked"`
 	// Held: pushed but not opened, the task's adversarial review comes
 	// first (WP-688); what to tell the agent. Notice goes first: what was
 	// done that wasn't asked for, and how to override it.
@@ -131,8 +131,8 @@ type openedPR struct {
 	UrgentPR int `json:"urgent_pr"`
 	// ClaimWarning: another session holds this pull request (WP-117).
 	ClaimWarning string `json:"claim_warning"`
-	key          string // the issue it was linked to, if any
-	why          string // how it was chosen: --issue, branch, claim or commit
+	key          string
+	why          string
 	tested       *shipEvidence
 }
 
@@ -232,8 +232,6 @@ func noticed(notice, s string) string {
 // reviewIntent is what the flags say about the task's review before its
 // pull request (core.ShipAuto and the rest).
 func (f prOpenFlags) reviewIntent() (string, error) {
-	// --pr is plain wp ship, kept for older prompts (WP-1370): beside
-	// --skip-review the skip wins, beside --review the review does.
 	intent := "auto"
 	if *f.review {
 		intent = "review"
@@ -256,13 +254,25 @@ func (f prOpenFlags) reviewIntent() (string, error) {
 type shipOpts struct {
 	noArm, noMove, noBabysit, notify, blocking, noWait *bool
 	waitTimeout                                        *time.Duration
-	// summary is the agent's final reply to the person (WP-1093); summaryGiven
-	// says --summary was on the command line ("" drops a kept one).
-	summary      *string
-	summaryGiven bool
-	// before is why what wp ship printed before the pull request (an
-	// objective's check, a notice) needs the agent to read it.
-	before string
+	summary                                            *string
+	summaryGiven                                       bool
+	before                                             string
+	// deadline is when --wait-timeout runs out, taken once at the start of
+	// shipWork and shared by the review wait and the checks wait (zero:
+	// not taken, as in a test that calls a wait directly).
+	deadline time.Time
+}
+
+// shipNow is the clock of the ship's deadline (replaced in tests).
+var shipNow = time.Now
+
+// waitLeft is how long a wait may still run: what is left of --wait-timeout,
+// and no more than what is left of the process's own limit (shipLeft).
+func (so shipOpts) waitLeft() time.Duration {
+	if so.deadline.IsZero() {
+		return min(*so.waitTimeout, shipLeft())
+	}
+	return min(so.deadline.Sub(shipNow()), shipLeft())
 }
 
 func addShipFlags(fs *flag.FlagSet) shipOpts {
@@ -272,8 +282,8 @@ func addShipFlags(fs *flag.FlagSet) shipOpts {
 		noBabysit:   fs.Bool("no-babysit", false, "don't babysit it"),
 		notify:      fs.Bool("notify", false, "wake me when it merges (only if work must follow)"),
 		blocking:    fs.Bool("blocking", false, "wake me within minutes (only if other work waits on it)"),
-		noWait:      fs.Bool("no-wait", false, "when the pull request waits on a review round, don't wait for the round's findings: end as before"),
-		waitTimeout: fs.Duration("wait-timeout", shipWaitDefault, "how long to wait on a review round before ending as with --no-wait (at most "+waitMaxText()+"; `DURATION`)"),
+		noWait:      fs.Bool("no-wait", false, "don't wait for the review round's findings or the pull request's first checks: end as before"),
+		waitTimeout: fs.Duration("wait-timeout", shipWaitDefault, "how long to wait on a review round and the first checks before ending as with --no-wait (at most "+waitMaxText()+"; `DURATION`)"),
 		summary:     fs.String("summary", "", "your final reply to the person, shown as the turn ends if the ship goes as expected (no reply turn after it); {task}, {pr} and {url} are filled in (`TEXT`)"),
 	}
 }
@@ -284,15 +294,21 @@ func addShipFlags(fs *flag.FlagSet) shipOpts {
 // commits name it). A pull request already open from this branch for
 // other tasks is theirs: pushed to, never armed, babysat or linked, and
 // the task finishes as wp done would (other is true then).
-func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, key string, given bool) (other bool, err error) {
+func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, keys []string, given bool) (other bool, err error) {
+	so.deadline = shipNow().Add(*so.waitTimeout)
+	key := ""
+	if len(keys) > 0 {
+		key = strings.ToUpper(keys[0])
+	}
+	f.also = alsoKeys(keys)
 	switch {
 	case key == "" || *f.issue != "":
 	case given:
 		*f.issue = key
-	default: // held: the branch or commits may still name the issue to link
+	default:
 		f.finishing = key
 	}
-	if _, err := localGit("diff", "--cached", "--quiet"); err != nil && isExit(err, 1) { // something is staged
+	if _, err := localGit("diff", "--cached", "--quiet"); err != nil && isExit(err, 1) {
 		if strings.TrimSpace(msg) == "" {
 			return false, c.usage("changes are staged: say what they are with -m MESSAGE")
 		}
@@ -302,9 +318,6 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 	} else if err != nil {
 		return false, err
 	} else if msgGiven {
-		// -m says there is work to commit. With changes left unstaged,
-		// shipping now would open the pull request from the commits that
-		// are already there, which may be another change's (WP-493).
 		if dirty, _ := localGit("status", "--porcelain"); uncommittedFiles(dirty) > 0 {
 			return false, c.usage("nothing is staged but the tree has changes: git add them and run wp ship -m again, or drop -m to ship the commits as they are")
 		}
@@ -314,7 +327,6 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 		f.shipSummary, f.shipSummaryGiven = *so.summary, true
 	}
 	if (*f.body != "" || *f.file != "") && c.agentHeader() != "" && !c.asJSON {
-		// Writing it costs tokens Waypoint saves (WP-55): say so, use it.
 		c.println("Notice: Waypoint writes the description from -m, the commits, the task and the recorded tests; your -f/--body replaces it. Next time leave it out.")
 	}
 	o, raw, err := reopenPR(c, f)
@@ -333,13 +345,9 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 		o, raw = o2, raw2
 	}
 	if o.Held != "" {
-		// Held for the task's review: nothing to arm, babysit or move yet,
-		// and the task isn't finished (WP-688).
 		keptWhy, putOff := "", ""
 		if summary != "" {
-			// Kept until the hook's Stop shows it (WP-1093); the review's
-			// findings start another turn, which ships with its own.
-			c.keepSummary(cmpStr(key, o.key), summary)
+			c.keepSummaries(keys, cmpStr(key, o.key), summary)
 			dirty, _ := localGit("status", "--porcelain", "--untracked-files=no")
 			putOff = putOffPrompt(o.key, o.PutOff)
 			keptWhy = shipNeedsAgent(o, so.before, nil, putOff, dirty != "")
@@ -347,12 +355,14 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 		if err := c.emit(withTested(raw, o.tested), func() string { return o.heldText() + o.tested.text() }); err != nil {
 			return false, err
 		}
+		if len(f.also) > 0 && !c.asJSON {
+			c.println("Waypoint links " + strings.Join(f.also, ", ") + " to the pull request when it opens, and moves them In Review; if one isn't linked after, run wp link KEY URL.")
+		}
 		if putOff != "" && c.agentHeader() != "" && !c.asJSON {
 			c.println(putOff)
 		}
 		if summary != "" && keptWhy == "" {
-			// Only once the output is written: a failed emit must not end the turn.
-			c.endTurnAfterShip(cmpStr(key, o.key), heldSummary(summary)) // its notice says when it can't
+			c.endTurnAfterShip(cmpStr(key, o.key), heldSummary(summary))
 		}
 		return false, nil
 	}
@@ -367,10 +377,6 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 	}
 	d := o.Pull
 	noteUrgent := (*f.urgent || o.UrgentHeld) && d.Urgent
-	// bits are every note, for --json. The text says the usual in one line
-	// (WP-1080): what happened to the pull request, and its URL; what went
-	// wrong goes on lines of its own. That the task named or held was
-	// linked and moved to In Review goes without saying.
 	var bits, said, wrong []string
 	note := func(s string) { bits, said = append(bits, s), append(said, s) }
 	problem := func(s string) { bits, wrong = append(bits, s), append(wrong, s) }
@@ -378,7 +384,8 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 	if o.Existing {
 		note("already open")
 	}
-	if len(o.Other) > 0 {
+	theirs := len(o.Other) > 0
+	if theirs && !given {
 		c.println(fmt.Sprintf("%s#%d %s (pushed; it is %s's work, so not armed or babysat)", d.Repo, d.Number, d.URL, strings.Join(o.Other, ", ")))
 		if noteUrgent {
 			c.println(urgentNote(d.Number))
@@ -388,7 +395,16 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 		}
 		return true, nil
 	}
+	if theirs {
+		// A task named on the command line is shipped onto the open pull
+		// request: linked, In Review, and Done with the others on the merge,
+		// not at once (WP-1426). The pull request is armed and babysat as it
+		// was by its own ship.
+		note(fmt.Sprintf("pushed to %s's pull request, so not armed or babysat again", strings.Join(o.Other, ", ")))
+	}
+	c.shipAlso(so, o, d, msg, f.also, note, problem)
 	switch {
+	case theirs:
 	case *so.noArm:
 	case (d.State == "draft" && !d.WipAuto) || *f.draft:
 		note("draft, not armed")
@@ -412,7 +428,7 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 		note("on the urgent CI lane")
 	}
 	notify := *so.notify || *so.blocking
-	if !*so.noBabysit && (d.State != "draft" || d.WipAuto) && !*f.draft {
+	if !theirs && !*so.noBabysit && (d.State != "draft" || d.WipAuto) && !*f.draft {
 		if _, err := c.call("POST", fmt.Sprintf("/api/v1/pulls/%d/babysit", d.ID), map[string]any{"via": "ship", "notify": notify, "blocking": *so.blocking}); err != nil {
 			problem("not babysat: " + err.Error())
 		} else {
@@ -422,26 +438,14 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 	if o.key != "" && o.Warning == "" {
 		link := "linked " + o.key + " (" + o.why + ")"
 		if strings.EqualFold(o.key, key) {
-			bits = append(bits, link) // the task being finished: the agent knows
+			bits = append(bits, link)
 		} else {
 			note(link)
 		}
 	}
 	if o.key != "" && !*so.noMove {
-		if _, err := c.call("POST", "/api/v1/issues/"+esc(o.key)+"/transition", map[string]string{"status": "In Review", "via_link": d.URL}); err != nil {
-			problem("left " + o.key + " where it was: " + err.Error())
-		} else {
+		if c.moveShipped(o.key, d.URL, msg, problem) {
 			bits, moved = append(bits, o.key+" In Review"), true
-			// -m is the task's summary as well as the commit message.
-			if strings.TrimSpace(msg) != "" {
-				if _, err := c.call("POST", "/api/v1/issues/"+esc(o.key)+"/comments", map[string]string{"body": msg}); err != nil {
-					problem("comment not saved: " + err.Error())
-				}
-			}
-			// Shipping finishes the task: the claim here ends, and a task
-			// or fan-out session hands on.
-			c.forgetClaim(o.key)
-			c.sessionDone(o.key)
 		}
 	}
 	if o.Warning != "" {
@@ -458,27 +462,42 @@ func (c *cli) shipWork(f prOpenFlags, so shipOpts, msg string, msgGiven bool, ke
 	if noteUrgent {
 		c.println(urgentNote(d.Number))
 	}
+	// What the agent's turn is still wanted for, read once for the wait and
+	// for the end of the ship below.
+	dirty, putOff := false, ""
+	if armed || babysat {
+		status, _ := localGit("status", "--porcelain", "--untracked-files=no")
+		dirty, putOff = status != "", putOffPrompt(o.key, o.PutOff)
+	}
+	if task := cmpStr(key, o.key); task != "" && babysat {
+		why := shipNeedsAgent(o, so.before, wrong, putOff, dirty)
+		if c.canWaitChecks(so, o, babysat, why) {
+			if summary != "" {
+				// The wait may end on failed checks: the next wp ship is the
+				// one that ends the turn with this summary.
+				c.keepSummaries(keys, cmpStr(key, o.key), summary)
+			}
+			head, _ := localGit("rev-parse", "HEAD")
+			if done, err := c.waitShipChecks(task, d.ID, d.Number, strings.TrimSpace(head), so.waitLeft()); err != nil || done {
+				return false, err
+			}
+		}
+	}
 	if (armed || babysat) && c.agentHeader() != "" {
-		dirty, _ := localGit("status", "--porcelain", "--untracked-files=no")
-		putOff := putOffPrompt(o.key, o.PutOff)
 		if putOff != "" {
 			c.println(putOff)
 		}
 		if summary != "" {
-			// The summary is the reply: the turn ends here when nothing
-			// above needs the agent (WP-1093).
-			// The summary stays kept until the hook's Stop shows it: a
-			// turn that goes on after all can ship again without it.
-			c.keepSummary(cmpStr(key, o.key), summary)
-			why := shipNeedsAgent(o, so.before, wrong, putOff, dirty != "")
+			c.keepSummaries(keys, cmpStr(key, o.key), summary)
+			why := shipNeedsAgent(o, so.before, wrong, putOff, dirty)
 			if why == "" && c.endTurnAfterShip(cmpStr(key, o.key), fillSummary(summary, o.key, d)) {
 				c.println("Waypoint ends the turn here and shows the person your --summary as the reply (should the turn go on, end it with that summary).")
 				return false, nil
 			}
 		}
-		c.println(shipReply(o.ShipReply, o.key, d, dirty != ""))
+		c.println(shipReply(o.ShipReply, o.key, d, dirty))
 	} else if summary != "" {
-		c.keepSummary(cmpStr(key, o.key), summary)
+		c.keepSummaries(keys, cmpStr(key, o.key), summary)
 	}
 	return false, nil
 }
@@ -658,9 +677,6 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 	if len(all) == 0 {
 		return nil, nil, c.usage("%s has no commits beyond %s; commit first (wp ship -m does)", branch, base)
 	}
-	// A branch made from another one (a stacked change) carries that
-	// branch's commits too; they are its change, not this one, so they name
-	// neither the title nor the issue (WP-493).
 	parents := stackedOn(base, branch)
 	commits := commitsSince(base, parents...)
 	if len(commits) == 0 {
@@ -669,8 +685,6 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 	if len(parents) > 0 {
 		fmt.Fprintf(c.err, "Stacked on %s: %d commits beyond %s are its; title, summary and issue use the other %d.\n", strings.Join(parents, ", "), len(all)-len(commits), base, len(commits))
 	}
-	// A held task the commits all name comes before the branch's name, and
-	// still under a claim's rules: open, in this project, not merged (WP-665).
 	named := branch
 	if f.finishing != "" && commitsOverBranch(*f.base, f.finishing) {
 		named = ""
@@ -687,7 +701,7 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 		}
 	}
 	if !*f.noPush {
-		c.mergeBaseIfForkedTwice(base) // before the evidence: it can move HEAD
+		c.mergeBaseIfForkedTwice(base)
 	}
 	tested := c.sendTestEvidence(project, repo, key, f.summary)
 	body := *f.body
@@ -706,8 +720,6 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 		}
 		body = string(b)
 	case body == "":
-		// Waypoint writes it, so the server may have a model reword its
-		// Summary from the same inputs (WP-55).
 		summary := summarize(commits, f.summary)
 		body, err = c.renderPRBody(key, text, summary, *f.check, tested)
 		if err != nil {
@@ -725,20 +737,14 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 	if *f.base == "" {
 		stacked = stackBranches(parents)
 	}
-	req := map[string]any{"stacked_on": stacked, "head": branch, "base": *f.base, "title": text, "body": body, "draft": *f.draft, "ready": *f.ready, "issue": key, "for": f.finishing, "repo": repo, "urgent": *f.urgent,
+	req := map[string]any{"stacked_on": stacked, "head": branch, "base": *f.base, "title": text, "body": body, "draft": *f.draft, "ready": *f.ready, "issue": key, "for": f.finishing, "also": f.also, "repo": repo, "urgent": *f.urgent,
 		"review": intent, "reason": strings.TrimSpace(*f.skipReview), "force": *f.force}
-	// What a pull request Waypoint opens for a held ship carries: the newest
-	// ship's words win (WP-1370). A key is sent only when its flag was given
-	// (given empty clears; left out keeps), which also keeps a ship against a
-	// server from before them working.
 	f.addShipWords(req)
 	if ct, err := localGit("log", "-1", "--format=%ct", "HEAD"); err == nil {
 		if t, err := strconv.ParseInt(strings.TrimSpace(ct), 10, 64); err == nil {
 			req["head_time"] = t
 		}
 	}
-	// The head's commit, which tells two heads committed in the same second
-	// apart (WP-1325).
 	if sha, err := localGit("rev-parse", "HEAD"); err == nil {
 		if sha = strings.TrimSpace(sha); sha != "" {
 			req["head_sha"] = sha
@@ -750,7 +756,6 @@ func (c *cli) openPR(f prOpenFlags) (*openedPR, []byte, error) {
 	if bodyInputs != nil {
 		req["body_inputs"] = bodyInputs
 	}
-	// What the server would refuse for size is refused before the push.
 	if b, err := json.Marshal(req); err == nil && len(b) > maxOpenRequest {
 		return nil, nil, c.usage("the pull request is too large to send (%d bytes with its description; the server takes at most %d): shorten the description or leave -f/--body out and let Waypoint write it", len(b), maxOpenRequest)
 	}
@@ -836,7 +841,7 @@ func (c *cli) postOpen(project string, req map[string]any) (raw []byte, oldServe
 		delete(req, "summary")
 		raw, err = send()
 		if err != nil {
-			return raw, false, err // its own failure, not news about the server
+			return raw, false, err
 		}
 		_, _ = fmt.Fprintln(c.err, droppedShipWordsNote(m, sm))
 		return raw, true, nil
@@ -862,8 +867,6 @@ var (
 	prOpenRetries = []time.Duration{5 * time.Second, 20 * time.Second}
 	prOpenSleep   = time.Sleep
 )
-
-// ---- git ----
 
 type commitInfo struct{ subject, body string }
 
@@ -898,7 +901,7 @@ func isExit(err error, code int) bool {
 func baseRef(flag string) string {
 	if flag != "" {
 		if codeindex.CheckRef(flag) != nil {
-			return "" // git would read it as an option: never given to it
+			return ""
 		}
 		if _, err := localGit("rev-parse", "--verify", "-q", "origin/"+flag); err == nil {
 			return "origin/" + flag
@@ -956,8 +959,6 @@ func stackedOn(base, branch string) []string {
 			continue
 		}
 		refs = append(refs, r)
-		// The parent's local tip may be ahead of its pushed copy; its
-		// unpushed commits are the parent's, not this change's.
 		local := "refs/heads/" + strings.TrimPrefix(r, "origin/")
 		if _, err := localGit("rev-parse", "--verify", "--quiet", local); err == nil {
 			if _, err := localGit("merge-base", "--is-ancestor", local, "HEAD"); err != nil {
@@ -982,7 +983,7 @@ func stackedOn(base, branch string) []string {
 // branch (WP-ADR152).
 func (c *cli) mergeBaseIfForkedTwice(base string) {
 	if name, ok := strings.CutPrefix(base, "origin/"); ok && codeindex.CheckRef(name) == nil {
-		_, _ = localGit("fetch", "-q", "origin", name) // a stale base can only miss one
+		_, _ = localGit("fetch", "-q", "origin", name)
 	}
 	out, err := localGit("merge-base", "--all", base, "HEAD")
 	n := len(strings.Fields(out))
@@ -990,7 +991,6 @@ func (c *cli) mergeBaseIfForkedTwice(base string) {
 		return
 	}
 	if _, err := localGit("rev-parse", "-q", "--verify", "MERGE_HEAD"); err == nil {
-		// Someone's merge, perhaps half resolved: aborting it would lose that.
 		_, _ = fmt.Fprintf(c.err, "Notice: this branch forks from %s at %d commits, so its diff will show other pull requests' changes, and a merge is already under way here. Finish it, then git merge %s if that merge wasn't of it.\n", base, n, base)
 		return
 	}
@@ -1011,7 +1011,7 @@ func stackBranches(refs []string) []string {
 	type near struct {
 		name   string
 		n      int
-		onLine bool // its tip is on HEAD's first-parent line, not merged in from aside
+		onLine bool
 	}
 	line := map[string]bool{}
 	if out, err := localGit("rev-list", "--first-parent", "HEAD"); err == nil {
@@ -1023,7 +1023,7 @@ func stackBranches(refs []string) []string {
 	for _, r := range refs {
 		name := strings.TrimPrefix(r, "origin/")
 		if strings.HasPrefix(r, "refs/heads/") {
-			name = strings.TrimPrefix(r, "refs/heads/") // a local branch may itself be named origin/x
+			name = strings.TrimPrefix(r, "refs/heads/")
 		}
 		out, err := localGit("rev-list", "--count", "--first-parent", r+"..HEAD")
 		if err != nil {
@@ -1050,7 +1050,7 @@ func stackBranches(refs []string) []string {
 		if a.n != b.n {
 			return a.n - b.n
 		}
-		if a.onLine != b.onLine { // equal counts: the branch HEAD grew from, not one merged in
+		if a.onLine != b.onLine {
 			if a.onLine {
 				return -1
 			}
@@ -1080,7 +1080,7 @@ func (c *cli) issueFor(sc *scope, flag, branch, repo string, commits []commitInf
 		title, project string
 		closed         bool
 		status         string
-		merged         int // a merged pull request of this repo linked to it
+		merged         int
 	}
 	look := func(k string) (found, bool) {
 		raw, err := c.call("GET", "/api/v1/issues/"+esc(strings.ToUpper(k)), nil)
@@ -1117,8 +1117,6 @@ func (c *cli) issueFor(sc *scope, flag, branch, repo string, commits []commitInf
 	skip := func(k, from, reason string) {
 		fmt.Fprintf(c.err, "Not linking %s (%s): %s. Use --issue %s to link it anyway.\n", k, from, reason, k)
 	}
-	// usable looks the key up and applies the rules; needOpen is for sources
-	// that may be stale (a claim, a key in some commit text).
 	usable := func(k, from string, needOpen bool) (string, bool) {
 		f, ok := look(k)
 		if !ok {
@@ -1132,8 +1130,6 @@ func (c *cli) issueFor(sc *scope, flag, branch, repo string, commits []commitInf
 			skip(k, from, "it is "+f.status)
 			return "", false
 		}
-		// Its pull request here already merged: the claim or the key is left
-		// over from that change, and this is another (WP-493).
 		if needOpen && f.merged != 0 {
 			skip(k, from, fmt.Sprintf("its pull request #%d already merged", f.merged))
 			return "", false
@@ -1150,10 +1146,6 @@ func (c *cli) issueFor(sc *scope, flag, branch, repo string, commits []commitInf
 			return strings.ToUpper(m[1]), t, "branch"
 		}
 	}
-	// Keys in the commits come before the claim: a claim can be left over
-	// from another session. When the claim is one of those keys it wins (it
-	// is the same work); otherwise the first usable commit key does. The
-	// claim alone is the fallback, and says so.
 	var claimKey string
 	if dir, err := os.Getwd(); err == nil {
 		if _, cl := c.state.claimFor(dir); cl != nil {
@@ -1201,8 +1193,6 @@ func humanBranch(b string) string {
 	r := []rune(b)
 	return strings.ToUpper(string(r[:1])) + string(r[1:])
 }
-
-// ---- the body ----
 
 const defaultPRBody = `## Summary
 
@@ -1253,7 +1243,7 @@ func (c *cli) renderPRBody(key, title, summary, checks string, tested *shipEvide
 		custom = read("pr-checks.md")
 	}
 	d.Checks = cmpStr(custom, defaultPRChecks)
-	if tested != nil && tested.Line != "" { // the record says it, not a box to tick
+	if tested != nil && tested.Line != "" {
 		lines := "- " + tested.Line + "\n"
 		for _, l := range tested.BenchLines {
 			lines += "- " + l + "\n"
@@ -1377,3 +1367,43 @@ func jsonStrings(v any) []string {
 // factAsks reads a needs-the-agent fact from the server: unsaid (a server from
 // before the facts) is asking, the safe answer (WP-1370).
 func factAsks(b *bool) bool { return b == nil || *b }
+
+// moveShipped puts a task the pull request is linked to In Review with the
+// ship's message as a comment, and lets its claim and session hold go; the
+// merge then finishes it with the others linked to the pull request. false:
+// it stayed where it was (problem says why).
+func (c *cli) moveShipped(k, url, msg string, problem func(string)) bool {
+	if _, err := c.call("POST", "/api/v1/issues/"+esc(k)+"/transition", map[string]string{"status": "In Review", "via_link": url}); err != nil {
+		problem("left " + k + " where it was: " + err.Error() + " (run wp edit " + k + " --status \"In Review\")")
+		return false
+	}
+	if strings.TrimSpace(msg) != "" {
+		if _, err := c.call("POST", "/api/v1/issues/"+esc(k)+"/comments", map[string]string{"body": msg}); err != nil {
+			problem("comment on " + k + " not saved: " + err.Error())
+		}
+	}
+	c.forgetClaim(k)
+	c.sessionDone(k)
+	return true
+}
+
+// shipAlso settles the other tasks of wp ship A B once the pull request is
+// open: the server linked them as it opened it, and each goes In Review as
+// the first does. One that isn't linked is said to be, with the command that
+// fixes it, and never left out silently (WP-1426).
+func (c *cli) shipAlso(so shipOpts, o *openedPR, d *prDetail, msg string, also []string, note, problem func(string)) {
+	for _, k := range also {
+		if !slices.Contains(o.AlsoLinked, k) {
+			if !namesKey(o.Warning, k) {
+				problem(k + " isn't linked to the pull request: run wp link " + k + " " + d.URL)
+			}
+			continue
+		}
+		switch {
+		case *so.noMove:
+			note("also linked " + k)
+		case c.moveShipped(k, d.URL, msg, problem):
+			note("also " + k + " In Review")
+		}
+	}
+}

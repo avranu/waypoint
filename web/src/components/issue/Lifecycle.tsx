@@ -1,9 +1,3 @@
-// A task's life so far, at a glance (WP-1196): one track from when it was
-// written to now, coloured by the status it was in, with marks where
-// something happened (relations found, follow-ups filed, pull requests,
-// edits, comments). It replaces a three-step bar that only repeated the
-// status picker, and holds the "Created … · Written on v…" line.
-
 import { useMemo, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -169,8 +163,6 @@ export function Lifecycle({ issue, project }: { issue: IssueDetail; project: Pro
   )
   const width = end - start
   const pct = (t: number) => Math.min(100, Math.max(0, ((t - start) / width) * 100))
-  // A long history comes back cut to its newest events: the track before the
-  // oldest one stays blank rather than guess the status it was in.
   const known =
     events.length >= HISTORY_LIMIT
       ? Math.min(end, Math.max(start, Math.min(...events.map((e) => Date.parse(e.at)))))
@@ -187,7 +179,6 @@ export function Lifecycle({ issue, project }: { issue: IssueDetail; project: Pro
         .sort((a, b) => a.at - b.at),
     [events],
   )
-  // Marks close together share one spot, so the track never turns into a smear.
   const SLOTS = 32
   const slots = new Map<number, Mark[]>()
   for (const m of marks) {
@@ -197,7 +188,6 @@ export function Lifecycle({ issue, project }: { issue: IssueDetail; project: Pro
   const counts = ORDER.map((k) => [k, marks.filter((m) => m.kind === k).length] as const).filter(
     ([, n]) => n > 0,
   )
-  // Time spent in each status, in the order first reached.
   const spent: { name: string; category: Category; ms: number }[] = []
   for (const s of segs) {
     const row = spent.find((x) => x.name === s.name)
@@ -217,8 +207,6 @@ export function Lifecycle({ issue, project }: { issue: IssueDetail; project: Pro
     ? `${w.environment ?? 'Production'} ran ${[w.version, w.commit?.slice(0, 7)].filter(Boolean).join(' at ')} when this was written` +
       (since ? `; it runs ${live} now` : w.environment && live ? '; still live' : '')
     : ''
-  // Until the history answers, the statuses it passed through aren't known:
-  // the track waits rather than paint its whole life in today's status.
   const loading = history.isPending
   const failed = history.isError
   const asker = issue.reporter_agent
@@ -238,7 +226,6 @@ export function Lifecycle({ issue, project }: { issue: IssueDetail; project: Pro
                 .join('\n')}
               className={clsx(
                 'absolute top-0 flex items-center gap-px text-[10px] leading-none [&>svg]:size-3',
-                // The ends stay inside the track instead of hanging over it.
                 slot === 0 ? '' : slot === SLOTS ? '-translate-x-full' : '-translate-x-1/2',
                 m.tone,
               )}

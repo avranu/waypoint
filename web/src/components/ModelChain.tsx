@@ -1,6 +1,3 @@
-// Model chains (WP-D14): an ordered list of models, tried in turn until one
-// answers. Used for an AI task's fallbacks and a review action's own models.
-
 import { useState, type ReactNode, type RefObject } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowDown, ArrowUp, Coins, Plus, X } from 'lucide-react'
@@ -55,7 +52,6 @@ export function ModelChain({
   const agentMenu = usePopover()
   const edit = (i: number, patch: Partial<ChainModel>) =>
     onChange(value.map((m, j) => (j === i ? { ...m, ...patch } : m)))
-  // Only said once the runners are known, and only for CLIs the chain uses.
   const unready = mine.isSuccess
     ? [...new Set(value.flatMap((m) => (m.cli && ready[m.cli]?.state !== 'ready' ? [m.cli] : [])))]
     : []
@@ -233,8 +229,6 @@ export function ModelChooser({
     })),
   ]
   const pick = (model: string) => {
-    // A model the provider lists as not free is marked paid; a typed one
-    // isn't known, so it is free until marked.
     const listed = models.data?.find((m) => m.id === model)
     onPick(
       model

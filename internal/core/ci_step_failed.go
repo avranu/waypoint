@@ -1,22 +1,5 @@
 package core
 
-// A cancelled job's own verdict (WP-513). A workflow that fails fast
-// (a repo's: a step cancels the run when a job fails) has the forge call the
-// failing job cancelled; only its log ("[runner]: exitcode '2': failure"
-// before the cancel) tells it from a job a newer push or a person stopped
-// (WP-424). Check recording (refreshHead) reads that log, but only for the
-// heads it follows and only while it follows them: a main push past its
-// poll window, a log read in the second before its failure line was
-// uploaded, a head nobody re-read after it settled. The CI doctor then
-// counted those failures as cancels ("0 failed, 12 cancelled" while the
-// logs showed 10 failed steps).
-//
-// So each recent cancelled job kept in ci_jobs has its own log read once,
-// on the scheduled CI history pass, and the verdict kept (step_failed). The
-// doctor counts a job self-stopped when either reading says so. The reads
-// are capped per repo and pass, like the board's other reads of a repo, and
-// what's left is read on the next pass.
-
 import (
 	"context"
 	"errors"

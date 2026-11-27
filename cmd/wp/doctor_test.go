@@ -18,8 +18,6 @@ import (
 // Both spellings of a doctor are one tool, so a guess at either costs no
 // error (WP-797), and a doctor added under any command joins by itself.
 func TestDoctorBothWays(t *testing.T) {
-	// The setup doctor probes real CLIs and the host's runner service, whose
-	// answers could differ between the two runs; pin them.
 	oldCLIs, oldClaude, oldSvc := detectCLIsFn, claudeInstalled, runnerServiceFn
 	detectCLIsFn = func(context.Context) []runnerCLI { return nil }
 	claudeInstalled = func() bool { return false }
@@ -51,11 +49,10 @@ func TestDoctorBothWays(t *testing.T) {
 			}
 		})
 	}
-	if found < 4 { // ci, sandbox, setup, config
+	if found < 4 {
 		t.Errorf("found only %d doctors", found)
 	}
 
-	// A flag before the tool's name is the same guess.
 	first, codeFirst := e.run("doctor", "--json", "ci")
 	last, codeLast := e.run("ci", "doctor", "--json")
 	if first != last || codeFirst != codeLast {

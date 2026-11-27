@@ -52,7 +52,6 @@ async function run(width, scheme, n) {
   await page.waitForURL(base + "/");
   await api("POST", "/projects", { name: `Work log ${n}`, key: KEY });
 
-  // ---- autopilot's review round, per project ----
   await page.goto(`${base}/agents?tab=autopilot`);
   const row = page.getByTestId(`autopilot-${KEY}`);
   await row.waitFor();
@@ -70,7 +69,7 @@ async function run(width, scheme, n) {
     `${tag} the prompt field shows the default`,
   );
   await prompt.fill("Attack this change and fix what breaks.");
-  await prompt.blur(); // typed limits save on blur or Enter (WP-680)
+  await prompt.blur();
   await page.waitForFunction(async ([b, k]) => {
     const o = await (await fetch(b + "/api/v1/autopilot")).json();
     const p = o.projects.find((x) => x.project_key === k);
@@ -78,7 +77,6 @@ async function run(width, scheme, n) {
   }, [base, KEY]);
   ok(true, `${tag} the project's review and prompt are saved`);
 
-  // ---- who reviews, and the reviewer's brief (WP-1320) ----
   const brief = page.locator(`#p-${KEY}-review_text`);
   await brief.waitFor();
   ok(
@@ -105,7 +103,6 @@ async function run(width, scheme, n) {
   await shot("autopilot-review");
   await overflow("autopilot review limits");
 
-  // ---- under a custom default brief, a project can go back to Waypoint's built-in one (WP-1320) ----
   const briefIs = (want) =>
     page.waitForFunction(async ([b, k, w]) => {
       const o = await (await fetch(b + "/api/v1/autopilot")).json();
@@ -119,7 +116,6 @@ async function run(width, scheme, n) {
   await page.getByTestId(`autopilot-${KEY}`).getByRole("button", { name: `Limits for ${KEY}` }).click();
   await dlg.waitFor();
   await brief.fill(house + "!");
-  // an emoji is one character here as on the server, not the two a string's length counts
   await dlg.getByText(`${[...house].length + 1} of 12,000 characters`).waitFor();
   ok(true, `${tag} the brief's length is counted in characters, as the server counts it`);
   await brief.fill("");
@@ -142,13 +138,11 @@ async function run(width, scheme, n) {
   await dlg.getByRole("button", { name: "Inherit instead" }).click();
   await briefIs(null);
   ok((await brief.getAttribute("placeholder")) === house, `${tag} Inherit instead goes back to the default's brief`);
-  // as it was, for the rest of this suite and the ones after it
   await api("PUT", "/autopilot", { limits: mine });
   await brief.fill("Attack the parser. Name the input that breaks it.");
   await brief.blur();
   await briefIs("Attack the parser. Name the input that breaks it.");
 
-  // ---- a task with a counted round ----
   const issue = await api("POST", "/issues", { project: KEY, title: `Parser of ${KEY}` });
   const empty = await api("GET", `/issues/${issue.key}/worklog`);
   ok(empty.entries.length === 0, `${tag} a new task's work log is empty`);
@@ -194,7 +188,6 @@ async function run(width, scheme, n) {
   await shot("issue-round");
   await overflow("issue round open");
 
-  // ---- a note from the page ----
   await block.getByRole("button", { name: "+ Note" }).click();
   await block.getByLabel("Note").fill("The review missed the empty-input case; caught in QA.");
   await pick(block, "Count it as", "An issue found");
@@ -210,11 +203,9 @@ async function run(width, scheme, n) {
   await shot("issue-note");
   await overflow("note added");
 
-  // ---- stats ----
   const stats = await api("GET", `/worklog/stats?project=${KEY}&days=30`);
   ok(stats.total.rounds === 1 && stats.total.model_read.rounds === 1 && stats.total.model_read.found === 2 && stats.total.measured.rounds === 0 && stats.total.pushed === 1, `${tag} the stats count the round (${JSON.stringify(stats.total)})`);
 
-  // ---- test evidence and mismatches (WP-715) ----
   const long = "go test -run " + "VeryLongTestNameWithoutAnyBreak".repeat(8) + " ./...";
   const failed = { at: Date.now(), command: long, outcome: "fail", passed: 118, failed: 2, skipped: 0, units: 3, unit_name: "packages", failures: ["TestA", "TestB"], seconds: 4, duration: 5 };
   const sent = await api("POST", `/projects/${KEY}/test-evidence`, {

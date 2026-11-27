@@ -23,22 +23,21 @@ func TestEgressPolicy(t *testing.T) {
 		{"8.8.8.8", true, true, true},
 		{"10.9.0.5", true, false, true},
 		{"192.168.1.10", true, false, true},
-		{"100.81.30.79", true, false, true}, // Tailscale
+		{"100.81.30.79", true, false, true},
 		{"fd00::1", true, false, true},
 		{"127.0.0.1", false, false, true},
 		{"::1", false, false, true},
 		{"::ffff:127.0.0.1", false, false, true},
-		{"169.254.169.254", false, false, false}, // cloud metadata
+		{"169.254.169.254", false, false, false},
 		{"fe80::1", false, false, false},
 		{"0.0.0.0", false, false, false},
 		{"224.0.0.1", false, false, false},
-		// IPv6 addresses carrying an IPv4 one: judged by what they carry.
-		{"64:ff9b::a9fe:a9fe", false, false, false},       // NAT64 → 169.254.169.254
-		{"64:ff9b:1:a9fe:a9:fe00::", false, false, false}, // local-use NAT64 → 169.254.169.254
-		{"2002:a9fe:a9fe::1", false, false, false},        // 6to4 → 169.254.169.254
-		{"64:ff9b::7f00:1", false, false, true},           // → 127.0.0.1
-		{"64:ff9b::a02:5", true, false, true},             // → 10.9.0.5
-		{"64:ff9b::808:808", true, true, true},            // → 8.8.8.8
+		{"64:ff9b::a9fe:a9fe", false, false, false},
+		{"64:ff9b:1:a9fe:a9:fe00::", false, false, false},
+		{"2002:a9fe:a9fe::1", false, false, false},
+		{"64:ff9b::7f00:1", false, false, true},
+		{"64:ff9b::a02:5", true, false, true},
+		{"64:ff9b::808:808", true, true, true},
 	} {
 		ip := netip.MustParseAddr(tc.ip)
 		if got := def.allowed(ip); got != tc.def {
@@ -69,11 +68,9 @@ func TestWebhookDeliveryAndEgress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The default policy refuses loopback, with a message safe to show.
 	if _, err := e.s.TestWebhook(e.ctx, e.admin, h.ID); PublicError(err) != "that address is not allowed" {
 		t.Fatalf("loopback webhook: %v (%q)", err, PublicError(err))
 	}
-	// Allowed when configured, and signed.
 	e.s.http = EgressPolicy{AllowLoopback: true}.client(0)
 	if _, err := e.s.TestWebhook(e.ctx, e.admin, h.ID); err != nil {
 		t.Fatal(err)
@@ -83,7 +80,6 @@ func TestWebhookDeliveryAndEgress(t *testing.T) {
 	if gotSig != "sha256="+hex.EncodeToString(mac.Sum(nil)) {
 		t.Errorf("signature %q", gotSig)
 	}
-	// Redirects are not followed.
 	gotBody = ""
 	if _, err := e.s.UpdateWebhook(e.ctx, e.admin, h.ID, WebhookInput{URL: &redirect.URL}); err != nil {
 		t.Fatal(err)
@@ -124,21 +120,17 @@ func TestEgressStreamClient(t *testing.T) {
 		b, err := io.ReadAll(resp.Body)
 		return string(b), err
 	}
-	// The body takes twice the headers' limit, and arrives whole.
 	if body, err := get(context.Background(), "/"); err != nil || body != "chunk\nchunk\nchunk\n" {
 		t.Errorf("streamed body = %q, %v", body, err)
 	}
-	// Headers later than the limit fail.
 	if _, err := get(context.Background(), "/slow-headers"); err == nil {
 		t.Error("late headers were waited for")
 	}
-	// The context cuts a stream short.
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
 	if _, err := get(ctx, "/"); !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("past the deadline: %v", err)
 	}
-	// Loopback stays refused without AllowLoopback.
 	req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
 	if _, err := (EgressPolicy{}).streamClient(time.Second).Do(req); !errors.Is(err, ErrEgressBlocked) {
 		t.Errorf("loopback: %v", err)

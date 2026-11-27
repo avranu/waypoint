@@ -1,12 +1,5 @@
 package core
 
-// Any CI job's log (WP-315): `wp ci log` reads the logs of a commit's or a
-// run's Forgejo Actions jobs through Waypoint, which holds the forge token.
-// `wp pr log` (ci_logs.go) only reads a pull request's head checks; a
-// push to main has no pull request, so its jobs (the ones that decide
-// whether a merge is released) could not be looked at by an agent at all.
-// The extraction is the same: the failing part, or all of it with full.
-
 import (
 	"context"
 	"errors"
@@ -47,8 +40,6 @@ func (c *httpForgeClient) ActionRunsAt(ctx context.Context, f *Forge, repo, sha 
 		return nil, ErrNotFound
 	}
 	if len(sha) == 40 {
-		// Every page: a head with 50 newer skipped runs keeps an older
-		// failed run on page two, and the run that counts needs them all.
 		var out []ActionRun
 		for page := 1; ; page++ {
 			var res struct {

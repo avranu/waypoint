@@ -1,8 +1,3 @@
-// The assistant's skills (WP-ADR1): what it knows how to do, by category.
-// Each can be switched off, read, and edited; new ones written here. The
-// agent writes skills of its own as it learns, so those stand out.
-// ?path= opens one skill, ?view=new the new-skill form.
-
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
@@ -51,7 +46,6 @@ export function SkillsTab({ assistant }: { assistant: Assistant }) {
     if (!open && !creating) listScroll = scroller(top.current)?.scrollTop ?? 0
     navigate({ search: (cur: AssistantSearch) => ({ tab: cur.tab, ...s }) })
   }
-  // A skill or the form starts at the top; the list where it was left.
   useLayoutEffect(() => {
     scroller(top.current)?.scrollTo({ top: open || creating ? 0 : listScroll })
   }, [open, creating])
@@ -127,7 +121,6 @@ function SkillList({ assistant, onNew }: { assistant: Assistant; onNew: () => vo
       const k = s.category ?? ''
       by.set(k, [...(by.get(k) ?? []), s])
     }
-    // Agent-written skills first within each category.
     return [...by.entries()]
       .sort(([a], [b]) => (a ? (b ? a.localeCompare(b) : -1) : 1))
       .map(([c, list]) => ({

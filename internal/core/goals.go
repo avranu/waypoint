@@ -11,15 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
-
-// Goals: what people want from a project, in plain words, and how the
-// work traces to it (WP-382, WP-ADR50). goal_trace.go computes the trace;
-// this file guesses links, checks wording and answers the questions
-// people and agents ask of it.
-
-// ---- the matcher ----
 
 // The matcher links work that traces to no goal to the goal it is plainly
 // about: its tf-idf cosine to one goal's profile clears goalMatchMin and
@@ -29,7 +23,7 @@ const (
 	goalMatchMin    = 0.25
 	goalMatchLead   = 1.4
 	goalSuggestMin  = 0.1
-	goalRecentDays  = 14 // finished work this recent still gets a guess
+	goalRecentDays  = 14
 	goalProfileWork = 0.5
 )
 
@@ -46,7 +40,7 @@ type goalMatcher struct {
 	idx        *simIndex
 	goals      []goalProfile
 	projParent map[int64]int64
-	dismissed  map[[2]int64]bool // (issue id, goal id) a person turned down
+	dismissed  map[[2]int64]bool
 }
 
 func (s *Service) newGoalMatcher(ctx context.Context) (*goalMatcher, error) {
@@ -82,10 +76,6 @@ func (s *Service) newGoalMatcher(ctx context.Context) (*goalMatcher, error) {
 	if m.idx, err = s.similarityIndex(ctx); err != nil {
 		return nil, err
 	}
-	// What a goal means is learned only from what people stand behind:
-	// work people linked to it, and notes under it a person approved. An
-	// agent's link or note would teach the matcher to guess more of the
-	// agent's own links (WP-ADR50).
 	work := map[int64][]int64{}
 	rows, err = s.db.R.QueryContext(ctx, `SELECT goal_id, item_id FROM goal_traces WHERE item_type = 'issue' AND goal_id IS NOT NULL AND grounding = 'person_goal'`)
 	if err != nil {
@@ -106,9 +96,8 @@ func (s *Service) newGoalMatcher(ctx context.Context) (*goalMatcher, error) {
 		}
 		counts := simCounts(n.title, n.body, nil)
 		for t, c := range counts {
-			counts[t] = 2 * c // the goal's own words count most
+			counts[t] = 2 * c
 		}
-		// The notes under it, to a few levels.
 		queue := slices.Clone(children[n.id])
 		for depth := 0; len(queue) > 0 && depth < 6; depth++ {
 			var next []int
@@ -345,8 +334,6 @@ func (s *Service) recordGoalDismissal(ctx context.Context, t *tx, actor *Actor, 
 		}
 		basis, agent, at = was.basis, was.agent, was.createdAt
 	}
-	// An earlier no (a suggestion dismissed) stays as it was, but takes on
-	// the link's data when this one carries it and that one had none.
 	_, err := t.ExecContext(ctx, `INSERT INTO goal_dismissals(src_type, src_id, goal_id, user_id, created_at, link_score, link_basis, link_by, link_agent, link_created_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT (src_type, src_id, goal_id) DO UPDATE SET link_score = excluded.link_score, link_basis = excluded.link_basis,
@@ -360,8 +347,6 @@ func (s *Service) recordGoalDismissal(ctx context.Context, t *tx, actor *Actor, 
 func linkBasis(basis, agent string, by int64, confirmed bool) string {
 	return basisNames[storedBasis(basis, agent, by, confirmed)]
 }
-
-// ---- wording ----
 
 // goalTech are technologies a goal names when it says how rather than what.
 var goalTech = map[string]string{}
@@ -403,7 +388,7 @@ func goalWording(title string) []string {
 		if tech, ok := goalTech[strings.ToLower(what)]; ok || isCapitalized(what) {
 			if ok {
 				what = tech
-				seen[tech] = true // one flag for it, not two
+				seen[tech] = true
 			}
 			add(fmt.Sprintf("says how (%q): say what it is for; using %s is a decision under this goal", strings.TrimSpace(m[0]), what))
 		}
@@ -430,9 +415,6 @@ func goalWording(title string) []string {
 	} else if m := goalTaskObjRE.FindStringSubmatch(title); m != nil {
 		add(fmt.Sprintf("reads as a task (%q): say what people can do or have once it's done", m[1]))
 	}
-	// A spec heading: "Merge line: order by arming, base fix first, …", or
-	// two sentences joined by a semicolon. One list after a colon ("Sign-in
-	// is simple: email, passkey or SSO") is still one outcome.
 	words := len(strings.Fields(title))
 	if head, rest, ok := strings.Cut(title, ": "); ok && strings.Count(rest, ",") >= 2 {
 		add(fmt.Sprintf("lists several things (“%s: …”): a goal is one outcome; make the parts goals under it, or put them in its body", clipText(head, 40)))
@@ -464,8 +446,6 @@ var goalTaskObjRE = lazyre.New(`(?i)^\s*((?:build|fix|store|cache|port|install|u
 func isCapitalized(w string) bool {
 	return w != "" && w[0] >= 'A' && w[0] <= 'Z'
 }
-
-// ---- the Goals view ----
 
 // GoalCoverage is what traces to a goal, by grounding.
 type GoalCoverage struct {
@@ -587,8 +567,6 @@ func (s *Service) ListGoals(ctx context.Context, actor *Actor, project string) (
 	if role == RoleNone {
 		return nil, notFound("project")
 	}
-	// The first view after a restart, or of an instance's first goal, may
-	// come before the traces are computed.
 	s.goalsSettle(ctx)
 	s.goals.mu.Lock()
 	fresh := s.goals.checked
@@ -622,8 +600,6 @@ func (s *Service) ListGoals(ctx context.Context, actor *Actor, project string) (
 		return nil, err
 	}
 	if actor.actsAsPerson() {
-		// What a person was shown, so what they then did tells whether the
-		// suggestion was right (goal_meaning_labels.go).
 		s.recordMeaningShown(ctx, shown)
 	}
 	subtree, err := s.projectSubtree(ctx, p.ID)
@@ -683,7 +659,7 @@ func orderGoals(notes []*DesignNote) []*GoalView {
 				}
 				return 1
 			}
-			if a.Inherited != b.Inherited { // the project's own first
+			if a.Inherited != b.Inherited {
 				if !a.Inherited {
 					return -1
 				}
@@ -944,8 +920,6 @@ func (s *Service) goalTotals(ctx context.Context, actor *Actor, subtree []int64,
 	if !out.Scoped {
 		return nil
 	}
-	// Tasks the background trace hasn't reached yet: the page says so
-	// rather than leaving them out of the counts unexplained.
 	// #nosec G202 -- as above
 	return s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM issues i JOIN statuses st ON st.id = i.status_id
 		WHERE st.category NOT IN ('done', 'canceled') AND i.project_id IN (`+idList(len(subtree))+`) AND `+vis+` AND `+draftsHidden(actor, "i")+`
@@ -1008,10 +982,6 @@ func (s *Service) goalDrift(ctx context.Context, actor *Actor, subtree []int64) 
 		vis, vargs = visibleSQL("i.project_id", actor)
 		vis += " AND " + draftsHidden(actor, "i")
 	}
-	// A task counts as it traced when it was finished (goal_finished),
-	// not as it traces now: a goal approved or retired later doesn't
-	// rewrite last week. One finished since the last recompute counts as
-	// it traces now.
 	// #nosec G202 -- vis is a fixed condition and the rest placeholders; values are bound
 	rows, err := s.db.R.QueryContext(ctx, `SELECT CASE WHEN gf.resolved_at = i.resolved_at THEN gf.grounding ELSE gt.grounding END, i.resolved_at >= ?, count(*)
 		FROM goal_traces gt JOIN issues i ON i.id = gt.item_id JOIN statuses st ON st.id = i.status_id
@@ -1038,8 +1008,6 @@ func (s *Service) goalDrift(ctx context.Context, actor *Actor, subtree []int64) 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// Grounded: a person or an agent linked it to an approved goal.
-	// Waypoint's own guesses count apart: a guess is no one's intent.
 	share := func(m map[string]int, which ...string) (float64, int) {
 		var at, all int
 		for g, n := range m {
@@ -1126,8 +1094,6 @@ func goalQuestions(o *GoalsOverview) []string {
 	}
 	return q
 }
-
-// ---- one item's trace ----
 
 // TraceHop is one step of a route: From is for To.
 type TraceHop struct {
@@ -1316,7 +1282,6 @@ func (tr *tracer) item(ctx context.Context, n gnode) (*ItemTrace, error) {
 	it := tr.g.items[n]
 	out := &ItemTrace{Item: tr.kitem(ctx, n), Routes: []TraceRoute{}}
 	if it == nil {
-		// A draft, a personal page or a retired note isn't traced.
 		out.Grounding, out.Words = GroundNone, GroundingWords(GroundNone)
 		out.Note = "drafts, personal pages and retired notes aren't traced"
 		return out, nil
@@ -1362,7 +1327,6 @@ func (tr *tracer) item(ctx context.Context, n gnode) (*ItemTrace, error) {
 			}
 		}
 	}
-	// Work that reaches no approved goal: the one Waypoint would offer.
 	if n.typ == KIssue && t.scoped && (t.grounding == GroundNone || t.grounding == GroundPersonRequest || t.grounding == GroundProposedGoal) {
 		if tr.m == nil {
 			m, err := tr.s.newGoalMatcher(ctx)
@@ -1450,8 +1414,6 @@ func (tr *tracer) commit(ctx context.Context, q TraceQuery) (*ItemTrace, error) 
 	}
 	short := sha[:min(len(sha), 10)]
 	item := KItem{Type: KURL, Kind: "commit", Title: "commit " + short, Repo: q.Repo}
-	// The pull request Waypoint knows merged or carries it first: its
-	// tasks are recorded. A message's keys are only what it says.
 	vis, args := prVisible(tr.actor, 0)
 	var prID int64
 	// #nosec G202 -- vis is a fixed condition; values are bound
@@ -1488,8 +1450,6 @@ func (tr *tracer) commit(ctx context.Context, q TraceQuery) (*ItemTrace, error) 
 	return &ItemTrace{Item: item, Grounding: GroundNone, Words: GroundingWords(GroundNone), Routes: []TraceRoute{},
 		Note: "its message names no task and no pull request Waypoint knows carries it"}, nil
 }
-
-// ---- confirming and dismissing ----
 
 // ConfirmGoalLink makes an agent's link or Waypoint's guess the person's
 // own: it counts as a person's link from then on.
@@ -1544,8 +1504,6 @@ func (s *Service) DismissGoalLink(ctx context.Context, actor *Actor, id int64) e
 			return err
 		}
 		if auto {
-			// An agent's [[wikilink]] stays in its text, but the no keeps
-			// it out of the trace. A person's own words are theirs to edit.
 			if personText || dstType != KDesign || !dstID.Valid {
 				return invalid("a person's [[wikilink]] in the text makes this link; edit the text to remove it")
 			}
@@ -1555,7 +1513,6 @@ func (s *Service) DismissGoalLink(ctx context.Context, actor *Actor, id int64) e
 			}
 			return s.recordGoalDismissal(ctx, t, actor, src.Type, src.ID, dstID.Int64, was)
 		}
-		// Read the link before it goes: the dismissal keeps its score and author.
 		was, err := readDismissedLink(ctx, t, id)
 		if err != nil {
 			return err
@@ -1665,8 +1622,6 @@ func (s *Service) goalRewordings(ctx context.Context, ids []any, byID map[int64]
 	if len(ids) == 0 {
 		return nil
 	}
-	// The suggested goals' reasons first: a second query while the
-	// revision rows are open would hold two read connections.
 	for _, g := range byID {
 		if g.Note.Approved || g.Note.CreatedAgent != goalSuggestAgent {
 			continue
@@ -1692,7 +1647,7 @@ func (s *Service) goalRewordings(ctx context.Context, ids []any, byID map[int64]
 			return err
 		}
 		if g := byID[note]; g != nil {
-			g.Rewording = &rw // newest last
+			g.Rewording = &rw
 		}
 	}
 	return rows.Err()
@@ -1736,6 +1691,18 @@ func (s *Service) issueGoal(ctx context.Context, q queryer, actor *Actor, issueI
 	return nil
 }
 
+// outsideTitleInPrompt stands for the title of a linked issue whose text
+// came from outside and no person has released: a model's prompt never
+// carries it (WP-281, WP-1788).
+const outsideTitleInPrompt = "(title not shown: written from outside, not yet approved)"
+
+// quoteTitle puts a title in double quotes it can't end early: its own
+// double quotes become single ones. Go's %q would escape them as \", and a
+// reader that doesn't take a backslash as an escape sees the quote end there.
+func quoteTitle(s string) string {
+	return `"` + strings.ReplaceAll(s, `"`, `'`) + `"`
+}
+
 // reviewIntent is what the pull request's tasks are for (WP-382): each
 // task, the goal it traces to and how firmly, and the factors of its
 // provenance risk, so a reviewer can tell work no one asked for. "" with no
@@ -1753,15 +1720,23 @@ func (s *Service) reviewIntent(ctx context.Context, prID int64) string {
 			continue
 		}
 		seen[l.issue.ID] = true
-		fmt.Fprintf(&b, "- %s %s", l.issue.Key, excerpt(l.issue.Title, 160))
 		var project int64
-		_ = s.db.R.QueryRowContext(ctx, `SELECT project_id FROM issues WHERE id = ?`, l.issue.ID).Scan(&project)
+		var outside bool
+		if err := s.db.R.QueryRowContext(ctx, `SELECT project_id, outside FROM issues WHERE id = ?`, l.issue.ID).Scan(&project, &outside); err != nil {
+			outside = true
+		}
+		// Quoted, so a title can't pass for the goal or risk clause after it.
+		title := quoteTitle(kernel.Excerpt(oneLine(l.issue.Title), 160))
+		if outside {
+			title = outsideTitleInPrompt
+		}
+		fmt.Fprintf(&b, "- %s %s", l.issue.Key, title)
 		switch g := s.issueGoal(ctx, s.db.R, sys, l.issue.ID, project); {
 		case g == nil:
 		case g.Pending:
 			b.WriteString("; not traced to a goal yet")
 		case g.Goal != nil:
-			fmt.Fprintf(&b, "; serves goal %q, %s", excerpt(g.Goal.Title, 160), GroundingWords(g.Grounding))
+			fmt.Fprintf(&b, "; serves goal %s, %s", quoteTitle(kernel.Excerpt(oneLine(g.Goal.Title), 160)), GroundingWords(g.Grounding))
 		default:
 			b.WriteString("; " + GroundingWords(g.Grounding))
 		}

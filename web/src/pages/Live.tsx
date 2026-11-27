@@ -1,8 +1,3 @@
-// What's live (WP-389): can I try it yet? Each deployed environment says
-// whether it has everything that merged, and recent work is grouped by where
-// it stands: stuck, merged but not deployed, on its way, being worked on,
-// live. The server places each item (internal/core/delivery.go).
-
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'

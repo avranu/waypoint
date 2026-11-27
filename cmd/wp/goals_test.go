@@ -14,7 +14,7 @@ import (
 // wp goals, wp goal and wp trace, down to a line of code (WP-382).
 func TestCLIGoals(t *testing.T) {
 	e := newEnv(t)
-	me := e.login() // an agent token
+	me := e.login()
 	agentTok := os.Getenv("WAYPOINT_TOKEN")
 	ctx := context.Background()
 	humanTok, _, err := e.svc.CreateAPIToken(ctx, me, "robin", false, 0)
@@ -62,7 +62,6 @@ func TestCLIGoals(t *testing.T) {
 		t.Errorf("goals after confirm:\n%s", out)
 	}
 
-	// A line of code traces through the commit that wrote it to its task's goal.
 	if err := os.WriteFile("routes.go", []byte("package atlas\n\nfunc Routes() {}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

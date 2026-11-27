@@ -25,7 +25,7 @@ func TestParseWPInvocation(t *testing.T) {
 		{"wp babysit --now", "wp babysit", false, []string{"--now"}},
 		{"wp ship -m summary", "wp ship", false, []string{"-m"}},
 		{"wp show WP-1 -- --not-a-flag", "wp show", false, nil},
-		{"wp new -d -3,5", "wp new", false, []string{"-d"}}, // -3,5 is no flag's shape
+		{"wp new -d -3,5", "wp new", false, []string{"-d"}},
 	} {
 		got := parseWPInvocation(strings.Fields(tc.line))
 		if got.Head != tc.head || got.Help != tc.help || !reflect.DeepEqual(got.Flags, tc.flags) {
@@ -124,11 +124,9 @@ func TestUsageParseCLIRows(t *testing.T) {
 			t.Errorf("%s = %d, want %d", key, c[key], want)
 		}
 	}
-	// the sixth Bash call after wp next is outside its window
 	if c["follow|wp next|gh"] != 0 || c["follow|wp next|gh pr"] != 0 {
 		t.Errorf("gh counted past the window: %v", c)
 	}
-	// a task body quoting the command's own error isn't that error
 	if c["error|wp show|unknown_flag"] != 0 || c["unknown_flag|wp show|--quoted"] != 0 {
 		t.Errorf("a quoted error was counted: %v", c)
 	}
@@ -156,7 +154,6 @@ func TestUsageParseCLICarriesNoArguments(t *testing.T) {
 	}
 	for _, r := range got.Chunk.CLI {
 		b, _ := json.Marshal(r)
-		// --hush is a flag name; everything else with the word is a value
 		s := strings.ReplaceAll(strings.ReplaceAll(string(b), `"--hush"`, ""), `"--hush-output-value"`, "")
 		if strings.Contains(s, "hush") || strings.Contains(s, "HUSH") {
 			t.Errorf("a value left the machine: %s", b)
@@ -184,7 +181,6 @@ func TestUsageParseCLIFollowsAcrossReads(t *testing.T) {
 	if c["follow|wp next|git fetch"] != 1 || c["wp|wp next|"] != 0 || c["file||"] != 0 {
 		t.Errorf("second read: %v", c)
 	}
-	// counted in the hour of the command it followed
 	for _, r := range second.Chunk.CLI {
 		if r.Kind == usageCLIFollow && r.Hour != first.Chunk.CLI[0].Hour {
 			t.Errorf("follow hour %d, want the wp command's %d", r.Hour, first.Chunk.CLI[0].Hour)
@@ -206,7 +202,6 @@ func TestUsageParseCLISleepBesideCI(t *testing.T) {
 		{"nothing near", []string{"sleep 30", "git status", "wp pr check 3"}, 0},
 		{"beside something else", []string{"wp ls", "sleep 30", "wp show WP-1"}, 0},
 	} {
-		// one read, then the same calls split over two reads
 		var lines []string
 		for i, cmd := range tc.cmds {
 			id := string(rune('a' + i))

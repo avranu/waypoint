@@ -7,9 +7,6 @@ import (
 	"time"
 )
 
-// Autopilot works in sessions of its own; a person's own sessions are never
-// moved on (WP-1319).
-
 // personsOwn makes the env's session one autopilot didn't start.
 func (a *apEnv) personsOwn() {
 	a.t.Helper()
@@ -150,7 +147,6 @@ func TestAutopilotClearTakesTheSession(t *testing.T) {
 			t.Fatalf("end first %v: moved the cleared session on", endFirst)
 		}
 	}
-	// Any other end stops the step too.
 	b := newAPEnv(t)
 	bf := b.issue(b.admin, IssueInput{Project: b.p.Key, Title: "First", Agent: "claude"})
 	b.issue(b.admin, IssueInput{Project: b.p.Key, Title: "Second", Agent: "claude"})
@@ -341,7 +337,6 @@ func TestAutopilotOwnsHoldsWhenTheStartingStepIsRewritten(t *testing.T) {
 	if err := a.s.db.R.QueryRow(`SELECT session_id FROM autopilot_steps WHERE next_session = ?`, a.session).Scan(&prev); err != nil {
 		t.Fatal(err)
 	}
-	// What a Stop of the old session does to its step.
 	err := a.s.write(a.ctx, a.admin, func(tx *tx) error {
 		x, err := a.s.sessionByID(a.ctx, tx, a.admin, prev)
 		if err != nil {
@@ -355,8 +350,6 @@ func TestAutopilotOwnsHoldsWhenTheStartingStepIsRewritten(t *testing.T) {
 	if own, err := autopilotOwns(a.ctx, a.s.db.R, a.session); err != nil || own {
 		t.Fatalf("a person's session is autopilot's again: %v, %v", own, err)
 	}
-	// The revived step is live again, so a tick, the Autopilot tab or a
-	// settings change rewrites it in its own ways; none of them may either.
 	var id int64
 	if err := a.s.db.R.QueryRow(`SELECT id FROM autopilot_steps WHERE session_id = ?`, prev).Scan(&id); err != nil {
 		t.Fatal(err)

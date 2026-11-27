@@ -12,10 +12,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// wp usage machines (audit 1218.10, .34, .35): what each machine says of its
-// transcript archive, so a stalled or opted-out machine can be told apart
-// from a healthy one without the admin screens.
-
 var usageMachinesCmd = &command{
 	name: "machines", args: "[--user NAME]",
 	summary: "each machine's transcript archive state: waiting, drops, passes, opt-out",
@@ -124,7 +120,7 @@ func transcriptFilesText(files []core.TranscriptFile) string {
 	tw := tabwriter.NewWriter(&b, 0, 4, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "MACHINE\tFILE\tKIND\tGEN\tPIECES\tRAW\tSTORED\tREDACTED\tREDACTIONS\tCOMPLETE\tLAST")
 	for _, f := range files {
-		red := "unknown" // a piece from before the counts were kept
+		red := "unknown"
 		if f.Redactions != nil {
 			red = fmt.Sprint(*f.Redactions)
 		}

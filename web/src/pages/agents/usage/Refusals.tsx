@@ -1,6 +1,3 @@
-// Usage → Permission refusals: what the classifier, hooks, rules and you
-// said no to, why, and the allow rule that would let a command through.
-
 import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { ShieldAlert } from 'lucide-react'

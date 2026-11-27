@@ -13,19 +13,6 @@ import (
 	"time"
 )
 
-// The drift check (WP-559): a model reads an agent's pull request, and each
-// week's work, against the goals people approved (WP-382, WP-ADR50). It
-// flags a change that works against a goal, serves a technology choice as
-// if that were the goal, opens a direction no person asked for, or belongs
-// to a run of changes that together lead away from a goal.
-//
-// A flag tells a person, who answers "this is fine, record it as intent" or
-// "stop this". It doesn't hold the merge, and neither does the check while
-// it runs (WP-821): only a person's "stop this" does. Only that answer
-// counts: a flag is a model's read, and a "clear" is kept out of every API,
-// so a guess never reads as evidence to the agents that come after it. The
-// design is WP-ADR71.
-
 // Kinds of drift.
 const (
 	DriftContradicts = "contradicts"
@@ -54,11 +41,11 @@ const (
 )
 
 const (
-	driftWaitFor   = 15 * time.Minute // how long a check goes on before it is given up
+	driftWaitFor   = 15 * time.Minute
 	driftAttempts  = 3
-	driftRetry     = time.Minute // doubles with each failed attempt
+	driftRetry     = time.Minute
 	driftTextMax   = 24000
-	driftRecent    = 25 // finished tasks shown with a pull request
+	driftRecent    = 25
 	driftWeekItems = 120
 	driftWeekFlags = 3
 	// driftFlagsShown bounds the view; the flags on a pull request come
@@ -150,7 +137,7 @@ type driftGoal struct {
 type driftTask struct {
 	id                          int64
 	key, title, desc, grounding string
-	person                      bool // a person wrote it, approved it or called it their intent
+	person                      bool
 }
 
 // driftInput is what the model reads about one change.
@@ -159,8 +146,8 @@ type driftInput struct {
 	title, body string
 	paths       []string
 	tasks       []driftTask
-	recent      []string // finished work with how it traced
-	answers     []string // what people said to earlier flags
+	recent      []string
+	answers     []string
 }
 
 // personBehind: a person's goal or request stands behind one of the tasks,
@@ -285,7 +272,6 @@ func (in *driftInput) settle(a driftAnswer) (driftAnswer, error) {
 	case driftNone:
 		return driftAnswer{Kind: driftNone}, nil
 	case DriftUntraced, DriftTechnology:
-		// A person's task is intent (WP-ADR50), the technology it names too.
 		if in.personBehind() {
 			return driftAnswer{Kind: driftNone}, nil
 		}
@@ -312,8 +298,6 @@ func (in *driftInput) settle(a driftAnswer) (driftAnswer, error) {
 	}
 	return a, nil
 }
-
-// ---- what the check reads ----
 
 // driftGoals lists the approved goals over a project: its own, its
 // ancestors' and the global ones.
@@ -427,10 +411,8 @@ func (s *Service) prDriftInput(ctx context.Context, pr *PullRequest, projectID i
 	if err != nil {
 		return nil, err
 	}
-	s.goalsSettle(ctx) // a task just linked is traced before it is read
+	s.goalsSettle(ctx)
 	s.loadPRFiles(ctx, pr)
-	// A description the forge couldn't give isn't an empty one: the model
-	// would clear the change without reading what it says.
 	body, err := s.prBodyRead(ctx, pr)
 	if err != nil {
 		return nil, err
@@ -471,8 +453,6 @@ func driftHash(pr *PullRequest, tasks []IntentTask, body string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// ---- a pull request's check and its hold ----
-
 type prGoalCheck struct {
 	hash, verdict      string
 	flagID             int64
@@ -506,7 +486,7 @@ func driftChecked(pr *PullRequest) bool {
 // person merging now doesn't. The time is when to look again.
 func (s *Service) driftHold(ctx context.Context, pr *PullRequest, settle bool) (string, *time.Time) {
 	if pr.Outside || (pr.State != "open" && pr.State != "draft") || !driftChecked(pr) {
-		return "", nil // a stranger's is held anyway; a person's own is a person's act
+		return "", nil
 	}
 	unread := func(what string, err error) (string, *time.Time) {
 		if readFault(err) {
@@ -520,7 +500,6 @@ func (s *Service) driftHold(ctx context.Context, pr *PullRequest, settle bool) (
 		return unread("read a pull request's drift check", err)
 	}
 	if c != nil && c.verdict == driftFlag {
-		// No recheck, however its text changes: only a person's answer counts.
 		why, err := s.driftFlagHold(ctx, c.flagID)
 		if err != nil {
 			return unread("read a pull request's drift flag", err)
@@ -559,7 +538,7 @@ func (s *Service) advanceDriftCheck(ctx context.Context, pr *PullRequest, c *prG
 		return nil
 	}
 	switch ok, err := s.screenConfigured(ctx); {
-	case err != nil: // a failed lookup isn't "no model" (screenConfigured)
+	case err != nil:
 		return again("look up the drift check's model", err)
 	case !ok:
 		return nil
@@ -588,7 +567,7 @@ func (s *Service) advanceDriftCheck(ctx context.Context, pr *PullRequest, c *prG
 	}
 	nextTry := c.updated + (driftRetry << min(c.attempts, 4)).Milliseconds()
 	if now >= nextTry {
-		s.queueDriftCheck(pr.ID) // after a failure, or a restart that lost the job
+		s.queueDriftCheck(pr.ID)
 		nextTry = now + driftRetry.Milliseconds()
 	}
 	next := msTime(min(nextTry, deadline))
@@ -602,7 +581,7 @@ func (s *Service) driftFlagHold(ctx context.Context, flagID int64) (string, erro
 	var answer, goal string
 	err := s.db.R.QueryRowContext(ctx, `SELECT answer, goal_title FROM goal_drift_flags WHERE id = ?`, flagID).Scan(&answer, &goal)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil // the flag went with its project or by hand
+		return "", nil
 	}
 	if err != nil {
 		return "", err
@@ -682,7 +661,7 @@ func (s *Service) runDriftCheck(ctx context.Context, prID int64) error {
 	var ans driftAnswer
 	var model string
 	var in *driftInput
-	if len(goals) == 0 { // the last goal went while it waited
+	if len(goals) == 0 {
 		ans.Kind = driftNone
 	} else {
 		if in, err = s.prDriftInput(ctx, pr, projectID, goals); err != nil {
@@ -703,7 +682,7 @@ func (s *Service) runDriftCheck(ctx context.Context, prID int64) error {
 			return err
 		}
 		if verdict != driftPending || hash != c.hash {
-			return nil // given up on, or a newer check of a changed pull request has its place
+			return nil
 		}
 		if ans.Kind == driftNone {
 			_, err := t.ExecContext(ctx, `UPDATE pr_goal_checks SET verdict = ?, error = '', updated_at = ? WHERE pr_id = ?`, driftClear, s.nowMS(), prID)
@@ -776,8 +755,6 @@ func (s *Service) insertDriftFlag(ctx context.Context, t *tx, projectID, prID in
 	return id, nil
 }
 
-// ---- events ----
-
 // onGoalDriftEvent does what a flag or a person's answer sets off.
 func (s *Service) onGoalDriftEvent(ctx context.Context, e *Event) {
 	if e.Kind != EvGoalDrift {
@@ -789,14 +766,13 @@ func (s *Service) onGoalDriftEvent(ctx context.Context, e *Event) {
 		id, _ := e.Data["flag"].(int64)
 		s.notifyDriftFlag(context.WithoutCancel(ctx), id)
 	case DriftAnswerIntent:
-		s.goalsChanged() // its tasks are a person's requests now
+		s.goalsChanged()
 		if prID != 0 {
 			s.goBG(func() { s.maybeAutoMerge(withoutLineLocks(context.WithoutCancel(ctx)), prID) })
 		}
 	case DriftAnswerStop:
 		if prID != 0 {
 			s.goBG(func() {
-				// The hold stands either way; this takes it out of the merge line.
 				if err := s.DisarmMerge(context.WithoutCancel(ctx), SystemActor(), prID); err != nil {
 					s.log.WarnContext(ctx, "disarm a stopped pull request", "pr", prID, "err", err)
 				}
@@ -848,8 +824,6 @@ func driftHeadline(kind, goal string) string {
 	}
 	return "Traces to no person's goal."
 }
-
-// ---- what a person sees and answers ----
 
 // DriftFlagPR is the pull request a flag is about.
 type DriftFlagPR struct {
@@ -1010,7 +984,7 @@ func (s *Service) AnswerDriftFlag(ctx context.Context, actor *Actor, id int64, a
 					return err
 				}
 				if others > 0 {
-					continue // another flag's "stop" still wants it held
+					continue
 				}
 				if _, err := t.ExecContext(ctx, `UPDATE issues SET hold_at = NULL, hold_until = NULL, hold_note = '', hold_by = NULL, hold_agent = '', hold_person = 0,
 					updated_at = ? WHERE id = ?`, s.nowMS(), i.ID); err != nil {
@@ -1036,8 +1010,6 @@ func (s *Service) AnswerDriftFlag(ctx context.Context, actor *Actor, id int64, a
 func (s *Service) stopAlreadyHolds(h *Hold) bool {
 	return h.on(s.now()) && (h.Note == driftStopNote || (h.Until == nil && h.byPerson))
 }
-
-// ---- the weekly read ----
 
 type driftWeekAnswer struct {
 	Flags []struct {
@@ -1127,7 +1099,7 @@ func (s *Service) driftWeekly(ctx context.Context, projectID int64) string {
 		byKey[strings.ToUpper(r.key)] = r
 	}
 	err = s.write(ctx, SystemActor(), func(t *tx) error {
-		recorded := 0 // a flag dropped below doesn't use up the week's
+		recorded := 0
 		for _, f := range ans.Flags {
 			if recorded >= driftWeekFlags {
 				break
@@ -1135,7 +1107,6 @@ func (s *Service) driftWeekly(ctx context.Context, projectID int64) string {
 			var ids []int64
 			for _, key := range f.Items {
 				r, ok := byKey[driftItemKey(key)]
-				// A task a person asked for isn't one no person asked for.
 				if ok && !slices.Contains(ids, r.id) && (f.Kind != DriftUntraced || !personAsked(r.grounding, r.person)) {
 					ids = append(ids, r.id)
 				}

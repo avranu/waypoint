@@ -29,8 +29,6 @@ func TestKnowledgeUsageAPI(t *testing.T) {
 		t.Fatalf("term: %d %v", code, g)
 	}
 	id := itoa(int(g["id"].(float64)))
-	// The agent looks it up (by the word to avoid, over HTTP and MCP) and
-	// writes the word to avoid in a task.
 	if code, _ := agent.do("GET", "/api/v1/glossary/lookup?term=kanban&project=WID", nil); code != 200 {
 		t.Fatalf("lookup: %d", code)
 	}

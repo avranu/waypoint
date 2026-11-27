@@ -71,7 +71,7 @@ function tasksOf(repo) {
   const names = Object.keys(r.history);
   const n = r.history[names[0]].length;
   for (let k = 0; k < n; k++) {
-    let t = 22 * 60 - k * 240; // minutes ago the run was made
+    let t = 22 * 60 - k * 240;
     const number = 30 - k;
     for (const name of names) {
       const d = r.history[name][k] ?? 5;
@@ -156,7 +156,6 @@ let api, forgeID;
   const page = await signIn(ctx);
   api = (m, p, d) => page.request.fetch(base + "/api/v1" + p, { method: m, headers: H, data: d }).then((r) => (r.status() === 204 ? null : r.json()));
   await api("POST", "/projects", { name: "CI board", key: KEY });
-  // Earlier suites leave their own forges, each with a pool on the board.
   const forge = await api("POST", "/forges", { kind: "forgejo", name: "CI board forge", base_url: fake, token: "tok", webhook_secret: "e2e-ci" });
   forgeID = forge.id;
   for (const repo of Object.keys(repos)) await api("POST", `/projects/${KEY}/repos`, { forge_id: forge.id, repo, sync_issues: false });
@@ -167,7 +166,6 @@ let api, forgeID;
   const pool = b.pools.find((p) => p.forge_id === forgeID);
   ok(pool?.source === "runners" && pool.forge_runners.length === 2, `the pool comes from the forge's runners: ${pool?.source}`);
   ok(b.recent.length > 10 && b.stats.length >= 5, `a day of history: ${b.recent.length} finished, ${b.stats.length} jobs`);
-  // ctx stays open: api uses its page
 }
 
 async function look(width, scheme, edit) {
@@ -178,7 +176,6 @@ async function look(width, scheme, edit) {
   page.on("console", (m) => {
     if (m.type() === "error") fail(`${tag} console: ${m.text().slice(0, 300)}`);
   });
-  // The page scrolls inside the app shell: let it grow so the shot has all of it.
   const shot = async (name) => {
     await page.addStyleTag({ content: "html, body, #root, #root * { overflow: visible !important; } #root, #root > div { height: auto !important; }" });
     await page.screenshot({ path: `${out}/${name}-${width}-${scheme}.png`, fullPage: true });
@@ -198,7 +195,6 @@ async function look(width, scheme, edit) {
   await shot("ci");
 
   if (edit) {
-    // Set the pool: runner2 8 heavy, runner1 2, and a gpu box; then all can finish.
     const sec = page.locator("section").filter({ has: page.getByText("Runner pool · CI board forge") });
     await sec.getByRole("button", { name: "Edit" }).click();
     const caps = sec.getByLabel("Capacity");
@@ -219,7 +215,6 @@ async function look(width, scheme, edit) {
     ok(!(await page.getByText("no runner offers gpu").count()), `${tag} the gpu job is no longer stuck`);
     await shot("ci-configured");
   }
-  // The phone layout: the forecast labels sit above their bars.
   if (width < 600) await page.getByText("Forecast").first().scrollIntoViewIfNeeded();
   await ctx.close();
 }
@@ -285,7 +280,6 @@ async function lookHistory(width, scheme) {
 }
 
 try {
-  // The last look sets the pool, and is the one a PR run keeps (keep = 3).
   for (const [w, s, e] of looks([[1280, "dark", false], [390, "light", false], [390, "dark", false], [1280, "light", true]], 3)) await look(w, s, e);
   const ack = await api("POST", "/ci/report", { forge: "CI board forge", host: "e2e-host", labels: ["forgejo-ci"], capacity: 4, cpus: 8,
     memory: 17179869184, disk_total: 107374182400, disk_free: 5368709120, containers: [] });
@@ -293,7 +287,6 @@ try {
   const hb = await api("GET", "/ci");
   const host = hb.hosts?.find((h) => h.name === "e2e-host" && h.forge_id === forgeID);
   ok(host?.health === "low_disk", `the board lists the host as low on disk: ${JSON.stringify(host)}`);
-  // Host screenshots follow the same look policy; the report check above always runs.
   for (const [w, s] of looks([[1280, "light"], [390, "light"], [390, "dark"]])) await lookHosts(w, s);
   const h = await api("GET", "/ci/history?days=30");
   ok(h.since && h.repos.includes("me/app") && h.now.jobs >= 20 && h.now.runs >= 5 && h.now.run_p50 === 40 * 60,

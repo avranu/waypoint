@@ -1,17 +1,5 @@
 package core
 
-// CI time limits (WP-922). On 2026-11-11 the merge queue backed up because
-// internal/core's tests on backend shard 1 had crept up to go test's 30m
-// -timeout (an O(n²) mention sync, WP-921): each front's full run timed out
-// after half an hour, got a flake re-run and then an agent round about code
-// that wasn't its own. Nothing said the package was close to its limit
-// until it was past it. So Waypoint keeps how long each Go package took in
-// each job (from the job's log, with its test evidence), reads the limits
-// from the repo's workflows (each job's timeout-minutes and the -timeout of
-// the go test its steps run), and finds the jobs and packages that run close
-// to them: the CI doctor shows them, and an hourly check files one task per
-// repo for an agent, with the numbers and the slowest tests.
-
 import (
 	"context"
 	"encoding/json"
@@ -45,15 +33,13 @@ const (
 	workflowLimitTTL = time.Hour
 )
 
-// ---- package times from job logs ----
-
 // jobPackage is one Go package's run in a job, as go test reported it.
 type jobPackage struct {
 	pkg     string
-	outcome string // ok, fail, timeout
+	outcome string
 	ms      int64
-	limitMs int64    // timeout: the -timeout that fired
-	running []string // timeout: the tests it was running then
+	limitMs int64
+	running []string
 }
 
 var (
@@ -119,8 +105,6 @@ func goPackages(lines []string, known []string) []jobPackage {
 		}
 		stops = append(stops, st)
 	}
-	// A panic is go test's binary; the FAIL line its package's. Each panic
-	// goes to a failed package that ran at least as long as its limit.
 	for _, st := range stops {
 		for i := range out {
 			if out[i].outcome == "fail" && out[i].ms >= st.limit.Milliseconds()-1000 {
@@ -175,13 +159,11 @@ func (s *Service) keepJobPackages(ctx context.Context, forgeID int64, repo strin
 	return tx.Commit()
 }
 
-// ---- limits from workflows ----
-
 // workflowJobLimit is one workflow job's limits.
 type workflowJobLimit struct {
-	name   *regexp.Regexp // its name as the forge shows it
-	jobMs  int64          // timeout-minutes; 0 when not set
-	testMs int64          // the longest go test -timeout its steps give; 0 when it runs no go test
+	name   *regexp.Regexp
+	jobMs  int64
+	testMs int64
 }
 
 type workflowLimitCache struct {
@@ -242,8 +224,6 @@ func parseWorkflowLimits(body string) []workflowJobLimit {
 			}
 			goTest = goTest || goTestRunRE.MatchString(st.Run)
 		}
-		// go test's own default, unless it was set to one this can't read
-		// (an expression) or turned off (-timeout 0).
 		if l.testMs == 0 && goTest && !ownTimeout {
 			l.testMs = (10 * time.Minute).Milliseconds()
 		}
@@ -304,7 +284,7 @@ func (s *Service) workflowLimits(ctx context.Context, f *Forge, repo, workflow s
 	if strings.Contains(workflow, "/") {
 		paths = []string{workflow}
 	}
-	var jobs []workflowJobLimit // none when the workflow isn't there
+	var jobs []workflowJobLimit
 	for _, p := range paths {
 		body, err := rd.FileAt(ctx, f, repo, p, ref)
 		if errors.Is(err, ErrNotFound) {
@@ -312,7 +292,7 @@ func (s *Service) workflowLimits(ctx context.Context, f *Forge, repo, workflow s
 		}
 		if err != nil {
 			s.log.Debug("CI limits: read a workflow", "repo", repo, "path", p, "err", err)
-			return nil // tried again next time
+			return nil
 		}
 		jobs = parseWorkflowLimits(body)
 		break
@@ -335,8 +315,6 @@ func jobLimitOf(limits []workflowJobLimit, name string) workflowJobLimit {
 	}
 	return workflowJobLimit{}
 }
-
-// ---- finding what is close ----
 
 // ciLimit is a kind of CI job, or a Go package in one, close to its limit.
 type ciLimit struct {
@@ -476,7 +454,6 @@ func (s *Service) ciLimitsOf(ctx context.Context, f *Forge, repo string) ([]ciLi
 			continue
 		}
 		kind := evidenceKind(name)
-		// A job the forge stopped at its timeout ends a little past it.
 		add("j|"+kind+"|"+tier, ciLimit{Job: kind, Tier: tier, Limit: time.Duration(lim) * time.Millisecond}, ms, ms >= lim-30_000 && status != "success", "")
 	}
 	jobs.Close()
@@ -530,8 +507,6 @@ func (s *Service) slowestTests(ctx context.Context, forgeID int64, repo, pkg, ti
 	}
 	return out
 }
-
-// ---- the doctor and the task ----
 
 // doctorLimits adds a finding for each job or package close to its limit.
 func (s *Service) doctorLimits(ctx context.Context, d *CIDoctor, snap *ciSnapshot, visible func(int64, string) (string, bool)) error {
@@ -628,8 +603,6 @@ func (s *Service) watchCILimits(ctx context.Context, f *Forge, repo string) {
 	st.Checked = now.UnixMilli()
 	worse := level == "problem" && st.Level != "problem" || level == "warn" && st.Level == ""
 	if level != "" && (worse || now.Sub(msTime(st.Told)) >= ciLimitRetell) {
-		// Told is set only once it was filed, so a failure is tried again
-		// on the next look.
 		task, err := s.fileCILimits(ctx, f.ID, repo, level, ls, "")
 		if err != nil && readFault(err) {
 			s.log.WarnContext(ctx, "file the CI limits of a repo", "repo", repo, "err", err)
@@ -665,8 +638,6 @@ func (s *Service) fileCILimits(ctx context.Context, forgeID int64, repo, level s
 		}
 		b.WriteString(seen)
 	}
-	// One task at a time: babysits and the hourly watch file from their own
-	// goroutines.
 	defer forgeLocks.lock(fmt.Sprintf("cilimits:%d:%s", forgeID, strings.ToLower(repo)))()
 	owner := s.repoProjectOwner(ctx, forgeID, repo)
 	project, err := s.attachedProject(ctx, s.db.R, forgeID, repo)
@@ -683,8 +654,6 @@ func (s *Service) fileCILimits(ctx context.Context, forgeID int64, repo, level s
 	writer := Actor{User: u}
 	writer.textAgent = "waypoint"
 	open := s.ciLimitsTask(ctx, forgeID, repo)
-	// A run stopped by a limit: the fix cuts the merge line (WP-949), once
-	// per spell, so a person who takes the tag off keeps it off.
 	urge := level == "problem" && (open == "" || s.ciLimitUrged(ctx, forgeID, repo) != open)
 	if urge {
 		b.WriteString("\n" + ciLimitUrgeNote)

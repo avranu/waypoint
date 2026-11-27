@@ -108,8 +108,6 @@ func (ix *Index) Summary() (*Summary, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// Each file keeps its own strongest partners, so a pair can be stored
-	// from one side only: collect both directions, once per pair.
 	pr, err := ix.db.Query(`SELECT a, b, weight, support FROM cochange`)
 	if err != nil {
 		return nil, err

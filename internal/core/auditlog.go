@@ -10,9 +10,6 @@ import (
 	"time"
 )
 
-// Reading the audit log (WP-D15): newest first, filtered, paged by id, and
-// as a spreadsheet.
-
 // AuditQuery narrows the log.
 type AuditQuery struct {
 	Project  string // a project key
@@ -142,8 +139,6 @@ func (s *Service) ListAudit(ctx context.Context, actor *Actor, q AuditQuery) (*A
 	page := &AuditPage{Entries: []*AuditRecord{}}
 	users, projects := map[int64]*UserRef{}, map[int64]*AuditProject{}
 	before := q.Before
-	// An agent filter matches in Go (specs aren't SQL), so it reads in
-	// batches until the page is full.
 	size := q.Limit + 1
 	if spec != "" {
 		size = 500
@@ -151,7 +146,6 @@ func (s *Service) ListAudit(ctx context.Context, actor *Actor, q AuditQuery) (*A
 	for range auditBatches {
 		w, wa := slices.Clone(where), slices.Clone(args)
 		if before > 0 {
-			// Entries backfilled from older records aren't in id order: time decides.
 			w, wa = append(w, "(a.created_at, a.id) < (SELECT created_at, id FROM audit_log WHERE id = ?)"), append(wa, before)
 		}
 		cond := "1"
@@ -193,10 +187,9 @@ func (s *Service) ListAudit(ctx context.Context, actor *Actor, q AuditQuery) (*A
 			page.Entries = append(page.Entries, &r.AuditRecord)
 		}
 		if len(got) < size {
-			return page, nil // the start of the log
+			return page, nil
 		}
 	}
-	// Read as far as one page may: more may match further back.
 	page.NextBefore = before
 	return page, nil
 }

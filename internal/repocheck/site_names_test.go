@@ -8,8 +8,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"unicode"
 )
@@ -18,19 +20,11 @@ import (
 // file not listed may hold none. Lower a count when a file loses some; the
 // test only fails when one gains.
 var siteBaseline = map[string]int{
-	// This instance's working rules: an example of a decision's approval.
-	"AGENTS.md": 1,
-	// Names the job pool's own image repo in a comment; editing the file
-	// changes CI's image tag (build.sh hashes it), so it waits for the next
-	// image change.
+	"AGENTS.md":                    1,
 	".forgejo/ci-image/Dockerfile": 1,
-	// The public mirror's address: the GitHub workflow's header says where
-	// GitHub bills, and the runbook's gh commands (-R) must name the repo.
-	".github/workflows/ci.yml": 1,
-	"docs/DEPLOY.md":           4,
+	".github/workflows/ci.yml":     1,
+	"docs/DEPLOY.md":               4,
 }
-
-var siteWordRE = regexp.MustCompile(`[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*`)
 
 type siteHit struct {
 	line int
@@ -90,10 +84,9 @@ func siteNamesFile() string {
 
 // siteChecker finds names, given in lower case, in text.
 type siteChecker struct {
-	names map[string]bool
-	// phrases matches the names that aren't one word: issue keys as task
-	// codes, and hyphenated names. Nil when there are none.
-	phrases *regexp.Regexp
+	names       map[string]bool
+	singleNames map[string]bool
+	phrases     *regexp.Regexp
 }
 
 func isAlnum(b byte) bool { return isLower(b) || isUpper(b) || '0' <= b && b <= '9' }
@@ -113,28 +106,27 @@ func phraseAlone(line string, i, j int) bool {
 }
 
 func newSiteChecker(names map[string]bool) *siteChecker {
-	c := &siteChecker{names: map[string]bool{}}
+	c := &siteChecker{names: map[string]bool{}, singleNames: map[string]bool{}}
 	var keys, phrases []string
 	for n := range names {
-		// A leading hyphen means nothing: -ab is ab.
 		n = strings.TrimLeft(n, "-")
 		switch stem := strings.TrimRight(n, "-"); {
 		case stem == "":
-		case stem != n: // a key, even one with a hyphen in it (my-app-)
+		case stem != n:
 			keys = append(keys, regexp.QuoteMeta(stem))
 		case strings.Contains(n, "-"):
 			phrases = append(phrases, regexp.QuoteMeta(n))
 		default:
 			c.names[n] = true
+			if !strings.ContainsRune(n, '.') && !allDigits([]string{n}) {
+				c.singleNames[n] = true
+			}
 		}
 	}
 	sort.Strings(keys)
 	sort.Strings(phrases)
 	var alts []string
 	if len(keys) > 0 {
-		// A code: KEY-12, KEY#12 (a pull request), KEY-PL13 or KEY-ADR7 /
-		// KEY-ADR-0007 (a page or a decision), KEY:R-3 (a request; not
-		// group-open:rotate-90, a style).
 		alts = append(alts, `(?:`+strings.Join(keys, "|")+`)(?:[-#]?[0-9]+|-?(?:adr-?|[a-z]{1,2})[0-9]+|:[a-z]{1,3}-?[0-9]+)`)
 	}
 	if len(phrases) > 0 {
@@ -146,17 +138,73 @@ func newSiteChecker(names map[string]bool) *siteChecker {
 	return c
 }
 
+// asciiLowerInto writes the ASCII-lowercased form of s into dst (or a fresh
+// slice if s is longer than dst) without allocating on the common path.
+func asciiLowerInto(dst []byte, s string) []byte {
+	if len(s) > len(dst) {
+		dst = make([]byte, len(s))
+	} else {
+		dst = dst[:len(s)]
+	}
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if 'A' <= b && b <= 'Z' {
+			b += 'a' - 'A'
+		}
+		dst[i] = b
+	}
+	return dst
+}
+
 // hits finds the names in text: at most one a word. A camelCase word is
 // also read as its humps, so a name inside an identifier (nameFile,
 // @nameAI) counts.
 func (c *siteChecker) hits(text []byte) []siteHit {
 	var hits []siteHit
+	var lowerBuf [64]byte
 	sc := bufio.NewScanner(bytes.NewReader(text))
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for n := 1; sc.Scan(); n++ {
 		line := sc.Text()
-		for _, w := range siteWordRE.FindAllString(line, -1) {
-			if c.word(strings.ToLower(w)) || c.humps(w) {
+		for i := 0; i < len(line); {
+			if !isAlnum(line[i]) {
+				i++
+				continue
+			}
+			start := i
+			hasDot := false
+			hasHump := false
+			prevLower := isLower(line[i])
+			i++
+			for i < len(line) {
+				b := line[i]
+				if isAlnum(b) {
+					if prevLower && isUpper(b) {
+						hasHump = true
+					}
+					prevLower = isLower(b)
+					i++
+				} else if b == '.' && i+1 < len(line) && isAlnum(line[i+1]) {
+					hasDot = true
+					prevLower = false
+					i++
+				} else {
+					break
+				}
+			}
+			w := line[start:i]
+			matched := false
+			if !hasDot {
+				lb := asciiLowerInto(lowerBuf[:], w)
+				matched = c.singleNames[string(lb)]
+			} else {
+				lb := asciiLowerInto(lowerBuf[:], w)
+				matched = c.word(string(lb))
+			}
+			if !matched && hasHump {
+				matched = c.humps(w, lowerBuf[:])
+			}
+			if matched {
 				hits = append(hits, siteHit{n, w})
 			}
 		}
@@ -174,7 +222,7 @@ func (c *siteChecker) hits(text []byte) []siteHit {
 
 // humps reports whether a camelCase word has a name as one of its humps:
 // a lower-case letter followed by an upper-case one starts a new hump.
-func (c *siteChecker) humps(w string) bool {
+func (c *siteChecker) humps(w string, lowerBuf []byte) bool {
 	start, split := 0, false
 	for i := 1; i <= len(w); i++ {
 		if i < len(w) && (!isLower(w[i-1]) || !isUpper(w[i])) {
@@ -183,7 +231,13 @@ func (c *siteChecker) humps(w string) bool {
 		if i == len(w) && !split {
 			return false
 		}
-		if c.word(strings.ToLower(w[start:i])) {
+		part := w[start:i]
+		lb := asciiLowerInto(lowerBuf, part)
+		if !strings.ContainsRune(part, '.') {
+			if c.singleNames[string(lb)] {
+				return true
+			}
+		} else if c.word(string(lb)) {
 			return true
 		}
 		start, split = i, true
@@ -251,31 +305,62 @@ func TestNoSiteNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The module path is every import's prefix, not a stray mention: it
-	// changes by renaming the module (go mod edit -module), so it isn't flagged.
 	module := strings.TrimSpace(strings.TrimPrefix(strings.SplitN(string(mod), "\n", 2)[0], "module"))
 	check := newSiteChecker(names)
+	paths := strings.Split(strings.TrimRight(string(out), "\x00"), "\x00")
+	modBytes := []byte(module)
+	type fileResult struct {
+		path    string
+		count   int
+		problem string
+	}
+	results := make([]fileResult, len(paths))
+	workers := min(max(1, runtime.GOMAXPROCS(0)), len(paths))
+	jobs := make(chan int, len(paths))
+	for i := range paths {
+		jobs <- i
+	}
+	close(jobs)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			for idx := range jobs {
+				path := paths[idx]
+				text, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
+				if err != nil || bytes.IndexByte(text, 0) >= 0 {
+					continue
+				}
+				if len(modBytes) > 0 {
+					text = bytes.ReplaceAll(text, modBytes, nil)
+				}
+				hits := check.hits(text)
+				if len(hits) == 0 {
+					continue
+				}
+				res := fileResult{path: path, count: len(hits)}
+				if allowed := siteBaseline[path]; len(hits) > allowed {
+					var b strings.Builder
+					fmt.Fprintf(&b, "%s has %d, %d allowed:", path, len(hits), allowed)
+					for _, h := range hits {
+						fmt.Fprintf(&b, "\n\t%s:%d: %s", path, h.line, h.word)
+					}
+					res.problem = b.String()
+				}
+				results[idx] = res
+			}
+		}()
+	}
+	wg.Wait()
 	counts := map[string]int{}
 	var problems []string
-	for _, path := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
-		text, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
-		if err != nil || bytes.IndexByte(text, 0) >= 0 {
-			continue // deleted in the working tree, a submodule, or binary
+	for _, r := range results {
+		if r.count > 0 {
+			counts[r.path] = r.count
 		}
-		if module != "" {
-			text = bytes.ReplaceAll(text, []byte(module), nil)
-		}
-		hits := check.hits(text)
-		if len(hits) == 0 {
-			continue
-		}
-		counts[path] = len(hits)
-		if allowed := siteBaseline[path]; len(hits) > allowed {
-			p := fmt.Sprintf("%s has %d, %d allowed:", path, len(hits), allowed)
-			for _, h := range hits {
-				p += fmt.Sprintf("\n\t%s:%d: %s", path, h.line, h.word)
-			}
-			problems = append(problems, p)
+		if r.problem != "" {
+			problems = append(problems, r.problem)
 		}
 	}
 	if os.Getenv("REPOCHECK_COUNTS") != "" {
@@ -305,11 +390,11 @@ func TestSiteWord(t *testing.T) {
 		"git.example.net":          false,
 		"waypoint.example.org":     true,
 		"10.77.0.216":              true,
-		"10.77.0":                  false, // a version, not an address
+		"10.77.0":                  false,
 		"v1.10.77.0":               false,
 		"10.77.1.1":                false,
 		"robin":                    false,
-		"a.b.c.d.e.f.g.tumbleweed": false, // too many parts to try every run
+		"a.b.c.d.e.f.g.tumbleweed": false,
 	} {
 		if got := c.word(w); got != want {
 			t.Errorf("word(%q) = %v, want %v", w, got, want)
@@ -320,11 +405,15 @@ func TestSiteWord(t *testing.T) {
 		t.Errorf("hits %+v", hits)
 	}
 	for w, want := range map[string]bool{
-		"tumbleweedFile": true,
-		"newTumbleweed":  true,
-		"atumbleweedAI":  false,
-		"TUMBLEWEEDAI":   false,
-		"Tumbleweeds":    false,
+		"tumbleweedFile":       true,
+		"newTumbleweed":        true,
+		"atumbleweedAI":        false,
+		"TUMBLEWEEDAI":         false,
+		"Tumbleweeds":          false,
+		"waypoint.example.org": true,
+		"10.77.0.216":          true,
+		"git.example.net":      false,
+		"10.77.0":              false,
 	} {
 		if got := len(c.hits([]byte(w))) == 1; got != want {
 			t.Errorf("hits(%q) = %v, want %v", w, got, want)

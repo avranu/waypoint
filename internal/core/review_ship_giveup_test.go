@@ -17,7 +17,7 @@ func TestEndedRoundShipGivesUpFromItsFirstTry(t *testing.T) {
 	e.g.createErr = errors.New("forge unavailable")
 	e.shipAndCheck(r1, []string{"rejected"})
 	e.exec(`UPDATE agent_runs SET ended_at = ?, outcome = 'released' WHERE id = (SELECT run_id FROM work_log WHERE id = ?)`, e.clockNow().UnixMilli(), r1)
-	for range 52 { // 26 hours in half-hour steps
+	for range 52 {
 		e.tickAll(30 * time.Minute)
 		e.s.Wait()
 	}

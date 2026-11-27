@@ -120,7 +120,6 @@ func TestForgejoEventNames(t *testing.T) {
 			t.Errorf("%s: not reported, got %v", cond, got)
 		}
 	}
-	// Forgejo's own names, and GitHub's names under types: alone.
 	for _, cond := range []string{
 		"github.event.action == 'label_updated'",
 		"github.event.action == 'synchronized'",
@@ -134,7 +133,6 @@ func TestForgejoEventNames(t *testing.T) {
 	if got := Lint(".github/workflows/ci.yml", []byte(step("github.event.action == 'labeled'"))); slices.ContainsFunc(got, func(f Finding) bool { return f.Rule == RuleFgEvent }) {
 		t.Errorf("a GitHub workflow is right to say labeled: %v", got)
 	}
-	// Eleven uses are one fix.
 	twice := step("github.event.action == 'labeled'") + "  b:\n    if: github.event.action == 'labeled'\n    runs-on: x\n"
 	n := 0
 	for _, r := range rules(twice) {
@@ -145,7 +143,6 @@ func TestForgejoEventNames(t *testing.T) {
 	if n != 1 {
 		t.Errorf("want one finding per name per file, got %d", n)
 	}
-	// An == never holds and a != always does; each is its own mistake.
 	both := step("github.event.action == 'labeled'") + "  b:\n    if: github.event.action != 'labeled'\n    runs-on: x\n"
 	var msgs []string
 	for _, f := range Lint(".forgejo/workflows/ci.yml", []byte(both)) {

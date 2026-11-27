@@ -1,7 +1,3 @@
-// Turning the rich editor's HTML back into markdown (WP-628). Only the tags a
-// contenteditable editor makes are handled; anything else falls back to its
-// text, so pasted markup can't smuggle itself into the source.
-
 import { renderMarkdownForEdit, hasRawHtml, isPieceSrc, pieceText, PIECE_SRC } from '@/lib/markdown'
 import { PARK } from '@/lib/richinput'
 
@@ -72,7 +68,6 @@ function escapeLineStarts(s: string) {
         const indent = /^[ \t]*/.exec(line)![0]
         if (columns(indent) >= 4) line = line.slice(indent.length)
       }
-      // `>` opens a blockquote with or without a space after it.
       const m = /^(\s*)(?:(>)|(#{1,6}|[+*-])(?=\s|$)|(\d+)([.)])(?=\s|$))/.exec(line)
       if (m) {
         if (m[4] !== undefined) {
@@ -81,7 +76,6 @@ function escapeLineStarts(s: string) {
         }
         return `${m[1]}\\${m[2] ?? m[3]}${line.slice(m[0].length)}`
       }
-      // A rule may have spaces between its dashes ("- - -" is caught above).
       const rule = /^(\s*)([-=])(?:\s*\2)*\s*$/.exec(line)
       const dashes = line.split('-').length - 1
       if (rule && (!first || (rule[2] === '-' && dashes >= 3))) {
@@ -94,8 +88,6 @@ function escapeLineStarts(s: string) {
       ) {
         return line.replace(/[\\|]/g, (c) => (c === '|' ? '\\|' : c))
       }
-      // Only the opening bracket: escaping it is enough, and a [[wikilink]]
-      // later in the line stays as typed.
       const def = /^(\s*)\[[^\]]+\]:/.exec(line)
       if (def) return `${def[1]}\\${line.slice(def[1].length)}`
       return line
@@ -249,7 +241,6 @@ function serialize(node: Node, opts: Opts = {}): string {
       const code = el.querySelector('code')
       const lang = (code?.className.match(/(?:^|\s)language-(\S+)/) ?? [])[1] ?? ''
       const body = codeText(code ?? el)
-      // A table cell is one line: code pasted into one stays inline code.
       if (opts.cell) return codeSpan(oneLine(body))
       const longest = Math.max(0, ...(body.match(/`+/g) ?? []).map((r) => r.length))
       const fence = '`'.repeat(Math.max(3, longest + 1))
@@ -261,8 +252,6 @@ function serialize(node: Node, opts: Opts = {}): string {
     case 'h4':
     case 'h5':
     case 'h6':
-      // A trailing run of "#" after a space would be read as the heading's
-      // closing sequence and dropped.
       return `\n${'#'.repeat(Number(tag[1]))} ${oneLine(inner()).replace(/(^|\s)(#+)$/, '$1\\$2')}\n`
     case 'p':
     case 'div':
@@ -281,11 +270,8 @@ function serialize(node: Node, opts: Opts = {}): string {
     case 'a': {
       const href = el.getAttribute('href') ?? ''
       if (!href) return inner().trim()
-      // A link with no text shows its address, as an autolink would.
       const own = escapeText(href, { label: true })
       const label = inner({ ...opts, label: true }).trim() || own
-      // One that reads as its own address is an autolink; autolinks() picks
-      // its form once its neighbours are known.
       if (label === own && AUTOLINK.test(href)) return `\0${href}\0`
       return `[${label}](${target(href)})`
     }
@@ -303,7 +289,6 @@ function serialize(node: Node, opts: Opts = {}): string {
       return '\n---\n'
     case 'table':
       return `\n${table(el)}\n`
-    // Their text is code or markup, not words the reader sees.
     case 'input':
     case 'script':
     case 'style':
@@ -365,9 +350,6 @@ function blocksOf(nodes: Node[], opts: Opts = {}) {
   let run = ''
   let afterBlock = false
   let piece: string | null = null
-  // Inline text gets a blank line from a block on either side, so neither
-  // joins the other: text right above a rule would become a setext heading,
-  // and text right under a paragraph, quote or list would continue it.
   const text = (beforeBlock: boolean) =>
     run.trim()
       ? `${afterBlock ? '\n' : ''}${escapeLineStarts(run)}${beforeBlock ? '\n' : ''}`
@@ -422,20 +404,12 @@ function list(el: HTMLElement, opts: Opts = {}): string {
       }
       own.push(c)
     }
-    // Inline text is line-start escaped and blocks (a paragraph, code, a
-    // quote) are kept as they are, as anywhere else.
     let body = blocksOf(own, opts).trim()
-    // A literal "[ ]" opening a bullet would become a task box.
     if (!box && /^\[[ xX]\]/.test(body)) body = `\\${body}`
     const bare = ordered ? `${n++}.` : '-'
     const marker = box ? `${bare} [${box.checked ? 'x' : ' '}]` : bare
-    // Chromium's indent writes the sub-list as a sibling of the item, straight
-    // inside the outer list; it belongs to the item before it.
     for (let k = at + 1; k < kids.length && isListTag(kids[k]); k++)
       nested.push(kids[k] as HTMLElement)
-    // Nested content lines up with the parent's text: marker width + 1.
-    // Lines after the first are indented by that too, or a second paragraph
-    // or a code block would end the item.
     const pad = ' '.repeat(bare.length + 1)
     body = body
       .split('\n')

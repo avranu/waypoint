@@ -1,9 +1,3 @@
-// Agents page, Queue tab (WP-D15): what each agent will take next, in
-// order, and why other delegated work waits. Tasks follow the automatic
-// order (one score: priority, due date, unblocks, delegated, bug, planned, size, age; WP-997) exactly as wp next reads
-// it; people hold a task in a place of their own by dragging it there (WP-87):
-// only that task is pinned, the rest keep flowing around it.
-
 import { useMemo, useState, type ReactNode } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -197,8 +191,6 @@ function queueTitle(q?: AgentQueue) {
   return `Queue for ${q.agent}`
 }
 
-// ---- pauses ----
-
 function Banners({
   queue,
   name,
@@ -327,8 +319,6 @@ function PauseControl({ spec, pauses }: { spec: string; pauses: AgentPause[] }) 
   )
 }
 
-// ---- working now ----
-
 function Working({
   items,
   editable,
@@ -395,8 +385,6 @@ function Working({
   )
 }
 
-// ---- up next ----
-
 function UpNext({
   queue,
   agent,
@@ -449,22 +437,15 @@ function UpNext({
   }
   const onStart = (e: DragStartEvent) =>
     setActive(items.find((i) => i.issue.key === e.active.id) ?? null)
-  // The pins at the head of the queue, one after another: Prioritize puts a
-  // task right after them (WP-753).
   const head = items.findIndex((i) => !i.pinned)
   const pinsAtTop = head < 0 ? items.length : head
   const toTop = (key: string, n: number) => place(key, 1, arrayMove(ids, n, 0))
   const menu = (it: QueueItem, n: number): MenuItem[] => {
     const key = it.issue.key
     const out: MenuItem[] = []
-    // The row has its own Move to top button, but not on a phone.
     if (n > 0 && narrow)
       out.push({ label: 'Move to top', icon: <ArrowUpToLine />, onSelect: () => toTop(key, n) })
-    // Past the pins ahead of it: n counts this task's own pin out, as it
-    // isn't among them.
     const after = n < pinsAtTop ? n : pinsAtTop
-    // A task already right after them is pinned where it is. On a phone,
-    // with no pins, Move to top above says the same thing.
     const moves = n > after || (n === after && !it.pinned)
     if (moves && !(narrow && after === 0 && n > 0))
       out.push({
@@ -494,8 +475,6 @@ function UpNext({
           onDragCancel={() => setActive(null)}
         >
           <SortableContext items={ids} strategy={verticalListSortingStrategy}>
-            {/* No scroll anchoring in the list: the browser would keep the
-                task you just moved in view and scroll the page after it (WP-753). */}
             <ol aria-label="Up next, in order" className="[overflow-anchor:none]">
               {items.map((it, n) => {
                 const can = editable(it.issue.project_key)
@@ -577,8 +556,6 @@ function QueueRow({
     id: item.issue.key,
     disabled: !editable,
   })
-  // The whole row drags by pointer or touch; the keyboard drags from the
-  // grip, so Enter and Space still reach the links and buttons in the row.
   return (
     <li
       ref={setNodeRef}
@@ -852,8 +829,6 @@ function IssueTitle({ issue }: { issue: Issue }) {
   )
 }
 
-// ---- waiting ----
-
 const WAITS: { reason: WaitReason; title: string; about: string }[] = [
   {
     reason: 'safety',
@@ -1070,7 +1045,6 @@ function WaitRow({ item: it, editable }: { item: QueueItem; editable: boolean })
             it.reason === 'hold' ||
             it.reason === 'objective' ||
             it.reason === 'released' ? (
-            // Only these say more than their group's heading does.
             <span className="text-muted">{it.detail}</span>
           ) : it.reason === 'backlog' ? (
             <span>{i.status.name}</span>
@@ -1093,8 +1067,6 @@ function WaitRow({ item: it, editable }: { item: QueueItem; editable: boolean })
     </li>
   )
 }
-
-// ---- adding work ----
 
 /** Finds an open issue not yet for agents and delegates it, optionally pinned to the top. */
 function AddWork({

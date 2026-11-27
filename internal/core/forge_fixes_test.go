@@ -9,8 +9,6 @@ import (
 	"testing"
 )
 
-// Regressions from the forge review (docs/audits: 2026-10-12 Haiku review).
-
 func (e *env) syncedRepo(f *Forge, project, repo string) int64 {
 	e.t.Helper()
 	r, err := e.s.AddProjectRepo(e.ctx, e.admin, project, f.ID, repo, true)
@@ -193,7 +191,6 @@ func TestForgeCommentEditsAndDeletes(t *testing.T) {
 		t.Errorf("delete didn't reach the forge: %+v", fc)
 	}
 
-	// A forge user's comment deleted here stays on the forge and stays gone.
 	if err := e.hook(f, "issue_comment", ghComment("me/web", 3, 501, "created", "pasted a secret", "bob")); err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +277,6 @@ func TestForgeDetachedRepoStaysDetached(t *testing.T) {
 	if projects != 1 {
 		t.Errorf("webhook made another project: %d", projects)
 	}
-	// Attaching it by hand works and lifts the block.
 	if _, err := e.s.AddProjectRepo(e.ctx, e.admin, key, f.ID, "me/web", true); err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +314,6 @@ func TestForgeDiscoverPickAndDelete(t *testing.T) {
 	if e.s.db.R.QueryRow(`SELECT count(*) FROM projects`).Scan(&projects); projects != 0 {
 		t.Fatalf("preview made %d projects", projects)
 	}
-	// Names the forge didn't report are ignored.
 	n, err := e.s.DiscoverRepos(e.ctx, e.admin, f.ID, &RepoPick{Repos: []string{"ACME/web", "evil/x"}, Skip: []string{"me/notes", "evil/y"}})
 	e.s.Wait()
 	if err != nil || n != 1 {
@@ -331,11 +326,9 @@ func TestForgeDiscoverPickAndDelete(t *testing.T) {
 	if e.s.db.R.QueryRow(`SELECT count(*) FROM forge_repo_ignores`).Scan(&ignores); ignores != 1 {
 		t.Errorf("ignores = %d, want me/notes", ignores)
 	}
-	// acme/api was neither picked nor skipped: still offered.
 	if preview, _ = e.s.PreviewDiscover(e.ctx, e.admin, f.ID); len(preview) != 1 || preview[0].Repo != "acme/api" || preview[0].NewNamespace {
 		t.Errorf("preview after = %+v", preview)
 	}
-	// Deleting the web project keeps acme/web from coming back.
 	var key string
 	e.s.db.R.QueryRow(`SELECT p.key FROM projects p JOIN project_repos r ON r.project_id = p.id WHERE r.repo = 'acme/web'`).Scan(&key)
 	if err := e.s.DeleteProject(e.ctx, e.admin, key); err != nil {
@@ -348,6 +341,52 @@ func TestForgeDiscoverPickAndDelete(t *testing.T) {
 	e.s.db.R.QueryRow(`SELECT count(*) FROM project_repos WHERE repo = 'acme/web'`).Scan(&n)
 	if n != 0 {
 		t.Errorf("deleted project's repo came back")
+	}
+}
+
+// Deleting a hand-made project ignores its repos too, unless another project
+// still has them; attaching one by hand lifts the ignore.
+func TestForgeDeleteHandMadeProjectIgnoresRepos(t *testing.T) {
+	e := newEnv(t)
+	mem := newMemForge()
+	e.s.Forges = mem
+	f := e.forge("github", "", false)
+	mem.repos[f.ID] = []ForgeRepo{{Path: "me/web"}, {Path: "me/shared"}}
+	ignores := func() (n int) {
+		e.s.db.R.QueryRow(`SELECT count(*) FROM forge_repo_ignores`).Scan(&n)
+		return n
+	}
+	a, b, c := e.project(e.admin, "Alpha", "kanban"), e.project(e.admin, "Beta", "kanban"), e.project(e.admin, "Gamma", "kanban")
+	for _, add := range []struct {
+		p    *Project
+		repo string
+	}{{a, "me/web"}, {a, "me/shared"}, {b, "me/shared"}} {
+		if _, err := e.s.AddProjectRepo(e.ctx, e.admin, add.p.Key, f.ID, add.repo, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.s.Wait()
+	if err := e.s.DeleteProject(e.ctx, e.admin, a.Key); err != nil {
+		t.Fatal(err)
+	}
+	e.s.Wait()
+	var repo string
+	if err := e.s.db.R.QueryRow(`SELECT repo FROM forge_repo_ignores`).Scan(&repo); err != nil || repo != "me/web" || ignores() != 1 {
+		t.Fatalf("ignores = %d (%q, %v), want only me/web (me/shared is still on Beta)", ignores(), repo, err)
+	}
+	preview, err := e.s.PreviewDiscover(e.ctx, e.admin, f.ID)
+	if err != nil || len(preview) != 0 {
+		t.Errorf("preview offers %+v, %v", preview, err)
+	}
+	if n, err := e.s.DiscoverRepos(e.ctx, e.admin, f.ID, nil); err != nil || n != 0 {
+		t.Errorf("discover attached %d, %v", n, err)
+	}
+	if _, err := e.s.AddProjectRepo(e.ctx, e.admin, c.Key, f.ID, "me/web", true); err != nil {
+		t.Fatal(err)
+	}
+	e.s.Wait()
+	if ignores() != 0 {
+		t.Errorf("ignore kept after attaching by hand")
 	}
 }
 

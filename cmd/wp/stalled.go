@@ -16,34 +16,15 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Stalled background jobs (WP-605, WP-ADR97). Claude Code runs a
-// background Bash command as `bash -c` with its output going to
-// `<tmp>/<project>/<session>/tasks/<id>.output`, so the processes holding
-// that file open are the job, and the path names the session that owns it.
-// The runner looks at its machine's jobs each minute, from /proc only (it
-// never signals or touches a job), and reports one that has made no
-// progress for a while: no output, no CPU or reads and writes by a lasting
-// process, and too little CPU for real work among the short-lived ones. A
-// Waypoint waiter (`wp pr wait`, `wp slot run`, ...) that waits with
-// nothing under it isn't reported. Waypoint decides whether and when to
-// tell the session.
-//
-// With a Waypoint that applies its stall policy (WP-1045, WP-ADR118: its
-// answer says policy 2), the runner reports every job quiet for its floor
-// (stallFloor), again when Waypoint asks (again_in) while it stays quiet,
-// and once more when it moves again or ends (settled). With an older one it
-// reports once a job that has run 30 minutes and made no progress for 15,
-// and skips one bounded by a timeout under an hour.
-
 const (
-	stallFloor    = 5 * time.Minute  // with policy 2: no job is reported sooner
-	stallMinAge   = 30 * time.Minute // older Waypoints: younger jobs aren't looked at
-	stallQuiet    = 15 * time.Minute // older Waypoints: no progress this long is a stall
-	stallTimeout  = time.Hour        // older Waypoints: a whole-job timeout under this ends it soon enough
+	stallFloor    = 5 * time.Minute
+	stallMinAge   = 30 * time.Minute
+	stallQuiet    = 15 * time.Minute
+	stallTimeout  = time.Hour
 	stallEvery    = time.Minute
-	clockTicks    = 100 // USER_HZ: /proc's CPU times are in these on every Linux port Go supports
-	stallWorkCPU  = 20  // ticks a lasting process uses in a look that count as work
-	stallBurstCPU = 10  // seconds a minute short-lived processes use that count as work
+	clockTicks    = 100
+	stallWorkCPU  = 20
+	stallBurstCPU = 10
 )
 
 // procEntry is one process as /proc shows it.
@@ -51,13 +32,13 @@ type procEntry struct {
 	pid, ppid, pgrp int
 	comm            string
 	args            []string
-	start           uint64 // clock ticks after boot
-	own             uint64 // utime+stime
-	cpu             uint64 // own plus its reaped children's (cutime+cstime)
-	io              uint64 // rchar+wchar
+	start           uint64
+	own             uint64
+	cpu             uint64
+	io              uint64
 	ioKnown         bool
-	mine            bool     // its fds are readable: this user's (or root's view)
-	outs            []string // Claude Code task output files it holds open
+	mine            bool
+	outs            []string
 }
 
 // shell: a shell, or a script one runs (`./wait.sh` shows its script's
@@ -176,8 +157,6 @@ func parseProcStat(s string) *procEntry {
 		return nil
 	}
 	f := strings.Fields(s[end+1:])
-	// f[0] is field 3 (state): ppid 4, pgrp 5, utime 14, stime 15,
-	// cutime 16, cstime 17, starttime 22.
 	if len(f) < 20 {
 		return nil
 	}
@@ -246,7 +225,7 @@ func findJobs(t *procTable) []*bgJob {
 	for _, p := range t.procs {
 		for _, o := range p.outs {
 			if parent := t.procs[p.ppid]; parent != nil && slices.Contains(parent.outs, o) {
-				continue // its parent holds it too: not the top
+				continue
 			}
 			if cur := byOut[o]; cur == nil || p.start < cur.start || (p.start == cur.start && p.pid < cur.pid) {
 				byOut[o] = p
@@ -322,8 +301,6 @@ func timeoutBound(cmd string) time.Duration {
 		}
 		main = append(main, c)
 	}
-	// Anything else at the top level (a list, a pipe) runs outside it; the
-	// commands of its own substitutions are in its subs.
 	if len(main) != 1 || len(main[0].words) == 0 || filepath.Base(main[0].words[0]) != "timeout" {
 		return 0
 	}
@@ -332,7 +309,7 @@ func timeoutBound(cmd string) time.Duration {
 		a := w[0]
 		w = w[1:]
 		if (a == "-s" || a == "-k" || a == "--signal" || a == "--kill-after") && len(w) > 0 {
-			w = w[1:] // its value
+			w = w[1:]
 		}
 	}
 	if len(w) < 2 {
@@ -365,8 +342,8 @@ func parseTimeoutDuration(s string) time.Duration {
 // pgrepUse is a pgrep or pkill in a command and the pattern it looks for.
 type pgrepUse struct {
 	tool, pattern string
-	exact         bool // -x: the pattern must match the whole text
-	full          bool // -f: the pattern is matched against whole command lines
+	exact         bool
+	full          bool
 }
 
 // pgrepValueFlags take a value: the rest of their word (`-unobody`), or the
@@ -417,7 +394,6 @@ func pgrepUses(cmd string) []pgrepUse {
 				case strings.HasPrefix(a, "--"):
 				case tool == "pkill" && pkillSignalRE.MatchString(a):
 				case strings.HasPrefix(a, "-") && len(a) > 1:
-					// A cluster (-fa, -fu nobody): it ends at a flag that takes a value.
 					for i, r := range a[1:] {
 						if r == 'f' {
 							u.full = true
@@ -494,7 +470,7 @@ func topAlternatives(re string) []string {
 		case c == '[':
 			class = true
 			if i+1 < len(re) && re[i+1] == ']' {
-				i++ // `[]…]`: the ] is in the class
+				i++
 			}
 		case c == '(':
 			depth++
@@ -534,8 +510,6 @@ func bracketFirst(re string) string {
 // ended). Empty when there is nothing to say.
 func pgrepSelfNudge(cmd string) string {
 	for _, u := range pgrepUses(cmd) {
-		// The shell's command line, near enough: the command follows
-		// `bash -c`, so an anchored pattern (^node) doesn't match it.
 		if !u.full || strings.ContainsRune(u.pattern, '\'') || !u.matches("/bin/bash -c "+cmd) {
 			continue
 		}
@@ -557,9 +531,9 @@ func pgrepSelfNudge(cmd string) string {
 // jobSample is what a look saw of one job.
 type jobSample struct {
 	at     time.Time
-	cpu    uint64             // the whole subtree's, reaped children included
-	procs  map[procKey]uint64 // lasting work's own CPU, by process
-	io     map[procKey]uint64 // and its reads and writes
+	cpu    uint64
+	procs  map[procKey]uint64
+	io     map[procKey]uint64
 	outLen int64
 	outMod time.Time
 }
@@ -568,15 +542,15 @@ type jobSample struct {
 type stallWatch struct {
 	session  string
 	task     string
-	first    time.Time // first look
-	moved    time.Time // the last look that saw progress
+	first    time.Time
+	moved    time.Time
 	prev     *jobSample
-	comeback map[string]int // short-lived commands seen new at a look, by name: a polling loop's
-	watched  int            // looks after the first
-	reported bool           // reported in this quiet spell (unreport: report it again)
-	sent     bool           // with policy 2: Waypoint heard of this spell, so hears how it ends
-	due      time.Time      // with policy 2: report it again from then
-	said     string         // Waypoint's last outcome, logged once
+	comeback map[string]int
+	watched  int
+	reported bool
+	sent     bool
+	due      time.Time
+	said     string
 }
 
 // stalledJob is a job the runner reports: what it asks Waypoint to tell
@@ -605,12 +579,10 @@ type settledJob struct {
 
 // stallWatcher looks at a machine's background jobs.
 type stallWatcher struct {
-	jobs map[string]*stallWatch // by output file and root
-	// policy: 2 once Waypoint said it applies its stall policy; probed is
-	// when the runner last asked.
+	jobs    map[string]*stallWatch
 	policy  int
 	probed  time.Time
-	settled []settledJob // to report
+	settled []settledJob
 }
 
 func newStallWatcher() *stallWatcher { return &stallWatcher{jobs: map[string]*stallWatch{}} }
@@ -677,7 +649,7 @@ func (w *stallWatcher) look(t *procTable, stat func(string) (os.FileInfo, error)
 			sw.watched++
 			if progressed(sw.prev, cur) || waiter != "" {
 				sw.moved = t.at
-				if w.policy >= 2 && (sw.reported || sw.sent) { // older Waypoints get one report per job // sent: Waypoint heard of it, though a failed report was to be retried
+				if w.policy >= 2 && (sw.reported || sw.sent) {
 					w.settle(sw, "progress")
 				}
 			}
@@ -692,7 +664,6 @@ func (w *stallWatcher) look(t *procTable, stat func(string) (os.FileInfo, error)
 		if sw.moved.After(quietFrom) {
 			quietFrom = sw.moved
 		}
-		// Watched from its start, so one quiet since minute 15 is reported at 30.
 		minAge, quiet, again := stallMinAge, stallQuiet, !sw.reported
 		if w.policy >= 2 {
 			minAge, quiet, again = stallFloor, stallFloor, !t.at.Before(sw.due)
@@ -706,7 +677,6 @@ func (w *stallWatcher) look(t *procTable, stat func(string) (os.FileInfo, error)
 			if bound > 0 {
 				r.Timeout = max(int(bound.Minutes()), 1)
 			}
-			// Until Waypoint's answer says when.
 			sw.sent, sw.due = true, t.at.Add(stallAgainMax)
 		}
 		marked = append(marked, sw)
@@ -715,7 +685,7 @@ func (w *stallWatcher) look(t *procTable, stat func(string) (os.FileInfo, error)
 	for id, sw := range w.jobs {
 		if !seen[id] {
 			w.settle(sw, "ended")
-			delete(w.jobs, id) // it ended
+			delete(w.jobs, id)
 		}
 	}
 	return out

@@ -92,7 +92,6 @@ func TestPlanStoryWrittenAndKept(t *testing.T) {
 		t.Fatalf("story prompts: %q", got)
 	}
 
-	// The agent can't write the story; the rest of its edit goes through.
 	mine, title := "As an agent, I want my plan approved.", "Faster boards"
 	got, err := e.s.UpdatePage(e.ctx, ag, pg.ID, PageInput{Story: &mine, Title: &title})
 	if err != nil {
@@ -102,7 +101,6 @@ func TestPlanStoryWrittenAndKept(t *testing.T) {
 		t.Fatalf("agent's story edit: notice %q story %q title %q", got.Notice, got.Story, got.Title)
 	}
 
-	// Approving the plan keeps the story: it is the person's now.
 	if n, err := e.s.Review(e.ctx, e.admin, ReviewPage, itoa64(pg.ID), p.Key); err != nil || n != 1 {
 		t.Fatalf("review: %d %v", n, err)
 	}
@@ -111,8 +109,6 @@ func TestPlanStoryWrittenAndKept(t *testing.T) {
 		t.Fatalf("after review: agent %q by %+v model %q unreviewed %v", pg.StoryAgent, pg.StoryBy, pg.StoryModel, pg.Unreviewed)
 	}
 
-	// The agent rewrites the plan: the person's story stays, marked stale,
-	// and no model replaces it.
 	body := longPlan("two")
 	if _, err := e.s.UpdatePage(e.ctx, ag, pg.ID, PageInput{Body: &body}); err != nil {
 		t.Fatal(err)
@@ -125,7 +121,6 @@ func TestPlanStoryWrittenAndKept(t *testing.T) {
 	if len(llm.asked()) != 1 {
 		t.Fatalf("a person's story was rewritten: %d prompts", len(llm.asked()))
 	}
-	// Approving it again keeps it against the new plan; the page counts once.
 	if n, err := e.s.Review(e.ctx, e.admin, ReviewPage, itoa64(pg.ID), p.Key); err != nil || n != 1 {
 		t.Fatalf("second review: %d %v", n, err)
 	}
@@ -136,7 +131,6 @@ func TestPlanStoryWrittenAndKept(t *testing.T) {
 		t.Fatalf("a review with nothing new counted %d", n)
 	}
 
-	// A person's own words: their story, no model.
 	own := "  As the owner, I want boards to keep up.  "
 	pg, err = e.s.UpdatePage(e.ctx, e.admin, pg.ID, PageInput{Story: &own})
 	if err != nil {
@@ -149,7 +143,6 @@ func TestPlanStoryWrittenAndKept(t *testing.T) {
 		t.Fatal("suggesting over a person's story should be refused")
 	}
 
-	// Clearing it has the model suggest one again.
 	empty := ""
 	if _, err = e.s.UpdatePage(e.ctx, e.admin, pg.ID, PageInput{Story: &empty}); err != nil {
 		t.Fatal(err)
@@ -158,12 +151,9 @@ func TestPlanStoryWrittenAndKept(t *testing.T) {
 	if pg = e.page(e.admin, pg.ID); pg.Story != wantStory || pg.StoryAgent != storyAgent || pg.StoryBy != nil {
 		t.Fatalf("after clearing: %q agent %q by %+v", pg.Story, pg.StoryAgent, pg.StoryBy)
 	}
-	// Asking again over a suggestion writes a new one.
 	if pg, err = e.s.SuggestStory(e.ctx, e.admin, pg.ID); err != nil || pg.Story != wantStory || pg.StoryAgent != storyAgent {
 		t.Fatalf("suggested again: %v %+v", err, pg)
 	}
-	// A person keeps a suggestion by sending it back unchanged: the model
-	// that wrote it stays on record.
 	keep := pg.Story
 	if pg, err = e.s.UpdatePage(e.ctx, e.admin, pg.ID, PageInput{Story: &keep}); err != nil || !pg.StoryIsPersons() || pg.StoryModel == "" {
 		t.Fatalf("kept: %v agent %q model %q", err, pg.StoryAgent, pg.StoryModel)
@@ -216,13 +206,12 @@ func TestPlanStoryOnlyForLongAgentPlans(t *testing.T) {
 	if n := len(llm.asked()); n != 0 {
 		t.Fatalf("the story model was asked %d times", n)
 	}
-	// The sweep fills in long agent plans from before stories.
 	e.s.db.W.Exec(`UPDATE pages SET text_agent = 'anthropic/claude-code' WHERE id = ?`, draft.ID)
 	if _, err := e.s.PublishPage(e.ctx, e.admin, draft.ID); err != nil {
 		t.Fatal(err)
 	}
 	e.s.Wait()
-	e.s.db.W.Exec(`UPDATE pages SET story = '', story_tried = 0 WHERE id = ?`, draft.ID) // as from before stories
+	e.s.db.W.Exec(`UPDATE pages SET story = '', story_tried = 0 WHERE id = ?`, draft.ID)
 	e.s.sweepStories(e.ctx)
 	e.s.Wait()
 	if e.page(e.admin, draft.ID).Story != wantStory {
@@ -317,13 +306,12 @@ func TestPlanStorySweepMovesOn(t *testing.T) {
 	e, p, llm := storyEnv(t)
 	ag := agentActor(e.admin, "anthropic/claude-code")
 	llm.mu.Lock()
-	llm.answer.IWant = "" // every story comes back empty
+	llm.answer.IWant = ""
 	llm.mu.Unlock()
 	for i := range storySweepMax + 2 {
 		e.plan(ag, p, "Plan "+itoa64(int64(i)), longPlan(itoa64(int64(i))))
 	}
 	asked := len(llm.asked())
-	// Just tried: the sweep leaves them for a day.
 	e.s.sweepStories(e.ctx)
 	e.s.Wait()
 	if n := len(llm.asked()) - asked; n != 0 {
@@ -363,7 +351,6 @@ func TestPlanStoryReviewRecord(t *testing.T) {
 		return ""
 	}
 
-	// Approved with a story: on its story.
 	pg := e.plan(ag, p, "Fast boards", longPlan("one"))
 	if _, err := e.s.Review(e.ctx, e.admin, ReviewPage, itoa64(pg.ID), p.Key); err != nil {
 		t.Fatal(err)
@@ -379,8 +366,6 @@ func TestPlanStoryReviewRecord(t *testing.T) {
 		t.Fatal("rewriting the story later lost that the plan was approved on it")
 	}
 
-	// Approved line by line before it had a story: the text was reviewed,
-	// and a story added later doesn't change that.
 	llm.mu.Lock()
 	llm.answer.IWant = ""
 	llm.mu.Unlock()
@@ -395,7 +380,6 @@ func TestPlanStoryReviewRecord(t *testing.T) {
 		t.Fatalf("a story added after a line-by-line review: on story %v", pg.ReviewedOnStory)
 	}
 
-	// Keeping only the story of a reviewed plan says so.
 	e.s.db.W.Exec(`UPDATE pages SET body = ? WHERE id = ?`, longPlan("three"), pg.ID)
 	if n, err := e.s.Review(e.ctx, e.admin, ReviewPage, itoa64(pg.ID), p.Key); err != nil || n != 1 {
 		t.Fatalf("keeping a stale story: %d %v", n, err)
@@ -404,7 +388,6 @@ func TestPlanStoryReviewRecord(t *testing.T) {
 		t.Fatalf("audit: %q", d)
 	}
 
-	// Lists show a stale person's story as the page does.
 	e.s.db.W.Exec(`UPDATE pages SET body = ? WHERE id = ?`, longPlan("four"), pg.ID)
 	list, err := e.s.ListPages(e.ctx, e.admin, PageQuery{Project: p.Key})
 	if err != nil {

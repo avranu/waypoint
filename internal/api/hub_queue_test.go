@@ -45,7 +45,6 @@ func TestAgentQueueAPI(t *testing.T) {
 		t.Errorf("queue text: %d %s", code, b)
 	}
 
-	// Paused: next answers in words, not with an error.
 	if code, b := human.do("POST", "/api/v1/agents/pauses", map[string]any{"spec": "claude", "note": "lunch"}); code != 200 {
 		t.Fatalf("pause: %d %s", code, b)
 	}
@@ -61,7 +60,6 @@ func TestAgentQueueAPI(t *testing.T) {
 	if code != 200 || !strings.HasPrefix(string(b), `WID-2 "Second" by `) || !strings.Contains(string(b), "\nPinned at #1 by robin") {
 		t.Errorf("next: %d %s", code, b)
 	}
-	// A person takes it back.
 	if code, b := human.do("POST", "/api/v1/agents/release/WID-2", nil); code >= 300 {
 		t.Errorf("release: %d %s", code, b)
 	}

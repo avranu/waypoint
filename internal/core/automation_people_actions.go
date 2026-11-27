@@ -9,11 +9,6 @@ import (
 	"time"
 )
 
-// Asking a person from an automation (WP-D18, WP-D16): ask_person makes a
-// request for them and waits for their decision, create_request makes one
-// and carries on. The request is the person's own in their inbox; the
-// automation never decides it.
-
 var askKinds = opts(RequestQuestion, "A question", RequestAction, "Something only they can do")
 
 // autoRequestKey names the request a step made, so a step run twice finds it.
@@ -77,7 +72,6 @@ func (c *StepCtx) makeRequest(slot int) (id int64, err error) {
 		}
 		in.Questions = []Question{q}
 	case RequestAction:
-		// An action is a step only the person can do; the request is the note.
 	default:
 		return 0, invalid("a person can be asked a question or to do something")
 	}
@@ -167,7 +161,6 @@ func askPerson(c *StepCtx) error {
 		return err
 	}
 	if timedOut {
-		// Nobody answered: take the request back so it doesn't linger.
 		if who, aerr := c.asker(c.requestUser(id)); aerr == nil {
 			if _, werr := c.S.WithdrawRequest(c.Ctx, who, itoa64(id), "Nobody answered in time."); werr != nil {
 				c.Logf("couldn't withdraw the request: %v", werr)

@@ -24,8 +24,6 @@ import (
 	"time"
 )
 
-// Audits the LLM gateway runs, as the runner sees them (WP-617).
-
 // unpack lists a packed checkout: each file's name, mode and content.
 func unpack(t *testing.T, packed []byte) map[string]string {
 	t.Helper()
@@ -67,7 +65,6 @@ func TestPackCheckout(t *testing.T) {
 	write("vendor/mod/.git", "gitdir: ../../.git/modules/mod\n", 0o600)
 	write("vendor/mod/m.go", "package mod\n", 0o600)
 	write(".waypoint-audit/change.diff", "+new\n", 0o600)
-	// Nothing outside the checkout comes along through a link.
 	outside := filepath.Join(t.TempDir(), "secret")
 	if err := os.WriteFile(outside, []byte("a key"), 0o600); err != nil {
 		t.Fatal(err)
@@ -78,7 +75,6 @@ func TestPackCheckout(t *testing.T) {
 	if err := os.Symlink(filepath.Dir(outside), filepath.Join(work, "linked-dir")); err != nil {
 		t.Fatal(err)
 	}
-	// A file past the gateway's limit for one stays out, and is named.
 	big, err := os.Create(filepath.Join(work, "data.bin"))
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +112,6 @@ func TestPackCheckout(t *testing.T) {
 		t.Error("the list was written into the checkout")
 	}
 
-	// More than the gateway takes in all: said so, not sent short.
 	noise := make([]byte, 64<<10)
 	for i := range noise {
 		noise[i] = byte(i*7 + i>>8*13 + i>>3)
@@ -134,7 +129,7 @@ func TestPackCheckout(t *testing.T) {
 // and each question is answered with, in turn (the last answer stays).
 type fakeRelay struct {
 	mu      sync.Mutex
-	starts  []any // a gatewayTaskView, or an int: that HTTP status
+	starts  []any
 	polls   []any
 	prompts []string
 	packed  [][]byte
@@ -234,7 +229,7 @@ func TestGatewayAuditJob(t *testing.T) {
 		},
 		polls: []any{
 			gatewayTaskView{ID: "task_1", Status: "queued"},
-			http.StatusBadGateway, // Waypoint restarting: the task runs on
+			http.StatusBadGateway,
 			gatewayTaskView{ID: "task_1", Status: "unknown", ErrorKind: "unreachable", RetryAfter: 30},
 			gatewayTaskView{ID: "task_1", Status: "running"},
 			gatewayTaskView{ID: "task_1", Status: "succeeded", Model: "deepseek/deepseek-v4.1-flash", Text: "(as JSON)", JSON: findings, InputTokens: 9000, OutputTokens: 700, CostUSD: 0.002},
@@ -301,7 +296,7 @@ func TestGatewayAuditJobFailures(t *testing.T) {
 		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		p := newTestProc(t)
-		if err := os.MkdirAll(p.cacheDir(), 0o750); err != nil { // the checkout's making leaves it there
+		if err := os.MkdirAll(p.cacheDir(), 0o750); err != nil {
 			t.Fatal(err)
 		}
 		o := p.execGatewayAudit(ctx, run, agentJob{CLI: gatewayCLI, Model: "audit", Prompt: "Audit it."}, work, nil, map[string]any{"cli": gatewayCLI})
@@ -339,7 +334,6 @@ func TestGatewayAuditJobFailures(t *testing.T) {
 			}
 		})
 	}
-	// What the failed task did say is kept for the audit.
 	t.Run("the answer is kept", func(t *testing.T) {
 		_, res, _ := exec(t, &fakeRelay{starts: []any{taken}, polls: []any{gatewayTaskView{ID: "task_1", Status: "failed", Model: "cerebras/gpt-oss-120b", ErrorKind: "invalid_output", Text: "I found nothing."}}},
 			context.Background(), time.Minute)
@@ -355,7 +349,6 @@ func TestGatewayAuditJobFailures(t *testing.T) {
 			t.Errorf("outcome = %+v\n%s", o, run.out.text())
 		}
 	})
-	// The job's time over, or the job stopped: the task is stopped too.
 	t.Run("out of time", func(t *testing.T) {
 		relay := &fakeRelay{starts: []any{taken}, polls: []any{gatewayTaskView{ID: "task_1", Status: "running"}}}
 		o, res, _ := exec(t, relay, context.Background(), 300*time.Millisecond)

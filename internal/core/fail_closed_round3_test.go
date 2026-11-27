@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// Round 3 of WP-1406: a read that fails is never the permissive answer.
-
 // failingQueryer fails every read, as a database that went away does.
 type failingQueryer struct{ queryer }
 
@@ -61,7 +59,6 @@ func TestBehindBaseForgeFaultHolds(t *testing.T) {
 		t.Errorf("no Warn naming the pull request:\n%s", logs.String())
 	}
 
-	// A base the forge doesn't have is an answer.
 	se.sg.behindErr = &forgeAPIError{method: "GET", path: "/branches/main", status: 404, body: "not found"}
 	if _, behind, stale, err := se.s.behindBaseErr(se.ctx, pr); err != nil || behind || stale {
 		t.Errorf("a 404: behind=%v stale=%v err=%v, want no reason to wait", behind, stale, err)
@@ -78,9 +75,6 @@ func TestArmedMergeHeldWhenBaseUnreadable(t *testing.T) {
 	se.sg.behindErr = &forgeAPIError{method: "GET", path: "/branches/main", status: 502, body: "bad gateway"}
 	se.pullHook("opened", testPR)
 	se.drain()
-	// The hook's own follow-ups (a checks read, a merge attempt) run in the
-	// background; one that ran after the checks below would merge the pull
-	// request before the table is broken.
 	se.s.Wait()
 	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
 	se.poll()
@@ -180,9 +174,6 @@ func TestMergeNowReadFaultRetries(t *testing.T) {
 	const head = "1111111aaaa"
 	se.pullHook("opened", testPR)
 	se.drain()
-	// The hook's own follow-ups (a checks read, a merge attempt) run in the
-	// background; one that ran after the checks below would merge the pull
-	// request before the table is broken.
 	se.s.Wait()
 	se.sg.setChecks(head, CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess})
 	pr := se.pr(5)
@@ -249,7 +240,6 @@ func TestBabysitJobUnreadableIsNotFinished(t *testing.T) {
 	old := lookupRunnerJob
 	defer func() { lookupRunnerJob = old }()
 	lookupRunnerJob = func(context.Context, *Service, int64) (*RunnerJob, error) { return nil, errors.New("database is gone") }
-	// The job finished (its event is missed) and the look at it fails.
 	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE runner_jobs SET state = 'done' WHERE id = ?`, jobs[0]); err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +273,6 @@ func TestUnstickStepJobUnreadableIsNotGone(t *testing.T) {
 	if st := a.step(); st.state != StepStarting {
 		t.Errorf("an unreadable job failed the step: %+v", st)
 	}
-	// Truly gone is another answer.
 	lookupRunnerJob = func(context.Context, *Service, int64) (*RunnerJob, error) { return nil, notFound("runner job") }
 	a.s.unstickSteps(a.ctx)
 	if st := a.step(); st.state == StepStarting {

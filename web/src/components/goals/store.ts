@@ -1,12 +1,26 @@
-// Small memory for the Goals page: which goals are folded (per browser, a
-// view choice), and which wording warnings a person dismissed (on their
-// profile, so a warning waved off stays gone on every device).
-
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { q, useSavePrefs } from '@/lib/queries'
 
+// Sets whose write to storage failed, so a remount still sees them.
+// Each is kept with what storage held then, and applies only while storage
+// still holds that, so another tab's later save shows.
+const unsaved = new Map<string, { set: Set<string>; stored: string | null }>()
+
+function raw(key: string): string | null {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
 function read(key: string): Set<string> {
+  const kept = unsaved.get(key)
+  if (kept) {
+    if (kept.stored === raw(key)) return new Set(kept.set)
+    unsaved.delete(key)
+  }
   try {
     const v: unknown = JSON.parse(localStorage.getItem(key) ?? '[]')
     return new Set(Array.isArray(v) ? v.map(String) : [])
@@ -23,15 +37,15 @@ export function useStoredSet(key: string) {
     set = read(key)
     setState({ key, set })
   }
-  // Each change starts from the latest set, so two in one tick both stay.
   const change = (f: (next: Set<string>) => void) =>
     setState((prev) => {
       const next = new Set(prev.key === key ? prev.set : read(key))
       f(next)
       try {
         localStorage.setItem(key, JSON.stringify([...next]))
+        unsaved.delete(key)
       } catch {
-        /* private mode: it holds until the page closes */
+        unsaved.set(key, { set: next, stored: raw(key) })
       }
       return { key, set: next }
     })
@@ -72,9 +86,7 @@ export function useDismissedWarnings(project: string) {
     })
     try {
       localStorage.removeItem(old)
-    } catch {
-      /* private mode */
-    }
+    } catch {}
     if (!kept.length) return
     save.mutate({ dismissed_warnings: merge(list, kept) })
   }, [loaded, project]) // eslint-disable-line react-hooks/exhaustive-deps

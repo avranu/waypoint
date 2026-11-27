@@ -13,7 +13,7 @@ import (
 // reviewer's finding of before must not be read as a panel finding.
 func TestTakenLeadBackfill(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,8 +33,6 @@ func TestTakenLeadBackfill(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The columns are there already (Open ran the file); its statements
-	// that move rows are run again over rows written the old way.
 	ran := 0
 	for _, stmt := range strings.Split(string(body), ";") {
 		var lines []string

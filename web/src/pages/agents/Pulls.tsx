@@ -1,8 +1,3 @@
-// Agents page, Pull requests tab (WP-D15): where pull requests went, how
-// many pushes they took, who reviewed and approved them, what bots found,
-// and what agents spent on the issues they're linked to. A pull request
-// opens in a side sheet (?pr=) with its whole story.
-
 import { useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
@@ -464,8 +459,6 @@ function Fact({ icon, title, children }: { icon: ReactNode; title: string; child
     </span>
   )
 }
-
-// ---- one pull request ----
 
 function PullSheet({ id, onClose }: { id: number; onClose: () => void }) {
   useEscapeLayer(true, onClose)

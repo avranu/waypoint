@@ -10,13 +10,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// The guard's rules (WP-270, WP-ADR10): what an unattended session may not
-// do with a Bash command. A rule looks at a simple command's name and
-// arguments, after assignments and wrappers (env, nohup, timeout, xargs...),
-// and at the commands inside `bash -c`, eval, find -exec and substitutions.
-// It is a seatbelt against an agent following bad instructions, not a
-// sandbox: Bash can always be phrased past a pattern.
-
 // Rule ids, as they appear in guard.log.
 const (
 	ruleRoot     = "root"
@@ -34,10 +27,10 @@ const (
 // guardHit is a refused call.
 type guardHit struct {
 	rule   string
-	reason string // what it is, in a few words: "installing software"
-	what   string // the part of the call that matched
-	ask    bool   // the way out is a question, not a command for a person to run
-	way    string // the way out, when the agent can take it itself
+	reason string
+	what   string
+	ask    bool
+	way    string
 }
 
 func hit(rule, reason string, words ...string) *guardHit {
@@ -47,27 +40,17 @@ func hit(rule, reason string, words ...string) *guardHit {
 // guard is one call's check. dir follows `cd` through the command; lost is
 // set once a `cd` goes where the guard can't tell ($DIR, -).
 type guard struct {
-	site   guardSite
-	dir    string
-	server string // the Waypoint server's host
-	origin func() string
-	orig   *string
-	lost   bool
-	// installs: the call installs the lockfile's packages (npm ci) before
-	// what comes after it, so the guard can't tell what node_modules holds.
-	installs bool
-	// inherit: the script being checked is a child's, whose first command
-	// runs where the install did, so it keeps installs.
-	inherit bool
-	// contained: the session runs in a Contained sandbox (WP-473), whose
-	// walls already stop what the walled rules guard against.
+	site      guardSite
+	dir       string
+	server    string
+	origin    func() string
+	orig      *string
+	lost      bool
+	installs  bool
+	inherit   bool
 	contained bool
-	// envHosts are the hosts of the repo's environments a person set
-	// (WP-749): reads from them are fine, changes need a person.
-	envHosts func() []string
-	// open is, for the command being checked, which of its arguments the
-	// shell may make other words of (guardCmd.open).
-	open []bool
+	envHosts  func() []string
+	open      []bool
 }
 
 // walled are the rules a Contained sandbox enforces itself (PL7 §3): it has
@@ -130,14 +113,14 @@ func (g *guard) script(cmds []*guardCmd, depth int) *guardHit {
 	if depth > guardMaxDepth {
 		return nil
 	}
-	fetch := false // an earlier command of this pipeline downloads
+	fetch := false
 	for i, c := range cmds {
 		first := i == 0
 		if !c.pipeIn {
 			fetch = false
 		}
 		if !c.andIn && (!g.inherit || !first) {
-			g.installs = false // npm ci || npx tsc: npx runs when the install failed
+			g.installs = false
 		}
 		for _, sub := range c.subs {
 			if h := g.child(sub, depth+1); h != nil {
@@ -236,7 +219,7 @@ func runsSub(name string, args []string) bool {
 // readsStdinAsCode: the interpreter would run what is piped into it (no
 // script, no -c): `curl … | sh`, not `curl … | python3 -m json.tool`.
 func readsStdinAsCode(name string, args []string) bool {
-	inline := "" // the letters of the flags that give it code to run
+	inline := ""
 	switch {
 	case shellNames[name]:
 		inline = "c"
@@ -283,7 +266,7 @@ func (g *guard) assignHit(w string) *guardHit {
 	case guardMarkers[name] && (val == "" || val == "0" || val == "false"):
 		return hit(ruleGuard, "clearing what marks the session as unattended", w)
 	case strings.EqualFold(name, "npm_config_package") || strings.EqualFold(name, "npm_config_yes") && val != "false":
-		return hit(ruleInstall, "installing software", w) // npx's --package and --yes, read from the environment
+		return hit(ruleInstall, "installing software", w)
 	case fetchSettingsVar(name):
 		return hit(ruleDownload, "pointing fetches at settings or a proxy the guard can't read", w)
 	}
@@ -347,7 +330,7 @@ func (g *guard) unwrap(words []string) ([]string, *guardHit) {
 		case "timeout":
 			words = dropFlags(args, "-s", "-k", "--signal", "--kill-after")
 			if len(words) > 0 {
-				words = words[1:] // the duration
+				words = words[1:]
 			}
 		case "xargs":
 			words = dropFlags(args, "-n", "-I", "-L", "-P", "-s", "-d", "-E", "-a", "--max-args", "--max-procs", "--delimiter", "--arg-file")
@@ -421,8 +404,8 @@ func (g *guard) unwrapEnv(args []string) ([]string, *guardHit) {
 // argScan is a command line split into positional words and flags.
 type argScan struct {
 	pos   []string
-	flags map[string]bool     // -x and --long, as given
-	val   map[string][]string // values of flags that take one
+	flags map[string]bool
+	val   map[string][]string
 }
 
 // values are the values given to any of the flags named.
@@ -487,13 +470,11 @@ func (g *guard) simple(c *guardCmd, name string, args []string, depth int) *guar
 	if name == "" {
 		return nil
 	}
-	// A heredoc given to a shell is a script; text given to anything else is data.
 	if shellNames[name] && c.heredoc != "" {
 		if h := g.child(parseShell(c.heredoc), depth+1); h != nil {
 			return h
 		}
 	}
-	// Code made of a download: bash <(curl …), sh -c "$(curl …)", eval "$(curl …)".
 	if (codeRunners[name] || rePython.MatchString(name)) && runsSub(name, args) {
 		for _, sub := range c.subs {
 			if g.hasFetcher(sub) {
@@ -504,7 +485,7 @@ func (g *guard) simple(c *guardCmd, name string, args []string, depth int) *guar
 		}
 	}
 	if name == "wp" {
-		return g.keep(wpHit(args)) // what follows wp is data (a request's text, a comment)
+		return g.keep(wpHit(args))
 	}
 	for _, rule := range []func(string, []string) *guardHit{rootHit, g.installHit, remoteHit, hostHit, g.looseHit, g.downloadHit} {
 		if h := g.keep(rule(name, args)); h != nil {
@@ -547,7 +528,7 @@ func (g *guard) findExec(args []string, depth int) *guardHit {
 			}
 			c := &guardCmd{words: args[i+1 : j]}
 			if len(g.open) == len(args) {
-				c.open = g.open[i+1 : j] // the shell expanded them before find saw them
+				c.open = g.open[i+1 : j]
 			}
 			if h := g.child([]*guardCmd{c}, depth+1); h != nil {
 				return h
@@ -559,7 +540,7 @@ func (g *guard) findExec(args []string, depth int) *guardHit {
 }
 
 func (g *guard) chdir(args []string) {
-	g.installs = false // the install was for the directory we leave
+	g.installs = false
 	sc := scanArgs(args, "")
 	target := g.site.home
 	if len(sc.pos) > 0 {
@@ -600,8 +581,6 @@ func wpHit(args []string) *guardHit {
 // wp env read|get -o FILE (Go flags: -o F, -o=F, --o F, --o=F), checked
 // like curl -o's.
 func wpWriteTargets(args []string) []string {
-	// An earlier argument may itself be "env" (a flag value: wp -p env env read),
-	// so try each one as the subcommand.
 	i := -1
 	for k := 0; k+1 < len(args); k++ {
 		if args[k] == "env" && (args[k+1] == "read" || args[k+1] == "get") {
@@ -718,7 +697,7 @@ func (g *guard) installHit(name string, args []string) *guardHit {
 			return h()
 		}
 		if lockfileInstall(name, args) {
-			g.installs = true // the lockfile's packages, so npx after it (&&) finds them
+			g.installs = true
 		}
 		if rest, where, ok := pmExec(name, args); ok {
 			verb := " exec"
@@ -736,7 +715,7 @@ func (g *guard) installHit(name string, args []string) *guardHit {
 		if first == "run" || first == "tool" {
 			for _, p := range scanArgs(args, "").pos[1:] {
 				if strings.Contains(p, "@") {
-					return h() // go run pkg@version
+					return h()
 				}
 			}
 		}
@@ -823,9 +802,9 @@ func pmInstalls(name string, args []string) bool {
 	case "update", "upgrade", "up", "uninstall", "remove", "rm", "link", "ln":
 		return global
 	case "dlx", "create":
-		return true // pnpm dlx, yarn dlx; npm create X runs the package create-X
+		return true
 	case "init", "innit":
-		return name == "npm" && len(pkgs) > 0 // npm init X: npm exec create-X
+		return name == "npm" && len(pkgs) > 0
 	case "global":
 		return name == "yarn"
 	}
@@ -849,7 +828,7 @@ func pmExec(name string, args []string) (rest, where []string, ok bool) {
 	if name != "npm" && name != "bun" {
 		return nil, nil, false
 	}
-	value := false // this word may be the value of the option before it
+	value := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		maybeValue := value
@@ -902,13 +881,13 @@ var npmOptNames = map[string]string{"package": "package=", "yes": "yes", "ye": "
 
 // npmOpt is an option word as npm reads it.
 type npmOpt struct {
-	names  []string // the options it sets that the guard follows: package, yes, no, prefix, workspace, call
-	val    string   // the value after =, which goes to the last of them
+	names  []string
+	val    string
 	hasVal bool
-	takes  bool // its last option takes a value: the next word, without =
-	follow bool // it sets one of names
-	known  bool // npm knows the spelling, so takes is sure
-	split  bool // an option before the last takes a value it can't have (-Cy DIR)
+	takes  bool
+	follow bool
+	known  bool
+	split  bool
 }
 
 // readNpmOpt reads an option word the way npm's parser does: one dash or
@@ -938,14 +917,14 @@ func readNpmOpt(a string, cli string) npmOpt {
 	name, ok := npmOptNames[key]
 	if !ok && strings.HasPrefix(key, "no-") {
 		if n, isOpt := npmOptNames[strings.TrimPrefix(key, "no-")]; isOpt && strings.HasSuffix(n, "=") {
-			name, ok = n, true // npm --no-package X: --package X
+			name, ok = n, true
 		}
 	}
 	if npx && key == "no-install" {
-		name, ok = "no", true // npx rewrites it; npm exec doesn't know it
+		name, ok = "no", true
 	}
 	if npx && key == "n" {
-		name, ok = "removed=", true // npx drops its old -n and the word after it
+		name, ok = "removed=", true
 	}
 	var parts []string
 	switch {
@@ -955,7 +934,7 @@ func readNpmOpt(a string, cli string) npmOpt {
 		for i := 0; i < len(key); i++ {
 			l := npmOptLetters[key[i]]
 			if npx && key[i] == 'p' {
-				l = "package=" // npx -p, bun x -p
+				l = "package="
 			}
 			parts = append(parts, l)
 		}
@@ -997,7 +976,7 @@ func lockfileInstall(name string, args []string) bool {
 		switch a {
 		case "--frozen-lockfile", "--immutable", "--no-audit", "--no-fund", "--prefer-offline", "--silent", "--quiet", "--ignore-scripts":
 		default:
-			return false // --dry-run, --prefix DIR, -w web, a package
+			return false
 		}
 	}
 	return true
@@ -1041,16 +1020,16 @@ func (g *guard) npxHit(name string, args []string) *guardHit {
 			case contains(pmValueFlags, flag) && !hasVal:
 				i++
 			case !strings.HasPrefix(a, "--") && strings.ContainsAny(a[1:], "yp"):
-				return h // a word npm doesn't take as -y or -p: refused all the same
+				return h
 			}
 			continue
 		}
 		if o.split && o.follow {
-			return h // -Cy DIR: npm gives -C the word --yes; the guard can't follow it
+			return h
 		}
 		for j, n := range o.names {
 			last := j == len(o.names)-1
-			off := last && o.hasVal && val == "false" // --yes=false, --no=false
+			off := last && o.hasVal && val == "false"
 			switch {
 			case n == "package", n == "yes" && !off, n == "no" && off:
 				return h
@@ -1065,9 +1044,9 @@ func (g *guard) npxHit(name string, args []string) *guardHit {
 	}
 	switch {
 	case cmd == "":
-		return nil // npx -c "…", npx --version
+		return nil
 	case reVersioned.MatchString(cmd):
-		return h // npx prettier@3
+		return h
 	case no || g.lost || g.installs || strings.ContainsAny(cmd, "$`") || strings.Contains(cmd, subPlaceholder) ||
 		strings.HasPrefix(cmd, ".") || strings.HasPrefix(cmd, "~") || filepath.IsAbs(cmd):
 		return nil
@@ -1081,17 +1060,12 @@ func (g *guard) npxHit(name string, args []string) *guardHit {
 	if npmLocal(dir, cmd) {
 		return nil
 	}
-	// npm exec -w web tsc also looks in the workspace's own node_modules. A
-	// workspace given by its package's name, not its directory, can't be
-	// told from here.
 	for _, w := range workspaces {
 		wd := g.site.resolve(dir, w)
 		if fi, err := os.Stat(wd); wd == "" || err != nil || !fi.IsDir() || npmLocal(wd, cmd) {
 			return nil
 		}
 	}
-	// npx never looks on PATH, only in npm's own global bin: npx ls fetches
-	// the package "ls".
 	h.way = "There is no node_modules/.bin/" + cmd + " here, so " + name + " would download a package named `" + cmd +
 		"` from the registry. Install the repository's own packages first (`npm ci` runs unattended), then run it again"
 	return h
@@ -1459,7 +1433,7 @@ func (g *guard) gitHit(args []string) *guardHit {
 			if p := g.site.resolve(dir, v); p != "" {
 				dir = p
 				if strings.HasPrefix(a, "--git-dir=") {
-					dir = filepath.Dir(p) // the repository whose .git it is
+					dir = filepath.Dir(p)
 				}
 			}
 		case strings.HasPrefix(a, "-"):
@@ -1543,7 +1517,7 @@ func writeTargets(name string, args []string) []string {
 			return nil
 		}
 		if len(sc.val["-e"])+len(sc.val["-f"])+len(sc.val["--expression"])+len(sc.val["--file"]) == 0 && len(sc.pos) > 0 {
-			return sc.pos[1:] // the first word is the script
+			return sc.pos[1:]
 		}
 		return sc.pos
 	case "dd":

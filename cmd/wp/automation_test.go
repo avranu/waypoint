@@ -12,7 +12,7 @@ import (
 func TestCLIAutomations(t *testing.T) {
 	e := newEnv(t)
 	t.Chdir(t.TempDir())
-	me := e.login() // the CLI acts as an agent, on robin's token
+	me := e.login()
 	ctx := context.Background()
 	name := "Reports"
 	p, err := e.svc.CreateProject(ctx, me, core.ProjectInput{Name: &name})
@@ -46,7 +46,6 @@ func TestCLIAutomations(t *testing.T) {
 		!strings.Contains(out, "Input focus (text, required)") || !strings.Contains(out, "agents may run it") || !strings.Contains(out, "Step mk: create_issue") {
 		t.Errorf("show:\n%s", out)
 	}
-	// Names match by part; ambiguity is an error.
 	if out, code := e.run("automation", "show", "o", "-p", p.Key); code == 0 || !strings.Contains(out, "could be") {
 		t.Errorf("ambiguous name: %d %s", code, out)
 	}
@@ -54,7 +53,6 @@ func TestCLIAutomations(t *testing.T) {
 		t.Errorf("unknown name: %d %s", code, out)
 	}
 
-	// Run with inputs and wait.
 	out = e.wp("automation", "run", "Weekly report", "--input", "focus=bugs, mostly", "--input", "days=14", "--wait", "-p", p.Key)
 	if !strings.Contains(out, "succeeded") || !strings.Contains(out, "mk") || !strings.Contains(out, "create_issue") {
 		t.Errorf("run --wait:\n%s", out)
@@ -63,11 +61,9 @@ func TestCLIAutomations(t *testing.T) {
 	if err != nil || len(res.Issues) != 1 || res.Issues[0].Title != "Report on bugs, mostly, 14 days" {
 		t.Fatalf("issues = %+v %v", res, err)
 	}
-	// Defaults fill the rest; a missing required input is an error.
 	if out, code := e.run("automation", "run", "Weekly report", "-p", p.Key); code == 0 || !strings.Contains(out, "required") {
 		t.Errorf("missing input: %d %s", code, out)
 	}
-	// Agents may not run an automation that doesn't allow it.
 	if out, code := e.run("automation", "run", "Locked down", "-p", p.Key); code == 0 || !strings.Contains(out, "agents") {
 		t.Errorf("agent ran a locked automation: %d %s", code, out)
 	}
@@ -75,7 +71,6 @@ func TestCLIAutomations(t *testing.T) {
 	if out, code := e.run("automation", "run", "On create", "-p", p.Key); code == 0 || !strings.Contains(out, "manual") {
 		t.Errorf("ran an automation with no manual trigger: %d %s", code, out)
 	}
-	// Runs, by name or number, and as JSON.
 	out = e.wp("automation", "runs", "Weekly", "-p", p.Key)
 	if !strings.Contains(out, "succeeded") || !strings.Contains(out, "cli") {
 		t.Errorf("runs:\n%s", out)
@@ -91,14 +86,12 @@ func TestCLIAutomations(t *testing.T) {
 	if out := e.wp("automation", "show", "Weekly report", weeklyRun, "-p", p.Key); !strings.Contains(out, "Run #"+weeklyRun) {
 		t.Errorf("show run:\n%s", out)
 	}
-	// A run number must belong to the automation named with it; -n must make sense.
 	if out, code := e.run("automation", "show", "Locked down", weeklyRun, "-p", p.Key); code == 0 || !strings.Contains(out, "belongs to another automation") {
 		t.Errorf("show of another automation's run: %d %s", code, out)
 	}
 	if out, code := e.run("automation", "runs", "Weekly", "-n", "0", "-p", p.Key); code == 0 || !strings.Contains(out, "1 to 200") {
 		t.Errorf("-n 0: %d %s", code, out)
 	}
-	// A run waiting on a delay can be cancelled.
 	slow := add("Slow", core.Rule{Trigger: core.Trigger{Event: "manual"}, AllowAgents: true, Actions: []core.Action{{Type: "delay", Extra: map[string]any{"duration": "1h"}}}})
 	out = e.wp("automation", "run", "Slow", "-p", p.Key)
 	if !strings.Contains(out, "queued") {

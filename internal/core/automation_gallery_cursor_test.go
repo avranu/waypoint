@@ -17,14 +17,13 @@ func TestDailyGrokAuditBecomesATaskForClaude(t *testing.T) {
 	day := func(d int) *AutomationRun {
 		t.Helper()
 		ae.setClock(time.Date(2026, 11, d, 12, 31, 0, 0, time.UTC))
-		ae.runnerSeen(ae.box, true) // it kept polling
+		ae.runnerSeen(ae.box, true)
 		ae.s.RunTimedAutomations(ae.ctx)
 		ae.work()
 		runs := ae.env.runs(card)
 		return runs[0]
 	}
 
-	// Monday: security.
 	run := day(2)
 	claim := ae.take()
 	in := agentJobOf(t, claim)
@@ -49,7 +48,6 @@ func TestDailyGrokAuditBecomesATaskForClaude(t *testing.T) {
 		PriorityName(task.Priority) != "low" || len(task.Labels) != 1 || task.Labels[0].Name != "audit" {
 		t.Errorf("task = %q agent %q text %q unreviewed %v priority %d labels %+v", task.Title, task.Agent, task.TextAgent, task.Unreviewed, task.Priority, task.Labels)
 	}
-	// Grok's text waits for the safety screen before an agent may take it.
 	if task.Safety == nil || task.Safety.Verdict != "pending" {
 		t.Errorf("safety = %+v", task.Safety)
 	}
@@ -61,7 +59,6 @@ func TestDailyGrokAuditBecomesATaskForClaude(t *testing.T) {
 		t.Errorf("findings handed to Claude needn't be told: %+v", ns)
 	}
 
-	// Tuesday: nothing found, so no task.
 	run = day(3)
 	claim = ae.take()
 	if in := agentJobOf(t, claim); !strings.Contains(in.Prompt, "Focus: correctness") {
@@ -73,8 +70,6 @@ func TestDailyGrokAuditBecomesATaskForClaude(t *testing.T) {
 		t.Fatalf("Tuesday: %s, audit step %+v", got.Status, stepByID(got, "audit"))
 	}
 
-	// Wednesday: the pool is spent. Both entries of the chain say so, and
-	// nobody is told.
 	run = day(4)
 	for range 2 {
 		claim = ae.take()
@@ -89,7 +84,6 @@ func TestDailyGrokAuditBecomesATaskForClaude(t *testing.T) {
 		t.Errorf("a spent pool shouldn't tell anyone: %+v", ns)
 	}
 
-	// Thursday: another failure is told.
 	day(5)
 	claim = ae.take()
 	ae.finish(claim.ID, "failed", map[string]any{}, "can't get the repository: authentication failed")
@@ -127,7 +121,6 @@ func TestAskGrokToAuditABranch(t *testing.T) {
 	if err != nil || a.Title != "me/app branch wp-222-queue (against main)" || a.Counts.Total != 1 || a.Automation != "Ask Grok" {
 		t.Fatalf("audit = %+v %v", a, err)
 	}
-	// Told, since nobody else will act on them.
 	if ns, _, _ := ae.s.ListNotifications(ae.ctx, ae.admin, false, 5); len(ns) == 0 || ns[0].Kind != NotifyAudit {
 		t.Errorf("notifications = %+v", ns)
 	}

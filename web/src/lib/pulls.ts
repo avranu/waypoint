@@ -1,7 +1,3 @@
-// Pull requests on the Agents page (WP-D15): where each went, its pushes,
-// reviews and approvals, what bots found and what agents spent; and the
-// note bot reviews start with.
-
 import { queryOptions } from '@tanstack/react-query'
 import { api, qs } from './api'
 import type { BotFinding, BotRun } from './types'
@@ -139,8 +135,6 @@ export interface PRDetail extends PRSummary {
   shipping: PRShipping | null
 }
 
-// ---- merge gates (WP-D21) ----
-
 export type CIState = 'pending' | 'passed' | 'failed' | 'none' | ''
 export type GateState = 'pending' | 'success' | 'failure' | ''
 export type CheckState = 'pending' | 'success' | 'failed'
@@ -227,8 +221,6 @@ export const disarmPull = (id: number) => api.del<void>(`/pulls/${id}/merge`)
 export const dismissFinding = (id: number, note = '') =>
   api.post<BotFinding>(`/findings/${id}/dismiss`, { note })
 export const reopenFinding = (id: number) => api.post<BotFinding>(`/findings/${id}/reopen`)
-
-// ---- babysitting (WP-134) ----
 
 export type BabysitState =
   | 'watching'
@@ -431,8 +423,6 @@ export const outsidePRQuery = (prID: number) =>
 export const decideOutsidePR = (id: number, approve: boolean) =>
   api.post(`/outside-pr/${id}/${approve ? 'approve' : 'discard'}`)
 
-// ---- the review note (Admin → AI) ----
-
 export interface ReviewNote {
   note: string
   default: string
@@ -452,8 +442,6 @@ export const setReviewNote = (note: string) => api.put<ReviewNote>('/admin/revie
 /** The note as a review shows it, with these models named. */
 export const renderNote = (note: string, models: string) =>
   (note.trim() || '').replaceAll('{models}', models)
-
-// ---- formatting ----
 
 /** "3h", "2.5d", "40m": how long a pull request was open. */
 export function hoursLabel(h: number | null | undefined) {

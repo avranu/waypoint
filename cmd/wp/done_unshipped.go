@@ -28,7 +28,7 @@ func (c *cli) unshippedWork(keys []string) (string, error) {
 		if top == "" || slices.Contains(seen, top) {
 			continue
 		}
-		if _, err := os.Stat(top); err != nil { // directory gone: nothing there
+		if _, err := os.Stat(top); err != nil {
 			continue
 		}
 		seen = append(seen, top)
@@ -78,8 +78,6 @@ func unpushedCommits(top string) int {
 	if refs, err := gitOutput(top, "for-each-ref", "--count=1", "refs/remotes"); err != nil || refs == "" {
 		return 0
 	}
-	// What no remote branch has, whatever the upstream is: commits pushed
-	// to another branch are shipped too.
 	n, err := gitOutput(top, "rev-list", "--count", "HEAD", "--not", "--remotes")
 	if k, _ := strconv.Atoi(n); err == nil {
 		return k

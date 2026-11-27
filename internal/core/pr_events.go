@@ -8,12 +8,6 @@ import (
 	"time"
 )
 
-// Labels added and reviewers asked for on a pull request (WP-D14 phase 5):
-// pr.labeled comes from comparing the labels a forge reports with those
-// recorded, so it works the same on every forge; pr.review_requested from
-// the webhooks that say who was asked (GitHub's and Forgejo's
-// review_requested, GitLab's reviewer changes).
-
 // addedLabels are cur's labels that old didn't have (all of them for a pull
 // request seen for the first time).
 func addedLabels(old, cur *PullRequest) []string {
@@ -77,7 +71,6 @@ func (s *Service) tokenLogin(ctx context.Context, f *Forge, bot bool) string {
 	}
 	key := tokenLoginKey{f.ID, bot}
 	if v, ok := s.botLogins.Load(key); ok {
-		// A failed read is kept an hour: callers ask on every CI read.
 		if b := v.(botLogin); b.token == tf.token && (s.now().Sub(b.at) < time.Hour || (b.login != "" && s.now().Sub(b.at) < 24*time.Hour)) {
 			return b.login
 		}

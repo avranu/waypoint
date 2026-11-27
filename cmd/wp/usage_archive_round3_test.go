@@ -17,8 +17,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Tests for the findings of audit 1233 on the transcript archive client.
-
 // hexLine is a line of incompressible text, so a piece's gzip is about half
 // its raw size whatever the neighbours are.
 func hexLine(seed uint64, n int) string {
@@ -36,8 +34,6 @@ func lowerVar[T any](t *testing.T, p *T, v T) {
 	*p = v
 	t.Cleanup(func() { *p = old })
 }
-
-// ---- 1, 2, 20, 26: redaction ----
 
 // Each row names the part that must not survive, in text and in a JSON string
 // of an archived line (audit 1233.1, .2).
@@ -76,14 +72,12 @@ func TestRedactionRowsHideTheirSecret(t *testing.T) {
 			t.Errorf("the archive left %q in %q (%v)", r.secret, out, err)
 		}
 	}
-	// plain prose is not blanked further than before
 	if got := redact("authorization: none"); got != "authorization: ***" {
 		t.Errorf("prose: %q", got)
 	}
 	if got := redact("the authorization header is required"); got != "the authorization header is required" {
 		t.Errorf("prose without a value: %q", got)
 	}
-	// and a block cut off by the end of the string loses only its body
 	if got := redact("x -----BEGIN RSA PRIVATE KEY-----\nabc"); !strings.HasPrefix(got, "x -----BEGIN RSA PRIVATE KEY-----") || strings.Contains(got, "abc") {
 		t.Errorf("cut-off block: %q", got)
 	}
@@ -115,11 +109,12 @@ func TestMayHoldSecretDecodesEscapes(t *testing.T) {
 func TestRedactionPatternsArePinned(t *testing.T) {
 	pins := []struct{ name, got, want string }{
 		{"secretRE", secretRE.String(), `(?i)([\w-]*(?:token|secret|passw(?:or)?d|api[_-]?key|apikey|access[_-]?key|private[_-]?key|authorization|credential)[\w-]*["']?\s*[=:]\s*|--(?:token|secret|password|passwd|api[_-]?key|auth|access[_-]?key)\s+|bearer\s+)(["']?)(?:(?:bearer|basic|token|negotiate|ntlm)\s+)?[^\s"']{4,}`},
-		{"digestAuthRE", digestAuthRE.String(), `(?i)(\bauthorization["']?\s*[=:]\s*["']?digest\s+)[^\n']+`},
+		{"digestAuthRE", digestAuthRE.String(), `(?i)(\bauthorization["']?\s*[=:]\s*["']?digest\s+)[^\r\n']+`},
 		{"schemeAuthRE", schemeAuthRE.String(), `(?i)(\bauthorization["']?\s*[=:]\s*["']?)[\w-]+\s+[^\s"']{4,}`},
-		{"tokenLikeRE", tokenLikeRE.String(), `\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,})`},
+		{"tokenLikeRE", tokenLikeRE.String(), `\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{22,}|glpat-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|AIza[A-Za-z0-9_-]{35,}|npm_[A-Za-z0-9]{36,}|pypi-[A-Za-z0-9_-]{16,}|xapp-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,})`},
 		{"urlPasswordRE", urlPasswordRE.String(), `(://[^\s/:@]+:)[^\s/@]+@`},
-		{"pemKeyRE", pemKeyRE.String(), `(-----BEGIN [A-Z ]*PRIVATE KEY-----)(?s:.*?)(-----END [A-Z ]*PRIVATE KEY-----|\z)`},
+		{"urlUserRE", urlUserRE.String(), `://[^\s/:@?#]{8,}(?::\*\*\*|:)?@`},
+		{"pemKeyRE", pemKeyRE.String(), `(-----BEGIN [A-Z ]*PRIVATE KEY-----)(?s:.*?)(-----END [A-Z ]*PRIVATE KEY-----|\z)|(-----BEGIN [A-Z ]*PRIVATE KEY BLOCK-----)(?s:.*?)(-----END [A-Z ]*PRIVATE KEY BLOCK-----|\z)`},
 	}
 	for _, p := range pins {
 		if p.got != p.want {
@@ -127,8 +122,6 @@ func TestRedactionPatternsArePinned(t *testing.T) {
 		}
 	}
 }
-
-// ---- 3: an archive-off server ----
 
 // A 501 says the server keeps no archive: the pass stops with that reason,
 // counts nothing, holds nothing, and a hook's passes leave it alone for an
@@ -190,11 +183,7 @@ func TestArchiveOffServerStopsQuietlyAndHookPassesSkip(t *testing.T) {
 	}
 }
 
-// ---- 5, 17: the hook's deadline is real ----
-
 func TestHookPassBoundFitsTheHookTimeout(t *testing.T) {
-	// the hour counts' upload counts from the sync's start, as the archive's
-	// limit does, so it must lie inside that limit (audit 1234.2)
 	if usageHookUploadTimeout > archiveHookLimit {
 		t.Errorf("the hour-count upload timeout %v is past the archive's limit %v", usageHookUploadTimeout, archiveHookLimit)
 	}
@@ -303,8 +292,6 @@ func TestHookStatusPostIsBounded(t *testing.T) {
 	}
 }
 
-// ---- 7, 9: a proxy's body limit, and the piece cap ----
-
 // bodyLimit answers 413 with an HTML body to a piece whose body is over n
 // bytes, as a reverse proxy would, and counts the refusals per session.
 func bodyLimit(n *int, refused map[string]int, mu *sync.Mutex) func(int, http.ResponseWriter, *http.Request) bool {
@@ -341,7 +328,7 @@ func TestArchiveLearnsAPieceCapFrom413(t *testing.T) {
 	pa := putTranscript(t, dir, "aaa", l1...)
 	putTranscript(t, dir, "bbb", l2...)
 	old := time.Now().Add(-time.Hour)
-	_ = os.Chtimes(pa, old, old) // bbb first
+	_ = os.Chtimes(pa, old, old)
 	limit, refused, mu := 3000, map[string]int{}, sync.Mutex{}
 	tap.onPiece = bodyLimit(&limit, refused, &mu)
 
@@ -371,7 +358,6 @@ func TestArchiveLearnsAPieceCapFrom413(t *testing.T) {
 		t.Errorf("counted: %v", st.Dropped)
 	}
 
-	// the next pass starts from the cap
 	before := refused["bbb"] + refused["aaa"]
 	appendTo(t, pa, strings.Join(hexLines(300, 20, 400), "\n")+"\n")
 	if res = archiveSync(t, e, dir); res.Archive.PendingBytes != 0 || res.Archive.Pieces == 0 {
@@ -381,7 +367,6 @@ func TestArchiveLearnsAPieceCapFrom413(t *testing.T) {
 		t.Errorf("the second pass was refused again: %v", refused)
 	}
 
-	// a day later the cap is forgotten, so a raised limit is found
 	st, _ = loadArchiveState(e.dir)
 	st.PieceCapAt = time.Now().Add(-25 * time.Hour).UnixMilli()
 	if err := writeJSON(filepath.Join(e.dir, archiveStateFile), st); err != nil {
@@ -456,8 +441,6 @@ func TestArchiveNon413RefusalDoesNotCapLaterPieces(t *testing.T) {
 	}
 }
 
-// ---- 8: bytes appended while another pass holds the lock ----
-
 func TestArchiveBusyPassMarksAndHolderSendsLateBytes(t *testing.T) {
 	e, tap := tappedEnv(t)
 	me := e.login()
@@ -512,8 +495,6 @@ func TestArchiveStaleAgainMarkerIsHarmless(t *testing.T) {
 	}
 }
 
-// ---- 16: the documented blind spot ----
-
 func TestArchiveDoesNotNoticeAMiddleEditThatKeepsTheChecks(t *testing.T) {
 	e := newEnv(t)
 	me := e.login()
@@ -523,7 +504,7 @@ func TestArchiveDoesNotNoticeAMiddleEditThatKeepsTheChecks(t *testing.T) {
 	p := putTranscript(t, dir, "mid", lines...)
 	archiveSync(t, e, dir)
 	raw, _ := os.ReadFile(p)
-	edited := bytes.Replace(raw, []byte("m 4 "), []byte("X 4 "), 1) // same size, the middle, not the first line or the last 64 bytes
+	edited := bytes.Replace(raw, []byte("m 4 "), []byte("X 4 "), 1)
 	if bytes.Equal(raw, edited) {
 		t.Fatal("nothing edited")
 	}
@@ -540,8 +521,6 @@ func TestArchiveDoesNotNoticeAMiddleEditThatKeepsTheChecks(t *testing.T) {
 		t.Errorf("archived: %.200q", got)
 	}
 }
-
-// ---- 21: piece count cap, out of sync ----
 
 func TestArchivePieceCountCapStopsThePassAndTheRestGoesNext(t *testing.T) {
 	e := newEnv(t)
@@ -588,8 +567,6 @@ func TestArchiveOutOfSyncIsCounted(t *testing.T) {
 	}
 }
 
-// ---- 22: nested sub-agent ----
-
 func TestArchiveFileKeyOfANestedSubagent(t *testing.T) {
 	f := usageFile{Path: filepath.Join("/c", "projects", "-w", "sess9", "subagents", "workflows", "wf1", "agent-x.jsonl"), Session: "sess9", Kind: "agent"}
 	if got := archiveFileKey(f); got != "subagents/workflows/wf1/agent-x.jsonl" {
@@ -622,8 +599,6 @@ func TestArchiveNestedSubagentEndToEnd(t *testing.T) {
 		t.Errorf("nested file: %q", got)
 	}
 }
-
-// ---- 23: an unreadable file, whoever runs the test ----
 
 // A path that is a directory opens but cannot be read, with or without root.
 func TestArchiveUnreadableFileCountedWithoutChmod(t *testing.T) {

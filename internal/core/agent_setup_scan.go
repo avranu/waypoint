@@ -1,9 +1,5 @@
 package core
 
-// Reading each attached repo's agent files from the forge (WP-ADR44 §1), at
-// the head of its default branch: after a push to it that changed one,
-// hourly when the head moved, and when someone presses Refresh.
-
 import (
 	"context"
 	"database/sql"
@@ -38,9 +34,7 @@ var agentRefreshMu sync.Mutex
 type setupRepo struct {
 	forgeID  int64
 	repo     string
-	projects []string // keys
-	// optedOut: one of its projects turned "Keep this project's repos in
-	// line" off.
+	projects []string
 	optedOut bool
 }
 
@@ -94,8 +88,6 @@ func (s *Service) RefreshAgentSetupNow(ctx context.Context, actor *Actor) error 
 	}
 	agentRefreshMu.Lock()
 	if agentRefreshing {
-		// A read is under way and may have passed some repos already: one
-		// more follows it.
 		agentRefreshAgain = true
 		agentRefreshMu.Unlock()
 		return nil
@@ -139,7 +131,6 @@ func (s *Service) scanAgentRepos(ctx context.Context, force bool) error {
 			errs = append(errs, err)
 		}
 	}
-	// Repos no longer attached take their files with them.
 	if _, err := s.db.W.ExecContext(ctx, `DELETE FROM agent_repo_files WHERE NOT EXISTS (SELECT 1 FROM project_repos r
 		WHERE r.forge_id = agent_repo_files.forge_id AND r.repo = agent_repo_files.repo COLLATE NOCASE)`); err != nil {
 		errs = append(errs, err)
@@ -273,7 +264,7 @@ type storedAgentFile struct {
 func newStoredFile(p, kind, body string) storedAgentFile {
 	f := storedAgentFile{path: p, kind: kind, size: len(body)}
 	if !utf8.ValidString(body) || strings.ContainsRune(body, 0) {
-		f.content, f.truncated = "", true // not text: listed, not kept
+		f.content, f.truncated = "", true
 		return f
 	}
 	if len(body) > maxAgentFileBytes {

@@ -12,13 +12,6 @@ import (
 	"unicode/utf8"
 )
 
-// Steps that run on a runner (WP-D17, WP-D18): agent_task has a coding-agent
-// CLI work in a fresh checkout, run_command runs a shell command. Both queue
-// a runner job on the runners of the person who last saved the automation,
-// then park the run until the job finishes (runner.job_finished); a step that
-// runs again after the wait or a restart finds its job by its step key and
-// never queues it twice.
-
 // PAgents: a chain of coding-agent CLIs and models, tried in order.
 const PAgents = "agents"
 
@@ -82,8 +75,6 @@ func checkAgents(_ *Rule, a *Action) error {
 	}
 	return nil
 }
-
-// ---- finding the repository ----
 
 // stepRepo is the repository a step works in.
 type stepRepo struct {
@@ -175,8 +166,6 @@ func (c *StepCtx) Repo(param string) (*stepRepo, error) {
 	return nil, invalid("this project has several repositories: say which one in the step")
 }
 
-// ---- runner jobs for a step ----
-
 // BoolDefault is a yes/no setting that is def when unset.
 func (c *StepCtx) BoolDefault(name string, def bool) bool {
 	v, ok := c.params[name]
@@ -194,6 +183,9 @@ type stepJob struct {
 	Result map[string]any
 	Error  string
 	Tail   string // the end of its output
+	// CreatedAt and StartedAt are when the job was queued and when a
+	// runner took it (ms; 0 when none has).
+	CreatedAt, StartedAt int64
 }
 
 func (j *stepJob) finished() bool {
@@ -207,15 +199,17 @@ func (s *Service) readStepJob(ctx context.Context, where string, args ...any) (*
 	var exit sql.NullInt64
 	var result sql.NullString
 	var tail sql.NullString
+	var started sql.NullInt64
 	// #nosec G202 -- where is one of two fixed conditions; values are bound
-	err := s.db.R.QueryRowContext(ctx, `SELECT j.id, j.state, j.exit_code, j.result, j.error,
+	err := s.db.R.QueryRowContext(ctx, `SELECT j.id, j.state, j.exit_code, j.result, j.error, j.created_at, j.started_at,
 		(SELECT CAST(substr(CAST(l.text AS BLOB), -`+fmt.Sprint(jobTailBytes)+`) AS TEXT) FROM runner_job_logs l WHERE l.job_id = j.id)
-		FROM runner_jobs j WHERE `+where, args...).Scan(&j.ID, &j.State, &exit, &result, &j.Error, &tail)
+		FROM runner_jobs j WHERE `+where, args...).Scan(&j.ID, &j.State, &exit, &result, &j.Error, &j.CreatedAt, &started, &tail)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	} else if err != nil {
 		return nil, err
 	}
+	j.StartedAt = started.Int64
 	if exit.Valid {
 		c := int(exit.Int64)
 		j.Exit = &c
@@ -324,8 +318,6 @@ func (c *StepCtx) runnerOwnerName(id int64) string {
 	return "its owner"
 }
 
-// ---- agent_task ----
-
 // modelFailureWords in a failed job's message or output say the model, not
 // the work, was the problem: a limit, an outage, a missing model or sign-in.
 var modelFailureWords = []string{"rate limit", "rate-limit", "429", "529", "quota", "usage limit", "overloaded", "model not found", "unknown model",
@@ -400,11 +392,10 @@ type agentOutcome struct {
 // the automation's when no project has the repo.
 func (c *StepCtx) jobProject(r *stepRepo) (int64, error) {
 	if r != nil && r.Forge != nil {
-		// The step's own project, when it has the repository.
 		if pid := c.stepProject(); c.Automation != nil && pid != 0 {
 			var n int
 			if err := c.S.db.R.QueryRowContext(c.Ctx, `SELECT COUNT(*) FROM project_repos WHERE project_id = ? AND forge_id = ? AND repo = ? COLLATE NOCASE`, pid, r.Forge.ID, r.Repo).Scan(&n); err != nil {
-				return 0, err // unread is not "another project's" (WP-1406)
+				return 0, err
 			}
 			if n > 0 {
 				return pid, nil
@@ -412,7 +403,7 @@ func (c *StepCtx) jobProject(r *stepRepo) (int64, error) {
 		}
 		id, err := c.S.attachedProject(c.Ctx, c.S.db.R, r.Forge.ID, r.Repo)
 		if err != nil {
-			return 0, err // not the automation's project: that would file the job under the wrong one
+			return 0, err
 		}
 		if id != 0 {
 			return id, nil
@@ -696,7 +687,6 @@ func exitNote(code int) string {
 // protected-path check must see the name the runner saw.
 func anyFileStrings(v any) []string {
 	if s, ok := v.(string); ok {
-		// One name per line; commas and blanks are part of a name.
 		var out []string
 		for _, f := range strings.Split(s, "\n") {
 			if f != "" {

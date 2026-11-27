@@ -1,7 +1,3 @@
-// CI over time (WP-490): how the runs and jobs the server keeps fared by day
-// or week, and the last seven days against the seven before, so a change to
-// CI or the runners can be read as faster or slower than before.
-
 import { useEffect, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useSearch } from '@tanstack/react-router'
@@ -130,7 +126,6 @@ function Report({ h }: { h: CIHistory }) {
       ? `Week of ${new Date(p.at).toLocaleDateString(undefined, short)}`
       : new Date(p.at).toLocaleDateString(undefined, { ...short, weekday: 'short' }),
   )
-  // Buckets before the first job kept have no data, not zero jobs.
   const since = h.since ? new Date(h.since).getTime() : 0
   const kept = (p: CIHistoryPoint) => new Date(p.to).getTime() > since
   const col = (f: (p: CIHistoryPoint) => number | null) => pts.map((p) => (kept(p) ? f(p) : null))

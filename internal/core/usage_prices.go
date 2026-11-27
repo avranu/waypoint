@@ -7,12 +7,6 @@ import (
 	"time"
 )
 
-// What a model's tokens would cost on the API (WP-D20). Subscriptions are
-// not billed per token, so this is "API-equivalent": a way to compare
-// models and sessions, not an invoice. Prices are per million tokens,
-// matched to a model id by prefix (the longest wins), and editable by
-// admins. A price of 0 means unknown.
-
 // ModelPrice is one row of the price table.
 type ModelPrice struct {
 	Model        string     `json:"model"` // an id prefix: claude-opus-5-5
@@ -32,7 +26,7 @@ func (p ModelPrice) Cost(input, output, cw5, cw1, cr int64) float64 {
 
 // priceBook finds the price of a model id.
 type priceBook struct {
-	list []ModelPrice // longest model first
+	list []ModelPrice
 }
 
 func newPriceBook(list []ModelPrice) *priceBook {
@@ -122,7 +116,7 @@ func (s *Service) DeleteModelPrice(ctx context.Context, actor *Actor, model stri
 	if err := requireUsageAdmin(actor); err != nil {
 		return err
 	}
-	model = strings.TrimSpace(model) // as SetModelPrice stores it
+	model = strings.TrimSpace(model)
 	return s.write(ctx, actor, func(t *tx) error {
 		r, err := t.ExecContext(ctx, `DELETE FROM model_prices WHERE model = ?`, model)
 		if err != nil {

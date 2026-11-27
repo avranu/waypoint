@@ -2,11 +2,6 @@ package core
 
 import "git.jmann.me/claude/waypoint/internal/core/kernel"
 
-// These are the old names of what moved to package kernel. A file that
-// leaves package core uses kernel directly, new code in core should too,
-// and this file is deleted when its last user is gone (WP-1499 tracks the
-// split and keeps the count of what still uses these).
-
 var (
 	ErrNotFound     = kernel.ErrNotFound
 	ErrForbidden    = kernel.ErrForbidden

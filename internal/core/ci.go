@@ -1,14 +1,5 @@
 package core
 
-// CI is known to Waypoint (WP-D21). Statuses and checks are read per pull
-// request head: when a forge's webhook says one changed, and by polling
-// the head every minute while any check is pending (for two hours after it
-// was first seen, then every ten minutes up to a day for the head of a live
-// pull request: the shared runner queue can take hours, WP-163). When they all settle, ignoring Waypoint's own, pr.ci is
-// emitted once per head: passed, or failed with the failed checks and a
-// link to each log. Failed jobs keep the tail of their log for a bot that
-// fixes CI.
-
 import (
 	"context"
 	"errors"
@@ -23,19 +14,19 @@ import (
 const (
 	ciPollEvery      = time.Minute
 	ciPollWindow     = 2 * time.Hour
-	ciPollSlowEvery  = 10 * time.Minute // past the window, a live pull request's head is read this often (WP-163)
+	ciPollSlowEvery  = 10 * time.Minute
 	ciPollSlowWindow = 24 * time.Hour
 	// Past a day a live pull request's pending head is still read, hourly,
 	// until it settles or the pull request closes: a status webhook the forge
 	// never sent otherwise left a finished run "pending" for good, and its
 	// babysit watching it (one pull request waited 30h).
 	ciPollStaleEvery = time.Hour
-	ciNoChecksWait   = 5 * time.Minute // how long a head with no checks may still get some
+	ciNoChecksWait   = 5 * time.Minute
 
 	CIPending = "pending"
 	CIPassed  = "passed"
 	CIFailed  = "failed"
-	CINone    = "none" // the repo has no checks on this head
+	CINone    = "none"
 )
 
 // PRCheck is one status or check on a pull request's head.
@@ -70,7 +61,7 @@ func (s *Service) trackHead(ctx context.Context, forgeID int64, repo, sha string
 // as a failed "ci / backend (push)" next to "ci / backend (pull_request)".
 // A cancellation with no such sibling still counts as failed.
 func dropSuperseded(checks []CommitCheck) []CommitCheck {
-	ran := map[string]bool{} // job without the event, for checks that didn't fail
+	ran := map[string]bool{}
 	for _, c := range checks {
 		if job, ok := jobOf(c.Name); ok && c.State != CheckFailed {
 			ran[job] = true
@@ -134,15 +125,16 @@ func sameLogStale(kept, now int64) bool { return now != 0 && kept != now }
 func (s *Service) refreshHead(ctx context.Context, f *Forge, repo, sha string) error {
 	cl, ok := s.Forges.(ForgeChecks)
 	if !ok || sha == "" || f.token == "" {
-		return nil // without a token Waypoint can't read a repo's checks
+		return nil
 	}
 	headID, err := s.trackHead(ctx, f.ID, repo, sha)
 	if err != nil {
 		return err
 	}
+	now := s.nowMS()
 	all, err := cl.CommitChecks(ctx, f, repo, sha)
 	if err != nil {
-		_, _ = s.db.W.ExecContext(ctx, `UPDATE ci_heads SET checked_at = ? WHERE id = ?`, s.nowMS(), headID)
+		_, _ = s.db.W.ExecContext(ctx, `UPDATE ci_heads SET checked_at = ? WHERE id = ? AND checked_at < ?`, now, headID, now)
 		return err
 	}
 	s.foreignOwnStatuses(ctx, f, repo, sha, all)
@@ -157,9 +149,7 @@ func (s *Service) refreshHead(ctx context.Context, f *Forge, repo, sha string) e
 	if err := s.db.R.QueryRowContext(ctx, `SELECT seen_at FROM ci_heads WHERE id = ?`, headID).Scan(&seen); err != nil {
 		return err
 	}
-	now := s.nowMS()
 
-	// Logs of checks that failed and whose log isn't kept yet.
 	type keptLog struct {
 		url, log string
 		statusID int64
@@ -179,7 +169,7 @@ func (s *Service) refreshHead(ctx context.Context, f *Forge, repo, sha string) e
 	rows.Close()
 	var need []CommitCheck
 	for _, c := range checks {
-		if k, kept := have[c.Name]; c.State == CheckFailed && (!kept || k.url != c.URL || sameLogStale(k.statusID, c.ID) || (cancelledCheck(c.Description) && !stepFailedLog(k.log))) { // a rerun is another job; a cancelled job's log may still have been growing
+		if k, kept := have[c.Name]; c.State == CheckFailed && (!kept || k.url != c.URL || sameLogStale(k.statusID, c.ID) || (cancelledCheck(c.Description) && !stepFailedLog(k.log))) {
 			need = append(need, c)
 		}
 	}
@@ -206,12 +196,10 @@ func (s *Service) refreshHead(ctx context.Context, f *Forge, repo, sha string) e
 			checks[i].Description = failedThenStopped
 		}
 	}
-	// Only now, with fail-fast cancellations told from real cancels, can a
-	// job's later pass supersede them.
 	checks = dropSuperseded(checks)
 	state := ciState(checks, seen, now)
 	if state == CIPassed && s.fullRunOutstanding(ctx, f, repo, sha, checks) {
-		state = CIPending // the draft tier's green isn't the full run's (WP-158)
+		state = CIPending
 	}
 
 	type prState struct {
@@ -223,6 +211,13 @@ func (s *Service) refreshHead(ctx context.Context, f *Forge, repo, sha string) e
 	}
 	var prs []prState
 	err = s.write(ctx, SystemActor(), func(t *tx) error {
+		var prevChecked int64
+		if err := t.QueryRowContext(ctx, `SELECT checked_at FROM ci_heads WHERE id = ?`, headID).Scan(&prevChecked); err != nil {
+			return err
+		}
+		if prevChecked > now {
+			return nil
+		}
 		for _, c := range checks {
 			if _, err := t.ExecContext(ctx, `INSERT INTO ci_checks(head_id, name, state, url, description, source, job_id, log, updated_at, status_id) VALUES (?,?,?,?,?,?,?,?,?,?)
 				ON CONFLICT(head_id, name) DO UPDATE SET state = excluded.state, url = excluded.url, description = excluded.description,
@@ -232,7 +227,6 @@ func (s *Service) refreshHead(ctx context.Context, f *Forge, repo, sha string) e
 				return err
 			}
 		}
-		// Checks that vanished (a rerun under another name) no longer count.
 		names := make([]any, 0, len(checks)+1)
 		names = append(names, headID)
 		for _, c := range checks {
@@ -285,7 +279,7 @@ func (s *Service) refreshHead(ctx context.Context, f *Forge, repo, sha string) e
 				return err
 			}
 			if (state != CIPassed && state != CIFailed) || p.announced == sha || p.outside {
-				continue // from outside, it sets nothing off (WP-281)
+				continue
 			}
 			if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET ci_announced_sha = ? WHERE id = ?`, sha, p.id); err != nil {
 				return err
@@ -333,9 +327,6 @@ const liveHeadSQL = `EXISTS (SELECT 1 FROM pull_requests p WHERE p.forge_id = h.
 // PollCI reads the heads whose checks are still pending, once a minute.
 func (s *Service) PollCI(ctx context.Context) {
 	now := s.nowMS()
-	// Past the window only the current head of an open or draft pull request
-	// is followed, and less often (hourly past a day); a superseded head keeps
-	// the short limit.
 	rows, err := s.db.R.QueryContext(ctx, `SELECT h.forge_id, h.repo, h.sha FROM ci_heads h WHERE h.state = 'pending' AND (
 			(h.seen_at > ? AND h.checked_at < ?)
 			OR (h.checked_at < CASE WHEN h.seen_at > ? THEN ? ELSE ? END AND `+liveHeadSQL+`)
@@ -388,7 +379,7 @@ func (s *Service) pruneCI(ctx context.Context) {
 	if _, err := s.db.W.ExecContext(ctx, `DELETE FROM ci_job_usage WHERE started_at < ?`, s.nowMS()-ciUsageKeep.Milliseconds()); err != nil {
 		s.log.WarnContext(ctx, "best-effort write failed", "err", err)
 	}
-	s.pruneCIEvidence(ctx) // WP-704
+	s.pruneCIEvidence(ctx)
 }
 
 // onForgeCI handles a webhook that says checks on a commit changed (sha is
@@ -397,7 +388,6 @@ func (s *Service) pruneCI(ctx context.Context) {
 func (s *Service) onForgeCI(ctx context.Context, f *Forge, repo, sha string) {
 	switch id, err := s.attachedProject(ctx, s.db.R, f.ID, repo); {
 	case err != nil:
-		// Not "attached to nothing": the checks are read all the same.
 		if readFault(err) {
 			s.log.WarnContext(ctx, "read the project of a repo whose checks changed", "repo", repo, "err", err)
 		}
@@ -405,7 +395,6 @@ func (s *Service) onForgeCI(ctx context.Context, f *Forge, repo, sha string) {
 		return
 	}
 	if sha != "" {
-		// A candidate's commit (WP-404, WP-1659): its line reads the run.
 		if ref, ok := s.candLineByCommit(ctx, f.ID, repo, sha); ok {
 			s.lineChangedAsync(ref)
 			return
@@ -460,11 +449,10 @@ func (s *Service) afterPRRecorded(ctx context.Context, f *Forge, pr *PullRequest
 		}
 	}
 	if pr.Outside {
-		return // nothing acts on it before a person approves it (WP-281)
+		return
 	}
 	on, _, gerr := s.gateConfigErr(ctx, pr.ForgeID, pr.Repo)
 	if gerr != nil {
-		// Not "gate off": evaluating it reports the same failure and posts nothing.
 		if readFault(gerr) {
 			s.log.WarnContext(ctx, "read a repo's review gate setting", "repo", pr.Repo, "number", pr.Number, "err", gerr)
 		}
@@ -472,8 +460,6 @@ func (s *Service) afterPRRecorded(ctx context.Context, f *Forge, pr *PullRequest
 	if on || gerr != nil || pr.GateState != "" {
 		s.goBG(func() { s.checkPR(bg, pr.ID, "pull request updated") })
 	}
-	// Merge automatically (WP-133) arms, or takes its own arming off, as
-	// the repo's setting says.
 	if s.autoArm(ctx, pr.ID) {
 		s.goBG(func() { s.maybeAutoMerge(bg, pr.ID) })
 	}

@@ -21,8 +21,8 @@ type runForge struct {
 	repo     string
 	statuses []fakeStatus
 	runs     []ActionRun
-	jobs     map[int64][]ActionJob // by run id
-	runsErr  int                   // HTTP status the runs list answers, 0 for 200
+	jobs     map[int64][]ActionJob
+	runsErr  int
 
 	mu       sync.Mutex
 	paths    []string
@@ -33,10 +33,10 @@ type runForge struct {
 type fakeStatus struct {
 	id      int64
 	context string
-	status  string // Forgejo's: pending, success, failure, skipped
+	status  string
 	desc    string
-	run     int64 // run number
-	job     int   // index of the job in the run, by id
+	run     int64
+	job     int
 }
 
 func (s fakeStatus) json(repo string) map[string]any {
@@ -56,7 +56,6 @@ func (g *runForge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(p, "/version"):
 		_ = enc.Encode(map[string]string{"version": "17.0.1"})
 	case strings.HasSuffix(p, "/status"):
-		// The combined status: each context's newest.
 		newest := map[string]fakeStatus{}
 		for _, s := range g.statuses {
 			if o, ok := newest[s.context]; !ok || s.id > o.id {
@@ -77,7 +76,7 @@ func (g *runForge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var list []map[string]any
 		if r.URL.Query().Get("page") == "1" {
 			g.historyN++
-			for i := len(g.statuses) - 1; i >= 0; i-- { // newest first
+			for i := len(g.statuses) - 1; i >= 0; i-- {
 				list = append(list, g.statuses[i].json(g.repo))
 			}
 		}
@@ -172,7 +171,6 @@ func TestRunThatCountsCancelledOlderRun(t *testing.T) {
 		{15, release, "failure", "Has been cancelled", 1705, 1},
 		{16, gone, "failure", "Has been cancelled", 1705, 3},
 		{20, backend, "success", "Successful in 9m", 1713, 0},
-		// deploy: 1713 posted no status for its skip
 	}
 	got, cl, f := g.checks(t)
 	if st := ciState(got, 0, 1<<40); st != CIPassed {

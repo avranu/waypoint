@@ -12,14 +12,9 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// The code half of `wp brief` (ADR3 point 3): from the text of a task or a
-// question, the files, symbols, warnings, tests and doc sections an agent
-// would otherwise grep and sed its way to. Everything here is the index's
-// own data; the task and the records that govern it are the client's.
-
 const (
-	DefaultBriefBudget  = 3000 // tokens for the code part of a full brief
-	CompactBriefBudget  = 900  // tokens for the code part of the brief wp next prints
+	DefaultBriefBudget  = 3000
+	CompactBriefBudget  = 900
 	briefCandidateLimit = 40
 )
 
@@ -119,7 +114,6 @@ func ExtractRefs(title, text string) Refs {
 		in := strings.TrimSpace(m[1])
 		switch {
 		case strings.Contains(in, " "):
-			// `wp brief --budget`: only a leading path could be a name
 			if f := strings.Fields(in)[0]; strings.Contains(f, "/") || fileExtRE.MatchString(f) {
 				addPath(f)
 			}
@@ -189,7 +183,7 @@ func (ix *Index) Brief(ctx context.Context, text string, o BriefOptions) (*Brief
 			var lang string
 			var lines int
 			if ix.db.QueryRow(`SELECT lang, lines FROM files WHERE path = ?`, p).Scan(&lang, &lines) != nil {
-				return nil // a directory, or a file the index doesn't hold
+				return nil
 			}
 			f = &BriefFile{Path: p, Lang: lang, Lines: lines}
 			cands[p] = f
@@ -205,7 +199,6 @@ func (ix *Index) Brief(ctx context.Context, text string, o BriefOptions) (*Brief
 	}
 	br := &Brief{Compact: o.Compact}
 
-	// 1. paths the text names
 	for _, p := range refs.Paths {
 		rel, amb := ix.resolveFile(p)
 		switch {
@@ -220,7 +213,6 @@ func (ix *Index) Brief(ctx context.Context, text string, o BriefOptions) (*Brief
 		}
 	}
 
-	// 2. symbols the text names
 	for _, id := range refs.Idents {
 		hits, err := ix.LookupSymbols(ctx, id, 6)
 		if err != nil {
@@ -238,9 +230,9 @@ func (ix *Index) Brief(ctx context.Context, text string, o BriefOptions) (*Brief
 			pts := 45.0
 			switch {
 			case h.Score < 85:
-				pts = 22 // only a partial name match, but it was in backticks
+				pts = 22
 			case taken > 0:
-				pts = 20 // the same name elsewhere
+				pts = 20
 			}
 			f := add(h.Path, pts, "symbol "+h.Symbol.Qualified())
 			if f == nil {
@@ -256,7 +248,6 @@ func (ix *Index) Brief(ctx context.Context, text string, o BriefOptions) (*Brief
 		}
 	}
 
-	// 3. full text: the title's words alone, then all the words
 	runFTS := func(words []string, weight float64, why string) error {
 		if len(words) == 0 {
 			return nil
@@ -285,14 +276,10 @@ func (ix *Index) Brief(ctx context.Context, text string, o BriefOptions) (*Brief
 		return nil, err
 	}
 
-	// 3b. precedent: files of earlier commits whose subjects say what the
-	// task says
 	for p, pts := range ix.precedent(ctx, o.Title, text, o.Key) {
 		add(p, pts, "past commits on this")
 	}
 
-	// tests and documentation count for less than the code they cover,
-	// unless the text named them
 	for _, f := range cands {
 		switch {
 		case slices.ContainsFunc(f.Why, func(w string) bool { return whyRank(w) == 0 }):
@@ -318,7 +305,6 @@ func (ix *Index) Brief(ctx context.Context, text string, o BriefOptions) (*Brief
 		return out
 	}
 
-	// 4. import neighbours and 5. co-change partners of the best few
 	seeds := 0
 	for _, f := range ranked() {
 		if seeds >= 3 {
@@ -329,7 +315,6 @@ func (ix *Index) Brief(ctx context.Context, text string, o BriefOptions) (*Brief
 		}
 		seeds++
 		base := path.Base(f.Path)
-		// a Go package is imported by half the repository: only a few importers say anything
 		if imp, err := ix.Importers(f.Path); err == nil && (!strings.HasSuffix(f.Path, ".go") || len(imp) <= 3) {
 			n := 0
 			for _, p := range imp {
@@ -339,7 +324,7 @@ func (ix *Index) Brief(ctx context.Context, text string, o BriefOptions) (*Brief
 				}
 			}
 		}
-		if in, _, err := ix.Imports(f.Path); err == nil && !strings.HasSuffix(f.Path, ".go") { // Go imports name packages, not files
+		if in, _, err := ix.Imports(f.Path); err == nil && !strings.HasSuffix(f.Path, ".go") {
 			for _, p := range firstN(in, 4) {
 				add(p, 6, "imported by "+base)
 			}
@@ -497,7 +482,7 @@ func (ix *Index) RenderBrief(b *Brief, budget int) string {
 		return true
 	}
 	if b.Compact {
-		put("Code, best first:\n") // its last line says how to read them
+		put("Code, best first:\n")
 	} else {
 		put("Code: files this points at, best first (wp code show FILE[:SYMBOL] reads them)\n")
 	}
@@ -541,7 +526,6 @@ func (ix *Index) RenderBrief(b *Brief, budget int) string {
 		return out.String()
 	}
 
-	// the bodies of symbols the text names: what it would sed -n for
 	if left := budget - used; left > 200 {
 		ix.fillBodies(b, left*55/100)
 		if len(b.Bodies) > 0 {
@@ -555,12 +539,11 @@ func (ix *Index) RenderBrief(b *Brief, budget int) string {
 			}
 		}
 	}
-	// outlines of the top files with the rest
 	var skipped []string
 	shown := 0
 	for _, f := range b.Files {
 		if shown >= 4 || isTestPath(f.Path) || f.Lines <= 40 {
-			continue // a short file reads whole in one `wp code show`
+			continue
 		}
 		left := budget - used
 		if left < 220 {
@@ -720,7 +703,7 @@ func (o *Outline) briefRender(budget int) string {
 // time someone did something like this, these changed. Commits that name
 // key are the task's own work, not precedent.
 func (ix *Index) precedent(ctx context.Context, title, text, key string) map[string]float64 {
-	rows, err := ix.db.QueryContext(ctx, `SELECT id, subject FROM commits WHERE nfiles <= 25`) // the window is 3000 commits
+	rows, err := ix.db.QueryContext(ctx, `SELECT id, subject FROM commits WHERE nfiles <= 25`)
 	if err != nil {
 		return nil
 	}
@@ -754,7 +737,7 @@ func (ix *Index) precedent(ctx context.Context, title, text, key string) map[str
 		weight[w] = 2 + weight[w]
 	}
 	for w := range weight {
-		if df[w] == 0 || df[w] > 3 && float64(df[w]) > n/8 { // a word in an eighth of them says little
+		if df[w] == 0 || df[w] > 3 && float64(df[w]) > n/8 {
 			delete(weight, w)
 			continue
 		}
@@ -877,7 +860,7 @@ func (ix *Index) weighWords(ctx context.Context, title, text string) (titleWords
 		t.weight = (1 + math.Log(float64(t.tf))) * math.Log(total/df)
 		var named float64
 		if ix.db.QueryRowContext(ctx, `SELECT count(*) FROM docs WHERE docs MATCH ?`, "{path symbols} : "+ftsQuote(t.stem)+"*").Scan(&named) == nil && named > 0 {
-			t.weight *= 4 // a word the code names things with, not only says in comments
+			t.weight *= 4
 		}
 		if t.title {
 			t.weight *= 2
@@ -904,7 +887,7 @@ func stemWord(w string) string {
 			continue
 		}
 		if n := len(st); n >= 5 && st[n-1] == st[n-2] && !strings.ContainsRune("aeiouls", rune(st[n-1])) {
-			st = st[:n-1] // babysitt -> babysit
+			st = st[:n-1]
 		}
 		return st
 	}

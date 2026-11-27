@@ -16,7 +16,7 @@ import (
 type twoForks struct {
 	*shipForge
 	heads  map[string]bool
-	during func() // while the forge is being asked
+	during func()
 }
 
 func (g *twoForks) ForkedTwice(ctx context.Context, f *Forge, repo, tip, head string) (bool, error) {
@@ -205,5 +205,27 @@ func TestForkedTwiceLeavesAClosedPullRequest(t *testing.T) {
 	be.s.Wait()
 	if u := be.sg.updatedPRs(); len(u) != 0 {
 		t.Fatalf("updated a closed pull request: %v", u)
+	}
+}
+
+// A pull request whose babysit has a step running is passed over: the job
+// that walks the pull requests on a base doesn't wait for the step.
+func TestForkedTwicePassesOverALockedBabysit(t *testing.T) {
+	be := newBabysitEnvOn(t, "forgejo")
+	be.sg.files[".forgejo/workflows/ci.yml"] = ciOnEdit
+	be.runnerOnline()
+	const head = "7777777aaaa"
+	be.queuedDraft(7, "add-export", head)
+	be.sg.behind = map[string]bool{head: true}
+	be.s.Forges = &twoForks{shipForge: be.sg, heads: map[string]bool{head: true}}
+	id := be.pr(7).ID
+	unlock := be.s.babysitLocks.lock(id)
+	defer unlock()
+	within(t, "mergeBaseBehindFront", func() { be.s.mergeBaseBehindFront(be.ctx, be.f, id) })
+	if u := be.sg.updatedPRs(); len(u) != 0 {
+		t.Fatalf("updated under a running step: %v", u)
+	}
+	if note := be.pr(7).armedNote; note != "" {
+		t.Fatalf("armed_note = %q", note)
 	}
 }

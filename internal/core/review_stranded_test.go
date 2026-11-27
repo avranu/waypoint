@@ -6,9 +6,6 @@ import (
 	"time"
 )
 
-// A round that never ran still ends with its pull request, once its run or
-// session is over or the session has moved on to another task (WP-1325).
-
 // strandedEnv is a task shipped and held for its review, then left with no
 // autopilot step and its run ended, as a session's end or a person's /clear
 // leaves it.
@@ -41,7 +38,7 @@ func TestStrandedRoundOpensItsPR(t *testing.T) {
 				}
 			}
 			a.setClock(a.clockNow().Add(heldStopLost + time.Minute))
-			a.s.sweepRounds(a.ctx) // a pending round ends first (decideRound: doEnd)
+			a.s.sweepRounds(a.ctx)
 			a.s.sweepRounds(a.ctx)
 			created, _, _, _ := g.snapshot()
 			if len(created) != 1 || !strings.Contains(created[0].Body, "without an adversarial review") || !strings.Contains(created[0].Body, "What changed.") {
@@ -84,8 +81,6 @@ func TestStrandedRoundLeftAlone(t *testing.T) {
 			t.Fatalf("opened %d", n)
 		}
 	})
-	// A resolved task needs no pull request, and a task with a newer review
-	// round is that round's: it is pending, or its own end decides.
 	for name, change := range map[string]string{
 		"the task is resolved": `UPDATE issues SET resolved_at = ?2 WHERE id = (SELECT issue_id FROM work_log WHERE id = ?1)`,
 		"a newer round of the task": `INSERT INTO work_log(kind, session_id, run_id, issue_id, state, prompt, created_at, updated_at)
@@ -147,7 +142,6 @@ func TestStrandedRoundBacksOff(t *testing.T) {
 		RoundFailed, a.clockNow().UnixMilli(), `{"project":"APP","repo":"acme/missing","branch":"gone"}`, first); err != nil {
 		t.Fatal(err)
 	}
-	// A later task, stranded the same way.
 	second := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "Second", Agent: "claude"})
 	if _, err := a.s.AgentTake(a.ctx, a.ag, second.Key, ""); err != nil {
 		t.Fatal(err)
@@ -163,8 +157,8 @@ func TestStrandedRoundBacksOff(t *testing.T) {
 	}
 	a.lapse(heldStopLost + time.Minute)
 
-	a.s.sweepRounds(a.ctx) // the later round, pending, ends first
-	a.s.sweepRounds(a.ctx) // then it opens; the first fails
+	a.s.sweepRounds(a.ctx)
+	a.s.sweepRounds(a.ctx)
 	if n := a.opened(g); n != 1 {
 		t.Fatalf("opened %d on the first sweep", n)
 	}
@@ -176,12 +170,12 @@ func TestStrandedRoundBacksOff(t *testing.T) {
 	if n1 != 1 || next <= a.clockNow().UnixMilli() {
 		t.Fatalf("no back-off recorded: %d tries, next %d", n1, next)
 	}
-	a.s.sweepRounds(a.ctx) // backing off: not tried again
+	a.s.sweepRounds(a.ctx)
 	if n2, again := tries(); n2 != 1 || again != next {
 		t.Errorf("tried again inside its back-off: %d tries, next %d then %d", n2, next, again)
 	}
 	a.lapse(shipBackoff(1) + time.Minute)
-	a.s.sweepRounds(a.ctx) // after it: tried again
+	a.s.sweepRounds(a.ctx)
 	if n3, _ := tries(); n3 != 2 {
 		t.Errorf("not tried again after its back-off: %d tries", n3)
 	}
@@ -206,7 +200,7 @@ func TestStrandedRoundOfASessionThatMovedOn(t *testing.T) {
 		t.Fatalf("round = %+v, opened %d", r, a.opened(g))
 	}
 	a.lapse(heldStopLost + time.Minute)
-	a.s.sweepRounds(a.ctx) // the pending round ends first
+	a.s.sweepRounds(a.ctx)
 	a.s.sweepRounds(a.ctx)
 	if n := a.opened(g); n != 1 {
 		t.Fatalf("opened %d", n)

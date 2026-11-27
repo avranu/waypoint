@@ -50,7 +50,7 @@ func TestLogStoreAcrossRestart(t *testing.T) {
 	r1.add(c.t.Add(5*time.Minute), slog.LevelWarn, "before-warn", "")
 	r1.Close()
 
-	c.t = c.t.Add(4 * time.Hour) // a deploy at 11:00
+	c.t = c.t.Add(4 * time.Hour)
 	r2 := persistedRing(t, dir, c, 100, 0, 0)
 	r2.add(c.t, slog.LevelInfo, "after-0", "")
 	r2.add(c.t.Add(time.Minute), slog.LevelInfo, "after-1", "pr=me/app#377")
@@ -62,12 +62,10 @@ func TestLogStoreAcrossRestart(t *testing.T) {
 	if !oldest.Equal(time.Date(2026, 11, 11, 7, 0, 0, 0, time.UTC)) {
 		t.Errorf("oldest = %v", oldest)
 	}
-	// The newest Limit across both, the count of all.
 	recs, matched, _ = r2.query(LogQuery{Since: c.t.Add(-6 * time.Hour), Limit: 3})
 	if got := msgs(recs); got != "before-warn,after-0,after-1" || matched != 8 {
 		t.Errorf("limit 3: %d %s", matched, got)
 	}
-	// Grep and level apply to the files' records too.
 	recs, matched, _ = r2.query(LogQuery{Since: c.t.Add(-6 * time.Hour), Grep: regexp.MustCompile(`#377`)})
 	if got := msgs(recs); got != "before-0,before-1,before-2,before-3,before-4,after-1" || matched != 6 {
 		t.Errorf("grep: %d %s", matched, got)
@@ -76,28 +74,22 @@ func TestLogStoreAcrossRestart(t *testing.T) {
 	if got := msgs(recs); got != "before-warn" {
 		t.Errorf("level warn: %s", got)
 	}
-	// A window wholly before the restart.
 	recs, _, _ = r2.query(LogQuery{Since: c.t.Add(-4 * time.Hour), Until: c.t.Add(-238 * time.Minute)})
 	if got := msgs(recs); got != "before-0,before-1,before-2" {
 		t.Errorf("window: %s", got)
 	}
-	// A query the ring covers doesn't need the files, and says the ring's oldest.
 	recs, _, oldest = r2.query(LogQuery{Since: c.t})
 	if got := msgs(recs); got != "after-0,after-1" || !oldest.Equal(c.t) {
 		t.Errorf("recent: %s from %v", got, oldest)
 	}
-	// Status's queries want only the newest: with the ring holding enough,
-	// the files aren't read, so only the ring's count.
 	recs, matched, _ = r2.query(LogQuery{Since: c.t.Add(-6 * time.Hour), Limit: 1, Newest: true})
 	if got := msgs(recs); got != "after-1" || matched != 2 {
 		t.Errorf("newest: %d %s", matched, got)
 	}
-	// Not enough in the ring: the files fill the rest.
 	recs, _, _ = r2.query(LogQuery{Since: c.t.Add(-6 * time.Hour), Limit: 3, Newest: true})
 	if got := msgs(recs); got != "before-warn,after-0,after-1" {
 		t.Errorf("newest from the files: %s", got)
 	}
-	// Status: what the files hold.
 	f := r2.files()
 	if f == nil || f.Since == nil || !f.Since.Equal(time.Date(2026, 11, 11, 7, 0, 0, 0, time.UTC)) || f.Bytes == 0 || f.Days != DefaultLogDays {
 		t.Errorf("files = %+v", f)
@@ -109,7 +101,7 @@ func TestLogStoreAcrossRestart(t *testing.T) {
 func TestLogStoreDayRollover(t *testing.T) {
 	dir := t.TempDir()
 	c := &testClock{time.Date(2026, 11, 10, 23, 59, 0, 0, time.UTC)}
-	r := persistedRing(t, dir, c, 2, 0, 0) // a ring of two: the rest only on disk
+	r := persistedRing(t, dir, c, 2, 0, 0)
 	r.add(c.t, slog.LevelInfo, "late", "")
 	r.add(c.t.Add(30*time.Second), slog.LevelInfo, "later", "")
 	c.t = c.t.Add(2 * time.Minute)
@@ -150,19 +142,15 @@ func TestLogStoreTidy(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	day("2026-09-01", 10) // past the 30 days
+	day("2026-09-01", 10)
 	day("2026-11-01", 50)
 	day("2026-11-09", 50)
-	day("2026-11-11", 10000) // today, big
-	// Not the store's: kept, whatever their names.
+	day("2026-11-11", 10000)
 	for _, name := range []string{"notes.txt", "waypoint-notes.tmp", "waypoint-2026-11-08.jsonl.tmp"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("not a log"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// What a crash or a failed remove leaves, hidden from the listing: a
-	// gzip's temporary file (for a day still plain, and one long gone), and
-	// a plain copy beside its finished gzip.
 	day("2026-11-10", 5)
 	for _, name := range []string{"waypoint-2026-11-09.jsonl.gz.tmp", "waypoint-2026-10-20.jsonl.gz.tmp"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("half a gzip"), 0o600); err != nil {
@@ -184,7 +172,6 @@ func TestLogStoreTidy(t *testing.T) {
 		t.Errorf("files %s, want %s", got, want)
 	}
 
-	// Over the size: the oldest go first, today never.
 	r = persistedRing(t, dir, c, 10, 30, 1)
 	r.Close()
 	if got, want := dirNames(t, dir), "notes.txt,waypoint-2026-11-08.jsonl.tmp,waypoint-2026-11-11.jsonl,waypoint-notes.tmp"; got != want {
@@ -227,9 +214,8 @@ func TestLogStoreRedactsLate(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Errorf("mode %v", info.Mode().Perm())
 	}
-	// The record after the cut line is on disk too, not merged into it.
 	r2.Close()
-	if got := diskMsgs(t, dir); got != "forge token late-secret-abcdef in a message,after" { // as written: blanked on query
+	if got := diskMsgs(t, dir); got != "forge token late-secret-abcdef in a message,after" {
 		t.Errorf("on disk: %s", got)
 	}
 }
@@ -244,13 +230,13 @@ func TestLogStoreRecoversFromWriteError(t *testing.T) {
 	st := r.store
 	waitWritten(t, st)
 	st.mu.Lock()
-	_ = st.f.Close() // the disk goes away under the writer
+	_ = st.f.Close()
 	st.mu.Unlock()
 	r.add(c.t.Add(time.Second), slog.LevelInfo, "lost", "")
 	waitWritten(t, st)
 	r.add(c.t.Add(2*time.Second), slog.LevelInfo, "back", "")
 	r.Close()
-	if got := diskMsgs(t, dir); got != "first,back,log records dropped: the log file writer fell behind or failed" { // the marker says the gap
+	if got := diskMsgs(t, dir); got != "first,back,log records dropped: the log file writer fell behind or failed" {
 		t.Errorf("on disk: %s", got)
 	}
 }
@@ -267,7 +253,7 @@ func TestLogStoreCountsUnopenedFile(t *testing.T) {
 	}
 	r := persistedRing(t, dir, c, 100, 0, 0)
 	r.add(c.t, slog.LevelInfo, "first", "")
-	r.add(c.t.Add(2*time.Minute), slog.LevelInfo, "lost", "") // the rollover's open fails
+	r.add(c.t.Add(2*time.Minute), slog.LevelInfo, "lost", "")
 	waitWritten(t, r.store)
 	if err := os.Remove(blocked); err != nil {
 		t.Fatal(err)
@@ -278,11 +264,10 @@ func TestLogStoreCountsUnopenedFile(t *testing.T) {
 		t.Errorf("on disk: %s", got)
 	}
 
-	// Nothing opens again before close: close writes the marker.
 	if err := os.Mkdir(filepath.Join(dir, "waypoint-2026-11-13.jsonl"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	r.add(c.t.Add(25*time.Hour), slog.LevelInfo, "lost-too", "") // 11-13: its open fails too
+	r.add(c.t.Add(25*time.Hour), slog.LevelInfo, "lost-too", "")
 	waitWritten(t, r.store)
 	if err := os.Remove(filepath.Join(dir, "waypoint-2026-11-13.jsonl")); err != nil {
 		t.Fatal(err)
@@ -313,7 +298,7 @@ func waitWritten(t *testing.T, st *logStore) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	time.Sleep(20 * time.Millisecond) // the record taken is written under mu
+	time.Sleep(20 * time.Millisecond)
 	st.mu.Lock()
 	st.flush()
 	st.mu.Unlock()
@@ -341,7 +326,7 @@ func TestLogRingNoStore(t *testing.T) {
 	if msgs(recs) != "x" {
 		t.Errorf("got %s", msgs(recs))
 	}
-	r.Close() // no-op
+	r.Close()
 }
 
 func dirNames(t *testing.T, dir string) string {

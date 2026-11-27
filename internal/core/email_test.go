@@ -127,7 +127,6 @@ func TestEmailSettings(t *testing.T) {
 	if err != nil || !es.Configured || es.Port != 465 || !es.HasPassword || es.Password != "" || es.From != "Waypoint <wp@example.com>" {
 		t.Fatalf("set: %+v %v", es, err)
 	}
-	// An empty password keeps the one set; clearing removes it.
 	if es, _ = e.s.SetEmailSettings(e.ctx, e.admin, EmailSettingsInput{Host: "smtp.example.com", Port: 2525, Username: "wp", From: "wp@example.com"}); !es.HasPassword || es.Port != 2525 {
 		t.Errorf("kept password: %+v", es)
 	}
@@ -177,7 +176,6 @@ func TestEmailCatalogAndAction(t *testing.T) {
 		t.Fatalf("run failed: %q", r.Error)
 	}
 	got := srv.received()
-	// robin is both an admin and in "to": one email each, to two addresses.
 	if len(got) != 2 {
 		t.Fatalf("sent %d emails: %+v", len(got), got)
 	}
@@ -198,7 +196,6 @@ func TestEmailCatalogAndAction(t *testing.T) {
 		}
 	}
 
-	// Saving a rule with nobody to email, or a bad address, is refused.
 	for _, act := range []Action{{Type: "email", Message: "x"}, {Type: "email", Extra: map[string]any{"to": "nope"}}} {
 		if _, err := e.s.CreateAutomation(e.ctx, e.admin, p.Key, AutomationInput{Name: ptr("Bad " + strconv.Itoa(len(act.Extra))), Rule: &Rule{Trigger: Trigger{Event: "manual"}, Actions: []Action{act}}}); err == nil {
 			t.Errorf("saved %+v", act)

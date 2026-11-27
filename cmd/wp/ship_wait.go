@@ -8,11 +8,6 @@ import (
 	"time"
 )
 
-// A wp ship held for its review round waits on the server for the round's next
-// step and prints it, instead of exiting so that every step costs the agent a
-// turn end, a reply and a typed prompt (WP-1669). Run in the background (Claude
-// Code moves a long command there itself), the agent is woken when it exits.
-
 // shipWaitDefault bounds the wait. shipWaitMax is the longest it may run
 // from the start of the wp ship process: it stays under shipBgFresh so a
 // marker written at its end still counts for the background call. Claude Code
@@ -42,7 +37,10 @@ type shipNews struct {
 	Outcome string  `json:"outcome"` // findings, pull, ended, waiting, none
 	Text    string  `json:"text"`
 	IDs     []int64 `json:"ids"` // the messages of findings: waitHeldShip acks them once printed
-	Pull    *struct {
+	// Checks: the answer is to a wait for a pull request's checks. A server
+	// without that wait never sets it (WP-1878).
+	Checks bool `json:"checks"`
+	Pull   *struct {
 		Repo   string `json:"repo"`
 		Number int    `json:"number"`
 		URL    string `json:"url"`
@@ -65,9 +63,9 @@ func (c *cli) canWaitShip(so shipOpts, o *openedPR) bool {
 type waitStop int
 
 const (
-	stopQuiet waitStop = iota // an older server, or no round: nothing to say
-	stopBound                 // the bound passed
-	stopLost                  // retries or the time for them ran out, or a request failed for good
+	stopQuiet waitStop = iota
+	stopBound
+	stopLost
 )
 
 // waitShipNews holds until the task's round has something for the agent, or
@@ -76,7 +74,6 @@ const (
 // waiting.
 func (c *cli) waitShipNews(task string, bound time.Duration, announce func()) (*shipNews, waitStop, error) {
 	announced := false
-	// quit is how a stop reads: silent until the wait was announced.
 	quit := func(why waitStop, err error) (*shipNews, waitStop, error) {
 		if !announced {
 			why = stopQuiet
@@ -89,7 +86,7 @@ func (c *cli) waitShipNews(task string, bound time.Duration, announce func()) (*
 		if err != nil {
 			var ae *apiError
 			if errors.As(err, &ae) && (ae.status == http.StatusNotFound || ae.status == http.StatusMethodNotAllowed) {
-				return true, nil // an older server
+				return true, nil
 			}
 			return false, err
 		}
@@ -103,7 +100,6 @@ func (c *cli) waitShipNews(task string, bound time.Duration, announce func()) (*
 			}
 			return false, nil
 		}
-		// "none", or one this client doesn't know: stop
 		return true, nil
 	})
 	var failed *pollBoundError
@@ -176,7 +172,7 @@ func (c *cli) waitHeldShip(f prOpenFlags, so shipOpts, o *openedPR, raw []byte, 
 	announce := func() {
 		c.println(fmt.Sprintf("Pushed; waiting for %s's review (it can take a while; you are woken when this command exits).", cmpStr(task, "the task")))
 	}
-	n, why, werr := c.waitShipNews(task, min(*so.waitTimeout, shipLeft()), announce)
+	n, why, werr := c.waitShipNews(task, so.waitLeft(), announce)
 	switch {
 	case n == nil:
 		switch why {
@@ -188,7 +184,7 @@ func (c *cli) waitHeldShip(f prOpenFlags, so shipOpts, o *openedPR, raw []byte, 
 		return o, raw, false, nil
 	case n.Outcome == "pull":
 		c.println(cmpStr(n.Text, n.pullLine()))
-		*f.review, *f.force = false, false // the round ran: this only finds its pull request
+		*f.review, *f.force = false, false
 		o2, raw2, err := reopenPR(c, f)
 		if err != nil {
 			return nil, nil, true, err
@@ -198,11 +194,122 @@ func (c *cli) waitHeldShip(f prOpenFlags, so shipOpts, o *openedPR, raw []byte, 
 	if notes := o.heldNotes(); notes != "" {
 		c.println(notes)
 	}
-	// Acked only once written: a ship that dies or can't write before this
-	// leaves the findings queued, and they are typed as before.
 	if _, err := fmt.Fprintln(c.out, n.Text); err != nil {
 		return nil, nil, true, fmt.Errorf("printing the review's findings: %w", err)
 	}
 	c.ackShipNews(task, n.IDs)
 	return o, raw, true, nil
+}
+
+// shipChecksOnce asks the server to hold up to hold for the outcome of the
+// pull request's checks on head, taking at most limit.
+func (c *cli) shipChecksOnce(task string, pull int64, head string, hold, limit time.Duration) (*shipNews, error) {
+	c.longPoll = limit
+	defer func() { c.longPoll = 0 }()
+	raw, err := c.call("POST", "/api/v1/sessions/hook/ship-news", map[string]any{
+		"session_id": c.thisSession(), "machine": machineName(), "task": task, "wait": int(hold.Seconds()), "pull_id": pull, "head": head})
+	if err != nil {
+		return nil, err
+	}
+	var n shipNews
+	if err := jsonInto(raw, &n); err != nil {
+		return nil, err
+	}
+	return &n, nil
+}
+
+// canWaitChecks: wp ship waits on the checks of the pull request it opened
+// when it is the agent's ship in a session with Waypoint's hooks, the wait
+// wasn't switched off, this ship babysits the pull request and nothing else
+// asks the agent's turn (why). Babysitting is what hands a failure to the
+// author, and only the ship's own babysit call gives it this session: an
+// armed ship with --no-babysit has at most the babysit arming starts, with no
+// session, whose failures go to a round, so waiting would hold the turn for
+// nothing.
+func (c *cli) canWaitChecks(so shipOpts, o *openedPR, babysat bool, why string) bool {
+	// shipWork has already returned for --json by the time it asks; the term
+	// is kept so the predicate states the whole rule on its own.
+	return babysat && why == "" && !*so.noWait && !c.asJSON && c.agentHeader() != "" && c.thisSession() != "" && c.server() != "" && c.token() != ""
+}
+
+// olderServer: the answer of a server that predates the wait for checks: no
+// such route, or one that refuses the field it doesn't know.
+func olderServer(e *apiError) bool {
+	return e.status == http.StatusNotFound || e.status == http.StatusMethodNotAllowed ||
+		(e.status == http.StatusBadRequest && strings.Contains(e.msg+e.body, "unknown field") && strings.Contains(e.msg+e.body, "pull_id"))
+}
+
+// checksAfterWait is who takes a failure once the checks wait stops: one in
+// the minute after still comes to this session (ciWaitWindow on the server),
+// as a message that babysitting gives it up to 30 minutes to fix
+// (authorHandBack) before it sends a round.
+const checksAfterWait = "a failure within a minute still comes to this session as a message, to fix within 30 minutes; after that Waypoint's babysitting takes it."
+
+// waitShipChecks is wp ship's wait, after it opened the pull request, for the
+// outcome of the head's first checks (WP-1878). done: a failure was printed
+// for the agent to fix (the ship is over, with no marker, as for review
+// findings). Otherwise the ship goes on: the checks passed, something else
+// has the pull request, the wait ended, or the server doesn't know this wait
+// (it answers without Checks, and the ship stops at "opened" as it did).
+func (c *cli) waitShipChecks(task string, pull int64, number int, head string, bound time.Duration) (done bool, err error) {
+	announced := false
+	var news *shipNews
+	var still string
+	err = longPoll(shipChunk, time.Second, time.Now().Add(bound), func(hold time.Duration, probe bool, limit time.Duration) (bool, error) {
+		n, err := c.shipChecksOnce(task, pull, head, hold, limit)
+		if err != nil {
+			var ae *apiError
+			if errors.As(err, &ae) && olderServer(ae) {
+				return true, nil
+			}
+			return false, err
+		}
+		if !n.Checks {
+			return true, nil
+		}
+		if n.Outcome == "waiting" {
+			still = n.Text
+			if probe {
+				announced = true
+				c.println(fmt.Sprintf("Waiting for PR %d's checks (a failure comes back here for you to fix; you are woken when this command exits).", number))
+			}
+			return false, nil
+		}
+		news = n
+		return true, nil
+	})
+	// A request that failed is said even before the wait was announced: the
+	// author would else take the silence for a ship with nothing to wait for.
+	lostTouch := func(cause error) {
+		what := "Lost touch with Waypoint while waiting"
+		if !announced {
+			what = "Couldn't ask Waypoint to wait"
+		}
+		c.println(fmt.Sprintf("%s for PR %d's checks (%v); %s", what, number, cause, checksAfterWait))
+	}
+	var lost *pollBoundError
+	switch {
+	case errors.As(err, &lost):
+		lostTouch(lost.cause)
+		return false, nil
+	case errors.Is(err, errPollBound):
+		if announced {
+			c.println(cmpStr(still, fmt.Sprintf("PR %d's checks are still running.", number)) + " Stopped waiting here; " + checksAfterWait)
+		}
+		return false, nil
+	case err != nil:
+		lostTouch(err)
+		return false, nil
+	case news == nil:
+		return false, nil
+	}
+	if news.Outcome == "checks_failed" {
+		if _, err := fmt.Fprintln(c.out, news.Text); err != nil {
+			return true, fmt.Errorf("printing the failed checks: %w", err)
+		}
+		c.ackShipNews(task, news.IDs)
+		return true, nil
+	}
+	c.println(news.Text)
+	return false, nil
 }

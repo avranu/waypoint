@@ -13,17 +13,11 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// /wp review (WP-562): where an adversarial review has got to, in figures a
-// person can judge it by (how long each stage has taken, what the auditing
-// model has done lately, how long such stages usually take) and when its
-// findings may come. Read from what Waypoint keeps: no call to the gateway
-// or a model, so it fits in a prompt hook.
-
 // reviewAsk is a /wp review typed in a session: answered after the hook's
 // write, from the database alone.
 type reviewAsk struct {
 	session *AgentSession
-	key     string // a task named after it ("": the session's newest review)
+	key     string
 }
 
 // reviewKeyRE is a task key as /wp review takes one.
@@ -160,7 +154,6 @@ func (s *Service) reviewProgress(ctx context.Context, ask *reviewAsk) string {
 		return fmt.Sprintf("%s is %s.", head, r.state)
 	}
 
-	// Pending: waiting for its turn, a runner, or another model's audit.
 	lines := []string{}
 	auditLeft := time.Duration(0)
 	switch {
@@ -251,9 +244,6 @@ func (s *Service) auditProgress(ctx context.Context, auditID int64, alt string, 
 	hasJob := a.jobID.Valid && q.QueryRowContext(ctx, `SELECT j.state, j.cli, j.runner_name, j.created_at, j.started_at, j.log_size, r.last_seen_at
 		FROM runner_jobs j LEFT JOIN runners r ON r.id = j.runner_id WHERE j.id = ?`, a.jobID.Int64).
 		Scan(&j.state, &j.cli, &j.runner, &j.created, &j.started, &j.logSize, &j.runnerSeen) == nil
-	// Audits through the same CLI (the gateway's, mostly) are the ones to
-	// compare with.
-	// (An agentic prep is a job of the same kind and CLI, and no audit.)
 	runs := durationsOf(ctx, q, `SELECT started_at, finished_at FROM runner_jobs WHERE kind = ? AND source != ? AND state = 'done' AND started_at IS NOT NULL
 		AND finished_at > ? AND (? = '' OR cli = ?) ORDER BY id DESC LIMIT 40`, JobAudit, prepAgentSource, now-reviewStatsSpan.Milliseconds(), j.cli, j.cli)
 	name := fmt.Sprintf("Audit #%d", auditID)
@@ -289,7 +279,6 @@ func (s *Service) auditProgress(ctx context.Context, auditID int64, alt string, 
 		lines = append(lines, "  Audits like it: "+runs.String()+".")
 		wait := time.Duration(0)
 		if j.cli == GatewayCLI && running+ahead >= GatewayTasksInFlight && runs.n > 0 {
-			// Each wave of the slots ahead of it takes about a median run.
 			wait = time.Duration((ahead+1+GatewayTasksInFlight-1)/GatewayTasksInFlight) * runs.p50
 		}
 		return lines, wait + runs.p50

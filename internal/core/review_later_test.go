@@ -161,7 +161,6 @@ func TestLaterFindingsAgentComment(t *testing.T) {
 			t.Errorf("link = %q, want %q", u, want)
 		}
 	}
-	// A later finding that is no longer open leaves the to-do (1255.21).
 	if _, err := pe.s.db.W.ExecContext(pe.ctx, `UPDATE bot_findings SET state = ? WHERE run_id = ? AND placement = ?`, FindingFixed, run.ID, placementLater); err != nil {
 		t.Fatal(err)
 	}

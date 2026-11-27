@@ -1,6 +1,3 @@
-// Usage → Quota: the subscription's seven-day and five-hour windows, as the
-// status line last reported them, and where they are heading at the rate so far.
-
 import { CircleCheck, CircleDashed, TriangleAlert } from 'lucide-react'
 import clsx from 'clsx'
 import { LineChart, Legend, Sparkbars, viz } from '@/components/charts'
@@ -8,7 +5,7 @@ import { Section } from '@/components/ui/misc'
 import { paceText, weekdayTime, type QuotaWindow } from '@/lib/usage-analytics'
 import { relativeTime } from '@/lib/format'
 
-const STEPS = 42 // points across the current window
+const STEPS = 42
 
 export function QuotaSection({
   windows,
@@ -127,7 +124,6 @@ function WeekChart({ w }: { w: QuotaWindow }) {
     while (j + 1 < samples.length && samples[j + 1].t <= t) j++
     used.push(j >= 0 && t <= lastT + step ? samples[j].v : null)
   }
-  // the last sample, on the step it falls in
   const k = Math.min(STEPS - 1, Math.max(0, Math.round((lastT - start) / step)))
   used[k] = samples[samples.length - 1].v
   for (let i = k + 1; i < STEPS; i++) used[i] = null
@@ -145,7 +141,6 @@ function WeekChart({ w }: { w: QuotaWindow }) {
       minute: '2-digit',
     }),
   )
-  // short axis labels: the chart shows as many as fit
   const labels = used.map((_, i) =>
     new Date(start + i * step).toLocaleString(undefined, { weekday: 'short', hour: 'numeric' }),
   )

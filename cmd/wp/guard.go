@@ -15,17 +15,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/sandbox"
 )
 
-// The guard (WP-270, WP-ADR10 layer 2): a PreToolUse hook that refuses, in
-// sessions no person is driving, what an agent must not do on the strength of
-// a task someone else wrote: install software, run code from the web, reach
-// other machines, change the host, write to other repositories, or loosen
-// the guard itself. Searching and reading the web (WebSearch, WebFetch) is
-// allowed (WP-ADR98; WP-1029 weighs limits on it).
-// Local only, no network, no subprocess: it runs before every Bash, Write
-// and Edit call. It fails open on its
-// own errors. WP_GUARD=warn|deny|off in the session's launch environment
-// overrides; an agent can't change its hooks' environment.
-
 // guardMode is "deny", "warn" or "off".
 func guardMode() string {
 	switch m := strings.ToLower(os.Getenv("WP_GUARD")); m {
@@ -80,13 +69,6 @@ func (c *cli) noteAttendanceKind(in hookEventInput, typedKind string, answered b
 	p := strings.TrimSpace(in.Prompt)
 	switch {
 	case strings.HasPrefix(p, autopilotPromptMark) || c.isPastedPrompt(id, p):
-		// The mark here only ever tightens: a prompt that starts with it is
-		// treated as automation's, so a person who types it is refused when
-		// the quota guard stopped the session, and the session is marked
-		// unattended (the guard's stricter rules). It grants nothing and
-		// lifts nothing, so it is not told by the server's record (WP-1370):
-		// this runs before the event is sent, and a refused prompt is never
-		// sent.
 		if refusal = c.guardPrompt(id, true); refusal != "" {
 			return refusal
 		}
@@ -102,16 +84,7 @@ func (c *cli) noteAttendanceKind(in hookEventInput, typedKind string, answered b
 			}
 		})
 	case (p == "/compact" || p == "/exit") && (!answered || typedKind != ""):
-		// Texts Waypoint types with no visible mark, so a person can type
-		// them too. The server's record decides when it answered: a match is
-		// Waypoint's, no match is the person's (the default branch below).
-		// With no answer it is Waypoint's, the side that keeps the unattended
-		// mark and a quota stop.
 	case core.IsKeepWarmPing(p) || harnessPromptMark(p) != "" || core.TypedWaypointAlone(typedKind):
-		// Only the whole ping, not the mark that starts it: a person can type
-		// the mark, and what skips the person's branch below (lifting a stop,
-		// clearing the unattended mark, the refusal in a session nobody types
-		// in) must not be something typing can fake (WP-1370).
 	default:
 		if refusal = c.guardPrompt(id, !personCanType()); refusal != "" {
 			return refusal
@@ -169,7 +142,7 @@ func (c *cli) guardCheck(in hookEventInput) *guardHit {
 		NotebookPath string `json:"notebook_path"`
 	}
 	if len(in.ToolInput) > 0 && json.Unmarshal(in.ToolInput, &ti) != nil {
-		return nil // not a call we can judge
+		return nil
 	}
 	cwd := in.Cwd
 	if cwd == "" {
@@ -242,8 +215,6 @@ func hookClaudeGuard(c *cli, stdin io.Reader, stdout io.Writer) {
 	}
 	mode := guardMode()
 	if kind, text := c.hookRefusalFor(in); kind != "" {
-		// The guard still judges and logs a call refused here, so its finding
-		// is not held back until the retry and guard.log has every hit.
 		var h *guardHit
 		if mode != "off" && c.guardActive(in.SessionID) {
 			h = c.guardCheck(in)
@@ -257,10 +228,8 @@ func hookClaudeGuard(c *cli, stdin io.Reader, stdout io.Writer) {
 			c.logGuard(in, mode, h, hookCountWait(hookGuardTimeout))
 		}
 		c.countNudge(kind, hookCountWait(hookGuardTimeout))
-		return // refused: the command will not run, so no wait claim
+		return
 	}
-	// The call is let through unless the guard denies it below; only then is
-	// `wp agents wait` going to run and claim its agent.
 	if mode == "off" || !c.guardActive(in.SessionID) {
 		c.claimWait(in)
 		return
@@ -272,7 +241,7 @@ func hookClaudeGuard(c *cli, stdin io.Reader, stdout io.Writer) {
 	}
 	_, _ = stdout.Write(guardOutput(mode, h))
 	if mode != "deny" {
-		c.claimWait(in) // a warning only: the call still runs
+		c.claimWait(in)
 	}
 	c.logGuard(in, mode, h, hookCountWait(hookGuardTimeout))
 }
@@ -317,8 +286,6 @@ func (c *cli) refuseUnreadable(stdout io.Writer, why error) {
 	}
 	h := hit(ruleGuard, "a call the guard can't read ("+why.Error()+")", "")
 	_, _ = stdout.Write(guardOutput(mode, h))
-	// Logged and counted as a normal refusal is; the call is unknown, so the
-	// input is empty.
 	c.logGuard(hookEventInput{}, mode, h, hookCountWait(hookGuardTimeout))
 	c.countNudge("guard_unreadable", hookCountWait(hookGuardTimeout))
 }
@@ -378,24 +345,15 @@ func (c *cli) logGuard(in hookEventInput, mode string, h *guardHit, wait time.Du
 	if err := os.MkdirAll(c.dir, 0o700); err != nil {
 		return
 	}
-	// Parallel tool calls refuse in parallel hooks: the lock keeps one hook's
-	// rotation from moving another's fresh log over the full guard.log.1.
-	// The refusal is already written: the lock is tried for wait at most (what
-	// is left before the hook's late point, at most 500 ms, and one try once
-	// late), so a hung holder cannot carry the run past the timeout, which
-	// discards the output.
-	// Without it the line is appended after a rotation only at twice
-	// guardLogMax, a hard cap so the log cannot grow without bound; racing
-	// another hook's rotation then costs at most one old guard.log.1.
 	locked := false
 	if lf, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600); err == nil { // #nosec G304 -- our own state directory
-		defer func() { _ = lf.Close() }() // closing drops the flock
+		defer func() { _ = lf.Close() }()
 		for deadline := time.Now().Add(wait); ; time.Sleep(10 * time.Millisecond) {
 			if ok, err := slotTryLock(lf); ok {
 				locked = true
 				break
 			} else if err != nil {
-				locked = true // no flock here (Windows): rotate unlocked, as before
+				locked = true
 				break
 			} else if time.Now().After(deadline) {
 				break

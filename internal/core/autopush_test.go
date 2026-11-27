@@ -33,7 +33,6 @@ func TestAutoPushRecordedOnStrandedWork(t *testing.T) {
 			t.Errorf("comment lacks %q: %s", want, c)
 		}
 	}
-	// The same commit again: nothing new to say.
 	if res, err := se.s.RecordAutoPush(se.ctx, se.ag, in); err != nil || len(res.Told) != 0 {
 		t.Errorf("repeat = %+v, %v", res, err)
 	}
@@ -53,8 +52,6 @@ func TestAutoPushRecordedOnStrandedWork(t *testing.T) {
 		}
 	}
 
-	// A newer commit that couldn't go: said, and the branch that has the
-	// earlier ones stays named.
 	in.Head, in.Error = "def456", "! [rejected] app-1-triage -> app-1-triage (fetch first)"
 	if res, err := se.s.RecordAutoPush(se.ctx, se.ag, in); err != nil || len(res.Told) != 1 {
 		t.Fatalf("failed push = %+v, %v", res, err)
@@ -67,8 +64,6 @@ func TestAutoPushRecordedOnStrandedWork(t *testing.T) {
 	if w == nil || w.Pushed != branch || !strings.Contains(w.PushError, "rejected") {
 		t.Errorf("stranded = %+v", w)
 	}
-	// wp next mustn't send the next agent to the forge for commits that
-	// aren't there.
 	r = w.ResumeText(se.key)
 	if !strings.Contains(r, "Pushing its latest commits failed") || !strings.Contains(r, "earlier ones are on branch `"+branch+"`") ||
 		strings.Contains(r, "git fetch") || strings.Contains(r, "pushed to branch") {

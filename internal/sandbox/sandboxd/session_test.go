@@ -170,7 +170,6 @@ func TestStartSession(t *testing.T) {
 	run := filepath.Join(r.cfg.RunPath, "s1")
 	var inside []string
 	r.sys.session = func(c unitCall) (int, error) {
-		// What the session sees, while it runs.
 		read := func(name string) string {
 			b, err := os.ReadFile(filepath.Join(run, name))
 			if err != nil {
@@ -206,7 +205,7 @@ func TestStartSession(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(ws, "pkg", "mod"), 0o755); err != nil {
 			t.Error(err)
 		}
-		_ = os.Chmod(filepath.Join(ws, "pkg"), 0o555) // as the Go module cache leaves it
+		_ = os.Chmod(filepath.Join(ws, "pkg"), 0o555)
 		st := h.Handle(sandbox.Request{Op: sandbox.OpStatus}).Status
 		if len(st.Sessions) != 1 || !st.Sessions[0].Running || st.Sessions[0].User != u.Name || st.Sessions[0].Job != 11 {
 			t.Errorf("status while running %+v", st.Sessions)
@@ -234,8 +233,6 @@ func TestStartSession(t *testing.T) {
 		t.Errorf("policy %s", inside[3])
 	}
 
-	// The broker ran as wp-egress with the CA as credentials; the session
-	// as the repo user, contained; the cleaner as the repo user.
 	started, _ := r.sys.calls("waypoint-sb-s1-broker.service")
 	if len(started) != 1 || started[0].UID != 998 || started[0].GID != 998 ||
 		!started[0].has("LoadCredential=ca-key.pem:"+r.cfg.StatePath+"/ca-key.pem") ||
@@ -254,7 +251,6 @@ func TestStartSession(t *testing.T) {
 		t.Errorf("cleaner %+v", cleaned)
 	}
 
-	// Everything's gone: the units, the run dir, the workspace, the record.
 	if !slices.Contains(r.sys.stopped, "waypoint-sb-s1-broker.service") {
 		t.Errorf("stopped %v", r.sys.stopped)
 	}
@@ -296,13 +292,11 @@ func TestStartKeep(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(r.cfg.RunPath, "k1")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the run dir outlived the session: %v", err)
 	}
-	// A kept session can't change its class.
 	other := ss
 	other.Class = sandbox.ClassPerson
 	if resp := start(h, r.startSpec(other)); !strings.Contains(resp.Error, "unattended session") {
 		t.Errorf("class change: %+v", resp)
 	}
-	// The next step, not kept, finds the workspace and clears it after.
 	ss.Keep = false
 	if resp := start(h, r.startSpec(ss)); resp.Error != "" || step != 2 {
 		t.Fatalf("%+v step %d", resp, step)
@@ -311,13 +305,11 @@ func TestStartKeep(t *testing.T) {
 		t.Errorf("the workspace is still there: %v", err)
 	}
 
-	// Kept again, then stopped: a stop clears it.
 	ss.ID = "k2"
 	ss.Keep = true
 	if resp := start(h, r.startSpec(ss)); resp.Error != "" {
 		t.Fatal(resp.Error)
 	}
-	// The repo user can't go while a session holds its workspace.
 	if resp := r.remove(h, u); !strings.Contains(resp.Error, "session") {
 		t.Errorf("remove with a kept session: %+v", resp)
 	}
@@ -330,7 +322,6 @@ func TestStartKeep(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(r.cfg.StorePath, "sessions", "k2")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("stop left the workspace: %v", err)
 	}
-	// Stopping what nobody knows is done.
 	if resp := h.Handle(sandbox.Request{Op: sandbox.OpStop, Session: "k9"}); resp.Error != "" {
 		t.Error(resp.Error)
 	}
@@ -389,7 +380,6 @@ func TestStartRefuses(t *testing.T) {
 	bad("bad id", func(s *sandbox.Spec) { s.Session.ID = "A/../b" }, "session id")
 	bad("wrong op", func(s *sandbox.Spec) { s.Op = sandbox.OpEnsureUsers }, "not start")
 
-	// A replay.
 	sd := r.startSpec(newSession("r2"))
 	if resp := start(h, sd); resp.Error != "" {
 		t.Fatal(resp.Error)
@@ -398,12 +388,10 @@ func TestStartRefuses(t *testing.T) {
 		t.Error("a start spec ran twice")
 	}
 
-	// No wp-egress user.
 	delete(r.sys.users, sandbox.EgressUser)
 	bad("egress user", func(*sandbox.Spec) {}, "wp-egress")
 	r.sys.users[sandbox.EgressUser] = 998
 
-	// A broker that never listens fails the start, and clears it.
 	r.sys.noListen = true
 	h.sessionWait = 100 * time.Millisecond
 	bad("no broker", func(*sandbox.Spec) {}, "didn't listen")
@@ -417,7 +405,6 @@ func TestStartRefuses(t *testing.T) {
 	if st := h.Handle(sandbox.Request{Op: sandbox.OpStatus}).Status; len(st.Sessions) != 0 || len(st.Drift) != 0 {
 		t.Errorf("after refusals: %+v %v", st.Sessions, st.Drift)
 	}
-	// A start without descriptors goes through the socket only.
 	if resp := h.Handle(sandbox.Request{Op: sandbox.OpStart, Spec: r.startSpec(newSession("r3"))}); !strings.Contains(resp.Error, "stdin") {
 		t.Errorf("start via Handle: %+v", resp)
 	}
@@ -438,14 +425,12 @@ func TestStartHangupAndStop(t *testing.T) {
 	running := make(chan struct{}, 1)
 	r.sys.session = blockingSession(running)
 
-	// The runner hangs up: the session stops and is cleared.
 	hangup := make(chan struct{})
 	done := make(chan sandbox.Response, 1)
 	go func() {
 		done <- h.Start(sandbox.Request{Op: sandbox.OpStart, Spec: r.startSpec(newSession("h1"))}, [3]*os.File{}, hangup)
 	}()
 	<-running
-	// The same session can't start twice.
 	if resp := start(h, r.startSpec(newSession("h1"))); !strings.Contains(resp.Error, "running") {
 		t.Errorf("second start: %+v", resp)
 	}
@@ -458,7 +443,6 @@ func TestStartHangupAndStop(t *testing.T) {
 		t.Errorf("the hung-up session's workspace is left: %v", err)
 	}
 
-	// A stop ends a kept session and clears it anyway.
 	ss := newSession("h2")
 	ss.Keep = true
 	go func() { done <- start(h, r.startSpec(ss)) }()
@@ -481,8 +465,6 @@ func TestReconcileSessions(t *testing.T) {
 	if resp := start(h, r.startSpec(ss)); resp.Error != "" {
 		t.Fatal(resp.Error)
 	}
-	// A session the helper died in the middle of: record, workspace and
-	// run dir; a run dir nobody knows; a store dir a stranger owns.
 	if _, err := h.store.sessionDirs("crashed", u.UID, true); err != nil {
 		t.Fatal(err)
 	}
@@ -555,7 +537,6 @@ func TestServeStart(t *testing.T) {
 	if err != nil || *resp.Exit != 7 {
 		t.Fatalf("%+v %v", resp, err)
 	}
-	// The helper closed its copies: the pipes end when ours close.
 	_ = outW.Close()
 	_ = errW.Close()
 	if out, _ := io.ReadAll(outR); string(out) != "out:hello" {
@@ -565,7 +546,6 @@ func TestServeStart(t *testing.T) {
 		t.Errorf("stderr %q", e)
 	}
 
-	// A directory's descriptor would be a way out: refused.
 	dir, _ := os.Open(t.TempDir())
 	defer func() { _ = dir.Close() }()
 	if resp, err := sandbox.Start(context.Background(), sock, r.startSpec(newSession("v2")), dir, outR, errR); err == nil || !strings.Contains(err.Error(), "descriptor 0") {
@@ -575,7 +555,6 @@ func TestServeStart(t *testing.T) {
 		t.Error("a session ran with a directory as stdin")
 	}
 
-	// Cancelling hangs up and the session stops.
 	running := make(chan struct{}, 1)
 	r.sys.session = blockingSession(running)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -646,7 +625,6 @@ func TestUnitProps(t *testing.T) {
 	for _, want := range []string{
 		"TemporaryFileSystem=/:ro", "PrivateNetwork=yes", "PrivateDevices=yes", "NoNewPrivileges=yes", "CapabilityBoundingSet=",
 		"RestrictSUIDSGID=yes", "RestrictNamespaces=yes", "SystemCallErrorNumber=EPERM", "Slice=waypoint-sandbox.slice",
-		// the spike's findings (WP-X8): its own /dev/shm and a 1777 /tmp
 		"TemporaryFileSystem=/tmp:mode=1777,size=2048M /dev/shm:mode=1777,size=512M",
 		"BindPaths=/run/waypoint-sandbox/s1/broker:/run/waypoint-broker",
 		"BindPaths=/store/sessions/s1/ws:/work /store/sessions/s1/home:/home/sandbox",

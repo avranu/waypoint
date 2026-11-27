@@ -1,13 +1,5 @@
 package core
 
-// Conflicts in the merge queue (WP-535): a stack or batch whose run finds
-// that a pull request's head doesn't merge cleanly onto the heads before it
-// says so in its log. That pull request's row ends as a conflict, and while
-// the heads it conflicts with are still ahead of it in the queue, the ones
-// behind it are stacked or batched past it: it yields its place to them, so
-// one conflicting place doesn't hold every stack behind it. It gets its turn
-// at the front once those heads merge, where its conflict round resolves it.
-
 import (
 	"context"
 	"fmt"
@@ -38,7 +30,7 @@ func (s *Service) stackBaseConflict(st *queueStack, h stackHead) {
 	}
 	key := fmt.Sprintf("%d@%s", h.PRID, st.BaseSHA)
 	if v, had := s.baseUpdated.Load(key); had && sameSHA(v.(baseUpdate).from, h.SHA) {
-		return // what the line did with this head at this tip stands
+		return
 	}
 	s.baseUpdated.Store(key, baseUpdate{outcome: upConflict, at: s.now(), from: h.SHA, n: 1})
 	s.nudgeBabysit(h.PRID, false)
