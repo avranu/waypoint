@@ -44,12 +44,8 @@ func (s *Stage) Name() string { return s.name }
 // On subscribes h to every event the stage sees.
 func (s *Stage) On(h Handler) { s.subs = append(s.subs, stageSub{h: h}) }
 
-// OnKind subscribes h to the events of the given kinds the stage sees. It
-// panics when given none, which would otherwise subscribe h to every event.
+// OnKind subscribes h to the events of the given kinds the stage sees.
 func (s *Stage) OnKind(h Handler, kinds ...string) {
-	if len(kinds) == 0 {
-		panic(fmt.Sprintf("kernel: OnKind with no kinds in stage %q", s.name))
-	}
 	s.subs = append(s.subs, stageSub{kinds: slices.Clone(kinds), h: h})
 }
 

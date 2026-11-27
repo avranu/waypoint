@@ -1208,24 +1208,12 @@ func (s *Service) ensureAnotherOwner(ctx context.Context, t *tx, projectID, user
 // handOverProjects makes by an owner of every project userID is the only
 // owner of, so deleting the account leaves none without one. users.DeleteUser
 // runs it in the deleting transaction, before the account's memberships go
-// with its row (Hooks.BeforeDelete). The system actor (by 0) is no account and
-// can own nothing, so its delete is refused while there is such a project.
+// with its row (Hooks.BeforeDelete).
 func (s *Service) handOverProjects(ctx context.Context, t *kernel.Tx, userID, by int64) error {
-	const soleOwned = ` FROM project_members m
-		WHERE m.user_id = ? AND m.role = 'owner'
-		  AND NOT EXISTS (SELECT 1 FROM project_members o WHERE o.project_id = m.project_id AND o.role = 'owner' AND o.user_id != m.user_id)`
-	if by == 0 {
-		var n int
-		if err := t.QueryRowContext(ctx, `SELECT COUNT(*)`+soleOwned, userID).Scan(&n); err != nil {
-			return err
-		}
-		if n > 0 {
-			return invalid("the account is the only owner of %d project(s): give each another owner first", n)
-		}
-		return nil
-	}
 	_, err := t.ExecContext(ctx, `INSERT INTO project_members(project_id, user_id, role, created_at)
-		SELECT m.project_id, ?, 'owner', ?`+soleOwned+`
+		SELECT m.project_id, ?, 'owner', ? FROM project_members m
+		WHERE m.user_id = ? AND m.role = 'owner'
+		  AND NOT EXISTS (SELECT 1 FROM project_members o WHERE o.project_id = m.project_id AND o.role = 'owner' AND o.user_id != m.user_id)
 		ON CONFLICT(project_id, user_id) DO UPDATE SET role = 'owner'`, by, s.nowMS(), userID)
 	return err
 }

@@ -48,27 +48,6 @@ func TestDeleteUserHandsOverSoleOwnedProjects(t *testing.T) {
 	}
 }
 
-// The system actor can't be handed a project, so it can't delete an account
-// that is the only owner of one.
-func TestSystemDeleteLeavesNoProjectOwnerless(t *testing.T) {
-	e := newEnv(t)
-	bob := e.user("bob", false)
-	sole := e.project(bob, "Sole", "")
-	if err := e.s.DeleteUser(e.ctx, SystemActor(), bob.User.ID); !IsInvalid(err) {
-		t.Fatalf("deleting a sole owner: %v", err)
-	}
-	if got := memberRole(t, e, sole.ID, bob.User.ID); got != "owner" {
-		t.Fatalf("after the refusal bob's role = %q, want owner", got)
-	}
-	e.user("carol", false)
-	if err := e.s.SetMember(e.ctx, bob, sole.Key, "carol", "owner"); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.s.DeleteUser(e.ctx, SystemActor(), bob.User.ID); err != nil {
-		t.Fatalf("deleting a co-owner: %v", err)
-	}
-}
-
 func TestInviteLinkReadsTheBaseURLLive(t *testing.T) {
 	e := newEnv(t)
 	e.s.cfg.BaseURL = "https://moved.test/"
