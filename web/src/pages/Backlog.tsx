@@ -245,13 +245,19 @@ function Sections({
     return l
   }, [data])
   const [lists, setLists] = useState<Lists>(server)
+  // Whether the lists on screen are in manual rank: taken with them from the
+  // same response, so a response that lands mid-drag can't pair one list's
+  // order with another's flag.
+  const [manual, setManual] = useState(data.manual_order)
   const [active, setActive] = useState<Issue | null>(null)
   const [crossed, setCrossed] = useState(false)
   const origin = useRef<string | null>(null)
   const throttle = useMoveThrottle()
   useEffect(() => {
-    if (!active) setLists(server)
-  }, [server, active])
+    if (active) return
+    setLists(server)
+    setManual(data.manual_order)
+  }, [server, data.manual_order, active])
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 220, tolerance: 6 } }),
@@ -312,23 +318,23 @@ function Sections({
     }
     const idx = list.findIndex((i) => i.key === e.active.id)
     const issue = list[idx]
-    const moved = from !== sec || (data.manual_order && idx !== oldIdx)
+    const moved = from !== sec || (manual && idx !== oldIdx)
     if (!moved) return setLists(server)
     setLists({ ...base, [sec]: list })
     const sprint =
       sec === BACKLOG ? null : data.sprints.find((s) => sectionId(s.sprint) === sec)!.sprint
-    const after = data.manual_order ? list[idx - 1]?.key : undefined
-    const before = data.manual_order ? list[idx + 1]?.key : undefined
+    const after = manual ? list[idx - 1]?.key : undefined
+    const before = manual ? list[idx + 1]?.key : undefined
+    // The dropped issue leaves the section it came from and the target takes
+    // the list as shown, so no section shows it twice or not at all.
+    const place = (id: string, issues: Issue[]) =>
+      id === sec ? list : id === from ? issues.filter((i) => i.key !== issue.key) : issues
     qc.setQueryData<Backlog>(['backlog', project.key, filter], (b) =>
       b
         ? {
             ...b,
-            backlog:
-              sec === BACKLOG
-                ? list
-                : from === BACKLOG
-                  ? b.backlog.filter((i) => i.key !== issue.key)
-                  : b.backlog,
+            backlog: place(BACKLOG, b.backlog),
+            sprints: b.sprints.map((s) => ({ ...s, issues: place(sectionId(s.sprint), s.issues) })),
           }
         : b,
     )
