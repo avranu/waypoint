@@ -355,10 +355,9 @@ func (c *cli) autoUpdate(ctx context.Context, sv string, err error) {
 // keeps the version a claim named, so its 6-hour backoff stands. A claim
 // (the try begins) replaces the record whatever it said. A result for one
 // release doesn't overwrite another wp's fresh claim on another: that
-// download still runs, and its claim keeps others from starting a third. A
-// state file that can't be read stays as it is: another's claim may be in it.
+// download still runs, and its claim keeps others from starting a third.
 func (c *cli) recordUpdate(sv, result string, claim bool) {
-	_ = c.claimStateWithin(5*time.Second, func(s *State) {
+	_ = c.updateState(func(s *State) {
 		if u := s.Update; !claim && sv != "" && claimLive(u) && u.Server != "" && u.Server != sv {
 			return
 		}
@@ -483,10 +482,9 @@ var backgroundStart = func(exe string, args ...string) bool {
 
 // releaseUpdateClaim removes the claim of a try for server version sv that
 // was cut short (the runner stopped), so a wp command may start it again at
-// once. A record of any other version, or with a result, stays, and so does a
-// state file that can't be read.
+// once. A record of any other version, or with a result, stays.
 func (c *cli) releaseUpdateClaim(sv string) {
-	_ = c.claimStateWithin(5*time.Second, func(s *State) {
+	_ = c.updateState(func(s *State) {
 		if u := s.Update; u != nil && u.Server == sv && u.Result == "started" {
 			s.Update = nil
 		}
