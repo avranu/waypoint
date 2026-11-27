@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"path/filepath"
 	"strings"
@@ -16,7 +17,7 @@ const slowCTE = `WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WH
 func openSlow(t *testing.T) (*DB, *[]SlowStatement) {
 	t.Helper()
 	t.Setenv("WAYPOINT_SLOW_STATEMENT", "20ms")
-	d, err := Open(context.Background(), filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(context.Background(), filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,9 +137,46 @@ func TestSlowStatementWriteTransaction(t *testing.T) {
 	}
 }
 
+func scanIntHelper(r *sql.Row) (int, error) {
+	var n int
+	return n, r.Scan(&n)
+}
+
+func TestSlowStatementCallerAttributedAtStart(t *testing.T) {
+	d, got := openSlow(t)
+	// A shared scan helper must not steal blame from the caller that issued the query.
+	if _, err := scanIntHelper(d.R.QueryRowContext(context.Background(), slowCTE, "arg")); err != nil {
+		t.Fatal(err)
+	}
+	if len(*got) != 1 || !strings.Contains((*got)[0].Caller, "TestSlowStatementCallerAttributedAtStart") || strings.Contains((*got)[0].Caller, "scanIntHelper") {
+		t.Fatalf("scan helper attribution: %+v", *got)
+	}
+
+	// A context-cancelled write transaction is rolled back by database/sql's
+	// awaitDone goroutine; the caller must still be the function that began it.
+	ch := make(chan SlowStatement, 4)
+	d.SetSlowHandler(func(s SlowStatement) { ch <- s })
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	tx, err := d.W.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-ctx.Done()
+	select {
+	case s := <-ch:
+		if !s.Tx || !strings.Contains(s.Caller, "TestSlowStatementCallerAttributedAtStart") {
+			t.Fatalf("cancelled tx attribution: %+v", s)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for cancelled tx slow statement")
+	}
+	_ = tx.Rollback()
+}
+
 func TestSlowStatementOff(t *testing.T) {
 	t.Setenv("WAYPOINT_SLOW_STATEMENT", "0")
-	d, err := Open(context.Background(), filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(context.Background(), filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +198,7 @@ func TestSlowStatementOff(t *testing.T) {
 // A modernc upgrade that adds an interface to its conn, stmt or rows has to be
 // forwarded too, so the wrapper is compared with the driver rather than a list.
 func TestTimedDriverForwardsInterfaces(t *testing.T) {
-	d, err := Open(context.Background(), filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(context.Background(), filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

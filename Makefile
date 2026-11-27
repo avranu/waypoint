@@ -82,8 +82,9 @@ wplint-code: ## Waypoint's own analyzers over cmd and internal (WPLINTPKGS narro
 	$(SLOT) go run ./cmd/wplint $(WPLINTPKGS)
 
 cross-check: ## build wp for windows/amd64 and darwin/arm64 (no output)
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/wp
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o /dev/null ./cmd/wp
+	@CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/wp & p1=$$!; \
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o /dev/null ./cmd/wp & p2=$$!; \
+	rc=0; wait $$p1 || rc=1; wait $$p2 || rc=1; exit $$rc
 
 prepush: prepush-go prepush-ops prepush-web ## CI's lint job, as the pre-push hook runs it
 
