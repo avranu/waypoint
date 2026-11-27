@@ -301,23 +301,32 @@ func (s *Service) keepJobEvidence(ctx context.Context, cl ForgeActionLogs, f *Fo
 
 // keepFailedEvidence reads the evidence of a commit's failed jobs before
 // they are re-run (which replaces their logs): a flaky test's failure is
-// the half of its score the re-run would otherwise erase. Best effort.
+// the half of its score the re-run would otherwise erase. It reads the runs
+// the re-run picks (rerunnableRuns, from the same newest runs when a commit
+// has more than are read), so a run whose logs go is a run read here. Best
+// effort.
 func (s *Service) keepFailedEvidence(ctx context.Context, f *Forge, repo, sha string) {
 	cl, ok := s.Forges.(ForgeActionLogs)
 	if !ok || f.token == "" {
 		return
 	}
 	runs, err := cl.ActionRunsAt(ctx, f, repo, sha)
+	if errors.Is(err, ErrNotFound) {
+		return // GitHub and GitLab: no runs to read this way
+	}
 	if err != nil {
-		s.log.Debug("CI evidence before a re-run: list runs", "repo", repo, "sha", short(sha), "err", err)
-		return
+		s.log.WarnContext(ctx, "CI evidence before a re-run: list runs", "repo", repo, "sha", short(sha), "err", err)
+		if !errors.Is(err, errTooManyRuns) {
+			return
+		}
 	}
 	def := ""
 	defKnown := false
-	for _, run := range runs {
+	redo, _ := rerunnableRuns(runs)
+	for _, run := range redo {
 		jobs, err := cl.ActionJobs(ctx, f, repo, run.ID)
 		if err != nil {
-			s.log.Debug("CI evidence before a re-run: list jobs", "repo", repo, "run", run.Index, "err", err)
+			s.log.WarnContext(ctx, "CI evidence before a re-run: list jobs", "repo", repo, "run", run.Index, "err", err)
 			continue
 		}
 		for _, j := range jobs {

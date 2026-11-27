@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"git.jmann.me/claude/waypoint/internal/core"
@@ -21,6 +22,7 @@ func (s *Server) shippingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/projects/{key}/pulls", a(s.openPull))
 	mux.HandleFunc("POST /api/v1/projects/{key}/pulls/tasks", a(s.checkShipTasks))
 	mux.HandleFunc("POST /api/v1/pulls/{id}/check", a(s.checkPull))
+	mux.HandleFunc("POST /api/v1/pulls/{id}/rerun", a(s.rerunPull))
 	mux.HandleFunc("GET /api/v1/pulls/{id}/readiness", a(s.pullReadiness))
 	mux.HandleFunc("GET /api/v1/pulls/{id}/failed-checks", a(s.failedChecks))
 	mux.HandleFunc("GET /api/v1/pulls/{id}/logs", a(s.pullLogs))
@@ -155,6 +157,21 @@ func (s *Server) checkPull(w http.ResponseWriter, r *http.Request) (any, error) 
 		return nil, err
 	}
 	return s.svc.CheckPullRequest(r.Context(), actorFrom(r), id)
+}
+
+// rerunPull re-runs the failed jobs of the run that counts for each workflow
+// on the head (one count for all), or with ?job= only that one, without a
+// push (WP-1661).
+func (s *Server) rerunPull(w http.ResponseWriter, r *http.Request) (any, error) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		return nil, err
+	}
+	job := strings.TrimSpace(r.URL.Query().Get("job"))
+	if job == "" && r.URL.Query().Has("job") { // not "every failed job"
+		return nil, &core.InvalidError{Msg: "job is blank: give a failed job's name, or leave it out to re-run every failed job"}
+	}
+	return s.svc.RerunPullRequest(r.Context(), actorFrom(r), id, job)
 }
 
 func (s *Server) pullReadiness(w http.ResponseWriter, r *http.Request) (any, error) {

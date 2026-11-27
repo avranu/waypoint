@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -207,28 +208,19 @@ func (c *httpForgeClient) retryForgejo(ctx context.Context, f *Forge, repo, sha 
 	if !ok {
 		return 0, errForgejoNoRerun
 	}
-	var runs struct {
-		Runs []ActionRun `json:"workflow_runs"`
+	redo, _, unread := c.forgejoRunsToRerun(ctx, f, repo, sha)
+	if unread != nil && !errors.Is(unread, errTooManyRuns) {
+		return 0, unread
 	}
-	if err := c.do(ctx, f, http.MethodGet, fmt.Sprintf("/repos/%s/actions/runs?head_sha=%s&limit=50", repo, url.QueryEscape(sha)), nil, &runs); err != nil {
-		return 0, err
-	}
-	counting := countingRuns(runs.Runs)
 	n := 0
-	for _, r := range runs.Runs {
-		if cr, ok := counting[runGroup(r)]; !ok || cr.ID != r.ID {
-			continue
-		}
-		if r.Status != "failure" && r.Status != "cancelled" {
-			continue
-		}
+	for _, r := range redo {
 		m, err := c.rerunForgejoJobs(ctx, f, repo, r.ID)
 		n += m
 		if err != nil {
 			return n, err
 		}
 	}
-	return n, nil
+	return n, unread // older runs not read: said, with what the newest re-ran
 }
 
 // ForgeRunRetry is the optional part of a ForgeClient that re-runs the
@@ -249,42 +241,57 @@ func (c *httpForgeClient) RetryRun(ctx context.Context, f *Forge, repo string, r
 // rerunForgejoJobs re-runs a run's failed and cancelled jobs and says how
 // many it asked to run again.
 func (c *httpForgeClient) rerunForgejoJobs(ctx context.Context, f *Forge, repo string, runID int64) (int, error) {
-	jobs, err := c.ActionJobs(ctx, f, repo, runID)
-	if err != nil {
-		return 0, err
+	names, err := c.rerunForgejoNamed(ctx, f, repo, runID, "", nil)
+	return len(names), err
+}
+
+// rerunForgejoNamed is rerunForgejoJobs for the jobs called only (all of
+// them when it is empty, WP-1661) and says which it asked to run again. jobs
+// are the run's, when the caller has just read them; else they are read here.
+func (c *httpForgeClient) rerunForgejoNamed(ctx context.Context, f *Forge, repo string, runID int64, only string, jobs []ActionJob) ([]string, error) {
+	var err error
+	if jobs == nil {
+		if jobs, err = c.ActionJobs(ctx, f, repo, runID); err != nil {
+			return nil, err
+		}
 	}
-	n := 0
+	var names []string
 	posted := map[int64]bool{}
 	for {
-		j, ok := nextRerun(jobs, posted)
+		j, ok := nextRerun(jobs, posted, only)
 		if !ok {
 			break
 		}
 		if err := c.do(ctx, f, http.MethodPost, fmt.Sprintf("/repos/%s/actions/jobs/%d/rerun", repo, j.ID), nil, nil); err != nil {
-			return n, err
+			return names, err
 		}
 		posted[j.ID] = true
-		n++
+		names = append(names, j.Name)
+		// The re-run reopened the job's dependents. needs names their
+		// workflow keys, which the API doesn't give (a matrix job's name
+		// is not its key), so the jobs are read again rather than
+		// matched: re-running a reopened job is refused.
 		if jobs, err = c.ActionJobs(ctx, f, repo, runID); err != nil {
-			return n, err
+			return names, err
 		}
 	}
-	return n, nil
+	return names, nil
 }
 
 // nextRerun picks the next failed or cancelled job of a run to re-run,
 // leaving one that needs another such job (by a name that is also its key)
-// to that one's re-run.
-func nextRerun(jobs []ActionJob, posted map[int64]bool) (ActionJob, bool) {
-	redo := func(j ActionJob) bool { return j.Status == "failure" || j.Status == "cancelled" }
+// to that one's re-run. only, when set, is the one job name to re-run
+// (any case): a job it doesn't name is neither picked nor left out of the
+// needs check (WP-1661).
+func nextRerun(jobs []ActionJob, posted map[int64]bool, only string) (ActionJob, bool) {
 	failed := map[string]bool{}
 	for _, j := range jobs {
-		if redo(j) {
+		if actionJobFailed(j) {
 			failed[strings.ToLower(j.Name)] = true
 		}
 	}
 	for _, j := range jobs {
-		if redo(j) && !posted[j.ID] && !slices.ContainsFunc(j.Needs, func(need string) bool { return failed[strings.ToLower(need)] }) {
+		if actionJobFailed(j) && !posted[j.ID] && (only == "" || strings.EqualFold(j.Name, only)) && !slices.ContainsFunc(j.Needs, func(need string) bool { return failed[strings.ToLower(need)] }) {
 			return j, true
 		}
 	}

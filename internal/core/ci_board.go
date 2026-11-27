@@ -220,7 +220,15 @@ type ciBoardCache struct {
 	runners  map[int64]ciRunners
 	stall    map[string]ciStall
 	tests    map[string][]string
-	building chan struct{}
+	building *ciBuild
+}
+
+// ciBuild is a snapshot being read: the readers wait on done for snap and
+// err (WP-1851).
+type ciBuild struct {
+	done chan struct{}
+	snap *ciSnapshot
+	err  error
 }
 
 type ciRunners struct {
@@ -301,8 +309,14 @@ func (s *Service) CIBoard(ctx context.Context, actor *Actor) (*CIBoard, error) {
 	return s.layoutCIBoard(ctx, actor, snap), nil
 }
 
-// ciSnapshot returns a snapshot no older than ciBoardFresh; one reader
-// builds it while the others wait.
+// ciSnapshot returns a snapshot no older than ciBoardFresh; one read builds
+// it while the others wait. The read goes on in the background when its
+// caller's context ends first (the caller gets that error), so a viewer who
+// leaves or a deadline doesn't throw away what the others wait for, and a
+// slow forge can't hold a caller past its own time (WP-1851). Callers waiting
+// on a shared read get its error rather than each retrying: a retry per waiter
+// against a failing forge would multiply minute-long reads, and the next
+// caller starts a new read.
 func (s *Service) ciSnapshot(ctx context.Context) (*ciSnapshot, error) {
 	c := &s.ciBoard
 	for {
@@ -312,32 +326,55 @@ func (s *Service) ciSnapshot(ctx context.Context) (*ciSnapshot, error) {
 			c.mu.Unlock()
 			return snap, nil
 		}
-		if c.building == nil {
-			c.building = make(chan struct{})
-			c.mu.Unlock()
-			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
-			snap, err := s.readCI(rctx)
-			cancel()
-			if err == nil {
-				s.notePoolSaturation(snap)
-			}
-			c.mu.Lock()
-			if err == nil {
-				c.snap, c.at = snap, s.now()
-			}
-			close(c.building)
-			c.building = nil
-			c.mu.Unlock()
-			return snap, err
+		b := c.building
+		if b == nil {
+			b = &ciBuild{done: make(chan struct{})}
+			c.building = b
+			go s.buildCISnapshot(context.WithoutCancel(ctx), b)
 		}
-		wait := c.building
 		c.mu.Unlock()
 		select {
-		case <-wait:
+		case <-b.done:
+			return b.snap, b.err
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
 	}
+}
+
+// buildCISnapshot reads the snapshot for b, within a minute.
+func (s *Service) buildCISnapshot(ctx context.Context, b *ciBuild) {
+	c := &s.ciBoard
+	start := time.Now()
+	rctx, cancel := context.WithTimeout(ctx, time.Minute)
+	snap, err := s.readCI(rctx)
+	cancel()
+	if err == nil {
+		s.notePoolSaturation(snap) // WP-509
+	}
+	c.mu.Lock()
+	if err == nil {
+		c.snap, c.at = snap, s.now()
+	}
+	b.snap, b.err = snap, err
+	c.building = nil
+	c.mu.Unlock()
+	close(b.done)
+	if ms := time.Since(start).Milliseconds(); ms >= 5000 || err != nil {
+		s.log.Info("ci snapshot read", "ms", ms, "err", err)
+	}
+}
+
+// staleCISnapshot is the last snapshot read, however old, and its age; nil
+// when none was read yet.
+func (s *Service) staleCISnapshot() (*ciSnapshot, time.Duration) {
+	c := &s.ciBoard
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.snap == nil {
+		return nil, 0
+	}
+	return c.snap, s.now().Sub(c.at)
 }
 
 // ciVisibleRepos are the CI repos actor can see (a project of theirs
@@ -490,18 +527,34 @@ func (s *Service) readCIRepo(ctx context.Context, cl ForgeActions, d *ciRepoData
 	d.active = slices.DeleteFunc(d.active, func(r ActionRun) bool { return !ciPending(r.Status) })
 	d.jobs = map[int64][]ActionJob{}
 	gone := map[int64]bool{}
+	// Each active run needs its own job list. They are read side by side,
+	// ciReadParallel at a time (the semaphore), not one after the other
+	// (WP-1851).
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 	for _, r := range d.active {
-		var jobs []ActionJob
-		err := call(func() (err error) { jobs, err = cl.ActionJobs(ctx, f, repo, r.ID); return err })
-		if noActions(err) {
-			gone[r.ID] = true
-			continue
-		}
-		if err != nil {
-			d.err = err
-			return
-		}
-		d.jobs[r.ID] = jobs
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var jobs []ActionJob
+			err := call(func() (err error) { jobs, err = cl.ActionJobs(ctx, f, repo, r.ID); return err })
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case noActions(err):
+				gone[r.ID] = true // deleted since the list was read: nothing to show (WP-236)
+			case err != nil:
+				if d.err == nil {
+					d.err = err
+				}
+			default:
+				d.jobs[r.ID] = jobs
+			}
+		}()
+	}
+	wg.Wait()
+	if d.err != nil {
+		return
 	}
 	d.active = slices.DeleteFunc(d.active, func(r ActionRun) bool { return gone[r.ID] })
 	var running []ActionTask

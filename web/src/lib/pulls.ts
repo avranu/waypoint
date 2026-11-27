@@ -95,6 +95,8 @@ export type PRTimelineKind =
   | 'changes_requested'
   | 'merged'
   | 'closed'
+  | 'ci_rerun'
+  | 'ci_rerun_result'
   | 'bot_review'
   | 'agent_run'
   | 'issue_status'

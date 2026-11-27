@@ -87,7 +87,12 @@ func (g *runForge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		runs := slices.Clone(g.runs)
-		slices.SortFunc(runs, func(a, b ActionRun) int { return cmpInt64(b.Index, a.Index) })
+		slices.SortFunc(runs, func(a, b ActionRun) int { return cmpInt64(b.Index, a.Index) }) // newest first
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		if page < 1 {
+			page = 1
+		}
+		runs = runs[min((page-1)*50, len(runs)):min(page*50, len(runs))]
 		_ = enc.Encode(map[string]any{"workflow_runs": runs})
 	case runJobsPath.MatchString(p):
 		id, _ := strconv.ParseInt(runJobsPath.FindStringSubmatch(p)[1], 10, 64)

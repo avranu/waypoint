@@ -50,20 +50,20 @@ func (s *Service) ciHostRuns(ctx context.Context, since time.Time) ([]ciHostRun,
 	return out, rows.Err()
 }
 
-func (s *Service) doctorRunnerFindings(ctx context.Context, pool CIDoctorPool, now time.Time, show func(forgeID int64, repo string) bool) []CIFinding {
-	out := s.timeLimitFindings(ctx, now, show)
+// doctorRunnerFindings are the hosts that make no progress or run slow. The
+// jobs that ran out of time are their own step (timeLimitFindings), so a
+// failed read is put down to what it read.
+func (s *Service) doctorRunnerFindings(ctx context.Context, pool CIDoctorPool, now time.Time, show func(forgeID int64, repo string) bool) ([]CIFinding, error) {
 	runs, err := s.ciHostRuns(ctx, now.Add(-doctorHostHistory))
 	if err != nil {
-		s.log.WarnContext(ctx, "ci doctor: read the hosts' runs", "err", err)
-		return out
+		return nil, fmt.Errorf("read the hosts' runs: %w", err)
 	}
 	hosts, err := s.ciHosts(ctx)
 	if err != nil {
-		s.log.WarnContext(ctx, "ci doctor: read the hosts", "err", err)
-		return out
+		return nil, fmt.Errorf("read the hosts: %w", err)
 	}
-	out = append(out, noProgressFindings(runs, hosts, pool, now, show)...)
-	return append(out, slowHostFindings(runs, show)...)
+	out := noProgressFindings(runs, hosts, pool, now, show)
+	return append(out, slowHostFindings(runs, show)...), nil
 }
 
 // noProgressFindings: a host with jobs running where every one of them has
@@ -226,12 +226,11 @@ func slowHostFindings(runs []ciHostRun, show func(int64, string) bool) []CIFindi
 
 // timeLimitFindings are the jobs that ran out of their workflow's
 // timeout-minutes in the last day, from their kept logs.
-func (s *Service) timeLimitFindings(ctx context.Context, now time.Time, show func(int64, string) bool) []CIFinding {
+func (s *Service) timeLimitFindings(ctx context.Context, now time.Time, show func(int64, string) bool) ([]CIFinding, error) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT h.forge_id, h.repo, c.name, c.url, c.log FROM ci_checks c JOIN ci_heads h ON h.id = c.head_id
 		WHERE c.state = 'failed' AND c.updated_at >= ? AND c.log LIKE '%unable to copy%'`, now.Add(-doctorTimeLimits).UnixMilli())
 	if err != nil {
-		s.log.WarnContext(ctx, "ci doctor: read jobs' time limits", "err", err)
-		return nil
+		return nil, fmt.Errorf("read jobs' time limits: %w", err)
 	}
 	type seen struct {
 		forge      int64
@@ -256,7 +255,14 @@ func (s *Service) timeLimitFindings(ctx context.Context, now time.Time, show fun
 			all = append(all, c)
 		}
 	}
+	err = rows.Err()
 	rows.Close()
+	if err != nil {
+		return nil, fmt.Errorf("read jobs' time limits: %w", err)
+	}
+	// show and nameFaultHost query too, so only once the rows are closed: a
+	// query while they are open holds a second reader, and with every reader
+	// held so, none is left for it.
 	var order []string
 	groups := map[string]*seen{}
 	var faults []*RunnerFault
@@ -295,7 +301,7 @@ func (s *Service) timeLimitFindings(ctx context.Context, now time.Time, show fun
 			Title:  fmt.Sprintf("%s %s hit its time limit %d time%s in the last day", g.repo, g.name, g.n, plural(g.n)),
 			Detail: detail, URL: g.url, key: "job_time_limit:" + k})
 	}
-	return out
+	return out, nil
 }
 
 // NotifyCI is the notification kind of a CI health finding.
@@ -328,8 +334,18 @@ func (s *Service) SweepCIHealth(ctx context.Context) {
 		s.log.WarnContext(ctx, "CI health: read the doctor", "err", err)
 		return
 	}
+	// Part of CI wasn't read: findings missing from it haven't cleared, so
+	// nothing is forgotten. What was found is still told, but for the pool's
+	// findings when the forge wasn't read (WP-1851).
+	partial := len(d.Missing) > 0
+	if partial {
+		s.log.WarnContext(ctx, "CI health: the doctor was partial", "missing", d.Missing)
+	}
 	var due []CIFinding
 	for _, f := range d.Findings {
+		if d.forgeUnread && (f.Kind == "pool" || f.Kind == "pool_no_progress") {
+			continue
+		}
 		if f.Level == "problem" && ciNotifyKinds[f.Kind] {
 			due = append(due, f)
 		}
@@ -345,12 +361,13 @@ func (s *Service) SweepCIHealth(ctx context.Context) {
 			}
 		}
 	}
-	s.notifyCIHealth(ctx, admins, due)
+	s.notifyCIHealth(ctx, admins, due, !partial)
 }
 
 // notifyCIHealth tells the admins of each finding not told about in the last
-// ciNotifyEvery, and forgets those that have cleared.
-func (s *Service) notifyCIHealth(ctx context.Context, admins []int64, due []CIFinding) {
+// ciNotifyEvery, and forgets those that have cleared; forget is false when
+// due is not the whole list.
+func (s *Service) notifyCIHealth(ctx context.Context, admins []int64, due []CIFinding, forget bool) {
 	now := s.now()
 	last := map[string]int64{}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT key, value FROM server_settings WHERE key >= ? AND key < ?`, ciNotifiedKey, ciNotifiedKey+"\xff")
@@ -381,6 +398,9 @@ func (s *Service) notifyCIHealth(ctx context.Context, admins []int64, due []CIFi
 			s.notifyURL(ctx, id, nil, NotifyCI, f.Title, body, "/ci")
 		}
 		s.putSetting(ctx, k, itoa64(now.UnixMilli()))
+	}
+	if !forget {
+		return
 	}
 	for k, at := range last {
 		if !seen[k] && now.Sub(msTime(at)) >= ciNotifyEvery {

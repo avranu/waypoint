@@ -298,18 +298,18 @@ func TestNotifyCIHealthOncePerWindow(t *testing.T) {
 		}
 		return n
 	}
-	be.s.notifyCIHealth(be.ctx, admins, []CIFinding{f})
-	be.s.notifyCIHealth(be.ctx, admins, []CIFinding{f})
+	be.s.notifyCIHealth(be.ctx, admins, []CIFinding{f}, true)
+	be.s.notifyCIHealth(be.ctx, admins, []CIFinding{f}, true)
 	if n := count(); n != 1 {
 		t.Fatalf("told %d times", n)
 	}
 	be.setClock(be.clockNow().Add(ciNotifyEvery + time.Minute))
-	be.s.notifyCIHealth(be.ctx, admins, []CIFinding{f})
+	be.s.notifyCIHealth(be.ctx, admins, []CIFinding{f}, true)
 	if n := count(); n != 2 {
 		t.Fatalf("still happening after the window: told %d times", n)
 	}
 	be.setClock(be.clockNow().Add(ciNotifyEvery + time.Minute))
-	be.s.notifyCIHealth(be.ctx, admins, nil)
+	be.s.notifyCIHealth(be.ctx, admins, nil, true)
 	var left int
 	if err := be.s.db.R.QueryRowContext(be.ctx, `SELECT count(*) FROM server_settings WHERE key LIKE 'ci_notified:%'`).Scan(&left); err != nil {
 		t.Fatal(err)
@@ -400,7 +400,10 @@ func TestFaultHostsWithOneReader(t *testing.T) {
 		var n int
 		return be.s.db.R.QueryRowContext(ctx, `SELECT 1`).Scan(&n) == nil
 	}
-	got := be.s.timeLimitFindings(ctx, be.clockNow(), show)
+	got, err := be.s.timeLimitFindings(ctx, be.clockNow(), show)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 1 || !strings.Contains(got[0].Detail, "On runner2.") {
 		t.Fatalf("time limits: %+v (%v)", got, ctx.Err())
 	}

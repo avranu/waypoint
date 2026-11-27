@@ -632,13 +632,10 @@ func (s *Service) rerunParkedChecks(ctx context.Context, b *Babysit, pr *PullReq
 	}
 	s.keepFailedEvidence(ctx, f, pr.Repo, pr.HeadSHA)
 	n, err := cl.RetryChecks(ctx, f, pr.Repo, pr.HeadSHA)
-	if err != nil {
-		if readFault(err) {
-			s.log.WarnContext(ctx, "re-run a resting pull request's checks", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "err", err)
-		}
-		return false
+	if err != nil && (readFault(err) || n > 0) {
+		s.log.WarnContext(ctx, "re-run a resting pull request's checks", "repo", pr.Repo, "number", pr.Number, "pr", pr.ID, "rerun", n, "err", err)
 	}
-	return n > 0
+	return n > 0 // a forge that stopped part way has still taken the first n
 }
 
 // restReply is what Waypoint tells the assessor's round after a rest: what

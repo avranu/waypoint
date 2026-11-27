@@ -212,7 +212,9 @@ func (s *Service) refreshHead(ctx context.Context, f *Forge, repo, sha string) e
 	var prs []prState
 	err = s.write(ctx, SystemActor(), func(t *tx) error {
 		var prevChecked int64
-		if err := t.QueryRowContext(ctx, `SELECT checked_at FROM ci_heads WHERE id = ?`, headID).Scan(&prevChecked); err != nil {
+		var prevState string
+		var reruns int
+		if err := t.QueryRowContext(ctx, `SELECT checked_at, state, manual_reruns FROM ci_heads WHERE id = ?`, headID).Scan(&prevChecked, &prevState, &reruns); err != nil {
 			return err
 		}
 		if prevChecked > now {
@@ -277,6 +279,11 @@ func (s *Service) refreshHead(ctx context.Context, f *Forge, repo, sha string) e
 		for _, p := range prs {
 			if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET ci_state = ?, ci_sha = ? WHERE id = ?`, state, sha, p.id); err != nil {
 				return err
+			}
+			if reruns > 0 && prevState == CIPending && (state == CIPassed || state == CIFailed) {
+				if err := s.noteRerunOutcome(ctx, t, p.id, repo, p.number, sha, reruns, state, failedNames, now); err != nil {
+					return err
+				}
 			}
 			if (state != CIPassed && state != CIFailed) || p.announced == sha || p.outside {
 				continue
@@ -369,9 +376,11 @@ func (s *Service) PollCI(ctx context.Context) {
 }
 
 // pruneCI forgets heads older than a month, CI hosts' job usage older
-// than two months, and old CI evidence.
+// than two months, and old CI evidence. An open pull request's head that has
+// had a manual re-run stays: forgetting it would give its re-runs back
+// (WP-1661).
 func (s *Service) pruneCI(ctx context.Context) {
-	if _, err := s.db.W.ExecContext(ctx, `DELETE FROM ci_heads WHERE seen_at < ?`, s.nowMS()-30*24*time.Hour.Milliseconds()); err != nil {
+	if _, err := s.db.W.ExecContext(ctx, `DELETE FROM ci_heads AS h WHERE h.seen_at < ? AND NOT (h.manual_reruns > 0 AND `+liveHeadSQL+`)`, s.nowMS()-30*24*time.Hour.Milliseconds()); err != nil {
 		s.log.WarnContext(ctx, "best-effort write failed", "err", err)
 	}
 	if _, err := s.db.W.ExecContext(ctx, `DELETE FROM ci_job_usage WHERE started_at < ?`, s.nowMS()-ciUsageKeep.Milliseconds()); err != nil {

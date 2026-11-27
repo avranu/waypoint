@@ -31,6 +31,10 @@ const runsAtPages = 4
 // fullSHARunPages bounds the pages read for one full commit id (500 runs).
 const fullSHARunPages = 10
 
+// errTooManyRuns: a commit has more runs than ActionRunsAt reads; the newest
+// come with the error, for a caller that can do with those.
+var errTooManyRuns = errors.New("too many runs on one commit")
+
 func (c *httpForgeClient) ActionRunsAt(ctx context.Context, f *Forge, repo, sha string) ([]ActionRun, error) {
 	if f.Kind == "github" || f.Kind == "gitlab" {
 		return nil, ErrNotFound
@@ -38,14 +42,15 @@ func (c *httpForgeClient) ActionRunsAt(ctx context.Context, f *Forge, repo, sha 
 	if len(sha) == 40 {
 		var out []ActionRun
 		for page := 1; ; page++ {
-			if page > fullSHARunPages {
-				return nil, fmt.Errorf("more than %d runs on commit %s in %s", fullSHARunPages*50, sha, repo)
-			}
 			var res struct {
 				Runs []ActionRun `json:"workflow_runs"`
 			}
 			if err := c.do(ctx, f, http.MethodGet, fmt.Sprintf("/repos/%s/actions/runs?head_sha=%s&page=%d&limit=50", repo, url.QueryEscape(sha), page), nil, &res); err != nil {
 				return nil, err
+			}
+			// The page past the last one read only says whether any are left.
+			if page > fullSHARunPages && len(res.Runs) > 0 {
+				return out, fmt.Errorf("%w: more than %d runs on commit %s in %s", errTooManyRuns, fullSHARunPages*50, sha, repo)
 			}
 			out = append(out, res.Runs...)
 			if len(res.Runs) < 50 {

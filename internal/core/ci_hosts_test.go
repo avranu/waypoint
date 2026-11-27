@@ -278,6 +278,7 @@ type fakeJob struct {
 }
 
 func TestForgejoRerun(t *testing.T) {
+	sha := strings.Repeat("a", 40)
 	version := "17.0.1+gitea-1.22.0"
 	var posted []string
 	jobs := []*fakeJob{
@@ -297,7 +298,7 @@ func TestForgejoRerun(t *testing.T) {
 		case r.URL.Path == "/api/v1/version":
 			_ = json.NewEncoder(w).Encode(map[string]string{"version": version})
 		case r.URL.Path == "/api/v1/repos/me/app/actions/runs":
-			if r.URL.Query().Get("head_sha") != "abc" {
+			if r.URL.Query().Get("head_sha") != sha {
 				t.Errorf("query %s", r.URL.RawQuery)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"workflow_runs": []map[string]any{
@@ -344,7 +345,7 @@ func TestForgejoRerun(t *testing.T) {
 	defer srv.Close()
 	c := &httpForgeClient{http: srv.Client()}
 	f := &Forge{Kind: "forgejo", BaseURL: srv.URL, token: "t"}
-	n, err := c.RetryChecks(context.Background(), f, "me/app", "abc")
+	n, err := c.RetryChecks(context.Background(), f, "me/app", sha)
 	if err != nil || n != 5 || !slices.Equal(posted, []string{"/api/v1/repos/me/app/actions/jobs/30/rerun", "/api/v1/repos/me/app/actions/jobs/33/rerun",
 		"/api/v1/repos/me/app/actions/jobs/50/rerun", "/api/v1/repos/me/app/actions/jobs/51/rerun", "/api/v1/repos/me/app/actions/jobs/54/rerun"}) {
 		t.Fatalf("n %d err %v posted %v", n, err, posted)
@@ -359,7 +360,7 @@ func TestForgejoRerun(t *testing.T) {
 	if ok, err := c.CanRetryChecks(context.Background(), f); ok || err != nil {
 		t.Fatalf("16: %v %v", ok, err)
 	}
-	if _, err := c.RetryChecks(context.Background(), f, "me/app", "abc"); err == nil || !strings.Contains(err.Error(), "Forgejo 17") {
+	if _, err := c.RetryChecks(context.Background(), f, "me/app", sha); err == nil || !strings.Contains(err.Error(), "Forgejo 17") {
 		t.Fatalf("16: %v", err)
 	}
 	if forgejoMajor("v17.2.0") != 17 || forgejoMajor("dev") != 0 {

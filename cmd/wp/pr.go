@@ -35,6 +35,7 @@ func init() {
 		{name: "check", args: "[N...]", summary: "re-read threads and checks from the forge and update the gate",
 			examples: []string{"wp pr check 12"}, run: cmdPRCheck},
 		prWaitCmd,
+		prRerunCmd,
 		prLogCmd,
 		prTodoCmd,
 		prCommentsCmd,
