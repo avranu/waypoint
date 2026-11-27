@@ -70,15 +70,26 @@ for (const vp of looks([
     c
       .locator("[data-nav-key]")
       .evaluateAll((els) => els.map((e) => e.dataset.navKey));
-  const drag = async (from, to) => {
+  // drag drops from onto to. With patches (an issue key) the drop must save, and
+  // drag returns once that issue's PATCH has answered; without, the drop sends
+  // nothing, and drag gives the page a moment to (not) act on it.
+  const drag = async (from, to, patches) => {
     const a = await from.boundingBox();
     const b = await to.boundingBox();
+    const saved =
+      patches &&
+      page.waitForResponse(
+        (r) =>
+          r.url().endsWith(`/issues/${patches}`) &&
+          r.request().method() === "PATCH",
+      );
     await page.mouse.move(a.x + 30, a.y + 15);
     await page.mouse.down();
     await page.mouse.move(a.x + 40, a.y + 30, { steps: 4 });
     await page.mouse.move(b.x + 60, b.y + 15, { steps: 14 });
     await page.mouse.move(b.x + 62, b.y + 17, { steps: 2 });
     await page.mouse.up();
+    if (saved) return void (await saved);
     // wplint:ignore e2e-wait a same-column drop under a sort sends no request: there is nothing to wait on
     await page.waitForTimeout(800);
   };
@@ -112,7 +123,7 @@ for (const vp of looks([
       `${tag}: still the priority order after a reload`,
     );
 
-    await drag(card(B.key), card(D.key));
+    await drag(card(B.key), card(D.key), B.key);
     const b = await send("GET", "/issues/" + B.key);
     ok(
       b.status.id === c1.id,
@@ -182,7 +193,7 @@ for (const vp of looks([
       (await rows()).join() === sortedRows,
       `${tag}: the row returns to its sorted place: ${await rows()}`,
     );
-    await drag(card(B2.key), card(E2.key));
+    await drag(card(B2.key), card(E2.key), B2.key);
     const moved = await send("GET", "/issues/" + B2.key);
     ok(
       moved.sprint_name === sprint.name,
@@ -195,7 +206,7 @@ for (const vp of looks([
     await page.goto(`${base}/p/${bkey}/backlog`);
     await card(C2.key).waitFor();
     const unsorted = await ranks();
-    await drag(card(C2.key), card(A2.key));
+    await drag(card(C2.key), card(A2.key), C2.key);
     const after = await ranks();
     const rank = (r, k) =>
       Number(
