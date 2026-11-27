@@ -462,8 +462,8 @@ func pemShortLine(t string) bool {
 // not all letters. A diff or quote marker, a log prefix, quotes and a comma
 // around a line are allowed, and fields after a full line's base64. Where
 // some other line ends that run, the key may go on below it, so as far as an
-// END is looked for, each mixed-case full line with a digit, and a short one
-// right after it, becomes *** too. Then redact's other patterns run over the
+// END is looked for, each mixed-case full line with a digit, the full lines
+// right after it, and a short one after those, becomes *** too. Then redact's other patterns run over the
 // whole text, a match that spanned lines giving them back as *** lines.
 func redactKept(s string) string {
 	lines := strings.Split(s, "\n")
@@ -548,12 +548,14 @@ func redactKept(s string) string {
 			star(j)
 		}
 		// A header not listed, or another process's line, doesn't end the
-		// key (audit 1860.1).
+		// key (audit 1860.1). The first full line after it must look like a
+		// key, so a commit SHA stays; the full lines right after that one need
+		// not, as in the body above (audit 2091.1).
 		afterFull := false
 		for k := j; k < len(lines) && k <= i+pemMaxLines && !pemBeginRE.MatchString(lines[k]); k++ {
 			t := pemUnmarked(lines[k])
 			last := pemBodyField(t)
-			full := len(last) >= pemFullLine && pemBodyRE.MatchString(last) && pemKeyLike(last)
+			full := len(last) >= pemFullLine && pemBodyRE.MatchString(last) && (afterFull || pemKeyLike(last))
 			if full || afterFull && pemShortLine(t) {
 				star(k)
 			}

@@ -674,6 +674,10 @@ func TestKeptRedactionWholeText(t *testing.T) {
 			in:   begin + "\n" + body + "\nabcdEFGH1234 trailing\n" + body + "\nafter\n",
 			want: begin + "\n***\n***\n***\nafter\n",
 		},
+		"unterminated, a full line without a digit after the key goes on": {
+			in:   begin + "\n" + body + "\n12:00 GET /health ok\n" + body + "\n" + strings.Repeat("abcd+/", 11) + "ab\n" + b64(12) + "\nafter\n",
+			want: begin + "\n***\n12:00 GET /health ok\n***\n***\n***\nafter\n",
+		},
 		"unterminated, another line inside the key": {
 			in:   begin + "\n" + body + "\n12:00 GET /health ok\n12:00 " + body + "\n12:00 " + b64(12) + "\nafter\n",
 			want: begin + "\n***\n12:00 GET /health ok\n***\n***\nafter\n",
