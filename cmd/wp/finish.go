@@ -53,14 +53,23 @@ Waypoint opened (the turn ends there, as with --summary); or why the round
 ended. Run it with run_in_background: true and end your turn: you are woken
 when it exits. --no-wait returns at once as before, and what the review finds
 comes to you later as a message.
+After it opens and babysits the pull request (not with --no-babysit), wp
+ship also waits, within the same limit, for the first checks on your commit: a failure is printed with the command
+that reads each failing part, for you to fix, commit and ship again (Waypoint
+sends a round if no new commit comes in 30 minutes); a pass is printed and the
+ship ends as usual. A failure in the minute after you stop waiting still
+comes to you, as a message; babysitting takes any later one.
 --summary is your final reply to the person, written before you know the
 outcome: when the ship goes as expected (the pull request armed or babysat,
 or held for its review, with no notice or warning), Waypoint ends your turn
 there and shows it, so no turn follows just to write the reply. Otherwise
 the turn goes on, and the task's next wp ship uses the summary unless you
-give a new one. --check CMD runs CMD first, in the tests slot and recorded
-as wp testsum records it, and ships only if it passes (or chain it:
-make check && wp ship …).`,
+give a new one. In a repository with an executable .waypoint/test, wp ship
+first runs wp test (the scoped check of what changed; not again on a tree it
+already passed) and ships only if it passes; CI still runs the whole suite
+on the pull request. --check CMD runs CMD instead, in the tests
+slot and recorded as wp testsum records it, and --no-check skips the check
+(or chain it: make check && wp ship …).`,
 	examples: []string{`wp ship -m "Fix the redirect"`, `wp done APP-12 -m "Reviewed: looks good"`, `wp ship -m "Add the page" --shot http://localhost:5173/live`,
 		`wp ship -m "Fix the redirect" --check "make check" --summary "{task} shipped in PR #{pr}: the redirect keeps the query string. Tests: make check."`},
 	run: cmdFinish,
@@ -73,6 +82,7 @@ func cmdFinish(c *cli, args []string) error {
 	short(fs, "m", "message")
 	so := addShipFlags(fs)
 	check := fs.String("check", "", "run `CMD` first, in the tests slot (as wp testsum does), and ship only if it passes")
+	noCheck := fs.Bool("no-check", false, "ship without running wp test first (CI still runs the whole suite on the pull request)")
 	var shots multiFlag
 	fs.Var(&shots, "shot", "first screenshot this page `URL` (or /PATH of this checkout's preview), as wp shot does (repeatable)")
 	shotOpts := addShotFlags(fs)
@@ -183,6 +193,11 @@ func cmdFinish(c *cli, args []string) error {
 		}
 	case checkGiven:
 		if err := c.runShipCheck(*check); err != nil {
+			keepSummary()
+			return err
+		}
+	case shipping && !*noCheck:
+		if err := c.runDefaultShipCheck(); err != nil {
 			keepSummary()
 			return err
 		}

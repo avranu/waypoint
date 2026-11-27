@@ -13,7 +13,7 @@ import (
 // reviewer's finding of before must not be read as a panel finding.
 func TestTakenLeadBackfill(t *testing.T) {
 	ctx := context.Background()
-	d, err := Open(ctx, filepath.Join(t.TempDir(), "w.db"))
+	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

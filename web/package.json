@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build && node -e \"require('fs').writeFileSync('dist/.gitkeep','')\"",
+    "build": "npm run typecheck && npm run build:vite",
+    "build:vite": "vite build && node -e \"require('fs').writeFileSync('dist/.gitkeep','')\"",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write \"src/**/*.{ts,tsx,js,mjs,css,json}\" \"*.json\"",
