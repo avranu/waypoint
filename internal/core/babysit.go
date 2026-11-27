@@ -1302,6 +1302,10 @@ func (s *Service) babysitStepHeld(ctx context.Context, prID int64, sync bool) {
 		if s.waitOnSharedTimeout(ctx, b, pr) {
 			return
 		}
+		if who, deferring := s.liveSessionOnPR(ctx, b, pr); deferring {
+			s.setState(ctx, b, pr, BabysitWatching, liveSessionWaitPrefix+who+" to finish pushing")
+			return
+		}
 		if faults == nil && s.rerunForFlake(ctx, b, pr, failed) {
 			return
 		}
@@ -1310,6 +1314,10 @@ func (s *Service) babysitStepHeld(ctx context.Context, prID int64, sync bool) {
 		return
 	}
 	if len(failed) > 0 || conflict || len(work) > 0 || len(findings) > 0 {
+		if who, deferring := s.liveSessionOnPR(ctx, b, pr); deferring {
+			s.setState(ctx, b, pr, BabysitWatching, liveSessionWaitPrefix+who+" to finish pushing")
+			return
+		}
 		s.settleHandoffs(ctx, b, pr, handoffFellBack)
 		s.babysitRound(ctx, b, pr, failed, conflict, work, findings)
 		return
@@ -1380,6 +1388,72 @@ func (s *Service) babysitStepHeld(ctx context.Context, prID int64, sync bool) {
 	default:
 		s.setState(ctx, b, pr, BabysitWatching, rd.Reasons[0])
 	}
+}
+
+// liveSessionFresh is how recently a live session must have shown activity
+// to hold off a babysit round on its branch, linked task or PR claim
+// (WP-1420, WP-1982, WP-2021).
+const (
+	liveSessionFresh      = 5 * time.Minute
+	liveSessionDeferMax   = 20 * time.Minute
+	liveSessionWaitPrefix = "waiting for live session "
+)
+
+// liveSessionOnPR reports whether an active live agent session is currently
+// working on this PR's branch, linked task or PR claim, so the babysitter
+// should defer instead of launching a competing runner round (WP-1420,
+// WP-1982, WP-2021). Bounded by liveSessionDeferMax on the same head so an
+// abandoned or stuck session never wedges a PR.
+func (s *Service) liveSessionOnPR(ctx context.Context, b *Babysit, pr *PullRequest) (who string, deferring bool) {
+	if b.State == BabysitWatching && strings.HasPrefix(b.Wait, liveSessionWaitPrefix) && sameSHA(b.HeadSHA, pr.HeadSHA) && !b.WaitSince.IsZero() && s.now().Sub(b.WaitSince) >= liveSessionDeferMax {
+		return "", false
+	}
+	now := s.now()
+	cutoff := now.Add(-liveSessionFresh).UnixMilli()
+	rows, err := s.db.R.QueryContext(ctx, `SELECT DISTINCT x.id, coalesce(x.title, ''), coalesce(x.agent, '')
+		FROM agent_sessions x
+		WHERE x.ended_at IS NULL AND x.state = 'working' AND x.last_seen_at >= ?
+			AND (
+				(x.branch != '' AND x.branch = ? AND (x.repo = '' OR lower(x.repo) = lower(?)))
+				OR EXISTS (
+					SELECT 1 FROM agent_runs r
+					JOIN external_links el ON el.issue_id = r.issue_id
+					WHERE r.session_id = x.id AND r.ended_at IS NULL
+						AND ((el.kind = 'pull' AND lower(el.repo) = lower(?) AND el.number = ?) OR el.url = ?)
+				)
+				OR EXISTS (
+					SELECT 1 FROM pr_claims c
+					WHERE c.pull_id = ? AND c.session_id = x.id AND c.expires_at > ?
+						AND (x.branch = '' OR x.branch = ?)
+				)
+			)
+		ORDER BY x.last_seen_at DESC LIMIT 5`,
+		cutoff, pr.HeadRef, pr.Repo, pr.Repo, pr.Number, pr.URL, pr.ID, now.UnixMilli(), pr.HeadRef)
+	if err != nil {
+		return "", false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sid int64
+		var title, agent string
+		if err := rows.Scan(&sid, &title, &agent); err != nil {
+			continue
+		}
+		// A session waiting in AwaitShipChecks is already handled by
+		// authorHolds/handToAuthor, not actively editing code.
+		if s.shipWaits.checksHeld(sid, pr.ID, now) {
+			continue
+		}
+		label := strings.TrimSpace(title)
+		if label == "" {
+			label = strings.TrimSpace(agent)
+		}
+		if label == "" {
+			label = fmt.Sprintf("#%d", sid)
+		}
+		return excerpt(label, 60), true
+	}
+	return "", false
 }
 
 // markSeen marks pr's new review comments seen by the babysitter.

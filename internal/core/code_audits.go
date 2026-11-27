@@ -1076,6 +1076,10 @@ func (s *Service) endAudit(ctx context.Context, a *CodeAudit, status, why string
 	})
 	if err != nil {
 		s.log.WarnContext(ctx, "end an audit", "audit", a.ID, "err", err)
+		return
+	}
+	if len(a.HelperRuns) > 0 {
+		s.kickRunners()
 	}
 }
 
@@ -1347,6 +1351,10 @@ func (s *Service) requeueAudit(ctx context.Context, a *CodeAudit, slot, retries 
 	err := s.write(ctx, SystemActor(), func(t *tx) error { return s.requeueAuditTx(ctx, t, a, slot, retries, at) })
 	if err != nil {
 		s.log.WarnContext(ctx, "queue an audit's next model", "audit", a.ID, "err", err)
+		return
+	}
+	if len(a.HelperRuns) > 0 {
+		s.kickRunners()
 	}
 }
 

@@ -1009,7 +1009,7 @@ func messageTask(ctx context.Context, q queryer, stepKey string) (task int64, bo
 	kind, id := stepKeySource(stepKey)
 	n, err := strconv.ParseInt(id, 10, 64)
 	switch kind {
-	case "shipped":
+	case "shipped", "review":
 		bound = true
 		if err == nil {
 			_ = q.QueryRowContext(ctx, `SELECT issue_id FROM work_log WHERE id = ?`, n).Scan(&task)

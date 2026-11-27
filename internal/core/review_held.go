@@ -351,7 +351,7 @@ func (s *Service) shipOpen(ctx context.Context, sh *shipRun) (done bool, err err
 		if !given {
 			lead = "without the adversarial review's findings being given to the session"
 		}
-		in2.Body = strings.TrimSpace(body + "\n\nWaypoint opened this " + lead + ": " + in.why + "." + panel)
+		in2.Body = strings.TrimSpace(body + "\n\nWaypoint opened this " + lead + ": " + in.why + ". Because its pre-PR adversarial review didn't complete, it was left unarmed and won't auto-merge." + panel)
 	}
 	again := in
 	again.user = nil
@@ -397,7 +397,12 @@ func (s *Service) shipArm(ctx context.Context, sh *shipRun) {
 		notes = append(notes, "that branch's pull request belongs to "+strings.Join(res.OtherTasks, ", ")+", so it wasn't armed")
 	} else {
 		if !bp.Draft && (pr.State != "draft" || pr.WipAuto) {
-			if mr, err := s.MergePR(ctx, actor, pr.ID, MergeInput{WhenReady: true, Head: sh.pin}); err != nil {
+			if !reviewed {
+				// Fail closed on auto-merge (WP-1908, WP-2021): an unreviewed
+				// or timed-out pre-PR review opens the PR so work isn't lost,
+				// but never arms auto-merge without a completed review.
+				notes = append(notes, "wasn't armed because its pre-PR adversarial review didn't complete — review it and arm or merge by hand")
+			} else if mr, err := s.MergePR(ctx, actor, pr.ID, MergeInput{WhenReady: true, Head: sh.pin}); err != nil {
 				notes = append(notes, "couldn't arm it: "+err.Error())
 			} else if mr != nil && mr.ByHand {
 				notes = append(notes, "wasn't armed: "+strings.Join(mr.Reasons, "; "))

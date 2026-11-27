@@ -320,6 +320,66 @@ func (s *Service) SessionForHeader(ctx context.Context, userID int64, cliID, mac
 	return id
 }
 
+// cliPolledSession reports whether x is a non-Claude coding agent harness
+// (Antigravity, Codex, OpenCode, Gemini CLI) that receives review findings
+// synchronously via wp ship's AwaitShipNews instead of a tmux runner typing
+// prompts into Claude Code (WP-2021).
+func cliPolledSession(x *AgentSession) bool {
+	return x != nil && x.CLI != "" && x.CLI != "claude"
+}
+
+// EnsureCLISession returns (creating if absent) the lightweight agent_sessions
+// row for a non-Claude agent harness identified by X-Waypoint-Session and
+// X-Waypoint-Session-CLI (WP-2021). Claude Code sessions still register via
+// SessionStart hooks.
+func (s *Service) EnsureCLISession(ctx context.Context, actor *Actor, cliID, machine, cliName, cwd string) int64 {
+	if actor == nil || actor.User == nil || actor.User.ID == 0 || !actor.IsAgent() {
+		return 0
+	}
+	cliID = strings.TrimSpace(cliID)
+	cliName = strings.ToLower(strings.TrimSpace(cliName))
+	if cliID == "" || len(cliID) > 200 || cliName == "" || cliName == "claude" || len(cliName) > 40 {
+		return 0
+	}
+	machine = cmp(strings.TrimSpace(machine), "unknown")
+	if len(machine) > 120 {
+		machine = machine[:120]
+	}
+	if len(cwd) > 500 {
+		cwd = ""
+	}
+	if id := s.SessionForHeader(ctx, actor.User.ID, cliID, machine); id != 0 {
+		return id
+	}
+	var id int64
+	at := s.nowMS()
+	err := s.write(ctx, actor, func(t *tx) error {
+		if err := t.QueryRowContext(ctx, `SELECT id FROM agent_sessions WHERE user_id = ? AND machine = ? AND cli_id = ?`, actor.User.ID, machine, cliID).Scan(&id); err == nil && id != 0 {
+			_, _ = t.ExecContext(ctx, `UPDATE agent_sessions SET last_seen_at = max(last_seen_at, ?), ended_at = NULL WHERE id = ?`, at, id)
+			return nil
+		}
+		res, err := t.ExecContext(ctx, `INSERT INTO agent_sessions(user_id, machine, cli_id, cli, agent, cwd, state, started_at, last_seen_at, kind, started_server, started_wp)
+			VALUES (?,?,?,?,?,?,'working',?,?,?, ?,?)`,
+			actor.User.ID, machine, cliID, cliName, agentLabel(actor, cliName), cwd, at, at, SessionYours, s.cfg.Version, actor.ClientVersion)
+		if err != nil {
+			return err
+		}
+		id, _ = res.LastInsertId()
+		return nil
+	})
+	if err != nil || id == 0 {
+		return s.SessionForHeader(ctx, actor.User.ID, cliID, machine)
+	}
+	key := fmt.Sprintf("%d|%s|%s", actor.User.ID, machine, cliID)
+	s.sessCache.mu.Lock()
+	if s.sessCache.m == nil || len(s.sessCache.m) > 1000 {
+		s.sessCache.m = map[string]sessionCacheEntry{}
+	}
+	s.sessCache.m[key] = sessionCacheEntry{id: id, until: s.now().Add(5 * time.Minute)}
+	s.sessCache.mu.Unlock()
+	return id
+}
+
 type sessionCache struct {
 	mu sync.Mutex
 	m  map[string]sessionCacheEntry

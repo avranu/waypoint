@@ -167,8 +167,8 @@ func TestHeldReviewFailsOpen(t *testing.T) {
 	var armed, babysat int
 	_ = a.s.db.R.QueryRow(`SELECT count(*) FROM pull_requests WHERE armed_at IS NOT NULL`).Scan(&armed)
 	_ = a.s.db.R.QueryRow(`SELECT count(*) FROM babysits`).Scan(&babysat)
-	if armed != 1 || babysat != 1 {
-		t.Errorf("armed %d, babysat %d", armed, babysat)
+	if armed != 0 || babysat != 1 {
+		t.Errorf("armed %d, babysat %d (want unarmed=0, babysat=1)", armed, babysat)
 	}
 	d, err := a.s.GetIssue(a.ctx, a.admin, first.Key)
 	if err != nil {

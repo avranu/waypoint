@@ -1427,9 +1427,15 @@ func (s *Service) pauseStep(ctx context.Context, st *stepRow, why string, rechec
 // audit; plan is what to type, for advanceStep to take once the session is
 // free, nil when nothing was planned here.
 func (s *Service) reviewWorkFirst(ctx context.Context, st *stepRow, x *AgentSession, review *roundRow, prompted, now int64) (plan *reviewPlan, waits bool, err error) {
-	r := s.runnerOnMachine(ctx, st.userID, x.Machine)
-	if r == nil || !r.Online || !slices.Contains(r.Features, FeatureAutopilot) || !slices.Contains(r.Features, FeatureAutopilotReview) {
-		return nil, false, nil
+	if cliPolledSession(x) {
+		if !s.hasOnlineAuditRunner(ctx, st.userID) {
+			return nil, false, nil
+		}
+	} else {
+		r := s.runnerOnMachine(ctx, st.userID, x.Machine)
+		if r == nil || !r.Online || !slices.Contains(r.Features, FeatureAutopilot) || !slices.Contains(r.Features, FeatureAutopilotReview) {
+			return nil, false, nil
+		}
 	}
 	_, lim, err := s.autopilotFor(ctx, s.db.R, st.userID, st.projectID)
 	if err != nil {
@@ -1528,7 +1534,7 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 			return s.stepUpdate(ctx, st.id, StepWaiting, WaitPrompted, reviewWaitsForYou(pending.key), due)
 		}
 	}
-	if x.State == SessionWorking && !overdue && !s.freshSession(ctx, x.ID) {
+	if x.State == SessionWorking && !overdue && !s.freshSession(ctx, x.ID) && (!cliPolledSession(x) || !st.reviewID.Valid) {
 		return nil
 	}
 	on, lim, err := s.autopilotFor(ctx, s.db.R, st.userID, st.projectID)
@@ -1602,7 +1608,11 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 		s.tellOnce(ctx, st, WaitRunner, "Autopilot needs a runner", fmt.Sprintf("Autopilot can't start %s in %s: %s.", what, cmp(x.Title, "a session"), detail))
 		return nil
 	}
+	cliPolled := cliPolledSession(x)
 	runnerOK := r != nil && r.Online && slices.Contains(r.Features, FeatureAutopilot)
+	if cliPolled {
+		runnerOK = s.hasOnlineAuditRunner(ctx, st.userID)
+	}
 	agent, doneIssue := s.stepAgent(ctx, s.db.R, st.runID, st.sessionID)
 	user, err := s.userByID(ctx, s.db.R, st.userID)
 	if err != nil {
@@ -1613,12 +1623,18 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 	} else if review != nil && (early != nil || review.state == RoundPending || review.state == RoundRunning) {
 		heldTooLong := !runnerOK && review.state == RoundPending && now-noRunnerSince(review.createdAt, r) > heldNoRunnerWait.Milliseconds()
 		if !runnerOK && !heldTooLong && review.state != RoundRunning {
+			if cliPolled {
+				return s.stepUpdate(ctx, st.id, StepWaiting, WaitRunner, "no audit runner is online to review "+review.key, now+autopilotNothingRetry.Milliseconds())
+			}
 			return noRunner()
 		}
 		switch {
 		case heldTooLong:
-			s.setRoundNow(ctx, review.id, []string{RoundPending}, RoundFailed,
-				fmt.Sprintf("no runner was online on %s to start it for %d minutes", x.Machine, int(heldNoRunnerWait.Minutes())))
+			why := fmt.Sprintf("no runner was online on %s to start it for %d minutes", x.Machine, int(heldNoRunnerWait.Minutes()))
+			if cliPolled {
+				why = fmt.Sprintf("no audit runner was online to review it for %d minutes", int(heldNoRunnerWait.Minutes()))
+			}
+			s.setRoundNow(ctx, review.id, []string{RoundPending}, RoundFailed, why)
 			s.dropReviewCompact(ctx, user, review.id)
 			s.unwarmReview(ctx, x.ID)
 		case review.state == RoundRunning:
@@ -1630,7 +1646,7 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 				return s.stepUpdate(ctx, st.id, StepWaiting, WaitJob, "waiting on Waypoint: "+review.key+"'s check of its marks, then its pull request", now+autopilotRetry.Milliseconds())
 			}
 			s.setRoundNow(ctx, review.id, []string{RoundRunning}, out.To, out.Why)
-		case review.state == RoundPending && !slices.Contains(r.Features, FeatureAutopilotReview):
+		case review.state == RoundPending && !cliPolled && !slices.Contains(r.Features, FeatureAutopilotReview):
 			s.setRoundNow(ctx, review.id, []string{RoundPending}, RoundSkipped,
 				fmt.Sprintf("the runner on %s runs a wp from before adversarial reviews: update it (wp update, then restart the runner)", x.Machine))
 		case early != nil || review.state == RoundPending:
@@ -1642,8 +1658,12 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 			}
 			switch {
 			case plan.wait != "":
-				s.compactForReview(ctx, st, x, user, review)
+				if !cliPolled {
+					s.compactForReview(ctx, st, x, user, review)
+				}
 				return s.stepUpdate(ctx, st.id, StepWaiting, WaitAudit, plan.wait, now+reviewAuditRecheck.Milliseconds())
+			case !plan.done && cliPolled:
+				return s.deliverCLIReview(ctx, st, x, review, plan.prompt, now)
 			case !plan.done:
 				return s.startReviewJob(ctx, st, x, user, agent, review, plan.prompt, now)
 			default:
@@ -1822,6 +1842,40 @@ const autopilotReviewSource = "autopilot_review"
 // review (WP-285): prompt, the round's own or another model's findings (planReview).
 // The session's warm state keeps the compaction quiet, and the cache pings
 // off it, until the review's prompt starts a turn.
+// deliverCLIReview delivers adversarial review findings to a non-Claude
+// agent harness (Antigravity, Codex, OpenCode, Gemini CLI) via a queued
+// review:<roundID> session message instead of typing into tmux (WP-2021).
+// wp ship's synchronous AwaitShipNews wait picks up the message immediately,
+// prints it to the agent, and transitions the round to RoundRunning so the
+// agent can fix/mark findings and re-run wp ship.
+func (s *Service) deliverCLIReview(ctx context.Context, st *stepRow, x *AgentSession, review *roundRow, prompt string, now int64) error {
+	text := reviewPromptText(review.key, prompt)
+	started := false
+	err := s.write(ctx, SystemActor(), func(t *tx) error {
+		res, err := t.ExecContext(ctx, `UPDATE work_log SET state = ?, prompt = ?, started_at = coalesce(started_at, ?), updated_at = ?
+			WHERE id = ? AND kind = 'review' AND state = ?`,
+			RoundRunning, text, now, now, review.id, RoundPending)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil
+		}
+		started = true
+		s.emitWorkLog(ctx, t, review.issueID, review.id, RoundRunning)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if started {
+		if _, err := s.queueMessage(ctx, x.ID, text, fmt.Sprintf("review:%d", review.id), messageFrom{}, false); err != nil {
+			s.log.WarnContext(ctx, "autopilot: queue CLI review findings", "round", review.id, "session", x.ID, "err", err)
+		}
+	}
+	return s.stepUpdate(ctx, st.id, StepWaiting, WaitJob, "waiting for "+x.CLI+" session to address "+review.key+"'s adversarial review findings", now+reviewAuditRecheck.Milliseconds())
+}
+
 func (s *Service) startReviewJob(ctx context.Context, st *stepRow, x *AgentSession, user *User, agent string, review *roundRow, prompt string, now int64) error {
 	if job, res := s.typedRound(ctx, st.id, review); job != nil {
 		s.log.WarnContext(ctx, "autopilot: a review was typed and its round never started; starting it instead of typing it again",

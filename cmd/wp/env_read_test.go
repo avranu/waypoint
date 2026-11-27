@@ -55,7 +55,7 @@ func TestCLIEnvReadVouch(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HARBOR_ADMIN_KEY", secret)
-	for _, k := range []string{"CLAUDECODE", "GEMINI_CLI", "OPENCODE", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "WAYPOINT_AGENT"} {
+	for _, k := range []string{"CLAUDECODE", "ANTIGRAVITY_AGENT", "GEMINI_CLI", "OPENCODE", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "WAYPOINT_AGENT"} {
 		t.Setenv(k, "")
 	}
 

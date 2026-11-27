@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -101,7 +103,8 @@ func (c *cli) followupSession(pos []string) (int64, error) {
 
 // thisSession is the CLI's id of the agent session this runs in: the
 // environment's (SessionStart put it there), else the one that started in
-// this directory or above.
+// this directory or above, else a deterministic session id for non-Claude
+// agent harnesses (Antigravity, Codex, OpenCode, Gemini CLI; WP-2021).
 func (c *cli) thisSession() string {
 	if c.session != "" {
 		return c.session
@@ -109,10 +112,50 @@ func (c *cli) thisSession() string {
 	if id := strings.TrimSpace(os.Getenv("WAYPOINT_SESSION")); id != "" {
 		return id
 	}
-	if cwd, err := os.Getwd(); err == nil {
-		return c.state.sessionIn(cwd)
+	cwd, _ := os.Getwd()
+	if cwd != "" {
+		if id := c.state.sessionIn(cwd); id != "" {
+			return id
+		}
+	}
+	if c.agentHeader() != "" {
+		if id, _ := harnessSessionID(os.Getenv, cwd); id != "" {
+			return id
+		}
 	}
 	return ""
+}
+
+// harnessSessionID derives a stable CLI session id and harness name for
+// non-Claude coding agent shells that don't run Claude Code's SessionStart
+// hook (WP-2021).
+func harnessSessionID(getenv func(string) string, cwd string) (id, cliName string) {
+	cliName = detectHarness(getenv)
+	if cliName == "" || cliName == "claude" {
+		return "", ""
+	}
+	for _, k := range []string{"T3CODE_THREAD_ID", "OPENCODE_SESSION_ID", "CODEX_THREAD_ID", "GEMINI_SESSION_ID"} {
+		if raw := strings.TrimSpace(getenv(k)); raw != "" {
+			var clean strings.Builder
+			for _, r := range raw {
+				if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+					clean.WriteRune(r)
+				}
+			}
+			if s := clean.String(); s != "" {
+				out := cliName + "-" + s
+				if len(out) > 96 {
+					out = out[:96]
+				}
+				return out, cliName
+			}
+		}
+	}
+	if cwd == "" {
+		return "", ""
+	}
+	sum := sha256.Sum256([]byte(cliName + "|" + cwd))
+	return cliName + "-" + hex.EncodeToString(sum[:8]), cliName
 }
 
 // followupErr explains a refusal: follow-ups are for people, and wp runs as

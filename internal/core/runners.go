@@ -1046,10 +1046,20 @@ func (s *Service) withPriorPanel(ctx context.Context, input json.RawMessage, aud
 	s.settleRoundSiblings(ctx, auditID)
 	prior := s.priorPanel(ctx, auditID)
 	if len(prior) == 0 {
-		if _, stale := h["prior"]; !stale {
-			return input
+		busy, err := s.roundPanelSiblingRunning(ctx, auditID)
+		if err != nil {
+			s.log.WarnContext(ctx, "read whether a sibling panel is running", "audit", auditID, "err", err)
 		}
-		delete(h, "prior")
+		if busy {
+			delete(h, "panel")
+			delete(h, "prior")
+			s.log.InfoContext(ctx, "sibling panel already running; skipping duplicate panel at claim", "audit", auditID)
+		} else {
+			if _, stale := h["prior"]; !stale {
+				return input
+			}
+			delete(h, "prior")
+		}
 	} else {
 		pb, err := json.Marshal(prior)
 		if err != nil {

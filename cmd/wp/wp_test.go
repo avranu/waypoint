@@ -34,7 +34,7 @@ func TestMain(m *testing.M) {
 	processAge = func() time.Duration { return 0 }
 	snapshotProc = func() (string, int) { return "", 0 }
 	snapshotBudget = time.Minute
-	for _, k := range []string{"CLAUDECODE", "CLAUDE_PID", "GEMINI_CLI", "OPENCODE", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "WAYPOINT_AGENT", noWorktreeEnv} {
+	for _, k := range []string{"CLAUDECODE", "CLAUDE_PID", "ANTIGRAVITY_AGENT", "T3CODE_THREAD_ID", "GEMINI_CLI", "GEMINI_SESSION_ID", "OPENCODE", "OPENCODE_SESSION_ID", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_THREAD_ID", "WAYPOINT_AGENT", noWorktreeEnv} {
 		_ = os.Unsetenv(k)
 	}
 	for _, k := range []string{"WAYPOINT_SERVER", "WAYPOINT_TOKEN"} {
