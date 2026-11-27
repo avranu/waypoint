@@ -205,6 +205,40 @@ func TestOtherSessionOpenRunTakesTheTask(t *testing.T) {
 	}
 }
 
+// Another session's paused run (idle, waiting for its person) still holds
+// the task while its agent has the claim (holdingRun): the round is left,
+// not shipped under it. Once the claim lapses the paused run holds nothing.
+func TestOtherSessionPausedRunTakesTheTaskWhileItHoldsTheClaim(t *testing.T) {
+	e := newLoopEnv(t, map[string]string{"": "critical", "fixes": "complete"})
+	r1 := e.fixedRound()
+	e.expireRun(r1)
+	e.openRun(e.task.ID, e.otherSession())
+	now := e.clockNow().UnixMilli()
+	e.exec(`UPDATE agent_runs SET ended_at = ?, outcome = 'paused' WHERE issue_id = ? AND ended_at IS NULL`, now, e.task.ID)
+	e.exec(`UPDATE issues SET claimed_by = ?, claimed_until = ? WHERE id = ?`, e.taskAgent(), now+time.Hour.Milliseconds(), e.task.ID)
+	in := e.factsOf(r1)
+	if !in.Taken || in.RunOpen {
+		t.Fatalf("Taken = %v, RunOpen = %v: want another session's paused run with the claim to hold the task", in.Taken, in.RunOpen)
+	}
+	if out := decideRound(in); out.Do != doNothing || out.Settled != takenWant {
+		t.Fatalf("decideRound = %+v: want the round left, %q", out, takenWant)
+	}
+	if got, err := e.s.shipNewsNow(e.ctx, e.session, e.task.ID); err != nil || got == nil || !strings.Contains(got.Text, "/work/other on otherbox") {
+		t.Fatalf("shipNewsNow = %+v, %v: want the paused holder named", got, err)
+	}
+	// The round's session taking the task back is not under the paused run:
+	// whoever took the task last holds it.
+	e.openRun(e.task.ID, e.session)
+	if in := e.factsOf(r1); in.Taken || !in.RunOpen {
+		t.Fatalf("Taken = %v, RunOpen = %v: want the session's later run to carry the round", in.Taken, in.RunOpen)
+	}
+	e.exec(`DELETE FROM agent_runs WHERE issue_id = ? AND ended_at IS NULL`, e.task.ID)
+	e.exec(`UPDATE issues SET claimed_by = '', claimed_until = NULL WHERE id = ?`, e.task.ID)
+	if in := e.factsOf(r1); in.Taken {
+		t.Fatal("a paused run whose claim lapsed still took the task")
+	}
+}
+
 // The same agent taking the task again with no session (a caller that named
 // none) is the round's holder still, not another (WP-1828): its run carries
 // the round. Another agent's run with no session is another holder.

@@ -571,22 +571,34 @@ func sameHolder(o string) string {
 			AND ra.agent IS ` + o + `.agent AND ra.user_id IS NOT NULL AND ra.user_id IS ` + o + `.user_id)))))`
 }
 
-// newestOpenOn is true of a run, aliased as given, that no later open run on
-// round w's task follows: whoever took the task last holds it.
-func newestOpenOn(o string) string {
-	return `NOT EXISTS (SELECT 1 FROM agent_runs nx WHERE nx.issue_id = w.issue_id AND nx.ended_at IS NULL AND nx.id > ` + o + `.id)`
+// holdsTask is true of a run, aliased as given, that holds its task: open,
+// or paused (its session idle, waiting for its person) as its agent's latest
+// run there while that agent still has the task's claim. holdingRun reads a
+// paused run as holding the task too; expireRuns clears the claim when it
+// lapses, and then the paused run holds nothing.
+func holdsTask(o string) string {
+	return `(` + o + `.ended_at IS NULL OR (` + o + `.outcome = 'paused'
+		AND ` + o + `.id = (SELECT max(pl.id) FROM agent_runs pl WHERE pl.issue_id = ` + o + `.issue_id AND pl.agent = ` + o + `.agent)
+		AND EXISTS (SELECT 1 FROM issues pc WHERE pc.id = ` + o + `.issue_id AND pc.claimed_by = ` + o + `.agent)))`
+}
+
+// newestHolding is true of a run, aliased as given, that no later run
+// holding round w's task (holdsTask) follows: whoever took the task last
+// holds it.
+func newestHolding(o string) string {
+	return `NOT EXISTS (SELECT 1 FROM agent_runs nx WHERE nx.issue_id = w.issue_id AND nx.id > ` + o + `.id AND ` + holdsTask("nx") + `)`
 }
 
 // carriesRound is true of an open run, aliased as given, that carries round
-// w: its holder's (sameHolder), with no other holder's open run on the task
-// since. A session that took the task again after its claim expired carries
+// w: its holder's (sameHolder), with no other holder's run holding the task
+// since (holdsTask). A session that took the task again after its claim expired carries
 // the round in its new run (WP-1828); another session that took the task
 // after it holds the task, and the round waits on that one (takenRun).
 // roundRunOpen, takenRun and movedOnAt all read the holder through it, so
 // the rule is written once, and a round is never both carried and Taken.
 func carriesRound(o string) string {
 	return o + `.ended_at IS NULL AND ` + sameHolder(o) + ` AND NOT EXISTS (SELECT 1 FROM agent_runs tk
-		WHERE tk.issue_id = w.issue_id AND tk.ended_at IS NULL AND tk.id > ` + o + `.id AND NOT ` + sameHolder("tk") + `)`
+		WHERE tk.issue_id = w.issue_id AND tk.id > ` + o + `.id AND ` + holdsTask("tk") + ` AND NOT ` + sameHolder("tk") + `)`
 }
 
 // roundRunOpen: a run that carries the round is open (carriesRound): the
@@ -599,9 +611,10 @@ func roundRunOpen(ctx context.Context, q queryer, round int64) (open bool, err e
 	return open, err
 }
 
-// takenRun is the open run o that makes round w Taken: the newest open run
-// on its task, when it isn't the round's holder's (sameHolder).
-var takenRun = `o.issue_id = w.issue_id AND o.ended_at IS NULL AND NOT ` + sameHolder("o") + ` AND ` + newestOpenOn("o")
+// takenRun is the run o that makes round w Taken: the newest run holding
+// its task (holdsTask: open, or another session's paused one whose agent
+// still has the claim), when it isn't the round's holder's (sameHolder).
+var takenRun = `o.issue_id = w.issue_id AND ` + holdsTask("o") + ` AND NOT ` + sameHolder("o") + ` AND ` + newestHolding("o")
 
 // movedOnAt is when round w's session first started a run on another task
 // after the run that carries the round (its newest open one, else the
