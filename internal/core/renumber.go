@@ -39,14 +39,18 @@ type renumberTools struct {
 // renumberSeen: per line, the last pass's state, so the forge isn't asked
 // again while nothing changed. A pass that couldn't finish, or that moved a
 // branch, is looked at again after renumberRetry (the push's own event
-// usually comes first), not on every step.
+// usually comes first), not on every step. A pass given no tip trusts the
+// memo's for renumberRetry after it was read; then it reads the base's head
+// again, so a push to the base whose webhook was lost, or that no line step
+// carried, is seen (sweepRenumber asks on a timer).
 var renumberSeen sync.Map
 
 type renumberMemo struct {
-	tip   string
-	rest  string // open heads and line order
-	until int64  // ms; 0: finished, good until the state changes
-	moved bool   // the pass renamed files of a pull request in the line
+	tip     string
+	rest    string // open heads, what keeps a commit off each, and line order
+	until   int64  // ms; 0: finished, good until the state changes
+	checked int64  // ms; when tip was last read or given
+	moved   bool   // the pass renamed files of a pull request in the line
 }
 
 const renumberRetry = 5 * 60 * 1000
@@ -111,6 +115,44 @@ func (s *Service) renumberOnPR(ctx context.Context, e *Event) {
 	})
 }
 
+// sweepRenumber looks again at each base with open pull requests and no merge
+// line, whose memo has run out: it is what retries an unfinished pass and sees
+// a base that moved without a webhook, or a pull request a person approved,
+// when no event comes. A line's own sweep (sweepLines) steps it, and the step
+// runs the pass.
+func (s *Service) sweepRenumber(ctx context.Context) {
+	rows, err := s.db.R.QueryContext(ctx, `SELECT DISTINCT p.forge_id, p.repo, p.base_ref FROM pull_requests p
+		WHERE p.state IN ('open','draft') AND p.base_ref != '' AND EXISTS (SELECT 1 FROM project_repos r WHERE r.forge_id = p.forge_id AND r.repo = p.repo COLLATE NOCASE)
+		ORDER BY p.forge_id, p.repo, p.base_ref`)
+	if err != nil {
+		return
+	}
+	var refs []lineRef
+	for rows.Next() {
+		var r lineRef
+		if rows.Scan(&r.forge, &r.repo, &r.base) == nil {
+			refs = append(refs, r)
+		}
+	}
+	rows.Close()
+	ctx = withoutLineLocks(ctx)
+	for _, ref := range refs {
+		if ctx.Err() != nil {
+			return
+		}
+		if members, err := s.lineMembers(ctx, ref); err != nil || len(members) > 0 {
+			continue
+		}
+		s.renumberPass(ctx, ref, "", nil)
+	}
+}
+
+// renumberBaseMoved forgets the last pass's tip after a push to ref's base,
+// so the next pass reads the new one.
+func (s *Service) renumberBaseMoved(ref lineRef) {
+	renumberSeen.Delete(s.lineRunKey(ref))
+}
+
 // renumberToolsFor is the forge and capabilities a pass needs for ref's repo.
 func (s *Service) renumberToolsFor(ctx context.Context, ref lineRef) (*renumberTools, bool) {
 	cl, ok1 := s.Forges.(ForgeUnion)
@@ -131,8 +173,9 @@ func (s *Service) renumberToolsFor(ctx context.Context, ref lineRef) (*renumberT
 	return &renumberTools{f: f, cl: cl, cm: cm, ls: ls, rd: rd, pc: pc}, true
 }
 
-// renumberKey is the state a pass looks at: the line's order and each open
-// head.
+// renumberKey is the state a pass looks at: the line's order, each open
+// head, and what of each pull request's own row keeps a commit off it
+// (renumberSkip): a person approving one from outside changes the key.
 func renumberKey(order, prs []*PullRequest) (string, map[int64]int) {
 	place := map[int64]int{}
 	var key strings.Builder
@@ -141,9 +184,19 @@ func renumberKey(order, prs []*PullRequest) (string, map[int64]int) {
 		fmt.Fprintf(&key, "|o%d", p.ID)
 	}
 	for _, p := range prs {
-		fmt.Fprintf(&key, "|%d@%s", p.ID, p.HeadSHA)
+		fmt.Fprintf(&key, "|%d@%s:%s:%s:%t", p.ID, p.HeadSHA, p.HeadRef, p.headRepo, p.Outside)
 	}
 	return key.String(), place
+}
+
+// renumberMemoStands: the last pass's memo m answers for a pass at tip ("":
+// not read) with key, without asking the forge.
+func (s *Service) renumberMemoStands(m renumberMemo, key, tip string) bool {
+	now := s.nowMS()
+	if m.rest != key || (m.until != 0 && now >= m.until) {
+		return false
+	}
+	return tip == m.tip || (tip == "" && now < m.checked+renumberRetry)
 }
 
 // renumberPass renames what clashes among the open pull requests into a base.
@@ -165,23 +218,28 @@ func (s *Service) renumberPass(ctx context.Context, ref lineRef, tip string, ord
 	}
 	key, place := renumberKey(order, prs)
 	seenKey := s.lineRunKey(ref)
-	// With no tip in hand (a pull request's own event), the last pass's tip
-	// stands: a moved base reaches the pass through the line's step.
+	var last *renumberMemo
 	if v, ok := renumberSeen.Load(seenKey); ok {
 		m := v.(renumberMemo)
-		if m.rest == key && (tip == "" || tip == m.tip) && (m.until == 0 || s.nowMS() < m.until) {
+		if s.renumberMemoStands(m, key, tip) {
 			return m.moved
 		}
+		last = &m
 	}
 	if tip == "" {
 		if tip, err = rt.rd.BranchHead(ctx, rt.f, ref.repo, ref.base); err != nil || tip == "" {
 			s.log.WarnContext(ctx, "renumber: read the base's head", "repo", ref.repo, "base", ref.base, "err", err)
 			return false
 		}
+		if last != nil && s.renumberMemoStands(*last, key, tip) {
+			last.checked = s.nowMS()
+			renumberSeen.Store(seenKey, *last)
+			return last.moved
+		}
 	}
 	complete := true
 	defer func() {
-		m := renumberMemo{tip: tip, rest: key, moved: moved}
+		m := renumberMemo{tip: tip, rest: key, moved: moved, checked: s.nowMS()}
 		if !complete || moved {
 			m.until = s.nowMS() + renumberRetry
 		}
@@ -271,9 +329,16 @@ func (s *Service) renumberInputs(ctx context.Context, rt *renumberTools, ref lin
 	return in, byID, true
 }
 
-// renumberHeadFiles lists the numbered files at p's head, for a pull request
-// whose changed files are not known.
+// renumberHeadFiles lists the files p adds to the marked directories, for a
+// pull request whose changed files are not known: those at its head that its
+// merge base doesn't have. A file the base deleted since is at both, so it is
+// not counted as the pull request's.
 func (s *Service) renumberHeadFiles(ctx context.Context, rt *renumberTools, ref lineRef, pats []string, p *PullRequest) ([]string, bool) {
+	mb, err := rt.cl.MergeBase(ctx, rt.f, ref.repo, p.Number)
+	if err != nil || mb == "" {
+		s.log.WarnContext(ctx, "renumber: read a pull request's merge base", "repo", ref.repo, "number", p.Number, "err", err)
+		return nil, false
+	}
 	var out []string
 	for _, d := range uniqueDirs(pats) {
 		files, err := rt.ls.DirAt(ctx, rt.f, ref.repo, d, p.HeadSHA)
@@ -281,7 +346,16 @@ func (s *Service) renumberHeadFiles(ctx context.Context, rt *renumberTools, ref 
 			s.log.WarnContext(ctx, "renumber: list a directory at a pull request's head", "repo", ref.repo, "number", p.Number, "dir", d, "err", err)
 			return nil, false
 		}
-		out = append(out, files...)
+		had, err := rt.ls.DirAt(ctx, rt.f, ref.repo, d, mb)
+		if err != nil {
+			s.log.WarnContext(ctx, "renumber: list a directory at a pull request's merge base", "repo", ref.repo, "number", p.Number, "dir", d, "err", err)
+			return nil, false
+		}
+		for _, f := range files {
+			if !slices.Contains(had, f) {
+				out = append(out, f)
+			}
+		}
 	}
 	return out, true
 }
@@ -395,8 +469,9 @@ func (s *Service) renumberCarry(ctx context.Context, rt *renumberTools, pr *Pull
 	return true, false
 }
 
-// renumberEdits are the file changes of the commit: each move, and the other
-// files the pull request changed that mention a moved file's name. what names
+// renumberEdits are the file changes of the commit: each move, its content
+// with the moved names in it replaced, and the other files the pull request
+// changed that mention a moved file's name. what names
 // the read that failed. Blob ids are read at the planned head, not the
 // branch: a push since makes the forge refuse the commit.
 func (s *Service) renumberEdits(ctx context.Context, rt *renumberTools, pr *PullRequest, moves []numbering.Move) (files []FileChange, what string, err error) {
@@ -406,6 +481,9 @@ func (s *Service) renumberEdits(ctx context.Context, rt *renumberTools, pr *Pull
 	}
 	touched := map[string]bool{}
 	var names []numbering.Rename
+	for _, m := range moves {
+		names = append(names, numbering.NameChange(m.From, m.To))
+	}
 	for _, m := range moves {
 		touched[m.From], touched[m.To] = true, true
 		content, err := rt.rd.FileAt(ctx, rt.f, pr.Repo, m.From, pr.HeadSHA)
@@ -419,8 +497,7 @@ func (s *Service) renumberEdits(ctx context.Context, rt *renumberTools, pr *Pull
 		if _, err := rt.rd.FileAt(ctx, rt.f, pr.Repo, m.To, pr.HeadSHA); !errors.Is(err, ErrNotFound) {
 			return nil, m.To + " is free", errors.Join(errors.New("it exists or couldn't be read"), err)
 		}
-		files = append(files, FileChange{Path: m.From, BaseSHA: blob, Delete: true}, FileChange{Path: m.To, Content: content})
-		names = append(names, numbering.NameChange(m.From, m.To))
+		files = append(files, FileChange{Path: m.From, BaseSHA: blob, Delete: true}, FileChange{Path: m.To, Content: numbering.ReplaceNames(content, names)})
 	}
 	for _, fd := range splitDiff(diff) {
 		if touched[fd.path] || !slices.ContainsFunc(names, func(r numbering.Rename) bool { return addedMentions(fd.text, r.From) }) {

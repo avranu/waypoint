@@ -272,6 +272,7 @@ func TestRenumberKeepsToFreeNames(t *testing.T) {
 func TestRenumberCountsTooLargePullRequest(t *testing.T) {
 	se := renumberEnv(t, "me/app")
 	se.sg.diffErr = map[string]error{rnHd6: errDiffTooLarge}
+	se.sg.union.mergeBase = "mb-1"
 	se.rnSecond(rnDir + "0003_big.sql")
 	se.rnDir().heads = map[string][]string{rnHd6: {rnDir + "0001_a.sql", rnDir + "0002_b.sql", rnDir + "0003_big.sql"}}
 	se.renumber()
@@ -286,9 +287,30 @@ func TestRenumberCountsTooLargePullRequest(t *testing.T) {
 	}
 }
 
+// A file the base deleted since a too-large pull request's merge base is
+// still at its head, but it isn't the pull request's: it is neither counted
+// nor renamed.
+func TestRenumberTooLargeLeavesFilesTheBaseDeleted(t *testing.T) {
+	se := renumberEnv(t, "me/app")
+	se.sg.diffErr = map[string]error{rnHd6: errDiffTooLarge}
+	se.sg.union.mergeBase = "mb-1"
+	old := rnDir + "0005_old.sql"
+	se.rnSecond(old)
+	se.rnDir().heads = map[string][]string{
+		rnHd6:  {rnDir + "0001_a.sql", rnDir + "0002_b.sql", old},
+		"mb-1": {rnDir + "0001_a.sql", rnDir + "0002_b.sql", old},
+	}
+	se.renumber()
+	want := "commit: Merge queue: renumber 0002_new_thing.sql to 0003_new_thing.sql (its number is not above the highest on main)"
+	if got := se.sg.union.log; len(got) != 1 || got[0] != want {
+		t.Fatalf("calls = %q", got)
+	}
+}
+
 func TestRenumberMovesNothingWhenAHeadCannotBeListed(t *testing.T) {
 	se := renumberEnv(t, "me/app")
 	se.sg.diffErr = map[string]error{rnHd6: errDiffTooLarge}
+	se.sg.union.mergeBase = "mb-1"
 	se.rnSecond(rnDir + "0003_big.sql")
 	se.rnDir().failRef = rnHd6
 	se.renumber()
@@ -315,6 +337,45 @@ func TestRenumberLeavesOutsidePullRequests(t *testing.T) {
 	se.renumber()
 	if len(se.sg.union.log) != 1 {
 		t.Errorf("committed to a pull request from outside: %q", se.sg.union.log)
+	}
+	// A person approves it: its head is as it was, and the pass looks again.
+	if _, err := se.s.db.W.ExecContext(se.ctx, `UPDATE pull_requests SET outside = 0 WHERE number = 5`); err != nil {
+		t.Fatal(err)
+	}
+	se.renumber()
+	if len(se.sg.union.log) != 2 {
+		t.Errorf("not renamed once approved: %q", se.sg.union.log)
+	}
+}
+
+// A base that moves with no line to step and no event of a pull request: a
+// push's webhook has the next pass read the new tip, and without one the
+// sweep does within renumberRetry.
+func TestRenumberSeesAMovedBase(t *testing.T) {
+	for _, hook := range []bool{true, false} {
+		se := renumberEnv(t, "me/app")
+		se.rnDir().files = []string{rnDir + "0001_a.sql"}
+		se.renumber()
+		if len(se.sg.union.log) != 0 {
+			t.Fatalf("calls before the base moved = %q", se.sg.union.log)
+		}
+		se.rnDir().files = []string{rnDir + "0001_a.sql", rnDir + "0002_b.sql"}
+		se.sg.tips["main"] = "tip-2"
+		se.sg.fileAt["tip-2:.gitattributes"] = se.sg.fileAt["tip-1:.gitattributes"]
+		se.s.sweepRenumber(se.ctx)
+		if len(se.sg.union.log) != 0 {
+			t.Fatalf("the base was read again at once: %q", se.sg.union.log)
+		}
+		if hook {
+			se.s.renumberBaseMoved(rnRef(se))
+		} else {
+			later := se.s.now().Add(6 * time.Minute)
+			se.s.now = func() time.Time { return later }
+		}
+		se.s.sweepRenumber(se.ctx)
+		if got := se.sg.union.log; len(got) != 1 || !strings.Contains(got[0], "0003_new_thing.sql") {
+			t.Fatalf("webhook %t: calls after the base moved = %q", hook, got)
+		}
 	}
 }
 
@@ -372,6 +433,9 @@ func TestRenumberTwoFilesWithAlikeNames(t *testing.T) {
 	}
 	if got := h["docs/x.md"]; got != "x\nsee 0004_a_b.sql and 0002_a_b_c\n" {
 		t.Errorf("docs = %q", got)
+	}
+	if got := h[rnDir+"0003_a.sql"]; got != "-- see 0004_a_b\nA;\n" {
+		t.Errorf("moved file = %q", got)
 	}
 }
 
