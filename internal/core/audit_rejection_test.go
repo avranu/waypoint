@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -284,13 +285,38 @@ func TestHelperPanelFindingCountsAsHaikus(t *testing.T) {
 	}
 }
 
-func TestOtherFamilyFindingIsNotCompared(t *testing.T) {
+// Nothing is known of a finder outside the ordered families (an audit of
+// another provider), so it counts as the strongest family (WP-1825).
+func TestOtherFamilyFindingTakesTheStrongestFamily(t *testing.T) {
 	re := newRejectionEnv(t, "cursor/grok-4.7-high")
-	if err := re.reject(re.session("claude-haiku-5-5", ""), 1, "a.go:1"); err != nil {
+	err := re.reject(re.session("claude-opus-5-5", "max"), 1, "a.go:1")
+	if err == nil || !strings.Contains(err.Error(), "only fable or mythos may reject") {
+		t.Fatalf("opus against grok's finding: %v", err)
+	}
+	if err := re.reject(re.session("claude-fable-5-2", ""), 1, "a.go:1"); err != nil {
 		t.Fatal(err)
 	}
-	if f := re.finding(1); !strings.HasPrefix(f.DecidedStrength, "not_compared: ") {
+	if f := re.finding(1); !strings.HasPrefix(f.DecidedStrength, "at_least: ") {
 		t.Errorf("strength = %q", f.DecidedStrength)
+	}
+}
+
+// A review's own report from a round no session started has no author
+// model: it isn't left open to any agent, but counts as the strongest.
+func TestOwnReportWithoutAuthorSessionTakesTheStrongestFamily(t *testing.T) {
+	re := newRejectionEnv(t, ownReportModel)
+	re.exec(`UPDATE code_audits SET request_key = 'review-round:999999:own' WHERE id = ?`, re.audit)
+	if err := re.reject(re.session("claude-opus-5-5", ""), 1, "a.go:1"); err == nil || !strings.Contains(err.Error(), "found by unknown") {
+		t.Fatalf("opus against an own report of no session: %v", err)
+	}
+}
+
+// A finding that doesn't exist says so, before asking for evidence.
+func TestRejectingMissingFindingSaysNotFound(t *testing.T) {
+	re := newRejectionEnv(t, "claude-sonnet-5-5")
+	_, err := re.s.MarkAuditFindings(re.ctx, re.session("claude-opus-5-5", ""), MarkFindings{IDs: []string{re.id(9)}, State: "rejected", Note: "wrong"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v", err)
 	}
 }
 

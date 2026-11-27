@@ -69,7 +69,8 @@ finding of a pull request it isn't working on (outside its own review round)
 also gives --evidence TEXT (a file and line, or a command's output, up to ` + strconv.Itoa(core.MaxRejectionEvidence) + `
 characters), and must run as strong a model as the one that found it: not a
 haiku session for a sonnet's finding, a low effort one for a high effort one's,
-or an older version for a newer one's. If it can't, leave it (a medium or low
+or an older version for a newer one's. A finding of a model Waypoint doesn't
+rank (another provider's audit) only fable or mythos may reject. If it can't, leave it (a medium or low
 one can be filed: confirmed --issue KEY). People are never held to either. --issue links the
 task or bug that deals with it. A finding confirmed with --issue is filed:
 handed to that issue, so a review round, a pull request's babysitter or an

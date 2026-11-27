@@ -2773,18 +2773,18 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 			return nil, invalid("%s is canceled and isn't a duplicate of an open issue, so filing into it would drop the finding: fix it, reject it with why (-m), or file it in an open issue", strings.TrimSpace(in.Issue))
 		}
 	}
-	var records map[ref]rejectionRecord
-	if state == "rejected" && actor.IsAgent() {
-		var err error
-		if records, err = s.weighRejections(ctx, actor, evidence, refs); err != nil {
-			return nil, err
-		}
-	}
 	var by any
 	if actor.User != nil && actor.User.ID != 0 && !actor.IsAgent() {
 		by = actor.User.ID
 	}
 	err := s.write(ctx, actor, func(t *tx) error {
+		var records map[ref]rejectionRecord
+		if state == "rejected" && actor.IsAgent() {
+			var err error
+			if records, err = weighRejections(ctx, t, actor, evidence, refs); err != nil {
+				return err
+			}
+		}
 		for _, r := range refs {
 			if actor.IsAgent() {
 				if err := s.refuseMarkAfterCheck(ctx, t, r.audit, r.n, state); err != nil {

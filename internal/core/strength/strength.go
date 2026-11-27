@@ -115,16 +115,17 @@ func cmpStr(a, b string) string {
 type Verdict string
 
 const (
-	AtLeast     Verdict = "at_least"
-	Weaker      Verdict = "weaker"
-	NotCompared Verdict = "not_compared"
+	AtLeast Verdict = "at_least"
+	Weaker  Verdict = "weaker"
 )
 
 // Compare says whether rejecter is as strong as finder, and why. Family
 // decides first, then version, then effort; a version or effort unknown on
-// either side counts as equal for that part. A finder outside the ordered
-// families isn't compared; a rejecter outside them is weaker, as nothing is
-// known of it.
+// either side counts as equal for that part. Nothing is known of a model
+// outside the ordered families, so neither side gets the benefit of it: a
+// rejecter outside them is weaker, and a finder outside them (an audit run by
+// another provider, or one whose model wasn't recorded) counts as the
+// strongest family, which only that family may reject.
 func Compare(rejecter, finder Model) (Verdict, string) {
 	if !rejecter.Known() {
 		if rejecter.Name != "" {
@@ -133,7 +134,11 @@ func Compare(rejecter, finder Model) (Verdict, string) {
 		return Weaker, "Waypoint doesn't know which model this session runs"
 	}
 	if !finder.Known() {
-		return NotCompared, fmt.Sprintf("%s isn't a model Waypoint ranks", finder)
+		top := strings.Join(tiers[len(tiers)-1], " or ")
+		if rank[rejecter.Family] < len(tiers) {
+			return Weaker, fmt.Sprintf("%s isn't a model Waypoint ranks, so only %s may reject its findings", finder, top)
+		}
+		return AtLeast, fmt.Sprintf("%s isn't a model Waypoint ranks, and %s is the strongest family", finder, rejecter.Family)
 	}
 	if r, f := rank[rejecter.Family], rank[finder.Family]; r != f {
 		if r < f {

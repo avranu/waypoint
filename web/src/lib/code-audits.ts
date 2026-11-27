@@ -44,7 +44,7 @@ export interface AuditFinding {
   /** The model an agent that rejected it ran as, and effort. */
   decided_model?: string
   decided_effort?: string
-  /** How that compared with the finder: "at_least: why" or "not_compared: why". */
+  /** How that compared with the finder: "at_least: why" ('not_compared: why' on older verdicts). */
   decided_strength?: string
   /** The line on the forge. */
   url?: string
