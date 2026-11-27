@@ -91,14 +91,17 @@ func slowThreshold() time.Duration {
 	return d
 }
 
-// span is the start of one timed call. Capturing the caller's stack is
-// deferred to finish so fast statements pay only time.Now/time.Since.
+// span is the start of one timed call: the time and the caller's stack, in a
+// fixed array so that taking it allocates nothing.
 type span struct {
 	start time.Time
+	pcs   [stackDepth]uintptr
+	n     int
 }
 
 func (sp *span) begin() {
 	sp.start = time.Now()
+	sp.n = runtime.Callers(2, sp.pcs[:])
 }
 
 // finish records the call if it was slow enough to log or to count.
@@ -107,9 +110,7 @@ func (m *monitor) finish(sp *span, pool string, tx bool, query string, first tim
 	if d < min(m.floor, m.threshold) {
 		return
 	}
-	var pcs [stackDepth]uintptr
-	n := runtime.Callers(2, pcs[:])
-	caller := callerOf(pcs[:n])
+	caller := callerOf(sp.pcs[:sp.n])
 	kind := pool
 	if tx {
 		kind = "write transaction"
@@ -156,7 +157,7 @@ func (m *monitor) add(kind, caller string, d time.Duration) {
 func skipFrame(fn string) bool {
 	return strings.HasPrefix(fn, "database/sql.") || strings.HasPrefix(fn, "runtime.") ||
 		strings.Contains(fn, "internal/db.(*timed") || strings.Contains(fn, "internal/db.timed") ||
-		strings.Contains(fn, "internal/db.(*span)") || strings.Contains(fn, "internal/db.(*monitor)") ||
+		strings.Contains(fn, "internal/db.(*span)") ||
 		strings.HasSuffix(fn, "internal/core.(*Service).write")
 }
 

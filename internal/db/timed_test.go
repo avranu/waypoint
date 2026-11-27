@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"path/filepath"
 	"strings"
@@ -134,6 +135,43 @@ func TestSlowStatementWriteTransaction(t *testing.T) {
 	if len(*got) != 1 || !(*got)[0].Tx {
 		t.Errorf("a rollback is timed too: %v", *got)
 	}
+}
+
+func scanIntHelper(r *sql.Row) (int, error) {
+	var n int
+	return n, r.Scan(&n)
+}
+
+func TestSlowStatementCallerAttributedAtStart(t *testing.T) {
+	d, got := openSlow(t)
+	// A shared scan helper must not steal blame from the caller that issued the query.
+	if _, err := scanIntHelper(d.R.QueryRowContext(context.Background(), slowCTE, "arg")); err != nil {
+		t.Fatal(err)
+	}
+	if len(*got) != 1 || !strings.Contains((*got)[0].Caller, "TestSlowStatementCallerAttributedAtStart") || strings.Contains((*got)[0].Caller, "scanIntHelper") {
+		t.Fatalf("scan helper attribution: %+v", *got)
+	}
+
+	// A context-cancelled write transaction is rolled back by database/sql's
+	// awaitDone goroutine; the caller must still be the function that began it.
+	ch := make(chan SlowStatement, 4)
+	d.SetSlowHandler(func(s SlowStatement) { ch <- s })
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	tx, err := d.W.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-ctx.Done()
+	select {
+	case s := <-ch:
+		if !s.Tx || !strings.Contains(s.Caller, "TestSlowStatementCallerAttributedAtStart") {
+			t.Fatalf("cancelled tx attribution: %+v", s)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for cancelled tx slow statement")
+	}
+	_ = tx.Rollback()
 }
 
 func TestSlowStatementOff(t *testing.T) {

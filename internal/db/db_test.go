@@ -49,6 +49,39 @@ func TestOpenOddPathAndBackup(t *testing.T) {
 	}
 }
 
+func TestOpenTwiceSkipsAppliedMigrations(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "reopen.db")
+	d, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var count1 int
+	if err := d.R.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&count1); err != nil || count1 == 0 {
+		t.Fatalf("initial migrations: %d %v", count1, err)
+	}
+	if _, err := d.W.ExecContext(ctx, `INSERT INTO projects(id, key, name, created_at, updated_at) VALUES (1, 'REOP', 'Reopen', 0, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d2, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("re-open failed: %v", err)
+	}
+	defer d2.Close()
+	var count2 int
+	if err := d2.R.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&count2); err != nil || count2 != count1 {
+		t.Fatalf("migrations after reopen = %d, want %d (err=%v)", count2, count1, err)
+	}
+	var key string
+	if err := d2.R.QueryRowContext(ctx, `SELECT key FROM projects WHERE id = 1`).Scan(&key); err != nil || key != "REOP" {
+		t.Fatalf("row after reopen = %q %v", key, err)
+	}
+}
+
 func TestRebuildMigrationKeepsDependants(t *testing.T) {
 	ctx := context.Background()
 	d, err := OpenFresh(ctx, filepath.Join(t.TempDir(), "rebuild.db"))

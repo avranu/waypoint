@@ -86,7 +86,6 @@ func siteNamesFile() string {
 type siteChecker struct {
 	names       map[string]bool
 	singleNames map[string]bool
-	hasDotted   bool
 	phrases     *regexp.Regexp
 }
 
@@ -119,9 +118,7 @@ func newSiteChecker(names map[string]bool) *siteChecker {
 			phrases = append(phrases, regexp.QuoteMeta(n))
 		default:
 			c.names[n] = true
-			if strings.ContainsRune(n, '.') {
-				c.hasDotted = true
-			} else if !allDigits([]string{n}) {
+			if !strings.ContainsRune(n, '.') && !allDigits([]string{n}) {
 				c.singleNames[n] = true
 			}
 		}
@@ -408,11 +405,15 @@ func TestSiteWord(t *testing.T) {
 		t.Errorf("hits %+v", hits)
 	}
 	for w, want := range map[string]bool{
-		"tumbleweedFile": true,
-		"newTumbleweed":  true,
-		"atumbleweedAI":  false,
-		"TUMBLEWEEDAI":   false,
-		"Tumbleweeds":    false,
+		"tumbleweedFile":       true,
+		"newTumbleweed":        true,
+		"atumbleweedAI":        false,
+		"TUMBLEWEEDAI":         false,
+		"Tumbleweeds":          false,
+		"waypoint.example.org": true,
+		"10.77.0.216":          true,
+		"git.example.net":      false,
+		"10.77.0":              false,
 	} {
 		if got := len(c.hits([]byte(w))) == 1; got != want {
 			t.Errorf("hits(%q) = %v, want %v", w, got, want)

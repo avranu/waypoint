@@ -89,8 +89,11 @@ func open(ctx context.Context, path string, runMigrate, testMode bool) (*DB, err
 	}
 	r := openPool(dsnMode(path, true, testMode), "read", mon)
 	if testMode {
+		// Nested readers (e.g. usageSessionMetaN) hold two read connections at
+		// once; keep 4 open and idle so tests don't deadlock or churn schema
+		// re-parses while staying smaller than NumCPU pools.
 		r.SetMaxOpenConns(4)
-		r.SetMaxIdleConns(1)
+		r.SetMaxIdleConns(4)
 	} else {
 		n := max(4, runtime.NumCPU())
 		r.SetMaxOpenConns(n)
