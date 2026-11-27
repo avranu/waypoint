@@ -289,7 +289,16 @@ func fillEveryField(t *testing.T, v reflect.Value) {
 		case reflect.String:
 			f.SetString("x")
 		case reflect.Slice:
-			f.Set(reflect.ValueOf([]string{"x"}))
+			one := reflect.New(f.Type().Elem()).Elem()
+			switch one.Kind() {
+			case reflect.String:
+				one.SetString("x")
+			case reflect.Float64:
+				one.SetFloat(1)
+			default:
+				t.Fatalf("fill testRun.%s: add its element kind, %s", v.Type().Field(i).Name, one.Kind())
+			}
+			f.Set(reflect.Append(reflect.MakeSlice(f.Type(), 0, 1), one))
 		case reflect.Pointer:
 			if f.Type().Elem().Kind() != reflect.Float64 {
 				t.Fatalf("fill %s.%s: add its kind", v.Type().Name(), v.Type().Field(i).Name)
@@ -334,7 +343,8 @@ func TestSendTestEvidenceReachesTheServer(t *testing.T) {
 		}
 		return ev
 	}
-	base := testRun{Command: "go test ./...", Outcome: runPass, Passed: 3, Units: 1, UnitName: "packages", Packages: []string{"p"}, Seconds: 1, Duration: 2}
+	base := testRun{Command: "go test ./...", Outcome: runPass, Passed: 3, Units: 1, UnitName: "packages", Packages: []string{"p"}, Seconds: 1, Duration: 2,
+		Load: []float64{15.4, 19.2}} // the load must not reach the server, as nearest either (audit 1843)
 	keep := func(tree string, moved bool) {
 		r := base
 		r.At, r.Tree, r.Moved = 1, tree, moved
@@ -522,5 +532,77 @@ func TestShipLine(t *testing.T) {
 		if got := shipLine(7, url, tc.said, tc.babysat, tc.notify, tc.blocking); got != tc.want {
 			t.Errorf("%v %v %v %v:\ngot  %q\nwant %q", tc.said, tc.babysat, tc.notify, tc.blocking, got, tc.want)
 		}
+	}
+}
+
+func recordWithLoad(t *testing.T, read func() (float64, bool)) (testRun, string) {
+	t.Helper()
+	tempRepo(t)
+	rec := newTestRunRecorder([]string{"go", "test"})
+	rec.load = read
+	rec.started()
+	rec.finish(&testResult{Passed: 1, Units: 1}, 0)
+	b, err := os.ReadFile(testRunsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs := readTestRuns(testRunsPath())
+	if len(runs) != 1 {
+		t.Fatalf("runs: %+v", runs)
+	}
+	return runs[0], string(b)
+}
+
+func TestTestRunKeepsTheLoadAtStartAndEnd(t *testing.T) {
+	r, _ := recordWithLoad(t, loadReader(15.4, 19.2))
+	if !reflect.DeepEqual(r.Load, []float64{15.4, 19.2}) {
+		t.Errorf("load: %v", r.Load)
+	}
+}
+
+func TestTestRunWithoutLoadHasNoLoadKey(t *testing.T) {
+	r, raw := recordWithLoad(t, loadReader())
+	if r.Load != nil || strings.Contains(raw, `"load"`) {
+		t.Errorf("load %v in %s", r.Load, raw)
+	}
+}
+
+func TestTestRunWithOneReadingKeepsNone(t *testing.T) {
+	for name, read := range map[string]func() (float64, bool){
+		"start only": loadReader(3),
+		"end only": func() func() (float64, bool) {
+			n := 0
+			return func() (float64, bool) { n++; return 4, n > 1 }
+		}(),
+	} {
+		if r, raw := recordWithLoad(t, read); r.Load != nil || strings.Contains(raw, `"load"`) {
+			t.Errorf("%s: load %v in %s", name, r.Load, raw)
+		}
+	}
+}
+
+func TestTestRunReadsOldRecordsWithoutLoad(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "runs.jsonl")
+	write(t, p, `{"at":1,"tree":"t","command":"c","outcome":"pass","passed":1,"failed":0,"skipped":0,"units":1,"seconds":1,"duration":1}`+"\n")
+	if runs := readTestRuns(p); len(runs) != 1 || runs[0].Load != nil {
+		t.Errorf("runs: %+v", runs)
+	}
+}
+
+// The load stays on this machine: the server decodes strictly, so a run
+// sent with it would be refused (WP-1850).
+func TestRunsToSendLeavesOutTheLoad(t *testing.T) {
+	on := []testRun{{Outcome: runPass, Load: []float64{1, 2}}, {Outcome: runFail, Load: []float64{3, 4}}}
+	sent := runsToSend(on)
+	if len(sent) != 2 {
+		t.Fatalf("sent %d runs, want 2", len(sent))
+	}
+	for _, r := range sent {
+		if r.Load != nil {
+			t.Fatalf("sent with load: %+v", r)
+		}
+	}
+	if on[0].Load == nil {
+		t.Fatal("the kept record lost its load")
 	}
 }

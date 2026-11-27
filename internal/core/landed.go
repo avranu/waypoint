@@ -17,6 +17,7 @@ const landedGrace = 5 * time.Minute
 // onBaseMoved looks at the open pull requests whose base is branch, after a
 // push to it.
 func (s *Service) onBaseMoved(ctx context.Context, f *Forge, repo, branch string) {
+	s.renumberBaseMoved(lineRef{forge: f.ID, repo: repo, base: branch})
 	if f.token == "" {
 		return
 	}

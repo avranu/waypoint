@@ -463,7 +463,7 @@ func findCheckouts(root string, depth int) []string {
 }
 
 var kitStatusCmd = &command{
-	name: "status", args: "[DIR]",
+	name: "status", aliases: []string{"show"}, args: "[DIR]",
 	summary:  "this checkout's kit commit, plugins and drift",
 	examples: []string{"wp kit status"},
 	run:      kitStatus,

@@ -48,9 +48,11 @@ WPTEST = wp test -h >/dev/null 2>&1
 test: ## tests of what changed against the base (wp test); test-all is the whole tree
 	@if $(WPTEST); then wp test; else echo "make test: wp is missing or too old for wp test; running test-all (the whole tree)" >&2; $(MAKE) --no-print-directory test-all; fi
 
+# internal/core is one test binary here: 10-17m on 8 CPUs, and past 30m at a
+# load of 22-50 (WP-1857).
 test-all: ## the whole tree: backend tests + frontend typecheck (CI runs this on the pull request; about 20 minutes or more)
 	go vet $(GOPKGS)
-	$(TESTSUM) go test -count=1 -timeout 30m -cover $(GOPKGS)
+	$(TESTSUM) go test -count=1 -timeout 60m -cover $(GOPKGS)
 	cd web && $(WEBDEPS) && npm run typecheck
 
 tools: ## install pinned Go QA binaries
