@@ -13,8 +13,8 @@ const (
 	// Agent sessions (WP-D16). Data: session (id), machine, repo, branch, agent.
 	EvSessionStarted = "session.started"
 	EvSessionEnded   = "session.ended"
-	EvSessionWaiting = "session.waiting" // + reason: idle_prompt, permission_prompt, …
-	EvSessionUpdated = "session.updated" // state, title or last update changed (live only)
+	EvSessionWaiting = "session.waiting"
+	EvSessionUpdated = "session.updated"
 	// The agent truly finished (WP-D22): a Stop with no background tasks,
 	// crons or wakeups, nothing delivered and no open request. + at (ms).
 	EvSessionFinished = "session.finished"
@@ -33,36 +33,36 @@ const (
 
 	// Requests (WP-D16). Data: request (id), code (R-12), kind, state, session.
 	EvRequestCreated = "request.created"
-	EvRequestUpdated = "request.updated" // + decision: answered, approved, denied, done, dismissed, applied, failed, ran (a failed run sent it back)
+	EvRequestUpdated = "request.updated"
 	// A person picked an allow rule from a refused call (WP-232, WP-233).
 	// Data: refusal (id), rule, repo, session.
 	EvRefusalAllowed = "refusal.allowed"
 
 	// Runners (WP-D17). Data: runner (id), name, owner (user id).
-	EvRunnerStatus = "runner.status" // + online: true/false
+	EvRunnerStatus = "runner.status"
 	// Data: job (id), kind, state, source (request_cell, automation_step, bot_run), source_id.
 	EvRunnerJobFinished = "runner.job_finished"
-	EvRunnerJobUpdated  = "runner.job_updated" // state change or new log (live only)
+	EvRunnerJobUpdated  = "runner.job_updated"
 
 	// Automation runs (WP-D18). Data: automation (id), run (id), status.
 	EvAutomationRunFinished = "automation.run_finished"
 
 	// Pull requests, CI and code (WP-D21). Data for pr.*: pr (id), repo, number, sha.
-	EvPRCI         = "pr.ci"          // + state: passed, failed; failed: [check names]
-	EvPRReviewGate = "pr.review_gate" // + state: pending, success, failure; open: n
-	EvPRReview     = "pr.review"      // a review was submitted: + reviewer, verdict, bot
+	EvPRCI         = "pr.ci"
+	EvPRReviewGate = "pr.review_gate"
+	EvPRReview     = "pr.review"
 	// WP-D14 phase 5: a label was added (+ label), someone was asked to
 	// review (+ reviewer, bot: the forge's bot account was asked).
 	EvPRLabeled         = "pr.labeled"
 	EvPRReviewRequested = "pr.review_requested"
 	// Data: repo, branch, before, after, pusher, paths: [changed files], created: bool.
 	EvRepoPushed  = "repo.pushed"
-	EvRepoRelease = "repo.release" // + tag, name, url
+	EvRepoRelease = "repo.release"
 
 	// Environments (WP-D19). Data: environment (id), name, kind, url.
-	EvEnvDeployed     = "env.deployed" // + deployment (id), commit, branch, version, status
+	EvEnvDeployed     = "env.deployed"
 	EvEnvDeployFailed = "env.deploy_failed"
-	EvEnvStatus       = "env.status" // + status: up, down, degraded; previous
+	EvEnvStatus       = "env.status"
 	EvEnvCreated      = "env.created"
 	EvEnvStopped      = "env.stopped"
 	// An environment still runs an older commit than its branch's head
@@ -70,10 +70,10 @@ const (
 	EvEnvLagging = "env.lagging"
 
 	// Knowledge and projects, for automation triggers (WP-D18).
-	EvGlossaryChanged = "glossary.changed" // + term (id), name, created: bool
-	EvDesignChanged   = "design.changed"   // + note (id), state: proposed, approved, requested (written for a person's task, WP-ADR96)
+	EvGlossaryChanged = "glossary.changed"
+	EvDesignChanged   = "design.changed"
 	EvProjectCreated  = "project.created"
-	EvRepoAttached    = "project.repo_attached" // + repo, forge
+	EvRepoAttached    = "project.repo_attached"
 
 	// System (admin automations). Data: resource: disk, database, memory, transcripts; free, total.
 	EvSystemResources = "system.resources_low"
@@ -81,13 +81,13 @@ const (
 
 // Runner jobs (WP-D17): work done on a person's machine by `wp runner`.
 const (
-	JobCommand = "command" // run a shell command in an allowed directory
-	JobApply   = "apply"   // write files in an allowed worktree, optionally commit
-	JobAgent   = "agent"   // a coding-agent CLI headless in a fresh checkout
-	JobReview  = "review"  // a PR review on a subscription CLI (WP-D14 phase 3)
-	JobSession = "session" // start a background Claude Code session in an allowed directory (WP-D22)
-	JobMessage = "message" // post a prompt to a running session's inbox socket (WP-D22)
-	JobAudit   = "audit"   // a read-only audit that reports findings (WP-348, WP-ADR20)
+	JobCommand = "command"
+	JobApply   = "apply"
+	JobAgent   = "agent"
+	JobReview  = "review"
+	JobSession = "session"
+	JobMessage = "message"
+	JobAudit   = "audit"
 )
 
 // Permission levels of an agent job.
@@ -240,6 +240,13 @@ type AgentJob struct {
 	// starts from: the runner puts the diff from it to Base in the prompt,
 	// so the model reads the change and has the whole checkout around it.
 	DiffFrom string `json:"diff_from,omitempty"`
+	// DiffOver, for an audit that follows an earlier one (WP-1938), is the
+	// head that was audited; the runner puts the change since it in the
+	// prompt, then OverPrompt, when it can make that range, and the whole
+	// change as without it when it can't. Both are ignored by a runner that
+	// doesn't know them.
+	DiffOver   string `json:"diff_over,omitempty"`
+	OverPrompt string `json:"over_prompt,omitempty"`
 	// DiffSince, for an audit of recent changes (unix seconds): the change
 	// starts at Base's last first-parent commit before then (WP-548).
 	DiffSince int64 `json:"diff_since,omitempty"`

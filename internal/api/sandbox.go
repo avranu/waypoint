@@ -10,12 +10,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Sandbox policy (WP-418, WP-ADR28 decision 3, PL7 §12). Anyone who can
-// see a project or runner may read its sandbox settings, with a token too;
-// only a person in the Waypoint UI changes them. core enforces that for
-// every caller (MCP, automations); the personUI routes say so up front to
-// a token, and TestPersonUIRoutes keeps every write here among them.
-
 // errPersonUI is what a token hears on a personUI route.
 var errPersonUI = fmt.Errorf("sandbox settings are changed in the Waypoint UI: %w", core.ErrForbidden)
 

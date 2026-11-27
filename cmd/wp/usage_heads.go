@@ -7,11 +7,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Command heads (WP-D20): what a Bash call ran, without its arguments. A
-// chain "cd x && git commit -m msg | tee log" is three heads: cd, git commit,
-// tee. Arguments never leave the machine this way; only the program and, for
-// tools whose first word picks what they do, that subcommand.
-
 // shellWords splits a command line into segments (at && || ; | & and
 // newlines) of words with quotes removed. It follows the shell closely
 // enough for heads, not for running anything: quoted strings and $(…) stay
@@ -45,7 +40,7 @@ func shellWords(cmd string) [][]string {
 			flushWord()
 		case c == '\n':
 			endSeg()
-			for len(heredocs) > 0 { // skip the body of each here-document
+			for len(heredocs) > 0 {
 				delim := heredocs[0]
 				heredocs = heredocs[1:]
 				for i+1 < len(r) {
@@ -72,7 +67,7 @@ func shellWords(cmd string) [][]string {
 				endSeg()
 				i++
 			} else if i+1 < len(r) && r[i+1] == '>' || inWord && strings.HasSuffix(word.String(), ">") || i > 0 && r[i-1] == '>' {
-				word.WriteRune(c) // 2>&1, &>file
+				word.WriteRune(c)
 				inWord = true
 			} else {
 				endSeg()
@@ -83,9 +78,8 @@ func shellWords(cmd string) [][]string {
 			}
 			i--
 		case c == ')' || (c == '}' && !inWord):
-			endSeg() // a subshell or group closing
+			endSeg()
 		case (c == '(' || c == '{') && !inWord:
-			// opening one: not a word of its own
 		case c == '\\':
 			if i+1 < len(r) {
 				i++
@@ -127,7 +121,6 @@ func shellWords(cmd string) [][]string {
 				}
 			}
 		case c == '<' && i+1 < len(r) && r[i+1] == '<' && (i+2 >= len(r) || r[i+2] != '<'):
-			// here-document: remember the delimiter, drop the operator
 			j := i + 2
 			if j < len(r) && r[j] == '-' {
 				j++
@@ -248,7 +241,6 @@ func stripWords(seg []string) []string {
 	for i := 0; i < len(seg); i++ {
 		w := seg[i]
 		if redirectRE.MatchString(w) && w != "" {
-			// "2>file" is one word; a bare ">" takes the next word as its target
 			if m := redirectRE.FindStringSubmatch(w); m[3] == "" && i+1 < len(seg) {
 				i++
 			}
@@ -277,7 +269,7 @@ func stripWords(seg []string) []string {
 					words = words[1:]
 				}
 			}
-			for ; n > 0 && len(words) > 0; n-- { // timeout 30 cmd
+			for ; n > 0 && len(words) > 0; n-- {
 				words = words[1:]
 			}
 		}
@@ -304,7 +296,6 @@ func headOf(words []string) string {
 	flags, ok := subcommandTools[strings.TrimSuffix(name, ".exe")]
 	if !ok {
 		if strings.HasPrefix(name, "python") {
-			// python -m pytest: the module is what ran
 			for i := 1; i+1 < len(words); i++ {
 				if words[i] == "-m" && subcmdRE.MatchString(words[i+1]) {
 					return "python -m " + words[i+1]
@@ -324,13 +315,12 @@ func headOf(words []string) string {
 		case a == "--":
 			return name
 		case strings.HasPrefix(a, "-"):
-			if flags[a] { // a flag taking a value: git -C dir status
+			if flags[a] {
 				i++
 			}
 		case subcmdRE.MatchString(a):
 			sub := a
 			if name == "docker" && sub == "compose" || name == "kubectl" && sub == "rollout" {
-				// one level more says what ran: docker compose up
 				for _, b := range rest[i+1:] {
 					if !strings.HasPrefix(b, "-") && subcmdRE.MatchString(b) {
 						sub += " " + b
@@ -340,7 +330,7 @@ func headOf(words []string) string {
 			}
 			return name + " " + sub
 		default:
-			return name // a path or value, not a subcommand
+			return name
 		}
 	}
 	return name
@@ -355,14 +345,14 @@ func headOf(words []string) string {
 // and the credential after it go together; Digest's parameters are
 // digestAuthRE's.
 var secretRE = lazyre.New(`(?i)([\w-]*(?:token|secret|passw(?:or)?d|api[_-]?key|apikey|access[_-]?key|private[_-]?key|authorization|credential)[\w-]*["']?\s*[=:]\s*|--(?:token|secret|password|passwd|api[_-]?key|auth|access[_-]?key)\s+|bearer\s+)(["']?)(?:(?:bearer|basic|token|negotiate|ntlm)\s+)?[^\s"']{4,}`)
-var tokenLikeRE = lazyre.New(`\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,})`)
+var tokenLikeRE = lazyre.New(`\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{22,}|glpat-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|AIza[A-Za-z0-9_-]{35,}|npm_[A-Za-z0-9]{36,}|pypi-[A-Za-z0-9_-]{16,}|xapp-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,})`)
 
 // urlPasswordRE finds the password in a URL's user part
 // (postgres://admin:pw@db/app).
 // digestAuthRE takes a Digest header's whole value (several quoted
 // parameters, one of them the response) to the end of the line or a closing
 // single quote.
-var digestAuthRE = lazyre.New(`(?i)(\bauthorization["']?\s*[=:]\s*["']?digest\s+)[^\n']+`)
+var digestAuthRE = lazyre.New(`(?i)(\bauthorization["']?\s*[=:]\s*["']?digest\s+)[^\r\n']+`)
 
 // schemeAuthRE takes a scheme word and the credential after it in an
 // Authorization value (ApiKey, AWS4-HMAC-SHA256, one not invented yet), so a
@@ -372,17 +362,86 @@ var schemeAuthRE = lazyre.New(`(?i)(\bauthorization["']?\s*[=:]\s*["']?)[\w-]+\s
 // pemKeyRE blanks a PEM private key's body between its BEGIN and END lines
 // (RSA, EC, OPENSSH, ENCRYPTED or plain), and to the end of the text when the
 // END line is missing (a key cut off by a limit). The body may hold real or
-// escaped newlines.
-var pemKeyRE = lazyre.New(`(-----BEGIN [A-Z ]*PRIVATE KEY-----)(?s:.*?)(-----END [A-Z ]*PRIVATE KEY-----|\z)`)
+// escaped newlines. A PGP BLOCK is a pattern of its own, so its END line
+// doesn't end another key early (audit 1816.1). pemKeyRepl is what replaces
+// a match.
+var pemKeyRE = lazyre.New(`(-----BEGIN [A-Z ]*PRIVATE KEY-----)(?s:.*?)(-----END [A-Z ]*PRIVATE KEY-----|\z)|(-----BEGIN [A-Z ]*PRIVATE KEY BLOCK-----)(?s:.*?)(-----END [A-Z ]*PRIVATE KEY BLOCK-----|\z)`)
 var urlPasswordRE = lazyre.New(`(://[^\s/:@]+:)[^\s/@]+@`)
+
+// urlUserRE finds a URL user part that is not followed by a password, or
+// only by one redact has blanked (:***@) or left empty (:@), where the user
+// may be the token (https://TOKEN@host, https://TOKEN:x-oauth-basic@host).
+// Of a user part of 8 characters or more, redact blanks one that is 20
+// characters or more, or holds a digit and at least one other character that
+// is not a digit; a shorter part with no digit, or all digits, stays (git@,
+// deploy@, a number).
+var urlUserRE = lazyre.New(`://[^\s/:@?#]{8,}(?::\*\*\*|:)?@`)
+
+func blankURLUser(m string) string {
+	u := m[len("://") : len(m)-1]
+	rest := ""
+	if i := strings.IndexByte(u, ':'); i >= 0 {
+		u, rest = u[:i], u[i:]
+	}
+	if len(u) < 20 && (!strings.ContainsAny(u, "0123456789") || strings.Trim(u, "0123456789") == "") {
+		return m
+	}
+	return "://***" + rest + "@"
+}
+
+const pemKeyRepl = "${1}${3}***${2}${4}"
+
+// redactStep is one pattern of redact and what replaces a match of it; sub
+// is the match and its groups, as FindStringSubmatch gives them.
+type redactStep struct {
+	re   *lazyre.Regexp
+	repl func(sub []string) string
+}
+
+// redactSteps are redact's patterns after pemKeyRE, in the order they run.
+var redactSteps = []redactStep{
+	{urlPasswordRE, func(sub []string) string { return sub[1] + "***@" }},
+	{urlUserRE, func(sub []string) string { return blankURLUser(sub[0]) }},
+	{digestAuthRE, func(sub []string) string { return sub[1] + "***" }},
+	{schemeAuthRE, func(sub []string) string { return sub[1] + "***" }},
+	{secretRE, func(sub []string) string { return sub[1] + sub[2] + "***" }},
+	{tokenLikeRE, func([]string) string { return "***" }},
+}
+
+// replaceStep replaces every match of st in s; fix, when set, may change a
+// match's replacement given the matched text.
+func replaceStep(s string, st redactStep, fix func(m, r string) string) string {
+	idx := st.re.FindAllStringSubmatchIndex(s, -1)
+	if idx == nil {
+		return s
+	}
+	var b strings.Builder
+	last := 0
+	for _, ix := range idx {
+		sub := make([]string, len(ix)/2)
+		for g := range sub {
+			if ix[2*g] >= 0 {
+				sub[g] = s[ix[2*g]:ix[2*g+1]]
+			}
+		}
+		r := st.repl(sub)
+		if fix != nil {
+			r = fix(sub[0], r)
+		}
+		b.WriteString(s[last:ix[0]])
+		b.WriteString(r)
+		last = ix[1]
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
 
 // redact hides credentials in text that may leave the machine. Redact
 // before cutting, so a cut never leaves part of a token.
 func redact(s string) string {
-	s = pemKeyRE.ReplaceAllString(s, "${1}***${2}")
-	s = urlPasswordRE.ReplaceAllString(s, "${1}***@")
-	s = digestAuthRE.ReplaceAllString(s, "${1}***")
-	s = schemeAuthRE.ReplaceAllString(s, "${1}***")
-	s = secretRE.ReplaceAllString(s, "${1}${2}***")
-	return tokenLikeRE.ReplaceAllString(s, "***")
+	s = pemKeyRE.ReplaceAllString(s, pemKeyRepl)
+	for _, st := range redactSteps {
+		s = replaceStep(s, st, nil)
+	}
+	return s
 }

@@ -38,12 +38,10 @@ async function run(width, scheme) {
   const later = await api("POST", "/issues", { project: key, title: "CSV export drops quoted commas" });
   const simple = await api("POST", "/issues", { project: key, title: "One-glance board for executives" });
 
-  // Add follow-ups as a fix: one with the mouse, one by typing.
   const extra = await api("POST", "/issues", { project: key, title: "Quote commas in the header row" });
   await page.goto(`${base}/issue/${later.key}`);
-  await page.getByRole("tab", { name: "Details", exact: true }).click(); // a task opens on Summary
+  await page.getByRole("tab", { name: "Details", exact: true }).click();
   await page.getByRole("button", { name: "Add relation" }).click();
-  // It opens with the add box ready for typing.
   const box = page.getByRole("combobox", { name: "Task to relate" });
   await box.waitFor();
   ok(await box.evaluate((el) => el === document.activeElement), `${tag} + relation opens the add box focused`);
@@ -59,7 +57,6 @@ async function run(width, scheme) {
   await page.getByRole("option", { name: "Fix", exact: true }).click();
   await page.screenshot({ path: `${out}/add-follow-up-${width}-${scheme}.png`, fullPage: true });
   ok(!(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)), `${tag} no sideways scroll in the form`);
-  // The mouse path: search, then click the match.
   await box.fill("Export the board");
   await page.getByRole("listbox", { name: "Matching tasks" }).getByRole("option", { name: new RegExp("Export the board to CSV") }).click();
   await page.getByText("Follows up on", { exact: true }).first().waitFor();
@@ -69,7 +66,6 @@ async function run(width, scheme) {
   await page.getByText("fix", { exact: true }).locator("visible=true").first().waitFor({ timeout: 5000 }).catch(() => {});
   ok(await page.getByText("fix", { exact: true }).locator("visible=true").first().isVisible(), `${tag} the row shows the subkind`);
 
-  // The typed path: "fix KEY" and Enter, no mouse.
   await box.fill(`fix ${extra.key}`);
   await page.keyboard.press("Enter");
   await page.waitForFunction(async ([b, k, x]) => {
@@ -81,7 +77,6 @@ async function run(width, scheme) {
   ok(await box.isVisible(), `${tag} the add box stays open after typing one`);
   await page.waitForFunction(() => /^fix\s*$/i.test(document.querySelector('[aria-label="Task to relate"]')?.value ?? "x"));
   ok(true, `${tag} the relation words are kept and the rest cleared`);
-  // Words set the kind: "expands KEY" is a follow-up that expands, typed.
   await box.fill(`fixed by ${simple.key}`);
   await page.keyboard.press("Enter");
   await page.waitForFunction(async ([b, k, x]) => {
@@ -90,7 +85,6 @@ async function run(width, scheme) {
   }, [base, later.key, simple.key]);
   rels = (await api("GET", `/issues/${later.key}`)).relations ?? [];
   ok(rels.some((r) => r.kind === "followed_by" && r.subkind === "fix" && r.issue.key === simple.key), `${tag} "fixed by KEY" adds a followed-by fix`);
-  // Arrows pick: Enter takes the highlighted match, not the top one.
   await box.fill("blocks board");
   const list = page.getByRole("listbox", { name: "Matching tasks" });
   await page.waitForFunction(() => {
@@ -113,7 +107,6 @@ async function run(width, scheme) {
   ok(true, `${tag} Esc closes the add box`);
   await api("DELETE", `/issues/${later.key}/relations/${rels.find((r) => r.issue.key === simple.key).id}`);
 
-  // Tension reads the same from both ends.
   await api("POST", `/issues/${simple.key}/relations`, { kind: "tension", issue: later.key });
   await page.reload();
   await page.getByRole("tab", { name: "Details", exact: true }).click();

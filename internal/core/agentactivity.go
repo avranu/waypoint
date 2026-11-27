@@ -9,11 +9,6 @@ import (
 	"time"
 )
 
-// What agents did (WP-D15): their runs on issues people can see, the time
-// and tokens those took, the tasks they finished, the pull requests that
-// came of the work, the issues and comments they wrote, and what the review
-// bots did, over a period, for one agent spec or all of them.
-
 // ActivityQuery narrows the activity shown.
 type ActivityQuery struct {
 	Agent   string // an agent spec, matched against each run's identity and model
@@ -145,7 +140,6 @@ func (s *Service) AgentActivity(ctx context.Context, actor *Actor, q ActivityQue
 	q.Agent = strings.TrimSpace(q.Agent)
 	now := s.nowMS()
 	loc := s.actorLocation(actor)
-	// The period is whole days: from the start of the first day.
 	today := time.UnixMilli(now).In(loc)
 	first := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, -(q.Days - 1))
 	from := first.UnixMilli()
@@ -187,10 +181,10 @@ type activityBuilder struct {
 	totals   ActivityTotals
 	agents   map[string]*AgentActivity
 	order    []string
-	spans    map[string][][2]int64 // per agent: its runs' time inside the period
+	spans    map[string][][2]int64
 	days     map[string]*ActivityDay
 	runList  []ActivityRun
-	issueIDs map[int64][]string // issue → the agents that ran on it (for PR credit)
+	issueIDs map[int64][]string
 	bots     []*BotActivity
 }
 
@@ -231,8 +225,6 @@ func (a *activityBuilder) day(ms int64) *ActivityDay {
 // runs reads the runs that overlap the period. A run's tokens and cost count
 // in the period it started in; its time counts where it falls.
 func (a *activityBuilder) runs(ctx context.Context, where string, args []any) error {
-	// A run still open counts until now, or until its lease ran out if the
-	// agent went quiet (the sweep hasn't closed it yet), as reports do.
 	// #nosec G202 -- where is built from fixed conditions; values are bound
 	rows, err := a.s.db.R.QueryContext(ctx, `SELECT r.id, r.agent, r.model, r.step, r.started_at, r.ended_at,
 			min(coalesce(r.ended_at, min(?, coalesce((SELECT x.claimed_until FROM issues x WHERE x.id = r.issue_id AND x.claimed_by = r.agent), r.started_at + ?))), ?),
@@ -370,8 +362,6 @@ func (a *activityBuilder) writing(ctx context.Context, where string, args []any)
 // issue an agent in the period worked on, linked by an agent, or naming a
 // coding agent in their text, opened or merged in the period.
 func (a *activityBuilder) pulls(ctx context.Context, where string, args []any) error {
-	// Without a pull request record (a repo bots don't watch), when it
-	// merged comes from the linked issues' history.
 	mergedAt := map[string]int64{}
 	ev, err := a.s.db.R.QueryContext(ctx, `SELECT new_value, min(created_at) FROM events WHERE kind = ? AND created_at >= ? GROUP BY new_value`,
 		EvExternalPRMerged, a.from)
@@ -431,7 +421,7 @@ func (a *activityBuilder) pulls(ctx context.Context, where string, args []any) e
 		case mergedAt[url] > 0:
 			p.merged = mergedAt[url]
 		case state == "merged" && p.merged == 0:
-			p.merged = -1 // merged, but not in the period as far as anyone recorded
+			p.merged = -1
 		}
 		add := func(ag string) {
 			if ag != "" && !slices.ContainsFunc(p.agents, func(x string) bool { return normalizeAgent(x) == normalizeAgent(ag) }) {
@@ -444,7 +434,7 @@ func (a *activityBuilder) pulls(ctx context.Context, where string, args []any) e
 			}
 		}
 		for _, ag := range a.issueIDs[issueID] {
-			add(ag) // its runs matched already (perhaps by model)
+			add(ag)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -453,7 +443,7 @@ func (a *activityBuilder) pulls(ctx context.Context, where string, args []any) e
 	for _, url := range urls {
 		p := byURL[url]
 		if len(p.agents) == 0 {
-			continue // not agents' work (or not the agents asked about)
+			continue
 		}
 		if p.opened >= a.from {
 			a.totals.PRsOpened++
@@ -470,6 +460,13 @@ func (a *activityBuilder) pulls(ctx context.Context, where string, args []any) e
 	return nil
 }
 
+// reviewRunsSQL reads the review runs a condition on r selects, finished (or
+// made) since a bound time, with their finding counts by model.
+func reviewRunsSQL(where string) string {
+	return `SELECT r.id, r.status, r.log, ` + runFindingsByModelSQL + `
+		FROM bot_runs r WHERE ` + where + ` AND r.kind = 'review' AND coalesce(r.finished_at, r.created_at) >= ?`
+}
+
 // reviewBots sums what each model did for the review bots in the period.
 func (a *activityBuilder) reviewBots(ctx context.Context, actor *Actor, project string) error {
 	where, args := visibleSQL("r.project_id", actor)
@@ -477,9 +474,7 @@ func (a *activityBuilder) reviewBots(ctx context.Context, actor *Actor, project 
 		where, args = where+" AND r.project_id = (SELECT id FROM projects WHERE key = ?)", append(args, project)
 	}
 	// #nosec G202 -- where is built from fixed conditions; values are bound
-	rows, err := a.s.db.R.QueryContext(ctx, `SELECT r.id, r.status, r.log,
-			(SELECT json_group_object(model, n) FROM (SELECT f.model, count(*) AS n FROM bot_findings f WHERE f.run_id = r.id AND f.state != 'dropped' GROUP BY f.model))
-		FROM bot_runs r WHERE `+where+` AND r.kind = 'review' AND coalesce(r.finished_at, r.created_at) >= ?`, append(args, a.from)...)
+	rows, err := a.s.db.R.QueryContext(ctx, reviewRunsSQL(where), append(args, a.from)...)
 	if err != nil {
 		return err
 	}
@@ -541,7 +536,6 @@ func (a *activityBuilder) result() *Activity {
 	}
 	for _, k := range a.order {
 		x := a.agents[k]
-		// One agent on several tasks at once (a batch) is one span of time.
 		for _, sp := range mergeSpans(a.spans[k]) {
 			x.Seconds += (sp[1] - sp[0]) / 1000
 			a.splitDays(sp[0], sp[1])

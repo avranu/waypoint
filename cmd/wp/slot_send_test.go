@@ -53,7 +53,6 @@ func ssOutbox(t *testing.T, dir string) []core.SlotHold {
 func TestSlotHoldRecordsWhatTheClassWasDecidedFrom(t *testing.T) {
 	c, dir := ssEnv(t, ssDown(t))
 	sqSeed(t, "tests", sqCmd, 400, 3)
-	// another run holds slot 3; a live process waits
 	other, _, _ := sqCLI()
 	_, rel0, err := other.takeSlotFor(context.Background(), "tests", 4, sqRun("other cmd"))
 	if err != nil {
@@ -86,7 +85,7 @@ func TestSlotHoldRecordsWhatTheClassWasDecidedFrom(t *testing.T) {
 	if len(h.Waiters) != 1 || h.Waiters[0].PID != ppid || h.Waiters[0].Since != 123 || h.Waiters[0].Class != "long" || !h.Waiters[0].BehindOwn {
 		t.Errorf("waiters %+v", h.Waiters)
 	}
-	if len(readWaitRecs(dir)) != 4 { // the three seeded and this one: waits.jsonl is as it was
+	if len(readWaitRecs(dir)) != 4 {
 		t.Errorf("waits.jsonl has %d records", len(readWaitRecs(dir)))
 	}
 }
@@ -126,7 +125,6 @@ func TestSlotHoldGaveUpAndTreeWait(t *testing.T) {
 		t.Errorf("gave-up record %+v", gave)
 	}
 
-	// a long run waits behind its worktree's own earlier one
 	sqSeed(t, "tests", "make check", 1800, 3)
 	_, first, err := c.takeSlotFor(context.Background(), "tests", 4, sqRun("make check"))
 	if err != nil {
@@ -221,7 +219,7 @@ func TestSendSlotHoldsAcksOnlyWhatWasSent(t *testing.T) {
 		for _, h := range body.Holds {
 			sent = append(sent, h.ID)
 		}
-		if len(queries) == 3 { // a run finishes while the last batch is in flight
+		if len(queries) == 3 {
 			appendWaitRecFull(dir, waitRec{Name: "tests"}, &extra)
 		}
 		_, _ = w.Write([]byte(`{"stored":1}`))
@@ -232,11 +230,10 @@ func TestSendSlotHoldsAcksOnlyWhatWasSent(t *testing.T) {
 	_ = os.MkdirAll(dir, 0o700)
 	addDropped(dir, 4)
 	for i := 0; i < 450; i++ {
-		appendWaitRec(dir, waitRec{}) // keep the helper honest: waits only
+		appendWaitRec(dir, waitRec{})
 		appendOutbox(dir, ssHold(i))
 	}
 	n, remaining, err := c.sendSlotHolds(context.Background())
-	// the run that finished mid-send is not lost and not acked early: the next batch carries it
 	if err != nil || n != 451 || remaining != 0 {
 		t.Fatalf("sent %d, remaining %d, err %v", n, remaining, err)
 	}
@@ -355,7 +352,6 @@ func (r *ssRecorder) count() int {
 
 func TestSlotHoldSentToServerHasNoInlineSecrets(t *testing.T) {
 	c, dir := ssEnv(t, ssDown(t))
-	// one argument holds a space: joined with spaces, its tail would leak
 	argv := []string{"go", "test", "--token=abc123secret", "--password", "hunter2 tail2", "./x"}
 	_, rel, err := c.takeSlotFor(context.Background(), "tests", 2, slotRunOf(argv))
 	if err != nil {
@@ -374,13 +370,12 @@ func TestSlotHoldSentToServerHasNoInlineSecrets(t *testing.T) {
 	if h := ssOutbox(t, dir)[0]; !strings.Contains(h.Cmd, "go test") {
 		t.Errorf("cmd %q", h.Cmd)
 	}
-	// and what is posted
 	rec, url := ssServer(t)
 	t.Setenv("WAYPOINT_SERVER", url)
 	c2, _, _ := sqCLI()
 	deadline := time.Now().Add(5 * time.Second)
 	for len(readOutbox(dir)) > 0 && time.Now().Before(deadline) {
-		_, _, _ = c2.sendSlotHolds(context.Background()) // the earlier background send may still hold the lock
+		_, _, _ = c2.sendSlotHolds(context.Background())
 		time.Sleep(50 * time.Millisecond)
 	}
 	rec.mu.Lock()
@@ -393,7 +388,6 @@ func TestSlotHoldSentToServerHasNoInlineSecrets(t *testing.T) {
 			t.Errorf("posted a secret: %s", b)
 		}
 	}
-	// the local key is unchanged (the classifier and waits.jsonl use it)
 	if recs := readWaitRecs(dir); len(recs) != 1 || recs[0].Cmd != slotKey(argv) {
 		t.Errorf("waits.jsonl %+v", recs)
 	}
@@ -424,7 +418,7 @@ func TestSendSlotHoldsStopsWhenTheOutboxCannotBeRewritten(t *testing.T) {
 	var hits int
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++
-		if hits == 1 { // a record arrives meanwhile, so the outbox must be rewritten
+		if hits == 1 {
 			extra := ssHold(99)
 			appendOutbox(dir, extra)
 		}

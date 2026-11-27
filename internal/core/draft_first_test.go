@@ -67,8 +67,6 @@ func TestFullRunReasons(t *testing.T) {
 		{"docs-only full run: lint ran, tests skipped", []PRCheck{ran(b, 11), skipped}, ""},
 		{"no-op run: everything skipped after ready blocks", []PRCheck{{Name: b, State: CheckSuccess, StatusID: 11, Description: "Has been skipped"}, skipped}, "2 of 2"},
 		{"body edit during the full run: real pending outranks", []PRCheck{ran(b, 11), {Name: e, State: CheckPending, StatusID: 13}}, "1 of 2"},
-		// Forgejo posts nothing that repeats a check's last status, and a job
-		// the full run runs posts "waiting" as the run starts (WP-174).
 		{"skipped before ready and again", []PRCheck{ran(b, 11), {Name: e, State: CheckSuccess, StatusID: 6, Description: "Has been skipped"}}, ""},
 		{"an external check posts nothing for an edit", []PRCheck{ran(b, 11), ran(e, 12), ran(codeql, 7)}, ""},
 		{"one missing", []PRCheck{ran(b, 11)}, "1 of 2"},
@@ -81,7 +79,6 @@ func TestFullRunReasons(t *testing.T) {
 			t.Errorf("%s: %v", c.name, got)
 		}
 	}
-	// Not one Waypoint marked ready at this head.
 	other := *pr
 	other.readySHA = "def5678"
 	if got := fullRunReasons(&other, nil); len(got) != 0 {
@@ -92,7 +89,6 @@ func TestFullRunReasons(t *testing.T) {
 	if got := fullRunReasons(&other, []PRCheck{ran(codeql, 7)}); len(got) != 0 {
 		t.Errorf("only checks an edit doesn't run: %v", got)
 	}
-	// A draft-only job the full run skipped: its draft status counts (WP-552).
 	other = *pr
 	other.readySkipped = []string{e}
 	if got := fullRunReasons(&other, []PRCheck{ran(b, 11), ran(e, 8)}); len(got) != 0 {
@@ -101,10 +97,16 @@ func TestFullRunReasons(t *testing.T) {
 	if got := fullRunReasons(&other, []PRCheck{ran(b, 9), ran(e, 8)}); len(got) != 1 {
 		t.Errorf("only skips and draft statuses: %v", got)
 	}
+	// A person's: held only when their own edit marked it at this head
+	// (markReadyByEdit, WP-1808).
 	other = *pr
 	other.WipAuto = false
+	if got := fullRunReasons(&other, []PRCheck{ran(b, 9), ran(e, 8)}); len(got) != 1 {
+		t.Errorf("a person's, marked by their edit: %v", got)
+	}
+	other.readySHA = "def5678"
 	if got := fullRunReasons(&other, nil); len(got) != 0 {
-		t.Errorf("a person's: %v", got)
+		t.Errorf("a person's, not marked at this head: %v", got)
 	}
 }
 
@@ -152,7 +154,6 @@ func TestDraftFirstLifecycle(t *testing.T) {
 	}
 	be.start(pr)
 
-	// Draft tier: e2e skipped reports success.
 	be.draftChecks(head, CommitCheck{State: CheckSuccess, ID: 5, Description: "Successful in 4m"}, CommitCheck{State: CheckSuccess, ID: 6, Description: "Has been skipped"})
 	pr = be.pr(7)
 	if pr.State != "open" || pr.ReadyAt == nil || pr.readyStatusID != 6 || pr.Title != "Add export" || !sameSHA(pr.readySHA, head) {
@@ -169,8 +170,6 @@ func TestDraftFirstLifecycle(t *testing.T) {
 		t.Errorf("stage %q", st)
 	}
 
-	// The full run fails: the front keeps its place and stays ready through
-	// the round, so the fix's push runs the full tier (WP-456).
 	be.draftChecks(head, CommitCheck{State: CheckSuccess, ID: 9, Description: "Successful in 16m"}, CommitCheck{State: CheckFailed, ID: 10, Description: "Failing after 20m"})
 	be.rerunFails()
 	pr = be.pr(7)
@@ -181,9 +180,6 @@ func TestDraftFirstLifecycle(t *testing.T) {
 		t.Fatalf("title edits %v", e)
 	}
 
-	// The fix is pushed on the ready title, and the full run fails again:
-	// the round's push broke it, or didn't fix it, so the next round puts it
-	// back to draft and out of the queue.
 	if b := be.babysit(); b.JobID != 0 {
 		be.finish(b.JobID, true)
 	}
@@ -193,7 +189,6 @@ func TestDraftFirstLifecycle(t *testing.T) {
 	be.s.Wait()
 	be.drain()
 	be.s.Wait()
-	// (The same check failing again in a row is no flake: no re-run first.)
 	be.draftChecks("8888888aaaa", CommitCheck{State: CheckSuccess, ID: 15, Description: "Successful in 16m"}, CommitCheck{State: CheckFailed, ID: 16, Description: "Failing after 20m"})
 	pr = be.pr(7)
 	if b := be.babysit(); b.Round != 2 || pr.State != "draft" || pr.ReadyAt != nil || pr.QueuedAt != nil {
@@ -203,7 +198,6 @@ func TestDraftFirstLifecycle(t *testing.T) {
 		t.Fatalf("title edits %v", e)
 	}
 
-	// The next fix is pushed; the draft tier is green: ready again.
 	if b := be.babysit(); b.JobID != 0 {
 		be.finish(b.JobID, true)
 	}
@@ -219,7 +213,6 @@ func TestDraftFirstLifecycle(t *testing.T) {
 		t.Fatalf("not ready again: %+v", pr)
 	}
 
-	// The full run passes: it merges.
 	be.draftChecks("8888888bbbb", CommitCheck{State: CheckSuccess, ID: 22, Description: "Successful in 16m"}, CommitCheck{State: CheckSuccess, ID: 23, Description: "Successful in 24m"})
 	if len(be.sg.merges) != 1 {
 		r, _ := be.s.readiness(be.ctx, be.pr(7))
@@ -264,7 +257,6 @@ func TestReadyAgainAtAPassedHead(t *testing.T) {
 			if pr = be.pr(7); pr.readyStatusID != 6 {
 				t.Fatalf("first ready: %+v", pr)
 			}
-			// The full run ends; the next round puts it back to draft and pushes nothing.
 			be.sg.setChecks(head, backend(CommitCheck{State: CheckSuccess, ID: 9, Description: "Successful in 16m"}), e2e(tc.e2e))
 			if err := be.s.markDraft(be.ctx, be.pr(7)); err != nil {
 				t.Fatal(err)
@@ -272,8 +264,6 @@ func TestReadyAgainAtAPassedHead(t *testing.T) {
 			if pr = be.pr(7); pr.State != "draft" || pr.ReadyAt != nil {
 				t.Fatalf("back to draft: %+v", pr)
 			}
-			// The draft edit's run skips everything, so the full run still
-			// counts (WP-ADR48): the head's checks are the full run's.
 			be.sg.setChecks(head, backend(CommitCheck{State: CheckSuccess, ID: 9, Description: "Successful in 16m"}), e2e(tc.e2e))
 			if err := be.s.markReady(be.ctx, be.pr(7)); err != nil {
 				t.Fatal(err)
@@ -320,9 +310,6 @@ func TestRoundPacketBeforeBackToDraft(t *testing.T) {
 		t.Fatalf("not marked ready: %+v", pr)
 	}
 
-	// The full run fails; the round for it keeps it ready (WP-456) and
-	// pushes a fix whose full run fails too: the next round puts it back to
-	// draft.
 	be.draftChecks(head, CommitCheck{State: CheckSuccess, ID: 7, Description: "Successful in 16m"}, CommitCheck{State: CheckFailed, ID: 8, Description: "Failing after 20m"})
 	be.rerunFails()
 	be.finish(be.babysit().JobID, true)
@@ -339,7 +326,6 @@ func TestRoundPacketBeforeBackToDraft(t *testing.T) {
 			be.sg.setChecks(head2,
 				CommitCheck{Name: "ci / backend (pull_request)", State: CheckSuccess, ID: 11, Description: "Has been skipped"},
 				CommitCheck{Name: "ci / e2e (pull_request)", State: CheckSuccess, ID: 12, Description: "Has been skipped"})
-			// Its status webhook.
 			if err := be.hook(be.f, "status", map[string]any{"sha": head2, "repository": map[string]any{"full_name": "me/app"}}); err != nil {
 				t.Error(err)
 			}
@@ -426,7 +412,7 @@ func TestOpenDraftFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.forgePeople(f, "wp-bot") // the token's login is its connector's (WP-279)
+	e.forgePeople(f, "wp-bot")
 	if _, err := e.s.AddProjectRepo(e.ctx, e.admin, p.Key, f.ID, "acme/app", false); err != nil {
 		t.Fatal(err)
 	}
@@ -455,8 +441,6 @@ func TestOpenDraftFirst(t *testing.T) {
 	if d := open(e.admin, "d", nil); d.WipAuto || d.State != "open" {
 		t.Errorf("person: %+v", d.PRSummary)
 	}
-	// A repo whose CI doesn't run on an edit: dropping "WIP: " would start
-	// nothing (WP-173).
 	g.files[".forgejo/workflows/ci.yml"] = ciNotOnEdit
 	if d := open(agent, "e", nil); d.WipAuto || d.State != "open" {
 		t.Errorf("CI not on edits: %+v", d.PRSummary)
@@ -508,7 +492,7 @@ func TestOwnDraftGetsItsFirstReview(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !hookFirst {
-				be.pullHook("opened", opened) // late: nothing new
+				be.pullHook("opened", opened)
 			}
 			if got := updates(); got["opened"] != 1 {
 				t.Errorf("pr.updated events = %v, want one opened", got)
@@ -606,8 +590,6 @@ func TestDraftFirstWithoutRunOnEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	be.start(pr)
-	// Marked ready waiting for a full run, then the repo turns out not to
-	// run one: after the stall it merges on the checks it has.
 	be.draftChecks("7777777aaaa", CommitCheck{State: CheckSuccess, ID: 5, Description: "Successful in 4m"}, CommitCheck{State: CheckSuccess, ID: 6, Description: "Successful in 9m"})
 	if pr := be.pr(7); pr.ReadyAt == nil || pr.readyStatusID != 6 {
 		t.Fatalf("not ready: %+v", pr)
@@ -619,7 +601,7 @@ func TestDraftFirstWithoutRunOnEdit(t *testing.T) {
 	if b := be.babysit(); b.State == BabysitNeedsPerson {
 		t.Fatalf("handed to a person: %+v", b)
 	}
-	be.poll() // the head's CI, followed as it was, settles
+	be.poll()
 	be.s.Wait()
 	if len(be.sg.merges) != 1 {
 		r, _ := be.s.readiness(be.ctx, be.pr(7))
@@ -761,7 +743,7 @@ type runsAtForge struct {
 	*shipForge
 	mu   sync.Mutex
 	runs []ActionRun
-	jobs map[int64][]ActionJob // by run id
+	jobs map[int64][]ActionJob
 }
 
 func newRunsAtForge(sg *shipForge) *runsAtForge {
@@ -847,20 +829,16 @@ func TestFullRunSkipsADraftOnlyJob(t *testing.T) {
 	}
 	be.start(pr)
 
-	// Draft tier: backend (draft-only) runs, e2e (full-only) is skipped.
 	af.prRun(1, head, "success", [2]string{"backend", "success"}, [2]string{"e2e", "skipped"})
 	be.draftChecks(head, CommitCheck{State: CheckSuccess, ID: 5, Description: "Successful in 4m"}, CommitCheck{State: CheckSuccess, ID: 6, Description: "Has been skipped"})
 	if pr = be.pr(7); pr.State != "open" || pr.ReadyAt == nil {
 		t.Fatalf("not marked ready: %+v", pr)
 	}
-	// The full run's e2e passed while the run is still finishing: backend
-	// keeps its draft status and is not yet known to be skipped.
 	af.prRun(2, head, "running", [2]string{"backend", "skipped"}, [2]string{"e2e", "success"})
 	be.draftChecks(head, CommitCheck{State: CheckSuccess, ID: 5, Description: "Successful in 4m"}, CommitCheck{State: CheckSuccess, ID: 9, Description: "Successful in 20m"})
 	if len(be.sg.merges) != 0 || be.stage() != "ready (full run pending)" {
 		t.Fatalf("merged on an unfinished run: merges %d stage %q", len(be.sg.merges), be.stage())
 	}
-	// The run has finished: backend was skipped by it, so it merges.
 	af.prRun(2, head, "success", [2]string{"backend", "skipped"}, [2]string{"e2e", "success"})
 	be.poll()
 	be.s.Wait()
@@ -926,5 +904,80 @@ func TestFullRunSkipped(t *testing.T) {
 		if err != nil || !slices.Equal(got, c.want) {
 			t.Errorf("%s: %v %v, want %v", c.name, got, err, c.want)
 		}
+	}
+}
+
+// A person's draft made ready by their own title edit: the head's statuses
+// are the draft run's, whose jobs all skipped on a merge-only push (WP-1808),
+// so it is held, as markReady holds Waypoint's own, until the edit's run has
+// posted newer statuses, and nothing merges on those skips.
+func TestPersonsReadyEditPutsCIBackToPending(t *testing.T) {
+	be := newBabysitEnvOn(t, "forgejo")
+	be.sg.files[".forgejo/workflows/ci.yml"] = ciOnEdit
+	const head = "7777777aaaa"
+	p := bsPR
+	p.Title = "WIP: Add export"
+	be.pullHook("opened", p)
+	be.s.Wait()
+	be.drain()
+	be.draftChecks(head, CommitCheck{State: CheckSuccess, ID: 5, Description: "Has been skipped"}, CommitCheck{State: CheckSuccess, ID: 6, Description: "Has been skipped"})
+	pr := be.pr(7)
+	if pr.State != "draft" || pr.WipAuto || pr.CIState != CIPassed {
+		t.Fatalf("the draft: state %q wip_auto %v ci %q", pr.State, pr.WipAuto, pr.CIState)
+	}
+	p.Title = "Add export"
+	be.pullHook("edited", p)
+	be.s.Wait()
+	pr = be.pr(7)
+	if pr.State != "open" || pr.readyStatusID != 6 || !sameSHA(pr.readySHA, head) {
+		t.Fatalf("after the edit: state %q ready at %q status %d", pr.State, pr.readySHA, pr.readyStatusID)
+	}
+	rd, err := be.s.readiness(be.ctx, pr)
+	if err != nil || rd.Ready || !strings.Contains(strings.Join(rd.Reasons, ";"), "full run hasn't finished") {
+		t.Fatalf("ready on the draft run's skips: %+v %v", rd, err)
+	}
+	be.draftChecks(head, CommitCheck{State: CheckSuccess, ID: 9, Description: "Successful in 4m"}, CommitCheck{State: CheckSuccess, ID: 10, Description: "Successful in 9m"})
+	pr = be.pr(7)
+	if rd, err = be.s.readiness(be.ctx, pr); err != nil || strings.Contains(strings.Join(rd.Reasons, ";"), "full run") || pr.CIState != CIPassed {
+		t.Fatalf("after the full run: %+v %v ci %q", rd, err, pr.CIState)
+	}
+	// An edit that keeps it open changes nothing.
+	p.Body = "more words"
+	be.pullHook("edited", p)
+	be.s.Wait()
+	if pr = be.pr(7); pr.readyStatusID != 6 {
+		t.Fatalf("a body edit of an open pull request marked it again: %d", pr.readyStatusID)
+	}
+}
+
+// As above, but the edit comes before any of the draft run's statuses were
+// stored: it is still held, and the draft run's skips alone, coming after,
+// don't clear it; a run whose jobs really ran does (audit #1748.2).
+func TestPersonsReadyEditBeforeStatusesIsHeld(t *testing.T) {
+	be := newBabysitEnvOn(t, "forgejo")
+	be.sg.files[".forgejo/workflows/ci.yml"] = ciOnEdit
+	const head = "7777777aaaa"
+	p := bsPR
+	p.Title = "WIP: Add export"
+	be.pullHook("opened", p)
+	be.s.Wait()
+	be.drain()
+	p.Title = "Add export"
+	be.pullHook("edited", p)
+	be.s.Wait()
+	pr := be.pr(7)
+	if pr.State != "open" || pr.ReadyAt == nil || pr.readyStatusID != unknownReadyStatus || !sameSHA(pr.readySHA, head) || pr.CIState != CIPending {
+		t.Fatalf("after the edit: state %q ready at %q status %d ci %q", pr.State, pr.readySHA, pr.readyStatusID, pr.CIState)
+	}
+	be.draftChecks(head, CommitCheck{State: CheckSuccess, ID: 5, Description: "Has been skipped"}, CommitCheck{State: CheckSuccess, ID: 6, Description: "Has been skipped"})
+	pr = be.pr(7)
+	rd, err := be.s.readiness(be.ctx, pr)
+	if err != nil || rd.Ready || !strings.Contains(strings.Join(rd.Reasons, ";"), "full run hasn't finished") || pr.CIState == CIPassed {
+		t.Fatalf("ready on the draft run's skips: %+v %v ci %q", rd, err, pr.CIState)
+	}
+	be.draftChecks(head, CommitCheck{State: CheckSuccess, ID: 9, Description: "Successful in 4m"}, CommitCheck{State: CheckSuccess, ID: 10, Description: "Successful in 9m"})
+	pr = be.pr(7)
+	if rd, err = be.s.readiness(be.ctx, pr); err != nil || strings.Contains(strings.Join(rd.Reasons, ";"), "full run") || pr.CIState != CIPassed {
+		t.Fatalf("after the full run: %+v %v ci %q", rd, err, pr.CIState)
 	}
 }

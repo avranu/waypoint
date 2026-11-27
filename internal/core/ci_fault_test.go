@@ -22,22 +22,18 @@ func TestRunnerFault(t *testing.T) {
 		{"runner lost", "##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped.\n", "the runner was lost during the job", ""},
 		{"image pull timeout", "⚙️ [runner]: Error response from daemon: Get \"https://registry/v2/\": context deadline exceeded\n", "the runner timed out talking to Docker or a registry", ""},
 		{"dns", "  ☁️  git fetch 'https://github.com/actions/checkout' # ref=v7\n⚙️ [runner]: could not fetch remote 'origin': fatal: unable to access 'https://github.com/actions/checkout/': Could not resolve host: github.com (DNS server returned general failure): exit status 128\n🏁  Job failed\n", "the runner couldn't resolve a host name (DNS)", ""},
-		// A test that can't resolve a host is the code's.
 		{"test dns", "--- FAIL: TestFetch (0.10s)\n    fetch_test.go:20: dial tcp: lookup api.example.com: no such host\nFAIL\tapp\n", "", ""},
 		{"dns", "govulncheck: fetching vulnerabilities: Get \"https://vuln.go.dev/index/db.json.gz\": dial tcp: lookup vuln.go.dev on 127.0.0.11:53: server misbehaving\n", "the runner couldn't look up a host name (DNS)", ""},
 		{"dns timeout", "dial tcp: lookup proxy.golang.org on 10.0.0.2:53: read udp 172.18.0.3:40512->10.0.0.2:53: i/o timeout\n", "the runner couldn't look up a host name (DNS)", ""},
 		{"service unhealthy", "service [dragonfly]: container health check 61f07cc4 (docker.dragonflydb.io/dragonflydb/dragonfly:v2.0.2) is healthy\nservice [rabbitmq]: container health check 2f1d61c0a82d (rabbitmq:3.13-management-alpine) is not healthy\n", "a CI service container never became healthy", ""},
 		{"service starting", "service [rabbitmq]: container health check 2f1d61c0a82d (rabbitmq:3.13-management-alpine) is starting, waiting 10s\n--- FAIL: TestQueue (0.01s)\nFAIL\tapp\n", "", ""},
 		{"build download cut", stamp("#11 6.107   % Total    % Received % Xferd\n#11 75.69 curl: (18) HTTP/2 stream 1 was not closed cleanly before end of the underlying stream\n#11 ERROR: process \"/bin/sh -c apt-get update\" did not complete successfully: exit code: 18\n"), "a download in the Docker build was cut off (network)", ""},
-		// A wrong URL in a build, or a test's own server failing, is the code's.
 		{"build bad url", "#11 1.20 curl: (22) The requested URL returned error: 404\n", "", ""},
 		{"test curl reset", "    smoke.sh: curl: (56) Recv failure: Connection reset by peer\nFAIL\n", "", ""},
 		{"curl dns", "curl: (6) Could not resolve host: github.com\n", "the runner couldn't look up a host name (DNS)", ""},
-		// A passing test's own text is no fault of anyone's.
 		{"passing unittest", "otherhost, 2026-10-08 00:43Z: one `Could not resolve host: github.com` paged urgent ... ok\n", "", ""},
 		{"passing pytest", "tests/test_dns.py::test_could_not_resolve_host PASSED [ 50%]\n", "", ""},
 		{"passing go test", "--- PASS: TestNoSpaceLeftOnDevice (0.00s)\n", "", ""},
-		// A test's own timeout is the code's.
 		{"test deadline", "--- FAIL: TestSlow (5.00s)\n    slow_test.go:9: context deadline exceeded\nFAIL\tapp\t5.1s\n", "", ""},
 		{"plain failure", "--- FAIL: TestExport (0.01s)\n    export_test.go:12: got 1, want 2\nFAIL\tapp\n", "", ""},
 	}
@@ -53,7 +49,6 @@ func TestRunnerFault(t *testing.T) {
 			}
 		})
 	}
-	// The excerpt carries it, and the line that says so.
 	ex := failingExcerpt(stamp(noise(80, "before")+enospcLog), 0)
 	if ex.Fault == nil || !strings.Contains(ex.Text, "no space left on device") || !strings.Contains(ex.Text, "--- FAIL: TestWaitPullRequest") {
 		t.Fatalf("excerpt: %+v\n%s", ex.Fault, ex.Text)
@@ -138,8 +133,6 @@ func TestBabysitWaitsForRunner(t *testing.T) {
 	if m := lastOf(be.told()); !strings.Contains(m, "tracks it in "+task.key) || !strings.Contains(m, "don't push to re-run") {
 		t.Errorf("told %q", m)
 	}
-	// Steps again, and another head failing the same way: still the one
-	// task, the sighting added to it, and the wait still names it.
 	be.step()
 	be.push("8888888bbbb")
 	be.ci("8888888bbbb", CheckFailed)
@@ -152,12 +145,10 @@ func TestBabysitWaitsForRunner(t *testing.T) {
 	if b := be.babysit(); !strings.Contains(b.Wait, task.key) {
 		t.Fatalf("wait %q", b.Wait)
 	}
-	// The work packet and wp pr wait say what it is.
 	todo, err := be.s.PRWorkPacket(be.ctx, be.admin, pr.ID)
 	if err != nil || !strings.Contains(todo.Text, "Failed on its runner: the runner ran out of disk space (runner2)") {
 		t.Fatalf("packet: %v\n%s", err, todo.Text)
 	}
-	// A failure of the code on the next head gets its round.
 	be.sg.sm.Lock()
 	be.sg.logs["ci / test"] = "--- FAIL: TestExport (0.01s)\n    export_test.go:12: got 1, want 2\nFAIL\tapp\n"
 	be.sg.sm.Unlock()

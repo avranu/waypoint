@@ -12,8 +12,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/codeindex"
 )
 
-// wp code risk (WP-182, ADR3 point 4): what the history says about a change.
-
 func init() {
 	codeCmd.subs = append(codeCmd.subs, &command{name: "risk", args: "[FILE…] [--diff [BASE]] [--pr N]",
 		summary: "before you ship: hotspots, past fixes, missing edits, tests",
@@ -177,7 +175,7 @@ func (c *cli) prFiles(sf scopeFlags, n int, root string) ([]string, error) {
 func prFilesOf(root string, n int, d *prDetail) ([]string, error) {
 	tip := ""
 	for _, spec := range []string{fmt.Sprintf("refs/pull/%d/head", n), fmt.Sprintf("refs/merge-requests/%d/head", n), d.HeadRef} {
-		if spec == "" || codeindex.CheckRef(spec) != nil { // a forge's branch name is no option
+		if spec == "" || codeindex.CheckRef(spec) != nil {
 			continue
 		}
 		if _, err := gitIn(root, "fetch", "-q", "origin", spec); err == nil {

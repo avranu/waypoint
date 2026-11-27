@@ -1,12 +1,5 @@
 package main
 
-// An audit the LLM gateway runs (WP-617, WP-ADR84): its model is
-// gateway/<model>, no CLI on this machine. The runner clones and prepares
-// the checkout as for any audit, packs it and hands it to Waypoint, which
-// has the gateway's key and sends it on as an agent task; then it asks
-// Waypoint how the task goes until it ends. Nothing here knows the
-// gateway's address or key.
-
 import (
 	"archive/tar"
 	"bytes"
@@ -148,7 +141,6 @@ func (p *runnerProc) execGatewayAudit(ctx context.Context, run *jobRun, in agent
 
 	path := fmt.Sprintf("/api/v1/runner/jobs/%d/gateway", run.id)
 	for sent := 0; ; sent++ {
-		// Offer the task until the gateway takes it.
 		var view *gatewayTaskView
 		for began := time.Now(); ; {
 			view, err = p.gatewayUpload(ctx, path, prompt, archive, size)
@@ -156,8 +148,6 @@ func (p *runnerProc) execGatewayAudit(ctx context.Context, run *jobRun, in agent
 				return out
 			}
 			if err != nil {
-				// Waypoint refusing it says nothing a later try changes; not
-				// reaching Waypoint (or it not reaching on) may pass.
 				kind := "unreachable"
 				var ae *apiError
 				if errors.As(err, &ae) && ae.status >= 400 && ae.status < 500 {
@@ -183,7 +173,6 @@ func (p *runnerProc) execGatewayAudit(ctx context.Context, run *jobRun, in agent
 		}
 		fmt.Fprintf(run.out, "The gateway took the audit as task %s (%s)\n", view.ID, view.Status)
 
-		// Ask how it goes until it ends.
 		said, misses := view.Status, 0
 		for view.Status == "queued" || view.Status == "running" || view.Status == "unknown" {
 			select {
@@ -202,7 +191,6 @@ func (p *runnerProc) execGatewayAudit(ctx context.Context, run *jobRun, in agent
 				if errors.As(err, &ae) && ae.status >= 400 && ae.status < 500 {
 					return failed("Waypoint no longer knows the audit's task: %v", err)
 				}
-				// Waypoint is restarting or away: the task runs on.
 				if misses++; misses == 1 {
 					fmt.Fprintf(run.out, "Can't ask Waypoint about the task (%v); asking again\n", err)
 				}
@@ -256,8 +244,6 @@ func (p *runnerProc) gatewayUpload(ctx context.Context, path, prompt string, arc
 		return nil, err
 	}
 	body := io.MultiReader(&head, io.LimitReader(archive, size), strings.NewReader("\r\n--"+mw.Boundary()+"--\r\n"))
-	// The runner's other requests go on at their own pace: this one's
-	// longer limit is a copy's.
 	c := *p.c
 	c.longPoll = gatewayUploadTimeout
 	raw, err := c.send(ctx, "POST", path, mw.FormDataContentType(), body)
@@ -566,7 +552,7 @@ func packCheckout(work string, w io.Writer, opt packOptions) (res packResult, er
 			if d.IsDir() {
 				return fs.SkipDir
 			}
-			return nil // a work tree's pointer to its repository
+			return nil
 		}
 		if !d.Type().IsRegular() {
 			return nil
@@ -613,7 +599,6 @@ func packCheckout(work string, w io.Writer, opt packOptions) (res packResult, er
 		if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: path, Mode: mode, Size: size}); err != nil {
 			return err
 		}
-		// Exactly the size the header said, whatever the file does meanwhile.
 		if _, err := io.CopyN(tw, io.MultiReader(bytes.NewReader(head), f), size); err != nil {
 			return err
 		}

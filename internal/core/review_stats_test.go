@@ -20,7 +20,6 @@ func TestFateOf(t *testing.T) {
 		{statFinding{state: FindingWithdrawn}, fateFalse},
 		{statFinding{state: FindingDropped, verify: VerifyUnchecked, reason: evidenceMissing}, fateEvidence},
 		{statFinding{state: FindingDropped, verify: VerifyDropped, reason: "not a bug"}, fateWithheld},
-		// A leftover audit's verdict decides; while it's open, the finding's state does.
 		{statFinding{state: FindingOpen, audit: "confirmed"}, fateUseful},
 		{statFinding{state: FindingFixed, audit: "rejected"}, fateFalse},
 		{statFinding{state: FindingOpen, audit: "open"}, fateUnjudged},
@@ -38,7 +37,6 @@ func TestJudgedInterval(t *testing.T) {
 	if j.Precision != nil || j.Low != nil {
 		t.Fatalf("nothing judged = %+v", j)
 	}
-	// 8 of 10: Beta(9, 3), whose 5% and 95% quantiles bracket 0.8.
 	j = Judged{Useful: 8, False: 2, Unjudged: 5}
 	j.settle()
 	if *j.Precision != 0.8 {
@@ -47,7 +45,6 @@ func TestJudgedInterval(t *testing.T) {
 	if lo, hi := *j.Low, *j.High; math.Abs(lo-0.530) > 0.002 || math.Abs(hi-0.921) > 0.002 {
 		t.Errorf("interval = %v..%v, want about 0.530..0.921", lo, hi)
 	}
-	// None of 1 held up: the interval is Beta(1, 2)'s, 1-sqrt(0.95)..1-sqrt(0.05).
 	j = Judged{False: 1}
 	j.settle()
 	if *j.Precision != 0 || math.Abs(*j.Low-round3(1-math.Sqrt(0.95))) > 1e-9 || math.Abs(*j.High-round3(1-math.Sqrt(0.05))) > 1e-9 {
@@ -57,24 +54,21 @@ func TestJudgedInterval(t *testing.T) {
 
 func TestTallyReviewStats(t *testing.T) {
 	fs := []statFinding{
-		// Run 1: gpt-oss from two providers, one model; verified by glm.
 		{run: 1, model: "groq/openai/gpt-oss-120b", strategy: "diff", version: "v1", state: FindingFixed, verify: VerifyKept, verifier: "zai/glm-5"},
 		{run: 1, model: "ollama-eshu/gpt-oss:120b", strategy: "diff", version: "v1", state: FindingDismissed, verify: VerifyCorrected, verifier: "zai/glm-5"},
-		{run: 1, model: "groq/openai/gpt-oss-120b", strategy: "diff", version: "v1", state: FindingOpen, verify: VerifyDropped, verifier: "zai/glm-5"}, // posted anyway, unjudged
+		{run: 1, model: "groq/openai/gpt-oss-120b", strategy: "diff", version: "v1", state: FindingOpen, verify: VerifyDropped, verifier: "zai/glm-5"},
 		{run: 1, model: "groq/openai/gpt-oss-120b", strategy: "diff", version: "v1", state: FindingDismissed, verify: VerifyDropped, verifier: "zai/glm-5"},
 		{run: 1, model: "groq/openai/gpt-oss-120b", strategy: "diff", version: "v1", state: FindingDropped, verify: VerifyDropped, verifier: "zai/glm-5"},
 		{run: 1, model: "groq/openai/gpt-oss-120b", strategy: "diff", version: "v1", state: FindingDropped, verify: VerifyUnchecked, reason: evidenceMissing},
-		// Run 2: two reviewers, no verifier; the second raised nothing.
 		{run: 2, model: "openrouter/qwen/qwen3-coder", strategy: "diff+files", version: "v2", state: FindingOpen, verify: VerifySkipped, taken: true},
 		{run: 2, model: "openrouter/qwen/qwen3-coder", strategy: "diff+files", version: "v2", state: FindingOpen, verify: VerifySkipped, audit: "rejected"},
-		// Same model, another prompt version: its own row.
 		{run: 3, model: "groq/openai/gpt-oss-120b", strategy: "diff", version: "v0", state: FindingFixed, verify: VerifyUnchecked},
 	}
 	runs := []statRun{
 		{id: 1, strategy: "diff", version: "v1", arm: "diff/verify", verified: true, review: 1000, verify: 301},
 		{id: 2, strategy: "diff+files", version: "v2", arm: "diff+files/none", reviewers: []string{"openrouter/qwen/qwen3-coder", "groq/kimi-k3"}, review: 3001},
 		{id: 3, strategy: "diff", version: "v0", review: 500},
-		{id: 4, strategy: "diff", version: "v1", review: 70}, // nothing found, no reviewer known
+		{id: 4, strategy: "diff", version: "v1", review: 70},
 	}
 	st := tallyReviewStats(fs, runs)
 
@@ -100,7 +94,6 @@ func TestTallyReviewStats(t *testing.T) {
 	if o := byKey["gpt-oss-120b diff v0"]; o.Findings != 1 || o.Useful != 1 || o.Tokens != 500 {
 		t.Errorf("gpt-oss v0 = %+v", o)
 	}
-	// Run 2's tokens split between its two reviewers, the odd one to the first.
 	q := byKey["qwen3-coder diff+files v2"]
 	if q.Useful != 1 || q.False != 1 || q.Tokens != 1501 || q.TokensPerUseful != 1501 {
 		t.Errorf("qwen = %+v", q)
@@ -108,7 +101,6 @@ func TestTallyReviewStats(t *testing.T) {
 	if k := byKey["kimi-k3 diff+files v2"]; k.Findings != 0 || k.Tokens != 1500 || k.Runs != 1 || k.Precision != nil || k.Providers[0] != "groq" {
 		t.Errorf("kimi = %+v", k)
 	}
-	// Most judged first.
 	if st.Reviewers[0].Model != "gpt-oss-120b" || st.Reviewers[0].PromptVersion != "v1" {
 		t.Errorf("first = %+v", st.Reviewers[0])
 	}
@@ -145,7 +137,7 @@ func TestTallyTrustedRunIsNotNoVerifier(t *testing.T) {
 	st := tallyReviewStats([]statFinding{haiku, mixed, other}, []statRun{
 		{id: 1, strategy: "diff", version: "v1", arm: "diff/none", review: 100},
 		{id: 2, strategy: "diff", version: "v1", arm: "diff/none", review: 20},
-		{id: 3, strategy: "diff", version: "v1", arm: "diff/none", review: 3}, // nothing found
+		{id: 3, strategy: "diff", version: "v1", arm: "diff/none", review: 3},
 	})
 	if sk := st.Verify.Skipped; sk.Findings != 1 || sk.Runs != 2 || sk.Tokens != 23 {
 		t.Errorf("skipped = %+v", sk)
@@ -184,7 +176,7 @@ func TestReviewStatsService(t *testing.T) {
 	audit := exec(`INSERT INTO code_audits(project_id, forge_id, repo, target, owner_id, created_at) VALUES (?, ?, 'me/app', 'pr', ?, ?)`, pe.p.ID, pe.f.ID, pe.admin.User.ID, now)
 	af := exec(`INSERT INTO code_audit_findings(audit_id, ordinal, title, state) VALUES (?, 1, 't', 'confirmed')`, audit)
 	exec(`UPDATE bot_findings SET audit_finding_id = ? WHERE id = ?`, af, left)
-	finding(old, FindingFixed, "groq/kimi-k3") // outside the window
+	finding(old, FindingFixed, "groq/kimi-k3")
 
 	st, err := pe.s.ReviewStats(pe.ctx, pe.admin, ReviewStatsInput{Project: pe.p.Key})
 	if err != nil {
@@ -200,14 +192,12 @@ func TestReviewStatsService(t *testing.T) {
 	if st.Verify.Skipped.Runs != 1 || st.Verify.Skipped.Findings != 3 {
 		t.Errorf("skipped = %+v", st.Verify.Skipped)
 	}
-	// Ninety days reach the old run.
 	if st, err = pe.s.ReviewStats(pe.ctx, pe.admin, ReviewStatsInput{Days: 90}); err != nil || st.Totals.Findings != 4 {
 		t.Fatalf("90 days = %+v, %v", st, err)
 	}
 	if _, err := pe.s.ReviewStats(pe.ctx, pe.admin, ReviewStatsInput{Days: 1000}); err == nil {
 		t.Error("1000 days allowed")
 	}
-	// Every project is for admins; a project for those who can see it.
 	bob := pe.user("bob", false)
 	if _, err := pe.s.ReviewStats(pe.ctx, bob, ReviewStatsInput{}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("bob, every project: %v", err)

@@ -15,13 +15,8 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// Runner jobs (WP-D17): work queued for a runner, the log it streams back
-// and how it ended. EnqueueRunnerJob is the way in for the rest of Waypoint
-// (requests apply a change, automations run a command or an agent); a job's
-// end emits EvRunnerJobFinished.
-
 const (
-	runnerLogCap     = 1 << 20 // output kept per job
+	runnerLogCap     = 1 << 20
 	runnerLogEmit    = time.Second
 	runnerQueuedMax  = 200
 	runnerMaxTimeout = 2 * 3600
@@ -32,7 +27,7 @@ const (
 	runnerInputMax        = 4 << 20
 )
 
-var runnerJobSources = []string{"request_apply", "request_cell", "request_decision", "automation_step", "bot_run", "babysit", "session_message", "session_batch", "manual", "kit_rollout", "autopilot", autopilotReviewSource, "audit", cacheWarmSource, reviewCompactSource, prepAgentSource, babysitHeldSource}
+var runnerJobSources = []string{"request_apply", "request_cell", "request_decision", "automation_step", "bot_run", "babysit", "session_message", "session_batch", "manual", "kit_rollout", "autopilot", autopilotReviewSource, "audit", cacheWarmSource, reviewCompactSource, deferredCompactSource, prepAgentSource, babysitHeldSource}
 
 // default timeouts, seconds
 var runnerTimeouts = map[string]int{JobCommand: 600, JobApply: 300, JobAgent: 1800, JobReview: 900, JobSession: 120, JobMessage: 60, JobAutopilot: 900, JobAutopilotStart: 900, JobAudit: 2700, JobObjective: objectiveJobTimeout}
@@ -200,18 +195,13 @@ func checkRunnerInput(kind string, raw json.RawMessage) (jobNeeds, string, json.
 			return n, "", nil, invalid("json_schema must be JSON, up to 64 KB")
 		}
 		if kind == JobReview {
-			in.ReadOnly, in.Push, in.Branch, in.Permission = true, false, "", AgentRead // a review never changes anything
-			in.Confine = true                                                           // and its prompt is text others wrote
+			in.ReadOnly, in.Push, in.Branch, in.Permission = true, false, "", AgentRead
+			in.Confine = true
 		}
 		if kind == JobAudit {
-			// An audit finds and reports; it never changes anything. The CLIs
-			// that can be confined are (WP-ADR20); cursor can't, and audits
-			// only what the gate lets a runner read.
 			in.ReadOnly, in.Push, in.Branch, in.Permission = true, false, "", AgentRead
 			in.Confine = slices.Contains(reviewCLIs, in.CLI)
 			if gateway {
-				// No CLI runs on the runner: the gateway's sandbox holds the
-				// agent (read-only profile, no credentials, no way out).
 				var err error
 				if in.GatewayExclude, err = cleanGatewayExclude(in.GatewayExclude); err != nil {
 					return n, "", nil, err
@@ -240,6 +230,12 @@ func checkRunnerInput(kind string, raw json.RawMessage) (jobNeeds, string, json.
 			if in.DiffSince < 0 || (in.DiffSince > 0 && in.DiffFrom != "") {
 				return n, "", nil, invalid("diff_since is a time (unix seconds), instead of diff_from")
 			}
+			if in.DiffOver != "" && (!gitRefRE.MatchString(in.DiffOver) || in.DiffFrom == "" || len(in.OverPrompt) > 16<<10) {
+				return n, "", nil, invalid("diff_over %q isn't a branch, tag or commit, or comes without diff_from, or its over_prompt is over 16 KB", in.DiffOver)
+			}
+			if in.DiffOver == "" {
+				in.OverPrompt = ""
+			}
 			var err error
 			if in.DiffPaths, err = cleanAuditPaths(in.DiffPaths); err != nil {
 				return n, "", nil, err
@@ -249,6 +245,7 @@ func checkRunnerInput(kind string, raw json.RawMessage) (jobNeeds, string, json.
 			}
 		} else {
 			in.DiffFrom, in.DiffSince, in.DiffPaths, in.DiffExclude, in.GatewayExclude, in.GatewayWeakest = "", 0, nil, nil, nil, ""
+			in.DiffOver, in.OverPrompt = "", ""
 			in.GatewayPriority, in.GatewayPaid, in.GatewayArm = "", "", ""
 			in.GatewayArchiveMax, in.GatewayFileMax = 0, 0
 		}
@@ -284,7 +281,7 @@ func checkRunnerInput(kind string, raw json.RawMessage) (jobNeeds, string, json.
 		}
 		n.cli, v = in.CLI, in
 		if patch {
-			n.cli = "" // git only: no CLI runs
+			n.cli = ""
 		}
 		title = in.CLI + ": " + excerpt(in.Prompt, 90)
 		if patch {
@@ -306,7 +303,6 @@ func checkRunnerInput(kind string, raw json.RawMessage) (jobNeeds, string, json.
 			return n, "", nil, invalid("a session job needs an absolute directory without ..")
 		}
 		if in.Kickoff != "" {
-			// The runner makes the prompt from the task's wp next answer.
 			if in.Prompt != "" || len(splitTaskKeys(in.Task)) != 1 || len(in.Kickoff) > maxAutopilotText || len(in.Title) > 400 {
 				return n, "", nil, invalid("a kickoff session job needs one task, a template of up to %d characters and no prompt", maxAutopilotText)
 			}
@@ -510,7 +506,7 @@ func scanJob(row jobScanner, extra ...any) (*RunnerJobInfo, error) {
 // queue one at all, because what runs on a machine is a person's decision.
 // ErrNoRunner means that person has no runner (with the label).
 func (s *Service) EnqueueRunnerJob(ctx context.Context, a *Actor, in RunnerJobInput) (*RunnerJob, error) {
-	if err := a.need(PermRunnersRun); err != nil { // WP-111
+	if err := a.need(PermRunnersRun); err != nil {
 		return nil, err
 	}
 	if err := a.canWrite(); err != nil {
@@ -550,10 +546,6 @@ func (s *Service) EnqueueRunnerJob(ctx context.Context, a *Actor, in RunnerJobIn
 	if owner == 0 {
 		return nil, invalid("say whose runner the job is for")
 	}
-	// The ownership rule: your own runners. An automation runs as whoever
-	// triggered it, so it may use only the runners of the person who last
-	// saved it (anyone else editing it could otherwise run commands on that
-	// person's machine). Waypoint's own work (no user) is trusted.
 	switch {
 	case a.Automation != nil:
 		if automationRunnerOwner(a.Automation) != owner {
@@ -581,23 +573,14 @@ func (s *Service) EnqueueRunnerJob(ctx context.Context, a *Actor, in RunnerJobIn
 		return nil, err
 	}
 	if needs.kind == JobAudit && needs.cli == GatewayCLI {
-		// Every job of the gateway's, whoever queued it (an audit, a prep
-		// trial, a person through the API): its upload is held to the
-		// gateway's limits (archiveMax), so it carries them for the runner
-		// to pack against, not the runner's own fallbacks.
 		if input, err = s.withGatewayLimits(ctx, input); err != nil {
 			return nil, err
 		}
 	}
-	// A patch job pushes protected-file changes with no agent and no check
-	// of its own: only Waypoint queues one, for a held change it checked or
-	// a person approved (applyHeld, WP-ADR138).
 	if needs.patch && (a.User == nil || a.User.ID != 0 || a.IsAgent() || a.Automation != nil || in.Source != babysitHeldSource) {
 		return nil, fmt.Errorf("only Waypoint queues a job that pushes a held patch: %w", ErrForbidden)
 	}
 	needs.label = in.Label
-	// Somewhere it could run, now: a directory no runner allows or a CLI no
-	// runner has would wait a day and expire.
 	if !slices.ContainsFunc(candidates, func(r *Runner) bool { return runnerCanTake(r, needs) }) {
 		switch {
 		case needs.dir != "" && !slices.ContainsFunc(candidates, func(r *Runner) bool { return dirAllowed(needs.dir, r.AllowedDirs) }):
@@ -830,8 +813,6 @@ func (s *Service) ListRunnerJobs(ctx context.Context, actor *Actor, f RunnerJobF
 	return out, rows.Err()
 }
 
-// ---- the runner's side ----
-
 // runnerJobFor loads a job a runner reports on, which must be the caller's.
 func (s *Service) runnerJobFor(ctx context.Context, q queryer, actor *Actor, id int64) (owner int64, state string, size int64, cancel bool, kind string, err error) {
 	err = q.QueryRowContext(ctx, `SELECT owner_id, state, log_size, cancel_requested, kind FROM runner_jobs WHERE id = ?`, id).Scan(&owner, &state, &size, &cancel, &kind)
@@ -867,7 +848,7 @@ func (s *Service) AppendRunnerLog(ctx context.Context, actor *Actor, id, offset 
 		}
 		kind, ack.Size, ack.Cancel = k, size, cancel
 		if state != "running" {
-			ack.Cancel = true // finished already (expired, cancelled): the runner should stop
+			ack.Cancel = true
 			return nil
 		}
 		if offset >= 0 && offset < size {
@@ -881,9 +862,9 @@ func (s *Service) AppendRunnerLog(ctx context.Context, actor *Actor, id, offset 
 		if size >= runnerLogCap {
 			ack.Truncated = true
 			if size > runnerLogCap || text == "" {
-				return nil // the marker is there already
+				return nil
 			}
-			text = logTruncated // the output ended exactly at the cap, and more came
+			text = logTruncated
 		} else if room := runnerLogCap - size; int64(len(text)) > room {
 			text = text[:room]
 			for len(text) > 0 && !utf8.ValidString(text) {
@@ -982,10 +963,10 @@ func (s *Service) FinishRunnerJob(ctx context.Context, actor *Actor, id int64, i
 			return nil
 		}
 		if cancel && state == "failed" {
-			state = "cancelled" // killed because it was asked to stop
+			state = "cancelled"
 		}
 		msg := excerpt(in.Error, 2000)
-		if state == "cancelled" { // who asked, and why, not how it died
+		if state == "cancelled" {
 			var why string
 			_ = t.QueryRowContext(ctx, `SELECT error FROM runner_jobs WHERE id = ?`, id).Scan(&why)
 			msg = cmp(why, msg)
@@ -1016,7 +997,7 @@ func (t *tx) finishRunnerJob(ctx context.Context, id int64, state string, exit *
 	if err := t.dropJobTokens(ctx, id); err != nil {
 		return err
 	}
-	if source == sandboxDrillSource && sid != 0 { // WP-473
+	if source == sandboxDrillSource && sid != 0 {
 		if err := t.finishSandboxDrill(ctx, sid, state, result, msg); err != nil {
 			return err
 		}
@@ -1024,7 +1005,6 @@ func (t *tx) finishRunnerJob(ctx context.Context, id int64, state string, exit *
 	data := map[string]any{"job": id, "kind": kind, "state": state, "source": source, "source_id": sid}
 	fin := &Event{Kind: EvRunnerJobFinished, UserID: owner, Data: data}
 	if source == "automation_step" && sid != 0 {
-		// The run waiting for the job is in a project, and waits match by it.
 		var pid sql.NullInt64
 		_ = t.QueryRowContext(ctx, `SELECT project_id FROM automation_runs WHERE id = ?`, sid).Scan(&pid)
 		fin.ProjectID = pid.Int64

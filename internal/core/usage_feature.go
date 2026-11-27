@@ -1,10 +1,5 @@
 package core
 
-// Who had a feature (WP-256): usage of the tasks whose runs had a release
-// against those whose runs didn't, judged from what each run recorded
-// (run_features) and not from the release's date. Usage belongs to tasks as
-// on the Trends tab (WP-ADR39).
-
 import (
 	"context"
 	"database/sql"
@@ -19,10 +14,10 @@ import (
 
 // What a run or a task had of a release.
 const (
-	FeatureHad     = "had"     // everything it ran on had the release
-	FeatureBefore  = "before"  // nothing it ran on did
-	FeaturePartial = "partial" // some of it did, it changed during the work, or hooks weren't running
-	FeatureUnknown = "unknown" // no record, or a version that can't be ordered: before recording began, a dev build
+	FeatureHad     = "had"
+	FeatureBefore  = "before"
+	FeaturePartial = "partial"
+	FeatureUnknown = "unknown"
 )
 
 // FeatureQuery says which release, and how many days either side of it.
@@ -259,8 +254,6 @@ func (s *Service) featureRelease(ctx context.Context, actor *Actor, ref string) 
 		}
 		return nil, 0, err
 	}
-	// The first merge shipped the work; later ones are follow-ups. A later
-	// release can be named by its version.
 	var merged sql.NullInt64
 	if err := s.db.R.QueryRowContext(ctx, `SELECT min(p.merged_at) FROM external_links el
 		JOIN pull_requests p ON el.kind = 'pull' AND (el.url = p.url OR (el.repo = p.repo COLLATE NOCASE AND el.number = p.number))
@@ -271,7 +264,6 @@ func (s *Service) featureRelease(ctx context.Context, actor *Actor, ref string) 
 		return nil, 0, invalid("%s has no merged pull request, so no release contains it", i.Key)
 	}
 	var at int64
-	// A rollout that started before the merge was built without it.
 	err = s.db.R.QueryRowContext(ctx, `SELECT version, coalesce(finished_at, started_at) FROM deployments
 		WHERE environment_id = ? AND status IN ('succeeded', 'detected') AND version != '' AND started_at >= ?
 		ORDER BY 2, id LIMIT 1`, env, merged.Int64).Scan(&o.Release, &at)
@@ -442,7 +434,6 @@ func (s *Service) taskRuns(ctx context.Context, issueID int64) (runs []TaskUsage
 		if inSession {
 			r.Features["hooks"] = "on"
 		}
-		// The session's newest CLI until the run's own record says otherwise.
 		for name, v := range map[string]string{"cli": cli, featureCLIVersion: cliVersion} {
 			if v != "" {
 				r.Features[name] = v
@@ -495,7 +486,6 @@ func (s *Service) UsageForTask(ctx context.Context, actor *Actor, uq UsageQuery,
 	if o.Runs, from, to, o.RunMinutes, err = s.taskRuns(ctx, i.ID); err != nil {
 		return nil, err
 	}
-	// Which arm a task was in unblinds an experiment: admins only, as there.
 	if actor.canReadExperiments() == nil {
 		if err := s.taskArms(ctx, i.ID, o); err != nil {
 			return nil, err

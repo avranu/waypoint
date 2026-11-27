@@ -78,28 +78,24 @@ func (pe *prEnv) send(event string, payload map[string]any) {
 
 func TestPullRequestHistory(t *testing.T) {
 	pe := newPREnv(t, "github")
-	pe.fg.ownLogin = "robin"                           // Waypoint posts as the forge token's person
-	pe.policy(MergePolicyInput{AutoMerge: ptr(false)}) // its arming would be in the audit log too
+	pe.fg.ownLogin = "robin"
+	pe.policy(MergePolicyInput{AutoMerge: ptr(false)})
 	pe.llm.answers["opencode/muse-spark-1.3-contributor-free"] = `{"findings":[]}`
 	pr := ForgePR{Number: 12, Title: "Add search", Author: "robin", HeadRef: "search", HeadSHA: "aaaaaaa1111", State: "open",
 		Body: "Adds search.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"}
 	pe.fg.setPR(pe.f, "me/app", pr, sampleDiff)
 	pe.send("pull_request", prPayload("opened", pr, map[string]any{"additions": 40, "deletions": 3, "changed_files": 2, "commits": 1}))
-	pe.drain() // Waypoint's own review: a bot run, not a history row
+	pe.drain()
 	rec, _ := pe.s.prByNumber(pe.ctx, pe.s.db.R, pe.f.ID, "me/app", 12)
 	if rec.Agent != "anthropic/claude-opus-5-5" || rec.OpenedAt == nil || rec.OpenedAt.Day() != 4 || rec.Additions == nil || *rec.Additions != 40 {
 		t.Fatalf("record = %+v", rec)
 	}
 
-	// A push, by whoever pushed it.
 	pe.setClock(pe.clockNow().Add(time.Hour))
 	pr.HeadSHA = "bbbbbbb2222"
-	pe.fg.setPR(pe.f, "me/app", pr, sampleDiff)
+	pe.fg.setPR(pe.f, "me/app", pr, diffPlus("two.txt"))
 	pe.send("pull_request", prPayload("synchronize", pr, nil))
 	pe.drain()
-	// Reviews: a person's approval (twice: delivered again), a bot's
-	// comment, Waypoint's own review coming back (skipped), a person's
-	// comment and a comment on the diff from Waypoint's line comments.
 	approve := map[string]any{"action": "submitted", "review": map[string]any{"id": 77, "user": map[string]string{"login": "alex"}, "state": "APPROVED",
 		"body": "LGTM", "commit_id": "bbbbbbb2222", "html_url": "https://git.example.com/me/app/pulls/12#r77"},
 		"pull_request": prPayload("", pr, nil)["pull_request"], "repository": map[string]any{"full_name": "me/app"}}
@@ -117,7 +113,6 @@ func TestPullRequestHistory(t *testing.T) {
 		"comment":      map[string]any{"id": 601, "body": "**P1** high · …\n<!-- waypoint-finding -->", "user": map[string]string{"login": "robin"}},
 		"pull_request": prPayload("", pr, nil)["pull_request"], "repository": map[string]any{"full_name": "me/app"}})
 
-	// Merged by a person.
 	pe.setClock(pe.clockNow().Add(2 * time.Hour))
 	pr.State = "merged"
 	pe.fg.setPR(pe.f, "me/app", pr, sampleDiff)
@@ -134,7 +129,6 @@ func TestPullRequestHistory(t *testing.T) {
 		t.Errorf("audit = %v", a)
 	}
 
-	// An issue linked to it, worked by an agent.
 	i := pe.issue(pe.admin, IssueInput{Project: pe.p.Key, Title: "Search"})
 	if _, err := pe.s.AddLink(pe.ctx, pe.admin, i.Key, "https://git.example.com/me/app/pulls/12", ""); err != nil {
 		t.Fatal(err)
@@ -168,7 +162,6 @@ func TestPullRequestHistory(t *testing.T) {
 	if list.Totals.Merged != 1 || list.Totals.Opened != 1 || list.Totals.HumanApprovals != 1 || list.Totals.MedianHoursToMerge == nil {
 		t.Errorf("totals = %+v", list.Totals)
 	}
-	// Filters: by agent family, state and text.
 	for q, n := range map[PRQuery]int{
 		{Repo: "ME/app"}: 1, {Repo: "me/other"}: 0, {Agent: "opus"}: 1, {Agent: "claude code"}: 1, {Agent: "codex"}: 0, {State: "open"}: 0, {State: "merged"}: 1, {Text: "#12"}: 1, {Text: "nothing"}: 0,
 	} {
@@ -195,7 +188,6 @@ func TestPullRequestHistory(t *testing.T) {
 		t.Errorf("detail: %d bot runs, agent time %+v", len(d.BotRuns), d.AgentTime)
 	}
 
-	// Someone outside the project sees none of it.
 	other := pe.user("eve", false)
 	if l, err := pe.s.ListPullRequests(pe.ctx, other, PRQuery{}); err != nil || len(l.Pulls) != 0 {
 		t.Errorf("outsider sees %v, %v", l, err)
@@ -209,7 +201,6 @@ func TestForgejoReviewEvents(t *testing.T) {
 	pe := newPREnv(t, "forgejo")
 	pr := ForgePR{Number: 3, Title: "Fix", Author: "sam", HeadRef: "fix", HeadSHA: "ccccccc3333", State: "open"}
 	pe.fg.setPR(pe.f, "me/app", pr, sampleDiff)
-	// The first news of it is a review: it's fetched and recorded, quietly.
 	review := func(event, sender, content string) map[string]any {
 		return map[string]any{"action": "reviewed", "number": 3, "commit_id": "ccccccc3333", "pull_request": prPayload("", pr, nil)["pull_request"],
 			"review": map[string]any{"type": "pull_request_review_" + strings.TrimPrefix(event, "pull_request_"), "content": content},
@@ -217,7 +208,7 @@ func TestForgejoReviewEvents(t *testing.T) {
 	}
 	pe.send("pull_request_rejected", review("pull_request_rejected", "alex", "Needs tests"))
 	pe.send("pull_request_approved", review("pull_request_approved", "alex", "Thanks"))
-	pe.send("pull_request_approved", review("pull_request_approved", "alex", "Thanks")) // delivered again
+	pe.send("pull_request_approved", review("pull_request_approved", "alex", "Thanks"))
 	pe.send("pull_request_comment", review("pull_request_comment", "llm-review", "Low-trust review"))
 	if len(pe.drain()) != 0 {
 		t.Error("a review set the bots off")
@@ -247,7 +238,6 @@ func TestGitLabMergeRequestHistory(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The API answers as GitLab would at each step (the hook doesn't name the author).
 	setState := func(state string) {
 		pe.fg.setPR(pe.f, "me/app", ForgePR{Number: 8, Title: "Tidy", Author: "sam", HeadRef: "tidy", HeadSHA: "ddddddd4444", State: state}, sampleDiff)
 	}
@@ -274,7 +264,7 @@ func TestGitLabMergeRequestHistory(t *testing.T) {
 
 func TestRefreshPullRequests(t *testing.T) {
 	pe := newPREnv(t, "github")
-	pe.policy(MergePolicyInput{AutoMerge: ptr(false)}) // its arming would be in the audit log too
+	pe.policy(MergePolicyInput{AutoMerge: ptr(false)})
 	pe.llm.answers["opencode/muse-spark-1.3-contributor-free"] = `{"findings":[]}`
 	merged := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
 	opened := merged.Add(-48 * time.Hour)
@@ -285,7 +275,7 @@ func TestRefreshPullRequests(t *testing.T) {
 	newer := known
 	newer.HeadSHA, newer.Title = "9999999zzzz", "Known, retitled"
 	pe.fg.listed = []*ForgePR{
-		{Number: 1, Title: newer.Title, Author: "sam", HeadRef: "k", HeadSHA: newer.HeadSHA, State: "open"}, // pushed, webhook pending
+		{Number: 1, Title: newer.Title, Author: "sam", HeadRef: "k", HeadSHA: newer.HeadSHA, State: "open"},
 		{Number: 2, Title: "Unseen", Author: "sam", HeadRef: "u", HeadSHA: "2222222bbbb", State: "open", OpenedAt: &opened},
 		{Number: 3, Title: "Old", Author: "sam", HeadRef: "o", HeadSHA: "3333333cccc", State: "merged", OpenedAt: &opened, MergedAt: &merged, MergedBy: "alex"},
 	}
@@ -307,8 +297,6 @@ func TestRefreshPullRequests(t *testing.T) {
 	if a := pe.audits(); len(a) != 0 {
 		t.Errorf("history from a refresh was audited: %v", a)
 	}
-	// A pull request still headless a sync later missed its webhook: the
-	// refresh takes its place, once.
 	missed := ForgePR{Number: 4, Title: "Missed", Author: "sam", HeadRef: "m", HeadSHA: "4444444dddd", State: "open"}
 	pe.fg.setPR(pe.f, "me/app", missed, sampleDiff)
 	pe.fg.listed = []*ForgePR{&missed}
@@ -327,7 +315,6 @@ func TestRefreshPullRequests(t *testing.T) {
 	if runs := pe.drain(); len(runs) != 0 {
 		t.Fatalf("missed webhook, again: %+v", runs)
 	}
-	// The webhooks that do arrive still set the bots off.
 	pe.fg.setPR(pe.f, "me/app", newer, sampleDiff)
 	pe.send("pull_request", prPayload("synchronize", newer, nil))
 	unseen := ForgePR{Number: 2, Title: "Unseen", Author: "sam", HeadRef: "u", HeadSHA: "2222222bbbb", State: "open"}
@@ -342,7 +329,6 @@ func TestRefreshPullRequests(t *testing.T) {
 func TestRefreshPullRequestsWithoutWebhooks(t *testing.T) {
 	pe := newPREnv(t, "github")
 	pe.llm.answers["opencode/muse-spark-1.3-contributor-free"] = `{"findings":[]}`
-	// No webhook has ever arrived for the repo: the refresh does their work.
 	one := ForgePR{Number: 1, Title: "One", Author: "sam", HeadRef: "a", HeadSHA: "1111111aaaa", State: "open"}
 	draft := ForgePR{Number: 2, Title: "Two", Author: "sam", HeadRef: "b", HeadSHA: "2222222bbbb", State: "draft"}
 	pe.fg.setPR(pe.f, "me/app", one, sampleDiff)
@@ -356,18 +342,16 @@ func TestRefreshPullRequestsWithoutWebhooks(t *testing.T) {
 	list(one, draft)
 	pe.s.RefreshPullRequests(pe.ctx)
 	runs := pe.drain()
-	if len(runs) != 1 || runs[0].Reason != "opened" || runs[0].PR == nil || runs[0].PR.Number != 1 { // drafts wait
+	if len(runs) != 1 || runs[0].Reason != "opened" || runs[0].PR == nil || runs[0].PR.Number != 1 {
 		t.Fatalf("first refresh: %+v", runs)
 	}
 	if p, _ := pe.s.prByNumber(pe.ctx, pe.s.db.R, pe.f.ID, "me/app", 1); p.HeadSHA != one.HeadSHA {
 		t.Errorf("head not recorded: %+v", p)
 	}
-	// Nothing new: nothing runs again.
 	pe.s.RefreshPullRequests(pe.ctx)
 	if runs := pe.drain(); len(runs) != 0 {
 		t.Fatalf("repeat refresh: %+v", runs)
 	}
-	// A push is seen on the next refresh.
 	pushed := one
 	pushed.HeadSHA = "9999999zzzz"
 	pe.fg.setPR(pe.f, "me/app", pushed, sampleDiff)
@@ -376,8 +360,6 @@ func TestRefreshPullRequestsWithoutWebhooks(t *testing.T) {
 	if runs := pe.drain(); len(runs) != 1 || runs[0].Reason != "pushed" {
 		t.Fatalf("after a push: %+v", runs)
 	}
-	// Once webhooks arrive, a late one for a head the refresh saw does nothing,
-	// and the refresh leaves open pull requests to them again.
 	pe.send("pull_request", prPayload("synchronize", pushed, nil))
 	if runs := pe.drain(); len(runs) != 0 {
 		t.Fatalf("webhook for a head already seen: %+v", runs)
@@ -411,7 +393,7 @@ func TestCodingAgent(t *testing.T) {
 
 func TestReviewNote(t *testing.T) {
 	pe := newPREnv(t, "github")
-	pe.policy(MergePolicyInput{AutoMerge: ptr(false)}) // its arming would be in the audit log too
+	pe.policy(MergePolicyInput{AutoMerge: ptr(false)})
 	n, err := pe.s.GetReviewNote(pe.ctx, pe.admin)
 	if err != nil || n.Custom || n.Note != DefaultReviewNote {
 		t.Fatalf("default: %+v %v", n, err)

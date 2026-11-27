@@ -1,7 +1,3 @@
-// Usage → Tools and Bash commands: what the sessions called, how often it
-// failed or was refused, how much came back, and what is configured but
-// never used.
-
 import { useState } from 'react'
 import { ChevronRight } from 'lucide-react'
 import clsx from 'clsx'

@@ -113,10 +113,10 @@ func TestExecSandboxDrill(t *testing.T) {
 	want := map[string]string{
 		"read /etc/shadow":             probe.Refused,
 		"control: write /work":         probe.Allowed,
-		"write to the host's /tmp":     probe.Allowed, // the fake escaped
+		"write to the host's /tmp":     probe.Allowed,
 		"write to the host's /dev/shm": probe.Refused,
 		"fork bomb":                    probe.Refused,
-		"overrun the time limit":       probe.Allowed, // the fake slept through
+		"overrun the time limit":       probe.Allowed,
 	}
 	if len(cases) != len(want) {
 		t.Errorf("cases %+v", cases)

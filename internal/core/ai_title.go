@@ -8,13 +8,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// AI titles (WP-67). People often type a sentence or three into the box where
-// a title goes. A model writes a short title for it and the text they typed
-// becomes the description, so nothing is lost and a list stays readable. It
-// runs after the issue is saved (an event side effect, like auto-estimate),
-// so creating never waits on a model, and when the model is missing or fails
-// the title simply stays what was typed.
-
 const (
 	// titleGenMin: a title longer than this many characters is text, not a title.
 	titleGenMin = 100
@@ -74,8 +67,6 @@ func (s *Service) autoTitle(ctx context.Context, e *Event) {
 	if ok, err := s.runAITaskConfigured(ctx, "title"); err != nil || !ok {
 		return
 	}
-	// Bounded like estimates, so a burst of new issues can't queue up
-	// unbounded model calls.
 	s.aiMu.Lock()
 	full := s.titling >= maxQueuedEstimates
 	if !full {
@@ -108,11 +99,11 @@ func (s *Service) retitle(ctx context.Context, projectID, id int64, was string) 
 		return err
 	}
 	if i.Title != was {
-		return nil // edited already: theirs wins
+		return nil
 	}
 	text := i.Title
 	if d := strings.TrimSpace(i.Description); holdsTitle(d, i.Title) {
-		text = d // it already holds what was typed, and more
+		text = d
 	} else if d != "" {
 		text += "\n\n" + d
 	}
@@ -128,7 +119,6 @@ func (s *Service) retitle(ctx context.Context, projectID, id int64, was string) 
 	if title == "" || title == i.Title {
 		return invalid("the AI model didn't give a usable title")
 	}
-	// Read again: the model took a while.
 	cur, err := s.issueByID(ctx, s.db.R, id, true)
 	if err != nil || cur.Title != was {
 		return err

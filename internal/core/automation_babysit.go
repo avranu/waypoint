@@ -1,8 +1,5 @@
 package core
 
-// The babysit automation step (WP-134, ADR2 §2): a rule starts babysitting
-// a pull request, e.g. every one an agent opens.
-
 func init() {
 	registerAction(ActionDef{Name: "babysit", Label: "Babysit the pull request", Group: "Pull request", Phrase: "babysit the pull request", Runner: true,
 		Doc: "Start babysitting a pull request: Waypoint watches it until it merges, and each time its checks and reviews have settled with something left to do (a failed check, a conflict, a review comment not dealt with), a fresh Claude Code session on a runner of the person who last saved the automation deals with it. Starting one that is going does nothing. `model` is the rounds' Claude model (default sonnet). Outputs State",

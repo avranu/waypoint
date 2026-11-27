@@ -20,18 +20,13 @@ import (
 	"time"
 )
 
-// Email (WP-D14, WP-7): the server's SMTP settings, set under Admin → Email,
-// and the email automation action, which stays out of the editor until
-// they are set. The password is stored like AI provider keys and never
-// returned.
-
 const emailSettingsKey = "smtp"
 
 // Ways to secure the connection to the SMTP server.
 const (
-	SMTPStartTLS = "starttls" // plain connection upgraded with STARTTLS (port 587)
-	SMTPTLS      = "tls"      // TLS from the start (port 465)
-	SMTPNone     = "none"     // no encryption: only for a relay on the same host or network
+	SMTPStartTLS = "starttls"
+	SMTPTLS      = "tls"
+	SMTPNone     = "none"
 )
 
 const smtpTimeout = 30 * time.Second

@@ -9,11 +9,6 @@ import (
 	"time"
 )
 
-// Recent changes (WP-D16): what changed across issues, pages, glossary
-// terms and design notes, newest first, with who did it and which agent.
-// Built from the records themselves (issue history, and each record's own
-// updated time and author), so there is no second log to keep in step.
-
 // Change kinds, in the order people read them.
 const (
 	ChangeIssue    = "issue"
@@ -57,7 +52,7 @@ type ChangeList struct {
 const (
 	defaultChanges   = 20
 	maxChanges       = 100
-	agentChangeFetch = 300 // rows read per kind when an agent filter is matched in Go
+	agentChangeFetch = 300
 )
 
 // RecentChanges lists changes the actor may see.
@@ -145,7 +140,7 @@ func changeScope(actor *Actor, col, timeCol string, project, before int64) (stri
 
 func (s *Service) issueChanges(ctx context.Context, actor *Actor, project int64, agentOnly bool, before int64, limit int, cache map[int64]*UserRef) ([]Change, error) {
 	where, args := changeScope(actor, "i.project_id", "e.created_at", project, before)
-	where += " AND " + draftsHidden(actor, "i") // WP-42
+	where += " AND " + draftsHidden(actor, "i")
 	if agentOnly {
 		where += ` AND (coalesce(json_extract(e.data, '$.via'), '') != '')`
 	}
@@ -190,8 +185,6 @@ func (s *Service) issueChanges(ctx context.Context, actor *Actor, project int64,
 }
 
 func (s *Service) pageChanges(ctx context.Context, actor *Actor, project int64, agentOnly bool, before int64, limit int, cache map[int64]*UserRef) ([]Change, error) {
-	// Pages in projects the actor belongs to, and their own personal pages
-	// (not to a job's token, WP-418).
 	member, margs := actor.memberProjects(RoleViewer)
 	where := `((pg.project_id IS NULL AND pg.owner_id = ? AND ?) OR (pg.project_id IS NOT NULL AND (? OR pg.project_id IN ` + member + `)))`
 	args := append([]any{actor.id(), actor.scope == nil, actor.isAdmin()}, margs...)
@@ -204,7 +197,7 @@ func (s *Service) pageChanges(ctx context.Context, actor *Actor, project int64, 
 	if agentOnly {
 		where += ` AND pg.text_agent != ''`
 	}
-	where += " AND " + draftsHidden(actor, "pg") // WP-42
+	where += " AND " + draftsHidden(actor, "pg")
 	// #nosec G202 -- where is fixed conditions; values are bound
 	rows, err := s.db.R.QueryContext(ctx, `SELECT pg.id, pg.title, pg.category, pg.number, pg.created_at, pg.updated_at, pg.updated_by, pg.text_agent, coalesce(p.key, '')
 		FROM pages pg LEFT JOIN projects p ON p.id = pg.project_id WHERE `+where+` ORDER BY pg.updated_at DESC, pg.id DESC LIMIT ?`, append(args, limit)...)
@@ -274,8 +267,6 @@ func (s *Service) designChanges(ctx context.Context, actor *Actor, project int64
 	if agentOnly {
 		where += ` AND r.agent != ''`
 	}
-	// Every note has a revision for each change to it, its first included, a
-	// proposal waiting for a person too.
 	// #nosec G202 -- where is fixed conditions; values are bound
 	rows, err := s.db.R.QueryContext(ctx, `SELECT r.id, n.id, n.title, r.kind, r.state, r.created_at, n.created_at, r.user_id, r.agent, coalesce(p.key, '')
 		FROM design_revisions r JOIN design_notes n ON n.id = r.note_id LEFT JOIN projects p ON p.id = n.project_id

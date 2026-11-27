@@ -156,7 +156,7 @@ func Verify(pub ed25519.PublicKey, sd *Signed, now time.Time) (*Spec, error) {
 		return nil, errors.New("the spec has no nonce")
 	case s.Expiry <= s.Issued || time.Duration(s.Expiry-s.Issued)*time.Second > MaxSpecLife:
 		return nil, errors.New("the spec's lifetime is wrong")
-	case s.Issued > n+60: // a minute of clock skew
+	case s.Issued > n+60:
 		return nil, errors.New("the spec is from the future: check this machine's clock")
 	case n >= s.Expiry:
 		return nil, ErrExpired

@@ -48,7 +48,6 @@ for (const [width, scheme] of looks([
   const { token } = await api("POST", "/me/tokens", { name: `goals ${tag}`, agent: "anthropic/claude-opus-5-5" });
   const agent = { ...H, Authorization: `Bearer ${token}` };
 
-  // An empty project asks for the first goal in plain words.
   await page.goto(`${base}/p/${KEY}/goals`);
   const first = page.getByLabel("Add goal");
   await first.waitFor();
@@ -63,7 +62,6 @@ for (const [width, scheme] of looks([
   const goal = goals.goals[0]?.note;
   ok(goal?.approved && goal.kind === "goal", `${tag} the person's goal is approved: ${JSON.stringify(goal)?.slice(0, 200)}`);
 
-  // An agent suggests a goal that says how, links one task and files others.
   await api("POST", "/design", { title: "Use Elasticsearch for route search", kind: "goal", project: KEY }, agent);
   const linked = await api("POST", "/issues", { project: KEY, title: "Draw the route list" }, agent);
   const stray = await api("POST", "/issues", { project: KEY, title: "Recolour the footer" }, agent);
@@ -73,9 +71,7 @@ for (const [width, scheme] of looks([
     const l = await call("POST", "/links", { from: { ref: t.key }, to: { ref: `design:${goal.id}` }, rel: "serves" }, agent);
     ok(l.ok(), `${tag} the agent links ${t.key}: ${l.status()}`);
   }
-  // Waypoint guesses only for a person's work, never an agent's.
   const near = await api("POST", "/issues", { project: KEY, title: "Find a route in one tap from the map" });
-  // …and proposes other words for the person's goal: an edit that waits.
   const rw = await call("PATCH", `/design/${goal.id}`, { title: "Travellers reach a route in one tap" }, agent);
   ok(rw.ok(), `${tag} the agent proposes a rewording: ${rw.status()}`);
 
@@ -95,11 +91,9 @@ for (const [width, scheme] of looks([
   const nearRow = waiting.locator("li", { hasText: near.title });
   ok((await nearRow.locator("[title^=\"Waypoint's guess\"]").count()) === 1 && await nearRow.getByText(/^Both are about/).isVisible(), `${tag} Waypoint guesses the goal of the near task`);
   await shot("goals");
-  // One key for the colors, a chart for the week, and the page uses the width.
   ok(await page.getByTestId("goals-legend").isVisible(), `${tag} the legend names the colors`);
   ok(!(await page.getByText("Guessed goal").count()) && !(await page.getByText("Suggested goal").count()), `${tag} the agent kinds are one group`);
   ok(!(await page.getByRole("heading", { name: /Worth a look/ }).count()), `${tag} no wall of questions`);
-  // A warning on a goal can be dismissed, and stays dismissed.
   const warn = suggested.locator("span[title]").filter({ has: page.getByRole("button", { name: "Dismiss this warning" }) }).first();
   await warn.waitFor();
   const dismissedBefore = (await api("GET", "/me")).prefs.dismissed_warnings ?? [];
@@ -108,10 +102,8 @@ for (const [width, scheme] of looks([
   await page.reload();
   await suggested.waitFor();
   ok(!(await suggested.getByRole("button", { name: "Dismiss this warning" }).count()), `${tag} the dismissed warning stays gone after a reload`);
-  // On the profile, not this browser: it stays gone on every device.
   const dismissedAfter = (await api("GET", "/me")).prefs.dismissed_warnings ?? [];
   ok(dismissedAfter.length === dismissedBefore.length + 1, `${tag} the dismissal is on the profile: ${JSON.stringify(dismissedAfter.slice(-2))}`);
-  // Goals with goals under them fold, and stay folded.
   await api("POST", "/design", { title: "Routes load in a second", kind: "goal", project: KEY, parent: goal.id });
   await page.reload();
   const subRow = rows.filter({ hasText: "Routes load in a second" });
@@ -128,7 +120,6 @@ for (const [width, scheme] of looks([
   await shot("links");
   await overflow("the Goals tab");
 
-  // One click each: keep the person's words, confirm the agent's link, link the guess, drop the suggestion.
   await rewording.scrollIntoViewIfNeeded();
   await shot("rewording");
   await rewording.getByRole("button", { name: "Keep mine" }).click();
@@ -138,13 +129,11 @@ for (const [width, scheme] of looks([
   await linkedRow.waitFor({ state: "detached" });
   await nearRow.getByRole("button", { name: "Link", exact: true }).click();
   await nearRow.waitFor({ state: "detached" });
-  // Stop asking about the rest: they leave the list but stay the agent's.
   await waiting.getByRole("button", { name: "Stop asking" }).click();
   await page.getByText("Stopped asking about 2 links; they still count as unconfirmed").waitFor();
   await waiting.waitFor({ state: "detached" });
   await suggested.getByRole("button", { name: "Drop", exact: true }).click();
   await suggested.waitFor({ state: "detached" });
-  // The stray one goes to a goal by hand, through the picker.
   const strayRow = untraced.locator("li", { hasText: stray.title });
   await strayRow.getByRole("button", { name: /Link to a goal|Other/ }).click();
   await page.getByPlaceholder("Which goal does it serve?").fill("Pages look like the brand");
@@ -158,14 +147,11 @@ for (const [width, scheme] of looks([
   );
   ok(await page.getByText("Everything open traces to an approved goal.").isVisible(), `${tag} the tab says so`);
   await shot("traced");
-  // Suggest goals asks the model; without one set up, the person hears where to set it.
   await page.getByRole("button", { name: "Suggest goals" }).click();
   await page.getByText(/Admin → AI|Waypoint suggests|Nothing to suggest|found nothing/).first().waitFor();
   ok(true, `${tag} Suggest goals answers`);
 
-  // Decisions no person approved are one line pointing at review, not goals.
   await api("POST", "/design", { title: "Route search runs on a nightly index", kind: "decision", project: KEY }, agent);
-  // A goal lists the open work that may serve it, to tick and link at once.
   const fast = await api("POST", "/issues", { project: KEY, title: "Travellers find the fastest route between two stops" });
   const header = await api("POST", "/issues", { project: KEY, title: "Recolour the header" });
   await page.reload();
@@ -189,7 +175,6 @@ for (const [width, scheme] of looks([
   const linkedNow = await api("GET", `/goals?project=${KEY}`);
   ok(linkedNow.totals.person_goal === 5, `${tag} both tasks serve the goal as the person's: ${JSON.stringify(linkedNow.totals)}`);
 
-  // A task picks its goal on its own page, or asks the model for one.
   const loose = await api("POST", "/issues", { project: KEY, title: "Print the timetable" });
   await page.goto(`${base}/issue/${loose.key}`);
   const looseTrace = page.locator("[data-testid=goal-trace] >> visible=true");
@@ -206,7 +191,6 @@ for (const [width, scheme] of looks([
   await shot("issue-pick");
   await overflow("the issue with a goal picker");
 
-  // The issue page says which goal it serves and how.
   await page.goto(`${base}/issue/${linked.key}`);
   const trace = page.locator("[data-testid=goal-trace] >> visible=true");
   await trace.waitFor();
@@ -218,13 +202,9 @@ for (const [width, scheme] of looks([
   await shot("issue-trace");
   await overflow("the issue");
 
-  // CLI-grade text for agents: the trace says the same.
   const text = await (await call("GET", `/trace?ref=${linked.key}&format=text`, undefined, agent)).text();
   ok(text.includes("Travellers find a route in one tap"), `${tag} the agent's trace names the goal: ${text.slice(0, 300)}`);
 
-  // The goal drift check (WP-559): no agent answers a flag, and a person's
-  // list names the goal with one click each way. The flag itself needs a
-  // forge and a model, so the page reads a mocked one; the route is real.
   const noFlag = await call("POST", "/goals/drift/999999/answer", { answer: "intent" });
   ok(noFlag.status() === 404, `${tag} an unknown flag is a 404 from the API: ${noFlag.status()}`);
   const byAgent = await call("POST", "/goals/drift/999999/answer", { answer: "intent" }, agent);
@@ -271,9 +251,6 @@ for (const [width, scheme] of looks([
   ok(answers.join() === "stop,intent", `${tag} both answers went to the API: ${answers}`);
   await page.unrouteAll({ behavior: "wait" });
 
-  // A goal that counts on a person's request says whose, and links the task
-  // (WP-1196): no bare "asked for". Agents' goals never count that way
-  // (WP-ADR50), so the page reads one marked requested.
   const ask = await api("POST", "/issues", { project: KEY, title: "Make routes easy to share" });
   await page.route(/\/api\/v1\/goals\?project=/, async (route) => {
     const res = await route.fetch();

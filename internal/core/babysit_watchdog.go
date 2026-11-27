@@ -11,17 +11,6 @@ import (
 	"time"
 )
 
-// The babysit watchdog (WP-750). Every resting state used to need someone to
-// notice it: needs_person only told a session that had usually ended, and
-// the merge-line watch covers armed pull requests and only asks a person.
-// Once a minute this looks at babysits that haven't moved for a while. Checks
-// that seem to have stopped are read again. A wait an agent might clear gets
-// one assessor round per head; when the assessor can't take it, the babysit
-// parks with a real question, as does a review comment an agent left for a
-// person (WP-759). One a person kept for themselves gets a request. Nothing
-// here can loop: assessorBlocked allows one assessor round
-// per head and a parked babysit is left alone until someone answers or pushes.
-
 const (
 	// babysitStaleAfter is how long a babysit rests in needs_person before
 	// the watchdog steps in.
@@ -89,9 +78,15 @@ func (s *Service) refreshStaleChecks(ctx context.Context, prID int64) {
 // reviveRound hands a stale needs_person babysit to the assessor, or files
 // the request a person-only wait needs. It reports whether the babysit is
 // instead waiting on checks that should be read again (outside the babysit's
-// lock: reading them can step it).
+// lock: reading them can step it). A babysit whose lock is held has a step
+// running, so it is being moved: it is passed over, and the next run of the
+// job looks again.
 func (s *Service) reviveRound(ctx context.Context, prID int64) (readChecks bool) {
-	defer s.babysitLocks.lock(prID)()
+	unlock, ok := s.babysitLocks.tryLock(prID)
+	if !ok {
+		return false
+	}
+	defer unlock()
 	b, err := s.activeBabysit(ctx, s.db.R, prID)
 	if err != nil || b == nil || b.JobID != 0 {
 		return false
@@ -133,14 +128,6 @@ func (s *Service) reviveRound(ctx context.Context, prID int64) (readChecks bool)
 	s.babysitRoundBy(ctx, b, pr, nil, false, nil, findings, &roundPlan{rung: rungAssessor, why: why})
 	return false
 }
-
-// A babysit can rest where nothing here acts on it: a protected-file handoff
-// waits on a task, and the screen held each of #398's for a person while its
-// owner's only word said a session would take it; it waited four days, and
-// A person found it by its age (WP-1266). So a wait nobody has been asked about
-// is told to the owner once when it has rested too long: a handoff whose task
-// isn't moving after babysitStaleAfter, with what holds the task, and any
-// other wait after babysitRestNotice.
 
 const (
 	// babysitRestNotice is how long a babysit rests in one wait before its
@@ -267,8 +254,6 @@ func (s *Service) refusedOutsideDiff(ctx context.Context, b *Babysit, pr *PullRe
 		return false
 	}
 	s.loadPRFiles(ctx, pr)
-	// No files at all is a diff not read right: a refusal's own round
-	// changed some.
 	if !pr.filesKnown || pr.tooLarge || len(pr.files) == 0 {
 		return false
 	}
@@ -367,7 +352,7 @@ func (s *Service) readyUpdatesGoing(ctx context.Context, pr *PullRequest) int {
 		WHERE p.forge_id = ? AND p.repo = ? COLLATE NOCASE AND p.base_ref = ? AND p.id != ? AND p.armed_at IS NULL AND p.state = 'open'
 		AND b.state = ? AND b.wait LIKE ? AND coalesce(b.wait_at, b.updated_at) >= ?`,
 		pr.ForgeID, pr.Repo, pr.BaseRef, pr.ID, BabysitWatching, checksWait+"%", s.now().Add(-babysitStaleAfter).UnixMilli()).Scan(&n); err != nil {
-		return readyUpdatesAtOnce // can't tell: don't add to it
+		return readyUpdatesAtOnce
 	}
 	return n
 }

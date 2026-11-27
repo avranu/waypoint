@@ -1,7 +1,3 @@
-// Picks a project's icon: a grid of common emoji, plus a field that takes
-// any emoji typed or pasted (the last whole emoji wins, so 👩‍💻 and flags
-// stay intact).
-
 import { useState } from 'react'
 import clsx from 'clsx'
 import { SmilePlus } from 'lucide-react'
@@ -126,7 +122,6 @@ export function EmojiPicker({
           <form
             className="mt-1.5 flex items-center gap-1.5 border-t border-line pt-1.5"
             onSubmit={(ev) => {
-              // React bubbles this through the portal to any form around the picker.
               ev.preventDefault()
               ev.stopPropagation()
               const e = lastEmoji(typed)

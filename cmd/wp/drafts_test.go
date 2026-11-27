@@ -30,7 +30,7 @@ func TestDraftsStayOutOfAgentShells(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("WAYPOINT_TOKEN", tok)
-	t.Setenv("WAYPOINT_AGENT", "none") // "I'm a person", even in the agent's shell below
+	t.Setenv("WAYPOINT_AGENT", "none")
 	shell := func(agent bool) {
 		for _, k := range []string{"CLAUDECODE", "GEMINI_CLI", "OPENCODE", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED"} {
 			t.Setenv(k, "")
@@ -40,7 +40,6 @@ func TestDraftsStayOutOfAgentShells(t *testing.T) {
 		}
 	}
 
-	// Robin's own terminal: quick capture.
 	shell(false)
 	key := p.Key + "-1"
 	if out := e.wp("new", "Half a thought", "-p", p.Key, "--draft"); !strings.Contains(out, "Created "+key) || !strings.Contains(out, "draft") {
@@ -53,7 +52,6 @@ func TestDraftsStayOutOfAgentShells(t *testing.T) {
 		t.Errorf("ls is:draft: %s", out)
 	}
 
-	// Inside Claude Code the drafts don't exist, and can't be published.
 	shell(true)
 	if out := e.wp("ls"); strings.Contains(out, "Half a thought") {
 		t.Errorf("agent shell ls shows the draft: %s", out)
@@ -68,7 +66,6 @@ func TestDraftsStayOutOfAgentShells(t *testing.T) {
 		t.Errorf("agent shell publish: %d %s", code, out)
 	}
 
-	// Back in her terminal, Robin publishes it; then agents see it.
 	shell(false)
 	if out := e.wp("publish", key); !strings.Contains(out, "Published "+key) {
 		t.Errorf("publish: %s", out)

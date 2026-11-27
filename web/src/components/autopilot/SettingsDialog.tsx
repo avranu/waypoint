@@ -1,7 +1,3 @@
-// Autopilot settings in one dialog (opened from the gear at the top of Agents →
-// Autopilot, or a project's own gear): use what's left, your defaults, and
-// each project's limits. "Use what's left" also has a switch on the page.
-
 import { useState } from 'react'
 import clsx from 'clsx'
 import { Hourglass } from 'lucide-react'

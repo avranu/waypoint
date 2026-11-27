@@ -24,16 +24,14 @@ func TestRiskyCommandsIngestNotifyAndList(t *testing.T) {
 		risky(now-50_000, "s1", "delete", "medium", "ran", ""),
 		risky(now-40_000, "s1", "deploy", "high", "refused", "classifier"),
 		risky(now-30_000, "s2", "disk", "high", "error", ""),
-		risky(now-20_000, "s1", "bogus", "high", "ran", ""),    // unknown kind: dropped
-		risky(now-10_000, "s1", "delete", "severe", "ran", ""), // unknown level: dropped
+		risky(now-20_000, "s1", "bogus", "high", "ran", ""),
+		risky(now-10_000, "s1", "delete", "severe", "ran", ""),
 	}})
-	// a re-sent chunk adds nothing and tells nobody again
 	e.ingest(e.me, "a", "devhost", UsageChunk{Risky: []UsageRisky{risky(now-60_000, "s1", "force_push", "high", "ran", "")}})
 
 	var n int
 	var title, body, url string
 	_ = e.s.db.R.QueryRow(`SELECT count(*), max(title), max(body), max(url) FROM notifications WHERE kind = ? AND user_id = ?`, NotifyRisky, uid).Scan(&n, &title, &body, &url)
-	// one notification for the upload, naming the two high ones that ran (not the refused one)
 	if n != 1 || title != "Agents ran 2 risky commands" || !strings.Contains(body, "force_push label in acme/web: git push --force") || strings.Contains(body, "deploy label") ||
 		url != "/agents?tab=audit&view=risky" {
 		t.Errorf("notification %d %q %q %q", n, title, body, url)
@@ -50,7 +48,7 @@ func TestRiskyCommandsIngestNotifyAndList(t *testing.T) {
 	if first.Kind != "force_push" || first.Issue == nil || first.Issue.Key != task.Key || first.Command != "git push --force origin main "+strings.Repeat("x", 400) || first.Machine != "devhost" {
 		t.Errorf("first: %+v", first)
 	}
-	if page.Rows[0].Issue != nil { // s2 holds no task
+	if page.Rows[0].Issue != nil {
 		t.Errorf("s2: %+v", page.Rows[0])
 	}
 	high, err := e.s.UsageRiskyCommands(e.ctx, e.me, UsageQuery{Days: 7}, UsageRiskyFilter{Level: "high", Outcome: "ran"})
@@ -64,7 +62,6 @@ func TestRiskyCommandsIngestNotifyAndList(t *testing.T) {
 	if _, err := e.s.UsageRiskyCommands(e.ctx, e.me, UsageQuery{Days: 7}, UsageRiskyFilter{Kind: "nope"}); err == nil {
 		t.Error("an unknown kind is an error")
 	}
-	// someone else's are theirs
 	sam, err := e.s.UsageRiskyCommands(e.ctx, e.user("sam", false), UsageQuery{Days: 7}, UsageRiskyFilter{})
 	if err != nil || len(sam.Rows) != 0 || sam.Counts.High != 0 {
 		t.Errorf("sam: %+v %v", sam, err)

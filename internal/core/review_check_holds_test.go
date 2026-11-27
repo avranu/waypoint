@@ -43,8 +43,6 @@ func carriedCheckHolds(t *testing.T, checkNewest bool) {
 	}
 	e.exec(`UPDATE code_audits SET pr_id = ?, purpose = '', finished_at = coalesce(finished_at, created_at) + 3600000 WHERE id = ?`, prID, checkID)
 	if !checkNewest {
-		// The round's own audit finished after the check: the check is
-		// carried, not newest.
 		e.exec(`UPDATE code_audits SET pr_id = ?, purpose = '', finished_at = (SELECT finished_at FROM code_audits WHERE id = ?) + 3600000 WHERE request_key LIKE 'review-round:%' AND id != ?`, prID, checkID, checkID)
 	}
 	e.exec(`UPDATE code_audit_findings SET severity = 'low' WHERE audit_id = ?`, checkID)

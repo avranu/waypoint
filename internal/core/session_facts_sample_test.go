@@ -31,7 +31,6 @@ func TestFactsSample(t *testing.T) {
 		if i := bytes.LastIndexByte(raw[:n], '\n'); i >= 0 && n < len(raw) {
 			n = i + 1
 		} else if n < len(raw) {
-			// one line longer than the chunk: take it whole, or the rest when no newline remains
 			if j := bytes.IndexByte(raw, '\n'); j >= 0 {
 				n = j + 1
 			} else {

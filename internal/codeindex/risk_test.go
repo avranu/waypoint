@@ -11,8 +11,6 @@ func TestRiskMissingEditsAndTests(t *testing.T) {
 	r := seed(t)
 	ix := r.open()
 	update(t, ix)
-	// merge.go changes with api/handler.go in the seed history: editing only
-	// merge.go should flag the handler as a likely missing edit.
 	res, err := ix.Risk([]string{"core/merge.go", "no/such.go"})
 	if err != nil {
 		t.Fatal(err)
@@ -39,7 +37,6 @@ func TestRiskMissingEditsAndTests(t *testing.T) {
 	if !strings.HasPrefix(res.Summary, "risk ") || !strings.Contains(res.Summary, "likely missing edit") {
 		t.Errorf("summary = %q", res.Summary)
 	}
-	// the partner in the change is not missing
 	both, _ := ix.Risk([]string{"core/merge.go", "api/handler.go"})
 	if len(both.Missing) != 0 {
 		t.Errorf("missing with both changed = %+v", both.Missing)
@@ -50,7 +47,6 @@ func TestRiskMissingEditsAndTests(t *testing.T) {
 			t.Errorf("render lacks %q:\n%s", want, out)
 		}
 	}
-	// a tiny budget still names every file
 	small := res.Render(20)
 	if !strings.Contains(small, "more, quieter") && len(res.Files) > 1 {
 		t.Errorf("budget not applied:\n%s", small)

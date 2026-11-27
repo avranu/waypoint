@@ -10,9 +10,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// wp usage facts (WP-1467): what a session, or a task's share of its sessions,
-// did, counted from the facts the server derives from the transcript archive.
-
 var usageFactsCmd = &command{
 	name: "facts", args: "SESSION|TASK-KEY | --session ID | --task KEY [--machine M] [--user NAME]",
 	summary: "what a session or task did, counted from its archived transcript",
@@ -26,8 +23,8 @@ may not be counted yet, and the output says how much of the archive it covers.
 A bare argument that looks like a task key (APP-12) is one; for a session id
 that looks like a key, use --session.
 A value the transcript did not carry is shown as unknown, never 0; cache expiry
-is inferred from timing, and says so. Your own sessions; an admin can read
-anyone's with --user.`,
+is inferred from timing, and says so. Your own person's sessions, also from an agent (which sees repeated commands redacted);
+an admin (a person, not an agent) can read anyone's with --user.`,
 	examples: []string{"wp usage facts 0b1c…", "wp usage facts WP-1467 --json", "wp usage facts --session abc123"},
 	run:      cmdUsageFacts,
 }

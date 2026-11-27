@@ -1,5 +1,4 @@
 #!/bin/sh
-# Run in each new worktree autopilot starts a session in (WP-ADR57).
 set -e
 cd web
 npm ci --prefer-offline --no-audit --no-fund

@@ -36,7 +36,6 @@ func TestSandboxSpecs(t *testing.T) {
 		return w.Job
 	}
 
-	// No report (an older wp), or no helper: no spec.
 	if c := claim(nil, p.ID); c.Sandbox != nil {
 		t.Errorf("spec with no report: %+v", c.Sandbox)
 	}
@@ -63,7 +62,6 @@ func TestSandboxSpecs(t *testing.T) {
 		return &sandbox.Report{Installed: true, Status: &sandbox.Status{Version: "v1", Key: fp,
 			Store: sandbox.StoreStatus{Path: sandbox.StoreDir, OK: storeOK, Problem: "gone"}, Drift: []string{strings.Repeat("x", 5000)}}}
 	}
-	// Another key, or a broken store: no spec.
 	if c := claim(status("SHA256:other", true), p.ID); c.Sandbox != nil {
 		t.Error("spec for a helper pinning another key")
 	}
@@ -75,7 +73,6 @@ func TestSandboxSpecs(t *testing.T) {
 		t.Error("spec for a broken store")
 	}
 
-	// Ready: a spec for the project's repo, signed with the key.
 	c := claim(status(key.Fingerprint, true), p.ID)
 	if c.Sandbox == nil {
 		t.Fatal("no spec for a ready helper")
@@ -90,8 +87,6 @@ func TestSandboxSpecs(t *testing.T) {
 		t.Errorf("spec = %+v %+v", spec, spec.Repos)
 	}
 
-	// A project with more repos: a user for each, the job's own first
-	// (WP-448).
 	if _, err := e.s.db.W.Exec(`INSERT INTO project_repos(project_id, forge_id, repo, forge_repo_id, created_at) VALUES (?,?, 'Other/Lib', 78, 0)`, p.ID, forge); err != nil {
 		t.Fatal(err)
 	}
@@ -114,11 +109,9 @@ func TestSandboxSpecs(t *testing.T) {
 		t.Errorf("ready machine = %+v", h)
 	}
 
-	// A later poll without a report keeps the last one.
 	if c := claim(nil, p.ID); c.Sandbox == nil {
 		t.Error("the report was forgotten")
 	}
-	// A job for no project, or a project with no known repo: no spec.
 	if c := claim(nil, 0); c.Sandbox != nil {
 		t.Error("spec for a job with no project")
 	}
@@ -127,7 +120,6 @@ func TestSandboxSpecs(t *testing.T) {
 		t.Error("spec for a project with no repo")
 	}
 
-	// The kill switch: a paused machine gets none.
 	if _, err := e.s.Reauth(e.ctx, web, "correct-horse-battery"); err != nil {
 		t.Fatal(err)
 	}
@@ -169,11 +161,9 @@ func TestSandboxOps(t *testing.T) {
 	report := &sandbox.Report{Installed: true, Status: &sandbox.Status{Version: "v1", Key: key.Fingerprint,
 		Store: sandbox.StoreStatus{Path: sandbox.StoreDir, OK: true}, Users: users}}
 
-	// Not before the helper answers.
 	if _, err := e.s.RequestSandboxOp(e.ctx, web, r.ID, SandboxOpInput{Op: SandboxReconcile}); !IsInvalid(err) {
 		t.Errorf("op with no helper: %v", err)
 	}
-	// A job makes the users; its id is their last job.
 	in, _ := json.Marshal(AgentJob{CLI: "claude", Prompt: "hi", Repo: "https://git.example.com/acme/app.git", Permission: AgentEditRun})
 	e.enqueue(e.admin, RunnerJobInput{Kind: JobAgent, Input: in, ProjectID: p.ID})
 	job := e.poll(e.admin, r, RunnerPoll{Sandbox: report}).Job
@@ -192,8 +182,6 @@ func TestSandboxOps(t *testing.T) {
 		t.Errorf("wp-gone info = %+v", u)
 	}
 
-	// Only a person in the browser, the owner or an admin, for a user the
-	// helper has.
 	if _, err := e.s.RequestSandboxOp(e.ctx, e.admin, r.ID, SandboxOpInput{Op: SandboxReconcile}); !errors.Is(err, ErrSandboxUI) {
 		t.Errorf("op from the CLI: %v", err)
 	}
@@ -220,7 +208,6 @@ func TestSandboxOps(t *testing.T) {
 		t.Fatalf("reconcile = %+v %v", rec, err)
 	}
 
-	// The next poll carries both, signed for this runner.
 	w := e.poll(e.admin, r, RunnerPoll{Running: []int64{job.ID}, Free: ptr(0)})
 	if len(w.Sandbox) != 2 || w.Sandbox[0].ID != op.ID || w.Sandbox[1].ID != rec.ID {
 		t.Fatalf("poll ops = %+v", w.Sandbox)
@@ -233,7 +220,6 @@ func TestSandboxOps(t *testing.T) {
 	if spec, err := sandbox.Verify(pub, w.Sandbox[1].Spec, e.clockNow()); err != nil || spec.Op != sandbox.OpReconcile || spec.User != nil {
 		t.Errorf("reconcile spec = %+v %v", spec, err)
 	}
-	// Not again while the runner works on them; again if it never says.
 	if w := e.poll(e.admin, r, RunnerPoll{Running: []int64{job.ID}, Free: ptr(0)}); len(w.Sandbox) != 0 {
 		t.Errorf("resent at once: %+v", w.Sandbox)
 	}
@@ -246,18 +232,15 @@ func TestSandboxOps(t *testing.T) {
 	if len(w.Sandbox) != 2 {
 		t.Fatalf("not resent: %+v", w.Sandbox)
 	}
-	// The runner says how they went.
 	e.poll(e.admin, r, RunnerPoll{Running: []int64{job.ID}, Free: ptr(0), SandboxDone: []RunnerSandboxResult{
 		{ID: op.ID}, {ID: rec.ID, Error: "  the store is gone  "}, {ID: 9999}}})
 	ms, _ = e.s.SandboxMachines(e.ctx, web)
 	if o := ms[0].Ops; len(o) != 2 || o[1].State != "done" || o[0].State != "failed" || o[0].Error != "the store is gone" || o[1].DoneAt == nil {
 		t.Errorf("finished ops = %+v %+v", o[0], o[1])
 	}
-	// Done ones aren't the same action: asking again queues another.
 	if again, _ := e.s.RequestSandboxOp(e.ctx, web, r.ID, SandboxOpInput{Op: SandboxRemoveUser, User: "wp-gone"}); again == nil || again.ID == op.ID {
 		t.Errorf("a finished action was reused: %+v", again)
 	}
-	// One no runner took in an hour failed.
 	e.setClock(e.clockNow().Add(sandboxOpExpiry + time.Minute))
 	if w := e.poll(e.admin, r, RunnerPoll{Running: []int64{job.ID}, Free: ptr(0)}); len(w.Sandbox) != 0 {
 		t.Errorf("expired op sent: %+v", w.Sandbox)

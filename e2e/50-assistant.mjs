@@ -92,7 +92,6 @@ async function run(width, scheme) {
   await page.waitForURL((u) => !u.pathname.startsWith("/login"));
   id ??= await setup(page);
 
-  // ---- chat ----
   await page.goto(`${base}/assistant/${id}`);
   const box = page.getByLabel("Message Sage");
   await box.waitFor();
@@ -122,7 +121,6 @@ async function run(width, scheme) {
   await page.getByText(`Edited ${word}`).first().waitFor();
   ok(true, `${tag} the last question can be edited and sent again`);
 
-  // ---- every tab ----
   for (const t of TABS.slice(1)) {
     await page.goto(`${base}/assistant/${id}?tab=${t}`);
     await page.getByRole("tab", { name: new RegExp(t, "i") }).first().waitFor();
@@ -133,7 +131,6 @@ async function run(width, scheme) {
     await shot(`assistant-${t}`);
   }
 
-  // ---- the gate holds an action for Signal ----
   const code = await gate(`/dev/ask?tool=send_email&summary=${encodeURIComponent(`email the plumber (${tag})`)}`);
   await call("POST", `/assistants/${id}/check`);
   await page.goto(`${base}/assistant/${id}`);
@@ -142,7 +139,6 @@ async function run(width, scheme) {
   await gate(`/dev/decide?code=${code}&approve=0`);
   await call("POST", `/assistants/${id}/check`);
 
-  // ---- an issue starts a conversation and lists it ----
   const projects = await (await call("GET", "/projects")).json();
   if (!projects.some((p) => p.key === "ASST")) await call("POST", "/projects", { name: "Errands", key: "ASST" });
   const issue = await (await call("POST", "/issues", { project: "ASST", title: `Book the plumber ${tag}` })).json();
@@ -178,7 +174,7 @@ async function automation() {
   await call("POST", `/automations/${a.id}/run`, {});
   let run;
   for (let i = 0; i < 60; i++) {
-    run = (await (await call("GET", `/automations/${a.id}/runs`)).json())[0]; // newest first
+    run = (await (await call("GET", `/automations/${a.id}/runs`)).json())[0];
     if (run && !["queued", "running", "waiting"].includes(run.status)) break;
     await new Promise((r) => setTimeout(r, 500));
   }
@@ -187,7 +183,6 @@ async function automation() {
   const step = detail.steps?.find((s) => s.step_id === "ask");
   ok(run.status === "succeeded" && /hello from an automation/.test(step?.outputs?.Text ?? ""), `an automation asks the assistant and keeps its reply (${run.status})`);
 
-  // ---- freeze, then Signal thaws it ----
   await page.goto(`${base}/assistant/${id}`);
   await page.getByRole("button", { name: "Freeze" }).click();
   await page.getByRole("button", { name: "Freeze now" }).click();

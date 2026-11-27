@@ -9,25 +9,6 @@ import (
 	"time"
 )
 
-// wp agents wait (WP-1443): one command for a coordinator subagent to block
-// on while agents it started finish. Claude Code asks a subagent for its
-// report the moment it ends its turn, unless a background Bash of its own is
-// still running; run in the background, this keeps it from asking, and its
-// exit wakes the agent once, when everything is in.
-//
-// It reads the live table the SubagentStart and SubagentStop hooks keep
-// (gate.go); nothing is polled over the network.
-//
-// Edge cases, decided:
-//   - An agent that is resumed later is live again, but only the runs live
-//     when the command started are waited on: a run is over when the agent is
-//     gone from the table or its run (the start time) is a different one.
-//   - A child whose SubagentStop was lost stays in the table until the
-//     3-hour TTL (gateLiveTTL); the wait ends at --timeout, listing it.
-//   - No live children: exit 0 at once, "no agents of yours are running".
-//   - Hooks not installed or logged out: the table is empty, which reads as
-//     "none running", so the command is only as good as the hooks.
-
 const (
 	// 9 minutes, so a call made in the foreground fits in a Bash call of
 	// 600000 ms, the longest there is; calling it again continues the wait.
@@ -61,8 +42,8 @@ type waitedRun struct {
 type waitDeps struct {
 	now   func() time.Time
 	sleep func(time.Duration)
-	live  func() (map[string]liveAgent, bool) // the live agents of the session; !ok: not readable now
-	seen  func()                              // called each poll that finds one waiting agent still pending; may be nil
+	live  func() (map[string]liveAgent, bool)
+	seen  func()
 }
 
 // waitForRuns blocks until every target's run is over or timeout passes.
@@ -120,19 +101,14 @@ func cmdAgentsWait(c *cli, args []string) error {
 		}
 		who, found := c.takeWaitClaim(session)
 		if !found {
-			// The guard hook records a claim for every call, the main
-			// thread's too, so none means the hooks didn't see this one:
-			// guessing would make a subagent wait on itself.
 			c.println("wp: can't tell which agent is asking (the Waypoint hooks didn't see this call), so nothing was waited on: name the agents, `wp agents wait ID...`")
 			return exitCode(2)
 		}
-		// A start the gate let through that is not live yet is a child too:
-		// wait for each to show up (or its reservation to expire).
 		st = c.settleStarts(session, who, st, *timeout)
 		now = time.Now()
 		for id, a := range st.childrenOf(session, who, now) {
 			if id == who {
-				continue // never wait for the caller itself
+				continue
 			}
 			targets = append(targets, waitTarget{ID: id, Type: a.Type, Since: a.Since})
 		}
@@ -154,7 +130,7 @@ func cmdAgentsWait(c *cli, args []string) error {
 		} else if readJSON(filepath.Join(c.dir, "state.json"), &s) != nil {
 			return nil, false
 		}
-		if session == "" { // named ids with no session known: any
+		if session == "" {
 			all := map[string]liveAgent{}
 			for sid := range s.Agents {
 				for id, a := range s.liveIDs(sid, time.Now()) {

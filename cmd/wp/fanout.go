@@ -17,13 +17,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// Fan-outs (WP-148, X6): parallel work as budgeted task sessions, not
-// ad-hoc agents in one session. wp fanout PLAN.toml files a task per work
-// package and starts them as background task sessions here, a few at a
-// time, each in its own worktree with its own model and budget. Each
-// session's wp done (or its end) starts the next; the coordinator hears one
-// line per finish.
-
 var fanoutCmd = &command{
 	name: "fanout", group: "Code and CI", args: "PLAN.toml [--dry-run] | status|start|stop …",
 	summary: "run work packages as budgeted background task sessions",
@@ -70,8 +63,6 @@ func init() {
 		{name: "next", args: "N --ended KEY --outcome done|budget|ended", summary: "(hooks) record how a package's session ended and start the next", hidden: true, run: cmdFanoutNext},
 	}
 }
-
-// ---- the plan ----
 
 type fanoutPlan struct {
 	Project  string              `toml:"project"`
@@ -155,8 +146,6 @@ func repoRoot(dir string) (string, error) {
 	return top, nil
 }
 
-// ---- what the server says ----
-
 type fanoutItemView struct {
 	Pos      int     `json:"pos"`
 	Key      string  `json:"key"`
@@ -195,8 +184,6 @@ type fanoutClaimView struct {
 	Start   []*fanoutItemView `json:"start"`
 	Waiting string            `json:"waiting"`
 }
-
-// ---- wp fanout PLAN.toml ----
 
 func cmdFanout(c *cli, args []string) error {
 	fs := c.flags()
@@ -245,7 +232,7 @@ func cmdFanout(c *cli, args []string) error {
 	body := map[string]any{"project": project, "parent": plan.Parent, "model": plan.Model, "budget": plan.Budget, "parallel": plan.Parallel,
 		"base": base, "machine": machineName(), "dir": root, "packages": pkgs, "dry_run": *dry}
 	if c.agentHeader() == "" {
-		body["agent"] = "anthropic/claude-code" // the sessions are Claude Code's
+		body["agent"] = "anthropic/claude-code"
 	}
 	raw, err := c.call("POST", "/api/v1/fanouts", body)
 	if err != nil {
@@ -295,8 +282,6 @@ func fanoutEstimateText(f *fanoutView, dry bool) string {
 	fmt.Fprintf(&b, "Estimate: $%.2f, about %.1f%% of a week (asks first over %.0f%%).\nBasis: %s.\n", f.Estimate, f.WeekPct, f.AskOver, f.Basis)
 	return b.String()
 }
-
-// ---- starting ----
 
 // fanoutStart claims what can start now and starts it; wait: when nothing
 // can start only because packages wait for the safety screen, wait a while.
@@ -429,8 +414,6 @@ func fanoutPrompt(f *fanoutView, it *fanoutItemView, kickoff string) string {
 	return kickoff + fmt.Sprintf("\n\nThis session is package %d of fan-out #%d: it has its own worktree (branch %s) and a $%.2f budget; if it runs out, you will be told to hand off.",
 		it.Pos, f.ID, it.Branch, it.Budget)
 }
-
-// ---- status, start, stop ----
 
 func fanoutID(c *cli, s string) (int64, error) {
 	id, err := strconv.ParseInt(strings.TrimPrefix(s, "#"), 10, 64)
@@ -586,8 +569,6 @@ func cmdFanoutStop(c *cli, args []string) error {
 	return nil
 }
 
-// ---- how a package's session ended ----
-
 // cmdFanoutNext is run by the hooks (detached) when a package's session
 // stops at its budget or ends: it records that and starts the next.
 func cmdFanoutNext(c *cli, args []string) error {
@@ -674,7 +655,7 @@ func (c *cli) fanoutHandOff(id int64) {
 			started = append(started, strings.Fields(line)[1])
 			return
 		}
-		_, _ = fmt.Fprintln(w, line) // not started, not told, waiting: keep them
+		_, _ = fmt.Fprintln(w, line)
 	})
 	if err != nil {
 		fmt.Fprintf(w, "Fan-out #%d not told: %v. The coordinator starts the next package.\n", id, err)
@@ -687,8 +668,6 @@ func (c *cli) fanoutHandOff(id int64) {
 	}
 	c.reportHandoff("none", "fan-out #"+strconv.FormatInt(id, 10))
 }
-
-// ---- the hooks' part ----
 
 // fanoutBudgetLine is what the PostToolUse hook says when a package's
 // session reaches its budget (once), and whether it must stop now (at 1.5

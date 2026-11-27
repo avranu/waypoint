@@ -41,7 +41,7 @@ func TestAuditShownAtATime(t *testing.T) {
 		t.Fatalf("audit = %s %d findings, %q", got.Status, len(got.Findings), got.Summary)
 	}
 	c := auditComment(got, "https://wp.example")
-	if rows := strings.Count(c, "\n| "); rows != 6 { // the header and 5 findings
+	if rows := strings.Count(c, "\n| "); rows != 6 {
 		t.Errorf("rows = %d:\n%s", rows, c)
 	}
 	if !strings.Contains(c, "| 5 | low") || strings.Contains(c, "| 6 | low") || !strings.Contains(c, "7 more findings: https://wp.example/audits/") || !strings.Contains(c, "### Audit: 12 findings") {
@@ -82,7 +82,6 @@ func TestStoredMaxFindingsOverTheOldTopStillRuns(t *testing.T) {
 			t.Errorf("%d: %s max %d shown %d, %d findings", n, got.Status, got.MaxFindings, got.Shown, len(got.Findings))
 		}
 	}
-	// A stored value out of range (250) still runs and is shown as stored.
 	a, err := ae.s.RequestAudit(ae.ctx, ae.admin, AuditInput{Project: ae.p.Key, Instructions: "Look.", MaxFindings: 30, Via: "web"})
 	if err != nil {
 		t.Fatal(err)
@@ -221,7 +220,6 @@ func TestAuditTaskListsTheShownAndCountsTheRest(t *testing.T) {
 	if !strings.Contains(text, "3 more findings: `wp audit show 7 --all` lists them; mark them too") {
 		t.Errorf("no line for the rest:\n%s", text)
 	}
-	// Exactly what is shown, or fewer: no line for more.
 	for _, n := range []int{5, 3} {
 		if text := auditTaskText(auditWithFindings(n, 5), "https://wp.test"); strings.Contains(text, "more finding") || !strings.Contains(text, fmt.Sprintf("### 7.%d ", n)) {
 			t.Errorf("%d findings, shown 5:\n%s", n, text)

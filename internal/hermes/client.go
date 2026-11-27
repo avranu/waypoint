@@ -59,8 +59,8 @@ var headerName = lazyre.New(`^[A-Za-z0-9][A-Za-z0-9-]{0,63}$`)
 type Client struct {
 	cfg  Config
 	base *url.URL
-	http *http.Client // short requests
-	long *http.Client // streams and file transfers: no overall timeout
+	http *http.Client
+	long *http.Client
 	jar  http.CookieJar
 
 	mu      sync.Mutex

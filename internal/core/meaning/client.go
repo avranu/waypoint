@@ -19,15 +19,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core/kernel"
 )
 
-// The meaning service (WP-1035, page WP-PL17): local models that read how
-// two short texts relate, for the goal judgements (goal_meaning.go). An
-// embedding model (e5) places texts so near meanings sit close; a natural
-// language inference model (DeBERTa-v3 NLI) says how likely one text
-// entails another. deploy/meaning runs them beside Waypoint; an admin can
-// point WAYPOINT_AI_MEANING_URL at any server with the same API. Nothing
-// is sent anywhere else, and without the service the judgements use the
-// scorers they still have.
-
 // Models is the meaning service; swappable in tests.
 type Models interface {
 	// Embed returns one unit vector per text, and the model's id@revision.
@@ -89,8 +80,6 @@ func (m *Client) Embed(ctx context.Context, texts []string) (string, [][]float32
 		model = res.Model
 		vecs := make([][]float32, len(part))
 		for _, d := range res.Data {
-			// Each text gets one vector: an index out of range or given
-			// twice would leave another text with none.
 			if d.Index < 0 || d.Index >= len(part) || len(d.Embedding) == 0 || vecs[d.Index] != nil {
 				return "", nil, errors.New("the meaning service returned a vector out of place")
 			}
@@ -140,13 +129,11 @@ func (m *Client) post(ctx context.Context, path string, body, out any) error {
 	judged := false
 	defer func() {
 		if !judged {
-			m.breaker.release(probe) // a probe hands its turn back whatever happens
+			m.breaker.release(probe)
 		}
 	}()
 	unanswered, err := m.send(ctx, path, body, out)
 	if unanswered && errors.Is(ctx.Err(), context.Canceled) {
-		// The caller cancelled (the server is stopping), which says nothing
-		// about the service. A deadline passing is a timeout, and counts.
 		return err
 	}
 	judged = true

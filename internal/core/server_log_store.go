@@ -18,26 +18,11 @@ import (
 	"time"
 )
 
-// The server log on disk (WP-893). The ring is memory: a deploy or restart
-// drops everything before it, so an overnight stall followed by a release
-// left nothing to read. Every record the ring keeps also goes to a file of
-// its day (UTC) in the log directory, as a JSON line, already redacted. A
-// day's file is gzipped once the day is over (a day of records is about
-// 8 MB, 1 MB gzipped), and files are kept DefaultLogDays, within
-// DefaultLogDirBytes in all. `wp server log` reads the ring first, then the
-// files for what is older than the ring's oldest record.
-//
-// The files hold what the ring held when each record was written: a secret
-// learnt later (the stored ones load after start, and every minute) is
-// blanked when a file is read, as the ring blanks it in its buffer. They
-// sit next to the database, which holds those secrets itself, readable by
-// the server's user only.
-
 // Bounds of the log directory.
 const (
 	DefaultLogDays     = 30
 	DefaultLogDirBytes = 512 << 20
-	logStoreQueue      = 8192 // records waiting for the writer; more are dropped
+	logStoreQueue      = 8192
 	logStoreFlush      = time.Second
 	// logLineMax is the longest line read back: far over a record's (its
 	// message and attributes are clipped, then escaped at most 6 to 1).
@@ -48,7 +33,7 @@ const (
 	logFilePrefix = "waypoint-"
 	logFileExt    = ".jsonl"
 	logDayLayout  = "2006-01-02"
-	logTmpExt     = ".tmp" // a gzip being written
+	logTmpExt     = ".tmp"
 )
 
 // logStore writes the ring's records to day files and reads them back.
@@ -61,14 +46,14 @@ type logStore struct {
 	done    chan struct{}
 	closing sync.Once
 
-	mu      sync.Mutex // the open file, against a reader's flush
+	mu      sync.Mutex
 	f       *os.File
 	w       *bufio.Writer
-	day     string       // the open file's day, kept after a failed write
-	first   time.Time    // the oldest record on disk, found when tidy changes the files
-	dropped atomic.Int64 // records the queue had no room for
-	pending int64        // records written to the buffer since its last good flush
-	err     error        // the last write error, said once on stderr
+	day     string
+	first   time.Time
+	dropped atomic.Int64
+	pending int64
+	err     error
 }
 
 // Persist keeps every record from now on in day files in dir too, keeping
@@ -135,8 +120,6 @@ func (st *logStore) run() {
 			if !ok {
 				st.mu.Lock()
 				if st.f == nil && st.dropped.Load() > 0 {
-					// A count waiting for a file (the last one failed): the last
-					// chance to write its marker.
 					day := st.day
 					if day == "" {
 						day = time.Now().UTC().Format(logDayLayout)
@@ -172,10 +155,10 @@ func (st *logStore) write(rec LogRecord) {
 		ended := st.day != "" && day != st.day
 		st.closeFile()
 		if ended {
-			st.tidy(day) // yesterday's file is over: gzip it, drop the oldest
+			st.tidy(day)
 		}
 		if !st.open(day) {
-			st.day = day // so the next record doesn't tidy again, and close knows the day
+			st.day = day
 			st.dropped.Add(1)
 			return
 		}
@@ -190,7 +173,7 @@ func (st *logStore) write(rec LogRecord) {
 	}
 	if _, err := st.w.Write(append(line, '\n')); err != nil {
 		st.fail(err)
-		st.pending++ // this one too
+		st.pending++
 		st.drop()
 		return
 	}
@@ -225,8 +208,6 @@ func (st *logStore) open(day string) bool {
 // buffer: a bufio.Writer keeps its first error, so the next record opens
 // the file afresh instead. The day stays, so it is the same file. Under mu.
 func (st *logStore) drop() {
-	// What the buffer held is gone: count it (an upper bound, as bufio may
-	// have written some of it out), so the next flush marks the gap.
 	st.dropped.Add(st.pending)
 	st.pending = 0
 	if st.f != nil {
@@ -245,8 +226,6 @@ func (st *logStore) flush() {
 			st.pending = 0
 		}
 	}
-	// Said in the file itself, where the gap is. With no file open the count
-	// waits for the next one rather than being lost.
 	if st.w != nil {
 		if n := st.dropped.Swap(0); n > 0 {
 			line, _ := json.Marshal(LogRecord{At: time.Now(), Level: slog.LevelWarn.String(), Msg: "log records dropped: the log file writer fell behind or failed", Attrs: "dropped=" + strconv.FormatInt(n, 10)})
@@ -269,7 +248,7 @@ func (st *logStore) closeFile() {
 		return
 	}
 	st.flush()
-	if st.f != nil { // a failed flush has closed it already
+	if st.f != nil {
 		if err := st.f.Close(); err != nil {
 			st.fail(err)
 		}
@@ -410,7 +389,6 @@ func gzipFile(path string) (int64, error) {
 		return 0, err
 	}
 	defer func() { _ = in.Close() }()
-	// A crash before the rename leaves tmp; the next tidy removes it.
 	tmp := path + ".gz" + logTmpExt
 	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600) // #nosec G304 -- likewise
 	if err != nil {
@@ -451,11 +429,9 @@ type storeMatch struct {
 // files of the days q covers. secrets are blanked in what it returns.
 func (st *logStore) read(q LogQuery, before time.Time, limit int, secrets []string) storeMatch {
 	st.mu.Lock()
-	st.flush() // today's file has what the writer holds
+	st.flush()
 	st.mu.Unlock()
 	var out storeMatch
-	// A record's file is the day it was written, which may be the day after
-	// its time (just before midnight): a day of slack each side.
 	from, to := "", ""
 	if !q.Since.IsZero() {
 		from = q.Since.UTC().AddDate(0, 0, -1).Format(logDayLayout)
@@ -497,7 +473,6 @@ func (st *logStore) read(q LogQuery, before time.Time, limit int, secrets []stri
 func (st *logStore) readFile(f logFile, fn func(LogRecord) bool) {
 	fh, err := os.Open(f.path) // #nosec G304 -- a file of the server's own log directory
 	if errors.Is(err, os.ErrNotExist) && !f.gz {
-		// The writer's rollover gzipped it after the listing.
 		f.gz = true
 		fh, err = os.Open(f.path + ".gz") // #nosec G304 -- likewise
 	}
@@ -518,8 +493,6 @@ func (st *logStore) readFile(f logFile, fn func(LogRecord) bool) {
 	var line []byte
 	long := false
 	for {
-		// A line longer than any record (garbage a crash left) is skipped
-		// to its end, not the rest of the file with it.
 		chunk, err := br.ReadSlice('\n')
 		if len(line)+len(chunk) > logLineMax {
 			long, line = true, line[:0]
@@ -533,7 +506,7 @@ func (st *logStore) readFile(f logFile, fn func(LogRecord) bool) {
 			return
 		}
 		line, long = line[:0], false
-		if err != nil { // the end, or a file that can't be read further
+		if err != nil {
 			return
 		}
 	}

@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-// wp usage sync: the Usage tab's data (WP-D20).
-
 var usageSyncCmd = &command{
 	name: "sync", args: "[--all] [--since 30d] [--dry-run] [--dir CLAUDE_CONFIG_DIR]",
 	summary: "upload what Claude Code sessions used, read from its transcripts",
@@ -60,7 +58,7 @@ func cmdUsageSync(c *cli, args []string) error {
 	}
 	if *hook {
 		usageHook(c, os.Stdin, *dir)
-		return nil // a hook must never fail the session
+		return nil
 	}
 	o := usageSyncOptions{All: *all, DryRun: *dry, Dir: *dir, Inventory: !*noInv, NoArchive: *noArchive, Out: c.out}
 	switch {

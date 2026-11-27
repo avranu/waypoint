@@ -2,10 +2,14 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 const goJSONPass = `{"Action":"run","Package":"x/a","Test":"TestA"}
@@ -230,7 +234,7 @@ func TestTestsumCapsAndTruncatesMessages(t *testing.T) {
 
 func TestTestsumRunsCommandThroughSlot(t *testing.T) {
 	slotEnv(t)
-	t.Chdir(t.TempDir()) // no repo: nothing recorded in this checkout's git dir
+	t.Chdir(t.TempDir())
 	var out, errb bytes.Buffer
 	cmd := `printf '{"Action":"pass","Package":"p","Test":"T","Elapsed":0}\n{"Action":"pass","Package":"p","Elapsed":1}\n'`
 	if code := run([]string{"testsum", "--", "sh", "-c", cmd}, &out, &errb); code != 0 || !strings.HasPrefix(out.String(), "PASS: 1 tests") {
@@ -240,20 +244,70 @@ func TestTestsumRunsCommandThroughSlot(t *testing.T) {
 	if code := run([]string{"testsum", "--", "sh", "-c", "echo boom; exit 3"}, &out, &errb); code != 1 || !strings.Contains(out.String(), "exited 3") {
 		t.Errorf("unrecognized failure: %d %q", code, out.String())
 	}
-	// Tests passed, then a type check failed: say both, exit 1.
 	out.Reset()
 	cmd = `printf '{"Action":"pass","Package":"p","Test":"T","Elapsed":0}\n{"Action":"pass","Package":"p","Elapsed":1}\nmypy: 2 errors\n'; exit 2`
 	if code := run([]string{"testsum", "--", "sh", "-c", cmd}, &out, &errb); code != 1 || !strings.HasPrefix(out.String(), "PASS: 1 tests") ||
 		!strings.Contains(out.String(), "but the command exited 2") || !strings.Contains(out.String(), "mypy: 2 errors") {
 		t.Errorf("pass then failure: %d %q", code, out.String())
 	}
-	// The command without -- (WP-1080): flags before it are testsum's, and
-	// everything from it on, flags and -- included, is the command's.
 	out.Reset()
 	errb.Reset()
 	cmd = `printf '{"Action":"pass","Package":"p","Test":"T","Elapsed":0}\n{"Action":"pass","Package":"p","Elapsed":1}\n'; [ "$*" = "--format x -- -y" ] || exit 9`
 	if code := run([]string{"testsum", "--format", "go", "sh", "-c", cmd, "sh", "--format", "x", "--", "-y"}, &out, &errb); code != 0 || !strings.HasPrefix(out.String(), "PASS: 1 tests") {
 		t.Errorf("positional: %d %q %q", code, out.String(), errb.String())
+	}
+}
+
+// A failure with more output than the tail shows keeps all of it in a file
+// the message names; with no repo here that is a temp file (WP-1812).
+func TestTestsumKeepsLongFailedOutput(t *testing.T) {
+	slotEnv(t)
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Chdir(t.TempDir())
+	pass := `printf '{"Action":"pass","Package":"p","Test":"T","Elapsed":0}\n{"Action":"pass","Package":"p","Elapsed":1}\n'; `
+	fail := `printf '{"Action":"fail","Package":"p","Test":"T","Elapsed":0}\n{"Action":"fail","Package":"p","Elapsed":1}\n'; `
+	for name, cmd := range map[string]string{
+		"unrecognized": "echo first; seq 40; exit 3",
+		"passed, then": pass + "echo first; seq 40; exit 3",
+		"failed, and":  fail + "echo first; seq 40; exit 3",
+	} {
+		var out, errb bytes.Buffer
+		if code := run([]string{"testsum", "--", "sh", "-c", cmd}, &out, &errb); code != 1 {
+			t.Fatalf("%s: exit %d %q", name, code, out.String())
+		}
+		m := regexp.MustCompile(`All (\d+) lines of its output \(kept until the next long failure here\): (.+)\n`).FindStringSubmatch(out.String())
+		if m == nil {
+			t.Fatalf("%s: no pointer to the output:\n%s", name, out.String())
+		}
+		kept, err := os.ReadFile(m[2])
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if n := strings.Count(string(kept), "\n"); strconv.Itoa(n) != m[1] || !strings.Contains(string(kept), "first\n1\n2\n") || !strings.HasSuffix(string(kept), "\n40\n") {
+			t.Errorf("%s: pointer says %s lines; file has %d:\n%s", name, m[1], n, kept)
+		}
+		_ = os.Remove(m[2])
+	}
+}
+
+func TestKeptOutputSaysWhenItCannotSave(t *testing.T) {
+	data := []byte(strings.Repeat("x\n", 30))
+	blocker := filepath.Join(t.TempDir(), "a-file")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := keptAt(filepath.Join(blocker, "f.log"), "later", data, 30)
+	if !strings.HasPrefix(got, "Its 30 lines of output couldn't be saved: ") {
+		t.Errorf("write failure: %q", got)
+	}
+	// A credential above the tail isn't kept in the file.
+	p := filepath.Join(t.TempDir(), "f.log")
+	keptAt(p, "later", []byte("fetch https://bot:hunter2secret@git.example/x\n"+string(data)), 31)
+	if kept, err := os.ReadFile(p); err != nil || strings.Contains(string(kept), "hunter2secret") || !strings.Contains(string(kept), "https://bot:***@git.example/x\n") {
+		t.Errorf("kept file: %v\n%s", err, kept)
+	}
+	if got := keptOutput(data, 30); got != "" {
+		t.Errorf("output no longer than shown: %q", got)
 	}
 }
 
@@ -311,5 +365,515 @@ func TestTestsumBareWordIsCommand(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := run([]string{"testsum", "run-tests.sh"}, &out, &errb); code == 0 || !strings.Contains(errb.String(), "wp testsum -- sh run-tests.sh") {
 		t.Errorf("unparsed file: %d %q %q", code, out.String(), errb.String())
+	}
+}
+
+func TestTestsumCutOutputIsKept(t *testing.T) {
+	t.Setenv("WAYPOINT_TESTOUT_DIR", t.TempDir())
+	var b strings.Builder
+	for i := 0; i < 30; i++ {
+		name := fmt.Sprintf("T%02d", i)
+		b.WriteString(`{"Action":"output","Package":"p","Test":"` + name + `","Output":"f_test.go:1: boom ` + name + `\n"}` + "\n")
+		b.WriteString(`{"Action":"fail","Package":"p","Test":"` + name + `"}` + "\n")
+	}
+	data := []byte(b.String())
+	res, _ := parseGoJSON(data)
+	got := res.renderSaving(data)
+	if n := strings.Count(got, "\n"); n > testsumMaxLines {
+		t.Errorf("%d lines, cap %d", n, testsumMaxLines)
+	}
+	if strings.Contains(got, "run the tests directly") {
+		t.Errorf("still tells the agent to run the tests outside the slot:\n%s", got)
+	}
+	m := regexp.MustCompile(`Full output: (\S+) \((\d+) lines\)\n$`).FindStringSubmatch(got)
+	if m == nil {
+		t.Fatalf("no path on the last line:\n%s", got)
+	}
+	body, err := os.ReadFile(m[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "boom T29") || strings.Contains(string(body), `"Action"`) {
+		t.Errorf("file is not the plain output of every test:\n%s", body)
+	}
+	if fi, _ := os.Stat(m[1]); fi.Mode().Perm() != 0o600 {
+		t.Errorf("mode %v, want 0600", fi.Mode().Perm())
+	}
+
+	short := &testResult{Passed: 3, Seconds: 1}
+	if out := short.renderSaving([]byte("x\n")); strings.Contains(out, "Full output") {
+		t.Errorf("a summary that was not cut names a file:\n%s", out)
+	}
+	if ents, _ := os.ReadDir(filepath.Dir(m[1])); len(ents) != 1 {
+		t.Errorf("%d files, want 1: an uncut summary must not save", len(ents))
+	}
+}
+
+// The count bound leaves files another session was only just told about.
+func TestTestOutputKeepsFreshFilesBeyondTheCount(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WAYPOINT_TESTOUT_DIR", dir)
+	for i := 0; i < testOutKeep+5; i++ {
+		if _, _, ok := saveTestOutput([]byte("y\n")); !ok {
+			t.Fatal("not saved")
+		}
+	}
+	if ents, _ := os.ReadDir(dir); len(ents) != testOutKeep+5 {
+		t.Errorf("%d fresh files kept, want %d", len(ents), testOutKeep+5)
+	}
+	pruneTestOutput(dir, time.Now().Add(testOutFresh+time.Minute))
+	if ents, _ := os.ReadDir(dir); len(ents) != testOutKeep {
+		t.Errorf("%d files kept once no longer fresh, want %d", len(ents), testOutKeep)
+	}
+}
+
+func TestTestOutputFilesAreBounded(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WAYPOINT_TESTOUT_DIR", dir)
+	now := time.Now()
+	for i := 0; i < testOutKeep+5; i++ {
+		p := filepath.Join(dir, fmt.Sprintf("testsum-%02d.txt", i))
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		mod := now.Add(-testOutFresh - time.Duration(i+1)*time.Minute)
+		if err := os.Chtimes(p, mod, mod); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := filepath.Join(dir, "testsum-old.txt")
+	_ = os.WriteFile(old, []byte("x"), 0o600)
+	_ = os.Chtimes(old, now.Add(-2*testOutAge), now.Add(-2*testOutAge))
+	other := filepath.Join(dir, "notes.txt")
+	_ = os.WriteFile(other, []byte("x"), 0o600)
+	if _, _, ok := saveTestOutput([]byte("y\n")); !ok {
+		t.Fatal("not saved")
+	}
+	ents, _ := os.ReadDir(dir)
+	if len(ents) != testOutKeep+1 { // the newest testOutKeep, plus a file that isn't ours
+		t.Errorf("%d files kept, want %d", len(ents), testOutKeep+1)
+	}
+	if _, err := os.Stat(old); err == nil {
+		t.Error("a file past the age limit was kept")
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Error("a file that isn't ours was removed")
+	}
+}
+
+// keptRead writes data through keptAt and reads the file back.
+func keptRead(t *testing.T, data string) (pointer, file string) {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "f.log")
+	n := strings.Count(strings.TrimRight(data, "\n"), "\n") + 1
+	pointer = keptAt(p, "later", []byte(data), n)
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pointer, string(b)
+}
+
+func TestKeptRedactionKeepsEveryLine(t *testing.T) {
+	seq := ""
+	for i := 1; i <= 40; i++ {
+		seq += strconv.Itoa(i) + "\n"
+	}
+	tok := "ghp_" + strings.Repeat("a1B2c3", 5)
+	full := strings.Repeat("MIIEabc+/9", 6) + "ABCD"
+	for name, c := range map[string]struct{ in, want string }{
+		"header without an end": {
+			"x\n-----BEGIN RSA PRIVATE KEY-----\n" + seq + "ok\nPASS\nthe finding\n",
+			"x\n-----BEGIN RSA PRIVATE KEY-----\n" + seq + "ok\nPASS\nthe finding\n",
+		},
+		"complete key": {
+			"before\n-----BEGIN RSA PRIVATE KEY-----\n" + full + "\n" + full + "\nzz==\n-----END RSA PRIVATE KEY-----\nafter\n",
+			"before\n-----BEGIN RSA PRIVATE KEY-----\n***\n***\n***\n-----END RSA PRIVATE KEY-----\nafter\n",
+		},
+		"key cut off, then output": {
+			"-----BEGIN PRIVATE KEY-----\n" + full + "\nzz==\nok\n",
+			"-----BEGIN PRIVATE KEY-----\n***\n***\nok\n",
+		},
+		"CRLF key": {
+			"-----BEGIN PRIVATE KEY-----\r\n" + full + "\r\n" + full + "\r\nzz==\r\n-----END PRIVATE KEY-----\r\nafter\r\n",
+			"-----BEGIN PRIVATE KEY-----\r\n***\r\n***\r\n***\r\n-----END PRIVATE KEY-----\r\nafter\r\n",
+		},
+		"encrypted key headers": {
+			"-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,ABCD\n\n" + full + "\n-----END RSA PRIVATE KEY-----\nafter\n",
+			"-----BEGIN RSA PRIVATE KEY-----\n***\n***\n***\n***\n-----END RSA PRIVATE KEY-----\nafter\n",
+		},
+		"value on the next line": {
+			"api_token:\nabcdefgh12345678\nafter\n",
+			"api_token:\n***\nafter\n",
+		},
+		"credentials": {
+			"a\ntoken=abcdef123456\n" + tok + "\nfetch https://bot:hunter2secret@git.example/x\n",
+			"a\ntoken=***\n***\nfetch https://bot:***@git.example/x\n",
+		},
+		"plain lines": {strings.Repeat("x\n", 30), strings.Repeat("x\n", 30)},
+	} {
+		_, got := keptRead(t, c.in)
+		if got != c.want {
+			t.Errorf("%s:\n got %q\nwant %q", name, got, c.want)
+		}
+		keptInvariant(t, name, c.in, got)
+	}
+}
+
+// keptInvariant: redaction never changes the number of lines, and a line
+// that ended in \r still does.
+func keptInvariant(t *testing.T, name, in, got string) {
+	t.Helper()
+	if strings.Count(got, "\n") != strings.Count(in, "\n") {
+		t.Errorf("%s: %d lines in, %d kept", name, strings.Count(in, "\n"), strings.Count(got, "\n"))
+		return
+	}
+	a, b := strings.Split(in, "\n"), strings.Split(got, "\n")
+	for i := range a {
+		if strings.HasSuffix(a[i], "\r") && !strings.HasSuffix(b[i], "\r") {
+			t.Errorf("%s: line %d lost its \\r: %q", name, i+1, b[i])
+		}
+	}
+}
+
+// redactKept works on the whole text like redact, and keeps every line and
+// everything that is not credential (WP-1812).
+func TestKeptRedactionWholeText(t *testing.T) {
+	numbered := func(n int) string {
+		var b strings.Builder
+		for i := 1; i <= n; i++ {
+			fmt.Fprintf(&b, "line %d\n", i)
+		}
+		return b.String()
+	}
+	b64 := func(n int) string { return strings.Repeat("aB3/", n/4+1)[:n] }
+	body := b64(64)
+	begin, end := "-----BEGIN RSA PRIVATE KEY-----", "-----END RSA PRIVATE KEY-----"
+	for name, c := range map[string]struct {
+		in      string
+		absent  []string
+		present []string
+		want    string // exact output, when set
+	}{
+		"terminated, first body line indented": {in: begin + "\n " + body + "\n" + body + "\n" + end + "\nafter\n", absent: []string{body}, present: []string{begin, end, "after"}},
+		"terminated, trailing space":           {in: begin + "\n" + body + " \n" + body + "\n" + end + "\nafter\n", absent: []string{body}, present: []string{begin, end, "after"}},
+		"terminated, diff prefixes":            {in: "- " + begin + "\n- " + body + "\n- " + body + "\n- " + end + "\nafter\n", absent: []string{body}, present: []string{"- " + begin, "- " + end, "after"}},
+		"terminated, log prefix":               {in: begin + "\n12:00 " + body + "\n" + end + "\n", absent: []string{body}, present: []string{begin, end}},
+		"one line":                             {in: "a " + begin + "SECRETSECRET" + end + " b\n", want: "a " + begin + "***" + end + " b\n"},
+		"unterminated, indented first line":    {in: begin + "\n  " + body + "\n" + body + "\n" + body + "\nall done\n", absent: []string{body}, present: []string{begin, "all done"}},
+		"basic auth on the next line":          {in: "Authorization: Basic\ndXNlcjpwYXNzd29yZA==\nnext\n", absent: []string{"dXNlcjpwYXNzd29yZA=="}, present: []string{"next"}},
+		"bearer on the next line":              {in: "Authorization: Bearer\nabcdef123456\nnext\n", absent: []string{"abcdef123456"}, present: []string{"next"}},
+		"flag value on the next line":          {in: "--password\nhunter2hunter2\nnext\n", absent: []string{"hunter2hunter2"}, present: []string{"next"}},
+		"blank line between name and value":    {in: "password:\n\nhunter22222\nafter\n", absent: []string{"hunter22222"}, present: []string{"after"}},
+		"bare begin then a panic": {
+			in:   begin + "\npanic: runtime error: index out of range\n\nError: boom\nok\n12\nPASS\n",
+			want: begin + "\npanic: runtime error: index out of range\n\nError: boom\nok\n12\nPASS\n",
+		},
+		"unterminated with headers": {
+			in:      begin + "\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,ABCDEF\n\n" + body + "\n" + b64(20) + "\nafter\n",
+			absent:  []string{"Proc-Type", "DEK-Info", body, b64(20) + "\n"},
+			present: []string{begin, "after"},
+		},
+		"39 characters stays after a bare begin": {in: begin + "\n" + b64(39) + "\nafter\n", want: begin + "\n" + b64(39) + "\nafter\n"},
+		"40 characters is blanked after a begin": {in: begin + "\n" + b64(40) + "\nall done\n", want: begin + "\n***\nall done\n"},
+		"CRLF key": {
+			in:   begin + "\r\n" + body + "\r\n " + body + "\r\n" + b64(10) + "\r\n" + end + "\r\nafter\r\n",
+			want: begin + "\r\n***\r\n***\r\n***\r\n" + end + "\r\nafter\r\n",
+		},
+		"CRLF unterminated key": {
+			in:   begin + "\r\n" + body + "\r\n" + b64(10) + "\r\nafter\r\n",
+			want: begin + "\r\n***\r\n***\r\nafter\r\n",
+		},
+		"unterminated, body on the begin line":        {in: "key: \"" + begin + `\n` + body + `\n` + body + "\nall done\n", absent: []string{body}, present: []string{begin, "all done"}},
+		"terminated, body on the begin and end lines": {in: begin + body + "\n" + body + end + "\nafter\n", want: begin + "***\n***" + end + "\nafter\n"},
+		"name alone before a key":                     {in: "api_key:\n" + begin + "\n" + body + "\n" + end + "\n", want: "api_key:\n" + begin + "\n***\n" + end + "\n"},
+		"unterminated, log prefixes": {
+			in:   begin + "\n12:00 " + body + "\n12:00 " + body + "\n12:00 zz9=\n12:01 all done\n",
+			want: begin + "\n***\n***\n***\n12:01 all done\n",
+		},
+		"value glued to a begin line":      {in: "password=hunter2hunter2" + begin + "\n" + body + "\n" + end + "\n", absent: []string{"hunter2hunter2", body}, present: []string{begin, end}},
+		"base64 value glued to a begin":    {in: "password=dGVzdA==" + begin + "\n" + body + "\n" + end + "\n", absent: []string{"dGVzdA==", body}, present: []string{begin, end}},
+		"value with = glued to a begin":    {in: "secret=hunter2=" + begin + "\n" + body + "\n" + end + "\n", absent: []string{"hunter2", body}, present: []string{begin, end}},
+		"CRLF credential on the next line": {in: "Authorization: Basic\r\nSECRETSECRET\r\nnext\r\n", absent: []string{"SECRETSECRET"}, present: []string{"next"}},
+		"CRLF flag value":                  {in: "--password\r\nhunter2hunter2\r\nnext\r\n", want: "--password\r\n***\r\nnext\r\n"},
+		"diff plus lines with headers": {
+			in:      begin + "\n+Proc-Type: 4,ENCRYPTED\n+DEK-Info: AES-128-CBC,00112233445566778899AABBCCDDEEFF\n+\n+" + body + "\nrest\n",
+			absent:  []string{"00112233445566778899AABBCCDDEEFF", body},
+			present: []string{begin, "rest"},
+		},
+		"log prefix, short last line without =": {
+			in:      begin + "\n12:00 " + body + "\n12:00 abcdEFGH1234\nrest\n",
+			absent:  []string{"abcdEFGH1234", body},
+			present: []string{begin, "rest"},
+		},
+		"log prefixed headers": {
+			in:      begin + "\n12:00 Proc-Type: 4,ENCRYPTED\n12:00 DEK-Info: AES-128-CBC,00112233445566778899AABBCCDDEEFF\n\n12:00 " + body + "\nrest\n",
+			absent:  []string{"00112233445566778899AABBCCDDEEFF", body},
+			present: []string{begin, "rest"},
+		},
+		"blank line before the body": {
+			in:      begin + "\n\n" + body + "\n" + body + "\nrest\n",
+			absent:  []string{body},
+			present: []string{begin, "rest"},
+		},
+		"JSON array of lines": {
+			in:      begin + "\n\"" + body + "\",\n\"" + body + "\",\n\"abcd12EF\"\nrest\n",
+			absent:  []string{body, "abcd12EF"},
+			present: []string{begin, "rest"},
+		},
+		"commit SHA after a bare begin": {
+			in:   begin + "\ncommit " + strings.Repeat("3f2a", 10) + "\n" + strings.Repeat("3f2a", 10) + "\nPASS\n",
+			want: begin + "\ncommit " + strings.Repeat("3f2a", 10) + "\n" + strings.Repeat("3f2a", 10) + "\nPASS\n",
+		},
+		"a word after a bare begin": {in: begin + "\nPASS\nrest\n", want: begin + "\nPASS\nrest\n"},
+		"a begin named in a message": {
+			in:      "want a line: " + begin + "\nlint: finding X at a.go:3\na\nb\nc\nd\ne\n" + begin + "\n" + body + "\n" + end + "\nafter\n",
+			absent:  []string{body},
+			present: []string{"lint: finding X at a.go:3", "after"},
+		},
+		"begin with no end for 450 lines": {
+			in:      begin + "\n" + numbered(450) + end + "\n",
+			present: []string{"line 1\n", "line 450\n"},
+		},
+		"log prefix and diff mark on headers": {
+			in:   begin + "\n12:00 +Proc-Type: 4,ENCRYPTED\n12:00 +" + body + "\nrest\n",
+			want: begin + "\n***\n***\nrest\n",
+		},
+		"end at the last line searched": {
+			in:   begin + "\n" + numbered(400-1) + end + "\n",
+			want: begin + "\n" + strings.Repeat("***\n", 400-1) + end + "\n",
+		},
+		"end one line too far": {
+			in:   begin + "\n" + numbered(400) + end + "\n",
+			want: begin + "\n" + numbered(400) + end + "\n",
+		},
+		"all upper-case line after a bare begin":        {in: begin + "\n" + strings.Repeat("A", 44) + "\nrest\n", want: begin + "\n" + strings.Repeat("A", 44) + "\nrest\n"},
+		"all lower-case line after a bare begin":        {in: begin + "\n" + strings.Repeat("a", 44) + "\nrest\n", want: begin + "\n" + strings.Repeat("a", 44) + "\nrest\n"},
+		"all digits line after a bare begin":            {in: begin + "\n" + strings.Repeat("7", 44) + "\nrest\n", want: begin + "\n" + strings.Repeat("7", 44) + "\nrest\n"},
+		"mixed case without a digit after a bare begin": {in: begin + "\n" + strings.Repeat("aBcD", 11) + "\nrest\n", want: begin + "\n" + strings.Repeat("aBcD", 11) + "\nrest\n"},
+		"PGP block": {
+			in:      "-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v2\n\n" + body + "\n" + body + "\n=AbCd\n-----END PGP PRIVATE KEY BLOCK-----\nafter\n",
+			absent:  []string{body, "=AbCd", "GnuPG"},
+			present: []string{"-----BEGIN PGP PRIVATE KEY BLOCK-----", "-----END PGP PRIVATE KEY BLOCK-----", "after"},
+		},
+		"PGP block without an end": {
+			in:      "-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v2\n\n" + body + "\n" + body + "\n=AbCd\nafter\n",
+			absent:  []string{body, "=AbCd", "GnuPG"},
+			present: []string{"-----BEGIN PGP PRIVATE KEY BLOCK-----", "after"},
+		},
+		"a PGP end line inside another key": {
+			in:   begin + "\n" + body + "\n-----END PGP PRIVATE KEY BLOCK-----\n" + body + "\n" + end + "\nafter\n",
+			want: begin + "\n***\n***\n***\n" + end + "\nafter\n",
+		},
+		"unterminated, a field after the first body line": {
+			in:   begin + "\n12:00 " + body + " req=1\n12:00 " + body + " req=1\n12:00 " + body + "\nall done\n",
+			want: begin + "\n***\n***\n***\nall done\n",
+		},
+		"digest header with CRLF": {
+			in:      "Authorization: Digest username=\"u\", response=\"x\"\r\nnext\r\n",
+			absent:  []string{`response="x"`},
+			present: []string{"\r\nnext\r\n"},
+		},
+	} {
+		_, got := keptRead(t, c.in)
+		if c.want != "" && got != c.want {
+			t.Errorf("%s:\n got %q\nwant %q", name, got, c.want)
+		}
+		for _, a := range c.absent {
+			if strings.Contains(got, a) {
+				t.Errorf("%s: %q survives:\n%s", name, a, got)
+			}
+		}
+		for _, p := range c.present {
+			if !strings.Contains(got, p) {
+				t.Errorf("%s: %q was lost:\n%s", name, p, got)
+			}
+		}
+		keptInvariant(t, name, c.in, got)
+	}
+}
+
+// Outside a repo every long failure names one file, overwritten each time,
+// so they don't pile up in the temp directory.
+func TestKeptOutputOutsideRepoUsesOneFile(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Chdir(t.TempDir())
+	one := keptOutput([]byte(strings.Repeat("first\n", 30)), 20)
+	two := keptOutput([]byte(strings.Repeat("second\n", 30)), 20)
+	re := regexp.MustCompile(`: (.+)\n`)
+	a, b := re.FindStringSubmatch(one), re.FindStringSubmatch(two)
+	if a == nil || b == nil || a[1] != b[1] {
+		t.Fatalf("paths differ: %q %q", one, two)
+	}
+	if want := filepath.Join(os.TempDir(), fmt.Sprintf("wp-failed-output-%d.log", os.Getuid())); a[1] != want {
+		t.Errorf("path %q, want %q", a[1], want)
+	}
+	if got, _ := os.ReadFile(b[1]); string(got) != strings.Repeat("second\n", 30) {
+		t.Errorf("file holds %q", got)
+	}
+}
+
+// Failing tests with a clean exit have nothing else to show: no file.
+func TestTestsumNoKeptOutputOnCleanExit(t *testing.T) {
+	slotEnv(t)
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Chdir(t.TempDir())
+	cmd := `printf '{"Action":"fail","Package":"p","Test":"T","Elapsed":0}\n{"Action":"fail","Package":"p","Elapsed":1}\n'; seq 40`
+	var out, errb bytes.Buffer
+	if code := run([]string{"testsum", "--", "sh", "-c", cmd}, &out, &errb); code != 1 {
+		t.Fatalf("exit %d %q", code, out.String())
+	}
+	if strings.Contains(out.String(), "lines of its output") {
+		t.Errorf("a pointer for a command that exited 0:\n%s", out.String())
+	}
+}
+
+// The count is the file's lines, trailing blank lines included, while the
+// threshold is about the lines that hold something.
+func TestKeptOutputCountsTheFilesLines(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Chdir(t.TempDir())
+	got := keptOutput([]byte(strings.Repeat("x\n", 31)+"\n\n"), 20)
+	m := regexp.MustCompile(`All (\d+) lines of its output \(kept until the next long failure here\): (.+)\n`).FindStringSubmatch(got)
+	if m == nil || m[1] != "33" {
+		t.Fatalf("pointer: %q", got)
+	}
+	if b, _ := os.ReadFile(m[2]); strings.Count(string(b), "\n") != 33 {
+		t.Errorf("file has %d lines", strings.Count(string(b), "\n"))
+	}
+	// 20 lines and blank ones after them: all of it was shown.
+	if got := keptOutput([]byte(strings.Repeat("x\n", 20)+"\n\n"), 20); got != "" {
+		t.Errorf("blank lines past the shown ones: %q", got)
+	}
+}
+
+// wp testsum runs go test as go test -json; the kept file and the lines shown
+// are the text of the output, not its events.
+func TestKeptOutputOfGoTestJSONIsPlain(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Chdir(t.TempDir())
+	var b strings.Builder
+	b.WriteString("# m/p [build failed]\n")
+	for i := 1; i <= 25; i++ {
+		fmt.Fprintf(&b, `{"Action":"output","Package":"m/p","Test":"T","Output":"line %d\n"}`+"\n", i)
+		b.WriteString(`{"Action":"run","Package":"m/p","Test":"T"}` + "\n")
+	}
+	b.WriteString(`{"Action":"fail","Package":"m/p","Elapsed":0}` + "\n")
+	got := failedTail([]byte(b.String()), 20)
+	m := regexp.MustCompile(`All (\d+) lines of its output \(kept until the next long failure here\): (.+)\n`).FindStringSubmatch(got)
+	if m == nil {
+		t.Fatalf("no pointer:\n%s", got)
+	}
+	if strings.Contains(got, `{"Action"`) || !strings.Contains(got, "line 25\n") {
+		t.Errorf("tail is not plain text:\n%s", got)
+	}
+	kept, _ := os.ReadFile(m[2])
+	if strings.Contains(string(kept), `{"Action"`) || !strings.HasPrefix(string(kept), "# m/p [build failed]\nline 1\nline 2\n") || strconv.Itoa(strings.Count(string(kept), "\n")) != m[1] {
+		t.Errorf("pointer says %s lines; file has %d:\n%s", m[1], strings.Count(string(kept), "\n"), kept)
+	}
+	// Output that holds no events is as it was.
+	if p := plainOutput([]byte("a\n{\"x\":1}\nb\n")); string(p) != "a\n{\"x\":1}\nb\n" {
+		t.Errorf("plain output changed: %q", p)
+	}
+}
+
+// A pointer to the whole output is for output longer than the 20 lines
+// shown: 20 lines are all shown, 21 are not.
+func TestTestsumPointerOnlyPastTheShownLines(t *testing.T) {
+	slotEnv(t)
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Chdir(t.TempDir())
+	for n, want := range map[int]bool{20: false, 21: true} {
+		var out, errb bytes.Buffer
+		if code := run([]string{"testsum", "--", "sh", "-c", "seq " + strconv.Itoa(n) + "; exit 3"}, &out, &errb); code != 1 {
+			t.Fatalf("%d lines: exit %d %q", n, code, out.String())
+		}
+		if got := strings.Contains(out.String(), "lines of its output"); got != want {
+			t.Errorf("%d lines: pointer %v, want %v:\n%s", n, got, want, out.String())
+		}
+	}
+}
+
+// The kept file holds a log line that only looks like a go test event, and
+// output text that looks like one (WP-1812).
+func TestPlainOutputKeepsLookalikeLines(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Chdir(t.TempDir())
+	odd := `{"Action":"fail","Message":"nil pointer in parser"}`
+	got := keptOutput([]byte(odd+"\n"+strings.Repeat("x\n", 39)), 20)
+	m := regexp.MustCompile(`All (\d+) lines of its output \(kept until the next long failure here\): (.+)\n`).FindStringSubmatch(got)
+	if m == nil || m[1] != "40" {
+		t.Fatalf("pointer: %q", got)
+	}
+	if b, _ := os.ReadFile(m[2]); !strings.Contains(string(b), "nil pointer") {
+		t.Errorf("the line was dropped:\n%s", b)
+	}
+	// Output that is itself JSON stays through failedTail's one pass.
+	var b strings.Builder
+	for i := 0; i < 39; i++ {
+		fmt.Fprintf(&b, `{"Action":"output","Package":"p","Test":"T","Output":"o%d\n"}`+"\n", i)
+	}
+	b.WriteString(`{"Action":"output","Package":"p","Test":"T","Output":"{\"Action\":\"fail\",\"Package\":\"p\"}\n"}` + "\n")
+	got = failedTail([]byte(b.String()), 20)
+	m = regexp.MustCompile(`All (\d+) lines of its output \(kept until the next long failure here\): (.+)\n`).FindStringSubmatch(got)
+	if m == nil {
+		t.Fatalf("no pointer:\n%s", got)
+	}
+	if k, _ := os.ReadFile(m[2]); !strings.Contains(string(k), `{"Action":"fail","Package":"p"}`+"\n") {
+		t.Errorf("the output text was dropped:\n%s", k)
+	}
+}
+
+// Failed tests and a failing command: nothing of the output was shown, so
+// all of it is kept however short.
+func TestTestsumKeepsShortOutputWithFailedTests(t *testing.T) {
+	slotEnv(t)
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Chdir(t.TempDir())
+	cmd := `printf '{"Action":"fail","Package":"p","Test":"T","Elapsed":0}\n{"Action":"fail","Package":"p","Elapsed":1}\n'; echo LINT FAILED; exit 2`
+	for _, args := range [][]string{{"testsum"}, {"testsum", "--repeat", "2"}} {
+		var out, errb bytes.Buffer
+		if code := run(append(args, "--", "sh", "-c", cmd), &out, &errb); code != 1 {
+			t.Fatalf("%v: exit %d %q %q", args, code, out.String(), errb.String())
+		}
+		m := regexp.MustCompile(`All (\d+) lines of its output \(kept until the next long failure here\): (.+)\n`).FindStringSubmatch(out.String())
+		if m == nil {
+			t.Fatalf("%v: no pointer:\n%s", args, out.String())
+		}
+		if k, _ := os.ReadFile(m[2]); !strings.Contains(string(k), "LINT FAILED") {
+			t.Errorf("%v: kept file:\n%s", args, k)
+		}
+	}
+}
+
+func TestKeptRedactionOfGitHubFineGrainedToken(t *testing.T) {
+	tok := "github_pat_" + strings.Repeat("aB3_", 21)[:82]
+	got := redactKept("a\nFAIL fetch with " + tok + " now\nb\n")
+	if strings.Contains(got, "github_pat_") || got != "a\nFAIL fetch with *** now\nb\n" {
+		t.Errorf("%q", got)
+	}
+}
+
+func TestKeptOutputOfEmptyEventsIsEmpty(t *testing.T) {
+	if got := keptOutput([]byte(`{"Action":"fail","Package":"p"}`+"\n"), 0); got != "" {
+		t.Errorf("%q", got)
+	}
+	if got := keptPlain(nil, 0); got != "" {
+		t.Errorf("%q", got)
+	}
+}
+
+func TestFailedTailIsRedacted(t *testing.T) {
+	t.Chdir(t.TempDir()) // not a checkout, so the kept file goes to TMPDIR
+	t.Setenv("TMPDIR", t.TempDir())
+	got := failedTail([]byte("a\nb\npassword=hunter2secret\nc\n"), 3)
+	if strings.Contains(got, "hunter2secret") {
+		t.Errorf("secret in the printed tail:\n%s", got)
+	}
+	body := strings.Repeat("aB3/", 16)
+	in := "-----BEGIN RSA PRIVATE KEY-----\n" + body + "\n" + body + "\n" + body + "\n-----END RSA PRIVATE KEY-----\nafter\n"
+	got = failedTail([]byte(in), 3)
+	if strings.Contains(got, body) {
+		t.Errorf("key body in the printed tail:\n%s", got)
 	}
 }

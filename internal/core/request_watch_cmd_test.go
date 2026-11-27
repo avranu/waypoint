@@ -23,7 +23,6 @@ func TestCommandPollClosesTheRequest(t *testing.T) {
 	lookupRunnerJob = func(ctx context.Context, s *Service, id int64) (*RunnerJob, error) {
 		return &RunnerJob{ID: id, State: "done", ExitCode: &exit}, nil
 	}
-	// The person adds the poll.
 	if _, err := be.s.AddRequestWatch(be.ctx, be.admin, r.Ref, WatchInput{Kind: WatchCmdOK, Target: "test -f /tmp/seeded", Every: 300}); err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +30,7 @@ func TestCommandPollClosesTheRequest(t *testing.T) {
 	if len(queued) != 1 || queued[0].Source != "request_watch" || queued[0].Label != "m1" {
 		t.Fatalf("jobs = %+v", queued)
 	}
-	be.s.CheckRequestWatches(be.ctx) // one in flight: not started again
+	be.s.CheckRequestWatches(be.ctx)
 	if len(queued) != 1 {
 		t.Fatalf("a second poll started: %d", len(queued))
 	}

@@ -12,27 +12,9 @@ import (
 	"time"
 )
 
-// Text from outside on pull requests (WP-281, WP-ADR14). What a forge user
-// who isn't a Waypoint person writes on a pull request reaches no agent,
-// automation or model until a person has read and approved it:
-//
-//   - a pull request from outside (its title, description and code) is
-//     recorded with outside = 1: agents can't list or read it (prVisible,
-//     prAuthority), automation steps can't take it (StepCtx.PullRequest),
-//     bots don't review or answer on it, it sets off no event, and its
-//     title is blank until a person approves it. A new head or title from
-//     its author waits again;
-//   - a review, review comment or conversation comment from outside is
-//     dropped where Waypoint reads the forge (screenThreads, screenNotes),
-//     before anything else sees it, and waits in outside_pr_text;
-//   - their history keeps that they acted, not what they wrote.
-//
-// Waypoint's own accounts (the token's login is a person's; the bot
-// account's text is Waypoint's) aren't outside.
-
 // Kinds of outside text on a pull request.
 const (
-	OutsidePull = "pull" // the pull request: title, description and code at a head
+	OutsidePull = "pull"
 )
 
 // Outside text on a pull request, as a person decides on it.
@@ -69,7 +51,7 @@ func textHash(s string) string {
 type prVoice struct {
 	s   *Service
 	f   *Forge
-	bot string // Waypoint's bot account: what it posts, Waypoint wrote
+	bot string
 }
 
 func (s *Service) prVoice(ctx context.Context, f *Forge) *prVoice {
@@ -116,7 +98,6 @@ func (v *prVoice) authorOutsideErr(ctx context.Context, q queryer, forgeAuthor, 
 	if strings.EqualFold(author, forgeAuthor) {
 		return false, nil
 	}
-	// The original is on GitHub: its author must be a person there.
 	var ok bool
 	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM forge_people fp JOIN forges g ON g.id = fp.forge_id
 		WHERE g.kind = 'github' AND fp.login = ?)`, strings.TrimSpace(author)).Scan(&ok); err != nil {
@@ -194,18 +175,17 @@ func (s *Service) screenNotes(ctx context.Context, f *Forge, pr *PullRequest, no
 }
 
 // screenPull decides, as recordPR stores a pull request, whether it waits
-// for a person: from outside and not approved at this title and head. A
+// for a person: from outside and not approved at this title, head and description. A
 // waiting one keeps an approved title, or none.
 func (s *Service) screenPull(ctx context.Context, t *tx, v *prVoice, pr *PullRequest, fp *ForgePR) error {
 	title := excerpt(stripWIP(fp.Title), 300)
 	forgeAuthor := fp.Author
 	if forgeAuthor == "" {
-		// A GitLab hook, or a refresh, doesn't say: who it was recorded as.
 		forgeAuthor = pr.forgeAuthor
 	}
 	outsider, err := v.authorOutsideErr(ctx, t, forgeAuthor, pr.Author)
 	if err != nil {
-		return err // marks nothing: the next sync decides
+		return err
 	}
 	if !outsider {
 		if !pr.Outside {
@@ -222,13 +202,15 @@ func (s *Service) screenPull(ctx context.Context, t *tx, v *prVoice, pr *PullReq
 		return err
 	}
 	approved := state == outsideApproved
-	if approved && okTitle == title && okHead == pr.HeadSHA {
+	if approved && okTitle == title && okHead == pr.HeadSHA && (fp.Body == "" || okHash == textHash(fp.Body)) {
 		pr.Outside = false
 		_, err := t.ExecContext(ctx, `UPDATE pull_requests SET outside = 0 WHERE id = ?`, pr.ID)
 		return err
 	}
 	shown := ""
-	if approved && okTitle == title {
+	if approved && okTitle == title && (fp.Body == "" || okHash == textHash(fp.Body)) {
+		// An edited description waits with the title: neither shows, so
+		// nothing of the new text is read as approved.
 		shown = title
 	}
 	body, hash := fp.Body, textHash(fp.Body)
@@ -262,6 +244,20 @@ func (s *Service) approvedBody(ctx context.Context, f *Forge, pr *PullRequest, f
 		return fp.Body
 	}
 	return ""
+}
+
+// approvedTitle is a pull request's title as a person approved it, when its
+// author is from outside: the forge's title may have changed since, and a
+// review that starts before the next sync holds it again would read the new
+// one (WP-1788). An author who isn't from outside keeps the forge's title.
+func (s *Service) approvedTitle(ctx context.Context, f *Forge, pr *PullRequest, fp *ForgePR) string {
+	v := s.prVoice(ctx, f)
+	if !v.authorOutside(ctx, s.db.R, fp.Author, pr.Author) {
+		return fp.Title
+	}
+	var title string
+	_ = s.db.R.QueryRowContext(ctx, `SELECT title FROM outside_pr_text WHERE pr_id = ? AND external_id = '' AND state = 'approved'`, pr.ID).Scan(&title)
+	return cmp(title, outsideTitleInPrompt)
 }
 
 // errPROutside refuses work on a pull request from outside no person
@@ -388,7 +384,6 @@ func (s *Service) ApproveOutsidePR(ctx context.Context, actor *Actor, id int64) 
 	if !opened {
 		return nil
 	}
-	// What waited from it happens now, as for a pull request just opened.
 	cur, err := s.prByID(ctx, s.db.R, pr.ID)
 	if err != nil {
 		return err

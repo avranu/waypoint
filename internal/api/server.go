@@ -48,7 +48,7 @@ type Config struct {
 
 // Server is the HTTP front end.
 type Server struct {
-	done            chan struct{} // closed on shutdown, to end live streams
+	done            chan struct{}
 	doneOnce        sync.Once
 	svc             *core.Service
 	cfg             Config
@@ -56,15 +56,9 @@ type Server struct {
 	limiter         *rateLimiter // per client address
 	userLimiter     *rateLimiter // failed logins per account, from any address
 	userAddrLimiter *rateLimiter // failed logins per account and address
-	jobLimiter      *rateLimiter // requests per runner job's own token (WP-418)
+	jobLimiter      *rateLimiter
 	static          *staticFiles
-	// abandonedAfter is how long a request must have run before a caller
-	// who hung up on it is worth a warning. A choice, from a week of the
-	// production log (2026-11-13..20): 118 of 120 hang-ups on the pull
-	// request list came inside 10s (a page left, noise), and 528 of 530 on
-	// the escapes endpoint that hung came at 60s (the CLI's timeout, the
-	// one real signal). Ten seconds keeps the first out and the second in.
-	abandonedAfter time.Duration
+	abandonedAfter  time.Duration
 }
 
 // defaultAbandonedAfter is Server.abandonedAfter unless a test shortens it.
@@ -85,7 +79,7 @@ var (
 	}, []string{"route", "code"})
 	httpDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "waypoint_http_request_duration_seconds", Help: "HTTP request latency by route.",
-		Buckets: []float64{.001, .0025, .005, .01, .025, .05, .1, .25, .5, 1, 2.5},
+		Buckets: []float64{.001, .0025, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120},
 	}, []string{"route"})
 	sseClients = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "waypoint_live_clients", Help: "Connected live-update streams.",
@@ -99,8 +93,6 @@ func (s *Server) Handler() http.Handler {
 	return s.middleware(mux)
 }
 
-// ---- context ----
-
 type ctxKey int
 
 const (
@@ -111,10 +103,8 @@ const (
 // requestNote is what a handler leaves for the middleware's one record about
 // the request.
 type requestNote struct {
-	err   error
-	waits bool
-	// unregistered is set when a write names a session the server hasn't
-	// registered; it is counted once the write has succeeded (WP-1470).
+	err          error
+	waits        bool
 	unregistered *unregisteredWrite
 }
 
@@ -141,8 +131,6 @@ func actorFrom(r *http.Request) *core.Actor {
 	a, _ := r.Context().Value(actorKey).(*core.Actor)
 	return a
 }
-
-// ---- middleware ----
 
 type statusWriter struct {
 	http.ResponseWriter
@@ -176,13 +164,11 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w}
-		// What a request logs is counted as the requests' (WP-ADR139).
 		r = r.WithContext(core.WithLogSource(r.Context(), core.SourceRequests))
 		note := &requestNote{}
 		r = r.WithContext(context.WithValue(r.Context(), noteKey, note))
 		var span trace.Span
 		if tracing.Enabled() {
-			// A trace parent is believed only from a trusted proxy.
 			var ctx context.Context
 			ctx, span = tracing.StartRequest(r, s.trusted(peerIP(r)))
 			r = r.WithContext(ctx)
@@ -191,6 +177,9 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "same-origin")
 		h.Set("X-Frame-Options", "DENY")
+		if s.cfg.Version != "" {
+			h.Set("X-Waypoint-Version", s.cfg.Version) // a wp that differs upgrades itself
+		}
 		defer func() {
 			p := recover()
 			var stack string
@@ -214,16 +203,10 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 				httpDuration.WithLabelValues(route).Observe(d.Seconds())
 			}
 			s.logRequest(r, note, route, sw.status, d, p, stack)
-			// Only a write that went through stored rows without their
-			// session: one refused (4xx, 5xx) or that panicked stored none.
 			if u := note.unregistered; u != nil && p == nil && sw.status < 400 {
 				s.svc.CountUnregisteredWrite(context.WithoutCancel(r.Context()), u.user, u.machine)
 			}
 			if abort {
-				// A handler that fails after bytes went out ends the transfer
-				// as broken: net/http aborts the connection (and logs
-				// nothing) only for this panic, so a client sees an error,
-				// not a body that ended as if it were whole.
 				panic(http.ErrAbortHandler)
 			}
 		}()
@@ -360,7 +343,7 @@ func (s *Server) clientIP(r *http.Request) string {
 	}
 	for i := len(hops) - 1; i >= 0; i-- {
 		if _, err := netip.ParseAddr(hops[i]); err != nil {
-			return peer // garbage from a proxy we trust: don't guess
+			return peer
 		}
 		if !s.trusted(hops[i]) || i == 0 {
 			return canonicalIP(hops[i])
@@ -395,40 +378,22 @@ func (s *Server) authenticate(r *http.Request) (*core.Actor, error) {
 		if err != nil {
 			return nil, err
 		}
-		// A token without an agent identity can say which model it is per
-		// request (one token, many agents); an agent token's identity stands.
 		if ag := strings.TrimSpace(r.Header.Get("X-Waypoint-Agent")); ag != "" && len(ag) <= 100 && a.Agent == "" {
 			a.Agent = ag
 		}
-		// The CLI also says when it runs in a coding agent's shell, even
-		// if told it's a person: drafts stay out of the agent's context
-		// either way (WP-42).
 		if env := strings.TrimSpace(r.Header.Get("X-Waypoint-Agent-Env")); env != "" && len(env) <= 100 {
 			a.AgentEnv = env
 		}
 		a.Prestart = r.Header.Get("X-Waypoint-Prestart") == "1"
-		// What the agent does is recorded on its session (WP-D16): the CLI
-		// sends the session's id (from its hooks) with every call.
-		// A runner job's own token is rate-limited: a job stuck in a loop
-		// mustn't flood Waypoint (WP-418). Counted
-		// before the permission check, so refused requests use the budget too.
 		if a.RunnerJob != 0 && !s.jobLimiter.allow(fmt.Sprint("job:", a.RunnerJob)) {
 			return nil, errJobTooMany
 		}
-		// A permission token may use only the routes its permissions
-		// cover (WP-111), checked before the session header records anything.
 		if err := s.checkPermission(r, a); err != nil {
 			return nil, err
 		}
 		if sid := strings.TrimSpace(r.Header.Get("X-Waypoint-Session")); sid != "" && a.User != nil {
 			machine := strings.TrimSpace(r.Header.Get("X-Waypoint-Machine"))
 			a.Session = s.svc.SessionForHeader(r.Context(), a.User.ID, sid, machine)
-			// A write naming a session the server hasn't registered gets no
-			// session on its rows: noted here, counted by the middleware
-			// once the write has succeeded (WP-1470). The hook's own calls
-			// register sessions, so they are not; nor is the wait hook's ask
-			// for outstanding work and its word that it told, which write
-			// nothing without a session.
 			if a.Session == 0 && r.Method != http.MethodGet && r.Method != http.MethodHead && !strings.HasPrefix(r.URL.Path, "/api/v1/sessions/hook") &&
 				!strings.HasPrefix(r.URL.Path, "/api/v1/sessions/outstanding") {
 				if n := noteFrom(r); n != nil {
@@ -464,8 +429,6 @@ func (s *Server) authed(f apiFunc) http.HandlerFunc {
 			s.writeError(w, r, err)
 			return
 		}
-		// Every non-GET route changes something; read-only tokens stop here
-		// (core checks again, so a missed route still fails closed).
 		if a.ReadOnly && r.Method != http.MethodGet && r.Method != http.MethodHead {
 			s.writeError(w, r, fmt.Errorf("read-only token: %w", core.ErrForbidden))
 			return
@@ -492,7 +455,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, f apiFunc) {
 	v, err := f(w, r)
 	if err != nil {
 		if a, ok := r.Context().Value(actorKey).(*core.Actor); ok {
-			err = s.svc.Refused(r.Context(), a, r.Pattern, err) // core's own permission checks (WP-111)
+			err = s.svc.Refused(r.Context(), a, r.Pattern, err)
 		}
 		s.writeError(w, r, err)
 		return
@@ -529,8 +492,6 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	var ie *core.InvalidError
 	switch {
 	case errors.Is(err, context.Canceled) && (r.Context().Err() != nil || s.shuttingDown()):
-		// The caller hung up, or the server is going down: not a failure of
-		// the server's. A deadline is not this and stays a 500.
 		status, msg = statusClientClosed, "the request was cancelled"
 	case errors.As(err, &ie):
 		status, msg = http.StatusBadRequest, ie.Msg
@@ -551,16 +512,13 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, errTooMany):
 		status, msg = http.StatusTooManyRequests, err.Error()
 	case errors.Is(err, core.ErrTranscriptQuota):
-		// the archive is full: the client keeps the file and tries again
 		status, msg = http.StatusInsufficientStorage, core.TranscriptQuotaRefusal
 	case errors.Is(err, core.ErrTranscriptDiskLow):
 		status, msg = http.StatusInsufficientStorage, core.TranscriptDiskLowRefusal
 	case errors.Is(err, core.ErrTranscriptsOff):
-		// a setting, not a fault: the client reads it as "this server keeps no archive"
 		status, msg = http.StatusNotImplemented, err.Error()
 	}
 	if status >= 500 && status != http.StatusInsufficientStorage && status != http.StatusNotImplemented {
-		// The middleware logs it, once, with the route and the time taken.
 		if n := noteFrom(r); n != nil {
 			n.err = err
 		} else {
@@ -570,11 +528,11 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	body := map[string]string{"error": msg}
 	switch {
 	case errors.Is(err, core.ErrReauth):
-		body["code"] = "reauth" // the web app asks for the password and retries
+		body["code"] = "reauth"
 	case errors.Is(err, core.ErrTranscriptQuota), errors.Is(err, core.ErrTranscriptDiskLow):
-		body["code"] = "transcript_full" // the client holds the file; the text may change, the code does not
+		body["code"] = "transcript_full"
 	case errors.Is(err, core.ErrTranscriptJob):
-		body["code"] = "transcript_job" // the client stops its archive pass quietly
+		body["code"] = "transcript_job"
 	}
 	writeJSON(w, status, body)
 }
@@ -592,7 +550,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
-	_ = enc.Encode(v) // headers are sent; a failed write means the client left
+	_ = enc.Encode(v)
 }
 
 var gzPool = sync.Pool{New: func() any { w, _ := gzip.NewWriterLevel(io.Discard, gzip.BestSpeed); return w }}
@@ -608,8 +566,6 @@ func writeJSONCompressed(w http.ResponseWriter, r *http.Request, status int, v a
 	h.Set("Content-Type", "application/json; charset=utf-8")
 	h.Add("Vary", "Accept-Encoding")
 	if r.Method == http.MethodGet && status == http.StatusOK {
-		// The browser keeps a private copy and revalidates every time, so an
-		// unchanged answer costs a 304 instead of the whole body.
 		h.Set("Cache-Control", "private, no-cache")
 		sum := sha256.Sum256(b)
 		if notModified(w, r, `W/"`+hex.EncodeToString(sum[:8])+`"`) {
@@ -673,8 +629,6 @@ func decodeBodyLarge(r *http.Request, v any, max int64, tooLarge string) error {
 }
 
 func decodeBodyMax(r *http.Request, v any, max int64) (empty bool, err error) {
-	// One byte over the limit tells a body that was cut from one that was
-	// never longer: the first would read as broken JSON.
 	b, err := io.ReadAll(io.LimitReader(r.Body, max+1))
 	if err != nil {
 		return false, fmt.Errorf("%w: %v", errBadRequest, err)
@@ -861,8 +815,6 @@ func (l *rateLimiter) recent(key string, now time.Time) []time.Time {
 
 const maxLimiterKeys = 10000
 
-// ---- health & metrics ----
-
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
@@ -897,8 +849,6 @@ func (s *Server) metrics() http.Handler {
 				return
 			}
 		} else if !s.directLocal(r) {
-			// Without a token, metrics are for local scrapers only, not for
-			// anyone who can reach the public URL.
 			http.NotFound(w, r)
 			return
 		}

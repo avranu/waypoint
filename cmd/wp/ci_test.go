@@ -49,18 +49,15 @@ func TestCIHookOnWorkflowEdit(t *testing.T) {
 	if n := strings.Count(got.H.AdditionalContext, "\n") + 1; n > ciLintLines+1 {
 		t.Errorf("%d lines, max %d plus the heading", n, ciLintLines)
 	}
-	// Told once: the same finding after another edit stays quiet.
 	if out := ciHook(t, c, "MultiEdit", wf, repo); out != "" {
 		t.Errorf("repeat finding should be silent, got %q", out)
 	}
-	// Other files and other tools give nothing.
 	if out := ciHook(t, c, "Edit", other, repo); out != "" {
 		t.Errorf("non-workflow file: %q", out)
 	}
 	if out := ciHook(t, &cli{dir: t.TempDir()}, "Read", wf, repo); out != "" {
 		t.Errorf("Read: %q", out)
 	}
-	// A missing file never fails.
 	if out := ciHook(t, c, "Write", filepath.Join(repo, ".github", "workflows", "gone.yml"), repo); out != "" {
 		t.Errorf("missing file: %q", out)
 	}

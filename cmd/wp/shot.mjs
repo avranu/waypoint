@@ -19,7 +19,7 @@ const job = JSON.parse(readFileSync(0, "utf8"));
 const tokens = Object.fromEntries(
   Object.entries(JSON.parse(process.env.WP_SHOT_TOKENS || "{}")).map(([o, t]) => [new URL(o).origin, t]),
 );
-const maxHeight = 3; // screens of a long page kept
+const maxHeight = 3;
 
 function slug(u) {
   const x = new URL(u);
@@ -34,8 +34,6 @@ const browser = await pw.chromium.launch();
 const out = [];
 try {
   for (const size of job.sizes) {
-    // A token goes only to a context that shows its own server's pages, so
-    // no other page can make a request that carries it.
     const blocked = [];
     const open = async (server) => {
       const token = (server && tokens[server]) || "";
@@ -49,14 +47,10 @@ try {
         await ctx.route("**/*", (route) => {
           const req = route.request();
           const origin = new URL(req.url()).origin;
-          // Service-worker fetches have no frame; they belong to this server.
           if (req.serviceWorker()) {
             if (origin !== server) return route.continue();
             return route.continue({ headers: { ...req.headers(), authorization: "Bearer " + token } });
           }
-          // A page that navigates away (Go.tsx follows a link) must not take
-          // the token with it: refuse top-level moves off this server, and
-          // send the token only while the page itself is on it.
           if (origin !== server) {
             if (req.isNavigationRequest() && !req.frame().parentFrame()) {
               blocked.push(req.url());
@@ -66,7 +60,6 @@ try {
           }
           const top = req.frame().page()?.mainFrame().url() || "";
           if (top && top !== "about:blank" && new URL(top).origin !== server) return route.continue();
-          // A cross-origin iframe inside a server page must not get it either.
           const furl = req.frame().url();
           const opaque = !furl || furl === "about:blank" || furl.startsWith("data:");
           if (!opaque && new URL(furl).origin !== server) return route.continue();
@@ -85,7 +78,6 @@ try {
       const r = { url: t.url, size: size.name, file: "", status: 0, title: "", error: "" };
       const origin = t.auth ? new URL(t.url).origin : "";
       if (origin && !tokens[origin]) {
-        // A picture of a login page would be attached as if it were the page.
         out.push({ ...r, error: "no token for " + origin + ", so the page would be taken signed out" });
         continue;
       }

@@ -1,6 +1,3 @@
-// The summaries agents left of the tasks they finished (Agents → Autopilot):
-// unread ones or all, newest first, loaded as you scroll.
-
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useInfiniteQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
@@ -75,11 +72,9 @@ export function Summaries({
     autopilotSummariesQuery({ project: project || undefined, all: view === 'all' }),
   )
   const review = useReviewSummaries()
-  // Mark all read acts on the project shown, so the count is that project's.
   const unreviewed = list.data?.pages[0]?.unreviewed ?? (project ? 0 : overall)
   const items = list.data?.pages.flatMap((p) => p.summaries) ?? []
   const idle = !list.isFetchingNextPage && !list.isFetching
-  // A failed page stops the scroll from asking again; "Load more" retries.
   const end = useNearEnd(
     () => void list.fetchNextPage(),
     !!list.hasNextPage && idle && !list.isFetchNextPageError,
@@ -252,7 +247,6 @@ function SummaryCard({
       <div className={clsx('relative mt-2', long && !open && 'max-h-52 overflow-hidden')}>
         <div
           className="prose-wp text-[13px] [overflow-wrap:anywhere]"
-          // sanitised by renderMarkdown
           dangerouslySetInnerHTML={{ __html: html }}
         />
         {long && !open && (

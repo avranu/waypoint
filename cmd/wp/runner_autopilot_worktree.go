@@ -13,13 +13,6 @@ import (
 	"time"
 )
 
-// Every session autopilot starts gets its own worktree (WP-ADR57): the
-// restart runs `claude --worktree NAME` from the repo's main checkout, so the
-// agent never thinks about where to work and the checkout stays a person's.
-// When the session is done with, and before any new start, the repo's
-// finished worktrees go, by wp tidy's rules. Nothing is ever forced: work a
-// worktree still holds stays there and the person hears of it once.
-
 // autopilotWorktrees is where Claude Code keeps --worktree checkouts, below
 // the repo's root (excluded from git by Claude Code).
 var autopilotWorktrees = filepath.Join(".claude", "worktrees")
@@ -90,8 +83,6 @@ func (p *runnerProc) planWorktree(ctx context.Context, rl *relaunch) string {
 	if !claudeTrusts(root) {
 		return "no worktree for this session: Claude Code hasn't been trusted in " + root + " (run claude there once and accept)"
 	}
-	// The worktree the old session ran in, if it was one of autopilot's kind.
-	// Only when the new session leaves it: otherwise it is still in use.
 	if top := gitTop(rl.dir); top != "" {
 		top = tidyReal(top)
 		if base := filepath.Join(root, autopilotWorktrees); top != base && inside(top, base) {
@@ -103,8 +94,6 @@ func (p *runnerProc) planWorktree(ctx context.Context, rl *relaunch) string {
 	if rl.respawn {
 		return ""
 	}
-	// `claude --worktree` works from the folder it starts in, and the pane's
-	// shell may have stayed anywhere.
 	if rl.shellDir == "" || tidyReal(rl.shellDir) != root {
 		rl.cdTo = root
 	}
@@ -159,16 +148,11 @@ func worktreeName(ctx context.Context, root, key string) string {
 			name = fmt.Sprintf("%s-%d", slug, i)
 		}
 		if p := filepath.Join(root, autopilotWorktrees, name); dirExists(p) {
-			// A folder whose lock is held by a live owner (or one wp can't judge)
-			// isn't ours to carry on in: the next name (WP-1370). A stale lock is
-			// taken over by freeStaleLocks.
 			if lockedByOther(ctx, root, p) {
 				continue
 			}
 			return name
 		}
-		// rev-parse -q --verify exits 1 when the ref is missing; any other
-		// failure says nothing about the branch, so the name isn't free.
 		out, err := exec.CommandContext(ctx, "git", "-C", root, "rev-parse", "-q", "--verify", "refs/heads/"+autopilotWorktreeBranch(name)).CombinedOutput() // #nosec G204 G702 -- fixed git subcommand
 		_ = out
 		var ee *exec.ExitError
@@ -193,7 +177,7 @@ func (p *runnerProc) sweepWorktrees(ctx context.Context, run *jobRun, in autopil
 	if _, err := tidyGit(ctx, rl.root, "fetch", "--prune", "--quiet"); err != nil {
 		say("worktree sweep: fetch failed (%v); judging by the refs as they are", err)
 	}
-	p.sweepPushEnded(ctx, run, rl) // WP-843: the ended session's commits go to the forge
+	p.sweepPushEnded(ctx, run, rl)
 	repo, _, _ := gitInfo(rl.root)
 	merged, err := p.c.tidyMergedPRs(repo)
 	if err != nil {
@@ -205,8 +189,6 @@ func (p *runnerProc) sweepWorktrees(ctx context.Context, run *jobRun, in autopil
 		say("worktree sweep: %v", err)
 		return nil
 	}
-	// Without a view of the running processes or of what other sessions hold,
-	// nothing is known to be unused: remove nothing.
 	cwds, err := procCwds()
 	if err != nil {
 		say("worktree sweep: can't see which folders processes are in (%v); removing nothing", err)
@@ -246,7 +228,7 @@ func (p *runnerProc) sweepWorktrees(ctx context.Context, run *jobRun, in autopil
 // set when the person should hear about it; why alone keeps it quietly.
 func worktreeInUse(r *tidyRow, cwds []string, held []autopilotHeld, spare string) (stays, why string) {
 	path := tidyReal(r.Path)
-	if spare != "" && inside(tidyReal(spare), path) { // spare may be a folder within it
+	if spare != "" && inside(tidyReal(spare), path) {
 		return "", "the next task's worktree"
 	}
 	for _, d := range cwds {

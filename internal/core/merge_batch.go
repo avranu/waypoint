@@ -1,13 +1,5 @@
 package core
 
-// Candidate batches (WP-509, WP-ADR36, reworked by WP-1659 and WP-ADR152):
-// while a forge's CI runners are saturated, one candidate carries the front
-// of a line and the next few pull requests behind it, so one full run tests
-// them all instead of a run per place. Each riding pull request has a
-// queue_stacks row on the one branch and commit, whose pos says which of the
-// heads is its own; they pass, fail or are cancelled together, and merge in
-// order. With idle runners the line makes a candidate per place.
-
 import (
 	"context"
 	"time"
@@ -19,10 +11,8 @@ const (
 	poolSatWait = 2 * time.Minute
 	// poolSatFresh: how long a reading of the pool is trusted.
 	poolSatFresh = 2 * time.Minute
-	// batchMaxDepth bounds how many pull requests ride a batch behind its
-	// first head (lineBatchDepth: it grows by one each time a batch merges
-	// whole and drops back when one fails).
-	batchMaxDepth = 4
+	// batchMaxDepth is the most places one batch covers.
+	batchMaxDepth = 8
 )
 
 // poolVerdict is a reading of whether a forge's runners are saturated.
@@ -43,7 +33,6 @@ func (s *Service) poolSaturated(ctx context.Context, forgeID int64) bool {
 		bctx := context.WithoutCancel(ctx)
 		s.goBG(func() {
 			defer s.poolSatReading.Store(false)
-			// Run to note the verdicts; the snapshot itself is not wanted.
 			if _, err := s.ciSnapshot(bctx); err != nil {
 				if readFault(err) {
 					s.log.WarnContext(bctx, "read the CI snapshot that notes the verdicts", "err", err)

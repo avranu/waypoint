@@ -18,16 +18,10 @@ import (
 // file not listed may hold none. Lower a count when a file loses some; the
 // test only fails when one gains.
 var siteBaseline = map[string]int{
-	// This instance's working rules: an example of a decision's approval.
-	"AGENTS.md": 1,
-	// Names the job pool's own image repo in a comment; editing the file
-	// changes CI's image tag (build.sh hashes it), so it waits for the next
-	// image change.
+	"AGENTS.md":                    1,
 	".forgejo/ci-image/Dockerfile": 1,
-	// The public mirror's address: the GitHub workflow's header says where
-	// GitHub bills, and the runbook's gh commands (-R) must name the repo.
-	".github/workflows/ci.yml": 1,
-	"docs/DEPLOY.md":           4,
+	".github/workflows/ci.yml":     1,
+	"docs/DEPLOY.md":               4,
 }
 
 var siteWordRE = regexp.MustCompile(`[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*`)
@@ -90,9 +84,7 @@ func siteNamesFile() string {
 
 // siteChecker finds names, given in lower case, in text.
 type siteChecker struct {
-	names map[string]bool
-	// phrases matches the names that aren't one word: issue keys as task
-	// codes, and hyphenated names. Nil when there are none.
+	names   map[string]bool
 	phrases *regexp.Regexp
 }
 
@@ -116,11 +108,10 @@ func newSiteChecker(names map[string]bool) *siteChecker {
 	c := &siteChecker{names: map[string]bool{}}
 	var keys, phrases []string
 	for n := range names {
-		// A leading hyphen means nothing: -ab is ab.
 		n = strings.TrimLeft(n, "-")
 		switch stem := strings.TrimRight(n, "-"); {
 		case stem == "":
-		case stem != n: // a key, even one with a hyphen in it (my-app-)
+		case stem != n:
 			keys = append(keys, regexp.QuoteMeta(stem))
 		case strings.Contains(n, "-"):
 			phrases = append(phrases, regexp.QuoteMeta(n))
@@ -132,9 +123,6 @@ func newSiteChecker(names map[string]bool) *siteChecker {
 	sort.Strings(phrases)
 	var alts []string
 	if len(keys) > 0 {
-		// A code: KEY-12, KEY#12 (a pull request), KEY-PL13 or KEY-ADR7 /
-		// KEY-ADR-0007 (a page or a decision), KEY:R-3 (a request; not
-		// group-open:rotate-90, a style).
 		alts = append(alts, `(?:`+strings.Join(keys, "|")+`)(?:[-#]?[0-9]+|-?(?:adr-?|[a-z]{1,2})[0-9]+|:[a-z]{1,3}-?[0-9]+)`)
 	}
 	if len(phrases) > 0 {
@@ -251,8 +239,6 @@ func TestNoSiteNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The module path is every import's prefix, not a stray mention: it
-	// changes by renaming the module (go mod edit -module), so it isn't flagged.
 	module := strings.TrimSpace(strings.TrimPrefix(strings.SplitN(string(mod), "\n", 2)[0], "module"))
 	check := newSiteChecker(names)
 	counts := map[string]int{}
@@ -260,7 +246,7 @@ func TestNoSiteNames(t *testing.T) {
 	for _, path := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
 		text, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
 		if err != nil || bytes.IndexByte(text, 0) >= 0 {
-			continue // deleted in the working tree, a submodule, or binary
+			continue
 		}
 		if module != "" {
 			text = bytes.ReplaceAll(text, []byte(module), nil)
@@ -305,11 +291,11 @@ func TestSiteWord(t *testing.T) {
 		"git.example.net":          false,
 		"waypoint.example.org":     true,
 		"10.77.0.216":              true,
-		"10.77.0":                  false, // a version, not an address
+		"10.77.0":                  false,
 		"v1.10.77.0":               false,
 		"10.77.1.1":                false,
 		"robin":                    false,
-		"a.b.c.d.e.f.g.tumbleweed": false, // too many parts to try every run
+		"a.b.c.d.e.f.g.tumbleweed": false,
 	} {
 		if got := c.word(w); got != want {
 			t.Errorf("word(%q) = %v, want %v", w, got, want)

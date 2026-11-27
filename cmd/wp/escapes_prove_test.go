@@ -28,7 +28,6 @@ func TestProofRoundsPassOverFailingFixes(t *testing.T) {
 	if _, ok := held[9]; ok || len(held) != 1 {
 		t.Fatalf("an expired hold stayed: %v", held)
 	}
-	// Once the hold runs out, the fix is tried again.
 	prs = nil
 	for _, d := range pickProofs(due, held, now.Add(proveHold), proveRound) {
 		prs = append(prs, d.PR)

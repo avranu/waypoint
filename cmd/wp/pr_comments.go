@@ -5,9 +5,6 @@ import (
 	"strings"
 )
 
-// Review comments end to end (WP-130): wp pr comments, reply, react,
-// resolve, unresolve. Ids are the c12 of wp pr todo.
-
 var prCommentsCmd = &command{
 	name: "comments", args: "[N] [--settled]",
 	summary: "a pull request's review comments and where each stands",

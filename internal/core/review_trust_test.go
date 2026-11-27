@@ -153,21 +153,21 @@ func TestReviewerTrustFollowsFindings(t *testing.T) {
 			}
 		}
 	}
-	add("anthropic/claude-haiku-5-5", FindingDismissed, VerifyTrusted, 20, now) // seeded, measured bad
-	add("groq/kimi-k3", FindingFixed, VerifyKept, 20, now)                      // not seeded, measured good
-	add("zai/glm-5", FindingFixed, VerifySkipped, 20, now)                      // good, with a few false
+	add("anthropic/claude-haiku-5-5", FindingDismissed, VerifyTrusted, 20, now)
+	add("groq/kimi-k3", FindingFixed, VerifyKept, 20, now)
+	add("zai/glm-5", FindingFixed, VerifySkipped, 20, now)
 	add("zai/glm-5", FindingDismissed, VerifyDropped, 2, now)
-	add("groq/gpt-oss-120b", FindingFixed, VerifyKept, 5, now) // too few to say
+	add("groq/gpt-oss-120b", FindingFixed, VerifyKept, 5, now)
 	add("old/nemotron", FindingFixed, VerifyKept, 30, now-100*86400000)
-	add("cursor/grok-4.7-high", FindingDismissed, VerifyTrusted, 20, now)                  // one level measured bad
-	add("inferx/deepseek-v4-1-flash-basic", FindingDismissed, VerifyTrusted, 20, now)      // another spelling
-	add("anthropic/claude-opus-5-5", FindingDismissed, VerifyTrusted, 20, now-40*86400000) // old, but enough
-	add("anthropic/claude-sonnet-5-5", FindingDropped, VerifyUnchecked, 20, now)           // quotes not in the file
+	add("cursor/grok-4.7-high", FindingDismissed, VerifyTrusted, 20, now)
+	add("inferx/deepseek-v4-1-flash-basic", FindingDismissed, VerifyTrusted, 20, now)
+	add("anthropic/claude-opus-5-5", FindingDismissed, VerifyTrusted, 20, now-40*86400000)
+	add("anthropic/claude-sonnet-5-5", FindingDropped, VerifyUnchecked, 20, now)
 	if _, err := re.s.db.W.Exec(`UPDATE bot_findings SET verify_reason = ? WHERE model = 'anthropic/claude-sonnet-5-5'`, evidenceMissing); err != nil {
 		t.Fatal(err)
 	}
-	add("opencode/muse-spark-1.3", FindingDropped, VerifyDropped, 20, now) // a seed: the verifier's opinion, not a judgment
-	add("groq/filtered", FindingFixed, VerifyKept, 20, now)                // not seeded: good only through its verifier
+	add("opencode/muse-spark-1.3", FindingDropped, VerifyDropped, 20, now)
+	add("groq/filtered", FindingFixed, VerifyKept, 20, now)
 	add("groq/filtered", FindingDropped, VerifyDropped, 60, now)
 	re.s.trustSeeds = nil
 	trust, err := re.s.reviewerTrust(re.ctx)

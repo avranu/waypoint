@@ -22,8 +22,6 @@ type traceTx struct {
 }
 
 func newTraceTx(t *testing.T) *traceTx {
-	// a working directory that is gone counts as the repository root, and
-	// t.TempDir (under /tmp) would be treated as scratch space
 	return &traceTx{t: t, root: "/work/app", ts: time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC), ctx: 40000}
 }
 
@@ -80,7 +78,7 @@ func TestTraceSegments(t *testing.T) {
 	tests := []struct {
 		name  string
 		build func(x *traceTx)
-		want  []usageTraceRow // Key, Seq, Ended, Calls, Locate, Infile, Reads, Edits, Delegated, Other, PreCalls
+		want  []usageTraceRow
 	}{
 		{"take to ship", func(x *traceTx) {
 			x.take("WP-1")
@@ -235,14 +233,13 @@ func TestTraceResumeEqualsSinglePass(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// resume after every line: last row per seq must equal the single pass
 	for n := 1; n < len(x.lines); n++ {
 		prefix := strings.Join(x.lines[:n], "\n") + "\n"
 		if err := os.WriteFile(full.Path, []byte(prefix), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		p1, rows1 := readTraces(t, full, usageFileState{})
-		raw, err := json.Marshal(p1.State) // as saved between runs
+		raw, err := json.Marshal(p1.State)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -267,7 +264,6 @@ func TestTraceResumeEqualsSinglePass(t *testing.T) {
 			}
 		}
 	}
-	// reading again from nothing gives the same rows
 	_, again := readTraces(t, full, usageFileState{})
 	if !reflect.DeepEqual(again, want) {
 		t.Errorf("re-read differs:\n got %+v\nwant %+v", again, want)
@@ -324,13 +320,11 @@ func TestClassifyTraceCall(t *testing.T) {
 		{"pipe with a read first", "Bash", bash("cat internal/a.go | head -5"), trRead, []string{"internal/a.go"}},
 		{"git status is other", "Bash", bash("git status --short"), trOther, nil},
 
-		// where a command runs is what the line says
 		{"cd then read", "Bash", bash("cd web && cat src/x.ts"), trRead, []string{"web/src/x.ts"}},
 		{"cd to the root then grep", "Bash", bash("cd /work/app/web && grep -n foo src/x.ts | head"), trInfile, []string{"web/src/x.ts"}},
 		{"cd nowhere the line says", "Bash", bash(`cd "$d" && cat src/x.ts`), trRead, nil},
 		{"bash -c", "Bash", bash("bash -c 'cd web && echo x > a.ts'"), trEdit, []string{"web/a.ts"}},
 
-		// an edit is a write to a file of the work, and only that
 		{"output sent to scratch is not seen", "Bash", bash("cat internal/a.go > /tmp/out.txt"), trOther, nil},
 		{"a scratch script run on a file", "Bash", bash("cat > /tmp/x/s.py <<'EOF'\nprint(1)\nEOF\npython3 /tmp/x/s.py internal/a.go"), trOther, nil},
 		{"a scratch file by a variable", "Bash", bash("S=/tmp/s; cat > $S/x.py <<'EOF'\nx\nEOF"), trOther, nil},
@@ -343,6 +337,20 @@ func TestClassifyTraceCall(t *testing.T) {
 		{"sed -i by a path whose start is spelt out", "Bash", bash("for s in a b; do sed -i s/a/b/ clusters/$s/app.yaml; done"), trEdit, nil},
 		{"perl -pi", "Bash", bash("perl -0pi -e 's/a/b/' internal/a.go"), trEdit, []string{"internal/a.go"}},
 		{"perl prints", "Bash", bash("perl -ne 'print if /a/' internal/a.go"), trOther, nil},
+		{"gofmt -w", "Bash", bash("gofmt -w internal/a.go cmd/b.go"), trEdit, []string{"internal/a.go", "cmd/b.go"}},
+		{"goimports -w", "Bash", bash("goimports -w internal/a.go"), trEdit, []string{"internal/a.go"}},
+		{"prettier --write", "Bash", bash("cd web && npx prettier --write src/x.ts"), trEdit, []string{"web/src/x.ts"}},
+		{"prettier -w", "Bash", bash("prettier -w web/src/x.ts"), trEdit, []string{"web/src/x.ts"}},
+		{"curl -o", "Bash", bash("curl -sL -o docs/spec.md https://example.com/x"), trEdit, []string{"docs/spec.md"}},
+		{"curl --output", "Bash", bash("curl --output docs/spec.md https://example.com/x"), trEdit, []string{"docs/spec.md"}},
+		{"curl --output=", "Bash", bash("curl --output=docs/spec.md https://example.com/x"), trEdit, []string{"docs/spec.md"}},
+		{"curl -sLo", "Bash", bash("curl -sLo docs/spec.md https://example.com/x"), trEdit, []string{"docs/spec.md"}},
+		{"curl to a log", "Bash", bash("curl -sL -o build.log https://example.com/x"), trOther, nil},
+		{"curl to stdout", "Bash", bash("curl -o - https://example.com/x"), trOther, nil},
+		{"bunx prettier at a version", "Bash", bash("bunx prettier@3.3.3 --write web/src/x.ts"), trEdit, []string{"web/src/x.ts"}},
+		{"curl to scratch is not seen", "Bash", bash("curl -o /tmp/x.json https://example.com/x"), trOther, nil},
+		{"gofmt -l lists", "Bash", bash("gofmt -l ."), trOther, nil},
+		{"prettier --check", "Bash", bash("prettier --check ."), trOther, nil},
 		{"tee", "Bash", bash("tee internal/a.go <<'EOF'\nx\nEOF"), trEdit, []string{"internal/a.go"}},
 		{"a generated document", "Bash", bash("go run ./cmd/wp help --all > docs/CLI.md"), trEdit, []string{"docs/CLI.md"}},
 		{"a log kept in the checkout", "Bash", bash("go test ./... > test.log 2>&1"), trOther, nil},
@@ -355,7 +363,6 @@ func TestClassifyTraceCall(t *testing.T) {
 		{"git apply --check", "Bash", bash("git apply --check /tmp/s/fix.patch"), trOther, nil},
 		{"git -C elsewhere", "Bash", bash("git -C /tmp/s/clone apply /tmp/s/fix.patch"), trOther, nil},
 
-		// a script given to an interpreter edits what it writes
 		{"python heredoc", "Bash", bash("python3 - <<'EOF'\np='internal/a.go'\ns=open(p).read()\ns=s.replace('a','b')\nopen(p,'w').write(s)\nEOF"), trEdit, []string{"internal/a.go"}},
 		{"python heredoc after cd", "Bash", bash("cd web && python3 - <<'EOF'\np='src/x.ts'; s=open(p).read()\nopen(p, 'w').write(s)\nEOF"), trEdit, []string{"web/src/x.ts"}},
 		{"python reads the work, writes scratch", "Bash", bash("python3 - <<'EOF'\ns=open('internal/a.go').read()\nopen('/tmp/out.txt','w').write(s)\nEOF"), trOther, nil},
@@ -372,7 +379,6 @@ func TestClassifyTraceCall(t *testing.T) {
 		{"a scratch script only written", "Bash", bash("cat > /tmp/x/e.py <<'EOF'\nopen('internal/a.go','w').write('x')\nEOF"), trOther, nil},
 		{"python -m", "Bash", bash("python3 -m pytest tests/test_a.py"), trOther, nil},
 
-		// what writes a file of the work, and what only keeps output
 		{"sed with joined flags", "Bash", bash("sed -ri s/a/b/ internal/a.go"), trEdit, []string{"internal/a.go"}},
 		{"a test's output kept", "Bash", bash("go test ./... > out.txt 2>&1"), trOther, nil},
 		{"a search's output kept", "Bash", bash("grep -rn foo . > hits.txt"), trOther, nil},
@@ -440,11 +446,10 @@ func TestTraceKeptScripts(t *testing.T) {
 	if c := call(mem, "Bash", map[string]any{"command": "python3 /tmp/s/other.py"}); c.Class != trOther {
 		t.Fatalf("a script nobody wrote is %q", c.Class)
 	}
-	// a file made by a shell command is a file the agent made, as with Write
 	for cmd, want := range map[string]bool{
 		"cat > internal/new.go <<'EOF'\nx\nEOF":                        true,
 		"cp internal/a.go internal/b.go":                               true,
-		"git mv internal/a.go internal/b.go":                           false, // a.go is changed too, and it was there
+		"git mv internal/a.go internal/b.go":                           false,
 		"echo x >> internal/a.go":                                      false,
 		"sed -i s/a/b/ internal/a.go":                                  false,
 		"python3 - <<'EOF'\nopen('internal/a.go','w').write('x')\nEOF": false,
@@ -453,19 +458,16 @@ func TestTraceKeptScripts(t *testing.T) {
 			t.Errorf("%q: class %q, whole-file write %v, want an edit and %v", cmd, c.Class, c.Write, want)
 		}
 	}
-	// written again as a script that only reads: forgotten
 	call(mem, "Bash", map[string]any{"command": "cat > /tmp/s/edit1.py <<'EOF'\nprint(open('internal/a.go').read())\nEOF"})
 	if c := call(mem, "Bash", map[string]any{"command": "python3 /tmp/s/edit1.py"}); c.Class != trOther || len(*mem) != 0 {
 		t.Fatalf("after it was rewritten to read only: %q, remembered %+v", c.Class, *mem)
 	}
-	// no more than traceMaxScripts are remembered, the oldest going first
 	for i := 0; i < traceMaxScripts+3; i++ {
 		call(mem, "Write", map[string]any{"file_path": fmt.Sprintf("/tmp/s/e%d.py", i), "content": "open('a.go','w').write('x')\n"})
 	}
 	if len(*mem) != traceMaxScripts || (*mem)[0].At != "/tmp/s/e3.py" {
 		t.Fatalf("kept %d, first %q", len(*mem), (*mem)[0].At)
 	}
-	// a clone doesn't share them
 	st := &traceState{Scripts: *mem}
 	cl := st.clone()
 	cl.Scripts.keep("/tmp/s/e3.py", "print(1)")
@@ -579,7 +581,6 @@ func TestTraceFile(t *testing.T) {
 	}
 	traceScratch = nil
 
-	// the first edit of a take is an edit wherever the work's checkout is
 	edit := func(p string) json.RawMessage { b, _ := json.Marshal(map[string]any{"file_path": p}); return b }
 	for _, tc := range []struct {
 		name, tool, p, cwd, class string

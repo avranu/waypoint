@@ -17,23 +17,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
-// The runner's reading of an objective's round (WP-927, WP-ADR111, WP-ADR142): a job of
-// kind "objective", Waypoint's own, queued onto the runner of the person who
-// put the objective in effect. It reads in fresh checkouts the runner makes
-// itself, so the agent that worked the round has no hand in the reading.
-//
-// What isolation it has: the checkouts are scratch worktrees of the runner's
-// own clone, never a person's working tree; the commands run in them with the
-// environment a runner gives any job (jobEnv: an allowlist, so neither the
-// runner's token nor Waypoint's variables nor forge, cloud or ssh-agent
-// credentials are in it), each in its own process group that is killed on
-// timeout, cancel and when it exits, with its output capped; the checkouts
-// are removed afterwards. What it lacks: the commands run as the runner's
-// own user, so HOME (and the files in it: saved Waypoint config, ssh keys,
-// caches) and the network are as open to them as to any command job: there
-// is no kernel sandbox, container or separate user for them, only the
-// helper's machine users where a person has set that up for jobs that ask.
-
 // objectiveFeature is advertised in runnerFeatureList when this machine can
 // read an objective: it needs git and a shell.
 func objectiveFeature() bool {
@@ -77,7 +60,6 @@ func objectiveDir(checkout, dir string) (string, error) {
 	if err != nil || !st.IsDir() {
 		return "", fmt.Errorf("the folder %s isn't in the repository at that commit", dir)
 	}
-	// A link in the repository can lead anywhere on this machine.
 	real, err := filepath.EvalSymlinks(full)
 	root, err2 := filepath.EvalSymlinks(checkout)
 	if err != nil || err2 != nil || (real != root && !strings.HasPrefix(real, root+string(filepath.Separator))) {
@@ -110,8 +92,6 @@ func (p *runnerProc) execObjective(ctx context.Context, run *jobRun, in core.Obj
 	if budget <= 0 || budget > run.timeout {
 		budget = run.timeout / 2
 	}
-	// One command may use the whole budget; a read of a time plans its runs
-	// within it, and the job's own timeout is the backstop.
 	spec := measureSpec{Check: in.Check, Setup: in.Setup, Measure: in.Measure, Unit: in.Unit, Timeout: budget, Budget: budget, MinRuns: objectiveMinTimed,
 		Env: append(jobEnv(os.Environ(), nil, false), "GIT_TERMINAL_PROMPT=0")}
 
@@ -143,7 +123,6 @@ func (p *runnerProc) execObjective(ctx context.Context, run *jobRun, in core.Obj
 		return failed("%v", err)
 	}
 	defer func() {
-		// Even after a cancel or a timeout: the checkouts go.
 		bg, stop := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 		defer stop()
 		for _, d := range []string{"head", "base"} {
@@ -167,8 +146,6 @@ func (p *runnerProc) execObjective(ctx context.Context, run *jobRun, in core.Obj
 	res := &core.ObjectiveJobResult{Head: head}
 
 	headDir, err := objectiveDir(headRoot, in.Dir)
-	// Every command runs in the folder: keep-passing ones too, which run in
-	// it without a check.
 	if err != nil && (in.Check != "" || in.Setup != "" || len(in.KeepPassing) > 0) {
 		return p.objectiveError(ctx, run, "%v (at %s)", err, head[:12])
 	}
@@ -177,7 +154,7 @@ func (p *runnerProc) execObjective(ctx context.Context, run *jobRun, in core.Obj
 	}
 	sides := []measureSide{{"the branch (" + head[:12] + ")", headDir}}
 	var baseRoot string
-	var baseGone string // why the base can't be read, when it can't
+	var baseGone string
 	if both {
 		if baseRoot, err = checkout("base", base); err != nil {
 			return p.objectiveError(ctx, run, "can't check out %s: %v", base[:12], err)
@@ -211,8 +188,6 @@ func (p *runnerProc) execObjective(ctx context.Context, run *jobRun, in core.Obj
 		}
 		say("Read: %s", describeReading(res.Reading))
 	}
-	// With no check, nothing above ran the setup, and the keep-passing
-	// commands need what it builds as much as a check does.
 	if in.Check == "" && in.Setup != "" && len(in.KeepPassing) > 0 {
 		say("Setting up: %s", excerpt(in.Setup, 100))
 		r, err := runCheck(ctx, headDir, spec.Env, in.Setup, budget)
@@ -225,7 +200,6 @@ func (p *runnerProc) execObjective(ctx context.Context, run *jobRun, in core.Obj
 			return p.objectiveStopped(ctx, run, stopf("the setup (%s) failed with exit %d: %s", excerpt(in.Setup, 80), r.Code, excerpt(strings.TrimSpace(trimOutput(r.All, 1<<30)), 400)))
 		}
 	}
-	// The keep-passing commands: each at the head, whatever the check read.
 	for _, h := range in.KeepPassing {
 		say("Keeping passing: %s", excerpt(h, 100))
 		r, err := runCheck(ctx, headDir, spec.Env, h, budget)
@@ -238,8 +212,6 @@ func (p *runnerProc) execObjective(ctx context.Context, run *jobRun, in core.Obj
 		res.Kept = append(res.Kept, core.ObjectiveKept{Command: h, OK: r.Code == 0, Output: trimOutput(r.All, 2000)})
 	}
 	if base != "" && base != head {
-		// A list that can't be read fails the reading: an empty one would
-		// say the round left its own check alone.
 		touched, err := p.objectiveTouched(ctx, bare, base, head, in)
 		if err != nil {
 			return p.objectiveError(ctx, run, "can't list what changed between %s and %s: %v", base[:12], head[:12], err)
@@ -301,8 +273,6 @@ func (p *runnerProc) objectiveTouched(ctx context.Context, bare, base, head stri
 		return nil, err
 	}
 	cmds := strings.Join(append([]string{in.Check, in.Setup}, in.KeepPassing...), "\n")
-	// The folder as git names it: "./bench/" and "bench//" are "bench",
-	// and "." is the root.
 	dir := strings.Trim(path.Clean(filepath.ToSlash(in.Dir)), "/")
 	if dir == "." {
 		dir = ""

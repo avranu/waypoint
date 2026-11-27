@@ -8,9 +8,6 @@ import (
 	"time"
 )
 
-// Round 3 of WP-1449's review (audit 1214): what a diagnose round must not
-// let anyone finish or ship, what a re-set leaves behind, and the words said.
-
 func (o *objEnv) toldBodies(kind string) []string {
 	o.t.Helper()
 	o.s.Wait()
@@ -236,12 +233,10 @@ func TestObjectiveDiagnoseBriefClipsAndHedges(t *testing.T) {
 		t.Errorf("the brief isn't clipped (%d bytes)", len(brief))
 	}
 	hasAll(t, "the brief", brief, "[the rest is cut: wp objective show "+task.Key+" has all of it]", "not something Waypoint checked", "check it against the readings")
-	// A short one is whole.
 	ob.Diagnosis.Text = "The check times the build."
 	if brief = ObjectiveText(ob, true, o.clockNow()); !strings.Contains(brief, "The check times the build.") || strings.Contains(brief, "the rest is cut") {
 		t.Errorf("a short diagnosis was cut:\n%s", brief)
 	}
-	// The limit is characters, not bytes: 5,000 three-byte characters fit.
 	ob.Diagnosis.Text = strings.Repeat("€", 5000) + "WIDE-END"
 	if brief = ObjectiveText(ob, true, o.clockNow()); !strings.Contains(brief, "WIDE-END") || strings.Contains(brief, "the rest is cut") {
 		t.Errorf("a diagnosis under the limit in characters was cut (%d bytes)", len(brief))
@@ -277,12 +272,10 @@ func TestObjectiveDiagnoseAfterOnALoopIsRefused(t *testing.T) {
 	if !IsInvalid(err) || !strings.Contains(err.Error(), "a loop has no rounds to read") {
 		t.Fatalf("diagnose_after on a loop: %v", err)
 	}
-	// Left out, it is a loop on the default, and never diagnoses.
 	ob := o.set(task.Key, ObjectiveInput{Every: ptrOf("0")})
 	if ob.Kind != "loop" {
 		t.Fatalf("kind %q", ob.Kind)
 	}
-	// A judge or a check makes it rounds that are read: then it may be set.
 	if _, err := o.s.SetObjective(o.ctx, o.admin, task.Key, ObjectiveInput{Check: ptrOf("make lint"), Until: ptrOf("pass"), DiagnoseAfter: ptrOf(1)}); err != nil {
 		t.Fatalf("diagnose_after with a check: %v", err)
 	}
@@ -362,7 +355,6 @@ func TestObjectiveDiagnosePersonOverAnAgentsHeldRound(t *testing.T) {
 	if d.ClaimedBy != "" || d.ClaimedUntil != nil {
 		t.Errorf("still claimed: %q until %v", d.ClaimedBy, d.ClaimedUntil)
 	}
-	// Runs come newest first: the first is the held round's, ended as diagnosed.
 	if len(d.AgentRuns) == 0 || d.AgentRuns[0].EndedAt == nil || d.AgentRuns[0].Outcome != RunDiagnosed {
 		t.Errorf("the agent's run wasn't ended as diagnosed: %+v", d.AgentRuns)
 	}

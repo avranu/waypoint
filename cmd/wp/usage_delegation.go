@@ -6,9 +6,6 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core"
 )
 
-// wp usage delegation: how agents are told to split their work between
-// models, and what came of each way (WP-1262).
-
 var usageDelegationCmd = &command{
 	name: "delegation", args: "",
 	summary: "how agents are told to delegate to cheaper models, and what came of it",

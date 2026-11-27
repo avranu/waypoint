@@ -78,7 +78,6 @@ func TestReviewDoesntWaitOnTheWeeksPace(t *testing.T) {
 	first := a.issue(a.admin, IssueInput{Project: a.p.Key, Title: "First", Agent: "claude", Priority: "urgent"})
 	a.linkPR(first.ID, 7, "aaa")
 	a.finish(first.Key)
-	// 80% used with a day and a half of seven gone: far ahead of an even pace.
 	reset := a.clockNow().Add(5*24*time.Hour + 12*time.Hour)
 	if _, err := a.s.db.W.Exec(`INSERT INTO quota_samples(user_id, at, span, percent, resets_at, machine) VALUES (?,?,?,?,?,?)`,
 		a.admin.User.ID, a.clockNow().UnixMilli(), "seven_day", 80.0, reset.UnixMilli(), "box"); err != nil {
@@ -159,8 +158,6 @@ func TestReviewWorkHeldByRunawayLimits(t *testing.T) {
 			}
 		})
 	}
-	// The quota guard's hold reads as its own reason, never the pace's,
-	// however far ahead of the pace the week is.
 	now := time.Now()
 	m := &AutopilotMeter{GuardHold: &GuardHold{Until: now.Add(time.Hour), Reason: "$105 in the last hour"},
 		WeekPercent: ptrOf(80.0), WeekEven: ptrOf(20.0), WeekResetsAt: ptrOf(now.Add(5 * 24 * time.Hour))}
@@ -178,7 +175,6 @@ func TestReviewTypedAfterBlockingNews(t *testing.T) {
 	a.grokPR(first.ID, 7, "aaa")
 	a.stopWith("Shipped as #7.")
 	id := a.step().reviewID.Int64
-	// News it is blocked on, queued after its Stop, goes in at its runner.
 	if _, err := a.s.db.W.Exec(`INSERT INTO session_messages(session_id, body, state, blocking, created_at) VALUES (?,?,?,?,?)`,
 		a.session, "The merge you waited on went in.", "queued", 1, a.clockNow().UnixMilli()); err != nil {
 		t.Fatal(err)

@@ -110,13 +110,13 @@ func TestCheckRepo(t *testing.T) {
 	run(t, dir, "git", "branch", "base")
 	run(t, dir, "git", "checkout", "-qb", "work")
 
-	put(t, dir, m+"0001_a.sql", "CREATE TABLE x (a INT, b INT);\n")                                        // edited
-	put(t, dir, m+"0002_b.sql", "CREATE TABLE x (a INT);\n-- wplint:ignore migrations a comment change\n") // waived
-	put(t, dir, m+"0003_c.sql", "CREATE TABLE x (a INT);\n-- wplint:ignore migrations\n")                  // a waiver with no reason
-	run(t, dir, "git", "rm", "-q", m+"0004_d.sql")                                                         // removed
-	put(t, dir, m+"0005_new.sql", "CREATE TABLE y (a INT);\n")                                             // a new file, sharing no number
-	put(t, dir, m+"0006_x.sql", "CREATE TABLE z (a INT);\n")                                               // a new file
-	put(t, dir, m+"0007-Bad.sql", "SELECT 1;\n")                                                           // a bad name
+	put(t, dir, m+"0001_a.sql", "CREATE TABLE x (a INT, b INT);\n")
+	put(t, dir, m+"0002_b.sql", "CREATE TABLE x (a INT);\n-- wplint:ignore migrations a comment change\n")
+	put(t, dir, m+"0003_c.sql", "CREATE TABLE x (a INT);\n-- wplint:ignore migrations\n")
+	run(t, dir, "git", "rm", "-q", m+"0004_d.sql")
+	put(t, dir, m+"0005_new.sql", "CREATE TABLE y (a INT);\n")
+	put(t, dir, m+"0006_x.sql", "CREATE TABLE z (a INT);\n")
+	put(t, dir, m+"0007-Bad.sql", "SELECT 1;\n")
 	put(t, dir, "e2e/a.mjs", "await page.waitForTimeout(500);\nawait page.click('x');\nawait page.waitForTimeout(500);\n")
 	put(t, dir, "e2e/b.mjs", "await page.waitForTimeout (100);\n")
 	run(t, dir, "git", "add", "-A")
@@ -149,12 +149,9 @@ func TestCheckRepo(t *testing.T) {
 		t.Errorf("a removal says so: %q", got[4].Msg)
 	}
 
-	// The waiver only counts when this branch adds it.
 	run(t, dir, "git", "checkout", "-qb", "later")
 	run(t, dir, "git", "branch", "-f", "base", "work")
 	put(t, dir, m+"0002_b.sql", "CREATE TABLE x (a INT, c INT);\n-- wplint:ignore migrations a comment change\n")
-	// Moving a file, shortening a wait, a wait in a comment and a waived one
-	// add no wait.
 	run(t, dir, "git", "mv", "e2e/b.mjs", "e2e/c.mjs")
 	put(t, dir, "e2e/a.mjs", "await page.waitForTimeout(300);\nawait page.click('x');\nawait page.waitForTimeout(500);\n")
 	put(t, dir, "e2e/d.mjs", "// await page.waitForTimeout(500);\nawait x(); // was page.waitForTimeout(5)\n/*\n  old: page.waitForTimeout(5)\n*/\n// wplint:ignore e2e-wait the animation has no event\nawait page.waitForTimeout(200);\nawait page.waitForTimeout(1); // wplint:ignore e2e-wait a test of a trailing waiver\n")
@@ -165,7 +162,6 @@ func TestCheckRepo(t *testing.T) {
 	if len(got) != 2 || got[0].Path != m+"0002_b.sql" || got[1].Path != m+"0007-Bad.sql" {
 		t.Errorf("an old waiver let a later edit through, or a moved or edited wait was flagged: %v", got)
 	}
-	// A trailing waiver covers only its own line.
 	put(t, dir, "e2e/d.mjs", "await page.waitForTimeout(1); // wplint:ignore e2e-wait a trailing waiver\nawait page.waitForTimeout(2);\n")
 	got, err = CheckRepo(RepoOptions{Root: dir, Base: "base", RequireBase: true})
 	if err != nil {
@@ -174,7 +170,6 @@ func TestCheckRepo(t *testing.T) {
 	if len(got) != 3 || got[0].Path != "e2e/d.mjs" || got[0].Line != 2 {
 		t.Errorf("the wait under a trailing waiver should be flagged: %v", got)
 	}
-	// Removing a wait in one file doesn't buy a new one in another.
 	put(t, dir, "e2e/d.mjs", "await page.click('x');\n")
 	put(t, dir, "e2e/a.mjs", "await page.click('x');\nawait page.waitForTimeout(500);\n")
 	put(t, dir, "e2e/c.mjs", "await page.waitForTimeout (100);\nawait page.waitForTimeout(777);\n")
