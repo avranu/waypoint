@@ -457,10 +457,10 @@ func TestSlotWaitNote(t *testing.T) {
 func TestCheckLines(t *testing.T) {
 	wait := 43*time.Minute + 46*time.Second
 	for got, want := range map[string]string{
-		checkPassedLine("make check", 25*time.Minute+time.Second, 0):       "Check passed: make check (25m1s)",
-		checkPassedLine("make check", 25*time.Minute+time.Second, wait):    "Check passed: make check (25m1s, and 43m46s waiting for a slot)",
-		checkFailedHead("make check", 3, 25*time.Minute+time.Second, 0):    "Check failed: make check exited 3 after 25m1s; last lines:\n",
-		checkFailedHead("make check", 3, 25*time.Minute+time.Second, wait): "Check failed: make check exited 3 after 25m1s, and 43m46s waiting for a slot; last lines:\n",
+		checkPassedLine("make check", 25*time.Minute+time.Second, 0):            "Check passed: make check (25m1s)",
+		checkPassedLine("make check", 25*time.Minute+time.Second, wait):         "Check passed: make check (25m1s, and 43m46s waiting for a slot)",
+		checkFailedHead("make check", 3, 25*time.Minute+time.Second, 0, nil):    "Check failed: make check exited 3 after 25m1s; last lines:\n",
+		checkFailedHead("make check", 3, 25*time.Minute+time.Second, wait, nil): "Check failed: make check exited 3 after 25m1s, and 43m46s waiting for a slot; last lines:\n",
 	} {
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)
@@ -576,6 +576,38 @@ func TestShipCheckFailureNamesTheSlotWait(t *testing.T) {
 	}
 }
 
+// Indexing the work tree, before the check and after it, is neither the
+// wait for a slot nor the check's time (audit 1860.2).
+func TestShipCheckTimesLeaveOutIndexing(t *testing.T) {
+	slotEnv(t)
+	t.Chdir(t.TempDir())
+	git(t, ".", "init", "-q")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	slow := "#!/bin/sh\n[ \"$1\" = add ] && sleep 2\nexec " + shellJoin([]string{realGit}) + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(slow), 0o700); err != nil { // #nosec G306 -- a test's stand-in git
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	old := slotWaitNoteMin
+	slotWaitNoteMin = time.Second
+	t.Cleanup(func() { slotWaitNoteMin = old })
+	var out bytes.Buffer
+	c, err := newCLI(&out, new(bytes.Buffer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.runShipCheck("true"); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "Check passed: true (0s)") && !strings.Contains(got, "Check passed: true (1s)") || strings.Contains(got, "waiting for a slot") {
+		t.Errorf("indexing was counted:\n%s", got)
+	}
+}
+
 // A failed check shows 30 lines of output; a pointer to the file comes only
 // with more.
 func TestShipCheckPointerPastThirtyLines(t *testing.T) {
@@ -594,5 +626,66 @@ func TestShipCheckPointerPastThirtyLines(t *testing.T) {
 		if got := strings.Contains(out.String(), "lines of its output"); got != want {
 			t.Errorf("%d lines: pointer %v, want %v:\n%s", n, got, want, out.String())
 		}
+	}
+}
+
+func TestCheckFailedHeadNamesTheLoad(t *testing.T) {
+	old := cpuCount
+	cpuCount = func() int { return 8 }
+	t.Cleanup(func() { cpuCount = old })
+	got := checkFailedHead("make check", 3, time.Minute, 0, []float64{15.4, 19.2})
+	want := "Check failed: make check exited 3 after 1m0s; 1-minute load 15.4 at the start, 19.2 at the end, on 8 CPUs; last lines:\n"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// loadReader returns the readings in order, then none.
+func loadReader(vals ...float64) func() (float64, bool) {
+	return func() (float64, bool) {
+		if len(vals) == 0 {
+			return 0, false
+		}
+		v := vals[0]
+		vals = vals[1:]
+		return v, true
+	}
+}
+
+func shipCheckWithLoad(t *testing.T, cmd string, read func() (float64, bool)) string {
+	t.Helper()
+	slotEnv(t)
+	t.Chdir(t.TempDir())
+	oldLoad, oldCPU := readHostLoad, cpuCount
+	readHostLoad, cpuCount = read, func() int { return 8 }
+	t.Cleanup(func() { readHostLoad, cpuCount = oldLoad, oldCPU })
+	var out bytes.Buffer
+	c, err := newCLI(&out, new(bytes.Buffer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = c.runShipCheck(cmd)
+	return out.String()
+}
+
+func TestShipCheckFailureNamesTheLoad(t *testing.T) {
+	out := shipCheckWithLoad(t, "false", loadReader(15.4, 19.2))
+	if !strings.Contains(out, "1-minute load 15.4 at the start, 19.2 at the end, on 8 CPUs") {
+		t.Errorf("no load in:\n%s", out)
+	}
+}
+
+func TestShipCheckFailureWithoutLoadSaysNothingOfIt(t *testing.T) {
+	for name, read := range map[string]func() (float64, bool){"none": loadReader(), "one": loadReader(3)} {
+		if out := shipCheckWithLoad(t, "false", read); !strings.Contains(out, "Check failed: false exited 1") || strings.Contains(out, "load") {
+			t.Errorf("%s:\n%s", name, out)
+		}
+	}
+}
+
+func TestShipCheckPassLineLeavesOutTheLoad(t *testing.T) {
+	out := shipCheckWithLoad(t, "true", loadReader(1, 2))
+	if !strings.Contains(out, "Check passed: true") || strings.Contains(out, "load") {
+		t.Errorf("passing check:\n%s", out)
 	}
 }

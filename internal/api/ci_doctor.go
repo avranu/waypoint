@@ -148,6 +148,9 @@ func ciDoctorText(d *core.CIDoctor, repo string, verbose bool) string {
 			if st.Running > 0 {
 				fmt.Fprintf(&o, ", %d running", st.Running)
 			}
+			if st.Reran > 0 {
+				fmt.Fprintf(&o, "; %d re-run, %d of them passed", st.Reran, st.RerunPassed)
+			}
 			o.WriteString("\n")
 		}
 		for i, m := range l.Merged {

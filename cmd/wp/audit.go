@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"git.jmann.me/claude/waypoint/internal/core"
 )
@@ -27,7 +28,7 @@ Use -m for focus instructions, --model (repeatable) for fallback order, and
 task to check and fix findings. Findings are claims to verify with wp audit mark.`,
 	examples: []string{"wp audit", "wp audit pr 12", `wp audit branch feature-x -m "Focus on cache invalidation."`,
 		"wp audit recent --since 2w --focus security --path internal",
-		"wp audit show 12", "wp audit mark 12.1 12.3 confirmed", `wp audit mark 12.2 rejected -m "the lock is held by the caller"`},
+		"wp audit show 12", "wp audit mark 12.1 12.3 confirmed", `wp audit mark 12.2 rejected -m "the lock is held by the caller" --evidence "internal/x.go:40 takes the lock before the call"`},
 	run: auditRun(""),
 }
 
@@ -45,12 +46,18 @@ func init() {
 			examples: []string{"wp audit ls", "wp audit ls --active", "wp audit ls --pr 12"}, run: auditLs},
 		{name: "show", aliases: []string{"view", "get"}, args: "ID|AUDIT.N...", summary: "show an audit (or one finding like 12.3): state, models, findings",
 			examples: []string{"wp audit show 12", "wp audit show 12.3", "wp audit show 12 --all"}, run: auditShow},
-		{name: "mark", args: "FINDING... open|confirmed|fixed|rejected [-m NOTE] [--issue KEY]", summary: "record your verdict on findings (12.3: audit 12, finding 3)",
+		{name: "mark", args: "FINDING... open|confirmed|fixed|rejected [-m NOTE] [--issue KEY] [--evidence TEXT]", summary: "record your verdict on findings (12.3: audit 12, finding 3)",
 			about: `Verdicts: open, confirmed (real, unfixed), fixed, or rejected (-m WHY required).
 --issue KEY links the task dealing with it: confirmed --issue KEY hands a medium
 or low finding off to that open issue (critical/high cannot be deferred); fixed
---issue KEY names the task that fixed it.`,
-			examples: []string{"wp audit mark 12.1 12.3 confirmed", "wp audit mark 12.4 confirmed --issue WP-401", "wp audit mark 12.1 fixed -m \"checked in abc1234\"", `wp audit mark 12.2 rejected -m "the caller holds the lock"`}, run: auditMark},
+--issue KEY names the task that fixed it.
+
+An agent rejecting a finding of a pull request it isn't working on (outside its
+own review round) also gives --evidence TEXT (file:line or command output, up to
+` + strconv.Itoa(core.MaxRejectionEvidence) + ` characters) and must run at least as strong a model, effort and version
+as the finder; only fable or mythos may reject an unranked model's finding.
+Otherwise leave it, or file a medium or low one. People are held to neither.`,
+			examples: []string{"wp audit mark 12.1 12.3 confirmed", "wp audit mark 12.4 confirmed --issue WP-401", "wp audit mark 12.1 fixed -m \"checked in abc1234\"", `wp audit mark 12.2 rejected -m "the caller holds the lock" --evidence "internal/x.go:40 takes the lock before the call"`}, run: auditMark},
 		{name: "report", args: "[KEY] -f FILE | --none -m SUMMARY", summary: "record what the adversarial review you ran yourself found, as your task's review round",
 			about: `For an agent session whose review round was its own to run (wp ship
 says so, and holds the pull request for this). FILE (- for stdin) is JSON:
@@ -152,6 +159,12 @@ type auditFinding struct {
 	By         string `json:"by"`
 	Lead       string `json:"lead"`
 	Verdict    string `json:"verdict"`
+	Evidence   string `json:"evidence"`
+	// DecidedModel, DecidedEffort and DecidedStrength: what an agent that
+	// rejected it ran as, and how that compared with the finder (WP-1825).
+	DecidedModel    string `json:"decided_model"`
+	DecidedEffort   string `json:"decided_effort"`
+	DecidedStrength string `json:"decided_strength"`
 }
 
 // what names the code an audit reads: "#12", "feature-x against main".
@@ -306,42 +319,54 @@ func (a *auditView) text() string {
 			shown = min(shown, a.shownAtATime())
 		}
 		for _, f := range a.Findings[:shown] {
-			where := ""
-			if f.Path != "" {
-				where = " " + f.Path
-				if f.Line > 0 {
-					where += fmt.Sprintf(":%d", f.Line)
-				}
-			}
-			state := f.State
-			if f.Issue != "" {
-				state += " " + f.Issue
-				if f.FilingVoid && f.State == "confirmed" {
-					state += " (canceled)"
-				}
-			}
-			fmt.Fprintf(&s, "  %-6s %-8s %-9s%s: %s\n", f.ID, f.Severity, state, where, f.Title)
-			if f.Problem != "" {
-				fmt.Fprintf(&s, "         %s\n", indentRest(f.Problem, "         "))
-			}
-			if src := core.PanelSource(core.CodeAuditFinding{Lead: f.Lead}); src != "" {
-				fmt.Fprintf(&s, "         Source: %s\n", src)
-			}
-			if f.Confirm != "" {
-				fmt.Fprintf(&s, "         To confirm: %s\n", indentRest(f.Confirm, "         "))
-			}
-			if f.Note != "" {
-				fmt.Fprintf(&s, "         Note (%s): %s\n", f.By, indentRest(f.Note, "         "))
-			}
+			writeFinding(&s, f)
 		}
 	}
 	s.WriteString(a.moreFindings())
 	if firstOpen := a.firstOpenFinding(); firstOpen != "" {
-		fmt.Fprintf(&s, "  mark: wp audit mark %s fixed -m \"...\" | confirmed --issue KEY | rejected -m \"...\"\n", firstOpen)
+		fmt.Fprintf(&s, "  mark: wp audit mark %s fixed -m \"...\" | confirmed --issue KEY | rejected -m \"...\" --evidence \"file:line\"\n", firstOpen)
 	}
 	s.WriteString(a.unansweredPanel())
 	fmt.Fprintf(&s, "\n%s", a.URL)
 	return strings.TrimRight(s.String(), "\n")
+}
+
+// writeFinding is one finding as wp audit show prints it, alone or in its
+// audit's list.
+func writeFinding(s *strings.Builder, f auditFinding) {
+	where := ""
+	if f.Path != "" {
+		where = " " + f.Path
+		if f.Line > 0 {
+			where += fmt.Sprintf(":%d", f.Line)
+		}
+	}
+	state := f.State
+	if f.Issue != "" {
+		state += " " + f.Issue
+		if f.FilingVoid && f.State == "confirmed" {
+			state += " (canceled)"
+		}
+	}
+	fmt.Fprintf(s, "  %-6s %-8s %-9s%s: %s\n", f.ID, f.Severity, state, where, f.Title)
+	if f.Problem != "" {
+		fmt.Fprintf(s, "         %s\n", indentRest(f.Problem, "         "))
+	}
+	if src := core.PanelSource(core.CodeAuditFinding{Lead: f.Lead}); src != "" {
+		fmt.Fprintf(s, "         Source: %s\n", src)
+	}
+	if f.Confirm != "" {
+		fmt.Fprintf(s, "         To confirm: %s\n", indentRest(f.Confirm, "         "))
+	}
+	if f.Note != "" {
+		fmt.Fprintf(s, "         Note (%s): %s\n", f.By, indentRest(f.Note, "         "))
+	}
+	if f.Evidence != "" {
+		fmt.Fprintf(s, "         Evidence: %s\n", indentRest(f.Evidence, "         "))
+	}
+	if f.DecidedModel != "" {
+		fmt.Fprintf(s, "         Rejected as: %s\n", core.RejectedAs(core.CodeAuditFinding{DecidedModel: f.DecidedModel, DecidedEffort: f.DecidedEffort, DecidedStrength: f.DecidedStrength}))
+	}
 }
 
 func (a *auditView) firstOpenFinding() string {
@@ -360,35 +385,9 @@ func (a *auditView) findingText(ref string) (string, bool) {
 		}
 		var s strings.Builder
 		fmt.Fprintf(&s, "Audit #%d of %s: %s\n", a.ID, a.what(), a.state())
-		where := ""
-		if f.Path != "" {
-			where = " " + f.Path
-			if f.Line > 0 {
-				where += fmt.Sprintf(":%d", f.Line)
-			}
-		}
-		state := f.State
-		if f.Issue != "" {
-			state += " " + f.Issue
-			if f.FilingVoid && f.State == "confirmed" {
-				state += " (canceled)"
-			}
-		}
-		fmt.Fprintf(&s, "  %-6s %-8s %-9s%s: %s\n", f.ID, f.Severity, state, where, f.Title)
-		if f.Problem != "" {
-			fmt.Fprintf(&s, "         %s\n", indentRest(f.Problem, "         "))
-		}
-		if src := core.PanelSource(core.CodeAuditFinding{Lead: f.Lead}); src != "" {
-			fmt.Fprintf(&s, "         Source: %s\n", src)
-		}
-		if f.Confirm != "" {
-			fmt.Fprintf(&s, "         To confirm: %s\n", indentRest(f.Confirm, "         "))
-		}
-		if f.Note != "" {
-			fmt.Fprintf(&s, "         Note (%s): %s\n", f.By, indentRest(f.Note, "         "))
-		}
+		writeFinding(&s, f)
 		if f.State == "open" || (f.State == "confirmed" && (f.Issue == "" || f.FilingVoid)) {
-			fmt.Fprintf(&s, "  mark: wp audit mark %s fixed -m \"...\" | confirmed --issue KEY | rejected -m \"...\"\n", f.ID)
+			fmt.Fprintf(&s, "  mark: wp audit mark %s fixed -m \"...\" | confirmed --issue KEY | rejected -m \"...\" --evidence \"file:line\"\n", f.ID)
 		}
 		fmt.Fprintf(&s, "\n%s", a.URL)
 		return strings.TrimRight(s.String(), "\n"), true
@@ -836,8 +835,8 @@ func auditMark(c *cli, args []string) error {
 	fs := c.flags()
 	note := fs.String("message", "", "why (`NOTE`); required for rejected")
 	short(fs, "m", "message")
-	alias(fs, "evidence", "message")
 	issue := fs.String("issue", "", "task or bug `KEY` that deals with it")
+	evidence := fs.String("evidence", "", "what shows a rejected finding wrong (`TEXT`); an agent gives it for a pull request it isn't working on")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
@@ -853,7 +852,11 @@ func auditMark(c *cli, args []string) error {
 	default:
 		return c.usage("the last word is the verdict: open, confirmed, fixed or rejected")
 	}
-	raw, err := c.call("POST", "/api/v1/audits/findings", map[string]any{"ids": ids, "state": state, "note": *note, "issue": *issue})
+	// Evidence says why too, where it fits in a note.
+	if state == "rejected" && *note == "" && utf8.RuneCountInString(*evidence) <= core.MaxFindingNote {
+		*note = *evidence
+	}
+	raw, err := c.call("POST", "/api/v1/audits/findings", map[string]any{"ids": ids, "state": state, "note": *note, "issue": *issue, "evidence": *evidence})
 	if err != nil {
 		return err
 	}

@@ -188,7 +188,7 @@ func TestWP2011AuditFindingShowAndHints(t *testing.T) {
 	if out := e.wp("audit", "ls", "-n", "1"); !strings.Contains(out, "#1") {
 		t.Errorf("audit ls -n 1:\n%s", out)
 	}
-	// wp audit mark accepts --evidence as an alias for -m.
+	// A rejection with --evidence and no -m gives the evidence as the why.
 	if out := e.wp("audit", "mark", "1.1", "rejected", "--evidence", "caller checks nil"); !strings.Contains(out, "Marked 1.1 rejected") {
 		t.Errorf("audit mark --evidence:\n%s", out)
 	}

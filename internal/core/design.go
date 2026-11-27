@@ -97,6 +97,22 @@ type DesignNote struct {
 	requestedIssue, requestedBy      sql.NullInt64
 }
 
+// parentBy is who a trace counts as having put a note under parent: a person
+// directly, else nobody (WP-1790, as issues.parent_by).
+func parentBy(actor *Actor, parent *int64) any {
+	if parent != nil && actor.actsAsPerson() {
+		return nullUser(actor.id())
+	}
+	return nil
+}
+
+func parentAt(parent *int64, now int64) any {
+	if parent == nil {
+		return nil
+	}
+	return now
+}
+
 // agentsEdit: agents change the note directly (an unapproved one, or one
 // written for a person's task); on any other approved note their changes
 // wait for a person.
@@ -601,9 +617,9 @@ func (s *Service) CreateDesign(ctx context.Context, actor *Actor, in DesignInput
 			approvedAt, reqIssue, reqBy = now, req.issue, req.by
 		}
 		res, err := t.ExecContext(ctx, `INSERT INTO design_notes(project_id, parent_id, kind, title, body, status, approved_by, approved_at,
-			created_by, created_agent, created_at, updated_by, updated_agent, updated_at, requested_issue_id, requested_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			created_by, created_agent, created_at, updated_by, updated_agent, updated_at, requested_issue_id, requested_by, parent_by, parent_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			nullInt(scope), nullInt(parentID), kind, title, body, status, approvedBy, approvedAt,
-			nullUser(actor.id()), agent, now, nullUser(actor.id()), agent, now, reqIssue, reqBy)
+			nullUser(actor.id()), agent, now, nullUser(actor.id()), agent, now, reqIssue, reqBy, parentBy(actor, parentID), parentAt(parentID, now))
 		if err != nil {
 			return err
 		}
@@ -877,7 +893,8 @@ func (s *Service) UpdateDesign(ctx context.Context, actor *Actor, id int64, in D
 			parentID = nil
 		}
 		if !int64PtrEq(parentID, n.ParentID) {
-			sets, args = append(sets, "parent_id = ?"), append(args, nullInt(parentID))
+			now := s.nowMS()
+			sets, args = append(sets, "parent_id = ?", "parent_by = ?", "parent_at = ?"), append(args, nullInt(parentID), parentBy(actor, parentID), parentAt(parentID, now))
 		}
 		if actor.writesAsAgent() && !n.agentsEdit() && (moving || len(sets) > 0) {
 			return forbidden("a person approved this note, so agents can't change its kind, status, place or parent; add your suggestion with an addition")
@@ -1125,8 +1142,14 @@ func (s *Service) ApproveDesign(ctx context.Context, actor *Actor, id int64, ver
 				return fmt.Errorf("the note changed since you opened it; look again before approving: %w", ErrConflict)
 			}
 		}
-		if _, err = t.ExecContext(ctx, `UPDATE design_notes SET approved_by = ?, approved_at = ? WHERE id = ?`, nullUser(actor.id()), s.nowMS(), id); err != nil {
+		now := s.nowMS()
+		if _, err = t.ExecContext(ctx, `UPDATE design_notes SET approved_by = ?, approved_at = ? WHERE id = ?`, nullUser(actor.id()), now, id); err != nil {
 			return err
+		}
+		if n.ParentID != nil {
+			if _, err = t.ExecContext(ctx, `UPDATE design_notes SET parent_by = ?, parent_at = ? WHERE id = ?`, nullUser(actor.id()), now, id); err != nil {
+				return err
+			}
 		}
 		detail := "approved a proposed " + n.Kind
 		if n.CreatedAgent != "" {

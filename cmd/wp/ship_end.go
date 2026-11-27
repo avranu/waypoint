@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -478,9 +479,21 @@ func checkPassedLine(cmd string, took, waited time.Duration) string {
 	return fmt.Sprintf("Check passed: %s (%s%s)", cmd, took, slotWaitNote(waited))
 }
 
+// cpuCount is a var so a test can fix it.
+var cpuCount = runtime.NumCPU
+
+// loadNote says how loaded the machine was, so a transient failure can be
+// weighed against it afterwards (WP-1850); "" without both readings.
+func loadNote(load []float64) string {
+	if len(load) != 2 {
+		return ""
+	}
+	return fmt.Sprintf("; 1-minute load %.1f at the start, %.1f at the end, on %d CPUs", load[0], load[1], cpuCount())
+}
+
 // checkFailedHead is the line that comes before a failed check's last lines.
-func checkFailedHead(cmd string, code int, took, waited time.Duration) string {
-	return fmt.Sprintf("Check failed: %s exited %d after %s%s; last lines:\n", cmd, code, took, slotWaitNote(waited))
+func checkFailedHead(cmd string, code int, took, waited time.Duration, load []float64) string {
+	return fmt.Sprintf("Check failed: %s exited %d after %s%s%s; last lines:\n", cmd, code, took, slotWaitNote(waited), loadNote(load))
 }
 
 // runShipCheck runs --check CMD in the tests slot, as wp testsum does, and
@@ -507,12 +520,15 @@ func (c *cli) runShipCheck(cmd string) error {
 	// The wait for a slot isn't the check's time: a 25 minute make check
 	// that queued 44 minutes was reported as one of 69 (WP-1812).
 	queued := time.Now()
-	start := queued
+	got, start := queued, queued
 	var nothing bool
-	code, err := c.runInSlotWith("tests", defaultSlots(), goTestJSON(argv), &buf, &buf, func() { rec.started(); start = time.Now() }, func(env []string) []string {
+	// Nor is indexing the tree, before the command and after it, either
+	// one's time (audit 1860.2).
+	code, err := c.runInSlotWith("tests", defaultSlots(), goTestJSON(argv), &buf, &buf, func() { got = time.Now(); rec.started(); start = time.Now() }, func(env []string) []string {
 		env, _ = testEnv(env, nil)
 		return env
 	}, slotOpts{who: "wp ship", allCmd: "wp testsum --all --", rec: rec, nothing: &nothing})
+	took := time.Since(start).Round(time.Second)
 	if err != nil {
 		return fmt.Errorf("--check couldn't run %s: %w (nothing shipped)", cmd, err)
 	}
@@ -530,8 +546,7 @@ func (c *cli) runShipCheck(cmd string) error {
 	} else {
 		rec.finish(res, code)
 	}
-	took := time.Since(start).Round(time.Second)
-	waited := start.Sub(queued)
+	waited := got.Sub(queued)
 	if !failed {
 		line := checkPassedLine(cmd, took, waited)
 		if res.Passed+res.Failed+res.Skipped > 0 {
@@ -546,7 +561,7 @@ func (c *cli) runShipCheck(cmd string) error {
 	if res.Passed+res.Failed+res.Skipped > 0 {
 		_, _ = fmt.Fprint(c.out, res.renderSaving(buf.Bytes()))
 	}
-	_, _ = fmt.Fprint(c.out, checkFailedHead(cmd, code, took, waited)+failedTail(buf.Bytes(), 30))
+	_, _ = fmt.Fprint(c.out, checkFailedHead(cmd, code, took, waited, rec.loads())+failedTail(buf.Bytes(), 30))
 	return fmt.Errorf("the check failed, so nothing was committed or shipped: fix it and run wp ship again")
 }
 
