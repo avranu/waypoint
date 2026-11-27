@@ -301,7 +301,10 @@ func (s *Service) keepJobEvidence(ctx context.Context, cl ForgeActionLogs, f *Fo
 
 // keepFailedEvidence reads the evidence of a commit's failed jobs before
 // they are re-run (which replaces their logs): a flaky test's failure is
-// the half of its score the re-run would otherwise erase. Best effort.
+// the half of its score the re-run would otherwise erase. It reads the runs
+// the re-run picks (rerunnableRuns, from the same newest runs when a commit
+// has more than are read), so a run whose logs go is a run read here. Best
+// effort.
 func (s *Service) keepFailedEvidence(ctx context.Context, f *Forge, repo, sha string) {
 	cl, ok := s.Forges.(ForgeActionLogs)
 	if !ok || f.token == "" {
@@ -319,7 +322,8 @@ func (s *Service) keepFailedEvidence(ctx context.Context, f *Forge, repo, sha st
 	}
 	def := ""
 	defKnown := false
-	for _, run := range runs {
+	redo, _ := rerunnableRuns(runs)
+	for _, run := range redo {
 		jobs, err := cl.ActionJobs(ctx, f, repo, run.ID)
 		if err != nil {
 			s.log.WarnContext(ctx, "CI evidence before a re-run: list jobs", "repo", repo, "run", run.Index, "err", err)

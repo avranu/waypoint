@@ -265,8 +265,8 @@ func TestCIEvidenceBeforeRerun(t *testing.T) {
 	}
 	a.reply["GET /repos/acme/app"] = map[string]any{"default_branch": "main"}
 	a.reply["GET /repos/acme/app/actions/runs?page=1&limit=50"] = map[string]any{"total_count": 2, "workflow_runs": []map[string]any{
-		{"id": 77, "index_in_repo": 7, "commit_sha": "dddd444", "trigger_event": "pull_request", "prettyref": "feature", "title": "Try", "stopped": "2026-11-07T11:50:00Z"},
-		{"id": 78, "index_in_repo": 8, "commit_sha": "dddd444", "trigger_event": "push", "prettyref": "main", "title": "Merge", "stopped": "2026-11-07T11:51:00Z"},
+		{"id": 77, "index_in_repo": 7, "commit_sha": "dddd444", "trigger_event": "pull_request", "prettyref": "feature", "title": "Try", "status": "failure", "stopped": "2026-11-07T11:50:00Z"},
+		{"id": 78, "index_in_repo": 8, "commit_sha": "dddd444", "trigger_event": "push", "prettyref": "main", "title": "Merge", "status": "failure", "stopped": "2026-11-07T11:51:00Z"},
 	}}
 	a.reply["GET /repos/acme/app/actions/runs/78/jobs"] = []map[string]any{
 		{"id": 711, "run_id": 78, "name": "backend shard (1)", "task_id": 81, "status": "failure"},

@@ -212,7 +212,9 @@ func (s *Service) refreshHead(ctx context.Context, f *Forge, repo, sha string) e
 	var prs []prState
 	err = s.write(ctx, SystemActor(), func(t *tx) error {
 		var prevChecked int64
-		if err := t.QueryRowContext(ctx, `SELECT checked_at FROM ci_heads WHERE id = ?`, headID).Scan(&prevChecked); err != nil {
+		var prevState string
+		var reruns int
+		if err := t.QueryRowContext(ctx, `SELECT checked_at, state, manual_reruns FROM ci_heads WHERE id = ?`, headID).Scan(&prevChecked, &prevState, &reruns); err != nil {
 			return err
 		}
 		if prevChecked > now {
@@ -277,6 +279,11 @@ func (s *Service) refreshHead(ctx context.Context, f *Forge, repo, sha string) e
 		for _, p := range prs {
 			if _, err := t.ExecContext(ctx, `UPDATE pull_requests SET ci_state = ?, ci_sha = ? WHERE id = ?`, state, sha, p.id); err != nil {
 				return err
+			}
+			if reruns > 0 && prevState == CIPending && (state == CIPassed || state == CIFailed) {
+				if err := s.noteRerunOutcome(ctx, t, p.id, repo, p.number, sha, reruns, state, failedNames, now); err != nil {
+					return err
+				}
 			}
 			if (state != CIPassed && state != CIFailed) || p.announced == sha || p.outside {
 				continue

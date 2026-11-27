@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -351,9 +352,9 @@ type CIWorkPR struct {
 // that, with what was read and a line for what wasn't, because the doctor is
 // asked while CI is busy and the forge slow, which is when a failed answer
 // helps least. A variable so the tests can shorten it.
-var ciDoctorBudgets = struct{ Whole, Snapshot, Lines, Mains, Jobs, Tests, Limits, CIWork, Runners time.Duration }{
+var ciDoctorBudgets = struct{ Whole, Snapshot, Lines, Mains, Jobs, Tests, Limits, CIWork, Runners, Timeouts time.Duration }{
 	Whole: 50 * time.Second, Snapshot: 20 * time.Second, Lines: 15 * time.Second, Mains: 5 * time.Second, Jobs: 5 * time.Second, Tests: 10 * time.Second,
-	Limits: 10 * time.Second, CIWork: 10 * time.Second, Runners: 10 * time.Second,
+	Limits: 10 * time.Second, CIWork: 10 * time.Second, Runners: 10 * time.Second, Timeouts: 10 * time.Second,
 }
 
 // doctorSteps times the doctor's steps and keeps what each couldn't read.
@@ -378,12 +379,25 @@ func (t *doctorSteps) step(s *Service, ctx context.Context, name, what string, b
 	defer t.mu.Unlock()
 	t.ms[name] = time.Since(start).Milliseconds()
 	switch {
-	case late || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
+	case late || doctorLate(err):
 		t.missing = append(t.missing, what+" (not read in time)")
 	case err != nil:
 		s.log.WarnContext(ctx, "ci doctor: a step failed", "step", name, "err", err)
-		t.missing = append(t.missing, what+" (failed: "+excerpt(err.Error(), 120)+")")
+		t.missing = append(t.missing, what+" ("+doctorWhy(err)+")")
 	}
+}
+
+// doctorLate: a read ended because its time ran out.
+func doctorLate(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+}
+
+// doctorWhy is why a doctor read is missing: late, or how it failed.
+func doctorWhy(err error) string {
+	if doctorLate(err) {
+		return "not read in time"
+	}
+	return "failed: " + kernel.Excerpt(err.Error(), 120)
 }
 
 // CIDoctor reads the CI board and the merge lines and says what's wrong. The
@@ -411,10 +425,7 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 		t.ms["snapshot"] = time.Since(start).Milliseconds()
 		if err != nil {
 			unread = true
-			why := "failed: " + excerpt(err.Error(), 120)
-			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-				why = "not read in time"
-			}
+			why := doctorWhy(err)
 			var age time.Duration
 			if snap, age = s.staleCISnapshot(); snap != nil {
 				stale = true
@@ -523,14 +534,25 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 			return s.doctorLimits(c, &limits, snap, visibleIn(c)) // WP-922
 		})
 	})
+	var timeoutFindings []CIFinding
+	shown := func(c context.Context) func(int64, string) bool {
+		visible := visibleIn(c)
+		return func(forgeID int64, repo string) bool {
+			_, ok := visible(forgeID, repo)
+			return ok
+		}
+	}
 	side(func() {
 		t.step(s, ctx, "runners", "the hosts' runs", bud.Runners, func(c context.Context) error {
-			visible := visibleIn(c)
 			var err error
-			runnerFindings, err = s.doctorRunnerFindings(c, d.Pool, now, func(forgeID int64, repo string) bool {
-				_, ok := visible(forgeID, repo)
-				return ok
-			})
+			runnerFindings, err = s.doctorRunnerFindings(c, d.Pool, now, shown(c))
+			return err
+		})
+	})
+	side(func() {
+		t.step(s, ctx, "timeouts", "the jobs that ran out of time", bud.Timeouts, func(c context.Context) error {
+			var err error
+			timeoutFindings, err = s.timeLimitFindings(c, now, shown(c))
 			return err
 		})
 	})
@@ -539,7 +561,7 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 
 	slices.Sort(t.missing)
 	d.Missing = t.missing
-	extra := runnerFindings
+	extra := append(timeoutFindings, runnerFindings...)
 	if len(t.missing) > 0 {
 		extra = append(extra, CIFinding{Level: "warn", Kind: "doctor_partial", Title: "The doctor could not read all of CI: " + strings.Join(t.missing, "; "),
 			Detail: "What follows is what was read; what is missing is not reported as fine.", Next: "wp ci doctor, again in a minute"})

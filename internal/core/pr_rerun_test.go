@@ -158,7 +158,7 @@ func TestRerunPullRequestPartial(t *testing.T) {
 		t.Fatalf("partial: %+v %v", r, err)
 	}
 	var detail string
-	if err := be.s.db.R.QueryRow(`SELECT detail FROM audit_log WHERE action = 'pr.rerun' AND target_id = ?`, pr.ID).Scan(&detail); err != nil || !strings.Contains(detail, "the forge refused the rest: POST rerun: 502") {
+	if err := be.s.db.R.QueryRow(`SELECT detail FROM audit_log WHERE action = 'pr.rerun' AND target_id = ?`, pr.ID).Scan(&detail); err != nil || !strings.Contains(detail, "not all went again: POST rerun: 502") {
 		t.Errorf("activity %q, %v", detail, err)
 	}
 	if got := be.manualReruns(); got != 1 {
@@ -496,10 +496,124 @@ func TestRerunJobsForgejoManyRuns(t *testing.T) {
 		if over := extra+1 > fullSHARunPages*50; len(runs) != fullSHARunPages*50 || errors.Is(err, errTooManyRuns) != over || (!over && err != nil) {
 			t.Fatalf("%d runs: read %d, %v", extra+1, len(runs), err)
 		}
-		// The failed run is the newest, so among those read.
-		if res, err := cl.RerunJobs(context.Background(), f, g.repo, sha, ""); err != nil || strings.Join(res.Jobs, ",") != "e2e" {
+		// The failed run is the newest, so among those read; past the
+		// pages read, the error says older runs weren't.
+		if res, err := cl.RerunJobs(context.Background(), f, g.repo, sha, ""); errors.Is(err, errTooManyRuns) != (extra+1 > fullSHARunPages*50) || (err != nil && !errors.Is(err, errTooManyRuns)) || strings.Join(res.Jobs, ",") != "e2e" {
 			t.Fatalf("%d runs: %+v %v", extra+1, res, err)
 		}
+	}
+	// The only failure is older than the runs read: nothing is re-run, and
+	// the answer is not "nothing failed" (2093.2).
+	g := &runForge{repo: "o/r"}
+	g.run(1, 1, "failure", job(1, "e2e", "failure"))
+	for i := int64(0); i < fullSHARunPages*50; i++ {
+		g.run(100+i, 200+i, "skipped")
+	}
+	_, cl, f := g.checks(t)
+	res, err := cl.RerunJobs(context.Background(), f, g.repo, strings.Repeat("a", 40), "")
+	if !errors.Is(err, errTooManyRuns) || res == nil || len(res.Jobs) != 0 {
+		t.Fatalf("oldest failed: %+v %v", res, err)
+	}
+	if n, err := cl.RetryChecks(context.Background(), f, g.repo, strings.Repeat("a", 40)); n != 0 || !errors.Is(err, errTooManyRuns) {
+		t.Fatalf("RetryChecks, oldest failed: %d %v", n, err)
+	}
+}
+
+// A head with more runs than are read, none of the newest failed: refused,
+// saying why, and the claim is given back.
+func TestRerunPullRequestTooManyRuns(t *testing.T) {
+	be := newBabysitEnv(t)
+	pr := be.open()
+	be.s.Forges = &rerunForge{shipForge: be.sg, err: fmt.Errorf("%w: more than 500 runs on commit x in me/app", errTooManyRuns)}
+	_, err := be.s.RerunPullRequest(be.ctx, be.agent, pr.ID, "")
+	if !IsInvalid(err) || !strings.Contains(err.Error(), "more than Waypoint reads") || strings.Contains(err.Error(), "nothing failed on") {
+		t.Fatalf("too many runs: %v", err)
+	}
+	if got := be.manualReruns(); got != 0 {
+		t.Errorf("manual_reruns %d, want 0", got)
+	}
+}
+
+// c7128: nothing went again and the claim couldn't be given back: the caller
+// gets an error that says so, not the refusal as if the count were whole.
+func TestRerunPullRequestReleaseFails(t *testing.T) {
+	be := newBabysitEnv(t)
+	pr := be.open()
+	be.s.Forges = &rerunForge{shipForge: be.sg}
+	if _, err := be.s.db.W.ExecContext(be.ctx, `CREATE TRIGGER no_give_back BEFORE UPDATE OF manual_reruns ON ci_heads
+		WHEN NEW.manual_reruns < OLD.manual_reruns BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := be.s.RerunPullRequest(be.ctx, be.agent, pr.ID, "")
+	if err == nil || IsInvalid(err) || !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "nothing failed") || !strings.Contains(err.Error(), "couldn't give back") || !strings.Contains(err.Error(), "1 of 2") {
+		t.Fatalf("release failed: %v", err)
+	}
+}
+
+// 1870.31: once the head's checks go pending and settle after a re-run, the
+// history says how, once per re-run.
+func TestRerunOutcomeInHistory(t *testing.T) {
+	be := newBabysitEnv(t)
+	pr := be.open()
+	failed := CommitCheck{Name: "ci / backend", State: CheckFailed, URL: "https://ci.example.com/run/1"}
+	be.checks(pr.HeadSHA, failed)
+	if got := be.rerunOutcomes(pr); len(got) != 0 {
+		t.Fatalf("before any re-run: %q", got)
+	}
+	be.s.Forges = &rerunForge{shipForge: be.sg, failed: []string{"backend"}}
+	settle := func(to CommitCheck) {
+		t.Helper()
+		be.sg.setChecks(pr.HeadSHA, CommitCheck{Name: "ci / backend", State: CheckPending, URL: to.URL})
+		be.s.refreshPRChecks(be.ctx, pr.ID)
+		be.sg.setChecks(pr.HeadSHA, to)
+		be.s.refreshPRChecks(be.ctx, pr.ID)
+		be.s.refreshPRChecks(be.ctx, pr.ID) // settled again, not told again
+	}
+	if _, err := be.s.RerunPullRequest(be.ctx, be.agent, pr.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	settle(failed)
+	if got := be.rerunOutcomes(pr); len(got) != 1 || !strings.Contains(got[0], "after re-run 1 of 2") || !strings.Contains(got[0], "failed again: ci / backend") {
+		t.Fatalf("outcomes %q", got)
+	}
+	if _, err := be.s.RerunPullRequest(be.ctx, be.agent, pr.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	settle(CommitCheck{Name: "ci / backend", State: CheckSuccess, URL: "https://ci.example.com/run/2"})
+	if got := be.rerunOutcomes(pr); len(got) != 2 || !strings.Contains(got[1], "after re-run 2 of 2") || !strings.Contains(got[1], "every check passed") {
+		t.Fatalf("outcomes %q", got)
+	}
+}
+
+// rerunOutcomes is the pull request's re-run outcomes, oldest first.
+func (be *bsEnv) rerunOutcomes(pr *PullRequest) []string {
+	be.t.Helper()
+	rows, err := be.s.db.R.QueryContext(be.ctx, `SELECT body FROM pr_events WHERE pr_id = ? AND kind = 'ci_rerun_result' ORDER BY id`, pr.ID)
+	if err != nil {
+		be.t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var b string
+		if err := rows.Scan(&b); err != nil {
+			be.t.Fatal(err)
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
+// A head that settles with no re-run recorded on it gets no outcome.
+func TestRerunOutcomeNeedsARerun(t *testing.T) {
+	be := newBabysitEnv(t)
+	pr := be.open()
+	err := be.s.write(be.ctx, SystemActor(), func(tx *tx) error {
+		return be.s.noteRerunOutcome(be.ctx, tx, pr.ID, pr.Repo, pr.Number, pr.HeadSHA, 1, CIPassed, nil, be.s.nowMS())
+	})
+	var n int
+	if qerr := be.s.db.R.QueryRow(`SELECT count(*) FROM pr_events WHERE kind = 'ci_rerun_result'`).Scan(&n); err != nil || qerr != nil || n != 0 {
+		t.Fatalf("%d outcomes, %v %v", n, err, qerr)
 	}
 }
 

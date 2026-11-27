@@ -98,3 +98,18 @@ func TestCIDoctorStepOutOfTime(t *testing.T) {
 		t.Errorf("the other steps stopped answering: mains %+v", d.Mains)
 	}
 }
+
+// c7127: the jobs that ran out of time are their own step, so when only
+// their read is cut short the hosts' runs aren't said to be missing.
+func TestCIDoctorTimeoutsStepOwnsItsMiss(t *testing.T) {
+	restoreDoctorBudgets(t)
+	be := newBabysitEnvOn(t, "forgejo")
+	ciDoctorBudgets.Timeouts = time.Nanosecond
+	d, err := be.s.CIDoctor(be.ctx, be.admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Missing) != 1 || !strings.Contains(d.Missing[0], "the jobs that ran out of time") {
+		t.Fatalf("missing %q, want only the jobs that ran out of time", d.Missing)
+	}
+}

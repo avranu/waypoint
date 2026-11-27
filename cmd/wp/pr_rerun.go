@@ -35,7 +35,7 @@ type prRerunResult struct {
 	Head   string   `json:"head"`
 	Count  int      `json:"count"`
 	Max    int      `json:"max"`
-	// Partial is why the forge refused the rest of the jobs.
+	// Partial is why not all of the failed jobs went again.
 	Partial string `json:"partial"`
 	// Unrecorded: the jobs went again but Waypoint couldn't record it.
 	Unrecorded bool `json:"unrecorded"`
@@ -80,7 +80,7 @@ func cmdPRRerun(c *cli, args []string) error {
 				fmt.Fprintf(&b, "\nRun: %s", r.RunURL)
 			}
 			if r.Partial != "" {
-				fmt.Fprintf(&b, "\nthe forge refused the rest: %s; `wp pr log %d` shows what is still failed", r.Partial, d.Number)
+				fmt.Fprintf(&b, "\nnot all went again: %s; `wp pr log %d` shows what is still failed", r.Partial, d.Number)
 			}
 			if r.Unrecorded {
 				b.WriteString("\nthe jobs went again, but Waypoint couldn't record it in the pull request's activity and history")

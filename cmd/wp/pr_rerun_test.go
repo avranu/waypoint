@@ -65,7 +65,7 @@ func TestCLIPRRerunPartial(t *testing.T) {
 	e, fg := rerunEnv(t)
 	fg.err = errors.New("502 bad gateway")
 	out := e.wp("pr", "rerun", "3")
-	for _, want := range []string{"re-ran 2 jobs (backend, e2e)", "the forge refused the rest: 502 bad gateway; `wp pr log 3` shows what is still failed"} {
+	for _, want := range []string{"re-ran 2 jobs (backend, e2e)", "not all went again: 502 bad gateway; `wp pr log 3` shows what is still failed"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("lacks %q:\n%s", want, out)
 		}

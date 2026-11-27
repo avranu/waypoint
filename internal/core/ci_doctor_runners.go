@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -51,20 +50,20 @@ func (s *Service) ciHostRuns(ctx context.Context, since time.Time) ([]ciHostRun,
 	return out, rows.Err()
 }
 
-// A failed read is returned with what the other reads found, so the answer
-// says it is partial.
+// doctorRunnerFindings are the hosts that make no progress or run slow. The
+// jobs that ran out of time are their own step (timeLimitFindings), so a
+// failed read is put down to what it read.
 func (s *Service) doctorRunnerFindings(ctx context.Context, pool CIDoctorPool, now time.Time, show func(forgeID int64, repo string) bool) ([]CIFinding, error) {
-	out, limitsErr := s.timeLimitFindings(ctx, now, show)
 	runs, err := s.ciHostRuns(ctx, now.Add(-doctorHostHistory))
 	if err != nil {
-		return out, errors.Join(limitsErr, fmt.Errorf("read the hosts' runs: %w", err))
+		return nil, fmt.Errorf("read the hosts' runs: %w", err)
 	}
 	hosts, err := s.ciHosts(ctx)
 	if err != nil {
-		return out, errors.Join(limitsErr, fmt.Errorf("read the hosts: %w", err))
+		return nil, fmt.Errorf("read the hosts: %w", err)
 	}
-	out = append(out, noProgressFindings(runs, hosts, pool, now, show)...)
-	return append(out, slowHostFindings(runs, show)...), limitsErr
+	out := noProgressFindings(runs, hosts, pool, now, show)
+	return append(out, slowHostFindings(runs, show)...), nil
 }
 
 // noProgressFindings: a host with jobs running where every one of them has

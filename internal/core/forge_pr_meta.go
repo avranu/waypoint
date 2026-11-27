@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -207,9 +208,9 @@ func (c *httpForgeClient) retryForgejo(ctx context.Context, f *Forge, repo, sha 
 	if !ok {
 		return 0, errForgejoNoRerun
 	}
-	redo, _, err := c.forgejoRunsToRerun(ctx, f, repo, sha)
-	if err != nil {
-		return 0, err
+	redo, _, unread := c.forgejoRunsToRerun(ctx, f, repo, sha)
+	if unread != nil && !errors.Is(unread, errTooManyRuns) {
+		return 0, unread
 	}
 	n := 0
 	for _, r := range redo {
@@ -219,7 +220,7 @@ func (c *httpForgeClient) retryForgejo(ctx context.Context, f *Forge, repo, sha 
 			return n, err
 		}
 	}
-	return n, nil
+	return n, unread // older runs not read: said, with what the newest re-ran
 }
 
 // ForgeRunRetry is the optional part of a ForgeClient that re-runs the
