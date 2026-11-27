@@ -80,6 +80,7 @@ type slotHold struct {
 	idx    int
 	since  int64
 	ctxKey string
+	freed  func() // notes the release for the runner (noteSlotWait)
 }
 
 // write puts the holder line in the lock file: pid, start, folder, arguments,
@@ -90,7 +91,12 @@ func (h *slotHold) write(bound string) {
 	_, _ = h.f.WriteAt([]byte(fmt.Sprintf("%d\t%d\t%s\t%s\t%s\t%s\t%s\n", os.Getpid(), h.since, slotField(wd), slotField(strings.Join(os.Args[1:], " ")), slotField(slotSession()), slotField(h.ctxKey), bound)), 0)
 }
 
-func (h *slotHold) release() { _ = h.f.Close() }
+func (h *slotHold) release() {
+	_ = h.f.Close()
+	if h.freed != nil {
+		h.freed()
+	}
+}
 
 // acquireSlot waits for one of n slots called name. notify gets called once
 // if the wait passes slotWaitNotice. Inside an agent job the wait is noted
@@ -106,7 +112,9 @@ func acquireSlot(ctx context.Context, name string, n int, notify func()) (*slotH
 // acquireSlotIn is acquireSlot trying only the slots in order, in that order.
 // firstMiss, when not nil, is called once when the first pass finds none free.
 func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstMiss func()) (*slotHold, error) {
-	defer noteSlotWait(name)()
+	ended, free := noteSlotWait(name)
+	held := false
+	defer func() { ended(held) }() // a failed acquire holds nothing
 	dir, err := slotDir()
 	if err != nil {
 		return nil, err
@@ -139,8 +147,9 @@ func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstM
 				return nil, err
 			}
 			if ok {
-				h := &slotHold{f: f, idx: i, since: time.Now().Unix(), ctxKey: slotCtxKey(ctx)}
+				h := &slotHold{f: f, idx: i, since: time.Now().Unix(), ctxKey: slotCtxKey(ctx), freed: free}
 				h.write(slotBoundOf(ctx))
+				held = true
 				return h, nil
 			}
 			_ = f.Close()
