@@ -117,6 +117,7 @@ flags() {
 
 # Split go test flags into build-time vs binary-run-time for compiled test binaries.
 build_flags=()
+plain_build_flags=()
 run_flags=()
 has_cover=0
 has_timeout=0
@@ -168,12 +169,18 @@ for ((idx = 0; idx < ${#argv[@]}; idx++)); do
   -v)
     run_flags+=("-test.v")
     ;;
-  -cover | -cover=* | -covermode | -covermode=*)
+  -covermode)
+    has_cover=1
+    build_flags+=("$arg" "${argv[$((idx + 1))]}")
+    skip_next=1
+    ;;
+  -cover | -cover=* | -covermode=*)
     has_cover=1
     build_flags+=("$arg")
     ;;
   *)
     build_flags+=("$arg")
+    plain_build_flags+=("$arg")
     ;;
   esac
 done
@@ -184,11 +191,27 @@ if [ "$has_timeout" -eq 0 ]; then
   run_flags+=(-test.timeout=10m)
 fi
 
-# Run cmd/wp and rest packages while compiling internal/core once, then fan
-# internal/core across CORE_LANES isolated sub-processes so multi-core runners
-# don't sit idle on a single sequential core process. (go test -c builds the
-# test-augmented internal/core package, which cmd/wp and internal/api cannot
-# reuse anyway, so launching them immediately overlaps their work.)
+status=0
+core_pids=()
+core_build_pid=
+core_t0=0
+core_lanes=${CORE_LANES:-2}
+
+# Start compiling the test-augmented internal/core binary immediately so it
+# overlaps with cmd/wp and rest. When both cmd/wp and a rest package (e.g.
+# internal/api on shard 1 or cmd/waypoint on shard 3) import plain internal/core,
+# pre-warm plain internal/core once into GOCACHE before launching both so they
+# don't duplicate that compile concurrently.
+if [ -n "${run[internal/core]:-}" ] && [ "$core_lanes" -gt 1 ] && [ "${#core_weighted[@]}" -gt 1 ]; then
+  go test -c ${build_flags[@]+"${build_flags[@]}"} -o "$tmp/core.test" ./internal/core >"$tmp/core-build.out" 2>&1 &
+  core_build_pid=$!
+fi
+
+if [ -n "${run[cmd/wp]:-}" ] && [ ${#mine[@]} -gt 0 ] &&
+  go list -f '{{range .Deps}}{{if eq . "'"$mod"'/internal/core"}}1{{end}}{{end}}' "${mine[@]}" 2>/dev/null | grep -q 1; then
+  go build ${plain_build_flags[@]+"${plain_build_flags[@]}"} ./internal/core >/dev/null 2>&1 || true
+fi
+
 if [ -n "${run[cmd/wp]:-}" ]; then
   # shellcheck disable=SC2046 # flags prints separate words
   go test "$@" $(flags cmd-wp) -run "^(${run[cmd/wp]})\$" ./cmd/wp >"$tmp/cmd-wp.out" 2>&1 &
@@ -200,13 +223,9 @@ if [ ${#mine[@]} -gt 0 ]; then
   pids+=($!)
 fi
 
-status=0
-core_pids=()
-core_t0=0
-core_lanes=${CORE_LANES:-2}
 if [ -n "${run[internal/core]:-}" ]; then
-  if [ "$core_lanes" -gt 1 ] && [ "${#core_weighted[@]}" -gt 1 ]; then
-    if go test -c ${build_flags[@]+"${build_flags[@]}"} -o "$tmp/core.test" ./internal/core >"$tmp/core-build.out" 2>&1; then
+  if [ -n "$core_build_pid" ]; then
+    if wait "$core_build_pid"; then
       declare -a sub_run=()
       while read -r lane tname; do
         sub_run[lane]+="${sub_run[lane]:+|}$tname"

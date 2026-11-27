@@ -710,8 +710,33 @@ jobs:
         run: |
           tmp=$(mktemp -d)
           dumped=0
+          bg_pids=()
+          # shellcheck disable=SC2329 # invoked by cleanup (trap EXIT)
+          kill_tree() {
+            local sig=$1 pid=$2 child
+            for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+              kill_tree "$sig" "$child"
+            done
+            kill "-$sig" "$pid" 2>/dev/null || true
+          }
           # shellcheck disable=SC2329 # invoked by trap EXIT
           cleanup() {
+            local alive=0 pid
+            for pid in "${bg_pids[@]}"; do
+              if kill -0 "$pid" 2>/dev/null; then
+                alive=1
+                kill_tree TERM "$pid"
+              fi
+            done
+            if [ "$alive" -eq 1 ]; then
+              sleep 1
+              for pid in "${bg_pids[@]}"; do
+                if kill -0 "$pid" 2>/dev/null; then
+                  kill_tree KILL "$pid"
+                fi
+              done
+              wait "${bg_pids[@]}" 2>/dev/null || true
+            fi
             if [ "$dumped" -eq 0 ]; then
               for f in "$tmp"/*.log; do
                 [ -s "$f" ] || continue
@@ -730,10 +755,16 @@ jobs:
           # shard check alongside golangci-lint.
           (
             set -euo pipefail
-            test -z "$(gofmt -l cmd internal)"
+            unfmt=$(gofmt -l cmd internal)
+            if [ -n "$unfmt" ]; then
+              echo "gofmt: unformatted files:"
+              echo "$unfmt"
+              exit 1
+            fi
             golangci-lint run ./cmd/... ./internal/... ./web
           ) >"$tmp/golangci.log" 2>&1 &
           p_go=$!
+          bg_pids+=("$p_go")
 
           (
             set -euo pipefail
@@ -743,12 +774,14 @@ jobs:
             npm run format:check
           ) >"$tmp/web.log" 2>&1 &
           p_web=$!
+          bg_pids+=("$p_web")
 
           (
             set -euo pipefail
             .forgejo/scripts/gotest-shard.sh -check
           ) >"$tmp/shard-check.log" 2>&1 &
           p_shard=$!
+          bg_pids+=("$p_shard")
 
           declare -A status=()
           wait "$p_go" && status[golangci]=0 || status[golangci]=$?
@@ -782,8 +815,33 @@ jobs:
         run: |
           tmp=$(mktemp -d)
           dumped=0
+          bg_pids=()
+          # shellcheck disable=SC2329 # invoked by cleanup (trap EXIT)
+          kill_tree() {
+            local sig=$1 pid=$2 child
+            for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+              kill_tree "$sig" "$child"
+            done
+            kill "-$sig" "$pid" 2>/dev/null || true
+          }
           # shellcheck disable=SC2329 # invoked by trap EXIT
           cleanup() {
+            local alive=0 pid
+            for pid in "${bg_pids[@]}"; do
+              if kill -0 "$pid" 2>/dev/null; then
+                alive=1
+                kill_tree TERM "$pid"
+              fi
+            done
+            if [ "$alive" -eq 1 ]; then
+              sleep 1
+              for pid in "${bg_pids[@]}"; do
+                if kill -0 "$pid" 2>/dev/null; then
+                  kill_tree KILL "$pid"
+                fi
+              done
+              wait "${bg_pids[@]}" 2>/dev/null || true
+            fi
             if [ "$dumped" -eq 0 ]; then
               for f in "$tmp"/*.log; do
                 [ -s "$f" ] || continue
@@ -808,14 +866,17 @@ jobs:
             "$wplint_bin" repo -base origin/main -require-base
           ) >"$tmp/wplint.log" 2>&1 &
           p_wplint=$!
+          bg_pids+=("$p_wplint")
 
           p_cross=
           p_sast=
           if [ "$FULL" = true ]; then
             make cross-check >"$tmp/cross.log" 2>&1 &
             p_cross=$!
+            bg_pids+=("$p_cross")
             make sast >"$tmp/sast.log" 2>&1 &
             p_sast=$!
+            bg_pids+=("$p_sast")
           fi
 
           declare -A status=()
@@ -1016,6 +1077,8 @@ jobs:
         with:
           kind: release
       - uses: ./.forgejo/actions/go-mod
+      - name: verify module cache
+        run: go mod verify
       - name: tag and publish the release
         id: release
         env:

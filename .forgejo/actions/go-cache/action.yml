@@ -1,5 +1,5 @@
 name: go-cache
-description: Restore and save Go's module cache (shared across jobs, keyed on Go version and go.sum) and per-kind daily build cache (saved by the first passing job of each kind per day).
+description: Restore and save Go's module cache (keyed on Go version and go.sum; isolated for release) and per-kind daily build cache (saved by the first passing run of each kind per day).
 inputs:
   kind:
     description: what the job builds, e.g. backend-race, backend, lint, e2e
@@ -19,11 +19,16 @@ runs:
         gov=$(go env GOVERSION)
         sum=$(sha256sum go.sum | cut -c1-16)
         base="go-build-$KIND-$gov-$(go env GOOS)-$(go env GOARCH)"
+        if [ "$KIND" = release ]; then
+          modbase="go-mod-release-$gov"
+        else
+          modbase="go-mod-$gov"
+        fi
         {
           echo "gocache=$(go env GOCACHE)"
           echo "gomodcache=$(go env GOMODCACHE)"
-          echo "modkey=go-mod-$gov-$sum"
-          echo "modprefix=go-mod-$gov-"
+          echo "modkey=$modbase-$sum"
+          echo "modprefix=$modbase-"
           echo "base=$base"
           echo "sum=$base-$sum"
           echo "day=$(date -u +%Y%m%d)"
