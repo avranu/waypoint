@@ -1,0 +1,8 @@
+name: stack
+description: Build a merge queue stack's merges.
+runs:
+  using: composite
+  steps:
+    - if: startsWith(github.ref, 'refs/heads/wp-queue/')
+      shell: bash
+      run: .forgejo/scripts/queue-stack.sh

@@ -275,10 +275,14 @@ func TestReviewAsksAgainWithoutTheModelThatTimedOut(t *testing.T) {
 	if len(a.log) != 2 || a.log[0].Model != grok || a.log[0].Outcome != "timeout" || a.log[1].Outcome != "ok" {
 		t.Errorf("attempts = %+v", a.log)
 	}
-	if got := failedMidStream(chain[:1], []ModelAttempt{{Model: chain[0].Model, Outcome: "timeout"}}); got != "" {
+	gw := chain[0].ProviderID
+	if got := failedMidStream(gw, chain[:1], []ModelAttempt{{Model: chain[0].Model, Outcome: "timeout", providerID: gw}}); got != "" {
 		t.Errorf("the chain's own model = %q", got)
 	}
-	if got := failedMidStream(chain[:1], []ModelAttempt{{Model: grok, Outcome: "rate_limit"}}); got != "" {
+	if got := failedMidStream(gw, chain[:1], []ModelAttempt{{Model: grok, Outcome: "rate_limit", providerID: gw}}); got != "" {
 		t.Errorf("a rate limit = %q", got)
+	}
+	if got := failedMidStream(gw, chain[:1], []ModelAttempt{{Model: grok, Outcome: "timeout", providerID: gw + 1}}); got != "" {
+		t.Errorf("another provider's model = %q", got)
 	}
 }

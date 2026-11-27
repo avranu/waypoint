@@ -183,6 +183,9 @@ type stepJob struct {
 	Result map[string]any
 	Error  string
 	Tail   string // the end of its output
+	// CreatedAt and StartedAt are when the job was queued and when a
+	// runner took it (ms; 0 when none has).
+	CreatedAt, StartedAt int64
 }
 
 func (j *stepJob) finished() bool {
@@ -196,15 +199,17 @@ func (s *Service) readStepJob(ctx context.Context, where string, args ...any) (*
 	var exit sql.NullInt64
 	var result sql.NullString
 	var tail sql.NullString
+	var started sql.NullInt64
 	// #nosec G202 -- where is one of two fixed conditions; values are bound
-	err := s.db.R.QueryRowContext(ctx, `SELECT j.id, j.state, j.exit_code, j.result, j.error,
+	err := s.db.R.QueryRowContext(ctx, `SELECT j.id, j.state, j.exit_code, j.result, j.error, j.created_at, j.started_at,
 		(SELECT CAST(substr(CAST(l.text AS BLOB), -`+fmt.Sprint(jobTailBytes)+`) AS TEXT) FROM runner_job_logs l WHERE l.job_id = j.id)
-		FROM runner_jobs j WHERE `+where, args...).Scan(&j.ID, &j.State, &exit, &result, &j.Error, &tail)
+		FROM runner_jobs j WHERE `+where, args...).Scan(&j.ID, &j.State, &exit, &result, &j.Error, &j.CreatedAt, &started, &tail)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	} else if err != nil {
 		return nil, err
 	}
+	j.StartedAt = started.Int64
 	if exit.Valid {
 		c := int(exit.Int64)
 		j.Exit = &c

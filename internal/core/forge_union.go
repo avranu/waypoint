@@ -74,7 +74,11 @@ func (c *httpForgeClient) CommitToBranch(ctx context.Context, f *Forge, repo, br
 
 // unionPaths reads the patterns of a .gitattributes file whose attributes
 // include merge=union. Other attributes and lines are ignored.
-func unionPaths(attrs string) []string {
+func unionPaths(attrs string) []string { return attrPaths(attrs, "merge=union") }
+
+// attrPaths reads the patterns of a .gitattributes file whose attributes
+// include attr, written exactly so.
+func attrPaths(attrs, attr string) []string {
 	var out []string
 	sc := bufio.NewScanner(strings.NewReader(attrs))
 	for sc.Scan() {
@@ -82,16 +86,16 @@ func unionPaths(attrs string) []string {
 		if len(fs) < 2 || strings.HasPrefix(fs[0], "#") || strings.HasPrefix(fs[0], "[") {
 			continue
 		}
-		if slices.Contains(fs[1:], "merge=union") {
+		if slices.Contains(fs[1:], attr) {
 			out = append(out, strings.TrimPrefix(fs[0], "/"))
 		}
 	}
 	return out
 }
 
-// isUnionPath: p matches one of the patterns (a pattern without a slash
+// matchesAny: p matches one of the patterns (a pattern without a slash
 // matches a file's name in any directory, as in git).
-func isUnionPath(patterns []string, p string) bool {
+func matchesAny(patterns []string, p string) bool {
 	for _, pat := range patterns {
 		target := p
 		if !strings.Contains(pat, "/") {
@@ -176,8 +180,8 @@ func (s *Service) unionUpdate(ctx context.Context, f *Forge, pr *PullRequest, ti
 	var both []string
 	for _, p := range pr.files {
 		if slices.Contains(changed, p) {
-			if !isUnionPath(pats, p) {
-				return "", nil
+			if !matchesAny(pats, p) {
+				return "", nil // a real conflict may be among them
 			}
 			both = append(both, p)
 		}

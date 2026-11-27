@@ -17,8 +17,10 @@
 // points "down"; one to a later group points "up" and has to be cut (an event,
 // a moved helper, a small interface) before the lower group can leave the
 // package. A group not listed in groups.txt is "unplaced": it sits at the top
-// of the order and is named in the summary (a test keeps internal/core's own
-// files all placed). The group "kernel" is package core's root files, not the
+// of the order and is named in the summary. A file no line matches falls to the
+// group named by its stem before the first underscore; when that group is
+// listed, kernel included, the summary names the file (a test keeps
+// internal/core's own files all matched by a line). The group "kernel" is package core's root files, not the
 // package internal/core/kernel.
 //
 // The default report has three parts. The summary gives file and line counts

@@ -8,7 +8,7 @@ GOVULNCHECK_VERSION ?= v1.9.0
 ACTIONLINT_VERSION ?= v1.7.12
 KUBECONFORM_VERSION ?= v0.8.0
 
-.PHONY: e2e e2e-webkit all build web server cli cross-check test lint golint wplint wplint-code coremap coremap-upward sast vuln check prepush prepush-go prepush-ops prepush-web tools ci-image ops-lint dev docker deploy deploy-remote rollback-remote deploy-status restart-remote need-deploy-host release-dry-run clean help
+.PHONY: e2e e2e-webkit all build web server cli cross-check test test-all lint golint wplint wplint-code wplint-repo coremap coremap-upward sast vuln check check-all prepush prepush-go prepush-ops prepush-web tools ci-image ops-lint dev docker deploy deploy-remote rollback-remote deploy-status restart-remote need-deploy-host release-dry-run clean help
 
 all: build
 
@@ -27,6 +27,9 @@ cli: ## cross-compile wp (linux/darwin amd64+arm64, windows/amd64; WP_TARGETS="o
 	cmd/wp/build-all.sh bin/cli $(VERSION)
 
 GOPKGS := ./cmd/... ./internal/... ./web
+# What golint formats and wplint analyzes; .waypoint/test narrows both to the changed packages.
+GOFMTPATHS := cmd internal
+WPLINTPKGS := ./cmd/... ./internal/...
 
 GOTOOLS = PATH="$$(go env GOPATH)/bin:$$PATH"
 WEBDEPS = { [ -x node_modules/.bin/tsc ] || npm ci --no-audit --no-fund; }
@@ -35,9 +38,21 @@ SLOT ?= $(shell echo ",$$WAYPOINT_SLOTS_HELD" | grep -q ",tests=" || { wp slot -
 
 TESTSUM ?= $(if $(SLOT),$(shell wp testsum -h >/dev/null 2>&1 && echo wp testsum -- || echo '$(SLOT)'))
 
-test: ## backend tests + frontend typecheck (portable: no -race, needs cgo)
+# check and test run wp test, the scoped check (.waypoint/test, WP-ADR161), when this wp has it;
+# check-all and test-all are the whole tree.
+# WP_TEST_ALL=1 keeps the tests slot from narrowing their go test to the diff (WP-1877).
+check-all test-all: export WP_TEST_ALL = 1
+
+WPTEST = wp test -h >/dev/null 2>&1
+
+test: ## tests of what changed against the base (wp test); test-all is the whole tree
+	@if $(WPTEST); then wp test; else echo "make test: wp is missing or too old for wp test; running test-all (the whole tree)" >&2; $(MAKE) --no-print-directory test-all; fi
+
+# internal/core is one test binary here: 10-17m on 8 CPUs, and past 30m at a
+# load of 22-50 (WP-1857).
+test-all: ## the whole tree: backend tests + frontend typecheck (CI runs this on the pull request; about 20 minutes or more)
 	go vet $(GOPKGS)
-	$(TESTSUM) go test -count=1 -timeout 30m -cover $(GOPKGS)
+	$(TESTSUM) go test -count=1 -timeout 60m -cover $(GOPKGS)
 	cd web && $(WEBDEPS) && npm run typecheck
 
 tools: ## install pinned Go QA binaries
@@ -57,14 +72,16 @@ lint: cross-check golint ## vet + format check + full lint + wplint + wp cross-b
 
 golint: ## go vet, gofmt check and golangci-lint over GOPKGS
 	go vet $(GOPKGS)
-	test -z "$$(gofmt -l cmd internal)"
+	test -z "$$(gofmt -l $(GOFMTPATHS))"
 	$(GOTOOLS) $(SLOT) golangci-lint run $(GOPKGS)
 
-wplint: wplint-code ## Waypoint's own analyzers + the migration and e2e-wait checks against origin/main
+wplint: wplint-code wplint-repo ## Waypoint's own analyzers + the migration and e2e-wait checks against origin/main
+
+wplint-repo: ## the migration and e2e-wait checks against origin/main
 	go run ./cmd/wplint repo -base origin/main
 
-wplint-code: ## Waypoint's own analyzers over cmd and internal
-	$(SLOT) go run ./cmd/wplint ./cmd/... ./internal/...
+wplint-code: ## Waypoint's own analyzers over cmd and internal (WPLINTPKGS narrows)
+	$(SLOT) go run ./cmd/wplint $(WPLINTPKGS)
 
 coremap: ## map the references between internal/core's file groups (CORE_ARGS="-group pr" or "-edge 'pr>issues'"; see internal/coremap/doc.go)
 	$(SLOT) go run ./cmd/coremap $(CORE_ARGS)
@@ -73,8 +90,9 @@ coremap-upward: ## regenerate internal/coremap/upward.txt, the baseline of upwar
 	$(SLOT) go run ./cmd/coremap -write-upward
 
 cross-check: ## build wp for windows/amd64 and darwin/arm64 (no output)
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/wp
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o /dev/null ./cmd/wp
+	@CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/wp & p1=$$!; \
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o /dev/null ./cmd/wp & p2=$$!; \
+	rc=0; wait $$p1 || rc=1; wait $$p2 || rc=1; exit $$rc
 
 prepush: prepush-go prepush-ops prepush-web ## CI's lint job, as the pre-push hook runs it
 
@@ -100,13 +118,16 @@ sast: ## gosec SAST (accepted findings are marked `#nosec <rule> -- why`)
 vuln: ## govulncheck: fails only for called vulnerabilities this tree adds over origin/main (deploy/advisories.sh)
 	$(GOTOOLS) deploy/advisories.sh check go pr
 
-check: ## the full local gate (backend); web: cd web && npm run typecheck && npm run format:check && npm run audit && npm run build (lint dormant, see README)
-	@failed=; passed=; for s in lint sast vuln test; do \
+check: ## lint, vet, tests and guards for what changed against the base (wp test); check-all is the whole tree
+	@if $(WPTEST); then wp test; else echo "make check: wp is missing or too old for wp test; running check-all (the whole tree)" >&2; $(MAKE) --no-print-directory check-all; fi
+
+check-all: ## the whole tree, backend; CI runs this on the pull request; about 20 minutes or more; web: cd web && npm run typecheck && npm run format:check && npm run audit && npm run build (lint dormant, see README)
+	@failed=; passed=; for s in lint sast vuln test-all; do \
 	  if $(MAKE) --no-print-directory -k $$s; then passed="$$passed $$s"; else failed="$$failed $$s"; fi; \
 	done; \
 	passed=$$(echo $$passed | sed 's/ /, /g'); failed=$$(echo $$failed | sed 's/ /, /g'); \
-	if [ -n "$$failed" ]; then echo "make check: failed: $$failed; passed: $${passed:-none}" >&2; exit 1; fi; \
-	echo "make check: passed: $$passed" >&2
+	if [ -n "$$failed" ]; then echo "make check-all: failed: $$failed; passed: $${passed:-none}" >&2; exit 1; fi; \
+	echo "make check-all: passed: $$passed" >&2
 
 e2e: build ## browser checks (Playwright) against a throwaway server, all four looks; ARGS="05 07" picks suites, E2E_LOOKS=one does one look each
 	cd e2e && $(SLOT) ./run.sh $(ARGS)

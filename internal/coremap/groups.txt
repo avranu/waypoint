@@ -110,7 +110,7 @@ outside: outside.go outside_*.go
 leftover: leftover.go leftover_*.go
 mistake: mistake.go mistake_*.go
 prep: prep_*.go task_prep.go
-merge: merge*.go
+merge: merge*.go renumber.go
 permission: permission.go permission_*.go
 typed: typed.go typed_*.go
 cache: cache.go cache_*.go

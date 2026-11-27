@@ -155,6 +155,10 @@ type CodeAudit struct {
 	FromSHA     string `json:"from_sha,omitempty"`
 	ToSHA       string `json:"to_sha,omitempty"`
 	CommitCount *int   `json:"commit_count,omitempty"`
+	// FollowUpOf is the earlier audited head this audit read the change
+	// since, once the runner made that range; "" for a full audit, and for a
+	// follow-up that fell back to the whole change (WP-1938).
+	FollowUpOf string `json:"follow_up_of,omitempty"`
 	// Purpose is "" for an audit, footprint for the drift guard's check of
 	// a pull request's fix-up rounds against its task (WP-440).
 	Purpose string `json:"purpose,omitempty"`
@@ -211,6 +215,7 @@ type CodeAudit struct {
 	sessionID                int64
 	blocking                 bool
 	fixIssueID               int64
+	overRef                  string
 	authorModel              string
 	reviewText, roundContext string
 	claims                   string
@@ -256,6 +261,16 @@ type CodeAuditFinding struct {
 	Verdict     string `json:"verdict,omitempty"`
 	VerdictNote string `json:"verdict_note,omitempty"`
 	Lead        string `json:"lead,omitempty"`
+	// Evidence is what a rejection gave as showing the finding wrong;
+	// DecidedModel and DecidedEffort the model an agent that rejected it ran
+	// as, and DecidedStrength how that compared with the finder's (WP-1825).
+	Evidence        string `json:"evidence,omitempty"`
+	DecidedModel    string `json:"decided_model,omitempty"`
+	DecidedEffort   string `json:"decided_effort,omitempty"`
+	DecidedStrength string `json:"decided_strength,omitempty"`
+	// RefersTo is the id (c12 or 12.3) of the earlier point of the change's
+	// ledger this finding is about, as its reviewer named it (WP-1912).
+	RefersTo string `json:"refers_to,omitempty"`
 }
 
 // AuditAttempt is one model's go at an audit.
@@ -270,6 +285,14 @@ type AuditAttempt struct {
 	// "350 binary files (16.9 MiB)"; "" when nothing, or no gateway model.
 	LeftOut string `json:"left_out,omitempty"`
 	At      int64  `json:"at"`
+	// QueuedAt and TakenAt (ms) are when the attempt's runner job was queued
+	// and when a runner took it, so the wait for a runner shows (WP-1916);
+	// 0 on an attempt no runner took.
+	QueuedAt int64 `json:"queued_at,omitempty"`
+	TakenAt  int64 `json:"taken_at,omitempty"`
+	// Rerun marks the attempt after which a pull request's own audit was
+	// queued to run its whole chain once more (WP-1916).
+	Rerun bool `json:"rerun,omitempty"`
 }
 
 // AuditInput asks for an audit.
@@ -316,6 +339,8 @@ type AuditInput struct {
 	owner                    int64
 	purpose                  string
 	prContext                string
+	ledger                   string
+	over                     string // the earlier audited head a follow-up audit reads the change since (WP-1938)
 	authorModel              string
 	weakest                  string
 	reviewText, roundContext string
@@ -575,11 +600,29 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 				in.authorModel = s.prAuthorModel(ctx, known)
 			}
 		}
-		prContext = fmt.Sprintf("This is pull request %s#%d, %q, by %s, at its %s %s. Its description, as its author wrote it:\n\n<untrusted>\n%s\n</untrusted>",
-			repo.Repo, fp.Number, fp.Title, cmp(fp.Author, "someone"), map[bool]string{true: "merge commit", false: "head"}[fp.State == "merged" && fp.MergeSHA != ""],
-			short(cmp(fp.MergeSHA, cmp(in.head, fp.HeadSHA))), excerpt(untrusted(cmp(strings.TrimSpace(fp.Body), "(none)")), 4000))
+		// The title and description as a person approved them when the
+		// author is from outside (WP-281, WP-1788), as the review reads them;
+		// the title in quotes it can't end, the description in the wrapper.
+		title, body := fp.Title, fp.Body
+		if known != nil {
+			title, body = s.approvedTitle(ctx, repo.Forge, known, fp), s.approvedBody(ctx, repo.Forge, known, fp)
+		}
+		prContext = fmt.Sprintf("This is pull request %s#%d, %s, by %s, at its %s %s. Its description, as its author wrote it:\n\n<untrusted>\n%s\n</untrusted>",
+			repo.Repo, fp.Number, promptPRTitle(title), cmp(fp.Author, "someone"), map[bool]string{true: "merge commit", false: "head"}[fp.State == "merged" && fp.MergeSHA != ""],
+			short(cmp(fp.MergeSHA, cmp(in.head, fp.HeadSHA))), untrusted(excerpt(cmp(strings.TrimSpace(body), "(none)"), 4000)))
 		if in.prContext != "" {
 			prContext = in.prContext
+		}
+		if in.over != "" && known != nil {
+			if intent := s.prIntent(ctx, SystemActor(), known); intent != nil {
+				var c strings.Builder
+				c.WriteString("\n\nWhat it is for:\n")
+				intent.write(&c, "#### ")
+				prContext += c.String()
+			}
+		}
+		if in.ledger != "" {
+			prContext += "\n\n" + in.ledger
 		}
 	case "branch":
 		a.Ref, a.Base = strings.TrimSpace(in.Ref), strings.TrimSpace(in.Base)
@@ -646,6 +689,9 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 		}
 	}
 	a.Purpose, a.Weakest = in.purpose, in.weakest
+	if target == "pr" && a.Purpose == "" {
+		a.overRef = in.over
+	}
 	if slices.Contains(chain, AgentModel{CLI: GatewayCLI, Model: gatewayAuditModel}) {
 		if a.Weakest == "" {
 			a.Weakest = reviewFloorBar
@@ -688,11 +734,11 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 	err = s.write(ctx, actor, func(t *tx) error {
 		if err := t.QueryRowContext(ctx, `INSERT INTO code_audits(project_id, forge_id, repo, target, ref, base, pr_id, pr_number, title, instructions, prompt, models,
 			post_comment, fix, owner_id, requested_by, requested_agent, requested_via, automation_id, session_id, blocking, request_key, created_at,
-			since_spec, since_at, focus, paths, exclude, min_severity, max_findings, purpose, author_model, weakest, helpers)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,coalesce(?, ''),?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+			since_spec, since_at, focus, paths, exclude, min_severity, max_findings, purpose, author_model, weakest, helpers, over_ref)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,coalesce(?, ''),?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
 			p.ID, repo.Forge.ID, repo.Repo, a.Target, a.Ref, a.Base, prID, a.PRNumber, a.Title, a.Instructions, a.prompt, string(models),
 			a.PostComment, a.Fix, owner, by, actor.agentName(), via, auto, session, in.Blocking, key, s.nowMS(),
-			a.Since, sinceAt, jsonList(a.Focus), jsonList(a.Paths), jsonList(a.Exclude), a.MinSeverity, a.MaxFindings, a.Purpose, excerpt(strings.TrimSpace(in.authorModel), 100), a.Weakest, helpersJSON(a.Helpers)).Scan(&id); err != nil {
+			a.Since, sinceAt, jsonList(a.Focus), jsonList(a.Paths), jsonList(a.Exclude), a.MinSeverity, a.MaxFindings, a.Purpose, excerpt(strings.TrimSpace(in.authorModel), 100), a.Weakest, helpersJSON(a.Helpers), a.overRef).Scan(&id); err != nil {
 			return err
 		}
 		t.emit(&Event{Kind: EvCodeAudit, ProjectID: p.ID, New: AuditQueued, Data: map[string]any{"audit": id, "title": a.Title}})
@@ -822,13 +868,14 @@ func oldAuditRunnerWhy(runners []*Runner, cli string) string {
 // auditSchema is the answer every model is asked for.
 const auditSchema = `{"type":"object","additionalProperties":false,"required":["summary","findings"],"properties":{` +
 	`"summary":{"type":"string","description":"Two or three sentences: what you read and what you found."},` +
-	`"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["title","path","line","severity","problem","confirm"],"properties":{` +
+	`"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["title","path","line","severity","problem","confirm","refers_to"],"properties":{` +
 	`"title":{"type":"string","description":"One line: the defect."},` +
 	`"path":{"type":"string","description":"The file, relative to the repository's root."},` +
 	`"line":{"type":"integer","description":"The line the defect is on (0 if it has none)."},` +
 	`"severity":{"type":"string","enum":["critical","high","medium","low"]},` +
 	`"problem":{"type":"string","description":"What goes wrong, and when: the input or sequence of events that sets it off."},` +
-	`"confirm":{"type":"string","description":"How someone could confirm it: a test to write, an input to try, or the lines to read."}}}}}}`
+	`"confirm":{"type":"string","description":"How someone could confirm it: a test to write, an input to try, or the lines to read."},` +
+	`"refers_to":{"type":"string","description":"The id of the listed point this finding is about (a fix that did not hold, a wrong rejection); an empty string for a finding about anything else, and when the prompt lists no points."}}}}}}`
 
 // codeAuditPrompt is what the model is asked: the rules every audit keeps, then
 // what the requester asked for. The runner adds the change's diff.
@@ -921,6 +968,8 @@ func (s *Service) advanceAudit(ctx context.Context, id int64) {
 			JSONSchema: auditSchema, DiffPaths: a.Paths, DiffExclude: a.Exclude, Helpers: a.Helpers}
 		if a.SinceAt != nil {
 			in.DiffFrom, in.DiffSince = "", a.SinceAt.Unix()
+		} else if a.overRef != "" {
+			in.DiffOver, in.OverPrompt = a.overRef, followUpInstructions
 		}
 		timeout := auditTimeout + a.Helpers.extraTimeout()
 		if m.CLI == GatewayCLI {
@@ -999,9 +1048,9 @@ func (s *Service) endAudit(ctx context.Context, a *CodeAudit, status, why string
 			count = *a.CommitCount
 		}
 		res, err := t.ExecContext(ctx, `UPDATE code_audits SET status = ?, error = ?, attempts = ?, slot = ?, answer = ?, model = ?, summary = ?, tokens = ?, finished_at = ?,
-			from_sha = ?, to_sha = ?, commit_count = ?
+			from_sha = ?, to_sha = ?, commit_count = ?, followed_up = ?
 			WHERE id = ? AND status IN ('queued','running')`, status, excerpt(why, 2000), attemptsJSON(a.Attempts), a.Slot, a.Answer, a.Model, a.Summary,
-			tokensJSON(a.Tokens), s.nowMS(), a.FromSHA, a.ToSHA, count, a.ID)
+			tokensJSON(a.Tokens), s.nowMS(), a.FromSHA, a.ToSHA, count, a.FollowUpOf, a.ID)
 		if err != nil {
 			return err
 		}
@@ -1010,8 +1059,8 @@ func (s *Service) endAudit(ctx context.Context, a *CodeAudit, status, why string
 		}
 		if found != nil {
 			for i, f := range found.Findings {
-				if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO code_audit_findings(audit_id, ordinal, title, path, line, severity, problem, confirm, verdict, verdict_note, lead)
-					VALUES (?,?,?,?,?,?,?,?,?,?,?)`, a.ID, i+1, f.Title, f.Path, f.Line, f.Severity, f.Problem, f.Confirm, f.Verdict, f.VerdictNote, f.Lead); err != nil {
+				if _, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO code_audit_findings(audit_id, ordinal, title, path, line, severity, problem, confirm, verdict, verdict_note, lead, refers_to)
+					VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, a.ID, i+1, f.Title, f.Path, f.Line, f.Severity, f.Problem, f.Confirm, f.Verdict, f.VerdictNote, f.Lead, f.RefersTo); err != nil {
 					return err
 				}
 			}
@@ -1074,11 +1123,14 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 	if a.Slot < len(a.chain) {
 		m = a.chain[a.Slot]
 	}
-	att := AuditAttempt{Model: auditModelName(m), Job: jobID, Round: a.Retries, At: s.nowMS()}
+	att := AuditAttempt{Model: auditModelName(m), Job: jobID, Round: a.Retries, At: s.nowMS(), QueuedAt: j.CreatedAt, TakenAt: j.StartedAt}
 	if m.CLI == GatewayCLI {
 		att.LeftOut = kernel.Excerpt(strings.TrimSpace(anyString(j.Result["left_out"])), 300)
 	}
 	a.readRange(j.Result)
+	if a.overRef != "" && a.FollowUpOf == "" && j.State == "done" {
+		s.log.InfoContext(ctx, "a follow-up audit read the whole change", "audit", a.ID, "over", a.overRef, "why", excerpt(anyString(j.Result["over_fallback"]), 300))
+	}
 	a.HelperRuns = helperRunsOf(j.Result)
 	switch j.State {
 	case "done":
@@ -1134,7 +1186,10 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 		s.endAudit(ctx, a, AuditCancelled, att.Error, nil)
 		return
 	case "expired":
-		att.Outcome, att.Error = "unavailable", "no runner took it within a day"
+		att.Outcome, att.Error = "unavailable", runnerUntakenError
+		if j.StartedAt > 0 {
+			att.Error = runnerSilentError
+		}
 	default:
 		att.Outcome, att.Error = auditFailureKind(j), excerpt(jobWhy(j), 300)
 		if kind := anyString(j.Result["gateway_error"]); m.CLI == GatewayCLI && kind != "" {
@@ -1154,8 +1209,8 @@ func (s *Service) settleAudit(ctx context.Context, id, jobID int64) {
 	}
 	toGateway := m.CLI != GatewayCLI && next < len(a.chain) && slices.ContainsFunc(a.chain[next:], func(x AgentModel) bool { return x.CLI == GatewayCLI })
 	switch {
-	case (j.State == "expired" || att.Outcome == "error" && (next >= len(a.chain) || !rounds)) && !toGateway:
-		s.failAudit(ctx, a, att.Error)
+	case (j.State == "expired" && j.StartedAt == 0 || att.Outcome == "error" && (next >= len(a.chain) || !rounds)) && !toGateway:
+		s.endAuditFailed(ctx, a, att.Error)
 		return
 	case next < len(a.chain):
 		s.requeueAudit(ctx, a, next, a.Retries, nil)
@@ -1202,10 +1257,77 @@ func (s *Service) endAuditChain(ctx context.Context, a *CodeAudit, last string) 
 	case busy:
 		s.failAudit(ctx, a, fmt.Sprintf("Every model was still busy after %d tries: %s", auditMaxRetries+1, last))
 	case unreadable:
-		s.failAudit(ctx, a, "No model answered in the findings form; the last answer is kept as it came.")
+		s.endAuditFailed(ctx, a, "No model answered in the findings form; the last answer is kept as it came.")
 	default:
-		s.failAudit(ctx, a, last)
+		s.endAuditFailed(ctx, a, last)
 	}
+}
+
+// endAuditFailed ends a chain that failed on an error. A pull request's own
+// audit that failed on a passing fault runs its whole chain once more after
+// auditRetryStep, as its merge would otherwise go ahead with the head
+// unaudited (WP-1916); auditGoingErr holds the merge meanwhile. It does so
+// once, however many passes busy models took before, and only while the pull
+// request is open on the change the audit read. A pass that timed out, whose
+// runner went silent, or whose job no runner took in a day, is not run again:
+// the pull request waits on an audit that is going, and a second long wait
+// would hold it twice as long.
+// A pass that hit a usage limit is not run again either.
+func (s *Service) endAuditFailed(ctx context.Context, a *CodeAudit, why string) {
+	own, err := s.isPRAudit(ctx, a)
+	var rerun bool
+	if err == nil && own {
+		rerun, err = s.owesRerun(ctx, a)
+	}
+	if err != nil {
+		// Not ended on a guess: CheckAudits comes to it again.
+		s.log.WarnContext(ctx, "read whether a failed audit runs again", "audit", a.ID, "err", err)
+		return
+	}
+	if rerun {
+		a.Attempts[len(a.Attempts)-1].Rerun = true
+		at := s.now().Add(auditRetryStep)
+		s.requeueAudit(ctx, a, 0, a.Retries+1, &at)
+		return
+	}
+	if own && a.Retries > 0 {
+		why += fmt.Sprintf(" (tried %d times, the whole chain each time)", a.Retries+1)
+	}
+	s.failAudit(ctx, a, why)
+}
+
+// owesRerun says whether a pull request's own audit, its chain just failed,
+// runs once more (endAuditFailed).
+func (s *Service) owesRerun(ctx context.Context, a *CodeAudit) (bool, error) {
+	if len(a.Attempts) == 0 || a.PRID == nil {
+		return false, nil
+	}
+	for _, x := range a.Attempts {
+		slow := x.Outcome == "timeout" || x.Outcome == "spent" || x.Error == runnerSilentError || x.Error == runnerUntakenError
+		if x.Rerun || x.Round == a.Retries && slow {
+			return false, nil
+		}
+	}
+	pr, err := s.prByID(ctx, s.db.R, *a.PRID)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil || (pr.State != "open" && pr.State != "draft") {
+		return false, err
+	}
+	heads, err := s.sameChangeHeads(ctx, pr)
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(heads, func(h string) bool { return sameSHA(a.Ref, h) }), nil
+}
+
+// isPRAudit: the audit is a pull request's own (WP-1852), as against one a
+// person, an automation or a review round asked for.
+func (s *Service) isPRAudit(ctx context.Context, a *CodeAudit) (bool, error) {
+	var own bool
+	err := s.db.R.QueryRowContext(ctx, `SELECT purpose = '' AND request_key LIKE 'pr-audit:%' FROM code_audits WHERE id = ?`, a.ID).Scan(&own)
+	return own, err
 }
 
 // auditLimitAdvice says when a chain whose every model hit a usage limit
@@ -1257,6 +1379,14 @@ func (s *Service) requeueAuditTx(ctx context.Context, t *tx, a *CodeAudit, slot,
 // runnerStoppedError is the error of a job whose runner was stopped under it
 // (cmd/wp/runner.go), as against one a person cancelled.
 const runnerStoppedError = "The runner was stopped."
+
+// runnerSilentError is the error of an attempt whose runner took the job and
+// never reported back.
+const runnerSilentError = "the runner that took it went silent and never reported back"
+
+// runnerUntakenError is the error of an attempt whose job expired with no
+// runner having taken it.
+const runnerUntakenError = "no runner took it within a day"
 
 // jobWhy is a failed job's reason in a line.
 func jobWhy(j *stepJob) string {
@@ -1379,6 +1509,7 @@ func parseAuditAnswer(result map[string]any) (*auditAnswer, error) {
 			Severity string  `json:"severity"`
 			Problem  string  `json:"problem"`
 			Confirm  string  `json:"confirm"`
+			RefersTo string  `json:"refers_to"`
 			// What the runner's helpers add (WP-1320): the check's verdict
 			// and evidence, and the panel leads the runner names.
 			Verdict  string `json:"verdict"`
@@ -1412,7 +1543,7 @@ func parseAuditAnswer(result map[string]any) (*auditAnswer, error) {
 		sev := AuditSeverity(f.Severity)
 		p, line := cleanAuditPath(f.Path, int(f.Line))
 		a.Findings = append(a.Findings, CodeAuditFinding{Title: excerpt(title, 200), Path: p, Line: line, Severity: sev,
-			Problem: excerpt(problem, 4000), Confirm: excerpt(strings.TrimSpace(f.Confirm), 2000), Verdict: cleanVerdict(f.Verdict),
+			Problem: excerpt(problem, 4000), Confirm: excerpt(strings.TrimSpace(f.Confirm), 2000), Verdict: cleanVerdict(f.Verdict), RefersTo: cleanLedgerRef(f.RefersTo),
 			VerdictNote: excerpt(strings.TrimSpace(f.Evidence), 2000), Lead: strings.Join(leadIDs(strings.Join(append([]string{f.Lead}, f.Leads...), ",")), ",")})
 	}
 	slices.SortStableFunc(a.Findings, func(x, y CodeAuditFinding) int {
@@ -2051,7 +2182,7 @@ const auditCols = `a.id, a.project_id, p.key, p.name, a.forge_id, a.repo, a.targ
 	a.prompt, a.models, a.post_comment, a.fix, a.status, a.slot, a.job_id, coalesce(j.state, ''), a.attempts, a.retries, a.retry_at, a.model, a.summary, a.answer,
 	a.error, a.tokens, a.comment_url, coalesce(a.fix_issue_id, 0), coalesce(fp.key || '-' || fi.number, ''), a.owner_id, coalesce(a.requested_by, 0),
 	a.requested_agent, a.requested_via, coalesce(a.automation_id, 0), coalesce(au.name, ''), coalesce(a.session_id, 0), a.blocking, a.created_at, a.started_at, a.finished_at,
-	a.since_spec, a.since_at, a.focus, a.paths, a.exclude, a.min_severity, a.max_findings, a.from_sha, a.to_sha, a.commit_count, a.purpose, a.author_model, a.weakest, a.helpers`
+	a.since_spec, a.since_at, a.focus, a.paths, a.exclude, a.min_severity, a.max_findings, a.from_sha, a.to_sha, a.commit_count, a.purpose, a.author_model, a.weakest, a.helpers, a.over_ref, a.followed_up`
 
 const auditFrom = ` FROM code_audits a JOIN projects p ON p.id = a.project_id
 	LEFT JOIN pull_requests pr ON pr.id = a.pr_id
@@ -2069,7 +2200,7 @@ func scanAudit(sc interface{ Scan(...any) error }) (*CodeAudit, error) {
 		&a.Instructions, &a.prompt, &models, &a.PostComment, &a.Fix, &a.Status, &a.Slot, &jobID, &a.JobState, &attempts, &a.Retries, &retryAt, &a.Model,
 		&a.Summary, &a.Answer, &a.Error, &tokens, &a.CommentURL, &a.fixIssueID, &a.FixIssue, &a.ownerID, &a.requestedBy, &a.Agent, &a.Via, &a.automationID,
 		&a.Automation, &a.sessionID, &a.blocking, &created, &started, &finished,
-		&a.Since, &sinceAt, &focus, &paths, &exclude, &a.MinSeverity, &a.MaxFindings, &a.FromSHA, &a.ToSHA, &commits, &a.Purpose, &a.authorModel, &a.Weakest, &helpers)
+		&a.Since, &sinceAt, &focus, &paths, &exclude, &a.MinSeverity, &a.MaxFindings, &a.FromSHA, &a.ToSHA, &commits, &a.Purpose, &a.authorModel, &a.Weakest, &helpers, &a.overRef, &a.FollowUpOf)
 	if err != nil {
 		return nil, err
 	}
@@ -2136,7 +2267,7 @@ func (s *Service) auditCounts(ctx context.Context, id int64) AuditCounts {
 
 func (s *Service) loadFindings(ctx context.Context, a *CodeAudit) error {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT f.ordinal, f.title, f.path, f.line, f.severity, f.problem, f.confirm, f.state, f.note,
-		coalesce(ip.key || '-' || i.number, ''), i.id IS NOT NULL AND `+filingVoidOfIssue+`, coalesce(nullif(u.display_name, ''), u.username, f.decided_agent, ''), f.decided_at, f.verdict, f.verdict_note, f.lead
+		coalesce(ip.key || '-' || i.number, ''), i.id IS NOT NULL AND `+filingVoidOfIssue+`, coalesce(nullif(u.display_name, ''), u.username, f.decided_agent, ''), f.decided_at, f.verdict, f.verdict_note, f.lead, f.evidence, f.decided_model, f.decided_effort, f.decided_strength, f.refers_to
 		FROM code_audit_findings f LEFT JOIN issues i ON i.id = f.issue_id LEFT JOIN projects ip ON ip.id = i.project_id
 		LEFT JOIN users u ON u.id = f.decided_by WHERE f.audit_id = ? ORDER BY f.ordinal`, a.ID)
 	if err != nil {
@@ -2147,7 +2278,7 @@ func (s *Service) loadFindings(ctx context.Context, a *CodeAudit) error {
 	for rows.Next() {
 		var f CodeAuditFinding
 		var at sql.NullInt64
-		if err := rows.Scan(&f.Ordinal, &f.Title, &f.Path, &f.Line, &f.Severity, &f.Problem, &f.Confirm, &f.State, &f.Note, &f.Issue, &f.FilingVoid, &f.By, &at, &f.Verdict, &f.VerdictNote, &f.Lead); err != nil {
+		if err := rows.Scan(&f.Ordinal, &f.Title, &f.Path, &f.Line, &f.Severity, &f.Problem, &f.Confirm, &f.State, &f.Note, &f.Issue, &f.FilingVoid, &f.By, &at, &f.Verdict, &f.VerdictNote, &f.Lead, &f.Evidence, &f.DecidedModel, &f.DecidedEffort, &f.DecidedStrength, &f.RefersTo); err != nil {
 			return err
 		}
 		f.ID = fmt.Sprintf("%d.%d", a.ID, f.Ordinal)
@@ -2536,6 +2667,14 @@ type MarkFindings struct {
 	State string   `json:"state"`
 	Note  string   `json:"note"`
 	Issue string   `json:"issue"`
+	// Evidence is what shows a rejected finding wrong; an agent rejecting a
+	// finding of a pull request it isn't working on must give it (WP-1825).
+	Evidence string `json:"evidence"`
+}
+
+type findingRef struct {
+	audit int64
+	n     int
 }
 
 func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFindings) ([]CodeAuditFinding, error) {
@@ -2550,16 +2689,22 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 		return nil, invalid("mark at most 100 findings at once")
 	}
 	note := strings.TrimSpace(in.Note)
-	if utf8.RuneCountInString(note) > 2000 {
-		return nil, invalid("a note is at most 2000 characters")
+	if utf8.RuneCountInString(note) > MaxFindingNote {
+		return nil, invalid("a note is at most %d characters", MaxFindingNote)
 	}
 	if state == "rejected" && note == "" && actor.IsAgent() {
 		return nil, invalid("say why the finding is wrong or not worth fixing (a note)")
 	}
-	type ref struct {
-		audit int64
-		n     int
+	evidence := strings.TrimSpace(in.Evidence)
+	if err := checkEvidence(evidence); err != nil {
+		return nil, err
 	}
+	// Evidence is what shows a finding wrong: kept with a rejection only, so
+	// it isn't dropped without a word from another verdict.
+	if evidence != "" && state != "rejected" {
+		return nil, invalid("evidence goes with a rejection (what shows the finding wrong), not with %s", state)
+	}
+	type ref = findingRef
 	var refs []ref
 	audits := map[int64]*CodeAudit{}
 	for _, raw := range in.IDs {
@@ -2598,6 +2743,13 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 		by = actor.User.ID
 	}
 	err := s.write(ctx, actor, func(t *tx) error {
+		var records map[ref]rejectionRecord
+		if state == "rejected" && actor.IsAgent() {
+			var err error
+			if records, err = weighRejections(ctx, t, actor, evidence, refs); err != nil {
+				return err
+			}
+		}
 		for _, r := range refs {
 			if actor.IsAgent() {
 				if err := s.refuseMarkAfterCheck(ctx, t, r.audit, r.n, state); err != nil {
@@ -2605,8 +2757,8 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 				}
 			}
 			res, err := t.ExecContext(ctx, `UPDATE code_audit_findings SET state = ?, note = CASE WHEN ? = '' THEN note ELSE ? END, issue_id = CASE WHEN ? IS NOT NULL THEN ? WHEN ? = 'confirmed' THEN NULL ELSE issue_id END,
-				decided_by = ?, decided_agent = ?, decided_at = ? WHERE audit_id = ? AND ordinal = ?`,
-				state, note, note, issueID, issueID, state, by, actor.agentName(), s.nowMS(), r.audit, r.n)
+				decided_by = ?, decided_agent = ?, decided_at = ?, evidence = ?, decided_model = ?, decided_effort = ?, decided_strength = ? WHERE audit_id = ? AND ordinal = ?`,
+				state, note, note, issueID, issueID, state, by, actor.agentName(), s.nowMS(), evidence, records[r].model, records[r].effort, records[r].strength, r.audit, r.n)
 			if err != nil {
 				return err
 			}
@@ -2684,6 +2836,7 @@ func (a *CodeAudit) readRange(result map[string]any) {
 		c := int(n)
 		a.CommitCount = &c
 	}
+	a.FollowUpOf = excerpt(anyString(result["diff_over"]), 64)
 }
 
 // quietWhenClean: an audit Waypoint asked for itself (a footprint check, the

@@ -44,6 +44,7 @@ func WriteReport(w io.Writer, r Report) {
 		writeList(w, "  cycle", c)
 	}
 	writeList(w, "unplaced groups (not in the grouping file, at the top of the order)", s.Unplaced)
+	writeList(w, "files no line matches, put in a listed group by their stem", s.StemPlaced)
 	writeList(w, "ready groups (no upward references and none to the kernel group)", s.Ready)
 	if s.TypeErrors > 0 {
 		fmt.Fprintf(w, "WARNING: %d type errors; the map may be incomplete\n", s.TypeErrors)

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -168,14 +169,21 @@ func pageID(s string) (int64, error) {
 // pageRef finds a page by number, code (in the scope's project first) or
 // exact title (among pages you can see).
 func (c *cli) pageRef(ref string) (int64, error) {
+	return c.pageRefIn(ref, "")
+}
+
+func (c *cli) pageRefIn(ref, project string) (int64, error) {
 	if id, err := pageID(ref); err == nil {
 		return id, nil
 	}
 	if pageCodeRE.MatchString(ref) {
 		var p pageInfo
 		path := "/api/v1/pages/" + esc(strings.ToUpper(ref))
-		if home := c.homeProject(); home != "" {
-			path += "?project=" + url.QueryEscape(home)
+		if project == "" {
+			project = c.homeProject()
+		}
+		if project != "" {
+			path += "?project=" + url.QueryEscape(project)
 		}
 		err := c.do("GET", path, nil, &p)
 		var ae *apiError
@@ -218,20 +226,27 @@ func (c *cli) pageByTitle(ref string) (int64, error) {
 }
 
 var pageShowCmd = &command{
-	name: "show", args: "PAGE...", aliases: []string{"view", "cat"},
+	name: "show", args: "PAGE... [--raw] [-o FILE]", aliases: []string{"view", "cat"},
 	summary:  "show pages",
-	examples: []string{"wp page show PL13 7", `wp page show "Parser plan"`},
+	about:    `--raw prints only the markdown body; -o FILE writes the raw body to FILE.`,
+	examples: []string{"wp page show PL13 7", `wp page show "Parser plan"`, "wp page show PL13 --raw -o plan.md"},
 	run:      pageShow,
 }
 
 func pageShow(c *cli, args []string) error {
 	fs := c.flags()
+	project := fs.String("project", "", "project `PROJECT` for bare codes like PL13")
+	short(fs, "p", "project")
+	rawBody := fs.Bool("raw", false, "print only the raw markdown body")
+	alias(fs, "body", "raw")
+	outFile := fs.String("out", "", "write the raw markdown body to `FILE`")
+	short(fs, "o", "out")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) == 0 {
-		return c.usage("which page? Give its number or title")
+		return c.usage("which page? Give its number, code or title")
 	}
 	refs := listArgs(pos)
 	for _, r := range refs {
@@ -240,10 +255,32 @@ func pageShow(c *cli, args []string) error {
 			break
 		}
 	}
-	return c.each(refs, true, func(ref string) error {
-		id, err := c.pageRef(ref)
+	if *outFile != "" && len(refs) > 1 {
+		return c.usage("-o writes one page's body; give one PAGE")
+	}
+	return c.each(refs, !*rawBody, func(ref string) error {
+		id, err := c.pageRefIn(ref, *project)
 		if err != nil {
 			return err
+		}
+		if *rawBody || *outFile != "" {
+			var p pageInfo
+			if err := c.do("GET", fmt.Sprintf("/api/v1/pages/%d", id), nil, &p); err != nil {
+				return err
+			}
+			body := p.Body
+			if body != "" && !strings.HasSuffix(body, "\n") {
+				body += "\n"
+			}
+			if *outFile != "" {
+				if err := os.WriteFile(*outFile, []byte(body), 0o600); err != nil {
+					return err
+				}
+				c.println(fmt.Sprintf("Wrote page #%d body to %s (%d bytes).", id, *outFile, len(body)))
+				return nil
+			}
+			c.print(body)
+			return nil
 		}
 		path := fmt.Sprintf("/api/v1/pages/%d", id)
 		if !c.asJSON {
@@ -515,9 +552,10 @@ func pageLinks(c *cli, args []string, on bool) error {
 
 var pagePublishCmd = &command{
 	name: "publish", args: "PAGE",
-	summary: "(people) publish a draft page, so agents can see it",
-	about:   `Also publishes the drafts under it. Only a person can.`,
-	run:     pagePublish,
+	summary:  "(people) publish a draft page, so agents can see it",
+	about:    `Also publishes the drafts under it. Only a person can.`,
+	examples: []string{"wp page publish PL13"},
+	run:      pagePublish,
 }
 
 func pagePublish(c *cli, args []string) error {

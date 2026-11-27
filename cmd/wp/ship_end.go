@@ -3,8 +3,12 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -216,8 +220,7 @@ func fillSummary(text, key string, d *prDetail) string {
 	if d == nil {
 		return strings.TrimSpace(text)
 	}
-	what := cmpStr(key, d.Title)
-	s := strings.NewReplacer("{task}", what, "{pr}", strconv.Itoa(d.Number), "{url}", d.URL).Replace(strings.TrimSpace(text))
+	s := fillPlaceholders(text, cmpStr(key, d.Title), d.Number, d.URL)
 	if d.URL != "" && !strings.Contains(s, d.URL) {
 		s += fmt.Sprintf("\n\nPR #%d: %s", d.Number, d.URL)
 	}
@@ -229,6 +232,21 @@ func fillSummary(text, key string, d *prDetail) string {
 func heldSummary(text string) string {
 	s := strings.NewReplacer("{pr}", "(after the review)", "{url}", "(after the review)", "{task}", "this task").Replace(strings.TrimSpace(text))
 	return s + "\n\n(The pull request opens after the adversarial review, by Waypoint when the review leaves nothing for the session to do; findings that need the session come back to it.)"
+}
+
+// endedSummary is what the person sees when a held ship's wait ends with the
+// round over and the server sent its pull request: the summary, then
+// Waypoint's news.
+func endedSummary(text, key string, pull *shipPull, news string) string {
+	// news names the pull request and its URL, so no PR line is added; the
+	// server sends no title, so {task} without a key is "this task".
+	return fillPlaceholders(text, cmpStr(key, "this task"), pull.Number, pull.URL) + "\n\n" + news
+}
+
+// fillPlaceholders puts the task, the pull request's number and its URL into
+// a --summary's {task}, {pr} and {url}.
+func fillPlaceholders(text, task string, number int, url string) string {
+	return strings.NewReplacer("{task}", task, "{pr}", strconv.Itoa(number), "{url}", url).Replace(strings.TrimSpace(text))
 }
 
 // endTurnAfterShip marks this session's turn as one the hooks may end, with
@@ -475,9 +493,21 @@ func checkPassedLine(cmd string, took, waited time.Duration) string {
 	return fmt.Sprintf("Check passed: %s (%s%s)", cmd, took, slotWaitNote(waited))
 }
 
+// cpuCount is a var so a test can fix it.
+var cpuCount = runtime.NumCPU
+
+// loadNote says how loaded the machine was, so a transient failure can be
+// weighed against it afterwards (WP-1850); "" without both readings.
+func loadNote(load []float64) string {
+	if len(load) != 2 {
+		return ""
+	}
+	return fmt.Sprintf("; 1-minute load %.1f at the start, %.1f at the end, on %d CPUs", load[0], load[1], cpuCount())
+}
+
 // checkFailedHead is the line that comes before a failed check's last lines.
-func checkFailedHead(cmd string, code int, took, waited time.Duration) string {
-	return fmt.Sprintf("Check failed: %s exited %d after %s%s; last lines:\n", cmd, code, took, slotWaitNote(waited))
+func checkFailedHead(cmd string, code int, took, waited time.Duration, load []float64) string {
+	return fmt.Sprintf("Check failed: %s exited %d after %s%s%s; last lines:\n", cmd, code, took, slotWaitNote(waited), loadNote(load))
 }
 
 // runShipCheck runs --check CMD in the tests slot, as wp testsum does, and
@@ -504,13 +534,21 @@ func (c *cli) runShipCheck(cmd string) error {
 	// The wait for a slot isn't the check's time: a 25 minute make check
 	// that queued 44 minutes was reported as one of 69 (WP-1812).
 	queued := time.Now()
-	start := queued
-	code, err := c.runInSlotThen("tests", defaultSlots(), goTestJSON(argv), &buf, &buf, func() { rec.started(); start = time.Now() }, func(env []string) []string {
+	got, start := queued, queued
+	var nothing bool
+	// Nor is indexing the tree, before the command and after it, either
+	// one's time (audit 1860.2).
+	code, err := c.runInSlotWith("tests", defaultSlots(), goTestJSON(argv), &buf, &buf, func() { got = time.Now(); rec.started(); start = time.Now() }, func(env []string) []string {
 		env, _ = testEnv(env, nil)
 		return env
-	})
+	}, slotOpts{who: "wp ship", allCmd: "wp testsum --all --", rec: rec, nothing: &nothing})
+	took := time.Since(start).Round(time.Second)
 	if err != nil {
 		return fmt.Errorf("--check couldn't run %s: %w (nothing shipped)", cmd, err)
+	}
+	if nothing {
+		c.println("Check: " + cmd + " has nothing to run: no changed file is in the packages it asks for; not recorded as a pass.")
+		return nil
 	}
 	res, _, _ := parseTestOutput(buf.Bytes(), "auto")
 	if res == nil {
@@ -522,19 +560,70 @@ func (c *cli) runShipCheck(cmd string) error {
 	} else {
 		rec.finish(res, code)
 	}
-	took := time.Since(start).Round(time.Second)
-	waited := start.Sub(queued)
+	waited := got.Sub(queued)
 	if !failed {
 		line := checkPassedLine(cmd, took, waited)
 		if res.Passed+res.Failed+res.Skipped > 0 {
 			line += "; " + strings.TrimSpace(res.render())
 		}
+		if rec.compileOnly {
+			line += "; only compiled, no test ran, so it is not recorded as a pass"
+		}
 		c.println(line)
 		return nil
 	}
 	if res.Passed+res.Failed+res.Skipped > 0 {
-		_, _ = fmt.Fprint(c.out, res.render())
+		_, _ = fmt.Fprint(c.out, res.renderSaving(buf.Bytes()))
 	}
-	_, _ = fmt.Fprint(c.out, checkFailedHead(cmd, code, took, waited)+failedTail(buf.Bytes(), 30))
+	_, _ = fmt.Fprint(c.out, checkFailedHead(cmd, code, took, waited, rec.loads())+failedTail(buf.Bytes(), 30))
 	return fmt.Errorf("the check failed, so nothing was committed or shipped: fix it and run wp ship again")
+}
+
+// shipScopedCheck is how wp ship runs the repository's own scoped check when
+// --check wasn't given (WP-ADR161): wp test, run as this binary and not
+// whichever wp is on PATH. It takes the tests slot and records itself.
+var shipScopedCheck = func(c *cli) (int, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return 0, err
+	}
+	cmd := exec.Command(exe, "test") // #nosec G204 -- this binary, a fixed argument
+	cmd.Stdout, cmd.Stderr = c.err, c.err
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return ee.ExitCode(), nil
+		}
+		return 0, err
+	}
+	return 0, nil
+}
+
+// runDefaultShipCheck runs wp test before a ship in a repository with a
+// .waypoint/test, unless it already passed on this tree. CI still runs the
+// whole suite on the pull request, so this is the quick check.
+func (c *cli) runDefaultShipCheck() error {
+	root, err := localGit("rev-parse", "--show-toplevel")
+	if err != nil || !hasTestScript(root) {
+		return nil
+	}
+	recorded := "wp test" + scopedMark
+	if tree := workingTree(); tree != "" {
+		on, _ := runsOnTree(readTestRuns(testRunsPath()), tree)
+		for _, r := range on {
+			if r.Command == recorded && r.Outcome == runPass {
+				c.println("Check: wp test already passed on this tree; not run again.")
+				return nil
+			}
+		}
+	}
+	c.println("Check: wp test (this repository's " + testScriptFile + "; --check CMD runs another, --no-check skips; CI still runs the whole suite on the pull request).")
+	code, err := shipScopedCheck(c)
+	if err != nil {
+		return fmt.Errorf("wp test couldn't run: %w (nothing shipped; --no-check ships without it)", err)
+	}
+	if code != 0 {
+		return fmt.Errorf("wp test failed (exit %d), so nothing was committed or shipped: fix what it names and run wp ship again, or wp ship --no-check to ship without it", code)
+	}
+	return nil
 }

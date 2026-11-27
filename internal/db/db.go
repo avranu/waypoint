@@ -30,19 +30,29 @@ type DB struct {
 	W    *sql.DB // single connection, all writes
 	R    *sql.DB // concurrent reads
 	path string
+	mon  *monitor
 }
 
 func dsn(path string, readOnly bool) string {
+	return dsnMode(path, readOnly, false)
+}
+
+func dsnMode(path string, readOnly, testMode bool) string {
 	q := url.Values{}
-	for _, p := range []string{
+	pragmas := []string{
 		"journal_mode(WAL)",
 		"busy_timeout(10000)",
 		"foreign_keys(1)",
-		"synchronous(NORMAL)",
-		"cache_size(-32000)",
-		"mmap_size(268435456)",
 		"temp_store(MEMORY)",
-	} {
+	}
+	if testMode {
+		// Temp-dir test databases need no crash durability and open thousands
+		// of times per CI run; smaller cache and no mmap keep RSS bounded.
+		pragmas = append(pragmas, "synchronous(OFF)", "cache_size(-4000)")
+	} else {
+		pragmas = append(pragmas, "synchronous(NORMAL)", "cache_size(-32000)", "mmap_size(268435456)")
+	}
+	for _, p := range pragmas {
 		q.Add("_pragma", p)
 	}
 	if readOnly {
@@ -58,10 +68,12 @@ func dsn(path string, readOnly bool) string {
 // path ":memory:" is not supported because the two pools would see different
 // databases; tests use a temp file.
 func Open(ctx context.Context, path string) (*DB, error) {
-	w, err := sql.Open("sqlite", dsn(path, false))
-	if err != nil {
-		return nil, err
-	}
+	return open(ctx, path, true, false)
+}
+
+func open(ctx context.Context, path string, runMigrate, testMode bool) (*DB, error) {
+	mon := &monitor{threshold: slowThreshold(), floor: totalsFloor, callers: map[string]*CallerTotal{}}
+	w := openPool(dsnMode(path, false, testMode), "write", mon)
 	w.SetMaxOpenConns(1)
 	w.SetMaxIdleConns(1)
 	w.SetConnMaxLifetime(0)
@@ -69,22 +81,28 @@ func Open(ctx context.Context, path string) (*DB, error) {
 		_ = w.Close()
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
-	if err := migrate(ctx, w); err != nil {
-		_ = w.Close()
-		return nil, err
+	if runMigrate {
+		if err := migrate(ctx, w); err != nil {
+			_ = w.Close()
+			return nil, err
+		}
 	}
-	r, err := sql.Open("sqlite", dsn(path, true))
-	if err != nil {
-		_ = w.Close()
-		return nil, err
+	r := openPool(dsnMode(path, true, testMode), "read", mon)
+	if testMode {
+		// Nested readers (e.g. usageSessionMetaN) hold two read connections at
+		// once; keep 4 open and idle so tests don't deadlock or churn schema
+		// re-parses while staying smaller than NumCPU pools.
+		r.SetMaxOpenConns(4)
+		r.SetMaxIdleConns(4)
+	} else {
+		n := max(4, runtime.NumCPU())
+		r.SetMaxOpenConns(n)
+		r.SetMaxIdleConns(n)
 	}
-	n := max(4, runtime.NumCPU())
-	r.SetMaxOpenConns(n)
-	r.SetMaxIdleConns(n)
 	for _, f := range []string{path, path + "-wal", path + "-shm"} {
 		_ = os.Chmod(f, 0o600)
 	}
-	return &DB{W: w, R: r, path: path}, nil
+	return &DB{W: w, R: r, path: path, mon: mon}, nil
 }
 
 // Path is the database file.
@@ -99,6 +117,25 @@ func migrate(ctx context.Context, w *sql.DB) error {
 		name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL DEFAULT (unixepoch()))`); err != nil {
 		return err
 	}
+	applied := map[string]bool{}
+	rows, err := w.QueryContext(ctx, `SELECT name FROM schema_migrations`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return err
+		}
+		applied[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
 	names, err := fs.Glob(migrations, "migrations/*.sql")
 	if err != nil {
 		return err
@@ -106,11 +143,7 @@ func migrate(ctx context.Context, w *sql.DB) error {
 	sort.Strings(names)
 	for _, name := range names {
 		base := strings.TrimPrefix(name, "migrations/")
-		var exists int
-		if err := w.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE name = ?`, base).Scan(&exists); err != nil {
-			return err
-		}
-		if exists > 0 {
+		if applied[base] {
 			continue
 		}
 		body, err := migrations.ReadFile(name)

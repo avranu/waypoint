@@ -60,8 +60,16 @@ func cmdLs(c *cli, args []string) error {
 	agents := fs.String("for", "", "only tasks for `WHO`: anyone, none (humans only), any (any agent), or an agent like claude")
 	var tags listFlag
 	fs.Var(&tags, "tag", "only issues with this `TAG` (repeat for all of several)")
+	parent := fs.String("parent", "", "only direct children of issue `KEY`")
+	queryFlag := fs.String("query", "", "search `QUERY` (same as positional words or WQL filters)")
+	short(fs, "q", "query")
+	alias(fs, "search", "query")
+	alias(fs, "text", "query")
+	alias(fs, "wql", "query")
 	closed := fs.Bool("closed", false, "only closed issues (done or canceled)")
 	anyStatus := fs.Bool("any-status", false, "open and closed issues")
+	alias(fs, "archived", "any-status")
+	alias(fs, "all-status", "any-status")
 	sort := fs.String("sort", "", "order by `FIELD`: priority, due, updated, created, resolved, rank, key, title, points (-field: descending)")
 	limit := fs.Int("limit", 50, "show at most `N` issues")
 	short(fs, "n", "limit")
@@ -87,6 +95,9 @@ func cmdLs(c *cli, args []string) error {
 			return err
 		}
 	}
+	if *queryFlag != "" {
+		pos = append(pos, *queryFlag)
+	}
 	userQuery := joinArgs(pos)
 	var terms []string
 	add := func(key, v string) {
@@ -105,6 +116,7 @@ func cmdLs(c *cli, args []string) error {
 	add("type", *typ)
 	add("category", *category)
 	add("agent", *agents)
+	add("parent", *parent)
 	for _, t := range tags {
 		add("tag", t)
 	}
@@ -180,17 +192,15 @@ func quoteTerm(v string) string {
 }
 
 var showCmd = &command{
-	name: "show", group: "Issues", args: "[CODE...]",
+	name: "show", group: "Issues", args: "[CODE...] [-p PROJECT]",
 	aliases: []string{"view"},
-	summary: "show issues, requests, decisions, pages or pull requests in full",
-	about: `An issue: description, comments, then prep pointers, children,
-relations and links; attachments are login-gated links (wp files KEY saves
-them locally). CODE defaults to your current task. Other codes show what
-they name, as their own show command would: R-12 a request, ADR7 a
-decision note, PL13 a page, #12 a pull request. A code that names more
-than one thing (R1: request R-1 or page R1) lists the commands to pick
-from; issue:, request:, design:, page: and pr: say which.`,
-	examples: []string{"wp show APP-12 APP-15", "wp show R-12 ADR7 PL13", "wp show   # the task you took"},
+	summary: "show issues, requests, decisions, pages, pull requests or audit findings in full",
+	about: `An issue prints in full: description, all comments, prep pointers, children,
+relations and links (wp files KEY downloads attachments). CODE defaults to your
+current task. Also accepts R-12 (request), ADR7 (decision), PL13 (page), #12
+(pull request), 12.3 (audit finding) or prefixed forms (issue:, request:, design:,
+page:, pr:, audit:).`,
+	examples: []string{"wp show APP-12 APP-15", "wp show R-12 ADR7 PL13 #42 12.3", "wp show   # the task you took"},
 	run:      cmdShow,
 }
 
@@ -503,6 +513,10 @@ func cmdNew(c *cli, args []string) error {
 	draft := fs.Bool("draft", false, "a draft, hidden from agents")
 	hold := fs.String("hold", "", "hold until `WHEN` (date, or indefinitely)")
 	anyway := fs.Bool("new", false, "file even if a similar issue is open")
+	var blocks, follows, relates listFlag
+	fs.Var(&blocks, "blocks", "mark this issue as blocking `KEY` (repeatable)")
+	fs.Var(&follows, "follows", "mark this issue as following `KEY` (repeatable)")
+	fs.Var(&relates, "relates", "relate this issue to `KEY` (repeatable)")
 	of := addObjectiveFlags(fs, false)
 	pos, err := c.parse(fs, args)
 	if err != nil {
@@ -565,6 +579,22 @@ func cmdNew(c *cli, args []string) error {
 		}
 		if err := c.setNewObjective(made.Key, obj); err != nil {
 			return err
+		}
+	}
+	if made.Key != "" {
+		for _, rel := range []struct {
+			kind string
+			keys listFlag
+		}{{"blocks", blocks}, {"follows", follows}, {"relates", relates}} {
+			for _, other := range rel.keys {
+				other = strings.ToUpper(other)
+				if _, err := c.call("POST", "/api/v1/issues/"+esc(made.Key)+"/relations", map[string]string{"kind": rel.kind, "issue": other}); err != nil {
+					return fmt.Errorf("%s was created, but relating %s %s failed: %w", made.Key, rel.kind, other, err)
+				}
+				if !c.asJSON {
+					c.println(fmt.Sprintf("Related %s %s %s", made.Key, rel.kind, other))
+				}
+			}
 		}
 	}
 	if c.asJSON || !parsed {
@@ -771,16 +801,16 @@ func cmdMv(c *cli, args []string) error {
 }
 
 var assignCmd = &command{
-	name: "assign", group: "Issues", args: "[KEY] [USER...]",
+	name: "assign", group: "Issues", args: "[KEY] [USER...]", hidden: true,
 	summary: "assign an issue to people (you by default)",
 	about: `USER is a username; me (default) is you. Assigning someone outside the
-project shares the issue with them.`,
+project shares the issue with them. Same as wp edit KEY --assign USER.`,
 	examples: []string{"wp assign APP-12 sam robin"},
 	run:      func(c *cli, args []string) error { return assign(c, args, "add_assignees", "Assigned") },
 }
 
 var unassignCmd = &command{
-	name: "unassign", group: "Issues", args: "[KEY] [USER...]",
+	name: "unassign", group: "Issues", args: "[KEY] [USER...]", hidden: true,
 	summary:  "remove assignees (you by default)",
 	examples: []string{"wp unassign APP-12 sam"},
 	run:      func(c *cli, args []string) error { return assign(c, args, "remove_assignees", "Updated") },

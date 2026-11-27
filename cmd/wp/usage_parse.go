@@ -628,10 +628,6 @@ func (p *usageParser) assistant(b []byte, l *rawLine) {
 		}
 		cur.u = u
 	}
-	if !p.st.CLICounted && ts > 0 && model != "" && !strings.HasPrefix(model, "<") {
-		p.st.CLICounted = true
-		p.addCLI(hourOf(ts), model, usageCLIFile, "", "", 1)
-	}
 	if !bytes.Contains(b, markToolUse) {
 		return
 	}

@@ -246,6 +246,20 @@ func (s *Service) approvedBody(ctx context.Context, f *Forge, pr *PullRequest, f
 	return ""
 }
 
+// approvedTitle is a pull request's title as a person approved it, when its
+// author is from outside: the forge's title may have changed since, and a
+// review that starts before the next sync holds it again would read the new
+// one (WP-1788). An author who isn't from outside keeps the forge's title.
+func (s *Service) approvedTitle(ctx context.Context, f *Forge, pr *PullRequest, fp *ForgePR) string {
+	v := s.prVoice(ctx, f)
+	if !v.authorOutside(ctx, s.db.R, fp.Author, pr.Author) {
+		return fp.Title
+	}
+	var title string
+	_ = s.db.R.QueryRowContext(ctx, `SELECT title FROM outside_pr_text WHERE pr_id = ? AND external_id = '' AND state = 'approved'`, pr.ID).Scan(&title)
+	return cmp(title, outsideTitleInPrompt)
+}
+
 // errPROutside refuses work on a pull request from outside no person
 // approved.
 func errPROutside(pr *PullRequest) error {

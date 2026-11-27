@@ -30,10 +30,14 @@ type Summary struct {
 	ServiceMeths  int       `json:"serviceMethods"`
 	Groups        int       `json:"groups"`
 	Unplaced      []string  `json:"unplaced"`
-	Ready         []string  `json:"ready"`
-	SCCs          int       `json:"sccs"`
-	LargestSCC    int       `json:"largestScc"`
-	LargestSCCOf  []string  `json:"largestSccGroups"`
+	// StemPlaced lists the files no line matches that the stem rule put in a
+	// listed group (with PerFile, those it counts as kernel): Unplaced does
+	// not show them.
+	StemPlaced   []string `json:"stemPlaced"`
+	Ready        []string `json:"ready"`
+	SCCs         int      `json:"sccs"`
+	LargestSCC   int      `json:"largestScc"`
+	LargestSCCOf []string `json:"largestSccGroups"`
 	// Cycles lists every strongly connected component of two or more groups,
 	// largest first.
 	Cycles    [][]string `json:"cycles"`
@@ -105,6 +109,8 @@ type Analysis struct {
 	files    map[string]int // group -> files
 	lines    map[string]int // group -> lines
 	unplaced []string
+	// stemPlaced is Summary.StemPlaced.
+	stemPlaced []string
 	// kernel holds the groups made of the kernel line's files: "kernel", or
 	// with PerFile each of those files.
 	kernel map[string]bool
@@ -119,8 +125,12 @@ func Analyze(ld *Loaded, groups *Groups) *Analysis {
 		g := groups.Of(f)
 		a.files[g]++
 		a.lines[g] += ld.Lines[f]
-		if groups.Domain(f) == kernelGroup {
+		d := groups.Domain(f)
+		if d == kernelGroup {
 			a.kernel[g] = true
+		}
+		if !groups.Listed(f) && groups.Placed(d) && (!groups.PerFile || d == kernelGroup) {
+			a.stemPlaced = append(a.stemPlaced, f)
 		}
 	}
 	if !groups.PerFile {
@@ -150,7 +160,8 @@ func (a *Analysis) up(r Ref) bool { return a.pos[r.ToGroup] > a.pos[r.FromGroup]
 // Report builds the default report with the top heaviest upward edges.
 func (a *Analysis) Report(top int) Report {
 	s := Summary{Package: a.ld.ImportPath, ServiceFields: a.ld.ServiceFields,
-		ServiceMeths: a.ld.ServiceMeths, TypeErrors: a.ld.TypeErrors, Unplaced: a.unplaced}
+		ServiceMeths: a.ld.ServiceMeths, TypeErrors: a.ld.TypeErrors,
+		Unplaced: a.unplaced, StemPlaced: a.stemPlaced}
 	for _, g := range a.order {
 		if a.files[g] > 0 {
 			s.Groups++
