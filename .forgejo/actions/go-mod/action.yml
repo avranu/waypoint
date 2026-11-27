@@ -1,0 +1,19 @@
+name: go-mod
+description: Download the Go modules in go.mod, retrying on a network fault.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        for wait in 5 15 45 0; do
+          if go mod download 2>"$RUNNER_TEMP/go-mod.log"; then
+            exit 0
+          fi
+          if [ "$wait" = 0 ]; then
+            tail -n 20 "$RUNNER_TEMP/go-mod.log"
+            echo "::error title=Go modules::go mod download failed 4 times; the module proxy is unreachable, not the code"
+            exit 1
+          fi
+          echo "::warning title=Go modules::go mod download failed ($(tail -n 1 "$RUNNER_TEMP/go-mod.log")); trying again in ${wait}s"
+          sleep "$wait"
+        done
