@@ -1,0 +1,1009 @@
+name: ci
+
+on:
+  push:
+    branches: [main, 'wp-queue/**']
+  pull_request:
+    types: [opened, synchronize, reopened, edited, labeled]
+  schedule:
+    - cron: '17 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      looks:
+        description: 'Browser checks: one look per suite (like a pull request) or all four'
+        type: choice
+        options: ['all', 'one']
+        default: 'all'
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}${{ github.event.action == 'edited' && startsWith(github.event.pull_request.title, 'WIP:') && '-noop' || '' }}${{ github.event.label && github.event.label.name != 'ci-urgent' && '-label' || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action != 'edited' }}
+
+jobs:
+  # On a push to main: is this commit still main's tip? If not, a newer push
+  # is queued behind this run and will release instead, so the checks, release
+  # and deploy here skip themselves. Any doubt (the API unreachable) runs them.
+  # Pull requests skip it on the server: it had nothing to say there but took
+  # a turn in the shared runner queue before any check could queue (WP-156).
+  # The exception is an edit of a ready pull request (WP-353): if the head's
+  # last full run passed, tested says so and the checks skip; an edit changes
+  # no code. Dropping "WIP: " is such an edit, and at a head that only had the
+  # draft tier (no real e2e result) the full suite runs.
+  # The other exception is a push to a draft ("WIP: ") pull request (WP-1808):
+  # if it only merged the base in, cleanly, over a head whose checks passed,
+  # the new head has nothing the old one's checks did not see, and the checks
+  # skip (the merge-only step below). That run is a draft run that skipped,
+  # never a full run: tested says "skip" to the jobs, and passed() above
+  # reads their "Has been skipped" statuses as no full run. This costs a
+  # light turn in the runner queue on every draft push and saves the shards,
+  # lint and backend (about 6 turns) on a merge-only one; a ready pull
+  # request's push never takes this step.
+  #
+  # `current` and the `backend` and `e2e` aggregates ask for
+  # forgejo-ci-priority (WP-1991, WP-ADR32): Forgejo gives a free slot to the
+  # job that became ready first, so with the pool full each of these seconds
+  # of work waited a whole turn, three turns a run (2026-11-26: `current` a
+  # median 35 minutes, `backend` 40). The pool keeps two slots that take
+  # nothing but this label; every other runner offers it too, so the jobs
+  # run in turn, as before, while those slots are down. Only jobs of seconds
+  # ask for it: `release` and `deploy` take 6 to 17 minutes and stay on
+  # forgejo-ci.
+  current:
+    if: github.event_name == 'push' || (github.event.action == 'edited' && !startsWith(github.event.pull_request.title, 'WIP:')) || ((github.event.action == 'opened' || github.event.action == 'synchronized' || github.event.action == 'reopened') && startsWith(github.event.pull_request.title, 'WIP:'))
+    runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'ci-urgent') && 'forgejo-ci-urgent' || 'forgejo-ci-priority' }}
+    # The main-push path's tested step waits up to a minute for the merge's
+    # status; the merge-only step bounds itself (WP-1808).
+    timeout-minutes: 15
+    # The two steps below read the API with the job token: the tip of main,
+    # commit statuses and the Actions runs they point at (WP-315). Forgejo
+    # ignores a `permissions:` block (WP-289); its job token already reads
+    # this repository.
+    outputs:
+      run: ${{ steps.tip.outputs.run }}
+      tested: ${{ steps.tested.outputs.tested || steps.mergeonly.outputs.tested }}
+    steps:
+      # A merge line candidate (a push to wp-queue/**) whose heads don't merge
+      # says so here, in one light job, and the heavy jobs and the aggregates
+      # skip (their `if`): each of them used to take a heavy slot's turn to
+      # fail at its own stack step, 153 of the 209 jobs that failed in the 36
+      # hours to 2026-11-26 16:30 UTC, and the line waited for the first of
+      # them to learn it (WP-1991). Waypoint reads the conflict from this
+      # job's log (internal/core/merge_conflict.go). Only a head that doesn't
+      # merge fails the job: a checkout or a fetch that failed, or a timeout,
+      # is a doubt, and the heavy jobs build the merges themselves as before.
+      - id: stackco
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/wp-queue/')
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: a candidate's heads merge
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/wp-queue/') && steps.stackco.outcome == 'success'
+        timeout-minutes: 6
+        run: |
+          out=$(mktemp)
+          code=0
+          timeout 300 .forgejo/scripts/queue-stack.sh >"$out" 2>&1 || code=$?
+          cat "$out"
+          if [ "$code" = 0 ]; then
+            exit 0
+          fi
+          if grep -q "^::error title=Merge queue stack::#[0-9]* ([0-9a-f]*) doesn't merge cleanly" "$out"; then
+            exit 1
+          fi
+          echo "::warning title=Merge queue stack::building the candidate's merges here ended with $code and no conflict; the checks build them themselves."
+      - id: tip
+        if: github.event_name == 'push'
+        env:
+          TOKEN: ${{ github.token }}
+          API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          body=$(mktemp)
+          code=$(curl -sS --max-time 15 -o "$body" -w '%{http_code}' -H "Authorization: token $TOKEN" "$API/branches/main") || code=unreachable
+          tip=
+          if [ "$code" = 200 ]; then
+            tip=$(jq -r '.commit.id // empty' "$body")
+          else
+            echo "::warning title=Tip unknown::reading main's tip failed (HTTP $code); running this commit's checks."
+          fi
+          if [ -n "$tip" ] && [ "$tip" != "$GITHUB_SHA" ]; then
+            echo "::notice title=Superseded::main is at $tip now; that push's own run releases it."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - id: tested
+        if: (steps.tip.outputs.run == 'true' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.action == 'edited')
+        env:
+          TOKEN: ${{ github.token }}
+          ALT_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          WAYPOINT_LOGIN: ${{ vars.WAYPOINT_FORGE_LOGIN || github.repository_owner }}
+        run: |
+          tmp=$(mktemp -d)
+          code=
+          fetch() {
+            code=$(curl -sS --max-time 15 -o "$tmp/body" -w '%{http_code}' -H "Authorization: token $1" "$API/$2") || code=unreachable
+            [ "$code" = 200 ]
+          }
+          api() {
+            if fetch "$TOKEN" "$1"; then return 0; fi
+            if { [ "$code" = 401 ] || [ "$code" = 403 ]; } && [ -n "$ALT_TOKEN" ]; then
+              echo "The job token got HTTP $code on $1; trying RELEASE_TOKEN."
+              if fetch "$ALT_TOKEN" "$1"; then TOKEN=$ALT_TOKEN; return 0; fi
+            fi
+            return 1
+          }
+          lastwarn=
+          warn() {
+            if [ "$*" != "$lastwarn" ]; then echo "::warning title=Tested check::$*; the checks run."; fi
+            lastwarn=$*
+          }
+          statuses() {
+            local page=1 n
+            echo '[]' >"$2"
+            : >"$tmp/prev"
+            while [ "$page" -le 20 ]; do
+              if ! api "commits/$1/statuses?limit=50&page=$page"; then
+                warn "reading the statuses of $1 (page $page) failed with HTTP $code"
+                return 1
+              fi
+              if ! n=$(jq 'if type == "array" then length else error("not a list") end' "$tmp/body"); then
+                warn "the statuses of $1 (page $page) are not a list"
+                return 1
+              fi
+              if [ "$n" = 0 ] || cmp -s "$tmp/body" "$tmp/prev"; then return 0; fi
+              jq -s '.[0] + .[1]' "$2" "$tmp/body" >"$2.next" && mv "$2.next" "$2"
+              cp "$tmp/body" "$tmp/prev"
+              page=$((page + 1))
+            done
+            warn "$1 has more than 20 pages of statuses"
+            return 1
+          }
+          lastforeign=
+          marker() {
+            local others
+            if jq -e --arg who "$WAYPOINT_LOGIN" 'any(.[]; .context == "waypoint/tested" and (.status // .state) == "success"
+                and ((.creator.login // "") | ascii_downcase) == ($who | ascii_downcase))' "$1" >/dev/null; then
+              return 0
+            fi
+            others=$(jq -r --arg who "$WAYPOINT_LOGIN" '[.[] | select(.context == "waypoint/tested") | (.creator.login // "an unnamed account")
+                | select(ascii_downcase != ($who | ascii_downcase))] | unique | join(", ")' "$1")
+            if [ -n "$others" ] && [ "$others" != "$lastforeign" ]; then
+              echo "::warning title=Tested check::ignored a waypoint/tested status from $others: only Waypoint's account ($WAYPOINT_LOGIN) marks a commit tested."
+            fi
+            lastforeign=$others
+            return 1
+          }
+          stacked() {
+            local n rid sha heads
+            # shellcheck disable=SC2016
+            n=$(jq -r --arg who "$WAYPOINT_LOGIN" '[.[] | select(.context == "waypoint/stack"
+                and ((.creator.login // "") | ascii_downcase) == ($who | ascii_downcase))] | max_by(.id)
+              | select(. != null and (.status // .state) == "success")
+              | [(.target_url // "") | match("/actions/runs/([0-9]+)/") | .captures[0].string] | first // empty' "$tmp/head")
+            [ -n "$n" ] || return 2
+            if ! api "actions/runs?run_number=$n&limit=50"; then
+              warn "reading the stack's run $n from Actions failed with HTTP $code"
+              return 2
+            fi
+            read -r rid sha < <(jq -r --argjson n "$n" '[.workflow_runs[]? | select(.index_in_repo == $n
+                and .workflow_id == "ci.yml" and .event == "push")] | first // empty | "\(.id) \(.commit_sha)"' "$tmp/body") || true
+            if [ -z "$rid" ] || [ -z "$sha" ]; then
+              echo "::warning title=Tested check::$1's waypoint/stack status points at run $n, but Actions has no push run $n of ci.yml: ignoring it; the checks run."
+              return 2
+            fi
+            if ! api "contents/.waypoint-queue?ref=$sha"; then
+              warn "reading the stack file of $sha failed with HTTP $code"
+              return 2
+            fi
+            heads=$(jq -r '.content // ""' "$tmp/body" | base64 -d 2>/dev/null | grep -E '^[0-9]+ [0-9a-f]{7,64}$' | cut -d' ' -f2)
+            if ! grep -qxF "$1" <<<"$heads"; then
+              echo "::warning title=Tested check::the stack run $n's commit $sha doesn't merge $1 ($(echo "$heads" | tr '\n' ' ')): ignoring its waypoint/stack status; the checks run."
+              return 2
+            fi
+            ranon "$sha" "$n" || return 2
+          }
+          passed() {
+            local bad=0 c state desc run defs
+            statuses "$1" "$tmp/head" || return 2
+            # shellcheck disable=SC2016
+            defs='def st: .status // .state;
+              def real: ((.description // "") | (startswith("Has been skipped") or startswith("Has been cancelled")) | not) and st != "skipped" and st != "cancelled";
+              def runof: [(.target_url // "") | match("/actions/runs/([0-9]+)/") | .captures[0].string] | first // "";
+              def runnum: (runof | tonumber? // 0);
+              [.[] | select(real)] as $real
+              | ([$real[] | select(.context == "ci / e2e (pull_request)" and st != "pending")] | max_by(.id)) as $e
+              | (if $e == null then "" else ($e | runof) end) as $run
+              | (if $run == "" then 0 else ($run | tonumber) end) as $runn'
+            while IFS=$'\t' read -r c state desc; do
+              echo "  $c: $state ${desc:+($desc)}"
+              [ "$state" = success ] || bad=1
+            done < <(jq -r "$defs"'
+              | ["ci / backend (pull_request)", "ci / lint (pull_request)", "ci / e2e (pull_request)"][] as $c
+              | ([$real[] | select(.context == $c and $run != "" and runnum > $runn and (st == "failure" or st == "error"))] | max_by(.id)) as $newer_bad
+              | (if $newer_bad != null then $newer_bad else ([$real[] | select(.context == $c and $run != "" and runof == $run)] | max_by(.id)) end) as $s
+              | [$c, (if $s == null then "no full run" else ($s | st) end), (if $s == null then "" else (($s.description // "") + " in run " + ($s | runof)) end)] | @tsv' "$tmp/head")
+            [ "$bad" = 0 ] || return 2
+            run=$(jq -r "$defs"' | $run' "$tmp/head")
+            ranon "$1" "$run" || return 2
+          }
+          ranon() {
+            local bad=0 rid c state
+            if ! api "actions/runs?run_number=$2&limit=50"; then
+              warn "reading run $2 from Actions failed with HTTP $code"
+              return 2
+            fi
+            rid=$(jq -r --arg sha "$1" --argjson n "$2" '[.workflow_runs[]? | select(.index_in_repo == $n
+                and .workflow_id == "ci.yml"
+                and (.commit_sha == $sha or ((.event_payload // "") | fromjson? | .pull_request.head.sha) == $sha))]
+              | first | .id // empty' "$tmp/body")
+            if [ -z "$rid" ]; then
+              echo "::warning title=Tested check::the statuses of $1 point at run $2, but Actions has no run $2 of ci.yml on $1: ignoring them; the checks run."
+              return 2
+            fi
+            if ! api "actions/runs/$rid/jobs"; then
+              warn "reading the jobs of run $2 failed with HTTP $code"
+              return 2
+            fi
+            while IFS=$'\t' read -r c state; do
+              echo "  run $2, job $c in Actions: $state"
+              [ "$state" = success ] || bad=1
+            done < <(jq -r '["backend", "lint", "e2e"][] as $c
+              | ([.[]? | select(.name == $c)] | max_by(.id)) as $j
+              | [$c, (if $j == null then "missing" else $j.status end)] | @tsv' "$tmp/body")
+            if [ "$bad" != 0 ]; then
+              echo "::warning title=Tested check::the statuses of $1 say run $2 passed every check, but its jobs in Actions don't (above): ignoring the statuses; the checks run."
+              return 2
+            fi
+          }
+          tree() {
+            if ! api "git/trees/$1?per_page=100"; then warn "reading the tree of $1 failed with HTTP $code"; return 1; fi
+            if ! jq -ce 'if (.tree | length) > 0 and (.tree | length) == .total_count then [.tree[] | [.mode, .path, .sha]] | sort else error("partial") end' "$tmp/body" >"$2"; then
+              warn "the forge listed only part of $1's tree"
+              return 1
+            fi
+          }
+          compare() {
+            local parents head
+            if ! api "git/commits/$GITHUB_SHA"; then warn "reading the merge commit failed with HTTP $code"; return 2; fi
+            parents=$(jq '.parents | length' "$tmp/body")
+            if [ "$parents" != 2 ]; then
+              echo "::notice title=Tested check::$GITHUB_SHA has $parents parent(s), not the two of a merge, so there is no pull request head to compare with."
+              return 2
+            fi
+            head=$(jq -r '.parents[1].sha' "$tmp/body")
+            tree "$GITHUB_SHA" "$tmp/mtree" || return 2
+            tree "$head" "$tmp/htree" || return 2
+            if ! cmp -s "$tmp/mtree" "$tmp/htree"; then
+              if statuses "$head" "$tmp/head" && jq -e '[.[] | select(.context == "waypoint/stack")] | max_by(.id) | select(. != null and (.status // .state) == "success")' "$tmp/head" >/dev/null; then
+                echo "::notice title=Tested check::the merge's tree is not the pull request head $head's, but the head was marked ready on a merge queue stack or batch: looking for Waypoint's waypoint/tested."
+                return 2
+              fi
+              echo "::notice title=Not tested before::the merge's tree is not the pull request head $head's: the merge brought in changes the head's checks never saw."
+              return 1
+            fi
+            if ! passed "$head"; then
+              echo "::notice title=Not tested before::the pull request head $head has the merge's tree, but its last full run did not pass every check (above)."
+              return 2
+            fi
+            echo "::notice title=Already tested::the merged tree is the pull request head $head's, which passed the full suite; releasing without running it again."
+            return 0
+          }
+
+          tested=false
+          if [ "$EVENT" = pull_request ]; then
+            if passed "$PR_HEAD"; then
+              tested=true
+              echo "::notice title=Already tested::the head $PR_HEAD passed its last full run and an edit changes no code; the checks skip."
+            elif [ -s "$tmp/head" ] && stacked "$PR_HEAD"; then
+              tested=true
+              echo "::notice title=Already tested::the merge queue's stack with $PR_HEAD merged onto the base passed the full suite (waypoint/stack); the checks skip."
+            else
+              echo "::notice title=Not tested before::the head $PR_HEAD has no passed full run (above); the checks run."
+            fi
+          elif statuses "$GITHUB_SHA" "$tmp/merge" && marker "$tmp/merge"; then
+            tested=true
+            echo "::notice title=Already tested::Waypoint marked $GITHUB_SHA waypoint/tested (same tree as its pull request's tested head); releasing without running the checks again."
+          else
+            rc=0
+            compare || rc=$?
+            if [ "$rc" = 0 ]; then
+              tested=true
+            elif [ "$rc" = 2 ]; then
+              for _ in 1 2 3 4 5 6; do
+                sleep 10
+                if statuses "$GITHUB_SHA" "$tmp/merge" && marker "$tmp/merge"; then
+                  tested=true
+                  echo "::notice title=Already tested::Waypoint marked $GITHUB_SHA waypoint/tested; releasing without running the checks again."
+                  break
+                fi
+              done
+              if [ "$tested" = false ]; then
+                echo "::notice title=Not tested before::no waypoint/tested status on $GITHUB_SHA after a minute and the comparison did not settle it; the checks run."
+              fi
+            fi
+          fi
+          echo "tested=$tested" >> "$GITHUB_OUTPUT"
+
+      # A push to a draft that only merged the base in (WP-1808). All of these
+      # must hold, or the checks run (the notice or warning says which did not):
+      #  - the head is a merge of exactly two parents, P1 (the branch before)
+      #    and P2; this is read first, from the API, so the common push (not a
+      #    merge) costs one request and no clone;
+      #  - P2 is on the base branch (an ancestor of its tip, or its tip);
+      #  - `git merge-tree --write-tree P1 P2` reproduces the head's tree, so
+      #    the merge added nothing of its own (a conflict resolution, an edit
+      #    made in the merge commit) and the head is exactly P1 plus the base;
+      #  - P1 has real pull_request results that passed: of each job's newest
+      #    status, the ones that are not "Has been skipped", the newest of
+      #    each context must be success, with backend and lint among them (the
+      #    same `real` filter as passed() above). A "skipped" success posted
+      #    over a failure by a draft's later run is not a result. The backend
+      #    and lint statuses only point at a run: Actions must list it as a
+      #    run of ci.yml on that commit whose backend and lint jobs passed
+      #    (ranjobs, as ranon above; a write token can post any status). When P1 has
+      #    no real backend or lint at all, it must itself be such a merge-only
+      #    commit (the same tests), and its first parent is asked the same, up
+      #    to 10 steps back: a chain of skipped merges is only as good as its
+      #    root.
+      # Only drafts get here (the job's `if`), and only on opened, synchronized
+      # and reopened: dropping "WIP: " is an `edited` event and the `tested`
+      # step above decides it, which a skipped draft run never satisfies. A
+      # ready pull request's push does not run `current` at all. The step
+      # never fails the job: any error, or a timeout, is a doubt and the
+      # checks run (the git commands are bounded, and so is the step).
+      - id: mergeonly
+        if: github.event_name == 'pull_request' && github.event.action != 'edited' && startsWith(github.event.pull_request.title, 'WIP:')
+        timeout-minutes: 3
+        continue-on-error: true
+        env:
+          TOKEN: ${{ github.token }}
+          API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          # no MSG: say why the checks run, and return 1.
+          no() { echo "::notice title=Merge-only push::$*; the checks run."; return 1; }
+          doubt() { echo "::warning title=Merge-only push::$*; the checks run."; return 1; }
+          # get PATH: the API's JSON into $tmp/body; 0 on HTTP 200.
+          get() {
+            local code
+            code=$(curl -sS --max-time 15 -o "$tmp/body" -w '%{http_code}' -H "Authorization: token $TOKEN" "$API/$1") || code=unreachable
+            [ "$code" = 200 ] || { got_code=$code; return 1; }
+          }
+          # cleanmerge C: 0 when C is a merge of two parents whose second is on the base
+          # and whose tree is exactly their merge; sets m1 and m2. 1 otherwise, with why.
+          cleanmerge() {
+            local parents want tree
+            parents=$(git rev-list --parents -n 1 "$1") || { why="reading $1 failed"; return 1; }
+            # shellcheck disable=SC2086
+            set -- $1 $parents
+            if [ "$#" != 4 ]; then why="$1 has $(($# - 2)) parent(s), not the two of a merge"; return 1; fi
+            m1=$3 m2=$4
+            if ! git merge-base --is-ancestor "$m2" refs/remotes/o/base; then why="the second parent $m2 of $1 is not on $BASE"; return 1; fi
+            if ! want=$(timeout 120 git merge-tree --write-tree --no-messages "$m1" "$m2" 2>"$tmp/err"); then
+              why="merging $m2 into $m1 does not merge cleanly here ($(tr '\n' ' ' <"$tmp/err" | cut -c1-120))"; return 1
+            fi
+            tree=$(git rev-parse "$1^{tree}")
+            if [ "$want" != "$tree" ]; then why="the tree of $1 is not what merging $m2 into $m1 gives: the merge commit changed something itself"; return 1; fi
+          }
+          # verdict C: reads C's statuses (every page); verdict is pass, fail (a real result
+          # that did not pass, or too little) or none (no real backend and lint).
+          verdict() {
+            local page=1 n
+            echo '[]' >"$tmp/all"
+            while [ "$page" -le 20 ]; do
+              if ! get "commits/$1/statuses?limit=50&page=$page"; then doubt "reading the statuses of $1 failed with HTTP $got_code"; return 9; fi
+              if ! n=$(jq 'if type == "array" then length else error("not a list") end' "$tmp/body"); then
+                doubt "the statuses of $1 are not a list"; return 9
+              fi
+              [ "$n" = 0 ] && break
+              [ "$page" -gt 1 ] && cmp -s "$tmp/body" "$tmp/prev" && break
+              jq -s '.[0] + .[1]' "$tmp/all" "$tmp/body" >"$tmp/all.next" && mv "$tmp/all.next" "$tmp/all"
+              cp "$tmp/body" "$tmp/prev"
+              page=$((page + 1))
+            done
+            if [ "$page" -gt 20 ]; then doubt "$1 has more than 20 pages of statuses"; return 9; fi
+            # Each job's newest status, then the real ones (not skipped), then each
+            # context's newest. jq's own variables, not the shell's:
+            # shellcheck disable=SC2016
+            jq 'def st: .status // .state;
+              def real: ((.description // "") | startswith("Has been skipped") | not) and st != "skipped";
+              [.[] | select((.context // "") | endswith("(pull_request)"))]
+              | group_by([.context, (.target_url // "")]) | map(max_by(.id)) | map(select(real))
+              | group_by(.context) | map(max_by(.id))' "$tmp/all" >"$tmp/real"
+            if ! jq -e 'any(.[]; .context == "ci / backend (pull_request)") or any(.[]; .context == "ci / lint (pull_request)")' "$tmp/real" >/dev/null; then
+              return 2 # none
+            fi
+            if jq -e 'all(.[]; (.status // .state) == "success")
+                and any(.[]; .context == "ci / backend (pull_request)") and any(.[]; .context == "ci / lint (pull_request)")' "$tmp/real" >/dev/null; then
+              ranjobs "$1" || return $?
+              return 0
+            fi
+            echo "  $1's real pull_request statuses (newest of each):"
+            jq -r '.[] | "    \(.context): \(.status // .state)"' "$tmp/real"
+            return 1
+          }
+          # ranjobs C: 0 when Forgejo Actions itself says the backend and lint jobs that
+          # C's real statuses (in $tmp/real) point at passed, in a run of ci.yml on C. A
+          # status says only what its poster wrote: any token with write access (an agent's
+          # forge login, a CI job's) can post `ci / backend (pull_request)` = success
+          # (WP-452), so, as ranon in the tested step, the statuses only point at the run
+          # and the run's own jobs decide. 1 when they did not pass, 9 when it can't tell.
+          ranjobs() {
+            local j n rid state
+            for j in backend lint; do
+              n=$(jq -r --arg c "ci / $j (pull_request)" '[.[] | select(.context == $c)] | first
+                | [(.target_url // "") | match("/actions/runs/([0-9]+)/") | .captures[0].string] | first // empty' "$tmp/real")
+              if [ -z "$n" ]; then
+                no "$1's $j status points at no Actions run"; return 1
+              fi
+              if ! get "actions/runs?run_number=$n&limit=50"; then doubt "reading run $n from Actions failed with HTTP $got_code"; return 9; fi
+              rid=$(jq -r --arg sha "$1" --argjson n "$n" '[.workflow_runs[]? | select(.index_in_repo == $n
+                  and .workflow_id == "ci.yml"
+                  and (.commit_sha == $sha or ((.event_payload // "") | fromjson? | .pull_request.head.sha) == $sha))]
+                | first | .id // empty' "$tmp/body")
+              if [ -z "$rid" ]; then
+                no "the $j status of $1 points at run $n, but Actions has no run $n of ci.yml on $1"; return 1
+              fi
+              if ! get "actions/runs/$rid/jobs"; then doubt "reading the jobs of run $n failed with HTTP $got_code"; return 9; fi
+              state=$(jq -r --arg c "$j" '[.[]? | select(.name == $c)] | max_by(.id) | if . == null then "missing" else .status end' "$tmp/body")
+              echo "  $1: run $n, job $j in Actions: $state"
+              if [ "$state" != success ]; then
+                no "$1's $j status says success, but its job in run $n is $state in Actions"; return 1
+              fi
+            done
+          }
+          decide() {
+            local v hdr c steps=0 rc
+            # The parent count first, from the API: nothing is cloned for a push that
+            # is not a merge.
+            if ! get "git/commits/$PR_HEAD"; then doubt "reading the commit $PR_HEAD failed with HTTP $got_code"; return 1; fi
+            n=$(jq '.parents | length' "$tmp/body") || { doubt "the commit $PR_HEAD is not readable"; return 1; }
+            if [ "$n" != 2 ]; then no "$PR_HEAD has $n parent(s), not the two of a merge"; return 1; fi
+            command -v git >/dev/null || { doubt "git is not installed on this runner"; return 1; }
+            v=$(git --version | sed -E 's/^git version ([0-9]+)\.([0-9]+).*/\1 \2/')
+            # merge-tree --write-tree is git 2.38's; the job image has 2.43
+            # shellcheck disable=SC2086
+            set -- $v
+            if [ "${1:-0}" -lt 2 ] || { [ "${1:-0}" -eq 2 ] && [ "${2:-0}" -lt 38 ]; }; then
+              doubt "git $v has no merge-tree --write-tree (2.38 or later is needed)"; return 1
+            fi
+            hdr=$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)
+            git init -q "$tmp/r" || { doubt "git init failed"; return 1; }
+            cd "$tmp/r" || return 1
+            git config http.extraheader "Authorization: Basic $hdr"
+            git remote add origin "$REPO_URL"
+            # Commits and trees of the base and of the head, no file contents: merge-tree
+            # asks for the few blobs it needs.
+            if ! timeout 120 git fetch -q --no-tags --filter=blob:none origin \
+                "+refs/heads/$BASE:refs/remotes/o/base" "+refs/pull/$PR_NUMBER/head:refs/remotes/o/head" 2>"$tmp/err"; then
+              doubt "fetching the base and the head failed ($(tr '\n' ' ' <"$tmp/err" | cut -c1-200))"; return 1
+            fi
+            if [ "$(git rev-parse refs/remotes/o/head)" != "$PR_HEAD" ]; then
+              no "the pull request has moved on from $PR_HEAD"; return 1
+            fi
+            why=
+            if ! cleanmerge "$PR_HEAD"; then no "$why"; return 1; fi
+            p1=$m1 p2=$m2
+            c=$p1
+            while :; do
+              verdict "$c"; rc=$?
+              case $rc in
+                0) break ;;
+                2) ;;
+                9) return 1 ;;
+                *) no "the checks of $c, the first parent's line, have not all passed"; return 1 ;;
+              esac
+              # No real backend or lint on c: it counts only as a merge-only commit over a
+              # parent that has them.
+              steps=$((steps + 1))
+              if [ "$steps" -gt 10 ]; then no "no real checks in the 10 merge-only commits before $PR_HEAD"; return 1; fi
+              if ! cleanmerge "$c"; then no "$c has no real checks and $why"; return 1; fi
+              c=$m1
+            done
+            echo "::notice title=Merge-only push::$PR_HEAD only merges $p2 (on $BASE) into $p1, and the checks of $c (back $steps merge-only commit(s)) passed: the checks skip. This is a draft run that skipped, not a full run; dropping WIP: runs the full suite."
+          }
+          if decide; then
+            echo "tested=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tested=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # The long checks (backend, lint, e2e) all start together on every push, so
+  # they run on forgejo-ci-heavy, which two of the pool's three hosts offer
+  # (eleven slots, three on the fast host and eight on one that takes about
+  # 2.4 times as long for the same job): a push here fills at most those,
+  # and other repositories' checks still get the rest of the pool (WP-223).
+  # The quick jobs ask for forgejo-ci-priority (above `current`).
+  #
+  # The backend tests run as parallel shard jobs (WP-314): one heavy slot has
+  # three cores, and internal/core's 661 tests run one after another in a
+  # single process, which took 26 of the full tier's 33 minutes under -race.
+  # .forgejo/scripts/gotest-shard.sh deals them and cmd/wp's out by name and gives the other
+  # packages whole to the shards with the least to do. `backend` below is the
+  # status that branch protection, WP-159's skip and Waypoint read; it passes
+  # when every shard did. SHARDS and the matrix must agree (a test in
+  # internal/cilint/repo_test.go checks), or tests would silently not run.
+  # A full run is nine heavy jobs (4 backend shards, 4 e2e shards and lint)
+  # for the heavy hosts' eleven slots, so more shards would queue behind each
+  # other for no gain.
+  #
+  # The heavy jobs run in Waypoint's own job image (WP-402,
+  # .forgejo/ci-image): the pool's image plus Go, Node, Playwright's Chromium
+  # and its system packages, and the Go QA tools, so setup-go and setup-node
+  # find their toolchain (copying it took 10 to 50 s a job), and e2e installs
+  # no apt packages (70 s a shard). `make ci-image` builds and pushes it when
+  # its inputs change and rewrites the `image:` lines (tag and digest); until
+  # then the setup steps install what changed and lint warns that the image
+  # is stale. A host pulls it once.
+  #
+  # Go's caches are kept per kind of job (.forgejo/actions/go-cache): the
+  # race build, the plain one, lint's and e2e's each stay warm.
+  backend-shard:
+    name: ${{ github.event.label && github.event.label.name != 'ci-urgent' && 'label added, nothing to run' || format('backend shard {0}', matrix.shard) }}
+    needs: current
+    if: ${{ !cancelled() && !(github.event.label && github.event.label.name != 'ci-urgent') && github.event_name != 'schedule' && !(github.event.action == 'edited' && startsWith(github.event.pull_request.title, 'WIP:')) && (github.event_name != 'push' || needs.current.outputs.run == 'true') && needs.current.outputs.tested != 'true' && !(startsWith(github.ref, 'refs/heads/wp-queue/') && needs.current.result == 'failure') }}
+    runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'ci-urgent') && 'forgejo-ci-urgent' || 'forgejo-ci-heavy' }}
+    timeout-minutes: 40
+    container:
+      image: git.jmann.me/claude/waypoint-ci:01f88b8a84a7@sha256:09b09acc434ef9e1e20713fc4b0109715eaab94937b828634ef2b345433e458c
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      SHARDS: 4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.forgejo/actions/stack
+      - id: tier
+        uses: ./.forgejo/actions/tier
+      # Both tiers use every shard. The fast tier was one job (shard 1 ran
+      # everything and the others stopped here) until its tests took 34 to 39
+      # of that job's 40 minutes on a busy pool and hit the limit, while the
+      # other three slots the run already held sat idle (WP-1808). govulncheck
+      # and suppression scanning run once, in the last shard (which gotest-shard
+      # seeds lighter); go vet and gofmt already run via golangci-lint in lint.
+      - id: plan
+        env:
+          SHARD: ${{ matrix.shard }}
+          CODE: ${{ steps.tier.outputs.code }}
+        run: |
+          work=false once=false
+          if [ "$CODE" = true ]; then
+            work=true
+            if [ "$SHARD" = "$SHARDS" ]; then once=true; fi
+          fi
+          echo "work=$work" >> "$GITHUB_OUTPUT"
+          echo "once=$once" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: steps.plan.outputs.work == 'true'
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.forgejo/actions/go-cache
+        if: steps.plan.outputs.work == 'true'
+        with:
+          kind: ${{ steps.tier.outputs.full == 'true' && 'backend-race' || 'backend' }}
+      - uses: ./.forgejo/actions/go-mod
+        if: steps.plan.outputs.work == 'true'
+      - name: 'test (race detector in the full tier; needs cgo: Linux CI only, not local Windows)'
+        if: steps.plan.outputs.work == 'true'
+        env:
+          FULL: ${{ steps.tier.outputs.full }}
+          SHARD: ${{ matrix.shard }}
+          EVIDENCE: '1'
+          SUPPRESSIONS: ${{ steps.plan.outputs.once == 'true' && '1' || '' }}
+          SITE_NAMES: ${{ secrets.SITE_NAMES }}
+        run: |
+          if [ "$FULL" = true ]; then
+            .forgejo/scripts/gotest-shard.sh "$SHARD" "$SHARDS" -race \
+              -gcflags='modernc.org/sqlite/lib=-race=false' \
+              -gcflags='modernc.org/libc/...=-race=false' \
+              -gcflags='modernc.org/memory=-race=false' \
+              -gcflags='modernc.org/mathutil=-race=false' \
+              -count=1 -timeout 30m -cover
+          else
+            .forgejo/scripts/gotest-shard.sh "$SHARD" "$SHARDS" -timeout 30m -cover
+          fi
+      - id: tools
+        if: steps.plan.outputs.once == 'true' && steps.tier.outputs.full == 'true'
+        uses: ./.forgejo/actions/go-tools
+      - name: vulnerabilities (govulncheck, only those this change adds over main)
+        if: steps.plan.outputs.once == 'true' && steps.tier.outputs.full == 'true'
+        env:
+          ADVISORIES_BASE_SHA: ${{ github.event.pull_request.merge_base }}
+        run: deploy/advisories.sh check go pr
+
+  backend:
+    name: ${{ github.event.label && github.event.label.name != 'ci-urgent' && 'label added, nothing to run' || 'backend' }}
+    needs: [current, backend-shard]
+    if: ${{ !cancelled() && !(github.event.label && github.event.label.name != 'ci-urgent') && github.event_name != 'schedule' && !(github.event.action == 'edited' && startsWith(github.event.pull_request.title, 'WIP:')) && (github.event_name != 'push' || needs.current.outputs.run == 'true') && needs.current.outputs.tested != 'true' && !(startsWith(github.ref, 'refs/heads/wp-queue/') && needs.current.result == 'failure') }}
+    runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'ci-urgent') && 'forgejo-ci-urgent' || 'forgejo-ci-priority' }}
+    timeout-minutes: 5
+    steps:
+      - name: every backend shard passed
+        env:
+          SHARDS_RESULT: ${{ needs.backend-shard.result }}
+        run: |
+          if [ "$SHARDS_RESULT" != success ]; then
+            echo "::error title=Backend::the backend shards ended as '$SHARDS_RESULT'; see the failed 'backend shard' jobs."
+            exit 1
+          fi
+
+  lint:
+    name: ${{ github.event.label && github.event.label.name != 'ci-urgent' && 'label added, nothing to run' || 'lint' }}
+    needs: current
+    if: ${{ !cancelled() && !(github.event.label && github.event.label.name != 'ci-urgent') && github.event_name != 'schedule' && !(github.event.action == 'edited' && startsWith(github.event.pull_request.title, 'WIP:')) && (github.event_name != 'push' || needs.current.outputs.run == 'true') && needs.current.outputs.tested != 'true' && !(startsWith(github.ref, 'refs/heads/wp-queue/') && needs.current.result == 'failure') }}
+    runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'ci-urgent') && 'forgejo-ci-urgent' || 'forgejo-ci-heavy' }}
+    timeout-minutes: 30
+    container:
+      image: git.jmann.me/claude/waypoint-ci:01f88b8a84a7@sha256:09b09acc434ef9e1e20713fc4b0109715eaab94937b828634ef2b345433e458c
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.forgejo/actions/stack
+      - id: tier
+        uses: ./.forgejo/actions/tier
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: steps.tier.outputs.code == 'true'
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.forgejo/actions/go-cache
+        if: steps.tier.outputs.code == 'true'
+        with:
+          kind: lint
+          path: ~/.cache/golangci-lint
+      - uses: ./.forgejo/actions/go-mod
+        if: steps.tier.outputs.code == 'true'
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.tier.outputs.code == 'true'
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: CI image matches its inputs
+        if: steps.tier.outputs.code == 'true'
+        run: |
+          want=$(.forgejo/ci-image/build.sh --tag)
+          have=$(cat /opt/waypoint-ci/tag 2>/dev/null || echo none)
+          if [ "$want" = "$have" ]; then
+            echo "the job image is $have, built from this checkout's inputs"
+          else
+            echo "::warning title=CI image is stale::the job image was built as $have, but this checkout's Go, Playwright or tool pins give $want; jobs install the difference every run. Run 'make ci-image' (it needs the registry login) and commit ci.yml."
+          fi
+      - uses: ./.forgejo/actions/go-tools
+        if: steps.tier.outputs.code == 'true'
+      - name: dependency age (cmd/dep-age)
+        if: steps.tier.outputs.code == 'true'
+        run: |
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then depth=--depth=1; else depth=; fi
+          git fetch -q --no-tags ${depth:+"$depth"} origin main
+          go run ./cmd/dep-age -base FETCH_HEAD
+      - name: gofmt and golangci-lint (uses .golangci.yml)
+        if: steps.tier.outputs.code == 'true'
+        run: |
+          test -z "$(gofmt -l cmd internal)"
+          golangci-lint run ./cmd/... ./internal/... ./web
+      - name: Waypoint rules (cmd/wplint)
+        if: steps.tier.outputs.code == 'true'
+        run: |
+          wplint_bin=$(mktemp)
+          trap 'rm -f "$wplint_bin"' EXIT
+          go build -o "$wplint_bin" ./cmd/wplint
+          "$wplint_bin" ./cmd/... ./internal/...
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+            git fetch -q --no-tags --unshallow origin +refs/heads/main:refs/remotes/origin/main
+          else
+            git fetch -q --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          fi
+          "$wplint_bin" repo -base origin/main -require-base
+      - name: every internal/core and cmd/wp test is in a backend shard
+        if: steps.tier.outputs.code == 'true'
+        run: .forgejo/scripts/gotest-shard.sh -check
+      - name: wp builds for Windows and macOS
+        if: steps.tier.outputs.code == 'true' && steps.tier.outputs.full == 'true'
+        run: make cross-check
+      - name: workflow and k8s manifest lint (actionlint, kubeconform)
+        run: |
+          actionlint -config-file .forgejo/actionlint.yaml .forgejo/workflows/ci.yml
+          actionlint .github/workflows/*.yml
+          kubeconform -strict -summary deploy/k8s/waypoint.yaml
+      - name: gosec
+        if: steps.tier.outputs.code == 'true' && steps.tier.outputs.full == 'true'
+        run: make sast
+      - name: install app deps
+        if: steps.tier.outputs.code == 'true'
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+      - name: typecheck
+        if: steps.tier.outputs.code == 'true'
+        working-directory: web
+        run: npm run typecheck
+      - name: formatting (prettier --check)
+        if: steps.tier.outputs.code == 'true'
+        working-directory: web
+        run: npm run format:check
+      - name: npm audit (high and above, only those this change adds over main)
+        if: steps.tier.outputs.code == 'true' && steps.tier.outputs.full == 'true'
+        env:
+          ADVISORIES_BASE_SHA: ${{ github.event.pull_request.merge_base }}
+        run: deploy/advisories.sh check npm pr
+      - name: build (also validates what gets embedded into the binary)
+        if: steps.tier.outputs.code == 'true' && steps.tier.outputs.full == 'true'
+        working-directory: web
+        run: npm run build:vite
+
+  advisories:
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    runs-on: forgejo-ci-heavy
+    timeout-minutes: 30
+    container:
+      image: git.jmann.me/claude/waypoint-ci:01f88b8a84a7@sha256:09b09acc434ef9e1e20713fc4b0109715eaab94937b828634ef2b345433e458c
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.forgejo/actions/go-cache
+        with:
+          kind: advisories
+      - uses: ./.forgejo/actions/go-mod
+      - uses: ./.forgejo/actions/go-tools
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: npm audit (high and above)
+        working-directory: web
+        run: npm run audit
+      - name: vulnerabilities (govulncheck)
+        if: ${{ !cancelled() }}
+        run: deploy/advisories.sh check go main
+
+  web:
+    if: github.event_name == 'retired-see-lint'
+    runs-on: forgejo-ci
+    steps:
+      - run: 'true'
+
+  e2e-shard:
+    name: ${{ github.event.label && github.event.label.name != 'ci-urgent' && 'label added, nothing to run' || format('e2e shard {0}', matrix.shard) }}
+    needs: current
+    if: ${{ !cancelled() && !(github.event.label && github.event.label.name != 'ci-urgent') && !(github.event.action == 'edited' && startsWith(github.event.pull_request.title, 'WIP:')) && (github.event_name != 'push' || needs.current.outputs.run == 'true') && needs.current.outputs.tested != 'true' && !(startsWith(github.ref, 'refs/heads/wp-queue/') && needs.current.result == 'failure') && !startsWith(github.event.pull_request.title, 'WIP:') }}
+    runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'ci-urgent') && 'forgejo-ci-urgent' || 'forgejo-ci-heavy' }}
+    timeout-minutes: 45
+    container:
+      image: git.jmann.me/claude/waypoint-ci:01f88b8a84a7@sha256:09b09acc434ef9e1e20713fc4b0109715eaab94937b828634ef2b345433e458c
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      SHARDS: 4
+      E2E_LOOKS: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.looks != 'one')) && 'all' || 'one' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.forgejo/actions/stack
+      - id: tier
+        uses: ./.forgejo/actions/tier
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: steps.tier.outputs.code == 'true'
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.forgejo/actions/go-cache
+        if: steps.tier.outputs.code == 'true'
+        with:
+          kind: e2e
+      - uses: ./.forgejo/actions/go-mod
+        if: steps.tier.outputs.code == 'true'
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.tier.outputs.code == 'true'
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            e2e/package-lock.json
+      - name: build
+        if: steps.tier.outputs.code == 'true'
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          (cd web && npm ci --no-audit --no-fund && npm run build:vite)
+          make server
+          # Only 26-runners.mjs uses bin/cli/wp; skip compiling cmd/wp on the other shards.
+          lanes=${E2E_LANES:-2}
+          need_cli=false
+          for j in $(seq 1 "$lanes"); do
+            if node e2e/shard.mjs "$(((SHARD - 1) * lanes + j))/$((SHARDS * lanes))" 2>/dev/null | grep -qx '26-runners.mjs'; then
+              need_cli=true
+            fi
+          done
+          if [ "$need_cli" = true ]; then
+            WP_TARGETS="$(go env GOOS)/$(go env GOARCH)" make cli
+          fi
+      - id: image
+        if: steps.tier.outputs.code == 'true'
+        run: |
+          want=$(jq -r '.packages["node_modules/playwright"].version' e2e/package-lock.json)
+          have=$(cat /opt/waypoint-ci/playwright 2>/dev/null || true)
+          if [ "$want" = "$have" ] && compgen -G "$HOME/.cache/ms-playwright/chromium-*" >/dev/null; then
+            echo "playwright=baked" >> "$GITHUB_OUTPUT"
+          else
+            echo "the job image has Playwright '${have:-none}', the lockfile $want: installing it"
+          fi
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.tier.outputs.code == 'true' && steps.image.outputs.playwright != 'baked'
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/package-lock.json') }}
+      - name: browsers
+        if: steps.tier.outputs.code == 'true'
+        env:
+          BAKED: ${{ steps.image.outputs.playwright == 'baked' }}
+        run: |
+          cd e2e && npm ci --no-audit --no-fund
+          if [ "$BAKED" != true ]; then npx playwright install --with-deps chromium; fi
+      - name: browser checks
+        if: steps.tier.outputs.code == 'true'
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: cd e2e && ./run.sh --shard "$SHARD/$SHARDS"
+
+  e2e:
+    name: ${{ github.event.label && github.event.label.name != 'ci-urgent' && 'label added, nothing to run' || 'e2e' }}
+    needs: [current, e2e-shard]
+    if: ${{ !cancelled() && !(github.event.label && github.event.label.name != 'ci-urgent') && !(github.event.action == 'edited' && startsWith(github.event.pull_request.title, 'WIP:')) && (github.event_name != 'push' || needs.current.outputs.run == 'true') && needs.current.outputs.tested != 'true' && !(startsWith(github.ref, 'refs/heads/wp-queue/') && needs.current.result == 'failure') && !startsWith(github.event.pull_request.title, 'WIP:') }}
+    runs-on: ${{ contains(github.event.pull_request.labels.*.name, 'ci-urgent') && 'forgejo-ci-urgent' || 'forgejo-ci-priority' }}
+    timeout-minutes: 5
+    steps:
+      - name: every e2e shard passed
+        env:
+          SHARDS_RESULT: ${{ needs.e2e-shard.result }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$SHARDS_RESULT" != success ]; then
+            echo "::error title=Browser checks::the e2e shards ended as '$SHARDS_RESULT' ($EVENT run); see the failed 'e2e shard' jobs."
+            exit 1
+          fi
+
+  release:
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.current.outputs.run == 'true' && (needs.current.outputs.tested == 'true' || (needs.backend.result == 'success' && needs.lint.result == 'success' && needs.e2e.result == 'success')) }}
+    needs: [current, backend, lint, e2e]
+    runs-on: forgejo-ci
+    timeout-minutes: 20
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.forgejo/actions/go-cache
+        with:
+          kind: release
+      - uses: ./.forgejo/actions/go-mod
+      - name: tag and publish the release
+        id: release
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+        run: deploy/release.sh --publish
+
+  deploy:
+    needs: release
+    if: needs.release.outputs.version != ''
+    runs-on: forgejo-ci
+    timeout-minutes: 25
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    env:
+      VERSION: ${{ needs.release.outputs.version }}
+      DEPLOY_USER_HOST: ${{ vars.DEPLOY_USER_HOST }}
+      SITE_URL: ${{ vars.SITE_URL }}
+      WAYPOINT_URL: ${{ vars.SITE_URL }}
+      COMMIT: ${{ github.sha }}
+      BRANCH: main
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      WAYPOINT_DEPLOY_TOKEN: ${{ secrets.WAYPOINT_DEPLOY_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release.outputs.version }}
+      - name: check that this deploy should run
+        id: gate
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "$DEPLOY_SSH_KEY" ]; then
+            echo "::notice title=Deployed by the deployer::Production pulls its releases: the deployer on the production host deploys $VERSION within a few minutes (docs/DEPLOY.md, Continuous delivery)."
+            exit 0
+          fi
+          if [ -z "$DEPLOY_USER_HOST" ] || [ -z "$SITE_URL" ]; then
+            echo "::error title=Deploy not configured::DEPLOY_SSH_KEY is set but the repository variables DEPLOY_USER_HOST and SITE_URL aren't (Settings → Actions → Variables; docs/DEPLOY.md, Continuous delivery). $VERSION was released but not deployed."
+            exit 1
+          fi
+          newest=$(git ls-remote --tags --refs origin 'refs/tags/v*' | sed 's#.*refs/tags/##' | sort -V | tail -n 1)
+          if [ -n "$newest" ] && [ "$newest" != "$VERSION" ]; then
+            echo "::notice title=Deploy skipped::$newest is newer than $VERSION and will be deployed by its own run."
+            exit 0
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+      - name: ssh client and deploy key
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          if [ -z "$DEPLOY_KNOWN_HOSTS" ]; then
+            echo "::error::No DEPLOY_KNOWN_HOSTS secret; deploy/setup-cd.sh sets it. Refusing to trust an unknown host."
+            exit 1
+          fi
+          if ! command -v ssh >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends openssh-client
+          fi
+          umask 077
+          mkdir -p ~/.ssh
+          case "$DEPLOY_SSH_KEY" in
+            -----BEGIN*) printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/waypoint_deploy ;;
+            *) printf '%s' "$DEPLOY_SSH_KEY" | base64 -d > ~/.ssh/waypoint_deploy ;;
+          esac
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: record deployment started
+        if: steps.gate.outputs.enabled == 'true'
+        continue-on-error: true
+        run: deploy/record-deployment.sh started
+      - name: deploy to production
+        id: ship
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          git archive --format=tar "$VERSION" | ssh -i ~/.ssh/waypoint_deploy \
+            -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=15 -o ServerAliveInterval=30 \
+            "$DEPLOY_USER_HOST" "deploy $VERSION"
+      - name: wait for the new version
+        id: verify
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          for _ in $(seq 1 30); do
+            got=$(curl -fsS --max-time 10 "$SITE_URL/healthz" 2>/dev/null | jq -r '.version // empty' 2>/dev/null || true)
+            if [ "$got" = "$VERSION" ]; then
+              echo "$SITE_URL reports $got"
+              exit 0
+            fi
+            echo "waiting: $SITE_URL reports '${got:-nothing}', want $VERSION"
+            sleep 10
+          done
+          echo "::error::$SITE_URL never reported $VERSION"
+          exit 1
+      - name: record deployment result
+        if: always() && steps.gate.outputs.enabled == 'true'
+        continue-on-error: true
+        env:
+          RESULT: ${{ steps.verify.outcome == 'success' && 'succeeded' || 'failed' }}
+        run: deploy/record-deployment.sh "$RESULT" "CI run $RUN_URL"
+      - name: forget the deploy key
+        if: always() && steps.gate.outputs.enabled == 'true'
+        run: rm -f ~/.ssh/waypoint_deploy

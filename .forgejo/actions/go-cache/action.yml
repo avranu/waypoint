@@ -1,0 +1,36 @@
+name: go-cache
+description: Restore, and save at the end of a passing job, Go's module and build caches under a key per kind of job and day.
+inputs:
+  kind:
+    description: what the job builds, e.g. backend-race, backend, lint, e2e
+    required: true
+  path:
+    description: more directories to keep with Go's (lint's golangci-lint cache)
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - id: key
+      shell: bash
+      env:
+        KIND: ${{ inputs.kind }}
+      run: |
+        base="go-$KIND-$(go env GOVERSION)-$(go env GOOS)-$(go env GOARCH)"
+        {
+          echo "gocache=$(go env GOCACHE)"
+          echo "gomodcache=$(go env GOMODCACHE)"
+          echo "base=$base"
+          echo "sum=$base-$(sha256sum go.sum | cut -c1-16)"
+          echo "day=$(date -u +%Y%m%d)"
+        } >>"$GITHUB_OUTPUT"
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ steps.key.outputs.gocache }}
+          ${{ steps.key.outputs.gomodcache }}
+          ${{ inputs.path }}
+        key: ${{ steps.key.outputs.sum }}-${{ steps.key.outputs.day }}
+        restore-keys: |
+          ${{ steps.key.outputs.sum }}-
+          ${{ steps.key.outputs.base }}-
