@@ -48,9 +48,11 @@ WPTEST = wp test -h >/dev/null 2>&1
 test: ## tests of what changed against the base (wp test); test-all is the whole tree
 	@if $(WPTEST); then wp test; else echo "make test: wp is missing or too old for wp test; running test-all (the whole tree)" >&2; $(MAKE) --no-print-directory test-all; fi
 
+# internal/core is one test binary here: 10-17m on 8 CPUs, and past 30m at a
+# load of 22-50 (WP-1857).
 test-all: ## the whole tree: backend tests + frontend typecheck (CI runs this on the pull request; about 20 minutes or more)
 	go vet $(GOPKGS)
-	$(TESTSUM) go test -count=1 -timeout 30m -cover $(GOPKGS)
+	$(TESTSUM) go test -count=1 -timeout 60m -cover $(GOPKGS)
 	cd web && $(WEBDEPS) && npm run typecheck
 
 tools: ## install pinned Go QA binaries
@@ -82,8 +84,9 @@ wplint-code: ## Waypoint's own analyzers over cmd and internal (WPLINTPKGS narro
 	$(SLOT) go run ./cmd/wplint $(WPLINTPKGS)
 
 cross-check: ## build wp for windows/amd64 and darwin/arm64 (no output)
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/wp
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o /dev/null ./cmd/wp
+	@CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/wp & p1=$$!; \
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o /dev/null ./cmd/wp & p2=$$!; \
+	rc=0; wait $$p1 || rc=1; wait $$p2 || rc=1; exit $$rc
 
 prepush: prepush-go prepush-ops prepush-web ## CI's lint job, as the pre-push hook runs it
 

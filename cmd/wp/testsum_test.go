@@ -173,7 +173,7 @@ func TestTestsumFormats(t *testing.T) {
 	}{
 		{"go json pass", "auto", goJSONPass, 0, nil, "PASS: 4 tests in 2.0s (2 packages)\n"},
 		{"go json fail", "go", goJSONFail, 1, []string{"FAIL: 1 failed", "--- x/a.TestBad", "at bad_test.go:42", "got 1, want 2", "second line"}, ""},
-		{"go json timeout", "go", goJSONTimeout, 1, []string{"--- x/core (timed out after 10m0s)", "time limit (-timeout 10m0s)", "still running: TestQuick (3s)", "no test ran long", "-timeout 30m"}, ""},
+		{"go json timeout", "go", goJSONTimeout, 1, []string{"--- x/core (timed out after 10m0s)", "time limit (-timeout 10m0s)", "still running: TestQuick (3s)", "no test ran long", "-timeout 20m0s"}, ""},
 		{"go text timeout", "go", goTextTimeout, 1, []string{"--- TestEarlier", "--- x/core (timed out after 10m0s)", "still running: TestHang (9m58s), TestOther (2s)", "TestHang ran for 9m58s of it: it may hang"}, ""},
 		{"go text pass", "auto", goTextPass, 0, nil, "PASS: 2 packages in 2.0s\n"},
 		{"go text fail", "go", goTextFail, 1, []string{"--- TestBad", "at bad_test.go:42", "more detail"}, ""},
@@ -365,6 +365,31 @@ func TestTestsumBareWordIsCommand(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := run([]string{"testsum", "run-tests.sh"}, &out, &errb); code == 0 || !strings.Contains(errb.String(), "wp testsum -- sh run-tests.sh") {
 		t.Errorf("unparsed file: %d %q %q", code, out.String(), errb.String())
+	}
+}
+
+// The hint names a limit above the one that was hit: at -timeout 30m it
+// said "e.g. -timeout 30m" (WP-1857).
+func TestGoTimeoutHintIsAboveTheLimitHit(t *testing.T) {
+	f, ok := goTimeoutFailure("x/core", []string{"panic: test timed out after 30m0s", "\trunning tests:", "\t\tTestQuick (8s)"})
+	if !ok {
+		t.Fatal("not recognized")
+	}
+	got := strings.Join(f.Msg, "\n")
+	if !strings.Contains(got, "e.g. -timeout 1h0m0s") || strings.Contains(got, "e.g. -timeout 30m") {
+		t.Fatalf("hint = %q", got)
+	}
+	f, _ = goTimeoutFailure("x/core", []string{"panic: test timed out after 10m0s"})
+	if got := strings.Join(f.Msg, "\n"); !strings.Contains(got, "e.g. -timeout 20m0s") {
+		t.Fatalf("hint = %q", got)
+	}
+	f, _ = goTimeoutFailure("x/core", []string{"panic: test timed out after soon"})
+	if got := strings.Join(f.Msg, "\n"); !strings.Contains(got, "a longer -timeout") || strings.Contains(got, "e.g.") {
+		t.Fatalf("hint for an unread limit = %q", got)
+	}
+	f, _ = goTimeoutFailure("x/core", []string{"panic: test timed out after 10m0s", "\trunning tests:", "\t\tTestHang (9m0s)"})
+	if got := strings.Join(f.Msg, "\n"); !strings.Contains(got, "may hang") || strings.Contains(got, "longer -timeout") {
+		t.Fatalf("hint for a hang = %q", got)
 	}
 }
 
@@ -660,6 +685,31 @@ func TestKeptRedactionWholeText(t *testing.T) {
 			in:      "-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v2\n\n" + body + "\n" + body + "\n=AbCd\nafter\n",
 			absent:  []string{body, "=AbCd", "GnuPG"},
 			present: []string{"-----BEGIN PGP PRIVATE KEY BLOCK-----", "after"},
+		},
+		"unterminated PGP block, more armor headers": {
+			in:      "-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: GnuPG v2\nCharset: UTF-8\nHash: SHA256\nMessageID: abc\n\n" + body + "\n" + body + "\nafter\n",
+			absent:  []string{body},
+			present: []string{"after"},
+		},
+		"unterminated, a header not listed": {
+			in:   begin + "\nX-Other: yes\n\n" + body + "\n" + b64(12) + "\nafter\n",
+			want: begin + "\nX-Other: yes\n\n***\n***\nafter\n",
+		},
+		"unterminated, a short line with a field after it": {
+			in:   begin + "\n" + body + "\nabcdEFGH1234 trailing\n" + body + "\nafter\n",
+			want: begin + "\n***\n***\n***\nafter\n",
+		},
+		"unterminated, a full line without a digit after the key goes on": {
+			in:   begin + "\n" + body + "\n12:00 GET /health ok\n" + body + "\n" + strings.Repeat("abcd+/", 11) + "ab\n" + b64(12) + "\nafter\n",
+			want: begin + "\n***\n12:00 GET /health ok\n***\n***\n***\nafter\n",
+		},
+		"unterminated, another line inside the key": {
+			in:   begin + "\n" + body + "\n12:00 GET /health ok\n12:00 " + body + "\n12:00 " + b64(12) + "\nafter\n",
+			want: begin + "\n***\n12:00 GET /health ok\n***\n***\nafter\n",
+		},
+		"a key-like line past where an END is looked for": {
+			in:   begin + "\n" + numbered(400) + body + "\n",
+			want: begin + "\n" + numbered(400) + body + "\n",
 		},
 		"a PGP end line inside another key": {
 			in:   begin + "\n" + body + "\n-----END PGP PRIVATE KEY BLOCK-----\n" + body + "\n" + end + "\nafter\n",

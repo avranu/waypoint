@@ -145,6 +145,26 @@ func TestCLIAudit(t *testing.T) {
 	}
 }
 
+// An agent's rejection shows its evidence and the model it ran as, with how
+// that compared with the finder (WP-1825).
+func TestAuditShowListsARejectionsEvidenceAndModel(t *testing.T) {
+	a := auditView{ID: 9, Status: "done", Findings: []auditFinding{{ID: "9.1", Title: "Races", Severity: "high", State: "rejected", Note: "held", By: "claude",
+		Evidence: "a.go:12 takes mu\nb.go:3 too", DecidedModel: "claude-opus-5-5", DecidedEffort: "high", DecidedStrength: "at_least: opus is a stronger family than sonnet"}}}
+	out := a.text()
+	for _, want := range []string{
+		"         Evidence: a.go:12 takes mu\n         b.go:3 too\n",
+		"         Rejected as: claude-opus-5-5 (high), at least: opus is a stronger family than sonnet",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("no %q in\n%s", want, out)
+		}
+	}
+	a.Findings[0].Evidence, a.Findings[0].DecidedModel = "", ""
+	if out := a.text(); strings.Contains(out, "Evidence:") || strings.Contains(out, "Rejected as:") {
+		t.Errorf("a person's rejection:\n%s", out)
+	}
+}
+
 // The server says how many findings are listed at a time (WP-1421): a check
 // of a session's marks has more than its max_findings and lists every one,
 // and an older server, which sends no number, gets the old rule.

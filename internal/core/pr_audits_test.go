@@ -105,9 +105,18 @@ func (be *bsEnv) ready(pr *PullRequest) {
 	be.s.Wait()
 }
 
+// markFinding marks as a fable session: the audits here are another
+// provider's, which only the strongest family may reject (WP-1825).
 func (be *bsEnv) markFinding(id, state string) {
 	be.t.Helper()
-	if _, err := be.s.MarkAuditFindings(be.ctx, be.agent, MarkFindings{IDs: []string{id}, State: state, Note: "checked"}); err != nil {
+	if _, err := be.s.db.W.Exec(`UPDATE agent_sessions SET model = 'claude-fable-5-2' WHERE id = ?`, be.agent.Session); err != nil {
+		be.t.Fatal(err)
+	}
+	in := MarkFindings{IDs: []string{id}, State: state, Note: "checked"}
+	if state == "rejected" {
+		in.Evidence = "checked"
+	}
+	if _, err := be.s.MarkAuditFindings(be.ctx, be.agent, in); err != nil {
 		be.t.Fatal(err)
 	}
 	be.s.Wait()

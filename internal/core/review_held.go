@@ -1032,7 +1032,8 @@ const uncheckedNote = "Rejected by the session, unchecked: "
 func (s *Service) reopenUnverified(ctx context.Context, auditID int64) {
 	err := s.write(ctx, SystemActor(), func(t *tx) error {
 		res, err := t.ExecContext(ctx, `UPDATE code_audit_findings SET state = 'open',
-			note = trim(? || note), decided_at = NULL
+			note = trim(? || note), decided_at = NULL,
+			evidence = '', decided_model = '', decided_effort = '', decided_strength = ''
 			WHERE audit_id = ? AND state = 'rejected' AND severity IN ('critical', 'high')`, uncheckedNote, auditID)
 		if err != nil {
 			return err

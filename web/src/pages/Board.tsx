@@ -108,7 +108,7 @@ export function BoardPage() {
         </Empty>
       ) : (
         <NestContext.Provider value={folds}>
-          <Columns project={project} board={board} filter={search.q ?? ''} group={group} />
+          <Columns project={project} board={board} filter={agentQ} group={group} />
         </NestContext.Provider>
       )}
     </>
@@ -292,6 +292,10 @@ function Columns({
   const lanes = useMemo(() => buildLanes(board, group), [board, group])
   const fromServer = useMemo(() => buildCells(board, group), [board, group])
   const [cells, setCells] = useState<Cells>(fromServer)
+  // Whether the cells on screen are in manual rank: taken with them from the
+  // same response, so a response that lands mid-drag can't pair one list's
+  // order with another's flag.
+  const [manual, setManual] = useState(board.manual_order)
   const [active, setActive] = useState<Issue | null>(null)
   const [collapsed, setCollapsed] = useLocal<string[]>(
     `lanes-collapsed:${project.key}:${group}`,
@@ -304,8 +308,10 @@ function Columns({
   const boardRef = useRef<HTMLDivElement>(null)
   useListNav(boardRef, { onOpen: open })
   useEffect(() => {
-    if (!active) setCells(fromServer)
-  }, [fromServer, active])
+    if (active) return
+    setCells(fromServer)
+    setManual(board.manual_order)
+  }, [fromServer, board.manual_order, active])
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -405,15 +411,15 @@ function Columns({
     const statusChanged = from.status !== to.status
     const laneChanged = from.lane !== to.lane
     const lane = laneChanged ? lanePatch(to.lane) : { patch: {}, optimistic: {} }
-    const before = list[idx + 1]?.key
-    const after = list[idx - 1]?.key
-    const moved = statusChanged || laneChanged || oldIdx !== idx
+    const before = manual ? list[idx + 1]?.key : undefined
+    const after = manual ? list[idx - 1]?.key : undefined
+    const moved = statusChanged || laneChanged || (manual && oldIdx !== idx)
     const next = {
       ...base,
       [cell]: list.map((i) => (i.key === issue.key ? { ...i, status, ...lane.optimistic } : i)),
     }
+    if (!moved) return setCells(fromServer)
     setCells(next)
-    if (!moved) return
     qc.setQueryData<Board>(['board', project.key, filter], (b) =>
       b
         ? {

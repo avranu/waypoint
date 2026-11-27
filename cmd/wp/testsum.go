@@ -389,7 +389,7 @@ var (
 	pemEndRE    = lazyre.New(`-----END [A-Z ]*PRIVATE KEY-----`)
 	pgpEndRE    = lazyre.New(`-----END [A-Z ]*PRIVATE KEY BLOCK-----`)
 	pemBodyRE   = lazyre.New(`^[A-Za-z0-9+/=]+$`)
-	pemHeaderRE = lazyre.New(`(?:^|\s)[-+>]?(?:Proc-Type|DEK-Info|Comment|Version): `)
+	pemHeaderRE = lazyre.New(`(?:^|\s)[-+>]?(?:Proc-Type|DEK-Info|Comment|Version|Charset|Hash|MessageID): `)
 )
 
 // pemFullLine is the least length taken for a whole line of a key's body
@@ -424,6 +424,34 @@ func pemBodyField(line string) string {
 	return last
 }
 
+// pemUnmarked is a line without the blanks and the diff or quote marker
+// before its text.
+func pemUnmarked(line string) string {
+	t := strings.Trim(strings.TrimSuffix(line, "\r"), " \t")
+	if t != "" && strings.IndexByte("-+>", t[0]) >= 0 {
+		t = strings.TrimLeft(t[1:], " \t")
+	}
+	return t
+}
+
+// pemShortLine says a line that follows a key's full line holds its short
+// last one: the last field is base64 and not all letters, or any field is
+// key-like and a whole number of base64 groups, 8 characters or more, for one
+// with fields after it (audit 1860.1).
+func pemShortLine(t string) bool {
+	last := pemBodyField(t)
+	if pemBodyRE.MatchString(last) && strings.Trim(last, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz") != "" {
+		return true
+	}
+	for _, f := range strings.Fields(t) {
+		f = strings.Trim(f, `"',;`)
+		if len(f) >= 8 && len(f)%4 == 0 && pemBodyRE.MatchString(f) && pemKeyLike(f) {
+			return true
+		}
+	}
+	return false
+}
+
 // redactKept is redact for a kept output file, returning as many lines as it
 // got, each \r kept, so "All N lines" stays true. Every line between a
 // BEGIN and an END PRIVATE KEY line becomes ***, when the END is within 400
@@ -432,8 +460,11 @@ func pemBodyField(line string) string {
 // headers, base64 lines of 40 or more characters (the first one mixed case
 // with a digit, so a commit SHA is not one), then one shorter line that is
 // not all letters. A diff or quote marker, a log prefix, quotes and a comma
-// around a line are allowed, and fields after a full line's base64. Then redact's other patterns run over the whole
-// text, a match that spanned lines giving them back as *** lines.
+// around a line are allowed, and fields after a full line's base64. Where
+// some other line ends that run, the key may go on below it, so as far as an
+// END is looked for, each mixed-case full line with a digit, the full lines
+// right after it, and a short one after those, becomes *** too. Then redact's other patterns run over the
+// whole text, a match that spanned lines giving them back as *** lines.
 func redactKept(s string) string {
 	lines := strings.Split(s, "\n")
 	star := func(j int) {
@@ -494,10 +525,7 @@ func redactKept(s string) string {
 		j := i + 1
 	body:
 		for ; j < len(lines); j++ {
-			t := strings.Trim(strings.TrimSuffix(lines[j], "\r"), " \t")
-			if t != "" && strings.IndexByte("-+>", t[0]) >= 0 {
-				t = strings.TrimLeft(t[1:], " \t")
-			}
+			t := pemUnmarked(lines[j])
 			last := pemBodyField(t)
 			switch {
 			case inHeaders && pemHeaderRE.MatchString(t):
@@ -510,7 +538,7 @@ func redactKept(s string) string {
 				continue
 			case pemBodyRE.MatchString(last) && len(last) >= pemFullLine && (sawFull || pemKeyLike(last)):
 				inHeaders, sawFull = false, true
-			case sawFull && pemBodyRE.MatchString(last) && strings.Trim(last, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz") != "":
+			case sawFull && pemShortLine(t):
 				star(j)
 				j++
 				break body
@@ -518,6 +546,20 @@ func redactKept(s string) string {
 				break body
 			}
 			star(j)
+		}
+		// A header not listed, or another process's line, doesn't end the
+		// key (audit 1860.1). The first full line after it must look like a
+		// key, so a commit SHA stays; the full lines right after that one need
+		// not, as in the body above (audit 2091.1).
+		afterFull := false
+		for k := j; k < len(lines) && k <= i+pemMaxLines && !pemBeginRE.MatchString(lines[k]); k++ {
+			t := pemUnmarked(lines[k])
+			last := pemBodyField(t)
+			full := len(last) >= pemFullLine && pemBodyRE.MatchString(last) && (afterFull || pemKeyLike(last))
+			if full || afterFull && pemShortLine(t) {
+				star(k)
+			}
+			afterFull = full
 		}
 		i = j - 1
 	}
@@ -949,7 +991,11 @@ func goTimeoutFailure(pkg string, lines []string) (testFailure, bool) {
 	if limit > 0 && longest >= limit/2 {
 		msg = append(msg, longName+" ran for "+longest.String()+" of it: it may hang")
 	} else {
-		msg = append(msg, "no test ran long, so the package as a whole was slow (a busy machine?): run it again with a longer -timeout, e.g. -timeout 30m")
+		hint := "no test ran long, so the package as a whole was slow (a busy machine?): run it again with a longer -timeout"
+		if limit > 0 {
+			hint += ", e.g. -timeout " + (2 * limit).String()
+		}
+		msg = append(msg, hint)
 	}
 	return testFailure{Name: pkg + " (timed out after " + m[1] + ")", Msg: msg, Pkg: pkg}, true
 }
