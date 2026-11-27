@@ -116,11 +116,12 @@ func headerBefore(lines []string, i int) int {
 }
 
 var (
-	goRunRE       = lazyre.New(`^=== (?:RUN|CONT|NAME) `)
-	raceEnd       = lazyre.New(`^={10,}$`)
-	panicEnd      = lazyre.New(`^(?:FAIL\b|exit status \d|ok\s)`)
-	playwrightHd  = lazyre.New(`^\s+\d+\) \[[^\]]+\] › `)
-	playwrightEnd = lazyre.New(`^\s+\d+\) \[[^\]]+\] › |^\s+\d+ (?:failed|passed|flaky|skipped)\b`)
+	goRunRE        = lazyre.New(`^=== (?:RUN|CONT|NAME) `)
+	raceEnd        = lazyre.New(`^={10,}$`)
+	panicEnd       = lazyre.New(`^(?:FAIL\b|exit status \d|ok\s)`)
+	playwrightHd   = lazyre.New(`^\s+\d+\) \[[^\]]+\] › `)
+	playwrightEnd  = lazyre.New(`^\s+\d+\) \[[^\]]+\] › |^\s+\d+ (?:failed|passed|flaky|skipped)\b`)
+	lintSectionEnd = lazyre.New(`^(?:=== |::error |::group::|##\[error\]|⚙️ \[runner\]:|❌\s+Failure - |🏁\s+Job failed)`)
 )
 
 // logRules, most specific first: a line counts for the first that matches.
@@ -133,6 +134,9 @@ var logRules = []logRule{
 	{re: lazyre.New(`^E {2,}\S`), before: 3},
 	{re: lazyre.New(`^(?:FAILED|ERROR) \S+(?:::| - )`)},
 	{re: lazyre.New(`^=+ .*\b\d+ (?:failed|errors?)\b.* =+$`)},
+	{re: lazyre.New(`^=== .+ failed \(exit \d+\) ===$`), block: untilRE(lintSectionEnd, false)},
+	{re: lazyre.New(`^=== partial .+ ===$`), block: untilRE(lintSectionEnd, false)},
+	{re: lazyre.New(`^AST test list `), before: 5},
 	{re: lazyre.New(`^\S+\.py:\d+: \w+`)},
 	{re: playwrightHd, block: untilRE(playwrightEnd, false)},
 	{re: lazyre.New(`^\s+✘ `)},
