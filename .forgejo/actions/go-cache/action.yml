@@ -1,5 +1,5 @@
 name: go-cache
-description: Restore, and save at the end of a passing job, Go's module and build caches under a key per kind of job and day.
+description: Restore Go's module cache (immutable per go.sum) and build cache (saved on main only so PRs and ephemeral queue branches don't re-upload multi-GB caches).
 inputs:
   kind:
     description: what the job builds, e.g. backend-race, backend, lint, e2e
@@ -16,19 +16,39 @@ runs:
       env:
         KIND: ${{ inputs.kind }}
       run: |
-        base="go-$KIND-$(go env GOVERSION)-$(go env GOOS)-$(go env GOARCH)"
+        gov=$(go env GOVERSION)
+        sum=$(sha256sum go.sum | cut -c1-16)
+        base="go-build-$KIND-$gov-$(go env GOOS)-$(go env GOARCH)"
         {
           echo "gocache=$(go env GOCACHE)"
           echo "gomodcache=$(go env GOMODCACHE)"
+          echo "modkey=go-mod-$gov-$sum"
+          echo "modprefix=go-mod-$gov-"
           echo "base=$base"
-          echo "sum=$base-$(sha256sum go.sum | cut -c1-16)"
+          echo "sum=$base-$sum"
           echo "day=$(date -u +%Y%m%d)"
         } >>"$GITHUB_OUTPUT"
     - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
+        path: ${{ steps.key.outputs.gomodcache }}
+        key: ${{ steps.key.outputs.modkey }}
+        restore-keys: |
+          ${{ steps.key.outputs.modprefix }}
+    - if: github.ref == 'refs/heads/main'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
         path: |
           ${{ steps.key.outputs.gocache }}
-          ${{ steps.key.outputs.gomodcache }}
+          ${{ inputs.path }}
+        key: ${{ steps.key.outputs.sum }}-${{ steps.key.outputs.day }}
+        restore-keys: |
+          ${{ steps.key.outputs.sum }}-
+          ${{ steps.key.outputs.base }}-
+    - if: github.ref != 'refs/heads/main'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ steps.key.outputs.gocache }}
           ${{ inputs.path }}
         key: ${{ steps.key.outputs.sum }}-${{ steps.key.outputs.day }}
         restore-keys: |

@@ -685,65 +685,117 @@ jobs:
           fi
       - uses: ./.forgejo/actions/go-tools
         if: steps.tier.outputs.code == 'true'
-      - name: dependency age (cmd/dep-age)
-        if: steps.tier.outputs.code == 'true'
-        run: |
-          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then depth=--depth=1; else depth=; fi
-          git fetch -q --no-tags ${depth:+"$depth"} origin main
-          go run ./cmd/dep-age -base FETCH_HEAD
-      - name: gofmt and golangci-lint (uses .golangci.yml)
-        if: steps.tier.outputs.code == 'true'
-        run: |
-          test -z "$(gofmt -l cmd internal)"
-          golangci-lint run ./cmd/... ./internal/... ./web
-      - name: Waypoint rules (cmd/wplint)
-        if: steps.tier.outputs.code == 'true'
-        run: |
-          wplint_bin=$(mktemp)
-          trap 'rm -f "$wplint_bin"' EXIT
-          go build -o "$wplint_bin" ./cmd/wplint
-          "$wplint_bin" ./cmd/... ./internal/...
-          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
-            git fetch -q --no-tags --unshallow origin +refs/heads/main:refs/remotes/origin/main
-          else
-            git fetch -q --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          fi
-          "$wplint_bin" repo -base origin/main -require-base
-      - name: every internal/core and cmd/wp test is in a backend shard
-        if: steps.tier.outputs.code == 'true'
-        run: .forgejo/scripts/gotest-shard.sh -check
-      - name: wp builds for Windows and macOS
-        if: steps.tier.outputs.code == 'true' && steps.tier.outputs.full == 'true'
-        run: make cross-check
       - name: workflow and k8s manifest lint (actionlint, kubeconform)
         run: |
           actionlint -config-file .forgejo/actionlint.yaml .forgejo/workflows/ci.yml
           actionlint .github/workflows/*.yml
           kubeconform -strict -summary deploy/k8s/waypoint.yaml
-      - name: gosec
-        if: steps.tier.outputs.code == 'true' && steps.tier.outputs.full == 'true'
-        run: make sast
-      - name: install app deps
+      - name: gofmt, golangci-lint, dep-age, shard check, and web checks (parallel)
         if: steps.tier.outputs.code == 'true'
-        working-directory: web
-        run: npm ci --no-audit --no-fund
-      - name: typecheck
+        env:
+          FULL: ${{ steps.tier.outputs.full }}
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+
+          # Run low-RAM web checks and fast Go/repo checks alongside golangci-lint
+          # (which uses ~6-7 GiB alone) so they finish without adding wall time.
+          (
+            set -euo pipefail
+            test -z "$(gofmt -l cmd internal)"
+            golangci-lint run ./cmd/... ./internal/... ./web
+          ) >"$tmp/golangci.log" 2>&1 &
+          p_go=$!
+
+          (
+            set -euo pipefail
+            cd web
+            npm ci --no-audit --no-fund
+            npm run typecheck
+            npm run format:check
+            if [ "$FULL" = true ]; then
+              npm run build:vite
+            fi
+          ) >"$tmp/web.log" 2>&1 &
+          p_web=$!
+
+          (
+            set -euo pipefail
+            if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+              git fetch -q --no-tags --depth=50 origin +refs/heads/main:refs/remotes/origin/main
+              if ! git merge-base origin/main HEAD >/dev/null 2>&1; then
+                git fetch -q --no-tags --unshallow origin +refs/heads/main:refs/remotes/origin/main
+              fi
+            else
+              git fetch -q --no-tags origin +refs/heads/main:refs/remotes/origin/main
+            fi
+            go run ./cmd/dep-age -base origin/main
+            .forgejo/scripts/gotest-shard.sh -check
+          ) >"$tmp/fast.log" 2>&1 &
+          p_fast=$!
+
+          rc=0
+          wait "$p_go" || { echo "::error title=gofmt / golangci-lint::failed"; rc=1; }
+          wait "$p_web" || { echo "::error title=web checks::failed"; rc=1; }
+          wait "$p_fast" || { echo "::error title=dep-age / shard check::failed"; rc=1; }
+          for name in golangci fast web; do
+            if [ -s "$tmp/$name.log" ]; then
+              echo "::group::$name"
+              cat "$tmp/$name.log"
+              echo "::endgroup::"
+            fi
+          done
+          exit "$rc"
+      - name: Waypoint rules (wplint), cross-check, and gosec (parallel)
         if: steps.tier.outputs.code == 'true'
-        working-directory: web
-        run: npm run typecheck
-      - name: formatting (prettier --check)
-        if: steps.tier.outputs.code == 'true'
-        working-directory: web
-        run: npm run format:check
+        env:
+          FULL: ${{ steps.tier.outputs.full }}
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+
+          # Now that golangci-lint has exited (freeing its RAM and warming GOCACHE),
+          # run wplint, cross-check, and gosec concurrently.
+          (
+            set -euo pipefail
+            wplint_bin=$(mktemp)
+            trap 'rm -f "$wplint_bin"' EXIT
+            go build -o "$wplint_bin" ./cmd/wplint
+            "$wplint_bin" ./cmd/... ./internal/...
+            "$wplint_bin" repo -base origin/main -require-base
+          ) >"$tmp/wplint.log" 2>&1 &
+          p_wplint=$!
+
+          p_cross=
+          p_sast=
+          if [ "$FULL" = true ]; then
+            make cross-check >"$tmp/cross.log" 2>&1 &
+            p_cross=$!
+            make sast >"$tmp/sast.log" 2>&1 &
+            p_sast=$!
+          fi
+
+          rc=0
+          wait "$p_wplint" || { echo "::error title=wplint::failed"; rc=1; }
+          if [ -n "$p_cross" ]; then
+            wait "$p_cross" || { echo "::error title=cross-check::failed"; rc=1; }
+          fi
+          if [ -n "$p_sast" ]; then
+            wait "$p_sast" || { echo "::error title=gosec::failed"; rc=1; }
+          fi
+          for name in wplint cross sast; do
+            if [ -s "$tmp/$name.log" ]; then
+              echo "::group::$name"
+              cat "$tmp/$name.log"
+              echo "::endgroup::"
+            fi
+          done
+          exit "$rc"
       - name: npm audit (high and above, only those this change adds over main)
         if: steps.tier.outputs.code == 'true' && steps.tier.outputs.full == 'true'
         env:
           ADVISORIES_BASE_SHA: ${{ github.event.pull_request.merge_base }}
         run: deploy/advisories.sh check npm pr
-      - name: build (also validates what gets embedded into the binary)
-        if: steps.tier.outputs.code == 'true' && steps.tier.outputs.full == 'true'
-        working-directory: web
-        run: npm run build:vite
 
   advisories:
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
