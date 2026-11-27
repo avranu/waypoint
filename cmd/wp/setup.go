@@ -215,7 +215,7 @@ func (c *cli) planSetup(f setupFlags) (*setupPlan, error) {
 	o := runnerOpts{MaxJobs: 1}
 	if prev := c.state.Runner; prev != nil {
 		o.Name, o.Labels, o.Allow, o.Env, o.NoUsageSync, o.NoPrep, o.NoAutoUpdate = prev.Name, prev.Labels, prev.Allow, prev.Env, prev.NoUsageSync, prev.NoPrep, prev.NoAutoUpdate
-		o.MaxJobs = max(prev.MaxJobs, 1)
+		o.MaxJobs, o.MaxAgents = max(prev.MaxJobs, 1), prev.MaxAgents
 		p.allowFrom = "as installed before"
 	}
 	home, _ := os.UserHomeDir()

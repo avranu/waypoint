@@ -151,7 +151,7 @@ async function run(width, scheme, first, last) {
     const cap = row.getByTestId("runner-capacity");
     await cap.waitFor();
     ok(
-      /One job at a time|Up to \d+ heavy jobs? of 2/.test(await cap.innerText()),
+      /One (heavy )?job at a time|Up to \d+ heavy jobs? of 2/.test(await cap.innerText()),
       `${tag} it says how many jobs it takes at once: "${(await cap.innerText()).trim()}"`,
     );
   }

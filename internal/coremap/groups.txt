@@ -1,0 +1,157 @@
+# Grouping of internal/core's non-test files into domains (WP-1664, WP-ADR151).
+#
+# Each line is `domain: glob glob ...`; a glob matches a file name (path.Match),
+# and a name without wildcards beats any glob. A file no line matches falls to
+# the group named by its stem before the first underscore. A test requires every
+# non-test file of internal/core to match a line, and refuses a file that the
+# globs of two lines match unless a line names it, so the order of lines never
+# decides which group a file is in. A new file goes in the domain it belongs to
+# or in a line of its own.
+#
+# The `kernel` line is a group of package core's own root files (Service, tx and
+# the kernel shims), not the package internal/core/kernel.
+#
+# The ORDER of the lines is the provider-first layer order, bottom first. A
+# reference from a line to a later one is "upward" and has to be cut before the
+# lower group can move out of core. The order is a measured snapshot, kernel
+# first, from a heuristic that reduces upward references (not a proven minimum):
+#
+#   go run ./cmd/coremap -suggest-order     # the "order:" line, pasted by hand
+#
+# No test compares this file with that output, which shifts as the code does. A
+# new line goes where it adds the fewest upward references; measure the whole
+# order again before a domain moves. Small groups whose references go mostly
+# (>= 50%, from -affinity, judged by hand) to one domain are merged into it by
+# name; files that many groups use (contracts, users, work, knowledge,
+# permissions...) stay groups of their own so they sort low rather than hiding
+# inside a consumer.
+kernel: core.go events.go facade.go kernel_shims.go subscriptions.go
+egress: egress.go egress_*.go
+push: push.go push_*.go
+lineage: lineage.go lineage_*.go
+row: row.go row_*.go
+llm: llm.go llm_*.go
+contracts: contracts.go contracts_*.go
+audit: audit*.go
+users: users.go users_*.go
+permissions: permissions.go permissions_*.go
+project: project*.go
+job: job_*.go
+pasted: pasted.go pasted_*.go
+run: run.go run_*.go
+transcript: transcript.go transcript_*.go
+dates: dates.go dates_*.go
+issues: issues.go issue_*.go comment_text.go
+timetrack: timetrack.go timetrack_*.go
+forge: forge*.go
+webhooks: webhooks.go webhooks_*.go
+runner: runner*.go
+kit: kit*.go
+ai: ai.go ai_*.go
+page: page*.go
+gateway: gateway.go gateway_*.go
+jev: jev.go jev_*.go
+repo: repo.go repo_*.go
+device: device.go device_*.go
+email: email.go email_*.go
+knowledge: knowledge.go knowledge_*.go
+glossary: glossary.go glossary_*.go
+design: design*.go
+spec: spec.go spec_*.go
+provenance: provenance.go provenance_*.go
+agent: agent*.go
+usage: usage*.go
+notify: notify.go notify_*.go
+pr: pr_*.go pulls*.go
+requests: request*.go
+hold: hold.go hold_*.go
+automation: automation*.go followup_actions.go
+sprints: sprints.go sprints_*.go
+code: code_*.go
+findings: findings.go findings_*.go
+gate: gate.go gate_*.go
+work: work.go work_*.go
+concepts: concepts.go concepts_*.go
+mentions: mentions.go mentions_*.go
+transcripts: transcripts.go transcripts_*.go
+task: task*.go trailing_question.go
+handoff: handoff.go handoff_*.go
+session: session*.go
+own: own.go own_*.go
+risk: risk.go risk_*.go
+stranded: stranded.go stranded_*.go
+escape: escape*.go
+relayed: relayed.go relayed_*.go
+bot: bot.go bot_*.go
+line: line.go line_*.go
+autopilot: autopilot*.go
+followups: followups.go followups_*.go
+ci: ci.go ci_*.go
+env: env*.go
+base: base.go base_*.go
+refs: refs.go refs_*.go
+assistants: assistants.go assistants_*.go
+assistant: assistant.go assistant_*.go
+collector: collector.go collector_*.go
+sandbox: sandbox*.go
+experiments: experiments.go experiments_*.go
+server: server*.go
+unpushed: unpushed.go unpushed_*.go
+fanout: fanout*.go
+review: review*.go outside_diff.go verdict_replies.go
+test: test_evidence.go bench_evidence.go
+objective: objective*.go
+search: search*.go
+schedule: schedule.go schedule_*.go
+wakeups: wakeups.go wakeups_*.go
+stalled: stalled.go stalled_*.go
+draft: draft.go draft_*.go
+outside: outside.go outside_*.go
+leftover: leftover.go leftover_*.go
+mistake: mistake.go mistake_*.go
+prep: prep_*.go task_prep.go
+merge: merge*.go renumber.go
+permission: permission.go permission_*.go
+typed: typed.go typed_*.go
+cache: cache.go cache_*.go
+quota: quota*.go
+delegation: delegation.go delegation_*.go
+branch: branch.go branch_*.go
+babysit: babysit*.go
+late: late.go late_*.go
+front: front.go front_*.go
+drift: drift.go drift_*.go
+relation: relation*.go related.go
+goal: goal*.go
+deferred: deferred.go deferred_*.go
+scheduler: scheduler.go scheduler_*.go
+landed: landed.go landed_*.go
+nitpicks: nitpicks.go nitpicks_*.go
+round: round.go round_*.go
+ship: ship.go ship_*.go
+refusals: refusals.go refusals_*.go
+put: put.go put_*.go
+verify: verify.go verify_*.go
+rewrites: rewrites.go rewrites_*.go
+graph: graph.go graph_*.go
+surplus: surplus.go surplus_*.go
+changes: changes.go changes_*.go
+branches: branches.go branches_*.go
+overview: overview.go overview_*.go
+instructions: instructions.go instructions_*.go
+cross: cross.go cross_*.go
+reply: reply.go reply_*.go
+templates: templates.go templates_*.go
+follow: follow.go follow_*.go
+event: event.go event_*.go
+attachments: attachments.go attachments_*.go
+views: views.go views_*.go
+slot: slot.go slot_*.go
+similar: similar.go similar_*.go
+reports: reports.go reports_*.go
+inbox: inbox.go inbox_*.go
+ical: ical.go ical_*.go
+delivery: delivery.go delivery_*.go
+dashboard: dashboard.go dashboard_*.go
+catch: catch.go catch_*.go
+autopush: autopush.go autopush_*.go

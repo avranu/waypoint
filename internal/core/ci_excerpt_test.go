@@ -167,6 +167,17 @@ ERROR: Job failed: exit code 1
 			not:  []string{"Job failed", "git version"}},
 		{name: "the same failure said twice", log: "--- FAIL: TestA (0.00s)\n    a_test.go:3: boom\nFAIL\tex/a\t0.1s\nretrying\n--- FAIL: TestA (0.00s)\n    a_test.go:3: boom\nFAIL\tex/a\t0.1s\n",
 			want: []string{"--- FAIL: TestA (0.00s)", "FAIL\tex/a\t0.1s"}},
+		{name: "parallel lint shard-check and gofmt failures", log: stamp(noise(20, "setup") +
+			"=== golangci failed (exit 1) ===\ngofmt: unformatted files:\ninternal/core/foo.go\n##[error]failed (exit 1)\n" +
+			"=== shard-check failed (exit 1) ===\nTestMissed\nAST test list has tests of internal/core the grep misses: no shard would run them\n##[error]failed (exit 1)\n" +
+			runnerEnd),
+			want: []string{"=== golangci failed (exit 1) ===", "gofmt: unformatted files:", "internal/core/foo.go",
+				"=== shard-check failed (exit 1) ===", "TestMissed", "AST test list has tests of internal/core the grep misses"},
+			not: []string{"WARN forge webhook", "Job failed"}},
+		{name: "parallel lint partial logs on timeout", log: stamp(noise(10, "setup") +
+			"=== partial golangci ===\nloading packages...\n=== partial web ===\nnpm ci running...\n" + runnerEnd),
+			want: []string{"=== partial golangci ===", "loading packages...", "=== partial web ===", "npm ci running..."},
+			not:  []string{"WARN forge webhook", "Job failed"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
