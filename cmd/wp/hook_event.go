@@ -541,6 +541,9 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		}
 	}
 	c.trackAgentsLocally(in)
+	if in.HookEventName == "PostCompact" || (in.HookEventName == "SessionStart" && (in.Source == "compact" || in.Source == "clear")) {
+		c.clearSessionTold(in.SessionID, hookCountWait(eventHookTimeout(in.HookEventName)))
+	}
 	if c.server() == "" || c.token() == "" {
 		if slash != "" {
 			_, _ = stdout.Write(promptStop("Waypoint: this machine isn't logged in (`wp login`), so /wp " + slash + " did nothing."))
@@ -696,7 +699,13 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	}
 	if res == nil {
 		if in.HookEventName == "SessionStart" {
-			_, _ = stdout.Write(sessionStartOutput(c.withTidyHint("", in), kit))
+			if in.Source == "resume" {
+				if text := strings.TrimSpace(c.withTidyHint("", in)); text != "" {
+					_, _ = stdout.Write(hookContext("SessionStart", truncateUTF8(text, maxSessionContext)))
+				}
+			} else {
+				_, _ = stdout.Write(sessionStartOutput(c.withTidyHint("", in), kit))
+			}
 		}
 		if shipText != "" {
 			_, _ = stdout.Write(hookContext("UserPromptSubmit", shipText))
@@ -710,7 +719,13 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		c.saveEnvHosts(ev.Repo, res.EnvHosts)
 		text := c.withTidyHint(res.Text, in)
 		text = joinParts(c.pauseTell(in.SessionID, hookLateAfter(hookSessionStartTimeout)), text)
-		_, _ = stdout.Write(sessionStartOutput(joinParts(res.Instructions, text), kit))
+		if in.Source == "resume" {
+			if text = strings.TrimSpace(text); text != "" {
+				_, _ = stdout.Write(hookContext("SessionStart", truncateUTF8(text, maxSessionContext)))
+			}
+		} else {
+			_, _ = stdout.Write(sessionStartOutput(joinParts(res.Instructions, text), kit))
+		}
 	case "SubagentStart":
 		if res.Instructions != "" {
 			_, _ = stdout.Write(hookContext("SubagentStart", truncateUTF8(res.Instructions, maxSessionContext)))

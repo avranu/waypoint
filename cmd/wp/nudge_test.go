@@ -124,13 +124,14 @@ func TestRemoteHost(t *testing.T) {
 func TestNudgeHook(t *testing.T) {
 	t.Setenv("WAYPOINT_CONFIG_DIR", t.TempDir())
 	c := &cli{}
-	run := func(tool, command string) string {
-		in, _ := json.Marshal(map[string]any{"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": tool, "cwd": t.TempDir(),
+	runSess := func(sess, tool, command string) string {
+		in, _ := json.Marshal(map[string]any{"session_id": sess, "hook_event_name": "PreToolUse", "tool_name": tool, "cwd": t.TempDir(),
 			"tool_input": map[string]string{"command": command}})
 		var out bytes.Buffer
 		hookClaudeNudge(c, bytes.NewReader(in), &out)
 		return out.String()
 	}
+	run := func(tool, command string) string { return runSess("s", tool, command) }
 	out := run("Bash", "git branch -D a b")
 	var o struct {
 		Specific struct {
@@ -155,8 +156,20 @@ func TestNudgeHook(t *testing.T) {
 	if quiet.Len() != 0 {
 		t.Errorf("bad input answered: %q", quiet.String())
 	}
-	run("Bash", "git branch -D c d")
-	if st := c.state.Nudges["branch-sweep"]; st == nil || st.Shown != 2 || time.Since(st.Last) > time.Minute {
+	if got := run("Bash", "git branch -D c d"); got != "" {
+		t.Errorf("duplicate static nudge in same session was not suppressed: %q", got)
+	}
+	// After a PostCompact hook event removes earlier context, the nudge may fire once again.
+	pcIn, _ := json.Marshal(map[string]any{"session_id": "s", "hook_event_name": "PostCompact", "trigger": "auto", "cwd": t.TempDir()})
+	var pcOut bytes.Buffer
+	hookClaudeEvent(c, bytes.NewReader(pcIn), &pcOut, false)
+	if got := run("Bash", "git branch -D e f"); !strings.Contains(got, "wp tidy") {
+		t.Errorf("nudge after compaction was not re-delivered: %q", got)
+	}
+	if got := runSess("s2", "Bash", "git branch -D c d"); !strings.Contains(got, "wp tidy") {
+		t.Errorf("fresh session did not receive nudge: %q", got)
+	}
+	if st := c.state.Nudges["branch-sweep"]; st == nil || st.Shown != 3 || time.Since(st.Last) > time.Minute {
 		t.Errorf("nudge counts = %+v", c.state.Nudges)
 	}
 }

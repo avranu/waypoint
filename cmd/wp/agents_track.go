@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -369,11 +370,24 @@ func (c *cli) tellOnce(kind, session, agent string, wait time.Duration) bool {
 	if session == "" || agent == "" {
 		return false
 	}
+	return c.tellSessionOnce(kind, session, agent, wait)
+}
+
+// tellSessionOnce records that kind has been shown to session (and agent, or
+// the main thread when agent is empty) so static advisory hints are not
+// duplicated across repeated tool calls in the same session.
+func (c *cli) tellSessionOnce(kind, session, agent string, wait time.Duration) bool {
+	if session == "" {
+		return true
+	}
 	key := kind + "|" + session + "|" + agent
 	tell := false
 	_ = c.updateStateWithin(wait, func(s *State) {
 		now := time.Now()
-		since := s.Agents[session][agent].Since
+		var since time.Time
+		if agent != "" {
+			since = s.Agents[session][agent].Since
+		}
 		if t, ok := s.Told[key]; ok && !t.Before(since) {
 			return
 		}
@@ -385,6 +399,22 @@ func (c *cli) tellOnce(kind, session, agent string, wait time.Duration) bool {
 		tell = true
 	})
 	return tell
+}
+
+// clearSessionTold forgets which static nudges were shown to session so they
+// can fire once again after a compaction or clear removes them from context.
+func (c *cli) clearSessionTold(session string, wait time.Duration) {
+	if session == "" {
+		return
+	}
+	needle := "|" + session + "|"
+	_ = c.updateStateWithin(wait, func(s *State) {
+		for k := range s.Told {
+			if strings.Contains(k, needle) {
+				delete(s.Told, k)
+			}
+		}
+	})
 }
 
 // childrenOf are the live agents session's agent (empty: the main thread)
