@@ -117,16 +117,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if args[0] == "--version" {
 		args[0] = "version"
 	}
-	if (args[0] == "issue" || args[0] == "issues" || args[0] == "task" || args[0] == "tasks") && (len(args) == 1 || isCommandStart(args[1:])) {
-		args = args[1:]
-		if len(args) == 0 {
-			args = []string{"ls"}
-		}
-	}
-	if nargs, r := rewriteLegacy(args); r != nil {
+	args, r := commandWords(args)
+	if r != nil {
 		// Printed only if help is: a -h that is a flag's value asks for none.
 		c.legacy = legacyNote(r)
-		args = nargs
 	}
 	cmd := findCommand(args[0])
 	if cmd == nil {
@@ -203,6 +197,23 @@ func findCommand(name string) *command {
 		}
 	}
 	return nil
+}
+
+// commandWords turns the words of a wp line into the ones that run: a
+// leading task or issue prefix dropped (bare, it is ls), an old name made the
+// new one. r is the old name's route, nil when there is none. Both run and
+// the transcripts' reading of wp lines (parseWPInvocation) go through it.
+func commandWords(args []string) (words []string, r *legacyRoute) {
+	if len(args) > 0 && (args[0] == "issue" || args[0] == "issues" || args[0] == "task" || args[0] == "tasks") && (len(args) == 1 || isCommandStart(args[1:])) {
+		args = args[1:]
+		if len(args) == 0 {
+			args = []string{"ls"}
+		}
+	}
+	if nargs, r := rewriteLegacy(args); r != nil {
+		return nargs, r
+	}
+	return args, nil
 }
 
 // isCommandStart reports whether words begin a command, by its name now or
@@ -342,7 +353,14 @@ func (c *cli) showHelp(cmd *command) error {
 		return nil
 	}
 	c.cur = cmd
-	if err := cmd.run(c, []string{"-h"}); err != nil && !errors.Is(err, errHelpShown) {
+	err := cmd.run(c, []string{"-h"})
+	if len(cmd.subs) > 0 && errors.As(err, new(usageError)) {
+		// A parent that only lists what it holds: its help, as wp CMD -h
+		// gives it (dispatch).
+		c.commandHelp(cmd, nil)
+		return nil
+	}
+	if err != nil && !errors.Is(err, errHelpShown) {
 		return err
 	}
 	return nil

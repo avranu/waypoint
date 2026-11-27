@@ -149,6 +149,43 @@ func TestHelpListsNewNamesOnly(t *testing.T) {
 	}
 }
 
+// wp help PARENT is wp PARENT -h, and wp help --all has no empty section.
+func TestHelpOfParents(t *testing.T) {
+	reportEnv(t)
+	for _, args := range []string{"report", "record", "report ci", "report quality", "report behavior"} {
+		var out, errb bytes.Buffer
+		if code := run(append([]string{"help"}, strings.Fields(args)...), &out, &errb); code != 0 || !strings.HasPrefix(out.String(), "wp "+args+" ") {
+			t.Errorf("wp help %s: %d %q %s", args, code, out.String(), errb.String())
+		}
+	}
+	var out bytes.Buffer
+	if code := run([]string{"help", "--all"}, &out, &out); code != 0 {
+		t.Fatal(out.String())
+	}
+	if i := strings.Index(out.String(), "```\n```\n"); i >= 0 {
+		t.Errorf("wp help --all has an empty section: %s", out.String()[max(0, i-80):i])
+	}
+}
+
+// The transcripts' wp lines are read as run takes them: a task prefix and
+// an old name lead to the command that runs.
+func TestParseWPInvocationOldNames(t *testing.T) {
+	linkCommands()
+	for line, head := range map[string]string{
+		"wp usage where --since 3d": "wp report usage",
+		"wp tasks usage where":      "wp report usage",
+		"wp -p WP log WP-1 5m":      "wp record time",
+		"wp task burn":              "wp report usage",
+		"wp help usage stalled":     "wp report behavior stalled",
+		"wp issue report quality":   "wp report quality",
+		"wp tasks":                  "wp ls",
+	} {
+		if got := parseWPInvocation(strings.Fields(line)); got.Head != head {
+			t.Errorf("%s: %s, want %s", line, got.Head, head)
+		}
+	}
+}
+
 // A task or issue prefix goes before an old name as it does before a new one.
 func TestTaskPrefixBeforeMovedCommands(t *testing.T) {
 	reportEnv(t)

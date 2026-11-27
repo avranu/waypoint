@@ -134,10 +134,16 @@ func parseWPInvocation(words []string) cliInvocation {
 	descending := true
 	seen := map[string]bool{}
 	args := words[1:]
-	if re, r := rewriteLegacy(args); r != nil {
-		args = re // an old name counts as the command that replaced it
-	}
+	resolved := false
 	for i := 0; i < len(args); i++ {
+		if !resolved && args[i] != "help" && !strings.HasPrefix(args[i], "-") {
+			// The first command word, after any flags and help: a task
+			// prefix goes and an old name counts as the command that
+			// replaced it, as run takes them.
+			resolved = true
+			rest, _ := commandWords(args[i:])
+			args = append(slices.Clone(args[:i]), rest...)
+		}
 		a := args[i]
 		if a == "--" {
 			break
