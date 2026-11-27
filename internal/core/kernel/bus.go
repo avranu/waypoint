@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"sync"
 )
 
 // Handler reacts to one committed event.
@@ -44,8 +45,12 @@ func (s *Stage) Name() string { return s.name }
 // On subscribes h to every event the stage sees.
 func (s *Stage) On(h Handler) { s.subs = append(s.subs, stageSub{h: h}) }
 
-// OnKind subscribes h to the events of the given kinds the stage sees.
+// OnKind subscribes h to the events of the given kinds the stage sees. No
+// kinds panics: On is how to subscribe to every event.
 func (s *Stage) OnKind(h Handler, kinds ...string) {
+	if len(kinds) == 0 {
+		panic(fmt.Sprintf("kernel: stage %q: OnKind with no kinds", s.name))
+	}
 	s.subs = append(s.subs, stageSub{kinds: slices.Clone(kinds), h: h})
 }
 
@@ -74,8 +79,8 @@ func (k *Kernel) AfterStages(h BatchHandler) { k.batch = append(k.batch, h) }
 // chosen when the first stage that sees them begins, so what the stages
 // before it did to the flags counts, as it did when dispatch was one list.
 func (k *Kernel) Publish(ctx context.Context, actor *Actor, events []*Event) {
-	var visible []*Event
-	chosen := false
+	// Filtered once, at the first call.
+	visible := sync.OnceValue(func() []*Event { return filterEvents(events, isVisible) })
 	for _, st := range k.stages {
 		var seen []*Event
 		switch st.sees {
@@ -84,11 +89,7 @@ func (k *Kernel) Publish(ctx context.Context, actor *Actor, events []*Event) {
 		case SeesEvery:
 			seen = filterEvents(events, func(e *Event) bool { return !e.Private })
 		case SeesVisible:
-			if !chosen {
-				visible = filterEvents(events, func(e *Event) bool { return !e.Private && !e.Merged && !e.Quiet && !e.Draft })
-				chosen = true
-			}
-			seen = visible
+			seen = visible()
 		}
 		for _, e := range seen {
 			for _, sub := range st.subs {
@@ -98,16 +99,17 @@ func (k *Kernel) Publish(ctx context.Context, actor *Actor, events []*Event) {
 			}
 		}
 	}
-	if !chosen {
-		visible = filterEvents(events, func(e *Event) bool { return !e.Private && !e.Merged && !e.Quiet && !e.Draft })
-	}
-	if len(visible) == 0 {
+	batched := visible()
+	if len(batched) == 0 {
 		return
 	}
 	for _, h := range k.batch {
-		h(ctx, actor, visible)
+		h(ctx, actor, batched)
 	}
 }
+
+// isVisible says whether a SeesVisible stage and the batch subscribers get e.
+func isVisible(e *Event) bool { return !e.Private && !e.Merged && !e.Quiet && !e.Draft }
 
 func filterEvents(events []*Event, keep func(*Event) bool) []*Event {
 	var out []*Event

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -160,7 +161,7 @@ func TestOnEmitStampsEveryEvent(t *testing.T) {
 	}
 }
 
-func TestPartDropsEventsWritesAndDeferredWorkOfAFailedPart(t *testing.T) {
+func TestPartDropsEventsAndWritesOfAFailedPart(t *testing.T) {
 	k := newKernel(t)
 	k.Persist("kept", "dropped")
 	var seen []*Event
@@ -169,10 +170,10 @@ func TestPartDropsEventsWritesAndDeferredWorkOfAFailedPart(t *testing.T) {
 	var ran []string
 	err := k.Write(context.Background(), SystemActor(), func(tx *Tx) error {
 		tx.Emit(&Event{Kind: "kept"})
-		tx.Defer(func() { ran = append(ran, "before the part") })
+		tx.Defer(func() { ran = append(ran, "kept") })
 		if err := tx.Part(tx.Ctx, func() error {
 			tx.Emit(&Event{Kind: "dropped"})
-			tx.Defer(func() { ran = append(ran, "in the part") })
+			tx.Defer(func() { ran = append(ran, "dropped") })
 			return boom
 		}); !errors.Is(err, boom) {
 			t.Errorf("part err = %v", err)
@@ -182,11 +183,11 @@ func TestPartDropsEventsWritesAndDeferredWorkOfAFailedPart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ran) != 1 || ran[0] != "before the part" {
-		t.Errorf("deferred work run = %v", ran)
-	}
 	if len(seen) != 1 || seen[0].Kind != "kept" || countEvents(t, k, "dropped") != 0 || countEvents(t, k, "kept") != 1 {
 		t.Errorf("seen %+v, dropped rows %d", seen, countEvents(t, k, "dropped"))
+	}
+	if !slices.Equal(ran, []string{"kept"}) {
+		t.Errorf("deferred work ran %v, want only what was queued outside the part", ran)
 	}
 }
 

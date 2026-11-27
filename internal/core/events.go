@@ -153,8 +153,8 @@ func noteSession(t *kernel.Tx, e *Event) {
 // maxAutomationDepth stops automations that trigger each other forever.
 const maxAutomationDepth = 5
 
-// dispatch fans committed events out to live subscribers, notifications,
-// automations and webhooks.
+// dispatch publishes committed events on the kernel's bus; what reacts to
+// them, and in what order, is subscriptionPlan (subscriptions.go).
 func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 	if len(events) == 0 {
 		return
