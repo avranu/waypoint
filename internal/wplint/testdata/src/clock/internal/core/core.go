@@ -1,6 +1,10 @@
 package core
 
-import "time"
+import (
+	"time"
+
+	"clock/internal/core/kernel"
+)
 
 type Service struct{ clock func() time.Time }
 
@@ -70,4 +74,11 @@ func (s *Service) Waived() time.Time {
 func (s *Service) NoReason() time.Time {
 	/* want `wplint:ignore clock needs a reason` */ //wplint:ignore clock
 	return time.Now()                               // want `use s.now\(\)`
+}
+
+// tx is core's: it embeds the kernel's, so time.Now is refused there too.
+type tx struct{ *kernel.Tx }
+
+func (t *tx) At() time.Time {
+	return time.Now() // want `use s.now\(\)`
 }
