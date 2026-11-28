@@ -225,8 +225,11 @@ func TestHookPassUsesTheHookLimit(t *testing.T) {
 	}
 	lowerVar(t, &archiveHookLimit, 300*time.Millisecond)
 	lowerVar(t, &archiveHookFloor, 150*time.Millisecond)
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
 	tap.onPiece = func(_ int, w http.ResponseWriter, r *http.Request) bool {
 		select {
+		case <-done:
 		case <-r.Context().Done():
 		case <-time.After(20 * time.Second):
 		}
@@ -264,10 +267,12 @@ func TestHookDeadlineCountsFromTheSyncStart(t *testing.T) {
 
 // The status post is bounded for a hook pass.
 func TestHookStatusPostIsBounded(t *testing.T) {
+	done := make(chan struct{})
 	e := newEnvServing(t, nil, func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/api/v1/usage/transcript/status" {
 				select {
+				case <-done:
 				case <-r.Context().Done():
 				case <-time.After(20 * time.Second):
 				}
@@ -276,6 +281,7 @@ func TestHookStatusPostIsBounded(t *testing.T) {
 			h.ServeHTTP(w, r)
 		})
 	})
+	t.Cleanup(func() { close(done) })
 	e.login()
 	t.Setenv("WAYPOINT_MACHINE", "testbox")
 	lowerVar(t, &archiveReportHookTimeout, 200*time.Millisecond)

@@ -22,6 +22,7 @@ import (
 
 	"git.jmann.me/claude/waypoint/internal/api"
 	"git.jmann.me/claude/waypoint/internal/core"
+	"git.jmann.me/claude/waypoint/internal/core/users"
 	"git.jmann.me/claude/waypoint/internal/db"
 	"git.jmann.me/claude/waypoint/internal/testnet"
 )
@@ -32,6 +33,7 @@ func TestMain(m *testing.M) {
 	if os.Getenv("WP_TEST_MAIN") == "1" {
 		os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 	}
+	users.SetPasswordCostForTesting(1, 8)
 	processAge = func() time.Duration { return 0 }
 	snapshotProc = func() (string, int) { return "", 0 }
 	snapshotBudget = time.Minute

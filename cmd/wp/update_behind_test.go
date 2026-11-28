@@ -339,7 +339,7 @@ func TestRunnerRecordsItsUpdateInTheSharedState(t *testing.T) {
 		return want, u.exe, nil
 	}
 	u.busy(1)
-	u.step()
+	u.p.updateStep(context.Background())
 	<-started
 	c, _ := newCLI(io.Discard, io.Discard)
 	if c.state.Update == nil || c.state.Update.Server != "v1.2.0" || c.state.Update.Result != "started" {

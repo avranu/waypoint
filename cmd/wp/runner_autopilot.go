@@ -111,6 +111,9 @@ var (
 	// autopilotReadyWait is how long a new session has to become ready for
 	// its prompt.
 	autopilotReadyWait = 90 * time.Second
+	// autopilotRegisteredWait is how long a new session has to register with
+	// Waypoint before its prompt is sent.
+	autopilotRegisteredWait = 20 * time.Second
 	// autopilotCompactWait is how long /compact has before a review's
 	// prompt: compacting a full context takes minutes.
 	autopilotCompactWait = core.ReviewCompactWait
@@ -439,7 +442,7 @@ func (p *runnerProc) promptSession(ctx context.Context, run *jobRun, in autopilo
 	if !waitReady(ctx, ccDir, socket, pane, pid, autopilotReadyWait, false) {
 		return cleared("it wasn't ready for its prompt within %s (a dialog on its screen, or someone typing there?)", autopilotReadyWait)
 	}
-	p.waitRegistered(ctx, newID, 20*time.Second)
+	p.waitRegistered(ctx, newID, autopilotRegisteredWait)
 	if !p.stepWanted(ctx, in.Step, run.id) {
 		say("the step no longer wants this job: the new session gets no task")
 		r := base

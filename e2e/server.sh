@@ -1,7 +1,18 @@
 #!/bin/bash
 set -euo pipefail
 : "${DIR:?}" "${PORT:?}" "${BIN:?}"
-stop() { [ -f "$DIR/pid" ] && kill "$(cat "$DIR/pid")" 2>/dev/null || true; rm -f "$DIR/pid"; sleep 0.3; }
+stop() {
+  if [ -f "$DIR/pid" ]; then
+    local pid
+    pid=$(cat "$DIR/pid")
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 1 50); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+  fi
+  rm -f "$DIR/pid"
+}
 case "${1:-start}" in
 stop) stop; exit 0 ;;
 restart) stop ;;

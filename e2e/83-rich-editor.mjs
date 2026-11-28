@@ -71,9 +71,11 @@ for (const [width, scheme] of looks([
   });
   const page = await login(ctx);
   page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
-  // The description is on the Details tab, which a fresh browser may not show.
+  // The description is on the Details tab on phone widths; desktop shows it directly.
   const details = () =>
-    page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
+    width < 768
+      ? page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {})
+      : Promise.resolve();
   const make = async (title, description) =>
     (
       await page.request.post(base + "/api/v1/issues", {
@@ -90,7 +92,7 @@ for (const [width, scheme] of looks([
     let d = await desc(key);
     while (!hit(d) && Date.now() < end) {
       // wplint:ignore e2e-wait polling a value or proving a negative: there is nothing to wait on
-      await page.waitForTimeout(250);
+      await page.waitForTimeout(40);
       d = await desc(key);
     }
     return d;

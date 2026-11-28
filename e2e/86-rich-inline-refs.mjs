@@ -118,7 +118,7 @@ for (const [width, scheme] of looks(
   const description = Object.entries(pieces).map(([k, p]) => sweep(k, p)).join("\n\n");
   const issue = await make("Inline refs", description);
   await page.goto(`${base}/issue/${issue.key}`);
-  await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
+  if (width < 768) await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
   const view = page.locator(viewSel).first();
   await view.waitFor();
   // The reference becomes a link once the server has resolved it.
@@ -173,7 +173,7 @@ for (const [width, scheme] of looks(
   const openSmall = async (title, text) => {
     const i = await make(title, text);
     await page.goto(`${base}/issue/${i.key}`);
-    await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
+    if (width < 768) await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
     const v = page.locator(viewSel).first();
     await v.waitFor();
     const at = await v.evaluate((el) => {
@@ -289,7 +289,7 @@ for (const [width, scheme] of looks(
     const got = await waitDesc(i.key, want);
     ok(got === want, `${tag} typed [[x]] and @name save as literal markdown: ${JSON.stringify(got)}`);
     await page.goto(`${base}/issue/${i.key}`);
-    await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
+    if (width < 768) await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
     const v = page.locator(viewSel).first();
     await v.waitFor();
     const links = (await v.locator("a.wikilink").allTextContents()).join();
@@ -438,7 +438,7 @@ for (const [width, scheme] of looks(
   // What the description view draws for an issue: its wikilinks, mentions and links.
   const viewed = async (key) => {
     await page.goto(`${base}/issue/${key}`);
-    await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
+    if (width < 768) await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
     const v = page.locator(viewSel).first();
     await v.waitFor();
     return v.evaluate((el) => ({

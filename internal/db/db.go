@@ -71,6 +71,13 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	return open(ctx, path, true, false)
 }
 
+// OpenExistingForTest opens an already-migrated database file (such as a test
+// snapshot copied from VACUUM INTO) without re-running migrations, using the
+// test pool settings. For tests.
+func OpenExistingForTest(ctx context.Context, path string) (*DB, error) {
+	return open(ctx, path, false, true)
+}
+
 func open(ctx context.Context, path string, runMigrate, testMode bool) (*DB, error) {
 	mon := &monitor{threshold: slowThreshold(), floor: totalsFloor, callers: map[string]*CallerTotal{}}
 	w := openPool(dsnMode(path, false, testMode), "write", mon)

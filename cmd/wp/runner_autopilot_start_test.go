@@ -35,9 +35,12 @@ func newStartFixture(t *testing.T, show bool) *startFixture {
 	_ = os.WriteFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\n"), 0o700) // #nosec G306 -- it has to be executable
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("WAYPOINT_SERVER", "")
-	oldLaunch, oldWait, oldTmux := launchTmux, autopilotStartWait, runTmux
-	t.Cleanup(func() { launchTmux, autopilotStartWait, runTmux = oldLaunch, oldWait, oldTmux })
+	oldLaunch, oldWait, oldReg, oldTmux := launchTmux, autopilotStartWait, autopilotRegisteredWait, runTmux
+	t.Cleanup(func() {
+		launchTmux, autopilotStartWait, autopilotRegisteredWait, runTmux = oldLaunch, oldWait, oldReg, oldTmux
+	})
 	autopilotStartWait = 100 * time.Millisecond
+	autopilotRegisteredWait = 50 * time.Millisecond
 	runTmux = func(ctx context.Context, socket string, stdin []byte, args ...string) (string, error) {
 		switch args[0] {
 		case "kill-session":

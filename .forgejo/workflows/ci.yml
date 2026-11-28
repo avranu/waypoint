@@ -535,9 +535,10 @@ jobs:
   # status that branch protection, WP-159's skip and Waypoint read; it passes
   # when every shard did. SHARDS and the matrix must agree (a test in
   # internal/cilint/repo_test.go checks), or tests would silently not run.
-  # A full run is nine heavy jobs (4 backend shards, 4 e2e shards and lint)
-  # for the heavy hosts' eleven slots, so more shards would queue behind each
-  # other for no gain.
+  # A full run is six heavy jobs (3 backend shards, 2 e2e shards and lint)
+  # for the heavy hosts' eleven slots, leaving room for two runs to overlap
+  # without saturating the slower host (ibeji) and avoiding redundant per-shard
+  # compiles.
   #
   # The heavy jobs run in Waypoint's own job image (WP-402,
   # .forgejo/ci-image): the pool's image plus Go, Node, Playwright's Chromium
@@ -561,9 +562,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3]
     env:
-      SHARDS: 4
+      SHARDS: 3
+      WP_DB_TEMPLATE_DIR: /tmp/waypoint-db-template
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.forgejo/actions/stack
@@ -596,6 +598,11 @@ jobs:
         if: steps.plan.outputs.work == 'true'
         with:
           kind: ${{ steps.tier.outputs.full == 'true' && 'backend-race' || 'backend' }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.plan.outputs.work == 'true'
+        with:
+          path: /tmp/waypoint-db-template
+          key: db-template-${{ hashFiles('internal/db/migrations/**') }}
       - uses: ./.forgejo/actions/go-mod
         if: steps.plan.outputs.work == 'true'
       - name: 'test (race detector in the full tier; needs cgo: Linux CI only, not local Windows)'
@@ -604,6 +611,7 @@ jobs:
           FULL: ${{ steps.tier.outputs.full }}
           SHARD: ${{ matrix.shard }}
           EVIDENCE: '1'
+          CI_INIT_CHECK_IN_LINT: '1'
           SUPPRESSIONS: ${{ steps.plan.outputs.once == 'true' && '1' || '' }}
           SITE_NAMES: ${{ secrets.SITE_NAMES }}
         run: |
@@ -671,8 +679,13 @@ jobs:
         if: steps.tier.outputs.code == 'true'
         with:
           node-version-file: .nvmrc
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.tier.outputs.code == 'true'
+        with:
+          path: ~/.npm
+          key: npm-web-${{ hashFiles('web/package-lock.json') }}
+          restore-keys: |
+            npm-web-
       - name: CI image matches its inputs
         if: steps.tier.outputs.code == 'true'
         run: |
@@ -856,7 +869,9 @@ jobs:
           trap cleanup EXIT
 
           # Now that golangci-lint has exited (freeing its RAM and warming GOCACHE),
-          # run wplint, cross-check, and gosec concurrently.
+          # run wplint, cross-check + TestInitStaysCheap (using the warm non-race
+          # GOCACHE instead of cold-compiling in a -race backend shard), and gosec
+          # concurrently (at most 3 heavy processes on 3 CPUs).
           (
             set -euo pipefail
             wplint_bin=$(mktemp)
@@ -868,12 +883,22 @@ jobs:
           p_wplint=$!
           bg_pids+=("$p_wplint")
 
-          p_cross=
+          (
+            set -euo pipefail
+            init_bin=$(mktemp)
+            trap 'rm -f "$init_bin"' EXIT
+            go build -o "$init_bin" ./cmd/wp
+            WP_INIT_BIN="$init_bin" go test -count=1 -run '^TestInitStaysCheap$' ./cmd/wp
+            if [ "$FULL" = true ]; then
+              CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/wp
+              CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o /dev/null ./cmd/wp
+            fi
+          ) >"$tmp/cross.log" 2>&1 &
+          p_cross=$!
+          bg_pids+=("$p_cross")
+
           p_sast=
           if [ "$FULL" = true ]; then
-            make cross-check >"$tmp/cross.log" 2>&1 &
-            p_cross=$!
-            bg_pids+=("$p_cross")
             make sast >"$tmp/sast.log" 2>&1 &
             p_sast=$!
             bg_pids+=("$p_sast")
@@ -964,9 +989,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2]
     env:
-      SHARDS: 4
+      SHARDS: 2
+      E2E_LANES: 3
       E2E_LOOKS: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.looks != 'one')) && 'all' || 'one' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -988,10 +1014,13 @@ jobs:
         if: steps.tier.outputs.code == 'true'
         with:
           node-version-file: .nvmrc
-          cache: npm
-          cache-dependency-path: |
-            web/package-lock.json
-            e2e/package-lock.json
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.tier.outputs.code == 'true'
+        with:
+          path: ~/.npm
+          key: npm-e2e-${{ hashFiles('web/package-lock.json', 'e2e/package-lock.json') }}
+          restore-keys: |
+            npm-e2e-
       - name: build
         if: steps.tier.outputs.code == 'true'
         env:
@@ -1000,7 +1029,7 @@ jobs:
           (cd web && npm ci --no-audit --no-fund && npm run build:vite)
           make server
           # Only 26-runners.mjs uses bin/cli/wp; skip compiling cmd/wp on the other shards.
-          lanes=${E2E_LANES:-2}
+          lanes=${E2E_LANES:-3}
           need_cli=false
           for j in $(seq 1 "$lanes"); do
             if node e2e/shard.mjs "$(((SHARD - 1) * lanes + j))/$((SHARDS * lanes))" 2>/dev/null | grep -qx '26-runners.mjs'; then
@@ -1058,8 +1087,10 @@ jobs:
   release:
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.current.outputs.run == 'true' && (needs.current.outputs.tested == 'true' || (needs.backend.result == 'success' && needs.lint.result == 'success' && needs.e2e.result == 'success')) }}
     needs: [current, backend, lint, e2e]
-    runs-on: forgejo-ci
+    runs-on: forgejo-ci-heavy
     timeout-minutes: 20
+    container:
+      image: git.jmann.me/claude/waypoint-ci:01f88b8a84a7@sha256:09b09acc434ef9e1e20713fc4b0109715eaab94937b828634ef2b345433e458c
     concurrency:
       group: release
       cancel-in-progress: false
