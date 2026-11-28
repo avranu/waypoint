@@ -120,16 +120,14 @@ func TestArchiveNonClaudeHarnesses(t *testing.T) {
 		t.Fatalf("pass 2 uploaded %+v when nothing changed", res2.Archive)
 	}
 
-	// Append to Antigravity full log and update OpenCode session -> pass 3 uploads 2 new pieces.
+	// Append to Antigravity full log and insert an OpenCode message WITHOUT bumping
+	// session.time_updated -> pass 3 must still detect the message update and upload 2 pieces.
 	appendTo(t, agyFull, `{"step":2,"role":"assistant","text":"done"}`+"\n")
 	db, err = sql.Open("sqlite", ocDB)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t1 := time.Now().Add(-3 * time.Minute).UnixMilli()
-	if _, err := db.Exec(`UPDATE session SET time_updated = ? WHERE id = 'ses_oc1'`, t1); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := db.Exec(`INSERT INTO message(id, session_id, time_created, time_updated, data) VALUES ('msg_2', 'ses_oc1', ?, ?, '{"role":"assistant"}')`, t1, t1); err != nil {
 		t.Fatal(err)
 	}
@@ -144,5 +142,26 @@ func TestArchiveNonClaudeHarnesses(t *testing.T) {
 	}
 	if got := archived(t, e, me, "opencode-ses_oc1", "opencode/session.jsonl"); !strings.Contains(got, `"msg_2"`) {
 		t.Fatalf("opencode update missing:\n%s", got)
+	}
+
+	// Touching OpenCode session.time_updated without changing content skips redundant upload
+	// (prevents O(N^2) duplicate generations in transcript_pieces).
+	// Note: session.time_updated is inside the header JSON, so test identical export by
+	// checking a clean no-op re-sync after message update.
+	res4 := archiveSync(t, e, claudeRoot)
+	if res4.Archive == nil || res4.Archive.Pieces != 0 {
+		t.Fatalf("pass 4 uploaded %+v when nothing changed", res4.Archive)
+	}
+
+	// Custom CODEX_HOME is preserved via harnessFileOfPath and saved state metadata.
+	customCodex := filepath.Join(home, "custom_codex")
+	t.Setenv("CODEX_HOME", customCodex)
+	customFile := filepath.Join(customCodex, "sessions", "2026", "11", "rollout-custom.jsonl")
+	if hf, ok := harnessFileOfPath(customFile); !ok || hf.Kind != "codex" || hf.FileKey != "codex/main.jsonl" {
+		t.Fatalf("harnessFileOfPath(custom CODEX_HOME) = (%+v, %v)", hf, ok)
+	}
+	recovered := archiveFileFromState(customFile, &archiveFileState{Session: "codex-saved", Kind: "codex", FileKey: "codex/main.jsonl"})
+	if recovered.Session != "codex-saved" || recovered.Kind != "codex" || recovered.FileKey != "codex/main.jsonl" {
+		t.Fatalf("archiveFileOfPath with state = %+v", recovered)
 	}
 }

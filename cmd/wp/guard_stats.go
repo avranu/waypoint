@@ -80,6 +80,12 @@ func cmdGuardStats(c *cli, args []string) error {
 	if len(pos) > 0 {
 		return c.usage("unexpected %q", joinArgs(pos))
 	}
+	if *days < 0 {
+		return c.usage("--days must be >= 0")
+	}
+	if *limit < 1 {
+		return c.usage("--limit must be >= 1")
+	}
 	rep, err := readGuardStats(c.dir, *days, *limit, time.Now().UTC())
 	if err != nil {
 		return err
@@ -132,20 +138,22 @@ func readGuardStats(dir string, days, limit int, now time.Time) (*guardStatsRepo
 				rep.Malformed++
 				continue
 			}
-			if !cutoff.IsZero() && row.Time != "" {
-				if ts, err := time.Parse(time.RFC3339, row.Time); err == nil && ts.Before(cutoff) {
+			if !cutoff.IsZero() {
+				ts, err := time.Parse(time.RFC3339, row.Time)
+				if err != nil || ts.Before(cutoff) {
 					continue
 				}
 			}
 			rep.Total++
+			rule := cmpStr(row.Rule, "(unknown)")
 			modes[cmpStr(row.Mode, "(unknown)")]++
-			rules[cmpStr(row.Rule, "(unknown)")]++
+			rules[rule]++
 			if row.Reason != "" {
-				reasons[[2]string{row.Rule, row.Reason}]++
+				reasons[[2]string{rule, row.Reason}]++
 			}
 			if m := strings.TrimSpace(row.Matched); m != "" {
-				if len(m) > 80 {
-					m = m[:77] + "..."
+				if r := []rune(m); len(r) > 80 {
+					m = string(r[:77]) + "..."
 				}
 				matched[m]++
 			}
@@ -202,6 +210,9 @@ func guardStatsText(r *guardStatsReport) string {
 	}
 	if r.Total == 0 {
 		fmt.Fprintf(&b, "No guard log entries (%s) in %s.\n", scope, r.Path)
+		if r.Malformed > 0 {
+			fmt.Fprintf(&b, "  (%d unreadable lines skipped)\n", r.Malformed)
+		}
 		return b.String()
 	}
 	var modeParts []string

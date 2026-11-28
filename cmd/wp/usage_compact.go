@@ -721,16 +721,13 @@ func (a *cmpAcc) compaction(ev []cmpEvent, from, at, to int, before, after []int
 	if c.pre > 0 {
 		ta.callMicro = append(ta.callMicro, int64((read+out)*1e6))
 	}
+	held := cmpBeforeTokens(c.pre, last)
 	if first == nil {
 		t.NeverUsed++
 		t.UnusedUSD += read + out
-		beforeTok := c.pre
-		if last != nil && beforeTok == 0 {
-			beforeTok = last.ctx()
-		}
 		a.rep.Events = append(a.rep.Events, cmpCompactionRow{
 			Trigger:       c.trigger,
-			Before:        beforeTok,
+			Before:        held,
 			Seconds:       c.durMs / 1000,
 			SummaryTokens: summary,
 			CallsAfter:    0,
@@ -744,10 +741,6 @@ func (a *cmpAcc) compaction(ev []cmpEvent, from, at, to int, before, after []int
 		t.First.NoRead++
 	}
 	t.RewriteUSD += usd(first).Write
-	held := c.pre
-	if last != nil {
-		held = last.ctx()
-	}
 	if dropped := held - first.ctx(); dropped > 0 {
 		t.LaterReadsUSD += float64(dropped) * float64(len(after)) * price.CacheRead / 1e6
 	}
@@ -854,6 +847,13 @@ func (a *cmpAcc) report() *cmpReport {
 		rep.Signals = append(rep.Signals, *r)
 	}
 	return rep
+}
+
+func cmpBeforeTokens(pre int64, last *cmpEvent) int64 {
+	if last != nil && last.ctx() > 0 {
+		return last.ctx()
+	}
+	return pre
 }
 
 func cmdUsageCompact(c *cli, args []string) error {

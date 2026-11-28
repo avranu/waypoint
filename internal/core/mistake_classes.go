@@ -616,43 +616,41 @@ func (s *Service) sweepProjectMistakes(ctx context.Context, p *Project) error {
 	if err != nil {
 		return err
 	}
-	if len(items) == 0 {
-		return nil
-	}
-	items = slices.DeleteFunc(items, func(m *mistake) bool { return seen[m.ref()] || len(m.keys) == 0 })
-	plan := planMistakes(items, classes)
-	if len(plan.attach) > 0 {
-		err := s.write(ctx, SystemActor(), func(t *tx) error {
-			for id, list := range plan.attach {
-				if err := t.addMistakes(ctx, id, list); err != nil {
+	if len(items) > 0 {
+		items = slices.DeleteFunc(items, func(m *mistake) bool { return seen[m.ref()] || len(m.keys) == 0 })
+		plan := planMistakes(items, classes)
+		if len(plan.attach) > 0 {
+			err := s.write(ctx, SystemActor(), func(t *tx) error {
+				for id, list := range plan.attach {
+					if err := t.addMistakes(ctx, id, list); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+		if !off {
+			var filed int
+			if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM mistake_classes WHERE project_id = ? AND created_at >= ?`,
+				p.ID, now.Add(-24*time.Hour).UnixMilli()).Scan(&filed); err != nil {
+				return err
+			}
+			for _, g := range plan.fresh {
+				if filed >= mistakeFilesPerDay {
+					break
+				}
+				if err := s.fileMistakeClass(ctx, p, g); err != nil {
 					return err
 				}
+				filed++
 			}
-			return nil
-		})
-		if err != nil {
-			return err
-		}
-		if err := s.escalateMistakePriorities(ctx, p.ID); err != nil {
-			s.log.WarnContext(ctx, "escalate recurring mistake priorities", "project", p.Key, "err", err)
 		}
 	}
-	if off {
-		return nil
-	}
-	var filed int
-	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM mistake_classes WHERE project_id = ? AND created_at >= ?`,
-		p.ID, now.Add(-24*time.Hour).UnixMilli()).Scan(&filed); err != nil {
-		return err
-	}
-	for _, g := range plan.fresh {
-		if filed >= mistakeFilesPerDay {
-			break
-		}
-		if err := s.fileMistakeClass(ctx, p, g); err != nil {
-			return err
-		}
-		filed++
+	if err := s.escalateMistakePriorities(ctx, p.ID); err != nil {
+		s.log.WarnContext(ctx, "escalate recurring mistake priorities", "project", p.Key, "err", err)
 	}
 	return nil
 }
@@ -870,28 +868,35 @@ const (
 )
 
 func (s *Service) escalateMistakePriorities(ctx context.Context, projectID int64) error {
-	rows, err := s.db.R.QueryContext(ctx, `SELECT i.id, pj.key || '-' || i.number, i.priority, count(m.id)
-		FROM mistake_classes c
-		JOIN issues i ON i.id = c.issue_id
+	// Aggregate MAX class instance count per issue_id so multiple classes linked
+	// to one issue never overwrite each other's escalation.
+	rows, err := s.db.R.QueryContext(ctx, `SELECT i.id, i.project_id, pj.key || '-' || i.number, MAX(cc.n)
+		FROM (
+			SELECT c.issue_id, count(m.id) AS n
+			FROM mistake_classes c
+			JOIN mistake_instances m ON m.class_id = c.id
+			WHERE c.project_id = ? AND c.issue_id IS NOT NULL
+			GROUP BY c.id
+			HAVING count(m.id) >= ?
+		) cc
+		JOIN issues i ON i.id = cc.issue_id
 		JOIN projects pj ON pj.id = i.project_id
 		JOIN statuses st ON st.id = i.status_id
-		JOIN mistake_instances m ON m.class_id = c.id
-		WHERE c.project_id = ? AND st.category NOT IN ('done', 'canceled')
-		GROUP BY c.id
-		HAVING count(m.id) >= ?`, projectID, mistakeEscalateMedium)
+		WHERE st.category NOT IN ('done', 'canceled')
+		GROUP BY i.id`, projectID, mistakeEscalateMedium)
 	if err != nil {
 		return err
 	}
 	type cand struct {
-		id       int64
-		key      string
-		priority int
-		count    int
+		id        int64
+		projectID int64
+		key       string
+		count     int
 	}
 	var list []cand
 	for rows.Next() {
 		var x cand
-		if err := rows.Scan(&x.id, &x.key, &x.priority, &x.count); err != nil {
+		if err := rows.Scan(&x.id, &x.projectID, &x.key, &x.count); err != nil {
 			_ = rows.Close()
 			return err
 		}
@@ -905,18 +910,32 @@ func (s *Service) escalateMistakePriorities(ctx context.Context, projectID int64
 	return s.write(ctx, SystemActor(), func(t *tx) error {
 		for _, x := range list {
 			// Priorities are 0=none, 1=low, 2=medium, 3=high, 4=urgent (issues.go);
-			// escalate only upward so human-raised priority is preserved.
+			// re-read inside the write tx and guard the UPDATE with priority < want
+			// and open status so human-raised priority or closed issues are never overwritten.
 			want := 2 // medium
 			if x.count >= mistakeEscalateHigh {
 				want = 3 // high
 			}
-			if x.priority >= want {
-				continue
-			}
-			if _, err := t.ExecContext(ctx, `UPDATE issues SET priority = ?, updated_at = ? WHERE id = ?`, want, s.nowMS(), x.id); err != nil {
+			var cur int
+			var cat string
+			if err := t.QueryRowContext(ctx, `SELECT i.priority, st.category FROM issues i JOIN statuses st ON st.id = i.status_id WHERE i.id = ?`, x.id).Scan(&cur, &cat); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					continue
+				}
 				return err
 			}
-			t.emit(&Event{Kind: EvIssueUpdated, ProjectID: projectID, IssueID: x.id, IssueKey: x.key, Field: "priority", Old: PriorityName(x.priority), New: PriorityName(want)})
+			if cur >= want || cat == "done" || cat == "canceled" {
+				continue
+			}
+			res, err := t.ExecContext(ctx, `UPDATE issues SET priority = ?, updated_at = ?
+				WHERE id = ? AND priority < ? AND status_id IN (SELECT id FROM statuses WHERE category NOT IN ('done', 'canceled'))`,
+				want, s.nowMS(), x.id, want)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n > 0 {
+				t.emit(&Event{Kind: EvIssueUpdated, ProjectID: x.projectID, IssueID: x.id, IssueKey: x.key, Field: "priority", Old: PriorityName(cur), New: PriorityName(want)})
+			}
 		}
 		return nil
 	})
@@ -939,7 +958,8 @@ func (s *Service) MistakeClasses(ctx context.Context, a *Actor, project string) 
 		LEFT JOIN issues i ON i.id = c.issue_id LEFT JOIN projects pj ON pj.id = i.project_id LEFT JOIN statuses st ON st.id = i.status_id
 		WHERE c.project_id = ? GROUP BY c.id
 		ORDER BY CASE WHEN coalesce(st.category, '') NOT IN ('done', 'canceled', '') THEN 0 ELSE 1 END,
-			count(m.id) DESC, c.created_at DESC, c.id DESC`, p.ID)
+			CASE WHEN coalesce(st.category, '') NOT IN ('done', 'canceled', '') THEN count(m.id) ELSE 0 END DESC,
+			c.created_at DESC, c.id DESC`, p.ID)
 	if err != nil {
 		return nil, err
 	}

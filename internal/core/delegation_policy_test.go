@@ -271,4 +271,7 @@ func TestDelegationInconclusiveAndSeverityWeighted(t *testing.T) {
 	if !strings.Contains(text, "inconclusive (") || !strings.Contains(text, "severity-weighted review findings") {
 		t.Errorf("report text missing inconclusive guard or severity-weighted line:\n%s", text)
 	}
+	if note := delegInconclusiveNote(19.6, -0.1, 0.2); strings.Contains(note, "n=20 < 20") || !strings.Contains(note, "n=19.6 < 20") {
+		t.Errorf("delegInconclusiveNote(19.6) = %q, want n=19.6 < 20", note)
+	}
 }

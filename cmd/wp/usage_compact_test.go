@@ -135,7 +135,7 @@ func TestCompactReport(t *testing.T) {
 	if ev0.Trigger != "manual" || ev0.Before != 100010 || ev0.After != 50010 || ev0.SeenBefore != 1 || ev0.TokensAgain != 1000 || ev0.ToolErrors != 1 || !ev0.ReachedEdit {
 		t.Errorf("events[0] = %+v", ev0)
 	}
-	if ev1.Trigger != "auto" || ev1.Before != 60000 || ev1.CallsAfter != 0 {
+	if ev1.Trigger != "auto" || ev1.Before != 51010 || ev1.CallsAfter != 0 {
 		t.Errorf("events[1] = %+v", ev1)
 	}
 }
