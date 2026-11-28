@@ -216,7 +216,7 @@ func (s *Service) GetKit(ctx context.Context, actor *Actor) (*KitInfo, error) {
 	if actor == nil || actor.User == nil {
 		return nil, ErrUnauthorized
 	}
-	out := &KitInfo{Errors: []string{}, Reach: map[string][]string{}, CanManage: actor.isAdmin()}
+	out := &KitInfo{Errors: []string{}, Reach: map[string][]string{}, CanManage: actor.IsAdmin()}
 	k, err := s.theKit(ctx, s.db.R)
 	if err != nil || k == nil {
 		return out, err
@@ -338,7 +338,7 @@ type KitDrift struct {
 // ReportKitCheckout records a checkout's state (anyone signed in; reports
 // are their own).
 func (s *Service) ReportKitCheckout(ctx context.Context, actor *Actor, in KitReport) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
 	clean := func(v string, n int) string {
@@ -375,7 +375,7 @@ func (s *Service) ReportKitCheckout(ctx context.Context, actor *Actor, in KitRep
 		if _, err := t.ExecContext(ctx, `INSERT INTO kit_reports(user_id, machine, path, repo, kit_commit, plugins, drift, wp_version, error, reported_at) VALUES (?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(user_id, machine, path) DO UPDATE SET repo = excluded.repo, kit_commit = excluded.kit_commit, plugins = excluded.plugins,
 				drift = excluded.drift, wp_version = excluded.wp_version, error = excluded.error, reported_at = excluded.reported_at`,
-			actor.id(), in.Machine, in.Path, in.Repo, in.KitCommit, string(pb), string(db), in.WPVersion, in.Error, s.nowMS()); err != nil {
+			actor.ID(), in.Machine, in.Path, in.Repo, in.KitCommit, string(pb), string(db), in.WPVersion, in.Error, s.nowMS()); err != nil {
 			return err
 		}
 		t.emit(&Event{Kind: EvKitReported})
@@ -413,7 +413,7 @@ func (s *Service) ListKitCheckouts(ctx context.Context, actor *Actor) ([]KitChec
 		current = k.commit
 	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT u.id, u.username, u.display_name, u.avatar_version, k.machine, k.path, k.repo, k.kit_commit, k.plugins, k.drift, k.wp_version, k.error, k.reported_at
-		FROM kit_reports k JOIN users u ON u.id = k.user_id WHERE ? OR k.user_id = ? ORDER BY k.reported_at DESC LIMIT 500`, actor.isAdmin(), actor.id())
+		FROM kit_reports k JOIN users u ON u.id = k.user_id WHERE ? OR k.user_id = ? ORDER BY k.reported_at DESC LIMIT 500`, actor.IsAdmin(), actor.ID())
 	if err != nil {
 		return nil, err
 	}
@@ -478,10 +478,10 @@ func kitSyncCommand(os string) string {
 // its owner's jobs, so other people's machines catch up at their next
 // session start or sync.
 func (s *Service) RolloutKit(ctx context.Context, actor *Actor) ([]KitRollout, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("only admins can roll the kit out")
 	}
-	if err := actor.requireHuman("rolling the kit out"); err != nil {
+	if err := actor.RequireHuman("rolling the kit out"); err != nil {
 		return nil, err
 	}
 	k, err := s.theKit(ctx, s.db.R)
@@ -491,7 +491,7 @@ func (s *Service) RolloutKit(ctx context.Context, actor *Actor) ([]KitRollout, e
 	if k == nil || k.kit == nil {
 		return nil, invalid("there is no kit to roll out yet: pick the kit repo in Admin → Forges")
 	}
-	runners, err := s.ownerRunners(ctx, actor.id())
+	runners, err := s.ownerRunners(ctx, actor.ID())
 	if err != nil {
 		return nil, err
 	}
@@ -536,7 +536,7 @@ type KitRepoOption struct {
 
 // GetKitSource shows admins the kit repo and the repos to pick from.
 func (s *Service) GetKitSource(ctx context.Context, actor *Actor) (*KitSource, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("only admins can pick the kit repo")
 	}
 	out := &KitSource{Candidates: []KitRepoOption{}}
@@ -564,10 +564,10 @@ func (s *Service) GetKitSource(ctx context.Context, actor *Actor) (*KitSource, e
 // SetKitSource makes an attached repo the kit (0: no kit). The kit is read
 // from it right after (EvKitSourceSet).
 func (s *Service) SetKitSource(ctx context.Context, actor *Actor, repoID int64) (*KitSource, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("only admins can pick the kit repo")
 	}
-	if err := actor.requireHuman("picking the kit repo"); err != nil {
+	if err := actor.RequireHuman("picking the kit repo"); err != nil {
 		return nil, err
 	}
 	err := s.write(ctx, actor, func(t *tx) error {
@@ -606,7 +606,7 @@ func (s *Service) SetKitSource(ctx context.Context, actor *Actor, repoID int64) 
 
 // ReadKitNow reads the kit again now, even at the same commit (admins).
 func (s *Service) ReadKitNow(ctx context.Context, actor *Actor) (*KitInfo, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("only admins can read the kit again")
 	}
 	if err := s.refreshKit(ctx, true); err != nil {

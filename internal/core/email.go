@@ -90,7 +90,7 @@ func (s *Service) EmailConfigured(ctx context.Context) bool {
 
 // GetEmailSettings shows the SMTP settings to an admin, without the password.
 func (s *Service) GetEmailSettings(ctx context.Context, actor *Actor) (*EmailSettings, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("only admins can see the email settings")
 	}
 	es, err := s.emailSettings(ctx)
@@ -103,10 +103,10 @@ func (s *Service) GetEmailSettings(ctx context.Context, actor *Actor) (*EmailSet
 
 // SetEmailSettings sets the SMTP settings (admins, people only).
 func (s *Service) SetEmailSettings(ctx context.Context, actor *Actor, in EmailSettingsInput) (*EmailSettings, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("only admins can set up email")
 	}
-	if err := actor.requireHuman("setting up email"); err != nil {
+	if err := actor.RequireHuman("setting up email"); err != nil {
 		return nil, err
 	}
 	old, err := s.emailSettings(ctx)
@@ -187,7 +187,7 @@ func checkEmailSettings(es *EmailSettings) error {
 // SendTestEmail sends a test message to the admin asking, or to the
 // address given, with the settings as saved.
 func (s *Service) SendTestEmail(ctx context.Context, actor *Actor, to string) error {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return forbidden("only admins can send a test email")
 	}
 	to = cmp(strings.TrimSpace(to), actor.User.Email)

@@ -150,7 +150,7 @@ func (s *Service) pageRole(ctx context.Context, q queryer, actor *Actor, pg *Pag
 	if pg.ProjectID != nil {
 		return s.projectRole(ctx, q, actor, *pg.ProjectID)
 	}
-	if pg.Owner != nil && pg.Owner.ID == actor.id() && actor.id() != 0 && actor.scope == nil {
+	if pg.Owner != nil && pg.Owner.ID == actor.ID() && actor.ID() != 0 && actor.Scope == nil {
 		return RoleOwner, nil
 	}
 	return RoleNone, nil
@@ -158,7 +158,7 @@ func (s *Service) pageRole(ctx context.Context, q queryer, actor *Actor, pg *Pag
 
 func (s *Service) pageFor(ctx context.Context, q queryer, actor *Actor, id int64, min int, withBody bool) (*Page, int, error) {
 	if min > RoleViewer {
-		if err := actor.canWrite(); err != nil {
+		if err := actor.CanWrite(); err != nil {
 			return nil, 0, err
 		}
 	}
@@ -196,9 +196,9 @@ func (s *Service) ListPages(ctx context.Context, actor *Actor, q PageQuery) ([]*
 	if actor == nil || actor.User == nil {
 		return nil, ErrUnauthorized
 	}
-	member, margs := actor.memberProjects(RoleViewer)
+	member, margs := actor.MemberProjects(RoleViewer)
 	where := []string{`((pg.project_id IS NULL AND pg.owner_id = ? AND ?) OR (pg.project_id IS NOT NULL AND (? OR pg.project_id IN ` + member + `)))`}
-	args := append([]any{actor.id(), actor.scope == nil, actor.isAdmin()}, margs...)
+	args := append([]any{actor.ID(), actor.Scope == nil, actor.IsAdmin()}, margs...)
 	if actor.HidesDrafts() {
 		where = append(where, "pg.draft = 0")
 	}
@@ -452,7 +452,7 @@ func checkPageCategory(v string) (string, error) {
 // CreatePage adds a page. Under a parent it joins the parent's project (or
 // stays personal with it).
 func (s *Service) CreatePage(ctx context.Context, actor *Actor, in PageInput) (*Page, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	title := strings.TrimSpace(deref(in.Title))
@@ -509,8 +509,8 @@ func (s *Service) CreatePage(ctx context.Context, actor *Actor, in PageInput) (*
 		}
 		res, err := t.ExecContext(ctx, `INSERT INTO pages(parent_id, project_id, owner_id, title, body, category, position, created_at, updated_at, updated_by,
 			created_agent, text_by, text_agent, draft, session_id, prompt_event, session_issue_id)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, nullInt(parentID), nullInt(projectID), nullUser(actor.id()), title, body, cat, pos, now, now, nullUser(actor.id()),
-			actor.agentName(), nullUser(actor.id()), actor.agentName(), in.Draft, session, prompt, pageTask)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, nullInt(parentID), nullInt(projectID), nullUser(actor.ID()), title, body, cat, pos, now, now, nullUser(actor.ID()),
+			actor.AgentName(), nullUser(actor.ID()), actor.AgentName(), in.Draft, session, prompt, pageTask)
 		if err != nil {
 			return err
 		}
@@ -639,7 +639,7 @@ func (s *Service) UpdatePage(ctx context.Context, actor *Actor, id int64, in Pag
 		}
 		if (in.Title != nil && strings.TrimSpace(*in.Title) != pg.Title) || (in.Body != nil && *in.Body != pg.Body) {
 			sets = append(sets, "text_by = ?", "text_agent = ?", "reviewed_by = NULL", "reviewed_at = NULL", "reviewed_on_story = 0")
-			args = append(args, nullUser(actor.id()), actor.agentName())
+			args = append(args, nullUser(actor.ID()), actor.AgentName())
 		}
 		if in.Story != nil {
 			ss, sa, notice, err := s.storySets(actor, pg, *in.Story, in.Body)
@@ -698,7 +698,7 @@ func (s *Service) UpdatePage(ctx context.Context, actor *Actor, id int64, in Pag
 			if project == nil {
 				if _, err := t.ExecContext(ctx, `WITH RECURSIVE d(id) AS (SELECT id FROM pages WHERE id = ?
 					UNION SELECT x.id FROM pages x JOIN d ON x.parent_id = d.id)
-					UPDATE pages SET owner_id = ? WHERE id IN (SELECT id FROM d)`, id, nullUser(actor.id())); err != nil {
+					UPDATE pages SET owner_id = ? WHERE id IN (SELECT id FROM d)`, id, nullUser(actor.ID())); err != nil {
 					return err
 				}
 			}
@@ -716,7 +716,7 @@ func (s *Service) UpdatePage(ctx context.Context, actor *Actor, id int64, in Pag
 			return nil
 		}
 		if len(sets) > 0 {
-			sets, args = append(sets, "updated_at = ?", "updated_by = ?"), append(args, s.nowMS(), nullUser(actor.id()), id)
+			sets, args = append(sets, "updated_at = ?", "updated_by = ?"), append(args, s.nowMS(), nullUser(actor.ID()), id)
 			// #nosec G202 -- only fixed column names and ? placeholders are joined in
 			if _, err := t.ExecContext(ctx, `UPDATE pages SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...); err != nil {
 				return err
@@ -809,7 +809,7 @@ func (s *Service) linkPage(ctx context.Context, t *tx, actor *Actor, pageID int6
 		return err
 	}
 	if on {
-		_, err = t.ExecContext(ctx, `INSERT OR IGNORE INTO page_issues(page_id, issue_id, created_agent) VALUES (?, ?, ?)`, pg.ID, i.ID, actor.creditAgent())
+		_, err = t.ExecContext(ctx, `INSERT OR IGNORE INTO page_issues(page_id, issue_id, created_agent) VALUES (?, ?, ?)`, pg.ID, i.ID, actor.CreditAgent())
 	} else {
 		var agent string
 		switch err := t.QueryRowContext(ctx, `SELECT created_agent FROM page_issues WHERE page_id = ? AND issue_id = ?`, pg.ID, i.ID).Scan(&agent); {

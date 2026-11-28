@@ -796,11 +796,11 @@ func TestAgentSetupMachines(t *testing.T) {
 	if len(se.setup(bob).Machines) != 0 {
 		t.Fatal("bob sees others' machines")
 	}
-	if _, err := se.s.GetMachineFile(se.ctx, bob, sam.id(), "laptop", ".claude/CLAUDE.md"); !errors.Is(err, ErrNotFound) {
+	if _, err := se.s.GetMachineFile(se.ctx, bob, sam.ID(), "laptop", ".claude/CLAUDE.md"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("bob read sam's file: %v", err)
 	}
 	for p, gone := range map[string]string{".claude/settings.json": "sk-123", ".claude.json": "ghp_1"} {
-		fc, err := se.s.GetMachineFile(se.ctx, se.admin, sam.id(), "laptop", p)
+		fc, err := se.s.GetMachineFile(se.ctx, se.admin, sam.ID(), "laptop", p)
 		if err != nil || strings.Contains(fc.Content, gone) || strings.Contains(fc.Content, "sam@example.com") {
 			t.Fatalf("%s kept a secret: %+v %v", p, fc, err)
 		}

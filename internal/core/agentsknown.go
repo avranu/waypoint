@@ -64,7 +64,7 @@ func (s *Service) KnownAgents(ctx context.Context, actor *Actor) ([]*KnownAgent,
 			FROM issues i WHERE i.claimed_by != '' AND i.claimed_until > ? AND `+vis+` GROUP BY i.claimed_by
 		UNION ALL
 		SELECT agent, '', 0, 0, 0 FROM api_tokens WHERE user_id = ? AND agent != '' AND runner_job_id IS NULL`,
-		append(append(append(slices.Clone(vargs), now), vargs...), actor.id())...)
+		append(append(append(slices.Clone(vargs), now), vargs...), actor.ID())...)
 	if err != nil {
 		return nil, err
 	}

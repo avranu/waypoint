@@ -1116,7 +1116,7 @@ type QueueMove struct {
 
 // MoveInQueue changes where an issue sits in the agent queue.
 func (s *Service) MoveInQueue(ctx context.Context, actor *Actor, m QueueMove) error {
-	if err := actor.requireHuman("change the order agents take work in"); err != nil {
+	if err := actor.RequireHuman("change the order agents take work in"); err != nil {
 		return err
 	}
 	if m.Top {
@@ -1295,7 +1295,7 @@ func (s *Service) unpin(ctx context.Context, t *tx, i *Issue, detail string) err
 // ReleaseClaim lets a person take a task back from the agent holding it:
 // its run ends as released and the task waits in the queue again.
 func (s *Service) ReleaseClaim(ctx context.Context, actor *Actor, ref string) error {
-	if err := actor.requireHuman("take a task back from an agent"); err != nil {
+	if err := actor.RequireHuman("take a task back from an agent"); err != nil {
 		return err
 	}
 	return s.write(ctx, actor, func(t *tx) error {
@@ -1362,7 +1362,7 @@ func (s *Service) ListAgentPauses(ctx context.Context, actor *Actor) ([]*AgentPa
 	if actor == nil || actor.User == nil {
 		return nil, ErrUnauthorized
 	}
-	return s.pausesOf(ctx, actor.id())
+	return s.pausesOf(ctx, actor.ID())
 }
 
 func (s *Service) pausesOf(ctx context.Context, userID int64) ([]*AgentPause, error) {
@@ -1398,7 +1398,7 @@ func (s *Service) pauseFor(ctx context.Context, actor *Actor, id string) (*Agent
 	if actor == nil || actor.User == nil {
 		return nil, nil
 	}
-	pauses, err := s.pausesOf(ctx, actor.id())
+	pauses, err := s.pausesOf(ctx, actor.ID())
 	if err != nil {
 		return nil, err
 	}
@@ -1415,7 +1415,7 @@ func (s *Service) pauseFor(ctx context.Context, actor *Actor, id string) (*Agent
 // running sessions also start no agents, finish their step and stop
 // (WP-146); pausing again without it leaves that on.
 func (s *Service) PauseAgents(ctx context.Context, actor *Actor, spec, note string, sessions bool) (*AgentPause, error) {
-	if err := actor.requireHuman("pause agents"); err != nil {
+	if err := actor.RequireHuman("pause agents"); err != nil {
 		return nil, err
 	}
 	spec, err := checkAgentSpec(spec)
@@ -1431,7 +1431,7 @@ func (s *Service) PauseAgents(ctx context.Context, actor *Actor, spec, note stri
 	}
 	err = s.write(ctx, actor, func(t *tx) error {
 		if _, err := t.ExecContext(ctx, `INSERT INTO agent_pauses(user_id, spec, note, sessions, created_at) VALUES (?,?,?,?,?)
-			ON CONFLICT(user_id, spec) DO UPDATE SET note = excluded.note, sessions = max(sessions, excluded.sessions)`, actor.id(), spec, note, sessions, s.nowMS()); err != nil {
+			ON CONFLICT(user_id, spec) DO UPDATE SET note = excluded.note, sessions = max(sessions, excluded.sessions)`, actor.ID(), spec, note, sessions, s.nowMS()); err != nil {
 			return err
 		}
 		detail := "agents matching " + spec
@@ -1450,7 +1450,7 @@ func (s *Service) PauseAgents(ctx context.Context, actor *Actor, spec, note stri
 	if err != nil {
 		return nil, err
 	}
-	pauses, err := s.pausesOf(ctx, actor.id())
+	pauses, err := s.pausesOf(ctx, actor.ID())
 	if err != nil {
 		return nil, err
 	}
@@ -1464,13 +1464,13 @@ func (s *Service) PauseAgents(ctx context.Context, actor *Actor, spec, note stri
 
 // ResumeAgents ends the actor's pause for spec ("": every pause).
 func (s *Service) ResumeAgents(ctx context.Context, actor *Actor, spec string) (int, error) {
-	if err := actor.requireHuman("resume agents"); err != nil {
+	if err := actor.RequireHuman("resume agents"); err != nil {
 		return 0, err
 	}
 	spec = strings.TrimSpace(spec)
 	var n int64
 	err := s.write(ctx, actor, func(t *tx) error {
-		q, args := `DELETE FROM agent_pauses WHERE user_id = ?`, []any{actor.id()}
+		q, args := `DELETE FROM agent_pauses WHERE user_id = ?`, []any{actor.ID()}
 		if spec != "" {
 			q, args = q+` AND spec = ? COLLATE NOCASE`, append(args, spec)
 		}
@@ -1489,7 +1489,7 @@ func (s *Service) ResumeAgents(ctx context.Context, actor *Actor, spec string) (
 			target = "every pause"
 		}
 		t.audit(AuditEntry{Action: "agent.resume", Category: AuditControl, TargetType: "agent", Target: target, About: spec, Detail: "agents take new work again"})
-		t.emit(&Event{Kind: EvAgentsResumed, Data: map[string]any{"user": actor.id()}})
+		t.emit(&Event{Kind: EvAgentsResumed, Data: map[string]any{"user": actor.ID()}})
 		return nil
 	})
 	return int(n), err

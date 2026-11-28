@@ -61,7 +61,7 @@ type KitAddResult struct {
 
 // AddToKit opens a pull request on the kit repo with one shared component.
 func (s *Service) AddToKit(ctx context.Context, actor *Actor, in KitAddInput) (*KitAddResult, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	in.Kind, in.Plugin, in.Name = strings.TrimSpace(in.Kind), strings.TrimSpace(in.Plugin), strings.TrimSuffix(strings.TrimSpace(in.Name), ".md")
@@ -207,11 +207,11 @@ func (s *Service) AddToKit(ctx context.Context, actor *Actor, in KitAddInput) (*
 	}
 
 	who := actor.User.DisplayName
-	if ag := actor.agentName(); ag != "" {
+	if ag := actor.AgentName(); ag != "" {
 		who = ag + " (for " + actor.User.DisplayName + ")"
 	}
 	title := fmt.Sprintf("Add %s %s to %s", in.Kind, in.Name, in.Plugin)
-	sum := sha256.Sum256(fmt.Appendf(nil, "%d:%s:%d", actor.id(), title, s.nowMS()))
+	sum := sha256.Sum256(fmt.Appendf(nil, "%d:%s:%d", actor.ID(), title, s.nowMS()))
 	res.Branch = fmt.Sprintf("kit/add-%s-%s-%s", in.Kind, slug(in.Name, 30), hex.EncodeToString(sum[:])[:5])
 	msg := title
 	if m := strings.TrimSpace(in.Message); m != "" {

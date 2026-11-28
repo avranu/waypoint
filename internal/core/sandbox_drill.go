@@ -202,14 +202,14 @@ func (s *Service) maybeSandboxDrills(ctx context.Context) {
 // StartSandboxDrill runs a drill on a machine now: its owner or an admin,
 // in the browser.
 func (s *Service) StartSandboxDrill(ctx context.Context, actor *Actor, runnerID int64) (*SandboxDrill, error) {
-	if !actor.inBrowser() {
+	if !inBrowser(actor) {
 		return nil, ErrSandboxUI
 	}
 	r, err := s.runnerByID(ctx, s.db.R, runnerID)
 	if err != nil {
 		return nil, err
 	}
-	if !actor.isAdmin() && r.Owner.ID != actor.id() {
+	if !actor.IsAdmin() && r.Owner.ID != actor.ID() {
 		return nil, notFound("runner")
 	}
 	h, why, err := s.drillReady(ctx, s.db.R, r)
@@ -241,8 +241,8 @@ func (s *Service) StartSandboxDrill(ctx context.Context, actor *Actor, runnerID 
 // runner, as the runner's owner's job.
 func (s *Service) queueSandboxDrill(ctx context.Context, actor *Actor, r *Runner, h *SandboxHelper, reason string) (int64, error) {
 	var by any
-	if actor.person() {
-		by = actor.id()
+	if actor.Person() {
+		by = actor.ID()
 	}
 	var id int64
 	err := s.write(ctx, actor, func(t *tx) error {

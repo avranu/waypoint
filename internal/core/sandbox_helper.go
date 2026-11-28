@@ -64,7 +64,7 @@ type SandboxKey struct {
 // SandboxKey returns the key a machine's helper pins; anyone who may see
 // runners may read it.
 func (s *Service) SandboxKey(ctx context.Context, actor *Actor) (*SandboxKey, error) {
-	if err := actor.need(PermRunnersRead); err != nil {
+	if err := actor.Need(PermRunnersRead); err != nil {
 		return nil, err
 	}
 	priv, err := s.sandboxKey(ctx)

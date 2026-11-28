@@ -559,7 +559,7 @@ var dashFixWhat = map[string][2]string{
 // is recorded in dashboard_fixes, so renaming it or the project doesn't
 // lose it, and two clicks at once file one.
 func (s *Service) FileDashboardFix(ctx context.Context, actor *Actor, project, signal string) (*IssueDetail, bool, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, false, err
 	}
 	s.dashFixMu.Lock()

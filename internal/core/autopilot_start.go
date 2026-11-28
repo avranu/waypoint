@@ -117,19 +117,19 @@ func openSessionBusy(x *AgentSession, fresh, holdsTask bool) string {
 // task (the person's Start button, WP-307). The limits, the merge policy's
 // order and the runner's check of its screen still apply.
 func (s *Service) StartAutopilotSession(ctx context.Context, a *Actor, sessionID int64) error {
-	if err := a.need(PermSessionsStart); err != nil {
+	if err := a.Need(PermSessionsStart); err != nil {
 		return err
 	}
-	if err := a.requirePersonDirect("starting a task with autopilot"); err != nil {
+	if err := a.RequirePersonDirect("starting a task with autopilot"); err != nil {
 		return err
 	}
-	if err := a.canWrite(); err != nil {
+	if err := a.CanWrite(); err != nil {
 		return err
 	}
 	now := s.nowMS()
 	var pid sql.NullInt64
 	x, err := scanSession(scanWith{s.db.R.QueryRowContext(ctx, `SELECT `+sessionCols+`, `+sessionProjectSQL+` FROM agent_sessions s WHERE s.id = ? AND s.user_id = ?`,
-		sessionID, a.id()), []any{&pid}}, now)
+		sessionID, a.ID()), []any{&pid}}, now)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	} else if err != nil {
@@ -143,7 +143,7 @@ func (s *Service) StartAutopilotSession(ctx context.Context, a *Actor, sessionID
 	case !pid.Valid:
 		return invalid("that session's repo isn't attached to a project")
 	}
-	on, _, err := s.autopilotFor(ctx, s.db.R, a.id(), pid.Int64)
+	on, _, err := s.autopilotFor(ctx, s.db.R, a.ID(), pid.Int64)
 	if err != nil {
 		return err
 	}

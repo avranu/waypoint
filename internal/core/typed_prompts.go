@@ -189,14 +189,14 @@ func recordTypedUnbound(ctx context.Context, q queryer, userID int64, kind, text
 // RecordTypedStart records the text a session is about to be started with on
 // the command line, for the actor's user, before the session exists (WP-1370).
 func (s *Service) RecordTypedStart(ctx context.Context, a *Actor, text string) error {
-	if err := a.need(PermSessionsReport); err != nil {
+	if err := a.Need(PermSessionsReport); err != nil {
 		return err
 	}
 	if PromptSum(text) == "" {
 		return invalid("nothing to record")
 	}
 	return s.write(ctx, a, func(t *tx) error {
-		return recordTypedUnbound(ctx, t, a.id(), TypedStart, text, s.nowMS(), typedKickoffTTL)
+		return recordTypedUnbound(ctx, t, a.ID(), TypedStart, text, s.nowMS(), typedKickoffTTL)
 	})
 }
 
@@ -281,18 +281,18 @@ func (s *Service) recordHandedOver(ctx context.Context, q queryer, kind string, 
 // wp next's answer) just before it types it into session cliID (WP-1370).
 // The step must be waiting for this job, as AutopilotStepWanted asks.
 func (s *Service) AutopilotTyped(ctx context.Context, a *Actor, step, job int64, cliID, text string) error {
-	if err := a.need(PermRunnersHost); err != nil {
+	if err := a.Need(PermRunnersHost); err != nil {
 		return err
 	}
 	return s.write(ctx, a, func(t *tx) error {
 		var n int
-		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM autopilot_steps WHERE id = ? AND user_id = ? AND state = ? AND job_id = ?`, step, a.id(), StepStarting, job).Scan(&n); err != nil {
+		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM autopilot_steps WHERE id = ? AND user_id = ? AND state = ? AND job_id = ?`, step, a.ID(), StepStarting, job).Scan(&n); err != nil {
 			return err
 		}
 		if n == 0 {
 			return ErrForbidden
 		}
-		sid, err := sessionByCLI(ctx, t, a.id(), cliID)
+		sid, err := sessionByCLI(ctx, t, a.ID(), cliID)
 		if err != nil {
 			return err
 		}
@@ -411,13 +411,13 @@ type PendingTyped struct {
 // started yet, the newest 200. A hook that sends no prompt text
 // (--no-prompts) compares them locally and reports only the id it matched, or none.
 func (s *Service) PendingTypedPrompts(ctx context.Context, a *Actor, cliID string) ([]PendingTyped, error) {
-	if err := a.need(PermSessionsReport); err != nil {
+	if err := a.Need(PermSessionsReport); err != nil {
 		return nil, err
 	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT id, hash, kind FROM typed_prompts
 		WHERE consumed_at IS NULL AND expires_at > ? AND hash != '' AND (
 		  session_id = (SELECT id FROM agent_sessions WHERE user_id = ? AND cli_id = ? ORDER BY id DESC LIMIT 1)
-		  OR (session_id IS NULL AND user_id = ?)) ORDER BY id DESC LIMIT 200`, s.nowMS(), a.id(), cliID, a.id())
+		  OR (session_id IS NULL AND user_id = ?)) ORDER BY id DESC LIMIT 200`, s.nowMS(), a.ID(), cliID, a.ID())
 	if err != nil {
 		return nil, err
 	}

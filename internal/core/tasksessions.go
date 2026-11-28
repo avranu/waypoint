@@ -166,7 +166,7 @@ func (s *Service) TaskSessionWarning(ctx context.Context, actor *Actor, t *Agent
 		var k, keys string
 		var stored int64
 		err := s.db.R.QueryRowContext(ctx, `SELECT kind, task_keys, context_tokens FROM agent_sessions WHERE id = ? AND user_id = ?`,
-			actor.Session, actor.id()).Scan(&k, &keys, &stored)
+			actor.Session, actor.ID()).Scan(&k, &keys, &stored)
 		if err == nil {
 			kind = k
 			if b := splitTaskKeys(keys); len(b) > 0 {

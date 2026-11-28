@@ -15,7 +15,7 @@ func TestDepthLimitLoggedOnlyForSkippedAutomation(t *testing.T) {
 	logs := &lockedBuf{}
 	e.s.log = slog.New(slog.NewTextHandler(logs, nil))
 	deep := *e.admin
-	deep.depth = maxAutomationDepth
+	deep.Depth = maxAutomationDepth
 
 	e.issue(&deep, IssueInput{Project: p.Key, Title: "no automation yet"})
 	if strings.Contains(logs.String(), "depth limit") {

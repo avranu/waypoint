@@ -60,6 +60,7 @@ func TestSHAAndCountHelpers(t *testing.T) {
 		{"ClipRunes one", ClipRunes("abcdef", 1), "…"},
 		{"ClipRunes zero", ClipRunes("abcdef", 0), ""},
 		{"ClipRunes negative", ClipRunes("abcdef", -1), ""},
+		{"ClipRunes empty, negative", ClipRunes("", -1), ""},
 		{"Excerpt one", Excerpt("abcdef", 1), "…"},
 		{"Excerpt zero", Excerpt("abcdef", 0), ""},
 	} {

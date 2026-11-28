@@ -262,7 +262,7 @@ func TestAutomationsReachOnlyTheSaversRunners(t *testing.T) {
 	job := func(owner int64) RunnerJobInput {
 		return RunnerJobInput{Kind: JobCommand, OwnerID: owner, Input: cmdInput("true", "/work"), Source: "automation_step", SourceID: 9}
 	}
-	auto := &Actor{User: &User{ID: 0, Username: "system"}, Automation: &Automation{ID: 1, Name: "nightly", savedBy: e.admin.User.ID}}
+	auto := &Actor{User: &User{ID: 0, Username: "system"}, Automation: &AutomationRef{ID: 1, Name: "nightly", SavedBy: e.admin.User.ID}}
 	if _, err := e.s.EnqueueRunnerJob(e.ctx, auto, job(bob.User.ID)); !errors.Is(err, ErrForbidden) {
 		t.Errorf("an automation saved by robin used bob's runner: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestAutomationsReachOnlyTheSaversRunners(t *testing.T) {
 	if _, err := e.s.EnqueueRunnerJob(e.ctx, asBob, job(bob.User.ID)); !errors.Is(err, ErrForbidden) {
 		t.Errorf("triggering the automation gave bob's runner to it: %v", err)
 	}
-	orphan := &Actor{User: bob.User, Automation: &Automation{ID: 2, Name: "orphan"}}
+	orphan := &Actor{User: bob.User, Automation: &AutomationRef{ID: 2, Name: "orphan"}}
 	if _, err := e.s.EnqueueRunnerJob(e.ctx, orphan, job(bob.User.ID)); !errors.Is(err, ErrForbidden) {
 		t.Errorf("an automation nobody saved used a runner: %v", err)
 	}

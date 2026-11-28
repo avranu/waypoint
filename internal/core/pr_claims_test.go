@@ -10,7 +10,7 @@ import (
 func (be *bsEnv) claimSession(cli, title string) *Actor {
 	be.t.Helper()
 	r, err := be.s.db.W.ExecContext(be.ctx, `INSERT INTO agent_sessions(user_id, machine, cli_id, title, started_at, last_seen_at) VALUES (?, 'box', ?, ?, ?, ?)`,
-		be.agent.id(), cli, title, be.s.nowMS(), be.s.nowMS())
+		be.agent.ID(), cli, title, be.s.nowMS(), be.s.nowMS())
 	if err != nil {
 		be.t.Fatal(err)
 	}
@@ -208,7 +208,7 @@ func TestPRClaimOnHeldShip(t *testing.T) {
 	}
 
 	r, err := a.s.db.W.ExecContext(a.ctx, `INSERT INTO agent_sessions(user_id, machine, cli_id, title, started_at, last_seen_at) VALUES (?, 'box', 'other', '', ?, ?)`,
-		a.ag.id(), a.s.nowMS(), a.s.nowMS())
+		a.ag.ID(), a.s.nowMS(), a.s.nowMS())
 	if err != nil {
 		t.Fatal(err)
 	}

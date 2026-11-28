@@ -5,6 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -57,7 +58,7 @@ func cleanTitle(t string) string {
 // autoTitle has a model title a new issue whose title is long text, when
 // the project asks for it and a title model is set up.
 func (s *Service) autoTitle(ctx context.Context, e *Event) {
-	if !e.retitle {
+	if _, ok := kernel.Attached[retitleHint](e); !ok {
 		return
 	}
 	p, err := s.projectByID(ctx, s.db.R, e.ProjectID)

@@ -209,7 +209,7 @@ func (s *Service) prepText(ctx context.Context, issueID int64) (title, desc stri
 // what runs on a machine is that person's decision.
 func (s *Service) PrepDue(ctx context.Context, a *Actor, machine string, limit int) ([]*PrepDueTask, error) {
 	out := []*PrepDueTask{}
-	if err := a.requireHuman("preparing tasks on a machine"); err != nil {
+	if err := a.RequireHuman("preparing tasks on a machine"); err != nil {
 		return nil, err
 	}
 	if a.User == nil || a.User.ID == 0 || machine == "" {

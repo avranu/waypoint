@@ -232,7 +232,7 @@ func (s *Service) goalContextRead(ctx context.Context, q queryer, actor *Actor, 
 	case err == nil:
 		arm = got
 	case errors.Is(err, sql.ErrNoRows):
-		if pol := s.goalPol.peek(); pol != nil && actor.actsAsPerson() {
+		if pol := s.goalPol.peek(); pol != nil && actor.ActsAsPerson() {
 			arm = pol.best()
 		}
 	}
@@ -252,7 +252,7 @@ func goalDraw(issueID int64) float64 {
 // parent. It writes, so it is never called inside a write transaction.
 func (s *Service) goalContextDraw(ctx context.Context, actor *Actor, d *IssueDetail, via string) (string, error) {
 	i := d.Issue
-	if !actor.IsAgent() || actor.ReadOnly || d.Goal == nil || d.Goal.Goal == nil || i.ClaimedBy == "" || i.ClaimedBy != actor.agentName() {
+	if !actor.IsAgent() || actor.ReadOnly || d.Goal == nil || d.Goal.Goal == nil || i.ClaimedBy == "" || i.ClaimedBy != actor.AgentName() {
 		return "", nil
 	}
 	var arm string
@@ -770,10 +770,10 @@ type GoalContextReport struct {
 // GoalContextPolicy reports the policy (wp usage goal-context): every
 // project's tasks, in sums, so admins only.
 func (s *Service) GoalContextPolicy(ctx context.Context, actor *Actor) (*GoalContextReport, error) {
-	if err := actor.need(PermUsageRead); err != nil {
+	if err := actor.Need(PermUsageRead); err != nil {
 		return nil, err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("the goal context policy sums every project's tasks: admins only")
 	}
 	p, err := s.goalPolNow(ctx)

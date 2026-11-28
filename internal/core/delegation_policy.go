@@ -681,10 +681,10 @@ type DelegationReport struct {
 // DelegationPolicy reports the policy (wp usage delegation): every
 // person's tasks, in sums, so admins only.
 func (s *Service) DelegationPolicy(ctx context.Context, actor *Actor) (*DelegationReport, error) {
-	if err := actor.need(PermUsageRead); err != nil {
+	if err := actor.Need(PermUsageRead); err != nil {
 		return nil, err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("the delegation policy sums every person's usage: admins only")
 	}
 	p, err := s.delegPolicyNow(ctx)

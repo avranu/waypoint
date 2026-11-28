@@ -561,7 +561,7 @@ func (s *Service) OpenNitpicks(ctx context.Context, actor *Actor, projectRef str
 	if actor == nil || actor.User == nil {
 		return nil, ErrUnauthorized
 	}
-	if err := actor.need(PermPullsRead); err != nil {
+	if err := actor.Need(PermPullsRead); err != nil {
 		return nil, err
 	}
 	p, err := s.projectByRef(ctx, s.db.R, projectRef)

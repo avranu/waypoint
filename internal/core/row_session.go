@@ -36,7 +36,7 @@ func sessionStamp(ctx context.Context, q rowQuerier, a *Actor) (session, task an
 
 // sessionStamp is the stamp for a row written in this transaction.
 func (t *tx) sessionStamp(ctx context.Context) (session, task any) {
-	return sessionStamp(ctx, t, t.actor)
+	return sessionStamp(ctx, t, t.Actor)
 }
 
 // creditSession is the stamp for a row credited to agent: the acting session

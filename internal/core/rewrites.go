@@ -267,7 +267,7 @@ func RewriteSpan(lines, pr, prs int) string {
 // actor can't see. A call without head and with nothing found says too little
 // to drop anything.
 func (s *Service) NoteRewrites(ctx context.Context, actor *Actor, ref, repo, head string, prs []RewrittenPR) ([]*RewrittenTask, error) {
-	if err := actor.need(PermIssuesEdit); err != nil {
+	if err := actor.Need(PermIssuesEdit); err != nil {
 		return nil, err
 	}
 	repo = strings.TrimSpace(repo)
@@ -384,7 +384,7 @@ func (s *Service) recordRewrites(ctx context.Context, actor *Actor, d *IssueDeta
 			note := rewriteNote(r)
 			if !have[otherID] {
 				inserted, err := s.insertRelation(ctx, t, newRelation{Src: d.ID, Dst: otherID, Kind: "relates", Found: rewriteFound, Basis: linkBasisInferred,
-					CreatedBy: actor.id(), CreatedAgent: actor.creditAgent(), Unrelated: true})
+					CreatedBy: actor.ID(), CreatedAgent: actor.CreditAgent(), Unrelated: true})
 				if err != nil {
 					return err
 				}

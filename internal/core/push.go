@@ -53,7 +53,7 @@ func (s *Service) PushPublicKey(ctx context.Context) (string, error) {
 
 // SavePushSubscription registers this browser for the actor's notifications.
 func (s *Service) SavePushSubscription(ctx context.Context, actor *Actor, sub PushSubscription, userAgent string) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
 	u, err := url.Parse(sub.Endpoint)
@@ -66,11 +66,11 @@ func (s *Service) SavePushSubscription(ctx context.Context, actor *Actor, sub Pu
 	return s.write(ctx, actor, func(t *tx) error {
 		if _, err := t.ExecContext(ctx, `INSERT INTO push_subscriptions(user_id, endpoint, p256dh, auth, user_agent, created_at) VALUES (?,?,?,?,?,?)
 			ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth`,
-			actor.id(), sub.Endpoint, sub.Keys.P256dh, sub.Keys.Auth, truncateBytes(userAgent, 200), s.nowMS()); err != nil {
+			actor.ID(), sub.Endpoint, sub.Keys.P256dh, sub.Keys.Auth, truncateBytes(userAgent, 200), s.nowMS()); err != nil {
 			return err
 		}
 		_, err := t.ExecContext(ctx, `DELETE FROM push_subscriptions WHERE user_id = ? AND id NOT IN
-			(SELECT id FROM push_subscriptions WHERE user_id = ? ORDER BY created_at DESC LIMIT 10)`, actor.id(), actor.id())
+			(SELECT id FROM push_subscriptions WHERE user_id = ? ORDER BY created_at DESC LIMIT 10)`, actor.ID(), actor.ID())
 		return err
 	})
 }
@@ -84,17 +84,17 @@ func dropPushSubscriptions(ctx context.Context, q queryer, userID int64) error {
 
 // DeletePushSubscription stops pushes to one browser.
 func (s *Service) DeletePushSubscription(ctx context.Context, actor *Actor, endpoint string) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
-	_, err := s.db.W.ExecContext(ctx, `DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?`, actor.id(), endpoint)
+	_, err := s.db.W.ExecContext(ctx, `DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?`, actor.ID(), endpoint)
 	return err
 }
 
 // PushDevices counts the actor's subscribed browsers.
 func (s *Service) PushDevices(ctx context.Context, actor *Actor) (int, error) {
 	var n int
-	err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM push_subscriptions WHERE user_id = ?`, actor.id()).Scan(&n)
+	err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM push_subscriptions WHERE user_id = ?`, actor.ID()).Scan(&n)
 	return n, err
 }
 

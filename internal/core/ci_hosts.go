@@ -96,10 +96,10 @@ func (s *Service) ReportCIHost(ctx context.Context, actor *Actor, rep CIHostRepo
 	if actor == nil || actor.User == nil {
 		return nil, ErrUnauthorized
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("only an admin's token can report CI hosts")
 	}
-	if err := actor.need(PermCIReport); err != nil {
+	if err := actor.Need(PermCIReport); err != nil {
 		return nil, err
 	}
 	rep.Host = strings.TrimSpace(rep.Host)
@@ -451,7 +451,7 @@ func (s *Service) CIUsage(ctx context.Context, actor *Actor, repo string, days i
 	if actor == nil || actor.User == nil {
 		return nil, ErrUnauthorized
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("only admins can read the CI usage of every repo")
 	}
 	if days <= 0 {

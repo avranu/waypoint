@@ -29,6 +29,8 @@ func readFault(err error) bool                   { return kernel.ReadFault(err) 
 func missingOrDenied(err error) bool             { return kernel.MissingOrDenied(err) }
 func excerpt(s string, n int) string             { return kernel.Excerpt(s, n) }
 
+func placeholders(n int) string            { return kernel.Placeholders(n) }
+func int64Args(ids []int64) []any          { return kernel.Int64Args(ids) }
 func cmp(a, b string) string               { return kernel.FirstNonEmpty(a, b) }
 func msTime(ms int64) time.Time            { return kernel.MillisToTime(ms) }
 func boolInt(b bool) int                   { return kernel.BoolInt(b) }

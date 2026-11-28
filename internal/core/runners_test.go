@@ -99,7 +99,7 @@ func TestRunnerJobsRunOnlyOnTheirOwnersRunners(t *testing.T) {
 	if _, err := e.s.EnqueueRunnerJob(e.ctx, e.admin, RunnerJobInput{Kind: JobCommand, OwnerID: bob.User.ID, Input: cmdInput("true", "/work")}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("job for another owner: %v", err)
 	}
-	auto := &Actor{User: e.admin.User, Automation: &Automation{ID: 1, Name: "nightly"}}
+	auto := &Actor{User: e.admin.User, Automation: &AutomationRef{ID: 1, Name: "nightly"}}
 	if _, err := e.s.EnqueueRunnerJob(e.ctx, auto, RunnerJobInput{Kind: JobCommand, OwnerID: bob.User.ID, Input: cmdInput("true", "/work"), Source: "automation_step", SourceID: 9}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("automation job on another person's runner: %v", err)
 	}

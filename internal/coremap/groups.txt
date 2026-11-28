@@ -25,7 +25,7 @@
 # name; files that many groups use (contracts, users, work, knowledge,
 # permissions...) stay groups of their own so they sort low rather than hiding
 # inside a consumer.
-kernel: core.go events.go kernel_shims.go
+kernel: core.go events.go facade.go kernel_shims.go
 egress: egress.go egress_*.go
 push: push.go push_*.go
 lineage: lineage.go lineage_*.go

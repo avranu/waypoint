@@ -621,7 +621,7 @@ func TestAutomationCloseOfAgentWorkWaitsForReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	own := e.issue(e.admin, IssueInput{Project: p.Key, Title: "Person's work"})
-	rule := &Actor{User: e.admin.User, Automation: &Automation{Name: "Move to Done when a PR merges"}}
+	rule := &Actor{User: e.admin.User, Automation: &AutomationRef{Name: "Move to Done when a PR merges"}}
 	done := CatDone
 	for _, k := range []string{worked.Key, linked.Key, own.Key} {
 		if _, err := e.s.UpdateIssue(e.ctx, rule, k, IssuePatch{Status: &done}); err != nil {

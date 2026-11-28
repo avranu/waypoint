@@ -35,7 +35,7 @@ func newUsageEnv(t *testing.T) *usageEnv {
 		t.Fatal(err)
 	}
 	u.agent = agentActor(e.admin, "anthropic/claude-code")
-	u.person = &Actor{User: e.admin.User, session: "browser"}
+	u.person = &Actor{User: e.admin.User, SessionHash: "browser"}
 	return u
 }
 

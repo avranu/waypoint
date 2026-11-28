@@ -307,7 +307,7 @@ func (r *RunnerRegistration) clean() error {
 // runnerActor checks that a person (not an agent, not a read-only token) is
 // acting: runners run commands on a machine, so an agent can't be one.
 func runnerActor(a *Actor) error {
-	if err := a.canWrite(); err != nil {
+	if err := a.CanWrite(); err != nil {
 		return err
 	}
 	if a.User.ID == 0 || a.Automation != nil {
@@ -366,7 +366,7 @@ func (s *Service) runnerByID(ctx context.Context, q queryer, id int64) (*Runner,
 // RegisterRunner records the machine the caller's `wp runner` runs on (the
 // same name for the same person is the same runner) and marks it online.
 func (s *Service) RegisterRunner(ctx context.Context, actor *Actor, reg RunnerRegistration) (*Runner, error) {
-	if err := actor.need(PermRunnersHost); err != nil {
+	if err := actor.Need(PermRunnersHost); err != nil {
 		return nil, err
 	}
 	if err := runnerActor(actor); err != nil {
@@ -430,7 +430,7 @@ func (s *Service) ListRunners(ctx context.Context, actor *Actor, all bool) ([]*R
 	}
 	q, args := ` WHERE r.owner_id = ?`, []any{actor.User.ID}
 	if all {
-		if !actor.isAdmin() {
+		if !actor.IsAdmin() {
 			return nil, ErrForbidden
 		}
 		q, args = ``, nil
@@ -461,7 +461,7 @@ func (s *Service) GetRunner(ctx context.Context, actor *Actor, id int64) (*Runne
 	if err != nil {
 		return nil, err
 	}
-	if r.Owner.ID != actor.User.ID && !actor.isAdmin() {
+	if r.Owner.ID != actor.User.ID && !actor.IsAdmin() {
 		return nil, notFound("runner")
 	}
 	return r, nil
@@ -470,7 +470,7 @@ func (s *Service) GetRunner(ctx context.Context, actor *Actor, id int64) (*Runne
 // DeleteRunner removes a runner. What was waiting for it is cancelled and
 // what it was running fails; finished jobs keep their record.
 func (s *Service) DeleteRunner(ctx context.Context, actor *Actor, id int64) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
 	if actor.IsAgent() || actor.Automation != nil {
@@ -588,7 +588,7 @@ func launchesSession(kind string) bool {
 // Poll holds up to 30 seconds for a job this runner may take. It is also
 // the heartbeat: a runner that polled in the last 90 seconds is online.
 func (s *Service) RunnerPoll(ctx context.Context, actor *Actor, in RunnerPoll) (*RunnerWork, error) {
-	if err := actor.need(PermRunnersHost); err != nil {
+	if err := actor.Need(PermRunnersHost); err != nil {
 		return nil, err
 	}
 	if err := runnerActor(actor); err != nil {

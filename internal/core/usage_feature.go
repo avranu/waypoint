@@ -486,7 +486,7 @@ func (s *Service) UsageForTask(ctx context.Context, actor *Actor, uq UsageQuery,
 	if o.Runs, from, to, o.RunMinutes, err = s.taskRuns(ctx, i.ID); err != nil {
 		return nil, err
 	}
-	if actor.canReadExperiments() == nil {
+	if canReadExperiments(actor) == nil {
 		if err := s.taskArms(ctx, i.ID, o); err != nil {
 			return nil, err
 		}

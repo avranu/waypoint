@@ -36,10 +36,10 @@ const (
 // (project helps with a bare code) or a glossary entry id. It returns how
 // many things were waiting.
 func (s *Service) Review(ctx context.Context, actor *Actor, kind, ref, project string) (int, error) {
-	if err := actor.requirePersonDirect("reviewing what agents wrote"); err != nil {
+	if err := actor.RequirePersonDirect("reviewing what agents wrote"); err != nil {
 		return 0, err
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return 0, err
 	}
 	var n int64
@@ -51,7 +51,7 @@ func (s *Service) Review(ctx context.Context, actor *Actor, kind, ref, project s
 		n += c
 		return nil
 	}
-	now, me := s.nowMS(), actor.id()
+	now, me := s.nowMS(), actor.ID()
 	switch kind {
 	case ReviewIssue, ReviewComment, ReviewClose:
 		err := s.write(ctx, actor, func(t *tx) (err error) {
@@ -120,10 +120,10 @@ func (s *Service) Review(ctx context.Context, actor *Actor, kind, ref, project s
 // actor, a person who can edit them (WP-272), all or none. It returns how
 // many closes were waiting.
 func (s *Service) ReviewCloses(ctx context.Context, actor *Actor, refs []string) (int, error) {
-	if err := actor.requirePersonDirect("reviewing what agents did"); err != nil {
+	if err := actor.RequirePersonDirect("reviewing what agents did"); err != nil {
 		return 0, err
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return 0, err
 	}
 	if len(refs) > 1000 {
@@ -156,7 +156,7 @@ func (s *Service) reviewIssue(ctx context.Context, t *tx, actor *Actor, kind, re
 		n += c
 		return nil
 	}
-	now, me := s.nowMS(), actor.id()
+	now, me := s.nowMS(), actor.ID()
 	issueRef, commentID := ref, int64(0)
 	if kind == ReviewComment {
 		commentID = parseID(ref)

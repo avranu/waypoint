@@ -11,22 +11,16 @@ package core
 import (
 	"context"
 	"database/sql"
-	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
-
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/core/meaning"
 	"git.jmann.me/claude/waypoint/internal/db"
-	"git.jmann.me/claude/waypoint/internal/tracing"
 )
 
 // Config holds settings the domain needs from the environment.
@@ -73,7 +67,7 @@ type Service struct {
 	pushHTTP *http.Client
 	Hub      *Hub
 
-	now func() time.Time
+	k *kernel.Kernel
 
 	afterTranscriptFile func()
 
@@ -219,11 +213,16 @@ func New(d *db.DB, cfg Config, log *slog.Logger) *Service {
 		log:  log,
 		http: cfg.Egress.client(15 * time.Second),
 		Hub:  NewHub(),
-		now:  time.Now,
+		k:    kernel.New(d, log),
 	}
+	s.k.Persist(persistedKinds...)
+	s.k.OnEmit(noteSession)
+	s.k.OnEmit(stampEvent)
+	s.k.AfterCommit = s.dispatch
 	s.started = s.now()
 	s.jobs = newJobLedger(cfg.Logs, func() time.Time { return s.now() })
 	s.log = slog.New(&sourceHandler{ledger: s.jobs, next: log.Handler()})
+	s.k.Log = s.log
 	forgeEgress := cfg.Egress
 	forgeEgress.AllowLoopback = true
 	d.SetSlowHandler(func(ss db.SlowStatement) { s.log.Info(ss.String()) })
@@ -250,7 +249,7 @@ func New(d *db.DB, cfg Config, log *slog.Logger) *Service {
 }
 
 // SetClock replaces the clock; for tests.
-func (s *Service) SetClock(f func() time.Time) { s.now = f }
+func (s *Service) SetClock(f func() time.Time) { s.k.SetClock(f) }
 
 // Close stops queued background work (AI estimates); in-flight deliveries
 // still finish, so call Wait after it.
@@ -271,7 +270,10 @@ func (s *Service) Ping(ctx context.Context) error {
 // BaseURL is the configured external URL without a trailing slash.
 func (s *Service) BaseURL() string { return strings.TrimRight(s.cfg.BaseURL, "/") }
 
-func (s *Service) nowMS() int64 { return s.now().UnixMilli() }
+// now is the time by the service's clock (the kernel's).
+func (s *Service) now() time.Time { return s.k.Now() }
+
+func (s *Service) nowMS() int64 { return s.k.NowMS() }
 
 func (s *Service) goBG(f func()) {
 	s.bg.Add(1)
@@ -280,75 +282,6 @@ func (s *Service) goBG(f func()) {
 		f()
 	}()
 }
-
-// Actor is who is performing an operation.
-type Actor struct {
-	User *User
-	// ReadOnly is set for API tokens created read-only.
-	ReadOnly bool
-	// Permissions is what a permission token may do (WP-111); nil for
-	// people in the browser and unrestricted tokens.
-	Permissions PermissionSet
-	// TokenID is the API token behind the request, if any.
-	TokenID int64
-	// RunnerJob is the runner job whose own token (WP-418) is behind the
-	// request, if any.
-	RunnerJob int64
-	scope     map[int64]int
-	// Agent is the acting LLM's identity ("anthropic/claude-opus-5-5"), from
-	// an agent token or the X-Waypoint-Agent header; empty for people.
-	Agent string
-	// MCP is set for requests over the MCP endpoint, which only agents use.
-	MCP bool
-	// AgentEnv names the coding agent whose shell the request came from
-	// (the CLI's X-Waypoint-Agent-Env header), even when the caller said it
-	// is a person (WAYPOINT_AGENT=none): whatever it reads lands in the
-	// agent's context, so it never sees drafts (WP-42).
-	AgentEnv string
-	// Prestart: a launcher takes a task for a task session it is about to
-	// start (the CLI's X-Waypoint-Prestart header, WP-1037). No person drives
-	// that session, so the take counts as unattended.
-	Prestart bool
-	// Automation is set when an automation performs the change on behalf of
-	// User (the person whose action triggered it).
-	Automation *Automation
-	depth      int
-	session    string
-	// Session is the agent session (WP-D16) the request came from, set from
-	// the X-Waypoint-Session header: what the actor does is recorded on it.
-	Session int64
-	// ClientVersion is the wp that made the request, from its User-Agent
-	// (WP-256); "" for anything else.
-	ClientVersion string
-	budget        *int
-	forgeSync     bool
-	textAgent     string
-}
-
-func (a *Actor) id() int64 {
-	if a == nil || a.User == nil {
-		return 0
-	}
-	return a.User.ID
-}
-
-// IsAgent reports whether an LLM agent is acting (WP-D10): it has an
-// agent identity or came in over MCP. Everyone else counts as a person.
-// A permission token always counts as an agent (WP-111).
-func (a *Actor) IsAgent() bool { return a != nil && (a.Agent != "" || a.MCP || a.Permissions != nil) }
-
-// HidesDrafts reports whether drafts (WP-42) are hidden from the actor:
-// they are for people, so agents, anything run in an agent's shell or
-// session, and automations never see them, wherever they look.
-func (a *Actor) HidesDrafts() bool {
-	return a == nil || a.User == nil || a.IsAgent() || a.AgentEnv != "" || a.Session != 0 || a.Automation != nil
-}
-
-// HidesCommandText reports whether the text of commands agents ran is kept
-// from the actor: the same readers as drafts, as whatever it reads lands in
-// an agent's context. They still see that a command was refused or risky,
-// and its name.
-func (a *Actor) HidesCommandText() bool { return a.HidesDrafts() }
 
 // draftsHidden is a SQL condition that leaves out drafts in table alias
 // t when the actor mustn't see them ("1" otherwise).
@@ -359,106 +292,11 @@ func draftsHidden(actor *Actor, t string) string {
 	return "1"
 }
 
-// agentName is the agent's identity for provenance ("mcp" when an MCP
-// client didn't say); empty for people.
-func (a *Actor) agentName() string {
-	switch {
-	case a == nil:
-		return ""
-	case a.Agent != "":
-		return a.Agent
-	case a.MCP:
-		return "mcp"
-	}
-	return ""
-}
-
-// requireHuman refuses agents: approving, locking and deleting intent is
-// for people.
-func (a *Actor) requireHuman(what string) error {
-	if a.IsAgent() {
-		return forbidden("%s is for people, not agents", what)
-	}
-	return nil
-}
-
-// requirePersonDirect is requireHuman for what an agent mustn't do even
-// with its person's token (WP-ADR9): the request comes from the web or the
-// person's own terminal, not from a coding agent's shell, an agent session
-// or an automation.
-func (a *Actor) requirePersonDirect(what string) error {
-	if err := a.requireHuman(what); err != nil {
-		return err
-	}
-	if a.AgentEnv != "" || a.Session != 0 || a.Automation != nil {
-		return forbidden("%s is for people, in the web or their own terminal, not in an agent's shell", what)
-	}
-	return nil
-}
-
-// actsAsPerson: the actor is a person acting directly (requirePersonDirect
-// would let them through). Only such an act counts as a person's intent
-// in the trace to goals (WP-ADR50); anything else counts as an agent's.
-func (a *Actor) actsAsPerson() bool {
-	return a != nil && a.User != nil && a.requirePersonDirect("") == nil
-}
-
-// writesAsAgent: what the actor writes isn't a person's own act (an agent's
-// token, or a person's token in an agent's shell, session or automation), so
-// it never approves itself: a design note it writes is a proposal, or counts
-// on a person's task, and its edits are applied or pending (WP-ADR96).
-func (a *Actor) writesAsAgent() bool { return !a.actsAsPerson() }
-
-// creditAgent is the agent an act is credited to in provenance: the
-// agent's own name, or for a person's account acting through an agent's
-// shell, session or an automation, a stand-in, so it never reads as the
-// person's own act. "" only for a person acting directly (or no user).
-func (a *Actor) creditAgent() string {
-	if n := a.agentName(); n != "" {
-		return n
-	}
-	switch {
-	case a == nil || a.User == nil || a.actsAsPerson():
-		return ""
-	case a.Automation != nil:
-		return "automation"
-	}
-	return "agent-shell"
-}
-
-// isAdmin: a job's scoped token is never an admin, whoever's it is.
-func (a *Actor) isAdmin() bool { return a != nil && a.User != nil && a.User.IsAdmin && a.scope == nil }
-
-func (a *Actor) viaAutomation() any {
-	if a == nil || a.Automation == nil || a.Automation.ID <= 0 {
-		return nil
-	}
-	return a.Automation.ID
-}
-
-func (a *Actor) canWrite() error {
-	if a == nil || a.User == nil {
-		return ErrUnauthorized
-	}
-	if a.ReadOnly {
-		return fmt.Errorf("read-only token: %w", ErrForbidden)
-	}
-	return nil
-}
-
-// SystemActor acts with full access, for CLI bootstrap and background jobs.
-func SystemActor() *Actor {
-	return &Actor{User: &User{ID: 0, Username: "system", DisplayName: "Waypoint", IsAdmin: true}}
-}
-
-// tx wraps a write transaction and collects events to dispatch on commit.
+// tx wraps a write transaction and collects events to dispatch on commit; the
+// transaction itself is the kernel's.
 type tx struct {
-	*sql.Tx
-	s       *Service
-	actor   *Actor
-	ctx     context.Context
-	events  []*Event
-	pending []func()
+	*kernel.Tx
+	s *Service
 }
 
 type queryer interface {
@@ -470,85 +308,7 @@ type queryer interface {
 // write runs f in a write transaction, then any afterUpdate work still queued,
 // commits, and dispatches the events. When f fails, the queued work is dropped.
 func (s *Service) write(ctx context.Context, actor *Actor, f func(t *tx) error) error {
-	if actor != nil && actor.ReadOnly {
-		return fmt.Errorf("read-only token: %w", ErrForbidden)
-	}
-	var span trace.Span
-	if tracing.Enabled() {
-		ctx, span = tracing.Start(ctx, "db.write "+callerName(2))
-		defer span.End()
-	}
-	queued := time.Now()
-	sqlTx, err := s.db.W.BeginTx(ctx, nil)
-	if err != nil {
-		if span != nil {
-			tracing.Fail(span, "begin")
-		}
-		return err
-	}
-	if span != nil {
-		span.SetAttributes(attribute.Int64("db.wait_ms", time.Since(queued).Milliseconds()))
-	}
-	t := &tx{Tx: sqlTx, s: s, actor: actor, ctx: ctx}
-	defer func() {
-		if p := recover(); p != nil {
-			_ = sqlTx.Rollback()
-			panic(p)
-		}
-	}()
-	if err := f(t); err != nil {
-		_ = sqlTx.Rollback()
-		if span != nil {
-			tracing.Fail(span, errorKind(err))
-		}
-		return err
-	}
-	t.runPending()
-	if err := sqlTx.Commit(); err != nil {
-		if span != nil {
-			tracing.Fail(span, "commit")
-		}
-		return err
-	}
-	s.dispatch(ctx, actor, t.events)
-	return nil
-}
-
-// callerName is the Service method skip frames up ("CreateIssue"), for
-// span names.
-func callerName(skip int) string {
-	pc, _, _, ok := runtime.Caller(skip)
-	if !ok {
-		return "unknown"
-	}
-	f := runtime.FuncForPC(pc)
-	if f == nil {
-		return "unknown"
-	}
-	name := f.Name()
-	name = name[strings.LastIndex(name, "/")+1:]
-	name = strings.TrimPrefix(name, "core.")
-	name = strings.TrimPrefix(name, "(*Service).")
-	name, _, _ = strings.Cut(name, ".")
-	return name
-}
-
-// errorKind sorts an error into a category safe to put in a trace.
-func errorKind(err error) string {
-	var inv *InvalidError
-	switch {
-	case errors.As(err, &inv):
-		return "invalid"
-	case errors.Is(err, ErrNotFound):
-		return "not_found"
-	case errors.Is(err, ErrForbidden), errors.Is(err, ErrUnauthorized):
-		return "forbidden"
-	case errors.Is(err, ErrConflict):
-		return "conflict"
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		return "canceled"
-	}
-	return "error"
+	return s.k.WriteSkip(ctx, actor, 1, func(kt *kernel.Tx) error { return f(&tx{Tx: kt, s: s}) })
 }
 
 // queryIDs runs a query returning one integer column.
@@ -621,22 +381,6 @@ func ptrTime(n sql.NullInt64) *time.Time {
 	}
 	t := time.UnixMilli(n.Int64).UTC()
 	return &t
-}
-
-// placeholders returns "?,?,?" for n values.
-func placeholders(n int) string {
-	if n <= 0 {
-		return "NULL"
-	}
-	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
-}
-
-func int64Args(ids []int64) []any {
-	out := make([]any, len(ids))
-	for i, id := range ids {
-		out[i] = id
-	}
-	return out
 }
 
 // Opt is a JSON field that distinguishes "absent" from "null": Set is true

@@ -116,7 +116,7 @@ func (s *Service) GetAgentSetup(ctx context.Context, actor *Actor) (*AgentSetup,
 		return nil, ErrUnauthorized
 	}
 	person := !actor.IsAgent() && actor.AgentEnv == "" && actor.Session == 0
-	out := &AgentSetup{Repos: []AgentRepo{}, Machines: []AgentMachine{}, CanManage: actor.isAdmin() && person, CanEdit: person}
+	out := &AgentSetup{Repos: []AgentRepo{}, Machines: []AgentMachine{}, CanManage: actor.IsAdmin() && person, CanEdit: person}
 	versions, err := s.sharedVersions(ctx, s.db.R, 20)
 	if err != nil {
 		return nil, err
@@ -145,11 +145,11 @@ func (s *Service) GetAgentSetup(ctx context.Context, actor *Actor) (*AgentSetup,
 	forges := map[int64]*Forge{}
 	var comps [][]AgentComponent
 	for _, r := range repos {
-		if !actor.isAdmin() && !slices.ContainsFunc(r.projects, func(k string) bool { return viewer[k] }) {
+		if !actor.IsAdmin() && !slices.ContainsFunc(r.projects, func(k string) bool { return viewer[k] }) {
 			continue
 		}
 		ar := AgentRepo{ForgeID: r.forgeID, Repo: r.repo, Projects: r.projects, OptedOut: r.optedOut, KitPlugins: []string{}, Missing: []AgentComponent{}}
-		ar.CanEdit = person && (actor.isAdmin() || slices.ContainsFunc(r.projects, func(k string) bool { return editor[k] }))
+		ar.CanEdit = person && (actor.IsAdmin() || slices.ContainsFunc(r.projects, func(k string) bool { return editor[k] }))
 		f, ok := forges[r.forgeID]
 		if !ok {
 			var rerr error
@@ -306,7 +306,7 @@ func (s *Service) projectKeysOf(ctx context.Context, actor *Actor) (viewer, edit
 		role int
 		into map[string]bool
 	}{{RoleViewer, viewer}, {RoleEditor, editor}} {
-		set, args := actor.memberProjects(m.role)
+		set, args := actor.MemberProjects(m.role)
 		// #nosec G202 -- set is placeholders; values are bound
 		rows, err := s.db.R.QueryContext(ctx, `SELECT key FROM projects WHERE id IN `+set, args...)
 		if err != nil {
@@ -594,7 +594,7 @@ const maxMachineBytes = 2 << 20
 // ReportMachine records a machine's setup (anyone signed in; reports are
 // their own). Settings are cleaned again here, whatever wp sent.
 func (s *Service) ReportMachine(ctx context.Context, actor *Actor, in MachineReport) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
 	clean := func(v string, n int) string {
@@ -654,7 +654,7 @@ func (s *Service) ReportMachine(ctx context.Context, actor *Actor, in MachineRep
 		if _, err := t.ExecContext(ctx, `INSERT INTO machine_reports(user_id, machine, os, wp_version, files, checks, reported_at) VALUES (?,?,?,?,?,?,?)
 			ON CONFLICT(user_id, machine) DO UPDATE SET os = excluded.os, wp_version = excluded.wp_version, files = excluded.files,
 				checks = excluded.checks, reported_at = excluded.reported_at`,
-			actor.id(), in.Machine, in.OS, in.WPVersion, string(fj), string(cj), s.nowMS()); err != nil {
+			actor.ID(), in.Machine, in.OS, in.WPVersion, string(fj), string(cj), s.nowMS()); err != nil {
 			return err
 		}
 		t.emit(&Event{Kind: EvAgentSetupUpdated, Data: map[string]any{"machine": in.Machine}})
@@ -674,7 +674,7 @@ type storedMachineFile struct {
 // report first, without file text.
 func (s *Service) machineReports(ctx context.Context, actor *Actor) ([]AgentMachine, error) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT u.id, u.username, u.display_name, u.avatar_version, m.machine, m.os, m.wp_version, m.files, m.checks, m.reported_at
-		FROM machine_reports m JOIN users u ON u.id = m.user_id WHERE ? OR m.user_id = ? ORDER BY m.reported_at DESC LIMIT 200`, actor.isAdmin(), actor.id())
+		FROM machine_reports m JOIN users u ON u.id = m.user_id WHERE ? OR m.user_id = ? ORDER BY m.reported_at DESC LIMIT 200`, actor.IsAdmin(), actor.ID())
 	if err != nil {
 		return nil, err
 	}
@@ -719,7 +719,7 @@ func (s *Service) GetMachineFile(ctx context.Context, actor *Actor, userID int64
 	if actor == nil || actor.User == nil {
 		return nil, ErrUnauthorized
 	}
-	if userID != actor.id() && !actor.isAdmin() {
+	if userID != actor.ID() && !actor.IsAdmin() {
 		return nil, ErrNotFound
 	}
 	var files string

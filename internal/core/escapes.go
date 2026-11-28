@@ -111,7 +111,7 @@ func (s *Service) escapeDuePlaces(ctx context.Context, a *Actor, machine string)
 // use up the round.
 func (s *Service) EscapesDue(ctx context.Context, a *Actor, machine, repo string, limit int) ([]*EscapeDue, error) {
 	out := []*EscapeDue{}
-	if err := a.requireHuman("tracing fixes on a machine"); err != nil {
+	if err := a.RequireHuman("tracing fixes on a machine"); err != nil {
 		return nil, err
 	}
 	if a.User == nil || a.User.ID == 0 || (machine == "" && repo == "") {
@@ -311,7 +311,7 @@ func (in *FixTraceInput) validate() error {
 // RecordFixTrace stores a runner's trace and the escapes it completes. A
 // later upload replaces an earlier one and the escapes made from it.
 func (s *Service) RecordFixTrace(ctx context.Context, a *Actor, in FixTraceInput) error {
-	if err := a.requireHuman("recording a fix's trace"); err != nil {
+	if err := a.RequireHuman("recording a fix's trace"); err != nil {
 		return err
 	}
 	if err := in.validate(); err != nil {

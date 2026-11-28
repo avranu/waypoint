@@ -126,12 +126,12 @@ func TestNamedRelationLimits(t *testing.T) {
 		t.Errorf("an agent's text linked: %v", got.Relations)
 	}
 	carried := *e.admin
-	carried.textAgent = "waypoint"
+	carried.TextAgent = "waypoint"
 	if got := e.issue(&carried, IssueInput{Project: p.Key, Title: "Audit finding", Description: "See " + a.Key}); len(got.Relations) != 0 {
 		t.Errorf("text carried for an agent linked: %v", got.Relations)
 	}
 	mirror := *e.admin
-	mirror.forgeSync = true
+	mirror.ForgeSync = true
 	if got := e.issue(&mirror, IssueInput{Project: p.Key, Title: "Mirrored", Description: "See " + a.Key}); len(got.Relations) != 0 {
 		t.Errorf("mirrored text linked: %v", got.Relations)
 	}

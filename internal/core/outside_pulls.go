@@ -312,7 +312,7 @@ func (s *Service) outsidePRFor(ctx context.Context, actor *Actor, id int64) (*ou
 	if actor.HidesDrafts() {
 		return nil, nil, 0, errOutsideByPerson
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, nil, 0, err
 	}
 	var o outsidePRRow
@@ -346,7 +346,7 @@ func (s *Service) ApproveOutsidePR(ctx context.Context, actor *Actor, id int64) 
 	opened := false
 	err = s.write(ctx, actor, func(t *tx) error {
 		res, err := t.ExecContext(ctx, `UPDATE outside_pr_text SET state = 'approved', decided_by = ? WHERE id = ? AND state = 'held' AND updated_at = ?`,
-			nullUser(actor.id()), o.id, o.updated)
+			nullUser(actor.ID()), o.id, o.updated)
 		if err != nil {
 			return err
 		}
@@ -420,7 +420,7 @@ func (s *Service) DiscardOutsidePR(ctx context.Context, actor *Actor, id int64) 
 		return invalid("a pull request from outside waits until a person approves it; close it on the forge to turn it down")
 	}
 	return s.write(ctx, actor, func(t *tx) error {
-		if _, err := t.ExecContext(ctx, `UPDATE outside_pr_text SET state = 'discarded', decided_by = ? WHERE id = ? AND state = 'held'`, nullUser(actor.id()), o.id); err != nil {
+		if _, err := t.ExecContext(ctx, `UPDATE outside_pr_text SET state = 'discarded', decided_by = ? WHERE id = ? AND state = 'held'`, nullUser(actor.ID()), o.id); err != nil {
 			return err
 		}
 		t.audit(AuditEntry{Action: "outside.discard", Category: AuditApproval, ProjectID: pid, TargetType: "pr", TargetID: pr.ID,

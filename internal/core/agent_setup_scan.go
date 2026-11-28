@@ -83,7 +83,7 @@ func (s *Service) RefreshAgentSetup(ctx context.Context) {
 // RefreshAgentSetupNow reads every attached repo again, moved or not (the
 // page's Refresh), in the background.
 func (s *Service) RefreshAgentSetupNow(ctx context.Context, actor *Actor) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
 	agentRefreshMu.Lock()
