@@ -16,10 +16,14 @@ func TestPartialReviewIsNotCarried(t *testing.T) {
 		return "diff --git a/" + name + " b/" + name + "\nnew file mode 100644\n--- /dev/null\n+++ b/" + name +
 			"\n@@ -0,0 +1," + strconv.Itoa(n) + " @@\n" + strings.Repeat("+"+strings.Repeat("x", 99)+"\n", n)
 	}
+	var overflow strings.Builder
+	overflow.WriteString(sampleDiff)
+	for i := 1; i <= reviewMaxChunks+1; i++ {
+		overflow.WriteString(big("p"+strconv.Itoa(i)+".txt", 340))
+	}
 	cases := map[string]string{
-		"a file cut to fit": sampleDiff + big("huge.txt", 700),
-		"files past the last part": sampleDiff + big("p1.txt", 340) + big("p2.txt", 340) + big("p3.txt", 340) +
-			big("p4.txt", 340) + big("p5.txt", 340),
+		"a file cut to fit":        sampleDiff + big("huge.txt", 700),
+		"files past the last part": overflow.String(),
 	}
 	for name, diff := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -352,7 +352,7 @@ func (s *Service) AwaitShipNews(ctx context.Context, actor *Actor, cliID, machin
 // round's state says.
 func (s *Service) shipNewsNow(ctx context.Context, session, task int64) (*ShipNews, error) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT `+messageCols+` FROM session_messages m LEFT JOIN users u ON u.id = m.created_by
-		WHERE m.session_id = ? AND m.state = 'queued' AND (m.step_key LIKE 'audit:%' OR m.step_key LIKE 'check:%') ORDER BY m.id`, session)
+		WHERE m.session_id = ? AND m.state = 'queued' AND (m.step_key LIKE 'audit:%' OR m.step_key LIKE 'check:%' OR m.step_key LIKE 'review:%') ORDER BY m.id`, session)
 	if err != nil {
 		return nil, err
 	}
@@ -521,11 +521,12 @@ func (s *Service) AckShipNews(ctx context.Context, actor *Actor, cliID, machine,
 	return nil
 }
 
-// shipNewsKey: the step key is news a wp ship's wait delivers: an audit's or
-// the check of a session's marks (the review's wait), or the failed checks of
-// its pull request (the checks' wait).
+// shipNewsKey: the step key is news a wp ship's wait delivers: an audit's,
+// a CLI-delivered adversarial review round's (WP-2021), the check of a
+// session's marks (the review's wait), or the failed checks of its pull
+// request (the checks' wait).
 func shipNewsKey(key string) bool {
-	return strings.HasPrefix(key, "audit:") || strings.HasPrefix(key, "check:") || strings.HasPrefix(key, "ci:")
+	return strings.HasPrefix(key, "audit:") || strings.HasPrefix(key, "check:") || strings.HasPrefix(key, "review:") || strings.HasPrefix(key, "ci:")
 }
 
 func colonIf(s string) string {

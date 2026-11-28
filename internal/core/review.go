@@ -279,7 +279,7 @@ func tomlStrings(s string) ([]string, error) {
 // Review limits.
 const (
 	reviewChunkChars   = 35_000
-	reviewMaxChunks    = 4
+	reviewMaxChunks    = 16
 	reviewMaxChunk     = 60_000
 	reviewDefaultShown = 8
 )

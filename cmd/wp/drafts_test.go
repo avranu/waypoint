@@ -32,7 +32,7 @@ func TestDraftsStayOutOfAgentShells(t *testing.T) {
 	t.Setenv("WAYPOINT_TOKEN", tok)
 	t.Setenv("WAYPOINT_AGENT", "none")
 	shell := func(agent bool) {
-		for _, k := range []string{"CLAUDECODE", "GEMINI_CLI", "OPENCODE", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED"} {
+		for _, k := range []string{"CLAUDECODE", "ANTIGRAVITY_AGENT", "GEMINI_CLI", "OPENCODE", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED"} {
 			t.Setenv(k, "")
 		}
 		if agent {

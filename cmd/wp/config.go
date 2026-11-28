@@ -531,12 +531,31 @@ func detectAgent(getenv func(string) string) string {
 	switch {
 	case getenv("CLAUDECODE") != "":
 		return "anthropic/claude-code"
+	case getenv("ANTIGRAVITY_AGENT") != "":
+		return "google/antigravity"
 	case getenv("GEMINI_CLI") != "":
 		return "google/gemini-cli"
 	case getenv("OPENCODE") != "":
 		return "opencode"
 	case getenv("CODEX_SANDBOX") != "" || getenv("CODEX_SANDBOX_NETWORK_DISABLED") != "":
 		return "openai/codex"
+	}
+	return ""
+}
+
+// detectHarness returns the short harness CLI name for a coding agent shell.
+func detectHarness(getenv func(string) string) string {
+	switch {
+	case getenv("CLAUDECODE") != "":
+		return "claude"
+	case getenv("ANTIGRAVITY_AGENT") != "":
+		return "antigravity"
+	case getenv("GEMINI_CLI") != "":
+		return "gemini-cli"
+	case getenv("OPENCODE") != "":
+		return "opencode"
+	case getenv("CODEX_SANDBOX") != "" || getenv("CODEX_SANDBOX_NETWORK_DISABLED") != "":
+		return "codex"
 	}
 	return ""
 }

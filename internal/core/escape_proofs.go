@@ -347,7 +347,10 @@ func ClassifyNoBuildNote(note string) string {
 	}
 	if strings.Contains(note, "too many arguments in call to") ||
 		strings.Contains(note, "not enough arguments in call to") ||
-		strings.Contains(note, "in argument to") {
+		strings.Contains(note, "in argument to") ||
+		strings.Contains(note, "assignment mismatch:") ||
+		strings.Contains(note, "multiple-value ") ||
+		strings.Contains(note, "in return statement") {
 		return "signature_change"
 	}
 	if sawExported {
