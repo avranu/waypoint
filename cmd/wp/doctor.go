@@ -285,7 +285,11 @@ func (c *cli) checkGuardLog(add addCheck) {
 		return
 	}
 	rep, err := readGuardStats(c.dir, 7, 3, time.Now().UTC())
-	if err != nil || rep.Total == 0 {
+	if err != nil {
+		add(checkWarn, "guard log", "could not read %s: %v", filepath.Join(c.dir, "guard.log"), err)
+		return
+	}
+	if rep.Total == 0 {
 		return
 	}
 	top := ""
@@ -310,7 +314,7 @@ func (c *cli) checkMemoryHealth(add addCheck) {
 	if err != nil {
 		return
 	}
-	top := gitTop(cwd)
+	top := gitMainRoot(cwd)
 	if top == "" {
 		return
 	}
@@ -333,32 +337,50 @@ func (c *cli) checkMemoryHealth(add addCheck) {
 	}
 }
 
+// gitMainRoot returns the main repository checkout root even when cwd is inside
+// a linked git worktree, matching how Claude Code resolves its project memory dir.
+func gitMainRoot(cwd string) string {
+	if common, err := gitOutput(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"); err == nil && filepath.Base(common) == ".git" {
+		return filepath.Dir(common)
+	}
+	return gitTop(cwd)
+}
+
 func claudeMemoryPath(repoTop string) string {
 	root := claudeDir("")
 	if root == "" || repoTop == "" {
 		return ""
 	}
-	// Claude Code encodes project directories by replacing '/' and '.' with '-'.
-	slug := strings.NewReplacer("/", "-", ".", "-").Replace(filepath.Clean(repoTop))
-	return filepath.Join(root, "projects", slug, "memory", "MEMORY.md")
+	return filepath.Join(root, "projects", projectDirName(filepath.Clean(repoTop)), "memory", "MEMORY.md")
 }
 
-// analyzeMemoryMD counts non-empty lines and duplicate substantive bullet/prose
-// lines (ignoring headings, horizontal rules, and blank lines).
+// analyzeMemoryMD counts total lines (matching Claude Code's 200-line truncation
+// limit) and duplicate substantive bullet/prose lines (ignoring headings,
+// horizontal rules, table separator rules, fenced code blocks, and blank lines).
 func analyzeMemoryMD(text string) (totalLines, duplicates int) {
 	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
 	if text == "" {
 		return 0, 0
 	}
 	seen := map[string]int{}
-	inFence := false
+	fence := ""
 	for _, raw := range lines {
 		s := strings.TrimSpace(raw)
-		if strings.HasPrefix(s, "```") {
-			inFence = !inFence
+		if fence != "" {
+			if strings.HasPrefix(s, fence) {
+				fence = ""
+			}
 			continue
 		}
-		if inFence || s == "" || strings.HasPrefix(s, "#") || s == "---" || s == "***" {
+		if strings.HasPrefix(s, "```") {
+			fence = "```"
+			continue
+		}
+		if strings.HasPrefix(s, "~~~") {
+			fence = "~~~"
+			continue
+		}
+		if s == "" || strings.HasPrefix(s, "#") || s == "---" || s == "***" || isMarkdownTableRule(s) {
 			continue
 		}
 		norm := strings.ToLower(strings.Join(strings.Fields(s), " "))
@@ -371,6 +393,18 @@ func analyzeMemoryMD(text string) (totalLines, duplicates int) {
 		}
 	}
 	return len(lines), duplicates
+}
+
+func isMarkdownTableRule(s string) bool {
+	if !strings.Contains(s, "|") || !strings.Contains(s, "-") {
+		return false
+	}
+	for _, r := range s {
+		if r != '|' && r != '-' && r != ':' && r != ' ' && r != '\t' {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *cli) checkRunner(signedIn bool, add addCheck) {

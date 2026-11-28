@@ -10,23 +10,20 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
-
-	"git.jmann.me/claude/waypoint/internal/core"
 )
 
 // archiveOpenCodeState tracks the last archived snapshot of one OpenCode
 // session exported from opencode.db.
 type archiveOpenCodeState struct {
-	Updated int64  `json:"updated"`       // session.time_updated (ms) last archived
-	Gen     int    `json:"gen,omitempty"` // generation bumped on each update
+	Updated int64  `json:"updated"`        // effective max time_updated (ms) across session/message/part
+	Hash    string `json:"hash,omitempty"` // SHA-256 of exported JSONL to skip redundant generations
+	Gen     int    `json:"gen,omitempty"`  // server generation of the last uploaded snapshot
 	SentAt  int64  `json:"sent_at,omitempty"`
 	Held    string `json:"held,omitempty"`
 	HeldAt  int64  `json:"held_at,omitempty"`
@@ -37,18 +34,28 @@ type archiveOpenCodeState struct {
 var (
 	harnessHomeFn          = os.UserHomeDir
 	archiveHarnessesForce  = false
-	openCodeHookQuietDelay = 2 * time.Minute
+	openCodeHookQuietDelay = 10 * time.Minute
 )
 
 func shouldArchiveHarnesses(o usageSyncOptions, root string) bool {
 	if archiveHarnessesForce {
 		return !o.OnlyFiles
 	}
-	if o.OnlyFiles || o.Dir != "" {
+	if o.OnlyFiles {
 		return false
 	}
 	def := claudeDir("")
 	return def != "" && filepath.Clean(root) == filepath.Clean(def)
+}
+
+func isHarnessFile(f usageFile) bool {
+	switch f.Kind {
+	case "antigravity", "antigravity_compact", "codex", "opencode":
+		return true
+	}
+	return strings.HasPrefix(f.FileKey, "antigravity/") ||
+		strings.HasPrefix(f.FileKey, "codex/") ||
+		strings.HasPrefix(f.FileKey, "opencode/")
 }
 
 func hasHarnessTranscriptSources() bool {
@@ -59,7 +66,7 @@ func hasHarnessTranscriptSources() bool {
 	if p == "" {
 		return false
 	}
-	fi, err := os.Lstat(p)
+	fi, err := os.Stat(p)
 	return err == nil && fi.Mode().IsRegular() && fi.Size() > 0
 }
 
@@ -89,7 +96,9 @@ func sanitizeTranscriptSession(raw string) string {
 
 // discoverHarnessTranscripts lists local JSONL transcripts for non-Claude
 // harnesses (Antigravity and Codex). OpenCode uses SQLite and is handled by
-// archiveOpenCode.
+// archiveOpenCode. Discovered files are deduplicated by (Session, FileKey) so
+// Codex sessions/ vs archived_sessions/ or multi-root Antigravity copies never
+// collide on the same server transcript key.
 func discoverHarnessTranscripts(since time.Duration) []usageFile {
 	home, err := harnessHomeFn()
 	if err != nil || home == "" {
@@ -99,22 +108,44 @@ func discoverHarnessTranscripts(since time.Duration) []usageFile {
 	if since > 0 {
 		cut = archiveNow().Add(-since)
 	}
-	var out []usageFile
-	seen := map[string]bool{}
+	type cand struct {
+		f   usageFile
+		mod time.Time
+	}
+	byKey := map[[2]string]int{}
+	var picked []cand
+	seenPath := map[string]bool{}
 	add := func(f usageFile) {
-		if seen[f.Path] {
+		if seenPath[f.Path] {
 			return
 		}
-		if fi, err := os.Lstat(f.Path); err == nil && fi.Mode().IsRegular() && fi.Size() > 0 && (cut.IsZero() || fi.ModTime().After(cut)) {
-			seen[f.Path] = true
-			out = append(out, f)
+		fi, err := os.Lstat(f.Path)
+		if err != nil || !fi.Mode().IsRegular() || fi.Size() == 0 {
+			return
 		}
+		if !cut.IsZero() && !fi.ModTime().After(cut) {
+			return
+		}
+		seenPath[f.Path] = true
+		k := [2]string{f.Session, archiveFileKey(f)}
+		if idx, exists := byKey[k]; exists {
+			if fi.ModTime().After(picked[idx].mod) {
+				picked[idx] = cand{f: f, mod: fi.ModTime()}
+			}
+			return
+		}
+		byKey[k] = len(picked)
+		picked = append(picked, cand{f: f, mod: fi.ModTime()})
 	}
 	for _, f := range discoverAntigravityTranscripts(home) {
 		add(f)
 	}
 	for _, f := range discoverCodexTranscripts(home) {
 		add(f)
+	}
+	out := make([]usageFile, len(picked))
+	for i, c := range picked {
+		out[i] = c.f
 	}
 	return out
 }
@@ -160,14 +191,24 @@ func discoverAntigravityTranscripts(home string) []usageFile {
 	return out
 }
 
+func codexHomeDir(home string) string {
+	if codexRoot := strings.TrimSpace(os.Getenv("CODEX_HOME")); codexRoot != "" {
+		return filepath.Clean(codexRoot)
+	}
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".codex")
+}
+
 func discoverCodexTranscripts(home string) []usageFile {
-	codexRoot := strings.TrimSpace(os.Getenv("CODEX_HOME"))
+	codexRoot := codexHomeDir(home)
 	if codexRoot == "" {
-		codexRoot = filepath.Join(home, ".codex")
+		return nil
 	}
 	var out []usageFile
 	for _, sub := range []string{"sessions", "archived_sessions"} {
-		dir := filepath.Join(filepath.Clean(codexRoot), sub)
+		dir := filepath.Join(codexRoot, sub)
 		if _, err := os.Stat(dir); err != nil { // #nosec G703 -- user's local CODEX_HOME directory
 			continue
 		}
@@ -192,10 +233,10 @@ func discoverCodexTranscripts(home string) []usageFile {
 }
 
 // harnessFileOfPath reconstructs a non-Claude usageFile from a path stored in
-// usage-archive.json.
+// usage-archive.json when saved metadata is absent (legacy state files).
 func harnessFileOfPath(p string) (usageFile, bool) {
 	slash := filepath.ToSlash(p)
-	if i := strings.Index(slash, "/brain/"); i >= 0 && strings.Contains(slash[i:], "/.system_generated/logs/") {
+	if i := strings.LastIndex(slash, "/brain/"); i >= 0 && strings.Contains(slash[i:], "/.system_generated/logs/") {
 		rest := slash[i+len("/brain/"):]
 		convID, _, ok := strings.Cut(rest, "/")
 		if ok && convID != "" {
@@ -208,9 +249,18 @@ func harnessFileOfPath(p string) (usageFile, bool) {
 			}
 		}
 	}
-	if strings.HasSuffix(slash, ".jsonl") && (strings.Contains(slash, "/.codex/sessions/") || strings.Contains(slash, "/.codex/archived_sessions/")) {
-		base := strings.TrimSuffix(filepath.Base(p), ".jsonl")
-		return usageFile{Path: p, Session: sanitizeTranscriptSession("codex-" + base), Kind: "codex", FileKey: "codex/main.jsonl"}, true
+	if strings.HasSuffix(slash, ".jsonl") {
+		isCodex := strings.Contains(slash, "/.codex/sessions/") || strings.Contains(slash, "/.codex/archived_sessions/")
+		if !isCodex {
+			if codexRoot := strings.TrimSpace(os.Getenv("CODEX_HOME")); codexRoot != "" {
+				rootSlash := strings.TrimRight(filepath.ToSlash(filepath.Clean(codexRoot)), "/")
+				isCodex = strings.HasPrefix(slash, rootSlash+"/sessions/") || strings.HasPrefix(slash, rootSlash+"/archived_sessions/")
+			}
+		}
+		if isCodex {
+			base := strings.TrimSuffix(filepath.Base(p), ".jsonl")
+			return usageFile{Path: p, Session: sanitizeTranscriptSession("codex-" + base), Kind: "codex", FileKey: "codex/main.jsonl"}, true
+		}
 	}
 	return usageFile{}, false
 }
@@ -229,37 +279,70 @@ func openCodeDBPath() string {
 	return filepath.Join(home, ".local", "share", "opencode", "opencode.db")
 }
 
+func openCodeDSN(dbPath string) string {
+	esc := strings.NewReplacer("%", "%25", "?", "%3f", "#", "%23").Replace(filepath.ToSlash(dbPath))
+	return "file:" + esc + "?mode=ro&_pragma=busy_timeout(5000)&_pragma=query_only(1)"
+}
+
 // archiveOpenCode reads OpenCode sessions from opencode.db (strictly read-only)
 // and uploads any new or updated session as redacted, gzip-compressed JSONL
 // pieces into transcript_pieces (kind="opencode").
 func (a *archiver) archiveOpenCode(o usageSyncOptions, since time.Duration) {
+	if a.stop != "" && !a.dry {
+		return
+	}
 	dbPath := openCodeDBPath()
 	if dbPath == "" {
 		return
 	}
-	fi, err := os.Lstat(dbPath)
+	fi, err := os.Stat(dbPath)
 	if err != nil || !fi.Mode().IsRegular() || fi.Size() == 0 {
 		return
 	}
-	dsn := "file:" + filepath.ToSlash(dbPath) + "?mode=ro&_pragma=busy_timeout(5000)&_pragma=query_only(1)"
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
+	if !a.dry && (time.Now().After(a.deadline) || a.bound().Err() != nil) {
+		a.stop = "time limit; the rest goes next time"
 		return
 	}
+	db, err := sql.Open("sqlite", openCodeDSN(dbPath))
+	if err != nil {
+		a.drop("unreadable_file")
+		return
+	}
+	db.SetMaxOpenConns(1)
 	defer func() { _ = db.Close() }()
 
-	ctx, cancel := context.WithTimeout(a.bound(), max(time.Until(a.deadline), time.Second))
+	rem := time.Until(a.deadline)
+	if a.dry || rem < time.Second {
+		rem = max(rem, time.Second)
+	}
+	ctx, cancel := context.WithTimeout(a.bound(), rem)
 	defer cancel()
 
 	var cutoffMS int64
 	if since > 0 {
 		cutoffMS = archiveNow().Add(-since).UnixMilli()
 	}
-	rows, err := db.QueryContext(ctx, `SELECT id, project_id, coalesce(parent_id, ''), slug, directory, title, version,
-			coalesce(agent, ''), coalesce(model, ''), cost, tokens_input, tokens_output, tokens_reasoning,
-			tokens_cache_read, tokens_cache_write, time_created, time_updated
-		FROM session WHERE time_updated >= ? ORDER BY time_updated DESC`, cutoffMS)
+	// Watermark across session, message, and part tables so updates to messages
+	// or parts that don't bump session.time_updated are never missed.
+	rows, err := db.QueryContext(ctx, `SELECT s.id, coalesce(s.project_id, ''), coalesce(s.parent_id, ''), coalesce(s.slug, ''),
+			coalesce(s.directory, ''), coalesce(s.title, ''), coalesce(s.version, ''),
+			coalesce(s.agent, ''), coalesce(s.model, ''),
+			coalesce(s.cost, 0), coalesce(s.tokens_input, 0), coalesce(s.tokens_output, 0),
+			coalesce(s.tokens_reasoning, 0), coalesce(s.tokens_cache_read, 0), coalesce(s.tokens_cache_write, 0),
+			coalesce(s.time_created, 0), coalesce(s.time_updated, 0),
+			MAX(coalesce(s.time_updated, 0), coalesce(m.max_u, 0), coalesce(p.max_u, 0)) AS eff_updated,
+			coalesce(m.bytes, 0) + coalesce(p.bytes, 0) AS est_bytes
+		FROM session s
+		LEFT JOIN (SELECT session_id, MAX(time_updated) AS max_u, SUM(length(data)) AS bytes FROM message GROUP BY session_id) m ON m.session_id = s.id
+		LEFT JOIN (SELECT session_id, MAX(time_updated) AS max_u, SUM(length(data)) AS bytes FROM part GROUP BY session_id) p ON p.session_id = s.id
+		WHERE MAX(coalesce(s.time_updated, 0), coalesce(m.max_u, 0), coalesce(p.max_u, 0)) >= ?
+		ORDER BY eff_updated DESC`, cutoffMS)
 	if err != nil {
+		if ctx.Err() != nil {
+			a.stop = "time limit; the rest goes next time"
+		} else {
+			a.drop("unreadable_file")
+		}
 		return
 	}
 	type ocSession struct {
@@ -280,48 +363,64 @@ func (a *archiver) archiveOpenCode(o usageSyncOptions, since time.Duration) {
 		TokensCacheW    int64
 		TimeCreated     int64
 		TimeUpdated     int64
+		EffUpdated      int64
+		EstBytes        int64
 	}
 	var sessions []ocSession
 	for rows.Next() {
 		var s ocSession
 		if err := rows.Scan(&s.ID, &s.ProjectID, &s.ParentID, &s.Slug, &s.Directory, &s.Title, &s.Version,
 			&s.Agent, &s.Model, &s.Cost, &s.TokensInput, &s.TokensOutput, &s.TokensReasoning,
-			&s.TokensCacheRead, &s.TokensCacheW, &s.TimeCreated, &s.TimeUpdated); err != nil {
+			&s.TokensCacheRead, &s.TokensCacheW, &s.TimeCreated, &s.TimeUpdated, &s.EffUpdated, &s.EstBytes); err != nil {
 			_ = rows.Close()
+			a.drop("unreadable_file")
 			return
 		}
 		sessions = append(sessions, s)
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
+		if ctx.Err() != nil {
+			a.stop = "time limit; the rest goes next time"
+		} else {
+			a.drop("unreadable_file")
+		}
 		return
 	}
 	_ = rows.Close()
 
-	quietBefore := archiveNow().Add(-openCodeHookQuietDelay).UnixMilli()
+	now := archiveNow()
+	quietBefore := now.Add(-openCodeHookQuietDelay).UnixMilli()
 	for _, s := range sessions {
+		est := max(s.EstBytes, 1)
 		st := a.st.OpenCode[s.ID]
-		if st != nil && st.Updated >= s.TimeUpdated {
+		if st != nil && st.Updated >= s.EffUpdated {
 			continue
 		}
-		if st != nil && st.Held != "" && time.Since(time.UnixMilli(st.HeldAt)) < archiveRetryHeld {
+		if st != nil && st.Held != "" && now.Sub(time.UnixMilli(st.HeldAt)) < archiveRetryHeld {
+			a.res.Files++
+			a.res.PendingFiles++
+			a.res.PendingBytes += est
 			continue
 		}
-		if a.hook && s.TimeUpdated > quietBefore {
+		if a.hook && s.EffUpdated > quietBefore {
 			continue
 		}
 		a.res.Files++
 		if a.stop != "" {
 			a.res.PendingFiles++
+			a.res.PendingBytes += est
 			continue
 		}
 		if a.dry {
 			a.res.PendingFiles++
+			a.res.PendingBytes += est
 			continue
 		}
 		if time.Now().After(a.deadline) || a.bound().Err() != nil {
 			a.stop = "time limit; the rest goes next time"
 			a.res.PendingFiles++
+			a.res.PendingBytes += est
 			continue
 		}
 		raw, err := exportOpenCodeSessionJSONL(ctx, db, s.ID, map[string]any{
@@ -332,19 +431,39 @@ func (a *archiver) archiveOpenCode(o usageSyncOptions, since time.Duration) {
 			"tokens_cache_read": s.TokensCacheRead, "tokens_cache_write": s.TokensCacheW,
 			"time_created": s.TimeCreated, "time_updated": s.TimeUpdated,
 		})
-		if err != nil || len(raw) == 0 {
-			a.drop("unreadable_file")
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || ctx.Err() != nil {
+				a.stop = "time limit; the rest goes next time"
+				a.res.PendingFiles++
+				a.res.PendingBytes += est
+			} else {
+				a.drop("unreadable_file")
+			}
+			continue
+		}
+		if len(raw) == 0 {
 			continue
 		}
 		if st == nil {
 			st = &archiveOpenCodeState{}
 		}
+		sum := sha256.Sum256(raw)
+		hash := hex.EncodeToString(sum[:])
+		// Skip minting a new generation if exported bytes are identical.
+		if st.Hash != "" && st.Hash == hash {
+			st.Updated = s.EffUpdated
+			a.st.OpenCode[s.ID] = st
+			_ = a.save()
+			continue
+		}
 		gen := st.Gen
 		if st.Updated > 0 {
 			gen++
 		}
-		if ok := a.uploadSyntheticJSONL(sanitizeTranscriptSession("opencode-"+s.ID), "opencode/session.jsonl", "opencode", gen, raw, st); ok {
-			st.Updated, st.Gen, st.SentAt, st.Held, st.HeldAt = s.TimeUpdated, gen, time.Now().UnixMilli(), "", 0
+		ok, actualGen := a.uploadSyntheticJSONL(sanitizeTranscriptSession("opencode-"+s.ID), "opencode/session.jsonl", "opencode", gen, raw, st)
+		st.Gen = max(st.Gen, actualGen)
+		if ok {
+			st.Updated, st.Hash, st.Gen, st.SentAt, st.Held, st.HeldAt = s.EffUpdated, hash, actualGen, archiveNow().UnixMilli(), "", 0
 			a.st.OpenCode[s.ID] = st
 			_ = a.save()
 		} else {
@@ -369,92 +488,111 @@ func exportOpenCodeSessionJSONL(ctx context.Context, db *sql.DB, sessionID strin
 	if err := writeLine(header); err != nil {
 		return nil, err
 	}
-	// Load all parts grouped by message_id so messages and parts stream deterministically.
-	type partRow struct {
-		ID, MessageID string
-		Created       int64
-		Updated       int64
-		Data          string
+	// Fetch messages ordered deterministically, then stream each message's parts
+	// via its index instead of buffering every part row in a second in-memory map.
+	type msgRow struct {
+		ID      string
+		Created int64
+		Updated int64
+		Data    string
 	}
-	partsByMsg := map[string][]partRow{}
-	prows, err := db.QueryContext(ctx, `SELECT id, message_id, time_created, time_updated, data FROM part WHERE session_id = ? ORDER BY time_created, id`, sessionID)
+	var msgs []msgRow
+	mrows, err := db.QueryContext(ctx, `SELECT id, coalesce(time_created, 0), coalesce(time_updated, 0), coalesce(data, '')
+		FROM message WHERE session_id = ? ORDER BY time_created, id`, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	for prows.Next() {
-		var p partRow
-		if err := prows.Scan(&p.ID, &p.MessageID, &p.Created, &p.Updated, &p.Data); err != nil {
-			_ = prows.Close()
-			return nil, err
-		}
-		partsByMsg[p.MessageID] = append(partsByMsg[p.MessageID], p)
-	}
-	if err := prows.Err(); err != nil {
-		_ = prows.Close()
-		return nil, err
-	}
-	_ = prows.Close()
-
-	mrows, err := db.QueryContext(ctx, `SELECT id, time_created, time_updated, data FROM message WHERE session_id = ? ORDER BY time_created, id`, sessionID)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = mrows.Close() }()
 	for mrows.Next() {
-		var id, data string
-		var created, updated int64
-		if err := mrows.Scan(&id, &created, &updated, &data); err != nil {
+		var m msgRow
+		if err := mrows.Scan(&m.ID, &m.Created, &m.Updated, &m.Data); err != nil {
+			_ = mrows.Close()
 			return nil, err
 		}
+		msgs = append(msgs, m)
+	}
+	if err := mrows.Err(); err != nil {
+		_ = mrows.Close()
+		return nil, err
+	}
+	_ = mrows.Close()
+
+	for _, m := range msgs {
 		msgLine := map[string]any{
-			"type": "opencode_message", "id": id, "session_id": sessionID,
-			"time_created": created, "time_updated": updated,
+			"type": "opencode_message", "id": m.ID, "session_id": sessionID,
+			"time_created": m.Created, "time_updated": m.Updated,
 		}
-		if json.Valid([]byte(data)) {
-			msgLine["data"] = json.RawMessage(data)
+		if json.Valid([]byte(m.Data)) {
+			msgLine["data"] = json.RawMessage(m.Data)
 		} else {
-			msgLine["data"] = data
+			msgLine["data"] = m.Data
 		}
 		if err := writeLine(msgLine); err != nil {
 			return nil, err
 		}
-		for _, p := range partsByMsg[id] {
-			partLine := map[string]any{
-				"type": "opencode_part", "id": p.ID, "message_id": p.MessageID, "session_id": sessionID,
-				"time_created": p.Created, "time_updated": p.Updated,
+		prows, err := db.QueryContext(ctx, `SELECT id, coalesce(time_created, 0), coalesce(time_updated, 0), coalesce(data, '')
+			FROM part WHERE session_id = ? AND message_id = ? ORDER BY time_created, id`, sessionID, m.ID)
+		if err != nil {
+			return nil, err
+		}
+		for prows.Next() {
+			var pid, pdata string
+			var pcreated, pupdated int64
+			if err := prows.Scan(&pid, &pcreated, &pupdated, &pdata); err != nil {
+				_ = prows.Close()
+				return nil, err
 			}
-			if json.Valid([]byte(p.Data)) {
-				partLine["data"] = json.RawMessage(p.Data)
+			partLine := map[string]any{
+				"type": "opencode_part", "id": pid, "message_id": m.ID, "session_id": sessionID,
+				"time_created": pcreated, "time_updated": pupdated,
+			}
+			if json.Valid([]byte(pdata)) {
+				partLine["data"] = json.RawMessage(pdata)
 			} else {
-				partLine["data"] = p.Data
+				partLine["data"] = pdata
 			}
 			if err := writeLine(partLine); err != nil {
+				_ = prows.Close()
 				return nil, err
 			}
 		}
-	}
-	if err := mrows.Err(); err != nil {
-		return nil, err
+		if err := prows.Err(); err != nil {
+			_ = prows.Close()
+			return nil, err
+		}
+		_ = prows.Close()
 	}
 	return buf.Bytes(), nil
 }
 
 // uploadSyntheticJSONL redacts, chunks, gzips, and uploads an in-memory JSONL
-// stream (such as an exported OpenCode session) through the standard
-// /api/v1/usage/transcript endpoint.
-func (a *archiver) uploadSyntheticJSONL(session, fileKey, kind string, gen int, raw []byte, st *archiveOpenCodeState) bool {
+// stream (such as an exported OpenCode session) through the shared
+// /api/v1/usage/transcript piece uploader, enforcing full server offset and
+// generation synchronization so gaps or partial uploads never silently drop data.
+func (a *archiver) uploadSyntheticJSONL(session, fileKey, kind string, gen int, raw []byte, st *archiveOpenCodeState) (bool, int) {
 	sum := sha256.Sum256(raw)
-	fp := fmt.Sprintf("%s#%d", hex.EncodeToString(sum[:8]), gen)
+	baseFP := hex.EncodeToString(sum[:8])
 	off := int64(0)
 	size := int64(len(raw))
-	for off < size {
+	maxLines, shrunk, restarted := 0, false, false
+	for attempts := 0; off < size; attempts++ {
+		if attempts >= archiveMaxPieces {
+			a.stop = "a file with more pieces than one pass sends; the rest goes next time"
+			return false, gen
+		}
+		if err := a.bound().Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) && !time.Now().After(a.deadline) {
+			a.stop = "stopped before the end; the rest goes next time"
+			return false, gen
+		}
 		if time.Now().After(a.deadline) || a.bound().Err() != nil {
 			a.stop = "time limit; the rest goes next time"
-			return false
+			return false, gen
 		}
 		var piece archivePiece
 		pos := off
 		for pos < size && len(piece.data) < archivePieceSize {
+			if maxLines > 0 && len(piece.lines) >= maxLines {
+				break
+			}
 			nl := bytes.IndexByte(raw[pos:], '\n')
 			if nl < 0 {
 				break
@@ -490,72 +628,40 @@ func (a *archiver) uploadSyntheticJSONL(session, fileKey, kind string, gen int, 
 		if len(piece.lines) == 0 {
 			break
 		}
-		gz := gzipBytes(piece.data)
-		for len(gz) > archiveGzipCap {
-			if len(piece.lines) == 1 {
-				piece.stubOnly(lineTooLargeStub(piece.end(off)-off), "line_too_large", piece.end(off)-off)
-			} else {
-				piece.keep((len(piece.lines) + 1) / 2)
-			}
-			gz = gzipBytes(piece.data)
+		fp := fmt.Sprintf("%s#%d", baseFP, gen)
+		ans, to, act := a.postTranscriptPiece(session, fileKey, kind, fp, off, &piece, shrunk, func(msg string) {
+			st.Held, st.HeldAt = msg, archiveNow().UnixMilli()
+		})
+		switch act {
+		case pieceUploadRetry413:
+			continue
+		case pieceUploadRetryShrink:
+			shrunk, maxLines = true, (len(piece.lines)+1)/2
+			continue
+		case pieceUploadStop:
+			return false, gen
 		}
-		to := piece.end(off)
-		rc := piece.redactions()
-		rules, _ := json.Marshal(rc.rules())
-		q := url.Values{
-			"machine": {machineName()}, "session": {session}, "file": {fileKey}, "kind": {kind},
-			"fp": {fp}, "from": {fmt.Sprint(off)}, "to": {fmt.Sprint(to)},
-			"redacted": {"1"}, "version": {version}, "redactions": {fmt.Sprint(rc.Total)}, "redaction_rules": {string(rules)},
-		}
-		ctx, cancel := a.uploadContext()
-		b, err := a.c.send(ctx, "POST", "/api/v1/usage/transcript?"+q.Encode(), "application/gzip", bytes.NewReader(gz))
-		cancel()
-		var ans struct {
-			Status string `json:"status"`
-			Have   int64  `json:"have"`
-			Gen    int    `json:"gen"`
-		}
-		if err == nil {
-			err = json.Unmarshal(b, &ans)
-		}
-		if err != nil {
-			var ae *apiError
-			switch {
-			case errors.As(err, &ae) && ae.status == http.StatusForbidden && (ae.code == "transcript_job" || ae.msg == core.TranscriptJobRefusal):
-				a.stop, a.quiet = "this is a runner job's token; the runner's own sync archives its sessions", true
-				return false
-			case errors.As(err, &ae) && ae.status == http.StatusInsufficientStorage && (ae.code == "transcript_full" || ae.msg == core.TranscriptQuotaRefusal || ae.msg == core.TranscriptDiskLowRefusal):
-				a.stop = archiveFullStop
-				a.st.FullAt = archiveNow().UnixMilli()
-				return false
-			case errors.As(err, &ae) && ae.status == http.StatusNotImplemented:
-				a.stop, a.quiet = archiveNoneStop, true
-				a.st.NoneAt = archiveNow().UnixMilli()
-				return false
-			case errors.As(err, &ae) && refusedForGood(ae.status):
-				a.drop("refused")
-				st.Held, st.HeldAt = ae.Error(), time.Now().UnixMilli()
-				return false
-			}
-			a.drop("upload_failed")
-			a.fails++
-			if a.fails >= archiveFailStop {
-				a.stop = "uploads are failing: " + err.Error()
-			}
-			return false
-		}
-		a.fails = 0
 		if ans.Status == "stored" {
-			a.res.Pieces++
-			a.res.RawBytes += int64(len(piece.data))
-			a.res.SentBytes += int64(len(gz))
-			for _, l := range piece.lines {
-				if l.reason != "" {
-					a.drop(l.reason)
-				}
-			}
+			gen = max(gen, ans.Gen)
+			off = to
+			shrunk, maxLines = false, 0
+			continue
 		}
-		off = to
+		switch {
+		case ans.Status == "behind" && ans.Have > off && ans.Have <= size && ans.Gen <= gen:
+			gen = max(gen, ans.Gen)
+			off = ans.Have
+			shrunk, maxLines = false, 0
+		case !restarted && (ans.Have > size || ans.Gen > gen || ans.Status == "gap" || ans.Have == 0):
+			gen = max(gen, ans.Gen) + 1
+			off = 0
+			restarted = true
+			shrunk, maxLines = false, 0
+			a.res.Rewritten++
+		default:
+			a.drop("out_of_sync")
+			return false, gen
+		}
 	}
-	return true
+	return true, gen
 }

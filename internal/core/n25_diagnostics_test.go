@@ -4,44 +4,58 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// When a CI snapshot rebuild fails or times out and a prior snapshot exists,
-// ciSnapshot degrades to the cached snapshot instead of timing out callers
-// like wp doctor ci (N25).
+// When a CI snapshot rebuild times out against a slow Forgejo server and a prior
+// snapshot exists, ciSnapshot degrades to the cached snapshot (without overwriting
+// it), backs off subsequent callers via retryAfter, and still honors a cancelled
+// caller context (N25).
 func TestCISnapshotFallsBackToStaleOnTimeout(t *testing.T) {
 	e := newEnv(t)
 	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
 	e.setClock(now)
 	p := e.project(e.admin, "Alpha", "kanban")
-	a, _, cl := newAPIFake(t, "forgejo")
-	f, err := e.s.CreateForge(e.ctx, e.admin, ForgeInput{Kind: ptr("forgejo"), Name: ptr("Forge"), BaseURL: ptr(a.srv.URL), Token: ptr("tok")})
+
+	var hits atomic.Int32
+	unblock := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		select {
+		case <-r.Context().Done():
+		case <-unblock:
+		}
+	}))
+	t.Cleanup(func() {
+		close(unblock)
+		srv.Close()
+	})
+
+	f, err := e.s.CreateForge(e.ctx, e.admin, ForgeInput{Kind: ptr("forgejo"), Name: ptr("Forge"), BaseURL: ptr(srv.URL), Token: ptr("tok")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.s.db.W.ExecContext(e.ctx, `INSERT INTO project_repos(project_id, forge_id, repo, created_at) VALUES (?, ?, 'acme/app', 0)`, p.ID, f.ID); err != nil {
 		t.Fatal(err)
 	}
-	e.s.Forges = cl
+	e.s.Forges = &httpForgeClient{http: srv.Client(), patient: srv.Client()}
 
 	cached := &ciSnapshot{at: now, runners: map[int64]ciRunners{}, prs: map[string]CIPRRef{}}
 	e.s.ciBoard.snap = cached
 	e.s.ciBoard.at = now.Add(-time.Hour) // stale
 
-	// Force readCI to fail via a missing-table DB error on server_settings while stale snap exists.
-	if _, err := e.s.db.W.ExecContext(e.ctx, `ALTER TABLE server_settings RENAME TO server_settings_off`); err != nil {
-		t.Fatal(err)
-	}
+	oldTimeout, oldRetry := ciReadTimeout, ciReadRetry
+	ciReadTimeout = 60 * time.Millisecond
+	ciReadRetry = 30 * time.Second
 	t.Cleanup(func() {
-		_, _ = e.s.db.W.ExecContext(context.Background(), `ALTER TABLE server_settings_off RENAME TO server_settings`)
+		ciReadTimeout, ciReadRetry = oldTimeout, oldRetry
 	})
-
-	oldTimeout := ciReadTimeout
-	ciReadTimeout = 50 * time.Millisecond
-	t.Cleanup(func() { ciReadTimeout = oldTimeout })
 
 	got, err := e.s.ciSnapshot(e.ctx)
 	if err != nil {
@@ -49,6 +63,26 @@ func TestCISnapshotFallsBackToStaleOnTimeout(t *testing.T) {
 	}
 	if got != cached {
 		t.Fatalf("expected stale cached snapshot fallback, got %p want %p", got, cached)
+	}
+	if hits.Load() == 0 {
+		t.Fatalf("expected Forgejo HTTP request to be attempted")
+	}
+
+	// Second call during retryAfter backoff returns cached immediately without hitting Forgejo again.
+	beforeHits := hits.Load()
+	got2, err := e.s.ciSnapshot(e.ctx)
+	if err != nil || got2 != cached {
+		t.Fatalf("backoff call got (%p, %v), want (%p, nil)", got2, err, cached)
+	}
+	if hits.Load() != beforeHits {
+		t.Fatalf("expected retryAfter backoff to skip Forgejo, hits went %d -> %d", beforeHits, hits.Load())
+	}
+
+	// A cancelled caller context must return context.Canceled rather than (cached, nil).
+	cctx, cancel := context.WithCancel(e.ctx)
+	cancel()
+	if _, err := e.s.ciSnapshot(cctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled ctx returned err=%v, want context.Canceled", err)
 	}
 }
 
@@ -134,6 +168,32 @@ func TestDeriveSessionFactsSkipsNonClaudeHarnesses(t *testing.T) {
 	}
 	if run.Waiting != 0 || run.Derived != 0 || run.Failed != 0 {
 		t.Fatalf("DeriveSessionFacts should skip non-Claude harnesses, got %+v", run)
+	}
+
+	// factsStatus must agree with factsWaitingSQL and not report non-Claude sessions as waiting.
+	st := &FactsStatus{}
+	if err := e.s.factsStatus(e.ctx, []factScope{{userID: e.admin.User.ID, machine: "m1", session: "opencode-s1"}}, st); err != nil {
+		t.Fatal(err)
+	}
+	if st.FilesWaiting != 0 || st.FilesArchived != 0 {
+		t.Fatalf("factsStatus for opencode session = %+v, want 0 waiting/archived Claude files", st)
+	}
+
+	// A Claude Code subagent whose agentType happens to be "codex" is still derived.
+	claudeLine := `{"type":"user","timestamp":"2026-11-28T12:00:00Z","message":{"role":"user","content":"hi"}}` + "\n"
+	if res, err := e.s.IngestTranscript(e.ctx, e.admin, TranscriptPieceIn{
+		Machine: "m1", Session: "claude-s1", File: "subagents/agent-1.jsonl", Kind: "codex",
+		FP: "fp2#0", From: 0, To: int64(len(claudeLine)), Redacted: true, Gzip: gzipTestBytes(t, []byte(claudeLine)),
+	}); err != nil || res.Status != "stored" {
+		t.Fatalf("IngestTranscript(claude subagent): %+v, %v", res, err)
+	}
+	e.setClock(base.Add(2*factsQuiet + 2*time.Minute))
+	run2, err := e.s.DeriveSessionFacts(e.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run2.Derived != 1 {
+		t.Fatalf("Claude subagent with kind=codex should still be derived, got %+v", run2)
 	}
 }
 

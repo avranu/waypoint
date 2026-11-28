@@ -397,7 +397,7 @@ func (s *Service) factsStatus(ctx context.Context, scopes []factScope, st *Facts
 	rows, err := s.db.R.QueryContext(ctx, `SELECT MAX(p.to_off), f.user_id IS NOT NULL, f.parser_version, f.derived_to, f.error IS NOT NULL, f.unknown, f.ignored
 		FROM transcript_pieces p
 		LEFT JOIN session_fact_files f ON f.user_id = p.user_id AND f.machine = p.machine AND f.session = p.session AND f.file = p.file AND f.gen = p.gen
-		WHERE `+w+`
+		WHERE `+w+` AND `+claudeTranscriptWhereSQL+`
 		GROUP BY p.user_id, p.machine, p.session, p.file, p.gen`, args...)
 	if err != nil {
 		return err

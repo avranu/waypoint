@@ -628,11 +628,12 @@ type DelegationArmReport struct {
 	N        float64 `json:"n"`
 	// Effect on cost against nothing said (log; -0.1 is about 10% less),
 	// its 90% interval, and as text.
-	Effect float64 `json:"effect"`
-	Lo     float64 `json:"lo"`
-	Hi     float64 `json:"hi"`
-	Text   string  `json:"text,omitempty"`
-	Out    string  `json:"out,omitempty"`
+	Effect       float64 `json:"effect"`
+	Lo           float64 `json:"lo"`
+	Hi           float64 `json:"hi"`
+	Text         string  `json:"text,omitempty"`
+	Inconclusive bool    `json:"inconclusive,omitempty"`
+	Out          string  `json:"out,omitempty"`
 	DelegationFigures
 }
 
@@ -666,8 +667,8 @@ type DelegationGuard struct {
 	Label        string  `json:"label"`
 	Arm          string  `json:"arm"`
 	N            float64 `json:"n"`
-	Lo           float64 `json:"lo,omitempty"`
-	Hi           float64 `json:"hi,omitempty"`
+	Lo           float64 `json:"lo"`
+	Hi           float64 `json:"hi"`
 	Text         string  `json:"text"`
 	Worse        float64 `json:"p_worse"`
 	Inconclusive bool    `json:"inconclusive,omitempty"`
@@ -727,6 +728,7 @@ func (p *delegPolicy) report(now time.Time) *DelegationReport {
 			a.Effect, _ = p.primary.effect(j)
 			a.Lo, a.Hi = p.primary.interval(j)
 			a.Text = prepEffectText(&delegPrimary, a.Effect, a.Lo, a.Hi)
+			a.Inconclusive = delegInconclusiveNote(a.N, a.Lo, a.Hi) != ""
 			if _, ok := delegArmDef0(arm); !ok && a.Out == "" {
 				a.Out = "no longer drawn"
 			}
@@ -876,11 +878,15 @@ func (r *DelegationReport) String() string {
 func delegInconclusiveNote(n, lo, hi float64) string {
 	small := n < prepGuardMin
 	crosses := lo <= 0 && hi >= 0
+	nText := fmt.Sprintf("%.0f", n)
+	if small && math.Round(n) >= prepGuardMin {
+		nText = fmt.Sprintf("%.1f", math.Floor(n*10)/10)
+	}
 	switch {
 	case small && crosses:
-		return fmt.Sprintf("n=%.0f < %.0f, CI crosses 0", n, prepGuardMin)
+		return fmt.Sprintf("n=%s < %.0f, CI crosses 0", nText, prepGuardMin)
 	case small:
-		return fmt.Sprintf("n=%.0f < %.0f", n, prepGuardMin)
+		return fmt.Sprintf("n=%s < %.0f", nText, prepGuardMin)
 	case crosses:
 		return "CI crosses 0"
 	default:
