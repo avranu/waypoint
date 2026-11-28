@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"slices"
 	"strings"
 	"sync"
 
@@ -154,8 +153,8 @@ func noteSession(t *kernel.Tx, e *Event) {
 // maxAutomationDepth stops automations that trigger each other forever.
 const maxAutomationDepth = 5
 
-// dispatch fans committed events out to live subscribers, notifications,
-// automations and webhooks.
+// dispatch publishes committed events on the kernel's bus; what reacts to
+// them, and in what order, is subscriptionPlan (subscriptions.go).
 func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 	if len(events) == 0 {
 		return
@@ -170,103 +169,7 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 		ctx, span = tracing.Start(ctx, "dispatch", attribute.StringSlice("waypoint.events", kinds))
 		defer span.End()
 	}
-	for _, e := range events {
-		if hint[*storedNotice](e) != nil {
-			s.deliverNotification(ctx, hint[*storedNotice](e))
-		}
-	}
-	events = slices.DeleteFunc(slices.Clone(events), func(e *Event) bool { return hint[*storedNotice](e) != nil })
-	if len(events) == 0 {
-		return
-	}
-	for _, e := range events {
-		s.Hub.Publish(e)
-		s.prWait.wake(e)
-		s.onStackParentMerged(ctx, e)
-	}
-	events = slices.DeleteFunc(slices.Clone(events), func(e *Event) bool { return e.Merged || e.Quiet })
-	events = slices.DeleteFunc(slices.Clone(events), func(e *Event) bool { return e.Draft })
-	if len(events) == 0 {
-		return
-	}
-	for _, e := range events {
-		s.notifyFor(ctx, actor, e)
-	}
-	for _, e := range events {
-		if e.Kind == EvPRUpdated {
-			s.renumberOnPR(ctx, e) // numbered files that clash (WP-1815)
-		}
-		if e.Kind == EvRepoPushed {
-			s.onRepoPushed(ctx, e)
-			s.onKitPush(ctx, e)
-		}
-		if e.Kind == EvAgentsResumed {
-			if uid, ok := e.Data["user"].(int64); ok {
-				s.resumeSessions(ctx, uid)
-			}
-		}
-		if e.Kind == EvUserDeleted {
-			s.dropUserTranscripts(e)
-		}
-		if e.Kind == EvKitSourceSet {
-			s.goBG(func() { s.RefreshKit(withoutLineLocks(ctx)) })
-		}
-		if e.Kind == EvReviewLoopRecorded {
-			s.goBG(func() { s.checkReviewHealth(withoutLineLocks(ctx), e.ProjectID) })
-		}
-		if hint[*pullRef](e) != nil {
-			s.goBG(func() { s.urgentFromLink(withoutLineLocks(ctx), e) })
-		}
-		if j := hint[*permRuleJob](e); j != nil {
-			s.addPermissionRule(ctx, actor, j)
-		}
-		if e.Kind == EvProjectUpdated && e.Field == "auto_estimate" && e.New == "on" {
-			if p, err := s.projectByID(ctx, s.db.R, e.ProjectID); err == nil && p.Settings.AutoEstimate {
-				s.backfillEstimates(ctx, p)
-			}
-		}
-		if e.Kind == EvIssueCreated && (actor == nil || actor.Automation == nil || actor.Automation.ID > 0) && actor.Allows(PermAIUse) {
-			s.autoEstimate(ctx, e)
-			s.autoTitle(ctx, e)
-		}
-		if e.Kind == EvIssueCreated {
-			s.autoRelate(ctx, e)
-		}
-		if e.Kind == EvExternalPRMerged {
-			s.goBG(func() { s.followUpsByFiles(withoutLineLocks(ctx), e) })
-		}
-		s.autoScreen(e)
-		s.deliverWebhooks(ctx, e)
-		if e.Kind == EvIssueStatus && (actor == nil || !actor.ForgeSync) {
-			s.pushIssueState(ctx, e)
-		}
-		if e.Kind == EvIssueCommented {
-			s.pushComment(ctx, e)
-		}
-		if hint[*forgeCommentChange](e) != nil && (actor == nil || !actor.ForgeSync) {
-			s.pushCommentChange(ctx, e)
-		}
-		if j := hint[*repoHookJob](e); j != nil {
-			s.goBG(func() { s.runRepoHook(withoutLineLocks(ctx), j) })
-		}
-		s.onPRAudit(ctx, e)
-		s.onBabysitEvent(ctx, e)
-		s.onParkAnswered(ctx, e)
-		s.onHeldAnswered(ctx, e)
-		s.crossFiledEvent(ctx, e)
-		s.onLeftoverEvent(ctx, e)
-		s.onWorkLogEvent(ctx, e)
-		s.onCheckSettled(ctx, e)
-		s.onReviewAudit(ctx, e)
-		s.onFanoutEvent(ctx, e)
-		s.onGoalDriftEvent(ctx, e)
-		s.onMergeOrderEvent(ctx, e)
-		s.onObjectiveEvent(ctx, e)
-	}
-	s.afterDispatch(ctx, actor, events)
-	for _, e := range events {
-		s.runAutomations(ctx, actor, e)
-	}
+	s.k.Publish(ctx, actor, events)
 }
 
 // Hub fans events out to connected clients (server-sent events). Each

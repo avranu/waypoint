@@ -30,6 +30,8 @@ type Kernel struct {
 	clock     func() time.Time
 	persisted map[string]bool
 	stamps    []func(t *Tx, e *Event)
+	stages    []*Stage
+	batch     []BatchHandler
 }
 
 // New returns a Kernel over d, on the real clock.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -166,10 +167,13 @@ func TestPartDropsEventsAndWritesOfAFailedPart(t *testing.T) {
 	var seen []*Event
 	k.AfterCommit = func(_ context.Context, _ *Actor, evs []*Event) { seen = evs }
 	boom := errors.New("boom")
+	var ran []string
 	err := k.Write(context.Background(), SystemActor(), func(tx *Tx) error {
 		tx.Emit(&Event{Kind: "kept"})
+		tx.Defer(func() { ran = append(ran, "kept") })
 		if err := tx.Part(tx.Ctx, func() error {
 			tx.Emit(&Event{Kind: "dropped"})
+			tx.Defer(func() { ran = append(ran, "dropped") })
 			return boom
 		}); !errors.Is(err, boom) {
 			t.Errorf("part err = %v", err)
@@ -181,6 +185,9 @@ func TestPartDropsEventsAndWritesOfAFailedPart(t *testing.T) {
 	}
 	if len(seen) != 1 || seen[0].Kind != "kept" || countEvents(t, k, "dropped") != 0 || countEvents(t, k, "kept") != 1 {
 		t.Errorf("seen %+v, dropped rows %d", seen, countEvents(t, k, "dropped"))
+	}
+	if !slices.Equal(ran, []string{"kept"}) {
+		t.Errorf("deferred work ran %v, want only what was queued outside the part", ran)
 	}
 }
 
