@@ -81,7 +81,7 @@ func (s *Service) reviveHeldRounds(ctx context.Context) {
 	_ = rows.Close()
 	for _, l := range list {
 		x, err := scanSession(s.db.R.QueryRowContext(ctx, `SELECT `+sessionCols+` FROM agent_sessions s WHERE s.id = ?`, l.session), now)
-		if err != nil || x.State == SessionWorking {
+		if err != nil || (x.State == SessionWorking && !cliPolledSession(x)) {
 			continue
 		}
 		if err := s.write(ctx, SystemActor(), func(t *tx) error {
@@ -728,6 +728,18 @@ func heldGoesOnNotice(project string, keys []string, steps []int64, held []bool)
 func noRunnerSince(created int64, r *Runner) int64 {
 	if r != nil && !r.Online && r.LastSeenAt != nil {
 		return max(created, r.LastSeenAt.UnixMilli())
+	}
+	return created
+}
+
+// noAuditRunnerSince is noRunnerSince for CLI-polled sessions, which can use
+// any audit-capable runner of the user rather than only the local machine's.
+func (s *Service) noAuditRunnerSince(ctx context.Context, userID, created int64) int64 {
+	var last sql.NullInt64
+	_ = s.db.R.QueryRowContext(ctx, `SELECT MAX(last_seen_at) FROM runners WHERE owner_id = ? AND features LIKE ?`,
+		userID, `%"`+FeatureAudit+`"%`).Scan(&last)
+	if last.Valid && last.Int64 > created {
+		return last.Int64
 	}
 	return created
 }

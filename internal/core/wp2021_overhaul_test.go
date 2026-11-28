@@ -42,7 +42,7 @@ func TestBabysitDefersToLiveSessionAndResumesAfterBound(t *testing.T) {
 	// A repeat deferral mid-window where the session title changes must NOT
 	// reset WaitSince and extend the 20m defer cap.
 	mid := be.s.now().Add(12 * time.Minute)
-	be.s.now = func() time.Time { return mid }
+	be.setClock(mid)
 	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE agent_sessions SET title = 'Still fixing PR 7', last_seen_at = ? WHERE cli_id = 'live-1'`, mid.UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestBabysitDefersToLiveSessionAndResumesAfterBound(t *testing.T) {
 	// eventually take over rather than wedging indefinitely.
 	be.sg.noRetry = true
 	later := cur.WaitSince.Add(liveSessionDeferMax + time.Minute)
-	be.s.now = func() time.Time { return later }
+	be.setClock(later)
 	if _, err := be.s.db.W.ExecContext(be.ctx, `UPDATE agent_sessions SET last_seen_at = ? WHERE cli_id = 'live-1'`, later.UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
@@ -76,10 +76,11 @@ func TestBabysitDefersToLiveSessionAndResumesAfterBound(t *testing.T) {
 	}
 }
 
-// Pillar A regression: a session that arms and starts babysitting (MergePR
-// records a pr_claims row for b.sessionID) must NOT defer its own babysitter
-// when it isn't actively checked out on the PR's branch, whereas a DIFFERENT
-// live session holding a pr_claims row still defers it.
+// Pillar A regression: a session that arms (MergePR records a pr_claims row
+// for the arming session and ensures an armed babysit with that session_id)
+// must NOT defer its own babysitter when it isn't actively checked out on the
+// PR's branch, whereas a DIFFERENT live session holding a pr_claims row still
+// defers it.
 func TestBabysitDoesNotDeferToOwnShippingClaim(t *testing.T) {
 	be := newBabysitEnv(t)
 	be.runnerOnline()
@@ -87,7 +88,8 @@ func TestBabysitDoesNotDeferToOwnShippingClaim(t *testing.T) {
 	if _, err := be.s.MergePR(be.ctx, be.agent, pr.ID, MergeInput{WhenReady: true, Style: "merge"}); err != nil {
 		t.Fatal(err)
 	}
-	b := be.start(pr)
+	// Do NOT call be.start(pr): verify the arm-started babysit recorded the
+	// arming session_id and does not self-defer to its own pr_claims row.
 	be.sg.noRetry = true
 	be.sg.setChecks(pr.HeadSHA, CommitCheck{Name: "test", State: CheckFailed})
 	if err := be.s.refreshHead(be.ctx, be.f, "me/app", pr.HeadSHA); err != nil {
@@ -98,8 +100,38 @@ func TestBabysitDoesNotDeferToOwnShippingClaim(t *testing.T) {
 	if err != nil || cur == nil {
 		t.Fatalf("activeBabysit: %v, %v", cur, err)
 	}
-	if cur.ID != b.ID || cur.Round == 0 {
-		t.Fatalf("own shipping claim blocked babysit round: state=%q wait=%q round=%d", cur.State, cur.Wait, cur.Round)
+	if cur.Round == 0 {
+		t.Fatalf("own shipping claim blocked arm-started babysit round: state=%q wait=%q round=%d", cur.State, cur.Wait, cur.Round)
+	}
+
+	// A DIFFERENT live session holding a pr_claims row on a PR still defers babysit.
+	be2 := newBabysitEnv(t)
+	be2.runnerOnline()
+	pr2 := be2.open()
+	b2 := be2.start(pr2)
+	now := be2.s.nowMS()
+	res, err := be2.s.db.W.ExecContext(be2.ctx, `INSERT INTO agent_sessions(user_id, machine, cli_id, cli, agent, title, repo, branch, state, started_at, last_seen_at)
+		VALUES (?, 'devbox', 'other-live', 'claude', 'anthropic/claude-code', 'Other session', '', '', 'working', ?, ?)`,
+		be2.admin.User.ID, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSID, _ := res.LastInsertId()
+	if _, err := be2.s.db.W.ExecContext(be2.ctx, `INSERT INTO pr_claims(pull_id, session_id, claimed_at, expires_at) VALUES (?, ?, ?, ?)`,
+		pr2.ID, otherSID, now, now+ClaimLease.Milliseconds()); err != nil {
+		t.Fatal(err)
+	}
+	be2.sg.setChecks(pr2.HeadSHA, CommitCheck{Name: "test", State: CheckFailed})
+	if err := be2.s.refreshHead(be2.ctx, be2.f, "me/app", pr2.HeadSHA); err != nil {
+		t.Fatal(err)
+	}
+	be2.s.babysitStep(be2.ctx, pr2.ID, false)
+	cur2, err := be2.s.activeBabysit(be2.ctx, be2.s.db.R, pr2.ID)
+	if err != nil || cur2 == nil {
+		t.Fatalf("activeBabysit(pr2): %v, %v", cur2, err)
+	}
+	if cur2.ID != b2.ID || cur2.Round != 0 || !strings.HasPrefix(cur2.Wait, liveSessionWaitPrefix) {
+		t.Fatalf("expected different live session pr_claims to defer babysit, got state=%q wait=%q round=%d", cur2.State, cur2.Wait, cur2.Round)
 	}
 }
 
@@ -233,6 +265,15 @@ func TestConcurrentSiblingSkipsDuplicatePanelThenReusesPrior(t *testing.T) {
 	if got2.Helpers != nil && len(got2.Helpers.Panel) != 0 {
 		t.Fatalf("second concurrent sibling duplicated cold panel: %+v", got2.Helpers)
 	}
+	// Verify the stripped input was persisted in SQLite so a failed j1 does not
+	// cause j3 to falsely think j2 is running the panel.
+	var j2InputDB string
+	if err := fx.s.db.R.QueryRow(`SELECT input FROM runner_jobs WHERE id = ?`, j2.ID).Scan(&j2InputDB); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(j2InputDB, `"panel"`) {
+		t.Fatalf("j2 runner_jobs.input in SQLite still contains stripped panel: %s", j2InputDB)
+	}
 
 	// Once j1 records a done panel run, a later sibling/retry gets Prior.
 	fx.s.requeueAudit(fx.ctx, &CodeAudit{ID: first, Status: AuditRunning, HelperRuns: []AuditHelperRun{
@@ -319,6 +360,19 @@ func TestCancelledAuditPreservesLateHelperRuns(t *testing.T) {
 	if len(prior) != 1 || prior[0].Check != "goals" || len(prior[0].Leads) != 1 || !prior[0].Leads[0].Confirmed {
 		t.Fatalf("prior = %+v, want saved helper run from cancelled job", prior)
 	}
+
+	// Calling FinishRunnerJob again on the same cancelled job must be idempotent
+	// (no duplicate audit_helper_runs rows or doubled cost_usd).
+	if _, err := fx.s.FinishRunnerJob(fx.ctx, fx.admin, j.ID, RunnerFinish{State: "cancelled", Result: resJSON}); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := fx.s.db.R.QueryRow(`SELECT COUNT(*) FROM audit_helper_runs WHERE audit_id = ?`, auditID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("duplicate FinishRunnerJob inserted %d audit_helper_runs rows, want 1", count)
+	}
 }
 
 // Pillar E (WP-2021): non-Claude harnesses (Antigravity, Codex, OpenCode,
@@ -393,5 +447,39 @@ func TestCLIPolledSessionGetsAdversarialReviewWithoutTmux(t *testing.T) {
 	}
 	if err := a.s.AckShipNews(a.ctx, ag, "antigravity-thr_42", "laptop", task.Key, news.IDs); err != nil {
 		t.Fatal(err)
+	}
+
+	// Ticking autopilot past reviewAuditRecheck (2m) while the CLI-polled agent
+	// is still addressing findings must keep the round Running and NOT fail or
+	// ship the PR unreviewed.
+	a.tick(reviewAuditRecheck + time.Minute)
+	a.tick(10 * time.Minute)
+	var roundState string
+	if err := a.s.db.R.QueryRow(`SELECT state FROM work_log WHERE kind = 'review' ORDER BY id DESC LIMIT 1`).Scan(&roundState); err != nil {
+		t.Fatal(err)
+	}
+	if roundState != RoundRunning {
+		t.Fatalf("after 13m of CLI-polled work, round state = %q, want %q", roundState, RoundRunning)
+	}
+	if created, _, _, _ := g.snapshot(); len(created) != 0 {
+		t.Fatalf("PR opened unreviewed while CLI-polled session was addressing findings: %+v", created)
+	}
+
+	// EnsureCLISession must refresh last_seen_at after the 5m cache TTL so long-running
+	// non-Claude sessions never decay to idle/ended.
+	var beforeSeen int64
+	if err := a.s.db.R.QueryRow(`SELECT last_seen_at FROM agent_sessions WHERE id = ?`, sid).Scan(&beforeSeen); err != nil {
+		t.Fatal(err)
+	}
+	gotSID := a.s.EnsureCLISession(a.ctx, ag, "antigravity-thr_42", "laptop", "antigravity", "/repo")
+	if gotSID != sid {
+		t.Fatalf("EnsureCLISession refresh returned %d, want %d", gotSID, sid)
+	}
+	var afterSeen int64
+	if err := a.s.db.R.QueryRow(`SELECT last_seen_at FROM agent_sessions WHERE id = ?`, sid).Scan(&afterSeen); err != nil {
+		t.Fatal(err)
+	}
+	if afterSeen <= beforeSeen {
+		t.Fatalf("EnsureCLISession did not refresh last_seen_at: before=%d after=%d", beforeSeen, afterSeen)
 	}
 }

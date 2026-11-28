@@ -20,7 +20,7 @@ const maxCrossProjectReason = 500
 // outside a session (Actor.Session 0) neither claim nor contest one.
 func (s *Service) claimPR(ctx context.Context, actor *Actor, prID int64) string {
 	if actor == nil || actor.Session == 0 {
-		return ""
+		return s.babysitActiveWarning(ctx, s.db.R, prID)
 	}
 	warning := ""
 	err := s.write(ctx, actor, func(t *tx) error {

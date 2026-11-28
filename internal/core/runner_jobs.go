@@ -964,6 +964,8 @@ func (s *Service) FinishRunnerJob(ctx context.Context, actor *Actor, id int64, i
 			// When Waypoint cancels or expires a running audit job before
 			// the runner reports back, still preserve completed Haiku helper
 			// runs so retries and sibling audits can reuse them (WP-1358, WP-2021).
+			// Gate atomically on an empty runner_jobs.result so retries or
+			// previously settled jobs are idempotent and never double-insert.
 			if (cur == "cancelled" || cur == "expired") && kind == JobAudit && len(in.Result) > 0 {
 				var source string
 				var sid int64
@@ -972,11 +974,19 @@ func (s *Service) FinishRunnerJob(ctx context.Context, actor *Actor, id int64, i
 					var m map[string]any
 					if json.Unmarshal(in.Result, &m) == nil {
 						if runs := helperRunsOf(m); len(runs) > 0 {
-							if err := s.insertHelperRuns(ctx, t, sid, runs, false, s.nowMS()); err != nil {
+							res, err := t.ExecContext(ctx, `UPDATE runner_jobs SET result = ?
+								WHERE id = ? AND state IN ('cancelled', 'expired') AND (result IS NULL OR result = '' OR result = '{}')`,
+								string(in.Result), id)
+							if err != nil {
 								return err
 							}
-							savedHelpers = true
-							t.emit(&Event{Kind: EvReviewLoopRecorded, ProjectID: project.Int64})
+							if n, _ := res.RowsAffected(); n > 0 {
+								if err := s.insertHelperRuns(ctx, t, sid, runs, false, s.nowMS()); err != nil {
+									return err
+								}
+								savedHelpers = true
+								t.emit(&Event{Kind: EvReviewLoopRecorded, ProjectID: project.Int64})
+							}
 						}
 					}
 				}

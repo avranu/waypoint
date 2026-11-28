@@ -627,8 +627,12 @@ func dedupPanelLeads(runs []AuditHelperRun) []panelProblem {
 						continue
 					}
 					p.checks = append(p.checks, r.Check)
-					if severityRank(sev) < severityRank(p.sev) {
-						p.sev = sev
+					if p.line == 0 && line > 0 {
+						p.line = line
+					}
+					normSev := strings.ToLower(strings.TrimSpace(sev))
+					if severityRank(normSev) < severityRank(strings.ToLower(strings.TrimSpace(p.sev))) {
+						p.sev = normSev
 					}
 					if len(problem) > len(p.problem) {
 						p.title, p.problem, p.gist = title, problem, gist

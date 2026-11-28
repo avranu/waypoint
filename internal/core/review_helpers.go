@@ -273,14 +273,13 @@ func (s *Service) priorPanel(ctx context.Context, auditID int64) []AuditHelperRu
 	return s.roundPanelRuns(ctx, round)
 }
 
-// roundPanelSiblingRunning reports whether another reviewer audit of the same
-// review round currently has a running job with a Haiku panel attached
-// (WP-1544, WP-2021). Used at claim time (withPriorPanel) so a concurrent
-// sibling (such as an early or fallback reviewer racing the primary audit)
-// runs its reviewer immediately without duplicating the cold Haiku panel.
-func (s *Service) roundPanelSiblingRunning(ctx context.Context, auditID int64) (bool, error) {
+// roundPanelSiblingRunningQ reports whether another reviewer audit of the same
+// review round currently has a running job (excluding excludeJobID) with a
+// Haiku panel attached (WP-1544, WP-2021). Accepts a queryer so claimRunnerJob
+// can run it atomically inside its write transaction.
+func (s *Service) roundPanelSiblingRunningQ(ctx context.Context, q queryer, auditID, excludeJobID int64) (bool, error) {
 	var key string
-	if err := s.db.R.QueryRowContext(ctx, `SELECT coalesce(request_key, '') FROM code_audits WHERE id = ?`, auditID).Scan(&key); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT coalesce(request_key, '') FROM code_audits WHERE id = ?`, auditID).Scan(&key); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
 		}
@@ -292,12 +291,12 @@ func (s *Service) roundPanelSiblingRunning(ctx context.Context, auditID int64) (
 	}
 	num := strconv.FormatInt(round, 10)
 	var siblingRunning bool
-	err := s.db.R.QueryRowContext(ctx, `SELECT EXISTS (
+	err := q.QueryRowContext(ctx, `SELECT EXISTS (
 		SELECT 1 FROM code_audits a
 		JOIN runner_jobs j ON j.id = a.job_id
-		WHERE a.request_key IN (?, ?, ?) AND a.id != ? AND j.state = 'running'
+		WHERE a.request_key IN (?, ?, ?) AND a.id != ? AND j.id != ? AND j.state = 'running'
 			AND coalesce(json_extract(j.input, '$.helpers.panel'), '') NOT IN ('', '[]')
-	)`, "review-round:"+num, "review-round:"+num+":sonnet", "review-round:"+num+":other", auditID).Scan(&siblingRunning)
+	)`, "review-round:"+num, "review-round:"+num+":sonnet", "review-round:"+num+":other", auditID, excludeJobID).Scan(&siblingRunning)
 	return siblingRunning, err
 }
 

@@ -348,14 +348,19 @@ func (s *Service) EnsureCLISession(ctx context.Context, actor *Actor, cliID, mac
 	if len(cwd) > 500 {
 		cwd = ""
 	}
-	if id := s.SessionForHeader(ctx, actor.User.ID, cliID, machine); id != 0 {
-		return id
+	key := fmt.Sprintf("%d|%s|%s", actor.User.ID, machine, cliID)
+	now := s.now()
+	s.sessCache.mu.Lock()
+	e, ok := s.sessCache.m[key]
+	s.sessCache.mu.Unlock()
+	if ok && now.Before(e.until) {
+		return e.id
 	}
 	var id int64
-	at := s.nowMS()
+	at := now.UnixMilli()
 	err := s.write(ctx, actor, func(t *tx) error {
 		if err := t.QueryRowContext(ctx, `SELECT id FROM agent_sessions WHERE user_id = ? AND machine = ? AND cli_id = ?`, actor.User.ID, machine, cliID).Scan(&id); err == nil && id != 0 {
-			_, _ = t.ExecContext(ctx, `UPDATE agent_sessions SET last_seen_at = max(last_seen_at, ?), ended_at = NULL WHERE id = ?`, at, id)
+			_, _ = t.ExecContext(ctx, `UPDATE agent_sessions SET last_seen_at = max(last_seen_at, ?), ended_at = NULL, state = 'working' WHERE id = ?`, at, id)
 			return nil
 		}
 		res, err := t.ExecContext(ctx, `INSERT INTO agent_sessions(user_id, machine, cli_id, cli, agent, cwd, state, started_at, last_seen_at, kind, started_server, started_wp)
@@ -370,12 +375,11 @@ func (s *Service) EnsureCLISession(ctx context.Context, actor *Actor, cliID, mac
 	if err != nil || id == 0 {
 		return s.SessionForHeader(ctx, actor.User.ID, cliID, machine)
 	}
-	key := fmt.Sprintf("%d|%s|%s", actor.User.ID, machine, cliID)
 	s.sessCache.mu.Lock()
 	if s.sessCache.m == nil || len(s.sessCache.m) > 1000 {
 		s.sessCache.m = map[string]sessionCacheEntry{}
 	}
-	s.sessCache.m[key] = sessionCacheEntry{id: id, until: s.now().Add(5 * time.Minute)}
+	s.sessCache.m[key] = sessionCacheEntry{id: id, until: now.Add(5 * time.Minute)}
 	s.sessCache.mu.Unlock()
 	return id
 }

@@ -1021,8 +1021,19 @@ func (s *Service) ensureArmedBabysit(ctx context.Context, pr *PullRequest) bool 
 	return s.babysitArmedAs(ctx, pr, s.babysitOwnerFor(ctx, pr))
 }
 
+// ensureArmedBabysitBy is ensureArmedBabysit recording the arming session's ID
+// on the newly created babysit (while keeping started_by/started_agent as system
+// automation) so the arming session's own pr_claims row doesn't self-defer it.
+func (s *Service) ensureArmedBabysitBy(ctx context.Context, actor *Actor, pr *PullRequest) bool {
+	return s.babysitArmedWithActor(ctx, actor, pr, s.babysitOwnerFor(ctx, pr))
+}
+
 // babysitArmedAs is ensureArmedBabysit on owner's runner (0: nobody's).
 func (s *Service) babysitArmedAs(ctx context.Context, pr *PullRequest, owner int64) bool {
+	return s.babysitArmedWithActor(ctx, nil, pr, owner)
+}
+
+func (s *Service) babysitArmedWithActor(ctx context.Context, actor *Actor, pr *PullRequest, owner int64) bool {
 	if pr.ArmedAt == nil || (pr.State != "open" && pr.State != "draft") || (pr.headRepo != "" && !strings.EqualFold(pr.headRepo, pr.Repo)) {
 		return false
 	}
@@ -1032,7 +1043,11 @@ func (s *Service) babysitArmedAs(ctx context.Context, pr *PullRequest, owner int
 	if owner == 0 || s.babysitGate(ctx, pr) != "" {
 		return false
 	}
-	if _, err := s.startBabysit(ctx, SystemActor(), pr, owner, "", "automation", false, false); err != nil {
+	sys := *SystemActor()
+	if actor != nil && actor.Session != 0 {
+		sys.Session = actor.Session
+	}
+	if _, err := s.startBabysit(ctx, &sys, pr, owner, "", "automation", false, false); err != nil {
 		s.log.WarnContext(ctx, "babysit an armed pull request", "repo", pr.Repo, "number", pr.Number, "err", err)
 		return false
 	}
@@ -1109,7 +1124,15 @@ func (s *Service) babysitStepHeld(ctx context.Context, prID int64, sync bool) {
 	}
 	if pr.HeadSHA != "" && !sameSHA(pr.HeadSHA, b.HeadSHA) {
 		s.promoteFixing(ctx, pr)
-		if err := s.setBabysit(ctx, b, map[string]any{"head_sha": pr.HeadSHA}); err != nil {
+		patch := map[string]any{"head_sha": pr.HeadSHA}
+		if strings.HasPrefix(b.Wait, liveSessionWaitPrefix) {
+			// A new push resets the per-head live-session deferral budget (WP-2021).
+			patch["wait"] = ""
+			patch["wait_at"] = int64(0)
+			b.Wait = ""
+			b.WaitSince = time.Time{}
+		}
+		if err := s.setBabysit(ctx, b, patch); err != nil {
 			if readFault(err) {
 				s.log.WarnContext(ctx, "record a push on a babysit", "pr", prID, "err", err)
 			}
@@ -1419,6 +1442,7 @@ func (s *Service) liveSessionOnPR(ctx context.Context, b *Babysit, pr *PullReque
 					SELECT 1 FROM agent_runs r
 					JOIN external_links el ON el.issue_id = r.issue_id
 					WHERE r.session_id = x.id AND r.ended_at IS NULL
+						AND r.session_id != ?
 						AND ((el.kind = 'pull' AND lower(el.repo) = lower(?) AND el.number = ?) OR el.url = ?)
 				)
 				OR EXISTS (
@@ -1429,7 +1453,7 @@ func (s *Service) liveSessionOnPR(ctx context.Context, b *Babysit, pr *PullReque
 				)
 			)
 		ORDER BY x.last_seen_at DESC LIMIT 5`,
-		cutoff, pr.HeadRef, pr.Repo, pr.Repo, pr.Number, pr.URL, pr.ID, now.UnixMilli(), b.sessionID, pr.HeadRef)
+		cutoff, pr.HeadRef, pr.Repo, b.sessionID, pr.Repo, pr.Number, pr.URL, pr.ID, now.UnixMilli(), b.sessionID, pr.HeadRef)
 	if err != nil {
 		return "", false
 	}
