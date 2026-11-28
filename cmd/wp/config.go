@@ -531,6 +531,8 @@ func detectAgent(getenv func(string) string) string {
 	switch {
 	case getenv("CLAUDECODE") != "":
 		return "anthropic/claude-code"
+	case getenv("ANTIGRAVITY_AGENT") != "" || getenv("ANTIGRAVITY_CONVERSATION_ID") != "":
+		return "google/antigravity"
 	case getenv("GEMINI_CLI") != "":
 		return "google/gemini-cli"
 	case getenv("OPENCODE") != "":

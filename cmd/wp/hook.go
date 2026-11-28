@@ -106,9 +106,9 @@ var claudeHooks = []claudeHook{
 const hookMarker = "hook claude-"
 
 var hookCmd = &command{
-	name: "hook", group: "Hooks", args: "claude [--uninstall]",
-	summary:  "install the Claude Code hooks",
-	examples: []string{"wp hook claude", "wp hook claude --uninstall"},
+	name: "hook", group: "Hooks", args: "claude|antigravity [--uninstall]",
+	summary:  "install coding-agent hooks (Claude Code, Antigravity)",
+	examples: []string{"wp hook claude", "wp hook antigravity", "wp hook claude --uninstall"},
 }
 
 func init() {
@@ -193,6 +193,52 @@ report. Without a server answer a prompt reads as a person's. --uninstall remove
 			run: func(c *cli, args []string) error {
 				hookClaudeResume(c, os.Stdin)
 				c.refreshHooks()
+				return nil
+			}},
+		{name: "antigravity", args: "[--uninstall] [--no-prompts]", summary: "install Antigravity hooks for sessions, guards and usage",
+			about: `Adds a "waypoint" hook group to ~/.gemini/config/hooks.json (a backup is kept)
+and upgrades an older install; wp setup does this too. Other hook groups in
+hooks.json are left alone. --uninstall removes the Waypoint hook group.`,
+			examples: []string{"wp hook antigravity", "wp hook antigravity --uninstall"}, run: hookAntigravity},
+		{name: "antigravity-event", hidden: true, summary: "the session hooks (run by Antigravity)",
+			run: func(c *cli, args []string) error {
+				fs := c.flags()
+				noPrompts := fs.Bool("no-prompts", false, "")
+				if _, err := c.parse(fs, args); err != nil {
+					_, _ = c.out.Write([]byte("{}\n"))
+					return nil
+				}
+				hookAntigravityEvent(c, os.Stdin, c.out, *noPrompts)
+				return nil
+			}},
+		{name: "antigravity-guard", hidden: true, summary: "the unattended-session guard (run by Antigravity)",
+			run: func(c *cli, args []string) error {
+				hookAntigravityGuard(c, os.Stdin, c.out)
+				return nil
+			}},
+		{name: "antigravity-nudge", hidden: true, summary: "the PreToolUse nudge (run by Antigravity)",
+			run: func(c *cli, args []string) error {
+				hookAntigravityNudge(c, os.Stdin, c.out)
+				return nil
+			}},
+		{name: "antigravity-burn", hidden: true, summary: "the burn meter (run by Antigravity)",
+			run: func(c *cli, args []string) error {
+				hookAntigravityBurn(c, os.Stdin, c.out)
+				return nil
+			}},
+		{name: "antigravity-report", hidden: true, summary: "the task usage report hook (run by Antigravity)",
+			run: func(c *cli, args []string) error {
+				hookAntigravityReport(c, os.Stdin, c.out)
+				return nil
+			}},
+		{name: "antigravity-resume", hidden: true, summary: "the prompt hook (run by Antigravity): restarts the task's clock",
+			run: func(c *cli, args []string) error {
+				hookAntigravityResume(c, os.Stdin, c.out)
+				return nil
+			}},
+		{name: "antigravity-sync", hidden: true, summary: "the background usage sync hook (run by Antigravity)",
+			run: func(c *cli, args []string) error {
+				hookAntigravitySync(c, os.Stdin, c.out)
 				return nil
 			}},
 	}
@@ -684,6 +730,32 @@ func readTranscriptUsage(r io.ReadSeeker, offset int64, seen []string, since tim
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 && line[len(line)-1] == '\n' {
 			u.offset += int64(len(line))
+			if isAntigravityTranscriptLine(line) {
+				var agy agyTranscriptLine
+				if json.Unmarshal(line, &agy) == nil && agy.Type == "PLANNER_RESPONSE" {
+					ts, _ := time.Parse(time.RFC3339Nano, agy.CreatedAt)
+					if n := agy.InputTokens + agy.CacheReadTokens; n > 0 {
+						u.context = n
+					}
+					if (agy.InputTokens+agy.OutputTokens+agy.ThinkingTokens) > 0 && (ts.IsZero() || !ts.Before(since)) {
+						id := fmt.Sprintf("agy-step-%d", agy.StepIndex)
+						if !known[id] {
+							if _, ok := latest[id]; !ok {
+								order = append(order, id)
+							}
+							latest[id] = usage{
+								Input:     agy.InputTokens,
+								Output:    agy.OutputTokens + agy.ThinkingTokens,
+								CacheRead: agy.CacheReadTokens,
+							}
+						}
+						if agy.Model != "" {
+							u.model = agy.Model
+						}
+					}
+				}
+				continue
+			}
 			var entry struct {
 				Type      string    `json:"type"`
 				Timestamp time.Time `json:"timestamp"`

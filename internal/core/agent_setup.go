@@ -45,18 +45,20 @@ func agentFileKind(p string) string {
 		}
 	}
 	switch base := path.Base(p); {
-	case base == "CLAUDE.md" || base == "AGENTS.md":
+	case base == "CLAUDE.md" || base == "AGENTS.md" || base == "GEMINI.md":
 		return fileInstructions
 	case p == ".mcp.json":
 		return fileMCP
-	case p == ".claude/settings.json":
+	case p == ".claude/settings.json" || p == ".agents/hooks.json" || p == ".agent/hooks.json":
 		return fileSettings
-	case strings.HasPrefix(p, ".claude/agents/") && strings.HasSuffix(p, ".md"):
+	case (strings.HasPrefix(p, ".claude/agents/") || strings.HasPrefix(p, ".agents/agents/")) && strings.HasSuffix(p, ".md"):
 		return fileAgent
 	case strings.HasPrefix(p, ".claude/commands/") && strings.HasSuffix(p, ".md"):
 		return fileCommand
-	case strings.HasPrefix(p, ".claude/skills/") && base == "SKILL.md" && len(segs) == 4:
+	case (strings.HasPrefix(p, ".claude/skills/") || strings.HasPrefix(p, ".agents/skills/")) && base == "SKILL.md" && len(segs) == 4:
 		return fileSkill
+	case strings.HasPrefix(p, ".agents/rules/") && strings.HasSuffix(p, ".md"):
+		return fileInstructions
 	case strings.HasPrefix(p, ".claude/hooks/") && len(segs) == 3:
 		return fileHookScript
 	}
@@ -64,13 +66,22 @@ func agentFileKind(p string) string {
 }
 
 // machineFileKind says what kind of agent file a path in a machine's home
-// folder is (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, …); "" when it isn't one.
+// folder is (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, ~/.gemini/config/…); ""
+// when it isn't one.
 func machineFileKind(p string) string {
-	switch p {
-	case ".claude/CLAUDE.md", ".codex/AGENTS.md":
+	switch {
+	case p == ".claude/CLAUDE.md" || p == ".codex/AGENTS.md" || p == ".gemini/GEMINI.md":
 		return fileInstructions
-	case ".claude.json":
+	case p == ".claude.json" || p == ".gemini/config/mcp_config.json":
 		return fileMCP
+	case p == ".gemini/config/hooks.json":
+		return fileSettings
+	case strings.HasPrefix(p, ".gemini/config/rules/") && strings.HasSuffix(p, ".md"):
+		return fileInstructions
+	case strings.HasPrefix(p, ".gemini/config/agents/") && strings.HasSuffix(p, ".md"):
+		return fileAgent
+	case strings.HasPrefix(p, ".gemini/config/skills/") && path.Base(p) == "SKILL.md" && len(strings.Split(p, "/")) == 5:
+		return fileSkill
 	}
 	return agentFileKind(p)
 }
@@ -152,8 +163,8 @@ func sortComponents(cs []AgentComponent) {
 	})
 }
 
-// settingsHooks lists a settings.json's hooks, one per event, matcher and
-// command: "PreToolUse Bash · wp hook claude".
+// settingsHooks lists a settings.json's (or Antigravity hooks.json's) hooks,
+// one per event, matcher and command: "PreToolUse Bash · wp hook claude".
 func settingsHooks(raw string) []AgentComponent {
 	var sf struct {
 		Hooks map[string][]struct {
@@ -170,23 +181,64 @@ func settingsHooks(raw string) []AgentComponent {
 		return out
 	}
 	seen := map[string]bool{}
-	for ev, groups := range sf.Hooks {
-		for _, g := range groups {
-			for _, h := range g.Hooks {
-				what := hookCommandName(h.Command)
-				if h.Type == "prompt" || (h.Command == "" && h.Prompt != "") {
-					what = "prompt"
+	add := func(ev, matcher, typ, cmd, prompt string) {
+		what := hookCommandName(cmd)
+		if typ == "prompt" || (cmd == "" && prompt != "") {
+			what = "prompt"
+		}
+		name := ev
+		if matcher != "" && matcher != "*" {
+			name += " " + matcher
+		}
+		name += " · " + what
+		if seen[name] {
+			return
+		}
+		seen[name] = true
+		out = append(out, AgentComponent{Kind: "hook", Name: name, Detail: excerpt(cmp(cmd, prompt), 300)})
+	}
+	if len(sf.Hooks) > 0 {
+		for ev, groups := range sf.Hooks {
+			for _, g := range groups {
+				for _, h := range g.Hooks {
+					add(ev, g.Matcher, h.Type, h.Command, h.Prompt)
 				}
-				name := ev
-				if g.Matcher != "" && g.Matcher != "*" {
-					name += " " + g.Matcher
+			}
+		}
+		return out
+	}
+	// Antigravity hooks.json: top-level hook name -> event -> flat handlers or matcher groups.
+	var agy map[string]map[string]json.RawMessage
+	if json.Unmarshal([]byte(raw), &agy) != nil {
+		return out
+	}
+	for _, events := range agy {
+		for ev, body := range events {
+			if ev == "enabled" {
+				continue
+			}
+			var items []struct {
+				Matcher string `json:"matcher"`
+				Type    string `json:"type"`
+				Command string `json:"command"`
+				Hooks   []struct {
+					Type    string `json:"type"`
+					Command string `json:"command"`
+				} `json:"hooks"`
+			}
+			if json.Unmarshal(body, &items) != nil {
+				continue
+			}
+			for _, it := range items {
+				if len(it.Hooks) > 0 {
+					for _, h := range it.Hooks {
+						if h.Command != "" {
+							add(ev, it.Matcher, h.Type, h.Command, "")
+						}
+					}
+				} else if it.Command != "" {
+					add(ev, it.Matcher, it.Type, it.Command, "")
 				}
-				name += " · " + what
-				if seen[name] {
-					continue
-				}
-				seen[name] = true
-				out = append(out, AgentComponent{Kind: "hook", Name: name, Detail: excerpt(cmp(h.Command, h.Prompt), 300)})
 			}
 		}
 	}

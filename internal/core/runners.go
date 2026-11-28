@@ -35,7 +35,7 @@ const (
 )
 
 // Names of the coding-agent CLIs a runner can report (AgentJob.CLI).
-var runnerCLIs = []string{"claude", "codex", "opencode", "cursor"}
+var runnerCLIs = []string{"claude", "codex", "opencode", "cursor", "antigravity"}
 
 // RunnerCLI is an agent CLI found on a runner's machine.
 type RunnerCLI struct {

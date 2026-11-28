@@ -190,6 +190,10 @@ func discoverTranscripts(root string, since time.Duration, only []string) ([]usa
 	}
 	if len(only) > 0 {
 		for _, p := range only {
+			if af, ok := antigravityUsageFileOfPath(p); ok {
+				add(af)
+				continue
+			}
 			addSession(p)
 		}
 		return files, nil
@@ -364,12 +368,20 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 	var files []usageFile
 	if !o.OnlyFiles || len(o.Files) > 0 {
 		var err error
-		if files, err = discoverTranscripts(root, o.Since, o.Files); err != nil {
-			if !shouldArchiveHarnesses(o, root) || !hasHarnessTranscriptSources() {
+		files, err = discoverTranscripts(root, o.Since, o.Files)
+		var agyFiles []usageFile
+		if len(o.Files) == 0 && shouldArchiveHarnesses(o, root) {
+			if home, herr := harnessHomeFn(); herr == nil && home != "" {
+				agyFiles = discoverAntigravityUsageFiles(home, o.Since)
+			}
+		}
+		if err != nil {
+			if len(agyFiles) == 0 && (!shouldArchiveHarnesses(o, root) || !hasHarnessTranscriptSources()) {
 				return nil, err
 			}
 			files = nil
 		}
+		files = append(files, agyFiles...)
 	}
 	st := loadUsageState(c.dir)
 	if !o.OnlyFiles {

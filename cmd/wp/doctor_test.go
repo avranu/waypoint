@@ -18,11 +18,14 @@ import (
 // Both spellings of a doctor are one tool, so a guess at either costs no
 // error (WP-797), and a doctor added under any command joins by itself.
 func TestDoctorBothWays(t *testing.T) {
-	oldCLIs, oldClaude, oldSvc := detectCLIsFn, claudeInstalled, runnerServiceFn
+	oldCLIs, oldClaude, oldAgy, oldSvc := detectCLIsFn, claudeInstalled, antigravityInstalled, runnerServiceFn
 	detectCLIsFn = func(context.Context) []runnerCLI { return nil }
 	claudeInstalled = func() bool { return false }
+	antigravityInstalled = func() bool { return false }
 	runnerServiceFn = func() (bool, bool, string) { return false, false, "" }
-	t.Cleanup(func() { detectCLIsFn, claudeInstalled, runnerServiceFn = oldCLIs, oldClaude, oldSvc })
+	t.Cleanup(func() {
+		detectCLIsFn, claudeInstalled, antigravityInstalled, runnerServiceFn = oldCLIs, oldClaude, oldAgy, oldSvc
+	})
 	e := newEnv(t)
 	e.login()
 	t.Setenv("HOME", t.TempDir())
@@ -69,12 +72,13 @@ func TestDoctorBothWays(t *testing.T) {
 }
 
 func TestSetupDoctor(t *testing.T) {
-	oldCLIs, oldClaude := detectCLIsFn, claudeInstalled
+	oldCLIs, oldClaude, oldAgy := detectCLIsFn, claudeInstalled, antigravityInstalled
 	detectCLIsFn = func(context.Context) []runnerCLI {
 		return []runnerCLI{{Name: "claude", SignedIn: boolp(true)}, {Name: "codex", SignedIn: boolp(false)}, {Name: "cursor", Detail: probeUnfinished}}
 	}
 	claudeInstalled = func() bool { return false }
-	t.Cleanup(func() { detectCLIsFn, claudeInstalled = oldCLIs, oldClaude })
+	antigravityInstalled = func() bool { return false }
+	t.Cleanup(func() { detectCLIsFn, claudeInstalled, antigravityInstalled = oldCLIs, oldClaude, oldAgy })
 	t.Setenv("HOME", t.TempDir())
 	t.Chdir(t.TempDir())
 

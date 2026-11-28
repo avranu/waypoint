@@ -42,9 +42,10 @@ func TestKitReport(t *testing.T) {
 	cfg := filepath.Join(home, ".claude")
 	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
 	t.Setenv("WP_CLAUDE_SETTINGS", filepath.Join(cfg, "settings.json"))
-	oldInstalled := claudeInstalled
+	oldInstalled, oldAgy := claudeInstalled, antigravityInstalled
 	claudeInstalled = func() bool { return false }
-	t.Cleanup(func() { claudeInstalled = oldInstalled })
+	antigravityInstalled = func() bool { return false }
+	t.Cleanup(func() { claudeInstalled, antigravityInstalled = oldInstalled, oldAgy })
 
 	write := func(rel, body string) {
 		p := filepath.Join(home, rel)

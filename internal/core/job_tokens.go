@@ -25,7 +25,7 @@ var jobTokenPermissions = []Permission{
 const JobTokenRateLimit = 600
 
 // jobAgentVendor is the vendor part of the agent identity of a CLI's jobs.
-var jobAgentVendor = map[string]string{"claude": "anthropic", "codex": "openai", "cursor": "cursor", "opencode": "opencode"}
+var jobAgentVendor = map[string]string{"claude": "anthropic", "codex": "openai", "cursor": "cursor", "opencode": "opencode", "antigravity": "antigravity"}
 
 // jobTokenAgent says whether a job gets its own token and, if so, the agent
 // it acts as. Only jobs whose agent can run commands, and so run wp, get

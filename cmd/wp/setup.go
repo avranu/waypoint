@@ -74,6 +74,12 @@ type setupPlan struct {
 	hooksSkip  string
 	noPrompts  bool
 
+	agyHooks      bool
+	agyHooksPath  string
+	agyHooksState string
+	agyHooksSkip  string
+	agyNoPrompts  bool
+
 	runner     bool
 	runnerOpts runnerOpts
 	runnerExe  string
@@ -208,6 +214,30 @@ func (c *cli) planSetup(f setupFlags) (*setupPlan, error) {
 		}
 	}
 
+	switch {
+	case f.noHooks:
+		p.agyHooksSkip = "--no-hooks"
+	case !antigravityInstalled():
+	default:
+		path, err := antigravityHooksPath()
+		if err != nil {
+			return nil, err
+		}
+		res, err := installAntigravityHooks(path, hookInstallOpts{exe: hookExe(), noPrompts: f.noPrompts, keepNoPrompts: true, dryRun: true})
+		if err != nil {
+			return nil, err
+		}
+		p.agyHooks, p.agyHooksPath, p.agyNoPrompts = true, res.path, res.noPrompts
+		switch {
+		case !res.changed:
+			p.agyHooksState = "current"
+		case res.present:
+			p.agyHooksState = "update"
+		default:
+			p.agyHooksState = "install"
+		}
+	}
+
 	if f.noRunner {
 		p.runnerSkip = "--no-runner"
 		return p, nil
@@ -280,6 +310,19 @@ func (c *cli) printPlan(p *setupPlan) {
 		}
 		c.println("  Claude Code      " + verb + " the hooks in " + tildePath(p.hooksPath, home) + " (sessions, requests, usage; " + prompts + ")")
 	}
+	if p.agyHooks {
+		switch p.agyHooksState {
+		case "current":
+			c.println("  Antigravity      the hooks in " + tildePath(p.agyHooksPath, home) + " are up to date")
+		default:
+			verb := map[string]string{"install": "install", "update": "update"}[p.agyHooksState]
+			prompts := "prompts sent"
+			if p.agyNoPrompts {
+				prompts = "no prompts"
+			}
+			c.println("  Antigravity      " + verb + " the hooks in " + tildePath(p.agyHooksPath, home) + " (sessions, guards, usage; " + prompts + ")")
+		}
+	}
 	if !p.runner {
 		c.println("  runner           skipped: " + p.runnerSkip)
 		return
@@ -344,6 +387,27 @@ func (c *cli) runSetup(p *setupPlan) error {
 		summary = append(summary, "Claude Code hooks: skipped ("+p.hooksSkip+").")
 	}
 
+	if p.agyHooks {
+		path, err := antigravityHooksPath()
+		if err != nil {
+			return err
+		}
+		exe := hookExe()
+		res, err := installAntigravityHooks(path, hookInstallOpts{exe: exe, noPrompts: p.agyNoPrompts, keepNoPrompts: true})
+		if err != nil {
+			return err
+		}
+		if !res.changed {
+			summary = append(summary, "Antigravity hooks: up to date in "+tildePath(res.path, home)+".")
+		} else {
+			s := "Antigravity hooks: installed in " + tildePath(res.path, home)
+			if res.backup != "" {
+				s += " (the old file is " + tildePath(res.backup, home) + ")"
+			}
+			summary = append(summary, s+".")
+		}
+	}
+
 	if p.runner {
 		c.println()
 		if err := installRunner(c, p.runnerExe, p.runnerOpts); err != nil {
@@ -373,7 +437,7 @@ func (c *cli) runSetup(p *setupPlan) error {
 }
 
 // cliLabels name the coding-agent CLIs as people know them.
-var cliLabels = map[string]string{"claude": "Claude Code", "codex": "Codex", "opencode": "opencode", "cursor": "Cursor"}
+var cliLabels = map[string]string{"claude": "Claude Code", "codex": "Codex", "opencode": "opencode", "cursor": "Cursor", "antigravity": "Antigravity"}
 
 // agentCLISummary says which coding agents the runner found and whether each
 // is signed in, so a subscription that isn't connected yet shows here, with

@@ -119,15 +119,34 @@ func discoverHarnessTranscripts(since time.Duration) []usageFile {
 	return out
 }
 
-func discoverAntigravityTranscripts(home string) []usageFile {
-	var roots []string
+func antigravityBrainRoots(home string) []string {
+	var raw []string
 	if dir := strings.TrimSpace(os.Getenv("ANTIGRAVITY_APPDATA_DIR")); dir != "" {
-		roots = append(roots, filepath.Join(dir, "brain"))
+		raw = append(raw, filepath.Join(dir, "brain"))
+	}
+	if dir := strings.TrimSpace(os.Getenv("ANTIGRAVITY_APP_DATA_DIR")); dir != "" {
+		raw = append(raw, filepath.Join(dir, "brain"))
 	}
 	if matches, err := filepath.Glob(filepath.Join(home, ".t3", "userdata", "providers", "antigravity", "*", "antigravity-acp", "brain")); err == nil {
-		roots = append(roots, matches...)
+		raw = append(raw, matches...)
 	}
-	roots = append(roots, filepath.Join(home, ".gemini", "antigravity", "brain"))
+	for _, sub := range []string{"antigravity-cli", "antigravity", "antigravity-ide"} {
+		raw = append(raw, filepath.Join(home, ".gemini", sub, "brain"))
+	}
+	seen := map[string]bool{}
+	var roots []string
+	for _, r := range raw {
+		c := filepath.Clean(r)
+		if !seen[c] {
+			seen[c] = true
+			roots = append(roots, c)
+		}
+	}
+	return roots
+}
+
+func discoverAntigravityTranscripts(home string) []usageFile {
+	roots := antigravityBrainRoots(home)
 
 	var out []usageFile
 	for _, brainDir := range roots {

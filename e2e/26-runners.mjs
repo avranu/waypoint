@@ -38,6 +38,7 @@ const script = (name, body) => {
 };
 script("claude", `case "$1" in --version) echo "2.1.296 (Claude Code)";; auth) echo '{"loggedIn":true,"authMethod":"claude.ai"}';; esac`);
 script("codex", `case "$1" in --version) echo "codex-cli 0.5.1";; login) echo "Not logged in"; exit 1;; esac`);
+script("agy", `case "$1" in --version) echo "1.5.18";; models) printf 'gemini-4-neon-high  Gemini 4 Neon (High)\nclaude-sonnet-5-5-medium  Claude Sonnet 5.5 (Medium)\n';; esac`);
 const git = (...a) => execFileSync("git", a, { cwd: repo, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } }).toString().trim();
 git("init", "-q", "-b", "main");
 git("config", "user.name", "Repo Owner");
@@ -142,6 +143,11 @@ async function run(width, scheme, first, last) {
   ok((await row.getByText(work).count()) === 1, `${tag} its allowed folder shows`);
   await row.getByText("Claude Code").waitFor();
   ok((await row.innerText()).includes("signed in"), `${tag} claude is signed in`);
+  await row.getByText("Antigravity", { exact: true }).waitFor();
+  ok(
+    /Antigravity[\s\S]*signed in/.test(await row.innerText()),
+    `${tag} antigravity is signed in`,
+  );
   ok(
     /Codex[\s\S]*signed out/.test(await row.innerText()),
     `${tag} codex is signed out, with a hint on hover`,

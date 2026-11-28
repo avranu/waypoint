@@ -265,9 +265,10 @@ func newSetupEnv(t *testing.T) *setupEnv {
 	_ = os.WriteFile(filepath.Join(proj, "s.jsonl"), []byte(`{"cwd":"`+app+`"}`+"\n"), 0o600)
 
 	swapHookExe(t, "/usr/local/bin/wp")
-	oldSvc, oldClaude, oldAnswers, oldRun, oldWait := serviceExe, claudeInstalled, openAnswers, sysRun, onlineWait
+	oldSvc, oldClaude, oldAgy, oldAnswers, oldRun, oldWait := serviceExe, claudeInstalled, antigravityInstalled, openAnswers, sysRun, onlineWait
 	serviceExe = func() (string, error) { return "/usr/local/bin/wp", nil }
 	claudeInstalled = func() bool { return true }
+	antigravityInstalled = func() bool { return false }
 	openAnswers = func() io.ReadCloser {
 		if s.noTTY {
 			return nil
@@ -284,7 +285,7 @@ func newSetupEnv(t *testing.T) *setupEnv {
 	}
 	onlineWait = 0
 	t.Cleanup(func() {
-		serviceExe, claudeInstalled, openAnswers, sysRun, onlineWait = oldSvc, oldClaude, oldAnswers, oldRun, oldWait
+		serviceExe, claudeInstalled, antigravityInstalled, openAnswers, sysRun, onlineWait = oldSvc, oldClaude, oldAgy, oldAnswers, oldRun, oldWait
 	})
 	return s
 }

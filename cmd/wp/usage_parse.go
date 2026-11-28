@@ -227,6 +227,9 @@ type usageFile struct {
 	Session string
 	Kind    string // main, the subagent's type, or a non-Claude harness kind
 	FileKey string // optional archive file key override (e.g. antigravity/transcript_full.jsonl)
+	Harness string // "" or "claude" for Claude Code, "antigravity" for Antigravity
+	Cwd     string // optional pre-resolved workspace cwd (e.g. from conversation_summaries.db)
+	Title   string // optional pre-resolved session title
 	Main    bool
 }
 
@@ -401,6 +404,12 @@ func readUsageFile(f usageFile, st usageFileState, repoOf func(cwd string) strin
 		return nil, err
 	}
 	p := newUsageParser(f, &out.State)
+	if f.Cwd != "" && out.State.Cwd == "" {
+		out.State.Cwd = f.Cwd
+	}
+	if f.Title != "" && out.State.Title == "" {
+		out.State.Title = f.Title
+	}
 	br := bufio.NewReaderSize(io.LimitReader(fh, size-st.Off), 1<<20)
 	var long []byte
 	consumed := int64(0)
@@ -497,6 +506,10 @@ func (p *usageParser) skip(kind string) {
 func (p *usageParser) line(b []byte) {
 	b = bytes.TrimRight(b, "\r\n")
 	if len(b) == 0 {
+		return
+	}
+	if p.f.Harness == "antigravity" || bytes.Contains(b, markAgyStepIndex) {
+		p.parseAntigravityLine(b)
 		return
 	}
 	p.stats.Lines++

@@ -2023,7 +2023,7 @@ func textWritten(actor *Actor, author string) (sets []string, args []any) {
 }
 
 // agentTools are identities that name a coding tool, not the model in it.
-var agentTools = map[string]bool{"anthropic/claude-code": true, "google/gemini-cli": true, "openai/codex": true, "opencode": true}
+var agentTools = map[string]bool{"anthropic/claude-code": true, "google/gemini-cli": true, "google/antigravity": true, "openai/codex": true, "opencode": true}
 
 // authorAgent is the agent an issue's provenance names (WP-242): for a
 // tool's identity, the model its session reported (anthropic/claude-code

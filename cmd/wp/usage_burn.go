@@ -34,6 +34,13 @@ var burnFallbackPrices = []burnPrice{
 	{"claude-haiku-5-5", 0.1, 0.5, 0.125, 0.2, 0.01},
 	{"claude-fable-5", 10, 50, 12.5, 20, 1},
 	{"claude-mythos-5", 10, 50, 12.5, 20, 1},
+	{"gemini-4-neon", 2.5, 15, 0, 0, 0.25},
+	{"gemini-4-hydrogen", 2.5, 15, 0, 0, 0.25},
+	{"gemini-4-carbon", 1.25, 10, 0, 0, 0.125},
+	{"gemini-4-argon", 1.25, 10, 0, 0, 0.125},
+	{"gemini-pro-orchestrator", 1.25, 10, 0, 0, 0.125},
+	{"gemini-3.8-flash", 0.3, 2.5, 0, 0, 0.03},
+	{"gpt-oss-120b", 0.2, 0.8, 0, 0, 0.02},
 }
 
 // burnFallbackFamily is the fallback row a model name falls to by family.
@@ -41,6 +48,10 @@ var burnFallbackPrices = []burnPrice{
 var burnFallbackFamily = []struct{ Family, ID string }{
 	{"fable", "claude-fable-5"}, {"mythos", "claude-mythos-5"},
 	{"opus", "claude-opus-5-5"}, {"sonnet", "claude-sonnet-5-5"}, {"haiku", "claude-haiku-5-5"},
+	{"neon", "gemini-4-neon"}, {"hydrogen", "gemini-4-hydrogen"},
+	{"carbon", "gemini-4-carbon"}, {"argon", "gemini-4-argon"},
+	{"orchestrator", "gemini-pro-orchestrator"}, {"flash", "gemini-3.8-flash"},
+	{"gemini", "gemini-4-carbon"}, {"gpt-oss", "gpt-oss-120b"},
 }
 
 // burnPriceFor finds the price of a model: the longest id prefix in the

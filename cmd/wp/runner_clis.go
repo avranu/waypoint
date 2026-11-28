@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"slices"
@@ -23,9 +24,9 @@ type runnerCLI struct {
 }
 
 // cliBinaries maps the server's names for the CLIs to their programs.
-var cliBinaries = map[string]string{"claude": "claude", "codex": "codex", "opencode": "opencode", "cursor": "cursor-agent"}
+var cliBinaries = map[string]string{"claude": "claude", "codex": "codex", "opencode": "opencode", "cursor": "cursor-agent", "antigravity": "agy"}
 
-var cliOrder = []string{"claude", "codex", "opencode", "cursor"}
+var cliOrder = []string{"claude", "codex", "opencode", "cursor", "antigravity"}
 
 var (
 	ansiRE    = lazyre.New(`\x1b\[[0-9;?]*[A-Za-z]`)
@@ -180,10 +181,45 @@ func detectCLIs(ctx context.Context) []runnerCLI {
 			} else {
 				c.Detail = "no saved credentials (free models only)"
 			}
+		case "antigravity":
+			c.SignedIn, c.Detail = antigravityStatus(ctx, path)
 		}
 		out = append(out, c)
 	}
 	return out
+}
+
+// antigravityStatus asks agy for its available models: exit 0 with model rows
+// proves the Google subscription is signed in; a non-zero exit or auth error
+// means signed out.
+func antigravityStatus(ctx context.Context, path string) (*bool, string) {
+	o, code := cliProbe(ctx, path, "models")
+	if code == probeKilled {
+		return nil, probeUnfinished
+	}
+	low := strings.ToLower(o)
+	if code != 0 || strings.Contains(low, "not logged in") || strings.Contains(low, "not authenticated") || strings.Contains(low, "login required") || strings.Contains(low, "unauthenticated") {
+		return boolp(false), cmpStr(statusLine(o), "Not signed in")
+	}
+	models := 0
+	for _, line := range strings.Split(o, "\n") {
+		line = strings.TrimSpace(line)
+		// Strip spinner fragments ("Fetching available models...") emitted before the table.
+		if idx := strings.LastIndex(line, "\r"); idx >= 0 {
+			line = strings.TrimSpace(line[idx+1:])
+		}
+		if line == "" || strings.Contains(line, "Fetching available models") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 2 {
+			models++
+		}
+	}
+	if models > 0 {
+		return boolp(true), fmt.Sprintf("%d models available", models)
+	}
+	return nil, statusLine(o)
 }
 
 // cursorStatus asks cursor-agent whether it is signed in and, when it is,

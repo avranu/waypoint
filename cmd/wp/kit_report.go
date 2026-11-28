@@ -145,7 +145,7 @@ func (c *cli) machineReport() machineReport {
 		}
 		body := string(b)
 		switch {
-		case rel == ".claude.json":
+		case rel == ".claude.json" || rel == ".gemini/config/mcp_config.json":
 			body = mcpNamesOnly(body)
 		case strings.HasSuffix(rel, ".json"):
 			body = redactJSON(body)
@@ -194,12 +194,62 @@ func (c *cli) machineReport() machineReport {
 	if home != "" {
 		add(".claude.json", filepath.Join(home, ".claude.json"))
 		add(".codex/AGENTS.md", filepath.Join(home, ".codex", "AGENTS.md"))
+		geminiCfg := filepath.Join(home, ".gemini", "config")
+		add(".gemini/GEMINI.md", filepath.Join(home, ".gemini", "GEMINI.md"))
+		add(".gemini/config/hooks.json", filepath.Join(geminiCfg, "hooks.json"))
+		add(".gemini/config/mcp_config.json", filepath.Join(geminiCfg, "mcp_config.json"))
+		for _, sub := range []string{"rules", "agents"} {
+			root := filepath.Join(geminiCfg, sub)
+			var found []string
+			_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+				if err != nil || d.IsDir() || !strings.HasSuffix(p, ".md") {
+					return nil
+				}
+				found = append(found, p)
+				return nil
+			})
+			sort.Strings(found)
+			for _, p := range found {
+				rel, _ := filepath.Rel(geminiCfg, p)
+				add(".gemini/config/"+filepath.ToSlash(rel), p)
+			}
+		}
+		if skills, err := filepath.Glob(filepath.Join(geminiCfg, "skills", "*", "SKILL.md")); err == nil {
+			sort.Strings(skills)
+			for _, p := range skills {
+				add(".gemini/config/skills/"+filepath.Base(filepath.Dir(p))+"/SKILL.md", p)
+			}
+		}
 	}
 	r.Checks = append(r.Checks, hooksCheck())
+	if antigravityInstalled() {
+		r.Checks = append(r.Checks, antigravityHooksCheck())
+	}
 	if k, ok := c.kitMarketplaceCheck(); ok {
 		r.Checks = append(r.Checks, k)
 	}
 	return r
+}
+
+func antigravityHooksCheck() machineCheck {
+	ch := machineCheck{Key: "antigravity_hooks", Label: "Antigravity wp hooks installed"}
+	path, err := antigravityHooksPath()
+	if err != nil {
+		ch.State, ch.Note = "warn", err.Error()
+		return ch
+	}
+	res, err := installAntigravityHooks(path, hookInstallOpts{exe: hookExe(), keepNoPrompts: true, dryRun: true})
+	switch {
+	case err != nil:
+		ch.State, ch.Note = "fail", "couldn't read "+path+": "+err.Error()
+	case !res.changed:
+		ch.State = "ok"
+	case res.present:
+		ch.State, ch.Note = "warn", "an older set: run wp hook antigravity"
+	default:
+		ch.State, ch.Note = "fail", "not installed: run wp hook antigravity"
+	}
+	return ch
 }
 
 // hooksCheck: are wp's Claude Code hooks installed here, and current?
