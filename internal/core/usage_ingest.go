@@ -172,7 +172,7 @@ func (s *Service) IngestUsage(ctx context.Context, actor *Actor, in UsageIngest)
 	if err != nil {
 		return nil, err
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	in.Machine = clip(in.Machine, 100)
@@ -467,7 +467,7 @@ func (s *Service) RecordQuota(ctx context.Context, actor *Actor, in UsageQuotaIn
 	if err != nil {
 		return err
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
 	in.Machine = clip(in.Machine, 100)

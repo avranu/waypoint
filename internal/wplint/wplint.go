@@ -43,6 +43,7 @@ var Analyzers = []*analysis.Analyzer{
 	BlankErr,
 	LogMsg,
 	CoreLayers,
+	DomainActor,
 }
 
 var ignoreRE = regexp.MustCompile(`^//\s*wplint:ignore\s+([\w-]+)[ \t]*(.*)$`)
@@ -197,4 +198,60 @@ func funcDecls(pass *analysis.Pass) map[*types.Func]*ast.FuncDecl {
 // pkgLevel says whether obj is declared at the top of a package.
 func pkgLevel(obj types.Object) bool {
 	return obj != nil && obj.Pkg() != nil && obj.Parent() == obj.Pkg().Scope()
+}
+
+// inKernel says whether p is the kernel package, internal/core/kernel.
+func inKernel(p string) bool { return inPkg(p, "internal/core/kernel") }
+
+// kernelNamed says whether t is the type name declared in the kernel
+// package (through a pointer or an alias).
+func kernelNamed(t types.Type, name string) bool {
+	if p, ok := types.Unalias(t).(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	n, ok := types.Unalias(t).(*types.Named)
+	return ok && n.Obj().Name() == name && n.Obj().Pkg() != nil && inKernel(n.Obj().Pkg().Path())
+}
+
+// isClockHolder says whether t is a type that carries the clock and the
+// transaction: a Service (core's or a domain's), core's tx wrapper, the
+// kernel's Tx and Kernel, or a struct holding the Kernel.
+func isClockHolder(t types.Type) bool {
+	n := typeName(t)
+	return n == "Service" || n == "tx" || kernelNamed(t, "Tx") || kernelNamed(t, "Kernel") || holdsKernel(t)
+}
+
+// holdsKernel says whether t is a struct with a *kernel.Kernel field: a
+// domain's type that other domains call without an access check (email's
+// Mailer) is built on the kernel as its Service is.
+func holdsKernel(t types.Type) bool {
+	if p, ok := types.Unalias(t).(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	st, ok := t.Underlying().(*types.Struct)
+	if !ok {
+		return false
+	}
+	for i := 0; i < st.NumFields(); i++ {
+		if kernelNamed(st.Field(i).Type(), "Kernel") {
+			return true
+		}
+	}
+	return false
+}
+
+// coreRecv says whether fn is a method of a Service, core's tx, or the
+// kernel's Tx or Kernel: the receivers whose errors a rule keeps.
+func coreRecv(fn *types.Func) bool {
+	sig, ok := fn.Type().(*types.Signature)
+	return ok && sig.Recv() != nil && isClockHolder(sig.Recv().Type())
+}
+
+// isKernelWrite says whether fn is (*kernel.Kernel).Write or WriteSkip, which
+// run a write transaction as Service.write does.
+func isKernelWrite(fn *types.Func) bool {
+	if fn == nil || fn.Pkg() == nil || !inKernel(fn.Pkg().Path()) || recvName(fn) != "Kernel" {
+		return false
+	}
+	return fn.Name() == "Write" || fn.Name() == "WriteSkip"
 }

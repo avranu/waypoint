@@ -90,7 +90,7 @@ func (s *Service) calmCILimits(ctx context.Context, forgeID int64, repo string) 
 		return
 	}
 	writer := Actor{User: u}
-	writer.textAgent = "waypoint"
+	writer.TextAgent = "waypoint"
 	if _, err := s.UpdateIssue(ctx, &writer, task, IssuePatch{RemLabels: []string{CIUrgentLabel}}); err != nil {
 		s.log.WarnContext(ctx, "untag the CI limits task", "task", task, "err", err)
 		return

@@ -401,7 +401,7 @@ func prefixList() []string {
 // codes used elsewhere before (an imported repo's PL1…PL14) aren't given
 // to new pages. next maps prefixes to the first number new pages may get.
 func (s *Service) ReservePageCodes(ctx context.Context, actor *Actor, project string, next PageCodeNext) (PageCodeNext, error) {
-	if err := actor.requireHuman("reserving page codes"); err != nil {
+	if err := actor.RequireHuman("reserving page codes"); err != nil {
 		return nil, err
 	}
 	p, err := s.projectByRef(ctx, s.db.R, project)
@@ -468,7 +468,7 @@ func (s *Service) pageByCodeIn(ctx context.Context, q queryer, c PageCode, scope
 // used elsewhere before. The code stays reserved, never reused. code is
 // PL1, in the page's project, or APP-PL1.
 func (s *Service) DropPageCode(ctx context.Context, actor *Actor, pageID int64, code string) error {
-	if err := actor.requireHuman("dropping page codes"); err != nil {
+	if err := actor.RequireHuman("dropping page codes"); err != nil {
 		return err
 	}
 	c, ok := ParsePageCode(code)

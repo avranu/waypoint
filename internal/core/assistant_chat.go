@@ -148,7 +148,7 @@ func (s *Service) TestableAssistant(ctx context.Context, actor *Actor, id int64)
 	if err != nil {
 		return nil, err
 	}
-	if !actor.person() || (actor.id() != r.ownerID && !actor.User.IsAdmin) {
+	if !actor.Person() || (actor.ID() != r.ownerID && !actor.User.IsAdmin) {
 		return nil, ErrNotFound
 	}
 	return s.assistantClient(r)
@@ -287,7 +287,7 @@ func (s *Service) LinkAssistantSession(ctx context.Context, actor *Actor, id int
 	err = s.write(ctx, actor, func(t *tx) error {
 		if _, err := t.ExecContext(ctx, `INSERT INTO assistant_links(assistant_id, session_id, issue_id, title, created_by, created_at)
 			VALUES (?,?,?,?,?,?) ON CONFLICT(assistant_id, session_id, issue_id) DO UPDATE SET title = excluded.title`,
-			id, sessionID, i.ID, excerpt(strings.TrimSpace(title), 200), actor.id(), s.nowMS()); err != nil {
+			id, sessionID, i.ID, excerpt(strings.TrimSpace(title), 200), actor.ID(), s.nowMS()); err != nil {
 			return err
 		}
 		return t.QueryRowContext(ctx, `SELECT id FROM assistant_links WHERE assistant_id = ? AND session_id = ? AND issue_id = ?`, id, sessionID, i.ID).Scan(&linkID)
@@ -327,14 +327,14 @@ func (s *Service) AssistantLinks(ctx context.Context, actor *Actor, id int64, se
 // IssueAssistantLinks lists the conversations about an issue, from the
 // assistants the actor owns.
 func (s *Service) IssueAssistantLinks(ctx context.Context, actor *Actor, issueRef string) ([]*AssistantLink, error) {
-	if !actor.person() {
+	if !actor.Person() {
 		return []*AssistantLink{}, nil
 	}
 	i, _, err := s.getIssueFor(ctx, s.db.R, actor, issueRef, RoleViewer, false)
 	if err != nil {
 		return nil, err
 	}
-	return s.assistantLinks(ctx, actor, `l.issue_id = ? AND a.owner_id = ?`, i.ID, actor.id())
+	return s.assistantLinks(ctx, actor, `l.issue_id = ? AND a.owner_id = ?`, i.ID, actor.ID())
 }
 
 func (s *Service) assistantLinks(ctx context.Context, actor *Actor, where string, args ...any) ([]*AssistantLink, error) {

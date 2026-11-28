@@ -35,7 +35,8 @@ const (
 	shipWaitLinger = 15 * time.Second
 )
 
-// ShipPull is the pull request a round's end opened.
+// ShipPull is a pull request of a round's branch. On an ended round it also
+// says the client may end the agent's turn.
 type ShipPull struct {
 	Repo   string `json:"repo"`
 	Number int    `json:"number"`
@@ -297,7 +298,7 @@ func (s *Service) shipWaitTarget(ctx context.Context, actor *Actor, cliID, machi
 	if actor == nil || actor.User == nil || actor.User.ID == 0 {
 		return 0, 0, ErrUnauthorized
 	}
-	session = s.SessionForHeader(ctx, actor.id(), cliID, machine)
+	session = s.SessionForHeader(ctx, actor.ID(), cliID, machine)
 	if session == 0 {
 		return 0, 0, notFound("session")
 	}
@@ -391,19 +392,21 @@ func (s *Service) shipNewsNow(ctx context.Context, session, task int64) (*ShipNe
 		return &ShipNews{Outcome: ShipNewsNone}, nil
 	}
 	if bp.ShipDone {
-		p := &ShipPull{Repo: bp.Repo}
-		err := s.db.R.QueryRowContext(ctx, `SELECT number, url, state FROM pull_requests WHERE repo = ? COLLATE NOCASE AND head_ref = ? AND (head_repo = '' OR head_repo = repo COLLATE NOCASE) ORDER BY id DESC LIMIT 1`, bp.Repo, bp.Branch).
-			Scan(&p.Number, &p.URL, &p.State)
+		p, err := s.branchPull(ctx, bp)
 		switch {
-		case err == nil:
-			if p.State == "open" || p.State == "draft" {
+		case err != nil:
+			return nil, err
+		case p != nil:
+			if p.live() {
 				return &ShipNews{Outcome: ShipNewsPull, Pull: p, Text: fmt.Sprintf("The review ended and Waypoint shipped the pull request: PR %d (%s): %s", p.Number, p.State, p.URL)}, nil
 			}
-			return &ShipNews{Outcome: ShipNewsEnded, Text: fmt.Sprintf("Waypoint's review round for this task is over, and its pull request, PR %d, is %s. Nothing more is waiting on you here.", p.Number, p.State)}, nil
-		case errors.Is(err, sql.ErrNoRows):
-			return &ShipNews{Outcome: ShipNewsEnded, Text: fmt.Sprintf("Waypoint's review round for this task is over and it shipped the round, but no pull request from %s in %s is recorded. Nothing more is waiting on you here.", bp.Branch, bp.Repo)}, nil
+			text := fmt.Sprintf("Waypoint's review round for this task is over, and its pull request, PR %d, is %s: %s Nothing more is waiting on you here.", p.Number, p.State, p.URL)
+			if p.State != "merged" {
+				p = nil // closed without merging: the agent's to read
+			}
+			return &ShipNews{Outcome: ShipNewsEnded, Pull: p, Text: text}, nil
 		default:
-			return nil, err
+			return &ShipNews{Outcome: ShipNewsEnded, Text: fmt.Sprintf("Waypoint's review round for this task is over and it shipped the round, but no pull request from %s in %s is recorded. Nothing more is waiting on you here.", bp.Branch, bp.Repo)}, nil
 		}
 	}
 	in, err := s.roundInOf(ctx, r.id)
@@ -413,21 +416,54 @@ func (s *Service) shipNewsNow(ctx context.Context, session, task int64) (*ShipNe
 		}
 		return nil, err
 	}
-	ended := func(why string) *ShipNews {
-		return &ShipNews{Outcome: ShipNewsEnded, Text: fmt.Sprintf("Waypoint's review round for this task is over (%s)%s. Nothing more is waiting on you here.", in.State, colonIf(why))}
+	// The client ends the agent's turn on a Pull, so only a round whose branch
+	// has a live pull request carries one: a merged or closed one may be an
+	// earlier round's on a reused branch, and a ship Waypoint stopped
+	// (bp.ShipStop) is the agent's to read. The text names it either way. A
+	// pull request that can't be read leaves the news without one, so the
+	// turn doesn't end on it, rather than failing the wait.
+	ended := func(why string) (*ShipNews, error) {
+		p, err := s.branchPull(ctx, bp)
+		if err != nil {
+			s.log.WarnContext(ctx, "ship news: reading the round's pull request", "round", r.id, "err", err)
+			p = nil
+		}
+		line := ""
+		if p != nil {
+			line = fmt.Sprintf(" PR %d (%s): %s", p.Number, p.State, p.URL)
+		}
+		if bp.ShipStop != "" || (p != nil && !p.live()) {
+			p = nil
+		}
+		return &ShipNews{Outcome: ShipNewsEnded, Pull: p, Text: fmt.Sprintf("Waypoint's review round for this task is over (%s)%s.%s Nothing more is waiting on you here.", in.State, colonIf(why), line)}, nil
 	}
 	if bp.ShipStop != "" {
-		return ended(bp.ShipStop), nil
+		return ended(bp.ShipStop)
 	}
 	switch out := decideRound(in); {
 	case out.Do == doSettle || out.Do == doHold:
-		return ended(out.Why), nil
+		return ended(out.Why)
 	case out.Do == doNothing:
-		return ended(out.Settled), nil
+		return ended(out.Settled)
 	case out.Do == doEnd && out.Told != "":
-		return ended(out.Told), nil
+		return ended(out.Told)
 	}
 	return nil, nil
+}
+
+// live: the pull request is neither merged nor closed.
+func (p *ShipPull) live() bool { return p.State == "open" || p.State == "draft" }
+
+// branchPull is the newest pull request recorded for the round's branch (of
+// its own repo, not a fork's); nil when there is none.
+func (s *Service) branchPull(ctx context.Context, bp *beforePR) (*ShipPull, error) {
+	p := &ShipPull{Repo: bp.Repo}
+	err := s.db.R.QueryRowContext(ctx, `SELECT number, url, state FROM pull_requests WHERE repo = ? COLLATE NOCASE AND head_ref = ? AND (head_repo = '' OR head_repo = repo COLLATE NOCASE) ORDER BY id DESC LIMIT 1`, bp.Repo, bp.Branch).
+		Scan(&p.Number, &p.URL, &p.State)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return p, err
 }
 
 // AckShipNews says the client has printed the findings AwaitShipNews returned:

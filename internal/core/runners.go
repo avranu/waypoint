@@ -111,6 +111,17 @@ const FeatureRequestLane = "request_lane"
 // never holds (LaneMessage, WP-886).
 const FeatureMessageLane = "message_lane"
 
+// FeatureAgentLane: the runner's wp runs agent jobs (JobAgent) in a lane of
+// their own, ceilinged by --max-agents, and counts one toward its heavy limit
+// only while a command of it holds a test slot (LaneAgent, WP-1915).
+const FeatureAgentLane = "agent_lane"
+
+// FeatureLightLane: the runner's wp runs reviews and audits in a lane of
+// their own, ceilinged at LightLaneSlots and stopped only by short memory,
+// beside its heavy jobs rather than sharing --max-jobs and the load governor
+// with them (LaneLight, WP-1943).
+const FeatureLightLane = "light_lane"
+
 // FeatureGatewayAudit: the runner's wp runs an audit whose model is the
 // LLM gateway's (GatewayCLI): it sends its checkout through Waypoint to an
 // agent task there, and needs no CLI of its own for it (WP-617). A wp from
@@ -134,7 +145,7 @@ const FeatureTaskKickoff = "task_kickoff"
 // as before WP-1618.
 const FeatureWorkClock = "work_clock"
 
-var runnerFeatures = []string{FeatureWorkClock, FeatureConfine, FeatureAutopilot, FeatureAutopilotStart, FeatureAudit, FeatureAutopilotReview, FeatureRequestLane, FeatureMessageLane, FeatureGatewayAudit, FeatureGatewayLane, FeatureSandboxDrill, FeatureTaskKickoff, FeatureObjective}
+var runnerFeatures = []string{FeatureWorkClock, FeatureConfine, FeatureAutopilot, FeatureAutopilotStart, FeatureAudit, FeatureAutopilotReview, FeatureRequestLane, FeatureMessageLane, FeatureGatewayAudit, FeatureGatewayLane, FeatureSandboxDrill, FeatureTaskKickoff, FeatureObjective, FeatureAgentLane, FeatureLightLane}
 
 // runnerState is the Service's in-memory part of runners: a broadcast that
 // wakes held polls, and when each job's last live update went out.
@@ -296,7 +307,7 @@ func (r *RunnerRegistration) clean() error {
 // runnerActor checks that a person (not an agent, not a read-only token) is
 // acting: runners run commands on a machine, so an agent can't be one.
 func runnerActor(a *Actor) error {
-	if err := a.canWrite(); err != nil {
+	if err := a.CanWrite(); err != nil {
 		return err
 	}
 	if a.User.ID == 0 || a.Automation != nil {
@@ -355,7 +366,7 @@ func (s *Service) runnerByID(ctx context.Context, q queryer, id int64) (*Runner,
 // RegisterRunner records the machine the caller's `wp runner` runs on (the
 // same name for the same person is the same runner) and marks it online.
 func (s *Service) RegisterRunner(ctx context.Context, actor *Actor, reg RunnerRegistration) (*Runner, error) {
-	if err := actor.need(PermRunnersHost); err != nil {
+	if err := actor.Need(PermRunnersHost); err != nil {
 		return nil, err
 	}
 	if err := runnerActor(actor); err != nil {
@@ -419,7 +430,7 @@ func (s *Service) ListRunners(ctx context.Context, actor *Actor, all bool) ([]*R
 	}
 	q, args := ` WHERE r.owner_id = ?`, []any{actor.User.ID}
 	if all {
-		if !actor.isAdmin() {
+		if !actor.IsAdmin() {
 			return nil, ErrForbidden
 		}
 		q, args = ``, nil
@@ -450,7 +461,7 @@ func (s *Service) GetRunner(ctx context.Context, actor *Actor, id int64) (*Runne
 	if err != nil {
 		return nil, err
 	}
-	if r.Owner.ID != actor.User.ID && !actor.isAdmin() {
+	if r.Owner.ID != actor.User.ID && !actor.IsAdmin() {
 		return nil, notFound("runner")
 	}
 	return r, nil
@@ -459,7 +470,7 @@ func (s *Service) GetRunner(ctx context.Context, actor *Actor, id int64) (*Runne
 // DeleteRunner removes a runner. What was waiting for it is cancelled and
 // what it was running fails; finished jobs keep their record.
 func (s *Service) DeleteRunner(ctx context.Context, actor *Actor, id int64) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
 	if actor.IsAgent() || actor.Automation != nil {
@@ -524,7 +535,7 @@ type RunnerPoll struct {
 	// Wait is how many seconds to hold the poll (at most 30; tests use less).
 	Wait *float64 `json:"wait"`
 	// Lanes are the kinds of job it takes now (LaneHeavy, LaneLight,
-	// LaneRequest, LaneMessage, LaneGateway); nil (an older runner): any
+	// LaneRequest, LaneMessage, LaneGateway, LaneAgent); nil (an older runner): any
 	// (WP-366, WP-503).
 	Lanes []string `json:"lanes"`
 	// Capacity is how busy its machine is and what it takes because of it.
@@ -577,7 +588,7 @@ func launchesSession(kind string) bool {
 // Poll holds up to 30 seconds for a job this runner may take. It is also
 // the heartbeat: a runner that polled in the last 90 seconds is online.
 func (s *Service) RunnerPoll(ctx context.Context, actor *Actor, in RunnerPoll) (*RunnerWork, error) {
-	if err := actor.need(PermRunnersHost); err != nil {
+	if err := actor.Need(PermRunnersHost); err != nil {
 		return nil, err
 	}
 	if err := runnerActor(actor); err != nil {

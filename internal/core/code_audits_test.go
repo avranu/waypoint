@@ -130,6 +130,33 @@ func TestAuditOfAPullRequest(t *testing.T) {
 	}
 }
 
+// An automation's audit runs on the runners of whoever saved it, not of the
+// person whose change set it off, and is refused when nobody can be named.
+func TestAuditByAnAutomationUsesTheSaversRunners(t *testing.T) {
+	ae := newAgentEnv(t)
+	bob := ae.user("bob", false)
+	if err := ae.s.SetMember(ae.ctx, ae.admin, ae.p.Key, "bob", "editor"); err != nil {
+		t.Fatal(err)
+	}
+	auto := &Automation{ID: 1, ProjectID: ae.p.ID, Name: "nightly audit", savedBy: ae.admin.User.ID}
+	a, err := ae.s.RequestAudit(ae.ctx, &Actor{User: bob.User, Automation: auto.ref()}, AuditInput{Project: ae.p.Key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var owner int64
+	if err := ae.s.db.R.QueryRowContext(ae.ctx, `SELECT owner_id FROM code_audits WHERE id = ?`, a.ID).Scan(&owner); err != nil {
+		t.Fatal(err)
+	}
+	if owner != ae.admin.User.ID || a.Via != "automation" {
+		t.Errorf("owner %d via %q, want %d by automation", owner, a.Via, ae.admin.User.ID)
+	}
+	auto.savedBy = 0
+	_, err = ae.s.RequestAudit(ae.ctx, &Actor{User: ae.admin.User, Automation: auto.ref()}, AuditInput{Project: ae.p.Key})
+	if err == nil || !strings.Contains(err.Error(), "no owner for its runners") {
+		t.Errorf("an automation nobody saved asked for an audit: %v", err)
+	}
+}
+
 // Busy models fall back down the chain, then the whole chain is tried again
 // later; a spent plan ends it as limited.
 func TestAuditFallsBackAndWaitsOutBusyModels(t *testing.T) {

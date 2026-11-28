@@ -120,7 +120,7 @@ func AIUsageGroups() []string {
 // status, hour, day or provider (admins; a permission token also needs
 // server.read).
 func (s *Service) AIUsage(ctx context.Context, actor *Actor, q AIUsageQuery) (*AIUsage, error) {
-	if err := actor.canReadServer(); err != nil {
+	if err := canReadServer(actor); err != nil {
 		return nil, err
 	}
 	now := s.now()

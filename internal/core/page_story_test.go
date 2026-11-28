@@ -105,7 +105,7 @@ func TestPlanStoryWrittenAndKept(t *testing.T) {
 		t.Fatalf("review: %d %v", n, err)
 	}
 	pg = e.page(e.admin, pg.ID)
-	if !pg.StoryIsPersons() || pg.StoryBy == nil || pg.StoryBy.ID != e.admin.id() || pg.StoryModel == "" || pg.Unreviewed {
+	if !pg.StoryIsPersons() || pg.StoryBy == nil || pg.StoryBy.ID != e.admin.ID() || pg.StoryModel == "" || pg.Unreviewed {
 		t.Fatalf("after review: agent %q by %+v model %q unreviewed %v", pg.StoryAgent, pg.StoryBy, pg.StoryModel, pg.Unreviewed)
 	}
 

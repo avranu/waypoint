@@ -503,7 +503,7 @@ func (s *Service) sessionMeta(ctx context.Context, actor *Actor, list []*AgentSe
 			x.Issue = irefs[x.issueID.Int64]
 		}
 		x.OpenRequests = open[x.ID]
-		if x.userID != actor.id() && !actor.isAdmin() {
+		if x.userID != actor.ID() && !actor.IsAdmin() {
 			x.LastPrompt = ""
 		}
 	}
@@ -521,7 +521,7 @@ func (s *Service) sessionVisible(ctx context.Context, q queryer, actor *Actor, x
 	if actor == nil || actor.User == nil {
 		return false
 	}
-	if (x.userID == actor.id() && (actor.scope == nil || (!x.projectID.Valid && actor.Session != 0 && x.ID == actor.Session))) || actor.isAdmin() {
+	if (x.userID == actor.ID() && (actor.Scope == nil || (!x.projectID.Valid && actor.Session != 0 && x.ID == actor.Session))) || actor.IsAdmin() {
 		return true
 	}
 	if !x.projectID.Valid {
@@ -569,10 +569,10 @@ func (s *Service) ListAgentSessions(ctx context.Context, actor *Actor, q AgentSe
 	idleCut, endCut := now-sessionIdleAfter.Milliseconds(), now-sessionEndedAfter.Milliseconds()
 	stateExpr := `(CASE WHEN s.state = 'ended' OR s.last_seen_at <= ? THEN 'ended' WHEN s.last_seen_at <= ? THEN 'idle' ELSE s.state END)`
 	where, args := []string{"1=1"}, []any{}
-	if !actor.isAdmin() {
-		member, margs := actor.memberProjects(RoleViewer)
+	if !actor.IsAdmin() {
+		member, margs := actor.MemberProjects(RoleViewer)
 		where = append(where, `((s.user_id = ? AND (? OR (s.project_id IS NULL AND s.id = ?))) OR s.project_id IN `+member+`)`)
-		args = append(append(args, actor.id(), actor.scope == nil, actor.Session), margs...)
+		args = append(append(args, actor.ID(), actor.Scope == nil, actor.Session), margs...)
 	}
 	if q.User != "" {
 		u, err := s.resolveUser(ctx, s.db.R, actor, q.User)
@@ -689,7 +689,7 @@ func (s *Service) CurrentAgentSession(ctx context.Context, actor *Actor, cliID, 
 	}
 	id := actor.Session
 	if cliID != "" {
-		id = s.SessionForHeader(ctx, actor.id(), cliID, machine)
+		id = s.SessionForHeader(ctx, actor.ID(), cliID, machine)
 	}
 	if id == 0 {
 		return nil, notFound("session")
@@ -791,7 +791,7 @@ func (s *Service) GetAgentSession(ctx context.Context, actor *Actor, id int64) (
 	sum.Done.PullRequests, sum.Done.Commits, sum.Deferred.Issues = []SessionItem{}, []SessionItem{}, []SessionItem{}
 	sum.Deferred.Requests, sum.Waiting, sum.Requests, sum.Runs, sum.Timeline = []*Request{}, []*Request{}, []*Request{}, []SessionRun{}, []TimelineEntry{}
 
-	ownPrompts := x.userID == actor.id() || actor.isAdmin()
+	ownPrompts := x.userID == actor.ID() || actor.IsAdmin()
 	refusedText := ownPrompts
 	if !refusedText && x.projectID.Valid {
 		role, rerr := s.projectRole(ctx, s.db.R, actor, x.projectID.Int64)
@@ -929,10 +929,10 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 	res := &HookResult{}
 	lastQuiet := false
 	var perr error
-	if res.Pause, perr = s.sessionPause(ctx, actor.id(), pausedAgent(actor)); perr != nil {
+	if res.Pause, perr = s.sessionPause(ctx, actor.ID(), pausedAgent(actor)); perr != nil {
 		return nil, perr
 	}
-	res.Guard = s.guardState(ctx, actor.id())
+	res.Guard = s.guardState(ctx, actor.ID())
 	pausedStop := res.Pause != nil && evs[len(evs)-1].Event == "Stop"
 	var advance *stepRow
 	var review *reviewAsk
@@ -1066,7 +1066,9 @@ func (s *Service) SessionHook(ctx context.Context, actor *Actor, evs []HookEvent
 		res.Text = joinText(res.Text, s.autopilotSessionNote(ctx, res.Session, 0))
 	}
 	if last := evs[len(evs)-1]; last.Event == "Stop" && !last.StopHookActive && !lastQuiet && !pausedStop && !leftStop && res.Text == "" && res.Session != 0 {
-		if running := runningTasks(last.Pending); len(running) > 0 && !s.followUpTalks(ctx, res.Session) {
+		// A running subagent wakes the session when it reports, and the findings
+		// usually wait on its work: asking costs a turn that answers "not yet".
+		if running := allRunningTasks(last.Pending); len(running) > 0 && !pendingSubagent(last.Pending) && !s.followUpTalks(ctx, res.Session) {
 			ac := *actor
 			ac.Session = res.Session
 			if o, err := s.SessionOutstanding(ctx, &ac, OutstandingAtStop); err != nil {
@@ -1183,7 +1185,7 @@ var agentOfCLI = map[string]string{
 // as Claude Code. A Gemini session that says it is gemini is not recorded as
 // Claude Code.
 func agentLabel(actor *Actor, cli string) string {
-	if a := actor.agentName(); a != "" {
+	if a := actor.AgentName(); a != "" {
 		return a
 	}
 	name := strings.ToLower(cmp(strings.TrimSpace(cli), "claude"))
@@ -1196,7 +1198,7 @@ func (s *Service) touchSession(ctx context.Context, t *tx, actor *Actor, ev *Hoo
 	at := s.hookTime(ev)
 	machine := cmp(strings.TrimSpace(ev.Machine), "unknown")
 	x, err := scanSession(t.QueryRowContext(ctx, `SELECT `+sessionCols+` FROM agent_sessions s WHERE s.user_id = ? AND s.machine = ? AND s.cli_id = ?`,
-		actor.id(), machine, ev.SessionID), at)
+		actor.ID(), machine, ev.SessionID), at)
 	created := false
 	if errors.Is(err, sql.ErrNoRows) {
 		created = true
@@ -1206,7 +1208,7 @@ func (s *Service) touchSession(ctx context.Context, t *tx, actor *Actor, ev *Hoo
 		}
 		res, err := t.ExecContext(ctx, `INSERT INTO agent_sessions(user_id, machine, cli_id, cli, agent, started_at, last_seen_at, kind, task_keys, started_server, started_wp)
 			VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-			actor.id(), machine, ev.SessionID, cmp(ev.CLI, "claude"), agentLabel(actor, ev.CLI), at, at, kind, keys, s.cfg.Version, actor.ClientVersion)
+			actor.ID(), machine, ev.SessionID, cmp(ev.CLI, "claude"), agentLabel(actor, ev.CLI), at, at, kind, keys, s.cfg.Version, actor.ClientVersion)
 		if err != nil {
 			return nil, false, err
 		}
@@ -1244,7 +1246,7 @@ func (s *Service) touchSession(ctx context.Context, t *tx, actor *Actor, ev *Hoo
 		sets, args = append(sets, "model = ?"), append(args, ev.Model)
 		x.Model = ev.Model
 	}
-	if a := actor.agentName(); a != "" && a != x.Agent && created {
+	if a := actor.AgentName(); a != "" && a != x.Agent && created {
 		x.Agent = a
 	}
 	// #nosec G202 -- fixed column assignments; values are bound

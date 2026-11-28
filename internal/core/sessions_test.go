@@ -255,10 +255,10 @@ func TestSessionRecordsWhatTheActorDoes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := e.s.SessionForHeader(e.ctx, e.admin.id(), "c1", "box"); got != res.Session {
+	if got := e.s.SessionForHeader(e.ctx, e.admin.ID(), "c1", "box"); got != res.Session {
 		t.Fatalf("header lookup %d, want %d", got, res.Session)
 	}
-	if got := e.s.SessionForHeader(e.ctx, e.admin.id(), "nope", ""); got != 0 {
+	if got := e.s.SessionForHeader(e.ctx, e.admin.ID(), "nope", ""); got != 0 {
 		t.Fatalf("unknown session resolved to %d", got)
 	}
 	in := *ag

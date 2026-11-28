@@ -42,27 +42,27 @@ var (
 
 // inBrowser says whether the actor is a person in the Waypoint UI: a
 // browser session, not a token, MCP, an agent or an automation.
-func (a *Actor) inBrowser() bool {
-	return a.person() && a.session != "" && !a.ReadOnly
+func inBrowser(a *Actor) bool {
+	return a.Person() && a.SessionHash != "" && !a.ReadOnly
 }
 
 // Reauth checks the person's password again and records it on their
 // browser session, so they may loosen the sandbox for the next ten
 // minutes. It returns when that ends.
 func (s *Service) Reauth(ctx context.Context, actor *Actor, password string) (time.Time, error) {
-	if !actor.inBrowser() {
+	if !inBrowser(actor) {
 		return time.Time{}, fmt.Errorf("re-entering your password is done in the Waypoint UI: %w", ErrForbidden)
 	}
-	u, err := s.userByID(ctx, s.db.R, actor.id())
+	u, err := s.userByID(ctx, s.db.R, actor.ID())
 	if err != nil {
 		return time.Time{}, err
 	}
-	if !CheckPassword(u.passwordHash, password) {
+	if !CheckPassword(u.PasswordHash, password) {
 		return time.Time{}, invalid("wrong password")
 	}
 	now := s.nowMS()
 	err = s.write(ctx, actor, func(t *tx) error {
-		_, err := t.ExecContext(ctx, `UPDATE sessions SET reauth_at = ? WHERE token_hash = ? AND user_id = ?`, now, actor.session, u.ID)
+		_, err := t.ExecContext(ctx, `UPDATE sessions SET reauth_at = ? WHERE token_hash = ? AND user_id = ?`, now, actor.SessionHash, u.ID)
 		return err
 	})
 	return msTime(now).Add(sandboxReauthFor), err
@@ -71,11 +71,11 @@ func (s *Service) Reauth(ctx context.Context, actor *Actor, password string) (ti
 // ReauthUntil is when the actor's last password check stops counting, if
 // it still counts.
 func (s *Service) ReauthUntil(ctx context.Context, actor *Actor) *time.Time {
-	if !actor.inBrowser() {
+	if !inBrowser(actor) {
 		return nil
 	}
 	var at sql.NullInt64
-	if s.db.R.QueryRowContext(ctx, `SELECT reauth_at FROM sessions WHERE token_hash = ? AND user_id = ?`, actor.session, actor.id()).Scan(&at) != nil || !at.Valid {
+	if s.db.R.QueryRowContext(ctx, `SELECT reauth_at FROM sessions WHERE token_hash = ? AND user_id = ?`, actor.SessionHash, actor.ID()).Scan(&at) != nil || !at.Valid {
 		return nil
 	}
 	until := msTime(at.Int64).Add(sandboxReauthFor)
@@ -88,7 +88,7 @@ func (s *Service) ReauthUntil(ctx context.Context, actor *Actor) *time.Time {
 // sandboxWriter refuses anyone but a person in the browser, and a change
 // that loosens without a recent password check or a reason.
 func (s *Service) sandboxWriter(ctx context.Context, actor *Actor, loosens bool, reason string) error {
-	if !actor.inBrowser() {
+	if !inBrowser(actor) {
 		return ErrSandboxUI
 	}
 	if !loosens {
@@ -168,7 +168,7 @@ func (t *tx) logSandbox(ctx context.Context, actor *Actor, scope string, target 
 	changes := make([]map[string]any, 0, len(edits))
 	for _, e := range edits {
 		if _, err := t.ExecContext(ctx, `INSERT INTO sandbox_policy_log(at, user_id, scope, target_id, target_name, field, old_value, new_value, loosens, reason, reverts)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?)`, now, actor.id(), scope, target, name, e.field, e.old, e.new, e.loosens, excerpt(strings.TrimSpace(reason), 500), reverts); err != nil {
+			VALUES (?,?,?,?,?,?,?,?,?,?,?)`, now, actor.ID(), scope, target, name, e.field, e.old, e.new, e.loosens, excerpt(strings.TrimSpace(reason), 500), reverts); err != nil {
 			return err
 		}
 		changes = append(changes, map[string]any{"field": e.field, "old": e.old, "new": e.new})
@@ -220,7 +220,7 @@ func (s *Service) ProjectSandbox(ctx context.Context, actor *Actor, ref string) 
 	if err != nil {
 		return nil, err
 	}
-	if actor.inBrowser() {
+	if inBrowser(actor) {
 		r, rerr := s.projectRole(ctx, s.db.R, actor, p.ID)
 		if rerr != nil {
 			if readFault(rerr) {
@@ -259,7 +259,7 @@ func (s *Service) SetProjectSandbox(ctx context.Context, actor *Actor, ref strin
 }
 
 func (s *Service) setProjectSandbox(ctx context.Context, actor *Actor, ref string, in SandboxPolicyInput, reverts *int64) (*SandboxPolicy, error) {
-	if !actor.inBrowser() {
+	if !inBrowser(actor) {
 		return nil, ErrSandboxUI
 	}
 	p, err := s.projectByRef(ctx, s.db.R, ref)
@@ -307,7 +307,7 @@ func (s *Service) setProjectSandbox(ctx context.Context, actor *Actor, ref strin
 		}
 		if _, err := t.ExecContext(ctx, `INSERT INTO sandbox_projects(project_id, level, interactive_level, updated_by, updated_at) VALUES (?,?,?,?,?)
 			ON CONFLICT(project_id) DO UPDATE SET level = excluded.level, interactive_level = excluded.interactive_level, updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
-			p.ID, next.Level, next.InteractiveLevel, actor.id(), s.nowMS()); err != nil {
+			p.ID, next.Level, next.InteractiveLevel, actor.ID(), s.nowMS()); err != nil {
 			return err
 		}
 		return t.logSandbox(ctx, actor, "project", p.ID, p.Key, edits, in.Reason, reverts, 0)
@@ -355,10 +355,10 @@ type SandboxMachineInput struct {
 // SandboxMachines lists the runner machines the actor may see: an admin's
 // are all of them, anyone else's their own.
 func (s *Service) SandboxMachines(ctx context.Context, actor *Actor) ([]*SandboxMachine, error) {
-	if err := actor.need(PermRunnersRead); err != nil {
+	if err := actor.Need(PermRunnersRead); err != nil {
 		return nil, err
 	}
-	runners, err := s.ListRunners(ctx, actor, actor.isAdmin())
+	runners, err := s.ListRunners(ctx, actor, actor.IsAdmin())
 	if err != nil {
 		return nil, err
 	}
@@ -368,7 +368,7 @@ func (s *Service) SandboxMachines(ctx context.Context, actor *Actor) ([]*Sandbox
 		if err != nil {
 			return nil, err
 		}
-		m.CanEdit = actor.inBrowser() && (actor.isAdmin() || r.Owner.ID == actor.id())
+		m.CanEdit = inBrowser(actor) && (actor.IsAdmin() || r.Owner.ID == actor.ID())
 		out = append(out, m)
 	}
 	return out, nil
@@ -418,14 +418,14 @@ func (s *Service) SetSandboxMachine(ctx context.Context, actor *Actor, runnerID 
 }
 
 func (s *Service) setSandboxMachine(ctx context.Context, actor *Actor, runnerID int64, in SandboxMachineInput, reverts *int64) (*SandboxMachine, error) {
-	if !actor.inBrowser() {
+	if !inBrowser(actor) {
 		return nil, ErrSandboxUI
 	}
 	r, err := s.runnerByID(ctx, s.db.R, runnerID)
 	if err != nil {
 		return nil, err
 	}
-	if !actor.isAdmin() && r.Owner.ID != actor.id() {
+	if !actor.IsAdmin() && r.Owner.ID != actor.ID() {
 		return nil, notFound("runner")
 	}
 	var m *SandboxMachine
@@ -456,7 +456,7 @@ func (s *Service) setSandboxMachine(ctx context.Context, actor *Actor, runnerID 
 			}
 			if _, err := t.ExecContext(ctx, `INSERT INTO sandbox_machines(runner_id, default_level, paused, updated_by, updated_at) VALUES (?,?,?,?,?)
 				ON CONFLICT(runner_id) DO UPDATE SET default_level = excluded.default_level, paused = excluded.paused, updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
-				r.ID, next.DefaultLevel, next.Paused, actor.id(), s.nowMS()); err != nil {
+				r.ID, next.DefaultLevel, next.Paused, actor.ID(), s.nowMS()); err != nil {
 				return err
 			}
 			if err := t.logSandbox(ctx, actor, "machine", r.ID, r.Name, edits, in.Reason, reverts, r.Owner.ID); err != nil {
@@ -507,10 +507,10 @@ func (s *Service) SandboxLog(ctx context.Context, actor *Actor, q SandboxLogQuer
 	} else if q.Runner != 0 {
 		conds, args = append(conds, "scope = 'machine' AND target_id = ?"), append(args, q.Runner)
 	}
-	if !actor.isAdmin() {
-		set, sargs := actor.memberProjects(RoleViewer)
+	if !actor.IsAdmin() {
+		set, sargs := actor.MemberProjects(RoleViewer)
 		conds = append(conds, "((scope = 'project' AND target_id IN "+set+") OR (scope = 'machine' AND target_id IN (SELECT id FROM runners WHERE owner_id = ?)))")
-		args = append(append(args, sargs...), actor.id())
+		args = append(append(args, sargs...), actor.ID())
 	}
 	limit := q.Limit
 	if limit <= 0 || limit > 500 {
@@ -577,7 +577,7 @@ func (s *Service) sandboxFieldValue(ctx context.Context, q queryer, scope string
 // other: in the browser, and with a password check and a reason if putting
 // it back loosens the sandbox.
 func (s *Service) RevertSandboxChange(ctx context.Context, actor *Actor, id int64, reason string) error {
-	if !actor.inBrowser() {
+	if !inBrowser(actor) {
 		return ErrSandboxUI
 	}
 	var c SandboxChange
@@ -655,12 +655,12 @@ func (s *Service) notifySandboxPolicy(ctx context.Context, actor *Actor, e *Even
 		title = "Sandbox " + verb + " on " + name
 		link = "/admin?tab=runners"
 		owner = dataInt(e, "runner_owner")
-		if owner != 0 && owner != actor.id() {
+		if owner != 0 && owner != actor.ID() {
 			s.notifyURL(ctx, owner, nil, NotifySandbox, title, body, "/settings?tab=runners")
 		}
 	}
 	ids = append(ids, s.userIDsWhere(ctx, `SELECT id FROM users WHERE is_admin = 1 AND disabled = 0`)...)
-	seen := map[int64]bool{actor.id(): true, 0: true, owner: true}
+	seen := map[int64]bool{actor.ID(): true, 0: true, owner: true}
 	for _, id := range ids {
 		if !seen[id] {
 			seen[id] = true

@@ -131,7 +131,7 @@ func (s *Service) notifyFor(ctx context.Context, actor *Actor, e *Event) {
 	if e.IssueID == 0 {
 		return
 	}
-	self := actor.id()
+	self := actor.ID()
 	title := ""
 	if i, err := s.issueByID(ctx, s.db.R, e.IssueID, false); err == nil {
 		title = i.Key + " " + i.Title
@@ -261,7 +261,7 @@ func (t *tx) storeNotice(ctx context.Context, userID int64, kind, title, body, l
 		return false, fmt.Errorf("store notification: %w", err)
 	}
 	id, _ := res.LastInsertId()
-	t.emit(&Event{Kind: evNotificationStored, stored: &storedNotice{id: id, user: u, kind: kind, title: title, body: body, link: link}})
+	t.emit(withHint(&Event{Kind: evNotificationStored, Private: true}, &storedNotice{id: id, user: u, kind: kind, title: title, body: body, link: link}))
 	return true, nil
 }
 
@@ -371,7 +371,7 @@ func (s *Service) ListNotifications(ctx context.Context, actor *Actor, unreadOnl
 	rows, err := s.db.R.QueryContext(ctx, `SELECT n.id, n.kind, n.title, n.body, coalesce(p.key || '-' || i.number, ''), n.read_at, n.created_at, n.url,
 		u.id, u.username, u.display_name, u.avatar_version
 		FROM notifications n LEFT JOIN issues i ON i.id = n.issue_id LEFT JOIN projects p ON p.id = i.project_id
-		LEFT JOIN users u ON u.id = n.actor_id WHERE `+where+` ORDER BY n.id DESC LIMIT ?`, actor.id(), limit)
+		LEFT JOIN users u ON u.id = n.actor_id WHERE `+where+` ORDER BY n.id DESC LIMIT ?`, actor.ID(), limit)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -398,7 +398,7 @@ func (s *Service) ListNotifications(ctx context.Context, actor *Actor, unreadOnl
 		out = append(out, n)
 	}
 	var unread int
-	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM notifications WHERE user_id = ? AND read_at IS NULL AND kind != 'request'`, actor.id()).Scan(&unread); err != nil {
+	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM notifications WHERE user_id = ? AND read_at IS NULL AND kind != 'request'`, actor.ID()).Scan(&unread); err != nil {
 		return nil, 0, err
 	}
 	return out, unread, rows.Err()
@@ -413,7 +413,7 @@ func (s *Service) MarkNotificationsRead(ctx context.Context, actor *Actor, ids [
 // ids is empty and upto > 0, only notifications with id <= upto are marked, so
 // one that arrived after the caller's view was drawn stays unread.
 func (s *Service) MarkNotificationsReadUpto(ctx context.Context, actor *Actor, ids []int64, upto int64) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
 	if len(ids) > 500 {
@@ -422,16 +422,16 @@ func (s *Service) MarkNotificationsReadUpto(ctx context.Context, actor *Actor, i
 	now := s.nowMS()
 	var err error
 	if len(ids) == 0 && upto > 0 {
-		_, err = s.db.W.ExecContext(ctx, `UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL AND id <= ?`, now, actor.id(), upto)
+		_, err = s.db.W.ExecContext(ctx, `UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL AND id <= ?`, now, actor.ID(), upto)
 	} else if len(ids) == 0 {
-		_, err = s.db.W.ExecContext(ctx, `UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL`, now, actor.id())
+		_, err = s.db.W.ExecContext(ctx, `UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL`, now, actor.ID())
 	} else {
 		// #nosec G202 -- only fixed column names and ? placeholders are joined in; values are bound
 		_, err = s.db.W.ExecContext(ctx, `UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL AND id IN (`+placeholders(len(ids))+`)`,
-			append([]any{now, actor.id()}, int64Args(ids)...)...)
+			append([]any{now, actor.ID()}, int64Args(ids)...)...)
 	}
 	if err == nil {
-		s.Hub.Publish(&Event{Kind: EvNotification, UserID: actor.id(), Data: map[string]any{"read": true}})
+		s.Hub.Publish(&Event{Kind: EvNotification, UserID: actor.ID(), Data: map[string]any{"read": true}})
 	}
 	return err
 }

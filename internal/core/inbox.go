@@ -147,7 +147,7 @@ func classifyInbox(n *Notification, now time.Time, openReq map[string]bool, cate
 func (s *Service) loadInbox(ctx context.Context, actor *Actor) (out []inboxRow, asOf int64, truncated bool, err error) {
 	now := s.now()
 	open := map[string]bool{}
-	rr, err := s.db.R.QueryContext(ctx, `SELECT coalesce(p.key, ''), r.number FROM requests r LEFT JOIN projects p ON p.id = r.project_id WHERE r.user_id = ? AND r.state = 'open'`, actor.id())
+	rr, err := s.db.R.QueryContext(ctx, `SELECT coalesce(p.key, ''), r.number FROM requests r LEFT JOIN projects p ON p.id = r.project_id WHERE r.user_id = ? AND r.state = 'open'`, actor.ID())
 	if err != nil {
 		return nil, 0, false, err
 	}
@@ -178,7 +178,7 @@ func (s *Service) loadInbox(ctx context.Context, actor *Actor) (out []inboxRow, 
 		FROM notifications n LEFT JOIN issues i ON i.id = n.issue_id LEFT JOIN projects p ON p.id = i.project_id
 		LEFT JOIN statuses st ON st.id = i.status_id LEFT JOIN users u ON u.id = n.actor_id
 		WHERE `+where+` AND (n.read_at IS NULL OR n.id IN (SELECT id FROM notifications WHERE user_id = ? AND read_at IS NOT NULL ORDER BY id DESC LIMIT ?))
-		ORDER BY n.id DESC LIMIT ?`, append(append([]any{actor.id()}, vargs...), actor.id(), inboxReadKept, inboxScan+1)...)
+		ORDER BY n.id DESC LIMIT ?`, append(append([]any{actor.ID()}, vargs...), actor.ID(), inboxReadKept, inboxScan+1)...)
 	if err != nil {
 		return nil, 0, false, err
 	}
@@ -341,7 +341,7 @@ type InboxScope struct {
 // MarkInboxRead marks the unread notifications in a section, or one group of
 // it, as read, and returns how many it marked.
 func (s *Service) MarkInboxRead(ctx context.Context, actor *Actor, sc InboxScope) (int, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return 0, err
 	}
 	if sc.Section != InboxLive && sc.Section != InboxStale {
@@ -366,12 +366,12 @@ func (s *Service) MarkInboxRead(ctx context.Context, actor *Actor, sc InboxScope
 		ids = ids[len(chunk):]
 		// #nosec G202 -- only fixed column names and ? placeholders are joined in; values are bound
 		if _, err := s.db.W.ExecContext(ctx, `UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL AND id IN (`+placeholders(len(chunk))+`)`,
-			append([]any{now, actor.id()}, int64Args(chunk)...)...); err != nil {
+			append([]any{now, actor.ID()}, int64Args(chunk)...)...); err != nil {
 			return 0, err
 		}
 	}
 	if marked > 0 {
-		s.Hub.Publish(&Event{Kind: EvNotification, UserID: actor.id(), Data: map[string]any{"read": true}})
+		s.Hub.Publish(&Event{Kind: EvNotification, UserID: actor.ID(), Data: map[string]any{"read": true}})
 	}
 	return marked, nil
 }

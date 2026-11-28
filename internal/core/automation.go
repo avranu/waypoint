@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"git.jmann.me/claude/waypoint/internal/core/email"
 	"git.jmann.me/claude/waypoint/internal/wql"
 )
 
@@ -446,12 +447,12 @@ func (s *Service) runAction(c *StepCtx) error {
 		}
 		return nil
 	case "email":
-		es, err := s.emailSettings(ctx)
+		es, err := s.mailer.Settings(ctx)
 		if err != nil {
 			return err
 		}
 		if !es.Configured {
-			return errEmailOff
+			return email.ErrOff
 		}
 		msg, err := render(act.Message, eventText(e))
 		if err != nil {
@@ -461,7 +462,7 @@ func (s *Service) runAction(c *StepCtx) error {
 		if err != nil {
 			return err
 		}
-		to, err := parseRecipients(anyString(act.Extra["to"]))
+		to, err := email.ParseRecipients(anyString(act.Extra["to"]))
 		if err != nil {
 			return err
 		}
@@ -480,7 +481,7 @@ func (s *Service) runAction(c *StepCtx) error {
 		slices.Sort(to)
 		for _, addr := range slices.Compact(to) {
 			s.goBG(func() {
-				if err := sendEmail(context.Background(), es, addr, subject, msg, data.URL); err != nil {
+				if err := s.mailer.Send(context.Background(), es, addr, subject, msg, data.URL); err != nil {
 					s.log.WarnContext(ctx, "automation email failed", "automation", a.Name, "err", err)
 				}
 			})
@@ -518,7 +519,7 @@ func (s *Service) runAction(c *StepCtx) error {
 		if u.ID == 0 {
 			return nil
 		}
-		_, err = s.StartTimer(ctx, &Actor{User: u, Automation: a, depth: actor.depth}, itoa64(issue.ID), "")
+		_, err = s.StartTimer(ctx, &Actor{User: u, Automation: a.ref(), Depth: actor.Depth}, itoa64(issue.ID), "")
 		return err
 	case "stop_timer":
 		if err := needIssue(); err != nil {
@@ -528,7 +529,7 @@ func (s *Service) runAction(c *StepCtx) error {
 		if err != nil || u.ID == 0 {
 			return err
 		}
-		ua := &Actor{User: u, Automation: a, depth: actor.depth}
+		ua := &Actor{User: u, Automation: a.ref(), Depth: actor.Depth}
 		running, err := s.RunningTimer(ctx, ua)
 		if err != nil || running == nil || running.Issue == nil || running.Issue.ID != issue.ID {
 			return err
@@ -616,7 +617,7 @@ func (s *Service) runAction(c *StepCtx) error {
 				return invalid("written_by can be at most 100 characters")
 			}
 			as := *actor
-			as.textAgent = w
+			as.TextAgent = w
 			writer = &as
 		}
 		made, err := s.CreateIssue(ctx, writer, in)

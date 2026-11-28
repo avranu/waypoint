@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -373,7 +374,7 @@ func (s *Service) linkOwnWork(ctx context.Context, t *tx, src forgeText, owned m
 			}
 			ev := &Event{Kind: EvIssueLinked, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key, Field: src.kind, New: src.item.URL}
 			if src.kind == "pull" && src.item.Number != 0 {
-				ev.pullLinked = &pullRef{forgeID: src.f.ID, repo: src.repo, number: src.item.Number}
+				kernel.Attach(ev, &pullRef{forgeID: src.f.ID, repo: src.repo, number: src.item.Number})
 			}
 			t.emit(ev)
 			continue

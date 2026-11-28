@@ -370,10 +370,10 @@ func (s *Service) autopilotFor(ctx context.Context, q queryer, userID, projectID
 
 // AutopilotOverview is the person's autopilot: settings, projects, readings.
 func (s *Service) AutopilotOverview(ctx context.Context, a *Actor) (*AutopilotOverview, error) {
-	if err := a.need(PermAgentsRead); err != nil {
+	if err := a.Need(PermAgentsRead); err != nil {
 		return nil, err
 	}
-	uid := a.id()
+	uid := a.ID()
 	rows, err := s.autopilotRows(ctx, s.db.R, uid)
 	if err != nil {
 		return nil, err
@@ -451,17 +451,17 @@ type AutopilotSettingInput struct {
 
 // SetAutopilot saves the person's defaults (project "") or a project's.
 func (s *Service) SetAutopilot(ctx context.Context, a *Actor, project string, in AutopilotSettingInput) (*AutopilotOverview, error) {
-	if err := a.need(PermSessionsStart); err != nil {
+	if err := a.Need(PermSessionsStart); err != nil {
 		return nil, err
 	}
 	if offOnly := in.Enabled != nil && !*in.Enabled && in.Merge && !in.Reset && in.Limits == (AutopilotLimits{}) && in.QuotaOffUntil == nil; offOnly {
-		if err := a.requireHuman("changing autopilot"); err != nil {
+		if err := a.RequireHuman("changing autopilot"); err != nil {
 			return nil, err
 		}
-	} else if err := a.requirePersonDirect("changing autopilot, which starts work on your machines,"); err != nil {
+	} else if err := a.RequirePersonDirect("changing autopilot, which starts work on your machines,"); err != nil {
 		return nil, err
 	}
-	if err := a.canWrite(); err != nil {
+	if err := a.CanWrite(); err != nil {
 		return nil, err
 	}
 	in.Limits = in.Limits.normalized()
@@ -501,7 +501,7 @@ func (s *Service) SetAutopilot(ctx context.Context, a *Actor, project string, in
 			quotaOff = in.QuotaOffUntil.UnixMilli()
 		}
 	}
-	uid := a.id()
+	uid := a.ID()
 	turnedOff := false
 	var heldKeys []string
 	var heldSteps []int64

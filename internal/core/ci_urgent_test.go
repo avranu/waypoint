@@ -89,7 +89,7 @@ func TestForgePRLinkedToTaggedTask(t *testing.T) {
 		t.Errorf("label ops after a push = %v", ops)
 	}
 
-	pe.s.urgentFromLink(pe.ctx, &Event{IssueKey: tagged.Key, pullLinked: &pullRef{forgeID: pe.f.ID, repo: "me/app", number: 99}})
+	pe.s.urgentFromLink(pe.ctx, withHint(&Event{IssueKey: tagged.Key}, &pullRef{forgeID: pe.f.ID, repo: "me/app", number: 99}))
 	if _, ops, _, _ := g.snapshot(); !slices.Equal(ops, []string{"+" + CIUrgentLabel, "-" + CIUrgentLabel}) {
 		t.Errorf("label ops after a link to a missing pull request = %v", ops)
 	}

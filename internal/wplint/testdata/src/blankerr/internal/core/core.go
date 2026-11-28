@@ -1,13 +1,19 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"strings"
+
+	"blankerr/internal/core/kernel"
 )
 
 type Service struct{}
-type tx struct{}
+
+// tx wraps the kernel's transaction, as core's does: Part and Exec are the
+// kernel's, promoted.
+type tx struct{ *kernel.Tx }
 
 func (s *Service) read() (string, error) { return "", errors.New("down") }
 func (s *Service) check() error          { return nil }
@@ -109,4 +115,9 @@ func emptied(s *Service) {
 	var p *int
 	if p != nil { // not an error
 	}
+}
+
+func promoted(ctx context.Context, t *tx) {
+	t.Part(ctx, nil) // want `the error from Part is dropped`
+	_ = t.Exec()     // want `the error from Exec is discarded`
 }

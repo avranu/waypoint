@@ -125,7 +125,7 @@ func (s *Service) GetAutomation(ctx context.Context, actor *Actor, id int64) (*A
 		return nil, err
 	}
 	if a.ProjectID == 0 {
-		if err := actor.requireHuman("admin automations"); err != nil {
+		if err := actor.RequireHuman("admin automations"); err != nil {
 			return nil, err
 		}
 	}
@@ -180,7 +180,7 @@ type AutomationInput struct {
 
 // CreateAutomation adds a rule to a project (owners only).
 func (s *Service) CreateAutomation(ctx context.Context, actor *Actor, projectRef string, in AutomationInput) (*Automation, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	p, err := s.projectByRef(ctx, s.db.R, projectRef)
@@ -196,7 +196,7 @@ func (s *Service) CreateAutomation(ctx context.Context, actor *Actor, projectRef
 // CreateAdminAutomation adds an automation outside any project: it sees every
 // project's events and the system's. Admins (people) only.
 func (s *Service) CreateAdminAutomation(ctx context.Context, actor *Actor, in AutomationInput) (*Automation, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	if err := s.requireAdminHuman(actor); err != nil {
@@ -206,10 +206,10 @@ func (s *Service) CreateAdminAutomation(ctx context.Context, actor *Actor, in Au
 }
 
 func (s *Service) requireAdminHuman(actor *Actor) error {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return forbidden("admin automations are for admins")
 	}
-	return actor.requireHuman("admin automations")
+	return actor.RequireHuman("admin automations")
 }
 
 func (s *Service) createAutomation(ctx context.Context, actor *Actor, projectID int64, in AutomationInput) (*Automation, error) {
@@ -238,7 +238,7 @@ func (s *Service) createAutomation(ctx context.Context, actor *Actor, projectID 
 	}
 	res, err := s.db.W.ExecContext(ctx, `INSERT INTO automations(project_id, name, enabled, rule, position, created_by, saved_by, created_at, updated_at, hook_token, rule_agent)
 		VALUES (?,?,?,?,(SELECT coalesce(max(position), 0) + 1 FROM automations WHERE project_id IS ?),?,?,?,?,?,?)`,
-		pid, name, boolInt(enabled), ruleJSON(*in.Rule), pid, nullUser(actor.id()), saverOf(actor), now, now, hook, ruleAgentOf(actor))
+		pid, name, boolInt(enabled), ruleJSON(*in.Rule), pid, nullUser(actor.ID()), saverOf(actor), now, now, hook, ruleAgentOf(actor))
 	if err != nil {
 		return nil, err
 	}
@@ -264,7 +264,7 @@ func saverOf(actor *Actor) any {
 	if actor.IsAgent() {
 		return nil
 	}
-	return nullUser(actor.id())
+	return nullUser(actor.ID())
 }
 
 // ruleAgentOf is what an automation records as its rule's author when
@@ -273,7 +273,7 @@ func ruleAgentOf(actor *Actor) string {
 	if !actor.IsAgent() {
 		return ""
 	}
-	return cmp(actor.agentName(), "agent")
+	return cmp(actor.AgentName(), "agent")
 }
 
 // automationForManage loads an automation the actor may edit: a project's
@@ -287,13 +287,13 @@ func (s *Service) automationForManage(ctx context.Context, actor *Actor, id int6
 		if !a.ownedBy(actor) {
 			return nil, notFound("automation")
 		}
-		return a, actor.requireHuman("follow-ups")
+		return a, actor.RequireHuman("follow-ups")
 	}
 	if a.ProjectID == 0 {
-		if !actor.isAdmin() {
+		if !actor.IsAdmin() {
 			return nil, notFound("automation")
 		}
-		if err := actor.requireHuman("admin automations"); err != nil {
+		if err := actor.RequireHuman("admin automations"); err != nil {
 			return nil, err
 		}
 		return a, nil
@@ -306,7 +306,7 @@ func (s *Service) automationForManage(ctx context.Context, actor *Actor, id int6
 
 // UpdateAutomation edits or enables/disables an automation.
 func (s *Service) UpdateAutomation(ctx context.Context, actor *Actor, id int64, in AutomationInput) (*Automation, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	a, err := s.automationForManage(ctx, actor, id)
@@ -368,7 +368,7 @@ func (s *Service) UpdateAutomation(ctx context.Context, actor *Actor, id int64, 
 
 // DeleteAutomation removes an automation.
 func (s *Service) DeleteAutomation(ctx context.Context, actor *Actor, id int64) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
 	a, err := s.automationForManage(ctx, actor, id)

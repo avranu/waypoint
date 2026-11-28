@@ -113,10 +113,10 @@ func chainSQL(col string, chain []scopeLevel) (cond, rank string, args []any) {
 // visibleSQL limits a project_id column to what the actor can read: global
 // items, and items in projects they belong to (all, for admins).
 func visibleSQL(col string, actor *Actor) (string, []any) {
-	if actor.isAdmin() {
+	if actor.IsAdmin() {
 		return "1", nil
 	}
-	member, margs := actor.memberProjects(RoleViewer)
+	member, margs := actor.MemberProjects(RoleViewer)
 	return "(" + col + " IS NULL OR " + col + " IN " + member + ")", margs
 }
 
@@ -128,7 +128,7 @@ func (s *Service) scopeRole(ctx context.Context, q queryer, actor *Actor, projec
 		return RoleNone, nil
 	}
 	if projectID == nil {
-		if actor.isAdmin() {
+		if actor.IsAdmin() {
 			return RoleOwner, nil
 		}
 		return RoleViewer, nil
@@ -139,12 +139,12 @@ func (s *Service) scopeRole(ctx context.Context, q queryer, actor *Actor, projec
 // scopeFor resolves a project ref for a new or moved item ("" or "global"
 // for global) and checks the actor may write there.
 func (s *Service) scopeFor(ctx context.Context, q queryer, actor *Actor, ref string) (*int64, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	ref = strings.TrimSpace(ref)
 	if ref == "" || strings.EqualFold(ref, "global") {
-		if !actor.isAdmin() {
+		if !actor.IsAdmin() {
 			return nil, invalid("only admins can add to the global set; pick a project")
 		}
 		return nil, nil
@@ -684,7 +684,7 @@ func (s *Service) kitem(ctx context.Context, actor *Actor, typ string, id int64,
 // canEditSource checks the actor may add links from (or remove links on)
 // an item: write access, and for agents not a locked glossary entry.
 func (s *Service) canEditSource(ctx context.Context, q queryer, actor *Actor, typ string, id int64) (*int64, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	switch typ {
@@ -795,7 +795,7 @@ func (s *Service) addLink(ctx context.Context, t *tx, actor *Actor, in LinkInput
 	switch {
 	case actor.Automation != nil:
 		basis = linkBasisAutomation
-	case !actor.actsAsPerson():
+	case !actor.ActsAsPerson():
 		basis = linkBasisAgent
 	}
 	if rel == "serves" && tt == KDesign {
@@ -812,7 +812,7 @@ func (s *Service) addLink(ctx context.Context, t *tx, actor *Actor, in LinkInput
 	}
 	sessID, sessTask := sessionStamp(ctx, t, actor)
 	res, err := t.ExecContext(ctx, `INSERT OR IGNORE INTO knowledge_links(src_type, src_id, dst_type, dst_id, dst_ref, rel, note, created_by, created_agent, created_at, basis, session_id, session_issue_id)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, ft, fid, tt, nullID(tid), tref, rel, strings.TrimSpace(in.Note), nullUser(actor.id()), actor.creditAgent(), s.nowMS(), basis, sessID, sessTask)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, ft, fid, tt, nullID(tid), tref, rel, strings.TrimSpace(in.Note), nullUser(actor.ID()), actor.CreditAgent(), s.nowMS(), basis, sessID, sessTask)
 	if err != nil {
 		return 0, src, err
 	}
@@ -824,11 +824,11 @@ func (s *Service) addLink(ctx context.Context, t *tx, actor *Actor, in LinkInput
 		case err != nil:
 		case basis == "":
 			_, err = t.ExecContext(ctx, `UPDATE knowledge_links SET confirmed_by = ?, confirmed_at = ? WHERE id = ? AND auto = 0 AND confirmed_by IS NULL
-				AND (basis != '' OR created_agent != '' OR created_by IS NULL)`, actor.id(), s.nowMS(), id)
+				AND (basis != '' OR created_agent != '' OR created_by IS NULL)`, actor.ID(), s.nowMS(), id)
 		default:
 			_, err = t.ExecContext(ctx, `UPDATE knowledge_links SET basis = ?, created_by = ?, created_agent = ?, created_at = ?, note = ?, session_id = ?, session_issue_id = ?
 				WHERE id = ? AND confirmed_by IS NULL AND basis IN (?, ?)`,
-				basis, nullUser(actor.id()), actor.creditAgent(), s.nowMS(), strings.TrimSpace(in.Note), sessID, sessTask, id, linkBasisInferred, linkBasisSuggested)
+				basis, nullUser(actor.ID()), actor.CreditAgent(), s.nowMS(), strings.TrimSpace(in.Note), sessID, sessTask, id, linkBasisInferred, linkBasisSuggested)
 		}
 		return id, src, err
 	}

@@ -71,13 +71,13 @@ func (s *Service) sharedVersions(ctx context.Context, q queryer, n int) ([]Share
 // (admins, people only). Saving doesn't publish: repos missing the block
 // get it within the hour, the others on Publish.
 func (s *Service) SaveSharedInstructions(ctx context.Context, actor *Actor, text string) (*SharedVersion, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
-	if err := actor.requirePersonDirect("Editing the shared instructions"); err != nil {
+	if err := actor.RequirePersonDirect("Editing the shared instructions"); err != nil {
 		return nil, err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("only admins edit the shared instructions")
 	}
 	text = strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
@@ -109,7 +109,7 @@ func (s *Service) SaveSharedInstructions(ctx context.Context, actor *Actor, text
 	v.SavedBy = &ref
 	err = s.write(ctx, actor, func(t *tx) error {
 		if _, err := t.ExecContext(ctx, `INSERT INTO agent_shared_versions(version, text, saved_by, saved_at) VALUES (?,?,?,?)`,
-			v.Version, text, actor.id(), v.SavedAt.UnixMilli()); err != nil {
+			v.Version, text, actor.ID(), v.SavedAt.UnixMilli()); err != nil {
 			return err
 		}
 		t.emit(&Event{Kind: EvAgentSetupUpdated, New: fmt.Sprint(v.Version)})
@@ -132,13 +132,13 @@ type PublishResult struct {
 // on every repo whose block differs from them (admins, people only), in
 // the background; each repo's row shows how it went.
 func (s *Service) PublishShared(ctx context.Context, actor *Actor) (*PublishResult, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
-	if err := actor.requirePersonDirect("Publishing the shared instructions"); err != nil {
+	if err := actor.RequirePersonDirect("Publishing the shared instructions"); err != nil {
 		return nil, err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("only admins publish the shared instructions")
 	}
 	cur, err := s.sharedVersions(ctx, s.db.R, 1)
@@ -404,11 +404,11 @@ func (s *Service) publishSharedTo(ctx context.Context, actor *Actor, r setupRepo
 		return err
 	}
 	for _, p := range prs {
-		if p.Version == v.Version && (p.State == "open" || actor.id() == 0) {
+		if p.Version == v.Version && (p.State == "open" || actor.ID() == 0) {
 			return nil
 		}
 	}
-	rec := &agentPRRecord{forgeID: r.forgeID, repo: r.repo, kind: agentPRShared, version: v.Version, by: actor.id()}
+	rec := &agentPRRecord{forgeID: r.forgeID, repo: r.repo, kind: agentPRShared, version: v.Version, by: actor.ID()}
 	err = func() error {
 		af, err := s.agentForge(ctx, r.forgeID)
 		if err != nil {
@@ -467,7 +467,7 @@ func (s *Service) publishSharedTo(ctx context.Context, actor *Actor, r setupRepo
 			return err
 		}
 		who := "Waypoint"
-		if actor.id() != 0 {
+		if actor.ID() != 0 {
 			who = actor.User.DisplayName
 		}
 		body := "The shared agent instructions, version " + fmt.Sprint(v.Version) + ", published by " + who + " from Waypoint's Agents → Setup.\n\n" +
@@ -587,10 +587,10 @@ type AgentFileEditResult struct {
 // EditAgentFile opens a pull request, labelled automerge, with a person's
 // change to a repo's agent file (editors of one of the repo's projects).
 func (s *Service) EditAgentFile(ctx context.Context, actor *Actor, in AgentFileEdit) (*AgentFileEditResult, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
-	if err := actor.requirePersonDirect("Editing agent files"); err != nil {
+	if err := actor.RequirePersonDirect("Editing agent files"); err != nil {
 		return nil, err
 	}
 	in.Path = strings.TrimPrefix(strings.TrimSpace(in.Path), "./")
@@ -677,8 +677,8 @@ type agentFilePR struct {
 // its pull request, recorded as an agent PR (EditAgentFile, and a
 // permission request approved with a rule, WP-233).
 func (s *Service) openAgentFilePR(ctx context.Context, actor *Actor, r *setupRepo, af *agentForge, in agentFilePR) (*AgentFileEditResult, error) {
-	rec := &agentPRRecord{forgeID: r.forgeID, repo: r.repo, kind: agentPREdit, paths: []string{in.path}, by: actor.id()}
-	sum := sha256.Sum256(fmt.Appendf(nil, "%d:%s:%s:%d:%s:%s", actor.id(), r.repo, in.path, s.nowMS(), in.message, in.content))
+	rec := &agentPRRecord{forgeID: r.forgeID, repo: r.repo, kind: agentPREdit, paths: []string{in.path}, by: actor.ID()}
+	sum := sha256.Sum256(fmt.Appendf(nil, "%d:%s:%s:%d:%s:%s", actor.ID(), r.repo, in.path, s.nowMS(), in.message, in.content))
 	rec.branch = fmt.Sprintf("waypoint/%s-%s", in.branch, hex.EncodeToString(sum[:])[:5])
 	if _, err := af.commit.CommitFiles(ctx, af.f, r.repo, CommitInput{Base: in.base, Branch: rec.branch, Message: in.message,
 		Files: []FileChange{{Path: in.path, BaseSHA: in.baseSHA, Content: in.content}}}); err != nil {
@@ -730,7 +730,7 @@ func (s *Service) setupRepoFor(ctx context.Context, actor *Actor, forgeID int64,
 // canSeeRepo: the actor has at least role min (viewer or editor) in one of
 // the repo's projects.
 func (s *Service) canSeeRepo(ctx context.Context, actor *Actor, r setupRepo, min int) (bool, error) {
-	if actor.isAdmin() {
+	if actor.IsAdmin() {
 		return true, nil
 	}
 	viewer, editor, err := s.projectKeysOf(ctx, actor)

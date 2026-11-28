@@ -22,16 +22,17 @@ func TestAnalyzers(t *testing.T) {
 	t.Cleanup(wplint.SetCoreOrder("forge", "pr", "merge", "top"))
 	cases := map[string][]string{
 		"apidb":         {"apidb/internal/api", "apidb/internal/core"},
-		"writeclosure":  {"writeclosure/internal/core"},
-		"actorused":     {"actorused/internal/core"},
-		"clock":         {"clock/internal/core"},
+		"writeclosure":  {"writeclosure/internal/core", "writeclosure/internal/core/kernel", "writeclosure/internal/core/dom"},
+		"actorused":     {"actorused/internal/core", "actorused/internal/core/kernel", "actorused/internal/core/dom"},
+		"clock":         {"clock/internal/core", "clock/internal/core/kernel", "clock/internal/core/dom"},
 		"logctx":        {"logctx/internal/core", "logctx/internal/core/sub"},
-		"blankerr":      {"blankerr/internal/core", "blankerr/internal/core/sub"},
+		"blankerr":      {"blankerr/internal/core", "blankerr/internal/core/sub", "blankerr/internal/core/kernel", "blankerr/internal/core/dom"},
 		"logmsg":        {"logmsg/internal/core", "logmsg/internal/core/sub"},
 		"sqlscan":       {"sqlscan/store"},
-		"schemachain":   {"schemachain/internal/core"},
+		"schemachain":   {"schemachain/internal/core", "schemachain/internal/core/dom"},
 		"protecteddiff": {"protecteddiff/forge"},
-		"statuscreator": {"statuscreator/internal/core"},
+		"statuscreator": {"statuscreator/internal/core", "statuscreator/internal/core/dom"},
+		"domainactor":   {"domainactor/internal/core", "domainactor/internal/core/kernel", "domainactor/internal/core/dom"},
 		"corelayers":    {"corelayers/internal/core", "corelayers/internal/core/kernel", "corelayers/internal/core/forge", "corelayers/internal/core/pr", "corelayers/internal/core/merge", "corelayers/internal/core/top", "corelayers/internal/core/stray"},
 		"testenv":       {"testenv/cli", "testenv/clean", "testenv/notests", "testenv/ranged"},
 	}

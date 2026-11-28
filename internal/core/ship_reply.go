@@ -46,7 +46,7 @@ func (s *Service) ShipReplyTemplate(ctx context.Context, actor *Actor) string {
 
 // GetShipReply shows the template to an admin.
 func (s *Service) GetShipReply(ctx context.Context, actor *Actor) (*ShipReply, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("only admins can see the ship reply")
 	}
 	v, err := s.customShipReply(ctx)
@@ -59,10 +59,10 @@ func (s *Service) GetShipReply(ctx context.Context, actor *Actor) (*ShipReply, e
 // SetShipReply words the template (admins, people only); empty, or the
 // default itself, goes back to the default.
 func (s *Service) SetShipReply(ctx context.Context, actor *Actor, reply string) (*ShipReply, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("only admins can word the ship reply")
 	}
-	if err := actor.requireHuman("wording the ship reply"); err != nil {
+	if err := actor.RequireHuman("wording the ship reply"); err != nil {
 		return nil, err
 	}
 	reply = strings.TrimSpace(strings.ReplaceAll(reply, "\r\n", "\n"))

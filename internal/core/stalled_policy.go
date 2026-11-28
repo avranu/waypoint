@@ -146,10 +146,10 @@ func (s *Service) ProjectStallPolicy(ctx context.Context, actor *Actor, project 
 // SetStallPolicy sets the policy for every project (admins, people only);
 // nil goes back to the default.
 func (s *Service) SetStallPolicy(ctx context.Context, actor *Actor, in *StallPolicy) (*StallPolicies, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("only admins can set when stalled jobs are told for every project")
 	}
-	if err := actor.requireHuman("setting when stalled jobs are told"); err != nil {
+	if err := actor.RequireHuman("setting when stalled jobs are told"); err != nil {
 		return nil, err
 	}
 	val := ""

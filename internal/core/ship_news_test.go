@@ -158,6 +158,9 @@ func TestAwaitShipNewsShippedPullMergedEnds(t *testing.T) {
 	if got.Outcome != ShipNewsEnded || !strings.Contains(got.Text, "PR 12") || !strings.Contains(got.Text, "merged") {
 		t.Fatalf("got %+v", got)
 	}
+	if got.Pull == nil || got.Pull.Number != 12 || got.Pull.State != "merged" || !strings.Contains(got.Text, "https://git.example/acme/app/pulls/12") {
+		t.Fatalf("merged news lacks the pull request: %+v", got)
+	}
 }
 
 // A shipped round with no pull request of the branch's own repo recorded
@@ -184,6 +187,66 @@ func TestAwaitShipNewsSkippedRoundEnds(t *testing.T) {
 	}
 	got := a.await(held.Key, time.Second)
 	if got.Outcome != ShipNewsEnded || !strings.Contains(got.Text, "over") {
+		t.Fatalf("got %+v", got)
+	}
+	if got.Pull != nil || strings.Contains(got.Text, "PR ") {
+		t.Fatalf("no pull request is recorded, yet %+v", got)
+	}
+}
+
+// A shipped round whose pull request was closed without merging names it but
+// carries no Pull: the agent has that to read.
+func TestAwaitShipNewsShippedPullClosedCarriesNoPull(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	a.openPull(t, round, "closed")
+	a.shipDone(t, round)
+	got := a.await(held.Key, time.Second)
+	if got.Outcome != ShipNewsEnded || got.Pull != nil || !strings.Contains(got.Text, "PR 12, is closed") {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+// An ended round names its branch's merged pull request, which may be an
+// earlier round's, but carries no Pull.
+func TestAwaitShipNewsEndedNamesThePullRequest(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	a.openPull(t, round, "merged")
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = ?, ended_at = ?, reason = ? WHERE id = ?`, RoundSkipped, a.clockNow().UnixMilli(), roundCancelledBy+" a person", round); err != nil {
+		t.Fatal(err)
+	}
+	got := a.await(held.Key, time.Second)
+	if got.Outcome != ShipNewsEnded || got.Pull != nil || !strings.Contains(got.Text, "PR 12 (merged): https://git.example/acme/app/pulls/12 Nothing more is waiting on you here.") {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+// A round that ends once its run has, with the branch's pull request open,
+// carries it: the work is in it.
+func TestAwaitShipNewsEndedWithAnOpenPullCarriesIt(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	a.openPull(t, round, "open")
+	if _, err := a.s.db.W.Exec(`UPDATE agent_runs SET ended_at = ? WHERE id = (SELECT run_id FROM work_log WHERE id = ?)`, a.clockNow().UnixMilli(), round); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET state = ?, ended_at = ? WHERE id = ?`, RoundDone, a.clockNow().UnixMilli(), round); err != nil {
+		t.Fatal(err)
+	}
+	got := a.await(held.Key, time.Second)
+	if got.Outcome != ShipNewsEnded || got.Pull == nil || got.Pull.Number != 12 || !strings.Contains(got.Text, "PR 12 (open)") {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+// A ship Waypoint stopped names the pull request in its text but carries no
+// Pull, so the client leaves the turn with the agent.
+func TestAwaitShipNewsStoppedShipCarriesNoPull(t *testing.T) {
+	a, held, round := shipNewsEnv(t)
+	a.openPull(t, round, "open")
+	if _, err := a.s.db.W.Exec(`UPDATE work_log SET before_pr = json_set(before_pr, '$.ship_stop', 'the forge refused the push') WHERE id = ?`, round); err != nil {
+		t.Fatal(err)
+	}
+	got := a.await(held.Key, time.Second)
+	if got.Outcome != ShipNewsEnded || got.Pull != nil || !strings.Contains(got.Text, "the forge refused the push") || !strings.Contains(got.Text, "PR 12 (open)") {
 		t.Fatalf("got %+v", got)
 	}
 }

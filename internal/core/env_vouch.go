@@ -95,7 +95,7 @@ type EnvVouchResult struct {
 // once (editors); anyone else (an agent, an agent's shell, an automation)
 // files a question to a person instead, or finds the open one.
 func (s *Service) VouchEnvironment(ctx context.Context, actor *Actor, projectRef, name string, in EnvVouchInput) (*EnvVouchResult, error) {
-	if err := actor.need(PermEnvironmentsRead); err != nil {
+	if err := actor.Need(PermEnvironmentsRead); err != nil {
 		return nil, err
 	}
 	p, err := s.projectByRef(ctx, s.db.R, projectRef)
@@ -145,7 +145,7 @@ func (s *Service) VouchEnvironment(ctx context.Context, actor *Actor, projectRef
 		return res, err
 	}
 	if addressAgent(actor) != "" {
-		if err := actor.need(PermRequestsCreate); err != nil {
+		if err := actor.Need(PermRequestsCreate); err != nil {
 			return nil, err
 		}
 		req, created, err := s.CreateRequest(ctx, actor, RequestInput{
@@ -180,7 +180,7 @@ func (s *Service) VouchEnvironment(ctx context.Context, actor *Actor, projectRef
 // mayDecideOrOwn: the request is the actor's own, or in a project they edit
 // (requestVisible's rule), whether or not the actor is an agent.
 func (s *Service) mayDecideOrOwn(ctx context.Context, actor *Actor, r *Request) bool {
-	if r.userID == actor.id() || actor.isAdmin() {
+	if r.userID == actor.ID() || actor.IsAdmin() {
 		return true
 	}
 	if !r.projectID.Valid {

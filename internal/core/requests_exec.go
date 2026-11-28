@@ -130,7 +130,7 @@ func (s *Service) applyChange(ctx context.Context, actor *Actor, id int64, choic
 	path := choice
 	if auto {
 		path = "pr"
-		if cwd != "" && runnerOnline(ctx, s, actor.id(), machine) {
+		if cwd != "" && runnerOnline(ctx, s, actor.ID(), machine) {
 			path = "runner"
 		}
 	}
@@ -148,7 +148,7 @@ func (s *Service) applyChange(ctx context.Context, actor *Actor, id int64, choic
 		} else {
 			in := ApplyJob{Dir: cwd, Files: files, Commit: cmp(r.Message, r.Title)}
 			b, _ := json.Marshal(in)
-			job, err := enqueueRunnerJob(ctx, s, actor, RunnerJobInput{Kind: JobApply, OwnerID: actor.id(), Label: machine, Input: b, Source: "request_apply", SourceID: r.ID})
+			job, err := enqueueRunnerJob(ctx, s, actor, RunnerJobInput{Kind: JobApply, OwnerID: actor.ID(), Label: machine, Input: b, Source: "request_apply", SourceID: r.ID})
 			switch {
 			case err == nil:
 				upd, _ := s.db.W.ExecContext(ctx, `UPDATE requests SET apply_path = 'runner', result = ?, updated_at = ? WHERE id = ? AND state = 'applying'`,
@@ -208,7 +208,7 @@ func (s *Service) applyOutside(ctx context.Context, actor *Actor, r *Request, fi
 		files[i].Path = path.Base(files[i].Path)
 	}
 	b, _ := json.Marshal(ApplyJob{Dir: dir, Files: files})
-	job, err := enqueueRunnerJob(ctx, s, actor, RunnerJobInput{Kind: JobApply, OwnerID: actor.id(), Label: machine, Input: b, Source: "request_apply", SourceID: r.ID})
+	job, err := enqueueRunnerJob(ctx, s, actor, RunnerJobInput{Kind: JobApply, OwnerID: actor.ID(), Label: machine, Input: b, Source: "request_apply", SourceID: r.ID})
 	switch {
 	case err == nil:
 		upd, _ := s.db.W.ExecContext(ctx, `UPDATE requests SET apply_path = 'runner', result = ?, updated_at = ? WHERE id = ? AND state = 'applying'`,
@@ -379,13 +379,13 @@ func (s *Service) finishApply(ctx context.Context, actor *Actor, r *Request, sta
 // named like the session's machine. The person may edit the command first;
 // each run is kept.
 func (s *Service) RunCell(ctx context.Context, actor *Actor, ref string, n int, command string) (*Request, error) {
-	if err := actor.need(PermRequestsRun); err != nil {
+	if err := actor.Need(PermRequestsRun); err != nil {
 		return nil, err
 	}
-	if err := actor.requirePersonDirect("running a request's command"); err != nil {
+	if err := actor.RequirePersonDirect("running a request's command"); err != nil {
 		return nil, err
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	id, err := s.resolveRequestID(ctx, s.db.R, actor, ref)
@@ -431,7 +431,7 @@ func (s *Service) RunCell(ctx context.Context, actor *Actor, ref string, n int, 
 		if dir == "" && r.sessionID.Valid {
 			_ = t.QueryRowContext(ctx, `SELECT cwd FROM agent_sessions WHERE id = ?`, r.sessionID.Int64).Scan(&dir)
 		}
-		res, err := t.ExecContext(ctx, `INSERT INTO request_cell_runs(cell_id, command, state, run_by, created_at) VALUES (?,?,'queued',?,?)`, cellID, command, actor.id(), s.nowMS())
+		res, err := t.ExecContext(ctx, `INSERT INTO request_cell_runs(cell_id, command, state, run_by, created_at) VALUES (?,?,'queued',?,?)`, cellID, command, actor.ID(), s.nowMS())
 		if err != nil {
 			return err
 		}
@@ -443,7 +443,7 @@ func (s *Service) RunCell(ctx context.Context, actor *Actor, ref string, n int, 
 	}
 	in := CommandJob{Command: command, Dir: dir}
 	b, _ := json.Marshal(in)
-	job, err := enqueueRunnerJob(ctx, s, actor, RunnerJobInput{Kind: JobCommand, OwnerID: actor.id(), Label: machine, Input: b, Source: "request_cell", SourceID: runID})
+	job, err := enqueueRunnerJob(ctx, s, actor, RunnerJobInput{Kind: JobCommand, OwnerID: actor.ID(), Label: machine, Input: b, Source: "request_cell", SourceID: runID})
 	if err != nil {
 		msg := "The runner couldn't take the job: " + err.Error()
 		if errors.Is(err, ErrNoRunner) {

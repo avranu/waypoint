@@ -3,6 +3,8 @@ package core
 import (
 	"strings"
 	"testing"
+
+	"git.jmann.me/claude/waypoint/internal/core/users"
 )
 
 // A permission token's change can set off an automation, but the run can do
@@ -12,7 +14,7 @@ func TestAutomationKeepsTokenPermissions(t *testing.T) {
 	a := ae.addAuto(ae.p, "Echo", Rule{Trigger: Trigger{Event: "created"}, Actions: []Action{
 		{Type: "run_command", Extra: map[string]any{"command": "echo {{.Issue.Title}}", "dir": "/work"}},
 	}})
-	assistant := permissionPresets[0].Permissions
+	assistant := users.PermissionPresets[0].Permissions
 	hermes := &Actor{User: ae.admin.User, Agent: "nous/hermes", Permissions: permissionSet(assistant), TokenID: 1}
 	if !hermes.IsAgent() || !(&Actor{User: ae.admin.User, Permissions: PermissionSet{}}).IsAgent() {
 		t.Fatal("a permission token should count as an agent")
@@ -40,7 +42,7 @@ func TestAutomationKeepsTokenPermissions(t *testing.T) {
 func TestDelegationNeedsQueuePermission(t *testing.T) {
 	e := newEnv(t)
 	p := e.project(e.admin, "Home", "")
-	hermes := &Actor{User: e.admin.User, Agent: "nous/hermes", Permissions: permissionSet(permissionPresets[0].Permissions)}
+	hermes := &Actor{User: e.admin.User, Agent: "nous/hermes", Permissions: permissionSet(users.PermissionPresets[0].Permissions)}
 	if _, err := e.s.CreateIssue(e.ctx, hermes, IssueInput{Project: p.Key, Title: "x", Agent: "any"}); err == nil {
 		t.Error("created a delegated issue without agents.manage")
 	}

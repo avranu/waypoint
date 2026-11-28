@@ -43,7 +43,7 @@ func taggedUrgentNotice(task string, n int) string {
 // (WP-697). wp ship's pull requests open with the label; one from outside
 // stays where it is, so naming a tagged task doesn't jump the line.
 func (s *Service) urgentFromLink(ctx context.Context, e *Event) {
-	l := e.pullLinked
+	l := hint[*pullRef](e)
 	if !s.taskUrgent(ctx, SystemActor(), e.IssueKey) {
 		return
 	}
@@ -183,7 +183,7 @@ func (s *Service) labelPRUrgent(ctx context.Context, actor *Actor, pr *PullReque
 			return err
 		}
 		t.audit(AuditEntry{Action: "pr.urgent", Category: AuditControl, ProjectID: projectID, TargetType: "pr", TargetID: pr.ID,
-			Target: fmt.Sprintf("%s#%d", pr.Repo, pr.Number), URL: pr.URL, Detail: detail + " for “" + excerpt(pr.Title, 120) + "”", About: actor.agentName()})
+			Target: fmt.Sprintf("%s#%d", pr.Repo, pr.Number), URL: pr.URL, Detail: detail + " for “" + excerpt(pr.Title, 120) + "”", About: actor.AgentName()})
 		t.emit(&Event{Kind: EvPRActivity, ProjectID: projectID, New: map[bool]string{true: "urgent", false: "not urgent"}[on], Data: map[string]any{"pr_id": pr.ID}})
 		return nil
 	})

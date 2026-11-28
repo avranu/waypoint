@@ -40,11 +40,13 @@ type SessionOutstanding struct {
 const outstandingKind = "outstanding"
 
 // Where outstanding work is named (the record's ref_type): at the start of a
-// background wait (the PostToolUse hook) or at a Stop while it goes. Each
-// records a finding once, apart: the hook's answer can be lost (it is cut at
-// 3 s, and Claude Code may drop it) and the agent may not act on it, so the
-// Stop still names what is left (WP-1571, audit #1344). A finding already
-// recorded is named again only with a new one, which names the whole list.
+// background wait (the PostToolUse hook, which records it once its answer is
+// written) or at a Stop while it goes. A Stop counts a finding recorded at
+// either as named, so it doesn't spend a turn repeating the wait (WP-1861);
+// a wait counts only its own record, so it still names what a Stop did. A
+// finding already recorded is named again only with a new one, which names
+// the whole list. Claude Code can drop the hook's answer after it is written,
+// and then the Stop stays quiet too: the cost WP-1861 accepts.
 const (
 	OutstandingAtWait = "wait"
 	OutstandingAtStop = "stop"
@@ -60,9 +62,9 @@ func (o *SessionOutstanding) Empty() bool {
 // do in the audit of its review round whose prompt went in (at a Stop, one
 // still running because a subagent it started runs on, roundAtStop), and the
 // decisions on its requests it hasn't been told of. It is not a plain read.
-// Findings are recorded as named, and none are named when all were named at
-// via before; when one is new, all are, so the count is the whole. At the
-// wait, decisions are given as a bundled Stop would (takeDecisions) but left
+// Findings are recorded as named, and none are named when all count as named
+// already (outstandingKind's rows, as OutstandingAtWait says); when one is
+// new, all are, so the count is the whole. At the wait, decisions are given as a bundled Stop would (takeDecisions) but left
 // untold until the hook says it gave them, and only as many as fit the
 // hook's room. A Stop takes them, and gives them only with new findings: one
 // that would carry the agent on for answers alone already took those that
@@ -119,7 +121,13 @@ func (s *Service) SessionOutstanding(ctx context.Context, actor *Actor, via stri
 	fresh := 0
 	err = s.write(ctx, actor, func(t *tx) error {
 		for _, it := range out.Findings {
-			told, err := s.sessionTold(ctx, t, actor.Session, outstandingKind, via, it)
+			// Printed at the wait counts at a Stop; the wait's own record doesn't
+			// hide a finding the Stop named.
+			seenVia := via
+			if via == OutstandingAtStop {
+				seenVia = ""
+			}
+			told, err := s.sessionTold(ctx, t, actor.Session, outstandingKind, seenVia, it)
 			if err != nil {
 				return err
 			}
@@ -291,7 +299,7 @@ func (s *Service) SessionDecisionsTold(ctx context.Context, actor *Actor, ids []
 	return s.write(ctx, actor, func(t *tx) error {
 		// #nosec G202 -- only ? placeholders are joined in
 		_, err := t.ExecContext(ctx, `UPDATE requests SET delivered_at = ? WHERE session_id = ? AND user_id = ? AND delivered_at IS NULL AND decided_at IS NOT NULL AND via = '' AND id IN (`+placeholders(len(ids))+`)`,
-			append([]any{s.nowMS(), actor.Session, actor.id()}, int64Args(ids)...)...)
+			append([]any{s.nowMS(), actor.Session, actor.ID()}, int64Args(ids)...)...)
 		return err
 	})
 }
@@ -302,6 +310,13 @@ func (o *SessionOutstanding) stopText(running []string) string {
 	if o.Empty() {
 		return ""
 	}
-	return "Something is still running in the background (" + strings.Join(running[:min(len(running), 3)], "; ") +
-		"). Work of yours is waiting; do what doesn't need its result now instead of ending the turn idle:\n" + o.Lines
+	var b strings.Builder
+	b.WriteString("Still running in the background:\n")
+	for _, r := range running[:min(len(running), 3)] {
+		b.WriteString("- " + excerpt(r, 100) + "\n")
+	}
+	if n := len(running) - 3; n > 0 {
+		fmt.Fprintf(&b, "- and %d more\n", n)
+	}
+	return b.String() + "Work of yours is waiting; do what doesn't need those results now instead of ending the turn idle:\n" + o.Lines
 }

@@ -428,10 +428,10 @@ func parseAuditModel(v string) (AgentModel, error) {
 // RequestAudit records an audit and sets it going on the runner of whoever
 // asked (an automation: of the person who last saved it).
 func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput) (*CodeAudit, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
-	if err := actor.need(PermAuditsRun); err != nil {
+	if err := actor.Need(PermAuditsRun); err != nil {
 		return nil, err
 	}
 	if in.requestKey != "" {
@@ -518,9 +518,9 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 			}
 		}
 	}
-	owner := actor.id()
+	owner := actor.ID()
 	if actor.Automation != nil {
-		if owner = automationRunnerOwner(actor.Automation); owner == 0 {
+		if owner = actor.Automation.RunnerOwner(); owner == 0 {
 			return nil, invalid("this automation has no owner for its runners: an agent saved it, or it was never saved. Save it yourself to use your runners")
 		}
 	}
@@ -719,7 +719,7 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 	if actor.Session != 0 {
 		session = actor.Session
 	}
-	if id := actor.viaAutomation(); id != nil {
+	if id := actor.ViaAutomation(); id != nil {
 		auto = id
 	}
 	if in.requestKey != "" {
@@ -737,7 +737,7 @@ func (s *Service) RequestAudit(ctx context.Context, actor *Actor, in AuditInput)
 			since_spec, since_at, focus, paths, exclude, min_severity, max_findings, purpose, author_model, weakest, helpers, over_ref)
 			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,coalesce(?, ''),?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
 			p.ID, repo.Forge.ID, repo.Repo, a.Target, a.Ref, a.Base, prID, a.PRNumber, a.Title, a.Instructions, a.prompt, string(models),
-			a.PostComment, a.Fix, owner, by, actor.agentName(), via, auto, session, in.Blocking, key, s.nowMS(),
+			a.PostComment, a.Fix, owner, by, actor.AgentName(), via, auto, session, in.Blocking, key, s.nowMS(),
 			a.Since, sinceAt, jsonList(a.Focus), jsonList(a.Paths), jsonList(a.Exclude), a.MinSeverity, a.MaxFindings, a.Purpose, excerpt(strings.TrimSpace(in.authorModel), 100), a.Weakest, helpersJSON(a.Helpers), a.overRef).Scan(&id); err != nil {
 			return err
 		}
@@ -1836,7 +1836,7 @@ func (s *Service) auditFixTask(ctx context.Context, id int64) {
 		return
 	}
 	writer := Actor{User: owner}
-	writer.textAgent = cmp(a.Model, "audit")
+	writer.TextAgent = cmp(a.Model, "audit")
 	in := IssueInput{Project: itoa64(a.projectID), Type: "task", Agent: "claude", Labels: []string{"audit"},
 		Title:       fmt.Sprintf("Check audit #%d: %d finding%s in %s", a.ID, a.Counts.Open, plural(a.Counts.Open), excerpt(a.Title, 120)),
 		Description: auditTaskText(a, s.BaseURL())}
@@ -2318,7 +2318,7 @@ func (s *Service) loadFindings(ctx context.Context, a *CodeAudit) error {
 
 // auditFor reads an audit the actor may see.
 func (s *Service) auditFor(ctx context.Context, actor *Actor, id int64, findings bool) (*CodeAudit, error) {
-	if err := actor.need(PermPullsRead); err != nil {
+	if err := actor.Need(PermPullsRead); err != nil {
 		return nil, err
 	}
 	a, err := s.auditRow(ctx, id)
@@ -2332,7 +2332,7 @@ func (s *Service) auditFor(ctx context.Context, actor *Actor, id int64, findings
 	if role == RoleNone {
 		return nil, notFound("audit")
 	}
-	a.CanEdit = role >= RoleEditor && actor.canWrite() == nil
+	a.CanEdit = role >= RoleEditor && actor.CanWrite() == nil
 	a.RequestedBy = s.userRefByID(ctx, s.db.R, sql.NullInt64{Int64: a.requestedBy, Valid: a.requestedBy != 0})
 	if findings {
 		if err := s.loadFindings(ctx, a); err != nil {
@@ -2405,7 +2405,7 @@ type AuditFilter struct {
 
 // ListAudits lists the audits the actor may see, newest first.
 func (s *Service) ListAudits(ctx context.Context, actor *Actor, f AuditFilter) ([]*CodeAudit, error) {
-	if err := actor.need(PermPullsRead); err != nil {
+	if err := actor.Need(PermPullsRead); err != nil {
 		return nil, err
 	}
 	where, args := []string{"1"}, []any{}
@@ -2469,7 +2469,7 @@ func (s *Service) ListAudits(ctx context.Context, actor *Actor, f AuditFilter) (
 		if r == RoleNone {
 			continue
 		}
-		a.CanEdit = r >= RoleEditor && actor.canWrite() == nil
+		a.CanEdit = r >= RoleEditor && actor.CanWrite() == nil
 		a.Counts = s.auditCounts(ctx, a.ID)
 		a.RequestedBy = s.cachedUser(ctx, people, sql.NullInt64{Int64: a.requestedBy, Valid: a.requestedBy != 0})
 		a.Answer, a.prompt = "", ""
@@ -2483,10 +2483,10 @@ func (s *Service) ListAudits(ctx context.Context, actor *Actor, f AuditFilter) (
 
 // auditToChange reads an audit the actor may change.
 func (s *Service) auditToChange(ctx context.Context, actor *Actor, id int64) (*CodeAudit, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
-	if err := actor.need(PermAuditsRun); err != nil {
+	if err := actor.Need(PermAuditsRun); err != nil {
 		return nil, err
 	}
 	a, err := s.auditFor(ctx, actor, id, false)
@@ -2513,7 +2513,7 @@ func (s *Service) auditToMark(ctx context.Context, actor *Actor, id int64) (*Cod
 		}
 		return a, err
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	a, err := s.auditFor(ctx, actor, id, false)
@@ -2538,7 +2538,7 @@ func (s *Service) roundOnAudit(ctx context.Context, job, id int64) bool {
 func (s *Service) CancelAudit(ctx context.Context, actor *Actor, id int64) (*CodeAudit, error) {
 	if seen, err := s.auditToChange(ctx, actor, id); err != nil {
 		return nil, err
-	} else if seen.Purpose == AuditObjective && actor.id() != 0 && !objectivePerson(actor) {
+	} else if seen.Purpose == AuditObjective && actor.ID() != 0 && !objectivePerson(actor) {
 		return nil, forbidden("audit #%d judges an objective: a person stops it, or ends the objective (wp objective end)", id)
 	}
 	unlock := s.auditLocks.lock(id)
@@ -2555,7 +2555,7 @@ func (s *Service) CancelAudit(ctx context.Context, actor *Actor, id int64) (*Cod
 		unlock()
 		return nil, invalid("audit #%d is Waypoint's check of a review round's marks: it ends by itself, and only a person can cancel it", id)
 	}
-	who := cmp(actor.agentName(), "")
+	who := cmp(actor.AgentName(), "")
 	if who == "" && actor.User != nil {
 		who = actor.User.DisplayName
 	}
@@ -2697,8 +2697,8 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 		return nil, invalid("mark at most 100 findings at once")
 	}
 	note := strings.TrimSpace(in.Note)
-	if utf8.RuneCountInString(note) > 2000 {
-		return nil, invalid("a note is at most 2000 characters")
+	if utf8.RuneCountInString(note) > MaxFindingNote {
+		return nil, invalid("a note is at most %d characters", MaxFindingNote)
 	}
 	if state == "rejected" && note == "" && actor.IsAgent() {
 		return nil, invalid("say why the finding is wrong or not worth fixing (a note)")
@@ -2766,7 +2766,7 @@ func (s *Service) MarkAuditFindings(ctx context.Context, actor *Actor, in MarkFi
 			}
 			res, err := t.ExecContext(ctx, `UPDATE code_audit_findings SET state = ?, note = CASE WHEN ? = '' THEN note ELSE ? END, issue_id = CASE WHEN ? IS NOT NULL THEN ? WHEN ? = 'confirmed' THEN NULL ELSE issue_id END,
 				decided_by = ?, decided_agent = ?, decided_at = ?, evidence = ?, decided_model = ?, decided_effort = ?, decided_strength = ? WHERE audit_id = ? AND ordinal = ?`,
-				state, note, note, issueID, issueID, state, by, actor.agentName(), s.nowMS(), evidence, records[r].model, records[r].effort, records[r].strength, r.audit, r.n)
+				state, note, note, issueID, issueID, state, by, actor.AgentName(), s.nowMS(), evidence, records[r].model, records[r].effort, records[r].strength, r.audit, r.n)
 			if err != nil {
 				return err
 			}

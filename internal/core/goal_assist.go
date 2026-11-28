@@ -53,7 +53,7 @@ func (s *Service) SuggestTaskGoal(ctx context.Context, actor *Actor, ref string)
 	if err != nil {
 		return nil, err
 	}
-	if err := actor.requirePersonDirect("asking for a task's goal"); err != nil {
+	if err := actor.RequirePersonDirect("asking for a task's goal"); err != nil {
 		return nil, err
 	}
 	task, ok := s.goalSuggestChain(ctx)

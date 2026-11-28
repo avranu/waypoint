@@ -84,7 +84,7 @@ const (
 // ReportStalledJobs takes a runner's report: the quiet jobs and the ones
 // that moved again or ended.
 func (s *Service) ReportStalledJobs(ctx context.Context, actor *Actor, in StalledJobsReport) ([]StalledJobOutcome, error) {
-	if err := actor.need(PermRunnersHost); err != nil {
+	if err := actor.Need(PermRunnersHost); err != nil {
 		return nil, err
 	}
 	if err := runnerActor(actor); err != nil {

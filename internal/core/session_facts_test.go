@@ -494,7 +494,7 @@ func TestFactsReadByAgent(t *testing.T) {
 	}
 	// An automation acting for the person is not an agent reading.
 	auto := *jo
-	auto.Automation = &Automation{}
+	auto.Automation = &AutomationRef{}
 	if f, err := e.s.SessionFacts(e.ctx, &auto, FactsQuery{Session: "s1"}); !errors.Is(err, ErrForbidden) || f != nil {
 		t.Errorf("an automation: %v %v", err, f)
 	}
@@ -506,7 +506,7 @@ func TestFactsReadByAgent(t *testing.T) {
 		t.Errorf("a token without usage.read: %v", err)
 	}
 	job := *jo
-	job.scope = map[int64]int{p.ID: RoleEditor}
+	job.Scope = map[int64]int{p.ID: RoleEditor}
 	if _, err := e.s.SessionFacts(e.ctx, &job, FactsQuery{Session: "s1"}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("a runner job's scoped token: %v", err)
 	}

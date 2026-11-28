@@ -223,7 +223,7 @@ func (s *Service) placeHold(ctx context.Context, t *tx, actor *Actor, i *Issue, 
 	}
 	byPerson := !actor.HidesDrafts() || (when != nil && when.Person)
 	if _, err := t.ExecContext(ctx, `UPDATE issues SET hold_at = ?, hold_until = ?, hold_note = ?, hold_by = ?, hold_agent = ?, hold_person = ?, hold_when = ?,
-		updated_at = ? WHERE id = ?`, now, nullInt(until), note, nullUser(actor.id()), actor.agentName(), byPerson, raw, now, i.ID); err != nil {
+		updated_at = ? WHERE id = ?`, now, nullInt(until), note, nullUser(actor.ID()), actor.AgentName(), byPerson, raw, now, i.ID); err != nil {
 		return err
 	}
 	h := &Hold{Note: note, When: when}

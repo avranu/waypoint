@@ -713,7 +713,7 @@ func (s *Service) layoutCIBoard(ctx context.Context, actor *Actor, snap *ciSnaps
 			from = d.hist.whole
 		}
 	}
-	b := &CIBoard{GeneratedAt: now, Summary: CISummary{Since: from}, CanEditPool: actor.isAdmin() && !actor.IsAgent(),
+	b := &CIBoard{GeneratedAt: now, Summary: CISummary{Since: from}, CanEditPool: actor.IsAdmin() && !actor.IsAgent(),
 		Alerts: []CIAlert{}, Runs: []CIRun{}, Running: []CIJob{}, Queued: []CIJob{}, Recent: []CIJob{}, Stats: []CIJobStats{}, Repos: []CIRepo{}}
 	seen := map[int64]bool{}
 	visible := func(ps []ciProject) (string, bool) {
@@ -1317,7 +1317,7 @@ func (s *Service) ciPools(ctx context.Context) (map[int64][]CIPoolRunner, error)
 // (admins, and their agents); none clears it. Hosts that report replace
 // their entries (reportedPool).
 func (s *Service) SetCIPool(ctx context.Context, actor *Actor, forgeID int64, runners []CIPoolRunner) error {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return forbidden("only admins can set the CI runner pool")
 	}
 	f, err := s.forgeByID(ctx, forgeID)

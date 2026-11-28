@@ -29,7 +29,7 @@ func (e *uaEnv) session(a *Actor, machine, cli string, issue int64) int64 {
 		held = issue
 	}
 	r, err := e.s.db.W.ExecContext(e.ctx, `INSERT INTO agent_sessions(user_id, machine, cli_id, issue_id, started_at, last_seen_at) VALUES (?,?,?,?,?,?)`,
-		a.id(), machine, cli, held, e.hour(-48), e.hour(0))
+		a.ID(), machine, cli, held, e.hour(-48), e.hour(0))
 	if err != nil {
 		e.t.Fatal(err)
 	}

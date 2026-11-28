@@ -55,11 +55,11 @@ func validOrgFor(kind, org string) bool {
 
 func (s *Service) adminForge(ctx context.Context, actor *Actor, forgeID int64, write bool) (*Forge, error) {
 	if write {
-		if err := actor.canWrite(); err != nil {
+		if err := actor.CanWrite(); err != nil {
 			return nil, err
 		}
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, ErrForbidden
 	}
 	return s.forgeByID(ctx, forgeID)
@@ -133,7 +133,7 @@ func (s *Service) AddOrgHook(ctx context.Context, actor *Actor, forgeID int64, o
 		if err := t.QueryRowContext(ctx, `SELECT id FROM forge_org_hooks WHERE forge_id = ? AND lower(org) = lower(?)`, f.ID, org).Scan(&id); err != nil {
 			return err
 		}
-		t.emit(&Event{Kind: EvRepoHook, repoHook: &repoHookJob{installOrg: id}})
+		t.emit(withHint(&Event{Kind: EvRepoHook}, &repoHookJob{installOrg: id}))
 		return nil
 	})
 	if err != nil {
@@ -157,7 +157,7 @@ func (s *Service) RemoveOrgHook(ctx context.Context, actor *Actor, forgeID, id i
 		if _, err := t.ExecContext(ctx, `DELETE FROM forge_org_hooks WHERE id = ?`, id); err != nil {
 			return err
 		}
-		t.emit(&Event{Kind: EvRepoHook, repoHook: &repoHookJob{remove: f, org: true, repo: org, hookID: hookID}})
+		t.emit(withHint(&Event{Kind: EvRepoHook}, &repoHookJob{remove: f, org: true, repo: org, hookID: hookID}))
 		return nil
 	})
 }

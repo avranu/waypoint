@@ -425,6 +425,12 @@ func (s *Service) roundAtStop(ctx context.Context, t *tx, x *AgentSession, issue
 	return true, nil
 }
 
+// subagentKind: a background task type that is a subagent (Claude Code's
+// local_agent), not a shell.
+func subagentKind(kind string) bool {
+	return strings.Contains(strings.ToLower(kind), "agent")
+}
+
 // subagentsSince: background subagents (Claude Code's local_agent tasks) in
 // seen, first seen at or after since and not yet stale. Background shells
 // don't count: a waiter on CI says nothing about the review.
@@ -432,7 +438,7 @@ func subagentsSince(seen map[string]int64, since, now int64) bool {
 	stale := autopilotStaleAfter.Milliseconds()
 	for sig, first := range seen {
 		kind, _, _ := strings.Cut(sig, ":")
-		if strings.Contains(strings.ToLower(kind), "agent") && first >= since && now-first < stale {
+		if subagentKind(kind) && first >= since && now-first < stale {
 			return true
 		}
 	}
@@ -788,10 +794,10 @@ func (s *Service) countReport(ctx context.Context, id int64) error {
 
 // fillWorkLogEvent gives the last event of t its issue's project and key.
 func (s *Service) fillWorkLogEvent(ctx context.Context, t *tx) {
-	if len(t.events) == 0 {
+	if len(t.Events()) == 0 {
 		return
 	}
-	e := t.events[len(t.events)-1]
+	e := t.Events()[len(t.Events())-1]
 	_ = t.QueryRowContext(ctx, `SELECT i.project_id, p.key || '-' || i.number FROM issues i JOIN projects p ON p.id = i.project_id WHERE i.id = ?`, e.IssueID).Scan(&e.ProjectID, &e.IssueKey)
 }
 
@@ -915,7 +921,7 @@ func (s *Service) AddWorkNote(ctx context.Context, actor *Actor, ref string, in 
 	if in.Review && in.Tag != "" {
 		return nil, invalid("Waypoint counts a review's findings itself: leave out the tag")
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	var out *WorkLogEntry
@@ -926,13 +932,13 @@ func (s *Service) AddWorkNote(ctx context.Context, actor *Actor, ref string, in 
 		}
 		now := s.nowMS()
 		var uid, sess any
-		if actor.id() != 0 {
-			uid = actor.id()
+		if actor.ID() != 0 {
+			uid = actor.ID()
 		}
 		if actor.Session != 0 {
 			sess = actor.Session
 		}
-		agent := actor.agentName()
+		agent := actor.AgentName()
 		if in.Review {
 			out, err = s.attachOwnReview(ctx, t, actor, i, body, uid, sess, now)
 			return err
@@ -944,7 +950,7 @@ func (s *Service) AddWorkNote(ctx context.Context, actor *Actor, ref string, in 
 		}
 		id, _ := res.LastInsertId()
 		out = &WorkLogEntry{ID: id, Kind: WorkNote, At: msTime(now), Tag: in.Tag, Title: workTitle(body), Body: body, Agent: agent}
-		if actor.User != nil && actor.id() != 0 {
+		if actor.User != nil && actor.ID() != 0 {
 			r := actor.User.Ref()
 			out.Author = &r
 		}

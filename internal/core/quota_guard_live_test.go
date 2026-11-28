@@ -303,7 +303,7 @@ func TestGuardChangeAllowed(t *testing.T) {
 		{"a task session", &Actor{User: l.me.User, AgentEnv: "claude", Session: task}, false},
 		{"an agent's shell, no session", &Actor{User: l.me.User, AgentEnv: "claude"}, false},
 		{"an agent's token", &Actor{User: l.me.User, Agent: "claude"}, false},
-		{"an automation", &Actor{User: l.me.User, Automation: &Automation{}}, false},
+		{"an automation", &Actor{User: l.me.User, Automation: &AutomationRef{}}, false},
 	}
 	for _, c := range cases {
 		err := set(c.a)

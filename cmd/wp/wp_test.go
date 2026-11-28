@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -886,10 +887,13 @@ func TestHelpReference(t *testing.T) {
 			if c.hidden {
 				continue
 			}
+			if top && !slices.Contains(groups, c.group) {
+				t.Errorf("wp %s: group %q is not in groups (invisible in wp help)", c.path(), c.group)
+			}
 			if c.summary == "" {
 				t.Errorf("wp %s: needs a summary", c.path())
 			}
-			if top && c.args != "" && len(c.examples) == 0 {
+			if len(c.examples) == 0 {
 				t.Errorf("wp %s: needs examples", c.path())
 			}
 			check(c.subs, false)

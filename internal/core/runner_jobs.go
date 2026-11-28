@@ -506,10 +506,10 @@ func scanJob(row jobScanner, extra ...any) (*RunnerJobInfo, error) {
 // queue one at all, because what runs on a machine is a person's decision.
 // ErrNoRunner means that person has no runner (with the label).
 func (s *Service) EnqueueRunnerJob(ctx context.Context, a *Actor, in RunnerJobInput) (*RunnerJob, error) {
-	if err := a.need(PermRunnersRun); err != nil {
+	if err := a.Need(PermRunnersRun); err != nil {
 		return nil, err
 	}
-	if err := a.canWrite(); err != nil {
+	if err := a.CanWrite(); err != nil {
 		return nil, err
 	}
 	if a.IsAgent() && a.Automation == nil {
@@ -541,14 +541,14 @@ func (s *Service) EnqueueRunnerJob(ctx context.Context, a *Actor, in RunnerJobIn
 		owner, candidates = r.Owner.ID, []*Runner{r}
 	}
 	if owner == 0 {
-		owner = a.id()
+		owner = a.ID()
 	}
 	if owner == 0 {
 		return nil, invalid("say whose runner the job is for")
 	}
 	switch {
 	case a.Automation != nil:
-		if automationRunnerOwner(a.Automation) != owner {
+		if a.Automation.RunnerOwner() != owner {
 			return nil, fmt.Errorf("an automation runs jobs only on the runners of the person who last saved it: %w", ErrForbidden)
 		}
 	case a.User.ID != 0 && owner != a.User.ID:
@@ -674,7 +674,7 @@ func jobAccess(a *Actor, owner int64, creator *UserRef) (full, ok bool) {
 	if a.User.ID == owner || (creator != nil && creator.ID == a.User.ID) {
 		return true, true
 	}
-	return false, a.isAdmin()
+	return false, a.IsAdmin()
 }
 
 func (j *RunnerJobInfo) redact() {
@@ -762,7 +762,7 @@ func (s *Service) ListRunnerJobs(ctx context.Context, actor *Actor, f RunnerJobF
 	var where []string
 	var args []any
 	if f.All {
-		if !actor.isAdmin() {
+		if !actor.IsAdmin() {
 			return nil, ErrForbidden
 		}
 	} else {
@@ -1047,7 +1047,7 @@ func (t *tx) finishRunnerJob(ctx context.Context, id int64, state string, exit *
 // the runner has gone). Only people can: the job's creator or its runner's
 // owner.
 func (s *Service) CancelRunnerJob(ctx context.Context, actor *Actor, id int64) (*RunnerJobInfo, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	if actor.IsAgent() || actor.Automation != nil {

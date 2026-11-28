@@ -40,7 +40,7 @@ func TestTranscriptReadsRefuseAgentShells(t *testing.T) {
 // owner's transcript archive (1218.7).
 func TestTranscriptWritesRefuseJobTokens(t *testing.T) {
 	e := transcriptEnv(t)
-	job := &Actor{User: e.admin.User, Agent: "anthropic/claude-code", RunnerJob: 5, scope: map[int64]int{1: RoleEditor}}
+	job := &Actor{User: e.admin.User, Agent: "anthropic/claude-code", RunnerJob: 5, Scope: map[int64]int{1: RoleEditor}}
 	l := "{}\n"
 	in := piece("s1", "main", 0, l)
 	in.Gzip = tgz(t, l)

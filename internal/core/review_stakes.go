@@ -689,7 +689,7 @@ func (s *Service) stakesOutcomes(ctx context.Context, actor *Actor, days int, ta
 	if len(taskTier) == 0 {
 		return nil
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		out.OutcomesNote = "task outcomes need an admin: they read every person's usage"
 		return nil
 	}
