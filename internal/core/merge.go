@@ -741,6 +741,11 @@ func (s *Service) armMerge(ctx context.Context, actor *Actor, pr *PullRequest, s
 		return nil, err
 	}
 	bg := context.WithoutCancel(ctx)
+	if actor != nil && actor.Session != 0 {
+		if armed, err := s.prByID(bg, s.db.R, pr.ID); err == nil {
+			s.ensureArmedBabysitBy(bg, actor, armed)
+		}
+	}
 	s.maybeAutoMerge(bg, pr.ID)
 	pr, err = s.prByID(ctx, s.db.R, pr.ID)
 	if err != nil {

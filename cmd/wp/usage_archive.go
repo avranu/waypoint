@@ -111,14 +111,17 @@ var (
 const archiveRefresh = 12 * time.Hour
 
 type archiveFileState struct {
-	Off    int64  `json:"off"`               // the server's copy ends here (a line end)
-	Size   int64  `json:"size,omitempty"`    // the file's size when a pass last looked: bytes past Off were unsent if it is deleted
-	FP     string `json:"fp,omitempty"`      // hash of the file's first line (at most 256 bytes)
-	Gen    int    `json:"gen,omitempty"`     // the generation of the server's copy this continues
-	Tail   string `json:"tail,omitempty"`    // hash of the bytes just before Off ("" is not known)
-	Last   int64  `json:"sent_at,omitempty"` // ms of the last piece
-	Held   string `json:"held,omitempty"`    // the server refused a piece for good: its words
-	HeldAt int64  `json:"held_at,omitempty"` // ms; tried again after archiveRetryHeld
+	Off     int64  `json:"off"`               // the server's copy ends here (a line end)
+	Size    int64  `json:"size,omitempty"`    // the file's size when a pass last looked: bytes past Off were unsent if it is deleted
+	FP      string `json:"fp,omitempty"`      // hash of the file's first line (at most 256 bytes)
+	Gen     int    `json:"gen,omitempty"`     // the generation of the server's copy this continues
+	Tail    string `json:"tail,omitempty"`    // hash of the bytes just before Off ("" is not known)
+	Last    int64  `json:"sent_at,omitempty"` // ms of the last piece
+	Held    string `json:"held,omitempty"`    // the server refused a piece for good: its words
+	HeldAt  int64  `json:"held_at,omitempty"` // ms; tried again after archiveRetryHeld
+	Session string `json:"session,omitempty"` // recorded session id (avoids path-guessing on recovery)
+	Kind    string `json:"kind,omitempty"`    // recorded transcript kind
+	FileKey string `json:"file_key,omitempty"`
 }
 
 type archiveState struct {
@@ -232,6 +235,21 @@ func archiveFileOfPath(p string) usageFile {
 		return usageFile{Path: p, Session: filepath.Base(p[:i]), Kind: subagentType(p)}
 	}
 	return usageFile{Path: p, Session: strings.TrimSuffix(filepath.Base(p), ".jsonl"), Kind: "main", Main: true}
+}
+
+// archiveFileFromState reconstructs a usageFile from usage-archive.json,
+// preferring saved Session/Kind/FileKey metadata over path heuristics.
+func archiveFileFromState(p string, fs *archiveFileState) usageFile {
+	if fs != nil && fs.Session != "" && fs.Kind != "" {
+		return usageFile{
+			Path:    p,
+			Session: fs.Session,
+			Kind:    fs.Kind,
+			FileKey: fs.FileKey,
+			Main:    fs.FileKey == "" || fs.FileKey == "main",
+		}
+	}
+	return archiveFileOfPath(p)
 }
 
 type archiver struct {
@@ -432,7 +450,11 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 			}
 			delete(a.st.Files, p)
 		case err == nil && fi.Size() > fs.Off:
-			add(archiveFileOfPath(p))
+			f := archiveFileFromState(p, fs)
+			if !includeHarnesses && isHarnessFile(f) {
+				continue
+			}
+			add(f)
 		}
 	}
 	sort.SliceStable(todo, func(i, j int) bool {
@@ -680,6 +702,9 @@ func (a *archiver) file(f usageFile, size int64) {
 	}
 	st.FP = fp
 	st.Size = size
+	st.Session = f.Session
+	st.Kind = f.Kind
+	st.FileKey = archiveFileKey(f)
 	a.st.Files[key] = st
 	if a.dry {
 		return
@@ -711,83 +736,20 @@ func (a *archiver) file(f usageFile, size int64) {
 		if len(piece.lines) == 0 {
 			return
 		}
-		gz := gzipBytes(piece.data)
-		for len(gz) > archiveGzipCap {
-			if len(piece.lines) == 1 {
-				piece.stubOnly(lineTooLargeStub(piece.end(st.Off)-st.Off), "line_too_large", piece.end(st.Off)-st.Off)
-			} else {
-				piece.keep((len(piece.lines) + 1) / 2)
-			}
-			gz = gzipBytes(piece.data)
-		}
-		to := piece.end(st.Off)
-		rc := piece.redactions()
-		rules, _ := json.Marshal(rc.rules())
-		q := url.Values{"machine": {machineName()}, "session": {f.Session}, "file": {archiveFileKey(f)}, "kind": {f.Kind},
-			"fp": {fmt.Sprintf("%s#%d", st.FP, st.Gen)}, "from": {fmt.Sprint(st.Off)}, "to": {fmt.Sprint(to)},
-			"redacted": {"1"}, "version": {version}, "redactions": {fmt.Sprint(rc.Total)}, "redaction_rules": {string(rules)}}
-		ctx, cancel := a.uploadContext()
-		b, err := a.c.send(ctx, "POST", "/api/v1/usage/transcript?"+q.Encode(), "application/gzip", bytes.NewReader(gz))
-		cancel()
-		var ans struct {
-			Status string `json:"status"`
-			Have   int64  `json:"have"`
-			Gen    int    `json:"gen"`
-		}
-		if err == nil {
-			err = json.Unmarshal(b, &ans)
-		}
-		if err != nil {
-			var ae *apiError
-			switch {
-			case errors.As(err, &ae) && ae.status == http.StatusForbidden && (ae.code == "transcript_job" || ae.msg == core.TranscriptJobRefusal):
-				a.stop = "this is a runner job's token; the runner's own sync archives its sessions"
-				a.quiet = true
-				return
-			case errors.As(err, &ae) && ae.status == http.StatusInsufficientStorage && (ae.code == "transcript_full" || ae.msg == core.TranscriptQuotaRefusal || ae.msg == core.TranscriptDiskLowRefusal):
-				a.stop = archiveFullStop
-				a.st.FullAt = archiveNow().UnixMilli()
-				return
-			case errors.As(err, &ae) && ae.status == http.StatusNotImplemented:
-				a.stop, a.quiet = archiveNoneStop, true
-				a.st.NoneAt = archiveNow().UnixMilli()
-				return
-			case errors.As(err, &ae) && ae.status == http.StatusRequestEntityTooLarge:
-				if len(piece.lines) > 1 {
-					a.learnCap(len(piece.data) / 2)
-					continue
-				}
-				a.drop("refused")
-				st.Held, st.HeldAt = ae.Error()+" (a single line was refused; likely a proxy's request body size limit, e.g. nginx client_max_body_size; see docs/DEPLOY.md)", time.Now().UnixMilli()
-				return
-			case errors.As(err, &ae) && refusedForGood(ae.status):
-				if len(piece.lines) > 1 && !shrunk {
-					shrunk, maxLines = true, (len(piece.lines)+1)/2
-					continue
-				}
-				a.drop("refused")
-				st.Held, st.HeldAt = ae.Error(), time.Now().UnixMilli()
-				return
-			}
-			a.drop("upload_failed")
-			a.fails++
-			if a.fails >= archiveFailStop {
-				a.stop = "uploads are failing: " + err.Error()
-			}
+		ans, to, act := a.postTranscriptPiece(f.Session, archiveFileKey(f), f.Kind, fmt.Sprintf("%s#%d", st.FP, st.Gen), st.Off, &piece, shrunk, func(msg string) {
+			st.Held, st.HeldAt = msg, archiveNow().UnixMilli()
+		})
+		switch act {
+		case pieceUploadRetry413:
+			continue
+		case pieceUploadRetryShrink:
+			shrunk, maxLines = true, (len(piece.lines)+1)/2
+			continue
+		case pieceUploadStop:
 			return
 		}
-		a.fails = 0
-		a.st.FullAt, a.st.NoneAt = 0, 0
 		if ans.Status == "stored" {
-			a.res.Pieces++
-			a.res.RawBytes += int64(len(piece.data))
-			a.res.SentBytes += int64(len(gz))
-			for _, l := range piece.lines {
-				if l.reason != "" {
-					a.drop(l.reason)
-				}
-			}
-			st.Off, st.Last, st.Held, st.Tail, shrunk, maxLines = to, time.Now().UnixMilli(), "", "", false, 0
+			st.Off, st.Last, st.Held, st.Tail, shrunk, maxLines = to, archiveNow().UnixMilli(), "", "", false, 0
 			sent = true
 			tail, err := tailHash(fh, to)
 			if err != nil {
@@ -817,6 +779,103 @@ func (a *archiver) file(f usageFile, size int64) {
 			st.Gen, st.Off, st.Tail = max(st.Gen, ans.Gen), ans.Have, tail
 		}
 	}
+}
+
+type transcriptUploadAns struct {
+	Status string `json:"status"`
+	Have   int64  `json:"have"`
+	Gen    int    `json:"gen"`
+}
+
+type pieceUploadAction int
+
+const (
+	pieceUploadOK pieceUploadAction = iota
+	pieceUploadRetry413
+	pieceUploadRetryShrink
+	pieceUploadStop
+)
+
+// postTranscriptPiece compresses (shrinking/stubbing to archiveGzipCap) and
+// uploads one piece to /api/v1/usage/transcript, unifying HTTP error handling,
+// 413 piece-cap learning, 4xx single-shrink retry, and FullAt/NoneAt resets
+// across file-backed and synthetic (OpenCode) transcript uploads.
+func (a *archiver) postTranscriptPiece(session, fileKey, kind, fp string, off int64, piece *archivePiece, shrunk bool, hold func(string)) (transcriptUploadAns, int64, pieceUploadAction) {
+	gz := gzipBytes(piece.data)
+	for len(gz) > archiveGzipCap {
+		if len(piece.lines) == 1 {
+			piece.stubOnly(lineTooLargeStub(piece.end(off)-off), "line_too_large", piece.end(off)-off)
+		} else {
+			piece.keep((len(piece.lines) + 1) / 2)
+		}
+		gz = gzipBytes(piece.data)
+	}
+	to := piece.end(off)
+	rc := piece.redactions()
+	rules, _ := json.Marshal(rc.rules())
+	q := url.Values{
+		"machine": {machineName()}, "session": {session}, "file": {fileKey}, "kind": {kind},
+		"fp": {fp}, "from": {fmt.Sprint(off)}, "to": {fmt.Sprint(to)},
+		"redacted": {"1"}, "version": {version}, "redactions": {fmt.Sprint(rc.Total)}, "redaction_rules": {string(rules)},
+	}
+	ctx, cancel := a.uploadContext()
+	b, err := a.c.send(ctx, "POST", "/api/v1/usage/transcript?"+q.Encode(), "application/gzip", bytes.NewReader(gz))
+	cancel()
+	var ans transcriptUploadAns
+	if err == nil {
+		err = json.Unmarshal(b, &ans)
+	}
+	if err != nil {
+		var ae *apiError
+		switch {
+		case errors.As(err, &ae) && ae.status == http.StatusForbidden && (ae.code == "transcript_job" || ae.msg == core.TranscriptJobRefusal):
+			a.stop = "this is a runner job's token; the runner's own sync archives its sessions"
+			a.quiet = true
+			return ans, to, pieceUploadStop
+		case errors.As(err, &ae) && ae.status == http.StatusInsufficientStorage && (ae.code == "transcript_full" || ae.msg == core.TranscriptQuotaRefusal || ae.msg == core.TranscriptDiskLowRefusal):
+			a.stop = archiveFullStop
+			a.st.FullAt = archiveNow().UnixMilli()
+			return ans, to, pieceUploadStop
+		case errors.As(err, &ae) && ae.status == http.StatusNotImplemented:
+			a.stop, a.quiet = archiveNoneStop, true
+			a.st.NoneAt = archiveNow().UnixMilli()
+			return ans, to, pieceUploadStop
+		case errors.As(err, &ae) && ae.status == http.StatusRequestEntityTooLarge:
+			if len(piece.lines) > 1 {
+				a.learnCap(len(piece.data) / 2)
+				return ans, to, pieceUploadRetry413
+			}
+			a.drop("refused")
+			hold(ae.Error() + " (a single line was refused; likely a proxy's request body size limit, e.g. nginx client_max_body_size; see docs/DEPLOY.md)")
+			return ans, to, pieceUploadStop
+		case errors.As(err, &ae) && refusedForGood(ae.status):
+			if len(piece.lines) > 1 && !shrunk {
+				return ans, to, pieceUploadRetryShrink
+			}
+			a.drop("refused")
+			hold(ae.Error())
+			return ans, to, pieceUploadStop
+		}
+		a.drop("upload_failed")
+		a.fails++
+		if a.fails >= archiveFailStop {
+			a.stop = "uploads are failing: " + err.Error()
+		}
+		return ans, to, pieceUploadStop
+	}
+	a.fails = 0
+	a.st.FullAt, a.st.NoneAt = 0, 0
+	if ans.Status == "stored" {
+		a.res.Pieces++
+		a.res.RawBytes += int64(len(piece.data))
+		a.res.SentBytes += int64(len(gz))
+		for _, l := range piece.lines {
+			if l.reason != "" {
+				a.drop(l.reason)
+			}
+		}
+	}
+	return ans, to, pieceUploadOK
 }
 
 // archivePiece is whole lines, redacted, with where each ends.

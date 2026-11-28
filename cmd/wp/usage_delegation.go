@@ -20,9 +20,10 @@ gets the best arm (best). Neither is evidence.
 Shares of new tasks follow each arm's probability of costing least (the
 task's Claude cost at API prices), with project, type, risk, the text's
 length and time taken out. An arm worse than none on a guard (not done in
-14 days, review findings on its pull requests, audit findings fixed in its
-rounds, follow-up fix tasks, escapes) by more than its margin, with
-probability over 0.975 on at least 20 tasks, gets none.
+14 days, review findings and severity-weighted review findings on its pull
+requests, audit findings fixed in its rounds, follow-up fix tasks, escapes)
+by more than its margin, with probability over 0.975 on at least 20 tasks,
+gets none.
 
 Per arm, as the tasks came out: cost (median, mean, share by model and by
 main thread or subagents), subagents, tool calls, context, compactions,

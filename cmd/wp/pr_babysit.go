@@ -727,7 +727,7 @@ func helperStatsText(hs []helperStat) string {
 			if h.UnansweredCancelled > 0 {
 				why = append(why, fmt.Sprintf("%d cancelled", h.UnansweredCancelled))
 			}
-			if other := unans - h.UnansweredFailed - h.UnansweredCancelled; other > 0 && len(why) > 0 {
+			if other := unans - h.UnansweredFailed - h.UnansweredCancelled; other > 0 {
 				why = append(why, fmt.Sprintf("%d retry/other", other))
 			}
 			detail := ""

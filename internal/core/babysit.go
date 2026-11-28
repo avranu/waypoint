@@ -1021,8 +1021,19 @@ func (s *Service) ensureArmedBabysit(ctx context.Context, pr *PullRequest) bool 
 	return s.babysitArmedAs(ctx, pr, s.babysitOwnerFor(ctx, pr))
 }
 
+// ensureArmedBabysitBy is ensureArmedBabysit recording the arming session's ID
+// on the newly created babysit (while keeping started_by/started_agent as system
+// automation) so the arming session's own pr_claims row doesn't self-defer it.
+func (s *Service) ensureArmedBabysitBy(ctx context.Context, actor *Actor, pr *PullRequest) bool {
+	return s.babysitArmedWithActor(ctx, actor, pr, s.babysitOwnerFor(ctx, pr))
+}
+
 // babysitArmedAs is ensureArmedBabysit on owner's runner (0: nobody's).
 func (s *Service) babysitArmedAs(ctx context.Context, pr *PullRequest, owner int64) bool {
+	return s.babysitArmedWithActor(ctx, nil, pr, owner)
+}
+
+func (s *Service) babysitArmedWithActor(ctx context.Context, actor *Actor, pr *PullRequest, owner int64) bool {
 	if pr.ArmedAt == nil || (pr.State != "open" && pr.State != "draft") || (pr.headRepo != "" && !strings.EqualFold(pr.headRepo, pr.Repo)) {
 		return false
 	}
@@ -1032,7 +1043,11 @@ func (s *Service) babysitArmedAs(ctx context.Context, pr *PullRequest, owner int
 	if owner == 0 || s.babysitGate(ctx, pr) != "" {
 		return false
 	}
-	if _, err := s.startBabysit(ctx, SystemActor(), pr, owner, "", "automation", false, false); err != nil {
+	sys := *SystemActor()
+	if actor != nil && actor.Session != 0 {
+		sys.Session = actor.Session
+	}
+	if _, err := s.startBabysit(ctx, &sys, pr, owner, "", "automation", false, false); err != nil {
 		s.log.WarnContext(ctx, "babysit an armed pull request", "repo", pr.Repo, "number", pr.Number, "err", err)
 		return false
 	}
@@ -1109,7 +1124,15 @@ func (s *Service) babysitStepHeld(ctx context.Context, prID int64, sync bool) {
 	}
 	if pr.HeadSHA != "" && !sameSHA(pr.HeadSHA, b.HeadSHA) {
 		s.promoteFixing(ctx, pr)
-		if err := s.setBabysit(ctx, b, map[string]any{"head_sha": pr.HeadSHA}); err != nil {
+		patch := map[string]any{"head_sha": pr.HeadSHA}
+		if strings.HasPrefix(b.Wait, liveSessionWaitPrefix) {
+			// A new push resets the per-head live-session deferral budget (WP-2021).
+			patch["wait"] = ""
+			patch["wait_at"] = int64(0)
+			b.Wait = ""
+			b.WaitSince = time.Time{}
+		}
+		if err := s.setBabysit(ctx, b, patch); err != nil {
 			if readFault(err) {
 				s.log.WarnContext(ctx, "record a push on a babysit", "pr", prID, "err", err)
 			}
@@ -1302,6 +1325,10 @@ func (s *Service) babysitStepHeld(ctx context.Context, prID int64, sync bool) {
 		if s.waitOnSharedTimeout(ctx, b, pr) {
 			return
 		}
+		if who, deferring := s.liveSessionOnPR(ctx, b, pr); deferring {
+			s.setState(ctx, b, pr, BabysitWatching, liveSessionWaitPrefix+who+" to finish pushing")
+			return
+		}
 		if faults == nil && s.rerunForFlake(ctx, b, pr, failed) {
 			return
 		}
@@ -1310,6 +1337,10 @@ func (s *Service) babysitStepHeld(ctx context.Context, prID int64, sync bool) {
 		return
 	}
 	if len(failed) > 0 || conflict || len(work) > 0 || len(findings) > 0 {
+		if who, deferring := s.liveSessionOnPR(ctx, b, pr); deferring {
+			s.setState(ctx, b, pr, BabysitWatching, liveSessionWaitPrefix+who+" to finish pushing")
+			return
+		}
 		s.settleHandoffs(ctx, b, pr, handoffFellBack)
 		s.babysitRound(ctx, b, pr, failed, conflict, work, findings)
 		return
@@ -1380,6 +1411,74 @@ func (s *Service) babysitStepHeld(ctx context.Context, prID int64, sync bool) {
 	default:
 		s.setState(ctx, b, pr, BabysitWatching, rd.Reasons[0])
 	}
+}
+
+// liveSessionFresh is how recently a live session must have shown activity
+// to hold off a babysit round on its branch, linked task or PR claim
+// (WP-1420, WP-1982, WP-2021).
+const (
+	liveSessionFresh      = 5 * time.Minute
+	liveSessionDeferMax   = 20 * time.Minute
+	liveSessionWaitPrefix = "waiting for live session "
+)
+
+// liveSessionOnPR reports whether an active live agent session is currently
+// working on this PR's branch, linked task or PR claim, so the babysitter
+// should defer instead of launching a competing runner round (WP-1420,
+// WP-1982, WP-2021). Bounded by liveSessionDeferMax on the same head so an
+// abandoned or stuck session never wedges a PR.
+func (s *Service) liveSessionOnPR(ctx context.Context, b *Babysit, pr *PullRequest) (who string, deferring bool) {
+	if b.State == BabysitWatching && strings.HasPrefix(b.Wait, liveSessionWaitPrefix) && sameSHA(b.HeadSHA, pr.HeadSHA) && !b.WaitSince.IsZero() && s.now().Sub(b.WaitSince) >= liveSessionDeferMax {
+		return "", false
+	}
+	now := s.now()
+	cutoff := now.Add(-liveSessionFresh).UnixMilli()
+	rows, err := s.db.R.QueryContext(ctx, `SELECT DISTINCT x.id, coalesce(x.title, ''), coalesce(x.agent, '')
+		FROM agent_sessions x
+		WHERE x.ended_at IS NULL AND x.state = 'working' AND x.last_seen_at >= ?
+			AND (
+				(x.branch != '' AND x.branch = ? AND (x.repo = '' OR lower(x.repo) = lower(?)))
+				OR EXISTS (
+					SELECT 1 FROM agent_runs r
+					JOIN external_links el ON el.issue_id = r.issue_id
+					WHERE r.session_id = x.id AND r.ended_at IS NULL
+						AND r.session_id != ?
+						AND ((el.kind = 'pull' AND lower(el.repo) = lower(?) AND el.number = ?) OR el.url = ?)
+				)
+				OR EXISTS (
+					SELECT 1 FROM pr_claims c
+					WHERE c.pull_id = ? AND c.session_id = x.id AND c.expires_at > ?
+						AND c.session_id != ?
+						AND (x.branch = '' OR x.branch = ?)
+				)
+			)
+		ORDER BY x.last_seen_at DESC`,
+		cutoff, pr.HeadRef, pr.Repo, b.sessionID, pr.Repo, pr.Number, pr.URL, pr.ID, now.UnixMilli(), b.sessionID, pr.HeadRef)
+	if err != nil {
+		return "", false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sid int64
+		var title, agent string
+		if err := rows.Scan(&sid, &title, &agent); err != nil {
+			continue
+		}
+		// A session waiting in AwaitShipChecks is already handled by
+		// authorHolds/handToAuthor, not actively editing code.
+		if s.shipWaits.checksHeld(sid, pr.ID, now) {
+			continue
+		}
+		label := strings.TrimSpace(title)
+		if label == "" {
+			label = strings.TrimSpace(agent)
+		}
+		if label == "" {
+			label = fmt.Sprintf("#%d", sid)
+		}
+		return excerpt(label, 60), true
+	}
+	return "", false
 }
 
 // markSeen marks pr's new review comments seen by the babysitter.
@@ -2171,7 +2270,9 @@ func (s *Service) setState(ctx context.Context, b *Babysit, pr *PullRequest, sta
 		return
 	}
 	since := s.now()
-	if b.State == state && (isFullRunReason(b.Wait) && isFullRunReason(wait) || IsQueuedRoundWait(b.Wait) && IsQueuedRoundWait(wait)) {
+	if b.State == state && (isFullRunReason(b.Wait) && isFullRunReason(wait) ||
+		IsQueuedRoundWait(b.Wait) && IsQueuedRoundWait(wait) ||
+		(strings.HasPrefix(b.Wait, liveSessionWaitPrefix) && strings.HasPrefix(wait, liveSessionWaitPrefix))) {
 		since = b.WaitSince
 	}
 	err := s.write(ctx, SystemActor(), func(t *tx) error {

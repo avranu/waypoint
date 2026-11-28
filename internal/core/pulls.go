@@ -926,8 +926,15 @@ func (s *Service) finishRun(ctx context.Context, id int64, status, summary, errT
 // endBotRun is finishRun, saying whether it ended the run: false when the run
 // had finished already.
 func (s *Service) endBotRun(ctx context.Context, id int64, status, summary, errText string, log []ModelAttempt, reviewURL string) (bool, error) {
-	sets := `status = ?, summary = ?, error = ?, finished_at = ?`
-	args := []any{status, summary, errText, s.nowMS()}
+	return s.endBotRunCoverage(ctx, id, status, summary, errText, log, reviewURL, 0, false)
+}
+
+// endBotRunCoverage records how a run ended together with its diff coverage
+// (how many files were dropped unreviewed and whether any file diff was cut;
+// WP-1434, WP-2021).
+func (s *Service) endBotRunCoverage(ctx context.Context, id int64, status, summary, errText string, log []ModelAttempt, reviewURL string, droppedFiles int, diffCut bool) (bool, error) {
+	sets := `status = ?, summary = ?, error = ?, finished_at = ?, dropped_files = ?, diff_cut = ?`
+	args := []any{status, summary, errText, s.nowMS(), droppedFiles, boolInt(diffCut)}
 	if log != nil {
 		lb, _ := json.Marshal(log)
 		sets += `, log = ?`
@@ -1169,9 +1176,11 @@ func anyNoBar(answers []reviewerAnswer) bool {
 
 // botResult is what a run did.
 type botResult struct {
-	summary   string
-	reviewURL string
-	log       []ModelAttempt
+	summary      string
+	reviewURL    string
+	log          []ModelAttempt
+	droppedFiles int
+	diffCut      bool
 }
 
 // carryOut does one run and records the outcome; failures are retried a
@@ -1203,7 +1212,7 @@ func (s *Service) carryOut(ctx context.Context, r *BotRun) {
 	var wait *aiWaitError
 	switch {
 	case err == nil:
-		err = s.finishRun(done, r.ID, "done", res.summary, "", res.log, res.reviewURL)
+		_, err = s.endBotRunCoverage(done, r.ID, "done", res.summary, "", res.log, res.reviewURL, res.droppedFiles, res.diffCut)
 	case errors.As(err, &wait) && wait.why == "quota":
 		s.log.WarnContext(ctx, "bot run waits for the AI key's daily limit to reset", "run", r.ID, "until", wait.until)
 		lb, _ := json.Marshal(res.log)
@@ -1397,7 +1406,7 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 
 	diff, err := cl.PRDiff(ctx, f, pr.Repo, fp)
 	if errors.Is(err, errDiffTooLarge) {
-		return res, &errSkip{"the diff is too large to review"}
+		return res, &errSkip{diffTooLargeSummary}
 	} else if err != nil {
 		return res, err
 	}
@@ -1684,6 +1693,8 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 			s.noteReviewedHead(context.WithoutCancel(ctx), pr.ID, ruleID(r.AutomationID), fp.HeadSHA, udiff.ChangeHash(diff), res.summary, cur.contentHeadSHA(), since)
 		}
 	}
+	res.droppedFiles = len(o.dropped)
+	res.diffCut = o.cut
 	return res, nil
 }
 

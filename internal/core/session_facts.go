@@ -30,6 +30,20 @@ const (
 // factsRunBytes is a variable so a test can lower it.
 var factsRunBytes int64 = factsRunBytesDefault
 
+// claudeTranscriptWhereSQL excludes non-Claude harness transcripts
+// (antigravity, codex, opencode) from Claude Code's session-facts derivation
+// and status counts. Claude subagents live under subagents/% and may have
+// arbitrary agentType kinds, so they are always kept.
+const claudeTranscriptWhereSQL = `coalesce(p.file, '') NOT LIKE 'antigravity/%'
+		AND coalesce(p.file, '') NOT LIKE 'codex/%'
+		AND coalesce(p.file, '') NOT LIKE 'opencode/%'
+		AND (coalesce(p.file, '') LIKE 'subagents/%' OR (
+			coalesce(p.kind, '') NOT IN ('antigravity', 'antigravity_compact', 'codex', 'opencode')
+			AND coalesce(p.kind, '') NOT LIKE 'antigravity/%'
+			AND coalesce(p.kind, '') NOT LIKE 'codex/%'
+			AND coalesce(p.kind, '') NOT LIKE 'opencode/%'
+		))`
+
 // factsWaitingSQL selects the Claude Code files due to be derived: one row per
 // (user, machine, session, file, gen) with the end offset, raw bytes and newest
 // piece time. Non-Claude harnesses (antigravity, codex, opencode) are archived
@@ -40,8 +54,7 @@ var factsRunBytes int64 = factsRunBytesDefault
 const factsWaitingSQL = `SELECT p.user_id, p.machine, p.session, p.file, p.gen, MAX(p.to_off) AS end_off, SUM(p.raw_bytes) AS raw, MAX(p.created_at) AS newest
 	FROM transcript_pieces p
 	LEFT JOIN session_fact_files f ON f.user_id = p.user_id AND f.machine = p.machine AND f.session = p.session AND f.file = p.file AND f.gen = p.gen
-	WHERE p.kind NOT IN ('antigravity', 'antigravity_compact', 'codex', 'opencode')
-		AND p.kind NOT LIKE 'antigravity/%' AND p.kind NOT LIKE 'codex/%' AND p.kind NOT LIKE 'opencode/%'
+	WHERE ` + claudeTranscriptWhereSQL + `
 	GROUP BY p.user_id, p.machine, p.session, p.file, p.gen
 	HAVING MAX(p.created_at) <= ?1 AND (f.user_id IS NULL OR f.parser_version < ?2 OR f.attempted_to < MAX(p.to_off)
 		OR (f.error IS NOT NULL AND f.error_at <= ?3))`
