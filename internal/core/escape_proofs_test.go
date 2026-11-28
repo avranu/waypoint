@@ -164,3 +164,41 @@ func TestFixProofInputValidates(t *testing.T) {
 		t.Error("accepted a proof of an untraced fix")
 	}
 }
+
+func TestClassifyNoBuildNoteAndSummary(t *testing.T) {
+	cases := map[string]string{
+		"./merge_line_service_test.go:946:32: undefined: stackRunCeiling":                                              "unexported_symbol",
+		"./merge_line_front_test.go:274:25: se.s.lineStanding undefined (type *Service has no field or method)":        "unexported_symbol",
+		"./review_pipeline_test.go:279:43: too many arguments in call to failedMidStream have (int64, ...) want (...)": "signature_change",
+		"./core_test.go:1436:22: b.ManualOrder undefined (type *Board has no field or method ManualOrder)":             "exported_api",
+		"./api_test.go:42:10: undefined: core.NewExportedType":                                                         "exported_api",
+		"syntax error: unexpected EOF": "other",
+		"":                             "other",
+	}
+	for note, want := range cases {
+		if got := ClassifyNoBuildNote(note); got != want {
+			t.Errorf("ClassifyNoBuildNote(%q) = %q, want %q", note, got, want)
+		}
+	}
+	if line := ProofText("no_build", nil, "", "", "./x_test.go:1: undefined: helperFn"); !strings.Contains(line, "tests new unexported symbol") {
+		t.Errorf("ProofText(no_build) = %q", line)
+	}
+
+	e := newEscapeEnv(t)
+	now := e.s.now()
+	a := e.mergedPR(t, 1, now.Add(-48*time.Hour), "m1")
+	b := e.mergedPR(t, 2, now.Add(-24*time.Hour), "m2")
+	e.bug(t, "unexported test", 1)
+	e.bug(t, "exported api test", 2)
+	e.record(t, a, FixIntroducerInput{}, "none")
+	e.record(t, b, FixIntroducerInput{}, "none")
+	e.prove(t, FixProofInput{PR: a, Commit: "placed", Outcome: "no_build", Note: "./a_test.go:10: undefined: myHelper"})
+	e.prove(t, FixProofInput{PR: b, Commit: "placed", Outcome: "no_build", Note: "./b_test.go:10: x.NewField undefined"})
+	st, err := e.s.EscapeSummary(e.ctx, e.admin, EscapeQuery{Project: e.proj.Key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.NoBuildCauses) != 2 {
+		t.Fatalf("NoBuildCauses = %+v, want 2 causes", st.NoBuildCauses)
+	}
+}

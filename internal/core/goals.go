@@ -348,18 +348,22 @@ func linkBasis(basis, agent string, by int64, confirmed bool) string {
 	return basisNames[storedBasis(basis, agent, by, confirmed)]
 }
 
-// goalTech are technologies a goal names when it says how rather than what.
+// goalTech are unambiguous technologies a goal names when it says how rather
+// than what. Common English words (e.g. "express", "rest", "react", "spring",
+// "swift", "rails", "node", "rust", "ruby", "vault", "helm") are intentionally
+// left out to avoid false positives; explicit "use X" phrases are still caught
+// by goalUseRE when X is capitalized.
 var goalTech = map[string]string{}
 
 func init() {
-	for _, w := range strings.Fields(`Django Flask Rails Laravel Spring Express Next.js Nuxt React Vue Svelte Angular jQuery Tailwind Bootstrap
+	for _, w := range strings.Fields(`Django Laravel Next.js Nuxt Vue Svelte jQuery
 		Postgres PostgreSQL MySQL MariaDB SQLite MongoDB Redis Memcached Kafka RabbitMQ NATS Elasticsearch OpenSearch ClickHouse DynamoDB Cassandra
-		Docker Kubernetes k8s k3s Helm Terraform Ansible Nomad Consul Vault Nginx Caddy Traefik Apache HAProxy Cloudflare AWS GCP Azure Lambda S3 EC2
-		Python Golang Rust Java Kotlin Swift TypeScript JavaScript Node Node.js Deno Bun Ruby PHP Elixir Haskell Scala C++ C#
-		GraphQL gRPC REST WebSocket WebSockets Protobuf JSON YAML TOML OAuth OIDC JWT SAML LDAP
-		Playwright Cypress Jest Vitest Pytest Webpack Vite esbuild npm pnpm yarn pip Poetry
-		Forgejo Gitea GitHub GitLab Jenkins CircleCI Grafana Prometheus Loki Sentry Datadog
-		OpenAI Anthropic Claude GPT Gemini Llama Ollama LangChain htmx Electron Flutter`) {
+		Docker Kubernetes k8s k3s Terraform Ansible Nginx Traefik Apache HAProxy Cloudflare AWS GCP Azure S3 EC2
+		Python Golang Java Kotlin TypeScript JavaScript Node.js Deno PHP Haskell Scala C++ C#
+		GraphQL gRPC WebSocket WebSockets Protobuf JSON YAML TOML OAuth OIDC JWT SAML LDAP
+		Playwright Vitest Pytest Webpack Vite esbuild npm pnpm yarn pip
+		Forgejo Gitea GitHub GitLab Jenkins CircleCI Grafana Prometheus Loki Datadog
+		OpenAI Anthropic Claude GPT Gemini Ollama LangChain htmx`) {
 		goalTech[strings.ToLower(w)] = w
 	}
 }
