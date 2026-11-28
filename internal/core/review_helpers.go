@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"slices"
@@ -270,6 +271,33 @@ func (s *Service) priorPanel(ctx context.Context, auditID int64) []AuditHelperRu
 		return nil
 	}
 	return s.roundPanelRuns(ctx, round)
+}
+
+// roundPanelSiblingRunningQ reports whether another reviewer audit of the same
+// review round currently has a running job (excluding excludeJobID) with a
+// Haiku panel attached (WP-1544, WP-2021). Accepts a queryer so claimRunnerJob
+// can run it atomically inside its write transaction.
+func (s *Service) roundPanelSiblingRunningQ(ctx context.Context, q queryer, auditID, excludeJobID int64) (bool, error) {
+	var key string
+	if err := q.QueryRowContext(ctx, `SELECT coalesce(request_key, '') FROM code_audits WHERE id = ?`, auditID).Scan(&key); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	round := roundOfKey(key)
+	if round == 0 {
+		return false, nil
+	}
+	num := strconv.FormatInt(round, 10)
+	var siblingRunning bool
+	err := q.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM code_audits a
+		JOIN runner_jobs j ON j.id = a.job_id
+		WHERE a.request_key IN (?, ?, ?) AND a.id != ? AND j.id != ? AND j.state = 'running'
+			AND coalesce(json_extract(j.input, '$.helpers.panel'), '') NOT IN ('', '[]')
+	)`, "review-round:"+num, "review-round:"+num+":sonnet", "review-round:"+num+":other", auditID, excludeJobID).Scan(&siblingRunning)
+	return siblingRunning, err
 }
 
 // settleRoundSiblings reads in the finished jobs of the round's other

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"unicode/utf8"
 )
@@ -19,7 +20,7 @@ const maxCrossProjectReason = 500
 // outside a session (Actor.Session 0) neither claim nor contest one.
 func (s *Service) claimPR(ctx context.Context, actor *Actor, prID int64) string {
 	if actor == nil || actor.Session == 0 {
-		return ""
+		return s.babysitActiveWarning(ctx, s.db.R, prID)
 	}
 	warning := ""
 	err := s.write(ctx, actor, func(t *tx) error {
@@ -37,23 +38,41 @@ func (s *Service) claimPR(ctx context.Context, actor *Actor, prID int64) string 
 	})
 	if err != nil {
 		s.log.WarnContext(ctx, "claim pull request", "pull", prID, "err", err)
-		return ""
+		return s.babysitActiveWarning(ctx, s.db.R, prID)
 	}
-	return warning
+	return joinNotes(warning, s.babysitActiveWarning(ctx, s.db.R, prID))
 }
 
 // prClaimWarning is claimPR's warning without claiming, for an action that
 // may yet fail or that ends the claim by succeeding.
 func (s *Service) prClaimWarning(ctx context.Context, actor *Actor, prID int64) string {
 	if actor == nil || actor.Session == 0 {
-		return ""
+		return s.babysitActiveWarning(ctx, s.db.R, prID)
 	}
 	warning, err := s.prHeldElsewhere(ctx, s.db.R, actor, prID)
 	if err != nil {
 		s.log.WarnContext(ctx, "read pull request claim", "pull", prID, "err", err)
+		return s.babysitActiveWarning(ctx, s.db.R, prID)
+	}
+	return joinNotes(warning, s.babysitActiveWarning(ctx, s.db.R, prID))
+}
+
+// babysitActiveWarning warns a session or caller when Waypoint's babysitter
+// currently has a queued or running round on prID (WP-1982, WP-2021).
+func (s *Service) babysitActiveWarning(ctx context.Context, q queryer, prID int64) string {
+	var round, number int
+	var jobID int64
+	var state string
+	err := q.QueryRowContext(ctx, `SELECT b.round, j.id, j.state, p.number
+		FROM babysits b
+		JOIN runner_jobs j ON j.id = b.job_id
+		JOIN pull_requests p ON p.id = b.pr_id
+		WHERE b.pr_id = ? AND b.ended_at IS NULL AND j.state IN ('queued', 'running')
+		ORDER BY b.id DESC LIMIT 1`, prID).Scan(&round, &jobID, &state, &number)
+	if err != nil {
 		return ""
 	}
-	return warning
+	return fmt.Sprintf("Waypoint's babysitter currently has round %d %s on this pull request (job #%d). Wait for it to finish or run `wp pr babysit stop %d` before pushing so you don't collide.", round, state, jobID, number)
 }
 
 // prHeldElsewhere is the warning for a pull request another live session

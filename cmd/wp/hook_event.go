@@ -344,15 +344,26 @@ func (c *cli) addSessionHeaders(req *http.Request) {
 		}
 		id = os.Getenv("WAYPOINT_SESSION")
 	}
+	cwd, _ := os.Getwd()
+	if id == "" && cwd != "" {
+		id = c.state.sessionIn(cwd)
+	}
+	hcli := ""
 	if id == "" {
-		if cwd, err := os.Getwd(); err == nil {
-			id = c.state.sessionIn(cwd)
-		}
+		id, hcli = harnessSessionID(os.Getenv, cwd)
+	} else if h := detectHarness(os.Getenv); h != "" && h != "claude" {
+		hcli = h
 	}
 	if id == "" {
 		return
 	}
 	req.Header.Set("X-Waypoint-Session", id)
+	if hcli != "" {
+		req.Header.Set("X-Waypoint-Session-CLI", hcli)
+		if cwd != "" {
+			req.Header.Set("X-Waypoint-Cwd", cwd)
+		}
+	}
 	req.Header.Set("X-Waypoint-Machine", cmpStr(os.Getenv("WAYPOINT_MACHINE"), machineName()))
 }
 

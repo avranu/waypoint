@@ -302,7 +302,12 @@ func (s *Service) gateFor(ctx context.Context, actor *Actor, task string, take, 
 		return g, nil
 	}
 	g.wanted = true
-	if r := s.runnerOnMachine(ctx, x.userID, x.Machine); r == nil || !r.Online || !slices.Contains(r.Features, FeatureAutopilot) || !slices.Contains(r.Features, FeatureAutopilotReview) {
+	if cliPolledSession(x) {
+		if !s.hasOnlineAuditRunner(ctx, x.userID) {
+			g.no = "no audit runner is online to review this change"
+			return g, nil
+		}
+	} else if r := s.runnerOnMachine(ctx, x.userID, x.Machine); r == nil || !r.Online || !slices.Contains(r.Features, FeatureAutopilot) || !slices.Contains(r.Features, FeatureAutopilotReview) {
 		g.no = "no runner online on this machine types reviews"
 		return g, nil
 	}
@@ -320,6 +325,23 @@ func (s *Service) gateFor(ctx context.Context, actor *Actor, task string, take, 
 		g.no = g.key + " isn't under way in this session (wp next takes it)"
 	}
 	return g, err
+}
+
+// hasOnlineAuditRunner reports whether userID has any online runner capable
+// of running an adversarial review audit (FeatureAudit, which runnerCanTake
+// requires for JobAudit), without requiring tmux prompt-typing on the
+// session's local machine (WP-2021).
+func (s *Service) hasOnlineAuditRunner(ctx context.Context, userID int64) bool {
+	runners, err := s.ownerRunners(ctx, userID)
+	if err != nil {
+		return false
+	}
+	for _, r := range runners {
+		if r.Online && slices.Contains(r.Features, FeatureAudit) {
+			return true
+		}
+	}
+	return false
 }
 
 // skipReviewStep is why a step stands down for wp ship --skip-review.

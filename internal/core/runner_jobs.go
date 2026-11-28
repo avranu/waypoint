@@ -953,13 +953,44 @@ func (s *Service) FinishRunnerJob(ctx context.Context, actor *Actor, id int64, i
 		return "", invalid("result must be JSON")
 	}
 	state := in.State
+	savedHelpers := false
 	err := s.write(ctx, actor, func(t *tx) error {
-		_, cur, _, cancel, _, err := s.runnerJobFor(ctx, t, actor, id)
+		_, cur, _, cancel, kind, err := s.runnerJobFor(ctx, t, actor, id)
 		if err != nil {
 			return err
 		}
 		if cur != "running" {
 			state = cur
+			// When Waypoint cancels or expires a running audit job before
+			// the runner reports back, still preserve completed Haiku helper
+			// runs so retries and sibling audits can reuse them (WP-1358, WP-2021).
+			// Gate atomically on an empty runner_jobs.result so retries or
+			// previously settled jobs are idempotent and never double-insert.
+			if (cur == "cancelled" || cur == "expired") && kind == JobAudit && len(in.Result) > 0 {
+				var source string
+				var sid int64
+				var project sql.NullInt64
+				if err := t.QueryRowContext(ctx, `SELECT source, source_id, project_id FROM runner_jobs WHERE id = ?`, id).Scan(&source, &sid, &project); err == nil && source == auditSource && sid != 0 {
+					var m map[string]any
+					if json.Unmarshal(in.Result, &m) == nil {
+						if runs := helperRunsOf(m); len(runs) > 0 {
+							res, err := t.ExecContext(ctx, `UPDATE runner_jobs SET result = ?
+								WHERE id = ? AND state IN ('cancelled', 'expired') AND (result IS NULL OR result = '' OR result = '{}')`,
+								string(in.Result), id)
+							if err != nil {
+								return err
+							}
+							if n, _ := res.RowsAffected(); n > 0 {
+								if err := s.insertHelperRuns(ctx, t, sid, runs, false, s.nowMS()); err != nil {
+									return err
+								}
+								savedHelpers = true
+								t.emit(&Event{Kind: EvReviewLoopRecorded, ProjectID: project.Int64})
+							}
+						}
+					}
+				}
+			}
 			return nil
 		}
 		if cancel && state == "failed" {
@@ -973,6 +1004,9 @@ func (s *Service) FinishRunnerJob(ctx context.Context, actor *Actor, id int64, i
 		}
 		return t.finishRunnerJob(ctx, id, state, in.ExitCode, in.Result, msg)
 	})
+	if err == nil && savedHelpers {
+		s.kickRunners()
+	}
 	return state, err
 }
 

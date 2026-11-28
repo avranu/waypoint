@@ -963,10 +963,9 @@ func (s *Service) claimRunnerJob(ctx context.Context, actor *Actor, r *Runner, l
 	if err != nil || len(ids) == 0 {
 		return nil, err
 	}
+	s.settleCandidateAuditSiblings(ctx, ids)
 	signer := s.sandboxSigner(ctx, r)
 	var claim *RunnerClaim
-	var claimSource string
-	var claimSID int64
 	err = s.write(ctx, actor, func(t *tx) error {
 		for _, id := range ids {
 			var c RunnerClaim
@@ -983,6 +982,15 @@ func (s *Service) claimRunnerJob(ctx context.Context, actor *Actor, r *Runner, l
 				return err
 			}
 			c.Input = json.RawMessage(input)
+			if c.Kind == JobAudit && source == auditSource {
+				updated, strippedPanel := s.applyPriorPanelQ(ctx, t, c.ID, c.Input, sid)
+				if strippedPanel {
+					if _, err := t.ExecContext(ctx, `UPDATE runner_jobs SET input = ? WHERE id = ?`, string(updated), c.ID); err != nil {
+						return err
+					}
+				}
+				c.Input = updated
+			}
 			if !slices.Contains(r.Features, FeatureWorkClock) {
 				var in struct {
 					WorkTimeout int `json:"work_timeout"`
@@ -1021,64 +1029,90 @@ func (s *Service) claimRunnerJob(ctx context.Context, actor *Actor, r *Runner, l
 			if c.Kind == JobSandboxDrill && source == sandboxDrillSource {
 				c.Sessions = s.drillSessions(ctx, t, signer, r, &c, sid)
 			}
-			claim, claimSource, claimSID = &c, source, sid
+			claim = &c
 			t.emit(jobUpdated(&c, "running", r.ID, r.Owner.ID, 0))
 			return nil
 		}
 		return nil
 	})
-	if err == nil && claim != nil && claim.Kind == JobAudit && claimSource == auditSource {
-		claim.Input = s.withPriorPanel(ctx, claim.Input, claimSID)
-	}
 	return claim, err
 }
 
-// withPriorPanel returns an audit job's input with the round's earlier
-// panel runs set (priorPanel), read now, when a runner takes the job: a job
-// that waited in the queue takes what finished meanwhile (WP-1481). Every
-// field of the input is kept, those this version doesn't know too; the
-// input is returned as it is when it has no panel, nothing finished, or it
-// can't be read. Two audits of one round that run at the same time still
-// both run the panel: a sibling that hasn't finished has recorded nothing
-// to take (WP-1544).
+// settleCandidateAuditSiblings settles any finished sibling audits for queued
+// candidate audit jobs before claimRunnerJob enters its single-writer tx.
+func (s *Service) settleCandidateAuditSiblings(ctx context.Context, ids []int64) {
+	for _, id := range ids {
+		var kind, source string
+		var sid int64
+		if s.db.R.QueryRowContext(ctx, `SELECT kind, source, source_id FROM runner_jobs WHERE id = ?`, id).Scan(&kind, &source, &sid) == nil &&
+			kind == JobAudit && source == auditSource && sid != 0 {
+			s.settleRoundSiblings(ctx, sid)
+		}
+	}
+}
+
+// withPriorPanel returns an audit job's input with prior panel runs attached
+// (or stripped when a sibling panel is running). Used by tests; claimRunnerJob
+// calls applyPriorPanelQ directly inside its write transaction.
 func (s *Service) withPriorPanel(ctx context.Context, input json.RawMessage, auditID int64) json.RawMessage {
+	s.settleRoundSiblings(ctx, auditID)
+	out, _ := s.applyPriorPanelQ(ctx, s.db.R, 0, input, auditID)
+	return out
+}
+
+// applyPriorPanelQ computes the panel payload for a newly claimed audit job
+// using queryer q so claimRunnerJob can run it atomically inside its
+// single-writer transaction and persist runner_jobs.input in SQLite (WP-1481,
+// WP-1544, WP-2021).
+func (s *Service) applyPriorPanelQ(ctx context.Context, q queryer, jobID int64, input json.RawMessage, auditID int64) (json.RawMessage, bool) {
 	var in map[string]json.RawMessage
 	if json.Unmarshal(input, &in) != nil {
-		return input
+		return input, false
 	}
 	var h map[string]json.RawMessage
 	if json.Unmarshal(in["helpers"], &h) != nil || h == nil {
-		return input
+		return input, false
 	}
 	var panel []json.RawMessage
 	if json.Unmarshal(h["panel"], &panel) != nil || len(panel) == 0 {
-		return input
+		return input, false
 	}
-	s.settleRoundSiblings(ctx, auditID)
 	prior := s.priorPanel(ctx, auditID)
+	strippedPanel := false
 	if len(prior) == 0 {
-		if _, stale := h["prior"]; !stale {
-			return input
+		busy, err := s.roundPanelSiblingRunningQ(ctx, q, auditID, jobID)
+		if err != nil {
+			s.log.WarnContext(ctx, "read whether a sibling panel is running", "audit", auditID, "err", err)
 		}
-		delete(h, "prior")
+		if busy {
+			delete(h, "panel")
+			delete(h, "prior")
+			strippedPanel = true
+			s.log.InfoContext(ctx, "sibling panel already running; skipping duplicate panel at claim", "audit", auditID)
+		} else {
+			if _, stale := h["prior"]; !stale {
+				return input, false
+			}
+			delete(h, "prior")
+		}
 	} else {
 		pb, err := json.Marshal(prior)
 		if err != nil {
-			return input
+			return input, false
 		}
 		h["prior"] = pb
 		s.log.InfoContext(ctx, "prior panel runs attached at claim", "audit", auditID, "runs", len(prior))
 	}
 	hb, err := json.Marshal(h)
 	if err != nil {
-		return input
+		return input, false
 	}
 	in["helpers"] = hb
 	out, err := json.Marshal(in)
 	if err != nil {
-		return input
+		return input, false
 	}
-	return out
+	return out, strippedPanel
 }
 
 func jobUpdated(c *RunnerClaim, state string, runner, owner, size int64) *Event {
