@@ -9,6 +9,7 @@ import (
 
 	"git.jmann.me/claude/waypoint/internal/core/email"
 	"git.jmann.me/claude/waypoint/internal/core/kernel"
+	"git.jmann.me/claude/waypoint/internal/core/users"
 )
 
 type (
@@ -103,13 +104,9 @@ const (
 	PermAdmin             = kernel.PermAdmin
 )
 
-const gotifyMask = kernel.GotifyMask
-
 var (
 	SessionEfforts         = kernel.SessionEfforts
 	SessionPermissionModes = kernel.SessionPermissionModes
-
-	permissionGroups = kernel.PermissionGroups
 )
 
 // SystemActor acts with full access, for CLI bootstrap and background jobs.
@@ -150,3 +147,69 @@ const (
 // EmailConfigured says whether email can be sent. It takes no actor, so it is
 // not on the email domain's Service.
 func (s *Service) EmailConfigured(ctx context.Context) bool { return s.mailer.Configured(ctx) }
+
+// The users domain's types and functions (internal/core/users).
+type (
+	APIToken          = users.APIToken
+	TokenSpec         = users.TokenSpec
+	TokenPatch        = users.TokenPatch
+	TokenRefusal      = users.TokenRefusal
+	UserLink          = users.UserLink
+	PendingInvite     = users.PendingInvite
+	AcceptInviteInput = users.AcceptInviteInput
+	Session           = users.Session
+	CreateUserInput   = users.CreateUserInput
+	UserPatch         = users.UserPatch
+
+	PermissionPreset  = users.PermissionPreset
+	PermissionCatalog = users.PermissionCatalog
+)
+
+const CacheWarmCompact = users.CacheWarmCompact
+
+func HashPassword(pw string) string      { return users.HashPassword(pw) }
+func CheckPassword(hash, pw string) bool { return users.CheckPassword(hash, pw) }
+func WarmLogin()                         { users.WarmLogin() }
+func CanonicalIP(ip string) string       { return users.CanonicalIP(ip) }
+
+// The users domain's operations that take no actor: sign-in has none yet, and
+// public reads need none. The rest are on its Service, embedded in Service.
+func (s *Service) UserByID(ctx context.Context, id int64) (*User, error) {
+	return s.users.UserByID(ctx, id)
+}
+func (s *Service) Login(ctx context.Context, login, password, userAgent, ip string) (string, *User, error) {
+	return s.users.Login(ctx, login, password, userAgent, ip)
+}
+func (s *Service) LoginAccountID(ctx context.Context, login string) (int64, error) {
+	return s.users.LoginAccountID(ctx, login)
+}
+func (s *Service) SignedInFrom(ctx context.Context, userID int64, ip string) (bool, error) {
+	return s.users.SignedInFrom(ctx, userID, ip)
+}
+func (s *Service) SessionActor(ctx context.Context, tok string) (*Actor, error) {
+	return s.users.SessionActor(ctx, tok)
+}
+func (s *Service) SessionUser(ctx context.Context, tok string) (*User, error) {
+	return s.users.SessionUser(ctx, tok)
+}
+func (s *Service) Logout(ctx context.Context, tok string) error { return s.users.Logout(ctx, tok) }
+func (s *Service) TokenActor(ctx context.Context, tok string) (*Actor, error) {
+	return s.users.TokenActor(ctx, tok)
+}
+func (s *Service) GetLink(ctx context.Context, tok string) (*UserLink, error) {
+	return s.users.GetLink(ctx, tok)
+}
+func (s *Service) AcceptInvite(ctx context.Context, tok string, in AcceptInviteInput, userAgent, ip string) (string, *User, error) {
+	return s.users.AcceptInvite(ctx, tok, in, userAgent, ip)
+}
+func (s *Service) ResetPassword(ctx context.Context, tok, password string) error {
+	return s.users.ResetPassword(ctx, tok, password)
+}
+func (s *Service) Avatar(ctx context.Context, id int64) ([]byte, string, error) {
+	return s.users.Avatar(ctx, id)
+}
+func (s *Service) UserCount(ctx context.Context) (int, error) { return s.users.UserCount(ctx) }
+func (s *Service) BootstrapInvite(ctx context.Context) (*UserLink, error) {
+	return s.users.BootstrapInvite(ctx)
+}
+func (s *Service) Permissions() PermissionCatalog { return s.users.Permissions() }

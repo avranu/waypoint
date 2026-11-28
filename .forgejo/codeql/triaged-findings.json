@@ -13,7 +13,7 @@
   },
   {
     "rule": "go/email-injection",
-    "path": "internal/core/email.go",
+    "path": "internal/core/email/email.go",
     "fingerprint": "c0476a9c4afbc5a5:1",
     "reason": "emailMessage rejects CR/LF in sender and recipient, strips them from header values, Q-encodes the subject and quoted-printable encodes the body; smtp.Client.Data dot-stuffs. Recipients also pass mail.ParseAddress."
   }

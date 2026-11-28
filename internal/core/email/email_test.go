@@ -93,3 +93,38 @@ func TestEmailMessageHeaders(t *testing.T) {
 		t.Error("a recipient with a line break")
 	}
 }
+
+func TestSendTestEmailToAGivenRecipientAndAsAnAdminAgent(t *testing.T) {
+	e := kerneltest.New(t)
+	svc := New(NewMailer(e.K))
+	admin := e.User("robin", true)
+	srv := emailtest.NewSMTP(t)
+	if _, err := svc.SetEmailSettings(e.Ctx, admin, SettingsInput{Host: "127.0.0.1", Port: srv.Port(), Security: None, From: "wp@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.SendTestEmail(e.Ctx, admin, " other@example.com "); err != nil {
+		t.Fatal(err)
+	}
+	if got := srv.Received(); len(got) != 1 || got[0].To[0] != "other@example.com" {
+		t.Errorf("explicit recipient: %+v", got)
+	}
+	// Only changing settings needs a person: an admin's agent may send a test.
+	agent := &kernel.Actor{User: admin.User, Agent: "anthropic/claude-code"}
+	if err := svc.SendTestEmail(e.Ctx, agent, ""); err != nil {
+		t.Errorf("an admin agent's test: %v", err)
+	}
+	if got := srv.Received(); len(got) != 2 || got[1].To[0] != "robin@example.com" {
+		t.Errorf("agent's test email: %+v", got)
+	}
+}
+
+func TestConfiguredIsFalseWhenTheReadFails(t *testing.T) {
+	e := kerneltest.New(t)
+	m := NewMailer(e.K)
+	if err := e.K.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if m.Configured(e.Ctx) {
+		t.Error("configured with the database closed")
+	}
+}

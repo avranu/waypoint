@@ -1,4 +1,4 @@
-package core
+package users
 
 import (
 	"context"
@@ -8,54 +8,56 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 )
 
 // PermissionPreset is a starting selection the settings page offers.
 type PermissionPreset struct {
-	Key         string       `json:"key"`
-	Label       string       `json:"label"`
-	Description string       `json:"description"`
-	Permissions []Permission `json:"permissions"`
+	Key         string              `json:"key"`
+	Label       string              `json:"label"`
+	Description string              `json:"description"`
+	Permissions []kernel.Permission `json:"permissions"`
 }
 
 // PermissionCatalog is everything the settings page needs to edit a token.
 type PermissionCatalog struct {
-	Groups  []PermissionGroup  `json:"groups"`
-	Presets []PermissionPreset `json:"presets"`
+	Groups  []kernel.PermissionGroup `json:"groups"`
+	Presets []PermissionPreset       `json:"presets"`
 }
 
-var permissionPresets = []PermissionPreset{
+var PermissionPresets = []PermissionPreset{
 	{Key: "assistant", Label: "Assistant",
 		Description: "Reads and writes issues, pages, the glossary and design notes, searches, comments and asks you things. Starts, runs, merges and deletes nothing.",
-		Permissions: []Permission{PermIssuesRead, PermIssuesCreate, PermIssuesEdit, PermIssuesComment, PermTimeTrack,
-			PermSearch, PermPagesRead, PermPagesWrite, PermGlossaryRead, PermGlossaryWrite, PermDesignRead, PermDesignWrite,
-			PermLinksWrite, PermAttachmentsRead, PermAttachmentsWrite, PermRequestsRead, PermRequestsCreate, PermNotifications}},
+		Permissions: []kernel.Permission{kernel.PermIssuesRead, kernel.PermIssuesCreate, kernel.PermIssuesEdit, kernel.PermIssuesComment, kernel.PermTimeTrack,
+			kernel.PermSearch, kernel.PermPagesRead, kernel.PermPagesWrite, kernel.PermGlossaryRead, kernel.PermGlossaryWrite, kernel.PermDesignRead, kernel.PermDesignWrite,
+			kernel.PermLinksWrite, kernel.PermAttachmentsRead, kernel.PermAttachmentsWrite, kernel.PermRequestsRead, kernel.PermRequestsCreate, kernel.PermNotifications}},
 	{Key: "read", Label: "Read only", Description: "Every safe read; changes nothing.", Permissions: readPermissions()},
 }
 
 // readPermissions are the safe permissions that only read.
-func readPermissions() []Permission {
-	return []Permission{PermIssuesRead, PermSearch, PermPagesRead, PermGlossaryRead, PermDesignRead, PermAttachmentsRead,
-		PermRequestsRead, PermAgentsRead, PermSessionsRead, PermPullsRead, PermEnvironmentsRead, PermAutomationsRead, PermUsageRead}
+func readPermissions() []kernel.Permission {
+	return []kernel.Permission{kernel.PermIssuesRead, kernel.PermSearch, kernel.PermPagesRead, kernel.PermGlossaryRead, kernel.PermDesignRead, kernel.PermAttachmentsRead,
+		kernel.PermRequestsRead, kernel.PermAgentsRead, kernel.PermSessionsRead, kernel.PermPullsRead, kernel.PermEnvironmentsRead, kernel.PermAutomationsRead, kernel.PermUsageRead}
 }
 
 // Permissions is the catalog of permissions and presets.
-func (s *Service) Permissions() PermissionCatalog {
-	return PermissionCatalog{Groups: permissionGroups, Presets: permissionPresets}
+func (s *Store) Permissions() PermissionCatalog {
+	return PermissionCatalog{Groups: kernel.PermissionGroups, Presets: PermissionPresets}
 }
 
 // normalizePermissions checks a token's permission list and returns it
 // sorted and de-duplicated. nil stays nil (unrestricted); an empty list is
 // a token that can only say who it is.
-func normalizePermissions(in []Permission) ([]Permission, error) {
+func normalizePermissions(in []kernel.Permission) ([]kernel.Permission, error) {
 	if in == nil {
 		return nil, nil
 	}
-	out := make([]Permission, 0, len(in))
+	out := make([]kernel.Permission, 0, len(in))
 	for _, p := range in {
-		p = Permission(strings.TrimSpace(string(p)))
-		if !KnownPermission(p) {
-			return nil, invalid("unknown permission %q", p)
+		p = kernel.Permission(strings.TrimSpace(string(p)))
+		if !kernel.KnownPermission(p) {
+			return nil, kernel.Invalid("unknown permission %q", p)
 		}
 		if !slices.Contains(out, p) {
 			out = append(out, p)
@@ -65,7 +67,7 @@ func normalizePermissions(in []Permission) ([]Permission, error) {
 	return out, nil
 }
 
-func permissionsJSON(ps []Permission) any {
+func PermissionsJSON(ps []kernel.Permission) any {
 	if ps == nil {
 		return nil
 	}
@@ -73,22 +75,22 @@ func permissionsJSON(ps []Permission) any {
 	return string(b)
 }
 
-func parsePermissions(v sql.NullString) []Permission {
+func ParsePermissions(v sql.NullString) []kernel.Permission {
 	if !v.Valid {
 		return nil
 	}
-	out := []Permission{}
+	out := []kernel.Permission{}
 	if err := json.Unmarshal([]byte(v.String), &out); err != nil {
-		return []Permission{}
+		return []kernel.Permission{}
 	}
 	return out
 }
 
-func permissionSet(ps []Permission) PermissionSet {
+func NewPermissionSet(ps []kernel.Permission) kernel.PermissionSet {
 	if ps == nil {
 		return nil
 	}
-	set := PermissionSet{}
+	set := kernel.PermissionSet{}
 	for _, p := range ps {
 		set[p] = true
 	}
@@ -98,33 +100,33 @@ func permissionSet(ps []Permission) PermissionSet {
 // TokenRefusal is something a permission token was refused, counted per
 // permission, so its owner can decide whether to grant it.
 type TokenRefusal struct {
-	Permission Permission `json:"permission"`
-	Count      int        `json:"count"`
-	LastAt     time.Time  `json:"last_at"`
-	What       string     `json:"what"`
+	Permission kernel.Permission `json:"permission"`
+	Count      int               `json:"count"`
+	LastAt     time.Time         `json:"last_at"`
+	What       string            `json:"what"`
 }
 
 // RecordRefusal counts a refusal for the actor's token. It is best-effort:
 // a failure to record never changes the answer.
-func (s *Service) RecordRefusal(ctx context.Context, actor *Actor, p Permission, what string) {
+func (s *Service) RecordRefusal(ctx context.Context, actor *kernel.Actor, p kernel.Permission, what string) {
 	if actor == nil || actor.TokenID == 0 || !actor.Restricted() {
 		return
 	}
 	if len(what) > 200 {
 		what = what[:200]
 	}
-	_, err := s.db.W.ExecContext(ctx, `INSERT INTO api_token_refusals(token_id, permission, count, last_at, what) VALUES (?,?,1,?,?)
+	_, err := s.st.k.DB.W.ExecContext(ctx, `INSERT INTO api_token_refusals(token_id, permission, count, last_at, what) VALUES (?,?,1,?,?)
 		ON CONFLICT(token_id, permission) DO UPDATE SET count = count + 1, last_at = excluded.last_at, what = excluded.what`,
-		actor.TokenID, string(p), s.nowMS(), what)
+		actor.TokenID, string(p), s.st.k.NowMS(), what)
 	if err != nil {
-		s.log.WarnContext(ctx, "best-effort write failed", "err", err)
+		s.st.k.Log.WarnContext(ctx, "best-effort write failed", "err", err)
 	}
 }
 
 // Refused records err's refusal when it is a missing permission, and
 // returns err unchanged, so callers can wrap any service call with it.
-func (s *Service) Refused(ctx context.Context, actor *Actor, what string, err error) error {
-	var pe *PermissionError
+func (s *Service) Refused(ctx context.Context, actor *kernel.Actor, what string, err error) error {
+	var pe *kernel.PermissionError
 	if errors.As(err, &pe) {
 		if pe.What != "" {
 			what = pe.What
@@ -134,14 +136,14 @@ func (s *Service) Refused(ctx context.Context, actor *Actor, what string, err er
 	return err
 }
 
-func (s *Service) tokenRefusals(ctx context.Context, ids []int64) (map[int64][]TokenRefusal, error) {
+func (s *Store) TokenRefusals(ctx context.Context, ids []int64) (map[int64][]TokenRefusal, error) {
 	out := map[int64][]TokenRefusal{}
 	if len(ids) == 0 {
 		return out, nil
 	}
 	// #nosec G202 -- only placeholders are concatenated; values are bound
-	rows, err := s.db.R.QueryContext(ctx, `SELECT token_id, permission, count, last_at, what FROM api_token_refusals
-		WHERE token_id IN (`+placeholders(len(ids))+`) ORDER BY last_at DESC`, int64Args(ids)...)
+	rows, err := s.k.DB.R.QueryContext(ctx, `SELECT token_id, permission, count, last_at, what FROM api_token_refusals
+		WHERE token_id IN (`+kernel.Placeholders(len(ids))+`) ORDER BY last_at DESC`, kernel.Int64Args(ids)...)
 	if err != nil {
 		return nil, err
 	}
@@ -153,25 +155,25 @@ func (s *Service) tokenRefusals(ctx context.Context, ids []int64) (map[int64][]T
 		if err := rows.Scan(&id, &p, &r.Count, &at, &r.What); err != nil {
 			return nil, err
 		}
-		r.Permission, r.LastAt = Permission(p), msTime(at)
+		r.Permission, r.LastAt = kernel.Permission(p), kernel.MillisToTime(at)
 		out[id] = append(out[id], r)
 	}
 	return out, rows.Err()
 }
 
 // ClearTokenRefusals forgets a token's refusals.
-func (s *Service) ClearTokenRefusals(ctx context.Context, actor *Actor, id int64) error {
+func (s *Service) ClearTokenRefusals(ctx context.Context, actor *kernel.Actor, id int64) error {
 	if err := actor.CanManageTokens(); err != nil {
 		return err
 	}
 	var n int
-	if err := s.db.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_tokens WHERE id = ? AND user_id = ?`, id, actor.ID()).Scan(&n); err != nil {
+	if err := s.st.k.DB.R.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_tokens WHERE id = ? AND user_id = ?`, id, actor.ID()).Scan(&n); err != nil {
 		return err
 	}
 	if n == 0 {
-		return notFound("token")
+		return kernel.NotFound("token")
 	}
-	_, err := s.db.W.ExecContext(ctx, `DELETE FROM api_token_refusals WHERE token_id = ?`, id)
+	_, err := s.st.k.DB.W.ExecContext(ctx, `DELETE FROM api_token_refusals WHERE token_id = ?`, id)
 	return err
 }
 
@@ -180,20 +182,20 @@ type TokenPatch struct {
 	Name *string
 	// SetPermissions applies Permissions (nil: unrestricted).
 	SetPermissions bool
-	Permissions    []Permission
+	Permissions    []kernel.Permission
 	ReadOnly       *bool
 }
 
 // UpdateAPIToken changes one of the actor's tokens. Changing what a token
 // may do is for people: an agent can't widen its own or another's access.
-func (s *Service) UpdateAPIToken(ctx context.Context, actor *Actor, id int64, p TokenPatch) (*APIToken, error) {
+func (s *Service) UpdateAPIToken(ctx context.Context, actor *kernel.Actor, id int64, p TokenPatch) (*APIToken, error) {
 	if err := actor.CanManageTokens(); err != nil {
 		return nil, err
 	}
 	if (p.SetPermissions || p.ReadOnly != nil) && actor.IsAgent() {
-		return nil, forbidden("changing what a token may do is for people, not agents")
+		return nil, kernel.Forbidden("changing what a token may do is for people, not agents")
 	}
-	old, err := s.apiToken(ctx, actor, id)
+	old, err := s.st.Token(ctx, actor, id)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +203,7 @@ func (s *Service) UpdateAPIToken(ctx context.Context, actor *Actor, id int64, p 
 	if p.Name != nil {
 		name := strings.TrimSpace(*p.Name)
 		if name == "" {
-			return nil, invalid("token name is required")
+			return nil, kernel.Invalid("token name is required")
 		}
 		t.Name = name
 	}
@@ -218,15 +220,15 @@ func (s *Service) UpdateAPIToken(ctx context.Context, actor *Actor, id int64, p 
 	if t.Permissions != nil {
 		t.ReadOnly = false
 	}
-	if _, err := s.db.W.ExecContext(ctx, `UPDATE api_tokens SET name = ?, read_only = ?, permissions = ? WHERE id = ? AND user_id = ?`,
-		t.Name, boolInt(t.ReadOnly), permissionsJSON(t.Permissions), id, actor.ID()); err != nil {
+	if _, err := s.st.k.DB.W.ExecContext(ctx, `UPDATE api_tokens SET name = ?, read_only = ?, permissions = ? WHERE id = ? AND user_id = ?`,
+		t.Name, kernel.BoolInt(t.ReadOnly), PermissionsJSON(t.Permissions), id, actor.ID()); err != nil {
 		return nil, err
 	}
 	if detail := accessChange(old, &t); detail != "" {
-		s.audit(ctx, actor, AuditEntry{Action: "token.permissions", Category: AuditAccess, TargetType: "token", TargetID: t.ID,
+		s.st.k.Audit(ctx, actor, kernel.AuditEntry{Action: "token.permissions", Category: kernel.AuditAccess, TargetType: "token", TargetID: t.ID,
 			Target: t.Name, Detail: detail, About: t.Agent})
 	}
-	return s.apiToken(ctx, actor, id)
+	return s.st.Token(ctx, actor, id)
 }
 
 // accessChange describes a change in what a token may do, for the audit log.
@@ -250,7 +252,7 @@ func accessChange(old, t *APIToken) string {
 		}
 		return "changed from " + from + " to " + to
 	}
-	var added, removed []Permission
+	var added, removed []kernel.Permission
 	for _, p := range t.Permissions {
 		if !slices.Contains(old.Permissions, p) {
 			added = append(added, p)
@@ -271,7 +273,7 @@ func accessChange(old, t *APIToken) string {
 	return strings.Join(parts, "; ")
 }
 
-func permissionNames(ps []Permission) string {
+func permissionNames(ps []kernel.Permission) string {
 	if len(ps) == 0 {
 		return "nothing"
 	}

@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
@@ -488,7 +489,7 @@ type ProjectRepo struct {
 
 var (
 	repoRE   = lazyre.New(`^[\w.-]+/[\w.-]+$`)
-	nestedRE = lazyre.New(`^[\w.-]+(/[\w.-]+)+$`)
+	nestedRE = kernel.NestedRepoRE
 )
 
 // validRepoFor accepts owner/name (group/subgroup/…/name on GitLab); "."

@@ -14,7 +14,9 @@ func TestOperationName(t *testing.T) {
 		p + ".(*Service).CreateIssue.func1.2":          "CreateIssue",
 		p + "/email.(*Service).SetEmailSettings":       "SetEmailSettings",
 		p + "/email.(*Service).SetEmailSettings.func1": "SetEmailSettings",
-		p + ".(*tx).emit":                              "(*tx)", // as before the generalisation
+		p + ".(*tx).emit":                              "emit",
+		p + "/users.(*Store).ResetPassword":            "ResetPassword",
+		p + "/kernel.(*Kernel).Audit":                  "Audit",
 		p + ".sweep.func2":                             "sweep",
 	} {
 		if got := operationName(full); got != want {

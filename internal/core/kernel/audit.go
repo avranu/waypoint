@@ -59,6 +59,18 @@ func (t *Tx) Audit(e AuditEntry) {
 	}
 }
 
+// Audit records a decision outside a write (one that changed nothing in
+// Waypoint's own tables, or a forge's report), in a write of its own. A
+// failure is logged: the decision it describes has already happened.
+func (k *Kernel) Audit(ctx context.Context, actor *Actor, e AuditEntry) {
+	if !Auditable(actor, e) {
+		return
+	}
+	if err := k.Write(ctx, actor, func(t *Tx) error { t.Audit(e); return nil }); err != nil {
+		k.Log.ErrorContext(ctx, "record audit entry", "action", e.Action, "err", err)
+	}
+}
+
 // Auditable: a person (or an agent through their token) decided, or a
 // forge names who did.
 func Auditable(a *Actor, e AuditEntry) bool {

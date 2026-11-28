@@ -11,7 +11,7 @@ func TestSignedInFromMatchesAnySpelling(t *testing.T) {
 	e := newEnv(t)
 	id := e.admin.User.ID
 	for _, ip := range []string{"::ffff:203.0.113.9", "2001:DB8::7"} {
-		if _, err := e.s.createSession(e.ctx, id, "test", ip); err != nil {
+		if _, err := e.s.users.CreateSession(e.ctx, id, "test", ip); err != nil {
 			t.Fatal(err)
 		}
 	}

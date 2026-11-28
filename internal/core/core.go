@@ -21,6 +21,7 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core/email"
 	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/core/meaning"
+	"git.jmann.me/claude/waypoint/internal/core/users"
 	"git.jmann.me/claude/waypoint/internal/db"
 )
 
@@ -63,9 +64,13 @@ type Config struct {
 // methods are the facade's.
 type emailService = email.Service
 
+// usersService is the users domain's operations, embedded the same way.
+type usersService = users.Service
+
 // Service is the domain API.
 type Service struct {
 	*emailService
+	*usersService
 
 	db       *db.DB
 	cfg      Config
@@ -76,6 +81,7 @@ type Service struct {
 
 	k      *kernel.Kernel
 	mailer *email.Mailer // no access checks: automation sends through it
+	users  *users.Store  // no access checks: sign-in, and what other domains need
 
 	afterTranscriptFile func()
 
@@ -218,22 +224,28 @@ func New(d *db.DB, cfg Config, log *slog.Logger) *Service {
 	s := &Service{
 		db:   d,
 		cfg:  cfg,
-		log:  log,
 		http: cfg.Egress.client(15 * time.Second),
 		Hub:  NewHub(),
-		k:    kernel.New(d, log),
 	}
+	s.jobs = newJobLedger(cfg.Logs, func() time.Time { return s.now() })
+	s.log = slog.New(&sourceHandler{ledger: s.jobs, next: log.Handler()})
+	s.k = kernel.New(d, s.log)
 	s.mailer = email.NewMailer(s.k)
 	s.emailService = email.New(s.mailer)
+	s.users = users.NewStore(s.k, users.Options{BaseURL: s.BaseURL, ArchivesTranscripts: func() bool { return s.cfg.TranscriptDir != "" }}, users.Hooks{
+		CredentialsChanged: func(ctx context.Context, t *kernel.Tx, userID int64) error {
+			return dropPushSubscriptions(ctx, t, userID)
+		},
+		JobScope:     s.jobScope,
+		BeforeDelete: s.handOverProjects,
+	})
+	s.usersService = users.New(s.users)
 	s.k.Persist(persistedKinds...)
 	s.k.OnEmit(noteSession)
 	s.k.OnEmit(stampEvent)
 	s.k.AfterCommit = s.dispatch
 	s.subscribe()
 	s.started = s.now()
-	s.jobs = newJobLedger(cfg.Logs, func() time.Time { return s.now() })
-	s.log = slog.New(&sourceHandler{ledger: s.jobs, next: log.Handler()})
-	s.k.Log = s.log
 	forgeEgress := cfg.Egress
 	forgeEgress.AllowLoopback = true
 	d.SetSlowHandler(func(ss db.SlowStatement) { s.log.Info(ss.String()) })
@@ -310,11 +322,7 @@ type tx struct {
 	s *Service
 }
 
-type queryer interface {
-	QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error)
-	QueryRowContext(ctx context.Context, q string, args ...any) *sql.Row
-	ExecContext(ctx context.Context, q string, args ...any) (sql.Result, error)
-}
+type queryer = kernel.Queryer
 
 // write runs f in a write transaction, then any afterUpdate work still queued,
 // commits, and dispatches the events. When f fails, the queued work is dropped.
@@ -384,14 +392,6 @@ func ptrFloat(n sql.NullFloat64) *float64 {
 	}
 	v := n.Float64
 	return &v
-}
-
-func ptrTime(n sql.NullInt64) *time.Time {
-	if !n.Valid {
-		return nil
-	}
-	t := time.UnixMilli(n.Int64).UTC()
-	return &t
 }
 
 // Opt is a JSON field that distinguishes "absent" from "null": Set is true
