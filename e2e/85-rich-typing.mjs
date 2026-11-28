@@ -127,10 +127,6 @@ for (const [width, scheme] of looks(
   const typed = async (name, steps, md, dom) => {
     const issue = await make(name, "");
     await page.goto(`${base}/issue/${issue.key}`);
-    // The description lives on the Details tab at phone widths; desktop shows it directly.
-    if (width < 768) {
-      await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
-    }
     await page.getByRole("button", { name: "Add a description…" }).click();
     await richBox.waitFor();
     await steps();
@@ -679,9 +675,6 @@ for (const [width, scheme] of looks(
   const openDesc = async (name, initial) => {
     const issue = await make(name, initial);
     await page.goto(`${base}/issue/${issue.key}`);
-    if (width < 768) {
-      await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
-    }
     return issue;
   };
   const viewBox = page.locator('.prose-wp[title="Click or press Enter to edit"]').first();

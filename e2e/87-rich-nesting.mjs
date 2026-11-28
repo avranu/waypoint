@@ -97,10 +97,6 @@ for (const [width, scheme] of looks(
   const openNew = async (name) => {
     const issue = await make(name, "");
     await page.goto(`${base}/issue/${issue.key}`);
-    // The description lives on the Details tab at phone widths; desktop shows it directly.
-    if (width < 768) {
-      await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
-    }
     await page.getByRole("button", { name: "Add a description…" }).click();
     await richBox.waitFor();
     return issue;

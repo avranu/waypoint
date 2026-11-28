@@ -163,6 +163,13 @@ for idx in "${!argv[@]}"; do
   -cpu=*)
     run_flags+=("-test.cpu=${arg#-cpu=}")
     ;;
+  -parallel)
+    run_flags+=("-test.parallel=${argv[$((idx + 1))]}")
+    skip_next=1
+    ;;
+  -parallel=*)
+    run_flags+=("-test.parallel=${arg#-parallel=}")
+    ;;
   -short)
     run_flags+=("-test.short")
     ;;

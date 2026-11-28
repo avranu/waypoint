@@ -4,12 +4,27 @@
 // system libraries are not on this host (webkit.sh runs WebKit that way).
 import { chromium, firefox, webkit } from "playwright";
 
-export const launchEngine = () => {
+export const launchEngine = async () => {
   const name = process.env.RICH_TYPING_BROWSER || "chromium";
   // A name misspelt must not quietly run Chromium in its place.
   const engine = { chromium, firefox, webkit }[name];
   if (!engine) throw new Error(`RICH_TYPING_BROWSER=${name}: chromium, firefox or webkit`);
-  return process.env.RICH_TYPING_WS
+  const browser = await (process.env.RICH_TYPING_WS
     ? engine.connect(process.env.RICH_TYPING_WS)
-    : engine.launch();
+    : engine.launch());
+  // Tasks open on Summary by default (WP-780); start rich-editor suites on
+  // Details across all engines (including firefox/webkit and remote WS, where
+  // guard.mjs's chromium.launch patch does not run).
+  const newContext = browser.newContext.bind(browser);
+  browser.newContext = async (...args) => {
+    const ctx = await newContext(...args);
+    await ctx.addInitScript(() => {
+      try {
+        if (localStorage.getItem("wp:issue-tab") === null)
+          localStorage.setItem("wp:issue-tab", '"details"');
+      } catch {}
+    });
+    return ctx;
+  };
+  return browser;
 };

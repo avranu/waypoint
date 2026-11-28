@@ -17,6 +17,7 @@ if [ "${1:-}" = --shard ]; then
   [[ ${2:-} =~ ^([0-9]+)/([0-9]+)$ ]] || { echo "--shard I/N, not '${2:-}'" >&2; exit 2; }
   i=${BASH_REMATCH[1]} n=${BASH_REMATCH[2]}
   pids=() ports=" " browser_pid=""
+  # shellcheck disable=SC2329 # invoked by trap EXIT
   cleanup_shard() {
     local code=$?
     trap - TERM INT EXIT

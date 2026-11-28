@@ -17,7 +17,7 @@
 1 cmd/wp TestAutopilotStartStoppedWhileWaiting
 1 cmd/wp TestHookPassUsesTheHookLimit
 1 cmd/wp TestRunnerRecordsItsUpdateInTheSharedState
-4 cmd/wp TestTimedOutAgentKeepsItsCommits
+10 cmd/wp TestTimedOutAgentKeepsItsCommits
 18 cmd/wp TestCLIPROpenAndShip
 15 internal/core TestDecideEndedRoundNeverStrands
 14 internal/core TestObjectiveDiagnoseAsk

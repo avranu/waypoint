@@ -67,10 +67,10 @@ func migratedTemplate(ctx context.Context) ([]byte, error) {
 	}
 	var cachePath string
 	if digest, err := migrationsDigest(); err == nil {
-		if err := os.MkdirAll(cacheDir, 0o700); err == nil {
-			if fi, serr := os.Lstat(cacheDir); serr == nil && fi.IsDir() && fi.Mode()&os.ModeSymlink == 0 {
+		if err := os.MkdirAll(cacheDir, 0o700); err == nil { // #nosec G703 -- operator/CI template cache dir
+			if fi, serr := os.Lstat(cacheDir); serr == nil && fi.IsDir() && fi.Mode()&os.ModeSymlink == 0 { // #nosec G703 -- operator/CI template cache dir
 				cachePath = filepath.Join(cacheDir, "waypoint-db-template-"+digest+".db")
-				if data, err := os.ReadFile(cachePath); err == nil && len(data) > 0 { // #nosec G304 -- content-addressed cache in private dir
+				if data, err := os.ReadFile(cachePath); err == nil && len(data) > 0 { // #nosec G304 G703 -- content-addressed cache in private dir
 					return data, nil
 				}
 			}
@@ -103,16 +103,16 @@ func migratedTemplate(ctx context.Context) ([]byte, error) {
 			tmpName := tmp.Name()
 			if _, werr := tmp.Write(data); werr == nil {
 				if cerr := tmp.Close(); cerr == nil {
-					_ = os.Chmod(tmpName, 0o600)
-					if os.Rename(tmpName, cachePath) != nil {
-						_ = os.Remove(tmpName)
+					_ = os.Chmod(tmpName, 0o600)              // #nosec G703 -- temp file inside operator/CI cache dir
+					if os.Rename(tmpName, cachePath) != nil { // #nosec G703 -- atomic install into operator/CI cache dir
+						_ = os.Remove(tmpName) // #nosec G703 -- clean up failed rename
 					}
 				} else {
-					_ = os.Remove(tmpName)
+					_ = os.Remove(tmpName) // #nosec G703 -- clean up failed close
 				}
 			} else {
 				_ = tmp.Close()
-				_ = os.Remove(tmpName)
+				_ = os.Remove(tmpName) // #nosec G703 -- clean up failed write
 			}
 		}
 	}

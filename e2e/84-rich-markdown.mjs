@@ -47,11 +47,6 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
   });
   const page = await login(ctx);
   page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
-  // The description is on the Details tab on phone widths; desktop shows it directly.
-  const details = () =>
-    width < 768
-      ? page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {})
-      : Promise.resolve();
   const make = async (title, description) =>
     (
       await page.request.post(base + "/api/v1/issues", {
@@ -83,7 +78,6 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
   const open = async (title, description) => {
     const issue = await make(title, description);
     await page.goto(`${base}/issue/${issue.key}`);
-    await details();
     if (description === undefined) {
       const add = page.getByRole("button", { name: "Add a description…" });
       await add.waitFor().catch(async (e) => {

@@ -65,7 +65,17 @@ const detailsFirst = (browser) => {
 chromium.launch = async (...args) => {
   const ws = process.env.E2E_CHROMIUM_WS;
   const plainOpts = args.length === 0 || !args[0] || Object.keys(args[0]).length === 0;
-  const browser = ws && plainOpts ? await connect(ws) : await launch(...args);
+  let browser;
+  if (ws && plainOpts) {
+    try {
+      browser = await connect(ws);
+    } catch (e) {
+      console.error(`warning: shared chromium connect failed (${e?.message || e}); falling back to launch`);
+      browser = await launch(...args);
+    }
+  } else {
+    browser = await launch(...args);
+  }
   detailsFirst(browser);
   if (!patched) {
     patched = true;
