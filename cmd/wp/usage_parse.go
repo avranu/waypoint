@@ -225,7 +225,8 @@ const (
 type usageFile struct {
 	Path    string
 	Session string
-	Kind    string // main, or the subagent's type
+	Kind    string // main, the subagent's type, or a non-Claude harness kind
+	FileKey string // optional archive file key override (e.g. antigravity/transcript_full.jsonl)
 	Main    bool
 }
 

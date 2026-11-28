@@ -1,7 +1,10 @@
 package core
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -92,4 +95,57 @@ func TestAgainHelperStatsSplitsUnanswered(t *testing.T) {
 	if st.Done != 4 || st.Answered != 1 || st.UnansweredFailed != 2 || st.UnansweredCancelled != 1 {
 		t.Fatalf("got %+v, want Done=4 Answered=1 UnansweredFailed=2 UnansweredCancelled=1", st)
 	}
+}
+
+// Non-Claude harness transcripts (antigravity, codex, opencode) are stored
+// losslessly in transcript_pieces and skipped cleanly by Claude's
+// DeriveSessionFacts parser so they never pollute unknown-record warnings.
+func TestDeriveSessionFactsSkipsNonClaudeHarnesses(t *testing.T) {
+	e := newEnv(t)
+	e.s.cfg.TranscriptDir = t.TempDir()
+	base := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
+	e.setClock(base)
+
+	var buf []byte
+	{
+		var b strings.Builder
+		b.WriteString(`{"type":"custom","text":"hi"}` + "\n")
+		buf = gzipTestBytes(t, []byte(b.String()))
+	}
+	for _, tc := range []struct{ sess, file, kind string }{
+		{"agy-conv1", "antigravity/transcript_full.jsonl", "antigravity"},
+		{"agy-conv1", "antigravity/transcript.jsonl", "antigravity_compact"},
+		{"codex-r1", "codex/main.jsonl", "codex"},
+		{"opencode-s1", "opencode/session.jsonl", "opencode"},
+	} {
+		res, err := e.s.IngestTranscript(e.ctx, e.admin, TranscriptPieceIn{
+			Machine: "m1", Session: tc.sess, File: tc.file, Kind: tc.kind,
+			FP: "fp1#0", From: 0, To: 30, Redacted: true, Gzip: buf,
+		})
+		if err != nil || res.Status != "stored" {
+			t.Fatalf("IngestTranscript(%s): %+v, %v", tc.kind, res, err)
+		}
+	}
+
+	e.setClock(base.Add(factsQuiet + time.Minute))
+	run, err := e.s.DeriveSessionFacts(e.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Waiting != 0 || run.Derived != 0 || run.Failed != 0 {
+		t.Fatalf("DeriveSessionFacts should skip non-Claude harnesses, got %+v", run)
+	}
+}
+
+func gzipTestBytes(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	zw := gzip.NewWriter(&b)
+	if _, err := zw.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
 }

@@ -30,13 +30,18 @@ const (
 // factsRunBytes is a variable so a test can lower it.
 var factsRunBytes int64 = factsRunBytesDefault
 
-// factsWaitingSQL selects the files due to be derived: one row per
+// factsWaitingSQL selects the Claude Code files due to be derived: one row per
 // (user, machine, session, file, gen) with the end offset, raw bytes and newest
-// piece time. ?1 is the newest piece time allowed (now - quiet), ?2 the parser
-// version, ?3 the time before which a failed attempt may be retried.
+// piece time. Non-Claude harnesses (antigravity, codex, opencode) are archived
+// losslessly in transcript_pieces for future parsers without feeding them to
+// Claude Code's transcript parser. ?1 is the newest piece time allowed
+// (now - quiet), ?2 the parser version, ?3 the time before which a failed
+// attempt may be retried.
 const factsWaitingSQL = `SELECT p.user_id, p.machine, p.session, p.file, p.gen, MAX(p.to_off) AS end_off, SUM(p.raw_bytes) AS raw, MAX(p.created_at) AS newest
 	FROM transcript_pieces p
 	LEFT JOIN session_fact_files f ON f.user_id = p.user_id AND f.machine = p.machine AND f.session = p.session AND f.file = p.file AND f.gen = p.gen
+	WHERE p.kind NOT IN ('antigravity', 'antigravity_compact', 'codex', 'opencode')
+		AND p.kind NOT LIKE 'antigravity/%' AND p.kind NOT LIKE 'codex/%' AND p.kind NOT LIKE 'opencode/%'
 	GROUP BY p.user_id, p.machine, p.session, p.file, p.gen
 	HAVING MAX(p.created_at) <= ?1 AND (f.user_id IS NULL OR f.parser_version < ?2 OR f.attempted_to < MAX(p.to_off)
 		OR (f.error IS NOT NULL AND f.error_at <= ?3))`
