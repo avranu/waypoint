@@ -132,7 +132,7 @@ func (t *tx) applyTraces(ctx context.Context, uid int64, machine string, traces 
 		ref := strings.ToUpper(r.Key)
 		id, known := ids[ref]
 		if !known {
-			if i, _, err := t.s.getIssueFor(ctx, t, t.actor, ref, RoleViewer, false); err == nil {
+			if i, _, err := t.s.getIssueFor(ctx, t, t.Actor, ref, RoleViewer, false); err == nil {
 				id = i.ID
 			}
 			ids[ref] = id

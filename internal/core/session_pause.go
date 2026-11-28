@@ -38,11 +38,11 @@ func (s *Service) SessionPause(ctx context.Context, actor *Actor) (*SessionPause
 	if actor == nil || actor.User == nil || actor.User.ID == 0 {
 		return nil, ErrUnauthorized
 	}
-	p, err := s.sessionPause(ctx, actor.id(), pausedAgent(actor))
+	p, err := s.sessionPause(ctx, actor.ID(), pausedAgent(actor))
 	if err != nil {
 		return nil, err
 	}
-	return &SessionPauseState{Pause: p, Guard: s.guardState(ctx, actor.id())}, nil
+	return &SessionPauseState{Pause: p, Guard: s.guardState(ctx, actor.ID())}, nil
 }
 
 // pausedStopNote is the line the person sees at a paused session's Stop.

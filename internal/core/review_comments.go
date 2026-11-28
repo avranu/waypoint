@@ -730,7 +730,7 @@ type rcBy struct {
 
 func rcByActor(a *Actor) rcBy {
 	if a.IsAgent() {
-		return rcBy{kind: "agent", name: cmp(a.Agent, "an agent"), userID: a.id()}
+		return rcBy{kind: "agent", name: cmp(a.Agent, "an agent"), userID: a.ID()}
 	}
 	if a.User == nil || a.User.ID == 0 {
 		return rcBy{kind: "babysitter", name: "waypoint"}
@@ -991,7 +991,7 @@ func (s *Service) commentsFor(ctx context.Context, actor *Actor, ids []string) (
 
 // loadComments is commentsFor; guard keeps agents from changing what a person decided.
 func (s *Service) loadComments(ctx context.Context, actor *Actor, ids []string, guard bool) ([]*PRReviewComment, map[int64]*PullRequest, error) {
-	if err := actor.need(PermPullsWrite); err != nil {
+	if err := actor.Need(PermPullsWrite); err != nil {
 		return nil, nil, err
 	}
 	if len(ids) == 0 {

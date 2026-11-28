@@ -401,7 +401,7 @@ func (s *Service) settleLeftoverFindings(ctx context.Context, t *tx, actor *Acto
 		by.name, by.userID = actor.User.DisplayName, actor.User.ID
 	}
 	if actor.IsAgent() {
-		by.kind, by.name = "agent", fmt.Sprintf("%s (%s)", by.name, cmp(actor.agentName(), "agent"))
+		by.kind, by.name = "agent", fmt.Sprintf("%s (%s)", by.name, cmp(actor.AgentName(), "agent"))
 	}
 	why := fmt.Sprintf("audit %d.%d", auditID, ordinal)
 	if note = strings.TrimSpace(note); note != "" {

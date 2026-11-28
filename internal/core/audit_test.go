@@ -265,7 +265,7 @@ func TestAuditKnowledgeAndAccess(t *testing.T) {
 
 func TestAuditSkipsAutomations(t *testing.T) {
 	e := newEnv(t)
-	if auditable(&Actor{User: e.admin.User, Automation: &Automation{ID: 1}}, AuditEntry{}) {
+	if auditable(&Actor{User: e.admin.User, Automation: &AutomationRef{ID: 1}}, AuditEntry{}) {
 		t.Error("an automation's change is recorded as a person's")
 	}
 	if auditable(SystemActor(), AuditEntry{}) || !auditable(SystemActor(), AuditEntry{Actor: "robin"}) {

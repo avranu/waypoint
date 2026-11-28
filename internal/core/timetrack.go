@@ -90,7 +90,7 @@ const AgentTimerLimit = 24 * time.Hour
 // RunningTimer returns the actor's running timer, or nil. An agent has its
 // own timer, apart from its person's.
 func (s *Service) RunningTimer(ctx context.Context, actor *Actor) (*TimeEntry, error) {
-	rows, err := s.db.R.QueryContext(ctx, timeSelect+` WHERE t.user_id = ? AND t.agent = ? AND t.ended_at IS NULL`, actor.id(), actor.agentName())
+	rows, err := s.db.R.QueryContext(ctx, timeSelect+` WHERE t.user_id = ? AND t.agent = ? AND t.ended_at IS NULL`, actor.ID(), actor.AgentName())
 	if err != nil {
 		return nil, err
 	}
@@ -105,11 +105,11 @@ func (s *Service) RunningTimer(ctx context.Context, actor *Actor) (*TimeEntry, e
 // agent's timer and its person's are separate). issueRef may be empty to
 // track time without an issue.
 func (s *Service) StartTimer(ctx context.Context, actor *Actor, issueRef, note string) (*TimeEntry, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	var id int64
-	agent := actor.agentName()
+	agent := actor.AgentName()
 	err := s.write(ctx, actor, func(t *tx) error {
 		var issueID, projectID any
 		if issueRef != "" {
@@ -118,7 +118,7 @@ func (s *Service) StartTimer(ctx context.Context, actor *Actor, issueRef, note s
 				return err
 			}
 			var running sql.NullInt64
-			if err := t.QueryRowContext(ctx, `SELECT id FROM time_entries WHERE user_id = ? AND agent = ? AND ended_at IS NULL AND issue_id = ?`, actor.id(), agent, i.ID).Scan(&running); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			if err := t.QueryRowContext(ctx, `SELECT id FROM time_entries WHERE user_id = ? AND agent = ? AND ended_at IS NULL AND issue_id = ?`, actor.ID(), agent, i.ID).Scan(&running); err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return err
 			}
 			if running.Valid && note == "" {
@@ -128,16 +128,16 @@ func (s *Service) StartTimer(ctx context.Context, actor *Actor, issueRef, note s
 			issueID, projectID = i.ID, i.ProjectID
 		}
 		now := s.nowMS()
-		if _, err := t.ExecContext(ctx, `UPDATE time_entries SET ended_at = ? WHERE user_id = ? AND agent = ? AND ended_at IS NULL`, now, actor.id(), agent); err != nil {
+		if _, err := t.ExecContext(ctx, `UPDATE time_entries SET ended_at = ? WHERE user_id = ? AND agent = ? AND ended_at IS NULL`, now, actor.ID(), agent); err != nil {
 			return err
 		}
 		res, err := t.ExecContext(ctx, `INSERT INTO time_entries(user_id, agent, issue_id, project_id, note, started_at, created_at) VALUES (?,?,?,?,?,?,?)`,
-			actor.id(), agent, issueID, projectID, strings.TrimSpace(note), now, now)
+			actor.ID(), agent, issueID, projectID, strings.TrimSpace(note), now, now)
 		if err != nil {
 			return err
 		}
 		id, _ = res.LastInsertId()
-		t.emit(&Event{Kind: EvTimer, UserID: actor.id()})
+		t.emit(&Event{Kind: EvTimer, UserID: actor.ID()})
 		return nil
 	})
 	if err != nil {
@@ -169,12 +169,12 @@ func (s *Service) timerEvent(ctx context.Context, actor *Actor, kind string, id 
 
 // StopTimer stops the actor's running timer, if any.
 func (s *Service) StopTimer(ctx context.Context, actor *Actor) (*TimeEntry, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	var id int64
 	err := s.write(ctx, actor, func(t *tx) error {
-		err := t.QueryRowContext(ctx, `SELECT id FROM time_entries WHERE user_id = ? AND agent = ? AND ended_at IS NULL`, actor.id(), actor.agentName()).Scan(&id)
+		err := t.QueryRowContext(ctx, `SELECT id FROM time_entries WHERE user_id = ? AND agent = ? AND ended_at IS NULL`, actor.ID(), actor.AgentName()).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -182,7 +182,7 @@ func (s *Service) StopTimer(ctx context.Context, actor *Actor) (*TimeEntry, erro
 			return err
 		}
 		_, err = t.ExecContext(ctx, `UPDATE time_entries SET ended_at = ? WHERE id = ?`, s.nowMS(), id)
-		t.emit(&Event{Kind: EvTimer, UserID: actor.id()})
+		t.emit(&Event{Kind: EvTimer, UserID: actor.ID()})
 		return err
 	})
 	if err != nil || id == 0 {
@@ -230,7 +230,7 @@ func parseTimestamp(v string) (int64, error) {
 
 // CreateTimeEntry records time manually.
 func (s *Service) CreateTimeEntry(ctx context.Context, actor *Actor, in TimeEntryInput) (*TimeEntry, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	var id int64
@@ -251,12 +251,12 @@ func (s *Service) CreateTimeEntry(ctx context.Context, actor *Actor, in TimeEntr
 			return invalid("give an end time or a duration")
 		}
 		res, err := t.ExecContext(ctx, `INSERT INTO time_entries(user_id, agent, issue_id, project_id, note, started_at, ended_at, created_at) VALUES (?,?,?,?,?,?,?,?)`,
-			actor.id(), actor.agentName(), issueID, projectID, deref(in.Note), start, *end, s.nowMS())
+			actor.ID(), actor.AgentName(), issueID, projectID, deref(in.Note), start, *end, s.nowMS())
 		if err != nil {
 			return err
 		}
 		id, _ = res.LastInsertId()
-		t.emit(&Event{Kind: EvTimer, UserID: actor.id()})
+		t.emit(&Event{Kind: EvTimer, UserID: actor.ID()})
 		return nil
 	})
 	if err != nil {
@@ -316,7 +316,7 @@ func (s *Service) entrySpan(in TimeEntryInput, curStart, curEnd *int64) (int64, 
 
 // UpdateTimeEntry edits one of the actor's entries.
 func (s *Service) UpdateTimeEntry(ctx context.Context, actor *Actor, id int64, in TimeEntryInput) (*TimeEntry, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	err := s.write(ctx, actor, func(t *tx) error {
@@ -325,7 +325,7 @@ func (s *Service) UpdateTimeEntry(ctx context.Context, actor *Actor, id int64, i
 		if err := t.QueryRowContext(ctx, `SELECT user_id, started_at, ended_at FROM time_entries WHERE id = ?`, id).Scan(&uid, &start, &end); err != nil {
 			return notFound("time entry")
 		}
-		if uid != actor.id() {
+		if uid != actor.ID() {
 			return ErrForbidden
 		}
 		newStart, newEnd, err := s.entrySpan(in, &start, ptrInt(end))
@@ -359,7 +359,7 @@ func (s *Service) UpdateTimeEntry(ctx context.Context, actor *Actor, id int64, i
 				}
 			}
 		}
-		t.emit(&Event{Kind: EvTimer, UserID: actor.id()})
+		t.emit(&Event{Kind: EvTimer, UserID: actor.ID()})
 		return nil
 	})
 	if err != nil {
@@ -370,17 +370,17 @@ func (s *Service) UpdateTimeEntry(ctx context.Context, actor *Actor, id int64, i
 
 // DeleteTimeEntry removes one of the actor's entries.
 func (s *Service) DeleteTimeEntry(ctx context.Context, actor *Actor, id int64) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
-	res, err := s.db.W.ExecContext(ctx, `DELETE FROM time_entries WHERE id = ? AND user_id = ?`, id, actor.id())
+	res, err := s.db.W.ExecContext(ctx, `DELETE FROM time_entries WHERE id = ? AND user_id = ?`, id, actor.ID())
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return notFound("time entry")
 	}
-	s.Hub.Publish(&Event{Kind: EvTimer, UserID: actor.id()})
+	s.Hub.Publish(&Event{Kind: EvTimer, UserID: actor.ID()})
 	return nil
 }
 
@@ -417,7 +417,7 @@ func (s *Service) ListTimeEntries(ctx context.Context, actor *Actor, q TimeQuery
 		}
 		where, args = append(where, "t.project_id = ?"), append(args, p.ID)
 	default:
-		where, args = append(where, "t.user_id = ?"), append(args, actor.id())
+		where, args = append(where, "t.user_id = ?"), append(args, actor.ID())
 	}
 	if q.From != nil {
 		where, args = append(where, "coalesce(t.ended_at, ?) >= ?"), append(args, s.nowMS(), q.From.UnixMilli())

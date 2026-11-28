@@ -150,7 +150,7 @@ func (e *goalCtxEnv) serving(title string, goal *DesignNote) *IssueDetail {
 	if _, err := e.s.RecomputeGoalTraces(e.ctx); err != nil {
 		e.t.Fatal(err)
 	}
-	e.exec(`UPDATE issues SET claimed_by = ?, claimed_at = ? WHERE id = ?`, e.ag.agentName(), e.s.nowMS(), i.ID)
+	e.exec(`UPDATE issues SET claimed_by = ?, claimed_at = ? WHERE id = ?`, e.ag.AgentName(), e.s.nowMS(), i.ID)
 	return i
 }
 

@@ -26,7 +26,7 @@ func (s *Service) automationFor(ctx context.Context, actor *Actor, id int64, min
 		return a, nil
 	}
 	if a.ProjectID == 0 {
-		if !actor.isAdmin() {
+		if !actor.IsAdmin() {
 			return nil, notFound("automation")
 		}
 		return a, nil
@@ -45,7 +45,7 @@ func (s *Service) ListAutomationRuns(ctx context.Context, actor *Actor, automati
 		return nil, err
 	}
 	if a.ProjectID == 0 {
-		if err := actor.requireHuman("admin automations"); err != nil {
+		if err := actor.RequireHuman("admin automations"); err != nil {
 			return nil, err
 		}
 	}
@@ -82,7 +82,7 @@ func (s *Service) GetAutomationRun(ctx context.Context, actor *Actor, id int64) 
 		return nil, notFound("run")
 	}
 	if a.ProjectID == 0 {
-		if err := actor.requireHuman("admin automations"); err != nil {
+		if err := actor.RequireHuman("admin automations"); err != nil {
 			return nil, err
 		}
 	}
@@ -124,14 +124,14 @@ func redactAction(act *Action) {
 // RunAutomationNow runs a manual automation, with the inputs it asks for.
 // Agents may only run automations that allow it.
 func (s *Service) RunAutomationNow(ctx context.Context, actor *Actor, id int64, inputs map[string]any, via string) (*AutomationRun, error) {
-	if err := actor.need(PermAutomationsManage); err != nil {
+	if err := actor.Need(PermAutomationsManage); err != nil {
 		return nil, err
 	}
 	return s.runManual(ctx, actor, id, inputs, via, 0)
 }
 
 func (s *Service) runManual(ctx context.Context, actor *Actor, id int64, inputs map[string]any, via string, rerunOf int64) (*AutomationRun, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	a, err := s.automationFor(ctx, actor, id, RoleEditor)
@@ -155,10 +155,10 @@ func (s *Service) runManual(ctx context.Context, actor *Actor, id int64, inputs 
 	who := actor.User.DisplayName
 	by := "person"
 	if actor.IsAgent() {
-		who, by = actor.agentName(), "agent"
+		who, by = actor.AgentName(), "agent"
 	}
 	e := &Event{Kind: EvManual, ProjectID: a.ProjectID, Actor: &ref, At: s.now().UTC(), Data: map[string]any{"inputs": vals, "summary": "Run by " + who}}
-	run, err := s.startRun(ctx, actor, a, e, fireOpts{Via: cmp(via, "manual"), Inputs: vals, Agent: actor.agentName(), By: by, RerunOf: rerunOf})
+	run, err := s.startRun(ctx, actor, a, e, fireOpts{Via: cmp(via, "manual"), Inputs: vals, Agent: actor.AgentName(), By: by, RerunOf: rerunOf})
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +169,7 @@ func (s *Service) runManual(ctx context.Context, actor *Actor, id int64, inputs 
 // RerunAutomation starts another run from a run's event and inputs, with the
 // automation as it is now.
 func (s *Service) RerunAutomation(ctx context.Context, actor *Actor, runID int64) (*AutomationRun, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	old, err := s.runByID(ctx, runID)
@@ -202,13 +202,13 @@ func (s *Service) RerunAutomation(ctx context.Context, actor *Actor, runID int64
 	}
 	e := *old.Event
 	e.At = s.now().UTC()
-	return s.startRun(ctx, actor, a, &e, fireOpts{Via: "rerun", Inputs: old.Inputs, RerunOf: old.ID, Summary: old.Summary, Agent: actor.agentName()})
+	return s.startRun(ctx, actor, a, &e, fireOpts{Via: "rerun", Inputs: old.Inputs, RerunOf: old.ID, Summary: old.Summary, Agent: actor.AgentName()})
 }
 
 // CancelAutomationRun stops a run that has not finished: a step in progress
 // is interrupted, waits are dropped.
 func (s *Service) CancelAutomationRun(ctx context.Context, actor *Actor, runID int64) (*AutomationRun, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	r, err := s.runByID(ctx, runID)
@@ -285,7 +285,7 @@ func (s *Service) TestAutomation(ctx context.Context, actor *Actor, id int64, in
 	}
 	n := automationBudget
 	run := &AutomationRun{AutomationID: a.ID, Automation: a.Name, ProjectID: a.ProjectID, Inputs: vals, Event: e}
-	auto := &Actor{User: actor.User, Automation: a, depth: 1, budget: &n}
+	auto := &Actor{User: actor.User, Automation: a.ref(), Depth: 1, Budget: &n}
 	x := &execution{s: s, run: run, a: a, rule: &a.Rule, ev: e, actor: auto, dry: true,
 		trig:  s.triggerView(a, e, "test", eventBy(e), actor.User.Ref()),
 		steps: map[string]map[string]any{}, prev: map[string]any{}, rows: map[string]*RunStep{}}
@@ -318,7 +318,7 @@ func (s *Service) sampleEvent(ctx context.Context, actor *Actor, a *Automation, 
 		}
 		return &Event{Kind: EvWebhookIn, ProjectID: a.ProjectID, At: now, Data: data}, true, "Add sample data to see how templates read the body."
 	}
-	if persisted[d.Event] {
+	if s.k.Persisted(d.Event) {
 		where, args := `e.kind = ?`, []any{d.Event}
 		if a.ProjectID != 0 {
 			where += ` AND e.project_id = ?`
@@ -393,7 +393,7 @@ func (s *Service) hookURL(token string) string {
 
 // RegenerateAutomationHook replaces a webhook automation's secret address.
 func (s *Service) RegenerateAutomationHook(ctx context.Context, actor *Actor, id int64) (*Automation, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	a, err := s.automationForManage(ctx, actor, id)

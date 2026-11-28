@@ -28,8 +28,8 @@ func (s *Service) GetSessionUsage(ctx context.Context, actor *Actor, id int64) (
 	out := &SessionUsage{Models: []UsageBreakdown{}, Kinds: []UsageBreakdown{}, Tools: []UsageTool{}, Bash: []UsageTool{},
 		Refusals: UsageRefusals{Reasons: []UsageReason{}, Daily: []UsageCountDay{}, Commands: []UsageRefusedCommand{}, Recent: []UsageRefusalRow{}}}
 	who := ""
-	if x.userID != actor.id() {
-		if !actor.isAdmin() || actor.IsAgent() {
+	if x.userID != actor.ID() {
+		if !actor.IsAdmin() || actor.IsAgent() {
 			out.Private = true
 			return out, nil
 		}

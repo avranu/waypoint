@@ -355,7 +355,7 @@ func (s *Service) tellCrossFiled(ctx context.Context, issueID int64, cat string)
 		note += "."
 		sys := SystemActor()
 		if outcome == "declined" && r.why != "" {
-			sys.textAgent = r.declinedAgent
+			sys.TextAgent = r.declinedAgent
 		}
 		err := s.write(ctx, sys, func(t *tx) error {
 			for _, id := range blocked {
@@ -363,7 +363,7 @@ func (s *Service) tellCrossFiled(ctx context.Context, issueID int64, cat string)
 				if err != nil {
 					return err
 				}
-				if _, err := s.addComment(ctx, t, t.actor, b, note); err != nil {
+				if _, err := s.addComment(ctx, t, t.Actor, b, note); err != nil {
 					return err
 				}
 			}

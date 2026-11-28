@@ -119,13 +119,13 @@ const approvedGrace = 2 * time.Minute
 // ApproveDeviceLogin lets the waiting CLI sign in as the actor. Only the
 // first approval counts; the token is made when the CLI collects it.
 func (s *Service) ApproveDeviceLogin(ctx context.Context, actor *Actor, userCode string) error {
-	if err := actor.requirePersonDirect("approving a sign-in"); err != nil {
+	if err := actor.RequirePersonDirect("approving a sign-in"); err != nil {
 		return err
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
-	if actor.User == nil || actor.id() == 0 {
+	if actor.User == nil || actor.ID() == 0 {
 		return ErrUnauthorized
 	}
 	now := s.nowMS()
@@ -133,7 +133,7 @@ func (s *Service) ApproveDeviceLogin(ctx context.Context, actor *Actor, userCode
 		var name, agent, ip string
 		err := t.QueryRowContext(ctx, `UPDATE device_logins SET user_id = ?, expires_at = max(expires_at, ?)
 			WHERE user_code = ? AND user_id IS NULL AND expires_at > ? RETURNING name, agent, ip`,
-			actor.id(), now+approvedGrace.Milliseconds(), normalizeUserCode(userCode), now).Scan(&name, &agent, &ip)
+			actor.ID(), now+approvedGrace.Milliseconds(), normalizeUserCode(userCode), now).Scan(&name, &agent, &ip)
 		if errors.Is(err, sql.ErrNoRows) {
 			return notFound("login code (it may have expired)")
 		} else if err != nil {

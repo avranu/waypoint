@@ -46,7 +46,7 @@ func (s *Service) reviewNote(ctx context.Context) string {
 
 // GetReviewNote shows the note to an admin.
 func (s *Service) GetReviewNote(ctx context.Context, actor *Actor) (*ReviewNote, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("only admins can see the review note")
 	}
 	v, err := s.customReviewNote(ctx)
@@ -59,10 +59,10 @@ func (s *Service) GetReviewNote(ctx context.Context, actor *Actor) (*ReviewNote,
 // SetReviewNote words the note (admins). It's one line, since it heads a
 // review; empty, or the default itself, goes back to the default.
 func (s *Service) SetReviewNote(ctx context.Context, actor *Actor, note string) (*ReviewNote, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("only admins can word the review note")
 	}
-	if err := actor.requireHuman("wording the review note"); err != nil {
+	if err := actor.RequireHuman("wording the review note"); err != nil {
 		return nil, err
 	}
 	note = strings.Join(strings.Fields(note), " ")

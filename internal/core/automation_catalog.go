@@ -277,7 +277,7 @@ func BuildCatalog(admin bool) Catalog {
 // AutomationCatalog is BuildCatalog for this person, leaving out the
 // actions the server isn't set up for (email, until Admin → Email is set).
 func (s *Service) AutomationCatalog(ctx context.Context, actor *Actor) Catalog {
-	c := BuildCatalog(actor.isAdmin())
+	c := BuildCatalog(actor.IsAdmin())
 	if !s.EmailConfigured(ctx) {
 		c.Actions = slices.DeleteFunc(c.Actions, func(d ActionDef) bool { return d.Name == "email" })
 	}

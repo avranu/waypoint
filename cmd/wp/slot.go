@@ -27,60 +27,33 @@ var slotPoll = 100 * time.Millisecond
 var slotCmd = &command{
 	name: "slot", group: "Code and CI", args: "run NAME [-n N] [--all] -- CMD… | ls | send | replay",
 	summary: "run a command once a per-machine slot is free",
-	about: `A per-host semaphore so concurrent test suites take turns. run waits for
-a free slot of NAME, runs CMD holding it and exits with CMD's code. N
-defaults to half the cores. Runs whose last five (same repo and command) took
-5 minutes or more are long: they may only use the lower half of the slots, so
-short runs (the rest) never queue behind them, and a worktree runs one long
-run of a NAME at a time (a second waits behind its first; short runs from it
-go straight to a slot). ls shows the slots, who waits (and whether behind its
-own worktree) and the waits of the last 24h, including runs that gave up.
-Each finished hold and each wait that gave up is also
-sent to the server (not when WAYPOINT_SLOT_SEND=off or no server is set), by
-the next run in the background or by send; replay runs the recorded holds
-through the policy again, and through other settings (WP-1646).
-A nested run of the same NAME reuses the slot it
-is in. A run of tests drops credential-named variables, as wp testsum does
-(--keep-env NAME passes one through; WP-1065). Each successful run's time is
-kept (runs.jsonl in the slot directory); a run that has to wait, and again
-one that starts, says on stderr when it expects to finish, from the median
-of the command's recent runs, and says nothing without any (WP-1571).
+	about: `Per-host semaphore so concurrent test suites take turns. Waits for a free slot
+of NAME (default half the CPU cores), runs CMD with a CPU bound
+(WAYPOINT_SLOT_CPU, default 200%), and passes its exit code through. Long runs
+(>=5m median) stay in the lower half of slots so short runs don't queue behind
+them; nested runs of the same NAME reuse their slot.
 
-In the tests slot a go test of a whole heavy package or ./... with no -run,
-in a repository with .waypoint/heavy-tests, runs the tests beside what you
-changed since the base instead, and says so first, with the command that runs
-everything. --all, or WP_TEST_ALL=1, runs it whole, as does a flag that names a
-file (-coverprofile, -o, -cpuprofile, -trace, …). Such a whole run is long
-from its first run. Runs of the two kinds keep separate times (WP-1877).
-
-Waiters are served first come, first served: a run tries a slot only when no
-earlier waiter that may use it is still waiting (WP-1876).
-
-Each run of a command through the slot (run, testsum, ship --check) gets one
-CPU bound, WAYPOINT_SLOT_CPU percent of one core (default 200; off for none),
-so a go test in a slot can't take every core:
-  cgroup  the process already sits under a cpu.max quota (a sandbox): nothing added
-  runner  a runner job: its load governor paces it; Go is held to the quota
-  scope   a systemd user scope (systemd-run --user) with CPUQuota in
-          waypoint-tests.slice; needs a user bus (XDG_RUNTIME_DIR). A scope
-          whose cgroup shows no quota gets the env bound instead
-  env     elsewhere: GOMAXPROCS and GOFLAGS -p set, unless you set them. This
-          binds Go builds and tests only, not other programs the command runs.
-  none    WAYPOINT_SLOT_CPU=off
-ls shows the bound of each running hold and how many runs of the last 24h had none.`,
+In the tests slot, whole-package go tests in repos with .waypoint/heavy-tests
+automatically scope to changed files unless --all or WP_TEST_ALL=1 is set.
+Credential-named env vars are stripped (--keep-env NAME keeps one).`,
 	examples: []string{"wp slot run tests -- go test -run '^TestSlot' ./cmd/wp", "wp slot ls"},
 }
 
 func init() {
 	slotCmd.subs = []*command{
 		{name: "run", args: "NAME [-n N] [--all] -- CMD…", summary: "wait for a free slot, run CMD, pass its exit code through",
-			run: cmdSlotRun},
+			examples: []string{"wp slot run tests -- go test ./cmd/wp", "wp slot run tests --all -- go test ./..."},
+			run:      cmdSlotRun},
 		{name: "send", summary: "send the recorded slot holds to the server now",
-			run: cmdSlotSend},
+			examples: []string{"wp slot send"},
+			run:      cmdSlotSend},
 		{name: "replay", args: "[--days 7] [--threshold 5m] [--long-share 0.5] [--slots N] [--machine NAME] [--local]",
-			summary: "replay recorded slot holds under the policy and under another one", run: cmdSlotReplay},
-		{name: "ls", aliases: []string{"list"}, summary: "show the slots, who holds and awaits them, and recent waits",
-			run: cmdSlotLs},
+			summary:  "replay recorded slot holds under the policy and under another one",
+			examples: []string{"wp slot replay --days 7", "wp slot replay --slots 6 --local"},
+			run:      cmdSlotReplay},
+		{name: "ls", aliases: []string{"list", "status"}, summary: "show the slots, who holds and awaits them, and recent waits",
+			examples: []string{"wp slot ls", "wp slot status"},
+			run:      cmdSlotLs},
 	}
 }
 
@@ -107,6 +80,7 @@ type slotHold struct {
 	idx    int
 	since  int64
 	ctxKey string
+	freed  func() // notes the release for the runner (noteSlotWait)
 }
 
 // write puts the holder line in the lock file: pid, start, folder, arguments,
@@ -117,7 +91,12 @@ func (h *slotHold) write(bound string) {
 	_, _ = h.f.WriteAt([]byte(fmt.Sprintf("%d\t%d\t%s\t%s\t%s\t%s\t%s\n", os.Getpid(), h.since, slotField(wd), slotField(strings.Join(os.Args[1:], " ")), slotField(slotSession()), slotField(h.ctxKey), bound)), 0)
 }
 
-func (h *slotHold) release() { _ = h.f.Close() }
+func (h *slotHold) release() {
+	_ = h.f.Close()
+	if h.freed != nil {
+		h.freed()
+	}
+}
 
 // acquireSlot waits for one of n slots called name. notify gets called once
 // if the wait passes slotWaitNotice. Inside an agent job the wait is noted
@@ -133,7 +112,9 @@ func acquireSlot(ctx context.Context, name string, n int, notify func()) (*slotH
 // acquireSlotIn is acquireSlot trying only the slots in order, in that order.
 // firstMiss, when not nil, is called once when the first pass finds none free.
 func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstMiss func()) (*slotHold, error) {
-	defer noteSlotWait(name)()
+	ended, free := noteSlotWait(name)
+	held := false
+	defer func() { ended(held) }() // a failed acquire holds nothing
 	dir, err := slotDir()
 	if err != nil {
 		return nil, err
@@ -166,8 +147,9 @@ func acquireSlotIn(ctx context.Context, name string, order []int, notify, firstM
 				return nil, err
 			}
 			if ok {
-				h := &slotHold{f: f, idx: i, since: time.Now().Unix(), ctxKey: slotCtxKey(ctx)}
+				h := &slotHold{f: f, idx: i, since: time.Now().Unix(), ctxKey: slotCtxKey(ctx), freed: free}
 				h.write(slotBoundOf(ctx))
+				held = true
 				return h, nil
 			}
 			_ = f.Close()

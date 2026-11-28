@@ -289,7 +289,7 @@ func (s *Service) hookProblems(ctx context.Context, actor *Actor, project string
 		return out, nil
 	}
 	quiet := s.now().Add(-hookSilentAfter).UnixMilli()
-	owned, oargs := actor.memberProjects(RoleOwner)
+	owned, oargs := actor.MemberProjects(RoleOwner)
 	// #nosec G202 -- owned is placeholders; values are bound
 	rows, err := s.db.R.QueryContext(ctx, `SELECT p.key, min(r.id), r.repo, r.hook_state, r.hook_note
 		FROM project_repos r JOIN projects p ON p.id = r.project_id
@@ -299,7 +299,7 @@ func (s *Service) hookProblems(ctx context.Context, actor *Actor, project string
 			AND (? = '' OR p.key = ?)
 		GROUP BY r.forge_id, lower(r.repo)
 		ORDER BY lower(r.repo)`,
-		append(append([]any{hookFailed, hookInstalled, quiet, actor.isAdmin()}, oargs...), project, project)...)
+		append(append([]any{hookFailed, hookInstalled, quiet, actor.IsAdmin()}, oargs...), project, project)...)
 	if err != nil {
 		return nil, err
 	}
@@ -337,7 +337,7 @@ func (s *Service) RetryRepoHook(ctx context.Context, actor *Actor, projectRef st
 		if n, _ := res.RowsAffected(); n == 0 {
 			return notFound("project repo")
 		}
-		t.emit(&Event{Kind: EvRepoHook, ProjectID: p.ID, repoHook: &repoHookJob{install: id}})
+		t.emit(withHint(&Event{Kind: EvRepoHook, ProjectID: p.ID}, &repoHookJob{install: id}))
 		return nil
 	})
 }
@@ -357,7 +357,7 @@ func (s *Service) refreshRepoHooks(ctx context.Context, t *tx, forgeID int64) er
 			rows.Close()
 			return err
 		}
-		evs = append(evs, &Event{Kind: EvRepoHook, repoHook: &repoHookJob{installOrg: id}})
+		evs = append(evs, withHint(&Event{Kind: EvRepoHook}, &repoHookJob{installOrg: id}))
 	}
 	rows.Close()
 	rows, err = t.QueryContext(ctx, `SELECT min(id), min(project_id) FROM project_repos
@@ -371,7 +371,7 @@ func (s *Service) refreshRepoHooks(ctx context.Context, t *tx, forgeID int64) er
 		if err := rows.Scan(&id, &projectID); err != nil {
 			return err
 		}
-		evs = append(evs, &Event{Kind: EvRepoHook, ProjectID: projectID, repoHook: &repoHookJob{install: id}})
+		evs = append(evs, withHint(&Event{Kind: EvRepoHook, ProjectID: projectID}, &repoHookJob{install: id}))
 	}
 	if err := rows.Err(); err != nil {
 		return err

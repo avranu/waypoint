@@ -60,7 +60,7 @@ export function useStoredSet(key: string) {
   }
 }
 
-/** The cap the server keeps (internal/core users.go maxDismissedWarnings). */
+/** The cap the server keeps (internal/core users.go MaxDismissedWarnings). */
 const MAX_DISMISSED = 500
 
 /** One warning on one goal, as stored: "NOTE_ID:what it says", at most 200 characters. */

@@ -40,8 +40,13 @@ the server's version: the new binary is put in place at once and the runner
 restarts on it when no job is running (after 15 minutes of waiting it takes no
 new jobs until the running ones finish); the --no-* flags turn each off.
 On Linux --max-jobs is a ceiling: it takes fewer while the machine is busy
-(wp runner status shows how many and why). A job that has waited over a
-minute for a test slot doesn't count toward it, one such job at a time.
+(wp runner status shows how many and why). An agent job counts toward it
+only while a command of it holds a slot (wp slot, under any name);
+--max-agents (default 3) is how many agent jobs run at once, and the runner
+takes no more while the machine is short of memory. Where it can't measure memory (macOS, Windows) the default
+is --max-jobs, at most 3. Audits and reviews don't count toward --max-jobs: up
+to 3 run beside it while memory isn't short (where it can't be measured, no
+more than --max-jobs).
 
 Needs wp auth login first, as you. wp runner install starts it at login
 (systemd user unit, launchd agent); wp setup does that and the hooks.`,
@@ -72,10 +77,12 @@ type runnerOpts struct {
 	Allow  []string
 	// Env names variables of the runner's environment its jobs get beyond
 	// the allowlist (WP-418).
-	Env      []string
-	MaxJobs  int
-	Once     bool
-	PollWait float64 // seconds a poll is held; negative: the server's default (30)
+	Env     []string
+	MaxJobs int
+	// MaxAgents is --max-agents; 0 means the default.
+	MaxAgents int
+	Once      bool
+	PollWait  float64 // seconds a poll is held; negative: the server's default (30)
 	// NoUsageSync turns off the usage upload (WP-D20); UsageEvery and
 	// UsageDir are for tests.
 	NoUsageSync bool
@@ -101,6 +108,7 @@ func runnerFlags(c *cli, o *runnerOpts, install bool) func([]string) ([]string, 
 	fs.Var(&allow, "allow", "`DIR`: directory (and below) command/apply jobs may use (repeatable)")
 	fs.Var(&env, "env", "`NAME`: extra environment variable to pass to jobs (repeatable)")
 	fs.IntVar(&o.MaxJobs, "max-jobs", 1, "`N`: most jobs at once")
+	fs.IntVar(&o.MaxAgents, "max-agents", 0, fmt.Sprintf("`N`: most agent jobs at once, each counting toward --max-jobs only while it holds a slot, under any name (0, the default, means %d; where memory can't be measured, as on macOS and Windows, --max-jobs if lower)", core.DefaultMaxAgents))
 	fs.BoolVar(&o.NoUsageSync, "no-usage-sync", false, "don't upload Claude Code usage")
 	fs.BoolVar(&o.NoPrep, "no-prep", false, "don't prepare queued tasks")
 	fs.BoolVar(&o.NoAutoUpdate, "no-auto-update", false, "keep this wp version: no update or restart to the server's")
@@ -152,6 +160,9 @@ func runRunner(ctx context.Context, c *cli, o runnerOpts) error {
 	c.agent = "none"
 	if o.MaxJobs < 1 || o.MaxJobs > maxRunnerJobs {
 		return c.usage("--max-jobs is between 1 and %d", maxRunnerJobs)
+	}
+	if o.MaxAgents != 0 && (o.MaxAgents < 1 || o.MaxAgents > maxRunnerJobs) {
+		return c.usage("--max-agents is between 1 and %d", maxRunnerJobs)
 	}
 	allowed, err := parseAllowed(o.Allow)
 	if err != nil {
@@ -219,11 +230,13 @@ type runnerProc struct {
 	stopCtx    context.Context
 	stopCancel context.CancelFunc
 
-	mu            sync.Mutex
-	jobs          map[int64]*activeJob
-	wg            sync.WaitGroup
-	freed         chan struct{}
-	gov           *governor
+	mu    sync.Mutex
+	jobs  map[int64]*activeJob
+	wg    sync.WaitGroup
+	freed chan struct{}
+	gov   *governor
+	// memUnwatched: the first look couldn't measure memory (agentCeiling).
+	memUnwatched  bool
 	clis          []runnerCLI
 	clisDirty     bool
 	repoLocks     map[string]*sync.Mutex
@@ -235,11 +248,11 @@ type runnerProc struct {
 }
 
 type activeJob struct {
-	id            int64
-	lane          string
-	cancel        context.CancelFunc
-	cancelled     atomic.Bool
-	slotWaitSince time.Time
+	id          int64
+	lane        string
+	cancel      context.CancelFunc
+	cancelled   atomic.Bool
+	slotHolding bool // a command of the job holds a slot, under any name (agent lane)
 }
 
 // jobRun is what an executor gets besides the input.
@@ -399,7 +412,10 @@ func (p *runnerProc) poll(ctx context.Context, free int, lanes []string) (*pollA
 	body := map[string]any{"runner": p.id, "running": p.activeIDs(), "free": max(free, 0), "lanes": lanes}
 	if p.gov != nil {
 		heavy, light, _, _, gw := p.running()
-		body["capacity"] = p.gov.report(time.Now(), heavy, light, gw)
+		cp := p.gov.report(time.Now(), heavy, light, gw)
+		p.addAgentReport(cp)
+		p.addLightReport(cp, light)
+		body["capacity"] = cp
 	}
 	switch {
 	case p.opts.PollWait >= 0:
@@ -468,9 +484,9 @@ func (p *runnerProc) run(ctx context.Context, reportStop context.CancelFunc) err
 	if !p.opts.Once {
 		p.reapInterruptedStarts(ctx)
 	}
-	if p.opts.MaxJobs > 1 {
-		p.watchLoad(ctx)
-	}
+	// A one-job runner watches too: memory stops its agent jobs, and its
+	// report says how many it runs at once.
+	p.watchLoad(ctx)
 
 	defer p.stopUpdate()
 	delay := time.Second
@@ -533,7 +549,9 @@ func (p *runnerProc) run(ctx context.Context, reportStop context.CancelFunc) err
 			p.start(ctx, ans.Job)
 			continue
 		}
-		if p.opts.Once && free > 0 && slices.Contains(lanes, laneHeavy) && slices.Contains(lanes, laneLight) && len(p.activeIDs()) == 0 {
+		// An idle runner's light lane is closed only while memory is short,
+		// which --once doesn't wait out.
+		if p.opts.Once && free > 0 && slices.Contains(lanes, laneHeavy) && len(p.activeIDs()) == 0 {
 			break
 		}
 		if len(ans.Cancel) > 0 {
@@ -1039,7 +1057,7 @@ func (p *runnerProc) syncUsage(ctx context.Context) {
 func (p *runnerProc) start(ctx context.Context, job *claimedJob) {
 	jctx, cancel := context.WithCancel(ctx)
 	aj := &activeJob{id: job.ID, cancel: cancel, lane: jobLane(job.Kind)}
-	if slices.Contains([]string{laneHeavy, laneLight, laneRequest, laneMessage, laneGateway}, job.Lane) {
+	if slices.Contains([]string{laneHeavy, laneLight, laneRequest, laneMessage, laneGateway, laneAgent}, job.Lane) {
 		aj.lane = job.Lane
 	}
 	p.mu.Lock()

@@ -216,7 +216,7 @@ func (s *Service) deferredOn(ctx context.Context, actor *Actor, project int64) (
 	if err != nil || role == RoleNone {
 		return false, err
 	}
-	on, lim, err := s.autopilotFor(ctx, s.db.R, actor.id(), project)
+	on, lim, err := s.autopilotFor(ctx, s.db.R, actor.ID(), project)
 	if err != nil {
 		return false, err
 	}

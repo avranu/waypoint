@@ -38,7 +38,7 @@ func ProfileSeconds(n int) int {
 // ServerProfile takes the profile kind (goroutine, cpu or heap). A CPU profile
 // runs for seconds and stops early if ctx ends.
 func (s *Service) ServerProfile(ctx context.Context, actor *Actor, kind string, seconds int) (*ServerProfile, error) {
-	if err := actor.canReadServer(); err != nil {
+	if err := canReadServer(actor); err != nil {
 		return nil, err
 	}
 	var b bytes.Buffer

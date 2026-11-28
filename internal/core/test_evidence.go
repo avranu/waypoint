@@ -371,7 +371,7 @@ func (s *Service) RecordTestEvidence(ctx context.Context, actor *Actor, projectR
 			return nil, err
 		}
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	p, err := s.GetProject(ctx, actor, projectRef)
@@ -415,8 +415,8 @@ func (s *Service) RecordTestEvidence(ctx context.Context, actor *Actor, projectR
 		if actor.Session != 0 {
 			sess = actor.Session
 		}
-		if actor.id() != 0 {
-			uid = actor.id()
+		if actor.ID() != 0 {
+			uid = actor.ID()
 		}
 		var id int64
 		if err := t.QueryRowContext(ctx, `INSERT INTO test_evidence(project_id, issue_id, repo, sha, tree, outcome, line, runs, nearest, bench, session_id, user_id, agent, created_at, updated_at)
@@ -424,10 +424,10 @@ func (s *Service) RecordTestEvidence(ctx context.Context, actor *Actor, projectR
 			ON CONFLICT(project_id, repo, sha) DO UPDATE SET issue_id = coalesce(excluded.issue_id, issue_id), tree = excluded.tree, outcome = excluded.outcome, line = excluded.line,
 				runs = excluded.runs, nearest = excluded.nearest, bench = excluded.bench, session_id = excluded.session_id, user_id = excluded.user_id, agent = excluded.agent, updated_at = excluded.updated_at
 			RETURNING id`,
-			p.ID, issueID, in.Repo, in.SHA, in.Tree, outcome, line, string(runs), string(near), string(bench), sess, uid, actor.agentName(), now, now).Scan(&id); err != nil {
+			p.ID, issueID, in.Repo, in.SHA, in.Tree, outcome, line, string(runs), string(near), string(bench), sess, uid, actor.AgentName(), now, now).Scan(&id); err != nil {
 			return err
 		}
-		if err := addDropRow(ctx, t, actor.id(), "server", DropEvidenceRunsCap, "test_evidence", capped, now); err != nil {
+		if err := addDropRow(ctx, t, actor.ID(), "server", DropEvidenceRunsCap, "test_evidence", capped, now); err != nil {
 			return err
 		}
 		out = &TestEvidence{ID: id, Repo: in.Repo, SHA: in.SHA, Tree: in.Tree, Outcome: outcome, Line: line, Runs: in.Runs, Bench: in.Bench, BenchLines: benchLines(in.Bench), At: msTime(now)}
@@ -435,7 +435,7 @@ func (s *Service) RecordTestEvidence(ctx context.Context, actor *Actor, projectR
 			return nil
 		}
 		t.emit(&Event{Kind: EvIssueWorkLog, ProjectID: issue.ProjectID, IssueID: issue.ID, IssueKey: issue.Key, New: WorkTested, Data: map[string]any{"evidence": id, "state": WorkTested}})
-		found, err := s.checkStatements(ctx, t, statementScope{issue: issue.ID, project: issue.ProjectID, key: issue.Key, session: actor.Session, agent: actor.agentName(), source: "ship", testsFresh: true}, in.Summary, now)
+		found, err := s.checkStatements(ctx, t, statementScope{issue: issue.ID, project: issue.ProjectID, key: issue.Key, session: actor.Session, agent: actor.AgentName(), source: "ship", testsFresh: true}, in.Summary, now)
 		if err != nil {
 			return err
 		}

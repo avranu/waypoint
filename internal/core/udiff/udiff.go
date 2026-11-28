@@ -36,11 +36,28 @@ type diffOp struct {
 	line string
 }
 
+// maxEdits bounds the Myers search on one piece; past it the piece is
+// split on anchors instead.
+const maxEdits = 1500
+
+// maxSplits bounds how deeply pieces are split. A search that fails costs
+// the most, and a file can be built so that each split leaves nearly all of
+// its lines to be searched again; this keeps any line to maxSplits+1
+// searches.
+const maxSplits = 4
+
 // diffLines is the shortest edit script from a to b (Myers, O(ND)), after
-// trimming what both share at the ends. Past maxEdits differences it gives
-// up on finding the shortest and replaces the middle wholesale.
+// trimming what both share at the ends. Where a piece needs more than
+// maxEdits differences it is split on lines that occur exactly once on each
+// side (see uniqueAnchors), and the gaps between them likewise; a piece
+// with no such line, or already split maxSplits deep, is replaced wholesale.
 func diffLines(a, b []string) []diffOp {
-	const maxEdits = 1500
+	return diffRange(a, b, 0, make([]diffOp, 0, len(a)+len(b)))
+}
+
+// diffRange appends the edit script from a to b to out; depth is how many
+// splits led to this piece.
+func diffRange(a, b []string, depth int, out []diffOp) []diffOp {
 	pre := 0
 	for pre < len(a) && pre < len(b) && a[pre] == b[pre] {
 		pre++
@@ -49,32 +66,117 @@ func diffLines(a, b []string) []diffOp {
 	for suf < len(a)-pre && suf < len(b)-pre && a[len(a)-1-suf] == b[len(b)-1-suf] {
 		suf++
 	}
-	var out []diffOp
 	for _, l := range a[:pre] {
 		out = append(out, diffOp{' ', l})
 	}
-	out = append(out, myers(a[pre:len(a)-suf], b[pre:len(b)-suf], maxEdits)...)
+	out = diffMiddle(a[pre:len(a)-suf], b[pre:len(b)-suf], depth, out)
 	for _, l := range a[len(a)-suf:] {
 		out = append(out, diffOp{' ', l})
 	}
 	return out
 }
 
-func myers(a, b []string, maxEdits int) []diffOp {
+// diffMiddle diffs pieces with no shared ends: capped Myers, then anchors.
+func diffMiddle(a, b []string, depth int, out []diffOp) []diffOp {
+	if len(a) == 0 || len(b) == 0 {
+		return appendReplace(a, b, out)
+	}
+	if ops, ok := myers(a, b, maxEdits); ok {
+		return append(out, ops...)
+	}
+	var anchors []anchor
+	if depth < maxSplits {
+		anchors = uniqueAnchors(a, b)
+	}
+	if len(anchors) == 0 {
+		return appendReplace(a, b, out)
+	}
+	pa, pb := 0, 0
+	for _, an := range anchors {
+		out = diffRange(a[pa:an.a], b[pb:an.b], depth+1, out)
+		out = append(out, diffOp{' ', a[an.a]})
+		pa, pb = an.a+1, an.b+1
+	}
+	return diffRange(a[pa:], b[pb:], depth+1, out)
+}
+
+func appendReplace(a, b []string, out []diffOp) []diffOp {
+	for _, l := range a {
+		out = append(out, diffOp{'-', l})
+	}
+	for _, l := range b {
+		out = append(out, diffOp{'+', l})
+	}
+	return out
+}
+
+type anchor struct{ a, b int }
+
+// uniqueAnchors returns the longest run, increasing in both a and b, of
+// lines that occur exactly once in a and exactly once in b (patience
+// diff's anchors). O((n+m) log(n+m)).
+func uniqueAnchors(a, b []string) []anchor {
+	type occ struct{ ca, cb, ia, ib int }
+	idx := make(map[string]int, len(a))
+	occs := make([]occ, 0, len(a))
+	for i, l := range a {
+		if k, ok := idx[l]; ok {
+			occs[k].ca++
+		} else {
+			idx[l] = len(occs)
+			occs = append(occs, occ{ca: 1, ia: i})
+		}
+	}
+	for i, l := range b {
+		if k, ok := idx[l]; ok {
+			occs[k].cb++
+			occs[k].ib = i
+		}
+	}
+	// Candidates in a's order, each with its position in b.
+	var cand []anchor
+	for i, l := range a {
+		if o := occs[idx[l]]; o.ca == 1 && o.cb == 1 {
+			cand = append(cand, anchor{i, o.ib})
+		}
+	}
+	// Longest increasing subsequence on b by patience sorting.
+	var tails []int // tails[k] = index in cand ending a run of length k+1
+	prev := make([]int, len(cand))
+	for i, c := range cand {
+		lo, hi := 0, len(tails)
+		for lo < hi {
+			mid := (lo + hi) / 2
+			if cand[tails[mid]].b < c.b {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		prev[i] = -1
+		if lo > 0 {
+			prev[i] = tails[lo-1]
+		}
+		if lo == len(tails) {
+			tails = append(tails, i)
+		} else {
+			tails[lo] = i
+		}
+	}
+	if len(tails) == 0 {
+		return nil
+	}
+	res := make([]anchor, len(tails))
+	for k, i := len(tails)-1, tails[len(tails)-1]; k >= 0; k, i = k-1, prev[i] {
+		res[k] = cand[i]
+	}
+	return res
+}
+
+// myers is the shortest edit script, or ok false when it needs more than
+// maxEdits edits.
+func myers(a, b []string, maxEdits int) (ops []diffOp, ok bool) {
 	n, m := len(a), len(b)
-	replace := func() []diffOp {
-		out := make([]diffOp, 0, n+m)
-		for _, l := range a {
-			out = append(out, diffOp{'-', l})
-		}
-		for _, l := range b {
-			out = append(out, diffOp{'+', l})
-		}
-		return out
-	}
-	if n == 0 || m == 0 {
-		return replace()
-	}
 	maxD := min(n+m, maxEdits)
 	off := maxD + 1
 	v := make([]int, 2*off+1)
@@ -107,7 +209,7 @@ rounds:
 		}
 	}
 	if found < 0 {
-		return replace()
+		return nil, false
 	}
 	var rev []diffOp
 	x, y := n, m
@@ -145,7 +247,7 @@ rounds:
 	for i, op := range rev {
 		out[len(rev)-1-i] = op
 	}
-	return out
+	return out, true
 }
 
 // Unified renders the change from old to new for one file with three

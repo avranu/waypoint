@@ -199,15 +199,9 @@ func (s *Service) assistantRow(ctx context.Context, id int64) (*assistantRow, er
 	return rs[0], nil
 }
 
-// person is a signed-in person in a browser: not a token, an automation or
-// an MCP client.
-func (a *Actor) person() bool {
-	return a != nil && a.User != nil && a.User.ID != 0 && a.TokenID == 0 && a.Automation == nil && !a.MCP && a.Agent == ""
-}
-
 func (s *Service) finishAssistant(ctx context.Context, actor *Actor, r *assistantRow) *Assistant {
 	a := r.Assistant
-	a.Mine = actor.id() == r.ownerID
+	a.Mine = actor.ID() == r.ownerID
 	if a.TokenID != nil {
 		var agent sql.NullString
 		_ = s.db.R.QueryRowContext(ctx, `SELECT agent FROM api_tokens WHERE id = ?`, *a.TokenID).Scan(&agent)
@@ -219,10 +213,10 @@ func (s *Service) finishAssistant(ctx context.Context, actor *Actor, r *assistan
 // ListAssistants is the assistants the actor owns; admins see every one,
 // to set them up.
 func (s *Service) ListAssistants(ctx context.Context, actor *Actor) ([]*Assistant, error) {
-	if !actor.person() {
+	if !actor.Person() {
 		return []*Assistant{}, nil
 	}
-	where, args := `WHERE a.owner_id = ?`, []any{actor.id()}
+	where, args := `WHERE a.owner_id = ?`, []any{actor.ID()}
 	if actor.User.IsAdmin {
 		where, args = ``, nil
 	}
@@ -243,7 +237,7 @@ func (s *Service) GetAssistant(ctx context.Context, actor *Actor, id int64) (*As
 	if err != nil {
 		return nil, err
 	}
-	if !actor.person() || (actor.id() != r.ownerID && !actor.User.IsAdmin) {
+	if !actor.Person() || (actor.ID() != r.ownerID && !actor.User.IsAdmin) {
 		return nil, ErrNotFound
 	}
 	return s.finishAssistant(ctx, actor, r), nil
@@ -256,7 +250,7 @@ func (s *Service) UseAssistant(ctx context.Context, actor *Actor, id int64) (*he
 	if err != nil {
 		return nil, nil, err
 	}
-	if !actor.person() || actor.id() != r.ownerID {
+	if !actor.Person() || actor.ID() != r.ownerID {
 		return nil, nil, ErrNotFound
 	}
 	c, err := s.assistantClient(r)
@@ -329,7 +323,7 @@ func (s *Service) checkAssistantToken(ctx context.Context, ownerID int64, tokenI
 
 // CreateAssistant connects an assistant (admins).
 func (s *Service) CreateAssistant(ctx context.Context, actor *Actor, in AssistantInput) (*Assistant, error) {
-	if !actor.person() || !actor.User.IsAdmin {
+	if !actor.Person() || !actor.User.IsAdmin {
 		return nil, ErrForbidden
 	}
 	r := &assistantRow{}
@@ -337,7 +331,7 @@ func (s *Service) CreateAssistant(ctx context.Context, actor *Actor, in Assistan
 	if err := in.apply(r, true); err != nil {
 		return nil, err
 	}
-	owner := actor.id()
+	owner := actor.ID()
 	if in.OwnerID != nil && *in.OwnerID != 0 {
 		if _, err := s.userByID(ctx, s.db.R, *in.OwnerID); err != nil {
 			return nil, invalid("no such owner")
@@ -370,7 +364,7 @@ func (s *Service) CreateAssistant(ctx context.Context, actor *Actor, in Assistan
 
 // UpdateAssistant changes an assistant's name, owner, door or login (admins).
 func (s *Service) UpdateAssistant(ctx context.Context, actor *Actor, id int64, in AssistantInput) (*Assistant, error) {
-	if !actor.person() || !actor.User.IsAdmin {
+	if !actor.Person() || !actor.User.IsAdmin {
 		return nil, ErrForbidden
 	}
 	r, err := s.assistantRow(ctx, id)
@@ -419,7 +413,7 @@ func (s *Service) UpdateAssistant(ctx context.Context, actor *Actor, id int64, i
 
 // DeleteAssistant disconnects an assistant (admins). Its agent is untouched.
 func (s *Service) DeleteAssistant(ctx context.Context, actor *Actor, id int64) error {
-	if !actor.person() || !actor.User.IsAdmin {
+	if !actor.Person() || !actor.User.IsAdmin {
 		return ErrForbidden
 	}
 	r, err := s.assistantRow(ctx, id)

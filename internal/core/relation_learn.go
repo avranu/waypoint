@@ -211,7 +211,7 @@ func (s *Service) recordShown(ctx context.Context, actor *Actor, issueID int64, 
 				shared_goal = excluded.shared_goal, age_days = excluded.age_days, source_done = excluded.source_done,
 				blend = excluded.blend, model_p = excluded.model_p
 			WHERE relation_suggestions.outcome IS NULL`,
-			issueID, r.id, r.Kind, r.source, r.Confidence, nullUser(actor.id()), now,
+			issueID, r.id, r.Kind, r.source, r.Confidence, nullUser(actor.ID()), now,
 			f.Word, conceptCol, f.SameProject, f.SharedParent, f.SharedGoal, f.AgeDays, f.SrcDone, f.blend(), pCol); err != nil {
 			return err
 		}
@@ -225,7 +225,7 @@ func (s *Service) recordShown(ctx context.Context, actor *Actor, issueID int64, 
 func (s *Service) noteRelated(ctx context.Context, t *tx, actor *Actor, a, b int64) error {
 	_, err := t.ExecContext(ctx, `UPDATE relation_suggestions SET outcome = 'accepted', decided_at = ?, decided_by = ?
 		WHERE ((issue_id = ? AND other_id = ?) OR (issue_id = ? AND other_id = ?)) AND coalesce(outcome, '') != 'accepted'`,
-		s.nowMS(), nullUser(actor.id()), a, b, b, a)
+		s.nowMS(), nullUser(actor.ID()), a, b, b, a)
 	return err
 }
 
@@ -262,7 +262,7 @@ func (s *Service) decideRelationSuggestion(ctx context.Context, actor *Actor, re
 	if !dismiss {
 		what = "undoing a dismissal"
 	}
-	if err := actor.requirePersonDirect(what); err != nil {
+	if err := actor.RequirePersonDirect(what); err != nil {
 		return err
 	}
 	return s.write(ctx, actor, func(t *tx) error {
@@ -299,11 +299,11 @@ func (s *Service) decideRelationSuggestion(ctx context.Context, actor *Actor, re
 			_, err = t.ExecContext(ctx, `INSERT INTO relation_suggestions(issue_id, other_id, kind, source, confidence, shown_by, shown_at,
 					word, same_project, shared_parent, shared_goal, age_days, source_done, blend, outcome, decided_at, decided_by)
 				VALUES (?, ?, 'relates', ?, '', ?, ?, 0, 0, 0, 0, 0, 0, 0, 'dismissed', ?, ?)`,
-				a.ID, b.ID, sugUnrecorded, nullUser(actor.id()), now, now, nullUser(actor.id()))
+				a.ID, b.ID, sugUnrecorded, nullUser(actor.ID()), now, now, nullUser(actor.ID()))
 			return err
 		}
 		_, err = t.ExecContext(ctx, `UPDATE relation_suggestions SET outcome = 'dismissed', decided_at = ?, decided_by = ?
-			WHERE `+sugPair+` AND outcome IS NOT 'dismissed'`, now, nullUser(actor.id()), a.ID, b.ID, b.ID, a.ID)
+			WHERE `+sugPair+` AND outcome IS NOT 'dismissed'`, now, nullUser(actor.ID()), a.ID, b.ID, b.ID, a.ID)
 		return err
 	})
 }

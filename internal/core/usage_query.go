@@ -288,22 +288,22 @@ func (s *Service) usageWho(ctx context.Context, actor *Actor, who string) (uids 
 	if actor == nil || actor.User == nil {
 		return nil, false, "", ErrUnauthorized
 	}
-	if err := actor.need(PermUsageRead); err != nil {
+	if err := actor.Need(PermUsageRead); err != nil {
 		return nil, false, "", err
 	}
-	if actor.scope != nil {
+	if actor.Scope != nil {
 		return nil, false, "", forbidden("a runner job's token reaches its project; usage spans the person's")
 	}
 	who = strings.TrimSpace(who)
 	if who != "" && !strings.EqualFold(who, actor.User.Username) {
-		if err := actor.requireHuman("reading another person's usage"); err != nil {
+		if err := actor.RequireHuman("reading another person's usage"); err != nil {
 			return nil, false, "", err
 		}
 	}
 	switch {
 	case who == "" || strings.EqualFold(who, actor.User.Username):
 		return []int64{actor.User.ID}, false, actor.User.Username, nil
-	case !actor.isAdmin():
+	case !actor.IsAdmin():
 		return nil, false, "", forbidden("usage is private to each person")
 	case who == "all":
 		return nil, true, "all", nil
@@ -467,14 +467,14 @@ func (s *Service) UsageOverview(ctx context.Context, actor *Actor, q UsageQuery)
 	if err != nil {
 		return nil, err
 	}
-	o := &UsageOverview{From: first.UTC(), To: msTime(sc.to - 1), Days: q.Days, Who: label, Prices: actor.isAdmin(),
+	o := &UsageOverview{From: first.UTC(), To: msTime(sc.to - 1), Days: q.Days, Who: label, Prices: actor.IsAdmin(),
 		Daily: []UsageDay{}, Models: []UsageBreakdown{}, Repos: []UsageBreakdown{}, Machines: []UsageBreakdown{}, Kinds: []UsageBreakdown{},
 		TopSess: []UsageBreakdown{}, Tools: []UsageTool{}, Bash: []UsageTool{}, Unused: []UsageUnused{}, Advice: []UsageAdvice{},
 		Reported: []UsageMachine{}, Unpriced: []string{}}
 	if o.HasData, err = s.usageHasData(ctx, sc); err != nil {
 		return nil, err
 	}
-	if actor.isAdmin() {
+	if actor.IsAdmin() {
 		if o.People, err = s.usagePeople(ctx); err != nil {
 			return nil, err
 		}

@@ -304,7 +304,7 @@ func (s *Service) SessionPulse(ctx context.Context, actor *Actor, in PulseInput)
 	if len(machine) > 200 || len(in.Sessions) > 200 || len(in.Trips) > 50 {
 		return nil, invalid("too many sessions or trips in one pulse")
 	}
-	uid := actor.id()
+	uid := actor.ID()
 	now := s.nowMS()
 	var stops []*Event
 	if len(in.Sessions) > 0 || len(in.Trips) > 0 {
@@ -358,7 +358,7 @@ func (s *Service) guardTrip(ctx context.Context, t *tx, actor *Actor, machine st
 	default:
 		return nil, nil
 	}
-	uid := actor.id()
+	uid := actor.ID()
 	at := s.nowMS()
 	if !in.At.IsZero() && in.At.UnixMilli() < at && at-in.At.UnixMilli() < 24*time.Hour.Milliseconds() {
 		at = in.At.UnixMilli()
@@ -877,7 +877,7 @@ func (s *Service) QuotaGuardLiveState(ctx context.Context, actor *Actor, who str
 // person in the web, their terminal or a session they are typing in may.
 func (s *Service) guardChangeAllowed(ctx context.Context, a *Actor) error {
 	const what = "changing the quota guard"
-	if err := a.requireHuman(what); err != nil {
+	if err := a.RequireHuman(what); err != nil {
 		return err
 	}
 	if a.Automation != nil {
@@ -890,13 +890,13 @@ func (s *Service) guardChangeAllowed(ctx context.Context, a *Actor) error {
 		return nil
 	}
 	var machine, cli, kind string
-	if err := s.db.R.QueryRowContext(ctx, `SELECT machine, cli_id, kind FROM agent_sessions WHERE id = ? AND user_id = ?`, a.Session, a.id()).Scan(&machine, &cli, &kind); err != nil {
+	if err := s.db.R.QueryRowContext(ctx, `SELECT machine, cli_id, kind FROM agent_sessions WHERE id = ? AND user_id = ?`, a.Session, a.ID()).Scan(&machine, &cli, &kind); err != nil {
 		return forbidden("%s is for people: in the web, your own terminal, or a session you are typing in", what)
 	}
 	if kind == SessionTask {
 		return forbidden("%s is for people, not a task session (ask with wp request change)", what)
 	}
-	line, _, err := s.sessionOwners(ctx, a.id(), machine, cli, s.nowMS()+1)
+	line, _, err := s.sessionOwners(ctx, a.ID(), machine, cli, s.nowMS()+1)
 	if err != nil {
 		return err
 	}
@@ -918,16 +918,16 @@ type QuotaGuardSettingsInput struct {
 
 // SetQuotaGuard changes the actor's guard settings.
 func (s *Service) SetQuotaGuard(ctx context.Context, actor *Actor, in QuotaGuardSettingsInput) (*QuotaGuardLive, error) {
-	if err := actor.need(PermSessionsStart); err != nil {
+	if err := actor.Need(PermSessionsStart); err != nil {
 		return nil, err
 	}
 	if err := s.guardChangeAllowed(ctx, actor); err != nil {
 		return nil, err
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
-	uid := actor.id()
+	uid := actor.ID()
 	for _, v := range []*float64{in.Settings.ChurnUSD, in.Settings.SessionUSD, in.Settings.Hours, in.Settings.IdleHours, in.Settings.ModelUSD, in.Settings.BurstUSD} {
 		if v != nil && (*v < 0 || math.IsNaN(*v) || *v > 100000) {
 			return nil, invalid("a line is a number from 0 (off) up")
@@ -1027,17 +1027,17 @@ func (s *Service) LiftQuotaGuard(ctx context.Context, actor *Actor, quietFor str
 		}
 		quiet = d
 	}
-	if err := actor.need(PermSessionsStart); err != nil {
+	if err := actor.Need(PermSessionsStart); err != nil {
 		return nil, err
 	}
 	if err := s.guardChangeAllowed(ctx, actor); err != nil {
 		return nil, err
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	quiet = min(quiet, 7*24*time.Hour)
-	uid := actor.id()
+	uid := actor.ID()
 	now := s.now()
 	err := s.write(ctx, actor, func(t *tx) error {
 		w, err := s.loadGuardWatch(ctx, t, uid)

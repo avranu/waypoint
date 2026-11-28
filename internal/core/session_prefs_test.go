@@ -31,7 +31,7 @@ func TestSessionPrefsForRepo(t *testing.T) {
 func TestSessionPrefsAreSavedCheckedAndTidied(t *testing.T) {
 	e := newEnv(t)
 	save := func(p *SessionPrefs) (*User, error) {
-		return e.s.UpdateUser(e.ctx, e.admin, e.admin.id(), UserPatch{Prefs: &UserPrefs{WeekStart: 1, Sessions: p}})
+		return e.s.UpdateUser(e.ctx, e.admin, e.admin.ID(), UserPatch{Prefs: &UserPrefs{WeekStart: 1, Sessions: p}})
 	}
 	u, err := save(&SessionPrefs{
 		All: SessionSettings{CodeMode: boolp(true), Model: " claude-opus-5-5[1m] ", PermissionMode: "auto"},
@@ -60,7 +60,7 @@ func TestSessionPrefsAreSavedCheckedAndTidied(t *testing.T) {
 		{SessionPrefs{All: SessionSettings{Effort: "huge"}}, "effort"},
 		{SessionPrefs{All: SessionSettings{Model: "opus; rm -rf /"}}, "model"},
 		{SessionPrefs{Repos: map[string]SessionSettings{"waypoint": {Effort: "low"}}}, "owner/name"},
-		{SessionPrefs{Repos: map[string]SessionSettings{"a/b": {Effort: "x"}, "A/B": {Effort: "low"}}}, ""},
+		{SessionPrefs{Repos: map[string]SessionSettings{"a/b": {Effort: "high"}, "A/B": {Effort: "low"}}}, "two sets of session settings"},
 	} {
 		if _, err := save(&bad.p); err == nil || !strings.Contains(err.Error(), bad.want) {
 			t.Errorf("%+v: %v", bad.p, err)
@@ -73,7 +73,7 @@ func TestSessionPrefsAreSavedCheckedAndTidied(t *testing.T) {
 func TestSessionJobsCarryTheOwnersSettings(t *testing.T) {
 	e := newEnv(t)
 	prefs := &SessionPrefs{All: SessionSettings{RemoteControl: boolp(false), Effort: "low"}}
-	if _, err := e.s.UpdateUser(e.ctx, e.admin, e.admin.id(), UserPatch{Prefs: &UserPrefs{WeekStart: 1, Sessions: prefs}}); err != nil {
+	if _, err := e.s.UpdateUser(e.ctx, e.admin, e.admin.ID(), UserPatch{Prefs: &UserPrefs{WeekStart: 1, Sessions: prefs}}); err != nil {
 		t.Fatal(err)
 	}
 	r := e.runner(e.admin, "m1", func(r *RunnerRegistration) { r.CLIs = []RunnerCLI{{Name: "claude"}} })
@@ -101,7 +101,7 @@ func TestSessionJobsWithUnreadablePrefs(t *testing.T) {
 		{`{"sessions":{"all":{}}}`, ""},
 		{`{"sessions":`, "session settings"},
 	} {
-		if _, err := e.s.db.W.ExecContext(e.ctx, `UPDATE users SET prefs = ? WHERE id = ?`, c.prefs, e.admin.id()); err != nil {
+		if _, err := e.s.db.W.ExecContext(e.ctx, `UPDATE users SET prefs = ? WHERE id = ?`, c.prefs, e.admin.ID()); err != nil {
 			t.Fatal(err)
 		}
 		e.enqueue(e.admin, RunnerJobInput{Kind: JobSession, Input: raw})

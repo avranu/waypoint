@@ -1508,7 +1508,7 @@ func TestGatewayTaskLimits(t *testing.T) {
 	}
 	gw := taskGateway(t, ae.s)
 	now := time.Now()
-	ae.s.now = func() time.Time { return now }
+	ae.s.SetClock(func() time.Time { return now })
 	const MiB = 1 << 20
 	for name, c := range map[string]struct {
 		says GatewayLimits

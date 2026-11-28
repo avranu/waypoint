@@ -225,7 +225,8 @@ const (
 type usageFile struct {
 	Path    string
 	Session string
-	Kind    string // main, or the subagent's type
+	Kind    string // main, the subagent's type, or a non-Claude harness kind
+	FileKey string // optional archive file key override (e.g. antigravity/transcript_full.jsonl)
 	Main    bool
 }
 
@@ -627,10 +628,6 @@ func (p *usageParser) assistant(b []byte, l *rawLine) {
 			p.order = append(p.order, m.ID)
 		}
 		cur.u = u
-	}
-	if !p.st.CLICounted && ts > 0 && model != "" && !strings.HasPrefix(model, "<") {
-		p.st.CLICounted = true
-		p.addCLI(hourOf(ts), model, usageCLIFile, "", "", 1)
 	}
 	if !bytes.Contains(b, markToolUse) {
 		return

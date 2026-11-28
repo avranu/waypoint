@@ -3,16 +3,14 @@ package core
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
-	"slices"
 	"strings"
 	"sync"
-	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/tracing"
 )
 
@@ -53,14 +51,15 @@ const (
 // (tx.storeNotice); nothing else sees it.
 const evNotificationStored = "notification.stored"
 
-// persisted kinds are written to the events table (issue history).
-var persisted = map[string]bool{
-	EvIssueCreated: true, EvIssueUpdated: true, EvIssueStatus: true, EvIssueAssigned: true,
-	EvIssueUnassigned: true, EvIssueCommented: true, EvIssueLinked: true, EvIssueShared: true,
-	EvExternalPROpened: true, EvExternalPRMerged: true, EvExternalPRClosed: true, EvExternalIssueClose: true,
-	EvSprintStarted: true, EvSprintClosed: true,
-	EvProjectMember: true,
-	EvIssueStep:     true,
+// persistedKinds are written to the events table (issue history); New
+// registers them with the kernel.
+var persistedKinds = []string{
+	EvIssueCreated, EvIssueUpdated, EvIssueStatus, EvIssueAssigned,
+	EvIssueUnassigned, EvIssueCommented, EvIssueLinked, EvIssueShared,
+	EvExternalPROpened, EvExternalPRMerged, EvExternalPRClosed, EvExternalIssueClose,
+	EvSprintStarted, EvSprintClosed,
+	EvProjectMember,
+	EvIssueStep,
 }
 
 // pullRef names a pull request on a forge.
@@ -70,63 +69,47 @@ type pullRef struct {
 	number  int
 }
 
-// Event is something that happened.
-type Event struct {
-	ID        int64          `json:"id,omitempty"`
-	Kind      string         `json:"kind"`
-	ProjectID int64          `json:"project_id,omitempty"`
-	IssueID   int64          `json:"issue_id,omitempty"`
-	IssueKey  string         `json:"issue_key,omitempty"`
-	SprintID  int64          `json:"sprint_id,omitempty"`
-	Actor     *UserRef       `json:"actor,omitempty"`
-	Field     string         `json:"field,omitempty"`
-	Old       string         `json:"old,omitempty"`
-	New       string         `json:"new,omitempty"`
-	Data      map[string]any `json:"data,omitempty"`
-	At        time.Time      `json:"at"`
-	// ViaAutomation names the automation that made this change.
-	ViaAutomation string `json:"via_automation,omitempty"`
-	// UserID scopes an event to one user (timers, notifications).
-	UserID int64 `json:"-"`
-	// AdminOnly keeps an event of an admin automation from other people.
-	AdminOnly    bool `json:"-"`
-	forgeComment *forgeCommentChange
-	repoHook     *repoHookJob
-	pullLinked   *pullRef
-	stackParent  int64
-	permRule     *permRuleJob
-	retitle      bool
-	draft        bool
-	coalesce     bool
-	merged       bool
-	stored       *storedNotice
-	quiet        bool
+// The private messages a domain sends to its own reaction ride on the Event
+// as kernel attachments (kernel.Attach); each has a type of its own here.
+type (
+	// stackParentHint is the id of the stacked pull request a merge frees.
+	stackParentHint int64
+	// retitleHint marks an issue whose long title text a model should shorten.
+	retitleHint struct{}
+)
+
+// withHint attaches v to e and returns e, for building an Event in a call.
+func withHint[T any](e *Event, v T) *Event {
+	kernel.Attach(e, v)
+	return e
 }
+
+// hint is the attachment of type T on e, the zero value (nil for a pointer)
+// when it has none.
+func hint[T any](e *Event) T {
+	v, _ := kernel.Attached[T](e)
+	return v
+}
+
+// part runs f as a part of the transaction that is undone whole when f fails
+// (kernel.Tx.Part).
+func (t *tx) part(ctx context.Context, f func() error) error { return t.Part(ctx, f) }
+
+// emit records an event in the transaction; it is dispatched after commit.
+func (t *tx) emit(e *Event) { t.Emit(e) }
 
 // coalesceWindow is how long autosaves of one text field by one actor stay
 // a single history entry and a single issue.updated event.
-const coalesceWindow = 10 * time.Minute
+const coalesceWindow = kernel.CoalesceWindow
 
-// emit records an event in the transaction; it is dispatched after commit.
-// part runs f as a part of the transaction that is undone whole when f
-// fails: its writes roll back to a savepoint and its events are dropped,
-// while the rest of the transaction goes on. For a side job a caller logs
-// and moves past, so a half of it doesn't commit without the other.
-func (t *tx) part(ctx context.Context, f func() error) error {
-	n := len(t.events)
-	if _, err := t.ExecContext(ctx, `SAVEPOINT part`); err != nil {
-		return err
-	}
-	if err := f(); err != nil {
-		t.events = t.events[:n]
-		if _, rerr := t.ExecContext(ctx, `ROLLBACK TO part`); rerr != nil {
-			return errors.Join(err, rerr)
+// stampEvent is what core adds to every event Emit records: whether it is
+// about a draft issue, which hides it from people who may not see drafts.
+func stampEvent(t *kernel.Tx, e *Event) {
+	if e.IssueID != 0 && e.Kind != EvIssueDeleted {
+		if err := t.QueryRowContext(context.Background(), `SELECT draft FROM issues WHERE id = ?`, e.IssueID).Scan(&e.Draft); err != nil {
+			e.Draft = true
 		}
-		_, rerr := t.ExecContext(ctx, `RELEASE part`)
-		return errors.Join(err, rerr)
 	}
-	_, err := t.ExecContext(ctx, `RELEASE part`)
-	return err
 }
 
 // noteSession records the agent session behind an event (WP-999): its id, and
@@ -134,22 +117,24 @@ func (t *tx) part(ctx context.Context, f func() error) error {
 // event's own project, so history shows an agent editing a task other than
 // its own without naming one of another project. A few primary-key lookups,
 // only for an actor with a session. An event that already names a session
-// (the session events themselves) keeps its own.
-func (t *tx) noteSession(e *Event) {
-	if t.actor == nil || t.actor.Session == 0 {
+// (the session events themselves) keeps its own. It is a stamp on Emit
+// (OnEmit) because it reads the sessions, issues and projects tables, which
+// the kernel does not know.
+func noteSession(t *kernel.Tx, e *Event) {
+	if t.Actor == nil || t.Actor.Session == 0 {
 		return
 	}
 	if e.Data == nil {
 		e.Data = map[string]any{}
 	}
 	if _, ok := e.Data["session"]; !ok {
-		e.Data["session"] = t.actor.Session
+		e.Data["session"] = t.Actor.Session
 	}
 	if e.IssueID == 0 {
 		return
 	}
 	var held sql.NullInt64
-	if err := t.QueryRowContext(context.Background(), `SELECT issue_id FROM agent_sessions WHERE id = ?`, t.actor.Session).Scan(&held); err != nil || !held.Valid || held.Int64 == e.IssueID {
+	if err := t.QueryRowContext(context.Background(), `SELECT issue_id FROM agent_sessions WHERE id = ?`, t.Actor.Session).Scan(&held); err != nil || !held.Valid || held.Int64 == e.IssueID {
 		return
 	}
 	here := e.ProjectID
@@ -165,104 +150,11 @@ func (t *tx) noteSession(e *Event) {
 	}
 }
 
-func (t *tx) emit(e *Event) {
-	e.At = t.s.now().UTC()
-	if t.actor != nil && t.actor.User != nil && t.actor.User.ID != 0 && e.Actor == nil {
-		r := t.actor.User.Ref()
-		e.Actor = &r
-	}
-	if t.actor != nil && t.actor.Automation != nil {
-		e.ViaAutomation = t.actor.Automation.Name
-	}
-	if agent := t.actor.agentName(); agent != "" && t.actor.viaAutomation() == nil {
-		if e.Data == nil {
-			e.Data = map[string]any{}
-		}
-		e.Data["via"] = agent
-		e.ViaAutomation = agent
-	}
-	t.noteSession(e)
-	if t.actor != nil && t.actor.User != nil && t.actor.User.ID == 0 && t.actor.viaAutomation() == nil {
-		if via := t.actor.User.DisplayName; via != "" && via != SystemActor().User.DisplayName {
-			if e.Data == nil {
-				e.Data = map[string]any{}
-			}
-			e.Data["via"] = via
-			e.ViaAutomation = via
-		}
-	}
-	if e.IssueID != 0 && e.Kind != EvIssueDeleted {
-		if err := t.QueryRowContext(context.Background(), `SELECT draft FROM issues WHERE id = ?`, e.IssueID).Scan(&e.draft); err != nil {
-			e.draft = true
-		}
-	}
-	if e.coalesce {
-		e.merged = t.mergesIntoLast(e)
-	}
-	if persisted[e.Kind] && !e.merged {
-		data := "{}"
-		if len(e.Data) > 0 {
-			b, _ := json.Marshal(e.Data)
-			data = string(b)
-		}
-		var actorID, issueID, projectID any
-		if e.Actor != nil {
-			actorID = e.Actor.ID
-		}
-		if e.IssueID != 0 {
-			issueID = e.IssueID
-		}
-		if e.ProjectID != 0 {
-			projectID = e.ProjectID
-		}
-		res, err := t.ExecContext(context.Background(), `INSERT INTO events(project_id, issue_id, actor_id, kind, field, old_value, new_value, data, via_automation, created_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?)`, projectID, issueID, actorID, e.Kind, e.Field, e.Old, e.New, data, t.actor.viaAutomation(), e.At.UnixMilli())
-		if err == nil {
-			e.ID, _ = res.LastInsertId()
-		} else {
-			t.s.log.ErrorContext(t.ctx, "record event", "kind", e.Kind, "err", err)
-		}
-	}
-	t.events = append(t.events, e)
-}
-
-// mergesIntoLast reports whether the issue's latest recorded event is an
-// earlier save of the same field by the same actor inside the window. A
-// merged save carries its text and its time into that entry, so the history
-// shows the latest words (an intent's) with the time they were saved, not the
-// first save's. A sitting is therefore a run of saves less than the window
-// apart, not one window from the first.
-func (t *tx) mergesIntoLast(e *Event) bool {
-	var id int64
-	var kind, field string
-	var via sql.NullInt64
-	var actor sql.NullInt64
-	var at int64
-	err := t.QueryRowContext(context.Background(), `SELECT id, kind, field, actor_id, via_automation, created_at
-		FROM events WHERE issue_id = ? ORDER BY id DESC LIMIT 1`, e.IssueID).Scan(&id, &kind, &field, &actor, &via, &at)
-	if err != nil || kind != e.Kind || field != e.Field || e.At.UnixMilli()-at > coalesceWindow.Milliseconds() {
-		return false
-	}
-	var want int64
-	if e.Actor != nil {
-		want = e.Actor.ID
-	}
-	wantVia, _ := t.actor.viaAutomation().(int64)
-	if actor.Int64 != want || via.Int64 != wantVia {
-		return false
-	}
-	if _, err := t.ExecContext(context.Background(), `UPDATE events SET new_value = ?, created_at = ? WHERE id = ?`, e.New, e.At.UnixMilli(), id); err != nil {
-		t.s.log.ErrorContext(t.ctx, "merge event", "kind", e.Kind, "err", err)
-		return false
-	}
-	return true
-}
-
 // maxAutomationDepth stops automations that trigger each other forever.
 const maxAutomationDepth = 5
 
-// dispatch fans committed events out to live subscribers, notifications,
-// automations and webhooks.
+// dispatch publishes committed events on the kernel's bus; what reacts to
+// them, and in what order, is subscriptionPlan (subscriptions.go).
 func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 	if len(events) == 0 {
 		return
@@ -277,103 +169,7 @@ func (s *Service) dispatch(ctx context.Context, actor *Actor, events []*Event) {
 		ctx, span = tracing.Start(ctx, "dispatch", attribute.StringSlice("waypoint.events", kinds))
 		defer span.End()
 	}
-	for _, e := range events {
-		if e.stored != nil {
-			s.deliverNotification(ctx, e.stored)
-		}
-	}
-	events = slices.DeleteFunc(slices.Clone(events), func(e *Event) bool { return e.stored != nil })
-	if len(events) == 0 {
-		return
-	}
-	for _, e := range events {
-		s.Hub.Publish(e)
-		s.prWait.wake(e)
-		s.onStackParentMerged(ctx, e)
-	}
-	events = slices.DeleteFunc(slices.Clone(events), func(e *Event) bool { return e.merged || e.quiet })
-	events = slices.DeleteFunc(slices.Clone(events), func(e *Event) bool { return e.draft })
-	if len(events) == 0 {
-		return
-	}
-	for _, e := range events {
-		s.notifyFor(ctx, actor, e)
-	}
-	for _, e := range events {
-		if e.Kind == EvPRUpdated {
-			s.renumberOnPR(ctx, e) // numbered files that clash (WP-1815)
-		}
-		if e.Kind == EvRepoPushed {
-			s.onRepoPushed(ctx, e)
-			s.onKitPush(ctx, e)
-		}
-		if e.Kind == EvAgentsResumed {
-			if uid, ok := e.Data["user"].(int64); ok {
-				s.resumeSessions(ctx, uid)
-			}
-		}
-		if e.Kind == EvUserDeleted {
-			s.dropUserTranscripts(e)
-		}
-		if e.Kind == EvKitSourceSet {
-			s.goBG(func() { s.RefreshKit(withoutLineLocks(ctx)) })
-		}
-		if e.Kind == EvReviewLoopRecorded {
-			s.goBG(func() { s.checkReviewHealth(withoutLineLocks(ctx), e.ProjectID) })
-		}
-		if e.pullLinked != nil {
-			s.goBG(func() { s.urgentFromLink(withoutLineLocks(ctx), e) })
-		}
-		if j := e.permRule; j != nil {
-			s.addPermissionRule(ctx, actor, j)
-		}
-		if e.Kind == EvProjectUpdated && e.Field == "auto_estimate" && e.New == "on" {
-			if p, err := s.projectByID(ctx, s.db.R, e.ProjectID); err == nil && p.Settings.AutoEstimate {
-				s.backfillEstimates(ctx, p)
-			}
-		}
-		if e.Kind == EvIssueCreated && (actor == nil || actor.Automation == nil || actor.Automation.ID > 0) && actor.Allows(PermAIUse) {
-			s.autoEstimate(ctx, e)
-			s.autoTitle(ctx, e)
-		}
-		if e.Kind == EvIssueCreated {
-			s.autoRelate(ctx, e)
-		}
-		if e.Kind == EvExternalPRMerged {
-			s.goBG(func() { s.followUpsByFiles(withoutLineLocks(ctx), e) })
-		}
-		s.autoScreen(e)
-		s.deliverWebhooks(ctx, e)
-		if e.Kind == EvIssueStatus && (actor == nil || !actor.forgeSync) {
-			s.pushIssueState(ctx, e)
-		}
-		if e.Kind == EvIssueCommented {
-			s.pushComment(ctx, e)
-		}
-		if e.forgeComment != nil && (actor == nil || !actor.forgeSync) {
-			s.pushCommentChange(ctx, e)
-		}
-		if j := e.repoHook; j != nil {
-			s.goBG(func() { s.runRepoHook(withoutLineLocks(ctx), j) })
-		}
-		s.onPRAudit(ctx, e)
-		s.onBabysitEvent(ctx, e)
-		s.onParkAnswered(ctx, e)
-		s.onHeldAnswered(ctx, e)
-		s.crossFiledEvent(ctx, e)
-		s.onLeftoverEvent(ctx, e)
-		s.onWorkLogEvent(ctx, e)
-		s.onCheckSettled(ctx, e)
-		s.onReviewAudit(ctx, e)
-		s.onFanoutEvent(ctx, e)
-		s.onGoalDriftEvent(ctx, e)
-		s.onMergeOrderEvent(ctx, e)
-		s.onObjectiveEvent(ctx, e)
-	}
-	s.afterDispatch(ctx, actor, events)
-	for _, e := range events {
-		s.runAutomations(ctx, actor, e)
-	}
+	s.k.Publish(ctx, actor, events)
 }
 
 // Hub fans events out to connected clients (server-sent events). Each
@@ -434,7 +230,7 @@ func (h *Hub) Publish(e *Event) {
 	h.mu.Unlock()
 	cache := map[int64]bool{}
 	for _, sub := range subs {
-		if e.draft && sub.HidesDrafts {
+		if e.Draft && sub.HidesDrafts {
 			continue
 		}
 		if e.AdminOnly {

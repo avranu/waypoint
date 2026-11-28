@@ -121,7 +121,7 @@ const (
 // ExperimentResults compares the arms of a run (0: the live run, else the
 // latest). scope is done (default) or all.
 func (s *Service) ExperimentResults(ctx context.Context, actor *Actor, key string, runID int64, scope string) (*ExperimentResults, error) {
-	if err := actor.canReadExperiments(); err != nil {
+	if err := canReadExperiments(actor); err != nil {
 		return nil, err
 	}
 	d, ok := experimentDef(key)

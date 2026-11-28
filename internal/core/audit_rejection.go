@@ -14,9 +14,12 @@ import (
 	"git.jmann.me/claude/waypoint/internal/core/strength"
 )
 
-// MaxRejectionEvidence is how long the evidence for rejecting an audit
-// finding may be, in characters.
-const MaxRejectionEvidence = 4000
+// MaxRejectionEvidence and MaxFindingNote are how long, in characters, the
+// evidence for rejecting an audit finding and the note on a verdict may be.
+const (
+	MaxRejectionEvidence = 4000
+	MaxFindingNote       = 2000
+)
 
 // rejectionRecord is what is kept with an agent's rejection of a finding: the
 // model and effort it ran as, and how that compared with the finder.

@@ -122,7 +122,8 @@ type archiveFileState struct {
 }
 
 type archiveState struct {
-	Files map[string]*archiveFileState `json:"files"`
+	Files    map[string]*archiveFileState     `json:"files"`
+	OpenCode map[string]*archiveOpenCodeState `json:"opencode,omitempty"`
 	// Dropped counts, since this machine began, what was not archived and why.
 	Dropped map[string]int64 `json:"dropped,omitempty"`
 	// Reported is the last status the server was told.
@@ -165,6 +166,9 @@ func loadArchiveState(dir string) (archiveState, error) {
 	if s.Files == nil {
 		s.Files = map[string]*archiveFileState{}
 	}
+	if s.OpenCode == nil {
+		s.OpenCode = map[string]*archiveOpenCodeState{}
+	}
 	if s.Dropped == nil {
 		s.Dropped = map[string]int64{}
 	}
@@ -203,6 +207,9 @@ func archiveEnabled() bool {
 // under the session's directory (subagents/agent-x.jsonl, or one a workflow
 // started: subagents/workflows/<id>/agent-x.jsonl).
 func archiveFileKey(f usageFile) string {
+	if f.FileKey != "" {
+		return f.FileKey
+	}
 	if f.Main {
 		return "main"
 	}
@@ -217,6 +224,9 @@ func archiveFileKey(f usageFile) string {
 // archiveFileOfPath is the usageFile of a transcript known only by its path
 // (one in the state): a sub-agent's is under <session>/subagents/.
 func archiveFileOfPath(p string) usageFile {
+	if hf, ok := harnessFileOfPath(p); ok {
+		return hf
+	}
 	sep := string(filepath.Separator)
 	if i := strings.LastIndex(p, sep+"subagents"+sep); i >= 0 {
 		return usageFile{Path: p, Session: filepath.Base(p[:i]), Kind: subagentType(p)}
@@ -362,6 +372,7 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 		since = archiveBackfill
 	}
 	var files []usageFile
+	includeHarnesses := shouldArchiveHarnesses(o, root)
 	if o.OnlyFiles {
 		if len(o.Files) > 0 {
 			var err error
@@ -372,7 +383,13 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 	} else {
 		var err error
 		if files, err = discoverTranscripts(root, since, nil); err != nil {
-			return err
+			if !includeHarnesses || !hasHarnessTranscriptSources() {
+				return err
+			}
+			files = nil
+		}
+		if includeHarnesses {
+			files = append(files, discoverHarnessTranscripts(since)...)
 		}
 	}
 	type sized struct {
@@ -435,9 +452,12 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 			res.PendingFiles++
 		}
 	}
+	if includeHarnesses {
+		a.archiveOpenCode(o, since)
+	}
 	res.OlderFiles, res.OlderBytes = 0, 0
 	if !o.Hook && !o.OnlyFiles && (!o.All || o.Since != 0) {
-		a.countOlder(root, seen)
+		a.countOlder(root, seen, includeHarnesses)
 	}
 	return nil
 }
@@ -445,10 +465,13 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 // countOlder counts the transcripts the window left out that were never
 // uploaded (no state), so a manual pass can say they wait for --all. It only
 // stats files; the hook's pass never does it.
-func (a *archiver) countOlder(root string, seen map[string]bool) {
+func (a *archiver) countOlder(root string, seen map[string]bool, includeHarnesses bool) {
 	all, err := discoverTranscripts(root, 0, nil)
-	if err != nil {
+	if err != nil && !includeHarnesses {
 		return
+	}
+	if includeHarnesses {
+		all = append(all, discoverHarnessTranscripts(0)...)
 	}
 	for _, f := range all {
 		if seen[f.Path] || a.st.Files[f.Path] != nil {

@@ -682,3 +682,28 @@ func TestParseSarifPathsMapsCodeFlowSteps(t *testing.T) {
 		t.Errorf("own step path %s", p)
 	}
 }
+
+// Every triage entry names a file that exists, so a moved file does not leave
+// its finding blocking again.
+func TestCodeqlTriagedPathsExist(t *testing.T) {
+	root := filepath.Join("..", "..")
+	text, err := os.ReadFile(filepath.Join(root, ".forgejo", "codeql", "triaged-findings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []struct {
+		Rule string `json:"rule"`
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(text, &entries); err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("no triage entries")
+	}
+	for _, e := range entries {
+		if st, err := os.Stat(filepath.Join(root, filepath.FromSlash(e.Path))); err != nil || st.IsDir() {
+			t.Errorf("%s: %s is not a file in the repo", e.Rule, e.Path)
+		}
+	}
+}

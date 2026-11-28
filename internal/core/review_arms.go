@@ -705,7 +705,7 @@ type ArmRecall struct {
 
 // ReviewArms is each arm's state (admins).
 func (s *Service) ReviewArms(ctx context.Context, actor *Actor) (*ReviewArms, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("review arms are for admins")
 	}
 	vchain, err := s.taskChain(ctx, "verify_review")
@@ -847,7 +847,7 @@ func (s *Service) armRecall(ctx context.Context) ([]ArmRecall, error) {
 
 // PinReviewArm pins an arm on or off ("" unpins it) (admins).
 func (s *Service) PinReviewArm(ctx context.Context, actor *Actor, key, pin string) (*ReviewArms, error) {
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("review arms are for admins")
 	}
 	if _, ok := armByKey(key); !ok {

@@ -22,7 +22,7 @@ func TestScreenTrustsWaypointTemplates(t *testing.T) {
 	file := func(trust bool) *IssueDetail {
 		t.Helper()
 		w := *e.admin
-		w.textAgent = "waypoint"
+		w.TextAgent = "waypoint"
 		made, err := e.s.CreateIssue(e.ctx, &w, IssueInput{Project: p.Key, Agent: "claude", Priority: "high", Title: "Settle the protected-file conflict babysitting can't on me/app#7", Description: body, template: trust})
 		if err != nil {
 			t.Fatal(err)

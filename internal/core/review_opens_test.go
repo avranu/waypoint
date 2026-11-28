@@ -105,8 +105,14 @@ func (sn *loopSnapshot) start(t *testing.T) *loopEnv {
 	return &loopEnv{apEnv: a, box: deepCopy(src.box), g: g, j: j, task: deepCopy(src.task)}
 }
 
+// isCorePkg reports whether pkg is internal/core or a package split from it
+// (internal/core/kernel, internal/core/users, ...).
+func isCorePkg(pkg string) bool {
+	return strings.HasSuffix(pkg, "/internal/core") || strings.Contains(pkg, "/internal/core/")
+}
+
 // deepCopy is x with nothing shared: every pointer, slice, map and
-// interface value reached through x and this package's structs is new,
+// interface value reached through x and core packages' structs is new,
 // unexported fields included. A pointer met twice is copied once. Other
 // packages' structs (a time, a mutex), funcs and channels are assigned.
 func deepCopy[T any](x T) T {
@@ -134,7 +140,7 @@ func deepCopy[T any](x T) T {
 			cp(n.Elem(), src.Elem())
 			dst.Set(n)
 		case reflect.Struct:
-			if !strings.HasSuffix(src.Type().PkgPath(), "/internal/core") {
+			if !isCorePkg(src.Type().PkgPath()) {
 				dst.Set(src)
 				return
 			}
@@ -203,7 +209,7 @@ func refs(x any) map[unsafe.Pointer]string {
 			}
 			walk(v.Elem(), path)
 		case reflect.Struct:
-			if !strings.HasSuffix(v.Type().PkgPath(), "/internal/core") {
+			if !isCorePkg(v.Type().PkgPath()) {
 				return
 			}
 			for i := range v.NumField() {
@@ -859,7 +865,7 @@ func TestLoopSnapshotEnvMatchesABuild(t *testing.T) {
 	memory := func(e *loopEnv) string {
 		sl := e.s.LLM.(*gatewayScoringLLM)
 		who := func(a *Actor) string {
-			return fmt.Sprintf("%d/%s/admin=%v agent=%q token=%d session=%d scope=%v", a.User.ID, a.User.Username, a.User.IsAdmin, a.Agent, a.TokenID, a.Session, a.scope)
+			return fmt.Sprintf("%d/%s/admin=%v agent=%q token=%d session=%d scope=%v", a.User.ID, a.User.Username, a.User.IsAdmin, a.Agent, a.TokenID, a.Session, a.Scope)
 		}
 		return fmt.Sprintf("clock=%v session=%d cli=%s admin=%s ag=%s project=%+v jobs=%+v res=%+v box=%+v task=%s %q %+v\nforge %v heads=%v\ngateway %v\ndecisions %v choice=%v states=%v",
 			e.clockNow(), e.session, e.cli, who(e.admin), who(e.ag), *e.p, e.jobs, e.res, *e.box, e.task.Key, e.task.Title, e.task.Status,
@@ -976,7 +982,7 @@ func setFields(x any) map[string]string {
 				}
 				return
 			}
-			if pkg := v.Type().PkgPath(); !strings.HasSuffix(pkg, "/internal/core") && pkg != "sync/atomic" {
+			if pkg := v.Type().PkgPath(); !isCorePkg(pkg) && pkg != "sync/atomic" {
 				return
 			}
 			for i := range v.NumField() {
@@ -1044,8 +1050,8 @@ func TestSetFieldsAndFieldDiffs(t *testing.T) {
 // issue or a project.
 func TestDeepCopySharesNothing(t *testing.T) {
 	budget, parent := 3, int64(9)
-	a := &Actor{User: &User{ID: 1, Username: "ann"}, Permissions: PermissionSet{PermIssuesRead: true}, Automation: &Automation{ID: 4},
-		scope: map[int64]int{1: 2}, budget: &budget}
+	a := &Actor{User: &User{ID: 1, Username: "ann"}, Permissions: PermissionSet{PermIssuesRead: true}, Automation: &AutomationRef{ID: 4},
+		Scope: map[int64]int{1: 2}, Budget: &budget}
 	iss := &Issue{Key: "T-1", ParentID: &parent, Labels: []Label{{Name: "bug"}}, Blocks: []string{"T-2"}}
 	task := &IssueDetail{Issue: iss, Children: []*Issue{iss, {Key: "T-3"}}}
 	p := &Project{Key: "T", Statuses: []Status{{Name: "To Do"}}, Sprints: []*Sprint{{ID: 5}}}
@@ -1064,10 +1070,10 @@ func TestDeepCopySharesNothing(t *testing.T) {
 	if ct.Children[0] != ct.Issue {
 		t.Error("the task's own issue, held twice, was copied to two issues")
 	}
-	ca.Permissions[PermIssuesRead], ca.Automation.ID, ca.scope[1], *ca.budget, ca.User.Username = false, 0, 0, 0, "changed"
+	ca.Permissions[PermIssuesRead], ca.Automation.ID, ca.Scope[1], *ca.Budget, ca.User.Username = false, 0, 0, 0, "changed"
 	*ct.ParentID, ct.Labels[0].Name, ct.Blocks[0], ct.Children[1].Key = 0, "changed", "changed", "changed"
 	cp.Statuses[0].Name, cp.Sprints[0].ID = "changed", 0
-	if !a.Permissions[PermIssuesRead] || a.Automation.ID != 4 || a.scope[1] != 2 || budget != 3 || a.User.Username != "ann" ||
+	if !a.Permissions[PermIssuesRead] || a.Automation.ID != 4 || a.Scope[1] != 2 || budget != 3 || a.User.Username != "ann" ||
 		parent != 9 || iss.Labels[0].Name != "bug" || iss.Blocks[0] != "T-2" || task.Children[1].Key != "T-3" ||
 		p.Statuses[0].Name != "To Do" || p.Sprints[0].ID != 5 {
 		t.Errorf("writing through the copy changed the source: %+v %+v %+v %+v", a, iss, task.Children[1], p)

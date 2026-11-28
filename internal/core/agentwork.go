@@ -718,7 +718,7 @@ func (s *Service) claimIssueTx(ctx context.Context, t *tx, actor *Actor, issueID
 	}
 	opened, err := t.ExecContext(ctx, `INSERT INTO agent_runs(issue_id, agent, step, user_id, started_at, session_id) SELECT ?,?,?,?,?,?
 		WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE issue_id = ? AND agent = ? AND ended_at IS NULL)`,
-		i.ID, id, i.Step, nullUser(actor.id()), now, nullUser(actor.Session), i.ID, id)
+		i.ID, id, i.Step, nullUser(actor.ID()), now, nullUser(actor.Session), i.ID, id)
 	if err != nil {
 		return err
 	}
@@ -889,7 +889,7 @@ func (s *Service) lapsedHolds(ctx context.Context, actor *Actor) (map[int64]stri
 	out := map[int64]string{}
 	for _, h := range holds {
 		who := "another agent session"
-		if h.userID == actor.id() {
+		if h.userID == actor.ID() {
 			who = "another session of yours"
 		}
 		out[h.issueID] = sessionHoldsText(who, h.cwd, h.machine, h.seen, now) + "; its claim lapsed while it was quiet."
@@ -1207,7 +1207,7 @@ func (s *Service) AgentReportUsage(ctx context.Context, actor *Actor, ref, agent
 				return err
 			}
 			_, err = t.ExecContext(ctx, `INSERT INTO agent_runs(issue_id, agent, step, user_id, started_at, ended_at, input_tokens, output_tokens, cost_usd, outcome, model)
-				VALUES (?,?,?,?,?,?,?,?,?,'',?)`, i.ID, id, i.Step, nullUser(actor.id()), now, now, u.InputTokens, u.OutputTokens, u.CostUSD, u.Model)
+				VALUES (?,?,?,?,?,?,?,?,?,'',?)`, i.ID, id, i.Step, nullUser(actor.ID()), now, now, u.InputTokens, u.OutputTokens, u.CostUSD, u.Model)
 			return err
 		} else if err != nil {
 			return err
@@ -1239,7 +1239,7 @@ func (s *Service) endRun(ctx context.Context, t *tx, issueID int64, id, outcome 
 	if err := s.closeRun(ctx, t, issueID, id, outcome, u); err != nil {
 		return err
 	}
-	s.recordRunChanges(ctx, t, t.actor, issueID, id)
+	s.recordRunChanges(ctx, t, t.Actor, issueID, id)
 	return nil
 }
 
@@ -1249,11 +1249,11 @@ func (s *Service) closeRun(ctx context.Context, t *tx, issueID int64, id, outcom
 	}
 	now := s.nowMS()
 	var sess any
-	if t.actor != nil {
-		sess = nullUser(t.actor.Session)
+	if t.Actor != nil {
+		sess = nullUser(t.Actor.Session)
 	}
 	if _, err := t.ExecContext(ctx, `UPDATE time_entries SET ended_at = ? WHERE user_id = ? AND agent = ? AND issue_id = ? AND ended_at IS NULL`,
-		now, t.actor.id(), id, issueID); err != nil {
+		now, t.Actor.ID(), id, issueID); err != nil {
 		return err
 	}
 	if _, err := t.ExecContext(ctx, `UPDATE time_entries SET paused = 0 WHERE agent = ? AND issue_id = ? AND paused = 1`, id, issueID); err != nil {
@@ -1286,9 +1286,9 @@ func (s *Service) closeRun(ctx context.Context, t *tx, issueID int64, id, outcom
 		return err
 	}
 	_, err = t.ExecContext(ctx, `INSERT INTO agent_runs(issue_id, agent, step, user_id, started_at, ended_at, input_tokens, output_tokens, cost_usd, outcome, model, session_id)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, issueID, id, step, nullUser(t.actor.id()), now, now, u.InputTokens, u.OutputTokens, u.CostUSD, outcome, u.Model, sess)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, issueID, id, step, nullUser(t.Actor.ID()), now, now, u.InputTokens, u.OutputTokens, u.CostUSD, outcome, u.Model, sess)
 	if err == nil {
-		s.recordRunFeatures(ctx, t, t.actor, issueID, id)
+		s.recordRunFeatures(ctx, t, t.Actor, issueID, id)
 	}
 	return err
 }
@@ -1376,7 +1376,7 @@ func (s *Service) AgentPause(ctx context.Context, actor *Actor, ref, agent strin
 			return err
 		}
 		pausedTimer, err := t.ExecContext(ctx, `UPDATE time_entries SET ended_at = ?, paused = 1 WHERE user_id = ? AND agent = ? AND issue_id = ? AND ended_at IS NULL`,
-			now, actor.id(), id, i.ID)
+			now, actor.ID(), id, i.ID)
 		if err != nil {
 			return err
 		}
@@ -1389,7 +1389,7 @@ func (s *Service) AgentPause(ctx context.Context, actor *Actor, ref, agent strin
 		if n, _ := res.RowsAffected(); n > 0 {
 			s.recordRunChanges(ctx, t, actor, i.ID, id)
 			t.emit(&Event{Kind: EvIssueUpdated, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key, Field: "claim", New: id})
-			t.emit(&Event{Kind: EvTimer, UserID: actor.id()})
+			t.emit(&Event{Kind: EvTimer, UserID: actor.ID()})
 		}
 		return nil
 	})
@@ -1459,7 +1459,7 @@ func (s *Service) AgentResume(ctx context.Context, actor *Actor, ref, agent stri
 	err = s.write(ctx, actor, func(t *tx) error {
 		opened, err := t.ExecContext(ctx, `INSERT INTO agent_runs(issue_id, agent, step, user_id, started_at, session_id) SELECT ?,?,?,?,?,?
 			WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE issue_id = ? AND agent = ? AND ended_at IS NULL)`,
-			i.ID, id, i.Step, nullUser(actor.id()), now, nullUser(actor.Session), i.ID, id)
+			i.ID, id, i.Step, nullUser(actor.ID()), now, nullUser(actor.Session), i.ID, id)
 		if err != nil {
 			return err
 		}
@@ -1470,7 +1470,7 @@ func (s *Service) AgentResume(ctx context.Context, actor *Actor, ref, agent stri
 		var entry int64
 		err = t.QueryRowContext(ctx, `SELECT id FROM time_entries WHERE user_id = ? AND agent = ? AND issue_id = ? AND paused = 1
 			AND NOT EXISTS (SELECT 1 FROM time_entries r WHERE r.user_id = ? AND r.agent = ? AND r.ended_at IS NULL)
-			ORDER BY id DESC LIMIT 1`, actor.id(), id, i.ID, actor.id(), id).Scan(&entry)
+			ORDER BY id DESC LIMIT 1`, actor.ID(), id, i.ID, actor.ID(), id).Scan(&entry)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 		case err != nil:
@@ -1480,9 +1480,9 @@ func (s *Service) AgentResume(ctx context.Context, actor *Actor, ref, agent stri
 				SELECT user_id, agent, issue_id, project_id, note, ?, ? FROM time_entries WHERE id = ?`, now, now, entry); err != nil {
 				return err
 			}
-			t.emit(&Event{Kind: EvTimer, UserID: actor.id()})
+			t.emit(&Event{Kind: EvTimer, UserID: actor.ID()})
 		}
-		if _, err := t.ExecContext(ctx, `UPDATE time_entries SET paused = 0 WHERE user_id = ? AND agent = ? AND issue_id = ? AND paused = 1`, actor.id(), id, i.ID); err != nil {
+		if _, err := t.ExecContext(ctx, `UPDATE time_entries SET paused = 0 WHERE user_id = ? AND agent = ? AND issue_id = ? AND paused = 1`, actor.ID(), id, i.ID); err != nil {
 			return err
 		}
 		t.emit(&Event{Kind: EvIssueUpdated, ProjectID: i.ProjectID, IssueID: i.ID, IssueKey: i.Key, Field: "claim", New: id})

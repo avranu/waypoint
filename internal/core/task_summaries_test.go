@@ -106,7 +106,7 @@ func TestTaskSummariesAndUnfiledAsks(t *testing.T) {
 		t.Errorf("an agent reading the summaries: %+v %v", ap, err)
 	}
 	job := *te.ag
-	job.scope = map[int64]int{}
+	job.Scope = map[int64]int{}
 	if ap, err := te.s.TaskSummaries(te.ctx, &job, TaskSummaryQuery{}); err != nil || len(ap.Summaries) != 0 || ap.Unreviewed != 0 {
 		t.Errorf("a job elsewhere: %+v %v", ap, err)
 	}

@@ -14,65 +14,37 @@ import (
 // (WP-608). Picking wp done where code should ship left the code on a
 // branch nobody looked at again.
 var shipCmd = &command{
-	name: "ship", aliases: []string{"done", "finish"}, group: "Tasks", args: "[KEY] [-m SUMMARY] [--check CMD] [--summary REPLY]",
+	name: "ship", aliases: []string{"done", "finish"}, group: "Tasks", args: "[KEY...] [-m SUMMARY] [--check CMD] [--summary REPLY]",
 	summary: "finish a task: ship its code in a pull request, or move it on",
-	about: `With code here to ship (staged changes, commits not pushed, or a branch with
-its own commits that has a pull request open, is named for the task, or (one
-task finishing) has every commit's subject naming that task), it
-commits what is staged, opens the pull request, arms merge when ready,
-babysits it and moves the task to In Review; Waypoint merges it. It is not
-armed, and a person merges it, where the repo's Merge automatically is off or
-covers only other base branches than this pull request's, and for a pull
-request whose head is outside the repo. A pull request already open from the
-branch for another task is pushed to but not armed or babysat: the task is
-linked to it and stays In Review until it merges.
-wp ship A B [...] ships one change that does several tasks (at most 6, all
-in one project): one pull request linked to every task, one adversarial
-review given every task's description, every task In Review and Done when it
-merges. -m, --summary and --shot apply to all of them (--shot attaches its
-pictures to every task). A task that can't go along is refused before
-anything is committed.
-With nothing to ship, the task moves to its next workflow step, or Done.
--m is the commit message for staged changes, the task's comment and the
-lead of the pull request's description, which Waypoint writes: don't write
-one (-f/--body).
-Uncommitted files (here, or where the task was taken) with nothing else to
-ship are refused: stage the task's, or --no-ship finishes without them.
-KEY defaults to the task you hold; with nothing to ship, several KEYs share
-one -m. Safe to run again.
-Where your autopilot reviews before pull requests, the task's adversarial
-review comes first: say which you want with --review (schedule it) or
---skip-review WHY. With neither it does whichever fits, and Waypoint carries
-the review on and opens the pull request itself when the review leaves
-nothing for you to do, so run it once (--pr is the same, kept for older
-prompts); a notice says when it did something else and how to override it.
-When the pull request is held for the review round (or the check of your marks),
-wp ship waits for the round's next step and prints it, up to --wait-timeout
-(default 90m): the findings in full, to mark and ship again; the pull request
-Waypoint opened (the turn ends there, as with --summary); or why the round
-ended (with --summary the turn ends there too, if the server sends the round's
-pull request and nothing else needs you). Run it with run_in_background: true
-and end your turn: you are woken when it exits. --no-wait returns at once as
-before, and what the review finds comes to you later as a message.
-After it opens and babysits the pull request (not with --no-babysit), wp
-ship also waits, within the same limit, for the first checks on your commit: a failure is printed with the command
-that reads each failing part, for you to fix, commit and ship again (Waypoint
-sends a round if no new commit comes in 30 minutes); a pass is printed and the
-ship ends as usual. A failure in the minute after you stop waiting still
-comes to you, as a message; babysitting takes any later one.
---summary is your final reply to the person, written before you know the
-outcome: when the ship goes as expected (the pull request armed or babysat,
-or held for its review, with no notice or warning), Waypoint ends your turn
-there and shows it, so no turn follows just to write the reply. Otherwise
-the turn goes on, and the task's next wp ship uses the summary unless you
-give a new one. In a repository with an executable .waypoint/test, wp ship
-first runs wp test (the scoped check of what changed; not again on a tree it
-already passed) and ships only if it passes; CI still runs the whole suite
-on the pull request. --check CMD runs CMD instead, in the tests
-slot and recorded as wp testsum records it, and --no-check skips the check
-(or chain it: make check && wp ship …).`,
-	examples: []string{`wp ship -m "Fix the redirect"`, `wp done APP-12 -m "Reviewed: looks good"`, `wp ship -m "Add the page" --shot http://localhost:5173/live`,
-		`wp ship -m "Fix the redirect" --check "make check" --summary "{task} shipped in PR #{pr}: the redirect keeps the query string. Tests: make check."`},
+	about: `Finishes the task you hold (or KEY...; up to 6 in one project for a single PR).
+
+With code to ship (staged changes, unpushed commits, or a branch with commits
+for the task): runs wp test (or --check CMD; --no-check skips), commits staged
+changes with -m, pushes, opens the PR (with Waypoint's auto-generated body),
+arms auto-merge and babysitting, and moves the task to In Review.
+A person merges (not armed) where the repo's Merge automatically is off or
+covers only other base branches, and where the head is outside the repo. A pull
+request already open from the branch for another task is pushed to but not armed
+or babysat: your task is linked to it and stays In Review until it merges.
+With nothing to ship: moves the task to its next step or Done. Uncommitted files
+with nothing else to ship are refused unless you stage them or pass --no-ship.
+
+Pre-PR adversarial review (when enabled in autopilot): --review schedules it,
+--skip-review WHY opens the PR directly, or omit both to do whichever fits.
+When held for review or waiting on first CI checks, wp ship waits up to
+--wait-timeout (default 90m) and prints findings or failures (--no-wait returns
+immediately). Run in background and end your turn to be woken when done.
+
+--summary sets your final reply so Waypoint can end your turn on a clean ship,
+or when a review round it waited on ends with the server sending the round's
+pull request and nothing else needing you.`,
+	examples: []string{
+		`wp ship -m "Fix the redirect"`,
+		`wp ship WP-12 --skip-review "docs only" -m "Update deploy docs"`,
+		`wp done APP-12 -m "Reviewed: looks good"`,
+		`wp ship -m "Add the page" --shot /live`,
+		`wp ship -m "Fix the redirect" --check "make check" --summary "{task} shipped in PR #{pr}: keeps query string."`,
+	},
 	run: cmdFinish,
 }
 

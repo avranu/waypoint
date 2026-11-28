@@ -37,6 +37,7 @@ func cmdGraph(c *cli, args []string) error {
 	sf := addScopeFlags(fs)
 	hops := fs.Int("hops", 3, "steps out, 1-6")
 	limit := fs.Int("limit", 40, "most things listed")
+	short(fs, "n", "limit")
 	sure := fs.Bool("sure", false, "only links people and agents made, no guesses")
 	open := fs.Bool("open", false, "only open issues (other kinds still listed)")
 	types := fs.String("types", "", "list only these `KINDS`: issue,page,design,glossary,file,pull,session")

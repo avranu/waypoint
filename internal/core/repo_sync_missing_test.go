@@ -39,7 +39,7 @@ func TestRepoSync404BacksOff(t *testing.T) {
 	logs := &lockedBuf{}
 	e.s.log = slog.New(slog.NewTextHandler(logs, nil))
 	clock := time.Now()
-	e.s.now = func() time.Time { return clock }
+	e.s.SetClock(func() time.Time { return clock })
 
 	e.s.SyncAllRepos(e.ctx)
 	e.s.SyncAllRepos(e.ctx)

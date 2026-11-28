@@ -108,6 +108,9 @@ fi
 guards=
 # A changed internal/cilint runs whole below, so the guard run would repeat it.
 printf '%s\n' "$pkgs" | grep -q -x './internal/cilint' || guards="./internal/cilint"
+if any '_test\.go$' && ! printf '%s\n' "$pkgs" | grep -q -x './internal/testnet'; then
+  guards="$guards ./internal/testnet"
+fi
 any '^deploy/' && guards="$guards ./internal/repocheck"
 any '(^|/)package-lock\.json$|^renovate\.json$|^go\.(mod|sum)$' && guards="$guards ./internal/depage"
 if [ -n "$guards" ]; then

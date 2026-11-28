@@ -364,7 +364,7 @@ func (s *Service) objectiveClose(ctx context.Context, t *tx, actor *Actor, i *Is
 		return st, err
 	}
 	now := s.nowMS()
-	if objectivePerson(actor) && (!actor.forgeSync || actor.textAgent == "") {
+	if objectivePerson(actor) && (!actor.ForgeSync || actor.TextAgent == "") {
 		why := "closed as " + st.Name + " by " + cmp(actor.User.DisplayName, actor.User.Username)
 		res, err := t.ExecContext(ctx, `UPDATE objective_rounds SET outcome = ?, note = ? WHERE issue_id = ? AND outcome = ?`, RoundUnmeasured, why+" before it was read", i.ID, RoundReading)
 		if err != nil {
@@ -386,8 +386,8 @@ func (s *Service) objectiveClose(ctx context.Context, t *tx, actor *Actor, i *Is
 		t.emit(objectiveEvent(o, "ended", fmt.Sprintf("round %d", o.Round), "ended: "+why))
 		return st, nil
 	}
-	w := workEnd{merged: p.mergedLink, agent: actor.agentName(), closeAs: st}
-	w.direct = actor.Automation == nil && !actor.forgeSync && w.merged == "" && actor.id() != 0
+	w := workEnd{merged: p.mergedLink, agent: actor.AgentName(), closeAs: st}
+	w.direct = actor.Automation == nil && !actor.ForgeSync && w.merged == "" && actor.ID() != 0
 	if st.Category == CatCanceled {
 		if w.direct {
 			return nil, forbidden("%s has an objective in effect, and ending it is for a person: cancelling the task doesn't. If the objective is wrong or can't be reached, say why with wp request ask; to finish this round, ship what you have (wp ship)", i.Key)
@@ -811,7 +811,7 @@ const (
 // ObjectiveGo is a person steering an objective in effect: their own act,
 // in the web or their own terminal.
 func (s *Service) ObjectiveGo(ctx context.Context, actor *Actor, ref, action string) (*Objective, error) {
-	if err := actor.requirePersonDirect("steering an objective"); err != nil {
+	if err := actor.RequirePersonDirect("steering an objective"); err != nil {
 		return nil, err
 	}
 	if !objectivePerson(actor) {
@@ -871,7 +871,7 @@ func (s *Service) ObjectiveGo(ctx context.Context, actor *Actor, ref, action str
 			}
 			sets := append(verifyReset(), "phase", from, "phase_at", now, "phase_why", "", "phase_note", "", "blocked_from", "", "verify_at", now)
 			if o.Phase == PhaseBlocked && o.PhaseWhy == BlockedPerson {
-				sets = append(sets, "confirmed_by", actor.id(), "confirmed_at", now)
+				sets = append(sets, "confirmed_by", actor.ID(), "confirmed_at", now)
 			}
 			if err := s.objSet(ctx, t, i.ID, sets...); err != nil {
 				return err

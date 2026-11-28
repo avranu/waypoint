@@ -35,12 +35,12 @@ var knowledgeTables = map[string]string{KGlossary: "glossary", KPage: "pages", K
 // (a word to avoid that led to the entry). It never fails the read.
 func (s *Service) NoteLookup(ctx context.Context, actor *Actor, typ string, id int64, word string) {
 	table := knowledgeTables[typ]
-	if actor == nil || actor.User == nil || actor.User.ID == 0 || actor.session != "" || table == "" || id == 0 {
+	if actor == nil || actor.User == nil || actor.User.ID == 0 || actor.SessionHash != "" || table == "" || id == 0 {
 		return
 	}
 	ctx = context.WithoutCancel(ctx)
 	now := s.nowMS()
-	agent := actor.agentName()
+	agent := actor.AgentName()
 	sessID, sessTask := sessionStamp(ctx, s.db.R, actor)
 	who, whoArg := `user_id = ? AND agent = ? AND session_id IS NULL`, []any{actor.User.ID, agent}
 	if sessID != nil {
@@ -89,7 +89,7 @@ type ShownRef struct {
 // point 7). refs are what the client printed; ones that name nothing are
 // counted in the result, not dropped silently.
 func (s *Service) NoteShown(ctx context.Context, actor *Actor, via string, refs []ShownRef) (recorded, unknown int, err error) {
-	if actor == nil || actor.User == nil || actor.User.ID == 0 || actor.session != "" || actor.ReadOnly || !actor.IsAgent() {
+	if actor == nil || actor.User == nil || actor.User.ID == 0 || actor.SessionHash != "" || actor.ReadOnly || !actor.IsAgent() {
 		return 0, 0, nil
 	}
 	if via != "brief" && via != "prep" {
@@ -111,7 +111,7 @@ func (s *Service) NoteShown(ctx context.Context, actor *Actor, via string, refs 
 		// #nosec G202 -- table is one of three fixed names; values are bound
 		if _, err := s.db.W.ExecContext(ctx, `INSERT INTO knowledge_shown(item_type, item_id, via, session_id, session_issue_id, project_id, user_id, agent, created_at)
 			SELECT ?, ?, ?, ?, ?, (SELECT project_id FROM `+table+` WHERE id = ?), ?, ?, ?`,
-			typ, id, via, sessID, sessTask, id, actor.User.ID, actor.agentName(), now); err != nil {
+			typ, id, via, sessID, sessTask, id, actor.User.ID, actor.AgentName(), now); err != nil {
 			return recorded, unknown, fmt.Errorf("record shown %s %d: %w", typ, id, err)
 		}
 		recorded++
@@ -564,7 +564,7 @@ func usesVisible(actor *Actor) (string, []any) {
 			AND ((x.project_id IS NULL AND x.owner_id = ?) OR (x.project_id IS NOT NULL AND ` + xvis + `)))))`
 	args = append(args, xargs...)
 	args = append(args, xargs...)
-	args = append(args, actor.id())
+	args = append(args, actor.ID())
 	return cond, append(args, xargs...)
 }
 
@@ -697,12 +697,12 @@ func (s *Service) prItem(ctx context.Context, actor *Actor, id int64) *KItem {
 	var repo, title, url string
 	var number int64
 	var visible bool
-	member, margs := actor.memberProjects(RoleViewer)
+	member, margs := actor.MemberProjects(RoleViewer)
 	// #nosec G202 -- member is placeholders; values are bound
 	err := s.db.R.QueryRowContext(ctx, `SELECT pr.repo, pr.number, pr.title, pr.url, EXISTS (SELECT 1 FROM project_repos r
 			WHERE r.forge_id = pr.forge_id AND r.repo = pr.repo COLLATE NOCASE
 			AND (? OR r.project_id IN `+member+`))
-		FROM pull_requests pr WHERE pr.id = ?`, append(append([]any{actor.isAdmin()}, margs...), id)...).Scan(&repo, &number, &title, &url, &visible)
+		FROM pull_requests pr WHERE pr.id = ?`, append(append([]any{actor.IsAdmin()}, margs...), id)...).Scan(&repo, &number, &title, &url, &visible)
 	if err != nil || !visible {
 		return nil
 	}

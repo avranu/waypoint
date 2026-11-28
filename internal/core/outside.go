@@ -137,7 +137,7 @@ func forgeSyncActor(f *Forge, author, agent string) *Actor {
 	via := kindLabel(f.Kind)
 	u := *SystemActor().User
 	u.DisplayName = cmp(author, via) + " (via " + via + ")"
-	return &Actor{User: &u, forgeSync: true, textAgent: agent}
+	return &Actor{User: &u, ForgeSync: true, TextAgent: agent}
 }
 
 // heldText is outside text to keep for a person.
@@ -227,17 +227,17 @@ func (s *Service) screenForgeText(ctx context.Context, f *Forge, cur *Issue, ite
 func (s *Service) addForgeComment(ctx context.Context, t *tx, f *Forge, i *Issue, author, externalID, url, body string, createdAt int64, quiet bool) error {
 	via := kindLabel(f.Kind)
 	_, agent := s.forgeWriter(ctx, t, f, author)
-	prev := t.actor
-	t.actor = forgeSyncActor(f, author, agent)
-	n := len(t.events)
-	added, err := s.addComment(ctx, t, t.actor, i, body)
-	t.actor = prev
+	prev := t.Actor
+	t.Actor = forgeSyncActor(f, author, agent)
+	n := len(t.Events())
+	added, err := s.addComment(ctx, t, t.Actor, i, body)
+	t.Actor = prev
 	if err != nil {
 		return err
 	}
 	if quiet {
-		for _, e := range t.events[n:] {
-			e.quiet = true
+		for _, e := range t.Events()[n:] {
+			e.Quiet = true
 		}
 	}
 	if _, err := t.ExecContext(ctx, `UPDATE comments SET external_author = ?, external_via = ?, created_at = min(created_at, ?) WHERE id = ?`,
@@ -329,7 +329,7 @@ func (s *Service) outsideFor(ctx context.Context, actor *Actor, id int64) (*outs
 	if actor.HidesDrafts() {
 		return nil, nil, errOutsideByPerson
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, nil, err
 	}
 	o, err := s.outsideRow(ctx, s.db.R, id)
@@ -467,7 +467,7 @@ func (s *Service) releaseOutsideIssue(ctx context.Context, t *tx, issueID int64,
 		if err != nil {
 			return err
 		}
-		t.emit(&Event{Kind: EvIssueUpdated, ProjectID: i.ProjectID, IssueID: id, IssueKey: i.Key, Field: "draft", Old: "draft", New: "published", quiet: true})
+		t.emit(&Event{Kind: EvIssueUpdated, ProjectID: i.ProjectID, IssueID: id, IssueKey: i.Key, Field: "draft", Old: "draft", New: "published", Quiet: true})
 	}
 	return nil
 }
@@ -545,13 +545,13 @@ func (s *Service) forgePeople(ctx context.Context, forgeID int64) ([]ForgePerson
 // or agents' accounts, and lets in what was waiting from the ones added. Admins only, and only
 // as themselves: whose word counts is never an agent's call.
 func (s *Service) SetForgePeople(ctx context.Context, actor *Actor, forgeID int64, people []ForgePersonInput) ([]ForgePerson, error) {
-	if err := actor.requirePersonDirect("saying who is a Waypoint person on a forge"); err != nil {
+	if err := actor.RequirePersonDirect("saying who is a Waypoint person on a forge"); err != nil {
 		return nil, err
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, ErrForbidden
 	}
 	f, err := s.forgeByID(ctx, forgeID)

@@ -61,11 +61,11 @@ func TestJobTokenLifecycle(t *testing.T) {
 		t.Errorf("job actor = %+v", a)
 	}
 	for _, p := range []Permission{PermRunnersRun, PermRequestsAnswer, PermAdmin, PermSessionsStart, PermIssuesDelete} {
-		if a.need(p) == nil {
+		if a.Need(p) == nil {
 			t.Errorf("the job's token may %s", p)
 		}
 	}
-	if a.need(PermTasksWork) != nil || a.need(PermIssuesComment) != nil {
+	if a.Need(PermTasksWork) != nil || a.Need(PermIssuesComment) != nil {
 		t.Error("the job's token can't do an agent's work")
 	}
 	if _, err := e.s.EnqueueRunnerJob(e.ctx, a, RunnerJobInput{Kind: JobCommand, Input: cmdInput("ls", "/work")}); err == nil {
@@ -134,7 +134,7 @@ func TestJobTokenScope(t *testing.T) {
 	}
 
 	job := actor(a.ID)
-	if job.isAdmin() || job.User.IsAdmin || !e.admin.User.IsAdmin {
+	if job.IsAdmin() || job.User.IsAdmin || !e.admin.User.IsAdmin {
 		t.Error("a job's token is an admin, or its person stopped being one")
 	}
 	if got := keys(job); !slices.Equal(got, []string{a.Key, sub.Key}) {

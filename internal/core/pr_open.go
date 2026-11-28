@@ -128,7 +128,7 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 	if actor == nil || actor.User == nil {
 		return nil, ErrUnauthorized
 	}
-	if err := actor.need(PermPullsWrite); err != nil {
+	if err := actor.Need(PermPullsWrite); err != nil {
 		return nil, err
 	}
 	in.Head, in.Title = strings.TrimSpace(in.Head), strings.TrimSpace(in.Title)
@@ -268,7 +268,7 @@ func (s *Service) OpenPullRequest(ctx context.Context, actor *Actor, in OpenPRIn
 		if !in.Urgent && s.taskUrgent(ctx, actor, task) {
 			in.Urgent, tagged = true, task
 		}
-		managed := actor.agentName() != "" && !in.Draft && !in.Ready && s.draftFirstRepo(fctx, f, pick.Repo, base)
+		managed := actor.AgentName() != "" && !in.Draft && !in.Ready && s.draftFirstRepo(fctx, f, pick.Repo, base)
 		if managed {
 			defer s.expectOwnDraft(f.ID, pick.Repo, in.Head)()
 		}
@@ -425,7 +425,7 @@ func (s *Service) recordOpened(ctx context.Context, actor *Actor, projectID int6
 	if err != nil {
 		return 0, err
 	}
-	agent := actor.agentName()
+	agent := actor.AgentName()
 	if agent != "" && adopted && fp.Author != "" {
 		var n int
 		if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM pull_requests WHERE forge_id = ? AND agent != '' AND forge_author = ? COLLATE NOCASE AND id != ?`, f.ID, fp.Author, pr.ID).Scan(&n); err != nil {
@@ -557,7 +557,7 @@ func (s *Service) CheckShipTasks(ctx context.Context, actor *Actor, project stri
 	if actor == nil || actor.User == nil {
 		return ErrUnauthorized
 	}
-	if err := actor.need(PermPullsWrite); err != nil {
+	if err := actor.Need(PermPullsWrite); err != nil {
 		return err
 	}
 	p, err := s.projectByRef(ctx, s.db.R, project)

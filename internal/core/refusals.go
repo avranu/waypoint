@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 )
 
 const (
@@ -165,7 +167,7 @@ func (s *Service) logRefusal(ctx context.Context, t *tx, actor *Actor, x *AgentS
 	reason := truncateBytes(strings.TrimSpace(ev.Reason), 10_000)
 	if _, err := t.ExecContext(ctx, `INSERT INTO tool_refusals(user_id, project_id, session_id, issue_id, agent, source, tool, command, input, reason, tool_use_id, dedupe_key, created_at, last_at)
 		VALUES (?,?,?,?,?,'classifier',?,?,?,?,?,?,?,?)`,
-		actor.id(), nullInt(ptrInt(project)), x.ID, nullInt(ptrInt(x.issueID)), cmp(actor.agentName(), x.Agent), ev.Tool, command, input, reason, ev.ToolUseID, key, at, at); err != nil {
+		actor.ID(), nullInt(ptrInt(project)), x.ID, nullInt(ptrInt(x.issueID)), cmp(actor.AgentName(), x.Agent), ev.Tool, command, input, reason, ev.ToolUseID, key, at, at); err != nil {
 		return err
 	}
 	return s.sessionTimeline(ctx, t, x.ID, at, "refused", "", 0, ev.Tool, "", excerpt(command, 300), project, map[string]any{"tool": ev.Tool})
@@ -523,7 +525,7 @@ func (s *Service) AllowRefusedCall(ctx context.Context, actor *Actor, id int64, 
 	err = s.write(ctx, actor, func(t *tx) error {
 		now := s.nowMS()
 		res, err := t.ExecContext(ctx, `UPDATE tool_refusals SET rule_by = ?, rule_at = ?, rule_reason = ''
-			WHERE id = ? AND rule = '' AND (rule_at IS NULL OR rule_reason != '' OR rule_at < ?)`, actor.id(), now, f.ID, now-refusalPickStale.Milliseconds())
+			WHERE id = ? AND rule = '' AND (rule_at IS NULL OR rule_reason != '' OR rule_at < ?)`, actor.ID(), now, f.ID, now-refusalPickStale.Milliseconds())
 		if err != nil {
 			return err
 		}
@@ -538,7 +540,7 @@ func (s *Service) AllowRefusedCall(ctx context.Context, actor *Actor, id int64, 
 		} else {
 			e.UserID = f.userID
 		}
-		e.permRule = &permRuleJob{refusal: f.ID, at: now, repo: repo, rule: rule}
+		kernel.Attach(e, &permRuleJob{refusal: f.ID, at: now, repo: repo, rule: rule})
 		t.emit(e)
 		t.audit(AuditEntry{Action: "refusal.allow", Category: AuditApproval, ProjectID: derefInt(ptrInt(f.projectID)), TargetType: "refusal", TargetID: f.ID,
 			Target: rule, Detail: excerpt(f.Command, 200), About: f.Agent})

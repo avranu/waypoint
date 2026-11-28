@@ -802,8 +802,8 @@ func TestHelperContext(t *testing.T) {
 	fx := newHelperFixture(t)
 	p := fx.project(fx.admin, "Alpha", "kanban")
 	issue := fx.issue(fx.admin, IssueInput{Project: p.Key, Title: "Work"})
-	sid := fx.exec(`INSERT INTO agent_sessions(user_id, machine, cli_id, started_at, last_seen_at) VALUES (?, 'box', 'raw', 1, 1)`, fx.admin.id())
-	run := fx.exec(`INSERT INTO agent_runs(issue_id, agent, user_id, started_at, session_id) VALUES (?, 'claude', ?, 100, ?)`, issue.ID, fx.admin.id(), sid)
+	sid := fx.exec(`INSERT INTO agent_sessions(user_id, machine, cli_id, started_at, last_seen_at) VALUES (?, 'box', 'raw', 1, 1)`, fx.admin.ID())
+	run := fx.exec(`INSERT INTO agent_runs(issue_id, agent, user_id, started_at, session_id) VALUES (?, 'claude', ?, 100, ?)`, issue.ID, fx.admin.ID(), sid)
 	prompt := func(at int64, text string) {
 		typed := ""
 		if strings.HasPrefix(text, AutopilotPromptMark) {

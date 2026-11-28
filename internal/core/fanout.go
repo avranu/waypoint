@@ -468,10 +468,10 @@ func estimateFanout(in *FanoutInput, r *fanoutRates) (items []*FanoutItem, total
 // DryRun only says what it would cost. Over fanoutAskPct of a week, it asks
 // the person and nothing starts until they say Start.
 func (s *Service) CreateFanout(ctx context.Context, actor *Actor, in FanoutInput) (*Fanout, error) {
-	if err := actor.need(PermSessionsStart); err != nil {
+	if err := actor.Need(PermSessionsStart); err != nil {
 		return nil, err
 	}
-	if err := actor.need(PermIssuesCreate); err != nil {
+	if err := actor.Need(PermIssuesCreate); err != nil {
 		return nil, err
 	}
 	if actor.ReadOnly {
@@ -511,7 +511,7 @@ func (s *Service) CreateFanout(ctx context.Context, actor *Actor, in FanoutInput
 		}
 		return nil, ErrForbidden
 	}
-	rates := s.fanoutRates(ctx, actor.id())
+	rates := s.fanoutRates(ctx, actor.ID())
 	items, total, weekPct := estimateFanout(&in, rates)
 	f := &Fanout{Project: p.Key, State: FanoutRunning, Parallel: in.Parallel, Machine: in.Machine, Dir: in.Dir, Base: in.Base, Agent: agent,
 		Estimate: total, WeekPct: weekPct, Basis: strings.Join(rates.basis, "; "), Items: items, Created: s.now(), AskOver: fanoutAskPct}
@@ -522,7 +522,7 @@ func (s *Service) CreateFanout(ctx context.Context, actor *Actor, in FanoutInput
 		return f, nil
 	}
 	if f.State == FanoutAsked {
-		if err := actor.need(PermRequestsCreate); err != nil {
+		if err := actor.Need(PermRequestsCreate); err != nil {
 			return nil, err
 		}
 	}
@@ -530,7 +530,7 @@ func (s *Service) CreateFanout(ctx context.Context, actor *Actor, in FanoutInput
 	now := s.nowMS()
 	err = s.write(ctx, actor, func(t *tx) error {
 		res, err := t.ExecContext(ctx, `INSERT INTO fanouts(user_id, project_id, session_id, agent, machine, dir, base, parallel, estimate_usd, week_pct, basis, state, created_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, actor.id(), p.ID, nullID(actor.Session), agent, in.Machine, in.Dir, in.Base, in.Parallel, total, weekPct, f.Basis, FanoutStopped, now)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, actor.ID(), p.ID, nullID(actor.Session), agent, in.Machine, in.Dir, in.Base, in.Parallel, total, weekPct, f.Basis, FanoutStopped, now)
 		if err != nil {
 			return err
 		}
@@ -585,7 +585,7 @@ func (s *Service) CreateFanout(ctx context.Context, actor *Actor, in FanoutInput
 		if _, err := t.ExecContext(ctx, `UPDATE fanouts SET state = ?, request_id = ? WHERE id = ?`, f.State, nullID(requestID), f.ID); err != nil {
 			return err
 		}
-		t.emit(&Event{Kind: EvFanoutCreated, ProjectID: p.ID, UserID: actor.id(), Data: map[string]any{"fanout": f.ID, "items": len(items), "state": f.State}})
+		t.emit(&Event{Kind: EvFanoutCreated, ProjectID: p.ID, UserID: actor.ID(), Data: map[string]any{"fanout": f.ID, "items": len(items), "state": f.State}})
 		return nil
 	})
 	if err != nil {
@@ -733,7 +733,7 @@ func (s *Service) ownFanout(ctx context.Context, q queryer, actor *Actor, id int
 	if err != nil {
 		return nil, err
 	}
-	if f.userID != actor.id() {
+	if f.userID != actor.ID() {
 		return nil, notFound("fan-out #" + itoa64(id))
 	}
 	return f, nil
@@ -741,7 +741,7 @@ func (s *Service) ownFanout(ctx context.Context, q queryer, actor *Actor, id int
 
 // GetFanout is one of the actor's fan-outs.
 func (s *Service) GetFanout(ctx context.Context, actor *Actor, id int64) (*Fanout, error) {
-	if err := actor.need(PermSessionsRead); err != nil {
+	if err := actor.Need(PermSessionsRead); err != nil {
 		return nil, err
 	}
 	return s.ownFanout(ctx, s.db.R, actor, id)
@@ -750,14 +750,14 @@ func (s *Service) GetFanout(ctx context.Context, actor *Actor, id int64) (*Fanou
 // ListFanouts is the actor's latest fan-outs, newest first; live only
 // unless all.
 func (s *Service) ListFanouts(ctx context.Context, actor *Actor, all bool) ([]*Fanout, error) {
-	if err := actor.need(PermSessionsRead); err != nil {
+	if err := actor.Need(PermSessionsRead); err != nil {
 		return nil, err
 	}
 	where := ` WHERE f.user_id = ?`
 	if !all {
 		where += ` AND f.state IN ('asked', 'running')`
 	}
-	rows, err := s.db.R.QueryContext(ctx, `SELECT `+fanoutCols+fanoutFrom+where+` ORDER BY f.id DESC LIMIT 20`, actor.id())
+	rows, err := s.db.R.QueryContext(ctx, `SELECT `+fanoutCols+fanoutFrom+where+` ORDER BY f.id DESC LIMIT 20`, actor.ID())
 	if err != nil {
 		return nil, err
 	}
@@ -847,7 +847,7 @@ func (s *Service) settleAsk(ctx context.Context, t *tx, f *Fanout) (string, erro
 // that can't start yet (screen pending, on hold, blocked) wait; the claim
 // says why when nothing starts.
 func (s *Service) ClaimFanout(ctx context.Context, actor *Actor, id int64, machine string) (*FanoutClaim, error) {
-	if err := actor.need(PermSessionsStart); err != nil {
+	if err := actor.Need(PermSessionsStart); err != nil {
 		return nil, err
 	}
 	var claim *FanoutClaim
@@ -1042,7 +1042,7 @@ func (f *Fanout) item(key string) *FanoutItem {
 // FanoutItemStarted records that a package's session started: attach is
 // its Claude Code background session id.
 func (s *Service) FanoutItemStarted(ctx context.Context, actor *Actor, id int64, key, attach string) error {
-	if err := actor.need(PermSessionsStart); err != nil {
+	if err := actor.Need(PermSessionsStart); err != nil {
 		return err
 	}
 	if len(attach) > 100 {
@@ -1071,7 +1071,7 @@ func (s *Service) FanoutItemStarted(ctx context.Context, actor *Actor, id int64,
 // FanoutItemFailed records that a package's session couldn't start: its
 // lease goes back, and the coordinator hears why.
 func (s *Service) FanoutItemFailed(ctx context.Context, actor *Actor, id int64, key, note string) error {
-	if err := actor.need(PermSessionsStart); err != nil {
+	if err := actor.Need(PermSessionsStart); err != nil {
 		return err
 	}
 	return s.write(ctx, actor, func(t *tx) error {
@@ -1128,7 +1128,7 @@ func (s *Service) releaseFanoutTask(ctx context.Context, t *tx, f *Fanout, it *F
 // budget (stopped at its budget) or ended (it ended without wp done), and
 // what it spent. Saying it twice changes only the spend.
 func (s *Service) EndFanoutItem(ctx context.Context, actor *Actor, id int64, key, outcome string, spent float64, note string) error {
-	if err := actor.need(PermSessionsStart); err != nil {
+	if err := actor.Need(PermSessionsStart); err != nil {
 		return err
 	}
 	if spent < 0 || spent > 100000 || math.IsNaN(spent) {
@@ -1197,7 +1197,7 @@ func (s *Service) EndFanoutItem(ctx context.Context, actor *Actor, id int64, key
 // StopFanout starts nothing more: queued packages are cancelled. Running
 // sessions go on (the CLI stops them with --now).
 func (s *Service) StopFanout(ctx context.Context, actor *Actor, id int64) (*Fanout, error) {
-	if err := actor.need(PermSessionsStart); err != nil {
+	if err := actor.Need(PermSessionsStart); err != nil {
 		return nil, err
 	}
 	err := s.write(ctx, actor, func(t *tx) error {

@@ -441,7 +441,7 @@ func (s *Service) prAuthority(ctx context.Context, actor *Actor, pr *PullRequest
 		seen = true
 		if role >= min {
 			if min > RoleViewer {
-				if err := actor.canWrite(); err != nil {
+				if err := actor.CanWrite(); err != nil {
 					return 0, err
 				}
 			}
@@ -474,7 +474,7 @@ func (s *Service) decideFinding(ctx context.Context, actor *Actor, id int64, to,
 	}
 	note = strings.TrimSpace(note)
 	by := findingBy{kind: "person", name: actor.User.DisplayName, userID: actor.User.ID}
-	if agent := actor.agentName(); actor.IsAgent() {
+	if agent := actor.AgentName(); actor.IsAgent() {
 		if to == FindingDismissed && note == "" {
 			return nil, invalid("say why the finding is wrong or not worth fixing (a note)")
 		}

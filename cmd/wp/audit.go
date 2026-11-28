@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"git.jmann.me/claude/waypoint/internal/core"
 )
@@ -14,31 +15,18 @@ var auditCmd = &command{
 	name: "audit", aliases: []string{"audits"}, group: "Code and CI",
 	args:    "[pr|branch|commit|range|recent|repo] [TARGET] [FLAGS]",
 	summary: "have a model on your runner audit a PR, branch, commit or the repo",
-	about: `By default, where the Waypoint has an LLM gateway, Grok 4.7 through Cursor
-on your runner first, then the model the gateway picks for audits
-(gateway/audit); with no gateway, Grok through Cursor alone. Runs on a
-checkout your runner sends. Reads only; findings are recorded
-(wp audit show), posted on a pull request, and your session is told the
-result when it ends, findings or none.
+	about: `Runs a read-only audit on your runner (default: Grok via Cursor, falling back
+to gateway/audit). Findings are recorded (wp audit show), posted on pull
+requests, and reported back when finished.
 
-  wp audit                  the branch's pull request, else the branch against
-                            the default branch (on it: the whole repository)
+  wp audit                  this branch's PR, else the branch vs default (or repo)
   wp audit pr N | branch NAME | commit SHA | range A..B | repo [REF]
-  wp audit recent [BRANCH]  what landed in the last --since (7d, 2w, a date)
+  wp audit recent [BRANCH]  changes in the last --since (default 7d)
 
--m says what to look for. --model repeats for a fallback chain used when
-one is busy or out of quota; --model gateway/audit asks the gateway
-gateway's own agent, where there is one. --focus, --path, --exclude and
---min-severity narrow it; an audit whose paths match nothing runs no model.
---show N is how many findings wp audit show and the audit's page list at a
-time (default 15; --all lists every one). It is not a limit: the model is
-told no number and every finding is kept.
---fix also makes a task for Claude to check and fix the real findings.
-
-Findings are claims to check; record your verdict with wp audit mark (12.3 is
-audit 12's third finding). wp audit report records the findings of a review
-you ran yourself, for your task's review round.`,
-	examples: []string{"wp audit", "wp audit pr 12", `wp audit branch feature-x -m "Focus on the new cache's invalidation."`,
+Use -m for focus instructions, --model (repeatable) for fallback order, and
+--focus/--path/--exclude/--min-severity to narrow scope. --fix also creates a
+task to check and fix findings. Findings are claims to verify with wp audit mark.`,
+	examples: []string{"wp audit", "wp audit pr 12", `wp audit branch feature-x -m "Focus on cache invalidation."`,
 		"wp audit recent --since 2w --focus security --path internal",
 		"wp audit show 12", "wp audit mark 12.1 12.3 confirmed", `wp audit mark 12.2 rejected -m "the lock is held by the caller" --evidence "internal/x.go:40 takes the lock before the call"`},
 	run: auditRun(""),
@@ -56,28 +44,20 @@ func init() {
 		{name: "repo", args: "[REF] [flags]", summary: "audit the whole repository", about: targetAbout, examples: []string{`wp audit repo -m "Look for SQL built from strings."`}, run: auditRun("repo")},
 		{name: "ls", aliases: []string{"list"}, args: "[--active|--status S] [--pr N] [-p PROJECT]", summary: "list audits, newest first",
 			examples: []string{"wp audit ls", "wp audit ls --active", "wp audit ls --pr 12"}, run: auditLs},
-		{name: "show", aliases: []string{"view", "get"}, args: "ID...", summary: "an audit: state, models tried, findings",
-			examples: []string{"wp audit show 12", "wp audit show 12 13"}, run: auditShow},
+		{name: "show", aliases: []string{"view", "get"}, args: "ID|AUDIT.N...", summary: "show an audit (or one finding like 12.3): state, models, findings",
+			examples: []string{"wp audit show 12", "wp audit show 12.3", "wp audit show 12 --all"}, run: auditShow},
 		{name: "mark", args: "FINDING... open|confirmed|fixed|rejected [-m NOTE] [--issue KEY] [--evidence TEXT]", summary: "record your verdict on findings (12.3: audit 12, finding 3)",
-			about: `confirmed is real but unfixed; rejected needs -m why. An agent rejecting a
-finding of a pull request it isn't working on (outside its own review round)
-also gives --evidence TEXT (a file and line, or a command's output, up to ` + strconv.Itoa(core.MaxRejectionEvidence) + `
-characters), and must run as strong a model as the one that found it: not a
-haiku session for a sonnet's finding, a low effort one for a high effort one's,
-or an older version for a newer one's. A finding of a model Waypoint doesn't
-rank (another provider's audit) only fable or mythos may reject. If it can't, leave it (a medium or low
-one can be filed: confirmed --issue KEY). People are never held to either. --issue links the
-task or bug that deals with it. A finding confirmed with --issue is filed:
-handed to that issue, so a review round, a pull request's babysitter or an
-audit's fix task no longer asks for it (file one with wp new first). An
-issue that is canceled (won't do, duplicate) doesn't count unless it
-duplicates an open one: that is refused, and a filing whose issue is
-canceled later is to do again. A
-round's check of your marks reads each filing, and a critical or high
-finding can't be filed: fix or reject it. Confirmed without an issue is still
-to do, and marking a filed finding confirmed again without --issue unfiles
-it. fixed --issue names the task that fixed it.`,
-			examples: []string{"wp audit mark 12.1 12.3 confirmed", "wp audit mark 12.4 confirmed --issue WP-401", "wp audit mark 12.1 fixed --issue WP-399", `wp audit mark 12.2 rejected -m "the caller holds the lock" --evidence "internal/x.go:40 takes the lock before the call"`}, run: auditMark},
+			about: `Verdicts: open, confirmed (real, unfixed), fixed, or rejected (-m WHY required).
+--issue KEY links the task dealing with it: confirmed --issue KEY hands a medium
+or low finding off to that open issue (critical/high cannot be deferred); fixed
+--issue KEY names the task that fixed it.
+
+An agent rejecting a finding of a pull request it isn't working on (outside its
+own review round) also gives --evidence TEXT (file:line or command output, up to
+` + strconv.Itoa(core.MaxRejectionEvidence) + ` characters) and must run at least as strong a model, effort and version
+as the finder; only fable or mythos may reject an unranked model's finding.
+Otherwise leave it, or file a medium or low one. People are held to neither.`,
+			examples: []string{"wp audit mark 12.1 12.3 confirmed", "wp audit mark 12.4 confirmed --issue WP-401", "wp audit mark 12.1 fixed -m \"checked in abc1234\"", `wp audit mark 12.2 rejected -m "the caller holds the lock" --evidence "internal/x.go:40 takes the lock before the call"`}, run: auditMark},
 		{name: "report", args: "[KEY] -f FILE | --none -m SUMMARY", summary: "record what the adversarial review you ran yourself found, as your task's review round",
 			about: `For an agent session whose review round was its own to run (wp ship
 says so, and holds the pull request for this). FILE (- for stdin) is JSON:
@@ -339,45 +319,80 @@ func (a *auditView) text() string {
 			shown = min(shown, a.shownAtATime())
 		}
 		for _, f := range a.Findings[:shown] {
-			where := ""
-			if f.Path != "" {
-				where = " " + f.Path
-				if f.Line > 0 {
-					where += fmt.Sprintf(":%d", f.Line)
-				}
-			}
-			state := f.State
-			if f.Issue != "" {
-				state += " " + f.Issue
-				if f.FilingVoid && f.State == "confirmed" {
-					state += " (canceled)"
-				}
-			}
-			fmt.Fprintf(&s, "  %-6s %-8s %-9s%s: %s\n", f.ID, f.Severity, state, where, f.Title)
-			if f.Problem != "" {
-				fmt.Fprintf(&s, "         %s\n", indentRest(f.Problem, "         "))
-			}
-			if src := core.PanelSource(core.CodeAuditFinding{Lead: f.Lead}); src != "" {
-				fmt.Fprintf(&s, "         Source: %s\n", src)
-			}
-			if f.Confirm != "" {
-				fmt.Fprintf(&s, "         To confirm: %s\n", indentRest(f.Confirm, "         "))
-			}
-			if f.Note != "" {
-				fmt.Fprintf(&s, "         Note (%s): %s\n", f.By, indentRest(f.Note, "         "))
-			}
-			if f.Evidence != "" {
-				fmt.Fprintf(&s, "         Evidence: %s\n", indentRest(f.Evidence, "         "))
-			}
-			if f.DecidedModel != "" {
-				fmt.Fprintf(&s, "         Rejected as: %s\n", core.RejectedAs(core.CodeAuditFinding{DecidedModel: f.DecidedModel, DecidedEffort: f.DecidedEffort, DecidedStrength: f.DecidedStrength}))
-			}
+			writeFinding(&s, f)
 		}
 	}
 	s.WriteString(a.moreFindings())
+	if firstOpen := a.firstOpenFinding(); firstOpen != "" {
+		fmt.Fprintf(&s, "  mark: wp audit mark %s fixed -m \"...\" | confirmed --issue KEY | rejected -m \"...\" --evidence \"file:line\"\n", firstOpen)
+	}
 	s.WriteString(a.unansweredPanel())
 	fmt.Fprintf(&s, "\n%s", a.URL)
 	return strings.TrimRight(s.String(), "\n")
+}
+
+// writeFinding is one finding as wp audit show prints it, alone or in its
+// audit's list.
+func writeFinding(s *strings.Builder, f auditFinding) {
+	where := ""
+	if f.Path != "" {
+		where = " " + f.Path
+		if f.Line > 0 {
+			where += fmt.Sprintf(":%d", f.Line)
+		}
+	}
+	state := f.State
+	if f.Issue != "" {
+		state += " " + f.Issue
+		if f.FilingVoid && f.State == "confirmed" {
+			state += " (canceled)"
+		}
+	}
+	fmt.Fprintf(s, "  %-6s %-8s %-9s%s: %s\n", f.ID, f.Severity, state, where, f.Title)
+	if f.Problem != "" {
+		fmt.Fprintf(s, "         %s\n", indentRest(f.Problem, "         "))
+	}
+	if src := core.PanelSource(core.CodeAuditFinding{Lead: f.Lead}); src != "" {
+		fmt.Fprintf(s, "         Source: %s\n", src)
+	}
+	if f.Confirm != "" {
+		fmt.Fprintf(s, "         To confirm: %s\n", indentRest(f.Confirm, "         "))
+	}
+	if f.Note != "" {
+		fmt.Fprintf(s, "         Note (%s): %s\n", f.By, indentRest(f.Note, "         "))
+	}
+	if f.Evidence != "" {
+		fmt.Fprintf(s, "         Evidence: %s\n", indentRest(f.Evidence, "         "))
+	}
+	if f.DecidedModel != "" {
+		fmt.Fprintf(s, "         Rejected as: %s\n", core.RejectedAs(core.CodeAuditFinding{DecidedModel: f.DecidedModel, DecidedEffort: f.DecidedEffort, DecidedStrength: f.DecidedStrength}))
+	}
+}
+
+func (a *auditView) firstOpenFinding() string {
+	for _, f := range a.Findings {
+		if f.State == "open" || (f.State == "confirmed" && (f.Issue == "" || f.FilingVoid)) {
+			return f.ID
+		}
+	}
+	return ""
+}
+
+func (a *auditView) findingText(ref string) (string, bool) {
+	for _, f := range a.Findings {
+		if f.ID != ref {
+			continue
+		}
+		var s strings.Builder
+		fmt.Fprintf(&s, "Audit #%d of %s: %s\n", a.ID, a.what(), a.state())
+		writeFinding(&s, f)
+		if f.State == "open" || (f.State == "confirmed" && (f.Issue == "" || f.FilingVoid)) {
+			fmt.Fprintf(&s, "  mark: wp audit mark %s fixed -m \"...\" | confirmed --issue KEY | rejected -m \"...\" --evidence \"file:line\"\n", f.ID)
+		}
+		fmt.Fprintf(&s, "\n%s", a.URL)
+		return strings.TrimRight(s.String(), "\n"), true
+	}
+	return "", false
 }
 
 // unansweredPanel lists what Waypoint's Haiku checks confirmed against the
@@ -624,6 +639,7 @@ func auditLs(c *cli, args []string) error {
 	pr := fs.Int("pr", 0, "only audits of pull request `N`")
 	repo := fs.String("repo", "", "`REPO` of --pr, if several repos have the number")
 	limit := fs.Int("limit", 20, "at most `N`")
+	short(fs, "n", "limit")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
@@ -687,16 +703,24 @@ func auditID(c *cli, v string) (int64, error) {
 func auditShow(c *cli, args []string) error {
 	fs := c.flags()
 	all := fs.Bool("all", false, "list every finding, not the first few")
+	alias(fs, "v", "all")
+	alias(fs, "full", "all")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
 	}
 	ids := listArgs(pos)
 	if len(ids) == 0 {
-		return c.usage("name the audit: wp audit show 12 (wp audit ls lists them)")
+		return c.usage("name the audit: wp audit show 12 (or 12.3 for one finding; wp audit ls lists them)")
 	}
 	return c.each(ids, true, func(v string) error {
-		id, err := auditID(c, v)
+		findingRef := ""
+		idStr := v
+		if ref, ok := auditFindingRef(v); ok {
+			findingRef = ref
+			idStr, _, _ = strings.Cut(ref, ".")
+		}
+		id, err := auditID(c, idStr)
 		if err != nil {
 			return err
 		}
@@ -707,6 +731,22 @@ func auditShow(c *cli, args []string) error {
 		var a auditView
 		if err := jsonInto(raw, &a); err != nil {
 			return err
+		}
+		if findingRef != "" {
+			if c.asJSON {
+				for _, f := range a.Findings {
+					if f.ID == findingRef {
+						return c.codeJSON(f)
+					}
+				}
+				return fmt.Errorf("finding %s not found in audit #%d", findingRef, a.ID)
+			}
+			txt, ok := a.findingText(findingRef)
+			if !ok {
+				return fmt.Errorf("finding %s not found in audit #%d", findingRef, a.ID)
+			}
+			c.println(txt)
+			return nil
 		}
 		return c.emit(raw, func() string {
 			a.job = auditJobText(c, &a)
@@ -793,7 +833,8 @@ func (j *auditJobView) text(now time.Time) string {
 
 func auditMark(c *cli, args []string) error {
 	fs := c.flags()
-	note := fs.String("m", "", "why (`NOTE`); say why for rejected")
+	note := fs.String("message", "", "why (`NOTE`); required for rejected")
+	short(fs, "m", "message")
 	issue := fs.String("issue", "", "task or bug `KEY` that deals with it")
 	evidence := fs.String("evidence", "", "what shows a rejected finding wrong (`TEXT`); an agent gives it for a pull request it isn't working on")
 	pos, err := c.parse(fs, args)
@@ -811,6 +852,10 @@ func auditMark(c *cli, args []string) error {
 	default:
 		return c.usage("the last word is the verdict: open, confirmed, fixed or rejected")
 	}
+	// Evidence says why too, where it fits in a note.
+	if state == "rejected" && *note == "" && utf8.RuneCountInString(*evidence) <= core.MaxFindingNote {
+		*note = *evidence
+	}
 	raw, err := c.call("POST", "/api/v1/audits/findings", map[string]any{"ids": ids, "state": state, "note": *note, "issue": *issue, "evidence": *evidence})
 	if err != nil {
 		return err
@@ -827,7 +872,8 @@ func auditReport(c *cli, args []string) error {
 	file := fs.String("file", "", "the findings as JSON, from `FILE` (- for stdin)")
 	short(fs, "f", "file")
 	none := fs.Bool("none", false, "the review raised nothing (say what it covered with -m)")
-	summary := fs.String("m", "", "what was reviewed and how (`SUMMARY`)")
+	summary := fs.String("message", "", "what was reviewed and how (`SUMMARY`)")
+	short(fs, "m", "message")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err

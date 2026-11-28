@@ -11,53 +11,42 @@ import (
 var prBabysitCmd = &command{
 	name: "babysit", args: "[N...] [--stop] [--status] [--model M] [--notify | --blocking]",
 	summary: "watch the pull request until it merges, fixing failures and comments",
-	about: `Waypoint watches the pull request until it merges, and sends a fresh
-agent session for failed checks, conflicts and review comments. Rounds that
-don't settle it go to a stronger model, then to an assessor; if that doesn't
-settle it, it rests out of the merge line and is looked at again when
-something changes; its owner is asked only when the assessor says why no
-agent can settle it (it never gives up). wp ship starts it. Your session is woken only if it needs
-you; a merge doesn't wake you.
-
---notify wakes you at the merge too (if work must follow it); --blocking
-wakes you within minutes (if other work waits on it). --stop ends it; an
-agent may stop it only with no review comment left.`,
-	examples: []string{"wp pr babysit 12 --model opus", "wp pr babysit 12 --stop"},
+	about: `Watches a pull request until merge and dispatches fresh sessions for failed
+checks, conflicts and review comments (escalating model, then assessor if
+needed). wp ship starts this automatically. --notify wakes you on merge too;
+--blocking wakes you within minutes (if other work waits on it); --stop ends it.`,
+	examples: []string{"wp pr babysit 12 --model opus", "wp pr babysit 12 --status", "wp pr babysit 12 --stop"},
 	run:      cmdPRBabysit,
 }
 
 var prTodoCmd = &command{
-	name: "todo", args: "[N...]",
+	name: "todo", aliases: []string{"findings"}, args: "[N...]",
 	summary: "what is left to do: failed checks, conflicts, comments, findings",
-	about: `Failed checks with their failing log, conflicts, and each review comment
-not dealt with (id c12, author, file:line, text), and audit findings still to
-do (id like 12.3, closed with wp audit mark). Answer comments with wp pr
-ack and wp pr fixed.`,
+	about: `Shows failed check logs, conflicts, unresolved review comments (id c12),
+and open audit findings (id 12.3). Mark comments with wp pr fixed or wp pr ack,
+and audit findings with wp audit mark.`,
 	examples: []string{"wp pr todo 12"},
 	run:      cmdPRTodo,
 }
 
 var prAckCmd = &command{
-	name: "ack", args: "ID… --accept|--reject|--partial|--defer|--needs-person [-m WHY]",
-	summary: "give a verdict on review comments (accept, reject, partial, defer, needs person)",
-	about: `Ids come from wp pr todo. --reject (wrong or not worth doing) and --partial
-reply with -m and stop the comment blocking the merge; --defer (real, but
-this task doesn't need it) files one follow-up task for the comments, replies
-with its key and resolves the threads; --needs-person hands the comment to
-the assessor, which settles it or asks its owner. Accepted comments still
-need wp pr fixed.`,
-	examples: []string{"wp pr ack c12 c13 --accept", `wp pr ack c14 --reject -m "the cache is per request, so it can't go stale"`,
+	name: "ack", args: "ID… --accept|--reject|--partial|--defer|--needs-person|--fixed [-m WHY]",
+	summary: "give a verdict on review comments (accept, reject, partial, defer, needs person, fixed)",
+	about: `Ids come from wp pr todo. --reject and --partial post -m and unblock merge;
+--defer files a follow-up task and resolves the thread; --needs-person escalates
+to the assessor; --fixed marks committed fixes in one step (same as wp pr fixed).`,
+	examples: []string{"wp pr ack c12 c13 --accept", "wp pr ack c12 --fixed -m \"fixed in abc1234\"", `wp pr ack c14 --reject -m "the cache is per request, so it can't go stale"`,
 		`wp pr ack c15 --defer -m "a retry policy for every forge call is its own change"`},
 	run: cmdPRAck,
 }
 
 var prFixedCmd = &command{
 	name: "fixed", args: "ID… [-m NOTE]",
-	summary: "say review comments are fixed",
-	about: `Marks comments fixed and resolves their threads where the forge allows.
-Run it after committing the fix (refused with uncommitted changes); -m posts
-a reply. Not pushed yet: marked being fixed until the push arrives.`,
-	examples: []string{"wp pr fixed c12 c13"},
+	summary: "mark review comments fixed (no wp pr ack --accept needed first)",
+	about: `Marks review comments fixed and resolves their threads where the forge allows.
+Commit the fix first (refused with uncommitted changes); -m posts a reply.
+Works directly without running wp pr ack --accept first.`,
+	examples: []string{"wp pr fixed c12 c13", `wp pr fixed c12 -m "validated in handler"`},
 	run:      cmdPRFixed,
 }
 
@@ -299,7 +288,9 @@ func cmdPRAck(c *cli, args []string) error {
 	partial := fs.Bool("partial", false, "partly right (😕, a reply saying what you take)")
 	deferIt := fs.Bool("defer", false, "real, but not this task's (👀, files a follow-up task and resolves the thread)")
 	person := fs.Bool("needs-person", false, "for a person: the assessor takes it next (😕, a reply saying what)")
-	note := fs.String("m", "", "why (`WHY`), the reply; required but for --accept")
+	fixed := fs.Bool("fixed", false, "already fixed in a commit (same as wp pr fixed)")
+	note := fs.String("message", "", "why (`WHY`), the reply; required except for --accept and --fixed")
+	short(fs, "m", "message")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
@@ -308,16 +299,19 @@ func cmdPRAck(c *cli, args []string) error {
 	for _, v := range []struct {
 		on   bool
 		name string
-	}{{*accept, "accepted"}, {*reject, "rejected"}, {*partial, "partial"}, {*deferIt, "deferred"}, {*person, "needs_person"}} {
+	}{{*accept, "accepted"}, {*reject, "rejected"}, {*partial, "partial"}, {*deferIt, "deferred"}, {*person, "needs_person"}, {*fixed, "fixed"}} {
 		if v.on {
 			verdicts = append(verdicts, v.name)
 		}
 	}
 	if len(verdicts) != 1 {
-		return c.usage("give one of --accept, --reject, --partial, --defer, --needs-person")
+		return c.usage("give one of --accept, --reject, --partial, --defer, --needs-person, --fixed")
 	}
 	if len(pos) == 0 {
 		return c.usage("name the review comments (like c12; wp pr todo lists them)")
+	}
+	if verdicts[0] == "fixed" {
+		return c.markCommentsFixed(pos, *note)
 	}
 	if verdicts[0] != "accepted" && strings.TrimSpace(*note) == "" {
 		return c.usage("say why with -m: it is the reply on the comment")
@@ -331,7 +325,8 @@ func cmdPRAck(c *cli, args []string) error {
 
 func cmdPRFixed(c *cli, args []string) error {
 	fs := c.flags()
-	note := fs.String("m", "", "a reply (`NOTE`)")
+	note := fs.String("message", "", "a reply (`NOTE`)")
+	short(fs, "m", "message")
 	pos, err := c.parse(fs, args)
 	if err != nil {
 		return err
@@ -339,11 +334,15 @@ func cmdPRFixed(c *cli, args []string) error {
 	if len(pos) == 0 {
 		return c.usage("name the review comments (like c12; wp pr todo lists them)")
 	}
+	return c.markCommentsFixed(pos, *note)
+}
+
+func (c *cli) markCommentsFixed(ids []string, note string) error {
 	sha, _ := localGit("rev-parse", "HEAD")
 	if dirty, err := localGit("status", "--porcelain", "--untracked-files=no"); err == nil && strings.TrimSpace(dirty) != "" {
 		return c.usage("commit the fix first: there are uncommitted changes here")
 	}
-	raw, err := c.call("POST", "/api/v1/review-comments/fixed", map[string]any{"ids": pos, "note": *note, "sha": strings.TrimSpace(sha)})
+	raw, err := c.call("POST", "/api/v1/review-comments/fixed", map[string]any{"ids": ids, "note": note, "sha": strings.TrimSpace(sha)})
 	if err != nil {
 		return err
 	}
@@ -667,28 +666,30 @@ func (st *roundStats) classText() string {
 // helperStat is how one Haiku helper around the review rounds' audits did
 // (core.AgainHelperStat).
 type helperStat struct {
-	Check             string  `json:"check"`
-	Runs              int     `json:"runs"`
-	Done              int     `json:"done"`
-	Failed            int     `json:"failed"`
-	Skipped           int     `json:"skipped"`
-	Partial           int     `json:"partial"`
-	Stopped           int     `json:"stopped"`
-	Answered          int     `json:"answered"`
-	Raised            int     `json:"raised"`
-	Added             int     `json:"added"`
-	Fixed             int     `json:"fixed"`
-	Rejected          int     `json:"rejected"`
-	CostUSD           float64 `json:"cost_usd"`
-	Confirmed         int     `json:"confirmed"`
-	Refuted           int     `json:"refuted"`
-	Unsupported       int     `json:"unsupported"`
-	RefutedHeld       int     `json:"refuted_held"`
-	ConfirmedRejected int     `json:"confirmed_rejected"`
-	Reasked           int     `json:"reasked"`
-	Overturned        int     `json:"overturned"`
-	Filed             int     `json:"filed"`
-	RefutedFiled      int     `json:"refuted_filed"`
+	Check               string  `json:"check"`
+	Runs                int     `json:"runs"`
+	Done                int     `json:"done"`
+	Failed              int     `json:"failed"`
+	Skipped             int     `json:"skipped"`
+	Partial             int     `json:"partial"`
+	Stopped             int     `json:"stopped"`
+	Answered            int     `json:"answered"`
+	Raised              int     `json:"raised"`
+	Added               int     `json:"added"`
+	Fixed               int     `json:"fixed"`
+	Rejected            int     `json:"rejected"`
+	CostUSD             float64 `json:"cost_usd"`
+	Confirmed           int     `json:"confirmed"`
+	Refuted             int     `json:"refuted"`
+	Unsupported         int     `json:"unsupported"`
+	RefutedHeld         int     `json:"refuted_held"`
+	ConfirmedRejected   int     `json:"confirmed_rejected"`
+	Reasked             int     `json:"reasked"`
+	Overturned          int     `json:"overturned"`
+	Filed               int     `json:"filed"`
+	RefutedFiled        int     `json:"refuted_filed"`
+	UnansweredFailed    int     `json:"unanswered_failed"`
+	UnansweredCancelled int     `json:"unanswered_cancelled"`
 }
 
 // helperStatsText is the helpers' table: each panel check's runs, leads
@@ -718,7 +719,22 @@ func helperStatsText(hs []helperStat) string {
 			fmt.Fprintf(&b, "%s: %d runs failed in part, %d stopped with their job (counted in RUNS, not DONE or FAILED).\n", h.Check, h.Partial, h.Stopped)
 		}
 		if h.Check != "verify" && h.Done > h.Answered {
-			fmt.Fprintf(&b, "%s: %d done runs went with a reviewer that didn't answer; RAISED counts only the %d whose reviewer did.\n", h.Check, h.Done-h.Answered, h.Answered)
+			unans := h.Done - h.Answered
+			var why []string
+			if h.UnansweredFailed > 0 {
+				why = append(why, fmt.Sprintf("%d reviewer/provider failed", h.UnansweredFailed))
+			}
+			if h.UnansweredCancelled > 0 {
+				why = append(why, fmt.Sprintf("%d cancelled", h.UnansweredCancelled))
+			}
+			if other := unans - h.UnansweredFailed - h.UnansweredCancelled; other > 0 && len(why) > 0 {
+				why = append(why, fmt.Sprintf("%d retry/other", other))
+			}
+			detail := ""
+			if len(why) > 0 {
+				detail = " (" + strings.Join(why, ", ") + ")"
+			}
+			fmt.Fprintf(&b, "%s: %d done runs went with a reviewer that didn't answer%s; RAISED counts only the %d whose reviewer did.\n", h.Check, unans, detail, h.Answered)
 		}
 	}
 	if v := verify; v != nil && v.Confirmed+v.Refuted+v.Unsupported > 0 {
