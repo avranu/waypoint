@@ -137,9 +137,16 @@ func callerName(skip int) string {
 	if f == nil {
 		return "unknown"
 	}
-	name := f.Name()
-	name = name[strings.LastIndex(name, "/")+1:]
-	name = strings.TrimPrefix(name, "core.")
+	return operationName(f.Name())
+}
+
+// operationName shortens a function's full name to the operation's name:
+// "git.example.net/…/core.(*Service).CreateIssue.func1" and
+// "git.example.net/…/email.(*Service).SetEmailSettings" give "CreateIssue" and
+// "SetEmailSettings". Any package's Service is the same.
+func operationName(full string) string {
+	name := full[strings.LastIndex(full, "/")+1:]
+	_, name, _ = strings.Cut(name, ".") // the package: core, email, …
 	name = strings.TrimPrefix(name, "(*Service).")
 	name, _, _ = strings.Cut(name, ".")
 	return name

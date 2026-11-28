@@ -214,11 +214,30 @@ func kernelNamed(t types.Type, name string) bool {
 }
 
 // isClockHolder says whether t is a type that carries the clock and the
-// transaction: a Service (core's or a domain's), core's tx wrapper, or the
-// kernel's Tx and Kernel.
+// transaction: a Service (core's or a domain's), core's tx wrapper, the
+// kernel's Tx and Kernel, or a struct holding the Kernel.
 func isClockHolder(t types.Type) bool {
 	n := typeName(t)
-	return n == "Service" || n == "tx" || kernelNamed(t, "Tx") || kernelNamed(t, "Kernel")
+	return n == "Service" || n == "tx" || kernelNamed(t, "Tx") || kernelNamed(t, "Kernel") || holdsKernel(t)
+}
+
+// holdsKernel says whether t is a struct with a *kernel.Kernel field: a
+// domain's type that other domains call without an access check (email's
+// Mailer) is built on the kernel as its Service is.
+func holdsKernel(t types.Type) bool {
+	if p, ok := types.Unalias(t).(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	st, ok := t.Underlying().(*types.Struct)
+	if !ok {
+		return false
+	}
+	for i := 0; i < st.NumFields(); i++ {
+		if kernelNamed(st.Field(i).Type(), "Kernel") {
+			return true
+		}
+	}
+	return false
 }
 
 // coreRecv says whether fn is a method of a Service, core's tx, or the

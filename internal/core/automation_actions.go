@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core/email"
 )
 
 func legacyRun(c *StepCtx) error { return c.S.runAction(c) }
@@ -136,7 +138,7 @@ func registerActions() {
 			messageTpl(false),
 		},
 		Check: func(r *Rule, a *Action) error {
-			to, err := parseRecipients(anyString(a.Extra["to"]))
+			to, err := email.ParseRecipients(anyString(a.Extra["to"]))
 			if err != nil {
 				return err
 			}
