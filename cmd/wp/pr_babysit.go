@@ -666,28 +666,30 @@ func (st *roundStats) classText() string {
 // helperStat is how one Haiku helper around the review rounds' audits did
 // (core.AgainHelperStat).
 type helperStat struct {
-	Check             string  `json:"check"`
-	Runs              int     `json:"runs"`
-	Done              int     `json:"done"`
-	Failed            int     `json:"failed"`
-	Skipped           int     `json:"skipped"`
-	Partial           int     `json:"partial"`
-	Stopped           int     `json:"stopped"`
-	Answered          int     `json:"answered"`
-	Raised            int     `json:"raised"`
-	Added             int     `json:"added"`
-	Fixed             int     `json:"fixed"`
-	Rejected          int     `json:"rejected"`
-	CostUSD           float64 `json:"cost_usd"`
-	Confirmed         int     `json:"confirmed"`
-	Refuted           int     `json:"refuted"`
-	Unsupported       int     `json:"unsupported"`
-	RefutedHeld       int     `json:"refuted_held"`
-	ConfirmedRejected int     `json:"confirmed_rejected"`
-	Reasked           int     `json:"reasked"`
-	Overturned        int     `json:"overturned"`
-	Filed             int     `json:"filed"`
-	RefutedFiled      int     `json:"refuted_filed"`
+	Check               string  `json:"check"`
+	Runs                int     `json:"runs"`
+	Done                int     `json:"done"`
+	Failed              int     `json:"failed"`
+	Skipped             int     `json:"skipped"`
+	Partial             int     `json:"partial"`
+	Stopped             int     `json:"stopped"`
+	Answered            int     `json:"answered"`
+	Raised              int     `json:"raised"`
+	Added               int     `json:"added"`
+	Fixed               int     `json:"fixed"`
+	Rejected            int     `json:"rejected"`
+	CostUSD             float64 `json:"cost_usd"`
+	Confirmed           int     `json:"confirmed"`
+	Refuted             int     `json:"refuted"`
+	Unsupported         int     `json:"unsupported"`
+	RefutedHeld         int     `json:"refuted_held"`
+	ConfirmedRejected   int     `json:"confirmed_rejected"`
+	Reasked             int     `json:"reasked"`
+	Overturned          int     `json:"overturned"`
+	Filed               int     `json:"filed"`
+	RefutedFiled        int     `json:"refuted_filed"`
+	UnansweredFailed    int     `json:"unanswered_failed"`
+	UnansweredCancelled int     `json:"unanswered_cancelled"`
 }
 
 // helperStatsText is the helpers' table: each panel check's runs, leads
@@ -717,7 +719,22 @@ func helperStatsText(hs []helperStat) string {
 			fmt.Fprintf(&b, "%s: %d runs failed in part, %d stopped with their job (counted in RUNS, not DONE or FAILED).\n", h.Check, h.Partial, h.Stopped)
 		}
 		if h.Check != "verify" && h.Done > h.Answered {
-			fmt.Fprintf(&b, "%s: %d done runs went with a reviewer that didn't answer; RAISED counts only the %d whose reviewer did.\n", h.Check, h.Done-h.Answered, h.Answered)
+			unans := h.Done - h.Answered
+			var why []string
+			if h.UnansweredFailed > 0 {
+				why = append(why, fmt.Sprintf("%d reviewer/provider failed", h.UnansweredFailed))
+			}
+			if h.UnansweredCancelled > 0 {
+				why = append(why, fmt.Sprintf("%d cancelled", h.UnansweredCancelled))
+			}
+			if other := unans - h.UnansweredFailed - h.UnansweredCancelled; other > 0 {
+				why = append(why, fmt.Sprintf("%d retry/other", other))
+			}
+			detail := ""
+			if len(why) > 0 {
+				detail = " (" + strings.Join(why, ", ") + ")"
+			}
+			fmt.Fprintf(&b, "%s: %d done runs went with a reviewer that didn't answer%s; RAISED counts only the %d whose reviewer did.\n", h.Check, unans, detail, h.Answered)
 		}
 	}
 	if v := verify; v != nil && v.Confirmed+v.Refuted+v.Unsupported > 0 {

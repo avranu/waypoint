@@ -9,6 +9,9 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
+
+	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
 
 const (
@@ -305,6 +308,112 @@ func escapeProofs(rows []*Escape) (out []EscapeProof, pending int) {
 	return out, pending
 }
 
+var (
+	noBuildUndefRE      = lazyre.New(`\bundefined:\s+(?:[A-Za-z_][A-Za-z0-9_]*\.)*([A-Za-z_][A-Za-z0-9_]*)`)
+	noBuildFieldUndefRE = lazyre.New(`\.([A-Za-z_][A-Za-z0-9_]*)\s+undefined\b`)
+	noBuildUnknownFldRE = lazyre.New(`\bunknown field\s+([A-Za-z_][A-Za-z0-9_]*)\b`)
+)
+
+// ClassifyNoBuildNote classifies why a fix's tests failed to compile on base
+// (N25, WP-911): distinguishing tests tied to brand-new unexported helpers from
+// signature changes or new exported APIs.
+func ClassifyNoBuildNote(note string) string {
+	if strings.TrimSpace(note) == "" {
+		return "other"
+	}
+	var sawUnexported, sawExported bool
+	checkSym := func(sym string) {
+		if sym == "" {
+			return
+		}
+		r := rune(sym[0])
+		if unicode.IsLower(r) || r == '_' {
+			sawUnexported = true
+		} else if unicode.IsUpper(r) {
+			sawExported = true
+		}
+	}
+	for _, m := range noBuildUndefRE.FindAllStringSubmatch(note, -1) {
+		checkSym(m[1])
+	}
+	for _, m := range noBuildFieldUndefRE.FindAllStringSubmatch(note, -1) {
+		checkSym(m[1])
+	}
+	for _, m := range noBuildUnknownFldRE.FindAllStringSubmatch(note, -1) {
+		checkSym(m[1])
+	}
+	if sawUnexported {
+		return "unexported_symbol"
+	}
+	if strings.Contains(note, "too many arguments in call to") ||
+		strings.Contains(note, "not enough arguments in call to") ||
+		strings.Contains(note, "in argument to") ||
+		strings.Contains(note, "assignment mismatch:") ||
+		strings.Contains(note, "multiple-value ") ||
+		strings.Contains(note, "in return statement") {
+		return "signature_change"
+	}
+	if sawExported {
+		return "exported_api"
+	}
+	return "other"
+}
+
+func noBuildCauseLabel(cause string) string {
+	switch cause {
+	case "unexported_symbol":
+		return "tests new unexported symbol"
+	case "signature_change":
+		return "tests changed call signature"
+	case "exported_api":
+		return "tests new exported symbol"
+	default:
+		return ""
+	}
+}
+
+// escapeNoBuildCauses breaks down no_build fixes by compiler failure cause.
+func escapeNoBuildCauses(rows []*Escape) []EscapeProof {
+	blamed := map[int64]bool{}
+	for _, e := range rows {
+		if e.introPR != 0 && e.confident() {
+			blamed[e.introPR] = true
+		}
+	}
+	by := map[string]*EscapeProof{}
+	seen := map[int64]bool{}
+	for _, e := range rows {
+		if e.Proof != "no_build" || seen[e.pr] {
+			continue
+		}
+		seen[e.pr] = true
+		cause := ClassifyNoBuildNote(e.ProofNote)
+		g := by[cause]
+		if g == nil {
+			g = &EscapeProof{Outcome: cause}
+			by[cause] = g
+		}
+		g.Fixes++
+		if blamed[e.pr] {
+			g.Refixed++
+		}
+	}
+	if len(by) == 0 {
+		return nil
+	}
+	out := make([]EscapeProof, 0, len(by))
+	for _, g := range by {
+		out = append(out, *g)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Fixes != out[j].Fixes {
+			return out[i].Fixes > out[j].Fixes
+		}
+		return out[i].Outcome < out[j].Outcome
+	})
+	return out
+}
+
 // fixProofLine is the one line a pull request's detail shows about its
 // proof, "" when it has none.
 func fixProofLine(ctx context.Context, q queryer, pr int64) (string, error) {
@@ -330,6 +439,9 @@ func ProofText(outcome string, failed []string, intro, check, note string) strin
 		line = "not proven: its tests pass without the fix too"
 	case "no_build":
 		line = "not proven: its tests don't build without the fix"
+		if lbl := noBuildCauseLabel(ClassifyNoBuildNote(note)); lbl != "" {
+			line += " (" + lbl + ")"
+		}
 	case "head_fails":
 		line = "not proven: its tests fail on the fix itself"
 	case "no_test":

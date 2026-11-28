@@ -616,40 +616,41 @@ func (s *Service) sweepProjectMistakes(ctx context.Context, p *Project) error {
 	if err != nil {
 		return err
 	}
-	if len(items) == 0 {
-		return nil
-	}
-	items = slices.DeleteFunc(items, func(m *mistake) bool { return seen[m.ref()] || len(m.keys) == 0 })
-	plan := planMistakes(items, classes)
-	if len(plan.attach) > 0 {
-		err := s.write(ctx, SystemActor(), func(t *tx) error {
-			for id, list := range plan.attach {
-				if err := t.addMistakes(ctx, id, list); err != nil {
+	if len(items) > 0 {
+		items = slices.DeleteFunc(items, func(m *mistake) bool { return seen[m.ref()] || len(m.keys) == 0 })
+		plan := planMistakes(items, classes)
+		if len(plan.attach) > 0 {
+			err := s.write(ctx, SystemActor(), func(t *tx) error {
+				for id, list := range plan.attach {
+					if err := t.addMistakes(ctx, id, list); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+		if !off {
+			var filed int
+			if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM mistake_classes WHERE project_id = ? AND created_at >= ?`,
+				p.ID, now.Add(-24*time.Hour).UnixMilli()).Scan(&filed); err != nil {
+				return err
+			}
+			for _, g := range plan.fresh {
+				if filed >= mistakeFilesPerDay {
+					break
+				}
+				if err := s.fileMistakeClass(ctx, p, g); err != nil {
 					return err
 				}
+				filed++
 			}
-			return nil
-		})
-		if err != nil {
-			return err
 		}
 	}
-	if off {
-		return nil
-	}
-	var filed int
-	if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM mistake_classes WHERE project_id = ? AND created_at >= ?`,
-		p.ID, now.Add(-24*time.Hour).UnixMilli()).Scan(&filed); err != nil {
-		return err
-	}
-	for _, g := range plan.fresh {
-		if filed >= mistakeFilesPerDay {
-			break
-		}
-		if err := s.fileMistakeClass(ctx, p, g); err != nil {
-			return err
-		}
-		filed++
+	if err := s.escalateMistakePriorities(ctx, p.ID); err != nil {
+		s.log.WarnContext(ctx, "escalate recurring mistake priorities", "project", p.Key, "err", err)
 	}
 	return nil
 }
@@ -858,7 +859,91 @@ type MistakeClass struct {
 	LastAt   *time.Time `json:"last_at,omitempty"`
 }
 
-// MistakeClasses lists a project's recurring mistakes, newest first.
+// Mistake escalation thresholds (N25): open recurring-mistake tasks start at
+// low priority (behind planned work) and escalate only upward when instances
+// keep piling up without a check landing.
+const (
+	mistakeEscalateMedium = 10
+	mistakeEscalateHigh   = 20
+)
+
+func (s *Service) escalateMistakePriorities(ctx context.Context, projectID int64) error {
+	// Aggregate MAX class instance count per issue_id so multiple classes linked
+	// to one issue never overwrite each other's escalation.
+	rows, err := s.db.R.QueryContext(ctx, `SELECT i.id, i.project_id, pj.key || '-' || i.number, MAX(cc.n)
+		FROM (
+			SELECT c.issue_id, count(m.id) AS n
+			FROM mistake_classes c
+			JOIN mistake_instances m ON m.class_id = c.id
+			WHERE c.project_id = ? AND c.issue_id IS NOT NULL
+			GROUP BY c.id
+			HAVING count(m.id) >= ?
+		) cc
+		JOIN issues i ON i.id = cc.issue_id
+		JOIN projects pj ON pj.id = i.project_id
+		JOIN statuses st ON st.id = i.status_id
+		WHERE st.category NOT IN ('done', 'canceled')
+		GROUP BY i.id`, projectID, mistakeEscalateMedium)
+	if err != nil {
+		return err
+	}
+	type cand struct {
+		id        int64
+		projectID int64
+		key       string
+		count     int
+	}
+	var list []cand
+	for rows.Next() {
+		var x cand
+		if err := rows.Scan(&x.id, &x.projectID, &x.key, &x.count); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		list = append(list, x)
+	}
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil || len(list) == 0 {
+		return err
+	}
+	return s.write(ctx, SystemActor(), func(t *tx) error {
+		for _, x := range list {
+			// Priorities are 0=none, 1=low, 2=medium, 3=high, 4=urgent (issues.go);
+			// re-read inside the write tx and guard the UPDATE with priority < want
+			// and open status so human-raised priority or closed issues are never overwritten.
+			want := 2 // medium
+			if x.count >= mistakeEscalateHigh {
+				want = 3 // high
+			}
+			var cur int
+			var cat string
+			if err := t.QueryRowContext(ctx, `SELECT i.priority, st.category FROM issues i JOIN statuses st ON st.id = i.status_id WHERE i.id = ?`, x.id).Scan(&cur, &cat); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					continue
+				}
+				return err
+			}
+			if cur >= want || cat == "done" || cat == "canceled" {
+				continue
+			}
+			res, err := t.ExecContext(ctx, `UPDATE issues SET priority = ?, updated_at = ?
+				WHERE id = ? AND priority < ? AND status_id IN (SELECT id FROM statuses WHERE category NOT IN ('done', 'canceled'))`,
+				want, s.nowMS(), x.id, want)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n > 0 {
+				t.emit(&Event{Kind: EvIssueUpdated, ProjectID: x.projectID, IssueID: x.id, IssueKey: x.key, Field: "priority", Old: PriorityName(cur), New: PriorityName(want)})
+			}
+		}
+		return nil
+	})
+}
+
+// MistakeClasses lists a project's recurring mistakes: open classes first by
+// instance count descending so the highest-churn unresolved classes stay visible,
+// then landed and declined classes newest first (N25).
 func (s *Service) MistakeClasses(ctx context.Context, a *Actor, project string) ([]*MistakeClass, error) {
 	p, err := s.projectByRef(ctx, s.db.R, project)
 	if err != nil {
@@ -871,7 +956,10 @@ func (s *Service) MistakeClasses(ctx context.Context, a *Actor, project string) 
 			count(m.id), coalesce(sum(st.category = 'done' AND i.resolved_at IS NOT NULL AND m.at > i.resolved_at), 0), max(m.at)
 		FROM mistake_classes c LEFT JOIN mistake_instances m ON m.class_id = c.id
 		LEFT JOIN issues i ON i.id = c.issue_id LEFT JOIN projects pj ON pj.id = i.project_id LEFT JOIN statuses st ON st.id = i.status_id
-		WHERE c.project_id = ? GROUP BY c.id ORDER BY c.created_at DESC, c.id DESC`, p.ID)
+		WHERE c.project_id = ? GROUP BY c.id
+		ORDER BY CASE WHEN coalesce(st.category, '') NOT IN ('done', 'canceled', '') THEN 0 ELSE 1 END,
+			CASE WHEN coalesce(st.category, '') NOT IN ('done', 'canceled', '') THEN count(m.id) ELSE 0 END DESC,
+			c.created_at DESC, c.id DESC`, p.ID)
 	if err != nil {
 		return nil, err
 	}

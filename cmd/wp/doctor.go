@@ -116,6 +116,8 @@ func (c *cli) setupChecks() []doctorCheck {
 
 	c.checkRepo(signedIn, add)
 	c.checkHooks(add)
+	c.checkGuardLog(add)
+	c.checkMemoryHealth(add)
 	c.checkRunner(signedIn, add)
 	checkAgentCLIs(add)
 	return checks
@@ -274,6 +276,135 @@ func (c *cli) checkHooks(add addCheck) {
 	default:
 		add(checkWarn, "hooks", "not installed in %s: wp hook claude", res.path)
 	}
+}
+
+// checkGuardLog surfaces high recent claude-guard denial volume so false
+// positives or misconfigured repos don't go unnoticed (N25).
+func (c *cli) checkGuardLog(add addCheck) {
+	if c.dir == "" {
+		return
+	}
+	rep, err := readGuardStats(c.dir, 7, 3, time.Now().UTC())
+	if err != nil {
+		add(checkWarn, "guard log", "could not read %s: %v", filepath.Join(c.dir, "guard.log"), err)
+		return
+	}
+	if rep.Total == 0 {
+		return
+	}
+	top := ""
+	if len(rep.ByRule) > 0 {
+		top = fmt.Sprintf(" (top: %s %d)", rep.ByRule[0].Key, rep.ByRule[0].Count)
+	}
+	if rep.Total >= 25 {
+		add(checkWarn, "guard log", "%d entries in last 7d%s: wp guard stats", rep.Total, top)
+		return
+	}
+	add(checkInfo, "guard log", "%d entries in last 7d%s: wp guard stats", rep.Total, top)
+}
+
+// checkMemoryHealth flags bloated or duplicate Claude Code MEMORY.md files for
+// the current repository (N25). Silent when Claude Code is absent or no
+// MEMORY.md exists.
+func (c *cli) checkMemoryHealth(add addCheck) {
+	if !claudeInstalled() {
+		return
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	top := gitMainRoot(cwd)
+	if top == "" {
+		return
+	}
+	memPath := claudeMemoryPath(top)
+	if memPath == "" {
+		return
+	}
+	raw, err := os.ReadFile(memPath) // #nosec G304 -- local Claude memory file for current repo
+	if err != nil {
+		return
+	}
+	lines, dupes := analyzeMemoryMD(string(raw))
+	switch {
+	case lines >= 180 && dupes > 0:
+		add(checkWarn, "claude memory", "%s has %d lines (truncates at 200) and %d duplicate entries", memPath, lines, dupes)
+	case lines >= 180:
+		add(checkWarn, "claude memory", "%s has %d lines (Claude Code truncates MEMORY.md at 200 lines)", memPath, lines)
+	case dupes >= 3:
+		add(checkWarn, "claude memory", "%s has %d duplicate entries: trim stale duplicates", memPath, dupes)
+	}
+}
+
+// gitMainRoot returns the main repository checkout root even when cwd is inside
+// a linked git worktree, matching how Claude Code resolves its project memory dir.
+func gitMainRoot(cwd string) string {
+	if common, err := gitOutput(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"); err == nil && filepath.Base(common) == ".git" {
+		return filepath.Dir(common)
+	}
+	return gitTop(cwd)
+}
+
+func claudeMemoryPath(repoTop string) string {
+	root := claudeDir("")
+	if root == "" || repoTop == "" {
+		return ""
+	}
+	return filepath.Join(root, "projects", projectDirName(filepath.Clean(repoTop)), "memory", "MEMORY.md")
+}
+
+// analyzeMemoryMD counts total lines (matching Claude Code's 200-line truncation
+// limit) and duplicate substantive bullet/prose lines (ignoring headings,
+// horizontal rules, table separator rules, fenced code blocks, and blank lines).
+func analyzeMemoryMD(text string) (totalLines, duplicates int) {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if text == "" {
+		return 0, 0
+	}
+	seen := map[string]int{}
+	fence := ""
+	for _, raw := range lines {
+		s := strings.TrimSpace(raw)
+		if fence != "" {
+			if strings.HasPrefix(s, fence) {
+				fence = ""
+			}
+			continue
+		}
+		if strings.HasPrefix(s, "```") {
+			fence = "```"
+			continue
+		}
+		if strings.HasPrefix(s, "~~~") {
+			fence = "~~~"
+			continue
+		}
+		if s == "" || strings.HasPrefix(s, "#") || s == "---" || s == "***" || isMarkdownTableRule(s) {
+			continue
+		}
+		norm := strings.ToLower(strings.Join(strings.Fields(s), " "))
+		if len(norm) < 20 {
+			continue
+		}
+		seen[norm]++
+		if seen[norm] > 1 {
+			duplicates++
+		}
+	}
+	return len(lines), duplicates
+}
+
+func isMarkdownTableRule(s string) bool {
+	if !strings.Contains(s, "|") || !strings.Contains(s, "-") {
+		return false
+	}
+	for _, r := range s {
+		if r != '|' && r != '-' && r != ':' && r != ' ' && r != '\t' {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *cli) checkRunner(signedIn bool, add addCheck) {

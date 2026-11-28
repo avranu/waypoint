@@ -979,17 +979,22 @@ type AgainHelperStat struct {
 	Stopped int    `json:"stopped,omitempty"`
 	// Answered: done runs whose attempt's reviewer answered; Raised counts
 	// their problems only (an unanswered attempt's went to no finding).
-	Answered          int     `json:"answered"`
-	Raised            int     `json:"raised"`
-	Added             int     `json:"added"`
-	Fixed             int     `json:"fixed"`
-	Rejected          int     `json:"rejected"`
-	CostUSD           float64 `json:"cost_usd"`
-	Confirmed         int     `json:"confirmed,omitempty"`
-	Refuted           int     `json:"refuted,omitempty"`
-	Unsupported       int     `json:"unsupported,omitempty"`
-	RefutedHeld       int     `json:"refuted_held,omitempty"`
-	ConfirmedRejected int     `json:"confirmed_rejected,omitempty"`
+	// UnansweredFailed and UnansweredCancelled split the unanswered done runs
+	// by the parent audit's fate so provider outages aren't conflated with
+	// Waypoint cancellations (N25).
+	Answered            int     `json:"answered"`
+	UnansweredFailed    int     `json:"unanswered_failed,omitempty"`
+	UnansweredCancelled int     `json:"unanswered_cancelled,omitempty"`
+	Raised              int     `json:"raised"`
+	Added               int     `json:"added"`
+	Fixed               int     `json:"fixed"`
+	Rejected            int     `json:"rejected"`
+	CostUSD             float64 `json:"cost_usd"`
+	Confirmed           int     `json:"confirmed,omitempty"`
+	Refuted             int     `json:"refuted,omitempty"`
+	Unsupported         int     `json:"unsupported,omitempty"`
+	RefutedHeld         int     `json:"refuted_held,omitempty"`
+	ConfirmedRejected   int     `json:"confirmed_rejected,omitempty"`
 	// Reasked: refuted findings the check of findings asked about again;
 	// Overturned: of them, the ones the second answer didn't refute (so
 	// they stand unsupported).
@@ -1019,6 +1024,8 @@ func (s *Service) againHelperStats(ctx context.Context, ivis string, iargs []any
 	// #nosec G202 -- fixed conditions; values are bound
 	rows, err := s.db.R.QueryContext(ctx, `SELECT h.check_name, count(*), sum(h.state = 'done'), sum(h.state = 'failed'), sum(h.state = 'skipped'),
 			sum(h.state = 'partial'), sum(h.state = 'stopped'), sum(h.state = 'done' AND h.answered),
+			sum(h.state = 'done' AND NOT h.answered AND a.status IN ('failed', 'limited')),
+			sum(h.state = 'done' AND NOT h.answered AND a.status = 'cancelled'),
 			sum(CASE WHEN h.answered THEN json_array_length(h.leads) + (SELECT count(*) FROM json_each(h.cut) c WHERE
 				json_extract(c.value, '$.why') LIKE 'refuted%' OR json_extract(c.value, '$.why') LIKE 'unsupported%' OR json_extract(c.value, '$.why') LIKE 'check failed%'
 				OR json_extract(c.value, '$.why') LIKE 'not checked%' OR json_extract(c.value, '$.why') LIKE 'confirmed%') ELSE 0 END),
@@ -1032,7 +1039,7 @@ func (s *Service) againHelperStats(ctx context.Context, ivis string, iargs []any
 	for rows.Next() {
 		var name string
 		var st AgainHelperStat
-		if err := rows.Scan(&name, &st.Runs, &st.Done, &st.Failed, &st.Skipped, &st.Partial, &st.Stopped, &st.Answered, &st.Raised, &st.Confirmed, &st.CostUSD); err != nil {
+		if err := rows.Scan(&name, &st.Runs, &st.Done, &st.Failed, &st.Skipped, &st.Partial, &st.Stopped, &st.Answered, &st.UnansweredFailed, &st.UnansweredCancelled, &st.Raised, &st.Confirmed, &st.CostUSD); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}

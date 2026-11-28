@@ -91,6 +91,7 @@ var (
 		{Key: "rounds", Label: "audit findings fixed or confirmed in its review rounds", Log: true, Spread: 0.9, Margin: 0.10},
 		{Key: "fixes", Label: "follow-up fix tasks filed against it", Log: true, Spread: 0.5, Margin: 0.10},
 		{Key: "escapes", Label: "bugs its pull requests shipped, found later", Log: true, Spread: 0.3, Margin: 0.05},
+		{Key: "findings_weighted", Label: "severity-weighted review findings (critical×3, high×2, medium×1)", Log: true, Spread: 0.9, Margin: 0.10},
 	}
 )
 
@@ -357,6 +358,9 @@ func delegValue(o *prepOutcome, r *delegRow, now time.Time) (float64, bool) {
 		return 1, age > delegWithin.Milliseconds()
 	case "findings":
 		return math.Log1p(r.findings), r.done && r.prs > 0
+	case "findings_weighted":
+		w := float64(3*r.severity["critical"] + 2*r.severity["high"] + r.severity["medium"])
+		return math.Log1p(w), r.done && r.prs > 0
 	case "rounds":
 		return math.Log1p(float64(r.audit["fixed"] + r.audit["confirmed"])), r.done
 	case "fixes":
@@ -624,11 +628,12 @@ type DelegationArmReport struct {
 	N        float64 `json:"n"`
 	// Effect on cost against nothing said (log; -0.1 is about 10% less),
 	// its 90% interval, and as text.
-	Effect float64 `json:"effect"`
-	Lo     float64 `json:"lo"`
-	Hi     float64 `json:"hi"`
-	Text   string  `json:"text,omitempty"`
-	Out    string  `json:"out,omitempty"`
+	Effect       float64 `json:"effect"`
+	Lo           float64 `json:"lo"`
+	Hi           float64 `json:"hi"`
+	Text         string  `json:"text,omitempty"`
+	Inconclusive bool    `json:"inconclusive,omitempty"`
+	Out          string  `json:"out,omitempty"`
 	DelegationFigures
 }
 
@@ -658,12 +663,15 @@ type DelegationFigures struct {
 
 // DelegationGuard is one guard's figures for one arm.
 type DelegationGuard struct {
-	Guard string  `json:"guard"`
-	Label string  `json:"label"`
-	Arm   string  `json:"arm"`
-	N     float64 `json:"n"`
-	Text  string  `json:"text"`
-	Worse float64 `json:"p_worse"`
+	Guard        string  `json:"guard"`
+	Label        string  `json:"label"`
+	Arm          string  `json:"arm"`
+	N            float64 `json:"n"`
+	Lo           float64 `json:"lo"`
+	Hi           float64 `json:"hi"`
+	Text         string  `json:"text"`
+	Worse        float64 `json:"p_worse"`
+	Inconclusive bool    `json:"inconclusive,omitempty"`
 }
 
 // DelegationReport is the delegation policy and what came of it.
@@ -720,6 +728,7 @@ func (p *delegPolicy) report(now time.Time) *DelegationReport {
 			a.Effect, _ = p.primary.effect(j)
 			a.Lo, a.Hi = p.primary.interval(j)
 			a.Text = prepEffectText(&delegPrimary, a.Effect, a.Lo, a.Hi)
+			a.Inconclusive = delegInconclusiveNote(a.N, a.Lo, a.Hi) != ""
 			if _, ok := delegArmDef0(arm); !ok && a.Out == "" {
 				a.Out = "no longer drawn"
 			}
@@ -744,8 +753,11 @@ func (p *delegPolicy) report(now time.Time) *DelegationReport {
 			mean, _ := g.fit.effect(j)
 			lo, hi := g.fit.interval(j)
 			o := g.prepOutcome
-			rep.Guards = append(rep.Guards, DelegationGuard{Guard: g.Key, Label: g.Label, Arm: arm, N: g.fit.armN(j),
-				Text: prepEffectText(&o, mean, lo, hi), Worse: g.fit.pWorse(j, g.Margin)})
+			n := g.fit.armN(j)
+			worse := g.fit.pWorse(j, g.Margin)
+			inconclusive := n < prepGuardMin || (lo <= 0 && hi >= 0 && worse < prepGuardP)
+			rep.Guards = append(rep.Guards, DelegationGuard{Guard: g.Key, Label: g.Label, Arm: arm, N: n,
+				Lo: lo, Hi: hi, Text: prepEffectText(&o, mean, lo, hi), Worse: worse, Inconclusive: inconclusive})
 		}
 	}
 	return rep
@@ -825,7 +837,11 @@ func (r *DelegationReport) String() string {
 		fmt.Fprintf(&b, "\n  %s (%s): %.0f%% of new tasks, best with probability %.2f; %d drawn, %d measured (count as %.0f)\n",
 			a.Arm, a.Label, a.Share*100, a.PBest, a.Drawn, a.Measured, a.N)
 		if a.Text != "" {
-			fmt.Fprintf(&b, "    cost against nothing said: %s\n", a.Text)
+			if note := delegInconclusiveNote(a.N, a.Lo, a.Hi); note != "" {
+				fmt.Fprintf(&b, "    cost against nothing said: %s — inconclusive (%s)\n", a.Text, note)
+			} else {
+				fmt.Fprintf(&b, "    cost against nothing said: %s\n", a.Text)
+			}
 		}
 		if a.Out != "" {
 			fmt.Fprintf(&b, "    out: %s\n", a.Out)
@@ -845,10 +861,37 @@ func (r *DelegationReport) String() string {
 	if len(r.Guards) > 0 {
 		b.WriteString("\n  Guards, against nothing said (an arm is out at 0.975 on 20 tasks):\n")
 		for _, g := range r.Guards {
-			fmt.Fprintf(&b, "    %-8s %-56s %s, worse with probability %.2f (%.0f tasks)\n", g.Arm, g.Label, g.Text, g.Worse, g.N)
+			if g.Inconclusive {
+				note := delegInconclusiveNote(g.N, g.Lo, g.Hi)
+				if note == "" {
+					note = fmt.Sprintf("n=%.0f", g.N)
+				}
+				fmt.Fprintf(&b, "    %-8s %-65s %s — inconclusive (%s; p_worse=%.2f)\n", g.Arm, g.Label, g.Text, note, g.Worse)
+				continue
+			}
+			fmt.Fprintf(&b, "    %-8s %-65s %s, worse with probability %.2f (%.0f tasks)\n", g.Arm, g.Label, g.Text, g.Worse, g.N)
 		}
 	}
 	return b.String()
+}
+
+func delegInconclusiveNote(n, lo, hi float64) string {
+	small := n < prepGuardMin
+	crosses := lo <= 0 && hi >= 0
+	nText := fmt.Sprintf("%.0f", n)
+	if small && math.Round(n) >= prepGuardMin {
+		nText = fmt.Sprintf("%.1f", math.Floor(n*10)/10)
+	}
+	switch {
+	case small && crosses:
+		return fmt.Sprintf("n=%s < %.0f, CI crosses 0", nText, prepGuardMin)
+	case small:
+		return fmt.Sprintf("n=%s < %.0f", nText, prepGuardMin)
+	case crosses:
+		return "CI crosses 0"
+	default:
+		return ""
+	}
 }
 
 func delegShareText(m map[string]float64) string {

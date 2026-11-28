@@ -213,14 +213,21 @@ type CIPoint struct {
 
 // ciBoardCache keeps what was read, shared by everyone looking.
 type ciBoardCache struct {
-	mu       sync.Mutex
-	at       time.Time
-	snap     *ciSnapshot
-	history  map[string]*ciHistory
-	runners  map[int64]ciRunners
-	stall    map[string]ciStall
-	tests    map[string][]string
-	building chan struct{}
+	mu         sync.Mutex
+	at         time.Time
+	retryAfter time.Time
+	snap       *ciSnapshot
+	history    map[string]*ciHistory
+	runners    map[int64]ciRunners
+	stall      map[string]ciStall
+	tests      map[string][]string
+	building   *ciBuild
+}
+
+type ciBuild struct {
+	done chan struct{}
+	snap *ciSnapshot
+	err  error
 }
 
 type ciRunners struct {
@@ -301,42 +308,81 @@ func (s *Service) CIBoard(ctx context.Context, actor *Actor) (*CIBoard, error) {
 	return s.layoutCIBoard(ctx, actor, snap), nil
 }
 
+// ciReadTimeout bounds one readCI rebuild so CIDoctor and CIBoard stay well
+// inside the CLI's 60s HTTP timeout even when Forgejo is slow (N25).
+// ciReadRetry backs off after a failed/timed-out rebuild when a prior snapshot
+// exists so concurrent or back-to-back callers don't trigger a 25s rebuild storm.
+var (
+	ciReadTimeout = 25 * time.Second
+	ciReadRetry   = 15 * time.Second
+)
+
 // ciSnapshot returns a snapshot no older than ciBoardFresh; one reader
-// builds it while the others wait.
+// builds it while the others wait. If a rebuild fails or times out and a prior
+// snapshot is available, the prior snapshot is returned (with a retry backoff)
+// so diagnostics degrade gracefully instead of timing out callers. A cancelled
+// caller context always returns ctx.Err() so downstream layout never sees a
+// dead context with err == nil.
 func (s *Service) ciSnapshot(ctx context.Context) (*ciSnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	c := &s.ciBoard
-	for {
-		c.mu.Lock()
-		if c.snap != nil && s.now().Sub(c.at) < ciBoardFresh {
-			snap := c.snap
-			c.mu.Unlock()
-			return snap, nil
-		}
-		if c.building == nil {
-			c.building = make(chan struct{})
-			c.mu.Unlock()
-			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
-			snap, err := s.readCI(rctx)
-			cancel()
+	c.mu.Lock()
+	now := s.now()
+	if c.snap != nil && (now.Sub(c.at) < ciBoardFresh || now.Before(c.retryAfter)) {
+		snap := c.snap
+		c.mu.Unlock()
+		return snap, nil
+	}
+	b := c.building
+	if b == nil {
+		b = &ciBuild{done: make(chan struct{})}
+		c.building = b
+		c.mu.Unlock()
+		go func() {
+			var snap *ciSnapshot
+			var err error
+			completed := false
+			defer func() {
+				if !completed && err == nil {
+					err = errors.New("ci snapshot build panicked")
+				}
+				c.mu.Lock()
+				if err == nil && snap != nil {
+					c.snap, c.at, c.retryAfter = snap, s.now(), time.Time{}
+					b.snap = snap
+				} else if c.snap != nil {
+					c.retryAfter = s.now().Add(ciReadRetry)
+					b.snap = c.snap
+				} else {
+					b.err = err
+				}
+				if c.building == b {
+					c.building = nil
+				}
+				close(b.done)
+				c.mu.Unlock()
+			}()
+			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ciReadTimeout)
+			defer cancel()
+			snap, err = s.readCI(rctx)
 			if err == nil {
 				s.notePoolSaturation(snap)
 			}
-			c.mu.Lock()
-			if err == nil {
-				c.snap, c.at = snap, s.now()
-			}
-			close(c.building)
-			c.building = nil
-			c.mu.Unlock()
-			return snap, err
-		}
-		wait := c.building
+			completed = true
+		}()
+	} else {
 		c.mu.Unlock()
-		select {
-		case <-wait:
-		case <-ctx.Done():
-			return nil, ctx.Err()
+	}
+	select {
+	case <-b.done:
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
+		return b.snap, b.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
@@ -443,6 +489,9 @@ func (s *Service) readCI(ctx context.Context) (*ciSnapshot, error) {
 		snap.runners[id] = s.ciForgeRunners(ctx, cl, f)
 	}
 	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.ciPullRequests(ctx, snap)
 	s.noteCITasks(ctx, snap)
 	return snap, nil
@@ -453,17 +502,19 @@ func (s *Service) ciForgeRunners(ctx context.Context, cl ForgeActions, f *Forge)
 	c.mu.Lock()
 	r, ok := c.runners[f.ID]
 	c.mu.Unlock()
-	if ok && s.now().Sub(r.at) < ciHistoryFresh {
+	if ok && r.err == nil && s.now().Sub(r.at) < ciHistoryFresh {
 		return r
 	}
 	list, err := cl.ActionRunners(ctx, f)
 	r = ciRunners{at: s.now(), list: list, err: err}
-	c.mu.Lock()
-	if c.runners == nil {
-		c.runners = map[int64]ciRunners{}
+	if err == nil {
+		c.mu.Lock()
+		if c.runners == nil {
+			c.runners = map[int64]ciRunners{}
+		}
+		c.runners[f.ID] = r
+		c.mu.Unlock()
 	}
-	c.runners[f.ID] = r
-	c.mu.Unlock()
 	return r
 }
 
@@ -472,7 +523,11 @@ func (s *Service) ciForgeRunners(ctx context.Context, cl ForgeActions, f *Forge)
 func (s *Service) readCIRepo(ctx context.Context, cl ForgeActions, d *ciRepoData, sem chan struct{}) {
 	f, repo := d.ref.forge, d.ref.repo
 	call := func(fn func() error) error {
-		sem <- struct{}{}
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 		defer func() { <-sem }()
 		return fn()
 	}

@@ -365,7 +365,10 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 	if !o.OnlyFiles || len(o.Files) > 0 {
 		var err error
 		if files, err = discoverTranscripts(root, o.Since, o.Files); err != nil {
-			return nil, err
+			if !shouldArchiveHarnesses(o, root) || !hasHarnessTranscriptSources() {
+				return nil, err
+			}
+			files = nil
 		}
 	}
 	st := loadUsageState(c.dir)
