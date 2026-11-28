@@ -190,7 +190,11 @@ func buildSnapshot(in hookEventInput, g gitFacts) *hookSnapshot {
 	b := &snapshotBuilder{in: in, git: g, deadline: start.Add(snapshotBudget), src: map[string]string{}, miss: map[string]string{}, inv: map[string]any{}}
 	b.cfgDir, b.cfgWhy = userConfigDir()
 	hookSrc := "hook:" + in.HookEventName
-	b.sn.Harness, b.src["harness"] = sp("claude"), "constant: the hook is installed for Claude Code"
+	if in.Harness != "" && in.Harness != "claude" {
+		b.sn.Harness, b.src["harness"] = sp(in.Harness), "constant: the hook is installed for "+in.Harness
+	} else {
+		b.sn.Harness, b.src["harness"] = sp("claude"), "constant: the hook is installed for Claude Code"
+	}
 	b.findClaude()
 	b.fromEnvironment()
 	b.fromPayload(hookSrc)

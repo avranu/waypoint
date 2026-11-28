@@ -73,6 +73,9 @@ type hookEventInput struct {
 	// versions that don't say.
 	BackgroundTasks json.RawMessage `json:"background_tasks"`
 	SessionCrons    json.RawMessage `json:"session_crons"`
+	// Harness names the non-Claude harness when invoked via an adapter
+	// (e.g. "antigravity"); empty defaults to "claude".
+	Harness string `json:"-"`
 }
 
 // effortLevel is the effort level of a payload: its `effort.level`, "" when
@@ -503,6 +506,13 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 	if err := json.NewDecoder(io.LimitReader(stdin, 4<<20)).Decode(&in); err != nil || in.SessionID == "" || in.HookEventName == "" {
 		return
 	}
+	hookEventRun(c, in, stdout, noPrompts)
+}
+
+func hookEventRun(c *cli, in hookEventInput, stdout io.Writer, noPrompts bool) {
+	if in.SessionID == "" || in.HookEventName == "" {
+		return
+	}
 	raw := in.Prompt
 	if in.HookEventName == "UserPromptSubmit" {
 		in.Prompt = core.UnwrapPasted(in.Prompt)
@@ -558,7 +568,7 @@ func hookClaudeEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts bool) 
 		}
 		return
 	}
-	ev := sessionEvent{Event: in.HookEventName, At: time.Now().UnixMilli(), SessionID: in.SessionID, Machine: machineName(), CLI: "claude", Cwd: in.Cwd,
+	ev := sessionEvent{Event: in.HookEventName, At: time.Now().UnixMilli(), SessionID: in.SessionID, Machine: machineName(), CLI: cmpStr(in.Harness, "claude"), Cwd: in.Cwd,
 		Task: taskBinding()}
 	var git gitFacts
 	if filepath.IsAbs(in.Cwd) {

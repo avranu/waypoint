@@ -53,6 +53,7 @@ export const AGENT_SUGGESTIONS = [
   'gpt',
   'grok',
   'gemini',
+  'antigravity',
 ]
 
 export type Who = 'anyone' | 'humans' | 'agents'

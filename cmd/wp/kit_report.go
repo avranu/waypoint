@@ -145,8 +145,10 @@ func (c *cli) machineReport() machineReport {
 		}
 		body := string(b)
 		switch {
-		case rel == ".claude.json":
+		case rel == ".claude.json" || rel == ".gemini/config/mcp_config.json":
 			body = mcpNamesOnly(body)
+		case rel == ".gemini/config/hooks.json" || rel == ".agents/hooks.json" || rel == ".agent/hooks.json":
+			body = redactAntigravityHooks(body)
 		case strings.HasSuffix(rel, ".json"):
 			body = redactJSON(body)
 		case strings.HasPrefix(rel, ".claude/hooks/"):
@@ -194,12 +196,62 @@ func (c *cli) machineReport() machineReport {
 	if home != "" {
 		add(".claude.json", filepath.Join(home, ".claude.json"))
 		add(".codex/AGENTS.md", filepath.Join(home, ".codex", "AGENTS.md"))
+		geminiCfg := filepath.Join(home, ".gemini", "config")
+		add(".gemini/GEMINI.md", filepath.Join(home, ".gemini", "GEMINI.md"))
+		add(".gemini/config/hooks.json", filepath.Join(geminiCfg, "hooks.json"))
+		add(".gemini/config/mcp_config.json", filepath.Join(geminiCfg, "mcp_config.json"))
+		for _, sub := range []string{"rules", "agents"} {
+			root := filepath.Join(geminiCfg, sub)
+			var found []string
+			_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+				if err != nil || d.IsDir() || !strings.HasSuffix(p, ".md") {
+					return nil
+				}
+				found = append(found, p)
+				return nil
+			})
+			sort.Strings(found)
+			for _, p := range found {
+				rel, _ := filepath.Rel(geminiCfg, p)
+				add(".gemini/config/"+filepath.ToSlash(rel), p)
+			}
+		}
+		if skills, err := filepath.Glob(filepath.Join(geminiCfg, "skills", "*", "SKILL.md")); err == nil {
+			sort.Strings(skills)
+			for _, p := range skills {
+				add(".gemini/config/skills/"+filepath.Base(filepath.Dir(p))+"/SKILL.md", p)
+			}
+		}
 	}
 	r.Checks = append(r.Checks, hooksCheck())
+	if antigravityInstalled() {
+		r.Checks = append(r.Checks, antigravityHooksCheck())
+	}
 	if k, ok := c.kitMarketplaceCheck(); ok {
 		r.Checks = append(r.Checks, k)
 	}
 	return r
+}
+
+func antigravityHooksCheck() machineCheck {
+	ch := machineCheck{Key: "antigravity_hooks", Label: "Antigravity wp hooks installed"}
+	path, err := antigravityHooksPath()
+	if err != nil {
+		ch.State, ch.Note = "warn", err.Error()
+		return ch
+	}
+	res, err := installAntigravityHooks(path, hookInstallOpts{exe: hookExe(), keepNoPrompts: true, dryRun: true})
+	switch {
+	case err != nil:
+		ch.State, ch.Note = "fail", "couldn't read "+path+": "+err.Error()
+	case !res.changed:
+		ch.State = "ok"
+	case res.present:
+		ch.State, ch.Note = "warn", "an older set: run wp hook antigravity"
+	default:
+		ch.State, ch.Note = "fail", "not installed: run wp hook antigravity"
+	}
+	return ch
 }
 
 // hooksCheck: are wp's Claude Code hooks installed here, and current?
@@ -262,7 +314,14 @@ var secretKeyCLI = lazyre.New(`(?i)(token|secret|password|passwd|api[_-]?key|api
 
 // redactJSON replaces every env value, header and secret-looking value with
 // •••; text that isn't JSON isn't sent.
-func redactJSON(raw string) string {
+func redactJSON(raw string) string { return redactJSONRoot(raw, "") }
+
+// redactAntigravityHooks redacts an Antigravity hooks.json file whose top-level
+// keys are named hook groups (e.g. "waypoint") mapping directly to event names
+// (e.g. "SessionStart") without a wrapping "hooks" object.
+func redactAntigravityHooks(raw string) string { return redactJSONRoot(raw, "hooksRoot") }
+
+func redactJSONRoot(raw, startUnder string) string {
 	var v any
 	if json.Unmarshal([]byte(raw), &v) != nil {
 		return ""
@@ -274,6 +333,8 @@ func redactJSON(raw string) string {
 			for k, val := range t {
 				m, isMap := val.(map[string]any)
 				switch {
+				case under == "hooksRoot" && isMap:
+					t[k] = walk(val, "hooks")
 				case k == "env" || k == "headers" || under == "env":
 					if isMap {
 						for ek := range m {
@@ -313,7 +374,7 @@ func redactJSON(raw string) string {
 		}
 		return x
 	}
-	b, err := json.MarshalIndent(walk(v, ""), "", "  ")
+	b, err := json.MarshalIndent(walk(v, startUnder), "", "  ")
 	if err != nil {
 		return ""
 	}

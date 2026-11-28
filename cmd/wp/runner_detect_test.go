@@ -21,9 +21,10 @@ func TestDetectCLIs(t *testing.T) {
 	write("codex", `case "$1" in --version) echo "codex-cli 0.5.1";; login) echo "Not logged in"; exit 1;; esac`)
 	write("opencode", `case "$1" in --version) echo "1.18.32";; auth) printf '\033[90m└  0 credentials\033[0m\n';; esac`)
 	write("cursor-agent", `case "$1" in --version) echo "2026.10.01";; status) echo "Not logged in";; esac`)
+	write("agy", `case "$1" in --version) echo "1.5.18";; models) printf 'gemini-4-neon-high  Gemini 4 Neon (High)\nclaude-sonnet-5-5-medium  Claude Sonnet 5.5 (Medium)\n';; esac`)
 	t.Setenv("PATH", bin)
 	got := detectCLIs(context.Background())
-	if len(got) != 4 {
+	if len(got) != 5 {
 		t.Fatalf("found %+v", got)
 	}
 	by := map[string]runnerCLI{}
@@ -41,6 +42,15 @@ func TestDetectCLIs(t *testing.T) {
 	}
 	if c := by["cursor"]; c.SignedIn == nil || *c.SignedIn {
 		t.Errorf("cursor = %+v", c)
+	}
+	if c := by["antigravity"]; c.Version != "1.5.18" || c.SignedIn == nil || !*c.SignedIn || c.Detail != "2 models available" {
+		t.Errorf("antigravity = %+v", c)
+	}
+	write("agy", `case "$1" in --version) echo "1.5.18";; models) echo "Not authenticated"; exit 1;; esac`)
+	for _, c := range detectCLIs(context.Background()) {
+		if c.Name == "antigravity" && (c.SignedIn == nil || *c.SignedIn || c.Detail != "Not authenticated") {
+			t.Errorf("antigravity signed out = %+v", c)
+		}
 	}
 	write("cursor-agent", `case "$1 $2 $3" in
 "status --format json") echo '{"status":"authenticated","isAuthenticated":true,"userInfo":{"email":"robin@example.com"}}';;

@@ -190,6 +190,10 @@ func discoverTranscripts(root string, since time.Duration, only []string) ([]usa
 	}
 	if len(only) > 0 {
 		for _, p := range only {
+			if af, ok := antigravityUsageFileOfPath(p); ok {
+				add(af)
+				continue
+			}
 			addSession(p)
 		}
 		return files, nil
@@ -364,14 +368,41 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 	var files []usageFile
 	if !o.OnlyFiles || len(o.Files) > 0 {
 		var err error
-		if files, err = discoverTranscripts(root, o.Since, o.Files); err != nil {
-			if !shouldArchiveHarnesses(o, root) || !hasHarnessTranscriptSources() {
+		files, err = discoverTranscripts(root, o.Since, o.Files)
+		var agyFiles []usageFile
+		if len(o.Files) == 0 && shouldArchiveHarnesses(o, root) {
+			if home, herr := harnessHomeFn(); herr == nil && home != "" {
+				agyFiles = discoverAntigravityUsageFiles(home, o.Since)
+			}
+		}
+		if err != nil {
+			if len(agyFiles) == 0 && (!shouldArchiveHarnesses(o, root) || !hasHarnessTranscriptSources()) {
 				return nil, err
 			}
 			files = nil
 		}
+		files = append(files, agyFiles...)
 	}
 	st := loadUsageState(c.dir)
+	for i := range files {
+		if files[i].Harness != "antigravity" || st.Files[files[i].Path] != nil {
+			continue
+		}
+		// If an earlier sync already tracked the sibling file (transcript_full.jsonl
+		// vs transcript.jsonl), keep using that sibling to prevent double-counting.
+		var sibling string
+		switch filepath.Base(files[i].Path) {
+		case "transcript.jsonl":
+			sibling = filepath.Join(filepath.Dir(files[i].Path), "transcript_full.jsonl")
+		case "transcript_full.jsonl":
+			sibling = filepath.Join(filepath.Dir(files[i].Path), "transcript.jsonl")
+		}
+		if sibling != "" && st.Files[sibling] != nil {
+			if fi, err := os.Lstat(sibling); err == nil && fi.Mode().IsRegular() {
+				files[i].Path = sibling
+			}
+		}
+	}
 	if !o.OnlyFiles {
 		files = append(files, outdatedTranscripts(root, &st, files)...)
 	}

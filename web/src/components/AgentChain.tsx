@@ -12,6 +12,16 @@ export const AGENT_CLIS: { value: string; label: string; models: string[] }[] = 
   { value: 'codex', label: 'Codex', models: ['gpt-5-codex'] },
   { value: 'opencode', label: 'opencode', models: ['opencode/muse-spark-1.3-contributor-free'] },
   { value: 'cursor', label: 'Cursor', models: ['grok-4.7-high', 'grok-4.7-medium', 'auto'] },
+  {
+    value: 'antigravity',
+    label: 'Antigravity',
+    models: [
+      'gemini-4-neon-high',
+      'gemini-4-carbon-medium',
+      'gemini-3.8-flash-medium',
+      'claude-sonnet-5-5-medium',
+    ],
+  },
 ]
 
 /** What an audit's chain may name: the LLM gateway, which runs the

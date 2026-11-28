@@ -34,6 +34,8 @@ func (p *runnerProc) buildDriver(ctx context.Context, in agentJob, path, work st
 		return p.opencodeDriver(ctx, in, prompt, path, work), nil
 	case "cursor":
 		return cursorDriver(in, prompt, work)
+	case "antigravity":
+		return antigravityDriver(in, prompt, work)
 	}
 	return nil, fmt.Errorf("unknown CLI %q", in.CLI)
 }
@@ -744,6 +746,124 @@ func lockCursorTools(work string) error {
 		return err
 	}
 	return f.Close()
+}
+
+type antigravityStreamEvent struct {
+	Event          string `json:"event"`
+	ConversationID string `json:"conversation_id"`
+	StepUpdate     *struct {
+		ConversationID string `json:"conversation_id"`
+		StepIndex      int    `json:"step_index"`
+		State          string `json:"state"`
+		StepType       string `json:"step_type"`
+		TextDelta      string `json:"text_delta"`
+		ToolName       string `json:"tool_name"`
+		Error          string `json:"error"`
+	} `json:"step_update"`
+	Result *antigravityResult `json:"result"`
+}
+
+type antigravityResult struct {
+	ConversationID   string          `json:"conversation_id"`
+	Status           string          `json:"status"`
+	Response         string          `json:"response"`
+	Error            string          `json:"error"`
+	StructuredOutput json.RawMessage `json:"structured_output"`
+	Usage            struct {
+		Input     int64 `json:"input_tokens"`
+		Output    int64 `json:"output_tokens"`
+		Thinking  int64 `json:"thinking_tokens"`
+		CacheRead int64 `json:"cache_read_tokens"`
+	} `json:"usage"`
+}
+
+func antigravityDriver(in agentJob, prompt, work string) (*cliDriver, error) {
+	if len(prompt) > 100<<10 {
+		return nil, errors.New("this prompt is too long for agy, which takes it as an argument (limit 100 KB)")
+	}
+	args := []string{"--output-format", "stream-json"}
+	if in.Model != "" {
+		args = append(args, "--model", in.Model)
+	}
+	if in.Effort != "" {
+		args = append(args, "--effort", in.Effort)
+	}
+	if in.JSONSchema != "" {
+		f := filepath.Join(work, "..", filepath.Base(work)+".schema.json")
+		if err := os.WriteFile(f, []byte(in.JSONSchema), 0o600); err != nil {
+			return nil, err
+		}
+		args = append(args, "--json-schema", f)
+	}
+	switch in.perm() {
+	case "read":
+		args = append(args, "--mode", "plan", "--sandbox")
+	case "edit_run":
+		args = append(args, "--mode", "auto")
+	default:
+		args = append(args, "--mode", "accept-edits")
+	}
+	args = append(args, "--print="+prompt)
+
+	var res *antigravityResult
+	d := &cliDriver{args: args, isStream: true, calls: &callClock{}, env: map[string]string{runnerJobEnv: "1"}}
+	d.line = func(line []byte, out *logSink) {
+		var ev antigravityStreamEvent
+		if json.Unmarshal(line, &ev) != nil {
+			fmt.Fprintf(out, "%s\n", line)
+			return
+		}
+		if ev.ConversationID != "" {
+			d.sessionID = ev.ConversationID
+		}
+		switch ev.Event {
+		case "step_update":
+			u := ev.StepUpdate
+			if u == nil {
+				return
+			}
+			if u.ConversationID != "" {
+				d.sessionID = u.ConversationID
+			}
+			if u.TextDelta != "" {
+				fmt.Fprintf(out, "%s", u.TextDelta)
+			}
+			if u.ToolName != "" && u.State == "ACTIVE" {
+				fmt.Fprintf(out, "→ %s\n", u.ToolName)
+				d.calls.begin(strconv.Itoa(u.StepIndex), u.ToolName)
+			} else if u.ToolName != "" && u.State == "DONE" {
+				d.calls.end(strconv.Itoa(u.StepIndex))
+			}
+			if u.Error != "" {
+				fmt.Fprintf(out, "error: %s\n", u.Error)
+			}
+		case "result":
+			if ev.Result != nil {
+				res = ev.Result
+				if res.ConversationID != "" {
+					d.sessionID = res.ConversationID
+				}
+			}
+		}
+	}
+	d.finish = func([]byte) (string, json.RawMessage, tokenUse, error) {
+		if res == nil {
+			return "", nil, tokenUse{}, errors.New("antigravity ended without an answer")
+		}
+		t := tokenUse{Input: res.Usage.Input, Output: res.Usage.Output + res.Usage.Thinking, CacheRead: res.Usage.CacheRead}
+		if res.Error != "" || (res.Status != "" && !strings.EqualFold(res.Status, "SUCCESS")) {
+			return res.Response, nil, t, fmt.Errorf("antigravity reported an error: %s", excerpt(orStr(res.Error, orStr(res.Response, res.Status)), 300))
+		}
+		structured := res.StructuredOutput
+		if string(structured) == "null" {
+			structured = nil
+		}
+		if structured == nil && in.JSONSchema != "" {
+			structured = jsonAnswer(res.Response)
+		}
+		return res.Response, structured, t, nil
+	}
+	return d, nil
 }
 
 var _ = exec.LookPath

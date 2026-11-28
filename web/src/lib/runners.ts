@@ -115,6 +115,7 @@ export const CLI_LABELS: Record<string, string> = {
   codex: 'Codex',
   opencode: 'opencode',
   cursor: 'Cursor',
+  antigravity: 'Antigravity',
 }
 
 /**
@@ -131,6 +132,7 @@ export const CLI_SIGN_IN: Record<string, string> = {
   codex: 'codex login',
   opencode: 'opencode auth login',
   cursor: 'cursor-agent login',
+  antigravity: 'agy acp --login',
 }
 
 export type CLIReadiness =

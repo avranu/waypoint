@@ -42,9 +42,10 @@ func TestKitReport(t *testing.T) {
 	cfg := filepath.Join(home, ".claude")
 	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
 	t.Setenv("WP_CLAUDE_SETTINGS", filepath.Join(cfg, "settings.json"))
-	oldInstalled := claudeInstalled
+	oldInstalled, oldAgy := claudeInstalled, antigravityInstalled
 	claudeInstalled = func() bool { return false }
-	t.Cleanup(func() { claudeInstalled = oldInstalled })
+	antigravityInstalled = func() bool { return false }
+	t.Cleanup(func() { claudeInstalled, antigravityInstalled = oldInstalled, oldAgy })
 
 	write := func(rel, body string) {
 		p := filepath.Join(home, rel)
@@ -154,6 +155,17 @@ func TestKitReport(t *testing.T) {
 	c.maybeReportMachine()
 	if len(started) != 1 {
 		t.Fatalf("a throwaway build reported: %v", started)
+	}
+}
+
+func TestRedactAntigravityHooks(t *testing.T) {
+	raw := `{"waypoint":{"SessionStart":[{"type":"command","command":"API_TOKEN=sk-123 wp hook antigravity-event"}]},"auth-gate":{"PreToolUse":[{"type":"command","command":"./check","headers":{"Authorization":"Bearer tok"}}]}}`
+	got := redactAntigravityHooks(raw)
+	if strings.Contains(got, "sk-123") || strings.Contains(got, "Bearer tok") {
+		t.Fatalf("leaked secret:\n%s", got)
+	}
+	if !strings.Contains(got, "wp hook antigravity-event") || !strings.Contains(got, "./check") {
+		t.Fatalf("destroyed SessionStart or auth-gate hooks:\n%s", got)
 	}
 }
 

@@ -1190,10 +1190,11 @@ func (s *Service) CountUnregisteredWrite(ctx context.Context, userID int64, mach
 // agentOfCLI is the agent identity of a coding agent's CLI, as the hook names
 // it (cli on the hook event); "" for one it does not know.
 var agentOfCLI = map[string]string{
-	"claude":   "anthropic/claude-code",
-	"gemini":   "google/gemini-cli",
-	"codex":    "openai/codex",
-	"opencode": "opencode",
+	"claude":      "anthropic/claude-code",
+	"gemini":      "google/gemini-cli",
+	"antigravity": "google/antigravity",
+	"codex":       "openai/codex",
+	"opencode":    "opencode",
 }
 
 // agentLabel is the one place that decides the agent a session, and the

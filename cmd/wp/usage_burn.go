@@ -34,6 +34,13 @@ var burnFallbackPrices = []burnPrice{
 	{"claude-haiku-5-5", 0.1, 0.5, 0.125, 0.2, 0.01},
 	{"claude-fable-5", 10, 50, 12.5, 20, 1},
 	{"claude-mythos-5", 10, 50, 12.5, 20, 1},
+	{"gemini-4-neon", 2.5, 15, 0, 0, 0.25},
+	{"gemini-4-hydrogen", 2.5, 15, 0, 0, 0.25},
+	{"gemini-4-carbon", 1.25, 10, 0, 0, 0.125},
+	{"gemini-4-argon", 1.25, 10, 0, 0, 0.125},
+	{"gemini-pro-orchestrator", 1.25, 10, 0, 0, 0.125},
+	{"gemini-3.8-flash", 0.3, 2.5, 0, 0, 0.03},
+	{"gpt-oss-120b", 0.2, 0.8, 0, 0, 0.02},
 }
 
 // burnFallbackFamily is the fallback row a model name falls to by family.
@@ -41,6 +48,10 @@ var burnFallbackPrices = []burnPrice{
 var burnFallbackFamily = []struct{ Family, ID string }{
 	{"fable", "claude-fable-5"}, {"mythos", "claude-mythos-5"},
 	{"opus", "claude-opus-5-5"}, {"sonnet", "claude-sonnet-5-5"}, {"haiku", "claude-haiku-5-5"},
+	{"neon", "gemini-4-neon"}, {"hydrogen", "gemini-4-hydrogen"},
+	{"carbon", "gemini-4-carbon"}, {"argon", "gemini-4-argon"},
+	{"orchestrator", "gemini-pro-orchestrator"}, {"flash", "gemini-3.8-flash"},
+	{"gemini", "gemini-4-carbon"}, {"gpt-oss", "gpt-oss-120b"},
 }
 
 // burnPriceFor finds the price of a model: the longest id prefix in the
@@ -241,7 +252,7 @@ func (t *burnTree) read(f burnFile, prices []burnPrice) bool {
 		if len(line) > 0 && line[len(line)-1] == '\n' {
 			off += int64(len(line))
 			t.budget -= int64(len(line))
-			t.add(a, line, prices)
+			t.add(f.id, a, line, prices)
 			if t.bounded && t.budget < 0 {
 				break
 			}
@@ -254,40 +265,65 @@ func (t *burnTree) read(f burnFile, prices []burnPrice) bool {
 	return true
 }
 
-// add counts one transcript line (the parser's rawLine: usage_parse.go).
-func (t *burnTree) add(a *burnAgent, line []byte, prices []burnPrice) {
-	if !bytes.Contains(line, burnUsageMark) {
-		return
-	}
-	var l rawLine
-	if json.Unmarshal(line, &l) != nil || l.Type != "assistant" || l.Message == nil || l.Message.Usage == nil || l.Message.ID == "" {
-		return
-	}
-	m, u := l.Message, l.Message.Usage
-	model := cleanModel(m.Model)
-	if model == "" || strings.HasPrefix(model, "<") || t.Seen[m.ID] {
-		return
-	}
-	t.Seen[m.ID] = true
-	cw5, cw1 := u.CacheCreation, int64(0)
-	if cc := u.CC; cc != nil && cc.E5m+cc.E1h > 0 {
-		cw5, cw1 = cc.E5m, cc.E1h
-		if rest := u.CacheCreation - cc.E5m - cc.E1h; rest > 0 {
-			cw5 += rest
+// add counts one transcript line (Claude Code rawLine or Antigravity PLANNER_RESPONSE).
+func (t *burnTree) add(fileID string, a *burnAgent, line []byte, prices []burnPrice) {
+	if bytes.Contains(line, burnUsageMark) {
+		var l rawLine
+		if json.Unmarshal(line, &l) == nil && l.Type == "assistant" && l.Message != nil && l.Message.Usage != nil && l.Message.ID != "" {
+			m, u := l.Message, l.Message.Usage
+			model := cleanModel(m.Model)
+			if model == "" || strings.HasPrefix(model, "<") || t.Seen[m.ID] {
+				return
+			}
+			t.Seen[m.ID] = true
+			cw5, cw1 := u.CacheCreation, int64(0)
+			if cc := u.CC; cc != nil && cc.E5m+cc.E1h > 0 {
+				cw5, cw1 = cc.E5m, cc.E1h
+				if rest := u.CacheCreation - cc.E5m - cc.E1h; rest > 0 {
+					cw5 += rest
+				}
+			}
+			p := burnPriceFor(prices, model)
+			cr := float64(u.CacheRead) * p.CacheRead / 1e6
+			cost := float64(u.Input)*p.Input/1e6 + float64(u.Output)*p.Output/1e6 +
+				float64(cw5)*p.CacheWrite5m/1e6 + float64(cw1)*p.CacheWrite1h/1e6 + cr
+			ctx := u.Input + u.CacheRead + u.CacheCreation
+			t.recordBurn(a, model, ctx, cost, cr, parseTS(l.Timestamp))
+			return
 		}
 	}
+	if !isAntigravityTranscriptLine(line) {
+		return
+	}
+	var agy agyTranscriptLine
+	if json.Unmarshal(line, &agy) != nil || agy.Type != "PLANNER_RESPONSE" {
+		return
+	}
+	model := cleanModel(agy.Model)
+	outTok := agy.OutputTokens + agy.ThinkingTokens
+	if model == "" || strings.HasPrefix(model, "<") || agy.InputTokens+outTok+agy.CacheReadTokens == 0 {
+		return
+	}
+	id := fmt.Sprintf("%s:agy-step-%d", fileID, agy.StepIndex)
+	if t.Seen[id] {
+		return
+	}
+	t.Seen[id] = true
 	p := burnPriceFor(prices, model)
-	cr := float64(u.CacheRead) * p.CacheRead / 1e6
-	cost := float64(u.Input)*p.Input/1e6 + float64(u.Output)*p.Output/1e6 +
-		float64(cw5)*p.CacheWrite5m/1e6 + float64(cw1)*p.CacheWrite1h/1e6 + cr
-	ctx := u.Input + u.CacheRead + u.CacheCreation
+	cr := float64(agy.CacheReadTokens) * p.CacheRead / 1e6
+	cost := float64(agy.InputTokens)*p.Input/1e6 + float64(outTok)*p.Output/1e6 + cr
+	ctx := agy.InputTokens + agy.CacheReadTokens
+	t.recordBurn(a, model, ctx, cost, cr, parseTS(agy.CreatedAt))
+}
+
+func (t *burnTree) recordBurn(a *burnAgent, model string, ctx int64, cost, cr float64, ts int64) {
 	a.Calls++
 	a.CtxSum += ctx
 	a.CtxMax = max(a.CtxMax, ctx)
 	a.Cost += cost
 	a.CostCR += cr
 	a.Model = model
-	if ts := parseTS(l.Timestamp); ts > 0 {
+	if ts > 0 {
 		if a.First == 0 || ts < a.First {
 			a.First = ts
 		}
@@ -351,13 +387,24 @@ func (t *burnTree) recentRate(now time.Time) float64 {
 	return sum * 6
 }
 
-// transcriptOfSession finds <config>/projects/*/<id>.jsonl.
+// transcriptOfSession finds <config>/projects/*/<id>.jsonl or an Antigravity
+// brain/<id>/.system_generated/logs/transcript.jsonl.
 func transcriptOfSession(id string) string {
 	m, _ := filepath.Glob(filepath.Join(claudeConfigDir(), "projects", "*", id+".jsonl"))
-	if len(m) == 0 {
-		return ""
+	if len(m) > 0 {
+		return m[0]
 	}
-	return m[0]
+	if home, err := harnessHomeFn(); err == nil && home != "" && reSafeID.MatchString(id) && id != "." && id != ".." {
+		for _, brainDir := range antigravityBrainRoots(home) {
+			for _, name := range []string{"transcript.jsonl", "transcript_full.jsonl"} {
+				p := filepath.Join(brainDir, id, ".system_generated", "logs", name)
+				if fi, err := os.Lstat(p); err == nil && fi.Mode().IsRegular() && fi.Size() > 0 { // #nosec G703 -- id validated by reSafeID
+					return p
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // currentTranscript is the transcript burn reports on: --session (an id or

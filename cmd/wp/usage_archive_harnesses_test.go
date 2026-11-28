@@ -84,6 +84,7 @@ func TestArchiveNonClaudeHarnesses(t *testing.T) {
 		harnessHomeFn, archiveHarnessesForce = oldHome, oldForce
 	})
 	t.Setenv("ANTIGRAVITY_APPDATA_DIR", "")
+	t.Setenv("ANTIGRAVITY_APP_DATA_DIR", "")
 	t.Setenv("CODEX_HOME", "")
 	t.Setenv("XDG_DATA_HOME", "")
 	t.Setenv("WP_OPENCODE_DB", "")

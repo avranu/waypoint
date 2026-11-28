@@ -77,6 +77,9 @@ func collectInventory(root string, cwds []string) []usageInventoryItem {
 		collectDir(b, filepath.Join(dir, ".claude"), scope, "")
 	}
 	collectPlugins(b, root, asMap(settings["enabledPlugins"]))
+	if filepath.Base(root) == ".claude" {
+		collectAntigravityInventory(b, filepath.Join(filepath.Dir(root), ".gemini", "config"))
+	}
 	sort.Slice(b.items, func(i, j int) bool {
 		x, y := b.items[i], b.items[j]
 		return x.Kind+"\x00"+x.Name+"\x00"+x.Scope < y.Kind+"\x00"+y.Name+"\x00"+y.Scope
@@ -252,6 +255,49 @@ func collectHooks(b *inventoryBuilder, settings map[string]any, scope string) {
 					continue
 				}
 				b.add("hook", event+": "+hookName(cmd), scope, "")
+			}
+		}
+	}
+}
+
+// collectAntigravityInventory reads Antigravity customizations under
+// ~/.gemini/config (mcp_config.json, skills/, agents/, plugins/, hooks.json).
+func collectAntigravityInventory(b *inventoryBuilder, cfgDir string) {
+	if !exists(cfgDir) {
+		return
+	}
+	var mcp struct {
+		Servers map[string]any `json:"mcpServers"`
+	}
+	_ = readJSON(filepath.Join(cfgDir, "mcp_config.json"), &mcp)
+	for name := range mcp.Servers {
+		b.add("mcp", name, "antigravity", "")
+	}
+	collectDir(b, cfgDir, "antigravity", "")
+	var hooks map[string]any
+	if readJSON(filepath.Join(cfgDir, "hooks.json"), &hooks) == nil {
+		for _, rawGroup := range hooks {
+			gm := asMap(rawGroup)
+			if enabled, ok := gm["enabled"].(bool); ok && !enabled {
+				continue
+			}
+			for ev, rawList := range gm {
+				if ev == "enabled" {
+					continue
+				}
+				list, _ := rawList.([]any)
+				for _, item := range list {
+					im := asMap(item)
+					if inner, ok := im["hooks"].([]any); ok {
+						for _, h := range inner {
+							if cmd, _ := asMap(h)["command"].(string); cmd != "" {
+								b.add("hook", ev+": "+hookName(cmd), "antigravity", "")
+							}
+						}
+					} else if cmd, _ := im["command"].(string); cmd != "" {
+						b.add("hook", ev+": "+hookName(cmd), "antigravity", "")
+					}
+				}
 			}
 		}
 	}

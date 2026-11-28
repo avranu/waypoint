@@ -88,18 +88,23 @@ func cmdUsageSync(c *cli, args []string) error {
 	return err
 }
 
-// usageHook syncs the session a Claude Code hook names: its transcript and
-// its subagents'. Silent, and never an error.
+// usageHook syncs the session a Claude Code or Antigravity hook names: its
+// transcript and its subagents'. Silent, and never an error.
 func usageHook(c *cli, stdin io.Reader, dir string) {
 	var in struct {
 		SessionID      string `json:"session_id"`
 		TranscriptPath string `json:"transcript_path"`
+		AgySessionID   string `json:"conversationId"`
+		AgyTranscript  string `json:"transcriptPath"`
 	}
-	if err := json.NewDecoder(io.LimitReader(stdin, 1<<20)).Decode(&in); err != nil || in.TranscriptPath == "" ||
-		!strings.HasSuffix(in.TranscriptPath, ".jsonl") || c.server() == "" || c.token() == "" {
+	if err := json.NewDecoder(io.LimitReader(stdin, 1<<20)).Decode(&in); err != nil || c.server() == "" || c.token() == "" {
 		return
 	}
-	_, _ = usageSync(c, usageSyncOptions{Hook: true, Dir: dir, Files: []string{in.TranscriptPath}})
+	tp := usageOr(in.TranscriptPath, in.AgyTranscript)
+	if tp == "" || !strings.HasSuffix(tp, ".jsonl") {
+		return
+	}
+	_, _ = usageSync(c, usageSyncOptions{Hook: true, Dir: dir, Files: []string{tp}})
 }
 
 func usageSyncText(r *usageSyncResult) string {

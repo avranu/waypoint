@@ -258,23 +258,41 @@ func (c *cli) checkKit(add addCheck) {
 func (c *cli) checkHooks(add addCheck) {
 	if !claudeInstalled() {
 		add(checkInfo, "hooks", "Claude Code isn't installed here")
-		return
+	} else {
+		path, err := claudeSettingsPath()
+		if err != nil {
+			add(checkWarn, "hooks", "%v", err)
+		} else {
+			res, err := installClaudeHooks(path, hookInstallOpts{exe: hookExe(), keepNoPrompts: true, dryRun: true})
+			switch {
+			case err != nil:
+				add(checkWarn, "hooks", "%v", err)
+			case !res.changed:
+				add(checkOK, "hooks", "up to date in %s", res.path)
+			case res.present:
+				add(checkWarn, "hooks", "out of date in %s: wp hook claude", res.path)
+			default:
+				add(checkWarn, "hooks", "not installed in %s: wp hook claude", res.path)
+			}
+		}
 	}
-	path, err := claudeSettingsPath()
-	if err != nil {
-		add(checkWarn, "hooks", "%v", err)
-		return
-	}
-	res, err := installClaudeHooks(path, hookInstallOpts{exe: hookExe(), keepNoPrompts: true, dryRun: true})
-	switch {
-	case err != nil:
-		add(checkWarn, "hooks", "%v", err)
-	case !res.changed:
-		add(checkOK, "hooks", "up to date in %s", res.path)
-	case res.present:
-		add(checkWarn, "hooks", "out of date in %s: wp hook claude", res.path)
-	default:
-		add(checkWarn, "hooks", "not installed in %s: wp hook claude", res.path)
+	if antigravityInstalled() {
+		path, err := antigravityHooksPath()
+		if err != nil {
+			add(checkWarn, "antigravity hooks", "%v", err)
+			return
+		}
+		res, err := installAntigravityHooks(path, hookInstallOpts{exe: hookExe(), keepNoPrompts: true, dryRun: true})
+		switch {
+		case err != nil:
+			add(checkWarn, "antigravity hooks", "%v", err)
+		case !res.changed:
+			add(checkOK, "antigravity hooks", "up to date in %s", res.path)
+		case res.present:
+			add(checkWarn, "antigravity hooks", "out of date in %s: wp hook antigravity", res.path)
+		default:
+			add(checkWarn, "antigravity hooks", "not installed in %s: wp hook antigravity", res.path)
+		}
 	}
 }
 

@@ -1295,6 +1295,8 @@ func signInHint(cli string) string {
 		return "codex login"
 	case "cursor":
 		return "cursor-agent login"
+	case "antigravity":
+		return "agy acp --login"
 	}
 	return "opencode auth login"
 }
