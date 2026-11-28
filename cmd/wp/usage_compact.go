@@ -106,20 +106,42 @@ const (
 
 // cmpReport is what wp usage compact prints.
 type cmpReport struct {
-	Days           float64        `json:"days"`
-	Transcripts    int            `json:"transcripts"`
-	Unreadable     int            `json:"unreadable,omitempty"` // transcripts that could not be opened, left out
-	Sessions       int            `json:"sessions"`
-	Compacted      int            `json:"sessions_compacted"`
-	WindowCalls    int            `json:"window_calls"`
-	AnalysisFactor float64        `json:"analysis_factor"`
-	Compactions    []cmpTrigger   `json:"compactions"`
-	Idle           []cmpIdle      `json:"by_idle"`
-	Start          cmpFirstCall   `json:"session_start"`
-	Follows        []cmpFollowRow `json:"what_followed"`
-	Bands          []cmpFollowRow `json:"by_context_before,omitempty"`
-	Reviews        []cmpReviewRow `json:"review_rounds"`
-	Signals        []cmpReviewRow `json:"adversarial_reviews"`
+	Days           float64            `json:"days"`
+	Transcripts    int                `json:"transcripts"`
+	Unreadable     int                `json:"unreadable,omitempty"` // transcripts that could not be opened, left out
+	Sessions       int                `json:"sessions"`
+	Compacted      int                `json:"sessions_compacted"`
+	WindowCalls    int                `json:"window_calls"`
+	AnalysisFactor float64            `json:"analysis_factor"`
+	Compactions    []cmpTrigger       `json:"compactions"`
+	Idle           []cmpIdle          `json:"by_idle"`
+	Start          cmpFirstCall       `json:"session_start"`
+	Follows        []cmpFollowRow     `json:"what_followed"`
+	Bands          []cmpFollowRow     `json:"by_context_before,omitempty"`
+	Events         []cmpCompactionRow `json:"events,omitempty"`
+	Reviews        []cmpReviewRow     `json:"review_rounds"`
+	Signals        []cmpReviewRow     `json:"adversarial_reviews"`
+}
+
+// cmpCompactionRow is one raw, unbucketed compaction observation emitted in
+// --json so downstream callers can group by any context-size cutpoints or
+// covariates without being locked into fixed display bands.
+type cmpCompactionRow struct {
+	Trigger       string  `json:"trigger"`
+	Before        int64   `json:"context_before"`
+	After         int64   `json:"context_after,omitempty"`
+	Seconds       int64   `json:"seconds,omitempty"`
+	SummaryTokens int64   `json:"summary_tokens,omitempty"`
+	CallsAfter    int     `json:"calls_after"`
+	Cold          bool    `json:"cache_cold,omitempty"`
+	WindowCalls   int     `json:"window_calls,omitempty"`
+	FileLookups   int     `json:"file_lookups,omitempty"`
+	SeenBefore    int     `json:"seen_before,omitempty"`
+	TokensAgain   int64   `json:"tokens_again,omitempty"`
+	Tools         int     `json:"tool_calls,omitempty"`
+	ToolErrors    int     `json:"tool_errors,omitempty"`
+	ReachedEdit   bool    `json:"reached_edit,omitempty"`
+	WindowUSD     float64 `json:"window_usd,omitempty"`
 }
 
 // cmpTrigger is the compactions of one trigger. Token figures are medians.
@@ -702,6 +724,18 @@ func (a *cmpAcc) compaction(ev []cmpEvent, from, at, to int, before, after []int
 	if first == nil {
 		t.NeverUsed++
 		t.UnusedUSD += read + out
+		beforeTok := c.pre
+		if last != nil && beforeTok == 0 {
+			beforeTok = last.ctx()
+		}
+		a.rep.Events = append(a.rep.Events, cmpCompactionRow{
+			Trigger:       c.trigger,
+			Before:        beforeTok,
+			Seconds:       c.durMs / 1000,
+			SummaryTokens: summary,
+			CallsAfter:    0,
+			Cold:          cold,
+		})
 		return
 	}
 	ta.after = append(ta.after, first.ctx())
@@ -729,6 +763,23 @@ func (a *cmpAcc) compaction(ev []cmpEvent, from, at, to int, before, after []int
 	if held > 0 {
 		a.bands[cmpContextBand(held)].add(w)
 	}
+	a.rep.Events = append(a.rep.Events, cmpCompactionRow{
+		Trigger:       c.trigger,
+		Before:        held,
+		After:         first.ctx(),
+		Seconds:       c.durMs / 1000,
+		SummaryTokens: summary,
+		CallsAfter:    len(after),
+		Cold:          cold,
+		WindowCalls:   w.Calls,
+		FileLookups:   w.FileLookups,
+		SeenBefore:    w.Reconsults,
+		TokensAgain:   int64(float64(w.ReconsultChars) / cmpCharsPerToken),
+		Tools:         w.Tools,
+		ToolErrors:    w.Failed,
+		ReachedEdit:   w.Reached,
+		WindowUSD:     w.USD.total(),
+	})
 
 	carry := cmpReplay(ev, at, to)
 	ct := &t.Carry
