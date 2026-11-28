@@ -407,7 +407,7 @@ func (s *Service) recordPR(ctx context.Context, f *Forge, repo string, fp *Forge
 			return err
 		}
 		if ended && fp.State == "merged" && attached != 0 {
-			t.emit(&Event{Kind: EvPRActivity, ProjectID: attached, New: "merged", quiet: true, stackParent: pr.ID, Data: map[string]any{"pr_id": pr.ID}})
+			t.emit(withHint(&Event{Kind: EvPRActivity, ProjectID: attached, New: "merged", Quiet: true, Data: map[string]any{"pr_id": pr.ID}}, stackParentHint(pr.ID)))
 		}
 		if pr.Outside {
 			return nil
@@ -836,7 +836,7 @@ func (s *Service) cancelRun(ctx context.Context, actor *Actor, r *BotRun) (*BotR
 	if r.Status != "queued" && r.Status != "running" {
 		return nil, invalid("this run has already finished")
 	}
-	if actor.writesAsAgent() && r.Kind == "review" && sameSHA(r.HeadSHA, r.PR.HeadSHA) && (r.PR.State == "open" || r.PR.State == "draft") {
+	if actor.WritesAsAgent() && r.Kind == "review" && sameSHA(r.HeadSHA, r.PR.HeadSHA) && (r.PR.State == "open" || r.PR.State == "draft") {
 		return nil, forbidden("agents can't cancel the review of a pull request's head: a cancelled review counts as done, so it would merge unreviewed; a person can cancel it")
 	}
 	ended, err := s.endBotRun(ctx, r.ID, "cancelled", "Cancelled by "+actor.User.DisplayName+".", "", nil, "")
@@ -1690,13 +1690,6 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 // signedOffSummary starts the summary of a run that signed its head off; the
 // gate reads it (WP-234).
 const signedOffSummary = "No issues found"
-
-func short(sha string) string {
-	if len(sha) > 7 {
-		return sha[:7]
-	}
-	return sha
-}
 
 // privatePaths are the paths a mirror keeps off the forge it copies a repo
 // to: the forge's own list (Admin → Forges) and, on Forgejo, the `private`

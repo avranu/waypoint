@@ -58,7 +58,7 @@ func (w *draftWorld) agents() map[string]*Actor {
 		"mcp":        {User: u, MCP: true},
 		"agent-env":  {User: u, AgentEnv: "anthropic/claude-code"},
 		"session":    {User: u, Session: 7},
-		"automation": {User: u, Automation: &Automation{ID: 1, Name: "auto", ProjectID: w.p.ID}},
+		"automation": {User: u, Automation: &AutomationRef{ID: 1, Name: "auto", ProjectID: w.p.ID}},
 	}
 }
 

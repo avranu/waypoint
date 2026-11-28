@@ -796,7 +796,7 @@ func TestApproveChangeOnTheRunner(t *testing.T) {
 	if err := json.Unmarshal(j.Input, &apply); err != nil {
 		t.Fatal(err)
 	}
-	if j.Kind != JobApply || j.OwnerID != r.ana.id() || j.Label != "box" || j.Source != "request_apply" || j.SourceID != q.ID ||
+	if j.Kind != JobApply || j.OwnerID != r.ana.ID() || j.Label != "box" || j.Source != "request_apply" || j.SourceID != q.ID ||
 		apply.Dir != "/work/app" || apply.Commit != "Tighten the rules" || len(apply.Files) != 2 || apply.Files[0].BaseSHA != udiff.GitBlobSHA(base) || apply.Files[0].Content != "# Rules\nbe brief\n" || apply.Push {
 		t.Fatalf("job: %+v apply %+v", j, apply)
 	}
@@ -908,7 +908,7 @@ func TestCommandCells(t *testing.T) {
 	}
 	var cj CommandJob
 	_ = json.Unmarshal(run.jobs[0].In.Input, &cj)
-	if run.jobs[0].In.Kind != JobCommand || run.jobs[0].In.Source != "request_cell" || run.jobs[0].In.OwnerID != r.ana.id() || run.jobs[0].In.Label != "box" ||
+	if run.jobs[0].In.Kind != JobCommand || run.jobs[0].In.Source != "request_cell" || run.jobs[0].In.OwnerID != r.ana.ID() || run.jobs[0].In.Label != "box" ||
 		cj.Command != "make migrate ARGS=--dry-run" || cj.Dir != "/work/app/db" {
 		t.Fatalf("job: %+v %+v", run.jobs[0].In, cj)
 	}
@@ -1051,7 +1051,7 @@ func TestRequestEventsReachOnlyThoseWhoCanDecide(t *testing.T) {
 	}
 	subs := map[string]*Subscription{}
 	for name, a := range map[string]*Actor{"ana": r.ana, "bob": r.bob, "cara": cara} {
-		subs[name] = r.s.Hub.Subscribe(a.id())
+		subs[name] = r.s.Hub.Subscribe(a.ID())
 		defer r.s.Hub.Unsubscribe(subs[name])
 	}
 	r.ask(RequestInput{Kind: RequestAction, Title: "Look at this"})

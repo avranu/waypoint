@@ -173,7 +173,7 @@ func (s *Service) countDrops(ctx context.Context, t *tx, actor *Actor, machine s
 		if _, err := t.ExecContext(ctx, `DELETE FROM hook_drop_reports WHERE at < ?`, at-dropReportKeep.Milliseconds()); err != nil {
 			return err
 		}
-		res, err := t.ExecContext(ctx, `INSERT INTO hook_drop_reports(user_id, report_id, at) VALUES (?,?,?) ON CONFLICT DO NOTHING`, actor.id(), id, at)
+		res, err := t.ExecContext(ctx, `INSERT INTO hook_drop_reports(user_id, report_id, at) VALUES (?,?,?) ON CONFLICT DO NOTHING`, actor.ID(), id, at)
 		if err != nil {
 			return err
 		}
@@ -199,7 +199,7 @@ func (s *Service) countDrops(ctx context.Context, t *tx, actor *Actor, machine s
 }
 
 func (s *Service) addDrop(ctx context.Context, t *tx, actor *Actor, machine, reason, event string, n, at int64) error {
-	return addDropRow(ctx, t, actor.id(), machine, reason, event, n, at)
+	return addDropRow(ctx, t, actor.ID(), machine, reason, event, n, at)
 }
 
 // addDropRow adds n to the count of what was dropped for a person's machine.
@@ -357,7 +357,7 @@ func (s *Service) ownSession(ctx context.Context, actor *Actor, sessionID int64)
 	if err != nil {
 		return err
 	}
-	if x.userID != actor.id() && !actor.isAdmin() {
+	if x.userID != actor.ID() && !actor.IsAdmin() {
 		return forbidden("a session's snapshots and observed changes are for its owner and admins")
 	}
 	return nil
@@ -438,7 +438,7 @@ func (s *Service) SessionObserved(ctx context.Context, actor *Actor, sessionID i
 // HookDrops is the counts of hook data dropped, for every person and machine
 // (server status; admins only).
 func (s *Service) HookDrops(ctx context.Context, actor *Actor) ([]HookDrop, error) {
-	if err := actor.canReadServer(); err != nil {
+	if err := canReadServer(actor); err != nil {
 		return nil, err
 	}
 	rows, err := s.db.R.QueryContext(ctx, `SELECT h.user_id, coalesce(u.username, ''), coalesce(u.display_name, ''), h.machine, h.reason, h.event, sum(h.dropped), min(h.first_at), max(h.last_at)

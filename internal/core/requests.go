@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 	"git.jmann.me/claude/waypoint/internal/core/udiff"
 	"git.jmann.me/claude/waypoint/internal/lazyre"
 )
@@ -335,16 +336,16 @@ func requestRef(projectKey string, number int) string {
 // requestVisible is the SQL for requests an actor may see: their own, and
 // project requests in projects they edit (who may decide them).
 func requestVisible(actor *Actor, alias string) (string, []any) {
-	if actor.isAdmin() {
+	if actor.IsAdmin() {
 		return "1=1", nil
 	}
-	editor, eargs := actor.memberProjects(RoleEditor)
-	if actor.scope != nil {
-		member, margs := actor.memberProjects(RoleViewer)
+	editor, eargs := actor.MemberProjects(RoleEditor)
+	if actor.Scope != nil {
+		member, margs := actor.MemberProjects(RoleViewer)
 		return fmt.Sprintf(`((%[1]s.user_id = ? AND %[1]s.project_id IN %[2]s) OR %[1]s.project_id IN %[3]s)`, alias, member, editor),
-			append(append([]any{actor.id()}, margs...), eargs...)
+			append(append([]any{actor.ID()}, margs...), eargs...)
 	}
-	return fmt.Sprintf(`(%[1]s.user_id = ? OR %[1]s.project_id IN %[2]s)`, alias, editor), append([]any{actor.id()}, eargs...)
+	return fmt.Sprintf(`(%[1]s.user_id = ? OR %[1]s.project_id IN %[2]s)`, alias, editor), append([]any{actor.ID()}, eargs...)
 }
 
 // resolveRequestID finds a request the actor may see from a reference: a
@@ -373,7 +374,7 @@ func (s *Service) resolveRequestID(ctx context.Context, q queryer, actor *Actor,
 	var err error
 	switch {
 	case strings.EqualFold(m[1], "me"):
-		rows, err = q.QueryContext(ctx, `SELECT r.id, r.session_id, r.project_id FROM requests r WHERE r.project_id IS NULL AND r.user_id = ? AND r.number = ?`, actor.id(), number)
+		rows, err = q.QueryContext(ctx, `SELECT r.id, r.session_id, r.project_id FROM requests r WHERE r.project_id IS NULL AND r.user_id = ? AND r.number = ?`, actor.ID(), number)
 	case m[1] != "":
 		rows, err = q.QueryContext(ctx, `SELECT r.id, r.session_id, r.project_id FROM requests r JOIN projects p ON p.id = r.project_id
 			WHERE p.key = ? COLLATE NOCASE AND r.number = ? AND `+vis, append([]any{m[1], number}, vargs...)...)
@@ -676,7 +677,7 @@ func (s *Service) canDecide(ctx context.Context, actor *Actor, r *Request, roles
 	if actor == nil || actor.User == nil || actor.IsAgent() || actor.ReadOnly {
 		return false
 	}
-	if r.userID == actor.id() || actor.isAdmin() {
+	if r.userID == actor.ID() || actor.IsAdmin() {
 		return true
 	}
 	if !r.projectID.Valid {
@@ -750,7 +751,7 @@ func (s *Service) ListRequests(ctx context.Context, actor *Actor, q RequestQuery
 		where, args = append(where, "r.state = ?"), append(args, q.State)
 	}
 	if q.Mine {
-		where, args = append(where, "r.user_id = ?"), append(args, actor.id())
+		where, args = append(where, "r.user_id = ?"), append(args, actor.ID())
 	}
 	if q.Session != 0 {
 		where, args = append(where, "r.session_id = ?"), append(args, q.Session)
@@ -845,7 +846,7 @@ func (s *Service) getRequest(ctx context.Context, actor *Actor, ref string, wait
 			}
 		}
 		s.fillRunner(ctx, actor, r)
-		if tell && r.IsDecided() && r.DeliveredAt == nil && r.userID == actor.id() && actor.IsAgent() {
+		if tell && r.IsDecided() && r.DeliveredAt == nil && r.userID == actor.ID() && actor.IsAgent() {
 			now := s.nowMS()
 			if _, err := s.db.W.ExecContext(ctx, `UPDATE requests SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL`, now, r.ID); err == nil {
 				t := msTime(now)
@@ -861,7 +862,7 @@ func (s *Service) fillRunner(ctx context.Context, actor *Actor, r *Request) {
 	if r.Session == nil || (r.Kind != RequestChange && r.Kind != RequestCommand && r.Kind != RequestAction) || !r.CanDecide {
 		return
 	}
-	r.Runner = &RequestRunner{Machine: r.Session.Machine, Online: runnerOnline(ctx, s, actor.id(), r.Session.Machine)}
+	r.Runner = &RequestRunner{Machine: r.Session.Machine, Online: runnerOnline(ctx, s, actor.ID(), r.Session.Machine)}
 }
 
 var toolNameRE = lazyre.New(`^[A-Za-z0-9_.:*-]{1,100}$`)
@@ -871,7 +872,7 @@ var toolNameRE = lazyre.New(`^[A-Za-z0-9_.:*-]{1,100}$`)
 // whether it is new (a permission request repeated within ten minutes is the
 // same one).
 func (s *Service) CreateRequest(ctx context.Context, actor *Actor, in RequestInput) (*Request, bool, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, false, err
 	}
 	var id int64
@@ -879,7 +880,7 @@ func (s *Service) CreateRequest(ctx context.Context, actor *Actor, in RequestInp
 	err := s.write(ctx, actor, func(t *tx) error {
 		var sess *AgentSession
 		if actor.Session != 0 {
-			x, err := scanSession(t.QueryRowContext(ctx, `SELECT `+sessionCols+` FROM agent_sessions s WHERE s.id = ? AND s.user_id = ?`, actor.Session, actor.id()), s.nowMS())
+			x, err := scanSession(t.QueryRowContext(ctx, `SELECT `+sessionCols+` FROM agent_sessions s WHERE s.id = ? AND s.user_id = ?`, actor.Session, actor.ID()), s.nowMS())
 			if err == nil {
 				sess = x
 			}
@@ -1041,14 +1042,14 @@ func (s *Service) createRequestTx(ctx context.Context, t *tx, actor *Actor, sess
 		}
 	}
 	var open int
-	if err := t.QueryRowContext(ctx, `SELECT count(*) FROM requests WHERE user_id = ? AND state = 'open'`, actor.id()).Scan(&open); err != nil {
+	if err := t.QueryRowContext(ctx, `SELECT count(*) FROM requests WHERE user_id = ? AND state = 'open'`, actor.ID()).Scan(&open); err != nil {
 		return 0, false, err
 	}
 	if open >= maxRequestsOpenIn {
 		return 0, false, &requestsFullError{invalid("%d requests are already waiting; decide or dismiss some first", open)}
 	}
 	var number int
-	scope := actor.id()
+	scope := actor.ID()
 	scopeExpr := "-?"
 	if projectID.Valid {
 		scope, scopeExpr = projectID.Int64, "?"
@@ -1070,7 +1071,7 @@ func (s *Service) createRequestTx(ctx context.Context, t *tx, actor *Actor, sess
 	}
 	res, err := t.ExecContext(ctx, `INSERT INTO requests(project_id, number, user_id, session_id, issue_id, agent, kind, title, body, state, payload, tool_use_id, dedupe_key, created_at, updated_at, source, notify_at, followup, followup_on, blocking)
 		VALUES (?,?,?,?,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?)`,
-		nullInt(ptrInt(projectID)), number, actor.id(), nullInt(ptrInt(sessionID)), nullInt(ptrInt(issueID)), cmp(actor.agentName(), agentOf(sess)), in.Kind, in.Title, in.Body,
+		nullInt(ptrInt(projectID)), number, actor.ID(), nullInt(ptrInt(sessionID)), nullInt(ptrInt(issueID)), cmp(actor.AgentName(), agentOf(sess)), in.Kind, in.Title, in.Body,
 		string(payload), in.ToolUseID, dedupe, at, at, in.Source, notifyAt, follow, followOn, in.Blocking)
 	if err != nil {
 		return 0, false, err
@@ -1108,10 +1109,10 @@ func (s *Service) createRequestTx(ctx context.Context, t *tx, actor *Actor, sess
 		}
 	}
 	if in.Source == requestAuto {
-		t.emit(requestEvent(EvRequestUpdated, id, ref, number, in.Kind, RequestOpen, actor.id(), projectID, sessionID, in.Title, actor.agentName()))
+		t.emit(requestEvent(EvRequestUpdated, id, ref, number, in.Kind, RequestOpen, actor.ID(), projectID, sessionID, in.Title, actor.AgentName()))
 		return id, true, nil
 	}
-	t.emit(requestEvent(EvRequestCreated, id, ref, number, in.Kind, RequestOpen, actor.id(), projectID, sessionID, in.Title, actor.agentName()))
+	t.emit(requestEvent(EvRequestCreated, id, ref, number, in.Kind, RequestOpen, actor.ID(), projectID, sessionID, in.Title, actor.AgentName()))
 	return id, true, nil
 }
 
@@ -1478,13 +1479,13 @@ func (s *Service) takeDecisions(ctx context.Context, t *tx, actor *Actor, x *Age
 // (at a start, also those of earlier sessions in its worktree) not told yet.
 func decisionsWhere(actor *Actor, x *AgentSession, start bool) (string, []any) {
 	where := `r.user_id = ? AND r.decided_at IS NOT NULL AND r.delivered_at IS NULL AND r.via = '' AND r.state IN (` + placeholders(len(decidedStates)) + `)`
-	args := []any{actor.id()}
+	args := []any{actor.ID()}
 	for _, st := range decidedStates {
 		args = append(args, st)
 	}
 	if start && x.Cwd != "" {
 		where += ` AND (r.session_id = ? OR r.session_id IN (SELECT id FROM agent_sessions WHERE user_id = ? AND machine = ? AND cwd = ?))`
-		args = append(args, x.ID, actor.id(), x.Machine, x.Cwd)
+		args = append(args, x.ID, actor.ID(), x.Machine, x.Cwd)
 	} else {
 		where += ` AND r.session_id = ?`
 		args = append(args, x.ID)
@@ -1595,7 +1596,7 @@ func (s *Service) AnsweredRequests(ctx context.Context, actor *Actor) int {
 	}
 	var n int
 	// #nosec G202 -- only ? placeholders are joined in
-	args := []any{actor.id()}
+	args := []any{actor.ID()}
 	for _, st := range decidedStates {
 		args = append(args, st)
 	}
@@ -1729,7 +1730,7 @@ var requestDecisions = map[string][]string{
 // it, so its own request is withdrawn, the note kept as the reason (WP-198).
 func (s *Service) DecideRequest(ctx context.Context, actor *Actor, ref string, in RequestDecision) (*Request, error) {
 	in.Decision = strings.ToLower(strings.TrimSpace(in.Decision))
-	if !actor.actsAsPerson() {
+	if !actor.ActsAsPerson() {
 		if in.Decision == "done" || in.Decision == "dismiss" {
 			r, err := s.WithdrawRequest(ctx, actor, ref, in.Note)
 			var perm *PermissionError
@@ -1738,17 +1739,17 @@ func (s *Service) DecideRequest(ctx context.Context, actor *Actor, ref string, i
 			}
 			return r, err
 		}
-		if err := actor.requirePersonDirect("deciding a request"); err != nil {
+		if err := actor.RequirePersonDirect("deciding a request"); err != nil {
 			return nil, fmt.Errorf("%w; the agent that asked can take it back: wp request withdraw %s -m WHY", err, ref)
 		}
 	}
-	if err := actor.need(PermRequestsAnswer); err != nil {
+	if err := actor.Need(PermRequestsAnswer); err != nil {
 		return nil, err
 	}
-	if err := actor.requirePersonDirect("deciding a request"); err != nil {
+	if err := actor.RequirePersonDirect("deciding a request"); err != nil {
 		return nil, err
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	id, err := s.resolveRequestID(ctx, s.db.R, actor, ref)
@@ -1874,13 +1875,13 @@ func (s *Service) DecideRequest(ctx context.Context, actor *Actor, ref string, i
 		}
 		if _, err := t.ExecContext(ctx, `UPDATE requests SET state = ?, decision = ?, note = ?, answer = ?, decided_by = ?, decided_at = ?, delivered_at = ?, snoozed_until = NULL,
 			apply_path = ?, error = '', updated_at = ? WHERE id = ?`,
-			state, in.Decision, in.Note, answer, actor.id(), now, delivered, in.ApplyPath, now, r.ID); err != nil {
+			state, in.Decision, in.Note, answer, actor.ID(), now, delivered, in.ApplyPath, now, r.ID); err != nil {
 			return err
 		}
 		e := requestEvent(EvRequestUpdated, r.ID, r.Ref, r.Number, r.Kind, state, r.userID, r.projectID, r.sessionID, r.Title, r.Agent)
 		e.Data["decision"] = decisionWord(in.Decision, state)
 		if ruleRepo != nil {
-			e.permRule = &permRuleJob{request: r.ID, repo: ruleRepo, rule: in.Rule}
+			kernel.Attach(e, &permRuleJob{request: r.ID, repo: ruleRepo, rule: in.Rule})
 		}
 		t.emit(e)
 		t.audit(AuditEntry{Action: "request." + in.Decision, Category: AuditApproval, ProjectID: derefInt(ptrInt(r.projectID)), TargetType: "request", TargetID: r.ID,
@@ -1993,10 +1994,10 @@ func checkAnswers(qs []Question, in RequestDecision) ([]Answer, string, error) {
 
 // SnoozeRequest hides an open request until a time (nil brings it back).
 func (s *Service) SnoozeRequest(ctx context.Context, actor *Actor, ref string, until *time.Time) (*Request, error) {
-	if err := actor.need(PermRequestsAnswer); err != nil {
+	if err := actor.Need(PermRequestsAnswer); err != nil {
 		return nil, err
 	}
-	if err := actor.requirePersonDirect("snoozing a request"); err != nil {
+	if err := actor.RequirePersonDirect("snoozing a request"); err != nil {
 		return nil, err
 	}
 	if until != nil && (until.Before(s.now()) || until.After(s.now().AddDate(1, 0, 0))) {
@@ -2039,10 +2040,10 @@ func (s *Service) SnoozeRequest(ctx context.Context, actor *Actor, ref string, u
 // person it is for, no longer needs the answer. reason, if given, is kept
 // as the request's note for the person to read (WP-198).
 func (s *Service) WithdrawRequest(ctx context.Context, actor *Actor, ref, reason string) (*Request, error) {
-	if err := actor.need(PermRequestsCreate); err != nil {
+	if err := actor.Need(PermRequestsCreate); err != nil {
 		return nil, err
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	reason = strings.TrimSpace(reason)
@@ -2058,7 +2059,7 @@ func (s *Service) WithdrawRequest(ctx context.Context, actor *Actor, ref, reason
 		if err != nil {
 			return err
 		}
-		if r.userID != actor.id() || ((actor.Restricted() || actor.agentName() != "") && r.Agent != actor.agentName()) {
+		if r.userID != actor.ID() || ((actor.Restricted() || actor.AgentName() != "") && r.Agent != actor.AgentName()) {
 			return fmt.Errorf("only the agent that asked can withdraw %s: %w", r.Code, ErrForbidden)
 		}
 		if r.State != RequestOpen {
@@ -2123,7 +2124,7 @@ func (s *Service) waitingOnYou(ctx context.Context, actor *Actor, project, agent
 		return nil, ErrUnauthorized
 	}
 	w := &Waiting{Requests: []*Request{}, Hooks: []*HookProblem{}}
-	list, err := s.loadRequests(ctx, actor, false, `r.user_id = ? AND r.state = 'open' AND (r.snoozed_until IS NULL OR r.snoozed_until <= ?) ORDER BY r.id DESC LIMIT 50`, actor.id(), s.nowMS())
+	list, err := s.loadRequests(ctx, actor, false, `r.user_id = ? AND r.state = 'open' AND (r.snoozed_until IS NULL OR r.snoozed_until <= ?) ORDER BY r.id DESC LIMIT 50`, actor.ID(), s.nowMS())
 	if err != nil {
 		return nil, err
 	}
@@ -2138,7 +2139,7 @@ func (s *Service) waitingOnYou(ctx context.Context, actor *Actor, project, agent
 	}
 	open := len(w.Requests)
 	if project == "" && agent == "" {
-		if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM requests WHERE user_id = ? AND state = 'open' AND (snoozed_until IS NULL OR snoozed_until <= ?)`, actor.id(), s.nowMS()).Scan(&open); err != nil {
+		if err := s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM requests WHERE user_id = ? AND state = 'open' AND (snoozed_until IS NULL OR snoozed_until <= ?)`, actor.ID(), s.nowMS()).Scan(&open); err != nil {
 			return nil, err
 		}
 	}

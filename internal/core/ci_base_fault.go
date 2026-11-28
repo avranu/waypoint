@@ -550,7 +550,7 @@ func (s *Service) fileAdvisories(ctx context.Context, f *Forge, repo, branch, sh
 		return noOwner()
 	}
 	writer := Actor{User: owner}
-	writer.textAgent = "waypoint"
+	writer.TextAgent = "waypoint"
 	text := fmt.Sprintf("The `%s` job (npm audit, govulncheck) failed on %s %s at %s (%s): a dependency there has a known vulnerability. "+
 		"No release, deploy or pull request waits for that job, so this task is what asks for the fix.\n\n"+
 		"1. Read what it found: `wp ci log --repo %s --run %d --job %s`.\n"+

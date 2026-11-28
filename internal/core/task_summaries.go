@@ -330,7 +330,7 @@ type TaskSummaryPage struct {
 
 // TaskSummaries lists the person's task summaries: unreviewed ones, or all.
 func (s *Service) TaskSummaries(ctx context.Context, a *Actor, q TaskSummaryQuery) (*TaskSummaryPage, error) {
-	if err := a.need(PermAgentsRead); err != nil {
+	if err := a.Need(PermAgentsRead); err != nil {
 		return nil, err
 	}
 	if q.Limit <= 0 || q.Limit > 100 {
@@ -344,7 +344,7 @@ func (s *Service) TaskSummaries(ctx context.Context, a *Actor, q TaskSummaryQuer
 		}
 		pid = p.ID
 	}
-	where, args := `ts.user_id = ? AND (? = 0 OR ts.project_id = ?)`, []any{a.id(), pid, pid}
+	where, args := `ts.user_id = ? AND (? = 0 OR ts.project_id = ?)`, []any{a.ID(), pid, pid}
 	if !q.All {
 		where += ` AND ts.reviewed_at IS NULL`
 	}
@@ -397,7 +397,7 @@ func (s *Service) TaskSummaries(ctx context.Context, a *Actor, q TaskSummaryQuer
 	}
 	// #nosec G202 -- limit is built from constant clauses; values are bound
 	err = s.db.R.QueryRowContext(ctx, `SELECT count(*) FROM task_summaries ts WHERE ts.user_id = ? AND ts.reviewed_at IS NULL AND (? = 0 OR ts.project_id = ?)`+limit,
-		append([]any{a.id(), pid, pid}, limitArgs...)...).Scan(&page.Unreviewed)
+		append([]any{a.ID(), pid, pid}, limitArgs...)...).Scan(&page.Unreviewed)
 	return page, err
 }
 
@@ -410,12 +410,12 @@ func taskSummariesFor(a *Actor) (string, []any) {
 	if a.HidesDrafts() {
 		where = ` AND NOT EXISTS (SELECT 1 FROM issues d WHERE d.id = ts.issue_id AND d.draft = 1)`
 	}
-	if a.scope != nil {
-		if len(a.scope) == 0 {
+	if a.Scope != nil {
+		if len(a.Scope) == 0 {
 			return where + ` AND 0`, args
 		}
-		where += ` AND ts.project_id IN (` + placeholders(len(a.scope)) + `)`
-		for id := range a.scope {
+		where += ` AND ts.project_id IN (` + placeholders(len(a.Scope)) + `)`
+		for id := range a.Scope {
 			args = append(args, id)
 		}
 	}
@@ -425,13 +425,13 @@ func taskSummariesFor(a *Actor) (string, []any) {
 // ReviewTaskSummaries marks summaries read (ids, or every unreviewed one of
 // the project, or of the person with project ""), or unread again.
 func (s *Service) ReviewTaskSummaries(ctx context.Context, a *Actor, ids []int64, all bool, project string, unread bool) (int, error) {
-	if err := a.need(PermAgentsManage); err != nil {
+	if err := a.Need(PermAgentsManage); err != nil {
 		return 0, err
 	}
-	if err := a.requirePersonDirect("reviewing task summaries"); err != nil {
+	if err := a.RequirePersonDirect("reviewing task summaries"); err != nil {
 		return 0, err
 	}
-	if err := a.canWrite(); err != nil {
+	if err := a.CanWrite(); err != nil {
 		return 0, err
 	}
 	if !all && len(ids) == 0 {
@@ -450,11 +450,11 @@ func (s *Service) ReviewTaskSummaries(ctx context.Context, a *Actor, ids []int64
 	}
 	n := 0
 	err := s.write(ctx, a, func(t *tx) error {
-		set, args := `reviewed_at = ?, reviewed_by = ?`, []any{s.nowMS(), a.id()}
+		set, args := `reviewed_at = ?, reviewed_by = ?`, []any{s.nowMS(), a.ID()}
 		if unread {
 			set, args = `reviewed_at = NULL, reviewed_by = NULL`, nil
 		}
-		where, wargs := `user_id = ? AND (? = 0 OR project_id = ?) AND reviewed_at IS NULL`, []any{a.id(), pid, pid}
+		where, wargs := `user_id = ? AND (? = 0 OR project_id = ?) AND reviewed_at IS NULL`, []any{a.ID(), pid, pid}
 		if unread {
 			where = `user_id = ? AND (? = 0 OR project_id = ?) AND reviewed_at IS NOT NULL`
 		}

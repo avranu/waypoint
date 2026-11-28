@@ -243,7 +243,7 @@ func (s *Service) fileReviewHealth(ctx context.Context, projectID int64, h revie
 		return fmt.Errorf("the project's owner %s is disabled", owner.Name())
 	}
 	writer := Actor{User: owner}
-	writer.textAgent = "waypoint"
+	writer.TextAgent = "waypoint"
 	var b strings.Builder
 	b.WriteString(h.body)
 	b.WriteString("\n\nFiled by Waypoint's check of the review loop's own record against WP-ADR135's reopen conditions (review_health.go). `wp pr rounds` shows the record. Change what the figures point at, then let the record show whether it worked; close this task when it does.")

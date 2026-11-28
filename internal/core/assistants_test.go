@@ -177,7 +177,7 @@ func TestAssistantAccess(t *testing.T) {
 		{"owner's permission token", ownerTok(TokenSpec{Name: "perm", Permissions: []Permission{PermIssuesRead}}), false, false},
 		{"owner over MCP", &Actor{User: ann, MCP: true}, false, false},
 		{"owner as a named agent", &Actor{User: ann, Agent: "anthropic/claude"}, false, false},
-		{"owner's automation", &Actor{User: ann, Automation: &Automation{}}, false, false},
+		{"owner's automation", &Actor{User: ann, Automation: &AutomationRef{}}, false, false},
 		{"no one", nil, false, false},
 		{"system", SystemActor(), false, false},
 	}
@@ -249,7 +249,7 @@ func TestAssistantAdminCRUD(t *testing.T) {
 		{"another person", e.other},
 		{"admin's token", adminTokActor},
 		{"admin over MCP", &Actor{User: e.admin.User, MCP: true}},
-		{"admin's automation", &Actor{User: e.admin.User, Automation: &Automation{}}},
+		{"admin's automation", &Actor{User: e.admin.User, Automation: &AutomationRef{}}},
 	} {
 		if _, err := e.s.CreateAssistant(e.ctx, c.a, in); !errors.Is(err, ErrForbidden) {
 			t.Errorf("%s create: %v", c.name, err)

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core/users"
 )
 
 // Shared names for WP-D16 to WP-D21, so the parts built in parallel agree.
@@ -26,10 +28,10 @@ const (
 	// is posted to them. Data: user (id).
 	EvAgentsResumed = "agents.resumed"
 
-	// An account was deleted. Data: user (id). Seen by admins only; what
-	// belongs to the account outside the database goes in dispatch (the
-	// transcript archive's files, WP-1466).
-	EvUserDeleted = "user.deleted"
+	// An account was deleted (declared in users). Data: user (id). Seen by
+	// admins only; what belongs to the account outside the database goes in
+	// dispatch (the transcript archive's files, WP-1466).
+	EvUserDeleted = users.EvUserDeleted
 
 	// Requests (WP-D16). Data: request (id), code (R-12), kind, state, session.
 	EvRequestCreated = "request.created"

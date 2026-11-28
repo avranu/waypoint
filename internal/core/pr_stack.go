@@ -416,11 +416,12 @@ func (s *Service) afterStackMerge(ctx context.Context, f *Forge, pr *PullRequest
 // one on the forge's page, or whose answer was lost (WP-760). It never
 // deletes the branch.
 func (s *Service) onStackParentMerged(ctx context.Context, e *Event) {
-	if e.stackParent == 0 {
+	parent := hint[stackParentHint](e)
+	if parent == 0 {
 		return
 	}
 	s.goBG(func() {
-		pr, err := s.prByID(ctx, s.db.R, e.stackParent)
+		pr, err := s.prByID(ctx, s.db.R, int64(parent))
 		if err != nil {
 			return
 		}

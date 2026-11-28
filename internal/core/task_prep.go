@@ -209,7 +209,7 @@ func (s *Service) prepText(ctx context.Context, issueID int64) (title, desc stri
 // what runs on a machine is that person's decision.
 func (s *Service) PrepDue(ctx context.Context, a *Actor, machine string, limit int) ([]*PrepDueTask, error) {
 	out := []*PrepDueTask{}
-	if err := a.requireHuman("preparing tasks on a machine"); err != nil {
+	if err := a.RequireHuman("preparing tasks on a machine"); err != nil {
 		return nil, err
 	}
 	if a.User == nil || a.User.ID == 0 || machine == "" {
@@ -603,6 +603,10 @@ func prepTaskText(key, typ, title, desc string, comments []string) string {
 				continue
 			}
 			c = truncateBytes(c, min(left, 1500))
+			if c == "" { // what is left can't hold even the ellipsis
+				fmt.Fprintf(&sb, "- (%d later comments not shown)\n", len(comments)-n)
+				break
+			}
 			sb.WriteString("- " + strings.ReplaceAll(c, "\n", "\n  ") + "\n")
 			if left -= len(c); left <= 0 {
 				if more := len(comments) - n - 1; more > 0 {

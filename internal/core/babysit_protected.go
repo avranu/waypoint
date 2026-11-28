@@ -107,7 +107,7 @@ func (s *Service) fileProtectedPush(ctx context.Context, b *Babysit, pr *PullReq
 		return "", err
 	}
 	writer := Actor{User: owner}
-	writer.textAgent = "waypoint"
+	writer.TextAgent = "waypoint"
 	made, err := s.CreateIssue(ctx, &writer, IssueInput{Project: itoa64(projectID), Agent: "claude", Priority: "high",
 		Title: title, Description: body, template: trusted})
 	if err != nil {

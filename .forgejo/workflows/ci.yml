@@ -690,22 +690,81 @@ jobs:
           actionlint -config-file .forgejo/actionlint.yaml .forgejo/workflows/ci.yml
           actionlint .github/workflows/*.yml
           kubeconform -strict -summary deploy/k8s/waypoint.yaml
-      - name: gofmt, golangci-lint, dep-age, shard check, and web checks (parallel)
+      - name: base fetch and dependency age (cmd/dep-age)
         if: steps.tier.outputs.code == 'true'
-        env:
-          FULL: ${{ steps.tier.outputs.full }}
+        run: |
+          # Run dep-age BEFORE npm ci so a too-new dependency fails before any
+          # install script runs. Fetch origin/main once here for both dep-age
+          # and wplint repo.
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+            git fetch -q --no-tags --depth=50 origin +refs/heads/main:refs/remotes/origin/main
+            if ! git merge-base origin/main HEAD >/dev/null 2>&1; then
+              git fetch -q --no-tags --unshallow origin +refs/heads/main:refs/remotes/origin/main
+            fi
+          else
+            git fetch -q --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          fi
+          go run ./cmd/dep-age -base origin/main
+      - name: gofmt, golangci-lint, shard check, and web typecheck/format (parallel)
+        if: steps.tier.outputs.code == 'true'
         run: |
           tmp=$(mktemp -d)
-          trap 'rm -rf "$tmp"' EXIT
+          dumped=0
+          bg_pids=()
+          # shellcheck disable=SC2329 # invoked by cleanup (trap EXIT)
+          kill_tree() {
+            local sig=$1 pid=$2 child
+            for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+              kill_tree "$sig" "$child"
+            done
+            kill "-$sig" "$pid" 2>/dev/null || true
+          }
+          # shellcheck disable=SC2329 # invoked by trap EXIT
+          cleanup() {
+            local alive=0 pid
+            for pid in "${bg_pids[@]}"; do
+              if kill -0 "$pid" 2>/dev/null; then
+                alive=1
+                kill_tree TERM "$pid"
+              fi
+            done
+            if [ "$alive" -eq 1 ]; then
+              sleep 1
+              for pid in "${bg_pids[@]}"; do
+                if kill -0 "$pid" 2>/dev/null; then
+                  kill_tree KILL "$pid"
+                fi
+              done
+              wait "${bg_pids[@]}" 2>/dev/null || true
+            fi
+            if [ "$dumped" -eq 0 ]; then
+              for f in "$tmp"/*.log; do
+                [ -s "$f" ] || continue
+                echo "=== partial $(basename "$f" .log) ==="
+                cat "$f"
+              done
+            fi
+            rm -rf "$tmp"
+          }
+          trap 'exit 143' TERM
+          trap 'exit 130' INT
+          trap cleanup EXIT
 
-          # Run low-RAM web checks and fast Go/repo checks alongside golangci-lint
-          # (which uses ~6-7 GiB alone) so they finish without adding wall time.
+          # Run low-RAM web checks (without vite build, which empties web/dist
+          # and would race golangci-lint on ./web's go:embed all:dist) and
+          # shard check alongside golangci-lint.
           (
             set -euo pipefail
-            test -z "$(gofmt -l cmd internal)"
+            unfmt=$(gofmt -l cmd internal)
+            if [ -n "$unfmt" ]; then
+              echo "gofmt: unformatted files:"
+              echo "$unfmt"
+              exit 1
+            fi
             golangci-lint run ./cmd/... ./internal/... ./web
           ) >"$tmp/golangci.log" 2>&1 &
           p_go=$!
+          bg_pids+=("$p_go")
 
           (
             set -euo pipefail
@@ -713,38 +772,41 @@ jobs:
             npm ci --no-audit --no-fund
             npm run typecheck
             npm run format:check
-            if [ "$FULL" = true ]; then
-              npm run build:vite
-            fi
           ) >"$tmp/web.log" 2>&1 &
           p_web=$!
+          bg_pids+=("$p_web")
 
           (
             set -euo pipefail
-            if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
-              git fetch -q --no-tags --depth=50 origin +refs/heads/main:refs/remotes/origin/main
-              if ! git merge-base origin/main HEAD >/dev/null 2>&1; then
-                git fetch -q --no-tags --unshallow origin +refs/heads/main:refs/remotes/origin/main
-              fi
-            else
-              git fetch -q --no-tags origin +refs/heads/main:refs/remotes/origin/main
-            fi
-            go run ./cmd/dep-age -base origin/main
             .forgejo/scripts/gotest-shard.sh -check
-          ) >"$tmp/fast.log" 2>&1 &
-          p_fast=$!
+          ) >"$tmp/shard-check.log" 2>&1 &
+          p_shard=$!
+          bg_pids+=("$p_shard")
+
+          declare -A status=()
+          wait "$p_go" && status[golangci]=0 || status[golangci]=$?
+          wait "$p_web" && status[web]=0 || status[web]=$?
+          wait "$p_shard" && status[shard-check]=0 || status[shard-check]=$?
 
           rc=0
-          wait "$p_go" || { echo "::error title=gofmt / golangci-lint::failed"; rc=1; }
-          wait "$p_web" || { echo "::error title=web checks::failed"; rc=1; }
-          wait "$p_fast" || { echo "::error title=dep-age / shard check::failed"; rc=1; }
-          for name in golangci fast web; do
-            if [ -s "$tmp/$name.log" ]; then
+          for name in golangci shard-check web; do
+            if [ "${status[$name]}" -eq 0 ] && [ -s "$tmp/$name.log" ]; then
               echo "::group::$name"
               cat "$tmp/$name.log"
               echo "::endgroup::"
             fi
           done
+          # Print failing logs last (uncollapsed), each followed by ::error so
+          # wp pr log excerpts the real tool failure lines.
+          for name in golangci shard-check web; do
+            if [ "${status[$name]}" -ne 0 ]; then
+              rc=1
+              echo "=== $name failed (exit ${status[$name]}) ==="
+              if [ -s "$tmp/$name.log" ]; then cat "$tmp/$name.log"; fi
+              echo "::error title=$name::failed (exit ${status[$name]})"
+            fi
+          done
+          dumped=1
           exit "$rc"
       - name: Waypoint rules (wplint), cross-check, and gosec (parallel)
         if: steps.tier.outputs.code == 'true'
@@ -752,7 +814,46 @@ jobs:
           FULL: ${{ steps.tier.outputs.full }}
         run: |
           tmp=$(mktemp -d)
-          trap 'rm -rf "$tmp"' EXIT
+          dumped=0
+          bg_pids=()
+          # shellcheck disable=SC2329 # invoked by cleanup (trap EXIT)
+          kill_tree() {
+            local sig=$1 pid=$2 child
+            for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+              kill_tree "$sig" "$child"
+            done
+            kill "-$sig" "$pid" 2>/dev/null || true
+          }
+          # shellcheck disable=SC2329 # invoked by trap EXIT
+          cleanup() {
+            local alive=0 pid
+            for pid in "${bg_pids[@]}"; do
+              if kill -0 "$pid" 2>/dev/null; then
+                alive=1
+                kill_tree TERM "$pid"
+              fi
+            done
+            if [ "$alive" -eq 1 ]; then
+              sleep 1
+              for pid in "${bg_pids[@]}"; do
+                if kill -0 "$pid" 2>/dev/null; then
+                  kill_tree KILL "$pid"
+                fi
+              done
+              wait "${bg_pids[@]}" 2>/dev/null || true
+            fi
+            if [ "$dumped" -eq 0 ]; then
+              for f in "$tmp"/*.log; do
+                [ -s "$f" ] || continue
+                echo "=== partial $(basename "$f" .log) ==="
+                cat "$f"
+              done
+            fi
+            rm -rf "$tmp"
+          }
+          trap 'exit 143' TERM
+          trap 'exit 130' INT
+          trap cleanup EXIT
 
           # Now that golangci-lint has exited (freeing its RAM and warming GOCACHE),
           # run wplint, cross-check, and gosec concurrently.
@@ -765,37 +866,57 @@ jobs:
             "$wplint_bin" repo -base origin/main -require-base
           ) >"$tmp/wplint.log" 2>&1 &
           p_wplint=$!
+          bg_pids+=("$p_wplint")
 
           p_cross=
           p_sast=
           if [ "$FULL" = true ]; then
             make cross-check >"$tmp/cross.log" 2>&1 &
             p_cross=$!
+            bg_pids+=("$p_cross")
             make sast >"$tmp/sast.log" 2>&1 &
             p_sast=$!
+            bg_pids+=("$p_sast")
+          fi
+
+          declare -A status=()
+          wait "$p_wplint" && status[wplint]=0 || status[wplint]=$?
+          if [ -n "$p_cross" ]; then
+            wait "$p_cross" && status[cross]=0 || status[cross]=$?
+          fi
+          if [ -n "$p_sast" ]; then
+            wait "$p_sast" && status[sast]=0 || status[sast]=$?
           fi
 
           rc=0
-          wait "$p_wplint" || { echo "::error title=wplint::failed"; rc=1; }
-          if [ -n "$p_cross" ]; then
-            wait "$p_cross" || { echo "::error title=cross-check::failed"; rc=1; }
-          fi
-          if [ -n "$p_sast" ]; then
-            wait "$p_sast" || { echo "::error title=gosec::failed"; rc=1; }
-          fi
           for name in wplint cross sast; do
-            if [ -s "$tmp/$name.log" ]; then
+            [ -n "${status[$name]+x}" ] || continue
+            if [ "${status[$name]}" -eq 0 ] && [ -s "$tmp/$name.log" ]; then
               echo "::group::$name"
               cat "$tmp/$name.log"
               echo "::endgroup::"
             fi
           done
+          for name in wplint cross sast; do
+            [ -n "${status[$name]+x}" ] || continue
+            if [ "${status[$name]}" -ne 0 ]; then
+              rc=1
+              echo "=== $name failed (exit ${status[$name]}) ==="
+              if [ -s "$tmp/$name.log" ]; then cat "$tmp/$name.log"; fi
+              echo "::error title=$name::failed (exit ${status[$name]})"
+            fi
+          done
+          dumped=1
           exit "$rc"
       - name: npm audit (high and above, only those this change adds over main)
         if: steps.tier.outputs.code == 'true' && steps.tier.outputs.full == 'true'
         env:
           ADVISORIES_BASE_SHA: ${{ github.event.pull_request.merge_base }}
         run: deploy/advisories.sh check npm pr
+      - name: build (also validates what gets embedded into the binary)
+        if: steps.tier.outputs.code == 'true' && steps.tier.outputs.full == 'true'
+        working-directory: web
+        run: npm run build:vite
 
   advisories:
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
@@ -956,6 +1077,8 @@ jobs:
         with:
           kind: release
       - uses: ./.forgejo/actions/go-mod
+      - name: verify module cache
+        run: go mod verify
       - name: tag and publish the release
         id: release
         env:

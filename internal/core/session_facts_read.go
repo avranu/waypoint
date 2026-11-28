@@ -265,7 +265,7 @@ func (s *Service) SessionFacts(ctx context.Context, actor *Actor, q FactsQuery) 
 		return nil, err
 	}
 	if actor.Automation != nil {
-		if err := actor.requirePersonDirect("reading session facts"); err != nil {
+		if err := actor.RequirePersonDirect("reading session facts"); err != nil {
 			return nil, err
 		}
 	}
@@ -273,7 +273,7 @@ func (s *Service) SessionFacts(ctx context.Context, actor *Actor, q FactsQuery) 
 	// not anyone else's: decided on the resolved ids, so a differently-cased
 	// name or an alias cannot dodge it.
 	if everyone || len(uids) != 1 || uids[0] != actor.User.ID {
-		if err := actor.requirePersonDirect("reading another person's session facts"); err != nil {
+		if err := actor.RequirePersonDirect("reading another person's session facts"); err != nil {
 			return nil, forbidden("%v; read your own person's sessions by leaving out --user", err)
 		}
 	}

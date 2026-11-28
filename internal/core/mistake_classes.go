@@ -732,7 +732,7 @@ func (s *Service) fileMistakeClass(ctx context.Context, p *Project, g *mistakeGr
 		WHERE i.project_id = ? AND i.title = ? AND instr(i.description, ?) > 0 AND st.category NOT IN ('done','canceled') ORDER BY i.id DESC LIMIT 1`, p.ID, title, "(`"+g.key+"`)").Scan(&issueID)
 	if errors.Is(err, sql.ErrNoRows) {
 		writer := Actor{User: owner}
-		writer.textAgent = "waypoint"
+		writer.TextAgent = "waypoint"
 		made, err := s.CreateIssue(ctx, &writer, IssueInput{Project: itoa64(p.ID), Type: "story", Category: "test", Agent: "claude", Priority: "low",
 			Labels: []string{"recurring"}, Title: title, Description: mistakeTaskText(g)})
 		if err != nil {

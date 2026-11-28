@@ -117,6 +117,7 @@ flags() {
 
 # Split go test flags into build-time vs binary-run-time for compiled test binaries.
 build_flags=()
+plain_build_flags=()
 run_flags=()
 has_cover=0
 has_timeout=0
@@ -168,12 +169,18 @@ for ((idx = 0; idx < ${#argv[@]}; idx++)); do
   -v)
     run_flags+=("-test.v")
     ;;
-  -cover | -cover=* | -covermode | -covermode=*)
+  -covermode)
+    has_cover=1
+    build_flags+=("$arg" "${argv[$((idx + 1))]}")
+    skip_next=1
+    ;;
+  -cover | -cover=* | -covermode=*)
     has_cover=1
     build_flags+=("$arg")
     ;;
   *)
     build_flags+=("$arg")
+    plain_build_flags+=("$arg")
     ;;
   esac
 done
@@ -184,24 +191,25 @@ if [ "$has_timeout" -eq 0 ]; then
   run_flags+=(-test.timeout=10m)
 fi
 
-# Compile internal/core once BEFORE launching cmd/wp and rest packages: both
-# cmd/wp and internal/api import internal/core, so launching all three at once
-# causes Go to miss GOCACHE and compile 204k-LOC internal/core up to 3x
-# concurrently. Warming GOCACHE here lets cmd/wp and internal/api reuse the
-# compiled internal/core package immediately.
 status=0
 core_pids=()
+core_build_pid=
 core_t0=0
 core_lanes=${CORE_LANES:-2}
-core_compiled=0
+
+# Start compiling the test-augmented internal/core binary immediately so it
+# overlaps with cmd/wp and rest. When both cmd/wp and a rest package (e.g.
+# internal/api on shard 1 or cmd/waypoint on shard 3) import plain internal/core,
+# pre-warm plain internal/core once into GOCACHE before launching both so they
+# don't duplicate that compile concurrently.
 if [ -n "${run[internal/core]:-}" ] && [ "$core_lanes" -gt 1 ] && [ "${#core_weighted[@]}" -gt 1 ]; then
-  if go test -c ${build_flags[@]+"${build_flags[@]}"} -o "$tmp/core.test" ./internal/core >"$tmp/core-build.out" 2>&1; then
-    core_compiled=1
-  else
-    cat "$tmp/core-build.out" >&2
-    printf 'FAIL\t%s/internal/core [build failed]\n' "$mod" >"$tmp/internal-core-pkg.out"
-    status=1
-  fi
+  go test -c ${build_flags[@]+"${build_flags[@]}"} -o "$tmp/core.test" ./internal/core >"$tmp/core-build.out" 2>&1 &
+  core_build_pid=$!
+fi
+
+if [ -n "${run[cmd/wp]:-}" ] && [ ${#mine[@]} -gt 0 ] &&
+  go list -f '{{range .Deps}}{{if eq . "'"$mod"'/internal/core"}}1{{end}}{{end}}' "${mine[@]}" 2>/dev/null | grep -q 1; then
+  go build ${plain_build_flags[@]+"${plain_build_flags[@]}"} ./internal/core >/dev/null 2>&1 || true
 fi
 
 if [ -n "${run[cmd/wp]:-}" ]; then
@@ -216,25 +224,31 @@ if [ ${#mine[@]} -gt 0 ]; then
 fi
 
 if [ -n "${run[internal/core]:-}" ]; then
-  if [ "$core_compiled" -eq 1 ]; then
-    declare -a sub_run=()
-    while read -r lane tname; do
-      sub_run[lane]+="${sub_run[lane]:+|}$tname"
-    done < <(
-      printf '%s\n' "${core_weighted[@]}" | awk -v n="$core_lanes" '
-        { best = 0; for (i = 1; i < n; i++) if (load[i] < load[best]) best = i
-          load[best] += $1; print best, $2 }'
-    )
-    core_t0=$(date +%s%3N)
-    for lane in "${!sub_run[@]}"; do
-      if [ -n "${EVIDENCE:-}" ]; then
-        (cd internal/core && go tool test2json -p "$mod/internal/core" -t "$tmp/core.test" -test.paniconexit0 -test.v=test2json "-test.coverprofile=$tmp/internal-core-$lane.cov" ${run_flags[@]+"${run_flags[@]}"} -test.run="^(${sub_run[$lane]})\$") >"$tmp/internal-core-$lane.out" 2>&1 &
-      else
-        (cd internal/core && "$tmp/core.test" -test.paniconexit0 ${run_flags[@]+"${run_flags[@]}"} -test.run="^(${sub_run[$lane]})\$") >"$tmp/internal-core-$lane.out" 2>&1 &
-      fi
-      core_pids+=($!)
-    done
-  elif [ "$core_lanes" -le 1 ] || [ "${#core_weighted[@]}" -le 1 ]; then
+  if [ -n "$core_build_pid" ]; then
+    if wait "$core_build_pid"; then
+      declare -a sub_run=()
+      while read -r lane tname; do
+        sub_run[lane]+="${sub_run[lane]:+|}$tname"
+      done < <(
+        printf '%s\n' "${core_weighted[@]}" | awk -v n="$core_lanes" '
+          { best = 0; for (i = 1; i < n; i++) if (load[i] < load[best]) best = i
+            load[best] += $1; print best, $2 }'
+      )
+      core_t0=$(date +%s%3N)
+      for lane in "${!sub_run[@]}"; do
+        if [ -n "${EVIDENCE:-}" ]; then
+          (cd internal/core && go tool test2json -p "$mod/internal/core" -t "$tmp/core.test" -test.paniconexit0 -test.v=test2json "-test.coverprofile=$tmp/internal-core-$lane.cov" ${run_flags[@]+"${run_flags[@]}"} -test.run="^(${sub_run[$lane]})\$") >"$tmp/internal-core-$lane.out" 2>&1 &
+        else
+          (cd internal/core && "$tmp/core.test" -test.paniconexit0 ${run_flags[@]+"${run_flags[@]}"} -test.run="^(${sub_run[$lane]})\$") >"$tmp/internal-core-$lane.out" 2>&1 &
+        fi
+        core_pids+=($!)
+      done
+    else
+      cat "$tmp/core-build.out" >&2
+      printf 'FAIL\t%s/internal/core [build failed]\n' "$mod" >"$tmp/internal-core-pkg.out"
+      status=1
+    fi
+  else
     # shellcheck disable=SC2046
     go test "$@" $(flags internal-core) -run "^(${run[internal/core]})\$" ./internal/core >"$tmp/internal-core.out" 2>&1 &
     pids+=($!)

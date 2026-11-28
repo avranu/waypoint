@@ -91,10 +91,10 @@ func (s *Service) ListAudit(ctx context.Context, actor *Actor, q AuditQuery) (*A
 		q.Limit = 50
 	}
 	where, args := []string{}, []any{}
-	if !actor.isAdmin() {
-		member, margs := actor.memberProjects(RoleViewer)
+	if !actor.IsAdmin() {
+		member, margs := actor.MemberProjects(RoleViewer)
 		where = append(where, `((a.user_id = ? AND ?) OR a.project_id IN `+member+`)`)
-		args = append(append(args, actor.id(), actor.scope == nil), margs...)
+		args = append(append(args, actor.ID(), actor.Scope == nil), margs...)
 	}
 	if q.Project != "" {
 		p, err := s.projectByRef(ctx, s.db.R, q.Project)

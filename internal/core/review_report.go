@@ -239,7 +239,7 @@ func (s *Service) ReportReview(ctx context.Context, actor *Actor, ref string, in
 	}
 	owner := r.owner.Int64
 	if owner == 0 {
-		owner = actor.id()
+		owner = actor.ID()
 	}
 	if owner == 0 {
 		return nil, invalid("the session has no person to own its report")
@@ -281,16 +281,16 @@ func (s *Service) ReportReview(ctx context.Context, actor *Actor, ref string, in
 				return err
 			}
 			t.audit(AuditEntry{Action: "audit.report.replace", Category: AuditControl, ProjectID: p.ID, TargetType: "code_audit", TargetID: id, Target: i.Key,
-				About: actor.agentName(), Detail: fmt.Sprintf("a new report of %s's review replaced %s of audit #%d", i.Key, plural1(replaced, "finding"), id)})
+				About: actor.AgentName(), Detail: fmt.Sprintf("a new report of %s's review replaced %s of audit #%d", i.Key, plural1(replaced, "finding"), id)})
 			if _, err := t.ExecContext(ctx, `UPDATE code_audits SET summary = ?, answer = ?, requested_agent = ?, finished_at = ?, settled_at = NULL WHERE id = ?`,
-				summary, clipText(in.Report, ownReportKept), actor.agentName(), at, id); err != nil {
+				summary, clipText(in.Report, ownReportKept), actor.AgentName(), at, id); err != nil {
 				return err
 			}
 		} else if err := t.QueryRowContext(ctx, `INSERT INTO code_audits(project_id, forge_id, repo, target, ref, base, title, instructions, models,
 				post_comment, fix, status, model, summary, answer, owner_id, requested_agent, requested_via, request_key, created_at, started_at, finished_at, purpose)
 			VALUES (?,?,?,'branch',?,?,?,?,'[{"cli":"session"}]',0,0,?,?,?,?,?,?,'cli',?,?,?,?,?) RETURNING id`,
 			p.ID, repo.Forge.ID, repo.Repo, bp.Branch, bp.Base, title, "The session's report of the adversarial review it ran itself (wp audit report).",
-			AuditDone, ownReportModel, summary, clipText(in.Report, ownReportKept), owner, actor.agentName(), key, at, at, at, AuditReview).Scan(&id); err != nil {
+			AuditDone, ownReportModel, summary, clipText(in.Report, ownReportKept), owner, actor.AgentName(), key, at, at, at, AuditReview).Scan(&id); err != nil {
 			return err
 		}
 		for n, f := range findings {
@@ -298,7 +298,7 @@ func (s *Service) ReportReview(ctx context.Context, actor *Actor, ref string, in
 			var agent string
 			var who any
 			if f.outcome != "open" {
-				decidedAt, agent, who = at, actor.agentName(), by
+				decidedAt, agent, who = at, actor.AgentName(), by
 			}
 			if _, err := t.ExecContext(ctx, `INSERT INTO code_audit_findings(audit_id, ordinal, title, path, line, severity, problem, confirm, state, note, decided_by, decided_agent, decided_at)
 				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,

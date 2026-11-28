@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core/kernel"
 )
 
 // ciStacked runs on a ready pull request's edit and on pushes to merge queue
@@ -214,7 +216,7 @@ func (se *stackEnv) queueAll() {
 
 // The runners are saturated when a job has waited poolSatWait for one.
 func TestNotePoolSaturation(t *testing.T) {
-	s := &Service{now: time.Now}
+	s := &Service{k: kernel.New(nil, nil)}
 	now := time.Now()
 	snap := func(waited time.Duration, status string) *ciSnapshot {
 		return &ciSnapshot{repos: []*ciRepoData{{ref: ciRepoRef{forge: &Forge{ID: 4}}, active: []ActionRun{{ID: 1, Index: 1, Created: now.Add(-waited)}},

@@ -216,10 +216,10 @@ func (s *Service) canWriteInstructions(ctx context.Context, actor *Actor, projec
 		return ErrUnauthorized
 	}
 	if !projectID.Valid {
-		if err := actor.canWrite(); err != nil {
+		if err := actor.CanWrite(); err != nil {
 			return err
 		}
-		if !actor.isAdmin() {
+		if !actor.IsAdmin() {
 			return forbidden("instructions for every project are for admins")
 		}
 		return nil
@@ -376,16 +376,16 @@ func (s *Service) addInstrRevision(ctx context.Context, t *tx, actor *Actor, id 
 	}
 	state = InstrApproved
 	var reviewedBy, reviewedAt any
-	if actor.writesAsAgent() {
+	if actor.WritesAsAgent() {
 		state = InstrPending
 	} else {
-		reviewedBy, reviewedAt = actor.id(), s.nowMS()
+		reviewedBy, reviewedAt = actor.ID(), s.nowMS()
 	}
-	agent := actor.creditAgent()
+	agent := actor.CreditAgent()
 	sessID, sessTask := t.creditSession(ctx, agent)
 	if _, err := t.ExecContext(ctx, `INSERT INTO agent_instruction_revisions(instruction_id, rev, title, body, scope, models, agent_types, moment, state, user_id, agent, session_id, session_issue_id, created_at, reviewed_by, reviewed_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, rev, c.title, c.body, c.scope, jsonList(c.models), jsonList(c.types), c.moment, state,
-		actor.id(), agent, sessID, sessTask, s.nowMS(), reviewedBy, reviewedAt); err != nil {
+		actor.ID(), agent, sessID, sessTask, s.nowMS(), reviewedBy, reviewedAt); err != nil {
 		return "", err
 	}
 	if state == InstrApproved {
@@ -421,7 +421,7 @@ func (s *Service) CreateInstruction(ctx context.Context, actor *Actor, in Instru
 	if err != nil {
 		return nil, err
 	}
-	if (in.Enabled != nil || in.Position != nil) && actor.writesAsAgent() {
+	if (in.Enabled != nil || in.Position != nil) && actor.WritesAsAgent() {
 		return nil, forbidden("an agent proposes the text and who it is for; turning it on or off and its order are a person's")
 	}
 	var id int64
@@ -434,7 +434,7 @@ func (s *Service) CreateInstruction(ctx context.Context, actor *Actor, in Instru
 			position = *in.Position
 		}
 		res, err := t.ExecContext(ctx, `INSERT INTO agent_instructions(project_id, enabled, position, created_by, created_at, updated_at) VALUES (?,?,?,?,?,?)`,
-			pid, enabled, position, actor.id(), s.nowMS(), s.nowMS())
+			pid, enabled, position, actor.ID(), s.nowMS(), s.nowMS())
 		if err != nil {
 			return err
 		}
@@ -464,7 +464,7 @@ func (s *Service) UpdateInstruction(ctx context.Context, actor *Actor, id int64,
 		return nil, err
 	}
 	if in.Enabled != nil || in.Position != nil {
-		if err := actor.requirePersonDirect("turning an instruction on or off, or reordering it,"); err != nil {
+		if err := actor.RequirePersonDirect("turning an instruction on or off, or reordering it,"); err != nil {
 			return nil, err
 		}
 	}
@@ -476,7 +476,7 @@ func (s *Service) UpdateInstruction(ctx context.Context, actor *Actor, id int64,
 			var models, types string
 			q, args := `SELECT title, body, scope, models, agent_types, moment FROM agent_instruction_revisions
 				WHERE instruction_id = ? AND state <> ? ORDER BY rev DESC LIMIT 1`, []any{id, InstrRejected}
-			if !actor.writesAsAgent() {
+			if !actor.WritesAsAgent() {
 				q, args = `SELECT title, body, scope, models, agent_types, moment FROM agent_instruction_revisions
 				WHERE instruction_id = ? AND rev = (SELECT rev FROM agent_instructions WHERE id = ?)`, []any{id, id}
 			}
@@ -523,7 +523,7 @@ func (s *Service) ReviewInstruction(ctx context.Context, actor *Actor, id int64,
 	if err := s.canWriteInstructions(ctx, actor, x.projectID); err != nil {
 		return nil, err
 	}
-	if err := actor.requirePersonDirect("approving or rejecting an instruction"); err != nil {
+	if err := actor.RequirePersonDirect("approving or rejecting an instruction"); err != nil {
 		return nil, err
 	}
 	err = s.write(ctx, actor, func(t *tx) error {
@@ -546,12 +546,12 @@ func (s *Service) ReviewInstruction(ctx context.Context, actor *Actor, id int64,
 			}
 		}
 		if _, err := t.ExecContext(ctx, `UPDATE agent_instruction_revisions SET state = ?, reviewed_by = ?, reviewed_at = ? WHERE instruction_id = ? AND rev = ?`,
-			state, actor.id(), s.nowMS(), id, rev); err != nil {
+			state, actor.ID(), s.nowMS(), id, rev); err != nil {
 			return err
 		}
 		if approve {
 			if _, err := t.ExecContext(ctx, `UPDATE agent_instruction_revisions SET state = ?, reviewed_by = ?, reviewed_at = ? WHERE instruction_id = ? AND state = ? AND rev < ?`,
-				InstrRejected, actor.id(), s.nowMS(), id, InstrPending, rev); err != nil {
+				InstrRejected, actor.ID(), s.nowMS(), id, InstrPending, rev); err != nil {
 				return err
 			}
 			if _, err := t.ExecContext(ctx, `UPDATE agent_instructions SET rev = ?, updated_at = ? WHERE id = ?`, rev, s.nowMS(), id); err != nil {
@@ -577,7 +577,7 @@ func (s *Service) DeleteInstruction(ctx context.Context, actor *Actor, id int64)
 	if err := s.canWriteInstructions(ctx, actor, x.projectID); err != nil {
 		return err
 	}
-	if err := actor.requirePersonDirect("deleting an instruction"); err != nil {
+	if err := actor.RequirePersonDirect("deleting an instruction"); err != nil {
 		return err
 	}
 	return s.write(ctx, actor, func(t *tx) error {

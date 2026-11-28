@@ -298,7 +298,7 @@ func (s *Service) shipWaitTarget(ctx context.Context, actor *Actor, cliID, machi
 	if actor == nil || actor.User == nil || actor.User.ID == 0 {
 		return 0, 0, ErrUnauthorized
 	}
-	session = s.SessionForHeader(ctx, actor.id(), cliID, machine)
+	session = s.SessionForHeader(ctx, actor.ID(), cliID, machine)
 	if session == 0 {
 		return 0, 0, notFound("session")
 	}

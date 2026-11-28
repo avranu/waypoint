@@ -16,7 +16,7 @@ func TestInboxMarkReadLeavesWhatWasNotShown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.s.db.W.Exec(`INSERT INTO notifications(user_id, kind, title, body, url, created_at, issue_id) VALUES (?, 'mentioned', 'new', 'late', '', ?, ?)`, sam.id(), e.s.nowMS(), is.ID); err != nil {
+	if _, err := e.s.db.W.Exec(`INSERT INTO notifications(user_id, kind, title, body, url, created_at, issue_id) VALUES (?, 'mentioned', 'new', 'late', '', ?, ?)`, sam.ID(), e.s.nowMS(), is.ID); err != nil {
 		t.Fatal(err)
 	}
 	n, err := e.s.MarkInboxRead(e.ctx, sam, InboxScope{Section: InboxLive, Group: "i:" + is.Key, Upto: v.Summary.AsOf})
@@ -68,8 +68,8 @@ func TestInboxOwedStaysLiveAndRemovedMembersSeeNothing(t *testing.T) {
 	if v, _ := e.s.Inbox(e.ctx, sam); len(v.Live) != 0 || v.Summary.LiveUnread != 0 {
 		t.Errorf("a removed member still sees the project's issues: %+v", v.Summary)
 	}
-	e.s.notify(e.ctx, sam.id(), nil, NotifyQuota, "5h window at 90%", "")
-	e.s.notify(e.ctx, sam.id(), nil, NotifyQuota, "7d window at 80%", "")
+	e.s.notify(e.ctx, sam.ID(), nil, NotifyQuota, "5h window at 90%", "")
+	e.s.notify(e.ctx, sam.ID(), nil, NotifyQuota, "7d window at 80%", "")
 	if v, _ := e.s.Inbox(e.ctx, sam); len(v.Live) != 2 {
 		t.Errorf("two different alerts folded into %d row(s)", len(v.Live))
 	}
@@ -85,7 +85,7 @@ func TestMarkAllReadUptoLeavesLateArrivals(t *testing.T) {
 	if err != nil || v.Summary.AsOf == 0 {
 		t.Fatalf("view: %v %+v", err, v.Summary)
 	}
-	if _, err := e.s.db.W.Exec(`INSERT INTO notifications(user_id, kind, title, body, url, created_at, issue_id) VALUES (?, 'mentioned', 'new', 'late', '', ?, ?)`, sam.id(), e.s.nowMS(), is.ID); err != nil {
+	if _, err := e.s.db.W.Exec(`INSERT INTO notifications(user_id, kind, title, body, url, created_at, issue_id) VALUES (?, 'mentioned', 'new', 'late', '', ?, ?)`, sam.ID(), e.s.nowMS(), is.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.s.MarkNotificationsReadUpto(e.ctx, sam, nil, v.Summary.AsOf); err != nil {

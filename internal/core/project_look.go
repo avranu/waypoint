@@ -363,7 +363,7 @@ func (s *Service) saveLook(ctx context.Context, actor *Actor, p *Project, l look
 // from the current one in icon, colour and background, and replaces it, a
 // person's own choices included (the owner asked).
 func (s *Service) RegenerateLook(ctx context.Context, actor *Actor, ref string) (*Project, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	p, err := s.projectByRef(ctx, s.db.R, ref)
@@ -386,7 +386,7 @@ func (s *Service) RegenerateLook(ctx context.Context, actor *Actor, ref string) 
 // ResetLook puts the project's look back to the default and keeps Waypoint
 // from styling it again until someone presses "Pick another".
 func (s *Service) ResetLook(ctx context.Context, actor *Actor, ref string) (*Project, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	p, err := s.projectByRef(ctx, s.db.R, ref)

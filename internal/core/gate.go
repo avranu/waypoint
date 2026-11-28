@@ -75,15 +75,6 @@ func shortClaim(claim string, max int) string {
 	return c
 }
 
-// clipRunes cuts s to n runes, with an ellipsis.
-func clipRunes(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return strings.TrimSpace(string(r[:n-1])) + "…"
-}
-
 // computeGate decides a pull request's gate from its runs and findings.
 func (s *Service) computeGate(ctx context.Context, pr *PullRequest, sev string) (state, note string, open, below int, err error) {
 	findings, err := s.prFindings(ctx, s.db.R, pr.ID)

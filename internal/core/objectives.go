@@ -1361,7 +1361,7 @@ func agoWords(d time.Duration) string {
 // itself never puts a command in effect, and never ends an objective the
 // way a person's close does.
 func objectivePerson(a *Actor) bool {
-	return a.actsAsPerson() && a.User != nil && a.User.ID != 0
+	return a.ActsAsPerson() && a.User != nil && a.User.ID != 0
 }
 
 // objectiveEvent is a change of an objective, in the task's history. what
@@ -1544,7 +1544,7 @@ func (s *Service) SetObjective(ctx context.Context, actor *Actor, ref string, in
 			return err
 		}
 		person := objectivePerson(actor)
-		if cur != nil && cur.State == ObjectiveProposed && !person && cur.SetAgent != "" && cur.SetAgent != actor.creditAgent() {
+		if cur != nil && cur.State == ObjectiveProposed && !person && cur.SetAgent != "" && cur.SetAgent != actor.CreditAgent() {
 			return forbidden("%s's proposed objective is %s's: another agent can't rewrite it before a person reads it", i.Key, cur.SetAgent)
 		}
 		if cur != nil && cur.State != ObjectiveProposed && !person {
@@ -1754,7 +1754,7 @@ func (s *Service) SetObjective(ctx context.Context, actor *Actor, ref string, in
 		if err := s.objSet(ctx, t, i.ID, "check_cmd", o.Check, "dir", o.Dir, "setup", o.Setup, "measure", o.Measure, "until", o.Until, "op", o.Op,
 			"target", nullFloat(o.Target), "factor", nullFloat(o.Factor), "better", o.Better, "unit", o.Unit, "pace", o.Pace, "every_ms", o.everyMS,
 			"max_rounds", o.MaxRounds, "diagnose_after", o.DiagnoseAfter, "repo", o.Repo, "branch", o.Branch, "keep_passing", jsonList(o.KeepPassing), "judge", o.Judge, "judge_bar", o.JudgeBar,
-			"judge_models", jsonList(o.JudgeModels), "set_by", nullUser(actor.id()), "set_agent", actor.creditAgent()); err != nil {
+			"judge_models", jsonList(o.JudgeModels), "set_by", nullUser(actor.ID()), "set_agent", actor.CreditAgent()); err != nil {
 			return err
 		}
 		o.Kind = o.kind()
@@ -1769,7 +1769,7 @@ func (s *Service) SetObjective(ctx context.Context, actor *Actor, ref string, in
 			}
 			t.emit(objectiveEvent(o, "proposed", old, "proposed: "+o.summary()))
 		case fresh || cur.State != ObjectiveActive:
-			if err := s.objectiveStart(ctx, t, o, actor.id(), o.Round); err != nil {
+			if err := s.objectiveStart(ctx, t, o, actor.ID(), o.Round); err != nil {
 				return err
 			}
 			t.emit(objectiveEvent(o, "active", old, o.summary()))
@@ -1817,7 +1817,7 @@ func (s *Service) objectiveEdited(ctx context.Context, t *tx, cur, o *Objective,
 		from = cur.blockedFrom
 	}
 	if changed {
-		if err := s.objSet(ctx, t, o.IssueID, "confirmed_by", nullUser(actor.id()), "confirmed_at", now); err != nil {
+		if err := s.objSet(ctx, t, o.IssueID, "confirmed_by", nullUser(actor.ID()), "confirmed_at", now); err != nil {
 			return err
 		}
 	}
@@ -1875,7 +1875,7 @@ func (s *Service) objectiveEdited(ctx context.Context, t *tx, cur, o *Objective,
 // proposal the person read (Objective.Rev): an agent may have written
 // another over it since, and that one isn't what they confirm.
 func (s *Service) ConfirmObjective(ctx context.Context, actor *Actor, ref, rev string) (*Objective, error) {
-	if err := actor.requirePersonDirect("confirming an objective"); err != nil {
+	if err := actor.RequirePersonDirect("confirming an objective"); err != nil {
 		return nil, err
 	}
 	if !objectivePerson(actor) {
@@ -1912,7 +1912,7 @@ func (s *Service) ConfirmObjective(ctx context.Context, actor *Actor, ref, rev s
 				return invalid("%s's objective is read in %s, which isn't a repository of its project any more: set it again", i.Key, o.Repo)
 			}
 		}
-		if err := s.objectiveStart(ctx, t, o, actor.id(), o.Round); err != nil {
+		if err := s.objectiveStart(ctx, t, o, actor.ID(), o.Round); err != nil {
 			return err
 		}
 		t.emit(objectiveEvent(o, "active", "proposed", "confirmed: "+o.Summary))
@@ -1944,7 +1944,7 @@ func (s *Service) ClearObjective(ctx context.Context, actor *Actor, ref string) 
 			return nil
 		case o.State != ObjectiveProposed && !person:
 			return forbidden("%s's objective is a person's to take off, in the web or their own terminal. Finishing a round is wp ship; if the objective is wrong or can't be reached, say so with wp request ask", i.Key)
-		case o.State == ObjectiveProposed && !person && o.SetAgent != "" && o.SetAgent != actor.creditAgent():
+		case o.State == ObjectiveProposed && !person && o.SetAgent != "" && o.SetAgent != actor.CreditAgent():
 			return forbidden("%s's proposed objective is %s's: it is theirs or a person's to withdraw", i.Key, o.SetAgent)
 		}
 		if err := s.objectiveDropJob(ctx, t, o, "the objective was taken off"); err != nil {
@@ -2024,7 +2024,7 @@ func (s *Service) RecordObjectiveCheck(ctx context.Context, actor *Actor, ref st
 		}
 		m := &ObjectiveMeasurement{OK: in.OK, Value: in.Value, BaseOK: in.BaseOK, BaseValue: in.BaseValue, P: in.P, Moved: in.Moved, Exact: in.Exact, Source: SourceAgent}
 		m.Met, m.Improved = o.judge(m)
-		agent := actor.agentName()
+		agent := actor.AgentName()
 		if agent == "" {
 			agent = strings.TrimSpace(in.Agent)
 		}
@@ -2040,7 +2040,7 @@ func (s *Service) RecordObjectiveCheck(ctx context.Context, actor *Actor, ref st
 			agent, user_id, session_id, source, rev, exact)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			i.ID, o.Round, s.nowMS(), in.OK, nullFloat(in.Value), baseOK, nullFloat(in.BaseValue), in.BaseSHA, in.Tree, in.Commit, in.Runs,
-			nullFloat(in.Low), nullFloat(in.High), nullFloat(in.P), in.Moved, m.Met, m.Improved, agent, nullUser(actor.id()), session, SourceAgent, o.measuredRev(), in.Exact)
+			nullFloat(in.Low), nullFloat(in.High), nullFloat(in.P), in.Moved, m.Met, m.Improved, agent, nullUser(actor.ID()), session, SourceAgent, o.measuredRev(), in.Exact)
 		if err != nil {
 			return err
 		}
@@ -2164,7 +2164,7 @@ func (s *Service) objectiveWaits(ctx context.Context, actor *Actor) (map[int64]o
 			continue
 		}
 		if !asked {
-			asked, spare = true, actor.id() != 0 && s.spendGoesOn(ctx, actor.id())
+			asked, spare = true, actor.ID() != 0 && s.spendGoesOn(ctx, actor.ID())
 		}
 		if !spare {
 			out[r.id] = objectiveWait{round: r.round}
@@ -2210,7 +2210,7 @@ func (s *Service) objectiveTakeRefusal(ctx context.Context, t *tx, actor *Actor,
 			return nil
 		}
 	case o.Pace == PaceSpare:
-		if (explicit && !s.unattended(ctx, actor)) || (actor.id() != 0 && s.spendGoesOn(ctx, actor.id())) {
+		if (explicit && !s.unattended(ctx, actor)) || (actor.ID() != 0 && s.spendGoesOn(ctx, actor.ID())) {
 			return nil
 		}
 	default:

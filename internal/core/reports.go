@@ -692,7 +692,7 @@ func (s *Service) GetTimeReport(ctx context.Context, actor *Actor, from, to time
 // agentTime sums agents' runs between two times: the actor's own agents
 // (runs under their tokens), or every agent's within a project.
 func (s *Service) agentTime(ctx context.Context, actor *Actor, fromMS, toMS int64, projectRef string) (map[string]int64, error) {
-	cond, arg := "r.user_id = ?", any(actor.id())
+	cond, arg := "r.user_id = ?", any(actor.ID())
 	if projectRef != "" {
 		p, err := s.projectByRef(ctx, s.db.R, projectRef)
 		if err != nil {

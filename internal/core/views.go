@@ -34,7 +34,7 @@ type ViewInput struct {
 // ListViews returns the actor's saved views.
 func (s *Service) ListViews(ctx context.Context, actor *Actor) ([]View, error) {
 	rows, err := s.db.R.QueryContext(ctx, `SELECT v.id, v.project_id, coalesce(p.key, ''), v.name, v.query, v.layout, v.pinned, v.position, v.created_at
-		FROM saved_views v LEFT JOIN projects p ON p.id = v.project_id WHERE v.user_id = ? ORDER BY v.position, v.id`, actor.id())
+		FROM saved_views v LEFT JOIN projects p ON p.id = v.project_id WHERE v.user_id = ? ORDER BY v.position, v.id`, actor.ID())
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +67,7 @@ func (s *Service) validateView(in ViewInput) error {
 
 // CreateView saves a query.
 func (s *Service) CreateView(ctx context.Context, actor *Actor, in ViewInput) (*View, error) {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return nil, err
 	}
 	if err := s.validateView(in); err != nil {
@@ -95,7 +95,7 @@ func (s *Service) CreateView(ctx context.Context, actor *Actor, in ViewInput) (*
 	pinned := in.Pinned == nil || *in.Pinned
 	res, err := s.db.W.ExecContext(ctx, `INSERT INTO saved_views(user_id, project_id, name, query, layout, pinned, position, created_at)
 		VALUES (?,?,?,?,?,?,(SELECT coalesce(max(position), 0) + 1 FROM saved_views WHERE user_id = ?),?)`,
-		actor.id(), pid, name, strings.TrimSpace(deref(in.Query)), layout, boolInt(pinned), actor.id(), s.nowMS())
+		actor.ID(), pid, name, strings.TrimSpace(deref(in.Query)), layout, boolInt(pinned), actor.ID(), s.nowMS())
 	if err != nil {
 		return nil, err
 	}
@@ -114,14 +114,14 @@ func (s *Service) CreateView(ctx context.Context, actor *Actor, in ViewInput) (*
 
 // UpdateView edits a saved view.
 func (s *Service) UpdateView(ctx context.Context, actor *Actor, id int64, in ViewInput) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
 	if err := s.validateView(in); err != nil {
 		return err
 	}
 	var owner int64
-	if err := s.db.R.QueryRowContext(ctx, `SELECT user_id FROM saved_views WHERE id = ?`, id).Scan(&owner); err != nil || owner != actor.id() {
+	if err := s.db.R.QueryRowContext(ctx, `SELECT user_id FROM saved_views WHERE id = ?`, id).Scan(&owner); err != nil || owner != actor.ID() {
 		return notFound("view")
 	}
 	if in.Name != nil && strings.TrimSpace(*in.Name) != "" {
@@ -149,10 +149,10 @@ func (s *Service) UpdateView(ctx context.Context, actor *Actor, id int64, in Vie
 
 // DeleteView removes a saved view.
 func (s *Service) DeleteView(ctx context.Context, actor *Actor, id int64) error {
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return err
 	}
-	res, err := s.db.W.ExecContext(ctx, `DELETE FROM saved_views WHERE id = ? AND user_id = ?`, id, actor.id())
+	res, err := s.db.W.ExecContext(ctx, `DELETE FROM saved_views WHERE id = ? AND user_id = ?`, id, actor.ID())
 	if err != nil {
 		return err
 	}

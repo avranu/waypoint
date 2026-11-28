@@ -76,7 +76,6 @@ var serviceSideEffects = map[string]string{
 	"deliverWebhooks": "a webhook",
 	"sendLogged":      "a webhook",
 	"sendPush":        "a push notification",
-	"sendEmail":       "an email",
 	"runChain":        "a model call",
 	"runChainAt":      "a model call",
 	"runAI":           "a model call",
@@ -110,7 +109,10 @@ func directEffect(fn *types.Func) string {
 			return "a process"
 		}
 		return ""
-	case inPkg(p, "internal/core"):
+	case underPkg(p, "internal/core"):
+		if inPkg(p, "internal/core/email") && recvName(fn) == "Mailer" && fn.Name() == "Send" {
+			return "an email"
+		}
 		if recv := recvName(fn); strings.HasPrefix(recv, "Forge") && isInterfaceMethod(fn) || recv == "httpForgeClient" {
 			return "a forge call"
 		}
@@ -121,13 +123,29 @@ func directEffect(fn *types.Func) string {
 	return ""
 }
 
+// isWriteSink says whether fn runs a closure in a write transaction: a
+// Service's write (core's or a domain's) or (*kernel.Kernel).Write/WriteSkip.
+func isWriteSink(fn *types.Func) bool {
+	if fn == nil {
+		return false
+	}
+	return fn.Name() == "write" && recvName(fn) == "Service" || isKernelWrite(fn)
+}
+
+func sinkName(fn *types.Func) string {
+	if recvName(fn) == "Kernel" {
+		return "Kernel." + fn.Name()
+	}
+	return "Service.write"
+}
+
 func isInterfaceMethod(fn *types.Func) bool {
 	sig, ok := fn.Type().(*types.Signature)
 	return ok && sig.Recv() != nil && types.IsInterface(sig.Recv().Type())
 }
 
 func runWriteClosure(pass *analysis.Pass) (any, error) {
-	if !inPkg(pass.Pkg.Path(), "internal/core") {
+	if !underPkg(pass.Pkg.Path(), "internal/core") {
 		return nil, nil
 	}
 	r := newReporter(pass)
@@ -140,7 +158,7 @@ func runWriteClosure(pass *analysis.Pass) (any, error) {
 	effect := map[*types.Func]reach{}
 	calls := map[*types.Func][]*types.Func{}
 	for fn, fd := range decls {
-		if fn.Name() == "write" && recvName(fn) == "Service" {
+		if isWriteSink(fn) {
 			continue
 		}
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
@@ -182,7 +200,7 @@ func runWriteClosure(pass *analysis.Pass) (any, error) {
 				return true
 			}
 			c := callee(pass, call)
-			if c == nil || c.Name() != "write" || recvName(c) != "Service" || len(call.Args) == 0 {
+			if !isWriteSink(c) || len(call.Args) == 0 {
 				return true
 			}
 			closure, ok := ast.Unparen(call.Args[len(call.Args)-1]).(*ast.FuncLit)
@@ -193,12 +211,12 @@ func runWriteClosure(pass *analysis.Pass) (any, error) {
 				if call, ok := m.(*ast.CallExpr); ok {
 					inner := callee(pass, call)
 					if what := directEffect(inner); what != "" {
-						r.report(call.Pos(), "%s (%s) inside Service.write runs before the commit: use t.emit and dispatch (events.go)", what, inner.Name())
+						r.report(call.Pos(), "%s (%s) inside %s runs before the commit: use t.emit and dispatch (events.go)", what, inner.Name(), sinkName(c))
 						return true
 					}
 					if inner != nil {
 						if e, ok := effect[inner]; ok {
-							r.report(call.Pos(), "%s reaches %s (%s) inside Service.write, before the commit: use t.emit and dispatch (events.go)", inner.Name(), e.what, strings.Join(e.via, " → "))
+							r.report(call.Pos(), "%s reaches %s (%s) inside %s, before the commit: use t.emit and dispatch (events.go)", inner.Name(), e.what, strings.Join(e.via, " → "), sinkName(c))
 						}
 					}
 				}
@@ -221,7 +239,7 @@ var ActorUsed = &analysis.Analyzer{
 }
 
 func runActorUsed(pass *analysis.Pass) (any, error) {
-	if !inPkg(pass.Pkg.Path(), "internal/core") {
+	if !underPkg(pass.Pkg.Path(), "internal/core") {
 		return nil, nil
 	}
 	r := newReporter(pass)
@@ -271,17 +289,19 @@ func usesObject(pass *analysis.Pass, body ast.Node, obj types.Object) bool {
 	return used
 }
 
-// Clock keeps internal/core on its clock: where a Service or tx is at hand,
-// the time comes from s.now, which tests control and tests' background work
-// reads (WP-393). time.Now stays fine for measuring a duration.
+// Clock keeps internal/core, and the packages under it, on their clock: where
+// a Service, tx, kernel.Tx or kernel.Kernel is at hand, the time comes from
+// s.now (core) or Kernel.Now/NowMS (a domain, the kernel), which tests control
+// and tests' background work reads (WP-393). time.Now stays fine for measuring
+// a duration. The kernel's own Now and NowMS are the clock and are exempt.
 var Clock = &analysis.Analyzer{
 	Name: "clock",
-	Doc:  "in internal/core, use s.now instead of time.Now where a Service is at hand; durations are exempt (WP-393)",
+	Doc:  "in internal/core, use s.now or Kernel.Now instead of time.Now where a Service or kernel Tx is at hand; durations are exempt (WP-393)",
 	Run:  runClock,
 }
 
 func runClock(pass *analysis.Pass) (any, error) {
-	if !inPkg(pass.Pkg.Path(), "internal/core") {
+	if !underPkg(pass.Pkg.Path(), "internal/core") {
 		return nil, nil
 	}
 	r := newReporter(pass)
@@ -291,7 +311,7 @@ func runClock(pass *analysis.Pass) (any, error) {
 		}
 		for _, d := range f.Decls {
 			fd, ok := d.(*ast.FuncDecl)
-			if !ok || fd.Body == nil || !hasClock(pass, fd) {
+			if !ok || fd.Body == nil || !hasClock(pass, fd) || isKernelClock(pass, fd) {
 				continue
 			}
 			checkClock(pass, r, fd)
@@ -300,8 +320,14 @@ func runClock(pass *analysis.Pass) (any, error) {
 	return nil, nil
 }
 
-// hasClock says whether the function can reach s.now: a Service or tx
-// receiver or parameter.
+// isKernelClock says whether fd is the kernel's own clock, Kernel.Now or NowMS.
+func isKernelClock(pass *analysis.Pass, fd *ast.FuncDecl) bool {
+	fn, ok := pass.TypesInfo.Defs[fd.Name].(*types.Func)
+	return ok && fn.Pkg() != nil && inKernel(fn.Pkg().Path()) && recvName(fn) == "Kernel" && (fn.Name() == "Now" || fn.Name() == "NowMS")
+}
+
+// hasClock says whether the function can reach the clock: a Service, tx,
+// kernel.Tx or kernel.Kernel receiver or parameter.
 func hasClock(pass *analysis.Pass, fd *ast.FuncDecl) bool {
 	lists := []*ast.FieldList{fd.Type.Params}
 	if fd.Recv != nil {
@@ -309,7 +335,7 @@ func hasClock(pass *analysis.Pass, fd *ast.FuncDecl) bool {
 	}
 	for _, l := range lists {
 		for _, field := range l.List {
-			if n := typeName(pass.TypesInfo.TypeOf(field.Type)); n == "Service" || n == "tx" {
+			if isClockHolder(pass.TypesInfo.TypeOf(field.Type)) {
 				return true
 			}
 		}
@@ -332,7 +358,7 @@ func checkClock(pass *analysis.Pass, r *reporter, fd *ast.FuncDecl) {
 		}
 		c := callee(pass, call)
 		if (isPkgFunc(c, "time", "Since") || isPkgFunc(c, "time", "Until")) && len(call.Args) == 1 && !isReal(pass, real, call.Args[0]) {
-			r.report(call.Pos(), "time.%s measures against the real clock, but this time isn't from time.Now: use s.now().Sub, so a test clock stays consistent", c.Name())
+			r.report(call.Pos(), "time.%s measures against the real clock, but this time isn't from time.Now: use s.now().Sub (Kernel.Now().Sub in a domain), so a test clock stays consistent", c.Name())
 			return true
 		}
 		if !isPkgFunc(c, "time", "Now") || len(stack) < 2 {
@@ -341,7 +367,7 @@ func checkClock(pass *analysis.Pass, r *reporter, fd *ast.FuncDecl) {
 		if measured(pass, real, stack, call) {
 			return true
 		}
-		r.report(call.Pos(), "use s.now(), the clock tests control, instead of time.Now (a duration between two time.Now readings is exempt)")
+		r.report(call.Pos(), "use s.now(), the clock tests control (Kernel.Now() in a domain or the kernel), instead of time.Now (a duration between two time.Now readings is exempt)")
 		return true
 	})
 }
@@ -587,7 +613,7 @@ var StatusCreator = &analysis.Analyzer{
 }
 
 func runStatusCreator(pass *analysis.Pass) (any, error) {
-	if !inPkg(pass.Pkg.Path(), "internal/core") {
+	if !underPkg(pass.Pkg.Path(), "internal/core") {
 		return nil, nil
 	}
 	r := newReporter(pass)

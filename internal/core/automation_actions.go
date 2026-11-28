@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"git.jmann.me/claude/waypoint/internal/core/email"
 )
 
 func legacyRun(c *StepCtx) error { return c.S.runAction(c) }
@@ -136,7 +138,7 @@ func registerActions() {
 			messageTpl(false),
 		},
 		Check: func(r *Rule, a *Action) error {
-			to, err := parseRecipients(anyString(a.Extra["to"]))
+			to, err := email.ParseRecipients(anyString(a.Extra["to"]))
 			if err != nil {
 				return err
 			}
@@ -294,7 +296,7 @@ func knownEventKind(k string) bool {
 	if k == "" {
 		return false
 	}
-	return isTriggerEvent(k) || persisted[k] || slices.Contains(waitableKinds, k)
+	return isTriggerEvent(k) || slices.Contains(persistedKinds, k) || slices.Contains(waitableKinds, k)
 }
 
 // eventMap is an event as templates read it from a step's output.

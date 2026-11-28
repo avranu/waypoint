@@ -3,13 +3,16 @@ package core
 import (
 	"context"
 	"net/http"
+
+	"writeclosure/internal/core/kernel"
 )
 
 type Actor struct{}
 
-type tx struct{}
+// tx wraps the kernel's transaction, as core's does.
+type tx struct{ *kernel.Tx }
 
-type Service struct{}
+type Service struct{ k *kernel.Kernel }
 
 func (s *Service) write(ctx context.Context, a *Actor, f func(t *tx) error) error {
 	if err := f(&tx{}); err != nil {
@@ -64,5 +67,17 @@ func (s *Service) Waived(ctx context.Context, a *Actor) error {
 		//wplint:ignore writeclosure a test of the waiver
 		s.notify("now")
 		return nil
+	})
+}
+
+// Wrapped reaches the kernel's Part through core's tx and Write through the
+// kernel, as core does now.
+func (s *Service) Wrapped(ctx context.Context, a *Actor) error {
+	return s.k.Write(ctx, nil, func(kt *kernel.Tx) error {
+		t := &tx{Tx: kt}
+		return t.Part(ctx, func() error {
+			s.notify("now") // want `a notification \(notify\) inside Kernel.Write`
+			return nil
+		})
 	})
 }

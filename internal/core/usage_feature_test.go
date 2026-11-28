@@ -212,7 +212,7 @@ func TestRunKeepsItsCLIVersion(t *testing.T) {
 	ag.Session = e.session(e.me, "m1", "s1", 0)
 	version := func(v string) {
 		if _, err := e.s.db.W.ExecContext(e.ctx, `INSERT INTO usage_sessions(user_id, machine, session, version) VALUES (?, 'm1', 's1', ?)
-			ON CONFLICT(user_id, machine, session) DO UPDATE SET version = excluded.version`, e.me.id(), v); err != nil {
+			ON CONFLICT(user_id, machine, session) DO UPDATE SET version = excluded.version`, e.me.ID(), v); err != nil {
 			t.Fatal(err)
 		}
 	}

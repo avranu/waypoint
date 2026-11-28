@@ -4,6 +4,7 @@ import (
 	"os"
 	"testing"
 
+	"git.jmann.me/claude/waypoint/internal/core/users"
 	"git.jmann.me/claude/waypoint/internal/testnet"
 )
 
@@ -16,7 +17,6 @@ import (
 var prodArgonTime, prodArgonMemory uint32
 
 func TestMain(m *testing.M) {
-	prodArgonTime, prodArgonMemory = argonTime, argonMemory
-	argonTime, argonMemory = 1, 8
+	prodArgonTime, prodArgonMemory = users.SetPasswordCostForTesting(1, 8)
 	os.Exit(testnet.Run(m))
 }

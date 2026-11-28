@@ -458,7 +458,7 @@ func (s *Service) SetPRMergeAfter(ctx context.Context, actor *Actor, prID int64,
 				return err
 			}
 		} else if _, err := t.ExecContext(ctx, `INSERT INTO pr_merge_after(pr_id, after_id, created_at, created_by, created_agent) VALUES (?,?,?,?,?)
-			ON CONFLICT (pr_id, after_id) DO NOTHING`, pr.ID, other.ID, s.nowMS(), nullUser(actor.id()), actor.creditAgent()); err != nil {
+			ON CONFLICT (pr_id, after_id) DO NOTHING`, pr.ID, other.ID, s.nowMS(), nullUser(actor.ID()), actor.CreditAgent()); err != nil {
 			return err
 		}
 		var apart bool
@@ -523,7 +523,7 @@ func (s *Service) onMergeOrderEvent(ctx context.Context, e *Event) {
 	case e.IssueID == 0:
 		return
 	case e.Kind == EvIssueStatus, e.Kind == EvIssueUpdated && e.Field == "relation", e.Kind == EvIssueLinked && e.Field == "pull":
-	case e.Kind == EvProjectUpdated && e.forgeComment == nil:
+	case e.Kind == EvProjectUpdated && hint[*forgeCommentChange](e) == nil:
 	default:
 		return
 	}

@@ -102,7 +102,7 @@ func TestRenumberPassSaysAMemberMoved(t *testing.T) {
 	}
 	// The push's event never came: the pass looks again after the retry time.
 	later := se.s.now().Add(6 * time.Minute)
-	se.s.now = func() time.Time { return later }
+	se.s.SetClock(func() time.Time { return later })
 	pass()
 	if se.rnAsked() == asked {
 		t.Errorf("not looked at again after the retry time")
@@ -180,7 +180,7 @@ func TestRenumberLineStepStartsNothingOnAMovingHead(t *testing.T) {
 	}
 	// If the push's event never comes the line looks again after the retry time.
 	later := se.s.now().Add(6 * time.Minute)
-	se.s.now = func() time.Time { return later }
+	se.s.SetClock(func() time.Time { return later })
 	se.line()
 	if d.(*renumberDir).asked == asked {
 		t.Errorf("the line was not looked at again after the retry time")

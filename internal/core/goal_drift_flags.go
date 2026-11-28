@@ -927,7 +927,7 @@ func (s *Service) driftFlagIssues(ctx context.Context, q queryer, flagID int64, 
 // holds its open tasks and takes the pull request out of the merge line; a
 // person can still change it to "intent", which lifts those holds.
 func (s *Service) AnswerDriftFlag(ctx context.Context, actor *Actor, id int64, answer string) error {
-	if err := actor.requirePersonDirect("answering a drift flag"); err != nil {
+	if err := actor.RequirePersonDirect("answering a drift flag"); err != nil {
 		return err
 	}
 	if answer != DriftAnswerIntent && answer != DriftAnswerStop {
@@ -957,7 +957,7 @@ func (s *Service) AnswerDriftFlag(ctx context.Context, actor *Actor, id int64, a
 		if was == answer {
 			return nil
 		}
-		if _, err := t.ExecContext(ctx, `UPDATE goal_drift_flags SET answer = ?, answered_by = ?, answered_at = ? WHERE id = ?`, answer, actor.id(), s.nowMS(), id); err != nil {
+		if _, err := t.ExecContext(ctx, `UPDATE goal_drift_flags SET answer = ?, answered_by = ?, answered_at = ? WHERE id = ?`, answer, actor.ID(), s.nowMS(), id); err != nil {
 			return err
 		}
 		issues, err := s.driftFlagIssues(ctx, t, id, true)

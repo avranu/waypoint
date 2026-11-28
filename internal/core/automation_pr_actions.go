@@ -184,7 +184,7 @@ var protectedPaths = []string{
 }
 
 func openPR(c *StepCtx) error {
-	if err := c.Actor.need(PermPullsWrite); err != nil {
+	if err := c.Actor.Need(PermPullsWrite); err != nil {
 		return fmt.Errorf("open_pr: %w", err)
 	}
 	repo, err := c.Repo("repo")

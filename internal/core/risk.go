@@ -481,7 +481,7 @@ func (s *Service) RiskOf(ctx context.Context, actor *Actor, kind, ref, project s
 	}
 	if p, ok := map[string]Permission{RiskKindPage: PermPagesRead, RiskKindDesign: PermDesignRead, RiskKindGlossary: PermGlossaryRead, RiskKindPull: PermPullsRead,
 		RiskKindPrompt: PermSessionsRead, RiskKindAutomation: PermAutomationsRead}[kind]; ok {
-		if err := actor.need(p); err != nil {
+		if err := actor.Need(p); err != nil {
 			return nil, err
 		}
 	}

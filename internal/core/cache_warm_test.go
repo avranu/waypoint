@@ -236,7 +236,7 @@ func TestKeepWarmAutopilotSession(t *testing.T) {
 	be.runner(be.admin, "m1", nil)
 	be.typed(TypedKickoff, AutopilotPromptMark+" started this session for WP-1")
 	if _, err := be.s.db.W.Exec(`INSERT INTO sessions(token_hash, user_id, created_at, last_seen_at, expires_at, user_agent, ip, reauth_at) VALUES ('h', ?, ?, ?, ?, '', '', 0)`,
-		be.admin.id(), be.clockNow().UnixMilli(), be.clockNow().Add(time.Hour).UnixMilli(), be.clockNow().Add(2*time.Hour).UnixMilli()); err != nil {
+		be.admin.ID(), be.clockNow().UnixMilli(), be.clockNow().Add(time.Hour).UnixMilli(), be.clockNow().Add(2*time.Hour).UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 	be.hookEv(HookEvent{Event: "Stop", Pending: &HookPending{}, CacheTTL: "1h", LastMessage: "Shipped.", ContextTokens: 100_000})
@@ -343,7 +343,7 @@ func TestFinishedSessionCoolsUnlessItsPersonIsWorkingWithIt(t *testing.T) {
 	be.stop(&HookPending{}, "1h", "Done too.")
 	be.setClock(be.clockNow().Add(50 * time.Minute))
 	if _, err := be.s.db.W.Exec(`INSERT INTO sessions(token_hash, user_id, created_at, last_seen_at, expires_at, user_agent, ip, reauth_at) VALUES ('h', ?, ?, ?, ?, '', '', 0)`,
-		be.admin.id(), be.clockNow().UnixMilli(), be.clockNow().UnixMilli(), be.clockNow().Add(time.Hour).UnixMilli()); err != nil {
+		be.admin.ID(), be.clockNow().UnixMilli(), be.clockNow().UnixMilli(), be.clockNow().Add(time.Hour).UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 	be.warmSweep(5 * time.Minute)
@@ -514,7 +514,7 @@ func TestKeepWarmCompactsInsteadWhenItsPersonAsks(t *testing.T) {
 	be := newBabysitEnv(t)
 	be.runner(be.admin, "m1", nil)
 	compact := UserPrefs{CacheWarm: CacheWarmCompact, WeekStart: 1}
-	if _, err := be.s.UpdateUser(be.ctx, be.admin, be.admin.id(), UserPatch{Prefs: &compact}); err != nil {
+	if _, err := be.s.UpdateUser(be.ctx, be.admin, be.admin.ID(), UserPatch{Prefs: &compact}); err != nil {
 		t.Fatal(err)
 	}
 	running := &HookPending{Tasks: []PendingTask{{Type: "shell", Status: "running"}}}

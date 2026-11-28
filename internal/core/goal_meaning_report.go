@@ -63,10 +63,10 @@ const meaningRecoveryMax = 2000
 // MeaningState reports the judgements of meaning. Admins only: it reads
 // every project's goals.
 func (s *Service) MeaningState(ctx context.Context, actor *Actor) (*MeaningReport, error) {
-	if err := actor.need(PermUsageRead); err != nil {
+	if err := actor.Need(PermUsageRead); err != nil {
 		return nil, err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return nil, forbidden("the judgements of meaning read every project's goals: admins only")
 	}
 	s.goals.mu.Lock()

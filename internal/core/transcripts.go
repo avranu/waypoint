@@ -118,10 +118,10 @@ func transcriptWriter(actor *Actor) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := actor.canWrite(); err != nil {
+	if err := actor.CanWrite(); err != nil {
 		return 0, err
 	}
-	if actor.RunnerJob != 0 || actor.scope != nil {
+	if actor.RunnerJob != 0 || actor.Scope != nil {
 		return 0, ErrTranscriptJob
 	}
 	return uid, nil
@@ -657,7 +657,7 @@ func (s *Service) transcriptPieces(ctx context.Context, actor *Actor, q Transcri
 	if actor == nil {
 		return nil, ErrUnauthorized
 	}
-	if err := actor.requirePersonDirect("reading a transcript"); err != nil {
+	if err := actor.RequirePersonDirect("reading a transcript"); err != nil {
 		return nil, err
 	}
 	uids, everyone, _, err := s.usageWho(ctx, actor, q.User)

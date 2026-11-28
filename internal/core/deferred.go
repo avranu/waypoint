@@ -84,7 +84,7 @@ func (s *Service) OfferDeferred(ctx context.Context, actor *Actor, in DeferredIn
 	}
 	var model, cli string
 	var tokens int64
-	err = s.db.R.QueryRowContext(ctx, `SELECT model, context_tokens, cli FROM agent_sessions WHERE id = ? AND user_id = ?`, actor.Session, actor.id()).Scan(&model, &tokens, &cli)
+	err = s.db.R.QueryRowContext(ctx, `SELECT model, context_tokens, cli FROM agent_sessions WHERE id = ? AND user_id = ?`, actor.Session, actor.ID()).Scan(&model, &tokens, &cli)
 	if errors.Is(err, sql.ErrNoRows) || err == nil && !deferredModel(model) {
 		return none, nil
 	}
@@ -106,7 +106,7 @@ func (s *Service) OfferDeferred(ctx context.Context, actor *Actor, in DeferredIn
 			}
 		}
 	}
-	on, lim, err := s.autopilotFor(ctx, s.db.R, actor.id(), p.ID)
+	on, lim, err := s.autopilotFor(ctx, s.db.R, actor.ID(), p.ID)
 	if err != nil {
 		return nil, err
 	}

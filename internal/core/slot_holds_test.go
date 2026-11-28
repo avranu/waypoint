@@ -151,7 +151,7 @@ func TestRecordSlotHoldsEmitsQuietEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	ev := next(mine)
-	if ev == nil || !ev.quiet || ev.UserID != e.admin.User.ID || ev.Data["machine"] != "box" || ev.Data["stored"] != 1 ||
+	if ev == nil || !ev.Quiet || ev.UserID != e.admin.User.ID || ev.Data["machine"] != "box" || ev.Data["stored"] != 1 ||
 		ev.Data["pending"] != int64(2) || ev.Data["refused"] != false {
 		t.Fatalf("event %+v", ev)
 	}
@@ -202,7 +202,7 @@ func TestSlotHoldsAreSeparatePerUserAndAccess(t *testing.T) {
 			t.Errorf("%s may send", name)
 		}
 	}
-	rojob := &Actor{User: jo.User, RunnerJob: 5, ReadOnly: true, scope: map[int64]int{1: RoleEditor}}
+	rojob := &Actor{User: jo.User, RunnerJob: 5, ReadOnly: true, Scope: map[int64]int{1: RoleEditor}}
 	if _, err := e.s.RecordSlotHolds(e.ctx, rojob, SlotHoldsIn{Machine: "box"}); !errors.Is(err, ErrForbidden) {
 		t.Errorf("a read-only job token may send: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestSlotHoldsAreSeparatePerUserAndAccess(t *testing.T) {
 func TestSlotHoldsRunnerJobStores(t *testing.T) {
 	e := newEnv(t)
 	jo := e.user("jo", false)
-	job := &Actor{User: jo.User, RunnerJob: 5, scope: map[int64]int{1: RoleEditor}}
+	job := &Actor{User: jo.User, RunnerJob: 5, Scope: map[int64]int{1: RoleEditor}}
 	res, err := e.s.RecordSlotHolds(e.ctx, job, SlotHoldsIn{Machine: "box", Holds: []SlotHold{slotHoldIn("j1", e.clockNow().UnixMilli())}})
 	if err != nil || res.Stored != 1 {
 		t.Fatalf("job: %+v %v", res, err)

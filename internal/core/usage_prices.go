@@ -100,7 +100,7 @@ func (s *Service) SetModelPrice(ctx context.Context, actor *Actor, p ModelPrice)
 			VALUES (?,?,?,?,?,?,?,?)
 			ON CONFLICT(model) DO UPDATE SET input = excluded.input, output = excluded.output, cache_write_5m = excluded.cache_write_5m,
 				cache_write_1h = excluded.cache_write_1h, cache_read = excluded.cache_read, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
-			p.Model, p.Input, p.Output, p.CacheWrite5m, p.CacheWrite1h, p.CacheRead, now, nullUser(actor.id()))
+			p.Model, p.Input, p.Output, p.CacheWrite5m, p.CacheWrite1h, p.CacheRead, now, nullUser(actor.ID()))
 		return err
 	})
 	if err != nil {
@@ -133,11 +133,11 @@ func requireUsageAdmin(actor *Actor) error {
 	if actor == nil || actor.User == nil {
 		return ErrUnauthorized
 	}
-	if err := actor.requireHuman("changing prices"); err != nil {
+	if err := actor.RequireHuman("changing prices"); err != nil {
 		return err
 	}
-	if !actor.isAdmin() {
+	if !actor.IsAdmin() {
 		return forbidden("only admins change prices")
 	}
-	return actor.canWrite()
+	return actor.CanWrite()
 }

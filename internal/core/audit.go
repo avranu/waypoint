@@ -1,82 +1,9 @@
 package core
 
-import (
-	"context"
-	"strings"
-)
+import "context"
 
-// Audit categories.
-const (
-	AuditApproval   = "approval"
-	AuditDelegation = "delegation"
-	AuditControl    = "control"
-	AuditSettings   = "settings"
-	AuditAccess     = "access"
-)
-
-// AuditEntry is one decision.
-type AuditEntry struct {
-	Action     string // review, delegate, agent.pause, pr.merged, …
-	Category   string
-	ProjectID  int64 // 0: not about one project
-	TargetType string
-	TargetID   int64
-	Target     string // a label people recognise: WP-12, a rule's name, owner/repo#12
-	URL        string
-	Detail     string // one line
-	// About is the agent whose work or access the decision is about (the
-	// agent delegated to, whose text was approved).
-	About string
-	// Actor is a forge login, for decisions a forge reported (a merge); the
-	// person and agent otherwise come from the transaction's actor.
-	Actor string
-}
-
-// audit records a decision made in this transaction, by its actor.
-// Automations and Waypoint's own work aren't people deciding, so they
-// aren't recorded unless a forge names who acted.
-func (t *tx) audit(e AuditEntry) {
-	if !auditable(t.actor, e) {
-		return
-	}
-	var userID any
-	agent := ""
-	if a := t.actor; a != nil && a.User != nil && a.User.ID != 0 {
-		userID, agent = a.User.ID, a.agentName()
-	}
-	var project, target any
-	if e.ProjectID != 0 {
-		project = e.ProjectID
-	}
-	if e.TargetID != 0 {
-		target = e.TargetID
-	}
-	if _, err := t.ExecContext(context.Background(), `INSERT INTO audit_log(user_id, actor, agent, about_agent, action, category, project_id, target_type, target_id, target, url, detail, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, userID, e.Actor, agent, e.About, e.Action, e.Category, project, e.TargetType, target,
-		excerpt(e.Target, 200), e.URL, excerpt(strings.Join(strings.Fields(e.Detail), " "), 300), t.s.nowMS()); err != nil {
-		t.s.log.ErrorContext(t.ctx, "record audit entry", "action", e.Action, "err", err)
-	}
-}
-
-// auditable: a person (or an agent through their token) decided, or a
-// forge names who did.
-func auditable(a *Actor, e AuditEntry) bool {
-	if a != nil && a.User != nil && a.User.ID != 0 {
-		return a.Automation == nil
-	}
-	return e.Actor != ""
-}
-
-// audit records a decision outside a write (one that changed nothing in
-// Waypoint's own tables, or a forge's report).
-func (s *Service) audit(ctx context.Context, actor *Actor, e AuditEntry) {
-	if !auditable(actor, e) {
-		return
-	}
-	if err := s.write(ctx, actor, func(t *tx) error { t.audit(e); return nil }); err != nil {
-		s.log.ErrorContext(ctx, "record audit entry", "action", e.Action, "err", err)
-	}
-}
+// audit records a decision outside a write; see kernel.Audit.
+func (s *Service) audit(ctx context.Context, actor *Actor, e AuditEntry) { s.k.Audit(ctx, actor, e) }
 
 func derefInt(p *int64) int64 {
 	if p == nil {

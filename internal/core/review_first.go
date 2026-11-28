@@ -337,7 +337,7 @@ const skipReviewStep = "the agent skipped the review with wp ship --skip-review"
 // A failed write is logged, not returned: the pull request the agent asked
 // for opens either way.
 func (s *Service) skipRoundsElsewhere(ctx context.Context, actor *Actor, issueID, except int64, key, reason string) string {
-	if issueID == 0 || actor.id() == 0 {
+	if issueID == 0 || actor.ID() == 0 {
 		return ""
 	}
 	why := "the agent skipped it: " + strings.TrimSpace(reason)
@@ -346,7 +346,7 @@ func (s *Service) skipRoundsElsewhere(ctx context.Context, actor *Actor, issueID
 		skipped = skipped[:0]
 		rows, err := t.QueryContext(ctx, `SELECT w.id, w.session_id FROM work_log w JOIN agent_sessions x ON x.id = w.session_id
 			WHERE w.kind = 'review' AND w.issue_id = ? AND w.state = ? AND w.id != ? AND x.user_id = ? ORDER BY w.id`,
-			issueID, RoundPending, except, actor.id())
+			issueID, RoundPending, except, actor.ID())
 		if err != nil {
 			return err
 		}
@@ -433,7 +433,7 @@ func (s *Service) openRunIn(ctx context.Context, q queryer, session, issueID int
 // anyway once the pull request is open. It says why it couldn't ("":
 // taken). Another live session holding the task keeps it.
 func (s *Service) retakeForReview(ctx context.Context, actor *Actor, g *reviewGate) (string, error) {
-	id := actor.agentName()
+	id := actor.AgentName()
 	if id == "" {
 		return g.key + " isn't under way in this session (wp next takes it)", nil
 	}
@@ -904,11 +904,11 @@ func (s *Service) gateNote(ctx context.Context, actor *Actor, g *reviewGate, bod
 		}
 		now := s.nowMS()
 		var uid any
-		if actor.id() != 0 {
-			uid = actor.id()
+		if actor.ID() != 0 {
+			uid = actor.ID()
 		}
 		res, err := t.ExecContext(ctx, `INSERT INTO work_log(issue_id, kind, session_id, user_id, agent, body, created_at, updated_at) VALUES (?, 'note', ?, ?, ?, ?, ?, ?)`,
-			g.issueID, g.x.ID, uid, actor.agentName(), body, now, now)
+			g.issueID, g.x.ID, uid, actor.AgentName(), body, now, now)
 		if err != nil {
 			return err
 		}
