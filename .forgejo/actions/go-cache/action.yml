@@ -1,5 +1,5 @@
 name: go-cache
-description: Restore and save Go's module cache (keyed on Go version and go.sum; isolated for release) and per-kind daily build cache (saved by the first passing run of each kind per day).
+description: Restore and save Go's module cache (shared across jobs, keyed on Go version and go.sum; isolated for release) and per-kind 4-hour build cache (refreshed every 4h UTC so heavy churn doesn't recompile from a stale midnight cache).
 inputs:
   kind:
     description: what the job builds, e.g. backend-race, backend, lint, e2e
@@ -24,6 +24,8 @@ runs:
         else
           modbase="go-mod-$gov"
         fi
+        day=$(date -u +%Y%m%d)
+        slot=$(( $(date -u +%-H) / 4 ))
         {
           echo "gocache=$(go env GOCACHE)"
           echo "gomodcache=$(go env GOMODCACHE)"
@@ -31,7 +33,8 @@ runs:
           echo "modprefix=$modbase-"
           echo "base=$base"
           echo "sum=$base-$sum"
-          echo "day=$(date -u +%Y%m%d)"
+          echo "day=$day"
+          echo "slot=${day}-s${slot}"
         } >>"$GITHUB_OUTPUT"
     - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
@@ -44,7 +47,8 @@ runs:
         path: |
           ${{ steps.key.outputs.gocache }}
           ${{ inputs.path }}
-        key: ${{ steps.key.outputs.sum }}-${{ steps.key.outputs.day }}
+        key: ${{ steps.key.outputs.sum }}-${{ steps.key.outputs.slot }}
         restore-keys: |
+          ${{ steps.key.outputs.sum }}-${{ steps.key.outputs.day }}-
           ${{ steps.key.outputs.sum }}-
           ${{ steps.key.outputs.base }}-

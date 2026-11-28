@@ -72,7 +72,7 @@ func (sn *loopSnapshot) start(t *testing.T) *loopEnv {
 	if err := os.WriteFile(path, sn.db, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d, err := db.Open(context.Background(), path)
+	d, err := db.OpenExistingForTest(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -47,9 +47,6 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
   });
   const page = await login(ctx);
   page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
-  // The description is on the Details tab, which a fresh browser may not show.
-  const details = () =>
-    page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
   const make = async (title, description) =>
     (
       await page.request.post(base + "/api/v1/issues", {
@@ -62,11 +59,11 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
       .description;
   const saved = async (key, want) => {
     let got;
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 250; i++) {
       got = await desc(key);
       if (got === want) return got;
       // wplint:ignore e2e-wait polling a value or proving a negative: there is nothing to wait on
-      await page.waitForTimeout(250);
+      await page.waitForTimeout(40);
     }
     return got;
   };
@@ -81,7 +78,6 @@ for (const [width, scheme] of looks([[1280, "light"]])) {
   const open = async (title, description) => {
     const issue = await make(title, description);
     await page.goto(`${base}/issue/${issue.key}`);
-    await details();
     if (description === undefined) {
       const add = page.getByRole("button", { name: "Add a description…" });
       await add.waitFor().catch(async (e) => {

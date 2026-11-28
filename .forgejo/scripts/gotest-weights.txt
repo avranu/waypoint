@@ -7,17 +7,17 @@
 # only unbalance the shards; every test still runs.
 # From the wp-evidence of CI run 4644's four backend shards (full tier,
 # 2026-11-26, normalized across host speeds), every test of 2s or more.
-66 internal/core TestSessionAndServerShipsReachTheSameOutcome
-56 cmd/wp TestInitStaysCheap
+30 internal/core TestSessionAndServerShipsReachTheSameOutcome
+1 cmd/wp TestInitStaysCheap
 45 internal/core TestPrepPolicySimulation
-35 internal/core TestDecideRoundEveryWaitHasTimeLeft
+12 internal/core TestDecideRoundEveryWaitHasTimeLeft
 28 cmd/wp TestCLIClaimsAndPrune
 25 internal/core TestReviewAgainBeforePR
-20 cmd/wp TestArchiveUploadHasADeadline
-20 cmd/wp TestAutopilotStartStoppedWhileWaiting
-20 cmd/wp TestHookPassUsesTheHookLimit
-20 cmd/wp TestRunnerRecordsItsUpdateInTheSharedState
-20 cmd/wp TestTimedOutAgentKeepsItsCommits
+1 cmd/wp TestArchiveUploadHasADeadline
+1 cmd/wp TestAutopilotStartStoppedWhileWaiting
+1 cmd/wp TestHookPassUsesTheHookLimit
+1 cmd/wp TestRunnerRecordsItsUpdateInTheSharedState
+10 cmd/wp TestTimedOutAgentKeepsItsCommits
 18 cmd/wp TestCLIPROpenAndShip
 15 internal/core TestDecideEndedRoundNeverStrands
 14 internal/core TestObjectiveDiagnoseAsk
@@ -30,7 +30,7 @@
 9 cmd/wp TestBriefListsALinkedAndNamedNoteOnce
 9 internal/core TestReviewRoundsUnscoredLater
 8 cmd/wp TestCLIAudit
-8 cmd/wp TestHookStatusPostIsBounded
+1 cmd/wp TestHookStatusPostIsBounded
 8 cmd/wp TestPrePushCheck
 8 internal/core TestAgentQueueOrderAndPins
 8 internal/core TestEscapesDueByRepoIsNotSlowerThanBefore

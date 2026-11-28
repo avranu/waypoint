@@ -4,23 +4,28 @@ cd "$(dirname "$0")/../.."
 
 declare -A seconds=(
   [cmd/waypoint]=5
-  [internal/api]=190
-  [internal/cilint]=40
-  [internal/codeindex]=100
+  [internal/api]=110
+  [internal/cilint]=35
+  [internal/codeindex]=80
+  [internal/core/email]=5
   [internal/core/kernel]=5
+  [internal/core/kernel/kerneltest]=5
   [internal/core/meaning]=5
   [internal/core/numbering]=5
-  [internal/core/udiff]=5
-  [internal/db]=125
+  [internal/core/strength]=5
+  [internal/core/udiff]=45
+  [internal/core/users]=10
+  [internal/coremap]=5
+  [internal/db]=50
   [internal/depage]=5
   [internal/hermes]=5
   [internal/hermes/hermestest]=5
   [internal/hermes/hermestest/door]=5
   [internal/repocheck]=10
-  [internal/sandbox/pushgate]=50
-  [internal/sandbox/sandboxd]=65
+  [internal/sandbox/pushgate]=40
+  [internal/sandbox/sandboxd]=15
   [internal/tracing]=5
-  [internal/wplint]=110
+  [internal/wplint]=60
   [internal/wql]=5
   [web]=10
 )
@@ -85,6 +90,7 @@ plan=$(
 declare -a mine=()
 declare -A run=()
 declare -a core_weighted=()
+declare -a wp_weighted=()
 while read -r kind a b wt; do
   if [ "$b" -ne "$shard" ]; then continue; fi
   case $kind in
@@ -92,6 +98,10 @@ while read -r kind a b wt; do
   internal/core)
     run[$kind]+="${run[$kind]:+|}$a"
     core_weighted+=("$wt $a")
+    ;;
+  cmd/wp)
+    run[$kind]+="${run[$kind]:+|}$a"
+    wp_weighted+=("$wt $a")
     ;;
   *) run[$kind]+="${run[$kind]:+|}$a" ;;
   esac
@@ -121,15 +131,22 @@ plain_build_flags=()
 run_flags=()
 has_cover=0
 has_timeout=0
-skip_next=0
 argv=("$@")
-for ((idx = 0; idx < ${#argv[@]}; idx++)); do
+skip_next=0
+for idx in "${!argv[@]}"; do
   if [ "$skip_next" -eq 1 ]; then
     skip_next=0
     continue
   fi
   arg=${argv[$idx]}
   case "$arg" in
+  -count)
+    run_flags+=("-test.count=${argv[$((idx + 1))]}")
+    skip_next=1
+    ;;
+  -count=*)
+    run_flags+=("-test.count=${arg#-count=}")
+    ;;
   -timeout)
     has_timeout=1
     run_flags+=("-test.timeout=${argv[$((idx + 1))]}")
@@ -139,12 +156,12 @@ for ((idx = 0; idx < ${#argv[@]}; idx++)); do
     has_timeout=1
     run_flags+=("-test.timeout=${arg#-timeout=}")
     ;;
-  -count)
-    run_flags+=("-test.count=${argv[$((idx + 1))]}")
+  -cpu)
+    run_flags+=("-test.cpu=${argv[$((idx + 1))]}")
     skip_next=1
     ;;
-  -count=*)
-    run_flags+=("-test.count=${arg#-count=}")
+  -cpu=*)
+    run_flags+=("-test.cpu=${arg#-cpu=}")
     ;;
   -parallel)
     run_flags+=("-test.parallel=${argv[$((idx + 1))]}")
@@ -152,13 +169,6 @@ for ((idx = 0; idx < ${#argv[@]}; idx++)); do
     ;;
   -parallel=*)
     run_flags+=("-test.parallel=${arg#-parallel=}")
-    ;;
-  -cpu)
-    run_flags+=("-test.cpu=${argv[$((idx + 1))]}")
-    skip_next=1
-    ;;
-  -cpu=*)
-    run_flags+=("-test.cpu=${arg#-cpu=}")
     ;;
   -short)
     run_flags+=("-test.short")
@@ -192,16 +202,54 @@ if [ "$has_timeout" -eq 0 ]; then
 fi
 
 status=0
-core_pids=()
 core_build_pid=
-core_t0=0
-core_lanes=${CORE_LANES:-2}
+core_lanes=${CORE_LANES:-3}
+wp_lanes=${WP_LANES:-2}
+
+fan_out_binary() {
+  local pkg_dir=$1 bin=$2 prefix=$3 lanes=$4
+  shift 4
+  local -a weighted=("$@")
+  local -a sub_run=()
+  while read -r lane tname; do
+    sub_run[lane]+="${sub_run[lane]:+|}$tname"
+  done < <(
+    printf '%s\n' "${weighted[@]}" | awk -v n="$lanes" '
+      { best = 0; for (i = 1; i < n; i++) if (load[i] < load[best]) best = i
+        load[best] += $1; print best, $2 }'
+  )
+  local t0 lane_pids=() lane_status=0
+  t0=$(date +%s%3N)
+  for lane in "${!sub_run[@]}"; do
+    if [ -n "${EVIDENCE:-}" ]; then
+      (cd "$pkg_dir" && go tool test2json -p "$mod/$pkg_dir" -t "$bin" -test.paniconexit0 -test.v=test2json "-test.coverprofile=$tmp/$prefix-$lane.cov" ${run_flags[@]+"${run_flags[@]}"} -test.run="^(${sub_run[$lane]})\$") >"$tmp/$prefix-$lane.out" 2>&1 &
+    else
+      (cd "$pkg_dir" && "$bin" -test.paniconexit0 ${run_flags[@]+"${run_flags[@]}"} -test.run="^(${sub_run[$lane]})\$") >"$tmp/$prefix-$lane.out" 2>&1 &
+    fi
+    lane_pids+=($!)
+  done
+  for pid in "${lane_pids[@]}"; do wait "$pid" || lane_status=1; done
+  local ms sec pkg_line
+  ms=$(($(date +%s%3N) - t0))
+  sec=$(awk -v ms="$ms" 'BEGIN { printf "%.3f", ms / 1000 }')
+  if [ "$lane_status" -eq 0 ]; then
+    pkg_line="ok  \t$mod/$pkg_dir\t${sec}s"
+  else
+    pkg_line="FAIL\t$mod/$pkg_dir\t${sec}s"
+  fi
+  if [ -n "${EVIDENCE:-}" ]; then
+    printf '{"Action":"output","Package":"%s/%s","Output":"%s\\n"}\n' "$mod" "$pkg_dir" "$pkg_line" >"$tmp/$prefix-pkg.out"
+  else
+    printf '%b\n' "$pkg_line" >"$tmp/$prefix-pkg.out"
+  fi
+  return "$lane_status"
+}
 
 # Start compiling the test-augmented internal/core binary immediately so it
 # overlaps with cmd/wp and rest. When both cmd/wp and a rest package (e.g.
-# internal/api on shard 1 or cmd/waypoint on shard 3) import plain internal/core,
-# pre-warm plain internal/core once into GOCACHE before launching both so they
-# don't duplicate that compile concurrently.
+# internal/api or cmd/waypoint) import plain internal/core, pre-warm plain
+# internal/core once into GOCACHE before launching both so they don't duplicate
+# that compile concurrently.
 if [ -n "${run[internal/core]:-}" ] && [ "$core_lanes" -gt 1 ] && [ "${#core_weighted[@]}" -gt 1 ]; then
   go test -c ${build_flags[@]+"${build_flags[@]}"} -o "$tmp/core.test" ./internal/core >"$tmp/core-build.out" 2>&1 &
   core_build_pid=$!
@@ -213,10 +261,24 @@ if [ -n "${run[cmd/wp]:-}" ] && [ ${#mine[@]} -gt 0 ] &&
 fi
 
 if [ -n "${run[cmd/wp]:-}" ]; then
-  # shellcheck disable=SC2046 # flags prints separate words
-  go test "$@" $(flags cmd-wp) -run "^(${run[cmd/wp]})\$" ./cmd/wp >"$tmp/cmd-wp.out" 2>&1 &
-  pids+=($!)
+  if [ "$wp_lanes" -gt 1 ] && [ "${#wp_weighted[@]}" -gt 1 ]; then
+    (
+      if go test -c ${build_flags[@]+"${build_flags[@]}"} -o "$tmp/wp.test" ./cmd/wp >"$tmp/wp-build.out" 2>&1; then
+        fan_out_binary "cmd/wp" "$tmp/wp.test" "cmd-wp" "$wp_lanes" "${wp_weighted[@]}"
+      else
+        cat "$tmp/wp-build.out" >&2
+        printf 'FAIL\t%s/cmd/wp [build failed]\n' "$mod" >"$tmp/cmd-wp-pkg.out"
+        exit 1
+      fi
+    ) &
+    pids+=($!)
+  else
+    # shellcheck disable=SC2046 # flags prints separate words
+    go test "$@" $(flags cmd-wp) -run "^(${run[cmd/wp]})\$" ./cmd/wp >"$tmp/cmd-wp.out" 2>&1 &
+    pids+=($!)
+  fi
 fi
+
 if [ ${#mine[@]} -gt 0 ]; then
   # shellcheck disable=SC2046
   go test "$@" $(flags rest) "${mine[@]}" >"$tmp/rest.out" 2>&1 &
@@ -226,23 +288,7 @@ fi
 if [ -n "${run[internal/core]:-}" ]; then
   if [ -n "$core_build_pid" ]; then
     if wait "$core_build_pid"; then
-      declare -a sub_run=()
-      while read -r lane tname; do
-        sub_run[lane]+="${sub_run[lane]:+|}$tname"
-      done < <(
-        printf '%s\n' "${core_weighted[@]}" | awk -v n="$core_lanes" '
-          { best = 0; for (i = 1; i < n; i++) if (load[i] < load[best]) best = i
-            load[best] += $1; print best, $2 }'
-      )
-      core_t0=$(date +%s%3N)
-      for lane in "${!sub_run[@]}"; do
-        if [ -n "${EVIDENCE:-}" ]; then
-          (cd internal/core && go tool test2json -p "$mod/internal/core" -t "$tmp/core.test" -test.paniconexit0 -test.v=test2json "-test.coverprofile=$tmp/internal-core-$lane.cov" ${run_flags[@]+"${run_flags[@]}"} -test.run="^(${sub_run[$lane]})\$") >"$tmp/internal-core-$lane.out" 2>&1 &
-        else
-          (cd internal/core && "$tmp/core.test" -test.paniconexit0 ${run_flags[@]+"${run_flags[@]}"} -test.run="^(${sub_run[$lane]})\$") >"$tmp/internal-core-$lane.out" 2>&1 &
-        fi
-        core_pids+=($!)
-      done
+      fan_out_binary "internal/core" "$tmp/core.test" "internal-core" "$core_lanes" "${core_weighted[@]}" || status=1
     else
       cat "$tmp/core-build.out" >&2
       printf 'FAIL\t%s/internal/core [build failed]\n' "$mod" >"$tmp/internal-core-pkg.out"
@@ -255,24 +301,6 @@ if [ -n "${run[internal/core]:-}" ]; then
   fi
 fi
 
-if [ ${#core_pids[@]} -gt 0 ]; then
-  core_status=0
-  for pid in "${core_pids[@]}"; do wait "$pid" || core_status=1; done
-  [ "$core_status" -eq 0 ] || status=1
-  core_ms=$(($(date +%s%3N) - core_t0))
-  core_sec=$(awk -v ms="$core_ms" 'BEGIN { printf "%.3f", ms / 1000 }')
-  if [ "$core_status" -eq 0 ]; then
-    pkg_line="ok  \t$mod/internal/core\t${core_sec}s"
-  else
-    pkg_line="FAIL\t$mod/internal/core\t${core_sec}s"
-  fi
-  if [ -n "${EVIDENCE:-}" ]; then
-    printf '{"Action":"output","Package":"%s/internal/core","Output":"%s\\n"}\n' "$mod" "$pkg_line" >"$tmp/internal-core-pkg.out"
-  else
-    printf '%b\n' "$pkg_line" >"$tmp/internal-core-pkg.out"
-  fi
-fi
-
 for pid in "${pids[@]}"; do wait "$pid" || status=1; done
 if [ -n "${EVIDENCE:-}" ]; then
   args=(-shard "$((shard + 1))/$shards")
@@ -282,14 +310,15 @@ if [ -n "${EVIDENCE:-}" ]; then
   if [ -n "${SUPPRESSIONS:-}" ]; then args+=(-suppressions); fi
   outs=()
   for f in "$tmp"/*.out; do
-    if [ "$f" != "$tmp/core-build.out" ] && [ -s "$f" ]; then outs+=("$f"); fi
+    if [ "$f" != "$tmp/core-build.out" ] && [ "$f" != "$tmp/wp-build.out" ] && [ -s "$f" ]; then outs+=("$f"); fi
   done
   if [ ${#outs[@]} -gt 0 ] && go run ./cmd/ci-evidence "${args[@]}" "${outs[@]}" >"$tmp/evidence" 2>"$tmp/evidence.err"; then
     cat "$tmp/evidence"
     exit $status
   fi
-  echo "ci-evidence failed, so this is the raw output and Waypoint keeps no evidence of it:" >&2
-  cat "$tmp/evidence.err" 2>/dev/null >&2 || true
+  cat "$tmp/evidence.err" >&2 2>/dev/null || true
 fi
-cat "$tmp"/*.out 2>/dev/null || true
+for f in "$tmp"/*.out; do
+  if [ "$f" != "$tmp/core-build.out" ] && [ "$f" != "$tmp/wp-build.out" ]; then cat "$f"; fi
+done
 exit $status

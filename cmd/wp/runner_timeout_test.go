@@ -29,7 +29,7 @@ func TestTimedOutAgentKeepsItsCommits(t *testing.T) {
 	job := agentJob{CLI: "claude", Prompt: "x", Repo: remote, Branch: "agent/round", Push: true, Permission: "edit_run", CommitMessage: "Round"}
 
 	job.KeepOnTimeout = true
-	run := newRun(10 * time.Second)
+	run := newRun(5 * time.Second)
 	o := p.execAgent(context.Background(), run, "agent", job)
 	if o.State != "failed" || !strings.Contains(o.Error, "timed out") {
 		t.Fatalf("outcome = %+v\n%s", o, run.out.text())
@@ -52,7 +52,7 @@ func TestTimedOutAgentKeepsItsCommits(t *testing.T) {
 	}
 
 	job.KeepOnTimeout, job.Branch = false, "agent/other"
-	if o := p.execAgent(context.Background(), newRun(10*time.Second), "agent", job); o.State != "failed" || o.Result != nil {
+	if o := p.execAgent(context.Background(), newRun(5*time.Second), "agent", job); o.State != "failed" || !strings.Contains(o.Error, "timed out") || o.Result != nil {
 		t.Errorf("outcome = %+v", o)
 	}
 	if got := gitOut(t, remote, "branch", "--list", "agent/other"); got != "" {

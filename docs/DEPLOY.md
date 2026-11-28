@@ -181,18 +181,22 @@ deploy key in a CI job is readable by whatever runs beside it.
    that is a skipped draft run, never a full one: dropping "WIP: " still runs the full suite.
    `backend` and `e2e` are the statuses branch protection and Waypoint read,
    but each is a small job that waits for parallel shard jobs (`backend shard
-   1`..`4`, `e2e shard 1`..`4`, WP-313, WP-314) and fails unless every shard
+   1`..`3`, `e2e shard 1`..`2`, WP-313, WP-314) and fails unless every shard
    passed. The backend tests (`.forgejo/scripts/gotest-shard.sh`) deal
    `internal/core`'s and `cmd/wp`'s tests out by name, heaviest first by the
    seconds in `.forgejo/scripts/gotest-weights.txt` (unlisted tests count
    1s), so a new test lands in a shard by itself, and give every other
-   package whole to the shard with the least package time; a shard runs its
-   part of each split package and its whole packages side by side. The browser suites (`e2e/shard.mjs`)
+   package whole to the shard with the least package time; each shard fans
+   `internal/core` (`CORE_LANES`, default 3) and `cmd/wp` (`WP_LANES`, default 2)
+   across precompiled test binaries alongside its whole packages, reusing a
+   migration-keyed SQLite template DB (`WP_DB_TEMPLATE_DIR`) across processes.
+   The browser suites (`e2e/shard.mjs`)
    are dealt out by the seconds in `e2e/weights.txt`; a suite missing from it
    counts as the median one, so refresh the file from a run's
-   `e2e/out/timings.txt` now and then. Each e2e shard runs its suites in two
-   lanes side by side (`E2E_LANES`, each with its own server and database),
-   because the suites mostly wait on the browser. `SHARDS` in each shard job and its
+   `e2e/out/timings.txt` now and then. Each e2e shard starts one shared Chromium
+   server, runs `01-signup-flow.mjs` once to seed its database, and copies that
+   database to three parallel lanes (`E2E_LANES`, default 3, each with its own
+   server and database). `SHARDS` in each shard job and its
    `matrix.shard` list must agree; `internal/cilint/repo_test.go` checks.
    A pull request or main run does each browser suite at one viewport and
    theme (`E2E_LOOKS=one`); a weekly schedule (Sundays 03:17 UTC, or "Run
@@ -476,13 +480,15 @@ across non-release jobs, with a separate `go-mod-release-…` cache for `release
 so PR runs cannot write to the release module cache, and resetting on each Go
 version bump), while `GOCACHE` (plus golangci-lint's cache in `lint`) is kept
 per kind of job (`backend-race`, `backend` for the draft tier, `lint`, `e2e`,
-`advisories` and `release`) and keyed by Go's version, `go.sum` and the day.
-The first passing run of a kind each day restores the previous day's cache by
-prefix and saves today's key; later runs that day hit the exact key and skip
-saving. setup-go's cache had one key for every job, and restored it as
-`setup-go-linux-…` but saved it as `setup-go-Linux-…`, so every heavy job
-uploaded 350 to 480 MB again (45 to 90 s) and none of them found a cache of its
-own kind.
+`advisories` and `release`) and keyed by Go's version, `go.sum`, the UTC day
+and a 4-hour slot (`s0`..`s5`). The first passing run of a kind in each 4-hour
+window restores the previous window's cache by prefix and saves the new slot's
+key; later runs in that window hit the exact key and skip saving. `backend-shard`
+also caches the freshly migrated SQLite template DB (`WP_DB_TEMPLATE_DIR`) keyed
+on `internal/db/migrations/**` so every test binary and lane skips re-running
+migrations. setup-go's and setup-node's built-in caches restored as lowercase
+`linux` and saved as `Linux`, causing redundant uploads on every heavy job, so
+both Go and npm caches use explicit lowercase `actions/cache` keys instead.
 
 **Rolling back**: `make rollback-remote` (or `ssh $DEPLOY_HOST 'bash
 waypoint/deploy/remote-deploy.sh rollback'`) swaps the previous tree back in

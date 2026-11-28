@@ -9,6 +9,11 @@
 // /login page.goto into a failed suite while the host's load was 7. Default
 // timeouts a suite sets are scaled by E2E_SLOW (3 under CI, else 1);
 // explicit per-call timeouts are left alone, some of them assert absence.
+//
+// When run.sh starts a shared Chromium server for a shard (E2E_CHROMIUM_WS),
+// plain chromium.launch() calls connect to it instead of cold-launching a new
+// browser binary for every suite. browser.close() on a connected client closes
+// only that client's contexts and disconnects without stopping the server.
 import { chromium } from "playwright";
 
 const slow = Number(process.env.E2E_SLOW ?? (process.env.CI ? 3 : 1)) || 1;
@@ -37,6 +42,7 @@ const scale = (proto) => {
 
 // Page, Locator and BrowserContext classes are only reachable from an instance, so make one.
 const launch = chromium.launch.bind(chromium);
+const connect = chromium.connect.bind(chromium);
 let patched = false;
 // A task opens on its Summary tab (WP-780); the suites written before it
 // check what the Details tab holds (links, files, runs, the work log), so
@@ -57,7 +63,19 @@ const detailsFirst = (browser) => {
 };
 
 chromium.launch = async (...args) => {
-  const browser = await launch(...args);
+  const ws = process.env.E2E_CHROMIUM_WS;
+  const plainOpts = args.length === 0 || !args[0] || Object.keys(args[0]).length === 0;
+  let browser;
+  if (ws && plainOpts) {
+    try {
+      browser = await connect(ws);
+    } catch (e) {
+      console.error(`warning: shared chromium connect failed (${e?.message || e}); falling back to launch`);
+      browser = await launch(...args);
+    }
+  } else {
+    browser = await launch(...args);
+  }
   detailsFirst(browser);
   if (!patched) {
     patched = true;

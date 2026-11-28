@@ -63,6 +63,14 @@ for (const [width, scheme] of looks(
   const tag = `w${width}`;
   const height = width < 500 ? 844 : 800;
   const ctx = await browser.newContext({ viewport: { width, height }, colorScheme: scheme });
+  // Tasks open on Summary by default (WP-780); ensure standalone runs without
+  // guard.mjs also land directly on the Details tab.
+  await ctx.addInitScript(() => {
+    try {
+      if (localStorage.getItem("wp:issue-tab") === null)
+        localStorage.setItem("wp:issue-tab", '"details"');
+    } catch {}
+  });
   const page = await login(ctx);
   page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
   const cdp = await ctx.newCDPSession(page);
@@ -81,7 +89,7 @@ for (const [width, scheme] of looks(
     let d = await desc(key);
     while (d !== want && Date.now() < end) {
       // wplint:ignore e2e-wait polling a value or proving a negative: there is nothing to wait on
-      await page.waitForTimeout(250);
+      await page.waitForTimeout(40);
       d = await desc(key);
     }
     return d;
@@ -130,7 +138,6 @@ for (const [width, scheme] of looks(
   const typed = async (name, steps, md, dom) => {
     const issue = await make(name);
     await page.goto(`${base}/issue/${issue.key}`);
-    await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
     await page.getByRole("button", { name: "Add a description…" }).click();
     await richBox.waitFor();
     await steps();
@@ -337,7 +344,6 @@ for (const [width, scheme] of looks(
   {
     const issue = await make("mid-composition");
     await page.goto(`${base}/issue/${issue.key}`);
-    await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
     await page.getByRole("button", { name: "Add a description…" }).click();
     await richBox.waitFor();
     await cc("#");
@@ -473,7 +479,6 @@ for (const [width, scheme] of looks(
     ]) {
       const issue = await make(`mention ${name}`);
       await page.goto(`${base}/issue/${issue.key}`);
-      await page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
       await page.getByRole("button", { name: "Add a description…" }).click();
       await richBox.waitFor();
       await steps();

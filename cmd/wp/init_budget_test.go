@@ -31,11 +31,17 @@ func TestInitStaysCheap(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds the wp binary")
 	}
-	bin := filepath.Join(t.TempDir(), "wp")
-	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, out)
+	if os.Getenv("CI_INIT_CHECK_IN_LINT") == "1" {
+		t.Skip("checked in CI lint job with warm non-race GOCACHE")
 	}
-	cmd := exec.Command(bin, "version")
+	bin := os.Getenv("WP_INIT_BIN")
+	if bin == "" {
+		bin = filepath.Join(t.TempDir(), "wp")
+		if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+			t.Fatalf("go build: %v\n%s", err, out)
+		}
+	}
+	cmd := exec.Command(bin, "version") // #nosec G204 -- test binary path from TempDir or WP_INIT_BIN
 	cmd.Env = append(os.Environ(), "GODEBUG=inittrace=1", "HOME="+t.TempDir())
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

@@ -71,9 +71,6 @@ for (const [width, scheme] of looks([
   });
   const page = await login(ctx);
   page.on("pageerror", (e) => fail(`${tag} pageerror: ${e.message}`));
-  // The description is on the Details tab, which a fresh browser may not show.
-  const details = () =>
-    page.getByRole("tab", { name: "Details" }).click({ timeout: 2000 }).catch(() => {});
   const make = async (title, description) =>
     (
       await page.request.post(base + "/api/v1/issues", {
@@ -90,7 +87,7 @@ for (const [width, scheme] of looks([
     let d = await desc(key);
     while (!hit(d) && Date.now() < end) {
       // wplint:ignore e2e-wait polling a value or proving a negative: there is nothing to wait on
-      await page.waitForTimeout(250);
+      await page.waitForTimeout(40);
       d = await desc(key);
     }
     return d;
@@ -108,7 +105,6 @@ for (const [width, scheme] of looks([
 
   const a = await make("Mixed", MIXED);
   await page.goto(`${base}/issue/${a.key}`);
-  await details();
   await page.getByText("Intro with snake_case").click();
   await richBox.waitFor();
   ok((await note.count()) === 0, `${tag} mixed markdown opens in the rich editor`);
@@ -120,7 +116,6 @@ for (const [width, scheme] of looks([
 
   const b = await make("Bold", "alpha beta_gamma");
   await page.goto(`${base}/issue/${b.key}`);
-  await details();
   await page.getByText("alpha beta_gamma").click();
   await richBox.waitFor();
   await field.press("Control+End");
@@ -137,7 +132,6 @@ for (const [width, scheme] of looks([
 
   const c = await make("Word", "plain text");
   await page.goto(`${base}/issue/${c.key}`);
-  await details();
   await page.getByText("plain text").click();
   await richBox.waitFor();
   await field.press("Control+End");
@@ -150,7 +144,6 @@ for (const [width, scheme] of looks([
   await settleClose();
   const t = await make("Tasks", "- [ ] first\n- [x] second");
   await page.goto(`${base}/issue/${t.key}`);
-  await details();
   await page.getByText("first").click({ position: { x: 40, y: 5 } });
   await richBox.waitFor();
   await richBox.locator("input[type=checkbox]").first().click();
@@ -160,7 +153,6 @@ for (const [width, scheme] of looks([
 
   const h = await make("Html", HTML);
   await page.goto(`${base}/issue/${h.key}`);
-  await details();
   await page.locator("summary").click();
   await mdBox.waitFor();
   ok((await note.count()) === 1, `${tag} raw HTML opens as markdown with a note`);
@@ -178,7 +170,6 @@ for (const [width, scheme] of looks([
 
   const m = await make("Toggle", "**bold** text");
   await page.goto(`${base}/issue/${m.key}`);
-  await details();
   await page.locator(".prose-wp strong").click();
   await richBox.waitFor();
   await page.getByRole("button", { name: "Edit as markdown" }).click();
@@ -200,7 +191,6 @@ for (const [width, scheme] of looks([
   await settleClose();
   const m2 = await make("Remembered", "plain");
   await page.goto(`${base}/issue/${m2.key}`);
-  await details();
   await page.getByText("plain", { exact: true }).click();
   await mdBox.waitFor();
   ok((await note.count()) === 0, `${tag} the chosen editor is remembered, without a note`);
@@ -211,7 +201,6 @@ for (const [width, scheme] of looks([
   const menu = page.getByRole("listbox", { name: "Mention someone" });
   const openRich = async (key, text) => {
     await page.goto(`${base}/issue/${key}`);
-    await details();
     await page.getByText(text, { exact: true }).click();
     await richBox.waitFor();
     await field.press("Control+End");
@@ -385,7 +374,6 @@ for (const [width, scheme] of looks([
     const want = (d) => new RegExp(re.source.replace("TXT", "hi")).test(d ?? "");
     const ei = await make(`Empty ${name}`, undefined);
     await page.goto(`${base}/issue/${ei.key}`);
-    await details();
     await page.getByRole("button", { name: "Add a description…", exact: true }).click();
     await richBox.waitFor();
     await page.getByRole("button", { name, exact: true }).click();
@@ -430,7 +418,6 @@ for (const [width, scheme] of looks([
   await settleClose();
   const e = await make("Empty", undefined);
   await page.goto(`${base}/issue/${e.key}`);
-  await details();
   const emptyBtn = page.getByRole("button", { name: "Add a description…", exact: true });
   await emptyBtn.waitFor();
   ok(

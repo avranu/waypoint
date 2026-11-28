@@ -600,8 +600,11 @@ func TestArchiveUploadHasADeadline(t *testing.T) {
 	oldLimit, oldFloor := archivePassLimit, archiveUploadFloor
 	archivePassLimit, archiveUploadFloor = 200*time.Millisecond, 200*time.Millisecond
 	t.Cleanup(func() { archivePassLimit, archiveUploadFloor = oldLimit, oldFloor })
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
 	tap.onPiece = func(_ int, w http.ResponseWriter, r *http.Request) bool {
 		select {
+		case <-done:
 		case <-r.Context().Done():
 		case <-time.After(20 * time.Second):
 		}
