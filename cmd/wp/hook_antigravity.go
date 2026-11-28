@@ -72,13 +72,17 @@ func antigravityHookSpec(exe string, noPrompts bool) map[string]any {
 		},
 		"PreInvocation": []any{
 			h(cmd(agyHookEvent, true), 20),
-			h(cmd(agyHookResume, false), 5),
 		},
 		"PreToolUse": []any{
 			map[string]any{
 				"matcher": agyPreToolMask,
 				"hooks": []any{
 					h(cmd(agyHookGuard, false), hookGuardTimeout),
+				},
+			},
+			map[string]any{
+				"matcher": "read_file|view_file",
+				"hooks": []any{
 					h(cmd(agyHookNudge, false), hookNudgeTimeout),
 				},
 			},
@@ -284,9 +288,27 @@ func decodeAgyHook(stdin io.Reader) (antigravityHookInput, bool) {
 	return a, true
 }
 
-// isNewAgyPrompt returns true once per distinct user input per conversation so
+// decodeAgyGuardInput reads one PreToolUse payload fail-closed (mirroring
+// decodeGuardInput): payloads over guardInputMax or non-JSON return an error so
+// hookAntigravityGuard refuses them in unattended sessions rather than failing open.
+func decodeAgyGuardInput(stdin io.Reader, a *antigravityHookInput) error {
+	b, err := io.ReadAll(io.LimitReader(stdin, guardInputMax+1))
+	if err != nil {
+		return fmt.Errorf("it couldn't be read: %w", err)
+	}
+	if len(b) > guardInputMax {
+		return fmt.Errorf("it is over %d MB", guardInputMax>>20)
+	}
+	if err := json.Unmarshal(b, a); err != nil {
+		return fmt.Errorf("it isn't JSON: %w", err)
+	}
+	return nil
+}
+
+// isNewAgyPrompt returns true once per turn per distinct user input so
 // PreInvocation (which fires before every model call in a tool loop) only emits
-// UserPromptSubmit / resume when the user's input actually changes.
+// UserPromptSubmit / resume when a new turn begins. Stop clears the marker so
+// repeating an identical prompt (e.g. "continue") on the next turn still fires.
 func (c *cli) isNewAgyPrompt(convID, prompt string) bool {
 	if c.dir == "" || convID == "" || strings.TrimSpace(prompt) == "" {
 		return false
@@ -302,6 +324,13 @@ func (c *cli) isNewAgyPrompt(convID, prompt string) bool {
 		_ = os.WriteFile(p, []byte(want), 0o600)
 	}
 	return true
+}
+
+func (c *cli) clearAgyPrompt(convID string) {
+	if c.dir == "" || convID == "" {
+		return
+	}
+	_ = os.Remove(filepath.Join(c.dir, "agy-prompts", sanitizeTranscriptSession(convID)))
 }
 
 // translateClaudeToAgyReply converts Claude Code hook JSON emitted by Waypoint's
@@ -366,6 +395,9 @@ func hookAntigravityEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts b
 		_, _ = stdout.Write([]byte("{}\n"))
 		return
 	}
+	if a.HookEventName == "Stop" {
+		c.clearAgyPrompt(a.ConversationID)
+	}
 	if a.HookEventName == "PreInvocation" && !c.isNewAgyPrompt(a.ConversationID, a.LastUserInput) {
 		_, _ = stdout.Write([]byte("{}\n"))
 		return
@@ -373,12 +405,26 @@ func hookAntigravityEvent(c *cli, stdin io.Reader, stdout io.Writer, noPrompts b
 	in := a.toHookEventInput()
 	var buf bytes.Buffer
 	hookEventRun(c, in, &buf, noPrompts)
+	if a.HookEventName == "PreInvocation" && strings.TrimSpace(in.Prompt) != "" {
+		inBytes, _ := json.Marshal(map[string]string{
+			"session_id": in.SessionID,
+			"cwd":        in.Cwd,
+			"prompt":     in.Prompt,
+		})
+		hookClaudeResume(c, bytes.NewReader(inBytes))
+	}
 	_, _ = stdout.Write(translateClaudeToAgyReply(a.HookEventName, buf.Bytes()))
 }
 
 func hookAntigravityGuard(c *cli, stdin io.Reader, stdout io.Writer) {
-	a, ok := decodeAgyHook(stdin)
-	if !ok || a.ToolCall == nil {
+	var a antigravityHookInput
+	if err := decodeAgyGuardInput(stdin, &a); err != nil {
+		var buf bytes.Buffer
+		c.refuseUnreadable(&buf, err)
+		_, _ = stdout.Write(translateClaudeToAgyReply("PreToolUse", buf.Bytes()))
+		return
+	}
+	if a.ToolCall == nil {
 		_, _ = stdout.Write([]byte("{}\n"))
 		return
 	}
@@ -389,6 +435,9 @@ func hookAntigravityGuard(c *cli, stdin io.Reader, stdout io.Writer) {
 	_, _ = stdout.Write(translateClaudeToAgyReply("PreToolUse", buf.Bytes()))
 }
 
+// hookAntigravityNudge handles PreToolUse auto-allows (picturePermit, WP-1137).
+// Antigravity's PreToolUse stdout contract only supports decision+reason (no
+// additionalContext), so text-only nudges are not evaluated or counted here.
 func hookAntigravityNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 	a, ok := decodeAgyHook(stdin)
 	if !ok || a.ToolCall == nil {
@@ -396,12 +445,36 @@ func hookAntigravityNudge(c *cli, stdin io.Reader, stdout io.Writer) {
 		return
 	}
 	in := a.toHookEventInput()
-	inBytes, _ := json.Marshal(in)
-	var buf bytes.Buffer
-	hookClaudeNudge(c, bytes.NewReader(inBytes), &buf)
-	_, _ = stdout.Write(translateClaudeToAgyReply("PreToolUse", buf.Bytes()))
+	if in.ToolName != "Read" {
+		_, _ = stdout.Write([]byte("{}\n"))
+		return
+	}
+	var ti struct {
+		FilePath string `json:"file_path"`
+	}
+	if json.Unmarshal(in.ToolInput, &ti) != nil || ti.FilePath == "" {
+		_, _ = stdout.Write([]byte("{}\n"))
+		return
+	}
+	cwd := in.Cwd
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	if kind, _ := c.hookRefusalFor(in); kind != "" {
+		_, _ = stdout.Write([]byte("{}\n"))
+		return
+	}
+	if picturePermit(in, cwd, ti.FilePath) {
+		_, _ = stdout.Write(translateClaudeToAgyReply("PreToolUse", nudgeReply("", true)))
+		return
+	}
+	_, _ = stdout.Write([]byte("{}\n"))
 }
 
+// hookAntigravityBurn updates local burn & quota-guard state from the session's
+// transcript. Antigravity's PostToolUse contract has no additionalContext field,
+// so stdout stays `{}` while persisted guard-stop state takes effect on the next
+// PreInvocation / Stop hook.
 func hookAntigravityBurn(c *cli, stdin io.Reader, stdout io.Writer) {
 	a, ok := decodeAgyHook(stdin)
 	if !ok {

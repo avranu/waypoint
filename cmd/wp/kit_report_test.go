@@ -158,6 +158,17 @@ func TestKitReport(t *testing.T) {
 	}
 }
 
+func TestRedactAntigravityHooks(t *testing.T) {
+	raw := `{"waypoint":{"SessionStart":[{"type":"command","command":"API_TOKEN=sk-123 wp hook antigravity-event"}]},"auth-gate":{"PreToolUse":[{"type":"command","command":"./check","headers":{"Authorization":"Bearer tok"}}]}}`
+	got := redactAntigravityHooks(raw)
+	if strings.Contains(got, "sk-123") || strings.Contains(got, "Bearer tok") {
+		t.Fatalf("leaked secret:\n%s", got)
+	}
+	if !strings.Contains(got, "wp hook antigravity-event") || !strings.Contains(got, "./check") {
+		t.Fatalf("destroyed SessionStart or auth-gate hooks:\n%s", got)
+	}
+}
+
 func TestRedactJSON(t *testing.T) {
 	if got := redactJSON("not json"); got != "" {
 		t.Fatalf("not JSON: %q", got)

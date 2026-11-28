@@ -384,6 +384,25 @@ func usageSync(c *cli, o usageSyncOptions) (*usageSyncResult, error) {
 		files = append(files, agyFiles...)
 	}
 	st := loadUsageState(c.dir)
+	for i := range files {
+		if files[i].Harness != "antigravity" || st.Files[files[i].Path] != nil {
+			continue
+		}
+		// If an earlier sync already tracked the sibling file (transcript_full.jsonl
+		// vs transcript.jsonl), keep using that sibling to prevent double-counting.
+		var sibling string
+		switch filepath.Base(files[i].Path) {
+		case "transcript.jsonl":
+			sibling = filepath.Join(filepath.Dir(files[i].Path), "transcript_full.jsonl")
+		case "transcript_full.jsonl":
+			sibling = filepath.Join(filepath.Dir(files[i].Path), "transcript.jsonl")
+		}
+		if sibling != "" && st.Files[sibling] != nil {
+			if fi, err := os.Lstat(sibling); err == nil && fi.Mode().IsRegular() {
+				files[i].Path = sibling
+			}
+		}
+	}
 	if !o.OnlyFiles {
 		files = append(files, outdatedTranscripts(root, &st, files)...)
 	}

@@ -508,7 +508,7 @@ func (p *usageParser) line(b []byte) {
 	if len(b) == 0 {
 		return
 	}
-	if p.f.Harness == "antigravity" || bytes.Contains(b, markAgyStepIndex) {
+	if p.f.Harness == "antigravity" {
 		p.parseAntigravityLine(b)
 		return
 	}

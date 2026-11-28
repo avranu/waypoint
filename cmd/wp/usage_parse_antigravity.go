@@ -12,7 +12,10 @@ import (
 	"time"
 )
 
-var markAgyStepIndex = []byte(`"step_index":`)
+var (
+	markAgyStepIndex       = []byte(`"step_index":`)
+	markAgyPlannerResponse = []byte(`"PLANNER_RESPONSE"`)
+)
 
 type agyTranscriptLine struct {
 	StepIndex       int    `json:"step_index"`
@@ -140,11 +143,13 @@ func discoverAntigravityUsageFiles(home string, since time.Duration) []usageFile
 			}
 			seenConv[convID] = true
 			cm := meta[convID]
-			sessID := sanitizeTranscriptSession("agy-" + convID)
+			// Use the raw conversation ID (no "agy-" prefix) so usage_sessions.session
+			// joins cleanly with agent_sessions.cli_id reported by hooks.
+			sessID := sanitizeTranscriptSession(convID)
 			kind := "main"
 			isMain := true
 			if cm.ParentID != "" {
-				sessID = sanitizeTranscriptSession("agy-" + cm.ParentID)
+				sessID = sanitizeTranscriptSession(cm.ParentID)
 				kind = cmpStr(cm.AgentName, "subagent")
 				isMain = false
 			}
@@ -162,10 +167,24 @@ func discoverAntigravityUsageFiles(home string, since time.Duration) []usageFile
 	return out
 }
 
+// canonicalAntigravityUsagePath maps transcript_full.jsonl to its sibling
+// transcript.jsonl when present so hook-triggered and periodic syncs always
+// track one canonical file per conversation and never double-count tokens.
+func canonicalAntigravityUsagePath(p string) string {
+	if filepath.Base(p) == "transcript_full.jsonl" {
+		compact := filepath.Join(filepath.Dir(p), "transcript.jsonl")
+		if fi, err := os.Lstat(compact); err == nil && fi.Mode().IsRegular() && fi.Size() > 0 {
+			return compact
+		}
+	}
+	return p
+}
+
 // antigravityUsageFileOfPath builds a usageFile for a single Antigravity
 // transcript path (e.g. passed via --hook or Files), enriching it with
 // conversation_summaries.db metadata when present.
 func antigravityUsageFileOfPath(p string) (usageFile, bool) {
+	p = canonicalAntigravityUsagePath(p)
 	hf, ok := harnessFileOfPath(p)
 	if !ok || (hf.Kind != "antigravity" && hf.Kind != "antigravity_compact") {
 		return usageFile{}, false
@@ -178,11 +197,11 @@ func antigravityUsageFileOfPath(p string) (usageFile, bool) {
 	brainDir := filepath.FromSlash(slash[:idx+len("/brain")])
 	convID, _, _ := strings.Cut(slash[idx+len("/brain/"):], "/")
 	cm := loadAntigravityConvMeta(brainDir)[convID]
-	sessID := hf.Session
+	sessID := sanitizeTranscriptSession(convID)
 	kind := "main"
 	isMain := true
 	if cm.ParentID != "" {
-		sessID = sanitizeTranscriptSession("agy-" + cm.ParentID)
+		sessID = sanitizeTranscriptSession(cm.ParentID)
 		kind = cmpStr(cm.AgentName, "subagent")
 		isMain = false
 	}
@@ -282,8 +301,8 @@ func (p *usageParser) parseAntigravityLine(b []byte) {
 	case "PLANNER_RESPONSE":
 		p.stats.Parsed++
 		model := cleanModel(l.Model)
+		id := fmt.Sprintf("%s:step-%d", p.f.Session, l.StepIndex)
 		if model != "" && (l.InputTokens+l.OutputTokens+l.ThinkingTokens+l.CacheReadTokens) > 0 {
-			id := fmt.Sprintf("agy-step-%d", l.StepIndex)
 			u := usageSeenMsg{
 				ID:  id,
 				In:  l.InputTokens,
@@ -298,22 +317,28 @@ func (p *usageParser) parseAntigravityLine(b []byte) {
 			}
 			cur.u = u
 		}
-		for i, tc := range l.ToolCalls {
-			if tc.Name == "" {
-				continue
+		if !p.seenBefore(id) {
+			for i, tc := range l.ToolCalls {
+				if tc.Name == "" {
+					continue
+				}
+				callID := fmt.Sprintf("%s:%d", id, i)
+				if p.done[callID] {
+					continue
+				}
+				p.done[callID] = true
+				canonName, rawIn := normalizeAntigravityTool(tc.Name, tc.Args)
+				call := classifyCall(canonName, rawIn)
+				call.Hour, call.Model = hourOf(ts), model
+				p.stats.Calls++
+				for _, k := range call.Keys {
+					p.tool(call.Hour, call.Model, k).Calls++
+				}
+				p.noteCLI(call)
+				if call.Risky != nil {
+					p.addRisky(call, ts, "unknown", "")
+				}
 			}
-			canonName, rawIn := normalizeAntigravityTool(tc.Name, tc.Args)
-			call := classifyCall(canonName, rawIn)
-			call.Hour, call.Model = hourOf(ts), model
-			p.stats.Calls++
-			for _, k := range call.Keys {
-				p.tool(call.Hour, call.Model, k).Calls++
-			}
-			p.noteCLI(call)
-			if call.Risky != nil {
-				p.addRisky(call, ts, "ran", "")
-			}
-			_ = i
 		}
 	case "USER_INPUT", "GENERIC", "SYSTEM_MESSAGE", "EPHEMERAL_MESSAGE", "CHECKPOINT", "CONVERSATION_HISTORY", "COMMAND_STATUS", "ERROR_MESSAGE":
 		p.stats.Parsed++
@@ -326,8 +351,20 @@ func (p *usageParser) parseAntigravityLine(b []byte) {
 	}
 }
 
+func (p *usageParser) seenBefore(id string) bool {
+	if p.st == nil {
+		return false
+	}
+	for _, s := range p.st.Last {
+		if s.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 // isAntigravityTranscriptLine reports whether a raw JSONL line looks like an
-// Antigravity transcript step.
+// Antigravity PLANNER_RESPONSE transcript step.
 func isAntigravityTranscriptLine(line []byte) bool {
-	return bytes.Contains(line, markAgyStepIndex)
+	return bytes.Contains(line, markAgyStepIndex) && bytes.Contains(line, markAgyPlannerResponse)
 }

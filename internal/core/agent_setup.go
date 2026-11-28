@@ -213,6 +213,12 @@ func settingsHooks(raw string) []AgentComponent {
 		return out
 	}
 	for _, events := range agy {
+		if rawEnabled, ok := events["enabled"]; ok {
+			var enabled bool
+			if json.Unmarshal(rawEnabled, &enabled) == nil && !enabled {
+				continue
+			}
+		}
 		for ev, body := range events {
 			if ev == "enabled" {
 				continue
@@ -376,10 +382,21 @@ const redacted = "•••"
 
 var secretKeyRE = lazyre.New(`(?i)(token|secret|password|passwd|api[_-]?key|apikey|auth|credential|private|cookie|session)|(^|[^a-z])(key|pat|jwt|bearer)([^a-z]|$)`)
 
+// isAntigravityHooksPath reports whether p is an Antigravity hooks.json file.
+func isAntigravityHooksPath(p string) bool {
+	return p == ".gemini/config/hooks.json" || p == ".agents/hooks.json" || p == ".agent/hooks.json"
+}
+
 // redactSettings blanks what a settings file shouldn't send: every env
 // value, every value under a key that sounds secret, apiKeyHelper. Not JSON:
 // nothing of it is kept.
-func redactSettings(raw string) (string, bool) {
+func redactSettings(raw string) (string, bool) { return redactSettingsRoot(raw, "") }
+
+// redactAntigravityHooks redacts an Antigravity hooks.json file whose top-level
+// keys are named hook groups mapping directly to event names (like SessionStart).
+func redactAntigravityHooks(raw string) (string, bool) { return redactSettingsRoot(raw, "hooksRoot") }
+
+func redactSettingsRoot(raw, startUnder string) (string, bool) {
 	var v any
 	if json.Unmarshal([]byte(raw), &v) != nil {
 		return "", false
@@ -389,7 +406,10 @@ func redactSettings(raw string) (string, bool) {
 		switch t := x.(type) {
 		case map[string]any:
 			for k, val := range t {
+				_, isMap := val.(map[string]any)
 				switch {
+				case under == "hooksRoot" && isMap:
+					t[k] = walk(val, "hooks")
 				case k == "env" || under == "env" || k == "headers":
 					if m, ok := val.(map[string]any); ok {
 						for ek := range m {
@@ -402,14 +422,12 @@ func redactSettings(raw string) (string, bool) {
 					t[k] = redacted
 				case k == "command" && isStr(val):
 					t[k] = redactCommand(val.(string))
-				case k == "command" && isStr(val):
-					t[k] = redactCommand(val.(string))
 				case k == "url" && isStr(val):
 					t[k] = redactSetupURL(val.(string))
 				case k == "args" && isArr(val):
 					t[k] = redactArgs(val.([]any))
 				case under != "hooks" && secretKeyRE.MatchString(k):
-					if _, isMap := val.(map[string]any); !isMap {
+					if !isMap {
 						t[k] = redacted
 						continue
 					}
@@ -431,7 +449,7 @@ func redactSettings(raw string) (string, bool) {
 		}
 		return x
 	}
-	v = walk(v, "")
+	v = walk(v, startUnder)
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return "", false

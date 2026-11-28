@@ -147,6 +147,8 @@ func (c *cli) machineReport() machineReport {
 		switch {
 		case rel == ".claude.json" || rel == ".gemini/config/mcp_config.json":
 			body = mcpNamesOnly(body)
+		case rel == ".gemini/config/hooks.json" || rel == ".agents/hooks.json" || rel == ".agent/hooks.json":
+			body = redactAntigravityHooks(body)
 		case strings.HasSuffix(rel, ".json"):
 			body = redactJSON(body)
 		case strings.HasPrefix(rel, ".claude/hooks/"):
@@ -312,7 +314,14 @@ var secretKeyCLI = lazyre.New(`(?i)(token|secret|password|passwd|api[_-]?key|api
 
 // redactJSON replaces every env value, header and secret-looking value with
 // •••; text that isn't JSON isn't sent.
-func redactJSON(raw string) string {
+func redactJSON(raw string) string { return redactJSONRoot(raw, "") }
+
+// redactAntigravityHooks redacts an Antigravity hooks.json file whose top-level
+// keys are named hook groups (e.g. "waypoint") mapping directly to event names
+// (e.g. "SessionStart") without a wrapping "hooks" object.
+func redactAntigravityHooks(raw string) string { return redactJSONRoot(raw, "hooksRoot") }
+
+func redactJSONRoot(raw, startUnder string) string {
 	var v any
 	if json.Unmarshal([]byte(raw), &v) != nil {
 		return ""
@@ -324,6 +333,8 @@ func redactJSON(raw string) string {
 			for k, val := range t {
 				m, isMap := val.(map[string]any)
 				switch {
+				case under == "hooksRoot" && isMap:
+					t[k] = walk(val, "hooks")
 				case k == "env" || k == "headers" || under == "env":
 					if isMap {
 						for ek := range m {
@@ -363,7 +374,7 @@ func redactJSON(raw string) string {
 		}
 		return x
 	}
-	b, err := json.MarshalIndent(walk(v, ""), "", "  ")
+	b, err := json.MarshalIndent(walk(v, startUnder), "", "  ")
 	if err != nil {
 		return ""
 	}

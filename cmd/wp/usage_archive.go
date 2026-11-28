@@ -400,7 +400,11 @@ func (a *archiver) pass(o usageSyncOptions, root string) error {
 	}
 	hooked := map[string]bool{}
 	for _, p := range o.Files {
-		hooked[strings.TrimSuffix(filepath.Base(p), ".jsonl")] = true
+		if hf, ok := harnessFileOfPath(p); ok {
+			hooked[hf.Session] = true
+		} else {
+			hooked[strings.TrimSuffix(filepath.Base(p), ".jsonl")] = true
+		}
 	}
 	seen := map[string]bool{}
 	var todo []sized

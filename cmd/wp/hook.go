@@ -753,8 +753,8 @@ func readTranscriptUsage(r io.ReadSeeker, offset int64, seen []string, since tim
 							u.model = agy.Model
 						}
 					}
+					continue
 				}
-				continue
 			}
 			var entry struct {
 				Type      string    `json:"type"`

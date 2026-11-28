@@ -622,8 +622,14 @@ func (s *Service) ReportMachine(ctx context.Context, actor *Actor, in MachineRep
 		}
 		body := f.Content
 		switch {
-		case p == ".claude.json":
+		case p == ".claude.json" || p == ".gemini/config/mcp_config.json":
 			body = mcpOnly(body)
+		case isAntigravityHooksPath(p):
+			r, ok := redactAntigravityHooks(body)
+			if !ok {
+				r = ""
+			}
+			body = r
 		case strings.HasSuffix(p, ".json"):
 			r, ok := redactSettings(body)
 			if !ok {

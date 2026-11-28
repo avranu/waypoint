@@ -207,8 +207,8 @@ async function run(width) {
     .locator("li[data-state]")
     .evaluateAll((l) => l.map((x) => x.getAttribute("data-state")));
   ok(
-    nLi === 4 && states.length === 4,
-    `${tag} Admin → AI lists the four coding agents with their state (li ${nLi}, states ${JSON.stringify(states)}, text ${JSON.stringify((await agents.innerText().catch(() => "")).slice(0, 300))})`,
+    nLi === 5 && states.length === 5,
+    `${tag} Admin → AI lists the five coding agents with their state (li ${nLi}, states ${JSON.stringify(states)}, text ${JSON.stringify((await agents.innerText().catch(() => "")).slice(0, 300))})`,
   );
   await page.getByRole("button", { name: "Connect a computer" }).click();
   await page.getByText("Connect a runner").waitFor();

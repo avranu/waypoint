@@ -806,7 +806,6 @@ func antigravityDriver(in agentJob, prompt, work string) (*cliDriver, error) {
 	args = append(args, "--print="+prompt)
 
 	var res *antigravityResult
-	var streamed strings.Builder
 	d := &cliDriver{args: args, isStream: true, calls: &callClock{}, env: map[string]string{runnerJobEnv: "1"}}
 	d.line = func(line []byte, out *logSink) {
 		var ev antigravityStreamEvent
@@ -827,7 +826,6 @@ func antigravityDriver(in agentJob, prompt, work string) (*cliDriver, error) {
 				d.sessionID = u.ConversationID
 			}
 			if u.TextDelta != "" {
-				streamed.WriteString(u.TextDelta)
 				fmt.Fprintf(out, "%s", u.TextDelta)
 			}
 			if u.ToolName != "" && u.State == "ACTIVE" {
@@ -850,9 +848,6 @@ func antigravityDriver(in agentJob, prompt, work string) (*cliDriver, error) {
 	}
 	d.finish = func([]byte) (string, json.RawMessage, tokenUse, error) {
 		if res == nil {
-			if ans := strings.TrimSpace(streamed.String()); ans != "" {
-				return ans, jsonAnswer(ans), tokenUse{}, nil
-			}
 			return "", nil, tokenUse{}, errors.New("antigravity ended without an answer")
 		}
 		t := tokenUse{Input: res.Usage.Input, Output: res.Usage.Output + res.Usage.Thinking, CacheRead: res.Usage.CacheRead}

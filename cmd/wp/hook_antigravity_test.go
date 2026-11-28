@@ -144,12 +144,55 @@ func TestAntigravityHookPayloadAndReplyTranslation(t *testing.T) {
 		t.Errorf("guard output = %s (%v)", out.String(), err)
 	}
 
-	// Verify PreInvocation prompt deduplication.
+	// Verify guard fails closed on invalid JSON and oversized (>4 MB) payloads.
+	out.Reset()
+	hookAntigravityGuard(c, strings.NewReader("{bad json"), &out)
+	guardRes = nil
+	if err := json.Unmarshal(out.Bytes(), &guardRes); err != nil || guardRes["decision"] != "deny" {
+		t.Errorf("malformed guard input should fail closed, got %s (%v)", out.String(), err)
+	}
+	out.Reset()
+	hookAntigravityGuard(c, bytes.NewReader(bytes.Repeat([]byte("x"), guardInputMax+10)), &out)
+	guardRes = nil
+	if err := json.Unmarshal(out.Bytes(), &guardRes); err != nil || guardRes["decision"] != "deny" {
+		t.Errorf("oversized guard input should fail closed, got %s (%v)", out.String(), err)
+	}
+
+	// Verify hookAntigravityNudge does not falsely inflate nudge metrics for non-Read tools.
+	cNudge := &cli{dir: t.TempDir()}
+	out.Reset()
+	nudgePayload, _ := json.Marshal(antigravityHookInput{
+		ConversationID: "conv-nudge-1",
+		Cwd:            t.TempDir(),
+		HookEventName:  "PreToolUse",
+		ToolCall: &struct {
+			ID   string         `json:"id"`
+			Name string         `json:"name"`
+			Args map[string]any `json:"args"`
+		}{
+			ID:   "call-10",
+			Name: "run_command",
+			Args: map[string]any{"CommandLine": "sleep 60"},
+		},
+	})
+	hookAntigravityNudge(cNudge, bytes.NewReader(nudgePayload), &out)
+	if strings.TrimSpace(out.String()) != "{}" {
+		t.Errorf("nudge output = %s, want {}", out.String())
+	}
+	if len(cNudge.state.Nudges) != 0 {
+		t.Errorf("antigravity nudge should not record undeliverable nudges: %+v", cNudge.state.Nudges)
+	}
+
+	// Verify PreInvocation prompt deduplication resets on Stop so identical prompts across turns still fire.
 	if !c.isNewAgyPrompt("conv-42", "first prompt") {
 		t.Error("first prompt should be new")
 	}
 	if c.isNewAgyPrompt("conv-42", "first prompt") {
-		t.Error("same prompt repeated should not be new")
+		t.Error("same prompt repeated within turn should not be new")
+	}
+	c.clearAgyPrompt("conv-42")
+	if !c.isNewAgyPrompt("conv-42", "first prompt") {
+		t.Error("same prompt after Stop should be new")
 	}
 	if !c.isNewAgyPrompt("conv-42", "second prompt") {
 		t.Error("changed prompt should be new")

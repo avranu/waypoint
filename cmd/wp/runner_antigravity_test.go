@@ -90,4 +90,14 @@ func TestAntigravityDriverErrorAndSizeLimit(t *testing.T) {
 	if _, _, _, err := d.finish(nil); err == nil || !strings.Contains(err.Error(), "quota exceeded") {
 		t.Errorf("expected error with quota exceeded, got %v", err)
 	}
+
+	// Partial text_delta without a final result event must fail rather than report success.
+	d2, err := antigravityDriver(agentJob{CLI: "antigravity", Permission: "edit"}, "hi", work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2.line([]byte(`{"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","text_delta":"partial output"}}`), out)
+	if _, _, _, err := d2.finish(nil); err == nil {
+		t.Errorf("expected error when agy exits without a result event")
+	}
 }
