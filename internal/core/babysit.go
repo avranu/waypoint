@@ -1452,7 +1452,7 @@ func (s *Service) liveSessionOnPR(ctx context.Context, b *Babysit, pr *PullReque
 						AND (x.branch = '' OR x.branch = ?)
 				)
 			)
-		ORDER BY x.last_seen_at DESC LIMIT 5`,
+		ORDER BY x.last_seen_at DESC`,
 		cutoff, pr.HeadRef, pr.Repo, b.sessionID, pr.Repo, pr.Number, pr.URL, pr.ID, now.UnixMilli(), b.sessionID, pr.HeadRef)
 	if err != nil {
 		return "", false

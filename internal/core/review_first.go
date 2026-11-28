@@ -328,15 +328,16 @@ func (s *Service) gateFor(ctx context.Context, actor *Actor, task string, take, 
 }
 
 // hasOnlineAuditRunner reports whether userID has any online runner capable
-// of running an adversarial review audit (FeatureAudit or FeatureGatewayAudit),
-// without requiring tmux prompt-typing on the session's local machine (WP-2021).
+// of running an adversarial review audit (FeatureAudit, which runnerCanTake
+// requires for JobAudit), without requiring tmux prompt-typing on the
+// session's local machine (WP-2021).
 func (s *Service) hasOnlineAuditRunner(ctx context.Context, userID int64) bool {
 	runners, err := s.ownerRunners(ctx, userID)
 	if err != nil {
 		return false
 	}
 	for _, r := range runners {
-		if r.Online && (slices.Contains(r.Features, FeatureAudit) || slices.Contains(r.Features, FeatureGatewayAudit)) {
+		if r.Online && slices.Contains(r.Features, FeatureAudit) {
 			return true
 		}
 	}

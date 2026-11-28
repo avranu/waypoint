@@ -393,7 +393,8 @@ func (s *Server) authenticate(r *http.Request) (*core.Actor, error) {
 		}
 		if sid := strings.TrimSpace(r.Header.Get("X-Waypoint-Session")); sid != "" && a.User != nil {
 			machine := strings.TrimSpace(r.Header.Get("X-Waypoint-Machine"))
-			if cliName := strings.TrimSpace(r.Header.Get("X-Waypoint-Session-CLI")); cliName != "" && cliName != "claude" && a.IsAgent() {
+			cliName := strings.TrimSpace(r.Header.Get("X-Waypoint-Session-CLI"))
+			if cliName != "" && cliName != "claude" && a.IsAgent() && r.Method != http.MethodGet && r.Method != http.MethodHead {
 				a.Session = s.svc.EnsureCLISession(r.Context(), a, sid, machine, cliName, strings.TrimSpace(r.Header.Get("X-Waypoint-Cwd")))
 			} else {
 				a.Session = s.svc.SessionForHeader(r.Context(), a.User.ID, sid, machine)

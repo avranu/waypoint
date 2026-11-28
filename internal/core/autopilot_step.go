@@ -1428,7 +1428,7 @@ func (s *Service) pauseStep(ctx context.Context, st *stepRow, why string, rechec
 // free, nil when nothing was planned here.
 func (s *Service) reviewWorkFirst(ctx context.Context, st *stepRow, x *AgentSession, review *roundRow, prompted, now int64) (plan *reviewPlan, waits bool, err error) {
 	if cliPolledSession(x) {
-		if !s.hasOnlineAuditRunner(ctx, st.userID) {
+		if !s.hasOnlineAuditRunner(ctx, st.userID) && !s.roundHasFinishedAudit(ctx, review.id) {
 			return nil, false, nil
 		}
 	} else {
@@ -1622,12 +1622,13 @@ func (s *Service) advanceStep(ctx context.Context, st *stepRow) error {
 	if review, err := roundByID(ctx, s.db.R, st.reviewID.Int64); err != nil {
 		return err
 	} else if review != nil && (early != nil || review.state == RoundPending || review.state == RoundRunning) {
+		cliFinished := cliPolled && (early != nil || s.roundHasFinishedAudit(ctx, review.id))
 		noRunnerAt := noRunnerSince(review.createdAt, r)
 		if cliPolled {
 			noRunnerAt = s.noAuditRunnerSince(ctx, st.userID, review.createdAt)
 		}
-		heldTooLong := !reviewRunnerOK && review.state == RoundPending && now-noRunnerAt > heldNoRunnerWait.Milliseconds()
-		if !reviewRunnerOK && !heldTooLong && review.state != RoundRunning {
+		heldTooLong := !reviewRunnerOK && !cliFinished && review.state == RoundPending && now-noRunnerAt > heldNoRunnerWait.Milliseconds()
+		if !reviewRunnerOK && !cliFinished && !heldTooLong && review.state != RoundRunning {
 			if cliPolled {
 				return s.stepUpdate(ctx, st.id, StepWaiting, WaitRunner, "no audit runner is online to review "+review.key, now+autopilotNothingRetry.Milliseconds())
 			}

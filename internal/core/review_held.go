@@ -400,8 +400,21 @@ func (s *Service) shipArm(ctx context.Context, sh *shipRun) {
 			if !reviewed {
 				// Fail closed on auto-merge (WP-1908, WP-2021): an unreviewed
 				// or timed-out pre-PR review opens the PR so work isn't lost,
-				// but never arms auto-merge without a completed review.
-				notes = append(notes, "wasn't armed because its pre-PR adversarial review didn't complete — review it and arm or merge by hand")
+				// but never arms auto-merge — and disarms any existing arm on
+				// the branch's PR so it cannot auto-merge unreviewed.
+				if cur, perr := s.prByID(ctx, s.db.R, pr.ID); perr == nil && cur.ArmedAt != nil {
+					err := s.DisarmMerge(ctx, actor, pr.ID)
+					if errors.Is(err, ErrForbidden) {
+						err = s.DisarmMerge(ctx, SystemActor(), pr.ID)
+					}
+					if err != nil {
+						notes = append(notes, "couldn't disarm its existing auto-merge after an incomplete pre-PR review: "+err.Error())
+					} else {
+						notes = append(notes, "disarmed its existing auto-merge because its pre-PR adversarial review didn't complete — review it and arm or merge by hand")
+					}
+				} else {
+					notes = append(notes, "wasn't armed because its pre-PR adversarial review didn't complete — review it and arm or merge by hand")
+				}
 			} else if mr, err := s.MergePR(ctx, actor, pr.ID, MergeInput{WhenReady: true, Head: sh.pin}); err != nil {
 				notes = append(notes, "couldn't arm it: "+err.Error())
 			} else if mr != nil && mr.ByHand {
@@ -742,6 +755,22 @@ func (s *Service) noAuditRunnerSince(ctx context.Context, userID, created int64)
 		return last.Int64
 	}
 	return created
+}
+
+// roundHasFinishedAudit reports whether a review round already has a completed
+// reviewer audit so CLI-polled sessions can deliver its findings even if the
+// audit runner subsequently went offline.
+func (s *Service) roundHasFinishedAudit(ctx context.Context, roundID int64) bool {
+	if roundID == 0 {
+		return false
+	}
+	num := strconv.FormatInt(roundID, 10)
+	var exists bool
+	_ = s.db.R.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM code_audits
+		WHERE request_key IN (?, ?, ?) AND status = ?
+	)`, "review-round:"+num, "review-round:"+num+":sonnet", "review-round:"+num+":other", AuditDone).Scan(&exists)
+	return exists
 }
 
 // endHeldRun finishes the run and claim of a task whose pull request is

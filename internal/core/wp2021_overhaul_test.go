@@ -197,8 +197,38 @@ func TestLargeDiffChunkingAndHonestReviewGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state != GateFailure || open != 0 || !strings.Contains(note, "Incomplete review: 3 files left unreviewed") {
-		t.Fatalf("computeGate = (%q, %q, open=%d), want GateFailure naming 3 unreviewed files", state, note, open)
+	if state != GateFailure || open != 0 || !strings.Contains(note, "Incomplete review: 3 files left unreviewed") || !strings.Contains(note, "@waypoint full review") {
+		t.Fatalf("computeGate = (%q, %q, open=%d), want GateFailure naming 3 unreviewed files and @waypoint full review", state, note, open)
+	}
+	// A stale/queued retry on the same head must NOT clear the incomplete-review GateFailure.
+	if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO bot_runs(project_id, pr_id, kind, head_sha, status, summary, created_at)
+		VALUES (?, ?, 'review', ?, 'queued', '', 3)`, se.p.ID, pr.ID, pr.HeadSHA); err != nil {
+		t.Fatal(err)
+	}
+	se.setClock(se.clockNow().Add(time.Hour))
+	state, note, _, _, err = se.s.computeGate(se.ctx, pr, "high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != GateFailure || !strings.Contains(note, "Incomplete review: 3 files left unreviewed") {
+		t.Fatalf("stale queued retry cleared incomplete-review gate: (%q, %q)", state, note)
+	}
+
+	// A review skipped because the diff is too large must also fail closed (audit 2260.3).
+	se.pullHook("opened", ForgePR{Number: 23, Title: "Too large diff", Author: "dev", HeadRef: "huge", HeadRepo: "me/app", HeadSHA: "sha-huge", State: "open"})
+	se.s.Wait()
+	prHuge := se.pr(23)
+	if _, err := se.s.db.W.ExecContext(se.ctx, `INSERT INTO bot_runs(project_id, pr_id, kind, head_sha, status, summary, created_at, finished_at)
+		VALUES (?, ?, 'review', ?, 'skipped', ?, 1, 2)`,
+		se.p.ID, prHuge.ID, prHuge.HeadSHA, diffTooLargeSummary); err != nil {
+		t.Fatal(err)
+	}
+	state, note, _, _, err = se.s.computeGate(se.ctx, prHuge, "high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != GateFailure || !strings.Contains(note, diffTooLargeSummary) {
+		t.Fatalf("diff-too-large skipped review gate = (%q, %q), want GateFailure", state, note)
 	}
 
 	// A truncated file diff (diff_cut = 1, dropped_files = 0) must also fail the gate.
@@ -481,5 +511,13 @@ func TestCLIPolledSessionGetsAdversarialReviewWithoutTmux(t *testing.T) {
 	}
 	if afterSeen <= beforeSeen {
 		t.Fatalf("EnsureCLISession did not refresh last_seen_at: before=%d after=%d", beforeSeen, afterSeen)
+	}
+
+	// hasOnlineAuditRunner must reject a gateway-only runner lacking FeatureAudit.
+	if _, err := a.s.db.W.Exec(`UPDATE runners SET features = '["gateway_audit"]' WHERE name = 'auditbox'`); err != nil {
+		t.Fatal(err)
+	}
+	if a.s.hasOnlineAuditRunner(a.ctx, a.admin.User.ID) {
+		t.Fatalf("hasOnlineAuditRunner admitted gateway-only runner without FeatureAudit")
 	}
 }

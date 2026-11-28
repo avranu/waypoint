@@ -328,6 +328,11 @@ func cliPolledSession(x *AgentSession) bool {
 	return x != nil && x.CLI != "" && x.CLI != "claude"
 }
 
+// maxActiveCLISessionsPerUser bounds how many live non-Claude CLI sessions
+// one account can auto-register via EnsureCLISession (preventing unbounded
+// agent_sessions row creation from arbitrary X-Waypoint-Session headers).
+const maxActiveCLISessionsPerUser = 64
+
 // EnsureCLISession returns (creating if absent) the lightweight agent_sessions
 // row for a non-Claude agent harness identified by X-Waypoint-Session and
 // X-Waypoint-Session-CLI (WP-2021). Claude Code sessions still register via
@@ -358,18 +363,31 @@ func (s *Service) EnsureCLISession(ctx context.Context, actor *Actor, cliID, mac
 	}
 	var id int64
 	at := now.UnixMilli()
+	agent := agentLabel(actor, cliName)
 	err := s.write(ctx, actor, func(t *tx) error {
 		if err := t.QueryRowContext(ctx, `SELECT id FROM agent_sessions WHERE user_id = ? AND machine = ? AND cli_id = ?`, actor.User.ID, machine, cliID).Scan(&id); err == nil && id != 0 {
 			_, _ = t.ExecContext(ctx, `UPDATE agent_sessions SET last_seen_at = max(last_seen_at, ?), ended_at = NULL, state = 'working' WHERE id = ?`, at, id)
 			return nil
 		}
+		var active int
+		if err := t.QueryRowContext(ctx, `SELECT count(*) FROM agent_sessions WHERE user_id = ? AND cli != 'claude' AND ended_at IS NULL AND last_seen_at >= ?`,
+			actor.User.ID, now.Add(-sessionEndedAfter).UnixMilli()).Scan(&active); err != nil {
+			return err
+		}
+		if active >= maxActiveCLISessionsPerUser {
+			return nil
+		}
 		res, err := t.ExecContext(ctx, `INSERT INTO agent_sessions(user_id, machine, cli_id, cli, agent, cwd, state, started_at, last_seen_at, kind, started_server, started_wp)
 			VALUES (?,?,?,?,?,?,'working',?,?,?, ?,?)`,
-			actor.User.ID, machine, cliID, cliName, agentLabel(actor, cliName), cwd, at, at, SessionYours, s.cfg.Version, actor.ClientVersion)
+			actor.User.ID, machine, cliID, cliName, agent, cwd, at, at, SessionYours, s.cfg.Version, actor.ClientVersion)
 		if err != nil {
 			return err
 		}
 		id, _ = res.LastInsertId()
+		t.emit(sessionEvent(EvSessionStarted, &AgentSession{
+			ID: id, userID: actor.User.ID, Machine: machine, CLIID: cliID, CLI: cliName,
+			Agent: agent, Cwd: cwd, State: SessionWorking, Kind: SessionYours,
+		}, nil))
 		return nil
 	})
 	if err != nil || id == 0 {

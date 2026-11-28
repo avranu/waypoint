@@ -19,8 +19,9 @@ const (
 )
 
 const (
-	gateRecheck   = 2 * time.Minute
-	gateNoteLimit = 140
+	gateRecheck         = 2 * time.Minute
+	gateNoteLimit       = 140
+	diffTooLargeSummary = "the diff is too large to review"
 )
 
 // PRGate is a pull request's review gate as last posted.
@@ -110,9 +111,11 @@ func (s *Service) computeGate(ctx context.Context, pr *PullRequest, sev string) 
 		queued = down
 	}
 	running += queued
+	// Look at the latest finished review run for this head so an expired or
+	// queued retry never masks an earlier failed or incomplete review.
 	var last, lastErr, lastSummary string
 	var lastDropped, lastCut int
-	if rerr := s.db.R.QueryRowContext(ctx, `SELECT status, error, summary, dropped_files, diff_cut FROM bot_runs WHERE pr_id = ? AND kind = 'review' AND head_sha = ? ORDER BY id DESC LIMIT 1`, pr.ID, pr.HeadSHA).Scan(&last, &lastErr, &lastSummary, &lastDropped, &lastCut); rerr != nil && !errors.Is(rerr, sql.ErrNoRows) {
+	if rerr := s.db.R.QueryRowContext(ctx, `SELECT status, error, summary, dropped_files, diff_cut FROM bot_runs WHERE pr_id = ? AND kind = 'review' AND head_sha = ? AND status IN ('done', 'failed', 'skipped') ORDER BY id DESC LIMIT 1`, pr.ID, pr.HeadSHA).Scan(&last, &lastErr, &lastSummary, &lastDropped, &lastCut); rerr != nil && !errors.Is(rerr, sql.ErrNoRows) {
 		return state, note, open, below, rerr
 	}
 	switch {
@@ -137,7 +140,7 @@ func (s *Service) computeGate(ctx context.Context, pr *PullRequest, sev string) 
 		head := fmt.Sprintf("%d open finding%s: ", open, plural(open))
 		return GateFailure, clipRunes(head+strings.Join(items, ", "), gateNoteLimit), open, below, nil
 	case last == "done" && (lastDropped > 0 || lastCut != 0):
-		const tail = "; comment @waypoint review to retry or merge by hand"
+		const tail = "; comment @waypoint full review to retry or merge by hand"
 		var reason string
 		switch {
 		case lastDropped > 0 && lastCut != 0:
@@ -148,6 +151,8 @@ func (s *Service) computeGate(ctx context.Context, pr *PullRequest, sev string) 
 			reason = "Incomplete review: a file diff was truncated to fit"
 		}
 		return GateFailure, clipRunes(reason, gateNoteLimit-utf8.RuneCountInString(tail)) + tail, open, below, nil
+	case last == "skipped" && lastSummary == diffTooLargeSummary:
+		return GateFailure, "Incomplete review: the diff is too large to review; merge by hand", open, below, nil
 	case below > 0:
 		return GateSuccess, fmt.Sprintf("No blocking findings (%d below %s)", below, priority(sev)), open, below, nil
 	case total > 0:

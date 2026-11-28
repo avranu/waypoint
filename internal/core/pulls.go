@@ -1406,7 +1406,7 @@ func (s *Service) reviewPR(ctx context.Context, r *BotRun) (botResult, error) {
 
 	diff, err := cl.PRDiff(ctx, f, pr.Repo, fp)
 	if errors.Is(err, errDiffTooLarge) {
-		return res, &errSkip{"the diff is too large to review"}
+		return res, &errSkip{diffTooLargeSummary}
 	} else if err != nil {
 		return res, err
 	}
