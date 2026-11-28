@@ -49,10 +49,14 @@ func TestGuardStatsReport(t *testing.T) {
 }
 
 func TestAnalyzeMemoryMDAndHelperBreakdown(t *testing.T) {
-	text := "# Memory\n\n- Never run full tests locally on this machine\n- Never run full tests locally on this machine\n- Never run full tests locally on this machine\n- Never run full tests locally on this machine\n"
+	text := "# Memory\n\n| Col A | Col B |\n| ----- | ----- |\n| ----- | ----- |\n| ----- | ----- |\n| ----- | ----- |\n~~~\n- duplicate inside tilde fence should be ignored completely\n- duplicate inside tilde fence should be ignored completely\n~~~\n- Never run full tests locally on this machine\n- Never run full tests locally on this machine\n- Never run full tests locally on this machine\n- Never run full tests locally on this machine\n"
 	lines, dupes := analyzeMemoryMD(text)
-	if lines != 6 || dupes != 3 {
-		t.Fatalf("analyzeMemoryMD = (%d, %d), want (6, 3)", lines, dupes)
+	if lines != 15 || dupes != 3 {
+		t.Fatalf("analyzeMemoryMD = (%d, %d), want (15, 3)", lines, dupes)
+	}
+	// Verify claudeMemoryPath uses projectDirName (replaces underscores and spaces).
+	if p := claudeMemoryPath("/home/user/my_repo dir"); !strings.Contains(p, "-home-user-my-repo-dir") {
+		t.Fatalf("claudeMemoryPath = %q, want projectDirName slug", p)
 	}
 
 	out := helperStatsText([]helperStat{{
@@ -70,5 +74,9 @@ func TestAnalyzeMemoryMDAndHelperBreakdown(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("helperStatsText missing %q:\n%s", want, out)
 		}
+	}
+	retryOnly := helperStatsText([]helperStat{{Check: "assumptions", Runs: 2, Done: 2, Answered: 1}})
+	if !strings.Contains(retryOnly, "(1 retry/other)") {
+		t.Errorf("pure retry/other breakdown hidden:\n%s", retryOnly)
 	}
 }

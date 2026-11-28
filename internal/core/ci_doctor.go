@@ -381,13 +381,16 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 		}
 		ids, err := s.projectsOfRepo(ctx, forgeID, repo)
 		if err != nil {
-			repoVis[rk] = repoVisEntry{}
 			return "", false
 		}
 		for _, id := range ids {
 			ok, known := seen[id]
 			if !known {
-				ok = s.requireProjectRole(ctx, s.db.R, actor, id, RoleViewer) == nil
+				rerr := s.requireProjectRole(ctx, s.db.R, actor, id, RoleViewer)
+				if rerr != nil && ctx.Err() != nil {
+					return "", false
+				}
+				ok = rerr == nil
 				seen[id] = ok
 			}
 			if ok {
@@ -395,6 +398,7 @@ func (s *Service) CIDoctor(ctx context.Context, actor *Actor) (*CIDoctor, error)
 					repoVis[rk] = repoVisEntry{key: p.Key, ok: true}
 					return p.Key, true
 				}
+				return "", false
 			}
 		}
 		repoVis[rk] = repoVisEntry{}

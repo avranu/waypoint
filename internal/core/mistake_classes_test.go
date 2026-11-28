@@ -229,6 +229,15 @@ func TestMistakeOrderingAndPriorityEscalation(t *testing.T) {
 	if prio := PriorityName(pe.get(pe.admin, list[0].Issue).Priority); prio != "high" {
 		t.Fatalf("at 20 instances priority = %q, want high", prio)
 	}
+	// Human raising priority to urgent must never be downgraded by subsequent sweeps.
+	if _, err := pe.s.UpdateIssue(pe.ctx, pe.admin, list[0].Issue, IssuePatch{Priority: "urgent"}); err != nil {
+		t.Fatal(err)
+	}
+	pe.mistakeBug(21, "merge queue front loses place 21", fileA)
+	pe.s.SweepMistakes(pe.ctx)
+	if prio := PriorityName(pe.get(pe.admin, list[0].Issue).Priority); prio != "urgent" {
+		t.Fatalf("after human raised to urgent, priority = %q, want urgent", prio)
+	}
 }
 
 // Won't Do declines a class for good, and the setting stops filing.
